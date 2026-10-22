@@ -14,14 +14,32 @@
 // pointers before absences before memberships at equal t; contradictory equals
 // and cycles fail closed as `conflict`. Facts (title, state) and child counts
 // are separate observations: the freshest wins and they never decide parentage.
+//
+// GitHub dependencies (slice 2, 2026-10-21 design §6) in one more. Every
+// observation is about a pair "A blocks B": B's own dependency section listing
+// A in `blocked_by`, or A's listing B in `blocking`, says it holds; a COMPLETE
+// list of either end that omits the other says it no longer does. The newest
+// decides and a negative wins at equal t, because a missing "waits on" degrades
+// to today's view while a false one misleads. A cycle is GitHub's data, kept
+// and marked, never decided away.
 import { issueKey } from '../public/issue-key.js'
 import type { IssueKeySets } from '../public/issue-key.js'
-import type { IssueFacts, IssueRelative, IssueSnapshotRow, IssueState, IssueStateReason } from './store.js'
+import type {
+  IssueDependencies, IssueDependencyList, IssueFacts, IssueRelative, IssueSnapshotRow, IssueState, IssueStateReason,
+} from './store.js'
 
 /** One response's budget: a unit per node, plus one per root entry that has no node. */
 export const MAX_GRAPH_NODES = 2_000
 // GitHub's eight levels: the chain emitted above one root never exceeds them
 const MAX_ANCESTORS = 8
+
+/** Slice 2: GitHub's counts from this issue's own bound, ok dependency section, never from other lists. */
+export interface IssueDependencyCounts {
+  blocked_by_open: number
+  blocked_by_total: number
+  blocking_open: number
+  blocking_total: number
+}
 
 export interface IssueGraphNode {
   key: string
@@ -33,12 +51,15 @@ export interface IssueGraphNode {
   /** only where an observation carried them (rule 4) */
   children_total?: number
   children_completed?: number
+  /** slice 2: only when this issue's own section is bound and ok */
+  deps?: IssueDependencyCounts
   observed_at: string
   /** rule 3 or rule 5 decided this issue's parent away */
   conflict?: true
 }
 
-export interface IssueGraphEdge {
+/** Sub-issue containment, from the parent to its child. */
+export interface IssueContainsEdge {
   kind: 'contains'
   from: string
   to: string
@@ -46,6 +67,18 @@ export interface IssueGraphEdge {
   position: number
   observed_at: string
 }
+
+/** Slice 2: GitHub's "blocked by", from the blocker to the issue that waits on it. Never sequencing by position. */
+export interface IssueBlocksEdge {
+  kind: 'blocks'
+  from: string
+  to: string
+  observed_at: string
+  /** both ends share a strongly connected component: a circular dependency on GitHub */
+  cycle?: true
+}
+
+export type IssueGraphEdge = IssueContainsEdge | IssueBlocksEdge
 
 export interface IssueGraphRoot {
   /** the requested key an entity links; see `aliases` for its node */
@@ -60,7 +93,15 @@ export interface IssueGraphRoot {
    * null when there is no readable snapshot. Additive within version 1.
    */
   hierarchy: 'ok' | 'unavailable' | null
+  /**
+   * Slice 2: this root's own dependency section. `unknown` is a readable
+   * snapshot whose section is missing or unbound (an older viewer refreshed it
+   * since); null, no readable snapshot. Additive within version 1.
+   */
+  dependencies: 'ok' | 'unavailable' | 'unknown' | null
   children_omitted: number
+  /** slice 2: this root's blocks edges (each a "waits on" or "unblocks" entry) the cap cut */
+  dependencies_omitted: number
 }
 
 export interface IssueGraph {
@@ -69,7 +110,8 @@ export interface IssueGraph {
   edges: IssueGraphEdge[]
   roots: IssueGraphRoot[]
   aliases: Record<string, string>
-  truncated: { roots: number; ancestors: number; children: number; edges: number }
+  /** `edges` counts both kinds; `dependencies`, neighbour nodes counted nowhere else (slice 2) */
+  truncated: { roots: number; ancestors: number; children: number; dependencies: number; edges: number }
 }
 
 // What one observation says an issue's parent is. Neither sentinel can be a
@@ -90,6 +132,9 @@ interface ParentList { t: string; observer: string; complete: boolean; children:
 interface Seen<T> { t: string; source: number; observer: string; value: T }
 interface Counts { total: number; completed: number }
 interface Decision { parent: string; t: string }
+// Slice 2: one direction of a root's own dependency section, as observations
+interface DependencySide { listed: Set<string>; complete: boolean }
+interface DependencySection { t: string; blockedBy: DependencySide; blocking: DependencySide }
 interface Root {
   key: string
   node: string
@@ -99,6 +144,10 @@ interface Root {
   hasNode: boolean
   ancestors: string[]
   children: string[]
+  /** slice 2: its blockers, then its dependents, each by key */
+  neighbours: string[]
+  /** the same entries as blocks edges (pair ids), in the same order */
+  blocks: string[]
 }
 
 // newest first; then the lower source (rule 7); then the observer's key, so a
@@ -117,12 +166,93 @@ function push<K, V>(map: Map<K, V[]>, key: K, value: V): void {
   else map.set(key, [value])
 }
 
+// One "from blocks to" pair. A key never holds a space: a slug is [\w.-] only.
+const pairId = (from: string, to: string): string => `${from} ${to}`
+const pairEnds = (id: string): [string, string] => {
+  const space = id.indexOf(' ')
+  return [id.slice(0, space), id.slice(space + 1)]
+}
+
+// §6 step 3 and slice 2's fills: rounds across `lists` in rank order, each
+// giving every list its next entry not yet `done`, until `spent` or nothing is left.
+function roundRobin(lists: string[][], done: (entry: string) => boolean, take: (entry: string) => void, spent: () => boolean): void {
+  const cursors = lists.map(() => 0)
+  for (let progressed = true; progressed && !spent();) {
+    progressed = false
+    lists.forEach((list, index) => {
+      if (spent()) return
+      let cursor = cursors[index]!
+      while (cursor < list.length && done(list[cursor]!)) cursor++
+      const entry = list[cursor]
+      if (entry !== undefined) {
+        take(entry)
+        cursor++
+        progressed = true
+      }
+      cursors[index] = cursor
+    })
+  }
+}
+
+// Strongly connected components of the accepted blocks edges (Tarjan),
+// iterative so a long chain cannot overflow the stack, and linear. Two keys
+// share a component exactly when each reaches the other, so every edge between
+// them lies on a cycle. A local copy of store.ts's waitsOnComponents: this
+// module must stay pure and import no value but issueKey (§6.4).
+function components(next: Map<string, string[]>): Map<string, number> {
+  const index = new Map<string, number>()
+  const low = new Map<string, number>()
+  const component = new Map<string, number>()
+  const stack: string[] = []
+  let visited = 0
+  let found = 0
+  const visit = (key: string): void => {
+    index.set(key, visited)
+    low.set(key, visited++)
+    stack.push(key)
+  }
+  for (const start of next.keys()) {
+    if (index.has(start)) continue
+    visit(start)
+    const frames = [{ key: start, edge: 0 }]
+    while (frames.length) {
+      const frame = frames[frames.length - 1]!
+      const targets = next.get(frame.key) ?? []
+      if (frame.edge < targets.length) {
+        const to = targets[frame.edge++]!
+        if (!index.has(to)) {
+          visit(to)
+          frames.push({ key: to, edge: 0 })
+        } else if (!component.has(to)) {
+          // still on the stack: part of the component being built
+          low.set(frame.key, Math.min(low.get(frame.key)!, index.get(to)!))
+        }
+        continue
+      }
+      frames.pop()
+      const parent = frames[frames.length - 1]
+      if (parent) low.set(parent.key, Math.min(low.get(parent.key)!, low.get(frame.key)!))
+      if (low.get(frame.key) !== index.get(frame.key)) continue
+      let member: string
+      do {
+        member = stack.pop()!
+        component.set(member, found)
+      } while (member !== frame.key)
+      found++
+    }
+  }
+  return component
+}
+
 export function buildIssueGraph(
   snapshots: IssueSnapshotRow[],
   keySets: IssueKeySets,
   opts: { maxUnits?: number } = {},
 ): IssueGraph {
   const maxUnits = Math.max(0, opts.maxUnits ?? MAX_GRAPH_NODES)
+  // Slice 2 §6.3: every edge of one response, both kinds, within twice its
+  // node budget. A node has at most one parent edge, so containment always fits.
+  const maxEdges = 2 * maxUnits
 
   // Rule 6. A hard failure of K at tF drops every observation about K made at
   // or before tF. Every cached row counts, displayed or not: a refusal only
@@ -151,6 +281,9 @@ export function buildIssueGraph(
   const facts = new Map<string, Seen<IssueFacts>[]>()
   const counts = new Map<string, Seen<Counts>[]>()
   const aliasOf = new Map<string, string>()
+  // slice 2: each canonical issue's own bound, ok dependency sections, and their counts
+  const sections = new Map<string, DependencySection[]>()
+  const dependencyCounts = new Map<string, Seen<IssueDependencyCounts>[]>()
 
   const fact = (key: string, t: string, source: number, observer: string, v: IssueRelative, withCounts: boolean) => {
     if (suppressed(key, t)) return
@@ -168,6 +301,29 @@ export function buildIssueGraph(
     const named = parent !== NO_PARENT && suppressed(parent, t) ? UNKNOWN : parent
     push(claims, child, { t, rank, parent: named })
   }
+  // Slice 2 §6.1. A listed issue's facts are a LISTED source (rule 7); the
+  // root listing itself says nothing. Pairs are decided once every row is read.
+  const section = (root: string, t: string, observer: string, deps: Extract<IssueDependencies, { status: 'ok' }>) => {
+    const side = (list: IssueDependencyList): DependencySide => {
+      const listed = new Set<string>()
+      for (const issue of list.list) {
+        const key = issueKey(issue.repo, issue.number)
+        if (!key || key === root || listed.has(key)) continue
+        listed.add(key)
+        fact(key, t, LISTED, observer, issue, false)
+      }
+      return { listed, complete: !list.truncated }
+    }
+    const blockedBy = side(deps.blocked_by)
+    const blocking = side(deps.blocking)
+    // as with a parent's own list, a refused root's own section says nothing
+    if (suppressed(root, t)) return
+    push(sections, root, { t, blockedBy, blocking })
+    const { blocked_by: by, blocking: to } = deps
+    push(dependencyCounts, root, { t, source: OWN, observer, value: {
+      blocked_by_open: by.open, blocked_by_total: by.total, blocking_open: to.open, blocking_total: to.total,
+    } })
+  }
 
   for (const { key: observer, row } of rows) {
     const snap = row.snapshot
@@ -178,6 +334,10 @@ export function buildIssueGraph(
     // Rule 8: GitHub followed a repository redirect; file under its answer.
     if (root !== observer) aliasOf.set(observer, root)
     fact(root, t, OWN, observer, snap.issue, false)
+    // The dependency section is a section of its own, read whatever the
+    // hierarchy's status. listIssueSnapshots returns it only while it is bound
+    // to this row's fetched_at; missing, unbound or unavailable, it says nothing.
+    if (row.dependencies?.status === 'ok') section(root, t, observer, row.dependencies)
     // An unavailable hierarchy section yields no observations at all.
     if (snap.hierarchy.status !== 'ok') continue
     if (!suppressed(root, t)) {
@@ -258,10 +418,62 @@ export function buildIssueGraph(
     for (const key of path) walk.set(key, 'done')
   }
 
+  // Slice 2 §6.1: each pair "from blocks to". Its positives, newest first: the
+  // dependent's own blocked_by naming the blocker, or the blocker's own
+  // blocking naming the dependent.
+  const positive = new Map<string, string>()
+  const assert = (from: string, to: string, t: string) => {
+    const id = pairId(from, to)
+    const held = positive.get(id)
+    if (held === undefined || t > held) positive.set(id, t)
+  }
+  for (const [root, seen] of sections) {
+    for (const { t, blockedBy, blocking } of seen) {
+      for (const from of blockedBy.listed) assert(from, root, t)
+      for (const to of blocking.listed) assert(root, to, t)
+    }
+  }
+  // Its negatives: a COMPLETE list of either end that omits the other. A
+  // truncated one says nothing about what it lacks.
+  const newestNegative = (from: string, to: string): string | undefined => {
+    let newest: string | undefined
+    const omits = (t: string, side: DependencySide, other: string) => {
+      if (side.complete && !side.listed.has(other) && (newest === undefined || t > newest)) newest = t
+    }
+    for (const { t, blockedBy } of sections.get(to) ?? []) omits(t, blockedBy, from)
+    for (const { t, blocking } of sections.get(from) ?? []) omits(t, blocking, to)
+    return newest
+  }
+  const blocks = new Map<string, string>()
+  const next = new Map<string, string[]>()
+  const blockersOf = new Map<string, string[]>()
+  const dependentsOf = new Map<string, string[]>()
+  for (const [id, t] of [...positive].sort((a, b) => byKey(a[0], b[0]))) {
+    const [from, to] = pairEnds(id)
+    // Rule 6, both ends: nothing said at or before either end's hard failure
+    // counts. Only the newest positive needs the test: an older one never survives it.
+    if (suppressed(from, t) || suppressed(to, t)) continue
+    // The newest observation decides, and at equal t a negative wins.
+    const negative = newestNegative(from, to)
+    if (negative !== undefined && negative >= t) continue
+    blocks.set(id, t)
+    push(next, from, to)
+    push(blockersOf, to, from)
+    push(dependentsOf, from, to)
+  }
+  // A cycle is GitHub's data: every edge inside a strongly connected component keeps it.
+  const component = components(next)
+  const circular = (id: string): boolean => {
+    const [from, to] = pairEnds(id)
+    return component.get(from) === component.get(to)
+  }
+
   const factsOf = new Map<string, Seen<IssueFacts>>()
   for (const [key, seen] of facts) factsOf.set(key, seen.reduce(fresher))
   const countsOf = new Map<string, Seen<Counts>>()
   for (const [key, seen] of counts) countsOf.set(key, seen.reduce(fresher))
+  const dependencyCountsOf = new Map<string, Seen<IssueDependencyCounts>>()
+  for (const [key, seen] of dependencyCounts) dependencyCountsOf.set(key, seen.reduce(fresher))
 
   // Rule 4: a parent's children take the order of its own freshest list, and
   // accepted children that list lacks follow by key.
@@ -300,6 +512,9 @@ export function buildIssueGraph(
   const roots: Root[] = rows.map(({ key, row }) => {
     const node = aliasOf.get(key) ?? key
     const display = keySets.display.get(key)!
+    // slice 2: its blockers, then its dependents, by key, as §6.3 fills them
+    const blockers = (blockersOf.get(node) ?? []).filter((other) => factsOf.has(other)).sort(byKey)
+    const dependents = (dependentsOf.get(node) ?? []).filter((other) => factsOf.has(other)).sort(byKey)
     return {
       key, node, row,
       refresh: display.refresh,
@@ -307,6 +522,8 @@ export function buildIssueGraph(
       hasNode: factsOf.has(node),
       ancestors: ancestorsOf(node),
       children: (ordered.get(node) ?? []).filter((child) => factsOf.has(child)),
+      neighbours: [...blockers, ...dependents],
+      blocks: [...blockers.map((from) => pairId(from, node)), ...dependents.map((to) => pairId(node, to))],
     }
   })
   roots.sort((a, b) =>
@@ -331,67 +548,93 @@ export function buildIssueGraph(
 
   // Step 3: children of the kept roots, round-robin in rank order, until the
   // budget is spent. A child already kept costs nothing.
-  const cursors = keptRoots.map(() => 0)
   let remaining = maxUnits - used
-  for (let progressed = true; progressed && remaining > 0;) {
-    progressed = false
-    keptRoots.forEach((root, index) => {
-      if (remaining <= 0) return
-      let cursor = cursors[index]!
-      while (cursor < root.children.length && kept.has(root.children[cursor]!)) cursor++
-      const child = root.children[cursor]
-      if (child !== undefined) {
-        kept.add(child)
-        cursor++
-        remaining--
-        progressed = true
-      }
-      cursors[index] = cursor
-    })
+  const keep = (key: string) => {
+    kept.add(key)
+    remaining--
   }
+  const nodesSpent = () => remaining <= 0
+  roundRobin(keptRoots.map((root) => root.children), (key) => kept.has(key), keep, nodesSpent)
+  // Slice 2 §6.3, step 4: then their dependency neighbours, the same way, each
+  // root's blockers before its dependents, by key.
+  roundRobin(keptRoots.map((root) => root.neighbours), (key) => kept.has(key), keep, nodesSpent)
 
   // Exact truncation. Each node the cap removed is counted once: an omitted
   // root's own node is that root (`roots`); otherwise an ancestor some omitted
-  // root needed (`ancestors`); otherwise a child (`children`).
+  // root needed (`ancestors`); otherwise a child (`children`); otherwise a
+  // dependency neighbour (`dependencies`).
   const omittedRoots = roots.slice(keptRoots.length)
   const everyNode = new Set<string>()
+  const childNodes = new Set<string>()
   for (const root of roots) {
     if (root.hasNode) everyNode.add(root.node)
-    for (const key of [...root.ancestors, ...root.children]) everyNode.add(key)
+    for (const key of root.ancestors) everyNode.add(key)
+    for (const key of root.children) {
+      everyNode.add(key)
+      childNodes.add(key)
+    }
+    for (const key of root.neighbours) everyNode.add(key)
   }
   const omittedRootNodes = new Set(omittedRoots.filter((root) => root.hasNode).map((root) => root.node))
   const omittedAncestors = new Set(omittedRoots.flatMap((root) => root.ancestors))
-  const truncated = { roots: omittedRoots.length, ancestors: 0, children: 0, edges: 0 }
+  const truncated = { roots: omittedRoots.length, ancestors: 0, children: 0, dependencies: 0, edges: 0 }
   for (const key of everyNode) {
     if (kept.has(key) || omittedRootNodes.has(key)) continue
     if (omittedAncestors.has(key)) truncated.ancestors++
-    else truncated.children++
+    else if (childNodes.has(key)) truncated.children++
+    else truncated.dependencies++
   }
   const edgesWithin = (nodes: Set<string>): string[] =>
     [...nodes].filter((key) => nodes.has(accepted.get(key)?.parent ?? NO_PARENT))
-  truncated.edges = edgesWithin(everyNode).length - edgesWithin(kept).length
+  const containedKeys = edgesWithin(kept)
+  truncated.edges = edgesWithin(everyNode).length - containedKeys.length
+
+  // Slice 2 §6.3: a blocks edge only between two emitted nodes, in what the
+  // edge budget leaves after containment: round-robin across the kept roots in
+  // rank order (each root's blockers, then its dependents, by key), then any
+  // other edge between emitted nodes, by key. Every one cut is counted.
+  const emitted = new Set<string>()
+  let edgeBudget = maxEdges - containedKeys.length
+  const between = (id: string) => {
+    const [from, to] = pairEnds(id)
+    return kept.has(from) && kept.has(to)
+  }
+  const emit = (id: string) => {
+    emitted.add(id)
+    edgeBudget--
+  }
+  const edgesSpent = () => edgeBudget <= 0
+  roundRobin(keptRoots.map((root) => root.blocks.filter(between)), (id) => emitted.has(id), emit, edgesSpent)
+  roundRobin([[...blocks.keys()].filter(between)], (id) => emitted.has(id), emit, edgesSpent)
+  truncated.edges += blocks.size - emitted.size
 
   const nodes: IssueGraphNode[] = [...kept].sort(byKey).map((key) => {
     const seen = factsOf.get(key)!
     const tally = countsOf.get(key)?.value
+    const dependencies = dependencyCountsOf.get(key)?.value
     return {
       key,
       ...seen.value,
       ...(tally ? { children_total: tally.total, children_completed: tally.completed } : {}),
+      ...(dependencies ? { deps: dependencies } : {}),
       observed_at: seen.t,
       ...(conflicts.has(key) ? { conflict: true as const } : {}),
     }
   })
-  const edges: IssueGraphEdge[] = edgesWithin(kept)
+  const contained: IssueContainsEdge[] = containedKeys
     .map((key) => ({ kind: 'contains' as const, from: accepted.get(key)!.parent, to: key, position: positionOf.get(key)!, observed_at: accepted.get(key)!.t }))
     .sort((a, b) => byKey(a.from, b.from) || a.position - b.position)
+  const blocking: IssueBlocksEdge[] = [...emitted].sort(byKey).map((id) => {
+    const [from, to] = pairEnds(id)
+    return { kind: 'blocks' as const, from, to, observed_at: blocks.get(id)!, ...(circular(id) ? { cycle: true as const } : {}) }
+  })
   const aliases: Record<string, string> = {}
   const keptByKey = [...keptRoots].sort((a, b) => byKey(a.key, b.key))
   for (const root of keptByKey) if (root.node !== root.key) aliases[root.key] = root.node
   return {
     version: 1,
     nodes,
-    edges,
+    edges: [...contained, ...blocking],
     roots: keptByKey.map((root) => ({
       key: root.key,
       refresh: root.refresh,
@@ -400,7 +643,9 @@ export function buildIssueGraph(
       error: root.row.error,
       failure: root.row.failure,
       hierarchy: root.row.snapshot?.hierarchy.status ?? null,
+      dependencies: root.row.snapshot ? root.row.dependencies?.status ?? 'unknown' : null,
       children_omitted: root.children.filter((key) => !kept.has(key)).length,
+      dependencies_omitted: root.blocks.filter((id) => !emitted.has(id)).length,
     })),
     aliases,
     truncated,
@@ -412,28 +657,53 @@ export function buildIssueGraph(
 // The ages §5.8 renders by: dimmed after 30 minutes, hidden after 7 days.
 const REL_STALE_MS = 30 * 60_000
 const REL_HIDDEN_MS = 7 * 24 * 60 * 60_000
+// slice 2 §6.4: GitHub's own limit per dependency type
+const REL_WAITS_ON_MAX = 50
 
 /** What a titled board_get says about one linked issue: keys and counts, never titles. */
 export interface IssueRel {
   key: string
   parent?: string
   children?: { total: number; done: number }
+  /**
+   * Slice 2 §6.4: the keys of this issue's OPEN blockers on GitHub ("blocked
+   * by") that reconciled to an edge, sorted, at most 50. Read-only GitHub data,
+   * not a row's own writable `waits_on` step labels, and never a reason for
+   * `blocked`. With `unblocks`, present only while this issue's own dependency
+   * section is bound, ok and at most 7 days old: absent means unknown, never none.
+   */
+  waits_on_issues?: string[]
+  /** slice 2: how many OPEN issues this one blocks on GitHub */
+  unblocks?: number
   /** the latest applied attempt, whatever its outcome */
   checked_at: string
   /** no successful fetch in the last 30 minutes */
   stale: boolean
-  /** nothing to draw: a hard failure, an unavailable hierarchy or a snapshot over 7 days old */
+  /** no parent or sub-issues to draw: a hard failure, an unavailable hierarchy or a snapshot over 7 days old */
   unavailable: boolean
 }
 
 // The relationships the viewer would draw for each key, read off the same
 // reconciled graph. A key with no cached answer gets no entry: a soft failure
 // before any success knows nothing. `nowMs` is passed in to keep this pure.
+// A summary is no response, so it reads the whole graph: a node cap could
+// otherwise shorten waits_on_issues into a list that looks complete.
 export function issueRelations(snapshots: IssueSnapshotRow[], keys: Iterable<string>, nowMs: number): Map<string, IssueRel> {
   const display = new Map<string, { refresh: boolean; updated_at: string }>()
   for (const key of keys) display.set(key, { refresh: true, updated_at: '' })
-  const graph = buildIssueGraph(snapshots, { refresh: new Set(display.keys()), display })
+  const graph = buildIssueGraph(snapshots, { refresh: new Set(display.keys()), display }, { maxUnits: Infinity })
   const nodes = new Map(graph.nodes.map((node) => [node.key, node]))
+  const parents = new Map<string, string>()
+  const blockersOf = new Map<string, string[]>()
+  const dependentsOf = new Map<string, string[]>()
+  for (const edge of graph.edges) {
+    if (edge.kind === 'contains') parents.set(edge.to, edge.from)
+    else {
+      push(blockersOf, edge.to, edge.from)
+      push(dependentsOf, edge.from, edge.to)
+    }
+  }
+  const open = (key: string) => nodes.get(key)?.state === 'OPEN'
   const out = new Map<string, IssueRel>()
   for (const root of graph.roots) {
     if (root.fetched_at === null && root.failure !== 'hard') continue
@@ -444,15 +714,25 @@ export function issueRelations(snapshots: IssueSnapshotRow[], keys: Iterable<str
     let parent: string | undefined
     let children: IssueRel['children']
     if (node && !unavailable) {
-      parent = graph.edges.find((edge) => edge.to === node.key)?.from
+      parent = parents.get(node.key)
       if (node.children_total !== undefined && node.children_completed !== undefined) {
         children = { total: node.children_total, done: node.children_completed }
       }
+    }
+    // A separate section with its own status: only this issue's own answer,
+    // bound, ok and at most 7 days old, says anything about its dependencies.
+    let waitsOn: string[] | undefined
+    let unblocks: number | undefined
+    if (node && root.dependencies === 'ok' && age <= REL_HIDDEN_MS) {
+      waitsOn = (blockersOf.get(node.key) ?? []).filter(open).sort(byKey).slice(0, REL_WAITS_ON_MAX)
+      unblocks = (dependentsOf.get(node.key) ?? []).filter(open).length
     }
     out.set(root.key, {
       key: root.key,
       ...(parent !== undefined ? { parent } : {}),
       ...(children ? { children } : {}),
+      ...(waitsOn ? { waits_on_issues: waitsOn } : {}),
+      ...(unblocks !== undefined ? { unblocks } : {}),
       checked_at: root.checked_at,
       stale: !(age <= REL_STALE_MS),
       unavailable,

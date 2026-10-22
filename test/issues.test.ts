@@ -9,7 +9,7 @@ import { indexLinks } from '../public/source.js'
 import type { CachedLink } from '../public/source.js'
 import { buildIssueGraph, issueRelations } from '../src/issue-graph.js'
 import type { IssueSnapshotRow } from '../src/store.js'
-import { at, facts, keySets, row, snapshot } from './issue-fixtures.js'
+import { at, depsOf, facts, keySets, row, snapshot } from './issue-fixtures.js'
 
 const REPO = 'shariqh/agent-inbox'
 const K = (n: number): string => `${REPO}#${n}`
@@ -470,5 +470,44 @@ describe('plan grouping keys (slice 2 §7)', () => {
     expect([...runs].map(([id, node]) => [id, node.key])).toEqual([['r1', K(117)], ['r4', K(116)], ['r5', K(117)]])
     expect(rowParentRuns([linked('r1', 120), linked('r2', null), linked('r3', 121)], view(rows)).size).toBe(0)
     expect(rowParentRuns([linked('r1', 120), linked('r4', 130)], buildIssueView(null)).size).toBe(0)
+  })
+})
+
+// Slice 2 PR B: /api/issues now carries GitHub dependencies (blocks edges, node
+// deps, each root's dependency status). Today's view reads containment only, so
+// breadcrumbs, children, progress, plan groups and row runs are identical with
+// and without them; PR D draws them.
+describe('GitHub dependencies leave today’s view alone (slice 2 PR B)', () => {
+  const plan = (id: string, pin: number | null): IssueViewPlan => ({
+    id, project: 'agent-inbox', agent: 'copilot', title: `Plan ${id}`, status: 'active', repo: REPO, stream: 'main',
+    issue_ref: null, ...(pin === null ? {} : { issue_pin_repo: REPO, issue_pin_number: pin }), rows: [],
+  })
+
+  it('draws the same relations, plan groups and row runs with and without blocks edges and the new fields', () => {
+    const parent117 = facts(K(117), { title: 'Integrate Agent Inbox with Agent Host Protocol', children_total: 10, children_completed: 1 })
+    const rows = [family()[0]!, ...[120, 121].map((n) => row(K(n), snapshot(K(n), { ancestors: [parent117] }), at(0)))]
+    // #121 and #120 wait on each other, issues elsewhere block #120 and the parentless #117, and #120 blocks #122
+    const section = depsOf([[K(121), K(120)], [K(120), K(121)], ['other/repo#5', K(120)], [K(120), K(122)], ['other/repo#6', K(117)]])
+    const plain = graphOf(rows)
+    const dependent = graphOf(rows.map((r) => ({ ...r, dependencies: section(`${r.repo}#${r.number}`) })))
+    expect(dependent.edges.filter((e) => e.kind === 'blocks')).toHaveLength(5)
+    expect(dependent.edges.some((e) => e.kind === 'blocks' && e.cycle)).toBe(true)
+    expect(dependent.nodes.filter((n) => n.deps)).toHaveLength(3)
+    expect(dependent.roots.every((r) => r.dependencies === 'ok')).toBe(true)
+
+    const nowMs = T + 3 * 60_000
+    const before = buildIssueView(plain, { nowMs })
+    const after = buildIssueView(dependent, { nowMs })
+    expect(after).toEqual(before)
+    expect(relation(after, K(117)).children.map((c) => c.node.number)).toEqual(GITHUB_ORDER)
+    expect(relation(after, K(120)).trail.map((n) => n.key)).toEqual([K(117)])
+
+    const plans = [plan('a', null), plan('p120', 120), plan('x', null), plan('umb', 117), plan('p121', 121)]
+    const grouped = planGroups(plans, after, null)
+    expect(grouped.groupOf.size).toBe(3)
+    expect(grouped).toEqual(planGroups(plans, before, null))
+    const linked = (id: string, n: number): IssueViewRow => ({ id, label: id, status: 'tracked', issue_repo: REPO, issue_number: n })
+    const steps = [linked('r1', 120), linked('r2', 121)]
+    expect(rowParentRuns(steps, after)).toEqual(rowParentRuns(steps, before))
   })
 })

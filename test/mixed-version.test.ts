@@ -21,10 +21,11 @@ import {
 } from '../src/store.js'
 import type { IssueDependencies } from '../src/store.js'
 import { issueQueue } from '../src/issue-poller.js'
+import { buildIssueGraph } from '../src/issue-graph.js'
 import { runHook } from '../src/hook.js'
 import { issueKeyFor } from '../public/issue-key.js'
 import { createViewer } from '../src/viewer.js'
-import { at, facts, snapshot } from './issue-fixtures.js'
+import { at, facts, keySets, snapshot } from './issue-fixtures.js'
 import { scratchDir } from './scratch.js'
 
 const V131_SCHEMA = readFileSync(new URL('./fixtures/v1.3.1-schema.sql', import.meta.url), 'utf8')
@@ -719,6 +720,30 @@ describe('a v1.4.0 viewer sharing a hub with this build (issue #103 slice 2)', (
     expect(read()).toMatchObject({ fetched_at: at(13), error: null, dependencies: null })
     expect(oldSuccess(old, at(10)).changes).toBe(0)
     expect(read()).toMatchObject({ fetched_at: at(13), dependencies: null })
+  })
+
+  // PR B (§6.1's fifth worked example, end to end): the graph never trusts an
+  // unbound section, but the other end's own bound list still speaks, as of its fetch.
+  it('a section a v1.4.0 success unbound draws no edge; #119’s own bound list still does, as of its fetch', () => {
+    const { hub, old } = bothProcesses()
+    const display = keySets([`${REPO}#121`, `${REPO}#119`])
+    const graph = () => buildIssueGraph(listIssueSnapshots(hub), display)
+    const blocks = () => graph().edges.filter((e) => e.kind === 'blocks').map((e) => [e.from, e.to, e.observed_at])
+    upsertIssueSnapshot(hub, { ...KEY, snapshot: snapshot(`${REPO}#121`), dependencies: DEPS, startedAt: at(10) })
+    expect(blocks()).toEqual([[`${REPO}#119`, `${REPO}#121`, at(10)], [`${REPO}#120`, `${REPO}#121`, at(10)]])
+
+    oldSuccess(old, at(12))
+    expect(blocks()).toEqual([])
+    expect(graph().roots).toEqual([expect.objectContaining({ key: `${REPO}#121`, dependencies: 'unknown' })])
+
+    upsertIssueSnapshot(hub, {
+      repo: REPO, number: 119, snapshot: snapshot(`${REPO}#119`), startedAt: at(11), dependencies: {
+        status: 'ok',
+        blocked_by: { open: 0, total: 0, truncated: false, list: [] },
+        blocking: { open: 1, total: 1, truncated: false, list: [facts(`${REPO}#121`)] },
+      },
+    })
+    expect(blocks()).toEqual([[`${REPO}#119`, `${REPO}#121`, at(11)]])
   })
 })
 

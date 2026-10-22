@@ -9,6 +9,7 @@ import { openDb, insertItem, listItems, getItem, annotateItem, replyItem, snooze
 import { createViewer } from '../src/viewer.js'
 import { releaseRuntime, registerHost } from './release-runtime.js'
 import { facts, snapshot } from './issue-fixtures.js'
+import type { IssueDependencies } from '../src/store.js'
 import { scratchDir } from './scratch.js'
 
 function freshDb(): Database.Database {
@@ -756,7 +757,7 @@ describe('issue graph api (issue #103)', () => {
     expect(res.headers.get('content-type')).toContain('application/json')
     expect(await res.json()).toEqual({
       version: 1, nodes: [], edges: [], roots: [], aliases: {},
-      truncated: { roots: 0, ancestors: 0, children: 0, edges: 0 },
+      truncated: { roots: 0, ancestors: 0, children: 0, dependencies: 0, edges: 0 },
     })
   })
 
@@ -787,6 +788,49 @@ describe('issue graph api (issue #103)', () => {
     expect(body.nodes.map((node: { key: string }) => node.key)).toEqual(['a/x#5', `${REPO}#117`, `${REPO}#119`, `${REPO}#120`])
     expect(body.edges).toEqual([{ kind: 'contains', from: `${REPO}#117`, to: `${REPO}#120`, position: 0, observed_at: startedAt }])
     expect(body.aliases).toEqual({})
+  })
+
+  // Slice 2 §6.2: GitHub dependencies, additive within version 1.
+  it('carries blocks edges, own-section counts and each root\'s dependency status; the tag moves only with the bytes', async () => {
+    const db = freshDb()
+    const startedAt = new Date(Date.now() - 60_000).toISOString()
+    const depsOf = (blockedBy: number[], blocking: number[]): IssueDependencies => ({
+      status: 'ok',
+      blocked_by: { open: blockedBy.length, total: blockedBy.length, truncated: false, list: blockedBy.map((n) => facts(`${REPO}#${n}`)) },
+      blocking: { open: blocking.length, total: blocking.length, truncated: false, list: blocking.map((n) => facts(`${REPO}#${n}`)) },
+    })
+    insertItem(db, { ...SCOPE, kind: 'question', title: 'Which input first?', repo: REPO, issue_ref: 121 })
+    insertItem(db, { ...SCOPE, stream: '122-x', kind: 'note', title: 'Unchecked', repo: REPO, issue_ref: 122 })
+    upsertIssueSnapshot(db, { repo: REPO, number: 121, snapshot: snapshot(`${REPO}#121`), dependencies: depsOf([119, 120], []), startedAt })
+    upsertIssueSnapshot(db, { repo: REPO, number: 122, snapshot: snapshot(`${REPO}#122`), startedAt })
+    const app = createViewer(db)
+
+    const first = await app.request('/api/issues')
+    const body = await first.json()
+    expect(body.edges).toEqual([
+      { kind: 'blocks', from: `${REPO}#119`, to: `${REPO}#121`, observed_at: startedAt },
+      { kind: 'blocks', from: `${REPO}#120`, to: `${REPO}#121`, observed_at: startedAt },
+    ])
+    expect(body.nodes.find((n: { key: string }) => n.key === `${REPO}#121`).deps)
+      .toEqual({ blocked_by_open: 2, blocked_by_total: 2, blocking_open: 0, blocking_total: 0 })
+    expect(body.nodes.find((n: { key: string }) => n.key === `${REPO}#119`)).not.toHaveProperty('deps')
+    expect(body.roots.map((r: { key: string; dependencies: string; dependencies_omitted: number }) =>
+      [r.key, r.dependencies, r.dependencies_omitted])).toEqual([[`${REPO}#121`, 'ok', 0], [`${REPO}#122`, 'unknown', 0]])
+    expect(body.truncated).toEqual({ roots: 0, ancestors: 0, children: 0, dependencies: 0, edges: 0 })
+
+    // nothing changed: the same tag, even across an unrelated write
+    const etag = first.headers.get('etag')!
+    expect((await app.request('/api/issues', { headers: { 'If-None-Match': etag } })).status).toBe(304)
+    insertItem(db, { ...SCOPE, stream: 'main', kind: 'note', title: 'Unlinked' })
+    expect((await app.request('/api/issues', { headers: { 'If-None-Match': etag } })).status).toBe(304)
+
+    // the same fetch's section now lists only #119: new bytes, a new tag
+    db.prepare(`UPDATE issue_snapshots SET dependencies = ? WHERE number = 121`)
+      .run(JSON.stringify({ v: 1, fetched_at: startedAt, ...depsOf([119], []) }))
+    const changed = await app.request('/api/issues', { headers: { 'If-None-Match': etag } })
+    expect(changed.status).toBe(200)
+    expect(changed.headers.get('etag')).not.toBe(etag)
+    expect((await changed.json()).edges).toEqual([{ kind: 'blocks', from: `${REPO}#119`, to: `${REPO}#121`, observed_at: startedAt }])
   })
 })
 

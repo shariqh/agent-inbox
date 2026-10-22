@@ -9,9 +9,10 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type Database from 'better-sqlite3'
 import { insertItem, upsertBoard, upsertIssueSnapshot } from '../../src/store.js'
+import type { IssueFacts } from '../../src/store.js'
 import { facts, snapshot } from '../issue-fixtures.js'
 import type { SnapshotOpts } from '../issue-fixtures.js'
-import { badgeCount, bootApp, click, freshDb, pollTick, rows, settle, showInbox, tabCount, useDomTest } from './harness.js'
+import { advanceClock, badgeCount, bootApp, click, freshDb, pollTick, rows, settle, showInbox, tabCount, useDomTest } from './harness.js'
 
 useDomTest()
 let db: Database.Database | null = null
@@ -114,13 +115,54 @@ describe('attention with and without relationship data (#103 PR3)', () => {
     expect(on).toEqual(off)
   })
 
-  it('pins the attention modules: none of them names an issue field, waits_on or plan grouping', () => {
+  // Slice 2 PR B (§10): GitHub dependencies reach /api/issues and feed nothing here.
+  it('keeps every attention surface identical with and without GitHub dependencies', async () => {
+    db = freshDb()
+    insertItem(db, { ...SCOPE, stream: '121-input', kind: 'question', title: 'Which input first?', repo: REPO, issue_ref: 121 })
+    upsertBoard(db, {
+      ...SCOPE, stream: 'adapter', title: 'Adapter work', repo: REPO, issuePin: { repo: REPO, number: 117 },
+      rows: [
+        { label: 'Waits on the adapter', status: 'partial', issue: { repo: REPO, number: 121 } },
+        {
+          label: 'Approve the AHP contract', status: 'blocked', issue: { repo: REPO, number: 119 },
+          note: 'The contract is drafted.', next_step: 'Approve the contract.', action_owner: 'approval',
+          impact: 'Unblocks the adapter.', options: [{ label: 'Approve', recommended: true }, { label: 'Hold' }],
+        },
+      ],
+    })
+    const parent = facts(K(117), { title: 'Umbrella', children_total: 3, children_completed: 0 })
+    cache(db, 117, { children: [K(119), K(120), K(121)] })
+    for (const n of [119, 120, 121]) cache(db, n, { ancestors: [parent] })
+    await bootApp(db)
+    await showInbox()
+    const before = await attentionSurfaces()
+
+    // the same issues refreshed with GitHub's dependencies: #119 and #120 block #121, open
+    advanceClock(60_000)
+    const list = (issues: IssueFacts[]) => ({ open: issues.length, total: issues.length, truncated: false, list: issues })
+    const refresh = (n: number, blockedBy: number[], blocking: number[]) => upsertIssueSnapshot(db!, {
+      repo: REPO, number: n, startedAt: new Date().toISOString(), snapshot: snapshot(K(n), { ancestors: [parent] }),
+      dependencies: { status: 'ok', blocked_by: list(blockedBy.map((b) => facts(K(b)))), blocking: list(blocking.map((b) => facts(K(b)))) },
+    })
+    refresh(121, [119, 120], [])
+    refresh(119, [], [121])
+    await pollTick()
+    await settle()
+    const graph = await (await fetch('/api/issues')).json() as { edges: Array<{ kind: string }> }
+    expect(graph.edges.filter((edge) => edge.kind === 'blocks')).toHaveLength(2)
+    const withDependencies = await attentionSurfaces()
+
+    expect(before.badge).toBe(2)
+    expect(withDependencies).toEqual(before)
+  })
+
+  it('pins the attention modules: none of them names an issue field, a dependency field, waits_on or plan grouping', () => {
     for (const file of ['public/attention.js', 'public/relay.js', 'electron/reply-watch.cjs']) {
       const code = readFileSync(join(ROOT, file), 'utf8').split('\n').filter((line) => {
         const t = line.trim()
         return !(t.startsWith('//') || t.startsWith('*') || t.startsWith('/*'))
       }).join('\n')
-      expect(code, `${file} reads relationship data`).not.toMatch(/issue|sub-?issue|children_|relation|waits_?on/i)
+      expect(code, `${file} reads relationship data`).not.toMatch(/issue|sub-?issue|children_|relation|waits_?on|\bblocks\b|\bdeps\b|dependenc|unblock/i)
       expect(code, `${file} reads plan grouping`).not.toMatch(/planGroups|rowParentRuns|groupOf|groupByParent|group-plans|plan-group|parent/i)
     }
   })

@@ -27,7 +27,7 @@ this document says otherwise.
    pattern. A v1.4 viewer that refreshes the same issue unbinds it instead of erasing it, so
    mixed versions lose freshness, never correctness.
 5. **The pure graph gains `blocks` edges** under S1 §4.6's reconciliation, inside
-   `/api/issues` version 1 (additive). `issue_rel` gains `waits_on` and `unblocks`. The MCP
+   `/api/issues` version 1 (additive). `issue_rel` gains `waits_on_issues` and `unblocks`. The MCP
    process still only runs pure code over the cache.
 6. **Plans** show neutral "waits on" chips on rows and plans, and a "Dependencies on GitHub"
    section in the source block. **Plan flow** shows, per step, what it waits on and what it
@@ -326,6 +326,22 @@ Worked examples (#117 family; t20 newer than t10):
 | t20 #121's section is unbound (a v1.4 refresh) · t10 #119 lists #121 | Edge, as of t10 |
 | #119 hard-failed at t15 · t10 #121 lists #119 | No edge; #119 unavailable |
 
+*As built (PR B):* `test/issue-graph.test.ts` runs each row of this table. Five details the
+rules above leave open:
+
+- A negative needs a positive to matter, so "known" never has to be listed: every pair with a
+  positive names two known issues, and a pair with only negatives draws nothing.
+- Like a parent's own list (S1 rule 6), the section of a root that failed at or after its `t`
+  records no observation. The issues it lists still keep their facts, as a refused parent's
+  children do.
+- Aliases fold the observing root to GitHub's canonical key, as S1 does for a snapshot's own
+  issue. Listed issues are already GitHub's canonical answers and are not folded again.
+- The section is read whatever the hierarchy's status: GitHub asks for the two on separate
+  aliases (`hN`, `dN`), so one failing says nothing about the other.
+- Strongly connected components use an iterative, linear Tarjan, a local copy of PR C's
+  `waitsOnComponents` in `store.ts`: `issue-graph.ts` imports no value but `issueKey`, and a
+  shared module would add a new module to the stdio MCP graph, which §6.4 rules out.
+
 ### 6.2 `/api/issues`, still version 1
 
 All additions are optional fields or a new edge kind, which v1.4 code ignores (§1):
@@ -343,6 +359,14 @@ All additions are optional fields or a new edge kind, which v1.4 code ignores (�
   snapshot, missing or unbound section) and `dependencies_omitted`.
 - `truncated` gains `dependencies` (neighbour nodes the cap cut).
 
+*As built (PR B):* edges are `contains` first, in S1's order, then `blocks` by `(from, to)`.
+`dependencies_omitted` is a number on every root (0 when nothing was cut), and `truncated.edges`
+counts omitted edges of both kinds. `public/snapshots.js` accepts the body unchanged (it checks
+only that each edge has string ends and that a root's `hierarchy` is known), and
+`public/issues.js` reads `contains` edges only, so the page draws exactly what it drew before
+until PR D; `test/snapshots.test.ts`, `test/issues.test.ts` and
+`test/dom/issue-relations.test.ts` pin both.
+
 ### 6.3 The node cap
 
 S1 §6's cap stays at 2,000 units and its order is unchanged: rank roots, keep whole roots, fill
@@ -356,6 +380,15 @@ about 1.5 MB, and a body is sent only when it changes.
 The graph's bytes still depend on the database alone, so `/api/issues` remains a store-token
 conditional snapshot (CLAUDE.md "Conditional snapshots must remain authoritative").
 
+*As built (PR B):* the 4,000 bounds every edge of a response, both kinds. `contains` edges come
+first and are never cut by it: each node has at most one, so they never take more than half.
+`blocks` edges then fill what is left, round-robin across the kept roots in rank order (each
+root's blockers, then its dependents, by key), and finally any other edge between two emitted
+nodes, by key: an omitted root's node can still be emitted as a kept root's neighbour or child,
+and its edges to other emitted nodes count too. A root's `dependencies_omitted` counts its
+entries (edges) not emitted, whether a neighbour was cut or the edge budget ran out. At the cap
+(2,000 nodes and 5,000 candidate edges, 4,000 emitted) the build takes about 50 ms.
+
 ### 6.4 `issue_rel` (agent reads)
 
 `issueRelations` adds two fields when the key's own section is bound, `ok` and not older than 7
@@ -364,19 +397,35 @@ days:
 ```json
 { "key": "shariqh/agent-inbox#121", "parent": "shariqh/agent-inbox#117",
   "children": { "total": 0, "done": 0 },
-  "waits_on": ["shariqh/agent-inbox#119", "shariqh/agent-inbox#120"],
+  "waits_on_issues": ["shariqh/agent-inbox#119", "shariqh/agent-inbox#120"],
   "unblocks": 0,
   "checked_at": "2026-10-21T21:00:00.000Z", "stale": false, "unavailable": false }
 ```
 
-- `waits_on`: keys of **open** blockers that reconciled to an edge, sorted, at most 50. Keys
-  only, never titles (#42's payload diet).
+- `waits_on_issues`: keys of **open** blockers that reconciled to an edge, sorted, at most 50.
+  Keys only, never titles (#42's payload diet). Named apart from the row's own `waits_on` (PR C),
+  which a titled read echoes on the same row object: these are read-only GitHub issue keys, never
+  step labels to copy into `waits_on`, and never a reason to mark a row `blocked` (revision
+  history, PR B).
 - `unblocks`: the count of open dependents in the reconciled graph.
 - Both are omitted when nothing is known, so an agent never reads "no dependencies" from missing
   data. The `board_get` description gains the two names.
 
 The MCP process gains no new module: it already imports `issue-graph.ts` and `issue-key.js`, and
 `test/issue-graph.test.ts` keeps pinning the stdio import graph.
+
+*As built (PR B):*
+
+- `issueRelations` reads the whole reconciled graph, with no node cap: a summary is not a
+  response, and a cap could otherwise shorten `waits_on_issues` into a list that looks complete.
+  A board's keys bound its size.
+- The dependency fields follow the dependency section alone. An issue whose hierarchy GitHub
+  could not return still reports them, beside `unavailable: true`, which keeps meaning "no parent
+  or sub-issues to draw".
+- `[]` and `0` mean known and none; absent means unknown.
+- The `board_get` description names both fields and says they are GitHub issue keys, read-only,
+  distinct from the row's own writable `waits_on` step labels, and never a reason to mark a row
+  `blocked`.
 
 ---
 
@@ -538,7 +587,7 @@ All new chips are built in `public/source.js`, so every href still comes from `c
   *As built (PR C):* the second case cannot happen. A v1.4 insert writes no `waits_on`, so a
   re-added row can only be waited on, and the references it revives cannot close a cycle;
   `test/mixed-version.test.ts` pins both halves. "Circular" stays a defensive rendering.
-- **v1.5 MCP server reading v1.4 snapshots:** `issue_rel` omits `waits_on`/`unblocks` until the
+- **v1.5 MCP server reading v1.4 snapshots:** `issue_rel` omits `waits_on_issues`/`unblocks` until the
   viewer refreshes.
 - **Older browser code** is never served by a newer viewer (one process serves both), and v1.4's
   `issues.js` already ignores unknown edge kinds and fields.
@@ -557,8 +606,8 @@ tests use real SQLite through `openDb()`; scratch directories come from `scratch
 | `test/issue-store.test.ts` | `dependencies` written with the snapshot; bound vs unbound reads; hard failure clears; soft keeps; invalid JSON reads as null; leases unchanged (`test/issue-claims.test.ts`) |
 | `test/store.test.ts` | `waits_on` omission keeps, `[]` clears, unknown label refused, self refused, cycle refused (one statement, `.immediate()`), dangling kept and revived, revision and `updated_at` bump, `board_advance` keeps |
 | `test/mixed-version.test.ts` | Frozen v1.4.0 `upsertIssueSnapshot` unbinds; frozen v1.4.0 hard failure unbinds; frozen v1.4.0 board statements keep `waits_on` |
-| `test/issue-graph.test.ts` | Every §6.1 worked example; aliases; hard-failure suppression of both ends; cycles marked; counts from own section only; node cap fill order and exact `truncated`; edges only between emitted nodes; byte-identical output for identical input; `issueRelations` `waits_on`/`unblocks` present, omitted when unknown, open only; stdio import graph unchanged |
-| `test/mcp.integration.test.ts` | `waits_on` round trip over real stdio; refusals reach the agent as tool errors; titled `board_get` echoes `waits_on` and `issue_rel.waits_on`; the `status` field description carries the new sentence |
+| `test/issue-graph.test.ts` | Every §6.1 worked example; aliases; hard-failure suppression of both ends; cycles marked; counts from own section only; node cap fill order and exact `truncated`; edges only between emitted nodes; byte-identical output for identical input; `issueRelations` `waits_on_issues`/`unblocks` present, omitted when unknown, open only; stdio import graph unchanged |
+| `test/mcp.integration.test.ts` | `waits_on` round trip over real stdio; refusals reach the agent as tool errors; titled `board_get` echoes `waits_on` and `issue_rel.waits_on_issues`; the `status` field description carries the new sentence |
 | `test/issues.test.ts` | Waits-on and unblocks view model, freshness ages, closed blockers excluded, "+N" counts, grouping keys (umbrella, two-member minimum, cross-project separation, degradation states) |
 | `test/mission.test.ts` (extended) | `buildMission` with both sources: merge of agreeing pairs, external issues, containment rail, "Not in this plan", cycles, dangling labels ignored, row order unchanged, `next_after` text creates no edge |
 | `test/source.test.ts` | Hostile titles in chips, tooltips and headers; constructed hrefs only; tones; "Blocked" never appears |
@@ -579,7 +628,7 @@ PR that renders.
 | PR | Scope | Depends on | Size (prod / test lines, estimate) |
 |---|---|---|---|
 | **A. Ingest GitHub dependencies** | Query fields, `parseIssueBatch`, `issue_snapshots.dependencies` with binding, `completeIssueRefresh` plumbing, upgrade tier, blocker nudge. No UI | — | 250 / 400 |
-| **B. Graph and `issue_rel`** | §6 reconciliation, `blocks` edges, node-cap fill, root and node fields, `issue_rel.waits_on`/`unblocks`, `board_get` description | A | 250 / 450 |
+| **B. Graph and `issue_rel`** | §6 reconciliation, `blocks` edges, node-cap fill, root and node fields, `issue_rel.waits_on_issues`/`unblocks`, `board_get` description | A | 250 / 450 |
 | **C. `waits_on` row field** | Column, store validation and cycle check, MCP schemas and echo, contract sentence in three tool descriptions, `status` describe and the reporting snippet, mixed-version pins | — | 200 / 350 |
 | **D. Plans chips** | Row and plan "waits on" chips, "Dependencies on GitHub" section, row-detail "Waits on" block, view model in `issues.js` | B, C | 300 / 400 |
 | **E. Plan flow** | `buildMission(board, deps)`, waits-on / unblocks buttons, containment rail, "Not in this plan", cycles, CSS | B, C | 300 / 400 |
@@ -704,3 +753,11 @@ Run on 2026-10-21 with `gh` 2.102.0, read-only:
 - **PR C notes (2026-10-21):** §4.2 now says how "written in this call" and the cycle rule
   were built (only what a write adds is checked, in linear time under the write lock), and §11
   notes that a v1.4 re-add cannot close a cycle.
+- **PR B notes (2026-10-21):** `issue_rel.waits_on` is renamed `issue_rel.waits_on_issues`
+  (§0, §6.4, §11, §12, §13). The PR C review advised it and Shariq approved: a titled
+  `board_get` row would otherwise carry two `waits_on` fields, its own writable step labels and
+  the read-only GitHub issue keys inside `issue_rel`, and an agent could paste issue keys into the
+  row field or think GitHub dependencies were writable. No name is built on "blocked", which
+  means the human here. §6.1 to §6.4 gain "as built" notes: the edge budget bounds both edge
+  kinds, `dependencies_omitted` counts edges, a refused root's own section records nothing,
+  listed keys are not alias-folded, and `issue_rel` reads the uncapped graph.

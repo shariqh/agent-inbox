@@ -4,7 +4,7 @@
 // A snapshot here is exactly the v1 JSON a refresh stores (§4.3). Keys are
 // written `owner/name#number`; the builders split them back into parts.
 import type {
-  IssueFacts, IssueRelative, IssueSnapshot, IssueSnapshotRow, IssueError,
+  IssueDependencies, IssueDependencyList, IssueFacts, IssueRelative, IssueSnapshot, IssueSnapshotRow, IssueError,
 } from '../src/store.js'
 import type { IssueKeySets } from '../public/issue-key.js'
 
@@ -58,19 +58,60 @@ export function snapshot(key: string, opts: SnapshotOpts = {}): IssueSnapshot {
   }
 }
 
-/** A listIssueSnapshots() row, built without a database for the pure builder. */
+export interface DepsOpts {
+  blockedBy?: Relative[]
+  blocking?: Relative[]
+  /** GitHub had more, or an entry was dropped: the list is no evidence of absence */
+  blockedByTruncated?: boolean
+  blockingTruncated?: boolean
+  /** issueDependenciesSummary; by default the list's open entries and its length */
+  blockedByCounts?: { open: number; total: number }
+  blockingCounts?: { open: number; total: number }
+}
+
+function dependencyList(entries: Relative[] = [], truncated = false, counts?: { open: number; total: number }): IssueDependencyList {
+  const list = entries.map(relative).map(({ repo, number, title, state, state_reason }) => ({ repo, number, title, state, state_reason }))
+  return { open: counts?.open ?? list.filter((i) => i.state === 'OPEN').length, total: counts?.total ?? list.length, truncated, list }
+}
+
+/** An `ok` dependency section (slice 2 §5.3): "blocked by" and "blocking", complete unless said otherwise. */
+export function deps(opts: DepsOpts = {}): IssueDependencies {
+  return {
+    status: 'ok',
+    blocked_by: dependencyList(opts.blockedBy, opts.blockedByTruncated, opts.blockedByCounts),
+    blocking: dependencyList(opts.blocking, opts.blockingTruncated, opts.blockingCounts),
+  }
+}
+
+/**
+ * Every key's section from one set of "from blocks to" pairs, both directions
+ * agreeing as GitHub keeps them: what a refresh of each key would store.
+ */
+export function depsOf(pairs: Array<[string, string]>): (key: string) => IssueDependencies {
+  return (key) => deps({
+    blockedBy: pairs.filter(([, to]) => to === key).map(([from]) => from),
+    blocking: pairs.filter(([from]) => from === key).map(([, to]) => to),
+  })
+}
+
+/**
+ * A listIssueSnapshots() row, built without a database for the pure builder.
+ * `dependencies` is the section as listIssueSnapshots reads it: bound to this
+ * row's fetched_at, or null (missing, unbound or unreadable: "unknown").
+ */
 export function row(
   key: string,
   snap: IssueSnapshot | null,
   fetchedAt: string | null,
-  extra: { error?: IssueError | null; checkedAt?: string } = {},
+  extra: { error?: IssueError | null; checkedAt?: string; dependencies?: IssueDependencies | null } = {},
 ): IssueSnapshotRow {
   const error = extra.error ?? null
   return {
     ...parts(key),
     provider: 'github',
     snapshot: snap,
-    dependencies: null,
+    // only ever read beside a readable snapshot
+    dependencies: snap ? extra.dependencies ?? null : null,
     fetched_at: snap ? fetchedAt : null,
     checked_at: extra.checkedAt ?? fetchedAt ?? at(0),
     error,

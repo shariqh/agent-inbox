@@ -123,7 +123,7 @@ describe('viewer conditional snapshots', () => {
     // Issue #103: nothing here links an issue, so the graph is complete and empty.
     const graph = {
       version: 1, nodes: [], edges: [], roots: [], aliases: {},
-      truncated: { roots: 0, ancestors: 0, children: 0, edges: 0 },
+      truncated: { roots: 0, ancestors: 0, children: 0, dependencies: 0, edges: 0 },
     }
     const expected = [page, listBoards(db), listBoards(db, { status: 'archived' }), graph]
     for (const [index, route] of ROUTES.entries()) {
@@ -729,7 +729,7 @@ describe('viewer conditional snapshots', () => {
       linked()
       expect(await (await app.request(ISSUES)).json()).toEqual({
         version: 1, nodes: [], edges: [], roots: [], aliases: {},
-        truncated: { roots: 0, ancestors: 0, children: 0, edges: 0 },
+        truncated: { roots: 0, ancestors: 0, children: 0, dependencies: 0, edges: 0 },
       })
     })
 

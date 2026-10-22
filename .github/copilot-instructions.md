@@ -168,6 +168,20 @@ Run the build before `npm run electron`; the development shell starts the built
   names; never a search per edge. A label whose row was removed stays, never re-checked;
   never prune it. Only titled `board_get` echoes it, and it never makes a row `blocked` or
   enters attention.
+- GitHub dependencies (#103 slice 2 PR B) become `blocks` edges (blocker → dependent) in the
+  pure `buildIssueGraph`: positives from a root's own bound `ok` `blocked_by`/`blocking`,
+  negatives only from a complete list that omits the other end, the newest wins and a negative
+  wins ties, nothing at or before either end's hard failure counts, and cycles are kept with
+  `cycle: true` (iterative SCC, no recursion, no new stdio module). A node's `deps` come only
+  from its own section. The cap keeps S1's order, then fills dependency neighbours round-robin
+  (blockers before dependents, by key); a `blocks` edge needs both nodes emitted, all edges stay
+  within twice the node budget, and every omission is counted. The browser ignores them until
+  PR D (`snapshots.js` accepts the body, `issues.js` reads `contains` edges only). `issue_rel`
+  adds `waits_on_issues` (open blocker keys, at most 50) and `unblocks` only while the key's own
+  section is bound, `ok`, at most 7 days old and not dropped by rule 6 (that root reports
+  `unknown`); never name them `waits_on` (a row's writable step labels) or anything built on
+  "blocked". The cap bounds the response, not the work: the build reads every display root's
+  dependency entries, so keep it linear, with no per-pair strings and no global sort.
 - Breadcrumbs and child progress (#103 PR3) are ambient. `/api/issues` is the
   poll's eighth read, through its own snapshot validator and a links-style
   fallback: a 404, network error or refused body means no graph and today's plain

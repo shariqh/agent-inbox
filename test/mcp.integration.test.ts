@@ -1704,6 +1704,57 @@ describe('plan and row issue links (#103 PR2)', () => {
     expect(tools.get('board_get')!.description).toMatch(/issue_rel/)
     await c.close()
   }, 20000)
+
+  // Slice 2 PR B (§6.4): GitHub dependencies reach the agent as issue keys and
+  // a count, read-only, and apart from the row's own waits_on step labels.
+  it('a titled board_get adds issue_rel.waits_on_issues and unblocks; pending() and the title-less summary stay byte-identical', async () => {
+    const dbPath = join(scratchDir('mcp-issue-deps-'), 'inbox.db')
+    const c = await serve({ AGENT_INBOX_DB: dbPath }, scratchDir('mcp-issue-deps-cwd-'))
+    await call(c, 'board_upsert', {
+      title: 'T', issue: 'o/r#121',
+      rows: [
+        { label: 'Adapter', status: 'partial', issue: 'o/r#119' },
+        { label: 'Import', status: 'tracked', issue: 'o/r#121', waits_on: ['Adapter'] },
+      ],
+    })
+    await call(c, 'pending', {})
+    const pendingBefore = text(await c.callTool({ name: 'pending', arguments: {} }))
+    const summaryBefore = text(await c.callTool({ name: 'board_get', arguments: {} }))
+
+    // the viewer's poller caches #121 (blocked by #119, #120 and the closed #118) and #119
+    const hub = openDb(dbPath)
+    const startedAt = new Date(Date.now() - 60_000).toISOString()
+    const issue = (n: number, state: 'OPEN' | 'CLOSED' = 'OPEN') =>
+      ({ repo: 'o/r', number: n, title: `Secret title ${n}`, state, state_reason: state === 'CLOSED' ? 'COMPLETED' as const : null })
+    const list = (issues: Array<ReturnType<typeof issue>>) =>
+      ({ open: issues.filter((i) => i.state === 'OPEN').length, total: issues.length, truncated: false, list: issues })
+    const cache = (n: number, blockedBy: Array<ReturnType<typeof issue>>, blocking: Array<ReturnType<typeof issue>>) =>
+      upsertIssueSnapshot(hub, {
+        repo: 'o/r', number: n, startedAt,
+        snapshot: { v: 1, issue: issue(n), ancestors: [], ancestors_end: 'top', hierarchy: { status: 'ok', total: 0, completed: 0, truncated: false, children: [] } },
+        dependencies: { status: 'ok', blocked_by: list(blockedBy), blocking: list(blocking) },
+      })
+    cache(121, [issue(119), issue(120), issue(118, 'CLOSED')], [])
+    cache(119, [], [issue(121), issue(122)])
+
+    const board = await call(c, 'board_get', { title: 'T' })
+    const deps = { key: 'o/r#121', waits_on_issues: ['o/r#119', 'o/r#120'], unblocks: 0, stale: false, unavailable: false }
+    expect(board.issue_rel).toMatchObject(deps)
+    const rowOf = (label: string) => board.rows.find((r: { label: string }) => r.label === label)
+    expect(rowOf('Adapter').issue_rel).toMatchObject({ key: 'o/r#119', waits_on_issues: [], unblocks: 2 })
+    // the row's own step labels and GitHub's issue keys never mix
+    expect(rowOf('Import')).toMatchObject({ waits_on: ['Adapter'], issue_rel: deps })
+    expect(JSON.stringify(board)).not.toMatch(/Secret/)
+    expect(text(await c.callTool({ name: 'pending', arguments: {} }))).toBe(pendingBefore)
+    expect(text(await c.callTool({ name: 'board_get', arguments: {} }))).toBe(summaryBefore)
+
+    const description = (await c.listTools()).tools.find((t) => t.name === 'board_get')!.description!
+    expect(description).toContain('issue_rel: { key, parent?, children?: { total, done }, waits_on_issues?, unblocks?, checked_at, stale, unavailable }')
+    expect(description).toContain('issue_rel.waits_on_issues holds GitHub issue keys')
+    expect(description).toContain('read-only and distinct from the row’s own writable waits_on step labels')
+    expect(description).toContain('never a reason to mark a row blocked')
+    await c.close()
+  }, 20000)
 })
 
 // Issue #103 slice 2, PR C (§4): agent-declared step dependencies, end to end

@@ -6039,9 +6039,15 @@ function claimItemIntent(id, { staged = false } = {}) {
   if (!staged) invalidateItemDraftIntents(id)
   const sequence = ++storedReplyIntent.sequence
   sessionStorage.setItem(ITEM_REPLY_INTENT_SESSION_KEY, JSON.stringify(storedReplyIntent))
-  // The claiming window's identity travels with the intent, so a stored draft
-  // retried from another window replays this exact intent (#279).
-  const intent = { sequence, actionId: globalThis.crypto.randomUUID(), clientId: storedReplyIntent.clientId }
+  // The claiming window's identity and the answer this send is made against
+  // travel with the intent: a stored draft retried from another window replays
+  // this exact intent, and only while that answer still stands (savedIntentRule).
+  const intent = {
+    sequence,
+    actionId: globalThis.crypto.randomUUID(),
+    clientId: storedReplyIntent.clientId,
+    pin: draftAnswerOf(freshItem(id)),
+  }
   if (!staged) itemLatestIntents[id] = intent
   if (!staged) cancelStagedItemIntent(id)
   return intent
@@ -6205,9 +6211,7 @@ function preserveItemDraftRecovery(id, {
     kind,
     intent: intent ? { ...intent } : null,
     owner: owner ?? itemDraftRecoveryOwner(ownerIntent, generation),
-    // the answer its intent was tried against, and why a restored draft is
-    // here (#279); a retry that fails again keeps the reason
-    answer: draftAnswerOf(freshItem(id)),
+    // why a restored draft is here (#279); a retry that fails again keeps it
     reason: reason || staleItemDrafts[recoveryKey]?.reason || '',
   }
   return recoveryKey
@@ -6391,20 +6395,29 @@ let restoredDrafts = (() => {
 const revealDraftIds = new Set()
 let draftSaveTimer = null
 
-// What a question draft is pinned to: the question's answer, whoever wrote it.
-// replied_at moves on every reply, clear and chat answer; the human's own Note,
-// which also moves response_revision, leaves it alone.
+// What a question draft, and each reply intent, is pinned to: the question's
+// answer, whoever wrote it. replied_at moves on every reply, clear and chat
+// answer, and the text makes the pin exact; the human's own Note, which also
+// moves response_revision, leaves it alone.
 function draftAnswerOf(item) {
-  return item ? { at: item.replied_at ?? null, source: item.reply_source ?? null, kind: item.reply_kind ?? null } : null
+  return item
+    ? { at: item.replied_at ?? null, source: item.reply_source ?? null, kind: item.reply_kind ?? null, text: item.reply ?? null }
+    : null
 }
 
 function sameAnswer(left, right) {
-  return Boolean(left && right && left.at === right.at && left.source === right.source && left.kind === right.kind)
+  return Boolean(left && right && left.at === right.at && left.source === right.source
+    && left.kind === right.kind && left.text === right.text)
 }
 
 function storedIntent(intent) {
   return intent
-    ? { clientId: intent.clientId ?? storedReplyIntent.clientId, sequence: intent.sequence, actionId: intent.actionId }
+    ? {
+        clientId: intent.clientId ?? storedReplyIntent.clientId,
+        sequence: intent.sequence,
+        actionId: intent.actionId,
+        pin: intent.pin ?? null,
+      }
     : null
 }
 
@@ -6436,7 +6449,6 @@ function collectDrafts() {
       text: draft.text,
       context: draft.context ?? '',
       kind: draft.kind,
-      answer: draft.answer ?? null,
       intent: storedIntent(draft.intent),
       reason: draft.reason ?? '',
     }, key.startsWith('item-recovery:') ? key : `item-recovery:${draftPageId}:${key}`)
@@ -6559,6 +6571,19 @@ function itemHolds(item, { text, context = '', kind = 'answer' }) {
     && (item.reply_context ?? '') === context.trim() && (item.reply_kind ?? 'answer') === kind)
 }
 
+// The one rule for reusing a saved reply intent (#279): an unsent response's
+// Retry, an editor's Send after an unconfirmed send, and so every intent a
+// restart brings back. A send whose answer was lost may still have landed.
+// When the server holds exactly this response it was delivered; once the
+// question's answer moved since the intent was claimed (its pin), a replay
+// would be answered from the server's record without writing anything, so
+// the send must be fresh; otherwise the exact replay keeps it idempotent.
+function savedIntentRule(id, intent, response) {
+  const item = freshItem(id)
+  if (itemHolds(item, response)) return 'delivered'
+  return sameAnswer(intent.pin, draftAnswerOf(item)) ? 'replay' : 'fresh'
+}
+
 // Two windows that restored the same draft may each have kept it; one copy is enough.
 function recoveryHolds(itemId, { text, context = '', kind = 'answer' }) {
   return Object.values(staleItemDrafts).some((draft) => draft.itemId === itemId && draft.kind === kind
@@ -6573,10 +6598,9 @@ function rowHolds(rowId, { text, kind }) {
 
 // Back to its editor while its target is unchanged and its project open; to the
 // unsent responses, with the reason, otherwise; nowhere once the server holds
-// exactly that text. A reply intent survives only while the question's answer
-// is as it was: once the answer moved, a send of it may have landed and been
-// superseded, so replaying that intent would be a no-op and Retry sends afresh.
-// Returns where an editor draft went back to.
+// exactly that text. A reply intent comes back as it was stored: Send and
+// Retry reuse it only as savedIntentRule allows. Returns where an editor
+// draft went back to.
 function placeRestoredDraft(key, draft) {
   switch (draft.type) {
     case 'reply': {
@@ -6589,7 +6613,7 @@ function placeRestoredDraft(key, draft) {
         && draftReplies[id] === undefined && draftReplyContexts[id] === undefined
       if (!inPlace && recoveryHolds(id, draft)) return null
       const generation = bumpDraftGeneration(itemDraftGenerations, id)
-      const intent = unchanged ? draft.intent : null
+      const intent = draft.intent
       // the restored intent is this window's latest for the question, so a
       // refused retry keeps its text rather than counting as superseded
       if (intent) itemLatestIntents[id] = { ...intent }
@@ -6608,14 +6632,14 @@ function placeRestoredDraft(key, draft) {
         kind: 'answer',
         intent,
         generation,
-        reason: draftReason(cause, Boolean(draft.intent)),
+        reason: draftReason(cause, Boolean(intent)),
       })
       return null
     }
     case 'item-recovery': {
       const item = freshItem(draft.itemId)
       if (itemHolds(item, draft) || recoveryHolds(draft.itemId, draft)) return null
-      const intent = sameAnswer(draft.answer, draftAnswerOf(item)) ? draft.intent : null
+      const intent = draft.intent
       if (intent) itemLatestIntents[draft.itemId] = { ...intent }
       const cause = item?.status === 'open' ? 'questionChanged' : 'questionClosed'
       staleItemDrafts[key] = {
@@ -6626,8 +6650,10 @@ function placeRestoredDraft(key, draft) {
         kind: draft.kind,
         intent: intent ? { ...intent } : null,
         owner: itemDraftRecoveryOwner(intent, itemDraftGenerations[draft.itemId] ?? 0),
-        answer: draft.answer,
-        reason: draft.intent && !intent ? draftReason(cause, true) : draft.reason,
+        // its Retry will send afresh: say that the earlier send may have landed
+        reason: intent && savedIntentRule(draft.itemId, intent, draft) === 'fresh'
+          ? draftReason(cause, true)
+          : draft.reason,
       }
       return null
     }
@@ -6733,6 +6759,22 @@ function sendReply(...args) {
   return withPendingResponse(() => submitItemReply(...args))
 }
 
+// savedIntentRule found exactly this response on the server: a send of it
+// landed, so nothing is written and the draft or entry retires as delivered.
+function retireDeliveredReply(id, { recoveryKey, savedIntent, text, context, kind }) {
+  if (!recoveryKey) {
+    bumpDraftGeneration(itemDraftGenerations, id)
+    delete draftReplies[id]
+    delete draftReplyContexts[id]
+    delete itemDraftMeta[id]
+    delete itemDraftRetryIntents[id]
+  }
+  retireItemDraftSubmissionIntent(id, savedIntent)
+  // every unsent copy of this response was delivered, a Retry's own entry too
+  deleteMatchingItemDraftRecoveries(id, { text, context, kind })
+  showWriteError(id, '')
+}
+
 async function submitItemReply(
   id,
   text,
@@ -6748,9 +6790,25 @@ async function submitItemReply(
   const reply = text.trim()
   if (!reply) return
   const hadDraft = draftReplies[id] !== undefined || draftReplyContexts[id] !== undefined
+  // A Retry of an entry already taken by an earlier click does nothing.
+  if (recoveryKey && !sameItemDraftRecoveryOwner(staleItemDrafts[recoveryKey]?.owner, recoveryOwner)) {
+    forceRender()
+    return
+  }
   if (recoveryKey) delete itemDraftRetryIntents[id]
+  // A Retry reuses its entry's intent, and an editor's Send the one its last
+  // unconfirmed send left; savedIntentRule decides whether either is reused.
+  const savedIntent = recoveryKey
+    ? intent
+    : !intent && submissionUsesDraft ? reusableDraftIntent(id, submittedGeneration) : null
+  const fate = savedIntent ? savedIntentRule(id, savedIntent, { text, context, kind }) : null
+  if (fate === 'delivered') {
+    retireDeliveredReply(id, { recoveryKey, savedIntent, text, context, kind })
+    await reloadAndPaint()
+    return
+  }
+  if (savedIntent) intent = fate === 'replay' ? savedIntent : null
   const replayingRecordedIntent = Boolean(recoveryKey && intent)
-  intent ??= submissionUsesDraft ? reusableDraftIntent(id, submittedGeneration) : null
   if (intent) cancelStagedItemIntent(id)
   intent ??= claimItemIntent(id)
   if (!sameItemIntent(itemLatestIntents[id], intent) && !replayingRecordedIntent) return

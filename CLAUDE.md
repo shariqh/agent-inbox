@@ -863,10 +863,12 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   the text on this screen would otherwise go with it. A routine save leaves that
   delete alone, and a draft whose own last write has expired is let go. Each entry
   carries what it was written against: a question draft the question's answer as of
-  the last edit (`replied_at`, source and kind, never `response_revision`, which the
-  human's own Note also moves), a recovery the answer its intent was tried against, a
-  row draft its row and board ids and revisions, its action version and whether its
-  send was still unanswered, and any reply intent its claiming client id. The tab's
+  the last edit (`replied_at`, source, kind and text, never `response_revision`, which
+  the human's own Note also moves), a row draft its row and board ids and revisions,
+  its action version and whether its send was still unanswered, and any reply intent
+  its claiming client id and its pin, the answer as it stood when the intent was
+  claimed. The pin travels on the intent, so nothing can move it while the intent is
+  kept, and a fresh intent brings its own. The tab's
   reply identity itself stays in `sessionStorage`: shared, two windows would merge
   their counters and refuse each other's newer replies. Restoring happens once, in the
   first applied `load()` before its `renderIfIdle()` (`placeRestoredDrafts`), and sends
@@ -879,11 +881,21 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   available", "this action changed", "Kept because this project is closed", or #272's
   set-aside reason only when it was recorded. Once a send of the text was tried and
   never answered (a reply intent, or a row send still in flight), the reason says
-  "Your send was not confirmed", never "not sent": the write may have landed. A reply
-  intent replays exactly only while the question's answer is unchanged since it was
-  claimed; once the answer moved, the send may have landed and been superseded, so
-  the intent is dropped and Retry is a fresh send. A draft whose exact text the server
-  already holds is dropped. `renderIfIdle()` paints the first editable frame even with
+  "Your send was not confirmed", never "not sent": the write may have landed. A draft
+  whose exact text the server already holds is dropped. **One rule decides every reuse
+  of a saved reply intent** (`savedIntentRule`, called by `submitItemReply` for an
+  unsent response's Retry and for an editor's Send after an unconfirmed send, so for
+  every intent a restart brings back too; the restore only uses it to word a reason):
+  the server holds exactly that response (text, context and kind), so the entry or
+  draft retires without a send; else the answer moved since the intent's pin, so a
+  replay would be answered from the server's intent record without writing anything
+  and the send is fresh, with a new intent and pin; else the exact replay, which keeps
+  it idempotent. This deliberately reverses the older contract that a re-send after an
+  ambiguous failure never overwrites a later answer: once the answer moved, the
+  human's own Send or Retry writes, as any other Send would. The rule reads the last
+  snapshot, so within one poll (3 s) of another writer it can still replay. A Retry
+  of an entry an earlier click already took does nothing, so a double click claims no
+  second intent. `renderIfIdle()` paints the first editable frame even with
   restored drafts, since no editor exists yet to protect; every later tick pauses
   exactly as for a typed draft. Bounds, applied on every read and write: 30 days since
   the last write, 100 entries and 200,000 characters, oldest evicted first; a refused

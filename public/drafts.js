@@ -30,26 +30,31 @@ const isId = (value, max = MAX_ID) => typeof value === 'string' && value.length 
 const isInt = (value, min) => Number.isSafeInteger(value) && value >= min
 const filled = (...values) => values.some((value) => value.trim() !== '')
 
-// undefined means "invalid"; null means "no intent"
+const optionalInt = (value, min) => (value === null || value === undefined ? null : isInt(value, min) ? value : undefined)
+const optionalText = (value, max) => value === null || isText(value, max)
+
+// What a question draft, and each reply intent, is pinned to: the question's
+// answer (when it was last written, by whom, of what kind, and its text), never
+// response_revision, which the human's own Note also moves. undefined means
+// "invalid"; null means "not known".
+function answerOf(value) {
+  if (value === null || value === undefined) return null
+  if (typeof value !== 'object') return undefined
+  const text = value.text ?? null
+  if (!optionalText(value.at, 64) || !optionalText(value.source, 32) || !optionalText(value.kind, 32)
+    || !optionalText(text, MAX_TEXT)) return undefined
+  return { at: value.at, source: value.source, kind: value.kind, text }
+}
+
+// undefined means "invalid"; null means "no intent". An intent without its pin
+// is never replayed: its Retry sends afresh.
 function intentOf(value) {
   if (value === null || value === undefined) return null
   if (typeof value !== 'object') return undefined
   const { clientId, sequence, actionId } = value
-  if (!isId(clientId, 128) || !isId(actionId, 128) || !isInt(sequence, 1)) return undefined
-  return { clientId, sequence, actionId }
-}
-
-const optionalInt = (value, min) => (value === null || value === undefined ? null : isInt(value, min) ? value : undefined)
-const optionalText = (value, max) => value === null || isText(value, max)
-
-// What a question draft is pinned to: the question's answer (when it was last
-// written, by whom, of what kind), never response_revision, which the human's
-// own Note also moves. undefined means "invalid"; null means "not known".
-function answerOf(value) {
-  if (value === null || value === undefined) return null
-  if (typeof value !== 'object' || !optionalText(value.at, 64) || !optionalText(value.source, 32)
-    || !optionalText(value.kind, 32)) return undefined
-  return { at: value.at, source: value.source, kind: value.kind }
+  const pin = answerOf(value.pin)
+  if (!isId(clientId, 128) || !isId(actionId, 128) || !isInt(sequence, 1) || pin === undefined) return undefined
+  return { clientId, sequence, actionId, pin }
 }
 
 // The one canonical shape of each kind: unknown fields are dropped and the key
@@ -70,13 +75,12 @@ export function draftEntry(raw) {
     }
     case 'item-recovery': {
       const intent = intentOf(raw.intent)
-      const answer = answerOf(raw.answer)
-      if (intent === undefined || answer === undefined || !isId(raw.itemId) || !isText(raw.title, MAX_LABEL)
+      if (intent === undefined || !isId(raw.itemId) || !isText(raw.title, MAX_LABEL)
         || !isText(raw.text) || !isText(raw.context) || !filled(raw.text, raw.context)
         || !KINDS.has(raw.kind) || !isText(reason, MAX_LABEL)) return null
       return {
         type: 'item-recovery', itemId: raw.itemId, title: raw.title, text: raw.text, context: raw.context,
-        kind: raw.kind, answer, intent, reason,
+        kind: raw.kind, intent, reason,
       }
     }
     case 'row': {

@@ -9,7 +9,8 @@ const NOW = Date.parse('2026-10-22T12:00:00.000Z')
 const DAY = 24 * 60 * 60 * 1000
 
 const reply = (itemId: string, text = 'Ship it.'): Draft => ({
-  type: 'reply', itemId, title: 'Question', text, context: '', answer: { at: null, source: null, kind: null }, intent: null,
+  type: 'reply', itemId, title: 'Question', text, context: '', answer: { at: null, source: null, kind: null, text: null },
+  intent: null,
 })
 
 function store(entries: Record<string, { savedAt: number; draft: unknown }>): string {
@@ -41,7 +42,10 @@ describe('draftEntry', () => {
       { ...reply('q1'), answer: { at: 7, source: null, kind: null } },
       { ...reply('q1'), answer: { at: null, source: null } },
       { ...reply('q1'), answer: 'pinned' },
+      { ...reply('q1'), answer: { at: null, source: null, kind: null, text: 7 } },
       { ...reply('q1'), intent: { clientId: 'c', sequence: 0, actionId: 'a' } },
+      { ...reply('q1'), intent: { clientId: 'c', sequence: 1, actionId: 'a', pin: 'answered' } },
+      { ...reply('q1'), intent: { clientId: 'c', sequence: 1, actionId: 'a', pin: { at: 7, source: null, kind: null } } },
       { ...reply('q1'), intent: { clientId: '', sequence: 1, actionId: 'a' } },
       { ...reply('q1'), title: 7 },
       {
@@ -56,13 +60,23 @@ describe('draftEntry', () => {
     }
   })
 
-  it('keeps the answer a question draft or recovery was pinned to, and an unconfirmed row send', () => {
-    const answered = { at: '2026-10-22T11:00:00.000Z', source: 'agent', kind: 'answer' }
+  it('keeps the answer a question draft and each reply intent are pinned to, and an unconfirmed row send', () => {
+    const answered = { at: '2026-10-22T11:00:00.000Z', source: 'agent', kind: 'answer', text: 'Thursday' }
+    const intent = { clientId: 'c', sequence: 2, actionId: 'a' }
     expect(draftEntry({ ...reply('q1'), answer: answered })).toMatchObject({ answer: answered })
     expect(draftEntry({ ...reply('q1'), answer: null })).toMatchObject({ answer: null })
-    expect(draftEntry({
-      type: 'item-recovery', itemId: 'q1', title: 'Q', text: 'x', context: '', kind: 'answer', answer: answered, intent: null, reason: '',
-    })).toMatchObject({ answer: answered })
+    expect(draftEntry({ ...reply('q1'), answer: { ...answered, text: undefined } }))
+      .toMatchObject({ answer: { ...answered, text: null } })
+    expect(draftEntry({ ...reply('q1'), intent: { ...intent, pin: answered } }))
+      .toMatchObject({ intent: { ...intent, pin: answered } })
+    expect(draftEntry({ ...reply('q1'), intent }), 'an intent without its pin is never replayed')
+      .toMatchObject({ intent: { ...intent, pin: null } })
+    const recovery = draftEntry({
+      type: 'item-recovery', itemId: 'q1', title: 'Q', text: 'x', context: '', kind: 'answer', answer: answered,
+      intent: { ...intent, pin: answered }, reason: '',
+    })
+    expect(recovery, 'a recovery is pinned only through its intent').not.toHaveProperty('answer')
+    expect(recovery).toMatchObject({ intent: { pin: answered } })
     expect(draftEntry({
       type: 'row', rowId: 'r1', boardId: 'b1', boardRevision: 4, revision: 7, actionVersion: 2,
       text: 'Go.', kind: 'answer', boardTitle: 'Plan', label: 'Step', context: '', unconfirmed: true,

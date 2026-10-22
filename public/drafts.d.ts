@@ -1,20 +1,24 @@
 export type DraftResponseKind = 'answer' | 'clarify' | 'decline'
 
-/** The reply intent a draft was sent (or last tried) with, and the window identity that claimed it. */
-export interface DraftIntent {
-  clientId: string
-  sequence: number
-  actionId: string
-}
-
 /**
- * A question's answer as a draft last saw it: when it was written, by whom
- * (`inbox` or `agent`) and of what kind. A Note does not move it.
+ * A question's answer as a draft or a reply intent last saw it: when it was
+ * written, by whom (`inbox` or `agent`), of what kind and its text. A Note
+ * does not move it.
  */
 export interface DraftAnswer {
   at: string | null
   source: string | null
   kind: string | null
+  text: string | null
+}
+
+/** The reply intent a draft was sent (or last tried) with, and the window identity that claimed it. */
+export interface DraftIntent {
+  clientId: string
+  sequence: number
+  actionId: string
+  /** the question's answer when the intent was claimed; null when unknown, which is never replayed */
+  pin: DraftAnswer | null
 }
 
 export type Draft =
@@ -35,8 +39,6 @@ export type Draft =
       text: string
       context: string
       kind: DraftResponseKind
-      /** the question's answer when the recovery was made; null when unknown */
-      answer: DraftAnswer | null
       intent: DraftIntent | null
       reason: string
     }

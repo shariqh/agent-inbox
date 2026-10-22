@@ -61,7 +61,7 @@ const SEND_UNCONFIRMED_ACTION = 'Your send was not confirmed, and this action ha
 
 interface Stored { savedAt: number; draft: Record<string, unknown> }
 // A stored question draft's pin for a question nobody has answered yet.
-const UNANSWERED = { at: null, source: null, kind: null }
+const UNANSWERED = { at: null, source: null, kind: null, text: null }
 
 function stored(): Record<string, Stored> {
   const raw = localStorage.getItem(KEY)
@@ -129,6 +129,38 @@ function moveAction(d: Database.Database, title = 'Launch plan'): void {
     action_owner: 'approval',
     impact: 'Continues.',
   }).ok).toBe(true)
+}
+
+// The first reply POST for this question commits, but its answer never arrives.
+function loseFirstReply(id: string): BootOptions {
+  let lose = true
+  return {
+    interceptFetch: async (input, init, next) => {
+      const response = await next()
+      if (lose && init?.method === 'POST' && String(input).includes(`/items/${id}/reply`)) {
+        lose = false
+        throw new Error('lost reply response')
+      }
+      return response
+    },
+  }
+}
+
+// The agent picks the inbox answer up, then records another from chat.
+function agentAnswers(d: Database.Database, id: string, text: string): void {
+  const item = getItem(d, id)!
+  expect(markReplySeen(d, id, item.replied_at, item.response_revision)).toBe(true)
+  expect(answerItem(d, id, text).ok).toBe(true)
+}
+
+const body = (post: { init?: RequestInit } | undefined) => JSON.parse(String(post?.init?.body)) as Record<string, unknown>
+
+async function pickOption(id: string, label: string): Promise<void> {
+  await showInbox()
+  if (!row(id)?.querySelector('.nrow-card')) click(row(id))
+  await settle()
+  click(buttonLabelled(label, row(id)!))
+  await settle()
 }
 
 async function draftAnswer(id: string, text: string, context = ''): Promise<void> {
@@ -435,27 +467,15 @@ describe('a draft whose target changed goes to the unsent responses', () => {
   ] as const)('says %s whose send was not confirmed is not confirmed, and Retry sends it afresh', async (_label, text, send) => {
     db = freshDb()
     const id = question(db)
-    let lose = true
-    const first = await bootApp(db, {
-      interceptFetch: async (input, init, next) => {
-        const response = await next()
-        if (lose && init?.method === 'POST' && String(input).includes(`/items/${id}/reply`)) {
-          lose = false
-          throw new Error('lost reply response')
-        }
-        return response
-      },
-    })
+    const first = await bootApp(db, loseFirstReply(id))
     expectConsoleError(/lost reply response/)
     await send(id)
     await settle()
-    const lost = JSON.parse(String(first.posts.at(-1)?.init?.body)) as Record<string, unknown>
+    const lost = body(first.posts.at(-1))
     expect(getItem(db, id)?.reply, 'the send committed; only its answer was lost').toBe(text)
     window.dispatchEvent(new Event('pagehide'))
     // While the app is closed the agent picks the answer up and records another in chat.
-    const committed = getItem(db, id)!
-    expect(markReplySeen(db, id, committed.replied_at, committed.response_revision)).toBe(true)
-    expect(answerItem(db, id, 'Chat answer').ok).toBe(true)
+    agentAnswers(db, id, 'Chat answer')
 
     const bridge = await reopen(db)
     await pollTick()
@@ -465,8 +485,7 @@ describe('a draft whose target changed goes to the unsent responses', () => {
     expect(fold.textContent).not.toContain('Not sent')
     click(buttonLabelled('Retry', fold))
     await settle()
-    const retried = JSON.parse(String(bridge.posts[0]!.init?.body)) as Record<string, unknown>
-    expect(retried['intent_action_id']).not.toBe(lost['intent_action_id'])
+    expect(body(bridge.posts[0])['intent_action_id']).not.toBe(lost['intent_action_id'])
     expect(getItem(db, id)).toMatchObject({ reply: text, reply_source: 'inbox' })
     expect(recovery()).toBeNull()
     await saved()
@@ -726,6 +745,223 @@ describe('bounds', () => {
     click(sendButton(id))
     await settle()
     expect(getItem(db, id)?.reply).toBe('Still here.')
+  })
+})
+
+// One rule decides every reuse of a saved reply intent: an unsent response's
+// Retry, an editor's Send after a lost answer, and every intent a restart
+// brings back. Delivered when the server holds exactly that answer; a fresh
+// send once the answer moved since the intent's send; the exact replay otherwise.
+describe('a saved reply intent is reused by one rule', () => {
+  it('sends an unsent response afresh in the same window once the agent answered in chat', async () => {
+    db = freshDb()
+    const id = question(db)
+    const bridge = await bootApp(db, loseFirstReply(id))
+    expectConsoleError(/lost reply response/)
+    await pickOption(id, 'Tuesday')
+    const lost = body(bridge.posts.at(-1))
+    agentAnswers(db, id, 'Thursday')
+    await pollTick()
+
+    click(buttonLabelled('Retry', recovery()!))
+    await settle()
+    expect(body(bridge.posts.at(-1))['intent_action_id']).not.toBe(lost['intent_action_id'])
+    expect(getItem(db, id)).toMatchObject({ reply: 'Tuesday', reply_source: 'inbox' })
+    expect(recovery()).toBeNull()
+  })
+
+  it('sends a draft afresh from its editor once the agent answered in chat after a lost answer', async () => {
+    db = freshDb()
+    const id = question(db)
+    const bridge = await bootApp(db, loseFirstReply(id))
+    expectConsoleError(/lost reply response/)
+    await draftAnswer(id, 'Ship Tuesday.')
+    click(sendButton(id))
+    await settle()
+    const lost = body(bridge.posts.at(-1))
+    agentAnswers(db, id, 'Chat answer')
+    await pollTick()
+    expect(answerInput(id)?.value, 'the paused editor still holds the draft').toBe('Ship Tuesday.')
+
+    click(sendButton(id))
+    await settle()
+    expect(body(bridge.posts.at(-1))['intent_action_id']).not.toBe(lost['intent_action_id'])
+    expect(getItem(db, id)).toMatchObject({ reply: 'Ship Tuesday.', reply_source: 'inbox' })
+  })
+
+  it('keeps a failed Retry on its own fresh intent, so a restart still sends the answer', async () => {
+    db = freshDb()
+    const id = question(db)
+    const first = await bootApp(db, loseFirstReply(id))
+    expectConsoleError(/lost reply response/)
+    await pickOption(id, 'Tuesday')
+    const lost = body(first.posts.at(-1))
+    agentAnswers(db, id, 'Thursday')
+    await pollTick()
+    first.failPostsWith(500)
+    expectConsoleError(/reply failed: HTTP 500/)
+    click(buttonLabelled('Retry', recovery()!))
+    await settle()
+    expect(body(first.posts.at(-1))['intent_action_id'], 'the answer moved, so even this Retry is fresh')
+      .not.toBe(lost['intent_action_id'])
+    expect(recovery()?.textContent).toContain('answer: Tuesday')
+
+    const bridge = await reopen(db)
+    await pollTick()
+    click(buttonLabelled('Retry', recovery()!))
+    await settle()
+    expect(body(bridge.posts[0])['intent_action_id']).not.toBe(lost['intent_action_id'])
+    expect(getItem(db, id)).toMatchObject({ reply: 'Tuesday', reply_source: 'inbox' })
+    expect(recovery()).toBeNull()
+    await saved()
+    expect(stored()).toEqual({})
+  })
+
+  it.each(['an unsent response\'s Retry', 'an editor\'s Send'] as const)(
+    'retires %s without sending when the server already holds exactly that answer',
+    async (path) => {
+      db = freshDb()
+      const id = question(db)
+      const bridge = await bootApp(db, loseFirstReply(id))
+      expectConsoleError(/lost reply response/)
+      const text = path === 'an editor\'s Send' ? 'Ship Tuesday.' : 'Tuesday'
+      if (path === 'an editor\'s Send') {
+        await draftAnswer(id, text)
+        click(sendButton(id))
+        await settle()
+      } else {
+        await pickOption(id, text)
+      }
+      expect(getItem(db, id)?.reply, 'the lost send committed').toBe(text)
+      await pollTick()
+      const posts = bridge.posts.length
+
+      click(path === 'an editor\'s Send' ? sendButton(id) : buttonLabelled('Retry', recovery()!))
+      await settle()
+      expect(bridge.posts, 'nothing is sent again').toHaveLength(posts)
+      expect(recovery()).toBeNull()
+      expect(answerInput(id)).toBeNull()
+      await saved()
+      expect(stored()).toEqual({})
+    },
+  )
+
+  it('keeps an intent\'s pin when its replay is lost while the answer moves', async () => {
+    db = freshDb()
+    const id = question(db)
+    let replies = 0
+    let release!: () => void
+    const held = new Promise<void>((resolve) => { release = resolve })
+    await bootApp(db, {
+      interceptFetch: async (input, init, next) => {
+        if (init?.method !== 'POST' || !String(input).includes(`/items/${id}/reply`)) return next()
+        replies += 1
+        // the pick never reaches the server; its Retry lands, but that answer is lost
+        if (replies === 1) throw new Error('lost reply request')
+        const response = await next()
+        if (replies === 2) {
+          await held
+          throw new Error('lost reply response')
+        }
+        return response
+      },
+    })
+    expectConsoleError(/lost reply (request|response)/)
+    await pickOption(id, 'Tuesday')
+    click(buttonLabelled('Retry', recovery()!))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(getItem(db, id)?.reply, 'the exact replay landed').toBe('Tuesday')
+    agentAnswers(db, id, 'Thursday')
+    await pollTick()
+    release()
+    await settle()
+    expect(recovery()?.textContent).toContain('answer: Tuesday')
+
+    await reopen(db)
+    await pollTick()
+    expect(recovery()?.textContent, 'the pin is still the answer the intent was claimed against')
+      .toContain(SEND_UNCONFIRMED_QUESTION)
+    click(buttonLabelled('Retry', recovery()!))
+    await settle()
+    expect(getItem(db, id)).toMatchObject({ reply: 'Tuesday', reply_source: 'inbox' })
+    expect(recovery()).toBeNull()
+  })
+
+  it('tells two answers written in the same millisecond apart by their text', async () => {
+    db = freshDb()
+    const id = question(db)
+    expect(answerItem(db, id, 'Earlier').ok).toBe(true)
+    const pinnedAt = getItem(db, id)!.replied_at!
+    const bridge = await bootApp(db, loseFirstReply(id))
+    expectConsoleError(/lost reply response/)
+    await draftAnswer(id, 'Mine.')
+    click(sendButton(id))
+    await settle()
+    const lost = body(bridge.posts.at(-1))
+    // The agent's next chat answer lands in the millisecond of the one this send was made against.
+    vi.setSystemTime(new Date(pinnedAt))
+    agentAnswers(db, id, 'Later')
+    expect(getItem(db, id)?.replied_at).toBe(pinnedAt)
+    await pollTick()
+
+    click(sendButton(id))
+    await settle()
+    expect(body(bridge.posts.at(-1))['intent_action_id']).not.toBe(lost['intent_action_id'])
+    expect(getItem(db, id)).toMatchObject({ reply: 'Mine.', reply_source: 'inbox' })
+  })
+
+  it('keeps an entry whose fresh Retry was clicked twice and then refused', async () => {
+    db = freshDb()
+    const id = question(db)
+    let replies = 0
+    let release!: () => void
+    const held = new Promise<void>((resolve) => { release = resolve })
+    const bridge = await bootApp(db, {
+      interceptFetch: async (input, init, next) => {
+        if (init?.method !== 'POST' || !String(input).includes(`/items/${id}/reply`)) return next()
+        replies += 1
+        if (replies === 2) await held
+        const response = await next()
+        if (replies === 1) throw new Error('lost reply response')
+        return response
+      },
+    })
+    expectConsoleError(/lost reply response/)
+    await pickOption(id, 'Tuesday')
+    agentAnswers(db, id, 'Thursday')
+    await pollTick()
+
+    const retry = buttonLabelled('Retry', recovery()!)
+    click(retry)
+    click(retry)
+    await vi.advanceTimersByTimeAsync(0)
+    resolveItem(db, id)
+    release()
+    await settle()
+    expect(bridge.posts, 'the second click sent nothing').toHaveLength(2)
+    expect(recovery()?.textContent, 'the refused send keeps its text').toContain('answer: Tuesday')
+    await saved()
+    expect(storedTexts()).toEqual(['Tuesday'])
+  })
+
+  it('replays the exact intent while the answer is unchanged', async () => {
+    db = freshDb()
+    const id = question(db)
+    const bridge = await bootApp(db)
+    bridge.failPostsWith(500)
+    expectConsoleError(/reply failed: HTTP 500/)
+    await pickOption(id, 'Tuesday')
+    const failed = body(bridge.posts.at(-1))
+    bridge.failPostsWith(null)
+
+    click(buttonLabelled('Retry', recovery()!))
+    await settle()
+    expect(body(bridge.posts.at(-1))).toMatchObject({
+      intent_client_id: failed['intent_client_id'],
+      intent_action_id: failed['intent_action_id'],
+    })
+    expect(getItem(db, id)?.reply).toBe('Tuesday')
+    expect(recovery()).toBeNull()
   })
 })
 

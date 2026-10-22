@@ -413,9 +413,13 @@ Run the build before `npm run electron`; the development shell starts the built
   editor deletes the stored copy and a refused send keeps it. Restoring happens
   once in the first applied `load()`: an unchanged target in an open project gets
   its draft back in its editor; anything else goes to the unsent responses with a
-  reason, "not confirmed" (and a fresh intent on Retry) once a send of it was
-  tried and its target moved. Nothing is ever sent, focused or switched for the
-  human. Question drafts pin the question's answer, not `response_revision`. A
+  reason, "not confirmed" once a send of it was tried and its target moved.
+  Nothing is ever sent, focused or switched for the human. Question drafts pin the
+  question's answer, not `response_revision`; each reply intent carries its own
+  pin. One rule, `savedIntentRule`, decides every reuse of a saved intent (Retry,
+  an editor's Send after an unconfirmed send): the server holds exactly that
+  response, so it retires unsent; the answer moved since the pin, so the send is
+  fresh; otherwise the exact replay. Never move a pin while keeping its intent. A
   window deletes only the copy it loaded or last wrote, and its leaving save
   writes back a draft another window deleted; the viewer-restart hold stays.
 - Every value export in `src/*.ts` and `public/*.js` must be reachable from

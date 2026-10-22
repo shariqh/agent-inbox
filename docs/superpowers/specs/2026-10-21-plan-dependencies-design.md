@@ -551,14 +551,18 @@ All new chips are built in `public/source.js`, so every href still comes from `c
 - **One chip per row.** A row's steps and its issue's blockers share one chip: "waits on step
   Build" or "waits on #119" for one target, "waits on 2 steps" when every target is a step,
   "waits on 3" otherwise. A step whose linked issue is also a GitHub blocker is one entry, so
-  the count never double-counts it. A step that is `done` draws nothing even when its issue
-  is still open on GitHub; that issue then appears as a GitHub entry.
+  the count never double-counts it. A step that is `done` or `na` (it will not happen, so it
+  holds nothing up; Plan flow drops `na` rows too) draws nothing even when its issue is still
+  open on GitHub; that issue then appears as a GitHub entry.
 - **The "+N" counts are of OPEN issues.** The lists show open issues only, so "+N not visible
-  to your GitHub account" is `open` (not `total`) minus those listed and those beyond the page;
-  `total` would count closed issues the list deliberately omits. "+N more on GitHub" is open
-  issues beyond GitHub's 50-entry page. "+N not shown" (`dependencies_omitted`) covers both
-  directions, so it is one line under the section rather than one per list, and it is taken out
-  of the hidden counts so no issue is counted twice.
+  to your GitHub account" counts open issues (`open`, not `total`) the list lacks; `total` would
+  count closed issues the list deliberately omits. GitHub's page is the first 50 dependencies of
+  the direction, closed ones included, so when `total` exceeds 50 an unlisted open issue may
+  simply sit beyond it: then all `open` minus listed is "+N more on GitHub", and "not visible"
+  is used only when the page was complete (`total` ≤ 50). The two cannot be told apart beyond
+  the page, and permissions are never blamed for it. "+N not shown" (`dependencies_omitted`)
+  covers both directions, so it is one line under the section rather than one per list, and it
+  is taken out of the other two counts so no issue is counted twice.
 - **The row detail** names a step as "step Build" and a GitHub issue by chip and title, each
   with its source ("step in this plan", "GitHub" or both). It carries no activity labels: the
   steps are this plan's own rows.
@@ -822,4 +826,6 @@ Run on 2026-10-21 with `gh` 2.102.0, read-only:
 - **PR D notes (2026-10-22):** §9.1 gains an "as built" note: one chip per row for both
   sources, "+N" counts of open issues (`open`, not `total`, since closed ones are never
   listed), one "+N not shown" line per section (the omitted count is not split by direction),
-  and no activity labels in the row detail.
+  and no activity labels in the row detail. Review of #274: open issues missing from a page of
+  50 that mixes closed ones are "more on GitHub", never "not visible" (only a complete page
+  proves that), and a `waits_on` target whose row is `na` counts as satisfied, like `done`.

@@ -200,10 +200,12 @@ Run the build before `npm run electron`; the development shell starts the built
 - "Waits on" in Plans (#103 slice 2 PR D) is ambient. `buildIssueView` gives a drawn
   relation `dependencies` only when its root says `dependencies: "ok"` (open blockers and
   dependents, activity labels read from `attentionEntries`, `cycle`, and +N counts of open
-  ones beyond the page, hidden from the account or cut by the cap), `{status:'unavailable'}`
+  ones beyond the page (any unlisted open one when the direction's total exceeds GitHub's
+  50-entry page, which includes closed issues), hidden from the account (only when the page
+  was complete) or cut by the cap), `{status:'unavailable'}`
   for a refused section, and `null` otherwise: never "no dependencies". `planWaits` and
   `rowWaits` merge a row's unfinished `waits_on` steps (local, drawn with no graph; dangling
-  labels and `done` targets draw nothing) with its issue's open blockers, one entry per pair.
+  labels and `done` or `na` targets draw nothing) with its issue's open blockers, one entry per pair.
   Chips and lists are built only in `public/source.js` (`esc()`, `chipHtml()`, a link only
   from a validated slug and number, `tone-issue`/`tone-stale`, never the word "Blocked");
   matrix chips stay out of the roving order. No dependency or `waits_on` value reaches

@@ -164,12 +164,15 @@ const byIssue = (a, b) => {
   return ra !== rb ? (ra < rb ? -1 : 1) : a.number - b.number
 }
 
-// What a list cannot show of the OPEN issues its section counts: those beyond
-// GitHub's page, and those this account cannot see. Closed ones draw nothing,
-// so they are never counted either.
-function depMoreOf(listed, open) {
-  const onGitHub = open === null ? 0 : Math.max(0, Math.min(open - listed, open - DEPENDENCY_PAGE))
-  return { notVisible: open === null ? 0 : Math.max(0, open - listed - onGitHub), onGitHub }
+// What a list cannot show of the OPEN issues its section counts. GitHub's page
+// holds the first 50 of ALL of them, closed included, so when the direction has
+// more than 50 an unlisted open one may simply sit beyond it: "more on GitHub",
+// never blamed on permissions. Only a complete page (total ≤ 50) proves the rest
+// are hidden from this account. Closed ones draw nothing and are never counted.
+function depMoreOf(listed, open, total) {
+  if (open === null) return { notVisible: 0, onGitHub: 0 }
+  const missing = Math.max(0, open - listed)
+  return (total ?? open) > DEPENDENCY_PAGE ? { notVisible: 0, onGitHub: missing } : { notVisible: missing, onGitHub: 0 }
 }
 
 // §9.1's "Dependencies on GitHub" for a drawn relation. Only a section the
@@ -180,19 +183,21 @@ function dependenciesOf(root, node, { nodes, countsOf, blocking, activity }) {
   if (root.dependencies === 'unavailable') return { status: 'unavailable' }
   if (root.dependencies !== 'ok') return null
   const counts = countsOf.get(node.key) ?? {}
-  const side = (keys, open) => {
+  const side = (keys, open, total) => {
     const list = (keys ?? []).map((key) => nodes.get(key)).filter((n) => n && n.state === 'OPEN').sort(byIssue)
-    return { list: list.map((n) => ({ node: n, activity: activityOf(activity.get(n.key)) })), more: depMoreOf(list.length, open) }
+    return { list: list.map((n) => ({ node: n, activity: activityOf(activity.get(n.key)) })), more: depMoreOf(list.length, open, total) }
   }
-  const waitsOn = side(blocking.blockersOf.get(node.key), count(counts.blocked_by_open))
-  const unblocks = side(blocking.dependentsOf.get(node.key), count(counts.blocking_open))
-  // the node cap cut these (§6.3); they are counted once, not as hidden
+  const waitsOn = side(blocking.blockersOf.get(node.key), count(counts.blocked_by_open), count(counts.blocked_by_total))
+  const unblocks = side(blocking.dependentsOf.get(node.key), count(counts.blocking_open), count(counts.blocking_total))
+  // the node cap cut these (§6.3); they are counted once, not as missing
   const notShown = count(root.dependencies_omitted) ?? 0
   let left = notShown
   for (const more of [unblocks.more, waitsOn.more]) {
-    const taken = Math.min(left, more.notVisible)
-    more.notVisible -= taken
-    left -= taken
+    for (const field of ['notVisible', 'onGitHub']) {
+      const taken = Math.min(left, more[field])
+      more[field] -= taken
+      left -= taken
+    }
   }
   return {
     status: 'ok', waitsOn: waitsOn.list, unblocks: unblocks.list, cycle: blocking.circular.has(node.key),
@@ -208,7 +213,7 @@ function githubWaits(rel) {
 }
 
 // §9.1: per plan, its issue's open blockers; per row, its waits_on steps that
-// are not done (a label naming a removed row draws nothing, §4.2) beside its own
+// are neither done nor na (a label naming a removed row draws nothing, §4.2) beside its own
 // issue's open blockers. A step whose issue is one of those blockers is ONE
 // entry, labelled with both sources.
 function waitsOf({ boards, archived, links }, relations, canonical) {
@@ -229,7 +234,8 @@ function waitsOf({ boards, archived, links }, relations, canonical) {
       const entries = []
       for (const label of Array.isArray(r.waits_on) ? r.waits_on : []) {
         const target = byLabel.get(label)
-        if (!target || target === r || target.status === 'done') continue
+        // a step that is done, or will not happen (na), holds nothing up
+        if (!target || target === r || target.status === 'done' || target.status === 'na') continue
         const key = issueKey(target.issue_repo, target.issue_number)
         const same = key ? fromGitHub.findIndex((g) => g.node.key === canonical(key)) : -1
         const github = same >= 0 ? fromGitHub.splice(same, 1)[0] : null

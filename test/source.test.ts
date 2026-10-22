@@ -747,6 +747,9 @@ describe('dependency chips and blocks in Plans (slice 2 PR D)', () => {
     { id: 'rd', label: 'Doc', status: 'tracked', waits_on: [QUOTES] },
     { id: 'rq', label: 'Quiet', status: 'tracked', waits_on: ['Build'] },
     { id: 'r1', label: 'One', status: 'tracked', issue_repo: R, issue_number: 122 },
+    { id: 'rn', label: 'Skipped', status: 'na' },
+    { id: 'rw', label: 'Wait', status: 'tracked', waits_on: ['Skipped'] },
+    { id: 'rv', label: 'Verify', status: 'tracked', waits_on: ['Doc', 'Skipped'] },
   ]
   const plan = { id: 'p', project: 'agent-inbox', agent: 'copilot', title: 'Release', status: 'active', repo: R, stream: 'main',
     issue_ref: null, issue_pin_repo: R, issue_pin_number: 121, updated_at: at(1), rows }
@@ -861,6 +864,30 @@ describe('dependency chips and blocks in Plans (slice 2 PR D)', () => {
       expect(rowWaitsChipHtml(byId('r1'), plan, nowMs, { issues })).toBe('')
       expect(issueRelationsHtml(new Map(), plan, nowMs, { issues })).not.toMatch(/Dependenc|Waits on/)
     }
+  })
+
+  it('counts a step that will not happen (na) as satisfied, like a done one (review of #274)', () => {
+    const issues = view(graph())
+    expect(rowWaitsChipHtml(byId('rw'), plan, NOW3, { issues })).toBe('')
+    expect(rowWaitsHtml(byId('rw'), plan, NOW3, { issues })).toBe('')
+    expect(text(rowWaitsChipHtml(byId('rv'), plan, NOW3, { issues }))).toBe('waits on step Doc')
+    expect(rowWaitsHtml(byId('rv'), plan, NOW3, { issues }).match(/<li /g)).toHaveLength(1)
+  })
+
+  it('says "more on GitHub", never "not visible", when a page of 50 mixing closed issues leaves open ones out (review of #274)', () => {
+    const mixed = [
+      ...Array.from({ length: 5 }, (_, i) => facts(K(600 + i))),
+      ...Array.from({ length: 45 }, (_, i) => facts(K(700 + i), { state: 'CLOSED' })),
+    ]
+    const snaps = [row(K(121), snapshot(K(121)), at(0), { dependencies: deps({
+      blockedBy: mixed, blockedByTruncated: true, blockedByCounts: { open: 20, total: 80 },
+      blocking: [facts(K(130))], blockingCounts: { open: 3, total: 3 },
+    }) })]
+    const issues = view(buildIssueGraph(snaps, keySets([K(121)])))
+    const html = issueRelationsHtml(new Map(), plan, NOW3, { issues })
+    expect([...html.matchAll(/<li class="src-more">([^<]*)<\/li>/g)].map((m) => m[1])).toEqual([
+      '+15 more on GitHub', '+2 not visible to your GitHub account',
+    ])
   })
 
   it('lists both kinds in the row detail, each with its source, and the pair once', () => {

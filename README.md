@@ -375,7 +375,7 @@ GitHub), or a row says it waits on other steps of its plan, Plans shows a quiet
 "waits on #119", "waits on 3" or "waits on step Build" chip; hover it for the list.
 The plan card adds "Dependencies on GitHub" with what the issue waits on and what it
 unblocks, and an expanded row lists everything it waits on and where that came from.
-Only open issues and unfinished steps count. A dependency is not a request for you:
+Only open issues and steps that are neither done nor marked not applicable count. A dependency is not a request for you:
 it never marks a row blocked or changes a badge, count or notification. GitHub data
 dims after 30 minutes without a refresh and disappears after seven days.
 

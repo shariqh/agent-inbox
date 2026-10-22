@@ -665,12 +665,15 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   "Dependencies unavailable" line), and otherwise the OPEN blockers ("waits on") and OPEN
   dependents ("unblocks") by repository and number, each with the slice-1 activity label
   READ from the frame's `attentionEntries`, `cycle` when a `cycle: true` edge touches the
-  issue, and three counts of open ones it cannot show: beyond GitHub's 50-entry page
-  (`open − 50`), not visible to this account (`open` minus listed minus that), and cut by
-  the node cap (`dependencies_omitted`, once per section, taken out of the hidden counts).
+  issue, and three counts of open ones it cannot show. GitHub's page holds the first 50
+  dependencies of a direction, CLOSED ones included, so the unlisted open ones (`open` minus
+  listed) are "more on GitHub" when that direction's `total` exceeds 50 and "not visible to
+  your GitHub account" only when the page was complete (`total` ≤ 50): never blame
+  permissions for what may sit beyond the page (review of #274). The node cap's cut
+  (`dependencies_omitted`, once per section) is taken out of those two counts.
   Closed issues draw nothing and are never counted. The same view adds `planWaits` (plan
   id → its certain issue's open blockers) and `rowWaits` (row id → its `waits_on` steps that
-  are not `done`, then its own link's open blockers). Steps are local and draw with no graph;
+  are neither `done` nor `na` (a step that will not happen holds nothing up), then its own link's open blockers). Steps are local and draw with no graph;
   a dangling label draws nothing; a step whose linked issue is one of those blockers is ONE
   entry labelled with both sources. `public/source.js` draws it all: `rowWaitsChipHtml`
   after a row's issue chip (matrix note cell, out of the roving order unless `tabbable`, and

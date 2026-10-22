@@ -544,6 +544,36 @@ describe('GitHub dependencies in the view (slice 2 PR D)', () => {
     })]), { nowMs })
     expect(depsOfRel(beyond, K(121)).unblocks).toHaveLength(50)
     expect(depsOfRel(beyond, K(121)).more.unblocks).toEqual({ notVisible: 0, onGitHub: 10 })
+    // the cap cut four of the page: they are "not shown", not also "more on GitHub"
+    const cutPage = { ...graphOf([depRow(121, { blocking: page, blockingTruncated: true, blockingCounts: { open: 60, total: 80 } })]) }
+    const kept = { ...cutPage, edges: cutPage.edges.filter((e) => !(e.kind === 'blocks' && [K(500), K(501), K(502), K(503)].includes(e.to))),
+      roots: cutPage.roots.map((r) => ({ ...r, dependencies_omitted: 4 })) }
+    expect(depsOfRel(buildIssueView(kept, { nowMs }), K(121)).more).toEqual({
+      waitsOn: { notVisible: 0, onGitHub: 0 }, unblocks: { notVisible: 0, onGitHub: 10 }, notShown: 4,
+    })
+
+    // a page of 50 that mixes open and closed: the open ones it lacks may sit
+    // beyond it, so they are never blamed on permissions (review of #274, F1)
+    const mixed = (n: number) => [
+      ...Array.from({ length: 5 }, (_, i) => K(n + i)),
+      ...Array.from({ length: 45 }, (_, i) => facts(K(n + 100 + i), { state: 'CLOSED' })),
+    ]
+    const both = buildIssueView(graphOf([depRow(121, {
+      blockedBy: mixed(600), blockedByTruncated: true, blockedByCounts: { open: 20, total: 80 },
+      blocking: mixed(800), blockingTruncated: true, blockingCounts: { open: 9, total: 51 },
+    })]), { nowMs })
+    expect(depsOfRel(both, K(121)).waitsOn).toHaveLength(5)
+    expect(depsOfRel(both, K(121)).more).toEqual({
+      waitsOn: { notVisible: 0, onGitHub: 15 }, unblocks: { notVisible: 0, onGitHub: 4 }, notShown: 0,
+    })
+    // a complete page (total ≤ 50) lists everything this account can see
+    const complete = buildIssueView(graphOf([depRow(121, {
+      blockedBy: mixed(600), blockedByCounts: { open: 8, total: 50 },
+      blocking: [K(130), facts(K(131), { state: 'CLOSED' })], blockingCounts: { open: 4, total: 6 },
+    })]), { nowMs })
+    expect(depsOfRel(complete, K(121)).more).toEqual({
+      waitsOn: { notVisible: 3, onGitHub: 0 }, unblocks: { notVisible: 3, onGitHub: 0 }, notShown: 0,
+    })
 
     // the node cap: two dependents were cut, and the root says so
     const graph = graphOf([depRow(121, { blockedBy: [K(119)], blocking: [K(122), K(123), K(124)] })])
@@ -567,6 +597,8 @@ describe('GitHub dependencies in the view (slice 2 PR D)', () => {
       step('rp', 'Ship', 'partial', 121, ['Build', 'Gone', 'Sign']),
       step('rd', 'Doc', 'tracked', null, ['Sign']),
       step('rx', 'Extra', 'tracked', null, ['Build']),
+      step('rn', 'Skipped', 'na', null),
+      step('ry', 'Later', 'tracked', null, ['Doc', 'Skipped']),
     ]
     const shipPlan: IssueViewPlan = {
       id: 'p', project: 'agent-inbox', agent: 'copilot', title: 'Release', status: 'active', repo: REPO, stream: 'main',
@@ -585,8 +617,9 @@ describe('GitHub dependencies in the view (slice 2 PR D)', () => {
         [null, K(122), 'github'],
       ])
       expect(brief(view.rowWaits.get('rd'))).toEqual([['Sign', null, 'step']])
-      // its only step is done
+      // its only step is done; a step that will not happen (na) holds nothing up either
       expect(view.rowWaits.has('rx')).toBe(false)
+      expect(brief(view.rowWaits.get('ry'))).toEqual([['Doc', null, 'step']])
       expect(view.rowWaits.has('rs')).toBe(false)
       expect(brief(view.planWaits.get('p'))).toEqual([[null, K(119), 'github'], [null, K(120), 'github'], [null, K(122), 'github']])
       expect(view.rowWaits.get('rp')?.every((e) => e.node === null || e.freshness === 'fresh')).toBe(true)

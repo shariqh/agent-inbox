@@ -648,12 +648,13 @@ describe('the dock watcher lean item read (issue #156)', () => {
 describe('the dock watcher conditional reads (issue #287)', () => {
   const URL = 'http://127.0.0.1:4319/api/boards?scope=attention'
 
-  function viewerAnswering(answers: Array<{ status: number; etag?: string; body?: unknown }>) {
+  function viewerAnswering(answers: Array<{ status: number; etag?: string; body?: unknown } | Error>) {
     const sent: Array<string | null> = []
     let parsed = 0
     const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
       sent.push(new Headers(init?.headers).get('if-none-match'))
       const answer = answers.shift()!
+      if (answer instanceof Error) throw answer
       return {
         status: answer.status,
         headers: new Headers(answer.etag ? { etag: answer.etag } : {}),
@@ -722,6 +723,21 @@ describe('the dock watcher conditional reads (issue #287)', () => {
 
     const { fetchImpl: unasked } = viewerAnswering([{ status: 304, etag: '"plans-1"' }])
     await expect(conditionalRead.createConditionalReader(unasked)(URL)).rejects.toThrow('HTTP 304')
+  })
+
+  // A viewer that cannot be reached may come back as another instance, so what
+  // was held is dropped there too rather than revalidated against it.
+  it('drops what it holds when the viewer cannot be reached, and asks unconditionally after', async () => {
+    const { fetchImpl, sent } = viewerAnswering([
+      { status: 200, etag: '"plans-1"', body: ['held'] },
+      new TypeError('fetch failed: connect ECONNREFUSED 127.0.0.1:4319'),
+      { status: 200, etag: '"plans-2"', body: ['restarted'] },
+    ])
+    const read = conditionalRead.createConditionalReader(fetchImpl)
+    await read(URL)
+    await expect(read(URL)).rejects.toThrow('ECONNREFUSED')
+    expect(await read(URL)).toEqual(['restarted'])
+    expect(sent).toEqual([null, '"plans-1"', null])
   })
 })
 

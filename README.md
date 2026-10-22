@@ -379,6 +379,13 @@ Only open issues and steps that are neither done nor marked not applicable count
 it never marks a row blocked or changes a badge, count or notification. GitHub data
 dims after 30 minutes without a refresh and disappears after seven days.
 
+**Plan flow** shows the same dependencies on each step, in the agent's own order:
+"Waits on" and "Unblocks" name the other steps as buttons that take you to them, and
+an issue no step of the plan links shows as its GitHub chip with what Agent Inbox is
+doing about it. A step filed under a different parent issue says "Part of #200",
+sub-issues of the plan's issue that no step covers sit in a "Not in this plan" fold,
+and a loop says "Circular dependency".
+
 ## Architecture
 
 - **`src/store.ts`** owns schema, migrations, WAL configuration, and every database

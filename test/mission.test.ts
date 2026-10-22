@@ -144,8 +144,13 @@ describe('buildMission with dependencies (slice 2 §9.2)', () => {
     expect(pathOf(mission, 'rx').waitsOn).toEqual([])
     expect(pathOf(mission, 'ry').waitsOn).toEqual([])
     expect(pathOf(mission, 'rd').unblocks).toEqual([])
-    // next_after prose is a result, never an edge
+    // next_after prose is a result, never an edge: these are every edge there is
     expect(pathOf(mission, 'ri').result).toEqual({ kind: 'next', text: 'After Build lands, ship #131.' })
+    expect(mission.paths.map((p) => [p.row.id, brief(p.waitsOn), brief(p.unblocks)]).filter(([, w, u]) => w.length || u.length)).toEqual([
+      ['rb', [], ['step Import requests #120 [step]']],
+      ['ra', [], ['step Import requests #120 [step+github]', `issue ${K(131)} None here`]],
+      ['ri', ['step Build [step]', 'step AHP adapter #119 [step+github]', `issue ${K(130)} Active · copilot · Gateway`], []],
+    ])
     expect(mission.paths.every((p) => !p.circular)).toBe(true)
   })
 

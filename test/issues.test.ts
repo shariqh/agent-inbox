@@ -408,6 +408,14 @@ describe('plan grouping keys (slice 2 §7)', () => {
     flat(cached([120, 121]), T, indexLinks([legacy]), [plan('pr120', null, { stream: '120-x' }), plan('p121', 121)])
   })
 
+  it('reads the freshness itself, not just whether a node is present', () => {
+    const fresh = view(cached([120, 121]))
+    for (const freshness of ['hidden', 'no-hierarchy', 'unavailable'] as const) {
+      const forged = { relations: new Map([...fresh.relations].map(([key, rel]) => [key, { ...rel, freshness }])) }
+      expect(planGroups([plan('p120', 120), plan('p121', 121)], forged, null).groupOf.size).toBe(0)
+    }
+  })
+
   it('never hides or duplicates a plan, and never writes to what it reads', () => {
     const plans = Object.freeze([plan('umb', 117), plan('p120', 120), plan('p121', 121), plan('a', null), plan('p120b', 120)].map((p) => Object.freeze(p)))
     const out = planGroups(plans, view(cached([120, 121])), null)

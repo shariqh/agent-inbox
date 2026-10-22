@@ -135,6 +135,9 @@ interface Decision { parent: string; t: string }
 // Slice 2: one direction of a root's own dependency section, as observations
 interface DependencySide { listed: Set<string>; complete: boolean }
 interface DependencySection { t: string; blockedBy: DependencySide; blocking: DependencySide }
+const NO_SECTIONS: readonly DependencySection[] = []
+/** An accepted "from blocks to" pair, decided at `t`, its newest positive. */
+interface Pair { from: string; to: string; t: string }
 interface Root {
   key: string
   node: string
@@ -146,19 +149,22 @@ interface Root {
   children: string[]
   /** slice 2: its blockers, then its dependents, each by key */
   neighbours: string[]
-  /** the same entries as blocks edges (pair ids), in the same order */
-  blocks: string[]
+  /** the same entries as their pairs, in the same order */
+  blocks: Pair[]
 }
 
-// newest first; then the lower source (rule 7); then the observer's key, so a
-// tie can never depend on input order
-function fresher<T>(a: Seen<T>, b: Seen<T>): Seen<T> {
-  if (a.t !== b.t) return a.t > b.t ? a : b
-  if (a.source !== b.source) return a.source < b.source ? a : b
-  return a.observer <= b.observer ? a : b
+// Whether an observation replaces the held one: newer, then the lower source
+// (rule 7), then the lower observer key, so a tie can never depend on input
+// order; of exact equals the first is kept. Applied as each one arrives.
+function replaces<T>(held: Seen<T>, t: string, source: number, observer: string): boolean {
+  if (held.t !== t) return t > held.t
+  if (held.source !== source) return source < held.source
+  return observer < held.observer
 }
 
 const byKey = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0)
+// blocks edges in their output order: by blocker, then by dependent
+const byEnds = (a: Pair, b: Pair): number => byKey(a.from, b.from) || byKey(a.to, b.to)
 
 function push<K, V>(map: Map<K, V[]>, key: K, value: V): void {
   const list = map.get(key)
@@ -166,16 +172,9 @@ function push<K, V>(map: Map<K, V[]>, key: K, value: V): void {
   else map.set(key, [value])
 }
 
-// One "from blocks to" pair. A key never holds a space: a slug is [\w.-] only.
-const pairId = (from: string, to: string): string => `${from} ${to}`
-const pairEnds = (id: string): [string, string] => {
-  const space = id.indexOf(' ')
-  return [id.slice(0, space), id.slice(space + 1)]
-}
-
 // §6 step 3 and slice 2's fills: rounds across `lists` in rank order, each
 // giving every list its next entry not yet `done`, until `spent` or nothing is left.
-function roundRobin(lists: string[][], done: (entry: string) => boolean, take: (entry: string) => void, spent: () => boolean): void {
+function roundRobin<T>(lists: T[][], done: (entry: T) => boolean, take: (entry: T) => void, spent: () => boolean): void {
   const cursors = lists.map(() => 0)
   for (let progressed = true; progressed && !spent();) {
     progressed = false
@@ -253,6 +252,16 @@ export function buildIssueGraph(
   // Slice 2 §6.3: every edge of one response, both kinds, within twice its
   // node budget. A node has at most one parent edge, so containment always fits.
   const maxEdges = 2 * maxUnits
+  // issueKey is pure, and a hub names the same issues again and again, in
+  // every list that holds them: each repository and number is checked once.
+  const keys = new Map<string, Map<number, string | null>>()
+  const keyOf = (repo: string, number: number): string | null => {
+    let byNumber = keys.get(repo)
+    if (!byNumber) keys.set(repo, (byNumber = new Map()))
+    let key = byNumber.get(number)
+    if (key === undefined) byNumber.set(number, (key = issueKey(repo, number)))
+    return key
+  }
 
   // Rule 6. A hard failure of K at tF drops every observation about K made at
   // or before tF. Every cached row counts, displayed or not: a refusal only
@@ -260,7 +269,7 @@ export function buildIssueGraph(
   // displayed while another issue's older list still names it.
   const failedAt = new Map<string, string>()
   for (const row of snapshots) {
-    const key = issueKey(row.repo, row.number)
+    const key = keyOf(row.repo, row.number)
     if (key && row.failure === 'hard') failedAt.set(key, row.checked_at)
   }
   const suppressed = (key: string, t: string): boolean => {
@@ -271,27 +280,33 @@ export function buildIssueGraph(
   // Rule 9: only the display roots' own rows are read; any other row is inert.
   const rows: Array<{ key: string; row: IssueSnapshotRow }> = []
   for (const row of snapshots) {
-    const key = issueKey(row.repo, row.number)
+    const key = keyOf(row.repo, row.number)
     if (key && keySets.display.has(key)) rows.push({ key, row })
   }
   rows.sort((a, b) => byKey(a.key, b.key))
 
   const claims = new Map<string, Claim[]>()
   const lists = new Map<string, ParentList[]>()
-  const facts = new Map<string, Seen<IssueFacts>[]>()
-  const counts = new Map<string, Seen<Counts>[]>()
+  // Facts and counts keep only the freshest observation of each issue (rule 7)
+  const factsOf = new Map<string, Seen<IssueFacts>>()
+  const countsOf = new Map<string, Seen<Counts>>()
   const aliasOf = new Map<string, string>()
   // slice 2: each canonical issue's own bound, ok dependency sections, and their counts
   const sections = new Map<string, DependencySection[]>()
-  const dependencyCounts = new Map<string, Seen<IssueDependencyCounts>[]>()
+  const dependencyCountsOf = new Map<string, Seen<IssueDependencyCounts>>()
+  const offer = <T>(best: Map<string, Seen<T>>, key: string, t: string, source: number, observer: string, value: () => T) => {
+    const held = best.get(key)
+    if (!held || replaces(held, t, source, observer)) best.set(key, { t, source, observer, value: value() })
+  }
 
   const fact = (key: string, t: string, source: number, observer: string, v: IssueRelative, withCounts: boolean) => {
     if (suppressed(key, t)) return
-    const { repo, number, title, state, state_reason } = v
-    push(facts, key, { t, source, observer, value: { repo, number, title, state, state_reason } })
-    if (withCounts && v.children_total !== undefined && v.children_completed !== undefined) {
-      push(counts, key, { t, source, observer, value: { total: v.children_total, completed: v.children_completed } })
-    }
+    offer(factsOf, key, t, source, observer, () => {
+      const { repo, number, title, state, state_reason } = v
+      return { repo, number, title, state, state_reason }
+    })
+    const { children_total: total, children_completed: completed } = v
+    if (withCounts && total !== undefined && completed !== undefined) offer(countsOf, key, t, source, observer, () => ({ total, completed }))
   }
   // A claim naming a parent GitHub has since refused is not dropped but made
   // UNKNOWN: it still outranks every older claim, so a refuted parent can never
@@ -307,7 +322,7 @@ export function buildIssueGraph(
     const side = (list: IssueDependencyList): DependencySide => {
       const listed = new Set<string>()
       for (const issue of list.list) {
-        const key = issueKey(issue.repo, issue.number)
+        const key = keyOf(issue.repo, issue.number)
         if (!key || key === root || listed.has(key)) continue
         listed.add(key)
         fact(key, t, LISTED, observer, issue, false)
@@ -320,16 +335,16 @@ export function buildIssueGraph(
     if (suppressed(root, t)) return
     push(sections, root, { t, blockedBy, blocking })
     const { blocked_by: by, blocking: to } = deps
-    push(dependencyCounts, root, { t, source: OWN, observer, value: {
+    offer(dependencyCountsOf, root, t, OWN, observer, () => ({
       blocked_by_open: by.open, blocked_by_total: by.total, blocking_open: to.open, blocking_total: to.total,
-    } })
+    }))
   }
 
   for (const { key: observer, row } of rows) {
     const snap = row.snapshot
     const t = row.fetched_at
     if (!snap || !t) continue
-    const root = issueKey(snap.issue.repo, snap.issue.number)
+    const root = keyOf(snap.issue.repo, snap.issue.number)
     if (!root) continue
     // Rule 8: GitHub followed a repository redirect; file under its answer.
     if (root !== observer) aliasOf.set(observer, root)
@@ -340,9 +355,8 @@ export function buildIssueGraph(
     if (row.dependencies?.status === 'ok') section(root, t, observer, row.dependencies)
     // An unavailable hierarchy section yields no observations at all.
     if (snap.hierarchy.status !== 'ok') continue
-    if (!suppressed(root, t)) {
-      push(counts, root, { t, source: OWN, observer, value: { total: snap.hierarchy.total, completed: snap.hierarchy.completed } })
-    }
+    const { total, completed } = snap.hierarchy
+    if (!suppressed(root, t)) offer(countsOf, root, t, OWN, observer, () => ({ total, completed }))
 
     // Pointers up the walk, which stops at its first repeated issue. Its last
     // issue's parent is known only when the walk reached the top.
@@ -350,7 +364,7 @@ export function buildIssueGraph(
     let below = root
     let whole = true
     for (const [level, ancestor] of snap.ancestors.entries()) {
-      const key = issueKey(ancestor.repo, ancestor.number)
+      const key = keyOf(ancestor.repo, ancestor.number)
       if (!key || walked.has(key)) {
         whole = false
         break
@@ -367,7 +381,7 @@ export function buildIssueGraph(
     const children: string[] = []
     const members = new Set<string>()
     for (const child of snap.hierarchy.children) {
-      const key = issueKey(child.repo, child.number)
+      const key = keyOf(child.repo, child.number)
       if (!key || key === root || members.has(key)) continue
       members.add(key)
       children.push(key)
@@ -418,14 +432,15 @@ export function buildIssueGraph(
     for (const key of path) walk.set(key, 'done')
   }
 
-  // Slice 2 §6.1: each pair "from blocks to". Its positives, newest first: the
-  // dependent's own blocked_by naming the blocker, or the blocker's own
-  // blocking naming the dependent.
-  const positive = new Map<string, string>()
+  // Slice 2 §6.1: each pair "from blocks to", by its two ends. Its positives,
+  // newest first: the dependent's own blocked_by naming the blocker, or the
+  // blocker's own blocking naming the dependent.
+  const positive = new Map<string, Map<string, string>>()
   const assert = (from: string, to: string, t: string) => {
-    const id = pairId(from, to)
-    const held = positive.get(id)
-    if (held === undefined || t > held) positive.set(id, t)
+    let newest = positive.get(from)
+    if (!newest) positive.set(from, (newest = new Map()))
+    const held = newest.get(to)
+    if (held === undefined || t > held) newest.set(to, t)
   }
   for (const [root, seen] of sections) {
     for (const { t, blockedBy, blocking } of seen) {
@@ -433,47 +448,39 @@ export function buildIssueGraph(
       for (const to of blocking.listed) assert(root, to, t)
     }
   }
-  // Its negatives: a COMPLETE list of either end that omits the other. A
-  // truncated one says nothing about what it lacks.
-  const newestNegative = (from: string, to: string): string | undefined => {
-    let newest: string | undefined
-    const omits = (t: string, side: DependencySide, other: string) => {
-      if (side.complete && !side.listed.has(other) && (newest === undefined || t > newest)) newest = t
-    }
-    for (const { t, blockedBy } of sections.get(to) ?? []) omits(t, blockedBy, from)
-    for (const { t, blocking } of sections.get(from) ?? []) omits(t, blocking, to)
-    return newest
-  }
-  const blocks = new Map<string, string>()
+  // Each pair is decided on its own, so no order is needed here; only what is
+  // emitted is sorted, below.
+  const blocks: Pair[] = []
   const next = new Map<string, string[]>()
-  const blockersOf = new Map<string, string[]>()
-  const dependentsOf = new Map<string, string[]>()
-  for (const [id, t] of [...positive].sort((a, b) => byKey(a[0], b[0]))) {
-    const [from, to] = pairEnds(id)
-    // Rule 6, both ends: nothing said at or before either end's hard failure
-    // counts. Only the newest positive needs the test: an older one never survives it.
-    if (suppressed(from, t) || suppressed(to, t)) continue
-    // The newest observation decides, and at equal t a negative wins.
-    const negative = newestNegative(from, to)
-    if (negative !== undefined && negative >= t) continue
-    blocks.set(id, t)
-    push(next, from, to)
-    push(blockersOf, to, from)
-    push(dependentsOf, from, to)
+  const blockersOf = new Map<string, Pair[]>()
+  const dependentsOf = new Map<string, Pair[]>()
+  for (const [from, newest] of positive) {
+    const blockerSections = sections.get(from) ?? NO_SECTIONS
+    for (const [to, t] of newest) {
+      // Rule 6, both ends: nothing said at or before either end's hard failure
+      // counts. Only the newest positive needs the test: an older one never survives it.
+      if (suppressed(from, t) || suppressed(to, t)) continue
+      // Its negatives: a COMPLETE list of either end that omits the other (a
+      // truncated one says nothing about what it lacks). The newest
+      // observation decides, and at equal t a negative wins. '' is none.
+      let negative = ''
+      for (const own of sections.get(to) ?? NO_SECTIONS) {
+        if (own.blockedBy.complete && !own.blockedBy.listed.has(from) && own.t > negative) negative = own.t
+      }
+      for (const own of blockerSections) {
+        if (own.blocking.complete && !own.blocking.listed.has(to) && own.t > negative) negative = own.t
+      }
+      if (negative >= t) continue
+      const pair = { from, to, t }
+      blocks.push(pair)
+      push(next, from, to)
+      push(blockersOf, to, pair)
+      push(dependentsOf, from, pair)
+    }
   }
   // A cycle is GitHub's data: every edge inside a strongly connected component keeps it.
   const component = components(next)
-  const circular = (id: string): boolean => {
-    const [from, to] = pairEnds(id)
-    return component.get(from) === component.get(to)
-  }
-
-  const factsOf = new Map<string, Seen<IssueFacts>>()
-  for (const [key, seen] of facts) factsOf.set(key, seen.reduce(fresher))
-  const countsOf = new Map<string, Seen<Counts>>()
-  for (const [key, seen] of counts) countsOf.set(key, seen.reduce(fresher))
-  const dependencyCountsOf = new Map<string, Seen<IssueDependencyCounts>>()
-  for (const [key, seen] of dependencyCounts) dependencyCountsOf.set(key, seen.reduce(fresher))
+  const circular = (pair: Pair): boolean => component.get(pair.from) === component.get(pair.to)
 
   // Rule 4: a parent's children take the order of its own freshest list, and
   // accepted children that list lacks follow by key.
@@ -513,8 +520,8 @@ export function buildIssueGraph(
     const node = aliasOf.get(key) ?? key
     const display = keySets.display.get(key)!
     // slice 2: its blockers, then its dependents, by key, as §6.3 fills them
-    const blockers = (blockersOf.get(node) ?? []).filter((other) => factsOf.has(other)).sort(byKey)
-    const dependents = (dependentsOf.get(node) ?? []).filter((other) => factsOf.has(other)).sort(byKey)
+    const blockers = (blockersOf.get(node) ?? []).filter((pair) => factsOf.has(pair.from)).sort((a, b) => byKey(a.from, b.from))
+    const dependents = (dependentsOf.get(node) ?? []).filter((pair) => factsOf.has(pair.to)).sort((a, b) => byKey(a.to, b.to))
     return {
       key, node, row,
       refresh: display.refresh,
@@ -522,8 +529,8 @@ export function buildIssueGraph(
       hasNode: factsOf.has(node),
       ancestors: ancestorsOf(node),
       children: (ordered.get(node) ?? []).filter((child) => factsOf.has(child)),
-      neighbours: [...blockers, ...dependents],
-      blocks: [...blockers.map((from) => pairId(from, node)), ...dependents.map((to) => pairId(node, to))],
+      neighbours: [...blockers.map((pair) => pair.from), ...dependents.map((pair) => pair.to)],
+      blocks: [...blockers, ...dependents],
     }
   })
   roots.sort((a, b) =>
@@ -593,20 +600,19 @@ export function buildIssueGraph(
   // edge budget leaves after containment: round-robin across the kept roots in
   // rank order (each root's blockers, then its dependents, by key), then any
   // other edge between emitted nodes, by key. Every one cut is counted.
-  const emitted = new Set<string>()
+  const emitted = new Set<Pair>()
   let edgeBudget = maxEdges - containedKeys.length
-  const between = (id: string) => {
-    const [from, to] = pairEnds(id)
-    return kept.has(from) && kept.has(to)
-  }
-  const emit = (id: string) => {
-    emitted.add(id)
+  const between = (pair: Pair) => kept.has(pair.from) && kept.has(pair.to)
+  const emit = (pair: Pair) => {
+    emitted.add(pair)
     edgeBudget--
   }
   const edgesSpent = () => edgeBudget <= 0
-  roundRobin(keptRoots.map((root) => root.blocks.filter(between)), (id) => emitted.has(id), emit, edgesSpent)
-  roundRobin([[...blocks.keys()].filter(between)], (id) => emitted.has(id), emit, edgesSpent)
-  truncated.edges += blocks.size - emitted.size
+  const done = (pair: Pair) => emitted.has(pair)
+  roundRobin(keptRoots.map((root) => root.blocks.filter(between)), done, emit, edgesSpent)
+  // only what the round-robin left needs an order of its own
+  if (!edgesSpent()) roundRobin([blocks.filter((pair) => !emitted.has(pair) && between(pair)).sort(byEnds)], done, emit, edgesSpent)
+  truncated.edges += blocks.length - emitted.size
 
   const nodes: IssueGraphNode[] = [...kept].sort(byKey).map((key) => {
     const seen = factsOf.get(key)!
@@ -624,10 +630,9 @@ export function buildIssueGraph(
   const contained: IssueContainsEdge[] = containedKeys
     .map((key) => ({ kind: 'contains' as const, from: accepted.get(key)!.parent, to: key, position: positionOf.get(key)!, observed_at: accepted.get(key)!.t }))
     .sort((a, b) => byKey(a.from, b.from) || a.position - b.position)
-  const blocking: IssueBlocksEdge[] = [...emitted].sort(byKey).map((id) => {
-    const [from, to] = pairEnds(id)
-    return { kind: 'blocks' as const, from, to, observed_at: blocks.get(id)!, ...(circular(id) ? { cycle: true as const } : {}) }
-  })
+  const blocking: IssueBlocksEdge[] = [...emitted].sort(byEnds).map((pair) => ({
+    kind: 'blocks' as const, from: pair.from, to: pair.to, observed_at: pair.t, ...(circular(pair) ? { cycle: true as const } : {}),
+  }))
   const aliases: Record<string, string> = {}
   const keptByKey = [...keptRoots].sort((a, b) => byKey(a.key, b.key))
   for (const root of keptByKey) if (root.node !== root.key) aliases[root.key] = root.node
@@ -645,7 +650,7 @@ export function buildIssueGraph(
       hierarchy: root.row.snapshot?.hierarchy.status ?? null,
       dependencies: root.row.snapshot ? root.row.dependencies?.status ?? 'unknown' : null,
       children_omitted: root.children.filter((key) => !kept.has(key)).length,
-      dependencies_omitted: root.blocks.filter((id) => !emitted.has(id)).length,
+      dependencies_omitted: root.blocks.filter((pair) => !emitted.has(pair)).length,
     })),
     aliases,
     truncated,

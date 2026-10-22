@@ -386,6 +386,22 @@ doing about it. A step filed under a different parent issue says "Part of #200",
 sub-issues of the plan's issue that no step covers sit in a "Not in this plan" fold,
 and a loop says "Circular dependency".
 
+## Links in cards
+
+Agent text links GitHub references (`#287`, `PR #284`, `owner/name#12`) and local
+files written as absolute paths (`/Users/…/spec.md` or `~/notes.md`, optionally with
+`:line`), as well as web addresses. Every open card lists its links in a **Links**
+strip under its title: the item's own PR and issue first, then the rest in the order
+they appear, each once. More than six fold into **+N more**.
+
+Detection is cautious, so some things that could be links stay text: a single-digit
+`#N` needs `issue`, `PR` or a word such as `Fixes` before it, and relative paths,
+paths with spaces and routes such as `/api/items` never link.
+
+In the desktop app a web link opens in your browser and a file in its default app.
+Folders, apps, scripts, installers and anything with an execute bit are only shown in
+Finder, never opened. In a browser tab, clicking a file link copies its path.
+
 ## Architecture
 
 - **`src/store.ts`** owns schema, migrations, WAL configuration, and every database
@@ -415,6 +431,11 @@ tracked in [issue #8](https://github.com/shariqh/agent-inbox/issues/8).
 
 Live pull-request state is optional and viewer-owned through the local `gh` CLI. It
 never enters the MCP server process or changes what counts as human attention.
+
+Links in agent text are opened only by the desktop app's main process, which accepts
+requests only from its own viewer window, opens only http and https addresses, and
+only reveals a folder, app, script, installer or executable file. A file link carries
+its path in a data attribute, never an `href`.
 
 ## Development
 

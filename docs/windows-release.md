@@ -27,7 +27,10 @@ against headers node-gyp would download. Neither file enters the runtime payload
 - The input contract pins Windows `10.0.17763` as the minimum OS version for later
   package acceptance; this layer's native evidence itself runs on Windows Server 2022.
 - The Electron app is packaged natively with a separate Electron-ABI
-  `better-sqlite3` rebuild. The packaged Electron runs the same allocation-driven SQLite
+  `better-sqlite3` rebuild, compiled from the lockfile-pinned source: the stage installs
+  with `npm ci --ignore-scripts` and `@electron/rebuild` runs with `buildFromSource`, so no
+  cached or downloaded prebuild can stand in for it (#315), and the workflow restores no
+  npm cache. The packaged Electron runs the same allocation-driven SQLite
   check in Node mode against its own addon and `dist/store.js`, and the packaged update
   verifier, trust boundary and key registry must match the source byte for byte. The
   folder never checks for or installs updates: Electron enables the updater only on

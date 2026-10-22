@@ -51,6 +51,9 @@ describe('native Windows x64 folder foundation', () => {
 
     expect(build).toContain("platform: 'win32'")
     expect(build).toContain("'--runtime-key', key")
+    // The stage installs and compiles only through the hardened step (#315).
+    expect(build).toContain('await installAppDependencies({')
+    expect(build).not.toMatch(/'ci', '--omit=dev'|await rebuild\(|@electron\/rebuild/)
     expect(build).toContain("icon: join(repoRoot, 'electron', 'icon.ico')")
     expect(build).not.toMatch(/WiX|Squirrel|electron-forge|portable\.zip/i)
     expect(verify).toContain("reason !== 'unsupported-platform'")
@@ -194,3 +197,4 @@ describe('verified Node headers for native Windows staging (#135)', () => {
     expect(f.requested).toEqual([])
   })
 })
+

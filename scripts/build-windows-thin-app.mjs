@@ -15,7 +15,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 import { packager } from '@electron/packager'
-import { rebuild } from '@electron/rebuild'
+import { installAppDependencies } from './app-dependencies.mjs'
 import {
   APP_NAME,
   copyRequiredTree,
@@ -126,22 +126,16 @@ export async function buildWindowsThinApp({
     copyRequiredTree(repoRoot, stageRoot)
     copyTreePreservingMode(runtime, join(stageRoot, 'runtime', key))
 
-    execFileSync(process.execPath, [npmCli, 'ci', '--omit=dev', '--no-audit', '--no-fund'], {
-      cwd: stageRoot,
+    await installAppDependencies({
+      stageRoot,
+      npmCli,
+      electronVersion: inputs.electron.version,
+      arch: 'x64',
       env: {
         ...process.env,
         npm_config_platform: 'win32',
         npm_config_arch: 'x64',
       },
-      stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: 10 * 60_000,
-    })
-    await rebuild({
-      buildPath: stageRoot,
-      electronVersion: inputs.electron.version,
-      arch: 'x64',
-      force: true,
-      onlyModules: ['better-sqlite3'],
     })
     pruneNativeAddonBuildArtifacts(stageRoot)
     execFileSync(process.execPath, [

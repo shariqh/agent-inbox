@@ -15,6 +15,8 @@ describe('native Windows folder workflow', () => {
     expect(workflow).toContain('permissions:\n  contents: read')
     expect(workflow).not.toContain('secrets.')
     expect(workflow).not.toContain('contents: write')
+    // No restored npm cache: prebuild-install trusts whatever <cache>/_prebuilds holds (#315).
+    expect(workflow).not.toMatch(/^\s*cache:/m)
     expect(workflow).not.toMatch(/gh release|release create|release upload/)
   })
 

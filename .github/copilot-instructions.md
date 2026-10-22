@@ -231,7 +231,10 @@ Run the build before `npm run electron`; the development shell starts the built
   `next_after` says what follows. decision/approval carries 2-4 `options`; task
   omits them so the viewer offers "I've done my part." Long history belongs in
   collapsed `context`.
-- Snoozed work leaves badge attention but remains in the explicit snoozed fold.
+- Snoozed and pinned work (#247) leaves badge attention but remains in the explicit
+  snoozed and pinned folds (`laterEntries`, tagged by reason; a pin wins). Every
+  deferral goes through `deferAsk`: an ask that holds a draft opens its fold and
+  keeps the open card, so a draft that pauses the list is never hidden.
   Clarify/decline are response kinds, not outcomes. `board_advance` is the only
   same-row chain operation: it CAS-pins row `revision`, archives the prior step,
   and clears human/delivery state atomically. Agent reads get `history_count`, not
@@ -272,7 +275,9 @@ Run the build before `npm run electron`; the development shell starts the built
   `clear_row_pin_when_ask_ends` and `clear_item_pin_when_ask_ends` clear it when
   the ask is answered, closed or unblocked, or a new action starts, so an older
   server's writes cannot carry it over. A pin and a snooze with a time replace
-  each other.
+  each other. The attention predicate drops a pinned ask, and Electron's
+  notification `known` set keeps pinned asks (`knownNotificationIds`), so
+  bringing one back is never announced as new.
 - Keep network access out of the MCP process. Repository/branch identity is
   inferred locally; live PR and issue state is fetched only by the viewer's `gh`
   pollers (`src/prstate.ts`, `src/issue-poller.ts`).

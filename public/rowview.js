@@ -114,6 +114,18 @@ export function rowPickup(row) {
   return { pickedUp: true, pickedUpAt: latest.at, pickedUpBy: latest.by }
 }
 
+// Issue #247: why a deferred ask is out of the queue, for its reason chip. Only
+// a Copilot asker runs the #217 watcher a quiet deferral talks about, so any
+// other asker's stored deferral claims nothing (waitStopEl's rule).
+function deferral(entry, entity) {
+  const quiet = entity.action_agent === 'copilot' && entity.watch_stopped_at && entity.watch_stopped_until
+  return {
+    later: entry.later ?? null,
+    pinnedAt: entity.pinned_at ?? null,
+    quietUntil: quiet ? entity.watch_stopped_until : null,
+  }
+}
+
 export function rowModel(entry, {
   streams = new Map(),
   agents = new Map(),
@@ -140,6 +152,7 @@ export function rowModel(entry, {
       created_at: null,
       askedAt: currentAskAt(entry),
       snoozedUntil: row.snoozed_until ?? null,
+      ...deferral(entry, row),
       ownerLabel: actionOwnerLabel(row),
       actionCategory: actionCategory(row),
       changeKind: changeKind(row, lastVisitAt),
@@ -177,6 +190,7 @@ export function rowModel(entry, {
     created_at: it.created_at,
     askedAt: currentAskAt(entry),
     snoozedUntil: it.snoozed_until ?? null,
+    ...deferral(entry, it),
     ownerLabel: actionOwnerLabel(it),
     actionCategory: actionCategory(it),
     changeKind: changeKind(it, lastVisitAt),
@@ -202,10 +216,17 @@ export function rowModel(entry, {
 }
 
 // One time vocabulary shared with the Live freshness dots (§6) — never a raw
-// age ramp: only a live asking session earns heat.
+// age ramp: only a live asking session earns heat. A deferred ask (#247) shows
+// its reason instead: when it was pinned, or when its snooze brings it back.
 export function urgencyChip(model, nowMs) {
-  if (model.liveness === 'snoozed' && model.snoozedUntil) {
-    return { text: `snoozed ${relMs(Date.parse(model.snoozedUntil) - nowMs)}`, tone: 'muted' }
+  if (model.liveness === 'later') {
+    if (model.later === 'pinned') {
+      const at = Date.parse(model.pinnedAt ?? '')
+      return { text: Number.isFinite(at) ? `Pinned ${relMs(Math.max(0, nowMs - at))} ago` : 'Pinned', tone: 'muted' }
+    }
+    const back = `Back in ${relMs(Date.parse(model.snoozedUntil) - nowMs)}`
+    const quiet = Date.parse(model.quietUntil ?? '') > nowMs
+    return { text: quiet ? `${back} · agent waits quietly` : back, tone: 'muted' }
   }
   if (model.kind === 'row') {
     // #37: a blocked row that the human has ANSWERED must stop reading "you

@@ -124,6 +124,14 @@ export function freshAttentionNotifications(
   notifications: AttentionNotification[],
 ): AttentionNotification[]
 
+type NotifiableEntry = Parameters<typeof attentionNotification>[0]
+
+/** Issue #247 — the ids already announced: attention plus the asks pinned for later. */
+export function knownNotificationIds(
+  attention: NotifiableEntry[],
+  later: Array<NotifiableEntry & { later: 'snoozed' | 'pinned' }> | null | undefined,
+): Set<string>
+
 export function responseTargets(grouped: unknown, boards: unknown[]): ResponseTarget[]
 
 export function createResponseWatch(options?: {

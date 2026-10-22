@@ -1458,3 +1458,205 @@ describe('pin for later (#247)', () => {
     expect(listPending(db, 'p')).toEqual([expect.objectContaining({ id, pinned_at: at(0) })])
   })
 })
+
+// Issue #247 §5.4 — with the Later section on, "I'll take a while" also defers
+// the ask in the inbox, in the same write: "Stop waiting" pins it, and "Back
+// in …" snoozes it to the same time. One IMMEDIATE transaction applies both
+// halves or neither, and each half keeps its own semantics: the watch stop
+// stays #217's (not content, final once for good), the pin stays a pin (not
+// content), and the snooze is exactly the More-responses snooze.
+describe('the coupled "I’ll take a while" write (#247)', () => {
+  let db: Database.Database
+  const T0 = Date.parse('2026-10-21T12:00:00.000Z')
+  const at = (minutes: number) => new Date(T0 + minutes * 60_000).toISOString()
+  const clock = (minutes: number) => vi.setSystemTime(T0 + minutes * 60_000)
+  const DEFER = { defer: true }
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    clock(0)
+    db = freshDb()
+  })
+  afterEach(() => {
+    db.close()
+    vi.useRealTimers()
+  })
+
+  const question = (title = 'Choose', kind: 'question' | 'note' = 'question') =>
+    insertItem(db, { project: 'p', stream: '', agent: 'copilot', kind, title })
+  const ask = (label: string) => ({
+    label, status: 'blocked' as const, note: 'Upload the build.', next_step: 'Upload it.', action_owner: 'task' as const, impact: 'Ships it.',
+  })
+  const plan = (title: string, ...labels: string[]) =>
+    upsertBoard(db, { project: 'p', stream: '', agent: 'copilot', title, rows: labels.map(ask) })
+  const current = (title = 'B', label = 'Upload') => {
+    const board = getBoardByTitle(db, 'p', title)!
+    return { board, row: board.rows.find((row) => row.label === label)! }
+  }
+  const stopRow = (until: string | null, opts?: { defer?: boolean }, title = 'B', label = 'Upload') => {
+    const { board, row } = current(title, label)
+    return stopBoardRowWatch(db, row.id, until, row.revision, board.revision, opts)
+  }
+  const withoutIdentity = <T extends { id: string }>({ id: _id, ...rest }: T) => rest
+
+  it('"Stop waiting" stops a question’s watcher for good and pins it, moving no content stamp or response version', () => {
+    const id = question()
+    clock(5)
+    const before = getItem(db, id)!
+    expect(stopItemWatch(db, id, null, DEFER)).toBe(true)
+    expect(getItem(db, id)).toEqual({ ...before, watch_stopped_at: at(5), watch_stopped_until: null, pinned_at: at(5) })
+  })
+
+  it('"Back in …" makes a question’s watcher wait quietly and snoozes it exactly as More responses would', () => {
+    const coupled = question()
+    const separate = question()
+    expect(pinItem(db, coupled, true)).toBe(true)
+    expect(pinItem(db, separate, true)).toBe(true)
+    clock(5)
+    expect(stopItemWatch(db, coupled, at(65), DEFER)).toBe(true)
+    expect(stopItemWatch(db, separate, at(65))).toBe(true)
+    expect(snoozeItem(db, separate, at(65))).toBe(true)
+    const after = getItem(db, coupled)!
+    expect(after).toMatchObject({
+      watch_stopped_at: at(5), watch_stopped_until: at(65), snoozed_until: at(65), pinned_at: null, updated_at: at(5),
+    })
+    expect(withoutIdentity(after)).toEqual(withoutIdentity(getItem(db, separate)!))
+  })
+
+  it('without defer it is the #217 watch stop alone', () => {
+    const id = question()
+    clock(5)
+    const before = getItem(db, id)!
+    expect(stopItemWatch(db, id, at(65), { defer: false })).toBe(true)
+    expect(getItem(db, id)).toEqual({ ...before, watch_stopped_at: at(5), watch_stopped_until: at(65) })
+  })
+
+  it('refuses an answered, closed, informational, missing or stopped-for-good question, and applies neither half', () => {
+    const answered = question('answered')
+    replyItem(db, answered, 'Ship it')
+    const resolved = question('resolved')
+    resolveItem(db, resolved)
+    const note = question('note', 'note')
+    const stopped = question('stopped')
+    expect(stopItemWatch(db, stopped, null)).toBe(true)
+    const before = listItems(db)
+    clock(5)
+    for (const id of [answered, resolved, note, stopped, 'missing']) {
+      expect(stopItemWatch(db, id, null, DEFER), `${id} pin`).toBe(false)
+      expect(stopItemWatch(db, id, at(65), DEFER), `${id} snooze`).toBe(false)
+    }
+    expect(listItems(db)).toEqual(before)
+  })
+
+  // The watch stop accepts a question whose response kind has no words, as only
+  // an older or foreign writer leaves it; the pin does not. Neither half lands.
+  it('rolls the watch stop back when the pin half is refused', () => {
+    const id = question()
+    db.prepare(`UPDATE items SET reply_kind = 'decline' WHERE id = ?`).run(id)
+    const before = getItem(db, id)!
+    clock(5)
+    expect(stopItemWatch(db, id, null, DEFER)).toBe(false)
+    expect(getItem(db, id)).toEqual(before)
+    expect(stopItemWatch(db, id, null), 'the stop alone is still accepted').toBe(true)
+  })
+
+  it('"Stop waiting" stops a row’s watcher for good and pins it, moving neither revision nor a content stamp', () => {
+    plan('B', 'Upload')
+    const before = current()
+    clock(5)
+    expect(stopRow(null, DEFER)).toBe(true)
+    const after = current()
+    expect(after.row).toEqual({ ...before.row, watch_stopped_at: at(5), watch_stopped_until: null, pinned_at: at(5) })
+    expect(after.board).toMatchObject({ revision: before.board.revision, updated_at: before.board.updated_at })
+  })
+
+  it('"Back in …" makes a row’s watcher wait quietly and snoozes it exactly as More responses would', () => {
+    plan('A', 'Upload')
+    plan('B', 'Upload')
+    expect(pinBoardRow(db, current('A').row.id, true, current('A').row.revision, current('A').board.revision)).toBe(true)
+    expect(pinBoardRow(db, current('B').row.id, true, current('B').row.revision, current('B').board.revision)).toBe(true)
+    const before = { A: current('A'), B: current('B') }
+    clock(5)
+    expect(stopRow(at(65), DEFER, 'A')).toBe(true)
+    expect(stopRow(at(65), {}, 'B')).toBe(true)
+    const { board, row } = current('B')
+    expect(snoozeBoardRow(db, row.id, at(65), row.revision, board.revision)).toBe(true)
+
+    const coupled = current('A')
+    expect(coupled.row).toMatchObject({
+      watch_stopped_at: at(5), watch_stopped_until: at(65), snoozed_until: at(65), pinned_at: null,
+      revision: before.A.row.revision + 1, updated_at: at(5),
+    })
+    expect(coupled.board.revision).toBe(before.A.board.revision + 1)
+    expect(withoutIdentity(coupled.row)).toEqual(withoutIdentity(current('B').row))
+    expect(current('B').board.revision).toBe(before.B.board.revision + 1)
+  })
+
+  it('refuses stale pins and an answered, handled, unblocked, archived or stopped-for-good row, and applies neither half', () => {
+    plan('B', 'Upload', 'Answered', 'Handled', 'Moved on', 'Stopped')
+    annotateBoardRow(db, current('B', 'Answered').row.id, 'Uploaded')
+    markRowHandled(db, current('B', 'Handled').row.id)
+    updateBoardRow(db, { project: 'p', stream: '', agent: 'copilot', title: 'B', label: 'Moved on', status: 'partial' })
+    expect(stopRow(null, {}, 'B', 'Stopped')).toBe(true)
+    plan('Archived', 'Upload')
+    const archived = current('Archived')
+    expect(archiveBoard(db, archived.board.id, archived.board.revision)).toBe(true)
+    const before = [...listBoards(db), ...listBoards(db, { status: 'archived' })]
+    clock(5)
+
+    const { board, row } = current()
+    for (const until of [null, at(65)]) {
+      expect(stopBoardRowWatch(db, row.id, until, row.revision - 1, board.revision, DEFER), 'stale row').toBe(false)
+      expect(stopBoardRowWatch(db, row.id, until, row.revision, board.revision - 1, DEFER), 'stale board').toBe(false)
+      for (const label of ['Answered', 'Handled', 'Moved on', 'Stopped']) expect(stopRow(until, DEFER, 'B', label), label).toBe(false)
+      expect(stopRow(until, DEFER, 'Archived'), 'archived').toBe(false)
+      expect(stopBoardRowWatch(db, 'missing', until, 1, board.revision, DEFER), 'missing').toBe(false)
+    }
+    expect([...listBoards(db), ...listBoards(db, { status: 'archived' })]).toEqual(before)
+  })
+
+  // Neither half may outlive the other: a failure in the second half, here a
+  // trigger standing in for any SQLite error, undoes the first.
+  it.each<[string, string | null]>([
+    ['the pin', null],
+    ['the snooze', '2026-10-21T13:05:00.000Z'],
+  ])('rolls back the watch stop when %s fails', (_label, until) => {
+    const id = question()
+    plan('B', 'Upload')
+    const before = { item: getItem(db, id)!, boards: listBoards(db) }
+    db.exec(`CREATE TEMP TRIGGER fail_item_deferral BEFORE UPDATE OF snoozed_until ON items
+               BEGIN SELECT RAISE(ABORT, 'deferral failed'); END;
+             CREATE TEMP TRIGGER fail_row_deferral BEFORE UPDATE OF snoozed_until ON board_rows
+               BEGIN SELECT RAISE(ABORT, 'deferral failed'); END;`)
+    clock(5)
+    expect(() => stopItemWatch(db, id, until, DEFER)).toThrow('deferral failed')
+    expect(() => stopRow(until, DEFER)).toThrow('deferral failed')
+    expect(getItem(db, id)).toEqual(before.item)
+    expect(listBoards(db)).toEqual(before.boards)
+    expect(db.inTransaction).toBe(false)
+  })
+
+  it('leaves both halves to the triggers: a new action, an answer or a closure ends the deferral and the stop', () => {
+    plan('B', 'Upload', 'Docs')
+    expect(stopRow(null, DEFER)).toBe(true)
+    expect(stopRow(at(65), DEFER, 'B', 'Docs')).toBe(true)
+    expect(current('B', 'Upload').row).toMatchObject({ watch_stopped_at: at(0), pinned_at: at(0) })
+    expect(current('B', 'Docs').row).toMatchObject({ watch_stopped_until: at(65), snoozed_until: at(65) })
+    for (const label of ['Upload', 'Docs']) {
+      const { board, row } = current('B', label)
+      expect(advanceBoardRow(db, {
+        project: 'p', title: 'B', label, expectedBoardVersion: board.revision, expectedRevision: row.revision,
+        note: 'The notarized build is ready.', next_step: 'Upload it.', action_owner: 'task', impact: 'Ships it.',
+      })).toMatchObject({ ok: true, action_version: 2 })
+      expect(current('B', label).row, label).toMatchObject({
+        watch_stopped_at: null, watch_stopped_until: null, pinned_at: null, snoozed_until: null,
+      })
+    }
+
+    const answered = question()
+    expect(stopItemWatch(db, answered, null, DEFER)).toBe(true)
+    expect(getItem(db, answered)!.pinned_at).toBe(at(0))
+    replyItem(db, answered, 'Ship it')
+    expect(getItem(db, answered)!.pinned_at).toBeNull()
+  })
+})

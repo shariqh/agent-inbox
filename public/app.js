@@ -16,9 +16,9 @@ import {
 } from '/poll.js'
 import { createStagedSend } from '/star.js'
 import {
-  ageChip, agentCounts, handledUndoRefusal, needsYouEntries, relMs, repliedEntries, rowModel,
+  ageChip, agentCounts, handledUndoRefusal, laterBreakdown, needsYouEntries, relMs, repliedEntries, rowModel,
   rowPickup, rowStarOption, stagedLabel, staleFoldLabel, streamCounts, undoRefusal, urgencyChip,
-  ASK_SORT_OPTIONS, askTimeModel, sortNeedsYouByAsk,
+  ASK_SORT_OPTIONS, askTimeModel, sortLaterEntries, sortNeedsYouByAsk,
 } from '/rowview.js'
 import { cardSections, optionOrder, actionPresentation } from '/card.js'
 import { keyAction, rovingIndex, ariaAnswerLabel, livenessGlyph, deckEntryAt } from '/keys.js'
@@ -151,6 +151,16 @@ function savedAskSort() {
   const stored = localStorage.getItem(DEFAULT_SORT_KEY)
   return ASK_SORT_OPTIONS.some((option) => option.value === stored) ? stored : 'priority'
 }
+
+// The Later section (#247) is saved the same way and for the same reason: it
+// only lays out the queue (pinned and snoozed asks in one section at its foot,
+// or in separate snoozed and pinned folds) and never changes what counts. The
+// dock badge is computed in Electron main, which cannot read this storage, so
+// a preference that changed attention would make the two badges disagree. On
+// by default; any value but 'false' reads as on.
+const LATER_SECTION_KEY = 'agent-inbox-later-section'
+const savedLaterSection = () => localStorage.getItem(LATER_SECTION_KEY) !== 'false'
+let laterSection = savedLaterSection()
 
 // Grouping plans by their GitHub parent (#103 slice 2 §7) is saved the same way
 // and for the same reason: it reorders plans and never hides one. Off by
@@ -1123,7 +1133,17 @@ function searchResultContent(option, result) {
   const context = document.createElement('span')
   context.className = 'search-result-context'
   context.textContent = result.context
-  option.append(title, kind)
+  if (result.later) {
+    const tags = document.createElement('span')
+    tags.className = 'search-result-tags'
+    const chip = document.createElement('span')
+    chip.className = 'search-result-later'
+    chip.textContent = 'Later'
+    tags.append(chip, kind)
+    option.append(title, tags)
+  } else {
+    option.append(title, kind)
+  }
   if (result.match) {
     const match = document.createElement('span')
     match.className = 'search-result-match'
@@ -1266,6 +1286,18 @@ function searchStatusText(results, query) {
     : `No results for ${query}`
 }
 
+// #247 §2.2: a question set aside in Later is still an open item, and search
+// keeps finding it there; with the Later section on, its result says where it
+// waits. Marked here, beside the clock, so the result signature changes when a
+// snooze ends.
+function markLaterResults(results) {
+  if (!laterSection || !results.length) return results
+  const later = new Set(laterEntries(allItems(lastData.g), [], Date.now(), closedSet()).map((entry) => entry.item.id))
+  return results.map((result) => (
+    result.section === 'open' && later.has(result.targetId) ? { ...result, later: true } : result
+  ))
+}
+
 function renderSearchResults() {
   const { input, results, status } = searchElements()
   if (!input || !results) return
@@ -1289,7 +1321,7 @@ function renderSearchResults() {
   searchAwaitingHistory = false
   const previousActiveKey = searchResultCache[searchActiveIndex]?.key
   const previousResults = searchResultCache
-  const nextResults = buildSearchResults(lastData, query, fuzzySearch)
+  const nextResults = markLaterResults(buildSearchResults(lastData, query, fuzzySearch))
   const nextSignature = JSON.stringify([query, nextResults])
   if (!results.hidden && searchResultSignature === nextSignature) {
     searchResultCache = nextResults
@@ -1918,6 +1950,7 @@ function paintAmbient() {
   renderLiveBar(lastData.activity ?? [])    // collapsed strip — GLOBAL, never scoped (§7 filter-blindness, generalized)
   renderDashboardAmbient(dashboard)
   paintTabCounts(g, boards)
+  paintLaterSectionHint()
   return { agents, g, boards, archived, live, dashboard }
 }
 
@@ -2274,8 +2307,9 @@ const openContexts = new Set()
 const HANDLED_LABEL = 'I’ve done my part'
 const UNHANDLED_LABEL = 'Not done after all'
 
-// `onPin` is passed only for an unanswered ask that is not pinned yet (#247):
-// the pin is offered first, above the snooze choices it replaces.
+// `onPin` is passed only for an unanswered ask that is not pinned yet, and only
+// while the Later section is on (#247): the pin is offered first, above the
+// snooze choices it replaces.
 function dispositionEl(onResponse, onSnooze, key, onPin = null) {
   const menu = document.createElement('details')
   menu.className = 'disposition-menu'
@@ -2291,7 +2325,7 @@ function dispositionEl(onResponse, onSnooze, key, onPin = null) {
   if (onPin) {
     const pin = btn('Pin for later', onPin)
     pin.className = 'disposition-btn'
-    pin.title = 'Set this aside with no return time; it waits in the pinned fold until you bring it back.'
+    pin.title = 'Set this aside with no return time; it waits in Later until you bring it back.'
     wrap.appendChild(pin)
   }
   const snooze = (label, ms) => {
@@ -2315,19 +2349,28 @@ function dispositionEl(onResponse, onSnooze, key, onPin = null) {
 }
 
 // The one write behind every deferral (#247): a snooze or a pin, of a question
-// or a plan row, from any card. The ask moves into a fold that starts closed,
-// and a draft left on it would sit there unseen while it pauses the list. So a
-// deferral that leaves a draft behind keeps it in view instead.
-async function deferAsk(entry, reason, url, body, { refusal = '', onSaved = null } = {}) {
+// or a plan row, from any card. An ask that holds a draft keeps (or takes) the
+// open card, and the fold that holds the open card always renders open
+// (renderNeedsYou), so the draft that pauses the list stays in view. Without a
+// draft the card closes (§2.1) and the ask waits in its closed fold.
+async function deferAsk(entry, url, body, { refusal = '', onSaved = null } = {}) {
   const ask = entryEntity(entry)
   const res = await postJSON(url, body)
   if (res === null) return
   if (refusal) showWriteError(ask.id, res.ok ? '' : refusal)
   if (res.ok) {
-    if (holdsDraft(ask.id)) keepDraftInView(entry, reason)
+    if (holdsDraft(ask.id)) keepDraftInView(entry)
+    else if (openRowId === ask.id) setOpenRow(null, { resume: false })
     onSaved?.()
   }
   await reloadAndPaint()
+}
+
+// #247 §2.3: with the Later section on, "I'll take a while" also defers the ask
+// in the same write: "Stop waiting" pins it and "Back in …" snoozes it to the
+// same time. Through deferAsk, so a drafted ask stays in view.
+function deferWaitStop(entry, url, until, pins, options) {
+  return deferAsk(entry, url, { until, defer: true, ...pins }, options)
 }
 
 // The test suspendState() applies: a draft is more than whitespace.
@@ -2336,11 +2379,17 @@ function holdsDraft(id) {
     .some((text) => String(text ?? '').trim() !== '')
 }
 
-// Open the deferred ask's fold and give it the open card, as opening its row
-// would. From the Review queue or a plan panel it was not the open card, and
-// those ignore the list's filters, so widen any filter that would hide it.
-function keepDraftInView(entry, reason) {
-  openDeferredFolds.add(reason)
+// Give the deferred ask the open card, as opening its row would; its fold then
+// renders open. From the Review queue or a plan panel it was not the open card,
+// and those ignore the list's filters, so widen any filter that would hide it.
+// A Review queue opened with `t` on another tab would return there when it
+// closes, so the Inbox becomes the visible tab and the queue returns to its
+// Review queue button instead; nothing is focused now.
+function keepDraftInView(entry) {
+  if (triageDeck && activeTab !== 'needsYou') {
+    selectTab('needsYou', { paint: false })
+    triageReturnFocus = { kind: 'triageButton' }
+  }
   const ask = entryEntity(entry)
   if (openRowId === ask.id) return
   const owner = entry.kind === 'row' ? entry.board : entry.item
@@ -2358,10 +2407,12 @@ function keepDraftInView(entry, reason) {
 // watcher this stops, and only one whose server records who raised the ask
 // (`action_agent`) runs a watcher that honours it — so the control follows THIS
 // ask's asker, never the board's last writer, and an unknown asker draws
-// nothing rather than a guess. It never touches attention: the ask stays in
-// Needs you unless the human also snoozes it. A stop for good is final (the
-// watcher has already exited), so it renders as a reminder, not a control, and
-// the reminder outlives the answer until an agent has picked that answer up.
+// nothing rather than a guess. With the Later section off it never touches
+// attention: the ask stays in Needs you unless the human also snoozes it. With
+// it on (#247), the same write also defers the ask (deferWaitStop). A stop for
+// good is final (the watcher has already exited), so it renders as a reminder,
+// not a control, and the reminder outlives the answer until an agent has
+// picked that answer up.
 const WAIT_STOP_DEFERRALS = [
   ['Back in ~1 h', 60 * 60_000],
   ['Back in ~3 h', 3 * 60 * 60_000],
@@ -2403,9 +2454,13 @@ function waitStopEl(ask, { answered = false, pickedUp = false, key = '', onStop 
     button.title = title
     actions.appendChild(button)
   }
-  choice('Stop waiting', 'The agent stops waiting and won’t wake on its own; message it after you answer.', () => null)
+  choice('Stop waiting', laterSection
+    ? 'The agent stops waiting. The ask moves to Later until you bring it back.'
+    : 'The agent stops waiting and won’t wake on its own; message it after you answer.', () => null)
   for (const [label, ms] of WAIT_STOP_DEFERRALS) {
-    choice(label, 'The agent waits quietly until then; answering still wakes it.', () => new Date(Date.now() + ms).toISOString())
+    choice(label, laterSection
+      ? 'The agent waits quietly and the ask waits in Later until then. Answering still wakes the agent.'
+      : 'The agent waits quietly until then; answering still wakes it.', () => new Date(Date.now() + ms).toISOString())
   }
   menu.append(summary, actions)
   wrap.appendChild(menu)
@@ -2695,15 +2750,13 @@ function rowAnswerEl(b, r, onSaved) {
       },
       (until) => deferAsk(
         { kind: 'row', row: r, board: b },
-        'snoozed',
         `/api/boards/${b.id}/rows/${r.id}/snooze`,
         { until, expected_revision: r.revision, expected_board_version: b.revision },
         { onSaved },
       ),
       `row:${r.id}`,
-      r.pinned_at ? null : () => deferAsk(
+      r.pinned_at || !laterSection ? null : () => deferAsk(
         { kind: 'row', row: r, board: b },
-        'pinned',
         `/api/boards/${b.id}/rows/${r.id}/later`,
         { pinned: true, expected_revision: r.revision, expected_board_version: b.revision },
         { onSaved, refusal: 'This action changed before your click; refreshed without applying it.' },
@@ -2712,13 +2765,16 @@ function rowAnswerEl(b, r, onSaved) {
     const waitStop = waitStopEl(r, {
       key: `wait:row:${r.id}`,
       onStop: async (until) => {
-        const res = await postJSON(`/api/boards/${b.id}/rows/${r.id}/stop-waiting`, {
-          until,
-          expected_revision: r.revision,
-          expected_board_version: b.revision,
-        })
+        const url = `/api/boards/${b.id}/rows/${r.id}/stop-waiting`
+        const pins = { expected_revision: r.revision, expected_board_version: b.revision }
+        const refusal = 'This action changed before your click; refreshed without applying it.'
+        if (laterSection) {
+          await deferWaitStop({ kind: 'row', row: r, board: b }, url, until, pins, { refusal, onSaved })
+          return
+        }
+        const res = await postJSON(url, { until, ...pins })
         if (res === null) return
-        showWriteError(r.id, res.ok ? '' : 'This action changed before your click; refreshed without applying it.')
+        showWriteError(r.id, res.ok ? '' : refusal)
         await reloadAndPaint()
       },
     })
@@ -4857,11 +4913,16 @@ function renderNeedsYouExtras(host, notes) {
   host.appendChild(chip)
 }
 
-// the calm state: no red, no call to action, ambient counts as discrete chips
-function renderEmptyState(host) {
+// the calm state: no red, no call to action, ambient counts as discrete chips.
+// With the Later section on (#247) it names what waits there, so nothing is out
+// of view without a number on screen.
+function renderEmptyState(host, laterCount = 0) {
   const panel = document.createElement('div')
   panel.className = 'calm-panel'
-  panel.innerHTML = '<div class="calm-head">Your queue is clear</div>'
+  const head = document.createElement('div')
+  head.className = 'calm-head'
+  head.textContent = laterCount ? `Nothing needs you now · ${laterCount} in Later` : 'Your queue is clear'
+  panel.appendChild(head)
   // the unread-note count already has its own actionable footer button
   // (renderNeedsYouExtras' .notes-chip) — an inert duplicate here is one
   // number shown twice for the same fact.
@@ -4921,12 +4982,9 @@ function renderNeedsYou(g, boardsInView, nowMs) {
   // land in sortNeedsYou's bucket 3 — the same dimmed foot, one ordering rule.
   const replied = repliedEntries(items, nowMs, live)
   const awaiting = awaitingAgentRows(boardsInView, closedSet())
-  // #247: deferred asks, one fold per reason (snoozed, then pinned).
-  const later = laterEntries(items, boardsInView, nowMs, closedSet())
-  const deferred = DEFERRED_FOLDS.map((reason) => [
-    reason,
-    sortDeferredEntries(filterActionEntries(later.filter((entry) => entry.later === reason))),
-  ])
+  // #247: deferred asks, in the Later section or, with it off, one fold per
+  // reason (snoozed, then pinned). Either way they follow the current lens.
+  const later = filterActionEntries(laterEntries(items, boardsInView, nowMs, closedSet()))
   const unordered = filterActionEntries(needsYouEntries(items, boardsInView, nowMs, live, [...replied, ...awaiting]))
   // §10: pin existing order BEFORE paginating. New arrivals append at the foot,
   // so they appear live without moving the row the human is reading.
@@ -4949,13 +5007,27 @@ function renderNeedsYou(g, boardsInView, nowMs) {
   replaceNeedsYouBody(host, header)
   if (!entries.length) {
     // A demoted stale item is, by definition, not something that needs you.
-    renderEmptyState(host)
+    renderEmptyState(host, laterSection ? later.length : 0)
   }
   for (const e of visible) host.appendChild(needsRowEl(rowModel(e, opts), e, nowMs))
   if (remaining > 0) host.appendChild(moreButton('needsYou', remaining))
-  for (const [reason, entries] of deferred) {
-    if (entries.length) host.appendChild(deferredFoldEl(reason, entries, opts, nowMs))
+  // #247: the fold (Later, snoozed, pinned or stale) that holds the open card
+  // always renders open, whatever moved its ask there (a deferral, the Later
+  // setting, another client, a native notification or the clock), so an open
+  // card and its draft are never inside a closed fold. The human closing that
+  // fold closes the card (closeCardIn).
+  const holdsOpenCard = (entries) => Boolean(openRowId) && entries.some((entry) => needsEntryId(entry) === openRowId)
+  if (laterSection) {
+    if (holdsOpenCard(later)) openDeferredFolds.add('later')
+    if (later.length) host.appendChild(laterSectionEl(sortLaterEntries(later), opts, nowMs))
+  } else {
+    for (const reason of DEFERRED_FOLDS) {
+      const deferred = sortDeferredEntries(later.filter((entry) => entry.later === reason))
+      if (holdsOpenCard(deferred)) openDeferredFolds.add(reason)
+      if (deferred.length) host.appendChild(deferredFoldEl(reason, deferred, opts, nowMs))
+    }
   }
+  if (holdsOpenCard(stale)) staleFoldOpen = true
   if (stale.length) host.appendChild(staleFoldEl(stale, opts, nowMs))
   renderOrphanedDrafts(host)
   // fix round 2 (I3): the foot chip is fed the SAME scoped notes the Notes tab
@@ -5092,7 +5164,9 @@ function renderOrphanedDrafts(host) {
 // re-collapses under the user mid-read
 let staleFoldOpen = false
 // The deferred folds under Needs you (#247), in render order, keyed by the
-// reason laterEntries tags each entry with, and the ones the human has open.
+// reason laterEntries tags each entry with, and the ones that are open: opened
+// by the human, a deep link, or because they hold the open card. The Later
+// section, which replaces them while its setting is on, is the key 'later'.
 const DEFERRED_FOLDS = ['snoozed', 'pinned']
 const openDeferredFolds = new Set()
 
@@ -5108,6 +5182,18 @@ function revealDetailsAncestors(target) {
   }
 }
 
+// A fold under the queue renders open while it holds the open card, so the
+// human closing one closes that card too; otherwise the next frame would open
+// the fold again under them. A draft in it is kept, as when any card is closed.
+function closeCardIn(fold) {
+  const row = openRowId ? needsYouRowEl(openRowId) : null
+  if (!row || !fold.contains(row)) return
+  setOpenRow(null, { resume: false })
+  row.removeAttribute('data-open')
+  row.setAttribute('aria-expanded', 'false')
+  row.querySelector('.nrow-card')?.remove()
+}
+
 // Asks the human set aside: out of every count, but one click away, each with
 // its own way back (Wake now, Back to inbox) on the row.
 function deferredFoldEl(reason, entries, opts, nowMs) {
@@ -5117,7 +5203,10 @@ function deferredFoldEl(reason, entries, opts, nowMs) {
   if (openDeferredFolds.has(reason)) fold.open = true
   fold.addEventListener('toggle', () => {
     if (fold.open) openDeferredFolds.add(reason)
-    else openDeferredFolds.delete(reason)
+    else {
+      openDeferredFolds.delete(reason)
+      closeCardIn(fold)
+    }
     restoreRowSelection(false)
   })
   const summary = document.createElement('summary')
@@ -5125,6 +5214,36 @@ function deferredFoldEl(reason, entries, opts, nowMs) {
   fold.appendChild(summary)
   for (const entry of entries) fold.appendChild(needsRowEl(rowModel(entry, opts), entry, nowMs))
   return fold
+}
+
+// Issue #247 §2.2: every pinned and snoozed ask in one section at the foot of
+// the queue, collapsed by default, with one count for the current lens and the
+// reason each ask waits. Its rows are ordinary queue rows, so their cards,
+// drafts, row-scoped writes and deep links work here unchanged.
+function laterSectionEl(entries, opts, nowMs) {
+  const section = document.createElement('details')
+  section.className = 'later-section'
+  section.dataset.deferredFold = 'later'
+  if (openDeferredFolds.has('later')) section.open = true
+  section.addEventListener('toggle', () => {
+    if (section.open) openDeferredFolds.add('later')
+    else {
+      openDeferredFolds.delete('later')
+      closeCardIn(section)
+    }
+    restoreRowSelection(false)
+  })
+  const summary = document.createElement('summary')
+  const title = document.createElement('span')
+  title.className = 'later-title'
+  title.textContent = `Later · ${entries.length}`
+  const breakdown = document.createElement('span')
+  breakdown.className = 'later-breakdown'
+  breakdown.textContent = laterBreakdown(entries, nowMs)
+  summary.append(title, ' ', breakdown)
+  section.appendChild(summary)
+  for (const entry of entries) section.appendChild(needsRowEl(rowModel(entry, opts), entry, nowMs))
+  return section
 }
 
 // nobody is listening and it is older than STALE_MS: out of the active list and
@@ -5135,6 +5254,7 @@ function staleFoldEl(entries, opts, nowMs) {
   if (staleFoldOpen) fold.open = true
   fold.addEventListener('toggle', () => {
     staleFoldOpen = fold.open
+    if (!fold.open) closeCardIn(fold)
     restoreRowSelection(false)
   })
   const summary = document.createElement('summary')
@@ -5163,8 +5283,10 @@ function needsRowEl(m, entry, nowMs) {
   // card owns the truthful dispositions (snooze, clarify, decline, or do/answer).
   // The old ✕ advertised the x key and did nothing.
   const dismissBit = m.kind === 'item' ? '<button class="nrow-dismiss" title="Dismiss (x)" aria-label="Dismiss">✕</button>' : ''
+  // The Later section calls both ways back "Back to inbox"; the separate
+  // snoozed fold keeps its Wake now.
   const wakeBit = m.later
-    ? `<button class="nrow-wake" title="Return to Needs you now">${m.later === 'pinned' ? 'Back to inbox' : 'Wake now'}</button>`
+    ? `<button class="nrow-wake" title="Return to Needs you now">${m.later === 'pinned' || laterSection ? 'Back to inbox' : 'Wake now'}</button>`
     : ''
   const projBit = m.projectLabel ? `<span class="nrow-proj" title="${esc(m.project)}">${esc(m.projectLabel)}</span>` : ''
   const agentBit = m.agent ? `<span class="nrow-agent">${esc(m.agent)}</span>` : ''
@@ -6465,11 +6587,10 @@ function answerEl(it) {
     (kind, text) => sendReply(
       it.id, text, effectiveReplyContext(it), kind, editorGeneration,
     ),
-    (until) => deferAsk({ kind: 'item', item: it }, 'snoozed', `/api/items/${it.id}/snooze`, { until }),
+    (until) => deferAsk({ kind: 'item', item: it }, `/api/items/${it.id}/snooze`, { until }),
     `item:${it.id}`,
-    it.reply || it.reply_kind || it.pinned_at ? null : () => deferAsk(
+    it.reply || it.reply_kind || it.pinned_at || !laterSection ? null : () => deferAsk(
       { kind: 'item', item: it },
-      'pinned',
       `/api/items/${it.id}/later`,
       { pinned: true },
       { refusal: 'This question changed before your click; refreshed without applying it.' },
@@ -6482,9 +6603,15 @@ function answerEl(it) {
     pickedUp: Boolean(it.reply_seen_at),
     key: `wait:item:${it.id}`,
     onStop: async (until) => {
-      const res = await postJSON(`/api/items/${it.id}/stop-waiting`, { until })
+      const url = `/api/items/${it.id}/stop-waiting`
+      const refusal = 'This question changed before your click; refreshed without applying it.'
+      if (laterSection) {
+        await deferWaitStop({ kind: 'item', item: it }, url, until, {}, { refusal })
+        return
+      }
+      const res = await postJSON(url, { until })
       if (res === null) return
-      showWriteError(it.id, res.ok ? '' : 'This question changed before your click; refreshed without applying it.')
+      showWriteError(it.id, res.ok ? '' : refusal)
       await reloadAndPaint()
     },
   })
@@ -7717,6 +7844,63 @@ function renderSortSettings(host) {
   host.appendChild(section)
 }
 
+function renderLaterSettings(host) {
+  const section = document.createElement('section')
+  section.className = 'setup-block later-settings'
+  const title = document.createElement('h3')
+  title.textContent = 'Inbox'
+  const preference = document.createElement('label')
+  preference.className = 'settings-toggle'
+  const input = document.createElement('input')
+  input.type = 'checkbox'
+  input.className = 'later-section-toggle'
+  input.checked = laterSection
+  input.setAttribute('aria-describedby', 'later-section-detail later-section-hint')
+  input.addEventListener('change', () => {
+    try {
+      localStorage.setItem(LATER_SECTION_KEY, String(input.checked))
+    } catch (err) {
+      input.checked = laterSection
+      console.error('Later section setting could not be saved', err)
+      document.getElementById('status').textContent = 'later section setting not saved'
+      return
+    }
+    laterSection = input.checked
+    // The human's own choice: renderIfIdle() would hold it behind any open draft.
+    forceRender()
+  })
+  const preferenceCopy = document.createElement('span')
+  const label = document.createElement('strong')
+  label.textContent = 'Later section'
+  const detail = document.createElement('small')
+  detail.id = 'later-section-detail'
+  detail.textContent = 'Move pinned and snoozed asks to a Later section at the foot of the inbox. Used each time Agent Inbox opens in this browser or app profile.'
+  preferenceCopy.append(label, detail)
+  preference.append(input, preferenceCopy)
+  const hint = document.createElement('p')
+  hint.className = 'setup-hint later-section-hint'
+  hint.id = 'later-section-hint'
+  hint.hidden = true
+  section.append(title, preference, hint)
+  host.appendChild(section)
+  paintLaterSectionHint()
+}
+
+// With the Later section off, pins that already exist stay in the pinned fold
+// (#247 §2.4); say so under the switch, so turning it off never hides an ask
+// without a word. Ambient: painted with every frame, never a render gate.
+function paintLaterSectionHint() {
+  const hint = document.getElementById('later-section-hint')
+  if (!hint || !lastData) return
+  const pinned = laterSection ? 0 : laterEntries(allItems(lastData.g), lastData.boards, Date.now(), closedSet())
+    .filter((entry) => entry.later === 'pinned').length
+  const text = !pinned ? ''
+    : pinned === 1 ? '1 ask is still pinned. It stays in a pinned fold until you bring it back.'
+      : `${pinned} asks are still pinned. They stay in a pinned fold until you bring them back.`
+  if (hint.textContent !== text) hint.textContent = text
+  hint.hidden = !text
+}
+
 function renderPlanSettings(host) {
   const section = document.createElement('section')
   section.className = 'setup-block plan-settings'
@@ -8061,6 +8245,7 @@ async function renderSetup() {
   renderThemeSettings(host)
   renderUpdateSettings(host)
   renderSortSettings(host)
+  renderLaterSettings(host)
   renderPlanSettings(host)
   renderCopySettings(host)
   try {

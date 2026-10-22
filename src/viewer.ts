@@ -538,6 +538,14 @@ function snoozeUntil(value: unknown): string | null | undefined {
   return /^\d{4}-/.test(iso) ? iso : undefined
 }
 
+// #247: `defer` on the stop-waiting routes is optional and means "no" when
+// absent; a present value must be a boolean. null = invalid, refused before any
+// store call.
+function deferField(value: unknown): boolean | null {
+  if (value === undefined) return false
+  return typeof value === 'boolean' ? value : null
+}
+
 // Issue #184: closed items the default /api/items snapshot carries, newest touch
 // first. Fifty fill ten History pages (PAGE.done = 5) while bounding a changed
 // tick at about a tenth of a long-lived hub's full history. Anything beyond is
@@ -879,11 +887,15 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
   // Issue #217 — "I'll take a while". `until` is required: a date asks the
   // asking Copilot session's watcher to wait quietly until then, and an explicit
   // null stops it for good. A dropped field is a 400, never the final stop.
+  // #247: an optional `defer: true` (the Later section) also pins the question
+  // or snoozes it to the same time, in the same write.
   app.post('/api/items/:id/stop-waiting', async (c) => {
-    const body = await c.req.json<{ until?: unknown }>().catch(() => null)
+    const body = await c.req.json<{ until?: unknown; defer?: unknown }>().catch(() => null)
     const until = snoozeUntil(body?.until)
     if (until === undefined) return c.json({ ok: false, error: 'until must be a date or null' }, 400)
-    const ok = stopItemWatch(db, c.req.param('id'), until)
+    const defer = deferField(body?.defer)
+    if (defer === null) return c.json({ ok: false, error: 'defer must be a boolean' }, 400)
+    const ok = stopItemWatch(db, c.req.param('id'), until, { defer })
     return c.json({ ok })
   })
 
@@ -985,6 +997,7 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
   app.post('/api/boards/:id/rows/:rowId/stop-waiting', async (c) => {
     const body = await c.req.json<{
       until?: unknown
+      defer?: unknown
       expected_revision?: unknown
       expected_board_version?: unknown
     }>().catch(() => null)
@@ -995,8 +1008,10 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
     }
     const until = snoozeUntil(body?.until)
     if (until === undefined) return c.json({ ok: false, error: 'until must be a date or null' }, 400)
+    const defer = deferField(body?.defer)
+    if (defer === null) return c.json({ ok: false, error: 'defer must be a boolean' }, 400)
     const rowId = c.req.param('rowId')
-    if (stopBoardRowWatch(db, rowId, until, revision as number, boardRevision as number)) return c.json({ ok: true })
+    if (stopBoardRowWatch(db, rowId, until, revision as number, boardRevision as number, { defer })) return c.json({ ok: true })
     const currentBoard = [
       ...listBoards(db),
       ...listBoards(db, { status: 'archived' }),

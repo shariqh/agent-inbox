@@ -41,6 +41,46 @@ export function sortNeedsYouByAsk(entries, mode) {
     .map(({ entry }) => entry)
 }
 
+// Issue #247 §2.2: the Later section's own order, whatever the Sort menu says.
+// Snoozed asks first, the soonest back first; then pinned asks, the oldest pin
+// first. An unreadable time sorts last within its reason, and ties fall back to
+// a stable key, so a poll never reshuffles the section.
+export function sortLaterEntries(entries) {
+  return entries
+    .map((entry) => {
+      const entity = entry.kind === 'row' ? entry.row : entry.item
+      const pinned = entry.later === 'pinned'
+      const at = Date.parse((pinned ? entity.pinned_at : entity.snoozed_until) ?? '')
+      return { entry, group: pinned ? 1 : 0, at: Number.isFinite(at) ? at : Number.MAX_VALUE, key: askSortKey(entry) }
+    })
+    .sort((a, b) => {
+      if (a.group !== b.group) return a.group - b.group
+      if (a.at !== b.at) return a.at - b.at
+      return a.key < b.key ? -1 : a.key > b.key ? 1 : 0
+    })
+    .map(({ entry }) => entry)
+}
+
+// The Later header's breakdown: `2 pinned · 1 snoozed, next back in 2h`.
+export function laterBreakdown(entries, nowMs) {
+  let pinned = 0
+  let snoozed = 0
+  let next = Number.POSITIVE_INFINITY
+  for (const entry of entries) {
+    if (entry.later === 'pinned') {
+      pinned += 1
+      continue
+    }
+    snoozed += 1
+    const until = Date.parse((entry.kind === 'row' ? entry.row : entry.item).snoozed_until ?? '')
+    if (Number.isFinite(until)) next = Math.min(next, until)
+  }
+  const parts = []
+  if (pinned) parts.push(`${pinned} pinned`)
+  if (snoozed) parts.push(Number.isFinite(next) ? `${snoozed} snoozed, next back in ${relMs(next - nowMs)}` : `${snoozed} snoozed`)
+  return parts.join(' · ')
+}
+
 export function askTimeModel(askedAt, nowMs) {
   const at = Date.parse(askedAt ?? '')
   if (!Number.isFinite(at)) return null

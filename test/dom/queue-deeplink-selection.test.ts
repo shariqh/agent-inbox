@@ -58,7 +58,7 @@ describe('Needs-you deep-link selection ownership', () => {
     navigateToHash(`#item/${snoozed}`)
     await settle()
     await pollTick()
-    expect(row(snoozed)?.closest<HTMLDetailsElement>('.snoozed-fold')?.open).toBe(true)
+    expect(row(snoozed)?.closest<HTMLDetailsElement>('.later-section')?.open).toBe(true)
     expect(row(snoozed)?.classList.contains('selected')).toBe(true)
     expect(row(snoozed)?.tabIndex).toBe(0)
   })

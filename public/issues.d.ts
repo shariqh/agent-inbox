@@ -100,6 +100,8 @@ export type IssueDependenciesView =
 export interface IssueWaitEntry {
   step: { id: string; label: string } | null
   node: IssueNodeView | null
+  /** the GitHub issue's Agent Inbox activity; null for a step alone */
+  activity?: IssueActivity | null
   /** the GitHub relation's age; null for a step alone */
   freshness: 'fresh' | 'stale' | null
   fetchedAt: string | null

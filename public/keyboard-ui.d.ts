@@ -8,3 +8,5 @@ export function createKeyboardUI(options: KeyboardUIOptions): {
   refresh(): void
   destroy(): void
 }
+/** Scroll `target` into view through the scrolling ancestors inside `scope` only. */
+export function revealControl(target: Element, scope: Element): void

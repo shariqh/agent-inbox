@@ -22,7 +22,7 @@ import {
 } from '/rowview.js'
 import { cardSections, optionOrder, actionPresentation } from '/card.js'
 import { keyAction, rovingIndex, ariaAnswerLabel, livenessGlyph, deckEntryAt } from '/keys.js'
-import { createKeyboardUI } from '/keyboard-ui.js'
+import { createKeyboardUI, revealControl } from '/keyboard-ui.js'
 import { partitionNotes, unreadNoteCount, ambientChips, seenWatermark, markSeenIds } from '/notes.js'
 import { liveSummary, lastActivityAt, isDormant, activitySynopsis, sessionBuild } from '/livebar.js'
 import { agentsAction, hooksGuidance, hostLabel, hostLine, restartGuidance } from '/agents.js'
@@ -35,8 +35,8 @@ import { boardRowsView, boardRowLine, progressLabel, hiddenDoneCount, lingeringB
 import { titleWithBadge, focusHashFor, parseFocusHash } from '/badge.js'
 import { layoutMode, railLabel, NARROW_MAX, PROJECT_DISCLOSURE_MAX } from '/layout.js'
 import {
-  indexLinks, issueRelationsHtml, planGroupHeadHtml, planWaitsChipHtml, PREVIEW_TTL_MS, previewRef, rowIssueChipsHtml,
-  rowParentHeadHtml, rowWaitsChipHtml, rowWaitsHtml, sourceChipsHtml, sourceBlockHtml,
+  indexLinks, issueRelationsHtml, missionDepsHtml, missionOutsideHtml, planGroupHeadHtml, planWaitsChipHtml, PREVIEW_TTL_MS,
+  previewRef, rowIssueChipsHtml, rowParentHeadHtml, rowWaitsChipHtml, rowWaitsHtml, sourceChipsHtml, sourceBlockHtml,
 } from '/source.js'
 import { buildIssueView, planGroups, rowParentRuns } from '/issues.js'
 import { buildSummary } from '/buildstamp.js'
@@ -3336,6 +3336,17 @@ function openMissionDetail(row) {
   missionDetailPanel()?.focus({ preventScroll: true })
 }
 
+// Slice 2 §9.2: a "Waits on"/"Unblocks" button is explicit navigation, so it
+// moves focus to that step and may scroll the flow to reveal it. A poll's
+// restoration never comes here.
+function focusMissionStep(rowId) {
+  const path = document.querySelector(`#missionbox .mission-path[data-row-id="${CSS.escape(rowId)}"]`)
+  const target = path?.querySelector('.mission-node-open')
+  if (!target) return
+  target.focus({ preventScroll: true })
+  revealControl(path.querySelector('.mission-node') ?? target, missionPanel())
+}
+
 function closeMissionDetail({ restoreFocus = true } = {}) {
   const returnFocus = missionDetailReturnFocus
   missionDetailRowId = null
@@ -3356,11 +3367,19 @@ function missionPathEl(path, board) {
     <span class="mission-node-meta">${esc(owner)}</span>
     <strong>${esc(row.label)}</strong>
     ${row.note ? `<div class="mission-node-summary">${renderStructuredText(row.note)}</div>` : ''}
+    ${missionDepsHtml(path, board)}
     ${row.impact ? `<div class="mission-node-impact"><span>Why now</span>${renderStructuredText(row.impact)}</div>` : ''}`
   action.addEventListener('click', (event) => {
     if (event.target instanceof Element && event.target.closest('a, button')) return
     openMissionDetail(row)
   })
+  for (const step of action.querySelectorAll('button[data-mission-step]')) {
+    step.addEventListener('click', (event) => {
+      event.stopPropagation()
+      focusMissionStep(step.dataset.missionStep)
+    })
+  }
+  bindIssueActivity(action)
   const open = btn('Open details', () => openMissionDetail(row))
   open.className = 'mission-node-open'
   action.appendChild(open)
@@ -3388,7 +3407,8 @@ function renderMission({ restoreFocus = true } = {}) {
   const board = [...lastData.boards, ...lastData.archived].find((candidate) => candidate.id === missionBoardId)
   if (!board) { closeMission(); return }
   const box = document.getElementById('missionbox')
-  const mission = buildMission(board)
+  // the frame's issue view, as Plans draws it; nothing here fetches (§9.4)
+  const mission = buildMission(board, { issues: issueView, links: linkIndex })
   box.querySelector('.mission-subtitle').textContent = `${mission.root.project} · ${mission.paths.length} steps`
   box.querySelector('.mission-root-project').textContent = mission.root.project
   box.querySelector('.mission-root-title').textContent = mission.root.title
@@ -3402,6 +3422,16 @@ function renderMission({ restoreFocus = true } = {}) {
     paths.appendChild(empty)
   } else {
     for (const path of mission.paths) paths.appendChild(missionPathEl(path, board))
+  }
+  const outsideKey = `mission-outside:${board.id}`
+  const outside = missionOutsideHtml(mission.outside, board, { key: outsideKey, open: openContexts.has(outsideKey) })
+  if (outside) {
+    const foot = document.createElement('div')
+    foot.className = 'mission-outside-foot'
+    foot.innerHTML = outside
+    // its open state and activity labels, as every Background disclosure's
+    bindContextDisclosures(foot)
+    paths.appendChild(foot)
   }
   box.querySelector('.mission-root-card').onclick = () => {
     closeMission({ restoreFocus: false })

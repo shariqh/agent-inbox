@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type Database from 'better-sqlite3'
 import { getBoard, upsertBoard } from '../../src/store.js'
-import { bootApp, buttonLabelled, click, freshDb, pollTick, settle, useDomTest } from './harness.js'
+import { advanceClock, bootApp, buttonLabelled, click, freshDb, pollTick, settle, useDomTest } from './harness.js'
+import { flowPath, openFlow, seedFlow, stepButton } from './plan-flow-fixtures.js'
 
 useDomTest()
 
@@ -189,5 +190,63 @@ describe('Plan Flow focus ownership', () => {
 
     expect(mission().querySelector<HTMLElement>('.mission-detail')?.hidden).toBe(true)
     expect(document.activeElement).toBe(mission().querySelector('.mission-panel'))
+  })
+})
+
+// Slice 2 PR E (§9.3): only an explicit activation moves focus to a step. A poll
+// restores the flow's focus where it was, and a background window gets none.
+describe('Plan flow dependency focus (slice 2 PR E)', () => {
+  /** A poll that changes the AHP plan's notes, and so rebuilds every step. */
+  function touch(d: Database.Database) {
+    const plan = getBoard(d, 'agent-inbox', 'AHP')!
+    advanceClock()
+    upsertBoard(d, {
+      project: 'agent-inbox', agent: 'copilot', stream: 'main', title: 'AHP', repo: 'shariqh/agent-inbox', expectedVersion: plan.revision,
+      rows: plan.rows.map((row) => ({ label: row.label, revision: row.revision, status: row.status, note: `${row.note} refreshed` })),
+    })
+  }
+
+  it('keeps focus on the rebuilt dependency button across a poll, and never moves it to the target or scrolls', async () => {
+    const d = open()
+    const { plan, id } = seedFlow(d)
+    await bootApp(d)
+    const box = await openFlow(plan.id)
+    const before = stepButton(flowPath(id('Import requests')), 'Waits on step AHP adapter (#119)')
+    before.focus()
+    const paths = box.querySelector<HTMLElement>('.mission-paths')!
+    paths.scrollTop = 40
+    touch(d)
+    await pollTick()
+    const after = stepButton(flowPath(id('Import requests')), 'Waits on step AHP adapter (#119)')
+    expect(before.isConnected).toBe(false)
+    expect(flowPath(id('Import requests')).textContent).toContain('refreshed')
+    expect(document.activeElement).toBe(after)
+    expect(paths.scrollTop).toBe(40)
+
+    // an external activity label is restored too
+    const label = flowPath(id('Import requests')).querySelector<HTMLButtonElement>('button[data-issue-open]')!
+    label.focus()
+    touch(d)
+    await pollTick()
+    expect(document.activeElement).toBe(flowPath(id('Import requests')).querySelector('button[data-issue-open]'))
+  })
+
+  it('moves no focus in a background window, while the flow still refreshes', async () => {
+    const d = open()
+    const { plan, id } = seedFlow(d)
+    await bootApp(d)
+    await openFlow(plan.id)
+    const before = stepButton(flowPath(id('AHP adapter')), 'Unblocks step Import requests (#120)')
+    before.focus()
+    vi.spyOn(document, 'hasFocus').mockReturnValue(false)
+    window.dispatchEvent(new Event('blur'))
+    before.dispatchEvent(new FocusEvent('focusout', { bubbles: true }))
+    const focused = vi.spyOn(HTMLElement.prototype, 'focus')
+    touch(d)
+    await pollTick()
+    expect(flowPath(id('AHP adapter')).textContent).toContain('refreshed')
+    expect(before.isConnected).toBe(false)
+    expect(focused).not.toHaveBeenCalled()
+    expect(document.activeElement?.tagName).toBe('BODY')
   })
 })

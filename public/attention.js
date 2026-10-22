@@ -4,10 +4,11 @@
 // `nowMs`, live sessions injected as `liveSessionIds` and closed projects
 // injected as `closedProjects`.
 //
-// TWO things sit outside the attention set on purpose: the §6 stale fold
-// (nobody is listening any more) and, since issue #32, a project the human has
-// explicitly CLOSED. Both are demotions, never deletions — the stale fold and
-// the rail's closed fold each still show what they hold.
+// THREE things sit outside the attention set on purpose: the §6 stale fold
+// (nobody is listening any more), since issue #32 a project the human has
+// explicitly CLOSED, and an ask the human deferred, by a snooze or since #247 a
+// pin for later. All are demotions, never deletions — the stale fold, the
+// rail's closed fold and the deferred folds each still show what they hold.
 
 export const STALE_MS = 72 * 60 * 60 * 1000     // no live session + older than this → stale fold
 export const ESCALATE_MS = 60 * 60 * 1000       // a *waiting* item older than this turns the rail badge red
@@ -31,17 +32,37 @@ function isSnoozed(entity, nowMs) {
   return Number.isFinite(until) && until > nowMs
 }
 
+// Issue #247: the human set this ask aside with no return time. It comes back
+// when they say so, or when the ask ends or a new action starts (the store's
+// triggers clear `pinned_at`), never on a clock.
+function isPinnedForLater(entity) {
+  return Boolean(entity?.pinned_at)
+}
+
+// Why an unanswered ask sits in Later rather than in attention, or null. A pin
+// wins over a snooze when an older server's snooze left both set. The predicates
+// below and laterEntries all read this one function, so an ask can never be
+// dropped by one and missed by the other.
+function laterReason(entity, nowMs) {
+  if (isPinnedForLater(entity)) return 'pinned'
+  return isSnoozed(entity, nowMs) ? 'snoozed' : null
+}
+
+// An open question nobody has answered, deferred or not. Absent status
+// (hand-built fixtures, legacy rows) is treated as open.
+function isUnansweredQuestion(item) {
+  if (!item || item.kind !== 'question' || item.reply || item.reply_kind) return false
+  return item.status === undefined || item.status === null || item.status === 'open'
+}
+
 // A question is still asking only while it is OPEN and unanswered. `resolve`
 // closes an item without ever writing a reply, so keying on `reply` alone
 // counts a resolved question forever and the badge can never reach zero.
-// Absent status (hand-built fixtures, legacy rows) is treated as open.
 // EXPORTED because the triage deck re-validates its entries against the live
 // data: it used to re-implement this as a bare `!i.reply`, which is the second
 // predicate spec §7 tenet 3 exists to forbid.
 export function isAskingQuestion(item, nowMs = Date.now()) {
-  if (!item || item.kind !== 'question' || item.reply || item.reply_kind) return false
-  if (isSnoozed(item, nowMs)) return false
-  return item.status === undefined || item.status === null || item.status === 'open'
+  return isUnansweredQuestion(item) && !laterReason(item, nowMs)
 }
 
 // waiting = an agent is blocked on you *right now*; parked = answer whenever;
@@ -64,6 +85,10 @@ export function humanActedOnRow(row) {
   return Boolean(row.annotation_kind) || Boolean(row.annotation) || Boolean(row.handled_at)
 }
 
+function isUnansweredBlockedRow(row) {
+  return row.status === 'blocked' && !humanActedOnRow(row)
+}
+
 // A blocked row stops asking the moment the HUMAN answers it — in words, or by
 // doing it. Whether an agent has picked that answer up is the agent's state, not
 // a reason to keep nagging the human, and this is precisely what items already
@@ -81,7 +106,7 @@ export function humanActedOnRow(row) {
 //
 // The signal is NOT removed, it is relabeled: see awaitingAgentRows below.
 export function isBlockedRowAttention(row, nowMs = Date.now()) {
-  return row.status === 'blocked' && !humanActedOnRow(row) && !isSnoozed(row, nowMs)
+  return isUnansweredBlockedRow(row) && !laterReason(row, nowMs)
 }
 
 // The rows isBlockedRowAttention just dropped: blocked, and carrying whatever the
@@ -145,20 +170,26 @@ export function staleEntries(items, nowMs, liveSessionIds) {
   return out
 }
 
-export function snoozedEntries(items, boards, nowMs, closedProjects = []) {
+// The third half of the split (#247): unanswered asks the human deferred, by a
+// snooze that ends on its own or a pin that waits for them. Out of every count,
+// never out of sight: each entry carries `later: 'snoozed' | 'pinned'` so the
+// renderer can draw one fold per reason. Complement, exactly: every blocked row
+// is in attention, here or awaitingAgentRows; every open question in attention,
+// the stale fold, here or the replied foot.
+export function laterEntries(items, boards, nowMs, closedProjects = []) {
   const closed = asSet(closedProjects)
   const out = []
   for (const item of items ?? []) {
-    if (closed.has(item.project)) continue
-    if (item.kind !== 'question' || (item.status ?? 'open') !== 'open') continue
-    if (item.reply || item.reply_kind || !isSnoozed(item, nowMs)) continue
-    out.push({ kind: 'item', item, liveness: 'snoozed' })
+    if (closed.has(item.project) || !isUnansweredQuestion(item)) continue
+    const later = laterReason(item, nowMs)
+    if (later) out.push({ kind: 'item', item, liveness: 'later', later })
   }
   for (const board of boards ?? []) {
     if (closed.has(board.project)) continue
     for (const row of board.rows ?? []) {
-      if (row.status !== 'blocked' || humanActedOnRow(row) || !isSnoozed(row, nowMs)) continue
-      out.push({ kind: 'row', row, board, liveness: 'snoozed' })
+      if (!isUnansweredBlockedRow(row)) continue
+      const later = laterReason(row, nowMs)
+      if (later) out.push({ kind: 'row', row, board, liveness: 'later', later })
     }
   }
   return out

@@ -138,6 +138,15 @@ function freshAttentionNotifications(known, notifications) {
   return known === null ? [] : notifications.filter((notification) => !known.has(notification.id))
 }
 
+// The ids the next poll treats as already announced (#247): every ask in
+// attention, plus every ask the human pinned for later. Bringing a pinned ask
+// back is the human's own move, and a pin moves no revision, so it must not be
+// announced as new. A snooze that ends should be, so snoozed entries stay out.
+function knownNotificationIds(attention, later) {
+  const pinned = (later ?? []).filter((entry) => entry.later === 'pinned')
+  return new Set([...attention, ...pinned].map((entry) => attentionNotification(entry).id))
+}
+
 function responseTargets(grouped, boards) {
   const targets = []
   for (const group of grouped?.needsYou ?? []) {
@@ -321,6 +330,7 @@ module.exports = {
   createResponseWatch,
   formatResponseReminder,
   freshAttentionNotifications,
+  knownNotificationIds,
   responseTargets,
   responseForNotificationAction,
   refreshNotificationTarget,

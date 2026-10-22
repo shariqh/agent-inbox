@@ -173,11 +173,15 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   carries 2-4 `options`; task omits options and gets "I've done my part." Long history belongs
   in collapsed `context`. These are additive agent-owned fields: full-board upserts preserve
   omitted values, explicit empty values clear them, and legacy rows use note/detail fallbacks.
-- **Snooze is a demotion, never disappearance.** `snoozed_until` excludes an unanswered item
-  or row from `attentionEntries`/badge counts until due, but `snoozedEntries` renders it in a
-  visible fold with Wake now. The three-way complement for blocked rows is attention ∪
-  awaiting-agent ∪ snoozed. Clarify/decline are response kinds and therefore human action;
-  they move to awaiting-agent and never pretend to be an outcome.
+- **Snooze and pin are demotions, never disappearance.** `snoozed_until` (until due) and,
+  since #247, `pinned_at` (no return time) exclude an unanswered item or row from
+  `attentionEntries`/badge counts, but `laterEntries` hands them to the renderer tagged
+  `later: 'snoozed' | 'pinned'` (a pin wins when both are set), drawn as a "snoozed" fold with
+  Wake now and a "pinned" fold with Back to inbox. The predicates and `laterEntries` share one
+  `laterReason`, so the complements stay exact: every blocked row is in attention ∪ Later ∪
+  awaiting-agent, every open question in attention ∪ stale fold ∪ Later ∪ replied foot.
+  Clarify/decline are response kinds and therefore human action; they move to awaiting-agent
+  and never pretend to be an outcome.
 - **Row chaining is versioned and atomic.** `board_advance` uses row `revision` as its CAS
   token; `action_version` is only the human-step number. `advanceBoardRow(...).immediate`
   archives the current action/response/outcome into JSON `history`, clears every
@@ -436,8 +440,12 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   (capped at an hour) and records a soft `rate-limit` for the batch it would have fetched; a
   rate-limited call that reported nothing backs off ten minutes. (5) **Parsing fails closed**
   (`parseIssueBatch`): a whole failure is soft for every key; per alias `NOT_FOUND`/`FORBIDDEN`
-  are hard only when no other error names that alias; a field error under `parent`/`subIssues`
-  marks only that root's hierarchy unavailable; an unreadable immediate parent is never read as
+  are hard only when no other error names that alias; a field error under `parent`, or any error
+  on the issue's hierarchy alias `hN`, marks only that root's hierarchy unavailable (#267: GitHub
+  marks `subIssues`/`subIssuesSummary` non-null, so an error under them nulls the issue they were
+  asked on; on `hN`, beside `rN` with its variables, that is only `hN.issue`, and the issue's
+  title, state and parent still refresh; `parent` is nullable and stays on `rN`, at the same
+  1 point per ten issues); an unreadable immediate parent is never read as
   "no parent"; a list that lost an invalid child is marked truncated so it is no evidence of
   absence; a repository redirect becomes an alias and any other identity mismatch is `moved`.
   (6) **`closing_refs`**: `parsePrPayload` records every closing reference (one unreadable
@@ -448,14 +456,14 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
 - **GitHub issue dependencies ride the same call, bound to their fetch (issue #103 slice 2, PR A).**
   Design: [`docs/superpowers/specs/2026-10-21-plan-dependencies-design.md`](docs/superpowers/specs/2026-10-21-plan-dependencies-design.md).
   A `Deps` fragment asks for `issueDependenciesSummary` and `blockedBy`/`blocking(first: 50)`
-  (GitHub's own limit per type) on a SECOND alias per issue, `dN`, with `rN`'s variables; `Root`
-  is slice 1's, byte for byte. Still ONE call per batch, measured at 1 point and 12.8 KB for the
+  (GitHub's own limit per type) on another alias per issue, `dN`, with `rN`'s variables, as the
+  sub-issues are on `hN`. Still ONE call per batch, measured at 1 point and 12.8 KB for the
   ten-issue #117 family (`test/fixtures/issue-relations-10-deps.json`). The alias is what isolates
   the sections: GitHub marks the three fields, their `Int!` counts and `pageInfo` non-null, so an
   error in any of them nulls the whole issue it was asked on. Inside `rN` that would turn the issue
   into a soft `gh-failed` and stop its hierarchy refreshing; on `dN` it nulls only `dN.issue`.
-  (1) **Parsing** (`parseIssueBatch`) fails closed per section: `rN` is read exactly as in slice 1,
-  and the section only from `dN`, where any error, or a null or missing `dN.issue`, makes only that
+  (1) **Parsing** (`parseIssueBatch`) fails closed per section: the issue and hierarchy are read
+  from `rN` and `hN` as above, and the section only from `dN`, where any error, or a null or missing `dN.issue`, makes only that
   issue's dependencies `unavailable` (never the issue itself, whatever the error's type); each
   listed issue is validated like a child, and an invalid one is dropped and marks its list
   truncated; the root itself and repeats are dropped; lists cap at 50 and are kept in key order
@@ -895,8 +903,22 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   `annotateBoardRow`, and `markRowHandled` also clear it in their own statement, exactly where
   the trigger would: a cleared note answers nothing and keeps the pin. Agents see `pinned_at`
   in `pending()` (a pinned blocked row arrives on every poll until its status flips, as a
-  snoozed one does) and in `board_get`; the Copilot watcher ignores it. Attention does not read
-  it yet: the demotion, the pinned fold and the Later section are #247's later slices.
+  snoozed one does) and in `board_get`; the Copilot watcher ignores it. *(Slice 2)* The one
+  predicate drops a pinned ask (`isPinnedForLater`, see "Snooze and pin are demotions"), so the
+  title and dock badges, tab counts, rail, Review queue, Dashboard and Handoffs all follow.
+  "Pin for later" is the first choice in More responses on an unanswered open
+  question or an unanswered blocked row of an active plan, and is not drawn on one already
+  pinned; it posts to the `later` route with the row and board revisions and ends in
+  `reloadAndPaint()`, like every human write. Every deferral, pin or snooze, goes through
+  `deferAsk`. When the ask holds a draft, its fold opens and the ask keeps the open card (or,
+  from the Review queue or a plan panel, takes it, widening a list filter that would hide it):
+  a draft pauses the list by design, so a deferral must never carry it out of sight. Deferred
+  rows carry a reason chip instead of an urgency (`Pinned 2d ago`, `Back in 3h`,
+  `… · agent waits quietly` while a Copilot asker's #217 deferral runs). Electron's `known`
+  set is the unsuppressed attention set plus the `pinned` Later entries
+  (`knownNotificationIds` in `electron/reply-watch.cjs`): a pin moves no revision, so Back to
+  inbox announces nothing, while a snooze that ends and a new action are announced. The Later
+  section, its setting and the "I'll take a while" coupling are slice 3.
 
 - **Agent setup is explicit, dry-run-first, and owns only marked text.**
   `scripts/install-agents.sh` is the supported bridge between two configuration systems:

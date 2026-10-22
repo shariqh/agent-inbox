@@ -199,10 +199,11 @@ Run the build before `npm run electron`; the development shell starts the built
   "unknown", never "no dependencies"); an older process's success or hard
   failure unbinds it, a soft failure keeps it bound. A success without a bound
   section is fetched again at once (the queue's `upgrade` tier) unless its
-  `checked_at` is ahead of the clock; a failure keeps its own TTL. The
-  dependency fields are asked on a second alias per issue (`dN`): GitHub marks
-  them non-null, so an error there nulls only `dN.issue` and leaves the issue
-  and its hierarchy refresh in `rN` intact.
+  `checked_at` is ahead of the clock; a failure keeps its own TTL. GitHub
+  marks the dependency fields and `subIssues`/`subIssuesSummary` non-null, so
+  each group is asked on an alias of its own per issue (`dN`, `hN`): an error
+  there nulls only `dN.issue` or `hN.issue`, makes only that section
+  unavailable, and leaves the issue and its parent chain in `rN` refreshing.
 - Race-sensitive state changes must be atomic SQL statements or transactions.
   Do not replace conditioned/version-pinned updates with SELECT-then-UPDATE.
   Human replies, annotations, and handled marks can change from another process
@@ -239,7 +240,10 @@ Run the build before `npm run electron`; the development shell starts the built
   `next_after` says what follows. decision/approval carries 2-4 `options`; task
   omits them so the viewer offers "I've done my part." Long history belongs in
   collapsed `context`.
-- Snoozed work leaves badge attention but remains in the explicit snoozed fold.
+- Snoozed and pinned work (#247) leaves badge attention but remains in the explicit
+  snoozed and pinned folds (`laterEntries`, tagged by reason; a pin wins). Every
+  deferral goes through `deferAsk`: an ask that holds a draft opens its fold and
+  keeps the open card, so a draft that pauses the list is never hidden.
   Clarify/decline are response kinds, not outcomes. `board_advance` is the only
   same-row chain operation: it CAS-pins row `revision`, archives the prior step,
   and clears human/delivery state atomically. Agent reads get `history_count`, not
@@ -280,7 +284,9 @@ Run the build before `npm run electron`; the development shell starts the built
   `clear_row_pin_when_ask_ends` and `clear_item_pin_when_ask_ends` clear it when
   the ask is answered, closed or unblocked, or a new action starts, so an older
   server's writes cannot carry it over. A pin and a snooze with a time replace
-  each other.
+  each other. The attention predicate drops a pinned ask, and Electron's
+  notification `known` set keeps pinned asks (`knownNotificationIds`), so
+  bringing one back is never announced as new.
 - Keep network access out of the MCP process. Repository/branch identity is
   inferred locally; live PR and issue state is fetched only by the viewer's `gh`
   pollers (`src/prstate.ts`, `src/issue-poller.ts`).

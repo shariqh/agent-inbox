@@ -218,9 +218,11 @@ lease and tick deadlines (S1 §5.2–§5.6). The response grows by about 0.5 KB 
 
 ### 5.2 Parsing (`parseIssueBatch`, still pure)
 
-- A field error under `[rN, "issue", "blockedBy" | "blocking" | "issueDependenciesSummary"]`
-  makes that root's **dependencies** `unavailable` and leaves its hierarchy alone, the same
-  per-section rule S1 §5.7 uses for `parent` / `subIssues`.
+- GitHub marks these fields non-null, so an error under them nulls the issue they were asked on.
+  They are therefore asked on an alias of their own per issue, `dN` (#264), as the sub-issues
+  are on `hN` (#267). Any error under `dN`, or a null or missing `dN.issue`, makes that root's
+  **dependencies** `unavailable` and leaves the issue and its hierarchy alone, the same
+  per-section rule S1 §5.7 uses for the hierarchy.
 - Every listed node is validated like a child (slug, number, state, reason, title clip). An
   invalid node is dropped and the list is marked truncated, so it is never read as evidence of
   absence (S1 §5.7).

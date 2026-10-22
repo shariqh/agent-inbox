@@ -106,7 +106,8 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   the page's slot, and `/api/items/history` is a path of its own (#184).
   Read the live boot header before consuming cached data. Untagged servers retain
   full-fetch behavior, malformed replies fail explicitly, and no snapshot content
-  is persisted to browser storage. Derive mutable view state rather than changing
+  is persisted to browser storage (the human's unsent drafts, #279, are not snapshot
+  content). Derive mutable view state rather than changing
   authoritative cached records. A poll tick starts its eight reads together (#161)
   and applies nothing until all settle: history, closed projects, links (read as a
   snapshot since #288, its body through `linksBody`, so a 404, a network error or
@@ -304,7 +305,8 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   Item reply and annotation timelines are independent: neither may borrow the
   other's timestamps to claim pickup. The Note prompt retires an attempt only on
   JSON `ok:true`; refused or transport-unconfirmed text, including a clear intent,
-  stays in the existing window-local recovery surface and protects automatic
+  stays in the existing recovery surface (kept in this profile's storage since #279
+  and restored as unconfirmed, never resent) and protects automatic
   restart. Retry requires explicit review, closed targets cannot retry, and local
   recovery Clear never changes the stored annotation. Do not claim crash-durable
   persistence or that a transport error proves the write never committed.
@@ -904,9 +906,79 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   and is never applied, because it would mix two servers' data.
   The quiet status hint explains an unsent-work hold without labeling an in-flight
   write or pointer interaction as a human blocker. Failed staged choices use the same
-  exact-intent recovery path as other replies. This is automatic-restart protection,
-  not durable persistence across a manual reload, window close, or renderer crash.
+  exact-intent recovery path as other replies. The hold stays although drafts are now
+  durable (#279, next bullet): it also protects in-flight writes, staged undo actions
+  and the editor under the human's cursor, which stored text alone cannot.
   `test/dom/viewer-restart.test.ts` pins the draft, revision, in-flight, and undo boundaries.
+- **Unsent drafts survive a reload, a window close and an app restart (#279).** Every
+  unsent response the window holds (question answers and their context, plan-row
+  drafts, Note attempts and the unsent responses list) is mirrored into this
+  profile's `localStorage` under `agent-inbox-drafts-v1`, never to the viewer server,
+  the hub database or an agent. `public/drafts.js` is pure: it validates every entry
+  (an unreadable or unknown one is dropped, never thrown) and merges one window's
+  changes into what the profile holds. The window's memory stays the source of truth:
+  `saveDrafts()` writes only what changed since this window last loaded or wrote each
+  key, so an emptied editor, a successful send (JSON `ok:true`), Clear and every
+  deliberate discard delete the stored copy, and a refused send keeps it as an unsent
+  response. A save is queued from `showPauseHint()`, which every draft change reaches,
+  and lands within 300 ms. The leaving saves (`pagehide`, `beforeunload`,
+  `visibilitychange` to hidden) also write back every draft the window still holds
+  whose key storage lost: another window sent or cleared it, no newer copy exists, and
+  the text on this screen would otherwise go with it. A routine save leaves that
+  delete alone, and a draft whose own last write has expired is let go. Each entry
+  carries what it was written against: a question draft the question's answer as of
+  the last edit (`replied_at`, source, kind and text, never `response_revision`, which
+  the human's own Note also moves), a row draft its row and board ids and revisions,
+  its action version and whether its send was still unanswered, and any reply intent
+  its claiming client id and its pin, the answer as it stood when the intent was
+  claimed. The pin travels on the intent, so nothing can move it while the intent is
+  kept, and a fresh intent brings its own. The tab's
+  reply identity itself stays in `sessionStorage`: shared, two windows would merge
+  their counters and refuse each other's newer replies. Restoring happens once, in the
+  first applied `load()` before its `renderIfIdle()` (`placeRestoredDrafts`), and sends
+  nothing, focuses nothing and switches no tab. A draft whose target is unchanged and
+  whose project is open goes back to its editor, the newest one in the queue reopens
+  its card when none is open, a Plans-only row reopens its panel, and the next queue
+  render opens any fold holding a restored draft once. Anything else goes to the
+  unsent responses, which never pause the list and show in every project view, with a
+  stored `reason`: "this question changed", "this question is closed or no longer
+  available", "this action changed", "Kept because this project is closed", or #272's
+  set-aside reason only when it was recorded. Once a send of the text was tried and
+  never answered (a reply intent, or a row send still in flight), the reason says
+  "Your send was not confirmed", never "not sent": the write may have landed. A draft
+  whose exact text the server already holds is dropped. **One rule decides every reuse
+  of a saved reply intent** (`savedIntentRule`, called by `submitItemReply` for an
+  unsent response's Retry and for an editor's Send after an unconfirmed send, so for
+  every intent a restart brings back too; the restore only uses it to word a reason):
+  the server holds exactly that response (text, context and kind), so the entry or
+  draft retires without a send; else the answer moved since the intent's pin, so a
+  replay would be answered from the server's intent record without writing anything
+  and the send is fresh, with a new intent and pin; else the exact replay, which keeps
+  it idempotent. This deliberately reverses the older contract that a re-send after an
+  ambiguous failure never overwrites a later answer: once the answer moved, the
+  human's own Send or Retry writes, as any other Send would. The rule reads the last
+  snapshot, so within one poll (3 s) of another writer it can still replay. A Retry
+  of an entry an earlier click already took does nothing, so a double click claims no
+  second intent. `renderIfIdle()` paints the first editable frame even with
+  restored drafts, since no editor exists yet to protect; every later tick pauses
+  exactly as for a typed draft. Bounds, applied on every read and write: 30 days since
+  the last write, 100 entries and 200,000 characters, oldest evicted first; a refused
+  write (a full profile) is retried once within 50,000 characters, then the drafts
+  stay in memory without an alarm. A stamp from the future (the clock was set back)
+  counts as now, and any write re-stamps it, so it can be overwritten and expires.
+  Two windows on one profile: per key the latest write wins, a window deletes only the
+  copy it loaded or last wrote (compare-and-delete on `savedAt`) and never an entry it
+  was not told about, and after a write it knows only what storage then holds exactly
+  as it holds it. There is no `storage`-event sync, so another window's newer draft
+  appears on this window's next load, and two windows editing one target each keep
+  their own text on screen. Electron commits DOM storage in `will-quit`
+  (`session.defaultSession.flushStorageData()`), after every window has closed and
+  run its `pagehide` save. Not covered: a crash within the 300 ms before a save or
+  before Chromium commits it, another browser or profile, the viewer opened at its
+  other address (`localhost` and `127.0.0.1` are separate origins), a private window,
+  and clearing site data. `test/drafts.test.ts` and `test/dom/durable-drafts.test.ts`
+  pin it; the DOM file removes a closed page's unload listeners itself, because jsdom
+  keeps every boot's on one window.
 - **Dashboard focus must not freeze monitoring detail.** Mount the structural frame
   and native range selector once, then refresh ownership, dispatch, recent outcomes
   and history through the ambient painter as well as headline signals. Preserve the
@@ -2071,7 +2143,9 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   all agents and All action types, and no expanded card. Project/agent filters are
   window-local; the boot path removes the two legacy localStorage keys so an older build
   cannot strand a new build behind a stale lens. Explicit notification/hash deep links are
-  the exception: they scope to and open their target. This keeps the global badge and the
+  the exception: they scope to and open their target. A draft restored at boot (#279) is
+  a second exception, without a tab switch or focus: the newest restored queue draft
+  reopens its card, and a fold holding a restored draft opens once. This keeps the global badge and the
   first visible list honest about the same cross-project workload. Sort order is a saved
   queue display preference *(#221)*, because ordering never hides anything: Settings →
   Default sort order (`agent-inbox-default-sort`; an unknown value reads as Priority) seeds

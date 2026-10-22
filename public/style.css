@@ -1489,7 +1489,8 @@ body:has(.nrow[data-open="1"]) .inspector-empty { display: none; }
 .copy-settings { padding-bottom: 18px; border-bottom: 1px solid var(--app-border); }
 .link-settings { padding-bottom: 18px; border-bottom: 1px solid var(--app-border); }
 .link-rules { display: grid; gap: 8px; margin: 8px 0 12px; }
-.link-rule { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 220px) auto; align-items: center; gap: 10px; }
+/* A fixed third column, so a row without Remove keeps its select in line. */
+.link-rule { display: grid; grid-template-columns: minmax(0, 1fr) minmax(120px, 220px) 76px; align-items: center; gap: 10px; }
 .link-rule-label { font-size: 12.5px; overflow-wrap: anywhere; }
 .link-rule select, .link-add-type input {
   min-width: 0;

@@ -393,9 +393,14 @@ describe('app.js wires the source chips without re-implementing the escaping', (
   it('load() fetches /api/links, defensively enough that an old server cannot blank the page', () => {
     const start = js.indexOf('async function load()')
     const fn = js.slice(start, js.indexOf('\nasync function postJSON('))
-    expect(fn).toContain('/api/links')
-    expect(fn).toMatch(/links/)
-    expect(fn).toContain('.catch(() => [])')
+    // #288: a conditional snapshot, its body read after the boot decision…
+    expect(fn).toContain("readSnapshot('/api/links').then(marked)")
+    expect(fn).toContain('linksBody(linksRead)')
+    // …and any failure, a refused body included, is no links rather than a failed tick
+    // (test/dom/poll-concurrency.test.ts drives each one).
+    const helperStart = js.indexOf('async function linksBody(')
+    const helper = js.slice(helperStart, js.indexOf('\n}', helperStart))
+    expect(helper).toMatch(/catch \{\s*return \[\]\s*\}/)
   })
 
   it('rebuilds linkIndex in the ambient frame before editable renderers run', () => {

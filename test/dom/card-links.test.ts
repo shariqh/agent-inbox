@@ -65,18 +65,30 @@ function clickPrevented(el: Element, init: MouseEventInit = {}): boolean {
 
 type LinkAnswer = (request: { kind: string }) => Promise<Record<string, unknown>>
 
+// The desktop app's bridge; `files` is main's answer to whether this page is
+// the viewer the app started and owns.
 function bridge(answer: LinkAnswer = async (request) => (request.kind === 'file'
   ? { ok: true, action: 'revealed', reason: 'blocked' }
-  : { ok: true, action: 'opened' })) {
+  : { ok: true, action: 'opened' }), { files = true }: { files?: boolean } = {}) {
   const open = vi.fn(answer)
-  Object.defineProperty(window, 'agentInboxLinks', { configurable: true, value: { open } })
-  return open
+  const filesAvailable = vi.fn(async () => files)
+  Object.defineProperty(window, 'agentInboxLinks', { configurable: true, value: { open, filesAvailable } })
+  return Object.assign(open, { filesAvailable })
 }
+
+function clipboard() {
+  const writeText = vi.fn(async () => undefined)
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+  return writeText
+}
+
+const fileCalls = (open: ReturnType<typeof bridge>) => open.mock.calls.filter(([request]) => request.kind === 'file')
 
 const status = () => document.getElementById('linkOpenStatus')?.textContent ?? ''
 
 describe('the Links strip (issue #300)', () => {
   it('lists the card’s links under its origin: own PR and issue first, then first appearance, once each', async () => {
+    bridge()
     db = freshDb()
     const id = seed(db)
     seedPr(db)
@@ -264,13 +276,93 @@ describe('opening a link (issue #300)', () => {
     expect(status()).toMatch(/^Shown in .+: this type isn’t opened automatically\.$/)
   })
 
+  it('in a viewer the app does not own, a file link copies its path and says why; web links still open', async () => {
+    const open = bridge(undefined, { files: false })
+    const writeText = clipboard()
+    db = freshDb()
+    const id = seed(db)
+    await openInspector(db, id)
+    await pollTick()
+    const strip = stripOf(cardOf(id))!
+    const chip = strip.querySelector<HTMLElement>('button[data-link-kind="file"]')!
+    expect(chip.title).toBe('Copy path: /Users/s/docs/spec.md')
+    expect(cardOf(id)!.querySelector<HTMLElement>('.card-tldr-body .file-link')!.title).toBe('Copy path: /Users/s/docs/spec.md')
+
+    click(chip)
+    await settle()
+    expect(writeText).toHaveBeenCalledWith('/Users/s/docs/spec.md')
+    expect(status()).toBe('Copied the path. File links open only in Agent Inbox’s own viewer.')
+    expect(fileCalls(open)).toEqual([])
+
+    expect(clickPrevented(stripOf(cardOf(id))!.querySelector('a[data-link-kind="web"]')!)).toBe(true)
+    expect(open).toHaveBeenLastCalledWith({ kind: 'web', url: 'https://example.com/guide' })
+  })
+
+  it('in its own viewer, a file link opens, and copies instead if main refuses it', async () => {
+    let owned = true
+    const open = bridge(async (request) => (request.kind === 'web' || owned
+      ? { ok: true, action: 'opened' }
+      : { ok: false, reason: 'unowned' }))
+    const writeText = clipboard()
+    db = freshDb()
+    const id = seed(db)
+    await openInspector(db, id)
+    await pollTick()
+    const chip = () => stripOf(cardOf(id))!.querySelector<HTMLElement>('button[data-link-kind="file"]')!
+    expect(chip().title).not.toMatch(/^Copy path/)
+    click(chip())
+    await settle()
+    expect(fileCalls(open)).toEqual([[{ kind: 'file', path: '/Users/s/docs/spec.md', reveal: false }]])
+    expect(writeText).not.toHaveBeenCalled()
+
+    // main is the boundary: a page it no longer owns is refused whatever it was told
+    owned = false
+    click(chip())
+    await settle()
+    expect(fileCalls(open)).toHaveLength(2)
+    expect(writeText).toHaveBeenCalledWith('/Users/s/docs/spec.md')
+    expect(status()).toBe('Copied the path. File links open only in Agent Inbox’s own viewer.')
+    await pollTick()
+    expect(chip().title).toBe('Copy path: /Users/s/docs/spec.md')
+  })
+
+  it('asks main again when Settings opens, and before copying, as a reload’s re-proof can finish late', async () => {
+    const open = bridge(undefined, { files: false })
+    const writeText = clipboard()
+    db = freshDb()
+    const id = seed(db)
+    await openInspector(db, id)
+    expect(open.filesAvailable).toHaveBeenCalledOnce()
+
+    open.filesAvailable.mockResolvedValue(true)
+    click(document.getElementById('gear'))
+    await settle()
+    expect(open.filesAvailable).toHaveBeenCalledTimes(2)
+    click(document.getElementById('gear'))
+    await settle()
+    await pollTick()
+    expect(stripOf(cardOf(id))!.querySelector<HTMLElement>('button[data-link-kind="file"]')!.title).not.toMatch(/^Copy path/)
+
+    // told no at boot, then granted without Settings: a click asks first, and opens
+    open.filesAvailable.mockResolvedValue(false)
+    click(document.getElementById('gear'))
+    await settle()
+    click(document.getElementById('gear'))
+    await settle()
+    open.filesAvailable.mockResolvedValue(true)
+    click(stripOf(cardOf(id))!.querySelector('button[data-link-kind="file"]'))
+    await settle()
+    expect(fileCalls(open)).toEqual([[{ kind: 'file', path: '/Users/s/docs/spec.md', reveal: false }]])
+    expect(writeText).not.toHaveBeenCalled()
+  })
+
   it('in a browser, a file link copies its path and says why; web links keep their own behaviour', async () => {
-    const writeText = vi.fn(async () => undefined)
-    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+    const writeText = clipboard()
     db = freshDb()
     const id = seed(db)
     const card = await openInspector(db, id)
     const strip = stripOf(card)!
+    expect(strip.querySelector<HTMLElement>('button[data-link-kind="file"]')!.title).toBe('Copy path: /Users/s/docs/spec.md')
 
     click(strip.querySelector('button[data-link-kind="file"]'))
     await settle()

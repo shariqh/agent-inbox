@@ -304,13 +304,17 @@ export function textLinkHtml(url, label, kind = 'web') {
 // escaped data- attribute; public/link-open.js asks Electron main to open it,
 // and main alone decides what may open. Inline it is a role="button" anchor
 // with no href, so its text still reads and selects as part of the sentence.
+// Where a click copies the path instead (a browser, or a viewer the app does
+// not own), `copy` says so in its title.
 const LINK_KINDS = { web: 'Web', pr: 'PR', issue: 'Issue', file: 'File' }
 const linkKind = (kind) => (Object.hasOwn(LINK_KINDS, kind) && kind !== 'file' ? kind : 'web')
 
-export function fileLinkHtml(path, label, title) {
+const fileTitle = (path, title, copy) => (copy ? `Copy path: ${path}` : title || path)
+
+export function fileLinkHtml(path, label, title, copy = false) {
   if (typeof path !== 'string' || !path) return esc(label)
   return `<a class="structured-link file-link" role="button" tabindex="0" data-link-kind="file" data-link-path="${esc(path)}"` +
-    ` title="${esc(title || path)}">${esc(label)}</a>`
+    ` title="${esc(fileTitle(path, title, copy))}">${esc(label)}</a>`
 }
 
 const STRIP_VISIBLE = 6
@@ -322,10 +326,10 @@ const COPY_ICON = '<svg class="link-action-icon" viewBox="0 0 16 16" aria-hidden
 
 // In the desktop app (`actions`), a file chip also offers Reveal and Copy path:
 // two buttons carrying the same escaped path, never an href.
-function fileChipHtml(link, inner, actions) {
+function fileChipHtml(link, inner, actions, copyFiles) {
   const path = esc(link.path)
   const chip = `<button type="button" class="src-chip tone-link" data-link-kind="file" data-link-path="${path}"` +
-    ` title="${esc(link.title || link.path)}">${inner}</button>`
+    ` title="${esc(fileTitle(link.path, link.title, copyFiles))}">${inner}</button>`
   if (!actions || typeof actions.reveal !== 'string') return chip
   return `<span class="link-file" role="group" aria-label="${esc(`File ${link.label}`)}">${chip}` +
     `<button type="button" class="link-file-action" data-link-action="reveal" data-link-path="${path}"` +
@@ -334,12 +338,12 @@ function fileChipHtml(link, inner, actions) {
     ` title="Copy path" aria-label="${esc(`Copy path: ${link.label}`)}">${COPY_ICON}</button></span>`
 }
 
-function linkChipHtml(link, actions) {
+function linkChipHtml(link, actions, copyFiles) {
   if (!link || !Object.hasOwn(LINK_KINDS, link.kind)) return ''
   const inner = `<span class="link-kind">${esc(LINK_KINDS[link.kind])}</span> <span class="link-label">${esc(link.label)}</span>`
   if (link.kind === 'file') {
     if (typeof link.path !== 'string' || !link.path) return ''
-    return fileChipHtml(link, inner, actions)
+    return fileChipHtml(link, inner, actions, copyFiles)
   }
   if (!safeHttpUrl(link.url)) return ''
   return chipHtml(link.url, 'link', inner, link.title || '', true, `data-link-kind="${esc(link.kind)}"`)
@@ -348,9 +352,10 @@ function linkChipHtml(link, actions) {
 // The compact Links strip at the top of an open card (§2 of the issue): every
 // link the card's text shows, the item's own PR and issue first, each with
 // its kind and a short label; past the first few, a "+N more" disclosure whose
-// open state the caller keeps by `key` across rebuilds.
-export function linkStripHtml(links, { key = '', open = false, actions = null } = {}) {
-  const chips = (Array.isArray(links) ? links : []).map((link) => linkChipHtml(link, actions)).filter(Boolean)
+// open state the caller keeps by `key` across rebuilds. `copyFiles`: a file
+// chip's click copies its path here (see fileLinkHtml).
+export function linkStripHtml(links, { key = '', open = false, actions = null, copyFiles = false } = {}) {
+  const chips = (Array.isArray(links) ? links : []).map((link) => linkChipHtml(link, actions, copyFiles)).filter(Boolean)
   if (!chips.length) return ''
   const rest = chips.slice(STRIP_VISIBLE)
   const more = rest.length

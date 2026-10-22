@@ -65,8 +65,11 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   default's active plans that hold a blocked row, in its order, each narrowed to
   those rows, every plan field and `progress` otherwise the default's),
   `/api/items/history` (issue #184, below), likewise its own registration and
-  validator, and `/api/issues` (issue #103, below), the seventh. Any other query
-  string keeps the default items or boards response. The watcher reads both
+  validator, `/api/issues` (issue #103, below), the seventh, and `/api/links`
+  (issue #288), the eighth: the cached PR state, whose bytes depend on the
+  database alone because the PR poller writes them through `store.ts` and the
+  previews it keeps follow open items and active plans. Any other query string
+  keeps the default items or boards response. The dock watcher reads its two
   projections through `electron/conditional-read.cjs`: each read sends the
   validator its last 200 carried and reuses what it parsed on a 304, an untagged
   answer (an older viewer) is never held, and a failure drops what was held. An
@@ -105,10 +108,12 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   full-fetch behavior, malformed replies fail explicitly, and no snapshot content
   is persisted to browser storage. Derive mutable view state rather than changing
   authoritative cached records. A poll tick starts its eight reads together (#161)
-  and applies nothing until all settle: history, closed projects, links and the
-  sub-issue graph (#103) keep their fallbacks, any other failure still fails the
-  whole tick (reported in the old serial order) without blanking the frame, and
-  `loadGeneration` still discards an older tick that finishes late.
+  and applies nothing until all settle: history, closed projects, links (read as a
+  snapshot since #288, its body through `linksBody`, so a 404, a network error or
+  a refused body is no links) and the sub-issue graph (#103) keep their
+  fallbacks, any other failure still fails the whole tick (reported in the old
+  serial order) without blanking the frame, and `loadGeneration` still discards
+  an older tick that finishes late.
 - **Closed history is paged out of the default items snapshot (issue #184).**
   `/api/items` carries every open item, the `RECENT_CLOSED_ITEMS` (50) most
   recently TOUCHED closed items (`listItemsPage`: the newest of every item stamp)
@@ -407,8 +412,19 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   `writeClipboard` and says a browser cannot open local files. `electron/link-open.cjs`
   decides, testable without Electron: the sender is the viewer window's exact `webContents`,
   its top frame, on the viewer origin (the update channel's non-install check plus the top
-  frame; not the install path's ownership proof, because opening never runs code, so links
-  work in a reused viewer too); the request has exactly its keys; a web link is http(s) by
+  frame), which is all a web link needs, so web links work in a reused viewer too. **A local
+  file (open, reveal, Quick Look) also needs the window to show the viewer this app started
+  and proved it owns**: the window's `createInstallBinding()` holds a third grant, `files`
+  (`filesAllowed: () => viewerOwned`, applied as `fileLinkWebContentsId`), revoked by every
+  later navigation and re-proved like installs (#216), so a reused or failed-over viewer never
+  gets it; main passes `filesPermitted` and `openLinkRequest` refuses a file request without
+  it (`unowned`) before the path is even read. `agentInboxLinks.filesAvailable()` reads the
+  grant (`agent-inbox:link-files-available` awaits `installBinding.settled()`), asked once per
+  page load, again when Settings opens, and again before a file link copies instead of
+  opening; where it is false (and in a browser) `fileLinksCopy()` makes file links say "Copy
+  path" in their title and a click copies the path with "File links open only in Agent
+  Inbox’s own viewer". The UI is only a hint: main's refusal is the boundary, and a refused
+  click falls back to copying. The request has exactly its keys; a web link is http(s) by
   `URL` and only its normalized href reaches `shell.openExternal`; a file path is absolute
   after `~/`, normalized, control-free, and judged by its FINAL target after `realpath`:
   missing is reported, a folder or `.app` is only revealed, a denied extension on the link or
@@ -436,7 +452,10 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   the view's `systemDefault` says which, an added type off the list starts as Reveal, and a stored
   System default off the list reads as Reveal); a denied type can never get one. The
   renderer's `agentInboxLinkSettings` bridge (get, setHandler, chooseApp, addType, removeType,
-  exact arity, same sender check as opening) names a rule id and a handler, NEVER an app path:
+  exact arity, same sender check as opening and the same owned-viewer `files` grant: any other
+  page gets `{ available: false, rules: [], error: 'unowned' }`, after any re-proof in flight,
+  and the section says where it works; Settings asks again each time it opens,
+  `refreshLinkSettings()`) names a rule id and a handler, NEVER an app path:
   `app` comes only from `chooseApp`, which asks main's own `dialog.showOpenDialog` (`openFile`,
   `.app` filter), and the view the renderer gets names the app, never its path. ONE check,
   `launchableApp` in `link-open.cjs`, judges an app when the picker returns it AND at every launch
@@ -457,8 +476,11 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   navigate paths (`openWebLink(url, shell, { readRules })`, where an unreadable file means the
   system defaults); nothing there can say why, so a chosen browser that is gone, refused or fails
   to start falls back to `shell.openExternal` on the already-checked href. Off macOS nothing is
-  offered and links keep the system defaults. In the desktop app (`linkFileActions()`), a strip's file chip also gets
-  Reveal and Copy path buttons (`data-link-action`), never in a browser.
+  offered and links keep the system defaults. In the viewer this app owns (`linkFileActions()`
+  needs main's `filesAvailable()` yes), a strip's file chip also gets Reveal and Copy path
+  buttons (`data-link-action`), never in a browser or a reused viewer. Opening, a rule's app or
+  Quick Look, a Reveal rule and a Reveal request are all file requests, so `openLinkRequest`
+  refuses each of them as `unowned` without the grant, before any rule is read.
 - **`src/prstate.ts` is VIEWER-PROCESS-ONLY (issue #30).** It and `src/issue-poller.ts` (#103, below)
   are the only modules that shell out to a network tool (`gh`), so `src/mcp.ts`/`src/mcp-server.ts`
   must never import either, directly or transitively — a subprocess that inherited a stream, or gh's update notifier, would corrupt the MCP
@@ -1788,8 +1810,9 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   (3) A newer navigation, a renderer crash or the window closing discards a proof still
   running; a crash revokes and the window's next load may re-bind under the same proof; a
   closed window never binds again; nothing binds once a quit has begun (#205). (4) Setup
-  is granted only while `setupInstallEnabled`, update installs only while `viewerOwned`;
-  with neither (a reused or failed-over viewer) nothing is probed. The UI is honest as well:
+  is granted only while `setupInstallEnabled`, update installs and (#300) local file links
+  only while `viewerOwned`; with none of them (a reused or failed-over viewer) nothing is
+  probed. The UI is honest as well:
   the controller publishes `available.installPermitted` from main's
   `updateInstallPermitted()` (the binding the install IPC checks, and no quit), the preload
   requires a boolean that implies `installable`, and the binding's `apply` calls

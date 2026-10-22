@@ -11,26 +11,36 @@
 // a web link keeps its native behaviour, which main's window-open handler
 // checks the same way.
 //
-// A browser has no such bridge. Web links keep their ordinary new-tab
-// behaviour, and a file link copies its path, because a page cannot open a
-// local file. In the desktop app a file chip also has Reveal and Copy path
-// (part 2). Nothing here reaches attention, a badge or a count.
+// Local files open only in the viewer the app itself started and proved it
+// owns. agentInboxLinks.filesAvailable() says whether this page is that viewer,
+// asked once per page load and again when Settings opens (and before copying
+// instead, since a reload's re-proof can finish late); main refuses file
+// requests from any other page whatever this module thinks. A browser has no
+// bridge at all. In both, web links keep their ordinary behaviour and a file
+// link copies its path instead, saying why, and its title says "Copy path"
+// (fileLinksCopy(), read when cards are drawn). Only in that viewer does a file
+// chip also get Reveal and Copy path (part 2, linkFileActions()). Nothing here
+// reaches attention, a badge or a count.
 import { writeClipboard } from './structured-copy.js'
 
 const BINDING = Symbol.for('agent-inbox.link-open')
 const STATUS_MS = 2600
 const NEVER_OPENED = new Set(['blocked', 'executable', 'special'])
+const BROWSER_NOTE = 'A browser can’t open local files.'
+const UNOWNED_NOTE = 'File links open only in Agent Inbox’s own viewer.'
 
 const finderName = (platform) => (/^Mac/i.test(platform) ? 'Finder' : 'your file manager')
+const usableBridge = (found) => (found && typeof found.open === 'function' ? found : null)
 
-// The secondary actions a file chip gets, or null in a browser, which can
-// neither reveal a file nor needs a second way to copy its path.
+// The secondary actions a file chip gets, or null where files do not open: in
+// a browser, which can neither reveal a file nor needs a second way to copy
+// its path, and in a viewer main has not said is its own.
 export function linkFileActions({
   bridge = () => globalThis.agentInboxLinks,
   platform = globalThis.navigator?.platform ?? '',
+  documentRef = globalThis.document,
 } = {}) {
-  const found = bridge()
-  if (!found || typeof found.open !== 'function') return null
+  if (!usableBridge(bridge()) || documentRef?.[BINDING]?.permission !== true) return null
   return { reveal: /^Mac/i.test(platform) ? 'Reveal in Finder' : 'Show in folder' }
 }
 
@@ -70,16 +80,28 @@ export function linkOpenMessage(result, request, { finder = 'Finder' } = {}) {
 
 // One set of listeners per document; a later viewer boot in the same document
 // replaces the handlers they forward to instead of stacking another set.
-function bind(documentRef, handlers) {
+function binding(documentRef) {
   const existing = documentRef[BINDING]
-  if (existing) {
-    existing.handlers = handlers
-    return
-  }
-  const binding = { handlers }
-  documentRef.addEventListener('click', (event) => binding.handlers.click(event), true)
-  documentRef.addEventListener('keydown', (event) => binding.handlers.keydown(event), true)
-  documentRef[BINDING] = binding
+  if (existing) return existing
+  const created = { handlers: null, permission: null, refresh: () => Promise.resolve(false) }
+  documentRef.addEventListener('click', (event) => created.handlers?.click(event), true)
+  documentRef.addEventListener('keydown', (event) => created.handlers?.keydown(event), true)
+  documentRef[BINDING] = created
+  return created
+}
+
+// Whether a file link copies its path here instead of opening: always in a
+// browser, and in the app once main has said this page is not its own viewer.
+export function fileLinksCopy({ documentRef = globalThis.document, bridge = () => globalThis.agentInboxLinks } = {}) {
+  if (!usableBridge(bridge())) return true
+  return documentRef?.[BINDING]?.permission === false
+}
+
+// Asks main again whether this page may open local files (Settings opening,
+// as Setup does). Resolves with the answer.
+export function refreshLinkPermission(documentRef = globalThis.document) {
+  const bound = documentRef?.[BINDING]
+  return bound ? bound.refresh() : Promise.resolve(false)
 }
 
 const linkElement = (event) => {
@@ -108,25 +130,54 @@ export function initLinkOpening({
       delete region.dataset.state
     }, STATUS_MS)
   }
-  const api = () => {
-    const found = bridge()
-    return found && typeof found.open === 'function' ? found : null
-  }
-  const open = async (links, request) => {
-    let result
-    try {
-      result = await links.open(request)
-    } catch {
-      result = { ok: false, reason: 'failed' }
+  const api = () => usableBridge(bridge())
+  const bound = binding(documentRef)
+  // what this page may do is asked anew on every boot
+  bound.permission = null
+  let asking = null
+  const readPermission = (links) => {
+    if (!links || typeof links.filesAvailable !== 'function') {
+      bound.permission = false
+      return Promise.resolve(false)
     }
+    const ask = Promise.resolve().then(() => links.filesAvailable()).then((value) => value === true, () => false)
+    asking = ask
+    return ask.then((permitted) => {
+      if (asking === ask) bound.permission = permitted
+      return permitted
+    })
+  }
+  bound.refresh = () => readPermission(api())
+  const send = async (links, request) => {
+    try {
+      return await links.open(request)
+    } catch {
+      return { ok: false, reason: 'failed' }
+    }
+  }
+  const report = (result, request) => {
     show(linkOpenMessage(result, request, { finder }), result && result.ok === true ? 'success' : 'error')
   }
   const copyPath = async (path, note) => {
     const copied = await writeClipboard(documentRef, path).catch(() => false)
-    show(copied ? `Copied the path.${note}` : 'Couldn’t copy the path.', copied ? 'success' : 'error')
+    show(copied ? `Copied the path.${note ? ` ${note}` : ''}` : 'Couldn’t copy the path.', copied ? 'success' : 'error')
+  }
+  // Opens (or, from a chip's Reveal, only reveals) a local file through main,
+  // or copies its path where files do not open.
+  const openFile = async (links, path, reveal) => {
+    // a page told no asks again first: its reload's re-proof may have finished
+    const permitted = bound.permission === true || await readPermission(links)
+    if (!permitted) return copyPath(path, UNOWNED_NOTE)
+    const request = { kind: 'file', path, reveal }
+    const result = await send(links, request)
+    if (result && result.ok === false && result.reason === 'unowned') {
+      bound.permission = false
+      return copyPath(path, UNOWNED_NOTE)
+    }
+    return report(result, request)
   }
 
-  bind(documentRef, {
+  bound.handlers = {
     click(event) {
       const links = api()
       const action = event.target && typeof event.target.closest === 'function' ? event.target.closest('[data-link-action]') : null
@@ -135,7 +186,7 @@ export function initLinkOpening({
         const path = action.dataset.linkPath
         if (!path) return
         if (action.dataset.linkAction === 'copy') void copyPath(path, '')
-        else if (action.dataset.linkAction === 'reveal' && links) void open(links, { kind: 'file', path, reveal: true })
+        else if (action.dataset.linkAction === 'reveal' && links) void openFile(links, path, true)
         return
       }
       const el = linkElement(event)
@@ -144,15 +195,16 @@ export function initLinkOpening({
         event.preventDefault()
         const path = el.dataset.linkPath
         if (!path) return
-        if (links) void open(links, { kind: 'file', path, reveal: false })
-        else void copyPath(path, ' A browser can’t open local files.')
+        if (links) void openFile(links, path, false)
+        else void copyPath(path, BROWSER_NOTE)
         return
       }
       if (!links || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
       const url = el.getAttribute('href')
       if (!url) return
       event.preventDefault()
-      void open(links, { kind: 'web', url })
+      const request = { kind: 'web', url }
+      void send(links, request).then((result) => report(result, request))
     },
     // An inline file link is a role="button" anchor with no href, so Enter and
     // Space do not click it natively.
@@ -163,5 +215,6 @@ export function initLinkOpening({
       event.preventDefault()
       el.click()
     },
-  })
+  }
+  void bound.refresh()
 }

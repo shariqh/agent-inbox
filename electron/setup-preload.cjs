@@ -47,10 +47,13 @@ contextBridge.exposeInMainWorld('agentInboxTheme', {
 // Issue #300: the one method the viewer opens links through. It passes on a
 // fresh copy of a well-formed request and a checked copy of the answer; main
 // re-validates the sender and everything in the request, and alone decides
-// what may open (electron/link-open.cjs).
+// what may open (electron/link-open.cjs). filesAvailable() only reads whether
+// this page may open local files: main says yes only while the window shows the
+// viewer this app started and proved it owns, and refuses file requests
+// otherwise, whatever the page asks.
 const LINK_REASONS = new Set([
   'folder', 'app', 'blocked', 'executable', 'special', 'type', 'requested', 'rule',
-  'invalid', 'missing', 'inaccessible', 'failed', 'unavailable', 'app-missing', 'app-refused',
+  'invalid', 'missing', 'inaccessible', 'failed', 'unavailable', 'unowned', 'app-missing', 'app-refused',
 ])
 
 function linkRequest(request) {
@@ -79,13 +82,17 @@ contextBridge.exposeInMainWorld('agentInboxLinks', {
     if (!request) return Promise.resolve({ ok: false, reason: 'invalid' })
     return ipcRenderer.invoke('agent-inbox:open-link', request).then(linkResult, () => ({ ok: false, reason: 'failed' }))
   },
+  filesAvailable(...args) {
+    if (args.length !== 0) return Promise.resolve(false)
+    return ipcRenderer.invoke('agent-inbox:link-files-available').then((value) => value === true, () => false)
+  },
 })
 
 // Issue #300 part 2: Settings → Links. Main keeps the rules; the renderer names
 // a rule and a handler, never an app path, because an app comes only from
 // main's own native picker. Each call answers with a checked copy of the view.
 const SETTINGS_HANDLERS = new Set(['default', 'quicklook', 'reveal', 'app'])
-const SETTINGS_ERRORS = new Set(['invalid', 'covered', 'blocked', 'exists', 'full', 'not-an-app', 'runs-code', 'newer', 'failed'])
+const SETTINGS_ERRORS = new Set(['invalid', 'covered', 'blocked', 'exists', 'full', 'not-an-app', 'runs-code', 'newer', 'failed', 'unowned'])
 
 function settingsView(value) {
   if (!value || typeof value !== 'object' || typeof value.available !== 'boolean' || !Array.isArray(value.rules)) return null

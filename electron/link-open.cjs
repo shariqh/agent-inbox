@@ -9,7 +9,9 @@
 //
 //   Web links: http and https only, parsed with URL; only the normalized href
 //   ever reaches shell.openExternal.
-//   Files: an absolute path after expanding ~/, normalized, free of NUL and
+//   Files: only for the viewer this app started and proved it owns (main's
+//   `filesPermitted`); from a reused viewer a file request is refused unread.
+//   Then an absolute path after expanding ~/, normalized, free of NUL and
 //   control characters. Symlinks are resolved and the FINAL target is judged:
 //     missing                                        → reported as missing
 //     a folder or app bundle                         → revealed, never opened
@@ -377,11 +379,15 @@ function linkRequest(value) {
 }
 
 // Never rejects: the renderer gets { ok, action?, reason? } and says what
-// happened. `rules`, `platform` and `spawnImpl` (part 2) apply Settings →
-// Links on macOS, and only to what the safety policy lets open.
-async function openLinkRequest(raw, { shell, homeDir, fsp, execFileImpl, rules = null, platform = process.platform, spawnImpl = null } = {}) {
+// happened. `filesPermitted` is main's word that the window shows the viewer
+// this app started and proved it owns; without it no local path is even looked
+// at ('unowned'), while web links still open. `rules`, `platform` and
+// `spawnImpl` (part 2) apply Settings → Links on macOS, and only to what the
+// safety policy lets open.
+async function openLinkRequest(raw, { shell, homeDir, fsp, execFileImpl, filesPermitted = false, rules = null, platform = process.platform, spawnImpl = null } = {}) {
   const request = linkRequest(raw)
   if (!request) return { ok: false, reason: 'invalid' }
+  if (request.kind === 'file' && filesPermitted !== true) return { ok: false, reason: 'unowned' }
   try {
     if (request.kind === 'web') {
       const href = externalWebUrl(request.url)
@@ -406,13 +412,12 @@ async function openLinkRequest(raw, { shell, homeDir, fsp, execFileImpl, rules =
   }
 }
 
-// The update channel's sender check, the strictest one main has that does not
-// depend on install ownership: the exact webContents of the app's one viewer
-// window, still alive, whose sending frame is on the viewer's origin. A link
-// request must also come from that window's top frame. Opening a link never
-// runs code (main opens only allow-listed documents and reveals the rest), so
-// it does not need the install path's ownership proof, and links keep working
-// in a reused viewer.
+// The update channel's sender check: the exact webContents of the app's one
+// viewer window, still alive, whose sending frame is on the viewer's origin. A
+// link request must also come from that window's top frame. This is all a web
+// link needs, so web links keep working in a reused viewer; a local file also
+// needs the window to show the viewer this app owns (`filesPermitted`, from the
+// same binding as Setup and update installs).
 function isTrustedLinkSender({ sender, senderFrame, window, viewerUrl }) {
   try {
     if (!window || window.isDestroyed() || window.webContents.isDestroyed()) return false

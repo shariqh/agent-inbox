@@ -138,6 +138,26 @@ describe('Settings → Links (issue #300 part 2)', () => {
     expect(section()?.querySelector('select, form')).toBeNull()
   })
 
+  it('in a viewer the app does not own, says where the setting works, and asks again when Settings opens', async () => {
+    const api = settingsBridge({ available: false, rules: [], error: 'unowned' })
+    db = freshDb()
+    await bootApp(db)
+    expect(api.get).toHaveBeenCalledOnce()
+    expect(section()?.querySelector('.setup-hint')?.textContent)
+      .toBe('Choosing how links open works only in Agent Inbox’s own viewer, not in one it found already running.')
+    expect(section()?.querySelector('.link-settings-message')?.textContent).toBe('')
+    expect(section()?.querySelector('select, form')).toBeNull()
+
+    // main has re-proved the viewer since: opening Settings shows the rules
+    api.get.mockResolvedValue({ available: true, rules: [WEB, MARKDOWN] })
+    click(document.getElementById('gear'))
+    await settle()
+    expect(api.get).toHaveBeenCalledTimes(2)
+    expect(section()?.querySelector('.setup-hint')?.textContent).toMatch(/^Links you open from the Inbox use these/)
+    expect(select('markdown')).not.toBeNull()
+    expect(section()?.querySelector('form.link-add-type')).not.toBeNull()
+  })
+
   it('in a browser, only says where the setting lives', async () => {
     db = freshDb()
     await bootApp(db)
@@ -160,7 +180,7 @@ describe('file chip actions (issue #300 part 2)', () => {
   it('in the desktop app, reveals a file through main and copies its path', async () => {
     Object.defineProperty(navigator, 'platform', { configurable: true, value: 'MacIntel' })
     const open = vi.fn(async () => ({ ok: true, action: 'revealed', reason: 'requested' }))
-    Object.defineProperty(window, 'agentInboxLinks', { configurable: true, value: { open } })
+    Object.defineProperty(window, 'agentInboxLinks', { configurable: true, value: { open, filesAvailable: async () => true } })
     const writeText = vi.fn(async () => undefined)
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
     try {
@@ -187,7 +207,7 @@ describe('file chip actions (issue #300 part 2)', () => {
 
   it('says when the app chosen for a type has gone, or is one main refuses to launch', async () => {
     const open = vi.fn(async () => ({ ok: false, reason: 'app-missing' }))
-    Object.defineProperty(window, 'agentInboxLinks', { configurable: true, value: { open } })
+    Object.defineProperty(window, 'agentInboxLinks', { configurable: true, value: { open, filesAvailable: async () => true } })
     const strip = await card()
     click(strip.querySelector('button[data-link-kind="file"]'))
     await settle()
@@ -196,6 +216,27 @@ describe('file chip actions (issue #300 part 2)', () => {
     click(strip.querySelector('button[data-link-kind="file"]'))
     await settle()
     expect(document.getElementById('linkOpenStatus')?.textContent).toBe('Agent Inbox won’t open links with the app chosen in Settings → Links. Choose another there.')
+  })
+
+  it('in a viewer the app does not own, a file chip has neither action, and copies its path', async () => {
+    Object.defineProperty(navigator, 'platform', { configurable: true, value: 'MacIntel' })
+    const open = vi.fn(async () => ({ ok: true, action: 'opened' }))
+    Object.defineProperty(window, 'agentInboxLinks', { configurable: true, value: { open, filesAvailable: async () => false } })
+    const writeText = vi.fn(async () => undefined)
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+    try {
+      const strip = await card()
+      expect(strip.querySelector('.link-file, [data-link-action]')).toBeNull()
+      const chip = strip.querySelector<HTMLElement>('button[data-link-kind="file"]')!
+      expect(chip.title).toBe('Copy path: /Users/s/docs/spec.md')
+      click(chip)
+      await settle()
+      expect(writeText).toHaveBeenCalledWith('/Users/s/docs/spec.md')
+      expect(document.getElementById('linkOpenStatus')?.textContent).toBe('Copied the path. File links open only in Agent Inbox’s own viewer.')
+      expect(open).not.toHaveBeenCalled()
+    } finally {
+      Reflect.deleteProperty(navigator, 'platform')
+    }
   })
 
   it('in a browser, keeps the plain chip, whose click already copies the path', async () => {

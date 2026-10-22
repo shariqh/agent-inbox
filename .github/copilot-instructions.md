@@ -108,7 +108,8 @@ Run the build before `npm run electron`; the development shell starts the built
   cancels and awaits the running install; the renderer stops its per-host loop
   at a step that was cancelled, timed out or could not run (a plain failure,
   such as a missing CLI, continues).
-  Setup and update installs are granted to the window by `createInstallBinding()`
+  Setup and update installs, and opening local files from links (#300), are
+  granted to the window by `createInstallBinding()`
   (#216): bound at its first navigation, revoked by every later one, and granted
   again only after that load commits to the viewer origin and ownership is proven
   again (`reproveOwnership()`), never once a quit has begun. Settings shows
@@ -144,11 +145,15 @@ Run the build before `npm run electron`; the development shell starts the built
 - Conditional viewer snapshots retain only items, the dock watcher's
   `/api/items?scope=attention` and `/api/boards?scope=attention` projections (#156,
   #287; each its own validator, never the default representation's),
-  `/api/items/history` (likewise its own), active/archived boards
-  and the `/api/issues` sub-issue graph (#103, likewise its own; its builder is pure,
-  so its bytes depend on the database alone). `/api/items` and `/api/boards` never
-  carry GitHub data, so issue snapshot writes leave their bytes and validators unchanged.
-  The dock watcher reads both projections conditionally through
+  `/api/items/history` (likewise its own), active/archived boards,
+  the `/api/issues` sub-issue graph (#103, likewise its own; its builder is pure,
+  so its bytes depend on the database alone) and the `/api/links` PR state (#288,
+  likewise its own; the PR poller writes it through `store.ts` and its previews
+  follow open items and active plans, so its bytes depend on the database alone too,
+  and a 404, network error or refused body still means no links). `/api/items` and
+  `/api/boards` never carry GitHub data, so issue snapshot writes leave their bytes
+  and validators unchanged.
+  The dock watcher reads its two projections conditionally through
   `electron/conditional-read.cjs` and still runs the shared predicate every tick,
   because the clock alone changes what it decides.
   Invalidate on same/other-connection writes, schema changes and pickup stamps;
@@ -401,7 +406,10 @@ Run the build before `npm run electron`; the development shell starts the built
   about links reaches attention, a badge or a count. Only Electron main opens
   anything: `public/link-open.js` calls the one preload method
   `agentInboxLinks.open`, and `electron/link-open.cjs` re-checks the sender
-  (the viewer window's top frame on its origin), the request's exact shape,
+  (the viewer window's top frame on its origin; a local file also needs the
+  binding's `files` grant, so only the viewer this app started and owns opens
+  or reveals files, a reused one copies the path and main refuses it as
+  `unowned`; `agentInboxLinks.filesAvailable()` reads the grant), the request's exact shape,
   http(s) only, and a file's final target: folders, apps, denied types
   (launchers, installers, disk images, executables, macro documents, …) and
   any execute bit are only revealed. Opening is an allow-list of common
@@ -422,7 +430,9 @@ Run the build before `npm run electron`; the development shell starts the built
   code file in an editor); System default never does. Launches use argv only
   (`/usr/bin/open -a <app> -- <target>`, `/usr/bin/qlmanage -p <file>`), no
   shell, stdio ignored. On the window's own open path, a chosen browser that
-  fails falls back to the default one.
+  fails falls back to the default one. Rules, Quick Look and Reveal are file
+  requests, so they share the owned-viewer `files` grant, and so do the
+  Settings → Links channels (a reused viewer gets `error: 'unowned'`).
 - The 3-second poll uses the gated `load()`/`renderIfIdle()` path. Its reads
   run concurrently, but a tick applies only after all settle, and only if no newer
   tick has applied and every boot marker agrees. A successful

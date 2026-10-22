@@ -406,7 +406,7 @@ describe('openLinkRequest (issue #300)', () => {
     writeFileSync(join(root, 'a.command'), 'x')
     writeFileSync(join(root, 'a.py'), 'x')
     const { calls, shell } = fakeShell()
-    const deps = { shell, homeDir: root, platform: 'darwin', execFileImpl: fakeXattr().execFileImpl }
+    const deps = { shell, homeDir: root, platform: 'darwin', execFileImpl: fakeXattr().execFileImpl, filesPermitted: true }
     expect(await openLinkRequest({ kind: 'file', path: '~/a.md', reveal: false }, deps)).toEqual({ ok: true, action: 'opened' })
     expect(await openLinkRequest({ kind: 'file', path: join(root, 'a.command'), reveal: false }, deps)).toEqual({ ok: true, action: 'revealed', reason: 'blocked' })
     expect(await openLinkRequest({ kind: 'file', path: join(root, 'a.py'), reveal: false }, deps)).toEqual({ ok: true, action: 'revealed', reason: 'type' })
@@ -420,9 +420,33 @@ describe('openLinkRequest (issue #300)', () => {
     const root = scratchDir('link-open-alias-')
     writeFileSync(join(root, 'notes.md'), BOOKMARK)
     const { calls, shell } = fakeShell()
-    expect(await openLinkRequest({ kind: 'file', path: join(root, 'notes.md'), reveal: false }, { shell, homeDir: root, platform: 'darwin', execFileImpl: fakeXattr().execFileImpl }))
+    expect(await openLinkRequest({ kind: 'file', path: join(root, 'notes.md'), reveal: false }, { shell, homeDir: root, platform: 'darwin', execFileImpl: fakeXattr().execFileImpl, filesPermitted: true }))
       .toEqual({ ok: true, action: 'revealed', reason: 'blocked' })
     expect(calls).toEqual([['showItemInFolder', realpathSync(join(root, 'notes.md'))]])
+  })
+
+  it('opens files only for the viewer this app owns, and web links anywhere', async () => {
+    const root = scratchDir('link-open-unowned-')
+    writeFileSync(join(root, 'a.md'), 'x')
+    // nothing about the path is even looked at
+    const touched: string[] = []
+    const untouched = new Proxy({}, { get(_target, name) { touched.push(String(name)); throw new Error('the filesystem was read') } })
+    const execFileImpl = () => { touched.push('xattr'); throw new Error('xattr ran') }
+    for (const filesPermitted of [false, undefined, 'yes', 1]) {
+      const { calls, shell } = fakeShell()
+      const deps = { shell, homeDir: root, fsp: untouched, platform: 'darwin', execFileImpl, filesPermitted } as never
+      expect(await openLinkRequest({ kind: 'file', path: join(root, 'a.md'), reveal: false }, deps), String(filesPermitted)).toEqual({ ok: false, reason: 'unowned' })
+      expect(await openLinkRequest({ kind: 'file', path: join(root, 'a.md'), reveal: true }, deps)).toEqual({ ok: false, reason: 'unowned' })
+      expect(await openLinkRequest({ kind: 'file', path: '/nowhere/at/all.md', reveal: false }, deps)).toEqual({ ok: false, reason: 'unowned' })
+      expect(await openLinkRequest({ kind: 'web', url: 'https://example.com/pr/1' }, deps)).toEqual({ ok: true, action: 'opened' })
+      expect(calls).toEqual([['openExternal', 'https://example.com/pr/1']])
+    }
+    expect(touched).toEqual([])
+    const { calls, shell } = fakeShell()
+    expect(await openLinkRequest({ kind: 'file', path: join(root, 'a.md'), reveal: false }, {
+      shell, homeDir: root, platform: 'darwin', execFileImpl: fakeXattr().execFileImpl, filesPermitted: true,
+    })).toEqual({ ok: true, action: 'opened' })
+    expect(calls).toEqual([['openPath', realpathSync(join(root, 'a.md'))]])
   })
 
   it.each([
@@ -451,7 +475,7 @@ describe('openLinkRequest (issue #300)', () => {
       openPath: async () => 'no app for this',
       showItemInFolder: () => { throw new Error('nope') },
     }
-    const deps = { shell, homeDir: root, platform: 'darwin', execFileImpl: fakeXattr().execFileImpl }
+    const deps = { shell, homeDir: root, platform: 'darwin', execFileImpl: fakeXattr().execFileImpl, filesPermitted: true }
     expect(await openLinkRequest({ kind: 'web', url: 'https://example.com' }, deps)).toEqual({ ok: false, reason: 'failed' })
     expect(await openLinkRequest({ kind: 'file', path: join(root, 'a.md'), reveal: false }, deps)).toEqual({ ok: false, reason: 'failed' })
     expect(await openLinkRequest({ kind: 'file', path: join(root, 'a.py'), reveal: false }, deps)).toEqual({ ok: false, reason: 'failed' })
@@ -558,7 +582,7 @@ describe('Settings → Links rules, applied after the safety policy (issue #300 
     const { calls, spawnImpl } = fakeSpawn()
     const { calls: shellCalls, shell } = recordingShell()
     const result = await openLinkRequest({ kind: 'file', path: doc, reveal: false }, {
-      shell, homeDir: root, rules: rules({ markdown: { handler: 'app', app } }), platform: 'darwin', execFileImpl: noXattr, spawnImpl,
+      shell, homeDir: root, filesPermitted: true, rules: rules({ markdown: { handler: 'app', app } }), platform: 'darwin', execFileImpl: noXattr, spawnImpl,
     })
     expect(result).toEqual({ ok: true, action: 'opened' })
     expect(calls).toEqual([{ command: '/usr/bin/open', args: ['-a', realApp, '--', doc], options: SPAWN_OPTIONS }])
@@ -569,7 +593,7 @@ describe('Settings → Links rules, applied after the safety policy (issue #300 
     const { root, doc, log } = files()
     const { calls, spawnImpl } = fakeSpawn()
     const { calls: shellCalls, shell } = recordingShell()
-    const deps = { shell, homeDir: root, platform: 'darwin', execFileImpl: noXattr, spawnImpl, rules: rules({ markdown: { handler: 'quicklook' }, types: [{ extension: 'log', handler: 'reveal' }] }) }
+    const deps = { shell, homeDir: root, filesPermitted: true, platform: 'darwin', execFileImpl: noXattr, spawnImpl, rules: rules({ markdown: { handler: 'quicklook' }, types: [{ extension: 'log', handler: 'reveal' }] }) }
     expect(await openLinkRequest({ kind: 'file', path: doc, reveal: false }, deps)).toEqual({ ok: true, action: 'opened' })
     expect(await openLinkRequest({ kind: 'file', path: log, reveal: false }, deps)).toEqual({ ok: true, action: 'revealed', reason: 'rule' })
     expect(calls).toEqual([{ command: '/usr/bin/qlmanage', args: ['-p', doc], options: SPAWN_OPTIONS }])
@@ -583,7 +607,7 @@ describe('Settings → Links rules, applied after the safety policy (issue #300 
     const openWith = fakeXattr(() => 'com.apple.LaunchServices.OpenWith\n').execFileImpl
     for (const handler of [{ handler: 'app', app }, { handler: 'quicklook' }]) {
       const deps = {
-        shell, homeDir: root, platform: 'darwin', execFileImpl: noXattr, spawnImpl,
+        shell, homeDir: root, filesPermitted: true, platform: 'darwin', execFileImpl: noXattr, spawnImpl,
         rules: rules({ markdown: handler, types: [{ extension: 'command', ...handler }] }),
       }
       expect(await openLinkRequest({ kind: 'file', path: script, reveal: false }, deps)).toEqual({ ok: true, action: 'revealed', reason: 'blocked' })
@@ -601,7 +625,7 @@ describe('Settings → Links rules, applied after the safety policy (issue #300 
     const { calls, spawnImpl } = fakeSpawn()
     const { calls: shellCalls, shell } = recordingShell()
     const deps = {
-      shell, homeDir: root, platform: 'darwin', execFileImpl: noXattr, spawnImpl,
+      shell, homeDir: root, filesPermitted: true, platform: 'darwin', execFileImpl: noXattr, spawnImpl,
       rules: rules({ types: [{ extension: 'py', handler: 'app', app }, { extension: 'sh', handler: 'quicklook' }, { extension: 'rtf', handler: 'default' }] }),
     }
     expect(await openLinkRequest({ kind: 'file', path: code, reveal: false }, deps)).toEqual({ ok: true, action: 'opened' })
@@ -624,7 +648,7 @@ describe('Settings → Links rules, applied after the safety policy (issue #300 
     const { shell } = recordingShell()
     writeFileSync(join(root, 'alias.py'), BOOKMARK)
     const deps = {
-      shell, homeDir: root, platform: 'darwin', execFileImpl: noXattr, spawnImpl,
+      shell, homeDir: root, filesPermitted: true, platform: 'darwin', execFileImpl: noXattr, spawnImpl,
       rules: rules({ types: [{ extension: 'py', handler: 'app', app }] }),
     }
     expect(await openLinkRequest({ kind: 'file', path: join(root, 'alias.py'), reveal: false }, deps)).toEqual({ ok: true, action: 'revealed', reason: 'blocked' })
@@ -634,12 +658,32 @@ describe('Settings → Links rules, applied after the safety policy (issue #300 
     expect(calls).toEqual([])
   })
 
+  it('refuses every local file path, rules, Quick Look and Reveal included, in a viewer this app does not own', async () => {
+    const { root, app, doc, log } = files()
+    const { calls, spawnImpl } = fakeSpawn()
+    const { calls: shellCalls, shell } = recordingShell()
+    const deps = {
+      shell, homeDir: root, platform: 'darwin', execFileImpl: noXattr, spawnImpl,
+      rules: rules({ markdown: { handler: 'quicklook' }, types: [{ extension: 'log', handler: 'reveal' }, { extension: 'txt', handler: 'app', app }] }),
+    }
+    writeFileSync(join(root, 'notes.txt'), 'x')
+    for (const [path, reveal] of [[doc, false], [log, false], [join(root, 'notes.txt'), false], [doc, true]] as Array<[string, boolean]>) {
+      expect(await openLinkRequest({ kind: 'file', path, reveal }, deps), `${path} ${reveal}`).toEqual({ ok: false, reason: 'unowned' })
+      expect(await openLinkRequest({ kind: 'file', path, reveal }, { ...deps, filesPermitted: false })).toEqual({ ok: false, reason: 'unowned' })
+    }
+    expect(calls).toEqual([])
+    expect(shellCalls).toEqual([])
+    // the same rules apply once main says the viewer is its own
+    expect(await openLinkRequest({ kind: 'file', path: doc, reveal: false }, { ...deps, filesPermitted: true })).toEqual({ ok: true, action: 'opened' })
+    expect(calls.map((call) => call.command)).toEqual(['/usr/bin/qlmanage'])
+  })
+
   it('reveals on request whatever the rule says', async () => {
     const { root, doc } = files()
     const { calls, spawnImpl } = fakeSpawn()
     const { calls: shellCalls, shell } = recordingShell()
     expect(await openLinkRequest({ kind: 'file', path: doc, reveal: true }, {
-      shell, homeDir: root, platform: 'darwin', execFileImpl: noXattr, spawnImpl, rules: rules({ markdown: { handler: 'quicklook' } }),
+      shell, homeDir: root, filesPermitted: true, platform: 'darwin', execFileImpl: noXattr, spawnImpl, rules: rules({ markdown: { handler: 'quicklook' } }),
     })).toEqual({ ok: true, action: 'revealed', reason: 'requested' })
     expect(calls).toEqual([])
     expect(shellCalls).toEqual([['showItemInFolder', doc]])
@@ -650,14 +694,14 @@ describe('Settings → Links rules, applied after the safety policy (issue #300 
     const { shell } = recordingShell()
     const markdownApp = rules({ markdown: { handler: 'app', app } })
     const failing = fakeSpawn({ fail: true })
-    expect(await openLinkRequest({ kind: 'file', path: doc, reveal: false }, { shell, homeDir: root, platform: 'darwin', execFileImpl: noXattr, rules: markdownApp, spawnImpl: failing.spawnImpl }))
+    expect(await openLinkRequest({ kind: 'file', path: doc, reveal: false }, { shell, homeDir: root, filesPermitted: true, platform: 'darwin', execFileImpl: noXattr, rules: markdownApp, spawnImpl: failing.spawnImpl }))
       .toEqual({ ok: false, reason: 'failed' })
     const refusing = fakeSpawn({ exitCode: 1 })
-    expect(await openLinkRequest({ kind: 'file', path: doc, reveal: false }, { shell, homeDir: root, platform: 'darwin', execFileImpl: noXattr, rules: markdownApp, spawnImpl: refusing.spawnImpl }))
+    expect(await openLinkRequest({ kind: 'file', path: doc, reveal: false }, { shell, homeDir: root, filesPermitted: true, platform: 'darwin', execFileImpl: noXattr, rules: markdownApp, spawnImpl: refusing.spawnImpl }))
       .toEqual({ ok: false, reason: 'failed' })
     rmSync(app, { recursive: true })
     const gone = fakeSpawn()
-    expect(await openLinkRequest({ kind: 'file', path: doc, reveal: false }, { shell, homeDir: root, platform: 'darwin', execFileImpl: noXattr, rules: markdownApp, spawnImpl: gone.spawnImpl }))
+    expect(await openLinkRequest({ kind: 'file', path: doc, reveal: false }, { shell, homeDir: root, filesPermitted: true, platform: 'darwin', execFileImpl: noXattr, rules: markdownApp, spawnImpl: gone.spawnImpl }))
       .toEqual({ ok: false, reason: 'app-missing' })
     expect(gone.calls).toEqual([])
   })
@@ -667,7 +711,7 @@ describe('Settings → Links rules, applied after the safety policy (issue #300 
     const { calls, spawnImpl } = fakeSpawn()
     const { calls: shellCalls, shell } = recordingShell()
     expect(await openLinkRequest({ kind: 'file', path: doc, reveal: false }, {
-      shell, homeDir: root, platform: 'linux', spawnImpl, rules: rules({ markdown: { handler: 'app', app } }),
+      shell, homeDir: root, filesPermitted: true, platform: 'linux', spawnImpl, rules: rules({ markdown: { handler: 'app', app } }),
     })).toEqual({ ok: true, action: 'opened' })
     expect(calls).toEqual([])
     expect(shellCalls).toEqual([['openPath', doc]])
@@ -678,7 +722,7 @@ describe('Settings → Links rules, applied after the safety policy (issue #300 
     const { calls, spawnImpl } = fakeSpawn()
     const { calls: shellCalls, shell } = recordingShell()
     const webApp = rules({ web: { handler: 'app', app } })
-    expect(await openLinkRequest({ kind: 'web', url: 'https://example.com/a' }, { shell, homeDir: root, platform: 'darwin', spawnImpl, rules: webApp }))
+    expect(await openLinkRequest({ kind: 'web', url: 'https://example.com/a' }, { shell, homeDir: root, filesPermitted: true, platform: 'darwin', spawnImpl, rules: webApp }))
       .toEqual({ ok: true, action: 'opened' })
     expect(openWebLink('https://example.com/b', shell, { platform: 'darwin', spawnImpl, readRules: async () => webApp })).toBe(true)
     expect(openWebLink('https://example.com/c', shell, { platform: 'darwin', spawnImpl, readRules: async () => { throw new Error('unreadable') } })).toBe(true)
@@ -738,13 +782,13 @@ describe('Settings → Links rules, applied after the safety policy (issue #300 
     ] as Array<[string, string]>) {
       const { calls, spawnImpl } = fakeSpawn()
       expect(await openLinkRequest({ kind: 'file', path: doc, reveal: false }, {
-        shell, homeDir: root, platform: 'darwin', execFileImpl: noXattr, spawnImpl, rules: rules({ markdown: { handler: 'app', app } }),
+        shell, homeDir: root, filesPermitted: true, platform: 'darwin', execFileImpl: noXattr, spawnImpl, rules: rules({ markdown: { handler: 'app', app } }),
       }), app).toEqual({ ok: false, reason })
       expect(calls, app).toEqual([])
     }
     const { calls, spawnImpl } = fakeSpawn()
     expect(await openLinkRequest({ kind: 'file', path: doc, reveal: false }, {
-      shell, homeDir: root, platform: 'darwin', execFileImpl: noXattr, spawnImpl, rules: rules({ markdown: { handler: 'app', app: link('Alias.app', viewer) } }),
+      shell, homeDir: root, filesPermitted: true, platform: 'darwin', execFileImpl: noXattr, spawnImpl, rules: rules({ markdown: { handler: 'app', app: link('Alias.app', viewer) } }),
     })).toEqual({ ok: true, action: 'opened' })
     expect(calls.map((call) => call.args)).toEqual([['-a', realpathSync(viewer), '--', doc]])
   })

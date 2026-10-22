@@ -1,7 +1,7 @@
 // Type declarations for electron/link-open.cjs (issue #300). The runtime lives
 // in the .cjs; this lets the TS tests and `tsc --noEmit` see its shapes.
 
-export type LinkFailure = 'invalid' | 'missing' | 'inaccessible' | 'failed' | 'unavailable' | 'app-missing' | 'app-refused'
+export type LinkFailure = 'invalid' | 'missing' | 'inaccessible' | 'failed' | 'unavailable' | 'unowned' | 'app-missing' | 'app-refused'
 export type RevealReason = 'folder' | 'app' | 'blocked' | 'executable' | 'special' | 'type' | 'rule'
 
 export type LinkResult =
@@ -20,7 +20,7 @@ export interface LinkRules {
 export type FilePlan =
   | { ok: true; action: 'open'; path: string; rule?: Extract<LinkRule, { handler: 'quicklook' | 'app' }> }
   | { ok: true; action: 'reveal'; path: string; reason: RevealReason }
-  | { ok: false; reason: Exclude<LinkFailure, 'unavailable' | 'app-missing' | 'app-refused'> }
+  | { ok: false; reason: Exclude<LinkFailure, 'unavailable' | 'unowned' | 'app-missing' | 'app-refused'> }
 
 export interface LinkShell {
   openExternal(url: string): Promise<void>
@@ -88,7 +88,8 @@ export function openWebLink(
 export function normalizeLocalPath(value: unknown, homeDir: unknown): string | null
 export function blockedFileName(value: unknown): boolean
 export function fileOpenPlan(value: unknown, deps?: FileDeps & { rules?: LinkRules | null }): Promise<FilePlan>
-export function openLinkRequest(raw: unknown, deps: FileDeps & OpenOptions & { shell: LinkShell }): Promise<LinkResult>
+/** `filesPermitted`: main's word that the window shows the viewer this app owns; local files need it. */
+export function openLinkRequest(raw: unknown, deps: FileDeps & OpenOptions & { shell: LinkShell; filesPermitted?: boolean }): Promise<LinkResult>
 export function isTrustedLinkSender(input: {
   sender: unknown
   senderFrame: { url: string; parent: unknown } | null | undefined

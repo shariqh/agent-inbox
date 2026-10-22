@@ -402,8 +402,9 @@ In the desktop app a web link opens in your browser, and a common document (Mark
 text, logs, JSON, YAML, TOML, CSV, XML, PDF, images, SVG, HTML, diffs, MOV and MP4)
 opens in its default app. Anything else is only shown in Finder: folders, apps,
 scripts and other code, installers, disk images, aliases, files set to open with a
-particular app, and anything with an execute bit. In a browser tab, clicking a file
-link copies its path.
+particular app, and anything with an execute bit. Files open only in the viewer the
+app started itself: if it is showing a viewer it found already running, and in a
+browser tab, clicking a file link copies its path instead.
 
 On macOS, **Settings → Links** chooses how links open from the Inbox instead of the
 Mac's defaults: web links in a browser you pick, and Markdown (`.md`, `.markdown`) or
@@ -413,7 +414,8 @@ types, such as code in your editor: add `.py` and choose Sublime Text. Folders, 
 installers, aliases, files set to open with a particular app and anything with an
 execute bit are still only shown in Finder, whatever you choose, and some types (such
 as `.command`, `.pkg` or `.dmg`) can't have a rule at all. In the desktop app every
-file chip also has **Reveal in Finder** and **Copy path**.
+file chip also has **Reveal in Finder** and **Copy path**. Both, and Settings →
+Links itself, work only in the viewer the app started itself.
 
 ## Architecture
 

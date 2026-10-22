@@ -11,3 +11,6 @@ export function renderLinkSettings(
   host: Element,
   opts?: { bridge?: () => LinkSettingsBridge | null | undefined; documentRef?: Document },
 ): HTMLElement
+
+/** Asks main for the section again (Settings opening); null when nothing is shown. */
+export function refreshLinkSettings(): Promise<unknown>

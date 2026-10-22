@@ -32,8 +32,8 @@ import { captureSelection, restoreSelection } from '/selection.js'
 import { createCopyOnSelect } from '/copy-on-select.js'
 import { renderStructuredText } from '/structured-text.js'
 import { cardLinks } from '/link-strip.js'
-import { initLinkOpening, linkFileActions } from '/link-open.js'
-import { renderLinkSettings } from '/link-settings.js'
+import { fileLinksCopy, initLinkOpening, linkFileActions, refreshLinkPermission } from '/link-open.js'
+import { refreshLinkSettings, renderLinkSettings } from '/link-settings.js'
 import { boardRowsView, boardRowLine, progressLabel, hiddenDoneCount, lingeringBoards } from '/boards.js'
 import { titleWithBadge, focusHashFor, parseFocusHash } from '/badge.js'
 import { layoutMode, railLabel, NARROW_MAX, PROJECT_DISCLOSURE_MAX } from '/layout.js'
@@ -501,6 +501,18 @@ async function issuesBody(read) {
   }
 }
 
+// Cached PR state (issue #30) is a conditional snapshot since #288, with the
+// same defensive fallback it always had: a 404 from a viewer that predates the
+// route, a network error or a body its validator refuses means no links, and
+// every surface renders exactly as before the feature, never a dead page.
+async function linksBody(read) {
+  try {
+    return await settledValue(read).json()
+  } catch {
+    return []
+  }
+}
+
 async function load() {
   if (reloadRequested) return false
   const generation = ++loadGeneration
@@ -529,10 +541,9 @@ async function load() {
       fetch('/api/projects/closed').then(marked)
         .then((r) => (r.ok ? r.json() : null))
         .catch(() => null),
-      // Cached PR state (issue #30), same defensive shape and for the same reason:
-      // an empty links set must mean "render exactly as before this feature", never
-      // a dead page. A viewer that predates this route answers 404 with HTML.
-      fetch('/api/links').then(marked).then((r) => (r.ok ? r.json() : [])).catch(() => []),
+      // Cached PR state (issue #30): a conditional snapshot (#288) whose body is
+      // read after the boot decision, with its own fallback (linksBody).
+      readSnapshot('/api/links').then(marked),
       // The sub-issue graph (#103), the eighth read: a conditional snapshot with
       // its own validator and the same fallback (issuesBody).
       readSnapshot('/api/issues').then(marked),
@@ -555,11 +566,10 @@ async function load() {
     const body = (read) => (read.status === 'fulfilled' ? read.value.json() : Promise.reject(read.reason))
     const bodies = await Promise.allSettled([
       res.json(), body(boardsRead), body(archivedRead), body(activityRead), historyBody(historyRead),
-      wantHistory ? closedHistoryBody(closedHistoryRead) : null, issuesBody(issuesRead),
+      wantHistory ? closedHistoryBody(closedHistoryRead) : null, issuesBody(issuesRead), linksBody(linksRead),
     ])
-    const [g, boards, archived, activity, activityHistory, firstOlder, issues] = bodies.map(settledValue)
+    const [g, boards, archived, activity, activityHistory, firstOlder, issues, links] = bodies.map(settledValue)
     const closedSnapshot = settledValue(closedRead)
-    const links = settledValue(linksRead)
     if (reloadRequested || generation < appliedLoadGeneration) return false
     const nowMs = Date.now()
     const page = ageNotes(g, nowMs)
@@ -2931,14 +2941,16 @@ function cardHeadingHtml(presentation, ctx) {
 // Issue #300: a bare #N in a card's text resolves against the repository of
 // the item, or of the plan a row belongs to.
 function textContext(identity) {
-  return { repo: typeof identity?.repo === 'string' ? identity.repo : null }
+  return { repo: typeof identity?.repo === 'string' ? identity.repo : null, copyFiles: fileLinksCopy() }
 }
 
 // Issue #300: the Links strip under the card's origin, listing every link its
 // text shows; '' when there is nothing beyond the PR and issue chips above it.
 function cardLinksHtml(entity, identity) {
   const key = `links:${entity.id}`
-  return linkStripHtml(cardLinks(entity, identity, linkIndex), { key, open: openContexts.has(key), actions: linkFileActions() })
+  return linkStripHtml(cardLinks(entity, identity, linkIndex), {
+    key, open: openContexts.has(key), actions: linkFileActions(), copyFiles: fileLinksCopy(),
+  })
 }
 
 function cardOriginHtml(entity, identity, { showProject = true } = {}) {
@@ -4489,10 +4501,13 @@ function showPanel(id) {
   gear.setAttribute('aria-pressed', String(id === 'setup'))
   // #197: a terminal install or an update can change what each host runs while
   // the app is open, so Settings re-reads it whenever it opens; #216: so can
-  // whether this window may run one-click Setup, after a reload
+  // whether this window may run one-click Setup, after a reload, and (#300)
+  // whether it may open local files
   if (openingSettings) {
     refreshAgents()
     refreshSetupAvailability()
+    refreshLinkPermission()
+    refreshLinkSettings()
   }
 }
 

@@ -96,6 +96,10 @@ let themeWindow = null
 let themeWindowWebContentsId = null
 // The one viewer window whose top frame may ask main to open a link (#300).
 let linkWindow = null
+// That window's id while it shows the viewer this app started and proved it
+// owns (#300): only then may a link open, reveal or preview a local file. Held
+// by the window's binding (#216), so a reload revokes it until the re-proof.
+let fileLinkWebContentsId = null
 let updateWindow = null
 let updateController = null
 // True only once waitForOwnership() proved the viewer is the one this app
@@ -353,8 +357,13 @@ ipcMain.handle('agent-inbox:install', async (event, target) => {
 // frame on the viewer origin may ask (see isTrustedLinkSender), with exactly one
 // request; link-open.cjs re-validates it and opens a web link, opens a common
 // document type with its default app or the app a Settings → Links rule names,
-// or only reveals anything else.
+// or only reveals anything else. A local file is opened, revealed or previewed
+// only while that window shows the viewer this app started and proved it owns
+// (fileLinkWebContentsId, re-proved after every load as installs are), and only
+// that viewer may read or change Settings → Links; a reused viewer's page can
+// still open web links.
 const linkSender = (event) => isTrustedLinkSender({ sender: event.sender, senderFrame: event.senderFrame, window: linkWindow, viewerUrl: URL_BASE })
+const linkFilesPermitted = (event) => fileLinkWebContentsId !== null && event.sender.id === fileLinkWebContentsId
 // Settings → Links (part 2): main's own file, read on each open, so a change
 // applies to the next click. An unreadable file means the system defaults.
 let linkPreferences = null
@@ -364,7 +373,18 @@ const linkOpening = { platform: process.platform, spawnImpl: spawn }
 
 ipcMain.handle('agent-inbox:open-link', async (event, request, ...args) => {
   if (args.length !== 0 || !linkSender(event)) return { ok: false, reason: 'unavailable' }
-  return openLinkRequest(request, { shell, homeDir: app.getPath('home'), rules: await linkRules(), ...linkOpening })
+  return openLinkRequest(request, {
+    shell, homeDir: app.getPath('home'), filesPermitted: linkFilesPermitted(event), rules: await linkRules(), ...linkOpening,
+  })
+})
+
+// Whether this page may open local files, asked once per page load and again
+// when Settings opens, as Setup's is: a reload's re-proof may still be running,
+// so this answers once it has settled.
+ipcMain.handle('agent-inbox:link-files-available', async (event, ...args) => {
+  if (args.length !== 0) return false
+  await installBinding?.settled()
+  return linkSender(event) && linkFilesPermitted(event)
 })
 
 // The renderer names a rule and a handler, never an app: an app comes only from
@@ -386,9 +406,14 @@ const linkSettingsFor = () => (linkSettings ??= createLinkSettings({
   },
 }))
 
+// Like local files, these rules are only for the viewer this app started and
+// owns: any other page gets an empty view saying so, and changes nothing.
 function handleLinkSettings(channel, arity, call) {
-  ipcMain.handle(channel, (event, ...args) => {
-    if (args.length !== arity || !linkSender(event)) return { available: false, rules: [] }
+  ipcMain.handle(channel, async (event, ...args) => {
+    if (args.length !== arity) return { available: false, rules: [] }
+    await installBinding?.settled()
+    if (!linkSender(event)) return { available: false, rules: [] }
+    if (!linkFilesPermitted(event)) return { available: false, rules: [], error: 'unowned' }
     return call(linkSettingsFor(), ...args)
   })
 }
@@ -1062,11 +1087,14 @@ app.whenReady().then(async () => {
     setupAllowed: () => setupInstallEnabled,
     // Update installs need only the owned viewer, not agent Setup's runtime payload.
     updateAllowed: () => viewerOwned,
+    // So do local file links (#300); web links need no grant.
+    filesAllowed: () => viewerOwned,
     isQuitting: () => installGate.quitting(),
     proveOwnership: reproveOwnership,
-    apply({ setup, update }) {
+    apply({ setup, update, files }) {
       setupInstallWebContentsId = setup ? setupWindowWebContentsId : null
       updateInstallWebContentsId = update ? setupWindowWebContentsId : null
+      fileLinkWebContentsId = files ? setupWindowWebContentsId : null
       updateController?.refreshInstallPermission()
     },
   })

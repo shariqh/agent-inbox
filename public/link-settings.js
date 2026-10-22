@@ -32,6 +32,21 @@ function option(documentRef, value, text) {
   return el
 }
 
+// Main answers a page that is not the viewer this app started and owns with
+// an empty view saying so ('unowned'), as it refuses that page's file links.
+const HINTS = {
+  rules: 'Links you open from the Inbox use these instead of your Mac’s defaults. To open a type Agent Inbox only shows in Finder, such as .py, add it and choose an app. Apps, installers, aliases and anything executable are never opened.',
+  unowned: 'Choosing how links open works only in Agent Inbox’s own viewer, not in one it found already running.',
+  elsewhere: 'Links open with your system’s default apps. Choosing an app for each type of file is available on macOS.',
+}
+
+// Asks main for the section again, as Settings does each time it opens: a
+// reload's re-proof may have finished since the section was drawn.
+let refreshShown = null
+export function refreshLinkSettings() {
+  return refreshShown ? refreshShown() : Promise.resolve(null)
+}
+
 export function renderLinkSettings(host, {
   bridge = () => globalThis.agentInboxLinkSettings,
   documentRef = globalThis.document,
@@ -55,10 +70,11 @@ export function renderLinkSettings(host, {
 
   const api = bridge()
   if (!api || typeof api.get !== 'function') {
+    refreshShown = null
     hint.textContent = 'In the Agent Inbox app on macOS, you can choose which app opens web links and each type of file.'
     return section
   }
-  hint.textContent = 'Links you open from the Inbox use these instead of your Mac’s defaults. To open a type Agent Inbox only shows in Finder, such as .py, add it and choose an app. Apps, installers, aliases and anything executable are never opened.'
+  hint.textContent = HINTS.rules
 
   const form = make('form', 'link-add-type')
   const addLabel = make('label', '', 'Add a file type')
@@ -77,13 +93,15 @@ export function renderLinkSettings(host, {
   let busy = false
   const paint = (view, focusRule) => {
     const available = Boolean(view && view.available)
-    message.textContent = view && view.error ? ERRORS[view.error] ?? ERRORS.failed : ''
+    const unowned = Boolean(view && view.error === 'unowned')
+    message.textContent = view && view.error && !unowned ? ERRORS[view.error] ?? ERRORS.failed : ''
     if (!available) {
-      hint.textContent = 'Links open with your system’s default apps. Choosing an app for each type of file is available on macOS.'
+      hint.textContent = unowned ? HINTS.unowned : HINTS.elsewhere
       rules.replaceChildren()
       form.remove()
       return
     }
+    hint.textContent = HINTS.rules
     rules.replaceChildren(...view.rules.map((rule, index) => ruleRow(rule, index)))
     section.appendChild(form)
     section.appendChild(message)
@@ -142,6 +160,7 @@ export function renderLinkSettings(host, {
     if (view && !view.error) input.value = ''
   })
 
+  refreshShown = () => (section.isConnected ? run(() => api.get()) : Promise.resolve(null))
   void run(() => api.get())
   return section
 }

@@ -616,7 +616,7 @@ describe('async draft ownership', () => {
     expect(remaining).not.toContain('Option Y')
   })
 
-  it('retries an uncertain option with the exact action identity without resetting pickup', async () => {
+  it('retires an uncertain option the server already holds without resetting pickup', async () => {
     db = freshDb()
     const id = insertItem(db, {
       ...AGENT,
@@ -624,7 +624,7 @@ describe('async draft ownership', () => {
       title: 'Exact recovery replay',
       options: [{ label: 'Option Y' }],
     })
-    await bootApp(db)
+    const bridge = await bootApp(db)
     const fetchNow = globalThis.fetch
     let loseFirstResponse = true
     globalThis.fetch = async (input, init) => {
@@ -653,6 +653,8 @@ describe('async draft ownership', () => {
     click(buttonLabelled('Retry', recovery))
     await settle()
 
+    // the server holds exactly that answer, so the Retry sends nothing (#279)
+    expect(bridge.posts.filter((post) => post.url.includes(`/items/${id}/reply`))).toHaveLength(1)
     expect(getItem(db, id)?.reply_seen_at).not.toBeNull()
     expect(document.querySelector('.stale-drafts-fold')).toBeNull()
   })

@@ -123,8 +123,9 @@ describe('the Electron dock badge shares the §7 attention predicate (no duplica
   // body read what is VISIBLE.
   it('maintains its seen-set from the UNSUPPRESSED set, so reopening announces nothing old', () => {
     const watch = main.slice(main.indexOf('function startAttentionWatch'))
-    expect(watch).toMatch(/known\s*=\s*new Set\(everything\.map/)
     expect(watch).toMatch(/const everything = attentionEntries\(items, boards, Date\.now\(\), liveSessions\)/)
+    // #247: the pinned asks join it, read without the closed set for the same reason.
+    expect(watch).toMatch(/known\s*=\s*knownNotificationIds\(everything, laterEntries\(items, boards, Date\.now\(\)\)\)/)
   })
 
   it('never swallows a failed module import silently', () => {
@@ -175,6 +176,11 @@ describe('focusItem opens ancestor <details> folds, not just the target (fix rou
   })
   it('flips staleFoldOpen so the next 3s poll does not re-collapse the stale fold', () => {
     expect(helper).toMatch(/staleFoldOpen\s*=\s*true/)
+  })
+  // #247: the snoozed and pinned folds, likewise. jsdom's own toggle event
+  // re-records a programmatic open, so only the source can hold this line.
+  it('records an opened deferred fold so the next 3s poll keeps it open', () => {
+    expect(helper).toMatch(/openDeferredFolds\.add\(node\.dataset\.deferredFold\)/)
   })
   it('flips showArchived so the next 3s poll does not re-collapse the archived fold', () => {
     expect(helper).toMatch(/showArchived\s*=\s*true/)

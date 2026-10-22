@@ -519,7 +519,7 @@ body.settings-open .floating-search { opacity: .32; }
 .stale-fold > summary { cursor: pointer; font-size: 12px; letter-spacing: .02em; padding: 4px 0; list-style: none; }
 .stale-fold > summary::before { content: "▸ "; font-size: 10px; }
 .stale-fold[open] > summary::before { content: "▾ "; }
-.snoozed-fold { opacity: .78; }
+.snoozed-fold, .pinned-fold { opacity: .78; }
 
 .card { display: block; }
 .structured-text { min-width: 0; max-width: 100%; white-space: normal; overflow-wrap: anywhere; }

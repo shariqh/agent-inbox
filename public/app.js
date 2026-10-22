@@ -6,7 +6,7 @@ import {
 } from '/rail.js'
 import {
   attentionCount, attentionEntries, awaitingAgentRows, classifyLiveness, countsByProject,
-  isAskingQuestion, isBlockedRowAttention, snoozedEntries, staleEntries,
+  isAskingQuestion, isBlockedRowAttention, laterEntries, staleEntries,
 } from '/attention.js'
 import { DEFAULT_TAB, TAB_IDS, tabCounts } from '/tabs.js'
 import { projectColor } from '/colors.js'
@@ -955,12 +955,7 @@ function focusItem(id, source = null) {
   // above put it there — then render again so the card body mounts under it.
   const queueTarget = needsYouRowEl(id)
   if (queueTarget) {
-    for (let node = queueTarget; node; node = node.parentElement) {
-      if (node.tagName !== 'DETAILS') continue
-      node.open = true
-      if (node.classList.contains('snoozed-fold')) snoozedFoldOpen = true
-      else if (node.classList.contains('stale-fold')) staleFoldOpen = true
-    }
+    revealDetailsAncestors(queueTarget)
     selectRow(id)
   }
   if (queueTarget) setOpenRow(id)
@@ -2268,7 +2263,9 @@ const openContexts = new Set()
 const HANDLED_LABEL = 'I’ve done my part'
 const UNHANDLED_LABEL = 'Not done after all'
 
-function dispositionEl(onResponse, onSnooze, key) {
+// `onPin` is passed only for an unanswered ask that is not pinned yet (#247):
+// the pin is offered first, above the snooze choices it replaces.
+function dispositionEl(onResponse, onSnooze, key, onPin = null) {
   const menu = document.createElement('details')
   menu.className = 'disposition-menu'
   menu.open = openDispositionMenus.has(key)
@@ -2280,6 +2277,12 @@ function dispositionEl(onResponse, onSnooze, key) {
   summary.textContent = 'More responses'
   const wrap = document.createElement('div')
   wrap.className = 'disposition-actions'
+  if (onPin) {
+    const pin = btn('Pin for later', onPin)
+    pin.className = 'disposition-btn'
+    pin.title = 'Set this aside with no return time; it waits in the pinned fold until you bring it back.'
+    wrap.appendChild(pin)
+  }
   const snooze = (label, ms) => {
     const button = btn(label, () => onSnooze(new Date(Date.now() + ms).toISOString()))
     button.className = 'disposition-btn'
@@ -2298,6 +2301,46 @@ function dispositionEl(onResponse, onSnooze, key) {
   wrap.appendChild(decline)
   menu.append(summary, wrap)
   return menu
+}
+
+// The one write behind every deferral (#247): a snooze or a pin, of a question
+// or a plan row, from any card. The ask moves into a fold that starts closed,
+// and a draft left on it would sit there unseen while it pauses the list. So a
+// deferral that leaves a draft behind keeps it in view instead.
+async function deferAsk(entry, reason, url, body, { refusal = '', onSaved = null } = {}) {
+  const ask = entryEntity(entry)
+  const res = await postJSON(url, body)
+  if (res === null) return
+  if (refusal) showWriteError(ask.id, res.ok ? '' : refusal)
+  if (res.ok) {
+    if (holdsDraft(ask.id)) keepDraftInView(entry, reason)
+    onSaved?.()
+  }
+  await reloadAndPaint()
+}
+
+// The test suspendState() applies: a draft is more than whitespace.
+function holdsDraft(id) {
+  return [draftReplies[id], draftReplyContexts[id], rowDrafts[id]]
+    .some((text) => String(text ?? '').trim() !== '')
+}
+
+// Open the deferred ask's fold and give it the open card, as opening its row
+// would. From the Review queue or a plan panel it was not the open card, and
+// those ignore the list's filters, so widen any filter that would hide it.
+function keepDraftInView(entry, reason) {
+  openDeferredFolds.add(reason)
+  const ask = entryEntity(entry)
+  if (openRowId === ask.id) return
+  const owner = entry.kind === 'row' ? entry.board : entry.item
+  if (projectFilter && projectFilter !== owner.project) projectFilter = owner.project
+  if (agentFilter && agentFilter !== owner.agent) agentFilter = null
+  if (!filterActionEntries([entry]).length) {
+    actionFilter = 'all'
+    changedOnly = false
+  }
+  selectedId = ask.id
+  setOpenRow(ask.id, { resume: false })
 }
 
 // Issue #217 — "I'll take a while". Only a Copilot session runs the answer
@@ -2639,18 +2682,21 @@ function rowAnswerEl(b, r, onSaved) {
         rowDraftKinds[r.id] = kind
         save()
       },
-      async (until) => {
-        const res = await postJSON(`/api/boards/${b.id}/rows/${r.id}/snooze`, {
-          until,
-          expected_revision: r.revision,
-          expected_board_version: b.revision,
-        })
-        if (res === null) return
-        if (!res.ok) { await reloadAndPaint(); return }
-        onSaved?.()
-        await reloadAndPaint()
-      },
+      (until) => deferAsk(
+        { kind: 'row', row: r, board: b },
+        'snoozed',
+        `/api/boards/${b.id}/rows/${r.id}/snooze`,
+        { until, expected_revision: r.revision, expected_board_version: b.revision },
+        { onSaved },
+      ),
       `row:${r.id}`,
+      r.pinned_at ? null : () => deferAsk(
+        { kind: 'row', row: r, board: b },
+        'pinned',
+        `/api/boards/${b.id}/rows/${r.id}/later`,
+        { pinned: true, expected_revision: r.revision, expected_board_version: b.revision },
+        { onSaved, refusal: 'This action changed before your click; refreshed without applying it.' },
+      ),
     ))
     const waitStop = waitStopEl(r, {
       key: `wait:row:${r.id}`,
@@ -4864,9 +4910,12 @@ function renderNeedsYou(g, boardsInView, nowMs) {
   // land in sortNeedsYou's bucket 3 — the same dimmed foot, one ordering rule.
   const replied = repliedEntries(items, nowMs, live)
   const awaiting = awaitingAgentRows(boardsInView, closedSet())
-  const snoozed = sortDeferredEntries(
-    filterActionEntries(snoozedEntries(items, boardsInView, nowMs, closedSet())),
-  )
+  // #247: deferred asks, one fold per reason (snoozed, then pinned).
+  const later = laterEntries(items, boardsInView, nowMs, closedSet())
+  const deferred = DEFERRED_FOLDS.map((reason) => [
+    reason,
+    sortDeferredEntries(filterActionEntries(later.filter((entry) => entry.later === reason))),
+  ])
   const unordered = filterActionEntries(needsYouEntries(items, boardsInView, nowMs, live, [...replied, ...awaiting]))
   // §10: pin existing order BEFORE paginating. New arrivals append at the foot,
   // so they appear live without moving the row the human is reading.
@@ -4893,7 +4942,9 @@ function renderNeedsYou(g, boardsInView, nowMs) {
   }
   for (const e of visible) host.appendChild(needsRowEl(rowModel(e, opts), e, nowMs))
   if (remaining > 0) host.appendChild(moreButton('needsYou', remaining))
-  if (snoozed.length) host.appendChild(snoozedFoldEl(snoozed, opts, nowMs))
+  for (const [reason, entries] of deferred) {
+    if (entries.length) host.appendChild(deferredFoldEl(reason, entries, opts, nowMs))
+  }
   if (stale.length) host.appendChild(staleFoldEl(stale, opts, nowMs))
   renderOrphanedDrafts(host)
   // fix round 2 (I3): the foot chip is fed the SAME scoped notes the Notes tab
@@ -5029,7 +5080,10 @@ function renderOrphanedDrafts(host) {
 // same precedent as openLive/openContexts: without this the fold silently
 // re-collapses under the user mid-read
 let staleFoldOpen = false
-let snoozedFoldOpen = false
+// The deferred folds under Needs you (#247), in render order, keyed by the
+// reason laterEntries tags each entry with, and the ones the human has open.
+const DEFERRED_FOLDS = ['snoozed', 'pinned']
+const openDeferredFolds = new Set()
 
 function revealDetailsAncestors(target) {
   for (let node = target; node; node = node.parentElement) {
@@ -5037,22 +5091,26 @@ function revealDetailsAncestors(target) {
     node.open = true
     if (node.dataset.contextKey) openContexts.add(node.dataset.contextKey)
     if (node.dataset.cardId) setCardCollapsed(node.dataset.cardId, false)
-    if (node.classList.contains('snoozed-fold')) snoozedFoldOpen = true
+    if (node.dataset.deferredFold) openDeferredFolds.add(node.dataset.deferredFold)
     else if (node.classList.contains('stale-fold')) staleFoldOpen = true
     if (node.classList.contains('archived-fold')) showArchived = true
   }
 }
 
-function snoozedFoldEl(entries, opts, nowMs) {
+// Asks the human set aside: out of every count, but one click away, each with
+// its own way back (Wake now, Back to inbox) on the row.
+function deferredFoldEl(reason, entries, opts, nowMs) {
   const fold = document.createElement('details')
-  fold.className = 'stale-fold snoozed-fold'
-  if (snoozedFoldOpen) fold.open = true
+  fold.className = `stale-fold ${reason}-fold`
+  fold.dataset.deferredFold = reason
+  if (openDeferredFolds.has(reason)) fold.open = true
   fold.addEventListener('toggle', () => {
-    snoozedFoldOpen = fold.open
+    if (fold.open) openDeferredFolds.add(reason)
+    else openDeferredFolds.delete(reason)
     restoreRowSelection(false)
   })
   const summary = document.createElement('summary')
-  summary.textContent = `snoozed (${entries.length})`
+  summary.textContent = `${reason} (${entries.length})`
   fold.appendChild(summary)
   for (const entry of entries) fold.appendChild(needsRowEl(rowModel(entry, opts), entry, nowMs))
   return fold
@@ -5094,7 +5152,9 @@ function needsRowEl(m, entry, nowMs) {
   // card owns the truthful dispositions (snooze, clarify, decline, or do/answer).
   // The old ✕ advertised the x key and did nothing.
   const dismissBit = m.kind === 'item' ? '<button class="nrow-dismiss" title="Dismiss (x)" aria-label="Dismiss">✕</button>' : ''
-  const wakeBit = m.snoozedUntil ? '<button class="nrow-wake" title="Return to Needs you now">Wake now</button>' : ''
+  const wakeBit = m.later
+    ? `<button class="nrow-wake" title="Return to Needs you now">${m.later === 'pinned' ? 'Back to inbox' : 'Wake now'}</button>`
+    : ''
   const projBit = m.projectLabel ? `<span class="nrow-proj" title="${esc(m.project)}">${esc(m.projectLabel)}</span>` : ''
   const agentBit = m.agent ? `<span class="nrow-agent">${esc(m.agent)}</span>` : ''
   const ownerBit = `<span class="nrow-owner owner-${esc(m.actionCategory)}">${esc(m.ownerLabel)}</span>`
@@ -5161,16 +5221,18 @@ function needsRowEl(m, entry, nowMs) {
   const wakeBtn = el.querySelector('.nrow-wake')
   if (wakeBtn) wakeBtn.addEventListener('click', async (ev) => {
     ev.stopPropagation()
+    // A pinned ask comes back by clearing the pin, a snoozed one by waking it.
+    const [route, body] = m.later === 'pinned' ? ['later', { pinned: false }] : ['snooze', { until: null }]
     const url = entry.kind === 'row'
-      ? `/api/boards/${entry.board.id}/rows/${entry.row.id}/snooze`
-      : `/api/items/${entry.item.id}/snooze`
+      ? `/api/boards/${entry.board.id}/rows/${entry.row.id}/${route}`
+      : `/api/items/${entry.item.id}/${route}`
     const res = await postJSON(url, entry.kind === 'row'
       ? {
-          until: null,
+          ...body,
           expected_revision: entry.row.revision,
           expected_board_version: entry.board.revision,
         }
-      : { until: null })
+      : body)
     if (res === null) return
     if (!res.ok) { await reloadAndPaint(); return }
     await reloadAndPaint()
@@ -6355,12 +6417,15 @@ function answerEl(it) {
     (kind, text) => sendReply(
       it.id, text, effectiveReplyContext(it), kind, editorGeneration,
     ),
-    async (until) => {
-      const res = await postJSON(`/api/items/${it.id}/snooze`, { until })
-      if (res === null) return
-      await reloadAndPaint()
-    },
+    (until) => deferAsk({ kind: 'item', item: it }, 'snoozed', `/api/items/${it.id}/snooze`, { until }),
     `item:${it.id}`,
+    it.reply || it.reply_kind || it.pinned_at ? null : () => deferAsk(
+      { kind: 'item', item: it },
+      'pinned',
+      `/api/items/${it.id}/later`,
+      { pinned: true },
+      { refusal: 'This question changed before your click; refreshed without applying it.' },
+    ),
   ))
   const waitStop = waitStopEl(it, {
     // A chat-recorded answer reuses this surface as a correction form, but the

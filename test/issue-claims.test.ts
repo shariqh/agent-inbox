@@ -146,6 +146,24 @@ describe('issue refresh claims (issue #103 PR1b)', () => {
     expect(claim(db, 'b', [key(2, at(60))])).toEqual([2])
   })
 
+  it('writes each dependency section with its snapshot, and records a refused section like a refused snapshot (slice 2 §5.3)', () => {
+    claim(db, 'a', [key(1), key(2)])
+    const none = { open: 0, total: 0, truncated: false, list: [] }
+    const deps = { status: 'ok' as const, blocked_by: none, blocking: none }
+    const invalid: Array<{ repo: string; number: number }> = []
+    expect(completeIssueRefresh(db, {
+      owner: 'a',
+      results: [
+        { repo: REPO, number: 1, startedAt: at(60), snapshot: snapshot(`${REPO}#1`), dependencies: deps },
+        { repo: REPO, number: 2, startedAt: at(60), snapshot: snapshot(`${REPO}#2`), dependencies: { ...deps, blocking: { ...none, open: 1 } } },
+      ],
+      onInvalid: (k) => invalid.push(k),
+    })).toBe(2)
+    expect(invalid).toEqual([{ repo: REPO, number: 2 }])
+    expect(listIssueSnapshots(db).map((r) => [r.number, r.error, r.snapshot !== null, r.dependencies]))
+      .toEqual([[1, null, true, deps], [2, 'gh-failed', false, null]])
+  })
+
   it('waits for, and then sees, another connection\'s uncommitted claim instead of claiming the same key', () => {
     const other = openDb(path)
     extra.push(other)

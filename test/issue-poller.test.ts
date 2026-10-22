@@ -9,28 +9,32 @@ import {
   archiveBoard, closeProject, getBoard, insertItem, listIssueEntities, listIssueSnapshots, listSourceLinks, openDb,
   recordIssueFailure, upsertBoard, upsertIssueSnapshot, upsertSourceLink,
 } from '../src/store.js'
-import type { IssueSnapshot } from '../src/store.js'
+import type { IssueDependencies, IssueSnapshot } from '../src/store.js'
 import {
   IssueBudget, ISSUE_BATCH, ISSUE_POINTS_PER_HOUR, ISSUE_TTL, RATE_FLOOR, issueQueue, parseIssueBatch,
   invalidSnapshotNotice, refreshIssuesOnce, relationsArgs, relationsQuery, startGithubPoller,
 } from '../src/issue-poller.js'
 import type { IssueGhRun } from '../src/issue-poller.js'
 import { createViewer } from '../src/viewer.js'
-import { at, snapshot } from './issue-fixtures.js'
+import { at, facts, snapshot } from './issue-fixtures.js'
 import { scratchDir } from './scratch.js'
 
 const REPO = 'shariqh/agent-inbox'
 const MIN = 60_000
 const ms = (minute: number) => Date.parse(at(minute))
 const DESIGN = readFileSync(new URL('../docs/superpowers/specs/2026-10-19-plans-sub-issues-design.md', import.meta.url), 'utf8')
+const DEPS_DESIGN = readFileSync(new URL('../docs/superpowers/specs/2026-10-21-plan-dependencies-design.md', import.meta.url), 'utf8')
 const FAMILY = JSON.parse(readFileSync(new URL('./fixtures/issue-117-family.json', import.meta.url), 'utf8')) as {
   rows: Array<{ repo: string; number: number; snapshot: IssueSnapshot }>
 }
 const RELATIONS_10 = readFileSync(new URL('./fixtures/issue-relations-10.json', import.meta.url), 'utf8')
+// the live answer to the slice-2 document for the same ten issues (2026-10-21, cost 1)
+const RELATIONS_10_DEPS = readFileSync(new URL('./fixtures/issue-relations-10-deps.json', import.meta.url), 'utf8')
 
 // ── a fake GitHub: answers the real document shape for the keys it is asked ──
 
-interface WorldIssue { title?: string; state?: 'OPEN' | 'CLOSED'; parent?: string }
+// `depsError`: GitHub fails that dependency field of the issue (slice 2)
+interface WorldIssue { title?: string; state?: 'OPEN' | 'CLOSED'; parent?: string; blockedBy?: string[]; depsError?: string }
 type World = Map<string, WorldIssue>
 
 const split = (key: string) => ({ repo: key.slice(0, key.lastIndexOf('#')), number: Number(key.slice(key.lastIndexOf('#') + 1)) })
@@ -49,6 +53,19 @@ function childrenOf(world: World, key: string): string[] {
 function summary(world: World, key: string) {
   const kids = childrenOf(world, key)
   return { total: kids.length, completed: kids.filter((k) => world.get(k)?.state === 'CLOSED').length }
+}
+
+// GitHub keeps both directions of a dependency, so `blocking` is derived from every `blockedBy`
+function gqlDependencies(world: World, key: string) {
+  const blockedBy = world.get(key)?.blockedBy ?? []
+  const blocking = [...world].filter(([, w]) => w.blockedBy?.includes(key)).map(([k]) => k)
+  const open = (keys: string[]) => keys.filter((k) => world.get(k)?.state !== 'CLOSED').length
+  const list = (keys: string[]) => ({ totalCount: keys.length, pageInfo: { hasNextPage: false }, nodes: keys.map((k) => gqlNode(world, k)) })
+  return {
+    issueDependenciesSummary: { blockedBy: open(blockedBy), totalBlockedBy: blockedBy.length, blocking: open(blocking), totalBlocking: blocking.length },
+    blockedBy: list(blockedBy),
+    blocking: list(blocking),
+  }
 }
 
 function gqlRoot(world: World, key: string) {
@@ -88,14 +105,31 @@ function fakeGitHub(world: World, rateLimit = { cost: 1, remaining: 4_000, reset
   const calls: string[][] = []
   const run: IssueGhRun = (args) => {
     calls.push(asked(args))
+    const ownAlias = args.some((arg) => arg.startsWith('query=') && /\bd0: repository\(/.test(arg))
     const data: Record<string, unknown> = { rateLimit }
     const errors: unknown[] = []
     asked(args).forEach((key, i) => {
       const { repo } = split(key)
-      if (world.has(key)) data[`r${i}`] = { nameWithOwner: repo, issue: gqlRoot(world, key) }
-      else {
+      const field = world.get(key)?.depsError
+      if (world.has(key)) {
+        // GitHub answers the document it is sent. The dependency fields are
+        // non-null, so an error in one nulls the issue it was asked on: only
+        // dN.issue when they have an alias of their own, else rN.issue itself.
+        const deps = field ? null : gqlDependencies(world, key)
+        if (ownAlias) {
+          data[`r${i}`] = { nameWithOwner: repo, issue: gqlRoot(world, key) }
+          data[`d${i}`] = { issue: deps }
+        } else {
+          data[`r${i}`] = { nameWithOwner: repo, issue: deps && { ...gqlRoot(world, key), ...deps } }
+        }
+        if (field) errors.push({ path: [ownAlias ? `d${i}` : `r${i}`, 'issue', field], message: 'Something went wrong while executing your query.' })
+      } else {
         data[`r${i}`] = { nameWithOwner: repo, issue: null }
         errors.push({ type: 'NOT_FOUND', path: [`r${i}`, 'issue'], message: 'Could not resolve to an issue' })
+        if (ownAlias) {
+          data[`d${i}`] = { issue: null }
+          errors.push({ type: 'NOT_FOUND', path: [`d${i}`, 'issue'], message: 'Could not resolve to an issue' })
+        }
       }
     })
     return { stdout: JSON.stringify(errors.length ? { data, errors } : { data }), stderr: '', code: errors.length ? 1 : 0 }
@@ -106,10 +140,19 @@ function fakeGitHub(world: World, rateLimit = { cost: 1, remaining: 4_000, reset
 // ────────────────────────────────────────────────────────────────────────────
 
 describe('relationsQuery and the gh argv (§5.6)', () => {
-  it('builds exactly the verified one-root document', () => {
+  // GitHub marks the three dependency fields non-null, so an error in any of
+  // them nulls the whole issue it was asked on. They get an alias of their own,
+  // and slice 1's verified Root is unchanged.
+  it('builds exactly the verified one-root document: slice 1’s, plus slice 2’s dependency fields on an alias of their own', () => {
     const block = DESIGN.split('```graphql\n')[1]!.split('```')[0]!
+    const deps = DEPS_DESIGN.split('```graphql\n')[1]!.split('```')[0]!
     const norm = (s: string) => s.replace(/\s+/g, ' ').trim()
-    expect(norm(relationsQuery(1))).toBe(norm(block))
+    const r0 = '  r0: repository(owner: $o0, name: $n0) { nameWithOwner issue(number: $k0) { ...Root } }\n'
+    expect(block).toContain(r0)
+    expect(deps).toContain('blockedBy(first: 50)')
+    const expected = block.replace(r0, `${r0}  d0: repository(owner: $o0, name: $n0) { issue(number: $k0) { ...Deps } }\n`)
+      + `\nfragment Deps on Issue {\n${deps}}\n`
+    expect(norm(relationsQuery(1))).toBe(norm(expected))
   })
 
   it('declares exactly n variable sets and n aliases for every batch size, deterministically', () => {
@@ -120,7 +163,9 @@ describe('relationsQuery and the gh argv (§5.6)', () => {
       expect(doc.match(/\$o\d+: String!/g)).toHaveLength(n)
       expect(doc.match(/\$k\d+: Int!/g)).toHaveLength(n)
       expect(doc.match(/\br\d+: repository\(/g)).toHaveLength(n)
+      expect(doc.match(/\bd\d+: repository\(/g)).toHaveLength(n)
       expect(doc).toContain(`r${n - 1}: repository(owner: $o${n - 1}, name: $n${n - 1})`)
+      expect(doc).toContain(`d${n - 1}: repository(owner: $o${n - 1}, name: $n${n - 1}) { issue(number: $k${n - 1}) { ...Deps } }`)
       expect(doc).not.toContain(`$o${n}:`)
     }
     expect(relationsQuery(10)).toMatchSnapshot()
@@ -151,12 +196,29 @@ describe('parseIssueBatch (§5.7)', () => {
       subIssues: { totalCount: 0, pageInfo: { hasNextPage: false }, nodes: [] }, ...extra,
     },
   })
+  // the same issue asked on its dependency alias, dN (slice 2)
+  const deps = (extra: Record<string, unknown> = {}) => ({
+    issue: {
+      issueDependenciesSummary: { blockedBy: 0, totalBlockedBy: 0, blocking: 0, totalBlocking: 0 },
+      blockedBy: { totalCount: 0, pageInfo: { hasNextPage: false }, nodes: [] },
+      blocking: { totalCount: 0, pageInfo: { hasNextPage: false }, nodes: [] },
+      ...extra,
+    },
+  })
   const out = (body: unknown) => JSON.stringify(body)
+  const NO_DEPENDENCIES = {
+    status: 'ok',
+    blocked_by: { open: 0, total: 0, truncated: false, list: [] },
+    blocking: { open: 0, total: 0, truncated: false, list: [] },
+  }
 
+  // RELATIONS_10 is the live answer to the slice-1 document, which asked for no
+  // dependency fields: its hierarchy parses exactly as before, and a section
+  // GitHub did not return is unavailable, never "no dependencies".
   it('turns the live ten-root response into exactly the stored #117 family snapshots', () => {
     const keys = FAMILY.rows.map((r) => ({ repo: r.repo, number: r.number }))
     const batch = parseIssueBatch(RELATIONS_10, keys)
-    expect(batch.outcomes).toEqual(FAMILY.rows.map((r) => ({ snapshot: r.snapshot })))
+    expect(batch.outcomes).toEqual(FAMILY.rows.map((r) => ({ snapshot: r.snapshot, dependencies: { status: 'unavailable' } })))
     expect(batch.rateLimit).toEqual({ cost: 1, remaining: 9136, resetAt: '2026-10-19T22:49:46Z' })
   })
 
@@ -194,7 +256,9 @@ describe('parseIssueBatch (§5.7)', () => {
 
   it('a field error under parent or subIssues makes only that root\'s hierarchy unavailable', () => {
     const batch = parseIssueBatch(out({
-      data: { r0: ok('a/b', 1, { subIssues: null }), r1: ok('a/b', 2, { parent: null }), r2: ok('a/b', 3) },
+      data: {
+        r0: ok('a/b', 1, { subIssues: null }), d0: deps(), r1: ok('a/b', 2, { parent: null }), d1: deps(), r2: ok('a/b', 3), d2: deps(),
+      },
       errors: [
         { type: 'INTERNAL', path: ['r0', 'issue', 'subIssues'], message: 'timeout' },
         // an error deep in a section voids it even when the rest of it looks whole
@@ -204,6 +268,8 @@ describe('parseIssueBatch (§5.7)', () => {
     expect(batch.outcomes[0]).toEqual({
       snapshot: { v: 1, issue: { repo: 'a/b', number: 1, title: 'T1', state: 'OPEN', state_reason: null },
         ancestors: [], ancestors_end: 'top', hierarchy: { status: 'unavailable' } },
+      // the sections are independent: a broken hierarchy leaves the dependencies alone
+      dependencies: NO_DEPENDENCIES,
     })
     expect(batch.outcomes[1]).toMatchObject({ snapshot: { hierarchy: { status: 'ok' } } })
     expect(batch.outcomes[2]).toMatchObject({ snapshot: { issue: { number: 3 }, ancestors: [], hierarchy: { status: 'unavailable' } } })
@@ -301,6 +367,140 @@ describe('parseIssueBatch (§5.7)', () => {
     // a parent field missing below level eight is not "no parent"
     expect(walk(4)).toEqual([[2, 3], 'limit', 'ok'])
   })
+
+  // ── slice 2 §5.2: GitHub's issue dependencies ──────────────────────────────
+
+  const dep = (number: number, extra: Record<string, unknown> = {}) => ({
+    number, title: `D${number}`, state: 'OPEN', stateReason: null, repository: { nameWithOwner: 'a/b' }, ...extra,
+  })
+  const connection = (nodes: unknown[], hasNextPage = false) => ({ totalCount: nodes.length, pageInfo: { hasNextPage }, nodes })
+  const summary = (blockedBy: number, totalBlockedBy: number, blocking: number, totalBlocking: number) =>
+    ({ blockedBy, totalBlockedBy, blocking, totalBlocking })
+  const dependenciesOf = (batch: ReturnType<typeof parseIssueBatch>, i: number) =>
+    (batch.outcomes[i] as { dependencies: IssueDependencies }).dependencies
+
+  it('reads the #117 family’s dependencies from the live slice-2 response, both directions agreeing (slice 2 §2)', () => {
+    const keys = FAMILY.rows.map((r) => ({ repo: r.repo, number: r.number }))
+    const batch = parseIssueBatch(RELATIONS_10_DEPS, keys)
+    expect(batch.rateLimit).toMatchObject({ cost: 1 })
+    // the added fields leave the hierarchy exactly as slice 1 stored it
+    expect(batch.outcomes.map((o) => ('snapshot' in o ? o.snapshot : o))).toEqual(FAMILY.rows.map((r) => r.snapshot))
+    const numbers = (list: Array<{ number: number }>) => list.map((issue) => issue.number)
+    expect(batch.outcomes.map((_, i) => {
+      const deps = dependenciesOf(batch, i)
+      return deps.status === 'ok' ? [keys[i]!.number, numbers(deps.blocked_by.list), numbers(deps.blocking.list)] : deps.status
+    })).toEqual([
+      [117, [], []],
+      [118, [119], []],
+      // GitHub listed these newest first; the section keeps key order
+      [119, [], [118, 120, 121, 122, 123, 124, 125]],
+      [120, [119], [121]],
+      [121, [119, 120], []],
+      [122, [119], []], [123, [119], []], [124, [119], []], [125, [119], []],
+      [126, [], []],
+    ])
+    const facts = (number: number) => FAMILY.rows.find((r) => r.number === number)!.snapshot.issue
+    expect(dependenciesOf(batch, 4)).toEqual({
+      status: 'ok',
+      blocked_by: { open: 2, total: 2, truncated: false, list: [facts(119), facts(120)] },
+      blocking: { open: 0, total: 0, truncated: false, list: [] },
+    })
+  })
+
+  // GitHub marks the three fields, their counts and pageInfo non-null, so an
+  // error in any of them nulls the whole issue it was asked on: dN.issue.
+  it('an error under the dependency alias leaves the issue and its hierarchy standing: only its dependencies are unavailable', () => {
+    const generic = 'Something went wrong while executing your query. This may be the result of a timeout.'
+    const batch = parseIssueBatch(out({
+      data: {
+        r0: ok('a/b', 1), d0: { issue: null },
+        r1: ok('a/b', 2), d1: { issue: null },
+        r2: ok('a/b', 3), d2: { issue: null },
+        // a node is nullable, so its error leaves the rest of the list in place: still unavailable
+        r3: ok('a/b', 4), d3: deps({ blocking: connection([null]) }),
+        // even a clear no on the dependency alias says nothing about the issue itself
+        r4: ok('a/b', 5), d4: null,
+        r5: ok('a/b', 6),
+        r6: ok('a/b', 7), d6: deps(),
+      },
+      errors: [
+        { path: ['d0', 'issue', 'issueDependenciesSummary', 'blockedBy'], message: generic },
+        { path: ['d1', 'issue', 'blockedBy'], message: generic },
+        { path: ['d2', 'issue', 'blocking', 'pageInfo'], message: generic },
+        { type: 'FORBIDDEN', path: ['d3', 'issue', 'blocking', 'nodes', 0], message: 'Resource not accessible by integration' },
+        { type: 'NOT_FOUND', path: ['d4'], message: 'Could not resolve to a Repository' },
+      ],
+    }), claimed('a/b#1', 'a/b#2', 'a/b#3', 'a/b#4', 'a/b#5', 'a/b#6', 'a/b#7'), { code: 1, stderr: '' })
+    expect(batch.outcomes.map((o) => ('error' in o ? o.error : [o.snapshot.hierarchy.status, o.dependencies.status]))).toEqual([
+      ['ok', 'unavailable'], ['ok', 'unavailable'], ['ok', 'unavailable'], ['ok', 'unavailable'],
+      ['ok', 'unavailable'], ['ok', 'unavailable'], ['ok', 'ok'],
+    ])
+    expect(batch.outcomes[0]).toEqual({
+      snapshot: {
+        v: 1, issue: { repo: 'a/b', number: 1, title: 'T1', state: 'OPEN', state_reason: null },
+        ancestors: [], ancestors_end: 'top', hierarchy: { status: 'ok', total: 0, completed: 0, truncated: false, children: [] },
+      },
+      // an unavailable section carries no lists, so it yields no observations
+      dependencies: { status: 'unavailable' },
+    })
+    expect(dependenciesOf(batch, 6)).toEqual(NO_DEPENDENCIES)
+  })
+
+  it('validates every listed issue like a child: drops an invalid one (the list is then incomplete), the root itself and duplicates; clips titles; caps at 50', () => {
+    const batch = parseIssueBatch(out({
+      data: {
+        r0: ok('a/b', 1),
+        d0: deps({
+          issueDependenciesSummary: summary(3, 4, 1, 1),
+          blockedBy: connection([
+            dep(30), dep(1), dep(30), dep(4, { state: 'MAYBE' }),
+            dep(20, { title: 'x'.repeat(500), state: 'CLOSED', stateReason: 'COMPLETED' }),
+          ]),
+          blocking: connection([dep(5, { repository: { nameWithOwner: 'Other/Lib' } })], true),
+        }),
+        r1: ok('a/b', 9),
+        d1: deps({ issueDependenciesSummary: summary(51, 51, 0, 0), blockedBy: connection(Array.from({ length: 51 }, (_, i) => dep(100 + i))) }),
+        // the root itself and a repeat are dropped without making the list incomplete
+        r2: ok('a/b', 3),
+        d2: deps({ issueDependenciesSummary: summary(0, 0, 1, 1), blocking: connection([dep(3), dep(8), dep(8)]) }),
+        // counts come from the summary alone: an issue the token cannot see is no missing entry
+        r3: ok('a/b', 2),
+        d3: deps({ issueDependenciesSummary: summary(2, 3, 0, 0), blockedBy: connection([dep(7)]) }),
+      },
+    }), claimed('a/b#1', 'a/b#9', 'a/b#3', 'a/b#2'))
+    expect(dependenciesOf(batch, 0)).toEqual({
+      status: 'ok',
+      blocked_by: {
+        open: 3, total: 4, truncated: true,
+        list: [
+          { repo: 'a/b', number: 20, title: `${'x'.repeat(300)}…`, state: 'CLOSED', state_reason: 'COMPLETED' },
+          { repo: 'a/b', number: 30, title: 'D30', state: 'OPEN', state_reason: null },
+        ],
+      },
+      blocking: { open: 1, total: 1, truncated: true, list: [{ repo: 'Other/Lib', number: 5, title: 'D5', state: 'OPEN', state_reason: null }] },
+    })
+    const capped = dependenciesOf(batch, 1)
+    expect(capped.status === 'ok' && [capped.blocked_by.truncated, capped.blocked_by.list.map((issue) => issue.number)])
+      .toEqual([true, Array.from({ length: 50 }, (_, i) => 100 + i)])
+    expect(dependenciesOf(batch, 2)).toMatchObject({ blocking: { truncated: false, list: [{ number: 8 }] } })
+    expect(dependenciesOf(batch, 3)).toMatchObject({ blocked_by: { open: 2, total: 3, truncated: false, list: [{ number: 7 }] } })
+  })
+
+  it('reads a dependency section it cannot trust as unavailable, never as "no dependencies", and keeps the hierarchy', () => {
+    const batch = parseIssueBatch(out({
+      data: {
+        r0: ok('a/b', 1), d0: deps({ issueDependenciesSummary: summary(2, 1, 0, 0) }),
+        r1: ok('a/b', 2), d1: deps({ issueDependenciesSummary: summary(0, 0, -1, 0) }),
+        r2: ok('a/b', 3), d2: deps({ issueDependenciesSummary: { ...summary(0, 0, 0, 0), totalBlocking: 0.5 } }),
+        r3: ok('a/b', 4), d3: deps({ blocking: undefined }),
+        r4: ok('a/b', 5), d4: deps({ blockedBy: null }),
+        r5: ok('a/b', 6), d5: deps({ blocking: { totalCount: 0, nodes: [] } }),
+        r6: ok('a/b', 7), d6: deps({ blockedBy: { totalCount: 0, pageInfo: { hasNextPage: false }, nodes: null } }),
+      },
+    }), claimed('a/b#1', 'a/b#2', 'a/b#3', 'a/b#4', 'a/b#5', 'a/b#6', 'a/b#7'))
+    expect(batch.outcomes.map((o) => ('error' in o ? o.error : o.dependencies))).toEqual(Array(7).fill({ status: 'unavailable' }))
+    expect(batch.outcomes.every((o) => 'snapshot' in o && o.snapshot.hierarchy.status === 'ok')).toBe(true)
+  })
 })
 
 describe('issueQueue: candidates, TTLs and order (§5.4)', () => {
@@ -323,8 +523,16 @@ describe('issueQueue: candidates, TTLs and order (§5.4)', () => {
   const queue = (nowMs: number) =>
     issueQueue({ entities: listIssueEntities(db), links: listSourceLinks(db), snapshots: listIssueSnapshots(db), nowMs })
   const numbers = (nowMs: number) => queue(nowMs).map((e) => e.number)
-  const seed = (number: number, minute: number, opts: { state?: 'OPEN' | 'CLOSED'; error?: Parameters<typeof recordIssueFailure>[1]['error'] } = {}) => {
-    upsertIssueSnapshot(db, { repo: REPO, number, snapshot: snapshot(`${REPO}#${number}`, { issue: { state: opts.state ?? 'OPEN' } }), startedAt: at(minute) })
+  const none = { open: 0, total: 0, truncated: false, list: [] }
+  const NO_DEPS: IssueDependencies = { status: 'ok', blocked_by: none, blocking: none }
+  // `deps: null` writes a snapshot as a v1.4 viewer leaves it: with no dependency section
+  const seed = (number: number, minute: number, opts: {
+    state?: 'OPEN' | 'CLOSED'; error?: Parameters<typeof recordIssueFailure>[1]['error']; deps?: IssueDependencies | null
+  } = {}) => {
+    upsertIssueSnapshot(db, {
+      repo: REPO, number, snapshot: snapshot(`${REPO}#${number}`, { issue: { state: opts.state ?? 'OPEN' } }), startedAt: at(minute),
+      ...(opts.deps === null ? {} : { dependencies: opts.deps ?? NO_DEPS }),
+    })
     if (opts.error) recordIssueFailure(db, { repo: REPO, number, error: opts.error, startedAt: at(minute + 0.001) })
   }
 
@@ -382,7 +590,9 @@ describe('issueQueue: candidates, TTLs and order (§5.4)', () => {
 
   it('a merged PR nudges its certain closing issue and every candidate listing it, once', () => {
     for (const n of [117, 120, 121]) item(n)
-    upsertIssueSnapshot(db, { repo: REPO, number: 117, snapshot: snapshot(`${REPO}#117`, { children: [`${REPO}#120`] }), startedAt: at(1) })
+    upsertIssueSnapshot(db, {
+      repo: REPO, number: 117, snapshot: snapshot(`${REPO}#117`, { children: [`${REPO}#120`] }), dependencies: NO_DEPS, startedAt: at(1),
+    })
     seed(120, 1)
     seed(121, 1)
     vi.setSystemTime(ms(3))
@@ -399,6 +609,51 @@ describe('issueQueue: candidates, TTLs and order (§5.4)', () => {
     // once refreshed after the merge was seen, the nudge is spent
     seed(117, 4)
     seed(120, 4)
+    expect(queue(ms(5))).toEqual([])
+  })
+
+  // slice 2 §5.4
+  it('fetches a readable snapshot without a bound dependency section at once: after new keys, before nudged ones', () => {
+    for (const n of [1, 2, 3, 4, 5, 6, 7, 8]) item(n)
+    seed(2, 3) // current: not due
+    seed(3, 3, { deps: null }) // written before slice 2, or since by an older viewer
+    seed(4, 2, { deps: null })
+    seed(5, 3, { deps: { status: 'unavailable' } }) // GitHub failed the section: an answer, kept until due
+    seed(6, 3, { deps: null, error: 'no-gh' }) // GitHub could not be asked: its own TTL decides
+    seed(7, 3)
+    recordIssueFailure(db, { repo: REPO, number: 8, error: 'not-found', startedAt: at(3) }) // no snapshot to upgrade
+    vi.setSystemTime(ms(4))
+    upsertSourceLink(db, { repo: REPO, branch: '7-x', head_repo: REPO, pr_number: 9, pr_state: 'MERGED', closing_refs: [{ repo: REPO, number: 7 }] })
+    expect(queue(ms(5)).map((e) => [e.number, e.reason])).toEqual([[1, 'new'], [4, 'upgrade'], [3, 'upgrade'], [7, 'nudged']])
+    seed(3, 5)
+    seed(4, 5)
+    seed(7, 5)
+    expect(queue(ms(6))).toEqual([{ repo: REPO, number: 1, checked_at: null, reason: 'new' }])
+    expect(numbers(ms(3.001) + ISSUE_TTL.softSlow)).toContain(6)
+  })
+
+  // After the clock moves back, the attempt rule refuses every write that
+  // started before the stored checked_at, so the section could never be bound
+  // and the key would be fetched on every tick.
+  it('takes no upgrade whose checked_at is ahead of the clock', () => {
+    item(1)
+    seed(1, 10, { deps: null })
+    expect(queue(ms(10) - 1)).toEqual([])
+    expect(queue(ms(10)).map((e) => [e.number, e.reason])).toEqual([[1, 'upgrade']])
+  })
+
+  it('a settled PR closing one of a key’s open blockers nudges that key, once', () => {
+    for (const n of [121, 122, 123]) item(n)
+    const blocker = (number: number, state: 'OPEN' | 'CLOSED' = 'OPEN') =>
+      ({ ...none, open: state === 'OPEN' ? 1 : 0, total: 1, list: [facts(`${REPO}#${number}`, { state })] })
+    seed(121, 1, { deps: { status: 'ok', blocked_by: blocker(119), blocking: none } })
+    seed(122, 1, { deps: { status: 'ok', blocked_by: blocker(120, 'CLOSED'), blocking: none } }) // already closed
+    seed(123, 1, { deps: { status: 'ok', blocked_by: none, blocking: blocker(119) } }) // a dependent, not a blocker
+    vi.setSystemTime(ms(3))
+    upsertSourceLink(db, { repo: REPO, branch: '119-x', head_repo: REPO, pr_number: 9, pr_state: 'MERGED', closing_refs: [{ repo: REPO, number: 119 }] })
+    upsertSourceLink(db, { repo: REPO, branch: '120-x', head_repo: REPO, pr_number: 10, pr_state: 'CLOSED', closing_refs: [{ repo: REPO, number: 120 }] })
+    expect(queue(ms(4)).map((e) => [e.number, e.reason])).toEqual([[121, 'nudged']])
+    seed(121, 4, { deps: { status: 'ok', blocked_by: blocker(119, 'CLOSED'), blocking: none } })
     expect(queue(ms(5))).toEqual([])
   })
 
@@ -459,6 +714,47 @@ describe('refreshIssuesOnce (§5.2–5.5)', () => {
     expect(graph.roots).toEqual([expect.objectContaining({ key: `${REPO}#120`, error: null, fetched_at: at(0) })])
     expect(graph.edges).toEqual([expect.objectContaining({ from: `${REPO}#117`, to: `${REPO}#120` })])
     expect(graph.nodes.find((n) => n.key === `${REPO}#117`)).toMatchObject({ children_total: 2 })
+  })
+
+  it('stores each root’s dependency section with its snapshot, bound to that fetch (slice 2 §5.3)', async () => {
+    item(121)
+    const w = world(119, 120, 121, 122)
+    w.get(`${REPO}#120`)!.state = 'CLOSED'
+    w.get(`${REPO}#121`)!.blockedBy = [`${REPO}#120`, `${REPO}#119`]
+    w.get(`${REPO}#122`)!.blockedBy = [`${REPO}#121`]
+    await refreshIssuesOnce(db, { run: fakeGitHub(w).run, now, owner: 'v1', budget: new IssueBudget(clock) })
+    const issue = (n: number, state: 'OPEN' | 'CLOSED' = 'OPEN') =>
+      facts(`${REPO}#${n}`, { state, state_reason: state === 'CLOSED' ? 'COMPLETED' : null })
+    expect(listIssueSnapshots(db)).toEqual([expect.objectContaining({
+      number: 121, fetched_at: at(0),
+      dependencies: {
+        status: 'ok',
+        blocked_by: { open: 1, total: 2, truncated: false, list: [issue(119), issue(120, 'CLOSED')] },
+        blocking: { open: 1, total: 1, truncated: false, list: [issue(122)] },
+      },
+    })])
+  })
+
+  // The real shape: GitHub fails a dependency field, `d0.issue` is null with an
+  // error at its path, and `r0` is intact. The issue must keep its hierarchy
+  // refresh, however long the dependency fields keep failing.
+  it('a dependency field that keeps failing never stops the hierarchy refresh: stored each time, the section unavailable', async () => {
+    item(117)
+    const w = world(117, 118, 119)
+    w.get(`${REPO}#118`)!.parent = `${REPO}#117`
+    w.get(`${REPO}#117`)!.depsError = 'blockedBy'
+    const gh = fakeGitHub(w)
+    const read = () => listIssueSnapshots(db).find((r) => r.number === 117)!
+    expect(await refreshIssuesOnce(db, { run: gh.run, now, owner: 'v1', budget: new IssueBudget(clock) })).toMatchObject({ applied: 1 })
+    expect(read()).toMatchObject({ error: null, fetched_at: at(0), dependencies: { status: 'unavailable' } })
+    expect(read().snapshot!.hierarchy).toMatchObject({ status: 'ok', children: [{ number: 118 }] })
+
+    tick(10)
+    w.get(`${REPO}#119`)!.parent = `${REPO}#117`
+    w.get(`${REPO}#117`)!.depsError = 'issueDependenciesSummary'
+    await refreshIssuesOnce(db, { run: gh.run, now, owner: 'v1', budget: new IssueBudget(clock) })
+    expect(read()).toMatchObject({ error: null, fetched_at: at(10), dependencies: { status: 'unavailable' } })
+    expect(read().snapshot!.hierarchy).toMatchObject({ status: 'ok', children: [{ number: 118 }, { number: 119 }] })
   })
 
   it('soft failures keep data, hard failures suppress it at once (a partial batch, per alias)', async () => {

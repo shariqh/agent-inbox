@@ -1803,6 +1803,16 @@ body.settings-open #liveBar { opacity: .32; }
 .dashboard-empty { display: grid; min-height: 110px; place-items: center; margin: 0; }
 .boards > .tab-header { justify-items: end; padding-bottom: 0; border-bottom: 0; }
 .boards > .tab-header .header-toggle { width: auto; }
+.plan-settings { padding-bottom: 18px; border-bottom: 1px solid var(--app-border); }
+/* #103 slice 2 §7: the Plans header's "Group by parent issue" switch and its groups */
+.header-switch { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--app-muted); cursor: pointer; }
+.header-switch input { margin: 0; accent-color: var(--app-accent); }
+.plan-group-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; margin: 18px 0 8px; font-size: 13px; font-weight: 600; }
+.plan-group-head.stale { opacity: .6; }
+.plan-group-title { min-width: 0; overflow-wrap: anywhere; }
+.plan-group-meta { color: var(--app-muted); font-size: 12px; font-weight: 400; }
+.board.in-group { margin-left: 14px; }
+.board-table .row-parent-run th { padding: 6px 6px 2px; text-align: left; color: var(--app-muted); font-size: 11px; font-weight: 500; }
 
 /* Finished work is a ledger first and a full audit card only on demand. */
 #done .items { display: grid; max-width: 1120px; margin: 0 auto; }

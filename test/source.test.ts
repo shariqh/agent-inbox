@@ -16,9 +16,11 @@ import {
   rowIssueChipsHtml,
   previewRef,
   PREVIEW_TTL_MS,
+  planGroupHeadHtml,
+  rowParentHeadHtml,
 } from '../public/source.js'
 import type { CachedLink, LinkedEntity } from '../public/source.js'
-import { buildIssueView } from '../public/issues.js'
+import { buildIssueView, planGroups } from '../public/issues.js'
 import { buildIssueGraph } from '../src/issue-graph.js'
 import type { IssueError } from '../src/store.js'
 import { at, facts, keySets, row, snapshot } from './issue-fixtures.js'
@@ -655,6 +657,40 @@ describe('issue relationships in the chips and the source block (#103)', () => {
     expect(html).not.toMatch(/blocked/i)
     expect(html).not.toContain('tone-bad')
     for (const [, tone] of html.matchAll(/class="src-chip tone-([\w-]+)"/g)) expect(['issue', 'stale']).toContain(tone)
+  })
+
+  // Slice 2 §7.5: the group header is a heading, never a control, and every
+  // GitHub or agent text in it is inert.
+  it('draws a group header and a row run header with hostile titles as inert text', () => {
+    const XSS = '"><img src=x onerror=alert(1)>'
+    const QUOTES = `It's "quoted" & <b>bold</b>`
+    const issues = view(family({ parentTitle: XSS, childTitle: QUOTES }))
+    const plans = [
+      { id: 'umb', project: QUOTES, agent: XSS, title: XSS, repo: R, stream: 'main', issue_pin_repo: R, issue_pin_number: 117 },
+      { id: 'p120', project: QUOTES, agent: XSS, title: QUOTES, repo: R, stream: 'main', issue_pin_repo: R, issue_pin_number: 120 },
+    ]
+    const group = planGroups(plans, issues, null).groupOf.get('umb')!
+    const head = planGroupHeadHtml(group, NOW3)
+    expect(head.startsWith('<h3 class="plan-group-head">')).toBe(true)
+    expect(head.replace(/<[^>]*>/g, '')).toBe(`#117${XSS}1 of 10 sub-issues done · 2 plans · ${QUOTES}`
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;'))
+    expect(planGroupHeadHtml(group, NOW3, { continued: true })).toContain('(continued)')
+    const run = rowParentHeadHtml(issues.relations.get(K(120))!.trail[0]!, plans[0]!)
+    expect(run).toBe(`<th colspan="5" scope="colgroup" class="row-parent-head" title="${XSS.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')}">Part of #117</th>`)
+    const html = head + run
+    expect(html).not.toContain('<img')
+    expect(html).not.toContain('<b>')
+    expect(html).not.toMatch(/blocked/i)
+    expect(hrefs(html)).toEqual(['https://github.com/shariqh/agent-inbox/issues/117'])
+    for (const tag of html.match(/<[a-z][^>]*>/g) ?? []) expect(tag.split('"').length % 2, tag).toBe(1)
+    for (const [, tone] of html.matchAll(/class="src-chip tone-([\w-]+)"/g)) expect(tone).toBe('issue')
+
+    // a group of stale members is dimmed and says how old its evidence is
+    const stale = planGroups(plans, view(family({ fetchedAt: at(0) }), { nowMs: T + 2 * 60 * 60_000 }), null).groupOf.get('umb')!
+    const dim = planGroupHeadHtml(stale, T + 2 * 60 * 60_000)
+    expect(dim.startsWith('<h3 class="plan-group-head stale">')).toBe(true)
+    expect(dim).toContain('class="src-chip tone-stale"')
+    expect(dim).toContain(' · as of 2h ago')
   })
 
   it('names a row\'s own issue instead of its plan\'s, and draws nothing for a row with no link', () => {

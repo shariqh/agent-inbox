@@ -184,3 +184,98 @@ export function buildIssueView(graph, { items, boards, archived, links, attentio
   }
   return { relations }
 }
+
+// Slice 2 §7: opt-in grouping. Only fresh and stale relations take part; every
+// other state, an uncertain identity, a root the node cap omitted and a missing
+// graph leave a plan flat in its place (§7.4).
+const groupable = (rel) => Boolean(rel && rel.node && (rel.freshness === 'fresh' || rel.freshness === 'stale'))
+const parentNode = (rel) => (groupable(rel) ? rel.trail[rel.trail.length - 1] ?? null : null)
+
+function relationOf(entity, view, links) {
+  const relations = view && view.relations instanceof Map ? view.relations : null
+  if (!relations || !record(entity)) return null
+  const identity = issueKeyFor(entity, linkFor(links ?? null, entity))
+  const rel = identity && identity.certain ? relations.get(identity.key) : null
+  return groupable(rel) ? rel : null
+}
+
+// Active plans in today's order → the same plans, each exactly once, with every
+// group of two or more plans of ONE project under one GitHub parent gathered at
+// its first member's place (§7.1, §7.2). The umbrella, whose own issue is the
+// parent, leads; then members in GitHub's child order; then today's order.
+export function planGroups(plans, view, links) {
+  // GitHub's child order is known only for a parent whose own list was fetched
+  // and drawn; its children carry their place in it.
+  const placeOf = new Map()
+  for (const rel of view && view.relations instanceof Map ? view.relations.values() : []) {
+    if (groupable(rel)) rel.children.forEach(({ node }, index) => placeOf.set(`${rel.node.key}\u0000${node.key}`, index))
+  }
+  const facts = plans.map((plan, index) => {
+    const rel = typeof plan?.project === 'string' ? relationOf(plan, view, links) : null
+    if (!rel) return { plan, index, rel: null }
+    const parent = parentNode(rel)
+    const scope = (key) => `${plan.project}\u0000${key}`
+    const place = parent ? placeOf.get(`${parent.key}\u0000${rel.node.key}`) ?? Infinity : Infinity
+    return { plan, index, rel, place, own: scope(rel.node.key), up: parent ? scope(parent.key) : null, parent }
+  })
+  // A plan is an umbrella where its own group lives, else a member of its
+  // parent's. Groups that end up with no member or a single plan dissolve, and
+  // a dissolved group frees its plans for their parent's, until nothing moves.
+  const dead = new Set()
+  let groups
+  for (;;) {
+    groups = new Map()
+    const join = (key, role, fact) => {
+      const group = groups.get(key) ?? { umbrellas: [], members: [] }
+      group[role].push(fact)
+      groups.set(key, group)
+    }
+    const hasMembers = new Set(facts.filter((f) => f.up && !dead.has(f.up)).map((f) => f.up))
+    for (const fact of facts) {
+      if (!fact.rel) continue
+      if (!dead.has(fact.own) && hasMembers.has(fact.own)) join(fact.own, 'umbrellas', fact)
+      else if (fact.up && !dead.has(fact.up)) join(fact.up, 'members', fact)
+    }
+    const dying = [...groups].filter(([, g]) => !g.members.length || g.umbrellas.length + g.members.length < 2)
+    if (!dying.length) break
+    for (const [key] of dying) dead.add(key)
+  }
+  const groupOf = new Map()
+  const ordered = new Map()
+  for (const [key, { umbrellas, members }] of groups) {
+    const sorted = [...umbrellas, ...[...members].sort((a, b) => a.place - b.place || a.index - b.index)]
+    const rels = sorted.map((f) => f.rel)
+    const stamps = rels.map((rel) => rel.fetchedAt).filter((stamp) => typeof stamp === 'string').sort()
+    const first = sorted[0].plan
+    const group = {
+      key, project: first.project, parent: members[0].parent, size: sorted.length,
+      stale: rels.every((rel) => rel.freshness === 'stale'), fetchedAt: stamps[0] ?? null,
+      against: text(first.repo) ?? text(linkFor(links ?? null, first)?.repo),
+    }
+    for (const fact of sorted) groupOf.set(fact.plan.id, group)
+    ordered.set(group, sorted.map((f) => f.plan))
+  }
+  const out = []
+  const placed = new Set()
+  for (const plan of plans) {
+    const group = groupOf.get(plan?.id)
+    if (!group) out.push(plan)
+    else if (!placed.has(group)) {
+      placed.add(group)
+      out.push(...ordered.get(group))
+    }
+  }
+  return { plans: out, groupOf }
+}
+
+// Inside one plan (§7.1): the rows that start a run under a GitHub parent, when
+// the plan's linked rows span two or more parents. Rows are never reordered.
+export function rowParentRuns(rows, view) {
+  const parents = rows.map((row) => parentNode(relationOf({ issue_repo: row?.issue_repo, issue_number: row?.issue_number }, view, null)))
+  const runs = new Map()
+  if (new Set(parents.filter(Boolean).map((node) => node.key)).size < 2) return runs
+  parents.forEach((node, i) => {
+    if (node && node.key !== parents[i - 1]?.key) runs.set(rows[i].id, node)
+  })
+  return runs
+}

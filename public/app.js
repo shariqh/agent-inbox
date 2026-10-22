@@ -2358,12 +2358,20 @@ async function deferAsk(entry, url, body, { refusal = '', onSaved = null } = {})
   const res = await postJSON(url, body)
   if (res === null) return
   if (refusal) showWriteError(ask.id, res.ok ? '' : refusal)
+  // #272: a row snooze moves the revision, so the next frame moves this draft to
+  // the unsent responses. The mark says why, and is read only by that frame: a
+  // pin moves no revision, so a later agent edit must not inherit it.
+  const meta = res.ok && entry.kind === 'row' && rowDraftMeta[ask.id]?.revision === ask.revision
+    ? rowDraftMeta[ask.id]
+    : null
+  if (meta) meta.setAside = true
   if (res.ok) {
     if (holdsDraft(ask.id)) keepDraftInView(entry)
     else if (openRowId === ask.id) setOpenRow(null, { resume: false })
     onSaved?.()
   }
   await reloadAndPaint()
+  if (meta) delete meta.setAside
 }
 
 // #247 §2.3: with the Later section on, "I'll take a while" also defers the ask
@@ -2795,7 +2803,7 @@ function rowAnswerEl(b, r, onSaved) {
     warning.className = 'write-error stale-draft'
     warning.textContent = recovery.revision === r.revision
       ? 'Not sent because the board changed. Review the preserved draft and send again.'
-      : `Not sent because this action changed. Preserved ${recovery.kind}: ${recovery.text}`
+      : `${recovery.setAside ? 'Kept from before you set this aside.' : 'Not sent because this action changed.'} Preserved ${recovery.kind}: ${recovery.text}`
     wrap.appendChild(warning)
   }
   return wrap
@@ -6258,6 +6266,7 @@ function reconcileDraftOwners() {
       boardTitle: meta?.boardTitle ?? 'Plan',
       label: meta?.label ?? 'Removed row',
       context: meta?.context ?? '',
+      setAside: meta?.setAside === true,
     }
     bumpDraftGeneration(rowDraftGenerations, id)
     delete rowDrafts[id]

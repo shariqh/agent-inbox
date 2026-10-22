@@ -1,7 +1,7 @@
-import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import {
   WindowsBinaryGateError,
   assertPeTreeCompatibility,
@@ -9,6 +9,9 @@ import {
   listPlainWindowsBinaryFiles,
   readPeArchitecture,
 } from '../scripts/windows-binary-gates.mjs'
+import { removeScratchDirs, scratchDir } from './scratch.js'
+
+afterEach(removeScratchDirs)
 
 // Windows requires SeCreateSymbolicLinkPrivilege (or Developer Mode) to
 // create a FILE or plain directory symlink, which a windows-2022 CI runner
@@ -53,7 +56,7 @@ function peBytes(machine: number, magic: number, lfanew = 0x80, sizeOfOptionalHe
 }
 
 function writeFixture(bytes: Buffer, name = 'binary.exe'): string {
-  const path = join(mkdtempSync(join(tmpdir(), 'windows-pe-')), name)
+  const path = join(scratchDir('windows-pe-'), name)
   writeFileSync(path, bytes)
   return path
 }
@@ -177,7 +180,7 @@ describe('Windows PE parser', () => {
   // skip there rather than fail CI for a privilege this gate doesn't need.
   it.skipIf(IS_WINDOWS)('never follows a symlink to read PE bytes', () => {
     const target = amd64Pe32Plus()
-    const link = join(mkdtempSync(join(tmpdir(), 'windows-pe-link-')), 'binary.exe')
+    const link = join(scratchDir('windows-pe-link-'), 'binary.exe')
     symlinkSync(target, link)
     expect(() => readPeArchitecture(link)).toThrow(/must be a plain regular file/)
   })
@@ -185,7 +188,7 @@ describe('Windows PE parser', () => {
 
 describe('Windows whole-tree binary gate', () => {
   it('gates every plain .exe/.dll/.node file, sorted, contained, case-insensitively by suffix', () => {
-    const root = mkdtempSync(join(tmpdir(), 'windows-tree-'))
+    const root = scratchDir('windows-tree-')
     writeFileSync(join(root, 'README.txt'), 'not a binary')
     mkdirSync(join(root, 'resources', 'app.asar.unpacked', 'node_modules', 'better-sqlite3', 'build', 'Release'), { recursive: true })
     writeFileSync(
@@ -226,7 +229,7 @@ describe('Windows whole-tree binary gate', () => {
     // stand-in for a Windows junction/reparse point) must never be followed
     // OR silently dropped: a symlink pointing at a valid gated suffix could
     // otherwise hide an unvetted binary from this inventory entirely.
-    const root = mkdtempSync(join(tmpdir(), 'windows-tree-link-'))
+    const root = scratchDir('windows-tree-link-')
     writeFileSync(join(root, 'good.exe'), peBytes(0x8664, 0x20b))
     const outsideExe = amd64Pe32Plus('outside.exe')
     symlinkSync(outsideExe, join(root, 'linked.exe'))
@@ -238,9 +241,9 @@ describe('Windows whole-tree binary gate', () => {
   })
 
   it('refuses a link-like directory entry (a real junction on win32, a symlink elsewhere) instead of traversing into it', () => {
-    const root = mkdtempSync(join(tmpdir(), 'windows-tree-junction-'))
+    const root = scratchDir('windows-tree-junction-')
     writeFileSync(join(root, 'good.exe'), peBytes(0x8664, 0x20b))
-    const realDir = mkdtempSync(join(tmpdir(), 'windows-tree-junction-target-'))
+    const realDir = scratchDir('windows-tree-junction-target-')
     writeFileSync(join(realDir, 'hidden.dll'), peBytes(0x8664, 0x20b))
     // 'junction' creates a real, unprivileged directory junction on Windows
     // and is a harmless type hint (ignored) everywhere else, so this proves
@@ -253,7 +256,7 @@ describe('Windows whole-tree binary gate', () => {
   })
 
   it('fails the whole-tree gate with the offending relative path when one binary is malformed', () => {
-    const root = mkdtempSync(join(tmpdir(), 'windows-tree-bad-'))
+    const root = scratchDir('windows-tree-bad-')
     writeFileSync(join(root, 'good.exe'), peBytes(0x8664, 0x20b))
     mkdirSync(join(root, 'nested'))
     writeFileSync(join(root, 'nested', 'bad.dll'), peBytes(0xaa64, 0x20b))
@@ -262,7 +265,7 @@ describe('Windows whole-tree binary gate', () => {
   })
 
   it('rejects a compatibility request for an unsupported Windows architecture', () => {
-    const root = mkdtempSync(join(tmpdir(), 'windows-tree-unsupported-'))
+    const root = scratchDir('windows-tree-unsupported-')
     writeFileSync(join(root, 'good.exe'), peBytes(0x8664, 0x20b))
     // @ts-expect-error exercising the runtime guard with an arch this package never ships
     expect(() => assertPeTreeCompatibility({ root, arch: 'arm64' }))
@@ -270,8 +273,8 @@ describe('Windows whole-tree binary gate', () => {
   })
 
   it('rejects a packaged app root that is itself a symlink', () => {
-    const real = mkdtempSync(join(tmpdir(), 'windows-tree-real-'))
-    const link = join(mkdtempSync(join(tmpdir(), 'windows-tree-link-')), 'app')
+    const real = scratchDir('windows-tree-real-')
+    const link = join(scratchDir('windows-tree-link-'), 'app')
     // 'junction' avoids the Windows symlink-creation privilege: the root is
     // a directory here, not a file, so a junction proves the same refusal.
     symlinkSync(real, link, 'junction')

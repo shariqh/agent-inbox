@@ -1,23 +1,23 @@
 import {
   chmodSync,
   existsSync,
-  mkdirSync,
-  mkdtempSync,
   readdirSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs'
-import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createRequire } from 'node:module'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
+import { removeScratchDirs, scratchDir } from './scratch.js'
 
 const require = createRequire(import.meta.url)
 const { createSetupFilesystem } = require('../scripts/setup-filesystem.cjs')
 
 describe.runIf(process.platform === 'win32')('native Win32 Setup filesystem evidence', () => {
+  afterEach(removeScratchDirs)
+
   it('publishes and removes an immutable runtime with stable NTFS identity', () => {
-    const parent = mkdtempSync(join(tmpdir(), 'agent-inbox-win32-fs-'))
+    const parent = scratchDir('agent-inbox-win32-fs-')
     const destination = join(parent, 'runtime-id')
     const filesystem = createSetupFilesystem()
     const parentIdentity = filesystem.identify(parent, 'directory')
@@ -58,8 +58,8 @@ describe.runIf(process.platform === 'win32')('native Win32 Setup filesystem evid
   })
 
   it('refuses a native junction instead of traversing or deleting its target', () => {
-    const parent = mkdtempSync(join(tmpdir(), 'agent-inbox-win32-junction-'))
-    const outside = mkdtempSync(join(tmpdir(), 'agent-inbox-win32-outside-'))
+    const parent = scratchDir('agent-inbox-win32-junction-')
+    const outside = scratchDir('agent-inbox-win32-outside-')
     const marker = join(outside, 'keep.txt')
     writeFileSync(marker, 'keep\n')
     const junction = join(parent, 'linked-runtime')

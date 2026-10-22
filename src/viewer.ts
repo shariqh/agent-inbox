@@ -9,7 +9,7 @@ import type Database from 'better-sqlite3'
 import {
   listItems, listItemsPage, listOpenQuestions, resolveItem, dismissItem, annotateItem, replyItem, snoozeItem,
   stopItemWatch, stopBoardRowWatch, pinItem, pinBoardRow,
-  listBoards, archiveBoard, unarchiveBoard, annotateBoardRow, snoozeBoardRow,
+  listBoards, listBoardsWithBlockedRows, archiveBoard, unarchiveBoard, annotateBoardRow, snoozeBoardRow,
   markRowHandled, clearRowHandled, listActivity, listActivitySpans, listSourceLinks, defaultDbPath,
   closeProject, reopenProject, closedProjects, readSnapshotState, listIssueEntities, listIssueSnapshots,
 } from './store.js'
@@ -587,7 +587,7 @@ function etagMatches(requested: string | undefined, etag: string): boolean {
 
 function conditionalSnapshot(
   db: Database.Database,
-  name: 'items' | 'attention-items' | 'history-items' | 'boards' | 'archived-boards' | 'issues',
+  name: 'items' | 'attention-items' | 'history-items' | 'boards' | 'attention-boards' | 'archived-boards' | 'issues',
   read: () => object,
 ): Handler {
   // One representation per registration, local to this viewer instance.
@@ -924,7 +924,14 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
     return c.json(ok ? { ok: true } : { ok: false, reason: 'not_pinnable' })
   })
 
-  app.get('/api/boards', conditionalSnapshot(db, 'boards', () => listBoards(db)))
+  const allBoards = conditionalSnapshot(db, 'boards', () => listBoards(db))
+  // Issue #287: the same dock watcher read every plan, every row and all of their
+  // background every 3 seconds as well. `?scope=attention` serves the same shape
+  // narrowed to the plans holding a blocked row and to those rows, as its own
+  // cached representation with its own validator, so neither can revalidate or
+  // evict the other; any other query string keeps the full response.
+  const attentionBoards = conditionalSnapshot(db, 'attention-boards', () => listBoardsWithBlockedRows(db))
+  app.get('/api/boards', (c, next) => (c.req.query('scope') === 'attention' ? attentionBoards : allBoards)(c, next))
 
   app.get('/api/boards/archived', conditionalSnapshot(db, 'archived-boards', () => listBoards(db, { status: 'archived' })))
 

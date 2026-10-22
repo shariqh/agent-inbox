@@ -36,6 +36,7 @@ const { createAppImageInstaller } = require('./update-install-appimage.cjs')
 const { checkForUpdate, runsFromAppImage } = require('./update-fetch.cjs')
 const { createUpdatePreferences, createUpdateTrustState } = require('./update-preferences.cjs')
 const { loadUpdateRegistry } = require('./update-trust.cjs')
+const { createConditionalReader } = require('./conditional-read.cjs')
 const {
   attentionNotification,
   cannedResponseActions,
@@ -566,6 +567,10 @@ function spawnViewer() {
 function startAttentionWatch(win) {
   let known = null // ids seen on the previous poll; null until the first one
   let polling = false
+  // Issue #287: the two projections are conditional. Each read sends the
+  // validator its last answer carried, and an unchanged one comes back as a
+  // bodyless 304 the reader answers from what it parsed then.
+  const read = createConditionalReader()
   const poll = async () => {
     if (attentionModsFailed) return // already logged once — don't spam every 3s
     let mods
@@ -576,13 +581,14 @@ function startAttentionWatch(win) {
     }
     const { attentionEntries, laterEntries, focusHashFor, optionOrder } = mods
     try {
-      // The lean item projection (issue #156): the same Grouped shape without the
-      // closed history this watcher never reads, which would otherwise be built,
-      // sent and parsed in this process every 3 seconds. An older reused viewer
-      // ignores the parameter and sends the full payload, whose needsYou groups
-      // are the same; test/reply-watch.test.ts pins that both yield one result.
-      const g = await (await fetch(`${URL_BASE}api/items?scope=attention`)).json()
-      const boards = await (await fetch(`${URL_BASE}api/boards`)).json()
+      // The lean projections (issues #156 and #287): the same shapes without the
+      // closed history and the plan rows this watcher never reads, which would
+      // otherwise be built, sent and parsed in this process every 3 seconds. An
+      // older reused viewer ignores the parameter and sends the full payload,
+      // which the shared module reads the same way, with or without a validator;
+      // test/reply-watch.test.ts pins that every one of them yields one result.
+      const g = await read(`${URL_BASE}api/items?scope=attention`)
+      const boards = await read(`${URL_BASE}api/boards?scope=attention`)
       const activity = await (await fetch(`${URL_BASE}api/activity`)).json()
       // Projects the human closed (issue #32). FAIL OPEN, deliberately: an older
       // standalone viewer from a different checkout has no such route, and
@@ -620,7 +626,9 @@ function startAttentionWatch(win) {
       // includes or drops, the dock follows for free, which is the only way the
       // dock and the title badge can be guaranteed to agree.
       // `attn` is the VISIBLE set (closed projects suppressed): it sizes the dock
-      // badge and fills the notification body.
+      // badge and fills the notification body. It is computed on every tick, 304s
+      // or not (#287): what the shared module decides can change with the clock
+      // alone, and over the lean reads it costs microseconds.
       const attn = attentionEntries(items, boards, Date.now(), liveSessions, closed)
       if (typeof app.setBadgeCount === 'function') app.setBadgeCount(attn.length)
       const entries = attn.map(attentionNotification)
@@ -654,6 +662,9 @@ function startAttentionWatch(win) {
             let saved = false
             if (actionable.target.source === 'row') {
               try {
+                // The default representation, read fresh and unconditionally
+                // (#287): a refused answer is rare, and its retry is pinned to
+                // the row revision the notification showed.
                 const latestBoards = await (await fetch(`${URL_BASE}api/boards`)).json()
                 const refreshed = refreshNotificationTarget(latestBoards, actionable.target)
                 if (refreshed) {

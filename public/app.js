@@ -6409,6 +6409,9 @@ const DRAFT_REASONS = {
   actionChanged: [ROW_ACTION_CHANGED, 'Your send was not confirmed, and this action has changed since.'],
 }
 const draftReason = (cause, unconfirmed) => DRAFT_REASONS[cause][unconfirmed ? 1 : 0]
+// Issue #322: the server answered a replay from its record of the earlier send,
+// which did land, and reports an answer that is no longer this response.
+const REPLY_REPLACED = 'Your send went through, but this question\'s answer has changed since.'
 // An item recovery's in-memory key repeats across page loads; its stored key
 // carries this load's id so a later load's recovery can never overwrite it.
 const draftPageId = globalThis.crypto.randomUUID()
@@ -6620,6 +6623,17 @@ function savedIntentRule(id, intent, response) {
   return sameAnswer(intent.pin, draftAnswerOf(item)) ? 'replay' : 'fresh'
 }
 
+// Issue #322: the rule can only read the last poll, so within one poll of
+// another writer it replays a send the server already applied. The server
+// answers that from its record without writing, and says so (`replayed`, not
+// `wrote`) with the answer that stands, in the item's own field names. When
+// that answer is not this response, a newer one replaced it after it landed.
+// A server from before #322 says only `ok`, which keeps the old reading.
+function replacedSinceItLanded(res, response) {
+  return res.replayed === true && res.wrote === false && Boolean(res.answer)
+    && !itemHolds(res.answer, response)
+}
+
 // Two windows that restored the same draft may each have kept it; one copy is enough.
 function recoveryHolds(itemId, { text, context = '', kind = 'answer' }) {
   return Object.values(staleItemDrafts).some((draft) => draft.itemId === itemId && draft.kind === kind
@@ -6809,6 +6823,34 @@ function retireDeliveredReply(id, { recoveryKey, savedIntent, text, context, kin
   // every unsent copy of this response was delivered, a Retry's own entry too
   deleteMatchingItemDraftRecoveries(id, { text, context, kind })
   showWriteError(id, '')
+}
+
+// Issue #322: a replay wrote nothing and a newer answer stands, so the text
+// stays, as an unsent response saying so: in the entry its Retry came from, in
+// the one its editor's draft moved to while the send was in flight, or out of
+// the editor it was sent from. An editor typed in since keeps that newer text
+// instead. The replayed intent is spent, so a Retry claims a fresh one.
+// Returns whether an entry holds the text.
+function keepReplacedReply(id, {
+  title, text, context, kind, generation, intent, recoveryKey, recoveryOwner, submission, ownsDraft,
+}) {
+  const kept = { title, text, context, kind, intent: null, generation, reason: REPLY_REPLACED }
+  let key = null
+  if (recoveryKey) {
+    key = preserveItemDraftRecovery(id, { ...kept, key: recoveryKey, expectedOwner: recoveryOwner })
+  } else if (submission?.recoveryKey) {
+    key = preserveItemDraftRecovery(id, { ...kept, key: submission.recoveryKey, expectedOwner: submission.recoveryOwner })
+  } else if (ownsDraft) {
+    key = preserveItemDraftRecovery(id, kept)
+    bumpDraftGeneration(itemDraftGenerations, id)
+    delete draftReplies[id]
+    delete draftReplyContexts[id]
+    delete itemDraftMeta[id]
+    delete itemDraftRetryIntents[id]
+  }
+  retireItemDraftSubmission(id, generation, intent)
+  if (recoveryKey) retireItemDraftSubmissionIntent(id, intent)
+  return key !== null
 }
 
 async function submitItemReply(
@@ -7024,6 +7066,24 @@ async function submitItemReply(
     delete draftReplies[id]
     delete draftReplyContexts[id]
     delete itemDraftMeta[id]
+    showWriteError(id, '')
+    await reloadAndPaint()
+    return
+  }
+  if (replacedSinceItLanded(res, { text, context, kind })) {
+    const kept = keepReplacedReply(id, {
+      title: recoveryTitle,
+      text,
+      context,
+      kind,
+      generation: submittedGeneration,
+      intent,
+      recoveryKey,
+      recoveryOwner: submittedRecoveryOwner,
+      submission: trackedSubmission,
+      ownsDraft: hadDraft && submissionUsesDraft && ownsSubmission,
+    })
+    if (kept) requestDraftRecovery()
     showWriteError(id, '')
     await reloadAndPaint()
     return

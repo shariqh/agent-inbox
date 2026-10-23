@@ -485,7 +485,11 @@ Run the build before `npm run electron`; the development shell starts the built
   pin. One rule, `savedIntentRule`, decides every reuse of a saved intent (Retry,
   an editor's Send after an unconfirmed send): the server holds exactly that
   response, so it retires unsent; the answer moved since the pin, so the send is
-  fresh; otherwise the exact replay. Never move a pin while keeping its intent. A
+  fresh; otherwise the exact replay. Never move a pin while keeping its intent. The
+  rule reads the last poll, so the reply route also says, additively, whether a
+  request `wrote`, whether it `replayed` a recorded intent, and the `answer` it left
+  (#322); `ok` keeps its meaning. A replay that wrote nothing under someone else's
+  answer keeps the text as an unsent response, with its spent intent dropped. A
   window deletes only the copy it loaded or last wrote, and its leaving save
   writes back a draft another window deleted; the viewer-restart hold stays.
 - Every value export in `src/*.ts` and `public/*.js` must be reachable from

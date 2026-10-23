@@ -879,8 +879,11 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
     )) {
       return c.json({ ok: false, error: 'invalid reply intent metadata' }, 400)
     }
-    // false = refused: an already-picked-up reply cannot be silently blanked out (src/store.ts)
-    const ok = replyItem(
+    // A refusal is ok:false (an already-picked-up reply cannot be silently
+    // blanked out, src/store.ts). Issue #322 adds, additively, whether this
+    // request wrote anything (an exact replay is answered from its record) and
+    // the answer it left; a page that reads only `ok` sees what it always did.
+    const result = replyItem(
       db,
       c.req.param('id'),
       text,
@@ -890,7 +893,7 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
         ? { clientId, sequence: intentSequence, actionId }
         : undefined,
     )
-    return c.json({ ok })
+    return c.json(result)
   })
 
   app.post('/api/items/:id/snooze', async (c) => {

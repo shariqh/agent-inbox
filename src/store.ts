@@ -774,8 +774,28 @@ function insertItemRow(db: Database.Database, item: NewItem): string {
   return id
 }
 
-// Returns false when the write was refused, true otherwise — so a caller
-// (the viewer's POST handler) can surface a refusal instead of a silent no-op.
+// The question's answer, whoever wrote it: what a client compares with the
+// response it sent (#322).
+export type ReplyAnswer = Pick<Item, 'replied_at' | 'reply_source' | 'reply_kind' | 'reply' | 'reply_context'>
+
+// What one reply request did. `ok` is false when the write was refused, so a
+// caller (the viewer's POST handler) can surface a refusal instead of a silent
+// no-op; true when this request wrote, or repeats an intent the store already
+// applied. Issue #322: that replay is answered from the intent's record and
+// writes nothing, so `ok` alone cannot say whether the sent text is still the
+// answer. `wrote` says whether THIS request changed the question, `replayed`
+// that the store already held its intent (applied or refused), and `answer`
+// is the question's answer once the request was done (null for no question).
+// For an intent the answer is read in the same transaction as the decision;
+// without one it is read just after the write, which nothing can undo, so a
+// concurrent writer can only make it newer.
+export interface ReplyResult {
+  ok: boolean
+  wrote: boolean
+  replayed: boolean
+  answer: ReplyAnswer | null
+}
+
 export function replyItem(
   db: Database.Database,
   id: string,
@@ -783,7 +803,7 @@ export function replyItem(
   context?: string,
   kind: ResponseKind = 'answer',
   intent?: { clientId: string; sequence: number; actionId: string },
-): boolean {
+): ReplyResult {
   // a changed answer resets pickup — the agent must see the latest reply;
   // an empty answer reverts the question to unanswered (null, never '') — but
   // ONLY when the agent has not already picked the current reply up. Once
@@ -826,17 +846,25 @@ export function replyItem(
       .run(params)
     return info.changes > 0
   }
+  const currentAnswer = (): ReplyAnswer | null => (db.prepare(`
+      SELECT replied_at, reply_source, reply_kind, reply, reply_context
+        FROM items
+       WHERE id = ? AND kind = 'question'`)
+    .get(id) as ReplyAnswer | undefined) ?? null
 
-  if (!intent) return applyReply()
-  return db.transaction(() => {
+  if (!intent) {
+    const wrote = applyReply()
+    return { ok: wrote, wrote, replayed: false, answer: currentAnswer() }
+  }
+  return db.transaction((): ReplyResult => {
     const target = db.prepare(`SELECT id FROM items WHERE id = ? AND kind = 'question' AND status = 'open'`).get(id)
-    if (!target) return false
+    if (!target) return { ok: false, wrote: false, replayed: false, answer: currentAnswer() }
     const recorded = db.prepare(`
       SELECT applied
         FROM item_reply_intents
        WHERE item_id = ? AND client_id = ? AND action_id = ?`)
       .get(id, intent.clientId, intent.actionId) as { applied: number } | undefined
-    if (recorded) return recorded.applied === 1
+    if (recorded) return { ok: recorded.applied === 1, wrote: false, replayed: true, answer: currentAnswer() }
 
     const waterMark = db.prepare(`
       SELECT MAX(sequence) AS sequence
@@ -859,7 +887,7 @@ export function replyItem(
         applied: applied ? 1 : 0,
         now,
       })
-    return applied
+    return { ok: applied, wrote: applied, replayed: false, answer: currentAnswer() }
   }).immediate()
 }
 

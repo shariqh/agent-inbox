@@ -1043,7 +1043,20 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   it idempotent. This deliberately reverses the older contract that a re-send after an
   ambiguous failure never overwrites a later answer: once the answer moved, the
   human's own Send or Retry writes, as any other Send would. The rule reads the last
-  snapshot, so within one poll (3 s) of another writer it can still replay. A Retry
+  snapshot, so within one poll (3 s) of another writer it can still replay. *(#322)*
+  The reply route therefore says what each request did, additively: `wrote` (this
+  request changed the question), `replayed` (the store already held its intent, so
+  it wrote nothing) and `answer`, the question's answer once it was done
+  (`replied_at`, source, kind, text and context, in the item's field names; read
+  inside the intent's `.immediate()` transaction, and just after the write without
+  one). `ok` keeps its meaning, so an older page sees what it always did, and a page
+  that finds no report keeps the old reading. When a replay wrote nothing and that
+  answer is not the response it sent, the text was replaced after it landed: it is
+  kept as an unsent response, "Your send went through, but this question's answer
+  has changed since.", from the Retry's own entry, the entry its in-flight draft
+  moved to, or the editor (an editor typed in since keeps its newer text), and the
+  spent intent goes with it, so its Retry is fresh. `replyItem` stays the same
+  conditioned statements; the report adds reads, never a write. A Retry
   of an entry an earlier click already took does nothing, so a double click claims no
   second intent. `renderIfIdle()` paints the first editable frame even with
   restored drafts, since no editor exists yet to protect; every later tick pauses

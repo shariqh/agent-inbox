@@ -7,6 +7,7 @@ export class LinuxDebContractError extends Error {}
 export function debArtifactName(packageVersion: string, arch?: 'x64' | 'arm64'): string
 export function renderDebLauncher(inputs: LinuxDebInputs): string
 export function renderDebDesktopEntry(inputs: LinuxDebInputs): string
+export function renderDebChromiumLicensesLink(inputs: LinuxDebInputs): string
 export function renderDebControl(
   inputs: LinuxDebInputs,
   profile: { target: 'linux-x64' | 'linux-arm64' } & LinuxDebArchitectureProfile,

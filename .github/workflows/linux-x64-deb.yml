@@ -12,6 +12,9 @@ concurrency:
   cancel-in-progress: true
 
 env:
+  # Every npm install in this workflow compiles better-sqlite3 rather than load an
+  # unpinned prebuild; no job or step may override it (#315).
+  npm_config_build_from_source: "true"
   # Runtime libraries an installed Agent Inbox DEB depends on (release/linux-deb.json's
   # `dependencies`, minus the versioned libc6/libstdc++6 constraints already satisfied by
   # the base image). The packaged build itself launches the bundled Electron binary in
@@ -40,7 +43,7 @@ jobs:
         with:
           node-version: ${{ steps.release-inputs.outputs.node-version }}
           architecture: x64
-          cache: npm
+          package-manager-cache: false
       - run: npm ci
       - name: Validate exact package inputs and source gates
         run: |
@@ -313,7 +316,7 @@ jobs:
         with:
           node-version: ${{ steps.release-inputs.outputs.node-version }}
           architecture: x64
-          cache: npm
+          package-manager-cache: false
       - run: npm ci
       - run: npm run build
       - name: Stage verified native x64 runtime

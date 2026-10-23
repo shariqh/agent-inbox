@@ -51,10 +51,22 @@ $reported = "$(& $wix --version)".Trim()
 if (-not $reported.StartsWith("$($pin.version)+$($pin.sourceCommit.Substring(0, 8))")) {
   throw "installed WiX reports $reported, not $($pin.version) from $($pin.sourceCommit)"
 }
-$stored = Get-ChildItem -LiteralPath $toolPath -Recurse -Force -Filter "$($pin.package).$($pin.version).nupkg.sha512" |
-  Select-Object -First 1
-$storedHash = if ($stored) { (Get-Content -Raw -LiteralPath $stored.FullName).Trim() } else { $null }
-if ($storedHash -and $storedHash -cne $pin.sha512) { throw 'the installed WiX package hash differs from the pin' }
+# What NuGet left in the tool store, for the record. A package file it kept must be
+# the verified one; its hash and metadata files are recorded as written.
+$store = @(Get-ChildItem -LiteralPath $toolPath -Recurse -Force -File |
+  Where-Object { $_.Name -like "$($pin.package).$($pin.version).nupkg*" -or $_.Name -eq '.nupkg.metadata' } |
+  ForEach-Object {
+    [ordered]@{
+      path = $_.FullName.Substring($toolPath.Length + 1)
+      bytes = $_.Length
+      sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash.ToLowerInvariant()
+      text = if ($_.Extension -ne '.nupkg' -and $_.Length -lt 4096) { (Get-Content -Raw -LiteralPath $_.FullName).Trim() } else { $null }
+    }
+  })
+$store | ConvertTo-Json -Depth 3 | Write-Host
+if (@($store | Where-Object { $_.path -like '*.nupkg' -and $_.sha256 -ne $pin.sha256 }).Count -gt 0) {
+  throw 'the tool store holds a WiX package other than the verified one'
+}
 
 [ordered]@{
   schema = 1
@@ -64,7 +76,7 @@ if ($storedHash -and $storedHash -cne $pin.sha512) { throw 'the installed WiX pa
   url = $pin.url
   sha512 = $sha512
   sha256 = $sha256
-  installedPackageHash = $storedHash
+  toolStore = $store
   license = $pin.license
   dotnetSdk = "$(dotnet --version)".Trim()
   dotnetRuntimes = @(dotnet --list-runtimes | Where-Object { $_ -match '^Microsoft\.NETCore\.App ' })

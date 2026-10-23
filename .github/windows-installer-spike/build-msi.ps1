@@ -25,7 +25,7 @@ $intermediate = Join-Path $Output "obj-$version"
 $identity = $tools.identity
 
 $timer = [Diagnostics.Stopwatch]::StartNew()
-& $Wix build (Join-Path $PSScriptRoot 'agent-inbox.wxs') -nologo -arch x64 `
+& $Wix build (Join-Path $PSScriptRoot 'agent-inbox.wxs') -arch x64 `
   -d "AppDir=$App" `
   -d "Version=$version" `
   -d "IconFile=$Icon" `
@@ -87,7 +87,7 @@ $report = [ordered]@{
 # ICE validation is a measurement, not a gate: WiX documents that Files harvesting in a
 # per-user package does not pass ICE validation.
 $PSNativeCommandUseErrorActionPreference = $false
-$iceOutput = @(& $Wix msi validate -nologo $msi 2>&1 | ForEach-Object { "$_" })
+$iceOutput = @(& $Wix msi validate $msi 2>&1 | ForEach-Object { "$_" })
 $iceExit = $LASTEXITCODE
 $PSNativeCommandUseErrorActionPreference = $true
 $ices = [ordered]@{}

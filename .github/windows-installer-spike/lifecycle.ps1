@@ -185,6 +185,7 @@ try {
 } catch {
   $failure = "$_"
   Write-Host "::error::[$Kind] lifecycle stopped: $failure"
+  Write-Host "$($_.InvocationInfo.PositionMessage)`n$($_.ScriptStackTrace)"
 } finally {
   [ordered]@{
     schema = 1

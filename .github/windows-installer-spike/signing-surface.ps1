@@ -12,6 +12,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
+trap { Write-Host "signing-surface.ps1 failed: $_`n$($_.InvocationInfo.PositionMessage)`n$($_.ScriptStackTrace)"; break }
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 
 $Folder = [IO.Path]::GetFullPath($Folder)

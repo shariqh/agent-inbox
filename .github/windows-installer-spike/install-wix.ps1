@@ -12,6 +12,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
+trap { Write-Host "install-wix.ps1 failed: $_`n$($_.InvocationInfo.PositionMessage)`n$($_.ScriptStackTrace)"; break }
 
 $pin = (Get-Content -Raw (Join-Path $PSScriptRoot 'tools.json') | ConvertFrom-Json).wix
 $Destination = [IO.Path]::GetFullPath($Destination)

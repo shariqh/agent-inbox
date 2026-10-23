@@ -249,18 +249,24 @@ function Get-UninstallEntries {
   })
 }
 
+# Windows Installer automation through IDispatch explicitly: PowerShell's COM
+# adapter does not resolve every parameterized property.
+function Get-ComProperty([object]$Target, [string]$Name, [object[]]$Arguments = @()) {
+  return $Target.GetType().InvokeMember($Name, [Reflection.BindingFlags]::GetProperty, $null, $Target, $Arguments)
+}
+
 function Get-MsiProducts {
   try {
     $installer = New-Object -ComObject WindowsInstaller.Installer
-    @(foreach ($entry in $installer.ProductsEx('', '', 7)) {
-      $name = try { $entry.InstallProperty('ProductName') } catch { '' }
+    @(foreach ($entry in (Get-ComProperty $installer 'ProductsEx' @('', '', 7))) {
+      $name = try { Get-ComProperty $entry 'InstallProperty' @('ProductName') } catch { '' }
       if ($name -ne $product) { continue }
-      $package = try { $entry.InstallProperty('LocalPackage') } catch { '' }
+      $package = try { Get-ComProperty $entry 'InstallProperty' @('LocalPackage') } catch { '' }
       [ordered]@{
-        productCode = $entry.ProductCode
-        context = $entry.Context
-        version = $entry.InstallProperty('VersionString')
-        installLocation = "$($entry.InstallProperty('InstallLocation'))".Replace($paths.profile, '%USERPROFILE%')
+        productCode = Get-ComProperty $entry 'ProductCode'
+        context = Get-ComProperty $entry 'Context'
+        version = Get-ComProperty $entry 'InstallProperty' @('VersionString')
+        installLocation = "$(Get-ComProperty $entry 'InstallProperty' @('InstallLocation'))".Replace($paths.profile, '%USERPROFILE%')
         localPackage = $package
         localPackageBytes = if ($package -and (Test-Path -LiteralPath $package)) { (Get-Item -LiteralPath $package).Length } else { $null }
       }

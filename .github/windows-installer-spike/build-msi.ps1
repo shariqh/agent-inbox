@@ -13,6 +13,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
+trap { Write-Host "build-msi.ps1 failed: $_`n$($_.InvocationInfo.PositionMessage)`n$($_.ScriptStackTrace)"; break }
 
 $tools = Get-Content -Raw (Join-Path $PSScriptRoot 'tools.json') | ConvertFrom-Json
 $version = (Get-Content -Raw (Join-Path $App 'resources\app\package.json') | ConvertFrom-Json).version
@@ -20,8 +21,8 @@ if ($version -notmatch '^\d+\.\d+\.\d+$') {
   throw "an MSI ProductVersion holds only major.minor.patch; the folder is $version"
 }
 New-Item -ItemType Directory -Force $Output | Out-Null
-$msi = Join-Path $Output "AgentInbox-$version-x64.msi"
-$intermediate = Join-Path $Output "obj-$version"
+$msi = [IO.Path]::GetFullPath((Join-Path $Output "AgentInbox-$version-x64.msi"))
+$intermediate = [IO.Path]::GetFullPath((Join-Path $Output "obj-$version"))
 $identity = $tools.identity
 
 $timer = [Diagnostics.Stopwatch]::StartNew()
@@ -40,23 +41,32 @@ $timer = [Diagnostics.Stopwatch]::StartNew()
 $timer.Stop()
 Remove-Item -Recurse -Force $intermediate -ErrorAction SilentlyContinue
 
+# Late-bound Windows Installer automation, called through IDispatch explicitly:
+# PowerShell's COM adapter does not resolve every parameterized property.
+function Invoke-Com([object]$Target, [string]$Name, [Reflection.BindingFlags]$Kind, [object[]]$Arguments = @()) {
+  return $Target.GetType().InvokeMember($Name, $Kind, $null, $Target, $Arguments)
+}
+$method = [Reflection.BindingFlags]::InvokeMethod
+$get = [Reflection.BindingFlags]::GetProperty
 $installer = New-Object -ComObject WindowsInstaller.Installer
 function Get-Rows([object]$Database, [string]$Query) {
-  $view = $Database.OpenView($Query)
-  $view.Execute()
+  $view = Invoke-Com $Database 'OpenView' $method @($Query)
+  Invoke-Com $view 'Execute' $method | Out-Null
   $rows = [Collections.Generic.List[object]]::new()
-  while ($null -ne ($record = $view.Fetch())) {
-    $fields = for ($i = 1; $i -le $record.FieldCount; $i++) { $record.StringData($i) }
-    $rows.Add(@($fields))
+  while ($null -ne ($record = Invoke-Com $view 'Fetch' $method)) {
+    $count = [int](Invoke-Com $record 'FieldCount' $get)
+    $fields = [object[]]::new($count)
+    for ($i = 1; $i -le $count; $i++) { $fields[$i - 1] = Invoke-Com $record 'StringData' $get @($i) }
+    $rows.Add($fields)
   }
-  $view.Close()
+  Invoke-Com $view 'Close' $method | Out-Null
   return , $rows
 }
-$database = $installer.OpenDatabase($msi, 0)
+$database = Invoke-Com $installer 'OpenDatabase' $method @($msi, 0)
 $property = @{}
 foreach ($row in (Get-Rows $database 'SELECT `Property`, `Value` FROM `Property`')) { $property[$row[0]] = $row[1] }
-$summary = $installer.SummaryInformation($msi, 0)
-$wordCount = [int]$summary.Property(15)
+$summary = Invoke-Com $installer 'SummaryInformation' $get @($msi, 0)
+$wordCount = [int](Invoke-Com $summary 'Property' $get @(15))
 $report = [ordered]@{
   schema = 1
   kind = 'msi'
@@ -72,7 +82,7 @@ $report = [ordered]@{
   productVersion = $property['ProductVersion']
   upgradeCode = $property['UpgradeCode']
   allUsers = $property['ALLUSERS']
-  template = "$($summary.Property(7))"
+  template = "$(Invoke-Com $summary 'Property' $get @(7))"
   wordCount = $wordCount
   elevationNotRequired = [bool]($wordCount -band 8)
   files = (Get-Rows $database 'SELECT `File` FROM `File`').Count

@@ -1935,6 +1935,28 @@ function buildFixtureRepoRoot(): string {
   const tarball = join(markerTarballs, 'marker-pkg-1.0.0.tgz')
   if (!existsSync(tarball)) throw new Error(`fixture setup: expected tarball missing at ${tarball}`)
 
+  // #291: what a published package carries beside its code, which staging
+  // prunes before the selftests run and the manifest is computed
+  const typedSrc = join(repoRoot, '.typed-pkg-src')
+  for (const [path, text] of [
+    ['package.json', JSON.stringify({ name: 'typed-pkg', version: '1.0.0', main: 'index.js' }, null, 2)],
+    ['index.js', 'module.exports = 1\n'],
+    ['index.d.ts', 'export {}\n'],
+    ['index.js.map', '{"version":3}\n'],
+    ['README.md', '# typed-pkg\n'],
+    ['docs/guide.md', '# guide\n'],
+    ['LICENSE', 'MIT\n'],
+    ['NOTICE.md', 'notice\n'],
+  ] as const) {
+    mkdirSync(dirname(join(typedSrc, path)), { recursive: true })
+    writeFileSync(join(typedSrc, path), text)
+  }
+  execFileSync(nodeBin, [npmCli, 'pack', '--pack-destination', markerTarballs], {
+    cwd: typedSrc, stdio: ['ignore', 'pipe', 'pipe'], timeout: 30_000,
+  })
+  const typedTarball = join(markerTarballs, 'typed-pkg-1.0.0.tgz')
+  if (!existsSync(typedTarball)) throw new Error(`fixture setup: expected tarball missing at ${typedTarball}`)
+
   mkdirSync(join(repoRoot, 'dist'), { recursive: true })
   mkdirSync(join(repoRoot, 'scripts'), { recursive: true })
   mkdirSync(join(repoRoot, 'docs', 'instructions'), { recursive: true })
@@ -1945,7 +1967,7 @@ function buildFixtureRepoRoot(): string {
     private: true,
     type: 'module',
     bin: { 'agent-inbox-runtime': './dist/hook-cli.js' },
-    dependencies: { 'marker-pkg': `file:${tarball}` },
+    dependencies: { 'marker-pkg': `file:${tarball}`, 'typed-pkg': `file:${typedTarball}` },
     allowScripts: { 'marker-pkg@1.0.0': true },
   }, null, 2))
   writeFileSync(join(repoRoot, 'LICENSE'), 'fixture Agent Inbox license\n')
@@ -2076,6 +2098,18 @@ describe.skipIf(!REAL_NODE_ROOT || !['darwin', 'linux'].includes(process.platfor
           expect(file.path).not.toMatch(/(^|\/)(package-lock\.json|yarn\.lock|pnpm-lock\.yaml)$/)
           expect(file.path).not.toMatch(/(^|\/)(\.git|\.bin|node_gyp_bins)(\/|$)|\.o(bj)?$/)
         }
+        // #291: node_modules was pruned before the manifest was computed, its
+        // licenses kept, and the runtime's own docs are not node_modules
+        const paths = manifest.files.map((file) => file.path)
+        expect(paths.filter((path) => path.startsWith('node_modules/typed-pkg/')).sort()).toEqual([
+          'node_modules/typed-pkg/LICENSE',
+          'node_modules/typed-pkg/NOTICE.md',
+          'node_modules/typed-pkg/index.js',
+          'node_modules/typed-pkg/package.json',
+        ])
+        expect(existsSync(join(output, 'node_modules', 'typed-pkg', 'docs'))).toBe(false)
+        expect(paths).toContain('docs/reporting-snippet.md')
+        expect(paths).toContain('docs/instructions/claude-code.md')
 
         // No leftover staging temp directory beside the published output.
         const siblings = readdirSync(outputParent)

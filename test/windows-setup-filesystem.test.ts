@@ -2,19 +2,25 @@ import {
   chmodSync,
   closeSync,
   existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
   openSync,
   readdirSync,
+  realpathSync,
+  renameSync,
+  rmSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs'
 import { join } from 'node:path'
 import { createRequire } from 'node:module'
 import { afterEach, describe, expect, it } from 'vitest'
-import type { RenameAttempt } from '../scripts/setup-filesystem.cjs'
+import type { SetupFilesystemIO } from '../scripts/setup-filesystem.cjs'
 import { removeScratchDirs, scratchDir } from './scratch.js'
 
 const require = createRequire(import.meta.url)
-const { createSetupFilesystem, renameWithRetry } = require('../scripts/setup-filesystem.cjs')
+const { createSetupFilesystem } = require('../scripts/setup-filesystem.cjs')
 
 describe.runIf(process.platform === 'win32')('native Win32 Setup filesystem evidence', () => {
   afterEach(removeScratchDirs)
@@ -71,9 +77,28 @@ describe.runIf(process.platform === 'win32')('native Win32 Setup filesystem evid
       if (held !== undefined) closeSync(held)
       held = undefined
     }
+    // The module's own filesystem calls, except that a refused rename lets go
+    // of the held file, as an exiting child's handles close
+    const io: SetupFilesystemIO = {
+      lstat: (path) => lstatSync(path, { bigint: true }),
+      realpath: (path) => realpathSync.native(path),
+      mkdir: (path, options) => { mkdirSync(path, options) },
+      mkdtemp: (prefix) => mkdtempSync(prefix),
+      rename(from, to) {
+        try {
+          renameSync(from, to)
+        } catch (error) {
+          refusals.push((error as NodeJS.ErrnoException).code)
+          release()
+          throw error
+        }
+      },
+      remove: (path, options) => { rmSync(path, options) },
+      readdir: (path) => readdirSync(path),
+    }
 
     try {
-      createSetupFilesystem().stageDirectory({
+      createSetupFilesystem({ io }).stageDirectory({
         destination,
         replacement: 'refuse',
         prepare(stage: string) {
@@ -81,19 +106,7 @@ describe.runIf(process.platform === 'win32')('native Win32 Setup filesystem evid
           held = openSync(join(stage, 'held.txt'), 'r')
         },
         validate() {},
-        publishWith: ({ check, rename }: RenameAttempt) => renameWithRetry({
-          check,
-          rename() {
-            try {
-              rename()
-            } catch (error) {
-              refusals.push((error as NodeJS.ErrnoException).code)
-              throw error
-            }
-          },
-          // As an exiting child's handles close while the publisher waits
-          sleep: release,
-        }),
+        retryBusyRename: true,
       })
     } finally {
       release()

@@ -65,9 +65,9 @@ export interface SetupFilesystem {
     replacement: DirectoryReplacement
     prepare(stageDirectory: string): T
     validate(stageDirectory: string, prepared: T): void
-    // Publishes into a free destination, calling check() before every
-    // rename() it attempts; the default renames once (#333).
-    publishWith?(attempt: RenameAttempt): void
+    // Retry a publishing rename Windows refused, re-running every check before
+    // each attempt (#333); the default renames once.
+    retryBusyRename?: boolean
   }): StageDirectoryResult<T>
   removeDirectory(options: {
     target: string

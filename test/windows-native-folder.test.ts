@@ -335,6 +335,18 @@ describe('publishing the packaged Windows folder', () => {
     expect(existsSync(join(source, 'Agent Inbox.exe'))).toBe(true)
   })
 
+  // What the folder build relies on: no platform passed
+  it.skipIf(process.platform === 'win32')('fails at once on this host when no platform is given', () => {
+    const { source, destination } = packaged()
+    const { rename, renames } = refusing(1)
+    const waits: number[] = []
+
+    expect(() => publishNewFolder(source, destination, { rename, sleep: (ms) => { waits.push(ms) } })).toThrow(/EPERM/)
+    expect(renames).toHaveLength(1)
+    expect(waits).toEqual([])
+    expect(existsSync(join(source, 'Agent Inbox.exe'))).toBe(true)
+  })
+
   it('refuses an output that appeared between attempts instead of retrying into it', () => {
     const { source, destination } = packaged()
     const { rename, renames } = refusing(1, () => {

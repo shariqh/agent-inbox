@@ -230,21 +230,24 @@ function createSetupFilesystem({
     }
   }
 
-  // publishWith renames a stage into a free destination, running check()
-  // before every rename() it attempts. The default renames once; the
-  // build-time publisher passes renameWithRetry (#333).
+  // A new tree is published with one checked rename. retryBusyRename, which
+  // only the build-time publisher sets, retries a rename Windows refused
+  // instead (#333), with this transaction's checks before every attempt.
   function stageDirectory({
     destination,
     replacement,
     prepare,
     validate,
-    publishWith = renameOnce,
+    retryBusyRename = false,
   }) {
     if (replacement !== 'refuse' && replacement !== 'swap') {
       throw filesystemError('invalid-replacement', `unsupported directory replacement policy: ${String(replacement)}`)
     }
-    if (typeof prepare !== 'function' || typeof validate !== 'function' || typeof publishWith !== 'function') {
-      throw filesystemError('invalid-callback', 'directory prepare, validate and publish callbacks are required')
+    if (typeof prepare !== 'function' || typeof validate !== 'function') {
+      throw filesystemError('invalid-callback', 'directory prepare and validate callbacks are required')
+    }
+    if (typeof retryBusyRename !== 'boolean') {
+      throw filesystemError('invalid-option', 'directory retryBusyRename option must be true or false')
     }
 
     const requestedDestination = normalizeAbsolute(pathApi, platform, destination)
@@ -367,7 +370,8 @@ function createSetupFilesystem({
           )
         }
       } else {
-        publishWith({ check: checkTransaction, rename: () => io.rename(stage, operationDestination) })
+        const publish = retryBusyRename ? renameWithRetry : renameOnce
+        publish({ check: checkTransaction, rename: () => io.rename(stage, operationDestination), platform })
         stagePublished = true
         committed = true
         try {

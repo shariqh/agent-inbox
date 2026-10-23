@@ -1532,11 +1532,13 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   published name. Immutable runtime install refuses replacement; `stage-runtime --force`
   uses a two-rename backup swap with a visibility gap and explicit recovery retention.
   *(#333)* A new tree is published with one checked rename; only the build-time publisher
-  passes `publishWith: renameWithRetry`, which on win32 alone retries a rename refused with
-  EPERM, EACCES or EBUSY for about nine seconds of growing waits and re-runs every
-  transaction check before each attempt, so a substituted stage or a taken destination is
-  still refused, never retried into. The shipping installer keeps its single attempt; the
-  Windows folder builder publishes its app folder through the same helper.
+  passes `retryBusyRename: true` (strictly a boolean), which makes `stageDirectory` use its
+  own `renameWithRetry`: on win32 alone it retries a rename refused with EPERM, EACCES or
+  EBUSY for about nine seconds of growing waits, re-running every transaction check itself
+  before each attempt, so a substituted stage or a taken destination is still refused,
+  never retried into. No caller function decides whether a check runs or a rename happens.
+  The shipping installer keeps its single attempt; the Windows folder builder publishes
+  its app folder through the same helper.
   This is point-in-time detection, not a stable handle: inode reuse and races after the
   last check remain. The modeled Win32 policy additionally rejects drive-relative,
   drive-less-rooted, device/extended-namespace and ADS-like paths plus junction/reparse

@@ -852,8 +852,8 @@ describe('universal finalization contract', () => {
     const installer = readFileSync(join(root, 'scripts', 'runtime-payload.mjs'), 'utf8')
     const folder = readFileSync(join(root, 'scripts', 'build-windows-thin-app.mjs'), 'utf8')
 
-    expect(staging).toContain('publishWith: renameWithRetry,')
-    expect(installer).not.toMatch(/publishWith|renameWithRetry/)
+    expect(staging).toContain('retryBusyRename: true,')
+    expect(installer).not.toMatch(/retryBusyRename|renameWithRetry/)
     expect(folder).toContain('publishNewFolder(packaged, destination)')
   })
 

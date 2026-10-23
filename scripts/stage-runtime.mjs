@@ -59,7 +59,7 @@ import {
 } from './native-runtime-adapter.mjs'
 
 const require = createRequire(import.meta.url)
-const { createSetupFilesystem, renameWithRetry } = require('./setup-filesystem.cjs')
+const { createSetupFilesystem } = require('./setup-filesystem.cjs')
 const setupFilesystem = createSetupFilesystem()
 
 const PRODUCT = 'agent-inbox-runtime'
@@ -497,7 +497,7 @@ export function stageRuntime({
       replacement: force ? 'swap' : 'refuse',
       // The selftests have just run the staged node, and Windows refuses to
       // rename a folder while anything in it is still open (#333)
-      publishWith: renameWithRetry,
+      retryBusyRename: true,
       prepare(stageDir) {
         return stageInto(stageDir, {
           repoRoot,

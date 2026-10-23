@@ -2,6 +2,8 @@ name: Native Windows x64 release folder
 
 on:
   workflow_dispatch:
+  # The Windows installer spike (#87) builds its installers from this exact folder.
+  workflow_call:
   pull_request:
     paths:
       - ".github/workflows/windows-native-folder.yml"

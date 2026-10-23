@@ -594,41 +594,27 @@ jobs:
         run: |
           set -euo pipefail
           STATE=build/update-signing-state
-          mkdir -p "$STATE"
+          HANDOFF=build/unsigned-publish-handoff
+          mkdir -p "$STATE/prior"
+          # The release commit's key registry and expected macOS CPU types (design §7.1).
           git show "$RELEASE_SOURCE:release/update-keys.json" > "$STATE/update-keys.json"
-          node - "$STATE/update-keys.json" build/unsigned-publish-handoff <<'NODE'
-          const { createHash } = require('node:crypto')
-          const { readFileSync, readdirSync, statSync } = require('node:fs')
-          const { join } = require('node:path')
-          const verifier = require('./electron/update-manifest.cjs')
-          const [registryPath, root] = process.argv.slice(2)
-          const registryBytes = readFileSync(registryPath)
-          const registry = verifier.parseRegistry(registryBytes)
-          const evidence = JSON.parse(readFileSync(join(root, 'release-aggregation-evidence.json'), 'utf8'))
-          const context = JSON.parse(readFileSync(join(root, 'release-context.json'), 'utf8'))
-          const assets = join(root, 'release-assets')
-          const names = readdirSync(assets).sort()
-          if (
-            names.length !== 7 ||
-            !names.includes('update-manifest.json') ||
-            evidence.updateManifest?.name !== 'update-manifest.json' ||
-            evidence.updateManifest?.keyRegistrySha256 !== createHash('sha256').update(registryBytes).digest('hex')
-          ) throw new Error('unsigned update manifest handoff is malformed')
-          const manifestBytes = readFileSync(join(assets, 'update-manifest.json'))
-          const manifest = verifier.parseManifest(manifestBytes)
-          if (
-            evidence.updateManifest.size !== statSync(join(assets, 'update-manifest.json')).size ||
-            evidence.updateManifest.sha256 !== createHash('sha256').update(manifestBytes).digest('hex') ||
-            manifest.tag !== context.tag ||
-            manifest.version !== context.version ||
-            manifest.source.commit !== context.sourceCommit ||
-            manifest.source.tree !== evidence.sourceTree ||
-            manifest.publishedAt !== context.taggedAt ||
-            manifest.signingKeyId !== registry.signingKeyId ||
-            JSON.stringify(manifest.trustedKeyIds) !==
-              JSON.stringify(registry.keys.map((key) => key.keyId).sort())
-          ) throw new Error('unsigned update manifest does not match trusted release evidence')
-          NODE
+          git show "$RELEASE_SOURCE:release/macos-inputs.json" > "$STATE/macos-inputs.json"
+          RELEASE_ARGS=(
+            --handoff "$HANDOFF"
+            --registry "$STATE/update-keys.json"
+            --macos-inputs "$STATE/macos-inputs.json"
+            --tag "$RELEASE_TAG"
+            --source-commit "$RELEASE_SOURCE"
+          )
+          # G7 and G9: the unsigned v2 manifest describes this release, re-hashing its packages, and
+          # the CPU types measured in the shipped app give the expected kind.
+          node scripts/update-manifest.mjs check-release "${RELEASE_ARGS[@]}" > "$STATE/release-check.json"
+          RELEASE_KIND="$(node -e '
+            const { readFileSync } = require("node:fs")
+            const { kind } = JSON.parse(readFileSync(process.argv[1], "utf8"))
+            if (!["universal", "arm64"].includes(kind)) process.exit(1)
+            process.stdout.write(kind)
+          ' "$STATE/release-check.json")"
 
           gh api --paginate --slurp "repos/$GH_REPO/releases?per_page=100" > "$STATE/release-pages.json"
           node - "$STATE/release-pages.json" "$STATE/prior-releases.json" "$RELEASE_TAG" <<'NODE'
@@ -641,148 +627,76 @@ jobs:
           const releases = pages.flat().filter((release) => release?.tag_name !== currentTag)
           writeFileSync(outputPath, `${JSON.stringify(releases)}\n`)
           NODE
+          # G1 to G5: one plan for both manifests; then each earlier file it names, by asset id.
           node scripts/update-manifest.mjs inspect-history \
             --releases "$STATE/prior-releases.json" \
-            --new-tag "$RELEASE_TAG" > "$STATE/history-plan.json"
-          HISTORY_MODE="$(node -e '
-            const { readFileSync } = require("node:fs")
-            const plan = JSON.parse(readFileSync(process.argv[1], "utf8"))
-            if (!["bootstrap", "continuity"].includes(plan.mode)) process.exit(1)
-            process.stdout.write(plan.mode)
-          ' "$STATE/history-plan.json")"
-          if [[ "$HISTORY_MODE" == bootstrap ]]; then
-            printf '%s\n' \
-              '{"authorized":true,"mode":"bootstrap","priorTag":null,"rotationOverrideUsed":false}' \
-              > "$STATE/authorization.json"
-          else
-            MANIFEST_ID="$(node -e '
-              const { readFileSync } = require("node:fs")
-              const plan = JSON.parse(readFileSync(process.argv[1], "utf8"))
-              if (!Number.isSafeInteger(plan.manifestAsset?.id) || plan.manifestAsset.id <= 0) process.exit(1)
-              process.stdout.write(String(plan.manifestAsset.id))
-            ' "$STATE/history-plan.json")"
-            SIGNATURE_ID="$(node -e '
-              const { readFileSync } = require("node:fs")
-              const plan = JSON.parse(readFileSync(process.argv[1], "utf8"))
-              if (!Number.isSafeInteger(plan.signatureAsset?.id) || plan.signatureAsset.id <= 0) process.exit(1)
-              process.stdout.write(String(plan.signatureAsset.id))
-            ' "$STATE/history-plan.json")"
-            gh api "repos/$GH_REPO/releases/assets/$MANIFEST_ID" \
-              -H "Accept: application/octet-stream" > "$STATE/prior-update-manifest.json"
-            gh api "repos/$GH_REPO/releases/assets/$SIGNATURE_ID" \
-              -H "Accept: application/octet-stream" > "$STATE/prior-update-manifest.json.sig"
-            node - "$STATE/history-plan.json" "$STATE/prior-update-manifest.json" \
-              "$STATE/prior-update-manifest.json.sig" <<'NODE'
-          const { readFileSync, statSync } = require('node:fs')
-          const { createHash } = require('node:crypto')
-          const [planPath, manifestPath, signaturePath] = process.argv.slice(2)
-          const plan = JSON.parse(readFileSync(planPath, 'utf8'))
-          const digest = (path) => `sha256:${createHash('sha256').update(readFileSync(path)).digest('hex')}`
-          if (
-            statSync(manifestPath).size !== plan.manifestAsset.size ||
-            statSync(signaturePath).size !== plan.signatureAsset.size ||
-            (plan.manifestAsset.digest && digest(manifestPath) !== plan.manifestAsset.digest) ||
-            (plan.signatureAsset.digest && digest(signaturePath) !== plan.signatureAsset.digest)
-          ) throw new Error('previous update manifest asset bytes disagree with GitHub API evidence')
-          NODE
-            ROTATION_ARGS=()
-            if [[ -n "$UPDATE_KEY_ROTATION_OVERRIDE" ]]; then
-              ROTATION_ARGS=(--rotation-override "$UPDATE_KEY_ROTATION_OVERRIDE")
+            --new-tag "$RELEASE_TAG" \
+            --kind "$RELEASE_KIND" > "$STATE/history-plan.json"
+          node scripts/update-manifest.mjs history-assets --plan "$STATE/history-plan.json" > "$STATE/history-assets.txt"
+          while read -r ASSET_ID ASSET_SLOT; do
+            if [[ ! "$ASSET_ID" =~ ^[1-9][0-9]*$ || ! "$ASSET_SLOT" =~ ^v[12]-(manifest|signature)$ ]]; then
+              echo "the history plan names a malformed earlier asset" >&2
+              exit 1
             fi
-            node scripts/update-manifest.mjs authorize-history \
-              --prior-manifest "$STATE/prior-update-manifest.json" \
-              --prior-signature "$STATE/prior-update-manifest.json.sig" \
-              --registry "$STATE/update-keys.json" \
-              --new-tag "$RELEASE_TAG" \
-              "${ROTATION_ARGS[@]}" > "$STATE/authorization-result.json"
-            node - "$STATE/history-plan.json" "$STATE/authorization-result.json" \
-              "$STATE/authorization.json" <<'NODE'
-          const { readFileSync, writeFileSync } = require('node:fs')
-          const [planPath, resultPath, outputPath] = process.argv.slice(2)
-          const plan = JSON.parse(readFileSync(planPath, 'utf8'))
-          const result = JSON.parse(readFileSync(resultPath, 'utf8'))
-          if (
-            result.authorized !== true ||
-            result.priorTag !== plan.priorTag ||
-            typeof result.rotationOverrideUsed !== 'boolean'
-          ) throw new Error('previous update manifest authorization is inconsistent')
-          writeFileSync(outputPath, `${JSON.stringify({
-            authorized: true,
-            mode: 'continuity',
-            priorTag: result.priorTag,
-            rotationOverrideUsed: result.rotationOverrideUsed,
-          })}\n`)
-          NODE
+            gh api "repos/$GH_REPO/releases/assets/$ASSET_ID" \
+              -H "Accept: application/octet-stream" > "$STATE/prior/$ASSET_SLOT"
+          done < "$STATE/history-assets.txt"
+          ROTATION_ARGS=()
+          if [[ -n "$UPDATE_KEY_ROTATION_OVERRIDE" ]]; then
+            ROTATION_ARGS=(--rotation-override "$UPDATE_KEY_ROTATION_OVERRIDE")
           fi
+          # Both earlier manifests under this release's keys, sizes and digests as GitHub lists them;
+          # and G10 before the key is touched.
+          node scripts/update-manifest.mjs authorize-history \
+            --plan "$STATE/history-plan.json" \
+            --prior-dir "$STATE/prior" \
+            --registry "$STATE/update-keys.json" \
+            --new-tag "$RELEASE_TAG" \
+            ${ROTATION_ARGS[@]+"${ROTATION_ARGS[@]}"} > "$STATE/authorization.json"
+          # G6 and G8: the v1 manifest, by projection or re-stamp, from verified inputs only.
+          node scripts/update-manifest.mjs derive-v1 "${RELEASE_ARGS[@]}" \
+            --releases "$STATE/prior-releases.json" \
+            --plan "$STATE/history-plan.json" \
+            --prior-dir "$STATE/prior" \
+            --output "$STATE/update-manifest.json" > "$STATE/derivation.json"
+          # The handoff the next step signs in place, so the key's step runs nothing else.
+          rm -rf build/signed-publish-handoff
+          cp -R "$HANDOFF" build/signed-publish-handoff
+          cp "$STATE/update-keys.json" build/signed-publish-handoff/update-keys.json
+          cp "$STATE/update-manifest.json" build/signed-publish-handoff/release-assets/update-manifest.json
       - name: Sign exact deterministic update manifest
         env:
           AGENT_INBOX_UPDATE_PRIVATE_KEY_BASE64: ${{ secrets.AGENT_INBOX_UPDATE_PRIVATE_KEY_BASE64 }}
         run: |
           set -euo pipefail
-          rm -rf build/signed-publish-handoff
-          cp -R build/unsigned-publish-handoff build/signed-publish-handoff
-          cp build/update-signing-state/update-keys.json build/signed-publish-handoff/update-keys.json
+          # The key reaches this one process, which signs both manifests and zeroes it.
           node scripts/update-manifest.mjs sign \
-            --manifest build/signed-publish-handoff/release-assets/update-manifest.json \
             --registry build/update-signing-state/update-keys.json \
-            --output build/signed-publish-handoff/release-assets/update-manifest.json.sig \
-            > build/update-signing-state/sign-result.json
+            --manifest build/signed-publish-handoff/release-assets/update-manifest-v2.json \
+            --output build/signed-publish-handoff/release-assets/update-manifest-v2.json.sig \
+            --manifest build/signed-publish-handoff/release-assets/update-manifest.json \
+            --output build/signed-publish-handoff/release-assets/update-manifest.json.sig
       - name: Bind exact signed publication handoff
+        env:
+          RELEASE_TAG: ${{ needs.authorize.outputs.tag }}
+          RELEASE_SOURCE: ${{ needs.authorize.outputs.source-commit }}
+          UPDATE_KEY_ROTATION_OVERRIDE: ${{ vars.AGENT_INBOX_UPDATE_KEY_ROTATION_OVERRIDE }}
         run: |
           set -euo pipefail
-          node scripts/update-manifest.mjs verify \
-            --manifest build/signed-publish-handoff/release-assets/update-manifest.json \
-            --signature build/signed-publish-handoff/release-assets/update-manifest.json.sig \
-            --registry build/signed-publish-handoff/update-keys.json \
-            --now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >/dev/null
-          node - build/signed-publish-handoff build/update-signing-state <<'NODE'
-          const { createHash } = require('node:crypto')
-          const { readFileSync, statSync, writeFileSync } = require('node:fs')
-          const { join } = require('node:path')
-          const [root, state] = process.argv.slice(2)
-          const sha256 = (path) => createHash('sha256').update(readFileSync(path)).digest('hex')
-          const context = JSON.parse(readFileSync(join(root, 'release-context.json'), 'utf8'))
-          const aggregate = JSON.parse(readFileSync(join(root, 'release-aggregation-evidence.json'), 'utf8'))
-          const registry = JSON.parse(readFileSync(join(root, 'update-keys.json'), 'utf8'))
-          const authorization = JSON.parse(readFileSync(join(state, 'authorization.json'), 'utf8'))
-          const signResult = JSON.parse(readFileSync(join(state, 'sign-result.json'), 'utf8'))
-          const manifestPath = join(root, 'release-assets', 'update-manifest.json')
-          const signaturePath = join(root, 'release-assets', 'update-manifest.json.sig')
-          if (
-            authorization.authorized !== true ||
-            !['bootstrap', 'continuity'].includes(authorization.mode) ||
-            JSON.stringify(signResult.keyIds) !== JSON.stringify([registry.signingKeyId]) ||
-            signResult.manifestSha256 !== aggregate.updateManifest.sha256 ||
-            sha256(manifestPath) !== aggregate.updateManifest.sha256
-          ) throw new Error('update signing evidence is inconsistent')
-          const evidence = {
-            schema: 1,
-            tag: context.tag,
-            sourceCommit: context.sourceCommit,
-            sourceTree: aggregate.sourceTree,
-            signingKeyId: registry.signingKeyId,
-            trustedKeyIds: registry.keys.map((key) => key.keyId).sort(),
-            manifest: {
-              name: 'update-manifest.json',
-              size: statSync(manifestPath).size,
-              sha256: sha256(manifestPath),
-            },
-            signature: {
-              name: 'update-manifest.json.sig',
-              size: statSync(signaturePath).size,
-              sha256: sha256(signaturePath),
-            },
-            history: authorization,
-            verification: {
-              privateKeyMatchesRegistry: 'passed',
-              previousReleaseContinuity: authorization.mode === 'bootstrap' ? 'bootstrap' : 'passed',
-              signature: 'passed',
-            },
-          }
-          writeFileSync(join(root, 'update-signing-evidence.json'), `${JSON.stringify(evidence, null, 2)}\n`)
-          NODE
+          ROTATION_ARGS=()
+          if [[ -n "$UPDATE_KEY_ROTATION_OVERRIDE" ]]; then
+            ROTATION_ARGS=(--rotation-override "$UPDATE_KEY_ROTATION_OVERRIDE")
+          fi
+          # Both pairs verify now; G10 or its exact waiver; signing evidence schema 2.
+          node scripts/update-manifest.mjs bind \
+            --handoff build/signed-publish-handoff \
+            --state build/update-signing-state \
+            --tag "$RELEASE_TAG" \
+            --source-commit "$RELEASE_SOURCE" \
+            --now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            ${ROTATION_ARGS[@]+"${ROTATION_ARGS[@]}"}
           test "$(find build/signed-publish-handoff -maxdepth 1 -type f | wc -l | tr -d ' ')" = 5
-          test "$(find build/signed-publish-handoff/release-assets -maxdepth 1 -type f | wc -l | tr -d ' ')" = 8
+          test "$(find build/signed-publish-handoff/release-assets -maxdepth 1 -type f | wc -l | tr -d ' ')" = 10
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: signed-publish-handoff
@@ -811,6 +725,7 @@ jobs:
           RELEASE_SOURCE: ${{ needs.authorize.outputs.source-commit }}
           PRODUCER_RUN_ID: ${{ needs.authorize.outputs.run-id }}
           PRODUCER_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          UPDATE_KEY_ROTATION_OVERRIDE: ${{ vars.AGENT_INBOX_UPDATE_KEY_ROTATION_OVERRIDE }}
         shell: bash
         run: |
           set -euo pipefail
@@ -916,25 +831,18 @@ jobs:
           ) process.exit(1)
           NODE
           }
-          PACKAGE_NAMES=(
-            "Agent-Inbox-$RELEASE_TAG-linux-arm64.AppImage"
-            "Agent-Inbox-$RELEASE_TAG-linux-x86_64.AppImage"
-            "Agent-Inbox-$RELEASE_TAG-universal.dmg"
-            "agent-inbox_${RELEASE_VERSION}_amd64.deb"
-            "agent-inbox_${RELEASE_VERSION}_arm64.deb"
-          )
-          ASSET_NAMES=(
-            "${PACKAGE_NAMES[@]}"
-            "SHA256SUMS.txt"
-            "update-manifest.json"
-            "update-manifest.json.sig"
-          )
+          # Both manifests against the release (design §7.4): v2 describes it; v1 describes it too in a
+          # universal release (G8) or re-stamps the newest universal release in an arm64 one (G6);
+          # every v1 carries the original key's signature or the exact recorded waiver (G10).
           verify_update_assets() {
-            node - "$1" "$2" <<'NODE'
+            node - "$1" "$2" "$RELEASE_KIND" "$RESTAMP" <<'NODE'
           const { createHash, createPublicKey, verify } = require('node:crypto')
           const { readFileSync, statSync } = require('node:fs')
           const { join } = require('node:path')
-          const [assets, root] = process.argv.slice(2)
+          const [assets, root, kind, restamp] = process.argv.slice(2)
+          // The only key apps from 1.2 to 1.6 trust, pinned as in scripts/update-manifest.mjs.
+          const ORIGINAL_KEY_ID = 'ed25519-99927ba2f6af6482'
+          const ORIGINAL_KEY_SPKI = 'MCowBQYDK2VwAyEAshsgCvPUphCyxSv/sgvDCBvdde/Ws+CU0Fgdl62SU/k='
           const fail = (message) => { throw new Error(message) }
           const exact = (actual, expected, label) => {
             if (JSON.stringify([...actual].sort()) !== JSON.stringify([...expected].sort())) {
@@ -943,6 +851,7 @@ jobs:
           }
           const sha256Bytes = (bytes) => createHash('sha256').update(bytes).digest('hex')
           const sha256 = (path) => sha256Bytes(readFileSync(path))
+          if (kind !== 'universal' && kind !== 'arm64') fail('the macOS release kind is malformed')
           const registryBytes = readFileSync(join(root, 'update-keys.json'))
           const registry = JSON.parse(registryBytes)
           exact(Object.keys(registry), ['keys', 'schema', 'signingKeyId'], 'update key registry')
@@ -981,152 +890,308 @@ jobs:
           if (aggregate.updateManifest?.keyRegistrySha256 !== sha256Bytes(registryBytes)) {
             fail('update key registry digest does not match aggregate evidence')
           }
-          const manifestBytes = readFileSync(join(assets, 'update-manifest.json'))
-          const envelopeBytes = readFileSync(join(assets, 'update-manifest.json.sig'))
-          const envelope = JSON.parse(envelopeBytes)
-          exact(Object.keys(envelope), ['manifestSha256', 'schema', 'signatures'], 'signature envelope')
-          if (
-            envelope.schema !== 1 ||
-            envelope.manifestSha256 !== sha256Bytes(manifestBytes) ||
-            !Array.isArray(envelope.signatures) ||
-            envelope.signatures.length === 0
-          ) fail('update manifest signature envelope is malformed')
-          let previousKeyId = ''
-          const seenSignatures = new Set()
-          let validSignature = false
-          for (const entry of envelope.signatures) {
-            exact(Object.keys(entry), ['algorithm', 'keyId', 'signature'], 'signature entry')
-            const signature = Buffer.from(entry.signature, 'base64')
+
+          // An envelope over these exact bytes, with a valid signature by a registry key.
+          const checkEnvelope = (manifestBytes, envelopeBytes, label) => {
+            const envelope = JSON.parse(envelopeBytes)
+            exact(Object.keys(envelope), ['manifestSha256', 'schema', 'signatures'], `${label} signature envelope`)
             if (
-              entry.algorithm !== 'ed25519' ||
-              entry.keyId <= previousKeyId ||
-              signature.length !== 64 ||
-              signature.toString('base64') !== entry.signature ||
-              seenSignatures.has(entry.signature)
-            ) fail('update manifest signature envelope contains an invalid entry')
-            previousKeyId = entry.keyId
-            seenSignatures.add(entry.signature)
-            const publicKey = publicKeys.get(entry.keyId)
-            if (publicKey && verify(null, manifestBytes, publicKey, signature)) {
-              validSignature = true
+              envelope.schema !== 1 ||
+              envelope.manifestSha256 !== sha256Bytes(manifestBytes) ||
+              !Array.isArray(envelope.signatures) ||
+              envelope.signatures.length === 0
+            ) fail(`${label} signature envelope is malformed`)
+            let previousKeyId = ''
+            const seenSignatures = new Set()
+            let validSignature = false
+            for (const entry of envelope.signatures) {
+              exact(Object.keys(entry), ['algorithm', 'keyId', 'signature'], `${label} signature entry`)
+              const signature = Buffer.from(entry.signature, 'base64')
+              if (
+                entry.algorithm !== 'ed25519' ||
+                entry.keyId <= previousKeyId ||
+                signature.length !== 64 ||
+                signature.toString('base64') !== entry.signature ||
+                seenSignatures.has(entry.signature)
+              ) fail(`${label} signature envelope contains an invalid entry`)
+              previousKeyId = entry.keyId
+              seenSignatures.add(entry.signature)
+              const publicKey = publicKeys.get(entry.keyId)
+              if (publicKey && verify(null, manifestBytes, publicKey, signature)) {
+                validSignature = true
+              }
             }
+            if (!validSignature) fail(`update manifest signature verification failed: ${label}`)
+            return envelope
           }
-          if (!validSignature) fail('update manifest signature verification failed')
-          const manifest = JSON.parse(manifestBytes)
-          exact(Object.keys(manifest), [
-            'expiresAt',
-            'kind',
-            'publishedAt',
-            'releaseUrl',
-            'repository',
-            'schema',
-            'signingKeyId',
-            'source',
-            'tag',
-            'targets',
-            'trustedKeyIds',
-            'version',
-          ], 'update manifest')
-          exact(Object.keys(manifest.source || {}), ['commit', 'tree'], 'update manifest source')
-          const expectedExpiry = new Date(
-            new Date(context.taggedAt).getTime() + 180 * 24 * 60 * 60 * 1000,
+          const expiryOf = (publishedAt) => new Date(
+            new Date(publishedAt).getTime() + 180 * 24 * 60 * 60 * 1000,
           ).toISOString().replace('.000Z', 'Z')
-          if (
-            manifest.schema !== 1 ||
-            manifest.kind !== 'agent-inbox-update-manifest' ||
-            manifest.repository !== 'shariqh/agent-inbox' ||
-            manifest.tag !== context.tag ||
-            manifest.version !== context.version ||
-            manifest.source.commit !== context.sourceCommit ||
-            manifest.source.tree !== aggregate.sourceTree ||
-            manifest.publishedAt !== context.taggedAt ||
-            manifest.expiresAt !== expectedExpiry ||
-            manifest.releaseUrl !== `https://github.com/shariqh/agent-inbox/releases/tag/${context.tag}` ||
-            manifest.signingKeyId !== registry.signingKeyId ||
-            JSON.stringify(manifest.trustedKeyIds) !== JSON.stringify(keyIds)
-          ) fail('update manifest release identity is malformed')
-          const expectedTargets = [
-            ['darwin', 'universal', 'dmg', 'macos-dmg'],
+          const parseManifest = (bytes, schema, label) => {
+            const manifest = JSON.parse(bytes)
+            exact(Object.keys(manifest), [
+              'expiresAt',
+              'kind',
+              'publishedAt',
+              'releaseUrl',
+              'repository',
+              'schema',
+              'signingKeyId',
+              'source',
+              'tag',
+              'targets',
+              'trustedKeyIds',
+              'version',
+            ], label)
+            exact(Object.keys(manifest.source || {}), ['commit', 'tree'], `${label} source`)
+            if (
+              manifest.schema !== schema ||
+              manifest.kind !== 'agent-inbox-update-manifest' ||
+              manifest.repository !== 'shariqh/agent-inbox'
+            ) fail(`${label} is not a schema ${schema} update manifest`)
+            return manifest
+          }
+          // A manifest that describes this release.
+          const describeRelease = (manifest, label) => {
+            if (
+              manifest.tag !== context.tag ||
+              manifest.version !== context.version ||
+              manifest.source.commit !== context.sourceCommit ||
+              manifest.source.tree !== aggregate.sourceTree ||
+              manifest.publishedAt !== context.taggedAt ||
+              manifest.expiresAt !== expiryOf(context.taggedAt) ||
+              manifest.releaseUrl !== `https://github.com/shariqh/agent-inbox/releases/tag/${context.tag}` ||
+              manifest.signingKeyId !== registry.signingKeyId ||
+              JSON.stringify(manifest.trustedKeyIds) !== JSON.stringify(keyIds)
+            ) fail(`${label} release identity is malformed`)
+          }
+          const LINUX_TARGETS = [
             ['linux', 'arm64', 'appimage', 'appimage-self-replace'],
             ['linux', 'arm64', 'deb', 'deb-notify'],
             ['linux', 'x64', 'appimage', 'appimage-self-replace'],
             ['linux', 'x64', 'deb', 'deb-notify'],
           ]
-          if (!Array.isArray(manifest.targets) || manifest.targets.length !== expectedTargets.length) {
-            fail('update manifest target inventory is malformed')
-          }
           const aggregateAssets = new Map((aggregate.assets || []).map((asset) => [asset.name, asset]))
-          for (const [index, target] of manifest.targets.entries()) {
-            const [platform, architecture, packageType, strategy] = expectedTargets[index]
-            const expectedKeys = packageType === 'dmg'
-              ? [
-                  'architecture',
-                  'byteLength',
-                  'filename',
-                  'installStrategy',
-                  'minimumSystemVersion',
-                  'packageType',
-                  'platform',
-                  'sha256',
-                  'url',
-                ]
-              : [
-                  'architecture',
-                  'byteLength',
-                  'filename',
-                  'installStrategy',
-                  'packageType',
-                  'platform',
-                  'sha256',
-                  'url',
-                ]
-            exact(Object.keys(target), expectedKeys, `update manifest target ${index}`)
-            const aggregateAsset = aggregateAssets.get(target.filename)
-            if (
-              target.platform !== platform ||
-              target.architecture !== architecture ||
-              target.packageType !== packageType ||
-              target.installStrategy !== strategy ||
-              !aggregateAsset ||
-              target.byteLength !== aggregateAsset.size ||
-              target.sha256 !== aggregateAsset.sha256 ||
-              target.url !==
-                `https://github.com/shariqh/agent-inbox/releases/download/${context.tag}/${target.filename}`
-            ) fail(`update manifest target ${index} does not match aggregate package evidence`)
-            if (packageType === 'dmg' && !/^\d+\.\d+(?:\.\d+)?$/.test(target.minimumSystemVersion)) {
-              fail('macOS update target minimum system version is malformed')
+          const checkTargets = (manifest, expectedTargets, label) => {
+            if (!Array.isArray(manifest.targets) || manifest.targets.length !== expectedTargets.length) {
+              fail(`${label} target inventory is malformed`)
+            }
+            for (const [index, target] of manifest.targets.entries()) {
+              const [platform, architecture, packageType, strategy] = expectedTargets[index]
+              const expectedKeys = [
+                'architecture',
+                'byteLength',
+                'filename',
+                'installStrategy',
+                'packageType',
+                'platform',
+                'sha256',
+                'url',
+                ...(packageType === 'dmg' ? ['minimumSystemVersion'] : []),
+              ]
+              exact(Object.keys(target), expectedKeys, `${label} target ${index}`)
+              const aggregateAsset = aggregateAssets.get(target.filename)
+              if (
+                target.platform !== platform ||
+                target.architecture !== architecture ||
+                target.packageType !== packageType ||
+                target.installStrategy !== strategy ||
+                !aggregateAsset ||
+                target.byteLength !== aggregateAsset.size ||
+                target.sha256 !== aggregateAsset.sha256 ||
+                target.url !==
+                  `https://github.com/shariqh/agent-inbox/releases/download/${context.tag}/${target.filename}`
+              ) fail(`${label} target ${index} does not match aggregate package evidence`)
+              if (packageType === 'dmg' && !/^\d+\.\d+(?:\.\d+)?$/.test(target.minimumSystemVersion)) {
+                fail('macOS update target minimum system version is malformed')
+              }
             }
           }
 
+          // The re-stamp, checked independently of the signer (design §7.4): the earlier v1 pair
+          // GitHub lists for the release before, fetched by asset id; only the four re-stamped
+          // fields differ; and what it copies is the newest release with a universal DMG (G6).
+          const checkRestamp = (manifest, bytes) => {
+            const releases = JSON.parse(readFileSync(join(restamp, 'releases.json'), 'utf8'))
+            const versionOf = (tag) => tag.slice(1).split('.').map(BigInt)
+            const compare = (left, right) => {
+              const [a, b] = [versionOf(left), versionOf(right)]
+              for (let index = 0; index < 3; index += 1) {
+                if (a[index] !== b[index]) return a[index] < b[index] ? -1 : 1
+              }
+              return 0
+            }
+            const newest = (list) => list.reduce(
+              (best, release) => (best === null || compare(release.tag_name, best.tag_name) > 0 ? release : best),
+              null,
+            )
+            if (!Array.isArray(releases) || releases.some((release) => compare(release.tag_name, context.tag) >= 0)) {
+              fail('every other published release must be older than this one')
+            }
+            const listed = (release, name) => {
+              const found = (release.assets || []).filter((asset) => asset.name === name)
+              if (found.length !== 1) fail(`release ${release.tag_name} must list exactly one ${name}`)
+              return found[0]
+            }
+            const sameFile = (fileBytes, asset) => fileBytes.length === asset.size &&
+              (!asset.digest || asset.digest.toLowerCase() === `sha256:${sha256Bytes(fileBytes)}`)
+            const before = newest(releases)
+            if (!before) fail('an arm64 release re-stamps the v1 manifest of the release before it')
+            const earlierBytes = readFileSync(join(restamp, 'update-manifest.json'))
+            const earlierSignature = readFileSync(join(restamp, 'update-manifest.json.sig'))
+            if (
+              !sameFile(earlierBytes, listed(before, 'update-manifest.json')) ||
+              !sameFile(earlierSignature, listed(before, 'update-manifest.json.sig'))
+            ) fail(`the earlier update-manifest.json pair is not the one GitHub lists for ${before.tag_name}`)
+            checkEnvelope(earlierBytes, earlierSignature, `the update-manifest.json of ${before.tag_name}`)
+            const earlier = parseManifest(earlierBytes, 1, `the update-manifest.json of ${before.tag_name}`)
+            const described = newest(releases.filter((release) => (release.assets || [])
+              .some((asset) => asset.name === `Agent-Inbox-${release.tag_name}-universal.dmg`)))
+            if (!described || earlier.tag !== described.tag_name) {
+              fail(`a re-stamped update-manifest.json must describe the newest release with a universal DMG (${described?.tag_name ?? 'none'}), not ${earlier.tag}`)
+            }
+            const changed = Object.keys(earlier)
+              .filter((key) => JSON.stringify(earlier[key]) !== JSON.stringify(manifest[key]))
+              .sort()
+            const expected = {
+              ...earlier,
+              publishedAt: context.taggedAt,
+              expiresAt: expiryOf(context.taggedAt),
+              signingKeyId: registry.signingKeyId,
+              trustedKeyIds: keyIds,
+            }
+            if (bytes.toString('utf8') !== `${JSON.stringify(expected, null, 2)}\n`) {
+              fail(`the re-stamped update-manifest.json may differ from the earlier one only in publishedAt, expiresAt, signingKeyId and trustedKeyIds, not in ${changed.join(', ')}`)
+            }
+            for (const target of earlier.targets) {
+              const asset = listed(described, target.filename)
+              if (
+                asset.size !== target.byteLength ||
+                (asset.digest && asset.digest.toLowerCase() !== `sha256:${target.sha256}`)
+              ) fail(`${target.filename} is not the file release ${described.tag_name} lists (size or digest differs)`)
+            }
+            return { before, earlier, earlierBytes }
+          }
+
+          const read = (name) => readFileSync(join(assets, name))
+          const v2Bytes = read('update-manifest-v2.json')
+          checkEnvelope(v2Bytes, read('update-manifest-v2.json.sig'), 'update-manifest-v2.json')
+          const v2 = parseManifest(v2Bytes, 2, 'update-manifest-v2.json')
+          describeRelease(v2, 'update-manifest-v2.json')
+          checkTargets(v2, [['darwin', kind, 'dmg', 'macos-dmg'], ...LINUX_TARGETS], 'update-manifest-v2.json')
+          const v1Bytes = read('update-manifest.json')
+          const v1Envelope = checkEnvelope(v1Bytes, read('update-manifest.json.sig'), 'update-manifest.json')
+          const v1 = parseManifest(v1Bytes, 1, 'update-manifest.json')
+          let restamped = null
+          if (kind === 'universal') {
+            describeRelease(v1, 'update-manifest.json')
+            checkTargets(v1, [['darwin', 'universal', 'dmg', 'macos-dmg'], ...LINUX_TARGETS], 'update-manifest.json')
+            // G8: the same data as v2, apart from schema.
+            const prefix = (schema) => `{\n  "schema": ${schema},\n`
+            const v2Text = v2Bytes.toString('utf8')
+            if (!v2Text.startsWith(prefix(2)) || v1Bytes.toString('utf8') !== `${prefix(1)}${v2Text.slice(prefix(2).length)}`) {
+              fail('a universal release\'s update-manifest.json must carry the data of its update-manifest-v2.json, apart from schema')
+            }
+          } else {
+            restamped = checkRestamp(v1, v1Bytes)
+          }
+
+          // G10: the original key signed v1, or the signer recorded the waiver and this job's
+          // repository variable holds the exact override for this tag and signing key.
+          const originalEntry = v1Envelope.signatures.find((entry) => entry.keyId === ORIGINAL_KEY_ID)
+          const originalKey = createPublicKey({ key: Buffer.from(ORIGINAL_KEY_SPKI, 'base64'), format: 'der', type: 'spki' })
+          const originalSigned = Boolean(originalEntry) &&
+            verify(null, v1Bytes, originalKey, Buffer.from(originalEntry.signature, 'base64'))
+          const override = `ALLOW-UPDATE-KEY-ROTATION:${context.tag}:${registry.signingKeyId}`
+          if (originalSigned) {
+            if (signing.originalKeySignature !== 'passed') {
+              fail('the signing evidence must record that the original key signed update-manifest.json')
+            }
+          } else if (
+            signing.originalKeySignature !== 'waived' ||
+            signing.rotationOverride !== override ||
+            process.env.UPDATE_KEY_ROTATION_OVERRIDE !== override
+          ) {
+            fail(`update-manifest.json has no valid signature from ${ORIGINAL_KEY_ID}, the only key apps from 1.2 to 1.6 trust; only the exact override ${override}, recorded by the signer and set for this job, waives that`)
+          }
+
           exact(Object.keys(signing), [
-            'history',
-            'manifest',
+            'macos',
+            'manifests',
+            'originalKeySignature',
             'schema',
-            'signature',
             'signingKeyId',
             'sourceCommit',
             'sourceTree',
             'tag',
             'trustedKeyIds',
             'verification',
+            ...(signing.originalKeySignature === 'waived' ? ['rotationOverride'] : []),
           ], 'update signing evidence')
+          exact(Object.keys(signing.manifests || {}), ['v1', 'v2'], 'update signing evidence manifests')
+          exact(Object.keys(signing.verification || {}), ['privateKeyMatchesRegistry', 'signatures'], 'update signing verification')
           if (
-            signing.schema !== 1 ||
+            signing.schema !== 2 ||
             signing.tag !== context.tag ||
             signing.sourceCommit !== context.sourceCommit ||
             signing.sourceTree !== aggregate.sourceTree ||
             signing.signingKeyId !== registry.signingKeyId ||
             JSON.stringify(signing.trustedKeyIds) !== JSON.stringify(keyIds) ||
-            signing.manifest?.name !== 'update-manifest.json' ||
-            signing.manifest?.size !== statSync(join(assets, 'update-manifest.json')).size ||
-            signing.manifest?.sha256 !== sha256(join(assets, 'update-manifest.json')) ||
-            signing.signature?.name !== 'update-manifest.json.sig' ||
-            signing.signature?.size !== statSync(join(assets, 'update-manifest.json.sig')).size ||
-            signing.signature?.sha256 !== sha256(join(assets, 'update-manifest.json.sig')) ||
-            signing.verification?.privateKeyMatchesRegistry !== 'passed' ||
-            signing.verification?.signature !== 'passed' ||
-            !['bootstrap', 'passed'].includes(signing.verification?.previousReleaseContinuity)
+            signing.macos?.kind !== kind ||
+            signing.verification.privateKeyMatchesRegistry !== 'passed' ||
+            signing.verification.signatures !== 'passed'
           ) fail('update signing evidence is malformed')
+          const checkSigned = (slot, name, manifest, made) => {
+            const record = signing.manifests[slot]
+            exact(Object.keys(record || {}), [
+              'history',
+              'made',
+              'name',
+              'sha256',
+              'signature',
+              'size',
+              'tag',
+              'version',
+              ...(made === 'restamp' ? ['restamp'] : []),
+            ], `update signing evidence for ${name}`)
+            exact(Object.keys(record.signature || {}), ['name', 'sha256', 'size'], `update signing evidence for ${name}.sig`)
+            const history = record.history || {}
+            exact(Object.keys(history), history.mode === 'bootstrap'
+              ? ['mode', 'priorTag', 'rotationOverrideUsed']
+              : ['describes', 'mode', 'priorTag', 'rotationOverrideUsed'], `update signing history for ${name}`)
+            if (
+              record.name !== name ||
+              record.size !== statSync(join(assets, name)).size ||
+              record.sha256 !== sha256(join(assets, name)) ||
+              record.signature.name !== `${name}.sig` ||
+              record.signature.size !== statSync(join(assets, `${name}.sig`)).size ||
+              record.signature.sha256 !== sha256(join(assets, `${name}.sig`)) ||
+              record.made !== made ||
+              record.version !== manifest.version ||
+              record.tag !== manifest.tag ||
+              !(history.mode === 'bootstrap'
+                ? history.priorTag === null && history.rotationOverrideUsed === false
+                : history.mode === 'continuity' &&
+                  typeof history.priorTag === 'string' &&
+                  typeof history.describes === 'string' &&
+                  typeof history.rotationOverrideUsed === 'boolean') ||
+              (kind === 'arm64' && history.mode !== 'continuity')
+            ) fail(`update signing evidence for ${name} is malformed`)
+            return record
+          }
+          checkSigned('v2', 'update-manifest-v2.json', v2, 'release')
+          const v1Record = checkSigned('v1', 'update-manifest.json', v1, kind === 'universal' ? 'projection' : 'restamp')
+          if (restamped) {
+            exact(Object.keys(v1Record.restamp || {}), ['earlierManifestSha256', 'targets'], 'update signing re-stamp record')
+            if (
+              v1Record.restamp.earlierManifestSha256 !== sha256Bytes(restamped.earlierBytes) ||
+              JSON.stringify(v1Record.restamp.targets) !== JSON.stringify(restamped.earlier.targets.map(
+                ({ filename, byteLength, sha256: digest }) => ({ filename, byteLength, sha256: digest }),
+              )) ||
+              v1Record.history.priorTag !== restamped.before.tag_name ||
+              v1Record.history.describes !== restamped.earlier.tag
+            ) fail('update signing evidence does not record the re-stamp this job checked')
+          }
           NODE
           }
 
@@ -1135,11 +1200,87 @@ jobs:
             --name signed-publish-handoff \
             --dir "$WORK"
 
-          node - "$WORK" "$RELEASE_TAG" "$RELEASE_VERSION" "$RELEASE_SOURCE" <<'NODE'
+          # The macOS kind, recomputed from the CPU types measured in the shipped app: they must equal
+          # the expected set the signer read at the release commit, and the DMG name, its labels and
+          # the way v1 was made must all follow from it (G9).
+          KIND_LINE="$(node -e '
+            const { readFileSync } = require("node:fs")
+            const { join } = require("node:path")
+            const [root, tag] = process.argv.slice(1)
+            const fail = (message) => { throw new Error(message) }
+            const same = (left, right) => JSON.stringify(left) === JSON.stringify(right)
+            const KINDS = [
+              { kind: "universal", architectures: ["arm64", "x86_64"], dmgName: `Agent-Inbox-${tag}-universal.dmg`,
+                architecture: "universal", target: "darwin-arm64+darwin-x64", nativeIntel: true, v1: "projection" },
+              { kind: "arm64", architectures: ["arm64"], dmgName: `Agent-Inbox-${tag}-arm64.dmg`,
+                architecture: "arm64", target: "darwin-arm64", nativeIntel: false, v1: "restamp" },
+            ]
+            const kindOf = (set, label) => KINDS.find((row) => same(row.architectures, set)) ||
+              fail(`${label} ${JSON.stringify(set)} give no macOS release kind`)
+            const aggregate = JSON.parse(readFileSync(join(root, "release-aggregation-evidence.json"), "utf8"))
+            const signing = JSON.parse(readFileSync(join(root, "update-signing-evidence.json"), "utf8"))
+            const macs = (aggregate.assets || []).filter((asset) => asset && asset.platform === "macos")
+            if (macs.length !== 1) fail("the aggregate evidence must list exactly one macOS package")
+            const [mac] = macs
+            const sets = mac.architectures || {}
+            const recorded = signing.macos || {}
+            if (
+              !same(Object.keys(sets).sort(), ["betterSqlite3", "executable"]) ||
+              !same(Object.keys(recorded).sort(), ["architectures", "expected", "kind"]) ||
+              !same(Object.keys(recorded.architectures || {}).sort(), ["betterSqlite3", "executable"])
+            ) fail("the measured macOS CPU types are malformed")
+            const row = kindOf(recorded.expected, "the expected macOS CPU types")
+            if (
+              kindOf(sets.executable, "the app executable CPU types") !== row ||
+              kindOf(sets.betterSqlite3, "the better-sqlite3 addon CPU types") !== row
+            ) fail("the measured macOS CPU types differ from the expected set the signer recorded")
+            if (
+              recorded.kind !== row.kind ||
+              !same(recorded.architectures.executable, sets.executable) ||
+              !same(recorded.architectures.betterSqlite3, sets.betterSqlite3)
+            ) fail("the signing evidence records other macOS CPU types than the aggregate evidence")
+            if (
+              mac.name !== row.dmgName ||
+              mac.packageType !== "DMG" ||
+              mac.architecture !== row.architecture ||
+              mac.target !== row.target
+            ) fail(`the measured macOS CPU types give ${row.dmgName} labelled ${row.architecture}, not ${mac.name} labelled ${mac.architecture}`)
+            if (row.nativeIntel ? mac.nativeIntel !== "passed" : Object.prototype.hasOwnProperty.call(mac, "nativeIntel")) {
+              fail(`the native Intel evidence does not fit a ${row.kind} macOS release`)
+            }
+            if (signing.manifests?.v1?.made !== row.v1) fail(`a ${row.kind} release makes its v1 manifest by ${row.v1}`)
+            process.stdout.write(`${row.kind} ${row.dmgName}`)
+          ' "$WORK" "$RELEASE_TAG")"
+          RELEASE_KIND="${KIND_LINE%% *}"
+          DMG_NAME="${KIND_LINE#* }"
+          case "$RELEASE_KIND:$DMG_NAME" in
+            "universal:Agent-Inbox-$RELEASE_TAG-universal.dmg" | "arm64:Agent-Inbox-$RELEASE_TAG-arm64.dmg") ;;
+            *)
+              echo "the macOS release kind or DMG name is malformed" >&2
+              exit 1
+              ;;
+          esac
+          PACKAGE_NAMES=(
+            "Agent-Inbox-$RELEASE_TAG-linux-arm64.AppImage"
+            "Agent-Inbox-$RELEASE_TAG-linux-x86_64.AppImage"
+            "$DMG_NAME"
+            "agent-inbox_${RELEASE_VERSION}_amd64.deb"
+            "agent-inbox_${RELEASE_VERSION}_arm64.deb"
+          )
+          ASSET_NAMES=(
+            "${PACKAGE_NAMES[@]}"
+            "SHA256SUMS.txt"
+            "update-manifest.json"
+            "update-manifest.json.sig"
+            "update-manifest-v2.json"
+            "update-manifest-v2.json.sig"
+          )
+
+          node - "$WORK" "$RELEASE_TAG" "$RELEASE_VERSION" "$RELEASE_SOURCE" "$DMG_NAME" <<'NODE'
           const { createHash } = require('node:crypto')
           const { readFileSync, readdirSync, statSync } = require('node:fs')
           const { join } = require('node:path')
-          const [root, tag, version, source] = process.argv.slice(2)
+          const [root, tag, version, source, dmgName] = process.argv.slice(2)
           const fail = (message) => { throw new Error(message) }
           const readJson = (path) => JSON.parse(readFileSync(path, 'utf8'))
           const sha256 = (path) => createHash('sha256').update(readFileSync(path)).digest('hex')
@@ -1160,16 +1301,18 @@ jobs:
           const packageNames = [
             `Agent-Inbox-${tag}-linux-arm64.AppImage`,
             `Agent-Inbox-${tag}-linux-x86_64.AppImage`,
-            `Agent-Inbox-${tag}-universal.dmg`,
+            dmgName,
             `agent-inbox_${version}_amd64.deb`,
             `agent-inbox_${version}_arm64.deb`,
-          ]
+          ].sort()
           const assets = join(root, 'release-assets')
           exact(readdirSync(assets), [
             ...packageNames,
             'SHA256SUMS.txt',
             'update-manifest.json',
             'update-manifest.json.sig',
+            'update-manifest-v2.json',
+            'update-manifest-v2.json.sig',
           ], 'release asset')
           const checksumText = packageNames.map((name) => `${sha256(join(assets, name))}  ${name}\n`).join('')
           if (readFileSync(join(assets, 'SHA256SUMS.txt'), 'utf8') !== checksumText) {
@@ -1209,9 +1352,9 @@ jobs:
             evidence.checksumManifest?.name !== 'SHA256SUMS.txt' ||
             JSON.stringify(evidence.checksumManifest?.entries) !== JSON.stringify(packageNames) ||
             evidence.checksumManifest?.sha256 !== sha256(join(assets, 'SHA256SUMS.txt')) ||
-            evidence.updateManifest?.name !== 'update-manifest.json' ||
-            evidence.updateManifest?.size !== statSync(join(assets, 'update-manifest.json')).size ||
-            evidence.updateManifest?.sha256 !== sha256(join(assets, 'update-manifest.json')) ||
+            evidence.updateManifest?.name !== 'update-manifest-v2.json' ||
+            evidence.updateManifest?.size !== statSync(join(assets, 'update-manifest-v2.json')).size ||
+            evidence.updateManifest?.sha256 !== sha256(join(assets, 'update-manifest-v2.json')) ||
             !/^[0-9a-f]{64}$/.test(evidence.updateManifest?.keyRegistrySha256 || '') ||
             evidence.verification?.linuxHandoff !== 'passed' ||
             evidence.verification?.macosNotarization !== 'passed' ||
@@ -1225,7 +1368,59 @@ jobs:
             ) fail(`aggregate evidence mismatch for ${asset.name}`)
           }
           NODE
-            verify_update_assets "$WORK/release-assets" "$WORK"
+
+          # An arm64 release re-stamps the earlier v1 manifest. This job reads the listing and that
+          # pair from GitHub itself, by asset id, so its check does not depend on the signer.
+          RESTAMP="$WORK/restamp"
+          if [[ "$RELEASE_KIND" == arm64 ]]; then
+            mkdir -p "$RESTAMP"
+            gh api --paginate --slurp "repos/$GH_REPO/releases?per_page=100" > "$RESTAMP/release-pages.json"
+            node - "$RESTAMP" "$RELEASE_TAG" <<'NODE'
+          const { readFileSync, writeFileSync } = require('node:fs')
+          const { join } = require('node:path')
+          const [dir, currentTag] = process.argv.slice(2)
+          const fail = (message) => { throw new Error(message) }
+          const pages = JSON.parse(readFileSync(join(dir, 'release-pages.json'), 'utf8'))
+          if (!Array.isArray(pages) || pages.some((page) => !Array.isArray(page))) {
+            fail('GitHub release pagination response is malformed')
+          }
+          const stable = /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/
+          const releases = pages.flat()
+            .filter((release) => release && release.draft === false && release.prerelease === false &&
+              stable.test(release.tag_name) && release.tag_name !== currentTag)
+            .map((release) => ({
+              tag_name: release.tag_name,
+              assets: (release.assets || []).map(({ id, name, size, digest }) => ({ id, name, size, digest: digest || null })),
+            }))
+          writeFileSync(join(dir, 'releases.json'), JSON.stringify(releases))
+          const versionOf = (tag) => tag.slice(1).split('.').map(BigInt)
+          const newer = (left, right) => {
+            const [a, b] = [versionOf(left), versionOf(right)]
+            for (let index = 0; index < 3; index += 1) {
+              if (a[index] !== b[index]) return a[index] > b[index]
+            }
+            return false
+          }
+          const before = releases.reduce((best, release) => (best === null || newer(release.tag_name, best.tag_name) ? release : best), null)
+          if (!before) fail('an arm64 release re-stamps the v1 manifest of the release before it')
+          writeFileSync(join(dir, 'assets.txt'), ['update-manifest.json', 'update-manifest.json.sig'].map((name) => {
+            const listed = before.assets.filter((asset) => asset.name === name)
+            if (listed.length !== 1 || !Number.isSafeInteger(listed[0].id) || listed[0].id <= 0) {
+              fail(`release ${before.tag_name} must list exactly one ${name}`)
+            }
+            return `${listed[0].id} ${name}\n`
+          }).join(''))
+          NODE
+            while read -r ASSET_ID ASSET_FILE; do
+              if [[ ! "$ASSET_ID" =~ ^[1-9][0-9]*$ ]] || [[ "$ASSET_FILE" != update-manifest.json && "$ASSET_FILE" != update-manifest.json.sig ]]; then
+                echo "the earlier v1 pair is listed malformed" >&2
+                exit 1
+              fi
+              gh api "repos/$GH_REPO/releases/assets/$ASSET_ID" \
+                -H "Accept: application/octet-stream" > "$RESTAMP/$ASSET_FILE"
+            done < "$RESTAMP/assets.txt"
+          fi
+          verify_update_assets "$WORK/release-assets" "$WORK"
 
           STAGING_TITLE="Agent Inbox $RELEASE_TAG staging run $PRODUCER_RUN_ID/$PRODUCER_RUN_ATTEMPT"
           node - "$WORK" "$RELEASE_TAG" "$RELEASE_SOURCE" "$PRODUCER_RUN_ID" \
@@ -1294,22 +1489,24 @@ jobs:
             gh release view "$RELEASE_TAG" \
               --repo "$GH_REPO" \
               --json tagName,isDraft,isPrerelease,name,body,assets > "$WORK/remote.json"
-            node - "$WORK/remote.json" "$RELEASE_TAG" "$expected_draft" "$expected_title" "$expected_body_file" "$WORK/release-assets" <<'NODE'
+            node - "$WORK/remote.json" "$RELEASE_TAG" "$expected_draft" "$expected_title" "$expected_body_file" "$WORK/release-assets" "$DMG_NAME" <<'NODE'
           const { createHash } = require('node:crypto')
           const { readFileSync, statSync } = require('node:fs')
           const { join } = require('node:path')
-          const [path, tag, expectedDraft, expectedTitle, expectedBodyFile, assetsDir] = process.argv.slice(2)
+          const [path, tag, expectedDraft, expectedTitle, expectedBodyFile, assetsDir, dmgName] = process.argv.slice(2)
           const release = JSON.parse(readFileSync(path, 'utf8'))
           const version = tag.slice(1)
           const names = [
             `Agent-Inbox-${tag}-linux-arm64.AppImage`,
             `Agent-Inbox-${tag}-linux-x86_64.AppImage`,
-            `Agent-Inbox-${tag}-universal.dmg`,
+            dmgName,
             `agent-inbox_${version}_amd64.deb`,
             `agent-inbox_${version}_arm64.deb`,
             'SHA256SUMS.txt',
             'update-manifest.json',
             'update-manifest.json.sig',
+            'update-manifest-v2.json',
+            'update-manifest-v2.json.sig',
           ]
           const actual = (release.assets || []).map(({ name, size, digest }) => ({ name, size, digest }))
           if (
@@ -1342,12 +1539,14 @@ jobs:
               --repo "$GH_REPO" \
               --pattern "Agent-Inbox-$RELEASE_TAG-linux-arm64.AppImage" \
               --pattern "Agent-Inbox-$RELEASE_TAG-linux-x86_64.AppImage" \
-              --pattern "Agent-Inbox-$RELEASE_TAG-universal.dmg" \
+              --pattern "$DMG_NAME" \
               --pattern "agent-inbox_${RELEASE_VERSION}_amd64.deb" \
               --pattern "agent-inbox_${RELEASE_VERSION}_arm64.deb" \
               --pattern SHA256SUMS.txt \
               --pattern update-manifest.json \
               --pattern update-manifest.json.sig \
+              --pattern update-manifest-v2.json \
+              --pattern update-manifest-v2.json.sig \
               --dir "$WORK/remote-assets"
             for name in "${ASSET_NAMES[@]}"; do
               cmp "$WORK/release-assets/$name" "$WORK/remote-assets/$name"
@@ -1420,6 +1619,9 @@ jobs:
             name: `Agent Inbox ${tag}`,
             body: readFileSync(notes, 'utf8'),
             draft: false,
+            // The manifests are read through /releases/latest, so every release must become
+            // latest (#343, R2); never leave it to GitHub's default.
+            make_latest: 'true',
           })}\n`)
           NODE
           PUBLICATION_ATTEMPTED=true

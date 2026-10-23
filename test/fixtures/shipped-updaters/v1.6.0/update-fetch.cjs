@@ -1,0 +1,421 @@
+'use strict'
+
+const fs = require('node:fs')
+const path = require('node:path')
+const {
+  verifyManifest,
+} = require('./update-manifest.cjs')
+
+const MANIFEST_URL = 'https://github.com/shariqh/agent-inbox/releases/latest/download/update-manifest.json'
+const SIGNATURE_URL = 'https://github.com/shariqh/agent-inbox/releases/latest/download/update-manifest.json.sig'
+const MANIFEST_MAX_BYTES = 256 * 1024
+const SIGNATURE_MAX_BYTES = 16 * 1024
+const DEFAULT_TIMEOUT_MS = 30_000
+const MAX_REDIRECTS = 5
+const VERSION_RE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/
+const GITHUB_RELEASE_PATH_RE = /^\/shariqh\/agent-inbox\/releases\/(?:latest\/download|download\/v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*))\/(update-manifest\.json(?:\.sig)?)$/
+const GITHUB_CONTENT_PATH_RE = /^\/github-production-release-asset(?:-\d+)?\//
+
+class UpdateFetchError extends Error {
+  constructor(message) {
+    super(message)
+    this.name = 'UpdateFetchError'
+  }
+}
+
+function fail(message) {
+  throw new UpdateFetchError(message)
+}
+
+function validateFetchUrl(value, expectedAsset) {
+  let url
+  try {
+    url = new URL(value)
+  } catch {
+    return fail('update endpoint is not a valid URL')
+  }
+  if (url.protocol !== 'https:') fail('update endpoint must use HTTPS')
+  if (url.username !== '' || url.password !== '') fail('update endpoint must not contain credentials')
+  if (url.hash !== '') fail('update endpoint must not contain a fragment')
+
+  if (url.hostname === 'github.com') {
+    if (url.port !== '' || url.search !== '') fail('GitHub update endpoint is not canonical')
+    const match = GITHUB_RELEASE_PATH_RE.exec(url.pathname)
+    if (!match || match[1] !== expectedAsset) fail('GitHub update endpoint is outside the expected release path')
+    return url
+  }
+
+  const isGithubContent = (
+    url.hostname.endsWith('.githubusercontent.com')
+    && url.hostname.length > '.githubusercontent.com'.length
+  )
+  if (!isGithubContent || url.port !== '' || !GITHUB_CONTENT_PATH_RE.test(url.pathname)) {
+    fail('update endpoint is outside the trusted release asset hosts')
+  }
+  return url
+}
+
+function isRedirect(status) {
+  return status === 301 || status === 302 || status === 303 || status === 307 || status === 308
+}
+
+function contentLength(response, cap) {
+  const raw = response.headers?.get?.('content-length')
+  if (raw === null || raw === undefined) return
+  if (!/^(0|[1-9]\d*)$/.test(raw)) fail('update response has an invalid Content-Length')
+  const length = Number(raw)
+  if (!Number.isSafeInteger(length) || length > cap) fail('update response exceeds its size limit')
+}
+
+function cancelBody(body) {
+  if (!body || typeof body.cancel !== 'function') return
+  try {
+    Promise.resolve(body.cancel()).catch(() => {})
+  } catch {
+    // Fetch may have already torn down the response after its signal aborted.
+  }
+}
+
+function withAbort(promise, signal) {
+  if (signal.aborted) return Promise.reject(new UpdateFetchError('update request timed out'))
+  return new Promise((resolve, reject) => {
+    const abort = () => reject(new UpdateFetchError('update request timed out'))
+    signal.addEventListener('abort', abort, { once: true })
+    Promise.resolve(promise).then(
+      (value) => {
+        signal.removeEventListener('abort', abort)
+        resolve(value)
+      },
+      (error) => {
+        signal.removeEventListener('abort', abort)
+        reject(error)
+      },
+    )
+  })
+}
+
+async function readCappedBody(response, cap, signal) {
+  try {
+    contentLength(response, cap)
+  } catch (error) {
+    cancelBody(response.body)
+    throw error
+  }
+  if (!response.body) return Buffer.alloc(0)
+
+  const chunks = []
+  let total = 0
+  const append = (value) => {
+    const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value)
+    total += chunk.length
+    if (total > cap) fail('update response exceeds its streaming size limit')
+    chunks.push(chunk)
+  }
+
+  if (typeof response.body.getReader === 'function') {
+    const reader = response.body.getReader()
+    let complete = false
+    try {
+      while (true) {
+        const { done, value } = await withAbort(reader.read(), signal)
+        if (done) {
+          complete = true
+          break
+        }
+        if (value !== undefined) append(value)
+      }
+    } finally {
+      if (!complete || signal.aborted) {
+        try {
+          reader.cancel?.().catch?.(() => {})
+        } catch {
+          // The response may already have been cancelled by fetch's signal.
+        }
+      }
+      try {
+        reader.releaseLock?.()
+      } catch {
+        // A cancelled implementation may retain its lock until cancellation settles.
+      }
+    }
+  } else if (typeof response.body[Symbol.asyncIterator] === 'function') {
+    const iterator = response.body[Symbol.asyncIterator]()
+    let complete = false
+    try {
+      while (true) {
+        const { done, value } = await withAbort(iterator.next(), signal)
+        if (done) {
+          complete = true
+          break
+        }
+        append(value)
+      }
+    } finally {
+      if (!complete || signal.aborted) {
+        try {
+          Promise.resolve(iterator.return?.()).catch(() => {})
+        } catch {
+          // The iterator may already have been closed by fetch's signal.
+        }
+      }
+    }
+  } else {
+    cancelBody(response.body)
+    fail('update response body is not stream-readable')
+  }
+  return Buffer.concat(chunks, total)
+}
+
+async function fetchAsset({ fetchImpl, initialUrl, expectedAsset, cap, signal }) {
+  let current = validateFetchUrl(initialUrl, expectedAsset)
+  let redirects = 0
+
+  while (true) {
+    let response
+    try {
+      response = await fetchImpl(current.href, {
+        redirect: 'manual',
+        signal,
+        headers: { 'cache-control': 'no-cache' },
+      })
+    } catch (error) {
+      if (signal.aborted) fail('update request timed out')
+      fail('update request failed')
+    }
+
+    if (isRedirect(response.status)) {
+      cancelBody(response.body)
+      if (redirects >= MAX_REDIRECTS) fail('update request exceeded its redirect limit')
+      const location = response.headers?.get?.('location')
+      if (!location) fail('update redirect is missing a Location header')
+      let next
+      try {
+        next = new URL(location, current)
+      } catch {
+        fail('update redirect Location is invalid')
+      }
+      current = validateFetchUrl(next, expectedAsset)
+      redirects += 1
+      continue
+    }
+
+    if (response.status < 200 || response.status >= 300) {
+      cancelBody(response.body)
+      fail('update endpoint did not return a successful response')
+    }
+    return readCappedBody(response, cap, signal)
+  }
+}
+
+function versionParts(version, label) {
+  const match = VERSION_RE.exec(version)
+  if (!match) fail(`${label} must be an exact stable X.Y.Z version`)
+  return [BigInt(match[1]), BigInt(match[2]), BigInt(match[3])]
+}
+
+function compareVersions(left, right) {
+  const a = versionParts(left, 'version')
+  const b = versionParts(right, 'currentVersion')
+  for (let index = 0; index < 3; index += 1) {
+    if (a[index] > b[index]) return 1
+    if (a[index] < b[index]) return -1
+  }
+  return 0
+}
+
+function canonicalAbsolute(value) {
+  return typeof value === 'string' && value !== '' && path.isAbsolute(value) && path.resolve(value) === value
+    ? value
+    : null
+}
+
+// What the AppImage proof reads from this machine; tests inject their own.
+const SYSTEM_PROBE = Object.freeze({
+  lstat: (target) => fs.lstatSync(target, { bigint: true }),
+  mountInfo: () => fs.readFileSync('/proc/self/mountinfo', 'utf8'),
+})
+
+// /proc/self/mountinfo escapes space, tab, newline and backslash as \ooo.
+function mountInfoField(value) {
+  return value.replace(/\\([0-7]{3})/g, (_escape, octal) => String.fromCharCode(Number.parseInt(octal, 8)))
+}
+
+// The type and source of the mount visible at `mountPoint`: the last one listed,
+// since a later mount at the same point hides the earlier ones.
+function mountAt(mountInfo, mountPoint) {
+  let visible = null
+  for (const line of mountInfo.split('\n')) {
+    const fields = line.split(' ')
+    // ID, parent, dev, root, mount point, options, optional fields…, '-', type, source, super options
+    const separator = fields.indexOf('-', 6)
+    if (separator === -1 || separator + 2 >= fields.length) continue
+    if (mountInfoField(fields[4]) !== mountPoint) continue
+    visible = { type: mountInfoField(fields[separator + 1]), source: mountInfoField(fields[separator + 2]) }
+  }
+  return visible
+}
+
+// APPDIR must be the pinned type2-runtime's FUSE mount of the file APPIMAGE
+// names. A mount point has another device than its parent, so an extracted
+// squashfs-root (or an extract-and-run folder) fails here. The runtime passes
+// no fsname or subtype, so libfuse names the mount after the image's real file
+// name: type fuse.<name>, source <name>, as a mount by hand of a different
+// image would not be.
+function mountsImage(image, mount, probe) {
+  try {
+    const mounted = probe.lstat(mount)
+    if (!mounted.isDirectory() || mounted.dev === probe.lstat(path.dirname(mount)).dev) return false
+    const visible = mountAt(probe.mountInfo(), mount)
+    const name = path.basename(image)
+    return visible !== null && visible.type === `fuse.${name}` && visible.source === name
+  } catch {
+    return false
+  }
+}
+
+// A Linux app runs from its AppImage only when APPIMAGE names an image, the
+// executable sits inside APPDIR, and APPDIR is that image's runtime mount. A .deb
+// install started from inside another AppImage inherits both variables but runs
+// from /opt, and an extracted squashfs-root started there gets a plain-folder
+// APPDIR from our AppRun, so both keep the deb target. The AppImage installer
+// and its registration in main apply this same proof.
+function runsFromAppImage({ appImagePath, appDir, execPath, appImageProbe = SYSTEM_PROBE } = {}) {
+  const image = canonicalAbsolute(appImagePath)
+  const mount = canonicalAbsolute(appDir)
+  const executable = canonicalAbsolute(execPath)
+  if (image === null || mount === null || executable === null || mount === path.parse(mount).root) return false
+  const relative = path.relative(mount, executable)
+  if (relative === '' || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return false
+  return mountsImage(image, mount, appImageProbe)
+}
+
+function selectTarget(manifest, options) {
+  const packaged = options.isPackaged === true
+  const supportedArch = options.arch === 'x64' || options.arch === 'arm64'
+  if (!packaged || !supportedArch) return null
+
+  let architecture
+  let packageType
+  if (options.platform === 'darwin') {
+    architecture = 'universal'
+    packageType = 'dmg'
+  } else if (options.platform === 'linux') {
+    architecture = options.arch
+    packageType = runsFromAppImage(options) ? 'appimage' : 'deb'
+  } else {
+    return null
+  }
+  return manifest.targets.find((target) => (
+    target.platform === options.platform
+    && target.architecture === architecture
+    && target.packageType === packageType
+  )) ?? null
+}
+
+function baseState(status, options, checkedAt, message) {
+  return {
+    status,
+    currentVersion: options.currentVersion,
+    automaticChecks: options.automaticChecks === true,
+    checkedAt,
+    message,
+  }
+}
+
+// Rollback high-water mark (#148): record the just-verified version and read back the
+// persisted maximum in one step, so the stale decision below uses the stored mark.
+async function recordHighWater(options, verifiedVersion) {
+  if (typeof options.recordVerifiedVersion !== 'function') return null
+  const highWater = await options.recordVerifiedVersion(verifiedVersion)
+  if (highWater === null || highWater === undefined) return null
+  versionParts(highWater, 'high-water mark')
+  return highWater
+}
+
+async function checkForUpdate(options) {
+  if (!options || typeof options.fetchImpl !== 'function') fail('fetchImpl is required')
+  versionParts(options.currentVersion, 'currentVersion')
+  const now = typeof options.now === 'function' ? options.now() : new Date()
+  if (!(now instanceof Date) || !Number.isFinite(now.getTime())) fail('now must return a valid Date')
+  const checkedAt = now.toISOString()
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) fail('timeoutMs must be positive')
+  const setTimeoutImpl = options.setTimeoutImpl ?? setTimeout
+  const clearTimeoutImpl = options.clearTimeoutImpl ?? clearTimeout
+  const controller = new AbortController()
+  const deadline = setTimeoutImpl(() => controller.abort(), timeoutMs)
+  deadline?.unref?.()
+
+  try {
+    const manifestBytes = await fetchAsset({
+      fetchImpl: options.fetchImpl,
+      initialUrl: MANIFEST_URL,
+      expectedAsset: 'update-manifest.json',
+      cap: MANIFEST_MAX_BYTES,
+      signal: controller.signal,
+    })
+    const signatureBytes = await fetchAsset({
+      fetchImpl: options.fetchImpl,
+      initialUrl: SIGNATURE_URL,
+      expectedAsset: 'update-manifest.json.sig',
+      cap: SIGNATURE_MAX_BYTES,
+      signal: controller.signal,
+    })
+    const manifest = verifyManifest({
+      manifestBytes,
+      envelope: signatureBytes,
+      registry: options.registry,
+      now,
+    })
+    const highWater = await recordHighWater(options, manifest.version)
+    if (highWater !== null && compareVersions(manifest.version, highWater) < 0) {
+      return baseState(
+        'stale',
+        options,
+        checkedAt,
+        'Update information is older than a release this app already verified.',
+      )
+    }
+    const target = selectTarget(manifest, options)
+    if (!target) {
+      return baseState(
+        'unsupported',
+        options,
+        checkedAt,
+        'Automatic updates are not supported for this installation.',
+      )
+    }
+    if (compareVersions(manifest.version, options.currentVersion) <= 0) {
+      return baseState('current', options, checkedAt, 'Agent Inbox is up to date.')
+    }
+    return {
+      ...baseState('available', options, checkedAt, 'A verified update is available.'),
+      available: {
+        version: manifest.version,
+        tag: manifest.tag,
+        releaseUrl: manifest.releaseUrl,
+        target: {
+          packageType: target.packageType,
+          installStrategy: target.installStrategy,
+        },
+      },
+      // Main-process only: the downloader needs the signed URL, length and digest,
+      // which the renderer-facing state deliberately never carries.
+      ...(options.includeArtifact === true
+        ? { artifact: Object.freeze({ version: manifest.version, tag: manifest.tag, ...target }) }
+        : {}),
+    }
+  } catch (error) {
+    controller.abort()
+    throw error
+  } finally {
+    clearTimeoutImpl(deadline)
+  }
+}
+
+module.exports = {
+  MANIFEST_URL,
+  SIGNATURE_URL,
+  checkForUpdate,
+  runsFromAppImage,
+}

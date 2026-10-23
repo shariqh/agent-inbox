@@ -1898,7 +1898,12 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   Later releases verify the latest prior pair and signed `trustedKeyIds` continuity before the one secret-bearing signing step. The sole write job still stages a private
   draft, independently verifies all eight remote bytes plus the five-entry checksum and
   signature, then exposes them atomically by undrafting. This layer adds no Electron
-  fetching, scheduling, download, or install behavior.
+  fetching, scheduling, download, or install behavior. *(#340)* Installed apps keep the
+  reader they shipped for good, so `test/fixtures/shipped-updaters/` holds it byte for
+  byte: `v1.2.8/` (1.2.0–1.2.8) and `v1.6.0/` (1.3.0–1.6.0, with its trust-state writer),
+  each folder with its own `update-manifest.cjs`. `test/shipped-updaters.test.ts` pins
+  every file's SHA-256 and runs them against today's publisher; never edit or regenerate
+  a fixture, and keep those tests passing through any manifest change (#295).
 - **Rollback high-water mark** *(#148, rollback half only)* — the packaged notify-only
   checker (`electron/update-fetch.cjs` + `update-controller.cjs`) persists the highest
   release version whose manifest passed signature, schema and expiry verification in its

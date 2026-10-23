@@ -1,3 +1,7 @@
 # The landing page's vendored files are published byte for byte and checked
 # against marketing/vendor/manifest.json, so Git never converts their line endings.
 marketing/vendor/** -text
+
+# The updater code installed apps shipped is pinned byte for byte by
+# test/shipped-updaters.test.ts, so Git never converts its line endings either.
+test/fixtures/shipped-updaters/** -text

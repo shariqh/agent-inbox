@@ -495,6 +495,9 @@ export function stageRuntime({
     const publication = setupFilesystem.stageDirectory({
       destination: outputResolved,
       replacement: force ? 'swap' : 'refuse',
+      // The selftests have just run the staged node, and Windows refuses to
+      // rename a folder while anything in it is still open (#333)
+      retryBusyRename: true,
       prepare(stageDir) {
         return stageInto(stageDir, {
           repoRoot,

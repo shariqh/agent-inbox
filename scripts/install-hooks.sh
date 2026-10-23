@@ -258,8 +258,10 @@ else
   fi
 
   # Every jq step is checked: a failed one prints nothing, and writing that
-  # nothing over settings.json would be data loss reported as success.
-  ALREADY="$(echo "$CURRENT" | jq --arg entry "$ENTRY" '[ (.hooks // {}) | .[]? | .[]? | .hooks[]? | select((.args // [])[0] == $entry) ] | length')" || unmergeable
+  # nothing over settings.json would be data loss reported as success. Their
+  # own errors are dropped (#337): jq quotes the value it fails on, and
+  # settings.json can hold secrets; unmergeable names the file instead.
+  ALREADY="$(echo "$CURRENT" | jq --arg entry "$ENTRY" '[ (.hooks // {}) | .[]? | .[]? | .hooks[]? | select((.args // [])[0] == $entry) ] | length' 2>/dev/null)" || unmergeable
   if [ "$UNINSTALL" -eq 0 ] && [ "${ALREADY:-0}" -gt 0 ] && [ "$FORCE" -eq 0 ] && [ "$REPLACE" -eq 0 ]; then
     echo "install-hooks: agent-inbox hooks are already installed in $SETTINGS." >&2
     echo "  Re-run with --force to replace them, or --uninstall to remove them." >&2
@@ -280,7 +282,7 @@ else
                                          | map(select((.hooks // []) | length > 0)) ))
                 | with_entries(select((.value | length) > 0)) )
     else . end
-    | if (.hooks == {}) then del(.hooks) else . end')" || unmergeable
+    | if (.hooks == {}) then del(.hooks) else . end' 2>/dev/null)" || unmergeable
 
   if [ "$UNINSTALL" -eq 1 ]; then
     MERGED="$STRIPPED"
@@ -289,7 +291,7 @@ else
     # same event — an existing PostToolUse (or anyone else's Stop hook) survives.
     MERGED="$(echo "$STRIPPED" | jq --argjson block "$BLOCK" '
       .hooks = ((.hooks // {}) as $h
-        | reduce ($block | keys_unsorted[]) as $k ($h; .[$k] = (($h[$k] // []) + $block[$k])))')" || unmergeable
+        | reduce ($block | keys_unsorted[]) as $k ($h; .[$k] = (($h[$k] // []) + $block[$k])))' 2>/dev/null)" || unmergeable
   fi
 fi
 [ -n "$MERGED" ] || unmergeable

@@ -56,7 +56,7 @@ describe('smoke-linux-appimage.sh English locale fallback (#292)', () => {
       104: [app, '--type=renderer', '--lang=en-US'],
     })
     expect(result.status, result.stderr).toBe(0)
-    expect(result.stdout).toBe('smoke-linux-appimage: 2 renderers fell back to --lang=en-US under LANG=fr_FR.UTF-8\n')
+    expect(result.stdout).toBe('smoke-linux-appimage: every renderer (2) fell back to --lang=en-US under LANG=fr_FR.UTF-8\n')
   })
 
   it('refuses a renderer running in another locale', () => {

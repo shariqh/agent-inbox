@@ -45,7 +45,7 @@ assert_english_renderers() {
     echo "smoke-linux-appimage: no renderer showed which locale Chromium chose" >&2
     return 1
   fi
-  echo "smoke-linux-appimage: $renderers renderers fell back to --lang=en-US under LANG=fr_FR.UTF-8"
+  echo "smoke-linux-appimage: every renderer ($renderers) fell back to --lang=en-US under LANG=fr_FR.UTF-8"
 }
 
 APPIMAGE=""

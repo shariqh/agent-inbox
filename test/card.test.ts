@@ -232,13 +232,13 @@ describe('app.js wiring (source-level pins)', () => {
     const start = js.indexOf('function itemCardEl(')
     const fn = js.slice(start, js.indexOf('\nasync function changeAnswer('))
     expect(fn).toContain('actionPresentation(it, { done })')
-    expect(fn).toContain('actionBlocksHtml(presentation)')
+    expect(fn).toContain('actionBlocksHtml(presentation, textContext(it))')
     expect(fn).toContain('cardDetailsHtml(it, it, `item:${it.id}`, presentation, { includeAsked })')
     expect(fn).toContain('bindContextDisclosures(el)')
     const blocks = js.slice(js.indexOf('function cardDetailsHtml('), js.indexOf('\n// the inline expansion'))
     expect(blocks).toContain('data-context-key="${esc(key)}"')
     expect(blocks).toContain("openContexts.has(key) ? ' open' : ''")
-    expect(blocks).toMatch(/card-context-body">\$\{renderStructuredText\(entity\.context\)\}/)
+    expect(blocks).toMatch(/card-context-body">\$\{renderStructuredText\(entity\.context, textContext\(identity\)\)\}/)
   })
 
   // #29: an answer an agent recorded from chat must be visibly agent-written, and the

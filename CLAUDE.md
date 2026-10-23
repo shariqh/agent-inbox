@@ -386,6 +386,106 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   text (PR titles are third-party network text). Every href is constructed in ONE place,
   `chipHtml()` in `public/source.js`, through `esc(safeHttpUrl(...))` — a URL that does not
   survive `safeHttpUrl` renders as a `<span>`. Do not build an anchor anywhere else.
+- **Links in agent text are found conservatively, drawn by `source.js`, and opened only by
+  Electron main (issue #300).** `public/links.js` (pure) finds GitHub references (`#287`,
+  `PR #284`, `owner/name#12`, a bare `#N` only against the card's own `repo`) and local paths
+  (`/Users/…`, `~/…`, optional `:line`) in the plain runs between the URLs `structured-text.js`
+  finds; `renderStructuredText(value, { repo, found })` threads both. A wrong link is worse than
+  none, so ordinals (a single-digit `#N` needs `issue`/`PR`/a closing keyword or parentheses),
+  counters (`step #12`, `run #1234`), colours, entities, versions, dates, routes such as
+  `/api/items` (only known roots like `/Users`, `/home`, `/tmp` start a path), globs, and paths
+  that go on across a space stay plain; every check is bounded, so a run scans in linear time.
+  `structured-text.js` must stay under 350 lines (a test pins it), so new grammar goes in
+  `links.js`. References and URLs become anchors through `anchorHtml`/`chipHtml` like every
+  href; a local file is a control carrying its path in an escaped `data-link-path`, NEVER an
+  href (inline: a `role="button"` anchor with no href, so it still reads and selects as text;
+  in the strip: a `<button>`). `public/link-strip.js` builds the Links strip under each card's
+  origin (Inbox inspector, Review queue, Notes, History, Plans row panel: they all share
+  `cardOriginHtml`) by COLLECTING what `renderStructuredText` renders for each agent field, so
+  it lists exactly the links the card shows, never one from a fence or quarantined markup: own
+  PR and issue first, then first appearance, one chip per target (`#284`, `PR #284` and its
+  github.com URL share a key), six visible and a `+N more` `<details>` kept open across
+  rebuilds by `openContexts`; no strip when the text links nothing beyond the origin chips.
+  Nothing about links reaches `public/attention.js`, a badge or a count. `public/link-open.js`
+  is ONE capture-phase listener per document (the inspector stops propagation): in Electron
+  every detected link (`[data-link-kind]`) goes to the one preload method
+  `window.agentInboxLinks.open({kind:'web',url} | {kind:'file',path,reveal})`, a modified click
+  on a web link keeps its native path; in a browser a file link copies its path through
+  `writeClipboard` and says a browser cannot open local files. `electron/link-open.cjs`
+  decides, testable without Electron: the sender is the viewer window's exact `webContents`,
+  its top frame, on the viewer origin (the update channel's non-install check plus the top
+  frame), which is all a web link needs, so web links work in a reused viewer too. **A local
+  file (open, reveal, Quick Look) also needs the window to show the viewer this app started
+  and proved it owns**: the window's `createInstallBinding()` holds a third grant, `files`
+  (`filesAllowed: () => viewerOwned`, applied as `fileLinkWebContentsId`), revoked by every
+  later navigation and re-proved like installs (#216), so a reused or failed-over viewer never
+  gets it; main passes `filesPermitted` and `openLinkRequest` refuses a file request without
+  it (`unowned`) before the path is even read. `agentInboxLinks.filesAvailable()` reads the
+  grant (`agent-inbox:link-files-available` awaits `installBinding.settled()`), asked once per
+  page load, again when Settings opens, and again before a file link copies instead of
+  opening; where it is false (and in a browser) `fileLinksCopy()` makes file links say "Copy
+  path" in their title and a click copies the path with "File links open only in Agent
+  Inbox’s own viewer". The UI is only a hint: main's refusal is the boundary, and a refused
+  click falls back to copying. The request has exactly its keys; a web link is http(s) by
+  `URL` and only its normalized href reaches `shell.openExternal`; a file path is absolute
+  after `~/`, normalized, control-free, and judged by its FINAL target after `realpath`:
+  missing is reported, a folder or `.app` is only revealed, a denied extension on the link or
+  its target (apps, launchers, location and VPN files, installers, disk images, executables,
+  compiled and Windows scripts, documents that can carry macros, certificates) or any execute
+  bit is only revealed. **Opening is an ALLOW-list** (`OPENABLE_EXTENSIONS`: Markdown, text,
+  logs, JSON/YAML/TOML, CSV/TSV, PDF, images, SVG, HTML, diffs, MOV/MP4): any other type
+  is revealed with reason `type`, because a deny-list of what runs code never ends; code files
+  (`py`, `sh`, …) are neither allowed nor denied, and XML stays off the list (on Windows,
+  Office's handler sends a `.xml` naming Word to Word, and Word 2003 XML can carry macros). On macOS, before anything opens, the resolved
+  file is checked for an alias, which `realpath` does not follow and Launch Services opens the
+  target of (bookmark magic `book\0\0\0\0mark` in its first bytes, the Finder alias flag in
+  `com.apple.FinderInfo`, a non-empty `..namedfork/rsrc`), and for a per-file
+  `com.apple.LaunchServices.OpenWith`; xattrs are read with `/usr/bin/xattr` through
+  `execFile`, argv only, and a check that cannot finish reveals (`blocked`, fail closed). Only
+  then does `shell.openPath` get the resolved path. The check is point-in-time.
+  `setWindowOpenHandler` and `will-navigate` share `openWebLink`, so no path in main hands a
+  non-http(s) URL to the OS.
+- **Settings → Links (#300 part 2) is macOS-only, main-owned, and never outranks the safety
+  policy.** `electron/link-preferences.cjs` keeps the rules in userData `link-preferences.json`:
+  schema 1, written by `createLockedFile` (exported from `update-preferences.cjs`: temp file and
+  rename under the same cross-process lock), read tolerantly (corrupt → defaults, a bad rule
+  dropped, a newer schema read as defaults and never overwritten, unknown top-level fields kept).
+  Rules: Web links (Default browser or an app), Markdown (`.md`, `.markdown`) and up to 20 added
+  types (Quick Look, Reveal, or an app, plus System default only for a type on the allow-list:
+  the view's `systemDefault` says which, an added type off the list starts as Reveal, and a stored
+  System default off the list reads as Reveal); a denied type can never get one. The
+  renderer's `agentInboxLinkSettings` bridge (get, setHandler, chooseApp, addType, removeType,
+  exact arity, same sender check as opening and the same owned-viewer `files` grant: any other
+  page gets `{ available: false, rules: [], error: 'unowned' }`, after any re-proof in flight,
+  and the section says where it works; Settings asks again each time it opens,
+  `refreshLinkSettings()`) names a rule id and a handler, NEVER an app path:
+  `app` comes only from `chooseApp`, which asks main's own `dialog.showOpenDialog` (`openFile`,
+  `.app` filter), and the view the renderer gets names the app, never its path. ONE check,
+  `launchableApp` in `link-open.cjs`, judges an app when the picker returns it AND at every launch
+  (the file can be edited by hand, the bundle can move): its `realpath` must still end in `.app`,
+  be a directory and hold a `Contents/Info.plist` file, and neither the name it was chosen under
+  nor the one it resolves to may be an app that runs what it opens (Terminal, iTerm, Script Editor,
+  Python Launcher, JavaLauncher…) or hands it to its default app (Finder, System Events, which
+  would make a rule System default for a type off the allow-list); the real path is what is
+  saved and launched, and the reader also drops a rule
+  naming a runner. `fileOpenPlan(value, { rules })` reads a rule only AFTER a folder, a bundle, a
+  denied type and an execute bit have been revealed; a Reveal rule reveals (`rule`); an app or
+  Quick Look rule may open a type the allow-list leaves out (the escape hatch for code files,
+  such as `.py` in an editor), while System default never does; and the alias and Open With
+  checks run before any rule or default opens a file, so a rule never applies to an alias, an
+  Open With file, an executable, a bundle or a denied type. A reveal request (a file chip's
+  Reveal action, `{kind:'file',path,reveal:true}`) reveals whatever the rule. Launches use argv
+  only (`/usr/bin/open -a <app> -- <target>`, `/usr/bin/qlmanage -p <file>`), `shell: false`,
+  stdio ignored, detached; an app that fails the check is `app-missing` (gone or not an app) or
+  `app-refused` (a runner), reported to the renderer. The web rule also governs the window-open and
+  navigate paths (`openWebLink(url, shell, { readRules })`, where an unreadable file means the
+  system defaults); nothing there can say why, so a chosen browser that is gone, refused or fails
+  to start falls back to `shell.openExternal` on the already-checked href. Off macOS nothing is
+  offered and links keep the system defaults. In the viewer this app owns (`linkFileActions()`
+  needs main's `filesAvailable()` yes), a strip's file chip also gets Reveal and Copy path
+  buttons (`data-link-action`), never in a browser or a reused viewer. Opening, a rule's app or
+  Quick Look, a Reveal rule and a Reveal request are all file requests, so `openLinkRequest`
+  refuses each of them as `unowned` without the grant, before any rule is read.
 - **`src/prstate.ts` is VIEWER-PROCESS-ONLY (issue #30).** It and `src/issue-poller.ts` (#103, below)
   are the only modules that shell out to a network tool (`gh`), so `src/mcp.ts`/`src/mcp-server.ts`
   must never import either, directly or transitively — a subprocess that inherited a stream, or gh's update notifier, would corrupt the MCP
@@ -1800,8 +1900,9 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   (3) A newer navigation, a renderer crash or the window closing discards a proof still
   running; a crash revokes and the window's next load may re-bind under the same proof; a
   closed window never binds again; nothing binds once a quit has begun (#205). (4) Setup
-  is granted only while `setupInstallEnabled`, update installs only while `viewerOwned`;
-  with neither (a reused or failed-over viewer) nothing is probed. The UI is honest as well:
+  is granted only while `setupInstallEnabled`, update installs and (#300) local file links
+  only while `viewerOwned`; with none of them (a reused or failed-over viewer) nothing is
+  probed. The UI is honest as well:
   the controller publishes `available.installPermitted` from main's
   `updateInstallPermitted()` (the binding the install IPC checks, and no quit), the preload
   requires a boolean that implies `installable`, and the binding's `apply` calls

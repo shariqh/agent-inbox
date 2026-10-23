@@ -108,7 +108,8 @@ Run the build before `npm run electron`; the development shell starts the built
   cancels and awaits the running install; the renderer stops its per-host loop
   at a step that was cancelled, timed out or could not run (a plain failure,
   such as a missing CLI, continues).
-  Setup and update installs are granted to the window by `createInstallBinding()`
+  Setup and update installs, and opening local files from links (#300), are
+  granted to the window by `createInstallBinding()`
   (#216): bound at its first navigation, revoked by every later one, and granted
   again only after that load commits to the viewer origin and ownership is proven
   again (`reproveOwnership()`), never once a quit has begun. Settings shows
@@ -395,6 +396,45 @@ Run the build before `npm run electron`; the development shell starts the built
 - All agent-authored text interpolated into HTML must pass through `esc()`.
   Supplied URLs additionally pass through `safeHttpUrl()` in
   `public/source.js`; build anchors through the existing `chipHtml()` path.
+- Links in agent text (#300) are found only by `public/links.js` (GitHub
+  references and local paths; URLs stay in `structured-text.js`, which must
+  stay under 350 lines) and drawn only by `public/source.js`. Detection is
+  conservative: ordinals, counters, colours, routes such as `/api/items`,
+  globs and paths with spaces stay plain. A local file is never an href: it
+  carries its path in an escaped `data-link-path`. `public/link-strip.js`
+  lists a card's links by collecting what `renderStructuredText` renders, so
+  the strip never shows a link from a fence or quarantined markup, and nothing
+  about links reaches attention, a badge or a count. Only Electron main opens
+  anything: `public/link-open.js` calls the one preload method
+  `agentInboxLinks.open`, and `electron/link-open.cjs` re-checks the sender
+  (the viewer window's top frame on its origin; a local file also needs the
+  binding's `files` grant, so only the viewer this app started and owns opens
+  or reveals files, a reused one copies the path and main refuses it as
+  `unowned`; `agentInboxLinks.filesAvailable()` reads the grant), the request's exact shape,
+  http(s) only, and a file's final target: folders, apps, denied types
+  (launchers, installers, disk images, executables, macro documents, …) and
+  any execute bit are only revealed. Opening is an allow-list of common
+  document types; anything else is revealed, and on macOS so is an alias or a
+  file with its own Open With (checked through `/usr/bin/xattr`, argv only,
+  failing closed). `setWindowOpenHandler` and `will-navigate` share the same
+  http(s) check. A browser copies a file's path instead.
+- Settings → Links (#300 part 2, macOS only) lives in main:
+  `electron/link-preferences.cjs` keeps per-type rules in userData
+  `link-preferences.json` (schema 1, `createLockedFile`, tolerant reader that
+  never overwrites a newer schema). The renderer names a rule and a handler,
+  never an app path; an app comes only from main's own `dialog.showOpenDialog`
+  limited to `.app` bundles, and `launchableApp` re-checks it at every launch
+  (real path, `Contents/Info.plist`, never an app that runs what it opens or
+  hands it to its default app, such as Finder).
+  A rule is read only after folders, bundles, denied types and execute bits
+  are revealed, and the alias and Open With checks run before it opens
+  anything. An app or Quick Look rule may open a type off the allow-list (a
+  code file in an editor); System default never does. Launches use argv only
+  (`/usr/bin/open -a <app> -- <target>`, `/usr/bin/qlmanage -p <file>`), no
+  shell, stdio ignored. On the window's own open path, a chosen browser that
+  fails falls back to the default one. Rules, Quick Look and Reveal are file
+  requests, so they share the owned-viewer `files` grant, and so do the
+  Settings → Links channels (a reused viewer gets `error: 'unowned'`).
 - The 3-second poll uses the gated `load()`/`renderIfIdle()` path. Its reads
   run concurrently, but a tick applies only after all settle, and only if no newer
   tick has applied and every boot marker agrees. A successful

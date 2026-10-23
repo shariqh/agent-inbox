@@ -97,7 +97,26 @@ export function linkKey(repo: string, branch: string, head?: string): string
 export function indexLinks(links: CachedLink[] | null | undefined): Map<string, CachedLink>
 export function linkFor(index: Map<string, CachedLink> | null, entity: LinkedEntity | null): CachedLink | null
 export function safeHttpUrl(url: unknown): string
-export function textLinkHtml(url: unknown, label: unknown): string
+export function textLinkHtml(url: unknown, label: unknown, kind?: 'web' | 'pr' | 'issue'): string
+/** issue #300 — a local file as an inert control carrying its path; never an href */
+export function fileLinkHtml(path: unknown, label: unknown, title?: unknown, copy?: boolean): string
+
+/** issue #300 — one chip of a card's Links strip */
+export interface StripLink {
+  kind: 'web' | 'pr' | 'issue' | 'file'
+  label: string
+  title?: string
+  url?: string
+  path?: string
+}
+export function linkStripHtml(
+  links: StripLink[] | null | undefined,
+  /**
+   * `actions` (part 2): give each file chip Reveal and Copy path, naming Reveal as `actions.reveal`;
+   * `copyFiles`: a file chip's click copies its path here, so its title says so
+   */
+  opts?: { key?: string; open?: boolean; actions?: { reveal: string } | null; copyFiles?: boolean },
+): string
 export function issueRef(entity: LinkedEntity | null, link: CachedLink | null, row?: IssueViewRow | { id: string } | null): IssueRef | null
 export const PREVIEW_TTL_MS: number
 export function previewRef(link: CachedLink | null | undefined, nowMs: number): PreviewRef | null

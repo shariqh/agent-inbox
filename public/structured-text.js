@@ -1,5 +1,5 @@
 import { esc } from './esc.js'
-import { textLinkHtml } from './source.js'
+import { linkedHtml, webLinkHtml } from './links.js'
 
 const URL_RE = /https?:\/\/[^\s<>"']+/gi
 const MARKUP_START_RE = /<!--|<!doctype(?=[\s>])|<\/?([\p{ID_Start}_$][\p{ID_Continue}\u200c\u200d_$:-]*(?:\.[\p{ID_Start}_$][\p{ID_Continue}\u200c\u200d_$:-]*)*)/giu
@@ -100,7 +100,7 @@ function renderLinkedSegment(value, linkState) {
     const start = match.index
     const candidate = match[0]
     updateDelimiterStack(value, boundaryCursor, start, expectedProseClosers)
-    html += esc(value.slice(cursor, start))
+    html += linkedHtml(value, cursor, start, linkState.ctx)
     const previous = start > 0 ? value[start - 1] : ''
     if (previous && !SAFE_BOUNDARY_RE.test(previous)) {
       html += esc(candidate)
@@ -112,7 +112,7 @@ function renderLinkedSegment(value, linkState) {
         const externalClosers = index === segments.length - 1 ? expectedProseClosers : []
         const { url, trailing } = splitTrailingPunctuation(segment.url, externalClosers)
         const totalTrailing = trailing + segment.trailing
-        html += textLinkHtml(url, url) + esc(totalTrailing)
+        html += webLinkHtml(url, linkState.ctx) + esc(totalTrailing)
         updateDelimiterStack(totalTrailing, 0, totalTrailing.length, expectedProseClosers)
       }
     }
@@ -120,7 +120,7 @@ function renderLinkedSegment(value, linkState) {
     boundaryCursor = cursor
   }
   updateDelimiterStack(value, boundaryCursor, value.length, expectedProseClosers)
-  return html + esc(value.slice(cursor))
+  return html + linkedHtml(value, cursor, value.length, linkState.ctx)
 }
 
 function isFrameworkName(name) {
@@ -208,10 +208,10 @@ function findQuarantineStart(value) {
   return -1
 }
 
-function renderBlockLines(lines) {
+function renderBlockLines(lines, ctx) {
   const value = lines.join('\n')
   const quarantineAt = findQuarantineStart(value)
-  const linkState = { expectedProseClosers: [] }
+  const linkState = { expectedProseClosers: [], ctx }
   let offset = 0
   return lines.map((line) => {
     const lineEnd = offset + line.length
@@ -229,12 +229,12 @@ function renderBlockLines(lines) {
   }).join('<br>')
 }
 
-function paragraphHtml(lines) {
-  return `<p>${renderBlockLines(lines)}</p>`
+function paragraphHtml(lines, ctx) {
+  return `<p>${renderBlockLines(lines, ctx)}</p>`
 }
-function listHtml(kind, items, start) {
+function listHtml(kind, items, start, ctx) {
   const startAttr = kind === 'ol' && start !== 1 ? ` start="${start}"` : ''
-  return `<${kind}${startAttr}>${items.map((item) => `<li>${renderBlockLines([item])}</li>`).join('')}</${kind}>`
+  return `<${kind}${startAttr}>${items.map((item) => `<li>${renderBlockLines([item], ctx)}</li>`).join('')}</${kind}>`
 }
 
 function sourceLines(value) {
@@ -283,9 +283,9 @@ function fencedBlocks(lines) {
   return blocks
 }
 // A deliberately small presentation grammar: paragraphs, explicit line breaks,
-// simple lists, inert fenced code blocks, and safe HTTP(S) autolinks.
+// simple lists, inert fenced code, safe links (URLs; links.js: refs and paths).
 // A credible markup-like start quarantines the rest of its paragraph or list item.
-export function renderStructuredText(value) {
+export function renderStructuredText(value, ctx = {}) {
   if (value === null || value === undefined || value === '') return ''
   const lines = sourceLines(String(value))
   const blocks = []
@@ -295,12 +295,12 @@ export function renderStructuredText(value) {
 
   const flushParagraph = () => {
     if (!paragraph.length) return
-    blocks.push(paragraphHtml(paragraph))
+    blocks.push(paragraphHtml(paragraph, ctx))
     paragraph = []
   }
   const flushList = () => {
     if (!list) return
-    blocks.push(listHtml(list.kind, list.items, list.start))
+    blocks.push(listHtml(list.kind, list.items, list.start, ctx))
     list = null
   }
 

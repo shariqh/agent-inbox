@@ -248,6 +248,7 @@ public static class AgentInboxWindows {
   [DllImport("user32.dll")] private static extern IntPtr GetWindow(IntPtr window, uint command);
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetWindowText(IntPtr window, StringBuilder text, int length);
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetClassName(IntPtr window, StringBuilder name, int length);
+  [DllImport("user32.dll")] private static extern bool PostMessage(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
 
   public sealed class Window {
     public int ProcessId;
@@ -281,6 +282,25 @@ public static class AgentInboxWindows {
       return true;
     }, IntPtr.Zero);
     return found.ToArray();
+  }
+
+  // What the close button does: WM_CLOSE to each visible, unowned window
+  // titled with the app's name. Returns how many were asked.
+  public static int Close(int[] processIds, string wanted) {
+    var ids = new System.Collections.Generic.HashSet<uint>();
+    foreach (int id in processIds) ids.Add((uint)id);
+    int asked = 0;
+    EnumWindows((window, parameter) => {
+      uint processId;
+      GetWindowThreadProcessId(window, out processId);
+      if (!ids.Contains(processId) || !IsWindowVisible(window)) return true;
+      var title = new StringBuilder(256);
+      GetWindowText(window, title, title.Capacity);
+      if (title.ToString() != wanted || GetWindow(window, 4) != IntPtr.Zero) return true;
+      if (PostMessage(window, 0x0010, IntPtr.Zero, IntPtr.Zero)) asked++;
+      return true;
+    }, IntPtr.Zero);
+    return asked;
   }
 }
 '@
@@ -375,13 +395,20 @@ function Stop-App {
   $record = [ordered]@{ method = 'none'; graceful = $true; portReleased = $true }
   $main = @(Get-AppProcesses | Where-Object { $_.main })
   if ($main.Count -eq 0 -and (Get-AppProcesses).Count -eq 0) { return $record }
-  $record.method = 'close-main-window'
+  # Process.CloseMainWindow would ask the first visible window, which can be a
+  # Chromium popup (a tooltip) above the app's own window.
+  $record.method = 'close-window'
   $record.windows = @(Get-AppWindows)
-  foreach ($entry in $main) {
-    $process = Get-Process -Id $entry.pid -ErrorAction SilentlyContinue
-    if (-not $process) { continue }
-    for ($i = 0; $i -lt 20 -and $process.MainWindowHandle -eq 0; $i++) { Start-Sleep -Milliseconds 500; $process.Refresh() }
-    if (-not $process.CloseMainWindow()) { $record.method = 'taskkill'; & taskkill.exe /PID $entry.pid | Out-Null }
+  $asked = 0
+  for ($i = 0; $i -lt 20 -and $main.Count -gt 0; $i++) {
+    $asked = [AgentInboxWindows]::Close([int[]]@($main | ForEach-Object { $_.pid }), $product)
+    if ($asked -gt 0) { break }
+    Start-Sleep -Milliseconds 500
+  }
+  $record.windowsAsked = $asked
+  if ($asked -eq 0) {
+    $record.method = 'taskkill'
+    foreach ($entry in $main) { & taskkill.exe /PID $entry.pid | Out-Null }
   }
   $closing = [Diagnostics.Stopwatch]::StartNew()
   if (-not (Wait-NoProcess "$product.exe" 30)) {

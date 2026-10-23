@@ -295,6 +295,18 @@ describe('Windows MSI lifecycle (#87 PR 2b)', () => {
       'Set-ItemProperty -LiteralPath $policyKey -Name DisableMSI -Value $policy.disableMsiBefore -Type $policy.disableMsiKind')
   })
 
+  it('closes the app the way its close button does, through the window titled with its name', () => {
+    const asUser = read(join(msiDir, 'as-user.ps1'))
+    // Process.CloseMainWindow picks the first visible window, which can be a
+    // Chromium popup above the app (run 40018346604 closed a tooltip and waited).
+    expect(asUser).not.toContain('.CloseMainWindow(')
+    const stop = asUser.slice(asUser.indexOf('function Stop-App {'), asUser.indexOf('function Get-LinkInfo'))
+    expect(stop).toContain("[AgentInboxWindows]::Close([int[]]@($main | ForEach-Object { $_.pid }), $product)")
+    expect(stop).toContain("$record.method = 'close-window'")
+    expect(asUser).toContain('if (title.ToString() != wanted || GetWindow(window, 4) != IntPtr.Zero) return true;')
+    expect(asUser).toContain('PostMessage(window, 0x0010, IntPtr.Zero, IntPtr.Zero)')
+  })
+
   it('asks the running app to close through Restart Manager without forcing it', () => {
     const asUser = read(join(msiDir, 'as-user.ps1'))
     expect(asUser.match(/RmShutdown\(session,[^)]*\)/g)).toEqual(['RmShutdown(session, flags, IntPtr.Zero)'])
@@ -360,7 +372,7 @@ describe('Windows MSI requirements (#87 PR 2b)', () => {
           failure: null,
           steps: {
             '03-install-base': { user, run: { exitCode: 0 }, state: { ...installed, toastActivator: { localServer32: `"${exe}"`, customActivator: '1' } } },
-            '04-launch-base': { user, launch: { ready: true }, quit: { graceful: true, portReleased: true } },
+            '04-launch-base': { user, launch: { ready: true }, quit: { method: 'close-window', graceful: true, portReleased: true } },
             '05-notify-with-shortcut': { user, notification: { seen: true }, shortcutsAfter: [{ ...link, workingDirectory: folder }] },
             '06-notify-without-shortcut': { user, notification: { seen: false }, shortcutsAfter: [] },
             '07-restart-manager': {
@@ -432,6 +444,9 @@ describe('Windows MSI requirements (#87 PR 2b)', () => {
       steps(data)['03-install-base']!.state!.toastActivator = { localServer32: '"C:\\elsewhere.exe"', customActivator: '1' }
     }],
     ['the app had to be killed', /quits when its window closes/, (data) => { steps(data)['04-launch-base']!.quit = { graceful: false, portReleased: true } }],
+    ['another window was closed and the app ended some other way', /quits when its window closes/, (data) => {
+      steps(data)['04-launch-base']!.quit = { method: 'taskkill', graceful: true, portReleased: true }
+    }],
     ['PowerShell wrote one log line as a string', /Restart Manager/, (data) => { steps(data)['07-restart-manager']!.appLog = 'no quit line' }],
     ['Restart Manager saw no app', /Restart Manager/, (data) => { steps(data)['07-restart-manager']!.restartManager = { apps: [], shutdown: 0 } }],
     ['Restart Manager also saw a process it cannot ask', /Restart Manager/, (data) => {

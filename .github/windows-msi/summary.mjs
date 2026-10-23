@@ -90,7 +90,8 @@ export function requirements(data) {
     install?.state?.toastActivator?.localServer32 === `"${installedExe(data)}"` && install.state.toastActivator.customActivator === '1')
   const launch = step(data, 'launch-base')
   require('Launches from the shortcut and quits when its window closes',
-    ranClean(launch) && launch.launch?.ready === true && launch.quit?.graceful === true && launch.quit?.portReleased === true)
+    ranClean(launch) && launch.launch?.ready === true && launch.quit?.method === 'close-window' &&
+    launch.quit?.graceful === true && launch.quit?.portReleased === true)
   const restart = step(data, 'restart-manager')
   const asked = list(restart?.restartManager?.apps)
   require('Quits through its own path when Restart Manager asks it to close',

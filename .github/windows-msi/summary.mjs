@@ -92,8 +92,9 @@ export function requirements(data) {
   require('Launches from the shortcut and quits when its window closes',
     ranClean(launch) && launch.launch?.ready === true && launch.quit?.graceful === true && launch.quit?.portReleased === true)
   const restart = step(data, 'restart-manager')
+  const asked = list(restart?.restartManager?.apps)
   require('Quits through its own path when Restart Manager asks it to close',
-    ranClean(restart) && list(restart.restartManager?.apps).some((app) => app.type === 'main window') &&
+    ranClean(restart) && asked.length > 0 && asked.every((app) => app.type === 'main window') &&
     restart.restartManager?.shutdown === 0 && restart.exited === true && restart.portReleased === true &&
     logged(restart, QUIT_LINE))
   const upgrade = finalUpgrade(data)
@@ -153,8 +154,9 @@ const restartManagerText = (record) => {
   const after = list(record.appsAfter).map((app) => `pid ${app.pid} status ${app.status}`).join(', ')
   return `RmGetList ${record.list}: ${apps}${record.shutdown === -1 ? '' : `; RmShutdown ${record.shutdown}${after ? `; then ${after}` : ''}`}`
 }
+const windowsText = (value) => list(value).map((window) => `"${window.title}" (${window.class}${window.hung ? ', hung' : ''}${window.enabled === false ? ', disabled' : ''}${window.owned ? ', owned' : ''})`).join(', ') || 'none'
 const quitText = (quit) => quit
-  ? `${quit.graceful ? `closed by ${quit.method} in ${quit.seconds ?? '—'}s` : `${quit.method}: still running after 30 s (${list(quit.stillRunning).map((p) => p.type).join(', ') || 'unknown'})`}, port ${quit.portReleased ? 'released' : 'still bound'}`
+  ? `${quit.graceful ? `closed by ${quit.method} in ${quit.seconds ?? '—'}s` : `${quit.method}: still running after 30 s (${list(quit.stillRunning).map((p) => p.type).join(', ') || 'unknown'}; windows before ${windowsText(quit.windows)}, after ${windowsText(quit.windowsStillOpen)}; screen ${quit.screen ?? '—'})`}, port ${quit.portReleased ? 'released' : 'still bound'}`
   : 'not run'
 const appsDuring = (entry) => [...new Set(list(entry?.run?.appProcessesSeen).map((process) => process.path ? process.path.split('\\').slice(-1)[0] : 'Agent Inbox.exe'))].join(', ') || 'none'
 
@@ -198,11 +200,12 @@ function rows(data) {
   }
   row('Restart Manager asks the running app to close', restart ? [
     restart.error ? `error: ${restart.error}` : null,
-    `without RmForceShutdown: ${restartManagerText(restart.restartManagerWithoutForce)}; ${restart.runningAfterWithoutForce ?? '—'} app processes still running`,
-    `with RmForceShutdown: ${restartManagerText(restart.restartManager)}`,
+    `what holds ${data.release.product}.exe: ${restartManagerText(restart.restartManagerExecutable)}`,
+    `asked through the SQLite addon only the main process loads: ${restartManagerText(restart.restartManager)}`,
     `every app process ${restart.exited ? `exited within ${restart.exitSeconds}s` : 'did not exit within 30 s'}; main process exit code ${restart.mainExit?.exitCode ?? '—'}; port ${restart.portReleased ? 'released' : 'still bound'}`,
     `app log: ${list(restart.appLog).filter((line) => line.includes('Windows asked')).join(' ') || 'no quit line'}`,
     list(restart.chromiumLog).length ? `Chromium: ${list(restart.chromiumLog).join(' / ')}` : null,
+    restart.screen ? `still running: windows ${windowsText(restart.windowsAfter)}; screen ${restart.screen}` : null,
   ].filter(Boolean).join('<br>') : 'not run')
   row('Upgrade to the next build while the app runs', running ? [
     runText(running),

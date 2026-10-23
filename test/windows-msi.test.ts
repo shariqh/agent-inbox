@@ -295,15 +295,17 @@ describe('Windows MSI lifecycle (#87 PR 2b)', () => {
       'Set-ItemProperty -LiteralPath $policyKey -Name DisableMSI -Value $policy.disableMsiBefore -Type $policy.disableMsiKind')
   })
 
-  it('asks the running app to close through Restart Manager, first without RmForceShutdown, then with it', () => {
+  it('asks the running app to close through Restart Manager without forcing it', () => {
     const asUser = read(join(msiDir, 'as-user.ps1'))
     expect(asUser.match(/RmShutdown\(session,[^)]*\)/g)).toEqual(['RmShutdown(session, flags, IntPtr.Zero)'])
+    // RmForceShutdown (0x1) would end what it cannot ask; no probe passes it.
+    expect(asUser.match(/::Probe\([^\n]*, \$(true|false), \d\)/g)?.map((call) => call.slice(-3))).toEqual([' 0)', ' 0)', ' 0)'])
     const step = asUser.slice(asUser.indexOf("    'restart-manager' {"), asUser.indexOf("    'upgrade' {"))
-    const without = step.indexOf('[AgentInboxRestartManager]::Probe(@($exe), $true, 0)')
-    const forced = step.indexOf('[AgentInboxRestartManager]::Probe(@($exe), $true, 1)')
-    expect(without).toBeGreaterThan(0)
-    expect(forced).toBeGreaterThan(without)
-    expect(step.match(/::Probe\(/g)).toHaveLength(2)
+    const looked = step.indexOf('[AgentInboxRestartManager]::Probe(@(Join-Path $directory "$product.exe"), $false, 0)')
+    const asked = step.indexOf('[AgentInboxRestartManager]::Probe(@($addon), $true, 0)')
+    expect(looked).toBeGreaterThan(0)
+    expect(asked).toBeGreaterThan(looked)
+    expect(step).toContain("$addon = Join-Path $directory 'resources\\app\\node_modules\\better-sqlite3\\build\\Release\\better_sqlite3.node'")
     // Before the upgrade it only looks: Windows Installer does the asking there.
     expect(asUser).toContain('[AgentInboxRestartManager]::Probe(@(Join-Path (Get-AppDirectory) "$product.exe"), $false, 0)')
     expect(asUser).toContain("$quitLine = 'Windows asked the app to close \\(Restart Manager\\); quitting'")
@@ -363,7 +365,7 @@ describe('Windows MSI requirements (#87 PR 2b)', () => {
             '06-notify-without-shortcut': { user, notification: { seen: false }, shortcutsAfter: [] },
             '07-restart-manager': {
               user,
-              restartManager: { apps: [{ pid: 1, type: 'main window' }, { pid: 2, type: 'unknown' }], shutdown: 0 },
+              restartManager: { apps: [{ pid: 1, type: 'main window' }], shutdown: 0 },
               exited: true,
               portReleased: true,
               appLog: [QUIT],
@@ -432,8 +434,8 @@ describe('Windows MSI requirements (#87 PR 2b)', () => {
     ['the app had to be killed', /quits when its window closes/, (data) => { steps(data)['04-launch-base']!.quit = { graceful: false, portReleased: true } }],
     ['PowerShell wrote one log line as a string', /Restart Manager/, (data) => { steps(data)['07-restart-manager']!.appLog = 'no quit line' }],
     ['Restart Manager saw no app', /Restart Manager/, (data) => { steps(data)['07-restart-manager']!.restartManager = { apps: [], shutdown: 0 } }],
-    ['Restart Manager saw no window to ask', /Restart Manager/, (data) => {
-      steps(data)['07-restart-manager']!.restartManager = { apps: [{ pid: 2, type: 'unknown' }], shutdown: 0 }
+    ['Restart Manager also saw a process it cannot ask', /Restart Manager/, (data) => {
+      steps(data)['07-restart-manager']!.restartManager = { apps: [{ pid: 1, type: 'main window' }, { pid: 2, type: 'unknown' }], shutdown: 0 }
     }],
     ['Restart Manager could not shut it down', /Restart Manager/, (data) => {
       steps(data)['07-restart-manager']!.restartManager = { apps: [{ pid: 1, type: 'main window' }], shutdown: 351 }

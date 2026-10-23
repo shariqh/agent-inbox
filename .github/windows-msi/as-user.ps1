@@ -235,6 +235,54 @@ public static class AgentInboxRestartManager {
     return result;
   }
 }
+
+// The app's top-level windows: which one a close request reaches, and whether
+// Windows considers it hung (not pumping messages).
+public static class AgentInboxWindows {
+  private delegate bool EnumProc(IntPtr window, IntPtr parameter);
+  [DllImport("user32.dll")] private static extern bool EnumWindows(EnumProc callback, IntPtr parameter);
+  [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
+  [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr window);
+  [DllImport("user32.dll")] private static extern bool IsWindowEnabled(IntPtr window);
+  [DllImport("user32.dll")] private static extern bool IsHungAppWindow(IntPtr window);
+  [DllImport("user32.dll")] private static extern IntPtr GetWindow(IntPtr window, uint command);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetWindowText(IntPtr window, StringBuilder text, int length);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetClassName(IntPtr window, StringBuilder name, int length);
+
+  public sealed class Window {
+    public int ProcessId;
+    public string ClassName;
+    public string Title;
+    public bool Enabled;
+    public bool Owned;
+    public bool Hung;
+  }
+
+  public static Window[] Visible(int[] processIds) {
+    var wanted = new System.Collections.Generic.HashSet<uint>();
+    foreach (int id in processIds) wanted.Add((uint)id);
+    var found = new System.Collections.Generic.List<Window>();
+    EnumWindows((window, parameter) => {
+      uint processId;
+      GetWindowThreadProcessId(window, out processId);
+      if (!wanted.Contains(processId) || !IsWindowVisible(window)) return true;
+      var title = new StringBuilder(256);
+      var name = new StringBuilder(256);
+      GetWindowText(window, title, title.Capacity);
+      GetClassName(window, name, name.Capacity);
+      found.Add(new Window {
+        ProcessId = (int)processId,
+        ClassName = name.ToString(),
+        Title = title.ToString(),
+        Enabled = IsWindowEnabled(window),
+        Owned = GetWindow(window, 4) != IntPtr.Zero,
+        Hung = IsHungAppWindow(window),
+      });
+      return true;
+    }, IntPtr.Zero);
+    return found.ToArray();
+  }
+}
 '@
 
 function Get-Seconds([Diagnostics.Stopwatch]$Timer) { [math]::Round($Timer.Elapsed.TotalSeconds, 1) }
@@ -253,6 +301,34 @@ function Get-AppProcesses {
 
 function Get-ProcessesNamed([string]$Name) {
   @(Get-CimInstance Win32_Process -Filter "Name = '$Name'" -ErrorAction SilentlyContinue | ForEach-Object { [int]$_.ProcessId })
+}
+
+function Get-AppWindows {
+  $ids = [int[]]@(Get-AppProcesses | ForEach-Object { $_.pid })
+  @([AgentInboxWindows]::Visible($ids) | ForEach-Object {
+    [ordered]@{ pid = $_.ProcessId; class = $_.ClassName; title = $_.Title; enabled = $_.Enabled; owned = $_.Owned; hung = $_.Hung }
+  })
+}
+
+# A picture of the user's screen when the app does not quit, to show what it is showing.
+function Save-Screen([string]$Name) {
+  $bitmap = $null
+  $graphics = $null
+  try {
+    Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+    $bounds = [System.Windows.Forms.SystemInformation]::VirtualScreen
+    $bitmap = [System.Drawing.Bitmap]::new($bounds.Width, $bounds.Height)
+    $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+    $graphics.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
+    $path = Join-Path $params.logDir "$($params.label)-$Name.png"
+    $bitmap.Save($path, [System.Drawing.Imaging.ImageFormat]::Png)
+    return Split-Path -Leaf $path
+  } catch {
+    return "no screenshot: $_"
+  } finally {
+    if ($graphics) { $graphics.Dispose() }
+    if ($bitmap) { $bitmap.Dispose() }
+  }
 }
 
 function Invoke-Tool([string]$File, [string]$Arguments, [int]$TimeoutSeconds = 900, [switch]$SampleApp) {
@@ -300,6 +376,7 @@ function Stop-App {
   $main = @(Get-AppProcesses | Where-Object { $_.main })
   if ($main.Count -eq 0 -and (Get-AppProcesses).Count -eq 0) { return $record }
   $record.method = 'close-main-window'
+  $record.windows = @(Get-AppWindows)
   foreach ($entry in $main) {
     $process = Get-Process -Id $entry.pid -ErrorAction SilentlyContinue
     if (-not $process) { continue }
@@ -313,6 +390,8 @@ function Stop-App {
     $record.stillRunning = @(Get-AppProcesses | ForEach-Object {
       [ordered]@{ pid = $_.pid; main = $_.main; type = if ($_.args -match '--type=(\S+)') { $Matches[1] } else { 'main' } }
     })
+    $record.windowsStillOpen = @(Get-AppWindows)
+    $record.screen = Save-Screen 'not-closed'
     Get-AppProcesses | ForEach-Object { Stop-Process -Id $_.pid -Force -ErrorAction SilentlyContinue }
     Wait-NoProcess "$product.exe" 30 | Out-Null
   }
@@ -720,14 +799,17 @@ try {
       $result.launch = $started
       if (-not $started.ready) { throw 'the app did not become ready' }
       $result.processesBefore = @(Get-AppProcesses)
-      $exe = Join-Path (Get-AppDirectory) "$product.exe"
-      # Chromium's child processes have no window, so Restart Manager cannot ask them
-      # to close: without RmForceShutdown it asks nothing at all.
-      $result.restartManagerWithoutForce = ConvertTo-RestartManagerRecord ([AgentInboxRestartManager]::Probe(@($exe), $true, 0))
-      $result.runningAfterWithoutForce = @(Get-AppProcesses).Count
-      # With it (what Windows Installer uses when MSIRMSHUTDOWN is 1), the app's window is asked.
+      $result.windowsBefore = @(Get-AppWindows)
+      $directory = Get-AppDirectory
+      # Everything that holds the app's executable: its window's process, and Chromium's
+      # windowless child processes, which Restart Manager cannot ask to close.
+      $result.restartManagerExecutable = ConvertTo-RestartManagerRecord (
+        [AgentInboxRestartManager]::Probe(@(Join-Path $directory "$product.exe"), $false, 0))
+      # Only the app's main process, the one with the window, loads the SQLite addon, so
+      # registering it makes Restart Manager ask exactly that process to close.
+      $addon = Join-Path $directory 'resources\app\node_modules\better-sqlite3\build\Release\better_sqlite3.node'
       $asked = [Diagnostics.Stopwatch]::StartNew()
-      $result.restartManager = ConvertTo-RestartManagerRecord ([AgentInboxRestartManager]::Probe(@($exe), $true, 1))
+      $result.restartManager = ConvertTo-RestartManagerRecord ([AgentInboxRestartManager]::Probe(@($addon), $true, 0))
       $result.restartManager.seconds = Get-Seconds $asked
       $result.exited = Wait-NoProcess "$product.exe" 30
       $result.exitSeconds = Get-Seconds $asked
@@ -737,6 +819,10 @@ try {
       $result.chromiumLog = @(Read-ChromiumLog $started)
       $result.quitLogged = [bool](@($result.appLog | Where-Object { $_ -match $quitLine }).Count)
       $result.processesAfter = @(Get-AppProcesses)
+      if ($result.processesAfter.Count) {
+        $result.windowsAfter = @(Get-AppWindows)
+        $result.screen = Save-Screen 'restart-manager'
+      }
       $result.leftover = Stop-App
       $result.dataAfter = Get-Names $paths.data
       $result.state = Get-State

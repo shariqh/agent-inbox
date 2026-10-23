@@ -4,9 +4,20 @@ import type {
   UpdateRegistry,
   UpdateTargetPackageType,
 } from './update-manifest.cjs'
+import type { UpdateManifestName } from './update-preferences.cjs'
 
 export const MANIFEST_URL: 'https://github.com/shariqh/agent-inbox/releases/latest/download/update-manifest.json'
 export const SIGNATURE_URL: 'https://github.com/shariqh/agent-inbox/releases/latest/download/update-manifest.json.sig'
+/** update-manifest-v2.json, which 1.7.0 and later read first (#343). */
+export const MANIFEST_V2_URL: 'https://github.com/shariqh/agent-inbox/releases/latest/download/update-manifest-v2.json'
+export const SIGNATURE_V2_URL: 'https://github.com/shariqh/agent-inbox/releases/latest/download/update-manifest-v2.json.sig'
+
+/**
+ * Why an offer can't be downloaded or installed here (#343): the release ships only an
+ * arm64 DMG, this process isn't arm64, and update-manifest.json offers nothing newer.
+ * `apple-silicon` on an Intel Mac, `rosetta` when the app runs translated on Apple silicon.
+ */
+export type UpdateBlockedReason = 'apple-silicon' | 'rosetta'
 
 export type UpdateStatus =
   | 'idle'
@@ -25,6 +36,7 @@ export interface VerifiedAvailableUpdate {
     packageType: UpdateTargetPackageType
     installStrategy: UpdateInstallStrategy
   }
+  blocked?: UpdateBlockedReason
 }
 
 export interface UpdateRendererState {
@@ -48,6 +60,8 @@ export interface UpdateArtifact extends UpdateManifestTarget {
 
 export interface UpdateCheckResult extends UpdateRendererState {
   artifact?: UpdateArtifact
+  /** The manifest an `available` result came from; main-process only (#343). */
+  manifest?: UpdateManifestName
 }
 
 export interface FetchResponse {
@@ -77,13 +91,17 @@ export interface UpdateCheckOptions {
   currentVersion: string
   automaticChecks?: boolean
   /**
-   * Called once, only after the manifest's signature, schema and expiry verify: persists
-   * that version as a rollback high-water candidate and resolves the stored mark (or null).
-   * A verified manifest below the resolved mark yields the `stale` status.
+   * Called once per manifest, only after its signature, schema and expiry verify: persists
+   * that version in the manifest's rollback high-water mark and resolves the mark its stale
+   * decision uses (or null): the v1 mark for `v1`, the higher of both marks for `v2`. A
+   * verified manifest below the resolved mark yields the `stale` status.
    */
-  recordVerifiedVersion?(version: string): Promise<string | null>
+  recordVerifiedVersion?(version: string, manifest: UpdateManifestName): Promise<string | null>
   platform: string
+  /** `process.arch`; only an `arm64` process is ever offered an arm64-only DMG. */
   arch: string
+  /** `app.runningUnderARM64Translation`: chooses the blocked copy only (`rosetta`). */
+  translated?: boolean
   isPackaged: boolean
   /** `process.env.APPIMAGE`; with `appDir` and `execPath`, selects the AppImage target (see runsFromAppImage). */
   appImagePath?: string

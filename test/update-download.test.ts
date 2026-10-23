@@ -53,7 +53,7 @@ function sha256(bytes: Buffer) {
   return createHash('sha256').update(bytes).digest('hex')
 }
 
-type Kind = 'dmg' | 'appimage' | 'deb'
+type Kind = 'dmg' | 'arm64-dmg' | 'appimage' | 'deb'
 
 function artifactFor(body: Buffer, version = '2.0.0', kind: Kind = 'dmg'): UpdateArtifact {
   const tag = `v${version}`
@@ -64,6 +64,14 @@ function artifactFor(body: Buffer, version = '2.0.0', kind: Kind = 'dmg'): Updat
       packageType: 'dmg' as const,
       installStrategy: 'macos-dmg' as const,
       filename: `Agent-Inbox-${tag}-universal.dmg`,
+      minimumSystemVersion: '13.5',
+    },
+    'arm64-dmg': {
+      platform: 'darwin' as const,
+      architecture: 'arm64' as const,
+      packageType: 'dmg' as const,
+      installStrategy: 'macos-dmg' as const,
+      filename: `Agent-Inbox-${tag}-arm64.dmg`,
       minimumSystemVersion: '13.5',
     },
     appimage: {
@@ -227,6 +235,7 @@ describe('verified update download', () => {
       filename: 'Agent-Inbox-v2.0.0-universal.dmg',
       sha256: artifact.sha256,
       byteLength: body.length,
+      architecture: 'universal',
       packageType: 'dmg',
       installStrategy: 'macos-dmg',
       minimumSystemVersion: '13.5',
@@ -269,6 +278,52 @@ describe('verified update download', () => {
       installStrategy: 'appimage-self-replace',
       filename: 'Agent-Inbox-v2.0.0-linux-x86_64.AppImage',
     })
+  })
+
+  // Update manifest v2 (#343): the arm64 DMG of an Apple silicon-only release is a target
+  // type of its own, told apart from the universal one by its filename.
+  it('round-trips the arm64 DMG: normalized, downloaded, recorded with its architecture, and reopened', async () => {
+    const root = join(workDir(), 'update-downloads')
+    const body = randomBytes(CHUNK + 5)
+    const arm64 = artifactFor(body, '2.0.0', 'arm64-dmg')
+    const downloader = createUpdateDownloader({ directory: root, fetchImpl: releaseFetch(new Map([[arm64.url, body]])) })
+
+    expect(downloader.normalize(arm64)).toEqual(arm64)
+    const record = await downloader.download(arm64)
+    expect(record).toMatchObject({
+      filename: 'Agent-Inbox-v2.0.0-arm64.dmg',
+      architecture: 'arm64',
+      packageType: 'dmg',
+      installStrategy: 'macos-dmg',
+      minimumSystemVersion: '13.5',
+    })
+    await expect(downloader.verify(record)).resolves.toEqual(record)
+    const opened = await downloader.openVerified(record)
+    expect(opened.record).toEqual(record)
+    await opened.close()
+  })
+
+  it.each([
+    ['a universal filename claimed as arm64', 'dmg', 'arm64'],
+    ['an arm64 filename claimed as universal', 'arm64-dmg', 'universal'],
+  ] as const)('refuses %s, before any request and when reopening it', async (_label, kind, architecture) => {
+    const root = join(workDir(), 'update-downloads')
+    const body = randomBytes(CHUNK)
+    const real = artifactFor(body, '2.0.0', kind)
+    const fetchImpl = releaseFetch(new Map([[real.url, body]]))
+    const downloader = createUpdateDownloader({ directory: root, fetchImpl })
+
+    const mislabelled = { ...real, architecture }
+    expect(() => downloader.normalize(mislabelled)).toThrow()
+    expect(await codeOf(downloader.download(mislabelled))).toMatchObject({ code: 'invalid-artifact' })
+    expect(fetchImpl).not.toHaveBeenCalled()
+
+    // A verified file whose record names the other type is not this downloader's file.
+    const record = await downloader.download(real)
+    for (const forged of [{ ...record, architecture }, { ...record, architecture: undefined }]) {
+      expect(await codeOf(downloader.verify(forged as unknown as VerifiedArtifact))).toMatchObject({ code: 'not-verified' })
+      expect(await codeOf(downloader.openVerified(forged as unknown as VerifiedArtifact))).toMatchObject({ code: 'not-verified' })
+    }
   })
 
   it.each([
@@ -713,6 +768,7 @@ describe('something planted at a verified path', () => {
       filename: artifact.filename,
       sha256: artifact.sha256,
       byteLength: artifact.byteLength,
+      architecture: artifact.architecture,
       packageType: artifact.packageType,
       installStrategy: artifact.installStrategy as VerifiedArtifact['installStrategy'],
       ...(artifact.minimumSystemVersion ? { minimumSystemVersion: artifact.minimumSystemVersion } : {}),
@@ -954,6 +1010,7 @@ describe('opening a verified artifact for install', () => {
       filename: artifact.filename,
       sha256: artifact.sha256,
       byteLength: artifact.byteLength,
+      architecture: artifact.architecture,
       packageType: artifact.packageType,
       installStrategy: artifact.installStrategy as VerifiedArtifact['installStrategy'],
       ...(artifact.minimumSystemVersion ? { minimumSystemVersion: artifact.minimumSystemVersion } : {}),

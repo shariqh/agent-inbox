@@ -8,6 +8,7 @@ export type {
   UpdateInstallStrategy,
   UpdateManifestTarget,
   UpdateManifest,
+  UpdateManifestV2,
   UpdateManifestSignature,
   UpdateManifestEnvelope,
 } from '../electron/update-manifest.d.cts'
@@ -15,24 +16,38 @@ export type {
 export {
   UPDATE_REGISTRY_SCHEMA,
   UPDATE_MANIFEST_SCHEMA,
+  UPDATE_MANIFEST_SCHEMA_V2,
+  UPDATE_ENVELOPE_SCHEMA,
   UPDATE_MANIFEST_KIND,
   UPDATE_REPOSITORY,
   MANIFEST_LIFETIME_DAYS,
   MANIFEST_ASSET_NAME,
   SIGNATURE_ASSET_NAME,
+  MANIFEST_V2_ASSET_NAME,
+  SIGNATURE_V2_ASSET_NAME,
   UpdateManifestError,
   deriveKeyId,
   parseRegistry,
   validateRegistry,
   validateManifest,
   parseManifest,
+  validateManifestV2,
+  parseManifestV2,
   serializeEnvelope,
   validateEnvelope,
   parseEnvelope,
   verifyManifest,
+  verifyManifestV2,
 } from '../electron/update-manifest.d.cts'
 
-import type { UpdateRegistry, UpdateManifest, UpdateManifestEnvelope } from '../electron/update-manifest.d.cts'
+import type {
+  UpdateRegistry,
+  UpdateRegistryKey,
+  UpdateManifest,
+  UpdateManifestV2,
+  UpdateManifestEnvelope,
+} from '../electron/update-manifest.d.cts'
+import type { MacosReleaseKind } from './macos-release-kind.mjs'
 
 /**
  * Release evidence describing one built/uploaded update artifact. Field names
@@ -69,6 +84,7 @@ export function generateManifest(options: {
 
 export function serializeManifest(manifest: UpdateManifest): Buffer
 
+/** Signs a schema 1 or schema 2 manifest's exact bytes; either way the envelope is schema 1. */
 export function signManifest(options: {
   manifestBytes: Buffer
   registry: UpdateRegistry
@@ -98,53 +114,251 @@ export type ReleaseLike = {
   assets: readonly ReleaseAssetLike[]
 }
 
-export type ReleaseHistoryBootstrapPlan = {
+// ---------------------------------------------------------------------------
+// Update manifest v2 (#343; design §5 to §7): the publisher's pure functions.
+// ---------------------------------------------------------------------------
+
+/** The only key apps from 1.2 to 1.6 trust; every v1 manifest must carry its signature (G10). */
+export const ORIGINAL_UPDATE_KEY: Readonly<UpdateRegistryKey>
+
+/**
+ * This release's update-manifest-v2.json: exactly its own DMG (universal or arm64, from
+ * the measured kind) and the four Linux packages, a 180-day lifetime, serialized like v1.
+ */
+export function generateManifestV2(options: {
+  registry: UpdateRegistry
+  evidence: ReleaseEvidence
+  minimumMacosVersion: string
+  publishedAt: string | Date
+  kind: MacosReleaseKind
+}): { manifest: UpdateManifestV2; bytes: Buffer }
+
+export function serializeManifestV2(manifest: UpdateManifestV2): Buffer
+
+/**
+ * The v1 manifest of a universal release: the v2 data with schema 1 and only the five
+ * schema-1 types, all required. Byte-identical to generateManifest for the same evidence.
+ */
+export function projectV1(v2ManifestBytes: Buffer | string): { manifest: UpdateManifest; bytes: Buffer }
+
+export type RestampedManifest = {
+  manifest: UpdateManifest
+  bytes: Buffer
+  /** The tag of the universal release the re-stamped manifest describes. */
+  describes: string
+  earlierManifestSha256: string
+  targets: ReadonlyArray<{ filename: string; byteLength: number; sha256: string }>
+}
+
+/**
+ * The frozen v1 manifest of an arm64 release (design §5.3): the verified earlier v1
+ * manifest with only publishedAt, expiresAt, signingKeyId and trustedKeyIds changed. It
+ * must describe an older release, the newest published one with a universal DMG, whose
+ * listed files match every copied target.
+ */
+export function restampV1(options: {
+  earlierManifestBytes: Buffer | string
+  earlierSignatureBytes: Buffer | string
+  registry: UpdateRegistry
+  newTag: string
+  publishedAt: string | Date
+  releases: readonly ReleaseLike[]
+}): RestampedManifest
+
+export type ManifestHistoryName = 'v1' | 'v2'
+
+export type ManifestHistoryAsset = { id: number; name: string; size: number; url: string; digest?: string }
+
+export type ManifestHistoryBootstrapPlan = {
+  manifest: ManifestHistoryName
   mode: 'bootstrap'
   priorTag: null
 }
 
-export type ReleaseHistoryContinuityPlan = {
+export type ManifestHistoryContinuityPlan = {
+  manifest: ManifestHistoryName
   mode: 'continuity'
   priorTag: string
-  manifestAsset: { id: number; name: string; size: number; url: string; digest?: string }
-  signatureAsset: { id: number; name: string; size: number; url: string; digest?: string }
+  /** From the release before's own DMG name; null when it lists neither. */
+  priorKind: MacosReleaseKind | null
+  manifestAsset: ManifestHistoryAsset
+  signatureAsset: ManifestHistoryAsset
 }
 
-export type ReleaseHistoryPlan = ReleaseHistoryBootstrapPlan | ReleaseHistoryContinuityPlan
+export type ManifestHistoryPlan = ManifestHistoryBootstrapPlan | ManifestHistoryContinuityPlan
 
 /**
- * Anti-brick release-history assessment. Filters `releases` to published
- * (`draft:false`), non-prerelease (`prerelease:false`) releases whose
- * `tag_name` is a strict stable `vX.Y.Z` tag, rejects any such prior release
- * whose version is `>= newTag`'s version, rejects a release carrying only one
- * of the manifest/signature asset pair, and requires the latest qualifying
- * prior release to carry both assets unless no qualifying prior release
- * carries either (bootstrap).
+ * Both manifests' release history for a new release of this macOS kind (G1 to G5): every
+ * published stable release is older, no release carries half of either pair, once a
+ * manifest has been published the release before carries it, and only a universal release
+ * may publish the first of either.
  */
-export function planReleaseHistoryContinuity(options: {
+export function planReleaseHistory(options: {
   releases: readonly ReleaseLike[]
   newTag: string
-}): ReleaseHistoryPlan
+  kind: MacosReleaseKind
+}): { v1: ManifestHistoryPlan; v2: ManifestHistoryPlan }
 
-export type ReleaseContinuityAuthorization = {
-  authorized: true
-  priorManifest: UpdateManifest
-  priorTag: string
-  rotationOverrideUsed: boolean
-}
+export type ManifestHistoryAuthorization =
+  | {
+    manifest: ManifestHistoryName
+    authorized: true
+    mode: 'bootstrap'
+    priorTag: null
+    rotationOverrideUsed: false
+  }
+  | {
+    manifest: ManifestHistoryName
+    authorized: true
+    mode: 'continuity'
+    priorTag: string
+    describes: string
+    rotationOverrideUsed: boolean
+    priorManifest: UpdateManifest | UpdateManifestV2
+  }
 
 /**
- * Verifies a downloaded prior manifest/signature pair against the CURRENT
- * registry (structure + signature only; current expiry is not applied) and
- * requires the current registry's `signingKeyId` to already be present in the
- * prior manifest's `trustedKeyIds`, unless `rotationOverride` exactly equals
- * `` `ALLOW-UPDATE-KEY-ROTATION:${newTag}:${registry.signingKeyId}` ``, which
- * bypasses only that membership check.
+ * One earlier manifest, under this release's keys and without an expiry check: the bytes
+ * GitHub listed; a v2 describing the release before; a v1 describing it when universal or
+ * an older release when arm64; and the signing key already trusted, or the exact override.
  */
-export function authorizeReleaseContinuity(options: {
-  priorManifestBytes: Buffer
-  priorSignatureBytes: Buffer
+export function authorizeReleaseHistory(options: {
+  plan: ManifestHistoryPlan
+  priorManifestBytes?: Buffer | string
+  priorSignatureBytes?: Buffer | string
   registry: UpdateRegistry
   newTag: string
   rotationOverride?: string
-}): ReleaseContinuityAuthorization
+}): ManifestHistoryAuthorization
+
+export type CheckedRelease = {
+  kind: MacosReleaseKind
+  dmgName: string
+  /** What the signing evidence records about the measured kind (design §5.7). */
+  macos: {
+    kind: MacosReleaseKind
+    architectures: { executable: readonly string[]; betterSqlite3: readonly string[] }
+    expected: readonly string[]
+  }
+  manifest: UpdateManifestV2
+  manifestSha256: string
+  /** The inputs generateManifestV2 and generateManifest read for this release. */
+  generation: { evidence: ReleaseEvidence; minimumMacosVersion: string; publishedAt: string }
+}
+
+/**
+ * The unsigned v2 manifest against the authorized release (G7, G9). `aggregate`, `context`
+ * and `macosInputs` are the parsed release-aggregation evidence, release context and the
+ * release commit's release/macos-inputs.json; `packages` is each package file's measured
+ * size and SHA-256.
+ */
+export function checkReleaseManifest(options: {
+  manifestBytes: Buffer | string
+  aggregate: unknown
+  context: unknown
+  registryBytes: Buffer | string
+  macosInputs: unknown
+  packages: Readonly<Record<string, { size: number; sha256: string }>>
+  tag: string
+  sourceCommit: string
+}): CheckedRelease
+
+export type DerivedV1 =
+  | { made: 'projection'; describes: string; manifest: UpdateManifest; bytes: Buffer }
+  | ({ made: 'restamp' } & RestampedManifest)
+
+/** This release's v1 manifest: a projection (universal, G8) or a re-stamp (arm64, G6). */
+export function deriveV1(options: {
+  release: CheckedRelease
+  v2ManifestBytes: Buffer | string
+  registry: UpdateRegistry
+  releases: readonly ReleaseLike[]
+  earlierManifestBytes?: Buffer | string
+  earlierSignatureBytes?: Buffer | string
+}): DerivedV1
+
+export type OriginalKeySignature =
+  | { originalKeySignature: 'passed' }
+  | { originalKeySignature: 'waived'; rotationOverride: string }
+
+/** G10 before signing: passes only when the registry signs with the original key. */
+export function planOriginalKeySignature(options: {
+  registry: UpdateRegistry
+  newTag: string
+  rotationOverride?: string
+  originalKey?: UpdateRegistryKey
+}): OriginalKeySignature
+
+/**
+ * G10: the v1 envelope carries a valid signature of these bytes from the original key,
+ * or the exact `ALLOW-UPDATE-KEY-ROTATION:<tag>:<signingKeyId>` override waives it.
+ */
+export function checkOriginalKeySignature(options: {
+  manifestBytes: Buffer | string
+  envelope: Buffer | string | UpdateManifestEnvelope
+  registry: UpdateRegistry
+  newTag: string
+  rotationOverride?: string
+  originalKey?: UpdateRegistryKey
+}): OriginalKeySignature
+
+export type SignedFileRecord = { name: string; size: number; sha256: string }
+
+export type SigningHistoryRecord =
+  | { mode: 'bootstrap'; priorTag: null; rotationOverrideUsed: false }
+  | { mode: 'continuity'; priorTag: string; describes: string; rotationOverrideUsed: boolean }
+
+export type SignedManifestRecord = SignedFileRecord & {
+  signature: SignedFileRecord
+  version: string
+  tag: string
+  history: SigningHistoryRecord
+}
+
+/** update-signing-evidence.json, schema 2 (design §5.7). */
+export type SigningEvidence = {
+  schema: 2
+  tag: string
+  sourceCommit: string
+  sourceTree: string
+  signingKeyId: string
+  trustedKeyIds: string[]
+  macos: {
+    kind: MacosReleaseKind
+    architectures: { executable: string[]; betterSqlite3: string[] }
+    expected: string[]
+  }
+  originalKeySignature: 'passed' | 'waived'
+  rotationOverride?: string
+  manifests: {
+    v2: SignedManifestRecord & { made: 'release' }
+    v1: SignedManifestRecord & (
+      | { made: 'projection' }
+      | { made: 'restamp'; restamp: { earlierManifestSha256: string; targets: Array<{ filename: string; byteLength: number; sha256: string }> } }
+    )
+  }
+  verification: { privateKeyMatchesRegistry: 'passed'; signatures: 'passed' }
+}
+
+/**
+ * The signing evidence once both manifests are signed: both pairs verify under the registry
+ * at `now`, each is the manifest the earlier steps checked or derived, each envelope holds
+ * one signature by the signing key, both histories were authorized, and G10 passed or was
+ * waived by the exact override. `release`, `history` and `derivation` are the records
+ * check-release, authorize-history and derive-v1 wrote.
+ */
+export function bindSigningEvidence(options: {
+  registryBytes: Buffer | string
+  aggregate: unknown
+  tag: string
+  sourceCommit: string
+  release: { kind: MacosReleaseKind; macos: CheckedRelease['macos']; manifestSha256: string }
+  history: { v1: unknown; v2: unknown }
+  derivation: { made: string; describes: string; sha256: string; earlierManifestSha256?: string; targets?: unknown }
+  v2: { manifestBytes: Buffer | string; signatureBytes: Buffer | string }
+  v1: { manifestBytes: Buffer | string; signatureBytes: Buffer | string }
+  now: string | Date
+  rotationOverride?: string
+  originalKey?: UpdateRegistryKey
+}): SigningEvidence
+

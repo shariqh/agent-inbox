@@ -67,9 +67,20 @@ async function buildImage(output: string, volume: string, build: () => unknown) 
   await build()
 }
 
+// Nothing runs the executable. The in-app updater reads its Mach-O header (#343), so it is
+// a fat header naming x86_64 and arm64, as the shipped app's is.
+function universalHeader() {
+  const header = Buffer.alloc(48)
+  header.writeUInt32BE(0xcafebabe, 0)
+  header.writeUInt32BE(2, 4)
+  header.writeUInt32BE(0x01000007, 8)
+  header.writeUInt32BE(0x0100000c, 28)
+  return header
+}
+
 function writeApp(app: string) {
   mkdirSync(join(app, 'Contents', 'MacOS'), { recursive: true })
-  writeFileSync(join(app, 'Contents', 'MacOS', 'Agent Inbox'), '#!/bin/sh\nexit 0\n', { mode: 0o755 })
+  writeFileSync(join(app, 'Contents', 'MacOS', 'Agent Inbox'), universalHeader(), { mode: 0o755 })
   writeFileSync(join(app, 'Contents', 'Info.plist'), [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
@@ -171,6 +182,7 @@ describe.skipIf(process.platform !== 'darwin')('a release DMG built on macOS', (
       filename: `Agent-Inbox-v${VERSION}-universal.dmg`,
       sha256: createHash('sha256').update(bytes).digest('hex'),
       byteLength: bytes.length,
+      architecture: 'universal',
       packageType: 'dmg',
       installStrategy: 'macos-dmg',
       minimumSystemVersion: '13.5',

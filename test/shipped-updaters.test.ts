@@ -21,10 +21,13 @@ import { afterEach, describe, expect, it } from 'vitest'
 import {
   deriveKeyId,
   generateManifest,
+  generateManifestV2,
+  projectV1,
+  restampV1,
   serializeEnvelope,
   signManifest,
 } from '../scripts/update-manifest.mjs'
-import type { ReleaseAssetEvidence } from '../scripts/update-manifest.d.mts'
+import type { ReleaseAssetEvidence, ReleaseLike } from '../scripts/update-manifest.d.mts'
 import { removeScratchDirs, scratchDir } from './scratch.js'
 
 const FIXTURES = resolve(import.meta.dirname, 'fixtures', 'shipped-updaters')
@@ -401,3 +404,121 @@ describe('the trust-state writer 1.3.0 to 1.6.0 shipped (#148)', () => {
     await expect(trust.read()).resolves.toEqual({ highestVerifiedVersion: '1.9.0' })
   })
 })
+
+// Update manifest v2 (#343): the publisher keeps writing update-manifest.json for these
+// readers, as a projection of the v2 manifest in a universal release and as a re-stamp of
+// the newest universal release's in an arm64 one. They must accept both, and never take a
+// v2 file for theirs.
+describe('the shipped readers and the v2 publisher (#343)', () => {
+  const evidenceOf = (releaseVersion: string, dmg: 'universal' | 'arm64') => ({
+    tag: `v${releaseVersion}`,
+    packageVersion: releaseVersion,
+    sourceCommit: 'c'.repeat(40),
+    sourceTree: 'd'.repeat(40),
+    assets: PACKAGES.map((asset) => (asset.packageType === 'dmg'
+      ? { ...asset, architecture: dmg, name: `Agent-Inbox-v${releaseVersion}-${dmg}.dmg` }
+      : { ...asset, name: asset.name.replaceAll(VERSION, releaseVersion) })),
+  })
+  const signed = (manifestBytes: Buffer) => {
+    const signature = serializeEnvelope({
+      schema: 1,
+      manifestSha256: createHash('sha256').update(manifestBytes).digest('hex'),
+      signatures: [{ algorithm: 'ed25519', keyId, signature: sign(null, manifestBytes, scratchKey.privateKey).toString('base64') }],
+    })
+    return { manifestBytes, signatureBytes: signature }
+  }
+  const v2Of = (releaseVersion: string, dmg: 'universal' | 'arm64', taggedAt: string) => generateManifestV2({
+    registry,
+    evidence: evidenceOf(releaseVersion, dmg),
+    minimumMacosVersion: '13.5',
+    publishedAt: taggedAt,
+    kind: dmg,
+  })
+
+  // One reader on one host at `currentVersion`, with the clock at `now`.
+  async function read(
+    reader: (typeof READERS)[number],
+    host: (typeof HOSTS)[number],
+    served: { manifestBytes: Buffer; signatureBytes: Buffer },
+    currentVersion: string,
+    now: Date,
+  ) {
+    const fetchImpl = async (url: string) => {
+      if (url === reader.module.MANIFEST_URL) return new Response(served.manifestBytes as BodyInit)
+      if (url === reader.module.SIGNATURE_URL) return new Response(served.signatureBytes as BodyInit)
+      throw new Error(`no network here: ${url}`)
+    }
+    return reader.module.checkForUpdate({
+      fetchImpl,
+      registry,
+      currentVersion,
+      automaticChecks: true,
+      isPackaged: true,
+      now: () => now,
+      ...reader.options,
+      ...host.options,
+    })
+  }
+
+  it('the projection of a universal release is the file they read today, byte for byte', () => {
+    expect(projectV1(v2Of(VERSION, 'universal', TAGGED_AT).bytes).bytes.equals(publish().manifestBytes)).toBe(true)
+  })
+
+  // 1.9.0 is the last universal release; 2.0.0 is arm64 and re-stamps its v1 manifest.
+  const last = v2Of('1.9.0', 'universal', '2027-01-04T12:00:00Z')
+  const lastV1 = signed(projectV1(last.bytes).bytes)
+  const listing: ReleaseLike = {
+    tag_name: 'v1.9.0',
+    draft: false,
+    prerelease: false,
+    assets: [
+      ...last.manifest.targets.map((target, index) => ({
+        id: 100 + index,
+        name: target.filename,
+        size: target.byteLength,
+        browser_download_url: target.url,
+        digest: `sha256:${target.sha256}`,
+      })),
+      { id: 110, name: 'update-manifest.json', size: lastV1.manifestBytes.length, browser_download_url: 'https://github.com/shariqh/agent-inbox/releases/download/v1.9.0/update-manifest.json' },
+      { id: 111, name: 'update-manifest.json.sig', size: lastV1.signatureBytes.length, browser_download_url: 'https://github.com/shariqh/agent-inbox/releases/download/v1.9.0/update-manifest.json.sig' },
+    ],
+  }
+  const restamped = signed(restampV1({
+    earlierManifestBytes: lastV1.manifestBytes,
+    earlierSignatureBytes: lastV1.signatureBytes,
+    registry,
+    newTag: 'v2.0.0',
+    publishedAt: '2027-01-18T12:00:00Z',
+    releases: [listing],
+  }).bytes)
+  const afterRestamp = new Date('2027-01-19T09:30:00Z')
+
+  it.each(READERS)('$name offer every host the last universal release through a re-stamp', async (reader) => {
+    for (const host of HOSTS) {
+      const result = await read(reader, host, restamped, reader.currentVersion, afterRestamp)
+      expect(result.status, host.name).toBe('available')
+      expect(result.available?.version, host.name).toBe('1.9.0')
+      expect(result.available?.releaseUrl, host.name).toBe('https://github.com/shariqh/agent-inbox/releases/tag/v1.9.0')
+      if ('artifact' in result && result.artifact) {
+        expect(result.artifact.url, host.name).toMatch(/^https:\/\/github\.com\/shariqh\/agent-inbox\/releases\/download\/v1\.9\.0\//)
+        if (host.options.platform === 'darwin') expect(result.artifact.filename, host.name).toBe('Agent-Inbox-v1.9.0-universal.dmg')
+      }
+    }
+  })
+
+  it.each(READERS)('$name read a re-stamp as up to date on the release it describes', async (reader) => {
+    for (const host of HOSTS) {
+      await expect(read(reader, host, restamped, '1.9.0', afterRestamp), host.name).resolves.toMatchObject({ status: 'current' })
+    }
+  })
+
+  it.each(READERS)('$name reject every manifest the v2 publisher writes, universal or arm64', async (reader) => {
+    for (const v2 of [v2Of('2.0.0', 'universal', '2027-01-18T12:00:00Z'), v2Of('2.0.0', 'arm64', '2027-01-18T12:00:00Z')]) {
+      for (const host of HOSTS) {
+        await expect(read(reader, host, signed(v2.bytes), reader.currentVersion, afterRestamp), host.name)
+          .rejects.toThrow('manifest.schema must be 1')
+      }
+    }
+  })
+})
+

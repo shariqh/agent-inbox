@@ -3,6 +3,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import { EventEmitter } from 'node:events'
 import {
   chmodSync,
+  constants,
   cpSync,
   existsSync,
   lstatSync,
@@ -51,13 +52,37 @@ function workDir() {
   return dir
 }
 
-function writeApp(app: string, build: string, plist: Record<string, string>) {
+function writeApp(app: string, build: string | Uint8Array, plist: Record<string, string>) {
   mkdirSync(join(app, 'Contents', 'MacOS'), { recursive: true })
   writeFileSync(join(app, 'Contents', 'MacOS', 'Agent Inbox'), build)
   writeFileSync(join(app, 'Contents', 'Info.plist'), JSON.stringify(plist))
 }
 
-const NEW_PLIST = { CFBundleIdentifier: 'io.github.shariqh.agent-inbox', CFBundleShortVersionString: '2.0.0' }
+const NEW_PLIST = { CFBundleExecutable: 'Agent Inbox', CFBundleIdentifier: 'io.github.shariqh.agent-inbox', CFBundleShortVersionString: '2.0.0' }
+
+// cpu_type_t: CPU_TYPE_ARM64 and CPU_TYPE_X86_64 (#343).
+const CPU = { arm64: 0x0100000c, x64: 0x01000007 } as const
+
+/** A fat Mach-O header naming these CPU types, with 32-bit (20-byte) or 64-bit (32-byte) entries. */
+function fatHeader(cpuTypes: readonly number[], entrySize: 20 | 32 = 20) {
+  const header = Buffer.alloc(8 + cpuTypes.length * entrySize)
+  header.writeUInt32BE(entrySize === 20 ? 0xcafebabe : 0xcafebabf, 0)
+  header.writeUInt32BE(cpuTypes.length, 4)
+  cpuTypes.forEach((type, index) => header.writeUInt32BE(type, 8 + index * entrySize))
+  return header
+}
+
+/** A thin little-endian Mach-O header: 64-bit (`0xfeedfacf`) unless `magic` says otherwise. */
+function thinHeader(cpuType: number, magic = 0xfeedfacf) {
+  const header = Buffer.alloc(32)
+  header.writeUInt32LE(magic, 0)
+  header.writeUInt32LE(cpuType, 4)
+  return header
+}
+
+// The staged executable the fake DMG holds: the universal header the release ships (as
+// the installed 1.6.0 app's is), then a label the swap assertions compare.
+const NEW_BUILD = Buffer.concat([fatHeader([CPU.x64, CPU.arm64]), Buffer.from('new build')])
 
 type Scenario = {
   attachFails?: boolean
@@ -78,7 +103,7 @@ function applicationsLink(mount: string) {
 }
 
 function defaultDmg(mount: string) {
-  writeApp(join(mount, APP), 'new build', NEW_PLIST)
+  writeApp(join(mount, APP), NEW_BUILD, NEW_PLIST)
   applicationsLink(mount)
   mkdirSync(join(mount, '.background'))
 }
@@ -170,6 +195,7 @@ async function fixture(options: { bytes?: number } = {}) {
     filename: 'Agent-Inbox-v2.0.0-universal.dmg',
     sha256: createHash('sha256').update(body).digest('hex'),
     byteLength: body.length,
+    architecture: 'universal',
     packageType: 'dmg',
     installStrategy: 'macos-dmg',
     minimumSystemVersion: '13.5',
@@ -226,8 +252,8 @@ describe('macOS install feasibility', () => {
     const f = await fixture()
     const { installer } = installerFor(f)
     expect(installer.strategy).toBe('macos-dmg')
-    await expect(installer.feasibility({ version: '2.0.0', minimumSystemVersion: '13.5' })).resolves.toEqual({ ok: true })
-    await expect(installer.feasibility({ version: '2.0.0' })).resolves.toEqual({ ok: true })
+    await expect(installer.feasibility({ version: '2.0.0', architecture: 'universal', minimumSystemVersion: '13.5' })).resolves.toEqual({ ok: true })
+    await expect(installer.feasibility({ version: '2.0.0', architecture: 'universal' })).resolves.toEqual({ ok: true })
     await f.close()
   })
 
@@ -240,7 +266,7 @@ describe('macOS install feasibility', () => {
   ])('compares macOS dotted versions numerically (minimum %s)', async (_label, minimum, ok) => {
     const f = await fixture()
     const { installer } = installerFor(f, { systemVersion: '13.5.0' })
-    const result = await installer.feasibility({ version: '2.0.0', minimumSystemVersion: minimum })
+    const result = await installer.feasibility({ version: '2.0.0', architecture: 'universal', minimumSystemVersion: minimum })
     expect(result.ok).toBe(ok)
     if (!result.ok) {
       expect(result).toEqual({ ok: false, reason: 'system-version', message: `This update needs macOS ${minimum} or later.` })
@@ -251,8 +277,8 @@ describe('macOS install feasibility', () => {
   it('treats an unreadable running macOS version as too old for a minimum', async () => {
     const f = await fixture()
     const { installer } = installerFor(f, { systemVersion: 'unknown' })
-    await expect(installer.feasibility({ version: '2.0.0', minimumSystemVersion: '13.5' })).resolves.toMatchObject({ ok: false, reason: 'system-version' })
-    await expect(installer.feasibility({ version: '2.0.0', minimumSystemVersion: '13.5; rm -rf' })).resolves.toMatchObject({ ok: false })
+    await expect(installer.feasibility({ version: '2.0.0', architecture: 'universal', minimumSystemVersion: '13.5' })).resolves.toMatchObject({ ok: false, reason: 'system-version' })
+    await expect(installer.feasibility({ version: '2.0.0', architecture: 'universal', minimumSystemVersion: '13.5; rm -rf' })).resolves.toMatchObject({ ok: false })
     await f.close()
   })
 
@@ -266,7 +292,7 @@ describe('macOS install feasibility', () => {
   ] as const)('refuses %s', async (_label, overrides, reason) => {
     const f = await fixture()
     const { installer } = installerFor(f, overrides as never)
-    const result = await installer.feasibility({ version: '2.0.0', minimumSystemVersion: '13.5' })
+    const result = await installer.feasibility({ version: '2.0.0', architecture: 'universal', minimumSystemVersion: '13.5' })
     expect(result).toMatchObject({ ok: false, reason })
     if (!result.ok) expect(result.message).not.toContain('/')
     await f.close()
@@ -277,7 +303,7 @@ describe('macOS install feasibility', () => {
     const translocated = join(f.work, 'AppTranslocation', 'ABC', 'd', APP)
     mkdirSync(translocated, { recursive: true })
     const byPath = installerFor(f, { bundlePath: translocated }).installer
-    await expect(byPath.feasibility({ version: '2.0.0' })).resolves.toMatchObject({
+    await expect(byPath.feasibility({ version: '2.0.0', architecture: 'universal' })).resolves.toMatchObject({
       ok: false,
       reason: 'translocated',
       message: 'Move Agent Inbox to your Applications folder to install updates from the app.',
@@ -286,7 +312,7 @@ describe('macOS install feasibility', () => {
     const linkedParent = join(f.work, 'Linked')
     symlinkSync(dirname(translocated), linkedParent)
     const byRealpath = installerFor(f, { bundlePath: join(linkedParent, APP) }).installer
-    await expect(byRealpath.feasibility({ version: '2.0.0' })).resolves.toMatchObject({ ok: false, reason: 'translocated' })
+    await expect(byRealpath.feasibility({ version: '2.0.0', architecture: 'universal' })).resolves.toMatchObject({ ok: false, reason: 'translocated' })
     await f.close()
   })
 
@@ -294,8 +320,8 @@ describe('macOS install feasibility', () => {
     const f = await fixture()
     const link = join(f.applications, 'Linked.app')
     symlinkSync(f.target, link)
-    await expect(installerFor(f, { bundlePath: link }).installer.feasibility({ version: '2.0.0' })).resolves.toMatchObject({ ok: false, reason: 'location' })
-    await expect(installerFor(f, { bundlePath: join(f.applications, 'Missing.app') }).installer.feasibility({ version: '2.0.0' })).resolves.toMatchObject({ ok: false, reason: 'location' })
+    await expect(installerFor(f, { bundlePath: link }).installer.feasibility({ version: '2.0.0', architecture: 'universal' })).resolves.toMatchObject({ ok: false, reason: 'location' })
+    await expect(installerFor(f, { bundlePath: join(f.applications, 'Missing.app') }).installer.feasibility({ version: '2.0.0', architecture: 'universal' })).resolves.toMatchObject({ ok: false, reason: 'location' })
     await f.close()
   })
 
@@ -305,7 +331,7 @@ describe('macOS install feasibility', () => {
       ...(fsp as unknown as MacInstallerFs),
       access: async () => { throw Object.assign(new Error('read-only file system'), { code: 'EROFS' }) },
     }
-    await expect(installerFor(f, { fsImpl: readOnly }).installer.feasibility({ version: '2.0.0' })).resolves.toMatchObject({
+    await expect(installerFor(f, { fsImpl: readOnly }).installer.feasibility({ version: '2.0.0', architecture: 'universal' })).resolves.toMatchObject({
       ok: false,
       reason: 'read-only',
       message: 'Move Agent Inbox to your Applications folder to install updates from the app.',
@@ -317,7 +343,7 @@ describe('macOS install feasibility', () => {
     const f = await fixture()
     chmodSync(f.applications, 0o555)
     try {
-      const result = await installerFor(f).installer.feasibility({ version: '2.0.0' })
+      const result = await installerFor(f).installer.feasibility({ version: '2.0.0', architecture: 'universal' })
       expect(result).toMatchObject({ ok: false, reason: 'permission' })
       if (!result.ok) expect(result.message).not.toContain('/')
     } finally {
@@ -330,7 +356,7 @@ describe('macOS install feasibility', () => {
     const f = await fixture()
     chmodSync(f.target, 0o555)
     try {
-      await expect(installerFor(f).installer.feasibility({ version: '2.0.0' })).resolves.toMatchObject({ ok: false, reason: 'permission' })
+      await expect(installerFor(f).installer.feasibility({ version: '2.0.0', architecture: 'universal' })).resolves.toMatchObject({ ok: false, reason: 'permission' })
     } finally {
       chmodSync(f.target, 0o755)
     }
@@ -343,7 +369,7 @@ describe('macOS install feasibility', () => {
       ...(fsp as unknown as MacInstallerFs),
       realpath: () => { throw new TypeError('boom /private/secret') },
     }
-    const result = await installerFor(f, { fsImpl: broken }).installer.feasibility({ version: '2.0.0' })
+    const result = await installerFor(f, { fsImpl: broken }).installer.feasibility({ version: '2.0.0', architecture: 'universal' })
     expect(result.ok).toBe(false)
     expect(JSON.stringify(result)).not.toContain('secret')
     await f.close()
@@ -385,7 +411,7 @@ describe('preparing a verified DMG', () => {
       expect(call.options.maxBuffer).toBeGreaterThan(0)
       expect(call.stdinEnded).toBe(true)
     }
-    expect(readFileSync(join(staged, 'Contents', 'MacOS', 'Agent Inbox'), 'utf8')).toBe('new build')
+    expect(readFileSync(join(staged, 'Contents', 'MacOS', 'Agent Inbox'))).toEqual(NEW_BUILD)
     expect(statSync(stage).mode & 0o777).toBe(0o700)
     expect(statSync(f.workDirectory).mode & 0o777).toBe(0o700)
     expect(statSync(workDir).mode & 0o777).toBe(0o700)
@@ -422,6 +448,7 @@ describe('preparing a verified DMG', () => {
     ['a ditto failure', { code: 'staging', attached: true, scenario: { dittoFails: true } }],
     ['a staged bundle identifier mismatch', { code: 'verification-failed', attached: true, scenario: { afterDitto: (staged) => swapPlist(staged, { ...NEW_PLIST, CFBundleIdentifier: 'com.example.other' }) } }],
     ['a staged version mismatch', { code: 'verification-failed', attached: true, scenario: { afterDitto: (staged) => swapPlist(staged, { ...NEW_PLIST, CFBundleShortVersionString: '1.9.9' }) } }],
+    ['a staged plist that launches another executable', { code: 'verification-failed', attached: true, scenario: { afterDitto: (staged) => swapPlist(staged, { ...NEW_PLIST, CFBundleExecutable: 'Helper' }) } }],
     ['a staged plist that is not a file', { code: 'verification-failed', attached: true, scenario: { afterDitto: (staged) => {
       // The decoy holds a valid plist: only the link itself may cause the refusal.
       const decoy = join(dirname(staged), 'decoy-Info.plist')
@@ -689,10 +716,177 @@ describe('committing the hand-off', () => {
 
     expect(readFileSync(report, 'utf8')).toBe('0\n')
     expect(viewerExited).toBe(true)
-    expect(readFileSync(join(f.target, 'Contents', 'MacOS', 'Agent Inbox'), 'utf8')).toBe('new build')
+    expect(readFileSync(join(f.target, 'Contents', 'MacOS', 'Agent Inbox'))).toEqual(NEW_BUILD)
     expect(readFileSync(join(stage, 'Agent Inbox.app.previous', 'Contents', 'MacOS', 'Agent Inbox'), 'utf8')).toBe('old build')
     expect(existsSync(join(stage, APP))).toBe(false)
     expect(readFileSync(join(bin, 'open.log'), 'utf8')).toBe(`${f.target}\n`)
+  })
+})
+
+// Update manifest v2 (#343, design §6.6): an arm64-only build installs only natively on
+// Apple silicon, and the staged app must carry a slice for this process.
+describe('the architecture this Mac can run', () => {
+  const ARCHITECTURE_COPY = 'This update runs only natively on a Mac with Apple silicon.'
+  const EXECUTABLE = ['Contents', 'MacOS', 'Agent Inbox'] as const
+
+  it.each([
+    ['universal', 'arm64', true],
+    ['universal', 'x64', true],
+    ['arm64', 'arm64', true],
+    ['arm64', 'x64', false],
+  ] as const)('feasibility: a %s build in an %s process', async (architecture, hostArch, ok) => {
+    const f = await fixture()
+    const result = await installerFor(f, { hostArch }).installer.feasibility({ version: '2.0.0', architecture, minimumSystemVersion: '13.5' })
+    expect(result).toEqual(ok ? { ok: true } : { ok: false, reason: 'architecture', message: ARCHITECTURE_COPY })
+    expect(ARCHITECTURE_COPY).not.toMatch(/[\u0000-\u001f\u007f/\\]/)
+    await f.close()
+  })
+
+  it('refuses a candidate of no known architecture, and a process of no known architecture', async () => {
+    const f = await fixture()
+    for (const architecture of [undefined, 'x64', 'ARM64', '', 'constructor']) {
+      const candidate = { version: '2.0.0', ...(architecture === undefined ? {} : { architecture }) }
+      await expect(installerFor(f, { hostArch: 'arm64' }).installer.feasibility(candidate)).resolves.toMatchObject({ ok: false, reason: 'error' })
+    }
+    for (const hostArch of ['ia32', 'constructor', '']) {
+      await expect(installerFor(f, { hostArch }).installer.feasibility({ version: '2.0.0', architecture: 'universal' }))
+        .resolves.toMatchObject({ ok: false, reason: 'error' })
+    }
+    expect(() => installerFor(f, { hostArch: 64 as never })).toThrow(TypeError)
+    await f.close()
+  })
+
+  it.each([
+    ['an arm64 build in an x64 process', { architecture: 'arm64', filename: 'Agent-Inbox-v2.0.0-arm64.dmg' }, 'not-feasible'],
+    ['a record of no known architecture', { architecture: 'x64' }, 'not-verified'],
+    ['a record without an architecture', { architecture: undefined }, 'not-verified'],
+  ] as const)('prepare() refuses %s before touching anything', async (_label, overrides, code) => {
+    const f = await fixture()
+    const touched: string[] = []
+    const watched = new Proxy(fsp as unknown as MacInstallerFs, {
+      get(target, name, receiver) {
+        const value = Reflect.get(target, name, receiver) as unknown
+        if (typeof value !== 'function') return value
+        return (...args: unknown[]) => {
+          touched.push(String(name))
+          return (value as (...inner: unknown[]) => unknown).apply(target, args)
+        }
+      },
+    })
+    const exec = fakeExec()
+    const read = vi.fn(f.source.handle.read)
+    const { installer } = installerFor(f, { hostArch: 'x64', fsImpl: watched, execFileImpl: exec.execFileImpl })
+    const record = { ...f.record, ...overrides } as VerifiedArtifact
+    const outcome = await codeOf(installer.prepare({ record, handle: { stat: f.source.handle.stat, read } }))
+    await f.close()
+    expect(outcome.code).toBe(code)
+    expect(touched).toEqual([])
+    expect(exec.calls).toEqual([])
+    expect(read).not.toHaveBeenCalled()
+    f.expectTargetUntouched()
+  })
+
+  it('installs an arm64 build in an arm64 process', async () => {
+    const f = await fixture()
+    const exec = fakeExec({ populate: (mount) => {
+      defaultDmg(mount)
+      writeFileSync(join(mount, APP, ...EXECUTABLE), thinHeader(CPU.arm64))
+    } })
+    const { installer } = installerFor(f, { hostArch: 'arm64', execFileImpl: exec.execFileImpl })
+    const record = { ...f.record, architecture: 'arm64' as const, filename: 'Agent-Inbox-v2.0.0-arm64.dmg' }
+    const prepared = await installer.prepare({ ...f.source, record })
+    await f.close()
+    expect(f.stages()).toHaveLength(1)
+    await prepared.discard()
+    expect(f.stages()).toEqual([])
+    f.expectTargetUntouched()
+  })
+
+  const javaClass = Buffer.concat([Buffer.from('cafebabe00000037001d', 'hex'), Buffer.alloc(200)])
+  it.each([
+    ['a fat header with both CPU types', fatHeader([CPU.x64, CPU.arm64]), { arm64: true, x64: true }],
+    ['a fat header with 64-bit entries', fatHeader([CPU.arm64, CPU.x64], 32), { arm64: true, x64: true }],
+    ['a thin arm64 executable', thinHeader(CPU.arm64), { arm64: true, x64: false }],
+    ['a thin x86_64 executable', thinHeader(CPU.x64), { arm64: false, x64: true }],
+    ['a fat header without an arm64 slice', fatHeader([CPU.x64]), { arm64: false, x64: true }],
+    ['a Java class file, whose magic is the fat one', javaClass, { arm64: false, x64: false }],
+    ['a truncated fat header', fatHeader([CPU.x64, CPU.arm64]).subarray(0, 30), { arm64: false, x64: false }],
+    ['a fat header with nine entries', fatHeader(Array.from({ length: 9 }, () => CPU.arm64)), { arm64: false, x64: false }],
+    ['a fat header with no entries', fatHeader([]), { arm64: false, x64: false }],
+    ['a 32-bit thin header', thinHeader(CPU.x64, 0xfeedface), { arm64: false, x64: false }],
+    ['an empty file', Buffer.alloc(0), { arm64: false, x64: false }],
+  ] as const)('checks the staged executable itself: %s', async (_label, bytes, accepts) => {
+    for (const hostArch of ['arm64', 'x64'] as const) {
+      const f = await fixture()
+      const exec = fakeExec({ afterDitto: (staged) => writeFileSync(join(staged, ...EXECUTABLE), bytes) })
+      const { installer } = installerFor(f, { hostArch, execFileImpl: exec.execFileImpl })
+      if (accepts[hostArch]) {
+        const prepared = await installer.prepare(f.source)
+        await prepared.discard()
+      } else {
+        const outcome = await codeOf(installer.prepare(f.source))
+        expect(outcome.code).toBe('verification-failed')
+        // Checked before codesign and Gatekeeper.
+        expect(exec.calls.map((call) => call.file)).not.toContain('/usr/bin/codesign')
+      }
+      await f.close()
+      expect(f.stages()).toEqual([])
+      expect(f.workEntries()).toEqual([])
+      f.expectTargetUntouched()
+    }
+  })
+
+  it.each([
+    ['a symbolic link to a universal executable', (staged: string) => {
+      const decoy = join(dirname(staged), 'decoy-executable')
+      writeFileSync(decoy, NEW_BUILD)
+      rmSync(join(staged, ...EXECUTABLE))
+      symlinkSync(decoy, join(staged, ...EXECUTABLE))
+    }],
+    ['a directory', (staged: string) => {
+      rmSync(join(staged, ...EXECUTABLE))
+      mkdirSync(join(staged, ...EXECUTABLE))
+    }],
+    ['nothing', (staged: string) => rmSync(join(staged, ...EXECUTABLE))],
+  ])('refuses a staged executable that is %s', async (_label, afterDitto) => {
+    const f = await fixture()
+    const exec = fakeExec({ afterDitto })
+    const outcome = await codeOf(installerFor(f, { hostArch: 'arm64', execFileImpl: exec.execFileImpl }).installer.prepare(f.source))
+    await f.close()
+    expect(outcome.code).toBe('verification-failed')
+    expect(f.stages()).toEqual([])
+    f.expectTargetUntouched()
+  })
+
+  it('reads at most 4 KiB of it, read-only, without following links or blocking', async () => {
+    const f = await fixture()
+    const large = Buffer.concat([NEW_BUILD, randomBytes(64 * 1024)])
+    const exec = fakeExec({ afterDitto: (staged) => writeFileSync(join(staged, ...EXECUTABLE), large) })
+    const opened: Array<{ path: string; flags: unknown }> = []
+    const reads: number[] = []
+    const fsImpl = {
+      ...(fsp as unknown as MacInstallerFs),
+      async open(path: string, flags: string | number, mode?: number) {
+        const handle = await fsp.open(path, flags, mode)
+        if (typeof flags !== 'number') return handle
+        opened.push({ path, flags })
+        return {
+          stat: () => handle.stat(),
+          read: (buffer: Uint8Array, offset: number, length: number, position: number) => {
+            reads.push(length)
+            return handle.read(buffer, offset, length, position)
+          },
+          close: () => handle.close(),
+        }
+      },
+    } as unknown as MacInstallerFs
+    const prepared = await installerFor(f, { hostArch: 'x64', fsImpl, execFileImpl: exec.execFileImpl }).installer.prepare(f.source)
+    await f.close()
+    const staged = join(f.applications, f.stages()[0]!, APP)
+    expect(opened).toEqual([{ path: join(staged, ...EXECUTABLE), flags: constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK }])
+    expect(reads.length).toBeGreaterThan(0)
+    expect(reads.every((length) => length <= 4096)).toBe(true)
+    await prepared.discard()
   })
 })
 

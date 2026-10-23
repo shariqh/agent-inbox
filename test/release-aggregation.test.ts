@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto'
+import { createHash, generateKeyPairSync } from 'node:crypto'
 import {
   cpSync,
   mkdirSync,
@@ -15,8 +15,11 @@ import {
   validateLinuxReleaseArtifacts,
 } from '../scripts/release-aggregation.mjs'
 import { loadLinuxReleaseInputs } from '../scripts/linux-release-inputs.mjs'
-import { generateManifest, parseRegistry } from '../scripts/update-manifest.mjs'
+import { generateManifest, parseRegistry, projectV1, signManifest } from '../scripts/update-manifest.mjs'
+import updateFetch from '../electron/update-fetch.cjs'
 import { scratchDir } from './scratch.js'
+
+const { MANIFEST_V2_URL, SIGNATURE_V2_URL, checkForUpdate } = updateFetch
 
 const root = resolve(process.cwd())
 const sourceCommit = 'a'.repeat(40)
@@ -473,8 +476,9 @@ describe('multi-platform release aggregation', () => {
       'agent-inbox_1.0.1_amd64.deb',
       'agent-inbox_1.0.1_arm64.deb',
       'SHA256SUMS.txt',
-      'update-manifest.json',
+      'update-manifest-v2.json',
     ])
+    expect(readdirSync(join(output, 'release-assets'))).not.toContain('update-manifest.json')
     const checksums = readFileSync(join(output, 'release-assets', 'SHA256SUMS.txt'), 'utf8')
     const lines = checksums.trimEnd().split('\n')
     expect(lines).toHaveLength(5)
@@ -490,12 +494,12 @@ describe('multi-platform release aggregation', () => {
       expect(name).toBeTruthy()
       expect(line.startsWith(sha256File(join(output, 'release-assets', name!)))).toBe(true)
     }
-    const updateManifestPath = join(output, 'release-assets', 'update-manifest.json')
+    const updateManifestPath = join(output, 'release-assets', 'update-manifest-v2.json')
     const updateManifestBytes = readFileSync(updateManifestPath, 'utf8')
     expect(updateManifestBytes.endsWith('\n')).toBe(true)
     const updateManifest = JSON.parse(updateManifestBytes)
     expect(updateManifest).toMatchObject({
-      schema: 1,
+      schema: 2,
       kind: 'agent-inbox-update-manifest',
       repository: 'shariqh/agent-inbox',
       version: '1.0.1',
@@ -533,7 +537,7 @@ describe('multi-platform release aggregation', () => {
     expect(aggregateEvidence).not.toContain(output)
     expect(aggregateEvidence).not.toContain(basename(mac.evidence))
     expect(JSON.parse(aggregateEvidence).updateManifest).toEqual({
-      name: 'update-manifest.json',
+      name: 'update-manifest-v2.json',
       size: Buffer.byteLength(updateManifestBytes),
       sha256: sha256Bytes(updateManifestBytes),
       keyRegistrySha256: sha256File(join(root, 'release/update-keys.json')),
@@ -587,7 +591,8 @@ describe('multi-platform release aggregation', () => {
       minimumMacosVersion: '13.5',
       publishedAt: taggedAt,
     })
-    expect(readFileSync(join(assets, 'update-manifest.json')).equals(before.bytes)).toBe(true)
+    // The signer derives v1 from this v2 manifest (#343): the same bytes as before.
+    expect(projectV1(readFileSync(join(assets, 'update-manifest-v2.json'))).bytes.equals(before.bytes)).toBe(true)
     expect(readFileSync(join(assets, 'SHA256SUMS.txt'), 'utf8')).toBe(
       [...packages]
         .map((path) => basename(path))
@@ -626,10 +631,10 @@ describe('multi-platform release aggregation', () => {
     expect(readdirSync(output)).toEqual([])
   })
 
-  it('refuses an arm64 release until the v2 manifest can describe it (#343)', () => {
+  it('aggregates an arm64 release: its DMG, and a v2 manifest that lists only that DMG for macOS (#343)', () => {
     const mac = makeMacFixture({ dmgName: 'Agent-Inbox-v1.0.1-arm64.dmg', architectures: ['arm64'], kind: 'arm64' })
     const output = tempDir()
-    expect(() => aggregateReleaseAssets({
+    const result = aggregateReleaseAssets({
       artifactsRoot: makeLinuxFixture().root,
       macAssetsDir: mac.assets,
       macEvidencePath: mac.evidence,
@@ -637,8 +642,81 @@ describe('multi-platform release aggregation', () => {
       repoRoot: arm64Repo(),
       sourceTree,
       outputDir: output,
-    })).toThrow(/an arm64 macOS release needs the v2 update manifest \(#343\)/)
-    expect(readdirSync(output)).toEqual([])
+    })
+    expect(result.assetNames).toEqual([
+      'Agent-Inbox-v1.0.1-arm64.dmg',
+      'Agent-Inbox-v1.0.1-linux-arm64.AppImage',
+      'Agent-Inbox-v1.0.1-linux-x86_64.AppImage',
+      'agent-inbox_1.0.1_amd64.deb',
+      'agent-inbox_1.0.1_arm64.deb',
+      'SHA256SUMS.txt',
+      'update-manifest-v2.json',
+    ])
+    const manifest = JSON.parse(readFileSync(join(output, 'release-assets', 'update-manifest-v2.json'), 'utf8'))
+    expect(manifest.schema).toBe(2)
+    expect(manifest.targets.map((target: { platform: string; architecture: string; packageType: string; filename: string }) => (
+      `${target.platform}/${target.architecture}/${target.packageType}:${target.filename}`
+    ))).toEqual([
+      'darwin/arm64/dmg:Agent-Inbox-v1.0.1-arm64.dmg',
+      'linux/arm64/appimage:Agent-Inbox-v1.0.1-linux-arm64.AppImage',
+      'linux/arm64/deb:agent-inbox_1.0.1_arm64.deb',
+      'linux/x64/appimage:Agent-Inbox-v1.0.1-linux-x86_64.AppImage',
+      'linux/x64/deb:agent-inbox_1.0.1_amd64.deb',
+    ])
+    const evidence = JSON.parse(readFileSync(result.evidencePath, 'utf8'))
+    expect(evidence.assets.find((asset: { platform: string }) => asset.platform === 'macos')).toMatchObject({
+      name: 'Agent-Inbox-v1.0.1-arm64.dmg',
+      architecture: 'arm64',
+      target: 'darwin-arm64',
+      architectures: { executable: ['arm64'], betterSqlite3: ['arm64'] },
+    })
+    expect(evidence.assets.find((asset: { platform: string }) => asset.platform === 'macos')).not.toHaveProperty('nativeIntel')
+  })
+
+  // Design §7.5: the file the client fetches is the file aggregation writes, so neither half
+  // of #343 can later be removed alone.
+  it('writes the manifest the app fetches, which the app verifies once signed', async () => {
+    const signer = generateKeyPairSync('ed25519')
+    const publicKeySpkiBase64 = signer.publicKey.export({ type: 'spki', format: 'der' }).toString('base64')
+    const keyId = `ed25519-${createHash('sha256').update(Buffer.from(publicKeySpkiBase64, 'base64')).digest('hex').slice(0, 16)}`
+    const registry = { schema: 1, signingKeyId: keyId, keys: [{ keyId, algorithm: 'ed25519', publicKeySpkiBase64 }] }
+    const repo = tempDir()
+    cpSync(join(root, 'release'), join(repo, 'release'), { recursive: true })
+    writeJson(join(repo, 'release', 'update-keys.json'), registry)
+    const mac = makeMacFixture()
+    const output = tempDir()
+    const result = aggregateReleaseAssets({
+      artifactsRoot: makeLinuxFixture().root,
+      macAssetsDir: mac.assets,
+      macEvidencePath: mac.evidence,
+      context,
+      repoRoot: repo,
+      sourceTree,
+      outputDir: output,
+    })
+    const name = basename(new URL(MANIFEST_V2_URL).pathname)
+    expect(result.assetNames).toContain(name)
+    expect(basename(new URL(SIGNATURE_V2_URL).pathname)).toBe(`${name}.sig`)
+    const manifestBytes = readFileSync(join(output, 'release-assets', name))
+    const privateKeyPem = signer.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString()
+    const { bytes: signatureBytes } = signManifest({ manifestBytes, registry: parseRegistry(Buffer.from(JSON.stringify(registry))), privateKeyPem, now: taggedAt })
+    const served = new Map<string, Buffer>([[MANIFEST_V2_URL, manifestBytes], [SIGNATURE_V2_URL, signatureBytes]])
+    const checked = await checkForUpdate({
+      fetchImpl: async (url: string) => {
+        const body = served.get(url)
+        return body ? new Response(new Uint8Array(body)) : new Response(null, { status: 404 })
+      },
+      registry: parseRegistry(Buffer.from(JSON.stringify(registry))),
+      currentVersion: '1.0.0',
+      automaticChecks: true,
+      platform: 'darwin',
+      arch: 'arm64',
+      isPackaged: true,
+      now: () => new Date(Date.parse(taggedAt) + 60_000),
+      includeArtifact: true,
+    })
+    expect(checked).toMatchObject({ status: 'available', manifest: 'v2', available: { version: '1.0.1' } })
+    expect(checked.artifact?.filename).toBe('Agent-Inbox-v1.0.1-universal.dmg')
   })
 
   it('marks PR/manual aggregation evidence non-publishable while proving the complete inventory', () => {
@@ -672,6 +750,8 @@ describe('multi-platform release aggregation', () => {
       'agent-inbox_1.0.1_amd64.deb',
       'agent-inbox_1.0.1_arm64.deb',
       'SHA256SUMS.txt',
+      'update-manifest-v2.json',
+      'update-manifest-v2.json.sig',
       'update-manifest.json',
       'update-manifest.json.sig',
     ])
@@ -709,6 +789,8 @@ describe('multi-platform release aggregation', () => {
       'agent-inbox_1.0.1_amd64.deb',
       'agent-inbox_1.0.1_arm64.deb',
       'SHA256SUMS.txt',
+      'update-manifest-v2.json',
+      'update-manifest-v2.json.sig',
       'update-manifest.json',
       'update-manifest.json.sig',
     ])

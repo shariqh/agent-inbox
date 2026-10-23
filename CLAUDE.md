@@ -1896,14 +1896,46 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   signatures through the supported direct-upgrade floor.
   Bootstrap requires proving no prior published stable release has either manifest asset.
   Later releases verify the latest prior pair and signed `trustedKeyIds` continuity before the one secret-bearing signing step. The sole write job still stages a private
-  draft, independently verifies all eight remote bytes plus the five-entry checksum and
-  signature, then exposes them atomically by undrafting. This layer adds no Electron
+  draft, independently verifies every remote file (ten since #343) plus the five-entry
+  checksum and the signatures, then exposes them atomically by undrafting. This layer adds no Electron
   fetching, scheduling, download, or install behavior. *(#340)* Installed apps keep the
   reader they shipped for good, so `test/fixtures/shipped-updaters/` holds it byte for
   byte: `v1.2.8/` (1.2.0–1.2.8) and `v1.6.0/` (1.3.0–1.6.0, with its trust-state writer),
   each folder with its own `update-manifest.cjs`. `test/shipped-updaters.test.ts` pins
   every file's SHA-256 and runs them against today's publisher; never edit or regenerate
   a fixture, and keep those tests passing through any manifest change (#295).
+  *(#343, design `docs/superpowers/specs/2026-10-23-update-manifest-v2-design.md`)* Every
+  release from 1.7.0 publishes ten files: five packages, `SHA256SUMS.txt` (still the
+  packages only) and two manifest pairs. `update-manifest-v2.json` (schema 2, read from
+  1.7.0 on) lists the release's own DMG, universal or, from 2.0.0, arm64, and the four Linux
+  packages; its reader skips target types it does not know and ignores unknown keys, while
+  the publisher stays strict about the set. `update-manifest.json` (schema 1, unchanged) is
+  what 1.2 to 1.6 read for good: in a universal release it is the v2 data with schema 1,
+  byte for byte what the v1-only generator wrote (G8); in an arm64 release it re-stamps the
+  release before's v1 manifest, which must verify, changing only `publishedAt`, `expiresAt`,
+  `signingKeyId` and `trustedKeyIds`, so it keeps describing the newest release with a
+  universal DMG (G6). The macOS kind is measured, not labelled: the CPU types `lipo`
+  reported for the shipped executable and better-sqlite3 addon must equal
+  `macosArchitectures` in `release/macos-inputs.json`, and one table
+  (`scripts/macos-release-kind.mjs`) gives the DMG name, its labels, the Intel gate and how
+  v1 is made (G9). Aggregation writes only v2. The sign job's YAML only moves files between
+  trusted subcommands of `scripts/update-manifest.mjs`: `check-release` (G7, G9: re-hashes
+  the packages and binds the authorized tag and commit), `inspect-history --kind`,
+  `history-assets`, `authorize-history` (both earlier pairs, fetched by asset id, verified
+  under this release's keys without an expiry check; G1 to G5), `derive-v1`, one `sign`
+  process for both files (the key's step runs nothing else) and `bind`, which writes
+  signing evidence schema 2 (per-manifest records, the measured kind, both histories, a
+  re-stamp's earlier digest and copied targets). G10: every v1 manifest carries a valid
+  signature from `ed25519-99927ba2f6af6482`, the only key 1.2 to 1.6 trust, pinned as
+  `ORIGINAL_UPDATE_KEY` and again in the publish job. Only the exact
+  `ALLOW-UPDATE-KEY-ROTATION:<tag>:<signingKeyId>` override waives it: checked before the
+  key is touched, recorded in the evidence, and required again in the publish job's own
+  repository variable; using it knowingly cuts 1.2 to 1.6 off. The publish job, which has
+  no checkout, recomputes the kind, verifies both envelopes, checks v2 and a universal v1
+  against the release, re-checks an arm64 re-stamp on its own against the release listing
+  and the earlier pair it fetches by asset id, and sends `make_latest: "true"`: apps read
+  both manifests only through `/releases/latest`. Never delete or edit 1.x-last's files,
+  and never publish a stable release by hand or with `make_latest: false`.
 - **Rollback high-water mark** *(#148, rollback half only)* — the packaged notify-only
   checker (`electron/update-fetch.cjs` + `update-controller.cjs`) persists the highest
   release version whose manifest passed signature, schema and expiry verification in its
@@ -1933,13 +1965,27 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   rule above still stands. The publisher already refuses to sign a version that is not
   newer than every prior stable release, so re-pointing GitHub's latest at an older
   release shows `stale` to every client that already verified the newer one; fix forward.
+  *(#343)* Two marks share the file: `highestVerifiedVersion` stays the v1 mark (1.3 to 1.6
+  read and write only it and keep the other field) and `highestVerifiedVersionV2` holds
+  what `update-manifest-v2.json` verified. The checker calls
+  `recordVerifiedVersion(version, manifest)` once per manifest it verifies: v2 on every
+  check, v1 only in the Intel fallback. A v1 manifest is stale below the v1 mark and a v2
+  manifest below the higher of both, at check time and again at install time, where the
+  offer's manifest is the one of the latest check that confirmed the download (an Intel
+  Mac's universal 1.9.0, offered by v2 before 2.0.0 and by v1 after it, must not be refused
+  by v2's 2.0.0 mark). One shared mark would make the frozen v1 manifest stale for every
+  app that has seen 2.x, blocking the Intel fallback and a deliberate downgrade to 1.6. The
+  publisher's refusal to sign a version that is not newer has one exception: an arm64
+  release's v1 manifest, an exact re-stamp of the earlier verified one, which no v1 reader
+  can take for a rollback because its mark is at most 1.x-last.
 - **Verified update download** *(#196 part 1)* — on a packaged
   `macos-dmg` or `appimage-self-replace` host, Settings → Updates offers **Download
   update** for the release the signed manifest verified; it never starts on its own and
   `deb-notify` stays notify-only. `checkForUpdate({ includeArtifact: true })` hands the
   pinned target (URL, length, SHA-256) to Electron main only; the controller publishes
   `available.downloadable` and byte progress, never the URL, digest or path.
-  `electron/update-download.cjs` re-validates the target against `TARGET_SPECS`, fetches
+  `electron/update-download.cjs` re-validates the target against `TARGET_SPECS_V2` (#343:
+  `TARGET_SPECS` plus the arm64 DMG), fetches
   only the canonical `github.com/shariqh/agent-inbox/releases/download/vX.Y.Z/<file>` URL
   with manual redirects (at most five, HTTPS, no credentials, `github.com` only to that
   exact URL, otherwise only `release-assets.githubusercontent.com` or the older
@@ -1965,8 +2011,9 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   check time refreshed, so a serving path that is behind cannot delete a verified
   newer download. The install steps
   consume `getVerifiedArtifact()` (`{ path, version, tag, filename, sha256, byteLength,
-  packageType, installStrategy }`) only through `downloader.openVerified()` (part 2,
-  below). The downloader itself never executes, mounts, opens or installs, and update
+  architecture, packageType, installStrategy }`) only through `downloader.openVerified()`
+  (part 2, below). *(#343)* The verified record carries the target's `architecture`, and a
+  file is reused only for the same one: a record an older build wrote is downloaded again. The downloader itself never executes, mounts, opens or installs, and update
   state never enters `public/attention.js`, badges or Needs-you.
 - **Verified update install on macOS** *(#196 part 2)* — **Install and restart** in
   Settings → Updates installs the verified DMG; an AppImage installs through its own
@@ -2041,6 +2088,31 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   the exit codes and `resultPath`. Update state still never enters
   `public/attention.js`, badges or Needs-you. Open: the real `/Applications` swap under
   macOS App Management needs the planned 1.3.0 → 1.3.1 end-to-end run.
+  *(#343)* **This process's architecture.** The installer takes `hostArch`
+  (`process.arch`, which is `x64` under Rosetta). Feasibility refuses an arm64 target
+  unless it is `arm64` (reason `architecture`, with copy that names neither processor) and
+  any other architecture, or an unknown host, as `error`; `prepare()` refuses an arm64
+  record on such a host before any filesystem call. The plist check also requires
+  `CFBundleExecutable` to be `Agent Inbox`, and then `verifyStaged` reads at most 4 KiB of
+  `Contents/MacOS/Agent Inbox` through `O_RDONLY|O_NOFOLLOW|O_NONBLOCK` and requires a fat
+  header (`0xcafebabe`/`0xcafebabf`, 1 to 8 entries, all inside the bytes read; a Java
+  class file shares the magic and fails on its count) or a thin little-endian 64-bit one
+  (`0xfeedfacf`) naming this process's CPU type (`0x0100000c` arm64, `0x01000007` x86_64),
+  before codesign: the bytes that will run, not the manifest's label. No `lipo`: without the
+  Command Line Tools it is only an installer stub. A Mac that cannot run an arm64-only
+  release gets a blocked, notify-only offer, never downloadable whatever installer is
+  registered: `available.blocked` is `apple-silicon` on an Intel Mac (copy says it stays on
+  its version; Settings hides Review release, main refuses `update-open-release`, no
+  notification) or `rosetta` (copy says to reopen without Rosetta; Review release stays;
+  one notification per version). It is blocked only when `update-manifest.json` verified,
+  is not stale and is not newer than the running app; a newer v1 is an ordinary,
+  installable offer of that universal release, and a v1 read that fails or is stale keeps
+  any verified download. A blocked result keeps one too while it is a universal download of
+  a release newer than the running app, exactly as `stale` does (only the check time moves,
+  nothing is pruned, the download stays on screen): v1 always names the newest universal
+  release, so a read that leaves this Mac blocked below the release it holds is behind. That
+  covers a 1.x-last download verified through v2, which raised only the v2 mark; an arm64
+  download, or one not newer than the running app, is still dropped.
 - **Verified update install for AppImage** *(#196 part 3)* — `electron/update-install-appimage.cjs`
   replaces the running AppImage FILE in place (same name and path; the name may carry the
   old version) and restarts into it. (1) **One AppImage proof:** `runsFromAppImage()` in

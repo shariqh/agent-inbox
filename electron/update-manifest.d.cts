@@ -1,10 +1,16 @@
 export const UPDATE_REGISTRY_SCHEMA: 1
 export const UPDATE_MANIFEST_SCHEMA: 1
+/** Schema of update-manifest-v2.json, read by 1.7.0 and later (#343). */
+export const UPDATE_MANIFEST_SCHEMA_V2: 2
+/** The detached signature envelope's own schema, the same for both manifests. */
+export const UPDATE_ENVELOPE_SCHEMA: 1
 export const UPDATE_MANIFEST_KIND: 'agent-inbox-update-manifest'
 export const UPDATE_REPOSITORY: 'shariqh/agent-inbox'
 export const MANIFEST_LIFETIME_DAYS: 180
 export const MANIFEST_ASSET_NAME: string
 export const SIGNATURE_ASSET_NAME: string
+export const MANIFEST_V2_ASSET_NAME: 'update-manifest-v2.json'
+export const SIGNATURE_V2_ASSET_NAME: 'update-manifest-v2.json.sig'
 
 export class UpdateManifestError extends Error {}
 
@@ -54,6 +60,13 @@ export type UpdateManifest = {
   targets: readonly UpdateManifestTarget[]
 }
 
+/**
+ * A validated schema-2 manifest. Its `targets` hold only the types this reader knows, in
+ * manifest order; types it does not know were checked for name, uniqueness and order, then
+ * skipped. Keys it does not know are never carried over.
+ */
+export type UpdateManifestV2 = Omit<UpdateManifest, 'schema'> & { schema: 2 }
+
 export type UpdateManifestSignature = {
   algorithm: 'ed25519'
   keyId: Ed25519KeyId
@@ -84,6 +97,11 @@ export type UpdateManifestTargetSpec = {
 }
 
 export const TARGET_SPECS: readonly UpdateManifestTargetSpec[]
+/**
+ * The six target types the schema-2 reader knows: `TARGET_SPECS` plus the arm64 DMG,
+ * ordered by platform, then architecture, then packageType.
+ */
+export const TARGET_SPECS_V2: readonly UpdateManifestTargetSpec[]
 export function targetTuple(value: {
   platform: string
   architecture: string
@@ -103,6 +121,14 @@ export function validateRegistry(value: unknown): UpdateRegistry
 
 export function validateManifest(value: unknown): UpdateManifest
 export function parseManifest(bytes: string | Buffer): UpdateManifest
+/**
+ * Schema 2 (design §5.4): the top level of schema 1 with a lifetime above 0 and up to 180
+ * days, unknown keys ignored at every level, and 1 to 32 targets ordered by platform, then
+ * architecture, then packageType, each part compared by UTF-16 code unit. A known type's
+ * required fields are as strict as in schema 1; an unknown type is skipped.
+ */
+export function validateManifestV2(value: unknown): UpdateManifestV2
+export function parseManifestV2(bytes: string | Buffer): UpdateManifestV2
 
 export function serializeEnvelope(envelope: UpdateManifestEnvelope): Buffer
 /**
@@ -144,3 +170,11 @@ export function verifyManifest(options: {
   registry: UpdateRegistry
   now?: string | Date
 }): UpdateManifest
+
+/** `verifyManifest` for update-manifest-v2.json: the same envelope and trust order. */
+export function verifyManifestV2(options: {
+  manifestBytes: Buffer
+  envelope: Buffer | string | UpdateManifestEnvelope
+  registry: UpdateRegistry
+  now?: string | Date
+}): UpdateManifestV2

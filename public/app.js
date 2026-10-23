@@ -9007,8 +9007,9 @@ function paintUpdateSettings(state) {
   checked.textContent = state.checkedAt
     ? `Last checked ${new Date(state.checkedAt).toLocaleString()}`
     : 'Not checked yet'
-  // Nothing competes with an install that is already under way.
-  review.hidden = !state.available || installing
+  // Nothing competes with an install that is already under way, and an Intel Mac is never
+  // pointed at a release it can't run (#343); under Rosetta the release still helps.
+  review.hidden = !state.available || installing || state.available.blocked === 'apple-silicon'
   // The download, install or restart is the primary action while it is offered or running.
   review.classList.toggle('updates-secondary', !download.hidden || !cancel.hidden || !install.hidden || !restart.hidden)
   releases.hidden = state.status !== 'unverified' && state.status !== 'stale' && !(notice.textContent !== '' && !state.available)

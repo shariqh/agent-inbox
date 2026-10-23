@@ -378,7 +378,7 @@ digests to agree before any protected job receives credentials.
 
 The public allowlist is exactly:
 
-- `Agent-Inbox-vX.Y.Z-universal.dmg`
+- `Agent-Inbox-vX.Y.Z-universal.dmg`, or `Agent-Inbox-vX.Y.Z-arm64.dmg` for an arm64 release
 - `Agent-Inbox-vX.Y.Z-linux-x86_64.AppImage`
 - `Agent-Inbox-vX.Y.Z-linux-arm64.AppImage`
 - `agent-inbox_X.Y.Z_amd64.deb`
@@ -386,35 +386,43 @@ The public allowlist is exactly:
 - `SHA256SUMS.txt`
 - `update-manifest.json`
 - `update-manifest.json.sig`
+- `update-manifest-v2.json`
+- `update-manifest-v2.json.sig`
 
 The checksum manifest contains the five binary-package names in ascending
 bytewise filename order. Build reports and per-package checksum sidecars remain
 retained Actions evidence; they are not duplicate public assets. Aggregate
 evidence contains only canonical relative names, hashes, sizes, source and
 manifest identities, and verification outcomes—never builder-local paths. The
-deterministic update manifest repeats the exact five package names, byte lengths,
-and SHA-256 values with platform/architecture/install-strategy metadata. Its
-detached Ed25519 envelope covers the exact manifest bytes and carries a canonical
+deterministic update manifests (#343) repeat package names, byte lengths, and SHA-256
+values with platform/architecture/install-strategy metadata: `update-manifest-v2.json`
+lists this release's five packages and is what Agent Inbox 1.7.0 and later read on
+Linux, while `update-manifest.json`, which 1.2 to 1.6 read, describes this release while
+its macOS package is universal and the newest universal release after that. Linux
+selection does not change: an app from 1.7.0 on goes straight to the newest release, and
+one from 1.2 to 1.6 takes one extra hop through the last universal release once macOS
+builds are arm64-only ([Two update manifests](macos-release.md#two-update-manifests)).
+Each detached Ed25519 envelope covers its exact manifest bytes and carries a canonical
 key-id-sorted signature array. Production emits one signature; future key rotation
 can overlap old and new signatures without a schema change, and verification accepts
 any valid signature from a pinned trusted key. Structurally valid entries for keys an
 installed client does not yet pin are ignored; an unknown-only envelope still fails.
 The current protected signer remains single-key, so routine rotation must wait for a
-future dual-key signing extension rather than merely flipping the active key. Neither
+future dual-key signing extension rather than merely flipping the active key. No
 manifest asset is added to the package-only checksum file. Agent Inbox 1.3 and later
-persist the highest release version whose manifest they verified and report any older
-signed manifest as stale, so marking an older release as latest cannot roll those
-clients back; fix forward with a newer version instead.
+persist the highest release version whose manifest they verified (one mark per manifest
+from 1.7.0) and report any older signed manifest as stale, so marking an older release as
+latest cannot roll those clients back; fix forward with a newer version instead.
 
 Publication starts with a private draft carrying neutral staging metadata. The
 write-scoped job uploads the exact allowlist, verifies the remote API inventory,
-always downloads all eight assets into isolated storage, compares each file with
+always downloads all ten assets into isolated storage, compares each file with
 the protected handoff, rehashes all five packages through the downloaded
-checksum manifest, and independently verifies the manifest signature and target
+checksum manifest, and independently verifies both manifests' signatures and target
 metadata. Only then does one API update install the final title/notes and make
-the release public. Before signing, a separate read-only protected job proves
-that this is the first manifest-bearing release or verifies the latest prior
-manifest pair and signed key continuity. An exact already-public rerun is a
+the release public and latest. Before signing, a separate read-only protected job
+proves, for each manifest, that this release may start its history or verifies the
+latest prior pair and signed key continuity. An exact already-public rerun is a
 verified no-op; an existing draft or any conflicting tag, metadata, asset, byte,
 checksum, or signature fails closed. Draft creation captures the numeric release
 ID directly from the API response and writes a private ownership marker binding

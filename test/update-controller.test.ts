@@ -60,6 +60,7 @@ function state(
     message: status === 'available' ? 'A verified update is available.' : 'Agent Inbox is up to date.',
     ...(status === 'available'
       ? {
+          manifest: 'v2' as const,
           available: {
             version,
             tag: `v${version}`,
@@ -395,6 +396,7 @@ function availableWith(
     automaticChecks: false,
     checkedAt,
     message: 'A verified update is available.',
+    manifest: 'v2',
     available: {
       version,
       tag: `v${version}`,
@@ -453,6 +455,7 @@ function fakeDownloader() {
         filename: current.artifact.filename,
         sha256: current.artifact.sha256,
         byteLength: current.artifact.byteLength,
+        architecture: current.artifact.architecture,
         packageType: current.artifact.packageType,
         installStrategy: current.artifact.installStrategy,
         ...(current.artifact.minimumSystemVersion !== undefined
@@ -782,10 +785,10 @@ describe('installing a verified update', () => {
     return { installer, prepared, calls }
   }
 
-  function trustStore(mark: () => string | null) {
+  function trustStore(mark: () => string | null, markV2: () => string | null = () => null) {
     return {
-      read: vi.fn(async () => ({ highestVerifiedVersion: mark() })),
-      recordVerifiedVersion: vi.fn(async (version: string) => ({ highestVerifiedVersion: version })),
+      read: vi.fn(async () => ({ highestVerifiedVersion: mark(), highestVerifiedVersionV2: markV2() })),
+      recordVerifiedVersion: vi.fn(async (version: string) => ({ highestVerifiedVersion: version, highestVerifiedVersionV2: markV2() })),
     }
   }
 
@@ -884,7 +887,7 @@ describe('installing a verified update', () => {
       available: { version: '2.0.0', downloadable: true, installable: true },
     })
     expect(checked.available).not.toHaveProperty('reason')
-    expect(installer.feasibility).toHaveBeenCalledWith({ version: '2.0.0', minimumSystemVersion: '13.5' })
+    expect(installer.feasibility).toHaveBeenCalledWith({ version: '2.0.0', architecture: 'universal', minimumSystemVersion: '13.5' })
   })
 
   it('keeps an offer notify-only with the installer reason when it cannot install here', async () => {
@@ -978,7 +981,7 @@ describe('installing a verified update', () => {
     await source.handle.read(new Uint8Array(4), 0, 4, 0)
     expect(openedHandle.read).toHaveBeenCalledWith(expect.any(Uint8Array), 0, 4, 0)
     expect(prepareOptions?.signal).toBeInstanceOf(AbortSignal)
-    expect(installer.feasibility).toHaveBeenLastCalledWith({ version: '2.0.0', minimumSystemVersion: '13.5' })
+    expect(installer.feasibility).toHaveBeenLastCalledWith({ version: '2.0.0', architecture: 'universal', minimumSystemVersion: '13.5' })
     expect(result).toMatchObject({
       status: 'installing',
       message: 'Installing version 2.0.0. Agent Inbox will restart when it is ready.',
@@ -1671,3 +1674,280 @@ describe('reporting an install that did not take effect', () => {
     })).toThrow(TypeError)
   })
 })
+
+// Update manifest v2 (#343, design §6.3 and §6.4).
+describe('a release this Mac cannot install, and the manifest an offer came from', () => {
+  const INTEL = 'It needs a Mac with Apple silicon. This Mac has an Intel processor, so Agent Inbox stays on 1.9.0, which keeps working.'
+  const ROSETTA = 'It runs only natively on Apple silicon, and Agent Inbox is running under Rosetta. Quit Agent Inbox, turn off “Open using Rosetta” in its Get Info window in Finder, then reopen it to install.'
+
+  function blockedResult(blocked: 'apple-silicon' | 'rosetta', extra: Partial<UpdateCheckResult> = {}): UpdateCheckResult {
+    return {
+      status: 'available',
+      currentVersion: '1.9.0',
+      automaticChecks: true,
+      checkedAt: '2027-01-19T00:00:00.000Z',
+      message: 'A verified update is available.',
+      manifest: 'v2',
+      available: {
+        version: '2.0.0',
+        tag: 'v2.0.0',
+        releaseUrl: 'https://github.com/shariqh/agent-inbox/releases/tag/v2.0.0',
+        target: { packageType: 'dmg', installStrategy: 'macos-dmg' },
+        blocked,
+      },
+      ...extra,
+    }
+  }
+
+  function installer() {
+    return {
+      strategy: 'macos-dmg' as const,
+      feasibility: vi.fn(async (): Promise<InstallFeasibility> => ({ ok: true })),
+      prepare: vi.fn(async (): Promise<PreparedInstall> => ({ commit: vi.fn(async () => {}), discard: vi.fn(async () => {}) })),
+    }
+  }
+
+  function setup(checker: () => Promise<UpdateCheckResult>, options: { currentVersion?: string; trust?: { read: () => Promise<unknown>; recordVerifiedVersion: (...args: never[]) => Promise<unknown> } } = {}) {
+    const fake = fakeDownloader()
+    const notifier = vi.fn()
+    const preferences = prefs({ schema: 1, automaticChecks: true, lastNotifiedVersion: null })
+    const macInstaller = installer()
+    const controller = createUpdateController({
+      currentVersion: options.currentVersion ?? '1.9.0',
+      preferences,
+      checker,
+      notifier,
+      downloader: fake.downloader,
+      installers: { 'macos-dmg': macInstaller },
+      requestRestart: vi.fn(),
+      ...(options.trust ? { trustState: options.trust as never } : {}),
+      clock: () => new Date('2027-01-19T00:00:00Z'),
+    })
+    return { controller, fake, notifier, preferences, macInstaller }
+  }
+
+  it.each([
+    ['apple-silicon', INTEL],
+    ['rosetta', ROSETTA],
+  ] as const)('keeps a %s offer notify-only with its fixed copy, whatever installer is registered', async (blocked, copy) => {
+    const { controller, fake, macInstaller } = setup(async () => blockedResult(blocked))
+    const checked = await controller.checkNow()
+    expect(checked).toEqual({
+      status: 'available',
+      currentVersion: '1.9.0',
+      automaticChecks: true,
+      checkedAt: '2027-01-19T00:00:00.000Z',
+      message: 'A verified update is available.',
+      available: {
+        version: '2.0.0',
+        tag: 'v2.0.0',
+        releaseUrl: 'https://github.com/shariqh/agent-inbox/releases/tag/v2.0.0',
+        target: { packageType: 'dmg', installStrategy: 'macos-dmg' },
+        downloadable: false,
+        installable: false,
+        installPermitted: false,
+        reason: copy,
+        blocked,
+      },
+    })
+    // The copy passes the controller's own filter for anything shown in Settings.
+    expect(copy.length).toBeLessThanOrEqual(240)
+    expect(copy).not.toMatch(/[\u0000-\u001f\u007f/\\]/)
+    await expect(controller.downloadNow()).resolves.toBe(checked)
+    await expect(controller.installNow()).resolves.toBe(checked)
+    expect(fake.downloader.normalize).not.toHaveBeenCalled()
+    expect(fake.downloader.download).not.toHaveBeenCalled()
+    expect(macInstaller.feasibility).not.toHaveBeenCalled()
+  })
+
+  it('refuses a blocked offer with an artifact, an unknown reason or another package, and an offer that names no manifest', async () => {
+    const universal = artifactFor('2.0.0')
+    for (const candidate of [
+      blockedResult('apple-silicon', { artifact: universal }),
+      blockedResult('intel' as 'apple-silicon'),
+      { ...blockedResult('rosetta'), available: { ...blockedResult('rosetta').available!, target: { packageType: 'appimage' as const, installStrategy: 'appimage-self-replace' as const } } },
+      { ...availableWith(universal), manifest: undefined },
+      { ...availableWith(universal), manifest: 'v3' as 'v2' },
+    ]) {
+      const { controller } = setup(async () => candidate)
+      await expect(controller.checkNow()).resolves.toMatchObject({ status: 'unverified' })
+    }
+  })
+
+  it('notifies once per version under Rosetta, with its reason, and never on an Intel Mac', async () => {
+    const intel = setup(async () => blockedResult('apple-silicon'))
+    await intel.controller.runScheduledCheck()
+    await intel.controller.runScheduledCheck()
+    expect(intel.notifier).not.toHaveBeenCalled()
+    expect(intel.preferences.setLastNotifiedVersion).not.toHaveBeenCalled()
+
+    const rosetta = setup(async () => blockedResult('rosetta'))
+    await rosetta.controller.runScheduledCheck()
+    await rosetta.controller.runScheduledCheck()
+    expect(rosetta.notifier).toHaveBeenCalledTimes(1)
+    expect(rosetta.notifier).toHaveBeenCalledWith({
+      version: '2.0.0',
+      tag: 'v2.0.0',
+      releaseUrl: 'https://github.com/shariqh/agent-inbox/releases/tag/v2.0.0',
+      downloadable: false,
+      installable: false,
+      rosetta: true,
+    })
+
+    const ordinary = setup(async () => availableWith(artifactFor('2.0.0')), { currentVersion: '1.0.0' })
+    await ordinary.controller.runScheduledCheck()
+    expect(ordinary.notifier).toHaveBeenCalledWith(expect.not.objectContaining({ rosetta: expect.anything() }))
+  })
+
+  it('offers Review release for every state but a release an Intel Mac cannot run', async () => {
+    const { reviewReleaseOffered } = updateController
+    for (const [blocked, offered] of [['apple-silicon', false], ['rosetta', true]] as const) {
+      const { controller } = setup(async () => blockedResult(blocked))
+      expect(reviewReleaseOffered(await controller.checkNow()), blocked).toBe(offered)
+    }
+    const ordinary = setup(async () => availableWith(artifactFor('2.0.0')), { currentVersion: '1.0.0' })
+    expect(reviewReleaseOffered(await ordinary.controller.checkNow())).toBe(true)
+    expect(reviewReleaseOffered(null)).toBe(true)
+    expect(reviewReleaseOffered(undefined)).toBe(true)
+  })
+
+  // A Mac on `currentVersion` holding a verified download of `download` (design §6.2).
+  async function holding(next: () => Promise<UpdateCheckResult>, download = artifactFor('1.9.0'), currentVersion = '1.8.0') {
+    const offer = { ...availableWith(download), currentVersion }
+    let check: () => Promise<UpdateCheckResult> = async () => offer
+    const held = setup(() => check(), { currentVersion })
+    await held.controller.checkNow()
+    const done = held.controller.downloadNow()
+    held.fake.succeed()
+    await done
+    expect(held.controller.getVerifiedArtifact()).toMatchObject({ version: download.version, architecture: download.architecture })
+    held.fake.downloader.prune.mockClear()
+    check = next
+    return held
+  }
+
+  it('keeps a verified universal download of a newer release when the v1 read throws, reads stale or leaves the Mac blocked', async () => {
+    for (const [label, next] of [
+      ['a v1 read that throws', async (): Promise<UpdateCheckResult> => { throw new Error('manifest bytes do not match the digest') }],
+      ['a stale v1', async (): Promise<UpdateCheckResult> => ({ status: 'stale', currentVersion: '1.8.0', automaticChecks: false, checkedAt: '2027-01-19T00:00:00.000Z', message: 'x' })],
+      // update-manifest.json always names the newest universal release, so a v1 read that
+      // leaves this Mac blocked below the universal release it holds is behind (#343).
+      ['a v1 read that leaves an Intel Mac blocked', async (): Promise<UpdateCheckResult> => ({ ...blockedResult('apple-silicon'), currentVersion: '1.8.0' })],
+      ['a v1 read that leaves Rosetta blocked', async (): Promise<UpdateCheckResult> => ({ ...blockedResult('rosetta'), currentVersion: '1.8.0' })],
+    ] as const) {
+      const { controller, fake } = await holding(next)
+      const before = controller.getState()
+      const after = await controller.checkNow()
+      expect(after, label).toMatchObject({ status: 'verified', available: { version: '1.9.0', installable: true } })
+      // Only the check time moves: no blocked copy replaces the download on screen.
+      expect({ ...after, checkedAt: before.checkedAt }, label).toEqual(before)
+      expect(controller.getVerifiedArtifact(), label).toMatchObject({ version: '1.9.0', architecture: 'universal' })
+      expect(fake.downloader.prune, label).not.toHaveBeenCalled()
+    }
+  })
+
+  it('still drops a held arm64 download, or one not newer than the running app, on a blocked result', async () => {
+    const arm64 = {
+      ...artifactFor('1.9.0'),
+      architecture: 'arm64' as const,
+      filename: 'Agent-Inbox-v1.9.0-arm64.dmg',
+      url: 'https://github.com/shariqh/agent-inbox/releases/download/v1.9.0/Agent-Inbox-v1.9.0-arm64.dmg',
+    }
+    for (const [label, download, currentVersion] of [
+      ['an arm64 download', arm64, '1.8.0'],
+      ['a download of the running version', artifactFor('1.9.0'), '1.9.0'],
+    ] as const) {
+      const { controller, fake } = await holding(async () => ({ ...blockedResult('apple-silicon'), currentVersion }), download, currentVersion)
+      await expect(controller.checkNow(), label).resolves.toMatchObject({ status: 'available', available: { version: '2.0.0', blocked: 'apple-silicon' } })
+      expect(controller.getVerifiedArtifact(), label).toBeNull()
+      await vi.waitFor(() => expect(fake.downloader.prune, label).toHaveBeenCalledWith({ keep: null, currentVersion }))
+    }
+  })
+
+  describe('install-time marks follow the manifest the offer came from (design §5.6)', () => {
+    async function installWith(manifest: 'v1' | 'v2', marks: { v1: string | null; v2: string | null }, reconfirm?: 'v1' | 'v2') {
+      const trust = {
+        read: vi.fn(async () => ({ highestVerifiedVersion: marks.v1, highestVerifiedVersionV2: marks.v2 })),
+        recordVerifiedVersion: vi.fn(async () => ({ highestVerifiedVersion: marks.v1, highestVerifiedVersionV2: marks.v2 })),
+      }
+      let offered: 'v1' | 'v2' = manifest
+      const fake = fakeDownloader()
+      const macInstaller = installer()
+      const controller = createUpdateController({
+        currentVersion: '1.8.0',
+        preferences: prefs(),
+        trustState: trust,
+        checker: async () => ({ ...availableWith(artifactFor('1.9.0'), '1.9.0'), currentVersion: '1.8.0', manifest: offered }),
+        notifier: vi.fn(),
+        downloader: fake.downloader,
+        installers: { 'macos-dmg': macInstaller },
+        requestRestart: vi.fn(),
+      })
+      await controller.checkNow()
+      const done = controller.downloadNow()
+      fake.succeed()
+      await done
+      if (reconfirm) {
+        offered = reconfirm
+        await expect(controller.checkNow()).resolves.toMatchObject({ status: 'verified' })
+      }
+      const result = await controller.installNow()
+      return { result, prepared: macInstaller.prepare.mock.calls.length > 0 }
+    }
+
+    it('refuses a v2 offer below the higher of the two marks', async () => {
+      await expect(installWith('v2', { v1: '2.0.0', v2: null })).resolves.toMatchObject({
+        prepared: false,
+        result: { status: 'install-failed', message: 'A newer release was verified since this download. Check for updates again.' },
+      })
+      await expect(installWith('v2', { v1: null, v2: '2.0.0' })).resolves.toMatchObject({ prepared: false })
+    })
+
+    it('checks a v1 offer against the v1 mark only', async () => {
+      await expect(installWith('v1', { v1: '1.9.0', v2: '2.0.1' })).resolves.toMatchObject({ prepared: true })
+      await expect(installWith('v1', { v1: '1.9.1', v2: null })).resolves.toMatchObject({
+        prepared: false,
+        result: { status: 'install-failed' },
+      })
+    })
+
+    it('uses the manifest of the latest check that confirmed the download', async () => {
+      // Downloaded while v2 offered the universal 1.9.0; once 2.0.0 (arm64 only) is out, v1
+      // offers the same file, and v2's 2.0.0 mark no longer applies to it.
+      await expect(installWith('v2', { v1: '1.9.0', v2: '2.0.0' }, 'v1')).resolves.toMatchObject({ prepared: true })
+      await expect(installWith('v1', { v1: '1.9.0', v2: '2.0.0' }, 'v2')).resolves.toMatchObject({ prepared: false })
+    })
+  })
+
+  it('records each manifest in its own mark and resolves the one its stale decision uses', async () => {
+    const stored = { highestVerifiedVersion: '1.9.0' as string | null, highestVerifiedVersionV2: '2.0.1' as string | null }
+    const trust = {
+      read: vi.fn(async () => ({ ...stored })),
+      recordVerifiedVersion: vi.fn(async (version: string, manifest: 'v1' | 'v2') => {
+        const field = manifest === 'v1' ? 'highestVerifiedVersion' : 'highestVerifiedVersionV2'
+        const mark = stored[field]
+        if (mark === null || version.localeCompare(mark, undefined, { numeric: true }) > 0) stored[field] = version
+        return { ...stored }
+      }),
+    }
+    const resolved: Array<string | null> = []
+    const controller = createUpdateController({
+      currentVersion: '1.8.0',
+      preferences: prefs(),
+      trustState: trust,
+      checker: async ({ recordVerifiedVersion }) => {
+        resolved.push(await recordVerifiedVersion('2.0.0', 'v2'))
+        resolved.push(await recordVerifiedVersion('1.8.0', 'v1'))
+        await expect(recordVerifiedVersion('2.0.0', 'v3' as 'v2')).rejects.toThrow(TypeError)
+        return state('current', false)
+      },
+      notifier: vi.fn(),
+    })
+    await controller.checkNow()
+    // v2 is checked against the higher of both marks; v1 against its own mark alone. Each
+    // save writes that manifest's session high, which already holds the stored 1.9.0.
+    expect(resolved).toEqual(['2.0.1', '1.9.0'])
+    expect(trust.recordVerifiedVersion.mock.calls).toEqual([['2.0.0', 'v2'], ['1.9.0', 'v1']])
+  })
+})
+

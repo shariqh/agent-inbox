@@ -10,6 +10,9 @@ const DEFAULT_FILENAME = 'update-preferences.json'
 // to defaults (automatic checks off) when it carries any key they do not know.
 const TRUST_STATE_FILENAME = 'update-trust-state.json'
 const TRUST_STATE_SCHEMA = 1
+// One rollback mark per manifest (#343, design §5.6). Apps from 1.3 to 1.6 read and raise
+// only the v1 mark, keeping every other field, so the file stays at schema 1.
+const MARK_FIELDS = Object.freeze({ v1: 'highestVerifiedVersion', v2: 'highestVerifiedVersionV2' })
 const LOCK_RETRY_MS = 25
 const LOCK_TIMEOUT_MS = 5_000
 const LOCK_STALE_MS = 5 * 60_000
@@ -63,8 +66,12 @@ function isNewerVersion(candidate, current) {
   return false
 }
 
+function noMarks() {
+  return { highestVerifiedVersion: null, highestVerifiedVersionV2: null }
+}
+
 function parseTrustState(bytes) {
-  const corrupt = { record: null, mark: null, writable: true }
+  const corrupt = { record: null, marks: noMarks(), writable: true }
   let value
   try {
     value = JSON.parse(Buffer.isBuffer(bytes) ? bytes.toString('utf8') : String(bytes))
@@ -76,7 +83,10 @@ function parseTrustState(bytes) {
   }
   return {
     record: value,
-    mark: isVersion(value.highestVerifiedVersion) ? value.highestVerifiedVersion : null,
+    marks: {
+      highestVerifiedVersion: isVersion(value.highestVerifiedVersion) ? value.highestVerifiedVersion : null,
+      highestVerifiedVersionV2: isVersion(value.highestVerifiedVersionV2) ? value.highestVerifiedVersionV2 : null,
+    },
     writable: value.schema === TRUST_STATE_SCHEMA,
   }
 }
@@ -225,33 +235,39 @@ function createUpdatePreferences(options = {}) {
   })
 }
 
-// Rollback high-water mark (#148). Callers record only versions whose signed manifest
-// verified. A newer build may extend this file: a valid mark is enforced whatever else the
-// file holds, unknown fields survive a raise, and a newer schema is never overwritten.
+// Rollback high-water marks (#148), one per manifest (#343): a version verified in
+// update-manifest.json raises only highestVerifiedVersion, one verified in
+// update-manifest-v2.json only highestVerifiedVersionV2. Callers record only versions whose
+// signed manifest verified. A newer build may extend this file: a valid mark is enforced
+// whatever else the file holds, unknown fields survive a raise, and a newer schema is never
+// overwritten.
 function createUpdateTrustState(options = {}) {
   const file = createLockedFile(resolveFilePath(options, TRUST_STATE_FILENAME), options.fsImpl ?? fs)
 
   async function readLive() {
     const bytes = await file.readBytes()
-    return bytes === null ? { record: null, mark: null, writable: true } : parseTrustState(bytes)
+    return bytes === null ? { record: null, marks: noMarks(), writable: true } : parseTrustState(bytes)
   }
 
   return Object.freeze({
     async read() {
       await file.settled()
-      return { highestVerifiedVersion: (await readLive()).mark }
+      return { ...(await readLive()).marks }
     },
-    recordVerifiedVersion(version) {
+    recordVerifiedVersion(version, manifest) {
       if (!isVersion(version)) {
         return Promise.reject(new TypeError('verified version must be an exact stable X.Y.Z version'))
       }
+      if (manifest !== 'v1' && manifest !== 'v2') {
+        return Promise.reject(new TypeError('manifest must be "v1" or "v2"'))
+      }
+      const field = MARK_FIELDS[manifest]
       return file.mutate(async () => {
         const current = await readLive()
-        if (!current.writable || (current.mark !== null && !isNewerVersion(version, current.mark))) {
-          return { highestVerifiedVersion: current.mark }
-        }
-        await file.atomicWrite({ ...current.record, schema: TRUST_STATE_SCHEMA, highestVerifiedVersion: version })
-        return { highestVerifiedVersion: version }
+        const mark = current.marks[field]
+        if (!current.writable || (mark !== null && !isNewerVersion(version, mark))) return { ...current.marks }
+        await file.atomicWrite({ ...current.record, schema: TRUST_STATE_SCHEMA, [field]: version })
+        return { ...current.marks, [field]: version }
       })
     },
   })

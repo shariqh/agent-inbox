@@ -18,7 +18,11 @@ import {
 import { macosKindOf, macosRelease } from './macos-release-kind.mjs'
 import { loadReleaseInputs } from './release-inputs.mjs'
 import {
-  generateManifest,
+  MANIFEST_ASSET_NAME,
+  MANIFEST_V2_ASSET_NAME,
+  SIGNATURE_ASSET_NAME,
+  SIGNATURE_V2_ASSET_NAME,
+  generateManifestV2,
   parseRegistry,
 } from './update-manifest.mjs'
 
@@ -481,8 +485,11 @@ export function validateDryRunReleaseArtifacts({
         `agent-inbox_${release.version}_arm64.deb`,
       ].sort(),
       'SHA256SUMS.txt',
-      'update-manifest.json',
-      'update-manifest.json.sig',
+      // Both manifests (#343): the signer derives v1 from v2 and signs both.
+      MANIFEST_V2_ASSET_NAME,
+      SIGNATURE_V2_ASSET_NAME,
+      MANIFEST_ASSET_NAME,
+      SIGNATURE_ASSET_NAME,
     ],
     verification: {
       linuxNativePackages: 'passed',
@@ -569,9 +576,6 @@ export function aggregateReleaseAssets({
     context: release,
     expected: macosInputs.macosArchitectures,
   })
-  if (mac.macos.v1Manifest !== 'release') {
-    fail(`an ${mac.macos.kind} macOS release needs the v2 update manifest (#343): update-manifest.json can describe only a universal DMG`)
-  }
   const { output, assets } = prepareOutput(outputDir)
   const sources = new Map(linux.sources)
   const dmgName = mac.macos.dmgName
@@ -634,7 +638,10 @@ export function aggregateReleaseAssets({
   }
   const registryPath = join(resolve(repoRoot), 'release/update-keys.json')
   const registry = parseRegistry(readFileSync(registryPath))
-  const { bytes: updateManifestBytes } = generateManifest({
+  // Only v2 (#343, design §7.2): the trusted signer derives v1 from it, by projection or
+  // re-stamp, so this handoff still holds seven release files.
+  const { bytes: updateManifestBytes } = generateManifestV2({
+    kind: mac.macos.kind,
     registry,
     evidence: {
       tag: evidence.tag,
@@ -646,11 +653,11 @@ export function aggregateReleaseAssets({
     minimumMacosVersion: macosInputs.minimumMacosVersion,
     publishedAt: release.taggedAt,
   })
-  const updateManifestPath = join(assets, 'update-manifest.json')
+  const updateManifestPath = join(assets, MANIFEST_V2_ASSET_NAME)
   writeFileSync(updateManifestPath, updateManifestBytes, { mode: DATA_MODE })
   chmodSync(updateManifestPath, DATA_MODE)
   evidence.updateManifest = {
-    name: 'update-manifest.json',
+    name: MANIFEST_V2_ASSET_NAME,
     size: updateManifestBytes.length,
     sha256: sha256File(updateManifestPath),
     keyRegistrySha256: sha256File(registryPath),
@@ -658,7 +665,7 @@ export function aggregateReleaseAssets({
   const evidencePath = join(output, 'release-aggregation-evidence.json')
   writeFileSync(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`, { mode: DATA_MODE })
   return {
-    assetNames: [...packageNames, 'SHA256SUMS.txt', 'update-manifest.json'],
+    assetNames: [...packageNames, 'SHA256SUMS.txt', MANIFEST_V2_ASSET_NAME],
     assetsDir: assets,
     evidencePath,
   }

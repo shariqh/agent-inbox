@@ -7,9 +7,11 @@
 // signing, and history/CLI concerns). This module owns exactly: strict
 // key-registry parsing/validation, ed25519 key-id derivation, strict manifest
 // parsing/validation, strict multi-signature envelope parsing/canonical
-// validation, and raw-byte signature verification/freshness. It performs no
-// file I/O, no process/env access, and no signing (which requires a private
-// key and is a build-time-only concern).
+// validation, and raw-byte signature verification/freshness, for both
+// manifest schemas: update-manifest.json (schema 1, read by every app since
+// 1.2.0) and update-manifest-v2.json (schema 2, #343). It performs no file
+// I/O, no process/env access, and no signing (which requires a private key
+// and is a build-time-only concern).
 
 const { createHash, createPublicKey, verify } = require('node:crypto')
 
@@ -20,6 +22,16 @@ const UPDATE_REPOSITORY = 'shariqh/agent-inbox'
 const MANIFEST_LIFETIME_DAYS = 180
 const MANIFEST_ASSET_NAME = 'update-manifest.json'
 const SIGNATURE_ASSET_NAME = 'update-manifest.json.sig'
+// Update manifest v2 (#343, design §5.4): a second file, read by 1.7.0 and later, that can
+// describe an arm64-only DMG. Apps from 1.2 to 1.6 never fetch it.
+const UPDATE_MANIFEST_SCHEMA_V2 = 2
+const MANIFEST_V2_ASSET_NAME = 'update-manifest-v2.json'
+const SIGNATURE_V2_ASSET_NAME = 'update-manifest-v2.json.sig'
+const MANIFEST_V2_MAX_TARGETS = 32
+// Both manifests share one detached-signature envelope format, so the envelope keeps its
+// own schema, 1, whatever the manifest's.
+const UPDATE_ENVELOPE_SCHEMA = 1
+const DAY_MS = 24 * 60 * 60 * 1000
 
 const KEY_ID_RE = /^ed25519-[0-9a-f]{16}$/
 const SHA40_RE = /^[0-9a-f]{40}$/
@@ -32,6 +44,9 @@ const SHA64_RE = /^[0-9a-f]{64}$/
 const SEMVER_RE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/
 const ISO_SECONDS_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/
 const MACOS_VERSION_RE = /^\d+\.\d+(\.\d+)?$/
+// Each of a v2 target's platform, architecture and packageType.
+const TARGET_TYPE_PART_RE = /^[a-z0-9][a-z0-9-]{0,31}$/
+const TARGET_TYPE_PARTS = Object.freeze(['platform', 'architecture', 'packageType'])
 const FUTURE_SKEW_MS = 5 * 60 * 1000
 
 class UpdateManifestError extends Error {
@@ -88,8 +103,33 @@ const TARGET_SPECS = Object.freeze([
   }),
 ])
 
+// The six target types the schema-2 reader knows (design §5.4): the five above and the
+// arm64 DMG, the one type schema 1 cannot express. A later reader may know more; this one
+// skips every other type it meets. Already in the order compareTargetTypes defines.
+const TARGET_SPECS_V2 = Object.freeze([
+  Object.freeze({
+    platform: 'darwin',
+    architecture: 'arm64',
+    packageType: 'dmg',
+    installStrategy: 'macos-dmg',
+    filename: (tag) => `Agent-Inbox-${tag}-arm64.dmg`,
+  }),
+  ...TARGET_SPECS,
+])
+
 function targetTuple(value) {
   return `${value.platform}/${value.architecture}/${value.packageType}`
+}
+
+// Schema 2 orders targets by platform, then architecture, then packageType, each compared
+// by UTF-16 code unit. Comparing the joined "a/b/c" strings would disagree once one name
+// extends another ("linux" and "linux-musl", since "-" sorts before "/"), and the 1.7.0
+// reader can never change, so the parts are compared one at a time.
+function compareTargetTypes(left, right) {
+  for (const part of TARGET_TYPE_PARTS) {
+    if (left[part] !== right[part]) return left[part] < right[part] ? -1 : 1
+  }
+  return 0
 }
 
 function isCanonicalBase64(value) {
@@ -114,6 +154,17 @@ function assertExactKeys(value, keys, label) {
   }
   const missing = keys.filter((key) => !seen.has(key))
   if (extra.length > 0) fail(`${label} has unexpected field(s): ${extra.join(', ')}`)
+  if (missing.length > 0) fail(`${label} is missing required field(s): ${missing.join(', ')}`)
+}
+
+// Schema 2 ignores keys it does not know, at every level (design §5.4): only a missing key
+// fails. Nothing reads an ignored key, and every validated object is rebuilt from known
+// fields alone.
+function assertRequiredKeys(value, keys, label) {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    fail(`${label} must be a plain object`)
+  }
+  const missing = keys.filter((key) => !Object.hasOwn(value, key))
   if (missing.length > 0) fail(`${label} is missing required field(s): ${missing.join(', ')}`)
 }
 
@@ -254,6 +305,13 @@ function validateTargetUrl(url, tag, filename, label) {
   }
 }
 
+const TARGET_KEYS = Object.freeze(['platform', 'architecture', 'packageType', 'filename', 'url', 'byteLength', 'sha256', 'installStrategy'])
+
+// The required keys of a known target type; a DMG also names its minimum macOS.
+function targetKeysFor(spec) {
+  return spec.packageType === 'dmg' ? [...TARGET_KEYS, 'minimumSystemVersion'] : [...TARGET_KEYS]
+}
+
 function validateTarget(rawTarget, tag, version, label) {
   if (rawTarget === null || typeof rawTarget !== 'object' || Array.isArray(rawTarget)) {
     fail(`${label} must be a plain object`)
@@ -267,11 +325,15 @@ function validateTarget(rawTarget, tag, version, label) {
   if (!spec) {
     fail(`${label} has an unrecognized platform/architecture/packageType combination`)
   }
+  assertExactKeys(rawTarget, targetKeysFor(spec), label)
+  return knownTarget(rawTarget, spec, tag, version, label)
+}
+
+// The values of a known target type, the same in both schemas: the fixed filename and
+// install strategy, the canonical URL under this tag, a positive length, a lowercase
+// SHA-256 and, on a DMG, the minimum macOS. Its keys were checked by the caller.
+function knownTarget(rawTarget, spec, tag, version, label) {
   const isMac = spec.packageType === 'dmg'
-  const expectedKeys = isMac
-    ? ['platform', 'architecture', 'packageType', 'filename', 'url', 'byteLength', 'sha256', 'installStrategy', 'minimumSystemVersion']
-    : ['platform', 'architecture', 'packageType', 'filename', 'url', 'byteLength', 'sha256', 'installStrategy']
-  assertExactKeys(rawTarget, expectedKeys, label)
   if (rawTarget.installStrategy !== spec.installStrategy) {
     fail(`${label}.installStrategy must be "${spec.installStrategy}" for packageType "${spec.packageType}"`)
   }
@@ -324,9 +386,10 @@ const MANIFEST_KEYS = [
   'targets',
 ]
 
-function validateManifest(value) {
-  assertExactKeys(value, MANIFEST_KEYS, 'manifest')
-  if (value.schema !== UPDATE_MANIFEST_SCHEMA) fail(`manifest.schema must be ${UPDATE_MANIFEST_SCHEMA}`)
+// The top-level fields both schemas share, checked in schema 1's order. Schema 1 passes
+// assertExactKeys and its exact 180-day lifetime; schema 2 assertRequiredKeys and a
+// lifetime of at most 180 days.
+function validateManifestHeader(value, assertKeys, checkLifetime) {
   if (value.kind !== UPDATE_MANIFEST_KIND) fail(`manifest.kind must be "${UPDATE_MANIFEST_KIND}"`)
   if (value.repository !== UPDATE_REPOSITORY) fail(`manifest.repository must be "${UPDATE_REPOSITORY}"`)
   if (typeof value.version !== 'string' || !SEMVER_RE.test(value.version)) {
@@ -334,7 +397,7 @@ function validateManifest(value) {
   }
   const expectedTag = `v${value.version}`
   if (value.tag !== expectedTag) fail(`manifest.tag must be "${expectedTag}"`)
-  assertExactKeys(value.source, ['commit', 'tree'], 'manifest.source')
+  assertKeys(value.source, ['commit', 'tree'], 'manifest.source')
   if (typeof value.source.commit !== 'string' || !SHA40_RE.test(value.source.commit)) {
     fail('manifest.source.commit must be lowercase 40-character hex')
   }
@@ -343,13 +406,7 @@ function validateManifest(value) {
   }
   const publishedAtDate = parseWholeSecondIso(value.publishedAt, 'manifest.publishedAt')
   const expiresAtDate = parseWholeSecondIso(value.expiresAt, 'manifest.expiresAt')
-  const expectedExpiresAt = addDaysIso(publishedAtDate, MANIFEST_LIFETIME_DAYS)
-  if (value.expiresAt !== expectedExpiresAt) {
-    fail(`manifest.expiresAt must be exactly ${MANIFEST_LIFETIME_DAYS} days after publishedAt (${expectedExpiresAt})`)
-  }
-  if (expiresAtDate.getTime() <= publishedAtDate.getTime()) {
-    fail('manifest.expiresAt must be after manifest.publishedAt')
-  }
+  checkLifetime(value, publishedAtDate, expiresAtDate)
   const expectedReleaseUrl = `https://github.com/${UPDATE_REPOSITORY}/releases/tag/${value.tag}`
   if (value.releaseUrl !== expectedReleaseUrl) {
     fail(`manifest.releaseUrl must be "${expectedReleaseUrl}"`)
@@ -378,6 +435,44 @@ function validateManifest(value) {
   if (!uniqueTrustedKeyIds.has(value.signingKeyId)) {
     fail('manifest.signingKeyId must be included in manifest.trustedKeyIds')
   }
+  return {
+    kind: UPDATE_MANIFEST_KIND,
+    repository: UPDATE_REPOSITORY,
+    version: value.version,
+    tag: value.tag,
+    source: Object.freeze({ commit: value.source.commit, tree: value.source.tree }),
+    publishedAt: value.publishedAt,
+    expiresAt: value.expiresAt,
+    releaseUrl: value.releaseUrl,
+    signingKeyId: value.signingKeyId,
+    trustedKeyIds: Object.freeze([...value.trustedKeyIds]),
+  }
+}
+
+function exactLifetime(value, publishedAtDate, expiresAtDate) {
+  const expectedExpiresAt = addDaysIso(publishedAtDate, MANIFEST_LIFETIME_DAYS)
+  if (value.expiresAt !== expectedExpiresAt) {
+    fail(`manifest.expiresAt must be exactly ${MANIFEST_LIFETIME_DAYS} days after publishedAt (${expectedExpiresAt})`)
+  }
+  if (expiresAtDate.getTime() <= publishedAtDate.getTime()) {
+    fail('manifest.expiresAt must be after manifest.publishedAt')
+  }
+}
+
+// Schema 2 accepts any lifetime above 0 and up to 180 days, so a later publisher can
+// shorten it without another manifest transition. This publisher still writes 180.
+function boundedLifetime(_value, publishedAtDate, expiresAtDate) {
+  const lifetimeMs = expiresAtDate.getTime() - publishedAtDate.getTime()
+  if (lifetimeMs <= 0) fail('manifest.expiresAt must be after manifest.publishedAt')
+  if (lifetimeMs > MANIFEST_LIFETIME_DAYS * DAY_MS) {
+    fail(`manifest.expiresAt must be at most ${MANIFEST_LIFETIME_DAYS} days after manifest.publishedAt`)
+  }
+}
+
+function validateManifest(value) {
+  assertExactKeys(value, MANIFEST_KEYS, 'manifest')
+  if (value.schema !== UPDATE_MANIFEST_SCHEMA) fail(`manifest.schema must be ${UPDATE_MANIFEST_SCHEMA}`)
+  const header = validateManifestHeader(value, assertExactKeys, exactLifetime)
   if (!Array.isArray(value.targets) || value.targets.length !== TARGET_SPECS.length) {
     fail(`manifest.targets must contain exactly ${TARGET_SPECS.length} entries`)
   }
@@ -400,20 +495,44 @@ function validateManifest(value) {
       fail('manifest.targets must be sorted by platform/architecture/packageType')
     }
   }
-  return Object.freeze({
-    schema: UPDATE_MANIFEST_SCHEMA,
-    kind: UPDATE_MANIFEST_KIND,
-    repository: UPDATE_REPOSITORY,
-    version: value.version,
-    tag: value.tag,
-    source: Object.freeze({ commit: value.source.commit, tree: value.source.tree }),
-    publishedAt: value.publishedAt,
-    expiresAt: value.expiresAt,
-    releaseUrl: value.releaseUrl,
-    signingKeyId: value.signingKeyId,
-    trustedKeyIds: Object.freeze([...value.trustedKeyIds]),
-    targets: Object.freeze(targets),
+  return Object.freeze({ schema: UPDATE_MANIFEST_SCHEMA, ...header, targets: Object.freeze(targets) })
+}
+
+// Schema 2 (design §5.4). A type this reader knows is as strict as in schema 1; a type it
+// does not know is skipped once its three names are well formed, unique and in order, so a
+// later package or platform never makes this reader reject the file. The reader requires no
+// type: a host with no target of its own reads as unsupported.
+function validateManifestV2(value) {
+  assertRequiredKeys(value, MANIFEST_KEYS, 'manifest')
+  if (value.schema !== UPDATE_MANIFEST_SCHEMA_V2) fail(`manifest.schema must be ${UPDATE_MANIFEST_SCHEMA_V2}`)
+  const header = validateManifestHeader(value, assertRequiredKeys, boundedLifetime)
+  if (!Array.isArray(value.targets) || value.targets.length < 1 || value.targets.length > MANIFEST_V2_MAX_TARGETS) {
+    fail(`manifest.targets must contain 1 to ${MANIFEST_V2_MAX_TARGETS} entries`)
+  }
+  const targets = []
+  let previous = null
+  value.targets.forEach((rawTarget, index) => {
+    const label = `manifest.targets[${index}]`
+    if (rawTarget === null || typeof rawTarget !== 'object' || Array.isArray(rawTarget)) {
+      fail(`${label} must be a plain object`)
+    }
+    for (const part of TARGET_TYPE_PARTS) {
+      if (typeof rawTarget[part] !== 'string' || !TARGET_TYPE_PART_RE.test(rawTarget[part])) {
+        fail(`${label}.${part} must be 1 to 32 lowercase letters, digits or hyphens, not starting with a hyphen`)
+      }
+    }
+    if (previous !== null) {
+      const order = compareTargetTypes(previous, rawTarget)
+      if (order === 0) fail(`manifest.targets contains a duplicate target for ${targetTuple(rawTarget)}`)
+      if (order > 0) fail('manifest.targets must be sorted by platform, then architecture, then packageType')
+    }
+    previous = rawTarget
+    const spec = TARGET_SPECS_V2.find((candidate) => compareTargetTypes(candidate, rawTarget) === 0)
+    if (!spec) return
+    assertRequiredKeys(rawTarget, targetKeysFor(spec), label)
+    targets.push(knownTarget(rawTarget, spec, header.tag, header.version, label))
   })
+  return Object.freeze({ schema: UPDATE_MANIFEST_SCHEMA_V2, ...header, targets: Object.freeze(targets) })
 }
 
 function parseManifest(bytes) {
@@ -424,6 +543,16 @@ function parseManifest(bytes) {
     return fail(`manifest is not valid JSON: ${error.message}`)
   }
   return validateManifest(parsed)
+}
+
+function parseManifestV2(bytes) {
+  let parsed
+  try {
+    parsed = JSON.parse(typeof bytes === 'string' ? bytes : bytes.toString('utf8'))
+  } catch (error) {
+    return fail(`manifest is not valid JSON: ${error.message}`)
+  }
+  return validateManifestV2(parsed)
 }
 
 // ---------------------------------------------------------------------------
@@ -457,7 +586,7 @@ function validateEnvelopeSignatureEntry(entry, index) {
 
 function validateEnvelope(value) {
   assertExactKeys(value, ENVELOPE_KEYS, 'envelope')
-  if (value.schema !== UPDATE_MANIFEST_SCHEMA) fail(`envelope.schema must be ${UPDATE_MANIFEST_SCHEMA}`)
+  if (value.schema !== UPDATE_ENVELOPE_SCHEMA) fail(`envelope.schema must be ${UPDATE_ENVELOPE_SCHEMA}`)
   if (typeof value.manifestSha256 !== 'string' || !SHA64_RE.test(value.manifestSha256)) {
     fail('envelope.manifestSha256 must be lowercase 64-character hex')
   }
@@ -484,7 +613,7 @@ function validateEnvelope(value) {
     }
   }
   return Object.freeze({
-    schema: UPDATE_MANIFEST_SCHEMA,
+    schema: UPDATE_ENVELOPE_SCHEMA,
     manifestSha256: value.manifestSha256,
     signatures: Object.freeze(entries),
   })
@@ -525,7 +654,8 @@ function toEnvelope(value) {
 // Verify (raw-byte signature verification + freshness)
 // ---------------------------------------------------------------------------
 
-function verifyManifest({ manifestBytes, envelope, registry, now }) {
+// `parse` is the schema's own parser, reached only once the bytes are authentic.
+function verifySigned(parse, { manifestBytes, envelope, registry, now }) {
   const reg = validateRegistry(registry)
   const manifestBuffer = toBuffer(manifestBytes, 'manifestBytes')
   // `toEnvelope` (via `validateEnvelope`/`parseEnvelope`) structurally validates
@@ -565,7 +695,7 @@ function verifyManifest({ manifestBytes, envelope, registry, now }) {
   // raw manifest bytes have been proven authentic (digest-matched and signed
   // by at least one pinned key). This preserves the Layer 2 trust order:
   // untrusted bytes must never reach schema parsing/validation.
-  const manifest = parseManifest(manifestBuffer)
+  const manifest = parse(manifestBuffer)
   const nowDate = normalizeNow(now)
   if (nowDate !== undefined) {
     const publishedAtDate = new Date(manifest.publishedAt)
@@ -578,24 +708,42 @@ function verifyManifest({ manifestBytes, envelope, registry, now }) {
   return manifest
 }
 
+function verifyManifest(options) {
+  return verifySigned(parseManifest, options)
+}
+
+// Schema 2's entry point: the same envelope, keys and trust order (digest, signature,
+// schema, then freshness), with the schema-2 parser.
+function verifyManifestV2(options) {
+  return verifySigned(parseManifestV2, options)
+}
+
 module.exports = {
   UPDATE_REGISTRY_SCHEMA,
   UPDATE_MANIFEST_SCHEMA,
+  UPDATE_MANIFEST_SCHEMA_V2,
+  UPDATE_ENVELOPE_SCHEMA,
   UPDATE_MANIFEST_KIND,
   UPDATE_REPOSITORY,
   MANIFEST_LIFETIME_DAYS,
   MANIFEST_ASSET_NAME,
   SIGNATURE_ASSET_NAME,
+  MANIFEST_V2_ASSET_NAME,
+  SIGNATURE_V2_ASSET_NAME,
   UpdateManifestError,
   TARGET_SPECS,
+  TARGET_SPECS_V2,
   targetTuple,
   deriveKeyId,
   parseRegistry,
   validateRegistry,
   validateManifest,
   parseManifest,
+  validateManifestV2,
+  parseManifestV2,
   serializeEnvelope,
   validateEnvelope,
   parseEnvelope,
   verifyManifest,
+  verifyManifestV2,
 }

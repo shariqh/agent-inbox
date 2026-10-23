@@ -91,11 +91,11 @@ Each job:
    source, with install scripts off and no prebuild (#315), and prunes the app's
    `node_modules` the same way;
 5. creates a thin Electron application folder containing only the matching
-   Linux runtime key and only Electron's `locales/en-US.pak`
+   Linux runtime key and only Electron's `locales/en-US.pak` and `locales/en-GB.pak`
    ([What Electron locales ship](macos-release.md#what-electron-locales-ship-292));
 6. verifies ELF architecture, libc symbol floors, Electron/Node versions and
-   ABIs, both native addons, pruned app and runtime `node_modules`, the English-only
-   Electron locale, schema-2 Setup metadata, and exact-host payload selection, then runs
+   ABIs, both native addons, pruned app and runtime `node_modules`, the US and British
+   English Electron locales, schema-2 Setup metadata, and exact-host payload selection, then runs
    the allocation-driven SQLite check under the packaged Electron (180-second ceiling,
    scratch `HOME`/XDG/`AGENT_INBOX_DB`);
 7. archives and restores the runtime and app folder, repeats verification,
@@ -346,10 +346,11 @@ has no repository checkout or system Node, isolates HOME, XDG
 configuration/cache/data/state, the inbox database, and a private mode-`0700`
 scratch tree, then requires the packaged in-process viewer to answer on
 `127.0.0.1` with the hardened
-`x-agent-inbox-local-boundary: loopback-v1` marker. The app runs as a French
-user (`LANG=fr_FR.UTF-8`, with `LANGUAGE`, `LC_ALL` and `LC_MESSAGES` unset): only
-`locales/en-US.pak` ships (#292), so the gate also requires every renderer to have
-been started with `--lang=en-US`, the locale Chromium falls back to. The no-FUSE container has no
+`x-agent-inbox-local-boundary: loopback-v1` marker. Only US and British English ship
+(#292), so each gate also runs the app in a locale (`LANG`, with `LANGUAGE`, `LC_ALL` and
+`LC_MESSAGES` unset) and requires every renderer to have been started with the locale
+Chromium must choose for it: the FUSE gate runs as a French user, who falls back to
+`--lang=en-US`, the extraction gate as a British one, who keeps `--lang=en-GB`. The no-FUSE container has no
 `/dev/fuse`; the normal container receives the FUSE device explicitly.
 Because neither container has a `node` executable, that response cannot come
 from Electron's development-only host-Node fallback.

@@ -2,9 +2,10 @@
 // strings in 55 languages, about 48 MB (#292, from the #281 audit's Q4): 220
 // .lproj folders in Electron Framework and 55 empty ones in the app's own
 // Resources on macOS, 55 locales/*.pak files on Linux and Windows. The
-// thin-app builders keep only English before anything checks, hashes or
-// signs the app, and the gates refuse an app that ships any other locale or
-// lacks the English one Chromium falls back to.
+// thin-app builders keep only US and British English before anything checks,
+// hashes or signs the app (British so British and Commonwealth users keep
+// their date formats), and the gates refuse an app that ships any other
+// locale or lacks either English one.
 import {
   existsSync,
   lstatSync,
@@ -111,6 +112,8 @@ const FOLDER_APP: Record<string, string | null> = {
   'icudtl.dat': 'icu\n',
   'locales/en-US.pak': 'English\n',
   'locales/en-GB.pak': 'British English\n',
+  // no Chromium release ships this pseudo-locale; any English but the two goes
+  'locales/en-XA.pak': 'Pseudo-English\n',
   'locales/fr.pak': 'French\n',
   'locales/zh-TW.pak': 'Traditional Chinese\n',
   'resources/app/package.json': '{}\n',
@@ -124,7 +127,7 @@ function folderApp(extra: Record<string, string | null> = {}): string {
 const bytes = (...texts: string[]) => texts.reduce((sum, text) => sum + Buffer.byteLength(text), 0)
 
 describe('pruneElectronLocales (#292)', () => {
-  it('keeps only en.lproj across a macOS bundle, wherever a locale sits outside the app\'s own code', () => {
+  it('keeps en.lproj and en_GB.lproj across a macOS bundle, wherever a locale sits outside the app\'s own code', () => {
     const app = macApp({ 'Contents/Resources/Base.lproj/MainMenu.nib': 'nib\n' })
 
     const result = pruneElectronLocales(app, 'darwin')
@@ -138,6 +141,7 @@ describe('pruneElectronLocales (#292)', () => {
       `${FRAMEWORK_RESOURCES}/Info.plist`,
       `${FRAMEWORK_RESOURCES}/MainMenu.nib`,
       `${FRAMEWORK_RESOURCES}/en.lproj/locale.pak`,
+      `${FRAMEWORK_RESOURCES}/en_GB.lproj/locale.pak`,
       `${FRAMEWORK_RESOURCES}/icudtl.dat`,
       `${FRAMEWORK_RESOURCES}/resources.pak`,
       `${FRAMEWORK}/Versions/Current -> A`,
@@ -149,20 +153,22 @@ describe('pruneElectronLocales (#292)', () => {
       'Contents/Resources/app/package.json',
       'Contents/Resources/app/runtime/darwin-arm64/bin/node',
       'Contents/Resources/en.lproj/',
+      'Contents/Resources/en_GB.lproj/',
       'Contents/Resources/icon.icns',
     ])
-    // three empty app folders, six framework locales and the helper's
+    // two empty app folders, five framework locales (the gender variants
+    // included) and the helper's
     expect(result).toEqual({
-      removedLocales: 10,
+      removedLocales: 8,
       removedBytes: bytes(
-        'English, feminine\n', 'British English\n', 'British English, neuter\n', 'French\n', 'French, masculine\n',
+        'English, feminine\n', 'British English, neuter\n', 'French\n', 'French, masculine\n',
         'Traditional Chinese\n', 'German\n',
       ),
     })
     expect(pruneElectronLocales(app, 'darwin')).toEqual({ removedLocales: 0, removedBytes: 0 })
   })
 
-  it.each(['linux', 'win32'] as const)('keeps only locales/en-US.pak in a %s folder', (platform) => {
+  it.each(['linux', 'win32'] as const)('keeps only locales/en-US.pak and en-GB.pak in a %s folder', (platform) => {
     const app = folderApp()
 
     const result = pruneElectronLocales(app, platform)
@@ -172,6 +178,7 @@ describe('pruneElectronLocales (#292)', () => {
       'Agent Inbox.exe',
       'chrome_100_percent.pak',
       'icudtl.dat',
+      'locales/en-GB.pak',
       'locales/en-US.pak',
       'resources.pak',
       'resources/app/locales/fr.pak',
@@ -179,42 +186,66 @@ describe('pruneElectronLocales (#292)', () => {
     ])
     expect(result).toEqual({
       removedLocales: 3,
-      removedBytes: bytes('British English\n', 'French\n', 'Traditional Chinese\n'),
+      removedBytes: bytes('Pseudo-English\n', 'French\n', 'Traditional Chinese\n'),
     })
     expect(pruneElectronLocales(app, platform)).toEqual({ removedLocales: 0, removedBytes: 0 })
   })
 
-  it('refuses, before removing anything, an app without the English locale Chromium falls back to', () => {
-    const cases: Array<[string, () => string, 'darwin' | 'linux' | 'win32', RegExp]> = [
+  it('refuses, before removing anything, an app without US or British English', () => {
+    const US = 'the US English locale Chromium falls back to'
+    const GB = 'the British English locale Commonwealth users get'
+    const cases: Array<[string, () => string, 'darwin' | 'linux' | 'win32', string]> = [
       ['no app en.lproj', () => {
         const app = macApp()
         rmSync(join(app, 'Contents/Resources/en.lproj'), { recursive: true })
         return app
-      }, 'darwin', /has no Contents\/Resources\/en\.lproj,/],
+      }, 'darwin', `has no Contents/Resources/en.lproj, ${US}`],
+      ['no app en_GB.lproj', () => {
+        const app = macApp()
+        rmSync(join(app, 'Contents/Resources/en_GB.lproj'), { recursive: true })
+        return app
+      }, 'darwin', `has no Contents/Resources/en_GB.lproj, ${GB}`],
+      ['an app en_GB.lproj that is a file', () => {
+        const app = macApp()
+        rmSync(join(app, 'Contents/Resources/en_GB.lproj'), { recursive: true })
+        writeFileSync(join(app, 'Contents/Resources/en_GB.lproj'), '')
+        return app
+      }, 'darwin', `has no Contents/Resources/en_GB.lproj, ${GB}`],
       ['no framework en.lproj', () => {
         const app = macApp()
         rmSync(join(app, FRAMEWORK_RESOURCES, 'en.lproj'), { recursive: true })
         return app
-      }, 'darwin', /has no Contents\/Frameworks\/Electron Framework\.framework\/Versions\/A\/Resources\/en\.lproj\/locale\.pak,/],
-      ['an empty English pak', () => macApp({ [`${FRAMEWORK_RESOURCES}/en.lproj/locale.pak`]: '' }), 'darwin',
-        /en\.lproj\/locale\.pak, the locale Chromium falls back to/],
+      }, 'darwin', `has no ${FRAMEWORK_RESOURCES}/en.lproj/locale.pak, ${US}`],
+      ['no framework en_GB.lproj', () => {
+        const app = macApp()
+        rmSync(join(app, FRAMEWORK_RESOURCES, 'en_GB.lproj'), { recursive: true })
+        return app
+      }, 'darwin', `has no ${FRAMEWORK_RESOURCES}/en_GB.lproj/locale.pak, ${GB}`],
+      ['an empty British pak', () => macApp({ [`${FRAMEWORK_RESOURCES}/en_GB.lproj/locale.pak`]: '' }), 'darwin',
+        `has no ${FRAMEWORK_RESOURCES}/en_GB.lproj/locale.pak, ${GB}`],
       ['no en-US.pak', () => {
         const app = folderApp()
         rmSync(join(app, 'locales/en-US.pak'))
         return app
-      }, 'linux', /has no locales\/en-US\.pak, the locale Chromium falls back to/],
-      ['an en-US.pak folder', () => {
+      }, 'linux', `has no locales/en-US.pak, ${US}`],
+      ['no en-GB.pak', () => {
         const app = folderApp()
-        rmSync(join(app, 'locales/en-US.pak'))
-        writeTree(app, { 'locales/en-US.pak/locale.pak': 'English\n' })
+        rmSync(join(app, 'locales/en-GB.pak'))
         return app
-      }, 'win32', /has no locales\/en-US\.pak/],
+      }, 'win32', `has no locales/en-GB.pak, ${GB}`],
+      ['an empty en-US.pak', () => folderApp({ 'locales/en-US.pak': '' }), 'linux', `has no locales/en-US.pak, ${US}`],
+      ['an en-GB.pak folder', () => {
+        const app = folderApp()
+        rmSync(join(app, 'locales/en-GB.pak'))
+        writeTree(app, { 'locales/en-GB.pak/locale.pak': 'British English\n' })
+        return app
+      }, 'win32', `has no locales/en-GB.pak, ${GB}`],
     ]
     for (const [name, make, platform, message] of cases) {
       const app = make()
       const before = listEntries(app)
       expect(() => pruneElectronLocales(app, platform), name).toThrow(PruneElectronLocalesError)
-      expect(() => pruneElectronLocales(app, platform), name).toThrow(message)
+      expect(() => pruneElectronLocales(app, platform), name).toThrow(`packaged ${platform} app ${message}; review`)
       expect(listEntries(app), name).toEqual(before)
     }
   })
@@ -245,12 +276,11 @@ describe('assertEnglishOnlyElectronLocales (#292)', () => {
   it('names the locales a macOS bundle still ships, then passes once it is pruned', () => {
     const app = macApp()
     expect(() => assertEnglishOnlyElectronLocales(app, 'darwin', 'packaged darwin-arm64 app')).toThrow(
-      'packaged darwin-arm64 app ships 10 Electron locales besides English (#292): '
+      'packaged darwin-arm64 app ships 8 Electron locales besides US and British English (#292): '
         + 'Contents/Frameworks/Agent Inbox Helper.app/Contents/Resources/de.lproj, '
-        + `${FRAMEWORK_RESOURCES}/en_FEMININE.lproj, ${FRAMEWORK_RESOURCES}/en_GB.lproj, `
-        + `${FRAMEWORK_RESOURCES}/en_GB_NEUTER.lproj, ${FRAMEWORK_RESOURCES}/fr.lproj, `
-        + `${FRAMEWORK_RESOURCES}/fr_MASCULINE.lproj, ${FRAMEWORK_RESOURCES}/zh_TW.lproj, `
-        + 'Contents/Resources/en_GB.lproj, Contents/Resources/fr.lproj, Contents/Resources/zh_TW.lproj',
+        + `${FRAMEWORK_RESOURCES}/en_FEMININE.lproj, ${FRAMEWORK_RESOURCES}/en_GB_NEUTER.lproj, `
+        + `${FRAMEWORK_RESOURCES}/fr.lproj, ${FRAMEWORK_RESOURCES}/fr_MASCULINE.lproj, `
+        + `${FRAMEWORK_RESOURCES}/zh_TW.lproj, Contents/Resources/fr.lproj, Contents/Resources/zh_TW.lproj`,
     )
     pruneElectronLocales(app, 'darwin')
     expect(() => assertEnglishOnlyElectronLocales(app, 'darwin', 'packaged darwin-arm64 app')).not.toThrow()
@@ -260,7 +290,7 @@ describe('assertEnglishOnlyElectronLocales (#292)', () => {
     const extra = Object.fromEntries(Array.from({ length: 30 }, (_, index) => [`locales/x${String(index).padStart(2, '0')}.pak`, 'x\n']))
     const app = folderApp(extra)
     expect(() => assertEnglishOnlyElectronLocales(app, 'linux', 'packaged Linux app')).toThrow(
-      /^packaged Linux app ships 33 Electron locales besides English \(#292\): locales\/en-GB\.pak, locales\/fr\.pak, locales\/x00\.pak, .*, and 13 more$/,
+      /^packaged Linux app ships 33 Electron locales besides US and British English \(#292\): locales\/en-XA\.pak, locales\/fr\.pak, locales\/x00\.pak, .*, and 13 more$/,
     )
   })
 
@@ -274,22 +304,32 @@ describe('assertEnglishOnlyElectronLocales (#292)', () => {
     )
   })
 
-  it.each(['linux', 'win32'] as const)('passes a pruned %s folder and refuses one that lost its English pak', (platform) => {
-    const app = folderApp()
-    pruneElectronLocales(app, platform)
-    expect(() => assertEnglishOnlyElectronLocales(app, platform, 'packaged app')).not.toThrow()
-    rmSync(join(app, 'locales/en-US.pak'))
-    expect(() => assertEnglishOnlyElectronLocales(app, platform, 'packaged app')).toThrow(
-      'packaged app has no locales/en-US.pak, the locale Chromium falls back to (#292)',
-    )
+  it.each(['linux', 'win32'] as const)('passes a pruned %s folder and refuses one that lost either English pak', (platform) => {
+    for (const [pak, why] of [
+      ['en-US.pak', 'the US English locale Chromium falls back to'],
+      ['en-GB.pak', 'the British English locale Commonwealth users get'],
+    ]) {
+      const app = folderApp()
+      pruneElectronLocales(app, platform)
+      expect(() => assertEnglishOnlyElectronLocales(app, platform, 'packaged app')).not.toThrow()
+      rmSync(join(app, 'locales', pak!))
+      expect(() => assertEnglishOnlyElectronLocales(app, platform, 'packaged app')).toThrow(
+        `packaged app has no locales/${pak}, ${why} (#292)`,
+      )
+    }
   })
 
-  it('refuses a pruned bundle that no longer tells macOS it speaks English', () => {
-    const app = macApp()
-    pruneElectronLocales(app, 'darwin')
-    rmSync(join(app, 'Contents/Resources/en.lproj'), { recursive: true })
-    expect(() => assertEnglishOnlyElectronLocales(app, 'darwin', 'universal app')).toThrow(
-      'universal app has no Contents/Resources/en.lproj, the locale Chromium falls back to (#292)',
-    )
+  it('refuses a pruned bundle that no longer tells macOS it speaks US or British English', () => {
+    for (const [folder, why] of [
+      ['en.lproj', 'the US English locale Chromium falls back to'],
+      ['en_GB.lproj', 'the British English locale Commonwealth users get'],
+    ]) {
+      const app = macApp()
+      pruneElectronLocales(app, 'darwin')
+      rmSync(join(app, 'Contents/Resources', folder!), { recursive: true })
+      expect(() => assertEnglishOnlyElectronLocales(app, 'darwin', 'universal app')).toThrow(
+        `universal app has no Contents/Resources/${folder}, ${why} (#292)`,
+      )
+    }
   })
 })

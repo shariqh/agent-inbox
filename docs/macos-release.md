@@ -83,7 +83,7 @@ stated minimum before updating either pinned major.
    (`scripts/app-dependencies.mjs`), so the addon is always built from the
    lockfile-pinned source: prebuild-install would otherwise unpack a cached or
    downloaded prebuild, JavaScript included, without checking a digest (#315). The
-   packaged thin app keeps only the English Electron locale
+   packaged thin app keeps only the US and British English Electron locales
    ([What Electron locales ship](#what-electron-locales-ship-292)).
 4. Preserve each thin app with a tar archive so framework symlinks and executable
    modes survive artifact transfer.
@@ -91,7 +91,10 @@ stated minimum before updating either pinned major.
    `Contents/Resources/app/runtime/darwin-*` trees are excluded from `lipo`; Electron,
    helpers, frameworks, and `better_sqlite3.node` must be universal.
 6. Launch the provisional app from its DMG as a French user (`-AppleLanguages '(fr)'`)
-   and require its hardened loopback marker and every renderer's `--lang=en-US`.
+   and then as a British one (`'(en-GB)'`), and require its hardened loopback marker,
+   every renderer's `--lang` (`en-US`, then `en-GB`) and, read from the page over
+   DevTools by `scripts/launch-locale-probe.mjs`, the dates the app formats in that
+   locale.
 7. Run a second, native Intel job against the finalized signed x64 runtime and
    publish its verification record beside the provisional universal artifact.
 
@@ -141,25 +144,29 @@ publish if the app or an embedded runtime still carries any of it.
 
 ### What Electron locales ship (#292)
 
-The UI is English-only, so the app ships one Electron locale. Electron brings Chromium's
-UI strings in 55 languages: on macOS, 220 `.lproj` folders in `Electron
+The UI is English-only, so the app ships only US and British English. Electron brings
+Chromium's UI strings in 55 languages: on macOS, 220 `.lproj` folders in `Electron
 Framework.framework/Versions/A/Resources` (each language and three grammatical-gender
 variants that desktop Chromium never loads, 48 MB), plus 55 empty `.lproj` folders in the
 app's `Contents/Resources`, which only tell macOS which languages the app speaks; on Linux
 and Windows, 55 `locales/*.pak` files (48 MB).
-`scripts/prune-electron-locales.mjs` keeps `en.lproj` (and `Base.lproj`, should Electron
-ship one) wherever a `.lproj` sits in the bundle outside the app's own code, and only
-`locales/en-US.pak` on Linux and Windows.
+`scripts/prune-electron-locales.mjs` keeps `en.lproj` and `en_GB.lproj` (and `Base.lproj`,
+should Electron ship one) wherever a `.lproj` sits in the bundle outside the app's own code,
+and only `locales/en-US.pak` and `locales/en-GB.pak` on Linux and Windows. Chromium's locale
+is also the default locale of the dates the app formats, so keeping British English (about
+0.55 MB a package) keeps British and Commonwealth users' date formats.
 
-- **Fallback.** On macOS, Chromium takes its locale from the languages the app's own
-  `.lproj` folders declare (`l10n_util::OverrideLocaleWithCocoaLocale`); with `en.lproj`
-  alone, every user gets `en-US` and Chromium loads the framework's
-  `en.lproj/locale.pak`. On Linux and Windows, Chromium tries the user's languages
-  (`LANGUAGE`, `LC_ALL`, `LC_MESSAGES`, `LANG`; on Windows, the UI language) and falls back
-  to `en-US` when no pak matches (`GetApplicationLocaleInternalNonMac` in `l10n_util.cc`).
-  The pruned macOS and Linux layouts were launched in French, German, Japanese and
-  British English with Electron 43.8.0: `app.getLocale()`, `navigator.language` and every
-  renderer's `--lang` were `en-US`, where the unpruned layouts gave the user's language.
+- **Which locale a user gets.** On macOS, Chromium takes its locale from the languages the
+  app's own `.lproj` folders declare (`l10n_util::OverrideLocaleWithCocoaLocale`): English
+  (UK), Australia, India, New Zealand and Ireland get `en-GB`, US and Canadian English
+  `en-US` (macOS matches `en-CA` to `en`), and every other language `en-US`. On Linux and
+  Windows, Chromium tries the user's languages (`LANGUAGE`, `LC_ALL`, `LC_MESSAGES`,
+  `LANG`; on Windows, the UI language), gives every English variant but US, Liberian and
+  Philippine English `en-GB`, and falls back to `en-US` when no pak matches
+  (`l10n_util.cc`). Launched with Electron 43.8.0 on macOS and Linux in each of those
+  English variants and in French, German and Japanese, the pruned layouts give every English
+  variant the same locale as the unpruned ones and every other language `en-US`, in
+  `app.getLocale()`, `navigator.language`, every renderer's `--lang` and the page's dates.
 - **What a non-English user sees.** The app's text and Electron's menu role labels were
   always English. Strings Chromium takes from its locale pak (such as form validation
   messages and some accessibility descriptions) are now English for everyone. On
@@ -167,25 +174,35 @@ ship one) wherever a `.lproj` sits in the bundle outside the app's own code, and
   app's `.lproj` folders because the app does not set `CFBundleAllowMixedLocalizations`:
   the items AppKit adds to menus (such as Start Dictation and Emoji & Symbols), the About
   panel's version label and the open panel's buttons and sidebar are now English where
-  they followed the user's language. Dates and times formatted with the default locale
-  (`toLocaleString()`, `Intl.DateTimeFormat(undefined, ...)`) use `en-US` conventions for
-  every user, British English included. Notifications carry the app's own title, body and
-  action labels, and macOS draws the rest. `app.getPreferredSystemLanguages()` still
-  reports the user's languages, while on macOS `app.getSystemLocale()`
-  (`NSLocale.currentLocale`) follows the app's language; the app reads neither.
+  they followed the user's language. **Users of every other language now get US-English
+  date formats** in the two places the app formats dates with the default locale: the
+  update check's "Last checked" time (`toLocaleString()`) and the asked-at tooltip
+  (`Intl.DateTimeFormat(undefined, ...)`). A French user sees `10/23/2026, 2:05:06 PM` and
+  `Oct 23, 2026, 2:05:06 PM UTC` where they saw `23/10/2026 14:05:06` and
+  `23 oct. 2026, 14:05:06 UTC`; British and Commonwealth users keep `23/10/2026, 14:05:06`.
+  Notifications carry the app's own title, body and action labels, and macOS draws the
+  rest. `app.getPreferredSystemLanguages()` still reports the user's languages, while on
+  macOS `app.getSystemLocale()` (`NSLocale.currentLocale`) follows the app's language; the
+  app reads neither.
 - **Where.** Each thin-app builder prunes the packaged app once, right after
   `@electron/packager` (the only step that adds Electron's files) and before anything
   checks, hashes or publishes it, so both macOS thin apps carry the same locale set into
-  the universal merge. The prune refuses, before removing anything, an app without the
-  English locale Chromium falls back to. The macOS thin build, the Linux and Windows folder
-  gates (which every DEB and AppImage build and verification repeats on the folder it
-  packages or extracted), the universal assembly before anything is signed, and the final
-  DMG gate refuse an app that lacks that locale or ships any other.
+  the universal merge. The prune refuses, before removing anything, an app without US or
+  British English. The macOS thin build, the Linux and Windows folder gates (which every DEB
+  and AppImage build and verification repeats on the folder it packages or extracted), the
+  universal assembly before anything is signed, and the final DMG gate refuse an app that
+  lacks either or ships any other locale.
+- **Launch evidence.** The provisional DMG's app is launched in French and in British
+  English and must give its renderers `--lang=en-US` and `--lang=en-GB`; for each,
+  `scripts/launch-locale-probe.mjs` reads over DevTools (the launch passes
+  `--remote-debugging-port`) which locale the page runs in and how it formats both dates.
+  The AppImage FUSE gates run as a French user and require `--lang=en-US`, the extraction
+  gates as a British one and require `--lang=en-GB`.
 - **Signing.** Electron's prebuilt app is only linker-signed: its framework has no
   `_CodeSignature` and seals no resources, and the prune removes no Mach-O, so nothing
   already signed changes. The framework's signature and its
   `_CodeSignature/CodeResources` are made by release signing, after the merge, and seal
-  exactly the English locale.
+  exactly the two English locales.
 
 ## Finalization order
 
@@ -359,7 +376,7 @@ The credentialed sequence is intentionally split:
    app with `ditto` into clean temporary storage. Verify the copied app's signature,
    authority/team, staple, Gatekeeper assessment, universal executable/addon, both runtime
    manifests and architectures, source/version/setup metadata, icon, notices, and that the
-   app ships only the English Electron locale. Launch
+   app ships only the US and British English Electron locales. Launch
    that copied app under a disposable `HOME`, require its hardened loopback marker, and
    exercise portable-runtime install and prune without touching production
    `~/.agent-inbox`. Detach the DMG even when any check fails.

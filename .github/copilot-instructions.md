@@ -81,11 +81,12 @@ Run the build before `npm run electron`; the development shell starts the built
   (#291): better-sqlite3 keeps only `package.json`, `lib/` and its addon, every
   package loses typings, source maps and markdown, and license and notice files
   always stay. The thin-app gates refuse an unpruned copy, and the macOS runtime
-  signing list is exactly `bin/node` and the addon. Every package ships one Electron
-  locale (#292): `scripts/prune-electron-locales.mjs` keeps `en.lproj` on macOS and
-  `locales/en-US.pak` on Linux and Windows, once, right after `@electron/packager` and
-  before anything checks, hashes or signs the app; the thin-app, universal and
-  final-DMG gates refuse an app with any other locale or without that one.
+  signing list is exactly `bin/node` and the addon. Every package ships only US and
+  British English Electron locales (#292): `scripts/prune-electron-locales.mjs` keeps
+  `en.lproj` and `en_GB.lproj` on macOS and `locales/en-US.pak` and `en-GB.pak` on Linux
+  and Windows, once, right after `@electron/packager` and before anything checks, hashes
+  or signs the app; the thin-app, universal and final-DMG gates refuse an app with any
+  other locale or without either of those.
 - **Setup path:** `scripts/install-agents.sh` is the canonical dry-run-first
   installer for MCP registration and managed host instructions. Electron exposes
   only fixed setup targets through `electron/setup-preload.cjs` and invokes that

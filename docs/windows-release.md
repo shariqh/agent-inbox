@@ -30,8 +30,9 @@ against headers node-gyp would download. Neither file enters the runtime payload
   takes better-sqlite3's MSBuild `obj` and `.tlog` files and `test_extension.node` out of
   the runtime, the folder's deepest paths and an unsigned PE the installer spike counted.
 - The folder keeps only Electron's `locales/en-US.pak`, the locale Chromium falls back to
-  when no pak matches the user's language, and the folder gate refuses one with any other
-  ([What Electron locales ship](macos-release.md#what-electron-locales-ship-292)).
+  when no pak matches the user's language, and `locales/en-GB.pak`, which British and
+  Commonwealth English users get; the folder gate refuses a folder that lacks either or
+  ships any other ([What Electron locales ship](macos-release.md#what-electron-locales-ship-292)).
 - The input contract pins Windows `10.0.17763` as the minimum OS version for later
   package acceptance; this layer's native evidence itself runs on Windows Server 2022.
 - The Electron app is packaged natively with a separate Electron-ABI

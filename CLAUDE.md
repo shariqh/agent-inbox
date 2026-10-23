@@ -1740,24 +1740,29 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   gates refuse an unpruned app or runtime (`assertPrunedNodeModules`), and
   `signPortableRuntime` signs exactly `RUNTIME_MACHO_FILES` (`bin/node` and the addon),
   refusing any other Mach-O before signing a byte.
-  *(#292)* The UI is English-only, so `scripts/prune-electron-locales.mjs` keeps one
-  Electron locale: `en.lproj` (and `Base.lproj`, if Electron ever ships one) wherever a
-  `.lproj` sits in a macOS bundle outside `Contents/Resources/app` (Electron Framework's
-  220 locale folders and the app's 55 empty ones), and only `locales/en-US.pak` on Linux
-  and Windows, about 48 MB a package. macOS takes the app's language from the app's own
-  `.lproj` folders and Chromium follows it (`OverrideLocaleWithCocoaLocale`); Linux and
-  Windows fall back to `en-US` when no pak matches. So every user gets `en-US`: Chromium's
-  pak strings, AppKit's own strings and default-locale date formatting are English
-  (`en-US`, British users included). Each thin-app builder prunes once, right after
+  *(#292)* The UI is English-only, so `scripts/prune-electron-locales.mjs` keeps only US
+  and British English: `en.lproj` and `en_GB.lproj` (and `Base.lproj`, if Electron ever
+  ships one) wherever a `.lproj` sits in a macOS bundle outside `Contents/Resources/app`
+  (Electron Framework's 220 locale folders and the app's 55 empty ones), and only
+  `locales/en-US.pak` and `en-GB.pak` on Linux and Windows, about 47 MB a package.
+  macOS takes the app's language from the app's own `.lproj` folders and Chromium follows
+  it (`OverrideLocaleWithCocoaLocale`); Linux and Windows map Commonwealth English to
+  `en-GB` and fall back to `en-US` when no pak matches. Chromium's locale is also the
+  default for the app's dates, so British and Commonwealth users keep `en-GB` and their
+  date formats, while every other language gets `en-US`: Chromium's pak strings, AppKit's
+  own strings and the two default-locale dates (the update check's "Last checked" and the
+  asked-at tooltip) in US English. Each thin-app builder prunes once, right after
   `@electron/packager` and before anything checks, hashes or publishes the app, so both
-  macOS thin apps merge alike; the prune refuses an app without the English locale before
-  removing anything. The macOS thin build, the Linux and Windows folder gates (and so every
-  DEB/AppImage build and verification), the universal assembly before signing and the
-  final DMG gate refuse an app that lacks it or ships another (`assertEnglishOnlyElectronLocales`).
-  `package:app` prunes the bundle before its ad-hoc seal. Electron's prebuilt framework
-  seals no resources, so release signing creates its `_CodeSignature` after the prune.
-  The AppImage launch gates run as a French user and the provisional macOS DMG launch with
-  `-AppleLanguages '(fr)'`; both require every renderer's `--lang=en-US`.
+  macOS thin apps merge alike; the prune refuses an app without either English locale
+  before removing anything. The macOS thin build, the Linux and Windows folder gates (and
+  so every DEB/AppImage build and verification), the universal assembly before signing and
+  the final DMG gate refuse an app that lacks one or ships another
+  (`assertEnglishOnlyElectronLocales`). `package:app` prunes the bundle before its ad-hoc
+  seal. Electron's prebuilt framework seals no resources, so release signing creates its
+  `_CodeSignature` after the prune. The provisional macOS DMG is launched in French and in
+  British English and must give its renderers `--lang=en-US` and `--lang=en-GB`, with
+  `scripts/launch-locale-probe.mjs` reading the page's dates over DevTools; the AppImage
+  FUSE gates run in French (`en-US`) and the extraction gates in British English (`en-GB`).
 - **Signed update-manifest trust contract** *(#106 Layer 1)* — protected releases contain
   five packages, package-only `SHA256SUMS.txt`, deterministic `update-manifest.json`, and
   `update-manifest.json.sig`. The exact manifest bytes are signed with Ed25519 after

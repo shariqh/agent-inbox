@@ -292,15 +292,15 @@ describe('package-app-stage.mjs as a command', () => {
     const locales = cli('locales', bad)
     expect(locales.status).toBe(1)
     expect(locales.stderr).toContain(
-      'package-app: packaged darwin app has no Contents/Resources/en.lproj, the locale Chromium falls back to',
+      'package-app: packaged darwin app has no Contents/Resources/en.lproj, the US English locale Chromium falls back to',
     )
     expect(locales.stdout).toBe('')
   })
 
-  it('keeps only the English Electron locale in a packaged bundle and says how much went (#292)', () => {
+  it('keeps only the US and British English Electron locales in a packaged bundle and says how much went (#292)', () => {
     const app = join(realpathSync(tmp('stage-cli-locales-')), 'Agent Inbox.app')
     const framework = join(app, 'Contents', 'Frameworks', 'Electron Framework.framework', 'Versions', 'A', 'Resources')
-    for (const locale of ['en', 'fr', 'zh_TW']) {
+    for (const locale of ['en', 'en_GB', 'fr', 'zh_TW']) {
       mkdirSync(join(app, 'Contents', 'Resources', `${locale}.lproj`), { recursive: true })
       mkdirSync(join(framework, `${locale}.lproj`), { recursive: true })
       writeFileSync(join(framework, `${locale}.lproj`, 'locale.pak'), 'x'.repeat(250_000))
@@ -311,9 +311,11 @@ describe('package-app-stage.mjs as a command', () => {
     })
 
     expect(result.status, result.stderr).toBe(0)
-    expect(result.stdout).toBe(`package-app: kept only the English Electron locale in ${app}; removed 4 locales (0.5 MB)\n`)
-    expect(readdirSync(framework)).toEqual(['en.lproj'])
-    expect(readdirSync(join(app, 'Contents', 'Resources'))).toEqual(['en.lproj'])
+    expect(result.stdout).toBe(
+      `package-app: kept only the US and British English Electron locales in ${app}; removed 4 locales (0.5 MB)\n`,
+    )
+    expect(readdirSync(framework)).toEqual(['en.lproj', 'en_GB.lproj'])
+    expect(readdirSync(join(app, 'Contents', 'Resources'))).toEqual(['en.lproj', 'en_GB.lproj'])
   })
 })
 

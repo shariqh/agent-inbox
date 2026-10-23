@@ -333,7 +333,7 @@ describe('native architecture release stages', () => {
     expect(thin.indexOf('assertPrunedNodeModules(resources, ')).toBeLessThan(thin.indexOf('publishAtomically(app, destination, force)'))
   })
 
-  it('keeps only the English Electron locale once, after packaging and before any check, hash or publication (#292)', () => {
+  it('prunes the Electron locales once, after packaging and before any check, hash or publication (#292)', () => {
     const thin = readFileSync(join(root, 'scripts', 'build-thin-app.mjs'), 'utf8')
     const prune = thin.indexOf("pruneElectronLocales(app, 'darwin')")
     const gate = thin.indexOf("assertEnglishOnlyElectronLocales(app, 'darwin', ")
@@ -359,7 +359,7 @@ describe('native architecture release stages', () => {
     }
   })
 
-  it('refuses another Electron locale, or none, in every thin-app, universal and final-DMG gate (#292)', () => {
+  it('refuses another Electron locale, or a missing English one, in every thin-app, universal and final-DMG gate (#292)', () => {
     for (const [file, gate] of [
       ['build-thin-app.mjs', "assertEnglishOnlyElectronLocales(app, 'darwin', "],
       ['verify-linux-thin-app.mjs', "assertEnglishOnlyElectronLocales(appRoot, 'linux', "],
@@ -507,7 +507,7 @@ describe('universal finalization contract', () => {
         '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
         '<plist version="1.0"><dict><key>CFBundleExecutable</key><string>Fixture</string></dict></plist>',
       ].join('\n'))
-      for (const locale of ['en', 'en_GB', 'fr']) {
+      for (const locale of ['en', 'en_GB', 'en_GB_NEUTER', 'fr']) {
         mkdirSync(join(app, 'Contents', 'Resources', `${locale}.lproj`), { recursive: true })
         mkdirSync(join(app, frameworkResources, `${locale}.lproj`), { recursive: true })
         writeFileSync(join(app, frameworkResources, `${locale}.lproj`, 'locale.pak'), `${locale}\n`)
@@ -527,7 +527,7 @@ describe('universal finalization contract', () => {
     const universal = join(temp, 'Universal.app')
     await merge(makeApp('arm64', 'arm64', true), makeApp('x64', 'x64', true), universal)
     expect(() => assertEnglishOnlyElectronLocales(universal, 'darwin', 'universal app')).not.toThrow()
-    expect(readdirSync(join(universal, frameworkResources))).toEqual(['en.lproj'])
+    expect(readdirSync(join(universal, frameworkResources))).toEqual(['en.lproj', 'en_GB.lproj'])
 
     const reported = vi.spyOn(console, 'error').mockImplementation(() => {})
     try {
@@ -536,7 +536,7 @@ describe('universal finalization contract', () => {
       expect(reported).toHaveBeenCalledWith({
         uniqueToX64: [],
         uniqueToArm64: [
-          join(frameworkResources, 'en_GB.lproj', 'locale.pak'),
+          join(frameworkResources, 'en_GB_NEUTER.lproj', 'locale.pak'),
           join(frameworkResources, 'fr.lproj', 'locale.pak'),
         ],
       })
@@ -741,19 +741,29 @@ describe('universal finalization contract', () => {
     })).toThrow(/requires clean source provenance/)
   })
 
-  // The provisional app is launched as a French user: only en.lproj ships
-  // (#292), so Chromium must fall back to en-US and pass it to each renderer.
-  it('launches the provisional universal app in French and requires its renderers to run in en-US (#292)', () => {
+  // The provisional app is launched as a French and as a British user: only US
+  // and British English ship (#292), so the first must fall back to en-US and
+  // the second keep en-GB, in its renderers and in the dates its page formats.
+  it('launches the provisional universal app in French and British English and checks each locale (#292)', () => {
     const workflow = readFileSync(join(root, '.github', 'workflows', 'macos-universal.yml'), 'utf8')
     const start = workflow.indexOf('- name: Mount, copy, launch, verify boundary, and remove portable runtime')
     const step = workflow.slice(start, workflow.indexOf('- uses:', start))
-    expect(step).toContain(`"$COPIED/Contents/MacOS/Agent Inbox" -AppleLanguages '(fr)' >"$RUNNER_TEMP/agent-inbox.log" 2>&1 &`)
-    const boundary = step.lastIndexOf("grep -qi '^x-agent-inbox-local-boundary: loopback-v1'")
-    const renderers = step.indexOf(`pgrep -lf -- '--type=renderer' | grep -F -- "$COPIED/Contents/Frameworks/"`)
-    const check = step.indexOf('test "$RENDERER_LOCALES" = "--lang=en-US"')
+    const launch = step.slice(step.indexOf('launch_as() {'), step.indexOf('\n          }\n', step.indexOf('launch_as() {')))
+    expect(launch).toContain('-AppleLanguages "($language)" --remote-debugging-port="$((port + 100))"')
+    const boundary = launch.lastIndexOf("grep -qi '^x-agent-inbox-local-boundary: loopback-v1'")
+    const renderers = launch.indexOf(`pgrep -lf -P "$APP_PID" -- '--type=renderer'`)
+    const check = launch.indexOf('test "$locales" = "--lang=$expected"')
+    const dates = launch.indexOf('node scripts/launch-locale-probe.mjs --devtools-port "$((port + 100))" --viewer-port "$port" --expect "$expected"')
     expect(renderers).toBeGreaterThan(boundary)
     expect(check).toBeGreaterThan(renderers)
-    expect(check).toBeLessThan(step.indexOf('\n          kill "$APP_PID"\n'))
+    expect(dates).toBeGreaterThan(check)
+    const french = step.indexOf('\n          launch_as fr 14319 en-US\n')
+    const british = step.indexOf('\n          launch_as en-GB 14320 en-GB\n')
+    expect(french).toBeGreaterThan(step.indexOf('\n          }\n'))
+    expect(british).toBeGreaterThan(french)
+    expect(step.indexOf('\n          kill "$APP_PID"\n', british)).toBeGreaterThan(british)
+    const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+    expect(pkg.scripts['package:smoke']).toContain('test/launch-locale-probe.test.ts')
   })
 
   it('pins release workflow actions and resolves Node from the central manifest', () => {

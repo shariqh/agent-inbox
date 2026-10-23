@@ -9,8 +9,9 @@
 // and verifyStagedLockGraph() proves the installed graph is that lockfile's.
 // `prune` removes what nothing loads at runtime, as the release builders do
 // (#291); it removes files inside packages, never a package, so the graph
-// check that follows stays exact. `locales` keeps only the English Electron
-// locale in the packaged bundle, as the release builders do (#292).
+// check that follows stays exact. `locales` keeps only the US and British
+// English Electron locales in the packaged bundle, as the release builders do
+// (#292).
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -208,10 +209,10 @@ function pruneStagedApp(appRoot) {
 }
 
 // The development package is a macOS bundle. The prune refuses one without
-// the English locale and removes every other.
+// US or British English and removes every other locale.
 function pruneAppLocales(app) {
   const { removedLocales, removedBytes } = pruneElectronLocales(app, 'darwin')
-  return `package-app: kept only the English Electron locale in ${app}; `
+  return `package-app: kept only the US and British English Electron locales in ${app}; `
     + `removed ${removedLocales} locales (${(removedBytes / 1e6).toFixed(1)} MB)`
 }
 

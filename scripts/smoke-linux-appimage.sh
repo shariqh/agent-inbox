@@ -2,7 +2,7 @@
 set -euo pipefail
 
 usage() {
-  echo "usage: smoke-linux-appimage.sh --appimage <path> --mode <fuse|extract> --port <port>" >&2
+  echo "usage: smoke-linux-appimage.sh --appimage <path> --mode <fuse|extract> --port <port> --locale <ll_CC.UTF-8> --expect-lang <ll-CC>" >&2
   exit 2
 }
 
@@ -27,16 +27,17 @@ assert_chromium_sandbox() {
   return 1
 }
 
-# The app runs as a French user (LANG below), but only en-US.pak ships (#292):
-# Chromium must fall back to it and pass it to every renderer as --lang.
-assert_english_renderers() {
+# The app runs as a user of LOCALE (LANG below), but only US and British
+# English ship (#292): Chromium must choose EXPECT_LANG and pass it to every
+# renderer as --lang.
+assert_renderer_locale() {
   local cmdline command renderers=0
   for cmdline in /proc/[0-9]*/cmdline; do
     [[ -r "$cmdline" ]] || continue
     command="$(tr '\0' ' ' < "$cmdline" 2>/dev/null || true)"
     [[ "$command" == *" --type=renderer "* ]] || continue
-    if [[ "$command" != *" --lang=en-US "* ]]; then
-      echo "smoke-linux-appimage: a renderer did not fall back to en-US: $(grep -o -- '--lang=[^ ]*' <<<"$command" || echo 'no --lang')" >&2
+    if [[ "$command" != *" --lang=$EXPECT_LANG "* ]]; then
+      echo "smoke-linux-appimage: a renderer runs with $(grep -o -- '--lang=[^ ]*' <<<"$command" || echo 'no --lang'), not --lang=$EXPECT_LANG" >&2
       return 1
     fi
     renderers=$((renderers + 1))
@@ -45,17 +46,21 @@ assert_english_renderers() {
     echo "smoke-linux-appimage: no renderer showed which locale Chromium chose" >&2
     return 1
   fi
-  echo "smoke-linux-appimage: every renderer ($renderers) fell back to --lang=en-US under LANG=fr_FR.UTF-8"
+  echo "smoke-linux-appimage: every renderer ($renderers) runs with --lang=$EXPECT_LANG under LANG=$LOCALE"
 }
 
 APPIMAGE=""
 MODE=""
 PORT=""
+LOCALE=""
+EXPECT_LANG=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --appimage) APPIMAGE="${2:-}"; shift 2 ;;
     --mode) MODE="${2:-}"; shift 2 ;;
     --port) PORT="${2:-}"; shift 2 ;;
+    --locale) LOCALE="${2:-}"; shift 2 ;;
+    --expect-lang) EXPECT_LANG="${2:-}"; shift 2 ;;
     *) usage ;;
   esac
 done
@@ -63,6 +68,8 @@ done
 [[ -f "$APPIMAGE" && -x "$APPIMAGE" ]] || usage
 [[ "$MODE" == "fuse" || "$MODE" == "extract" ]] || usage
 [[ "$PORT" =~ ^[0-9]+$ ]] || usage
+[[ "$LOCALE" =~ ^[a-z]{2}_[A-Z]{2}\.UTF-8$ ]] || usage
+[[ "$EXPECT_LANG" =~ ^[a-z]{2}-[A-Z]{2}$ ]] || usage
 
 SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/agent-inbox-appimage-smoke.XXXXXX")"
 chmod 0700 "$SCRATCH"
@@ -120,7 +127,7 @@ launch=(
   "TMPDIR=$SCRATCH/tmp"
   "AGENT_INBOX_DB=$SCRATCH/state/inbox.db"
   "AGENT_INBOX_PORT=$PORT"
-  "LANG=fr_FR.UTF-8"
+  "LANG=$LOCALE"
 )
 if [[ "$MODE" == "extract" ]]; then
   launch+=("APPIMAGE_EXTRACT_AND_RUN=1")
@@ -146,7 +153,7 @@ curl -fsSI "http://127.0.0.1:$PORT/" |
   grep -qi '^x-agent-inbox-local-boundary: loopback-v1'
 assert_chromium_sandbox
 for _ in {1..30}; do
-  assert_english_renderers >/dev/null 2>&1 && break
+  assert_renderer_locale >/dev/null 2>&1 && break
   sleep 1
 done
-assert_english_renderers
+assert_renderer_locale

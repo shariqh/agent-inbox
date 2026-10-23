@@ -99,6 +99,8 @@ $built = [ordered]@{
 $PSNativeCommandUseErrorActionPreference = $false
 $iceOutput = @(& $Wix msi validate $msi 2>&1 | ForEach-Object { "$_" })
 $iceExit = $LASTEXITCODE
+# The runner ends a step with the last native exit code; validation's is data.
+$global:LASTEXITCODE = 0
 $PSNativeCommandUseErrorActionPreference = $true
 $ices = [ordered]@{}
 foreach ($line in $iceOutput) {

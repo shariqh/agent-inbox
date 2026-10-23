@@ -290,38 +290,39 @@ describe('what counts as using a runtime (#294)', () => {
 
   // A config that exists but proves nothing could hide the one launcher that
   // still uses a runtime, so nothing at all may be removed.
-  const UNREADABLE: Array<[string, (h: HooksHome) => string]> = [
+  const UNREADABLE: Array<[string, (h: HooksHome) => string, string]> = [
     ['is not valid JSON', (h) => {
       writeJson(files(h).copilot, {})
-      writeFileSync(files(h).copilot, '{"mcpServers": {')
+      // an unquoted value: V8's message for this one quotes the text around it
+      writeFileSync(files(h).copilot, '{"mcpServers": {"x": {"env": {"TOKEN": s3cret-value}}}}')
       return files(h).copilot
-    }],
+    }, 'is not valid JSON'],
     ['is a directory', (h) => {
       mkdirSync(files(h).settings, { recursive: true })
       return files(h).settings
-    }],
+    }, 'is not a regular file'],
     ['is a symlink to nothing', (h) => {
       mkdirSync(join(h.home, '.claude'), { recursive: true })
       symlinkSync(join(h.home, 'dotfiles', 'settings.json'), files(h).settings)
       return files(h).settings
-    }],
+    }, 'is a symlink to something that is not there'],
     ['sits under a symlinked folder whose target is gone', (h) => {
       symlinkSync(join(h.home, 'unmounted', 'claude'), join(h.home, '.claude'))
       return join(h.home, '.claude')
-    }],
+    }, 'is a symlink to something that is not there'],
     ['is larger than 64 MB', (h) => {
       writeJson(files(h).desktopMac, {})
       truncateSync(files(h).desktopMac, 64 * 1024 * 1024 + 1)
       return files(h).desktopMac
-    }],
+    }, 'is larger than 64 MB'],
     ['names more than 4096 paths in its launchers', (h) => {
       const args = Array.from({ length: 4097 }, (_, i) => `/opt/tool-${i}`)
       writeJson(files(h).claude, { mcpServers: { many: { command: 'node', args } } })
       return files(h).claude
-    }],
+    }, 'names more than 4096 paths in its launchers'],
   ]
 
-  it.each(UNREADABLE)('removes nothing at all when a host config %s', (_label, arrange) => {
+  it.each(UNREADABLE)('removes nothing at all when a host config %s', (_label, arrange, why) => {
     const f = fixture()
     const old = installRuntime(f.h, OLD)
     const culprit = arrange(f.h)
@@ -329,13 +330,17 @@ describe('what counts as using a runtime (#294)', () => {
     const verdicts = unused(f)
     expect(verdicts.status).toBe('unknown')
     expect(verdicts.reason).toContain(culprit)
+    expect(verdicts.reason).toContain(why)
     expect(verdicts.runtimes).toEqual([])
     expect(references(f, old.runtimeId).status).toBe('unknown')
 
     const applied = prune(f, ['--apply'])
     expect(applied.status).toBe(1)
     expect(applied.stderr).toContain(culprit)
+    expect(applied.stderr).toContain(why)
     expect(applied.stderr).toContain('Nothing was removed')
+    // says why without quoting the file, which can hold a secret
+    expect(applied.stderr + applied.stdout).not.toContain('s3cret')
     expect(runtimes(f.h)).toEqual([old.runtimeId])
   })
 

@@ -277,8 +277,9 @@ function readReferenceFile(file) {
   }
   try {
     return { state: 'ok', value: raw.trim() === '' ? {} : JSON.parse(raw) }
-  } catch (err) {
-    return { state: 'unknown', reason: `is not valid JSON (${err.message})` }
+  } catch {
+    // never the parser's message: it can quote the file, secrets and all
+    return { state: 'unknown', reason: 'is not valid JSON' }
   }
 }
 

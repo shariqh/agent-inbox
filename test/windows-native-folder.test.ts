@@ -1,9 +1,9 @@
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createTreeArchive } from '../scripts/archive-tree.mjs'
-import { buildWindowsThinApp } from '../scripts/build-windows-thin-app.mjs'
+import { buildWindowsThinApp, publishNewFolder } from '../scripts/build-windows-thin-app.mjs'
 import { nativeRuntimeAdapterFor } from '../scripts/native-runtime-adapter.mjs'
 import { downloadArchive } from '../scripts/release-inputs.mjs'
 import { buildManifest, writeManifestFile } from '../scripts/runtime-payload.mjs'
@@ -280,5 +280,84 @@ describe('Windows setup metadata against the embedded runtime', () => {
     writeFileSync(join(f.runtime, 'dist', 'hook-cli.js'), 'tampered\n')
     expect(() => verifyWindowsSetupMetadata({ resources: f.resources }))
       .toThrow(/does not match the embedded win32-x64 runtime: .*mismatch/)
+  })
+})
+
+// #333: the folder checks run its Electron and runtime node.exe just before it
+// is renamed into place, and Windows refuses that rename while anything in it
+// is still open.
+describe('publishing the packaged Windows folder', () => {
+  afterEach(removeScratchDirs)
+
+  function packaged(): { source: string; destination: string } {
+    const work = scratchDir('windows-thin-publish-')
+    const source = join(work, 'packager', 'Agent Inbox-win32-x64')
+    mkdirSync(source, { recursive: true })
+    writeFileSync(join(source, 'Agent Inbox.exe'), 'electron\n')
+    return { source, destination: join(work, 'thin', 'win32-x64', 'Agent Inbox') }
+  }
+
+  function refusing(refusals: number, onRefusal: () => void = () => {}) {
+    const renames: string[] = []
+    return {
+      renames,
+      rename(from: string, to: string) {
+        renames.push(from)
+        if (renames.length > 100) throw new Error('rename retried without end')
+        if (renames.length <= refusals) {
+          onRefusal()
+          throw Object.assign(new Error(`EPERM: operation not permitted, rename '${from}'`), { code: 'EPERM' })
+        }
+        renameSync(from, to)
+      },
+    }
+  }
+
+  it('publishes on Windows once the rename stops being refused', () => {
+    const { source, destination } = packaged()
+    const { rename, renames } = refusing(2)
+    const waits: number[] = []
+
+    publishNewFolder(source, destination, { platform: 'win32', rename, sleep: (ms) => { waits.push(ms) } })
+
+    expect(readFileSync(join(destination, 'Agent Inbox.exe'), 'utf8')).toBe('electron\n')
+    expect(existsSync(source)).toBe(false)
+    expect(renames).toHaveLength(3)
+    expect(waits).toHaveLength(2)
+  })
+
+  it.each(['linux', 'darwin'] as const)('fails at once on %s', (platform) => {
+    const { source, destination } = packaged()
+    const { rename, renames } = refusing(1)
+
+    expect(() => publishNewFolder(source, destination, { platform, rename, sleep() {} })).toThrow(/EPERM/)
+    expect(renames).toHaveLength(1)
+    expect(existsSync(join(source, 'Agent Inbox.exe'))).toBe(true)
+  })
+
+  // What the folder build relies on: no platform passed
+  it.skipIf(process.platform === 'win32')('fails at once on this host when no platform is given', () => {
+    const { source, destination } = packaged()
+    const { rename, renames } = refusing(1)
+    const waits: number[] = []
+
+    expect(() => publishNewFolder(source, destination, { rename, sleep: (ms) => { waits.push(ms) } })).toThrow(/EPERM/)
+    expect(renames).toHaveLength(1)
+    expect(waits).toEqual([])
+    expect(existsSync(join(source, 'Agent Inbox.exe'))).toBe(true)
+  })
+
+  it('refuses an output that appeared between attempts instead of retrying into it', () => {
+    const { source, destination } = packaged()
+    const { rename, renames } = refusing(1, () => {
+      mkdirSync(destination)
+      writeFileSync(join(destination, 'other.txt'), 'someone else\n')
+    })
+
+    expect(() => publishNewFolder(source, destination, { platform: 'win32', rename, sleep() {} }))
+      .toThrow(/output already exists/)
+    expect(renames).toHaveLength(1)
+    expect(readdirSync(destination)).toEqual(['other.txt'])
+    expect(existsSync(join(source, 'Agent Inbox.exe'))).toBe(true)
   })
 })

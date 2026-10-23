@@ -10,8 +10,10 @@
 //
 // it starts <runtime>/dist/mcp-server.js against a scratch database, sends
 // initialize and tools/list over stdio, and requires the agent-inbox tools.
-// Argv only, piped streams, bounded by a timeout; it writes nothing to stdout
-// and reports a failure, with the server's stderr, on stderr and exit 1.
+// Then it closes the server's stdin and waits for it to exit, killing it only
+// if it does not. Argv only, piped streams, bounded by a timeout; it writes
+// nothing to stdout and reports a failure, with the server's stderr, on stderr
+// and exit 1.
 import { execFileSync, spawn } from 'node:child_process'
 import { mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -22,6 +24,8 @@ const PROBE = fileURLToPath(import.meta.url)
 const REQUIRED_TOOLS = ['flag', 'pending', 'board_get']
 const PROTOCOL_VERSION = '2025-06-18'
 const STDERR_CAP = 64 * 1024
+// How long the server gets to exit by itself once its stdin closes
+const EXIT_GRACE_MS = 2_000
 export const MCP_PROBE_TIMEOUT_MS = 30_000
 
 /**
@@ -97,9 +101,14 @@ function probe(runtime, timeoutMs) {
     .finally(async () => {
       clearTimeout(timer)
       exited.catch(() => {})
-      if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM')
-      const killer = setTimeout(() => child.kill('SIGKILL'), 5_000)
+      // Closing stdin lets the server finish what it is running and exit. On
+      // Windows a kill is TerminateProcess, which would orphan a git the server
+      // runs for its presence write, still open inside the runtime (#333).
+      child.stdin.end()
+      const stopper = setTimeout(() => child.kill('SIGTERM'), EXIT_GRACE_MS)
+      const killer = setTimeout(() => child.kill('SIGKILL'), EXIT_GRACE_MS + 5_000)
       await closed
+      clearTimeout(stopper)
       clearTimeout(killer)
       rmSync(scratch, { recursive: true, force: true })
     })

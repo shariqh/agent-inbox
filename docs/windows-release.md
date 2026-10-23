@@ -67,6 +67,14 @@ against headers node-gyp would download. Neither file enters the runtime payload
   loopback boundary, and its bundled runtime selftests, installs, and prunes under a
   disposable user profile.
 
+The build publishes the staged runtime and the packaged folder by renaming each into
+place just after these checks have run executables from inside it, and Windows refuses
+to rename a folder while anything in it is still open: a child's handles that have not
+closed yet, or Defender scanning what just ran. So on Windows each of those two renames,
+when refused with `EPERM`, `EACCES` or `EBUSY`, is tried again after growing waits for
+about nine seconds, re-running its checks first; any other error still fails at once
+(#333). The runtime installer that Setup runs keeps its single attempt.
+
 The folder and reports are short-lived CI artifacts only. They are unsigned and are not
 added to release aggregation.
 

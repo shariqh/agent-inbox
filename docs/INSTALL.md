@@ -443,7 +443,8 @@ The dry run lists each runtime and what would happen to it, and changes nothing.
 - no running process names, such as an agent session still running the MCP server it
   started with. Exit that session and run it again to remove that runtime too.
 
-If a host config exists but cannot be read, nothing is removed. Project-scope configs
+If a host config exists but cannot be read, nothing is removed; the script names the file
+and why, but never quotes it, since it can hold a secret. Project-scope configs
 (`<project>/.mcp.json`, `<project>/.claude/settings*.json`) are not read; a session started
 from one is still protected while it runs. Each removal is the same one the installer
 makes: the runtime folder is checked against its manifest and renamed into a `.trash-…`

@@ -847,6 +847,16 @@ describe('universal finalization contract', () => {
     expect(staging).toContain("'setup-filesystem.cjs'")
   })
 
+  it('retries busy Windows renames when building, never in the shipping installer (#333)', () => {
+    const staging = readFileSync(join(root, 'scripts', 'stage-runtime.mjs'), 'utf8')
+    const installer = readFileSync(join(root, 'scripts', 'runtime-payload.mjs'), 'utf8')
+    const folder = readFileSync(join(root, 'scripts', 'build-windows-thin-app.mjs'), 'utf8')
+
+    expect(staging).toContain('publishWith: renameWithRetry,')
+    expect(installer).not.toMatch(/publishWith|renameWithRetry/)
+    expect(folder).toContain('publishNewFolder(packaged, destination)')
+  })
+
   it('keeps the rollback step helper the installer needs in payload verification and staging', () => {
     const verifier = readFileSync(join(root, 'electron', 'runtime-verify.cjs'), 'utf8')
     const staging = readFileSync(join(root, 'scripts', 'stage-runtime.mjs'), 'utf8')

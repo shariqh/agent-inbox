@@ -12,6 +12,12 @@ const TRASH_PREFIX = '.trash-'
 const RETAINED_MARKER = '.retained'
 // Leftover trash entries one cleanup tries to remove at most.
 const TRASH_CLEANUP_LIMIT = 16
+// Windows refuses to rename a directory while anything inside it is open: a
+// process whose handles have not closed yet, or Defender scanning executables
+// just written or run (#333). On win32, renameWithRetry waits these out with
+// growing waits that add up to about nine seconds, the approach graceful-fs takes.
+const BUSY_RENAME_CODES = new Set(['EPERM', 'EACCES', 'EBUSY'])
+const BUSY_RENAME_WAITS_MS = Object.freeze([50, 100, 200, 400, 800, 1600, 2000, 2000, 2000])
 
 function filesystemError(code, message, options = {}) {
   const error = new Error(message)
@@ -29,6 +35,33 @@ function isMissing(error) {
 
 function isTrashName(name) {
   return typeof name === 'string' && name.startsWith(TRASH_PREFIX)
+}
+
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+}
+
+// Runs check() and then rename(). On win32 only, a rename refused with a busy
+// code is tried again after the next wait, check() first every time, so a path
+// that changed meanwhile is refused rather than renamed. On any other platform
+// or error, or once the waits run out, the rename's error is thrown.
+function renameWithRetry({ check, rename, platform = process.platform, sleep = sleepSync }) {
+  for (let attempt = 0; ; attempt += 1) {
+    check()
+    try {
+      rename()
+      return
+    } catch (error) {
+      const wait = BUSY_RENAME_WAITS_MS[attempt]
+      if (platform !== 'win32' || !BUSY_RENAME_CODES.has(error?.code) || wait === undefined) throw error
+      sleep(wait)
+    }
+  }
+}
+
+function renameOnce({ check, rename }) {
+  check()
+  rename()
 }
 
 function defaultIo() {
@@ -197,17 +230,21 @@ function createSetupFilesystem({
     }
   }
 
+  // publishWith renames a stage into a free destination, running check()
+  // before every rename() it attempts. The default renames once; the
+  // build-time publisher passes renameWithRetry (#333).
   function stageDirectory({
     destination,
     replacement,
     prepare,
     validate,
+    publishWith = renameOnce,
   }) {
     if (replacement !== 'refuse' && replacement !== 'swap') {
       throw filesystemError('invalid-replacement', `unsupported directory replacement policy: ${String(replacement)}`)
     }
-    if (typeof prepare !== 'function' || typeof validate !== 'function') {
-      throw filesystemError('invalid-callback', 'directory prepare and validate callbacks are required')
+    if (typeof prepare !== 'function' || typeof validate !== 'function' || typeof publishWith !== 'function') {
+      throw filesystemError('invalid-callback', 'directory prepare, validate and publish callbacks are required')
     }
 
     const requestedDestination = normalizeAbsolute(pathApi, platform, destination)
@@ -251,14 +288,16 @@ function createSetupFilesystem({
       stageIdentity = identify(stage, 'directory')
       const prepared = prepare(stage)
       validate(stage, prepared)
-      assertIdentity(scratchIdentity)
-      assertIdentity(stageIdentity)
-      assertParentIdentity(requestedParent, parent)
-
-      if (previous) assertIdentity(previous, operationDestination)
-      else assertMissing(operationDestination)
+      const checkTransaction = () => {
+        assertIdentity(scratchIdentity)
+        assertIdentity(stageIdentity)
+        assertParentIdentity(requestedParent, parent)
+        if (previous) assertIdentity(previous, operationDestination)
+        else assertMissing(operationDestination)
+      }
 
       if (previous) {
+        checkTransaction()
         io.rename(operationDestination, backup)
         try {
           assertIdentity(scratchIdentity)
@@ -328,7 +367,7 @@ function createSetupFilesystem({
           )
         }
       } else {
-        io.rename(stage, operationDestination)
+        publishWith({ check: checkTransaction, rename: () => io.rename(stage, operationDestination) })
         stagePublished = true
         committed = true
         try {
@@ -543,4 +582,5 @@ function createSetupFilesystem({
 module.exports = {
   createSetupFilesystem,
   isTrashName,
+  renameWithRetry,
 }

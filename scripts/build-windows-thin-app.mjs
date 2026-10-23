@@ -11,6 +11,7 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs'
+import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
@@ -31,6 +32,8 @@ import {
   validateInstalledWindowsReleaseTools,
 } from './windows-release-inputs.mjs'
 
+const { renameWithRetry } = createRequire(import.meta.url)('./setup-filesystem.cjs')
+
 export class WindowsThinAppBuildError extends Error {
   constructor(message) {
     super(message)
@@ -46,12 +49,20 @@ function npmCliForWindowsNode() {
   return candidate
 }
 
-function publishNewFolder(source, destination) {
-  if (existsSync(destination)) {
-    throw new WindowsThinAppBuildError(`output already exists: ${destination}`)
-  }
+// The folder checks have just run its Electron and runtime node, and Windows
+// refuses to rename a folder while anything in it is still open (#333)
+export function publishNewFolder(source, destination, { platform, rename = renameSync, sleep } = {}) {
   mkdirSync(dirname(destination), { recursive: true })
-  renameSync(source, destination)
+  renameWithRetry({
+    platform,
+    sleep,
+    check() {
+      if (existsSync(destination)) {
+        throw new WindowsThinAppBuildError(`output already exists: ${destination}`)
+      }
+    },
+    rename: () => rename(source, destination),
+  })
 }
 
 function assertWindowsIcon(repoRoot) {

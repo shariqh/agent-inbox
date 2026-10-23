@@ -1,6 +1,8 @@
 import {
   chmodSync,
+  closeSync,
   existsSync,
+  openSync,
   readdirSync,
   symlinkSync,
   writeFileSync,
@@ -8,10 +10,11 @@ import {
 import { join } from 'node:path'
 import { createRequire } from 'node:module'
 import { afterEach, describe, expect, it } from 'vitest'
+import type { RenameAttempt } from '../scripts/setup-filesystem.cjs'
 import { removeScratchDirs, scratchDir } from './scratch.js'
 
 const require = createRequire(import.meta.url)
-const { createSetupFilesystem } = require('../scripts/setup-filesystem.cjs')
+const { createSetupFilesystem, renameWithRetry } = require('../scripts/setup-filesystem.cjs')
 
 describe.runIf(process.platform === 'win32')('native Win32 Setup filesystem evidence', () => {
   afterEach(removeScratchDirs)
@@ -55,6 +58,52 @@ describe.runIf(process.platform === 'win32')('native Win32 Setup filesystem evid
       },
     })
     expect(existsSync(destination)).toBe(false)
+  })
+
+  // #333: the evidence that a folder with an open file inside is refused with
+  // a code the build-time publisher retries, and that the retry then publishes
+  it('retries a publication Windows refused while a file in the stage was open', () => {
+    const parent = scratchDir('agent-inbox-win32-busy-')
+    const destination = join(parent, 'runtime-id')
+    const refusals: unknown[] = []
+    let held: number | undefined
+    const release = () => {
+      if (held !== undefined) closeSync(held)
+      held = undefined
+    }
+
+    try {
+      createSetupFilesystem().stageDirectory({
+        destination,
+        replacement: 'refuse',
+        prepare(stage: string) {
+          writeFileSync(join(stage, 'held.txt'), 'held\n')
+          held = openSync(join(stage, 'held.txt'), 'r')
+        },
+        validate() {},
+        publishWith: ({ check, rename }: RenameAttempt) => renameWithRetry({
+          check,
+          rename() {
+            try {
+              rename()
+            } catch (error) {
+              refusals.push((error as NodeJS.ErrnoException).code)
+              throw error
+            }
+          },
+          // As an exiting child's handles close while the publisher waits
+          sleep: release,
+        }),
+      })
+    } finally {
+      release()
+    }
+
+    // Defender scanning the new file may refuse it once more
+    expect(refusals.length).toBeGreaterThan(0)
+    for (const code of refusals) expect(['EPERM', 'EACCES', 'EBUSY']).toContain(code)
+    expect(existsSync(join(destination, 'held.txt'))).toBe(true)
+    expect(readdirSync(parent)).toEqual(['runtime-id'])
   })
 
   it('refuses a native junction instead of traversing or deleting its target', () => {

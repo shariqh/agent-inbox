@@ -105,10 +105,11 @@ all of it.
 Each installer gets a new local account in the Users group, never Administrators. Every action
 runs in that account's own logon session (`Start-Process -Credential -LoadUserProfile`); every
 step fails unless its token is that user's and not an administrator's, and records its
-integrity level (Medium throughout). The steps are: install the base version silently; launch it from its Start-menu shortcut and quit
-it; upgrade while it runs; upgrade with it closed (when the first upgrade did not finish
-cleanly); launch again; for the MSI, repair after deleting files, both with the source `.msi`
-present and with it moved away; uninstall after writing a sentinel file into
+integrity level (Medium throughout). The steps are: install the base version silently; launch
+it from its Start-menu shortcut and quit it; upgrade while it runs; upgrade with it closed (when
+the first upgrade did not finish cleanly); launch again; for the MSI, repair after deleting
+files, both with the source `.msi` present and with it moved away; uninstall after writing a
+sentinel file into
 `%USERPROFILE%\.agent-inbox`. For Squirrel the spike then reinstalls the base and runs
 Squirrel's own updater (`Update.exe --update`), launches and uninstalls again. After every
 install, upgrade and repair, the installed app folder is compared file by file with the verified
@@ -284,9 +285,10 @@ three, and add more.
 
 Further, the MSI starts nothing during install, needs a few lines of app code (its
 AppUserModelID and toast CLSID, and exiting when Windows asks) where Squirrel needs a handler
-for four lifecycle flags, downloads 42 MiB less, and is built by maintained tools. Its costs are the DisableMSI refusal on servers and locked-down
-machines (the portable ZIP covers those), the ICE errors (accepted for a per-user package, or
-avoided by a dual-purpose package, §6), and the WiX licence decision (§8.3).
+for four lifecycle flags, downloads 42 MiB less, and is built by maintained tools. Its costs are
+the DisableMSI refusal on servers and locked-down machines (the portable ZIP covers those), the
+ICE errors (accepted for a per-user package, or avoided by a dual-purpose package, §6), and the
+WiX licence decision (§8.3).
 
 Squirrel's one real advantage, a built-in background updater with delta packages, is outside
 #87's scope: updates stay notify-only through the existing signed manifest.

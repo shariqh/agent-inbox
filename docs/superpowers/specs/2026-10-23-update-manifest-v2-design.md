@@ -22,9 +22,9 @@ Recommended design:
 
 1. **A second manifest, `update-manifest-v2.json`,** is published in every release from 1.7.0
    on. It is signed with the same key, uses the same signature envelope and lasts at most 180
-   days. Its schema allows an arm64 DMG. Readers skip target types they don't know, and ignore
-   keys they don't know unless the manifest marks them critical, so a later target (Windows,
-   #85 and #87) or field doesn't need a third manifest.
+   days. Its schema allows an arm64 DMG. Readers skip target types they don't know and ignore
+   keys they don't know, so a later target (Windows, #85 and #87) or an optional field doesn't
+   need a third manifest.
 2. **`update-manifest.json` stays in every release.** While releases are universal it describes
    the release, with the same bytes as today. From 2.0.0 on it describes the last universal 1.x
    release (called **1.x-last** below). Each release re-signs that description with a fresh
@@ -49,7 +49,8 @@ Recommended design:
    universal release, or by re-signing the previous release's verified v1 manifest in an arm64
    release. New gates: v2 must be published before any arm64 release, no release may drop a
    manifest once it exists, a re-signed copy must match the files published for 1.x-last, and
-   v1 must always carry a signature from the key 1.2 to 1.6 trust. The publish job re-checks the
+   v1 must carry a signature from the key 1.2 to 1.6 trust, unless the existing emergency
+   rotation override waives it for one release. The publish job re-checks the
    re-signed copy on its own, from GitHub. The protected workflow keeps its jobs, secret,
    permissions and draft-then-publish protocol.
 
@@ -232,7 +233,9 @@ shipped versions of `update-fetch.cjs`.
 - **R3.** 1.7.0 and every later version read a new manifest that allows an arm64 DMG.
 - **R4.** On an Intel Mac or under Rosetta, an arm64-only build is never downloaded or
   installed, whatever installer is registered. The offer stays notify-only, with plain copy, and
-  nothing on screen points the user at the arm64 download.
+  in that blocked state nothing on screen points the user at the arm64 download. The general
+  Releases link that the `unverified` and `stale` states already show is unchanged; #296's
+  release notes name the version for Intel Macs.
 - **R5.** Linux keeps updating normally throughout.
 - **R6.** Expiry, rollback marks and key continuity keep their guarantees. Any exception is
   narrow, written down and tested.
@@ -274,8 +277,9 @@ byte.
   2027-01-04. From then on every app from 1.2 to 1.6 shows "Couldn't check right now". An Intel
   user who follows "review Releases" finds 2.x marked latest, and its DMG won't open on their
   Mac.
-- Intel Macs on 1.7.0 up to, not including, 1.x-last lose their way to 1.x-last at the same
-  moment, because their fallback reads v1 (§6.2).
+- Intel Macs that read v2 lose their fallback at the same moment, because it reads v1 (§6.2):
+  those on 1.7.0 to just before 1.x-last can no longer reach 1.x-last, and those on 1.x-last
+  itself go from the Apple silicon copy to a permanent "Couldn't check right now".
 
 ### C. Keep 1.x-last as GitHub's latest release
 
@@ -308,7 +312,7 @@ newest universal one.
 | | A (recommended) | B | C |
 | --- | --- | --- | --- |
 | Apps from 1.2 to 1.6, after 2.0.0 | Offered 1.x-last while releases continue | Offered 1.x-last until 180 days after its tag, then "Couldn't check right now" | Offered 1.x-last until 180 days after its tag, unless published files are replaced |
-| Intel Macs on 1.7.0 to just before 1.x-last, after 2.0.0 | Offered 1.x-last while releases continue | The same cliff as the row above | The same cliff as the row above |
+| Intel Macs on 1.7.0 to 1.x-last, after 2.0.0 | Offered 1.x-last, or shown the Apple silicon copy, while releases continue | The same cliff as the row above | The same cliff as the row above |
 | New signing rule | An exact re-stamp of the previous v1 manifest | None | None |
 | A later key rotation | v1 needs the original key's signature while it is published | The copy stays signed by the original key | As A or B |
 | GitHub's latest release and website links | Unchanged | Unchanged | Latest stays on 1.x |
@@ -355,7 +359,7 @@ out to be. Example numbers use 1.9.0 for 1.x-last.
   arm64 and x86_64, and arm64 exactly when they are arm64 alone. The DMG name, every label and
   both manifests follow from that set (§7.1).
 - **I8.** Every v1 manifest carries a signature from `ed25519-99927ba2f6af6482`, the only key
-  1.2 to 1.6 trust.
+  1.2 to 1.6 trust, unless the emergency rotation override waives it for one release (G10).
 
 ### 4.3 Release sequence
 
@@ -435,12 +439,17 @@ Before 2.0.0, every app is offered the newest 1.x, as today.
   GitHub's default. There is no separate channel (§3, comparison).
 - **Key rotation overlap.** Apps from 1.2 to 1.6 trust only `ed25519-99927ba2f6af6482`, so
   every v1 manifest must carry that key's signature for as long as it is published (I8). A
-  publisher gate enforces it (G10), so a later `signingKeyId` switch fails the release loudly
-  instead of silently cutting those apps off; the multi-signature envelope already allows an
-  old-and-new pair. v2 needs the same signature while any app that reads v2 trusts only that
-  key. Intel Macs on 1.x-last trust only 1.x-last's registry, for good; adding a second offline
-  public key before 1.x-last keeps them reachable (decision 7). Nothing in this design changes
-  the single-key signer.
+  publisher gate enforces it (G10), so a `signingKeyId` switch fails the release loudly instead
+  of silently cutting those apps off. Under decision 6A v1 is published for good, so a routine
+  rotation needs the dual-key signer, with the original key signing v1, for good; the
+  multi-signature envelope already allows the pair. v2 needs the original key's signature too
+  while any app that reads v2 trusts only that key. If the original key is lost or compromised,
+  the existing emergency override (`ALLOW-UPDATE-KEY-ROTATION:<tag>:<keyId>`,
+  `docs/macos-release.md:363`) also waives G10 for that release, recorded in the signing
+  evidence: releases continue, and 1.2 to 1.6 are knowingly cut off. Intel Macs on 1.x-last
+  trust only 1.x-last's registry, for good; a second offline public key added before 1.x-last
+  keeps them reachable on that emergency path (decision 7). Nothing in this design changes the
+  single-key signer.
 - **Linux keeps updating.** Linux selection is unchanged. Apps from 1.2 to 1.6 on Linux take
   one extra hop through 1.x-last after 2.0.0; apps from 1.7.0 on go straight to the newest
   release.
@@ -451,9 +460,10 @@ Before 2.0.0, every app is offered the newest 1.x, as today.
   verified download (§1.5). `deb-notify` and every existing feasibility reason are unchanged.
 - **Intel users.** They end on 1.x-last, which keeps working, including Setup and its x64 Node
   runtime. Settings → Updates says why there is nothing to install and hides Review release,
-  which would otherwise open the 2.x page. The 2.x release notes name 1.x-last for Intel Macs
-  (#296). Because release tags must increase, there can be no 1.x fix after 2.0.0 (§9, risk 5),
-  so the Intel path is rehearsed before 2.0.0 (§8.5).
+  which would otherwise open the 2.x page. The general Releases link of the `unverified` and
+  `stale` states is unchanged, so the 2.x release notes name 1.x-last for Intel Macs (#296).
+  Because release tags must increase, there can be no 1.x fix after 2.0.0 (§9, risk 5), so the
+  Intel path is rehearsed before 2.0.0 (§8.5).
 - **Tests:** §8. **Workflow:** §7.4.
 
 ---
@@ -539,14 +549,9 @@ Top level: the same twelve required keys and rules as v1 (§1.2), with three dif
 | --- | --- | --- |
 | `schema` | 1 | 2 |
 | Lifetime | `expiresAt` exactly 180 days after `publishedAt` | More than 0 and at most 180 days after `publishedAt`. The publisher still writes 180 |
-| Keys the reader doesn't know | The whole manifest is rejected | Ignored, unless the same object's optional `critical` array names them (below) |
+| Keys the reader doesn't know | The whole manifest is rejected | Ignored, at the top level and inside targets |
 
-`critical` is an optional array of key names, allowed at the top level and in a target of a
-known type. A reader rejects the whole manifest when `critical` names a key it doesn't
-implement. 1.7.0 implements none, so for 1.7.0 `critical` must be absent or empty. This lets a
-later release add a field that older readers may safely ignore, or force them to refuse a
-manifest whose new field they would misread. Freshness keeps the five-minute limit on a future
-`publishedAt`.
+Freshness keeps the five-minute limit on a future `publishedAt`.
 
 Targets:
 
@@ -555,7 +560,7 @@ Targets:
 | Count | 1 to 32 |
 | Order | Ascending by `platform/architecture/packageType`, as in v1 |
 | Target type | `platform`, `architecture` and `packageType` are strings matching `^[a-z0-9][a-z0-9-]{0,31}$`; each combination appears at most once |
-| A type the reader knows | Required keys and values exactly as in v1: the fixed filename, the canonical URL under this tag, a positive `byteLength`, a lowercase `sha256`, the fixed `installStrategy`, and `minimumSystemVersion` on a DMG. Other keys follow the `critical` rule above |
+| A type the reader knows | Required keys and values exactly as in v1: the fixed filename, the canonical URL under this tag, a positive `byteLength`, a lowercase `sha256`, the fixed `installStrategy`, and `minimumSystemVersion` on a DMG. Other keys are ignored. A target of a known type that fails its required fields rejects the whole manifest, as in v1; only a publisher bug can produce one, and G7 refuses it |
 | A type the reader doesn't know | Skipped. Nothing else about it is read |
 | Required types | None in the reader. The publisher requires the full set for each release (§7.3) |
 
@@ -570,8 +575,22 @@ The types 1.7.0 knows:
 | `linux` | `x64` | `appimage` | `Agent-Inbox-vX.Y.Z-linux-x86_64.AppImage` | `appimage-self-replace` |
 | `linux` | `x64` | `deb` | `agent-inbox_X.Y.Z_amd64.deb` | `deb-notify` |
 
-A known type's filename and required fields are fixed for schema 2. Renaming a package needs a
-new schema and a transition like this one. Adding a type, or an optional field, doesn't.
+How v2 can change later without breaking 1.7.0's reader, which can't change once shipped:
+
+- **A new package or platform:** a new type. Older readers skip it.
+- **An optional field,** at the top level or in a known type: any field added to an existing
+  type must be safe for older readers to ignore, because they do ignore it.
+- **A change older readers must understand, in one target** (a renamed file, a new hash, a new
+  install step): a new type name, for example packageType `dmg-2` instead of `dmg`. Older
+  readers skip it, so that host shows `unsupported` and installs nothing, the safe outcome.
+  A release can keep publishing the old type beside it for as long as older readers should be
+  served.
+- **A change older readers must understand, at the top level:** a new file name, with a
+  transition like this one.
+
+There is no must-understand marker inside a manifest. One such marker in one platform's target
+would make every older reader on every platform reject the whole file, which is the break this
+design removes.
 
 Why readers skip unknown types: a reader never acts on them, so checking them protects
 nothing, and the closed set is what turned a packaging change into a protocol break here. The
@@ -622,7 +641,8 @@ fails on `schema` (*probed*), and the reverse fails the same way.
 Unchanged, `schema: 1`, for both manifests: `manifestSha256` plus a key-sorted array of Ed25519
 signatures over the exact manifest bytes. In code the envelope's schema gets its own constant,
 because `electron/update-manifest.cjs:460` uses the manifest's today. Every v1 envelope must
-include a valid signature from `ed25519-99927ba2f6af6482` (I8, G10).
+include a valid signature from `ed25519-99927ba2f6af6482` (I8, G10), unless the emergency
+rotation override waives it for that release (§7.3).
 
 ### 5.6 Rollback marks
 
@@ -659,7 +679,9 @@ include a valid signature from `ed25519-99927ba2f6af6482` (I8, G10).
   `continuity`, the earlier tag, whether the rotation override was used). For a re-stamp it
   also records the earlier manifest's SHA-256 and each copied target's size and SHA-256. The
   top level keeps `tag`, `sourceCommit`, `sourceTree`, `signingKeyId` and `trustedKeyIds`, and
-  adds `macos: { kind, architectures }`, checked against the aggregate evidence.
+  adds `macos: { kind, architectures, expected }`, where `expected` is the set the signer read
+  from `release/macos-inputs.json` at the release commit, and `originalKeySignature`:
+  `passed`, or `waived` together with the exact override string (G10).
 
 ---
 
@@ -669,8 +691,8 @@ include a valid signature from `ed25519-99927ba2f6af6482` (I8, G10).
 
 - The v1 validator keeps its behaviour exactly. The publisher still produces v1 manifests, and
   the Intel fallback reads them.
-- Add the v2 catalog and validator (§5.4: the lifetime range, `critical`, skipped types and
-  keys) and a v2 entry point to `verifyManifest`. The trust order stays: digest, then
+- Add the v2 catalog and validator (§5.4: the lifetime range, skipped types and ignored keys)
+  and a v2 entry point to `verifyManifest`. The trust order stays: digest, then
   signature, then schema, then freshness.
 - Give the envelope its own schema constant (§5.5).
 
@@ -832,9 +854,10 @@ The kind of a release, universal or arm64, is measured, not labelled.
   universal label can't outlive it.
 - **The chain.** Final evidence (notarize job) → aggregate evidence (verify-publication: copies
   the sets and derives the labels) → the signing handoff → signing evidence → publish. The
-  signer and the publish job each recompute the kind from the sets and refuse any disagreement
-  with the expected set, the DMG name, the aggregate's labels, the v2 macOS type or the way v1
-  was made (G9).
+  signer reads the expected set from the release commit and records it in the signing evidence
+  next to the measured sets, because the publish job has no checkout. The signer and the publish
+  job each recompute the kind from the sets and refuse any disagreement with the expected set,
+  the DMG name, the aggregate's labels, the v2 macOS type or the way v1 was made (G9).
 - **What this catches.** A name, label or flag that disagrees with what `lipo` measured, which
   is exactly what #296 could introduce by relaxing the gates and keeping the label. It doesn't
   catch release code that misreports what `lipo` said: the sets are measured by the release's
@@ -889,16 +912,25 @@ New functions, all pure and deterministic:
 | G7 | The v2 manifest describes this release, and its target set is exactly the set for this kind of release | New; replaces today's v1 identity check (workflow `:586-617`) |
 | G8 | In a universal release, v1 and v2 carry the same data apart from `schema` | New; true by construction, checked anyway |
 | G9 | The kind measured in §7.1 agrees with the expected set, the DMG name, the aggregate's labels, the v2 macOS type and the way v1 was made; a universal kind also needs the Intel gate's pass | New |
-| G10 | The v1 envelope carries a valid signature from `ed25519-99927ba2f6af6482`, the only key 1.2 to 1.6 trust | New |
+| G10 | The v1 envelope carries a valid signature from `ed25519-99927ba2f6af6482`, the only key 1.2 to 1.6 trust. Waived only by the exact emergency override for this release, recorded in the signing evidence | New |
 
 The check that the earlier manifest's tag equals the planned earlier tag (workflow `:692`)
 splits in two. The earlier v2 manifest must describe the earlier release. The earlier v1
 manifest must describe either the earlier release (if it was universal) or an older one (if it
 was arm64).
 
-G10 turns a future `signingKeyId` switch into a failed release instead of a silent cut-off for
-1.2 to 1.6. With today's single-key signer it simply holds; a later rotation passes it only by
-dual signing.
+G10 turns a `signingKeyId` switch into a failed release instead of a silent cut-off for 1.2 to
+1.6. With today's single-key signer it simply holds. A routine rotation passes it only by dual
+signing, with the original key signing v1, and under decision 6A v1 is published for good.
+
+G10 must not stop every release if the original key is lost or compromised, because every
+release ships v1. So the existing emergency override, the exact string
+`ALLOW-UPDATE-KEY-ROTATION:<tag>:<keyId>` for this release's tag and its new signing key
+(`docs/macos-release.md:363`, `scripts/update-manifest.mjs:461`), also waives G10 for that
+release. The signer records `originalKeySignature: waived` and the override string in the
+signing evidence. Using it knowingly cuts off 1.2 to 1.6, and any app that reads v2 but trusts
+only the original key; releases, Linux and 2.x included, continue. Without the exact override,
+G10 holds.
 
 ### 7.4 `.github/workflows/macos-release-protected.yml`
 
@@ -910,9 +942,9 @@ dual signing.
 | `sign-update-manifest`: history | One plan for both manifests; download the earlier v2 pair when it exists, with the same size and digest checks; authorize both | `:619-702` |
 | `sign-update-manifest`: derive | Write the v1 manifest by projection or re-stamp, from verified inputs only, and check G6 | New, before signing |
 | `sign-update-manifest`: sign | The one existing step signs both files in one process | `:703-715` |
-| `sign-update-manifest`: bind | Verify both with the current time; G10; signing evidence schema 2; five handoff files and ten release files | `:716-771` |
-| `publish`: names and kind | Ten names. The kind is recomputed from the measured sets in the signed handoff, and the DMG name (one of exactly two), the labels, the v2 macOS type and the way v1 was made must all match it | `:905-917`, `:1154-1160`, `:1290-1299`, `:1327-1337` |
-| `publish`: manifests | v2 against the release; v1 against the release in a universal release; G10 | `:918-1117` |
+| `sign-update-manifest`: bind | Verify both with the current time; G10 or its recorded waiver; signing evidence schema 2, with the expected set; five handoff files and ten release files | `:716-771` |
+| `publish`: names and kind | Ten names. The kind is recomputed from the measured sets in the signed handoff, which must equal the expected set recorded in the signing evidence, and the DMG name (one of exactly two), the labels, the v2 macOS type and the way v1 was made must all match it | `:905-917`, `:1154-1160`, `:1290-1299`, `:1327-1337` |
+| `publish`: manifests | v2 against the release; v1 against the release in a universal release; G10. A v1 without the original key's signature passes only when the signing evidence records the waiver and the same repository variable, passed to this job too, holds the exact override for this tag and signing key | `:918-1117` |
 | `publish`: independent re-stamp check | In an arm64 release, list the releases, fetch the earlier release's v1 pair by asset id, check its size and digest against the listing and verify it with the inline Ed25519 code already there; require the new v1 to differ from it only in the four re-stamped fields; check the copied targets against the sizes and digests GitHub lists for the release it describes; and check G6's newest-universal rule itself | New, beside `:918-1117` |
 | `publish`: latest | Send `make_latest: "true"` in the final `PATCH`. Required: every release has to become latest for R2 to hold | `:1402-1410` |
 
@@ -982,8 +1014,11 @@ writes, so neither half can later be removed alone.
 
 - **`test/update-manifest.test.ts`:** one case per row of the v2 rules (§5.4): the lifetime
   range (180 days accepted, 181 and 0 refused); a key the reader doesn't know is ignored at the
-  top level and in a known target, and a non-empty `critical` is refused; unknown types skipped
-  but checked for name format, uniqueness and order; envelope schema 1 for v2. `projectV1`
+  top level and in a known target; unknown types skipped but checked for name format,
+  uniqueness and order; a manifest that lists a host's change only under a new type name (for
+  example `darwin/arm64/dmg-2`) leaves that host `unsupported` while every other host still
+  updates; a known target that fails its required fields rejects the manifest; envelope schema
+  1 for v2. `projectV1`
   output is byte-identical to `generateManifest` for the same evidence. `restampV1` changes only
   the four fields of §5.3, and refuses a forged, schema-2 or not-older earlier manifest and a
   copied target that disagrees with the release listing. History: v2 starts only in a universal
@@ -993,7 +1028,8 @@ writes, so neither half can later be removed alone.
   `universal` label, is refused; so are sets that disagree between the executable and the addon,
   `x86_64` alone, sets that differ from the expected set, and a universal kind without the Intel
   gate's pass. G10: a v1 envelope without a valid signature from `ed25519-99927ba2f6af6482` is
-  refused.
+  refused, unless the exact override for this tag and signing key is set, in which case the
+  signing evidence records the waiver; an override for another tag or key doesn't waive it.
 - **`test/macos-release-gates.test.ts` and `test/release-aggregation.test.ts`** (`:414`,
   `:502`): the final evidence records both sets from `lipo` output; the DMG name, `architecture`
   and `target` are derived from them, and the same arm64-only-but-universal-label cases are
@@ -1058,7 +1094,9 @@ offered 1.x-last and never reads `stale`, `highestVerifiedVersion` never holds a
   a v1 manifest that differs from the earlier v1 pair it fetches by more than the four
   re-stamped fields, copied targets that don't match the sizes and digests in the fake release
   listing, and a described release that isn't the newest with a `-universal.dmg`; a v1 envelope
-  without the original key's signature; a v2 manifest for another release.
+  without the original key's signature, unless the signing evidence records the waiver and the
+  repository variable holds the exact override; measured sets that differ from the expected set
+  recorded in the signing evidence; a v2 manifest for another release.
 - Source pins: the key appears only in the one signing step; no new job, secret, permission or
   action; the final `PATCH` sends `make_latest: "true"`.
 
@@ -1078,14 +1116,27 @@ offered 1.x-last and never reads `stale`, `highestVerifiedVersion` never holds a
     ```
 
     *Probed* on the installed 1.6.0 app: natively it reports `arm64` and Electron 43.8.0; under
-    `arch -x86_64` it reports `x64` with `sysctl.proc_translated` 1. The packaging keeps
-    Electron's Node-mode fuse on, because the SQLite check needs it
-    (`scripts/electron-sqlite-check.mjs:35`, `:125-126`). No test hook enters the shipped app.
+    `arch -x86_64` it reports `x64` with `sysctl.proc_translated` 1.
+  - **Why no hook is needed.** The shipped app pins its key registry only in `main.cjs`, which
+    loads `release/update-keys.json` (`electron/main.cjs:64-66`) and passes it to
+    `checkForUpdate` as an argument (`:905`). The updater files themselves take the registry,
+    `fetch` and host facts as arguments, so a harness can call the bundle's own files with a
+    scratch registry, and no test hook enters the shipped app. Node mode is dependable: a
+    release whose Electron refused `ELECTRON_RUN_AS_NODE` would already fail its SQLite check
+    (`scripts/electron-sqlite-check.mjs:35`, `:125-126`).
   - **Harness:** a committed script that isn't packaged (for example `test/rehearsal/`). It
     builds the controller the way `electron/main.cjs:896-956` does and injects only a scratch
     registry, a `fetch` that serves the scratch-signed manifest pairs for the four manifest URLs
     and passes every other request to the real `fetch`, `currentVersion`, `translated` from
-    `sysctl.proc_translated`, and scratch `userData` folders.
+    `sysctl.proc_translated`, and scratch `userData` folders. Two more requirements:
+    - It first checks that 1.x-last's bundled `Contents/Resources/app/electron/main.cjs`
+      contains the real wiring: `translated` and `hostArch` passed as §6.5 says, the refusal of
+      Review release for `apple-silicon`, and the `rosetta` notification. It applies the same
+      source pins as `test/electron-updates.test.ts` to the bundled file, since the harness
+      bypasses `main.cjs`.
+    - It supplies the macOS version to the installer itself (from `sw_vers -productVersion`),
+      because Electron's `app` and `process.getSystemVersion()` aren't available in Node mode
+      (*probed*: `process.getSystemVersion` is undefined there).
   - **Manifests,** both signed with the scratch key: a v2 manifest listing only an arm64 DMG
     (plus the Linux packages), and a v1 manifest that re-stamps 1.x-last's real published one,
     so its target is the real, notarized 1.x-last DMG.
@@ -1097,8 +1148,7 @@ offered 1.x-last and never reads `stale`, `highestVerifiedVersion` never holds a
     value, no artifact, and no request for the arm64 DMG. (3) A v1 pair that is missing, or
     whose manifest and signature come from different releases, ends `unverified` and keeps a
     verified download; a v1 older than the v1 mark ends `stale`.
-  - main.cjs wiring and the renderer aren't in this harness; §8.2's source pins and DOM tests
-    cover them.
+  - The renderer isn't in this harness; §8.2's DOM tests cover it.
 - **After 2.0.0 is published:** the checks in §4.3, step 7.
 
 ---
@@ -1111,8 +1161,10 @@ offered 1.x-last and never reads `stale`, `highestVerifiedVersion` never holds a
    app shows "Couldn't check right now" and nothing unsafe is offered. Mitigation: §7.7.
 3. **Losing or retiring the original key.** Apps from 1.2 to 1.6 trust only
    `ed25519-99927ba2f6af6482`, and Intel Macs on 1.x-last trust only 1.x-last's registry, for
-   good. Losing that key ends update checks for both groups. G10 makes a switch away from it
-   fail loudly instead of silently. Mitigation: decision 7.
+   good. G10 makes a planned switch away from that key fail loudly instead of silently. If the
+   key is lost or compromised, the exact emergency override waives G10 so releases continue,
+   and 1.2 to 1.6 are knowingly cut off; Intel Macs on 1.x-last stay reachable only if a backup
+   key was added first (decision 7).
 4. **A wrong re-stamp.** A copy that drifted would mislead old apps. The signer derives it from
    the verified earlier manifest and checks it against the published files of the release it
    describes; the publish job then fetches the earlier manifest itself and repeats every check,
@@ -1132,15 +1184,18 @@ offered 1.x-last and never reads `stale`, `highestVerifiedVersion` never holds a
    §8.5 cover them, and §4.3 step 7 checks them on the day.
 10. **A skipped type or key.** A later manifest can carry a type or key an older reader skips.
     For that reader it means "no update for this host" or an ignored detail, never a wrong
-    install; a field that must not be ignored goes in `critical`.
+    install. The rule that keeps this safe is a publisher rule: a change older readers must
+    understand ships under a new type name or a new file name, never as a new field on an
+    existing type (§5.4).
 11. **Release code that misreports `lipo`.** The measured sets come from the release's own code
     on the macOS runner; the trusted jobs only check that every label agrees with them (§7.1).
     This is the same trust the release path already has in its own gates, and that code is
     reviewed and tagged from `main`'s first-parent history.
 12. **An Intel user downloads 2.x by hand.** The releases page lists 2.x as latest, and dragging
-    its app over a working 1.x-last breaks the install. The app never links there from the
-    Intel state, the file name says `arm64`, and the 2.x notes, README and website say Intel Macs
-    stay on 1.x-last (#296).
+    its app over a working 1.x-last breaks the install. The blocked state never links there, but
+    the `unverified` and `stale` states keep today's general Releases link, which opens that
+    list (`public/app.js:8655`, `electron/main.cjs:275`). The file name says `arm64`, and the 2.x
+    notes, README and website say Intel Macs stay on 1.x-last (#296).
 
 ---
 
@@ -1151,8 +1206,9 @@ offered 1.x-last and never reads `stale`, `highestVerifiedVersion` never holds a
   apps keep being guided to 1.x-last while releases continue. It costs one narrow signing
   exception, which the publish job re-checks on its own.
 - B. Copy 1.x-last's v1 pair forward unchanged. No signing exception, but 180 days after
-  1.x-last's tag every app from 1.2 to 1.6 loses update checks, and Intel Macs on 1.7.0 to just
-  before 1.x-last lose their way to 1.x-last at the same moment.
+  1.x-last's tag every app from 1.2 to 1.6 loses update checks, and so do Intel Macs on 1.7.0
+  to 1.x-last: those before 1.x-last can no longer reach it, and 1.x-last itself shows "Couldn't
+  check right now" for good.
 - C. Keep 1.x-last as GitHub's latest release. It needs a second way for new apps to find 2.x,
   and replacing files on a published release.
 
@@ -1179,29 +1235,35 @@ without another transition.
 - C. None for either; Settings → Updates explains.
 
 **5. How forgiving should v2 readers be?**
-- **A. Skip unknown target types, ignore unknown keys unless `critical` names them, and accept
-  any lifetime up to 180 days (recommended).** New packages, optional fields and shorter
-  lifetimes then need no transition, while the required fields of known types stay strict and
-  `critical` can still force old readers to refuse.
+- **A. Skip unknown target types, ignore unknown keys at every level, and accept any lifetime up
+  to 180 days (recommended).** New packages, optional fields and shorter lifetimes then need no
+  transition. A change older readers must understand ships under a new type name (that host
+  becomes `unsupported` for them) or a new file name, never as a new field on an existing type.
+  The required fields of known types stay strict.
 - B. A closed set and exact keys, as in v1. Anything beyond the six known types needs another
   transition.
 
 **6. How long should releases keep re-stamping v1?**
 - **A. In every release, with no end date (recommended).** A re-stamp costs nothing, and it is
-  how apps from 1.2 to 1.6, and Intel Macs on 1.7.0 to just before 1.x-last, reach 1.x-last.
+  how apps from 1.2 to 1.6, and Intel Macs on 1.7.0 to just before 1.x-last, reach 1.x-last. It
+  also means the original key signs v1 for good (G10).
 - B. Until a set date, for example 12 months after 2.0.0. 180 days after the last re-stamp,
-  apps from 1.2 to 1.6 show "Couldn't check right now", and Intel Macs on 1.7.0 to just before
-  1.x-last can no longer reach 1.x-last: their v1 read fails, which ends the check `unverified`.
+  apps from 1.2 to 1.6 show "Couldn't check right now". So do Intel Macs on 1.7.0 to 1.x-last,
+  because their v1 read then fails, which ends the check `unverified`: those before 1.x-last can
+  no longer reach it, and 1.x-last itself loses the Apple silicon copy for good.
 
 **7. Should a backup public key be added before 1.x-last?**
 - **A. Yes, in a small separate PR, ideally before 1.7.0 and at the latest before 1.x-last
   (recommended).** Generate a second Ed25519 key, keep its private half offline, and add only
   its public key to `release/update-keys.json`. The original key stays `signingKeyId`, and every
-  later manifest lists both in `trustedKeyIds`, which also authorizes a later switch without the
-  emergency override. Every app from the release that adds it, including Intel Macs that stay
-  on 1.x-last for good, could then follow a rotation without dual signing. Apps from 1.2 to 1.6
-  can't gain it either way, so G10 still requires the original key's signature on v1.
-- B. No. A later rotation relies on dual signing for as long as those apps matter.
+  later manifest lists both in `trustedKeyIds`. The benefit is the emergency path only: if the
+  original key is lost or compromised, a release signed with the backup key under the exact
+  override (which also waives G10 and cuts off 1.2 to 1.6) still reaches every app from the
+  release that added it, including Intel Macs that stay on 1.x-last for good. A routine
+  rotation still needs the dual-key signer, with the original key signing v1, for as long as v1
+  is published, which under 6A is forever.
+- B. No. If the original key is lost, every installed app loses update checks until its user
+  installs a new release by hand, and Intel Macs on 1.x-last can never get them back.
 
 **8. Which release is 1.x-last, and what has to happen before 2.0.0?**
 - **A. Whichever 1.x is the last one before #296 is ready (recommended).** Before tagging 2.0.0,
@@ -1239,3 +1301,12 @@ without another transition.
   buildable as written, decision 6's option B also strands some Intel Macs, G10 requires the
   original key on v1, v2 accepts unknown keys under a `critical` rule and lifetimes up to 180
   days, 1.x-last's notes get a hand edit, and `make_latest: "true"` is required.
+- **2026-10-23, after a second check.** G10 can be waived, only by the exact emergency
+  override for one release and recorded in the signing evidence, so losing the original key
+  can't stop every release; decision 7's benefit is restated as the emergency path only
+  (§7.3). The `critical` marker is dropped: readers ignore unknown keys everywhere, and a
+  change older readers must understand ships under a new type name or a new file name (§5.4).
+  The signing evidence carries the expected set, so the publish job can check it (§7.1). R4
+  is narrowed to the blocked state. The rehearsal now records why it needs no hook, checks the
+  bundled `main.cjs` wiring and supplies the macOS version (§8.5). Decisions 1, 5, 6 and 7 are
+  corrected.

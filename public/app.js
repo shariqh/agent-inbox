@@ -26,6 +26,7 @@ import { createKeyboardUI, revealControl } from '/keyboard-ui.js'
 import { partitionNotes, unreadNoteCount, ambientChips, seenWatermark, markSeenIds } from '/notes.js'
 import { liveSummary, lastActivityAt, isDormant, activitySynopsis, sessionBuild } from '/livebar.js'
 import { agentsAction, hooksGuidance, hooksNextStep, hostLabel, hostLine, restartGuidance } from '/agents.js'
+import { PROJECT_SCOPE_NOTE, RUNTIMES_LEAD, runtimeLines, runtimesAction, runtimesNote } from '/runtimes.js'
 import { esc } from '/esc.js'
 import { initStructuredTextCopy } from '/structured-copy.js'
 import { captureSelection, restoreSelection } from '/selection.js'
@@ -8059,18 +8060,22 @@ function agentsCommand(text) {
   agentsBlock.actions.append(command, copy)
 }
 
-// Re-read what each host is registered to run, after any install. Resolves to
-// the agents it painted, or null when the read failed.
+// /api/setup as JSON, or null when it cannot be read.
+function readSetup() {
+  return fetch('/api/setup').then((r) => (r.ok ? r.json() : null)).catch(() => null)
+}
+
+// Re-read what each host is registered to run, after any install, and the
+// runtimes beside it (#294). Resolves to the agents it painted, or null when
+// the read failed.
 function refreshAgents() {
-  if (!agentsBlock) return Promise.resolve(null)
-  return fetch('/api/setup')
-    .then((r) => (r.ok ? r.json() : null))
-    .then((s) => {
-      if (!s?.agents || typeof s.agents !== 'object') return null
-      paintAgents(s.agents)
-      return s.agents
-    })
-    .catch(() => null) // keep the status already shown
+  if (!agentsBlock && !runtimesBlock) return Promise.resolve(null)
+  return readSetup().then((s) => {
+    if (s?.runtimes && typeof s.runtimes === 'object') paintRuntimes(s.runtimes)
+    if (!s?.agents || typeof s.agents !== 'object') return null // keep the status already shown
+    paintAgents(s.agents)
+    return s.agents
+  })
 }
 
 // One fixed install target per host, one after another: a host whose CLI is
@@ -8171,6 +8176,106 @@ async function updateAgents(action, current, button) {
     block.restart.replaceChildren(list)
   }
   block.restart.hidden = false
+}
+
+// ── Runtimes (#294) ─────────────────────────────────────────────────────────
+// Each runtime folder Setup installed, its size and what uses it, and ONE
+// explicit action that removes the unused ones through the existing bridge's
+// fixed `prune-runtimes` target. The renderer names the target and nothing
+// else: the script checks again under the setup lock, and keeps anything still
+// in use. Just before it runs, the panel re-reads the list and runs only if
+// the button still names what it would remove. Nothing runs at startup. Folder
+// names come from disk, so every string here is textContent.
+let runtimesBlock = null
+
+function renderRuntimes(host, s, canInstall) {
+  runtimesBlock = null
+  if (!s?.runtimes || typeof s.runtimes !== 'object') return
+  const section = document.createElement('section')
+  section.className = 'setup-block runtimes-status'
+  const title = document.createElement('h3')
+  title.textContent = 'Runtimes'
+  const lead = document.createElement('p')
+  lead.className = 'setup-hint'
+  lead.textContent = RUNTIMES_LEAD
+  const list = document.createElement('ul')
+  list.className = 'runtimes-list'
+  const actions = document.createElement('div')
+  actions.className = 'runtimes-actions'
+  const result = document.createElement('pre')
+  result.className = 'runtimes-result'
+  result.hidden = true
+  section.append(title, lead, list, actions, result)
+  host.appendChild(section)
+  runtimesBlock = { section, list, actions, result, canInstall, running: false }
+  paintRuntimes(s.runtimes)
+}
+
+function paintRuntimes(runtimes) {
+  const block = runtimesBlock
+  if (!block) return
+  const lines = runtimeLines(runtimes, lastData?.activity ?? [])
+  block.section.hidden = lines.length === 0
+  block.list.replaceChildren(...lines.map((line) => {
+    const item = document.createElement('li')
+    item.dataset.status = line.status
+    item.textContent = line.text
+    return item
+  }))
+  block.actions.replaceChildren()
+  const hint = (text) => {
+    const p = document.createElement('p')
+    p.className = 'setup-hint'
+    p.textContent = text
+    block.actions.appendChild(p)
+  }
+  const action = runtimesAction(runtimes)
+  const canRun = block.canInstall && Boolean(window.agentInboxSetup?.install)
+  if (action && canRun) {
+    hint(action.hint)
+    const run = btn(action.label, () => removeRuntimes(action, run))
+    run.className = 'runtimes-remove-btn'
+    run.disabled = block.running
+    block.actions.appendChild(run)
+  }
+  const note = runtimesNote(runtimes, canRun)
+  if (note) hint(note)
+  if (action) hint(PROJECT_SCOPE_NOTE)
+}
+
+async function removeRuntimes(action, button) {
+  const block = runtimesBlock
+  if (!block || block.running) return
+  block.running = true
+  button.disabled = true
+  const show = (text, state) => {
+    block.result.textContent = text
+    block.result.hidden = false
+    block.result.classList.toggle('success', state === 'ok')
+    block.result.classList.toggle('failure', state === 'failed')
+  }
+  try {
+    // the button names what it removes: run only if that is still the list
+    const fresh = await readSetup()
+    const now = runtimesAction(fresh?.runtimes)
+    const same = now !== null && now.ids.length === action.ids.length && now.ids.every((id) => action.ids.includes(id))
+    if (!same) {
+      show(fresh
+        ? 'The runtimes changed since Setup listed them, so it removed nothing. Check the list and try again.'
+        : 'Setup could not read the runtimes again, so it removed nothing.', 'failed')
+      return
+    }
+    show(`${action.label.replace(/^Remove/, 'Removing').replace(/ \([^)]*\)$/, '')}…`, 'running')
+    try {
+      const outcome = await window.agentInboxSetup.install('prune-runtimes')
+      show(outcome?.output || (outcome?.ok ? 'Done.' : 'Setup failed without output.'), outcome?.ok === true ? 'ok' : 'failed')
+    } catch (err) {
+      show(`Setup failed: ${err instanceof Error ? err.message : String(err)}`, 'failed')
+    }
+  } finally {
+    block.running = false
+    await refreshAgents()
+  }
 }
 
 function setupTargetLabel(target) {
@@ -8315,6 +8420,7 @@ async function refreshSetupAvailability() {
   shown.menu.replaceWith(menu)
   shown.menu = menu
   if (agentsBlock) agentsBlock.canInstall = true
+  if (runtimesBlock) runtimesBlock.canInstall = true
   await refreshAgents()
 }
 
@@ -8846,6 +8952,7 @@ async function renderSetup() {
     }
     const canInstall = await window.agentInboxSetup?.available?.().catch(() => false) ?? false
     renderAgents(host, s, canInstall)
+    renderRuntimes(host, s, canInstall)
     const menu = setupMenu(s, canInstall)
     host.appendChild(menu)
     setupShown = { info: s, canInstall, menu }

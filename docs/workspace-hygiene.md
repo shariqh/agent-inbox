@@ -141,7 +141,8 @@ a host config still uses. To remove every runtime nothing uses (#294), run a run
 `prune-runtimes.sh`: without `--apply` it is a dry run that lists what it would remove and
 changes nothing; with `--apply` it removes them under the setup lock, through the runtime
 prune, keeping the runtime it runs from and any runtime a host config or a running process
-still uses. Interrupted prunes leave `.trash-*` folders that the next install or prune
+still uses. Setup's Runtimes section offers the same removal with one button in the app.
+Interrupted prunes leave `.trash-*` folders that the next install or prune
 removes.
 
 ```sh

@@ -423,9 +423,28 @@ Nothing runs when the app starts; updating agents is always your explicit choice
 
 Each runtime Setup installs under `~/.agent-inbox/runtime/<runtime-id>/` takes about 170 MB.
 The installer removes old ones only during an install, and even then keeps the newest
-previous one. To remove every runtime nothing uses, run a runtime's own
-`prune-runtimes.sh` (in a 1.7.0 or later runtime, or the app's own copy inside
-`Agent Inbox.app/Contents/Resources/app/runtime/<platform-arch>/scripts/`):
+previous one. Setup's **Runtimes** section lists every runtime there, its size and what
+uses it:
+
+```text
+v1.2.2: not used · 171 MB
+v1.2.4: used by Claude Code settings · 171 MB
+v1.7.0: this app's runtime · 171 MB
+```
+
+In the Agent Inbox app's own window, **Remove the v1.2.2 runtime** (or **Remove 2 unused
+runtimes**) removes exactly the runtimes the list shows as not used. Setup reads the list
+again just before it starts, and does nothing if it changed; the removal itself checks again,
+under the setup lock, and keeps anything that has started being used. A line can also say
+`1 running session reports v1.2.2`: an agent session still running the MCP server it
+started with, which keeps that runtime until you exit it. A runtime that no longer matches
+what was installed (a file added, removed or changed) is left alone, and so is any folder
+that is not a runtime. If a host config exists but proves nothing (it is not valid JSON, for
+example), the section names it and says why, and offers to remove nothing. Nothing is removed
+when the app starts.
+
+From a terminal, run a runtime's own `prune-runtimes.sh` (in a 1.7.0 or later runtime, or
+the app's own copy inside `Agent Inbox.app/Contents/Resources/app/runtime/<platform-arch>/scripts/`):
 
 ```sh
 bash ~/.agent-inbox/runtime/<runtime-id>/scripts/prune-runtimes.sh           # dry run

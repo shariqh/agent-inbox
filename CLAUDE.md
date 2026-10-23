@@ -1415,6 +1415,25 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   newest previous runtime. Project-scope configs (`<project>/.mcp.json`,
   `<project>/.claude/settings*.json`) are deliberately not read; the process check still
   keeps a runtime a running session started from one uses.
+  *(#294 part B)* Setup's Runtimes block lists what is there before anything runs.
+  `src/runtime-inventory.ts` is VIEWER-PROCESS-ONLY and read-only (`node:fs`/`node:path`
+  only, no process): it mirrors the rule above, and `test/runtime-inventory.test.ts` runs
+  the script's own `unused` over every shared case in `test/runtime-uses.ts` and holds the
+  two to one answer. It cannot see running processes; the panel only adds an advisory "N
+  running sessions report vX" from Live's rows. Each folder's size is its manifest's
+  recorded total, and the bounded walk (an lstat per file, about 40 ms for a 4,000-file
+  runtime, on Electron main in the packaged app) runs only for an unused runtime, because
+  only that one is offered for removal and the prune refuses a folder that no longer
+  matches its manifest (`changed`). `/api/setup` carries `runtimes {state, unreadable?,
+  reason?, removable, entries}`, `reason` in the script's own words and never the JSON
+  parser's message, which can quote a secret from the file; the viewer keeps each folder's answer per stamp of the folder and
+  its manifest and the whole inventory per stamp of the host configs and runtime root
+  (10-minute backstop), so a cold read with three runtimes costs about 60-150 ms and a
+  warm one under 1 ms. `removable` holds only in a release whose verified payload carries
+  `scripts/prune-runtimes.sh`. The panel offers ONE Remove only in a window
+  `available()` grants; it re-reads `/api/setup` just before running and runs only if the
+  unused set is still the one its label names, then calls exactly
+  `install('prune-runtimes')`: the renderer never sends an id, path or list.
   `electron/runtime-verify.cjs` is the externally anchored verifier: using the digest from
   signed-bundle `setup-info.json`, it synchronously verifies the complete manifest file
   list, hashes, modes, entrypoints and runtime identity at selection and immediately before

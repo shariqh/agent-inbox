@@ -18,7 +18,6 @@ import {
   readdirSync,
   readFileSync,
   symlinkSync,
-  truncateSync,
   writeFileSync,
 } from 'node:fs'
 import { spawn, spawnSync } from 'node:child_process'
@@ -28,6 +27,7 @@ import { dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { hooksHome, installRuntime, installStaged, stageRuntime } from './hooks-runtime.js'
 import type { HooksHome, StagedRuntime } from './hooks-runtime.js'
+import { configFiles, hooksOf, launcher, notUses, UNREADABLE_CONFIGS, USE_SHAPES, writeJson } from './runtime-uses.js'
 import { removeScratchDirs, scratchDir } from './scratch.js'
 
 const REPO = resolve(import.meta.dirname, '..')
@@ -118,27 +118,7 @@ function references(f: Fixture, runtimeId: string): { status: string; matches: A
   return JSON.parse(result.stdout) as { status: string; matches: Array<{ file: string }> }
 }
 
-function writeJson(path: string, value: unknown): void {
-  mkdirSync(dirname(path), { recursive: true })
-  writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`)
-}
-
-const files = (h: HooksHome) => ({
-  claude: join(h.home, '.claude.json'),
-  settings: join(h.home, '.claude', 'settings.json'),
-  local: join(h.home, '.claude', 'settings.local.json'),
-  copilot: join(h.home, '.copilot', 'mcp-config.json'),
-  desktopMac: join(h.home, 'Library', 'Application Support', 'Claude', 'claude_desktop_config.json'),
-  desktopLinux: join(h.home, '.config', 'Claude', 'claude_desktop_config.json'),
-})
-
-const launcher = (dir: string, entry = 'mcp-server.js') => ({ command: join(dir, 'bin', 'node'), args: [join(dir, 'dist', entry)] })
-
-/** Claude's hooks as a Setup runtime's installer writes them. */
-function hooksOf(dir: string): unknown {
-  const hook = (sub: string) => ({ type: 'command', ...launcher(dir, 'hook-cli.js'), args: [join(dir, 'dist', 'hook-cli.js'), sub], timeout: 5 })
-  return { hooks: { Notification: [{ hooks: [hook('notification')] }], Stop: [{ hooks: [hook('stop'), hook('watch')] }] } }
-}
+const files = (h: HooksHome) => configFiles(h.home)
 
 /** A real process whose command line names `path`, the way an MCP server started from a runtime does. */
 async function runFrom(path: string): Promise<ChildProcess> {
@@ -172,66 +152,12 @@ function snapshot(root: string): string[] {
 const runtimes = (h: HooksHome): string[] => readdirSync(h.runtimeRoot).sort()
 
 describe('what counts as using a runtime (#294)', () => {
-  // Each shape names one runtime; every one keeps it, and the installer's own
-  // gate (`references`, used after an install) agrees.
-  const SHAPES: Array<[string, (dir: string, h: HooksHome) => { file: string; value: unknown; label: string }]> = [
-    ['a Claude Code user registration', (dir, h) => ({
-      file: files(h).claude, label: 'Claude Code', value: { mcpServers: { 'agent-inbox': launcher(dir) } },
-    })],
-    ['a Claude Code project-local registration (projects.*.mcpServers)', (dir, h) => ({
-      file: files(h).claude, label: 'Claude Code', value: { projects: { '/Users/me/src/app': { mcpServers: { inbox: launcher(dir) } } } },
-    })],
-    ['a split pair: the runtime\'s Node with another entry', (dir, h) => ({
-      file: files(h).claude, label: 'Claude Code', value: { mcpServers: { inbox: { command: join(dir, 'bin', 'node'), args: ['/opt/elsewhere/server.js'] } } },
-    })],
-    ['a split pair: another Node with the runtime\'s entry', (dir, h) => ({
-      file: files(h).copilot, label: 'Copilot CLI', value: { mcpServers: { inbox: { command: '/usr/local/bin/node', args: [join(dir, 'dist', 'mcp-server.js')] } } },
-    })],
-    ['an env value', (dir, h) => ({
-      file: files(h).claude, label: 'Claude Code', value: { mcpServers: { inbox: { command: 'node', args: ['/opt/x/server.js'], env: { AGENT_INBOX_NODE: join(dir, 'bin', 'node') } } } },
-    })],
-    ['an sh -c wrapper', (dir, h) => ({
-      file: files(h).claude, label: 'Claude Code', value: { mcpServers: { inbox: { command: '/bin/sh', args: ['-c', `exec '${join(dir, 'bin', 'node')}' '${join(dir, 'dist', 'mcp-server.js')}'`] } } },
-    })],
-    ['a hook written as one command string', (dir, h) => ({
-      file: files(h).settings, label: 'Claude Code settings', value: { hooks: { Stop: [{ hooks: [{ type: 'command', command: `${join(dir, 'bin', 'node')} ${join(dir, 'dist', 'hook-cli.js')} stop` }] }] } },
-    })],
-    ['an argument after the first', (dir, h) => ({
-      file: files(h).claude, label: 'Claude Code', value: { mcpServers: { inbox: { command: '/usr/bin/env', args: ['NODE_ENV=production', join(dir, 'bin', 'node'), join(dir, 'dist', 'mcp-server.js')] } } },
-    })],
-    ['Claude hooks in settings.json', (dir, h) => ({ file: files(h).settings, label: 'Claude Code settings', value: hooksOf(dir) })],
-    ['Claude hooks in settings.local.json', (dir, h) => ({ file: files(h).local, label: 'Claude Code settings', value: hooksOf(dir) })],
-    ['a Copilot CLI registration', (dir, h) => ({
-      file: files(h).copilot, label: 'Copilot CLI', value: { mcpServers: { 'agent-inbox': launcher(dir) } },
-    })],
-    ['Claude Desktop on macOS', (dir, h) => ({
-      file: files(h).desktopMac, label: 'Claude Desktop', value: { mcpServers: { 'agent-inbox': launcher(dir) } },
-    })],
-    ['Claude Desktop on Linux', (dir, h) => ({
-      file: files(h).desktopLinux, label: 'Claude Desktop', value: { mcpServers: { 'agent-inbox': launcher(dir) } },
-    })],
-    ['a symlinked alias that does not name the runtime', (dir, h) => {
-      mkdirSync(join(h.home, 'aliases'))
-      symlinkSync(join(dir, 'bin', 'node'), join(h.home, 'aliases', 'inbox-node'))
-      return { file: files(h).claude, label: 'Claude Code', value: { mcpServers: { inbox: { command: join(h.home, 'aliases', 'inbox-node'), args: ['/opt/x/server.js'] } } } }
-    }],
-    ['a home-relative alias', (dir, h) => {
-      mkdirSync(join(h.home, 'aliases'))
-      symlinkSync(join(dir, 'dist'), join(h.home, 'aliases', 'inbox-dist'))
-      return { file: files(h).copilot, label: 'Copilot CLI', value: { mcpServers: { inbox: { command: 'node', args: ['~/aliases/inbox-dist/mcp-server.js'] } } } }
-    }],
-    // a path naming it that cannot be followed for another reason than absence still counts
-    ['a path through a symlink loop', (dir, h) => {
-      symlinkSync(join(h.home, 'loop'), join(h.home, 'loop'))
-      const id = dir.slice(dir.lastIndexOf('/') + 1)
-      return { file: files(h).claude, label: 'Claude Code', value: { mcpServers: { inbox: { command: 'node', args: [join(h.home, 'loop', id, 'dist', 'mcp-server.js')] } } } }
-    }],
-  ]
-
-  it.each(SHAPES)('%s keeps the runtime it names', (_label, shape) => {
+  // Every shape keeps the runtime it names, and the installer's own gate
+  // (`references`, used after an install) agrees.
+  it.each(USE_SHAPES)('%s keeps the runtime it names', (_label, shape) => {
     const f = fixture()
     const old = installRuntime(f.h, OLD)
-    const { file, value, label } = shape(old.dir, f.h)
+    const { file, value, label } = shape(old.dir, f.h.home)
     writeJson(file, value)
 
     expect(verdictOf(f, old.runtimeId)).toMatchObject({ verdict: 'used', usedBy: [label] })
@@ -241,46 +167,21 @@ describe('what counts as using a runtime (#294)', () => {
     expect([...new Set(gate.matches.map((match) => match.file))]).toEqual([file])
   })
 
-  it('does not count another runtime\'s launcher, a config key, or a longer name that begins with the id', () => {
+  // A runtime id is content-derived, so another runtime root can hold the very
+  // same one: a path into that root, or one that no longer exists, does not
+  // use this one. Nor does a config key or a longer name.
+  it('does not count another root\'s copy, a path to nothing, a config key or a longer name', () => {
     const f = fixture()
     const old = installRuntime(f.h, OLD)
     const other = installRuntime(f.h, OLDER_HOOKS)
-    writeJson(files(f.h).claude, {
-      mcpServers: { 'agent-inbox': launcher(other.dir) },
-      // Claude Code keys a project by its folder; running in one is no launcher
-      projects: { [old.dir]: { allowedTools: [] } },
-      notes: [`${old.dir}.tar.gz`, `${old.runtimeId}-backup`, `x${old.runtimeId}`],
-    })
-
-    expect(verdictOf(f, old.runtimeId)).toMatchObject({ verdict: 'unused', usedBy: [], pids: [] })
-    expect(verdictOf(f, other.runtimeId)).toMatchObject({ verdict: 'used', usedBy: ['Claude Code'] })
-    expect(references(f, old.runtimeId).status).toBe('unreferenced')
-  })
-
-  it('counts the id anywhere in a config value, not only in a launcher', () => {
-    const f = fixture()
-    const old = installRuntime(f.h, OLD)
-    writeJson(files(f.h).settings, { statusLine: { type: 'script', path: join(old.dir, 'dist', 'status.js') } })
-
-    expect(verdictOf(f, old.runtimeId)).toMatchObject({ verdict: 'used', usedBy: ['Claude Code settings'] })
-  })
-
-  // A runtime id is content-derived, so another runtime root can hold the very
-  // same one. A path into that other root, or a path that no longer exists,
-  // does not use this one; a bare id, or a path it cannot place, still does.
-  it('counts a named id unless its path leads to another root\'s copy or nowhere', () => {
-    const f = fixture()
-    const old = installRuntime(f.h, OLD)
     const elsewhere = installStaged({ ...f.h, runtimeRoot: join(f.h.home, 'other-root') }, old)
     expect(elsewhere.runtimeId).toBe(old.runtimeId)
-    writeJson(files(f.h).copilot, { mcpServers: { 'agent-inbox': launcher(elsewhere.dir), gone: launcher(join(f.h.home, 'deleted-root', old.runtimeId)) } })
-    expect(verdictOf(f, old.runtimeId)).toMatchObject({ verdict: 'unused', usedBy: [] })
-    expect(references(f, old.runtimeId).status).toBe('unreferenced')
+    for (const { file, value } of notUses(old.dir, f.h.home, elsewhere.dir)) writeJson(file, value)
+    writeJson(files(f.h).settings, hooksOf(other.dir))
 
-    for (const named of [`AGENT_INBOX_RUNTIME=${old.runtimeId}`, `$HOME/.agent-inbox/runtime/${old.runtimeId}/bin/node`, `runtime/${old.runtimeId}/bin/node`]) {
-      writeJson(files(f.h).claude, { mcpServers: { inbox: { command: '/bin/sh', args: ['-c', `exec ${named}`] } } })
-      expect(verdictOf(f, old.runtimeId), named).toMatchObject({ verdict: 'used', usedBy: ['Claude Code'] })
-    }
+    expect(verdictOf(f, old.runtimeId)).toMatchObject({ verdict: 'unused', usedBy: [], pids: [] })
+    expect(verdictOf(f, other.runtimeId)).toMatchObject({ verdict: 'used', usedBy: ['Claude Code settings'] })
+    expect(references(f, old.runtimeId).status).toBe('unreferenced')
   })
 
   it('finds nothing in host configs that are not there', () => {
@@ -294,44 +195,10 @@ describe('what counts as using a runtime (#294)', () => {
     expect(references(f, old.runtimeId).status).toBe('unreferenced')
   })
 
-  // A config that exists but proves nothing could hide the one launcher that
-  // still uses a runtime, so nothing at all may be removed.
-  const UNREADABLE: Array<[string, (h: HooksHome) => string, string]> = [
-    ['is not valid JSON', (h) => {
-      writeJson(files(h).copilot, {})
-      // an unquoted value: V8's message for this one quotes the text around it
-      writeFileSync(files(h).copilot, '{"mcpServers": {"x": {"env": {"TOKEN": s3cret-value}}}}')
-      return files(h).copilot
-    }, 'is not valid JSON'],
-    ['is a directory', (h) => {
-      mkdirSync(files(h).settings, { recursive: true })
-      return files(h).settings
-    }, 'is not a regular file'],
-    ['is a symlink to nothing', (h) => {
-      mkdirSync(join(h.home, '.claude'), { recursive: true })
-      symlinkSync(join(h.home, 'dotfiles', 'settings.json'), files(h).settings)
-      return files(h).settings
-    }, 'is a symlink to something that is not there'],
-    ['sits under a symlinked folder whose target is gone', (h) => {
-      symlinkSync(join(h.home, 'unmounted', 'claude'), join(h.home, '.claude'))
-      return join(h.home, '.claude')
-    }, 'is a symlink to something that is not there'],
-    ['is larger than 64 MB', (h) => {
-      writeJson(files(h).desktopMac, {})
-      truncateSync(files(h).desktopMac, 64 * 1024 * 1024 + 1)
-      return files(h).desktopMac
-    }, 'is larger than 64 MB'],
-    ['names more than 4096 paths in its launchers', (h) => {
-      const args = Array.from({ length: 4097 }, (_, i) => `/opt/tool-${i}`)
-      writeJson(files(h).claude, { mcpServers: { many: { command: 'node', args } } })
-      return files(h).claude
-    }, 'names more than 4096 paths in its launchers'],
-  ]
-
-  it.each(UNREADABLE)('removes nothing at all when a host config %s', (_label, arrange, why) => {
+  it.each(UNREADABLE_CONFIGS)('removes nothing at all when a host config %s', (_label, arrange, why) => {
     const f = fixture()
     const old = installRuntime(f.h, OLD)
-    const culprit = arrange(f.h)
+    const culprit = arrange(f.h.home)
 
     const verdicts = unused(f)
     expect(verdicts.status).toBe('unknown')

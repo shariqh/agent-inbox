@@ -773,7 +773,9 @@ try {
       $command = Get-InstallerCommand $params.installer
       $result.dataBefore = Get-Names $paths.data
       $result.run = Invoke-Tool $command[0] $command[1] -SampleApp
-      $result.msiLog = @(Get-LogLines $command[2] 'Installation success or error status|Product: .* --|Error \d{4}|in use|Restart Manager|RmShutdown|1603|1612|1625|FindRelatedProducts: Found application')
+      $result.msiLog = @(Get-LogLines $command[2] 'Installation success or error status|Product: .* --|Error \d{4}|in use|Restart Manager|RmShutdown|1603|1612|1625')
+      # What FindRelatedProducts writes when it finds an earlier build this install replaces.
+      $result.upgradeDetected = @(Get-LogLines $command[2] 'PROPERTY CHANGE: Adding WIX_UPGRADE_DETECTED property' 5)
       $result.dataAfterInstall = Get-Names $paths.data
       $result.state = Get-State
     }

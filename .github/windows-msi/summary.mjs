@@ -14,6 +14,10 @@ const QUIT_LINE = '[agent-inbox] Windows asked the app to close (Restart Manager
 // the line above when a before-quit listener holds the quit.
 const WILL_QUIT_LINE = '[agent-inbox] Windows asked the app to close (Restart Manager); reached will-quit'
 const NOTIFY_LINE = '[agent-inbox] notifying: '
+// What FindRelatedProducts writes when it finds an earlier build to replace, the lines
+// as-user.ps1 keeps as upgradeDetected:
+// "PROPERTY CHANGE: Adding WIX_UPGRADE_DETECTED property. Its value is '{...}'."
+const UPGRADE_DETECTED = /PROPERTY CHANGE: Adding WIX_UPGRADE_DETECTED property\. Its value is '([^']+)'/i
 
 export function loadEvidence(directory, { pins, release }) {
   const load = (...parts) => {
@@ -175,6 +179,19 @@ const restartManagerText = (record) => {
   return `RmGetList ${record.list}: ${apps}${record.shutdown === -1 ? '' : `; RmShutdown ${record.shutdown}${after ? `; then ${after}` : ''}`}`
 }
 const windowsText = (value) => list(value).map((window) => `"${window.title}" (${window.class}${window.hung ? ', hung' : ''}${window.enabled === false ? ', disabled' : ''}${window.owned ? ', owned' : ''})`).join(', ') || 'none'
+// Only what the install's log shows: a line it cannot read is quoted, never taken as
+// no detection.
+const detectionText = (entry, first) => {
+  if (entry?.upgradeDetected == null) return "Windows Installer's detection was not recorded"
+  const lines = list(entry.upgradeDetected)
+  if (lines.length === 0) return 'its log shows no WIX_UPGRADE_DETECTED change'
+  const codes = lines.flatMap((line) => UPGRADE_DETECTED.exec(line)?.[1].split(';') ?? [])
+  if (codes.length === 0) return `Windows Installer logged: ${lines.join(' ')}`
+  const set = `Windows Installer set WIX_UPGRADE_DETECTED to ${codes.join(', ')}`
+  if (!first) return set
+  if (codes.length === 1 && codes[0] === first) return `${set}, the first build`
+  return codes.includes(first) ? `${set}, the first build among others` : `${set}, not the first build`
+}
 const quitText = (quit) => quit
   ? `${quit.graceful ? `closed by ${quit.method} in ${quit.seconds ?? '—'}s` : `${quit.method}: still running after 30 s (${list(quit.stillRunning).map((p) => p.type).join(', ') || 'unknown'}; windows before ${windowsText(quit.windows)}, after ${windowsText(quit.windowsStillOpen)}; screen ${quit.screen ?? '—'})`}, port ${quit.portReleased ? 'released' : 'still bound'}`
   : 'not run'
@@ -261,7 +278,7 @@ function rows(data) {
   const rebuildFolder = data.folders?.rebuild
   row('Same version built twice', sameRebuild ? [
     `first build ${data.builds.base?.productCode ?? '—'}: ${runText(sameFirst)}`,
-    `rebuild ${data.builds.rebuild?.productCode ?? '—'}${rebuildFolder ? ` (the base folder without ${rebuildFolder.removed}, with ${rebuildFolder.added})` : ''}: ${runText(sameRebuild)}; Windows Installer ${list(sameRebuild.msiLog).filter((line) => /Found application/.test(line)).map((line) => line.replace(/^.*Found application: ?/, 'found ')).join(', ') || 'found no related product'}`,
+    `rebuild ${data.builds.rebuild?.productCode ?? '—'}${rebuildFolder ? ` (the base folder without ${rebuildFolder.removed}, with ${rebuildFolder.added})` : ''}: ${runText(sameRebuild)}; ${detectionText(sameRebuild, data.builds.base?.productCode)}`,
     `installed afterwards: ${list(sameRebuild.state?.msiProducts).map((product) => product.error ?? `${product.productCode} ${product.version}`).join(', ') || 'nothing'}; installed-apps entries ${list(sameRebuild.state?.uninstallEntries).length}; tree ${treeText(check(data, 'same-version-rebuild'))}`,
     `uninstall: ${runText(sameUninstall)}; app folder ${sameUninstall?.state?.appDirectory ? 'still present' : 'removed'}; products left ${list(sameUninstall?.state?.msiProducts).length}; installed-apps entries left ${list(sameUninstall?.state?.uninstallEntries).length}`,
   ].join('<br>') : 'not run')

@@ -30,6 +30,7 @@ const release = (): { product: string, bundleId: string, minimumWindowsVersion: 
 type Requirement = { label: string, passed: boolean }
 const summary = (await import(pathToFileURL(join(msiDir, 'summary.mjs')).href)) as {
   requirements(data: unknown): Requirement[]
+  renderSummary(data: unknown, results: Requirement[]): string
 }
 const checksums = (await import(pathToFileURL(join(msiDir, 'checksums.mjs')).href)) as {
   CHECKSUMS: string
@@ -395,7 +396,7 @@ describe('Windows MSI requirements (#87 PR 2b)', () => {
             upgradeCode: identity.upgradeCode,
             productVersion: '1.6.0',
             elevationNotRequired: true,
-            validation: { passed: true },
+            validation: { passed: true, suppressed: ['ICE38', 'ICE61', 'ICE64', 'ICE91'], seconds: 20 },
             msi: { name: 'Agent-Inbox-v1.6.0-windows-x64.msi', sha256: sha },
             shortcutProperties: [
               { key: 'System.AppUserModel.ID', value: release().bundleId },
@@ -563,6 +564,47 @@ describe('Windows MSI requirements (#87 PR 2b)', () => {
       steps(data)['06-notify-without-shortcut']!.shortcutsAfter = [{ ...link, toastActivatorClsid: '{00000000-0000-0000-0000-000000000000}' }]
     }],
   ]
+  // Lines 222-238, then 70860-70873, of 15-same-version-rebuild.log from run 40032018939,
+  // converted from the UTF-16 msiexec writes: FindRelatedProducts in the rebuild's install
+  // finding the first build, then the closing property dump. MIGRATE carries the same
+  // value, and the dump names WIX_UPGRADE_DETECTED twice more; only the detection counts.
+  const detection = read(join(root, 'test', 'fixtures', 'windows-msi-rebuild-detection.txt')).trimEnd().split('\n')
+  const FIRST = '{56F3EF82-6953-457B-8084-914B487805E0}'
+  const rebuildRow = (data: Data): string =>
+    summary.renderSummary(data, []).split('\n').find((line) => line.startsWith('| Same version built twice |')) ?? ''
+
+  it('reports the line Windows Installer writes when the rebuild finds the first build', () => {
+    const asUser = read(join(msiDir, 'as-user.ps1'))
+    const pattern = /\$result\.upgradeDetected = @\(Get-LogLines \$command\[2\] '([^']+)' \d+\)/.exec(asUser)?.[1]
+    expect(pattern).toBeDefined()
+    // Select-String matches case-insensitively; the pattern needs nothing .NET-only.
+    const picked = detection.filter((line) => new RegExp(pattern!, 'i').test(line)).map((line) => line.trim())
+    expect(picked).toEqual([`MSI (s) (20:44) [22:30:46:808]: PROPERTY CHANGE: Adding WIX_UPGRADE_DETECTED property. Its value is '${FIRST}'.`])
+    const { data } = evidence()
+    data.builds.base.productCode = FIRST
+    steps(data)['15-same-version-rebuild']!.upgradeDetected = picked
+    expect(rebuildRow(data)).toContain(`Windows Installer set WIX_UPGRADE_DETECTED to ${FIRST}, the first build`)
+  })
+
+  it('says only what the rebuild\'s log shows', () => {
+    const { data } = evidence()
+    const rebuilt = steps(data)['15-same-version-rebuild']!
+    rebuilt.upgradeDetected = []
+    expect(rebuildRow(data)).toContain('its log shows no WIX_UPGRADE_DETECTED change')
+    delete rebuilt.upgradeDetected
+    expect(rebuildRow(data)).toContain("Windows Installer's detection was not recorded")
+    rebuilt.upgradeDetected = ["MSI (s) (20:44) [22:30:46:808]: PROPERTY CHANGE: Adding WIX_UPGRADE_DETECTED property. Its value is '{33333333-3333-3333-3333-333333333333}'."]
+    expect(rebuildRow(data)).toContain('Windows Installer set WIX_UPGRADE_DETECTED to {33333333-3333-3333-3333-333333333333}, not the first build')
+    // FindRelatedProducts lists every related product it found, separated by semicolons.
+    rebuilt.upgradeDetected = [`MSI (s) (20:44) [22:30:46:808]: PROPERTY CHANGE: Adding WIX_UPGRADE_DETECTED property. Its value is '{11111111-1111-1111-1111-111111111111};{33333333-3333-3333-3333-333333333333}'.`]
+    expect(rebuildRow(data)).toContain('Windows Installer set WIX_UPGRADE_DETECTED to {11111111-1111-1111-1111-111111111111}, {33333333-3333-3333-3333-333333333333}, the first build among others')
+    // A line it cannot read is shown as written, never as no detection.
+    rebuilt.upgradeDetected = ['MSI (s) (20:44) [22:30:46:808]: PROPERTY CHANGE: Adding WIX_UPGRADE_DETECTED property. Its value is unreadable.']
+    expect(rebuildRow(data)).toContain('Windows Installer logged: MSI (s) (20:44) [22:30:46:808]: PROPERTY CHANGE: Adding WIX_UPGRADE_DETECTED property. Its value is unreadable.')
+    // The line this Windows Installer never writes.
+    for (const name of ['as-user.ps1', 'summary.mjs']) expect(read(join(msiDir, name)), name).not.toContain('Found application')
+  })
+
   it.each(breaks)('fail when %s', (_name, label, mutate) => {
     const { data, link } = evidence()
     mutate(data, link)

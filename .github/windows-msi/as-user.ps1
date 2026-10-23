@@ -1,9 +1,9 @@
 #Requires -Version 7.2
 <#
-  #87 installer spike (CI only). lifecycle.ps1 runs this script AS a disposable
-  standard (non-administrator) user, so every installer action below is proven
-  to work without elevation. One invocation performs one action and writes one
-  JSON result; it never throws past the result file.
+  #87 PR 2b, CI only. lifecycle.ps1 runs this script AS a disposable standard
+  (non-administrator) user, so every installer and app action below is proven to
+  work without elevation. One invocation performs one action and writes one JSON
+  result; it never throws past the result file.
 #>
 param([Parameter(Mandatory)][string]$ParamsFile)
 
@@ -12,7 +12,7 @@ $PSNativeCommandUseErrorActionPreference = $false
 $params = Get-Content -Raw -LiteralPath $ParamsFile | ConvertFrom-Json
 $identity = $params.identity
 $product = $identity.productName
-$result = [ordered]@{ action = $params.action; kind = $params.kind; label = $params.label }
+$result = [ordered]@{ action = $params.action; label = $params.label }
 trap {
   $result.error = "setup: $_"
   $result.errorAt = "$($_.InvocationInfo.PositionMessage)"
@@ -48,17 +48,18 @@ foreach ($folder in 'LocalApplicationData', 'ApplicationData') {
 $paths = [ordered]@{
   profile = $env:USERPROFILE
   msiRoot = Join-Path $env:LOCALAPPDATA "Programs\$product"
-  squirrelRoot = Join-Path $env:LOCALAPPDATA $identity.squirrelPackageId
   startMenu = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu'
   desktop = Join-Path $env:USERPROFILE 'Desktop'
   data = Join-Path $env:USERPROFILE '.agent-inbox'
 }
+$toastKey = "HKCU:\Software\Classes\CLSID\$($identity.toastActivatorClsid)"
 
 Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
+using System.Text;
 
-public static class SpikeShellLink {
+public static class AgentInboxShellLink {
   [ComImport, Guid("00021401-0000-0000-C000-000000000046")]
   private class CShellLink { }
 
@@ -124,6 +125,114 @@ public static class SpikeShellLink {
     }
   }
 }
+
+// What Restart Manager sees using a file, and what happens when it asks those
+// applications to close: the requests Windows Installer makes during an upgrade,
+// repair or uninstall, made directly. RmShutdown without RmForceShutdown only asks.
+public static class AgentInboxRestartManager {
+  [StructLayout(LayoutKind.Sequential)]
+  private struct RM_UNIQUE_PROCESS {
+    public int dwProcessId;
+    public System.Runtime.InteropServices.ComTypes.FILETIME ProcessStartTime;
+  }
+
+  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+  private struct RM_PROCESS_INFO {
+    public RM_UNIQUE_PROCESS Process;
+    [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 256)] public string strAppName;
+    [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 64)] public string strServiceShortName;
+    public int ApplicationType;
+    public uint AppStatus;
+    public uint TSSessionId;
+    [MarshalAs(UnmanagedType.Bool)] public bool bRestartable;
+  }
+
+  [DllImport("rstrtmgr.dll", CharSet = CharSet.Unicode)]
+  private static extern int RmStartSession(out uint session, int flags, StringBuilder key);
+  [DllImport("rstrtmgr.dll")]
+  private static extern int RmEndSession(uint session);
+  [DllImport("rstrtmgr.dll", CharSet = CharSet.Unicode)]
+  private static extern int RmRegisterResources(uint session, uint files, string[] fileNames, uint applications,
+    RM_UNIQUE_PROCESS[] applicationList, uint services, string[] serviceNames);
+  [DllImport("rstrtmgr.dll")]
+  private static extern int RmGetList(uint session, out uint needed, ref uint count, [In, Out] RM_PROCESS_INFO[] apps,
+    ref uint rebootReasons);
+  [DllImport("rstrtmgr.dll")]
+  private static extern int RmShutdown(uint session, uint flags, IntPtr status);
+
+  public sealed class App {
+    public int ProcessId;
+    public string Name;
+    public int Type;
+    public uint Status;
+    public uint SessionId;
+    public bool Restartable;
+  }
+
+  public sealed class Result {
+    public int Start = -1;
+    public int Register = -1;
+    public int List = -1;
+    public uint RebootReasons;
+    public App[] Apps = new App[0];
+    public int Shutdown = -1;
+    public int ListAfter = -1;
+    public App[] AppsAfter = new App[0];
+  }
+
+  private static int List(uint session, out App[] apps, out uint reasons) {
+    apps = new App[0];
+    reasons = 0;
+    uint needed;
+    uint count = 0;
+    RM_PROCESS_INFO[] infos = null;
+    int code = RmGetList(session, out needed, ref count, null, ref reasons);
+    for (int attempt = 0; code == 234 && attempt < 5; attempt++) {
+      count = needed;
+      infos = new RM_PROCESS_INFO[count];
+      code = RmGetList(session, out needed, ref count, infos, ref reasons);
+    }
+    if (code != 0 || infos == null) return code;
+    apps = new App[count];
+    for (int i = 0; i < count; i++) {
+      apps[i] = new App {
+        ProcessId = infos[i].Process.dwProcessId,
+        Name = infos[i].strAppName,
+        Type = infos[i].ApplicationType,
+        Status = infos[i].AppStatus,
+        SessionId = infos[i].TSSessionId,
+        Restartable = infos[i].bRestartable,
+      };
+    }
+    return code;
+  }
+
+  public static Result Probe(string[] files, bool shutdown) {
+    Result result = new Result();
+    uint session;
+    result.Start = RmStartSession(out session, 0, new StringBuilder(33));
+    if (result.Start != 0) return result;
+    try {
+      result.Register = RmRegisterResources(session, (uint)files.Length, files, 0, null, 0, null);
+      if (result.Register != 0) return result;
+      uint reasons;
+      App[] apps;
+      result.List = List(session, out apps, out reasons);
+      result.Apps = apps;
+      result.RebootReasons = reasons;
+      if (shutdown && result.List == 0) {
+        result.Shutdown = RmShutdown(session, 0, IntPtr.Zero);
+        App[] after;
+        uint afterReasons;
+        result.ListAfter = List(session, out after, out afterReasons);
+        result.AppsAfter = after;
+      }
+    } finally {
+      RmEndSession(session);
+    }
+    return result;
+  }
+}
 '@
 
 function Get-Seconds([Diagnostics.Stopwatch]$Timer) { [math]::Round($Timer.Elapsed.TotalSeconds, 1) }
@@ -174,7 +283,7 @@ function Wait-NoProcess([string]$Name, [int]$TimeoutSeconds) {
   $timer = [Diagnostics.Stopwatch]::StartNew()
   while ((Get-ProcessesNamed $Name).Count -gt 0) {
     if ($timer.Elapsed.TotalSeconds -gt $TimeoutSeconds) { return $false }
-    Start-Sleep -Milliseconds 500
+    Start-Sleep -Milliseconds 250
   }
   return $true
 }
@@ -212,7 +321,9 @@ function Get-LinkInfo([string]$Path) {
     $info.target = $link.TargetPath.Replace($paths.profile, '%USERPROFILE%')
     $info.arguments = $link.Arguments
     $info.workingDirectory = $link.WorkingDirectory.Replace($paths.profile, '%USERPROFILE%')
-    $values = [SpikeShellLink]::Read($Path)
+    $info.description = $link.Description
+    $info.modified = (Get-Item -LiteralPath $Path).LastWriteTimeUtc.ToString('o')
+    $values = [AgentInboxShellLink]::Read($Path)
     $info.appUserModelId = $values[0]
     $info.toastActivatorClsid = $values[1]
   } catch {
@@ -225,7 +336,7 @@ function Get-ProductShortcuts([string]$Root) {
   if (-not (Test-Path -LiteralPath $Root)) { return @() }
   @(Get-ChildItem -LiteralPath $Root -Recurse -Force -Filter *.lnk -ErrorAction SilentlyContinue |
     ForEach-Object { Get-LinkInfo $_.FullName } |
-    Where-Object { "$($_.path) $($_.target)" -match [regex]::Escape($product) -or "$($_.target)" -match $identity.squirrelPackageId })
+    Where-Object { "$($_.path) $($_.target)" -match [regex]::Escape($product) })
 }
 
 function Get-RegistryValues([string]$Key) {
@@ -233,9 +344,20 @@ function Get-RegistryValues([string]$Key) {
   $item = Get-ItemProperty -LiteralPath $Key
   $values = [ordered]@{}
   foreach ($property in $item.PSObject.Properties) {
-    if ($property.Name -notmatch '^PS(Path|ParentPath|ChildName|Drive|Provider)$') { $values[$property.Name] = "$($property.Value)" }
+    if ($property.Name -notmatch '^PS(Path|ParentPath|ChildName|Drive|Provider)$') { $values[$property.Name] = "$($property.Value)".Replace($paths.profile, '%USERPROFILE%') }
   }
   return $values
+}
+
+function Get-ToastActivator {
+  $values = Get-RegistryValues $toastKey
+  if ($null -eq $values) { return $null }
+  $server = Get-RegistryValues "$toastKey\LocalServer32"
+  [ordered]@{
+    name = $values['(default)']
+    customActivator = $values['CustomActivator']
+    localServer32 = if ($server) { $server['(default)'] } else { $null }
+  }
 }
 
 function Get-UninstallEntries {
@@ -257,7 +379,6 @@ function Get-UninstallEntries {
         publisher = "$($values.Publisher)"
         installLocation = "$($values.InstallLocation)".Replace($paths.profile, '%USERPROFILE%')
         uninstallString = "$($values.UninstallString)".Replace($paths.profile, '%USERPROFILE%')
-        quietUninstallString = "$($values.QuietUninstallString)".Replace($paths.profile, '%USERPROFILE%')
         windowsInstaller = "$($values.WindowsInstaller)"
       }
     }
@@ -309,43 +430,24 @@ function Get-Names([string]$Path) {
 }
 
 function Get-AppDirectory {
-  if ($params.kind -eq 'msi') {
-    if (Test-Path -LiteralPath (Join-Path $paths.msiRoot "$product.exe")) { return $paths.msiRoot }
-    return $null
-  }
-  $versions = @(Get-ChildItem -LiteralPath $paths.squirrelRoot -Directory -Filter 'app-*' -ErrorAction SilentlyContinue |
-    Sort-Object { [version]($_.Name.Substring(4)) })
-  if ($versions.Count -eq 0) { return $null }
-  return $versions[-1].FullName
+  if (Test-Path -LiteralPath (Join-Path $paths.msiRoot "$product.exe")) { return $paths.msiRoot }
+  return $null
 }
 
 function Get-State {
-  $toastKey = "HKCU:\Software\Classes\CLSID\$($identity.toastActivatorClsid)"
-  $activators = @(Get-ChildItem 'HKCU:\Software\Classes\CLSID' -ErrorAction SilentlyContinue | Where-Object {
-      "$((Get-ItemProperty -LiteralPath $_.PSPath -ErrorAction SilentlyContinue).'(default)')" -match 'Notification Activator'
-    } | ForEach-Object {
-      [ordered]@{
-        clsid = $_.PSChildName
-        name = "$((Get-ItemProperty -LiteralPath $_.PSPath).'(default)')"
-        localServer32 = "$((Get-ItemProperty -LiteralPath (Join-Path $_.PSPath 'LocalServer32') -ErrorAction SilentlyContinue).'(default)')".Replace($paths.profile, '%USERPROFILE%')
-      }
-    })
   $appDirectory = Get-AppDirectory
   [ordered]@{
     appDirectory = if ($appDirectory) { $appDirectory.Replace($paths.profile, '%USERPROFILE%') } else { $null }
     appDirectoryFull = $appDirectory
     msiRoot = Get-Names $paths.msiRoot
-    squirrelRoot = Get-Names $paths.squirrelRoot
     localPrograms = Get-Names (Join-Path $env:LOCALAPPDATA 'Programs')
     startMenuShortcuts = @(Get-ProductShortcuts $paths.startMenu)
     desktopShortcuts = @(Get-ProductShortcuts $paths.desktop)
     appsFolder = @(Get-AppsFolder)
     uninstallEntries = @(Get-UninstallEntries)
-    msiProducts = @(if ($params.kind -eq 'msi') { Get-MsiProducts })
+    msiProducts = @(Get-MsiProducts)
     installerRegistry = Get-RegistryValues "HKCU:\Software\$product\Installer"
-    toastActivator = Get-RegistryValues $toastKey
-    toastActivatorServer = Get-RegistryValues "$toastKey\LocalServer32"
-    notificationActivators = $activators
+    toastActivator = Get-ToastActivator
     data = Get-Names $paths.data
     electronUserData = @('agent-inbox', $product | Where-Object { Test-Path -LiteralPath (Join-Path $env:APPDATA $_) })
     appProcesses = @(Get-AppProcesses)
@@ -376,63 +478,142 @@ function Get-LogLines([string]$Path, [string]$Pattern, [int]$Limit = 25) {
     Select-Object -First $Limit | ForEach-Object { $_.Line.Trim().Replace($paths.profile, '%USERPROFILE%') })
 }
 
-function Save-SquirrelLogs([string]$Step) {
-  $lines = [ordered]@{}
-  $sources = @(
-    Get-ChildItem -LiteralPath (Join-Path $env:LOCALAPPDATA 'SquirrelTemp') -Filter '*.log' -File -ErrorAction SilentlyContinue
-    Get-ChildItem -LiteralPath $paths.squirrelRoot -Filter '*.log' -File -ErrorAction SilentlyContinue
-    Get-ChildItem -LiteralPath $paths.squirrelRoot -Directory -Filter 'app-*' -ErrorAction SilentlyContinue |
-      ForEach-Object { Get-ChildItem -LiteralPath $_.FullName -Filter '*.log' -File -ErrorAction SilentlyContinue }
-  )
-  foreach ($source in $sources) {
-    $label = "$(Split-Path -Leaf $source.DirectoryName)-$($source.Name)"
-    Copy-Item -LiteralPath $source.FullName -Destination (Join-Path $params.logDir "$Step-$label") -Force
-    $lines[$label] = Get-LogLines $source.FullName `
-      'Squirrel Enabled Apps|squirrel-(install|updated|uninstall|firstrun|obsolete)|hook|burning it to the ground|already exists|Failed|Couldn''t|Exception|in use|delete|Kill' 40
-  }
-  return $lines
-}
-
 function Get-InstallerCommand([string]$Installer) {
   $log = Join-Path $params.logDir "$($params.label).log"
-  if ($params.kind -eq 'msi') {
-    return @('msiexec.exe', "/i `"$Installer`" /qn /norestart /l*v `"$log`"", $log)
-  }
-  return @($Installer, '--silent', $null)
+  return @('msiexec.exe', "/i `"$Installer`" /qn /norestart /l*v `"$log`"", $log)
 }
 
-function Wait-SquirrelIdle {
-  return [ordered]@{ updateExeIdle = Wait-NoProcess 'Update.exe' 180 }
+function Wait-Ready([Diagnostics.Stopwatch]$Timer) {
+  while ($Timer.Elapsed.TotalSeconds -lt 120) {
+    try {
+      $response = Invoke-WebRequest -Method Head -Uri "http://127.0.0.1:$($params.port)/" -TimeoutSec 2 -SkipHttpErrorCheck
+      if ("$($response.Headers['x-agent-inbox-local-boundary'])" -eq 'loopback-v1') { return $true }
+    } catch {}
+    Start-Sleep -Milliseconds 500
+  }
+  return $false
+}
+
+function Get-MainProcess {
+  $main = @(Get-AppProcesses | Where-Object { $_.main })
+  if ($main.Count -eq 0) { return $null }
+  [ordered]@{ count = $main.Count; pid = $main[0].pid; path = "$($main[0].path)".Replace($paths.profile, '%USERPROFILE%') }
 }
 
 function Start-AppFromShortcut {
   $shortcuts = @(Get-ProductShortcuts $paths.startMenu)
-  $record = [ordered]@{ via = $null; ready = $false; readySeconds = $null; mainProcess = $null }
-  if ($shortcuts.Count -gt 0) {
-    $record.via = $shortcuts[0].path
-    $launchPath = $shortcuts[0].path.Replace('%USERPROFILE%', $paths.profile)
-  } else {
-    $directory = Get-AppDirectory
-    if (-not $directory) { throw 'no shortcut and no installed app to launch' }
-    $launchPath = Join-Path $directory "$product.exe"
-    $record.via = "$launchPath (no Start-menu shortcut)".Replace($paths.profile, '%USERPROFILE%')
-  }
+  if ($shortcuts.Count -eq 0) { throw 'no Start-menu shortcut to launch' }
+  $record = [ordered]@{ via = $shortcuts[0].path; ready = $false; readySeconds = $null; mainProcess = $null }
   $timer = [Diagnostics.Stopwatch]::StartNew()
-  Start-Process -FilePath $launchPath | Out-Null
-  while ($timer.Elapsed.TotalSeconds -lt 120) {
-    try {
-      $response = Invoke-WebRequest -Method Head -Uri "http://127.0.0.1:$($params.port)/" -TimeoutSec 2 -SkipHttpErrorCheck
-      if ("$($response.Headers['x-agent-inbox-local-boundary'])" -eq 'loopback-v1') { $record.ready = $true; break }
-    } catch {}
-    Start-Sleep -Milliseconds 500
-  }
+  Start-Process -FilePath $shortcuts[0].path.Replace('%USERPROFILE%', $paths.profile) | Out-Null
+  $record.ready = Wait-Ready $timer
   $record.readySeconds = Get-Seconds $timer
-  $main = @(Get-AppProcesses | Where-Object { $_.main })
-  if ($main.Count -gt 0) {
-    $record.mainProcess = [ordered]@{ count = $main.Count; path = "$($main[0].path)".Replace($paths.profile, '%USERPROFILE%') }
-  }
+  $record.mainProcess = Get-MainProcess
   $record.dataAfterLaunch = Get-Names $paths.data
   return $record
+}
+
+# Started from the installed executable rather than the shortcut, so the app's own
+# [agent-inbox] log lines on stdout and stderr are kept.
+function Start-AppWithLog([string]$Name) {
+  $directory = Get-AppDirectory
+  if (-not $directory) { throw 'no installed app to launch' }
+  $record = [ordered]@{
+    via = "$product.exe".Replace($paths.profile, '%USERPROFILE%')
+    stdout = Join-Path $params.logDir "$($params.label)-$Name.stdout.txt"
+    stderr = Join-Path $params.logDir "$($params.label)-$Name.stderr.txt"
+  }
+  $timer = [Diagnostics.Stopwatch]::StartNew()
+  Start-Process -FilePath (Join-Path $directory "$product.exe") -WorkingDirectory $directory `
+    -RedirectStandardOutput $record.stdout -RedirectStandardError $record.stderr | Out-Null
+  $record.ready = Wait-Ready $timer
+  $record.readySeconds = Get-Seconds $timer
+  # Restart Manager sends its request to the app's top-level window, which shows once the viewer loads.
+  for ($i = 0; $i -lt 40; $i++) {
+    $main = Get-MainProcess
+    $process = if ($main) { Get-Process -Id $main.pid -ErrorAction SilentlyContinue }
+    if ($process -and $process.MainWindowHandle -ne 0) { break }
+    Start-Sleep -Milliseconds 500
+  }
+  $record.windowShown = [bool]($process -and $process.MainWindowHandle -ne 0)
+  $record.mainProcess = Get-MainProcess
+  return $record
+}
+
+function Read-SharedText([string]$Path) {
+  if (-not (Test-Path -LiteralPath $Path)) { return '' }
+  $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
+  try { return [IO.StreamReader]::new($stream).ReadToEnd() } finally { $stream.Dispose() }
+}
+
+function Read-AppLog([object]$Started) {
+  @($Started.stdout, $Started.stderr | ForEach-Object { (Read-SharedText $_) -split "`r?`n" } |
+    Where-Object { $_ -match '\[agent-inbox\]' } | ForEach-Object { $_.Trim().Replace($paths.profile, '%USERPROFILE%') })
+}
+
+function Wait-AppLog([object]$Started, [string]$Pattern, [int]$TimeoutSeconds) {
+  $timer = [Diagnostics.Stopwatch]::StartNew()
+  do {
+    $line = @(Read-AppLog $Started | Where-Object { $_ -match $Pattern })[0]
+    if ($line) { return [ordered]@{ seen = $true; seconds = Get-Seconds $timer; line = $line } }
+    Start-Sleep -Milliseconds 500
+  } while ($timer.Elapsed.TotalSeconds -lt $TimeoutSeconds)
+  return [ordered]@{ seen = $false; seconds = Get-Seconds $timer; line = $null }
+}
+
+$restartManagerTypes = @{ 0 = 'unknown'; 1 = 'main window'; 2 = 'other window'; 3 = 'service'; 4 = 'Explorer'; 5 = 'console'; 1000 = 'critical' }
+function ConvertTo-RestartManagerRecord([object]$Probe) {
+  $apps = {
+    param($List)
+    @($List | ForEach-Object {
+      [ordered]@{
+        pid = $_.ProcessId
+        name = $_.Name
+        type = $restartManagerTypes[$_.Type] ?? "$($_.Type)"
+        status = $_.Status
+        session = $_.SessionId
+        restartable = $_.Restartable
+      }
+    })
+  }
+  [ordered]@{
+    start = $Probe.Start
+    register = $Probe.Register
+    list = $Probe.List
+    rebootReasons = $Probe.RebootReasons
+    apps = & $apps $Probe.Apps
+    shutdown = $Probe.Shutdown
+    listAfter = $Probe.ListAfter
+    appsAfter = & $apps $Probe.AppsAfter
+  }
+}
+
+$quitLine = 'Windows asked the app to close \(Restart Manager\); quitting'
+
+# Adds an open question through the installed app's own runtime, which the running
+# app's attention watch then announces with a Windows notification.
+function Add-Question([string]$Title) {
+  $runtime = Join-Path (Get-AppDirectory) 'resources\app\runtime\win32-x64'
+  $output = & (Join-Path $runtime 'node.exe') $params.questionScript (Join-Path $runtime 'dist\store.js') $Title 2>&1
+  if ($LASTEXITCODE -ne 0) { throw "could not add a question (exit $LASTEXITCODE): $output" }
+  return ("$output" | ConvertFrom-Json).id
+}
+
+# Windows' notification history for the app's ID, read through WinRT in Windows
+# PowerShell, which projects it. A session without the notification platform says why.
+function Get-ToastHistory {
+  $script = @"
+try {
+  [void][Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime]
+  'count=' + [Windows.UI.Notifications.ToastNotificationManager]::History.GetHistory('$($identity.appUserModelId)').Count
+} catch {
+  'error=' + `$_.Exception.Message
+}
+"@
+  $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($script))
+  $output = "$(& "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -EncodedCommand $encoded 2>&1)".Trim()
+  if ($output -match '^count=(\d+)$') { return [ordered]@{ count = [int]$Matches[1] } }
+  return [ordered]@{ error = $output -replace '^error=', '' }
 }
 
 $result.user = [ordered]@{
@@ -441,6 +622,7 @@ $result.user = [ordered]@{
   isAdministrator = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
     [Security.Principal.WindowsBuiltInRole]::Administrator)
   integrity = "$((& whoami.exe /groups) -match 'Mandatory Level')".Trim() -replace '\s{2,}.*$', ''
+  session = [Diagnostics.Process]::GetCurrentProcess().SessionId
 }
 
 $timer = [Diagnostics.Stopwatch]::StartNew()
@@ -454,18 +636,8 @@ try {
       $command = Get-InstallerCommand $params.installer
       $result.dataBefore = Get-Names $paths.data
       $result.run = Invoke-Tool $command[0] $command[1] -SampleApp
-      if ($params.kind -eq 'squirrel') {
-        $result.idle = Wait-SquirrelIdle
-        $result.strayApp = Stop-App
-        $result.squirrelLog = Save-SquirrelLogs $params.label
-      }
-      if ($command[2]) { $result.msiLog = Get-LogLines $command[2] 'Installation success or error status|Product: .* --|Error \d{4}|in use|Restart Manager|RmShutdown|1603|1612' }
+      $result.msiLog = Get-LogLines $command[2] 'Installation success or error status|Product: .* --|Error \d{4}|in use|Restart Manager|RmShutdown|1603|1612|1625'
       $result.dataAfterInstall = Get-Names $paths.data
-      $result.state = Get-State
-    }
-    'squirrel-shortcut' {
-      $update = Join-Path $paths.squirrelRoot 'Update.exe'
-      $result.run = Invoke-Tool $update "--createShortcut `"$product.exe`" --shortcut-locations StartMenu" 120
       $result.state = Get-State
     }
     'launch' {
@@ -475,28 +647,88 @@ try {
       $result.quit = Stop-App
       $result.processesAfterQuit = @(Get-AppProcesses)
     }
+    'notify' {
+      $result.before = Stop-App
+      if ($params.withoutShortcut) {
+        # Without the MSI's shortcut, Electron writes its own at the first
+        # notification from the app's own ID and CLSID, which shows those two values.
+        $result.removedShortcuts = @(Get-ProductShortcuts $paths.startMenu | ForEach-Object path)
+        foreach ($link in $result.removedShortcuts) { Remove-Item -LiteralPath $link.Replace('%USERPROFILE%', $paths.profile) -Force }
+      }
+      $result.shortcutsBefore = @(Get-ProductShortcuts $paths.startMenu)
+      $result.toastActivatorBefore = Get-ToastActivator
+      $started = Start-AppWithLog 'notify'
+      $result.launch = $started
+      if (-not $started.ready) { throw 'the app did not become ready' }
+      # The attention watch polls every 3 s and announces only what arrives after its first poll.
+      Start-Sleep -Seconds 8
+      $result.questionId = Add-Question "Windows MSI lifecycle notification check ($($params.label))"
+      $result.notification = Wait-AppLog $started '\[agent-inbox\] notifying: ' 30
+      # Electron registers its toast activator (shortcut and COM entry) off its main
+      # thread once its notification presenter exists.
+      $before = if ($result.toastActivatorBefore) { $result.toastActivatorBefore.name } else { $null }
+      $wait = [Diagnostics.Stopwatch]::StartNew()
+      while ($wait.Elapsed.TotalSeconds -lt 15) {
+        $activator = Get-ToastActivator
+        if ($activator -and $activator.name -ne $before) { break }
+        Start-Sleep -Milliseconds 500
+      }
+      Start-Sleep -Seconds 2
+      $result.toastActivatorAfter = Get-ToastActivator
+      $result.shortcutsAfter = @(Get-ProductShortcuts $paths.startMenu)
+      $result.toastHistory = Get-ToastHistory
+      $result.appLog = Read-AppLog $started
+      $result.quit = Stop-App
+      $result.state = Get-State
+    }
+    'restart-manager' {
+      $result.before = Stop-App
+      $started = Start-AppWithLog 'restart-manager'
+      $result.launch = $started
+      if (-not $started.ready) { throw 'the app did not become ready' }
+      $result.processesBefore = @(Get-AppProcesses)
+      $exe = Join-Path (Get-AppDirectory) "$product.exe"
+      $asked = [Diagnostics.Stopwatch]::StartNew()
+      $result.restartManager = ConvertTo-RestartManagerRecord ([AgentInboxRestartManager]::Probe(@($exe), $true))
+      $result.restartManager.seconds = Get-Seconds $asked
+      $result.exited = Wait-NoProcess "$product.exe" 30
+      $result.exitSeconds = Get-Seconds $asked
+      $result.portReleased = -not (Test-Port $params.port)
+      $result.appLog = Read-AppLog $started
+      $result.quitLogged = [bool](@($result.appLog | Where-Object { $_ -match $quitLine }).Count)
+      $result.processesAfter = @(Get-AppProcesses)
+      $result.leftover = Stop-App
+      $result.dataAfter = Get-Names $paths.data
+      $result.state = Get-State
+    }
     'upgrade' {
       $result.before = Stop-App
-      if ($params.whileRunning) { $result.launch = Start-AppFromShortcut }
+      $started = $null
+      if ($params.whileRunning) {
+        $started = Start-AppWithLog 'upgrade'
+        $result.launch = $started
+        # What Restart Manager sees using the app just before Windows Installer asks it to close.
+        $result.restartManagerBefore = ConvertTo-RestartManagerRecord (
+          [AgentInboxRestartManager]::Probe(@(Join-Path (Get-AppDirectory) "$product.exe"), $false))
+      }
       $command = Get-InstallerCommand $params.installer
       $result.run = Invoke-Tool $command[0] $command[1] -SampleApp
-      if ($params.kind -eq 'squirrel') { $result.idle = Wait-SquirrelIdle }
       $result.processesAfterRun = @(Get-AppProcesses)
-      $result.quit = Stop-App
-      if ($params.kind -eq 'squirrel') { $result.squirrelLog = Save-SquirrelLogs $params.label }
-      if ($command[2]) {
-        $result.msiLog = Get-LogLines $command[2] 'Installation success or error status|Product: .* --|Error \d{4}|in use|Restart Manager|RmShutdown|RmGetList|1603|1612|3010' 40
-        # In-use files Windows Installer moved aside, to be deleted at the next reboot.
-        $result.rebootOperations = @(Select-String -LiteralPath $command[2] -Pattern 'Scheduling reboot operation' -ErrorAction SilentlyContinue).Count
+      if ($started) {
+        $result.appLog = Read-AppLog $started
+        $result.quitLogged = [bool](@($result.appLog | Where-Object { $_ -match $quitLine }).Count)
       }
+      $result.quit = Stop-App
+      $result.msiLog = Get-LogLines $command[2] 'Installation success or error status|Product: .* --|Error \d{4}|in use|RESTART MANAGER|1603|1612|3010' 40
+      # In-use files Windows Installer moved aside, to be deleted at the next reboot.
+      $result.rebootOperations = @(Select-String -LiteralPath $command[2] -Pattern 'Scheduling reboot operation' -ErrorAction SilentlyContinue).Count
       $result.state = Get-State
     }
     'repair' {
       $result.before = Stop-App
       $directory = Get-AppDirectory
       $result.deleted = @(foreach ($relative in $params.deleteFiles) {
-        $path = Join-Path $directory $relative
-        Remove-Item -LiteralPath $path -Force
+        Remove-Item -LiteralPath (Join-Path $directory $relative) -Force
         $relative
       })
       $log = Join-Path $params.logDir "$($params.label).log"
@@ -506,33 +738,16 @@ try {
       $result.msiLog = Get-LogLines $log 'Installation success or error status|Product: .* --|Error \d{4}|source|1612|1706' 30
       $result.state = Get-State
     }
-    'squirrel-update' {
-      $result.before = Stop-App
-      $update = Join-Path $paths.squirrelRoot 'Update.exe'
-      $result.run = Invoke-Tool $update "--update `"$($params.releasesDir)`"" 600 -SampleApp
-      $result.idle = Wait-SquirrelIdle
-      $result.strayApp = Stop-App
-      $result.squirrelLog = Save-SquirrelLogs $params.label
-      $result.state = Get-State
-    }
     'uninstall' {
       $result.before = Stop-App
       New-Item -ItemType Directory -Force $paths.data | Out-Null
-      Set-Content -LiteralPath (Join-Path $paths.data 'installer-spike-sentinel.txt') -Value 'user data written before uninstall'
+      Set-Content -LiteralPath (Join-Path $paths.data 'msi-lifecycle-sentinel.txt') -Value 'user data written before uninstall'
       $result.dataBefore = Get-Names $paths.data
-      if ($params.kind -eq 'msi') {
-        $log = Join-Path $params.logDir "$($params.label).log"
-        $result.run = Invoke-Tool 'msiexec.exe' "/x $($params.productCode) /qn /norestart /l*v `"$log`"" -SampleApp
-        $result.msiLog = Get-LogLines $log 'Installation success or error status|Product: .* --|Error \d{4}|Removal' 20
-      } else {
-        $update = Join-Path $paths.squirrelRoot 'Update.exe'
-        $result.run = Invoke-Tool $update '--uninstall -s' 300 -SampleApp
-        $result.idle = Wait-SquirrelIdle
-        $result.strayApp = Stop-App
-        $result.squirrelLog = Save-SquirrelLogs $params.label
-      }
+      $log = Join-Path $params.logDir "$($params.label).log"
+      $result.run = Invoke-Tool 'msiexec.exe' "/x $($params.productCode) /qn /norestart /l*v `"$log`"" -SampleApp
+      $result.msiLog = Get-LogLines $log 'Installation success or error status|Product: .* --|Error \d{4}|Removal' 20
       $result.dataAfter = Get-Names $paths.data
-      $result.sentinelSurvived = Test-Path -LiteralPath (Join-Path $paths.data 'installer-spike-sentinel.txt')
+      $result.sentinelSurvived = Test-Path -LiteralPath (Join-Path $paths.data 'msi-lifecycle-sentinel.txt')
       $result.inboxDatabaseSurvived = Test-Path -LiteralPath (Join-Path $paths.data 'inbox.db')
       $result.state = Get-State
       $result.snapshot = Get-Snapshot

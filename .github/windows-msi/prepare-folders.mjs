@@ -1,11 +1,12 @@
 #!/usr/bin/env node
-// #87 installer spike (CI only): restore the two Windows folders the installers
-// are built from, and prove each is byte-identical to the tree its build verified.
+// #87 PR 2b, CI only: restore the two Windows folders the MSIs are built from,
+// and prove each is byte-identical to the tree its build verified.
 //
 // --base is the native-win32-x64-folder-inputs artifact of the reused
-// windows-native-folder workflow (archive round trip, PE/ABI gates, launch).
-// --upgrade is the same commit rebuilt by this workflow with only the version
-// bumped; build-windows-thin-app.mjs runs the same verifier on it.
+// windows-native-folder workflow (archive round trip, PE/ABI gates, launch): the
+// MSI under test. --upgrade is the same commit rebuilt by windows-msi.yml with only
+// the version bumped, for the upgrade step; build-windows-thin-app.mjs runs the
+// same verifier on it.
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { parseArgs } from 'node:util'

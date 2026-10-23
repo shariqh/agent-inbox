@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "purpose": "#87 PR 2b: the tools the unsigned per-user MSI is built with, pinned by version and digest, and the installer identity that must never change once it ships.",
+  "wix": {
+    "package": "wix",
+    "version": "7.0.0",
+    "url": "https://api.nuget.org/v3-flatcontainer/wix/7.0.0/wix.7.0.0.nupkg",
+    "sha512": "4GbdoDWjm0QmBLyJ8PPiknXomjI5vHat4H27AB6NNGzFpbEhN9Xw0kiPQokZ3zH8F1RcjvDSn8yGDXwKxlW8Tg==",
+    "sha256": "7f992e57c356dcbda2ea961bf3b348e1bd7d31d96795be4ac391e04cf140536d",
+    "sourceCommit": "b8977d6f88e7b68e000bac226a2814f236770570",
+    "entryPoint": "tools/net8.0/any/wix.dll",
+    "license": "MS-RL source; the binary package is under the Open Source Maintenance Fee EULA v1.1",
+    "eulaId": "wix7",
+    "eulaAcceptedOn": "2026-10-23"
+  },
+  "dotnet": {
+    "framework": "Microsoft.NETCore.App",
+    "version": "10.0.13",
+    "url": "https://builds.dotnet.microsoft.com/dotnet/Runtime/10.0.13/dotnet-runtime-10.0.13-win-x64.zip",
+    "sha512": "2b98792ce86adc50899764ad2e4d21bd25cfda5432eeb0b4dfe7944f3ea049f9e0570a8f4aee92314d97cdb5f8b7be1363d501fc5012e680371e607af648ef40",
+    "sha256": "8db74a746baa450925d01325a2108ccf6ac39af4018047475292ae155c013d89",
+    "supportedUntil": "2028-11-14"
+  },
+  "identity": {
+    "upgradeCode": "{086C4AF7-CD48-4050-A328-CA911E7F7423}",
+    "toastActivatorClsid": "{08973E92-A6EF-47B2-9E91-A876F4B8F210}"
+  }
+}

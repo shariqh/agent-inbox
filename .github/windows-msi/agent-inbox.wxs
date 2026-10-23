@@ -1,18 +1,21 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  #87 installer spike (CI only; nothing here ships): a per-user MSI of the
-  verified Windows x64 folder, built by
-  .github/workflows/windows-installer-spike.yml with the WiX release pinned in
-  tools.json. The workflow passes every $(var.*) value with -d.
+  The per-user Windows MSI (#87, PR 2b), built by .github/workflows/windows-msi.yml
+  from the verified Windows x64 folder with the WiX release pinned in
+  installer.json. build-msi.ps1 passes every $(var.*) value with -d.
 
   - Per-user and unelevated: Scope="perUser", installed to
-    %LOCALAPPDATA%\Programs\Agent Inbox. WiX v6 names that folder
-    PerUserProgramFilesFolder; v5 spells it out.
+    %LOCALAPPDATA%\Programs\Agent Inbox, the same folder for every version, so a
+    major upgrade replaces the app in place.
   - The whole folder is harvested with Files, so the installed tree can be
     compared byte for byte with the folder's verified tree digest.
-  - The Start-menu shortcut carries the AppUserModelID and the toast activator
-    CLSID that Windows notifications need, and the MSI owns the CLSID's
-    LocalServer32 registration, so uninstall removes it.
+  - The Start-menu shortcut carries the AppUserModelID and toast activator CLSID
+    that Windows notifications need; electron/windows-app.cjs sets the same two
+    values in the app. The MSI owns the CLSID's LocalServer32 registration, so
+    uninstall removes it, and keeps %USERPROFILE%\.agent-inbox, which it never
+    installs.
+  - Windows Installer reports Windows 10 and 11 as 6.3, so the minimum Windows
+    build is read from the registry.
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
   <Package
@@ -26,6 +29,18 @@
     <SummaryInformation Description="$(var.ProductName) $(var.Version)" />
     <MajorUpgrade DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
     <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <Property Id="AGENTINBOXWINDOWSBUILD">
+      <RegistrySearch
+        Root="HKLM"
+        Key="SOFTWARE\Microsoft\Windows NT\CurrentVersion"
+        Name="CurrentBuildNumber"
+        Type="raw"
+        Bitness="always64" />
+    </Property>
+    <Launch
+      Condition="Installed OR AGENTINBOXWINDOWSBUILD &gt;= $(var.MinimumWindowsBuild)"
+      Message="[ProductName] needs Windows 10 or 11, build $(var.MinimumWindowsBuild) or later." />
 
     <Icon Id="AgentInbox.ico" SourceFile="$(var.IconFile)" />
     <Property Id="ARPPRODUCTICON" Value="AgentInbox.ico" />
@@ -51,7 +66,7 @@
           Id="AgentInboxShortcut"
           Name="$(var.ProductName)"
           Description="Local attention inbox for coding agents"
-          Target="[INSTALLFOLDER]Agent Inbox.exe"
+          Target="[INSTALLFOLDER]$(var.ProductName).exe"
           WorkingDirectory="INSTALLFOLDER">
           <ShortcutProperty Key="System.AppUserModel.ID" Value="$(var.AppUserModelId)" />
           <ShortcutProperty Key="System.AppUserModel.ToastActivatorCLSID" Value="$(var.ToastActivatorClsid)" />
@@ -66,7 +81,7 @@
       </Component>
     </StandardDirectory>
 
-    <!-- The same values Electron 43 writes for its toast activator, owned by the MSI. -->
+    <!-- Electron 43 writes these value names for its toast activator at the first notification; the MSI owns them, so uninstall removes them. -->
     <Component Id="ToastActivator" Directory="INSTALLFOLDER" Guid="{9639C28E-13C4-4208-B66B-550A0CB93154}">
       <RegistryValue
         Root="HKCU"
@@ -84,7 +99,7 @@
         Root="HKCU"
         Key="Software\Classes\CLSID\$(var.ToastActivatorClsid)\LocalServer32"
         Type="string"
-        Value="&quot;[INSTALLFOLDER]Agent Inbox.exe&quot;" />
+        Value="&quot;[INSTALLFOLDER]$(var.ProductName).exe&quot;" />
     </Component>
   </Package>
 </Wix>

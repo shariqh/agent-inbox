@@ -317,7 +317,8 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   a fresh inbox one. `answerItem` is ONE conditioned UPDATE that only writes while nothing
   unread is waiting (`reply IS NULL OR reply = '' OR reply_seen_at IS NOT NULL`) and
   otherwise returns `{ok:false, reason:'unread_inbox_answer'}` with the waiting answer;
-  `replyItem` overwrites an open question's answer and resets pickup. Never SELECT-then-UPDATE and
+  `replyItem` overwrites an open question's answer and resets pickup (or, when the page
+  sends the answer it expects to replace, only while that answer still stands, #321). Never SELECT-then-UPDATE and
   never two UPDATEs here: the viewer writes from its own OS process and would land between
   them, leaving the human's newest answer flagged "✓ picked up" and un-clearable. An agent
   may overwrite an answer it has already picked up, but may never blank one.
@@ -486,6 +487,51 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   buttons (`data-link-action`), never in a browser or a reused viewer. Opening, a rule's app or
   Quick Look, a Reveal rule and a Reveal request are all file requests, so `openLinkRequest`
   refuses each of them as `unowned` without the grant, before any rule is read.
+- **Repo-relative paths (#324, #300 part 3) open against the folder the item or plan recorded,
+  and never outside it.** `items.repo_root` and `boards.repo_root` are additive, nullable
+  columns: the MCP server's `git rev-parse --show-toplevel` (`inferRepoRoot` in `src/infer.ts`,
+  through the stdout-capturing `git()` helper, null on any failure or anything but one plain
+  absolute path). `scope.rootFor()` reads it LIVE and only on writes, like `headFor`: never in
+  `get()` (every call, `pending()` polls included, would pay a spawn), never memoized (worktrees
+  and checkouts move), no `register` override, and not in the scope `whoami` returns. `flag`
+  stamps it at insert; `board_upsert`/`board_row` pass it to `ensureBoard`, whose
+  `repo_root = COALESCE(?, repo_root)` keeps the stored folder through a write that found none,
+  and whose change counts like `head_repo`'s (`updated_at`, board revision; `rootChanged`).
+  `board_advance` restamps no plan field, and no older server's statement names the column
+  (`test/mixed-version.test.ts` runs v1.6.0's item insert, plan writes and `board_advance`).
+  Agent reads never carry it: `agentItem` (`src/shape.ts`) strips it from `pending()` items,
+  `shapeBoard` from a titled `board_get`, and the summary and `listPendingRows` never select it;
+  `/api/items` and `/api/boards` simply carry it. **Detection** (`relativeAt` in
+  `public/links.js`) runs only with a usable `ctx.root` (an absolute folder: `textContext()` and
+  `cardLinks` pass the item's or the row's plan's `repo_root`), so a card without one renders
+  exactly as before. It starts at a token's first `/` and reads back over one segment: an
+  opener before it (as for absolute paths), at least a folder and a name, a first folder with
+  no inner dot (`.github` yes; domains, versions, `Node.js` no), no segment of dots alone (`.`,
+  `..`, an elided `...`; a leading `./` is dropped), and either an extension (all lowercase or
+  all uppercase, ≤ 10 characters, so `write.Then` stays prose) or a `:line` on a name that still
+  looks like a file's (a dotfile, or a capital, `-` or `_`: never `origin/main:238`). A token
+  after a space whose previous token ended in a bare folder name (`/Users/s/My Documents/a.md`)
+  is a continuation and never links; `owner/name#N`, URLs, globs, routes and absolute paths keep
+  their own detectors. **Both reads are bounded, and no pattern can backtrack:** back over at
+  most one 255-character segment, forward over at most 255 characters a segment and 1024
+  (`MAX_RELATIVE`) in all, and a path past either cap links nothing, never a shortened prefix.
+  No pattern there nests quantifiers or puts two unbounded ones side by side: the `:line` name
+  check is plain code (`fileLikeName`), because as one regex it backtracked quadratically on a
+  long name (9 s at 80k characters) and froze every render of a card that showed one (review
+  of #330), and `fileLabel`, `webLabel` and `repoFilePath` strip trailing slashes with a loop,
+  never an unanchored `/\/+$/`, for the same reason. `test/links.test.ts` times each shape.
+  The link carries the path (`./` dropped, no `:line`) in `data-link-path` and the folder in an
+  escaped `data-link-root`, never an href; its title and the strip's key use the full path
+  (`repoFilePath` in `source.js`), so it shares one chip with the same file written absolute.
+  `link-open.js` sends `{kind:'file', path, root, reveal}`; the preload passes `root` only as a
+  string; main accepts exactly that key set and `fileOpenPlan(path, { root })` joins only a plain
+  relative path (`joinRepoPath`: no `.`/`..`/empty segment, `~`, `:` or backslash) to a plain
+  absolute folder, then resolves both with `realpath` and refuses a file whose real path is not
+  inside the folder's (`outside`, said as "points outside its repository") before `lstat`, the
+  xattr checks or any rule; everything after that is today's policy, ownership grant included.
+  A `missing` answer for a relative request copies the path as written and says it may be on
+  another branch or worktree; Copy path, a browser and a reused viewer copy the full path.
+  Nothing about it reaches attention, a badge or a count.
 - **`src/prstate.ts` is VIEWER-PROCESS-ONLY (issue #30).** It and `src/issue-poller.ts` (#103, below)
   are the only modules that shell out to a network tool (`gh`), so `src/mcp.ts`/`src/mcp-server.ts`
   must never import either, directly or transitively — a subprocess that inherited a stream, or gh's update notifier, would corrupt the MCP
@@ -998,7 +1044,47 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   it idempotent. This deliberately reverses the older contract that a re-send after an
   ambiguous failure never overwrites a later answer: once the answer moved, the
   human's own Send or Retry writes, as any other Send would. The rule reads the last
-  snapshot, so within one poll (3 s) of another writer it can still replay. A Retry
+  snapshot, so within one poll (3 s) of another writer it can still replay. *(#322)*
+  The reply route therefore says what each request did, additively: `wrote` (this
+  request changed the question), `replayed` (the store already held its intent, so
+  it wrote nothing) and `answer`, the question's answer once it was done
+  (`replied_at`, source, kind, text and context, in the item's field names; read
+  inside the intent's `.immediate()` transaction, and just after the write without
+  one). `ok` keeps its meaning, so an older page sees what it always did, and a page
+  that finds no report keeps the old reading. When a replay wrote nothing and that
+  answer is not the response it sent, the text was replaced after it landed: it is
+  kept as an unsent response, "Your send went through, but this question's answer
+  has changed since.", from the Retry's own entry, the entry its in-flight draft
+  moved to, or the editor (an editor typed in since keeps its newer text), and the
+  spent intent goes with it, so its Retry is fresh. `replyItem` stays the same
+  conditioned statements; the report adds reads, never a write. *(#321)* A send from
+  an answer editor or an unsent response replaces the question's answer, so it never
+  replaces one the surface has not shown. Each surface knows the answer it was drawn
+  with (`shown`: the editor's item, the line's answer at render) and the newest answer
+  the window knows (`knownAnswer`: the last poll, or a reply response's report until a
+  poll that started after it applies; derived state, the snapshot is never changed).
+  When that answer is a reply or response kind (a cleared question has nothing to
+  replace) that the surface has neither been drawn with nor named in a notice, the
+  click sends nothing: it names it in place, "A newer reply was sent: “…”. Send (or
+  Retry) replaces it.", in the editor's `.write-error` slot (now `role="status"`) or
+  the line's `.replace-notice`, and only a further click sends. An unsent response's
+  line names it as it is drawn whenever its Retry would be fresh over an answer, which
+  is also how a restored "not confirmed" entry says what Retry does. When the answer
+  is one this window sent (`sentReplies`, last five per question), the notice says
+  "Your earlier send went through" instead. The send then carries `expect_answer`
+  (`replied_at`, `reply_source`, `reply_kind`, `reply`), and `replyItem` writes only
+  while the question still holds it, or holds no answer at all (a clear moves
+  `replied_at`, yet leaves nothing to replace): one more condition in the same UPDATE,
+  so a reply that landed after the window last looked refuses it with `reason:
+  'answer_changed'` and the answer that stands (a 200, like every refusal), the
+  refused intent recorded as not applied. The text stays where it is with that answer
+  named (an entry keeps it, dropping the spent intent, and its line keeps focus on the
+  same control across the rebuild); the editor never moves. A refusal whose standing
+  answer is exactly this response (a double click's first send landed first) retires
+  it as a success would, with no notice. A new intent pins `knownAnswer`, the answer
+  `savedIntentRule` compares it with. A reply without `expect_answer` (an older
+  page, an option pick, the star, a notification) stays unconditional. Never send on
+  the human's behalf to get past a notice. A Retry
   of an entry an earlier click already took does nothing, so a double click claims no
   second intent. `renderIfIdle()` paints the first editable frame even with
   restored drafts, since no editor exists yet to protect; every later tick pauses

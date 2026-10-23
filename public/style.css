@@ -366,6 +366,8 @@ body.settings-open .floating-search { opacity: .32; }
 .stale-draft { margin: 5px 0 0; }
 .stale-drafts-fold { opacity: .85; }
 .stale-draft-line { display: flex; align-items: center; gap: 8px; padding: 5px 8px; font-size: 12px; color: color-mix(in srgb, var(--app-danger) 70%, var(--app-text)); }
+/* what an unsent response's Retry would replace (#321) */
+.replace-notice { font-weight: 600; }
 .empty { opacity: .4; font-size: 13px; }
 .board { border: 1px solid color-mix(in srgb, var(--app-text) 15%, transparent); border-radius: 8px; padding: 12px; margin-bottom: var(--gap); }
 .board-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }

@@ -21,7 +21,7 @@ function item(p: Partial<Item>): Item {
     watch_stopped_at: p.watch_stopped_at ?? null, watch_stopped_until: p.watch_stopped_until ?? null,
     action_agent: p.action_agent ?? null,
     updated_at: p.updated_at ?? p.created_at ?? '2026-07-12T00:00:00.000Z',
-    repo: p.repo ?? null, issue_ref: p.issue_ref ?? null, head_repo: p.head_repo ?? null,
+    repo: p.repo ?? null, issue_ref: p.issue_ref ?? null, head_repo: p.head_repo ?? null, repo_root: p.repo_root ?? null,
   }
 }
 

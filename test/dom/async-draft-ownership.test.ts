@@ -23,7 +23,7 @@ function removeAnswerEditor(d: Database.Database, id: string): void {
     clientId: 'editor-removal-window',
     sequence: 1,
     actionId: 'editor-removal',
-  })).toBe(true)
+  }).ok).toBe(true)
 }
 
 function deferPost(match: string, response?: Response): () => void {
@@ -371,7 +371,9 @@ describe('async draft ownership', () => {
     expect(getItem(db, id)?.reply).toBe('Option Y')
     const remaining = document.querySelector('.stale-drafts-fold')?.textContent ?? ''
     expect(remaining).toContain('Draft X, revised while Y sends')
-    expect(remaining).not.toContain('Option Y')
+    expect(remaining).not.toContain('answer: Option Y')
+    // #321: the draft's Retry would replace the option this window sent, and says so
+    expect(remaining).toContain('Your earlier send went through: “Option Y”. Retry replaces it.')
   })
 
   it('lets a newer Undo reach transport immediately and defeat a delayed staged reply', async () => {
@@ -672,10 +674,14 @@ describe('async draft ownership', () => {
     click(row(id))
     await settle()
     type(answerInput(id), 'Submission A')
-    const release = deferPost(`/items/${id}/reply`)
-    click(buttonLabelled('Send', row(id)!))
+    // #321: the answer that removes the editor is shown before a Send replaces it,
+    // so the send that succeeds is the one made after that notice
     removeAnswerEditor(db, id)
     await pollTick()
+    click(buttonLabelled('Send', row(id)!))
+    await settle()
+    const release = deferPost(`/items/${id}/reply`)
+    click(buttonLabelled('Send', row(id)!))
     click(buttonLabelled('Review queue'))
     await settle()
 
@@ -685,6 +691,41 @@ describe('async draft ownership', () => {
 
     expect(getItem(db, id)?.reply).toBe('Submission A')
     expect(document.querySelector('.stale-drafts-fold')?.textContent ?? '').not.toContain('Submission A')
+  })
+
+  it('keeps an in-flight free-text reply that a newer answer refused after owner removal, naming that answer', async () => {
+    db = freshDb()
+    const id = insertItem(db, {
+      ...AGENT,
+      kind: 'question',
+      title: 'Answered while sending',
+    })
+    insertItem(db, { ...AGENT, kind: 'question', title: 'Review target' })
+    await bootApp(db)
+
+    click(row(id))
+    await settle()
+    type(answerInput(id), 'Submission A')
+    const release = deferPost(`/items/${id}/reply`)
+    click(buttonLabelled('Send', row(id)!))
+    removeAnswerEditor(db, id)
+    await pollTick()
+    click(buttonLabelled('Review queue'))
+    await settle()
+    release()
+    await settle()
+
+    // #321: the send expected the unanswered question it was made on, so the
+    // answer that landed first stands, and the text waits with that answer named
+    expect(getItem(db, id)?.reply).toBe('Answered in another window')
+    const recovery = document.querySelector<HTMLElement>('.stale-drafts-fold')!
+    expect(recovery.textContent).toContain('answer: Submission A')
+    expect(recovery.querySelector('.replace-notice')?.textContent)
+      .toBe('A newer reply was sent: “Answered in another window”. Retry replaces it.')
+    click(buttonLabelled('Retry', recovery))
+    await settle()
+    expect(getItem(db, id)?.reply).toBe('Submission A')
+    expect(document.querySelector('.stale-drafts-fold')).toBeNull()
   })
 
   it('retries an owner-removed ambiguous free-text reply afresh once a later answer replaced it', async () => {
@@ -730,7 +771,7 @@ describe('async draft ownership', () => {
       clientId: 'other-window',
       sequence: 1,
       actionId: 'later-owner-removal',
-    })).toBe(true)
+    }).ok).toBe(true)
     const later = getItem(db, id)!
     expect(markReplySeen(db, id, later.replied_at)).toBe(true)
     await pollTick()
@@ -763,11 +804,14 @@ describe('async draft ownership', () => {
     await settle()
     const input = answerInput(id)
     type(input, 'Submission A')
+    // #321: the send that succeeds is made after the removing answer was shown
+    removeAnswerEditor(db, id)
+    await pollTick()
+    click(buttonLabelled('Send', row(id)!))
+    await settle()
     const release = deferPost(`/items/${id}/reply`)
     click(buttonLabelled('Send', row(id)!))
     type(input, 'Newer draft B')
-    removeAnswerEditor(db, id)
-    await pollTick()
     click(buttonLabelled('Review queue'))
     await settle()
     release()
@@ -775,8 +819,10 @@ describe('async draft ownership', () => {
 
     const recovery = document.querySelector('.stale-drafts-fold')?.textContent ?? ''
     expect(recovery).toContain('Newer draft B')
-    expect(recovery).not.toContain('Submission A')
+    expect(recovery).not.toContain('answer: Submission A')
     expect(getItem(db, id)?.reply).toBe('Submission A')
+    // #321: the newer draft's Retry would replace the send that went through
+    expect(recovery).toContain('Your earlier send went through: “Submission A”. Retry replaces it.')
   })
 
   it('retires a staged-action-superseded recovery without restoring its invalidated retry identity', async () => {
@@ -794,13 +840,16 @@ describe('async draft ownership', () => {
     click(row(id))
     await settle()
     type(answerInput(id), 'Submission A')
+    // #321: the send that succeeds is made after the removing answer was shown
+    removeAnswerEditor(db, id)
+    await pollTick()
+    click(buttonLabelled('Send', row(id)!))
+    await settle()
     const release = deferPost(`/items/${id}/reply`)
     click(buttonLabelled('Send', row(id)!))
     await vi.advanceTimersByTimeAsync(0)
     await collapseRow(id)
     click(row(id)?.querySelector('.star-btn'))
-    removeAnswerEditor(db, id)
-    await pollTick()
     click(buttonLabelled('Review queue'))
     await settle()
     expect(document.querySelector('.stale-drafts-fold')?.textContent).toContain('Submission A')
@@ -927,13 +976,16 @@ describe('async draft ownership', () => {
     expect(getItem(db, id)?.reply_seen_at).not.toBeNull()
     const retained = document.querySelector<HTMLElement>('.stale-drafts-fold')!
     expect(retained.textContent).toContain('Submission A')
+    expect(retryC.intent_action_id).toBeDefined()
 
-    expectConsoleError(/ambiguous retry 4/)
+    // #321: Newer B's own response already told this window its answer, so the
+    // retained entry's Retry no longer replays C under it: it names that answer
+    // first and sends nothing, leaving the pickup alone.
     click(buttonLabelled('Retry', retained))
     await settle()
-    const exactRetry = bodies[3]!
-    expect(exactRetry.intent_action_id).toBe(retryC.intent_action_id)
-    expect(exactRetry.intent_sequence).toBe(retryC.intent_sequence)
+    expect(bodies).toHaveLength(3)
+    expect(retained.querySelector('.replace-notice')?.textContent)
+      .toBe('Your earlier send went through: “Newer B”. Retry replaces it.')
     expect(getItem(db, id)?.reply).toBe('Newer B')
     expect(getItem(db, id)?.reply_seen_at).not.toBeNull()
   })
@@ -1042,11 +1094,17 @@ describe('async draft ownership', () => {
       clientId: 'other-window',
       sequence: 1,
       actionId: 'later-y',
-    })).toBe(true)
+    }).ok).toBe(true)
     const later = getItem(db, id)!
     expect(markReplySeen(db, id, later.replied_at)).toBe(true)
     await pollTick()
 
+    // #321: the paused editor never showed Later Y, so the first Send names it
+    click(buttonLabelled('Send', row(id)!))
+    await settle()
+    expect(bridge.posts.filter((post) => post.url.includes(`/items/${id}/reply`))).toHaveLength(1)
+    expect(row(id)?.querySelector('.write-error')?.textContent)
+      .toBe('A newer reply was sent: “Later Y”. Send replaces it.')
     click(buttonLabelled('Send', row(id)!))
     await settle()
 
@@ -1099,6 +1157,15 @@ describe('async draft ownership', () => {
     const edited = JSON.parse(String(replyPosts[1]?.init?.body))
     expect(edited.intent_action_id).not.toBe(first.intent_action_id)
     expect(edited.intent_sequence).toBeGreaterThan(first.intent_sequence)
+    // #321: the edited send expected the unanswered question its editor showed,
+    // but Draft A had landed: the server refused it, and the notice says whose
+    // text that is. Only the next click replaces it.
+    expect(getItem(db, id)?.reply).toBe('Draft A')
+    expect(row(id)?.querySelector('.write-error')?.textContent)
+      .toBe('Your earlier send went through: “Draft A”. Send replaces it.')
+    expect(answerInput(id)?.value).toBe('Draft B')
+    click(buttonLabelled('Send', row(id)!))
+    await settle()
     expect(getItem(db, id)?.reply).toBe('Draft B')
   })
 
@@ -1114,8 +1181,8 @@ describe('async draft ownership', () => {
       clientId: 'inherited-client',
       sequence: 2,
       actionId: 'other-clone-action',
-    })).toBe(true)
-    expect(replyItem(db, id, '')).toBe(true)
+    }).ok).toBe(true)
+    expect(replyItem(db, id, '').ok).toBe(true)
     sessionStorage.setItem('agent-inbox-reply-intent', JSON.stringify({
       clientId: 'inherited-client',
       sequence: 0,

@@ -14,7 +14,7 @@ import {
 import type { BootOptions, ViewerBridge } from './harness.js'
 import {
   advanceClock, answerInput, badgeCount, bootApp, buttonLabelled, click, expectConsoleError, freshDb, pollTick,
-  row, sendButton, settle, showInbox, type, useDomTest,
+  row, rowTitles, sendButton, settle, showInbox, tabCount, type, useDomTest,
 } from './harness.js'
 
 useDomTest()
@@ -398,10 +398,11 @@ describe('a draft whose target changed goes to the unsent responses', () => {
   it.each([
     ['answered in another window', (d: Database.Database, id: string) => {
       replyItem(d, id, 'Another answer', undefined, 'answer', { clientId: 'other-window', sequence: 1, actionId: 'other' })
-    }, QUESTION_CHANGED],
-    ['answered in chat', (d: Database.Database, id: string) => { answerItem(d, id, 'Chat answer') }, QUESTION_CHANGED],
-    ['closed', (d: Database.Database, id: string) => { resolveItem(d, id) }, QUESTION_CLOSED],
-  ] as const)('a question %s', async (_label, change, reason) => {
+    }, QUESTION_CHANGED, 'A newer reply was sent: “Another answer”. Retry replaces it.'],
+    ['answered in chat', (d: Database.Database, id: string) => { answerItem(d, id, 'Chat answer') }, QUESTION_CHANGED,
+      'A newer reply was sent: “Chat answer”. Retry replaces it.'],
+    ['closed', (d: Database.Database, id: string) => { resolveItem(d, id) }, QUESTION_CLOSED, ''],
+  ] as const)('a question %s', async (_label, change, reason, retryNotice) => {
     db = freshDb()
     const id = question(db)
     await bootApp(db)
@@ -416,6 +417,8 @@ describe('a draft whose target changed goes to the unsent responses', () => {
     expect(fold.textContent).toContain(reason)
     expect(fold.textContent).toContain('My unsent answer.')
     expect(fold.textContent).toContain('My context.')
+    // #321: what Retry replaces, where it would replace anything
+    expect(fold.querySelector('.replace-notice')?.textContent).toBe(retryNotice)
     await showInbox()
     expect(answerInput(id)?.value ?? '').not.toContain('My unsent answer.')
     await saved()
@@ -483,6 +486,9 @@ describe('a draft whose target changed goes to the unsent responses', () => {
     const fold = recovery()!
     expect(fold.textContent).toContain(SEND_UNCONFIRMED_QUESTION)
     expect(fold.textContent).not.toContain('Not sent')
+    // #321: and what its Retry does, so the one click is an informed one
+    expect(fold.querySelector('.replace-notice')?.textContent)
+      .toBe('A newer reply was sent: “Chat answer”. Retry replaces it.')
     click(buttonLabelled('Retry', fold))
     await settle()
     expect(body(bridge.posts[0])['intent_action_id']).not.toBe(lost['intent_action_id'])
@@ -783,6 +789,10 @@ describe('a saved reply intent is reused by one rule', () => {
     await pollTick()
     expect(answerInput(id)?.value, 'the paused editor still holds the draft').toBe('Ship Tuesday.')
 
+    // #321: the paused editor never showed the chat answer, so Send names it first
+    click(sendButton(id))
+    await settle()
+    expect(body(bridge.posts.at(-1))['intent_action_id']).toBe(lost['intent_action_id'])
     click(sendButton(id))
     await settle()
     expect(body(bridge.posts.at(-1))['intent_action_id']).not.toBe(lost['intent_action_id'])
@@ -904,6 +914,10 @@ describe('a saved reply intent is reused by one rule', () => {
     expect(getItem(db, id)?.replied_at).toBe(pinnedAt)
     await pollTick()
 
+    // #321: Send names the chat answer the paused editor never showed, then sends
+    click(sendButton(id))
+    await settle()
+    expect(bridge.posts).toHaveLength(1)
     click(sendButton(id))
     await settle()
     expect(body(bridge.posts.at(-1))['intent_action_id']).not.toBe(lost['intent_action_id'])
@@ -962,6 +976,528 @@ describe('a saved reply intent is reused by one rule', () => {
     })
     expect(getItem(db, id)?.reply).toBe('Tuesday')
     expect(recovery()).toBeNull()
+  })
+})
+
+// Issue #322: the rule reads the last poll, so within one poll of another writer
+// it can still replay a send the server already applied. The server answers that
+// replay from its record without writing, and says so with the answer that
+// stands: the human's text is kept whenever that answer is not theirs.
+describe('a replay the server answered from its record (#322)', () => {
+  const REPLACED = 'Your send went through, but this question\'s answer has changed since.'
+
+  function answerInWindowB(d: Database.Database, id: string): void {
+    expect(replyItem(d, id, 'Later Y', undefined, 'answer', { clientId: 'window-b', sequence: 1, actionId: 'b-1' }).ok).toBe(true)
+  }
+
+  // The first reply POST fails in this window, and its request reaches the
+  // server only afterwards, when the test lands it.
+  function lateFirstReply(id: string): { opts: BootOptions; land: () => Promise<void> } {
+    let late: (() => Promise<Response>) | null = null
+    return {
+      opts: {
+        interceptFetch: async (input, init, next) => {
+          if (late === null && init?.method === 'POST' && String(input).includes(`/items/${id}/reply`)) {
+            late = next
+            throw new Error('lost reply request')
+          }
+          return next()
+        },
+      },
+      land: async () => { await late?.() },
+    }
+  }
+
+  // Only `ok`, as a server from before #322 answers.
+  function olderServer(id: string): BootOptions {
+    const lose = loseFirstReply(id).interceptFetch!
+    return {
+      interceptFetch: async (input, init, next) => {
+        const response = await lose(input, init, next)
+        if (init?.method !== 'POST' || !String(input).includes(`/items/${id}/reply`)) return response
+        const { ok } = await response.json() as { ok: boolean }
+        return new Response(JSON.stringify({ ok }), { headers: { 'content-type': 'application/json' } })
+      },
+    }
+  }
+
+  // A typed answer whose send landed though its answer was lost, sent again with
+  // no poll since: the rule still sees the answer the send was made against, so
+  // it replays the landed send's intent, and the server writes nothing.
+  async function replayEditorSend(
+    opts: (id: string) => BootOptions,
+    change?: (d: Database.Database, id: string) => void,
+  ): Promise<{ id: string; bridge: ViewerBridge }> {
+    db = freshDb()
+    const id = question(db)
+    const bridge = await bootApp(db, opts(id))
+    expectConsoleError(/lost reply response/)
+    await draftAnswer(id, 'Ship Tuesday.')
+    click(sendButton(id))
+    await settle()
+    const lost = body(bridge.posts.at(-1))
+    expect(getItem(db, id)?.reply, 'the send landed; only its answer was lost').toBe('Ship Tuesday.')
+    change?.(db, id)
+    const before = getItem(db, id)
+    click(sendButton(id))
+    await settle()
+    expect(body(bridge.posts.at(-1))['intent_action_id'], 'the exact replay').toBe(lost['intent_action_id'])
+    expect(getItem(db, id), 'which wrote nothing').toEqual(before)
+    return { id, bridge }
+  }
+
+  it.each([
+    ['a reply from another window', answerInWindowB],
+    ['a chat answer', (d: Database.Database, id: string) => agentAnswers(d, id, 'Thursday, said in chat')],
+  ] as const)('keeps an editor\'s text as an unsent response when its replay finds %s', async (_label, change) => {
+    const { id } = await replayEditorSend(loseFirstReply, change)
+    const fold = recovery()!
+    expect(fold.textContent).toContain(REPLACED)
+    expect(fold.textContent).toContain('answer: Ship Tuesday.')
+    expect(answerInput(id)?.value ?? '').not.toBe('Ship Tuesday.')
+    expect(document.activeElement, 'focus follows the text out of the editor').toBe(fold.querySelector('summary'))
+    await saved()
+    expect(storedTexts()).toEqual(['Ship Tuesday.'])
+
+    // the reason comes back with it, and nothing is sent for the human
+    const bridge = await reopen(db!)
+    await pollTick()
+    expect(bridge.posts).toHaveLength(0)
+    expect(recovery()?.textContent).toContain(REPLACED)
+  })
+
+  it('keeps an unsent response when its Retry replays a send that landed before a newer reply', async () => {
+    db = freshDb()
+    const id = question(db)
+    const late = lateFirstReply(id)
+    const bridge = await bootApp(db, late.opts)
+    expectConsoleError(/lost reply request/)
+    await pickOption(id, 'Tuesday')
+    const lost = body(bridge.posts.at(-1))
+    expect(recovery()?.textContent).toContain('answer: Tuesday')
+    await late.land()
+    expect(getItem(db, id)?.reply, 'the request reached the server after all').toBe('Tuesday')
+    answerInWindowB(db, id)
+    const before = getItem(db, id)
+
+    click(buttonLabelled('Retry', recovery()!))
+    await settle()
+    expect(body(bridge.posts.at(-1))['intent_action_id'], 'the exact replay').toBe(lost['intent_action_id'])
+    expect(getItem(db, id), 'which wrote nothing').toEqual(before)
+    const fold = recovery()!
+    expect(fold.textContent).toContain(REPLACED)
+    expect(fold.textContent).toContain('answer: Tuesday')
+    await saved()
+    expect(storedTexts()).toEqual(['Tuesday'])
+  })
+
+  it('keeps the newer text of an editor typed in while the replay was in flight', async () => {
+    db = freshDb()
+    const id = question(db)
+    let replies = 0
+    let release!: () => void
+    const held = new Promise<void>((resolve) => { release = resolve })
+    await bootApp(db, {
+      interceptFetch: async (input, init, next) => {
+        if (init?.method !== 'POST' || !String(input).includes(`/items/${id}/reply`)) return next()
+        replies += 1
+        const response = await (replies === 2 ? held.then(next) : next())
+        if (replies === 1) throw new Error('lost reply response')
+        return response
+      },
+    })
+    expectConsoleError(/lost reply response/)
+    await draftAnswer(id, 'Ship Tuesday.')
+    click(sendButton(id))
+    await settle()
+    answerInWindowB(db, id)
+    click(sendButton(id))
+    await vi.advanceTimersByTimeAsync(0)
+    type(answerInput(id), 'Ship Thursday instead.')
+    release()
+    await settle()
+    expect(getItem(db, id)?.reply).toBe('Later Y')
+    const fold = recovery()!
+    expect(fold.textContent, 'the newer text is the human\'s').toContain('Ship Thursday instead.')
+    expect(fold.textContent).not.toContain('Ship Tuesday.')
+  })
+
+  it('spends the replayed intent: the kept response\'s Retry is a fresh send', async () => {
+    const { id, bridge } = await replayEditorSend(loseFirstReply, answerInWindowB)
+    const replayed = body(bridge.posts.at(-1))
+    click(buttonLabelled('Retry', recovery()!))
+    await settle()
+    expect(body(bridge.posts.at(-1))['intent_action_id']).not.toBe(replayed['intent_action_id'])
+    expect(getItem(db!, id)).toMatchObject({ reply: 'Ship Tuesday.', reply_source: 'inbox' })
+    expect(recovery()).toBeNull()
+  })
+
+  it.each(['an editor\'s Send', 'an unsent response\'s Retry'] as const)(
+    'retires %s whose replay finds its own answer still standing',
+    async (path) => {
+      if (path === 'an editor\'s Send') {
+        const { id } = await replayEditorSend(loseFirstReply)
+        expect(getItem(db!, id)?.reply).toBe('Ship Tuesday.')
+      } else {
+        db = freshDb()
+        const id = question(db)
+        const late = lateFirstReply(id)
+        const bridge = await bootApp(db, late.opts)
+        expectConsoleError(/lost reply request/)
+        await pickOption(id, 'Tuesday')
+        const lost = body(bridge.posts.at(-1))
+        await late.land()
+        click(buttonLabelled('Retry', recovery()!))
+        await settle()
+        expect(bridge.posts, 'the Retry replayed the landed send').toHaveLength(2)
+        expect(body(bridge.posts.at(-1))['intent_action_id']).toBe(lost['intent_action_id'])
+        expect(getItem(db, id)?.reply).toBe('Tuesday')
+      }
+      expect(recovery()).toBeNull()
+      await saved()
+      expect(stored()).toEqual({})
+    },
+  )
+
+  it('retires the text as before when an older server says only ok', async () => {
+    await replayEditorSend(olderServer, answerInWindowB)
+    expect(recovery()).toBeNull()
+    await saved()
+    expect(stored()).toEqual({})
+  })
+})
+
+// Issue #321: a Send or Retry replaces the question's answer. When that answer is
+// one this window has not shown (the list paused for a draft, a poll not yet
+// applied, a reply that landed while the send was on its way), the control names
+// it first, "A newer reply was sent: “…”. Send replaces it.", and only a further
+// click sends. Nothing is sent without that click.
+describe('a send over a newer reply this window has not shown (#321)', () => {
+  const notice = (answer: string, action = 'Send') => `A newer reply was sent: “${answer}”. ${action} replaces it.`
+  const editorNotice = (id: string) => row(id)?.querySelector<HTMLElement>('.nrow-card .write-error') ?? null
+  const lineNotice = () => recovery()?.querySelector<HTMLElement>('.replace-notice') ?? null
+  const replyPosts = (bridge: ViewerBridge, id: string) => bridge.posts.filter((post) => post.url.includes(`/items/${id}/reply`))
+
+  // Window B answers, and the agent picks that answer up.
+  function laterYPickedUp(d: Database.Database, id: string): void {
+    expect(replyItem(d, id, 'Later Y', undefined, 'answer', { clientId: 'window-b', sequence: 1, actionId: 'b-1' }).ok).toBe(true)
+    expect(markReplySeen(d, id, getItem(d, id)!.replied_at)).toBe(true)
+  }
+
+  it('names the newer reply before an editor\'s Send replaces it, and sends only on the next click', async () => {
+    db = freshDb()
+    const id = question(db)
+    const bridge = await bootApp(db, loseFirstReply(id))
+    expectConsoleError(/lost reply response/)
+    await draftAnswer(id, 'Original X')
+    click(sendButton(id))
+    await settle()
+    expect(getItem(db, id)?.reply, 'the send landed; only its answer was lost').toBe('Original X')
+    laterYPickedUp(db, id)
+    await pollTick()
+    expect(answerInput(id)?.value, 'the list is paused by the draft').toBe('Original X')
+    expect(row(id)?.textContent).not.toContain('Later Y')
+    const posts = replyPosts(bridge, id).length
+    const before = getItem(db, id)
+    const attention = [badgeCount(), tabCount('needsYou')]
+
+    click(sendButton(id))
+    await settle()
+    expect(replyPosts(bridge, id), 'the first click sends nothing').toHaveLength(posts)
+    expect(editorNotice(id)?.textContent).toBe(notice('Later Y'))
+    expect(editorNotice(id)?.hidden).toBe(false)
+    expect(editorNotice(id)?.getAttribute('role')).toBe('status')
+    expect(answerInput(id)?.value, 'the text stays in its editor').toBe('Original X')
+    expect(getItem(db, id), 'Later Y and its pickup are untouched').toEqual(before)
+    expect([badgeCount(), tabCount('needsYou')], 'a notice is not attention').toEqual(attention)
+    await pollTick()
+    await pollTick()
+    expect(replyPosts(bridge, id), 'nothing is sent without a click').toHaveLength(posts)
+
+    click(sendButton(id))
+    await settle()
+    expect(replyPosts(bridge, id)).toHaveLength(posts + 1)
+    expect(getItem(db, id)).toMatchObject({ reply: 'Original X', reply_source: 'inbox', reply_seen_at: null })
+  })
+
+  it('names a reply that landed after the last poll, from the server\'s refusal, and sends only on the next click', async () => {
+    db = freshDb()
+    const id = question(db)
+    const bridge = await bootApp(db)
+    await draftAnswer(id, 'Mine.')
+    laterYPickedUp(db, id)
+    const before = getItem(db, id)
+    const attention = [badgeCount(), tabCount('needsYou')]
+
+    click(sendButton(id))
+    await settle()
+    expect(replyPosts(bridge, id)).toHaveLength(1)
+    expect(body(replyPosts(bridge, id)[0])['expect_answer'], 'the send expected the answer its editor showed')
+      .toEqual({ replied_at: null, reply_source: null, reply_kind: null, reply: null })
+    expect(getItem(db, id), 'and the server refused it').toEqual(before)
+    expect(editorNotice(id)?.textContent).toBe(notice('Later Y'))
+    expect(answerInput(id)?.value).toBe('Mine.')
+    expect([badgeCount(), tabCount('needsYou')]).toEqual(attention)
+
+    click(sendButton(id))
+    await settle()
+    expect(body(replyPosts(bridge, id)[1])['expect_answer']).toMatchObject({ reply: 'Later Y', reply_source: 'inbox' })
+    expect(getItem(db, id)).toMatchObject({ reply: 'Mine.', reply_source: 'inbox' })
+  })
+
+  it('keeps focus in the editor, so a second Ctrl+Enter sends', async () => {
+    db = freshDb()
+    const id = question(db)
+    const bridge = await bootApp(db)
+    await draftAnswer(id, 'Mine.')
+    laterYPickedUp(db, id)
+    await pollTick()
+    const input = answerInput(id)!
+    input.focus()
+    const press = () => input.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true, cancelable: true }))
+    press()
+    await settle()
+    expect(replyPosts(bridge, id)).toHaveLength(0)
+    expect(editorNotice(id)?.textContent).toBe(notice('Later Y'))
+    expect(document.activeElement).toBe(input)
+    press()
+    await settle()
+    expect(getItem(db, id)?.reply).toBe('Mine.')
+  })
+
+  it('names the newer reply for an editor draft restored after a reload', async () => {
+    db = freshDb()
+    const id = question(db)
+    await bootApp(db)
+    await draftAnswer(id, 'Kept across the reload.')
+    const bridge = await reopen(db)
+    await showInbox()
+    expect(answerInput(id)?.value).toBe('Kept across the reload.')
+    laterYPickedUp(db, id)
+    await pollTick()
+    click(sendButton(id))
+    await settle()
+    expect(replyPosts(bridge, id)).toHaveLength(0)
+    expect(editorNotice(id)?.textContent).toBe(notice('Later Y'))
+    click(sendButton(id))
+    await settle()
+    expect(getItem(db, id)?.reply).toBe('Kept across the reload.')
+  })
+
+  it('says on an unsent response what its Retry replaces, so one click sends it', async () => {
+    db = freshDb()
+    const id = question(db)
+    const bridge = await bootApp(db)
+    bridge.failPostsWith(500)
+    expectConsoleError(/reply failed: HTTP 500/)
+    await pickOption(id, 'Tuesday')
+    bridge.failPostsWith(null)
+    expect(lineNotice()?.hidden, 'nothing to replace yet').toBe(true)
+    buttonLabelled('Retry', recovery()!)!.focus()
+    laterYPickedUp(db, id)
+    await pollTick()
+    expect(lineNotice()?.textContent).toBe(notice('Later Y', 'Retry'))
+    expect(lineNotice()?.hidden).toBe(false)
+    expect(document.activeElement, 'the rebuilt line keeps a keyboard user on its Retry')
+      .toBe(buttonLabelled('Retry', recovery()!))
+    click(buttonLabelled('Retry', recovery()!))
+    await settle()
+    expect(getItem(db, id)).toMatchObject({ reply: 'Tuesday', reply_source: 'inbox' })
+    expect(recovery()).toBeNull()
+  })
+
+  it('names the reply the server reports on an unsent response, keeping focus on its Retry', async () => {
+    db = freshDb()
+    const id = question(db)
+    const bridge = await bootApp(db)
+    bridge.failPostsWith(500)
+    expectConsoleError(/reply failed: HTTP 500/)
+    await pickOption(id, 'Tuesday')
+    bridge.failPostsWith(null)
+    laterYPickedUp(db, id)
+    const before = getItem(db, id)
+    buttonLabelled('Retry', recovery()!)!.focus()
+
+    click(buttonLabelled('Retry', recovery()!))
+    await settle()
+    expect(getItem(db, id), 'the server refused the Retry').toEqual(before)
+    expect(lineNotice()?.textContent).toBe(notice('Later Y', 'Retry'))
+    expect(recovery()?.textContent).toContain('answer: Tuesday')
+    expect(document.activeElement).toBe(buttonLabelled('Retry', recovery()!))
+
+    // the refused send was answered, so a restart never calls it unconfirmed
+    const reopened = await reopen(db)
+    await pollTick()
+    expect(recovery()?.textContent).not.toContain(SEND_UNCONFIRMED_QUESTION)
+    expect(lineNotice()?.textContent).toBe(notice('Later Y', 'Retry'))
+    click(buttonLabelled('Retry', recovery()!))
+    await settle()
+    expect(replyPosts(reopened, id)).toHaveLength(1)
+    expect(getItem(db, id)).toMatchObject({ reply: 'Tuesday', reply_source: 'inbox' })
+    expect(recovery()).toBeNull()
+  })
+
+  it('names nothing for a question closed since: the send is refused as before', async () => {
+    db = freshDb()
+    const id = question(db)
+    const bridge = await bootApp(db)
+    await draftAnswer(id, 'Mine.')
+    laterYPickedUp(db, id)
+    resolveItem(db, id)
+    await pollTick()
+    click(sendButton(id))
+    await settle()
+    expect(replyPosts(bridge, id), 'the click sends, and the server refuses it').toHaveLength(1)
+    expect(document.body.textContent).not.toContain('A newer reply was sent')
+    expect(recovery()?.textContent).toContain('answer: Mine.')
+  })
+
+  it('sends at once over an answer cleared since, which leaves nothing to replace', async () => {
+    db = freshDb()
+    const id = question(db)
+    const bridge = await bootApp(db)
+    await draftAnswer(id, 'Mine.')
+    expect(replyItem(db, id, 'Later Y', undefined, 'answer', { clientId: 'window-b', sequence: 1, actionId: 'b-1' }).ok).toBe(true)
+    expect(replyItem(db, id, '', undefined, 'answer', { clientId: 'window-b', sequence: 2, actionId: 'b-2' }).ok).toBe(true)
+    await pollTick()
+    click(sendButton(id))
+    await settle()
+    expect(replyPosts(bridge, id)).toHaveLength(1)
+    expect(getItem(db, id)?.reply).toBe('Mine.')
+  })
+
+  // A clear moves replied_at, so an expectation of "unanswered" no longer matches
+  // the question exactly; there is still nothing to replace.
+  it.each(['an editor\'s Send', 'an unsent response\'s Retry'] as const)(
+    'writes at once from %s over an answer cleared before the window polled',
+    async (path) => {
+      db = freshDb()
+      const id = question(db)
+      const bridge = await bootApp(db)
+      if (path === 'an editor\'s Send') {
+        await draftAnswer(id, 'Tuesday')
+      } else {
+        bridge.failPostsWith(500)
+        expectConsoleError(/reply failed: HTTP 500/)
+        await pickOption(id, 'Tuesday')
+        bridge.failPostsWith(null)
+      }
+      expect(replyItem(db, id, 'Later Y', undefined, 'answer', { clientId: 'window-b', sequence: 1, actionId: 'b-1' }).ok).toBe(true)
+      expect(replyItem(db, id, '', undefined, 'answer', { clientId: 'window-b', sequence: 2, actionId: 'b-2' }).ok).toBe(true)
+      const posts = replyPosts(bridge, id).length
+
+      click(path === 'an editor\'s Send' ? sendButton(id) : buttonLabelled('Retry', recovery()!))
+      await settle()
+      expect(replyPosts(bridge, id), 'one click, one send').toHaveLength(posts + 1)
+      expect(getItem(db, id)).toMatchObject({ reply: 'Tuesday', reply_source: 'inbox' })
+      expect(document.body.textContent).not.toContain('replaces it')
+      expect(recovery()).toBeNull()
+    },
+  )
+
+  // Both clicks expect the unanswered question, so the first writes and the
+  // second is refused naming that same text: it went through, once.
+  it('retires a double Send once its second click finds the first one\'s answer, with no notice and one write', async () => {
+    db = freshDb()
+    const id = question(db)
+    let replies = 0
+    let releaseFirst!: () => void
+    const firstHeld = new Promise<void>((resolve) => { releaseFirst = resolve })
+    const bridge = await bootApp(db, {
+      interceptFetch: async (input, init, next) => {
+        if (init?.method !== 'POST' || !String(input).includes(`/items/${id}/reply`)) return next()
+        replies += 1
+        const response = await next()
+        // the first send lands at once, but its answer comes back after the second's
+        if (replies === 1) await firstHeld
+        return response
+      },
+    })
+    await draftAnswer(id, 'Ship Tuesday.')
+    click(sendButton(id))
+    click(sendButton(id))
+    await settle()
+    expect(replyPosts(bridge, id)).toHaveLength(2)
+    releaseFirst()
+    await settle()
+
+    expect(getItem(db, id), 'written once').toMatchObject({ reply: 'Ship Tuesday.', reply_source: 'inbox', response_revision: 1 })
+    expect(answerInput(id), 'no draft is left in an editor').toBeNull()
+    expect(recovery(), 'and no unsent response').toBeNull()
+    expect(document.body.textContent).not.toContain('replaces it')
+    await saved()
+    expect(stored()).toEqual({})
+  })
+
+  it('replays a send whose answer was lost after its notice, rather than sending it afresh', async () => {
+    db = freshDb()
+    const id = question(db)
+    let replies = 0
+    const bridge = await bootApp(db, {
+      interceptFetch: async (input, init, next) => {
+        if (init?.method !== 'POST' || !String(input).includes(`/items/${id}/reply`)) return next()
+        replies += 1
+        const response = await next()
+        // the send made after the notice lands, but its answer is lost
+        if (replies === 2) throw new Error('lost reply response')
+        return response
+      },
+    })
+    expectConsoleError(/lost reply response/)
+    await draftAnswer(id, 'Mine.')
+    laterYPickedUp(db, id)
+    click(sendButton(id))
+    await settle()
+    expect(editorNotice(id)?.textContent, 'the server named Later Y').toBe(notice('Later Y'))
+    click(sendButton(id))
+    await settle()
+    expect(getItem(db, id)?.reply, 'that send landed').toBe('Mine.')
+    const landed = body(replyPosts(bridge, id)[1])
+    const revision = getItem(db, id)!.response_revision
+
+    // no poll since: its intent was pinned to Later Y, the answer the window knows
+    click(sendButton(id))
+    await settle()
+    expect(replyPosts(bridge, id)).toHaveLength(3)
+    expect(body(replyPosts(bridge, id)[2])['intent_action_id'], 'the exact replay').toBe(landed['intent_action_id'])
+    expect(getItem(db, id)?.response_revision, 'nothing was written again').toBe(revision)
+    expect(answerInput(id)).toBeNull()
+    expect(recovery()).toBeNull()
+    expect(document.body.textContent).not.toContain('replaces it')
+  })
+
+  it('names the newer reply in place when the paused list still shows an unsent response\'s old line', async () => {
+    db = freshDb()
+    const id = question(db)
+    const other = question(db, 'Another question')
+    const bridge = await bootApp(db)
+    bridge.failPostsWith(500)
+    expectConsoleError(/reply failed: HTTP 500/)
+    await pickOption(id, 'Tuesday')
+    bridge.failPostsWith(null)
+    await draftAnswer(other, 'Half typed.')
+    laterYPickedUp(db, id)
+    await pollTick()
+    expect(lineNotice()?.hidden, 'the paused line still names nothing').toBe(true)
+    const retry = buttonLabelled('Retry', recovery()!)!
+    retry.focus()
+    const posts = replyPosts(bridge, id).length
+    const before = getItem(db, id)
+    const attention = [badgeCount(), tabCount('needsYou'), rowTitles()]
+
+    click(retry)
+    await settle()
+    expect(replyPosts(bridge, id), 'the first click sends nothing').toHaveLength(posts)
+    expect(getItem(db, id)).toEqual(before)
+    expect(lineNotice()?.textContent).toBe(notice('Later Y', 'Retry'))
+    expect(document.activeElement, 'focus stays on Retry').toBe(retry)
+    expect([badgeCount(), tabCount('needsYou'), rowTitles()], 'a notice is not attention').toEqual(attention)
+    await pollTick()
+    expect(replyPosts(bridge, id), 'nothing is sent without a click').toHaveLength(posts)
+
+    click(retry)
+    await settle()
+    expect(getItem(db, id)).toMatchObject({ reply: 'Tuesday', reply_source: 'inbox' })
   })
 })
 

@@ -4,7 +4,7 @@ import type Database from 'better-sqlite3'
 import { randomUUID } from 'node:crypto'
 import { insertItem, resolveItem, listPending, markReplySeen, markItemAnnotationDelivered, answerItem, upsertBoard, updateBoardRow, advanceBoardRow, findBoard, archiveBoard, getBoard, getBoardByTitle, listBoards, markBoardRead, markAnnotationDelivered, markHandledDelivered, listPendingRows, upsertActivity, endActivity, touchActivity, recordActivityCall, listIssueSnapshots, listSourceLinks } from './store.js'
 import type { ActionOwner, BoardRow, BoardWithRows, IssueLink, QuestionOption } from './store.js'
-import { makeContextLedger, deliverContext, shapeBoard, summariseBoard, rowKey, itemKey } from './shape.js'
+import { makeContextLedger, deliverContext, shapeBoard, summariseBoard, rowKey, itemKey, agentItem } from './shape.js'
 import type { BoardIssueRelations } from './shape.js'
 import { issueRelations } from './issue-graph.js'
 import { issueKey, issueKeyFor } from '../public/issue-key.js'
@@ -195,6 +195,9 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
         // issue #157 — where the branch is pushed; only worth a git call when
         // there is a base repo to link against at all
         head_repo: s.repo ? scope.headFor(branch) : null,
+        // issue #324 — the folder its repo-relative paths open against, read
+        // live (worktrees and checkouts move); null when none is found
+        repo_root: scope.rootFor(),
         // stamp the asking session so the viewer can tell "waiting" (this
         // session is still in /api/activity) from "parked" (agent long gone)
         session: sessionId,
@@ -290,7 +293,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
       // than a delivery guarantee it cannot make.
       return {
         content: [{ type: 'text', text: JSON.stringify({
-          items: items.map((it) => deliverContext(it, itemKey(it.id), ledger, { full })),
+          items: items.map((it) => deliverContext(agentItem(it), itemKey(it.id), ledger, { full })),
           rows: rows.map((r) => deliverContext(r, rowKey(r.row_id), ledger, { full })),
         }) }],
       }
@@ -492,6 +495,8 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
         repo: s.repo,
         issueRef: s.issue,
         headRepo: s.repo ? scope.headFor(s.stream) : null,
+        // issue #324 — a null (none found) keeps the plan's stored folder
+        repoRoot: scope.rootFor(),
         issuePin,
       })
       const watches = s.agent === 'copilot' && newActions.size
@@ -573,6 +578,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
         repo: s.repo,
         issueRef: s.issue,
         headRepo: s.repo ? scope.headFor(s.stream) : null,
+        repoRoot: scope.rootFor(),
       })
       const watch = s.agent === 'copilot' && newAsk
         ? rowWatch({ id: out.rowId, label, action_version: (existing?.action_version ?? 0) + 1 }, s.project)

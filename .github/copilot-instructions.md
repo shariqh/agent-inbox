@@ -302,7 +302,8 @@ Run the build before `npm run electron`; the development shell starts the built
   treats any non-2xx as "the write never happened". An explicit `''` still clears.
 - Inbox answers have precedence over chat-recorded answers. `answerItem()` must
   refuse to overwrite an unread inbox answer; this is intentionally not
-  timestamp-based last-write-wins.
+  timestamp-based last-write-wins. A human reply that carries `expect_answer`
+  (#321) is written only while the question still holds that answer.
 - Item response and annotation snapshots use monotonic `response_revision`, not
   timestamps alone. MCP resolution after response history requires the exact
   `expected_response_revision` handled by that caller. Question reply/annotation
@@ -456,6 +457,22 @@ Run the build before `npm run electron`; the development shell starts the built
   fails falls back to the default one. Rules, Quick Look and Reveal are file
   requests, so they share the owned-viewer `files` grant, and so do the
   Settings → Links channels (a reused viewer gets `error: 'unowned'`).
+- Repo-relative paths (#324) link only in a card whose item or plan recorded
+  `repo_root` (additive, nullable columns on `items` and `boards`): the MCP
+  server's `git rev-parse --show-toplevel`, read live by `scope.rootFor()` on
+  writes only (never in `get()`, never memoized, fail open to null). A board
+  write that finds none keeps the stored folder (`COALESCE`); `board_advance`
+  and older servers never touch it. Agent reads never return it
+  (`agentItem`/`shapeBoard` in `src/shape.ts`). `public/links.js` detects them
+  conservatively (a folder and a name, an extension or a file-like name with
+  `:line`, no dotted first folder, no `.`/`..`/`...` segment), reading at most
+  255 characters a segment and 1024 in all (longer links nothing), with no
+  pattern that can backtrack over agent text: the render runs on every
+  3-second poll, so a quadratic regex there freezes the viewer. They carry
+  the folder in an escaped `data-link-root`, never an href. Main joins a plain
+  relative path to the folder (`joinRepoPath`), refuses it as `outside` when
+  its real path leaves the folder's real path, and then applies the same
+  policy and grant as any file. A missing one copies its path instead.
 - The 3-second poll uses the gated `load()`/`renderIfIdle()` path. Its reads
   run concurrently, but a tick applies only after all settle, and only if no newer
   tick has applied and every boot marker agrees. A successful
@@ -485,7 +502,18 @@ Run the build before `npm run electron`; the development shell starts the built
   pin. One rule, `savedIntentRule`, decides every reuse of a saved intent (Retry,
   an editor's Send after an unconfirmed send): the server holds exactly that
   response, so it retires unsent; the answer moved since the pin, so the send is
-  fresh; otherwise the exact replay. Never move a pin while keeping its intent. A
+  fresh; otherwise the exact replay. Never move a pin while keeping its intent. The
+  rule reads the last poll, so the reply route also says, additively, whether a
+  request `wrote`, whether it `replayed` a recorded intent, and the `answer` it left
+  (#322); `ok` keeps its meaning. A replay that wrote nothing under someone else's
+  answer keeps the text as an unsent response, with its spent intent dropped. An
+  editor's Send and an unsent response's Retry never replace an answer the surface
+  has not shown (#321): the first click names it in place ("A newer reply was sent:
+  …"), only a further click sends, and the send carries `expect_answer`, which
+  `replyItem` checks in the same conditioned UPDATE, refusing with `reason:
+  'answer_changed'` and the answer that stands. A question with no answer accepts
+  any expectation, and a refusal naming exactly the sent response retires it as
+  sent. Never send to get past a notice. A
   window deletes only the copy it loaded or last wrote, and its leaving save
   writes back a draft another window deleted; the viewer-restart hold stays.
 - Every value export in `src/*.ts` and `public/*.js` must be reachable from

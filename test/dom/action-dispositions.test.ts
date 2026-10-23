@@ -370,7 +370,7 @@ describe('the human stops an agent from waiting (#217)', () => {
     const d = open()
     const id = copilotQuestion(d)
     expect(stopItemWatch(d, id, null)).toBe(true)
-    expect(replyItem(d, id, 'Approve')).toBe(true)
+    expect(replyItem(d, id, 'Approve').ok).toBe(true)
     upsertBoard(d, { ...COPILOT, title: 'Release', rows: [ask('Install')] })
     let board = getBoard(d, 'alpha', 'Release')!
     const rowId = board.rows[0]!.id

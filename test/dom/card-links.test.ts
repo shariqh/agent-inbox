@@ -511,6 +511,22 @@ describe('repo-relative paths (issue #324)', () => {
     expect(status()).toBe('Copied the path. A browser can’t open local files.')
   })
 
+  // Review of #330: one open card whose text held such a shape kept the main
+  // thread busy for seconds on every render, and the poll renders every 3 s.
+  it('render a card holding hostile path and URL shapes, open and through a poll, without stalling', async () => {
+    bridge()
+    db = freshDb()
+    const slashes = '/'.repeat(40_000)
+    const context = `See docs/${'A'.repeat(40_000)}.1:5, /Users/s${slashes}x.md and https://example.com${slashes}x`
+    const started = performance.now()
+    const id = seedRel(db, { context })
+    await openInspector(db, id)
+    await pollTick()
+    const elapsed = performance.now() - started
+    expect(chips(cardOf(id))).toEqual(['File spec.md:12', 'File app.js:7491', 'File x.md', 'Web example.com/…/x'])
+    expect(elapsed).toBeLessThan(3_000)
+  })
+
   it('read a plan row against its plan’s folder', async () => {
     const open = bridge(async () => ({ ok: true, action: 'opened' }))
     db = freshDb()

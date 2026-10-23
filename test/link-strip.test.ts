@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { cardLinks } from '../public/link-strip.js'
 import type { CardLink } from '../public/link-strip.js'
-import { indexLinks, linkStripHtml } from '../public/source.js'
+import { indexLinks, linkStripHtml, repoFilePath } from '../public/source.js'
 import type { CachedLink } from '../public/source.js'
 
 const REPO = 'shariqh/agent-inbox'
@@ -166,5 +166,15 @@ describe('repo-relative files in the strip (issue #324)', () => {
     expect(html.match(/data-link-path="docs\/a\.md" data-link-root="\/Users\/s\/&quot;r&quot;"/g)).toHaveLength(3)
     expect(linkStripHtml([chip], { key: 'k', copyFiles: true })).toContain('title="Copy path: /Users/s/&quot;r&quot;/docs/a.md"')
     expect(linkStripHtml([{ ...chip, root: '' }], { key: 'k' })).not.toContain('data-link-root')
+  })
+
+  it('names the full path whatever separators the folder ends in, in linear time', () => {
+    expect(repoFilePath('/Users/s/repo/', 'docs/a.md')).toBe('/Users/s/repo/docs/a.md')
+    expect(repoFilePath('C:\\repo\\', 'docs/a.md')).toBe('C:\\repo/docs/a.md')
+    expect(repoFilePath('/', 'docs/a.md')).toBe('/docs/a.md')
+    const folder = `/a${'/'.repeat(40_000)}b`
+    const started = performance.now()
+    expect(repoFilePath(folder, 'x.md')).toBe(`${folder}/x.md`)
+    expect(performance.now() - started).toBeLessThan(500)
   })
 })

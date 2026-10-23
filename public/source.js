@@ -313,9 +313,13 @@ const fileTitle = (path, title, copy) => (copy ? `Copy path: ${path}` : title ||
 
 // Issue #324: the path a repo-relative link names inside the repository folder
 // its card recorded, for its title and Copy path. Electron main does its own
-// join, and alone decides what that opens.
+// join, and alone decides what that opens. The folder's trailing separators go
+// by a loop: an unanchored /[\\/]+$/ is quadratic on a long run of them.
 export function repoFilePath(root, path) {
-  return `${String(root).replace(/[\\/]+$/, '')}/${path}`
+  const folder = String(root)
+  let end = folder.length
+  while (end > 0 && (folder[end - 1] === '/' || folder[end - 1] === '\\')) end--
+  return `${folder.slice(0, end)}/${path}`
 }
 
 const rootedFile = (root) => typeof root === 'string' && root !== ''

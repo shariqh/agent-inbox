@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { findPlainLinks, githubRef, linkedHtml, webLabel } from '../public/links.js'
+import { fileLabel, findPlainLinks, githubRef, linkedHtml, webLabel } from '../public/links.js'
 import type { FoundLink } from '../public/links.js'
 import { renderStructuredText } from '../public/structured-text.js'
 
@@ -307,13 +307,13 @@ describe('repo-relative paths, only where the card knows its repository folder (
     // git refs, with or without a line
     'PRE-EXISTING on main (origin/main:238; this PR)', 'upstream/master:12', 'refs/heads/main:3', 'origin/main',
     // dates and times
-    '2026/10/23', '10/23/2026', '23/10/2026.', 'on 2026-10-23/24', 'at 3/4:12',
+    '2026/10/23', '10/23/2026', '23/10/2026.', 'on 2026-10-23/24', 'at 3/4:12', 'on 2026/10-11:30',
     // code
     '`node:fs/promises`', '`@modelcontextprotocol/sdk/server/mcp.js`', '`zod/v4`', '`react-dom/client`', "import x from './links.js'",
     '`../src/store.ts`', 'src/../etc/passwd.md', 'docs/./x.md', 'docs//x.md', '`x/*.ts`', 'src/**/*.test.ts', '`text/html`',
     '`application/json`', '`application/vnd.api+json`', '`image/svg+xml`', '`foo/bar.baz()`', '`a/b.md#L12`', '`a/b.md?raw=1`',
     '`a.b/c.d`', '`this.state/props.x`', 'ms/1000.0', '`$HOME/x.md`', '`%APPDATA%/x.md`', 'C:/Users/s/x.md', '`~user/x.md`',
-    '/\\d+/g.test(x)', 'docs/x.md_', '_docs/x.md_', './Dockerfile:3', "require('./links.js')",
+    '/\\d+/g.test(x)', 'docs/x.md_', '_docs/x.md_', './Dockerfile:3', "require('./links.js')", 'docs/Release.1:5',
     // an elision stands for folders left out
     'oris-engine-src/.../ImportDelivery.swift:247', 'src/…/x.ts',
     // URLs and hosts without a scheme
@@ -371,4 +371,46 @@ describe('repo-relative paths, only where the card knows its repository folder (
     expect(performance.now() - started).toBeLessThan(2_000)
     expect(html).toContain('data-link-path="docs/ok.md"')
   }, 10_000)
+
+  // Review of #330: a long name whose dot starts no extension, then a :line,
+  // made the :line name check backtrack quadratically (9 s at 80k characters),
+  // on every render of a card that showed it.
+  it.each([
+    ['capitals', `docs/${'A'.repeat(40_000)}.1:5`],
+    ['a_ pairs', `docs/${'a_'.repeat(20_000)}.1:5`],
+    ['a- pairs', `docs/${'a-'.repeat(20_000)}.1:5`],
+    ['Ä', `docs/${'Ä'.repeat(40_000)}.1:5`],
+    ['a long first folder', `${'A'.repeat(40_000)}/x.1:5`],
+    ['a long path of short folders', `${'a/'.repeat(20_000)}A.1:5`],
+  ])('reads a long name (%s) in linear time, and links none of it', (_shape, text) => {
+    const started = performance.now()
+    expect(findPlainLinks(`See ${text}`, 0, text.length + 4, { root: ROOT })).toEqual([])
+    expect(performance.now() - started).toBeLessThan(500)
+  })
+
+  it('links no segment longer than a file name may be, and no path longer than 1024 characters: never a part of one', () => {
+    const named = (length: number) => `${'n'.repeat(length - 3)}.md`
+    expect(rel(`docs/${named(255)}`)).toEqual([['file', `docs/${named(255)}`, `docs/${named(255)}`]])
+    expect(rel(`docs/${named(256)}`)).toEqual([])
+    expect(rel(`docs/${'s'.repeat(256)}/a.md`)).toEqual([])
+    expect(rel(`${'d'.repeat(255)}/a.md`)).toHaveLength(1)
+    expect(rel(`${'d'.repeat(256)}/a.md`)).toEqual([])
+    const deep = (length: number) => {
+      let folders = ''
+      while (folders.length + 110 < length) folders += `${'d'.repeat(99)}/`
+      return `${folders}${'n'.repeat(length - folders.length - 3)}.md`
+    }
+    expect([deep(1024).length, deep(1025).length]).toEqual([1024, 1025])
+    expect(rel(`See ${deep(1024)} now`)).toEqual([['file', deep(1024), deep(1024)]])
+    expect(rel(`See ${deep(1025)} now`)).toEqual([])
+  })
+
+  it('labels a path or a URL with a long run of slashes in linear time', () => {
+    const slashes = '/'.repeat(40_000)
+    const started = performance.now()
+    expect(fileLabel(`/Users/s${slashes}x.md`)).toBe('x.md')
+    expect(fileLabel(`/Users/s/dir${slashes}`)).toBe('dir/')
+    expect(webLabel(`https://example.com${slashes}x`)).toBe('example.com/…/x')
+    expect(performance.now() - started).toBeLessThan(500)
+  })
 })

@@ -12,8 +12,10 @@
 // Conservative on purpose: a wrong link is worse than none. Ordinals ("the #1
 // cause", "step #12"), CSS colours, entities, version numbers, dates, routes
 // such as /api/items, globs, and anything glued to a neighbouring token stay
-// plain text. Every check looks a bounded distance back or ahead, so a run is
-// scanned in linear time.
+// plain text. Every check looks a bounded distance back or ahead, each path is
+// read forward once (a repo-relative one for at most MAX_RELATIVE characters),
+// and no pattern can backtrack over a long token, so a run is scanned in
+// linear time.
 import { esc } from './esc.js'
 import { issueKey } from './issue-key.js'
 import { fileLinkHtml, repoFilePath, safeHttpUrl, textLinkHtml } from './source.js'
@@ -41,17 +43,21 @@ const EXTENSION_RE = /\.[A-Za-z][A-Za-z0-9]{0,7}["'`)\]}.,;:!?…]*$/u
 // such as .github but never a dotted name (a domain, a version, Node.js), and
 // starts with a letter, a digit or an underscore; and what its last segment
 // needs: an extension in one case (docs/spec.md, LOGO.PNG, never write.Then),
-// or, with a :line, a name that still looks like a file's: a dotfile, or one
-// with a capital, a hyphen or an underscore (.zshrc, Dockerfile, pre-commit),
-// never a branch such as origin/main:238 or a number such as 3/4:12. A segment
-// of dots alone (., .., or an elision such as src/.../x.swift) never links.
+// or, with a :line, a name that still looks like a file's (fileLikeName). A
+// segment of dots alone (., .., or an elision such as src/.../x.swift) never
+// links. No pattern here nests quantifiers or puts two unbounded ones side by
+// side, so none can backtrack over a long name; and no path is read past
+// MAX_SEGMENT characters in a segment or MAX_RELATIVE in all: a longer one is
+// no path an agent means, and is not linked at all, never shortened.
 const SEGMENT_CHAR_RE = /[\p{L}\p{N}\p{M}._@%+\-]/u
 const FIRST_FOLDER_RE = /^\.?[\p{L}\p{N}_][\p{L}\p{N}\p{M}_@%+\-]*$/u
 const REL_EXTENSION_RE = /[^.]\.(?:[a-z][a-z0-9]{0,9}|[A-Z][A-Z0-9]{0,9})$/
-const LINE_NAME_RE = /^(?=.*\p{L})(?:\.[^.]+|[^.]*[\p{Lu}_-][^.]*)$/u
+const LETTER_RE = /\p{L}/u
+const FILE_MARK_RE = /[\p{Lu}_-]/u
 const DOTS_RE = /^\.*$/
 const BARE_NAME_RE = /^[\p{L}\p{N}\p{M}_@%+\-]+$/u
 const MAX_SEGMENT = 255
+const MAX_RELATIVE = 1024
 // A folder the card's session recorded (an absolute POSIX or Windows path);
 // anything else links no relative path.
 const ROOT_RE = /^(?:\/|[A-Za-z]:[\\/])/
@@ -209,15 +215,37 @@ function continuesFromSpace(value, start) {
   return slash >= 0 && BARE_NAME_RE.test(before.slice(slash + 1))
 }
 
+// With a :line and no extension, a name must still look like a file's: a
+// dotfile (.zshrc), or a dotless name with a capital, a hyphen or an
+// underscore (Dockerfile, pre-commit, agent_inbox), and a letter either way;
+// never a branch such as origin/main:238 or a number such as 3/4:12. Plain
+// code in one pass each: as one regex (two unbounded runs around the capital)
+// it backtracked quadratically on a long name (review of #330).
+function fileLikeName(name) {
+  const dotfile = name.startsWith('.')
+  const body = dotfile ? name.slice(1) : name
+  if (body === '' || body.includes('.') || !LETTER_RE.test(body)) return false
+  return dotfile || FILE_MARK_RE.test(body)
+}
+
 // Issue #324: a repo-relative path whose first slash is at `slash`, read back to
 // the start of its first folder and on to its end. Folder and name, no `.` or
-// `..` segment (a leading ./ is dropped), and an extension or a :line.
+// `..` segment (a leading ./ is dropped), and an extension or a :line. Both
+// reads are bounded: back by one segment, on by MAX_SEGMENT a segment and
+// MAX_RELATIVE in all, past which nothing links.
 function relativeAt(value, slash, min, to, root) {
   let start = slash
   while (start > min && slash - start < MAX_SEGMENT && SEGMENT_CHAR_RE.test(value[start - 1])) start--
   if (start === slash || !opensPath(value, start)) return null
   let j = slash
-  while (j < to && (value[j] === '/' || SEGMENT_CHAR_RE.test(value[j]))) j++
+  let segment = 0
+  while (j < to) {
+    const ch = value[j]
+    if (ch === '/') segment = 0
+    else if (!SEGMENT_CHAR_RE.test(ch)) break
+    else if (++segment > MAX_SEGMENT) return null
+    if (++j - start > MAX_RELATIVE) return null
+  }
   let end = j
   while (end > slash && value[end - 1] === '.') end--
   LINE_RE.lastIndex = end
@@ -229,7 +257,7 @@ function relativeAt(value, slash, min, to, root) {
   if (segments[0] === '.') segments.shift()
   const name = segments[segments.length - 1] ?? ''
   if (segments.length < 2 || !FIRST_FOLDER_RE.test(segments[0]) || segments.some((s) => DOTS_RE.test(s))) return null
-  if (!REL_EXTENSION_RE.test(name) && !(stop > end && LINE_NAME_RE.test(name))) return null
+  if (!REL_EXTENSION_RE.test(name) && !(stop > end && fileLikeName(name))) return null
   if (continuesAcrossSpace(value, written, stop) || continuesFromSpace(value, start)) return null
   const path = segments.join('/')
   return {
@@ -308,6 +336,15 @@ export function githubRef(url) {
 
 const truncate = (text, max) => (text.length > max ? `${text.slice(0, max - 1)}…` : text)
 
+// `text` without its trailing slashes. A loop, not /\/+$/: unanchored, that
+// pattern restarts at every slash of a long run that does not end the text and
+// backtracks over the rest of it, quadratically (review of #330).
+function withoutTrailingSlashes(text) {
+  let end = text.length
+  while (end > 0 && text[end - 1] === '/') end--
+  return text.slice(0, end)
+}
+
 // "host/path" for a chip: no scheme, no www., no query or fragment; a long one
 // keeps its host and last segment.
 export function webLabel(url) {
@@ -318,7 +355,7 @@ export function webLabel(url) {
     return truncate(String(url), 40)
   }
   const host = parsed.host.replace(/^www\./, '')
-  const path = parsed.pathname.replace(/\/+$/, '')
+  const path = withoutTrailingSlashes(parsed.pathname)
   if (`${host}${path}`.length <= 40) return `${host}${path}`
   const last = path.slice(path.lastIndexOf('/') + 1)
   return last ? `${host}/…/${truncate(last, 24)}` : truncate(host, 40)
@@ -326,7 +363,7 @@ export function webLabel(url) {
 
 // A file's name for a chip, with its line when the text named one.
 export function fileLabel(path, line = null) {
-  const trimmed = String(path).replace(/\/+$/, '')
+  const trimmed = withoutTrailingSlashes(String(path))
   const name = trimmed.slice(trimmed.lastIndexOf('/') + 1) || trimmed
   const label = String(path).endsWith('/') && name !== trimmed ? `${name}/` : name
   return Number.isSafeInteger(line) ? `${label}:${line}` : label

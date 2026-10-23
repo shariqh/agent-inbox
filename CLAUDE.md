@@ -511,7 +511,14 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   looks like a file's (a dotfile, or a capital, `-` or `_`: never `origin/main:238`). A token
   after a space whose previous token ended in a bare folder name (`/Users/s/My Documents/a.md`)
   is a continuation and never links; `owner/name#N`, URLs, globs, routes and absolute paths keep
-  their own detectors. It is bounded like the rest (one segment back, one scan forward, linear).
+  their own detectors. **Both reads are bounded, and no pattern can backtrack:** back over at
+  most one 255-character segment, forward over at most 255 characters a segment and 1024
+  (`MAX_RELATIVE`) in all, and a path past either cap links nothing, never a shortened prefix.
+  No pattern there nests quantifiers or puts two unbounded ones side by side: the `:line` name
+  check is plain code (`fileLikeName`), because as one regex it backtracked quadratically on a
+  long name (9 s at 80k characters) and froze every render of a card that showed one (review
+  of #330), and `fileLabel`, `webLabel` and `repoFilePath` strip trailing slashes with a loop,
+  never an unanchored `/\/+$/`, for the same reason. `test/links.test.ts` times each shape.
   The link carries the path (`./` dropped, no `:line`) in `data-link-path` and the folder in an
   escaped `data-link-root`, never an href; its title and the strip's key use the full path
   (`repoFilePath` in `source.js`), so it shares one chip with the same file written absolute.

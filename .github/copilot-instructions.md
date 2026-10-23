@@ -443,7 +443,10 @@ Run the build before `npm run electron`; the development shell starts the built
   and older servers never touch it. Agent reads never return it
   (`agentItem`/`shapeBoard` in `src/shape.ts`). `public/links.js` detects them
   conservatively (a folder and a name, an extension or a file-like name with
-  `:line`, no dotted first folder, no `.`/`..`/`...` segment) and they carry
+  `:line`, no dotted first folder, no `.`/`..`/`...` segment), reading at most
+  255 characters a segment and 1024 in all (longer links nothing), with no
+  pattern that can backtrack over agent text: the render runs on every
+  3-second poll, so a quadratic regex there freezes the viewer. They carry
   the folder in an escaped `data-link-root`, never an href. Main joins a plain
   relative path to the folder (`joinRepoPath`), refuses it as `outside` when
   its real path leaves the folder's real path, and then applies the same

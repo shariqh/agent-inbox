@@ -28,6 +28,7 @@ import { pathToFileURL } from 'node:url'
 import { hooksHome, installRuntime, installStaged, stageRuntime } from './hooks-runtime.js'
 import type { HooksHome, StagedRuntime } from './hooks-runtime.js'
 import { configFiles, hooksOf, launcher, notUses, UNREADABLE_CONFIGS, USE_SHAPES, writeJson } from './runtime-uses.js'
+import { accentedRoot, RUNTIME_SPELLINGS } from './runtime-spellings.js'
 import { removeScratchDirs, scratchDir } from './scratch.js'
 
 const REPO = resolve(import.meta.dirname, '..')
@@ -167,21 +168,92 @@ describe('what counts as using a runtime (#294)', () => {
     expect([...new Set(gate.matches.map((match) => match.file))]).toEqual([file])
   })
 
-  // A runtime id is content-derived, so another runtime root can hold the very
-  // same one: a path into that root, or one that no longer exists, does not
-  // use this one. Nor does a config key or a longer name.
-  it('does not count another root\'s copy, a path to nothing, a config key or a longer name', () => {
+  // A path naming the id that is not there does not use it, nor does a config
+  // key or a longer name. Another root's copy of the same id does (USE_SHAPES).
+  it('does not count a path to nothing, a config key or a longer name', () => {
     const f = fixture()
     const old = installRuntime(f.h, OLD)
     const other = installRuntime(f.h, OLDER_HOOKS)
-    const elsewhere = installStaged({ ...f.h, runtimeRoot: join(f.h.home, 'other-root') }, old)
-    expect(elsewhere.runtimeId).toBe(old.runtimeId)
-    for (const { file, value } of notUses(old.dir, f.h.home, elsewhere.dir)) writeJson(file, value)
+    for (const { file, value } of notUses(old.dir, f.h.home)) writeJson(file, value)
     writeJson(files(f.h).settings, hooksOf(other.dir))
 
     expect(verdictOf(f, old.runtimeId)).toMatchObject({ verdict: 'unused', usedBy: [], pids: [] })
     expect(verdictOf(f, other.runtimeId)).toMatchObject({ verdict: 'used', usedBy: ['Claude Code settings'] })
     expect(references(f, old.runtimeId).status).toBe('unreferenced')
+  })
+
+  // A folder is compared by (dev, ino), never by how a path spells it: on
+  // macOS each of these reaches the runtime, whatever its string says. Once
+  // as a path naming the id (a), once as a shortcut that does not (b).
+  for (const [label, spell, here] of RUNTIME_SPELLINGS) {
+    it.skipIf(!here)(`keeps a runtime a launcher reaches through ${label}`, () => {
+      const f = fixture()
+      const h = { ...f.h, runtimeRoot: accentedRoot(f.h.home) }
+      const old = installRuntime(h, OLD)
+      writeJson(files(h).claude, { mcpServers: { inbox: { command: spell(join(old.dir, 'bin', 'node')), args: [spell(join(old.dir, 'dist', 'mcp-server.js'))] } } })
+
+      expect(verdictOf({ ...f, h }, old.runtimeId)).toMatchObject({ verdict: 'used', usedBy: ['Claude Code'] })
+      expect(references({ ...f, h }, old.runtimeId).status).toBe('referenced')
+
+      const shortcut = join(h.home, 'inbox-node')
+      symlinkSync(spell(join(old.dir, 'bin', 'node')), shortcut)
+      writeJson(files(h).claude, { mcpServers: { inbox: { command: shortcut, args: ['/opt/x/server.js'] } } })
+      expect(verdictOf({ ...f, h }, old.runtimeId)).toMatchObject({ verdict: 'used', usedBy: ['Claude Code'] })
+    })
+  }
+
+  // Errors only ever keep: a path stat refuses for another reason than absence.
+  it.skipIf(process.getuid?.() === 0)('keeps a runtime that a path stat cannot follow names (EACCES)', () => {
+    const f = fixture()
+    const old = installRuntime(f.h, OLD)
+    const locked = join(f.h.home, 'locked')
+    mkdirSync(join(locked, old.runtimeId, 'bin'), { recursive: true })
+    writeJson(files(f.h).claude, { mcpServers: { inbox: { command: join(locked, old.runtimeId, 'bin', 'node') } } })
+    chmodSync(locked, 0o000)
+    try {
+      expect(verdictOf(f, old.runtimeId)).toMatchObject({ verdict: 'used', usedBy: ['Claude Code'] })
+      expect(references(f, old.runtimeId).status).toBe('referenced')
+    } finally {
+      chmodSync(locked, 0o755)
+    }
+  })
+
+  it.skipIf(process.getuid?.() === 0)('keeps every runtime when a launcher path stat cannot follow lies in the runtime root', () => {
+    const f = fixture()
+    const old = installRuntime(f.h, OLD)
+    const other = installRuntime(f.h, OLDER_HOOKS)
+    const locked = join(f.h.runtimeRoot, '.locked')
+    mkdirSync(locked)
+    symlinkSync(join(old.dir, 'bin', 'node'), join(locked, 'inbox-node'))
+    writeJson(files(f.h).copilot, { mcpServers: { inbox: { command: join(locked, 'inbox-node') } } })
+    chmodSync(locked, 0o000)
+    try {
+      expect(unused(f).runtimes.map((r) => [r.runtimeId, r.verdict])).toEqual(
+        [[old.runtimeId, 'used'], [other.runtimeId, 'used']].sort(([a], [b]) => (a! < b! ? -1 : 1)),
+      )
+    } finally {
+      chmodSync(locked, 0o755)
+    }
+  })
+
+  // `references` names the files, never what is in them: a hook's one
+  // command string can carry a token.
+  it('says which host config files use a runtime, never what is in them', () => {
+    const f = fixture()
+    const old = installRuntime(f.h, OLD)
+    writeJson(files(f.h).settings, { hooks: { Stop: [{ hooks: [{ type: 'command', command: `SLACK_TOKEN=xoxb-s3cret ${join(old.dir, 'bin', 'node')} ${join(old.dir, 'dist', 'hook-cli.js')} stop` }] }] } })
+    const ask = (extra: string[]) => spawnSync(process.execPath, [
+      CONFIG_CLI, 'references', '--runtime-root', f.h.runtimeRoot, '--runtime-id', old.runtimeId, '--home', f.h.home, ...extra,
+    ], { encoding: 'utf8', env: f.h.env })
+
+    const full = ask([])
+    expect(full.status, full.stderr).toBe(0)
+    expect(full.stdout).not.toContain('s3cret')
+    expect((JSON.parse(full.stdout) as { matches: unknown[] }).matches).toEqual([{ file: files(f.h).settings, label: 'Claude Code settings' }])
+    // what the installer asks for: the answer alone
+    const status = ask(['--status'])
+    expect(status.status, status.stderr).toBe(0)
+    expect(status.stdout).toBe('referenced\n')
   })
 
   it('finds nothing in host configs that are not there', () => {

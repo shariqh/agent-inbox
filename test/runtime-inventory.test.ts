@@ -18,6 +18,7 @@ import { hooksHome, installRuntime, installStaged, stageRuntime } from './hooks-
 import { registerHost, releaseRuntime } from './release-runtime.js'
 import type { HooksHome, StagedRuntime } from './hooks-runtime.js'
 import { configFiles, hooksOf, launcher, notUses, UNREADABLE_CONFIGS, USE_SHAPES, writeJson } from './runtime-uses.js'
+import { accentedRoot, RUNTIME_SPELLINGS } from './runtime-spellings.js'
 import { removeScratchDirs, scratchDir } from './scratch.js'
 
 const CONFIG_CLI = resolve(import.meta.dirname, '..', 'scripts', 'runtime-config.mjs')
@@ -185,13 +186,62 @@ describe('readRuntimes agrees with the prune gate (#294)', () => {
     expect(viewerAnswer(h)).toMatchObject({ state: 'ok', runtimes: expect.arrayContaining([expect.objectContaining({ runtimeId: old.runtimeId, verdict: 'used' })]) })
   })
 
-  it('another root\'s copy, a path to nothing, a config key or a longer name', () => {
+  it('a path to nothing, a config key or a longer name', () => {
     const h = hooksHome()
     const old = installRuntime(h, OLD)
-    const elsewhere = installStaged({ ...h, runtimeRoot: join(h.home, 'other-root') }, old)
-    for (const { file, value } of notUses(old.dir, h.home, elsewhere.dir)) writeJson(file, value)
+    for (const { file, value } of notUses(old.dir, h.home)) writeJson(file, value)
     agree(h)
     expect(viewerAnswer(h)).toEqual({ state: 'ok', runtimes: [{ runtimeId: old.runtimeId, verdict: 'unused', usedBy: [] }] })
+  })
+
+  // folders compared by (dev, ino): a path naming the id, then a shortcut that does not
+  for (const [label, spell, here] of RUNTIME_SPELLINGS) {
+    it.skipIf(!here)(`a launcher that reaches a runtime through ${label}`, () => {
+      const plain = hooksHome()
+      const h = { ...plain, runtimeRoot: accentedRoot(plain.home) }
+      const old = installRuntime(h, OLD)
+      writeJson(configFiles(h.home).claude, { mcpServers: { inbox: { command: spell(join(old.dir, 'bin', 'node')), args: [spell(join(old.dir, 'dist', 'mcp-server.js'))] } } })
+      agree(h)
+      expect(viewerAnswer(h)).toMatchObject({ state: 'ok', runtimes: [{ verdict: 'used' }] })
+
+      symlinkSync(spell(join(old.dir, 'bin', 'node')), join(h.home, 'inbox-node'))
+      writeJson(configFiles(h.home).claude, { mcpServers: { inbox: { command: join(h.home, 'inbox-node'), args: ['/opt/x/server.js'] } } })
+      agree(h)
+      expect(viewerAnswer(h)).toMatchObject({ state: 'ok', runtimes: [{ verdict: 'used' }] })
+    })
+  }
+
+  // errors only ever keep
+  it.skipIf(process.getuid?.() === 0)('a path naming the runtime that stat cannot follow (EACCES)', () => {
+    const h = hooksHome()
+    const old = installRuntime(h, OLD)
+    const locked = join(h.home, 'locked')
+    mkdirSync(join(locked, old.runtimeId, 'bin'), { recursive: true })
+    writeJson(configFiles(h.home).claude, { mcpServers: { inbox: { command: join(locked, old.runtimeId, 'bin', 'node') } } })
+    chmodSync(locked, 0o000)
+    try {
+      agree(h)
+      expect(viewerAnswer(h)).toMatchObject({ state: 'ok', runtimes: [{ verdict: 'used' }] })
+    } finally {
+      chmodSync(locked, 0o755)
+    }
+  })
+
+  it.skipIf(process.getuid?.() === 0)('a launcher path stat cannot follow inside the runtime root', () => {
+    const h = hooksHome()
+    const old = installRuntime(h, OLD)
+    installRuntime(h, HOOKS)
+    const locked = join(h.runtimeRoot, '.locked')
+    mkdirSync(locked)
+    symlinkSync(join(old.dir, 'bin', 'node'), join(locked, 'inbox-node'))
+    writeJson(configFiles(h.home).copilot, { mcpServers: { inbox: { command: join(locked, 'inbox-node') } } })
+    chmodSync(locked, 0o000)
+    try {
+      agree(h)
+      expect(viewerAnswer(h)).toMatchObject({ state: 'ok', runtimes: [{ verdict: 'used' }, { verdict: 'used' }] })
+    } finally {
+      chmodSync(locked, 0o755)
+    }
   })
 
   it.each(UNREADABLE_CONFIGS)('a host config that %s', (_label, arrange, why) => {

@@ -133,26 +133,38 @@ export function classifyRuntimeConfig({ nodeBinPath, entryPath, runtimeRoot, man
 // installer's own (`references`, after an install and in its rollback) and
 // Setup's prune-runtimes.sh (`unused`). It reads whole host config files, so
 // every scope in them counts (Claude Code's per-project
-// `projects.*.mcpServers` as much as its user `mcpServers`). Runtime R is in
-// use by a config when
-//   (a) any string value in it names R's id as a whole name
-//       (runtimeIdInText), wherever it sits, unless that name ends a path
-//       that leads somewhere else (another root's runtime with the same
-//       content-derived id) or nowhere; or
-//   (b) a `/`- or `~/`-path inside a LAUNCHER resolves into R's directory, so
-//       a symlinked alias that does not name the id still counts. A launcher
-//       is any object with a string `command`: the shape of every MCP server
+// `projects.*.mcpServers` as much as its user `mcpServers`).
+//
+// It works on candidates: each string value, whole (a `command`, each
+// `args[i]`, each `env` value, a hook's one command string, a path with a
+// space in it) and split into the pieces a command line or `KEY=value` is made
+// of. Runtime R is in use by a config when
+//   (a) any candidate in it holds R's id as a whole path segment (`/<id>/`, or
+//       the id at either end), unless that candidate is an absolute or `~/`
+//       path whose stat fails with ENOENT or ENOTDIR. So a bare id, an `env`
+//       value, a `$HOME/…` or relative path, another root's copy of R (ids are
+//       content-derived) and a path stat cannot follow all count; or
+//   (b) an absolute or `~/` candidate in a LAUNCHER leads into R: R's folder,
+//       by (dev, ino), is the candidate's resolved path or a folder above it.
+//       No path is compared as a string, so a symlinked shortcut, another
+//       case, the other Unicode form and a firmlink all count. A candidate
+//       stat refuses for another reason than absence (EACCES, ELOOP) counts
+//       for every runtime when what of it resolves lies in the runtime root.
+//       A launcher is any object with a string `command`: every MCP server
 //       registration (Claude Code, Copilot CLI, Claude Desktop) and every
 //       Claude hook.
-// That is a superset of the verified {command, args[0]} pair this gate used
-// to require, which missed split pairs, `env` and `sh -c` wrappers, later
-// arguments and hooks written as one command string. A file that exists but
-// cannot be read (a symlink to nothing, not a regular file, over 64 MB, not
-// JSON) proves nothing, so the answer becomes `unknown` and nothing is
-// pruned. Project-scope configs (`<project>/.mcp.json`,
-// `<project>/.claude/settings*.json`) are not read: Setup never writes them,
-// and the running-process check below still keeps a runtime that a session
-// started from one of them uses.
+// Errors only ever keep. Every {command, args[0]} pair with absolute paths
+// that the verified-pair gate before this one matched is still matched by
+// (b): both paths resolved into R, so R is above the resolved command. So
+// against that gate this rule only keeps more. (That gate also resolved a
+// relative path against the installer's own working directory, which says
+// nothing about where a host launches; here a relative path counts through
+// (a) alone.) A file that exists but cannot be read (a symlink to nothing, not
+// a regular file, over 64 MB, not JSON) proves nothing, so the answer becomes
+// `unknown` and nothing is pruned. Project-scope configs
+// (`<project>/.mcp.json`, `<project>/.claude/settings*.json`) are not read:
+// Setup never writes them, and the running-process check below still keeps a
+// runtime that a session started from one of them uses.
 
 /** The host config files whose launchers can use a runtime, under `home`. */
 export function referenceFiles(home) {
@@ -176,14 +188,13 @@ const REFERENCE_LABELS = new Map([
 ])
 
 const MAX_REFERENCE_FILE_BYTES = 64 * 1024 * 1024
-// Paths canonicalized per check: realistic configs name a few dozen.
+// Launcher paths followed per check: realistic configs name a few dozen.
 const MAX_LAUNCHER_PATHS = 4096
 // What a runtime id is made of (product-version-platform-arch-digest).
 const RUNTIME_ID_CHAR = /[0-9A-Za-z._+-]/
-// What separates the paths inside one string: a whole command line (`sh -c`,
-// a hook's single command string) or `KEY=/path`.
-const PATH_SEPARATOR = /[\s'"=:;,]/
-const PATH_SEPARATORS = /[\s'"=:;,]+/
+// What a string splits into pieces at: the words of a command line (`sh -c`,
+// a hook's one command string) and each side of `KEY=value`.
+const PIECE_SEPARATORS = /[\s'"=:;,]+/
 
 // Each index at which `text` names `runtimeId` as a whole name.
 function* wholeNames(text, runtimeId) {
@@ -206,25 +217,75 @@ export function runtimeIdInText(text, runtimeId) {
   return false
 }
 
-// Whether `text` names the runtime `runtimeId` whose canonical directory is
-// `dir`. Each whole-name occurrence counts, unless it ends a path that leads
-// somewhere else: another runtime root holding a runtime with the same
-// content-derived id, or a path that no longer exists. A bare id, or a path
-// this cannot place (`$HOME/…`, relative), counts.
-function namesRuntime(text, runtimeId, dir, home) {
-  for (const at of wholeNames(text, runtimeId)) {
-    let start = at
-    while (start > 0 && !PATH_SEPARATOR.test(text[start - 1])) start -= 1
-    const named = text.slice(start, at + runtimeId.length)
-    const path = named.startsWith('/') ? named : home && named.startsWith('~/') ? join(home, named.slice(2)) : null
-    if (path === null || dir === null) return true
-    try {
-      if (realpathSync(path) === dir) return true
-    } catch (err) {
-      if (err?.code !== 'ENOENT' && err?.code !== 'ENOTDIR') return true
-    }
+/** Each of `texts` whole, and each piece of it, without repeats. */
+function candidatesOf(texts) {
+  const out = new Set()
+  for (const text of texts) {
+    out.add(text)
+    for (const piece of text.split(PIECE_SEPARATORS)) if (piece) out.add(piece)
+  }
+  return out
+}
+
+/** Does `candidate` hold `runtimeId` as a whole path segment: `/<id>/`, or the id at either end? */
+function holdsIdSegment(candidate, runtimeId) {
+  for (let at = candidate.indexOf(runtimeId); at >= 0; at = candidate.indexOf(runtimeId, at + 1)) {
+    const end = at + runtimeId.length
+    if ((at === 0 || candidate[at - 1] === '/') && (end === candidate.length || candidate[end] === '/')) return true
   }
   return false
+}
+
+/** `candidate` as a path this can follow: absolute, or `~/` under `home`; else null. */
+function placedPath(candidate, home) {
+  if (candidate.startsWith('/')) return candidate
+  if (home && candidate.startsWith('~/')) return join(home, candidate.slice(2))
+  return null
+}
+
+/** stat's error code for `path`, or null when it succeeds. */
+function statError(path) {
+  try {
+    statSync(path)
+    return null
+  } catch (err) {
+    return err?.code ?? 'EUNKNOWN'
+  }
+}
+
+const isAbsence = (code) => code === 'ENOENT' || code === 'ENOTDIR'
+
+/** A file's identity, its (dev, ino), or null when stat fails. */
+function identityOf(path) {
+  try {
+    const st = statSync(path, { bigint: true })
+    return `${st.dev}:${st.ino}`
+  } catch {
+    return null
+  }
+}
+
+/**
+ * The identities of `path` resolved and of every folder above it; when
+ * `path` cannot be resolved, of the deepest folder above it that can.
+ */
+function identitiesAbove(path) {
+  let real = null
+  for (let at = path; real === null;) {
+    try {
+      real = realpathSync(at)
+    } catch {
+      const up = dirname(at)
+      if (up === at) return new Set()
+      at = up
+    }
+  }
+  const out = new Set()
+  for (let at = real; ; at = dirname(at)) {
+    const identity = identityOf(at)
+    if (identity !== null) out.add(identity)
+    if (dirname(at) === at) return out
+  }
 }
 
 // The deepest entry that exists on `path`'s way down, when it is a symlink
@@ -312,33 +373,19 @@ function findLaunchers(value) {
   return out
 }
 
-// The `/`- and `~/`-paths inside one launcher's strings.
-function launcherPaths(launcher, home) {
-  const out = []
-  for (const text of stringValues(launcher)) {
-    for (const token of text.split(PATH_SEPARATORS)) {
-      if (token.startsWith('/')) out.push(token)
-      else if (home && token.startsWith('~/')) out.push(join(home, token.slice(2)))
-    }
-  }
-  return out
-}
-
 /**
  * Which of `runtimeIds` (directories directly under runtimeRoot) the host
  * configs in `files` use, by rules (a) and (b) above. Never throws. `uses`
- * maps each id in use to what uses it ({file, label, command, entry}; command
- * and entry are null when only a value outside a launcher names it);
- * `unknown` lists each file that exists but proves nothing, with why; `files`
- * says, per file, missing, unknown, checked or referenced.
+ * maps each id in use to the files that use it, as {file, label}: never
+ * what is in them; `unknown` lists each file that exists but proves nothing,
+ * with why; `files` says, per file, missing, unknown, checked or referenced.
  */
 export function scanRuntimeReferences({ runtimeRoot, runtimeIds, files, home = null }) {
-  const root = tryCanonicalize(runtimeRoot)
-  const runtimes = runtimeIds.map((id) => ({ id, dir: root === null ? null : join(root, id) }))
+  const rootIdentity = identityOf(runtimeRoot)
+  const runtimes = runtimeIds.map((id) => ({ id, identity: identityOf(join(runtimeRoot, id)) }))
   const uses = new Map()
   const unknown = []
   const checked = []
-  const use = (id, found) => uses.set(id, [...(uses.get(id) ?? []), found])
   let paths = 0
   for (const file of files) {
     const config = readReferenceFile(file)
@@ -351,25 +398,24 @@ export function scanRuntimeReferences({ runtimeRoot, runtimeIds, files, home = n
       checked.push({ file, status: 'unknown', reason: config.reason })
       continue
     }
-    const label = REFERENCE_LABELS.get(basename(file)) ?? file
     const found = new Set()
-    const launchers = findLaunchers(config.value)
+    // (b) a launcher path that leads into a runtime, by identity
     let tooMany = false
-    for (const launcher of launchers) {
-      const strings = stringValues(launcher)
-      const candidates = launcherPaths(launcher, home)
-      paths += candidates.length
+    for (const launcher of findLaunchers(config.value)) {
+      const placed = [...candidatesOf(stringValues(launcher))].map((c) => placedPath(c, home)).filter((p) => p !== null)
+      paths += placed.length
       if (paths > MAX_LAUNCHER_PATHS) {
         tooMany = true
         break
       }
-      const resolved = candidates.map(tryCanonicalize).filter((path) => path !== null)
-      for (const { id, dir } of runtimes) {
-        const named = strings.some((text) => namesRuntime(text, id, dir, home))
-        if (!named && !(dir !== null && resolved.some((path) => isUnder(dir, path)))) continue
-        found.add(id)
-        const entry = Array.isArray(launcher.args) && typeof launcher.args[0] === 'string' ? launcher.args[0] : null
-        use(id, { file, label, command: launcher.command, entry })
+      for (const path of placed) {
+        const code = statError(path)
+        if (isAbsence(code)) continue
+        const above = identitiesAbove(path)
+        const inRoot = code !== null && rootIdentity !== null && above.has(rootIdentity)
+        for (const { id, identity } of runtimes) {
+          if (inRoot || (identity !== null && above.has(identity))) found.add(id)
+        }
       }
     }
     if (tooMany) {
@@ -378,13 +424,25 @@ export function scanRuntimeReferences({ runtimeRoot, runtimeIds, files, home = n
       checked.push({ file, status: 'unknown', reason })
       continue
     }
-    // (a) holds for a value outside any launcher too: a runtime named only there
+    // (a) the id as a path segment, anywhere in the config
     const values = stringValues(config.value)
-    for (const { id, dir } of runtimes) {
-      if (found.has(id) || !values.some((text) => namesRuntime(text, id, dir, home))) continue
-      found.add(id)
-      use(id, { file, label, command: null, entry: null })
+    for (const { id } of runtimes) {
+      if (found.has(id)) continue
+      for (const text of values) {
+        if (!text.includes(id)) continue
+        const named = [...candidatesOf([text])].some((c) => {
+          if (!holdsIdSegment(c, id)) return false
+          const path = placedPath(c, home)
+          return path === null || !isAbsence(statError(path))
+        })
+        if (named) {
+          found.add(id)
+          break
+        }
+      }
     }
+    const label = REFERENCE_LABELS.get(basename(file)) ?? file
+    for (const id of found) uses.set(id, [...(uses.get(id) ?? []), { file, label }])
     checked.push({ file, status: found.size > 0 ? 'referenced' : 'checked' })
   }
   return { uses, unknown, files: checked }
@@ -398,10 +456,11 @@ export function scanRuntimeReferences({ runtimeRoot, runtimeIds, files, home = n
  *   'referenced'   — a config uses it (scanRuntimeReferences)
  *   'unknown'      — none does, but a file exists that proves nothing: retain
  *   'unreferenced' — every file is missing or readable without using it
+ * `matches` names each file that uses it ({file, label}), never its contents.
  */
 export function classifyRuntimeReference({ runtimeRoot, runtimeId, files, home = null }) {
   const scan = scanRuntimeReferences({ runtimeRoot, runtimeIds: [runtimeId], files, home })
-  const matches = (scan.uses.get(runtimeId) ?? []).map(({ file, command, entry }) => ({ file, command, entry }))
+  const matches = scan.uses.get(runtimeId) ?? []
   const status = matches.length > 0 ? 'referenced' : scan.unknown.length > 0 ? 'unknown' : 'unreferenced'
   return { status, runtimeId, matches, files: scan.files }
 }
@@ -1102,11 +1161,13 @@ function runClassifyCmd(argv) {
  * `--runtime-id` still used by a host config (scanRuntimeReferences)?
  *
  *   runtime-config.mjs references --runtime-root <abs> --runtime-id <id>
- *     [--home <dir>] [--file <path> ...] [--manifest-file <name>]
+ *     [--home <dir>] [--file <path> ...] [--manifest-file <name>] [--status]
  *
  * `--home` reads every host config Setup knows (referenceFiles) under that
  * directory, and expands `~/` paths against it; each `--file` adds one more.
  * stdout: `{status, runtimeId, matches, files}` JSON — always, on success.
+ *   `matches` names each file that uses it ({file, label}), never what is in
+ *   it. With `--status`, only the status word: what install-agents.sh reads.
  * exit 0: always, for any combination of missing/valid/invalid input files;
  *   `status` (not the exit code) carries the referenced/unreferenced/unknown
  *   verdict, exactly like `classify`'s status field.
@@ -1122,6 +1183,7 @@ function runReferencesCmd(argv) {
       home: { type: 'string' },
       file: { type: 'string', multiple: true },
       'manifest-file': { type: 'string' },
+      status: { type: 'boolean' },
     },
   })
   const runtimeRoot = resolve(requireString(values, 'runtime-root', 'references'))
@@ -1132,7 +1194,7 @@ function runReferencesCmd(argv) {
     throw new UsageError('references: --home <dir> or at least one --file <path> is required')
   }
   const result = classifyRuntimeReference({ runtimeRoot, runtimeId, files, home })
-  process.stdout.write(`${JSON.stringify(result)}\n`)
+  process.stdout.write(values.status ? `${result.status}\n` : `${JSON.stringify(result)}\n`)
 }
 
 /**

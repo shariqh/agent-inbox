@@ -716,22 +716,20 @@ cleanup() {
 }
 
 runtime_reference_status() {
-  local runtime_id="$1" output
+  local runtime_id="$1" status
   [ "$RUNTIME_MODE" -eq 1 ] || { echo unreferenced; return; }
   # --home: every host config the prune gate reads (#294), including Claude
   # Desktop's; one that exists but cannot be read makes the answer unknown.
-  output="$(run_node_step --stdout -- "$SOURCE_NODE" "$CONFIG_HELPER" references \
+  # --status prints the answer alone, so nothing from a config reaches a
+  # command line, and no second step parses it: in a rollback this step runs
+  # through run-isolated.mjs, which gives a command no stdin to read.
+  status="$(run_node_step --stdout -- "$SOURCE_NODE" "$CONFIG_HELPER" references --status \
     --runtime-root "$RUNTIME_ROOT" --runtime-id "$runtime_id" \
-    --home "$HOME" 2>/dev/null)" || {
-    echo unknown
-    return
-  }
-  run_node_step --stdout -- "$SOURCE_NODE" -e '
-    try {
-      const status = JSON.parse(process.argv[1]).status
-      process.stdout.write(typeof status === "string" ? status : "unknown")
-    } catch { process.stdout.write("unknown") }
-  ' "$output" 2>/dev/null
+    --home "$HOME" 2>/dev/null)" || status=unknown
+  case "$status" in
+    referenced | unreferenced) echo "$status" ;;
+    *) echo unknown ;;
+  esac
 }
 
 rollback_runtime() {

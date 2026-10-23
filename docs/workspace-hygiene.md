@@ -155,12 +155,14 @@ bash "$R/<runtime-id>/scripts/prune-runtimes.sh" --apply   # remove them
 copy is `"/Applications/Agent Inbox.app/Contents/Resources/app/runtime/<platform-arch>/scripts/prune-runtimes.sh"`.
 "Uses" is one rule, shared with the installer's own prune: a host config
 (`~/.claude.json` in every scope, `~/.claude/settings.json`, `~/.claude/settings.local.json`,
-`~/.copilot/mcp-config.json` or Claude Desktop's config) naming the runtime's id, or a
-launcher in one resolving into it; or a running process naming its id. A config it cannot
+`~/.copilot/mcp-config.json` or Claude Desktop's config) naming the runtime's id, unless as
+a path to nothing, or a launcher in one leading into it, through a symlink or whatever its
+spelling; or a running process naming its id. A config it cannot
 read means nothing is removed. Project-scope configs (`<project>/.mcp.json`,
 `<project>/.claude/settings*.json`) are not read.
 
-To see what is there and what is still referenced (read-only; prints no configuration):
+To see what is there and what is still referenced (read-only; `references` names the
+config files that use a runtime, never what is in them):
 
 ```sh
 R=~/.agent-inbox/runtime

@@ -1053,11 +1053,12 @@ describe('runtime-config classify: canonical ownership/reference logic', () => {
 // runtime-config.mjs — references: prune/rollback safety gating
 // ═══════════════════════════════════════════════════════════════════════
 describe('runtime-config references: structural reference gate for prune/rollback', () => {
-  function installedRuntime(): { runtimeRoot: string; runtimeId: string; nodeBin: string; entry: string } {
+  // The id is content-derived: another `node` makes another runtime id.
+  function installedRuntime(node = 'fake node binary\n'): { runtimeRoot: string; runtimeId: string; nodeBin: string; entry: string } {
     const payloadRoot = tmp('refs-payload-')
     mkdirSync(join(payloadRoot, 'bin'), { recursive: true })
     mkdirSync(join(payloadRoot, 'dist'), { recursive: true })
-    writeFileSync(join(payloadRoot, 'bin', 'node'), 'fake node binary\n')
+    writeFileSync(join(payloadRoot, 'bin', 'node'), node)
     writeFileSync(join(payloadRoot, 'dist', 'mcp-server.js'), 'console.log("mcp")\n')
     chmodSync(join(payloadRoot, 'bin', 'node'), 0o755)
     chmodSync(join(payloadRoot, 'dist', 'mcp-server.js'), 0o644)
@@ -1114,7 +1115,8 @@ describe('runtime-config references: structural reference gate for prune/rollbac
 
   it('reports unreferenced when a file only contains pairs pointing at a DIFFERENT runtimeId', () => {
     const target = installedRuntime()
-    const other = installedRuntime()
+    const other = installedRuntime('another fake node binary\n')
+    expect(other.runtimeId).not.toBe(target.runtimeId)
     const dir = tmp('refs-miss-')
     const settingsFile = join(dir, 'settings.json')
     writeFileSync(settingsFile, JSON.stringify({ command: other.nodeBin, args: [other.entry] }))

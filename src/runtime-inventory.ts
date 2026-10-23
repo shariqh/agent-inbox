@@ -67,9 +67,8 @@ const MAX_WALK_ENTRIES = 50_000
 const MAX_CONFIG_BYTES = 64 * 1024 * 1024
 const MAX_LAUNCHER_PATHS = 4096
 const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/
-const RUNTIME_ID_CHAR = /[0-9A-Za-z._+-]/
-const PATH_SEPARATOR = /[\s'"=:;,]/
-const PATH_SEPARATORS = /[\s'"=:;,]+/
+// what a string splits into pieces at: the words of a command line and each side of KEY=value
+const PIECE_SEPARATORS = /[\s'"=:;,]+/
 const LABELS = new Map([
   ['.claude.json', 'Claude Code'],
   ['settings.json', 'Claude Code settings'],
@@ -92,14 +91,6 @@ export function referenceFiles(home: string): string[] {
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
-function canonical(path: string): string | null {
-  try {
-    return realpathSync(path)
-  } catch {
-    return null
-  }
 }
 
 function isUnder(root: string, child: string): boolean {
@@ -267,43 +258,79 @@ function findLaunchers(value: unknown): Array<Record<string, unknown>> {
   return out
 }
 
-function launcherPaths(launcher: Record<string, unknown>, home: string): string[] {
-  const out: string[] = []
-  for (const text of stringValues(launcher)) {
-    for (const token of text.split(PATH_SEPARATORS)) {
-      if (token.startsWith('/')) out.push(token)
-      else if (token.startsWith('~/')) out.push(join(home, token.slice(2)))
-    }
+// Each of `texts` whole, and each piece of it, without repeats.
+function candidatesOf(texts: string[]): Set<string> {
+  const out = new Set<string>()
+  for (const text of texts) {
+    out.add(text)
+    for (const piece of text.split(PIECE_SEPARATORS)) if (piece) out.add(piece)
   }
   return out
 }
 
-// Whether `text` names the runtime `id` (canonical directory `dir`) as a whole
-// name, unless that name ends a path leading somewhere else or nowhere.
-function namesRuntime(text: string, id: string, dir: string | null, home: string): boolean {
-  for (let at = text.indexOf(id); at >= 0; at = text.indexOf(id, at + 1)) {
-    const before = at > 0 ? text[at - 1]! : ''
-    const after = text[at + id.length] ?? ''
-    if (RUNTIME_ID_CHAR.test(before) || RUNTIME_ID_CHAR.test(after)) continue
-    let start = at
-    while (start > 0 && !PATH_SEPARATOR.test(text[start - 1]!)) start -= 1
-    const named = text.slice(start, at + id.length)
-    const path = named.startsWith('/') ? named : named.startsWith('~/') ? join(home, named.slice(2)) : null
-    if (path === null || dir === null) return true
-    try {
-      if (realpathSync(path) === dir) return true
-    } catch (err) {
-      const code = errorCode(err)
-      if (code !== 'ENOENT' && code !== 'ENOTDIR') return true
-    }
+// Whether `candidate` holds `id` as a whole path segment: `/<id>/`, or the id at either end.
+function holdsIdSegment(candidate: string, id: string): boolean {
+  for (let at = candidate.indexOf(id); at >= 0; at = candidate.indexOf(id, at + 1)) {
+    const end = at + id.length
+    if ((at === 0 || candidate[at - 1] === '/') && (end === candidate.length || candidate[end] === '/')) return true
   }
   return false
 }
 
+// `candidate` as a path to follow: absolute, or `~/` under `home`; else null.
+function placedPath(candidate: string, home: string): string | null {
+  if (candidate.startsWith('/')) return candidate
+  if (candidate.startsWith('~/')) return join(home, candidate.slice(2))
+  return null
+}
+
+// stat's error code for `path`, or null when it succeeds.
+function statError(path: string): string | null {
+  try {
+    statSync(path)
+    return null
+  } catch (err) {
+    return errorCode(err) ?? 'EUNKNOWN'
+  }
+}
+
+const isAbsence = (code: string | null): boolean => code === 'ENOENT' || code === 'ENOTDIR'
+
+// A file's identity, its (dev, ino), or null when stat fails.
+function identityOf(path: string): string | null {
+  try {
+    const st = statSync(path, { bigint: true })
+    return `${st.dev}:${st.ino}`
+  } catch {
+    return null
+  }
+}
+
+// The identities of `path` resolved and of every folder above it; when `path`
+// cannot be resolved, of the deepest folder above it that can.
+function identitiesAbove(path: string): Set<string> {
+  let real: string | null = null
+  for (let at = path; real === null;) {
+    try {
+      real = realpathSync(at)
+    } catch {
+      const up = dirname(at)
+      if (up === at) return new Set()
+      at = up
+    }
+  }
+  const out = new Set<string>()
+  for (let at = real; ; at = dirname(at)) {
+    const identity = identityOf(at)
+    if (identity !== null) out.add(identity)
+    if (dirname(at) === at) return out
+  }
+}
+
 // Which of `ids` the host configs under `home` use, by label; or the first config that proves nothing, and why.
 function scanUses(home: string, runtimeRoot: string, ids: string[]): { uses: Map<string, Set<string>> } | { unreadable: string; reason: string } {
-  const root = canonical(runtimeRoot)
-  const runtimes = ids.map((id) => ({ id, dir: root === null ? null : join(root, id) }))
+  const rootIdentity = identityOf(runtimeRoot)
+  const runtimes = ids.map((id) => ({ id, identity: identityOf(join(runtimeRoot, id)) }))
   const uses = new Map<string, Set<string>>()
   const use = (id: string, label: string) => uses.set(id, (uses.get(id) ?? new Set()).add(label))
   let paths = 0
@@ -312,22 +339,32 @@ function scanUses(home: string, runtimeRoot: string, ids: string[]): { uses: Map
     if (config.state === 'missing') continue
     if (config.state === 'unknown') return { unreadable: file, reason: config.reason }
     const label = LABELS.get(basename(file)) ?? file
-    // (b) a launcher path that leads into the runtime's folder
+    // (b) a launcher path that leads into a runtime, by identity
     for (const launcher of findLaunchers(config.value)) {
-      const candidates = launcherPaths(launcher, home)
-      paths += candidates.length
+      const placed = [...candidatesOf(stringValues(launcher))].map((c) => placedPath(c, home)).filter((p): p is string => p !== null)
+      paths += placed.length
       if (paths > MAX_LAUNCHER_PATHS) {
         return { unreadable: file, reason: `names more than ${MAX_LAUNCHER_PATHS} paths in its launchers, too many to check` }
       }
-      const resolved = candidates.map(canonical).filter((path): path is string => path !== null)
-      for (const { id, dir } of runtimes) {
-        if (dir !== null && resolved.some((path) => isUnder(dir, path))) use(id, label)
+      for (const path of placed) {
+        const code = statError(path)
+        if (isAbsence(code)) continue
+        const above = identitiesAbove(path)
+        const inRoot = code !== null && rootIdentity !== null && above.has(rootIdentity)
+        for (const { id, identity } of runtimes) {
+          if (inRoot || (identity !== null && above.has(identity))) use(id, label)
+        }
       }
     }
-    // (a) any string value that names the runtime, a launcher's or not
+    // (a) the id as a path segment, anywhere in the config
     const values = stringValues(config.value)
-    for (const { id, dir } of runtimes) {
-      if (values.some((text) => namesRuntime(text, id, dir, home))) use(id, label)
+    for (const { id } of runtimes) {
+      const named = values.some((text) => text.includes(id) && [...candidatesOf([text])].some((c) => {
+        if (!holdsIdSegment(c, id)) return false
+        const path = placedPath(c, home)
+        return path === null || !isAbsence(statError(path))
+      }))
+      if (named) use(id, label)
     }
   }
   return { uses }

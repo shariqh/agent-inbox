@@ -3,8 +3,8 @@
 // viewer's agreement test (runtime-inventory.test.ts), so each case is written once.
 //
 // Deliberately NOT named *.test.ts: it is imported, never collected.
-import { mkdirSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { cpSync, mkdirSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs'
+import { basename, dirname, join } from 'node:path'
 
 export function writeJson(path: string, value: unknown): void {
   mkdirSync(dirname(path), { recursive: true })
@@ -70,7 +70,7 @@ export const USE_SHAPES: Array<[string, UseShape]> = [
     file: configFiles(home).desktopLinux, label: 'Claude Desktop', value: { mcpServers: { 'agent-inbox': launcher(dir) } },
   })],
   ['a value outside any launcher', (dir, home) => ({
-    file: configFiles(home).settings, label: 'Claude Code settings', value: { statusLine: { type: 'script', path: join(dir, 'dist', 'status.js') } },
+    file: configFiles(home).settings, label: 'Claude Code settings', value: { statusLine: { type: 'script', path: join(dir, 'dist', 'watch-cli.js') } },
   })],
   ['a bare id in a shell string', (dir, home) => ({
     file: configFiles(home).claude, label: 'Claude Code', value: { mcpServers: { inbox: { command: '/bin/sh', args: ['-c', `exec AGENT_INBOX_RUNTIME=${dir.slice(dir.lastIndexOf('/') + 1)} node x.js`] } } },
@@ -98,17 +98,34 @@ export const USE_SHAPES: Array<[string, UseShape]> = [
     const id = dir.slice(dir.lastIndexOf('/') + 1)
     return { file: configFiles(home).claude, label: 'Claude Code', value: { mcpServers: { inbox: { command: 'node', args: [join(home, 'loop', id, 'dist', 'mcp-server.js')] } } } }
   }],
+  // a whole argument is one path, spaces and all
+  ['a symlinked shortcut whose path has a space', (dir, home) => {
+    const shortcut = join(home, 'Library', 'Application Support', 'agent-inbox')
+    mkdirSync(shortcut, { recursive: true })
+    symlinkSync(join(dir, 'bin', 'node'), join(shortcut, 'node'))
+    symlinkSync(join(dir, 'dist', 'mcp-server.js'), join(shortcut, 'mcp-server.js'))
+    return { file: configFiles(home).copilot, label: 'Copilot CLI', value: { mcpServers: { 'agent-inbox': { command: join(shortcut, 'node'), args: [join(shortcut, 'mcp-server.js')] } } } }
+  }],
+  ['an env value naming only the id', (dir, home) => ({
+    file: configFiles(home).claude, label: 'Claude Code', value: { mcpServers: { inbox: { command: 'node', args: ['/opt/x/server.js'], env: { AGENT_INBOX_RUNTIME: basename(dir) } } } },
+  })],
+  // a runtime id is content-derived, so another root can hold the very same one
+  ['another root\'s copy of the same id', (dir, home) => {
+    const copy = join(home, 'other-root', basename(dir))
+    cpSync(dir, copy, { recursive: true })
+    return { file: configFiles(home).copilot, label: 'Copilot CLI', value: { mcpServers: { 'agent-inbox': launcher(copy) } } }
+  }],
 ]
 
 /**
- * Configs that name the runtime at `dir` without using it: another runtime
- * root's copy of the same id, a path that no longer exists, a config key, and
- * longer names that begin or end with the id.
+ * Configs that name the runtime at `dir` without using it: absolute and `~/`
+ * paths that are not there (the one exception to a named id), a config key,
+ * and longer names that begin or end with the id.
  */
-export function notUses(dir: string, home: string, elsewhere: string): Array<{ file: string; value: unknown }> {
-  const id = dir.slice(dir.lastIndexOf('/') + 1)
+export function notUses(dir: string, home: string): Array<{ file: string; value: unknown }> {
+  const id = basename(dir)
   return [
-    { file: configFiles(home).copilot, value: { mcpServers: { 'agent-inbox': launcher(elsewhere), gone: launcher(join(home, 'deleted-root', id)) } } },
+    { file: configFiles(home).copilot, value: { mcpServers: { gone: launcher(join(home, 'deleted-root', id)), home: { command: `~/deleted-root/${id}/bin/node` } } } },
     { file: configFiles(home).claude, value: { projects: { [dir]: { allowedTools: [] } }, notes: [`${dir}.tar.gz`, `${id}-backup`, `x${id}`] } },
   ]
 }

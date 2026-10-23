@@ -1395,17 +1395,29 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   directory directly in the runtime root carrying a manifest that names it (never a
   symlink, never a `.`-name such as `.trash-*`, never outside the root), and removes each
   other runtime only through `runtime-payload.mjs prune` (#211/#214 trash semantics),
-  after checking it again on its own. What "uses" means is ONE rule in
-  `scripts/runtime-config.mjs` (`scanRuntimeReferences`), which the installer's own prune
-  and rollback (`references --home`) share: a host config (`~/.claude.json` in every scope,
-  `~/.claude/settings.json`, `~/.claude/settings.local.json`, `~/.copilot/mcp-config.json`,
-  Claude Desktop's config on macOS or Linux) with any string value naming the runtime's id
-  as a whole name (`runtimeIdInText`: `/<id>/`, `/<id>` at the end, never a prefix or
-  suffix of a longer name), or a launcher (any object with a string `command`) with a `/` or
-  `~/` path resolving into it. That is a superset of the verified `{command, args[0]}` pair
-  the installer used to require, so the installer now keeps runtimes that split pairs, `env`
-  values, `sh -c` wrappers, later arguments and one-string hooks use. A config that exists
-  but cannot be read (a symlink to nothing, itself or a folder above it; not a regular
+  after checking it again on its own; seconds still pass between that check and the
+  rename (prune cleans trash and hashes the folder first), and a config written then is
+  not seen. What "uses" means is ONE rule in `scripts/runtime-config.mjs`
+  (`scanRuntimeReferences`), which the installer's own prune and rollback
+  (`references --home --status`) share. Its candidates are a host config's
+  string values (`~/.claude.json` in every scope, `~/.claude/settings.json`,
+  `~/.claude/settings.local.json`, `~/.copilot/mcp-config.json`, Claude Desktop's config on
+  macOS or Linux), each whole (a path with a space stays one path) and split into
+  command-line and `KEY=value` pieces. Runtime R is used when (a) a candidate holds R's id
+  as a whole path segment (`/<id>/`, or at either end), unless it is an absolute or `~/`
+  path whose stat fails with ENOENT or ENOTDIR (so another root's copy of the same id
+  counts); or (b) an absolute or `~/` candidate in a launcher (any object with a string
+  `command`) resolves to R or into it, compared by `(dev, ino)` and never as a path string,
+  so a symlinked shortcut, another case, the other Unicode form and a firmlink all count.
+  Errors only ever keep: any other stat error counts under (a), and under (b) keeps every
+  runtime when what resolves of the path lies in the runtime root. Against the verified
+  `{command, args[0]}` pair the installer used to require it only keeps more: every pair
+  with absolute paths it matched resolves into R, so (b) matches it (it also resolved a
+  relative path against the installer's own working directory, which no host launches
+  from). So the installer now also keeps runtimes that split pairs, `env` values, `sh -c`
+  wrappers, later arguments and one-string hooks use. `references` names each file that
+  uses a runtime (`{file, label}`), never what is in it. A config that exists but cannot
+  be read (a symlink to nothing, itself or a folder above it; not a regular
   file; over 64 MB; not JSON) makes the answer unknown, and then nothing is removed; the
   installer's prune keeps everything and the install still succeeds. The prune also keeps
   any runtime a running process names (`ps -A -ww -o pid=,ppid=,command=`, its own

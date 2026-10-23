@@ -457,8 +457,9 @@ The dry run lists each runtime and what would happen to it, and changes nothing.
 - is not the runtime the script runs from;
 - no host config uses: `~/.claude.json` (every scope in it, per-project servers included),
   `~/.claude/settings.json`, `~/.claude/settings.local.json`, `~/.copilot/mcp-config.json`
-  or Claude Desktop's config, wherever a value names the runtime or a command, argument or
-  environment path in an MCP server or hook leads into it; and
+  or Claude Desktop's config, wherever a value names the runtime (unless as a path that no
+  longer exists) or a command, argument or environment path in an MCP server or hook leads
+  into it, through a symlink or however its case or accents are spelled; and
 - no running process names, such as an agent session still running the MCP server it
   started with. Exit that session and run it again to remove that runtime too.
 

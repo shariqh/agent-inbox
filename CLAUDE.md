@@ -486,6 +486,44 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   buttons (`data-link-action`), never in a browser or a reused viewer. Opening, a rule's app or
   Quick Look, a Reveal rule and a Reveal request are all file requests, so `openLinkRequest`
   refuses each of them as `unowned` without the grant, before any rule is read.
+- **Repo-relative paths (#324, #300 part 3) open against the folder the item or plan recorded,
+  and never outside it.** `items.repo_root` and `boards.repo_root` are additive, nullable
+  columns: the MCP server's `git rev-parse --show-toplevel` (`inferRepoRoot` in `src/infer.ts`,
+  through the stdout-capturing `git()` helper, null on any failure or anything but one plain
+  absolute path). `scope.rootFor()` reads it LIVE and only on writes, like `headFor`: never in
+  `get()` (every call, `pending()` polls included, would pay a spawn), never memoized (worktrees
+  and checkouts move), no `register` override, and not in the scope `whoami` returns. `flag`
+  stamps it at insert; `board_upsert`/`board_row` pass it to `ensureBoard`, whose
+  `repo_root = COALESCE(?, repo_root)` keeps the stored folder through a write that found none,
+  and whose change counts like `head_repo`'s (`updated_at`, board revision; `rootChanged`).
+  `board_advance` restamps no plan field, and no older server's statement names the column
+  (`test/mixed-version.test.ts` runs v1.6.0's item insert, plan writes and `board_advance`).
+  Agent reads never carry it: `agentItem` (`src/shape.ts`) strips it from `pending()` items,
+  `shapeBoard` from a titled `board_get`, and the summary and `listPendingRows` never select it;
+  `/api/items` and `/api/boards` simply carry it. **Detection** (`relativeAt` in
+  `public/links.js`) runs only with a usable `ctx.root` (an absolute folder: `textContext()` and
+  `cardLinks` pass the item's or the row's plan's `repo_root`), so a card without one renders
+  exactly as before. It starts at a token's first `/` and reads back over one segment: an
+  opener before it (as for absolute paths), at least a folder and a name, a first folder with
+  no inner dot (`.github` yes; domains, versions, `Node.js` no), no segment of dots alone (`.`,
+  `..`, an elided `...`; a leading `./` is dropped), and either an extension (all lowercase or
+  all uppercase, ≤ 10 characters, so `write.Then` stays prose) or a `:line` on a name that still
+  looks like a file's (a dotfile, or a capital, `-` or `_`: never `origin/main:238`). A token
+  after a space whose previous token ended in a bare folder name (`/Users/s/My Documents/a.md`)
+  is a continuation and never links; `owner/name#N`, URLs, globs, routes and absolute paths keep
+  their own detectors. It is bounded like the rest (one segment back, one scan forward, linear).
+  The link carries the path (`./` dropped, no `:line`) in `data-link-path` and the folder in an
+  escaped `data-link-root`, never an href; its title and the strip's key use the full path
+  (`repoFilePath` in `source.js`), so it shares one chip with the same file written absolute.
+  `link-open.js` sends `{kind:'file', path, root, reveal}`; the preload passes `root` only as a
+  string; main accepts exactly that key set and `fileOpenPlan(path, { root })` joins only a plain
+  relative path (`joinRepoPath`: no `.`/`..`/empty segment, `~`, `:` or backslash) to a plain
+  absolute folder, then resolves both with `realpath` and refuses a file whose real path is not
+  inside the folder's (`outside`, said as "points outside its repository") before `lstat`, the
+  xattr checks or any rule; everything after that is today's policy, ownership grant included.
+  A `missing` answer for a relative request copies the path as written and says it may be on
+  another branch or worktree; Copy path, a browser and a reused viewer copy the full path.
+  Nothing about it reaches attention, a badge or a count.
 - **`src/prstate.ts` is VIEWER-PROCESS-ONLY (issue #30).** It and `src/issue-poller.ts` (#103, below)
   are the only modules that shell out to a network tool (`gh`), so `src/mcp.ts`/`src/mcp-server.ts`
   must never import either, directly or transitively — a subprocess that inherited a stream, or gh's update notifier, would corrupt the MCP

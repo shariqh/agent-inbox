@@ -133,3 +133,38 @@ describe('linkStripHtml (issue #300)', () => {
     expect(linkStripHtml(links(6), { key: 'links:i1' })).not.toContain('<details')
   })
 })
+
+describe('repo-relative files in the strip (issue #324)', () => {
+  const ROOT = '/Users/s/Development/agent-inbox'
+
+  it('lists a relative path against the card’s folder, one chip with the same file named in full', () => {
+    const item = {
+      id: 'i7', repo: REPO, repo_root: ROOT,
+      detail: 'Spec at docs/spec.md:12, also /Users/s/Development/agent-inbox/docs/spec.md and public/app.js',
+    }
+    expect(cardLinks(item, item, null).map((l) => [l.kind, l.label, l.path, l.root, l.title, l.key])).toEqual([
+      ['file', 'spec.md:12', 'docs/spec.md', ROOT, `${ROOT}/docs/spec.md:12`, `file:${ROOT}/docs/spec.md`],
+      ['file', 'app.js', 'public/app.js', ROOT, `${ROOT}/public/app.js`, `file:${ROOT}/public/app.js`],
+    ])
+  })
+
+  it('reads a plan row against its plan’s folder, and lists nothing relative without one', () => {
+    const row = { id: 'r2', label: 'Draft docs/spec.md', note: 'See public/app.js:12' }
+    expect(cardLinks(row, { id: 'b2', repo: REPO, repo_root: ROOT }, null).map((l) => [l.path, l.root])).toEqual([
+      ['docs/spec.md', ROOT], ['public/app.js', ROOT],
+    ])
+    expect(cardLinks(row, { id: 'b3', repo: REPO }, null)).toEqual([])
+    expect(cardLinks(row, { id: 'b4', repo: REPO, repo_root: null }, null)).toEqual([])
+    // the row's own fields never name a folder: only its plan's counts
+    expect(cardLinks({ ...row, repo_root: ROOT }, { id: 'b5', repo: REPO }, null)).toEqual([])
+  })
+
+  it('draws a relative chip with its folder on the chip and both actions, and the full path in its title', () => {
+    const chip = { kind: 'file' as const, path: 'docs/a.md', root: '/Users/s/"r"', label: 'a.md', title: '/Users/s/"r"/docs/a.md:3' }
+    const html = linkStripHtml([chip], { key: 'k', actions: { reveal: 'Reveal in Finder' } })
+    expect(html).toContain('data-link-kind="file" data-link-path="docs/a.md" data-link-root="/Users/s/&quot;r&quot;" title="/Users/s/&quot;r&quot;/docs/a.md:3"')
+    expect(html.match(/data-link-path="docs\/a\.md" data-link-root="\/Users\/s\/&quot;r&quot;"/g)).toHaveLength(3)
+    expect(linkStripHtml([chip], { key: 'k', copyFiles: true })).toContain('title="Copy path: /Users/s/&quot;r&quot;/docs/a.md"')
+    expect(linkStripHtml([{ ...chip, root: '' }], { key: 'k' })).not.toContain('data-link-root')
+  })
+})

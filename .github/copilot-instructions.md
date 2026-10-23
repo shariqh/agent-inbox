@@ -435,6 +435,19 @@ Run the build before `npm run electron`; the development shell starts the built
   fails falls back to the default one. Rules, Quick Look and Reveal are file
   requests, so they share the owned-viewer `files` grant, and so do the
   Settings → Links channels (a reused viewer gets `error: 'unowned'`).
+- Repo-relative paths (#324) link only in a card whose item or plan recorded
+  `repo_root` (additive, nullable columns on `items` and `boards`): the MCP
+  server's `git rev-parse --show-toplevel`, read live by `scope.rootFor()` on
+  writes only (never in `get()`, never memoized, fail open to null). A board
+  write that finds none keeps the stored folder (`COALESCE`); `board_advance`
+  and older servers never touch it. Agent reads never return it
+  (`agentItem`/`shapeBoard` in `src/shape.ts`). `public/links.js` detects them
+  conservatively (a folder and a name, an extension or a file-like name with
+  `:line`, no dotted first folder, no `.`/`..`/`...` segment) and they carry
+  the folder in an escaped `data-link-root`, never an href. Main joins a plain
+  relative path to the folder (`joinRepoPath`), refuses it as `outside` when
+  its real path leaves the folder's real path, and then applies the same
+  policy and grant as any file. A missing one copies its path instead.
 - The 3-second poll uses the gated `load()`/`renderIfIdle()` path. Its reads
   run concurrently, but a tick applies only after all settle, and only if no newer
   tick has applied and every boot marker agrees. A successful

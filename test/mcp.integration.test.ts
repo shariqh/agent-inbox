@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, realpathSync, renameSync } from 'node:fs'
 import { join } from 'node:path'
 import { spawn, execFileSync } from 'node:child_process'
 import type { ChildProcessByStdio } from 'node:child_process'
@@ -8,7 +8,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { ReadBuffer, serializeMessage } from '@modelcontextprotocol/sdk/shared/stdio.js'
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
-import { openDb, listItems, listBoards, getBoard, annotateBoardRow, markRowHandled, listPendingRows, pinBoardRow, pinItem, replyItem, listActivity, listActivitySpans, upsertIssueSnapshot } from '../src/store.js'
+import { openDb, listItems, listBoards, getBoard, updateBoardRow, annotateBoardRow, markRowHandled, listPendingRows, pinBoardRow, pinItem, replyItem, listActivity, listActivitySpans, upsertIssueSnapshot } from '../src/store.js'
 import { createViewer } from '../src/viewer.js'
 import { scratchDir } from './scratch.js'
 
@@ -150,6 +150,87 @@ describe('mcp round-trip', () => {
     // the pull ref names no repository, so no listed PR can verify against it
     expect(listItems(db).find((i) => i.title === 'reviewing a fork PR'))
       .toMatchObject({ repo: 'upstream/x', stream: 'patch-1', head_repo: 'refs/pull/7/head' })
+  })
+
+  // issue #324 — the repository folder repo-relative paths open against: git's
+  // top level for the server's own cwd, read on every write and never cached,
+  // kept on a plan through a write that finds none, and never read back by an
+  // agent. Its git spawn runs mid-protocol too, so this round trip also proves
+  // it never writes to the server's stdout.
+  it('stamps the repository folder on items and plans, keeps a plan’s through a write that finds none, and never reads it back', async () => {
+    const dir = scratchDir('mcp-root-')
+    execFileSync('git', ['init', '-q'], { cwd: dir, stdio: 'ignore' })
+    mkdirSync(join(dir, 'docs'))
+    const root = realpathSync(dir)
+    const dbPath = join(scratchDir('mcp-root-db-'), 'inbox.db')
+    const transport = new StdioClientTransport({
+      command: join(REPO_ROOT, 'node_modules', '.bin', 'tsx'),
+      args: [join(REPO_ROOT, 'src', 'mcp-server.ts')],
+      cwd: join(dir, 'docs'),
+      env: { ...process.env, AGENT_INBOX_DB: dbPath },
+    })
+    const client = new Client({ name: 'claude-code', version: '1.0.0' })
+    await client.connect(transport)
+    const text = async (name: string, args: Record<string, unknown>) => {
+      const result = await client.callTool({ name, arguments: args })
+      expect(result.isError, JSON.stringify(result)).not.toBe(true)
+      return (result.content as Array<{ text: string }>)[0]!.text
+    }
+    const call = async (name: string, args: Record<string, unknown>) => JSON.parse(await text(name, args))
+    const db = openDb(dbPath)
+    try {
+      await call('register', { project: 'roots' })
+      const question = await call('flag', { kind: 'question', title: 'Read docs/spec.md?', ...QUESTION_SHAPE })
+      await call('board_upsert', { title: 'plan', rows: [{ label: 'a', status: 'tracked' }] })
+      expect(listItems(db).find((i) => i.id === question.id)!.repo_root).toBe(root)
+      expect(getBoard(db, 'roots', 'plan')!.repo_root).toBe(root)
+
+      // the working tree goes away mid-session: writes now find no folder, so
+      // a new item has none and the plan keeps the one it had
+      renameSync(join(dir, '.git'), join(dir, '.git-away'))
+      const plan = await call('board_get', { title: 'plan' })
+      await call('board_row', { title: 'plan', board_version: plan.revision, label: 'a', expected_revision: plan.rows[0].revision, status: 'partial' })
+      const note = await call('flag', { kind: 'note', title: 'No repository here now', ...INFO_SHAPE })
+      expect(getBoard(db, 'roots', 'plan')).toMatchObject({ repo_root: root, rows: [expect.objectContaining({ status: 'partial' })] })
+      expect(listItems(db).find((i) => i.id === note.id)!.repo_root).toBeNull()
+
+      // and a write once it is back stamps it again: a new item, and a plan
+      // moved elsewhere in between, from board_row as from board_upsert
+      renameSync(join(dir, '.git-away'), join(dir, '.git'))
+      const again = await call('flag', { kind: 'note', title: 'Back in the repository', ...INFO_SHAPE })
+      expect(listItems(db).find((i) => i.id === again.id)!.repo_root).toBe(root)
+      const elsewhere = () => {
+        const before = getBoard(db, 'roots', 'plan')!
+        updateBoardRow(db, {
+          project: 'roots', stream: before.stream, agent: 'elsewhere', title: 'plan', label: 'a',
+          expectedBoardVersion: before.revision, expectedRevision: before.rows[0]!.revision, repoRoot: '/Users/s/elsewhere',
+        })
+        const after = getBoard(db, 'roots', 'plan')!
+        expect(after.repo_root).toBe('/Users/s/elsewhere')
+        return after
+      }
+      let moved = elsewhere()
+      await call('board_row', { title: 'plan', board_version: moved.revision, label: 'a', expected_revision: moved.rows[0]!.revision, status: 'tracked' })
+      expect(getBoard(db, 'roots', 'plan')!.repo_root).toBe(root)
+      moved = elsewhere()
+      await call('board_upsert', { title: 'plan', board_version: moved.revision, rows: [{ label: 'a', status: 'partial', revision: moved.rows[0]!.revision }] })
+      expect(getBoard(db, 'roots', 'plan')!.repo_root).toBe(root)
+
+      const reads: Array<[string, Record<string, unknown>, string]> = [
+        ['pending', {}, question.id], ['pending', { full: true }, question.id], ['pending', { item_id: question.id, full: true }, question.id],
+        ['board_get', { title: 'plan' }, '"title":"plan"'], ['board_get', { title: 'plan', full: true }, '"title":"plan"'],
+        ['board_get', {}, '"title":"plan"'], ['whoami', {}, '"project":"roots"'],
+      ]
+      for (const [name, args, shows] of reads) {
+        const body = await text(name, args)
+        expect(body, `${name} ${JSON.stringify(args)}`).toContain(shows)
+        expect(body, `${name} ${JSON.stringify(args)}`).not.toContain('repo_root')
+        expect(body, `${name} ${JSON.stringify(args)}`).not.toContain(root)
+      }
+    } finally {
+      await client.close()
+      db.close()
+    }
   })
 
   it('returns a host-launched answer watcher only for Copilot questions', async () => {

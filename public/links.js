@@ -2,10 +2,12 @@
 //
 // structured-text.js finds web URLs; this module finds the other two kinds in
 // the plain runs between them: GitHub references (#287, PR #284, owner/name#12)
-// and local file paths (/Users/…, ~/…, with an optional :line). It renders
-// each inline through source.js, which owns every href and escaped attribute,
-// and hands every link it renders to an optional collector, which is how a
-// card's Links strip lists exactly the links its text shows.
+// and local file paths (/Users/…, ~/…, with an optional :line, and, issue #324,
+// repo-relative paths such as docs/spec.md, but only for a card that recorded
+// its repository's folder). It renders each inline through source.js, which
+// owns every href and escaped attribute, and hands every link it renders to an
+// optional collector, which is how a card's Links strip lists exactly the links
+// its text shows.
 //
 // Conservative on purpose: a wrong link is worse than none. Ordinals ("the #1
 // cause", "step #12"), CSS colours, entities, version numbers, dates, routes
@@ -14,7 +16,7 @@
 // scanned in linear time.
 import { esc } from './esc.js'
 import { issueKey } from './issue-key.js'
-import { fileLinkHtml, safeHttpUrl, textLinkHtml } from './source.js'
+import { fileLinkHtml, repoFilePath, safeHttpUrl, textLinkHtml } from './source.js'
 
 const CANDIDATE_RE = /[#~/]/g
 const REF_NUMBER_RE = /#([1-9]\d{0,6})/y
@@ -34,6 +36,27 @@ const OWNER_CHAR_RE = /[A-Za-z0-9-]/
 const OWNER_RE = /^[A-Za-z0-9](?:-?[A-Za-z0-9]){0,38}$/
 const NAME_LIKE_RE = /^[\p{L}\p{N}._-]+\//u
 const EXTENSION_RE = /\.[A-Za-z][A-Za-z0-9]{0,7}["'`)\]}.,;:!?…]*$/u
+// Issue #324: what a repo-relative path is made of. A segment's characters (a
+// path's, without the slash and ~); its first folder, which may be a dot-folder
+// such as .github but never a dotted name (a domain, a version, Node.js), and
+// starts with a letter, a digit or an underscore; and what its last segment
+// needs: an extension in one case (docs/spec.md, LOGO.PNG, never write.Then),
+// or, with a :line, a name that still looks like a file's: a dotfile, or one
+// with a capital, a hyphen or an underscore (.zshrc, Dockerfile, pre-commit),
+// never a branch such as origin/main:238 or a number such as 3/4:12. A segment
+// of dots alone (., .., or an elision such as src/.../x.swift) never links.
+const SEGMENT_CHAR_RE = /[\p{L}\p{N}\p{M}._@%+\-]/u
+const FIRST_FOLDER_RE = /^\.?[\p{L}\p{N}_][\p{L}\p{N}\p{M}_@%+\-]*$/u
+const REL_EXTENSION_RE = /[^.]\.(?:[a-z][a-z0-9]{0,9}|[A-Z][A-Z0-9]{0,9})$/
+const LINE_NAME_RE = /^(?=.*\p{L})(?:\.[^.]+|[^.]*[\p{Lu}_-][^.]*)$/u
+const DOTS_RE = /^\.*$/
+const BARE_NAME_RE = /^[\p{L}\p{N}\p{M}_@%+\-]+$/u
+const MAX_SEGMENT = 255
+// A folder the card's session recorded (an absolute POSIX or Windows path);
+// anything else links no relative path.
+const ROOT_RE = /^(?:\/|[A-Za-z]:[\\/])/
+const CONTROL_RE = /[\u0000-\u001f\u007f]/
+const MAX_ROOT = 4096
 
 // The roots a local file an agent names starts from. Anything else that
 // starts with a slash (a route such as /api/items, a regex, /dev/null) is not
@@ -167,16 +190,67 @@ function pathAt(value, start, to) {
   }
 }
 
+const repoRootOf = (ctx) => {
+  const root = ctx && typeof ctx.root === 'string' ? ctx.root : ''
+  return root.length <= MAX_ROOT && ROOT_RE.test(root) && !CONTROL_RE.test(root) ? root : null
+}
+
+// Before a space, a token whose last segment is a bare folder-like name (no
+// extension, no :line) means a path that went on across the space ("/Users/s/My
+// Documents/a.md"): its second half is not a path of its own. It reads back past
+// the run's start on purpose: that token may be a URL or an absolute path that
+// another detector owns.
+function continuesFromSpace(value, start) {
+  if (value[start - 1] !== ' ') return false
+  let p = start - 1
+  while (p > 0 && start - 1 - p < 256 && !/\s/.test(value[p - 1])) p--
+  const before = value.slice(p, start - 1)
+  const slash = before.lastIndexOf('/')
+  return slash >= 0 && BARE_NAME_RE.test(before.slice(slash + 1))
+}
+
+// Issue #324: a repo-relative path whose first slash is at `slash`, read back to
+// the start of its first folder and on to its end. Folder and name, no `.` or
+// `..` segment (a leading ./ is dropped), and an extension or a :line.
+function relativeAt(value, slash, min, to, root) {
+  let start = slash
+  while (start > min && slash - start < MAX_SEGMENT && SEGMENT_CHAR_RE.test(value[start - 1])) start--
+  if (start === slash || !opensPath(value, start)) return null
+  let j = slash
+  while (j < to && (value[j] === '/' || SEGMENT_CHAR_RE.test(value[j]))) j++
+  let end = j
+  while (end > slash && value[end - 1] === '.') end--
+  LINE_RE.lastIndex = end
+  const line = end < to ? LINE_RE.exec(value) : null
+  const stop = line && end + line[0].length <= to ? end + line[0].length : end
+  if (!closesAt(value, stop)) return null
+  const written = value.slice(start, end)
+  const segments = written.split('/')
+  if (segments[0] === '.') segments.shift()
+  const name = segments[segments.length - 1] ?? ''
+  if (segments.length < 2 || !FIRST_FOLDER_RE.test(segments[0]) || segments.some((s) => DOTS_RE.test(s))) return null
+  if (!REL_EXTENSION_RE.test(name) && !(stop > end && LINE_NAME_RE.test(name))) return null
+  if (continuesAcrossSpace(value, written, stop) || continuesFromSpace(value, start)) return null
+  const path = segments.join('/')
+  return {
+    kind: 'file', start, end: stop, text: value.slice(start, stop), path,
+    line: stop > end && line ? Number(line[1]) : null, root, title: `${repoFilePath(root, path)}${value.slice(end, stop)}`,
+  }
+}
+
 // Every reference and path in value[from, to), in order. The characters just
 // outside the run still decide its boundaries, so a link never ends inside a
-// token the next run continues.
+// token the next run continues. Relative paths only with a folder (ctx.root).
 export function findPlainLinks(value, from = 0, to = value.length, ctx = {}) {
   const found = []
+  const root = repoRootOf(ctx)
   let min = from
   CANDIDATE_RE.lastIndex = from
   for (let match = CANDIDATE_RE.exec(value); match && match.index < to; match = CANDIDATE_RE.exec(value)) {
     const index = match.index
-    const link = value[index] === '#' ? refAt(value, index, min, to, ctx ?? {}) : pathAt(value, index, to)
+    const link = value[index] === '#'
+      ? refAt(value, index, min, to, ctx ?? {})
+      : pathAt(value, index, to) ?? (root && value[index] === '/' ? relativeAt(value, index, min, to, root) : null)
     if (!link) continue
     found.push(link)
     min = link.end
@@ -190,14 +264,15 @@ function collect(ctx, link) {
 }
 
 // The plain run value[from, to), escaped, with its references as GitHub
-// anchors and its paths as inert controls that carry the path (never an href).
+// anchors and its paths as inert controls that carry the path (never an href),
+// a repo-relative one with its folder too.
 export function linkedHtml(value, from, to, ctx) {
   let html = ''
   let cursor = from
   for (const link of findPlainLinks(value, from, to, ctx)) {
     html += esc(value.slice(cursor, link.start))
     html += link.kind === 'file'
-      ? fileLinkHtml(link.path, link.text, link.text, Boolean(ctx && ctx.copyFiles === true))
+      ? fileLinkHtml(link.path, link.text, link.title ?? link.text, Boolean(ctx && ctx.copyFiles === true), link.root ?? null)
       : textLinkHtml(link.url, link.text, link.kind)
     collect(ctx, link)
     cursor = link.end

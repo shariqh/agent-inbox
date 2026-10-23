@@ -35,11 +35,14 @@ const CONFIG_CLI = join(REPO, 'scripts', 'runtime-config.mjs')
 const SCRIPT = join(REPO, 'scripts', 'prune-runtimes.sh')
 
 interface ProcessEntry { pid: number; ppid: number; command: string }
-// The two pieces no CLI exposes: the whole-name match and the process scan.
+type ProcessList = { ok: true; processes: ProcessEntry[] } | { ok: false; reason: string }
+// The pieces no CLI exposes: the whole-name match, the process scan, and the
+// verdicts with a process list a test chooses.
 const config = (await import(pathToFileURL(CONFIG_CLI).href)) as {
   runtimeIdInText(text: string, runtimeId: string): boolean
   processesUsingRuntime(processes: ProcessEntry[], runtimeId: string, selfPid?: number): number[]
-  listProcesses(options?: { psBin?: string }): { ok: true; processes: ProcessEntry[] } | { ok: false; reason: string }
+  listProcesses(options?: { psBin?: string }): ProcessList
+  findUnusedRuntimes(options: { runtimeRoot: string; home: string; current?: string | null; processList?: () => ProcessList }): unknown
 }
 const { createSetupProcessRunner } = createRequire(import.meta.url)('../electron/setup-process.cjs') as {
   createSetupProcessRunner(options?: { env?: NodeJS.ProcessEnv }): {
@@ -400,6 +403,21 @@ describe('the running-process check (#294)', () => {
     writeFileSync(fake, '#!/bin/sh\necho "  1 0 /sbin/launchd"\n')
     chmodSync(fake, 0o755)
     expect(config.listProcesses({ psBin: fake })).toMatchObject({ ok: false, reason: expect.stringMatching(/did not list this process/) })
+  })
+
+  it('removes nothing at all when the running processes cannot be listed', () => {
+    const f = fixture()
+    installRuntime(f.h, OLD)
+    const failing = () => ({ ok: false as const, reason: 'ps failed (EACCES)' })
+
+    expect(config.findUnusedRuntimes({ runtimeRoot: f.h.runtimeRoot, home: f.h.home, processList: failing })).toEqual({
+      status: 'unknown',
+      reason: 'the running processes cannot be listed: ps failed (EACCES)',
+      runtimes: [],
+    })
+    // and a listing it can read decides as the CLI does
+    const listed = () => ({ ok: true as const, processes: [{ pid: process.pid, ppid: 1, command: 'vitest' }] })
+    expect(config.findUnusedRuntimes({ runtimeRoot: f.h.runtimeRoot, home: f.h.home, processList: listed })).toMatchObject({ status: 'ok', runtimes: [{ verdict: 'unused' }] })
   })
 
   it('keeps a runtime a running process uses, and removes it once that process is gone', async () => {

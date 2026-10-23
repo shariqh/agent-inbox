@@ -94,7 +94,7 @@ requests that touch its own files. It has three jobs.
 | WiX .NET tool 5.0.2 (`5.0.2+aa65968c`) | nupkg SHA-512 `z+fu1deTcaV+TRCo4+6HrJ48Sdnj+yeQjjMStTI3GW7NxFEPaknYCdxrf0qEvgdXrjYdjLnkZKCsNSqTTOo2OA==` (nuget.org's catalog `packageHash`) and SHA-256 `f30ef0c74e2a986126539c5780be93ac24e8136eaf723b1937b26272703ae173` | Downloaded from its exact nuget.org URL; both digests checked; installed with `dotnet tool install` from a private feed holding only that file, into an empty package cache; the reported version and source commit checked; the package the tool store keeps must hash to the pin. |
 | electron-winstaller 5.4.4 | lockfile integrity `sha512-j9ETcBGJaXxAY/b6UBpR7LZfjdU4BAO+yvr4ifqHEdyuc3UNCy91PDGkWKY5UQ4coHNYfnwFggrqD6QPeFGAlg==` | `npm ci --ignore-scripts` from `.github/windows-installer-spike/package-lock.json` (every entry from registry.npmjs.org with a SHA-512 integrity); its one install script, which copies the host's 7-Zip into `vendor/`, is run explicitly. |
 | Squirrel.Windows binaries inside it | Update.exe 2.0.1, Setup.exe 1.9.1, NuGet 2.8.3, 7-Zip 16.04, signtool 6.1.7600, rcedit 0.2.0 | Pinned by the npm integrity above; the summary records each binary's SHA-256. |
-| .NET runtime for WiX 5 | the runner image's .NET 6: 6.0.46 in the cited run, 6.0.47 in run 39899654879 | Recorded, not downloaded and not pinned, so it changes with the image. WiX 5 asks for .NET 6 with `rollForward: Major`, so it runs on .NET 6 whenever the image has it (§3.7). |
+| .NET runtime for WiX 5 | the runner image's .NET 6: 6.0.46 in the cited run, 6.0.47 on the runner of run 39899654879 | Recorded, not downloaded and not pinned, so it varies with the runner image. WiX 5 asks for .NET 6 with `rollForward: Major`, so it runs on .NET 6 whenever the image has it (§3.7). |
 
 No step downloads anything else, restores an npm cache, or sets `npm_config_build_from_source`
 anywhere but the workflow's top-level `env` (#315); `test/windows-installer-spike.test.ts` pins
@@ -257,10 +257,12 @@ uninstall should is a product question for 2b, not an installer difference.
 | Licence | MS-RL source; v6+ binaries under the Open Source Maintenance Fee EULA (§8.3) | MIT |
 | Consumer security fixes | v5 ended 2026-02-05; v6 until 2027-02-05; v7 current | none upstream since 2020 |
 
-The runner image reported its .NET 6 runtime as 6.0.46 and then 6.0.47. Neither appears in
-Microsoft's public .NET 6 release metadata, which ends at 6.0.36 on 2024-11-12, so the spike's
-WiX ran on a runtime that only the image supplies, outside Microsoft's support. That does not
-change the comparison, but PR 2b must choose WiX's runtime on purpose (§6).
+The runners reported their .NET 6 runtime as 6.0.46 in most runs and 6.0.47 in run
+39899654879. Neither
+appears in Microsoft's public .NET 6 release metadata, which ends at 6.0.36 on 2024-11-12, so
+the spike's WiX ran on a runtime build that comes with the runner image rather than from a public
+.NET release, on a .NET version Microsoft no longer supports. That does not change the
+comparison, but PR 2b must choose WiX's runtime on purpose (§6).
 
 ---
 

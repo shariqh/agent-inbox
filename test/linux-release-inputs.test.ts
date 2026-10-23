@@ -99,6 +99,7 @@ describe('Linux release inputs', () => {
       'product',
       'bundleId',
       'minimumMacosVersion',
+      'macosArchitectures',
       'node',
       'electron',
     ])

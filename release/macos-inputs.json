@@ -3,6 +3,7 @@
   "product": "Agent Inbox",
   "bundleId": "io.github.shariqh.agent-inbox",
   "minimumMacosVersion": "13.5",
+  "macosArchitectures": ["arm64", "x86_64"],
   "node": {
     "version": "v24.18.1",
     "modulesAbi": "137",

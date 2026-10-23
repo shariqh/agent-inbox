@@ -1,7 +1,9 @@
 import { createHash } from 'node:crypto'
 import {
+  cpSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
   rmSync,
   writeFileSync,
 } from 'node:fs'
@@ -13,6 +15,7 @@ import {
   validateLinuxReleaseArtifacts,
 } from '../scripts/release-aggregation.mjs'
 import { loadLinuxReleaseInputs } from '../scripts/linux-release-inputs.mjs'
+import { generateManifest, parseRegistry } from '../scripts/update-manifest.mjs'
 import { scratchDir } from './scratch.js'
 
 const root = resolve(process.cwd())
@@ -223,11 +226,19 @@ function makeLinuxFixture(): LinuxFixture {
   return { root: fixtureRoot, paths }
 }
 
-function makeMacFixture() {
+const identity = 'Developer ID Application: Release Test (AB12CD34EF)'
+const UNIVERSAL = ['arm64', 'x86_64']
+
+// The notarize job's output: the final DMG, its checksum and release-evidence.json, with
+// the CPU types verify-final-dmg measured in the app copied out of it (#341).
+function makeMacFixture({
+  dmgName = 'Agent-Inbox-v1.0.1-universal.dmg',
+  architectures = UNIVERSAL,
+  kind = 'universal',
+}: { dmgName?: string; architectures?: string[]; kind?: string } = {}) {
   const macRoot = tempDir()
   const assets = join(macRoot, 'release-assets')
   mkdirSync(assets)
-  const dmgName = 'Agent-Inbox-v1.0.1-universal.dmg'
   const dmg = join(assets, dmgName)
   writeFileSync(dmg, 'notarized dmg bytes')
   const digest = sha256File(dmg)
@@ -239,7 +250,7 @@ function makeMacFixture() {
     packageVersion: context.version,
     sourceCommit,
     annotatedTag: true,
-    identity: 'Developer ID Application: Release Test (AB12CD34EF)',
+    identity,
     teamId: 'AB12CD34EF',
     finalDmgName: dmgName,
     finalDmgSha256: digest,
@@ -251,18 +262,38 @@ function makeMacFixture() {
       sourceCommit,
       packageVersion: context.version,
       finalDmgSha256: digest,
-      identity: 'Developer ID Application: Release Test (AB12CD34EF)',
+      identity,
       teamId: 'AB12CD34EF',
       dmgSignatureIdentity: 'passed',
       copiedAppCodesign: 'passed',
       copiedAppStapler: 'passed',
       copiedAppGatekeeper: 'passed',
-      universalEnvelope: 'passed',
+      architectures: { executable: architectures, betterSqlite3: architectures },
+      kind,
       runtimeManifests: 'passed',
       releaseSetupInfo: 'passed',
       loopbackLaunch: 'passed',
       portableRuntimeLifecycle: 'passed',
     },
+    ...(kind === 'universal'
+      ? {
+          nativeIntel: {
+            schema: 1,
+            status: 'passed',
+            runner: 'native-intel',
+            sourceCommit,
+            packageVersion: context.version,
+            identity,
+            teamId: 'AB12CD34EF',
+            appArchiveSha256: 'c'.repeat(64),
+            appTreeDigest: `sha256:${'d'.repeat(64)}`,
+            verificationReportSha256: 'e'.repeat(64),
+            codesign: 'passed',
+            x64RuntimeManifest: 'passed',
+            x64RuntimeSelftest: 'passed',
+          },
+        }
+      : {}),
     verification: {
       appCodesign: 'passed',
       appGatekeeper: 'passed',
@@ -278,7 +309,17 @@ function makeMacFixture() {
   return { assets, evidence, dmg }
 }
 
-function makeMacDryRunFixture() {
+// A copy of the repository's release inputs whose committed expected set is arm64 alone,
+// which only a deliberate change to release/macos-inputs.json can make (#341).
+function arm64Repo() {
+  const repo = tempDir()
+  cpSync(join(root, 'release'), join(repo, 'release'), { recursive: true })
+  const inputsPath = join(repo, 'release', 'macos-inputs.json')
+  writeJson(inputsPath, { ...JSON.parse(readFileSync(inputsPath, 'utf8')), macosArchitectures: ['arm64'] })
+  return repo
+}
+
+function makeMacDryRunFixture(repo = root) {
   const directory = tempDir()
   const base = 'Agent-Inbox-1.0.1-macos-universal-adhoc'
   const files = new Map<string, string>([
@@ -304,7 +345,7 @@ function makeMacDryRunFixture() {
       provisional: true,
       notarized: false,
     }, null, 2)}\n`],
-    ['macos-inputs.json', readFileSync(join(root, 'release/macos-inputs.json'), 'utf8')],
+    ['macos-inputs.json', readFileSync(join(repo, 'release/macos-inputs.json'), 'utf8')],
   ])
   for (const [name, content] of files) writeFileSync(join(directory, name), content)
   const checksums = Object.fromEntries(
@@ -499,6 +540,107 @@ describe('multi-platform release aggregation', () => {
     })
   })
 
+  it('keeps a universal release byte for byte, deriving its labels from the measured CPU types (#341)', () => {
+    const linux = makeLinuxFixture()
+    const mac = makeMacFixture()
+    const output = tempDir()
+    aggregateReleaseAssets({
+      artifactsRoot: linux.root,
+      macAssetsDir: mac.assets,
+      macEvidencePath: mac.evidence,
+      context,
+      repoRoot: root,
+      sourceTree,
+      outputDir: output,
+    })
+    const assets = join(output, 'release-assets')
+    const packages = [
+      mac.dmg,
+      linux.paths.arm64AppImage,
+      linux.paths.arm64Deb,
+      linux.paths.x64AppImage,
+      linux.paths.x64Deb,
+    ]
+    for (const source of packages) {
+      expect(readFileSync(join(assets, basename(source))).equals(readFileSync(source)), basename(source)).toBe(true)
+    }
+    // What aggregation wrote before #341, with the macOS labels as constants.
+    const before = generateManifest({
+      registry: parseRegistry(readFileSync(join(root, 'release', 'update-keys.json'))),
+      evidence: {
+        tag: context.tag,
+        packageVersion: context.version,
+        sourceCommit,
+        sourceTree,
+        assets: [
+          { name: 'Agent-Inbox-v1.0.1-universal.dmg', packageType: 'dmg', platform: 'darwin', architecture: 'universal' },
+          { name: basename(linux.paths.arm64AppImage), packageType: 'appimage', platform: 'linux', architecture: 'arm64' },
+          { name: basename(linux.paths.arm64Deb), packageType: 'deb', platform: 'linux', architecture: 'arm64' },
+          { name: basename(linux.paths.x64AppImage), packageType: 'appimage', platform: 'linux', architecture: 'x64' },
+          { name: basename(linux.paths.x64Deb), packageType: 'deb', platform: 'linux', architecture: 'x64' },
+        ].map((asset, index) => ({
+          ...asset,
+          size: readFileSync(packages[index]!).byteLength,
+          sha256: sha256File(packages[index]!),
+        })) as Parameters<typeof generateManifest>[0]['evidence']['assets'],
+      },
+      minimumMacosVersion: '13.5',
+      publishedAt: taggedAt,
+    })
+    expect(readFileSync(join(assets, 'update-manifest.json')).equals(before.bytes)).toBe(true)
+    expect(readFileSync(join(assets, 'SHA256SUMS.txt'), 'utf8')).toBe(
+      [...packages]
+        .map((path) => basename(path))
+        .sort()
+        .map((name) => `${sha256File(join(assets, name))}  ${name}\n`)
+        .join(''),
+    )
+
+    const evidence = JSON.parse(readFileSync(join(output, 'release-aggregation-evidence.json'), 'utf8'))
+    expect(evidence.assets.find((asset: { platform: string }) => asset.platform === 'macos')).toEqual({
+      name: 'Agent-Inbox-v1.0.1-universal.dmg',
+      packageType: 'DMG',
+      platform: 'macos',
+      architecture: 'universal',
+      target: 'darwin-arm64+darwin-x64',
+      architectures: { executable: UNIVERSAL, betterSqlite3: UNIVERSAL },
+      nativeIntel: 'passed',
+      size: readFileSync(mac.dmg).byteLength,
+      sha256: sha256File(mac.dmg),
+      notarization: { appStatus: 'Accepted', dmgStatus: 'Accepted' },
+    })
+  })
+
+  it('refuses macOS evidence whose measured CPU types differ from the committed expected set (#341)', () => {
+    const mac = makeMacFixture({ architectures: ['arm64'], kind: 'arm64' })
+    const output = tempDir()
+    expect(() => aggregateReleaseAssets({
+      artifactsRoot: makeLinuxFixture().root,
+      macAssetsDir: mac.assets,
+      macEvidencePath: mac.evidence,
+      context,
+      repoRoot: root,
+      sourceTree,
+      outputDir: output,
+    })).toThrow(/\["arm64"\] differ from the expected \["arm64","x86_64"\]/)
+    expect(readdirSync(output)).toEqual([])
+  })
+
+  it('refuses an arm64 release until the v2 manifest can describe it (#343)', () => {
+    const mac = makeMacFixture({ dmgName: 'Agent-Inbox-v1.0.1-arm64.dmg', architectures: ['arm64'], kind: 'arm64' })
+    const output = tempDir()
+    expect(() => aggregateReleaseAssets({
+      artifactsRoot: makeLinuxFixture().root,
+      macAssetsDir: mac.assets,
+      macEvidencePath: mac.evidence,
+      context,
+      repoRoot: arm64Repo(),
+      sourceTree,
+      outputDir: output,
+    })).toThrow(/an arm64 macOS release needs the v2 update manifest \(#343\)/)
+    expect(readdirSync(output)).toEqual([])
+  })
+
   it('marks PR/manual aggregation evidence non-publishable while proving the complete inventory', () => {
     const linux = makeLinuxFixture()
     const mac = makeMacDryRunFixture()
@@ -534,8 +676,41 @@ describe('multi-platform release aggregation', () => {
       'update-manifest.json.sig',
     ])
     expect(evidence.assets.find((asset) => asset.platform === 'macos')).toMatchObject({
+      expectedPublicName: 'Agent-Inbox-v1.0.1-universal.dmg',
+      architecture: 'universal',
       provisional: true,
       notarized: false,
     })
+  })
+
+  it('derives the dry run\'s public macOS name from the committed expected set (#341)', () => {
+    const repo = arm64Repo()
+    const evidence = validateDryRunReleaseArtifacts({
+      artifactsRoot: makeLinuxFixture().root,
+      macArtifactsRoot: makeMacDryRunFixture(repo),
+      context: {
+        schema: 1,
+        tag: null,
+        version: context.version,
+        sourceCommit,
+        annotated: false,
+      },
+      repoRoot: repo,
+      sourceTree,
+    })
+    expect(evidence.assets.find((asset) => asset.platform === 'macos')).toMatchObject({
+      expectedPublicName: 'Agent-Inbox-v1.0.1-arm64.dmg',
+      architecture: 'arm64',
+    })
+    expect(evidence.expectedPublicInventory).toEqual([
+      'Agent-Inbox-v1.0.1-arm64.dmg',
+      'Agent-Inbox-v1.0.1-linux-arm64.AppImage',
+      'Agent-Inbox-v1.0.1-linux-x86_64.AppImage',
+      'agent-inbox_1.0.1_amd64.deb',
+      'agent-inbox_1.0.1_arm64.deb',
+      'SHA256SUMS.txt',
+      'update-manifest.json',
+      'update-manifest.json.sig',
+    ])
   })
 })

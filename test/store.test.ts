@@ -2988,6 +2988,45 @@ describe('items and boards carry the link identity they were raised on', () => {
     upsertBoard(migrated, { project: 'p', stream: 'feature', agent: 'a', title: 'legacy', rows: [], repo: 'o/n', headRepo: 'me/n' })
     expect(findBoard(migrated, 'p', 'legacy')!.head_repo).toBe('me/n')
   })
+
+  // issue #324 — the folder of the repository the writing session runs in, so
+  // the viewer can open repo-relative paths. An item gets it at insert. A board
+  // write restamps it like stream and repo, except that a write whose session
+  // could not detect one keeps the stored folder instead of clearing it.
+  it('items and boards record their repository folder; a board write that has none keeps it', () => {
+    const ROOT = '/Users/s/Development/agent-inbox'
+    const WORKTREE = '/Users/s/Development/worktrees/issue-324'
+    insertItem(db, { project: 'p', stream: 'f', agent: 'a', kind: 'question', title: 'q', repo_root: ROOT })
+    insertItem(db, { project: 'p', stream: 'f', agent: 'a', kind: 'note', title: 'n' })
+    expect(listItems(db).find((i) => i.title === 'q')!.repo_root).toBe(ROOT)
+    expect(listItems(db).find((i) => i.title === 'n')!.repo_root).toBeNull()
+
+    upsertBoard(db, { project: 'p', stream: 'f', agent: 'a', title: 'plan', rows: [{ label: 'a', status: 'tracked' }], repoRoot: ROOT })
+    upsertBoard(db, { project: 'p', stream: 'f', agent: 'a', title: 'other', rows: [{ label: 'a', status: 'tracked' }] })
+    expect(findBoard(db, 'p', 'plan')!.repo_root).toBe(ROOT)
+    expect(findBoard(db, 'p', 'other')!.repo_root).toBeNull()
+
+    // no folder detected (null or omitted): the stored one stays, and the write changed nothing
+    const before = findBoard(db, 'p', 'plan')!
+    upsertBoard(db, { project: 'p', stream: 'f', agent: 'a', title: 'plan', rows: [{ label: 'a', status: 'tracked' }], repoRoot: null })
+    updateBoardRow(db, { project: 'p', stream: 'f', agent: 'a', title: 'plan', label: 'a', status: 'tracked' })
+    expect(findBoard(db, 'p', 'plan')).toMatchObject({ repo_root: ROOT, revision: before.revision, updated_at: before.updated_at })
+
+    // a write from another folder restamps it, and that is a change to the plan
+    updateBoardRow(db, { project: 'p', stream: 'f', agent: 'a', title: 'plan', label: 'a', status: 'tracked', repoRoot: WORKTREE })
+    expect(findBoard(db, 'p', 'plan')).toMatchObject({ repo_root: WORKTREE, revision: before.revision + 1 })
+    upsertBoard(db, { project: 'p', stream: 'f', agent: 'a', title: 'plan', rows: [{ label: 'a', status: 'tracked' }], repoRoot: ROOT })
+    expect(findBoard(db, 'p', 'plan')).toMatchObject({ repo_root: ROOT, revision: before.revision + 2 })
+
+    // board_advance restamps nothing on the plan, so it keeps the folder too
+    const plan = findBoard(db, 'p', 'plan')!
+    const row = getBoard(db, 'p', 'plan')!.rows[0]!
+    expect(advanceBoardRow(db, {
+      project: 'p', title: 'plan', label: 'a', agent: 'a', expectedBoardVersion: plan.revision, expectedRevision: row.revision,
+      note: 'Next step.', next_step: 'Do it.', action_owner: 'task', impact: 'Ships it.',
+    })).toMatchObject({ ok: true })
+    expect(findBoard(db, 'p', 'plan')!.repo_root).toBe(ROOT)
+  })
 })
 
 describe('source links', () => {

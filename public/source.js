@@ -311,10 +311,25 @@ const linkKind = (kind) => (Object.hasOwn(LINK_KINDS, kind) && kind !== 'file' ?
 
 const fileTitle = (path, title, copy) => (copy ? `Copy path: ${path}` : title || path)
 
-export function fileLinkHtml(path, label, title, copy = false) {
+// Issue #324: the path a repo-relative link names inside the repository folder
+// its card recorded, for its title and Copy path. Electron main does its own
+// join, and alone decides what that opens. The folder's trailing separators go
+// by a loop: an unanchored /[\\/]+$/ is quadratic on a long run of them.
+export function repoFilePath(root, path) {
+  const folder = String(root)
+  let end = folder.length
+  while (end > 0 && (folder[end - 1] === '/' || folder[end - 1] === '\\')) end--
+  return `${folder.slice(0, end)}/${path}`
+}
+
+const rootedFile = (root) => typeof root === 'string' && root !== ''
+const rootAttr = (root) => (rootedFile(root) ? ` data-link-root="${esc(root)}"` : '')
+
+export function fileLinkHtml(path, label, title, copy = false, root = null) {
   if (typeof path !== 'string' || !path) return esc(label)
-  return `<a class="structured-link file-link" role="button" tabindex="0" data-link-kind="file" data-link-path="${esc(path)}"` +
-    ` title="${esc(fileTitle(path, title, copy))}">${esc(label)}</a>`
+  const shown = rootedFile(root) ? repoFilePath(root, path) : path
+  return `<a class="structured-link file-link" role="button" tabindex="0" data-link-kind="file" data-link-path="${esc(path)}"${rootAttr(root)}` +
+    ` title="${esc(fileTitle(shown, title, copy))}">${esc(label)}</a>`
 }
 
 const STRIP_VISIBLE = 6
@@ -325,16 +340,19 @@ const COPY_ICON = '<svg class="link-action-icon" viewBox="0 0 16 16" aria-hidden
   '<rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M3.5 10.5v-6a1 1 0 0 1 1-1h6"/></svg>'
 
 // In the desktop app (`actions`), a file chip also offers Reveal and Copy path:
-// two buttons carrying the same escaped path, never an href.
+// two buttons carrying the same escaped path, never an href. A repo-relative
+// file (#324) carries its repository folder beside it on all three.
 function fileChipHtml(link, inner, actions, copyFiles) {
   const path = esc(link.path)
-  const chip = `<button type="button" class="src-chip tone-link" data-link-kind="file" data-link-path="${path}"` +
-    ` title="${esc(fileTitle(link.path, link.title, copyFiles))}">${inner}</button>`
+  const root = rootAttr(link.root)
+  const shown = rootedFile(link.root) ? repoFilePath(link.root, link.path) : link.path
+  const chip = `<button type="button" class="src-chip tone-link" data-link-kind="file" data-link-path="${path}"${root}` +
+    ` title="${esc(fileTitle(shown, link.title, copyFiles))}">${inner}</button>`
   if (!actions || typeof actions.reveal !== 'string') return chip
   return `<span class="link-file" role="group" aria-label="${esc(`File ${link.label}`)}">${chip}` +
-    `<button type="button" class="link-file-action" data-link-action="reveal" data-link-path="${path}"` +
+    `<button type="button" class="link-file-action" data-link-action="reveal" data-link-path="${path}"${root}` +
     ` title="${esc(actions.reveal)}" aria-label="${esc(`${actions.reveal}: ${link.label}`)}">${REVEAL_ICON}</button>` +
-    `<button type="button" class="link-file-action" data-link-action="copy" data-link-path="${path}"` +
+    `<button type="button" class="link-file-action" data-link-action="copy" data-link-path="${path}"${root}` +
     ` title="Copy path" aria-label="${esc(`Copy path: ${link.label}`)}">${COPY_ICON}</button></span>`
 }
 

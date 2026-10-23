@@ -2958,9 +2958,14 @@ function cardHeadingHtml(presentation, ctx) {
 }
 
 // Issue #300: a bare #N in a card's text resolves against the repository of
-// the item, or of the plan a row belongs to.
+// the item, or of the plan a row belongs to; #324: a repo-relative path,
+// against the folder that item or plan recorded.
 function textContext(identity) {
-  return { repo: typeof identity?.repo === 'string' ? identity.repo : null, copyFiles: fileLinksCopy() }
+  return {
+    repo: typeof identity?.repo === 'string' ? identity.repo : null,
+    root: typeof identity?.repo_root === 'string' ? identity.repo_root : null,
+    copyFiles: fileLinksCopy(),
+  }
 }
 
 // Issue #300: the Links strip under the card's origin, listing every link its

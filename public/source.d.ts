@@ -14,6 +14,8 @@ export interface LinkedEntity {
   /** issue #103 PR2 — a plan's explicit pin, which outranks its PR and branch issue */
   issue_pin_repo?: string | null
   issue_pin_number?: number | null
+  /** issue #324 — the repository folder repo-relative paths in its text resolve against */
+  repo_root?: string | null
 }
 
 /** One cached /api/links row — the store's SourceLink, over the wire. */
@@ -98,8 +100,10 @@ export function indexLinks(links: CachedLink[] | null | undefined): Map<string, 
 export function linkFor(index: Map<string, CachedLink> | null, entity: LinkedEntity | null): CachedLink | null
 export function safeHttpUrl(url: unknown): string
 export function textLinkHtml(url: unknown, label: unknown, kind?: 'web' | 'pr' | 'issue'): string
-/** issue #300 — a local file as an inert control carrying its path; never an href */
-export function fileLinkHtml(path: unknown, label: unknown, title?: unknown, copy?: boolean): string
+/** issue #300 — a local file as an inert control carrying its path; never an href. `root` (#324): a repo-relative path's folder */
+export function fileLinkHtml(path: unknown, label: unknown, title?: unknown, copy?: boolean, root?: string | null): string
+/** issue #324 — the full path a repo-relative path names inside its folder */
+export function repoFilePath(root: string, path: string): string
 
 /** issue #300 — one chip of a card's Links strip */
 export interface StripLink {
@@ -108,6 +112,8 @@ export interface StripLink {
   title?: string
   url?: string
   path?: string
+  /** issue #324 — a repo-relative file's folder */
+  root?: string
 }
 export function linkStripHtml(
   links: StripLink[] | null | undefined,

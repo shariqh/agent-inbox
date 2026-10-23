@@ -21,6 +21,13 @@
 // (fileLinksCopy(), read when cards are drawn). Only in that viewer does a file
 // chip also get Reveal and Copy path (part 2, linkFileActions()). Nothing here
 // reaches attention, a badge or a count.
+//
+// A repo-relative file (#324) carries the folder its card recorded
+// (data-link-root): main joins the two, and refuses one whose symlinks lead
+// outside that folder. Copying one copies the full path, except when main
+// reports the file missing (a doc only on a PR branch or in another worktree):
+// then the click copies the path as the card wrote it, and says so.
+import { repoFilePath } from './source.js'
 import { writeClipboard } from './structured-copy.js'
 
 const BINDING = Symbol.for('agent-inbox.link-open')
@@ -31,6 +38,10 @@ const UNOWNED_NOTE = 'File links open only in Agent Inbox’s own viewer.'
 
 const finderName = (platform) => (/^Mac/i.test(platform) ? 'Finder' : 'your file manager')
 const usableBridge = (found) => (found && typeof found.open === 'function' ? found : null)
+// A file control's path and, for a repo-relative one, its folder.
+const fileTarget = (el) => ({ path: el.dataset.linkPath, root: el.dataset.linkRoot || null })
+const fullPath = ({ path, root }) => (root ? repoFilePath(root, path) : path)
+const folderName = (root) => String(root).split(/[\\/]+/).filter(Boolean).pop() || String(root)
 
 // The secondary actions a file chip gets, or null where files do not open: in
 // a browser, which can neither reveal a file nor needs a second way to copy
@@ -70,6 +81,7 @@ export function linkOpenMessage(result, request, { finder = 'Finder' } = {}) {
   }
   const reason = result && typeof result.reason === 'string' ? result.reason : 'failed'
   if (reason === 'missing') return `Not found: ${name}`
+  if (reason === 'outside') return `Not opened: ${name} points outside its repository.`
   if (reason === 'app-missing') return 'The app chosen in Settings → Links is gone. Choose another there.'
   if (reason === 'app-refused') return 'Agent Inbox won’t open links with the app chosen in Settings → Links. Choose another there.'
   if (reason === 'inaccessible') return `Agent Inbox can’t read ${name}`
@@ -162,18 +174,31 @@ export function initLinkOpening({
     const copied = await writeClipboard(documentRef, path).catch(() => false)
     show(copied ? `Copied the path.${note ? ` ${note}` : ''}` : 'Couldn’t copy the path.', copied ? 'success' : 'error')
   }
+  // Issue #324: a repo-relative file its folder does not have, such as a doc
+  // that only exists on a PR branch or in another worktree. The path as the card
+  // wrote it is what finds it there.
+  const copyMissing = async ({ path, root }) => {
+    const copied = await writeClipboard(documentRef, path).catch(() => false)
+    const where = folderName(root)
+    show(copied
+      ? `Copied ${path}: it isn’t in ${where}, so it may be on another branch or in another worktree.`
+      : `Not found in ${where}: ${path}`, copied ? 'success' : 'error')
+  }
   // Opens (or, from a chip's Reveal, only reveals) a local file through main,
   // or copies its path where files do not open.
-  const openFile = async (links, path, reveal) => {
+  const openFile = async (links, target, reveal) => {
     // a page told no asks again first: its reload's re-proof may have finished
     const permitted = bound.permission === true || await readPermission(links)
-    if (!permitted) return copyPath(path, UNOWNED_NOTE)
-    const request = { kind: 'file', path, reveal }
+    if (!permitted) return copyPath(fullPath(target), UNOWNED_NOTE)
+    const request = target.root
+      ? { kind: 'file', path: target.path, root: target.root, reveal }
+      : { kind: 'file', path: target.path, reveal }
     const result = await send(links, request)
     if (result && result.ok === false && result.reason === 'unowned') {
       bound.permission = false
-      return copyPath(path, UNOWNED_NOTE)
+      return copyPath(fullPath(target), UNOWNED_NOTE)
     }
+    if (target.root && result && result.ok === false && result.reason === 'missing') return copyMissing(target)
     return report(result, request)
   }
 
@@ -183,20 +208,20 @@ export function initLinkOpening({
       const action = event.target && typeof event.target.closest === 'function' ? event.target.closest('[data-link-action]') : null
       if (action) {
         event.preventDefault()
-        const path = action.dataset.linkPath
-        if (!path) return
-        if (action.dataset.linkAction === 'copy') void copyPath(path, '')
-        else if (action.dataset.linkAction === 'reveal' && links) void openFile(links, path, true)
+        const target = fileTarget(action)
+        if (!target.path) return
+        if (action.dataset.linkAction === 'copy') void copyPath(fullPath(target), '')
+        else if (action.dataset.linkAction === 'reveal' && links) void openFile(links, target, true)
         return
       }
       const el = linkElement(event)
       if (!el) return
       if (el.dataset.linkKind === 'file') {
         event.preventDefault()
-        const path = el.dataset.linkPath
-        if (!path) return
-        if (links) void openFile(links, path, false)
-        else void copyPath(path, BROWSER_NOTE)
+        const target = fileTarget(el)
+        if (!target.path) return
+        if (links) void openFile(links, target, false)
+        else void copyPath(fullPath(target), BROWSER_NOTE)
         return
       }
       if (!links || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return

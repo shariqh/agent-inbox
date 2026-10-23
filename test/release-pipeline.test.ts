@@ -8,6 +8,7 @@ import {
   readFileSync,
   readdirSync,
   readlinkSync,
+  rmSync,
   statSync,
   symlinkSync,
   writeFileSync,
@@ -25,9 +26,11 @@ import {
 } from '../scripts/archive-tree.mjs'
 import {
   MacReleaseError,
+  RUNTIME_MACHO_FILES,
   UNIVERSAL_RUNTIME_GLOB,
   assertPublishedEntries,
   releaseDisposition,
+  signPortableRuntime,
   validateSigningOptions,
   verifyThinReports,
 } from '../scripts/assemble-macos-release.mjs'
@@ -292,12 +295,41 @@ describe('native architecture release stages', () => {
     expect(existsSync(join(destination, 'hardlink-root'))).toBe(false)
   })
 
-  it('removes architecture-only rebuild caches before universal merging', () => {
+  it('prunes the app copy, architecture-only rebuild caches included, before universal merging (#291)', () => {
     const source = readFileSync(join(root, 'scripts', 'build-thin-app.mjs'), 'utf8')
-    expect(source).toContain("rmSync(join(moduleRoot, 'bin')")
-    expect(source).toContain("finalAddon = join(buildRoot, 'Release', 'better_sqlite3.node')")
-    expect(source.indexOf('pruneNativeAddonBuildArtifacts(stageRoot)'))
+    expect(source).toContain("export function pruneAppNodeModules(stageRoot) {")
+    expect(source).toContain('return pruneNodeModules(stageRoot)')
+    expect(source.indexOf('pruneAppNodeModules(stageRoot)\n'))
       .toBeLessThan(source.indexOf('const packagerOut'))
+    expect(source).not.toContain('pruneNativeAddonBuildArtifacts')
+  })
+
+  it('prunes each runtime before its probes, selftests and manifest (#291)', () => {
+    const source = readFileSync(join(root, 'scripts', 'stage-runtime.mjs'), 'utf8')
+    const deref = source.indexOf('renameSync(dereffed, srcModules)')
+    const prune = source.indexOf('pruneNodeModules(stageDir)')
+    const probe = source.indexOf("probeStagedNativeDependency(stageDir, nodeBin, 'after node_modules normalization and pruning')")
+    const selftest = source.indexOf('\n  runStagedSelftest(stageDir, adapter)\n')
+    const manifest = source.indexOf('const manifest = buildManifest({')
+    expect(deref).toBeGreaterThan(-1)
+    expect(prune).toBeGreaterThan(deref)
+    expect(probe).toBeGreaterThan(prune)
+    expect(selftest).toBeGreaterThan(probe)
+    expect(manifest).toBeGreaterThan(selftest)
+  })
+
+  it('refuses an unpruned app or runtime in every thin-app gate (#291)', () => {
+    for (const [file, gates] of [
+      ['verify-linux-thin-app.mjs', ['assertPrunedNodeModules(resources, ', 'assertPrunedNodeModules(runtimeRoot, ']],
+      ['verify-windows-thin-app.mjs', ['assertPrunedNodeModules(resources, ', 'assertPrunedNodeModules(runtimeRoot, ']],
+      ['build-thin-app.mjs', ['assertPrunedNodeModules(resources, ', "assertPrunedNodeModules(join(resources, 'runtime', key), "]],
+    ] as const) {
+      const source = readFileSync(join(root, 'scripts', file), 'utf8')
+      for (const gate of gates) expect(source, `${file}: ${gate}`).toContain(gate)
+    }
+    const thin = readFileSync(join(root, 'scripts', 'build-thin-app.mjs'), 'utf8')
+    expect(thin.indexOf('assertPrunedNodeModules(resources, ')).toBeGreaterThan(thin.indexOf('const paths = await packager({'))
+    expect(thin.indexOf('assertPrunedNodeModules(resources, ')).toBeLessThan(thin.indexOf('publishAtomically(app, destination, force)'))
   })
 
   it('uses the fixed native Windows archive adapter without changing POSIX tar selection', () => {
@@ -323,11 +355,13 @@ describe('native architecture release stages', () => {
   })
 
   it('installs and compiles each thin app stage only through the prebuild-free step (#315)', () => {
-    for (const builder of ['build-thin-app.mjs', 'build-linux-thin-app.mjs']) {
+    for (const builder of ['build-thin-app.mjs', 'build-linux-thin-app.mjs', 'build-windows-thin-app.mjs']) {
       const source = readFileSync(join(root, 'scripts', builder), 'utf8')
       const install = source.indexOf('await installAppDependencies({')
       expect(install, builder).toBeGreaterThan(-1)
-      expect(source.indexOf('pruneNativeAddonBuildArtifacts(stageRoot)', install), builder).toBeGreaterThan(install)
+      const prune = source.indexOf('pruneAppNodeModules(stageRoot)', install)
+      expect(prune, builder).toBeGreaterThan(install)
+      expect(prune, builder).toBeLessThan(source.indexOf('await packager({', install))
       expect(source, builder).not.toMatch(/'ci', '--omit=dev'|await rebuild\(|@electron\/rebuild/)
     }
     const linux = readFileSync(join(root, 'scripts', 'build-linux-thin-app.mjs'), 'utf8')
@@ -432,6 +466,41 @@ describe('universal finalization contract', () => {
     expect(snapshot).toBeGreaterThan(setup)
     expect(outer).toBeGreaterThan(snapshot)
     expect(unchanged).toBeGreaterThan(outer)
+  })
+
+  // The runtime signing list is pinned, not whatever Mach-O a build left behind:
+  // test_extension.node used to be signed into every release (#291).
+  it.skipIf(process.platform !== 'darwin')('signs exactly the runtime\'s Node and addon, refusing any other Mach-O (#291)', () => {
+    const temp = scratchDir('runtime-signing-')
+    writeFileSync(join(temp, 'main.c'), 'int main(void) { return 0; }\n')
+    const binary = join(temp, 'binary')
+    execFileSync('/usr/bin/xcrun', ['clang', join(temp, 'main.c'), '-o', binary])
+    const runtime = join(temp, 'runtime')
+    for (const path of RUNTIME_MACHO_FILES) {
+      mkdirSync(dirname(join(runtime, path)), { recursive: true })
+      cpSync(binary, join(runtime, path))
+    }
+    writeFileSync(join(runtime, 'runtime-manifest.json'), '{}\n')
+    writeFileSync(join(runtime, 'node_modules', 'better-sqlite3', 'package.json'), '{}\n')
+    const signing = validateSigningOptions({ mode: 'adhoc' })
+    const entitlementsRoot = join(root, 'release', 'entitlements')
+    const leftover = join(runtime, 'node_modules', 'better-sqlite3', 'build', 'Release', 'test_extension.node')
+    cpSync(binary, leftover)
+    const unsigned = readFileSync(join(runtime, 'bin', 'node'))
+
+    expect(() => signPortableRuntime({ runtimeRoot: runtime, signing, entitlementsRoot })).toThrow(
+      'runtime Mach-O files must be exactly bin/node, node_modules/better-sqlite3/build/Release/better_sqlite3.node; '
+        + 'found bin/node, node_modules/better-sqlite3/build/Release/better_sqlite3.node, '
+        + 'node_modules/better-sqlite3/build/Release/test_extension.node',
+    )
+    // refused before anything was signed
+    expect(readFileSync(join(runtime, 'bin', 'node')).equals(unsigned)).toBe(true)
+
+    rmSync(leftover)
+    const signed = signPortableRuntime({ runtimeRoot: runtime, signing, entitlementsRoot })
+    expect(signed.map((path) => relative(runtime, path)).sort()).toEqual([...RUNTIME_MACHO_FILES].sort())
+    for (const path of signed) execFileSync('/usr/bin/codesign', ['--verify', '--strict', path])
+    expect(readFileSync(join(runtime, 'bin', 'node')).equals(unsigned)).toBe(false)
   })
 
   it('uses minimal reviewed entitlements without sandbox or unsigned executable memory', () => {

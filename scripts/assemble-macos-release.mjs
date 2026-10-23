@@ -160,11 +160,25 @@ function codesignRuntimeFile({ path, signing, entitlements }) {
   })
 }
 
+// The only Mach-O files a portable runtime carries once staging pruned
+// better-sqlite3's compile leftovers (#291). Anything else, such as the
+// test_extension.node every release used to sign, is refused before a single
+// byte is signed.
+export const RUNTIME_MACHO_FILES = Object.freeze([
+  'bin/node',
+  'node_modules/better-sqlite3/build/Release/better_sqlite3.node',
+])
+
 export function signPortableRuntime({ runtimeRoot, signing, entitlementsRoot }) {
   const nodePath = join(runtimeRoot, 'bin', 'node')
   const machOs = walkFiles(runtimeRoot).filter((path) => basename(path) !== 'runtime-manifest.json' && isMachO(path))
+  const found = machOs.map((path) => relative(runtimeRoot, path).split(sep).join('/')).sort()
+  if (JSON.stringify(found) !== JSON.stringify([...RUNTIME_MACHO_FILES].sort())) {
+    throw new MacReleaseError(
+      `runtime Mach-O files must be exactly ${RUNTIME_MACHO_FILES.join(', ')}; found ${found.join(', ') || 'none'}`,
+    )
+  }
   machOs.sort((a, b) => b.split(sep).length - a.split(sep).length)
-  if (!machOs.includes(nodePath)) throw new MacReleaseError(`runtime has no Mach-O Node binary: ${nodePath}`)
   for (const path of machOs) {
     codesignRuntimeFile({
       path,

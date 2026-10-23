@@ -73,11 +73,12 @@ stated minimum before updating either pinned major.
 
 `.github/workflows/macos-universal.yml` uses native macOS runners:
 
-1. Stage and self-test the arm64 and x64 Node runtime payloads independently.
+1. Stage, prune and self-test the arm64 and x64 Node runtime payloads independently
+   ([What node_modules ships](#what-node_modules-ships-291)).
 2. Restore both verified payloads into each native thin Electron build.
-3. Compile `better-sqlite3` for Electron 43.8.0 on that architecture, then run the
-   allocation-driven SQLite check under that packaged Electron
-   ([Electron's embedded Node](#electrons-embedded-node)). The stage installs with
+3. Compile `better-sqlite3` for Electron 43.8.0 on that architecture, prune the app's
+   `node_modules`, then run the allocation-driven SQLite check under that packaged
+   Electron ([Electron's embedded Node](#electrons-embedded-node)). The stage installs with
    `npm ci --ignore-scripts` and `@electron/rebuild` runs with `buildFromSource`
    (`scripts/app-dependencies.mjs`), so the addon is always built from the
    lockfile-pinned source: prebuild-install would otherwise unpack a cached or
@@ -112,12 +113,36 @@ The app and each portable runtime carry the project MIT notice as
 The signed app also preserves Electron's upstream `LICENSE.electron` and
 `LICENSES.chromium.html` under `Contents/Resources`.
 
+### What node_modules ships (#291)
+
+Each `node_modules` copy, the app's and each runtime's, holds only what is loaded at
+runtime. `scripts/prune-node-modules.mjs` removes:
+
+- everything better-sqlite3 carries beyond `package.json`, `lib/` and
+  `build/Release/better_sqlite3.node`, which is all it and `bindings` load: its C and
+  C++ sources (`deps/`, `src/`, `binding.gyp`) and every compile leftover
+  (`build/Release/obj`, `sqlite3.a`, `test_extension.node`, makefiles and a `config.gypi`
+  that recorded builder paths);
+- TypeScript declarations (`*.d.ts`, `*.d.mts`, `*.d.cts`) and source maps;
+- markdown.
+
+License, notice, copying, copyright, authors, contributors and patents files always stay,
+as does anything in a folder named like one, and a package without a license file keeps
+the markdown at its root. The prune refuses,
+before removing anything, a better-sqlite3 whose entry points leave `lib/` or whose addon
+is missing. Runtime staging prunes before its probes, hook selftest, SQLite check and MCP
+probe, so the runtime manifest lists exactly the files those checks ran against. Each thin
+app prunes its own copy after the Electron rebuild and before packaging, and refuses to
+publish if the app or an embedded runtime still carries any of it.
+
 ## Finalization order
 
 `scripts/assemble-macos-release.mjs` enforces this order:
 
 1. Finish the merged app layout and mark it provisional.
-2. Sign every Mach-O in both portable runtime trees.
+2. Sign every Mach-O in both portable runtime trees. Each must hold exactly two, `bin/node`
+   and `better_sqlite3.node`; any other Mach-O, such as the `test_extension.node` releases
+   before #291 signed, is refused before anything is signed.
 3. Regenerate and fully verify both runtime manifests from the signed bytes.
 4. Rewrite `setup-info.json` from those final manifests.
 5. Snapshot every runtime file hash.

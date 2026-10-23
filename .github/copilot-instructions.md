@@ -76,7 +76,12 @@ Run the build before `npm run electron`; the development shell starts the built
   admits them (with `public/source.js`/`esc.js`) only for the titled `board_get`
   `issue_rel` summary, and a test pins the transitive stdio MCP import graph.
   `scripts/stage-runtime.mjs` stages the `public/` modules `dist/` reaches, so a
-  runtime payload can load them.
+  runtime payload can load them. Every shipped `node_modules` copy is pruned by
+  `scripts/prune-node-modules.mjs` before it is tested, manifested or signed
+  (#291): better-sqlite3 keeps only `package.json`, `lib/` and its addon, every
+  package loses typings, source maps and markdown, and license and notice files
+  always stay. The thin-app gates refuse an unpruned copy, and the macOS runtime
+  signing list is exactly `bin/node` and the addon.
 - **Setup path:** `scripts/install-agents.sh` is the canonical dry-run-first
   installer for MCP registration and managed host instructions. Electron exposes
   only fixed setup targets through `electron/setup-preload.cjs` and invokes that
@@ -435,6 +440,22 @@ Run the build before `npm run electron`; the development shell starts the built
   fails falls back to the default one. Rules, Quick Look and Reveal are file
   requests, so they share the owned-viewer `files` grant, and so do the
   Settings → Links channels (a reused viewer gets `error: 'unowned'`).
+- Repo-relative paths (#324) link only in a card whose item or plan recorded
+  `repo_root` (additive, nullable columns on `items` and `boards`): the MCP
+  server's `git rev-parse --show-toplevel`, read live by `scope.rootFor()` on
+  writes only (never in `get()`, never memoized, fail open to null). A board
+  write that finds none keeps the stored folder (`COALESCE`); `board_advance`
+  and older servers never touch it. Agent reads never return it
+  (`agentItem`/`shapeBoard` in `src/shape.ts`). `public/links.js` detects them
+  conservatively (a folder and a name, an extension or a file-like name with
+  `:line`, no dotted first folder, no `.`/`..`/`...` segment), reading at most
+  255 characters a segment and 1024 in all (longer links nothing), with no
+  pattern that can backtrack over agent text: the render runs on every
+  3-second poll, so a quadratic regex there freezes the viewer. They carry
+  the folder in an escaped `data-link-root`, never an href. Main joins a plain
+  relative path to the folder (`joinRepoPath`), refuses it as `outside` when
+  its real path leaves the folder's real path, and then applies the same
+  policy and grant as any file. A missing one copies its path instead.
 - The 3-second poll uses the gated `load()`/`renderIfIdle()` path. Its reads
   run concurrently, but a tick applies only after all settle, and only if no newer
   tick has applied and every boot marker agrees. A successful

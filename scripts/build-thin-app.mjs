@@ -19,6 +19,7 @@ import { packager } from '@electron/packager'
 import { installAppDependencies } from './app-dependencies.mjs'
 import { copyAgentInboxLicense } from './license.mjs'
 import { runElectronSqliteCheck } from './electron-sqlite-check.mjs'
+import { assertPrunedNodeModules, pruneNodeModules } from './prune-node-modules.mjs'
 import { copyTreePreservingMode, verifyPayload } from './runtime-payload.mjs'
 import { assertRuntimeSourceCommit } from './runtime-provenance.mjs'
 import { loadReleaseInputs, RUNTIME_KEYS, validateInstalledReleaseTools } from './release-inputs.mjs'
@@ -115,17 +116,13 @@ export function runRuntimeSelftest(runtimeRoot) {
 
 }
 
-export function pruneNativeAddonBuildArtifacts(stageRoot) {
-  const moduleRoot = join(stageRoot, 'node_modules', 'better-sqlite3')
-  rmSync(join(moduleRoot, 'bin'), { recursive: true, force: true })
-  const buildRoot = join(moduleRoot, 'build')
-  const finalAddon = join(buildRoot, 'Release', 'better_sqlite3.node')
-  if (!existsSync(finalAddon)) throw new ThinAppBuildError(`Electron rebuild did not produce ${finalAddon}`)
-  const preserved = `${buildRoot}.final-${process.pid}`
-  mkdirSync(join(preserved, 'Release'), { recursive: true })
-  renameSync(finalAddon, join(preserved, 'Release', 'better_sqlite3.node'))
-  rmSync(buildRoot, { recursive: true, force: true })
-  renameSync(preserved, buildRoot)
+export function pruneAppNodeModules(stageRoot) {
+  const addon = join(stageRoot, 'node_modules', 'better-sqlite3', 'build', 'Release', 'better_sqlite3.node')
+  if (!existsSync(addon)) throw new ThinAppBuildError(`Electron rebuild did not produce ${addon}`)
+  // Keeps only what better-sqlite3 loads, so the rebuild's architecture-only
+  // caches are gone before the universal merge, and drops typings, source
+  // maps and non-license markdown from every package (#291).
+  return pruneNodeModules(stageRoot)
 }
 
 export async function buildThinApp({
@@ -192,7 +189,7 @@ export async function buildThinApp({
       electronVersion: inputs.electron.version,
       arch,
     })
-    pruneNativeAddonBuildArtifacts(stageRoot)
+    pruneAppNodeModules(stageRoot)
     execFileSync(process.execPath, [
       join(repoRoot, 'scripts', 'write-setup-info.mjs'),
       '--release', join(stageRoot, 'setup-info.json'),
@@ -235,6 +232,10 @@ export async function buildThinApp({
     const app = join(paths[0], `${APP_NAME}.app`)
     copyElectronNotices(paths[0], app)
     const resources = join(app, 'Contents', 'Resources', 'app')
+    assertPrunedNodeModules(resources, `packaged darwin-${arch} app`)
+    for (const key of RUNTIME_KEYS) {
+      assertPrunedNodeModules(join(resources, 'runtime', key), `packaged ${key} runtime`)
+    }
     const nativeAddon = findNativeAddon(resources)
     const expectedLipoArch = arch === 'x64' ? 'x86_64' : 'arm64'
     const nativeAddonArchitectures = lipoArchs(nativeAddon)

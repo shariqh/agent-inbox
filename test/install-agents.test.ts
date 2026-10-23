@@ -15,6 +15,12 @@ import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { afterEach, describe, expect, it } from 'vitest'
 import { removeScratchDirs, scratchDir } from './scratch.js'
 
+// A signal-driven rollback runs each undo step as its own Node process through
+// scripts/run-isolated.mjs (#211), and each step may take up to its own 30 s
+// bound. On a loaded CI runner, startup alone can push the whole rollback past
+// the default 15 s test timeout, so these tests get room to finish (#356).
+const SIGNAL_ROLLBACK_TIMEOUT_MS = 60_000
+
 const REPO = resolve(import.meta.dirname, '..')
 const SCRIPT = join(REPO, 'scripts', 'install-agents.sh')
 const HOOK_SCRIPT = join(REPO, 'scripts', 'install-hooks.sh')
@@ -563,7 +569,7 @@ describe('agent setup installer', () => {
     expect(readFileSync(f.log, 'utf8')).toContain('claude mcp remove --scope user agent-inbox')
   })
 
-  it('rolls back an active transaction when the process is terminated', async () => {
+  it('rolls back an active transaction when the process is terminated', { timeout: SIGNAL_ROLLBACK_TIMEOUT_MS }, async () => {
     const f = fixture()
     const claudeBefore = readFileSync(f.claudeFile, 'utf8')
     const copilotBefore = readFileSync(f.copilotFile, 'utf8')
@@ -650,7 +656,7 @@ describe('agent setup installer', () => {
     expect(result.code, result.err).toBe(0)
   })
 
-  it('rolls back when termination lands after an MCP write but before its command returns', async () => {
+  it('rolls back when termination lands after an MCP write but before its command returns', { timeout: SIGNAL_ROLLBACK_TIMEOUT_MS }, async () => {
     const f = fixture()
     const before = readFileSync(f.copilotFile, 'utf8')
     f.env.MUTATE_THEN_HANG_ADD = 'copilot'
@@ -781,7 +787,7 @@ exec /bin/mv "$@"
     expect(existsSync(join(f.state, 'copilot'))).toBe(false)
   })
 
-  it('restores instructions when termination lands after rename but before it returns', async () => {
+  it('restores instructions when termination lands after rename but before it returns', { timeout: SIGNAL_ROLLBACK_TIMEOUT_MS }, async () => {
     const f = fixture()
     const fakeMv = join(f.fakebin, 'mv')
     writeFileSync(fakeMv, `#!/bin/sh
@@ -1428,7 +1434,7 @@ describe('agent setup installer: losing its parent mid-install (#208)', () => {
     }
   })
 
-  it('ignores further signals in the shell mid-restore, so it never re-runs a rollback step', async () => {
+  it('ignores further signals in the shell mid-restore, so it never re-runs a rollback step', { timeout: SIGNAL_ROLLBACK_TIMEOUT_MS }, async () => {
     const f = fixture()
     const claudeBefore = readFileSync(f.claudeFile, 'utf8')
     const copilotBefore = readFileSync(f.copilotFile, 'utf8')
@@ -1462,7 +1468,7 @@ describe('agent setup installer: losing its parent mid-install (#208)', () => {
     expect(exit).toEqual({ code: 143, signal: null })
   })
 
-  it('finishes undoing a new registration when repeat signals reach the group mid-restore (#211)', async () => {
+  it('finishes undoing a new registration when repeat signals reach the group mid-restore (#211)', { timeout: SIGNAL_ROLLBACK_TIMEOUT_MS }, async () => {
     const f = fixture()
     useNodeClaudeCli(f)
     // Claude has no registration, so undoing its new one needs its CLI's
@@ -1541,7 +1547,7 @@ describe('agent setup installer: losing its parent mid-install (#208)', () => {
     expect(installer.stderr()).toContain(`report retained at ${join(work[0]!, 'report.log')}`)
   })
 
-  it('runs an undo again when a repeat signal stops its helper while Node is still starting (#211)', async () => {
+  it('runs an undo again when a repeat signal stops its helper while Node is still starting (#211)', { timeout: SIGNAL_ROLLBACK_TIMEOUT_MS }, async () => {
     const f = fixture()
     // Holds the first two starts of run-isolated.mjs inside Node's startup:
     // Node has already reset the signals the shell ignores, and the helper has

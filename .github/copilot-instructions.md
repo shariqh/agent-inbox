@@ -281,7 +281,8 @@ Run the build before `npm run electron`; the development shell starts the built
   treats any non-2xx as "the write never happened". An explicit `''` still clears.
 - Inbox answers have precedence over chat-recorded answers. `answerItem()` must
   refuse to overwrite an unread inbox answer; this is intentionally not
-  timestamp-based last-write-wins.
+  timestamp-based last-write-wins. A human reply that carries `expect_answer`
+  (#321) is written only while the question still holds that answer.
 - Item response and annotation snapshots use monotonic `response_revision`, not
   timestamps alone. MCP resolution after response history requires the exact
   `expected_response_revision` handled by that caller. Question reply/annotation
@@ -468,7 +469,12 @@ Run the build before `npm run electron`; the development shell starts the built
   rule reads the last poll, so the reply route also says, additively, whether a
   request `wrote`, whether it `replayed` a recorded intent, and the `answer` it left
   (#322); `ok` keeps its meaning. A replay that wrote nothing under someone else's
-  answer keeps the text as an unsent response, with its spent intent dropped. A
+  answer keeps the text as an unsent response, with its spent intent dropped. An
+  editor's Send and an unsent response's Retry never replace an answer the surface
+  has not shown (#321): the first click names it in place ("A newer reply was sent:
+  …"), only a further click sends, and the send carries `expect_answer`, which
+  `replyItem` checks in the same conditioned UPDATE, refusing with `reason:
+  'answer_changed'` and the answer that stands. Never send to get past a notice. A
   window deletes only the copy it loaded or last wrote, and its leaving save
   writes back a draft another window deleted; the viewer-restart hold stays.
 - Every value export in `src/*.ts` and `public/*.js` must be reachable from

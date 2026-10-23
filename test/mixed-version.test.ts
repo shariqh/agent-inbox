@@ -952,7 +952,10 @@ describe('a v1.4.0 process sharing a hub with waits_on (#103 slice 2)', () => {
 // answer comes from the columns every version writes, never from anything only
 // this build records, so the reply or chat answer an older process writes after
 // this build's send landed is exactly what a replay of that send reports.
-describe('a v1.4.0 process answering after this build’s send landed (#322)', () => {
+// Issue #321: a reply that expects the answer its page showed is conditioned on
+// those same columns, so an older process's answer since refuses it, while a
+// reply from an older page, which expects nothing, still replaces it.
+describe('a v1.4.0 process answering a question this build replies to (#322, #321)', () => {
   let dir: string
   let path: string
   const open: Database.Database[] = []
@@ -1007,6 +1010,36 @@ describe('a v1.4.0 process answering after this build’s send landed (#322)', (
       expect(replyItem(hub, id, 'Original X', undefined, 'answer', intent), id)
         .toEqual({ ok: true, wrote: false, replayed: true, answer: expected[id] })
       expect(getItem(hub, id), id).toEqual(before)
+    }
+  })
+
+  it('an older process’s reply or chat answer refuses this build’s reply that expected what its page showed', () => {
+    const hub = openDb(path)
+    open.push(hub)
+    const old = olderProcess()
+    const shown = (id: string) => {
+      const { replied_at, reply_source, reply_kind, reply } = getItem(hub, id)!
+      return { replied_at, reply_source, reply_kind, reply }
+    }
+    const [replied, told] = ['Reply', 'Chat'].map((title) =>
+      insertItem(hub, { project: 'agent-inbox', stream: '', agent: 'new', kind: 'question', title })) as [string, string]
+    const seen = { [replied]: shown(replied), [told]: shown(told) }
+
+    vi.setSystemTime(Date.parse(at(61)))
+    const now = at(61)
+    old.prepare(V140.replyItem).run({ id: replied, reply: 'Later Y', replyContext: null, kind: 'answer', now })
+    old.prepare(V140.answerItem).get('Thursday, said in chat', null, now, now, 'answer', now, told)
+
+    vi.setSystemTime(Date.parse(at(62)))
+    for (const id of [replied, told]) {
+      const before = getItem(hub, id)
+      const intent = { clientId: 'window-w', sequence: 1, actionId: `w-${id}` }
+      expect(replyItem(hub, id, 'Original X', undefined, 'answer', intent, seen[id]), id).toMatchObject({
+        ok: false, wrote: false, reason: 'answer_changed', answer: { reply: before!.reply, reply_source: before!.reply_source },
+      })
+      expect(getItem(hub, id), id).toEqual(before)
+      // a page from before #321 expects nothing, and replaces it as it always did
+      expect(replyItem(hub, id, 'Older page', undefined, 'answer'), id).toMatchObject({ ok: true, wrote: true })
     }
   })
 })

@@ -317,7 +317,8 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   a fresh inbox one. `answerItem` is ONE conditioned UPDATE that only writes while nothing
   unread is waiting (`reply IS NULL OR reply = '' OR reply_seen_at IS NOT NULL`) and
   otherwise returns `{ok:false, reason:'unread_inbox_answer'}` with the waiting answer;
-  `replyItem` overwrites an open question's answer and resets pickup. Never SELECT-then-UPDATE and
+  `replyItem` overwrites an open question's answer and resets pickup (or, when the page
+  sends the answer it expects to replace, only while that answer still stands, #321). Never SELECT-then-UPDATE and
   never two UPDATEs here: the viewer writes from its own OS process and would land between
   them, leaving the human's newest answer flagged "✓ picked up" and un-clearable. An agent
   may overwrite an answer it has already picked up, but may never blank one.
@@ -1011,7 +1012,30 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   has changed since.", from the Retry's own entry, the entry its in-flight draft
   moved to, or the editor (an editor typed in since keeps its newer text), and the
   spent intent goes with it, so its Retry is fresh. `replyItem` stays the same
-  conditioned statements; the report adds reads, never a write. A Retry
+  conditioned statements; the report adds reads, never a write. *(#321)* A send from
+  an answer editor or an unsent response replaces the question's answer, so it never
+  replaces one the surface has not shown. Each surface knows the answer it was drawn
+  with (`shown`: the editor's item, the line's answer at render) and the newest answer
+  the window knows (`knownAnswer`: the last poll, or a reply response's report until a
+  poll that started after it applies; derived state, the snapshot is never changed).
+  When that answer is a reply or response kind (a cleared question has nothing to
+  replace) that the surface has neither been drawn with nor named in a notice, the
+  click sends nothing: it names it in place, "A newer reply was sent: “…”. Send (or
+  Retry) replaces it.", in the editor's `.write-error` slot (now `role="status"`) or
+  the line's `.replace-notice`, and only a further click sends. An unsent response's
+  line names it as it is drawn whenever its Retry would be fresh over an answer, which
+  is also how a restored "not confirmed" entry says what Retry does. When the answer
+  is one this window sent (`sentReplies`, last five per question), the notice says
+  "Your earlier send went through" instead. The send then carries `expect_answer`
+  (`replied_at`, `reply_source`, `reply_kind`, `reply`), and `replyItem` writes only
+  while the question still holds it: one more condition in the same UPDATE, so a reply
+  that landed after the window last looked refuses it with `reason: 'answer_changed'`
+  and the answer that stands (a 200, like every refusal), the refused intent recorded
+  as not applied. The text stays where it is with that answer named (an entry keeps
+  it, dropping the spent intent, and its line keeps focus on the same control across
+  the rebuild); the editor never moves. A reply without `expect_answer` (an older
+  page, an option pick, the star, a notification) stays unconditional. Never send on
+  the human's behalf to get past a notice. A Retry
   of an entry an earlier click already took does nothing, so a double click claims no
   second intent. `renderIfIdle()` paints the first editable frame even with
   restored drafts, since no editor exists yet to protect; every later tick pauses

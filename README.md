@@ -271,7 +271,10 @@ send or retry such a response, the question is checked first: if it already hold
 exactly your answer, nothing is sent again; if its answer changed since, yours is
 sent as a new answer. If your earlier send turns out to have gone through but a
 newer answer has replaced it since, your text stays under **unsent responses** and
-says so. Sending,
+says so. A Send or Retry never replaces an answer you have not seen: if a newer
+reply arrived (from another window, or the agent recording what you said in chat),
+the first click shows it, "A newer reply was sent: …", and only a second click
+replaces it. Sending,
 emptying or clearing a draft deletes it. A crash in the moment after you type can
 still lose the last keystrokes. Another browser or profile does not see these
 drafts, and neither does the viewer opened at its other address (`localhost`

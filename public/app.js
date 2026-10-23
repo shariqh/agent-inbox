@@ -754,6 +754,8 @@ function writeErrorEl(id) {
   const el = document.createElement('span')
   el.className = 'write-error'
   el.dataset.errorFor = id
+  // announced when showWriteError() rewrites it in place, as #321's notice does
+  el.setAttribute('role', 'status')
   el.textContent = writeErrors[id] ?? '' // never innerHTML — this text is rendered beside agent-authored content
   el.hidden = !writeErrors[id]
   return el
@@ -2047,6 +2049,11 @@ function render() {
   // the Plans header's controls are rebuilt with the list; keep a keyboard user on them
   const plansHeaderFocusId = activeFocusElement()?.closest?.('#boards .tab-header [id]')?.id ?? null
   pagedFocusId = pagedFocus?.id ?? null
+  // a rebuilt unsent response keeps the control a keyboard user is on (#321)
+  const recoveryControl = activeFocusElement()?.closest?.('.stale-draft-line[data-recovery-line] button') ?? null
+  draftRecoveryFocusControl = recoveryControl
+    ? { line: recoveryControl.closest('.stale-draft-line').dataset.recoveryLine, label: recoveryControl.textContent }
+    : null
   if (activeFocusElement()?.closest?.('.stale-drafts-fold')) draftRecoveryFocusPending = true
   reconcileDraftOwners()
   requestedDraftFocusBookmark = null
@@ -2089,6 +2096,7 @@ const ROW_SET_ASIDE = 'Kept from before you set this aside.'
 const ROW_ACTION_CHANGED = 'Not sent because this action changed.'
 let requestedDraftFocusBookmark = null
 let draftRecoveryFocusPending = false
+let draftRecoveryFocusControl = null // { line, label } of the unsent-response control focused at the last rebuild
 let draftRecoveryTarget = null
 
 function rowDraftRecoveryKey(rowId, revision) {
@@ -5165,18 +5173,26 @@ function renderOrphanedDrafts(host) {
   const activeRows = new Map((lastData?.boards ?? [])
     .flatMap((board) => board.rows.map((row) => [row.id, row.revision])))
   const entries = [
-    ...Object.entries(staleItemDrafts).map(([key, draft]) => ({
-      id: key,
-      draft,
-      retry: () => retryItemDraft(key, draft),
-      clear: () => deleteItemDraftRecovery(key, draft.owner),
-      text: [
-        draft.title,
-        draft.reason,
-        `${draft.kind}: ${draft.text}`,
-        draft.context ? `context: ${draft.context}` : '',
-      ].filter(Boolean).join(' · '),
-    })),
+    ...Object.entries(staleItemDrafts).map(([key, draft]) => {
+      // what Retry does when it would send this over an answer (#321)
+      const replaces = retryWouldReplace(draft)
+      // a question this window no longer knows still guards its Retry
+      const shown = draftAnswerOf(knownAnswer(draft.itemId)) ?? { at: null, source: null, kind: null, text: null }
+      return {
+        id: key,
+        draft,
+        retry: () => retryItemDraft(key, draft, shown),
+        clear: () => deleteItemDraftRecovery(key, draft.owner),
+        notice: replaces ? newerReplyNotice(draft.itemId, replaces, 'Retry') : '',
+        noticeFor: key,
+        text: [
+          draft.title,
+          draft.reason,
+          `${draft.kind}: ${draft.text}`,
+          draft.context ? `context: ${draft.context}` : '',
+        ].filter(Boolean).join(' · '),
+      }
+    }),
     ...Object.entries(staleRowDrafts)
       .filter(([, draft]) =>
         activeRows.get(draft.rowId) !== draft.revision
@@ -5225,12 +5241,22 @@ function renderOrphanedDrafts(host) {
   for (const entry of entries) {
     const line = document.createElement('div')
     line.className = 'stale-draft-line'
+    line.dataset.recoveryLine = entry.id
     if (entry.textClass) {
       const text = document.createElement('span')
       text.className = entry.textClass
       text.textContent = entry.text
       line.appendChild(text)
     } else line.textContent = entry.text
+    if (entry.noticeFor) {
+      const notice = document.createElement('span')
+      notice.className = 'replace-notice'
+      notice.dataset.noticeFor = entry.noticeFor
+      notice.setAttribute('role', 'status')
+      notice.textContent = entry.notice
+      notice.hidden = !entry.notice
+      line.appendChild(notice)
+    }
     if (entry.retry) {
       const retry = btn('Retry', entry.retry)
       retry.className = 'undo-btn'
@@ -6150,12 +6176,17 @@ function cancelStagedItemIntent(id) {
   return true
 }
 
+// Every reply response reports the answer it left (#322); it is the newest
+// this window knows until the next poll applies (#321).
 function postItemReply(id, body, intent) {
   return postJSON(`/api/items/${id}/reply`, {
     ...body,
     intent_client_id: intent.clientId ?? storedReplyIntent.clientId,
     intent_sequence: intent.sequence,
     intent_action_id: intent.actionId,
+  }).then((res) => {
+    noteReportedAnswer(id, res?.answer)
+    return res
   })
 }
 
@@ -6248,7 +6279,8 @@ function preserveItemDraftRecovery(id, {
   return recoveryKey
 }
 
-function retryItemDraft(key, draft) {
+// `shown`: the answer the entry's line was drawn with (#321).
+function retryItemDraft(key, draft, shown) {
   return sendReply(
     draft.itemId,
     draft.text,
@@ -6260,6 +6292,7 @@ function retryItemDraft(key, draft) {
     false,
     key,
     draft.owner,
+    shown,
   )
 }
 
@@ -6300,7 +6333,17 @@ function restoreDraftRecoveryFocus() {
     : null
   if (inline) revealDetailsAncestors(inline)
   const visibleInline = inline && !inline.closest('[hidden], details:not([open])') ? inline : null
-  const target = visibleInline ?? document.querySelector('.stale-drafts-fold summary')
+  // the same control of the same entry when it is still there, as after a
+  // Retry that kept its text; otherwise the list's own summary
+  const control = draftRecoveryFocusControl
+  draftRecoveryFocusControl = null
+  const line = control
+    ? document.querySelector(`.stale-drafts-fold .stale-draft-line[data-recovery-line="${CSS.escape(control.line)}"]`)
+    : null
+  const sameControl = line
+    ? [...line.querySelectorAll('button')].find((button) => button.textContent === control.label && !button.disabled) ?? null
+    : null
+  const target = visibleInline ?? sameControl ?? document.querySelector('.stale-drafts-fold summary')
   if (!target) return false
   target.focus({ preventScroll: true })
   const restored = document.activeElement === target
@@ -6613,9 +6656,101 @@ function itemHolds(item, { text, context = '', kind = 'answer' }) {
 // would be answered from the server's record without writing anything, so
 // the send must be fresh; otherwise the exact replay keeps it idempotent.
 function savedIntentRule(id, intent, response) {
-  const item = freshItem(id)
+  const item = knownAnswer(id)
   if (itemHolds(item, response)) return 'delivered'
   return sameAnswer(intent.pin, draftAnswerOf(item)) ? 'replay' : 'fresh'
+}
+
+// Issue #321: the newest answer this window knows for a question, in the
+// item's field names. A reply's response reports the answer it left (#322),
+// which is newer than the last poll until a poll that started after it has
+// applied. Derived view state: the poll's snapshot itself is never changed.
+const reportedAnswers = {} // item id → { answer, before: the last load started when it arrived }
+
+function noteReportedAnswer(id, answer) {
+  if (answer && typeof answer === 'object') reportedAnswers[id] = { answer, before: loadGeneration }
+}
+
+function knownAnswer(id) {
+  const report = reportedAnswers[id]
+  if (report && appliedLoadGeneration <= report.before) return report.answer
+  delete reportedAnswers[id]
+  return freshItem(id)
+}
+
+// Something a send would replace: a reply or a response kind, not an
+// unanswered or cleared question.
+function isAnswer(pin) {
+  return Boolean(pin && (pin.text || pin.kind))
+}
+
+// The last responses this window sent for each question. When the server holds
+// one of them, that answer is the human's own text, perhaps from a send whose
+// answer was lost, not a newer reply. Only the notice's wording reads them.
+const sentReplies = {} // item id → [{ text, context, kind }], newest last
+
+function noteSentReply(id, response) {
+  sentReplies[id] = [...(sentReplies[id] ?? []), response].slice(-5)
+}
+
+// "A newer reply was sent: “Later Y”. Send replaces it.", or, when that answer
+// is one this window sent, "Your earlier send went through: …". The answer
+// goes through textContent only.
+function newerReplyNotice(id, answer, action) {
+  const pin = draftAnswerOf(answer)
+  const text = pin.kind && pin.kind !== 'answer' ? `${pin.kind}: ${pin.text ?? ''}` : (pin.text ?? '')
+  const own = pin.source === 'inbox' && (sentReplies[id] ?? []).some((sent) => itemHolds(answer, sent))
+  return `${own ? 'Your earlier send went through' : 'A newer reply was sent'}: “${text}”. ${action} replaces it.`
+}
+
+// The newer reply each send surface has named in a notice beyond what it was
+// drawn with: `item:<id>` for an answer editor, `recovery:<key>` for an
+// unsent response. Seeing it there is seeing it.
+const noticedAnswers = {}
+
+// A send from an editor or an unsent response replaces an open question's
+// answer. It goes ahead only while that answer is one the surface has shown:
+// drawn with it, or named in its notice. Anything newer is shown first (#321).
+// A closed question replaces nothing: its refusal says so.
+function replacesUnseen(id, known, shown, surface, response) {
+  const current = draftAnswerOf(known)
+  return (freshItem(id)?.status ?? 'open') === 'open' && isAnswer(current) && !itemHolds(known, response)
+    && !sameAnswer(current, shown) && !sameAnswer(current, noticedAnswers[surface])
+}
+
+// What an unsent response's Retry would replace, as this window knows it: an
+// open question's answer that this text would be sent over afresh. A replay
+// was written against that answer, and a delivered one replaces nothing.
+function retryWouldReplace(draft) {
+  const item = freshItem(draft.itemId)
+  const known = knownAnswer(draft.itemId)
+  if ((item && item.status !== 'open') || !isAnswer(draftAnswerOf(known)) || itemHolds(known, draft)) return null
+  if (draft.intent && savedIntentRule(draft.itemId, draft.intent, draft) !== 'fresh') return null
+  return known
+}
+
+// The answer a send expects to replace, in the route's field names (#321).
+function expectedAnswerOf(answer) {
+  return {
+    replied_at: answer.replied_at ?? null,
+    reply_source: answer.reply_source ?? null,
+    reply_kind: answer.reply_kind ?? null,
+    reply: answer.reply ?? null,
+  }
+}
+
+// Names the newer reply beside the control the human pressed, in place, so
+// neither the text nor the focus moves; the surface has now shown it.
+function showNewerReply(id, surface, answer, recoveryKey) {
+  noticedAnswers[surface] = draftAnswerOf(answer)
+  if (!recoveryKey) {
+    showWriteError(id, newerReplyNotice(id, answer, 'Send'))
+    return
+  }
+  for (const el of document.querySelectorAll(`.replace-notice[data-notice-for="${CSS.escape(recoveryKey)}"]`)) {
+    el.textContent = newerReplyNotice(id, answer, 'Retry')
+    el.hidden = false
+  }
 }
 
 // Issue #322: the rule can only read the last poll, so within one poll of
@@ -6859,6 +6994,7 @@ async function submitItemReply(
   submissionUsesDraft = false,
   recoveryKey = null,
   recoveryOwner = null,
+  shown = null,
 ) {
   const reply = text.trim()
   if (!reply) return
@@ -6878,6 +7014,17 @@ async function submitItemReply(
   if (fate === 'delivered') {
     retireDeliveredReply(id, { recoveryKey, savedIntent, text, context, kind })
     await reloadAndPaint()
+    return
+  }
+  // #321: an answer editor's Send and an unsent response's Retry (`shown`: the
+  // answer the surface was drawn with) replace the question's answer. One the
+  // surface has not shown is named beside the control instead, and only a
+  // further click sends; the send then expects that answer, so the server
+  // refuses it if a newer one landed since.
+  const surface = shown ? (recoveryKey ? `recovery:${recoveryKey}` : `item:${id}`) : null
+  const known = surface ? knownAnswer(id) : null
+  if (surface && replacesUnseen(id, known, shown, surface, { text, context, kind })) {
+    showNewerReply(id, surface, known, recoveryKey)
     return
   }
   if (savedIntent) intent = fate === 'replay' ? savedIntent : null
@@ -6907,10 +7054,12 @@ async function submitItemReply(
   // #status's "disconnected" was wiped by the next successful poll ≤3s later.
   // Nothing is cleared until the server has it.
   const recoveryTitle = itemDraftMeta[id]?.title ?? freshItem(id)?.title ?? 'Question'
+  noteSentReply(id, { text, context, kind })
   const res = await postItemReply(id, {
     text: reply,
     context: context.trim() || undefined,
     kind,
+    expect_answer: known ? expectedAnswerOf(known) : undefined,
   }, intent)
   const latestIntent = sameItemIntent(itemLatestIntents[id], intent)
   const ownsSubmission = latestIntent
@@ -6989,6 +7138,34 @@ async function submitItemReply(
   if (sameItemIntent(itemDraftRetryIntents[id]?.intent, intent)) {
     delete itemDraftRetryIntents[id]
   }
+  // #321: a newer answer landed after this surface showed the one it expected,
+  // so nothing was written. The text stays where it is with that reply named,
+  // and only another click sends; the refused intent is spent.
+  if (surface && latestIntent && res.ok === false && res.reason === 'answer_changed' && res.answer) {
+    retireItemDraftSubmission(id, submittedGeneration, intent)
+    const keptKey = recoveryKey ?? trackedSubmission?.recoveryKey ?? null
+    if (!keptKey) {
+      showNewerReply(id, surface, res.answer, null)
+      resumeRender()
+      return
+    }
+    preserveItemDraftRecovery(id, {
+      key: keptKey,
+      expectedOwner: recoveryKey ? submittedRecoveryOwner : trackedSubmission.recoveryOwner,
+      title: recoveryTitle,
+      text,
+      context,
+      kind,
+      intent: null,
+      generation: submittedGeneration,
+    })
+    if (recoveryKey) retireItemDraftSubmissionIntent(id, intent)
+    requestDraftRecovery()
+    showWriteError(id, '')
+    await reloadAndPaint()
+    return
+  }
+  if (res.ok && surface) delete noticedAnswers[surface]
   if (!res.ok) {
     if (!latestIntent) {
       const rejectedRecoveryKeys = [
@@ -7167,8 +7344,9 @@ function answerEl(it) {
     rememberDraftOwner()
     resumeRender()
   })
+  // the answer this editor is drawn with: Send replaces only that unasked (#321)
   const submit = () => sendReply(
-    it.id, input.value, ctxInput.value, 'answer', editorGeneration, null, true, true,
+    it.id, input.value, ctxInput.value, 'answer', editorGeneration, null, true, true, null, null, draftAnswerOf(it),
   )
   bindReplyEditor(input, submit)
   row.appendChild(input)
@@ -7348,6 +7526,9 @@ async function changeAnswer(it, msgEl) {
   draftReplies[it.id] = it.reply
   draftReplyContexts[it.id] = it.reply_context ?? ''
   bumpDraftGeneration(itemDraftGenerations, it.id)
+  // a notice naming the answer just cleared no longer says what Send does (#321)
+  delete noticedAnswers[`item:${it.id}`]
+  showWriteError(it.id, '')
   requestedDraftFocusBookmark = { key: `${it.id}:answer`, scopeId: 'needsYouList' }
   // issue #31.1. Two things have to be true for the human to SEE that draft, and
   // neither was:

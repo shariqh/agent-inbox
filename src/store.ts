@@ -781,7 +781,20 @@ export interface ReplyResult {
   wrote: boolean
   replayed: boolean
   answer: ReplyAnswer | null
+  // #321: refused because the open question no longer holds the expected answer
+  reason?: 'answer_changed'
 }
+
+// Issue #321: the answer a page means to replace, the one it last showed. A
+// reply that carries it is written only while the question still holds it, in
+// the same conditioned statement, so a newer answer the page never showed (from
+// another window, or an agent's chat answer) refuses the write instead of being
+// replaced unseen. Without it a reply stays unconditional, as it always was.
+export type ExpectedAnswer = Pick<Item, 'replied_at' | 'reply_source' | 'reply_kind' | 'reply'>
+
+const EXPECTED_ANSWER_SQL = `(@expect = 0
+  OR (replied_at IS @expectedAt AND reply_source IS @expectedSource
+      AND reply_kind IS @expectedKind AND reply IS @expectedReply))`
 
 export function replyItem(
   db: Database.Database,
@@ -790,6 +803,7 @@ export function replyItem(
   context?: string,
   kind: ResponseKind = 'answer',
   intent?: { clientId: string; sequence: number; actionId: string },
+  expected?: ExpectedAnswer,
 ): ReplyResult {
   // a changed answer resets pickup — the agent must see the latest reply;
   // an empty answer reverts the question to unanswered (null, never '') — but
@@ -808,6 +822,11 @@ export function replyItem(
     replyContext: replyContext || null,
     kind,
     now,
+    expect: expected ? 1 : 0,
+    expectedAt: expected?.replied_at ?? null,
+    expectedSource: expected?.reply_source ?? null,
+    expectedKind: expected?.reply_kind ?? null,
+    expectedReply: expected?.reply ?? null,
   }
   const applyReply = (): boolean => {
     if (!reply) {
@@ -820,7 +839,7 @@ export function replyItem(
                      SET reply = NULL, reply_context = NULL, replied_at = @now, reply_seen_at = NULL,
                          reply_source = NULL, reply_kind = NULL, updated_at = @now
                    WHERE id = @id AND kind = 'question' AND status = 'open'
-                     AND reply_seen_at IS NULL`)
+                     AND reply_seen_at IS NULL AND ${EXPECTED_ANSWER_SQL}`)
         .run(params)
       return info.changes > 0
     }
@@ -829,7 +848,8 @@ export function replyItem(
                    SET reply = @reply, reply_context = @replyContext, replied_at = @now, reply_seen_at = NULL,
                        reply_source = 'inbox', reply_kind = @kind,
                        snoozed_until = NULL, pinned_at = NULL, updated_at = @now
-                 WHERE id = @id AND kind = 'question' AND status = 'open'`)
+                 WHERE id = @id AND kind = 'question' AND status = 'open'
+                   AND ${EXPECTED_ANSWER_SQL}`)
       .run(params)
     return info.changes > 0
   }
@@ -839,13 +859,22 @@ export function replyItem(
        WHERE id = ? AND kind = 'question'`)
     .get(id) as ReplyAnswer | undefined) ?? null
 
+  // Read after a refused write, never to decide one: the open question's
+  // answer is not the expected one, so the expectation refused it (#321).
+  const changed = (answer: ReplyAnswer | null): Pick<ReplyResult, 'reason'> =>
+    expected && answer && (answer.replied_at !== expected.replied_at || answer.reply_source !== expected.reply_source
+      || answer.reply_kind !== expected.reply_kind || answer.reply !== expected.reply)
+      ? { reason: 'answer_changed' }
+      : {}
+  const openQuestion = () => db.prepare(`SELECT id FROM items WHERE id = ? AND kind = 'question' AND status = 'open'`).get(id)
+
   if (!intent) {
     const wrote = applyReply()
-    return { ok: wrote, wrote, replayed: false, answer: currentAnswer() }
+    const answer = currentAnswer()
+    return { ok: wrote, wrote, replayed: false, answer, ...(!wrote && openQuestion() ? changed(answer) : {}) }
   }
   return db.transaction((): ReplyResult => {
-    const target = db.prepare(`SELECT id FROM items WHERE id = ? AND kind = 'question' AND status = 'open'`).get(id)
-    if (!target) return { ok: false, wrote: false, replayed: false, answer: currentAnswer() }
+    if (!openQuestion()) return { ok: false, wrote: false, replayed: false, answer: currentAnswer() }
     const recorded = db.prepare(`
       SELECT applied
         FROM item_reply_intents
@@ -858,9 +887,8 @@ export function replyItem(
         FROM item_reply_intents
        WHERE item_id = ? AND client_id = ?`)
       .get(id, intent.clientId) as { sequence: number | null }
-    const applied = waterMark.sequence !== null && intent.sequence < waterMark.sequence
-      ? false
-      : applyReply()
+    const superseded = waterMark.sequence !== null && intent.sequence < waterMark.sequence
+    const applied = superseded ? false : applyReply()
     db.prepare(`
       INSERT INTO item_reply_intents
         (item_id, client_id, action_id, sequence, applied, created_at)
@@ -874,7 +902,8 @@ export function replyItem(
         applied: applied ? 1 : 0,
         now,
       })
-    return { ok: applied, wrote: applied, replayed: false, answer: currentAnswer() }
+    const answer = currentAnswer()
+    return { ok: applied, wrote: applied, replayed: false, answer, ...(applied || superseded ? {} : changed(answer)) }
   }).immediate()
 }
 

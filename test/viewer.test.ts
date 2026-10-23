@@ -1337,11 +1337,20 @@ describe('write routes refuse invalid bodies before touching the store (#163)', 
   })
 
   describe('POST /api/items/:id/reply', () => {
+    const SHOWN = { replied_at: null, reply_source: null, reply_kind: null, reply: null }
     const INVALID_REPLY: BodyCase[] = [
       ...INVALID_TEXT,
       ['a numeric context', () => JSON.stringify({ text: 'Correction', context: 5 })],
       ['an object context', () => JSON.stringify({ text: 'Correction', context: { value: 'nested' } })],
       ['a null context', () => JSON.stringify({ text: 'Correction', context: null })],
+      // #321: the answer a send expects to replace is checked like every other field
+      ['a null expected answer', () => JSON.stringify({ text: 'Correction', expect_answer: null })],
+      ['a string expected answer', () => JSON.stringify({ text: 'Correction', expect_answer: 'Later Y' })],
+      ['an array expected answer', () => JSON.stringify({ text: 'Correction', expect_answer: [] })],
+      ['an expected answer missing its text', () => JSON.stringify({ text: 'Correction', expect_answer: { ...SHOWN, reply: undefined } })],
+      ['an expected answer with a numeric time', () => JSON.stringify({ text: 'Correction', expect_answer: { ...SHOWN, replied_at: 5 } })],
+      ['an expected answer from an unknown channel', () => JSON.stringify({ text: 'Correction', expect_answer: { ...SHOWN, reply_source: 'email' } })],
+      ['an expected answer of an unknown kind', () => JSON.stringify({ text: 'Correction', expect_answer: { ...SHOWN, reply_kind: 'shrug' } })],
     ]
 
     it.each(INVALID_REPLY)('refuses %s and keeps the stored answer', async (_label, body) => {
@@ -1350,6 +1359,27 @@ describe('write routes refuse invalid bodies before touching the store (#163)', 
       const before = getItem(db, id)
       await expectInvalid(await post(`/api/items/${id}/reply`, body({ context: 'new context' })))
       expect(getItem(db, id)).toEqual(before)
+    })
+
+    it('refuses with 200 and the answer that stands when the expected answer moved on (#321)', async () => {
+      const id = question()
+      const shown = getItem(db, id)!
+      const expectAnswer = { replied_at: shown.replied_at, reply_source: shown.reply_source, reply_kind: shown.reply_kind, reply: shown.reply }
+      replyItem(db, id, 'Later Y', undefined, 'answer', { clientId: 'window-b', sequence: 1, actionId: 'b-1' })
+      const later = getItem(db, id)!
+      let res = await post(`/api/items/${id}/reply`, JSON.stringify({ text: 'Original X', expect_answer: expectAnswer }))
+      expect(res.status, 'a refusal of a valid request is not an error').toBe(200)
+      expect(await res.json()).toEqual({
+        ok: false, wrote: false, replayed: false, reason: 'answer_changed',
+        answer: { replied_at: later.replied_at, reply_source: 'inbox', reply_kind: 'answer', reply: 'Later Y', reply_context: null },
+      })
+      expect(getItem(db, id)).toEqual(later)
+
+      res = await post(`/api/items/${id}/reply`, JSON.stringify({
+        text: 'Original X',
+        expect_answer: { replied_at: later.replied_at, reply_source: 'inbox', reply_kind: 'answer', reply: 'Later Y' },
+      }))
+      expect(await res.json()).toMatchObject({ ok: true, wrote: true, answer: { reply: 'Original X' } })
     })
 
     it('still clears an unread answer on an explicit empty string — and still refuses a read one with 200', async () => {

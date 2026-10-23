@@ -399,3 +399,169 @@ describe('links are never attention (issue #300)', () => {
     }
   })
 })
+
+// Issue #324: repo-relative paths link only in a card whose item (or plan)
+// recorded its repository's folder; main opens them with that folder, and
+// where the folder does not have the file the click copies its path instead.
+describe('repo-relative paths (issue #324)', () => {
+  const ROOT = '/Users/s/Development/agent-inbox'
+  const SPEC = 'docs/superpowers/specs/spec.md'
+  const REL_DETAIL = `Spec at ${SPEC}:12; code in public/app.js:7491. Not and/or, not v1.6/v1.7.`
+  const seedRel = (d: Database.Database, over: Record<string, unknown> = {}) =>
+    insertItem(d, { ...SCOPE, kind: 'question', title: 'Review the spec', detail: REL_DETAIL, repo_root: ROOT, ...over })
+  const inlineSpec = (card: HTMLElement) => card.querySelector<HTMLElement>('.card-tldr-body .file-link')!
+  const stripSpec = (card: HTMLElement) => stripOf(card)!.querySelector<HTMLElement>('button[data-link-kind="file"]')!
+
+  it('link inline and in the strip with their folder, and title the full path', async () => {
+    bridge()
+    db = freshDb()
+    const card = await openInspector(db, seedRel(db))
+    const inline = inlineSpec(card)
+    expect([inline.textContent, inline.dataset.linkPath, inline.dataset.linkRoot, inline.title])
+      .toEqual([`${SPEC}:12`, SPEC, ROOT, `${ROOT}/${SPEC}:12`])
+    expect(inline.hasAttribute('href')).toBe(false)
+    expect(card.querySelectorAll('.card-tldr-body [data-link-kind]')).toHaveLength(2)
+    expect(chips(card)).toEqual(['File spec.md:12', 'File app.js:7491'])
+    expect([stripSpec(card).dataset.linkPath, stripSpec(card).dataset.linkRoot, stripSpec(card).title]).toEqual([SPEC, ROOT, `${ROOT}/${SPEC}:12`])
+  })
+
+  it('stay plain text, as before, in a card that recorded no folder', async () => {
+    db = freshDb()
+    const card = await openInspector(db, seedRel(db, { repo_root: null }))
+    expect(card.querySelector('.card-tldr-body')!.textContent).toContain(`${SPEC}:12`)
+    expect(card.querySelectorAll('[data-link-kind="file"]')).toHaveLength(0)
+    expect(stripOf(card)).toBeNull()
+  })
+
+  it('open through main with the folder beside the path, and say so when the file points outside it', async () => {
+    const open = bridge(async () => ({ ok: true, action: 'opened' }))
+    const writeText = clipboard()
+    db = freshDb()
+    const id = seedRel(db)
+    const card = await openInspector(db, id)
+    click(inlineSpec(card))
+    await settle()
+    expect(fileCalls(open)).toEqual([[{ kind: 'file', path: SPEC, root: ROOT, reveal: false }]])
+    expect(status()).toBe('')
+
+    open.mockImplementation(async () => ({ ok: false, reason: 'outside' }))
+    click(stripSpec(cardOf(id)!))
+    await settle()
+    expect(status()).toBe(`Not opened: ${SPEC} points outside its repository.`)
+    expect(writeText).not.toHaveBeenCalled()
+  })
+
+  it('copy the path as written, and say why, when the folder does not have the file', async () => {
+    const open = bridge(async () => ({ ok: false, reason: 'missing' }))
+    const writeText = clipboard()
+    db = freshDb()
+    const id = seedRel(db)
+    const card = await openInspector(db, id)
+    const inline = inlineSpec(card)
+    inline.focus()
+    inline.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+    await settle()
+    expect(fileCalls(open)).toEqual([[{ kind: 'file', path: SPEC, root: ROOT, reveal: false }]])
+    expect(writeText).toHaveBeenCalledWith(SPEC)
+    expect(status()).toBe(`Copied ${SPEC}: it isn’t in agent-inbox, so it may be on another branch or in another worktree.`)
+
+    // the chip's Reveal is the same request, revealing, and falls back the same way
+    click(stripOf(cardOf(id))!.querySelector('[data-link-action="reveal"]'))
+    await settle()
+    expect(fileCalls(open).at(-1)).toEqual([{ kind: 'file', path: SPEC, root: ROOT, reveal: true }])
+    expect(writeText).toHaveBeenCalledTimes(2)
+  })
+
+  it('Copy path, a browser and a viewer the app does not own copy the full path', async () => {
+    const writeText = clipboard()
+    db = freshDb()
+    const id = seedRel(db)
+
+    // the desktop app's own viewer: the chip's Copy path
+    const owned = bridge()
+    await openInspector(db, id)
+    click(stripOf(cardOf(id))!.querySelector('[data-link-action="copy"]'))
+    await settle()
+    expect(writeText).toHaveBeenLastCalledWith(`${ROOT}/${SPEC}`)
+    expect(fileCalls(owned)).toEqual([])
+
+    // a viewer the app does not own: never asks main, copies, and says why
+    const unowned = bridge(undefined, { files: false })
+    click(document.getElementById('gear'))
+    await settle()
+    click(document.getElementById('gear'))
+    await settle()
+    await pollTick()
+    expect(stripSpec(cardOf(id)!).title).toBe(`Copy path: ${ROOT}/${SPEC}`)
+    click(stripSpec(cardOf(id)!))
+    await settle()
+    expect(writeText).toHaveBeenLastCalledWith(`${ROOT}/${SPEC}`)
+    expect(status()).toBe('Copied the path. File links open only in Agent Inbox’s own viewer.')
+    expect(fileCalls(unowned)).toEqual([])
+  })
+
+  it('in a browser, copy the full path and say why', async () => {
+    const writeText = clipboard()
+    db = freshDb()
+    const card = await openInspector(db, seedRel(db))
+    expect(inlineSpec(card).title).toBe(`Copy path: ${ROOT}/${SPEC}`)
+    click(inlineSpec(card))
+    await settle()
+    expect(writeText).toHaveBeenCalledWith(`${ROOT}/${SPEC}`)
+    expect(status()).toBe('Copied the path. A browser can’t open local files.')
+  })
+
+  // Review of #330: one open card whose text held such a shape kept the main
+  // thread busy for seconds on every render, and the poll renders every 3 s.
+  it('render a card holding hostile path and URL shapes, open and through a poll, without stalling', async () => {
+    bridge()
+    db = freshDb()
+    const slashes = '/'.repeat(40_000)
+    const context = `See docs/${'A'.repeat(40_000)}.1:5, /Users/s${slashes}x.md and https://example.com${slashes}x`
+    const started = performance.now()
+    const id = seedRel(db, { context })
+    await openInspector(db, id)
+    await pollTick()
+    const elapsed = performance.now() - started
+    expect(chips(cardOf(id))).toEqual(['File spec.md:12', 'File app.js:7491', 'File x.md', 'Web example.com/…/x'])
+    expect(elapsed).toBeLessThan(3_000)
+  })
+
+  it('read a plan row against its plan’s folder', async () => {
+    const open = bridge(async () => ({ ok: true, action: 'opened' }))
+    db = freshDb()
+    upsertBoard(db, {
+      ...SCOPE, title: 'Links plan', repoRoot: ROOT,
+      rows: [{ label: 'Draft the spec', status: 'tracked', note: `Draft in ${SPEC}` }],
+    })
+    await bootApp(db)
+    click(document.querySelector('.tab[data-tab="boards"]'))
+    await settle()
+    click(document.querySelector('#boards .board-row'))
+    await settle()
+    const panel = document.querySelector<HTMLElement>('#boards .row-panel')!
+    expect(chips(panel)).toEqual(['File spec.md'])
+    click(panel.querySelector('.card-links button[data-link-kind="file"]'))
+    await settle()
+    expect(fileCalls(open)).toEqual([[{ kind: 'file', path: SPEC, root: ROOT, reveal: false }]])
+  })
+
+  it.each([
+    ['without a folder', null],
+    ['with a folder', ROOT],
+  ])('never reach attention: the badge, tabs and queue read the same %s', async (_name, root) => {
+    db = freshDb()
+    const text = `see ${SPEC}:12 and public/app.js`
+    seedRel(db, { title: `Decide: ${text}`, detail: text, context: text, repo_root: root })
+    advanceClock()
+    insertItem(db, { ...SCOPE, kind: 'note', title: text, detail: text, repo_root: root })
+    upsertBoard(db, {
+      ...SCOPE, title: 'Plan', repoRoot: root,
+      rows: [{ label: 'Row', status: 'blocked', note: text, next_step: 'Do it', action_owner: 'task', impact: text }],
+    })
+    await bootApp(db)
+    await showInbox()
+    expect([badgeCount(), tabCount('needsYou'), tabCount('notes'), document.querySelectorAll('#needsYouList .nrow[data-card-id]').length])
+      .toEqual([2, '2', '1', 2])
+  })
+})

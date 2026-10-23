@@ -125,10 +125,10 @@ describe('response lifecycle safety', () => {
       }
       const before = getItem(agent, id)
       for (const text of ['Late correction', '']) {
-        expect(replyItem(human, id, text)).toBe(false)
+        expect(replyItem(human, id, text).ok).toBe(false)
         expect(replyItem(human, id, text, undefined, 'answer', {
           clientId: 'window', sequence: text ? 1 : 2, actionId: text || 'clear',
-        })).toBe(false)
+        }).ok).toBe(false)
         expect(getItem(agent, id)).toEqual(before)
       }
     },
@@ -137,11 +137,11 @@ describe('response lifecycle safety', () => {
   it('refuses a previously successful reply-intent retry once its question is closed', () => {
     const id = item()
     const intent = { clientId: 'window', sequence: 1, actionId: 'original' }
-    expect(replyItem(human, id, 'Proceed', undefined, 'answer', intent)).toBe(true)
-    expect(replyItem(human, id, 'Proceed', undefined, 'answer', intent)).toBe(true)
+    expect(replyItem(human, id, 'Proceed', undefined, 'answer', intent)).toMatchObject({ ok: true, wrote: true })
+    expect(replyItem(human, id, 'Proceed', undefined, 'answer', intent)).toMatchObject({ ok: true, wrote: false, replayed: true })
     resolveItem(agent, id, 'Completed.')
     const before = getItem(agent, id)
-    expect(replyItem(human, id, 'Proceed', undefined, 'answer', intent)).toBe(false)
+    expect(replyItem(human, id, 'Proceed', undefined, 'answer', intent)).toMatchObject({ ok: false, wrote: false })
     expect(getItem(agent, id)).toEqual(before)
   })
 
@@ -177,7 +177,7 @@ describe('response lifecycle safety', () => {
           body: JSON.stringify({ text }),
         })
         expect(response.status).toBe(200)
-        expect(await response.json()).toEqual({ ok: false })
+        expect(await response.json()).toMatchObject({ ok: false, wrote: false, replayed: false })
         expect(getItem(agent, id)).toEqual(before)
       }
     },
@@ -380,7 +380,7 @@ describe('response lifecycle safety', () => {
 
     const cleared = await call('flag', APPROVAL)
     replyItem(human, cleared.id, 'Proceed')
-    expect(replyItem(human, cleared.id, '')).toBe(true)
+    expect(replyItem(human, cleared.id, '').ok).toBe(true)
     expect(await call('resolve', { id: cleared.id })).toEqual({ ok: false, reason: 'response_revision_required' })
   })
 

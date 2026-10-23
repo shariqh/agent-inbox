@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { findPlainLinks, githubRef, linkedHtml, webLabel } from '../public/links.js'
+import { fileLabel, findPlainLinks, githubRef, linkedHtml, webLabel } from '../public/links.js'
 import type { FoundLink } from '../public/links.js'
 import { renderStructuredText } from '../public/structured-text.js'
 
@@ -237,5 +237,180 @@ describe('labels for the Links strip (issue #300)', () => {
     ['https://example.com/a/very/long/path/that/keeps/going/and/going/file.html', 'example.com/…/file.html'],
   ])('labels %s as host and path', (url, label) => {
     expect(webLabel(url)).toBe(label)
+  })
+})
+
+// Issue #324: a repo-relative path links only in a card that recorded the folder
+// of the repository its session ran in, and only when it looks unmistakably
+// like a file: a folder and a name, an extension or a :line, no `.` or `..`.
+describe('repo-relative paths, only where the card knows its repository folder (issue #324)', () => {
+  const ROOT = '/Users/s/Development/agent-inbox'
+  const rel = (text: string, root: unknown = ROOT): Array<[string, string, string]> =>
+    findPlainLinks(text, 0, text.length, { repo: REPO, root } as never).map((link) => [
+      link.kind,
+      link.text,
+      link.kind === 'file' ? link.path : link.url,
+    ])
+
+  it.each([
+    ['See docs/superpowers/specs/2026-10-21-plan-dependencies-design.md §4', 'docs/superpowers/specs/2026-10-21-plan-dependencies-design.md', 'docs/superpowers/specs/2026-10-21-plan-dependencies-design.md'],
+    ['at public/app.js:7491.', 'public/app.js:7491', 'public/app.js'],
+    ['`src/store.ts`', 'src/store.ts', 'src/store.ts'],
+    ['(electron/main.cjs:374-380)', 'electron/main.cjs:374-380', 'electron/main.cjs'],
+    ['"test/dom/card-links.test.ts"', 'test/dom/card-links.test.ts', 'test/dom/card-links.test.ts'],
+    ['“docs/a.md”', 'docs/a.md', 'docs/a.md'],
+    ['edit .github/copilot-instructions.md', '.github/copilot-instructions.md', '.github/copilot-instructions.md'],
+    ['run ./scripts/install-agents.sh --apply', './scripts/install-agents.sh', 'scripts/install-agents.sh'],
+    ['public/links.d.ts', 'public/links.d.ts', 'public/links.d.ts'],
+    ['node_modules/@types/node/index.d.ts', 'node_modules/@types/node/index.d.ts', 'node_modules/@types/node/index.d.ts'],
+    ['assets/LOGO.PNG', 'assets/LOGO.PNG', 'assets/LOGO.PNG'],
+    ['docs/résumé.md', 'docs/résumé.md', 'docs/résumé.md'],
+    ['bin/agent-inbox:12', 'bin/agent-inbox:12', 'bin/agent-inbox'],
+    ['.husky/pre-commit:3', '.husky/pre-commit:3', '.husky/pre-commit'],
+    ['docker/Dockerfile:12', 'docker/Dockerfile:12', 'docker/Dockerfile'],
+    ['zsh/.zshrc:4', 'zsh/.zshrc:4', 'zsh/.zshrc'],
+    ['config/.env.local', 'config/.env.local', 'config/.env.local'],
+    ['notes/2026/10/report.md', 'notes/2026/10/report.md', 'notes/2026/10/report.md'],
+    ['in src/a.ts:12:5, then', 'src/a.ts:12:5', 'src/a.ts'],
+    ["src/store.ts's tests", 'src/store.ts', 'src/store.ts'],
+    ['--file=docs/x.md', 'docs/x.md', 'docs/x.md'],
+    ['see docs/x.md…', 'docs/x.md', 'docs/x.md'],
+  ])('links %j', (text, label, path) => {
+    expect(rel(text)).toEqual([['file', label, path]])
+  })
+
+  it('carries the folder and the full path it opens, and a :line out of the path', () => {
+    const text = 'Read ./docs/spec.md:12 and public/app.js'
+    expect(findPlainLinks(text, 0, text.length, { root: ROOT })).toEqual([
+      { kind: 'file', start: 5, end: 22, text: './docs/spec.md:12', path: 'docs/spec.md', line: 12, root: ROOT, title: `${ROOT}/docs/spec.md:12` },
+      { kind: 'file', start: 27, end: 40, text: 'public/app.js', path: 'public/app.js', line: null, root: ROOT, title: `${ROOT}/public/app.js` },
+    ])
+    expect(findPlainLinks('docs/a.md', 0, 9, { root: '/' })).toMatchObject([{ path: 'docs/a.md', title: '/docs/a.md' }])
+    expect(findPlainLinks('docs/a.md', 0, 9, { root: 'C:/Users/s/repo' })).toMatchObject([{ title: 'C:/Users/s/repo/docs/a.md' }])
+  })
+
+  it('links none without a usable folder: relative paths stay plain text, as before', () => {
+    const text = 'Read docs/spec.md and public/app.js:7491'
+    for (const root of [undefined, null, '', 'relative/root', 'Users/s', 42, '/Users/s/\nrepo', '/Users/s/\u0000repo', `/${'a'.repeat(5000)}`]) {
+      expect(findPlainLinks(text, 0, text.length, { repo: REPO, root } as never), String(root)).toEqual([])
+    }
+    expect(findPlainLinks(text, 0, text.length, { repo: REPO })).toEqual([])
+    expect(rel(text)).toHaveLength(2)
+  })
+
+  it.each([
+    // prose
+    'and/or', 'read/write access', 'client/server', 'yes/no', 'w/o tests', 'n/a', 'I/O', 'CI/CD', 'UI/UX', 'A/B testing',
+    '24/7', '50/50', 'km/h', 'MB/s', 'TCP/IP', 'either/or.', 'the read/write.Then we', 'e.g./i.e.', 'docs/ and specs/',
+    // versions
+    'v1.6/v1.7', '1.6.0/1.7.0', 'node/24.1.0', 'release/2.1', 'release/v1.6', 'python3.12/site-packages/x.py', 'library/node:24.1',
+    // git refs, with or without a line
+    'PRE-EXISTING on main (origin/main:238; this PR)', 'upstream/master:12', 'refs/heads/main:3', 'origin/main',
+    // dates and times
+    '2026/10/23', '10/23/2026', '23/10/2026.', 'on 2026-10-23/24', 'at 3/4:12', 'on 2026/10-11:30',
+    // code
+    '`node:fs/promises`', '`@modelcontextprotocol/sdk/server/mcp.js`', '`zod/v4`', '`react-dom/client`', "import x from './links.js'",
+    '`../src/store.ts`', 'src/../etc/passwd.md', 'docs/./x.md', 'docs//x.md', '`x/*.ts`', 'src/**/*.test.ts', '`text/html`',
+    '`application/json`', '`application/vnd.api+json`', '`image/svg+xml`', '`foo/bar.baz()`', '`a/b.md#L12`', '`a/b.md?raw=1`',
+    '`a.b/c.d`', '`this.state/props.x`', 'ms/1000.0', '`$HOME/x.md`', '`%APPDATA%/x.md`', 'C:/Users/s/x.md', '`~user/x.md`',
+    '/\\d+/g.test(x)', 'docs/x.md_', '_docs/x.md_', './Dockerfile:3', "require('./links.js')", 'docs/Release.1:5',
+    // an elision stands for folders left out
+    'oris-engine-src/.../ImportDelivery.swift:247', 'src/…/x.ts',
+    // URLs and hosts without a scheme
+    'github.com/shariqh/agent-inbox/blob/main/docs/x.md', 'docs.python.org/3/library/os.html', 'example.com/guide.html',
+    'localhost:4319/x.md', 'user@host.com/x.md',
+    // folders, names with no folder, globs
+    'docs/', 'docs/specs/', 'README.md', 'CLAUDE.md', 'Makefile:12', 'docs/*.md', '.md/.markdown', '.../x.md',
+    // glued to a neighbour, or quoted as something else
+    'see:docs/x.md', '**docs/x.md**', '<docs/x.md>', 'x/docs/../a.md',
+    // a path that went on across a space: never its second half
+    '/Users/s/My Documents/a.md', '~/My Notes/x.md', 'docs/My Notes.md', 'docs/My Folder/notes.md',
+    // an ellipsis stands for what was left out
+    'docs/superpowers/specs/….md', '…/specs/x.md',
+  ])('leaves %j plain', (text) => {
+    expect(rel(text)).toEqual([])
+  })
+
+  it('leaves owner/name#N to the references, and every other kind where it was', () => {
+    expect(rel('shariqh/agent-inbox#324 and vercel/next.js#123')).toEqual([
+      ['issue', 'shariqh/agent-inbox#324', 'https://github.com/shariqh/agent-inbox/issues/324'],
+      ['issue', 'vercel/next.js#123', 'https://github.com/vercel/next.js/issues/123'],
+    ])
+    expect(rel('See /Users/s/a.md, docs/b.md, #301 and ~/c.md, then docs/d.md docs/e.md')).toEqual([
+      ['file', '/Users/s/a.md', '/Users/s/a.md'],
+      ['file', 'docs/b.md', 'docs/b.md'],
+      ['issue', '#301', 'https://github.com/shariqh/agent-inbox/issues/301'],
+      ['file', '~/c.md', '~/c.md'],
+      ['file', 'docs/d.md', 'docs/d.md'],
+      ['file', 'docs/e.md', 'docs/e.md'],
+    ])
+    const [absolute] = findPlainLinks('/Users/s/a.md', 0, 13, { root: ROOT })
+    expect(absolute).not.toHaveProperty('root')
+  })
+
+  it('renders one as an inert control carrying its path and folder, never an href, all escaped', () => {
+    const root = '/Users/s/<b>"repo"'
+    const text = 'Spec at docs/spec.md:12'
+    const html = linkedHtml(text, 0, text.length, { root })
+    expect(html).toBe('Spec at <a class="structured-link file-link" role="button" tabindex="0" data-link-kind="file" data-link-path="docs/spec.md"' +
+      ' data-link-root="/Users/s/&lt;b&gt;&quot;repo&quot;" title="/Users/s/&lt;b&gt;&quot;repo&quot;/docs/spec.md:12">docs/spec.md:12</a>')
+    expect(linkedHtml(text, 0, text.length, { root: ROOT, copyFiles: true })).toContain(`title="Copy path: ${ROOT}/docs/spec.md"`)
+    expect(renderStructuredText('```\ncat docs/spec.md\n```\n\nThen docs/next.md', { root: ROOT })).not.toContain('data-link-path="docs/spec.md"')
+  })
+
+  it('stays linear on hostile relative candidates', () => {
+    const hostile = [
+      `${'a/'.repeat(60_000)}x.md`,
+      'a/b '.repeat(60_000),
+      'x/y.md#'.repeat(30_000),
+      `${'a'.repeat(200)}/`.repeat(2_000),
+      'z/ '.repeat(60_000),
+    ].join('\n')
+    const started = performance.now()
+    const html = renderStructuredText(`${hostile}\nSee docs/ok.md`, { repo: REPO, root: ROOT })
+    expect(performance.now() - started).toBeLessThan(2_000)
+    expect(html).toContain('data-link-path="docs/ok.md"')
+  }, 10_000)
+
+  // Review of #330: a long name whose dot starts no extension, then a :line,
+  // made the :line name check backtrack quadratically (9 s at 80k characters),
+  // on every render of a card that showed it.
+  it.each([
+    ['capitals', `docs/${'A'.repeat(40_000)}.1:5`],
+    ['a_ pairs', `docs/${'a_'.repeat(20_000)}.1:5`],
+    ['a- pairs', `docs/${'a-'.repeat(20_000)}.1:5`],
+    ['Ä', `docs/${'Ä'.repeat(40_000)}.1:5`],
+    ['a long first folder', `${'A'.repeat(40_000)}/x.1:5`],
+    ['a long path of short folders', `${'a/'.repeat(20_000)}A.1:5`],
+  ])('reads a long name (%s) in linear time, and links none of it', (_shape, text) => {
+    const started = performance.now()
+    expect(findPlainLinks(`See ${text}`, 0, text.length + 4, { root: ROOT })).toEqual([])
+    expect(performance.now() - started).toBeLessThan(500)
+  })
+
+  it('links no segment longer than a file name may be, and no path longer than 1024 characters: never a part of one', () => {
+    const named = (length: number) => `${'n'.repeat(length - 3)}.md`
+    expect(rel(`docs/${named(255)}`)).toEqual([['file', `docs/${named(255)}`, `docs/${named(255)}`]])
+    expect(rel(`docs/${named(256)}`)).toEqual([])
+    expect(rel(`docs/${'s'.repeat(256)}/a.md`)).toEqual([])
+    expect(rel(`${'d'.repeat(255)}/a.md`)).toHaveLength(1)
+    expect(rel(`${'d'.repeat(256)}/a.md`)).toEqual([])
+    const deep = (length: number) => {
+      let folders = ''
+      while (folders.length + 110 < length) folders += `${'d'.repeat(99)}/`
+      return `${folders}${'n'.repeat(length - folders.length - 3)}.md`
+    }
+    expect([deep(1024).length, deep(1025).length]).toEqual([1024, 1025])
+    expect(rel(`See ${deep(1024)} now`)).toEqual([['file', deep(1024), deep(1024)]])
+    expect(rel(`See ${deep(1025)} now`)).toEqual([])
+  })
+
+  it('labels a path or a URL with a long run of slashes in linear time', () => {
+    const slashes = '/'.repeat(40_000)
+    const started = performance.now()
+    expect(fileLabel(`/Users/s${slashes}x.md`)).toBe('x.md')
+    expect(fileLabel(`/Users/s/dir${slashes}`)).toBe('dir/')
+    expect(webLabel(`https://example.com${slashes}x`)).toBe('example.com/…/x')
+    expect(performance.now() - started).toBeLessThan(500)
   })
 })

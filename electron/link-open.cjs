@@ -12,8 +12,12 @@
 //   Files: only for the viewer this app started and proved it owns (main's
 //   `filesPermitted`); from a reused viewer a file request is refused unread.
 //   Then an absolute path after expanding ~/, normalized, free of NUL and
-//   control characters. Symlinks are resolved and the FINAL target is judged:
+//   control characters, or (issue #324) a plain repo-relative path joined to
+//   the absolute repository folder its card recorded. Symlinks are resolved
+//   and the FINAL target is judged:
 //     missing                                        → reported as missing
+//     a repo-relative path no longer inside its folder's real path
+//                                                    → refused ('outside')
 //     a folder or app bundle                         → revealed, never opened
 //     a denied type (apps, launchers, installers, disk images, executables,
 //       macro documents, certificates), by the name of the link or of its
@@ -265,6 +269,29 @@ function normalizeLocalPath(value, homeDir) {
   return path.normalize(expanded)
 }
 
+// Issue #324: a repo-relative path (docs/spec.md) joined to the absolute folder
+// of the repository its card recorded, or null. Only a plain relative path
+// joins: folder and file names separated by `/`, no empty segment or one of
+// dots alone (., .., ...), no `~` (home paths come absolute or as ~/ alone), no
+// `:` (a :line stays in the renderer) and no backslash, so the join can only
+// name something inside the folder before symlinks; fileOpenPlan checks what
+// it names after them. Returns the normalized folder and the joined path.
+function joinRepoPath(value, root) {
+  if (typeof value !== 'string' || value === '' || value.length > MAX_PATH_LENGTH || CONTROL_RE.test(value)) return null
+  if (typeof root !== 'string' || root === '' || root.length > MAX_PATH_LENGTH || CONTROL_RE.test(root) || !path.isAbsolute(root)) return null
+  if (path.isAbsolute(value) || /[\\:~]/.test(value) || value.split('/').some((segment) => /^\.*$/.test(segment))) return null
+  const folder = path.resolve(root)
+  const joined = path.join(folder, value)
+  if (joined.length > MAX_PATH_LENGTH || !isWithin(folder, joined)) return null
+  return { root: folder, path: joined }
+}
+
+// Whether `target` is `folder` or inside it, both absolute and normalized.
+function isWithin(folder, target) {
+  const rel = path.relative(folder, target)
+  return rel === '' || (rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel))
+}
+
 const extensionOf = (value) => path.extname(String(value)).slice(1).toLowerCase()
 
 function blockedFileName(value) {
@@ -346,14 +373,19 @@ function failureReason(err) {
 
 // What main may do with a path: open it (with the Settings → Links rule that
 // applies, if any), only reveal it (and why), or nothing. `rules` are the ones
-// that apply here, or null.
-async function fileOpenPlan(value, { homeDir, fsp = fs.promises, platform = process.platform, execFileImpl = execFile, rules = null } = {}) {
-  const normalized = normalizeLocalPath(value, homeDir)
+// that apply here, or null. With `root` (issue #324) the path is repo-relative:
+// it is joined to that folder, and refused as `outside` when, once every
+// symlink is resolved, it is no longer inside the folder's own real path.
+async function fileOpenPlan(value, { homeDir, root = null, fsp = fs.promises, platform = process.platform, execFileImpl = execFile, rules = null } = {}) {
+  const repo = root === null || root === undefined ? null : joinRepoPath(value, root)
+  const normalized = root === null || root === undefined ? normalizeLocalPath(value, homeDir) : repo && repo.path
   if (!normalized) return { ok: false, reason: 'invalid' }
   let resolved
   let stats
   try {
+    const folder = repo ? await fsp.realpath(repo.root) : null
     resolved = await fsp.realpath(normalized)
+    if (folder !== null && !isWithin(folder, resolved)) return { ok: false, reason: 'outside' }
     stats = await fsp.lstat(resolved)
   } catch (err) {
     return { ok: false, reason: failureReason(err) }
@@ -377,14 +409,19 @@ const isPlainObject = (value) => Boolean(value) && typeof value === 'object' && 
 const keysOf = (value) => Object.keys(value).sort().join(',')
 
 // The exact request shapes the preload method sends, and nothing else. A file
-// is opened, or only revealed when `reveal` (a file chip's Reveal action).
+// is opened, or only revealed when `reveal` (a file chip's Reveal action); a
+// repo-relative one (#324) also names the folder its card recorded.
 function linkRequest(value) {
   if (!isPlainObject(value)) return null
   if (value.kind === 'web' && keysOf(value) === 'kind,url' && typeof value.url === 'string') {
     return { kind: 'web', url: value.url }
   }
-  if (value.kind === 'file' && keysOf(value) === 'kind,path,reveal' && typeof value.path === 'string' && typeof value.reveal === 'boolean') {
-    return { kind: 'file', path: value.path, reveal: value.reveal }
+  if (value.kind === 'file' && typeof value.path === 'string' && typeof value.reveal === 'boolean') {
+    const keys = keysOf(value)
+    if (keys === 'kind,path,reveal') return { kind: 'file', path: value.path, reveal: value.reveal }
+    if (keys === 'kind,path,reveal,root' && typeof value.root === 'string') {
+      return { kind: 'file', path: value.path, root: value.root, reveal: value.reveal }
+    }
   }
   return null
 }
@@ -406,7 +443,7 @@ async function openLinkRequest(raw, { shell, homeDir, fsp, execFileImpl, filesPe
       return await openWebHref(href, { shell, rules, platform, spawnImpl, fsp })
     }
     const applying = customOpening({ platform, spawnImpl }) && !request.reveal ? rules : null
-    const plan = await fileOpenPlan(request.path, { homeDir, fsp, platform, execFileImpl, rules: applying })
+    const plan = await fileOpenPlan(request.path, { homeDir, root: request.root ?? null, fsp, platform, execFileImpl, rules: applying })
     if (!plan.ok) return { ok: false, reason: plan.reason }
     if (request.reveal || plan.action === 'reveal') {
       shell.showItemInFolder(plan.path)
@@ -448,6 +485,7 @@ module.exports = {
   isTrustedLinkSender,
   isRunnerApp,
   isViewerUrl,
+  joinRepoPath,
   launchableApp,
   normalizeLocalPath,
   openableFileName,

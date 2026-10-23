@@ -13,7 +13,7 @@ import {
   markRowHandled, clearRowHandled, listActivity, listActivitySpans, listSourceLinks, defaultDbPath,
   closeProject, reopenProject, closedProjects, readSnapshotState, listIssueEntities, listIssueSnapshots,
 } from './store.js'
-import type { ResponseKind, SnapshotReadState } from './store.js'
+import type { ExpectedAnswer, ResponseKind, SnapshotReadState } from './store.js'
 import { groupItems } from './group.js'
 import { buildIssueGraph } from './issue-graph.js'
 import { issueKeySets } from '../public/issue-key.js'
@@ -574,6 +574,21 @@ function snoozeUntil(value: unknown): string | null | undefined {
   return /^\d{4}-/.test(iso) ? iso : undefined
 }
 
+// #321: the answer a reply expects to replace, the one the page last showed.
+// Optional (undefined: an unconditional reply, as from an older page); when
+// present, all four fields are required with their stored types. null =
+// invalid, refused before any store call.
+function expectedAnswer(value: unknown): ExpectedAnswer | null | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null
+  const { replied_at: at, reply_source: source, reply_kind: kind, reply } = value as Record<string, unknown>
+  const textOrNull = (field: unknown): field is string | null => field === null || typeof field === 'string'
+  if (!textOrNull(at) || !textOrNull(reply)) return null
+  if (source !== null && source !== 'inbox' && source !== 'agent') return null
+  if (kind !== null && responseKind(kind) === null) return null
+  return { replied_at: at, reply_source: source, reply_kind: kind as ResponseKind | null, reply }
+}
+
 // #247: `defer` on the stop-waiting routes is optional and means "no" when
 // absent; a present value must be a boolean. null = invalid, refused before any
 // store call.
@@ -916,6 +931,7 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
       intent_client_id: intentClientId,
       intent_sequence: intentSequence,
       intent_action_id: intentActionId,
+      expect_answer: expectAnswer,
     } = (await c.req.json<{
       text?: unknown
       context?: unknown
@@ -923,6 +939,7 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
       intent_client_id?: unknown
       intent_sequence?: unknown
       intent_action_id?: unknown
+      expect_answer?: unknown
     }>().catch(() => null)) ?? {}
     // Invalid input is a 400 before any store call (issue #163); it used to
     // throw out as a 500. An explicit '' is still the clear.
@@ -932,6 +949,8 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
     }
     const parsedKind = kind === undefined ? 'answer' : responseKind(kind)
     if (parsedKind === null) return c.json({ ok: false, error: 'invalid response kind' }, 400)
+    const expected = expectedAnswer(expectAnswer)
+    if (expected === null) return c.json({ ok: false, error: 'invalid expected answer' }, 400)
     const hasIntentClient = intentClientId !== undefined
     const hasIntentSequence = intentSequence !== undefined
     const hasIntentAction = intentActionId !== undefined
@@ -951,8 +970,13 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
     )) {
       return c.json({ ok: false, error: 'invalid reply intent metadata' }, 400)
     }
-    // false = refused: an already-picked-up reply cannot be silently blanked out (src/store.ts)
-    const ok = replyItem(
+    // A refusal is ok:false (an already-picked-up reply cannot be silently
+    // blanked out, src/store.ts). Issue #322 adds, additively, whether this
+    // request wrote anything (an exact replay is answered from its record) and
+    // the answer it left; a page that reads only `ok` sees what it always did.
+    // Issue #321: a reply that expected another answer is refused with
+    // reason 'answer_changed', still a 200.
+    const result = replyItem(
       db,
       c.req.param('id'),
       text,
@@ -961,8 +985,9 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
       clientId && actionId && typeof intentSequence === 'number'
         ? { clientId, sequence: intentSequence, actionId }
         : undefined,
+      expected,
     )
-    return c.json({ ok })
+    return c.json(result)
   })
 
   app.post('/api/items/:id/snooze', async (c) => {

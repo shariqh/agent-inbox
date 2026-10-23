@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest'
 import { join, basename } from 'node:path'
+import { realpathSync, renameSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { makeScope } from '../src/scope.js'
 import { scratchDir } from './scratch.js'
@@ -243,5 +244,37 @@ describe('headFor stays a live, write-only read beside the origin cache (issues 
     expect(gitSpawns(dir, ...refs('patch-1'))).toBe(1)
     expect(gitSpawns(dir, ...merge('patch-1'))).toBe(1)
     expect(gitSpawns(dir, ...PUSH_URL)).toBe(0)
+  })
+})
+
+// ── issue #324: the repository folder is a LIVE read, and only on writes ───────
+// Like the branch it is never cached, because worktrees and checkouts move, and
+// like the head repository it costs a git spawn, so get() (nearly every tool
+// call, pending() polls included) never pays for it: mcp.ts asks on writes.
+
+describe('rootFor stays a live, write-only read (issue #324)', () => {
+  const TOPLEVEL = ['rev-parse', '--show-toplevel'] as const
+
+  it('get() spawns no lookup; each rootFor() spawns exactly one and follows the working tree', () => {
+    const dir = tmpGitRepo({ remote: 'git@github.com:shariqh/agent-inbox.git', branch: 'feature' })
+    const scope = makeScope(dir)
+    for (let i = 0; i < 3; i++) scope.get('claude-code')
+    expect(gitSpawns(dir, ...TOPLEVEL)).toBe(0)
+    for (let i = 0; i < 3; i++) expect(scope.rootFor()).toBe(realpathSync(dir))
+    expect(gitSpawns(dir, ...TOPLEVEL)).toBe(3)
+
+    // the working tree goes away mid-session: the next write finds none, and a
+    // restored one is found again, so nothing was memoized either way
+    renameSync(join(dir, '.git'), join(dir, '.git-away'))
+    expect(scope.rootFor()).toBeNull()
+    renameSync(join(dir, '.git-away'), join(dir, '.git'))
+    expect(scope.rootFor()).toBe(realpathSync(dir))
+    expect(gitSpawns(dir, ...TOPLEVEL)).toBe(5)
+  })
+
+  it('is null outside a git repo, and a register() override changes nothing about it', () => {
+    const plain = makeScope(scratchDir('plain-'))
+    plain.override({ project: 'oris', repo: 'acme/other' })
+    expect(plain.rootFor()).toBeNull()
   })
 })

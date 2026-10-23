@@ -1,4 +1,4 @@
-import { readFileSync, realpathSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import vm from 'node:vm'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -61,6 +61,18 @@ describe('the link bridge (issue #300)', () => {
     const { links, invoke } = loadPreload(() => ({ ok: true, action: 'opened' }))
     await expect(links.open(...args)).resolves.toEqual({ ok: false, reason: 'invalid' })
     expect(invoke).not.toHaveBeenCalled()
+  })
+
+  // issue #324: a repo-relative file names the folder its card recorded
+  it('passes a repo-relative request on with its folder, and refuses one whose folder is not text', async () => {
+    const { links, invoke } = loadPreload(() => ({ ok: false, reason: 'outside' }))
+    await expect(links.open({ kind: 'file', path: 'docs/a.md', root: '/Users/s/repo', reveal: false, app: '/Applications/X.app' }))
+      .resolves.toEqual({ ok: false, reason: 'outside' })
+    expect(invoke.mock.calls).toEqual([['agent-inbox:open-link', { kind: 'file', path: 'docs/a.md', root: '/Users/s/repo', reveal: false }]])
+    for (const root of [7, null, { path: '/Users/s/repo' }, ['/Users/s/repo']]) {
+      await expect(links.open({ kind: 'file', path: 'docs/a.md', root, reveal: false }), JSON.stringify(root)).resolves.toEqual({ ok: false, reason: 'invalid' })
+    }
+    expect(invoke).toHaveBeenCalledOnce()
   })
 
   it('hands back only a well-formed answer', async () => {
@@ -157,6 +169,26 @@ describe('main opens local files only for the viewer it owns (issue #300)', () =
       expect(await reused.open(file), String(granted)).toEqual({ ok: false, reason: 'unowned' })
       expect(await reused.open({ kind: 'file', path: '/nowhere.md', reveal: false })).toEqual({ ok: false, reason: 'unowned' })
       expect(await reused.open({ ...file, reveal: true })).toEqual({ ok: false, reason: 'unowned' })
+      expect(reused.calls).toEqual([])
+    }
+  })
+
+  it('opens a repo-relative file with its folder for the granted window, refuses an escape, and reads neither anywhere else (#324)', async () => {
+    const base = scratchDir('link-owned-repo-')
+    const root = join(base, 'repo')
+    mkdirSync(join(root, 'docs'), { recursive: true })
+    writeFileSync(join(root, 'docs', 'spec.md'), '# spec')
+    writeFileSync(join(base, 'secret.md'), 'secret')
+    symlinkSync(join(base, 'secret.md'), join(root, 'docs', 'escape.md'))
+    const spec = { kind: 'file', path: 'docs/spec.md', root, reveal: false }
+    const owned = world({ granted: 7 })
+    expect(await owned.open(spec)).toEqual({ ok: true, action: 'opened' })
+    expect(await owned.open({ ...spec, path: 'docs/escape.md' })).toEqual({ ok: false, reason: 'outside' })
+    expect(owned.calls).toEqual([['openPath', realpathSync(join(root, 'docs', 'spec.md'))]])
+    for (const granted of [null, 8]) {
+      const reused = world({ granted })
+      expect(await reused.open(spec), String(granted)).toEqual({ ok: false, reason: 'unowned' })
+      expect(await reused.open({ ...spec, path: 'docs/escape.md', reveal: true })).toEqual({ ok: false, reason: 'unowned' })
       expect(reused.calls).toEqual([])
     }
   })

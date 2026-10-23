@@ -10,14 +10,15 @@
 // they stand for the process that cannot change. Later slices add their own
 // frozen cases here (PR1b: closing_refs; PR2: plan and row links). The
 // statements of a v1.4.0 process (#247's pins, slice 2's issue snapshots and
-// waits_on) are in their own blocks at the end.
+// waits_on, and the replies and chat answers #322's report must see) are in
+// their own blocks at the end.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import Database from 'better-sqlite3'
 import {
-  getBoard, getItem, insertItem, listActivity, listBoards, listHostSessions, listIssueEntities, listIssueSnapshots, listItems, listSourceLinks, openDb,
-  pinBoardRow, pinItem, recordIssueFailure, replyItem, stopBoardRowWatch, stopItemWatch, updateBoardRow, upsertActivity,
+  getBoard, getItem, insertItem, listActivity, listBoards, listHostSessions, listIssueEntities, listIssueSnapshots, listItems, listSourceLinks,
+  markReplySeen, openDb, pinBoardRow, pinItem, recordIssueFailure, replyItem, stopBoardRowWatch, stopItemWatch, updateBoardRow, upsertActivity,
   upsertBoard, upsertIssueSnapshot, upsertSourceLink,
 } from '../src/store.js'
 import type { IssueDependencies } from '../src/store.js'
@@ -26,6 +27,8 @@ import { buildIssueGraph } from '../src/issue-graph.js'
 import { runHook } from '../src/hook.js'
 import { issueKeyFor } from '../public/issue-key.js'
 import { createViewer } from '../src/viewer.js'
+import type { FoundLink } from '../public/links.js'
+import { renderStructuredText } from '../public/structured-text.js'
 import { at, facts, keySets, snapshot } from './issue-fixtures.js'
 import { scratchDir } from './scratch.js'
 
@@ -944,5 +947,275 @@ describe('a v1.4.0 process sharing a hub with waits_on (#103 slice 2)', () => {
       project: 'agent-inbox', stream: '', agent: 'new', title: 'Release', label: 'Build',
       expectedBoardVersion: current().revision, expectedRevision: row('Build').revision, waits_on: ['Publish'],
     })).toThrow('waits_on would create a cycle: Build → Publish → Build')
+  })
+})
+
+// Issue #324 — the item and plan writes a v1.6.0 process runs, copied verbatim
+// from src/store.ts at tag v1.6.0. None names repo_root: its item insert leaves
+// the column empty without an error, and none of its plan writes, board_advance
+// included, can clear a folder this build stored. An item without one shows its
+// repo-relative paths as plain text, exactly as v1.6.0 does.
+const V160 = {
+  insertItem: `INSERT INTO items (
+       id, project, stream, agent, action_agent, session, kind, title, detail, next_step,
+       action_owner, impact, next_after, context, options, repo, issue_ref, head_repo,
+       status, created_at, updated_at)
+     VALUES (
+       @id, @project, @stream, @agent, @agent, @session, @kind, @title, @detail, @next_step,
+       @action_owner, @impact, @next_after, @context, @options, @repo, @issue_ref, @head_repo,
+       'open', @created_at, @updated_at)`,
+  ensureBoard: `UPDATE boards
+                   SET stream = ?, agent = ?, repo = ?, issue_ref = ?, head_repo = ?,
+                       updated_at = CASE
+                         WHEN stream IS NOT ? OR agent IS NOT ? OR repo IS NOT ? OR issue_ref IS NOT ? OR head_repo IS NOT ?
+                         THEN ? ELSE updated_at END
+                 WHERE id = ?`,
+  insertBoard: `INSERT INTO boards (id, project, stream, agent, title, repo, issue_ref, head_repo, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
+  setBoardIssuePin: `UPDATE boards SET issue_pin_repo = ?, issue_pin_number = ?
+                            WHERE id = ? AND (issue_pin_repo IS NOT ? OR issue_pin_number IS NOT ?)`,
+  bumpBoardRevision: `UPDATE boards SET revision = revision + 1, updated_at = ? WHERE id = ? RETURNING revision`,
+  syncBoardStatus: `UPDATE boards SET status = ?, updated_at = ? WHERE id = ?`,
+  archiveBoard: `UPDATE boards
+                              SET status = 'archived', revision = revision + 1, updated_at = ?
+                            WHERE id = ? AND revision = ?`,
+  // board_advance: beginNewRowAction, then advanceBoardRow's own update
+  beginNewRowAction: `
+    UPDATE board_rows
+       SET note = '',
+           next_step = '',
+           action_owner = NULL,
+           impact = '',
+           next_after = '',
+           options = NULL,
+           annotation = NULL,
+           annotation_kind = NULL,
+           annotated_at = NULL,
+           annotation_seen_at = NULL,
+           annotation_seen_by = NULL,
+           handled_at = NULL,
+           handled_seen_at = NULL,
+           handled_seen_by = NULL,
+           snoozed_until = NULL,
+           pinned_at = NULL,
+           outcome = '',
+           outcome_at = NULL,
+           action_started_at = ?,
+           action_version = ?,
+           action_agent = ?,
+           action_agent_version = ?,
+           revision = revision + 1,
+           history = ?,
+           updated_at = ?
+     WHERE id = ?`,
+  advanceRow: `
+      UPDATE board_rows
+         SET status = 'blocked',
+             note = ?,
+             next_step = ?,
+             action_owner = ?,
+             impact = ?,
+             next_after = ?,
+             options = ?,
+             context = CASE WHEN ? IS NULL THEN context ELSE ? END,
+             updated_at = ?
+       WHERE id = ?`,
+}
+
+describe('a v1.6.0 process sharing a hub with repository folders (#324)', () => {
+  const ROOT = '/Users/s/Development/agent-inbox'
+  let dir: string
+  let path: string
+  const open: Database.Database[] = []
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(Date.parse(at(60)))
+    dir = scratchDir('mixed-version-roots-')
+    path = join(dir, 'inbox.db')
+  })
+
+  afterEach(() => {
+    for (const connection of open.splice(0)) if (connection.open) connection.close()
+    rmSync(dir, { recursive: true, force: true })
+    vi.useRealTimers()
+  })
+
+  // v1.6.0's openDb() pragmas, on a hub this build already migrated
+  function olderProcess(): Database.Database {
+    const db = new Database(path)
+    open.push(db)
+    db.pragma('busy_timeout = 5000')
+    db.pragma('journal_mode = WAL')
+    return db
+  }
+
+  function hub(): Database.Database {
+    const db = openDb(path)
+    open.push(db)
+    return db
+  }
+
+  it('its item insert leaves the folder empty, and this build reads that item’s relative paths as plain text', async () => {
+    const db = hub()
+    const old = olderProcess()
+    const detail = 'Read docs/spec.md and public/app.js:7491'
+    old.prepare(V160.insertItem).run({
+      id: 'old-item', project: 'agent-inbox', stream: 'main', agent: 'old', session: null, kind: 'question',
+      title: 'Old process asks', detail, next_step: '', action_owner: null, impact: '', next_after: '',
+      context: '', options: null, repo: REPO, issue_ref: null, head_repo: null, created_at: at(1), updated_at: at(1),
+    })
+    const fresh = insertItem(db, { project: 'agent-inbox', stream: 'main', agent: 'new', kind: 'question', title: 'New asks', detail, repo: REPO, repo_root: ROOT })
+    const byId = (id: string) => getItem(db, id)!
+    expect(byId('old-item').repo_root).toBeNull()
+    expect(byId(fresh).repo_root).toBe(ROOT)
+    // the viewer's /api/items simply carries the field
+    const api = await (await createViewer(db).request('/api/items')).json() as { needsYou: Array<{ items: Array<{ id: string; repo_root: string | null }> }> }
+    expect(Object.fromEntries(api.needsYou.flatMap((group) => group.items).map((item) => [item.id, item.repo_root])))
+      .toEqual({ [fresh]: ROOT, 'old-item': null })
+
+    // the viewer's own rule: no folder, no relative links, as in v1.6.0
+    const files = (id: string) => {
+      const found: FoundLink[] = []
+      renderStructuredText(byId(id).detail, { repo: REPO, root: byId(id).repo_root, found })
+      return found.flatMap((link) => (link.kind === 'file' ? [link.path] : []))
+    }
+    expect(files('old-item')).toEqual([])
+    expect(files(fresh)).toEqual(['docs/spec.md', 'public/app.js'])
+  })
+
+  it('none of its plan writes, board_advance included, clears a stored folder; its new plans have none', () => {
+    const db = hub()
+    const old = olderProcess()
+    upsertBoard(db, {
+      project: 'agent-inbox', stream: '324-links', agent: 'new', title: 'Links', repo: REPO, repoRoot: ROOT,
+      rows: [{ label: 'Detect', status: 'tracked' }, { label: 'Open', status: 'tracked' }],
+    })
+    const board = getBoard(db, 'agent-inbox', 'Links')!
+    const id = (label: string) => board.rows.find((row) => row.label === label)!.id
+    const root = () => (getBoard(db, 'agent-inbox', 'Links') ?? listBoards(db, { status: 'archived' })[0]!).repo_root
+    expect(root()).toBe(ROOT)
+
+    // a v1.6.0 upsert or board_row: restamp the plan, change its pin, bump it
+    vi.setSystemTime(Date.parse(at(61)))
+    const now = at(61)
+    old.prepare(V160.ensureBoard).run('main', 'old', REPO, null, null, 'main', 'old', REPO, null, null, now, board.id)
+    old.prepare(V160.setBoardIssuePin).run(REPO, 324, board.id, REPO, 324)
+    old.prepare(V160.bumpBoardRevision).get(now, board.id)
+    expect(root()).toBe(ROOT)
+
+    // its board_advance moves a row on to a new blocked action
+    old.prepare(V160.beginNewRowAction).run(now, 2, 'old', 2, '[]', now, id('Open'))
+    old.prepare(V160.advanceRow).run('Check the escape.', 'Approve it.', 'task', 'Ships it.', '', null, null, null, now, id('Open'))
+    old.prepare(V160.bumpBoardRevision).get(now, board.id)
+    expect(root()).toBe(ROOT)
+
+    // its completeness sync and its viewer's archive
+    old.prepare(V160.syncBoardStatus).run('archived', now, board.id)
+    old.prepare(V160.syncBoardStatus).run('active', now, board.id)
+    const revision = (old.prepare(V160.bumpBoardRevision).get(now, board.id) as { revision: number }).revision
+    old.prepare(V160.archiveBoard).run(now, board.id, revision)
+    expect(root()).toBe(ROOT)
+
+    // a plan it creates has no folder, and this build's write that finds none keeps it so
+    old.prepare(V160.insertBoard).run('old-plan', 'agent-inbox', 'main', 'old', 'Old plan', REPO, null, null, now, now)
+    const oldPlan = getBoard(db, 'agent-inbox', 'Old plan')!
+    upsertBoard(db, { project: 'agent-inbox', stream: 'main', agent: 'new', title: 'Old plan', rows: [], repoRoot: null, expectedVersion: oldPlan.revision })
+    expect(getBoard(db, 'agent-inbox', 'Old plan')!.repo_root).toBeNull()
+  })
+})
+
+// Issue #322: this build's reply says what it did and the answer it left. That
+// answer comes from the columns every version writes, never from anything only
+// this build records, so the reply or chat answer an older process writes after
+// this build's send landed is exactly what a replay of that send reports.
+// Issue #321: a reply that expects the answer its page showed is conditioned on
+// those same columns, so an older process's answer since refuses it, while a
+// reply from an older page, which expects nothing, still replaces it.
+describe('a v1.4.0 process answering a question this build replies to (#322, #321)', () => {
+  let dir: string
+  let path: string
+  const open: Database.Database[] = []
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(Date.parse(at(60)))
+    dir = scratchDir('mixed-version-replies-')
+    path = join(dir, 'inbox.db')
+  })
+
+  afterEach(() => {
+    for (const connection of open.splice(0)) if (connection.open) connection.close()
+    rmSync(dir, { recursive: true, force: true })
+    vi.useRealTimers()
+  })
+
+  // v1.4.0's openDb() pragmas, on a hub this build already migrated
+  function olderProcess(): Database.Database {
+    const db = new Database(path)
+    open.push(db)
+    db.pragma('busy_timeout = 5000')
+    db.pragma('journal_mode = WAL')
+    return db
+  }
+
+  it('a replay of the landed send writes nothing and reports the older process’s reply or chat answer', () => {
+    const hub = openDb(path)
+    open.push(hub)
+    const old = olderProcess()
+    const intent = { clientId: 'window-w', sequence: 1, actionId: 'w-1' }
+    const [replied, told] = ['Reply', 'Chat'].map((title) => {
+      const id = insertItem(hub, { project: 'agent-inbox', stream: '', agent: 'new', kind: 'question', title })
+      expect(replyItem(hub, id, 'Original X', undefined, 'answer', intent)).toMatchObject({ ok: true, wrote: true })
+      return id
+    }) as [string, string]
+
+    vi.setSystemTime(Date.parse(at(61)))
+    const now = at(61)
+    // its viewer answers again, and its MCP server records a chat answer once the agent read Original X
+    old.prepare(V140.replyItem).run({ id: replied, reply: 'Later Y', replyContext: 'from the older viewer', kind: 'answer', now })
+    expect(markReplySeen(hub, told, getItem(hub, told)!.replied_at)).toBe(true)
+    old.prepare(V140.answerItem).get('Thursday, said in chat', null, now, now, 'answer', now, told)
+
+    const expected = {
+      [replied]: { replied_at: now, reply_source: 'inbox', reply_kind: 'answer', reply: 'Later Y', reply_context: 'from the older viewer' },
+      [told]: { replied_at: now, reply_source: 'agent', reply_kind: 'answer', reply: 'Thursday, said in chat', reply_context: null },
+    }
+    vi.setSystemTime(Date.parse(at(62)))
+    for (const id of [replied, told]) {
+      const before = getItem(hub, id)
+      expect(replyItem(hub, id, 'Original X', undefined, 'answer', intent), id)
+        .toEqual({ ok: true, wrote: false, replayed: true, answer: expected[id] })
+      expect(getItem(hub, id), id).toEqual(before)
+    }
+  })
+
+  it('an older process’s reply or chat answer refuses this build’s reply that expected what its page showed', () => {
+    const hub = openDb(path)
+    open.push(hub)
+    const old = olderProcess()
+    const shown = (id: string) => {
+      const { replied_at, reply_source, reply_kind, reply } = getItem(hub, id)!
+      return { replied_at, reply_source, reply_kind, reply }
+    }
+    const [replied, told] = ['Reply', 'Chat'].map((title) =>
+      insertItem(hub, { project: 'agent-inbox', stream: '', agent: 'new', kind: 'question', title })) as [string, string]
+    const seen = { [replied]: shown(replied), [told]: shown(told) }
+
+    vi.setSystemTime(Date.parse(at(61)))
+    const now = at(61)
+    old.prepare(V140.replyItem).run({ id: replied, reply: 'Later Y', replyContext: null, kind: 'answer', now })
+    old.prepare(V140.answerItem).get('Thursday, said in chat', null, now, now, 'answer', now, told)
+
+    vi.setSystemTime(Date.parse(at(62)))
+    for (const id of [replied, told]) {
+      const before = getItem(hub, id)
+      const intent = { clientId: 'window-w', sequence: 1, actionId: `w-${id}` }
+      expect(replyItem(hub, id, 'Original X', undefined, 'answer', intent, seen[id]), id).toMatchObject({
+        ok: false, wrote: false, reason: 'answer_changed', answer: { reply: before!.reply, reply_source: before!.reply_source },
+      })
+      expect(getItem(hub, id), id).toEqual(before)
+      // a page from before #321 expects nothing, and replaces it as it always did
+      expect(replyItem(hub, id, 'Older page', undefined, 'answer'), id).toMatchObject({ ok: true, wrote: true })
+    }
   })
 })

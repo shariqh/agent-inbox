@@ -386,3 +386,8 @@ fnm exec --using=24 npm run electron
   `spellcheck-languages.cjs` sets the system's languages at startup, before the window
   opens, on a profile with none in the system's first language. macOS keeps the system's
   own spellchecker.
+- On Windows, `windows-app.cjs` (#87) sets the AppUserModelID and toast activator CLSID
+  that the per-user MSI's Start-menu shortcut carries, before any window or notification,
+  and quits through `app.quit()` when Restart Manager asks the window to close
+  (`session-end` with `close-app`) during an MSI upgrade, repair or uninstall; Electron
+  would otherwise end the process at once. A shutdown or log-off keeps that immediate exit.

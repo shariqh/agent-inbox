@@ -2176,6 +2176,38 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   never takes away a menu that may be running). A main-frame navigation that never commits
   leaves the window revoked until its next load, with the same honest copy. None of it
   enters `public/attention.js`, badges or Needs-you.
+- **Unsigned per-user Windows MSI** *(#87, PR 2b)* — `.github/workflows/windows-msi.yml` builds
+  `Agent-Inbox-vX.Y.Z-windows-x64.msi` and `SHA256SUMS-windows.txt` from the verified folder
+  workflow it calls, proves the MSI as a fresh standard user (`.github/windows-msi/`), and
+  uploads both as one seven-day workflow artifact only when every requirement in
+  `summary.mjs` held. It is never a release asset, and the update manifest gains no Windows
+  target: installed apps accept exactly its five (#343). Four things are load-bearing.
+  (1) **Pins, checked before anything runs:** WiX 7.0.0 by URL, nuget.org's SHA-512 package
+  hash, SHA-256 and source commit, extracted rather than `dotnet tool install`ed (no SDK,
+  feed or tool store), and run through `dotnet exec --fx-version` on a pinned .NET 10.0.13
+  runtime zip, never the runner's .NET: WiX asks for .NET 8, whose support ends 2026-11-10.
+  The host's trace must name the pinned runtime. (2) **The EULA:** the project owner
+  accepted the WiX OSMF EULA v1.1 on 2026-10-23, and `-acceptEula wix7`, WiX's documented
+  switch for CI, on `build` and `msi validate`, is the only acceptance anywhere;
+  `test/windows-msi.test.ts` refuses any other form (`wix eula accept` writes a per-user
+  file). (3) **Identity is permanent:** the UpgradeCode, the AppUserModelID (the release
+  inputs' `bundleId`) and the toast activator CLSID live in `installer.json`,
+  `release/windows-inputs.json` and `electron/windows-app.cjs`; a test keeps them equal and
+  `build-msi.ps1` reads the package back and refuses any difference. Never change one once
+  an MSI ships: a new UpgradeCode installs beside the old product, and a new ID or CLSID
+  orphans the shortcut's notifications. (4) **Electron main, Windows only, two calls:**
+  `setWindowsAppIdentity` at module load, before any window or notification (otherwise
+  Electron's first notification rewrites `Programs\Agent Inbox.lnk` to its default
+  `electron.app.Agent Inbox`, or invents a CLSID when there is no shortcut), and
+  `quitWhenRestartManagerAsks` on the window: a `session-end` whose reasons include
+  `close-app`, Restart Manager's request during an MSI upgrade, repair or uninstall, calls
+  `app.quit()`. Electron 43 otherwise ends the process at once on `WM_ENDSESSION` unless a
+  quit has begun, skipping `beforeunload` (staged sends, drafts) and `will-quit`'s storage
+  flush; a shutdown or log-off keeps that immediate exit. The MSI installs per user to
+  `%LOCALAPPDATA%\Programs\Agent Inbox`, one folder for every version; its uninstall keeps
+  `~/.agent-inbox`; ICE validation waives only ICE38, ICE64 and ICE91; and a launch
+  condition refuses Windows builds below the release inputs' 17763. Windows Setup stays
+  unavailable. The installer spike (PR 2a) is retired; its MSI harness moved here.
 - **Session presence** *(#28, corrected by #45)* — every MCP session is a Live row; `status()`
   upgrades it, process exit ends it, and a row that stops being heartbeated expires after ~15 min.
   That expiry only ever fires for a **crashed** process: a live one heartbeats itself, so what

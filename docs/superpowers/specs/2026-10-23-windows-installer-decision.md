@@ -1,12 +1,14 @@
 # Decision record: the Windows x64 installer (#87, PR 2a)
 
 **Date:** 2026-10-23
-**Status:** Recommendation, measured in CI. The owner's decisions are in §8.
+**Status:** Decided. The spike (PR 2a) measured both installers and recommended the per-user
+MSI; the owner chose WiX v7 and accepted its EULA on 2026-10-23 (§8.3), and PR 2b built the
+pinned, unsigned MSI (§9).
 **Milestone:** v1.7. Refs #87.
-**Scope of this PR:** a CI-only spike workflow and this record. Nothing is signed, published or
+**Scope of PR 2a:** a CI-only spike workflow and this record. Nothing is signed, published or
 released. Setup and the in-app updater stay off on Windows, and the signed update manifest
 gains no Windows target: installed 1.3–1.6 apps accept only its exact five targets
-(`TARGET_SPECS` in `electron/update-manifest.cjs`).
+(`TARGET_SPECS` in `electron/update-manifest.cjs`). PR 2b keeps every one of those limits.
 
 ---
 
@@ -71,8 +73,10 @@ the WiX version and its licence (§8).
 
 ## §1 — What the spike did
 
-`.github/workflows/windows-installer-spike.yml` runs on `workflow_dispatch` and on pull
-requests that touch its own files. It has three jobs.
+`.github/workflows/windows-installer-spike.yml` ran on `workflow_dispatch` and on pull
+requests that touched its own files. PR 2b retired it once the decision was made: its MSI
+harness moved to `.github/windows-msi/` (§9), and its Squirrel tooling was removed. It had
+three jobs.
 
 1. **Verified folder.** It calls `windows-native-folder.yml`, now also callable, unchanged: the
    native Node runtime, the Electron folder, the archive round trip, the PE/ABI gates and the
@@ -425,3 +429,7 @@ issue.
 
    The recommendation is v7 if the owner accepts its EULA, else WiX built from source. Either way
    the authoring here carries over: it uses the v4 schema all four share.
+
+   **Decided on 2026-10-23: WiX v7.** The owner accepted the Open Source Maintenance Fee EULA
+   v1.1 for the project that day. No fee applies, since Agent Inbox has no revenue. PR 2b passes
+   that acceptance to WiX only through its documented `-acceptEula wix7` switch (§9).

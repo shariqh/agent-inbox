@@ -1,8 +1,9 @@
 # Windows x64 release foundation
 
-Windows delivery is intentionally split into dependency-ordered layers. The current
-foundation builds a native, unsigned Electron folder on `windows-2022`; it is CI evidence
-for later installer work, not a downloadable Windows release.
+Windows delivery is intentionally split into dependency-ordered layers. The foundation
+builds a native, unsigned Electron folder on `windows-2022`, and a per-user MSI is built
+from that folder ([below](#per-user-msi-87-pr-2b)). Both are CI evidence and workflow
+artifacts, not a downloadable Windows release.
 
 ## Pinned inputs
 
@@ -78,23 +79,76 @@ about nine seconds, re-running its checks first; any other error still fails at 
 The folder and reports are short-lived CI artifacts only. They are unsigned and are not
 added to release aggregation.
 
-## Installer spike (#87, PR 2a)
+## Per-user MSI (#87, PR 2b)
 
-`.github/workflows/windows-installer-spike.yml` is CI-only evidence for choosing the
-installer. It reuses this folder workflow (now also callable), rebuilds the same commit
-with only its version bumped one patch, and builds a per-user MSI (WiX) and a
-Squirrel.Windows installer (electron-winstaller) from both folders. Then a fresh,
-disposable standard user installs, launches, upgrades and uninstalls each one (and
-repairs the MSI), and every installed tree is compared byte for byte with its verified
-folder. Because Windows Server refuses unelevated per-user MSI installs by default, the
-MSI lifecycle records that refusal, sets the `DisableMSI=0` policy that Windows 10 and
-11 use for the rest of its run, and then restores the previous setting. The tools are
-pinned in `.github/windows-installer-spike/`: WiX by exact version, nuget.org package
-hash and SHA-256, installed from a private feed; electron-winstaller by lockfile
-integrity, installed without lifecycle scripts. The installers are unsigned, uploaded
-only as seven-day CI artifacts, and never published; the update manifest has no Windows
-target. The measurements, recommendation and open decisions are in [the installer
-decision record](superpowers/specs/2026-10-23-windows-installer-decision.md).
+`.github/workflows/windows-msi.yml` builds `Agent-Inbox-vX.Y.Z-windows-x64.msi` from the
+folder this workflow verified (it calls it) and writes `SHA256SUMS-windows.txt` beside it,
+in the `sha256sum -c` form the macOS release uses. It runs on `workflow_dispatch` and on
+pull requests that change the MSI's own files. The [installer decision
+record](superpowers/specs/2026-10-23-windows-installer-decision.md) explains why an MSI
+and records what the runner showed.
+
+- **Per user, one folder.** The package is `Scope="perUser"`: it installs without
+  elevation to `%LOCALAPPDATA%\Programs\Agent Inbox` for every version, and a major
+  upgrade replaces the app in place and refuses a downgrade. An MSI version holds only
+  `major.minor.patch`, so the build refuses any other version.
+- **Shortcut identity.** The Start-menu shortcut, `Programs\Agent Inbox.lnk`, carries the
+  AppUserModelID `io.github.shariqh.agent-inbox` (the release inputs' `bundleId`) and the
+  toast activator CLSID `{08973E92-A6EF-47B2-9E91-A876F4B8F210}`, and the MSI owns that
+  CLSID's `LocalServer32` registration, which Windows uses to start the app from a
+  notification. On Windows, `electron/windows-app.cjs` sets the same two values at
+  startup, so the first notification keeps the shortcut's identity rather than writing
+  Electron's own. The UpgradeCode `{086C4AF7-CD48-4050-A328-CA911E7F7423}`, the ID and
+  the CLSID must never change once an MSI has shipped; `.github/windows-msi/installer.json`,
+  `release/windows-inputs.json` and the app hold them, and a test keeps them equal.
+- **Restart Manager.** An upgrade, repair or uninstall asks a running app to close through
+  Restart Manager. The app then quits through its own path (its page saves staged sends
+  and drafts, `will-quit` flushes storage) instead of Electron ending it at once.
+- **Uninstall** removes the app folder, the shortcut, the toast activator registration
+  and the installed-apps entry, and keeps `%USERPROFILE%\.agent-inbox`, which the MSI
+  never installs, and the Chromium profile the app creates in `%APPDATA%\agent-inbox`.
+- **Repair.** A repair by product code (`msiexec /fomus`) needs the original `.msi`; after
+  the download is gone, a fresh copy of the same version's `.msi` repairs or reinstalls it.
+- **Minimum Windows.** A launch condition refuses a Windows build older than the release
+  inputs' `minimumWindowsVersion` (`10.0.17763`), read from the registry because Windows
+  Installer reports Windows 10 and 11 as 6.3. It never blocks a repair or an uninstall.
+- **Managed machines.** Windows Server, and machines whose administrators set Windows
+  Installer's `DisableMSI` policy, refuse an unelevated per-user install of an unmanaged
+  package (1625). Windows 10 and 11 allow it by default; the lifecycle records the server
+  refusal and then measures under the client default, restoring the policy afterwards.
+
+The tools are pinned in `.github/windows-msi/installer.json` and checked before anything
+runs them:
+
+- **WiX 7.0.0**, the nuget.org `wix` package, by exact URL, nuget.org's SHA-512 package
+  hash, its SHA-256 and the source commit its version reports. Its binaries come under the
+  WiX Toolset's Open Source Maintenance Fee EULA v1.1, which the project owner accepted on
+  2026-10-23 (no fee applies: the project has no revenue). The build passes that acceptance
+  only as WiX's documented `-acceptEula wix7` switch, on the two commands that need it,
+  and records no per-user acceptance on the runner.
+- **.NET 10.0.13** (`Microsoft.NETCore.App`, supported until 2028-11-14), the official
+  `win-x64` runtime zip by URL and the SHA-512 Microsoft's release metadata publishes,
+  plus its SHA-256. WiX 7 asks for .NET 8, whose support ends on 2026-11-10, so the
+  package is extracted and run through this runtime's own `dotnet exec --fx-version
+  10.0.13`: no SDK, NuGet feed, tool store or runner .NET is involved, and the host's
+  trace must name the pinned runtime.
+
+Before anything is uploaded, the build reads the package back and refuses any change to
+its identity, and ICE validation must pass with warnings as errors. Only ICE38, ICE64
+and ICE91 are waived: they hold a per-user package to a per-machine or roaming layout,
+WiX documents that `Files` in a per-user package trips them, and the lifecycle proves
+the uninstall they guard. Then a fresh, disposable standard user installs the MSI,
+launches it from its shortcut, triggers a notification (with the shortcut and without
+it), asks the running app to close through Restart Manager, upgrades it while it runs to
+the same commit rebuilt one patch version later, launches that, repairs it with and
+without its source and uninstalls it, and every installed tree is compared byte for byte
+with its verified folder. `summary.mjs` turns that evidence into the job summary and
+fails the job unless every requirement held; only then are the MSI and its checksum
+uploaded, as one seven-day artifact.
+
+Nothing is signed, published or released, and the update manifest gains no Windows
+target: installed apps accept exactly its five targets, so Windows targets wait for
+manifest v2 (#343).
 
 ## Setup remains unavailable
 
@@ -110,13 +164,11 @@ folder foundation does not claim those semantics.
 
 ## Next layers
 
-1. Build the per-user MSI the installer decision record recommends, with pinned WiX, the
-   Start-menu shortcut and the AppUserModelID the app must match, still unsigned, so its
-   install folder stays the same across upgrades.
-2. Implement the fixed-purpose Windows Setup and host adapters against that stable
+1. Implement the fixed-purpose Windows Setup and host adapters against the MSI's stable
    layout.
-3. Select an eligible protected Authenticode provider, sign and timestamp nested PE
-   files and the final installer in order, run clean Windows acceptance, and add Windows
-   to all-or-nothing release publication.
+2. Select an eligible protected Authenticode provider, sign and timestamp nested PE
+   files and then the MSI, in that order, run clean Windows 11 acceptance, and add
+   Windows to all-or-nothing release publication and, once installed apps accept it, to
+   the update manifest (#343).
 
 Windows arm64, Microsoft Store/MSIX, and auto-update remain out of scope.

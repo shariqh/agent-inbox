@@ -20,7 +20,7 @@ import { dirname, join, resolve } from 'node:path'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { rebuild } from '@electron/rebuild'
 import { installAppDependencies } from '../scripts/app-dependencies.mjs'
-import { pruneNativeAddonBuildArtifacts } from '../scripts/build-thin-app.mjs'
+import { pruneAppNodeModules } from '../scripts/build-thin-app.mjs'
 import { scratchDir } from './scratch.js'
 
 const REPO = resolve(import.meta.dirname, '..')
@@ -168,6 +168,8 @@ describe.skipIf(!NPM_CLI || !HAS_NODE_HEADERS)('staged app dependencies never ta
       dependencies: { 'prebuild-install': `file:${shimTarball}` },
     }, null, 2))
     writeFileSync(join(addon, 'lib', 'index.js'), GENUINE_JS)
+    writeFileSync(join(addon, 'LICENSE'), 'MIT License\n')
+    writeFileSync(join(addon, 'README.md'), '# better-sqlite3\n')
     writeFileSync(join(addon, 'binding.gyp'), JSON.stringify({
       targets: [{ target_name: 'better_sqlite3', sources: ['src/addon.c'] }],
     }))
@@ -207,7 +209,7 @@ describe.skipIf(!NPM_CLI || !HAS_NODE_HEADERS)('staged app dependencies never ta
       force: true,
       onlyModules: ['better-sqlite3'],
     })
-    pruneNativeAddonBuildArtifacts(root)
+    pruneAppNodeModules(root)
     expect(readFileSync(moduleFile(root, 'build', 'Release', 'better_sqlite3.node'), 'utf8')).toBe(PLANTED_ADDON)
     expect(existsSync(moduleFile(root, 'lib', 'planted.js'))).toBe(true)
   }, 120_000)
@@ -232,10 +234,12 @@ describe.skipIf(!NPM_CLI || !HAS_NODE_HEADERS)('staged app dependencies never ta
       electronVersion: ELECTRON_VERSION,
       arch: process.arch,
     })
-    pruneNativeAddonBuildArtifacts(root)
+    pruneAppNodeModules(root)
 
     expect(readFileSync(moduleFile(root, 'lib', 'index.js'), 'utf8')).toBe(GENUINE_JS)
     expect(existsSync(moduleFile(root, 'lib', 'planted.js'))).toBe(false)
+    // only what it loads, and its license (#291)
+    expect(readdirSync(moduleFile(root)).sort()).toEqual(['LICENSE', 'build', 'lib', 'package.json'])
     expect(readdirSync(moduleFile(root, 'build'))).toEqual(['Release'])
     expect(readdirSync(moduleFile(root, 'build', 'Release'))).toEqual(['better_sqlite3.node'])
     const addon = moduleFile(root, 'build', 'Release', 'better_sqlite3.node')

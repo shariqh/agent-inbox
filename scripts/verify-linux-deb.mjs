@@ -7,6 +7,7 @@ import {
   lstatSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
 } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
@@ -24,6 +25,7 @@ import {
   assertPinnedDpkgDeb,
   debArtifactName,
   installedSizeKiB,
+  renderDebChromiumLicensesLink,
   renderDebControl,
   renderDebDesktopEntry,
   renderDebLauncher,
@@ -150,16 +152,23 @@ export function verifyDataEntries({ entries, headers, inputs, sourceDateEpoch })
     inputs.layout.icon,
     inputs.layout.copyright,
     inputs.layout.electronLicense,
-    inputs.layout.chromiumLicenses,
   ]
-  const ancestors = expectedAncestors([...fixedFiles, inputs.layout.applicationDirectory])
+  // #293: Chromium's notices ship once, beside the binary; the doc path links there
+  const noticesLink = inputs.layout.chromiumLicenses
+  const notices = `${inputs.layout.applicationDirectory}/LICENSES.chromium.html`
+  const ancestors = expectedAncestors([...fixedFiles, noticesLink, inputs.layout.applicationDirectory])
   const requiredDirectories = new Set([...ancestors, inputs.layout.applicationDirectory])
   const sandboxPath = `${inputs.layout.applicationDirectory}/chrome-sandbox`
   for (const entry of entries) {
     const insideApplication =
       entry.path === inputs.layout.applicationDirectory ||
       entry.path.startsWith(`${inputs.layout.applicationDirectory}/`)
-    if (!insideApplication && !fixedFiles.includes(entry.path) && !ancestors.has(entry.path)) {
+    if (
+      !insideApplication &&
+      !fixedFiles.includes(entry.path) &&
+      entry.path !== noticesLink &&
+      !ancestors.has(entry.path)
+    ) {
       throw new LinuxDebVerificationError(`data tar contains unexpected path: ${entry.path}`)
     }
     if (entry.uid !== 0 || entry.gid !== 0 || entry.uname !== 'root' || entry.gname !== 'root') {
@@ -189,11 +198,18 @@ export function verifyDataEntries({ entries, headers, inputs, sourceDateEpoch })
       )
     }
   }
-  for (const path of fixedFiles) {
+  for (const path of [...fixedFiles, notices]) {
     const entry = map.get(path)
     if (!entry || entry.type !== '0') {
       throw new LinuxDebVerificationError(`data tar is missing required plain file: ${path}`)
     }
+  }
+  const expectedLink = renderDebChromiumLicensesLink(inputs)
+  const link = map.get(noticesLink)
+  if (!link || link.type !== '2' || link.link !== expectedLink) {
+    throw new LinuxDebVerificationError(
+      `${noticesLink} must be a link to ${expectedLink}, the one copy of Chromium's notices`,
+    )
   }
   for (const path of requiredDirectories) {
     const entry = map.get(path)
@@ -321,7 +337,6 @@ export function verifyLinuxDeb({
     inputs.layout.icon,
     inputs.layout.copyright,
     inputs.layout.electronLicense,
-    inputs.layout.chromiumLicenses,
   ]
   const data = withDebTarFile({ deb: artifact, member: 'data' }, (tar) =>
     parseTarArchive(tar, { capturePaths: capturedDataPaths }))
@@ -381,11 +396,12 @@ export function verifyLinuxDeb({
       inputsPath: linuxInputsFile,
       sourceCommit,
     })
+    const extractedNoticesLink = join(extracted.root, ...inputs.layout.chromiumLicenses.split('/'))
     if (
       !packageFileContent(dataMap, inputs.layout.electronLicense)
         .equals(readFileSync(join(extractedApp, 'LICENSE'))) ||
-      !packageFileContent(dataMap, inputs.layout.chromiumLicenses)
-        .equals(readFileSync(join(extractedApp, 'LICENSES.chromium.html')))
+      !lstatSync(extractedNoticesLink).isSymbolicLink() ||
+      realpathSync(extractedNoticesLink) !== realpathSync(join(extractedApp, 'LICENSES.chromium.html'))
     ) {
       throw new LinuxDebVerificationError('packaged upstream notices do not match the Electron folder')
     }

@@ -19,7 +19,7 @@ import { installAppDependencies } from './app-dependencies.mjs'
 import {
   APP_NAME,
   copyRequiredTree,
-  pruneNativeAddonBuildArtifacts,
+  pruneAppNodeModules,
 } from './build-thin-app.mjs'
 import { copyTreePreservingMode, verifyPayload } from './runtime-payload.mjs'
 import { assertRuntimeSourceCommit } from './runtime-provenance.mjs'
@@ -137,7 +137,7 @@ export async function buildWindowsThinApp({
         npm_config_arch: 'x64',
       },
     })
-    pruneNativeAddonBuildArtifacts(stageRoot)
+    pruneAppNodeModules(stageRoot)
     execFileSync(process.execPath, [
       join(repoRoot, 'scripts', 'write-setup-info.mjs'),
       '--release', join(stageRoot, 'setup-info.json'),

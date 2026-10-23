@@ -24,6 +24,11 @@ against headers node-gyp would download. Neither file enters the runtime payload
   extraction, staged with the Node-ABI dependency tree, and self-tested on Windows x64:
   the hook selftest, the allocation-driven SQLite cleanup check (#135), and the MCP
   server probe (initialize + tools/list) all run before the manifest is written.
+- Both `node_modules` copies, the app's and the runtime's, are pruned before they are
+  tested or manifested ([What node_modules ships](macos-release.md#what-node_modules-ships-291)),
+  and the folder gate refuses either if it still carries anything the prune removes. That
+  takes better-sqlite3's MSBuild `obj` and `.tlog` files and `test_extension.node` out of
+  the runtime, the folder's deepest paths and an unsigned PE the installer spike counted.
 - The input contract pins Windows `10.0.17763` as the minimum OS version for later
   package acceptance; this layer's native evidence itself runs on Windows Server 2022.
 - The Electron app is packaged natively with a separate Electron-ABI

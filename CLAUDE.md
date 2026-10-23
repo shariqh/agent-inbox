@@ -1684,6 +1684,21 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   whose canonical Node+entry pair is still structurally referenced. Release signing order
   is fixed: nested runtime Mach-O files, manifests, setup-info, outer app without
   `--deep`, then strict verification; nested bytes never change afterward.
+  *(#291)* Every shipped `node_modules` copy, the app's and each runtime's, is pruned by
+  `scripts/prune-node-modules.mjs` before anything tests, manifests or signs it:
+  better-sqlite3 keeps only `package.json`, `lib/` and `build/Release/better_sqlite3.node`
+  (what it and `bindings` load), and every package loses `*.d.ts`/`*.d.mts`/`*.d.cts`,
+  source maps and markdown. A license, notice, copying, copyright, authors, contributors or
+  patents file, or anything in a folder named like one, is never removed, and a package
+  with no license file keeps its root markdown. The prune refuses, before removing anything, a better-sqlite3 whose entry
+  points leave `lib/` or whose addon is missing. Staging prunes right after
+  `node_modules` normalization, so the probes, hook selftest, SQLite check and MCP probe
+  run on what ships; the thin-app builders (`pruneAppNodeModules`) prune after the
+  Electron rebuild and before packaging; `package:app` prunes before its graph check,
+  which stays exact because no package is removed. The Linux, Windows and macOS thin-app
+  gates refuse an unpruned app or runtime (`assertPrunedNodeModules`), and
+  `signPortableRuntime` signs exactly `RUNTIME_MACHO_FILES` (`bin/node` and the addon),
+  refusing any other Mach-O before signing a byte.
 - **Signed update-manifest trust contract** *(#106 Layer 1)* — protected releases contain
   five packages, package-only `SHA256SUMS.txt`, deterministic `update-manifest.json`, and
   `update-manifest.json.sig`. The exact manifest bytes are signed with Ed25519 after

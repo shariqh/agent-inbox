@@ -4,11 +4,12 @@ import {
   mkdirSync,
   readFileSync,
   readlinkSync,
+  realpathSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
   buildLinuxDeb,
@@ -17,6 +18,8 @@ import {
 import {
   assertPinnedDpkgDeb,
   debArtifactName,
+  installedSizeKiB,
+  renderDebChromiumLicensesLink,
   renderDebControl,
   renderDebDesktopEntry,
   renderDebLauncher,
@@ -296,6 +299,8 @@ describe('Linux DEB package contract', () => {
       '',
     ].join('\n'))
     expect(() => renderDebControl(inputs, x64, '1.0.1', 0)).toThrow(/Installed-Size/)
+    // one copy of Chromium's notices (#293): relative, inside /usr (Debian policy 10.5)
+    expect(renderDebChromiumLicensesLink(inputs)).toBe('../../../lib/agent-inbox/LICENSES.chromium.html')
   })
 
   it('requires the exact native dpkg-deb identity', () => {
@@ -359,6 +364,17 @@ describe('Linux DEB package contract', () => {
       'usr/share/doc/agent-inbox/LICENSES.chromium.html',
     ]
     for (const path of required) expect(lstatSync(join(packageRoot, path))).toBeDefined()
+    // #293: one copy of Chromium's notices, beside the binary; the doc path links to it
+    const docNotices = join(packageRoot, 'usr/share/doc/agent-inbox/LICENSES.chromium.html')
+    expect(lstatSync(docNotices).isSymbolicLink()).toBe(true)
+    expect(readlinkSync(docNotices)).toBe('../../../lib/agent-inbox/LICENSES.chromium.html')
+    expect(realpathSync(docNotices)).toBe(realpathSync(join(packageRoot, 'usr/lib/agent-inbox/LICENSES.chromium.html')))
+    expect(readFileSync(docNotices, 'utf8')).toBe('<p>notices</p>\n')
+    expect(Math.floor(lstatSync(docNotices).mtimeMs / 1000)).toBe(1_700_000_000)
+    // Installed-Size counts the notices once
+    expect(installedSizeKiB(dirname(docNotices))).toBe(Math.ceil(
+      (lstatSync(join(packageRoot, 'usr/share/doc/agent-inbox/copyright')).size + 'electron license\n'.length) / 1024,
+    ))
     expect(lstatSync(packageRoot).mode & 0o777).toBe(0o755)
     expect(lstatSync(join(packageRoot, 'DEBIAN')).mode & 0o777).toBe(0o755)
     expect(lstatSync(join(packageRoot, 'usr/share/icons/hicolor/1024x1024/apps')).mode & 0o777)
@@ -405,7 +421,7 @@ describe('Linux DEB package contract', () => {
       inputs.layout.icon,
       inputs.layout.copyright,
       inputs.layout.electronLicense,
-      inputs.layout.chromiumLicenses,
+      `${inputs.layout.applicationDirectory}/LICENSES.chromium.html`,
     ]
     const metadata = {
       uid: 0,
@@ -442,6 +458,14 @@ describe('Linux DEB package contract', () => {
         type: '0',
         mode: 0o4755,
       },
+      {
+        ...metadata,
+        path: inputs.layout.chromiumLicenses,
+        type: '2',
+        mode: 0o777,
+        size: 0,
+        link: '../../../lib/agent-inbox/LICENSES.chromium.html',
+      },
     ]
     expect(() => verifyDataEntries({
       entries,
@@ -449,6 +473,33 @@ describe('Linux DEB package contract', () => {
       inputs,
       sourceDateEpoch: epoch,
     })).not.toThrow()
+
+    // #293: one copy of Chromium's notices, beside the binary, linked from the docs
+    const withNotices = (doc: Partial<(typeof entries)[number]> | null) => entries.flatMap((entry) => {
+      if (entry.path !== inputs.layout.chromiumLicenses) return [entry]
+      return doc ? [{ ...entry, ...doc }] : []
+    })
+    for (const doc of [
+      { type: '0', mode: 0o644, size: 1, link: '' },
+      { link: '/usr/lib/agent-inbox/LICENSES.chromium.html' },
+      { link: '../../../lib/agent-inbox/LICENSE' },
+      null,
+    ]) {
+      expect(() => verifyDataEntries({
+        entries: withNotices(doc),
+        headers: [],
+        inputs,
+        sourceDateEpoch: epoch,
+      }), JSON.stringify(doc)).toThrow(
+        'usr/share/doc/agent-inbox/LICENSES.chromium.html must be a link to ../../../lib/agent-inbox/LICENSES.chromium.html',
+      )
+    }
+    expect(() => verifyDataEntries({
+      entries: entries.filter((entry) => entry.path !== 'usr/lib/agent-inbox/LICENSES.chromium.html'),
+      headers: [],
+      inputs,
+      sourceDateEpoch: epoch,
+    })).toThrow(/missing required plain file: usr\/lib\/agent-inbox\/LICENSES\.chromium\.html/)
 
     expect(() => verifyDataEntries({
       entries: entries.filter((entry) => !entry.path.endsWith('/chrome-sandbox')),

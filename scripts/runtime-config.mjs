@@ -139,11 +139,14 @@ export function classifyRuntimeConfig({ nodeBinPath, entryPath, runtimeRoot, man
 // `args[i]`, each `env` value, a hook's one command string, a path with a
 // space in it) and split into the pieces a command line or `KEY=value` is made
 // of. Runtime R is in use by a config when
-//   (a) any candidate in it holds R's id as a whole path segment (`/<id>/`, or
-//       the id at either end), unless that candidate is an absolute or `~/`
-//       path whose stat fails with ENOENT or ENOTDIR. So a bare id, an `env`
-//       value, a `$HOME/…` or relative path, another root's copy of R (ids are
-//       content-derived) and a path stat cannot follow all count; or
+//   (a) any candidate in it names R's id as a whole name (no runtime-id
+//       character on either side, as runtimeIdInText), unless the text up to
+//       and including the id is an absolute or `~/` path to a folder whose
+//       stat fails with ENOENT or ENOTDIR. So a bare id, an `env` value, a
+//       `$HOME/…` or relative path, shell text glued to it (`cd <R>&&…`,
+//       `(cd <R>)`, `` `printf %s <R>`/bin/node ``), a file R lacks, another
+//       root's copy of R (ids are content-derived) and a path stat cannot
+//       follow all count; or
 //   (b) an absolute or `~/` candidate in a LAUNCHER leads into R: R's folder,
 //       by (dev, ino), is the candidate's resolved path or a folder above it.
 //       No path is compared as a string, so a symlinked shortcut, another
@@ -227,11 +230,15 @@ function candidatesOf(texts) {
   return out
 }
 
-/** Does `candidate` hold `runtimeId` as a whole path segment: `/<id>/`, or the id at either end? */
-function holdsIdSegment(candidate, runtimeId) {
-  for (let at = candidate.indexOf(runtimeId); at >= 0; at = candidate.indexOf(runtimeId, at + 1)) {
-    const end = at + runtimeId.length
-    if ((at === 0 || candidate[at - 1] === '/') && (end === candidate.length || candidate[end] === '/')) return true
+/**
+ * Rule (a) for one candidate: does it name `runtimeId` as a whole name
+ * (runtimeIdInText's boundary), other than at the end of a path to a folder
+ * that is not there? The text up to and including the id is that folder.
+ */
+function namesById(candidate, runtimeId, home) {
+  for (const at of wholeNames(candidate, runtimeId)) {
+    const folder = placedPath(candidate.slice(0, at + runtimeId.length), home)
+    if (folder === null || !isAbsence(statError(folder))) return true
   }
   return false
 }
@@ -424,18 +431,12 @@ export function scanRuntimeReferences({ runtimeRoot, runtimeIds, files, home = n
       checked.push({ file, status: 'unknown', reason })
       continue
     }
-    // (a) the id as a path segment, anywhere in the config
+    // (a) the id as a whole name, anywhere in the config
     const values = stringValues(config.value)
     for (const { id } of runtimes) {
       if (found.has(id)) continue
       for (const text of values) {
-        if (!text.includes(id)) continue
-        const named = [...candidatesOf([text])].some((c) => {
-          if (!holdsIdSegment(c, id)) return false
-          const path = placedPath(c, home)
-          return path === null || !isAbsence(statError(path))
-        })
-        if (named) {
+        if (text.includes(id) && [...candidatesOf([text])].some((c) => namesById(c, id, home))) {
           found.add(id)
           break
         }

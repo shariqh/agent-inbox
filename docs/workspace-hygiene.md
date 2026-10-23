@@ -156,8 +156,8 @@ copy is `"/Applications/Agent Inbox.app/Contents/Resources/app/runtime/<platform
 "Uses" is one rule, shared with the installer's own prune: a host config
 (`~/.claude.json` in every scope, `~/.claude/settings.json`, `~/.claude/settings.local.json`,
 `~/.copilot/mcp-config.json` or Claude Desktop's config) naming the runtime's id, unless as
-a path to nothing, or a launcher in one leading into it, through a symlink or whatever its
-spelling; or a running process naming its id. A config it cannot
+a path to a folder that is not there, or a launcher in one leading into it, through a
+symlink or whatever its spelling; or a running process naming its id. A config it cannot
 read means nothing is removed. Project-scope configs (`<project>/.mcp.json`,
 `<project>/.claude/settings*.json`) are not read.
 

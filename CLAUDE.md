@@ -1489,12 +1489,14 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   string values (`~/.claude.json` in every scope, `~/.claude/settings.json`,
   `~/.claude/settings.local.json`, `~/.copilot/mcp-config.json`, Claude Desktop's config on
   macOS or Linux), each whole (a path with a space stays one path) and split into
-  command-line and `KEY=value` pieces. Runtime R is used when (a) a candidate holds R's id
-  as a whole path segment (`/<id>/`, or at either end), unless it is an absolute or `~/`
-  path whose stat fails with ENOENT or ENOTDIR (so another root's copy of the same id
-  counts); or (b) an absolute or `~/` candidate in a launcher (any object with a string
-  `command`) resolves to R or into it, compared by `(dev, ino)` and never as a path string,
-  so a symlinked shortcut, another case, the other Unicode form and a firmlink all count.
+  command-line and `KEY=value` pieces. Runtime R is used when (a) a candidate names R's id
+  as a whole name (no runtime-id character on either side, as `runtimeIdInText`), unless
+  the text up to and including the id is an absolute or `~/` path to a folder whose stat
+  fails with ENOENT or ENOTDIR (so shell text glued to it, such as `cd <R>&&…`, a file R
+  lacks and another root's copy of the same id all count); or (b) an absolute or `~/`
+  candidate in a launcher (any object with a string `command`) resolves to R or into it,
+  compared by `(dev, ino)` and never as a path string, so a symlinked shortcut, another
+  case, the other Unicode form and a firmlink all count.
   Errors only ever keep: any other stat error counts under (a), and under (b) keeps every
   runtime when what resolves of the path lies in the runtime root. Against the verified
   `{command, args[0]}` pair the installer used to require it only keeps more: every pair

@@ -115,6 +115,24 @@ export const USE_SHAPES: Array<[string, UseShape]> = [
     cpSync(dir, copy, { recursive: true })
     return { file: configFiles(home).copilot, label: 'Copilot CLI', value: { mcpServers: { 'agent-inbox': launcher(copy) } } }
   }],
+  // shell punctuation glued to the id: the text up to it still names its folder
+  ['cd <R>&& in an sh -c string', (dir, home) => ({
+    file: configFiles(home).claude, label: 'Claude Code', value: { mcpServers: { inbox: { command: '/bin/sh', args: ['-c', `cd ${dir}&&exec ./bin/node dist/mcp-server.js`] } } },
+  })],
+  ['a `printf %s <R>` substitution', (dir, home) => ({
+    file: configFiles(home).claude, label: 'Claude Code', value: { mcpServers: { inbox: { command: '/bin/sh', args: ['-c', `exec \`printf %s ${dir}\`/bin/node dist/mcp-server.js`] } } },
+  })],
+  ['a (cd <R>) subshell', (dir, home) => ({
+    file: configFiles(home).claude, label: 'Claude Code', value: { mcpServers: { inbox: { command: '/bin/sh', args: ['-c', `(cd ${dir})&&exec node dist/mcp-server.js`] } } },
+  })],
+  // the whole string is no path, so only the folder of the piece `<R>&&exec` decides
+  ['cd <R>&& in a hook\'s one command string', (dir, home) => ({
+    file: configFiles(home).settings, label: 'Claude Code settings', value: { hooks: { Stop: [{ hooks: [{ type: 'command', command: `/bin/sh -c 'cd ${dir}&&exec ./bin/node dist/hook-cli.js stop'` }] }] } },
+  })],
+  // the folder ending at the id is there, though the file is not
+  ['a path into it to a file it does not have', (dir, home) => ({
+    file: configFiles(home).settings, label: 'Claude Code settings', value: { statusLine: { type: 'command', command: join(dir, 'dist', 'status.js') } },
+  })],
 ]
 
 /**

@@ -143,11 +143,11 @@ Run the build before `npm run electron`; the development shell starts the built
   rule in `scripts/runtime-config.mjs` (`scanRuntimeReferences`), shared with
   the installer's own prune and rollback: any value in `~/.claude.json` (every
   scope), `~/.claude/settings*.json`, `~/.copilot/mcp-config.json` or Claude
-  Desktop's config holding the id as a path segment (unless it is a path to
-  nothing), or a launcher path leading into it, compared by `(dev, ino)` and
-  never as a string. A config that exists but cannot be read means nothing is
-  removed. Project-scope configs are deliberately not read. Setup's Runtimes
-  block (#294 part B) lists the runtimes from `src/runtime-inventory.ts`, a
+  Desktop's config naming the id as a whole name (unless at the end of a path to
+  a folder that is not there), or a launcher path leading into it, compared by
+  `(dev, ino)` and never as a string. A config that exists but cannot be read
+  means nothing is removed. Project-scope configs are deliberately not read.
+  Setup's Runtimes block (#294 part B) lists the runtimes from `src/runtime-inventory.ts`, a
   viewer-only, read-only mirror of that rule held to agreement with the script
   by `test/runtime-inventory.test.ts`; it walks only unused runtimes, keeps
   answers per folder and config stamp, and its one Remove re-reads the list

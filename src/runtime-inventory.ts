@@ -69,6 +69,8 @@ const MAX_LAUNCHER_PATHS = 4096
 const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/
 // what a string splits into pieces at: the words of a command line and each side of KEY=value
 const PIECE_SEPARATORS = /[\s'"=:;,]+/
+// what a runtime id is made of: one of these on either side makes a longer name
+const RUNTIME_ID_CHAR = /[0-9A-Za-z._+-]/
 const LABELS = new Map([
   ['.claude.json', 'Claude Code'],
   ['settings.json', 'Claude Code settings'],
@@ -268,11 +270,15 @@ function candidatesOf(texts: string[]): Set<string> {
   return out
 }
 
-// Whether `candidate` holds `id` as a whole path segment: `/<id>/`, or the id at either end.
-function holdsIdSegment(candidate: string, id: string): boolean {
+// Rule (a) for one candidate: whether it names `id` as a whole name, other than
+// at the end of a path to a folder that is not there. The text up to and
+// including the id is that folder.
+function namesById(candidate: string, id: string, home: string): boolean {
   for (let at = candidate.indexOf(id); at >= 0; at = candidate.indexOf(id, at + 1)) {
     const end = at + id.length
-    if ((at === 0 || candidate[at - 1] === '/') && (end === candidate.length || candidate[end] === '/')) return true
+    if ((at > 0 && RUNTIME_ID_CHAR.test(candidate[at - 1]!)) || (end < candidate.length && RUNTIME_ID_CHAR.test(candidate[end]!))) continue
+    const folder = placedPath(candidate.slice(0, end), home)
+    if (folder === null || !isAbsence(statError(folder))) return true
   }
   return false
 }
@@ -356,15 +362,10 @@ function scanUses(home: string, runtimeRoot: string, ids: string[]): { uses: Map
         }
       }
     }
-    // (a) the id as a path segment, anywhere in the config
+    // (a) the id as a whole name, anywhere in the config
     const values = stringValues(config.value)
     for (const { id } of runtimes) {
-      const named = values.some((text) => text.includes(id) && [...candidatesOf([text])].some((c) => {
-        if (!holdsIdSegment(c, id)) return false
-        const path = placedPath(c, home)
-        return path === null || !isAbsence(statError(path))
-      }))
-      if (named) use(id, label)
+      if (values.some((text) => text.includes(id) && [...candidatesOf([text])].some((c) => namesById(c, id, home)))) use(id, label)
     }
   }
   return { uses }

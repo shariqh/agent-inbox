@@ -19,7 +19,7 @@ $PSNativeCommandUseErrorActionPreference = $true
 trap { Write-Host "build-msi.ps1 failed: $_`n$($_.InvocationInfo.PositionMessage)`n$($_.ScriptStackTrace)"; break }
 
 $pins = Get-Content -Raw (Join-Path $PSScriptRoot 'installer.json') | ConvertFrom-Json
-$tools = Get-Content -Raw $Tools | ConvertFrom-Json
+$installed = Get-Content -Raw $Tools | ConvertFrom-Json
 $release = Get-Content -Raw $Inputs | ConvertFrom-Json
 $App = [IO.Path]::GetFullPath($App)
 $appPackage = Get-Content -Raw (Join-Path $App 'resources\app\package.json') | ConvertFrom-Json
@@ -40,8 +40,8 @@ $intermediate = [IO.Path]::GetFullPath((Join-Path $Output "obj-$version"))
 
 # WiX runs only on the pinned runtime, with no variable pointing the host elsewhere.
 Get-ChildItem Env: | Where-Object { $_.Name -match '^(DOTNET_|COREHOST_)' } | ForEach-Object { Remove-Item -LiteralPath "Env:$($_.Name)" }
-$dotnet = $tools.dotnet.muxer
-$wixDll = $tools.wix.entryPoint
+$dotnet = $installed.dotnet.muxer
+$wixDll = $installed.wix.entryPoint
 function Invoke-Wix([string[]]$Arguments) {
   & $dotnet exec --fx-version $pins.dotnet.version $wixDll @Arguments
 }
@@ -106,7 +106,7 @@ $built = [ordered]@{
   kind = 'msi'
   version = $version
   seconds = [math]::Round($timer.Elapsed.TotalSeconds, 1)
-  wix = $tools.wix.reportedVersion
+  wix = $installed.wix.reportedVersion
   dotnet = "$($pins.dotnet.framework) $($pins.dotnet.version)"
   msi = [ordered]@{
     name = Split-Path -Leaf $msi

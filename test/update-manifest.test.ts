@@ -13,13 +13,26 @@ import {
   signManifest,
   planReleaseHistoryContinuity,
   authorizeReleaseContinuity,
+  ORIGINAL_UPDATE_KEY,
+  generateManifestV2,
+  projectV1,
+  restampV1,
+  planReleaseHistory,
+  authorizeReleaseHistory,
+  checkReleaseManifest,
+  deriveV1,
+  planOriginalKeySignature,
+  checkOriginalKeySignature,
 } from '../scripts/update-manifest.mjs'
 import type {
+  ManifestHistoryAsset,
+  ManifestHistoryPlan,
   ReleaseEvidence,
   ReleaseAssetEvidence,
   ReleaseLike,
   ReleaseAssetLike,
 } from '../scripts/update-manifest.d.mts'
+import { macosRelease } from '../scripts/macos-release-kind.mjs'
 
 // Verification-related exports (registry/key-id/manifest/envelope parsing,
 // validation, and raw-byte signature verification) are tested against the
@@ -46,21 +59,31 @@ type UpdateRegistry = import('../electron/update-manifest.cjs').UpdateRegistry
 const {
   UPDATE_REGISTRY_SCHEMA,
   UPDATE_MANIFEST_SCHEMA,
+  UPDATE_MANIFEST_SCHEMA_V2,
+  UPDATE_ENVELOPE_SCHEMA,
   UPDATE_MANIFEST_KIND,
   UPDATE_REPOSITORY,
   MANIFEST_LIFETIME_DAYS,
   MANIFEST_ASSET_NAME,
   SIGNATURE_ASSET_NAME,
+  MANIFEST_V2_ASSET_NAME,
+  SIGNATURE_V2_ASSET_NAME,
   UpdateManifestError,
+  TARGET_SPECS,
+  TARGET_SPECS_V2,
+  targetTuple,
   deriveKeyId,
   parseRegistry,
   validateRegistry,
   validateManifest,
   parseManifest,
+  validateManifestV2,
+  parseManifestV2,
   serializeEnvelope,
   validateEnvelope,
   parseEnvelope,
   verifyManifest,
+  verifyManifestV2,
 } = updateManifestRuntime
 
 const root = resolve(process.cwd())
@@ -1572,5 +1595,1084 @@ describe('CLI (scripts/update-manifest.mjs) — env-only private key, determinis
       expect(signResult.stderr).not.toContain(good.privateKeyPem)
       expect(signResult.stderr).not.toContain(canonical)
     }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Update manifest v2 (#343; design §5 to §7): the schema-2 reader and the publisher's
+// pure functions. Nothing in the app or the release workflow calls them yet: #343's
+// second PR wires the client and the signer to them together (design §7.5).
+// ---------------------------------------------------------------------------
+
+const DAY_MS = 24 * 60 * 60 * 1000
+
+type Signer = ReturnType<typeof makeEphemeralKeypair>
+type Kind = 'universal' | 'arm64'
+type RawTarget = Record<string, unknown>
+type RawManifest = Record<string, unknown> & {
+  publishedAt: string
+  source: Record<string, unknown>
+  targets: RawTarget[]
+}
+
+function isoAfter(start: string, ms: number): string {
+  return new Date(Date.parse(start) + ms).toISOString().replace(/\.\d{3}Z$/, 'Z')
+}
+
+function rawBytes(value: unknown): Buffer {
+  return Buffer.from(`${JSON.stringify(value, null, 2)}\n`, 'utf8')
+}
+
+/** An envelope over exact bytes, whatever their schema, signed by each signer in key order. */
+function signBytes(manifestBytes: Buffer, ...signers: Signer[]): Buffer {
+  return serializeEnvelope({
+    schema: 1,
+    manifestSha256: sha256Hex(manifestBytes),
+    signatures: signers
+      .map((signer) => ({
+        algorithm: 'ed25519' as const,
+        keyId: signer.keyId,
+        signature: edSign(null, manifestBytes, signer.privateKeyPem).toString('base64'),
+      }))
+      .sort((left, right) => (left.keyId < right.keyId ? -1 : 1)),
+  })
+}
+
+/** buildEvidence for an arm64 release: the arm64 DMG in place of the universal one. */
+function buildArm64Evidence(overrides: Partial<ReleaseEvidence> = {}): ReleaseEvidence {
+  const evidence = buildEvidence(overrides)
+  return {
+    ...evidence,
+    assets: evidence.assets.map((asset) => (asset.platform === 'darwin'
+      ? { ...asset, architecture: 'arm64' as const, name: `Agent-Inbox-${evidence.tag}-arm64.dmg` }
+      : asset)),
+  }
+}
+
+function evidenceFor(kind: Kind, overrides: Partial<ReleaseEvidence> = {}): ReleaseEvidence {
+  return kind === 'universal' ? buildEvidence(overrides) : buildArm64Evidence(overrides)
+}
+
+function v2Release(kind: Kind = 'universal', signer: Signer = makeEphemeralKeypair()) {
+  const registry = makeRegistry(signer)
+  const evidence = evidenceFor(kind)
+  const generated = generateManifestV2({ registry, evidence, minimumMacosVersion, publishedAt, kind })
+  return { signer, registry, evidence, ...generated, raw: JSON.parse(generated.bytes.toString('utf8')) as RawManifest }
+}
+
+function without(target: RawTarget | undefined, key: string): RawTarget {
+  const copy = { ...target }
+  delete copy[key]
+  return copy
+}
+
+describe('update manifest v2 — the schema-2 reader (design §5.4)', () => {
+  it('knows six target types in part-by-part order, the five of schema 1 plus the arm64 DMG', () => {
+    expect(UPDATE_MANIFEST_SCHEMA_V2).toBe(2)
+    expect(UPDATE_ENVELOPE_SCHEMA).toBe(1)
+    expect(MANIFEST_V2_ASSET_NAME).toBe('update-manifest-v2.json')
+    expect(SIGNATURE_V2_ASSET_NAME).toBe('update-manifest-v2.json.sig')
+    expect(TARGET_SPECS_V2.map(targetTuple)).toEqual(['darwin/arm64/dmg', ...EXPECTED_TARGET_ORDER])
+    expect(TARGET_SPECS_V2.slice(1)).toEqual(TARGET_SPECS)
+    // The catalog's DMG names are the ones the measured macOS kind gives (#341).
+    for (const kind of ['universal', 'arm64'] as const) {
+      const macos = macosRelease({ kind, tag })
+      const spec = TARGET_SPECS_V2.find((candidate) => candidate.platform === 'darwin' && candidate.architecture === macos.architecture)
+      expect(spec?.filename(tag, version)).toBe(macos.dmgName)
+      expect(spec?.installStrategy).toBe('macos-dmg')
+    }
+  })
+
+  it('accepts any lifetime above 0 and up to 180 days, and refuses 0 or anything longer', () => {
+    const { raw } = v2Release()
+    const cases: Array<[string, number, boolean]> = [
+      ['180 days', 180 * DAY_MS, true],
+      ['30 days', 30 * DAY_MS, true],
+      ['1 second', 1000, true],
+      ['0', 0, false],
+      ['-1 day', -DAY_MS, false],
+      ['181 days', 181 * DAY_MS, false],
+      ['180 days and 1 second', 180 * DAY_MS + 1000, false],
+    ]
+    for (const [label, ms, accepted] of cases) {
+      const value = { ...raw, expiresAt: isoAfter(raw.publishedAt, ms) }
+      if (accepted) expect(() => validateManifestV2(value), label).not.toThrow()
+      else expect(() => validateManifestV2(value), label).toThrow(UpdateManifestError)
+    }
+  })
+
+  it('ignores keys it does not know, at the top level, in source and in a known target', () => {
+    const { raw, manifest } = v2Release()
+    const value = {
+      ...raw,
+      channel: 'stable',
+      source: { ...raw.source, ref: 'refs/tags/v1.2.3' },
+      targets: raw.targets.map((target, index) => (index === 0
+        ? { ...target, notarizedAt: '2026-01-01T00:00:00Z', delta: { from: '1.2.2' } }
+        : target)),
+    }
+    expect(validateManifestV2(value)).toEqual(manifest)
+    expect(validateManifestV2(value)).not.toHaveProperty('channel')
+    expect(validateManifestV2(value).source).toEqual({ commit: sourceCommit, tree: sourceTree })
+  })
+
+  it('skips a target type it does not know, after checking its name, uniqueness and order', () => {
+    const { raw, manifest } = v2Release()
+    // Nothing but the three type names of an unknown type is ever read.
+    const windows = { platform: 'win32', architecture: 'x64', packageType: 'msix', filename: 7, url: null }
+    expect(validateManifestV2({ ...raw, targets: [...raw.targets, windows] }).targets).toEqual(manifest.targets)
+    expect(() => validateManifestV2({ ...raw, targets: [...raw.targets, { ...windows, packageType: 'a'.repeat(32) }] })).not.toThrow()
+    for (const name of [{ platform: 'Win32' }, { architecture: '-x64' }, { packageType: 'a'.repeat(33) }, { platform: 'win 32' }, { packageType: '' }, { architecture: 64 }]) {
+      expect(() => validateManifestV2({ ...raw, targets: [...raw.targets, { ...windows, ...name }] }), JSON.stringify(name))
+        .toThrow(UpdateManifestError)
+    }
+    expect(() => validateManifestV2({ ...raw, targets: [...raw.targets, windows, { ...windows }] })).toThrow(/duplicate target for win32\/x64\/msix/)
+    expect(() => validateManifestV2({ ...raw, targets: [windows, ...raw.targets] })).toThrow(/must be sorted/)
+    expect(() => validateManifestV2({ ...raw, targets: [...raw.targets, 'win32/x64/msix'] })).toThrow(/must be a plain object/)
+  })
+
+  it('orders target types part by part, so a name that extends another sorts after it', () => {
+    const { raw } = v2Release()
+    const [dmg, ...linux] = raw.targets
+    // Part by part, "linux" sorts before "linux-musl". The joined strings would sort the other
+    // way, because "-" comes before "/": this reader can never change, so the rule is pinned.
+    const musl = { platform: 'linux-musl', architecture: 'x64', packageType: 'appimage' }
+    expect(() => validateManifestV2({ ...raw, targets: [dmg, ...linux, musl] })).not.toThrow()
+    expect(() => validateManifestV2({ ...raw, targets: [dmg, musl, ...linux] })).toThrow(/must be sorted by platform, then architecture, then packageType/)
+    const dmg2 = { platform: 'darwin', architecture: 'universal', packageType: 'dmg-2' }
+    expect(() => validateManifestV2({ ...raw, targets: [dmg, dmg2, ...linux] })).not.toThrow()
+    expect(() => validateManifestV2({ ...raw, targets: [dmg2, dmg, ...linux] })).toThrow(/must be sorted/)
+  })
+
+  it('leaves a host without a target when its change ships only under a new type name', () => {
+    const { raw } = v2Release('arm64')
+    const [arm64Dmg, ...linux] = raw.targets
+    const renamed = { ...arm64Dmg, packageType: 'dmg-2', filename: `Agent-Inbox-${tag}-arm64-2.dmg` }
+    const validated = validateManifestV2({ ...raw, targets: [renamed, ...linux] })
+    // No Mac finds its target any more; every Linux host still finds its own package.
+    expect(validated.targets.map(targetTuple)).toEqual(EXPECTED_TARGET_ORDER.slice(1))
+  })
+
+  it('rejects the whole manifest when a known type misses or breaks a required field, as schema 1 does', () => {
+    const { raw } = v2Release()
+    const [dmg, ...linux] = raw.targets
+    const cases: Array<[string, RawTarget[]]> = [
+      ['no sha256', [without(dmg, 'sha256'), ...linux]],
+      ['no minimumSystemVersion on a DMG', [without(dmg, 'minimumSystemVersion'), ...linux]],
+      ['an uppercase sha256', [{ ...dmg, sha256: 'A'.repeat(64) }, ...linux]],
+      ['a zero byteLength', [{ ...dmg, byteLength: 0 }, ...linux]],
+      ['the arm64 filename on the universal type', [{ ...dmg, filename: `Agent-Inbox-${tag}-arm64.dmg` }, ...linux]],
+      ['a URL under another tag', [{ ...dmg, url: String(dmg?.url).replace(`/${tag}/`, '/v1.2.2/') }, ...linux]],
+      ['another install strategy', [{ ...dmg, installStrategy: 'deb-notify' }, ...linux]],
+      ['a Linux filename of another version', [dmg!, { ...linux[0], filename: 'Agent-Inbox-v1.2.2-linux-arm64.AppImage' }, ...linux.slice(1)]],
+      ['a known type listed twice', [dmg!, dmg!, ...linux]],
+    ]
+    for (const [label, targets] of cases) {
+      expect(() => validateManifestV2({ ...raw, targets }), label).toThrow(UpdateManifestError)
+    }
+  })
+
+  it('holds 1 to 32 targets', () => {
+    const { raw } = v2Release()
+    const unknown = (index: number) => ({ platform: 'zz', architecture: `a${String(index).padStart(2, '0')}`, packageType: 'pkg' })
+    const extra = Array.from({ length: 27 }, (_, index) => unknown(index))
+    expect(validateManifestV2({ ...raw, targets: [...raw.targets, ...extra] }).targets).toHaveLength(5)
+    expect(() => validateManifestV2({ ...raw, targets: [...raw.targets, ...extra, unknown(27)] })).toThrow(/1 to 32 entries/)
+    expect(() => validateManifestV2({ ...raw, targets: [] })).toThrow(/1 to 32 entries/)
+    expect(validateManifestV2({ ...raw, targets: [unknown(0)] }).targets).toEqual([])
+  })
+
+  it('keeps every other top-level rule of schema 1', () => {
+    const { raw } = v2Release()
+    const cases: Array<[string, unknown]> = [
+      ['schema 1', { ...raw, schema: 1 }],
+      ['another kind', { ...raw, kind: 'agent-inbox-update-manifest-2' }],
+      ['another repository', { ...raw, repository: 'someone/agent-inbox' }],
+      ['a leading zero', { ...raw, version: '01.2.3', tag: 'v01.2.3' }],
+      ['a tag of another version', { ...raw, tag: 'v1.2.4' }],
+      ['no source tree', { ...raw, source: { commit: sourceCommit } }],
+      ['no releaseUrl', (() => { const copy: Record<string, unknown> = { ...raw }; delete copy.releaseUrl; return copy })()],
+      ['a releaseUrl of another tag', { ...raw, releaseUrl: 'https://github.com/shariqh/agent-inbox/releases/tag/v1.2.4' }],
+      ['no trusted keys', { ...raw, trustedKeyIds: [] }],
+      ['a signing key it does not trust', { ...raw, signingKeyId: `ed25519-${'0'.repeat(16)}` }],
+      ['a publishedAt with milliseconds', { ...raw, publishedAt: '2026-01-01T00:00:00.000Z' }],
+      ['an array', [raw]],
+    ]
+    for (const [label, value] of cases) {
+      expect(() => validateManifestV2(value), label).toThrow(UpdateManifestError)
+    }
+  })
+
+  it('parses only its own schema, so neither file can stand in for the other', () => {
+    const { registry, bytes } = v2Release()
+    const v1 = generateManifest({ registry, evidence: buildEvidence(), minimumMacosVersion, publishedAt })
+    expect(() => parseManifestV2(v1.bytes)).toThrow('manifest.schema must be 2')
+    expect(() => parseManifest(bytes)).toThrow('manifest.schema must be 1')
+    expect(parseManifestV2(bytes).schema).toBe(2)
+  })
+
+  it('verifies in the trust order of schema 1: digest, signature, schema, then freshness', () => {
+    const { signer, registry, bytes, manifest } = v2Release()
+    const envelope = signBytes(bytes, signer)
+    expect(verifyManifestV2({ manifestBytes: bytes, envelope, registry, now: publishedAt })).toEqual(manifest)
+    expect(parseEnvelope(envelope).schema).toBe(1)
+    const schema2Envelope = Buffer.from(envelope.toString('utf8').replace('"schema": 1', '"schema": 2'))
+    expect(() => verifyManifestV2({ manifestBytes: bytes, envelope: schema2Envelope, registry })).toThrow('envelope.schema must be 1')
+
+    const tampered = Buffer.from(bytes.toString('utf8').replace('"schema": 2', '"schema": 9'))
+    expect(() => verifyManifestV2({ manifestBytes: tampered, envelope, registry })).toThrow(/do not match the digest/)
+    expect(() => verifyManifestV2({ manifestBytes: bytes, envelope: signBytes(bytes, makeEphemeralKeypair()), registry }))
+      .toThrow(/signature verification failed/)
+    // Schema is read only once the bytes are proven authentic.
+    const v1Bytes = generateManifest({ registry, evidence: buildEvidence(), minimumMacosVersion, publishedAt }).bytes
+    expect(() => verifyManifestV2({ manifestBytes: v1Bytes, envelope: signBytes(v1Bytes, signer), registry }))
+      .toThrow('manifest.schema must be 2')
+
+    expect(() => verifyManifestV2({ manifestBytes: bytes, envelope, registry, now: manifest.expiresAt })).toThrow('manifest has expired')
+    expect(() => verifyManifestV2({ manifestBytes: bytes, envelope, registry, now: isoAfter(publishedAt, -6 * 60 * 1000) }))
+      .toThrow(/materially in the future/)
+    expect(() => verifyManifestV2({ manifestBytes: bytes, envelope, registry, now: isoAfter(publishedAt, -4 * 60 * 1000) }))
+      .not.toThrow()
+  })
+
+  it('verifies a signed manifest that carries keys and types this reader does not know', () => {
+    const { signer, registry, raw, manifest } = v2Release()
+    const later = rawBytes({ ...raw, channel: 'stable', targets: [...raw.targets, { platform: 'win32', architecture: 'x64', packageType: 'msix' }] })
+    expect(verifyManifestV2({ manifestBytes: later, envelope: signBytes(later, signer), registry, now: publishedAt })).toEqual(manifest)
+  })
+})
+
+describe('generateManifestV2 — the strict set for each macOS kind', () => {
+  it('writes a universal release: the universal DMG and the four Linux packages', () => {
+    const { manifest, bytes, registry } = v2Release('universal')
+    expect(manifest.schema).toBe(2)
+    expect(manifest.targets.map(targetTuple)).toEqual(EXPECTED_TARGET_ORDER)
+    expect(manifest.expiresAt).toBe(isoAfter(publishedAt, 180 * DAY_MS))
+    expect(manifest.signingKeyId).toBe(registry.signingKeyId)
+    expect(bytes.toString('utf8')).toContain('\n  "schema": 2,')
+    expect(parseManifestV2(bytes)).toEqual(manifest)
+  })
+
+  it('writes an arm64 release: the arm64 DMG and the four Linux packages', () => {
+    const { manifest } = v2Release('arm64')
+    expect(manifest.targets.map(targetTuple)).toEqual(['darwin/arm64/dmg', ...EXPECTED_TARGET_ORDER.slice(1)])
+    expect(at(manifest.targets, 0)).toEqual({
+      platform: 'darwin',
+      architecture: 'arm64',
+      packageType: 'dmg',
+      filename: `Agent-Inbox-${tag}-arm64.dmg`,
+      url: `https://github.com/shariqh/agent-inbox/releases/download/${tag}/Agent-Inbox-${tag}-arm64.dmg`,
+      byteLength: 111,
+      sha256: 'a'.repeat(64),
+      installStrategy: 'macos-dmg',
+      minimumSystemVersion: '13.5',
+    })
+  })
+
+  it('serializes like schema 1, so a universal release differs from today\'s bytes only in schema', () => {
+    const signer = makeEphemeralKeypair()
+    const registry = makeRegistry(signer, makeEphemeralKeypair())
+    const v2 = generateManifestV2({ registry, evidence: buildEvidence(), minimumMacosVersion, publishedAt, kind: 'universal' })
+    const v1 = generateManifest({ registry, evidence: buildEvidence(), minimumMacosVersion, publishedAt })
+    expect(v2.bytes.toString('utf8').replace('\n  "schema": 2,\n', '\n  "schema": 1,\n')).toBe(v1.bytes.toString('utf8'))
+  })
+
+  it('refuses evidence that disagrees with the kind, a mislabelled DMG, a missing or extra package and an unknown kind', () => {
+    const registry = makeRegistry(makeEphemeralKeypair())
+    const universal = buildEvidence()
+    const arm64 = buildArm64Evidence()
+    const generate = (evidence: ReleaseEvidence, kind: string) => () => generateManifestV2({
+      registry,
+      evidence,
+      minimumMacosVersion,
+      publishedAt,
+      kind: kind as Kind,
+    })
+    expect(generate(universal, 'universal')).not.toThrow()
+    expect(generate(arm64, 'arm64')).not.toThrow()
+    expect(generate(arm64, 'universal')).toThrow(UpdateManifestError)
+    expect(generate(universal, 'arm64')).toThrow(UpdateManifestError)
+    const relabel = (evidence: ReleaseEvidence, patch: Partial<ReleaseAssetEvidence>) => ({
+      ...evidence,
+      assets: evidence.assets.map((asset) => (asset.platform === 'darwin' ? { ...asset, ...patch } : asset)),
+    })
+    // A universal filename claimed as arm64, and the reverse.
+    expect(generate(relabel(universal, { architecture: 'arm64' }), 'arm64')).toThrow(UpdateManifestError)
+    expect(generate(relabel(arm64, { architecture: 'universal' }), 'universal')).toThrow(UpdateManifestError)
+    expect(generate({ ...universal, assets: universal.assets.slice(1) }, 'universal')).toThrow(UpdateManifestError)
+    expect(generate({ ...universal, assets: [...universal.assets, at(arm64.assets, 0)] }, 'universal')).toThrow(UpdateManifestError)
+    expect(generate(universal, 'intel')).toThrow(UpdateManifestError)
+  })
+})
+
+describe('projectV1 — the v1 manifest of a universal release', () => {
+  it('is byte-identical to today\'s generator for the same evidence', () => {
+    for (const registry of [makeRegistry(makeEphemeralKeypair()), makeRegistry(makeEphemeralKeypair(), makeEphemeralKeypair())]) {
+      for (const evidence of [buildEvidence(), buildEvidence({ tag: 'v10.20.30', packageVersion: '10.20.30' })]) {
+        const v2 = generateManifestV2({ registry, evidence, minimumMacosVersion, publishedAt, kind: 'universal' })
+        const today = generateManifest({ registry, evidence, minimumMacosVersion, publishedAt })
+        const projected = projectV1(v2.bytes)
+        expect(projected.bytes.equals(today.bytes)).toBe(true)
+        expect(projected.manifest).toEqual(today.manifest)
+      }
+    }
+  })
+
+  it('refuses an arm64 release, which has no universal DMG to describe', () => {
+    const { bytes } = v2Release('arm64')
+    expect(() => projectV1(bytes)).toThrow(/darwin\/universal\/dmg/)
+  })
+
+  it('keeps only the five types of schema 1, and only a 180-day lifetime', () => {
+    const { raw, registry } = v2Release('universal')
+    const [universalDmg, ...linux] = raw.targets
+    const arm64Dmg = at(v2Release('arm64').raw.targets, 0)
+    const both = rawBytes({
+      ...raw,
+      targets: [arm64Dmg, universalDmg, ...linux, { platform: 'win32', architecture: 'x64', packageType: 'msix' }],
+    })
+    const today = generateManifest({ registry, evidence: buildEvidence(), minimumMacosVersion, publishedAt })
+    expect(projectV1(both).bytes.equals(today.bytes)).toBe(true)
+    expect(() => projectV1(rawBytes({ ...raw, expiresAt: isoAfter(publishedAt, 90 * DAY_MS) }))).toThrow(/exactly 180 days/)
+  })
+
+  it('reads only a v2 manifest', () => {
+    const registry = makeRegistry(makeEphemeralKeypair())
+    const today = generateManifest({ registry, evidence: buildEvidence(), minimumMacosVersion, publishedAt })
+    expect(() => projectV1(today.bytes)).toThrow('manifest.schema must be 2')
+  })
+})
+
+// A release as GitHub lists it, built only by the publisher functions above.
+interface PublishedRelease {
+  tag: string
+  kind: Kind | 'v1-only'
+  v1: { bytes: Buffer; signature: Buffer }
+  v2?: { bytes: Buffer; signature: Buffer }
+  listing: ReleaseLike
+}
+
+let nextAssetId = 1000
+
+function listedAsset(releaseTag: string, name: string, size: number, digestOf?: Buffer | string): ReleaseAssetLike {
+  nextAssetId += 1
+  const digest = digestOf === undefined
+    ? undefined
+    : `sha256:${typeof digestOf === 'string' ? digestOf : sha256Hex(digestOf)}`
+  return {
+    id: nextAssetId,
+    name,
+    size,
+    browser_download_url: `https://github.com/${UPDATE_REPOSITORY}/releases/download/${releaseTag}/${name}`,
+    ...(digest ? { digest } : {}),
+  }
+}
+
+function listing(releaseTag: string, evidence: ReleaseEvidence, pairs: Array<{ names: [string, string]; bytes: Buffer; signature: Buffer }>): ReleaseLike {
+  return githubRelease({
+    tag_name: releaseTag,
+    assets: [
+      ...evidence.assets.map((asset) => listedAsset(releaseTag, asset.name, asset.size, asset.sha256)),
+      listedAsset(releaseTag, 'SHA256SUMS.txt', 400),
+      ...pairs.flatMap(({ names, bytes, signature }) => [
+        listedAsset(releaseTag, names[0], bytes.length, bytes),
+        listedAsset(releaseTag, names[1], signature.length, signature),
+      ]),
+    ],
+  })
+}
+
+const V1_NAMES: [string, string] = ['update-manifest.json', 'update-manifest.json.sig']
+const V2_NAMES: [string, string] = ['update-manifest-v2.json', 'update-manifest-v2.json.sig']
+
+/** A 1.3 to 1.6 release: today's generator, the v1 pair only. */
+function publishV1Only(releaseVersion: string, signer: Signer, registry: UpdateRegistry, taggedAt: string): PublishedRelease {
+  const releaseTag = `v${releaseVersion}`
+  const evidence = buildEvidence({ tag: releaseTag, packageVersion: releaseVersion })
+  const { bytes } = generateManifest({ registry, evidence, minimumMacosVersion, publishedAt: taggedAt })
+  const signature = signBytes(bytes, signer)
+  return { tag: releaseTag, kind: 'v1-only', v1: { bytes, signature }, listing: listing(releaseTag, evidence, [{ names: V1_NAMES, bytes, signature }]) }
+}
+
+/** A universal release from #343 on: v2, and v1 as its projection. */
+function publishUniversal(releaseVersion: string, signer: Signer, registry: UpdateRegistry, taggedAt: string): PublishedRelease {
+  const releaseTag = `v${releaseVersion}`
+  const evidence = buildEvidence({ tag: releaseTag, packageVersion: releaseVersion })
+  const v2 = generateManifestV2({ registry, evidence, minimumMacosVersion, publishedAt: taggedAt, kind: 'universal' })
+  const v1 = projectV1(v2.bytes)
+  const pair = (bytes: Buffer) => ({ bytes, signature: signBytes(bytes, signer) })
+  const v1Pair = pair(v1.bytes)
+  const v2Pair = pair(v2.bytes)
+  return {
+    tag: releaseTag,
+    kind: 'universal',
+    v1: v1Pair,
+    v2: v2Pair,
+    listing: listing(releaseTag, evidence, [{ names: V1_NAMES, ...v1Pair }, { names: V2_NAMES, ...v2Pair }]),
+  }
+}
+
+/** An arm64 release: v2, and v1 as a re-stamp of the previous release's. */
+function publishArm64(
+  releaseVersion: string,
+  signer: Signer,
+  registry: UpdateRegistry,
+  taggedAt: string,
+  previous: PublishedRelease,
+  releases: ReleaseLike[],
+): PublishedRelease {
+  const releaseTag = `v${releaseVersion}`
+  const evidence = buildArm64Evidence({ tag: releaseTag, packageVersion: releaseVersion })
+  const v2 = generateManifestV2({ registry, evidence, minimumMacosVersion, publishedAt: taggedAt, kind: 'arm64' })
+  const v1 = restampV1({
+    earlierManifestBytes: previous.v1.bytes,
+    earlierSignatureBytes: previous.v1.signature,
+    registry,
+    newTag: releaseTag,
+    publishedAt: taggedAt,
+    releases,
+  })
+  const pair = (bytes: Buffer) => ({ bytes, signature: signBytes(bytes, signer) })
+  const v1Pair = pair(v1.bytes)
+  const v2Pair = pair(v2.bytes)
+  return {
+    tag: releaseTag,
+    kind: 'arm64',
+    v1: v1Pair,
+    v2: v2Pair,
+    listing: listing(releaseTag, evidence, [{ names: V1_NAMES, ...v1Pair }, { names: V2_NAMES, ...v2Pair }]),
+  }
+}
+
+function history(signer = makeEphemeralKeypair(), registry = makeRegistry(signer)) {
+  const v160 = publishV1Only('1.6.0', signer, registry, '2026-10-20T12:00:00Z')
+  const v170 = publishUniversal('1.7.0', signer, registry, '2026-11-16T12:00:00Z')
+  const v190 = publishUniversal('1.9.0', signer, registry, '2027-01-04T12:00:00Z')
+  const v200 = publishArm64('2.0.0', signer, registry, '2027-01-18T12:00:00Z', v190, [v160.listing, v170.listing, v190.listing])
+  return { signer, registry, v160, v170, v190, v200 }
+}
+
+function manifestDiff(left: Buffer, right: Buffer): string[] {
+  const a = JSON.parse(left.toString('utf8')) as Record<string, unknown>
+  const b = JSON.parse(right.toString('utf8')) as Record<string, unknown>
+  expect(Object.keys(b)).toEqual(Object.keys(a))
+  return Object.keys(a).filter((key) => JSON.stringify(a[key]) !== JSON.stringify(b[key])).sort()
+}
+
+describe('restampV1 — the frozen v1 manifest of an arm64 release (design §5.3)', () => {
+  it('copies the earlier v1 manifest and changes only publishedAt, expiresAt, signingKeyId and trustedKeyIds', () => {
+    const { signer, registry, v160, v170, v190 } = history()
+    // The release that re-stamps rotated to a new signing key while still trusting the old one.
+    const next = makeEphemeralKeypair()
+    const rotated: UpdateRegistry = { ...makeRegistry(next, signer), signingKeyId: next.keyId }
+    const restamped = restampV1({
+      earlierManifestBytes: v190.v1.bytes,
+      earlierSignatureBytes: v190.v1.signature,
+      registry: rotated,
+      newTag: 'v2.0.0',
+      publishedAt: '2027-01-18T12:00:00Z',
+      releases: [v160.listing, v170.listing, v190.listing],
+    })
+    expect(manifestDiff(v190.v1.bytes, restamped.bytes)).toEqual(['expiresAt', 'publishedAt', 'signingKeyId', 'trustedKeyIds'])
+    expect(restamped.manifest).toMatchObject({
+      schema: 1,
+      version: '1.9.0',
+      tag: 'v1.9.0',
+      publishedAt: '2027-01-18T12:00:00Z',
+      expiresAt: '2027-07-17T12:00:00Z',
+      releaseUrl: 'https://github.com/shariqh/agent-inbox/releases/tag/v1.9.0',
+      signingKeyId: next.keyId,
+      trustedKeyIds: [next.keyId, signer.keyId].sort(),
+    })
+    expect(restamped.describes).toBe('v1.9.0')
+    expect(restamped.earlierManifestSha256).toBe(sha256Hex(v190.v1.bytes))
+    expect(restamped.targets).toEqual(parseManifest(v190.v1.bytes).targets.map(({ filename, byteLength, sha256 }) => ({ filename, byteLength, sha256 })))
+    expect(serializeManifest(restamped.manifest).equals(restamped.bytes)).toBe(true)
+    expect(registry.signingKeyId).toBe(signer.keyId)
+  })
+
+  it('re-stamps a re-stamp, so every later arm64 release still describes the newest universal one', () => {
+    const { signer, registry, v160, v170, v190, v200 } = history()
+    const restamped = restampV1({
+      earlierManifestBytes: v200.v1.bytes,
+      earlierSignatureBytes: v200.v1.signature,
+      registry,
+      newTag: 'v2.0.1',
+      publishedAt: '2027-02-01T12:00:00Z',
+      releases: [v160.listing, v170.listing, v190.listing, v200.listing],
+    })
+    expect(restamped.describes).toBe('v1.9.0')
+    expect(manifestDiff(v190.v1.bytes, restamped.bytes)).toEqual(['expiresAt', 'publishedAt'])
+    expect(restamped.manifest.expiresAt).toBe(isoAfter('2027-02-01T12:00:00Z', 180 * DAY_MS))
+    expect(verifyManifest({ manifestBytes: restamped.bytes, envelope: signBytes(restamped.bytes, signer), registry }).tag).toBe('v1.9.0')
+  })
+
+  it('refuses a forged earlier manifest, a v2 one and one that is not older', () => {
+    const { registry, v160, v170, v190 } = history()
+    const releases = [v160.listing, v170.listing, v190.listing]
+    const restamp = (overrides: Partial<Parameters<typeof restampV1>[0]>) => () => restampV1({
+      earlierManifestBytes: v190.v1.bytes,
+      earlierSignatureBytes: v190.v1.signature,
+      registry,
+      newTag: 'v2.0.0',
+      publishedAt: '2027-01-18T12:00:00Z',
+      releases,
+      ...overrides,
+    })
+    expect(restamp({})).not.toThrow()
+    expect(restamp({ earlierSignatureBytes: signBytes(v190.v1.bytes, makeEphemeralKeypair()) })).toThrow(/signature verification failed/)
+    expect(restamp({ earlierManifestBytes: Buffer.from(v190.v1.bytes.toString('utf8').replace('"byteLength": 111', '"byteLength": 112')) }))
+      .toThrow(/do not match the digest/)
+    expect(restamp({ earlierManifestBytes: v190.v2!.bytes, earlierSignatureBytes: v190.v2!.signature })).toThrow('manifest.schema must be 1')
+    expect(restamp({ newTag: 'v1.9.0', releases: [] })).toThrow(/not older/)
+    expect(restamp({ newTag: 'v1.8.9', releases: [] })).toThrow(/not older/)
+  })
+
+  it('refuses a copied target that disagrees with the files GitHub lists for the release it describes', () => {
+    const { registry, v160, v170, v190 } = history()
+    const tamper = (patch: (asset: ReleaseAssetLike) => ReleaseAssetLike | null, name = 'Agent-Inbox-v1.9.0-universal.dmg') => ({
+      ...v190.listing,
+      assets: v190.listing.assets.flatMap((asset) => {
+        if (asset.name !== name) return [asset]
+        const patched = patch(asset)
+        return patched ? [patched] : []
+      }),
+    })
+    const restamp = (described: ReleaseLike) => () => restampV1({
+      earlierManifestBytes: v190.v1.bytes,
+      earlierSignatureBytes: v190.v1.signature,
+      registry,
+      newTag: 'v2.0.0',
+      publishedAt: '2027-01-18T12:00:00Z',
+      releases: [v160.listing, v170.listing, described],
+    })
+    // GitHub may not report a digest; the size is still checked.
+    expect(restamp(tamper(({ digest: _digest, ...asset }) => asset))).not.toThrow()
+    expect(restamp(tamper((asset) => ({ ...asset, size: asset.size + 1 })))).toThrow(/Agent-Inbox-v1\.9\.0-universal\.dmg/)
+    expect(restamp(tamper((asset) => ({ ...asset, digest: `sha256:${'f'.repeat(64)}` })))).toThrow(/Agent-Inbox-v1\.9\.0-universal\.dmg/)
+    expect(restamp(tamper(() => null, 'agent-inbox_1.9.0_arm64.deb'))).toThrow(/does not list agent-inbox_1\.9\.0_arm64\.deb/)
+    // Without its universal DMG, 1.9.0 is no longer the newest universal release (G6).
+    expect(restamp(tamper(() => null))).toThrow(/newest .*v1\.7\.0/)
+  })
+
+  it('refuses unless it describes the newest published release with a universal DMG (G6)', () => {
+    const { signer, registry, v160, v170, v190 } = history()
+    const v191 = publishUniversal('1.9.1', signer, registry, '2027-01-10T12:00:00Z')
+    const restamp = (releases: ReleaseLike[]) => () => restampV1({
+      earlierManifestBytes: v190.v1.bytes,
+      earlierSignatureBytes: v190.v1.signature,
+      registry,
+      newTag: 'v2.0.0',
+      publishedAt: '2027-01-18T12:00:00Z',
+      releases,
+    })
+    expect(restamp([v160.listing, v170.listing, v190.listing, v191.listing])).toThrow(/newest .*v1\.9\.1/)
+    // Drafts and prereleases are not published releases.
+    expect(restamp([v160.listing, v170.listing, v190.listing, { ...v191.listing, draft: true }, { ...v191.listing, prerelease: true }])).not.toThrow()
+    expect(restamp([v160.listing, v170.listing])).toThrow(/newest .*v1\.7\.0/)
+    expect(restamp([])).toThrow(/no published release/)
+    expect(restamp([v160.listing, v170.listing, v190.listing, githubRelease({ tag_name: 'v2.0.0' })])).toThrow(/not older/)
+  })
+})
+
+describe('planReleaseHistory — both manifests (G1 to G5)', () => {
+  it('starts v2 in a universal release and continues v1 from the release before', () => {
+    const { v160 } = history()
+    const plan = planReleaseHistory({ releases: [v160.listing], newTag: 'v1.7.0', kind: 'universal' })
+    expect(plan.v2).toEqual({ manifest: 'v2', mode: 'bootstrap', priorTag: null })
+    expect(plan.v1).toMatchObject({ manifest: 'v1', mode: 'continuity', priorTag: 'v1.6.0', priorKind: 'universal' })
+    if (plan.v1.mode !== 'continuity') throw new Error('expected continuity')
+    const [manifestAsset, signatureAsset] = v160.listing.assets.filter((asset) => V1_NAMES.includes(asset.name))
+    expect(plan.v1.manifestAsset).toEqual({
+      id: manifestAsset!.id,
+      name: 'update-manifest.json',
+      size: manifestAsset!.size,
+      url: manifestAsset!.browser_download_url,
+      digest: manifestAsset!.digest,
+    })
+    expect(plan.v1.signatureAsset.id).toBe(signatureAsset!.id)
+  })
+
+  it('lets only a universal release start v2, and an arm64 release needs the release before to carry it (G4, G5)', () => {
+    const { v160, v170, v190 } = history()
+    expect(() => planReleaseHistory({ releases: [v160.listing], newTag: 'v2.0.0', kind: 'arm64' })).toThrow(/only a universal release/)
+    const plan = planReleaseHistory({ releases: [v160.listing, v170.listing, v190.listing], newTag: 'v2.0.0', kind: 'arm64' })
+    expect(plan.v1).toMatchObject({ mode: 'continuity', priorTag: 'v1.9.0', priorKind: 'universal' })
+    expect(plan.v2).toMatchObject({ mode: 'continuity', priorTag: 'v1.9.0', priorKind: 'universal' })
+    if (plan.v2.mode !== 'continuity') throw new Error('expected continuity')
+    expect(plan.v2.manifestAsset.name).toBe('update-manifest-v2.json')
+    expect(plan.v2.signatureAsset.name).toBe('update-manifest-v2.json.sig')
+  })
+
+  it('records an arm64 release before as arm64', () => {
+    const { v160, v170, v190, v200 } = history()
+    const plan = planReleaseHistory({ releases: [v160.listing, v170.listing, v190.listing, v200.listing], newTag: 'v2.0.1', kind: 'arm64' })
+    expect(plan.v1).toMatchObject({ mode: 'continuity', priorTag: 'v2.0.0', priorKind: 'arm64' })
+    expect(plan.v2).toMatchObject({ mode: 'continuity', priorTag: 'v2.0.0', priorKind: 'arm64' })
+  })
+
+  it('refuses a gap: once a release has published v2, the release before every new one must have it', () => {
+    const { v160, v170, signer, registry } = history()
+    const v180 = publishV1Only('1.8.0', signer, registry, '2026-12-01T12:00:00Z')
+    for (const kind of ['universal', 'arm64'] as const) {
+      expect(() => planReleaseHistory({ releases: [v160.listing, v170.listing, v180.listing], newTag: 'v1.9.0', kind }))
+        .toThrow(/v1\.8\.0.*update-manifest-v2\.json/)
+    }
+  })
+
+  it('refuses half of either pair in any release (G2)', () => {
+    const { v160, v170, v190 } = history()
+    for (const name of [...V1_NAMES, ...V2_NAMES]) {
+      const half = { ...v170.listing, assets: v170.listing.assets.filter((asset) => asset.name !== name) }
+      expect(() => planReleaseHistory({ releases: [v160.listing, half, v190.listing], newTag: 'v2.0.0', kind: 'universal' }), name)
+        .toThrow(/partial/)
+    }
+  })
+
+  it('bootstraps v1 only when no release has either v1 file, and never in an arm64 release', () => {
+    expect(planReleaseHistory({ releases: [], newTag: 'v1.0.0', kind: 'universal' })).toEqual({
+      v1: { manifest: 'v1', mode: 'bootstrap', priorTag: null },
+      v2: { manifest: 'v2', mode: 'bootstrap', priorTag: null },
+    })
+    expect(() => planReleaseHistory({ releases: [], newTag: 'v1.0.0', kind: 'arm64' })).toThrow(/only a universal release/)
+    const { v160 } = history()
+    const noV1 = { ...v160.listing, tag_name: 'v1.6.1', assets: [] }
+    expect(() => planReleaseHistory({ releases: [v160.listing, noV1], newTag: 'v1.7.0', kind: 'universal' }))
+      .toThrow(/v1\.6\.1.*update-manifest\.json/)
+  })
+
+  it('tells the kind of the release before only from its own DMG, and refuses both', () => {
+    const { v160 } = history()
+    const noDmg = { ...v160.listing, assets: v160.listing.assets.filter((asset) => !asset.name.endsWith('.dmg')) }
+    expect(planReleaseHistory({ releases: [noDmg], newTag: 'v1.7.0', kind: 'universal' }).v1).toMatchObject({ priorKind: null })
+    const both = { ...v160.listing, assets: [...v160.listing.assets, listedAsset('v1.6.0', 'Agent-Inbox-v1.6.0-arm64.dmg', 5)] }
+    expect(() => planReleaseHistory({ releases: [both], newTag: 'v1.7.0', kind: 'universal' })).toThrow(/both/)
+  })
+
+  it('keeps G1 and the listing checks of the v1 history', () => {
+    const { v160, v170 } = history()
+    expect(() => planReleaseHistory({ releases: [v160.listing, v170.listing], newTag: 'v1.7.0', kind: 'universal' })).toThrow(/not older/)
+    expect(() => planReleaseHistory({ releases: [null as unknown as ReleaseLike], newTag: 'v1.7.0', kind: 'universal' })).toThrow(UpdateManifestError)
+    expect(() => planReleaseHistory({ releases: [v160.listing], newTag: 'v1.7.0', kind: 'intel' as Kind })).toThrow(UpdateManifestError)
+    expect(() => planReleaseHistory({ releases: [v160.listing], newTag: '1.7.0', kind: 'universal' })).toThrow(UpdateManifestError)
+  })
+})
+
+describe('authorizeReleaseHistory — each earlier manifest, under this release\'s keys', () => {
+  // The plan as it would read had GitHub listed `pair` as the release before's files.
+  function listedAs(plan: ManifestHistoryPlan, pair: { bytes: Buffer; signature: Buffer }, digests = true): ManifestHistoryPlan {
+    if (plan.mode !== 'continuity') throw new Error('expected a continuity plan')
+    const listed = (asset: ManifestHistoryAsset, bytes: Buffer): ManifestHistoryAsset => {
+      const { digest: _digest, ...rest } = asset
+      return { ...rest, size: bytes.length, ...(digests ? { digest: `sha256:${sha256Hex(bytes)}` } : {}) }
+    }
+    return { ...plan, manifestAsset: listed(plan.manifestAsset, pair.bytes), signatureAsset: listed(plan.signatureAsset, pair.signature) }
+  }
+
+  function authorize(
+    plan: ManifestHistoryPlan,
+    pair: { bytes: Buffer; signature: Buffer } | undefined,
+    registry: UpdateRegistry,
+    newTag: string,
+    rotationOverride?: string,
+  ) {
+    return authorizeReleaseHistory({
+      plan,
+      priorManifestBytes: pair?.bytes,
+      priorSignatureBytes: pair?.signature,
+      registry,
+      newTag,
+      rotationOverride,
+    })
+  }
+
+  it('authorizes both earlier manifests of the release before', () => {
+    const { registry, v160, v170, v190 } = history()
+    const plan = planReleaseHistory({ releases: [v160.listing, v170.listing, v190.listing], newTag: 'v2.0.0', kind: 'arm64' })
+    expect(authorize(plan.v1, v190.v1, registry, 'v2.0.0')).toMatchObject({
+      manifest: 'v1', authorized: true, mode: 'continuity', priorTag: 'v1.9.0', describes: 'v1.9.0', rotationOverrideUsed: false,
+    })
+    expect(authorize(plan.v2, v190.v2, registry, 'v2.0.0')).toMatchObject({
+      manifest: 'v2', authorized: true, mode: 'continuity', priorTag: 'v1.9.0', describes: 'v1.9.0', rotationOverrideUsed: false,
+    })
+  })
+
+  it('authorizes a bootstrap with nothing to read', () => {
+    const { registry, v160 } = history()
+    const plan = planReleaseHistory({ releases: [v160.listing], newTag: 'v1.7.0', kind: 'universal' })
+    expect(authorize(plan.v2, undefined, registry, 'v1.7.0')).toEqual({
+      manifest: 'v2', authorized: true, mode: 'bootstrap', priorTag: null, rotationOverrideUsed: false,
+    })
+  })
+
+  it('requires an earlier v1 to describe a universal release before, and an older one after an arm64 release', () => {
+    const { registry, v160, v170, v190, v200 } = history()
+    const releases = [v160.listing, v170.listing, v190.listing, v200.listing]
+    const plan = planReleaseHistory({ releases, newTag: 'v2.0.1', kind: 'arm64' })
+    expect(authorize(plan.v1, v200.v1, registry, 'v2.0.1')).toMatchObject({ priorTag: 'v2.0.0', describes: 'v1.9.0' })
+    // A universal release's v1 must describe that release itself.
+    const after190 = planReleaseHistory({ releases: [v160.listing, v170.listing, v190.listing], newTag: 'v2.0.0', kind: 'arm64' })
+    expect(() => authorize(listedAs(after190.v1, v170.v1), v170.v1, registry, 'v2.0.0')).toThrow(/describes v1\.7\.0.*v1\.9\.0/)
+    // A v1 of unknown kind is never trusted to describe anything.
+    expect(() => authorize({ ...plan.v1, priorKind: null } as ManifestHistoryPlan, v200.v1, registry, 'v2.0.1')).toThrow(/universal or arm64/)
+  })
+
+  it('requires an earlier v2 to describe the release before', () => {
+    const { registry, v160, v170, v190 } = history()
+    const plan = planReleaseHistory({ releases: [v160.listing, v170.listing, v190.listing], newTag: 'v2.0.0', kind: 'arm64' })
+    expect(() => authorize(listedAs(plan.v2, v170.v2!, false), v170.v2, registry, 'v2.0.0')).toThrow(/describes v1\.7\.0.*v1\.9\.0/)
+    // A v1 file in the v2 slot fails on schema, once its size and signature check out.
+    expect(() => authorize(listedAs(plan.v2, v190.v1, false), v190.v1, registry, 'v2.0.0')).toThrow('manifest.schema must be 2')
+  })
+
+  it('refuses bytes that are not the ones GitHub listed', () => {
+    const { registry, v160, v170, v190 } = history()
+    const plan = planReleaseHistory({ releases: [v160.listing, v170.listing, v190.listing], newTag: 'v2.0.0', kind: 'arm64' })
+    expect(() => authorize(plan.v2, { bytes: Buffer.concat([v190.v2!.bytes, Buffer.from(' ')]), signature: v190.v2!.signature }, registry, 'v2.0.0'))
+      .toThrow(/GitHub/)
+    const sameSize = Buffer.from(v190.v2!.signature)
+    sameSize[sameSize.length - 2] = 0x20
+    expect(() => authorize(plan.v2, { bytes: v190.v2!.bytes, signature: sameSize }, registry, 'v2.0.0')).toThrow(/GitHub/)
+    expect(() => authorize(plan.v2, undefined, registry, 'v2.0.0')).toThrow(UpdateManifestError)
+  })
+
+  it('keeps the key rule: the new signing key is trusted already, or the exact override names it', () => {
+    const { signer, v160, v170, v190 } = history()
+    const next = makeEphemeralKeypair()
+    const rotated: UpdateRegistry = { ...makeRegistry(next, signer), signingKeyId: next.keyId }
+    const plan = planReleaseHistory({ releases: [v160.listing, v170.listing, v190.listing], newTag: 'v2.0.0', kind: 'arm64' })
+    for (const [manifestPlan, pair] of [[plan.v1, v190.v1], [plan.v2, v190.v2]] as const) {
+      expect(() => authorize(manifestPlan, pair, rotated, 'v2.0.0')).toThrow(`ALLOW-UPDATE-KEY-ROTATION:v2.0.0:${next.keyId}`)
+      expect(() => authorize(manifestPlan, pair, rotated, 'v2.0.0', `ALLOW-UPDATE-KEY-ROTATION:v2.0.1:${next.keyId}`)).toThrow(UpdateManifestError)
+      expect(() => authorize(manifestPlan, pair, rotated, 'v2.0.0', `ALLOW-UPDATE-KEY-ROTATION:v2.0.0:${signer.keyId}`)).toThrow(UpdateManifestError)
+      expect(authorize(manifestPlan, pair, rotated, 'v2.0.0', `ALLOW-UPDATE-KEY-ROTATION:v2.0.0:${next.keyId}`))
+        .toMatchObject({ authorized: true, rotationOverrideUsed: true })
+    }
+  })
+
+  it('reads an earlier manifest long after it expired', () => {
+    const signer = makeEphemeralKeypair()
+    const registry = makeRegistry(signer)
+    const old = publishUniversal('1.7.0', signer, registry, '2000-01-01T00:00:00Z')
+    const plan = planReleaseHistory({ releases: [old.listing], newTag: 'v1.8.0', kind: 'universal' })
+    expect(authorize(plan.v2, old.v2, registry, 'v1.8.0').authorized).toBe(true)
+    expect(authorize(plan.v1, old.v1, registry, 'v1.8.0').authorized).toBe(true)
+  })
+})
+
+// The aggregate evidence the release's own code hands the signer (#341's field names).
+function aggregateAssets(kind: Kind, evidence: ReleaseEvidence) {
+  const macos = macosRelease({ kind, tag: evidence.tag })
+  const sets = kind === 'universal' ? ['arm64', 'x86_64'] : ['arm64']
+  const packageArch = { appimage: { x64: 'x86_64', arm64: 'aarch64' }, deb: { x64: 'amd64', arm64: 'arm64' } } as const
+  return evidence.assets.map((asset) => {
+    if (asset.platform === 'darwin') {
+      return {
+        name: asset.name,
+        packageType: 'DMG',
+        platform: 'macos',
+        architecture: macos.architecture,
+        target: macos.target,
+        architectures: { executable: [...sets], betterSqlite3: [...sets] },
+        ...(macos.needsNativeIntel ? { nativeIntel: 'passed' } : {}),
+        size: asset.size,
+        sha256: asset.sha256,
+        notarization: { appStatus: 'Accepted', dmgStatus: 'Accepted' },
+      }
+    }
+    const linuxType = asset.packageType === 'appimage' ? 'appimage' : 'deb'
+    const arch = asset.architecture === 'x64' ? 'x64' : 'arm64'
+    return {
+      name: asset.name,
+      packageType: linuxType === 'appimage' ? 'AppImage' : 'DEB',
+      platform: 'linux',
+      architecture: packageArch[linuxType][arch],
+      target: `linux-${arch}`,
+      size: asset.size,
+      sha256: asset.sha256,
+    }
+  }).sort((left, right) => (left.name < right.name ? -1 : 1))
+}
+
+function releaseHandoff(
+  kind: Kind = 'universal',
+  signer: Signer = makeEphemeralKeypair(),
+  releaseVersion = version,
+  taggedAt = publishedAt,
+) {
+  const releaseTag = `v${releaseVersion}`
+  const registry = makeRegistry(signer)
+  const registryBytes = Buffer.from(`${JSON.stringify(registry, null, 2)}\n`)
+  const evidence = evidenceFor(kind, { tag: releaseTag, packageVersion: releaseVersion })
+  const { bytes: manifestBytes } = generateManifestV2({ registry, evidence, minimumMacosVersion, publishedAt: taggedAt, kind })
+  const assets = aggregateAssets(kind, evidence)
+  const aggregate = {
+    schema: 1,
+    product: 'Agent Inbox',
+    tag: releaseTag,
+    packageVersion: releaseVersion,
+    sourceCommit,
+    sourceTree,
+    annotatedTag: true,
+    publishable: true,
+    assets,
+    updateManifest: {
+      name: 'update-manifest-v2.json',
+      size: manifestBytes.length,
+      sha256: sha256Hex(manifestBytes),
+      keyRegistrySha256: sha256Hex(registryBytes),
+    },
+  }
+  return {
+    tag: releaseTag,
+    signer,
+    registry,
+    registryBytes,
+    evidence,
+    manifestBytes,
+    aggregate,
+    context: { schema: 1, tag: releaseTag, version: releaseVersion, sourceCommit, taggedAt, annotated: true },
+    macosInputs: { macosArchitectures: kind === 'universal' ? ['arm64', 'x86_64'] : ['arm64'], minimumMacosVersion },
+    packages: Object.fromEntries(assets.map((asset) => [asset.name, { size: asset.size, sha256: asset.sha256 }])),
+  }
+}
+
+type Handoff = ReturnType<typeof releaseHandoff>
+
+function checkHandoff(handoff: Handoff, overrides: Record<string, unknown> = {}) {
+  return checkReleaseManifest({
+    manifestBytes: handoff.manifestBytes,
+    aggregate: handoff.aggregate,
+    context: handoff.context,
+    registryBytes: handoff.registryBytes,
+    macosInputs: handoff.macosInputs,
+    packages: handoff.packages,
+    tag: handoff.tag,
+    sourceCommit,
+    ...overrides,
+  } as Parameters<typeof checkReleaseManifest>[0])
+}
+
+function withMacAsset(handoff: Handoff, patch: Record<string, unknown>, drop: string[] = []) {
+  return {
+    ...handoff.aggregate,
+    assets: handoff.aggregate.assets.map((asset) => {
+      if (asset.platform !== 'macos') return asset
+      const patched: Record<string, unknown> = { ...asset, ...patch }
+      for (const key of drop) delete patched[key]
+      return patched
+    }),
+  }
+}
+
+describe('checkReleaseManifest — the unsigned v2 manifest describes this release (G7, G9)', () => {
+  it('accepts a universal and an arm64 release and reports the measured kind', () => {
+    const universal = checkHandoff(releaseHandoff('universal'))
+    expect(universal).toMatchObject({
+      kind: 'universal',
+      dmgName: `Agent-Inbox-${tag}-universal.dmg`,
+      macos: {
+        kind: 'universal',
+        architectures: { executable: ['arm64', 'x86_64'], betterSqlite3: ['arm64', 'x86_64'] },
+        expected: ['arm64', 'x86_64'],
+      },
+    })
+    expect(universal.manifest.tag).toBe(tag)
+    const arm64Handoff = releaseHandoff('arm64')
+    expect(checkHandoff(arm64Handoff)).toMatchObject({
+      kind: 'arm64',
+      dmgName: `Agent-Inbox-${tag}-arm64.dmg`,
+      manifestSha256: sha256Hex(arm64Handoff.manifestBytes),
+      macos: { kind: 'arm64', architectures: { executable: ['arm64'], betterSqlite3: ['arm64'] }, expected: ['arm64'] },
+    })
+  })
+
+  it('refuses a name, a label or an Intel record that disagrees with the measured CPU types (G9)', () => {
+    const universal = releaseHandoff('universal')
+    const arm64 = releaseHandoff('arm64')
+    const arm64Only = { executable: ['arm64'], betterSqlite3: ['arm64'] }
+    const cases: Array<[string, Handoff, Record<string, unknown>]> = [
+      ['arm64-only sets under the universal name and labels', universal, { aggregate: withMacAsset(universal, { architectures: arm64Only, nativeIntel: undefined }) }],
+      ['arm64-only sets with the universal label', arm64, { aggregate: withMacAsset(arm64, { architecture: 'universal' }) }],
+      ['arm64-only sets with the universal target', arm64, { aggregate: withMacAsset(arm64, { target: 'darwin-arm64+darwin-x64' }) }],
+      ['arm64-only sets under the universal DMG name', arm64, { aggregate: withMacAsset(arm64, { name: `Agent-Inbox-${tag}-universal.dmg` }) }],
+      ['an executable and an addon that disagree', universal, { aggregate: withMacAsset(universal, { architectures: { executable: ['arm64', 'x86_64'], betterSqlite3: ['arm64'] } }) }],
+      ['x86_64 alone', universal, { aggregate: withMacAsset(universal, { architectures: { executable: ['x86_64'], betterSqlite3: ['x86_64'] } }) }],
+      ['measured sets that differ from the expected set', universal, { macosInputs: { ...universal.macosInputs, macosArchitectures: ['arm64'] } }],
+      ['an expected set that is no kind', universal, { macosInputs: { ...universal.macosInputs, macosArchitectures: ['x86_64'] } }],
+      ['a universal release without the Intel gate\'s pass', universal, { aggregate: withMacAsset(universal, {}, ['nativeIntel']) }],
+      ['an arm64 release that claims an Intel gate', arm64, { aggregate: withMacAsset(arm64, { nativeIntel: 'passed' }) }],
+      ['a third measured file', universal, { aggregate: withMacAsset(universal, { architectures: { executable: ['arm64', 'x86_64'], betterSqlite3: ['arm64', 'x86_64'], helper: ['arm64'] } }) }],
+    ]
+    for (const [label, handoff, overrides] of cases) {
+      expect(() => checkHandoff(handoff, overrides), label).toThrow(UpdateManifestError)
+    }
+  })
+
+  it('refuses a v2 manifest that is not exactly what this release\'s evidence gives (G7)', () => {
+    const handoff = releaseHandoff('universal')
+    const raw = JSON.parse(handoff.manifestBytes.toString('utf8')) as RawManifest
+    const regenerated = (value: unknown) => {
+      const bytes = rawBytes(value)
+      return {
+        manifestBytes: bytes,
+        aggregate: { ...handoff.aggregate, updateManifest: { ...handoff.aggregate.updateManifest, size: bytes.length, sha256: sha256Hex(bytes) } },
+      }
+    }
+    const other = generateManifestV2({
+      registry: handoff.registry,
+      evidence: buildEvidence({ tag: 'v1.2.4', packageVersion: '1.2.4' }),
+      minimumMacosVersion,
+      publishedAt,
+      kind: 'universal',
+    })
+    const cases: Array<[string, Record<string, unknown>]> = [
+      ['a v2 manifest of another release', regenerated(JSON.parse(other.bytes.toString('utf8')))],
+      ['a key the publisher never writes', regenerated({ ...raw, channel: 'stable' })],
+      ['a shorter lifetime', regenerated({ ...raw, expiresAt: isoAfter(publishedAt, 90 * DAY_MS) })],
+      ['another package size', regenerated({ ...raw, targets: raw.targets.map((target, index) => (index === 1 ? { ...target, byteLength: 334 } : target)) })],
+      ['another minimum macOS', regenerated({ ...raw, targets: raw.targets.map((target, index) => (index === 0 ? { ...target, minimumSystemVersion: '14.0' } : target)) })],
+      ['the v1 file named in the evidence', { aggregate: { ...handoff.aggregate, updateManifest: { ...handoff.aggregate.updateManifest, name: 'update-manifest.json' } } }],
+      ['evidence about other bytes', { aggregate: { ...handoff.aggregate, updateManifest: { ...handoff.aggregate.updateManifest, sha256: 'f'.repeat(64) } } }],
+      ['another key registry', { registryBytes: Buffer.from(`${JSON.stringify(makeRegistry(makeEphemeralKeypair()), null, 2)}\n`) }],
+      ['another publishedAt in the context', { context: { ...handoff.context, taggedAt: '2026-01-02T00:00:00Z' } }],
+      ['another tag than authorized', { tag: 'v1.2.4' }],
+      ['another source commit than authorized', { sourceCommit: 'c'.repeat(40) }],
+      ['an unannotated tag', { context: { ...handoff.context, annotated: false } }],
+      ['evidence for another commit', { aggregate: { ...handoff.aggregate, sourceCommit: 'c'.repeat(40) } }],
+      ['evidence that is not publishable', { aggregate: { ...handoff.aggregate, publishable: false } }],
+    ]
+    for (const [label, overrides] of cases) {
+      expect(() => checkHandoff(handoff, overrides), label).toThrow(UpdateManifestError)
+    }
+  })
+
+  it('re-hashes the packages: each file must be the one the evidence describes', () => {
+    const handoff = releaseHandoff('universal')
+    const dmgName = `Agent-Inbox-${tag}-universal.dmg`
+    const { [dmgName]: dmg, ...linux } = handoff.packages
+    const cases: Array<[string, Record<string, { size: number; sha256: string }>]> = [
+      ['another size', { ...handoff.packages, [dmgName]: { ...dmg!, size: dmg!.size + 1 } }],
+      ['another digest', { ...handoff.packages, [dmgName]: { ...dmg!, sha256: 'f'.repeat(64) } }],
+      ['a missing package', linux],
+      ['an extra file', { ...handoff.packages, 'Agent-Inbox-v1.2.3-arm64.dmg': { size: 1, sha256: 'f'.repeat(64) } }],
+    ]
+    for (const [label, packages] of cases) {
+      expect(() => checkHandoff(handoff, { packages }), label).toThrow(UpdateManifestError)
+    }
+  })
+})
+
+describe('deriveV1 — v1 by projection or re-stamp (G6, G8)', () => {
+  it('projects a universal release, with today\'s generator bytes and the same data as v2 (G8)', () => {
+    const handoff = releaseHandoff('universal')
+    const checked = checkHandoff(handoff)
+    const derived = deriveV1({ release: checked, v2ManifestBytes: handoff.manifestBytes, registry: handoff.registry, releases: [] })
+    const today = generateManifest({ registry: handoff.registry, evidence: buildEvidence(), minimumMacosVersion, publishedAt })
+    expect(derived).toMatchObject({ made: 'projection', describes: tag })
+    expect(derived.bytes.equals(today.bytes)).toBe(true)
+    expect(handoff.manifestBytes.toString('utf8').replace('\n  "schema": 2,\n', '\n  "schema": 1,\n')).toBe(derived.bytes.toString('utf8'))
+    expect(() => deriveV1({ release: checked, v2ManifestBytes: Buffer.concat([handoff.manifestBytes, Buffer.from('\n')]), registry: handoff.registry, releases: [] }))
+      .toThrow(/not the v2 manifest/)
+  })
+
+  it('re-stamps for an arm64 release, describing the newest universal one (G6)', () => {
+    const { signer, registry, v160, v170, v190 } = history()
+    const handoff = releaseHandoff('arm64', signer, '2.0.0', '2027-01-18T12:00:00Z')
+    const arm64Checked = checkHandoff(handoff)
+    const releases = [v160.listing, v170.listing, v190.listing]
+    const derived = deriveV1({
+      release: arm64Checked,
+      v2ManifestBytes: handoff.manifestBytes,
+      registry,
+      releases,
+      earlierManifestBytes: v190.v1.bytes,
+      earlierSignatureBytes: v190.v1.signature,
+    })
+    expect(derived).toMatchObject({ made: 'restamp', describes: 'v1.9.0', earlierManifestSha256: sha256Hex(v190.v1.bytes) })
+    expect(manifestDiff(v190.v1.bytes, derived.bytes)).toEqual(['expiresAt', 'publishedAt'])
+    expect(derived.manifest.publishedAt).toBe('2027-01-18T12:00:00Z')
+    expect(derived.manifest.expiresAt).toBe('2027-07-17T12:00:00Z')
+    expect(() => deriveV1({ release: arm64Checked, v2ManifestBytes: handoff.manifestBytes, registry, releases }))
+      .toThrow(/earlier v1 manifest/)
+    // The v1 of a universal release before an older universal one is refused (G6).
+    expect(() => deriveV1({
+      release: arm64Checked,
+      v2ManifestBytes: handoff.manifestBytes,
+      registry,
+      releases,
+      earlierManifestBytes: v170.v1.bytes,
+      earlierSignatureBytes: v170.v1.signature,
+    })).toThrow(/newest .*v1\.9\.0/)
+  })
+})
+
+describe('the original key on every v1 manifest (G10)', () => {
+  const v1For = (signers: Signer[], registry: UpdateRegistry) => {
+    const { bytes } = generateManifest({ registry, evidence: buildEvidence(), minimumMacosVersion, publishedAt })
+    return { manifestBytes: bytes, envelope: signBytes(bytes, ...signers) }
+  }
+
+  it('pins the key 1.2 to 1.6 trust, as the production registry lists it', () => {
+    const production = parseRegistry(readFileSync(join(root, 'release', 'update-keys.json')))
+    expect(ORIGINAL_UPDATE_KEY).toEqual({ keyId: PROD_KEY_ID, algorithm: 'ed25519', publicKeySpkiBase64: PROD_PUBLIC_KEY_SPKI_BASE64 })
+    expect(production.keys).toContainEqual(ORIGINAL_UPDATE_KEY)
+    expect(deriveKeyId(ORIGINAL_UPDATE_KEY.publicKeySpkiBase64)).toBe(ORIGINAL_UPDATE_KEY.keyId)
+  })
+
+  it('passes when the original key signed the v1 manifest', () => {
+    const original = makeEphemeralKeypair()
+    const backup = makeEphemeralKeypair()
+    const registry = makeRegistry(original, backup)
+    const originalKey = { keyId: original.keyId, algorithm: 'ed25519' as const, publicKeySpkiBase64: original.publicKeySpkiBase64 }
+    const signed = v1For([original], registry)
+    expect(checkOriginalKeySignature({ ...signed, registry, newTag: tag, originalKey })).toEqual({ originalKeySignature: 'passed' })
+    expect(checkOriginalKeySignature({ ...v1For([original, backup], registry), registry, newTag: tag, originalKey }))
+      .toEqual({ originalKeySignature: 'passed' })
+    expect(planOriginalKeySignature({ registry, newTag: tag, originalKey })).toEqual({ originalKeySignature: 'passed' })
+  })
+
+  it('refuses a v1 manifest without it, unless the exact override for this tag and signing key waives it', () => {
+    const signer = makeEphemeralKeypair()
+    const registry = makeRegistry(signer)
+    const signed = v1For([signer], registry)
+    const exact = `ALLOW-UPDATE-KEY-ROTATION:${tag}:${signer.keyId}`
+    // The production key never signs in tests, so its signature is missing here.
+    expect(() => checkOriginalKeySignature({ ...signed, registry, newTag: tag })).toThrow(exact)
+    expect(() => planOriginalKeySignature({ registry, newTag: tag })).toThrow(exact)
+    for (const override of [
+      `ALLOW-UPDATE-KEY-ROTATION:v1.2.4:${signer.keyId}`,
+      `ALLOW-UPDATE-KEY-ROTATION:${tag}:${PROD_KEY_ID}`,
+      `${exact} `,
+      exact.toLowerCase(),
+      '',
+    ]) {
+      expect(() => checkOriginalKeySignature({ ...signed, registry, newTag: tag, rotationOverride: override }), override).toThrow(UpdateManifestError)
+      expect(() => planOriginalKeySignature({ registry, newTag: tag, rotationOverride: override }), override).toThrow(UpdateManifestError)
+    }
+    const waived = { originalKeySignature: 'waived', rotationOverride: exact }
+    expect(checkOriginalKeySignature({ ...signed, registry, newTag: tag, rotationOverride: exact })).toEqual(waived)
+    expect(planOriginalKeySignature({ registry, newTag: tag, rotationOverride: exact })).toEqual(waived)
+  })
+
+  it('counts only a valid signature of the exact bytes by the original key', () => {
+    const original = makeEphemeralKeypair()
+    const other = makeEphemeralKeypair()
+    const registry = makeRegistry(other, original)
+    const originalKey = { keyId: original.keyId, algorithm: 'ed25519' as const, publicKeySpkiBase64: original.publicKeySpkiBase64 }
+    const { manifestBytes } = v1For([other], registry)
+    // An entry under the original key id that holds another key's signature.
+    const impostor = serializeEnvelope({
+      schema: 1,
+      manifestSha256: sha256Hex(manifestBytes),
+      signatures: [{ algorithm: 'ed25519', keyId: original.keyId, signature: edSign(null, manifestBytes, other.privateKeyPem).toString('base64') }],
+    })
+    expect(() => checkOriginalKeySignature({ manifestBytes, envelope: impostor, registry, newTag: tag, originalKey })).toThrow(UpdateManifestError)
+    const signedByOriginal = signBytes(manifestBytes, original)
+    const otherBytes = Buffer.concat([manifestBytes, Buffer.from(' ')])
+    expect(() => checkOriginalKeySignature({ manifestBytes: otherBytes, envelope: signedByOriginal, registry, newTag: tag, originalKey }))
+      .toThrow(/digest/)
+    // The registry signs with another key, so a v1 signed only by that key needs the waiver.
+    expect(() => planOriginalKeySignature({ registry, newTag: tag, originalKey })).toThrow(UpdateManifestError)
   })
 })

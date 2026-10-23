@@ -293,9 +293,11 @@ function Get-MsiProducts {
 
 function Get-AppsFolder {
   try {
-    $folder = (New-Object -ComObject Shell.Application).NameSpace('shell:AppsFolder')
-    @($folder.Items() | Where-Object { $_.Name -match [regex]::Escape($product) } |
+    $items = @((New-Object -ComObject Shell.Application).NameSpace('shell:AppsFolder').Items())
+    $matched = @($items | Where-Object { $_.Name -match [regex]::Escape($product) } |
       ForEach-Object { [ordered]@{ name = $_.Name; appId = "$($_.Path)".Replace($paths.profile, '%USERPROFILE%') } })
+    if ($items.Count -eq 0) { return @([ordered]@{ error = 'shell:AppsFolder listed no apps at all in this session' }) }
+    return $matched
   } catch {
     @([ordered]@{ error = "$_" })
   }
@@ -376,14 +378,17 @@ function Get-LogLines([string]$Path, [string]$Pattern, [int]$Limit = 25) {
 
 function Save-SquirrelLogs([string]$Step) {
   $lines = [ordered]@{}
-  foreach ($source in @(
-      (Join-Path $env:LOCALAPPDATA 'SquirrelTemp\SquirrelSetup.log'),
-      (Join-Path $paths.squirrelRoot 'SquirrelSetup.log'))) {
-    if (-not (Test-Path -LiteralPath $source)) { continue }
-    $copy = Join-Path $params.logDir "$Step-$(Split-Path -Leaf (Split-Path -Parent $source))-SquirrelSetup.log"
-    Copy-Item -LiteralPath $source -Destination $copy -Force
-    $lines[(Split-Path -Leaf (Split-Path -Parent $source))] = Get-LogLines $source `
-      'Squirrel Enabled Apps|squirrel-(install|updated|uninstall|firstrun|obsolete)|hook|burning it to the ground|already exists|Failed|Couldn''t|Exception' 40
+  $sources = @(
+    Get-ChildItem -LiteralPath (Join-Path $env:LOCALAPPDATA 'SquirrelTemp') -Filter '*.log' -File -ErrorAction SilentlyContinue
+    Get-ChildItem -LiteralPath $paths.squirrelRoot -Filter '*.log' -File -ErrorAction SilentlyContinue
+    Get-ChildItem -LiteralPath $paths.squirrelRoot -Directory -Filter 'app-*' -ErrorAction SilentlyContinue |
+      ForEach-Object { Get-ChildItem -LiteralPath $_.FullName -Filter '*.log' -File -ErrorAction SilentlyContinue }
+  )
+  foreach ($source in $sources) {
+    $label = "$(Split-Path -Leaf $source.DirectoryName)-$($source.Name)"
+    Copy-Item -LiteralPath $source.FullName -Destination (Join-Path $params.logDir "$Step-$label") -Force
+    $lines[$label] = Get-LogLines $source.FullName `
+      'Squirrel Enabled Apps|squirrel-(install|updated|uninstall|firstrun|obsolete)|hook|burning it to the ground|already exists|Failed|Couldn''t|Exception|in use|delete|Kill' 40
   }
   return $lines
 }

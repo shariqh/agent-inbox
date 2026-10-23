@@ -112,7 +112,8 @@ function Measure-Installed([string]$Name, [hashtable]$Result, [string]$Side) {
   $record = [ordered]@{ step = $Name; side = $Side; installed = [bool]$directory }
   if ($directory) {
     $arguments = @($tree, '--root', $directory, '--compare', $verified.$Side.root)
-    if ($Kind -eq 'squirrel') { $arguments += @('--exclude', 'squirrel.exe') }
+    # Squirrel puts its own Update.exe copy and that copy's log in every app folder.
+    if ($Kind -eq 'squirrel') { $arguments += @('--exclude', 'squirrel.exe', '--exclude', 'Squirrel-UpdateSelf.log') }
     $measured = & node @arguments | ConvertFrom-Json -AsHashtable
     $userLength = $Result.user.name.Length
     $deepest = $directory.Length + 1 + $measured.deepestRelativeLength
@@ -142,8 +143,23 @@ function Measure-Installed([string]$Name, [hashtable]$Result, [string]$Side) {
 }
 
 $failure = $null
+$policyKey = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Installer'
+$policy = [ordered]@{ disableMsiBefore = (Get-ItemProperty -LiteralPath $policyKey -Name DisableMSI -ErrorAction SilentlyContinue).DisableMSI }
+$checks['installer-policy'] = $policy
 try {
   Invoke-Step 'baseline' @{ action = 'baseline' } | Out-Null
+  if ($Kind -eq 'msi') {
+    # Windows Server leaves DisableMSI unset, which blocks unelevated per-user
+    # installs of unmanaged packages; Windows 10 and 11 allow them. Record the
+    # server result, then measure everything else under the client default.
+    $serverDefault = Invoke-Step 'install-under-server-policy' @{ action = 'install'; installer = $installers.base }
+    if ($serverDefault.run.exitCode -eq 0) {
+      Invoke-Step 'uninstall-after-server-policy' @{ action = 'uninstall'; productCode = $builds.base.productCode } | Out-Null
+    }
+    New-Item -Force $policyKey | Out-Null
+    Set-ItemProperty -LiteralPath $policyKey -Name DisableMSI -Value 0 -Type DWord
+    $policy.disableMsiMeasured = (Get-ItemProperty -LiteralPath $policyKey -Name DisableMSI).DisableMSI
+  }
   $installed = Invoke-Step 'install-base' @{ action = 'install'; installer = $installers.base }
   Measure-Installed 'install-base' $installed 'base' | Out-Null
   if ($Kind -eq 'squirrel') { Invoke-Step 'shortcut-like-squirrel-startup' @{ action = 'squirrel-shortcut' } | Out-Null }

@@ -56,14 +56,15 @@ const runText = (entry) => {
   if (!entry.run) return `done in ${entry.seconds}s`
   return `exit ${entry.run.exitCode} in ${entry.run.seconds}s${entry.run.timedOut ? ' (timed out)' : ''}`
 }
-const treeText = (entry) => {
+const treeText = (entry, kind) => {
   if (!entry) return 'not measured'
   if (!entry.installed) return '❌ nothing installed'
   const compare = entry.compare ?? {}
   const parts = ['added', 'changed', 'missing']
     .filter((key) => compare[key]?.count)
     .map((key) => `${key} ${compare[key].count}: ${compare[key].first.slice(0, 3).join(', ')}`)
-  return `${ok(entry.matchesVerified)} ${parts.join('; ')}`.trim()
+  const note = kind === 'squirrel' ? ' (apart from the squirrel.exe and Squirrel-UpdateSelf.log Squirrel adds)' : ''
+  return `${ok(entry.matchesVerified)}${note} ${parts.join('; ')}`.trim()
 }
 const shortcutText = (shortcuts) => {
   if (!shortcuts?.length) return 'none'
@@ -79,7 +80,15 @@ const launchText = (entry) => {
     `quit by ${quit.method} (${quit.graceful ? 'graceful' : 'forced'}), port ${quit.portReleased ? 'released' : 'still bound'}`
 }
 const appsDuring = (entry) => (entry?.run?.appProcessesSeen ?? [])
-  .map((process) => `${process.path?.split('\\').slice(-2).join('\\') ?? '?'} ${process.args ?? ''}`.trim())
+  .map((process) => process.path
+    ? `${process.path.split('\\').slice(-2).join('\\')} ${process.args ?? ''}`.trim()
+    : 'Agent Inbox.exe (exited before its command line could be read)')
+const integrity = (entry) => /(\w+) Mandatory Level/.exec(entry?.user?.integrity ?? '')?.[1]?.concat(' integrity') ?? ''
+const startedByInstall = (entry) => {
+  const seen = appsDuring(entry)
+  const created = !entry?.dataBefore && (entry?.dataAfterInstall ?? []).includes('inbox.db')
+  return [...new Set(seen)].join('<br>').concat(created ? '<br>and the app created %USERPROFILE%\\.agent-inbox\\inbox.db before anyone launched it' : '') || 'none'
+}
 const leftovers = (kind, suffix) => {
   const before = step(kind, 'baseline')?.snapshot
   const after = step(kind, suffix)?.snapshot
@@ -90,14 +99,19 @@ const leftovers = (kind, suffix) => {
     roamingAppData: '%APPDATA%', startMenu: 'Start Menu', desktop: 'Desktop', hkcuSoftware: 'HKCU\\Software',
     hkcuClsid: 'HKCU\\Software\\Classes\\CLSID', hkcuUninstall: 'HKCU\\…\\Uninstall', hkcuInstallerProducts: 'HKCU\\Software\\Microsoft\\Installer\\Products',
   }
+  const explain = {
+    'localAppData:AgentInbox': () => ` (left: ${(step(kind, suffix)?.state?.squirrelRoot ?? []).join(', ')})`,
+    'roamingAppData:agent-inbox': () => ' (Chromium profile the app creates; no installer owns it)',
+  }
   const all = []
   const relevant = []
   for (const [key, label] of Object.entries(labels)) {
     const previous = new Set(before[key] ?? [])
     for (const name of after[key] ?? []) {
-      if (previous.has(name)) continue
-      all.push(`${label}\\${name}`)
-      if (['hkcuClsid', 'hkcuUninstall', 'hkcuInstallerProducts'].includes(key) || product.test(name)) relevant.push(`${label}\\${name}`)
+      if (previous.has(name) || (key === 'profile' && name === '.agent-inbox')) continue
+      const entry = `${label}\\${name}${explain[`${key}:${name}`]?.() ?? ''}`
+      all.push(entry)
+      if (['hkcuClsid', 'hkcuUninstall', 'hkcuInstallerProducts'].includes(key) || product.test(name)) relevant.push(entry)
     }
   }
   return { all, relevant }
@@ -133,6 +147,8 @@ function measure(kind) {
     launchUpgrade: step(kind, 'launch-upgrade'),
     repairWithSource: step(kind, 'repair-with-source'),
     repairWithSourceCheck: check(kind, 'repair-with-source'),
+    serverPolicy: step(kind, 'install-under-server-policy'),
+    policy: check(kind, 'installer-policy'),
     repairWithoutSource: step(kind, 'repair-without-source'),
     repairWithoutSourceCheck: check(kind, 'repair-without-source'),
     uninstall,
@@ -156,19 +172,24 @@ row('Installer size',
   `${MiB(msi?.installerBytes)} (.msi, LZX high)`,
   `${MiB(squirrel?.installerBytes)} (Setup.exe) + ${MiB(squirrel?.packageBytes)} full .nupkg for Squirrel's updater`)
 row('Build time (base)', `${msi?.buildSeconds ?? '—'} s`, `${squirrel?.buildSeconds ?? '—'} s`)
+const serverPolicyText = (entry) => {
+  if (!entry?.serverPolicy) return 'not run'
+  const refusal = (entry.serverPolicy.msiLog ?? []).find((line) => /Rejecting product|disabled/i.test(line))
+  return `${runText(entry.serverPolicy)}${refusal ? `: ${refusal.replace(/^MSI \([^)]*\) \([^)]*\) \[[^\]]*\]: /, '')}` : ''}; DisableMSI was ${entry.policy?.disableMsiBefore ?? 'unset'}, then set to ${entry.policy?.disableMsiMeasured ?? '—'} (the Windows 10/11 default) for every other step`
+}
+row("Unelevated per-user install under Windows Server's default installer policy",
+  serverPolicyText(msi), 'not subject to Windows Installer policy')
 row('Silent install as a standard user',
-  `${ok(msi?.install?.run?.exitCode === 0 && msi?.install?.user?.isAdministrator === false)} ${runText(msi?.install)}; ${msi?.install?.user?.integrity ?? ''}`,
-  `${ok(squirrel?.install?.run?.exitCode === 0 && squirrel?.install?.user?.isAdministrator === false)} ${runText(squirrel?.install)}; ${squirrel?.install?.user?.integrity ?? ''}`)
-row('App started by the installer itself',
-  appsDuring(msi?.install).join('<br>') || 'none',
-  appsDuring(squirrel?.install).join('<br>') || 'none')
+  `${ok(msi?.install?.run?.exitCode === 0 && msi?.install?.user?.isAdministrator === false)} ${runText(msi?.install)}; ${integrity(msi?.install)}`,
+  `${ok(squirrel?.install?.run?.exitCode === 0 && squirrel?.install?.user?.isAdministrator === false)} ${runText(squirrel?.install)}; ${integrity(squirrel?.install)}`)
+row('App started by the installer itself', startedByInstall(msi?.install), startedByInstall(squirrel?.install))
 row('Install location', msi?.install?.state?.appDirectory, squirrel?.install?.state?.appDirectory)
-row('Installed tree = verified folder', treeText(msi?.installCheck), treeText(squirrel?.installCheck))
+row('Installed tree = verified folder', treeText(msi?.installCheck, 'msi'), treeText(squirrel?.installCheck, 'squirrel'))
 row('Disk footprint after install',
   `${MiB(msi?.installCheck?.footprint?.bytes)} in ${msi?.installCheck?.footprint?.root ?? '—'}`,
   `${MiB(squirrel?.installCheck?.footprint?.bytes)} in ${squirrel?.installCheck?.footprint?.root ?? '—'}`)
 const deepestText = (deepest) => deepest
-  ? `${deepest.fullLength} chars with a ${deepest.userNameLength}-char user name; fits MAX_PATH for user names up to ${deepest.maxUserNameLength} chars (${deepest.relative})`
+  ? `${deepest.fullLength} characters for a user name of ${deepest.userNameLength}; fits MAX_PATH (260) for user names up to ${deepest.maxUserNameLength} characters (${deepest.relative})`
   : 'not measured'
 row('Deepest installed path', deepestText(msi?.deepest), deepestText(squirrel?.deepest))
 row('Start-menu shortcut after install',
@@ -182,28 +203,34 @@ row('Toast activator COM registration',
   msi?.install?.state?.toastActivatorServer ? `MSI-owned: LocalServer32 = ${Object.values(msi.install.state.toastActivatorServer)[0]}` : 'none',
   squirrel?.shortcutStep?.state?.toastActivatorServer ? 'present' : 'none at install (Electron writes one at its first notification)')
 row('Launch from the shortcut, then quit', launchText(msi?.launchBase), launchText(squirrel?.launchBase))
-const upgradeRunningText = (entry, measured) => entry
-  ? `${runText(entry)}; app ${entry.launch?.ready ? 'was running' : 'was not running'}; after: ${(entry.processesAfterRun ?? []).filter((p) => p.main).map((p) => p.path?.split('\\').slice(-2).join('\\')).join(', ') || 'no app process'}; tree ${treeText(measured)}`
+const upgradeRunningText = (entry, measured, kind) => entry
+  ? `${runText(entry)}; app ${entry.launch?.ready ? 'was running' : 'was not running'}; started during the run: ${appsDuring(entry).join(', ') || 'nothing'}; still running after: ${(entry.processesAfterRun ?? []).filter((p) => p.main).map((p) => p.path?.split('\\').slice(-2).join('\\')).join(', ') || 'nothing'}; tree ${treeText(measured, kind)}`
   : 'not run'
-row('Upgrade while the app is running', upgradeRunningText(msi?.upgradeRunning, msi?.upgradeRunningCheck), upgradeRunningText(squirrel?.upgradeRunning, squirrel?.upgradeRunningCheck))
-const upgradeText = (entry, measured, running) => {
+row('Upgrade while the app is running', upgradeRunningText(msi?.upgradeRunning, msi?.upgradeRunningCheck, 'msi'), upgradeRunningText(squirrel?.upgradeRunning, squirrel?.upgradeRunningCheck, 'squirrel'))
+const upgradeText = (entry, measured, running, kind) => {
   if (!entry) return running && !running.error ? 'not needed: the upgrade while running succeeded' : 'not run'
-  return `${runText(entry)}; location ${entry.state?.appDirectory ?? '—'}; tree ${treeText(measured)}`
+  return `${runText(entry)}; location ${entry.state?.appDirectory ?? '—'}; tree ${treeText(measured, kind)}`
 }
 row('Upgrade with the app closed',
-  upgradeText(msi?.upgrade, msi?.upgradeCheck, msi?.upgradeRunning),
-  upgradeText(squirrel?.upgrade, squirrel?.upgradeCheck, squirrel?.upgradeRunning))
+  upgradeText(msi?.upgrade, msi?.upgradeCheck, msi?.upgradeRunning, 'msi'),
+  upgradeText(squirrel?.upgrade, squirrel?.upgradeCheck, squirrel?.upgradeRunning, 'squirrel'))
 const finalUpgrade = (entry) => entry?.upgrade ?? entry?.upgradeRunning
-row('Install location after upgrade', finalUpgrade(msi)?.state?.appDirectory, finalUpgrade(squirrel)?.state?.appDirectory)
+const locationText = (entry) => {
+  const state = finalUpgrade(entry)?.state
+  if (!state) return '—'
+  const links = (state.startMenuShortcuts ?? []).map((link) => `shortcut working directory ${link.workingDirectory}`)
+  return [state.appDirectory ?? 'nothing installed', ...links].join('<br>')
+}
+row('Install location after upgrade', locationText(msi), locationText(squirrel))
 const arp = (state) => [...(state?.uninstallEntries ?? []).map((entry) => `${entry.hive} ${entry.displayName} ${entry.displayVersion}`),
   ...(state?.msiProducts ?? []).map((entry) => entry.error ?? `MSI ${entry.productCode} ${entry.version} (cached package ${MiB(entry.localPackageBytes)})`)].join('<br>') || 'none'
 row('Installed-apps entries after upgrade', arp(finalUpgrade(msi)?.state), arp(finalUpgrade(squirrel)?.state))
 row('Launch after upgrade', launchText(msi?.launchUpgrade), launchText(squirrel?.launchUpgrade))
-const repairText = (entry, measured) => entry
-  ? `${runText(entry)}; deleted ${entry.deleted?.join(', ')}; restored ${Object.entries(entry.restored ?? {}).map(([file, back]) => `${file} ${ok(back)}`).join(', ')}; tree ${treeText(measured)}`
+const repairText = (entry, measured, kind) => entry?.error ? `error: ${entry.error}` : entry
+  ? `${runText(entry)}; deleted ${entry.deleted?.join(', ')}; restored ${Object.entries(entry.restored ?? {}).map(([file, back]) => `${file} ${ok(back)}`).join(', ')}; tree ${treeText(measured, kind)}`
   : 'not run'
-row('Repair, installer source present', repairText(msi?.repairWithSource, msi?.repairWithSourceCheck), 'no repair: re-running Setup.exe deletes and reinstalls the app')
-row('Repair, installer source deleted', repairText(msi?.repairWithoutSource, msi?.repairWithoutSourceCheck), 'no repair')
+row('Repair, installer source present', repairText(msi?.repairWithSource, msi?.repairWithSourceCheck, 'msi'), 'no repair: re-running Setup.exe deletes and reinstalls the app')
+row('Repair, installer source deleted', repairText(msi?.repairWithoutSource, msi?.repairWithoutSourceCheck, 'msi'), 'no repair')
 const uninstallText = (entry) => entry
   ? `${runText(entry)}; app folder ${entry.state?.appDirectory ? 'still present' : 'removed'}; Start-menu shortcuts left: ${entry.state?.startMenuShortcuts?.length ?? '—'}; app started during uninstall: ${appsDuring(entry).join(', ') || 'no'}`
   : 'not run'
@@ -212,7 +239,7 @@ const keepsData = (entry) => entry ? `${ok(entry.sentinelSurvived && entry.inbox
 row('%USERPROFILE%\\.agent-inbox survives uninstall', keepsData(msi?.uninstall), keepsData(squirrel?.uninstall))
 row('Product leftovers after uninstall', msi?.leftover?.relevant.join('<br>') || (msi?.leftover ? 'none' : '—'), squirrel?.leftover?.relevant.join('<br>') || (squirrel?.leftover ? 'none' : '—'))
 row("Squirrel's own updater (Update.exe --update)", '—',
-  squirrel?.update ? `${runText(squirrel.update)}; app folders: ${(squirrel.update.state?.squirrelRoot ?? []).filter((name) => name.startsWith('app-')).join(', ')}; tree ${treeText(squirrel.updateCheck)}; next launch ${launchText(squirrel.launchAfterUpdate)}` : 'not run')
+  squirrel?.update ? `${runText(squirrel.update)}; started during the run: ${appsDuring(squirrel.update).join(', ') || 'nothing'}; app folders: ${(squirrel.update.state?.squirrelRoot ?? []).filter((name) => name.startsWith('app-')).join(', ')}; tree ${treeText(squirrel.updateCheck, 'squirrel')}; next launch ${launchText(squirrel.launchAfterUpdate)}; after uninstall: ${(squirrel.finalUninstall?.state?.squirrelRoot ?? []).join(', ') || 'folder removed'}` : 'not run')
 row('Signing surface (this build)',
   `${unsignedFolder.length} unsigned PE files in the folder, then the .msi last (${signedFolder.length} PE files already carry third-party signatures); MSI status: ${data.signatures?.msi?.status ?? '—'}`,
   `${unsignedFolder.length} unsigned folder PE files + ${(data.signatures?.squirrelAdded ?? []).map((entry) => `${entry.path} (${entry.status})`).join(', ') || '—'} + Setup.exe (${data.signatures?.squirrelSetup?.status ?? '—'}), signed inside Squirrel's releasify via signtool parameters`)

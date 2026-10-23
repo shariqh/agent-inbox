@@ -19,7 +19,9 @@ The spike built both candidates from the same verified Windows folder and drove 
 install, launch, upgrade, repair and uninstall as a fresh standard (non-administrator) user on
 a `windows-2022` runner. The numbers below are from run
 [39893800330](https://github.com/shariqh/agent-inbox/actions/runs/39893800330) (1.6.0 upgraded
-to 1.6.1); every later run of the workflow repeats them and writes them to its job summary.
+to 1.6.1). Run [39896941593](https://github.com/shariqh/agent-inbox/actions/runs/39896941593),
+on this PR's final spike change, reproduced every result; only the times varied. Every run
+writes the same table to its job summary.
 
 1. **One install folder for every version.** The MSI installs to
    `%LOCALAPPDATA%\Programs\Agent Inbox` and upgrades in place. Squirrel installs to
@@ -123,8 +125,9 @@ folder it came from.
 ## §2 — Results
 
 Run [39893800330](https://github.com/shariqh/agent-inbox/actions/runs/39893800330), commit
-`f041c3bf`. Both versions hold 8,115 files and 560.5 MiB. Times are single runs on a hosted
-runner, so only their order of magnitude means anything.
+`f041c3bf`, except where noted. Both versions hold 8,115 files and 560.5 MiB. Times are single
+runs on a hosted runner and were up to twice as long in the later run, so only their order of
+magnitude means anything.
 
 | Measurement | MSI (WiX 5.0.2, per-user) | Squirrel.Windows (electron-winstaller 5.4.4) |
 | --- | --- | --- |
@@ -141,7 +144,7 @@ runner, so only their order of magnitude means anything.
 | Shortcut AppUserModelID | `io.github.shariqh.agent-inbox` (set by the MSI) | `com.squirrel.AgentInbox.AgentInbox` (Squirrel's fixed pattern) |
 | Shortcut toast activator CLSID | `{08973E92-A6EF-47B2-9E91-A876F4B8F210}`, with its `LocalServer32` registration owned by the MSI | `{FB7E709B-6561-538D-86A3-6C663B6BB412}`, derived from the ID; no registration |
 | Launch from the shortcut, then quit | ready in under a second; closed by its window; port released | the same |
-| Upgrade while the app runs | exit 0 in 46 s, tree = 1.6.1. The running 1.6.0 kept running from files Windows Installer had moved aside, and then quit only when killed | exit 0 in 30 s, tree = 1.6.1. Setup.exe killed the running app, deleted the 1.6.0 folder, and started 1.6.1 with `--squirrel-install` |
+| Upgrade while the app runs | exit 0 in 46 s, tree = 1.6.1. The running 1.6.0 kept running from 15 in-use files Windows Installer had moved aside for deletion at the next reboot (counted in run 39896941593), and then quit only when killed | exit 0 in 30 s, tree = 1.6.1. Setup.exe killed the running app, deleted the 1.6.0 folder, and started 1.6.1 with `--squirrel-install` |
 | Install location after upgrade | the same folder | `app-1.6.1`; the shortcut's working directory still named the deleted `app-1.6.0` |
 | Installed-apps entries after upgrade | one, 1.6.1 | one, 1.6.1 |
 | Repair, `.msi` present | exit 0; deleted `Agent Inbox.exe` and `dist\store.js` restored | none |
@@ -177,7 +180,9 @@ covers them.
 Electron's executable carries `SquirrelAwareVersion=1` in its version resource, so Squirrel
 hands every lifecycle event to the app: it starts `Agent Inbox.exe --squirrel-install`
 (`--squirrel-updated`, `--squirrel-uninstall`) and waits up to 15 seconds (10 for uninstall)
-before killing it, and it creates no shortcut itself. Today's app treats those flags as a normal
+before killing it, and it creates no shortcut itself. Its log shows exactly that: "Squirrel
+Enabled Apps: [...\Agent Inbox.exe]", then "Couldn't run Squirrel hook, continuing ... The
+operation was canceled". Today's app treats those flags as a normal
 launch, so each install, upgrade and uninstall briefly ran the full app, which created the inbox
 database before the user had opened anything. Choosing Squirrel would mean handling those events in
 `electron/main.cjs` (create or remove the shortcut through `Update.exe`, then quit at once), the
@@ -220,7 +225,7 @@ installer should close it first.
 Squirrel's Setup.exe treats a second install as a fresh one: it kills the app, deletes the whole
 install, installs `app-1.6.1`, and leaves the old shortcut pointing its working directory at a
 folder that no longer exists. Its own updater (`Update.exe --update`), which a notify-only
-design would not use, keeps both version folders until a later run cleans up.
+design would not use, kept both version folders after updating and after the next launch.
 
 ### 3.5 Repair
 
@@ -233,8 +238,9 @@ reinstall from a new copy. 2b's documentation should say so. Squirrel has nothin
 The MSI removed every file and folder it installed, including the now empty
 `%LOCALAPPDATA%\Programs`, plus its shortcut, its `HKCU` keys and the COM registration. Squirrel
 left the whole `app-1.6.1` folder, `Update.exe`, a `.dead` marker, its temp folder and the
-Start-menu shortcut. Part of that is today's app: the uninstall hook started it, and Squirrel
-deleted the folder while it was still shutting down. Both kept `%USERPROFILE%\.agent-inbox`,
+Start-menu shortcut. Squirrel's log does not say why the folder stayed. The likely cause is
+today's app: the uninstall hook had started it seconds earlier, so its files were probably still
+in use when Squirrel deleted the folder. Both kept `%USERPROFILE%\.agent-inbox`,
 and neither removed `%APPDATA%\agent-inbox`, the Chromium profile the app creates; whether an
 uninstall should is a product question for 2b, not an installer difference.
 

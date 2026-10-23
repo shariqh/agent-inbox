@@ -730,7 +730,10 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   `hook-cli selftest` reaches no `public/` module, `scripts/runtime-mcp-probe.mjs`
   (`probeRuntimeMcp`) starts the runtime's own `dist/mcp-server.js` with its own Node against
   a scratch database and requires initialize + tools/list to answer, bounded by a timeout
-  and writing nothing to stdout. Staging, release assembly and the Intel release gate all
+  and writing nothing to stdout. Then it closes the server's stdin and lets it exit,
+  killing it only after a 2-second grace: on Windows a kill is TerminateProcess, which
+  would orphan a git the server runs for its presence write, still open inside the
+  runtime about to be renamed (#333). Staging, release assembly and the Intel release gate all
   run it beside the selftest.
 - **`waits_on` is agent-owned row content: labels, checked where it is written (issue #103,
   slice 2 PR C).** Design: [`docs/superpowers/specs/2026-10-21-plan-dependencies-design.md`](docs/superpowers/specs/2026-10-21-plan-dependencies-design.md)
@@ -1558,6 +1561,14 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   under the destination parent, rechecks identity at each transition, and verifies the
   published name. Immutable runtime install refuses replacement; `stage-runtime --force`
   uses a two-rename backup swap with a visibility gap and explicit recovery retention.
+  *(#333)* A new tree is published with one checked rename; only the build-time publisher
+  passes `retryBusyRename: true` (strictly a boolean), which makes `stageDirectory` use its
+  own `renameWithRetry`: on win32 alone it retries a rename refused with EPERM, EACCES or
+  EBUSY for about nine seconds of growing waits, re-running every transaction check itself
+  before each attempt, so a substituted stage or a taken destination is still refused,
+  never retried into. No caller function decides whether a check runs or a rename happens.
+  The shipping installer keeps its single attempt; the Windows folder builder publishes
+  its app folder through the same helper.
   This is point-in-time detection, not a stable handle: inode reuse and races after the
   last check remain. The modeled Win32 policy additionally rejects drive-relative,
   drive-less-rooted, device/extended-namespace and ADS-like paths plus junction/reparse

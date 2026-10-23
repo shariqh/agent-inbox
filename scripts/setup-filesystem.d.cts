@@ -27,6 +27,12 @@ export interface SetupFilesystemOptions {
   uid?: number | null
 }
 
+// One rename and the checks that must pass before it; check() throws to refuse.
+export interface RenameAttempt {
+  check(): void
+  rename(): void
+}
+
 export interface SetupPathIdentity {
   readonly path: string
   readonly canonicalPath: string
@@ -59,6 +65,9 @@ export interface SetupFilesystem {
     replacement: DirectoryReplacement
     prepare(stageDirectory: string): T
     validate(stageDirectory: string, prepared: T): void
+    // Retry a publishing rename Windows refused, re-running every check before
+    // each attempt (#333); the default renames once.
+    retryBusyRename?: boolean
   }): StageDirectoryResult<T>
   removeDirectory(options: {
     target: string
@@ -72,3 +81,10 @@ export function createSetupFilesystem(
 ): Readonly<SetupFilesystem>
 
 export function isTrashName(name: string): boolean
+
+// On win32 only, retries a rename refused with EPERM, EACCES or EBUSY for about
+// nine seconds of growing waits, running check() before every attempt (#333).
+export function renameWithRetry(attempt: RenameAttempt & {
+  platform?: NodeJS.Platform
+  sleep?(ms: number): void
+}): void

@@ -418,29 +418,44 @@ The credentialed sequence is intentionally split:
    against the source commit's expected set, derive the DMG's name, `architecture` and
    `target` from it, and copy the sets into the aggregate evidence as `architectures`
    (with `nativeIntel: "passed"` for a universal release). Generate deterministic
-   `update-manifest.json` bytes from that same package evidence, the annotated-tag
-   timestamp, and the source commit's pinned update key registry. That v1 manifest can
-   describe only a universal DMG, so aggregation refuses an arm64 kind until the v2
-   manifest lands (#343).
-9. In a separate read-only protected job, scan every published stable release before the
-   new version. The first signed-manifest release is allowed only when none of those
-   releases contains either manifest asset. Later releases require an exact manifest/
-   signature pair on the latest prior stable release, a valid signature and strict
-   manifest, and signed authorization for the new signing key. Only after that proof does
-   one Node process receive the update private key, derive its public SPKI, require an
-   exact registry/key-id match, and sign the exact manifest bytes. Signature-envelope
-   schema 1 is an ordered array: production emits one entry today, while a future rotation
+   `update-manifest-v2.json` bytes (schema 2: this release's DMG and the four Linux
+   packages) from that same package evidence, the annotated-tag timestamp, and the source
+   commit's pinned update key registry. Aggregation writes only the v2 manifest; the
+   trusted signer derives `update-manifest.json` from verified inputs (#343).
+9. In a separate read-only protected job, trusted default-branch code checks and signs both
+   manifests (see "Two update manifests" below); the YAML only moves files between
+   subcommands of `scripts/update-manifest.mjs`. `check-release` re-hashes the five
+   packages and requires the unsigned v2 manifest to be exactly what this release's
+   evidence, keys and inputs give, for the authorized tag and commit, with the macOS kind
+   recomputed against `release/macos-inputs.json` read at the release commit (G7, G9). One
+   history plan covers both manifests across every published stable release before the new
+   version (G1 to G5): the first of each pair may come only from a universal release, and
+   once a release has published a pair, the latest prior release must carry it. Each
+   earlier pair is downloaded by asset id, checked against GitHub's listed size and digest,
+   and verified under this release's registry without an expiry check, and the new signing
+   key must already be trusted there. `derive-v1` then writes `update-manifest.json`: the
+   v2 data with schema 1 in a universal release (G8), or an exact re-stamp of the release
+   before's v1 manifest in an arm64 release (G6). G10, that `update-manifest.json` will
+   carry a signature from `ed25519-99927ba2f6af6482`, is checked before the key is
+   touched. Only after that proof does one Node process receive the update private key,
+   derive its public SPKI, require an exact registry/key-id match, and sign both manifests;
+   that step runs nothing else. `bind` verifies both pairs at the current time, checks G10
+   on the signed envelope, and writes signing evidence schema 2. Signature-envelope schema
+   1 is an ordered array: production emits one entry today, while a future rotation
    release can carry both old- and new-key signatures without changing the schema.
-10. Revalidate the complete aggregate/signing evidence and exact eight-file public
+10. Revalidate the complete aggregate/signing evidence and exact ten-file public
    allowlist. Immediately before draft creation, the sole write-token step re-reads the remote tag
    ref, requires an annotated tag object, peels it to a commit, and requires that commit
    to remain the authorized source commit. Publication starts as a private draft with
    neutral staging metadata. After upload it validates exact remote names, uniqueness,
-   nonzero sizes, and API SHA-256 digests when present; it then always downloads all eight
+   nonzero sizes, and API SHA-256 digests when present; it then always downloads all ten
    assets, compares every byte with the protected handoff, rehashes all five packages
-   through the downloaded checksum manifest, and independently verifies the manifest
-   signature and its package target metadata. Only one final API update installs the
-   public title/notes and clears the draft bit.
+   through the downloaded checksum manifest, and independently verifies both manifests:
+   their signatures, the macOS kind recomputed from the measured sets, v2 and a universal
+   release's v1 against the package evidence, an arm64 release's re-stamp against the
+   release listing and the earlier pair it fetches itself by asset id, and G10. Only one
+   final API update installs the public title/notes, clears the draft bit and makes the
+   release latest (`make_latest: "true"`).
 
 ### The macOS release kind
 
@@ -455,22 +470,52 @@ transported-app evidence, together with the `kind` they give, in place of the ol
 `universalEnvelope: "passed"` flag. Both sets must equal each other and the expected set,
 and then one table in `scripts/macos-release-kind.mjs` gives everything else:
 
-| Measured sets | Kind | DMG name | `architecture` | `target` | Native Intel gate |
-| --- | --- | --- | --- | --- | --- |
-| `["arm64", "x86_64"]` | universal | `Agent-Inbox-vX.Y.Z-universal.dmg` | `universal` | `darwin-arm64+darwin-x64` | must have passed |
-| `["arm64"]` | arm64 | `Agent-Inbox-vX.Y.Z-arm64.dmg` | `arm64` | `darwin-arm64` | none |
+| Measured sets | Kind | DMG name | `architecture` | `target` | Native Intel gate | `update-manifest.json` |
+| --- | --- | --- | --- | --- | --- | --- |
+| `["arm64", "x86_64"]` | universal | `Agent-Inbox-vX.Y.Z-universal.dmg` | `universal` | `darwin-arm64+darwin-x64` | must have passed | This release: its v2 manifest with schema 1 |
+| `["arm64"]` | arm64 | `Agent-Inbox-vX.Y.Z-arm64.dmg` | `arm64` | `darwin-arm64` | none | Re-stamp of the newest universal release's |
 
 Any other set, `["x86_64"]` alone included, fails the release. The notarize job's
 `expected-kind` step names the DMG it builds, notarizes, verifies and describes in the
 release notes from the expected set; `final-evidence`, the publication check and
 aggregation each recompute the kind from the measured sets and refuse a DMG name, label
 or Intel result that disagrees. Changing `macosArchitectures` is the only way to change a
-release's kind. The trusted signer and publish job adopt the same check (G9) with the v2
-manifest (#343).
+release's kind. The trusted signer recomputes it too, against the expected set it reads at
+the release commit and records in the signing evidence, and the publish job recomputes it
+once more from the measured sets in the signed handoff (G9): the DMG name, the labels, the
+v2 manifest's macOS target and the way `update-manifest.json` was made must all agree.
+
+### Two update manifests
+
+Since #343 every release publishes two signed manifests, so a macOS build for Apple silicon
+only (#296) can reach Apple silicon Macs without breaking the apps already installed
+(design `docs/superpowers/specs/2026-10-23-update-manifest-v2-design.md`):
+
+| File | Read by | Describes |
+| --- | --- | --- |
+| `update-manifest.json` (schema 1) | 1.2 to 1.6 for good; from 1.7.0 only an Intel Mac, or a Mac running the app under Rosetta, when v2 lists only an arm64 DMG | The newest release with a universal DMG |
+| `update-manifest-v2.json` (schema 2) | 1.7.0 and later | This release: its own DMG and the four Linux packages |
+
+In an arm64 release the v1 manifest is a re-stamp: the release before's v1 manifest, which
+must verify, with only `publishedAt` (this release's tag time), `expiresAt`, `signingKeyId`
+and `trustedKeyIds` changed. Its targets must still be the files GitHub lists for the
+release they describe. Intel Macs therefore stay on the last universal release (1.x-last),
+which keeps working; its Settings → Updates explains that newer versions need Apple silicon.
+
+Operating rules:
+
+- Never delete or edit 1.x-last's files: every later v1 manifest points at them.
+- Once 1.x-last is chosen, edit its published notes by hand, once, to say Intel Macs stay on
+  it, keeping the `<!-- agent-inbox-release:… -->` marker line unchanged. A later re-run of
+  that release's publish job then fails its exact-notes check without changing anything.
+- Publish a release at least every 150 days: both manifests expire 180 days after the
+  latest release's tag.
+- Never publish a stable release by hand, or with `make_latest: false`: apps read both
+  manifests only through `/releases/latest`.
 
 The public allowlist is exactly:
 
-- `Agent-Inbox-vX.Y.Z-universal.dmg`
+- `Agent-Inbox-vX.Y.Z-universal.dmg`, or `Agent-Inbox-vX.Y.Z-arm64.dmg` for an arm64 release
 - `Agent-Inbox-vX.Y.Z-linux-x86_64.AppImage`
 - `Agent-Inbox-vX.Y.Z-linux-arm64.AppImage`
 - `agent-inbox_X.Y.Z_amd64.deb`
@@ -478,13 +523,15 @@ The public allowlist is exactly:
 - `SHA256SUMS.txt`
 - `update-manifest.json`
 - `update-manifest.json.sig`
+- `update-manifest-v2.json`
+- `update-manifest-v2.json.sig`
 
 The protected workflow grants `contents: write` only to the final publication job.
 Every earlier checkout sets `persist-credentials: false` and every earlier job has
 `contents: read` and `actions: read`. The write job contains no third-party action or
 checkout and exactly one trusted shell step; the write-scoped `github.token` exists only
 in that step. `SHA256SUMS.txt` continues to cover only the five binary packages; the
-manifest and signature are independently bound by Ed25519 and SHA-256 evidence.
+manifests and signatures are independently bound by Ed25519 and SHA-256 evidence.
 
 ### One-time operator prerequisites
 
@@ -515,7 +562,7 @@ Before pushing a release tag, configure the repository's `macos-release` environ
    | `APPLE_TEAM_ID` | Ten-character Apple Developer Team ID matching the identity |
    | `APPLE_NOTARY_KEY_ID` | App Store Connect Team API Key ID |
    | `APPLE_NOTARY_ISSUER_ID` | App Store Connect Team API Issuer UUID |
-   | `AGENT_INBOX_UPDATE_KEY_ROTATION_OVERRIDE` | Normally unset; emergency rotation only: `ALLOW-UPDATE-KEY-ROTATION:vX.Y.Z:ed25519-<derived-id>` |
+   | `AGENT_INBOX_UPDATE_KEY_ROTATION_OVERRIDE` | Normally unset; emergency rotation only: `ALLOW-UPDATE-KEY-ROTATION:vX.Y.Z:ed25519-<derived-id>`. It also waives G10 for that release, which cuts apps from 1.2 to 1.6 off |
 
 Signature-envelope schema 1 is ready for safe overlap rotation, but the current protected
 signer intentionally accepts one secret and emits one signature. **Do not change
@@ -526,6 +573,15 @@ supported upgrade floor can still include clients that pin only the old key. Ver
 then lets a client skip individual overlap builds and still authenticate a later
 dual-signed release. Stop emitting the old signature and remove its public key only when
 those clients are explicitly outside the supported direct-upgrade floor.
+
+Apps from 1.2 to 1.6 trust only `ed25519-99927ba2f6af6482`, and they read
+`update-manifest.json` for as long as it is published, which is for good. So every
+`update-manifest.json` must carry a valid signature from that key (G10): the signer refuses
+to touch the private key otherwise, and the publish job checks the signed envelope against
+its own pinned copy of the key. A routine rotation therefore keeps the original key signing
+`update-manifest.json`. Only the exact rotation override waives G10, for one release: the
+signer records the waiver in the signing evidence, and the publish job requires that record
+and the same override in the variable it receives.
 
 Use the minimum App Store Connect role Apple documents for Developer ID notarization.
 Do not paste, request, or store any P12, password, private key, or encoded credential in
@@ -609,8 +665,11 @@ on every path. No credential value is written to argv, logs, job output, or an a
   failure, or a fifth transient one, fails the step with stapler's own output and exit
   status. The protected jobs run the tagged commit's scripts, so a re-run of an older
   tag does not gain this retry.
-- An incomplete prior manifest pair, invalid previous signature, unknown signing key, or
-  missing signed `trustedKeyIds` authorization fails before the new private key is exposed.
+- An incomplete prior manifest pair (either manifest), invalid previous signature, unknown
+  signing key, missing signed `trustedKeyIds` authorization, a v2 manifest that is not what
+  the release evidence gives, a measured macOS kind that disagrees with the expected set,
+  a re-stamp that does not describe the newest universal release, or a v1 manifest that the
+  original key would not sign (G10) fails before the new private key is exposed.
   Do not set the rotation override or change `signingKeyId` for routine releases with the
   current one-key signer. The override is an audited emergency action bound to one exact
   tag and derived key id; using it accepts that clients without the new pinned key may need
@@ -636,15 +695,17 @@ asset's exact manifest entry (running the manifest wholesale requires downloadin
 five packages):
 
 ```sh
-ASSET=Agent-Inbox-vX.Y.Z-universal.dmg
+ASSET=Agent-Inbox-vX.Y.Z-universal.dmg   # or Agent-Inbox-vX.Y.Z-arm64.dmg
 grep -F "  $ASSET" SHA256SUMS.txt | shasum -a 256 -c -
 xcrun stapler validate "$ASSET"
 spctl --assess --type open --context context:primary-signature --verbose=4 \
   "$ASSET"
 ```
 
-`update-manifest.json.sig` authenticates the exact UTF-8 bytes of
-`update-manifest.json`; reformatting or reserializing the JSON invalidates every signature.
+Each `.sig` authenticates the exact UTF-8 bytes of its manifest (`update-manifest.json` or
+`update-manifest-v2.json`); reformatting or reserializing the JSON invalidates every
+signature. Each reader fetches only its own file and requires its own `schema` inside the
+signed bytes, so neither can take the other's manifest for its own.
 Its canonical key-id-sorted signature array permits old+new overlap during key rotation;
 verification structurally validates every entry, ignores cryptographic entries for keys
 that this installed client does not pin, and succeeds only when at least one entry validates
@@ -657,11 +718,12 @@ already-expired manifest, while previous-release continuity checks intentionally
 historical structure/signatures without applying current-time expiry so expiry cannot
 prevent a fix-forward release.
 Agent Inbox 1.3 and later also persist the highest release version whose manifest they
-verified and report any older signed manifest as stale instead of offering it. Marking an
-older release as GitHub's latest therefore cannot roll those clients back; retract a bad
-release by publishing a newer fixed version.
-The signed manifest contains the same five package SHA-256 values and byte lengths, but it
-does not replace the package-only `SHA256SUMS.txt` command above.
+verified and report any older signed manifest as stale instead of offering it; from 1.7.0
+on they keep one mark per manifest, and a v2 manifest is stale below the higher of the two.
+Marking an older release as GitHub's latest therefore cannot roll those clients back;
+retract a bad release by publishing a newer fixed version.
+Each signed manifest contains the SHA-256 values and byte lengths of the packages it lists,
+but it does not replace the package-only `SHA256SUMS.txt` command above.
 
 After mounting the DMG, the app must also pass:
 

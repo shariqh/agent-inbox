@@ -84,6 +84,7 @@ export function generateManifest(options: {
 
 export function serializeManifest(manifest: UpdateManifest): Buffer
 
+/** Signs a schema 1 or schema 2 manifest's exact bytes; either way the envelope is schema 1. */
 export function signManifest(options: {
   manifestBytes: Buffer
   registry: UpdateRegistry
@@ -112,57 +113,6 @@ export type ReleaseLike = {
   prerelease: boolean
   assets: readonly ReleaseAssetLike[]
 }
-
-export type ReleaseHistoryBootstrapPlan = {
-  mode: 'bootstrap'
-  priorTag: null
-}
-
-export type ReleaseHistoryContinuityPlan = {
-  mode: 'continuity'
-  priorTag: string
-  manifestAsset: { id: number; name: string; size: number; url: string; digest?: string }
-  signatureAsset: { id: number; name: string; size: number; url: string; digest?: string }
-}
-
-export type ReleaseHistoryPlan = ReleaseHistoryBootstrapPlan | ReleaseHistoryContinuityPlan
-
-/**
- * Anti-brick release-history assessment. Filters `releases` to published
- * (`draft:false`), non-prerelease (`prerelease:false`) releases whose
- * `tag_name` is a strict stable `vX.Y.Z` tag, rejects any such prior release
- * whose version is `>= newTag`'s version, rejects a release carrying only one
- * of the manifest/signature asset pair, and requires the latest qualifying
- * prior release to carry both assets unless no qualifying prior release
- * carries either (bootstrap).
- */
-export function planReleaseHistoryContinuity(options: {
-  releases: readonly ReleaseLike[]
-  newTag: string
-}): ReleaseHistoryPlan
-
-export type ReleaseContinuityAuthorization = {
-  authorized: true
-  priorManifest: UpdateManifest
-  priorTag: string
-  rotationOverrideUsed: boolean
-}
-
-/**
- * Verifies a downloaded prior manifest/signature pair against the CURRENT
- * registry (structure + signature only; current expiry is not applied) and
- * requires the current registry's `signingKeyId` to already be present in the
- * prior manifest's `trustedKeyIds`, unless `rotationOverride` exactly equals
- * `` `ALLOW-UPDATE-KEY-ROTATION:${newTag}:${registry.signingKeyId}` ``, which
- * bypasses only that membership check.
- */
-export function authorizeReleaseContinuity(options: {
-  priorManifestBytes: Buffer
-  priorSignatureBytes: Buffer
-  registry: UpdateRegistry
-  newTag: string
-  rotationOverride?: string
-}): ReleaseContinuityAuthorization
 
 // ---------------------------------------------------------------------------
 // Update manifest v2 (#343; design §5 to §7): the publisher's pure functions.
@@ -351,3 +301,64 @@ export function checkOriginalKeySignature(options: {
   rotationOverride?: string
   originalKey?: UpdateRegistryKey
 }): OriginalKeySignature
+
+export type SignedFileRecord = { name: string; size: number; sha256: string }
+
+export type SigningHistoryRecord =
+  | { mode: 'bootstrap'; priorTag: null; rotationOverrideUsed: false }
+  | { mode: 'continuity'; priorTag: string; describes: string; rotationOverrideUsed: boolean }
+
+export type SignedManifestRecord = SignedFileRecord & {
+  signature: SignedFileRecord
+  version: string
+  tag: string
+  history: SigningHistoryRecord
+}
+
+/** update-signing-evidence.json, schema 2 (design §5.7). */
+export type SigningEvidence = {
+  schema: 2
+  tag: string
+  sourceCommit: string
+  sourceTree: string
+  signingKeyId: string
+  trustedKeyIds: string[]
+  macos: {
+    kind: MacosReleaseKind
+    architectures: { executable: string[]; betterSqlite3: string[] }
+    expected: string[]
+  }
+  originalKeySignature: 'passed' | 'waived'
+  rotationOverride?: string
+  manifests: {
+    v2: SignedManifestRecord & { made: 'release' }
+    v1: SignedManifestRecord & (
+      | { made: 'projection' }
+      | { made: 'restamp'; restamp: { earlierManifestSha256: string; targets: Array<{ filename: string; byteLength: number; sha256: string }> } }
+    )
+  }
+  verification: { privateKeyMatchesRegistry: 'passed'; signatures: 'passed' }
+}
+
+/**
+ * The signing evidence once both manifests are signed: both pairs verify under the registry
+ * at `now`, each is the manifest the earlier steps checked or derived, each envelope holds
+ * one signature by the signing key, both histories were authorized, and G10 passed or was
+ * waived by the exact override. `release`, `history` and `derivation` are the records
+ * check-release, authorize-history and derive-v1 wrote.
+ */
+export function bindSigningEvidence(options: {
+  registryBytes: Buffer | string
+  aggregate: unknown
+  tag: string
+  sourceCommit: string
+  release: { kind: MacosReleaseKind; macos: CheckedRelease['macos']; manifestSha256: string }
+  history: { v1: unknown; v2: unknown }
+  derivation: { made: string; describes: string; sha256: string; earlierManifestSha256?: string; targets?: unknown }
+  v2: { manifestBytes: Buffer | string; signatureBytes: Buffer | string }
+  v1: { manifestBytes: Buffer | string; signatureBytes: Buffer | string }
+  now: string | Date
+  rotationOverride?: string
+  originalKey?: UpdateRegistryKey
+}): SigningEvidence
+

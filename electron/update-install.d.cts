@@ -23,6 +23,11 @@ export class UpdateInstallError extends Error {
 
 export interface InstallCandidate {
   version: string
+  /**
+   * The target's architecture (#343). Only the macOS installer reads it: it refuses a
+   * candidate without `universal` or `arm64`, and `arm64` unless this process is arm64.
+   */
+  architecture?: string
   minimumSystemVersion?: string
 }
 

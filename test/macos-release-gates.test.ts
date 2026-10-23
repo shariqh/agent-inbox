@@ -816,7 +816,7 @@ describe('macOS release gates', () => {
         architecture: 'universal',
         target: 'darwin-arm64+darwin-x64',
         needsNativeIntel: true,
-        v1Manifest: 'release',
+        v1Manifest: 'projection',
         architectures: { executable: ['arm64', 'x86_64'], betterSqlite3: ['arm64', 'x86_64'] },
       },
     })

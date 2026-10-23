@@ -156,8 +156,10 @@ function isByteCount(value) {
 }
 
 // installable implies downloadable, and installPermitted (#216) implies installable;
-// a reason explains only a notify-only offer.
+// a reason explains only a notify-only offer. A release this Mac can't run (#343) is
+// only ever such an offer, still on `available`, with its reason.
 const MAX_INSTALL_NOTICE_LENGTH = 400
+const BLOCKED_REASONS = new Set(['apple-silicon', 'rosetta'])
 
 function isOffer(available, status) {
   return (
@@ -175,6 +177,11 @@ function isOffer(available, status) {
       typeof available.reason === 'string' &&
       !available.installable &&
       !available.downloadable
+    )) &&
+    (available.blocked === undefined || (
+      BLOCKED_REASONS.has(available.blocked) &&
+      status === 'available' &&
+      typeof available.reason === 'string'
     )) &&
     (!INSTALL_STATES.has(status) || available.installable) &&
     typeof available.target === 'object' &&

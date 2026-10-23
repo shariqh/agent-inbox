@@ -1,7 +1,7 @@
 import { parseArgs } from 'node:util'
 import { createHash, createPrivateKey, createPublicKey, sign, verify } from 'node:crypto'
-import { readFileSync, writeFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { closeSync, lstatSync, openSync, readFileSync, readSync, readdirSync, writeFileSync } from 'node:fs'
+import { basename, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
 import { MacosReleaseKindError, macosRelease, measuredMacosKind } from './macos-release-kind.mjs'
@@ -223,10 +223,22 @@ export function serializeManifest(manifest) {
 // Sign
 // ---------------------------------------------------------------------------
 
+// Either schema (#343): a v2 manifest is signed exactly like a v1 manifest, so one key
+// signs both files in the one signing process.
+function parseSignableManifest(manifestBuffer) {
+  let schema
+  try {
+    schema = JSON.parse(manifestBuffer.toString('utf8'))?.schema
+  } catch {
+    return fail('manifestBytes is not valid JSON')
+  }
+  return schema === UPDATE_MANIFEST_SCHEMA_V2 ? parseManifestV2(manifestBuffer) : parseManifest(manifestBuffer)
+}
+
 export function signManifest({ manifestBytes, registry, privateKeyPem, now }) {
   const reg = validateRegistry(registry)
   const manifestBuffer = toBuffer(manifestBytes, 'manifestBytes')
-  const manifest = parseManifest(manifestBuffer)
+  const manifest = parseSignableManifest(manifestBuffer)
   const nowDate = normalizeNow(now) ?? new Date()
   if (new Date(manifest.expiresAt).getTime() <= nowDate.getTime()) {
     fail('refusing to sign a manifest that is already expired')
@@ -256,7 +268,7 @@ export function signManifest({ manifestBytes, registry, privateKeyPem, now }) {
   }
   const signatureBuffer = sign(null, manifestBuffer, privateKey)
   const envelope = validateEnvelope({
-    schema: UPDATE_MANIFEST_SCHEMA,
+    schema: UPDATE_ENVELOPE_SCHEMA,
     manifestSha256: createHash('sha256').update(manifestBuffer).digest('hex'),
     signatures: [
       {
@@ -374,112 +386,6 @@ function validateStableReleaseAssets(release, label) {
     if (!digestUnavailable && (typeof asset.digest !== 'string' || !RELEASE_ASSET_DIGEST_RE.test(asset.digest))) {
       fail(`${assetLabel}.digest must be exactly "sha256:<64 lowercase hex>" when present`)
     }
-  })
-}
-
-export function planReleaseHistoryContinuity({ releases, newTag }) {
-  if (!Array.isArray(releases)) fail('releases must be an array')
-  if (typeof newTag !== 'string' || !STABLE_TAG_RE.test(newTag)) {
-    fail('newTag must be a stable vX.Y.Z tag')
-  }
-  releases.forEach((release, index) => validateReleaseRecordShape(release, index))
-
-  const newVersionTuple = parseVersionTuple(newTag.slice(1))
-  // Now that every record's shape is proven, unrelated non-stable tags
-  // (drafts, prereleases, or tags that are not a stable vX.Y.Z at all) may be
-  // safely ignored — but only having reached this point via the shape check
-  // above, never as a way to avoid validating an ambiguous record.
-  const qualifying = releases.filter(
-    (release) => release.draft === false && release.prerelease === false && STABLE_TAG_RE.test(release.tag_name),
-  )
-  const seenTags = new Set()
-  for (const release of qualifying) {
-    if (seenTags.has(release.tag_name)) {
-      fail(`duplicate stable release tag ${release.tag_name}`)
-    }
-    seenTags.add(release.tag_name)
-
-    const label = `release ${release.tag_name}`
-    validateStableReleaseAssets(release, label)
-
-    const versionTuple = parseVersionTuple(release.tag_name.slice(1))
-    if (compareVersionTuples(versionTuple, newVersionTuple) >= 0) {
-      fail(`prior stable release ${release.tag_name} is not older than the new release ${newTag}`)
-    }
-    const manifestAsset = findAsset(release, MANIFEST_ASSET_NAME)
-    const signatureAsset = findAsset(release, SIGNATURE_ASSET_NAME)
-    if (Boolean(manifestAsset) !== Boolean(signatureAsset)) {
-      fail(`release ${release.tag_name} has a partial update-manifest/signature asset pair`)
-    }
-  }
-  const sorted = [...qualifying].sort(
-    (a, b) => compareVersionTuples(parseVersionTuple(b.tag_name.slice(1)), parseVersionTuple(a.tag_name.slice(1))),
-  )
-  const anyHasAssets = sorted.some(
-    (release) => findAsset(release, MANIFEST_ASSET_NAME) || findAsset(release, SIGNATURE_ASSET_NAME),
-  )
-  if (!anyHasAssets) {
-    return Object.freeze({ mode: 'bootstrap', priorTag: null })
-  }
-  const [latest] = sorted
-  const manifestAsset = latest ? findAsset(latest, MANIFEST_ASSET_NAME) : undefined
-  const signatureAsset = latest ? findAsset(latest, SIGNATURE_ASSET_NAME) : undefined
-  if (!latest || !manifestAsset || !signatureAsset) {
-    fail(
-      `the latest previous stable release${latest ? ` (${latest.tag_name})` : ''} is missing the update `
-      + 'manifest and signature; bootstrap is only permitted when no prior release has published either asset',
-    )
-  }
-  return Object.freeze({
-    mode: 'continuity',
-    priorTag: latest.tag_name,
-    manifestAsset: Object.freeze({
-      id: manifestAsset.id,
-      name: manifestAsset.name,
-      size: manifestAsset.size,
-      url: manifestAsset.browser_download_url,
-      // Omit digest when unavailable (undefined, null, or empty string).
-      ...(manifestAsset.digest ? { digest: manifestAsset.digest } : {}),
-    }),
-    signatureAsset: Object.freeze({
-      id: signatureAsset.id,
-      name: signatureAsset.name,
-      size: signatureAsset.size,
-      url: signatureAsset.browser_download_url,
-      // Omit digest when unavailable (undefined, null, or empty string).
-      ...(signatureAsset.digest ? { digest: signatureAsset.digest } : {}),
-    }),
-  })
-}
-
-export function authorizeReleaseContinuity({ priorManifestBytes, priorSignatureBytes, registry, newTag, rotationOverride }) {
-  const reg = validateRegistry(registry)
-  if (typeof newTag !== 'string' || !STABLE_TAG_RE.test(newTag)) {
-    fail('newTag must be a stable vX.Y.Z tag')
-  }
-  const priorManifest = verifyManifest({
-    manifestBytes: priorManifestBytes,
-    envelope: priorSignatureBytes,
-    registry: reg,
-  })
-  const newSigningKeyId = reg.signingKeyId
-  const membershipOk = priorManifest.trustedKeyIds.includes(newSigningKeyId)
-  let rotationOverrideUsed = false
-  if (!membershipOk) {
-    const expectedOverride = `ALLOW-UPDATE-KEY-ROTATION:${newTag}:${newSigningKeyId}`
-    if (rotationOverride !== expectedOverride) {
-      fail(
-        `new signing key ${newSigningKeyId} is not trusted by the prior release manifest (${priorManifest.tag}); `
-        + `supply rotationOverride "${expectedOverride}" to authorize key rotation`,
-      )
-    }
-    rotationOverrideUsed = true
-  }
-  return Object.freeze({
-    authorized: true,
-    priorManifest,
-    priorTag: priorManifest.tag,
-    rotationOverrideUsed,
   })
 }
 
@@ -647,8 +553,8 @@ export function projectV1(v2ManifestBytes) {
   return { manifest, bytes: serializeManifest(manifest) }
 }
 
-// The published stable releases older than `newTag`, every record's shape proven first,
-// as planReleaseHistoryContinuity reads the listing (G1 included).
+// The published stable releases older than `newTag`, every record's shape proven first (G1
+// included): an ambiguous or malformed record never falls through to a bootstrap.
 function qualifyingStableReleases(releases, newTag) {
   if (!Array.isArray(releases)) fail('releases must be an array')
   releases.forEach((release, index) => validateReleaseRecordShape(release, index))
@@ -1056,7 +962,9 @@ export function deriveV1({ release, v2ManifestBytes, registry, releases, earlier
   }
   const reg = validateRegistry(registry)
   const { tag, publishedAt } = release.manifest
-  if (release.kind === 'universal') {
+  // The way v1 is made follows from the kind through the shared table (G9).
+  const made = withKind(() => macosRelease({ kind: release.kind, tag })).v1Manifest
+  if (made === 'projection') {
     const projected = projectV1(v2Bytes)
     const v2Text = v2Bytes.toString('utf8')
     if (!v2Text.startsWith(SCHEMA_2_PREFIX) || `${SCHEMA_1_PREFIX}${v2Text.slice(SCHEMA_2_PREFIX.length)}` !== projected.bytes.toString('utf8')) {
@@ -1068,7 +976,7 @@ export function deriveV1({ release, v2ManifestBytes, registry, releases, earlier
     }
     return Object.freeze({ made: 'projection', describes: tag, manifest: projected.manifest, bytes: projected.bytes })
   }
-  if (release.kind !== 'arm64') fail(`${JSON.stringify(release.kind)} is not a macOS release kind`)
+  if (made !== 'restamp') fail(`no v1 manifest is made by ${JSON.stringify(made)}`)
   if (earlierManifestBytes === undefined || earlierSignatureBytes === undefined) {
     fail('an arm64 release re-stamps the earlier v1 manifest: pass its bytes and signature')
   }
@@ -1140,6 +1048,192 @@ export function checkOriginalKeySignature({ manifestBytes, envelope, registry, n
   return waiveOriginalKey(reg, newTag, rotationOverride, key)
 }
 
+const RESTAMP_TARGET_KEYS = 'byteLength,filename,sha256'
+
+// One authorized history as the signing evidence records it.
+function historyRecord(result, manifest, newTag) {
+  if (
+    !isPlainObject(result)
+    || result.manifest !== manifest
+    || result.authorized !== true
+    || typeof result.rotationOverrideUsed !== 'boolean'
+  ) {
+    fail(`the ${manifest} history was not authorized`)
+  }
+  if (result.mode === 'bootstrap' && result.priorTag === null && result.rotationOverrideUsed === false) {
+    return { mode: 'bootstrap', priorTag: null, rotationOverrideUsed: false }
+  }
+  if (
+    result.mode === 'continuity'
+    && typeof result.priorTag === 'string'
+    && STABLE_TAG_RE.test(result.priorTag)
+    && compareTags(result.priorTag, newTag) < 0
+    && typeof result.describes === 'string'
+    && STABLE_TAG_RE.test(result.describes)
+    && compareTags(result.describes, result.priorTag) <= 0
+  ) {
+    return {
+      mode: 'continuity',
+      priorTag: result.priorTag,
+      describes: result.describes,
+      rotationOverrideUsed: result.rotationOverrideUsed,
+    }
+  }
+  return fail(`the ${manifest} history is malformed`)
+}
+
+// What a re-stamp copied (design §5.7), checked against the v1 manifest it made.
+function restampRecord(derivation, manifest) {
+  const targets = derivation.targets
+  if (
+    typeof derivation.earlierManifestSha256 !== 'string'
+    || !SHA64_RE.test(derivation.earlierManifestSha256)
+    || !Array.isArray(targets)
+    || targets.some((target) => !isPlainObject(target) || Object.keys(target).sort().join(',') !== RESTAMP_TARGET_KEYS)
+  ) {
+    fail('the re-stamp record is malformed')
+  }
+  const copied = manifest.targets.map(({ filename, byteLength, sha256 }) => ({ filename, byteLength, sha256 }))
+  if (JSON.stringify(targets.map(({ filename, byteLength, sha256 }) => ({ filename, byteLength, sha256 }))) !== JSON.stringify(copied)) {
+    fail('the re-stamp record does not list the targets the v1 manifest carries')
+  }
+  return { earlierManifestSha256: derivation.earlierManifestSha256, targets: copied }
+}
+
+/**
+ * The signing evidence, schema 2 (design §5.7), once both manifests are signed. Both pairs
+ * verify under this release's registry at `now`; v2 is the manifest check-release checked
+ * and v1 the one derive-v1 made, the way this kind of release makes it; each envelope holds
+ * exactly one signature, by the signing key; both histories were authorized; and the v1
+ * envelope carries the original key's signature, or the exact override waives it (G10).
+ * The inputs are the records the earlier steps wrote; nothing in them is trusted unchecked.
+ */
+export function bindSigningEvidence({
+  registryBytes,
+  aggregate,
+  tag,
+  sourceCommit,
+  release,
+  history,
+  derivation,
+  v2,
+  v1,
+  now,
+  rotationOverride,
+  originalKey = ORIGINAL_UPDATE_KEY,
+}) {
+  if (typeof tag !== 'string' || !STABLE_TAG_RE.test(tag)) fail('tag must be the authorized stable vX.Y.Z tag')
+  if (typeof sourceCommit !== 'string' || !SHA40_RE.test(sourceCommit)) {
+    fail('sourceCommit must be the authorized lowercase 40-character commit')
+  }
+  const nowDate = normalizeNow(now)
+  if (nowDate === undefined) fail('now is required: both manifests must verify when they are bound')
+  const registryBuffer = toBuffer(registryBytes, 'registryBytes')
+  const registry = parseRegistry(registryBuffer)
+  if (
+    !isPlainObject(aggregate)
+    || aggregate.tag !== tag
+    || aggregate.sourceCommit !== sourceCommit
+    || typeof aggregate.sourceTree !== 'string'
+    || !SHA40_RE.test(aggregate.sourceTree)
+    || aggregate.updateManifest?.keyRegistrySha256 !== sha256Hex(registryBuffer)
+  ) {
+    fail('the aggregate evidence does not describe this release and key registry')
+  }
+  const macos = release?.macos
+  if (!isPlainObject(release) || !isPlainObject(macos) || !isPlainObject(macos.architectures)) {
+    fail('the release check record is malformed')
+  }
+  const kind = withKind(() => measuredMacosKind({
+    expected: macos.expected,
+    executable: macos.architectures.executable,
+    betterSqlite3: macos.architectures.betterSqlite3,
+  }))
+  if (release.kind !== kind || macos.kind !== kind) fail(`the release check record says ${release.kind}, but its CPU types give ${kind}`)
+
+  const v2Bytes = toBuffer(v2?.manifestBytes, 'v2 manifestBytes')
+  const v2Signature = toBuffer(v2?.signatureBytes, 'v2 signatureBytes')
+  const v1Bytes = toBuffer(v1?.manifestBytes, 'v1 manifestBytes')
+  const v1Signature = toBuffer(v1?.signatureBytes, 'v1 signatureBytes')
+  if (sha256Hex(v2Bytes) !== release.manifestSha256) fail(`${MANIFEST_V2_ASSET_NAME} is not the v2 manifest check-release checked`)
+  if (!isPlainObject(derivation) || sha256Hex(v1Bytes) !== derivation.sha256) {
+    fail(`${MANIFEST_ASSET_NAME} is not the v1 manifest derive-v1 made`)
+  }
+  const made = withKind(() => macosRelease({ kind, tag })).v1Manifest
+  if (derivation.made !== made) fail(`a ${kind} release's v1 manifest is its ${made}, not ${JSON.stringify(derivation.made)}`)
+
+  const v2Manifest = verifyManifestV2({ manifestBytes: v2Bytes, envelope: v2Signature, registry, now: nowDate })
+  const v1Manifest = verifyManifest({ manifestBytes: v1Bytes, envelope: v1Signature, registry, now: nowDate })
+  for (const [name, signature] of [[SIGNATURE_V2_ASSET_NAME, v2Signature], [SIGNATURE_ASSET_NAME, v1Signature]]) {
+    const { signatures } = parseEnvelope(signature)
+    if (signatures.length !== 1 || signatures[0].keyId !== registry.signingKeyId) {
+      fail(`${name} must hold exactly one signature, by the signing key ${registry.signingKeyId}`)
+    }
+  }
+  if (
+    v2Manifest.tag !== tag
+    || v2Manifest.source.commit !== sourceCommit
+    || v2Manifest.source.tree !== aggregate.sourceTree
+  ) {
+    fail(`${MANIFEST_V2_ASSET_NAME} does not describe ${tag} at ${sourceCommit}`)
+  }
+  if (v1Manifest.tag !== derivation.describes || (kind === 'universal' && v1Manifest.tag !== tag)) {
+    fail(`${MANIFEST_ASSET_NAME} describes ${v1Manifest.tag}, not the release derive-v1 recorded`)
+  }
+  const v2History = historyRecord(history?.v2, 'v2', tag)
+  const v1History = historyRecord(history?.v1, 'v1', tag)
+  if (kind === 'arm64' && (v1History.mode !== 'continuity' || v1History.describes !== v1Manifest.tag)) {
+    fail(`an arm64 release re-stamps the v1 manifest of the release before, which describes ${v1History.describes ?? 'nothing'}`)
+  }
+  const originalKeySignature = checkOriginalKeySignature({
+    manifestBytes: v1Bytes,
+    envelope: v1Signature,
+    registry,
+    newTag: tag,
+    rotationOverride,
+    originalKey,
+  })
+
+  const file = (name, bytes) => ({ name, size: bytes.length, sha256: sha256Hex(bytes) })
+  return {
+    schema: 2,
+    tag,
+    sourceCommit,
+    sourceTree: aggregate.sourceTree,
+    signingKeyId: registry.signingKeyId,
+    trustedKeyIds: registry.keys.map((key) => key.keyId).sort(),
+    macos: {
+      kind,
+      architectures: {
+        executable: [...macos.architectures.executable],
+        betterSqlite3: [...macos.architectures.betterSqlite3],
+      },
+      expected: [...macos.expected],
+    },
+    ...originalKeySignature,
+    manifests: {
+      v2: {
+        ...file(MANIFEST_V2_ASSET_NAME, v2Bytes),
+        signature: file(SIGNATURE_V2_ASSET_NAME, v2Signature),
+        version: v2Manifest.version,
+        tag: v2Manifest.tag,
+        made: 'release',
+        history: v2History,
+      },
+      v1: {
+        ...file(MANIFEST_ASSET_NAME, v1Bytes),
+        signature: file(SIGNATURE_ASSET_NAME, v1Signature),
+        version: v1Manifest.version,
+        tag: v1Manifest.tag,
+        made,
+        history: v1History,
+        ...(made === 'restamp' ? { restamp: restampRecord(derivation, v1Manifest) } : {}),
+      },
+    },
+    verification: { privateKeyMatchesRegistry: 'passed', signatures: 'passed' },
+  }
+}
+
 // ---------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------
@@ -1161,6 +1255,124 @@ function readJsonFile(path, label) {
 function writeBytes(path, bytes) {
   writeFileSync(resolve(path), bytes, { mode: DATA_MODE })
 }
+
+function readBytesFile(path, label) {
+  try {
+    return readFileSync(resolve(path))
+  } catch (error) {
+    return fail(`unable to read ${label} at ${path}: ${error.message}`)
+  }
+}
+
+function writeJsonOutput(value) {
+  process.stdout.write(`${JSON.stringify(value)}\n`)
+}
+
+// A plain file name, never a path: names come from evidence the release's own code wrote.
+const FILE_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._+-]*$/
+
+/** The release files in `directory`: exactly `names`, each a regular file, no link. */
+function requireExactFiles(directory, names, label) {
+  for (const name of names) {
+    if (typeof name !== 'string' || !FILE_NAME_RE.test(name)) fail(`${label} names a file that is not a plain file name`)
+  }
+  let present
+  try {
+    present = readdirSync(directory).sort()
+  } catch (error) {
+    return fail(`unable to list ${label} at ${directory}: ${error.message}`)
+  }
+  const expected = [...names].sort()
+  if (JSON.stringify(present) !== JSON.stringify(expected)) {
+    fail(`${label} holds ${present.join(', ')}, not exactly ${expected.join(', ')}`)
+  }
+  for (const name of names) {
+    if (!lstatSync(join(directory, name)).isFile()) fail(`${label} entry ${name} is not a regular file`)
+  }
+  return names
+}
+
+// Size and SHA-256 of a package as it is on disk, read in chunks: packages are hundreds of MB.
+function measureFile(path) {
+  const hash = createHash('sha256')
+  const buffer = Buffer.alloc(4 * 1024 * 1024)
+  const fd = openSync(path, 'r')
+  let size = 0
+  try {
+    for (;;) {
+      const read = readSync(fd, buffer, 0, buffer.length, null)
+      if (read === 0) break
+      hash.update(buffer.subarray(0, read))
+      size += read
+    }
+  } finally {
+    closeSync(fd)
+  }
+  return { size, sha256: hash.digest('hex') }
+}
+
+/**
+ * check-release's work, shared with derive-v1, which repeats it rather than trusting a
+ * record: the unsigned handoff holds exactly the five packages its evidence lists, the
+ * checksum file and the v2 manifest; the packages are measured again; and the manifest is
+ * checked against the authorized tag and commit (G7, G9).
+ */
+function checkUnsignedHandoff(values) {
+  for (const option of ['handoff', 'registry', 'macos-inputs', 'tag', 'source-commit']) {
+    if (!values[option]) fail(`--${option} is required`)
+  }
+  const handoff = resolve(values.handoff)
+  const aggregate = readJsonFile(join(handoff, 'release-aggregation-evidence.json'), 'aggregate evidence')
+  const context = readJsonFile(join(handoff, 'release-context.json'), 'release context')
+  const registryBytes = readBytesFile(values.registry, 'registry')
+  const macosInputs = readJsonFile(values['macos-inputs'], 'macOS release inputs')
+  if (!isPlainObject(aggregate) || !Array.isArray(aggregate.assets)) fail('the aggregate evidence must list the release assets')
+  const packageNames = aggregate.assets.map((asset) => asset?.name)
+  const assets = join(handoff, 'release-assets')
+  requireExactFiles(assets, [...packageNames, 'SHA256SUMS.txt', MANIFEST_V2_ASSET_NAME], 'the unsigned release assets')
+  const packages = Object.fromEntries(packageNames.map((name) => [name, measureFile(join(assets, name))]))
+  const manifestBytes = readFileSync(join(assets, MANIFEST_V2_ASSET_NAME))
+  const release = checkReleaseManifest({
+    manifestBytes,
+    aggregate,
+    context,
+    registryBytes,
+    macosInputs,
+    packages,
+    tag: values.tag,
+    sourceCommit: values['source-commit'],
+  })
+  return { release, manifestBytes, registry: parseRegistry(registryBytes) }
+}
+
+const PRIOR_SLOTS = Object.freeze({
+  v1: Object.freeze({ manifest: 'v1-manifest', signature: 'v1-signature' }),
+  v2: Object.freeze({ manifest: 'v2-manifest', signature: 'v2-signature' }),
+})
+
+function readHistoryPlan(path) {
+  const plan = readJsonFile(path, 'history plan')
+  if (!isPlainObject(plan) || plan.v1?.manifest !== 'v1' || plan.v2?.manifest !== 'v2') fail('the history plan is malformed')
+  return plan
+}
+
+// The earlier files a continuity plan names, as the job downloaded them by asset id.
+function readPriorPair(priorDir, manifest, plan) {
+  if (plan.mode !== 'continuity') return {}
+  if (!priorDir) fail('--prior-dir is required: the history continues from the release before')
+  const slots = PRIOR_SLOTS[manifest]
+  return {
+    priorManifestBytes: readBytesFile(join(priorDir, slots.manifest), `the earlier ${manifest} manifest`),
+    priorSignatureBytes: readBytesFile(join(priorDir, slots.signature), `the earlier ${manifest} signature`),
+  }
+}
+
+function authorizationRecord(result) {
+  const { priorManifest: _priorManifest, ...record } = result
+  return record
+}
+
+const SIGN_KEY_ENV = 'AGENT_INBOX_UPDATE_PRIVATE_KEY_BASE64'
 
 function main(argv) {
   const [command, ...rest] = argv
@@ -1192,7 +1404,33 @@ function main(argv) {
       publishedAt: values['published-at'],
     })
     writeBytes(values.output, bytes)
-    process.stdout.write(`${JSON.stringify({ output: resolve(values.output) })}\n`)
+    writeJsonOutput({ output: resolve(values.output) })
+    return
+  }
+
+  // The trusted signer, before the key (design §7.4): the unsigned v2 manifest describes this
+  // release and its measured kind is the expected one.
+  if (command === 'check-release') {
+    const { values } = parseArgs({
+      args: rest,
+      options: {
+        handoff: { type: 'string' },
+        registry: { type: 'string' },
+        'macos-inputs': { type: 'string' },
+        tag: { type: 'string' },
+        'source-commit': { type: 'string' },
+      },
+      strict: true,
+    })
+    const { release } = checkUnsignedHandoff(values)
+    writeJsonOutput({
+      kind: release.kind,
+      dmgName: release.dmgName,
+      macos: release.macos,
+      manifestSha256: release.manifestSha256,
+      version: release.manifest.version,
+      tag: release.manifest.tag,
+    })
     return
   }
 
@@ -1202,68 +1440,137 @@ function main(argv) {
       options: {
         releases: { type: 'string' },
         'new-tag': { type: 'string' },
+        kind: { type: 'string' },
       },
       strict: true,
     })
-    if (!values.releases || !values['new-tag']) {
-      fail('inspect-history requires --releases and --new-tag')
+    if (!values.releases || !values['new-tag'] || !values.kind) {
+      fail('inspect-history requires --releases, --new-tag, and --kind')
     }
     const releases = readJsonFile(values.releases, 'releases')
-    const plan = planReleaseHistoryContinuity({ releases, newTag: values['new-tag'] })
-    process.stdout.write(`${JSON.stringify(plan)}\n`)
+    writeJsonOutput(planReleaseHistory({ releases, newTag: values['new-tag'], kind: values.kind }))
     return
   }
 
+  // One line per earlier file to download, "<asset id> <slot>", so the job moves only files.
+  if (command === 'history-assets') {
+    const { values } = parseArgs({ args: rest, options: { plan: { type: 'string' } }, strict: true })
+    if (!values.plan) fail('history-assets requires --plan')
+    const plan = readHistoryPlan(values.plan)
+    const lines = []
+    for (const manifest of ['v1', 'v2']) {
+      const entry = plan[manifest]
+      if (entry.mode !== 'continuity') continue
+      for (const [asset, slot] of [[entry.manifestAsset, PRIOR_SLOTS[manifest].manifest], [entry.signatureAsset, PRIOR_SLOTS[manifest].signature]]) {
+        if (!Number.isSafeInteger(asset?.id) || asset.id <= 0) fail(`the history plan names no asset id for ${slot}`)
+        lines.push(`${asset.id} ${slot}\n`)
+      }
+    }
+    process.stdout.write(lines.join(''))
+    return
+  }
+
+  // G1 to G5 for both manifests, and G10 before the key is touched.
   if (command === 'authorize-history') {
     const { values } = parseArgs({
       args: rest,
       options: {
-        'prior-manifest': { type: 'string' },
-        'prior-signature': { type: 'string' },
+        plan: { type: 'string' },
+        'prior-dir': { type: 'string' },
         registry: { type: 'string' },
         'new-tag': { type: 'string' },
         'rotation-override': { type: 'string' },
       },
       strict: true,
     })
-    if (!values['prior-manifest'] || !values['prior-signature'] || !values.registry || !values['new-tag']) {
-      fail('authorize-history requires --prior-manifest, --prior-signature, --registry, and --new-tag')
+    if (!values.plan || !values.registry || !values['new-tag']) {
+      fail('authorize-history requires --plan, --registry, and --new-tag')
     }
+    const plan = readHistoryPlan(values.plan)
     const registry = validateRegistry(readJsonFile(values.registry, 'registry'))
-    const priorManifestBytes = readFileSync(resolve(values['prior-manifest']))
-    const priorSignatureBytes = readFileSync(resolve(values['prior-signature']))
-    const result = authorizeReleaseContinuity({
-      priorManifestBytes,
-      priorSignatureBytes,
+    const authorize = (manifest) => authorizationRecord(authorizeReleaseHistory({
+      plan: plan[manifest],
+      ...readPriorPair(values['prior-dir'], manifest, plan[manifest]),
       registry,
       newTag: values['new-tag'],
       rotationOverride: values['rotation-override'],
+    }))
+    writeJsonOutput({
+      v1: authorize('v1'),
+      v2: authorize('v2'),
+      originalKey: planOriginalKeySignature({
+        registry,
+        newTag: values['new-tag'],
+        rotationOverride: values['rotation-override'],
+      }),
     })
-    process.stdout.write(`${JSON.stringify({
-      authorized: result.authorized,
-      priorTag: result.priorTag,
-      rotationOverrideUsed: result.rotationOverrideUsed,
-    })}\n`)
     return
   }
 
-  if (command === 'sign') {
+  // G6 and G8: this release's v1 manifest, by projection or re-stamp, from verified inputs.
+  if (command === 'derive-v1') {
     const { values } = parseArgs({
       args: rest,
       options: {
-        manifest: { type: 'string' },
+        handoff: { type: 'string' },
         registry: { type: 'string' },
+        'macos-inputs': { type: 'string' },
+        tag: { type: 'string' },
+        'source-commit': { type: 'string' },
+        releases: { type: 'string' },
+        plan: { type: 'string' },
+        'prior-dir': { type: 'string' },
         output: { type: 'string' },
       },
       strict: true,
     })
-    if (!values.manifest || !values.registry || !values.output) {
-      fail('sign requires --manifest, --registry, and --output')
+    if (!values.releases || !values.plan || !values.output) fail('derive-v1 requires --releases, --plan, and --output')
+    const { release, manifestBytes, registry } = checkUnsignedHandoff(values)
+    const plan = readHistoryPlan(values.plan)
+    const earlier = release.kind === 'arm64' ? readPriorPair(values['prior-dir'], 'v1', plan.v1) : {}
+    const derived = deriveV1({
+      release,
+      v2ManifestBytes: manifestBytes,
+      registry,
+      releases: readJsonFile(values.releases, 'releases'),
+      earlierManifestBytes: earlier.priorManifestBytes,
+      earlierSignatureBytes: earlier.priorSignatureBytes,
+    })
+    writeFileSync(resolve(values.output), derived.bytes, { mode: DATA_MODE, flag: 'wx' })
+    writeJsonOutput({
+      made: derived.made,
+      describes: derived.describes,
+      version: derived.manifest.version,
+      size: derived.bytes.length,
+      sha256: sha256Hex(derived.bytes),
+      ...(derived.made === 'restamp'
+        ? { earlierManifestSha256: derived.earlierManifestSha256, targets: derived.targets }
+        : {}),
+    })
+    return
+  }
+
+  // Both manifests in one process: the key is decoded once and zeroed afterwards.
+  if (command === 'sign') {
+    const { values } = parseArgs({
+      args: rest,
+      options: {
+        manifest: { type: 'string', multiple: true },
+        registry: { type: 'string' },
+        output: { type: 'string', multiple: true },
+      },
+      strict: true,
+    })
+    const manifests = values.manifest ?? []
+    const outputs = values.output ?? []
+    if (!values.registry || manifests.length === 0 || manifests.length !== outputs.length) {
+      fail('sign requires --registry and one --output for each --manifest')
     }
-    const envVarName = 'AGENT_INBOX_UPDATE_PRIVATE_KEY_BASE64'
-    const rawEnvValue = process.env[envVarName]
+    const written = new Set([...manifests, ...outputs].map((path) => resolve(path)))
+    if (written.size !== manifests.length + outputs.length) fail('sign needs a distinct --output for each distinct --manifest')
+    const rawEnvValue = process.env[SIGN_KEY_ENV]
     if (!rawEnvValue) {
-      fail(`sign requires the private key PEM (base64-encoded) in the ${envVarName} environment variable`)
+      fail(`sign requires the private key PEM (base64-encoded) in the ${SIGN_KEY_ENV} environment variable`)
     }
     let pemBuffer
     try {
@@ -1277,20 +1584,89 @@ function main(argv) {
       // stdout, or any other log output.
       pemBuffer = Buffer.from(rawEnvValue, 'base64')
       if (pemBuffer.length === 0 || pemBuffer.toString('base64') !== rawEnvValue) {
-        fail(`${envVarName} must be canonical standard base64 (RFC 4648) encoding a nonempty value`)
+        fail(`${SIGN_KEY_ENV} must be canonical standard base64 (RFC 4648) encoding a nonempty value`)
       }
       const registry = validateRegistry(readJsonFile(values.registry, 'registry'))
-      const manifestBytes = readFileSync(resolve(values.manifest))
-      const { envelope, bytes } = signManifest({ manifestBytes, registry, privateKeyPem: pemBuffer })
-      writeBytes(values.output, bytes)
-      process.stdout.write(`${JSON.stringify({
-        keyIds: envelope.signatures.map((entry) => entry.keyId),
-        manifestSha256: envelope.manifestSha256,
-      })}\n`)
+      // Every manifest is signed before any envelope is written.
+      const signed = manifests.map((path) => ({
+        path,
+        ...signManifest({ manifestBytes: readBytesFile(path, 'manifest'), registry, privateKeyPem: pemBuffer }),
+      }))
+      signed.forEach(({ bytes }, index) => writeBytes(outputs[index], bytes))
+      writeJsonOutput({
+        signatures: signed.map(({ path, envelope }) => ({
+          manifest: basename(path),
+          keyIds: envelope.signatures.map((entry) => entry.keyId),
+          manifestSha256: envelope.manifestSha256,
+        })),
+      })
     } finally {
       if (pemBuffer) pemBuffer.fill(0)
-      delete process.env[envVarName]
+      delete process.env[SIGN_KEY_ENV]
     }
+    return
+  }
+
+  // The signing evidence (schema 2), from the records of the steps before.
+  if (command === 'bind') {
+    const { values } = parseArgs({
+      args: rest,
+      options: {
+        handoff: { type: 'string' },
+        state: { type: 'string' },
+        tag: { type: 'string' },
+        'source-commit': { type: 'string' },
+        now: { type: 'string' },
+        'rotation-override': { type: 'string' },
+      },
+      strict: true,
+    })
+    if (!values.handoff || !values.state || !values.tag || !values['source-commit'] || !values.now) {
+      fail('bind requires --handoff, --state, --tag, --source-commit, and --now')
+    }
+    const handoff = resolve(values.handoff)
+    const state = resolve(values.state)
+    const registryBytes = readBytesFile(join(state, 'update-keys.json'), 'the signing registry')
+    if (!readBytesFile(join(handoff, 'update-keys.json'), 'the handoff registry').equals(registryBytes)) {
+      fail('the handoff carries another key registry than the one the release was signed under')
+    }
+    const aggregate = readJsonFile(join(handoff, 'release-aggregation-evidence.json'), 'aggregate evidence')
+    if (!isPlainObject(aggregate) || !Array.isArray(aggregate.assets)) fail('the aggregate evidence must list the release assets')
+    const assets = join(handoff, 'release-assets')
+    requireExactFiles(assets, [
+      ...aggregate.assets.map((asset) => asset?.name),
+      'SHA256SUMS.txt',
+      MANIFEST_ASSET_NAME,
+      SIGNATURE_ASSET_NAME,
+      MANIFEST_V2_ASSET_NAME,
+      SIGNATURE_V2_ASSET_NAME,
+    ], 'the signed release assets')
+    const evidence = bindSigningEvidence({
+      registryBytes,
+      aggregate,
+      tag: values.tag,
+      sourceCommit: values['source-commit'],
+      release: readJsonFile(join(state, 'release-check.json'), 'the release check'),
+      history: readJsonFile(join(state, 'authorization.json'), 'the history authorization'),
+      derivation: readJsonFile(join(state, 'derivation.json'), 'the v1 derivation'),
+      v2: {
+        manifestBytes: readFileSync(join(assets, MANIFEST_V2_ASSET_NAME)),
+        signatureBytes: readFileSync(join(assets, SIGNATURE_V2_ASSET_NAME)),
+      },
+      v1: {
+        manifestBytes: readFileSync(join(assets, MANIFEST_ASSET_NAME)),
+        signatureBytes: readFileSync(join(assets, SIGNATURE_ASSET_NAME)),
+      },
+      now: values.now,
+      rotationOverride: values['rotation-override'],
+    })
+    const output = join(handoff, 'update-signing-evidence.json')
+    writeFileSync(output, `${JSON.stringify(evidence, null, 2)}\n`, { mode: DATA_MODE, flag: 'wx' })
+    writeJsonOutput({
+      evidence: output,
+      originalKeySignature: evidence.originalKeySignature,
+      v1: { made: evidence.manifests.v1.made, describes: evidence.manifests.v1.tag },
+    })
     return
   }
 
@@ -1302,22 +1678,23 @@ function main(argv) {
         signature: { type: 'string' },
         registry: { type: 'string' },
         now: { type: 'string' },
+        schema: { type: 'string' },
       },
       strict: true,
     })
     if (!values.manifest || !values.signature || !values.registry) {
       fail('verify requires --manifest, --signature, and --registry')
     }
+    const schema = values.schema ?? '1'
+    if (schema !== '1' && schema !== '2') fail('--schema must be 1 or 2')
     const registry = validateRegistry(readJsonFile(values.registry, 'registry'))
-    const manifestBytes = readFileSync(resolve(values.manifest))
-    const signatureBytes = readFileSync(resolve(values.signature))
-    const manifest = verifyManifest({
-      manifestBytes,
-      envelope: signatureBytes,
+    const manifest = (schema === '2' ? verifyManifestV2 : verifyManifest)({
+      manifestBytes: readBytesFile(values.manifest, 'manifest'),
+      envelope: readBytesFile(values.signature, 'signature'),
       registry,
       now: values.now,
     })
-    process.stdout.write(`${JSON.stringify({ valid: true, tag: manifest.tag, expiresAt: manifest.expiresAt })}\n`)
+    writeJsonOutput({ valid: true, schema: Number(schema), tag: manifest.tag, expiresAt: manifest.expiresAt })
     return
   }
 

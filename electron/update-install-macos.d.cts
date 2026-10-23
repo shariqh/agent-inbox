@@ -78,6 +78,12 @@ export interface MacInstallerFs {
     sync(): Promise<void>
     close(): Promise<void>
   }>
+  /** The staged executable's header (#343): `O_RDONLY | O_NOFOLLOW | O_NONBLOCK`, at most 4 KiB read. */
+  open(path: string, flags: number): Promise<{
+    stat(): Promise<{ isFile(): boolean }>
+    read(buffer: Uint8Array, offset: number, length: number, position: number): Promise<{ bytesRead: number }>
+    close(): Promise<void>
+  }>
   readdir(path: string): Promise<string[]>
   realpath(path: string): Promise<string>
   rm(path: string, options: { recursive: boolean; force: boolean }): Promise<void>
@@ -105,6 +111,11 @@ export interface MacInstallerOptions {
   viewerPid?: () => number | null
   uid: number
   platform?: string
+  /**
+   * process.arch (#343): an arm64-only build is refused unless this is `arm64` (under
+   * Rosetta it is `x64`), and the staged executable must carry this architecture's slice.
+   */
+  hostArch?: string
   isPackaged: boolean
   /** userData/update-install */
   workDirectory: string

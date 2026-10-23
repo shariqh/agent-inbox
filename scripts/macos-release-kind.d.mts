@@ -16,7 +16,7 @@ export interface MacosRelease {
   readonly architecture: 'universal' | 'arm64'
   readonly target: 'darwin-arm64+darwin-x64' | 'darwin-arm64'
   readonly needsNativeIntel: boolean
-  readonly v1Manifest: 'release' | 'restamp'
+  readonly v1Manifest: 'projection' | 'restamp'
 }
 
 export function macosRelease(options: { kind: MacosReleaseKind | string; tag: string }): MacosRelease

@@ -207,6 +207,7 @@ function fixture(newBytes: Buffer = appImageBytes(2 * MiB + 12_345)): Fixture {
     filename,
     sha256: sha256(newBytes),
     byteLength: newBytes.length,
+    architecture: 'x64',
     packageType: 'appimage',
     installStrategy: 'appimage-self-replace',
   }

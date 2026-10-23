@@ -164,20 +164,20 @@ describe('update trust state (rollback high-water mark, #148)', () => {
     const dir = workDir()
     const trustState = createUpdateTrustState({ app: { getPath: () => dir } })
     const filePath = join(dir, 'update-trust-state.json')
-    await expect(trustState.read()).resolves.toEqual({ highestVerifiedVersion: null })
+    await expect(trustState.read()).resolves.toEqual({ highestVerifiedVersion: null, highestVerifiedVersionV2: null })
 
-    await expect(trustState.recordVerifiedVersion('2.0.0')).resolves.toEqual({ highestVerifiedVersion: '2.0.0' })
+    await expect(trustState.recordVerifiedVersion('2.0.0', 'v1')).resolves.toEqual({ highestVerifiedVersion: '2.0.0', highestVerifiedVersionV2: null })
     expect(readFileSync(filePath, 'utf8')).toBe('{\n  "schema": 1,\n  "highestVerifiedVersion": "2.0.0"\n}\n')
     const written = statSync(filePath).ino
     for (const notHigher of ['1.99.99', '2.0.0']) {
-      await expect(trustState.recordVerifiedVersion(notHigher)).resolves.toEqual({ highestVerifiedVersion: '2.0.0' })
+      await expect(trustState.recordVerifiedVersion(notHigher, 'v1')).resolves.toEqual({ highestVerifiedVersion: '2.0.0', highestVerifiedVersionV2: null })
     }
     expect(statSync(filePath).ino).toBe(written)
 
-    await trustState.recordVerifiedVersion('10.0.0')
-    await trustState.recordVerifiedVersion('9.99.99')
-    await expect(trustState.read()).resolves.toEqual({ highestVerifiedVersion: '10.0.0' })
-    await expect(trustState.recordVerifiedVersion('11.0')).rejects.toThrow(TypeError)
+    await trustState.recordVerifiedVersion('10.0.0', 'v1')
+    await trustState.recordVerifiedVersion('9.99.99', 'v1')
+    await expect(trustState.read()).resolves.toEqual({ highestVerifiedVersion: '10.0.0', highestVerifiedVersionV2: null })
+    await expect(trustState.recordVerifiedVersion('11.0', 'v1')).rejects.toThrow(TypeError)
     expect(existsSync(join(dir, 'update-preferences.json'))).toBe(false)
   })
 
@@ -187,9 +187,9 @@ describe('update trust state (rollback high-water mark, #148)', () => {
     writeFileSync(filePath, newer)
     const trustState = createUpdateTrustState({ filePath })
 
-    await expect(trustState.read()).resolves.toEqual({ highestVerifiedVersion: '3.0.0' })
-    await expect(trustState.recordVerifiedVersion('2.0.0')).resolves.toEqual({ highestVerifiedVersion: '3.0.0' })
-    await expect(trustState.recordVerifiedVersion('3.1.0')).resolves.toEqual({ highestVerifiedVersion: '3.0.0' })
+    await expect(trustState.read()).resolves.toEqual({ highestVerifiedVersion: '3.0.0', highestVerifiedVersionV2: null })
+    await expect(trustState.recordVerifiedVersion('2.0.0', 'v1')).resolves.toEqual({ highestVerifiedVersion: '3.0.0', highestVerifiedVersionV2: null })
+    await expect(trustState.recordVerifiedVersion('3.1.0', 'v1')).resolves.toEqual({ highestVerifiedVersion: '3.0.0', highestVerifiedVersionV2: null })
     expect(readFileSync(filePath, 'utf8')).toBe(newer)
   })
 
@@ -198,8 +198,8 @@ describe('update trust state (rollback high-water mark, #148)', () => {
     writeFileSync(filePath, '{"schema":1,"highestVerifiedVersion":"3.0.0","futureField":{"kept":true}}')
     const trustState = createUpdateTrustState({ filePath })
 
-    await expect(trustState.recordVerifiedVersion('2.0.0')).resolves.toEqual({ highestVerifiedVersion: '3.0.0' })
-    await expect(trustState.recordVerifiedVersion('3.1.0')).resolves.toEqual({ highestVerifiedVersion: '3.1.0' })
+    await expect(trustState.recordVerifiedVersion('2.0.0', 'v1')).resolves.toEqual({ highestVerifiedVersion: '3.0.0', highestVerifiedVersionV2: null })
+    await expect(trustState.recordVerifiedVersion('3.1.0', 'v1')).resolves.toEqual({ highestVerifiedVersion: '3.1.0', highestVerifiedVersionV2: null })
     expect(JSON.parse(readFileSync(filePath, 'utf8'))).toEqual({
       schema: 1,
       highestVerifiedVersion: '3.1.0',
@@ -217,8 +217,8 @@ describe('update trust state (rollback high-water mark, #148)', () => {
     writeFileSync(filePath, bytes)
     const trustState = createUpdateTrustState({ filePath })
 
-    await expect(trustState.read()).resolves.toEqual({ highestVerifiedVersion: null })
-    await expect(trustState.recordVerifiedVersion('2.0.0')).resolves.toEqual({ highestVerifiedVersion: '2.0.0' })
+    await expect(trustState.read()).resolves.toEqual({ highestVerifiedVersion: null, highestVerifiedVersionV2: null })
+    await expect(trustState.recordVerifiedVersion('2.0.0', 'v1')).resolves.toEqual({ highestVerifiedVersion: '2.0.0', highestVerifiedVersionV2: null })
     expect(JSON.parse(readFileSync(filePath, 'utf8'))).toEqual({ schema: 1, highestVerifiedVersion: '2.0.0' })
   })
 
@@ -230,12 +230,63 @@ describe('update trust state (rollback high-water mark, #148)', () => {
     const secondProcess = createUpdateTrustState({ filePath })
 
     await Promise.all([
-      firstProcess.recordVerifiedVersion('2.0.0'),
-      secondProcess.recordVerifiedVersion('3.0.0'),
-      firstProcess.recordVerifiedVersion('2.5.0'),
+      firstProcess.recordVerifiedVersion('2.0.0', 'v1'),
+      secondProcess.recordVerifiedVersion('3.0.0', 'v1'),
+      firstProcess.recordVerifiedVersion('2.5.0', 'v1'),
     ])
 
-    await expect(secondProcess.read()).resolves.toEqual({ highestVerifiedVersion: '3.0.0' })
+    await expect(secondProcess.read()).resolves.toEqual({ highestVerifiedVersion: '3.0.0', highestVerifiedVersionV2: null })
     expect(existsSync(`${filePath}.lock`)).toBe(false)
+  })
+
+  it('keeps one mark per manifest in the same schema-1 file, each raised only by its own manifest (#343)', async () => {
+    const filePath = join(workDir(), 'update-trust-state.json')
+    const trustState = createUpdateTrustState({ filePath })
+
+    await expect(trustState.recordVerifiedVersion('2.0.1', 'v2')).resolves.toEqual({
+      highestVerifiedVersion: null,
+      highestVerifiedVersionV2: '2.0.1',
+    })
+    await expect(trustState.recordVerifiedVersion('1.9.0', 'v1')).resolves.toEqual({
+      highestVerifiedVersion: '1.9.0',
+      highestVerifiedVersionV2: '2.0.1',
+    })
+    // A v1 manifest never raises the v2 mark, nor a v2 manifest the v1 mark, and neither falls.
+    for (const [version, manifest] of [['1.8.0', 'v1'], ['2.0.0', 'v2'], ['1.9.0', 'v1'], ['2.0.1', 'v2']] as const) {
+      await expect(trustState.recordVerifiedVersion(version, manifest)).resolves.toEqual({
+        highestVerifiedVersion: '1.9.0',
+        highestVerifiedVersionV2: '2.0.1',
+      })
+    }
+    expect(JSON.parse(readFileSync(filePath, 'utf8'))).toEqual({
+      schema: 1,
+      highestVerifiedVersion: '1.9.0',
+      highestVerifiedVersionV2: '2.0.1',
+    })
+    await expect(trustState.read()).resolves.toEqual({ highestVerifiedVersion: '1.9.0', highestVerifiedVersionV2: '2.0.1' })
+    for (const manifest of [undefined, 'v3', 'V2']) {
+      await expect(trustState.recordVerifiedVersion('3.0.0', manifest as 'v1')).rejects.toThrow(TypeError)
+    }
+  })
+
+  it('keeps the other mark and unknown fields when it raises one, as 1.3 to 1.6 keep the v2 mark', async () => {
+    const filePath = join(workDir(), 'update-trust-state.json')
+    writeFileSync(filePath, '{"schema":1,"highestVerifiedVersion":"1.6.0","futureField":[1]}')
+    const trustState = createUpdateTrustState({ filePath })
+
+    await trustState.recordVerifiedVersion('1.7.0', 'v2')
+    expect(JSON.parse(readFileSync(filePath, 'utf8'))).toEqual({
+      schema: 1,
+      highestVerifiedVersion: '1.6.0',
+      highestVerifiedVersionV2: '1.7.0',
+      futureField: [1],
+    })
+    // A malformed mark counts as none, and only its own manifest replaces it.
+    writeFileSync(filePath, '{"schema":1,"highestVerifiedVersion":"1.6","highestVerifiedVersionV2":"2.0.1"}')
+    await expect(trustState.read()).resolves.toEqual({ highestVerifiedVersion: null, highestVerifiedVersionV2: '2.0.1' })
+    await expect(trustState.recordVerifiedVersion('1.9.0', 'v1')).resolves.toEqual({
+      highestVerifiedVersion: '1.9.0',
+      highestVerifiedVersionV2: '2.0.1',
+    })
   })
 })

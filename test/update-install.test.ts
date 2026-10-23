@@ -33,6 +33,7 @@ function recordFor(body: Buffer, overrides: Partial<VerifiedArtifact> = {}): Ver
     filename: 'Agent-Inbox-v2.0.0-universal.dmg',
     sha256: createHash('sha256').update(body).digest('hex'),
     byteLength: body.length,
+    architecture: 'universal',
     packageType: 'dmg',
     installStrategy: 'macos-dmg',
     minimumSystemVersion: '13.5',

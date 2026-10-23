@@ -5,9 +5,10 @@
 // executable and its better-sqlite3 addon. Both sets must equal each other and the
 // committed expected set, `macosArchitectures` in release/macos-inputs.json, and the kind
 // they give decides everything below: the DMG name, the labels, whether the native Intel
-// gate must have passed and whether update-manifest.json can describe the release. The
-// release gates and aggregation use this table today and the trusted signer joins them in
-// #343, so changing the expected set is the only way to change a release's kind.
+// gate must have passed and how the release's v1 update manifest is made. The release
+// gates, aggregation and the trusted signer all use this table (the publish job, which has
+// no checkout, carries a copy of its two rows), so changing the expected set is the only
+// way to change a release's kind.
 
 const KINDS = Object.freeze([
   Object.freeze({
@@ -18,8 +19,8 @@ const KINDS = Object.freeze([
     target: 'darwin-arm64+darwin-x64',
     // Only a universal app runs on an Intel Mac, so only it needs the Intel gate's pass.
     needsNativeIntel: true,
-    // The v1 manifest describes this release itself; it can name only a universal DMG.
-    v1Manifest: 'release',
+    // The v1 manifest describes this release itself: its v2 manifest with schema 1 (#343).
+    v1Manifest: 'projection',
   }),
   Object.freeze({
     kind: 'arm64',
@@ -28,7 +29,8 @@ const KINDS = Object.freeze([
     architecture: 'arm64',
     target: 'darwin-arm64',
     needsNativeIntel: false,
-    // The v1 manifest re-signs the newest universal release's instead (#343).
+    // update-manifest.json can name only a universal DMG, so the v1 manifest re-stamps the
+    // newest universal release's instead (#343).
     v1Manifest: 'restamp',
   }),
 ])

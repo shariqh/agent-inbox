@@ -127,9 +127,9 @@ describe('multi-platform release workflow', () => {
     expect(sign).toContain('contents: read')
     expect(sign).toContain('actions: read')
     expect(sign).toContain('ref: ${{ github.workflow_sha }}')
-    expect(sign).toContain('node scripts/update-manifest.mjs inspect-history')
-    expect(sign).toContain('node scripts/update-manifest.mjs authorize-history')
-    expect(sign).toContain('node scripts/update-manifest.mjs sign')
+    for (const command of ['check-release', 'inspect-history', 'history-assets', 'authorize-history', 'derive-v1', 'sign', 'bind']) {
+      expect(sign).toContain(`node scripts/update-manifest.mjs ${command}`)
+    }
     expect(sign).toContain('gh api --paginate --slurp')
     expect(sign.indexOf('node scripts/update-manifest.mjs inspect-history'))
       .toBeLessThan(sign.indexOf('AGENT_INBOX_UPDATE_PRIVATE_KEY_BASE64'))
@@ -149,6 +149,9 @@ describe('multi-platform release workflow', () => {
       'SHA256SUMS.txt',
       'update-manifest.json',
       'update-manifest.json.sig',
+      'update-manifest-v2.json',
+      'update-manifest-v2.json.sig',
+      'Agent-Inbox-$RELEASE_TAG-arm64.dmg',
     ]) {
       expect(publish).toContain(name)
     }

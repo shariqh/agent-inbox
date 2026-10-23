@@ -4,16 +4,21 @@ const fs = require('node:fs')
 const path = require('node:path')
 const {
   verifyManifest,
+  verifyManifestV2,
 } = require('./update-manifest.cjs')
 
+// Apps from 1.7.0 on read update-manifest-v2.json (#343). update-manifest.json, the file
+// apps from 1.2 to 1.6 read, is read only for the Intel fallback below.
 const MANIFEST_URL = 'https://github.com/shariqh/agent-inbox/releases/latest/download/update-manifest.json'
 const SIGNATURE_URL = 'https://github.com/shariqh/agent-inbox/releases/latest/download/update-manifest.json.sig'
+const MANIFEST_V2_URL = 'https://github.com/shariqh/agent-inbox/releases/latest/download/update-manifest-v2.json'
+const SIGNATURE_V2_URL = 'https://github.com/shariqh/agent-inbox/releases/latest/download/update-manifest-v2.json.sig'
 const MANIFEST_MAX_BYTES = 256 * 1024
 const SIGNATURE_MAX_BYTES = 16 * 1024
 const DEFAULT_TIMEOUT_MS = 30_000
 const MAX_REDIRECTS = 5
 const VERSION_RE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/
-const GITHUB_RELEASE_PATH_RE = /^\/shariqh\/agent-inbox\/releases\/(?:latest\/download|download\/v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*))\/(update-manifest\.json(?:\.sig)?)$/
+const GITHUB_RELEASE_PATH_RE = /^\/shariqh\/agent-inbox\/releases\/(?:latest\/download|download\/v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*))\/(update-manifest(?:-v2)?\.json(?:\.sig)?)$/
 const GITHUB_CONTENT_PATH_RE = /^\/github-production-release-asset(?:-\d+)?\//
 
 class UpdateFetchError extends Error {
@@ -289,27 +294,30 @@ function runsFromAppImage({ appImagePath, appDir, execPath, appImageProbe = SYST
   return mountsImage(image, mount, appImageProbe)
 }
 
+function findTarget(manifest, platform, architecture, packageType) {
+  return manifest.targets.find((target) => (
+    target.platform === platform
+    && target.architecture === architecture
+    && target.packageType === packageType
+  )) ?? null
+}
+
+// On macOS an arm64 process takes the arm64 DMG when the manifest lists one, and any
+// process takes the universal DMG next. A manifest that lists only an arm64 DMG yields it
+// whatever the process, and checkForUpdate never offers it to a process that isn't arm64.
 function selectTarget(manifest, options) {
   const packaged = options.isPackaged === true
   const supportedArch = options.arch === 'x64' || options.arch === 'arm64'
   if (!packaged || !supportedArch) return null
-
-  let architecture
-  let packageType
   if (options.platform === 'darwin') {
-    architecture = 'universal'
-    packageType = 'dmg'
-  } else if (options.platform === 'linux') {
-    architecture = options.arch
-    packageType = runsFromAppImage(options) ? 'appimage' : 'deb'
-  } else {
-    return null
+    return (options.arch === 'arm64' ? findTarget(manifest, 'darwin', 'arm64', 'dmg') : null)
+      ?? findTarget(manifest, 'darwin', 'universal', 'dmg')
+      ?? findTarget(manifest, 'darwin', 'arm64', 'dmg')
   }
-  return manifest.targets.find((target) => (
-    target.platform === options.platform
-    && target.architecture === architecture
-    && target.packageType === packageType
-  )) ?? null
+  if (options.platform === 'linux') {
+    return findTarget(manifest, 'linux', options.arch, runsFromAppImage(options) ? 'appimage' : 'deb')
+  }
+  return null
 }
 
 function baseState(status, options, checkedAt, message) {
@@ -322,14 +330,93 @@ function baseState(status, options, checkedAt, message) {
   }
 }
 
-// Rollback high-water mark (#148): record the just-verified version and read back the
-// persisted maximum in one step, so the stale decision below uses the stored mark.
-async function recordHighWater(options, verifiedVersion) {
+// Rollback high-water marks (#148), one per manifest (#343): record the just-verified
+// version in its manifest's mark and read back the mark the stale decision uses, in one
+// step: the v1 mark for update-manifest.json, the higher of both marks for v2.
+async function recordHighWater(options, verifiedVersion, manifest) {
   if (typeof options.recordVerifiedVersion !== 'function') return null
-  const highWater = await options.recordVerifiedVersion(verifiedVersion)
+  const highWater = await options.recordVerifiedVersion(verifiedVersion, manifest)
   if (highWater === null || highWater === undefined) return null
   versionParts(highWater, 'high-water mark')
   return highWater
+}
+
+const MANIFESTS = Object.freeze({
+  v1: Object.freeze({ url: MANIFEST_URL, signatureUrl: SIGNATURE_URL, name: 'update-manifest.json', verify: verifyManifest }),
+  v2: Object.freeze({ url: MANIFEST_V2_URL, signatureUrl: SIGNATURE_V2_URL, name: 'update-manifest-v2.json', verify: verifyManifestV2 }),
+})
+
+// Fetches one manifest pair from the latest release and verifies it: any failure throws.
+async function readManifest(options, which, signal, now) {
+  const manifest = MANIFESTS[which]
+  const manifestBytes = await fetchAsset({
+    fetchImpl: options.fetchImpl,
+    initialUrl: manifest.url,
+    expectedAsset: manifest.name,
+    cap: MANIFEST_MAX_BYTES,
+    signal,
+  })
+  const signatureBytes = await fetchAsset({
+    fetchImpl: options.fetchImpl,
+    initialUrl: manifest.signatureUrl,
+    expectedAsset: `${manifest.name}.sig`,
+    cap: SIGNATURE_MAX_BYTES,
+    signal,
+  })
+  return manifest.verify({ manifestBytes, envelope: signatureBytes, registry: options.registry, now })
+}
+
+function staleState(options, checkedAt) {
+  return baseState('stale', options, checkedAt, 'Update information is older than a release this app already verified.')
+}
+
+// An offer of `target`, remembering which manifest it came from (#343): the controller
+// checks an install against that manifest's mark.
+function offerState(options, checkedAt, manifest, verified, target) {
+  return {
+    ...baseState('available', options, checkedAt, 'A verified update is available.'),
+    manifest,
+    available: {
+      version: verified.version,
+      tag: verified.tag,
+      releaseUrl: verified.releaseUrl,
+      target: {
+        packageType: target.packageType,
+        installStrategy: target.installStrategy,
+      },
+    },
+    // Main-process only: the downloader needs the signed URL, length and digest,
+    // which the renderer-facing state deliberately never carries.
+    ...(options.includeArtifact === true
+      ? { artifact: Object.freeze({ version: verified.version, tag: verified.tag, ...target }) }
+      : {}),
+  }
+}
+
+// The v2 manifest offers only an arm64 DMG, and this process is not arm64: an Intel Mac,
+// or an Apple silicon Mac running the app under Rosetta (design §6.2). update-manifest.json
+// names the newest universal release, which this Mac can install when it is newer. When it
+// isn't, the offer is blocked, with no artifact. A v1 read that fails throws and a stale one
+// returns stale, so a verified download already on screen is never dropped.
+async function intelFallback(options, signal, now, checkedAt, v2) {
+  const v1 = await readManifest(options, 'v1', signal, now)
+  const highWater = await recordHighWater(options, v1.version, 'v1')
+  if (highWater !== null && compareVersions(v1.version, highWater) < 0) return staleState(options, checkedAt)
+  if (compareVersions(v1.version, options.currentVersion) > 0) {
+    return offerState(options, checkedAt, 'v1', v1, findTarget(v1, 'darwin', 'universal', 'dmg'))
+  }
+  return {
+    ...baseState('available', options, checkedAt, 'A verified update is available.'),
+    manifest: 'v2',
+    available: {
+      version: v2.version,
+      tag: v2.tag,
+      releaseUrl: v2.releaseUrl,
+      target: { packageType: 'dmg', installStrategy: 'macos-dmg' },
+      // `translated` (app.runningUnderARM64Translation) only chooses the copy.
+      blocked: options.translated === true ? 'rosetta' : 'apple-silicon',
+    },
+  }
 }
 
 async function checkForUpdate(options) {
@@ -347,35 +434,9 @@ async function checkForUpdate(options) {
   deadline?.unref?.()
 
   try {
-    const manifestBytes = await fetchAsset({
-      fetchImpl: options.fetchImpl,
-      initialUrl: MANIFEST_URL,
-      expectedAsset: 'update-manifest.json',
-      cap: MANIFEST_MAX_BYTES,
-      signal: controller.signal,
-    })
-    const signatureBytes = await fetchAsset({
-      fetchImpl: options.fetchImpl,
-      initialUrl: SIGNATURE_URL,
-      expectedAsset: 'update-manifest.json.sig',
-      cap: SIGNATURE_MAX_BYTES,
-      signal: controller.signal,
-    })
-    const manifest = verifyManifest({
-      manifestBytes,
-      envelope: signatureBytes,
-      registry: options.registry,
-      now,
-    })
-    const highWater = await recordHighWater(options, manifest.version)
-    if (highWater !== null && compareVersions(manifest.version, highWater) < 0) {
-      return baseState(
-        'stale',
-        options,
-        checkedAt,
-        'Update information is older than a release this app already verified.',
-      )
-    }
+    const manifest = await readManifest(options, 'v2', controller.signal, now)
+    const highWater = await recordHighWater(options, manifest.version, 'v2')
+    if (highWater !== null && compareVersions(manifest.version, highWater) < 0) return staleState(options, checkedAt)
     const target = selectTarget(manifest, options)
     if (!target) {
       return baseState(
@@ -388,23 +449,10 @@ async function checkForUpdate(options) {
     if (compareVersions(manifest.version, options.currentVersion) <= 0) {
       return baseState('current', options, checkedAt, 'Agent Inbox is up to date.')
     }
-    return {
-      ...baseState('available', options, checkedAt, 'A verified update is available.'),
-      available: {
-        version: manifest.version,
-        tag: manifest.tag,
-        releaseUrl: manifest.releaseUrl,
-        target: {
-          packageType: target.packageType,
-          installStrategy: target.installStrategy,
-        },
-      },
-      // Main-process only: the downloader needs the signed URL, length and digest,
-      // which the renderer-facing state deliberately never carries.
-      ...(options.includeArtifact === true
-        ? { artifact: Object.freeze({ version: manifest.version, tag: manifest.tag, ...target }) }
-        : {}),
+    if (target.platform === 'darwin' && target.architecture === 'arm64' && options.arch !== 'arm64') {
+      return await intelFallback(options, controller.signal, now, checkedAt, manifest)
     }
+    return offerState(options, checkedAt, 'v2', manifest, target)
   } catch (error) {
     controller.abort()
     throw error
@@ -416,6 +464,8 @@ async function checkForUpdate(options) {
 module.exports = {
   MANIFEST_URL,
   SIGNATURE_URL,
+  MANIFEST_V2_URL,
+  SIGNATURE_V2_URL,
   checkForUpdate,
   runsFromAppImage,
 }

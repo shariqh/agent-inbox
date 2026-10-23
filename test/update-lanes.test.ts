@@ -512,6 +512,109 @@ describe('an Intel Mac holding a verified download of 1.x-last', () => {
   })
 })
 
+// The #353 review: 1.9.0 downloaded and verified while it was the latest, so through v2,
+// which raised only the v2 mark. Once 2.0.0 ships for Apple silicon only, a v1 read that is
+// behind, yet not below the old v1 mark, must not drop that download.
+describe('a 1.x-last download verified through v2, after 2.0.0 ships', () => {
+  async function heldThroughV2(host: Host) {
+    const app = newApp(host, '1.8.0')
+    // An app that came through 1.6.0's reader still carries that reader's v1 mark.
+    writeFileSync(app.trustFile, `${JSON.stringify({ schema: 1, highestVerifiedVersion: '1.7.0' }, null, 2)}\n`)
+    let published = release('1.9.0')
+    let fetchImpl = latest(published)
+    const prune = vi.fn(async () => {})
+    const prepare = vi.fn(async () => ({ commit: vi.fn(async () => {}), discard: vi.fn(async () => {}) }))
+    const requestRestart = vi.fn()
+    const controller = createUpdateController({
+      currentVersion: app.version,
+      preferences: memoryPreferences(),
+      trustState: updatePreferences.createUpdateTrustState({ filePath: app.trustFile }),
+      checker: ({ currentVersion, automaticChecks, recordVerifiedVersion }) => checkForUpdate({
+        fetchImpl: (url: string) => fetchImpl(url),
+        registry,
+        currentVersion,
+        automaticChecks,
+        recordVerifiedVersion,
+        isPackaged: true,
+        now: () => after(published.taggedAt),
+        includeArtifact: true,
+        ...host.options,
+      }),
+      notifier: () => {},
+      downloader: {
+        normalize: (artifact: UpdateArtifact) => Object.freeze({ ...artifact }),
+        download: async (artifact: UpdateArtifact): Promise<VerifiedArtifact> => ({
+          path: `/private/update-downloads/v${artifact.version}/${artifact.filename}`,
+          version: artifact.version,
+          tag: artifact.tag,
+          filename: artifact.filename,
+          sha256: artifact.sha256,
+          byteLength: artifact.byteLength,
+          architecture: artifact.architecture,
+          packageType: artifact.packageType,
+          installStrategy: artifact.installStrategy,
+          ...(artifact.minimumSystemVersion ? { minimumSystemVersion: artifact.minimumSystemVersion } : {}),
+        }) as VerifiedArtifact,
+        cancel: async () => {},
+        prune,
+        openVerified: async (record: VerifiedArtifact) => ({
+          record,
+          handle: {
+            read: async () => ({ bytesRead: 0 }),
+            stat: async () => ({ isFile: () => true, size: record.byteLength }),
+            write: async () => ({ bytesWritten: 0 }),
+            sync: async () => {},
+            close: async () => {},
+          },
+          close: async () => {},
+        }),
+      },
+      installers: { 'macos-dmg': { strategy: 'macos-dmg' as const, feasibility: async () => ({ ok: true as const }), prepare } },
+      requestRestart,
+    })
+    await expect(controller.checkNow()).resolves.toMatchObject({ status: 'available', available: { version: '1.9.0', installable: true } })
+    await expect(controller.downloadNow()).resolves.toMatchObject({ status: 'verified', available: { version: '1.9.0' } })
+    expect(marks(app)).toEqual({ schema: 1, highestVerifiedVersion: '1.7.0', highestVerifiedVersionV2: '1.9.0' })
+    prune.mockClear()
+    published = release('2.0.0')
+    return {
+      controller,
+      prune,
+      prepare,
+      requestRestart,
+      /** What `latest` serves now: 2.0.0, with another v1 pair when one is given. */
+      serve(v1?: Partial<Pair>) {
+        fetchImpl = latest(published, v1)
+      },
+    }
+  }
+
+  it.each([[HOSTS.intel.name, HOSTS.intel], [HOSTS.rosetta.name, HOSTS.rosetta]] as const)('%s: keeps it when the v1 read is behind, and installs it after a good check', async (_name, host) => {
+    const held = await heldThroughV2(host)
+    // The publication race: a manifest from one release, a signature from the next.
+    held.serve({ bytes: release('2.0.0').v1.bytes, signature: release('1.9.0').v1.signature })
+    await expect(held.controller.checkNow()).resolves.toMatchObject({ status: 'verified', available: { version: '1.9.0' } })
+    // 1.8.0's own v1 pair: behind, yet not below the v1 mark of 1.7.0.
+    held.serve(release('1.8.0').v1)
+    const behind = await held.controller.checkNow()
+    expect(behind).toMatchObject({
+      status: 'verified',
+      checkedAt: after(release('2.0.0').taggedAt).toISOString(),
+      available: { version: '1.9.0', installable: true },
+    })
+    expect(behind.available).not.toHaveProperty('blocked')
+    expect(behind.available).not.toHaveProperty('reason')
+    expect(held.controller.getVerifiedArtifact()).toMatchObject({ version: '1.9.0', architecture: 'universal' })
+    // A good check: the re-stamped v1 manifest offers the same file, through v1.
+    held.serve()
+    await expect(held.controller.checkNow()).resolves.toMatchObject({ status: 'verified', available: { version: '1.9.0' } })
+    await expect(held.controller.installNow()).resolves.toMatchObject({ status: 'installing', available: { version: '1.9.0' } })
+    expect(held.prepare).toHaveBeenCalledTimes(1)
+    expect(held.requestRestart).toHaveBeenCalledTimes(1)
+    expect(held.prune).not.toHaveBeenCalled()
+  })
+})
+
 // Design §8.3: a deliberate downgrade to 1.6.0 shares the trust-state file with the new reader.
 describe('a downgrade to 1.6.0 on the same update-trust-state.json', () => {
   it.each([

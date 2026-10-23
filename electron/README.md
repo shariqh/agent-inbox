@@ -13,7 +13,8 @@ arm64 DMG and this process is not arm64 (an Intel Mac, or Rosetta), it reads
 `update-manifest.json`, which names the newest release with a universal DMG: a newer one
 is offered as usual, and otherwise the offer is blocked, never downloadable, with copy that
 says why (`apple-silicon` hides Review release and notifies nothing; `rosetta` says to
-reopen the app without Rosetta). Automatic checks are explicit and off by
+reopen the app without Rosetta). A verified universal download of a newer release outlives
+a blocked or stale result: such a v1 read is behind. Automatic checks are explicit and off by
 default. They make no telemetry requests and notify at most once per verified version.
 For `macos-dmg` and `appimage-self-replace` targets, a user-initiated **Download update**
 runs `update-download.cjs` in Electron main: it fetches only the manifest's canonical

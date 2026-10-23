@@ -564,16 +564,30 @@ function createUpdateController(options) {
     }
   }
 
+  // A blocked offer (#343) while this Mac holds a verified universal download of a release
+  // newer than the running app. update-manifest.json always names the newest release with a
+  // universal DMG (design I1, I2), and that release is at least the one held here, so a v1
+  // read that leaves this Mac blocked at or below its own version is behind, even when it
+  // is not below the v1 mark: a download verified through v2 raised only the v2 mark.
+  function behindHeldUniversal(next) {
+    return next.status === 'available'
+      && next.available.blocked !== undefined
+      && verifiedArtifact.architecture === 'universal'
+      && isNewerVersion(verifiedArtifact.version, currentVersion)
+  }
+
   // A re-check that confirms the exact verified artifact keeps it; anything
   // else (a newer release, no release, a notify-only target) discards it.
   // `stale` is not evidence about a download: release information below the
   // high-water mark comes only from a serving path that is behind (#148), so,
   // like a failed check, it never prunes or forgets the offer, and a verified
-  // file stays on screen with only its check time refreshed.
+  // file stays on screen with only its check time refreshed. A blocked offer
+  // below a held universal download is behind in the same way, and is kept the
+  // same way; it confirms nothing, so the file's install-time manifest stays.
   function settleCheck(checked) {
     const next = checked.state
     const keepVerified = holdsVerifiedFile()
-    if (next.status === 'stale') {
+    if (next.status === 'stale' || (keepVerified && behindHeldUniversal(next))) {
       if (!keepVerified) return publish(next)
       return publish({ ...state, automaticChecks: next.automaticChecks, checkedAt: next.checkedAt })
     }

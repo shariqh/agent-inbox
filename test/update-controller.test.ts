@@ -1811,34 +1811,57 @@ describe('a release this Mac cannot install, and the manifest an offer came from
     expect(reviewReleaseOffered(undefined)).toBe(true)
   })
 
-  // An Intel Mac on 1.8.0 holding a verified 1.9.0 download (design §6.2).
-  async function holding(next: () => Promise<UpdateCheckResult>) {
-    const offer = { ...availableWith(artifactFor('1.9.0'), '1.9.0'), currentVersion: '1.8.0' }
+  // A Mac on `currentVersion` holding a verified download of `download` (design §6.2).
+  async function holding(next: () => Promise<UpdateCheckResult>, download = artifactFor('1.9.0'), currentVersion = '1.8.0') {
+    const offer = { ...availableWith(download), currentVersion }
     let check: () => Promise<UpdateCheckResult> = async () => offer
-    const held = setup(() => check(), { currentVersion: '1.8.0' })
+    const held = setup(() => check(), { currentVersion })
     await held.controller.checkNow()
     const done = held.controller.downloadNow()
     held.fake.succeed()
     await done
+    expect(held.controller.getVerifiedArtifact()).toMatchObject({ version: download.version, architecture: download.architecture })
     held.fake.downloader.prune.mockClear()
     check = next
     return held
   }
 
-  it('keeps a verified download when the v1 read throws or reads stale; only a blocked result drops it', async () => {
-    for (const next of [
-      async (): Promise<UpdateCheckResult> => { throw new Error('manifest bytes do not match the digest') },
-      async (): Promise<UpdateCheckResult> => ({ status: 'stale', currentVersion: '1.8.0', automaticChecks: false, checkedAt: '2027-01-19T00:00:00.000Z', message: 'x' }),
-    ]) {
+  it('keeps a verified universal download of a newer release when the v1 read throws, reads stale or leaves the Mac blocked', async () => {
+    for (const [label, next] of [
+      ['a v1 read that throws', async (): Promise<UpdateCheckResult> => { throw new Error('manifest bytes do not match the digest') }],
+      ['a stale v1', async (): Promise<UpdateCheckResult> => ({ status: 'stale', currentVersion: '1.8.0', automaticChecks: false, checkedAt: '2027-01-19T00:00:00.000Z', message: 'x' })],
+      // update-manifest.json always names the newest universal release, so a v1 read that
+      // leaves this Mac blocked below the universal release it holds is behind (#343).
+      ['a v1 read that leaves an Intel Mac blocked', async (): Promise<UpdateCheckResult> => ({ ...blockedResult('apple-silicon'), currentVersion: '1.8.0' })],
+      ['a v1 read that leaves Rosetta blocked', async (): Promise<UpdateCheckResult> => ({ ...blockedResult('rosetta'), currentVersion: '1.8.0' })],
+    ] as const) {
       const { controller, fake } = await holding(next)
-      await expect(controller.checkNow()).resolves.toMatchObject({ status: 'verified', available: { version: '1.9.0' } })
-      expect(controller.getVerifiedArtifact()).toMatchObject({ version: '1.9.0' })
-      expect(fake.downloader.prune).not.toHaveBeenCalled()
+      const before = controller.getState()
+      const after = await controller.checkNow()
+      expect(after, label).toMatchObject({ status: 'verified', available: { version: '1.9.0', installable: true } })
+      // Only the check time moves: no blocked copy replaces the download on screen.
+      expect({ ...after, checkedAt: before.checkedAt }, label).toEqual(before)
+      expect(controller.getVerifiedArtifact(), label).toMatchObject({ version: '1.9.0', architecture: 'universal' })
+      expect(fake.downloader.prune, label).not.toHaveBeenCalled()
     }
-    const { controller, fake } = await holding(async () => ({ ...blockedResult('apple-silicon'), currentVersion: '1.8.0' }))
-    await expect(controller.checkNow()).resolves.toMatchObject({ status: 'available', available: { blocked: 'apple-silicon' } })
-    expect(controller.getVerifiedArtifact()).toBeNull()
-    await vi.waitFor(() => expect(fake.downloader.prune).toHaveBeenCalledWith({ keep: null, currentVersion: '1.8.0' }))
+  })
+
+  it('still drops a held arm64 download, or one not newer than the running app, on a blocked result', async () => {
+    const arm64 = {
+      ...artifactFor('1.9.0'),
+      architecture: 'arm64' as const,
+      filename: 'Agent-Inbox-v1.9.0-arm64.dmg',
+      url: 'https://github.com/shariqh/agent-inbox/releases/download/v1.9.0/Agent-Inbox-v1.9.0-arm64.dmg',
+    }
+    for (const [label, download, currentVersion] of [
+      ['an arm64 download', arm64, '1.8.0'],
+      ['a download of the running version', artifactFor('1.9.0'), '1.9.0'],
+    ] as const) {
+      const { controller, fake } = await holding(async () => ({ ...blockedResult('apple-silicon'), currentVersion }), download, currentVersion)
+      await expect(controller.checkNow(), label).resolves.toMatchObject({ status: 'available', available: { version: '2.0.0', blocked: 'apple-silicon' } })
+      expect(controller.getVerifiedArtifact(), label).toBeNull()
+      await vi.waitFor(() => expect(fake.downloader.prune, label).toHaveBeenCalledWith({ keep: null, currentVersion }))
+    }
   })
 
   describe('install-time marks follow the manifest the offer came from (design §5.6)', () => {

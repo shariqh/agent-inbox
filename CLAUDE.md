@@ -2107,7 +2107,12 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   one notification per version). It is blocked only when `update-manifest.json` verified,
   is not stale and is not newer than the running app; a newer v1 is an ordinary,
   installable offer of that universal release, and a v1 read that fails or is stale keeps
-  any verified download.
+  any verified download. A blocked result keeps one too while it is a universal download of
+  a release newer than the running app, exactly as `stale` does (only the check time moves,
+  nothing is pruned, the download stays on screen): v1 always names the newest universal
+  release, so a read that leaves this Mac blocked below the release it holds is behind. That
+  covers a 1.x-last download verified through v2, which raised only the v2 mark; an arm64
+  download, or one not newer than the running app, is still dropped.
 - **Verified update install for AppImage** *(#196 part 3)* — `electron/update-install-appimage.cjs`
   replaces the running AppImage FILE in place (same name and path; the name may carry the
   old version) and restarts into it. (1) **One AppImage proof:** `runsFromAppImage()` in

@@ -377,3 +377,7 @@ fnm exec --using=24 npm run electron
   Batched notifications remain open-only because one action list cannot identify multiple
   questions.
 - The app quits when the window closes, including on macOS (utility-window behavior).
+- Only US and British English Electron locales ship (#292). Electron seeds a new
+  profile's spellchecker languages from that locale, so on Linux and Windows
+  `spellcheck-languages.cjs` sets them to the system's languages at startup, before the
+  window opens. macOS keeps the system's own spellchecker.

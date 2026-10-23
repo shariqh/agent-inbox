@@ -1757,12 +1757,21 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   before removing anything. The macOS thin build, the Linux and Windows folder gates (and
   so every DEB/AppImage build and verification), the universal assembly before signing and
   the final DMG gate refuse an app that lacks one or ships another
-  (`assertEnglishOnlyElectronLocales`). `package:app` prunes the bundle before its ad-hoc
-  seal. Electron's prebuilt framework seals no resources, so release signing creates its
-  `_CodeSignature` after the prune. The provisional macOS DMG is launched in French and in
-  British English and must give its renderers `--lang=en-US` and `--lang=en-GB`, with
-  `scripts/launch-locale-probe.mjs` reading the page's dates over DevTools; the AppImage
-  FUSE gates run in French (`en-US`) and the extraction gates in British English (`en-GB`).
+  (`assertEnglishOnlyElectronLocales`). Every folder on the way to an English locale must
+  be a real one: `lstat` follows a link anywhere but in a path's last part, so a linked
+  `locales/` or `Resources` would vouch for whatever it points at while the walk, which
+  never follows links, removes nothing there. `package:app` prunes the bundle before its
+  ad-hoc seal. Electron's prebuilt framework seals no resources, so release signing
+  creates its `_CodeSignature` after the prune. The provisional macOS DMG is launched in
+  French and in British English and must give its renderers `--lang=en-US` and
+  `--lang=en-GB`, with `scripts/launch-locale-probe.mjs` reading the page's dates over
+  DevTools; the AppImage FUSE gates run in French (`en-US`) and the extraction gates in
+  British English (`en-GB`). Electron seeds a new profile's spellchecker languages from
+  Chromium's locale, so on Linux and Windows `electron/spellcheck-languages.cjs` points it
+  at `app.getPreferredSystemLanguages()` at startup, before the first window (exact code,
+  else base language, one per language, at most three, written only when it differs and
+  never to none); macOS keeps the system's own `NSSpellChecker`, which Chromium consults
+  directly and Electron's `setSpellCheckerLanguages` cannot change.
 - **Signed update-manifest trust contract** *(#106 Layer 1)* — protected releases contain
   five packages, package-only `SHA256SUMS.txt`, deterministic `update-manifest.json`, and
   `update-manifest.json.sig`. The exact manifest bytes are signed with Ed25519 after

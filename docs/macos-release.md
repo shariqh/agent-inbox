@@ -183,15 +183,34 @@ is also the default locale of the dates the app formats, so keeping British Engl
   Notifications carry the app's own title, body and action labels, and macOS draws the
   rest. `app.getPreferredSystemLanguages()` still reports the user's languages, while on
   macOS `app.getSystemLocale()` (`NSLocale.currentLocale`) follows the app's language; the
-  app reads neither.
+  app reads neither for its UI. Spellcheck still follows the user's languages (below).
+- **Spellcheck.** Electron seeds a new profile's spellchecker languages from Chromium's
+  locale (`ElectronBrowserContext`), so a new French or German profile on Linux, and on
+  Windows once it ships, would check the reply boxes against the English dictionary. On
+  those two, `electron/spellcheck-languages.cjs` sets the spellchecker to the system's
+  languages at startup, before the first page loads: for each of
+  `app.getPreferredSystemLanguages()` in order, the code in
+  `session.availableSpellCheckerLanguages` it matches exactly, else its base language, one
+  per language and at most three (Chromium sets no limit), and only when that differs from
+  what the profile holds. A profile from an earlier release that holds `fr` moves to
+  `fr-FR`, the same dictionary file. A system language Chromium has no dictionary for, such
+  as Japanese, leaves the profile as it is, US English, as before. In Docker, a new
+  Electron 43 profile under `LANG=fr_FR.UTF-8` loads the French dictionary with the sync
+  and the US English one without it. macOS is unchanged: its spellchecker is the system's
+  own (`NSSpellChecker`). Chromium replaces the preference there with that checker's
+  language, Electron's `setSpellCheckerLanguages` does nothing, and a launch with
+  `-AppleLanguages '(fr)'` reports `fr` and accepts the same French words with or without
+  the prune.
 - **Where.** Each thin-app builder prunes the packaged app once, right after
   `@electron/packager` (the only step that adds Electron's files) and before anything
   checks, hashes or publishes it, so both macOS thin apps carry the same locale set into
   the universal merge. The prune refuses, before removing anything, an app without US or
-  British English. The macOS thin build, the Linux and Windows folder gates (which every DEB
-  and AppImage build and verification repeats on the folder it packages or extracted), the
-  universal assembly before anything is signed, and the final DMG gate refuse an app that
-  lacks either or ships any other locale.
+  British English, or one that reaches either through a link (a linked `locales/` or
+  `Resources` folder, which the walk never follows, could hide every other locale). The
+  macOS thin build, the Linux and Windows folder gates (which every DEB and AppImage build
+  and verification repeats on the folder it packages or extracted), the universal assembly
+  before anything is signed, and the final DMG gate refuse an app that lacks either,
+  reaches either through a link, or ships any other locale.
 - **Launch evidence.** The provisional DMG's app is launched in French and in British
   English and must give its renderers `--lang=en-US` and `--lang=en-GB`; for each,
   `scripts/launch-locale-probe.mjs` reads over DevTools (the launch passes

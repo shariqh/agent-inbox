@@ -22,9 +22,9 @@
 //   en-GB, and fall back to en-US when no pak matches (l10n_util.cc).
 //
 // The prune refuses, before removing anything, an app missing either English
-// locale, and the gate refuses an app that lacks one or ships any other. Node
-// core only. Links are never followed, and the app's own code
-// (Contents/Resources/app) is never touched.
+// locale or reaching one through a link, and the gate refuses an app that
+// lacks one or ships any other. Node core only. Links are never followed, and
+// the app's own code (Contents/Resources/app) is never touched.
 import { lstatSync, readdirSync, rmSync } from 'node:fs'
 import { join, relative, sep } from 'node:path'
 
@@ -109,8 +109,24 @@ function planPrune(app, platform) {
   return remove.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
 }
 
+// lstat follows a link anywhere but in a path's last part, so every folder on
+// the way to an English locale has to be a real one: a linked locales/ would
+// vouch for whatever it points at, while the plan, which never follows a
+// link, finds nothing there to remove.
+function notAFolder(app, path) {
+  for (let end = 1; end < path.length; end++) {
+    const stat = lstatOrNull(join(app, ...path.slice(0, end)))
+    if (stat && !stat.isDirectory()) {
+      return `has ${path.slice(0, end).join('/')} as a ${stat.isSymbolicLink() ? 'link' : 'file'}, not a folder`
+    }
+  }
+  return null
+}
+
 function englishProblem(app, platform) {
   for (const { path, folder, why } of REQUIRED[platform === 'darwin' ? 'darwin' : 'paks']) {
+    const linked = notAFolder(app, path)
+    if (linked) return linked
     const stat = lstatOrNull(join(app, ...path))
     const present = folder ? stat?.isDirectory() : stat?.isFile() && stat.size > 0
     if (!present) return `has no ${path.join('/')}, ${why}`

@@ -86,7 +86,10 @@ Run the build before `npm run electron`; the development shell starts the built
   `en.lproj` and `en_GB.lproj` on macOS and `locales/en-US.pak` and `en-GB.pak` on Linux
   and Windows, once, right after `@electron/packager` and before anything checks, hashes
   or signs the app; the thin-app, universal and final-DMG gates refuse an app with any
-  other locale or without either of those.
+  other locale, without either of those, or reaching either through a linked folder.
+  Electron seeds a new profile's spellchecker from that locale, so on Linux and Windows
+  `electron/spellcheck-languages.cjs` sets it to the system's languages at startup;
+  macOS keeps its own `NSSpellChecker`.
 - **Setup path:** `scripts/install-agents.sh` is the canonical dry-run-first
   installer for MCP registration and managed host instructions. Electron exposes
   only fixed setup targets through `electron/setup-preload.cjs` and invokes that

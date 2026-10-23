@@ -13,6 +13,7 @@ import {
   readdirSync,
   readFileSync,
   readlinkSync,
+  renameSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -330,6 +331,53 @@ describe('assertEnglishOnlyElectronLocales (#292)', () => {
       expect(() => assertEnglishOnlyElectronLocales(app, 'darwin', 'universal app')).toThrow(
         `universal app has no Contents/Resources/${folder}, ${why} (#292)`,
       )
+    }
+  })
+
+  // lstat follows a link anywhere but in a path's last part, so a linked
+  // locales/ vouched for the English paks it pointed at, while the plan, which
+  // never follows a link, found nothing there to remove.
+  it.each(['linux', 'win32'] as const)('refuses a %s folder whose locales/ is a link, and removes nothing through it', (platform) => {
+    for (const paks of [['en-GB.pak', 'en-US.pak', 'fr.pak', 'zh-TW.pak'], ['en-GB.pak', 'en-US.pak']]) {
+      const target = writeTree(scratchDir('locales-linked-'), Object.fromEntries(paks.map((pak) => [pak, `${pak}\n`])))
+      const app = folderApp()
+      rmSync(join(app, 'locales'), { recursive: true })
+      symlinkSync(target, join(app, 'locales'), 'dir')
+
+      expect(() => assertEnglishOnlyElectronLocales(app, platform, 'packaged app')).toThrow(
+        'packaged app has locales as a link, not a folder (#292)',
+      )
+      expect(() => pruneElectronLocales(app, platform)).toThrow(
+        `packaged ${platform} app has locales as a link, not a folder; review`,
+      )
+      expect(readdirSync(target).sort()).toEqual(paks)
+    }
+  })
+
+  it('refuses a folder whose locales/ is a file', () => {
+    const app = folderApp()
+    rmSync(join(app, 'locales'), { recursive: true })
+    writeFileSync(join(app, 'locales'), 'en-US.pak\n')
+    expect(() => assertEnglishOnlyElectronLocales(app, 'linux', 'packaged app')).toThrow(
+      'packaged app has locales as a file, not a folder (#292)',
+    )
+  })
+
+  it('refuses a macOS bundle that reaches its English locales through a link, and removes nothing through it', () => {
+    for (const linked of ['Contents/Resources', FRAMEWORK_RESOURCES, `${FRAMEWORK_RESOURCES}/en_GB.lproj`]) {
+      const app = macApp()
+      const moved = join(scratchDir('locales-moved-'), 'folder')
+      renameSync(join(app, linked), moved)
+      symlinkSync(moved, join(app, linked), 'dir')
+      const before = listEntries(moved)
+
+      expect(() => assertEnglishOnlyElectronLocales(app, 'darwin', 'universal app'), linked).toThrow(
+        `universal app has ${linked} as a link, not a folder (#292)`,
+      )
+      expect(() => pruneElectronLocales(app, 'darwin'), linked).toThrow(
+        `packaged darwin app has ${linked} as a link, not a folder; review`,
+      )
+      expect(listEntries(moved), linked).toEqual(before)
     }
   })
 })

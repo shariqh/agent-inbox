@@ -220,6 +220,12 @@ describe('what counts as using a runtime (#294)', () => {
       symlinkSync(join(dir, 'dist'), join(h.home, 'aliases', 'inbox-dist'))
       return { file: files(h).copilot, label: 'Copilot CLI', value: { mcpServers: { inbox: { command: 'node', args: ['~/aliases/inbox-dist/mcp-server.js'] } } } }
     }],
+    // a path naming it that cannot be followed for another reason than absence still counts
+    ['a path through a symlink loop', (dir, h) => {
+      symlinkSync(join(h.home, 'loop'), join(h.home, 'loop'))
+      const id = dir.slice(dir.lastIndexOf('/') + 1)
+      return { file: files(h).claude, label: 'Claude Code', value: { mcpServers: { inbox: { command: 'node', args: [join(h.home, 'loop', id, 'dist', 'mcp-server.js')] } } } }
+    }],
   ]
 
   it.each(SHAPES)('%s keeps the runtime it names', (_label, shape) => {

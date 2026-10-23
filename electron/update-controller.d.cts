@@ -1,5 +1,6 @@
 import type {
   UpdateArtifact,
+  UpdateBlockedReason,
   UpdateCheckResult,
   UpdateRendererState,
   VerifiedAvailableUpdate,
@@ -11,6 +12,7 @@ import type {
 } from './update-download.cjs'
 import type { InstallAttemptStore, PlatformInstaller } from './update-install.cjs'
 import type {
+  UpdateManifestName,
   UpdatePreferences,
   UpdatePreferencesStore,
   UpdateTrustStateStore,
@@ -18,6 +20,7 @@ import type {
 
 export type {
   UpdateArtifact,
+  UpdateBlockedReason,
   UpdateCheckResult,
   UpdatePreferences,
   UpdateRendererState,
@@ -49,9 +52,16 @@ export interface OfferedUpdate extends VerifiedAvailableUpdate {
   installPermitted: boolean
   /**
    * Plain-language reason, without any path, that a registered installer cannot
-   * install this offer here. Present only on such notify-only offers.
+   * install this offer here, or that this Mac can't run the release (`blocked`).
+   * Present only on such notify-only offers.
    */
   reason?: string
+  /**
+   * Set when the release ships only an arm64 DMG and this Mac can't run it (#343): never
+   * downloadable or installable, with fixed copy in `reason`. Settings hides Review release
+   * for `apple-silicon`, and main refuses to open it.
+   */
+  blocked?: UpdateBlockedReason
 }
 
 export interface UpdateDownloadProgress {
@@ -91,13 +101,19 @@ export interface UpdateNotification {
   releaseUrl: string
   downloadable: boolean
   installable: boolean
+  /** Only `rosetta`: an `apple-silicon` offer never notifies (#343). */
+  blocked?: UpdateBlockedReason
 }
 
 export interface UpdateCheckerInput {
   currentVersion: string
   automaticChecks: boolean
-  /** Records a just-verified release, saves the session's highest one, and resolves the rollback high-water mark. */
-  recordVerifiedVersion(version: string): Promise<string | null>
+  /**
+   * Records a release just verified in `manifest`, saves that manifest's session high, and
+   * resolves the mark its stale decision uses: the v1 mark for `v1`, the higher of both
+   * marks for `v2` (#148, #343).
+   */
+  recordVerifiedVersion(version: string, manifest: UpdateManifestName): Promise<string | null>
 }
 
 export interface UpdateController {

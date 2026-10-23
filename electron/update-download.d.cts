@@ -1,5 +1,5 @@
 import type { FetchResponse, UpdateArtifact } from './update-fetch.cjs'
-import type { UpdateTargetPackageType } from './update-manifest.cjs'
+import type { UpdateTargetArchitecture, UpdateTargetPackageType } from './update-manifest.cjs'
 
 export type { UpdateArtifact }
 
@@ -17,6 +17,8 @@ export interface VerifiedArtifact {
   filename: string
   sha256: string
   byteLength: number
+  /** The target's architecture: `universal` or `arm64` for a DMG (#343), `x64` or `arm64` on Linux. */
+  architecture: UpdateTargetArchitecture
   packageType: UpdateTargetPackageType
   installStrategy: DownloadableInstallStrategy
   minimumSystemVersion?: string

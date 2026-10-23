@@ -34,12 +34,30 @@ const INSTALL_MESSAGES = Object.freeze({
   changed: 'The downloaded update changed on disk, so it was removed. Download it again.',
 })
 const MAX_INSTALL_MESSAGE_LENGTH = 240
+// Why an offer is blocked on this Mac (#343, design §6.3): its release ships only an arm64
+// DMG, this process isn't arm64, and update-manifest.json offers nothing newer.
+const BLOCKED_REASONS = new Set(['apple-silicon', 'rosetta'])
 // Copy shown to the renderer must never carry a path: no slashes, no control characters.
 const UNSAFE_MESSAGE_RE = /[\u0000-\u001f\u007f/\\]/
 // Helper exit codes (INSTALL_HELPER_EXIT in update-install.cjs) with a known cause.
 const PERMISSION_EXIT_CODES = new Set([70, 71])
 const TIMED_OUT_EXIT_CODE = 75
 const REFUSED_EXIT_CODE = 65
+
+// Fixed copy under "Agent Inbox X is available." for a release this Mac can't install. It
+// never names the arm64 build or links to it, and like every other reason it carries no
+// slash, so it passes safeInstallMessage's filter.
+function blockedCopy(blocked, runningVersion) {
+  return blocked === 'apple-silicon'
+    ? `It needs a Mac with Apple silicon. This Mac has an Intel processor, so Agent Inbox stays on ${runningVersion}, which keeps working.`
+    : 'It runs only natively on Apple silicon, and Agent Inbox is running under Rosetta. Quit Agent Inbox, turn off “Open using Rosetta” in its Get Info window in Finder, then reopen it to install.'
+}
+
+function higherVersion(left, right) {
+  if (typeof left !== 'string' || !VERSION_RE.test(left)) return typeof right === 'string' && VERSION_RE.test(right) ? right : null
+  if (typeof right !== 'string' || !VERSION_RE.test(right)) return left
+  return isNewerVersion(right, left) ? right : left
+}
 
 // What the next app start says about an install that left it on its old version.
 function attemptNotice(outcome, runningVersion) {
@@ -113,6 +131,7 @@ function sameRecord(left, right) {
     && right
     && left.path === right.path
     && left.version === right.version
+    && left.architecture === right.architecture
     && left.installStrategy === right.installStrategy
     && left.byteLength === right.byteLength
     && left.sha256 === right.sha256,
@@ -207,10 +226,13 @@ function createUpdateController(options) {
   let timer = null
   let inFlight = null
   let disposed = false
-  let highestVerifiedVersion = null
-  // Main-process only: the signed artifact behind state.available, the verified
-  // file once downloaded, and the running download. None of these is published.
+  // Rollback marks verified in this session, one per manifest (#148, #343).
+  const sessionMarks = { v1: null, v2: null }
+  // Main-process only: the signed artifact behind state.available, the manifest the
+  // latest check that offered it came from, the verified file once downloaded, and
+  // the running download. None of these is published.
   let artifact = null
+  let artifactManifest = null
   let verifiedArtifact = null
   let downloadOperation = null
   let startupPruned = false
@@ -338,6 +360,8 @@ function createUpdateController(options) {
   }
 
   async function notifyAvailable(available, startingPreferences) {
+    // Nothing an Intel Mac can act on: Settings explains it, and no notification does (#343).
+    if (available.blocked === 'apple-silicon') return
     if (startingPreferences.lastNotifiedVersion === available.version) return
     try {
       await preferences.setLastNotifiedVersion(available.version)
@@ -351,6 +375,7 @@ function createUpdateController(options) {
         releaseUrl: available.releaseUrl,
         downloadable: available.downloadable === true,
         installable: available.installable === true,
+        ...(available.blocked !== undefined ? { blocked: available.blocked } : {}),
       })
     } catch {
       // Notification delivery is best-effort after recording the version.
@@ -395,12 +420,46 @@ function createUpdateController(options) {
         || available.releaseUrl !== `https://github.com/shariqh/agent-inbox/releases/tag/${available.tag}`
         || !available.target
         || TARGET_STRATEGIES.get(available.target.packageType) !== available.target.installStrategy
+        || (candidate.manifest !== 'v1' && candidate.manifest !== 'v2')
       ) {
         throw new Error('checker returned invalid verified release metadata')
+      }
+      // A release this Mac can't install: notify-only with fixed copy, whatever installer
+      // is registered, and never an artifact to download (#343).
+      if (available.blocked !== undefined) {
+        if (
+          !BLOCKED_REASONS.has(available.blocked)
+          || available.target.installStrategy !== 'macos-dmg'
+          || candidate.artifact !== undefined
+        ) {
+          throw new Error('checker returned an invalid blocked offer')
+        }
+        return {
+          artifact: null,
+          manifest: candidate.manifest,
+          state: {
+            status: 'available',
+            currentVersion,
+            automaticChecks,
+            checkedAt: candidate.checkedAt,
+            message: 'A verified update is available.',
+            available: {
+              version: available.version,
+              tag: available.tag,
+              releaseUrl: available.releaseUrl,
+              target: { packageType: 'dmg', installStrategy: 'macos-dmg' },
+              downloadable: false,
+              installable: false,
+              reason: blockedCopy(available.blocked, currentVersion),
+              blocked: available.blocked,
+            },
+          },
+        }
       }
       const accepted = acceptArtifact(candidate.artifact, available)
       return {
         artifact: accepted,
+        manifest: candidate.manifest,
         state: {
           status: 'available',
           currentVersion,
@@ -423,6 +482,7 @@ function createUpdateController(options) {
     }
     return {
       artifact: null,
+      manifest: null,
       state: {
         status: candidate.status,
         currentVersion,
@@ -433,33 +493,37 @@ function createUpdateController(options) {
     }
   }
 
-  function rememberVerified(version) {
-    if (
-      typeof version === 'string'
-      && VERSION_RE.test(version)
-      && (highestVerifiedVersion === null || isNewerVersion(version, highestVerifiedVersion))
-    ) {
-      highestVerifiedVersion = version
-    }
+  function rememberMarks(marks) {
+    sessionMarks.v1 = higherVersion(sessionMarks.v1, marks?.highestVerifiedVersion)
+    sessionMarks.v2 = higherVersion(sessionMarks.v2, marks?.highestVerifiedVersionV2)
   }
 
-  // The checker calls this only after a manifest verifies. Memory keeps the mark for this
-  // session even when it cannot be saved, and every save writes that session high, so a
-  // later successful save also records a release whose own save failed.
-  async function recordVerifiedVersion(version) {
-    rememberVerified(version)
+  // The mark a manifest is checked against (design §5.6): update-manifest.json against the
+  // v1 mark alone, update-manifest-v2.json against the higher of both, which is safe because
+  // v1 never runs ahead of v2. A v1 manifest is never compared with the v2 mark, so the
+  // frozen 1.x manifest never reads as stale.
+  function markFor(manifest, marks) {
+    return manifest === 'v1' ? marks.v1 : higherVersion(marks.v1, marks.v2)
+  }
+
+  // The checker calls this only after a manifest verifies, naming which one. Memory keeps
+  // each mark for this session even when it cannot be saved, and every save writes that
+  // session high, so a later successful save also records a release whose own save failed.
+  async function recordVerifiedVersion(version, manifest) {
+    if (manifest !== 'v1' && manifest !== 'v2') throw new TypeError('manifest must be "v1" or "v2"')
+    sessionMarks[manifest] = higherVersion(sessionMarks[manifest], version)
     if (trustState !== null) {
       try {
-        rememberVerified((await trustState.recordVerifiedVersion(highestVerifiedVersion)).highestVerifiedVersion)
+        rememberMarks(await trustState.recordVerifiedVersion(sessionMarks[manifest], manifest))
       } catch {
         try {
-          rememberVerified((await trustState.read()).highestVerifiedVersion)
+          rememberMarks(await trustState.read())
         } catch {
-          // Unreadable storage leaves the in-memory mark for this session.
+          // Unreadable storage leaves the in-memory marks for this session.
         }
       }
     }
-    return highestVerifiedVersion
+    return markFor(manifest, sessionMarks)
   }
 
   // Never rejects: an installer that throws or answers malformed is "not here".
@@ -467,6 +531,7 @@ function createUpdateController(options) {
     try {
       const result = await installer.feasibility(Object.freeze({
         version: target.version,
+        architecture: target.architecture,
         ...(target.minimumSystemVersion !== undefined ? { minimumSystemVersion: target.minimumSystemVersion } : {}),
       }))
       if (result?.ok === true) return { ok: true }
@@ -488,6 +553,7 @@ function createUpdateController(options) {
       return checked
     }
     return {
+      ...checked,
       artifact: null,
       state: {
         ...checked.state,
@@ -518,10 +584,14 @@ function createUpdateController(options) {
       installNotice = null
     }
     if (keepVerified && next.status === 'available' && sameArtifact(artifact, checked.artifact)) {
+      // The latest check that confirmed this file decides its install-time mark: an Intel
+      // Mac's universal download offered by v2 is offered by v1 once v2 lists only arm64.
+      artifactManifest = checked.manifest
       return publish({ ...state, automaticChecks: next.automaticChecks, checkedAt: next.checkedAt })
     }
     verifiedArtifact = null
     artifact = checked.artifact
+    artifactManifest = checked.artifact === null ? null : checked.manifest
     prune({ keep: next.status === 'available' ? artifact : null, currentVersion })
     return publish(next)
   }
@@ -585,6 +655,7 @@ function createUpdateController(options) {
       && record.version === target.version
       && record.sha256 === target.sha256
       && record.byteLength === target.byteLength
+      && record.architecture === target.architecture
       && record.installStrategy === target.installStrategy,
     )
   }
@@ -640,23 +711,24 @@ function createUpdateController(options) {
     if (!holdsVerifiedFile() || state.available?.installable !== true) return null
     const installer = installers.get(verifiedArtifact.installStrategy)
     if (installer === undefined || state.available.version !== verifiedArtifact.version) return null
-    return { installer, record: verifiedArtifact, available: state.available }
+    return { installer, record: verifiedArtifact, available: state.available, manifest: artifactManifest ?? 'v2' }
   }
 
-  // Another app process sharing userData may have raised the mark since the offer.
-  async function highWaterMark() {
-    let mark = highestVerifiedVersion
+  // The mark the offer's own manifest is checked against, as at check time (design §5.6).
+  // Another app process sharing userData may have raised it since the offer.
+  async function highWaterMark(manifest) {
+    let stored = null
     if (trustState !== null) {
       try {
-        const stored = (await trustState.read()).highestVerifiedVersion
-        if (typeof stored === 'string' && VERSION_RE.test(stored) && (mark === null || isNewerVersion(stored, mark))) {
-          mark = stored
-        }
+        stored = await trustState.read()
       } catch {
-        // An unreadable file leaves this session's mark in force.
+        // An unreadable file leaves this session's marks in force.
       }
     }
-    return mark
+    return markFor(manifest, {
+      v1: higherVersion(sessionMarks.v1, stored?.highestVerifiedVersion),
+      v2: higherVersion(sessionMarks.v2, stored?.highestVerifiedVersionV2),
+    })
   }
 
   function setupRunning() {
@@ -676,7 +748,7 @@ function createUpdateController(options) {
     }
   }
 
-  async function runInstall(operation, installer, record, available) {
+  async function runInstall(operation, installer, record, available, manifest) {
     const { signal } = operation.controller
     let prepared = null
     let dropDownload = false
@@ -685,7 +757,7 @@ function createUpdateController(options) {
       if (inFlight !== null) return refuse(INSTALL_MESSAGES.checking)
       if (setupRunning()) return refuse(INSTALL_MESSAGES.setup)
       if (!isNewerVersion(record.version, currentVersion)) return refuse(INSTALL_MESSAGES.notNewer)
-      const mark = await highWaterMark()
+      const mark = await highWaterMark(manifest)
       if (mark !== null && isNewerVersion(mark, record.version)) return refuse(INSTALL_MESSAGES.stale)
       const feasible = await feasibilityFor(installer, record)
       if (!feasible.ok) return refuse(feasible.message)
@@ -774,7 +846,7 @@ function createUpdateController(options) {
     windowRefusal = false
     const operation = { controller: new AbortController(), committing: false, promise: null }
     installOperation = operation
-    operation.promise = runInstall(operation, target.installer, target.record, target.available)
+    operation.promise = runInstall(operation, target.installer, target.record, target.available, target.manifest)
       .catch(() => state)
     return operation.promise
   }

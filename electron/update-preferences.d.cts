@@ -34,16 +34,24 @@ export function createUpdatePreferences(options:
     }
 ): UpdatePreferencesStore
 
-/** Rollback high-water mark (#148), kept in userData `update-trust-state.json`. */
+/** Which signed manifest a version was verified in: update-manifest.json or update-manifest-v2.json (#343). */
+export type UpdateManifestName = 'v1' | 'v2'
+
+/** Rollback high-water marks (#148), one per manifest (#343), in userData `update-trust-state.json`. */
 export interface UpdateTrustState {
-  /** Highest release version whose signed manifest verified; null until the first one. */
+  /** Highest version verified in update-manifest.json; the only mark apps from 1.3 to 1.6 know. */
   highestVerifiedVersion: string | null
+  /** Highest version verified in update-manifest-v2.json; null until the first one. */
+  highestVerifiedVersionV2: string | null
 }
 
 export interface UpdateTrustStateStore {
   read(): Promise<UpdateTrustState>
-  /** Raises the mark when `version` is higher; never lowers it or rewrites a newer schema. */
-  recordVerifiedVersion(version: string): Promise<UpdateTrustState>
+  /**
+   * Raises the mark of the manifest `version` verified in when it is higher; never lowers
+   * either mark, touches the other, or rewrites a newer schema. Resolves both marks.
+   */
+  recordVerifiedVersion(version: string, manifest: UpdateManifestName): Promise<UpdateTrustState>
 }
 
 export function createUpdateTrustState(options:

@@ -19,7 +19,8 @@ const { createHash } = require('node:crypto')
 const { constants } = require('node:fs')
 const fs = require('node:fs/promises')
 const path = require('node:path')
-const { TARGET_SPECS, UPDATE_REPOSITORY } = require('./update-manifest.cjs')
+// The v2 catalog (#343): the five v1 types and the arm64 DMG, each with its own filename.
+const { TARGET_SPECS_V2, UPDATE_REPOSITORY } = require('./update-manifest.cjs')
 
 const DOWNLOADABLE_STRATEGIES = new Set(['macos-dmg', 'appimage-self-replace'])
 // GitHub answers the release URL with a 302 to a signed asset URL. Verified live
@@ -93,7 +94,7 @@ function compareVersions(left, right) {
 }
 
 function specFor(platform, architecture, packageType) {
-  return TARGET_SPECS.find((spec) => (
+  return TARGET_SPECS_V2.find((spec) => (
     spec.platform === platform
     && spec.architecture === architecture
     && spec.packageType === packageType
@@ -155,6 +156,7 @@ function recordFor(artifact, filePath) {
     filename: artifact.filename,
     sha256: artifact.sha256,
     byteLength: artifact.byteLength,
+    architecture: artifact.architecture,
     packageType: artifact.packageType,
     installStrategy: artifact.installStrategy,
     ...(artifact.minimumSystemVersion !== undefined ? { minimumSystemVersion: artifact.minimumSystemVersion } : {}),
@@ -685,14 +687,16 @@ function createUpdateDownloader(options) {
     return operation.promise
   }
 
-  // Re-derives a recorded artifact from TARGET_SPECS and pins it to the one path
+  // Re-derives a recorded artifact from the v2 catalog and pins it to the one path
   // this downloader would have written, inside directories lstat proves are real.
+  // The filename picks the type, and the recorded architecture must be that type's.
   async function locateVerified(record) {
     if (record === null || typeof record !== 'object' || typeof record.path !== 'string') fail('not-verified')
     const spec = typeof record.version === 'string' && VERSION_RE.test(record.version)
-      ? TARGET_SPECS.find((candidate) => (
+      ? TARGET_SPECS_V2.find((candidate) => (
           candidate.packageType === record.packageType
           && candidate.installStrategy === record.installStrategy
+          && candidate.architecture === record.architecture
           && candidate.filename(`v${record.version}`, record.version) === record.filename
         ))
       : undefined

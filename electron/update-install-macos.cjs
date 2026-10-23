@@ -35,6 +35,7 @@ const VERSION_RE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/
 const MACOS_VERSION_RE = /^\d+(\.\d+){0,2}$/
 const TRANSLOCATION = '/AppTranslocation/'
 const APP_NAME = 'Agent Inbox.app'
+const EXECUTABLE_NAME = 'Agent Inbox'
 const BACKUP_NAME = 'Agent Inbox.app.previous'
 const STAGE_PREFIX = '.agent-inbox-update-'
 const STAGE_RE = /^\.agent-inbox-update-[A-Za-z0-9]{6}$/
@@ -58,6 +59,15 @@ const MAX_OUTPUT_BYTES = 4 * 1024 * 1024
 const STALE_AFTER_MS = 60 * 60_000
 const MAX_CLEANUP_REMOVALS = 8
 const MAX_ENTRIES_CHECKED = 8
+// The DMG builds update manifest v2 lists (#343), and the cpu_type_t each process.arch
+// needs in the staged executable: CPU_TYPE_ARM64 and CPU_TYPE_X86_64.
+const ARCHITECTURES = new Set(['universal', 'arm64'])
+const CPU_TYPES = Object.freeze({ arm64: 0x0100000c, x64: 0x01000007 })
+const HEADER_BYTES = 4096
+const MAX_FAT_ARCHES = 8
+const FAT_MAGIC = 0xcafebabe
+const FAT_MAGIC_64 = 0xcafebabf
+const MH_MAGIC_64 = 0xfeedfacf
 
 const MOVE_MESSAGE = 'Move Agent Inbox to your Applications folder to install updates from the app.'
 const FEASIBILITY_MESSAGES = Object.freeze({
@@ -68,6 +78,8 @@ const FEASIBILITY_MESSAGES = Object.freeze({
   'read-only': MOVE_MESSAGE,
   owner: 'This copy of Agent Inbox belongs to another user account, so it cannot update itself. Use Review release instead.',
   permission: 'Agent Inbox cannot replace itself in its current folder. Use Review release instead.',
+  // Under Rosetta this is an Apple silicon Mac, so the copy names neither processor.
+  architecture: 'This update runs only natively on a Mac with Apple silicon.',
   error: 'Agent Inbox cannot install updates from the app here. Use Review release instead.',
 })
 
@@ -236,6 +248,22 @@ function systemAtLeast(system, minimum) {
   return true
 }
 
+// The CPU types a Mach-O header names: a fat header (32- or 64-bit entries, 1 to 8 of them,
+// all inside `bytes`) or a thin 64-bit little-endian one; null for anything else. A Java
+// class file shares the fat magic and fails on its count.
+function machCpuTypes(bytes) {
+  if (bytes.length < 8) return null
+  const magic = bytes.readUInt32BE(0)
+  if (magic === FAT_MAGIC || magic === FAT_MAGIC_64) {
+    const count = bytes.readUInt32BE(4)
+    const entry = magic === FAT_MAGIC ? 20 : 32
+    if (count < 1 || count > MAX_FAT_ARCHES || 8 + count * entry > bytes.length) return null
+    return Array.from({ length: count }, (_, index) => bytes.readUInt32BE(8 + index * entry))
+  }
+  if (bytes.readUInt32LE(0) === MH_MAGIC_64) return [bytes.readUInt32LE(4)]
+  return null
+}
+
 function refuse(reason, message = FEASIBILITY_MESSAGES[reason] ?? FEASIBILITY_MESSAGES.error) {
   return Object.freeze({ ok: false, reason, message })
 }
@@ -254,6 +282,7 @@ function createMacInstaller(options = {}) {
   if (options.viewerPid !== undefined && typeof options.viewerPid !== 'function') {
     throw new TypeError('viewerPid must be a function')
   }
+  if (options.hostArch !== undefined && typeof options.hostArch !== 'string') throw new TypeError('hostArch must be a string')
   const binaries = Object.freeze({ ...MAC_INSTALL_BINARIES, ...(options.binaries ?? {}) })
   for (const [name, value] of Object.entries(binaries)) {
     if (typeof value !== 'string' || !path.isAbsolute(value)) throw new TypeError(`${name} must be an absolute path`)
@@ -266,6 +295,9 @@ function createMacInstaller(options = {}) {
   const platform = options.platform ?? process.platform
   const isPackaged = options.isPackaged === true
   const systemVersion = typeof options.systemVersion === 'string' ? options.systemVersion : ''
+  // This process's architecture: x64 under Rosetta, so an arm64-only build never fits it.
+  const hostArch = options.hostArch ?? process.arch
+  const cpuType = Object.hasOwn(CPU_TYPES, hostArch) ? CPU_TYPES[hostArch] : null
   const execFileImpl = options.execFileImpl ?? childProcess.execFile
   const spawnImpl = options.spawnImpl ?? childProcess.spawn
   const fsImpl = options.fsImpl ?? fs
@@ -395,10 +427,16 @@ function createMacInstaller(options = {}) {
       const stat = await fsImpl.lstat(plist)
       if (!stat.isFile()) throw new Error('Info.plist is not a regular file')
       const info = JSON.parse(await run('plutil', ['-convert', 'json', '-o', '-', plist], TIMEOUTS.plutil, signal))
-      if (info?.CFBundleIdentifier !== expectedBundleId || info?.CFBundleShortVersionString !== version) {
+      if (
+        info?.CFBundleIdentifier !== expectedBundleId
+        || info?.CFBundleShortVersionString !== version
+        || info?.CFBundleExecutable !== EXECUTABLE_NAME
+      ) {
         throw new Error('staged bundle identity does not match the release')
       }
     })
+    throwIfAborted(signal)
+    await verifySlice(staged, signal)
     throwIfAborted(signal)
     await step('verification-failed', signal, () => run(
       'codesign',
@@ -413,6 +451,28 @@ function createMacInstaller(options = {}) {
       TIMEOUTS.spctl,
       signal,
     ))
+  }
+
+  // The bytes that will run, not the manifest's label (#343): the executable the staged
+  // bundle launches must carry a slice for this process. No external tool: /usr/bin/lipo is
+  // the shared Xcode stub, which without the Command Line Tools only offers to install them.
+  async function verifySlice(staged, signal) {
+    await step('verification-failed', signal, async () => {
+      const executable = path.join(staged, 'Contents', 'MacOS', EXECUTABLE_NAME)
+      const handle = await fsImpl.open(executable, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+      let header
+      try {
+        if (!(await handle.stat()).isFile()) throw new Error('the staged executable is not a regular file')
+        const buffer = Buffer.alloc(HEADER_BYTES)
+        const { bytesRead } = await handle.read(buffer, 0, HEADER_BYTES, 0)
+        header = buffer.subarray(0, bytesRead)
+      } finally {
+        await handle.close()
+      }
+      if (cpuType === null || !machCpuTypes(header)?.includes(cpuType)) {
+        throw new Error('the staged app has no slice for this process')
+      }
+    })
   }
 
   // `-` tells the helper there is no separate viewer process to wait for.
@@ -503,6 +563,9 @@ function createMacInstaller(options = {}) {
   async function feasibility(candidate) {
     try {
       if (platform !== 'darwin' || !isPackaged) return refuse('unsupported')
+      const architecture = candidate?.architecture
+      if (cpuType === null || !ARCHITECTURES.has(architecture)) return refuse('error')
+      if (architecture === 'arm64' && hostArch !== 'arm64') return refuse('architecture')
       const minimum = candidate?.minimumSystemVersion
       if (minimum !== undefined) {
         if (typeof minimum !== 'string' || !MACOS_VERSION_RE.test(minimum)) return refuse('system-version')
@@ -551,8 +614,13 @@ function createMacInstaller(options = {}) {
       || record.packageType !== 'dmg'
       || typeof record.version !== 'string'
       || !VERSION_RE.test(record.version)
+      || !ARCHITECTURES.has(record.architecture)
     ) {
       throw new UpdateInstallError('not-verified')
+    }
+    // Before anything is touched: an arm64-only build never runs in this process.
+    if (cpuType === null || (record.architecture === 'arm64' && hostArch !== 'arm64')) {
+      throw new UpdateInstallError('not-feasible')
     }
     if (!validBundlePath(bundlePath)) throw new UpdateInstallError('not-feasible')
     let work = null

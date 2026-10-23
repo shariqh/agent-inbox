@@ -3,6 +3,7 @@ import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:
 import { join, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { testLinuxSmokeReadiness } from './linux-smoke-readiness.js'
+import { testLinuxSmokeCleanup } from './linux-smoke-cleanup.js'
 import { scratchDir } from './scratch.js'
 
 const root = resolve(process.cwd())
@@ -11,6 +12,7 @@ const arm64WorkflowPath = join(root, '.github', 'workflows', 'linux-arm64-deb.ym
 const aptRetryPath = join(root, 'scripts', 'apt-install-with-retry.sh')
 
 testLinuxSmokeReadiness(join(root, 'scripts', 'smoke-linux-deb.sh'))
+testLinuxSmokeCleanup(join(root, 'scripts', 'smoke-linux-deb.sh'))
 
 function runAptRetry(packages: string[], succeedAfter: number) {
   const scratch = scratchDir('agent-inbox-apt-retry-')
@@ -478,7 +480,7 @@ describe('smoke-linux-deb.sh safety contract', () => {
     expect(script).toContain('HOME_ARG')
     expect(script).toContain('PERSISTENT_HOME')
     // A persistent home is never rm -rf'd on exit.
-    expect(script).toMatch(/if \[\[ "\$PERSISTENT_HOME" == 0 \]\]; then\n\s+rm -rf "\$SCRATCH"/)
+    expect(script).toContain('if [[ "$PERSISTENT_HOME" == 0 ]] && ! remove_scratch "$SCRATCH"; then')
   })
 
   it('proves offline relaunch only when the caller has removed external networking', () => {

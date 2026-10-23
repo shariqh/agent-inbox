@@ -21,6 +21,7 @@ function read(relPath: string): string {
 }
 
 type UpdatesBridge = {
+  check(...args: unknown[]): Promise<unknown> | false
   download(...args: unknown[]): Promise<unknown> | false
   cancelDownload(...args: unknown[]): Promise<unknown> | false
   install(...args: unknown[]): Promise<unknown> | false
@@ -82,6 +83,7 @@ async function controllerStates(): Promise<UpdateControllerState[]> {
   let permitted = true
   const record = {
     path: '/private/x.dmg', version: '2.0.0', tag, filename, sha256: 'd'.repeat(64), byteLength: 200,
+    architecture: 'universal' as const,
     packageType: 'dmg' as const, installStrategy: 'macos-dmg' as const, minimumSystemVersion: '13.5',
   }
   const controller = updateController.createUpdateController({
@@ -105,6 +107,7 @@ async function controllerStates(): Promise<UpdateControllerState[]> {
           automaticChecks: false,
           checkedAt: '2026-02-01T00:00:00.000Z',
           message: 'A verified update is available.',
+          manifest: 'v2' as const,
           available: {
             version: '2.0.0',
             tag,
@@ -190,6 +193,38 @@ async function controllerStates(): Promise<UpdateControllerState[]> {
   controller.refreshInstallPermission()
   await controller.installNow()
   return emitted
+}
+
+// What a real controller publishes for a release this Mac can't run (#343).
+async function blockedStates() {
+  const emitted: UpdateControllerState[] = []
+  let blocked: 'apple-silicon' | 'rosetta' = 'apple-silicon'
+  const preferences = { schema: 1 as const, automaticChecks: false, lastNotifiedVersion: null }
+  const controller = updateController.createUpdateController({
+    currentVersion: '1.9.0',
+    preferences: { read: async () => preferences, setAutomatic: async () => preferences, setLastNotifiedVersion: async () => preferences },
+    checker: async () => ({
+      status: 'available',
+      currentVersion: '1.9.0',
+      automaticChecks: false,
+      checkedAt: '2027-01-19T00:00:00.000Z',
+      message: 'A verified update is available.',
+      manifest: 'v2',
+      available: {
+        version: '2.0.0',
+        tag: 'v2.0.0',
+        releaseUrl: 'https://github.com/shariqh/agent-inbox/releases/tag/v2.0.0',
+        target: { packageType: 'dmg', installStrategy: 'macos-dmg' },
+        blocked,
+      },
+    }),
+    notifier: () => {},
+    emit: (state) => emitted.push(state),
+  })
+  await controller.checkNow()
+  blocked = 'rosetta'
+  await controller.checkNow()
+  return emitted.filter((state) => state.status === 'available')
 }
 
 describe('Electron updater integration', () => {
@@ -288,6 +323,57 @@ describe('Electron updater integration', () => {
     expect(received).toEqual([])
     await expect(updates.install()).rejects.toThrow(TypeError)
     expect(invoke).toHaveBeenCalledWith('agent-inbox:update-install')
+  })
+
+  it('passes both blocked offers through the real preload validator', async () => {
+    const states = await blockedStates()
+    expect(states.map((state) => state.available?.blocked)).toEqual(['apple-silicon', 'rosetta'])
+    expect(states.every((state) => state.available?.downloadable === false && typeof state.available.reason === 'string')).toBe(true)
+    const { updates, deliver } = loadPreload(() => null)
+    const received: unknown[] = []
+    updates.onState((state) => received.push(state))
+    for (const state of states) deliver(JSON.parse(JSON.stringify(state)))
+    expect(received).toEqual(JSON.parse(JSON.stringify(states)))
+  })
+
+  it.each([
+    ['another blocked value', { status: 'available', available: { blocked: 'intel' } }],
+    ['a blocked value that is not text', { status: 'available', available: { blocked: true } }],
+    ['a blocked offer without its reason', { status: 'available', available: { reason: undefined } }],
+    ['a blocked offer that can download', { status: 'available', available: { reason: undefined, downloadable: true } }],
+    ['a blocked offer that is downloading', { status: 'downloading', download: { receivedBytes: 1, totalBytes: 200 } }],
+    ['a blocked offer that is verified', { status: 'verified', download: { receivedBytes: 200, totalBytes: 200 } }],
+  ] as const)('rejects %s from main', async (_label, patch) => {
+    const [base] = await blockedStates()
+    const malformed = JSON.parse(JSON.stringify({
+      ...base,
+      ...patch,
+      ...('available' in patch ? { available: { ...base!.available, ...patch.available } } : {}),
+    }))
+    const { updates, invoke, deliver } = loadPreload(() => malformed)
+    const received: unknown[] = []
+    updates.onState((state) => received.push(state))
+    deliver(malformed)
+    expect(received).toEqual([])
+    await expect(updates.check()).rejects.toThrow(TypeError)
+    expect(invoke).toHaveBeenCalledWith('agent-inbox:update-check')
+  })
+
+  it('tells the checker about Rosetta, the installer about this process, and never opens a release an Intel Mac cannot run', () => {
+    const main = read('electron/main.cjs')
+    const initializer = main.slice(
+      main.indexOf('function initializeUpdateController()'),
+      main.indexOf('async function startOwnServer()'),
+    )
+    expect(initializer).toMatch(/checkForUpdate\(\{[^}]*\n\s+arch: process\.arch,\n\s+translated: app\.runningUnderARM64Translation === true,\n/)
+    expect(initializer).toMatch(/createMacInstaller\(\{[^}]*\n\s+hostArch: process\.arch,\n/)
+    const openRelease = main.slice(main.indexOf("ipcMain.handle('agent-inbox:update-open-release'"), main.indexOf('\n})\n', main.indexOf("ipcMain.handle('agent-inbox:update-open-release'")))
+    expect(openRelease).toContain("if (state?.available?.blocked === 'apple-silicon') return false")
+    expect(openRelease.indexOf("blocked === 'apple-silicon'")).toBeLessThan(openRelease.indexOf('shell.openExternal('))
+    const notifier = initializer.slice(initializer.indexOf('notifier: ('), initializer.indexOf('emit: sendUpdateState'))
+    expect(notifier).toContain('notifier: ({ version, downloadable, installable, blocked }) => {')
+    expect(notifier).toContain("blocked === 'rosetta'")
+    expect(notifier).toContain('`Version ${version} is available. Reopen Agent Inbox without Rosetta to install it.`')
   })
 
   it('restarts only on an argument-free request and reports only a plain true', async () => {

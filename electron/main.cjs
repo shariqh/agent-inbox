@@ -270,6 +270,8 @@ ipcMain.handle('agent-inbox:update-restart', (event, ...args) => {
 ipcMain.handle('agent-inbox:update-open-release', async (event, ...args) => {
   if (args.length !== 0 || !isTrustedUpdateSender(event.senderFrame?.url ?? '', event.sender)) return false
   const state = updateController?.getState()
+  // Settings shows no Review release for a release this Intel Mac can't run (#343).
+  if (state?.available?.blocked === 'apple-silicon') return false
   const verifiedUrl = state?.available
     ? validateReleaseUrl(state.available.releaseUrl, state.available.version)
     : null
@@ -909,6 +911,7 @@ function initializeUpdateController() {
       recordVerifiedVersion,
       platform: process.platform,
       arch: process.arch,
+      translated: app.runningUnderARM64Translation === true,
       isPackaged: app.isPackaged,
       appImagePath: process.env.APPIMAGE,
       appDir: process.env.APPDIR,
@@ -937,15 +940,17 @@ function initializeUpdateController() {
       })
       notificationRetainer.show(note)
     },
-    notifier: ({ version, downloadable, installable }) => {
+    notifier: ({ version, downloadable, installable, blocked }) => {
       if (!Notification.isSupported()) return
       const note = new Notification({
         title: 'Agent Inbox update available',
-        body: installable
-          ? `Version ${version} is available. Download and install it from Settings → Updates.`
-          : downloadable
-            ? `Version ${version} is available. Download and verify it from Settings → Updates.`
-            : `Version ${version} is ready to review on GitHub Releases.`,
+        body: blocked === 'rosetta'
+          ? `Version ${version} is available. Reopen Agent Inbox without Rosetta to install it.`
+          : installable
+            ? `Version ${version} is available. Download and install it from Settings → Updates.`
+            : downloadable
+              ? `Version ${version} is available. Download and verify it from Settings → Updates.`
+              : `Version ${version} is ready to review on GitHub Releases.`,
       })
       note.on('click', () => {
         if (updateWindow) openUpdatesWindow(updateWindow)
@@ -973,6 +978,7 @@ function updateInstallers() {
         viewerPid: spawnedViewerPid,
         uid: process.getuid(),
         platform: process.platform,
+        hostArch: process.arch,
         isPackaged: app.isPackaged,
         workDirectory: path.join(app.getPath('userData'), 'update-install'),
       }),

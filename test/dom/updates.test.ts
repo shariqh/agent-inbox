@@ -27,6 +27,7 @@ type UpdateState = {
     installable?: boolean
     installPermitted?: boolean
     reason?: string
+    blocked?: 'apple-silicon' | 'rosetta'
   }
   download?: { receivedBytes: number; totalBytes: number }
 }
@@ -609,6 +610,7 @@ describe('a window main binds again after refusing its install', () => {
         automaticChecks: false,
         checkedAt: '2026-02-01T00:00:00.000Z',
         message: 'A verified update is available.',
+        manifest: 'v2',
         available: {
           version: '1.3.0',
           tag,
@@ -691,3 +693,49 @@ describe('a window main binds again after refusing its install', () => {
     expect(document.querySelector('.updates-restart')?.hasAttribute('hidden')).toBe(true)
   })
 })
+
+// A release this Mac can't run (#343, design §6.3): what a real controller publishes.
+describe('a release this Mac cannot run', () => {
+  async function blockedState(blocked: 'apple-silicon' | 'rosetta'): Promise<UpdateState> {
+    const preferences = { schema: 1 as const, automaticChecks: false, lastNotifiedVersion: null }
+    const controller = createUpdateController({
+      currentVersion: '1.9.0',
+      preferences: { read: async () => preferences, setAutomatic: async () => preferences, setLastNotifiedVersion: async () => preferences },
+      checker: async () => ({
+        status: 'available',
+        currentVersion: '1.9.0',
+        automaticChecks: false,
+        checkedAt: '2027-01-19T00:00:00.000Z',
+        message: 'A verified update is available.',
+        manifest: 'v2',
+        available: {
+          version: '2.0.0',
+          tag: 'v2.0.0',
+          releaseUrl: 'https://github.com/shariqh/agent-inbox/releases/tag/v2.0.0',
+          target: { packageType: 'dmg', installStrategy: 'macos-dmg' },
+          blocked,
+        },
+      }),
+      notifier: () => {},
+    })
+    return JSON.parse(JSON.stringify(await controller.checkNow())) as UpdateState
+  }
+  const text = (selector: string) => document.querySelector(`#updates-settings ${selector}`)?.textContent
+
+  it('tells an Intel Mac it stays on its version, with only Check now', async () => {
+    const bridge = await boot()
+    bridge.emit(await blockedState('apple-silicon'))
+    expect(text('.updates-state')).toBe('Agent Inbox 2.0.0 is available.')
+    expect(text('.updates-detail')).toBe('It needs a Mac with Apple silicon. This Mac has an Intel processor, so Agent Inbox stays on 1.9.0, which keeps working.')
+    expect(visibleActions()).toEqual(['Check now'])
+    expect(bridge.openRelease).not.toHaveBeenCalled()
+  })
+
+  it('tells a Mac running it under Rosetta how to reopen it, and keeps Review release', async () => {
+    const bridge = await boot()
+    bridge.emit(await blockedState('rosetta'))
+    expect(text('.updates-detail')).toBe('It runs only natively on Apple silicon, and Agent Inbox is running under Rosetta. Quit Agent Inbox, turn off “Open using Rosetta” in its Get Info window in Finder, then reopen it to install.')
+    expect(visibleActions()).toEqual(['Check now', 'Review release'])
+  })
+})
+

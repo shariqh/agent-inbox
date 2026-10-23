@@ -1028,12 +1028,16 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   is one this window sent (`sentReplies`, last five per question), the notice says
   "Your earlier send went through" instead. The send then carries `expect_answer`
   (`replied_at`, `reply_source`, `reply_kind`, `reply`), and `replyItem` writes only
-  while the question still holds it: one more condition in the same UPDATE, so a reply
-  that landed after the window last looked refuses it with `reason: 'answer_changed'`
-  and the answer that stands (a 200, like every refusal), the refused intent recorded
-  as not applied. The text stays where it is with that answer named (an entry keeps
-  it, dropping the spent intent, and its line keeps focus on the same control across
-  the rebuild); the editor never moves. A reply without `expect_answer` (an older
+  while the question still holds it, or holds no answer at all (a clear moves
+  `replied_at`, yet leaves nothing to replace): one more condition in the same UPDATE,
+  so a reply that landed after the window last looked refuses it with `reason:
+  'answer_changed'` and the answer that stands (a 200, like every refusal), the
+  refused intent recorded as not applied. The text stays where it is with that answer
+  named (an entry keeps it, dropping the spent intent, and its line keeps focus on the
+  same control across the rebuild); the editor never moves. A refusal whose standing
+  answer is exactly this response (a double click's first send landed first) retires
+  it as a success would, with no notice. A new intent pins `knownAnswer`, the answer
+  `savedIntentRule` compares it with. A reply without `expect_answer` (an older
   page, an option pick, the star, a notification) stays unconditional. Never send on
   the human's behalf to get past a notice. A Retry
   of an entry an earlier click already took does nothing, so a double click claims no

@@ -669,6 +669,33 @@ describe('a reply can expect the answer it replaces (#321)', () => {
       .toEqual({ ok: false, wrote: false, replayed: false, answer: answerOf(read) })
     expect(item(read).reply).toBe('go left')
   })
+
+  // A clear stamps replied_at, so no expectation matches a cleared question
+  // exactly; but a question with no answer has nothing a send could replace.
+  it('writes over a question with no answer, whatever its page expected', () => {
+    const cleared = ask('Cleared before the page looked again?')
+    const unanswered = expectation(cleared)
+    replyItem(db, cleared, 'Later Y', undefined, 'answer', { clientId: 'b', sequence: 1, actionId: 'b-1' })
+    replyItem(db, cleared, '', undefined, 'answer', { clientId: 'b', sequence: 2, actionId: 'b-2' })
+    expect(item(cleared)).toMatchObject({ reply: null, reply_kind: null, replied_at: expect.any(String) })
+    expect(replyItem(db, cleared, 'Mine', undefined, 'answer', { clientId: 'w', sequence: 1, actionId: 'w-1' }, unanswered))
+      .toMatchObject({ ok: true, wrote: true, answer: { reply: 'Mine', reply_source: 'inbox' } })
+
+    // an answer the page showed, cleared since, leaves nothing to replace either
+    const shownThenCleared = ask('Shown, then cleared?')
+    replyItem(db, shownThenCleared, 'Shown Y')
+    const shown = expectation(shownThenCleared)
+    replyItem(db, shownThenCleared, '')
+    expect(replyItem(db, shownThenCleared, 'Mine', undefined, 'answer', undefined, shown))
+      .toMatchObject({ ok: true, wrote: true, answer: { reply: 'Mine' } })
+
+    // while an answer that stands still refuses an expectation of none
+    const answered = ask('Answered since?')
+    const none = expectation(answered)
+    replyItem(db, answered, 'Later Y')
+    expect(replyItem(db, answered, 'Mine', undefined, 'answer', undefined, none))
+      .toMatchObject({ ok: false, wrote: false, reason: 'answer_changed', answer: { reply: 'Later Y' } })
+  })
 })
 
 // issue #29 — dual-channel answers. The human can answer in the inbox card OR say it

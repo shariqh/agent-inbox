@@ -1361,6 +1361,18 @@ describe('write routes refuse invalid bodies before touching the store (#163)', 
       expect(getItem(db, id)).toEqual(before)
     })
 
+    it('writes over an answer cleared since the page looked, which leaves nothing to replace (#321)', async () => {
+      const id = question()
+      replyItem(db, id, 'Later Y')
+      replyItem(db, id, '')
+      const res = await post(`/api/items/${id}/reply`, JSON.stringify({
+        text: 'Original X',
+        expect_answer: { replied_at: null, reply_source: null, reply_kind: null, reply: null },
+      }))
+      expect(res.status).toBe(200)
+      expect(await res.json()).toMatchObject({ ok: true, wrote: true, answer: { reply: 'Original X', reply_source: 'inbox' } })
+    })
+
     it('refuses with 200 and the answer that stands when the expected answer moved on (#321)', async () => {
       const id = question()
       const shown = getItem(db, id)!

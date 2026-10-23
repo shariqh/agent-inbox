@@ -1366,6 +1366,106 @@ describe('a send over a newer reply this window has not shown (#321)', () => {
     expect(getItem(db, id)?.reply).toBe('Mine.')
   })
 
+  // A clear moves replied_at, so an expectation of "unanswered" no longer matches
+  // the question exactly; there is still nothing to replace.
+  it.each(['an editor\'s Send', 'an unsent response\'s Retry'] as const)(
+    'writes at once from %s over an answer cleared before the window polled',
+    async (path) => {
+      db = freshDb()
+      const id = question(db)
+      const bridge = await bootApp(db)
+      if (path === 'an editor\'s Send') {
+        await draftAnswer(id, 'Tuesday')
+      } else {
+        bridge.failPostsWith(500)
+        expectConsoleError(/reply failed: HTTP 500/)
+        await pickOption(id, 'Tuesday')
+        bridge.failPostsWith(null)
+      }
+      expect(replyItem(db, id, 'Later Y', undefined, 'answer', { clientId: 'window-b', sequence: 1, actionId: 'b-1' }).ok).toBe(true)
+      expect(replyItem(db, id, '', undefined, 'answer', { clientId: 'window-b', sequence: 2, actionId: 'b-2' }).ok).toBe(true)
+      const posts = replyPosts(bridge, id).length
+
+      click(path === 'an editor\'s Send' ? sendButton(id) : buttonLabelled('Retry', recovery()!))
+      await settle()
+      expect(replyPosts(bridge, id), 'one click, one send').toHaveLength(posts + 1)
+      expect(getItem(db, id)).toMatchObject({ reply: 'Tuesday', reply_source: 'inbox' })
+      expect(document.body.textContent).not.toContain('replaces it')
+      expect(recovery()).toBeNull()
+    },
+  )
+
+  // Both clicks expect the unanswered question, so the first writes and the
+  // second is refused naming that same text: it went through, once.
+  it('retires a double Send once its second click finds the first one\'s answer, with no notice and one write', async () => {
+    db = freshDb()
+    const id = question(db)
+    let replies = 0
+    let releaseFirst!: () => void
+    const firstHeld = new Promise<void>((resolve) => { releaseFirst = resolve })
+    const bridge = await bootApp(db, {
+      interceptFetch: async (input, init, next) => {
+        if (init?.method !== 'POST' || !String(input).includes(`/items/${id}/reply`)) return next()
+        replies += 1
+        const response = await next()
+        // the first send lands at once, but its answer comes back after the second's
+        if (replies === 1) await firstHeld
+        return response
+      },
+    })
+    await draftAnswer(id, 'Ship Tuesday.')
+    click(sendButton(id))
+    click(sendButton(id))
+    await settle()
+    expect(replyPosts(bridge, id)).toHaveLength(2)
+    releaseFirst()
+    await settle()
+
+    expect(getItem(db, id), 'written once').toMatchObject({ reply: 'Ship Tuesday.', reply_source: 'inbox', response_revision: 1 })
+    expect(answerInput(id), 'no draft is left in an editor').toBeNull()
+    expect(recovery(), 'and no unsent response').toBeNull()
+    expect(document.body.textContent).not.toContain('replaces it')
+    await saved()
+    expect(stored()).toEqual({})
+  })
+
+  it('replays a send whose answer was lost after its notice, rather than sending it afresh', async () => {
+    db = freshDb()
+    const id = question(db)
+    let replies = 0
+    const bridge = await bootApp(db, {
+      interceptFetch: async (input, init, next) => {
+        if (init?.method !== 'POST' || !String(input).includes(`/items/${id}/reply`)) return next()
+        replies += 1
+        const response = await next()
+        // the send made after the notice lands, but its answer is lost
+        if (replies === 2) throw new Error('lost reply response')
+        return response
+      },
+    })
+    expectConsoleError(/lost reply response/)
+    await draftAnswer(id, 'Mine.')
+    laterYPickedUp(db, id)
+    click(sendButton(id))
+    await settle()
+    expect(editorNotice(id)?.textContent, 'the server named Later Y').toBe(notice('Later Y'))
+    click(sendButton(id))
+    await settle()
+    expect(getItem(db, id)?.reply, 'that send landed').toBe('Mine.')
+    const landed = body(replyPosts(bridge, id)[1])
+    const revision = getItem(db, id)!.response_revision
+
+    // no poll since: its intent was pinned to Later Y, the answer the window knows
+    click(sendButton(id))
+    await settle()
+    expect(replyPosts(bridge, id)).toHaveLength(3)
+    expect(body(replyPosts(bridge, id)[2])['intent_action_id'], 'the exact replay').toBe(landed['intent_action_id'])
+    expect(getItem(db, id)?.response_revision, 'nothing was written again').toBe(revision)
+    expect(answerInput(id)).toBeNull()
+    expect(recovery()).toBeNull()
+    expect(document.body.textContent).not.toContain('replaces it')
+  })
+
   it('names the newer reply in place when the paused list still shows an unsent response\'s old line', async () => {
     db = freshDb()
     const id = question(db)

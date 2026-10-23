@@ -474,7 +474,9 @@ Run the build before `npm run electron`; the development shell starts the built
   has not shown (#321): the first click names it in place ("A newer reply was sent:
   …"), only a further click sends, and the send carries `expect_answer`, which
   `replyItem` checks in the same conditioned UPDATE, refusing with `reason:
-  'answer_changed'` and the answer that stands. Never send to get past a notice. A
+  'answer_changed'` and the answer that stands. A question with no answer accepts
+  any expectation, and a refusal naming exactly the sent response retires it as
+  sent. Never send to get past a notice. A
   window deletes only the copy it loaded or last wrote, and its leaving save
   writes back a draft another window deleted; the viewer-restart hold stays.
 - Every value export in `src/*.ts` and `public/*.js` must be reachable from

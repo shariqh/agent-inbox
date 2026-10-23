@@ -6099,11 +6099,12 @@ function claimItemIntent(id, { staged = false } = {}) {
   // The claiming window's identity and the answer this send is made against
   // travel with the intent: a stored draft retried from another window replays
   // this exact intent, and only while that answer still stands (savedIntentRule).
+  // The answer is the newest this window knows, which the rule compares it with.
   const intent = {
     sequence,
     actionId: globalThis.crypto.randomUUID(),
     clientId: storedReplyIntent.clientId,
-    pin: draftAnswerOf(freshItem(id)),
+    pin: draftAnswerOf(knownAnswer(id)),
   }
   if (!staged) itemLatestIntents[id] = intent
   if (!staged) cancelStagedItemIntent(id)
@@ -7138,10 +7139,16 @@ async function submitItemReply(
   if (sameItemIntent(itemDraftRetryIntents[id]?.intent, intent)) {
     delete itemDraftRetryIntents[id]
   }
+  // #321: refused only because the answer that stands is exactly this response
+  // (a double click's first send, or another send of the same text): it went
+  // through, so it retires below as a success would, with no notice.
+  const deliveredMeanwhile = res.ok === false && res.reason === 'answer_changed'
+    && itemHolds(res.answer, { text, context, kind })
   // #321: a newer answer landed after this surface showed the one it expected,
   // so nothing was written. The text stays where it is with that reply named,
   // and only another click sends; the refused intent is spent.
-  if (surface && latestIntent && res.ok === false && res.reason === 'answer_changed' && res.answer) {
+  if (surface && latestIntent && res.ok === false && res.reason === 'answer_changed' && res.answer
+    && !deliveredMeanwhile) {
     retireItemDraftSubmission(id, submittedGeneration, intent)
     const keptKey = recoveryKey ?? trackedSubmission?.recoveryKey ?? null
     if (!keptKey) {
@@ -7165,8 +7172,8 @@ async function submitItemReply(
     await reloadAndPaint()
     return
   }
-  if (res.ok && surface) delete noticedAnswers[surface]
-  if (!res.ok) {
+  if ((res.ok || deliveredMeanwhile) && surface) delete noticedAnswers[surface]
+  if (!res.ok && !deliveredMeanwhile) {
     if (!latestIntent) {
       const rejectedRecoveryKeys = [
         [recoveryKey, submittedRecoveryOwner],

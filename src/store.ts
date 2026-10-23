@@ -789,12 +789,15 @@ export interface ReplyResult {
 // reply that carries it is written only while the question still holds it, in
 // the same conditioned statement, so a newer answer the page never showed (from
 // another window, or an agent's chat answer) refuses the write instead of being
-// replaced unseen. Without it a reply stays unconditional, as it always was.
+// replaced unseen. A question with no answer (never answered, or cleared, which
+// moves replied_at) has nothing to replace, so it accepts any expectation.
+// Without one a reply stays unconditional, as it always was.
 export type ExpectedAnswer = Pick<Item, 'replied_at' | 'reply_source' | 'reply_kind' | 'reply'>
 
 const EXPECTED_ANSWER_SQL = `(@expect = 0
   OR (replied_at IS @expectedAt AND reply_source IS @expectedSource
-      AND reply_kind IS @expectedKind AND reply IS @expectedReply))`
+      AND reply_kind IS @expectedKind AND reply IS @expectedReply)
+  OR (COALESCE(reply, '') = '' AND reply_kind IS NULL))`
 
 export function replyItem(
   db: Database.Database,
@@ -859,11 +862,12 @@ export function replyItem(
        WHERE id = ? AND kind = 'question'`)
     .get(id) as ReplyAnswer | undefined) ?? null
 
-  // Read after a refused write, never to decide one: the open question's
-  // answer is not the expected one, so the expectation refused it (#321).
+  // Read after a refused write, never to decide one: the open question holds
+  // an answer, and not the expected one, so the expectation refused it (#321).
   const changed = (answer: ReplyAnswer | null): Pick<ReplyResult, 'reason'> =>
-    expected && answer && (answer.replied_at !== expected.replied_at || answer.reply_source !== expected.reply_source
-      || answer.reply_kind !== expected.reply_kind || answer.reply !== expected.reply)
+    expected && answer && (answer.reply || answer.reply_kind)
+      && (answer.replied_at !== expected.replied_at || answer.reply_source !== expected.reply_source
+        || answer.reply_kind !== expected.reply_kind || answer.reply !== expected.reply)
       ? { reason: 'answer_changed' }
       : {}
   const openQuestion = () => db.prepare(`SELECT id FROM items WHERE id = ? AND kind = 'question' AND status = 'open'`).get(id)

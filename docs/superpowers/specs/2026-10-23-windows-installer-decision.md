@@ -258,11 +258,10 @@ uninstall should is a product question for 2b, not an installer difference.
 | Consumer security fixes | v5 ended 2026-02-05; v6 until 2027-02-05; v7 current | none upstream since 2020 |
 
 The runners reported their .NET 6 runtime as 6.0.46 in most runs and 6.0.47 in run
-39899654879. Neither
-appears in Microsoft's public .NET 6 release metadata, which ends at 6.0.36 on 2024-11-12, so
-the spike's WiX ran on a runtime build that comes with the runner image rather than from a public
-.NET release, on a .NET version Microsoft no longer supports. That does not change the
-comparison, but PR 2b must choose WiX's runtime on purpose (§6).
+39899654879. Neither appears in Microsoft's public .NET 6 release metadata, which ends at 6.0.36
+on 2024-11-12, so the spike's WiX ran on a runtime build that comes with the runner image rather
+than from a public .NET release, on a .NET version Microsoft no longer supports. That does not
+change the comparison, but PR 2b must choose WiX's runtime on purpose (§6).
 
 ---
 

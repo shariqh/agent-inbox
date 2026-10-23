@@ -83,16 +83,20 @@ Each job:
 
 1. validates the exact Linux release profile;
 2. downloads and SHA-verifies the official Node archive;
-3. stages the portable runtime with its own Node/npm and runs the runtime
-   manifest, Node ABI, `better-sqlite3`, hook, and allocation-driven SQLite self-tests;
+3. stages the portable runtime with its own Node/npm, prunes its `node_modules`
+   ([What node_modules ships](macos-release.md#what-node_modules-ships-291)), and runs
+   the runtime manifest, Node ABI, `better-sqlite3`, hook, and allocation-driven SQLite
+   self-tests;
 4. compiles `better-sqlite3` for the pinned Electron ABI from the lockfile-pinned
-   source, with install scripts off and no prebuild (#315);
+   source, with install scripts off and no prebuild (#315), and prunes the app's
+   `node_modules` the same way;
 5. creates a thin Electron application folder containing only the matching
    Linux runtime key;
 6. verifies ELF architecture, libc symbol floors, Electron/Node versions and
-   ABIs, both native addons, schema-2 Setup metadata, and exact-host payload
-   selection, then runs the allocation-driven SQLite check under the packaged
-   Electron (180-second ceiling, scratch `HOME`/XDG/`AGENT_INBOX_DB`);
+   ABIs, both native addons, pruned app and runtime `node_modules`, schema-2 Setup
+   metadata, and exact-host payload selection, then runs the allocation-driven SQLite
+   check under the packaged Electron (180-second ceiling, scratch
+   `HOME`/XDG/`AGENT_INBOX_DB`);
 7. archives and restores the runtime and app folder, repeats verification,
    launches the restored app under Xvfb, and exercises runtime install/prune.
 

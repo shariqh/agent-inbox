@@ -29,7 +29,7 @@ const { loadViewer, reloadViewer } = require('./viewer-navigation.cjs')
 const { isTrustedLinkSender, isViewerUrl, openLinkRequest, openWebLink } = require('./link-open.cjs')
 const { createLinkPreferences, createLinkSettings } = require('./link-preferences.cjs')
 const { canRunSetup, createInstallBinding, createInstallGate, installerRepoRoot, runAgentInstall, runtimeKey, selectRuntimePayload } = require('./setup-runner.cjs')
-const { MANUAL_RELEASES_URL, createUpdateController } = require('./update-controller.cjs')
+const { MANUAL_RELEASES_URL, createUpdateController, reviewReleaseOffered } = require('./update-controller.cjs')
 const { createUpdateDownloader } = require('./update-download.cjs')
 const { createInstallAttemptStore } = require('./update-install.cjs')
 const { bundlePathFromExecPath, createMacInstaller } = require('./update-install-macos.cjs')
@@ -271,7 +271,7 @@ ipcMain.handle('agent-inbox:update-open-release', async (event, ...args) => {
   if (args.length !== 0 || !isTrustedUpdateSender(event.senderFrame?.url ?? '', event.sender)) return false
   const state = updateController?.getState()
   // Settings shows no Review release for a release this Intel Mac can't run (#343).
-  if (state?.available?.blocked === 'apple-silicon') return false
+  if (!reviewReleaseOffered(state)) return false
   const verifiedUrl = state?.available
     ? validateReleaseUrl(state.available.releaseUrl, state.available.version)
     : null
@@ -940,11 +940,11 @@ function initializeUpdateController() {
       })
       notificationRetainer.show(note)
     },
-    notifier: ({ version, downloadable, installable, blocked }) => {
+    notifier: ({ version, downloadable, installable, rosetta }) => {
       if (!Notification.isSupported()) return
       const note = new Notification({
         title: 'Agent Inbox update available',
-        body: blocked === 'rosetta'
+        body: rosetta
           ? `Version ${version} is available. Reopen Agent Inbox without Rosetta to install it.`
           : installable
             ? `Version ${version} is available. Download and install it from Settings → Updates.`

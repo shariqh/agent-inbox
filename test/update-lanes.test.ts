@@ -175,7 +175,7 @@ function latest(published: Published, v1: Partial<Pair> = {}) {
   ])
   return async (url: string) => {
     const body = files.get(url)
-    return body ? new Response(body) : new Response(null, { status: 404 })
+    return body ? new Response(new Uint8Array(body)) : new Response(null, { status: 404 })
   }
 }
 

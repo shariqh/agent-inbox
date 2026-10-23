@@ -1791,12 +1791,24 @@ describe('a release this Mac cannot install, and the manifest an offer came from
       releaseUrl: 'https://github.com/shariqh/agent-inbox/releases/tag/v2.0.0',
       downloadable: false,
       installable: false,
-      blocked: 'rosetta',
+      rosetta: true,
     })
 
     const ordinary = setup(async () => availableWith(artifactFor('2.0.0')), { currentVersion: '1.0.0' })
     await ordinary.controller.runScheduledCheck()
-    expect(ordinary.notifier).toHaveBeenCalledWith(expect.not.objectContaining({ blocked: expect.anything() }))
+    expect(ordinary.notifier).toHaveBeenCalledWith(expect.not.objectContaining({ rosetta: expect.anything() }))
+  })
+
+  it('offers Review release for every state but a release an Intel Mac cannot run', async () => {
+    const { reviewReleaseOffered } = updateController
+    for (const [blocked, offered] of [['apple-silicon', false], ['rosetta', true]] as const) {
+      const { controller } = setup(async () => blockedResult(blocked))
+      expect(reviewReleaseOffered(await controller.checkNow()), blocked).toBe(offered)
+    }
+    const ordinary = setup(async () => availableWith(artifactFor('2.0.0')), { currentVersion: '1.0.0' })
+    expect(reviewReleaseOffered(await ordinary.controller.checkNow())).toBe(true)
+    expect(reviewReleaseOffered(null)).toBe(true)
+    expect(reviewReleaseOffered(undefined)).toBe(true)
   })
 
   // An Intel Mac on 1.8.0 holding a verified 1.9.0 download (design §6.2).

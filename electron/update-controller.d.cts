@@ -30,6 +30,9 @@ export type {
 
 export const MANUAL_RELEASES_URL: 'https://github.com/shariqh/agent-inbox/releases'
 
+/** Whether Settings offers Review release, and main opens it: not for an `apple-silicon` offer (#343). */
+export function reviewReleaseOffered(state: Pick<UpdateControllerState, 'available'> | null | undefined): boolean
+
 export type UpdateControllerStatus =
   | UpdateRendererState['status']
   | 'downloading'
@@ -101,8 +104,8 @@ export interface UpdateNotification {
   releaseUrl: string
   downloadable: boolean
   installable: boolean
-  /** Only `rosetta`: an `apple-silicon` offer never notifies (#343). */
-  blocked?: UpdateBlockedReason
+  /** A blocked offer under Rosetta, whose copy says to reopen without it; an `apple-silicon` offer never notifies (#343). */
+  rosetta?: true
 }
 
 export interface UpdateCheckerInput {

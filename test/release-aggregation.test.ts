@@ -700,11 +700,11 @@ describe('multi-platform release aggregation', () => {
     const manifestBytes = readFileSync(join(output, 'release-assets', name))
     const privateKeyPem = signer.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString()
     const { bytes: signatureBytes } = signManifest({ manifestBytes, registry: parseRegistry(Buffer.from(JSON.stringify(registry))), privateKeyPem, now: taggedAt })
-    const served = new Map([[MANIFEST_V2_URL, manifestBytes], [SIGNATURE_V2_URL, signatureBytes]])
+    const served = new Map<string, Buffer>([[MANIFEST_V2_URL, manifestBytes], [SIGNATURE_V2_URL, signatureBytes]])
     const checked = await checkForUpdate({
       fetchImpl: async (url: string) => {
         const body = served.get(url)
-        return body ? new Response(body) : new Response(null, { status: 404 })
+        return body ? new Response(new Uint8Array(body)) : new Response(null, { status: 404 })
       },
       registry: parseRegistry(Buffer.from(JSON.stringify(registry))),
       currentVersion: '1.0.0',
@@ -712,7 +712,7 @@ describe('multi-platform release aggregation', () => {
       platform: 'darwin',
       arch: 'arm64',
       isPackaged: true,
-      now: new Date(Date.parse(taggedAt) + 60_000),
+      now: () => new Date(Date.parse(taggedAt) + 60_000),
       includeArtifact: true,
     })
     expect(checked).toMatchObject({ status: 'available', manifest: 'v2', available: { version: '1.0.1' } })

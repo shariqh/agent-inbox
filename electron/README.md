@@ -6,7 +6,14 @@ Two modes: a dev run from the repo, and a packaged self-contained `Agent Inbox.a
 Packaged macOS and Linux apps expose signed release checks in
 **Settings → Updates** and through **Check for Updates…** in the app menu. The checker
 fetches and verifies the release manifest and signature against the key registry bundled
-with the app before using release metadata. Automatic checks are explicit and off by
+with the app before using release metadata. From 1.7.0 it reads `update-manifest-v2.json`
+(#343), which lists each release's own DMG, universal or arm64, and the four Linux
+packages; an arm64 process takes the arm64 DMG when one is listed. When v2 lists only an
+arm64 DMG and this process is not arm64 (an Intel Mac, or Rosetta), it reads
+`update-manifest.json`, which names the newest release with a universal DMG: a newer one
+is offered as usual, and otherwise the offer is blocked, never downloadable, with copy that
+says why (`apple-silicon` hides Review release and notifies nothing; `rosetta` says to
+reopen the app without Rosetta). Automatic checks are explicit and off by
 default. They make no telemetry requests and notify at most once per verified version.
 For `macos-dmg` and `appimage-self-replace` targets, a user-initiated **Download update**
 runs `update-download.cjs` in Electron main: it fetches only the manifest's canonical
@@ -24,6 +31,9 @@ fully verifies the new build without touching the running one, and the returned
 `commit()` is the only step that changes the installation (`discard()` removes what was
 staged). `update-controller.cjs` consults feasibility on every check, so an installation
 that cannot install an offer gets a notify-only offer with the installer's plain reason.
+The macOS installer also refuses an arm64 build unless `process.arch` is `arm64`, and
+before codesign reads the staged executable's Mach-O header (at most 4 KiB, no link
+followed) to require a slice for this process.
 A strategy with no registered installer stays download-only. On
 **Install and restart** the controller re-checks the running version, the high-water mark
 re-read from `update-trust-state.json`, agent Setup, any check in flight and feasibility,
@@ -167,9 +177,13 @@ per pass: exact name, owner uid, over an hour old, never followed.
 
 Checks also refuse to move backwards. After a manifest's signature, schema and expiry
 verify, the app records that release version as a high-water mark in its own user-data
-file, `update-trust-state.json` (`{ "schema": 1, "highestVerifiedVersion": "X.Y.Z" }`),
-written under its own lock with the same temp-file + rename helper as
-`update-preferences.json`; the mark only ever rises. `update-preferences.json` keeps its
+file, `update-trust-state.json` (`{ "schema": 1, "highestVerifiedVersion": "X.Y.Z",
+"highestVerifiedVersionV2": "X.Y.Z" }`), written under its own lock with the same
+temp-file + rename helper as `update-preferences.json`; each mark only ever rises. Each
+manifest keeps its own mark (#343): `update-manifest.json` is stale below
+`highestVerifiedVersion`, which 1.3 to 1.6 also read and write, and
+`update-manifest-v2.json` below the higher of the two, both when checking and when
+installing. `update-preferences.json` keeps its
 1.2.x format because 1.2.x builds reset that file to defaults (automatic checks off) when
 it carries a key they do not know. A later manifest below the mark is reported as stale
 update information even when its signature and 180-day validity are intact: nothing is

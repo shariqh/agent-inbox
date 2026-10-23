@@ -375,7 +375,8 @@ function createUpdateController(options) {
         releaseUrl: available.releaseUrl,
         downloadable: available.downloadable === true,
         installable: available.installable === true,
-        ...(available.blocked !== undefined ? { blocked: available.blocked } : {}),
+        // The only blocked offer that notifies: its copy says to reopen without Rosetta.
+        ...(available.blocked === 'rosetta' ? { rosetta: true } : {}),
       })
     } catch {
       // Notification delivery is best-effort after recording the version.
@@ -982,7 +983,15 @@ function createUpdateController(options) {
   })
 }
 
+// Whether Settings offers Review release for this state (#343): never for a release an
+// Intel Mac can't run, whose page would only offer a build that can't open there. Main
+// refuses update-open-release on the same rule.
+function reviewReleaseOffered(state) {
+  return state?.available?.blocked !== 'apple-silicon'
+}
+
 module.exports = {
   MANUAL_RELEASES_URL,
   createUpdateController,
+  reviewReleaseOffered,
 }

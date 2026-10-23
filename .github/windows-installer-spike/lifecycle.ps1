@@ -83,20 +83,25 @@ function Invoke-Step([string]$Label, [hashtable]$Parameters) {
   $Parameters.identity = $tools.identity
   $Parameters | ConvertTo-Json -Depth 6 | Set-Content -Encoding utf8 $paramsFile
   $arguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$(Join-Path $work 'as-user.ps1')`" -ParamsFile `"$paramsFile`""
+  $stdout = Join-Path $work "results\$name.stdout.txt"
+  $stderr = Join-Path $work "results\$name.stderr.txt"
   $process = Start-Process -FilePath $pwsh -ArgumentList $arguments -Credential $credential -LoadUserProfile `
-    -WorkingDirectory $work -PassThru
+    -WorkingDirectory $work -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
   $null = $process.Handle
   if (-not $process.WaitForExit(1500 * 1000)) {
     Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
     throw "$Kind step $name timed out"
   }
-  if (-not (Test-Path $outFile)) { throw "$Kind step $name wrote no result (pwsh exit $($process.ExitCode))" }
+  if (-not (Test-Path $outFile)) {
+    $output = @($stdout, $stderr | Where-Object { Test-Path $_ } | ForEach-Object { Get-Content -Raw $_ }) -join "`n"
+    throw "$Kind step $name wrote no result (pwsh exit $($process.ExitCode)): $output"
+  }
   $result = Get-Content -Raw $outFile | ConvertFrom-Json -AsHashtable
   if ($result.user.isAdministrator -or $result.user.name -ne $UserName) {
     throw "$Kind step $name did not run as the standard user $UserName"
   }
   $run = if ($result.run) { "exit $($result.run.exitCode) in $($result.run.seconds)s" } else { "done in $($result.seconds)s" }
-  $errorText = if ($result.error) { "; ERROR: $($result.error)" } else { '' }
+  $errorText = if ($result.error) { "; ERROR: $($result.error) $($result.errorAt)" } else { '' }
   Write-Host "[$Kind] $name ($($result.user.name), $($result.user.integrity)): $run; app $($result.state.appDirectory)$errorText"
   $steps[$name] = $result
   return $result

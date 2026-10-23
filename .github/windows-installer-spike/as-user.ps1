@@ -13,29 +13,44 @@ $params = Get-Content -Raw -LiteralPath $ParamsFile | ConvertFrom-Json
 $identity = $params.identity
 $product = $identity.productName
 $result = [ordered]@{ action = $params.action; kind = $params.kind; label = $params.label }
+trap {
+  $result.error = "setup: $_"
+  $result.errorAt = "$($_.InvocationInfo.PositionMessage)"
+  $result | ConvertTo-Json -Depth 12 | Set-Content -Encoding utf8 -LiteralPath $params.out
+  break
+}
 
-# Start-Process -Credential hands this process the caller's environment block, so
-# rebuild the per-user variables from this token's known folders. Electron reads
+# Start-Process -Credential hands this process the administrator's environment
+# block, and known-folder lookups expand those variables. So find this token's
+# profile from its SID and rebuild the per-user variables from it. Electron reads
 # USERPROFILE for the home directory, where the inbox data lives.
-$env:USERPROFILE = [Environment]::GetFolderPath('UserProfile')
+$sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$profileDirectory = (Get-ItemProperty -LiteralPath "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$sid").ProfileImagePath
+$env:USERPROFILE = [Environment]::ExpandEnvironmentVariables($profileDirectory)
 $env:HOME = $env:USERPROFILE
 $env:HOMEDRIVE = $env:USERPROFILE.Substring(0, 2)
 $env:HOMEPATH = $env:USERPROFILE.Substring(2)
-$env:LOCALAPPDATA = [Environment]::GetFolderPath('LocalApplicationData')
-$env:APPDATA = [Environment]::GetFolderPath('ApplicationData')
+$env:LOCALAPPDATA = Join-Path $env:USERPROFILE 'AppData\Local'
+$env:APPDATA = Join-Path $env:USERPROFILE 'AppData\Roaming'
 $env:TEMP = Join-Path $env:LOCALAPPDATA 'Temp'
 $env:TMP = $env:TEMP
 $env:USERNAME = [Environment]::UserName
 $env:AGENT_INBOX_PORT = "$($params.port)"
 Remove-Item Env:\AGENT_INBOX_DB, Env:\ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $env:TEMP, $params.logDir | Out-Null
+foreach ($folder in 'LocalApplicationData', 'ApplicationData') {
+  $known = [Environment]::GetFolderPath($folder)
+  if (-not $known.StartsWith($env:USERPROFILE, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "$folder resolves to $known, outside this user's profile $($env:USERPROFILE)"
+  }
+}
 
 $paths = [ordered]@{
   profile = $env:USERPROFILE
   msiRoot = Join-Path $env:LOCALAPPDATA "Programs\$product"
   squirrelRoot = Join-Path $env:LOCALAPPDATA $identity.squirrelPackageId
   startMenu = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu'
-  desktop = [Environment]::GetFolderPath('Desktop')
+  desktop = Join-Path $env:USERPROFILE 'Desktop'
   data = Join-Path $env:USERPROFILE '.agent-inbox'
 }
 

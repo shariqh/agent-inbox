@@ -31,6 +31,26 @@ function extractPublisherScript(workflow: string) {
     .join('\n')
 }
 
+/** One step of a job: from its `- ` line to the next step at the same indentation. */
+function stepBlock(job: string, name: string) {
+  const named = job.indexOf(`name: ${name}\n`)
+  if (named < 0) throw new Error(`step not found: ${name}`)
+  const start = job.lastIndexOf('\n      - ', named)
+  const end = job.indexOf('\n      - ', named)
+  return job.slice(start + 1, end < 0 ? undefined : end + 1)
+}
+
+/** A step's `run: |` script, unindented. */
+function runScript(step: string) {
+  const marker = '        run: |\n'
+  const start = step.indexOf(marker)
+  if (start < 0) throw new Error('run block not found')
+  return step.slice(start + marker.length)
+    .split('\n')
+    .map((line) => line.startsWith('          ') ? line.slice(10) : line)
+    .join('\n')
+}
+
 function writePublishHandoff(directory: string) {
   const assets = join(directory, 'release-assets')
   mkdirSync(assets, { recursive: true })
@@ -472,7 +492,7 @@ describe('notarized macOS release workflow', () => {
     expect(workflow).toContain('verify-final-dmg')
     expect(workflow).toContain('--transport-evidence build/transported-app-evidence.json')
     expect(workflow).toContain('SHA256SUMS.txt')
-    expect(workflow).toContain('Agent-Inbox-${{ needs.authorize.outputs.tag }}-universal.dmg')
+    expect(workflow).toContain('DMG: build/${{ steps.kind.outputs.dmg-name }}')
     expect(workflow).toContain('macOS 13.5 or later')
     expect(workflow).toContain('Linux x86_64 AppImage')
     const docs = readFileSync(join(root, 'docs', 'macos-release.md'), 'utf8')
@@ -498,6 +518,55 @@ describe('notarized macOS release workflow', () => {
     expect(workflow).toContain('permissions:')
     expect(workflow).toContain('contents: write')
     expect(workflow).toContain('if: ${{ always() }}')
+  })
+
+  it('builds, notarizes, verifies and names the DMG from the expected macOS kind (#341)', () => {
+    const workflow = readFileSync(protectedPath, 'utf8')
+    const notarize = workflow.slice(
+      workflow.indexOf('  notarize-and-finalize:'),
+      workflow.indexOf('  verify-publication:'),
+    )
+    expect(notarize).not.toContain('-universal.dmg')
+    expect(notarize).not.toContain('darwin-arm64+darwin-x64')
+    const kind = stepBlock(notarize, 'Derive the DMG name from the expected macOS CPU types')
+    expect(kind).toContain('- id: kind')
+    expect(kind).toContain('node scripts/macos-release-gates.mjs expected-kind')
+    expect(kind).toContain('--tag "${{ needs.authorize.outputs.tag }}"')
+    expect(notarize.indexOf(kind)).toBeGreaterThan(notarize.indexOf('      - run: npm ci'))
+    for (const step of [
+      'Build and sign final DMG from stapled app',
+      'Notarize and staple accepted DMG',
+      'Mount final stapled DMG and verify transported app',
+      'Generate final post-staple evidence and checksums',
+    ]) {
+      const block = stepBlock(notarize, step)
+      expect(block, step).toContain('DMG: build/${{ steps.kind.outputs.dmg-name }}')
+      expect(block, step).toContain('"$DMG"')
+      expect(block, step).not.toContain('needs.authorize.outputs.tag }}.dmg')
+    }
+    expect(stepBlock(notarize, 'Generate final post-staple evidence and checksums'))
+      .toContain('--intel-evidence build/intel/intel-verification.json')
+
+    const notes = stepBlock(notarize, 'Write release notes')
+    expect(notes).toContain('DMG_NAME: ${{ steps.kind.outputs.dmg-name }}')
+    const temp = scratchDir('release-notes-')
+    mkdirSync(join(temp, 'build'))
+    const script = runScript(notes)
+      .replaceAll('${{ needs.authorize.outputs.tag }}', 'v1.2.3')
+      .replaceAll('${{ needs.authorize.outputs.version }}', '1.2.3')
+    expect(script).not.toContain('${{')
+    const written = spawnSync('bash', ['-c', script], {
+      cwd: temp,
+      env: { PATH: process.env.PATH, DMG_NAME: 'Agent-Inbox-v1.2.3-universal.dmg' },
+      encoding: 'utf8',
+    })
+    expect(written.status, written.stderr).toBe(0)
+    const rendered = readFileSync(join(temp, 'build', 'RELEASE_NOTES.md'), 'utf8')
+    expect(rendered).toContain('- macOS 13.5 or later, Apple silicon or Intel: `Agent-Inbox-v1.2.3-universal.dmg`\n')
+    expect(rendered).toContain(
+      'spctl --assess --type open --context context:primary-signature --verbose=4 Agent-Inbox-v1.2.3-universal.dmg\n',
+    )
+    expect(rendered).not.toContain('DMG_NAME')
   })
 
   it('confines Apple secrets to protected jobs and names no secret in artifact paths', () => {

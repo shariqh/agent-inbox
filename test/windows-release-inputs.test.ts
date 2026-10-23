@@ -274,6 +274,7 @@ describe('Windows release inputs', () => {
       'product',
       'bundleId',
       'minimumMacosVersion',
+      'macosArchitectures',
       'node',
       'electron',
     ])

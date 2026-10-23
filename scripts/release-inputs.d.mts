@@ -16,6 +16,7 @@ export type ReleaseInputs = {
   product: string
   bundleId: string
   minimumMacosVersion: string
+  macosArchitectures: readonly string[]
   node: {
     version: string
     modulesAbi: string

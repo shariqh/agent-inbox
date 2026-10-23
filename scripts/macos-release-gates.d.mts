@@ -1,3 +1,5 @@
+import type { MacosRelease, MacosReleaseKind } from './macos-release-kind.mjs'
+
 export class ReleaseGateError extends Error {}
 
 export interface ReleaseContext {
@@ -49,14 +51,30 @@ export function parseNotaryReceipt(options: {
   logJson: string
 }): Record<string, unknown>
 
+/** The sorted `lipo -archs` sets of the transported app and the kind they give (#341). */
+export interface TransportedAppArchitectures {
+  architectures: { executable: string[]; betterSqlite3: string[] }
+  kind: MacosReleaseKind
+}
+
+export function transportedAppArchitectures(options: {
+  executable: string
+  betterSqlite3: string
+  expected: readonly string[]
+}): TransportedAppArchitectures
+
 export function buildFinalReleaseEvidence(options: {
   context: ReleaseContext
   appReceipt: Record<string, unknown>
   dmgReceipt: Record<string, unknown>
   transportEvidence: Record<string, unknown>
+  /** The native Intel gate's record; a universal release requires its pass. */
+  intelEvidence?: Record<string, unknown>
   finalDmg: string
   identity: string
   teamId: string
+  /** Defaults to `macosArchitectures` in release/macos-inputs.json. */
+  expected?: readonly string[]
 }): Record<string, any>
 
 export function withMountedDmg<T>(options: {
@@ -87,9 +105,19 @@ export function validatePublicationInputs(options: {
   assetsDir: string
   evidencePath: string
   context: ReleaseContext
+  /** Defaults to `macosArchitectures` in release/macos-inputs.json. */
+  expected?: readonly string[]
 }): {
   dmg: string
   checksums: string
   tag: string
   version: string
+  macos: MacosRelease & { architectures: TransportedAppArchitectures['architectures'] }
 }
+
+export function validateRemoteDraft(options: {
+  remotePath: string
+  tag: string
+  /** Defaults to `macosArchitectures` in release/macos-inputs.json. */
+  expected?: readonly string[]
+}): Record<string, any>

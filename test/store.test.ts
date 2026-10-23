@@ -585,6 +585,119 @@ describe('a reply reports what it did (#322)', () => {
   })
 })
 
+// Issue #321: a page may send the answer it means to replace, the one it last
+// showed. The write is then conditioned on that answer in its own statement: a
+// newer one refuses it, reported as `answer_changed` with the answer that
+// stands, so the human sees that reply before anything replaces it.
+describe('a reply can expect the answer it replaces (#321)', () => {
+  let db: Database.Database
+  beforeEach(() => { db = freshDb() })
+
+  const ask = (title = 'Release day?') => insertItem(db, { project: 'p', stream: '', agent: 'a', kind: 'question', title })
+  const item = (id: string) => listItems(db).find((candidate) => candidate.id === id)!
+  const expectation = (id: string) => {
+    const { replied_at, reply_source, reply_kind, reply } = item(id)
+    return { replied_at, reply_source, reply_kind, reply }
+  }
+  const answerOf = (id: string) => ({ ...expectation(id), reply_context: item(id).reply_context })
+
+  it('writes while the question still holds the expected answer, answered or not', () => {
+    const id = ask()
+    const unanswered = expectation(id)
+    expect(replyItem(db, id, 'Tuesday', undefined, 'answer', { clientId: 'w', sequence: 1, actionId: 'w-1' }, unanswered))
+      .toMatchObject({ ok: true, wrote: true, answer: { reply: 'Tuesday' } })
+    expect(replyItem(db, id, 'Thursday', 'moved', 'answer', undefined, expectation(id)))
+      .toMatchObject({ ok: true, wrote: true, answer: { reply: 'Thursday', reply_context: 'moved' } })
+    expect(replyItem(db, id, 'Which day?', undefined, 'clarify', undefined, expectation(id)))
+      .toMatchObject({ ok: true, wrote: true, answer: { reply: 'Which day?', reply_kind: 'clarify' } })
+    expect(item(id).reply).toBe('Which day?')
+  })
+
+  it.each([
+    ['another window', (id: string) => {
+      expect(replyItem(db, id, 'Later Y', 'from window B', 'answer', { clientId: 'b', sequence: 1, actionId: 'b-1' }).ok).toBe(true)
+    }],
+    ['the agent in chat', (id: string) => { expect(answerItem(db, id, 'Said in chat').ok).toBe(true) }],
+  ] as const)('refuses, with the answer that stands, once %s answered since', (_label, answerSince) => {
+    const id = ask()
+    const shown = expectation(id)
+    answerSince(id)
+    const after = item(id)
+    const intent = { clientId: 'w', sequence: 1, actionId: 'w-1' }
+    expect(replyItem(db, id, 'Original X', undefined, 'answer', intent, shown))
+      .toEqual({ ok: false, wrote: false, replayed: false, answer: answerOf(id), reason: 'answer_changed' })
+    expect(replyItem(db, id, 'Original X', undefined, 'answer', undefined, shown))
+      .toEqual({ ok: false, wrote: false, replayed: false, answer: answerOf(id), reason: 'answer_changed' })
+    expect(item(id), 'nothing was written, pickup included').toEqual(after)
+    // the refused intent is spent: its replay is refused from the record
+    expect(replyItem(db, id, 'Original X', undefined, 'answer', intent, expectation(id)))
+      .toEqual({ ok: false, wrote: false, replayed: true, answer: answerOf(id) })
+    // a send that expects the answer it was shown replaces it
+    expect(replyItem(db, id, 'Original X', undefined, 'answer', { clientId: 'w', sequence: 2, actionId: 'w-2' }, expectation(id)))
+      .toMatchObject({ ok: true, wrote: true, answer: { reply: 'Original X', reply_source: 'inbox' } })
+  })
+
+  it('tells two answers written in the same millisecond apart by their text', () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      const id = ask()
+      replyItem(db, id, 'Earlier')
+      const shown = expectation(id)
+      replyItem(db, id, 'Later')
+      expect(item(id).replied_at).toBe(shown.replied_at)
+      expect(replyItem(db, id, 'Mine', undefined, 'answer', undefined, shown))
+        .toMatchObject({ ok: false, wrote: false, reason: 'answer_changed', answer: { reply: 'Later' } })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('names no changed answer when the question closed, and a clear still keeps its own guard', () => {
+    const closed = ask('Closed?')
+    const shown = expectation(closed)
+    replyItem(db, closed, 'Answered, then closed')
+    resolveItem(db, closed)
+    expect(replyItem(db, closed, 'Too late', undefined, 'answer', undefined, shown))
+      .toEqual({ ok: false, wrote: false, replayed: false, answer: answerOf(closed) })
+    expect(replyItem(db, closed, 'Too late', undefined, 'answer', { clientId: 'w', sequence: 1, actionId: 'w-1' }, shown))
+      .toEqual({ ok: false, wrote: false, replayed: false, answer: answerOf(closed) })
+
+    const read = ask('Read?')
+    replyItem(db, read, 'go left')
+    pickUp(db, read)
+    expect(replyItem(db, read, '', undefined, 'answer', undefined, expectation(read)))
+      .toEqual({ ok: false, wrote: false, replayed: false, answer: answerOf(read) })
+    expect(item(read).reply).toBe('go left')
+  })
+
+  // A clear stamps replied_at, so no expectation matches a cleared question
+  // exactly; but a question with no answer has nothing a send could replace.
+  it('writes over a question with no answer, whatever its page expected', () => {
+    const cleared = ask('Cleared before the page looked again?')
+    const unanswered = expectation(cleared)
+    replyItem(db, cleared, 'Later Y', undefined, 'answer', { clientId: 'b', sequence: 1, actionId: 'b-1' })
+    replyItem(db, cleared, '', undefined, 'answer', { clientId: 'b', sequence: 2, actionId: 'b-2' })
+    expect(item(cleared)).toMatchObject({ reply: null, reply_kind: null, replied_at: expect.any(String) })
+    expect(replyItem(db, cleared, 'Mine', undefined, 'answer', { clientId: 'w', sequence: 1, actionId: 'w-1' }, unanswered))
+      .toMatchObject({ ok: true, wrote: true, answer: { reply: 'Mine', reply_source: 'inbox' } })
+
+    // an answer the page showed, cleared since, leaves nothing to replace either
+    const shownThenCleared = ask('Shown, then cleared?')
+    replyItem(db, shownThenCleared, 'Shown Y')
+    const shown = expectation(shownThenCleared)
+    replyItem(db, shownThenCleared, '')
+    expect(replyItem(db, shownThenCleared, 'Mine', undefined, 'answer', undefined, shown))
+      .toMatchObject({ ok: true, wrote: true, answer: { reply: 'Mine' } })
+
+    // while an answer that stands still refuses an expectation of none
+    const answered = ask('Answered since?')
+    const none = expectation(answered)
+    replyItem(db, answered, 'Later Y')
+    expect(replyItem(db, answered, 'Mine', undefined, 'answer', undefined, none))
+      .toMatchObject({ ok: false, wrote: false, reason: 'answer_changed', answer: { reply: 'Later Y' } })
+  })
+})
+
 // issue #29 — dual-channel answers. The human can answer in the inbox card OR say it
 // out loud in chat, in which case the agent that heard it records it with answerItem.
 // The conflict rule is NOT wall-clock last-write-wins (a skewed clock or a delayed

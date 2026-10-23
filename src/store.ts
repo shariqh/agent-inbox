@@ -90,6 +90,12 @@ export interface Item {
   // pushes back where it fetches from records that ref (`refs/pull/<n>/head`)
   // instead, which no PR can verify against.
   head_repo: string | null
+  // issue #324 — the folder of the repository the asking session ran in (its
+  // `git rev-parse --show-toplevel`), against which the viewer resolves
+  // repo-relative paths in the item's text. NULL when none was detected and on
+  // every row an older server wrote: those paths then stay plain text. Viewer
+  // only: agent reads never carry it (src/shape.ts).
+  repo_root: string | null
   created_at: string
   updated_at: string
   resolved_at: string | null
@@ -113,6 +119,7 @@ export interface NewItem {
   repo?: string | null
   issue_ref?: number | null
   head_repo?: string | null
+  repo_root?: string | null
 }
 
 export function defaultDbPath(): string {
@@ -447,6 +454,11 @@ function runMigrations(db: Database.Database): void {
   // link columns: no statement an older process runs names it, so its writes
   // keep it (test/mixed-version.test.ts), and nothing is backfilled.
   ensureColumn(db, 'board_rows', 'waits_on', 'TEXT')
+  // issue #324 — the repository folder repo-relative paths resolve against.
+  // NULL on every legacy row and on every row an older server writes: its
+  // statements never name the column, so they can neither set nor clear it.
+  ensureColumn(db, 'items', 'repo_root', 'TEXT')
+  ensureColumn(db, 'boards', 'repo_root', 'TEXT')
 }
 
 // Issue #247 — the human's "Pin for later". NULL means not pinned, so there is
@@ -731,11 +743,11 @@ function insertItemRow(db: Database.Database, item: NewItem): string {
   db.prepare(
     `INSERT INTO items (
        id, project, stream, agent, action_agent, session, kind, title, detail, next_step,
-       action_owner, impact, next_after, context, options, repo, issue_ref, head_repo,
+       action_owner, impact, next_after, context, options, repo, issue_ref, head_repo, repo_root,
        status, created_at, updated_at)
      VALUES (
        @id, @project, @stream, @agent, @agent, @session, @kind, @title, @detail, @next_step,
-       @action_owner, @impact, @next_after, @context, @options, @repo, @issue_ref, @head_repo,
+       @action_owner, @impact, @next_after, @context, @options, @repo, @issue_ref, @head_repo, @repo_root,
        'open', @created_at, @updated_at)`,
   ).run({
     id,
@@ -755,14 +767,51 @@ function insertItemRow(db: Database.Database, item: NewItem): string {
     repo: item.repo ?? null,
     issue_ref: item.issue_ref ?? null,
     head_repo: item.head_repo ?? null,
+    repo_root: item.repo_root ?? null,
     created_at: now,
     updated_at: now,
   })
   return id
 }
 
-// Returns false when the write was refused, true otherwise — so a caller
-// (the viewer's POST handler) can surface a refusal instead of a silent no-op.
+// The question's answer, whoever wrote it: what a client compares with the
+// response it sent (#322).
+export type ReplyAnswer = Pick<Item, 'replied_at' | 'reply_source' | 'reply_kind' | 'reply' | 'reply_context'>
+
+// What one reply request did. `ok` is false when the write was refused, so a
+// caller (the viewer's POST handler) can surface a refusal instead of a silent
+// no-op; true when this request wrote, or repeats an intent the store already
+// applied. Issue #322: that replay is answered from the intent's record and
+// writes nothing, so `ok` alone cannot say whether the sent text is still the
+// answer. `wrote` says whether THIS request changed the question, `replayed`
+// that the store already held its intent (applied or refused), and `answer`
+// is the question's answer once the request was done (null for no question).
+// For an intent the answer is read in the same transaction as the decision;
+// without one it is read just after the write, which nothing can undo, so a
+// concurrent writer can only make it newer.
+export interface ReplyResult {
+  ok: boolean
+  wrote: boolean
+  replayed: boolean
+  answer: ReplyAnswer | null
+  // #321: refused because the open question no longer holds the expected answer
+  reason?: 'answer_changed'
+}
+
+// Issue #321: the answer a page means to replace, the one it last showed. A
+// reply that carries it is written only while the question still holds it, in
+// the same conditioned statement, so a newer answer the page never showed (from
+// another window, or an agent's chat answer) refuses the write instead of being
+// replaced unseen. A question with no answer (never answered, or cleared, which
+// moves replied_at) has nothing to replace, so it accepts any expectation.
+// Without one a reply stays unconditional, as it always was.
+export type ExpectedAnswer = Pick<Item, 'replied_at' | 'reply_source' | 'reply_kind' | 'reply'>
+
+const EXPECTED_ANSWER_SQL = `(@expect = 0
+  OR (replied_at IS @expectedAt AND reply_source IS @expectedSource
+      AND reply_kind IS @expectedKind AND reply IS @expectedReply)
+  OR (COALESCE(reply, '') = '' AND reply_kind IS NULL))`
+
 export function replyItem(
   db: Database.Database,
   id: string,
@@ -770,7 +819,8 @@ export function replyItem(
   context?: string,
   kind: ResponseKind = 'answer',
   intent?: { clientId: string; sequence: number; actionId: string },
-): boolean {
+  expected?: ExpectedAnswer,
+): ReplyResult {
   // a changed answer resets pickup — the agent must see the latest reply;
   // an empty answer reverts the question to unanswered (null, never '') — but
   // ONLY when the agent has not already picked the current reply up. Once
@@ -788,6 +838,11 @@ export function replyItem(
     replyContext: replyContext || null,
     kind,
     now,
+    expect: expected ? 1 : 0,
+    expectedAt: expected?.replied_at ?? null,
+    expectedSource: expected?.reply_source ?? null,
+    expectedKind: expected?.reply_kind ?? null,
+    expectedReply: expected?.reply ?? null,
   }
   const applyReply = (): boolean => {
     if (!reply) {
@@ -800,7 +855,7 @@ export function replyItem(
                      SET reply = NULL, reply_context = NULL, replied_at = @now, reply_seen_at = NULL,
                          reply_source = NULL, reply_kind = NULL, updated_at = @now
                    WHERE id = @id AND kind = 'question' AND status = 'open'
-                     AND reply_seen_at IS NULL`)
+                     AND reply_seen_at IS NULL AND ${EXPECTED_ANSWER_SQL}`)
         .run(params)
       return info.changes > 0
     }
@@ -809,30 +864,48 @@ export function replyItem(
                    SET reply = @reply, reply_context = @replyContext, replied_at = @now, reply_seen_at = NULL,
                        reply_source = 'inbox', reply_kind = @kind,
                        snoozed_until = NULL, pinned_at = NULL, updated_at = @now
-                 WHERE id = @id AND kind = 'question' AND status = 'open'`)
+                 WHERE id = @id AND kind = 'question' AND status = 'open'
+                   AND ${EXPECTED_ANSWER_SQL}`)
       .run(params)
     return info.changes > 0
   }
+  const currentAnswer = (): ReplyAnswer | null => (db.prepare(`
+      SELECT replied_at, reply_source, reply_kind, reply, reply_context
+        FROM items
+       WHERE id = ? AND kind = 'question'`)
+    .get(id) as ReplyAnswer | undefined) ?? null
 
-  if (!intent) return applyReply()
-  return db.transaction(() => {
-    const target = db.prepare(`SELECT id FROM items WHERE id = ? AND kind = 'question' AND status = 'open'`).get(id)
-    if (!target) return false
+  // Read after a refused write, never to decide one: the open question holds
+  // an answer, and not the expected one, so the expectation refused it (#321).
+  const changed = (answer: ReplyAnswer | null): Pick<ReplyResult, 'reason'> =>
+    expected && answer && (answer.reply || answer.reply_kind)
+      && (answer.replied_at !== expected.replied_at || answer.reply_source !== expected.reply_source
+        || answer.reply_kind !== expected.reply_kind || answer.reply !== expected.reply)
+      ? { reason: 'answer_changed' }
+      : {}
+  const openQuestion = () => db.prepare(`SELECT id FROM items WHERE id = ? AND kind = 'question' AND status = 'open'`).get(id)
+
+  if (!intent) {
+    const wrote = applyReply()
+    const answer = currentAnswer()
+    return { ok: wrote, wrote, replayed: false, answer, ...(!wrote && openQuestion() ? changed(answer) : {}) }
+  }
+  return db.transaction((): ReplyResult => {
+    if (!openQuestion()) return { ok: false, wrote: false, replayed: false, answer: currentAnswer() }
     const recorded = db.prepare(`
       SELECT applied
         FROM item_reply_intents
        WHERE item_id = ? AND client_id = ? AND action_id = ?`)
       .get(id, intent.clientId, intent.actionId) as { applied: number } | undefined
-    if (recorded) return recorded.applied === 1
+    if (recorded) return { ok: recorded.applied === 1, wrote: false, replayed: true, answer: currentAnswer() }
 
     const waterMark = db.prepare(`
       SELECT MAX(sequence) AS sequence
         FROM item_reply_intents
        WHERE item_id = ? AND client_id = ?`)
       .get(id, intent.clientId) as { sequence: number | null }
-    const applied = waterMark.sequence !== null && intent.sequence < waterMark.sequence
-      ? false
-      : applyReply()
+    const superseded = waterMark.sequence !== null && intent.sequence < waterMark.sequence
+    const applied = superseded ? false : applyReply()
     db.prepare(`
       INSERT INTO item_reply_intents
         (item_id, client_id, action_id, sequence, applied, created_at)
@@ -846,7 +919,8 @@ export function replyItem(
         applied: applied ? 1 : 0,
         now,
       })
-    return applied
+    const answer = currentAnswer()
+    return { ok: applied, wrote: applied, replayed: false, answer, ...(applied || superseded ? {} : changed(answer)) }
   }).immediate()
 }
 
@@ -1307,6 +1381,9 @@ export interface Board {
   issue_ref: number | null
   // issue #157 — as on items; null on every board written before #157
   head_repo: string | null
+  // issue #324 — as on items, restamped by every board write that detected
+  // one; a write that detected none keeps the stored folder
+  repo_root: string | null
   // issue #103 PR2 — the plan's explicit issue pin, which outranks its PR and
   // branch issue (§4.2). Repository lowercased; both null when unpinned.
   issue_pin_repo: string | null
@@ -1658,6 +1735,8 @@ interface UpsertBoardInput {
   repo?: string | null
   issueRef?: number | null
   headRepo?: string | null
+  /** issue #324: null or omitted keeps the stored folder */
+  repoRoot?: string | null
   /** issue #103 PR2: omitted keeps the stored pin; null clears it */
   issuePin?: IssueLink | null
 }
@@ -1682,6 +1761,7 @@ export function upsertBoard(db: Database.Database, input: UpsertBoardInput): { b
       || before.repo !== (inp.repo ?? null)
       || before.issue_ref !== (inp.issueRef ?? null)
       || before.head_repo !== (inp.headRepo ?? null)
+      || rootChanged(before, inp.repoRoot)
     const boardId = ensureBoard(db, inp, now)
     boardChanged = setBoardIssuePin(db, boardId, inp.issuePin) || boardChanged
     const existing = db.prepare(`SELECT id, label, status, note, position, action_version, revision, waits_on FROM board_rows WHERE board_id = ?`).all(boardId) as Array<{
@@ -1832,6 +1912,8 @@ interface UpdateRowInput {
   repo?: string | null
   issueRef?: number | null
   headRepo?: string | null
+  /** issue #324: null or omitted keeps the stored folder */
+  repoRoot?: string | null
   /** issue #103 PR2: omitted keeps the stored link; null clears it */
   issue?: IssueLink | null
   /** issue #103 slice 2: labels of other rows of this plan; omitted keeps, [] clears */
@@ -2043,6 +2125,7 @@ export function updateBoardRow(db: Database.Database, input: UpdateRowInput): { 
       || before!.repo !== (inp.repo ?? null)
       || before!.issue_ref !== (inp.issueRef ?? null)
       || before!.head_repo !== (inp.headRepo ?? null)
+      || rootChanged(before!, inp.repoRoot)
     )
     const boardId = ensureBoard(db, inp, now)
     const priorWaits = waits === undefined ? undefined : planWaitsOn(db, boardId)
@@ -2149,7 +2232,10 @@ function syncBoardStatus(db: Database.Database, boardId: string): boolean {
 // Find-or-create the board row and stamp the last writer. Shared by upsertBoard/updateBoardRow.
 function ensureBoard(
   db: Database.Database,
-  inp: { project: string; stream: string; agent: string; title: string; repo?: string | null; issueRef?: number | null; headRepo?: string | null },
+  inp: {
+    project: string; stream: string; agent: string; title: string
+    repo?: string | null; issueRef?: number | null; headRepo?: string | null; repoRoot?: string | null
+  },
   now: string,
 ): string {
   const board = findBoard(db, inp.project, inp.title)
@@ -2157,11 +2243,14 @@ function ensureBoard(
   // exactly like stream and agent — the board follows whoever is writing to it
   // now. They belong on the `boards` row and nowhere near board_rows, whose
   // annotation column is the human's and must survive every re-upsert untouched.
+  // #324's repo_root follows the writer too, but only when its session found
+  // one: COALESCE keeps the stored folder through a write that detected none.
   if (board) {
     db.prepare(`UPDATE boards
-                   SET stream = ?, agent = ?, repo = ?, issue_ref = ?, head_repo = ?,
+                   SET stream = ?, agent = ?, repo = ?, issue_ref = ?, head_repo = ?, repo_root = COALESCE(?, repo_root),
                        updated_at = CASE
                          WHEN stream IS NOT ? OR agent IS NOT ? OR repo IS NOT ? OR issue_ref IS NOT ? OR head_repo IS NOT ?
+                           OR repo_root IS NOT COALESCE(?, repo_root)
                          THEN ? ELSE updated_at END
                  WHERE id = ?`)
       .run(
@@ -2170,20 +2259,28 @@ function ensureBoard(
         inp.repo ?? null,
         inp.issueRef ?? null,
         inp.headRepo ?? null,
+        inp.repoRoot ?? null,
         inp.stream,
         inp.agent,
         inp.repo ?? null,
         inp.issueRef ?? null,
         inp.headRepo ?? null,
+        inp.repoRoot ?? null,
         now,
         board.id,
       )
     return board.id
   }
   const boardId = randomUUID()
-  db.prepare(`INSERT INTO boards (id, project, stream, agent, title, repo, issue_ref, head_repo, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`)
-    .run(boardId, inp.project, inp.stream, inp.agent, inp.title, inp.repo ?? null, inp.issueRef ?? null, inp.headRepo ?? null, now, now)
+  db.prepare(`INSERT INTO boards (id, project, stream, agent, title, repo, issue_ref, head_repo, repo_root, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`)
+    .run(boardId, inp.project, inp.stream, inp.agent, inp.title, inp.repo ?? null, inp.issueRef ?? null, inp.headRepo ?? null, inp.repoRoot ?? null, now, now)
   return boardId
+}
+
+// Issue #324: whether a write moves the plan's repository folder. A write that
+// detected none never does (ensureBoard keeps the stored one).
+function rootChanged(before: Board, repoRoot: string | null | undefined): boolean {
+  return repoRoot != null && before.repo_root !== repoRoot
 }
 
 export function archiveBoard(db: Database.Database, boardId: string, expectedRevision: number): boolean {

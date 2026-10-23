@@ -15,6 +15,7 @@ import {
   copyFileSync,
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
@@ -75,9 +76,11 @@ describe('package-app.sh installs and verifies the checked-in lockfile graph (#1
     const install = at('npm ci --prefix "$STAGE" --omit=dev')
     const enterStage = sh.lastIndexOf('cd "$STAGE"', install)
     const rebuild = at('"$REBUILD" -f -w better-sqlite3 -v "$ELECTRON_VERSION" -m "$STAGE" --build-from-source')
+    const prune = at('prune_modules "$STAGE"')
     const stagedCheck = at('verify_graph staged "$STAGE"')
     const leaveStage = at('cd "$ROOT"\n# --no-asar')
     const packager = at('npx --yes @electron/packager "$STAGE"')
+    const localePrune = at('prune_locales "$APP"')
     const packagedCheck = at('verify_graph packaged "$APP/Contents/Resources/app"')
     const signing = at('codesign --force --deep --sign - "$APP"')
 
@@ -85,10 +88,14 @@ describe('package-app.sh installs and verifies the checked-in lockfile graph (#1
     expect(enterStage).toBeGreaterThan(stage)
     expect(sh.slice(enterStage, rebuild)).not.toContain('cd "$ROOT"')
     expect(install).toBeLessThan(rebuild)
-    expect(rebuild).toBeLessThan(stagedCheck)
+    // pruned as the release builders prune (#291), then checked: the graph stays exact
+    expect(rebuild).toBeLessThan(prune)
+    expect(prune).toBeLessThan(stagedCheck)
     expect(stagedCheck).toBeLessThan(leaveStage)
     expect(leaveStage).toBeLessThan(packager)
-    expect(packager).toBeLessThan(packagedCheck)
+    // only English, as the release builders keep it, before the ad-hoc seal (#292)
+    expect(packager).toBeLessThan(localePrune)
+    expect(localePrune).toBeLessThan(packagedCheck)
     expect(packagedCheck).toBeLessThan(signing)
   })
 
@@ -109,14 +116,21 @@ describe('package-app.sh installs and verifies the checked-in lockfile graph (#1
 
 // A step that exits 0 having done nothing: what a skipped entry-point guard looks like.
 const SILENT_STAGE_TOOL = ''
-// Stages only the manifest pair, and its graph check confirms nothing.
+// Stages only the manifest pair and confirms its prune, but its graph check
+// confirms nothing.
 const MANIFEST_ONLY_STAGE_TOOL = `
 import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs'
-const [command, , stage] = process.argv.slice(2)
+const [command, first, stage] = process.argv.slice(2)
 appendFileSync(process.env.CALLS, \`stage-tool \${process.argv[1]} \${process.argv.slice(2).join(' ')}\\n\`)
 if (command === 'stage') {
   mkdirSync(stage, { recursive: true })
   for (const name of ['package.json', 'package-lock.json']) writeFileSync(\`\${stage}/\${name}\`, '{}\\n')
+}
+if (command === 'prune' && process.env.PRUNE_CONFIRMS !== '0') {
+  process.stdout.write(\`package-app: pruned 0 files (0.0 MB) nothing loads from \${first}/node_modules\\n\`)
+}
+if (command === 'verify' && process.env.VERIFY_CONFIRMS === '1') {
+  process.stdout.write(\`package-app: \${process.argv[6]} dependency graph matches package-lock.json: confirmed\\n\`)
 }
 `
 
@@ -203,7 +217,38 @@ describe('package-app.sh refuses to continue past a step that did nothing', () =
       `stage-tool ${tool} stage ${repo} ${stage}`,
       `npm cwd=${stage} ci --prefix ${stage} --omit=dev --ignore-scripts --prefer-offline --no-audit --no-fund`,
       `electron-rebuild cwd=${stage} -f -w better-sqlite3 -v 43.8.0 -m ${stage} --build-from-source`,
+      `stage-tool ${tool} prune ${stage}`,
       `stage-tool ${tool} verify ${join(repo, 'package-lock.json')} ${stage} --label staged`,
+    ])
+  })
+
+  it('stops before the graph check when the prune does not confirm (#291)', () => {
+    const checkout = fakeCheckout(MANIFEST_ONLY_STAGE_TOOL)
+    const result = checkout.run({ PRUNE_CONFIRMS: '0' })
+    const tool = join(checkout.repo, 'scripts', 'package-app-stage.mjs')
+
+    expect(result.status).toBe(1)
+    expect(result.stderr).toContain(`package-app: pruning did not confirm ${checkout.stage}`)
+    expect(checkout.calls().slice(-2)).toEqual([
+      `electron-rebuild cwd=${checkout.stage} -f -w better-sqlite3 -v 43.8.0 -m ${checkout.stage} --build-from-source`,
+      `stage-tool ${tool} prune ${checkout.stage}`,
+    ])
+  })
+
+  it('stops before the packaged graph check and signing when the locale prune does not confirm (#292)', () => {
+    const checkout = fakeCheckout(MANIFEST_ONLY_STAGE_TOOL)
+    const result = checkout.run({ VERIFY_CONFIRMS: '1' })
+    const tool = join(checkout.repo, 'scripts', 'package-app-stage.mjs')
+    const app = join(checkout.repo, 'out', 'Agent Inbox-darwin-arm64', 'Agent Inbox.app')
+
+    expect(result.status).toBe(1)
+    expect(result.stderr).toContain(`package-app: locale pruning did not confirm ${app}`)
+    expect(checkout.calls().slice(-3)).toEqual([
+      `stage-tool ${tool} verify ${join(checkout.repo, 'package-lock.json')} ${checkout.stage} --label staged`,
+      `npx cwd=${checkout.repo} --yes @electron/packager ${checkout.stage} Agent Inbox --platform=darwin --arch=arm64 `
+        + `--out=${join(checkout.repo, 'out')} --overwrite --no-asar --no-junk --no-prune `
+        + `--icon=${join(checkout.repo, 'electron', 'icon.icns')} --app-bundle-id=io.github.shariqh.agent-inbox`,
+      `stage-tool ${tool} locales ${app}`,
     ])
   })
 
@@ -238,6 +283,39 @@ describe('package-app-stage.mjs as a command', () => {
     const verified = cli('verify', join(root, 'package-lock.json'), bad)
     expect(verified.status).toBe(1)
     expect(verified.stderr).toContain(`package-app: ${join(bad, 'node_modules', '.package-lock.json')} is missing`)
+
+    const pruned = cli('prune', bad)
+    expect(pruned.status).toBe(1)
+    expect(pruned.stderr).toContain(`package-app: ${join(bad, 'node_modules')} is missing; nothing was installed to prune`)
+    expect(pruned.stdout).toBe('')
+
+    const locales = cli('locales', bad)
+    expect(locales.status).toBe(1)
+    expect(locales.stderr).toContain(
+      'package-app: packaged darwin app has no Contents/Resources/en.lproj, the US English locale Chromium falls back to',
+    )
+    expect(locales.stdout).toBe('')
+  })
+
+  it('keeps only the US and British English Electron locales in a packaged bundle and says how much went (#292)', () => {
+    const app = join(realpathSync(tmp('stage-cli-locales-')), 'Agent Inbox.app')
+    const framework = join(app, 'Contents', 'Frameworks', 'Electron Framework.framework', 'Versions', 'A', 'Resources')
+    for (const locale of ['en', 'en_GB', 'fr', 'zh_TW']) {
+      mkdirSync(join(app, 'Contents', 'Resources', `${locale}.lproj`), { recursive: true })
+      mkdirSync(join(framework, `${locale}.lproj`), { recursive: true })
+      writeFileSync(join(framework, `${locale}.lproj`, 'locale.pak'), 'x'.repeat(250_000))
+    }
+    const result = spawnSync(process.execPath, [join(root, 'scripts', 'package-app-stage.mjs'), 'locales', app], {
+      encoding: 'utf8',
+      timeout: 30_000,
+    })
+
+    expect(result.status, result.stderr).toBe(0)
+    expect(result.stdout).toBe(
+      `package-app: kept only the US and British English Electron locales in ${app}; removed 4 locales (0.5 MB)\n`,
+    )
+    expect(readdirSync(framework)).toEqual(['en.lproj', 'en_GB.lproj'])
+    expect(readdirSync(join(app, 'Contents', 'Resources'))).toEqual(['en.lproj', 'en_GB.lproj'])
   })
 })
 
@@ -499,6 +577,9 @@ describe.skipIf(!NPM_CLI)('a real npm ci over the staged pair', () => {
       const source = join(work, 'src', name)
       mkdirSync(source, { recursive: true })
       writeFileSync(join(source, 'package.json'), JSON.stringify({ name, version: '1.0.0' }))
+      writeFileSync(join(source, 'index.d.ts'), 'export {}\n')
+      writeFileSync(join(source, 'README.md'), `# ${name}\n`)
+      writeFileSync(join(source, 'LICENSE'), 'MIT\n')
       npm(source, 'pack', '--pack-destination', tarballs)
     }
     const repo = fixtureRepo((pkg) => {
@@ -517,6 +598,13 @@ describe.skipIf(!NPM_CLI)('a real npm ci over the staged pair', () => {
 
     expect(existsSync(join(stage, 'node_modules', 'prod-dep', 'package.json'))).toBe(true)
     expect(existsSync(join(stage, 'node_modules', 'dev-dep'))).toBe(false)
+    // pruned as package-app.sh prunes it (#291), and still exactly the locked graph
+    const pruned = spawnSync(process.execPath, [join(root, 'scripts', 'package-app-stage.mjs'), 'prune', stage], {
+      encoding: 'utf8', timeout: 30_000,
+    })
+    expect(pruned.status, pruned.stderr).toBe(0)
+    expect(pruned.stdout).toBe(`package-app: pruned 2 files (0.0 MB) nothing loads from ${join(stage, 'node_modules')}\n`)
+    expect(readdirSync(join(stage, 'node_modules', 'prod-dep')).sort()).toEqual(['LICENSE', 'package.json'])
     expect(verifyStagedLockGraph({ lockPath: join(repo, 'package-lock.json'), appRoot: stage })).toEqual({
       packages: 1,
       omittedDev: 1,

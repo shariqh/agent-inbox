@@ -51,4 +51,10 @@ describe('native Linux folder workflow', () => {
     expect(pkg.scripts['package:smoke']).toContain('test/linux-native-folder.test.ts')
     expect(pkg.scripts['package:smoke']).toContain('test/linux-release-workflow.test.ts')
   })
+
+  it('runs for changes to the prunes its folder build imports', () => {
+    const workflow = readFileSync(workflowPath, 'utf8')
+    expect(workflow).toContain('      - "scripts/prune-node-modules.mjs"\n')
+    expect(workflow).toContain('      - "scripts/prune-electron-locales.mjs"\n')
+  })
 })

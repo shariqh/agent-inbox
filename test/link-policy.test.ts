@@ -8,7 +8,7 @@ import type { LinkRules } from '../electron/link-open.cjs'
 import preferences from '../electron/link-preferences.cjs'
 import { removeScratchDirs, scratchDir } from './scratch.js'
 
-const { blockedFileName, externalWebUrl, fileOpenPlan, isTrustedLinkSender, isViewerUrl, normalizeLocalPath, openLinkRequest, openWebLink } = links
+const { blockedFileName, externalWebUrl, fileOpenPlan, isTrustedLinkSender, isViewerUrl, joinRepoPath, normalizeLocalPath, openLinkRequest, openWebLink } = links
 
 const VIEWER = 'http://127.0.0.1:4319/'
 const ON_MAC = process.platform === 'darwin' && existsSync('/usr/bin/xattr')
@@ -826,5 +826,147 @@ describe('Settings → Links rules, applied after the safety policy (issue #300 
     })).toEqual({ ok: false, reason: 'app-refused' })
     expect(calls).toEqual([])
     expect(shellCalls).toEqual([])
+  })
+})
+
+// Issue #324: a repo-relative path arrives with the folder its card recorded.
+// Main joins the two, applies exactly the rules above to the result, and
+// refuses a path whose symlinks lead outside that folder once resolved.
+describe('repo-relative paths: joined to their folder, and kept inside it (issue #324)', () => {
+  // a repository with links that stay inside it and links that escape it
+  function repository() {
+    const base = scratchDir('link-repo-')
+    const root = join(base, 'repo')
+    const outside = join(base, 'outside')
+    mkdirSync(join(root, 'docs', 'specs'), { recursive: true })
+    mkdirSync(join(root, 'public'))
+    mkdirSync(outside)
+    writeFileSync(join(root, 'docs', 'specs', 'spec.md'), '# spec')
+    writeFileSync(join(root, 'README.md'), '# readme')
+    writeFileSync(join(root, 'public', 'app.js'), 'x')
+    writeFileSync(join(root, 'docs', 'alias.md'), BOOKMARK)
+    writeFileSync(join(outside, 'secret.md'), 'secret')
+    symlinkSync(join(root, 'README.md'), join(root, 'docs', 'readme-link.md'))
+    symlinkSync('../README.md', join(root, 'docs', 'relative-link.md'))
+    symlinkSync(join(outside, 'secret.md'), join(root, 'docs', 'escape.md'))
+    symlinkSync('../../outside/secret.md', join(root, 'docs', 'relative-escape.md'))
+    symlinkSync(join(root, 'docs', 'escape.md'), join(root, 'docs', 'chain.md'))
+    symlinkSync(outside, join(root, 'vendor'))
+    symlinkSync(root, join(base, 'repo-link'))
+    return { base, root, outside }
+  }
+  const deps = () => ({ platform: 'darwin', execFileImpl: fakeXattr().execFileImpl })
+  function recordingShell() {
+    const calls: Array<[string, string]> = []
+    return {
+      calls,
+      shell: {
+        openExternal: async (url: string) => { calls.push(['openExternal', url]) },
+        openPath: async (target: string) => { calls.push(['openPath', target]); return '' },
+        showItemInFolder: (target: string) => { calls.push(['showItemInFolder', target]) },
+      },
+    }
+  }
+
+  it('opens a document inside the folder by its resolved path, symlinks that stay inside included', async () => {
+    const { base, root } = repository()
+    const pairs: Array<[string, string]> = [['docs/specs/spec.md', 'docs/specs/spec.md'], ['docs/readme-link.md', 'README.md'], ['docs/relative-link.md', 'README.md']]
+    for (const [rel, target] of pairs) {
+      expect(await fileOpenPlan(rel, { root, ...deps() }), rel).toEqual({ ok: true, action: 'open', path: realpathSync(join(root, target)) })
+    }
+    // a folder reached through a symlink (macOS's /tmp → /private/tmp) is judged by its real path
+    expect(await fileOpenPlan('docs/specs/spec.md', { root: join(base, 'repo-link'), ...deps() }))
+      .toEqual({ ok: true, action: 'open', path: realpathSync(join(root, 'docs', 'specs', 'spec.md')) })
+    // then exactly today's rules: a type it does not open, an alias
+    expect(await fileOpenPlan('public/app.js', { root, ...deps() })).toMatchObject({ ok: true, action: 'reveal', reason: 'type' })
+    expect(await fileOpenPlan('docs/alias.md', { root, ...deps() })).toMatchObject({ ok: true, action: 'reveal', reason: 'blocked' })
+  })
+
+  it.each(['docs/escape.md', 'docs/relative-escape.md', 'docs/chain.md', 'vendor/secret.md'])(
+    'refuses %s, whose symlinks lead outside the repository, before reading a thing about the file',
+    async (rel) => {
+      const { root } = repository()
+      const { calls, execFileImpl } = fakeXattr()
+      expect(await fileOpenPlan(rel, { root, platform: 'darwin', execFileImpl })).toEqual({ ok: false, reason: 'outside' })
+      expect(calls).toEqual([])
+    },
+  )
+
+  it('reports a file the folder does not have, and a folder that has gone, as missing', async () => {
+    const { base, root } = repository()
+    expect(await fileOpenPlan('docs/specs/not-here.md', { root, ...deps() })).toEqual({ ok: false, reason: 'missing' })
+    expect(await fileOpenPlan('docs/specs/spec.md', { root: join(base, 'gone'), ...deps() })).toEqual({ ok: false, reason: 'missing' })
+  })
+
+  it('joins only a plain relative path to a plain absolute folder', async () => {
+    const { root } = repository()
+    const cases: Array<[unknown, unknown]> = [
+      ['../outside/secret.md', root], ['docs/../../outside/secret.md', root], ['docs/./specs/spec.md', root], ['./docs/specs/spec.md', root],
+      ['docs//specs/spec.md', root], ['docs/specs/', root], ['/etc/hosts', root], ['~/notes.md', root], ['docs\\specs\\spec.md', root],
+      ['docs/spec.md:12', root], ['', root], ['docs/a\u0000.md', root], ['docs/a\n.md', root], [`${'a/'.repeat(2100)}x.md`, root], [7, root],
+      ['docs/specs/spec.md', 'relative/root'], ['docs/specs/spec.md', ''], ['docs/specs/spec.md', `${root}\n`],
+      ['docs/specs/spec.md', '~/repo'], ['docs/specs/spec.md', 7],
+    ]
+    for (const [rel, folder] of cases) {
+      expect(await fileOpenPlan(rel as string, { root: folder as string, ...deps() }), `${String(rel)} in ${String(folder)}`).toEqual({ ok: false, reason: 'invalid' })
+    }
+    expect(joinRepoPath('docs/specs/spec.md', `${root}/`)).toEqual({ root, path: join(root, 'docs', 'specs', 'spec.md') })
+    expect(joinRepoPath('docs/specs/spec.md', `${root}/sub/..`)).toEqual({ root, path: join(root, 'docs', 'specs', 'spec.md') })
+  })
+
+  it('opens and reveals for the viewer this app owns, refuses an escape whatever the request, and reads nothing for any other viewer', async () => {
+    const { root } = repository()
+    const { calls, shell } = recordingShell()
+    const owned = { shell, homeDir: '/Users/nobody', filesPermitted: true, ...deps() }
+    const spec = realpathSync(join(root, 'docs', 'specs', 'spec.md'))
+    expect(await openLinkRequest({ kind: 'file', path: 'docs/specs/spec.md', root, reveal: false }, owned)).toEqual({ ok: true, action: 'opened' })
+    expect(await openLinkRequest({ kind: 'file', path: 'docs/specs/spec.md', root, reveal: true }, owned)).toEqual({ ok: true, action: 'revealed', reason: 'requested' })
+    expect(await openLinkRequest({ kind: 'file', path: 'docs/escape.md', root, reveal: false }, owned)).toEqual({ ok: false, reason: 'outside' })
+    expect(await openLinkRequest({ kind: 'file', path: 'docs/escape.md', root, reveal: true }, owned)).toEqual({ ok: false, reason: 'outside' })
+    expect(await openLinkRequest({ kind: 'file', path: 'docs/specs/gone.md', root, reveal: false }, owned)).toEqual({ ok: false, reason: 'missing' })
+    expect(calls).toEqual([['openPath', spec], ['showItemInFolder', spec]])
+
+    const touched: string[] = []
+    const untouched = new Proxy({}, { get(_target, name) { touched.push(String(name)); throw new Error('the filesystem was read') } })
+    for (const filesPermitted of [false, undefined]) {
+      const other = { shell, homeDir: '/Users/nobody', fsp: untouched, filesPermitted, platform: 'darwin', execFileImpl: () => { touched.push('xattr') } } as never
+      expect(await openLinkRequest({ kind: 'file', path: 'docs/specs/spec.md', root, reveal: false }, other)).toEqual({ ok: false, reason: 'unowned' })
+      expect(await openLinkRequest({ kind: 'file', path: 'docs/escape.md', root, reveal: true }, other)).toEqual({ ok: false, reason: 'unowned' })
+    }
+    expect(touched).toEqual([])
+    expect(calls).toHaveLength(2)
+  })
+
+  it('applies a Settings → Links rule to the resolved file, and never to an escape', async () => {
+    const { root, base } = repository()
+    const app = join(base, 'QLMarkdown.app')
+    mkdirSync(join(app, 'Contents'), { recursive: true })
+    writeFileSync(join(app, 'Contents', 'Info.plist'), '<plist/>')
+    const spawned: Array<{ command: string, args: string[] }> = []
+    const spawnImpl = (command: string, args: string[]) => {
+      spawned.push({ command, args })
+      const child = Object.assign(new EventEmitter(), { unref: () => {} })
+      queueMicrotask(() => { child.emit('spawn'); child.emit('exit', 0) })
+      return child
+    }
+    const { calls, shell } = recordingShell()
+    const rules = { web: { handler: 'default' }, markdown: { handler: 'app', app }, types: [] } as unknown as LinkRules
+    const owned = { shell, homeDir: '/Users/nobody', filesPermitted: true, rules, spawnImpl, ...deps() }
+    expect(await openLinkRequest({ kind: 'file', path: 'docs/specs/spec.md', root, reveal: false }, owned)).toEqual({ ok: true, action: 'opened' })
+    expect(await openLinkRequest({ kind: 'file', path: 'docs/escape.md', root, reveal: false }, owned)).toEqual({ ok: false, reason: 'outside' })
+    expect(spawned).toEqual([{ command: '/usr/bin/open', args: ['-a', realpathSync(app), '--', realpathSync(join(root, 'docs', 'specs', 'spec.md'))] }])
+    expect(calls).toEqual([])
+  })
+
+  it.each([
+    { kind: 'file', path: 'docs/a.md', root: 7, reveal: false },
+    { kind: 'file', path: 'docs/a.md', root: null, reveal: false },
+    { kind: 'file', path: 'docs/a.md', root: '/Users/s/repo', reveal: false, extra: 1 },
+    { kind: 'file', path: 'docs/a.md', root: '/Users/s/repo' },
+    { kind: 'web', url: 'https://example.com', root: '/Users/s/repo' },
+  ])('refuses the malformed request %j', async (request) => {
+    const { calls, shell } = recordingShell()
+    expect(await openLinkRequest(request, { shell, homeDir: '/Users/s', filesPermitted: true })).toEqual({ ok: false, reason: 'invalid' })
+    expect(calls).toEqual([])
   })
 })

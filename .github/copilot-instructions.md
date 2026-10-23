@@ -76,7 +76,21 @@ Run the build before `npm run electron`; the development shell starts the built
   admits them (with `public/source.js`/`esc.js`) only for the titled `board_get`
   `issue_rel` summary, and a test pins the transitive stdio MCP import graph.
   `scripts/stage-runtime.mjs` stages the `public/` modules `dist/` reaches, so a
-  runtime payload can load them.
+  runtime payload can load them. Every shipped `node_modules` copy is pruned by
+  `scripts/prune-node-modules.mjs` before it is tested, manifested or signed
+  (#291): better-sqlite3 keeps only `package.json`, `lib/` and its addon, every
+  package loses typings, source maps and markdown, and license and notice files
+  always stay. The thin-app gates refuse an unpruned copy, and the macOS runtime
+  signing list is exactly `bin/node` and the addon. Every package ships only US and
+  British English Electron locales (#292): `scripts/prune-electron-locales.mjs` keeps
+  `en.lproj` and `en_GB.lproj` on macOS and `locales/en-US.pak` and `en-GB.pak` on Linux
+  and Windows, once, right after `@electron/packager` and before anything checks, hashes
+  or signs the app; the thin-app, universal and final-DMG gates refuse an app with any
+  other locale, without either of those, or reaching either through a linked folder.
+  Electron seeds a new profile's spellchecker from that locale, so on Linux and Windows
+  `electron/spellcheck-languages.cjs` sets the system's languages at startup on a profile
+  with none in the system's first language (a seeded `en-GB` for Commonwealth English
+  users stays); macOS keeps its own `NSSpellChecker`.
 - **Setup path:** `scripts/install-agents.sh` is the canonical dry-run-first
   installer for MCP registration and managed host instructions. Electron exposes
   only fixed setup targets through `electron/setup-preload.cjs` and invokes that
@@ -127,6 +141,27 @@ Run the build before `npm run electron`; the development shell starts the built
   A prune renames the runtime into a `.trash-*` folder before deleting it, so an
   interrupted one leaves trash, never a half-deleted runtime id; installs and
   prunes remove leftover trash this user owns, and `.trash-*` is never a runtime.
+  The fifth fixed target, `prune-runtimes` (#294), runs exactly `/bin/bash
+  <app payload>/scripts/prune-runtimes.sh --apply` from the verified release
+  payload (a checkout refuses it), through the same `agent-inbox:install`
+  handler and gates; the script re-derives what to remove under the setup lock,
+  so no runtime id or path becomes argv, and its dry run takes no lock and
+  writes nothing. It keeps its own runtime, anything a host config uses,
+  anything a running process names (`ps`; a failure refuses everything) and
+  anything that no longer verifies against its manifest (`changed`, never
+  attempted), and removes the rest only through `runtime-payload.mjs prune`. "Uses" is ONE
+  rule in `scripts/runtime-config.mjs` (`scanRuntimeReferences`), shared with
+  the installer's own prune and rollback: any value in `~/.claude.json` (every
+  scope), `~/.claude/settings*.json`, `~/.copilot/mcp-config.json` or Claude
+  Desktop's config naming the id as a whole name (unless at the end of a path to
+  a folder that is not there), or a launcher path leading into it, compared by
+  `(dev, ino)` and never as a string. A config that exists but cannot be read
+  means nothing is removed. Project-scope configs are deliberately not read.
+  Setup's Runtimes block (#294 part B) lists the runtimes from `src/runtime-inventory.ts`, a
+  viewer-only, read-only mirror of that rule held to agreement with the script
+  by `test/runtime-inventory.test.ts`; it walks only unused runtimes, keeps
+  answers per folder and config stamp, and its one Remove re-reads the list
+  before it calls exactly `install('prune-runtimes')`.
 - **Shared presentation rules:** `public/attention.js` is the single attention
   predicate used by the viewer and Electron dock badge. Pure modules under
   `public/` hold grouping, ordering, search, badge, polling, and rendering rules;
@@ -281,7 +316,8 @@ Run the build before `npm run electron`; the development shell starts the built
   treats any non-2xx as "the write never happened". An explicit `''` still clears.
 - Inbox answers have precedence over chat-recorded answers. `answerItem()` must
   refuse to overwrite an unread inbox answer; this is intentionally not
-  timestamp-based last-write-wins.
+  timestamp-based last-write-wins. A human reply that carries `expect_answer`
+  (#321) is written only while the question still holds that answer.
 - Item response and annotation snapshots use monotonic `response_revision`, not
   timestamps alone. MCP resolution after response history requires the exact
   `expected_response_revision` handled by that caller. Question reply/annotation
@@ -435,6 +471,22 @@ Run the build before `npm run electron`; the development shell starts the built
   fails falls back to the default one. Rules, Quick Look and Reveal are file
   requests, so they share the owned-viewer `files` grant, and so do the
   Settings → Links channels (a reused viewer gets `error: 'unowned'`).
+- Repo-relative paths (#324) link only in a card whose item or plan recorded
+  `repo_root` (additive, nullable columns on `items` and `boards`): the MCP
+  server's `git rev-parse --show-toplevel`, read live by `scope.rootFor()` on
+  writes only (never in `get()`, never memoized, fail open to null). A board
+  write that finds none keeps the stored folder (`COALESCE`); `board_advance`
+  and older servers never touch it. Agent reads never return it
+  (`agentItem`/`shapeBoard` in `src/shape.ts`). `public/links.js` detects them
+  conservatively (a folder and a name, an extension or a file-like name with
+  `:line`, no dotted first folder, no `.`/`..`/`...` segment), reading at most
+  255 characters a segment and 1024 in all (longer links nothing), with no
+  pattern that can backtrack over agent text: the render runs on every
+  3-second poll, so a quadratic regex there freezes the viewer. They carry
+  the folder in an escaped `data-link-root`, never an href. Main joins a plain
+  relative path to the folder (`joinRepoPath`), refuses it as `outside` when
+  its real path leaves the folder's real path, and then applies the same
+  policy and grant as any file. A missing one copies its path instead.
 - The 3-second poll uses the gated `load()`/`renderIfIdle()` path. Its reads
   run concurrently, but a tick applies only after all settle, and only if no newer
   tick has applied and every boot marker agrees. A successful
@@ -464,7 +516,18 @@ Run the build before `npm run electron`; the development shell starts the built
   pin. One rule, `savedIntentRule`, decides every reuse of a saved intent (Retry,
   an editor's Send after an unconfirmed send): the server holds exactly that
   response, so it retires unsent; the answer moved since the pin, so the send is
-  fresh; otherwise the exact replay. Never move a pin while keeping its intent. A
+  fresh; otherwise the exact replay. Never move a pin while keeping its intent. The
+  rule reads the last poll, so the reply route also says, additively, whether a
+  request `wrote`, whether it `replayed` a recorded intent, and the `answer` it left
+  (#322); `ok` keeps its meaning. A replay that wrote nothing under someone else's
+  answer keeps the text as an unsent response, with its spent intent dropped. An
+  editor's Send and an unsent response's Retry never replace an answer the surface
+  has not shown (#321): the first click names it in place ("A newer reply was sent:
+  …"), only a further click sends, and the send carries `expect_answer`, which
+  `replyItem` checks in the same conditioned UPDATE, refusing with `reason:
+  'answer_changed'` and the answer that stands. A question with no answer accepts
+  any expectation, and a refusal naming exactly the sent response retires it as
+  sent. Never send to get past a notice. A
   window deletes only the copy it loaded or last wrote, and its leaving save
   writes back a draft another window deleted; the viewer-restart hold stays.
 - Every value export in `src/*.ts` and `public/*.js` must be reachable from

@@ -26,6 +26,7 @@ import { createKeyboardUI, revealControl } from '/keyboard-ui.js'
 import { partitionNotes, unreadNoteCount, ambientChips, seenWatermark, markSeenIds } from '/notes.js'
 import { liveSummary, lastActivityAt, isDormant, activitySynopsis, sessionBuild } from '/livebar.js'
 import { agentsAction, hooksGuidance, hooksNextStep, hostLabel, hostLine, restartGuidance } from '/agents.js'
+import { PROJECT_SCOPE_NOTE, RUNTIMES_LEAD, runtimeLines, runtimesAction, runtimesNote } from '/runtimes.js'
 import { esc } from '/esc.js'
 import { initStructuredTextCopy } from '/structured-copy.js'
 import { captureSelection, restoreSelection } from '/selection.js'
@@ -754,6 +755,8 @@ function writeErrorEl(id) {
   const el = document.createElement('span')
   el.className = 'write-error'
   el.dataset.errorFor = id
+  // announced when showWriteError() rewrites it in place, as #321's notice does
+  el.setAttribute('role', 'status')
   el.textContent = writeErrors[id] ?? '' // never innerHTML — this text is rendered beside agent-authored content
   el.hidden = !writeErrors[id]
   return el
@@ -2047,6 +2050,11 @@ function render() {
   // the Plans header's controls are rebuilt with the list; keep a keyboard user on them
   const plansHeaderFocusId = activeFocusElement()?.closest?.('#boards .tab-header [id]')?.id ?? null
   pagedFocusId = pagedFocus?.id ?? null
+  // a rebuilt unsent response keeps the control a keyboard user is on (#321)
+  const recoveryControl = activeFocusElement()?.closest?.('.stale-draft-line[data-recovery-line] button') ?? null
+  draftRecoveryFocusControl = recoveryControl
+    ? { line: recoveryControl.closest('.stale-draft-line').dataset.recoveryLine, label: recoveryControl.textContent }
+    : null
   if (activeFocusElement()?.closest?.('.stale-drafts-fold')) draftRecoveryFocusPending = true
   reconcileDraftOwners()
   requestedDraftFocusBookmark = null
@@ -2089,6 +2097,7 @@ const ROW_SET_ASIDE = 'Kept from before you set this aside.'
 const ROW_ACTION_CHANGED = 'Not sent because this action changed.'
 let requestedDraftFocusBookmark = null
 let draftRecoveryFocusPending = false
+let draftRecoveryFocusControl = null // { line, label } of the unsent-response control focused at the last rebuild
 let draftRecoveryTarget = null
 
 function rowDraftRecoveryKey(rowId, revision) {
@@ -2958,9 +2967,14 @@ function cardHeadingHtml(presentation, ctx) {
 }
 
 // Issue #300: a bare #N in a card's text resolves against the repository of
-// the item, or of the plan a row belongs to.
+// the item, or of the plan a row belongs to; #324: a repo-relative path,
+// against the folder that item or plan recorded.
 function textContext(identity) {
-  return { repo: typeof identity?.repo === 'string' ? identity.repo : null, copyFiles: fileLinksCopy() }
+  return {
+    repo: typeof identity?.repo === 'string' ? identity.repo : null,
+    root: typeof identity?.repo_root === 'string' ? identity.repo_root : null,
+    copyFiles: fileLinksCopy(),
+  }
 }
 
 // Issue #300: the Links strip under the card's origin, listing every link its
@@ -5165,18 +5179,26 @@ function renderOrphanedDrafts(host) {
   const activeRows = new Map((lastData?.boards ?? [])
     .flatMap((board) => board.rows.map((row) => [row.id, row.revision])))
   const entries = [
-    ...Object.entries(staleItemDrafts).map(([key, draft]) => ({
-      id: key,
-      draft,
-      retry: () => retryItemDraft(key, draft),
-      clear: () => deleteItemDraftRecovery(key, draft.owner),
-      text: [
-        draft.title,
-        draft.reason,
-        `${draft.kind}: ${draft.text}`,
-        draft.context ? `context: ${draft.context}` : '',
-      ].filter(Boolean).join(' · '),
-    })),
+    ...Object.entries(staleItemDrafts).map(([key, draft]) => {
+      // what Retry does when it would send this over an answer (#321)
+      const replaces = retryWouldReplace(draft)
+      // a question this window no longer knows still guards its Retry
+      const shown = draftAnswerOf(knownAnswer(draft.itemId)) ?? { at: null, source: null, kind: null, text: null }
+      return {
+        id: key,
+        draft,
+        retry: () => retryItemDraft(key, draft, shown),
+        clear: () => deleteItemDraftRecovery(key, draft.owner),
+        notice: replaces ? newerReplyNotice(draft.itemId, replaces, 'Retry') : '',
+        noticeFor: key,
+        text: [
+          draft.title,
+          draft.reason,
+          `${draft.kind}: ${draft.text}`,
+          draft.context ? `context: ${draft.context}` : '',
+        ].filter(Boolean).join(' · '),
+      }
+    }),
     ...Object.entries(staleRowDrafts)
       .filter(([, draft]) =>
         activeRows.get(draft.rowId) !== draft.revision
@@ -5225,12 +5247,22 @@ function renderOrphanedDrafts(host) {
   for (const entry of entries) {
     const line = document.createElement('div')
     line.className = 'stale-draft-line'
+    line.dataset.recoveryLine = entry.id
     if (entry.textClass) {
       const text = document.createElement('span')
       text.className = entry.textClass
       text.textContent = entry.text
       line.appendChild(text)
     } else line.textContent = entry.text
+    if (entry.noticeFor) {
+      const notice = document.createElement('span')
+      notice.className = 'replace-notice'
+      notice.dataset.noticeFor = entry.noticeFor
+      notice.setAttribute('role', 'status')
+      notice.textContent = entry.notice
+      notice.hidden = !entry.notice
+      line.appendChild(notice)
+    }
     if (entry.retry) {
       const retry = btn('Retry', entry.retry)
       retry.className = 'undo-btn'
@@ -6073,11 +6105,12 @@ function claimItemIntent(id, { staged = false } = {}) {
   // The claiming window's identity and the answer this send is made against
   // travel with the intent: a stored draft retried from another window replays
   // this exact intent, and only while that answer still stands (savedIntentRule).
+  // The answer is the newest this window knows, which the rule compares it with.
   const intent = {
     sequence,
     actionId: globalThis.crypto.randomUUID(),
     clientId: storedReplyIntent.clientId,
-    pin: draftAnswerOf(freshItem(id)),
+    pin: draftAnswerOf(knownAnswer(id)),
   }
   if (!staged) itemLatestIntents[id] = intent
   if (!staged) cancelStagedItemIntent(id)
@@ -6150,12 +6183,17 @@ function cancelStagedItemIntent(id) {
   return true
 }
 
+// Every reply response reports the answer it left (#322); it is the newest
+// this window knows until the next poll applies (#321).
 function postItemReply(id, body, intent) {
   return postJSON(`/api/items/${id}/reply`, {
     ...body,
     intent_client_id: intent.clientId ?? storedReplyIntent.clientId,
     intent_sequence: intent.sequence,
     intent_action_id: intent.actionId,
+  }).then((res) => {
+    noteReportedAnswer(id, res?.answer)
+    return res
   })
 }
 
@@ -6248,7 +6286,8 @@ function preserveItemDraftRecovery(id, {
   return recoveryKey
 }
 
-function retryItemDraft(key, draft) {
+// `shown`: the answer the entry's line was drawn with (#321).
+function retryItemDraft(key, draft, shown) {
   return sendReply(
     draft.itemId,
     draft.text,
@@ -6260,6 +6299,7 @@ function retryItemDraft(key, draft) {
     false,
     key,
     draft.owner,
+    shown,
   )
 }
 
@@ -6300,7 +6340,17 @@ function restoreDraftRecoveryFocus() {
     : null
   if (inline) revealDetailsAncestors(inline)
   const visibleInline = inline && !inline.closest('[hidden], details:not([open])') ? inline : null
-  const target = visibleInline ?? document.querySelector('.stale-drafts-fold summary')
+  // the same control of the same entry when it is still there, as after a
+  // Retry that kept its text; otherwise the list's own summary
+  const control = draftRecoveryFocusControl
+  draftRecoveryFocusControl = null
+  const line = control
+    ? document.querySelector(`.stale-drafts-fold .stale-draft-line[data-recovery-line="${CSS.escape(control.line)}"]`)
+    : null
+  const sameControl = line
+    ? [...line.querySelectorAll('button')].find((button) => button.textContent === control.label && !button.disabled) ?? null
+    : null
+  const target = visibleInline ?? sameControl ?? document.querySelector('.stale-drafts-fold summary')
   if (!target) return false
   target.focus({ preventScroll: true })
   const restored = document.activeElement === target
@@ -6404,6 +6454,9 @@ const DRAFT_REASONS = {
   actionChanged: [ROW_ACTION_CHANGED, 'Your send was not confirmed, and this action has changed since.'],
 }
 const draftReason = (cause, unconfirmed) => DRAFT_REASONS[cause][unconfirmed ? 1 : 0]
+// Issue #322: the server answered a replay from its record of the earlier send,
+// which did land, and reports an answer that is no longer this response.
+const REPLY_REPLACED = 'Your send went through, but this question\'s answer has changed since.'
 // An item recovery's in-memory key repeats across page loads; its stored key
 // carries this load's id so a later load's recovery can never overwrite it.
 const draftPageId = globalThis.crypto.randomUUID()
@@ -6610,9 +6663,112 @@ function itemHolds(item, { text, context = '', kind = 'answer' }) {
 // would be answered from the server's record without writing anything, so
 // the send must be fresh; otherwise the exact replay keeps it idempotent.
 function savedIntentRule(id, intent, response) {
-  const item = freshItem(id)
+  const item = knownAnswer(id)
   if (itemHolds(item, response)) return 'delivered'
   return sameAnswer(intent.pin, draftAnswerOf(item)) ? 'replay' : 'fresh'
+}
+
+// Issue #321: the newest answer this window knows for a question, in the
+// item's field names. A reply's response reports the answer it left (#322),
+// which is newer than the last poll until a poll that started after it has
+// applied. Derived view state: the poll's snapshot itself is never changed.
+const reportedAnswers = {} // item id → { answer, before: the last load started when it arrived }
+
+function noteReportedAnswer(id, answer) {
+  if (answer && typeof answer === 'object') reportedAnswers[id] = { answer, before: loadGeneration }
+}
+
+function knownAnswer(id) {
+  const report = reportedAnswers[id]
+  if (report && appliedLoadGeneration <= report.before) return report.answer
+  delete reportedAnswers[id]
+  return freshItem(id)
+}
+
+// Something a send would replace: a reply or a response kind, not an
+// unanswered or cleared question.
+function isAnswer(pin) {
+  return Boolean(pin && (pin.text || pin.kind))
+}
+
+// The last responses this window sent for each question. When the server holds
+// one of them, that answer is the human's own text, perhaps from a send whose
+// answer was lost, not a newer reply. Only the notice's wording reads them.
+const sentReplies = {} // item id → [{ text, context, kind }], newest last
+
+function noteSentReply(id, response) {
+  sentReplies[id] = [...(sentReplies[id] ?? []), response].slice(-5)
+}
+
+// "A newer reply was sent: “Later Y”. Send replaces it.", or, when that answer
+// is one this window sent, "Your earlier send went through: …". The answer
+// goes through textContent only.
+function newerReplyNotice(id, answer, action) {
+  const pin = draftAnswerOf(answer)
+  const text = pin.kind && pin.kind !== 'answer' ? `${pin.kind}: ${pin.text ?? ''}` : (pin.text ?? '')
+  const own = pin.source === 'inbox' && (sentReplies[id] ?? []).some((sent) => itemHolds(answer, sent))
+  return `${own ? 'Your earlier send went through' : 'A newer reply was sent'}: “${text}”. ${action} replaces it.`
+}
+
+// The newer reply each send surface has named in a notice beyond what it was
+// drawn with: `item:<id>` for an answer editor, `recovery:<key>` for an
+// unsent response. Seeing it there is seeing it.
+const noticedAnswers = {}
+
+// A send from an editor or an unsent response replaces an open question's
+// answer. It goes ahead only while that answer is one the surface has shown:
+// drawn with it, or named in its notice. Anything newer is shown first (#321).
+// A closed question replaces nothing: its refusal says so.
+function replacesUnseen(id, known, shown, surface, response) {
+  const current = draftAnswerOf(known)
+  return (freshItem(id)?.status ?? 'open') === 'open' && isAnswer(current) && !itemHolds(known, response)
+    && !sameAnswer(current, shown) && !sameAnswer(current, noticedAnswers[surface])
+}
+
+// What an unsent response's Retry would replace, as this window knows it: an
+// open question's answer that this text would be sent over afresh. A replay
+// was written against that answer, and a delivered one replaces nothing.
+function retryWouldReplace(draft) {
+  const item = freshItem(draft.itemId)
+  const known = knownAnswer(draft.itemId)
+  if ((item && item.status !== 'open') || !isAnswer(draftAnswerOf(known)) || itemHolds(known, draft)) return null
+  if (draft.intent && savedIntentRule(draft.itemId, draft.intent, draft) !== 'fresh') return null
+  return known
+}
+
+// The answer a send expects to replace, in the route's field names (#321).
+function expectedAnswerOf(answer) {
+  return {
+    replied_at: answer.replied_at ?? null,
+    reply_source: answer.reply_source ?? null,
+    reply_kind: answer.reply_kind ?? null,
+    reply: answer.reply ?? null,
+  }
+}
+
+// Names the newer reply beside the control the human pressed, in place, so
+// neither the text nor the focus moves; the surface has now shown it.
+function showNewerReply(id, surface, answer, recoveryKey) {
+  noticedAnswers[surface] = draftAnswerOf(answer)
+  if (!recoveryKey) {
+    showWriteError(id, newerReplyNotice(id, answer, 'Send'))
+    return
+  }
+  for (const el of document.querySelectorAll(`.replace-notice[data-notice-for="${CSS.escape(recoveryKey)}"]`)) {
+    el.textContent = newerReplyNotice(id, answer, 'Retry')
+    el.hidden = false
+  }
+}
+
+// Issue #322: the rule can only read the last poll, so within one poll of
+// another writer it replays a send the server already applied. The server
+// answers that from its record without writing, and says so (`replayed`, not
+// `wrote`) with the answer that stands, in the item's own field names. When
+// that answer is not this response, a newer one replaced it after it landed.
+// A server from before #322 says only `ok`, which keeps the old reading.
+function replacedSinceItLanded(res, response) {
+  return res.replayed === true && res.wrote === false && Boolean(res.answer)
+    && !itemHolds(res.answer, response)
 }
 
 // Two windows that restored the same draft may each have kept it; one copy is enough.
@@ -6806,6 +6962,34 @@ function retireDeliveredReply(id, { recoveryKey, savedIntent, text, context, kin
   showWriteError(id, '')
 }
 
+// Issue #322: a replay wrote nothing and a newer answer stands, so the text
+// stays, as an unsent response saying so: in the entry its Retry came from, in
+// the one its editor's draft moved to while the send was in flight, or out of
+// the editor it was sent from. An editor typed in since keeps that newer text
+// instead. The replayed intent is spent, so a Retry claims a fresh one.
+// Returns whether an entry holds the text.
+function keepReplacedReply(id, {
+  title, text, context, kind, generation, intent, recoveryKey, recoveryOwner, submission, ownsDraft,
+}) {
+  const kept = { title, text, context, kind, intent: null, generation, reason: REPLY_REPLACED }
+  let key = null
+  if (recoveryKey) {
+    key = preserveItemDraftRecovery(id, { ...kept, key: recoveryKey, expectedOwner: recoveryOwner })
+  } else if (submission?.recoveryKey) {
+    key = preserveItemDraftRecovery(id, { ...kept, key: submission.recoveryKey, expectedOwner: submission.recoveryOwner })
+  } else if (ownsDraft) {
+    key = preserveItemDraftRecovery(id, kept)
+    bumpDraftGeneration(itemDraftGenerations, id)
+    delete draftReplies[id]
+    delete draftReplyContexts[id]
+    delete itemDraftMeta[id]
+    delete itemDraftRetryIntents[id]
+  }
+  retireItemDraftSubmission(id, generation, intent)
+  if (recoveryKey) retireItemDraftSubmissionIntent(id, intent)
+  return key !== null
+}
+
 async function submitItemReply(
   id,
   text,
@@ -6817,6 +7001,7 @@ async function submitItemReply(
   submissionUsesDraft = false,
   recoveryKey = null,
   recoveryOwner = null,
+  shown = null,
 ) {
   const reply = text.trim()
   if (!reply) return
@@ -6836,6 +7021,17 @@ async function submitItemReply(
   if (fate === 'delivered') {
     retireDeliveredReply(id, { recoveryKey, savedIntent, text, context, kind })
     await reloadAndPaint()
+    return
+  }
+  // #321: an answer editor's Send and an unsent response's Retry (`shown`: the
+  // answer the surface was drawn with) replace the question's answer. One the
+  // surface has not shown is named beside the control instead, and only a
+  // further click sends; the send then expects that answer, so the server
+  // refuses it if a newer one landed since.
+  const surface = shown ? (recoveryKey ? `recovery:${recoveryKey}` : `item:${id}`) : null
+  const known = surface ? knownAnswer(id) : null
+  if (surface && replacesUnseen(id, known, shown, surface, { text, context, kind })) {
+    showNewerReply(id, surface, known, recoveryKey)
     return
   }
   if (savedIntent) intent = fate === 'replay' ? savedIntent : null
@@ -6865,10 +7061,12 @@ async function submitItemReply(
   // #status's "disconnected" was wiped by the next successful poll ≤3s later.
   // Nothing is cleared until the server has it.
   const recoveryTitle = itemDraftMeta[id]?.title ?? freshItem(id)?.title ?? 'Question'
+  noteSentReply(id, { text, context, kind })
   const res = await postItemReply(id, {
     text: reply,
     context: context.trim() || undefined,
     kind,
+    expect_answer: known ? expectedAnswerOf(known) : undefined,
   }, intent)
   const latestIntent = sameItemIntent(itemLatestIntents[id], intent)
   const ownsSubmission = latestIntent
@@ -6947,7 +7145,41 @@ async function submitItemReply(
   if (sameItemIntent(itemDraftRetryIntents[id]?.intent, intent)) {
     delete itemDraftRetryIntents[id]
   }
-  if (!res.ok) {
+  // #321: refused only because the answer that stands is exactly this response
+  // (a double click's first send, or another send of the same text): it went
+  // through, so it retires below as a success would, with no notice.
+  const deliveredMeanwhile = res.ok === false && res.reason === 'answer_changed'
+    && itemHolds(res.answer, { text, context, kind })
+  // #321: a newer answer landed after this surface showed the one it expected,
+  // so nothing was written. The text stays where it is with that reply named,
+  // and only another click sends; the refused intent is spent.
+  if (surface && latestIntent && res.ok === false && res.reason === 'answer_changed' && res.answer
+    && !deliveredMeanwhile) {
+    retireItemDraftSubmission(id, submittedGeneration, intent)
+    const keptKey = recoveryKey ?? trackedSubmission?.recoveryKey ?? null
+    if (!keptKey) {
+      showNewerReply(id, surface, res.answer, null)
+      resumeRender()
+      return
+    }
+    preserveItemDraftRecovery(id, {
+      key: keptKey,
+      expectedOwner: recoveryKey ? submittedRecoveryOwner : trackedSubmission.recoveryOwner,
+      title: recoveryTitle,
+      text,
+      context,
+      kind,
+      intent: null,
+      generation: submittedGeneration,
+    })
+    if (recoveryKey) retireItemDraftSubmissionIntent(id, intent)
+    requestDraftRecovery()
+    showWriteError(id, '')
+    await reloadAndPaint()
+    return
+  }
+  if ((res.ok || deliveredMeanwhile) && surface) delete noticedAnswers[surface]
+  if (!res.ok && !deliveredMeanwhile) {
     if (!latestIntent) {
       const rejectedRecoveryKeys = [
         [recoveryKey, submittedRecoveryOwner],
@@ -7019,6 +7251,24 @@ async function submitItemReply(
     delete draftReplies[id]
     delete draftReplyContexts[id]
     delete itemDraftMeta[id]
+    showWriteError(id, '')
+    await reloadAndPaint()
+    return
+  }
+  if (replacedSinceItLanded(res, { text, context, kind })) {
+    const kept = keepReplacedReply(id, {
+      title: recoveryTitle,
+      text,
+      context,
+      kind,
+      generation: submittedGeneration,
+      intent,
+      recoveryKey,
+      recoveryOwner: submittedRecoveryOwner,
+      submission: trackedSubmission,
+      ownsDraft: hadDraft && submissionUsesDraft && ownsSubmission,
+    })
+    if (kept) requestDraftRecovery()
     showWriteError(id, '')
     await reloadAndPaint()
     return
@@ -7107,8 +7357,9 @@ function answerEl(it) {
     rememberDraftOwner()
     resumeRender()
   })
+  // the answer this editor is drawn with: Send replaces only that unasked (#321)
   const submit = () => sendReply(
-    it.id, input.value, ctxInput.value, 'answer', editorGeneration, null, true, true,
+    it.id, input.value, ctxInput.value, 'answer', editorGeneration, null, true, true, null, null, draftAnswerOf(it),
   )
   bindReplyEditor(input, submit)
   row.appendChild(input)
@@ -7288,6 +7539,9 @@ async function changeAnswer(it, msgEl) {
   draftReplies[it.id] = it.reply
   draftReplyContexts[it.id] = it.reply_context ?? ''
   bumpDraftGeneration(itemDraftGenerations, it.id)
+  // a notice naming the answer just cleared no longer says what Send does (#321)
+  delete noticedAnswers[`item:${it.id}`]
+  showWriteError(it.id, '')
   requestedDraftFocusBookmark = { key: `${it.id}:answer`, scopeId: 'needsYouList' }
   // issue #31.1. Two things have to be true for the human to SEE that draft, and
   // neither was:
@@ -8059,18 +8313,22 @@ function agentsCommand(text) {
   agentsBlock.actions.append(command, copy)
 }
 
-// Re-read what each host is registered to run, after any install. Resolves to
-// the agents it painted, or null when the read failed.
+// /api/setup as JSON, or null when it cannot be read.
+function readSetup() {
+  return fetch('/api/setup').then((r) => (r.ok ? r.json() : null)).catch(() => null)
+}
+
+// Re-read what each host is registered to run, after any install, and the
+// runtimes beside it (#294). Resolves to the agents it painted, or null when
+// the read failed.
 function refreshAgents() {
-  if (!agentsBlock) return Promise.resolve(null)
-  return fetch('/api/setup')
-    .then((r) => (r.ok ? r.json() : null))
-    .then((s) => {
-      if (!s?.agents || typeof s.agents !== 'object') return null
-      paintAgents(s.agents)
-      return s.agents
-    })
-    .catch(() => null) // keep the status already shown
+  if (!agentsBlock && !runtimesBlock) return Promise.resolve(null)
+  return readSetup().then((s) => {
+    if (s?.runtimes && typeof s.runtimes === 'object') paintRuntimes(s.runtimes)
+    if (!s?.agents || typeof s.agents !== 'object') return null // keep the status already shown
+    paintAgents(s.agents)
+    return s.agents
+  })
 }
 
 // One fixed install target per host, one after another: a host whose CLI is
@@ -8171,6 +8429,106 @@ async function updateAgents(action, current, button) {
     block.restart.replaceChildren(list)
   }
   block.restart.hidden = false
+}
+
+// ── Runtimes (#294) ─────────────────────────────────────────────────────────
+// Each runtime folder Setup installed, its size and what uses it, and ONE
+// explicit action that removes the unused ones through the existing bridge's
+// fixed `prune-runtimes` target. The renderer names the target and nothing
+// else: the script checks again under the setup lock, and keeps anything still
+// in use. Just before it runs, the panel re-reads the list and runs only if
+// the button still names what it would remove. Nothing runs at startup. Folder
+// names come from disk, so every string here is textContent.
+let runtimesBlock = null
+
+function renderRuntimes(host, s, canInstall) {
+  runtimesBlock = null
+  if (!s?.runtimes || typeof s.runtimes !== 'object') return
+  const section = document.createElement('section')
+  section.className = 'setup-block runtimes-status'
+  const title = document.createElement('h3')
+  title.textContent = 'Runtimes'
+  const lead = document.createElement('p')
+  lead.className = 'setup-hint'
+  lead.textContent = RUNTIMES_LEAD
+  const list = document.createElement('ul')
+  list.className = 'runtimes-list'
+  const actions = document.createElement('div')
+  actions.className = 'runtimes-actions'
+  const result = document.createElement('pre')
+  result.className = 'runtimes-result'
+  result.hidden = true
+  section.append(title, lead, list, actions, result)
+  host.appendChild(section)
+  runtimesBlock = { section, list, actions, result, canInstall, running: false }
+  paintRuntimes(s.runtimes)
+}
+
+function paintRuntimes(runtimes) {
+  const block = runtimesBlock
+  if (!block) return
+  const lines = runtimeLines(runtimes, lastData?.activity ?? [])
+  block.section.hidden = lines.length === 0
+  block.list.replaceChildren(...lines.map((line) => {
+    const item = document.createElement('li')
+    item.dataset.status = line.status
+    item.textContent = line.text
+    return item
+  }))
+  block.actions.replaceChildren()
+  const hint = (text) => {
+    const p = document.createElement('p')
+    p.className = 'setup-hint'
+    p.textContent = text
+    block.actions.appendChild(p)
+  }
+  const action = runtimesAction(runtimes)
+  const canRun = block.canInstall && Boolean(window.agentInboxSetup?.install)
+  if (action && canRun) {
+    hint(action.hint)
+    const run = btn(action.label, () => removeRuntimes(action, run))
+    run.className = 'runtimes-remove-btn'
+    run.disabled = block.running
+    block.actions.appendChild(run)
+  }
+  const note = runtimesNote(runtimes, canRun)
+  if (note) hint(note)
+  if (action) hint(PROJECT_SCOPE_NOTE)
+}
+
+async function removeRuntimes(action, button) {
+  const block = runtimesBlock
+  if (!block || block.running) return
+  block.running = true
+  button.disabled = true
+  const show = (text, state) => {
+    block.result.textContent = text
+    block.result.hidden = false
+    block.result.classList.toggle('success', state === 'ok')
+    block.result.classList.toggle('failure', state === 'failed')
+  }
+  try {
+    // the button names what it removes: run only if that is still the list
+    const fresh = await readSetup()
+    const now = runtimesAction(fresh?.runtimes)
+    const same = now !== null && now.ids.length === action.ids.length && now.ids.every((id) => action.ids.includes(id))
+    if (!same) {
+      show(fresh
+        ? 'The runtimes changed since Setup listed them, so it removed nothing. Check the list and try again.'
+        : 'Setup could not read the runtimes again, so it removed nothing.', 'failed')
+      return
+    }
+    show(`${action.label.replace(/^Remove/, 'Removing').replace(/ \([^)]*\)$/, '')}…`, 'running')
+    try {
+      const outcome = await window.agentInboxSetup.install('prune-runtimes')
+      show(outcome?.output || (outcome?.ok ? 'Done.' : 'Setup failed without output.'), outcome?.ok === true ? 'ok' : 'failed')
+    } catch (err) {
+      show(`Setup failed: ${err instanceof Error ? err.message : String(err)}`, 'failed')
+    }
+  } finally {
+    block.running = false
+    await refreshAgents()
+  }
 }
 
 function setupTargetLabel(target) {
@@ -8315,6 +8673,7 @@ async function refreshSetupAvailability() {
   shown.menu.replaceWith(menu)
   shown.menu = menu
   if (agentsBlock) agentsBlock.canInstall = true
+  if (runtimesBlock) runtimesBlock.canInstall = true
   await refreshAgents()
 }
 
@@ -8846,6 +9205,7 @@ async function renderSetup() {
     }
     const canInstall = await window.agentInboxSetup?.available?.().catch(() => false) ?? false
     renderAgents(host, s, canInstall)
+    renderRuntimes(host, s, canInstall)
     const menu = setupMenu(s, canInstall)
     host.appendChild(menu)
     setupShown = { info: s, canInstall, menu }

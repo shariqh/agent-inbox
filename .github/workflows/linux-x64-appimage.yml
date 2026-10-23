@@ -161,7 +161,9 @@ jobs:
               runuser -u appuser -- /gate/smoke-linux-appimage.sh \
                 --appimage "/tmp/$ARTIFACT" \
                 --mode fuse \
-                --port 14319
+                --port 14319 \
+                --locale fr_FR.UTF-8 \
+                --expect-lang en-US
             '
       - name: Clean Ubuntu 22.04 no-FUSE extraction gate
         shell: bash
@@ -193,7 +195,9 @@ jobs:
               runuser -u appuser -- /gate/smoke-linux-appimage.sh \
                 --appimage "/tmp/$ARTIFACT" \
                 --mode extract \
-                --port 14320
+                --port 14320 \
+                --locale en_GB.UTF-8 \
+                --expect-lang en-GB
             '
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

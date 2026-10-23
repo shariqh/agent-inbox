@@ -83,16 +83,21 @@ Each job:
 
 1. validates the exact Linux release profile;
 2. downloads and SHA-verifies the official Node archive;
-3. stages the portable runtime with its own Node/npm and runs the runtime
-   manifest, Node ABI, `better-sqlite3`, hook, and allocation-driven SQLite self-tests;
+3. stages the portable runtime with its own Node/npm, prunes its `node_modules`
+   ([What node_modules ships](macos-release.md#what-node_modules-ships-291)), and runs
+   the runtime manifest, Node ABI, `better-sqlite3`, hook, and allocation-driven SQLite
+   self-tests;
 4. compiles `better-sqlite3` for the pinned Electron ABI from the lockfile-pinned
-   source, with install scripts off and no prebuild (#315);
+   source, with install scripts off and no prebuild (#315), and prunes the app's
+   `node_modules` the same way;
 5. creates a thin Electron application folder containing only the matching
-   Linux runtime key;
+   Linux runtime key and only Electron's `locales/en-US.pak` and `locales/en-GB.pak`
+   ([What Electron locales ship](macos-release.md#what-electron-locales-ship-292));
 6. verifies ELF architecture, libc symbol floors, Electron/Node versions and
-   ABIs, both native addons, schema-2 Setup metadata, and exact-host payload
-   selection, then runs the allocation-driven SQLite check under the packaged
-   Electron (180-second ceiling, scratch `HOME`/XDG/`AGENT_INBOX_DB`);
+   ABIs, both native addons, pruned app and runtime `node_modules`, the US and British
+   English Electron locales, schema-2 Setup metadata, and exact-host payload selection, then runs
+   the allocation-driven SQLite check under the packaged Electron (180-second ceiling,
+   scratch `HOME`/XDG/`AGENT_INBOX_DB`);
 7. archives and restores the runtime and app folder, repeats verification,
    launches the restored app under Xvfb, and exercises runtime install/prune.
 
@@ -237,6 +242,14 @@ icon under the hicolor theme. `chrome-sandbox` is the sole privileged package
 entry and is stored as root-owned mode `4755`; the DEB launcher never disables
 Chromium's sandbox.
 
+`/usr/share/doc/agent-inbox` holds the Agent Inbox `copyright` file and
+Electron's `LICENSE.electron`. Chromium's notices, `LICENSES.chromium.html`
+(about 20 MB), ship once, beside the binary in `/usr/lib/agent-inbox`, and
+`/usr/share/doc/agent-inbox/LICENSES.chromium.html` is a relative link to that
+copy (#293). Debian policy 12.3 describes this pattern, a link from
+`/usr/share/doc/<package>` to a file installed elsewhere, and 10.5 asks for a
+relative link within `/usr`.
+
 The clean launch gate checks the helper's stored ownership and mode separately
 from live Chromium `/proc` evidence. The live evidence demonstrates a Chromium
 child using a distinct user namespace, `NoNewPrivs`, and seccomp filtering on
@@ -252,8 +265,9 @@ sha256sum --check agent-inbox_X.Y.Z_amd64.deb.sha256
 
 The strict verifier checks the outer ar member order and metadata, exact control
 fields, every control/data tar owner, group, mode, timestamp and symlink, the
-complete allowed root layout, package notices, icon and launcher, and the sole
-sandbox privilege directly from archive metadata. It then extracts with a
+complete allowed root layout, package notices (including the exact link to the
+one copy of Chromium's notices), icon and launcher, and the sole sandbox
+privilege directly from archive metadata. It then extracts with a
 child-only zero umask and reruns the complete thin-folder ELF architecture,
 Electron/Node ABI, native-addon, GLIBC/GLIBCXX, runtime-manifest, Setup-selection
 and source-tree gates.
@@ -332,7 +346,14 @@ has no repository checkout or system Node, isolates HOME, XDG
 configuration/cache/data/state, the inbox database, and a private mode-`0700`
 scratch tree, then requires the packaged in-process viewer to answer on
 `127.0.0.1` with the hardened
-`x-agent-inbox-local-boundary: loopback-v1` marker. The no-FUSE container has no
+`x-agent-inbox-local-boundary: loopback-v1` marker. Only US and British English ship
+(#292), so each gate also runs the app in a locale (`LANG`, with `LANGUAGE`, `LC_ALL` and
+`LC_MESSAGES` unset) and requires every renderer to have been started with the locale
+Chromium must choose for it: the FUSE gate runs as a French user, who falls back to
+`--lang=en-US`, the extraction gate as a British one, who keeps `--lang=en-GB`. Chromium
+would seed a new French profile with that English locale's spellchecker, so at startup the
+app sets the system's languages on a profile that has none in the system's first language
+([Spellcheck](macos-release.md#what-electron-locales-ship-292)). The no-FUSE container has no
 `/dev/fuse`; the normal container receives the FUSE device explicitly.
 Because neither container has a `node` executable, that response cannot come
 from Electron's development-only host-Node fallback.

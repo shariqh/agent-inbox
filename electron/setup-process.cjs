@@ -4,8 +4,12 @@ const { isAbsolute, join } = require('node:path')
 const { spawn } = require('node:child_process')
 
 // `hooks` (#206) moves Claude's hooks with an INSTALLED runtime's own hook
-// installer; every other target is an agent install.
-const TARGETS = new Set(['all', 'claude', 'copilot', 'hooks'])
+// installer, and `prune-runtimes` (#294) removes the runtimes nothing uses
+// with the app's own runtime payload; every other target is an agent install.
+const TARGETS = new Set(['all', 'claude', 'copilot', 'hooks', 'prune-runtimes'])
+// The targets that run a runtime's own script, in runtime mode, with no
+// runtime arguments; every other runs install-agents.sh.
+const RUNTIME_SCRIPTS = Object.freeze({ hooks: 'install-hooks.sh', 'prune-runtimes': 'prune-runtimes.sh' })
 const SUPPORTED_PLATFORMS = new Set(['darwin', 'linux'])
 const RUNTIME_MANIFEST = 'runtime-manifest.json'
 const DIGEST_RE = /^sha256:[0-9a-f]{64}$/i
@@ -25,7 +29,7 @@ function setupResult(target, output) {
 }
 
 function installerPath(repoRoot, target) {
-  return join(repoRoot, 'scripts', target === 'hooks' ? 'install-hooks.sh' : 'install-agents.sh')
+  return join(repoRoot, 'scripts', Object.hasOwn(RUNTIME_SCRIPTS, target) ? RUNTIME_SCRIPTS[target] : 'install-agents.sh')
 }
 
 function installerEnv(env) {
@@ -63,6 +67,11 @@ function validatedOperation(operation, platform) {
     // settings, so it runs only from an installed runtime, in runtime mode.
     if (runtime !== null || !existsSync(join(repoRoot, RUNTIME_MANIFEST))) {
       return { error: setupResult(target, 'Claude hooks move only from an installed runtime.') }
+    }
+  } else if (target === 'prune-runtimes') {
+    // It runs on its runtime's own Node and helpers, and keeps that runtime.
+    if (runtime !== null || !existsSync(join(repoRoot, RUNTIME_MANIFEST))) {
+      return { error: setupResult(target, 'Setup removes runtimes only with a release build\'s verified runtime.') }
     }
   } else if (runtime !== null) {
     if (
@@ -107,9 +116,13 @@ function createSetupProcessRunner({
       // installer replaces only Setup runtimes' hooks and refuses beside any
       // other. --move-only makes it refuse, under the setup lock, where no
       // Setup runtime's hooks are there to move: Setup never adds a fresh set.
+      // The prune (#294) takes nothing but --apply: it decides what to remove
+      // itself, under the setup lock, and never from a list the caller names.
       const argv = target === 'hooks'
         ? [script, '--apply', '--move-only']
-        : [script, '--apply', '--target', target, ...runtimeArgs]
+        : target === 'prune-runtimes'
+          ? [script, '--apply']
+          : [script, '--apply', '--target', target, ...runtimeArgs]
 
       return new Promise((resolveResult) => {
         let output = ''

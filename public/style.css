@@ -346,6 +346,15 @@ header { flex-wrap: wrap; }
 .agents-result { margin: 10px 0 0; }
 .agents-result.success { border: 1px solid color-mix(in srgb, var(--app-success) 40%, var(--app-border)); border-radius: 7px; background: color-mix(in srgb, var(--app-success) 7%, transparent); }
 .agents-result.failure { border: 1px solid color-mix(in srgb, var(--app-danger) 40%, var(--app-border)); border-radius: 7px; background: color-mix(in srgb, var(--app-danger) 7%, transparent); }
+/* #294: Setup's Runtimes block, styled as the Agents block above it */
+.runtimes-list { list-style: none; margin: 0 0 8px; padding: 0; }
+.runtimes-list li { font-size: 13px; margin: 3px 0; overflow-wrap: anywhere; }
+.runtimes-list li[data-status='unused'] { font-weight: 600; }
+.runtimes-actions .runtimes-remove-btn { padding: 6px 11px; border: 1px solid var(--app-accent); border-radius: 7px; background: var(--app-accent); color: var(--app-on-accent); cursor: pointer; }
+.runtimes-actions .runtimes-remove-btn:disabled { cursor: wait; opacity: .55; }
+.runtimes-result { margin: 10px 0 0; }
+.runtimes-result.success { border: 1px solid color-mix(in srgb, var(--app-success) 40%, var(--app-border)); border-radius: 7px; background: color-mix(in srgb, var(--app-success) 7%, transparent); }
+.runtimes-result.failure { border: 1px solid color-mix(in srgb, var(--app-danger) 40%, var(--app-border)); border-radius: 7px; background: color-mix(in srgb, var(--app-danger) 7%, transparent); }
 .agents-restart ul { margin: 4px 0 0; padding-left: 18px; font-size: 13px; }
 #setup { padding: 16px; border: 1px solid color-mix(in srgb, var(--app-text) 14%, transparent); border-radius: 12px; background: var(--app-surface); box-shadow: 0 18px 48px color-mix(in srgb, var(--app-text) 14%, transparent); }
 body.settings-open #rail,
@@ -366,6 +375,8 @@ body.settings-open .floating-search { opacity: .32; }
 .stale-draft { margin: 5px 0 0; }
 .stale-drafts-fold { opacity: .85; }
 .stale-draft-line { display: flex; align-items: center; gap: 8px; padding: 5px 8px; font-size: 12px; color: color-mix(in srgb, var(--app-danger) 70%, var(--app-text)); }
+/* what an unsent response's Retry would replace (#321) */
+.replace-notice { font-weight: 600; }
 .empty { opacity: .4; font-size: 13px; }
 .board { border: 1px solid color-mix(in srgb, var(--app-text) 15%, transparent); border-radius: 8px; padding: 12px; margin-bottom: var(--gap); }
 .board-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }

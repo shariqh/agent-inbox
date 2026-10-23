@@ -131,7 +131,11 @@ describe('31.1 · an accepted "Change answer" must show the surface it staged a 
     await settle()
     const retried = bridge.posts.filter((post) => post.url === `/api/items/${starred}/reply`)
     expect(retried).toHaveLength(2)
-    expect(JSON.parse(String(retried[1]!.init?.body))).toEqual(failedBody)
+    // the exact intent, now also expecting the unanswered question its line showed (#321)
+    expect(JSON.parse(String(retried[1]!.init?.body))).toEqual({
+      ...failedBody,
+      expect_answer: { replied_at: null, reply_source: null, reply_kind: null, reply: null },
+    })
     expect(getItem(d, starred)?.reply).toBe('Deploy')
     expect(getItem(d, other)?.reply).toBeNull()
     expect(document.querySelector('.stale-drafts-fold')).toBeNull()

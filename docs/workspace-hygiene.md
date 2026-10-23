@@ -135,25 +135,44 @@ git -C "$MAIN" bundle list-heads "$B"                 # must list the branch at 
 ## Runtimes
 
 Setup installs runtime payloads under `~/.agent-inbox/runtime/<runtime-id>/`. Never delete
-one with `rm -rf`. There is no standalone prune command: `scripts/install-agents.sh
---apply` prunes old runtimes itself, under the setup lock, keeping the current runtime
-and the newest previous one and skipping any runtime a host registration or hook still
-references. Interrupted prunes leave `.trash-*` folders that the next install or prune
+one with `rm -rf`. `scripts/install-agents.sh --apply` prunes old runtimes itself, under the
+setup lock, keeping the current runtime and the newest previous one and skipping any runtime
+a host config still uses. To remove every runtime nothing uses (#294), run a runtime's own
+`prune-runtimes.sh`: without `--apply` it is a dry run that lists what it would remove and
+changes nothing; with `--apply` it removes them under the setup lock, through the runtime
+prune, keeping the runtime it runs from, any runtime a host config or a running process
+still uses, and any that changed since it was installed (a Finder `.DS_Store` in it is
+enough). Setup's Runtimes section offers the same removal with one button in the app.
+Interrupted prunes leave `.trash-*` folders that the next install or prune
 removes.
 
-To see what is there and what is still referenced (read-only; prints no configuration):
+```sh
+R=~/.agent-inbox/runtime
+bash "$R/<runtime-id>/scripts/prune-runtimes.sh"           # dry run: what would go, and why the rest stays
+bash "$R/<runtime-id>/scripts/prune-runtimes.sh" --apply   # remove them
+```
+
+`<runtime-id>` must be a runtime that carries the script (1.7.0 or later); the app's own
+copy is `"/Applications/Agent Inbox.app/Contents/Resources/app/runtime/<platform-arch>/scripts/prune-runtimes.sh"`.
+"Uses" is one rule, shared with the installer's own prune: a host config
+(`~/.claude.json` in every scope, `~/.claude/settings.json`, `~/.claude/settings.local.json`,
+`~/.copilot/mcp-config.json` or Claude Desktop's config) naming the runtime's id, unless as
+a path to a folder that is not there, or a launcher in one leading into it, through a
+symlink or whatever its spelling; or a running process naming its id. A config it cannot
+read means nothing is removed. Project-scope configs (`<project>/.mcp.json`,
+`<project>/.claude/settings*.json`) are not read.
+
+To see what is there and what is still referenced (read-only; `references` names the
+config files that use a runtime, never what is in them):
 
 ```sh
 R=~/.agent-inbox/runtime
 fnm exec --using=24 -- node "$MAIN/scripts/runtime-payload.mjs" list --runtime-root "$R"
 fnm exec --using=24 -- node "$MAIN/scripts/runtime-config.mjs" references \
-  --runtime-root "$R" --runtime-id <id> \
-  --file ~/.claude.json --file ~/.copilot/mcp-config.json \
-  --file ~/.claude/settings.json --file ~/.claude/settings.local.json
+  --runtime-root "$R" --runtime-id <id> --home ~
 ```
 
-An `unreferenced` runtime goes away on the next Setup or installer run. Leave the
-decision to remove one sooner to the owner.
+Leave the decision to remove a runtime to the owner.
 
 ## Periodic sweep
 

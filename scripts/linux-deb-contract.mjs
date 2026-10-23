@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process'
 import { lstatSync, readdirSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, posix } from 'node:path'
 import { resolveLinuxDebTarget } from './linux-deb-inputs.mjs'
 import { renderLinuxDesktopEntry } from './linux-package-common.mjs'
 
@@ -32,6 +32,18 @@ export function renderDebLauncher(inputs) {
 
 export function renderDebDesktopEntry(inputs) {
   return renderLinuxDesktopEntry(inputs.desktop)
+}
+
+// The DEB ships Chromium's 20 MB notices once (#293): beside the binary, where
+// the verified application folder carries them, with the doc path a link to
+// that copy. Debian policy 12.3 describes exactly this, a link from
+// /usr/share/doc/<package> to a file installed elsewhere, and 10.5 asks for a
+// relative link within /usr.
+export function renderDebChromiumLicensesLink(inputs) {
+  return posix.relative(
+    posix.dirname(inputs.layout.chromiumLicenses),
+    `${inputs.layout.applicationDirectory}/LICENSES.chromium.html`,
+  )
 }
 
 export function renderDebControl(inputs, profile, packageVersion, installedSize) {

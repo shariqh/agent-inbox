@@ -42,6 +42,7 @@ jobs:
           test/package-stamp.test.ts
           test/setup-runner.test.ts
           test/install-runtime.test.ts
+          test/prune-runtimes.test.ts
           test/setup-lock.test.ts
       - name: Verify structured-text hostile-input performance
         run: npm run test:structured-text:perf

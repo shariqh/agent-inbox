@@ -55,6 +55,7 @@ function writePayload(payloadDir: string, version: string, opts: PayloadOptions 
     'node_modules/better-sqlite3/build/Release/better_sqlite3.node': 'native\n',
     'scripts/install-agents.sh': '#!/bin/bash\necho noop\n',
     'scripts/install-hooks.sh': '#!/bin/bash\necho noop\n',
+    'scripts/prune-runtimes.sh': '#!/bin/bash\necho noop\n',
     'scripts/runtime-payload.mjs': '// helper\n',
     'scripts/runtime-config.mjs': '// config helper\n',
     'scripts/setup-filesystem.cjs': '// filesystem adapter\n',
@@ -116,12 +117,13 @@ export function registerHost(home: string, host: AgentHost, command: string, ent
   writeFileSync(file, `${JSON.stringify(config, null, 2)}\n`)
 }
 
-export function releaseRuntime(version: string, opts: { hostPayload?: boolean } = {}): ReleaseRuntime {
+export function releaseRuntime(version: string, opts: { hostPayload?: boolean; pruneScript?: boolean } = {}): ReleaseRuntime {
   const appRoot = scratchDir('release-bundle-')
   const home = scratchDir('release-home-')
   const runtimeRoot = join(home, 'runtime')
   const payloadDir = join(appRoot, 'runtime', HOST)
-  const runtimeId = writePayload(payloadDir, version)
+  // a payload from before #294 carries no prune script
+  const runtimeId = writePayload(payloadDir, version, opts.pruneScript === false ? { omitFiles: ['scripts/prune-runtimes.sh'] } : {})
   const digest = createHash('sha256').update(readFileSync(join(payloadDir, 'runtime-manifest.json'))).digest('hex')
   const setupInfoPath = join(appRoot, 'setup-info.json')
   writeFileSync(setupInfoPath, JSON.stringify({

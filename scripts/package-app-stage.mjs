@@ -7,11 +7,18 @@
 // package.json + package-lock.json pair. `npm ci --omit=dev` then installs the
 // lockfile's production graph instead of resolving package.json ranges afresh,
 // and verifyStagedLockGraph() proves the installed graph is that lockfile's.
+// `prune` removes what nothing loads at runtime, as the release builders do
+// (#291); it removes files inside packages, never a package, so the graph
+// check that follows stays exact. `locales` keeps only the US and British
+// English Electron locales in the packaged bundle, as the release builders do
+// (#292).
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 import { copyRequiredTree } from './build-thin-app.mjs'
+import { pruneElectronLocales } from './prune-electron-locales.mjs'
+import { pruneNodeModules } from './prune-node-modules.mjs'
 
 // The development app's Electron identity: app.name, and therefore its
 // userData directory and menu label, comes from this field.
@@ -192,6 +199,23 @@ export function verifyStagedLockGraph({ lockPath, appRoot }) {
   return { packages, omittedDev, optionalAbsent }
 }
 
+// Without node_modules npm ci installed nothing, and a prune that removed
+// nothing would look like success.
+function pruneStagedApp(appRoot) {
+  const modules = join(appRoot, 'node_modules')
+  if (!existsSync(modules)) throw new PackageAppStageError(`${modules} is missing; nothing was installed to prune`)
+  const { removedFiles, removedBytes } = pruneNodeModules(appRoot)
+  return `package-app: pruned ${removedFiles} files (${(removedBytes / 1e6).toFixed(1)} MB) nothing loads from ${modules}`
+}
+
+// The development package is a macOS bundle. The prune refuses one without
+// US or British English and removes every other locale.
+function pruneAppLocales(app) {
+  const { removedLocales, removedBytes } = pruneElectronLocales(app, 'darwin')
+  return `package-app: kept only the US and British English Electron locales in ${app}; `
+    + `removed ${removedLocales} locales (${(removedBytes / 1e6).toFixed(1)} MB)`
+}
+
 function describeGraph(label, graph) {
   const optional = graph.optionalAbsent.length
     ? `; ${graph.optionalAbsent.length} optional packages not installed on this platform`
@@ -212,9 +236,15 @@ function main(argv) {
   } else if (command === 'verify' && first && second && extra.length === 0) {
     const graph = verifyStagedLockGraph({ lockPath: resolve(first), appRoot: resolve(second) })
     process.stdout.write(`${describeGraph(values.label, graph)}\n`)
+  } else if (command === 'prune' && first && !second) {
+    process.stdout.write(`${pruneStagedApp(resolve(first))}\n`)
+  } else if (command === 'locales' && first && !second) {
+    process.stdout.write(`${pruneAppLocales(resolve(first))}\n`)
   } else {
     process.stderr.write(
       'usage: package-app-stage.mjs stage <repo-root> <stage-dir>\n'
+        + '       package-app-stage.mjs prune <app-dir>\n'
+        + '       package-app-stage.mjs locales <app-bundle>\n'
         + '       package-app-stage.mjs verify <package-lock.json> <app-dir> [--label <name>]\n',
     )
     process.exitCode = 2

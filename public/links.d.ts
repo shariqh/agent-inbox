@@ -21,9 +21,13 @@ export interface FoundFile {
   end: number
   /** the path as written, with its :line suffix */
   text: string
-  /** absolute or ~/, without the :line suffix */
+  /** absolute or ~/, or (issue #324) relative to its root, without the :line suffix */
   path: string
   line: number | null
+  /** issue #324 — a repo-relative path's folder, from LinkContext.root */
+  root?: string
+  /** issue #324 — the full path it names in that folder, with the :line as written */
+  title?: string
 }
 
 export interface FoundWeb {
@@ -36,6 +40,8 @@ export type FoundLink = FoundRef | FoundFile | FoundWeb
 export interface LinkContext {
   /** owner/name a bare #N resolves against */
   repo?: string | null
+  /** issue #324 — the repository folder repo-relative paths resolve against; without one they stay plain */
+  root?: string | null
   /** receives every link rendered, in order */
   found?: FoundLink[]
   /** a file link's click copies its path here, so its title says so */

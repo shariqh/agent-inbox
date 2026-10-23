@@ -258,8 +258,12 @@ Linux, plus, for Setup's `hooks` target (#206), exactly
 that carries a runtime manifest. `--move-only` makes the installer refuse, under the setup
 lock, where no Setup runtime's hooks exist to move. The release adapter finds that installed copy by the verified
 runtime id and verifies it against the same signed manifest digest just before spawn; a dev
-checkout refuses the target. The boundary fails closed before spawn on Windows or an unknown
-platform. It accepts no
+checkout refuses the target. Setup's `prune-runtimes` target (#294) is exactly
+`/bin/bash <app payload>/scripts/prune-runtimes.sh --apply`, run from the app's own runtime
+payload once it verifies against the signed digest with that script among its files; the
+script decides what to remove itself, under the setup lock, so no runtime id or path ever
+becomes argv, and a dev checkout refuses the target too. The boundary fails closed before
+spawn on Windows or an unknown platform. It accepts no
 caller-provided executable, argv, or shell string. This does not enable Linux or Windows
 release Setup. The core does not load the Node-ABI agent runtime or model shell-internal
 self-test, rollback, or pruning work.
@@ -377,3 +381,8 @@ fnm exec --using=24 npm run electron
   Batched notifications remain open-only because one action list cannot identify multiple
   questions.
 - The app quits when the window closes, including on macOS (utility-window behavior).
+- Only US and British English Electron locales ship (#292). Electron seeds a new
+  profile's spellchecker languages from that locale, so on Linux and Windows
+  `spellcheck-languages.cjs` sets the system's languages at startup, before the window
+  opens, on a profile with none in the system's first language. macOS keeps the system's
+  own spellchecker.

@@ -38,6 +38,7 @@ const { checkForUpdate, runsFromAppImage } = require('./update-fetch.cjs')
 const { createUpdatePreferences, createUpdateTrustState } = require('./update-preferences.cjs')
 const { loadUpdateRegistry } = require('./update-trust.cjs')
 const { createConditionalReader } = require('./conditional-read.cjs')
+const { syncSpellcheckLanguages } = require('./spellcheck-languages.cjs')
 const {
   attentionNotification,
   cannedResponseActions,
@@ -1075,6 +1076,15 @@ app.whenReady().then(async () => {
   }
 
   updateController = initializeUpdateController()
+  // Only US and British English locales ship (#292), and Electron seeds a new
+  // profile's spellchecker from the app locale, so on Linux and Windows switch
+  // a profile with none of the system's first language to the system's
+  // languages, before the first page loads.
+  try {
+    syncSpellcheckLanguages({ platform: process.platform, app, session: session.defaultSession })
+  } catch (err) {
+    console.error(`[agent-inbox] could not set the spellchecker's languages: ${err.message}`)
+  }
   const win = createWindow()
   installApplicationMenu(win)
   const setupWindowWebContentsId = win.webContents.id

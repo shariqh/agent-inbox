@@ -317,7 +317,8 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   a fresh inbox one. `answerItem` is ONE conditioned UPDATE that only writes while nothing
   unread is waiting (`reply IS NULL OR reply = '' OR reply_seen_at IS NOT NULL`) and
   otherwise returns `{ok:false, reason:'unread_inbox_answer'}` with the waiting answer;
-  `replyItem` overwrites an open question's answer and resets pickup. Never SELECT-then-UPDATE and
+  `replyItem` overwrites an open question's answer and resets pickup (or, when the page
+  sends the answer it expects to replace, only while that answer still stands, #321). Never SELECT-then-UPDATE and
   never two UPDATEs here: the viewer writes from its own OS process and would land between
   them, leaving the human's newest answer flagged "✓ picked up" and un-clearable. An agent
   may overwrite an answer it has already picked up, but may never blank one.
@@ -486,6 +487,51 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   buttons (`data-link-action`), never in a browser or a reused viewer. Opening, a rule's app or
   Quick Look, a Reveal rule and a Reveal request are all file requests, so `openLinkRequest`
   refuses each of them as `unowned` without the grant, before any rule is read.
+- **Repo-relative paths (#324, #300 part 3) open against the folder the item or plan recorded,
+  and never outside it.** `items.repo_root` and `boards.repo_root` are additive, nullable
+  columns: the MCP server's `git rev-parse --show-toplevel` (`inferRepoRoot` in `src/infer.ts`,
+  through the stdout-capturing `git()` helper, null on any failure or anything but one plain
+  absolute path). `scope.rootFor()` reads it LIVE and only on writes, like `headFor`: never in
+  `get()` (every call, `pending()` polls included, would pay a spawn), never memoized (worktrees
+  and checkouts move), no `register` override, and not in the scope `whoami` returns. `flag`
+  stamps it at insert; `board_upsert`/`board_row` pass it to `ensureBoard`, whose
+  `repo_root = COALESCE(?, repo_root)` keeps the stored folder through a write that found none,
+  and whose change counts like `head_repo`'s (`updated_at`, board revision; `rootChanged`).
+  `board_advance` restamps no plan field, and no older server's statement names the column
+  (`test/mixed-version.test.ts` runs v1.6.0's item insert, plan writes and `board_advance`).
+  Agent reads never carry it: `agentItem` (`src/shape.ts`) strips it from `pending()` items,
+  `shapeBoard` from a titled `board_get`, and the summary and `listPendingRows` never select it;
+  `/api/items` and `/api/boards` simply carry it. **Detection** (`relativeAt` in
+  `public/links.js`) runs only with a usable `ctx.root` (an absolute folder: `textContext()` and
+  `cardLinks` pass the item's or the row's plan's `repo_root`), so a card without one renders
+  exactly as before. It starts at a token's first `/` and reads back over one segment: an
+  opener before it (as for absolute paths), at least a folder and a name, a first folder with
+  no inner dot (`.github` yes; domains, versions, `Node.js` no), no segment of dots alone (`.`,
+  `..`, an elided `...`; a leading `./` is dropped), and either an extension (all lowercase or
+  all uppercase, ≤ 10 characters, so `write.Then` stays prose) or a `:line` on a name that still
+  looks like a file's (a dotfile, or a capital, `-` or `_`: never `origin/main:238`). A token
+  after a space whose previous token ended in a bare folder name (`/Users/s/My Documents/a.md`)
+  is a continuation and never links; `owner/name#N`, URLs, globs, routes and absolute paths keep
+  their own detectors. **Both reads are bounded, and no pattern can backtrack:** back over at
+  most one 255-character segment, forward over at most 255 characters a segment and 1024
+  (`MAX_RELATIVE`) in all, and a path past either cap links nothing, never a shortened prefix.
+  No pattern there nests quantifiers or puts two unbounded ones side by side: the `:line` name
+  check is plain code (`fileLikeName`), because as one regex it backtracked quadratically on a
+  long name (9 s at 80k characters) and froze every render of a card that showed one (review
+  of #330), and `fileLabel`, `webLabel` and `repoFilePath` strip trailing slashes with a loop,
+  never an unanchored `/\/+$/`, for the same reason. `test/links.test.ts` times each shape.
+  The link carries the path (`./` dropped, no `:line`) in `data-link-path` and the folder in an
+  escaped `data-link-root`, never an href; its title and the strip's key use the full path
+  (`repoFilePath` in `source.js`), so it shares one chip with the same file written absolute.
+  `link-open.js` sends `{kind:'file', path, root, reveal}`; the preload passes `root` only as a
+  string; main accepts exactly that key set and `fileOpenPlan(path, { root })` joins only a plain
+  relative path (`joinRepoPath`: no `.`/`..`/empty segment, `~`, `:` or backslash) to a plain
+  absolute folder, then resolves both with `realpath` and refuses a file whose real path is not
+  inside the folder's (`outside`, said as "points outside its repository") before `lstat`, the
+  xattr checks or any rule; everything after that is today's policy, ownership grant included.
+  A `missing` answer for a relative request copies the path as written and says it may be on
+  another branch or worktree; Copy path, a browser and a reused viewer copy the full path.
+  Nothing about it reaches attention, a badge or a count.
 - **`src/prstate.ts` is VIEWER-PROCESS-ONLY (issue #30).** It and `src/issue-poller.ts` (#103, below)
   are the only modules that shell out to a network tool (`gh`), so `src/mcp.ts`/`src/mcp-server.ts`
   must never import either, directly or transitively — a subprocess that inherited a stream, or gh's update notifier, would corrupt the MCP
@@ -998,7 +1044,47 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   it idempotent. This deliberately reverses the older contract that a re-send after an
   ambiguous failure never overwrites a later answer: once the answer moved, the
   human's own Send or Retry writes, as any other Send would. The rule reads the last
-  snapshot, so within one poll (3 s) of another writer it can still replay. A Retry
+  snapshot, so within one poll (3 s) of another writer it can still replay. *(#322)*
+  The reply route therefore says what each request did, additively: `wrote` (this
+  request changed the question), `replayed` (the store already held its intent, so
+  it wrote nothing) and `answer`, the question's answer once it was done
+  (`replied_at`, source, kind, text and context, in the item's field names; read
+  inside the intent's `.immediate()` transaction, and just after the write without
+  one). `ok` keeps its meaning, so an older page sees what it always did, and a page
+  that finds no report keeps the old reading. When a replay wrote nothing and that
+  answer is not the response it sent, the text was replaced after it landed: it is
+  kept as an unsent response, "Your send went through, but this question's answer
+  has changed since.", from the Retry's own entry, the entry its in-flight draft
+  moved to, or the editor (an editor typed in since keeps its newer text), and the
+  spent intent goes with it, so its Retry is fresh. `replyItem` stays the same
+  conditioned statements; the report adds reads, never a write. *(#321)* A send from
+  an answer editor or an unsent response replaces the question's answer, so it never
+  replaces one the surface has not shown. Each surface knows the answer it was drawn
+  with (`shown`: the editor's item, the line's answer at render) and the newest answer
+  the window knows (`knownAnswer`: the last poll, or a reply response's report until a
+  poll that started after it applies; derived state, the snapshot is never changed).
+  When that answer is a reply or response kind (a cleared question has nothing to
+  replace) that the surface has neither been drawn with nor named in a notice, the
+  click sends nothing: it names it in place, "A newer reply was sent: “…”. Send (or
+  Retry) replaces it.", in the editor's `.write-error` slot (now `role="status"`) or
+  the line's `.replace-notice`, and only a further click sends. An unsent response's
+  line names it as it is drawn whenever its Retry would be fresh over an answer, which
+  is also how a restored "not confirmed" entry says what Retry does. When the answer
+  is one this window sent (`sentReplies`, last five per question), the notice says
+  "Your earlier send went through" instead. The send then carries `expect_answer`
+  (`replied_at`, `reply_source`, `reply_kind`, `reply`), and `replyItem` writes only
+  while the question still holds it, or holds no answer at all (a clear moves
+  `replied_at`, yet leaves nothing to replace): one more condition in the same UPDATE,
+  so a reply that landed after the window last looked refuses it with `reason:
+  'answer_changed'` and the answer that stands (a 200, like every refusal), the
+  refused intent recorded as not applied. The text stays where it is with that answer
+  named (an entry keeps it, dropping the spent intent, and its line keeps focus on the
+  same control across the rebuild); the editor never moves. A refusal whose standing
+  answer is exactly this response (a double click's first send landed first) retires
+  it as a success would, with no notice. A new intent pins `knownAnswer`, the answer
+  `savedIntentRule` compares it with. A reply without `expect_answer` (an older
+  page, an option pick, the star, a notification) stays unconditional. Never send on
+  the human's behalf to get past a notice. A Retry
   of an entry an earlier click already took does nothing, so a double click claims no
   second intent. `renderIfIdle()` paints the first editable frame even with
   restored drafts, since no editor exists yet to protect; every later tick pauses
@@ -1352,7 +1438,8 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   The Setup panel's direct action is deliberately Electron-only:
   `electron/setup-preload.cjs` exposes only `available()`/`install(target)`, with
   `contextIsolation:true` and `nodeIntegration:false`; `main.cjs` accepts only the
-  four fixed targets (`all`, `claude`, `copilot` and, since #206, `hooks`) and only
+  five fixed targets (`all`, `claude`, `copilot` and, since #206, `hooks` and, since #294,
+  `prune-runtimes`) and only
   while the app owns the exact local-viewer origin (the
   window binding update installs share, #216). A
   reused viewer never gets execution access, and there is no HTTP setup-write route.
@@ -1368,6 +1455,7 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   constructs only exact `/bin/bash scripts/install-agents.sh` argv, plus for `hooks`
   exactly `/bin/bash <installed runtime>/scripts/install-hooks.sh --apply --move-only`
   (never `--force` or another flag, and only from a directory carrying a runtime manifest),
+  and for `prune-runtimes` exactly `/bin/bash <payload>/scripts/prune-runtimes.sh --apply`,
   bounds output/time,
   and preserves POSIX process-group cancellation. It accepts no executable or arbitrary
   argv from callers, permits exact-host macOS/Linux shell execution, and fails closed before
@@ -1382,6 +1470,79 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   `scripts/install-hooks.sh` required) immediately before spawn; a missing copy, a
   changed or extra file, or a symlinked directory refuses without spawning. Main gates it
   exactly like the agent targets.
+  *(#294)* `prune-runtimes` removes the runtimes nothing uses. It too exists only in
+  release mode, and runs the app bundle's own payload (it bakes nothing into a host
+  config), once the core has verified that payload against the signed digest with
+  `scripts/prune-runtimes.sh` required; main's handler has no branch for it, so every gate
+  above applies unchanged. The script takes `--apply` and nothing else: it re-derives what
+  to remove itself, under the setup lock, so the renderer names the target and never a
+  runtime id or path. Without `--apply` it is a dry run that takes no lock, cleans no trash
+  and writes nothing. It always keeps its own runtime and anything that is not a real
+  directory directly in the runtime root carrying a manifest that names it (never a
+  symlink, never a `.`-name such as `.trash-*`, never outside the root), and removes each
+  other runtime only through `runtime-payload.mjs prune` (#211/#214 trash semantics),
+  after checking it again on its own. A runtime that no longer verifies against its
+  manifest (a Finder `.DS_Store` is enough) is kept as `changed` and named, never
+  attempted: `unused` runs the same full `verifyPayload` prune would (about 0.25 s per
+  171 MB runtime with a warm cache), so `--apply` exits 0 whenever everything it tried was
+  removed. Seconds still pass between the re-check and the
+  rename (prune cleans trash and hashes the folder first), and a config written then is
+  not seen. What "uses" means is ONE rule in `scripts/runtime-config.mjs`
+  (`scanRuntimeReferences`), which the installer's own prune and rollback
+  (`references --home --status`) share. Its candidates are a host config's
+  string values (`~/.claude.json` in every scope, `~/.claude/settings.json`,
+  `~/.claude/settings.local.json`, `~/.copilot/mcp-config.json`, Claude Desktop's config on
+  macOS or Linux), each whole (a path with a space stays one path) and split into
+  command-line and `KEY=value` pieces. Runtime R is used when (a) a candidate names R's id
+  as a whole name (no runtime-id character on either side, as `runtimeIdInText`), unless
+  the text up to and including the id is an absolute or `~/` path to a folder whose stat
+  fails with ENOENT or ENOTDIR (so shell text glued to it, such as `cd <R>&&…`, a file R
+  lacks and another root's copy of the same id all count); or (b) an absolute or `~/`
+  candidate in a launcher (any object with a string `command`) resolves to R or into it,
+  compared by `(dev, ino)` and never as a path string, so a symlinked shortcut, another
+  case, the other Unicode form and a firmlink all count.
+  Errors only ever keep: any other stat error counts under (a), and under (b) keeps every
+  runtime when what resolves of the path lies in the runtime root. Against the verified
+  `{command, args[0]}` pair the installer used to require it only keeps more: every pair
+  with absolute paths it matched resolves into R, so (b) matches it (it also resolved a
+  relative path against the installer's own working directory, which no host launches
+  from). So the installer now also keeps runtimes that split pairs, `env` values, `sh -c`
+  wrappers, later arguments and one-string hooks use. `references` names each file that
+  uses a runtime (`{file, label}`), never what is in it. A config that exists but cannot
+  be read (a symlink to nothing, itself or a folder above it; not a regular
+  file; over 64 MB; not JSON) makes the answer unknown, and then nothing is removed; the
+  installer's prune keeps everything and the install still succeeds. The prune also keeps
+  any runtime a running process names (`ps -A -ww -o pid=,ppid=,command=`, its own
+  ancestry excluded; a missing or failing `ps` refuses everything): a live MCP server
+  survives the deletion, but every Copilot watcher it hands out runs its runtime's
+  `dist/watch-cli.js`. That check is why the prune, unlike the installer, does not keep the
+  newest previous runtime. Project-scope configs (`<project>/.mcp.json`,
+  `<project>/.claude/settings*.json`) are deliberately not read; the process check still
+  keeps a runtime a running session started from one uses.
+  *(#294 part B)* Setup's Runtimes block lists what is there before anything runs.
+  `src/runtime-inventory.ts` is VIEWER-PROCESS-ONLY and read-only (`node:fs`/`node:path`
+  only, no process): it mirrors the rule above, and `test/runtime-inventory.test.ts` runs
+  the script's own `unused` over every shared case in `test/runtime-uses.ts` and holds the
+  two to one answer. It cannot see running processes; the panel only adds an advisory "N
+  running sessions report vX" from Live's rows. Each folder's size is its manifest's
+  recorded total, and the bounded walk (an lstat per file, about 40 ms for a 4,000-file
+  runtime, on Electron main in the packaged app) runs only for an unused runtime, because
+  only that one is offered for removal and the prune keeps a folder that no longer
+  matches its manifest (`changed`). The prune's check also hashes each file, which the main
+  thread cannot, so a file changed in place at the same size and mode shows as unused here
+  and the prune keeps it and says why. The list's root is Setup's own: an absolute
+  `AGENT_INBOX_RUNTIME_ROOT`, as `setupRuntimeRoot` in `electron/setup-runner.cjs` reads it,
+  else `~/.agent-inbox/runtime`. `/api/setup` carries `runtimes {state, unreadable?,
+  reason?, removable, entries}`, `reason` in the script's own words and never the JSON
+  parser's message, which can quote a secret from the file. The viewer keeps each
+  folder's answer per stamp of the folder and its manifest and the whole inventory per
+  stamp of the host configs and runtime root (10-minute backstop), so a cold read with
+  three runtimes costs about 60-160 ms and a warm one under 1 ms; a change deep inside a
+  runtime moves no stamp and shows after the backstop. `removable` holds only in a release
+  whose verified payload carries `scripts/prune-runtimes.sh`. The panel offers ONE Remove
+  only in a window `available()` grants; it re-reads `/api/setup` just before running and
+  runs only if the unused set is still the one its label names, then calls exactly
+  `install('prune-runtimes')`: the renderer never sends an id, path or list.
   `electron/runtime-verify.cjs` is the externally anchored verifier: using the digest from
   signed-bundle `setup-info.json`, it synchronously verifies the complete manifest file
   list, hashes, modes, entrypoints and runtime identity at selection and immediately before
@@ -1636,9 +1797,61 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   `process.platform`/`process.arch`, and Setup atomically installs it under
   `~/.agent-inbox/runtime/<runtime-id>/`. Packaged upgrades/uninstalls touch only exact
   manifest-owned registrations/hooks, share one kernel lock, and retain every runtime
-  whose canonical Node+entry pair is still structurally referenced. Release signing order
+  a host config still uses (the #294 rule: its id named anywhere, or a launcher path
+  resolving into it). Release signing order
   is fixed: nested runtime Mach-O files, manifests, setup-info, outer app without
   `--deep`, then strict verification; nested bytes never change afterward.
+  *(#291)* Every shipped `node_modules` copy, the app's and each runtime's, is pruned by
+  `scripts/prune-node-modules.mjs` before anything tests, manifests or signs it:
+  better-sqlite3 keeps only `package.json`, `lib/` and `build/Release/better_sqlite3.node`
+  (what it and `bindings` load), and every package loses `*.d.ts`/`*.d.mts`/`*.d.cts`,
+  source maps and markdown. A license, notice, copying, copyright, authors, contributors or
+  patents file, or anything in a folder named like one, is never removed, and a package
+  with no license file keeps its root markdown. The prune refuses, before removing anything, a better-sqlite3 whose entry
+  points leave `lib/` or whose addon is missing. Staging prunes right after
+  `node_modules` normalization, so the probes, hook selftest, SQLite check and MCP probe
+  run on what ships; the thin-app builders (`pruneAppNodeModules`) prune after the
+  Electron rebuild and before packaging; `package:app` prunes before its graph check,
+  which stays exact because no package is removed. The Linux, Windows and macOS thin-app
+  gates refuse an unpruned app or runtime (`assertPrunedNodeModules`), and
+  `signPortableRuntime` signs exactly `RUNTIME_MACHO_FILES` (`bin/node` and the addon),
+  refusing any other Mach-O before signing a byte.
+  *(#292)* The UI is English-only, so `scripts/prune-electron-locales.mjs` keeps only US
+  and British English: `en.lproj` and `en_GB.lproj` (and `Base.lproj`, if Electron ever
+  ships one) wherever a `.lproj` sits in a macOS bundle outside `Contents/Resources/app`
+  (Electron Framework's 220 locale folders and the app's 55 empty ones), and only
+  `locales/en-US.pak` and `en-GB.pak` on Linux and Windows, about 47 MB a package.
+  macOS takes the app's language from the app's own `.lproj` folders and Chromium follows
+  it (`OverrideLocaleWithCocoaLocale`); Linux and Windows map Commonwealth English to
+  `en-GB` and fall back to `en-US` when no pak matches. Chromium's locale is also the
+  default for the app's dates, so British and Commonwealth users keep `en-GB` and their
+  date formats, while every other language gets `en-US`: Chromium's pak strings, AppKit's
+  own strings and the two default-locale dates (the update check's "Last checked" and the
+  asked-at tooltip) in US English. Each thin-app builder prunes once, right after
+  `@electron/packager` and before anything checks, hashes or publishes the app, so both
+  macOS thin apps merge alike; the prune refuses an app without either English locale
+  before removing anything. The macOS thin build, the Linux and Windows folder gates (and
+  so every DEB/AppImage build and verification), the universal assembly before signing and
+  the final DMG gate refuse an app that lacks one or ships another
+  (`assertEnglishOnlyElectronLocales`). Every folder on the way to an English locale must
+  be a real one: `lstat` follows a link anywhere but in a path's last part, so a linked
+  `locales/` or `Resources` would vouch for whatever it points at while the walk, which
+  never follows links, removes nothing there. `package:app` prunes the bundle before its
+  ad-hoc seal. Electron's prebuilt framework seals no resources, so release signing
+  creates its `_CodeSignature` after the prune. The provisional macOS DMG is launched in
+  French and in British English and must give its renderers `--lang=en-US` and
+  `--lang=en-GB`, with `scripts/launch-locale-probe.mjs` reading the page's dates over
+  DevTools; the AppImage FUSE gates run in French (`en-US`) and the extraction gates in
+  British English (`en-GB`). Electron seeds a new profile's spellchecker languages from
+  Chromium's locale, so on Linux and Windows `electron/spellcheck-languages.cjs` points it
+  at `app.getPreferredSystemLanguages()` at startup, before the first window, but only
+  when none of the profile's languages shares a base language with the system's first
+  one (exact code, else a later entry of the same language, else the base language; one
+  per language, at most three, written only when it differs and never to none). Never
+  widen that: Chromium seeds `en-GB` for New Zealand, Indian and other Commonwealth
+  English users, has no dictionary for their variants, and maps bare `en` to the US
+  dictionary. macOS keeps the system's own `NSSpellChecker`, which Chromium consults
+  directly and Electron's `setSpellCheckerLanguages` cannot change.
 - **Signed update-manifest trust contract** *(#106 Layer 1)* — protected releases contain
   five packages, package-only `SHA256SUMS.txt`, deterministic `update-manifest.json`, and
   `update-manifest.json.sig`. The exact manifest bytes are signed with Ed25519 after

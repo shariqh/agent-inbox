@@ -1,7 +1,8 @@
 // Type declarations for electron/link-open.cjs (issue #300). The runtime lives
 // in the .cjs; this lets the TS tests and `tsc --noEmit` see its shapes.
 
-export type LinkFailure = 'invalid' | 'missing' | 'inaccessible' | 'failed' | 'unavailable' | 'unowned' | 'app-missing' | 'app-refused'
+// 'outside' (issue #324): a repo-relative path whose symlinks lead out of its repository folder
+export type LinkFailure = 'invalid' | 'missing' | 'outside' | 'inaccessible' | 'failed' | 'unavailable' | 'unowned' | 'app-missing' | 'app-refused'
 export type RevealReason = 'folder' | 'app' | 'blocked' | 'executable' | 'special' | 'type' | 'rule'
 
 export type LinkResult =
@@ -67,6 +68,8 @@ export type SpawnImpl = (
 
 export interface FileDeps {
   homeDir?: unknown
+  /** issue #324: the repository folder a repo-relative path is joined to; null or omitted for an absolute or ~/ path */
+  root?: unknown
   fsp?: Fsp
   platform?: string
   execFileImpl?: ExecFile
@@ -86,6 +89,8 @@ export function openWebLink(
   options?: Omit<OpenOptions, 'rules'> & { readRules?: () => Promise<LinkRules | null> | LinkRules | null; fsp?: Fsp },
 ): boolean
 export function normalizeLocalPath(value: unknown, homeDir: unknown): string | null
+/** Issue #324: a plain repo-relative path joined to its absolute folder, both normalized, or null. */
+export function joinRepoPath(value: unknown, root: unknown): { root: string; path: string } | null
 export function blockedFileName(value: unknown): boolean
 export function fileOpenPlan(value: unknown, deps?: FileDeps & { rules?: LinkRules | null }): Promise<FilePlan>
 /** `filesPermitted`: main's word that the window shows the viewer this app owns; local files need it. */

@@ -13,6 +13,8 @@ import {
 } from './linux-binary-gates.mjs'
 import { loadLinuxReleaseInputs } from './linux-release-inputs.mjs'
 import { verifyPackagedUpdateTrust } from './package-update-trust.mjs'
+import { assertEnglishOnlyElectronLocales } from './prune-electron-locales.mjs'
+import { assertPrunedNodeModules } from './prune-node-modules.mjs'
 import { assertRuntimeSourceCommit } from './runtime-provenance.mjs'
 import { verifyPayload } from './runtime-payload.mjs'
 import { treeIdentity } from './tree-identity.mjs'
@@ -116,6 +118,9 @@ export function verifyLinuxThinApp({
   const runtimeAddon = findNativeAddon(runtimeRoot)
   assertElectronNotices(appRoot)
   verifyPackagedUpdateTrust(resources)
+  assertEnglishOnlyElectronLocales(appRoot, 'linux', 'packaged Linux app')
+  assertPrunedNodeModules(resources, 'packaged Linux app')
+  assertPrunedNodeModules(runtimeRoot, `packaged ${key} runtime`)
 
   const setupInfo = JSON.parse(readFileSync(join(resources, 'setup-info.json'), 'utf8'))
   if (setupInfo.schema !== 2) {

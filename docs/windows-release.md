@@ -24,6 +24,18 @@ against headers node-gyp would download. Neither file enters the runtime payload
   extraction, staged with the Node-ABI dependency tree, and self-tested on Windows x64:
   the hook selftest, the allocation-driven SQLite cleanup check (#135), and the MCP
   server probe (initialize + tools/list) all run before the manifest is written.
+- Both `node_modules` copies, the app's and the runtime's, are pruned before they are
+  tested or manifested ([What node_modules ships](macos-release.md#what-node_modules-ships-291)),
+  and the folder gate refuses either if it still carries anything the prune removes. That
+  takes better-sqlite3's MSBuild `obj` and `.tlog` files and `test_extension.node` out of
+  the runtime, the folder's deepest paths and an unsigned PE the installer spike counted.
+- The folder keeps only Electron's `locales/en-US.pak`, the locale Chromium falls back to
+  when no pak matches the user's language, and `locales/en-GB.pak`, which British and
+  Commonwealth English users get; the folder gate refuses a folder that lacks either,
+  reaches either through a linked `locales` folder, or ships any other
+  ([What Electron locales ship](macos-release.md#what-electron-locales-ship-292)). Electron
+  would seed a new profile with the English locale's spellchecker, so at startup the app
+  sets the user's languages on a profile that has none in their first language.
 - The input contract pins Windows `10.0.17763` as the minimum OS version for later
   package acceptance; this layer's native evidence itself runs on Windows Server 2022.
 - The Electron app is packaged natively with a separate Electron-ABI

@@ -8,6 +8,7 @@ import {
   readFileSync,
   readdirSync,
   readlinkSync,
+  rmSync,
   statSync,
   symlinkSync,
   writeFileSync,
@@ -15,7 +16,7 @@ import {
 import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { dirname, join, relative, resolve } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { makeUniversalApp } from '@electron/universal'
 import { copyElectronNotices } from '../scripts/build-thin-app.mjs'
 import {
@@ -25,9 +26,11 @@ import {
 } from '../scripts/archive-tree.mjs'
 import {
   MacReleaseError,
+  RUNTIME_MACHO_FILES,
   UNIVERSAL_RUNTIME_GLOB,
   assertPublishedEntries,
   releaseDisposition,
+  signPortableRuntime,
   validateSigningOptions,
   verifyThinReports,
 } from '../scripts/assemble-macos-release.mjs'
@@ -43,6 +46,7 @@ import { assertRuntimeSourceCommit } from '../scripts/runtime-provenance.mjs'
 import { resolveSourceProvenance } from '../scripts/source-provenance.mjs'
 import { RUNTIME_TARGETS } from '../scripts/runtime-targets.mjs'
 import { verifyPackagedUpdateTrust } from '../scripts/package-update-trust.mjs'
+import { assertEnglishOnlyElectronLocales, pruneElectronLocales } from '../scripts/prune-electron-locales.mjs'
 import { scratchDir } from './scratch.js'
 
 const root = resolve(process.cwd())
@@ -292,12 +296,85 @@ describe('native architecture release stages', () => {
     expect(existsSync(join(destination, 'hardlink-root'))).toBe(false)
   })
 
-  it('removes architecture-only rebuild caches before universal merging', () => {
+  it('prunes the app copy, architecture-only rebuild caches included, before universal merging (#291)', () => {
     const source = readFileSync(join(root, 'scripts', 'build-thin-app.mjs'), 'utf8')
-    expect(source).toContain("rmSync(join(moduleRoot, 'bin')")
-    expect(source).toContain("finalAddon = join(buildRoot, 'Release', 'better_sqlite3.node')")
-    expect(source.indexOf('pruneNativeAddonBuildArtifacts(stageRoot)'))
+    expect(source).toContain("export function pruneAppNodeModules(stageRoot) {")
+    expect(source).toContain('return pruneNodeModules(stageRoot)')
+    expect(source.indexOf('pruneAppNodeModules(stageRoot)\n'))
       .toBeLessThan(source.indexOf('const packagerOut'))
+    expect(source).not.toContain('pruneNativeAddonBuildArtifacts')
+  })
+
+  it('prunes each runtime before its probes, selftests and manifest (#291)', () => {
+    const source = readFileSync(join(root, 'scripts', 'stage-runtime.mjs'), 'utf8')
+    const deref = source.indexOf('renameSync(dereffed, srcModules)')
+    const prune = source.indexOf('pruneNodeModules(stageDir)')
+    const probe = source.indexOf("probeStagedNativeDependency(stageDir, nodeBin, 'after node_modules normalization and pruning')")
+    const selftest = source.indexOf('\n  runStagedSelftest(stageDir, adapter)\n')
+    const manifest = source.indexOf('const manifest = buildManifest({')
+    expect(deref).toBeGreaterThan(-1)
+    expect(prune).toBeGreaterThan(deref)
+    expect(probe).toBeGreaterThan(prune)
+    expect(selftest).toBeGreaterThan(probe)
+    expect(manifest).toBeGreaterThan(selftest)
+  })
+
+  it('refuses an unpruned app or runtime in every thin-app gate (#291)', () => {
+    for (const [file, gates] of [
+      ['verify-linux-thin-app.mjs', ['assertPrunedNodeModules(resources, ', 'assertPrunedNodeModules(runtimeRoot, ']],
+      ['verify-windows-thin-app.mjs', ['assertPrunedNodeModules(resources, ', 'assertPrunedNodeModules(runtimeRoot, ']],
+      ['build-thin-app.mjs', ['assertPrunedNodeModules(resources, ', "assertPrunedNodeModules(join(resources, 'runtime', key), "]],
+    ] as const) {
+      const source = readFileSync(join(root, 'scripts', file), 'utf8')
+      for (const gate of gates) expect(source, `${file}: ${gate}`).toContain(gate)
+    }
+    const thin = readFileSync(join(root, 'scripts', 'build-thin-app.mjs'), 'utf8')
+    expect(thin.indexOf('assertPrunedNodeModules(resources, ')).toBeGreaterThan(thin.indexOf('const paths = await packager({'))
+    expect(thin.indexOf('assertPrunedNodeModules(resources, ')).toBeLessThan(thin.indexOf('publishAtomically(app, destination, force)'))
+  })
+
+  it('prunes the Electron locales once, after packaging and before any check, hash or publication (#292)', () => {
+    const thin = readFileSync(join(root, 'scripts', 'build-thin-app.mjs'), 'utf8')
+    const prune = thin.indexOf("pruneElectronLocales(app, 'darwin')")
+    const gate = thin.indexOf("assertEnglishOnlyElectronLocales(app, 'darwin', ")
+    expect(prune).toBeGreaterThan(thin.indexOf('const paths = await packager({'))
+    expect(prune).toBeGreaterThan(thin.indexOf('copyElectronNotices(paths[0], app)'))
+    expect(gate).toBeGreaterThan(prune)
+    expect(gate).toBeLessThan(thin.indexOf('runElectronSqliteCheck({'))
+    expect(gate).toBeLessThan(thin.indexOf('publishAtomically(app, destination, force)'))
+    expect(gate).toBeLessThan(thin.indexOf('appTreeDigest: treeIdentity(destination)'))
+    for (const [file, call, verification] of [
+      ['build-linux-thin-app.mjs', "pruneElectronLocales(packaged, 'linux')", 'const verification = verifyLinuxThinApp({'],
+      ['build-windows-thin-app.mjs', "pruneElectronLocales(packaged, 'win32')", 'const initial = verifyWindowsThinApp({'],
+    ] as const) {
+      const source = readFileSync(join(root, 'scripts', file), 'utf8')
+      const at = source.indexOf(call)
+      expect(at, file).toBeGreaterThan(source.indexOf('const paths = await packager({'))
+      // the verification computes the tree digest the reports and packages bind to
+      expect(at, file).toBeLessThan(source.indexOf(verification))
+    }
+    // once per builder: nothing after the packager adds a locale back
+    for (const file of ['build-thin-app.mjs', 'build-linux-thin-app.mjs', 'build-windows-thin-app.mjs']) {
+      expect(readFileSync(join(root, 'scripts', file), 'utf8').match(/pruneElectronLocales\(/g), file).toHaveLength(1)
+    }
+  })
+
+  it('refuses another Electron locale, or a missing English one, in every thin-app, universal and final-DMG gate (#292)', () => {
+    for (const [file, gate] of [
+      ['build-thin-app.mjs', "assertEnglishOnlyElectronLocales(app, 'darwin', "],
+      ['verify-linux-thin-app.mjs', "assertEnglishOnlyElectronLocales(appRoot, 'linux', "],
+      ['verify-windows-thin-app.mjs', "assertEnglishOnlyElectronLocales(appRoot, 'win32', "],
+      ['assemble-macos-release.mjs', "assertEnglishOnlyElectronLocales(app, 'darwin', "],
+      ['macos-release-gates.mjs', "assertEnglishOnlyElectronLocales(copiedApp, 'darwin', "],
+    ] as const) {
+      expect(readFileSync(join(root, 'scripts', file), 'utf8'), file).toContain(gate)
+    }
+    const gates = readFileSync(join(root, 'scripts', 'macos-release-gates.mjs'), 'utf8')
+    const finalGate = gates.indexOf("assertEnglishOnlyElectronLocales(copiedApp, 'darwin', ")
+    expect(finalGate).toBeGreaterThan(gates.indexOf('export async function verifyFinalDmg({'))
+    expect(finalGate).toBeLessThan(gates.indexOf('await verifyCopiedAppLaunch({'))
+    const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+    expect(pkg.scripts['package:smoke']).toContain('test/prune-electron-locales.test.ts')
   })
 
   it('uses the fixed native Windows archive adapter without changing POSIX tar selection', () => {
@@ -323,11 +400,13 @@ describe('native architecture release stages', () => {
   })
 
   it('installs and compiles each thin app stage only through the prebuild-free step (#315)', () => {
-    for (const builder of ['build-thin-app.mjs', 'build-linux-thin-app.mjs']) {
+    for (const builder of ['build-thin-app.mjs', 'build-linux-thin-app.mjs', 'build-windows-thin-app.mjs']) {
       const source = readFileSync(join(root, 'scripts', builder), 'utf8')
       const install = source.indexOf('await installAppDependencies({')
       expect(install, builder).toBeGreaterThan(-1)
-      expect(source.indexOf('pruneNativeAddonBuildArtifacts(stageRoot)', install), builder).toBeGreaterThan(install)
+      const prune = source.indexOf('pruneAppNodeModules(stageRoot)', install)
+      expect(prune, builder).toBeGreaterThan(install)
+      expect(prune, builder).toBeLessThan(source.indexOf('await packager({', install))
       expect(source, builder).not.toMatch(/'ci', '--omit=dev'|await rebuild\(|@electron\/rebuild/)
     }
     const linux = readFileSync(join(root, 'scripts', 'build-linux-thin-app.mjs'), 'utf8')
@@ -399,6 +478,73 @@ describe('universal finalization contract', () => {
       .toEqual(['x86_64'])
   })
 
+  // Signing seals the framework's resources: it has to see the pruned set (#292).
+  it('checks the merged app ships only English before anything is signed (#292)', () => {
+    const source = readFileSync(join(root, 'scripts', 'assemble-macos-release.mjs'), 'utf8')
+    const gate = source.indexOf("assertEnglishOnlyElectronLocales(app, 'darwin', ")
+    expect(gate).toBeGreaterThan(source.indexOf('await makeUniversalApp({'))
+    expect(gate).toBeLessThan(source.indexOf('signedRuntimeMachOs[key] = signPortableRuntime({'))
+    expect(gate).toBeLessThan(source.indexOf('await signElectronEnvelope({'))
+  })
+
+  it.skipIf(process.platform !== 'darwin')('merges thin apps pruned alike, and refuses thin apps whose locales differ (#292)', async () => {
+    const temp = scratchDir('universal-locales-')
+    const source = join(temp, 'main.c')
+    writeFileSync(source, 'int main(void) { return 0; }\n')
+    const binaries = { arm64: join(temp, 'arm64'), x64: join(temp, 'x64') }
+    execFileSync('/usr/bin/xcrun', ['clang', '-arch', 'arm64', source, '-o', binaries.arm64])
+    execFileSync('/usr/bin/xcrun', ['clang', '-arch', 'x86_64', source, '-o', binaries.x64])
+    const frameworkResources = join('Contents', 'Frameworks', 'Electron Framework.framework', 'Versions', 'A', 'Resources')
+    const makeApp = (name: string, arch: 'arm64' | 'x64', prune: boolean) => {
+      const app = join(temp, `${name}.app`)
+      mkdirSync(join(app, 'Contents', 'MacOS'), { recursive: true })
+      mkdirSync(join(app, 'Contents', 'Resources', 'app'), { recursive: true })
+      cpSync(binaries[arch], join(app, 'Contents', 'MacOS', 'Fixture'))
+      writeFileSync(join(app, 'Contents', 'Resources', 'app', 'package.json'), '{"main":"index.js"}\n')
+      writeFileSync(join(app, 'Contents', 'Resources', 'app', 'index.js'), 'module.exports = {}\n')
+      writeFileSync(join(app, 'Contents', 'Info.plist'), [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
+        '<plist version="1.0"><dict><key>CFBundleExecutable</key><string>Fixture</string></dict></plist>',
+      ].join('\n'))
+      for (const locale of ['en', 'en_GB', 'en_GB_NEUTER', 'fr']) {
+        mkdirSync(join(app, 'Contents', 'Resources', `${locale}.lproj`), { recursive: true })
+        mkdirSync(join(app, frameworkResources, `${locale}.lproj`), { recursive: true })
+        writeFileSync(join(app, frameworkResources, `${locale}.lproj`, 'locale.pak'), `${locale}\n`)
+      }
+      if (prune) pruneElectronLocales(app, 'darwin')
+      return app
+    }
+    const merge = (arm64AppPath: string, x64AppPath: string, outAppPath: string) => makeUniversalApp({
+      arm64AppPath,
+      x64AppPath,
+      outAppPath,
+      force: true,
+      mergeASARs: false,
+      x64ArchFiles: UNIVERSAL_RUNTIME_GLOB,
+    })
+
+    const universal = join(temp, 'Universal.app')
+    await merge(makeApp('arm64', 'arm64', true), makeApp('x64', 'x64', true), universal)
+    expect(() => assertEnglishOnlyElectronLocales(universal, 'darwin', 'universal app')).not.toThrow()
+    expect(readdirSync(join(universal, frameworkResources))).toEqual(['en.lproj', 'en_GB.lproj'])
+
+    const reported = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      await expect(merge(makeApp('arm64-unpruned', 'arm64', false), makeApp('x64-pruned', 'x64', true), join(temp, 'Mixed.app')))
+        .rejects.toThrow(/found a mismatch/)
+      expect(reported).toHaveBeenCalledWith({
+        uniqueToX64: [],
+        uniqueToArm64: [
+          join(frameworkResources, 'en_GB_NEUTER.lproj', 'locale.pak'),
+          join(frameworkResources, 'fr.lproj', 'locale.pak'),
+        ],
+      })
+    } finally {
+      reported.mockRestore()
+    }
+  })
+
   it('fails closed when Developer ID inputs are absent or malformed', () => {
     expect(() => validateSigningOptions({ mode: 'developer-id' })).toThrow(MacReleaseError)
     expect(() => validateSigningOptions({
@@ -432,6 +578,41 @@ describe('universal finalization contract', () => {
     expect(snapshot).toBeGreaterThan(setup)
     expect(outer).toBeGreaterThan(snapshot)
     expect(unchanged).toBeGreaterThan(outer)
+  })
+
+  // The runtime signing list is pinned, not whatever Mach-O a build left behind:
+  // test_extension.node used to be signed into every release (#291).
+  it.skipIf(process.platform !== 'darwin')('signs exactly the runtime\'s Node and addon, refusing any other Mach-O (#291)', () => {
+    const temp = scratchDir('runtime-signing-')
+    writeFileSync(join(temp, 'main.c'), 'int main(void) { return 0; }\n')
+    const binary = join(temp, 'binary')
+    execFileSync('/usr/bin/xcrun', ['clang', join(temp, 'main.c'), '-o', binary])
+    const runtime = join(temp, 'runtime')
+    for (const path of RUNTIME_MACHO_FILES) {
+      mkdirSync(dirname(join(runtime, path)), { recursive: true })
+      cpSync(binary, join(runtime, path))
+    }
+    writeFileSync(join(runtime, 'runtime-manifest.json'), '{}\n')
+    writeFileSync(join(runtime, 'node_modules', 'better-sqlite3', 'package.json'), '{}\n')
+    const signing = validateSigningOptions({ mode: 'adhoc' })
+    const entitlementsRoot = join(root, 'release', 'entitlements')
+    const leftover = join(runtime, 'node_modules', 'better-sqlite3', 'build', 'Release', 'test_extension.node')
+    cpSync(binary, leftover)
+    const unsigned = readFileSync(join(runtime, 'bin', 'node'))
+
+    expect(() => signPortableRuntime({ runtimeRoot: runtime, signing, entitlementsRoot })).toThrow(
+      'runtime Mach-O files must be exactly bin/node, node_modules/better-sqlite3/build/Release/better_sqlite3.node; '
+        + 'found bin/node, node_modules/better-sqlite3/build/Release/better_sqlite3.node, '
+        + 'node_modules/better-sqlite3/build/Release/test_extension.node',
+    )
+    // refused before anything was signed
+    expect(readFileSync(join(runtime, 'bin', 'node')).equals(unsigned)).toBe(true)
+
+    rmSync(leftover)
+    const signed = signPortableRuntime({ runtimeRoot: runtime, signing, entitlementsRoot })
+    expect(signed.map((path) => relative(runtime, path)).sort()).toEqual([...RUNTIME_MACHO_FILES].sort())
+    for (const path of signed) execFileSync('/usr/bin/codesign', ['--verify', '--strict', path])
+    expect(readFileSync(join(runtime, 'bin', 'node')).equals(unsigned)).toBe(false)
   })
 
   it('uses minimal reviewed entitlements without sandbox or unsigned executable memory', () => {
@@ -560,6 +741,31 @@ describe('universal finalization contract', () => {
     })).toThrow(/requires clean source provenance/)
   })
 
+  // The provisional app is launched as a French and as a British user: only US
+  // and British English ship (#292), so the first must fall back to en-US and
+  // the second keep en-GB, in its renderers and in the dates its page formats.
+  it('launches the provisional universal app in French and British English and checks each locale (#292)', () => {
+    const workflow = readFileSync(join(root, '.github', 'workflows', 'macos-universal.yml'), 'utf8')
+    const start = workflow.indexOf('- name: Mount, copy, launch, verify boundary, and remove portable runtime')
+    const step = workflow.slice(start, workflow.indexOf('- uses:', start))
+    const launch = step.slice(step.indexOf('launch_as() {'), step.indexOf('\n          }\n', step.indexOf('launch_as() {')))
+    expect(launch).toContain('-AppleLanguages "($language)" --remote-debugging-port="$((port + 100))"')
+    const boundary = launch.lastIndexOf("grep -qi '^x-agent-inbox-local-boundary: loopback-v1'")
+    const renderers = launch.indexOf(`pgrep -lf -P "$APP_PID" -- '--type=renderer'`)
+    const check = launch.indexOf('test "$locales" = "--lang=$expected"')
+    const dates = launch.indexOf('node scripts/launch-locale-probe.mjs --devtools-port "$((port + 100))" --viewer-port "$port" --expect "$expected"')
+    expect(renderers).toBeGreaterThan(boundary)
+    expect(check).toBeGreaterThan(renderers)
+    expect(dates).toBeGreaterThan(check)
+    const french = step.indexOf('\n          launch_as fr 14319 en-US\n')
+    const british = step.indexOf('\n          launch_as en-GB 14320 en-GB\n')
+    expect(french).toBeGreaterThan(step.indexOf('\n          }\n'))
+    expect(british).toBeGreaterThan(french)
+    expect(step.indexOf('\n          kill "$APP_PID"\n', british)).toBeGreaterThan(british)
+    const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+    expect(pkg.scripts['package:smoke']).toContain('test/launch-locale-probe.test.ts')
+  })
+
   it('pins release workflow actions and resolves Node from the central manifest', () => {
     const workflow = readFileSync(join(root, '.github', 'workflows', 'macos-universal.yml'), 'utf8')
     const refs = [...workflow.matchAll(/^\s*-\s+uses:\s+([^@\s]+)@([^\s#]+)(?:\s+#\s+(.+))?$/gm)]
@@ -647,6 +853,15 @@ describe('universal finalization contract', () => {
 
     expect(verifier).toContain("'scripts/run-isolated.mjs'")
     expect(staging).toContain("'run-isolated.mjs'")
+  })
+
+  it('stages the runtime prune script into every payload, where its Setup target requires it (#294)', () => {
+    const runner = readFileSync(join(root, 'electron', 'setup-runner.cjs'), 'utf8')
+    const staging = readFileSync(join(root, 'scripts', 'stage-runtime.mjs'), 'utf8')
+
+    expect(staging).toContain("'prune-runtimes.sh'")
+    expect(runner).toContain("const PRUNE_REQUIRED_FILES = Object.freeze([...REQUIRED_FILES, 'scripts/prune-runtimes.sh'])")
+    expect(runner).toContain("requiredFiles: request.target === 'prune-runtimes' ? PRUNE_REQUIRED_FILES : REQUIRED_FILES")
   })
 
   it('keeps the shared Setup lease in payload verification, package smoke, and native workflows', () => {

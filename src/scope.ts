@@ -1,4 +1,4 @@
-import { remoteUrl, inferProject, inferStream, inferAgent, inferRepo, inferIssueRef, inferHeadRepo } from './infer.js'
+import { remoteUrl, inferProject, inferStream, inferAgent, inferRepo, inferIssueRef, inferHeadRepo, inferRepoRoot } from './infer.js'
 
 export interface Scope {
   project: string
@@ -15,6 +15,7 @@ export function makeScope(cwd: string): {
   get(clientName: string | undefined): Scope
   issueFor(branch: string): number | null
   headFor(branch: string): string | null
+  rootFor(): string | null
   override(patch: { project?: string; stream?: string; repo?: string; issue?: number }): void
 } {
   let projectOverride: string | undefined
@@ -55,6 +56,12 @@ export function makeScope(cwd: string): {
   // independent of register({ repo }), which overrides the BASE: a fork
   // contributor registers the upstream and still pushes to their own fork.
   const headFor = (branch: string): string | null => inferHeadRepo(cwd, branch)
+  // issue #324 — the repository folder this session's repo-relative paths
+  // resolve against. LIVE, like the branch (worktrees and checkouts move, so it
+  // is never memoized), and write-only, like the head: it costs a git spawn, so
+  // mcp.ts asks only when it records an item or a board. No register() field
+  // overrides it, and it is not part of the scope agents read back.
+  const rootFor = (): string | null => inferRepoRoot(cwd)
   return {
     get(clientName) {
       const stream = streamOverride ?? inferStream(cwd)
@@ -71,6 +78,7 @@ export function makeScope(cwd: string): {
     },
     issueFor,
     headFor,
+    rootFor,
     override(patch) {
       if (patch.project !== undefined) projectOverride = patch.project
       if (patch.stream !== undefined) streamOverride = patch.stream

@@ -19,6 +19,8 @@ on:
       - "scripts/linux-binary-gates.mjs"
       - "scripts/linux-release-inputs.mjs"
       - "scripts/native-runtime-adapter.mjs"
+      - "scripts/prune-electron-locales.mjs"
+      - "scripts/prune-node-modules.mjs"
       - "scripts/release-inputs.mjs"
       - "scripts/runtime-payload.mjs"
       - "scripts/runtime-provenance.mjs"

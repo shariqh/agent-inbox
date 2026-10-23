@@ -269,7 +269,12 @@ responses** with the reason. If you had already sent it and no answer came back,
 it says the send was not confirmed rather than that it was never sent. When you
 send or retry such a response, the question is checked first: if it already holds
 exactly your answer, nothing is sent again; if its answer changed since, yours is
-sent as a new answer. Sending,
+sent as a new answer. If your earlier send turns out to have gone through but a
+newer answer has replaced it since, your text stays under **unsent responses** and
+says so. A Send or Retry never replaces an answer you have not seen: if a newer
+reply arrived (from another window, or the agent recording what you said in chat),
+the first click shows it, "A newer reply was sent: …", and only a second click
+replaces it. Sending,
 emptying or clearing a draft deletes it. A crash in the moment after you type can
 still lose the last keystrokes. Another browser or profile does not see these
 drafts, and neither does the viewer opened at its other address (`localhost`
@@ -413,9 +418,19 @@ files written as absolute paths (`/Users/…/spec.md` or `~/notes.md`, optionall
 strip under its title: the item's own PR and issue first, then the rest in the order
 they appear, each once. More than six fold into **+N more**.
 
+Paths relative to a repository (`docs/superpowers/specs/spec.md`,
+`public/app.js:7491`) link too, against the folder of the repository the agent's
+session was working in, which Agent Inbox records with each item and plan. They need
+a folder and a file name with an extension or a `:line`. A file that folder doesn't
+have, such as a doc that only exists on a pull request's branch or in another
+worktree, is not opened: clicking it copies its path and says so. A path whose
+symlinks lead outside the repository is never opened. Items and plans written before
+this, or by an older Agent Inbox, recorded no folder, so their relative paths stay
+text.
+
 Detection is cautious, so some things that could be links stay text: a single-digit
-`#N` needs `issue`, `PR` or a word such as `Fixes` before it, and relative paths,
-paths with spaces and routes such as `/api/items` never link.
+`#N` needs `issue`, `PR` or a word such as `Fixes` before it, and paths with spaces,
+routes such as `/api/items`, versions, dates and words such as `and/or` never link.
 
 In the desktop app a web link opens in your browser, and a common document (Markdown,
 text, logs, JSON, YAML, TOML, CSV, PDF, images, SVG, HTML, diffs, MOV and MP4)

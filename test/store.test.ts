@@ -259,21 +259,21 @@ describe('answer-back', () => {
       clientId: 'viewer-window-a',
       sequence: 2,
       actionId: 'action-a2',
-    })).toBe(true)
+    }).ok).toBe(true)
     expect(replyItem(db, id, 'other window', undefined, 'answer', {
       clientId: 'viewer-window-b',
       sequence: 1,
       actionId: 'action-b1',
-    })).toBe(true)
+    }).ok).toBe(true)
     expect(listItems(db).find((item) => item.id === id)?.reply).toBe('other window')
     expect(replyItem(db, id, 'late client A sequence 1', undefined, 'answer', {
       clientId: 'viewer-window-a',
       sequence: 1,
       actionId: 'action-a1',
-    })).toBe(false)
+    }).ok).toBe(false)
     expect(listItems(db).find((item) => item.id === id)?.reply).toBe('other window')
 
-    expect(replyItem(db, id, 'legacy caller')).toBe(true)
+    expect(replyItem(db, id, 'legacy caller').ok).toBe(true)
     const visible = listItems(db).find((item) => item.id === id)
     expect(visible?.reply).toBe('legacy caller')
     expect(visible).not.toHaveProperty('reply_intent_client')
@@ -283,11 +283,11 @@ describe('answer-back', () => {
   it('treats an exact action replay as success without rewriting reply delivery state', () => {
     const id = insertItem(db, { project: 'p', stream: '', agent: 'a', kind: 'question', title: 'q' })
     const intent = { clientId: 'cloned-window', sequence: 1, actionId: 'action-original' }
-    expect(replyItem(db, id, 'original', undefined, 'answer', intent)).toBe(true)
+    expect(replyItem(db, id, 'original', undefined, 'answer', intent).ok).toBe(true)
     pickUp(db, id)
     const pickedUp = listItems(db).find((item) => item.id === id)!
 
-    expect(replyItem(db, id, 'must not rewrite', undefined, 'answer', intent)).toBe(true)
+    expect(replyItem(db, id, 'must not rewrite', undefined, 'answer', intent).ok).toBe(true)
     const replayed = listItems(db).find((item) => item.id === id)!
     expect(replayed.reply).toBe('original')
     expect(replayed.reply_seen_at).toBe(pickedUp.reply_seen_at)
@@ -297,10 +297,10 @@ describe('answer-back', () => {
       clientId: 'cloned-window',
       sequence: 1,
       actionId: 'action-from-clone',
-    })).toBe(true)
+    }).ok).toBe(true)
     expect(listItems(db).find((item) => item.id === id)?.reply).toBe('distinct cloned-tab action')
 
-    expect(replyItem(db, id, 'late replay still must not rewrite', undefined, 'answer', intent)).toBe(true)
+    expect(replyItem(db, id, 'late replay still must not rewrite', undefined, 'answer', intent).ok).toBe(true)
     expect(listItems(db).find((item) => item.id === id)?.reply).toBe('distinct cloned-tab action')
   })
 
@@ -310,7 +310,7 @@ describe('answer-back', () => {
       clientId: 'viewer-window-a',
       sequence: 1,
       actionId: 'action-a1',
-    })).toBe(true)
+    }).ok).toBe(true)
     expect(db.prepare(`SELECT COUNT(*) AS count FROM item_reply_intents WHERE item_id = ?`).get(id))
       .toEqual({ count: 1 })
 
@@ -337,7 +337,7 @@ describe('answer-back', () => {
       clientId: 'viewer-window-a',
       sequence: 1,
       actionId: 'action-after-upgrade',
-    })).toBe(false)
+    }).ok).toBe(false)
     expect(listItems(db).find((item) => item.id === id)?.reply).toBe('newest legacy answer')
   })
 
@@ -349,7 +349,7 @@ describe('answer-back', () => {
     const id = insertItem(db, { project: 'p', stream: '', agent: 'a', kind: 'question', title: 'q' })
     replyItem(db, id, 'go left')
     pickUp(db, id)
-    expect(replyItem(db, id, '')).toBe(false) // refused — signaled via the return value
+    expect(replyItem(db, id, '').ok).toBe(false) // refused — signaled via the return value
     const item = listItems(db).find((i) => i.id === id)!
     expect(item.reply).toBe('go left') // the reply survives
     expect(item.reply_seen_at).not.toBeNull() // pickup state survives too
@@ -357,7 +357,7 @@ describe('answer-back', () => {
     // control: clearing a reply the agent has NOT yet picked up still works as before
     const id2 = insertItem(db, { project: 'p', stream: '', agent: 'a', kind: 'question', title: 'q2' })
     replyItem(db, id2, 'go right')
-    expect(replyItem(db, id2, '')).toBe(true)
+    expect(replyItem(db, id2, '').ok).toBe(true)
     expect(listItems(db).find((i) => i.id === id2)!.reply).toBeNull()
 
     // a genuine new answer (not a blank clear) still resets pickup even after it was seen —
@@ -413,7 +413,7 @@ describe('answer-back', () => {
       return stmt
     }) as typeof db1.prepare
 
-    const ok = replyItem(db1, id, '')
+    const { ok } = replyItem(db1, id, '')
     db1.prepare = realPrepare
 
     expect(ok).toBe(false) // refused — the concurrent pickup must win
@@ -459,7 +459,7 @@ describe('answer-back', () => {
   // matches zero rows, so info.changes is 0 — harmless, since ids always come from real
   // UI state, but noted so it doesn't read as a regression.
   it('replyItem blank-clear on a nonexistent id returns false (no matching row to update)', () => {
-    expect(replyItem(db, 'does-not-exist', '')).toBe(false)
+    expect(replyItem(db, 'does-not-exist', '').ok).toBe(false)
   })
 
   it('listPending returns open questions for a project, oldest first', () => {
@@ -497,6 +497,207 @@ describe('answer-back', () => {
   })
 })
 
+// Issue #322: a reply says what it did. A replay of an intent the store already
+// applied is answered from its record and writes nothing, so `ok` alone cannot
+// tell a client whether its text is the answer. `wrote`, `replayed` and the
+// answer the request left can.
+describe('a reply reports what it did (#322)', () => {
+  let db: Database.Database
+  beforeEach(() => { db = freshDb() })
+
+  const ask = (title = 'Release day?') => insertItem(db, { project: 'p', stream: '', agent: 'a', kind: 'question', title })
+  const answerOf = (id: string) => {
+    const { replied_at, reply_source, reply_kind, reply, reply_context } = listItems(db).find((item) => item.id === id)!
+    return { replied_at, reply_source, reply_kind, reply, reply_context }
+  }
+  const windowA = { clientId: 'window-a', sequence: 1, actionId: 'a-1' }
+
+  it('reports a write and the answer it left, with or without an intent', () => {
+    const id = ask()
+    expect(replyItem(db, id, ' Tuesday ', ' after the freeze ', 'answer', windowA)).toEqual({
+      ok: true, wrote: true, replayed: false,
+      answer: { replied_at: expect.any(String), reply_source: 'inbox', reply_kind: 'answer', reply: 'Tuesday', reply_context: 'after the freeze' },
+    })
+    expect(replyItem(db, id, 'Which freeze?', undefined, 'clarify')).toEqual({
+      ok: true, wrote: true, replayed: false,
+      answer: { ...answerOf(id), reply_source: 'inbox', reply_kind: 'clarify', reply: 'Which freeze?', reply_context: null },
+    })
+    expect(replyItem(db, id, '')).toEqual({
+      ok: true, wrote: true, replayed: false,
+      answer: { ...answerOf(id), reply_source: null, reply_kind: null, reply: null, reply_context: null },
+    })
+    expect(answerOf(id).replied_at).not.toBeNull()
+  })
+
+  it('reports an exact replay as writing nothing, with the answer that stands now', () => {
+    const id = ask()
+    replyItem(db, id, 'Tuesday', undefined, 'answer', windowA)
+    const landed = answerOf(id)
+    expect(replyItem(db, id, 'Tuesday', undefined, 'answer', windowA))
+      .toEqual({ ok: true, wrote: false, replayed: true, answer: landed })
+
+    // another window answers after the replayed send landed
+    replyItem(db, id, 'Later Y', 'from window B', 'answer', { clientId: 'window-b', sequence: 1, actionId: 'b-1' })
+    const later = listItems(db).find((item) => item.id === id)!
+    expect(replyItem(db, id, 'Tuesday', undefined, 'answer', windowA)).toEqual({
+      ok: true, wrote: false, replayed: true,
+      answer: { replied_at: later.replied_at, reply_source: 'inbox', reply_kind: 'answer', reply: 'Later Y', reply_context: 'from window B' },
+    })
+    // and the replay changed nothing, not even pickup or the content stamp
+    expect(listItems(db).find((item) => item.id === id)).toEqual(later)
+
+    // the agent records a chat answer once it picked Later Y up
+    pickUp(db, id)
+    expect(answerItem(db, id, 'Thursday, said in chat').ok).toBe(true)
+    expect(replyItem(db, id, 'Tuesday', undefined, 'answer', windowA)).toMatchObject({
+      ok: true, wrote: false, replayed: true,
+      answer: { reply_source: 'agent', reply: 'Thursday, said in chat', reply_context: null },
+    })
+  })
+
+  it('reports refusals as writing nothing, with the answer they left alone', () => {
+    const id = ask()
+    replyItem(db, id, 'Sequence 2', undefined, 'answer', { clientId: 'window-a', sequence: 2, actionId: 'a-2' })
+    const kept = answerOf(id)
+    // a late lower intent from the same window, then its replay
+    const late = { clientId: 'window-a', sequence: 1, actionId: 'a-late' }
+    expect(replyItem(db, id, 'Sequence 1', undefined, 'answer', late))
+      .toEqual({ ok: false, wrote: false, replayed: false, answer: kept })
+    expect(replyItem(db, id, 'Sequence 1', undefined, 'answer', late))
+      .toEqual({ ok: false, wrote: false, replayed: true, answer: kept })
+    // a clear the agent already picked up
+    pickUp(db, id)
+    expect(replyItem(db, id, '')).toEqual({ ok: false, wrote: false, replayed: false, answer: kept })
+
+    const closed = ask('Closed?')
+    replyItem(db, closed, 'Before it closed')
+    resolveItem(db, closed)
+    expect(replyItem(db, closed, 'Too late', undefined, 'answer', windowA))
+      .toEqual({ ok: false, wrote: false, replayed: false, answer: answerOf(closed) })
+    expect(replyItem(db, closed, 'Too late').answer).toEqual(answerOf(closed))
+
+    const note = insertItem(db, { project: 'p', stream: '', agent: 'a', kind: 'note', title: 'FYI' })
+    for (const target of [note, 'does-not-exist']) {
+      expect(replyItem(db, target, 'Hello'), target).toEqual({ ok: false, wrote: false, replayed: false, answer: null })
+      expect(replyItem(db, target, 'Hello', undefined, 'answer', windowA), target)
+        .toEqual({ ok: false, wrote: false, replayed: false, answer: null })
+    }
+  })
+})
+
+// Issue #321: a page may send the answer it means to replace, the one it last
+// showed. The write is then conditioned on that answer in its own statement: a
+// newer one refuses it, reported as `answer_changed` with the answer that
+// stands, so the human sees that reply before anything replaces it.
+describe('a reply can expect the answer it replaces (#321)', () => {
+  let db: Database.Database
+  beforeEach(() => { db = freshDb() })
+
+  const ask = (title = 'Release day?') => insertItem(db, { project: 'p', stream: '', agent: 'a', kind: 'question', title })
+  const item = (id: string) => listItems(db).find((candidate) => candidate.id === id)!
+  const expectation = (id: string) => {
+    const { replied_at, reply_source, reply_kind, reply } = item(id)
+    return { replied_at, reply_source, reply_kind, reply }
+  }
+  const answerOf = (id: string) => ({ ...expectation(id), reply_context: item(id).reply_context })
+
+  it('writes while the question still holds the expected answer, answered or not', () => {
+    const id = ask()
+    const unanswered = expectation(id)
+    expect(replyItem(db, id, 'Tuesday', undefined, 'answer', { clientId: 'w', sequence: 1, actionId: 'w-1' }, unanswered))
+      .toMatchObject({ ok: true, wrote: true, answer: { reply: 'Tuesday' } })
+    expect(replyItem(db, id, 'Thursday', 'moved', 'answer', undefined, expectation(id)))
+      .toMatchObject({ ok: true, wrote: true, answer: { reply: 'Thursday', reply_context: 'moved' } })
+    expect(replyItem(db, id, 'Which day?', undefined, 'clarify', undefined, expectation(id)))
+      .toMatchObject({ ok: true, wrote: true, answer: { reply: 'Which day?', reply_kind: 'clarify' } })
+    expect(item(id).reply).toBe('Which day?')
+  })
+
+  it.each([
+    ['another window', (id: string) => {
+      expect(replyItem(db, id, 'Later Y', 'from window B', 'answer', { clientId: 'b', sequence: 1, actionId: 'b-1' }).ok).toBe(true)
+    }],
+    ['the agent in chat', (id: string) => { expect(answerItem(db, id, 'Said in chat').ok).toBe(true) }],
+  ] as const)('refuses, with the answer that stands, once %s answered since', (_label, answerSince) => {
+    const id = ask()
+    const shown = expectation(id)
+    answerSince(id)
+    const after = item(id)
+    const intent = { clientId: 'w', sequence: 1, actionId: 'w-1' }
+    expect(replyItem(db, id, 'Original X', undefined, 'answer', intent, shown))
+      .toEqual({ ok: false, wrote: false, replayed: false, answer: answerOf(id), reason: 'answer_changed' })
+    expect(replyItem(db, id, 'Original X', undefined, 'answer', undefined, shown))
+      .toEqual({ ok: false, wrote: false, replayed: false, answer: answerOf(id), reason: 'answer_changed' })
+    expect(item(id), 'nothing was written, pickup included').toEqual(after)
+    // the refused intent is spent: its replay is refused from the record
+    expect(replyItem(db, id, 'Original X', undefined, 'answer', intent, expectation(id)))
+      .toEqual({ ok: false, wrote: false, replayed: true, answer: answerOf(id) })
+    // a send that expects the answer it was shown replaces it
+    expect(replyItem(db, id, 'Original X', undefined, 'answer', { clientId: 'w', sequence: 2, actionId: 'w-2' }, expectation(id)))
+      .toMatchObject({ ok: true, wrote: true, answer: { reply: 'Original X', reply_source: 'inbox' } })
+  })
+
+  it('tells two answers written in the same millisecond apart by their text', () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      const id = ask()
+      replyItem(db, id, 'Earlier')
+      const shown = expectation(id)
+      replyItem(db, id, 'Later')
+      expect(item(id).replied_at).toBe(shown.replied_at)
+      expect(replyItem(db, id, 'Mine', undefined, 'answer', undefined, shown))
+        .toMatchObject({ ok: false, wrote: false, reason: 'answer_changed', answer: { reply: 'Later' } })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('names no changed answer when the question closed, and a clear still keeps its own guard', () => {
+    const closed = ask('Closed?')
+    const shown = expectation(closed)
+    replyItem(db, closed, 'Answered, then closed')
+    resolveItem(db, closed)
+    expect(replyItem(db, closed, 'Too late', undefined, 'answer', undefined, shown))
+      .toEqual({ ok: false, wrote: false, replayed: false, answer: answerOf(closed) })
+    expect(replyItem(db, closed, 'Too late', undefined, 'answer', { clientId: 'w', sequence: 1, actionId: 'w-1' }, shown))
+      .toEqual({ ok: false, wrote: false, replayed: false, answer: answerOf(closed) })
+
+    const read = ask('Read?')
+    replyItem(db, read, 'go left')
+    pickUp(db, read)
+    expect(replyItem(db, read, '', undefined, 'answer', undefined, expectation(read)))
+      .toEqual({ ok: false, wrote: false, replayed: false, answer: answerOf(read) })
+    expect(item(read).reply).toBe('go left')
+  })
+
+  // A clear stamps replied_at, so no expectation matches a cleared question
+  // exactly; but a question with no answer has nothing a send could replace.
+  it('writes over a question with no answer, whatever its page expected', () => {
+    const cleared = ask('Cleared before the page looked again?')
+    const unanswered = expectation(cleared)
+    replyItem(db, cleared, 'Later Y', undefined, 'answer', { clientId: 'b', sequence: 1, actionId: 'b-1' })
+    replyItem(db, cleared, '', undefined, 'answer', { clientId: 'b', sequence: 2, actionId: 'b-2' })
+    expect(item(cleared)).toMatchObject({ reply: null, reply_kind: null, replied_at: expect.any(String) })
+    expect(replyItem(db, cleared, 'Mine', undefined, 'answer', { clientId: 'w', sequence: 1, actionId: 'w-1' }, unanswered))
+      .toMatchObject({ ok: true, wrote: true, answer: { reply: 'Mine', reply_source: 'inbox' } })
+
+    // an answer the page showed, cleared since, leaves nothing to replace either
+    const shownThenCleared = ask('Shown, then cleared?')
+    replyItem(db, shownThenCleared, 'Shown Y')
+    const shown = expectation(shownThenCleared)
+    replyItem(db, shownThenCleared, '')
+    expect(replyItem(db, shownThenCleared, 'Mine', undefined, 'answer', undefined, shown))
+      .toMatchObject({ ok: true, wrote: true, answer: { reply: 'Mine' } })
+
+    // while an answer that stands still refuses an expectation of none
+    const answered = ask('Answered since?')
+    const none = expectation(answered)
+    replyItem(db, answered, 'Later Y')
+    expect(replyItem(db, answered, 'Mine', undefined, 'answer', undefined, none))
+      .toMatchObject({ ok: false, wrote: false, reason: 'answer_changed', answer: { reply: 'Later Y' } })
+  })
+})
+
 // issue #29 — dual-channel answers. The human can answer in the inbox card OR say it
 // out loud in chat, in which case the agent that heard it records it with answerItem.
 // The conflict rule is NOT wall-clock last-write-wins (a skewed clock or a delayed
@@ -515,7 +716,7 @@ describe('dual-channel answers (#29)', () => {
     const id = ask()
     replyItem(db, id, 'sqlite')
     expect(row(id).reply_source).toBe('inbox')
-    expect(replyItem(db, id, '')).toBe(true) // not picked up yet, so the clear is allowed
+    expect(replyItem(db, id, '').ok).toBe(true) // not picked up yet, so the clear is allowed
     expect(row(id).reply).toBeNull()
     expect(row(id).reply_source).toBeNull() // no answer means no channel
   })
@@ -2899,6 +3100,45 @@ describe('items and boards carry the link identity they were raised on', () => {
     expect(listItems(migrated).find((i) => i.title === 'new')!.head_repo).toBe('me/n')
     upsertBoard(migrated, { project: 'p', stream: 'feature', agent: 'a', title: 'legacy', rows: [], repo: 'o/n', headRepo: 'me/n' })
     expect(findBoard(migrated, 'p', 'legacy')!.head_repo).toBe('me/n')
+  })
+
+  // issue #324 — the folder of the repository the writing session runs in, so
+  // the viewer can open repo-relative paths. An item gets it at insert. A board
+  // write restamps it like stream and repo, except that a write whose session
+  // could not detect one keeps the stored folder instead of clearing it.
+  it('items and boards record their repository folder; a board write that has none keeps it', () => {
+    const ROOT = '/Users/s/Development/agent-inbox'
+    const WORKTREE = '/Users/s/Development/worktrees/issue-324'
+    insertItem(db, { project: 'p', stream: 'f', agent: 'a', kind: 'question', title: 'q', repo_root: ROOT })
+    insertItem(db, { project: 'p', stream: 'f', agent: 'a', kind: 'note', title: 'n' })
+    expect(listItems(db).find((i) => i.title === 'q')!.repo_root).toBe(ROOT)
+    expect(listItems(db).find((i) => i.title === 'n')!.repo_root).toBeNull()
+
+    upsertBoard(db, { project: 'p', stream: 'f', agent: 'a', title: 'plan', rows: [{ label: 'a', status: 'tracked' }], repoRoot: ROOT })
+    upsertBoard(db, { project: 'p', stream: 'f', agent: 'a', title: 'other', rows: [{ label: 'a', status: 'tracked' }] })
+    expect(findBoard(db, 'p', 'plan')!.repo_root).toBe(ROOT)
+    expect(findBoard(db, 'p', 'other')!.repo_root).toBeNull()
+
+    // no folder detected (null or omitted): the stored one stays, and the write changed nothing
+    const before = findBoard(db, 'p', 'plan')!
+    upsertBoard(db, { project: 'p', stream: 'f', agent: 'a', title: 'plan', rows: [{ label: 'a', status: 'tracked' }], repoRoot: null })
+    updateBoardRow(db, { project: 'p', stream: 'f', agent: 'a', title: 'plan', label: 'a', status: 'tracked' })
+    expect(findBoard(db, 'p', 'plan')).toMatchObject({ repo_root: ROOT, revision: before.revision, updated_at: before.updated_at })
+
+    // a write from another folder restamps it, and that is a change to the plan
+    updateBoardRow(db, { project: 'p', stream: 'f', agent: 'a', title: 'plan', label: 'a', status: 'tracked', repoRoot: WORKTREE })
+    expect(findBoard(db, 'p', 'plan')).toMatchObject({ repo_root: WORKTREE, revision: before.revision + 1 })
+    upsertBoard(db, { project: 'p', stream: 'f', agent: 'a', title: 'plan', rows: [{ label: 'a', status: 'tracked' }], repoRoot: ROOT })
+    expect(findBoard(db, 'p', 'plan')).toMatchObject({ repo_root: ROOT, revision: before.revision + 2 })
+
+    // board_advance restamps nothing on the plan, so it keeps the folder too
+    const plan = findBoard(db, 'p', 'plan')!
+    const row = getBoard(db, 'p', 'plan')!.rows[0]!
+    expect(advanceBoardRow(db, {
+      project: 'p', title: 'plan', label: 'a', agent: 'a', expectedBoardVersion: plan.revision, expectedRevision: row.revision,
+      note: 'Next step.', next_step: 'Do it.', action_owner: 'task', impact: 'Ships it.',
+    })).toMatchObject({ ok: true })
+    expect(findBoard(db, 'p', 'plan')!.repo_root).toBe(ROOT)
   })
 })
 

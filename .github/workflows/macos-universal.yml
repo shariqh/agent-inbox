@@ -11,6 +11,11 @@ concurrency:
   group: macos-universal-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # Every npm install in this workflow compiles better-sqlite3 rather than load an
+  # unpinned prebuild; no job or step may override it (#315).
+  npm_config_build_from_source: "true"
+
 jobs:
   inputs:
     name: Validate pinned release inputs
@@ -25,10 +30,10 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ steps.release-inputs.outputs.node-version }}
-          cache: npm
+          package-manager-cache: false
       - run: npm ci
       - run: npm run release:inputs
-      - run: npx vitest run test/release-inputs.test.ts test/release-pipeline.test.ts
+      - run: npx vitest run test/release-inputs.test.ts test/release-pipeline.test.ts test/app-dependencies.test.ts
 
   runtime:
     name: Native runtime / ${{ matrix.key }}
@@ -55,7 +60,7 @@ jobs:
         with:
           node-version: ${{ steps.release-inputs.outputs.node-version }}
           architecture: ${{ matrix.arch }}
-          cache: npm
+          package-manager-cache: false
       - run: npm ci
       - name: Verify native Setup lock lease
         run: npx vitest run test/setup-lock.test.ts
@@ -103,7 +108,7 @@ jobs:
         with:
           node-version: ${{ steps.release-inputs.outputs.node-version }}
           architecture: ${{ matrix.arch }}
-          cache: npm
+          package-manager-cache: false
       - run: npm ci
       - run: echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)" >> "$GITHUB_ENV"
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -150,7 +155,7 @@ jobs:
         with:
           node-version: ${{ steps.release-inputs.outputs.node-version }}
           architecture: arm64
-          cache: npm
+          package-manager-cache: false
       - run: npm ci
       - run: echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)" >> "$GITHUB_ENV"
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -238,6 +243,7 @@ jobs:
         with:
           node-version: ${{ steps.release-inputs.outputs.node-version }}
           architecture: x64
+          package-manager-cache: false
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: macos-universal-provisional

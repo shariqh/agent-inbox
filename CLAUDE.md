@@ -1567,15 +1567,28 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
 - **Electron packaging** *(#11)* — `electron/` wraps the `public/` viewer; `scripts/package-app.sh`
   stages `dist` + `public` + `electron` and rebuilds `better-sqlite3` for Electron's ABI.
   *(#139)* The development path stages through the release `copyRequiredTree()`, so it ships
-  the checked-in `package.json` + `package-lock.json` pair. `npm ci --omit=dev` (with
-  `--prefix "$STAGE"`) installs that graph, the checkout's lockfile-pinned `electron-rebuild`
-  rebuilds the addon from inside the stage, and `scripts/package-app-stage.mjs verify`
-  refuses to package unless the stage and the packaged app hold exactly the lockfile's
-  production versions and integrities. Never stage without the lockfile or install with
+  the checked-in `package.json` + `package-lock.json` pair. `npm ci --omit=dev
+  --ignore-scripts` (with `--prefix "$STAGE"`) installs that graph, the checkout's
+  lockfile-pinned `electron-rebuild` compiles the addon `--build-from-source` inside the
+  stage (*#315:* the release thin-app builders do the same through
+  `scripts/app-dependencies.mjs`, because prebuild-install unpacks a cached or downloaded
+  prebuild, JavaScript included, without checking a digest), and
+  `scripts/package-app-stage.mjs verify` refuses to package unless the stage and the
+  packaged app hold exactly the lockfile's production versions and integrities. Never
+  stage without the lockfile or install with
   `npm install` there: either re-resolves ranges. The script works on physical paths
   (`pwd -P`) and treats a missing staged manifest or an unconfirmed graph check as failure:
   a step that silently did nothing could otherwise let `npm ci` walk up and strip the
-  checkout's devDependencies.
+  checkout's devDependencies. *(#315)* Every workflow but `ci.yml` builds, signs or
+  verifies a release, so none restores an npm cache (no setup-node `cache` input of any
+  kind, and `package-manager-cache: false` on each setup-node step), and each sets
+  `npm_config_build_from_source=true` once, in its top-level `env`, which no job or step
+  may name again: nothing from the checkout's install ships, but scripts and tests load
+  its addon in jobs that build the release or hold signing and notary secrets, and a
+  workflow-wide value reaches every npm spelling (`npm --prefix . ci`, `clean-install`,
+  `ic`). `test/release-pipeline.test.ts` pins all of it, `macos-universal.yml` runs
+  `test/app-dependencies.test.ts` under the release Node, and `ci.yml` keeps its
+  prebuilds.
 - **Portable release runtime** *(#74 Layer 1)* — the app may additionally embed
   `darwin-arm64` and `darwin-x64` Node 24 payloads staged outside the Electron dependency
   tree. Each payload has a content-derived `runtime-manifest.json`; Electron selects only

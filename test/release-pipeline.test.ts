@@ -321,6 +321,19 @@ describe('native architecture release stages', () => {
     expect(call).toContain('electron: inputs.electron.version')
     expect(source.slice(publish)).toContain("electronSqliteCheck: 'passed'")
   })
+
+  it('installs and compiles each thin app stage only through the prebuild-free step (#315)', () => {
+    for (const builder of ['build-thin-app.mjs', 'build-linux-thin-app.mjs']) {
+      const source = readFileSync(join(root, 'scripts', builder), 'utf8')
+      const install = source.indexOf('await installAppDependencies({')
+      expect(install, builder).toBeGreaterThan(-1)
+      expect(source.indexOf('pruneNativeAddonBuildArtifacts(stageRoot)', install), builder).toBeGreaterThan(install)
+      expect(source, builder).not.toMatch(/'ci', '--omit=dev'|await rebuild\(|@electron\/rebuild/)
+    }
+    const linux = readFileSync(join(root, 'scripts', 'build-linux-thin-app.mjs'), 'utf8')
+    expect(linux.indexOf('Object.assign(process.env, compilerEnvironment)'))
+      .toBeLessThan(linux.indexOf('await installAppDependencies({'))
+  })
 })
 
 describe('universal finalization contract', () => {
@@ -657,6 +670,97 @@ describe('universal finalization contract', () => {
     expect(universal).toContain('npx vitest run test/setup-lock.test.ts')
     expect(trigger).toContain('      - "scripts/**"')
     expect(trigger).toContain('      - "test/setup-*.test.ts"')
+  })
+
+  // Every workflow but ci.yml builds, signs or verifies a release (#315)
+  const releaseWorkflows = (): { file: string, lines: string[] }[] => {
+    const workflowsDir = join(root, '.github', 'workflows')
+    return readdirSync(workflowsDir)
+      .filter((name) => /\.ya?ml$/.test(name) && name !== 'ci.yml')
+      .map((file) => ({ file, lines: readFileSync(join(workflowsDir, file), 'utf8').split(/\r?\n/) }))
+  }
+  const indentOf = (line: string): number => line.match(/^ */)?.[0].length ?? 0
+  const isContent = (line: string): boolean => line.trim() !== '' && !line.trim().startsWith('#')
+
+  it('restores no npm cache where a release is built, signed or verified (#315)', () => {
+    // prebuild-install unpacks a restored <cache>/_prebuilds without checking a digest.
+    // An explicit cache input wins over package-manager-cache: false, however it is
+    // quoted, and that input defaults to true: setup-node then caches on its own once
+    // package.json names npm as its package manager.
+    type Step = { line: number, indent: number, lines: string[] }
+    const workflowSteps = (lines: string[]): Step[] => {
+      const steps: Step[] = []
+      let stepsIndent = -1
+      let current: Step | undefined
+      for (const [index, line] of lines.entries()) {
+        if (stepsIndent >= 0 && isContent(line) && indentOf(line) <= stepsIndent) {
+          stepsIndent = -1
+          current = undefined
+        }
+        if (/^\s*steps:\s*$/.test(line)) {
+          stepsIndent = indentOf(line)
+        } else if (stepsIndent >= 0 && /^\s*- /.test(line) && (!current || indentOf(line) === current.indent)) {
+          current = { line: index + 1, indent: indentOf(line), lines: [line] }
+          steps.push(current)
+        } else if (current && (!isContent(line) || indentOf(line) > current.indent)) {
+          current.lines.push(line)
+        }
+      }
+      return steps
+    }
+    // The entries of a step's block-style with:, so a flow-style one fails the check below
+    const inputs = (step: Step): string[] => {
+      const at = step.lines.findIndex((line) => line.trim() === 'with:' && indentOf(line) === step.indent + 2)
+      if (at < 0) return []
+      const end = step.lines.findIndex((line, index) => index > at && isContent(line) && indentOf(line) <= step.indent + 2)
+      return step.lines.slice(at + 1, end < 0 ? undefined : end).filter((line) => indentOf(line) === step.indent + 4)
+    }
+    const SETUP_NODE = /actions\/setup-node@/
+
+    let setupNodes = 0
+    for (const { file, lines } of releaseWorkflows()) {
+      const checked = new Set<number>()
+      for (const step of workflowSteps(lines)) {
+        if (!step.lines.some((line) => isContent(line) && SETUP_NODE.test(line))) continue
+        setupNodes += 1
+        const where = `${file}:${step.line}`
+        expect(inputs(step), `${where} must turn off setup-node's package-manager cache`)
+          .toContain(`${' '.repeat(step.indent + 4)}package-manager-cache: false`)
+        expect(inputs(step).filter((line) => /^\s*["']?cache[\w-]*["']?\s*:/.test(line)), `${where} must set no cache input`)
+          .toEqual([])
+        step.lines.forEach((_, offset) => checked.add(step.line + offset))
+      }
+      lines.forEach((line, index) => {
+        if (!isContent(line)) return
+        if (SETUP_NODE.test(line)) expect(checked.has(index + 1), `${file}:${index + 1} is outside any checked step`).toBe(true)
+        expect(line, `${file}:${index + 1} must restore no cache`).not.toMatch(/\buses:\s*["']?actions\/cache\b/)
+      })
+    }
+    expect(setupNodes).toBeGreaterThan(0)
+  })
+
+  it('compiles better-sqlite3 in every npm install where a release is built, signed or verified (#315)', () => {
+    // Nothing from the checkout's own npm install ships, but scripts and tests load its
+    // better-sqlite3 in jobs that build the release or hold the signing and notary
+    // secrets. Set once for the whole workflow, the variable reaches every step and every
+    // npm spelling (npm --prefix . ci, clean-install, ic, install-test and the rest). No
+    // other line may name it, since a job or step env, a $GITHUB_ENV write, an unset or
+    // an npm --build-from-source flag could turn it off. ci.yml keeps its prebuilds.
+    const SETTING = '  npm_config_build_from_source: "true"'
+    for (const { file, lines } of releaseWorkflows()) {
+      const at = lines.indexOf('env:')
+      const end = at < 0 ? -1 : lines.findIndex((line, index) => index > at && isContent(line) && indentOf(line) === 0)
+      const topEnv = at < 0 ? [] : lines.slice(at + 1, end < 0 ? undefined : end)
+      expect(topEnv, `${file} must set it in its top-level env`).toContain(SETTING)
+      const setting = at + 1 + topEnv.indexOf(SETTING)
+      lines.forEach((line, index) => {
+        if (!isContent(line) || index === setting) return
+        expect(line, `${file}:${index + 1} must not set or unset it again`).not.toMatch(/build[-_]?from[-_]?source/i)
+      })
+    }
+    // An npm that stops passing the variable to install scripts fails the release run itself
+    expect(readFileSync(join(root, '.github', 'workflows', 'macos-universal.yml'), 'utf8'))
+      .toMatch(/^\s*- run: npx vitest run [^\n]*test\/app-dependencies\.test\.ts/m)
   })
 
   it('pins every repository workflow action and disables checkout credential persistence', () => {

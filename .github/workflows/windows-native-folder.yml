@@ -29,6 +29,11 @@ concurrency:
   group: windows-native-folder-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # Every npm install in this workflow compiles better-sqlite3 rather than load an
+  # unpinned prebuild; no job or step may override it (#315).
+  npm_config_build_from_source: "true"
+
 jobs:
   native-folder:
     name: Native folder / win32-x64
@@ -44,12 +49,12 @@ jobs:
           $PSNativeCommandUseErrorActionPreference = $true
           "node-version=$(node scripts/windows-release-inputs.mjs --node-version)" |
             Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-      # No npm cache: the checkout's own npm ci still runs better-sqlite3's
-      # install script, which unpacks <cache>/_prebuilds without a digest (#315).
+      # No npm cache, restored or automatic (#315).
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ steps.release-inputs.outputs.node-version }}
           architecture: x64
+          package-manager-cache: false
       - uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
         with:
           python-version: "3.12"

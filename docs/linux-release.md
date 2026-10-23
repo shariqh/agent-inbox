@@ -237,6 +237,14 @@ icon under the hicolor theme. `chrome-sandbox` is the sole privileged package
 entry and is stored as root-owned mode `4755`; the DEB launcher never disables
 Chromium's sandbox.
 
+`/usr/share/doc/agent-inbox` holds the Agent Inbox `copyright` file and
+Electron's `LICENSE.electron`. Chromium's notices, `LICENSES.chromium.html`
+(about 20 MB), ship once, beside the binary in `/usr/lib/agent-inbox`, and
+`/usr/share/doc/agent-inbox/LICENSES.chromium.html` is a relative link to that
+copy (#293). Debian policy 12.3 describes this pattern, a link from
+`/usr/share/doc/<package>` to a file installed elsewhere, and 10.5 asks for a
+relative link within `/usr`.
+
 The clean launch gate checks the helper's stored ownership and mode separately
 from live Chromium `/proc` evidence. The live evidence demonstrates a Chromium
 child using a distinct user namespace, `NoNewPrivs`, and seccomp filtering on
@@ -252,8 +260,9 @@ sha256sum --check agent-inbox_X.Y.Z_amd64.deb.sha256
 
 The strict verifier checks the outer ar member order and metadata, exact control
 fields, every control/data tar owner, group, mode, timestamp and symlink, the
-complete allowed root layout, package notices, icon and launcher, and the sole
-sandbox privilege directly from archive metadata. It then extracts with a
+complete allowed root layout, package notices (including the exact link to the
+one copy of Chromium's notices), icon and launcher, and the sole sandbox
+privilege directly from archive metadata. It then extracts with a
 child-only zero umask and reruns the complete thin-folder ELF architecture,
 Electron/Node ABI, native-addon, GLIBC/GLIBCXX, runtime-manifest, Setup-selection
 and source-tree gates.

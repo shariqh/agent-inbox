@@ -9,6 +9,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
@@ -19,6 +20,7 @@ import {
   assertPinnedDpkgDeb,
   debArtifactName,
   installedSizeKiB,
+  renderDebChromiumLicensesLink,
   renderDebControl,
   renderDebDesktopEntry,
   renderDebLauncher,
@@ -100,6 +102,13 @@ function copyPackageFile(root, relativePath, source, mode) {
   return path
 }
 
+function linkPackageFile(root, relativePath, target) {
+  const path = join(root, ...relativePath.split('/'))
+  mkdirSync(dirname(path), { recursive: true, mode: 0o755 })
+  symlinkSync(target, path)
+  return path
+}
+
 export function stageLinuxDebRoot({
   packageRoot,
   thinApp,
@@ -131,12 +140,7 @@ export function stageLinuxDebRoot({
   copyPackageFile(destination, inputs.layout.icon, icon, 0o644)
   copyPackageFile(destination, inputs.layout.copyright, join(repoRoot, 'LICENSE'), 0o644)
   copyPackageFile(destination, inputs.layout.electronLicense, join(source, 'LICENSE'), 0o644)
-  copyPackageFile(
-    destination,
-    inputs.layout.chromiumLicenses,
-    join(source, 'LICENSES.chromium.html'),
-    0o644,
-  )
+  linkPackageFile(destination, inputs.layout.chromiumLicenses, renderDebChromiumLicensesLink(inputs))
 
   const installedSize = installedSizeKiB(destination)
   const controlDir = join(destination, 'DEBIAN')

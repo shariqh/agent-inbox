@@ -730,7 +730,10 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   `hook-cli selftest` reaches no `public/` module, `scripts/runtime-mcp-probe.mjs`
   (`probeRuntimeMcp`) starts the runtime's own `dist/mcp-server.js` with its own Node against
   a scratch database and requires initialize + tools/list to answer, bounded by a timeout
-  and writing nothing to stdout. Staging, release assembly and the Intel release gate all
+  and writing nothing to stdout. Then it closes the server's stdin and lets it exit,
+  killing it only after a 2-second grace: on Windows a kill is TerminateProcess, which
+  would orphan a git the server runs for its presence write, still open inside the
+  runtime about to be renamed (#333). Staging, release assembly and the Intel release gate all
   run it beside the selftest.
 - **`waits_on` is agent-owned row content: labels, checked where it is written (issue #103,
   slice 2 PR C).** Design: [`docs/superpowers/specs/2026-10-21-plan-dependencies-design.md`](docs/superpowers/specs/2026-10-21-plan-dependencies-design.md)
@@ -1392,6 +1395,20 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   false })`, no focus move) only when the ask holds a draft and the write succeeded, and the
   queue then returns focus to the Inbox's Review queue button, not to the tab it left.
 
+- **A host config that cannot be read is named, never quoted** *(#337)*. `~/.claude.json`,
+  `~/.copilot/mcp-config.json` and `~/.claude/settings.json` often hold other MCP servers'
+  API tokens, and since Node 20 a `JSON.parse` error quotes the text around the failure, as
+  jq does the value it fails on. So a reader that reports one it cannot read or parse
+  (`runtime-config.mjs` `registration`, `references`, `unused`, `hooks`, `foreign-hooks` and
+  `merge-json`, through `parseConfigFile`/`readConfigFile`; `prune-runtimes.sh`; the viewer's
+  `runtime-inventory.ts`) says its path and a fixed kind, `is not valid JSON` or
+  `is unreadable (EACCES)` (of a failed read only its error code), never a parser's, jq's or
+  fs error's message. A source checkout's `install-hooks.sh` drops jq's stderr on the steps
+  that read settings.json and names the file instead; `install-agents.sh`'s inline readers
+  only ever exit with a status; `agent-hosts.ts` returns closed kinds and no text at all.
+  `test/host-config-secrets.test.ts` runs every reader, the dry-run installers and
+  `/api/setup` over configs that put a fake token where the parser quotes it: a new reader
+  is one more row there. Unchanged on purpose: what each reader does with such a config.
 - **Agent setup is explicit, dry-run-first, and owns only marked text.**
   `scripts/install-agents.sh` is the supported bridge between two configuration systems:
   MCP registration can store a server command but cannot inject a global prompt, so the
@@ -1558,6 +1575,14 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   under the destination parent, rechecks identity at each transition, and verifies the
   published name. Immutable runtime install refuses replacement; `stage-runtime --force`
   uses a two-rename backup swap with a visibility gap and explicit recovery retention.
+  *(#333)* A new tree is published with one checked rename; only the build-time publisher
+  passes `retryBusyRename: true` (strictly a boolean), which makes `stageDirectory` use its
+  own `renameWithRetry`: on win32 alone it retries a rename refused with EPERM, EACCES or
+  EBUSY for about nine seconds of growing waits, re-running every transaction check itself
+  before each attempt, so a substituted stage or a taken destination is still refused,
+  never retried into. No caller function decides whether a check runs or a rename happens.
+  The shipping installer keeps its single attempt; the Windows folder builder publishes
+  its app folder through the same helper.
   This is point-in-time detection, not a stable handle: inode reuse and races after the
   last check remain. The modeled Win32 policy additionally rejects drive-relative,
   drive-less-rooted, device/extended-namespace and ADS-like paths plus junction/reparse
@@ -1873,7 +1898,12 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   Later releases verify the latest prior pair and signed `trustedKeyIds` continuity before the one secret-bearing signing step. The sole write job still stages a private
   draft, independently verifies all eight remote bytes plus the five-entry checksum and
   signature, then exposes them atomically by undrafting. This layer adds no Electron
-  fetching, scheduling, download, or install behavior.
+  fetching, scheduling, download, or install behavior. *(#340)* Installed apps keep the
+  reader they shipped for good, so `test/fixtures/shipped-updaters/` holds it byte for
+  byte: `v1.2.8/` (1.2.0–1.2.8) and `v1.6.0/` (1.3.0–1.6.0, with its trust-state writer),
+  each folder with its own `update-manifest.cjs`. `test/shipped-updaters.test.ts` pins
+  every file's SHA-256 and runs them against today's publisher; never edit or regenerate
+  a fixture, and keep those tests passing through any manifest change (#295).
 - **Rollback high-water mark** *(#148, rollback half only)* — the packaged notify-only
   checker (`electron/update-fetch.cjs` + `update-controller.cjs`) persists the highest
   release version whose manifest passed signature, schema and expiry verification in its

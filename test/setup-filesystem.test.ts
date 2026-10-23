@@ -20,7 +20,7 @@ import type {
 } from '../scripts/setup-filesystem.cjs'
 import { removeScratchDirs, scratchDir } from './scratch.js'
 
-const { createSetupFilesystem } = setupFilesystemModule
+const { createSetupFilesystem, renameWithRetry } = setupFilesystemModule
 
 function temp(prefix: string): string {
   return scratchDir(prefix)
@@ -915,5 +915,300 @@ describe('modeled Win32 filesystem policy', () => {
     })).toThrow(/identity changed|cleanup was refused/i)
     expect(virtual.has('C:\\AgentInbox\\runtime')).toBe(false)
     expect(virtual.has(replacementSentinel)).toBe(true)
+  })
+})
+
+// #333: Windows refuses to rename a directory while anything in it is still
+// open, so the build-time publishers retry those renames there, re-running
+// every check first. Every other platform and error still fails at once.
+function refusal(code: string): NodeJS.ErrnoException {
+  return Object.assign(new Error(`${code}: operation not permitted, rename`), { code })
+}
+
+describe('renameWithRetry: busy Windows renames (#333)', () => {
+  function folders(): { from: string; to: string } {
+    const parent = temp('rename-retry-')
+    const from = join(parent, 'stage')
+    mkdirSync(from)
+    writeFileSync(join(from, 'node.exe'), 'node\n')
+    return { from, to: join(parent, 'published') }
+  }
+
+  // Records each check, rename and wait; the first `refusals` renames fail
+  // with `code`, the rest rename for real. A retry that never ends throws
+  // rather than hanging the run.
+  function attempts(refusals: number, code = 'EPERM') {
+    const steps: string[] = []
+    const waits: number[] = []
+    let renames = 0
+    return {
+      steps,
+      waits,
+      check() {
+        steps.push('check')
+      },
+      rename(from: string, to: string) {
+        renames += 1
+        if (renames > 100) throw new Error('rename retried without end')
+        steps.push('rename')
+        if (renames <= refusals) throw refusal(code)
+        renameSync(from, to)
+      },
+      sleep(ms: number) {
+        steps.push('wait')
+        waits.push(ms)
+      },
+    }
+  }
+
+  it.each(['EPERM', 'EACCES', 'EBUSY'])('renames on Windows once %s stops, checking before every attempt', (code) => {
+    const { from, to } = folders()
+    const run = attempts(3, code)
+
+    renameWithRetry({ platform: 'win32', check: run.check, rename: () => run.rename(from, to), sleep: run.sleep })
+
+    expect(readFileSync(join(to, 'node.exe'), 'utf8')).toBe('node\n')
+    expect(existsSync(from)).toBe(false)
+    expect(run.steps).toEqual([
+      'check', 'rename', 'wait',
+      'check', 'rename', 'wait',
+      'check', 'rename', 'wait',
+      'check', 'rename',
+    ])
+    expect(run.waits[0]).toBeLessThan(run.waits[1]!)
+    expect(run.waits[1]).toBeLessThan(run.waits[2]!)
+  })
+
+  it('gives up on Windows after about ten seconds of growing waits, with the rename\'s own error', () => {
+    const { from, to } = folders()
+    const permanent = refusal('EPERM')
+    const waits: number[] = []
+    let renames = 0
+    let failure: unknown
+    try {
+      renameWithRetry({
+        platform: 'win32',
+        check() {},
+        rename() {
+          renames += 1
+          if (renames > 100) throw new Error('rename retried without end')
+          throw permanent
+        },
+        sleep(ms) {
+          waits.push(ms)
+        },
+      })
+    } catch (error) {
+      failure = error
+    }
+
+    expect(failure).toBe(permanent)
+    expect(renames).toBe(waits.length + 1)
+    const total = waits.reduce((sum, ms) => sum + ms, 0)
+    expect(total).toBeGreaterThan(8_000)
+    expect(total).toBeLessThanOrEqual(10_000)
+    waits.slice(1).forEach((ms, index) => expect(ms).toBeGreaterThanOrEqual(waits[index]!))
+    expect(waits[0]).toBeLessThan(waits.at(-1)!)
+    expect(readFileSync(join(from, 'node.exe'), 'utf8')).toBe('node\n')
+    expect(existsSync(to)).toBe(false)
+  })
+
+  it.each(['darwin', 'linux'] as const)('never retries on %s', (platform) => {
+    for (const code of ['EPERM', 'EACCES', 'EBUSY']) {
+      const { from, to } = folders()
+      const run = attempts(1, code)
+
+      expect(() => renameWithRetry({ platform, check: run.check, rename: () => run.rename(from, to), sleep: run.sleep }))
+        .toThrow(code)
+      expect(run.steps).toEqual(['check', 'rename'])
+      expect(existsSync(join(from, 'node.exe'))).toBe(true)
+    }
+  })
+
+  // What both production callers rely on: no platform passed
+  it.skipIf(process.platform === 'win32')('never retries on this host when no platform is given', () => {
+    const { from, to } = folders()
+    const run = attempts(1, 'EPERM')
+
+    expect(() => renameWithRetry({ check: run.check, rename: () => run.rename(from, to), sleep: run.sleep }))
+      .toThrow('EPERM')
+    expect(run.steps).toEqual(['check', 'rename'])
+    expect(run.waits).toEqual([])
+  })
+
+  it.each(['ENOENT', 'EEXIST', 'ENOTEMPTY', 'EXDEV', 'EINVAL', 'identity-changed'])(
+    'never retries a Windows rename that failed with %s',
+    (code) => {
+      const { from, to } = folders()
+      const run = attempts(1, code)
+
+      expect(() => renameWithRetry({ platform: 'win32', check: run.check, rename: () => run.rename(from, to), sleep: run.sleep }))
+        .toThrow(code)
+      expect(run.steps).toEqual(['check', 'rename'])
+    },
+  )
+})
+
+describe('Setup filesystem publication retried on Windows (#333)', () => {
+  // The first `refusals` renames fail as Windows fails them; the rest rename.
+  function refusingIo(refusals: number) {
+    const renames: string[] = []
+    return {
+      renames,
+      io: nodeIo({
+        rename(from, to) {
+          renames.push(from)
+          if (renames.length <= refusals) throw refusal('EPERM')
+          renameSync(from, to)
+        },
+      }),
+    }
+  }
+
+  function stageRuntime(stage: string): string {
+    writeFileSync(join(stage, 'node.exe'), 'node\n')
+    return 'prepared'
+  }
+
+  function failureOf(publish: () => unknown): unknown {
+    try {
+      publish()
+    } catch (error) {
+      return error
+    }
+    throw new Error('expected the publication to fail')
+  }
+
+  // A modeled Windows volume whose first `refusals` renames are refused as a
+  // busy folder's are; `onRefusal` runs while Windows refuses.
+  function modeledWindows(refusals: number, onRefusal: (virtual: VirtualWin32Filesystem) => void = () => {}) {
+    const virtual = new VirtualWin32Filesystem()
+    virtual.add('C:\\', 'directory')
+    virtual.add('C:\\AgentInbox', 'directory')
+    for (let call = 1; call <= refusals; call += 1) virtual.renameFailures.add(call)
+    const io = virtual.io()
+    const rename = io.rename
+    io.rename = (from, to) => {
+      try {
+        rename(from, to)
+      } catch (error) {
+        onRefusal(virtual)
+        throw error
+      }
+    }
+    const publish = (retryBusyRename?: boolean) => createSetupFilesystem({ platform: 'win32', io }).stageDirectory({
+      destination: 'C:\\AgentInbox\\runtime',
+      replacement: 'refuse',
+      prepare(stage) {
+        virtual.add(win32.join(stage, 'node.exe'), 'file')
+        return 'prepared'
+      },
+      validate() {},
+      retryBusyRename,
+    })
+    const stages = () => [...virtual.entries.keys()].filter((path) => path.includes('.agent-inbox-stage-'))
+    return { virtual, publish, stages }
+  }
+
+  it('publishes on Windows once the rename stops being refused, when asked to retry', () => {
+    const { virtual, publish, stages } = modeledWindows(2)
+
+    expect(publish(true)).toMatchObject({ path: 'C:\\AgentInbox\\runtime', prepared: 'prepared', replaced: false })
+    expect(virtual.renameCount).toBe(3)
+    expect(virtual.has('C:\\AgentInbox\\runtime\\node.exe')).toBe(true)
+    expect(stages()).toEqual([])
+  })
+
+  it.each([false, undefined])('renames once on Windows when retryBusyRename is %s', (retryBusyRename) => {
+    const { virtual, publish, stages } = modeledWindows(1)
+
+    expect(() => publish(retryBusyRename)).toThrow(/sharing violation/i)
+    expect(virtual.renameCount).toBe(1)
+    expect(virtual.has('C:\\AgentInbox\\runtime')).toBe(false)
+    expect(stages()).toEqual([])
+  })
+
+  it.skipIf(process.platform === 'win32')('never retries on this host, even when asked to', () => {
+    const parent = temp('setup-fs-busy-host-')
+    const destination = join(parent, 'win32-x64')
+    const { io, renames } = refusingIo(1)
+
+    expect(() => createSetupFilesystem({ io }).stageDirectory({
+      destination,
+      replacement: 'refuse',
+      prepare: stageRuntime,
+      validate() {},
+      retryBusyRename: true,
+    })).toThrow(/EPERM/)
+    expect(renames).toHaveLength(1)
+    expect(existsSync(destination)).toBe(false)
+    expect(stageEntries(parent)).toEqual([])
+  })
+
+  it.each([true, false])('refuses a destination that appeared during validation (retryBusyRename: %s)', (retryBusyRename) => {
+    const parent = temp('setup-fs-validate-taken-')
+    const destination = join(parent, 'win32-x64')
+    const { io, renames } = refusingIo(0)
+
+    expect(failureOf(() => createSetupFilesystem({ io }).stageDirectory({
+      destination,
+      replacement: 'refuse',
+      prepare: stageRuntime,
+      validate() {
+        mkdirSync(destination)
+        writeFileSync(join(destination, 'other.txt'), 'someone else\n')
+      },
+      retryBusyRename,
+    }))).toMatchObject({ code: 'already-exists', committed: false })
+    expect(renames).toEqual([])
+    expect(readdirSync(destination)).toEqual(['other.txt'])
+    expect(stageEntries(parent)).toEqual([])
+  })
+
+  it.each(['true', 1, null, {}])('refuses a retryBusyRename that is not a boolean (%s) before staging anything', (value) => {
+    const parent = temp('setup-fs-retry-option-')
+    let prepared = false
+
+    expect(failureOf(() => createSetupFilesystem().stageDirectory({
+      destination: join(parent, 'win32-x64'),
+      replacement: 'refuse',
+      prepare() {
+        prepared = true
+      },
+      validate() {},
+      retryBusyRename: value as unknown as boolean,
+    }))).toMatchObject({ code: 'invalid-option' })
+    expect(prepared).toBe(false)
+    expect(readdirSync(parent)).toEqual([])
+  })
+
+  it('refuses a stage substituted between attempts, never renaming it, and keeps it for recovery', () => {
+    let substitute = ''
+    const { virtual, publish } = modeledWindows(1, (model) => {
+      // While Windows refuses the rename, something else takes the stage's place.
+      const stage = [...model.entries.values()].find((entry) => entry.canonical.endsWith('\\tree'))!.canonical
+      model.removeTree(stage)
+      model.add(stage, 'directory')
+      substitute = win32.join(stage, 'node.exe')
+      model.add(substitute, 'file')
+    })
+
+    const failure = failureOf(() => publish(true))
+    expect(failure).toMatchObject({ cause: { code: 'identity-changed' }, recoveryPath: win32.dirname(win32.dirname(substitute)) })
+    expect(virtual.renameCount).toBe(1)
+    expect(virtual.has('C:\\AgentInbox\\runtime')).toBe(false)
+    expect(virtual.has(substitute)).toBe(true)
+  })
+
+  it('refuses a destination that appeared between attempts instead of retrying into it', () => {
+    const { virtual, publish, stages } = modeledWindows(1, (model) => {
+      model.add('C:\\AgentInbox\\runtime', 'directory')
+      model.add('C:\\AgentInbox\\runtime\\other.txt', 'file')
+    })
+
+    expect(failureOf(() => publish(true))).toMatchObject({ code: 'already-exists' })
+    expect(virtual.renameCount).toBe(1)
+    expect(virtual.has('C:\\AgentInbox\\runtime\\other.txt')).toBe(true)
+    expect(stages()).toEqual([])
   })
 })

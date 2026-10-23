@@ -139,11 +139,14 @@ export function classifyRuntimeConfig({ nodeBinPath, entryPath, runtimeRoot, man
 // `args[i]`, each `env` value, a hook's one command string, a path with a
 // space in it) and split into the pieces a command line or `KEY=value` is made
 // of. Runtime R is in use by a config when
-//   (a) any candidate in it holds R's id as a whole path segment (`/<id>/`, or
-//       the id at either end), unless that candidate is an absolute or `~/`
-//       path whose stat fails with ENOENT or ENOTDIR. So a bare id, an `env`
-//       value, a `$HOME/…` or relative path, another root's copy of R (ids are
-//       content-derived) and a path stat cannot follow all count; or
+//   (a) any candidate in it names R's id as a whole name (no runtime-id
+//       character on either side, as runtimeIdInText), unless the text up to
+//       and including the id is an absolute or `~/` path to a folder whose
+//       stat fails with ENOENT or ENOTDIR. So a bare id, an `env` value, a
+//       `$HOME/…` or relative path, shell text glued to it (`cd <R>&&…`,
+//       `(cd <R>)`, `` `printf %s <R>`/bin/node ``), a file R lacks, another
+//       root's copy of R (ids are content-derived) and a path stat cannot
+//       follow all count; or
 //   (b) an absolute or `~/` candidate in a LAUNCHER leads into R: R's folder,
 //       by (dev, ino), is the candidate's resolved path or a folder above it.
 //       No path is compared as a string, so a symlinked shortcut, another
@@ -227,11 +230,15 @@ function candidatesOf(texts) {
   return out
 }
 
-/** Does `candidate` hold `runtimeId` as a whole path segment: `/<id>/`, or the id at either end? */
-function holdsIdSegment(candidate, runtimeId) {
-  for (let at = candidate.indexOf(runtimeId); at >= 0; at = candidate.indexOf(runtimeId, at + 1)) {
-    const end = at + runtimeId.length
-    if ((at === 0 || candidate[at - 1] === '/') && (end === candidate.length || candidate[end] === '/')) return true
+/**
+ * Rule (a) for one candidate: does it name `runtimeId` as a whole name
+ * (runtimeIdInText's boundary), other than at the end of a path to a folder
+ * that is not there? The text up to and including the id is that folder.
+ */
+function namesById(candidate, runtimeId, home) {
+  for (const at of wholeNames(candidate, runtimeId)) {
+    const folder = placedPath(candidate.slice(0, at + runtimeId.length), home)
+    if (folder === null || !isAbsence(statError(folder))) return true
   }
   return false
 }
@@ -424,18 +431,12 @@ export function scanRuntimeReferences({ runtimeRoot, runtimeIds, files, home = n
       checked.push({ file, status: 'unknown', reason })
       continue
     }
-    // (a) the id as a path segment, anywhere in the config
+    // (a) the id as a whole name, anywhere in the config
     const values = stringValues(config.value)
     for (const { id } of runtimes) {
       if (found.has(id)) continue
       for (const text of values) {
-        if (!text.includes(id)) continue
-        const named = [...candidatesOf([text])].some((c) => {
-          if (!holdsIdSegment(c, id)) return false
-          const path = placedPath(c, home)
-          return path === null || !isAbsence(statError(path))
-        })
-        if (named) {
+        if (text.includes(id) && [...candidatesOf([text])].some((c) => namesById(c, id, home))) {
           found.add(id)
           break
         }
@@ -515,6 +516,16 @@ export function processesUsingRuntime(processes, runtimeId, selfPid = process.pi
     .sort((a, b) => a - b)
 }
 
+// Why `dir` no longer verifies against its own manifest, or null when it does.
+function verificationProblem(dir, runtimeId, manifestFileName) {
+  try {
+    verifyPayload({ root: dir, manifestFileName, expect: { runtimeId } })
+    return null
+  } catch (err) {
+    return err?.message ?? String(err)
+  }
+}
+
 // The version a runtime folder's own manifest declares, when that manifest is
 // a plain file naming this folder as an Agent Inbox runtime; else undefined.
 function declaredVersion(dir, name, manifestFileName) {
@@ -530,15 +541,19 @@ function declaredVersion(dir, name, manifestFileName) {
 /**
  * Every runtime under runtimeRoot and whether prune-runtimes.sh may remove it
  * (issue #294). Read-only: it lists the root, reads manifests and host
- * configs and runs `ps`; it never writes, locks or cleans trash. A runtime is
- * a real directory directly in the root: never a symlink (never followed),
- * never a `.`-name (the `.trash-*` folders an interrupted prune leaves
- * included), never anything outside the root. `only` checks that one alone.
- * Each gets a verdict, in this order:
+ * configs, verifies a would-be-unused runtime and runs `ps`; it never writes,
+ * locks or cleans trash. A runtime is a real directory directly in the root:
+ * never a symlink (never followed), never a `.`-name (the `.trash-*` folders
+ * an interrupted prune leaves included), never anything outside the root.
+ * `only` checks that one alone. Each gets a verdict, in this order:
  *   current       — `current`, the runtime the caller runs from: kept
  *   not-a-runtime — no manifest naming this folder as a runtime: left alone
  *   used          — a host config uses it (`usedBy` names which): kept
  *   in-use        — a running process names it (`pids`): kept
+ *   changed       — it no longer verifies against its manifest (`problem`
+ *                   says how: a Finder .DS_Store is enough): kept, since
+ *                   prune would refuse it. The same full verifyPayload prune
+ *                   runs, about 0.25 s for a 171 MB runtime with a warm cache
  *   unused        — none of these: prune-runtimes.sh removes it
  * `status` is 'unknown', with `reason` and no runtimes, when a host config
  * exists but proves nothing or the process list cannot be read: nothing may
@@ -584,8 +599,14 @@ export function findUnusedRuntimes({
     for (const { runtimeId, version } of candidates) {
       const usedBy = [...new Set((scan.uses.get(runtimeId) ?? []).map((found) => found.label))]
       const pids = processesUsingRuntime(listed.processes, runtimeId)
-      const verdict = usedBy.length > 0 ? 'used' : pids.length > 0 ? 'in-use' : 'unused'
-      runtimes.push({ runtimeId, version, verdict, usedBy, pids })
+      if (usedBy.length > 0 || pids.length > 0) {
+        runtimes.push({ runtimeId, version, verdict: usedBy.length > 0 ? 'used' : 'in-use', usedBy, pids })
+        continue
+      }
+      const problem = verificationProblem(join(runtimeRoot, runtimeId), runtimeId, manifestFileName)
+      runtimes.push(problem === null
+        ? { runtimeId, version, verdict: 'unused', usedBy, pids }
+        : { runtimeId, version, verdict: 'changed', usedBy, pids, problem })
     }
   }
   runtimes.sort((a, b) => (a.runtimeId < b.runtimeId ? -1 : a.runtimeId > b.runtimeId ? 1 : 0))

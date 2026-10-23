@@ -415,6 +415,16 @@ describe('portable release installer', () => {
       ['an env value naming only its id', (f, dir) => writeFileSync(f.copilotConfig, JSON.stringify({
         mcpServers: { legacy: { command: 'node', args: ['/work/app/server.js'], env: { AGENT_INBOX_RUNTIME: basename(dir) } } },
       }))],
+      // shell punctuation glued to the id (the review of #334's Note)
+      ['cd <R>&& in an sh -c string', (f, dir) => writeFileSync(f.copilotConfig, JSON.stringify({
+        mcpServers: { legacy: { command: '/bin/sh', args: ['-c', `cd ${dir}&&exec ./bin/node dist/mcp-server.js`] } },
+      }))],
+      ['a `printf %s <R>` substitution', (f, dir) => writeFileSync(f.copilotConfig, JSON.stringify({
+        mcpServers: { legacy: { command: '/bin/sh', args: ['-c', `exec \`printf %s ${dir}\`/bin/node dist/mcp-server.js`] } },
+      }))],
+      ['a (cd <R>) subshell', (f, dir) => writeFileSync(f.copilotConfig, JSON.stringify({
+        mcpServers: { legacy: { command: '/bin/sh', args: ['-c', `(cd ${dir})&&exec node dist/mcp-server.js`] } },
+      }))],
     ]
 
     it.each(REFERENCES)('keeps an older runtime that %s still uses', (_label, reference) => {

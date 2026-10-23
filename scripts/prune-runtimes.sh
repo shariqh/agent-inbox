@@ -9,7 +9,9 @@
 #   - no host config uses: ~/.claude.json (every scope in it),
 #     ~/.claude/settings.json, ~/.claude/settings.local.json,
 #     ~/.copilot/mcp-config.json or Claude Desktop's config, and
-#   - no running process names,
+#   - no running process names, and
+#   - still verifies against its manifest (a Finder .DS_Store is enough to
+#     change it: such a runtime is kept and named, never attempted),
 # checking each one again just before runtime-payload.mjs prune removes it.
 # A host config that cannot be read means nothing is removed. Project-scope
 # configs (<project>/.mcp.json, <project>/.claude/settings*.json) are not read.
@@ -18,8 +20,8 @@
 #   bash ~/.agent-inbox/runtime/<runtime-id>/scripts/prune-runtimes.sh          # dry run
 #   bash ~/.agent-inbox/runtime/<runtime-id>/scripts/prune-runtimes.sh --apply  # remove them
 # Setup's `prune-runtimes` target runs the app's own copy with --apply.
-# Exit 0: done, naming anything kept because it is still in use; 1: refused,
-# or a removal failed; 2: usage.
+# Exit 0: done, naming anything kept because it is in use or changed; 1:
+# refused, or a removal failed; 2: usage.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -96,7 +98,10 @@ verdicts() {
     for (const r of result.runtimes) {
       // a name a line cannot carry is never removed
       const verdict = /[\t\n\r]/.test(r.runtimeId) ? "not-a-runtime" : r.verdict
-      const detail = verdict === "used" ? r.usedBy.join(", ") : verdict === "in-use" ? r.pids.join(", ") : "-"
+      const detail = verdict === "used" ? r.usedBy.join(", ")
+        : verdict === "in-use" ? r.pids.join(", ")
+        : verdict === "changed" ? r.problem
+        : "-"
       process.stdout.write(`${verdict}\t${field(r.runtimeId)}\t${field(r.version ?? "-")}\t${field(detail)}\n`)
     }
   ' "$json" </dev/null
@@ -111,6 +116,7 @@ kept() {
   case "$1" in
     current) echo "Kept $2: the runtime this prune runs from." ;;
     used) echo "Kept $2: used by $3." ;;
+    changed) echo "Kept $2: changed since Setup installed it ($3)." ;;
     in-use)
       case "$3" in
         *,*) echo "Kept $2: in use by running processes (pids $3). Exit those sessions, then try again." ;;

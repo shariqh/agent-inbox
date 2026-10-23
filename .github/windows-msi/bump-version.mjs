@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// #87 installer spike (CI only): the upgrade build is this same commit with only
-// its release version bumped by one patch, so an installer can be upgraded to it.
+// #87 PR 2b, CI only: the next build is this same commit with only its release
+// version bumped by one patch, so the MSI under test can be upgraded to it.
 // --print writes base= and upgrade= lines for $GITHUB_OUTPUT. --apply rewrites the
 // three places the release version lives (package.json, package-lock.json and
 // src/version.ts, which test/release-pipeline.test.ts keeps in step).
@@ -14,7 +14,7 @@ const writeJson = (name, value) => writeFileSync(join(root, name), `${JSON.strin
 
 const pkg = JSON.parse(read('package.json'))
 const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(pkg.version)
-if (!match) throw new Error(`the spike needs a plain major.minor.patch version, not ${pkg.version}`)
+if (!match) throw new Error(`the MSI needs a plain major.minor.patch version, not ${pkg.version}`)
 const upgrade = `${match[1]}.${match[2]}.${Number(match[3]) + 1}`
 
 const mode = process.argv[2]

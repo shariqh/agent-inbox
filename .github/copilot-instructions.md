@@ -162,6 +162,26 @@ Run the build before `npm run electron`; the development shell starts the built
   by `test/runtime-inventory.test.ts`; it walks only unused runtimes, keeps
   answers per folder and config stamp, and its one Remove re-reads the list
   before it calls exactly `install('prune-runtimes')`.
+- **Windows MSI path (#87 PR 2b):** `.github/workflows/windows-msi.yml` builds the
+  unsigned per-user MSI (`Agent-Inbox-vX.Y.Z-windows-x64.msi`, installed to
+  `%LOCALAPPDATA%\Programs\Agent Inbox`) and `SHA256SUMS-windows.txt` from the
+  verified Windows folder, proves it as a fresh standard user, and uploads both as
+  a workflow artifact only when every requirement held: never a release asset, and
+  no update-manifest target (#343). WiX 7.0.0 and the .NET 10.0.13 runtime it runs
+  on (`dotnet exec --fx-version`, never the runner's .NET) are pinned by URL and
+  digest in `.github/windows-msi/installer.json`. The owner accepted the WiX OSMF
+  EULA on 2026-10-23; `-acceptEula wix7` on the WiX commands that need it is the
+  only acceptance allowed. The UpgradeCode, AppUserModelID and toast activator
+  CLSID are permanent and must stay equal across `installer.json`,
+  `release/windows-inputs.json` and `electron/windows-app.cjs`, which sets the
+  ID and CLSID at startup only in a packaged Windows build (never `electron .`)
+  and on Windows quits through `app.quit()` when Restart Manager asks
+  (`session-end` with `close-app`), logging again at `will-quit`, which the
+  lifecycle requires because a held `before-quit` lets Electron end the process
+  at once. A silent MSI upgrade never asks, so closing the app before an upgrade
+  is still open (decision record §9). `AllowSameVersionUpgrades` makes a
+  same-version rebuild replace the installed build (ICE61 waived). Windows
+  Setup stays unavailable.
 - **Shared presentation rules:** `public/attention.js` is the single attention
   predicate used by the viewer and Electron dock badge. Pure modules under
   `public/` hold grouping, ordering, search, badge, polling, and rendering rules;

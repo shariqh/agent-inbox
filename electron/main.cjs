@@ -39,6 +39,7 @@ const { createUpdatePreferences, createUpdateTrustState } = require('./update-pr
 const { loadUpdateRegistry } = require('./update-trust.cjs')
 const { createConditionalReader } = require('./conditional-read.cjs')
 const { syncSpellcheckLanguages } = require('./spellcheck-languages.cjs')
+const { quitWhenRestartManagerAsks, setWindowsAppIdentity } = require('./windows-app.cjs')
 const {
   attentionNotification,
   cannedResponseActions,
@@ -54,6 +55,15 @@ const {
   wakeAdapterFromEnv,
   wakeAdapterPayload,
 } = require('./reply-watch.cjs')
+
+// Windows (#87): the per-user MSI's Start-menu shortcut carries this app's
+// AppUserModelID and toast activator CLSID; claim them before any window or
+// notification exists (windows-app.cjs).
+try {
+  setWindowsAppIdentity({ app, platform: process.platform })
+} catch (err) {
+  console.error(`[agent-inbox] could not set the Windows app identity: ${err.message}`)
+}
 
 const PORT = Number(process.env.AGENT_INBOX_PORT ?? 4319)
 const VIEWER_HOST = '127.0.0.1'
@@ -805,6 +815,9 @@ function createWindow() {
   themeWindow = win
   updateWindow = win
   linkWindow = win
+  // Windows (#87): an MSI upgrade, repair or uninstall asks a running app to close
+  // through Restart Manager; quit through the normal path then (windows-app.cjs).
+  quitWhenRestartManagerAsks({ window: win, app, platform: process.platform })
   const webContentsId = win.webContents.id
   themeWindowWebContentsId = webContentsId
   syncThemeChrome(win)

@@ -1,15 +1,16 @@
 #Requires -Version 7.2
 <#
-  #87 installer spike (CI only): drive one installer through its whole lifecycle
-  as a fresh, disposable standard user, and compare every installed tree with the
-  verified folder it came from. Runs as the runner's administrator only to create
-  that user and to read the user's profile afterwards; every installer, Squirrel
-  and app action runs through as-user.ps1 with the standard user's token.
+  #87 PR 2b, CI only: drive the MSI through its whole lifecycle as a fresh,
+  disposable standard user, and compare every installed tree with the verified
+  folder it came from. Runs as the runner's administrator only to create that user,
+  to set and restore one installer policy value, and to read the user's profile
+  afterwards; every installer and app action runs through as-user.ps1 with the
+  standard user's token.
 #>
 param(
-  [Parameter(Mandatory)][ValidateSet('msi', 'squirrel')][string]$Kind,
   [Parameter(Mandatory)][string]$Build,
   [Parameter(Mandatory)][string]$Folders,
+  [Parameter(Mandatory)][string]$Inputs,
   [Parameter(Mandatory)][string]$Shared,
   [Parameter(Mandatory)][string]$UserName,
   [Parameter(Mandatory)][int]$Port,
@@ -18,30 +19,29 @@ param(
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
 
-$tools = Get-Content -Raw (Join-Path $PSScriptRoot 'tools.json') | ConvertFrom-Json
-$verified = Get-Content -Raw $Folders | ConvertFrom-Json
-$builds = @{
-  base = Get-Content -Raw (Join-Path $Build 'base.json') | ConvertFrom-Json
-  upgrade = Get-Content -Raw (Join-Path $Build 'upgrade.json') | ConvertFrom-Json
+$pins = Get-Content -Raw (Join-Path $PSScriptRoot 'installer.json') | ConvertFrom-Json
+$release = Get-Content -Raw $Inputs | ConvertFrom-Json
+$identity = [ordered]@{
+  productName = $release.product
+  appUserModelId = $release.bundleId
+  toastActivatorClsid = $pins.identity.toastActivatorClsid
 }
+$verified = Get-Content -Raw $Folders | ConvertFrom-Json
+$builds = @{}
+foreach ($side in 'base', 'upgrade', 'rebuild') { $builds[$side] = Get-Content -Raw (Join-Path $Build "$side.json") | ConvertFrom-Json }
 $tree = Join-Path $PSScriptRoot 'tree.mjs'
 $pwsh = (Get-Command pwsh).Source
 
 # A workspace the standard user can read and write.
-$work = Join-Path $Shared $Kind
+$work = Join-Path $Shared 'msi'
 New-Item -ItemType Directory -Force (Join-Path $work 'results'), (Join-Path $work 'logs'), (Join-Path $work 'installers') | Out-Null
-Copy-Item (Join-Path $PSScriptRoot 'as-user.ps1') $work -Force
+Copy-Item (Join-Path $PSScriptRoot 'as-user.ps1'), (Join-Path $PSScriptRoot 'question.mjs') $work -Force
+# The rebuild has the base's version and so its file name: each MSI keeps its own folder.
 $installers = @{}
-foreach ($side in 'base', 'upgrade') {
-  $source = if ($Kind -eq 'msi') { Join-Path $Build $builds[$side].msi.name } else { Join-Path $Build "$side\$($builds[$side].setup.name)" }
-  $installers[$side] = Join-Path $work "installers\$(Split-Path -Leaf $source)"
-  Copy-Item $source $installers[$side] -Force
-}
-$releases = $null
-if ($Kind -eq 'squirrel') {
-  $releases = Join-Path $work 'releases-upgrade'
-  New-Item -ItemType Directory -Force $releases | Out-Null
-  Copy-Item (Join-Path $Build 'upgrade\RELEASES'), (Join-Path $Build "upgrade\$($builds.upgrade.nupkg.name)") $releases -Force
+foreach ($side in 'base', 'upgrade', 'rebuild') {
+  New-Item -ItemType Directory -Force (Join-Path $work "installers\$side") | Out-Null
+  $installers[$side] = Join-Path $work "installers\$side\$($builds[$side].msi.name)"
+  Copy-Item (Join-Path $Build "$side\$($builds[$side].msi.name)") $installers[$side] -Force
 }
 
 # The disposable standard user. Its password exists only in this process.
@@ -50,7 +50,7 @@ Write-Host "::add-mask::$password"
 $computer = [ADSI]"WinNT://$env:COMPUTERNAME,computer"
 $account = $computer.Create('User', $UserName)
 $account.SetPassword($password)
-$account.Put('Description', 'Agent Inbox installer spike (disposable)')
+$account.Put('Description', 'Agent Inbox MSI lifecycle (disposable)')
 $account.SetInfo()
 $account.Put('UserFlags', [int]$account.UserFlags.Value -bor 0x10000)
 $account.SetInfo()
@@ -76,11 +76,11 @@ function Invoke-Step([string]$Label, [hashtable]$Parameters) {
   $paramsFile = Join-Path $work "results\$name.params.json"
   $outFile = Join-Path $work "results\$name.json"
   $Parameters.label = $name
-  $Parameters.kind = $Kind
   $Parameters.out = $outFile
   $Parameters.logDir = Join-Path $work 'logs'
   $Parameters.port = $Port
-  $Parameters.identity = $tools.identity
+  $Parameters.identity = $identity
+  $Parameters.questionScript = Join-Path $work 'question.mjs'
   $Parameters | ConvertTo-Json -Depth 6 | Set-Content -Encoding utf8 $paramsFile
   $arguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$(Join-Path $work 'as-user.ps1')`" -ParamsFile `"$paramsFile`""
   $stdout = Join-Path $work "results\$name.stdout.txt"
@@ -90,19 +90,19 @@ function Invoke-Step([string]$Label, [hashtable]$Parameters) {
   $null = $process.Handle
   if (-not $process.WaitForExit(1500 * 1000)) {
     Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
-    throw "$Kind step $name timed out"
+    throw "step $name timed out"
   }
   if (-not (Test-Path $outFile)) {
     $output = @($stdout, $stderr | Where-Object { Test-Path $_ } | ForEach-Object { Get-Content -Raw $_ }) -join "`n"
-    throw "$Kind step $name wrote no result (pwsh exit $($process.ExitCode)): $output"
+    throw "step $name wrote no result (pwsh exit $($process.ExitCode)): $output"
   }
   $result = Get-Content -Raw $outFile | ConvertFrom-Json -AsHashtable
   if ($result.user.isAdministrator -or $result.user.name -ne $UserName) {
-    throw "$Kind step $name did not run as the standard user $UserName"
+    throw "step $name did not run as the standard user $UserName"
   }
   $run = if ($result.run) { "exit $($result.run.exitCode) in $($result.run.seconds)s" } else { "done in $($result.seconds)s" }
   $errorText = if ($result.error) { "; ERROR: $($result.error) $($result.errorAt)" } else { '' }
-  Write-Host "[$Kind] $name ($($result.user.name), $($result.user.integrity)): $run; app $($result.state.appDirectory)$errorText"
+  Write-Host "[msi] $name ($($result.user.name), $($result.user.integrity), session $($result.user.session)): $run; app $($result.state.appDirectory)$errorText"
   $steps[$name] = $result
   return $result
 }
@@ -111,16 +111,15 @@ function Measure-Installed([string]$Name, [hashtable]$Result, [string]$Side) {
   $directory = $Result.state.appDirectoryFull
   $record = [ordered]@{ step = $Name; side = $Side; installed = [bool]$directory }
   if ($directory) {
-    $arguments = @($tree, '--root', $directory, '--compare', $verified.$Side.root)
-    # Squirrel puts its own Update.exe copy and that copy's log in every app folder.
-    if ($Kind -eq 'squirrel') { $arguments += @('--exclude', 'squirrel.exe', '--exclude', 'Squirrel-UpdateSelf.log') }
-    $measured = & node @arguments | ConvertFrom-Json -AsHashtable
+    $measured = & node $tree --root $directory --compare $verified.$Side.root | ConvertFrom-Json -AsHashtable
     $userLength = $Result.user.name.Length
     $deepest = $directory.Length + 1 + $measured.deepestRelativeLength
     $record.appDirectory = $Result.state.appDirectory
     $record.digest = $measured.digest
     $record.matchesVerified = $measured.digest -eq $verified.$Side.appTreeDigest
     $record.compare = $measured.compare
+    $record.files = $measured.files
+    $record.bytes = $measured.bytes
     $record.deepestPath = [ordered]@{
       relative = $measured.deepestRelative
       fullLength = $deepest
@@ -129,23 +128,15 @@ function Measure-Installed([string]$Name, [hashtable]$Result, [string]$Side) {
       maxUserNameLength = 259 - ($deepest - $userLength)
     }
   }
-  $profileDir = $Result.user.profile
-  $root = if ($Kind -eq 'msi') { Join-Path $profileDir "AppData\Local\Programs\$($tools.identity.productName)" } else {
-    Join-Path $profileDir "AppData\Local\$($tools.identity.squirrelPackageId)"
-  }
-  if (Test-Path -LiteralPath $root) {
-    $footprint = & node $tree --root $root | ConvertFrom-Json -AsHashtable
-    $record.footprint = [ordered]@{ root = $root.Replace($profileDir, '%USERPROFILE%'); files = $footprint.files; bytes = $footprint.bytes }
-  }
   $checks[$Name] = $record
-  Write-Host "[$Kind] $Name tree vs verified ${Side}: matches=$($record.matchesVerified)"
+  Write-Host "[msi] $Name tree vs verified ${Side}: matches=$($record.matchesVerified)"
   return $record
 }
 
 $failure = $null
-# The MSI lifecycle changes one machine policy value, DisableMSI, and the finally
-# below puts it back: the key is created only when missing, nothing else in it is
-# touched, and a key this run created is removed again once it is empty.
+# The lifecycle changes one machine policy value, DisableMSI, and the finally below
+# puts it back: the key is created only when missing, nothing else in it is touched,
+# and a key this run created is removed again once it is empty.
 $policyKey = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Installer'
 $policy = [ordered]@{ keyExisted = $false; disableMsiBefore = $null; disableMsiKind = $null; keyCreated = $false; changed = $false }
 $policyRead = Get-Item -LiteralPath $policyKey -ErrorAction SilentlyContinue
@@ -159,27 +150,30 @@ if ($policyRead) {
 $checks['installer-policy'] = $policy
 try {
   Invoke-Step 'baseline' @{ action = 'baseline' } | Out-Null
-  if ($Kind -eq 'msi') {
-    # Windows Server leaves DisableMSI unset, which blocks unelevated per-user
-    # installs of unmanaged packages; Windows 10 and 11 allow them. Record the
-    # server result, then measure everything else under the client default.
-    $serverDefault = Invoke-Step 'install-under-server-policy' @{ action = 'install'; installer = $installers.base }
-    if ($serverDefault.run.exitCode -eq 0) {
-      Invoke-Step 'uninstall-after-server-policy' @{ action = 'uninstall'; productCode = $builds.base.productCode } | Out-Null
-    }
-    if (-not (Test-Path -LiteralPath $policyKey)) {
-      New-Item -Path $policyKey | Out-Null
-      $policy.keyCreated = $true
-    }
-    $policy.changed = $true
-    Set-ItemProperty -LiteralPath $policyKey -Name DisableMSI -Value 0 -Type DWord
-    $policy.disableMsiMeasured = (Get-ItemProperty -LiteralPath $policyKey -Name DisableMSI).DisableMSI
+  # Windows Server leaves DisableMSI unset, which blocks unelevated per-user
+  # installs of unmanaged packages; Windows 10 and 11 allow them. Record the
+  # server result, then measure everything else under the client default.
+  $serverDefault = Invoke-Step 'install-under-server-policy' @{ action = 'install'; installer = $installers.base }
+  if ($serverDefault.run.exitCode -eq 0) {
+    Invoke-Step 'uninstall-after-server-policy' @{ action = 'uninstall'; productCode = $builds.base.productCode } | Out-Null
   }
+  if (-not (Test-Path -LiteralPath $policyKey)) {
+    New-Item -Path $policyKey | Out-Null
+    $policy.keyCreated = $true
+  }
+  $policy.changed = $true
+  Set-ItemProperty -LiteralPath $policyKey -Name DisableMSI -Value 0 -Type DWord
+  $policy.disableMsiMeasured = (Get-ItemProperty -LiteralPath $policyKey -Name DisableMSI).DisableMSI
+
   $installed = Invoke-Step 'install-base' @{ action = 'install'; installer = $installers.base }
   Measure-Installed 'install-base' $installed 'base' | Out-Null
-  if ($Kind -eq 'squirrel') { Invoke-Step 'shortcut-like-squirrel-startup' @{ action = 'squirrel-shortcut' } | Out-Null }
-  Invoke-Step 'launch-base' @{ action = 'launch' } | Out-Null
+  Invoke-Step 'launch-base' @{ action = 'launch'; holdSeconds = 20 } | Out-Null
+  Invoke-Step 'notify-with-shortcut' @{ action = 'notify'; withoutShortcut = $false } | Out-Null
+  Invoke-Step 'notify-without-shortcut' @{ action = 'notify'; withoutShortcut = $true } | Out-Null
+  Invoke-Step 'restart-manager' @{ action = 'restart-manager' } | Out-Null
 
+  # The previous build is the MSI under test; the upgrade is this commit rebuilt
+  # one patch version later.
   $upgraded = Invoke-Step 'upgrade-while-running' @{ action = 'upgrade'; installer = $installers.upgrade; whileRunning = $true }
   $measured = Measure-Installed 'upgrade-while-running' $upgraded 'upgrade'
   if ($upgraded.run.exitCode -ne 0 -or -not $measured.matchesVerified) {
@@ -188,39 +182,37 @@ try {
   }
   Invoke-Step 'launch-upgrade' @{ action = 'launch' } | Out-Null
 
-  if ($Kind -eq 'msi') {
-    $productCode = $builds.upgrade.productCode
-    $repaired = Invoke-Step 'repair-with-source' @{
-      action = 'repair'; productCode = $productCode
-      deleteFiles = @("$($tools.identity.productName).exe", 'resources\app\dist\store.js')
-    }
-    Measure-Installed 'repair-with-source' $repaired 'upgrade' | Out-Null
-    Rename-Item -LiteralPath $installers.upgrade -NewName "$(Split-Path -Leaf $installers.upgrade).moved"
-    try {
-      $sourceless = Invoke-Step 'repair-without-source' @{
-        action = 'repair'; productCode = $productCode; deleteFiles = @('resources\app\dist\store.js')
-      }
-    } finally {
-      Rename-Item -LiteralPath "$($installers.upgrade).moved" -NewName (Split-Path -Leaf $installers.upgrade)
-    }
-    Measure-Installed 'repair-without-source' $sourceless 'upgrade' | Out-Null
-    if (-not $checks['repair-without-source'].matchesVerified) {
-      $restored = Invoke-Step 'repair-after-source-returns' @{ action = 'repair'; productCode = $productCode; deleteFiles = @() }
-      Measure-Installed 'repair-after-source-returns' $restored 'upgrade' | Out-Null
-    }
-    Invoke-Step 'uninstall' @{ action = 'uninstall'; productCode = $productCode } | Out-Null
-  } else {
-    Invoke-Step 'uninstall' @{ action = 'uninstall' } | Out-Null
-    $again = Invoke-Step 'install-base-again' @{ action = 'install'; installer = $installers.base }
-    Measure-Installed 'install-base-again' $again 'base' | Out-Null
-    $updated = Invoke-Step 'update-with-update-exe' @{ action = 'squirrel-update'; releasesDir = $releases }
-    Measure-Installed 'update-with-update-exe' $updated 'upgrade' | Out-Null
-    Invoke-Step 'launch-after-update' @{ action = 'launch' } | Out-Null
-    Invoke-Step 'uninstall-after-update' @{ action = 'uninstall' } | Out-Null
+  $productCode = $builds.upgrade.productCode
+  $repaired = Invoke-Step 'repair-with-source' @{
+    action = 'repair'; productCode = $productCode
+    deleteFiles = @("$($identity.productName).exe", 'resources\app\dist\store.js')
   }
+  Measure-Installed 'repair-with-source' $repaired 'upgrade' | Out-Null
+  Rename-Item -LiteralPath $installers.upgrade -NewName "$(Split-Path -Leaf $installers.upgrade).moved"
+  try {
+    $sourceless = Invoke-Step 'repair-without-source' @{
+      action = 'repair'; productCode = $productCode; deleteFiles = @('resources\app\dist\store.js')
+    }
+  } finally {
+    Rename-Item -LiteralPath "$($installers.upgrade).moved" -NewName (Split-Path -Leaf $installers.upgrade)
+  }
+  Measure-Installed 'repair-without-source' $sourceless 'upgrade' | Out-Null
+  if (-not $checks['repair-without-source'].matchesVerified) {
+    $restored = Invoke-Step 'repair-after-source-returns' @{ action = 'repair'; productCode = $productCode; deleteFiles = @() }
+    Measure-Installed 'repair-after-source-returns' $restored 'upgrade' | Out-Null
+  }
+  Invoke-Step 'uninstall' @{ action = 'uninstall'; productCode = $productCode } | Out-Null
+
+  # A second build of one version (another pull request's artifact, or one commit
+  # built twice) has its own ProductCode. It must replace the first build, not install
+  # beside it as a second product sharing every component, and then uninstall cleanly.
+  Invoke-Step 'same-version-base' @{ action = 'install'; installer = $installers.base } | Out-Null
+  $rebuilt = Invoke-Step 'same-version-rebuild' @{ action = 'install'; installer = $installers.rebuild }
+  Measure-Installed 'same-version-rebuild' $rebuilt 'rebuild' | Out-Null
+  Invoke-Step 'same-version-uninstall' @{ action = 'uninstall'; productCode = $builds.rebuild.productCode } | Out-Null
 } catch {
   $failure = "$_"
-  Write-Host "::error::[$Kind] lifecycle stopped: $failure"
+  Write-Host "::error::[msi] lifecycle stopped: $failure"
   Write-Host "$($_.InvocationInfo.PositionMessage)`n$($_.ScriptStackTrace)"
 } finally {
   if ($policy.changed -or $policy.keyCreated) {
@@ -249,13 +241,12 @@ try {
     } catch {
       $policy.restored = $false
       $policy.restoreError = "$_"
-      Write-Host "::error::[$Kind] could not restore the Windows Installer policy: $_"
+      Write-Host "::error::[msi] could not restore the Windows Installer policy: $_"
       if (-not $failure) { $failure = "could not restore the Windows Installer policy: $_" }
     }
   }
   [ordered]@{
     schema = 1
-    kind = $Kind
     userName = $UserName
     failure = $failure
     steps = $steps

@@ -1,0 +1,240 @@
+name: Windows x64 MSI
+
+# #87 PR 2b. Builds the unsigned per-user MSI from the verified Windows x64 folder
+# with WiX v7 on a pinned .NET 10 runtime (.github/windows-msi/installer.json), then
+# proves it on the runner as a fresh standard user: install, launch, notification
+# identity, Restart Manager exit, upgrade to the next build, repair, uninstall, and a
+# second build of the same version replacing the first.
+# The MSI and SHA256SUMS-windows.txt are workflow artifacts only: nothing is signed,
+# published or released, and the update manifest gains no Windows target (#343).
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/windows-msi.yml"
+      - ".github/workflows/windows-native-folder.yml"
+      - ".github/windows-msi/**"
+      # main.cjs's before-quit listeners decide whether a Restart Manager request ends
+      # in will-quit or in Electron's immediate exit.
+      - "electron/main.cjs"
+      - "electron/windows-app.cjs"
+      - "release/windows-inputs.json"
+      - "test/windows-msi.test.ts"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-msi-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Every npm install in this workflow compiles better-sqlite3 rather than load an
+  # unpinned prebuild; no job or step may override it (#315).
+  npm_config_build_from_source: "true"
+
+jobs:
+  folder:
+    name: Verified folder
+    uses: ./.github/workflows/windows-native-folder.yml
+
+  upgrade-folder:
+    name: Upgrade folder / win32-x64
+    runs-on: windows-2022
+    outputs:
+      base-version: ${{ steps.versions.outputs.base }}
+      upgrade-version: ${{ steps.versions.outputs.upgrade }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: release-inputs
+        name: Resolve pinned Node version
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          "node-version=$(node scripts/windows-release-inputs.mjs --node-version)" |
+            Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+      # No npm cache, restored or automatic (#315).
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ steps.release-inputs.outputs.node-version }}
+          architecture: x64
+          package-manager-cache: false
+      - uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
+        with:
+          python-version: "3.12"
+      # The next build is this commit with only its version bumped, committed locally
+      # so the build's source provenance stays clean and exact.
+      - id: versions
+        name: Commit a one-patch version bump
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          node .github/windows-msi/bump-version.mjs --print |
+            Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          node .github/windows-msi/bump-version.mjs --apply
+          git -c user.name="Windows MSI lifecycle" -c user.email="windows-msi@users.noreply.github.com" `
+            commit --quiet --no-verify -m "Windows MSI lifecycle: next build" -- package.json package-lock.json src/version.ts
+          "AGENT_INBOX_RELEASE_SOURCE_SHA=$(git rev-parse HEAD)" |
+            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)" |
+            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - run: npm ci
+      - name: Build the next folder with the verified folder's builder
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          npm run build
+          npm run --silent stage:runtime:native -- `
+            --key win32-x64 `
+            --inputs release/windows-inputs.json `
+            --output build/runtime/win32-x64 | Out-Null
+          npm run package:windows-thin -- `
+            --runtime build/runtime/win32-x64 `
+            --inputs release/windows-inputs.json `
+            --output "build/thin/win32-x64/Agent Inbox"
+          node scripts/archive-tree.mjs create `
+            --source "build/thin/win32-x64/Agent Inbox" `
+            --archive build/win32-x64-folder.tar.gz
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-msi-upgrade-folder
+          path: |
+            build/win32-x64-folder.tar.gz
+            build/thin/win32-x64/Agent Inbox.thin-report.json
+          if-no-files-found: error
+          retention-days: 1
+
+  msi:
+    name: MSI / win32-x64
+    needs: [folder, upgrade-folder]
+    runs-on: windows-2022
+    timeout-minutes: 90
+    env:
+      MSI: .github/windows-msi
+      MSI_SHARED: C:\ai-msi
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: release-inputs
+        name: Resolve pinned Node version
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          "node-version=$(node scripts/windows-release-inputs.mjs --node-version)" |
+            Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+      # No npm cache, restored or automatic (#315).
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ steps.release-inputs.outputs.node-version }}
+          architecture: x64
+          package-manager-cache: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: native-win32-x64-folder-inputs
+          path: build/msi/artifacts/base
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: windows-msi-upgrade-folder
+          path: build/msi/artifacts/upgrade
+      - name: Restore both folders and match their verified tree digests
+        shell: pwsh
+        env:
+          BASE_VERSION: ${{ needs.upgrade-folder.outputs.base-version }}
+          UPGRADE_VERSION: ${{ needs.upgrade-folder.outputs.upgrade-version }}
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          node "$env:MSI/prepare-folders.mjs" `
+            --base build/msi/artifacts/base `
+            --upgrade build/msi/artifacts/upgrade `
+            --destination build/msi/folders `
+            --base-version $env:BASE_VERSION `
+            --upgrade-version $env:UPGRADE_VERSION `
+            --out build/msi/folders.json
+      - name: Install the pinned .NET runtime and WiX
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          New-Item -ItemType Directory -Force build/msi/reports | Out-Null
+          & "$env:MSI/install-tools.ps1" -Destination build/msi/tools -Report build/msi/reports/tools.json
+      # The rebuild has the base's version, and so its file name: every build gets its
+      # own folder.
+      - id: msi-build
+        name: Build and validate the MSI, then build the next one and a same-version rebuild
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          foreach ($side in 'base', 'upgrade', 'rebuild') {
+            & "$env:MSI/build-msi.ps1" `
+              -App (Resolve-Path "build/msi/folders/$side/Agent Inbox").Path `
+              -Output "build/msi/builds/$side" `
+              -Tools build/msi/reports/tools.json `
+              -Icon (Resolve-Path electron/icon.ico).Path `
+              -Inputs release/windows-inputs.json `
+              -Report "build/msi/builds/$side.json" `
+              -Validate:($side -eq 'base')
+          }
+      - name: Stage the MSI and SHA256SUMS-windows.txt
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          $base = Get-Content -Raw build/msi/builds/base.json | ConvertFrom-Json
+          New-Item -ItemType Directory -Force build/msi/artifact | Out-Null
+          Copy-Item "build/msi/builds/base/$($base.msi.name)" build/msi/artifact/
+          node "$env:MSI/checksums.mjs" --dir build/msi/artifact --version $base.version
+      - name: Prepare the standard user's workspace
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          New-Item -ItemType Directory -Force $env:MSI_SHARED, build/msi/results | Out-Null
+      - name: MSI lifecycle as a standard user
+        if: ${{ !cancelled() && steps.msi-build.outcome == 'success' }}
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          & "$env:MSI/lifecycle.ps1" -Build build/msi/builds -Folders build/msi/folders.json `
+            -Inputs release/windows-inputs.json -Shared $env:MSI_SHARED -UserName msiuser -Port 14410 `
+            -Out build/msi/results/msi.json
+      - name: Summarize the evidence and check every requirement
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          foreach ($part in 'results', 'logs') {
+            $source = Join-Path $env:MSI_SHARED "msi\$part"
+            if (Test-Path $source) {
+              New-Item -ItemType Directory -Force build/msi/lifecycle | Out-Null
+              Copy-Item -Recurse -Force $source "build/msi/lifecycle/$part"
+            }
+          }
+          node "$env:MSI/summary.mjs" --evidence build/msi --inputs release/windows-inputs.json `
+            --summary $env:GITHUB_STEP_SUMMARY --out build/msi/report.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !cancelled() }}
+        with:
+          name: windows-msi-evidence
+          path: |
+            build/msi/report.json
+            build/msi/folders.json
+            build/msi/reports/
+            build/msi/tools/wix-host-trace.txt
+            build/msi/builds/*.json
+            build/msi/artifact/SHA256SUMS-windows.txt
+            build/msi/results/
+            build/msi/lifecycle/
+          if-no-files-found: warn
+          retention-days: 7
+      # The unsigned MSI and its checksum, for manual tests on a clean machine. A CI
+      # artifact only, never a release asset; uploaded once every requirement held.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ success() }}
+        with:
+          name: windows-x64-msi-unsigned
+          path: |
+            build/msi/artifact/Agent-Inbox-v*-windows-x64.msi
+            build/msi/artifact/SHA256SUMS-windows.txt
+          if-no-files-found: error
+          retention-days: 7

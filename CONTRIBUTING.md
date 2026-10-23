@@ -19,8 +19,9 @@ npm run marketing
 
 Open `http://127.0.0.1:4320` to review the marketing site. Use
 `npm run marketing -- --port 4321` to choose another local port.
-`marketing/index.html` is a single file and can also be opened directly; only
-its hero visual loads from a CDN (see [Hosting the marketing page](#hosting-the-marketing-page)).
+`marketing/index.html` is a single file and can also be opened directly, but
+browsers refuse to load its hero's Three.js modules from a `file:` URL, so the
+hero then shows its plain background. Review the hero through the preview server.
 The interactive demo uses fictional data held only in the page; the preview
 server does not open the inbox database or expose the viewer API.
 The marketing page defaults to light appearance and owns its styles independently
@@ -31,53 +32,53 @@ source artwork.
 
 ### Hosting the marketing page
 
-Publish `marketing/index.html` as a standalone static page. Its styles, scripts,
-icons, and demo data are embedded; hosting it requires no build command,
-dependencies, environment variables, or backend. It can live at a site's root,
-on a subdomain, or under a path without changing its in-page links.
+Publish `marketing/index.html` as a standalone static page, together with the
+files `marketing/vendor/manifest.json` lists, at the same paths relative to the
+page. The page embeds its styles, scripts, icons, and demo data; hosting it
+requires no build command, dependencies, environment variables, or backend. It
+can live at a site's root, on a subdomain, or under a path without changing its
+in-page links. Serve it at a URL that ends in `/` or `/index.html`, or redirect
+to one, so that relative URLs resolve next to the page.
 
-The hero's animated visual is the one exception. It loads Three.js r186 from
-jsDelivr as two module files: `three.module.js` and the `three.core.js` it
-imports. Both requests go to `https://cdn.jsdelivr.net`, and they are the page's
-only third-party requests. The page pins each file with Subresource Integrity
-(sha384) in its import map and in its `modulepreload` links. The import map also
-blocks every other `https:` module URL, so a redirect cannot swap in a different
-`three.core.js`. If the files are blocked, offline, or fail the integrity check,
-the hero falls back to its plain background without the visual, as it does when
-WebGL is unavailable, and the rest of the page works as usual.
+The hero's animated visual uses Three.js r186 from the page's own `vendor/`
+folder: `three.module.js` and the `three.core.js` it imports, unchanged from the
+npm package `three@0.186.0`, with the package's MIT `LICENSE`. The hero imports
+them by relative URL, so the page makes no third-party requests. If they are
+missing or blocked, or WebGL is unavailable, the hero falls back to its plain
+background and the rest of the page works as usual.
 
-Browsers differ in which pins they check. Chrome checks the `modulepreload`
-integrity, and from Chrome 127 the import map's as well. Firefox checks the
-import map from Firefox 138. Safari ignores `modulepreload` integrity, so from
-Safari 18 the import map is its only check. The hero loads Three.js only where
-the browser reports support for both import maps and module preloads (Chrome 96,
-Firefox 115, Safari 17 or later); other browsers keep the plain hero. Two cases
-remain: Safari 17 supports both features but checks neither pin, so it runs the
-files unchecked, and Firefox 115 to 137 relies on its `modulepreload` integrity,
-which hasn't been tested.
+`manifest.json` records each vendored file's SHA-256 and, for each folder, the
+npm tarball it came from and that tarball's `integrity`. `test/dom/marketing.test.ts`
+checks the hashes, that the manifest lists every file under `marketing/vendor/`,
+and that each module the hero imports, directly or through another module, is
+vendored. A publishing site should copy exactly the files the manifest lists and
+can check each against its SHA-256. The sync that publishes
+https://shariq.dev/agent-inbox/ does both, and it also downloads the named
+`three` release from the npm registry, checks the tarball against the registry's
+`dist.integrity`, and requires each vendored file to match the same file in that
+tarball. It accepts only `three.module.js`, `three.core.js` and `LICENSE` from the
+`three` package, so vendoring any other file needs a change to that sync first.
 
-Keep the full document intact rather than inserting it into a blog template.
-If the host sets a Content Security Policy, allow the embedded script and style
-blocks by hash, including the import map, and allow `https://cdn.jsdelivr.net`
-in `script-src`; `scripts/serve-marketing.mjs` shows how the local preview builds
-that policy. A policy that refuses the import map leaves Safari with no integrity
-check, and no browser then blocks a redirect around the pins.
+Keep the full document intact rather than inserting it into a blog template, and
+serve the `.js` files with a JavaScript MIME type. If the host sets a Content
+Security Policy, allow the embedded script and style blocks by hash and the
+vendored modules with `script-src 'self'`; `scripts/serve-marketing.mjs` shows
+how the local preview builds that policy.
 
-To move to another Three.js release, use files that ship in its npm package.
-jsDelivr generates any `.min.js` file a package lacks and advises against SRI
-for generated files, because it may rebuild them with different bytes. Check
-what `three.module.js` imports, and what those files import in turn, and pin
-every file: the import map blocks any module URL it doesn't list, so a missed
-file would hide the hero while the tests still pass. For each file, add a
-self-mapping to the import map's `imports`, a sha384 to its `integrity`, and a
-`modulepreload` link, computing the hash from the `build/` files in the
-package's npm tarball. Then update the hero's import URL and `PINNED` in
-`test/dom/marketing.test.ts`.
+To move to another Three.js release:
 
-Only the marketing page should be published. `npm run marketing` is a
-loopback-only review server, and `npm run view` serves the private inbox; neither
-is the public hosting entry point. The hosting provider, domain, and route are
-left to the publishing site.
+1. Download its package with `npm pack three@<version> --json`, and check that
+   the `integrity` it prints matches `npm view three@<version> dist.integrity`.
+2. Copy `package/build/three.module.js`, every file it imports, and
+   `package/LICENSE` unchanged into `marketing/vendor/three-<version>/`, and
+   delete the previous folder.
+3. Update `manifest.json`, the hero's import URL, and `THREE_MODULE` in
+   `test/dom/marketing.test.ts`.
+
+Only the marketing page and its vendored files should be published.
+`npm run marketing` is a loopback-only review server, and `npm run view` serves
+the private inbox; neither is the public hosting entry point. The hosting
+provider, domain, and route are left to the publishing site.
 
 ## Before a pull request
 

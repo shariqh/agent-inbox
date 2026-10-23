@@ -175,8 +175,9 @@ Run the build before `npm run electron`; the development shell starts the built
   CLSID are permanent and must stay equal across `installer.json`,
   `release/windows-inputs.json` and `electron/windows-app.cjs`, which on Windows
   only sets the ID and CLSID at startup and quits through `app.quit()` when
-  Restart Manager asks (`session-end` with `close-app`). Windows Setup stays
-  unavailable.
+  Restart Manager asks (`session-end` with `close-app`); a silent MSI upgrade
+  never asks, so closing the app before an upgrade is still open (decision
+  record §9). Windows Setup stays unavailable.
 - **Shared presentation rules:** `public/attention.js` is the single attention
   predicate used by the viewer and Electron dock badge. Pure modules under
   `public/` hold grouping, ordering, search, badge, polling, and rendering rules;

@@ -101,9 +101,13 @@ and records what the runner showed.
   Electron's own. The UpgradeCode `{086C4AF7-CD48-4050-A328-CA911E7F7423}`, the ID and
   the CLSID must never change once an MSI has shipped; `.github/windows-msi/installer.json`,
   `release/windows-inputs.json` and the app hold them, and a test keeps them equal.
-- **Restart Manager.** An upgrade, repair or uninstall asks a running app to close through
-  Restart Manager. The app then quits through its own path (its page saves staged sends
-  and drafts, `will-quit` flushes storage) instead of Electron ending it at once.
+- **Restart Manager.** When Restart Manager asks the running app to close, the app quits
+  through its own path (its page saves staged sends and drafts, `will-quit` flushes
+  storage) instead of Electron ending it at once; the lifecycle asks it and checks. A
+  silent upgrade does not ask, though: on the runner, Windows Installer's Restart Manager
+  found nothing to close, the old app kept running on its moved-aside files, and the next
+  launch ran the new version. Closing the app before an upgrade is left to the Windows
+  update slice (the decision record's §9).
 - **Uninstall** removes the app folder, the shortcut, the toast activator registration
   and the installed-apps entry, and keeps `%USERPROFILE%\.agent-inbox`, which the MSI
   never installs, and the Chromium profile the app creates in `%APPDATA%\agent-inbox`.
@@ -139,7 +143,8 @@ and ICE91 are waived: they hold a per-user package to a per-machine or roaming l
 WiX documents that `Files` in a per-user package trips them, and the lifecycle proves
 the uninstall they guard. Then a fresh, disposable standard user installs the MSI,
 launches it from its shortcut, triggers a notification (with the shortcut and without
-it), asks the running app to close through Restart Manager, upgrades it while it runs to
+it), asks the running app to close through Restart Manager, closes it through its own
+window, upgrades it while it runs to
 the same commit rebuilt one patch version later, launches that, repairs it with and
 without its source and uninstalls it, and every installed tree is compared byte for byte
 with its verified folder. `summary.mjs` turns that evidence into the job summary and

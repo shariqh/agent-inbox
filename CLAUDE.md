@@ -2200,10 +2200,15 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   Electron's first notification rewrites `Programs\Agent Inbox.lnk` to its default
   `electron.app.Agent Inbox`, or invents a CLSID when there is no shortcut), and
   `quitWhenRestartManagerAsks` on the window: a `session-end` whose reasons include
-  `close-app`, Restart Manager's request during an MSI upgrade, repair or uninstall, calls
-  `app.quit()`. Electron 43 otherwise ends the process at once on `WM_ENDSESSION` unless a
-  quit has begun, skipping `beforeunload` (staged sends, drafts) and `will-quit`'s storage
-  flush; a shutdown or log-off keeps that immediate exit. The MSI installs per user to
+  `close-app`, Restart Manager's request to close an app holding files an installer needs,
+  calls `app.quit()`. Electron 43 otherwise ends the process at once on `WM_ENDSESSION`
+  unless a quit has begun, skipping `beforeunload` (staged sends, drafts) and `will-quit`'s
+  storage flush; a shutdown or log-off keeps that immediate exit. Do not claim an upgrade
+  sends it: on the runner, a silent MSI upgrade's Restart Manager found nothing to close,
+  the old app ran on and the next launch ran the new version, so closing the app before an
+  upgrade belongs to the Windows update slice (decision record §9). The lifecycle closes
+  the app through the window titled `Agent Inbox`, never `Process.CloseMainWindow`, which
+  can pick an untitled Chromium window above it. The MSI installs per user to
   `%LOCALAPPDATA%\Programs\Agent Inbox`, one folder for every version; its uninstall keeps
   `~/.agent-inbox`; ICE validation waives only ICE38, ICE64 and ICE91; and a launch
   condition refuses Windows builds below the release inputs' 17763. Windows Setup stays

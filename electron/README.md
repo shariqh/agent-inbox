@@ -389,5 +389,6 @@ fnm exec --using=24 npm run electron
 - On Windows, `windows-app.cjs` (#87) sets the AppUserModelID and toast activator CLSID
   that the per-user MSI's Start-menu shortcut carries, before any window or notification,
   and quits through `app.quit()` when Restart Manager asks the window to close
-  (`session-end` with `close-app`) during an MSI upgrade, repair or uninstall; Electron
+  (`session-end` with `close-app`), as an installer that needs its files can; Electron
   would otherwise end the process at once. A shutdown or log-off keeps that immediate exit.
+  A silent MSI upgrade did not ask on the CI runner (installer decision record, §9).

@@ -13,13 +13,14 @@
 // .github/windows-msi/installer.json; a test keeps them equal, and none of them may
 // change once an MSI has shipped.
 //
-// Restart Manager. An MSI upgrade, repair or uninstall asks a running app to close:
-// WM_QUERYENDSESSION, then WM_ENDSESSION with ENDSESSION_CLOSEAPP, which Electron
-// reports as the window's session-end event with the reason 'close-app'. Electron 43
-// then ends the process at once unless the app has begun its own quit, which would
-// skip the page's beforeunload (staged sends, unsent drafts) and will-quit's storage
-// flush. So the app quits through its normal path instead. A shutdown or log-off
-// keeps Electron's immediate exit.
+// Restart Manager. An installer that needs files a running app holds can ask it to
+// close through Restart Manager: WM_QUERYENDSESSION, then WM_ENDSESSION with
+// ENDSESSION_CLOSEAPP, which Electron reports as the window's session-end event with
+// the reason 'close-app'. Electron 43 then ends the process at once unless the app
+// has begun its own quit, which would skip the page's beforeunload (staged sends,
+// unsent drafts) and will-quit's storage flush. So the app quits through its normal
+// path instead. A shutdown or log-off keeps Electron's immediate exit. (A silent MSI
+// upgrade on the CI runner never asked: see the installer decision record, §9.)
 
 const APP_USER_MODEL_ID = 'io.github.shariqh.agent-inbox'
 const TOAST_ACTIVATOR_CLSID = '{08973E92-A6EF-47B2-9E91-A876F4B8F210}'

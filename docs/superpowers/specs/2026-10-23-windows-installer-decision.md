@@ -228,7 +228,8 @@ with 1.6.0 running. Windows Installer's Restart Manager reported closing the app
 kept running from files moved aside for deletion at the next reboot, and then quit only when
 killed. The app should therefore exit when Windows asks it to (Restart Manager sends the
 session-end messages Electron reports as `query-session-end` and `session-end`), or the
-installer should close it first.
+installer should close it first. (§9.4 corrects this reading: Windows Installer detected no
+app, and the app did not quit because the spike's close request reached another window.)
 
 Squirrel's Setup.exe treats a second install as a fresh one: it kills the app, deletes the whole
 install, installs `app-1.6.1`, and leaves the old shortcut pointing its working directory at a
@@ -433,3 +434,128 @@ issue.
    **Decided on 2026-10-23: WiX v7.** The owner accepted the Open Source Maintenance Fee EULA
    v1.1 for the project that day. No fee applies, since Agent Inbox has no revenue. PR 2b passes
    that acceptance to WiX only through its documented `-acceptEula wix7` switch (§9).
+
+---
+
+## §9 — PR 2b: the pinned, unsigned per-user MSI
+
+PR 2b built the MSI §4 recommends, with WiX 7.0.0 as §8.3 decided.
+`.github/workflows/windows-msi.yml` replaces the spike workflow. It calls the native folder
+workflow, rebuilds the same commit one patch version later as the upgrade, builds an MSI from
+each folder and runs the lifecycle below as a fresh standard user. Only when `summary.mjs`
+finds that every requirement held does it upload `Agent-Inbox-vX.Y.Z-windows-x64.msi` and
+`SHA256SUMS-windows.txt`, as the seven-day `windows-x64-msi-unsigned` artifact. Nothing is
+signed or published, and the update manifest gains no target. The spike's MSI harness moved to
+`.github/windows-msi/`; its Squirrel tooling and workflow are gone.
+
+### 9.1 Pins
+
+| Tool | Pin | How it runs |
+| --- | --- | --- |
+| WiX 7.0.0 (reports `7.0.0+b8977d6`) | nuget.org's `wix` package by exact URL; SHA-512 `4GbdoDWjm0QmBLyJ8PPiknXomjI5vHat4H27AB6NNGzFpbEhN9Xw0kiPQokZ3zH8F1RcjvDSn8yGDXwKxlW8Tg==` (nuget.org's `packageHash`), SHA-256 `7f992e57c356dcbda2ea961bf3b348e1bd7d31d96795be4ac391e04cf140536d`, source commit `b8977d6f88e7b68e000bac226a2814f236770570` | Extracted, never installed as a .NET tool; its `tools/net8.0/any/wix.dll` runs under the runtime below. `build` and `msi validate` get `-acceptEula wix7`, the only acceptance anywhere: nothing writes WiX's per-user acceptance file. |
+| .NET runtime 10.0.13 (`Microsoft.NETCore.App`, LTS, supported until 2028-11-14) | Microsoft's `win-x64` runtime zip by exact URL; the SHA-512 its release metadata publishes, and the SHA-256 | `dotnet exec --fx-version 10.0.13` from the extracted runtime, with every `DOTNET_` and `COREHOST_` variable cleared. The host trace must show `coreclr.dll` loaded from the pinned runtime, and the job summary records it. |
+
+WiX 7 asks for .NET 8 with `rollForward: Major`, and .NET 8's support ends on 2026-11-10, so
+the build names .NET 10 itself instead of letting the host choose. The runner's own .NET
+(8.0.31 and 10.0.12 in these runs) is never used, so an image update cannot change the result,
+unlike the spike's WiX 5, which ran on whatever .NET 6 the image had. On .NET 10, WiX built the
+package and passed ICE validation with warnings as errors.
+
+### 9.2 Answers to §6
+
+1. **WiX pinned** as above. `test/windows-msi.test.ts` pins the URLs, digests, switch and
+   workflow rules.
+2. **Identity.** The spike's UpgradeCode, AppUserModelID and CLSID are now permanent. They are
+   held in `installer.json`, `release/windows-inputs.json` and `electron/windows-app.cjs`; a
+   test keeps them equal, and the build reads the package back and refuses any difference.
+3. **AppUserModelID and CLSID.** `electron/windows-app.cjs` sets both at startup on Windows
+   (§9.5).
+4. **Exit when Windows asks.** Done for Restart Manager's request, but a silent upgrade never
+   makes it, so an upgrade can still leave the old process running (§9.4).
+5. **ICE.** `Scope="perUser"` stays. ICE validation passes with warnings as errors, waiving only
+   ICE38, ICE64 and ICE91.
+6. **Artifact.** Named as proposed, with `SHA256SUMS-windows.txt` in `sha256sum -c` form. No
+   update-manifest target is added.
+7. **Versions.** The build refuses any version other than `major.minor.patch`. There is no
+   `AllowSameVersionUpgrades`, so a rebuild needs a new patch version.
+8. **Minimum Windows.** A launch condition reads `CurrentBuildNumber` from the registry and
+   refuses builds below 17763. `Installed OR` keeps it from blocking a repair or an uninstall.
+9. **.NET.** 10.0.13, as above.
+
+### 9.3 Evidence
+
+Run [40021288282](https://github.com/shariqh/agent-inbox/actions/runs/40021288282), commit
+`d95dd504`, upgraded 1.6.0 to 1.6.1. Later commits changed only comments, documentation and how
+the evidence counts Windows' notification history. Every step ran as a fresh standard user in
+that user's own session at Medium integrity on `windows-2022`. Times are from that run.
+
+| Step | Result |
+| --- | --- |
+| Install under Windows Server's default policy | Refused, 1625: unelevated per-user installs of unmanaged packages are off on servers. The run then set `DisableMSI` to 0, the Windows 10 and 11 default, and put it back at the end. |
+| Install | Exit 0 in 19.9 s. The tree matched the verified folder. The shortcut carried the AppUserModelID and the CLSID, and `LocalServer32` named the installed exe. |
+| Launch from the shortcut, leave it open 20 s, then close its window | Ready in 0.7 s; closed in 0.6 s, port released. |
+| Notification, with the shortcut | Shown: Windows' notification history holds it under `io.github.shariqh.agent-inbox`. Electron rewrote the shortcut once, dropping the working directory's trailing backslash and replacing its description, and rewrote the CLSID's registration in its own form (an unquoted `LocalServer32` naming the same exe). The AppUserModelID and CLSID stayed the same, and uninstall still removed both. |
+| Notification, without the shortcut | Electron created `Programs\Agent Inbox.lnk` with exactly the MSI's AppUserModelID and CLSID. |
+| Restart Manager asks the app to close | Asked through the SQLite addon (§9.4): `RmShutdown` returned 0 in 0.2 s, and the app logged its quit line and exited 0, with every process gone in 0.3 s and its port released. |
+| Upgrade while the app runs | Exit 0 in 46.8 s. The tree matched the 1.6.1 folder, with one product and one installed-apps entry. The old app kept running (§9.4). |
+| Launch after the upgrade | Ready in 1.0 s from the upgraded tree; closed in 0.3 s. |
+| Repair by product code | With the `.msi` in place: 0 in 17.1 s, deleted files restored. With it renamed away: 1603 (no valid source). With it back: 0. |
+| Uninstall | Exit 0 in 21.9 s. The app folder, shortcut, CLSID registration and installed-apps entry were removed; `%USERPROFILE%\.agent-inbox` (sentinel and `inbox.db`) was kept. The one other leftover is `%APPDATA%\agent-inbox`, the Chromium profile the app creates (§3.6). |
+
+The MSI is 143,217,058 bytes (136.6 MiB). The installed tree is 4,890 files and 452,400,743
+bytes. The deepest installed path is 187 characters for a seven-character user name, so it fits
+MAX_PATH for user names up to 79 characters.
+
+### 9.4 Closing the app
+
+PR 2b's runs found three things the spike missed.
+
+- **The spike's "quit only when killed" was the harness.** `Process.CloseMainWindow` asks the
+  first visible, unowned window, and a few seconds after launch the app's process had a second,
+  untitled one above its window (most likely a Chromium tooltip under the resting pointer). The
+  close request went to that window, so the app's own window never got one. Closed through the
+  window titled `Agent Inbox`, as the close button would, the app quit in 0.6 s.
+- **Restart Manager cannot ask an Electron app as a whole without forcing it.** For
+  `Agent Inbox.exe`, it lists the main process as a main window and Chromium's GPU, network and
+  renderer processes as unknown apps. `RmShutdown` without `RmForceShutdown` then refuses at once
+  (351), and with it would end those processes rather than ask. A runner process
+  (`provjobd.exe`) that Restart Manager counts as critical also sometimes holds the executable
+  (350). Asked about the SQLite addon, which only the main process loads, Restart Manager asks
+  just the app's window. The app quits through `app.quit()`, and its child processes and port
+  go with it.
+- **A silent upgrade does not ask at all.** Windows Installer opened Restart Manager sessions and
+  logged "Successfully shut down all applications that held files in use" within 30 ms,
+  without detecting the app; the spike read that line as closing it. The old app kept running
+  on its moved-aside files (15 of them scheduled for deletion at the next reboot). The upgrade
+  still exited 0 with the new tree, and the next launch ran 1.6.1.
+
+So the app's Restart Manager handling works, but nothing in the MSI path triggers it. Closing
+the app before an upgrade stays open for the Windows update slice (#343). The options are:
+
+- the in-app updater quits the app before it runs the MSI, as the macOS install helper waits
+  for the app to exit, with no installer change;
+- WiX's Util extension `CloseApplication`, which asks the app's windows to close before files
+  are replaced, at the cost of another pinned WiX extension and a custom action;
+- accepting it: the upgrade succeeds, and the old app runs on until it is closed.
+
+### 9.5 Electron main
+
+`electron/windows-app.cjs` does nothing outside Windows. `main.cjs` calls it twice:
+
+- `setWindowsAppIdentity` at module load, before any window or notification. Otherwise
+  Electron's first notification would rewrite the MSI's shortcut to its default ID, or make up
+  a CLSID when there is no shortcut.
+- `quitWhenRestartManagerAsks` on the window. A `session-end` whose reasons include `close-app`
+  calls `app.quit()`, because Electron 43 otherwise ends the process at once on
+  `WM_ENDSESSION`, skipping `beforeunload` (staged sends, drafts) and `will-quit`'s storage
+  flush. A shutdown or log-off keeps Electron's immediate exit.
+
+A failure to set the identity is logged and the app starts anyway.
+
+### 9.6 Not covered
+
+- A Windows 11 desktop (§8.2): Start-menu search, SmartScreen on a browser download and the
+  interactive installer UI.
+- A click on a notification, which would start the app through the CLSID's `LocalServer32`.
+- Signing (§8.1).
+- An upgrade from a published MSI, since none exists yet.

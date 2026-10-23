@@ -30,6 +30,8 @@ const SCRIPTS = [
   'setup-lock.sh',
   'run-isolated.mjs',
 ]
+// What install-agents.sh renders into the instruction files, for a runtime it runs from.
+const INSTRUCTION_DOCS = ['reporting-snippet.md', 'instructions/claude-code.md', 'instructions/copilot-cli.md']
 
 export interface HooksHome {
   home: string
@@ -66,8 +68,8 @@ export function hooksHome(): HooksHome {
   }
 }
 
-/** Write a runtime of `version` for this host at `dir` and manifest it. */
-export function stageRuntime(dir: string, version: string): StagedRuntime {
+/** Write a runtime of `version` for this host at `dir` and manifest it; `docs` lets install-agents.sh run from it too. */
+export function stageRuntime(dir: string, version: string, { docs = false } = {}): StagedRuntime {
   mkdirSync(join(dir, 'bin'), { recursive: true })
   writeFileSync(join(dir, 'bin', 'node'), `#!/bin/sh\nexec '${process.execPath}' "$@"\n`)
   chmodSync(join(dir, 'bin', 'node'), 0o755)
@@ -78,6 +80,12 @@ export function stageRuntime(dir: string, version: string): StagedRuntime {
   writeFileSync(join(dir, 'package.json'), JSON.stringify({ type: 'module' }))
   mkdirSync(join(dir, 'scripts'), { recursive: true })
   for (const script of SCRIPTS) copyFileSync(join(REPO, 'scripts', script), join(dir, 'scripts', script))
+  if (docs) {
+    for (const doc of INSTRUCTION_DOCS) {
+      mkdirSync(dirname(join(dir, 'docs', doc)), { recursive: true })
+      copyFileSync(join(REPO, 'docs', doc), join(dir, 'docs', doc))
+    }
+  }
   const manifest = JSON.parse(execFileSync(process.execPath, [
     PAYLOAD_CLI, 'manifest',
     '--root', dir,

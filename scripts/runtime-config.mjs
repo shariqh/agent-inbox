@@ -78,6 +78,44 @@ function firstSegmentUnder(root, child) {
   return first
 }
 
+// ── a host config that cannot be read (issue #337) ─────────────────────
+// Host configs often hold other MCP servers' API tokens, in `env` blocks and
+// command lines. So one that cannot be read or parsed is named by its path and
+// a fixed kind of failure: never the parser's message, which since Node 20
+// quotes the text around the failure, secret and all, and of a failed read
+// only its error code, which holds nothing from the file.
+
+const NOT_VALID_JSON = 'is not valid JSON'
+
+/** A failed read in fixed words: `is unreadable (EACCES)`, its error code and nothing else. */
+function unreadable(err) {
+  const code = err?.code
+  return typeof code === 'string' && /^[A-Z][A-Z0-9_]*$/.test(code) ? `is unreadable (${code})` : 'is unreadable'
+}
+
+/** The JSON in the config file at `path` ({} when it is blank), or the fixed words for why there is none. */
+function parseConfigFile(path) {
+  let raw
+  try {
+    raw = readFileSync(path, 'utf8')
+  } catch (err) {
+    return { ok: false, reason: unreadable(err) }
+  }
+  try {
+    return { ok: true, value: raw.trim() === '' ? {} : JSON.parse(raw) }
+  } catch {
+    return { ok: false, reason: NOT_VALID_JSON }
+  }
+}
+
+/** A config file's JSON; a missing or blank file holds none. One that cannot be read or parsed throws, in fixed words. */
+function readConfigFile(path) {
+  if (!existsSync(path)) return {}
+  const config = parseConfigFile(path)
+  if (!config.ok) throw new Error(`${path} ${config.reason} — refusing to touch it`)
+  return config.value
+}
+
 /**
  * Classify whether (nodeBinPath, entryPath) point at a runtime this project
  * owns and can safely manage. Never throws — any failure to resolve or
@@ -329,7 +367,7 @@ function readReferenceFile(file) {
   try {
     st = statSync(file)
   } catch (err) {
-    if (err?.code !== 'ENOENT' && err?.code !== 'ENOTDIR') return { state: 'unknown', reason: `cannot be read (${errorText(err)})` }
+    if (err?.code !== 'ENOENT' && err?.code !== 'ENOTDIR') return { state: 'unknown', reason: unreadable(err) }
     const dangling = danglingLink(file)
     return dangling === null
       ? { state: 'missing' }
@@ -337,18 +375,8 @@ function readReferenceFile(file) {
   }
   if (!st.isFile()) return { state: 'unknown', reason: 'is not a regular file' }
   if (st.size > MAX_REFERENCE_FILE_BYTES) return { state: 'unknown', reason: 'is larger than 64 MB' }
-  let raw
-  try {
-    raw = readFileSync(file, 'utf8')
-  } catch (err) {
-    return { state: 'unknown', reason: `cannot be read (${errorText(err)})` }
-  }
-  try {
-    return { state: 'ok', value: raw.trim() === '' ? {} : JSON.parse(raw) }
-  } catch {
-    // never the parser's message: it can quote the file, secrets and all
-    return { state: 'unknown', reason: 'is not valid JSON' }
-  }
+  const config = parseConfigFile(file)
+  return config.ok ? { state: 'ok', value: config.value } : { state: 'unknown', reason: config.reason }
 }
 
 /** Every string value inside `value`, depth first; object keys are names, never values. */
@@ -630,7 +658,8 @@ export function findUnusedRuntimes({
  *               `mcpServers.<server>` entry at all. Nothing to conflict
  *               with — safe to WRITE a fresh registration.
  *   'unknown' — the file exists but could not be read, or is not valid
- *               JSON, or `mcpServers.<server>` exists but is not a
+ *               JSON (`reason` names the file and which, never what is in
+ *               it), or `mcpServers.<server>` exists but is not a
  *               well-formed `{command, args:[entry, ...]}` shape. Retain:
  *               something is there, but it cannot be safely characterized.
  *   'owned' | 'custom' | 'split' — delegated to classifyRuntimeConfig() once
@@ -643,18 +672,9 @@ export function classifyRuntimeRegistration({ filePath, runtimeRoot, server = 'a
   if (!existsSync(filePath)) {
     return { status: 'absent', server, reason: 'registration file does not exist' }
   }
-  let raw
-  try {
-    raw = readFileSync(filePath, 'utf8')
-  } catch (err) {
-    return { status: 'unknown', server, reason: `registration file is unreadable: ${err.message}` }
-  }
-  let parsed
-  try {
-    parsed = raw.trim() === '' ? {} : JSON.parse(raw)
-  } catch (err) {
-    return { status: 'unknown', server, reason: `registration file is not valid JSON: ${err.message}` }
-  }
+  const config = parseConfigFile(filePath)
+  if (!config.ok) return { status: 'unknown', server, reason: `${filePath} ${config.reason}` }
+  const parsed = config.value
 
   const servers = isPlainObject(parsed) ? parsed.mcpServers : undefined
   const serverEntry = isPlainObject(servers) ? servers[server] : undefined
@@ -721,14 +741,8 @@ export function deepMergeJson(base, patch) {
  * result back atomically. Returns the final merged object.
  */
 export function mergeJsonAtomic({ filePath, patch, createIfMissing = true }) {
-  let base = {}
-  if (existsSync(filePath)) {
-    const raw = readFileSync(filePath, 'utf8')
-    base = raw.trim() === '' ? {} : JSON.parse(raw)
-  } else if (!createIfMissing) {
-    throw new Error(`no such file: ${filePath}`)
-  }
-  const merged = deepMergeJson(base, patch)
+  if (!createIfMissing && !existsSync(filePath)) throw new Error(`no such file: ${filePath}`)
+  const merged = deepMergeJson(readConfigFile(filePath), patch)
   writeFileAtomic(filePath, `${JSON.stringify(merged, null, 2)}\n`)
   return merged
 }
@@ -1350,7 +1364,8 @@ function runMergeJsonCmd(argv) {
  * stdout: the fully formatted (2-space, trailing-newline) merged settings
  *   JSON on success. Nothing else is ever written to stdout.
  * exit 0: success (including a --uninstall or fresh-install no-op).
- * exit 1: --settings exists but is not valid JSON, OR existing agent-inbox-
+ * exit 1: --settings exists but cannot be read or is not valid JSON (stderr
+ *   names the file and which, never what is in it), OR existing agent-inbox-
  *   shaped entries are neither a verified Setup runtime's nor this runtime
  *   folder's own, and neither --force nor (when installing, and only for what
  *   sortHookEntries calls replaceable or another tool's) --replace-existing
@@ -1387,7 +1402,7 @@ function runHooksCmd(argv) {
   }
 
   const result = transformHooksSettings({
-    settings: readSettingsFile(settingsPath),
+    settings: readConfigFile(settingsPath),
     node,
     entry,
     runtimeRoot,
@@ -1402,18 +1417,6 @@ function runHooksCmd(argv) {
     manifestFileName: values['manifest-file'] ?? DEFAULT_MANIFEST_FILE,
   })
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`)
-}
-
-/** A settings file's JSON; a missing or blank file holds no settings. */
-function readSettingsFile(settingsPath) {
-  if (!existsSync(settingsPath)) return {}
-  const raw = readFileSync(settingsPath, 'utf8')
-  if (raw.trim() === '') return {}
-  try {
-    return JSON.parse(raw)
-  } catch (err) {
-    throw new Error(`${settingsPath} is not valid JSON — refusing to touch it (${err.message})`)
-  }
 }
 
 /**
@@ -1432,8 +1435,8 @@ function readSettingsFile(settingsPath) {
  * exit 0: nothing stands in the way; another tool's look-alike never does.
  * exit 1: another Agent Inbox install's hooks, or dead ones, are there and
  *   --replace-existing was not given; an entry runs but cannot be verified
- *   (flag or not); or --settings is not valid JSON. stderr names what is in
- *   the way and the one fix to try first.
+ *   (flag or not); or --settings cannot be read or is not valid JSON. stderr
+ *   names what is in the way and the one fix to try first.
  * exit 2: a required flag is missing/empty.
  */
 function runForeignHooksCmd(argv) {
@@ -1454,7 +1457,7 @@ function runForeignHooksCmd(argv) {
   const replace = !!values['replace-existing']
 
   const sorted = sortHookEntries({
-    settings: readSettingsFile(settingsPath),
+    settings: readConfigFile(settingsPath),
     isOwn: (hook) => hook.args[0] === selfEntry,
     runtimeRoot,
     manifestFileName: values['manifest-file'] ?? DEFAULT_MANIFEST_FILE,

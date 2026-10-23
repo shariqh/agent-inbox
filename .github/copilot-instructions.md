@@ -429,6 +429,10 @@ Run the build before `npm run electron`; the development shell starts the built
   entry-for-entry with that flag, and another tool's look-alike is never removed.
   A runtime folder outside the runtime root is never another tool's (#232), and
   a path is dead only when the OS cannot stat it as written either (#228).
+  A host config that cannot be read or parsed is named by its path and a fixed
+  kind (`is not valid JSON`, `is unreadable (EACCES)`), never by a parser's,
+  jq's or fs error's message, which can quote a token from it (#337);
+  `test/host-config-secrets.test.ts` runs every reader over such configs.
 - All agent-authored text interpolated into HTML must pass through `esc()`.
   Supplied URLs additionally pass through `safeHttpUrl()` in
   `public/source.js`; build anchors through the existing `chipHtml()` path.

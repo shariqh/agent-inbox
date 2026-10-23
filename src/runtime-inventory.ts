@@ -106,6 +106,13 @@ function errorCode(err: unknown): string | undefined {
   return (err as NodeJS.ErrnoException | null)?.code
 }
 
+// A failed read in fixed words, its error code and nothing else, as
+// runtime-config.mjs says it: never a message, which can quote the file (#337).
+function unreadable(err: unknown): string {
+  const code = errorCode(err)
+  return typeof code === 'string' && /^[A-Z][A-Z0-9_]*$/.test(code) ? `is unreadable (${code})` : 'is unreadable'
+}
+
 /**
  * The folder `dir` as its own manifest describes it, when that manifest is a
  * plain file naming the folder as an Agent Inbox runtime; else null. Its size
@@ -214,7 +221,7 @@ function readConfig(file: string, home: string): Config {
     st = statSync(file)
   } catch (err) {
     const code = errorCode(err)
-    if (code !== 'ENOENT' && code !== 'ENOTDIR') return { state: 'unknown', reason: `cannot be read (${code ?? 'error'})` }
+    if (code !== 'ENOENT' && code !== 'ENOTDIR') return { state: 'unknown', reason: unreadable(err) }
     const dangling = danglingLink(file)
     return dangling === null
       ? { state: 'missing' }
@@ -226,7 +233,7 @@ function readConfig(file: string, home: string): Config {
   try {
     raw = readFileSync(file, 'utf8')
   } catch (err) {
-    return { state: 'unknown', reason: `cannot be read (${errorCode(err) ?? 'error'})` }
+    return { state: 'unknown', reason: unreadable(err) }
   }
   try {
     return { state: 'ok', value: raw.trim() === '' ? {} : JSON.parse(raw) }

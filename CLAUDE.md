@@ -1426,13 +1426,14 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   only that one is offered for removal and the prune refuses a folder that no longer
   matches its manifest (`changed`). `/api/setup` carries `runtimes {state, unreadable?,
   reason?, removable, entries}`, `reason` in the script's own words and never the JSON
-  parser's message, which can quote a secret from the file; the viewer keeps each folder's answer per stamp of the folder and
-  its manifest and the whole inventory per stamp of the host configs and runtime root
-  (10-minute backstop), so a cold read with three runtimes costs about 60-150 ms and a
-  warm one under 1 ms. `removable` holds only in a release whose verified payload carries
-  `scripts/prune-runtimes.sh`. The panel offers ONE Remove only in a window
-  `available()` grants; it re-reads `/api/setup` just before running and runs only if the
-  unused set is still the one its label names, then calls exactly
+  parser's message, which can quote a secret from the file. The viewer keeps each
+  folder's answer per stamp of the folder and its manifest and the whole inventory per
+  stamp of the host configs and runtime root (10-minute backstop), so a cold read with
+  three runtimes costs about 60-160 ms and a warm one under 1 ms; a change deep inside a
+  runtime moves no stamp and shows after the backstop. `removable` holds only in a release
+  whose verified payload carries `scripts/prune-runtimes.sh`. The panel offers ONE Remove
+  only in a window `available()` grants; it re-reads `/api/setup` just before running and
+  runs only if the unused set is still the one its label names, then calls exactly
   `install('prune-runtimes')`: the renderer never sends an id, path or list.
   `electron/runtime-verify.cjs` is the externally anchored verifier: using the digest from
   signed-bundle `setup-info.json`, it synchronously verifies the complete manifest file

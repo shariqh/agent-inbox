@@ -1484,7 +1484,11 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   directory directly in the runtime root carrying a manifest that names it (never a
   symlink, never a `.`-name such as `.trash-*`, never outside the root), and removes each
   other runtime only through `runtime-payload.mjs prune` (#211/#214 trash semantics),
-  after checking it again on its own; seconds still pass between that check and the
+  after checking it again on its own. A runtime that no longer verifies against its
+  manifest (a Finder `.DS_Store` is enough) is kept as `changed` and named, never
+  attempted: `unused` runs the same full `verifyPayload` prune would (about 0.25 s per
+  171 MB runtime with a warm cache), so `--apply` exits 0 whenever everything it tried was
+  removed. Seconds still pass between the re-check and the
   rename (prune cleans trash and hashes the folder first), and a config written then is
   not seen. What "uses" means is ONE rule in `scripts/runtime-config.mjs`
   (`scanRuntimeReferences`), which the installer's own prune and rollback
@@ -1492,12 +1496,14 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   string values (`~/.claude.json` in every scope, `~/.claude/settings.json`,
   `~/.claude/settings.local.json`, `~/.copilot/mcp-config.json`, Claude Desktop's config on
   macOS or Linux), each whole (a path with a space stays one path) and split into
-  command-line and `KEY=value` pieces. Runtime R is used when (a) a candidate holds R's id
-  as a whole path segment (`/<id>/`, or at either end), unless it is an absolute or `~/`
-  path whose stat fails with ENOENT or ENOTDIR (so another root's copy of the same id
-  counts); or (b) an absolute or `~/` candidate in a launcher (any object with a string
-  `command`) resolves to R or into it, compared by `(dev, ino)` and never as a path string,
-  so a symlinked shortcut, another case, the other Unicode form and a firmlink all count.
+  command-line and `KEY=value` pieces. Runtime R is used when (a) a candidate names R's id
+  as a whole name (no runtime-id character on either side, as `runtimeIdInText`), unless
+  the text up to and including the id is an absolute or `~/` path to a folder whose stat
+  fails with ENOENT or ENOTDIR (so shell text glued to it, such as `cd <R>&&…`, a file R
+  lacks and another root's copy of the same id all count); or (b) an absolute or `~/`
+  candidate in a launcher (any object with a string `command`) resolves to R or into it,
+  compared by `(dev, ino)` and never as a path string, so a symlinked shortcut, another
+  case, the other Unicode form and a firmlink all count.
   Errors only ever keep: any other stat error counts under (a), and under (b) keeps every
   runtime when what resolves of the path lies in the runtime root. Against the verified
   `{command, args[0]}` pair the installer used to require it only keeps more: every pair
@@ -1516,6 +1522,30 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   newest previous runtime. Project-scope configs (`<project>/.mcp.json`,
   `<project>/.claude/settings*.json`) are deliberately not read; the process check still
   keeps a runtime a running session started from one uses.
+  *(#294 part B)* Setup's Runtimes block lists what is there before anything runs.
+  `src/runtime-inventory.ts` is VIEWER-PROCESS-ONLY and read-only (`node:fs`/`node:path`
+  only, no process): it mirrors the rule above, and `test/runtime-inventory.test.ts` runs
+  the script's own `unused` over every shared case in `test/runtime-uses.ts` and holds the
+  two to one answer. It cannot see running processes; the panel only adds an advisory "N
+  running sessions report vX" from Live's rows. Each folder's size is its manifest's
+  recorded total, and the bounded walk (an lstat per file, about 40 ms for a 4,000-file
+  runtime, on Electron main in the packaged app) runs only for an unused runtime, because
+  only that one is offered for removal and the prune keeps a folder that no longer
+  matches its manifest (`changed`). The prune's check also hashes each file, which the main
+  thread cannot, so a file changed in place at the same size and mode shows as unused here
+  and the prune keeps it and says why. The list's root is Setup's own: an absolute
+  `AGENT_INBOX_RUNTIME_ROOT`, as `setupRuntimeRoot` in `electron/setup-runner.cjs` reads it,
+  else `~/.agent-inbox/runtime`. `/api/setup` carries `runtimes {state, unreadable?,
+  reason?, removable, entries}`, `reason` in the script's own words and never the JSON
+  parser's message, which can quote a secret from the file. The viewer keeps each
+  folder's answer per stamp of the folder and its manifest and the whole inventory per
+  stamp of the host configs and runtime root (10-minute backstop), so a cold read with
+  three runtimes costs about 60-160 ms and a warm one under 1 ms; a change deep inside a
+  runtime moves no stamp and shows after the backstop. `removable` holds only in a release
+  whose verified payload carries `scripts/prune-runtimes.sh`. The panel offers ONE Remove
+  only in a window `available()` grants; it re-reads `/api/setup` just before running and
+  runs only if the unused set is still the one its label names, then calls exactly
+  `install('prune-runtimes')`: the renderer never sends an id, path or list.
   `electron/runtime-verify.cjs` is the externally anchored verifier: using the digest from
   signed-bundle `setup-info.json`, it synchronously verifies the complete manifest file
   list, hashes, modes, entrypoints and runtime identity at selection and immediately before

@@ -20,6 +20,8 @@ import { issueKeySets } from '../public/issue-key.js'
 import { hooksSettingsBlock } from './hook.js'
 import { agentConfigFiles, readAgentHosts, registeredRuntimeVersion } from './agent-hosts.js'
 import type { AgentHosts, HostRegistration, RuntimeVerifier } from './agent-hosts.js'
+import { measureRuntime, readRuntimes, referenceFiles } from './runtime-inventory.js'
+import type { RuntimeInventory, RuntimeMeasure, RuntimeMeasurer } from './runtime-inventory.js'
 import { buildStamp, readBakedInfo } from './stamp.js'
 import type { BakedInfo, BuildStamp } from './stamp.js'
 import { AGENT_INBOX_VERSION } from './version.js'
@@ -55,8 +57,9 @@ export interface ViewerOpts {
    *  pin a host key without touching the real process. */
   runtimeHostKey?: string
   /** issue #74: root directory a portable runtime gets installed under
-   *  (`~/.agent-inbox/runtime` in production); overridable so a test never
-   *  touches the real home directory. */
+   *  (an absolute AGENT_INBOX_RUNTIME_ROOT, else `~/.agent-inbox/runtime`, as
+   *  Setup's installers use it, #294); overridable so a test never touches the
+   *  real home directory. */
   runtimeRoot?: string
   /** issue #74: the app bundle root a release payload's contained relative
    *  path is resolved against (the directory setup-info.json itself lives
@@ -71,6 +74,9 @@ export interface ViewerOpts {
    *  each host's agents are registered to run; overridable so a test never
    *  reads the real one. */
   agentHome?: string
+  /** issue #294: how one runtime folder is measured, injected so a test can
+   *  count the manifest reads and walks its cache exists to avoid. */
+  runtimeMeasurer?: RuntimeMeasurer
 }
 
 /** Split a fixed `darwin-arm64`/`darwin-x64` runtime key into platform/arch —
@@ -108,7 +114,7 @@ function resolveReleaseRuntimeSource(
   payload: { path: string; digest: string } | null | undefined,
   packageVersion: string,
   verify: RuntimeVerifier,
-): { dir: string; installer: string } | null {
+): ReleaseRuntime['source'] {
   if (!payload) return null
   if (!isContainedRelativePath(payload.path)) return null
   if (!DIGEST_RE.test(payload.digest)) return null
@@ -122,8 +128,9 @@ function resolveReleaseRuntimeSource(
   if (!lstatSync(realResolved).isDirectory()) return null
 
   const { platform, arch } = platformArchOf(hostKey)
+  let runtimeId: string
   try {
-    verify({
+    runtimeId = verify({
       root: realResolved,
       expectedManifestDigest: payload.digest,
       expectedPlatform: platform,
@@ -134,14 +141,17 @@ function resolveReleaseRuntimeSource(
       expectedNodeModulesAbi: EXPECTED_NODE_MODULES_ABI,
       requiredEntrypoints: REQUIRED_ENTRYPOINTS,
       requiredFiles: REQUIRED_FILES,
-    })
+    }).manifest.runtimeId
   } catch {
     return null
   }
 
   const installer = resolve(realResolved, 'scripts', 'install-agents.sh')
   if (!existsSync(installer)) return null
-  return { dir: realResolved, installer }
+  // issue #294: the verified payload's own prune script, which Setup's
+  // prune-runtimes target runs; a verified payload holds no file it does not list
+  const prunable = existsSync(resolve(realResolved, 'scripts', 'prune-runtimes.sh'))
+  return { dir: realResolved, installer, runtimeId, prunable }
 }
 
 /**
@@ -372,7 +382,7 @@ function setupInfo(baked: BakedInfo | null, hostKey: string, lookup: ReleaseRunt
 // of them, so a long backstop re-verifies anyway; executing a runtime is still
 // guarded separately, immediately before spawn, by electron/setup-runner.cjs.
 interface ReleaseRuntime {
-  source: { dir: string; installer: string } | null
+  source: { dir: string; installer: string; runtimeId: string; prunable: boolean } | null
   runtime: { dir: string; nodeBin: string; entry: string; hookEntry: string } | null
 }
 
@@ -526,6 +536,19 @@ function agentsInfo(baked: BakedInfo | null, lookup: ReleaseRuntime | null, host
 
 const UNKNOWN_HOSTS: AgentHosts = { claude: { kind: 'unknown' }, copilot: { kind: 'unknown' }, hooks: { kind: 'unknown' } }
 
+// The Setup panel's Runtimes block (#294): each folder under the runtime root,
+// its size and what uses it. `removable` is whether Setup can run its prune
+// here: a release whose verified payload carries prune-runtimes.sh, the one
+// script Setup's `prune-runtimes` target runs. That script decides again,
+// under the setup lock, and also keeps a runtime a running process uses.
+interface RuntimesInfo extends RuntimeInventory {
+  removable: boolean
+}
+
+function canPrune(baked: BakedInfo | null, lookup: ReleaseRuntime | null): boolean {
+  return baked?.schema === 2 && lookup?.source?.prunable === true
+}
+
 // A close/reopen body carries one agent-authored project name. An unparseable
 // body arrives here as null (the caller's .catch) and is refused like any other
 // missing name — a 400, never a 500.
@@ -630,12 +653,21 @@ function conditionalSnapshot(
   }
 }
 
+// Where Setup's installers and prune keep runtimes: an absolute
+// AGENT_INBOX_RUNTIME_ROOT, as electron/setup-runner.cjs setupRuntimeRoot
+// reads it (a relative one is ignored here; Setup refuses it), else
+// ~/.agent-inbox/runtime (#294).
+function setupRuntimeRoot(): string {
+  const configured = process.env['AGENT_INBOX_RUNTIME_ROOT']
+  return configured && isAbsolute(configured) ? configured : resolve(homedir(), '.agent-inbox', 'runtime')
+}
+
 export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono {
   const app = new Hono()
   const bakedPath = opts.setupInfoPath ?? resolve(process.cwd(), 'setup-info.json')
   const stamp = opts.stamp ?? buildStamp
   const runtimeHostKey = opts.runtimeHostKey ?? `${process.platform}-${process.arch}`
-  const runtimeRoot = opts.runtimeRoot ?? resolve(homedir(), '.agent-inbox', 'runtime')
+  const runtimeRoot = opts.runtimeRoot ?? setupRuntimeRoot()
   // A release payload's contained relative path is resolved against the app
   // bundle root — the same directory setup-info.json itself lives in.
   const appRoot = opts.appRoot ?? dirname(bakedPath)
@@ -715,6 +747,54 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
     }
   }
 
+  // Issue #294: what Setup's Runtimes block lists. Re-read when a host config
+  // the prune gate reads (link or target) or the runtime root changes, and
+  // otherwise after the same backstop. Each runtime folder's manifest is read
+  // once per stamp of the folder and its manifest, and an unused one's folder
+  // walked once (the only walk, about 40 ms for a 4,000-file runtime), so a
+  // read with nothing changed reads stamps alone and a host config change
+  // walks nothing. A read that throws is answered as unavailable and never
+  // cached.
+  const measureFolder = opts.runtimeMeasurer ?? measureRuntime
+  const measures = new Map<string, { key: string; at: number; value: RuntimeMeasure | null }>()
+  let runtimesCache: { key: string; at: number; value: RuntimeInventory } | undefined
+  const runtimeInventory = (current: string | null): RuntimeInventory | null => {
+    const key = JSON.stringify([
+      referenceFiles(agentHome).map((file) => [entryStamp(file), targetStamp(file)]),
+      runtimeRootStamp(runtimeRoot),
+      current,
+    ])
+    const now = Date.now()
+    if (runtimesCache && runtimesCache.key === key && now - runtimesCache.at < RUNTIME_LOOKUP_BACKSTOP_MS) {
+      return runtimesCache.value
+    }
+    try {
+      const seen = new Set<string>()
+      const value = readRuntimes({
+        home: agentHome,
+        runtimeRoot,
+        current,
+        measure: (dir, runtimeId, walk) => {
+          seen.add(dir)
+          const stamp = `${entryStamp(dir)}|${entryStamp(resolve(dir, MANIFEST_FILE))}`
+          const hit = measures.get(dir)
+          if (hit && hit.key === stamp && now - hit.at < RUNTIME_LOOKUP_BACKSTOP_MS && (!walk || hit.value?.intact !== null)) {
+            return hit.value
+          }
+          const measured = measureFolder(dir, runtimeId, walk)
+          measures.set(dir, { key: stamp, at: now, value: measured })
+          return measured
+        },
+      })
+      for (const dir of measures.keys()) if (!seen.has(dir)) measures.delete(dir)
+      runtimesCache = { key, at: now, value }
+      return value
+    } catch {
+      runtimesCache = undefined
+      return null
+    }
+  }
+
   // boot id lets a long-lived tab detect a server restart (= likely deploy)
   // and reload itself instead of polling forever with stale frontend code
   const boot = new Date().toISOString()
@@ -758,7 +838,9 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
     }
     const lookup = baked?.schema === 2 ? releaseRuntime(baked) : null
     const agents = agentsInfo(baked, lookup, agentHosts(baked))
-    return c.json({ ...setupInfo(baked, runtimeHostKey, lookup), agents, build })
+    const inventory = runtimeInventory(lookup?.source?.runtimeId ?? null)
+    const runtimes: RuntimesInfo | null = inventory && { ...inventory, removable: canPrune(baked, lookup) }
+    return c.json({ ...setupInfo(baked, runtimeHostKey, lookup), agents, runtimes, build })
   })
 
   if (opts.ownerToken) {

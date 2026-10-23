@@ -19,9 +19,10 @@ The spike built both candidates from the same verified Windows folder and drove 
 install, launch, upgrade, repair and uninstall as a fresh standard (non-administrator) user on
 a `windows-2022` runner. The numbers below are from run
 [39893800330](https://github.com/shariqh/agent-inbox/actions/runs/39893800330) (1.6.0 upgraded
-to 1.6.1). Run [39896941593](https://github.com/shariqh/agent-inbox/actions/runs/39896941593),
-on this PR's final spike change, reproduced every result; only the times varied. Every run
-writes the same table to its job summary.
+to 1.6.1). Runs [39896941593](https://github.com/shariqh/agent-inbox/actions/runs/39896941593)
+and [39899654879](https://github.com/shariqh/agent-inbox/actions/runs/39899654879), on later
+commits of this PR, reproduced every result; only the times varied. Every run writes the same
+table to its job summary.
 
 1. **One install folder for every version.** The MSI installs to
    `%LOCALAPPDATA%\Programs\Agent Inbox` and upgrades in place. Squirrel installs to
@@ -53,7 +54,9 @@ writes the same table to its job summary.
 8. **Healthier tooling, one licence decision.** Squirrel.Windows has not released since 2020;
    electron-winstaller bundles NuGet 2.8.3, 7-Zip 16.04 and a Windows 7 `signtool`. WiX v7 is
    current but asks the owner to accept its Open Source Maintenance Fee EULA (§8.3); the spike
-   used WiX v5.0.2 (MS-RL, no EULA) to avoid accepting it on the owner's behalf.
+   used WiX v5.0.2 (MS-RL, no EULA) to avoid accepting it on the owner's behalf. v5 no longer
+   gets security fixes, and it ran on the runner's unpinned .NET 6, so PR 2b must choose WiX's
+   .NET runtime too (§6).
 9. **Two caveats for the MSI.** Windows Server refuses an unelevated per-user MSI install by
    default (Windows Installer's `DisableMSI` policy); Windows 10 and 11 allow it, and machines
    that set that policy would need the portable ZIP. And an upgrade while the app runs
@@ -91,7 +94,7 @@ requests that touch its own files. It has three jobs.
 | WiX .NET tool 5.0.2 (`5.0.2+aa65968c`) | nupkg SHA-512 `z+fu1deTcaV+TRCo4+6HrJ48Sdnj+yeQjjMStTI3GW7NxFEPaknYCdxrf0qEvgdXrjYdjLnkZKCsNSqTTOo2OA==` (nuget.org's catalog `packageHash`) and SHA-256 `f30ef0c74e2a986126539c5780be93ac24e8136eaf723b1937b26272703ae173` | Downloaded from its exact nuget.org URL; both digests checked; installed with `dotnet tool install` from a private feed holding only that file, into an empty package cache; the reported version and source commit checked; the package the tool store keeps must hash to the pin. |
 | electron-winstaller 5.4.4 | lockfile integrity `sha512-j9ETcBGJaXxAY/b6UBpR7LZfjdU4BAO+yvr4ifqHEdyuc3UNCy91PDGkWKY5UQ4coHNYfnwFggrqD6QPeFGAlg==` | `npm ci --ignore-scripts` from `.github/windows-installer-spike/package-lock.json` (every entry from registry.npmjs.org with a SHA-512 integrity); its one install script, which copies the host's 7-Zip into `vendor/`, is run explicitly. |
 | Squirrel.Windows binaries inside it | Update.exe 2.0.1, Setup.exe 1.9.1, NuGet 2.8.3, 7-Zip 16.04, signtool 6.1.7600, rcedit 0.2.0 | Pinned by the npm integrity above; the summary records each binary's SHA-256. |
-| .NET runtime for WiX 5 | Microsoft.NETCore.App 6.0.46 from the runner image | Recorded, not downloaded. |
+| .NET runtime for WiX 5 | the runner image's .NET 6: 6.0.46 in the cited run, 6.0.47 in run 39899654879 | Recorded, not downloaded and not pinned, so it changes with the image. WiX 5 asks for .NET 6 with `rollForward: Major`, so it runs on .NET 6 whenever the image has it (§3.7). |
 
 No step downloads anything else, restores an npm cache, or sets `npm_config_build_from_source`
 anywhere but the workflow's top-level `env` (#315); `test/windows-installer-spike.test.ts` pins
@@ -126,7 +129,7 @@ folder it came from.
 
 Run [39893800330](https://github.com/shariqh/agent-inbox/actions/runs/39893800330), commit
 `f041c3bf`, except where noted. Both versions hold 8,115 files and 560.5 MiB. Times are single
-runs on a hosted runner and were up to twice as long in the later run, so only their order of
+runs on a hosted runner and were up to twice as long in later runs, so only their order of
 magnitude means anything.
 
 | Measurement | MSI (WiX 5.0.2, per-user) | Squirrel.Windows (electron-winstaller 5.4.4) |
@@ -249,9 +252,15 @@ uninstall should is a product question for 2b, not an installer difference.
 | | WiX | electron-winstaller / Squirrel.Windows |
 | --- | --- | --- |
 | Latest release | v7.0.0, 2026-04-06; annual majors | electron-winstaller 5.4.4, 2026-07-01; Squirrel.Windows 2.0.1, 2020-09-27, maintainers wanted |
-| Runs on | .NET 6 (v5) or .NET 8 (v7) | Node, plus .NET Framework binaries from 2014–2020: NuGet 2.8.3, 7-Zip 16.04, signtool 6.1.7600, rcedit 0.2.0 |
+| Runs on | .NET 6 (v5) or .NET 8 (v7), each with `rollForward: Major`: a newer .NET runs it only when its own major is missing | Node, plus the Windows binaries it bundles: Squirrel 2.0.1 (2020), NuGet 2.8.3, 7-Zip 16.04 (2016), signtool 6.1.7600 (Windows 7 SDK) and rcedit 0.2.0 |
+| Support for that runtime | .NET 6 ended 2024-11-12; .NET 8 ends 2026-11-10; .NET 10 runs to 2028-11-14 | the .NET Framework that ships with Windows |
 | Licence | MS-RL source; v6+ binaries under the Open Source Maintenance Fee EULA (§8.3) | MIT |
 | Consumer security fixes | v5 ended 2026-02-05; v6 until 2027-02-05; v7 current | none upstream since 2020 |
+
+The runner image reported its .NET 6 runtime as 6.0.46 and then 6.0.47. Neither appears in
+Microsoft's public .NET 6 release metadata, which ends at 6.0.36 on 2024-11-12, so the spike's
+WiX ran on a runtime that only the image supplies, outside Microsoft's support. That does not
+change the comparison, but PR 2b must choose WiX's runtime on purpose (§6).
 
 ---
 
@@ -363,6 +372,11 @@ plus `SHA256SUMS-windows.txt`") should:
 8. **Decide the minimum Windows check.** The inputs pin Windows 10.0.17763, but Windows
    Installer reports Windows 10 and 11 as version 6.3 (`VersionNT` 603), so a launch condition
    needs the real build number from the registry.
+9. **Run WiX on a supported .NET, and record which.** WiX asks for its own .NET major (6 for v5,
+   8 for v7) and uses it whenever the runner has it. .NET 6 support ended on 2024-11-12, and .NET
+   8's ends on 2026-11-10. 2b should pick the runtime deliberately (for example .NET 10,
+   supported to 2028-11-14), build and validate on it, and record it in the job summary. The
+   spike did not test WiX on a newer runtime than it asks for.
 
 Separately, and not part of any installer slice: the runtime payload still ships
 better-sqlite3's MSBuild `obj` and `.tlog` files and `test_extension.node`. They hold the deepest
@@ -399,7 +413,7 @@ issue.
    - **WiX v6.0.2.** The earlier OSMF EULA, without the revenue threshold; consumer security
      fixes until 2027-02-05.
    - **WiX v5.0.2** (what the spike used). MS-RL only, no EULA, but consumer security fixes
-     ended on 2026-02-05.
+     ended on 2026-02-05, and it asks for .NET 6, which Microsoft stopped supporting in 2024.
    - **WiX built from source.** MS-RL only; the EULA covers just the published binaries. It
      costs a pinned source build in CI.
 

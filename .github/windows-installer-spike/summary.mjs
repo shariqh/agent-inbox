@@ -254,7 +254,7 @@ row('Files a default build would drop', '—', (data.builds.squirrel.base?.defau
 
 const toolRows = [
   `| WiX .NET tool | ${cell(data.wix?.reportedVersion ?? tools.wix.version)} | nupkg SHA-512 ${code(tools.wix.sha512)} (nuget.org catalog packageHash), SHA-256 ${code(tools.wix.sha256)} | ${data.wix ? 'downloaded from its exact URL, both digests checked, installed from a private feed holding only that file' : 'not installed'} |`,
-  `| .NET runtime for WiX | ${cell((data.wix?.dotnetRuntimes ?? []).join(', ') || '—')} | runner image | recorded |`,
+  `| .NET runtimes on the runner (WiX 5 asks for .NET 6 with rollForward Major, so it runs on the newest 6.0.x listed) | ${cell((data.wix?.dotnetRuntimes ?? []).join(', ') || '—')} | runner image, not pinned | recorded |`,
   `| electron-winstaller | ${cell(data.builds.squirrel.base?.electronWinstaller ?? tools.squirrel.version)} | lockfile integrity ${code(tools.squirrel.integrity)} | npm ci --ignore-scripts from .github/windows-installer-spike/package-lock.json |`,
   ...Object.entries(data.builds.squirrel.base?.vendor ?? {}).map(([name, digest]) => `| vendored ${cell(name)} | (inside electron-winstaller) | SHA-256 ${code(digest)} | pinned by the npm integrity above |`),
 ]

@@ -855,6 +855,15 @@ describe('universal finalization contract', () => {
     expect(staging).toContain("'run-isolated.mjs'")
   })
 
+  it('stages the runtime prune script into every payload, where its Setup target requires it (#294)', () => {
+    const runner = readFileSync(join(root, 'electron', 'setup-runner.cjs'), 'utf8')
+    const staging = readFileSync(join(root, 'scripts', 'stage-runtime.mjs'), 'utf8')
+
+    expect(staging).toContain("'prune-runtimes.sh'")
+    expect(runner).toContain("const PRUNE_REQUIRED_FILES = Object.freeze([...REQUIRED_FILES, 'scripts/prune-runtimes.sh'])")
+    expect(runner).toContain("requiredFiles: request.target === 'prune-runtimes' ? PRUNE_REQUIRED_FILES : REQUIRED_FILES")
+  })
+
   it('keeps the shared Setup lease in payload verification, package smoke, and native workflows', () => {
     const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
     const verifier = readFileSync(join(root, 'electron', 'runtime-verify.cjs'), 'utf8')

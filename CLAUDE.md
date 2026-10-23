@@ -1438,7 +1438,8 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   The Setup panel's direct action is deliberately Electron-only:
   `electron/setup-preload.cjs` exposes only `available()`/`install(target)`, with
   `contextIsolation:true` and `nodeIntegration:false`; `main.cjs` accepts only the
-  four fixed targets (`all`, `claude`, `copilot` and, since #206, `hooks`) and only
+  five fixed targets (`all`, `claude`, `copilot` and, since #206, `hooks` and, since #294,
+  `prune-runtimes`) and only
   while the app owns the exact local-viewer origin (the
   window binding update installs share, #216). A
   reused viewer never gets execution access, and there is no HTTP setup-write route.
@@ -1454,6 +1455,7 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   constructs only exact `/bin/bash scripts/install-agents.sh` argv, plus for `hooks`
   exactly `/bin/bash <installed runtime>/scripts/install-hooks.sh --apply --move-only`
   (never `--force` or another flag, and only from a directory carrying a runtime manifest),
+  and for `prune-runtimes` exactly `/bin/bash <payload>/scripts/prune-runtimes.sh --apply`,
   bounds output/time,
   and preserves POSIX process-group cancellation. It accepts no executable or arbitrary
   argv from callers, permits exact-host macOS/Linux shell execution, and fails closed before
@@ -1468,6 +1470,49 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   `scripts/install-hooks.sh` required) immediately before spawn; a missing copy, a
   changed or extra file, or a symlinked directory refuses without spawning. Main gates it
   exactly like the agent targets.
+  *(#294)* `prune-runtimes` removes the runtimes nothing uses. It too exists only in
+  release mode, and runs the app bundle's own payload (it bakes nothing into a host
+  config), once the core has verified that payload against the signed digest with
+  `scripts/prune-runtimes.sh` required; main's handler has no branch for it, so every gate
+  above applies unchanged. The script takes `--apply` and nothing else: it re-derives what
+  to remove itself, under the setup lock, so the renderer names the target and never a
+  runtime id or path. Without `--apply` it is a dry run that takes no lock, cleans no trash
+  and writes nothing. It always keeps its own runtime and anything that is not a real
+  directory directly in the runtime root carrying a manifest that names it (never a
+  symlink, never a `.`-name such as `.trash-*`, never outside the root), and removes each
+  other runtime only through `runtime-payload.mjs prune` (#211/#214 trash semantics),
+  after checking it again on its own; seconds still pass between that check and the
+  rename (prune cleans trash and hashes the folder first), and a config written then is
+  not seen. What "uses" means is ONE rule in `scripts/runtime-config.mjs`
+  (`scanRuntimeReferences`), which the installer's own prune and rollback
+  (`references --home --status`) share. Its candidates are a host config's
+  string values (`~/.claude.json` in every scope, `~/.claude/settings.json`,
+  `~/.claude/settings.local.json`, `~/.copilot/mcp-config.json`, Claude Desktop's config on
+  macOS or Linux), each whole (a path with a space stays one path) and split into
+  command-line and `KEY=value` pieces. Runtime R is used when (a) a candidate holds R's id
+  as a whole path segment (`/<id>/`, or at either end), unless it is an absolute or `~/`
+  path whose stat fails with ENOENT or ENOTDIR (so another root's copy of the same id
+  counts); or (b) an absolute or `~/` candidate in a launcher (any object with a string
+  `command`) resolves to R or into it, compared by `(dev, ino)` and never as a path string,
+  so a symlinked shortcut, another case, the other Unicode form and a firmlink all count.
+  Errors only ever keep: any other stat error counts under (a), and under (b) keeps every
+  runtime when what resolves of the path lies in the runtime root. Against the verified
+  `{command, args[0]}` pair the installer used to require it only keeps more: every pair
+  with absolute paths it matched resolves into R, so (b) matches it (it also resolved a
+  relative path against the installer's own working directory, which no host launches
+  from). So the installer now also keeps runtimes that split pairs, `env` values, `sh -c`
+  wrappers, later arguments and one-string hooks use. `references` names each file that
+  uses a runtime (`{file, label}`), never what is in it. A config that exists but cannot
+  be read (a symlink to nothing, itself or a folder above it; not a regular
+  file; over 64 MB; not JSON) makes the answer unknown, and then nothing is removed; the
+  installer's prune keeps everything and the install still succeeds. The prune also keeps
+  any runtime a running process names (`ps -A -ww -o pid=,ppid=,command=`, its own
+  ancestry excluded; a missing or failing `ps` refuses everything): a live MCP server
+  survives the deletion, but every Copilot watcher it hands out runs its runtime's
+  `dist/watch-cli.js`. That check is why the prune, unlike the installer, does not keep the
+  newest previous runtime. Project-scope configs (`<project>/.mcp.json`,
+  `<project>/.claude/settings*.json`) are deliberately not read; the process check still
+  keeps a runtime a running session started from one uses.
   `electron/runtime-verify.cjs` is the externally anchored verifier: using the digest from
   signed-bundle `setup-info.json`, it synchronously verifies the complete manifest file
   list, hashes, modes, entrypoints and runtime identity at selection and immediately before
@@ -1722,7 +1767,8 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   `process.platform`/`process.arch`, and Setup atomically installs it under
   `~/.agent-inbox/runtime/<runtime-id>/`. Packaged upgrades/uninstalls touch only exact
   manifest-owned registrations/hooks, share one kernel lock, and retain every runtime
-  whose canonical Node+entry pair is still structurally referenced. Release signing order
+  a host config still uses (the #294 rule: its id named anywhere, or a launcher path
+  resolving into it). Release signing order
   is fixed: nested runtime Mach-O files, manifests, setup-info, outer app without
   `--deep`, then strict verification; nested bytes never change afterward.
   *(#291)* Every shipped `node_modules` copy, the app's and each runtime's, is pruned by

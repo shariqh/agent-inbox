@@ -1644,4 +1644,138 @@ describe('main\'s install handler and the hooks target (#206)', () => {
     expect(outcome.output).toMatch(/only from a release build's verified runtime/)
     expect(spawnImpl).not.toHaveBeenCalled()
   })
+
+  // #294: the runtime prune goes through this same handler and nothing else:
+  // no channel, preload method or branch of its own, so every gate above holds.
+  it('hands the runtime prune to runAgentInstall with the verified release payload, through the same handler', async () => {
+    const m = mainInstall()
+    await expect(m.handler(m.event(), 'prune-runtimes')).resolves.toMatchObject({ ok: true, target: 'prune-runtimes' })
+    expect(m.run).toHaveBeenCalledOnce()
+    expect(m.run.mock.calls[0]![0]).toMatchObject({
+      repoRoot: RELEASE.path,
+      target: 'prune-runtimes',
+      runtimePayload: { key: RELEASE.key, path: RELEASE.path, digest: RELEASE.digest, packageVersion: RELEASE.packageVersion },
+    })
+    const main = readFileSync(join(import.meta.dirname, '..', 'electron', 'main.cjs'), 'utf8')
+    const handler = main.slice(main.indexOf("ipcMain.handle('agent-inbox:install',"), main.indexOf("ipcMain.handle('agent-inbox:open-link'"))
+    // the handler never looks at which target it was given
+    expect(handler).not.toMatch(/target\s*===|===\s*target|prune-runtimes/)
+  })
+
+  it.each([
+    ['from a viewer this app does not own', { setupInstallEnabled: false }, {}, /unavailable for this viewer/],
+    ['from a window Setup is not bound to', { bound: null }, {}, /unavailable for this viewer/],
+    ['from another window', {}, { id: 8 }, /unavailable for this viewer/],
+    ['from a page of another origin', {}, { url: 'https://example.com/' }, /unavailable for this viewer/],
+    ['once the app has begun to quit', { quitting: true }, {}, /quitting, so setup did not start/],
+    ['while another Setup install runs', { setupRunning: true }, {}, /already running/],
+    ['while an app update installs', { updateInstalling: true }, {}, /update is being installed/],
+  ] as const)('refuses the runtime prune %s, without starting anything', async (_label, world, sender, error) => {
+    const m = mainInstall(world)
+    const { url, id } = sender as { url?: string; id?: number }
+    const outcome = await m.handler(m.event(url, id), 'prune-runtimes')
+    expect(outcome.ok).toBe(false)
+    expect(outcome.output).toMatch(error)
+    expect(m.run).not.toHaveBeenCalled()
+  })
+
+  it('a dev checkout has no verified runtime, so its runtime prune spawns nothing', async () => {
+    const root = fixture('#!/bin/bash\nexit 0\n')
+    writeFileSync(join(root, 'scripts', 'prune-runtimes.sh'), '#!/bin/bash\nexit 0\n')
+    const spawnImpl = vi.fn()
+    const m = mainInstall({
+      runtimeSelection: { ok: false, reason: 'no-release-payloads', key: 'darwin-arm64' },
+      checkout: root,
+      runAgentInstall: (opts) => runAgentInstall({ ...(opts as Parameters<typeof runAgentInstall>[0]), spawnImpl: spawnImpl as never }),
+    })
+    const outcome = await m.handler(m.event(), 'prune-runtimes')
+    expect(m.run.mock.calls[0]![0]).toMatchObject({ repoRoot: root, target: 'prune-runtimes', runtimePayload: null })
+    expect(outcome).toMatchObject({ ok: false, target: 'prune-runtimes' })
+    expect(outcome.output).toMatch(/only with a release build's verified runtime/)
+    expect(spawnImpl).not.toHaveBeenCalled()
+  })
+})
+
+// #294: the runtime prune runs this release's own verified payload's
+// prune-runtimes.sh, re-verified against the signed manifest digest with that
+// script required, immediately before spawn. It keeps that payload's runtime
+// and decides everything else itself, under the setup lock.
+describe.skipIf(!['darwin', 'linux'].includes(process.platform))('runAgentInstall: the runtime prune target (#294)', () => {
+  const key = `${process.platform}-${process.arch}`
+
+  /** A release bundle carrying this host's real payload of `version`, and its runtimePayload as main passes it. */
+  function release(version = '1.7.0-p294s'): { source: StagedRuntime; payload: { key: string; path: string; digest: string; packageVersion: string } } {
+    const appRoot = scratchDir('setup-prune-bundle-')
+    const source = stageRuntime(join(appRoot, 'runtime', key), version)
+    return { source, payload: { key, path: source.dir, digest: source.digest, packageVersion: version } }
+  }
+
+  function recordingSpawn() {
+    const calls: unknown[][] = []
+    const spawnImpl = (...args: unknown[]): never => {
+      calls.push(args)
+      throw new Error('recorded, not spawned')
+    }
+    return { calls, spawnImpl }
+  }
+
+  it('spawns exactly /bin/bash <verified payload>/scripts/prune-runtimes.sh --apply: no runtime id, path or other flag', async () => {
+    const h = hooksHome()
+    const { source, payload } = release()
+    const { calls, spawnImpl } = recordingSpawn()
+
+    await runAgentInstall({ repoRoot: source.dir, target: 'prune-runtimes', runtimePayload: payload, env: h.env, spawnImpl })
+
+    expect(calls).toHaveLength(1)
+    expect(calls[0]![0]).toBe('/bin/bash')
+    expect(calls[0]![1]).toEqual([join(source.dir, 'scripts', 'prune-runtimes.sh'), '--apply'])
+    expect(calls[0]![2]).toMatchObject({ cwd: source.dir, detached: true })
+  })
+
+  it('removes what nothing uses and keeps this release\'s own runtime, through the real script', async () => {
+    const h = hooksHome()
+    const { source, payload } = release()
+    const current = installStaged(h, source)
+    const old = installRuntime(h, '1.2.2-p294s')
+
+    const result = await runAgentInstall({ repoRoot: source.dir, target: 'prune-runtimes', runtimePayload: payload, env: h.env })
+
+    expect(result, result.output).toMatchObject({ ok: true, exitCode: 0, target: 'prune-runtimes', timedOut: false, cancelled: false })
+    expect(result.output).toContain(`Removed v1.2.2-p294s (${old.runtimeId}).`)
+    expect(result.output).toContain(`Kept v1.7.0-p294s (${current.runtimeId}): the runtime this prune runs from.`)
+    expect(existsSync(old.dir)).toBe(false)
+    expect(existsSync(current.dir)).toBe(true)
+  })
+
+  it('refuses without spawning when the payload carries no prune script among its verified files', async () => {
+    const appRoot = scratchDir('setup-prune-old-bundle-')
+    const staged = stagePayloadDir(appRoot, `runtime/${key}`, { platform: process.platform, arch: process.arch })
+    const dir = join(appRoot, staged.path)
+    const { calls, spawnImpl } = recordingSpawn()
+
+    const result = await runAgentInstall({
+      repoRoot: dir, target: 'prune-runtimes', runtimePayload: { key, path: dir, digest: staged.digest, packageVersion: '1.2.3' }, spawnImpl,
+    })
+
+    expect(calls).toHaveLength(0)
+    expect(result).toMatchObject({ ok: false, exitCode: null, target: 'prune-runtimes' })
+    expect(result.output).toMatch(/release runtime payload failed integrity verification/i)
+    // the agent targets need no prune script, and still run from it
+    await runAgentInstall({ repoRoot: dir, target: 'claude', runtimePayload: { key, path: dir, digest: staged.digest, packageVersion: '1.2.3' }, spawnImpl })
+    expect(calls).toHaveLength(1)
+  })
+
+  it('refuses without spawning when the payload\'s prune script changed after it was signed', async () => {
+    const h = hooksHome()
+    const { source, payload } = release()
+    const old = installRuntime(h, '1.2.2-p294s')
+    writeFileSync(join(source.dir, 'scripts', 'prune-runtimes.sh'), '#!/bin/bash\nrm -rf "$HOME/.agent-inbox/runtime"\n')
+    const { calls, spawnImpl } = recordingSpawn()
+
+    const result = await runAgentInstall({ repoRoot: source.dir, target: 'prune-runtimes', runtimePayload: payload, env: h.env, spawnImpl })
+
+    expect(calls).toHaveLength(0)
+    expect(result.output).toMatch(/release runtime payload failed integrity verification/i)
+    expect(existsSync(old.dir)).toBe(true)
+  })
 })

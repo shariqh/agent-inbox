@@ -14,12 +14,14 @@ const {
 } = require('./runtime-verify.cjs')
 
 // `hooks` (#206) moves Claude's hooks with the installed copy of this
-// release's runtime: see installedRuntime() below.
-const TARGETS = new Set(['all', 'claude', 'copilot', 'hooks'])
+// release's runtime: see installedRuntime() below. `prune-runtimes` (#294)
+// removes the runtimes nothing uses, with this release's verified payload.
+const TARGETS = new Set(['all', 'claude', 'copilot', 'hooks', 'prune-runtimes'])
 const TARGET_NAMES = Object.freeze([...TARGETS])
 const HOOKS_REQUIRED_FILES = Object.freeze([...REQUIRED_FILES, 'scripts/install-hooks.sh'])
+const PRUNE_REQUIRED_FILES = Object.freeze([...REQUIRED_FILES, 'scripts/prune-runtimes.sh'])
 
-// Setup is available only for the four targets handled by the fixed-purpose
+// Setup is available only for the five targets handled by the fixed-purpose
 // POSIX shell adapter. Selection is STRICT `${process.platform}-${process.arch}`
 // only: never uname, cross-architecture fallback, or Windows execution.
 const RUNTIME_KEYS = new Set(POSIX_SETUP_RUNTIME_KEYS)
@@ -313,7 +315,8 @@ function createReleaseSetupAdapter({
         expectedNodeMajor: EXPECTED_NODE_MAJOR,
         expectedNodeModulesAbi: EXPECTED_NODE_MODULES_ABI,
         requiredEntrypoints: REQUIRED_ENTRYPOINTS,
-        requiredFiles: REQUIRED_FILES,
+        // the prune runs this payload's own script, so it must be one of its verified files
+        requiredFiles: request.target === 'prune-runtimes' ? PRUNE_REQUIRED_FILES : REQUIRED_FILES,
       })
       const { manifest } = verified
       return {
@@ -334,6 +337,11 @@ function createReleaseSetupAdapter({
         const installed = installedRuntime({ runtimeRoot, operation, host })
         if (installed.error) return Promise.resolve(installed.error)
         return processRunner.start({ repoRoot: installed.dir, target: 'hooks', runtime: null }, { onCancel })
+      }
+      // The verified payload's own prune-runtimes.sh, which keeps this
+      // payload's runtime and decides everything else itself (#294).
+      if (operation.target === 'prune-runtimes') {
+        return processRunner.start({ repoRoot: operation.sourceRoot, target: 'prune-runtimes', runtime: null }, { onCancel })
       }
       return processRunner.start({
         repoRoot,
@@ -525,6 +533,11 @@ function runAgentInstall({
     // Setup manages only its runtimes' hooks.
     if (target === 'hooks') {
       return Promise.resolve(setupFailure(target, "Setup moves Claude hooks only from a release build's verified runtime."))
+    }
+    // The prune runs on a verified runtime's own Node and keeps that runtime;
+    // a checkout has neither (#294).
+    if (target === 'prune-runtimes') {
+      return Promise.resolve(setupFailure(target, "Setup removes runtimes only with a release build's verified runtime."))
     }
     return processRunner.start({
       repoRoot,

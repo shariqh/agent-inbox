@@ -6,4 +6,4 @@ export function publishAtomically(source: string, destination: string, force: bo
 export function findNativeAddon(root: string): string
 export function copyElectronNotices(packagerOutput: string, app: string): void
 export function runRuntimeSelftest(runtimeRoot: string): void
-export function pruneNativeAddonBuildArtifacts(stageRoot: string): void
+export function pruneAppNodeModules(stageRoot: string): { removedFiles: number; removedBytes: number }

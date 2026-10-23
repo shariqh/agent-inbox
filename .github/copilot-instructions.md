@@ -76,7 +76,12 @@ Run the build before `npm run electron`; the development shell starts the built
   admits them (with `public/source.js`/`esc.js`) only for the titled `board_get`
   `issue_rel` summary, and a test pins the transitive stdio MCP import graph.
   `scripts/stage-runtime.mjs` stages the `public/` modules `dist/` reaches, so a
-  runtime payload can load them.
+  runtime payload can load them. Every shipped `node_modules` copy is pruned by
+  `scripts/prune-node-modules.mjs` before it is tested, manifested or signed
+  (#291): better-sqlite3 keeps only `package.json`, `lib/` and its addon, every
+  package loses typings, source maps and markdown, and license and notice files
+  always stay. The thin-app gates refuse an unpruned copy, and the macOS runtime
+  signing list is exactly `bin/node` and the addon.
 - **Setup path:** `scripts/install-agents.sh` is the canonical dry-run-first
   installer for MCP registration and managed host instructions. Electron exposes
   only fixed setup targets through `electron/setup-preload.cjs` and invokes that

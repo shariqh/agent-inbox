@@ -17,7 +17,7 @@ import {
   APP_NAME,
   copyRequiredTree,
   npmCliForCurrentNode,
-  pruneNativeAddonBuildArtifacts,
+  pruneAppNodeModules,
   publishAtomically,
 } from './build-thin-app.mjs'
 import {
@@ -112,7 +112,7 @@ export async function buildLinuxThinApp({
         else process.env[name] = previous
       }
     }
-    pruneNativeAddonBuildArtifacts(stageRoot)
+    pruneAppNodeModules(stageRoot)
     execFileSync(process.execPath, [
       join(repoRoot, 'scripts', 'write-setup-info.mjs'),
       '--release', join(stageRoot, 'setup-info.json'),

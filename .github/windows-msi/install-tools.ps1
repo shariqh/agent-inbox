@@ -74,7 +74,10 @@ $env:COREHOST_TRACE = '1'
 $env:COREHOST_TRACEFILE = $trace
 $reported = "$(& $dotnet exec --fx-version $dotnetPin.version $wixDll --version)".Trim()
 Remove-Item Env:COREHOST_TRACE, Env:COREHOST_TRACEFILE
-if (-not $reported.StartsWith("$($wixPin.version)+$($wixPin.sourceCommit.Substring(0, 8))")) {
+# WiX names its source commit by an abbreviated hash (seven characters for 7.0.0).
+$reportedParts = [regex]::Match($reported, '^(\d+\.\d+\.\d+)\+([0-9a-f]{7,40})$')
+if (-not $reportedParts.Success -or $reportedParts.Groups[1].Value -cne $wixPin.version -or
+    -not $wixPin.sourceCommit.StartsWith($reportedParts.Groups[2].Value)) {
   throw "WiX reports $reported, not $($wixPin.version) from $($wixPin.sourceCommit)"
 }
 # What the host itself says it loaded: every framework path in its trace must be the

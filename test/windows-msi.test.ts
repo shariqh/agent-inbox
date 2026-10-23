@@ -115,7 +115,8 @@ describe('Windows MSI workflow (#87 PR 2b)', () => {
       'throw "WiX $($wixPin.version) does not run on $($dotnetPin.framework) alone"',
       "Get-ChildItem Env: | Where-Object { $_.Name -match '^(DOTNET_|COREHOST_)' } | ForEach-Object { Remove-Item",
       '$reported = "$(& $dotnet exec --fx-version $dotnetPin.version $wixDll --version)".Trim()',
-      'if (-not $reported.StartsWith("$($wixPin.version)+$($wixPin.sourceCommit.Substring(0, 8))")) {\n  throw "WiX reports',
+      "$reportedParts = [regex]::Match($reported, '^(\\d+\\.\\d+\\.\\d+)\\+([0-9a-f]{7,40})$')",
+      '-not $wixPin.sourceCommit.StartsWith($reportedParts.Groups[2].Value)) {\n  throw "WiX reports',
       'throw "WiX did not run on $($dotnetPin.framework) $($dotnetPin.version)',
       '| Set-Content -Encoding utf8 -LiteralPath $Report',
     ]
@@ -328,7 +329,7 @@ describe('Windows MSI requirements (#87 PR 2b)', () => {
         release: release(),
         folders: { base: { version: '1.6.0' }, upgrade: { version: '1.6.1' } },
         tools: {
-          wix: { reportedVersion: `${wix.version}+${wix.sourceCommit.slice(0, 8)}`, sha512: wix.sha512 },
+          wix: { reportedVersion: `${wix.version}+${wix.sourceCommit.slice(0, 7)}`, sha512: wix.sha512 },
           dotnet: { sha512: dotnet.sha512, resolved: [`D:\\a\\tools\\dotnet\\shared\\Microsoft.NETCore.App\\${dotnet.version}\\coreclr.dll`] },
         },
         builds: {
@@ -389,7 +390,11 @@ describe('Windows MSI requirements (#87 PR 2b)', () => {
     ['WiX ran on the runner\'s .NET 8', /^WiX 7\.0\.0 ran/, (data) => {
       data.tools.dotnet.resolved = ['C:\\Program Files\\dotnet\\shared\\Microsoft.NETCore.App\\8.0.31\\coreclr.dll']
     }],
+    ['the host also loaded another runtime', /^WiX 7\.0\.0 ran/, (data) => {
+      data.tools.dotnet.resolved.push('C:\\Program Files\\dotnet\\shared\\Microsoft.NETCore.App\\8.0.31\\coreclr.dll')
+    }],
     ['another WiX build ran', /^WiX 7\.0\.0 ran/, (data) => { data.tools.wix.reportedVersion = '5.0.2+aa65968c' }],
+    ['WiX came from another commit', /^WiX 7\.0\.0 ran/, (data) => { data.tools.wix.reportedVersion = '7.0.0+aa65968' }],
     ['ICE validation did not pass', /ICE validation/, (data) => { data.builds.base.validation.passed = false }],
     ['the checksum names another digest', /SHA256SUMS-windows\.txt/, (data) => { data.checksums = `${'b'.repeat(64)}  Agent-Inbox-v1.6.0-windows-x64.msi\n` }],
     ['the lifecycle stopped', /ran to the end/, (data) => { (data.lifecycle as { failure: string | null }).failure = 'stopped' }],

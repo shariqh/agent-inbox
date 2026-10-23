@@ -61,8 +61,9 @@ export function requirements(data) {
   const { pins, release } = data
   const resolved = data.tools?.dotnet?.resolved ?? []
   const framework = `\\shared\\${pins.dotnet.framework}\\${pins.dotnet.version}`
+  const reported = /^(\d+\.\d+\.\d+)\+([0-9a-f]{7,40})$/.exec(data.tools?.wix?.reportedVersion ?? '')
   require(`WiX ${pins.wix.version} ran from its pinned package on .NET ${pins.dotnet.version}`,
-    data.tools?.wix?.reportedVersion?.startsWith(`${pins.wix.version}+${pins.wix.sourceCommit.slice(0, 8)}`) === true &&
+    reported?.[1] === pins.wix.version && pins.wix.sourceCommit.startsWith(reported[2] ?? '-') &&
     data.tools?.wix?.sha512 === pins.wix.sha512 && data.tools?.dotnet?.sha512 === pins.dotnet.sha512 &&
     resolved.length > 0 && resolved.every((path) => path.toLowerCase().includes(framework.toLowerCase())))
   const base = data.builds.base

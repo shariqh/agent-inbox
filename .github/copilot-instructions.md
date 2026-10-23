@@ -418,6 +418,23 @@ Run the build before `npm run electron`; the development shell starts the built
   file with its own Open With (checked through `/usr/bin/xattr`, argv only,
   failing closed). `setWindowOpenHandler` and `will-navigate` share the same
   http(s) check. A browser copies a file's path instead.
+- Settings → Links (#300 part 2, macOS only) lives in main:
+  `electron/link-preferences.cjs` keeps per-type rules in userData
+  `link-preferences.json` (schema 1, `createLockedFile`, tolerant reader that
+  never overwrites a newer schema). The renderer names a rule and a handler,
+  never an app path; an app comes only from main's own `dialog.showOpenDialog`
+  limited to `.app` bundles, and `launchableApp` re-checks it at every launch
+  (real path, `Contents/Info.plist`, never an app that runs what it opens or
+  hands it to its default app, such as Finder).
+  A rule is read only after folders, bundles, denied types and execute bits
+  are revealed, and the alias and Open With checks run before it opens
+  anything. An app or Quick Look rule may open a type off the allow-list (a
+  code file in an editor); System default never does. Launches use argv only
+  (`/usr/bin/open -a <app> -- <target>`, `/usr/bin/qlmanage -p <file>`), no
+  shell, stdio ignored. On the window's own open path, a chosen browser that
+  fails falls back to the default one. Rules, Quick Look and Reveal are file
+  requests, so they share the owned-viewer `files` grant, and so do the
+  Settings → Links channels (a reused viewer gets `error: 'unowned'`).
 - The 3-second poll uses the gated `load()`/`renderIfIdle()` path. Its reads
   run concurrently, but a tick applies only after all settle, and only if no newer
   tick has applied and every boot marker agrees. A successful

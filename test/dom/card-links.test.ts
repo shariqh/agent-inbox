@@ -239,7 +239,7 @@ describe('opening a link (issue #300)', () => {
 
     click(strip.querySelector('button[data-link-kind="file"]'))
     await settle()
-    expect(open).toHaveBeenLastCalledWith({ kind: 'file', path: '/Users/s/docs/spec.md' })
+    expect(open).toHaveBeenLastCalledWith({ kind: 'file', path: '/Users/s/docs/spec.md', reveal: false })
     expect(status()).toContain('Agent Inbox never opens apps, scripts, installers or aliases.')
 
     expect(clickPrevented(strip.querySelector('a[data-link-kind="web"]')!)).toBe(true)
@@ -261,7 +261,7 @@ describe('opening a link (issue #300)', () => {
     path.focus()
     path.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
     await settle()
-    expect(open).toHaveBeenCalledWith({ kind: 'file', path: '/Users/s/docs/spec.md' })
+    expect(open).toHaveBeenCalledWith({ kind: 'file', path: '/Users/s/docs/spec.md', reveal: false })
     expect(status()).toBe('Not found: /Users/s/docs/spec.md')
     expect(row(id)?.getAttribute('aria-expanded')).toBe('true')
   })
@@ -312,7 +312,7 @@ describe('opening a link (issue #300)', () => {
     expect(chip().title).not.toMatch(/^Copy path/)
     click(chip())
     await settle()
-    expect(fileCalls(open)).toEqual([[{ kind: 'file', path: '/Users/s/docs/spec.md' }]])
+    expect(fileCalls(open)).toEqual([[{ kind: 'file', path: '/Users/s/docs/spec.md', reveal: false }]])
     expect(writeText).not.toHaveBeenCalled()
 
     // main is the boundary: a page it no longer owns is refused whatever it was told
@@ -352,7 +352,7 @@ describe('opening a link (issue #300)', () => {
     open.filesAvailable.mockResolvedValue(true)
     click(stripOf(cardOf(id))!.querySelector('button[data-link-kind="file"]'))
     await settle()
-    expect(fileCalls(open)).toEqual([[{ kind: 'file', path: '/Users/s/docs/spec.md' }]])
+    expect(fileCalls(open)).toEqual([[{ kind: 'file', path: '/Users/s/docs/spec.md', reveal: false }]])
     expect(writeText).not.toHaveBeenCalled()
   })
 

@@ -97,6 +97,7 @@ function resolveFilePath(options, defaultFilename) {
 
 // One userData JSON file: writes are queued in-process, locked across processes by a
 // sibling `.lock` file, and published by temp-file + rename. Each file has its own lock.
+// Also the store for link-preferences.json (#300).
 function createLockedFile(filePath, fsImpl) {
   const lockPath = `${filePath}.lock`
   let sequence = 0
@@ -257,6 +258,8 @@ function createUpdateTrustState(options = {}) {
 }
 
 module.exports = {
+  createLockedFile,
   createUpdatePreferences,
   createUpdateTrustState,
+  resolveFilePath,
 }

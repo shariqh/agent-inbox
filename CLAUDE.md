@@ -409,7 +409,7 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   Nothing about links reaches `public/attention.js`, a badge or a count. `public/link-open.js`
   is ONE capture-phase listener per document (the inspector stops propagation): in Electron
   every detected link (`[data-link-kind]`) goes to the one preload method
-  `window.agentInboxLinks.open({kind:'web',url} | {kind:'file',path})`, a modified click
+  `window.agentInboxLinks.open({kind:'web',url} | {kind:'file',path,reveal})`, a modified click
   on a web link keeps its native path; in a browser a file link copies its path through
   `writeClipboard` and says a browser cannot open local files. `electron/link-open.cjs`
   decides, testable without Electron: the sender is the viewer window's exact `webContents`,
@@ -445,6 +445,47 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   then does `shell.openPath` get the resolved path. The check is point-in-time.
   `setWindowOpenHandler` and `will-navigate` share `openWebLink`, so no path in main hands a
   non-http(s) URL to the OS.
+- **Settings → Links (#300 part 2) is macOS-only, main-owned, and never outranks the safety
+  policy.** `electron/link-preferences.cjs` keeps the rules in userData `link-preferences.json`:
+  schema 1, written by `createLockedFile` (exported from `update-preferences.cjs`: temp file and
+  rename under the same cross-process lock), read tolerantly (corrupt → defaults, a bad rule
+  dropped, a newer schema read as defaults and never overwritten, unknown top-level fields kept).
+  Rules: Web links (Default browser or an app), Markdown (`.md`, `.markdown`) and up to 20 added
+  types (Quick Look, Reveal, or an app, plus System default only for a type on the allow-list:
+  the view's `systemDefault` says which, an added type off the list starts as Reveal, and a stored
+  System default off the list reads as Reveal); a denied type can never get one. The
+  renderer's `agentInboxLinkSettings` bridge (get, setHandler, chooseApp, addType, removeType,
+  exact arity, same sender check as opening and the same owned-viewer `files` grant: any other
+  page gets `{ available: false, rules: [], error: 'unowned' }`, after any re-proof in flight,
+  and the section says where it works; Settings asks again each time it opens,
+  `refreshLinkSettings()`) names a rule id and a handler, NEVER an app path:
+  `app` comes only from `chooseApp`, which asks main's own `dialog.showOpenDialog` (`openFile`,
+  `.app` filter), and the view the renderer gets names the app, never its path. ONE check,
+  `launchableApp` in `link-open.cjs`, judges an app when the picker returns it AND at every launch
+  (the file can be edited by hand, the bundle can move): its `realpath` must still end in `.app`,
+  be a directory and hold a `Contents/Info.plist` file, and neither the name it was chosen under
+  nor the one it resolves to may be an app that runs what it opens (Terminal, iTerm, Script Editor,
+  Python Launcher, JavaLauncher…) or hands it to its default app (Finder, System Events, which
+  would make a rule System default for a type off the allow-list); the real path is what is
+  saved and launched, and the reader also drops a rule
+  naming a runner. `fileOpenPlan(value, { rules })` reads a rule only AFTER a folder, a bundle, a
+  denied type and an execute bit have been revealed; a Reveal rule reveals (`rule`); an app or
+  Quick Look rule may open a type the allow-list leaves out (the escape hatch for code files,
+  such as `.py` in an editor), while System default never does; and the alias and Open With
+  checks run before any rule or default opens a file, so a rule never applies to an alias, an
+  Open With file, an executable, a bundle or a denied type. A reveal request (a file chip's
+  Reveal action, `{kind:'file',path,reveal:true}`) reveals whatever the rule. Launches use argv
+  only (`/usr/bin/open -a <app> -- <target>`, `/usr/bin/qlmanage -p <file>`), `shell: false`,
+  stdio ignored, detached; an app that fails the check is `app-missing` (gone or not an app) or
+  `app-refused` (a runner), reported to the renderer. The web rule also governs the window-open and
+  navigate paths (`openWebLink(url, shell, { readRules })`, where an unreadable file means the
+  system defaults); nothing there can say why, so a chosen browser that is gone, refused or fails
+  to start falls back to `shell.openExternal` on the already-checked href. Off macOS nothing is
+  offered and links keep the system defaults. In the viewer this app owns (`linkFileActions()`
+  needs main's `filesAvailable()` yes), a strip's file chip also gets Reveal and Copy path
+  buttons (`data-link-action`), never in a browser or a reused viewer. Opening, a rule's app or
+  Quick Look, a Reveal rule and a Reveal request are all file requests, so `openLinkRequest`
+  refuses each of them as `unowned` without the grant, before any rule is read.
 - **`src/prstate.ts` is VIEWER-PROCESS-ONLY (issue #30).** It and `src/issue-poller.ts` (#103, below)
   are the only modules that shell out to a network tool (`gh`), so `src/mcp.ts`/`src/mcp-server.ts`
   must never import either, directly or transitively — a subprocess that inherited a stream, or gh's update notifier, would corrupt the MCP

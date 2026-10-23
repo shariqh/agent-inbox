@@ -425,6 +425,17 @@ particular app, and anything with an execute bit. Files open only in the viewer 
 app started itself: if it is showing a viewer it found already running, and in a
 browser tab, clicking a file link copies its path instead.
 
+On macOS, **Settings → Links** chooses how links open from the Inbox instead of the
+Mac's defaults: web links in a browser you pick, and Markdown (`.md`, `.markdown`) or
+any file type you add with Quick Look, Reveal in Finder or an app you choose (and the
+system default, for the common documents above). That is also how to open other
+types, such as code in your editor: add `.py` and choose Sublime Text. Folders, apps,
+installers, aliases, files set to open with a particular app and anything with an
+execute bit are still only shown in Finder, whatever you choose, and some types (such
+as `.command`, `.pkg` or `.dmg`) can't have a rule at all. In the desktop app every
+file chip also has **Reveal in Finder** and **Copy path**. Both, and Settings →
+Links itself, work only in the viewer the app started itself.
+
 ## Architecture
 
 - **`src/store.ts`** owns schema, migrations, WAL configuration, and every database

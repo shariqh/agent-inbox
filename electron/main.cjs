@@ -17,7 +17,7 @@
 //      before and kill that child on quit — only because we own it.
 //   4. Open a BrowserWindow on the viewer URL once the server responds.
 
-const { app, BrowserWindow, ipcMain, Menu, Notification, nativeTheme, session, shell } = require('electron')
+const { app, BrowserWindow, dialog, ipcMain, Menu, Notification, nativeTheme, session, shell } = require('electron')
 const { spawn } = require('node:child_process')
 const { randomBytes } = require('node:crypto')
 const { existsSync } = require('node:fs')
@@ -27,6 +27,7 @@ const { pathToFileURL } = require('node:url')
 const { classifyReuse, watchUpstream } = require('./reuse.cjs')
 const { loadViewer, reloadViewer } = require('./viewer-navigation.cjs')
 const { isTrustedLinkSender, isViewerUrl, openLinkRequest, openWebLink } = require('./link-open.cjs')
+const { createLinkPreferences, createLinkSettings } = require('./link-preferences.cjs')
 const { canRunSetup, createInstallBinding, createInstallGate, installerRepoRoot, runAgentInstall, runtimeKey, selectRuntimePayload } = require('./setup-runner.cjs')
 const { MANUAL_RELEASES_URL, createUpdateController } = require('./update-controller.cjs')
 const { createUpdateDownloader } = require('./update-download.cjs')
@@ -355,16 +356,26 @@ ipcMain.handle('agent-inbox:install', async (event, target) => {
 // Issue #300: the viewer asks, main decides. Only the viewer window's own top
 // frame on the viewer origin may ask (see isTrustedLinkSender), with exactly one
 // request; link-open.cjs re-validates it and opens a web link, opens a common
-// document type with its default app, or only reveals anything else. A local
-// file is opened or revealed only while that window shows the viewer this app
-// started and proved it owns (fileLinkWebContentsId, re-proved after every load
-// as installs are); a reused viewer's page can still open web links.
+// document type with its default app or the app a Settings → Links rule names,
+// or only reveals anything else. A local file is opened, revealed or previewed
+// only while that window shows the viewer this app started and proved it owns
+// (fileLinkWebContentsId, re-proved after every load as installs are), and only
+// that viewer may read or change Settings → Links; a reused viewer's page can
+// still open web links.
 const linkSender = (event) => isTrustedLinkSender({ sender: event.sender, senderFrame: event.senderFrame, window: linkWindow, viewerUrl: URL_BASE })
 const linkFilesPermitted = (event) => fileLinkWebContentsId !== null && event.sender.id === fileLinkWebContentsId
+// Settings → Links (part 2): main's own file, read on each open, so a change
+// applies to the next click. An unreadable file means the system defaults.
+let linkPreferences = null
+const linkPrefs = () => (linkPreferences ??= createLinkPreferences({ app }))
+const linkRules = () => linkPrefs().read().catch(() => null)
+const linkOpening = { platform: process.platform, spawnImpl: spawn }
 
-ipcMain.handle('agent-inbox:open-link', (event, request, ...args) => {
+ipcMain.handle('agent-inbox:open-link', async (event, request, ...args) => {
   if (args.length !== 0 || !linkSender(event)) return { ok: false, reason: 'unavailable' }
-  return openLinkRequest(request, { shell, homeDir: app.getPath('home'), filesPermitted: linkFilesPermitted(event) })
+  return openLinkRequest(request, {
+    shell, homeDir: app.getPath('home'), filesPermitted: linkFilesPermitted(event), rules: await linkRules(), ...linkOpening,
+  })
 })
 
 // Whether this page may open local files, asked once per page load and again
@@ -375,6 +386,42 @@ ipcMain.handle('agent-inbox:link-files-available', async (event, ...args) => {
   await installBinding?.settled()
   return linkSender(event) && linkFilesPermitted(event)
 })
+
+// The renderer names a rule and a handler, never an app: an app comes only from
+// this native picker, limited to .app bundles, and is checked again before it
+// is saved (link-preferences.cjs).
+let linkSettings = null
+const linkSettingsFor = () => (linkSettings ??= createLinkSettings({
+  preferences: linkPrefs(),
+  platform: process.platform,
+  chooseApp: async () => {
+    const options = {
+      title: 'Choose an app', buttonLabel: 'Choose', defaultPath: '/Applications',
+      properties: ['openFile'], filters: [{ name: 'Applications', extensions: ['app'] }],
+    }
+    const result = linkWindow && !linkWindow.isDestroyed()
+      ? await dialog.showOpenDialog(linkWindow, options)
+      : await dialog.showOpenDialog(options)
+    return result.canceled ? null : result.filePaths
+  },
+}))
+
+// Like local files, these rules are only for the viewer this app started and
+// owns: any other page gets an empty view saying so, and changes nothing.
+function handleLinkSettings(channel, arity, call) {
+  ipcMain.handle(channel, async (event, ...args) => {
+    if (args.length !== arity) return { available: false, rules: [] }
+    await installBinding?.settled()
+    if (!linkSender(event)) return { available: false, rules: [] }
+    if (!linkFilesPermitted(event)) return { available: false, rules: [], error: 'unowned' }
+    return call(linkSettingsFor(), ...args)
+  })
+}
+handleLinkSettings('agent-inbox:link-settings', 0, (settings) => settings.view())
+handleLinkSettings('agent-inbox:link-settings-set', 2, (settings, ruleId, handler) => settings.setHandler(ruleId, handler))
+handleLinkSettings('agent-inbox:link-settings-choose-app', 1, (settings, ruleId) => settings.chooseApp(ruleId))
+handleLinkSettings('agent-inbox:link-settings-add-type', 1, (settings, extension) => settings.addType(extension))
+handleLinkSettings('agent-inbox:link-settings-remove-type', 1, (settings, ruleId) => settings.removeType(ruleId))
 
 ipcMain.handle('agent-inbox:set-theme-preference', (event, preference) => {
   const senderUrl = event.senderFrame?.url ?? ''
@@ -766,7 +813,7 @@ function createWindow() {
   // any scheme, and the OS would hand file:, custom or app schemes to whatever
   // claims them.
   win.webContents.setWindowOpenHandler(({ url }) => {
-    openWebLink(url, shell)
+    openWebLink(url, shell, { readRules: linkRules, ...linkOpening })
     return { action: 'deny' }
   })
   // In-window navigation away from the local viewer goes to the system browser
@@ -774,7 +821,7 @@ function createWindow() {
   win.webContents.on('will-navigate', (e, url) => {
     if (isViewerUrl(url, URL_BASE)) return
     e.preventDefault()
-    openWebLink(url, shell)
+    openWebLink(url, shell, { readRules: linkRules, ...linkOpening })
   })
   win.webContents.on('did-finish-load', async () => {
     if (!win.isDestroyed() && !win.isVisible()) {

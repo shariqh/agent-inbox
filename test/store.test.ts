@@ -259,21 +259,21 @@ describe('answer-back', () => {
       clientId: 'viewer-window-a',
       sequence: 2,
       actionId: 'action-a2',
-    })).toBe(true)
+    }).ok).toBe(true)
     expect(replyItem(db, id, 'other window', undefined, 'answer', {
       clientId: 'viewer-window-b',
       sequence: 1,
       actionId: 'action-b1',
-    })).toBe(true)
+    }).ok).toBe(true)
     expect(listItems(db).find((item) => item.id === id)?.reply).toBe('other window')
     expect(replyItem(db, id, 'late client A sequence 1', undefined, 'answer', {
       clientId: 'viewer-window-a',
       sequence: 1,
       actionId: 'action-a1',
-    })).toBe(false)
+    }).ok).toBe(false)
     expect(listItems(db).find((item) => item.id === id)?.reply).toBe('other window')
 
-    expect(replyItem(db, id, 'legacy caller')).toBe(true)
+    expect(replyItem(db, id, 'legacy caller').ok).toBe(true)
     const visible = listItems(db).find((item) => item.id === id)
     expect(visible?.reply).toBe('legacy caller')
     expect(visible).not.toHaveProperty('reply_intent_client')
@@ -283,11 +283,11 @@ describe('answer-back', () => {
   it('treats an exact action replay as success without rewriting reply delivery state', () => {
     const id = insertItem(db, { project: 'p', stream: '', agent: 'a', kind: 'question', title: 'q' })
     const intent = { clientId: 'cloned-window', sequence: 1, actionId: 'action-original' }
-    expect(replyItem(db, id, 'original', undefined, 'answer', intent)).toBe(true)
+    expect(replyItem(db, id, 'original', undefined, 'answer', intent).ok).toBe(true)
     pickUp(db, id)
     const pickedUp = listItems(db).find((item) => item.id === id)!
 
-    expect(replyItem(db, id, 'must not rewrite', undefined, 'answer', intent)).toBe(true)
+    expect(replyItem(db, id, 'must not rewrite', undefined, 'answer', intent).ok).toBe(true)
     const replayed = listItems(db).find((item) => item.id === id)!
     expect(replayed.reply).toBe('original')
     expect(replayed.reply_seen_at).toBe(pickedUp.reply_seen_at)
@@ -297,10 +297,10 @@ describe('answer-back', () => {
       clientId: 'cloned-window',
       sequence: 1,
       actionId: 'action-from-clone',
-    })).toBe(true)
+    }).ok).toBe(true)
     expect(listItems(db).find((item) => item.id === id)?.reply).toBe('distinct cloned-tab action')
 
-    expect(replyItem(db, id, 'late replay still must not rewrite', undefined, 'answer', intent)).toBe(true)
+    expect(replyItem(db, id, 'late replay still must not rewrite', undefined, 'answer', intent).ok).toBe(true)
     expect(listItems(db).find((item) => item.id === id)?.reply).toBe('distinct cloned-tab action')
   })
 
@@ -310,7 +310,7 @@ describe('answer-back', () => {
       clientId: 'viewer-window-a',
       sequence: 1,
       actionId: 'action-a1',
-    })).toBe(true)
+    }).ok).toBe(true)
     expect(db.prepare(`SELECT COUNT(*) AS count FROM item_reply_intents WHERE item_id = ?`).get(id))
       .toEqual({ count: 1 })
 
@@ -337,7 +337,7 @@ describe('answer-back', () => {
       clientId: 'viewer-window-a',
       sequence: 1,
       actionId: 'action-after-upgrade',
-    })).toBe(false)
+    }).ok).toBe(false)
     expect(listItems(db).find((item) => item.id === id)?.reply).toBe('newest legacy answer')
   })
 
@@ -349,7 +349,7 @@ describe('answer-back', () => {
     const id = insertItem(db, { project: 'p', stream: '', agent: 'a', kind: 'question', title: 'q' })
     replyItem(db, id, 'go left')
     pickUp(db, id)
-    expect(replyItem(db, id, '')).toBe(false) // refused — signaled via the return value
+    expect(replyItem(db, id, '').ok).toBe(false) // refused — signaled via the return value
     const item = listItems(db).find((i) => i.id === id)!
     expect(item.reply).toBe('go left') // the reply survives
     expect(item.reply_seen_at).not.toBeNull() // pickup state survives too
@@ -357,7 +357,7 @@ describe('answer-back', () => {
     // control: clearing a reply the agent has NOT yet picked up still works as before
     const id2 = insertItem(db, { project: 'p', stream: '', agent: 'a', kind: 'question', title: 'q2' })
     replyItem(db, id2, 'go right')
-    expect(replyItem(db, id2, '')).toBe(true)
+    expect(replyItem(db, id2, '').ok).toBe(true)
     expect(listItems(db).find((i) => i.id === id2)!.reply).toBeNull()
 
     // a genuine new answer (not a blank clear) still resets pickup even after it was seen —
@@ -413,7 +413,7 @@ describe('answer-back', () => {
       return stmt
     }) as typeof db1.prepare
 
-    const ok = replyItem(db1, id, '')
+    const { ok } = replyItem(db1, id, '')
     db1.prepare = realPrepare
 
     expect(ok).toBe(false) // refused — the concurrent pickup must win
@@ -459,7 +459,7 @@ describe('answer-back', () => {
   // matches zero rows, so info.changes is 0 — harmless, since ids always come from real
   // UI state, but noted so it doesn't read as a regression.
   it('replyItem blank-clear on a nonexistent id returns false (no matching row to update)', () => {
-    expect(replyItem(db, 'does-not-exist', '')).toBe(false)
+    expect(replyItem(db, 'does-not-exist', '').ok).toBe(false)
   })
 
   it('listPending returns open questions for a project, oldest first', () => {
@@ -497,6 +497,94 @@ describe('answer-back', () => {
   })
 })
 
+// Issue #322: a reply says what it did. A replay of an intent the store already
+// applied is answered from its record and writes nothing, so `ok` alone cannot
+// tell a client whether its text is the answer. `wrote`, `replayed` and the
+// answer the request left can.
+describe('a reply reports what it did (#322)', () => {
+  let db: Database.Database
+  beforeEach(() => { db = freshDb() })
+
+  const ask = (title = 'Release day?') => insertItem(db, { project: 'p', stream: '', agent: 'a', kind: 'question', title })
+  const answerOf = (id: string) => {
+    const { replied_at, reply_source, reply_kind, reply, reply_context } = listItems(db).find((item) => item.id === id)!
+    return { replied_at, reply_source, reply_kind, reply, reply_context }
+  }
+  const windowA = { clientId: 'window-a', sequence: 1, actionId: 'a-1' }
+
+  it('reports a write and the answer it left, with or without an intent', () => {
+    const id = ask()
+    expect(replyItem(db, id, ' Tuesday ', ' after the freeze ', 'answer', windowA)).toEqual({
+      ok: true, wrote: true, replayed: false,
+      answer: { replied_at: expect.any(String), reply_source: 'inbox', reply_kind: 'answer', reply: 'Tuesday', reply_context: 'after the freeze' },
+    })
+    expect(replyItem(db, id, 'Which freeze?', undefined, 'clarify')).toEqual({
+      ok: true, wrote: true, replayed: false,
+      answer: { ...answerOf(id), reply_source: 'inbox', reply_kind: 'clarify', reply: 'Which freeze?', reply_context: null },
+    })
+    expect(replyItem(db, id, '')).toEqual({
+      ok: true, wrote: true, replayed: false,
+      answer: { ...answerOf(id), reply_source: null, reply_kind: null, reply: null, reply_context: null },
+    })
+    expect(answerOf(id).replied_at).not.toBeNull()
+  })
+
+  it('reports an exact replay as writing nothing, with the answer that stands now', () => {
+    const id = ask()
+    replyItem(db, id, 'Tuesday', undefined, 'answer', windowA)
+    const landed = answerOf(id)
+    expect(replyItem(db, id, 'Tuesday', undefined, 'answer', windowA))
+      .toEqual({ ok: true, wrote: false, replayed: true, answer: landed })
+
+    // another window answers after the replayed send landed
+    replyItem(db, id, 'Later Y', 'from window B', 'answer', { clientId: 'window-b', sequence: 1, actionId: 'b-1' })
+    const later = listItems(db).find((item) => item.id === id)!
+    expect(replyItem(db, id, 'Tuesday', undefined, 'answer', windowA)).toEqual({
+      ok: true, wrote: false, replayed: true,
+      answer: { replied_at: later.replied_at, reply_source: 'inbox', reply_kind: 'answer', reply: 'Later Y', reply_context: 'from window B' },
+    })
+    // and the replay changed nothing, not even pickup or the content stamp
+    expect(listItems(db).find((item) => item.id === id)).toEqual(later)
+
+    // the agent records a chat answer once it picked Later Y up
+    pickUp(db, id)
+    expect(answerItem(db, id, 'Thursday, said in chat').ok).toBe(true)
+    expect(replyItem(db, id, 'Tuesday', undefined, 'answer', windowA)).toMatchObject({
+      ok: true, wrote: false, replayed: true,
+      answer: { reply_source: 'agent', reply: 'Thursday, said in chat', reply_context: null },
+    })
+  })
+
+  it('reports refusals as writing nothing, with the answer they left alone', () => {
+    const id = ask()
+    replyItem(db, id, 'Sequence 2', undefined, 'answer', { clientId: 'window-a', sequence: 2, actionId: 'a-2' })
+    const kept = answerOf(id)
+    // a late lower intent from the same window, then its replay
+    const late = { clientId: 'window-a', sequence: 1, actionId: 'a-late' }
+    expect(replyItem(db, id, 'Sequence 1', undefined, 'answer', late))
+      .toEqual({ ok: false, wrote: false, replayed: false, answer: kept })
+    expect(replyItem(db, id, 'Sequence 1', undefined, 'answer', late))
+      .toEqual({ ok: false, wrote: false, replayed: true, answer: kept })
+    // a clear the agent already picked up
+    pickUp(db, id)
+    expect(replyItem(db, id, '')).toEqual({ ok: false, wrote: false, replayed: false, answer: kept })
+
+    const closed = ask('Closed?')
+    replyItem(db, closed, 'Before it closed')
+    resolveItem(db, closed)
+    expect(replyItem(db, closed, 'Too late', undefined, 'answer', windowA))
+      .toEqual({ ok: false, wrote: false, replayed: false, answer: answerOf(closed) })
+    expect(replyItem(db, closed, 'Too late').answer).toEqual(answerOf(closed))
+
+    const note = insertItem(db, { project: 'p', stream: '', agent: 'a', kind: 'note', title: 'FYI' })
+    for (const target of [note, 'does-not-exist']) {
+      expect(replyItem(db, target, 'Hello'), target).toEqual({ ok: false, wrote: false, replayed: false, answer: null })
+      expect(replyItem(db, target, 'Hello', undefined, 'answer', windowA), target)
+        .toEqual({ ok: false, wrote: false, replayed: false, answer: null })
+    }
+  })
+})
+
 // issue #29 — dual-channel answers. The human can answer in the inbox card OR say it
 // out loud in chat, in which case the agent that heard it records it with answerItem.
 // The conflict rule is NOT wall-clock last-write-wins (a skewed clock or a delayed
@@ -515,7 +603,7 @@ describe('dual-channel answers (#29)', () => {
     const id = ask()
     replyItem(db, id, 'sqlite')
     expect(row(id).reply_source).toBe('inbox')
-    expect(replyItem(db, id, '')).toBe(true) // not picked up yet, so the clear is allowed
+    expect(replyItem(db, id, '').ok).toBe(true) // not picked up yet, so the clear is allowed
     expect(row(id).reply).toBeNull()
     expect(row(id).reply_source).toBeNull() // no answer means no channel
   })

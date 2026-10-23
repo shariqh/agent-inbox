@@ -269,7 +269,9 @@ responses** with the reason. If you had already sent it and no answer came back,
 it says the send was not confirmed rather than that it was never sent. When you
 send or retry such a response, the question is checked first: if it already holds
 exactly your answer, nothing is sent again; if its answer changed since, yours is
-sent as a new answer. Sending,
+sent as a new answer. If your earlier send turns out to have gone through but a
+newer answer has replaced it since, your text stays under **unsent responses** and
+says so. Sending,
 emptying or clearing a draft deletes it. A crash in the moment after you type can
 still lose the last keystrokes. Another browser or profile does not see these
 drafts, and neither does the viewer opened at its other address (`localhost`

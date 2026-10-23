@@ -642,8 +642,8 @@ describe('viewer api', () => {
       }),
     })
 
-    expect(await (await post('intent B', 2, 'action-b')).json()).toEqual({ ok: true })
-    expect(await (await post('late intent A', 1, 'action-a')).json()).toEqual({ ok: false })
+    expect(await (await post('intent B', 2, 'action-b')).json()).toMatchObject({ ok: true, wrote: true, replayed: false })
+    expect(await (await post('late intent A', 1, 'action-a')).json()).toMatchObject({ ok: false, wrote: false, replayed: false })
     expect(listItems(db).find((item) => item.id === id)?.reply).toBe('intent B')
 
     const incomplete = await app.request(`/api/items/${id}/reply`, {
@@ -682,10 +682,39 @@ describe('viewer api', () => {
         intent_action_id: actionId,
       }),
     })
-    expect(await (await clonedPost('first tab', 'action-tab-a')).json()).toEqual({ ok: true })
-    expect(await (await clonedPost('second tab', 'action-tab-b')).json()).toEqual({ ok: true })
-    expect(await (await clonedPost('replayed first tab', 'action-tab-a')).json()).toEqual({ ok: true })
+    expect(await (await clonedPost('first tab', 'action-tab-a')).json()).toMatchObject({ ok: true, wrote: true })
+    expect(await (await clonedPost('second tab', 'action-tab-b')).json()).toMatchObject({ ok: true, wrote: true })
+    // still ok for a page that reads only that, and now says it wrote nothing (#322)
+    expect(await (await clonedPost('replayed first tab', 'action-tab-a')).json()).toMatchObject({
+      ok: true, wrote: false, replayed: true, answer: { reply: 'second tab', reply_source: 'inbox' },
+    })
     expect(listItems(db).find((item) => item.id === clonedId)?.reply).toBe('second tab')
+  })
+
+  // Issue #322: an exact replay is answered from its intent's record and writes
+  // nothing. The route says so, with the answer that stands, so a page can tell
+  // its own text from a newer reply; `ok` keeps its meaning for older pages.
+  it('says whether a reply wrote anything, and the answer it left (#322)', async () => {
+    const id = insertItem(db, { project: 'p', stream: '', agent: 'claude-code', kind: 'question', title: 'release day?' })
+    const app = createViewer(db)
+    const send = (text: string, actionId: string, clientId = 'window-w') => app.request(`/api/items/${id}/reply`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text, context: 'my reasons', intent_client_id: clientId, intent_sequence: 1, intent_action_id: actionId }),
+    })
+    const answer = (reply: string) => ({
+      replied_at: getItem(db, id)!.replied_at, reply_source: 'inbox', reply_kind: 'answer', reply, reply_context: 'my reasons',
+    })
+
+    expect(await (await send('Original X', 'x')).json())
+      .toEqual({ ok: true, wrote: true, replayed: false, answer: answer('Original X') })
+    expect(await (await send('Original X', 'x')).json())
+      .toEqual({ ok: true, wrote: false, replayed: true, answer: answer('Original X') })
+    expect(await (await send('Later Y', 'y', 'window-b')).json()).toMatchObject({ ok: true, wrote: true })
+    const later = getItem(db, id)
+    expect(await (await send('Original X', 'x')).json())
+      .toEqual({ ok: true, wrote: false, replayed: true, answer: answer('Later Y') })
+    expect(getItem(db, id)).toEqual(later)
   })
 
   // #29: the channel is stamped inside the store, so the viewer needs no code of its
@@ -1328,7 +1357,7 @@ describe('write routes refuse invalid bodies before touching the store (#163)', 
       replyItem(db, unread, 'take it back')
       let res = await post(`/api/items/${unread}/reply`, JSON.stringify({ text: '' }))
       expect(res.status).toBe(200)
-      expect(await res.json()).toEqual({ ok: true })
+      expect(await res.json()).toMatchObject({ ok: true, wrote: true, answer: { reply: null } })
       expect(getItem(db, unread)!.reply).toBeNull()
 
       const read = question()
@@ -1336,7 +1365,7 @@ describe('write routes refuse invalid bodies before touching the store (#163)', 
       markReplySeen(db, read, getItem(db, read)!.replied_at)
       res = await post(`/api/items/${read}/reply`, JSON.stringify({ text: '' }))
       expect(res.status, 'a refusal of a valid request is not an error').toBe(200)
-      expect(await res.json()).toEqual({ ok: false })
+      expect(await res.json()).toMatchObject({ ok: false, wrote: false, answer: { reply: 'already read' } })
       expect(getItem(db, read)!.reply).toBe('already read')
     })
   })

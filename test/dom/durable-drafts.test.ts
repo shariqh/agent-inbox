@@ -965,6 +965,194 @@ describe('a saved reply intent is reused by one rule', () => {
   })
 })
 
+// Issue #322: the rule reads the last poll, so within one poll of another writer
+// it can still replay a send the server already applied. The server answers that
+// replay from its record without writing, and says so with the answer that
+// stands: the human's text is kept whenever that answer is not theirs.
+describe('a replay the server answered from its record (#322)', () => {
+  const REPLACED = 'Your send went through, but this question\'s answer has changed since.'
+
+  function answerInWindowB(d: Database.Database, id: string): void {
+    expect(replyItem(d, id, 'Later Y', undefined, 'answer', { clientId: 'window-b', sequence: 1, actionId: 'b-1' }).ok).toBe(true)
+  }
+
+  // The first reply POST fails in this window, and its request reaches the
+  // server only afterwards, when the test lands it.
+  function lateFirstReply(id: string): { opts: BootOptions; land: () => Promise<void> } {
+    let late: (() => Promise<Response>) | null = null
+    return {
+      opts: {
+        interceptFetch: async (input, init, next) => {
+          if (late === null && init?.method === 'POST' && String(input).includes(`/items/${id}/reply`)) {
+            late = next
+            throw new Error('lost reply request')
+          }
+          return next()
+        },
+      },
+      land: async () => { await late?.() },
+    }
+  }
+
+  // Only `ok`, as a server from before #322 answers.
+  function olderServer(id: string): BootOptions {
+    const lose = loseFirstReply(id).interceptFetch!
+    return {
+      interceptFetch: async (input, init, next) => {
+        const response = await lose(input, init, next)
+        if (init?.method !== 'POST' || !String(input).includes(`/items/${id}/reply`)) return response
+        const { ok } = await response.json() as { ok: boolean }
+        return new Response(JSON.stringify({ ok }), { headers: { 'content-type': 'application/json' } })
+      },
+    }
+  }
+
+  // A typed answer whose send landed though its answer was lost, sent again with
+  // no poll since: the rule still sees the answer the send was made against, so
+  // it replays the landed send's intent, and the server writes nothing.
+  async function replayEditorSend(
+    opts: (id: string) => BootOptions,
+    change?: (d: Database.Database, id: string) => void,
+  ): Promise<{ id: string; bridge: ViewerBridge }> {
+    db = freshDb()
+    const id = question(db)
+    const bridge = await bootApp(db, opts(id))
+    expectConsoleError(/lost reply response/)
+    await draftAnswer(id, 'Ship Tuesday.')
+    click(sendButton(id))
+    await settle()
+    const lost = body(bridge.posts.at(-1))
+    expect(getItem(db, id)?.reply, 'the send landed; only its answer was lost').toBe('Ship Tuesday.')
+    change?.(db, id)
+    const before = getItem(db, id)
+    click(sendButton(id))
+    await settle()
+    expect(body(bridge.posts.at(-1))['intent_action_id'], 'the exact replay').toBe(lost['intent_action_id'])
+    expect(getItem(db, id), 'which wrote nothing').toEqual(before)
+    return { id, bridge }
+  }
+
+  it.each([
+    ['a reply from another window', answerInWindowB],
+    ['a chat answer', (d: Database.Database, id: string) => agentAnswers(d, id, 'Thursday, said in chat')],
+  ] as const)('keeps an editor\'s text as an unsent response when its replay finds %s', async (_label, change) => {
+    const { id } = await replayEditorSend(loseFirstReply, change)
+    const fold = recovery()!
+    expect(fold.textContent).toContain(REPLACED)
+    expect(fold.textContent).toContain('answer: Ship Tuesday.')
+    expect(answerInput(id)?.value ?? '').not.toBe('Ship Tuesday.')
+    expect(document.activeElement, 'focus follows the text out of the editor').toBe(fold.querySelector('summary'))
+    await saved()
+    expect(storedTexts()).toEqual(['Ship Tuesday.'])
+
+    // the reason comes back with it, and nothing is sent for the human
+    const bridge = await reopen(db!)
+    await pollTick()
+    expect(bridge.posts).toHaveLength(0)
+    expect(recovery()?.textContent).toContain(REPLACED)
+  })
+
+  it('keeps an unsent response when its Retry replays a send that landed before a newer reply', async () => {
+    db = freshDb()
+    const id = question(db)
+    const late = lateFirstReply(id)
+    const bridge = await bootApp(db, late.opts)
+    expectConsoleError(/lost reply request/)
+    await pickOption(id, 'Tuesday')
+    const lost = body(bridge.posts.at(-1))
+    expect(recovery()?.textContent).toContain('answer: Tuesday')
+    await late.land()
+    expect(getItem(db, id)?.reply, 'the request reached the server after all').toBe('Tuesday')
+    answerInWindowB(db, id)
+    const before = getItem(db, id)
+
+    click(buttonLabelled('Retry', recovery()!))
+    await settle()
+    expect(body(bridge.posts.at(-1))['intent_action_id'], 'the exact replay').toBe(lost['intent_action_id'])
+    expect(getItem(db, id), 'which wrote nothing').toEqual(before)
+    const fold = recovery()!
+    expect(fold.textContent).toContain(REPLACED)
+    expect(fold.textContent).toContain('answer: Tuesday')
+    await saved()
+    expect(storedTexts()).toEqual(['Tuesday'])
+  })
+
+  it('keeps the newer text of an editor typed in while the replay was in flight', async () => {
+    db = freshDb()
+    const id = question(db)
+    let replies = 0
+    let release!: () => void
+    const held = new Promise<void>((resolve) => { release = resolve })
+    await bootApp(db, {
+      interceptFetch: async (input, init, next) => {
+        if (init?.method !== 'POST' || !String(input).includes(`/items/${id}/reply`)) return next()
+        replies += 1
+        const response = await (replies === 2 ? held.then(next) : next())
+        if (replies === 1) throw new Error('lost reply response')
+        return response
+      },
+    })
+    expectConsoleError(/lost reply response/)
+    await draftAnswer(id, 'Ship Tuesday.')
+    click(sendButton(id))
+    await settle()
+    answerInWindowB(db, id)
+    click(sendButton(id))
+    await vi.advanceTimersByTimeAsync(0)
+    type(answerInput(id), 'Ship Thursday instead.')
+    release()
+    await settle()
+    expect(getItem(db, id)?.reply).toBe('Later Y')
+    const fold = recovery()!
+    expect(fold.textContent, 'the newer text is the human\'s').toContain('Ship Thursday instead.')
+    expect(fold.textContent).not.toContain('Ship Tuesday.')
+  })
+
+  it('spends the replayed intent: the kept response\'s Retry is a fresh send', async () => {
+    const { id, bridge } = await replayEditorSend(loseFirstReply, answerInWindowB)
+    const replayed = body(bridge.posts.at(-1))
+    click(buttonLabelled('Retry', recovery()!))
+    await settle()
+    expect(body(bridge.posts.at(-1))['intent_action_id']).not.toBe(replayed['intent_action_id'])
+    expect(getItem(db!, id)).toMatchObject({ reply: 'Ship Tuesday.', reply_source: 'inbox' })
+    expect(recovery()).toBeNull()
+  })
+
+  it.each(['an editor\'s Send', 'an unsent response\'s Retry'] as const)(
+    'retires %s whose replay finds its own answer still standing',
+    async (path) => {
+      if (path === 'an editor\'s Send') {
+        const { id } = await replayEditorSend(loseFirstReply)
+        expect(getItem(db!, id)?.reply).toBe('Ship Tuesday.')
+      } else {
+        db = freshDb()
+        const id = question(db)
+        const late = lateFirstReply(id)
+        const bridge = await bootApp(db, late.opts)
+        expectConsoleError(/lost reply request/)
+        await pickOption(id, 'Tuesday')
+        const lost = body(bridge.posts.at(-1))
+        await late.land()
+        click(buttonLabelled('Retry', recovery()!))
+        await settle()
+        expect(bridge.posts, 'the Retry replayed the landed send').toHaveLength(2)
+        expect(body(bridge.posts.at(-1))['intent_action_id']).toBe(lost['intent_action_id'])
+        expect(getItem(db, id)?.reply).toBe('Tuesday')
+      }
+      expect(recovery()).toBeNull()
+      await saved()
+      expect(stored()).toEqual({})
+    },
+  )
+
+  it('retires the text as before when an older server says only ok', async () => {
+    await replayEditorSend(olderServer, answerInWindowB)
+    expect(recovery()).toBeNull()
+    await saved()
+    expect(stored()).toEqual({})
+  })
+})
+
 describe('two windows on one profile', () => {
   it('never deletes a copy another window wrote later, or an entry it never loaded', async () => {
     db = freshDb()

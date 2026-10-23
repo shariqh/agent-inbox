@@ -23,7 +23,7 @@ function removeAnswerEditor(d: Database.Database, id: string): void {
     clientId: 'editor-removal-window',
     sequence: 1,
     actionId: 'editor-removal',
-  })).toBe(true)
+  }).ok).toBe(true)
 }
 
 function deferPost(match: string, response?: Response): () => void {
@@ -730,7 +730,7 @@ describe('async draft ownership', () => {
       clientId: 'other-window',
       sequence: 1,
       actionId: 'later-owner-removal',
-    })).toBe(true)
+    }).ok).toBe(true)
     const later = getItem(db, id)!
     expect(markReplySeen(db, id, later.replied_at)).toBe(true)
     await pollTick()
@@ -1042,7 +1042,7 @@ describe('async draft ownership', () => {
       clientId: 'other-window',
       sequence: 1,
       actionId: 'later-y',
-    })).toBe(true)
+    }).ok).toBe(true)
     const later = getItem(db, id)!
     expect(markReplySeen(db, id, later.replied_at)).toBe(true)
     await pollTick()
@@ -1114,8 +1114,8 @@ describe('async draft ownership', () => {
       clientId: 'inherited-client',
       sequence: 2,
       actionId: 'other-clone-action',
-    })).toBe(true)
-    expect(replyItem(db, id, '')).toBe(true)
+    }).ok).toBe(true)
+    expect(replyItem(db, id, '').ok).toBe(true)
     sessionStorage.setItem('agent-inbox-reply-intent', JSON.stringify({
       clientId: 'inherited-client',
       sequence: 0,

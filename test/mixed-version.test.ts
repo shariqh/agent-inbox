@@ -10,14 +10,15 @@
 // they stand for the process that cannot change. Later slices add their own
 // frozen cases here (PR1b: closing_refs; PR2: plan and row links). The
 // statements of a v1.4.0 process (#247's pins, slice 2's issue snapshots and
-// waits_on) are in their own blocks at the end.
+// waits_on, and the replies and chat answers #322's report must see) are in
+// their own blocks at the end.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import Database from 'better-sqlite3'
 import {
-  getBoard, getItem, insertItem, listActivity, listBoards, listHostSessions, listIssueEntities, listIssueSnapshots, listItems, listSourceLinks, openDb,
-  pinBoardRow, pinItem, recordIssueFailure, replyItem, stopBoardRowWatch, stopItemWatch, updateBoardRow, upsertActivity,
+  getBoard, getItem, insertItem, listActivity, listBoards, listHostSessions, listIssueEntities, listIssueSnapshots, listItems, listSourceLinks,
+  markReplySeen, openDb, pinBoardRow, pinItem, recordIssueFailure, replyItem, stopBoardRowWatch, stopItemWatch, updateBoardRow, upsertActivity,
   upsertBoard, upsertIssueSnapshot, upsertSourceLink,
 } from '../src/store.js'
 import type { IssueDependencies } from '../src/store.js'
@@ -944,5 +945,68 @@ describe('a v1.4.0 process sharing a hub with waits_on (#103 slice 2)', () => {
       project: 'agent-inbox', stream: '', agent: 'new', title: 'Release', label: 'Build',
       expectedBoardVersion: current().revision, expectedRevision: row('Build').revision, waits_on: ['Publish'],
     })).toThrow('waits_on would create a cycle: Build → Publish → Build')
+  })
+})
+
+// Issue #322: this build's reply says what it did and the answer it left. That
+// answer comes from the columns every version writes, never from anything only
+// this build records, so the reply or chat answer an older process writes after
+// this build's send landed is exactly what a replay of that send reports.
+describe('a v1.4.0 process answering after this build’s send landed (#322)', () => {
+  let dir: string
+  let path: string
+  const open: Database.Database[] = []
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(Date.parse(at(60)))
+    dir = scratchDir('mixed-version-replies-')
+    path = join(dir, 'inbox.db')
+  })
+
+  afterEach(() => {
+    for (const connection of open.splice(0)) if (connection.open) connection.close()
+    rmSync(dir, { recursive: true, force: true })
+    vi.useRealTimers()
+  })
+
+  // v1.4.0's openDb() pragmas, on a hub this build already migrated
+  function olderProcess(): Database.Database {
+    const db = new Database(path)
+    open.push(db)
+    db.pragma('busy_timeout = 5000')
+    db.pragma('journal_mode = WAL')
+    return db
+  }
+
+  it('a replay of the landed send writes nothing and reports the older process’s reply or chat answer', () => {
+    const hub = openDb(path)
+    open.push(hub)
+    const old = olderProcess()
+    const intent = { clientId: 'window-w', sequence: 1, actionId: 'w-1' }
+    const [replied, told] = ['Reply', 'Chat'].map((title) => {
+      const id = insertItem(hub, { project: 'agent-inbox', stream: '', agent: 'new', kind: 'question', title })
+      expect(replyItem(hub, id, 'Original X', undefined, 'answer', intent)).toMatchObject({ ok: true, wrote: true })
+      return id
+    }) as [string, string]
+
+    vi.setSystemTime(Date.parse(at(61)))
+    const now = at(61)
+    // its viewer answers again, and its MCP server records a chat answer once the agent read Original X
+    old.prepare(V140.replyItem).run({ id: replied, reply: 'Later Y', replyContext: 'from the older viewer', kind: 'answer', now })
+    expect(markReplySeen(hub, told, getItem(hub, told)!.replied_at)).toBe(true)
+    old.prepare(V140.answerItem).get('Thursday, said in chat', null, now, now, 'answer', now, told)
+
+    const expected = {
+      [replied]: { replied_at: now, reply_source: 'inbox', reply_kind: 'answer', reply: 'Later Y', reply_context: 'from the older viewer' },
+      [told]: { replied_at: now, reply_source: 'agent', reply_kind: 'answer', reply: 'Thursday, said in chat', reply_context: null },
+    }
+    vi.setSystemTime(Date.parse(at(62)))
+    for (const id of [replied, told]) {
+      const before = getItem(hub, id)
+      expect(replyItem(hub, id, 'Original X', undefined, 'answer', intent), id)
+        .toEqual({ ok: true, wrote: false, replayed: true, answer: expected[id] })
+      expect(getItem(hub, id), id).toEqual(before)
+    }
   })
 })

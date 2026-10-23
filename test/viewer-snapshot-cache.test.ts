@@ -175,7 +175,7 @@ describe('viewer conditional snapshots', () => {
       replyItem(connection(), id, 'Proceed')
       const replied = await changed('/api/items', created.etag)
       expect(replied.body.needsYou[0].items[0].reply).toBe('Proceed')
-      expect(replyItem(connection(), id, '')).toBe(true)
+      expect(replyItem(connection(), id, '').ok).toBe(true)
       const cleared = await changed('/api/items', replied.etag)
       expect(cleared.body.needsYou[0].items[0].reply).toBeNull()
       resolveItem(connection(), id, 'Finished.')

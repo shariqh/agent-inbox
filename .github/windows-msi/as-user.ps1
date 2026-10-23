@@ -128,7 +128,9 @@ public static class AgentInboxShellLink {
 
 // What Restart Manager sees using a file, and what happens when it asks those
 // applications to close: the requests Windows Installer makes during an upgrade,
-// repair or uninstall, made directly. RmShutdown without RmForceShutdown only asks.
+// repair or uninstall, made directly. With RmForceShutdown (0x1) it still asks each
+// application with a window first, and ends only what it cannot ask or what does not
+// respond within 30 seconds.
 public static class AgentInboxRestartManager {
   [StructLayout(LayoutKind.Sequential)]
   private struct RM_UNIQUE_PROCESS {
@@ -207,7 +209,7 @@ public static class AgentInboxRestartManager {
     return code;
   }
 
-  public static Result Probe(string[] files, bool shutdown) {
+  public static Result Probe(string[] files, bool shutdown, uint flags) {
     Result result = new Result();
     uint session;
     result.Start = RmStartSession(out session, 0, new StringBuilder(33));
@@ -221,7 +223,7 @@ public static class AgentInboxRestartManager {
       result.Apps = apps;
       result.RebootReasons = reasons;
       if (shutdown && result.List == 0) {
-        result.Shutdown = RmShutdown(session, 0, IntPtr.Zero);
+        result.Shutdown = RmShutdown(session, flags, IntPtr.Zero);
         App[] after;
         uint afterReasons;
         result.ListAfter = List(session, out after, out afterReasons);
@@ -304,12 +306,17 @@ function Stop-App {
     for ($i = 0; $i -lt 20 -and $process.MainWindowHandle -eq 0; $i++) { Start-Sleep -Milliseconds 500; $process.Refresh() }
     if (-not $process.CloseMainWindow()) { $record.method = 'taskkill'; & taskkill.exe /PID $entry.pid | Out-Null }
   }
+  $closing = [Diagnostics.Stopwatch]::StartNew()
   if (-not (Wait-NoProcess "$product.exe" 30)) {
     $record.graceful = $false
     $record.method += '+forced'
+    $record.stillRunning = @(Get-AppProcesses | ForEach-Object {
+      [ordered]@{ pid = $_.pid; main = $_.main; type = if ($_.args -match '--type=(\S+)') { $Matches[1] } else { 'main' } }
+    })
     Get-AppProcesses | ForEach-Object { Stop-Process -Id $_.pid -Force -ErrorAction SilentlyContinue }
     Wait-NoProcess "$product.exe" 30 | Out-Null
   }
+  $record.seconds = Get-Seconds $closing
   $record.portReleased = -not (Test-Port $params.port)
   return $record
 }
@@ -519,13 +526,21 @@ function Start-AppWithLog([string]$Name) {
   $directory = Get-AppDirectory
   if (-not $directory) { throw 'no installed app to launch' }
   $record = [ordered]@{
-    via = "$product.exe".Replace($paths.profile, '%USERPROFILE%')
+    via = "$product.exe"
     stdout = Join-Path $params.logDir "$($params.label)-$Name.stdout.txt"
     stderr = Join-Path $params.logDir "$($params.label)-$Name.stderr.txt"
   }
   $timer = [Diagnostics.Stopwatch]::StartNew()
-  Start-Process -FilePath (Join-Path $directory "$product.exe") -WorkingDirectory $directory `
-    -RedirectStandardOutput $record.stdout -RedirectStandardError $record.stderr | Out-Null
+  # Chromium's own log lines (a child process that ended, a renderer that went away) go to stderr.
+  $env:ELECTRON_ENABLE_LOGGING = '1'
+  try {
+    $script:appProcess = Start-Process -FilePath (Join-Path $directory "$product.exe") -WorkingDirectory $directory `
+      -RedirectStandardOutput $record.stdout -RedirectStandardError $record.stderr -PassThru
+    # Without a cached handle, the exit code is not kept.
+    $null = $script:appProcess.Handle
+  } finally {
+    Remove-Item Env:\ELECTRON_ENABLE_LOGGING -ErrorAction SilentlyContinue
+  }
   $record.ready = Wait-Ready $timer
   $record.readySeconds = Get-Seconds $timer
   # Restart Manager sends its request to the app's top-level window, which shows once the viewer loads.
@@ -549,6 +564,18 @@ function Read-SharedText([string]$Path) {
 function Read-AppLog([object]$Started) {
   @($Started.stdout, $Started.stderr | ForEach-Object { (Read-SharedText $_) -split "`r?`n" } |
     Where-Object { $_ -match '\[agent-inbox\]' } | ForEach-Object { $_.Trim().Replace($paths.profile, '%USERPROFILE%') })
+}
+
+# How the main process this step started ended, once it has.
+function Get-AppExit {
+  if (-not $script:appProcess) { return $null }
+  [ordered]@{ exited = $script:appProcess.HasExited; exitCode = if ($script:appProcess.HasExited) { $script:appProcess.ExitCode } else { $null } }
+}
+
+# Chromium's log lines about child processes and the renderer ending.
+function Read-ChromiumLog([object]$Started) {
+  @((Read-SharedText $Started.stderr) -split "`r?`n" | Where-Object { $_ -match 'exited|crash|gone|terminat|kill' } |
+    Select-Object -First 20 | ForEach-Object { $_.Trim().Replace($paths.profile, '%USERPROFILE%') })
 }
 
 function Wait-AppLog([object]$Started, [string]$Pattern, [int]$TimeoutSeconds) {
@@ -611,9 +638,11 @@ try {
 }
 "@
   $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($script))
-  $output = "$(& "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -EncodedCommand $encoded 2>&1)".Trim()
-  if ($output -match '^count=(\d+)$') { return [ordered]@{ count = [int]$Matches[1] } }
-  return [ordered]@{ error = $output -replace '^error=', '' }
+  $lines = @(& "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -EncodedCommand $encoded 2>&1 |
+    ForEach-Object { "$_".Trim() } | Where-Object { $_ })
+  $count = @($lines | Where-Object { $_ -match '^count=\d+$' })[0]
+  if ($count) { return [ordered]@{ count = [int]($count -replace '^count=', ''); output = $lines } }
+  return [ordered]@{ error = (@($lines | Where-Object { $_ -match '^error=' })[0] ?? ($lines -join ' ')) -replace '^error=', ''; output = $lines }
 }
 
 $result.user = [ordered]@{
@@ -636,13 +665,15 @@ try {
       $command = Get-InstallerCommand $params.installer
       $result.dataBefore = Get-Names $paths.data
       $result.run = Invoke-Tool $command[0] $command[1] -SampleApp
-      $result.msiLog = Get-LogLines $command[2] 'Installation success or error status|Product: .* --|Error \d{4}|in use|Restart Manager|RmShutdown|1603|1612|1625'
+      $result.msiLog = @(Get-LogLines $command[2] 'Installation success or error status|Product: .* --|Error \d{4}|in use|Restart Manager|RmShutdown|1603|1612|1625')
       $result.dataAfterInstall = Get-Names $paths.data
       $result.state = Get-State
     }
     'launch' {
       $result.before = Stop-App
       $result.launch = Start-AppFromShortcut
+      # Running a while first, so a quit is measured once the app's background work has started.
+      if ($params.holdSeconds) { Start-Sleep -Seconds $params.holdSeconds }
       $result.state = Get-State
       $result.quit = Stop-App
       $result.processesAfterQuit = @(Get-AppProcesses)
@@ -677,8 +708,10 @@ try {
       $result.toastActivatorAfter = Get-ToastActivator
       $result.shortcutsAfter = @(Get-ProductShortcuts $paths.startMenu)
       $result.toastHistory = Get-ToastHistory
-      $result.appLog = Read-AppLog $started
+      $result.appLog = @(Read-AppLog $started)
       $result.quit = Stop-App
+      $result.mainExit = Get-AppExit
+      $result.chromiumLog = @(Read-ChromiumLog $started)
       $result.state = Get-State
     }
     'restart-manager' {
@@ -688,13 +721,20 @@ try {
       if (-not $started.ready) { throw 'the app did not become ready' }
       $result.processesBefore = @(Get-AppProcesses)
       $exe = Join-Path (Get-AppDirectory) "$product.exe"
+      # Chromium's child processes have no window, so Restart Manager cannot ask them
+      # to close: without RmForceShutdown it asks nothing at all.
+      $result.restartManagerWithoutForce = ConvertTo-RestartManagerRecord ([AgentInboxRestartManager]::Probe(@($exe), $true, 0))
+      $result.runningAfterWithoutForce = @(Get-AppProcesses).Count
+      # With it (what Windows Installer uses when MSIRMSHUTDOWN is 1), the app's window is asked.
       $asked = [Diagnostics.Stopwatch]::StartNew()
-      $result.restartManager = ConvertTo-RestartManagerRecord ([AgentInboxRestartManager]::Probe(@($exe), $true))
+      $result.restartManager = ConvertTo-RestartManagerRecord ([AgentInboxRestartManager]::Probe(@($exe), $true, 1))
       $result.restartManager.seconds = Get-Seconds $asked
       $result.exited = Wait-NoProcess "$product.exe" 30
       $result.exitSeconds = Get-Seconds $asked
+      $result.mainExit = Get-AppExit
       $result.portReleased = -not (Test-Port $params.port)
-      $result.appLog = Read-AppLog $started
+      $result.appLog = @(Read-AppLog $started)
+      $result.chromiumLog = @(Read-ChromiumLog $started)
       $result.quitLogged = [bool](@($result.appLog | Where-Object { $_ -match $quitLine }).Count)
       $result.processesAfter = @(Get-AppProcesses)
       $result.leftover = Stop-App
@@ -709,17 +749,21 @@ try {
         $result.launch = $started
         # What Restart Manager sees using the app just before Windows Installer asks it to close.
         $result.restartManagerBefore = ConvertTo-RestartManagerRecord (
-          [AgentInboxRestartManager]::Probe(@(Join-Path (Get-AppDirectory) "$product.exe"), $false))
+          [AgentInboxRestartManager]::Probe(@(Join-Path (Get-AppDirectory) "$product.exe"), $false, 0))
       }
       $command = Get-InstallerCommand $params.installer
       $result.run = Invoke-Tool $command[0] $command[1] -SampleApp
       $result.processesAfterRun = @(Get-AppProcesses)
       if ($started) {
-        $result.appLog = Read-AppLog $started
+        $result.appLog = @(Read-AppLog $started)
         $result.quitLogged = [bool](@($result.appLog | Where-Object { $_ -match $quitLine }).Count)
       }
       $result.quit = Stop-App
-      $result.msiLog = Get-LogLines $command[2] 'Installation success or error status|Product: .* --|Error \d{4}|in use|RESTART MANAGER|1603|1612|3010' 40
+      if ($started) {
+        $result.mainExit = Get-AppExit
+        $result.chromiumLog = @(Read-ChromiumLog $started)
+      }
+      $result.msiLog = @(Get-LogLines $command[2] 'Installation success or error status|Product: .* --|Error \d{4}|in use|RESTART MANAGER|1603|1612|3010' 40)
       # In-use files Windows Installer moved aside, to be deleted at the next reboot.
       $result.rebootOperations = @(Select-String -LiteralPath $command[2] -Pattern 'Scheduling reboot operation' -ErrorAction SilentlyContinue).Count
       $result.state = Get-State
@@ -735,7 +779,7 @@ try {
       $result.run = Invoke-Tool 'msiexec.exe' "/fomus $($params.productCode) /qn /norestart /l*v `"$log`""
       $result.restored = [ordered]@{}
       foreach ($relative in $params.deleteFiles) { $result.restored[$relative] = Test-Path -LiteralPath (Join-Path $directory $relative) }
-      $result.msiLog = Get-LogLines $log 'Installation success or error status|Product: .* --|Error \d{4}|source|1612|1706' 30
+      $result.msiLog = @(Get-LogLines $log 'Installation success or error status|Product: .* --|Error \d{4}|source|1612|1706' 30)
       $result.state = Get-State
     }
     'uninstall' {
@@ -745,7 +789,7 @@ try {
       $result.dataBefore = Get-Names $paths.data
       $log = Join-Path $params.logDir "$($params.label).log"
       $result.run = Invoke-Tool 'msiexec.exe' "/x $($params.productCode) /qn /norestart /l*v `"$log`"" -SampleApp
-      $result.msiLog = Get-LogLines $log 'Installation success or error status|Product: .* --|Error \d{4}|Removal' 20
+      $result.msiLog = @(Get-LogLines $log 'Installation success or error status|Product: .* --|Error \d{4}|Removal' 20)
       $result.dataAfter = Get-Names $paths.data
       $result.sentinelSurvived = Test-Path -LiteralPath (Join-Path $paths.data 'msi-lifecycle-sentinel.txt')
       $result.inboxDatabaseSurvived = Test-Path -LiteralPath (Join-Path $paths.data 'inbox.db')

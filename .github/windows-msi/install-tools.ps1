@@ -80,12 +80,13 @@ if (-not $reportedParts.Success -or $reportedParts.Groups[1].Value -cne $wixPin.
     -not $wixPin.sourceCommit.StartsWith($reportedParts.Groups[2].Value)) {
   throw "WiX reports $reported, not $($wixPin.version) from $($wixPin.sourceCommit)"
 }
-# What the host itself says it loaded: every framework path in its trace must be the
-# pinned runtime's.
+# What the host itself says it chose and loaded: the runtime it ran WiX on must be the
+# pinned one, and so must every framework path its trace names.
 $traceText = Get-Content -Raw -LiteralPath $trace
-$resolved = @([regex]::Matches($traceText, 'Chose FX version \[([^\]\r\n]+)\]|CoreCLR path:\s*\[([^\]\r\n]+)\]|Property FX_DEPS_FILE = ([^\r\n]+)') |
+$resolved = @([regex]::Matches($traceText, 'Chose FX version \[([^\]\r\n]+)\]|CoreCLR path = ''([^''\r\n]+)''|Property FX_DEPS_FILE = ([^\r\n]+)') |
   ForEach-Object { ($_.Groups | Select-Object -Skip 1 | Where-Object Success | Select-Object -First 1).Value.Trim() })
-if ($resolved.Count -eq 0 -or @($resolved | Where-Object { -not $_.StartsWith($framework, [StringComparison]::OrdinalIgnoreCase) }).Count -gt 0) {
+if (@($resolved | Where-Object { $_ -like '*\coreclr.dll' }).Count -eq 0 -or
+    @($resolved | Where-Object { -not $_.StartsWith($framework, [StringComparison]::OrdinalIgnoreCase) }).Count -gt 0) {
   throw "WiX did not run on $($dotnetPin.framework) $($dotnetPin.version) at $framework`: the host resolved $($resolved -join ', ')"
 }
 

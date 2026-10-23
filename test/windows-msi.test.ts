@@ -295,10 +295,17 @@ describe('Windows MSI lifecycle (#87 PR 2b)', () => {
       'Set-ItemProperty -LiteralPath $policyKey -Name DisableMSI -Value $policy.disableMsiBefore -Type $policy.disableMsiKind')
   })
 
-  it('asks the running app to close the way Windows Installer does, without forcing it', () => {
+  it('asks the running app to close through Restart Manager, first without RmForceShutdown, then with it', () => {
     const asUser = read(join(msiDir, 'as-user.ps1'))
-    // The one call passes no flags: RmForceShutdown (0x1) would end the app without asking.
-    expect(asUser.match(/RmShutdown\(session,[^)]*\)/g)).toEqual(['RmShutdown(session, 0, IntPtr.Zero)'])
+    expect(asUser.match(/RmShutdown\(session,[^)]*\)/g)).toEqual(['RmShutdown(session, flags, IntPtr.Zero)'])
+    const step = asUser.slice(asUser.indexOf("    'restart-manager' {"), asUser.indexOf("    'upgrade' {"))
+    const without = step.indexOf('[AgentInboxRestartManager]::Probe(@($exe), $true, 0)')
+    const forced = step.indexOf('[AgentInboxRestartManager]::Probe(@($exe), $true, 1)')
+    expect(without).toBeGreaterThan(0)
+    expect(forced).toBeGreaterThan(without)
+    expect(step.match(/::Probe\(/g)).toHaveLength(2)
+    // Before the upgrade it only looks: Windows Installer does the asking there.
+    expect(asUser).toContain('[AgentInboxRestartManager]::Probe(@(Join-Path (Get-AppDirectory) "$product.exe"), $false, 0)')
     expect(asUser).toContain("$quitLine = 'Windows asked the app to close \\(Restart Manager\\); quitting'")
     expect(read(join(root, 'electron', 'windows-app.cjs')))
       .toContain("log('[agent-inbox] Windows asked the app to close (Restart Manager); quitting')")
@@ -354,7 +361,13 @@ describe('Windows MSI requirements (#87 PR 2b)', () => {
             '04-launch-base': { user, launch: { ready: true }, quit: { graceful: true, portReleased: true } },
             '05-notify-with-shortcut': { user, notification: { seen: true }, shortcutsAfter: [{ ...link, workingDirectory: folder }] },
             '06-notify-without-shortcut': { user, notification: { seen: false }, shortcutsAfter: [] },
-            '07-restart-manager': { user, restartManager: { apps: [{ pid: 1 }], shutdown: 0 }, exited: true, portReleased: true, appLog: [QUIT] },
+            '07-restart-manager': {
+              user,
+              restartManager: { apps: [{ pid: 1, type: 'main window' }, { pid: 2, type: 'unknown' }], shutdown: 0 },
+              exited: true,
+              portReleased: true,
+              appLog: [QUIT],
+            },
             '08-upgrade-while-running': { user, run: { exitCode: 0 }, state: installed },
             '09-launch-upgrade': { user, launch: { ready: true } },
             '10-repair-with-source': { user, run: { exitCode: 0 }, restored: { 'Agent Inbox.exe': true } },
@@ -386,9 +399,19 @@ describe('Windows MSI requirements (#87 PR 2b)', () => {
     expect(results.map((entry) => entry.label)).not.toContain('With no shortcut, the app announces under the identity the MSI installs')
   })
 
+  it('read a one-element list that PowerShell wrote as the element itself', () => {
+    const { data, link } = evidence()
+    steps(data)['07-restart-manager']!.appLog = QUIT
+    steps(data)['03-install-base']!.state = { ...steps(data)['03-install-base']!.state, startMenuShortcuts: link }
+    expect(summary.requirements(data).filter((entry) => !entry.passed)).toEqual([])
+  })
+
   const breaks: [string, RegExp, (data: Data, link: ReturnType<typeof evidence>['link']) => void][] = [
     ['WiX ran on the runner\'s .NET 8', /^WiX 7\.0\.0 ran/, (data) => {
       data.tools.dotnet.resolved = ['C:\\Program Files\\dotnet\\shared\\Microsoft.NETCore.App\\8.0.31\\coreclr.dll']
+    }],
+    ['the host trace names no runtime it loaded', /^WiX 7\.0\.0 ran/, (data) => {
+      data.tools.dotnet.resolved = [`D:\\a\\tools\\dotnet\\shared\\Microsoft.NETCore.App\\${pins().dotnet.version}`]
     }],
     ['the host also loaded another runtime', /^WiX 7\.0\.0 ran/, (data) => {
       data.tools.dotnet.resolved.push('C:\\Program Files\\dotnet\\shared\\Microsoft.NETCore.App\\8.0.31\\coreclr.dll')
@@ -407,8 +430,14 @@ describe('Windows MSI requirements (#87 PR 2b)', () => {
       steps(data)['03-install-base']!.state!.toastActivator = { localServer32: '"C:\\elsewhere.exe"', customActivator: '1' }
     }],
     ['the app had to be killed', /quits when its window closes/, (data) => { steps(data)['04-launch-base']!.quit = { graceful: false, portReleased: true } }],
+    ['PowerShell wrote one log line as a string', /Restart Manager/, (data) => { steps(data)['07-restart-manager']!.appLog = 'no quit line' }],
     ['Restart Manager saw no app', /Restart Manager/, (data) => { steps(data)['07-restart-manager']!.restartManager = { apps: [], shutdown: 0 } }],
-    ['Restart Manager could not shut it down', /Restart Manager/, (data) => { steps(data)['07-restart-manager']!.restartManager = { apps: [{ pid: 1 }], shutdown: 351 } }],
+    ['Restart Manager saw no window to ask', /Restart Manager/, (data) => {
+      steps(data)['07-restart-manager']!.restartManager = { apps: [{ pid: 2, type: 'unknown' }], shutdown: 0 }
+    }],
+    ['Restart Manager could not shut it down', /Restart Manager/, (data) => {
+      steps(data)['07-restart-manager']!.restartManager = { apps: [{ pid: 1, type: 'main window' }], shutdown: 351 }
+    }],
     ['the app stayed running', /Restart Manager/, (data) => { steps(data)['07-restart-manager']!.exited = false }],
     ['Electron ended the app without its own quit', /Restart Manager/, (data) => { steps(data)['07-restart-manager']!.appLog = [] }],
     ['the upgrade left two products', /Upgrades in place/, (data) => {

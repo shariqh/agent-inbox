@@ -30,6 +30,8 @@ export function loadEvidence(directory, { pins, release }) {
   }
 }
 
+// PowerShell writes a one-element list as the element itself; read every list through this.
+const list = (value) => (Array.isArray(value) ? value : value == null ? [] : [value])
 const step = (data, suffix) => {
   const steps = data.lifecycle?.steps ?? {}
   const name = Object.keys(steps).find((key) => key.replace(/^\d+-/, '') === suffix)
@@ -43,13 +45,13 @@ const installedExe = (data) => `${installedDirectory(data)}\\${data.release.prod
 const carriesIdentity = (data, link) =>
   link?.appUserModelId === data.release.bundleId && link?.toastActivatorClsid === data.pins.identity.toastActivatorClsid
 const onlyShortcut = (data, state) => {
-  const links = state?.startMenuShortcuts ?? []
+  const links = list(state?.startMenuShortcuts)
   return links.length === 1 &&
     links[0].path === `%USERPROFILE%\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\${data.release.product}.lnk` &&
     links[0].target === installedExe(data) && carriesIdentity(data, links[0])
 }
 const ranClean = (entry) => entry && !entry.error && entry.user?.isAdministrator === false
-const logged = (entry, line) => (entry?.appLog ?? []).some((text) => text.includes(line))
+const logged = (entry, line) => list(entry?.appLog).some((text) => text.includes(line))
 
 /** Whether the app announced a notification in this step at all; the runner's session decides. */
 export const notificationAttempted = (entry) => entry?.notification?.seen === true
@@ -59,19 +61,20 @@ export function requirements(data) {
   const out = []
   const require = (label, value) => out.push({ label, passed: value === true })
   const { pins, release } = data
-  const resolved = data.tools?.dotnet?.resolved ?? []
+  const resolved = list(data.tools?.dotnet?.resolved)
   const framework = `\\shared\\${pins.dotnet.framework}\\${pins.dotnet.version}`
   const reported = /^(\d+\.\d+\.\d+)\+([0-9a-f]{7,40})$/.exec(data.tools?.wix?.reportedVersion ?? '')
   require(`WiX ${pins.wix.version} ran from its pinned package on .NET ${pins.dotnet.version}`,
     reported?.[1] === pins.wix.version && pins.wix.sourceCommit.startsWith(reported[2] ?? '-') &&
     data.tools?.wix?.sha512 === pins.wix.sha512 && data.tools?.dotnet?.sha512 === pins.dotnet.sha512 &&
-    resolved.length > 0 && resolved.every((path) => path.toLowerCase().includes(framework.toLowerCase())))
+    resolved.some((path) => /\\coreclr\.dll$/i.test(path)) &&
+    resolved.every((path) => path.toLowerCase().includes(framework.toLowerCase())))
   const base = data.builds.base
   require('The MSI carries the installer identity and passes ICE validation',
     base?.upgradeCode === pins.identity.upgradeCode && base?.productVersion === data.folders?.base?.version &&
     base?.validation?.passed === true && base?.elevationNotRequired === true &&
-    (base?.shortcutProperties ?? []).some((entry) => entry.key === 'System.AppUserModel.ID' && entry.value === release.bundleId) &&
-    (base?.shortcutProperties ?? []).some((entry) => entry.key === 'System.AppUserModel.ToastActivatorCLSID' &&
+    list(base?.shortcutProperties).some((entry) => entry.key === 'System.AppUserModel.ID' && entry.value === release.bundleId) &&
+    list(base?.shortcutProperties).some((entry) => entry.key === 'System.AppUserModel.ToastActivatorCLSID' &&
       entry.value === pins.identity.toastActivatorClsid))
   require('SHA256SUMS-windows.txt names the MSI and its SHA-256',
     typeof base?.msi?.sha256 === 'string' && data.checksums === `${base.msi.sha256}  ${base.msi.name}\n` &&
@@ -90,13 +93,14 @@ export function requirements(data) {
     ranClean(launch) && launch.launch?.ready === true && launch.quit?.graceful === true && launch.quit?.portReleased === true)
   const restart = step(data, 'restart-manager')
   require('Quits through its own path when Restart Manager asks it to close',
-    ranClean(restart) && (restart.restartManager?.apps ?? []).length > 0 && restart.restartManager?.shutdown === 0 &&
-    restart.exited === true && restart.portReleased === true && logged(restart, QUIT_LINE))
+    ranClean(restart) && list(restart.restartManager?.apps).some((app) => app.type === 'main window') &&
+    restart.restartManager?.shutdown === 0 && restart.exited === true && restart.portReleased === true &&
+    logged(restart, QUIT_LINE))
   const upgrade = finalUpgrade(data)
   require('Upgrades in place from the previous build',
     ranClean(upgrade) && upgrade.run?.exitCode === 0 && finalUpgradeCheck(data)?.matchesVerified === true &&
-    upgrade.state?.appDirectory === installedDirectory(data) && upgrade.state?.msiProducts?.length === 1 &&
-    upgrade.state.msiProducts[0].version === data.folders?.upgrade?.version && onlyShortcut(data, upgrade.state))
+    upgrade.state?.appDirectory === installedDirectory(data) && list(upgrade.state?.msiProducts).length === 1 &&
+    list(upgrade.state.msiProducts)[0].version === data.folders?.upgrade?.version && onlyShortcut(data, upgrade.state))
   const launchUpgrade = step(data, 'launch-upgrade')
   require('The upgraded app launches from the shortcut', ranClean(launchUpgrade) && launchUpgrade.launch?.ready === true)
   const repair = step(data, 'repair-with-source')
@@ -106,8 +110,8 @@ export function requirements(data) {
   const uninstall = step(data, 'uninstall')
   require('Uninstall removes the app, its shortcut, its toast activator and its installed-apps entry',
     ranClean(uninstall) && uninstall.run?.exitCode === 0 && !uninstall.state?.appDirectory && uninstall.state?.msiRoot === null &&
-    uninstall.state?.startMenuShortcuts?.length === 0 && uninstall.state?.msiProducts?.length === 0 &&
-    uninstall.state?.uninstallEntries?.length === 0 && uninstall.state?.toastActivator === null)
+    list(uninstall.state?.startMenuShortcuts).length === 0 && list(uninstall.state?.msiProducts).length === 0 &&
+    list(uninstall.state?.uninstallEntries).length === 0 && uninstall.state?.toastActivator === null)
   require('Uninstall keeps %USERPROFILE%\\.agent-inbox',
     uninstall?.sentinelSurvived === true && uninstall?.inboxDatabaseSurvived === true)
   // Whether a notification is shown depends on the runner's session; when the app
@@ -141,15 +145,18 @@ const treeText = (entry) => {
     .map((key) => `${key} ${compare[key].count}: ${compare[key].first.slice(0, 3).join(', ')}`)
   return `${ok(entry.matchesVerified)} ${parts.join('; ')}`.trim()
 }
-const links = (list) => (list ?? []).map((link) => `${link.path} → ${link.target} (ID ${link.appUserModelId ?? 'not set'}, CLSID ${link.toastActivatorClsid ?? 'not set'}, working directory ${link.workingDirectory || 'none'})`).join('<br>') || 'none'
+const links = (value) => list(value).map((link) => `${link.path} → ${link.target} (ID ${link.appUserModelId ?? 'not set'}, CLSID ${link.toastActivatorClsid ?? 'not set'}, working directory ${link.workingDirectory || 'none'})`).join('<br>') || 'none'
 const activator = (value) => (value ? `${value.name}; LocalServer32 ${value.localServer32}` : 'none')
 const restartManagerText = (record) => {
   if (!record) return 'not run'
-  const apps = (record.apps ?? []).map((app) => `${app.name} pid ${app.pid} (${app.type}, session ${app.session})`).join(', ') || 'none'
-  const after = (record.appsAfter ?? []).map((app) => `pid ${app.pid} status ${app.status}`).join(', ')
+  const apps = list(record.apps).map((app) => `pid ${app.pid} (${app.type}, session ${app.session})`).join(', ') || 'none'
+  const after = list(record.appsAfter).map((app) => `pid ${app.pid} status ${app.status}`).join(', ')
   return `RmGetList ${record.list}: ${apps}${record.shutdown === -1 ? '' : `; RmShutdown ${record.shutdown}${after ? `; then ${after}` : ''}`}`
 }
-const appsDuring = (entry) => [...new Set((entry?.run?.appProcessesSeen ?? []).map((process) => process.path ? process.path.split('\\').slice(-1)[0] : 'Agent Inbox.exe'))].join(', ') || 'none'
+const quitText = (quit) => quit
+  ? `${quit.graceful ? `closed by ${quit.method} in ${quit.seconds ?? '—'}s` : `${quit.method}: still running after 30 s (${list(quit.stillRunning).map((p) => p.type).join(', ') || 'unknown'})`}, port ${quit.portReleased ? 'released' : 'still bound'}`
+  : 'not run'
+const appsDuring = (entry) => [...new Set(list(entry?.run?.appProcessesSeen).map((process) => process.path ? process.path.split('\\').slice(-1)[0] : 'Agent Inbox.exe'))].join(', ') || 'none'
 
 function rows(data) {
   const out = []
@@ -174,9 +181,9 @@ function rows(data) {
   row('Deepest installed path', deepest ? `${deepest.fullLength} characters for a user name of ${deepest.userNameLength}; fits MAX_PATH for user names up to ${deepest.maxUserNameLength} (${deepest.relative})` : '—')
   row('Start-menu shortcut', links(install?.state?.startMenuShortcuts))
   row('Toast activator after install', activator(install?.state?.toastActivator))
-  row('Start apps list (shell:AppsFolder)', (install?.state?.appsFolder ?? []).map((entry) => entry.error ?? `${entry.name}: ${entry.appId}`).join('<br>') || 'not listed')
+  row('Start apps list (shell:AppsFolder)', list(install?.state?.appsFolder).map((entry) => entry.error ?? `${entry.name}: ${entry.appId}`).join('<br>') || 'not listed')
   const launch = step(data, 'launch-base')
-  row('Launch from the shortcut, then close its window', launch ? `${ok(launch.launch?.ready)} ready in ${launch.launch?.readySeconds}s; quit by ${launch.quit?.method} (${launch.quit?.graceful ? 'graceful' : 'forced'}), port ${launch.quit?.portReleased ? 'released' : 'still bound'}` : 'not run')
+  row('Launch from the shortcut, then close its window', launch ? `${ok(launch.launch?.ready)} ready in ${launch.launch?.readySeconds}s; ${quitText(launch.quit)}` : 'not run')
   for (const suffix of ['notify-with-shortcut', 'notify-without-shortcut']) {
     const entry = step(data, suffix)
     row(`Notification (${suffix.replace('notify-', '')})`, entry ? [
@@ -186,39 +193,42 @@ function rows(data) {
       `shortcut before: ${links(entry.shortcutsBefore)}`,
       `shortcut after: ${links(entry.shortcutsAfter)}`,
       `Windows notification history: ${entry.toastHistory?.error ? `unavailable (${entry.toastHistory.error})` : `${entry.toastHistory?.count} for ${data.release.bundleId}`}`,
+      `app quit when its window closed: ${quitText(entry.quit)}`,
     ].filter(Boolean).join('<br>') : 'not run')
   }
   row('Restart Manager asks the running app to close', restart ? [
     restart.error ? `error: ${restart.error}` : null,
-    restartManagerText(restart.restartManager),
-    `every app process ${restart.exited ? `exited within ${restart.exitSeconds}s` : 'did not exit within 30 s'}; port ${restart.portReleased ? 'released' : 'still bound'}`,
-    `app log: ${(restart.appLog ?? []).filter((line) => line.includes('Windows asked')).join(' ') || 'no quit line'}`,
+    `without RmForceShutdown: ${restartManagerText(restart.restartManagerWithoutForce)}; ${restart.runningAfterWithoutForce ?? '—'} app processes still running`,
+    `with RmForceShutdown: ${restartManagerText(restart.restartManager)}`,
+    `every app process ${restart.exited ? `exited within ${restart.exitSeconds}s` : 'did not exit within 30 s'}; main process exit code ${restart.mainExit?.exitCode ?? '—'}; port ${restart.portReleased ? 'released' : 'still bound'}`,
+    `app log: ${list(restart.appLog).filter((line) => line.includes('Windows asked')).join(' ') || 'no quit line'}`,
+    list(restart.chromiumLog).length ? `Chromium: ${list(restart.chromiumLog).join(' / ')}` : null,
   ].filter(Boolean).join('<br>') : 'not run')
   row('Upgrade to the next build while the app runs', running ? [
     runText(running),
     `before: ${restartManagerText(running.restartManagerBefore)}`,
-    `Windows Installer: ${(running.msiLog ?? []).filter((line) => /RESTART MANAGER/.test(line)).map((line) => line.replace(/^MSI \([^)]*\) \([^)]*\) \[[^\]]*\]: RESTART MANAGER: /, '')).join(' ') || 'no Restart Manager lines'}`,
-    `app ${logged(running, QUIT_LINE) ? 'quit when asked' : 'was not asked to quit'}; still running afterwards: ${(running.processesAfterRun ?? []).filter((p) => p.main).length ? 'yes' : 'no'}; ${running.rebootOperations ?? '—'} in-use files moved aside for the next reboot`,
+    `Windows Installer: ${list(running.msiLog).filter((line) => /RESTART MANAGER/.test(line)).map((line) => line.replace(/^MSI \([^)]*\) \([^)]*\) \[[^\]]*\]: RESTART MANAGER: /, '')).join(' ') || 'no Restart Manager lines'}`,
+    `app ${logged(running, QUIT_LINE) ? 'quit when asked' : 'was not asked to quit'}; still running afterwards: ${list(running.processesAfterRun).filter((p) => p.main).length ? `yes, then ${quitText(running.quit)}` : 'no'}; ${running.rebootOperations ?? '—'} in-use files moved aside for the next reboot`,
     `tree ${treeText(check(data, 'upgrade-while-running'))}`,
   ].join('<br>') : 'not run')
   if (step(data, 'upgrade')) row('Upgrade with the app closed', `${runText(step(data, 'upgrade'))}; tree ${treeText(check(data, 'upgrade'))}`)
-  row('After the upgrade', upgrade?.state ? `${upgrade.state.appDirectory}; ${(upgrade.state.msiProducts ?? []).map((product) => product.error ?? `MSI ${product.productCode} ${product.version}, cached package ${MiB(product.localPackageBytes)}`).join(', ')}; ${(upgrade.state.uninstallEntries ?? []).map((entry) => `${entry.hive} ${entry.displayName} ${entry.displayVersion}`).join(', ')}` : '—')
+  row('After the upgrade', upgrade?.state ? `${upgrade.state.appDirectory}; ${list(upgrade.state.msiProducts).map((product) => product.error ?? `MSI ${product.productCode} ${product.version}, cached package ${MiB(product.localPackageBytes)}`).join(', ')}; ${list(upgrade.state.uninstallEntries).map((entry) => `${entry.hive} ${entry.displayName} ${entry.displayVersion}`).join(', ')}` : '—')
   const launchUpgrade = step(data, 'launch-upgrade')
   row('Launch after the upgrade', launchUpgrade ? `${ok(launchUpgrade.launch?.ready)} ready in ${launchUpgrade.launch?.readySeconds}s` : 'not run')
   for (const [suffix, label] of [['repair-with-source', 'Repair by product code, package in place'], ['repair-without-source', 'Repair by product code, package renamed away'], ['repair-after-source-returns', 'Repair once the package is back']]) {
     const entry = step(data, suffix)
     if (!entry) continue
-    row(label, `${runText(entry)}; deleted ${(entry.deleted ?? []).join(', ') || 'nothing'}; restored ${Object.entries(entry.restored ?? {}).map(([file, back]) => `${file} ${ok(back)}`).join(', ') || '—'}; tree ${treeText(check(data, suffix))}`)
+    row(label, `${runText(entry)}; deleted ${list(entry.deleted).join(', ') || 'nothing'}; restored ${Object.entries(entry.restored ?? {}).map(([file, back]) => `${file} ${ok(back)}`).join(', ') || '—'}; tree ${treeText(check(data, suffix))}`)
   }
-  row('Uninstall', uninstall ? `${runText(uninstall)}; app folder ${uninstall.state?.appDirectory ? 'still present' : 'removed'}; shortcuts left ${uninstall.state?.startMenuShortcuts?.length ?? '—'}; toast activator ${uninstall.state?.toastActivator ? 'left' : 'removed'}; installed-apps entries ${uninstall.state?.uninstallEntries?.length ?? '—'}` : 'not run')
-  row('%USERPROFILE%\\.agent-inbox after uninstall', uninstall ? `sentinel ${ok(uninstall.sentinelSurvived)}, inbox.db ${ok(uninstall.inboxDatabaseSurvived)}; holds ${(uninstall.dataAfter ?? []).join(', ')}` : 'not run')
+  row('Uninstall', uninstall ? `${runText(uninstall)}; app folder ${uninstall.state?.appDirectory ? 'still present' : 'removed'}; shortcuts left ${list(uninstall.state?.startMenuShortcuts).length}; toast activator ${uninstall.state?.toastActivator ? 'left' : 'removed'}; installed-apps entries ${list(uninstall.state?.uninstallEntries).length}` : 'not run')
+  row('%USERPROFILE%\\.agent-inbox after uninstall', uninstall ? `sentinel ${ok(uninstall.sentinelSurvived)}, inbox.db ${ok(uninstall.inboxDatabaseSurvived)}; holds ${list(uninstall.dataAfter).join(', ')}` : 'not run')
   const before = step(data, 'baseline')?.snapshot
   const after = uninstall?.snapshot
   if (before && after) {
     const left = []
     for (const key of Object.keys(after)) {
-      const previous = new Set(before[key] ?? [])
-      for (const name of after[key] ?? []) if (!previous.has(name) && !(key === 'profile' && name === '.agent-inbox')) left.push(`${key}: ${name}`)
+      const previous = new Set(list(before[key]))
+      for (const name of list(after[key])) if (!previous.has(name) && !(key === 'profile' && name === '.agent-inbox')) left.push(`${key}: ${name}`)
     }
     row('Left after uninstall (beyond .agent-inbox)', left.join('<br>') || 'nothing')
   }
@@ -241,7 +251,7 @@ export function renderSummary(data, results) {
     '| Tool | Pin | Ran as |',
     '| --- | --- | --- |',
     `| WiX ${cell(data.pins.wix.version)} (nuget.org \`wix\`) | SHA-512 ${code(data.pins.wix.sha512)}, SHA-256 ${code(data.pins.wix.sha256)}; EULA ${data.pins.wix.eulaId} accepted by the owner on ${data.pins.wix.eulaAcceptedOn} | ${cell(tools?.wix?.reportedVersion ?? 'not installed')} |`,
-    `| .NET runtime ${cell(data.pins.dotnet.version)} (supported until ${data.pins.dotnet.supportedUntil}) | SHA-512 ${code(data.pins.dotnet.sha512)}, SHA-256 ${code(data.pins.dotnet.sha256)} | ${cell((tools?.dotnet?.resolved ?? []).slice(0, 1).join('') || 'not resolved')} |`,
+    `| .NET runtime ${cell(data.pins.dotnet.version)} (supported until ${data.pins.dotnet.supportedUntil}) | SHA-512 ${code(data.pins.dotnet.sha512)}, SHA-256 ${code(data.pins.dotnet.sha256)} | ${cell(list(tools?.dotnet?.resolved).find((path) => /coreclr\.dll$/i.test(path)) ?? 'not resolved')} |`,
     '',
     '### Lifecycle',
     '',

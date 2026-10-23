@@ -216,6 +216,7 @@ jobs:
             build/msi/reports/
             build/msi/tools/wix-host-trace.txt
             build/msi/builds/*.json
+            build/msi/artifact/SHA256SUMS-windows.txt
             build/msi/results/
             build/msi/lifecycle/
           if-no-files-found: warn

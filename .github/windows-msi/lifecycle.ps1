@@ -167,7 +167,7 @@ try {
 
   $installed = Invoke-Step 'install-base' @{ action = 'install'; installer = $installers.base }
   Measure-Installed 'install-base' $installed 'base' | Out-Null
-  Invoke-Step 'launch-base' @{ action = 'launch' } | Out-Null
+  Invoke-Step 'launch-base' @{ action = 'launch'; holdSeconds = 20 } | Out-Null
   Invoke-Step 'notify-with-shortcut' @{ action = 'notify'; withoutShortcut = $false } | Out-Null
   Invoke-Step 'notify-without-shortcut' @{ action = 'notify'; withoutShortcut = $true } | Out-Null
   Invoke-Step 'restart-manager' @{ action = 'restart-manager' } | Out-Null

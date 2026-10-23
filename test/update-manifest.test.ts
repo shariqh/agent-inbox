@@ -11,8 +11,6 @@ import {
   generateManifest,
   serializeManifest,
   signManifest,
-  planReleaseHistoryContinuity,
-  authorizeReleaseContinuity,
   ORIGINAL_UPDATE_KEY,
   generateManifestV2,
   projectV1,
@@ -23,6 +21,7 @@ import {
   deriveV1,
   planOriginalKeySignature,
   checkOriginalKeySignature,
+  bindSigningEvidence,
 } from '../scripts/update-manifest.mjs'
 import type {
   ManifestHistoryAsset,
@@ -1080,378 +1079,106 @@ function releaseAsset(id: number, name: string, tag: string): ReleaseAssetLike {
   return { id, name, size: 100 + id, browser_download_url: `https://github.com/${UPDATE_REPOSITORY}/releases/download/${tag}/${name}` }
 }
 
-describe('planReleaseHistoryContinuity', () => {
-  it('bootstraps when there are no prior releases at all', () => {
-    const plan = planReleaseHistoryContinuity({ releases: [], newTag: 'v1.0.0' })
-    expect(plan).toEqual({ mode: 'bootstrap', priorTag: null })
+// The listing checks every history plan makes (G1, G2 and the shape of each record), first
+// written for the v1-only history and kept for both manifests (#343).
+describe('planReleaseHistory — the release listing', () => {
+  const plan = (releases: ReleaseLike[], newTag = 'v1.0.0') => planReleaseHistory({ releases, newTag, kind: 'universal' })
+  const pair = (releaseTag: string) => [releaseAsset(1, MANIFEST_ASSET_NAME, releaseTag), releaseAsset(2, SIGNATURE_ASSET_NAME, releaseTag)]
+
+  it('bootstraps both manifests when no published release carries either file', () => {
+    expect(plan([githubRelease({ tag_name: 'v0.9.0' }), githubRelease({ tag_name: 'v0.8.0' })])).toEqual({
+      v1: { manifest: 'v1', mode: 'bootstrap', priorTag: null },
+      v2: { manifest: 'v2', mode: 'bootstrap', priorTag: null },
+    })
   })
 
-  it('bootstraps when no prior published release carries either asset', () => {
-    const releases = [
-      githubRelease({ tag_name: 'v0.9.0' }),
-      githubRelease({ tag_name: 'v0.8.0' }),
-    ]
-    const plan = planReleaseHistoryContinuity({ releases, newTag: 'v1.0.0' })
-    expect(plan).toEqual({ mode: 'bootstrap', priorTag: null })
-  })
-
-  it('rejects a release carrying only one of the manifest/signature asset pair', () => {
-    const releases = [
-      githubRelease({ tag_name: 'v0.9.0', assets: [releaseAsset(1, MANIFEST_ASSET_NAME, 'v0.9.0')] }),
-    ]
-    expect(() => planReleaseHistoryContinuity({ releases, newTag: 'v1.0.0' })).toThrow(UpdateManifestError)
-  })
-
-  it('rejects a prior qualifying stable release with a version >= the new tag', () => {
-    const releases = [githubRelease({ tag_name: 'v1.0.0' })]
-    expect(() => planReleaseHistoryContinuity({ releases, newTag: 'v1.0.0' })).toThrow(UpdateManifestError)
-    const releasesGreater = [githubRelease({ tag_name: 'v1.1.0' })]
-    expect(() => planReleaseHistoryContinuity({ releases: releasesGreater, newTag: 'v1.0.0' })).toThrow(UpdateManifestError)
-  })
-
-  it('ignores draft and prerelease releases when checking for a blocking prior version', () => {
-    const releases = [
+  it('ignores drafts, prereleases and proven-shaped releases with other tags', () => {
+    expect(() => plan([
       githubRelease({ tag_name: 'v5.0.0', draft: true }),
       githubRelease({ tag_name: 'v5.0.0', prerelease: true }),
-    ]
-    expect(() => planReleaseHistoryContinuity({ releases, newTag: 'v1.0.0' })).not.toThrow()
+      { tag_name: 'nightly-build', draft: false, prerelease: false, assets: [] },
+    ])).not.toThrow()
   })
 
-  it('requires the latest previous stable release to carry both assets, even if an older one has them', () => {
-    const releases = [
-      githubRelease({
-        tag_name: 'v0.8.0',
-        assets: [releaseAsset(1, MANIFEST_ASSET_NAME, 'v0.8.0'), releaseAsset(2, SIGNATURE_ASSET_NAME, 'v0.8.0')],
-      }),
-      githubRelease({ tag_name: 'v0.9.0' }), // latest previous stable release — missing both assets
-    ]
-    expect(() => planReleaseHistoryContinuity({ releases, newTag: 'v1.0.0' })).toThrow(UpdateManifestError)
-  })
-
-  it('returns a continuity plan with asset ids/metadata when the latest previous stable release has both', () => {
-    const releases = [
-      githubRelease({ tag_name: 'v0.8.0' }),
-      githubRelease({
-        tag_name: 'v0.9.0',
-        assets: [releaseAsset(10, MANIFEST_ASSET_NAME, 'v0.9.0'), releaseAsset(11, SIGNATURE_ASSET_NAME, 'v0.9.0')],
-      }),
-    ]
-    const plan = planReleaseHistoryContinuity({ releases, newTag: 'v1.0.0' })
-    expect(plan.mode).toBe('continuity')
-    expect(plan.priorTag).toBe('v0.9.0')
-    if (plan.mode !== 'continuity') throw new Error('expected continuity plan')
-    expect(plan.manifestAsset.id).toBe(10)
-    expect(plan.signatureAsset.id).toBe(11)
-    expect(plan.manifestAsset.name).toBe(MANIFEST_ASSET_NAME)
-    expect(plan.signatureAsset.name).toBe(SIGNATURE_ASSET_NAME)
-  })
-
-  it('rejects a leading-zero numeric identifier in newTag', () => {
-    expect(() => planReleaseHistoryContinuity({ releases: [], newTag: 'v01.0.0' })).toThrow(UpdateManifestError)
+  it('refuses a leading-zero numeric identifier in the new tag', () => {
+    expect(() => plan([], 'v01.0.0')).toThrow(UpdateManifestError)
   })
 
   it('compares arbitrarily large numeric identifiers exactly, without Number precision loss', () => {
-    // 2**53 and 2**53 + 1 are not distinguishable as IEEE-754 doubles, so a
-    // `Number.parseInt`-based comparison would treat these two tags as equal
-    // (or compare them incorrectly) instead of correctly ordering them.
-    const huge = '9007199254740992' // 2**53
-    const hugePlusOne = '9007199254740993' // 2**53 + 1, > Number.MAX_SAFE_INTEGER
-    const releases = [githubRelease({ tag_name: `v${huge}.0.0` })]
-    // huge.0.0 is older than (huge+1).0.0 — must bootstrap-block-free (no throw).
-    expect(() => planReleaseHistoryContinuity({ releases, newTag: `v${hugePlusOne}.0.0` })).not.toThrow()
-    // huge.0.0 is NOT older than itself — must be rejected as not-older.
-    expect(() => planReleaseHistoryContinuity({ releases, newTag: `v${huge}.0.0` })).toThrow(UpdateManifestError)
-    // (huge+1).0.0 prior release compared against huge.0.0 new tag: prior is
-    // newer than new, must be rejected.
-    const releasesNewer = [githubRelease({ tag_name: `v${hugePlusOne}.0.0` })]
-    expect(() => planReleaseHistoryContinuity({ releases: releasesNewer, newTag: `v${huge}.0.0` })).toThrow(UpdateManifestError)
+    // 2**53 and 2**53 + 1 are not distinguishable as IEEE-754 doubles.
+    const huge = '9007199254740992'
+    const hugePlusOne = '9007199254740993'
+    expect(() => plan([githubRelease({ tag_name: `v${huge}.0.0` })], `v${hugePlusOne}.0.0`)).not.toThrow()
+    expect(() => plan([githubRelease({ tag_name: `v${huge}.0.0` })], `v${huge}.0.0`)).toThrow(UpdateManifestError)
+    expect(() => plan([githubRelease({ tag_name: `v${hugePlusOne}.0.0` })], `v${huge}.0.0`)).toThrow(UpdateManifestError)
   })
 
-  it('fails closed on a malformed release record instead of silently ignoring it as non-stable', () => {
-    expect(() => planReleaseHistoryContinuity({ releases: [null as unknown as ReleaseLike], newTag: 'v1.0.0' })).toThrow(UpdateManifestError)
-    expect(() => planReleaseHistoryContinuity({ releases: ['not-an-object' as unknown as ReleaseLike], newTag: 'v1.0.0' })).toThrow(UpdateManifestError)
-    expect(() => planReleaseHistoryContinuity({
-      releases: [{ tag_name: 'v0.9.0', draft: false, prerelease: false } as unknown as ReleaseLike], // missing assets
-      newTag: 'v1.0.0',
-    })).toThrow(UpdateManifestError)
-    expect(() => planReleaseHistoryContinuity({
-      releases: [{ tag_name: 'v0.9.0', draft: 'false' as unknown as boolean, prerelease: false, assets: [] }], // draft not boolean
-      newTag: 'v1.0.0',
-    })).toThrow(UpdateManifestError)
-    expect(() => planReleaseHistoryContinuity({
-      releases: [{ tag_name: '', draft: false, prerelease: false, assets: [] }], // empty tag_name
-      newTag: 'v1.0.0',
-    })).toThrow(UpdateManifestError)
+  it('fails closed on a malformed release record instead of ignoring it as non-stable', () => {
+    for (const record of [
+      null,
+      'not-an-object',
+      { tag_name: 'v0.9.0', draft: false, prerelease: false },
+      { tag_name: 'v0.9.0', draft: 'false', prerelease: false, assets: [] },
+      { tag_name: '', draft: false, prerelease: false, assets: [] },
+    ]) {
+      expect(() => plan([record as unknown as ReleaseLike]), JSON.stringify(record)).toThrow(UpdateManifestError)
+    }
   })
 
-  it('permits a proven-shaped but unrelated non-stable-tag release to be ignored', () => {
-    const releases = [
-      { tag_name: 'nightly-build', draft: false, prerelease: false, assets: [] },
-      { tag_name: 'v2.0.0', draft: false, prerelease: true, assets: [] },
-    ]
-    expect(() => planReleaseHistoryContinuity({ releases, newTag: 'v1.0.0' })).not.toThrow()
+  it('refuses duplicate stable tags, duplicate asset names and non-positive or fractional ids and sizes', () => {
+    expect(() => plan([githubRelease({ tag_name: 'v0.9.0' }), githubRelease({ tag_name: 'v0.9.0' })])).toThrow(UpdateManifestError)
+    const asset = releaseAsset(1, MANIFEST_ASSET_NAME, 'v0.9.0')
+    for (const assets of [
+      [asset, { ...asset, id: 2 }],
+      [{ ...asset, id: 0 }],
+      [{ ...asset, id: 1.5 }],
+      [{ ...asset, size: -1 }],
+    ]) {
+      expect(() => plan([githubRelease({ tag_name: 'v0.9.0', assets })]), JSON.stringify(assets)).toThrow(UpdateManifestError)
+    }
   })
 
-  it('rejects a stable published release with a duplicate asset name', () => {
-    const dup = releaseAsset(1, MANIFEST_ASSET_NAME, 'v0.9.0')
-    const releases = [githubRelease({ tag_name: 'v0.9.0', assets: [dup, { ...dup, id: 2 }] })]
-    expect(() => planReleaseHistoryContinuity({ releases, newTag: 'v1.0.0' })).toThrow(UpdateManifestError)
-  })
-
-  it('rejects a stable published release asset with a non-positive or non-integer id/size', () => {
-    const base = releaseAsset(1, MANIFEST_ASSET_NAME, 'v0.9.0')
-    expect(() => planReleaseHistoryContinuity({
-      releases: [githubRelease({ tag_name: 'v0.9.0', assets: [{ ...base, id: 0 }] })],
-      newTag: 'v1.0.0',
-    })).toThrow(UpdateManifestError)
-    expect(() => planReleaseHistoryContinuity({
-      releases: [githubRelease({ tag_name: 'v0.9.0', assets: [{ ...base, id: 1.5 }] })],
-      newTag: 'v1.0.0',
-    })).toThrow(UpdateManifestError)
-    expect(() => planReleaseHistoryContinuity({
-      releases: [githubRelease({ tag_name: 'v0.9.0', assets: [{ ...base, size: -1 }] })],
-      newTag: 'v1.0.0',
-    })).toThrow(UpdateManifestError)
-  })
-
-  it('rejects a stable published release asset with a non-canonical browser_download_url', () => {
-    const base = releaseAsset(1, MANIFEST_ASSET_NAME, 'v0.9.0')
-    for (const badUrl of [
-      base.browser_download_url.replace('https://', 'http://'),
-      base.browser_download_url.replace('github.com', 'evil.example.com'),
-      `${base.browser_download_url}?x=1`,
-      `${base.browser_download_url}#frag`,
-      base.browser_download_url.replace('v0.9.0', 'v0.8.0'), // wrong tag in path
+  it('refuses a download URL that is not the canonical release-download URL', () => {
+    const asset = releaseAsset(1, MANIFEST_ASSET_NAME, 'v0.9.0')
+    for (const url of [
+      asset.browser_download_url.replace('https://', 'http://'),
+      asset.browser_download_url.replace('github.com', 'evil.example.com'),
+      `${asset.browser_download_url}?x=1`,
+      `${asset.browser_download_url}#frag`,
+      asset.browser_download_url.replace('v0.9.0', 'v0.8.0'),
       'https://user:pass@github.com/shariqh/agent-inbox/releases/download/v0.9.0/update-manifest.json',
     ]) {
-      expect(() => planReleaseHistoryContinuity({
-        releases: [githubRelease({ tag_name: 'v0.9.0', assets: [{ ...base, browser_download_url: badUrl }] })],
-        newTag: 'v1.0.0',
-      })).toThrow(UpdateManifestError)
+      expect(() => plan([githubRelease({ tag_name: 'v0.9.0', assets: [{ ...asset, browser_download_url: url }] })]), url)
+        .toThrow(UpdateManifestError)
     }
   })
 
-  it('rejects a malformed nonempty digest field but accepts an exact sha256:<64 lowercase hex>', () => {
-    const base = releaseAsset(1, MANIFEST_ASSET_NAME, 'v0.9.0')
-    const sig = releaseAsset(2, SIGNATURE_ASSET_NAME, 'v0.9.0')
-    const validDigest = `sha256:${'a1b2c3d4'.repeat(8)}`
-    const malformedDigests = [
-      'sha256:abc123', // too short, not 64 hex chars
-      `sha256:${'A1B2C3D4'.repeat(8)}`, // uppercase hex is not accepted
-      `md5:${'a1b2c3d4'.repeat(8)}`, // wrong algorithm prefix
-      'a1b2c3d4'.repeat(8), // missing "sha256:" prefix entirely
-      `sha256:${'g1b2c3d4'.repeat(8)}`, // non-hex character
-    ]
-    for (const digest of malformedDigests) {
-      expect(() => planReleaseHistoryContinuity({
-        releases: [githubRelease({ tag_name: 'v0.9.0', assets: [{ ...base, digest }, sig] })],
-        newTag: 'v1.0.0',
-      })).toThrow(UpdateManifestError)
+  it('accepts a digest only as sha256:<64 lowercase hex>, and treats a missing, null or empty one as unavailable', () => {
+    const [manifest, signature] = pair('v0.9.0') as [ReleaseAssetLike, ReleaseAssetLike]
+    const valid = `sha256:${'a1b2c3d4'.repeat(8)}`
+    for (const digest of [
+      'sha256:abc123',
+      `sha256:${'A1B2C3D4'.repeat(8)}`,
+      `md5:${'a1b2c3d4'.repeat(8)}`,
+      'a1b2c3d4'.repeat(8),
+      `sha256:${'g1b2c3d4'.repeat(8)}`,
+    ]) {
+      expect(() => plan([githubRelease({ tag_name: 'v0.9.0', assets: [{ ...manifest, digest }, signature] })]), digest)
+        .toThrow(UpdateManifestError)
     }
-    expect(() => planReleaseHistoryContinuity({
-      releases: [githubRelease({ tag_name: 'v0.9.0', assets: [{ ...base, digest: validDigest }, sig] })],
-      newTag: 'v1.0.0',
-    })).not.toThrow()
-  })
-
-  it('treats a missing, null, or empty-string digest as "unavailable" rather than malformed', () => {
-    const base = releaseAsset(1, MANIFEST_ASSET_NAME, 'v0.9.0')
-    const sig = releaseAsset(2, SIGNATURE_ASSET_NAME, 'v0.9.0')
-    // `undefined` (field omitted entirely)
-    expect(() => planReleaseHistoryContinuity({
-      releases: [githubRelease({ tag_name: 'v0.9.0', assets: [base, sig] })],
-      newTag: 'v1.0.0',
-    })).not.toThrow()
-    // GitHub's REST API reports `digest: null` when unavailable.
-    expect(() => planReleaseHistoryContinuity({
-      releases: [githubRelease({ tag_name: 'v0.9.0', assets: [{ ...base, digest: null }, sig] })],
-      newTag: 'v1.0.0',
-    })).not.toThrow()
-    // Matches existing publisher behavior of reporting an empty string.
-    expect(() => planReleaseHistoryContinuity({
-      releases: [githubRelease({ tag_name: 'v0.9.0', assets: [{ ...base, digest: '' }, sig] })],
-      newTag: 'v1.0.0',
-    })).not.toThrow()
-  })
-
-  it('propagates a valid asset digest into the continuity plan, and omits it when unavailable (undefined, null, or empty string)', () => {
-    const validDigest = `sha256:${'a1b2c3d4'.repeat(8)}`
-    const withDigest = planReleaseHistoryContinuity({
-      releases: [githubRelease({
+    const listed = (digest: string | null | undefined) => {
+      const result = plan([githubRelease({
         tag_name: 'v0.9.0',
-        assets: [
-          { ...releaseAsset(1, MANIFEST_ASSET_NAME, 'v0.9.0'), digest: validDigest },
-          releaseAsset(2, SIGNATURE_ASSET_NAME, 'v0.9.0'),
-        ],
-      })],
-      newTag: 'v1.0.0',
-    })
-    if (withDigest.mode !== 'continuity') throw new Error('expected continuity plan')
-    expect(withDigest.manifestAsset.digest).toBe(validDigest)
-    expect(withDigest.signatureAsset).not.toHaveProperty('digest')
-
-    const withoutDigest = planReleaseHistoryContinuity({
-      releases: [githubRelease({
-        tag_name: 'v0.9.0',
-        assets: [releaseAsset(1, MANIFEST_ASSET_NAME, 'v0.9.0'), releaseAsset(2, SIGNATURE_ASSET_NAME, 'v0.9.0')],
-      })],
-      newTag: 'v1.0.0',
-    })
-    if (withoutDigest.mode !== 'continuity') throw new Error('expected continuity plan')
-    expect(withoutDigest.manifestAsset).not.toHaveProperty('digest')
-    expect(withoutDigest.signatureAsset).not.toHaveProperty('digest')
-
-    for (const unavailable of [null, '']) {
-      const plan = planReleaseHistoryContinuity({
-        releases: [githubRelease({
-          tag_name: 'v0.9.0',
-          assets: [
-            { ...releaseAsset(1, MANIFEST_ASSET_NAME, 'v0.9.0'), digest: unavailable },
-            releaseAsset(2, SIGNATURE_ASSET_NAME, 'v0.9.0'),
-          ],
-        })],
-        newTag: 'v1.0.0',
-      })
-      if (plan.mode !== 'continuity') throw new Error('expected continuity plan')
-      expect(plan.manifestAsset).not.toHaveProperty('digest')
-      expect(plan.signatureAsset).not.toHaveProperty('digest')
+        assets: [{ ...manifest, ...(digest === undefined ? {} : { digest }) }, signature],
+      })])
+      if (result.v1.mode !== 'continuity') throw new Error('expected continuity')
+      return result.v1
     }
-  })
-
-  it('rejects duplicate stable release tags across the release list', () => {
-    const releases = [
-      githubRelease({ tag_name: 'v0.9.0' }),
-      githubRelease({ tag_name: 'v0.9.0' }),
-    ]
-    expect(() => planReleaseHistoryContinuity({ releases, newTag: 'v1.0.0' })).toThrow(UpdateManifestError)
-  })
-})
-
-describe('authorizeReleaseContinuity', () => {
-  function priorRelease(
-    keypair: ReturnType<typeof makeEphemeralKeypair>,
-    registry: UpdateRegistry,
-    priorTag = 'v0.9.0',
-  ) {
-    const priorEvidence = buildEvidence({ tag: priorTag, packageVersion: priorTag.slice(1) })
-    const { bytes: manifestBytes } = generateManifest({
-      registry,
-      evidence: priorEvidence,
-      minimumMacosVersion,
-      publishedAt,
-    })
-    const { bytes: signatureBytes } = signManifest({ manifestBytes, registry, privateKeyPem: keypair.privateKeyPem, now: publishedAt })
-    return { manifestBytes, signatureBytes }
-  }
-
-  it('authorizes continuity when the current signing key is already trusted by the prior manifest', () => {
-    const good = makeEphemeralKeypair()
-    const registry = makeRegistry(good)
-    const { manifestBytes, signatureBytes } = priorRelease(good, registry)
-    const result = authorizeReleaseContinuity({
-      priorManifestBytes: manifestBytes,
-      priorSignatureBytes: signatureBytes,
-      registry,
-      newTag: 'v1.0.0',
-    })
-    expect(result.authorized).toBe(true)
-    expect(result.rotationOverrideUsed).toBe(false)
-    expect(result.priorTag).toBe('v0.9.0')
-  })
-
-  it('refuses continuity when the new signing key is not trusted by the prior manifest and no override is given', () => {
-    const oldKey = makeEphemeralKeypair()
-    const oldRegistry = makeRegistry(oldKey)
-    const { manifestBytes, signatureBytes } = priorRelease(oldKey, oldRegistry)
-
-    const newKey = makeEphemeralKeypair()
-    const newRegistry = makeRegistry(newKey) // does not include oldKey — the prior manifest can't be re-verified either
-    expect(() => authorizeReleaseContinuity({
-      priorManifestBytes: manifestBytes,
-      priorSignatureBytes: signatureBytes,
-      registry: newRegistry,
-      newTag: 'v1.0.0',
-    })).toThrow(UpdateManifestError)
-  })
-
-  it('refuses rotation when new key is untrusted by prior manifest even though prior signature still verifies (registry retains old key)', () => {
-    const oldKey = makeEphemeralKeypair()
-    const rotatingRegistry = makeRegistry(oldKey)
-    const { manifestBytes, signatureBytes } = priorRelease(oldKey, rotatingRegistry)
-
-    const newKey = makeEphemeralKeypair()
-    // Registry now signs with newKey but still lists oldKey so the prior signature verifies.
-    const registryAfterRotation: UpdateRegistry = {
-      schema: 1,
-      signingKeyId: newKey.keyId,
-      keys: [
-        { keyId: oldKey.keyId, algorithm: 'ed25519', publicKeySpkiBase64: oldKey.publicKeySpkiBase64 },
-        { keyId: newKey.keyId, algorithm: 'ed25519', publicKeySpkiBase64: newKey.publicKeySpkiBase64 },
-      ],
+    expect(listed(valid).manifestAsset.digest).toBe(valid)
+    expect(listed(valid).signatureAsset).not.toHaveProperty('digest')
+    for (const unavailable of [undefined, null, '']) {
+      expect(listed(unavailable).manifestAsset).not.toHaveProperty('digest')
     }
-    expect(() => authorizeReleaseContinuity({
-      priorManifestBytes: manifestBytes,
-      priorSignatureBytes: signatureBytes,
-      registry: registryAfterRotation,
-      newTag: 'v1.0.0',
-    })).toThrow(UpdateManifestError)
-  })
-
-  it('permits rotation with the exact rotationOverride string, and rejects a mismatched one', () => {
-    const oldKey = makeEphemeralKeypair()
-    const rotatingRegistry = makeRegistry(oldKey)
-    const { manifestBytes, signatureBytes } = priorRelease(oldKey, rotatingRegistry)
-
-    const newKey = makeEphemeralKeypair()
-    const registryAfterRotation: UpdateRegistry = {
-      schema: 1,
-      signingKeyId: newKey.keyId,
-      keys: [
-        { keyId: oldKey.keyId, algorithm: 'ed25519', publicKeySpkiBase64: oldKey.publicKeySpkiBase64 },
-        { keyId: newKey.keyId, algorithm: 'ed25519', publicKeySpkiBase64: newKey.publicKeySpkiBase64 },
-      ],
-    }
-    const wrongOverride = `ALLOW-UPDATE-KEY-ROTATION:v1.0.0:${oldKey.keyId}` // wrong key id
-    expect(() => authorizeReleaseContinuity({
-      priorManifestBytes: manifestBytes,
-      priorSignatureBytes: signatureBytes,
-      registry: registryAfterRotation,
-      newTag: 'v1.0.0',
-      rotationOverride: wrongOverride,
-    })).toThrow(UpdateManifestError)
-
-    const correctOverride = `ALLOW-UPDATE-KEY-ROTATION:v1.0.0:${newKey.keyId}`
-    const result = authorizeReleaseContinuity({
-      priorManifestBytes: manifestBytes,
-      priorSignatureBytes: signatureBytes,
-      registry: registryAfterRotation,
-      newTag: 'v1.0.0',
-      rotationOverride: correctOverride,
-    })
-    expect(result.authorized).toBe(true)
-    expect(result.rotationOverrideUsed).toBe(true)
-  })
-
-  it('verifies prior signature/structure without applying current expiry (long-expired prior manifest still authorizes)', () => {
-    const good = makeEphemeralKeypair()
-    const registry = makeRegistry(good)
-    const longAgo = '2000-01-01T00:00:00Z'
-    const priorEvidence = buildEvidence({ tag: 'v0.9.0', packageVersion: '0.9.0' })
-    const { bytes: manifestBytes } = generateManifest({
-      registry,
-      evidence: priorEvidence,
-      minimumMacosVersion,
-      publishedAt: longAgo,
-    })
-    const { bytes: signatureBytes } = signManifest({ manifestBytes, registry, privateKeyPem: good.privateKeyPem, now: longAgo })
-    // This manifest's expiresAt was 180 days after year 2000 — long expired relative to "now" — yet authorization succeeds.
-    const result = authorizeReleaseContinuity({
-      priorManifestBytes: manifestBytes,
-      priorSignatureBytes: signatureBytes,
-      registry,
-      newTag: 'v1.0.0',
-    })
-    expect(result.authorized).toBe(true)
   })
 })
 
@@ -2676,3 +2403,168 @@ describe('the original key on every v1 manifest (G10)', () => {
     expect(() => planOriginalKeySignature({ registry, newTag: tag, originalKey })).toThrow(UpdateManifestError)
   })
 })
+
+describe('signManifest — either schema, one envelope schema', () => {
+  it('signs a v2 manifest that only the v2 verifier accepts, in an envelope of schema 1', () => {
+    const release = v2Release('arm64')
+    const { envelope, bytes } = signManifest({ manifestBytes: release.bytes, registry: release.registry, privateKeyPem: release.signer.privateKeyPem, now: publishedAt })
+    expect(envelope.schema).toBe(UPDATE_ENVELOPE_SCHEMA)
+    expect(verifyManifestV2({ manifestBytes: release.bytes, envelope: bytes, registry: release.registry, now: publishedAt }).tag).toBe(tag)
+    expect(() => verifyManifest({ manifestBytes: release.bytes, envelope: bytes, registry: release.registry, now: publishedAt }))
+      .toThrow('manifest.schema must be 1')
+  })
+
+  it('refuses an expired v2 manifest and a manifest of any other schema', () => {
+    const release = v2Release()
+    const sign = (manifestBytes: Buffer, now = publishedAt) => signManifest({ manifestBytes, registry: release.registry, privateKeyPem: release.signer.privateKeyPem, now })
+    expect(() => sign(release.bytes, isoAfter(publishedAt, 181 * DAY_MS))).toThrow(/expired/)
+    expect(() => sign(rawBytes({ ...release.raw, schema: 3 }))).toThrow(UpdateManifestError)
+    expect(() => sign(Buffer.from('not json'))).toThrow(UpdateManifestError)
+  })
+})
+
+// What the signer's bind step records (design §5.7), from what the earlier steps checked.
+describe('bindSigningEvidence — signing evidence schema 2', () => {
+  const asKey = (signer: Signer) => ({ keyId: signer.keyId, algorithm: 'ed25519' as const, publicKeySpkiBase64: signer.publicKeySpkiBase64 })
+
+  // A release through the trusted steps in process: check, plan, authorize, derive, sign.
+  function signedRelease(kind: Kind) {
+    const { signer, registry, v160, v170, v190 } = history()
+    const releases = kind === 'universal' ? [v160.listing] : [v160.listing, v170.listing, v190.listing]
+    const releaseVersion = kind === 'universal' ? '1.7.0' : '2.0.0'
+    const taggedAt = kind === 'universal' ? '2026-11-16T12:00:00Z' : '2027-01-18T12:00:00Z'
+    const handoff = releaseHandoff(kind, signer, releaseVersion, taggedAt)
+    const checked = checkHandoff(handoff)
+    const plan = planReleaseHistory({ releases, newTag: handoff.tag, kind })
+    const prior = kind === 'universal' ? { v1: v160.v1, v2: undefined } : { v1: v190.v1, v2: v190.v2 }
+    const authorized = (manifest: 'v1' | 'v2') => {
+      const pair = prior[manifest]
+      const { priorManifest: _prior, ...result } = authorizeReleaseHistory({
+        plan: plan[manifest],
+        priorManifestBytes: pair?.bytes,
+        priorSignatureBytes: pair?.signature,
+        registry,
+        newTag: handoff.tag,
+      }) as ReturnType<typeof authorizeReleaseHistory> & { priorManifest?: unknown }
+      return result
+    }
+    const derived = deriveV1({
+      release: checked,
+      v2ManifestBytes: handoff.manifestBytes,
+      registry,
+      releases,
+      ...(kind === 'arm64' ? { earlierManifestBytes: v190.v1.bytes, earlierSignatureBytes: v190.v1.signature } : {}),
+    })
+    const sign = (manifestBytes: Buffer) => signManifest({ manifestBytes, registry, privateKeyPem: signer.privateKeyPem, now: taggedAt }).bytes
+    const { bytes: v1Bytes, manifest: _manifest, ...derivation } = derived as typeof derived & { manifest: unknown }
+    return {
+      signer,
+      handoff,
+      v190,
+      input: {
+        registryBytes: handoff.registryBytes,
+        aggregate: handoff.aggregate,
+        tag: handoff.tag,
+        sourceCommit,
+        release: { kind: checked.kind, macos: checked.macos, manifestSha256: checked.manifestSha256 },
+        history: { v1: authorized('v1'), v2: authorized('v2') },
+        derivation: { ...derivation, sha256: sha256Hex(v1Bytes) },
+        v2: { manifestBytes: handoff.manifestBytes, signatureBytes: sign(handoff.manifestBytes) },
+        v1: { manifestBytes: v1Bytes, signatureBytes: sign(v1Bytes) },
+        now: isoAfter(taggedAt, DAY_MS),
+        originalKey: asKey(signer),
+        rotationOverride: undefined as string | undefined,
+      },
+    }
+  }
+
+  const file = (name: string, bytes: Buffer) => ({ name, size: bytes.length, sha256: sha256Hex(bytes) })
+
+  it('records a universal release: v2 as released, v1 as its projection', () => {
+    const { signer, input } = signedRelease('universal')
+    expect(bindSigningEvidence(input)).toEqual({
+      schema: 2,
+      tag: 'v1.7.0',
+      sourceCommit,
+      sourceTree,
+      signingKeyId: signer.keyId,
+      trustedKeyIds: [signer.keyId],
+      macos: { kind: 'universal', architectures: { executable: ['arm64', 'x86_64'], betterSqlite3: ['arm64', 'x86_64'] }, expected: ['arm64', 'x86_64'] },
+      originalKeySignature: 'passed',
+      manifests: {
+        v2: {
+          ...file('update-manifest-v2.json', input.v2.manifestBytes),
+          signature: file('update-manifest-v2.json.sig', input.v2.signatureBytes),
+          version: '1.7.0',
+          tag: 'v1.7.0',
+          made: 'release',
+          history: { mode: 'bootstrap', priorTag: null, rotationOverrideUsed: false },
+        },
+        v1: {
+          ...file('update-manifest.json', input.v1.manifestBytes),
+          signature: file('update-manifest.json.sig', input.v1.signatureBytes),
+          version: '1.7.0',
+          tag: 'v1.7.0',
+          made: 'projection',
+          history: { mode: 'continuity', priorTag: 'v1.6.0', describes: 'v1.6.0', rotationOverrideUsed: false },
+        },
+      },
+      verification: { privateKeyMatchesRegistry: 'passed', signatures: 'passed' },
+    })
+  })
+
+  it('records an arm64 release: v1 re-stamped from the newest universal release, with what it copied', () => {
+    const { input, v190 } = signedRelease('arm64')
+    const evidence = bindSigningEvidence(input)
+    expect(evidence.macos).toEqual({ kind: 'arm64', architectures: { executable: ['arm64'], betterSqlite3: ['arm64'] }, expected: ['arm64'] })
+    expect(evidence.manifests.v2).toMatchObject({ version: '2.0.0', tag: 'v2.0.0', made: 'release', history: { mode: 'continuity', priorTag: 'v1.9.0', describes: 'v1.9.0' } })
+    const earlier = parseManifest(v190.v1.bytes)
+    expect(evidence.manifests.v1).toMatchObject({
+      version: '1.9.0',
+      tag: 'v1.9.0',
+      made: 'restamp',
+      history: { mode: 'continuity', priorTag: 'v1.9.0', describes: 'v1.9.0', rotationOverrideUsed: false },
+      restamp: {
+        earlierManifestSha256: sha256Hex(v190.v1.bytes),
+        targets: earlier.targets.map(({ filename, byteLength, sha256 }) => ({ filename, byteLength, sha256 })),
+      },
+    })
+  })
+
+  it('records the waiver, with its exact override, only when the original key did not sign v1 (G10)', () => {
+    const { signer, input } = signedRelease('universal')
+    const { originalKey: _scratch, ...withProductionKey } = input
+    const exact = `ALLOW-UPDATE-KEY-ROTATION:v1.7.0:${signer.keyId}`
+    expect(() => bindSigningEvidence(withProductionKey)).toThrow(exact)
+    expect(() => bindSigningEvidence({ ...withProductionKey, rotationOverride: `ALLOW-UPDATE-KEY-ROTATION:v1.7.1:${signer.keyId}` })).toThrow(UpdateManifestError)
+    const evidence = bindSigningEvidence({ ...withProductionKey, rotationOverride: exact })
+    expect(evidence).toMatchObject({ originalKeySignature: 'waived', rotationOverride: exact })
+    expect(Object.keys(evidence)).toEqual([
+      'schema', 'tag', 'sourceCommit', 'sourceTree', 'signingKeyId', 'trustedKeyIds', 'macos',
+      'originalKeySignature', 'rotationOverride', 'manifests', 'verification',
+    ])
+    expect(bindSigningEvidence({ ...input, rotationOverride: exact })).not.toHaveProperty('rotationOverride')
+  })
+
+  it('refuses files that are not the ones the earlier steps checked, derived and signed', () => {
+    const { signer, input } = signedRelease('universal')
+    const other = makeEphemeralKeypair()
+    const resigned = (bytes: Buffer, ...signers: Signer[]) => signBytes(bytes, ...signers)
+    const v1Changed = Buffer.from(input.v1.manifestBytes.toString('utf8').replace('"schema": 1', '"schema": 1 '))
+    for (const [label, patch, message] of [
+      ['a v2 manifest other than the checked one', { release: { ...input.release, manifestSha256: 'f'.repeat(64) } }, /not the v2 manifest/],
+      ['a v1 manifest other than the derived one', { v1: { manifestBytes: v1Changed, signatureBytes: resigned(v1Changed, signer) } }, /not the v1 manifest/],
+      ['a v2 envelope signed by two keys', { v2: { ...input.v2, signatureBytes: resigned(input.v2.manifestBytes, signer, other) } }, /exactly one signature/],
+      ['a v1 envelope by an unregistered key', { v1: { ...input.v1, signatureBytes: resigned(input.v1.manifestBytes, other) } }, UpdateManifestError],
+      ['manifests that have expired by now', { now: isoAfter('2026-11-16T12:00:00Z', 181 * DAY_MS) }, /expired/],
+      ['a history that was not authorized', { history: { ...input.history, v2: { ...input.history.v2, authorized: false } } }, /history/],
+      ['a v1 made the other way', { derivation: { ...input.derivation, made: 'restamp' } }, /projection/],
+      ['measured CPU types that give another kind', { release: { ...input.release, macos: { ...input.release.macos, expected: ['arm64'] } } }, UpdateManifestError],
+      ['another tag', { tag: 'v1.7.1' }, UpdateManifestError],
+      ['another registry', { registryBytes: Buffer.from(`${JSON.stringify(makeRegistry(other), null, 2)}\n`) }, UpdateManifestError],
+    ] as const) {
+      expect(() => bindSigningEvidence({ ...input, ...patch } as typeof input), label).toThrow(message)
+    }
+  })
+})
+

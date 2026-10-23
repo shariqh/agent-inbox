@@ -307,6 +307,13 @@ describe('Windows MSI lifecycle (#87 PR 2b)', () => {
     expect(asUser).toContain('PostMessage(window, 0x0010, IntPtr.Zero, IntPtr.Zero)')
   })
 
+  it("counts Windows' notification history as a list, not once per notification", () => {
+    // Windows PowerShell finds no Count on the WinRT list and asks each item instead
+    // (run 40021288282 read two notifications as "count=1 1").
+    expect(read(join(msiDir, 'as-user.ps1')))
+      .toContain("'count=' + @([Windows.UI.Notifications.ToastNotificationManager]::History.GetHistory('$($identity.appUserModelId)')).Count")
+  })
+
   it('asks the running app to close through Restart Manager without forcing it', () => {
     const asUser = read(join(msiDir, 'as-user.ps1'))
     expect(asUser.match(/RmShutdown\(session,[^)]*\)/g)).toEqual(['RmShutdown(session, flags, IntPtr.Zero)'])

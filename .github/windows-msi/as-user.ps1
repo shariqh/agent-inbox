@@ -738,7 +738,7 @@ function Get-ToastHistory {
   $script = @"
 try {
   [void][Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime]
-  'count=' + [Windows.UI.Notifications.ToastNotificationManager]::History.GetHistory('$($identity.appUserModelId)').Count
+  'count=' + @([Windows.UI.Notifications.ToastNotificationManager]::History.GetHistory('$($identity.appUserModelId)')).Count
 } catch {
   'error=' + `$_.Exception.Message
 }

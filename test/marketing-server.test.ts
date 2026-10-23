@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { once } from 'node:events'
+import { readFileSync } from 'node:fs'
 import { request } from 'node:http'
 import { resolve } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
@@ -42,12 +43,12 @@ describe('isolated marketing preview server', () => {
     expect(response.headers.get('cache-control')).toBe('no-store')
     expect(response.headers.get('x-content-type-options')).toBe('nosniff')
     expect(response.headers.get('content-security-policy')).toContain("connect-src 'none'")
-    expect(response.headers.get('content-security-policy')).toContain('https://cdn.jsdelivr.net')
+    expect(response.headers.get('content-security-policy')).not.toContain('https:')
     expect(response.headers.get('content-security-policy')).toContain("frame-ancestors 'none'")
     expect(await response.text()).toContain('every terminal.')
   })
 
-  it('allows every inline script, including the import map, by hash next to the pinned CDN', async () => {
+  it('allows every inline script by hash and other scripts only from the preview itself', async () => {
     const response = await fetch(baseUrl)
     const html = await response.text()
     const scriptSrc = (response.headers.get('content-security-policy') ?? '')
@@ -55,11 +56,27 @@ describe('isolated marketing preview server', () => {
       .find(([name]) => name === 'script-src') ?? []
     const blocks = [...html.matchAll(/<script(\s[^>]*)?>([\s\S]*?)<\/script>/g)]
     expect(blocks.map(([, attributes]) => attributes?.match(/\btype="([^"]+)"/)?.[1] ?? 'classic'))
-      .toContain('importmap')
-    for (const [, , source] of blocks) {
-      expect(scriptSrc).toContain(`'sha256-${createHash('sha256').update(source!).digest('base64')}'`)
+      .toEqual(['classic', 'module', 'classic'])
+    expect(scriptSrc).toEqual([
+      'script-src',
+      "'self'",
+      ...blocks.map(([, , source]) => `'sha256-${createHash('sha256').update(source!).digest('base64')}'`),
+    ])
+  })
+
+  it('serves each vendored file the manifest lists, scripts as JavaScript', async () => {
+    const manifest = JSON.parse(readFileSync(resolve('marketing/vendor/manifest.json'), 'utf8')) as {
+      files: Array<{ path: string }>
     }
-    expect(scriptSrc).toContain('https://cdn.jsdelivr.net')
+    expect(manifest.files.map(file => file.path)).toContain('vendor/three-0.186.0/three.module.js')
+    for (const { path } of manifest.files) {
+      const response = await fetch(`${baseUrl}/${path}`)
+      expect(response.status, path).toBe(200)
+      expect(response.headers.get('content-type'))
+        .toBe(path.endsWith('.js') ? 'text/javascript; charset=utf-8' : 'text/plain; charset=utf-8')
+      expect(response.headers.get('x-content-type-options')).toBe('nosniff')
+      expect(Buffer.from(await response.arrayBuffer()).equals(readFileSync(resolve('marketing', path)))).toBe(true)
+    }
   })
 
   it('serves HEAD without a body', async () => {
@@ -68,10 +85,30 @@ describe('isolated marketing preview server', () => {
     expect(await response.text()).toBe('')
   })
 
-  it.each(['/api/items', '/api/boards', '/package.json', '/.git/config', '/src/store.ts'])(
+  it.each([
+    '/api/items',
+    '/api/boards',
+    '/package.json',
+    '/.git/config',
+    '/src/store.ts',
+    '/marketing/index.html',
+    '/vendor/manifest.json',
+    '/vendor/three-0.186.0/',
+    '/vendor/three-0.186.0/three.webgpu.js',
+    '/vendor/three-0.186.0/../../package.json',
+  ])(
     'does not expose the app or checkout through %s',
     async pathname => {
-      expect((await fetch(baseUrl + pathname)).status).toBe(404)
+      // A raw request keeps dot segments that fetch() would resolve away.
+      const status = await new Promise<number | undefined>((resolveStatus, reject) => {
+        const req = request(baseUrl, { path: pathname }, response => {
+          response.resume()
+          resolveStatus(response.statusCode)
+        })
+        req.on('error', reject)
+        req.end()
+      })
+      expect(status).toBe(404)
     },
   )
 

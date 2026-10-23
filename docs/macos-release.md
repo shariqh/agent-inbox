@@ -75,9 +75,13 @@ stated minimum before updating either pinned major.
 
 1. Stage and self-test the arm64 and x64 Node runtime payloads independently.
 2. Restore both verified payloads into each native thin Electron build.
-3. Rebuild `better-sqlite3` for Electron 43.8.0 on that architecture, then run the
+3. Compile `better-sqlite3` for Electron 43.8.0 on that architecture, then run the
    allocation-driven SQLite check under that packaged Electron
-   ([Electron's embedded Node](#electrons-embedded-node)).
+   ([Electron's embedded Node](#electrons-embedded-node)). The stage installs with
+   `npm ci --ignore-scripts` and `@electron/rebuild` runs with `buildFromSource`
+   (`scripts/app-dependencies.mjs`), so the addon is always built from the
+   lockfile-pinned source: prebuild-install would otherwise unpack a cached or
+   downloaded prebuild, JavaScript included, without checking a digest (#315).
 4. Preserve each thin app with a tar archive so framework symlinks and executable
    modes survive artifact transfer.
 5. Merge the thin apps with `@electron/universal`. The two
@@ -88,6 +92,21 @@ stated minimum before updating either pinned major.
 
 Set `SOURCE_DATE_EPOCH` to the source commit time for repeatable `setup-info.json`
 metadata. No build script downloads an unpinned `latest` tool or Node archive.
+Release, build and signing workflows restore no npm cache: no `actions/setup-node`
+step sets any `cache` input, and each sets `package-manager-cache: false`, so a later
+`packageManager` field in `package.json` cannot turn caching on. Each of these
+workflows sets `npm_config_build_from_source=true` once, in its top-level `env`, and no
+job or step sets it again (#315). So every npm install in them compiles better-sqlite3,
+however the command is spelled. Nothing from the checkout's own install ships, but
+scripts and tests load its better-sqlite3 in the jobs that build the release and in
+those that hold the signing and notary secrets, and prebuild-install would otherwise
+unpack a cached or downloaded prebuild, JavaScript included, and load it without
+checking a digest.
+node-gyp compiles it against headers it downloads for the runner's Node and checks
+against that release's `SHASUMS256.txt`. The universal workflow also runs
+`test/app-dependencies.test.ts` under the pinned release Node, so an npm that stopped
+passing the variable to install scripts would fail the release run itself. `ci.yml`,
+which holds no secret, keeps the prebuilds.
 The app and each portable runtime carry the project MIT notice as
 `LICENSE.agent-inbox`; the runtime keeps Node's separate upstream notice as `LICENSE`.
 The signed app also preserves Electron's upstream `LICENSE.electron` and

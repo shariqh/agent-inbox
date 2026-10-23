@@ -85,7 +85,8 @@ Each job:
 2. downloads and SHA-verifies the official Node archive;
 3. stages the portable runtime with its own Node/npm and runs the runtime
    manifest, Node ABI, `better-sqlite3`, hook, and allocation-driven SQLite self-tests;
-4. rebuilds `better-sqlite3` for the pinned Electron ABI;
+4. compiles `better-sqlite3` for the pinned Electron ABI from the lockfile-pinned
+   source, with install scripts off and no prebuild (#315);
 5. creates a thin Electron application folder containing only the matching
    Linux runtime key;
 6. verifies ELF architecture, libc symbol floors, Electron/Node versions and
@@ -98,6 +99,15 @@ Each job:
 The workflow uploads short-lived Actions artifacts for review and protected
 aggregation. It has read-only repository permissions, persists no checkout
 credentials, uses no secrets, and cannot publish GitHub Release assets itself.
+
+Like every release, build and signing workflow, it restores no npm cache (no `cache`
+input on any `actions/setup-node` step, and `package-manager-cache: false` on each),
+and it sets `npm_config_build_from_source=true` once in its top-level `env`, which no
+job or step sets again (#315). Nothing from the checkout's own install ships, but the
+job's scripts and tests load its better-sqlite3 beside the artifacts they build, so no
+npm install in the workflow takes a prebuild: node-gyp compiles it with the runner's
+default compiler, against headers it downloads for the runner's Node and checks
+against that release's `SHASUMS256.txt`.
 
 ## Build an AppImage
 

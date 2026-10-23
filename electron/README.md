@@ -207,8 +207,9 @@ The .app needs **no terminal and no system Node**: the viewer server runs inside
 Electron's bundled Node. `scripts/package-app.sh` stages the release thin app's inputs —
 `dist/ + public/ + electron/ + release/` and the checked-in `package.json` +
 `package-lock.json` pair — into `build/stage`, installs that lockfile's production graph
-with `npm ci --omit=dev`, rebuilds better-sqlite3 against Electron's ABI with the
-checkout's lockfile-pinned `electron-rebuild` (isolated — the repo's node_modules stays
+with `npm ci --omit=dev --ignore-scripts`, compiles better-sqlite3 from source against
+Electron's ABI with the checkout's lockfile-pinned `electron-rebuild --build-from-source`
+(no cached or downloaded prebuild, #315; isolated — the repo's node_modules stays
 built for Node 24), and packages with @electron/packager (`--no-asar`: the server chdirs
 into the app dir and serves `./public` from the real filesystem). Packaging stops if the
 stage is missing its manifest or lockfile, or if the staged or packaged dependency graph

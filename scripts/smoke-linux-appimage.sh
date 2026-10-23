@@ -27,6 +27,27 @@ assert_chromium_sandbox() {
   return 1
 }
 
+# The app runs as a French user (LANG below), but only en-US.pak ships (#292):
+# Chromium must fall back to it and pass it to every renderer as --lang.
+assert_english_renderers() {
+  local cmdline command renderers=0
+  for cmdline in /proc/[0-9]*/cmdline; do
+    [[ -r "$cmdline" ]] || continue
+    command="$(tr '\0' ' ' < "$cmdline" 2>/dev/null || true)"
+    [[ "$command" == *" --type=renderer "* ]] || continue
+    if [[ "$command" != *" --lang=en-US "* ]]; then
+      echo "smoke-linux-appimage: a renderer did not fall back to en-US: $(grep -o -- '--lang=[^ ]*' <<<"$command" || echo 'no --lang')" >&2
+      return 1
+    fi
+    renderers=$((renderers + 1))
+  done
+  if [[ "$renderers" -eq 0 ]]; then
+    echo "smoke-linux-appimage: no renderer showed which locale Chromium chose" >&2
+    return 1
+  fi
+  echo "smoke-linux-appimage: $renderers renderers fell back to --lang=en-US under LANG=fr_FR.UTF-8"
+}
+
 APPIMAGE=""
 MODE=""
 PORT=""
@@ -88,6 +109,9 @@ if ! unshare --user --map-root-user true; then
 fi
 launch=(
   env
+  -u LANGUAGE
+  -u LC_ALL
+  -u LC_MESSAGES
   "HOME=$SCRATCH/home"
   "XDG_CONFIG_HOME=$SCRATCH/config"
   "XDG_CACHE_HOME=$SCRATCH/cache"
@@ -96,6 +120,7 @@ launch=(
   "TMPDIR=$SCRATCH/tmp"
   "AGENT_INBOX_DB=$SCRATCH/state/inbox.db"
   "AGENT_INBOX_PORT=$PORT"
+  "LANG=fr_FR.UTF-8"
 )
 if [[ "$MODE" == "extract" ]]; then
   launch+=("APPIMAGE_EXTRACT_AND_RUN=1")
@@ -120,3 +145,8 @@ done
 curl -fsSI "http://127.0.0.1:$PORT/" |
   grep -qi '^x-agent-inbox-local-boundary: loopback-v1'
 assert_chromium_sandbox
+for _ in {1..30}; do
+  assert_english_renderers >/dev/null 2>&1 && break
+  sleep 1
+done
+assert_english_renderers

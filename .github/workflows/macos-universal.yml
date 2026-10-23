@@ -191,7 +191,8 @@ jobs:
           ditto "$MOUNT/Agent Inbox.app" "$COPIED"
           codesign --verify --deep --strict --verbose=2 "$COPIED"
           PORT=14319
-          HOME="$TEST_HOME" AGENT_INBOX_PORT="$PORT" "$COPIED/Contents/MacOS/Agent Inbox" >"$RUNNER_TEMP/agent-inbox.log" 2>&1 &
+          # Launched as a French user, though only en.lproj ships (#292).
+          HOME="$TEST_HOME" AGENT_INBOX_PORT="$PORT" "$COPIED/Contents/MacOS/Agent Inbox" -AppleLanguages '(fr)' >"$RUNNER_TEMP/agent-inbox.log" 2>&1 &
           APP_PID=$!
           trap 'kill "$APP_PID" >/dev/null 2>&1 || true; hdiutil detach "$MOUNT" >/dev/null 2>&1 || true' EXIT
           for _ in {1..60}; do
@@ -199,6 +200,15 @@ jobs:
             sleep 1
           done
           curl -fsSI "http://127.0.0.1:$PORT/" | grep -qi '^x-agent-inbox-local-boundary: loopback-v1'
+          # Chromium must fall back to en-US and pass it to every renderer.
+          RENDERER_LOCALES=""
+          for _ in {1..30}; do
+            RENDERER_LOCALES="$(pgrep -lf -- '--type=renderer' | grep -F -- "$COPIED/Contents/Frameworks/" | grep -o -- '--lang=[^ ]*' | sort -u | paste -sd ' ' - || true)"
+            [ -n "$RENDERER_LOCALES" ] && break
+            sleep 1
+          done
+          echo "Renderer locale with -AppleLanguages (fr): ${RENDERER_LOCALES:-none}"
+          test "$RENDERER_LOCALES" = "--lang=en-US"
           RUNTIME="$COPIED/Contents/Resources/app/runtime/darwin-arm64"
           "$RUNTIME/bin/node" "$RUNTIME/scripts/runtime-payload.mjs" install \
             --payload-root "$RUNTIME" --runtime-root "$TEST_HOME/.agent-inbox/runtime" >"$RUNNER_TEMP/runtime-install.json"

@@ -82,13 +82,17 @@ stated minimum before updating either pinned major.
    `npm ci --ignore-scripts` and `@electron/rebuild` runs with `buildFromSource`
    (`scripts/app-dependencies.mjs`), so the addon is always built from the
    lockfile-pinned source: prebuild-install would otherwise unpack a cached or
-   downloaded prebuild, JavaScript included, without checking a digest (#315).
+   downloaded prebuild, JavaScript included, without checking a digest (#315). The
+   packaged thin app keeps only the English Electron locale
+   ([What Electron locales ship](#what-electron-locales-ship-292)).
 4. Preserve each thin app with a tar archive so framework symlinks and executable
    modes survive artifact transfer.
 5. Merge the thin apps with `@electron/universal`. The two
    `Contents/Resources/app/runtime/darwin-*` trees are excluded from `lipo`; Electron,
    helpers, frameworks, and `better_sqlite3.node` must be universal.
-6. Run a second, native Intel job against the finalized signed x64 runtime and
+6. Launch the provisional app from its DMG as a French user (`-AppleLanguages '(fr)'`)
+   and require its hardened loopback marker and every renderer's `--lang=en-US`.
+7. Run a second, native Intel job against the finalized signed x64 runtime and
    publish its verification record beside the provisional universal artifact.
 
 Set `SOURCE_DATE_EPOCH` to the source commit time for repeatable `setup-info.json`
@@ -134,6 +138,54 @@ is missing. Runtime staging prunes before its probes, hook selftest, SQLite chec
 probe, so the runtime manifest lists exactly the files those checks ran against. Each thin
 app prunes its own copy after the Electron rebuild and before packaging, and refuses to
 publish if the app or an embedded runtime still carries any of it.
+
+### What Electron locales ship (#292)
+
+The UI is English-only, so the app ships one Electron locale. Electron brings Chromium's
+UI strings in 55 languages: on macOS, 220 `.lproj` folders in `Electron
+Framework.framework/Versions/A/Resources` (each language and three grammatical-gender
+variants that desktop Chromium never loads, 48 MB), plus 55 empty `.lproj` folders in the
+app's `Contents/Resources`, which only tell macOS which languages the app speaks; on Linux
+and Windows, 55 `locales/*.pak` files (48 MB).
+`scripts/prune-electron-locales.mjs` keeps `en.lproj` (and `Base.lproj`, should Electron
+ship one) wherever a `.lproj` sits in the bundle outside the app's own code, and only
+`locales/en-US.pak` on Linux and Windows.
+
+- **Fallback.** On macOS, Chromium takes its locale from the languages the app's own
+  `.lproj` folders declare (`l10n_util::OverrideLocaleWithCocoaLocale`); with `en.lproj`
+  alone, every user gets `en-US` and Chromium loads the framework's
+  `en.lproj/locale.pak`. On Linux and Windows, Chromium tries the user's languages
+  (`LANGUAGE`, `LC_ALL`, `LC_MESSAGES`, `LANG`; on Windows, the UI language) and falls back
+  to `en-US` when no pak matches (`GetApplicationLocaleInternalNonMac` in `l10n_util.cc`).
+  The pruned macOS and Linux layouts were launched in French, German, Japanese and
+  British English with Electron 43.8.0: `app.getLocale()`, `navigator.language` and every
+  renderer's `--lang` were `en-US`, where the unpruned layouts gave the user's language.
+- **What a non-English user sees.** The app's text and Electron's menu role labels were
+  always English. Strings Chromium takes from its locale pak (such as form validation
+  messages and some accessibility descriptions) are now English for everyone. On
+  macOS, AppKit's own strings follow the app's language, which macOS resolves from the
+  app's `.lproj` folders because the app does not set `CFBundleAllowMixedLocalizations`:
+  the items AppKit adds to menus (such as Start Dictation and Emoji & Symbols), the About
+  panel's version label and the open panel's buttons and sidebar are now English where
+  they followed the user's language. Dates and times formatted with the default locale
+  (`toLocaleString()`, `Intl.DateTimeFormat(undefined, ...)`) use `en-US` conventions for
+  every user, British English included. Notifications carry the app's own title, body and
+  action labels, and macOS draws the rest. `app.getPreferredSystemLanguages()` still
+  reports the user's languages, while on macOS `app.getSystemLocale()`
+  (`NSLocale.currentLocale`) follows the app's language; the app reads neither.
+- **Where.** Each thin-app builder prunes the packaged app once, right after
+  `@electron/packager` (the only step that adds Electron's files) and before anything
+  checks, hashes or publishes it, so both macOS thin apps carry the same locale set into
+  the universal merge. The prune refuses, before removing anything, an app without the
+  English locale Chromium falls back to. The macOS thin build, the Linux and Windows folder
+  gates (which every DEB and AppImage build and verification repeats on the folder it
+  packages or extracted), the universal assembly before anything is signed, and the final
+  DMG gate refuse an app that lacks that locale or ships any other.
+- **Signing.** Electron's prebuilt app is only linker-signed: its framework has no
+  `_CodeSignature` and seals no resources, and the prune removes no Mach-O, so nothing
+  already signed changes. The framework's signature and its
+  `_CodeSignature/CodeResources` are made by release signing, after the merge, and seal
+  exactly the English locale.
 
 ## Finalization order
 
@@ -306,7 +358,8 @@ The credentialed sequence is intentionally split:
    DMG read-only, require its expected app/Applications-link shape, and copy the transported
    app with `ditto` into clean temporary storage. Verify the copied app's signature,
    authority/team, staple, Gatekeeper assessment, universal executable/addon, both runtime
-   manifests and architectures, source/version/setup metadata, icon, and notices. Launch
+   manifests and architectures, source/version/setup metadata, icon, notices, and that the
+   app ships only the English Electron locale. Launch
    that copied app under a disposable `HOME`, require its hardened loopback marker, and
    exercise portable-runtime install and prune without touching production
    `~/.agent-inbox`. Detach the DMG even when any check fails.

@@ -1,13 +1,83 @@
-import { readFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
 import { join, resolve } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import { testLinuxSmokeReadiness } from './linux-smoke-readiness.js'
+import { removeScratchDirs, scratchDir } from './scratch.js'
 
 const root = resolve(process.cwd())
 const workflowPath = join(root, '.github', 'workflows', 'linux-x64-appimage.yml')
 const arm64WorkflowPath = join(root, '.github', 'workflows', 'linux-arm64-appimage.yml')
 
 testLinuxSmokeReadiness(join(root, 'scripts', 'smoke-linux-appimage.sh'))
+
+afterEach(removeScratchDirs)
+
+// Every AppImage launch gate runs the app as a French user: only en-US.pak
+// ships (#292), so Chromium must fall back to it and pass it to each renderer.
+describe('smoke-linux-appimage.sh English locale fallback (#292)', () => {
+  const smoke = readFileSync(join(root, 'scripts', 'smoke-linux-appimage.sh'), 'utf8')
+
+  it('launches under a French locale nothing else overrides and checks the renderers after the sandbox', () => {
+    const launch = smoke.slice(smoke.indexOf('launch=(\n'), smoke.indexOf('\n)\n', smoke.indexOf('launch=(\n')))
+    expect(launch).toContain('  env\n  -u LANGUAGE\n  -u LC_ALL\n  -u LC_MESSAGES\n')
+    expect(launch).toContain('"LANG=fr_FR.UTF-8"')
+    const sandbox = smoke.lastIndexOf('\nassert_chromium_sandbox\n')
+    const english = smoke.lastIndexOf('\nassert_english_renderers\n')
+    expect(sandbox).toBeGreaterThan(-1)
+    expect(english).toBeGreaterThan(sandbox)
+  })
+
+  // The function itself, run against a fake /proc.
+  function renderers(processes: Record<string, string[]>) {
+    const fn = smoke.match(/^assert_english_renderers\(\) \{\n[\s\S]*?^\}$/m)?.[0]
+    if (!fn) throw new Error('smoke-linux-appimage.sh defines no assert_english_renderers')
+    const proc = scratchDir('appimage-proc-')
+    for (const [pid, argv] of Object.entries(processes)) {
+      mkdirSync(join(proc, pid))
+      writeFileSync(join(proc, pid, 'cmdline'), `${argv.join('\0')}\0`)
+    }
+    const result = spawnSync('/bin/bash', ['-s'], {
+      encoding: 'utf8',
+      timeout: 5_000,
+      input: `set -euo pipefail\n${fn.replaceAll('/proc/', `${proc}/`)}\nassert_english_renderers\n`,
+    })
+    if (result.error) throw result.error
+    return result
+  }
+  const app = '/tmp/.mount_Agent/usr/lib/agent-inbox/Agent Inbox'
+
+  it('passes when every renderer fell back to en-US', () => {
+    const result = renderers({
+      100: [app, '--disable-setuid-sandbox'],
+      101: [app, '--type=zygote', '--no-zygote-sandbox'],
+      102: [app, '--type=renderer', '--enable-sandbox', '--lang=en-US', '--num-raster-threads=4'],
+      103: [app, '--type=gpu-process', '--enable-crash-reporter'],
+      104: [app, '--type=renderer', '--lang=en-US'],
+    })
+    expect(result.status, result.stderr).toBe(0)
+    expect(result.stdout).toBe('smoke-linux-appimage: 2 renderers fell back to --lang=en-US under LANG=fr_FR.UTF-8\n')
+  })
+
+  it('refuses a renderer running in another locale', () => {
+    const result = renderers({
+      102: [app, '--type=renderer', '--lang=en-US'],
+      104: [app, '--type=renderer', '--lang=fr', '--renderer-client-id=5'],
+    })
+    expect(result.status).toBe(1)
+    expect(result.stderr).toContain('smoke-linux-appimage: a renderer did not fall back to en-US: --lang=fr')
+  })
+
+  it('refuses a renderer that names no locale, and proof without any renderer', () => {
+    expect(renderers({ 102: [app, '--type=renderer', '--lang=en-USA'] }).stderr)
+      .toContain('smoke-linux-appimage: a renderer did not fall back to en-US: --lang=en-USA')
+    expect(renderers({ 102: [app, '--type=renderer'] }).stderr)
+      .toContain('smoke-linux-appimage: a renderer did not fall back to en-US: no --lang')
+    const none = renderers({ 100: [app], 101: [app, '--type=utility', '--lang=en-US'] })
+    expect(none.status).toBe(1)
+    expect(none.stderr).toContain('smoke-linux-appimage: no renderer showed which locale Chromium chose')
+  })
+})
 
 describe('Linux x64 AppImage workflow', () => {
   it('is a read-only, fork-safe, exact-action x64 package workflow', () => {

@@ -44,6 +44,48 @@ contextBridge.exposeInMainWorld('agentInboxTheme', {
   },
 })
 
+// Issue #300: the one method the viewer opens links through. It passes on a
+// fresh copy of a well-formed request and a checked copy of the answer; main
+// re-validates the sender and everything in the request, and alone decides
+// what may open (electron/link-open.cjs). filesAvailable() only reads whether
+// this page may open local files: main says yes only while the window shows the
+// viewer this app started and proved it owns, and refuses file requests
+// otherwise, whatever the page asks.
+const LINK_REASONS = new Set([
+  'folder', 'app', 'blocked', 'executable', 'special', 'type',
+  'invalid', 'missing', 'inaccessible', 'failed', 'unavailable', 'unowned',
+])
+
+function linkRequest(request) {
+  if (!request || typeof request !== 'object' || Array.isArray(request)) return null
+  if (request.kind === 'web' && typeof request.url === 'string') return { kind: 'web', url: request.url }
+  if (request.kind === 'file' && typeof request.path === 'string') return { kind: 'file', path: request.path }
+  return null
+}
+
+function linkResult(value) {
+  if (value && typeof value === 'object') {
+    if (value.ok === true && value.action === 'opened') return { ok: true, action: 'opened' }
+    if (value.ok === true && value.action === 'revealed' && LINK_REASONS.has(value.reason)) {
+      return { ok: true, action: 'revealed', reason: value.reason }
+    }
+    if (value.ok === false && LINK_REASONS.has(value.reason)) return { ok: false, reason: value.reason }
+  }
+  return { ok: false, reason: 'failed' }
+}
+
+contextBridge.exposeInMainWorld('agentInboxLinks', {
+  open(...args) {
+    const request = args.length === 1 ? linkRequest(args[0]) : null
+    if (!request) return Promise.resolve({ ok: false, reason: 'invalid' })
+    return ipcRenderer.invoke('agent-inbox:open-link', request).then(linkResult, () => ({ ok: false, reason: 'failed' }))
+  },
+  filesAvailable(...args) {
+    if (args.length !== 0) return Promise.resolve(false)
+    return ipcRenderer.invoke('agent-inbox:link-files-available').then((value) => value === true, () => false)
+  },
+})
+
 function isByteCount(value) {
   return Number.isSafeInteger(value) && value >= 0
 }

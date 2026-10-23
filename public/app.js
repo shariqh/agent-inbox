@@ -31,11 +31,13 @@ import { initStructuredTextCopy } from '/structured-copy.js'
 import { captureSelection, restoreSelection } from '/selection.js'
 import { createCopyOnSelect } from '/copy-on-select.js'
 import { renderStructuredText } from '/structured-text.js'
+import { cardLinks } from '/link-strip.js'
+import { fileLinksCopy, initLinkOpening, refreshLinkPermission } from '/link-open.js'
 import { boardRowsView, boardRowLine, progressLabel, hiddenDoneCount, lingeringBoards } from '/boards.js'
 import { titleWithBadge, focusHashFor, parseFocusHash } from '/badge.js'
 import { layoutMode, railLabel, NARROW_MAX, PROJECT_DISCLOSURE_MAX } from '/layout.js'
 import {
-  indexLinks, issueRelationsHtml, missionDepsHtml, missionOutsideHtml, planGroupHeadHtml, planWaitsChipHtml, PREVIEW_TTL_MS,
+  indexLinks, issueRelationsHtml, linkStripHtml, missionDepsHtml, missionOutsideHtml, planGroupHeadHtml, planWaitsChipHtml, PREVIEW_TTL_MS,
   previewRef, rowIssueChipsHtml, rowParentHeadHtml, rowWaitsChipHtml, rowWaitsHtml, sourceChipsHtml, sourceBlockHtml,
 } from '/source.js'
 import { buildIssueView, planGroups, rowParentRuns } from '/issues.js'
@@ -2761,7 +2763,7 @@ function rowAnswerEl(b, r, onSaved) {
       if (option.detail) {
         const detail = document.createElement('div')
         detail.className = 'opt-detail'
-        detail.innerHTML = renderStructuredText(option.detail)
+        detail.innerHTML = renderStructuredText(option.detail, textContext(b))
         box.appendChild(detail)
       }
       choices.appendChild(box)
@@ -2905,8 +2907,8 @@ function cardDetailsHtml(entity, identity, key, presentation, { includeAsked = t
     <div class="card-original-title">${esc(presentation.originalTitle)}</div>
     <div class="meta card-meta">${metadata.map(esc).join(' · ')}</div>
     ${identity.title && entity.label !== undefined ? `<div class="meta">Plan · ${esc(identity.title)} <span class="board-id">#${esc(identity.id.slice(0, 6))}</span></div>` : ''}
-    ${entity.next_step && entity.next_step !== presentation.headline ? `<div class="card-recorded-request"><span class="card-tracking-label">Recorded request</span>${renderStructuredText(entity.next_step)}</div>` : ''}
-    ${entity.context ? `<div class="card-context-body">${renderStructuredText(entity.context)}</div>` : ''}
+    ${entity.next_step && entity.next_step !== presentation.headline ? `<div class="card-recorded-request"><span class="card-tracking-label">Recorded request</span>${renderStructuredText(entity.next_step, textContext(identity))}</div>` : ''}
+    ${entity.context ? `<div class="card-context-body">${renderStructuredText(entity.context, textContext(identity))}</div>` : ''}
     ${sourceBlockHtml(linkIndex, identity, Date.now(), sourceOptions(entity, identity))}
     ${lifecycleHtml(entity, { includeAsked })}
     ${historyHtml(entity)}
@@ -2943,15 +2945,28 @@ function openIssueActivity(id, rowId) {
   focusItem(id, rowId ? { rowId } : null)
 }
 
-function actionBlocksHtml(presentation) {
+function actionBlocksHtml(presentation, ctx) {
   return `
-    ${presentation.detail ? `<div class="card-tldr"><div class="card-tldr-body">${renderStructuredText(presentation.detail)}</div></div>` : ''}
-    ${presentation.impact ? `<div class="card-impact"><div class="card-section-label">Why it matters</div>${renderStructuredText(presentation.impact)}</div>` : ''}
-    ${presentation.nextAfter ? `<div class="card-after"><div class="card-section-label">Then</div>${renderStructuredText(presentation.nextAfter)}</div>` : ''}`
+    ${presentation.detail ? `<div class="card-tldr"><div class="card-tldr-body">${renderStructuredText(presentation.detail, ctx)}</div></div>` : ''}
+    ${presentation.impact ? `<div class="card-impact"><div class="card-section-label">Why it matters</div>${renderStructuredText(presentation.impact, ctx)}</div>` : ''}
+    ${presentation.nextAfter ? `<div class="card-after"><div class="card-section-label">Then</div>${renderStructuredText(presentation.nextAfter, ctx)}</div>` : ''}`
 }
 
-function cardHeadingHtml(presentation) {
-  return `<div class="card-title${presentation.headlineField === 'next-step' ? ' card-next-body' : ''}" role="heading" aria-level="2">${renderStructuredText(presentation.headline)}</div>`
+function cardHeadingHtml(presentation, ctx) {
+  return `<div class="card-title${presentation.headlineField === 'next-step' ? ' card-next-body' : ''}" role="heading" aria-level="2">${renderStructuredText(presentation.headline, ctx)}</div>`
+}
+
+// Issue #300: a bare #N in a card's text resolves against the repository of
+// the item, or of the plan a row belongs to.
+function textContext(identity) {
+  return { repo: typeof identity?.repo === 'string' ? identity.repo : null, copyFiles: fileLinksCopy() }
+}
+
+// Issue #300: the Links strip under the card's origin, listing every link its
+// text shows; '' when there is nothing beyond the PR and issue chips above it.
+function cardLinksHtml(entity, identity) {
+  const key = `links:${entity.id}`
+  return linkStripHtml(cardLinks(entity, identity, linkIndex), { key, open: openContexts.has(key), copyFiles: fileLinksCopy() })
 }
 
 function cardOriginHtml(entity, identity, { showProject = true } = {}) {
@@ -2961,7 +2976,7 @@ function cardOriginHtml(entity, identity, { showProject = true } = {}) {
     ${entity.action_owner ? `<span class="action-owner">${esc(actionOwnerLabel(entity))}</span>` : ''}
     ${sourceChipsHtml(linkIndex, identity, Date.now(), { ...sourceOptions(entity, identity), tabbable: true })}
     ${entity !== identity && Array.isArray(identity.rows) ? rowWaitsChipHtml(entity, identity, Date.now(), { issues: issueView, tabbable: true }) : ''}
-  </div>`
+  </div>${cardLinksHtml(entity, identity)}`
 }
 
 function lifecycleHtml(entity, { includeAsked = true } = {}) {
@@ -2974,9 +2989,9 @@ function lifecycleHtml(entity, { includeAsked = true } = {}) {
   )).join('<span class="lifecycle-arrow">→</span>')}</div>`
 }
 
-function outcomeHtml(outcome, at = null) {
+function outcomeHtml(outcome, at = null, ctx = {}) {
   return outcome
-    ? `<div class="outcome-block"><div class="outcome-label">Outcome${at ? `<span class="outcome-age">· ${esc(rel(at))}</span>` : ''}</div>${renderStructuredText(outcome)}</div>`
+    ? `<div class="outcome-block"><div class="outcome-label">Outcome${at ? `<span class="outcome-age">· ${esc(rel(at))}</span>` : ''}</div>${renderStructuredText(outcome, ctx)}</div>`
     : ''
 }
 
@@ -3005,11 +3020,11 @@ function rowPanelEl(b, r, readOnly = false) {
   setHintOwner(wrap, r, b)
   const presentation = actionPresentation(r, { done: readOnly })
   wrap.innerHTML = `
-    ${cardHeadingHtml(presentation)}
+    ${cardHeadingHtml(presentation, textContext(b))}
     ${cardOriginHtml(r, b)}
-    ${actionBlocksHtml(presentation)}
+    ${actionBlocksHtml(presentation, textContext(b))}
     ${rowHumanStateHtml(r)}
-    ${outcomeHtml(r.outcome, r.outcome_at)}
+    ${outcomeHtml(r.outcome, r.outcome_at, textContext(b))}
     ${rowWaitsHtml(r, b, Date.now(), { issues: issueView })}
     ${cardDetailsHtml(r, b, `row:${r.id}`, presentation)}`
   bindContextDisclosures(wrap)
@@ -3028,11 +3043,11 @@ function rowCardEl(b, r, onSaved, { includeAsked = true, header = true } = {}) {
   setHintOwner(wrap, r, b)
   const presentation = actionPresentation(r, { done: b.status === 'archived' })
   wrap.innerHTML = `
-    ${header ? cardHeadingHtml(presentation) : ''}
+    ${header ? cardHeadingHtml(presentation, textContext(b)) : ''}
     ${cardOriginHtml(r, b, { showProject: header })}
-    ${actionBlocksHtml(presentation)}
+    ${actionBlocksHtml(presentation, textContext(b))}
     ${rowHumanStateHtml(r)}
-    ${outcomeHtml(r.outcome, r.outcome_at)}
+    ${outcomeHtml(r.outcome, r.outcome_at, textContext(b))}
     ${cardDetailsHtml(r, b, `row:${r.id}`, presentation, { includeAsked })}`
   bindContextDisclosures(wrap)
   wrap.appendChild(rowAnswerEl(b, r, onSaved))
@@ -4502,10 +4517,12 @@ function showPanel(id) {
   gear.setAttribute('aria-pressed', String(id === 'setup'))
   // #197: a terminal install or an update can change what each host runs while
   // the app is open, so Settings re-reads it whenever it opens; #216: so can
-  // whether this window may run one-click Setup, after a reload
+  // whether this window may run one-click Setup, after a reload, and (#300)
+  // whether it may open local files
   if (openingSettings) {
     refreshAgents()
     refreshSetupAvailability()
+    refreshLinkPermission()
   }
 }
 
@@ -5530,7 +5547,7 @@ function rowCardBodyEl(entry, m, nowMs) {
   title.className = `card-title${m.headlineField === 'next-step' ? ' card-next-body' : ''}`
   title.setAttribute('role', 'heading')
   title.setAttribute('aria-level', '2')
-  title.innerHTML = renderStructuredText(m.title)
+  title.innerHTML = renderStructuredText(m.title, textContext(entry.kind === 'row' ? entry.board : entry.item))
   const meta = document.createElement('span')
   meta.textContent = [m.project, m.agent].filter(Boolean).join(' · ')
   heading.append(title, meta)
@@ -7049,7 +7066,7 @@ function answerEl(it) {
     if (o.detail) {
       const d = document.createElement('div')
       d.className = 'opt-detail'
-      d.innerHTML = renderStructuredText(o.detail)
+      d.innerHTML = renderStructuredText(o.detail, textContext(it))
       box.appendChild(d)
     }
     wrap.appendChild(box)
@@ -7204,13 +7221,13 @@ function itemCardEl(it, {
   const s = cardSections(it, { done })
   const presentation = actionPresentation(it, { done })
   el.innerHTML = `
-    ${header ? cardHeadingHtml(presentation) : ''}
+    ${header ? cardHeadingHtml(presentation, textContext(it)) : ''}
     ${cardOriginHtml(it, it, { showProject: header })}
-    ${actionBlocksHtml(presentation)}
+    ${actionBlocksHtml(presentation, textContext(it))}
     ${itemAnnotationHtml(s.annotationReceipt)}
     ${s.recWarning ? `<div class="rec-warning">Review: ${esc(s.recWarning)}</div>` : ''}
     ${s.reply || it.reply_kind ? `<div class="reply-block"><strong>${esc(responseLabel(it) || 'You answered')}:</strong> ${esc(s.reply ?? '')}${it.reply_context ? `<div class="reply-context">Context: ${esc(it.reply_context)}</div>` : ''}${it.reply_source === 'agent' ? '<span class="reply-source">via chat</span>' : ''}${s.showPickup ? `<span class="pickup ${it.reply_seen_at ? 'picked' : 'awaiting'}"${it.reply_seen_at ? ' title="Delivery does not confirm the asking agent has resumed."' : ''}>${it.reply_seen_at ? 'Delivered to an agent' : 'Saved · waiting for delivery'}</span>` : ''}</div>` : ''}
-    ${outcomeHtml(s.outcome, it.outcome_at)}
+    ${outcomeHtml(s.outcome, it.outcome_at, textContext(it))}
     ${cardDetailsHtml(it, it, `item:${it.id}`, presentation, { includeAsked })}`
   bindContextDisclosures(el)
   if (s.showAnswer) el.appendChild(answerEl(it))
@@ -8858,7 +8875,7 @@ async function renderSetup() {
 //   initResponsive → initSidebarCollapse → initPaneResizers → initProjectDisclosure →
 //   initKeys (Task 17) → initFocusHash (Task 17) → initStagedFlush →
 //   initDraftPersistence (#279) → initPressGuard (#38) → initScrollGuard → initAgentSelect →
-//   initStructuredTextCopy → initCopyOnSelect → initGear → initLiveBar → renderSetup → load →
+//   initStructuredTextCopy → initLinkOpening → initCopyOnSelect → initGear → initLiveBar → renderSetup → load →
 //   setInterval(load, 3000)
 initTabs()
 initTriage()
@@ -8877,6 +8894,7 @@ initPressGuard()
 initScrollGuard()
 initAgentSelect()
 initStructuredTextCopy()
+initLinkOpening()
 initCopyOnSelect()
 initGear()
 initLiveBar()

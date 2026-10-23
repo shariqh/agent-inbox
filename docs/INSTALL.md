@@ -419,6 +419,36 @@ nothing is run to find this out.
 
 Nothing runs when the app starts; updating agents is always your explicit choice.
 
+### Removing old runtimes
+
+Each runtime Setup installs under `~/.agent-inbox/runtime/<runtime-id>/` takes about 170 MB.
+The installer removes old ones only during an install, and even then keeps the newest
+previous one. To remove every runtime nothing uses, run a runtime's own
+`prune-runtimes.sh` (in a 1.7.0 or later runtime, or the app's own copy inside
+`Agent Inbox.app/Contents/Resources/app/runtime/<platform-arch>/scripts/`):
+
+```sh
+bash ~/.agent-inbox/runtime/<runtime-id>/scripts/prune-runtimes.sh           # dry run
+bash ~/.agent-inbox/runtime/<runtime-id>/scripts/prune-runtimes.sh --apply   # remove them
+```
+
+The dry run lists each runtime and what would happen to it, and changes nothing. With
+`--apply` it takes the same setup lock as the installers and removes each runtime that:
+
+- is not the runtime the script runs from;
+- no host config uses: `~/.claude.json` (every scope in it, per-project servers included),
+  `~/.claude/settings.json`, `~/.claude/settings.local.json`, `~/.copilot/mcp-config.json`
+  or Claude Desktop's config, wherever a value names the runtime or a command, argument or
+  environment path in an MCP server or hook leads into it; and
+- no running process names, such as an agent session still running the MCP server it
+  started with. Exit that session and run it again to remove that runtime too.
+
+If a host config exists but cannot be read, nothing is removed. Project-scope configs
+(`<project>/.mcp.json`, `<project>/.claude/settings*.json`) are not read; a session started
+from one is still protected while it runs. Each removal is the same one the installer
+makes: the runtime folder is checked against its manifest and renamed into a `.trash-…`
+folder before anything is deleted, so an interrupted removal never leaves half a runtime.
+
 ### If an install is interrupted
 
 Stopping the installer partway (Ctrl-C, a closed terminal, Setup's cancel when the app

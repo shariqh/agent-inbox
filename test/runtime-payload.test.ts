@@ -1126,7 +1126,7 @@ describe('runtime-config references: structural reference gate for prune/rollbac
     expect(result.matches).toHaveLength(0)
   })
 
-  it('reports unreferenced (not unknown) when a file has only custom/split pairs — those do not count as a reference', () => {
+  it('reports unreferenced (not unknown) when a file has only a custom pair that points nowhere near the runtime', () => {
     const { runtimeRoot, runtimeId } = installedRuntime()
     const dir = tmp('refs-custom-')
     const settingsFile = join(dir, 'settings.json')
@@ -2030,6 +2030,7 @@ createInterface({ input: process.stdin }).on('line', (line) => {
   for (const name of [
     'install-agents.sh',
     'install-hooks.sh',
+    'prune-runtimes.sh',
     'runtime-payload.mjs',
     'runtime-config.mjs',
     'setup-filesystem.cjs',

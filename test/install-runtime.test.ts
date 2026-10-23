@@ -9,12 +9,13 @@ import {
   readdirSync,
   rmSync,
   symlinkSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { spawn, spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
-import { dirname, join, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { readAgentHosts, registeredRuntimeVersion } from '../src/agent-hosts.js'
 import type { RuntimeVerifier } from '../src/agent-hosts.js'
@@ -350,6 +351,106 @@ describe('portable release installer', () => {
     expect(removed.status, removed.stderr).toBe(0)
     expect(readdirSync(f.runtimeRoot).filter((name) => !name.startsWith('.'))).toEqual([])
   }, MULTI_INSTALL_TEST_TIMEOUT_MS)
+
+  // #294: the prune after an install asks the same gate as Setup's
+  // prune-runtimes.sh. An older runtime a host config still uses in any of
+  // these ways used to look unreferenced, so this install deleted it.
+  describe('the prune after an install (#294)', () => {
+    /** Two older runtimes already installed, the oldest first, so the install keeps the newer one as its previous. */
+    function olderRuntimes(f: Fixture): { oldest: string; previous: string } {
+      const [oldest, previous] = ['0.9.0', '0.9.1'].map((version, i) => {
+        const payload = runtimePayload(version)
+        const dir = join(f.runtimeRoot, payload.runtimeId)
+        mkdirSync(f.runtimeRoot, { recursive: true })
+        cpSync(payload.root, dir, { recursive: true })
+        const at = new Date(Date.now() - (2 - i) * 3_600_000)
+        utimesSync(dir, at, at)
+        return dir
+      }) as [string, string]
+      return { oldest, previous }
+    }
+    const node = (dir: string) => join(dir, 'bin', 'node')
+    const runtimes = (f: Fixture) => readdirSync(f.runtimeRoot).filter((name) => !name.startsWith('.')).sort()
+    const settings = (f: Fixture, value: unknown) => {
+      mkdirSync(join(f.home, '.claude'), { recursive: true })
+      writeFileSync(join(f.home, '.claude', 'settings.json'), JSON.stringify(value))
+    }
+
+    it('removes an older runtime nothing uses and keeps the previous one, as before', () => {
+      const f = fixture()
+      const { oldest, previous } = olderRuntimes(f)
+      const payload = runtimePayload('1.0.0')
+
+      const result = install(f, payload)
+
+      expect(result.status, result.stderr).toBe(0)
+      expect(result.stderr).toContain(`removed unreferenced runtime ${basename(oldest)}`)
+      expect(runtimes(f)).toEqual([basename(previous), payload.runtimeId].sort())
+    })
+
+    const REFERENCES: Array<[string, (f: Fixture, dir: string) => void]> = [
+      ['a split pair', (f, dir) => writeFileSync(f.copilotConfig, JSON.stringify({
+        mcpServers: { legacy: { command: node(dir), args: ['/work/app/server.js'] } },
+      }))],
+      ['an env value', (f, dir) => writeFileSync(f.copilotConfig, JSON.stringify({
+        mcpServers: { legacy: { command: 'node', args: ['/work/app/server.js'], env: { AGENT_INBOX_NODE: node(dir) } } },
+      }))],
+      ['an sh -c wrapper', (f, dir) => writeFileSync(f.copilotConfig, JSON.stringify({
+        mcpServers: { legacy: { command: '/bin/sh', args: ['-c', `exec ${node(dir)} ${join(dir, 'dist', 'mcp-server.js')}`] } },
+      }))],
+      ['a hook written as one command string', (f, dir) => settings(f, {
+        hooks: { Stop: [{ hooks: [{ type: 'command', command: `${node(dir)} ${join(dir, 'dist', 'hook-cli.js')} stop` }] }] },
+      })],
+    ]
+
+    it.each(REFERENCES)('keeps an older runtime that %s still uses', (_label, reference) => {
+      const f = fixture()
+      const { oldest, previous } = olderRuntimes(f)
+      reference(f, oldest)
+      const payload = runtimePayload('1.0.0')
+
+      const result = install(f, payload)
+
+      expect(result.status, result.stderr).toBe(0)
+      expect(result.stderr).toContain(`retained runtime ${basename(oldest)} (referenced)`)
+      expect(runtimes(f)).toEqual([basename(oldest), basename(previous), payload.runtimeId].sort())
+    })
+
+    // A config that cannot be read proves nothing: the install still goes
+    // through, and every older runtime stays.
+    const UNREADABLE: Array<[string, (f: Fixture) => void]> = [
+      ['Claude\'s settings are not JSON', (f) => {
+        mkdirSync(join(f.home, '.claude'), { recursive: true })
+        writeFileSync(join(f.home, '.claude', 'settings.json'), '{"hooks":')
+      }],
+      ['Claude Desktop\'s config is a symlink to nothing', (f) => {
+        const dir = join(f.home, 'Library', 'Application Support', 'Claude')
+        mkdirSync(dir, { recursive: true })
+        symlinkSync(join(f.home, 'gone.json'), join(dir, 'claude_desktop_config.json'))
+      }],
+      ...(process.getuid?.() === 0 ? [] : [['Claude\'s local settings cannot be read', (f: Fixture) => {
+        mkdirSync(join(f.home, '.claude'), { recursive: true })
+        writeFileSync(join(f.home, '.claude', 'settings.local.json'), '{}')
+        chmodSync(join(f.home, '.claude', 'settings.local.json'), 0o000)
+      }] as [string, (f: Fixture) => void]]),
+    ]
+
+    it.each(UNREADABLE)('keeps every runtime, and still installs, when %s', (_label, arrange) => {
+      const f = fixture()
+      const { oldest, previous } = olderRuntimes(f)
+      arrange(f)
+      const payload = runtimePayload('1.0.0')
+
+      const result = install(f, payload)
+
+      expect(result.status, result.stderr).toBe(0)
+      expect(result.stderr).toContain(`retained runtime ${basename(oldest)} (unknown)`)
+      expect(runtimes(f)).toEqual([basename(oldest), basename(previous), payload.runtimeId].sort())
+      for (const config of [f.claudeConfig, f.copilotConfig]) {
+        expect(registration(config)?.command).toBe(join(f.runtimeRoot, payload.runtimeId, 'bin', 'node'))
+      }
+    })
+  })
 
   // #197 part 2: Setup's Agents block reads back exactly what the installer
   // wrote, host by host — and "Update agents" for one host moves only that one.

@@ -1,11 +1,11 @@
 // test/hooks-runtime.ts — real Agent Inbox runtimes in a scratch HOME, for
-// Setup's Claude hooks target (#206).
+// Setup's Claude hooks target (#206) and its runtime prune (#294).
 //
 // Deliberately NOT named *.test.ts: it is imported, never collected.
 //
-// Each runtime carries the REAL scripts/install-hooks.sh, setup-lock.sh,
-// runtime-config.mjs and runtime-payload.mjs, a bin/node that execs the Node
-// running the tests, and a dist/hook-cli.js stub whose selftest passes. It is
+// Each runtime carries the REAL scripts/install-hooks.sh, prune-runtimes.sh,
+// setup-lock.sh, runtime-config.mjs and runtime-payload.mjs, a bin/node that
+// execs the Node running the tests, and a dist/hook-cli.js stub whose selftest passes. It is
 // manifested for THIS host exactly as scripts/runtime-payload.mjs manifests a
 // release payload, so electron/runtime-verify.cjs verifies it as one. The
 // scratch HOME holds ~/.agent-inbox/runtime, the setup lock and
@@ -23,6 +23,7 @@ const PAYLOAD_CLI = join(REPO, 'scripts', 'runtime-payload.mjs')
 const SCRIPTS = [
   'install-agents.sh',
   'install-hooks.sh',
+  'prune-runtimes.sh',
   'runtime-payload.mjs',
   'runtime-config.mjs',
   'setup-filesystem.cjs',

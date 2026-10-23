@@ -33,10 +33,16 @@
 // symlink keeps pointing at its real target rather than being replaced by a
 // plain file. No jq, no dependency — this has to run from the bundled Node
 // runtime itself and be trivially callable from Bash.
+//
+// The prune gate (issue #294) lives here too, read-only: which runtimes any
+// host config or running process still uses (`references` for the
+// installer's own prune and rollback, `unused` for prune-runtimes.sh).
+// Deleting stays in runtime-payload.mjs (`prune`).
 import {
   existsSync,
   lstatSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   renameSync,
@@ -45,9 +51,10 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { randomBytes } from 'node:crypto'
+import { execFileSync } from 'node:child_process'
 import { parseArgs } from 'node:util'
 import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path'
-import { DEFAULT_MANIFEST_FILE, isMainModule, verifyPayload } from './runtime-payload.mjs'
+import { DEFAULT_MANIFEST_FILE, isMainModule, readManifestFile, verifyPayload } from './runtime-payload.mjs'
 
 /** Resolve a path to its real, canonical filesystem identity, or null if it cannot be resolved (missing, unreadable, a loop). */
 function tryCanonicalize(path) {
@@ -120,95 +127,409 @@ export function classifyRuntimeConfig({ nodeBinPath, entryPath, runtimeRoot, man
   }
 }
 
+// ── which runtimes the host configs still use (issue #294) ──────────────
+//
+// ONE rule decides whether a runtime may be pruned, for every prune: the
+// installer's own (`references`, after an install and in its rollback) and
+// Setup's prune-runtimes.sh (`unused`). It reads whole host config files, so
+// every scope in them counts (Claude Code's per-project
+// `projects.*.mcpServers` as much as its user `mcpServers`). Runtime R is in
+// use by a config when
+//   (a) any string value in it names R's id as a whole name
+//       (runtimeIdInText), wherever it sits, unless that name ends a path
+//       that leads somewhere else (another root's runtime with the same
+//       content-derived id) or nowhere; or
+//   (b) a `/`- or `~/`-path inside a LAUNCHER resolves into R's directory, so
+//       a symlinked alias that does not name the id still counts. A launcher
+//       is any object with a string `command`: the shape of every MCP server
+//       registration (Claude Code, Copilot CLI, Claude Desktop) and every
+//       Claude hook.
+// That is a superset of the verified {command, args[0]} pair this gate used
+// to require, which missed split pairs, `env` and `sh -c` wrappers, later
+// arguments and hooks written as one command string. A file that exists but
+// cannot be read (a symlink to nothing, not a regular file, over 64 MB, not
+// JSON) proves nothing, so the answer becomes `unknown` and nothing is
+// pruned. Project-scope configs (`<project>/.mcp.json`,
+// `<project>/.claude/settings*.json`) are not read: Setup never writes them,
+// and the running-process check below still keeps a runtime that a session
+// started from one of them uses.
+
+/** The host config files whose launchers can use a runtime, under `home`. */
+export function referenceFiles(home) {
+  return [
+    join(home, '.claude.json'),
+    join(home, '.claude', 'settings.json'),
+    join(home, '.claude', 'settings.local.json'),
+    join(home, '.copilot', 'mcp-config.json'),
+    // Claude Desktop: macOS, then where its Linux builds keep it
+    join(home, 'Library', 'Application Support', 'Claude', 'claude_desktop_config.json'),
+    join(home, '.config', 'Claude', 'claude_desktop_config.json'),
+  ]
+}
+
+const REFERENCE_LABELS = new Map([
+  ['.claude.json', 'Claude Code'],
+  ['settings.json', 'Claude Code settings'],
+  ['settings.local.json', 'Claude Code settings'],
+  ['mcp-config.json', 'Copilot CLI'],
+  ['claude_desktop_config.json', 'Claude Desktop'],
+])
+
+const MAX_REFERENCE_FILE_BYTES = 64 * 1024 * 1024
+// Paths canonicalized per check: realistic configs name a few dozen.
+const MAX_LAUNCHER_PATHS = 4096
+// What a runtime id is made of (product-version-platform-arch-digest).
+const RUNTIME_ID_CHAR = /[0-9A-Za-z._+-]/
+// What separates the paths inside one string: a whole command line (`sh -c`,
+// a hook's single command string) or `KEY=/path`.
+const PATH_SEPARATOR = /[\s'"=:;,]/
+const PATH_SEPARATORS = /[\s'"=:;,]+/
+
+// Each index at which `text` names `runtimeId` as a whole name.
+function* wholeNames(text, runtimeId) {
+  if (typeof text !== 'string' || typeof runtimeId !== 'string' || runtimeId === '') return
+  for (let at = text.indexOf(runtimeId); at >= 0; at = text.indexOf(runtimeId, at + 1)) {
+    const before = at > 0 ? text[at - 1] : ''
+    const after = text[at + runtimeId.length] ?? ''
+    if (!RUNTIME_ID_CHAR.test(before) && !RUNTIME_ID_CHAR.test(after)) yield at
+  }
+}
+
 /**
- * Recursively walk an arbitrary parsed-JSON value looking for every object
- * shaped like `{command: <string>, args: [<string entry>, ...]}` — the
- * launcher shape shared by both this project's hook-settings entries
- * (docs/hooks.md) and a host's MCP server registration (`mcpServers.<name>`
- * in a Claude/Copilot config). This is deliberately more general than
- * collectCandidateHookEntries() below: a runtime-reference gate has to look
- * across whatever host config files exist, not just the one hooks shape.
+ * Does `text` name `runtimeId` as a whole name: `/<id>/`, `/<id>` at its end,
+ * or `<id>` with no runtime-id character on either side? Never as a prefix or
+ * suffix of a longer name, so a runtime whose id begins (or ends) another's
+ * is never mistaken for it.
  */
-function findCommandArgsPairs(node, out = []) {
-  if (Array.isArray(node)) {
-    for (const item of node) findCommandArgsPairs(item, out)
-  } else if (isPlainObject(node)) {
-    if (typeof node.command === 'string' && Array.isArray(node.args) && typeof node.args[0] === 'string') {
-      out.push({ command: node.command, entry: node.args[0] })
+export function runtimeIdInText(text, runtimeId) {
+  for (const _ of wholeNames(text, runtimeId)) return true
+  return false
+}
+
+// Whether `text` names the runtime `runtimeId` whose canonical directory is
+// `dir`. Each whole-name occurrence counts, unless it ends a path that leads
+// somewhere else: another runtime root holding a runtime with the same
+// content-derived id, or a path that no longer exists. A bare id, or a path
+// this cannot place (`$HOME/…`, relative), counts.
+function namesRuntime(text, runtimeId, dir, home) {
+  for (const at of wholeNames(text, runtimeId)) {
+    let start = at
+    while (start > 0 && !PATH_SEPARATOR.test(text[start - 1])) start -= 1
+    const named = text.slice(start, at + runtimeId.length)
+    const path = named.startsWith('/') ? named : home && named.startsWith('~/') ? join(home, named.slice(2)) : null
+    if (path === null || dir === null) return true
+    try {
+      if (realpathSync(path) === dir) return true
+    } catch (err) {
+      if (err?.code !== 'ENOENT' && err?.code !== 'ENOTDIR') return true
     }
-    for (const value of Object.values(node)) findCommandArgsPairs(value, out)
+  }
+  return false
+}
+
+// The deepest entry that exists on `path`'s way down, when it is a symlink
+// whose target is gone: whatever `path` should hold then cannot be read.
+function danglingLink(path) {
+  let current = path
+  for (;;) {
+    let entry
+    try {
+      entry = lstatSync(current)
+    } catch {
+      const parent = dirname(current)
+      if (parent === current) return null
+      current = parent
+      continue
+    }
+    if (!entry.isSymbolicLink()) return null
+    try {
+      statSync(current)
+      return null
+    } catch {
+      return current
+    }
+  }
+}
+
+function errorText(err) {
+  return err?.code ?? err?.message ?? String(err)
+}
+
+/** One host config: missing (it says nothing), unknown (it exists but proves nothing, with why), or its JSON. */
+function readReferenceFile(file) {
+  let st
+  try {
+    st = statSync(file)
+  } catch (err) {
+    if (err?.code !== 'ENOENT' && err?.code !== 'ENOTDIR') return { state: 'unknown', reason: `cannot be read (${errorText(err)})` }
+    const dangling = danglingLink(file)
+    return dangling === null
+      ? { state: 'missing' }
+      : { state: 'unknown', reason: `cannot be read: ${dangling} is a symlink to something that is not there` }
+  }
+  if (!st.isFile()) return { state: 'unknown', reason: 'is not a regular file' }
+  if (st.size > MAX_REFERENCE_FILE_BYTES) return { state: 'unknown', reason: 'is larger than 64 MB' }
+  let raw
+  try {
+    raw = readFileSync(file, 'utf8')
+  } catch (err) {
+    return { state: 'unknown', reason: `cannot be read (${errorText(err)})` }
+  }
+  try {
+    return { state: 'ok', value: raw.trim() === '' ? {} : JSON.parse(raw) }
+  } catch (err) {
+    return { state: 'unknown', reason: `is not valid JSON (${err.message})` }
+  }
+}
+
+/** Every string value inside `value`, depth first; object keys are names, never values. */
+function stringValues(value) {
+  const out = []
+  const queue = [value]
+  for (let i = 0; i < queue.length; i += 1) {
+    const node = queue[i]
+    if (typeof node === 'string') out.push(node)
+    else if (Array.isArray(node)) for (const item of node) queue.push(item)
+    else if (isPlainObject(node)) for (const item of Object.values(node)) queue.push(item)
+  }
+  return out
+}
+
+/** Every launcher in a parsed config: any object with a string `command`, wherever it sits. */
+function findLaunchers(value) {
+  const out = []
+  const queue = [value]
+  for (let i = 0; i < queue.length; i += 1) {
+    const node = queue[i]
+    if (Array.isArray(node)) {
+      for (const item of node) queue.push(item)
+    } else if (isPlainObject(node)) {
+      if (typeof node.command === 'string') out.push(node)
+      for (const item of Object.values(node)) queue.push(item)
+    }
+  }
+  return out
+}
+
+// The `/`- and `~/`-paths inside one launcher's strings.
+function launcherPaths(launcher, home) {
+  const out = []
+  for (const text of stringValues(launcher)) {
+    for (const token of text.split(PATH_SEPARATORS)) {
+      if (token.startsWith('/')) out.push(token)
+      else if (home && token.startsWith('~/')) out.push(join(home, token.slice(2)))
+    }
   }
   return out
 }
 
 /**
- * Does ANY `{command, args}` launcher pair found anywhere inside `--file`s
- * still resolve (structurally, via classifyRuntimeConfig) to the exact
- * `runtimeId` under `runtimeRoot`? This is the gate a prune/rollback must
- * consult before deleting a runtime directory — see pruneRuntime() in
- * runtime-payload.mjs, which only ever deletes what this says is safe.
- *
- * Never throws. Per file:
- *   · missing            — skipped; contributes nothing either way.
- *   · unreadable/invalid  JSON — contributes 'unknown' (retain): we could not
- *     rule out a reference, so pruning is not provably safe.
- *   · valid JSON, no pair classifies 'owned' with a matching runtimeId — a
- *     'custom'/'split' classification (or no candidate pairs at all) is NOT
- *     evidence of reference and does not itself force 'unknown'.
- *
- * Overall status, in precedence order:
- *   'referenced'   — at least one pair resolves to this exact runtimeId.
- *   'unknown'      — no match found, but at least one file could not be read
- *                    or parsed (retain — do not prune).
- *   'unreferenced' — every given file was either missing or readable/valid
- *                    JSON with no reference to this runtimeId (safe to prune).
+ * Which of `runtimeIds` (directories directly under runtimeRoot) the host
+ * configs in `files` use, by rules (a) and (b) above. Never throws. `uses`
+ * maps each id in use to what uses it ({file, label, command, entry}; command
+ * and entry are null when only a value outside a launcher names it);
+ * `unknown` lists each file that exists but proves nothing, with why; `files`
+ * says, per file, missing, unknown, checked or referenced.
  */
-export function classifyRuntimeReference({ runtimeRoot, runtimeId, files, manifestFileName = DEFAULT_MANIFEST_FILE }) {
+export function scanRuntimeReferences({ runtimeRoot, runtimeIds, files, home = null }) {
+  const root = tryCanonicalize(runtimeRoot)
+  const runtimes = runtimeIds.map((id) => ({ id, dir: root === null ? null : join(root, id) }))
+  const uses = new Map()
+  const unknown = []
   const checked = []
-  const matches = []
-  let sawUnknownFile = false
-
+  const use = (id, found) => uses.set(id, [...(uses.get(id) ?? []), found])
+  let paths = 0
   for (const file of files) {
-    if (!existsSync(file)) {
+    const config = readReferenceFile(file)
+    if (config.state === 'missing') {
       checked.push({ file, status: 'missing' })
       continue
     }
-    let raw
-    try {
-      raw = readFileSync(file, 'utf8')
-    } catch (err) {
-      sawUnknownFile = true
-      checked.push({ file, status: 'unreadable', reason: err.message })
+    if (config.state === 'unknown') {
+      unknown.push({ file, reason: config.reason })
+      checked.push({ file, status: 'unknown', reason: config.reason })
       continue
     }
-    let parsed
-    try {
-      parsed = raw.trim() === '' ? {} : JSON.parse(raw)
-    } catch (err) {
-      sawUnknownFile = true
-      checked.push({ file, status: 'invalid-json', reason: err.message })
-      continue
-    }
-
-    const pairs = findCommandArgsPairs(parsed)
-    let fileMatched = false
-    for (const { command, entry } of pairs) {
-      const result = classifyRuntimeConfig({
-        nodeBinPath: command,
-        entryPath: entry,
-        runtimeRoot,
-        manifestFileName,
-      })
-      if (result.status === 'owned' && result.runtimeId === runtimeId) {
-        fileMatched = true
-        matches.push({ file, command, entry })
+    const label = REFERENCE_LABELS.get(basename(file)) ?? file
+    const found = new Set()
+    const launchers = findLaunchers(config.value)
+    let tooMany = false
+    for (const launcher of launchers) {
+      const strings = stringValues(launcher)
+      const candidates = launcherPaths(launcher, home)
+      paths += candidates.length
+      if (paths > MAX_LAUNCHER_PATHS) {
+        tooMany = true
+        break
+      }
+      const resolved = candidates.map(tryCanonicalize).filter((path) => path !== null)
+      for (const { id, dir } of runtimes) {
+        const named = strings.some((text) => namesRuntime(text, id, dir, home))
+        if (!named && !(dir !== null && resolved.some((path) => isUnder(dir, path)))) continue
+        found.add(id)
+        const entry = Array.isArray(launcher.args) && typeof launcher.args[0] === 'string' ? launcher.args[0] : null
+        use(id, { file, label, command: launcher.command, entry })
       }
     }
-    checked.push({ file, status: fileMatched ? 'referenced' : 'checked', pairCount: pairs.length })
+    if (tooMany) {
+      const reason = `names more than ${MAX_LAUNCHER_PATHS} paths in its launchers, too many to check`
+      unknown.push({ file, reason })
+      checked.push({ file, status: 'unknown', reason })
+      continue
+    }
+    // (a) holds for a value outside any launcher too: a runtime named only there
+    const values = stringValues(config.value)
+    for (const { id, dir } of runtimes) {
+      if (found.has(id) || !values.some((text) => namesRuntime(text, id, dir, home))) continue
+      found.add(id)
+      use(id, { file, label, command: null, entry: null })
+    }
+    checked.push({ file, status: found.size > 0 ? 'referenced' : 'checked' })
   }
+  return { uses, unknown, files: checked }
+}
 
-  const status = matches.length > 0 ? 'referenced' : sawUnknownFile ? 'unknown' : 'unreferenced'
-  return { status, runtimeId, matches, files: checked }
+/**
+ * Is `runtimeId` still used by a host config in `files`? The gate the
+ * installer consults before it prunes an older runtime after an install, or
+ * removes the one a failed install published. Never throws. Status, in
+ * precedence order:
+ *   'referenced'   — a config uses it (scanRuntimeReferences)
+ *   'unknown'      — none does, but a file exists that proves nothing: retain
+ *   'unreferenced' — every file is missing or readable without using it
+ */
+export function classifyRuntimeReference({ runtimeRoot, runtimeId, files, home = null }) {
+  const scan = scanRuntimeReferences({ runtimeRoot, runtimeIds: [runtimeId], files, home })
+  const matches = (scan.uses.get(runtimeId) ?? []).map(({ file, command, entry }) => ({ file, command, entry }))
+  const status = matches.length > 0 ? 'referenced' : scan.unknown.length > 0 ? 'unknown' : 'unreferenced'
+  return { status, runtimeId, matches, files: scan.files }
+}
+
+// ── which runtimes a running process still uses (issue #294) ────────────
+// A running MCP server keeps working after its runtime is deleted, but every
+// Copilot answer watcher it hands out runs <its runtime>/dist/watch-cli.js,
+// and a hook still running from it may spawn more of its files. So a runtime
+// any running process names on its command line (runtimeIdInText) is kept.
+// The checker and its own ancestors are not counted: a recheck names the id
+// it checks. A process started through a symlinked alias, or with a path
+// relative to the runtime, names no id and is not seen; a host config that
+// launches it that way is caught by rule (b) above.
+
+const PS_CANDIDATES = ['/bin/ps', '/usr/bin/ps']
+
+/**
+ * Every process, from `ps -A -ww -o pid=,ppid=,command=`. Never throws:
+ * {ok:false, reason} when ps is missing, fails, or does not list this process
+ * itself, which no complete listing can leave out.
+ */
+export function listProcesses({ psBin = PS_CANDIDATES.find((path) => existsSync(path)) } = {}) {
+  if (!psBin) return { ok: false, reason: 'ps was not found' }
+  let output
+  try {
+    output = execFileSync(psBin, ['-A', '-ww', '-o', 'pid=,ppid=,command='], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      maxBuffer: 64 * 1024 * 1024,
+      timeout: 15_000,
+    })
+  } catch (err) {
+    return { ok: false, reason: `ps failed (${errorText(err)})` }
+  }
+  const processes = []
+  for (const line of output.split('\n')) {
+    const match = /^\s*(\d+)\s+(\d+)(?:\s(.*))?$/.exec(line)
+    if (match) processes.push({ pid: Number(match[1]), ppid: Number(match[2]), command: match[3] ?? '' })
+  }
+  if (!processes.some((p) => p.pid === process.pid)) return { ok: false, reason: 'ps did not list this process' }
+  return { ok: true, processes }
+}
+
+/** The pids in `processes` whose command line names `runtimeId`, leaving out `selfPid` and its ancestors. */
+export function processesUsingRuntime(processes, runtimeId, selfPid = process.pid) {
+  const parents = new Map(processes.map((p) => [p.pid, p.ppid]))
+  const own = new Set()
+  for (let pid = selfPid; pid > 0 && !own.has(pid); pid = parents.get(pid) ?? 0) own.add(pid)
+  return processes
+    .filter((p) => !own.has(p.pid) && runtimeIdInText(p.command, runtimeId))
+    .map((p) => p.pid)
+    .sort((a, b) => a - b)
+}
+
+// The version a runtime folder's own manifest declares, when that manifest is
+// a plain file naming this folder as an Agent Inbox runtime; else undefined.
+function declaredVersion(dir, name, manifestFileName) {
+  try {
+    const manifest = readManifestFile(dir, manifestFileName)
+    if (!isPlainObject(manifest) || manifest.product !== RUNTIME_PRODUCT || manifest.runtimeId !== name) return undefined
+    return typeof manifest.packageVersion === 'string' ? manifest.packageVersion : null
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Every runtime under runtimeRoot and whether prune-runtimes.sh may remove it
+ * (issue #294). Read-only: it lists the root, reads manifests and host
+ * configs and runs `ps`; it never writes, locks or cleans trash. A runtime is
+ * a real directory directly in the root: never a symlink (never followed),
+ * never a `.`-name (the `.trash-*` folders an interrupted prune leaves
+ * included), never anything outside the root. `only` checks that one alone.
+ * Each gets a verdict, in this order:
+ *   current       — `current`, the runtime the caller runs from: kept
+ *   not-a-runtime — no manifest naming this folder as a runtime: left alone
+ *   used          — a host config uses it (`usedBy` names which): kept
+ *   in-use        — a running process names it (`pids`): kept
+ *   unused        — none of these: prune-runtimes.sh removes it
+ * `status` is 'unknown', with `reason` and no runtimes, when a host config
+ * exists but proves nothing or the process list cannot be read: nothing may
+ * then be removed at all.
+ */
+export function findUnusedRuntimes({
+  runtimeRoot,
+  home,
+  current = null,
+  only = null,
+  manifestFileName = DEFAULT_MANIFEST_FILE,
+  processList = listProcesses,
+}) {
+  let names
+  try {
+    names = readdirSync(runtimeRoot)
+  } catch (err) {
+    if (err?.code === 'ENOENT') return { status: 'ok', runtimes: [] }
+    return { status: 'unknown', reason: `${runtimeRoot} cannot be listed (${errorText(err)})`, runtimes: [] }
+  }
+  const runtimes = []
+  const candidates = []
+  for (const name of names.sort()) {
+    if (name.startsWith('.') || (only !== null && name !== only)) continue
+    const dir = join(runtimeRoot, name)
+    try {
+      if (!lstatSync(dir).isDirectory()) continue
+    } catch {
+      continue
+    }
+    const version = declaredVersion(dir, name, manifestFileName)
+    if (name === current) runtimes.push({ runtimeId: name, version: version ?? null, verdict: 'current', usedBy: [], pids: [] })
+    else if (version === undefined) runtimes.push({ runtimeId: name, version: null, verdict: 'not-a-runtime', usedBy: [], pids: [] })
+    else candidates.push({ runtimeId: name, version })
+  }
+  if (candidates.length > 0) {
+    const scan = scanRuntimeReferences({ runtimeRoot, runtimeIds: candidates.map((c) => c.runtimeId), files: referenceFiles(home), home })
+    if (scan.unknown.length > 0) {
+      return { status: 'unknown', reason: scan.unknown.map(({ file, reason }) => `${file} ${reason}`).join('; '), runtimes: [] }
+    }
+    const listed = processList()
+    if (!listed.ok) return { status: 'unknown', reason: `the running processes cannot be listed: ${listed.reason}`, runtimes: [] }
+    for (const { runtimeId, version } of candidates) {
+      const usedBy = [...new Set((scan.uses.get(runtimeId) ?? []).map((found) => found.label))]
+      const pids = processesUsingRuntime(listed.processes, runtimeId)
+      const verdict = usedBy.length > 0 ? 'used' : pids.length > 0 ? 'in-use' : 'unused'
+      runtimes.push({ runtimeId, version, verdict, usedBy, pids })
+    }
+  }
+  runtimes.sort((a, b) => (a.runtimeId < b.runtimeId ? -1 : a.runtimeId > b.runtimeId ? 1 : 0))
+  return { status: 'ok', runtimes }
 }
 
 /**
@@ -776,19 +1097,20 @@ function runClassifyCmd(argv) {
 }
 
 /**
- * `references` — the prune/rollback safety gate: is `--runtime-id` still
- * referenced by anything structurally recognizable in one or more host
- * config `--file`s (repeatable)?
+ * `references` — the installer's prune/rollback safety gate: is
+ * `--runtime-id` still used by a host config (scanRuntimeReferences)?
  *
  *   runtime-config.mjs references --runtime-root <abs> --runtime-id <id>
- *     --file <path> [--file <path> ...] [--manifest-file <name>]
+ *     [--home <dir>] [--file <path> ...] [--manifest-file <name>]
  *
+ * `--home` reads every host config Setup knows (referenceFiles) under that
+ * directory, and expands `~/` paths against it; each `--file` adds one more.
  * stdout: `{status, runtimeId, matches, files}` JSON — always, on success.
  * exit 0: always, for any combination of missing/valid/invalid input files;
  *   `status` (not the exit code) carries the referenced/unreferenced/unknown
  *   verdict, exactly like `classify`'s status field.
  * exit 2: a required flag is missing/empty (no --runtime-root, --runtime-id,
- *   or not at least one --file).
+ *   or neither --home nor a --file).
  */
 function runReferencesCmd(argv) {
   const { values } = parseArgs({
@@ -796,20 +1118,58 @@ function runReferencesCmd(argv) {
     options: {
       'runtime-root': { type: 'string' },
       'runtime-id': { type: 'string' },
+      home: { type: 'string' },
       file: { type: 'string', multiple: true },
       'manifest-file': { type: 'string' },
     },
   })
   const runtimeRoot = resolve(requireString(values, 'runtime-root', 'references'))
   const runtimeId = requireString(values, 'runtime-id', 'references')
-  const files = values.file ?? []
+  const home = values.home ? resolve(values.home) : null
+  const files = [...(home ? referenceFiles(home) : []), ...(values.file ?? []).map((f) => resolve(f))]
   if (files.length === 0) {
-    throw new UsageError('references: at least one --file <path> is required')
+    throw new UsageError('references: --home <dir> or at least one --file <path> is required')
   }
-  const result = classifyRuntimeReference({
+  const result = classifyRuntimeReference({ runtimeRoot, runtimeId, files, home })
+  process.stdout.write(`${JSON.stringify(result)}\n`)
+}
+
+/**
+ * `unused` — Setup's prune gate (issue #294): every runtime under
+ * --runtime-root, and whether anything still uses it (findUnusedRuntimes).
+ * Read-only: no write, no lock, no trash cleanup.
+ *
+ *   runtime-config.mjs unused --runtime-root <abs> --home <abs>
+ *     [--current <runtimeId>] [--runtime-id <runtimeId>] [--manifest-file <name>]
+ *
+ * --current is the runtime the caller runs from, always kept; --runtime-id
+ * checks that one runtime alone, as prune-runtimes.sh does again just before
+ * it removes one.
+ * stdout: {status, reason?, runtimes: [{runtimeId, version, verdict, usedBy, pids}]}
+ * exit 0: always, whatever the verdicts; `status` carries 'unknown'.
+ * exit 2: a required flag is missing/empty, or a path is not absolute.
+ */
+function runUnusedCmd(argv) {
+  const { values } = parseArgs({
+    args: argv,
+    options: {
+      'runtime-root': { type: 'string' },
+      home: { type: 'string' },
+      current: { type: 'string' },
+      'runtime-id': { type: 'string' },
+      'manifest-file': { type: 'string' },
+    },
+  })
+  const runtimeRoot = requireString(values, 'runtime-root', 'unused')
+  const home = requireString(values, 'home', 'unused')
+  if (!isAbsolute(runtimeRoot) || !isAbsolute(home)) {
+    throw new UsageError('unused: --runtime-root and --home must be absolute paths')
+  }
+  const result = findUnusedRuntimes({
     runtimeRoot,
-    runtimeId,
-    files: files.map((f) => resolve(f)),
+    home,
+    current: values.current ?? null,
+    only: values['runtime-id'] ?? null,
     manifestFileName: values['manifest-file'] ?? DEFAULT_MANIFEST_FILE,
   })
   process.stdout.write(`${JSON.stringify(result)}\n`)
@@ -1029,12 +1389,13 @@ function main(argv) {
     switch (command) {
       case 'classify': runClassifyCmd(rest); break
       case 'references': runReferencesCmd(rest); break
+      case 'unused': runUnusedCmd(rest); break
       case 'registration': runRegistrationCmd(rest); break
       case 'merge-json': runMergeJsonCmd(rest); break
       case 'hooks': runHooksCmd(rest); break
       case 'foreign-hooks': runForeignHooksCmd(rest); break
       default:
-        throw new UsageError('usage: runtime-config.mjs <classify|references|registration|merge-json|hooks|foreign-hooks> [flags]')
+        throw new UsageError('usage: runtime-config.mjs <classify|references|unused|registration|merge-json|hooks|foreign-hooks> [flags]')
     }
   } catch (err) {
     process.stderr.write(err instanceof HookRefusal ? `${err.message}\n` : `runtime-config: ${err.message}\n`)

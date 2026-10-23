@@ -132,6 +132,20 @@ Run the build before `npm run electron`; the development shell starts the built
   A prune renames the runtime into a `.trash-*` folder before deleting it, so an
   interrupted one leaves trash, never a half-deleted runtime id; installs and
   prunes remove leftover trash this user owns, and `.trash-*` is never a runtime.
+  The fifth fixed target, `prune-runtimes` (#294), runs exactly `/bin/bash
+  <app payload>/scripts/prune-runtimes.sh --apply` from the verified release
+  payload (a checkout refuses it), through the same `agent-inbox:install`
+  handler and gates; the script re-derives what to remove under the setup lock,
+  so no runtime id or path becomes argv, and its dry run takes no lock and
+  writes nothing. It keeps its own runtime, anything a host config uses and
+  anything a running process names (`ps`; a failure refuses everything), and
+  removes the rest only through `runtime-payload.mjs prune`. "Uses" is ONE
+  rule in `scripts/runtime-config.mjs` (`scanRuntimeReferences`), shared with
+  the installer's own prune and rollback: any value in `~/.claude.json` (every
+  scope), `~/.claude/settings*.json`, `~/.copilot/mcp-config.json` or Claude
+  Desktop's config naming the id as a whole name, or a launcher path resolving
+  into it. A config that exists but cannot be read means nothing is removed.
+  Project-scope configs are deliberately not read.
 - **Shared presentation rules:** `public/attention.js` is the single attention
   predicate used by the viewer and Electron dock badge. Pure modules under
   `public/` hold grouping, ordering, search, badge, polling, and rendering rules;

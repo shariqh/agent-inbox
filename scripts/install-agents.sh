@@ -718,12 +718,11 @@ cleanup() {
 runtime_reference_status() {
   local runtime_id="$1" output
   [ "$RUNTIME_MODE" -eq 1 ] || { echo unreferenced; return; }
+  # --home: every host config the prune gate reads (#294), including Claude
+  # Desktop's; one that exists but cannot be read makes the answer unknown.
   output="$(run_node_step --stdout -- "$SOURCE_NODE" "$CONFIG_HELPER" references \
     --runtime-root "$RUNTIME_ROOT" --runtime-id "$runtime_id" \
-    --file "$HOME/.claude.json" \
-    --file "$HOME/.copilot/mcp-config.json" \
-    --file "$HOME/.claude/settings.json" \
-    --file "$HOME/.claude/settings.local.json" 2>/dev/null)" || {
+    --home "$HOME" 2>/dev/null)" || {
     echo unknown
     return
   }

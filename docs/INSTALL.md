@@ -421,10 +421,11 @@ Nothing runs when the app starts; updating agents is always your explicit choice
 
 ### Removing old runtimes
 
-Each runtime Setup installs under `~/.agent-inbox/runtime/<runtime-id>/` takes about 170 MB.
-The installer removes old ones only during an install, and even then keeps the newest
-previous one. Setup's **Runtimes** section lists every runtime there, its size and what
-uses it:
+Each runtime Setup installs under `~/.agent-inbox/runtime/<runtime-id>/` (or under
+`AGENT_INBOX_RUNTIME_ROOT`, when the app's environment sets it to an absolute folder) takes
+about 170 MB. The installer removes old ones only during an install, and even then keeps the
+newest previous one. Setup's **Runtimes** section lists every runtime there, its size and
+what uses it:
 
 ```text
 v1.2.2: not used · 171 MB
@@ -459,9 +460,12 @@ The dry run lists each runtime and what would happen to it, and changes nothing.
   `~/.claude/settings.json`, `~/.claude/settings.local.json`, `~/.copilot/mcp-config.json`
   or Claude Desktop's config, wherever a value names the runtime (unless as a path to a
   folder that no longer exists) or a command, argument or environment path in an MCP server
-  or hook leads into it, through a symlink or however its case or accents are spelled; and
+  or hook leads into it, through a symlink or however its case or accents are spelled;
 - no running process names, such as an agent session still running the MCP server it
-  started with. Exit that session and run it again to remove that runtime too.
+  started with. Exit that session and run it again to remove that runtime too; and
+- still matches what was installed. A runtime with a file added, removed or changed is
+  kept and named, with what changed: a `.DS_Store` that Finder wrote when you opened the
+  folder is enough. Delete what was added and run it again to remove that runtime too.
 
 If a host config exists but cannot be read, nothing is removed; the script names the file
 and why, but never quotes it, since it can hold a secret. Project-scope configs

@@ -15,7 +15,7 @@ import { measureRuntime, readRuntimes } from '../src/runtime-inventory.js'
 import { createViewer } from '../src/viewer.js'
 import type { RuntimeInventory, RuntimeMeasurer } from '../src/runtime-inventory.js'
 import { hooksHome, installRuntime, installStaged, stageRuntime } from './hooks-runtime.js'
-import { registerHost, releaseRuntime } from './release-runtime.js'
+import { installRuntimeVersion, registerHost, releaseRuntime } from './release-runtime.js'
 import type { HooksHome, StagedRuntime } from './hooks-runtime.js'
 import { configFiles, hooksOf, launcher, notUses, UNREADABLE_CONFIGS, USE_SHAPES, writeJson } from './runtime-uses.js'
 import { accentedRoot, RUNTIME_SPELLINGS } from './runtime-spellings.js'
@@ -260,6 +260,15 @@ describe('readRuntimes agrees with the prune gate (#294)', () => {
     mkdirSync(join(h.runtimeRoot, 'notes'))
     agree(h)
   })
+
+  // what Finder does to a folder it opens: both leave it, and say so
+  it('a runtime that changed since Setup installed it', () => {
+    const h = hooksHome()
+    const old = installRuntime(h, OLD)
+    writeFileSync(join(old.dir, '.DS_Store'), 'finder\n')
+    agree(h)
+    expect(viewerAnswer(h)).toEqual({ state: 'ok', runtimes: [{ runtimeId: old.runtimeId, verdict: 'changed', usedBy: [] }] })
+  })
 })
 
 // /api/setup carries the inventory to the Setup panel. Electron serves the
@@ -354,6 +363,26 @@ describe('/api/setup runtimes (#294)', () => {
       expect((await read(app)).entries).toMatchObject([{ status: 'changed' }])
     } finally {
       vi.useRealTimers()
+    }
+  })
+
+  // Setup's installers and prune work in AGENT_INBOX_RUNTIME_ROOT when it is
+  // absolute (electron/setup-runner.cjs setupRuntimeRoot), so the list does too.
+  it('lists the runtime root Setup uses: an absolute AGENT_INBOX_RUNTIME_ROOT, else the default', async () => {
+    const home = scratchDir('runtimes-env-home-')
+    const configured = join(scratchDir('runtimes-env-root-'), 'runtimes')
+    const inConfigured = idOf(installRuntimeVersion(configured, '1.2.2'))
+    const inDefault = idOf(installRuntimeVersion(join(home, '.agent-inbox', 'runtime'), '1.2.4'))
+    const viewer = () => createViewer(db(), { setupInfoPath: join(home, 'no-setup-info.json'), agentHome: home })
+    try {
+      vi.stubEnv('HOME', home)
+      vi.stubEnv('AGENT_INBOX_RUNTIME_ROOT', configured)
+      expect((await read(viewer())).entries.map((e) => e.runtimeId)).toEqual([inConfigured])
+
+      vi.stubEnv('AGENT_INBOX_RUNTIME_ROOT', 'relative/runtimes')
+      expect((await read(viewer())).entries.map((e) => e.runtimeId)).toEqual([inDefault])
+    } finally {
+      vi.unstubAllEnvs()
     }
   })
 

@@ -9,10 +9,13 @@
 // the list again and runs only if the button still names what it would remove.
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { rmSync, writeFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
 import { join } from 'node:path'
 import type Database from 'better-sqlite3'
 import { upsertActivity } from '../../src/store.js'
+import { hooksHome, stageRuntime } from '../hooks-runtime.js'
 import { registerHost, releaseRuntime } from '../release-runtime.js'
+import { scratchDir } from '../scratch.js'
 import type { ReleaseRuntime } from '../release-runtime.js'
 import { runtimesAction } from '../../public/runtimes.js'
 import { bootApp, click, freshDb, pollTick, settle, useDomTest } from './harness.js'
@@ -110,6 +113,42 @@ describe('Setup lists the runtimes and removes the unused ones (#294)', () => {
     expect(removeButton()?.textContent).toMatch(/^Remove the v1\.2\.2 runtime \(\d+ KB\)$/)
   })
 
+  // Finder writes a .DS_Store into a folder it opens. The real prune, run as
+  // Setup's fixed target runs it, keeps that runtime and says why, removes the
+  // one the button named, and the run succeeds.
+  it('keeps a runtime that changed since Setup installed it, removes the rest through the real prune, and reports success', async () => {
+    const release = releaseRuntime('2.0.0')
+    const current = release.install()
+    release.register('claude', current)
+    const old = release.installVersion('1.2.2-d294')
+    const finder = release.installVersion('1.2.3-d294')
+    writeFileSync(join(finder, '.DS_Store'), 'finder\n')
+    release.registerHooks(release.installVersion('1.2.4-d294'))
+    const app = stageRuntime(join(scratchDir('runtimes-app-'), 'payload'), '1.7.0-d294')
+    const env = { ...hooksHome().env, HOME: release.home, AGENT_INBOX_RUNTIME_ROOT: release.runtimeRoot }
+    const install = vi.fn<Install>(async (target) => {
+      const run = spawnSync('/bin/bash', [join(app.dir, 'scripts', 'prune-runtimes.sh'), '--apply'], { encoding: 'utf8', env })
+      return { ok: run.status === 0, exitCode: run.status, target: String(target), timedOut: false, output: `${run.stdout}${run.stderr}`.trim() }
+    })
+    bridge(install)
+    await boot(release)
+    expect(removeButton()?.textContent).toMatch(/^Remove the v1\.2\.2-d294 runtime \(\d+ KB\)$/)
+
+    removeButton()!.click()
+    await settle()
+
+    expect(install.mock.calls).toEqual([['prune-runtimes']])
+    expect(result()).toContain(`Removed v1.2.2-d294 (${idOf(old)}).`)
+    expect(result()).toContain(`Kept v1.2.3-d294 (${idOf(finder)}): changed since Setup installed it (unmanifested file present in payload: .DS_Store).`)
+    expect(document.querySelector('.runtimes-result')?.classList.contains('success')).toBe(true)
+    expect(lines()).toEqual([
+      expect.stringMatching(/^v1\.2\.3-d294: changed since Setup installed it, so Setup leaves it · \d+ KB$/),
+      expect.stringMatching(/^v1\.2\.4-d294: used by Claude Code settings · \d+ KB$/),
+      expect.stringMatching(/^v2\.0\.0: this app's runtime · \d+ KB$/),
+    ])
+    expect(removeButton()).toBeNull()
+  })
+
   it('names how many it removes when there are several', async () => {
     const release = releaseRuntime('2.0.0')
     release.installVersion('1.2.2')
@@ -170,7 +209,7 @@ describe('Setup lists the runtimes and removes the unused ones (#294)', () => {
 
   it('reports a prune that failed as it is, and keeps offering it', async () => {
     const { release, old } = ownersMac()
-    bridge(vi.fn<Install>(async () => ({ ok: false, exitCode: 1, target: 'prune-runtimes', timedOut: false, output: `Could not remove v1.2.2 (${idOf(old)}): unexpected file .DS_Store` })))
+    bridge(vi.fn<Install>(async () => ({ ok: false, exitCode: 1, target: 'prune-runtimes', timedOut: false, output: `Could not remove v1.2.2 (${idOf(old)}): EACCES: permission denied` })))
     await boot(release)
 
     removeButton()!.click()

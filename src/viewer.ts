@@ -57,8 +57,9 @@ export interface ViewerOpts {
    *  pin a host key without touching the real process. */
   runtimeHostKey?: string
   /** issue #74: root directory a portable runtime gets installed under
-   *  (`~/.agent-inbox/runtime` in production); overridable so a test never
-   *  touches the real home directory. */
+   *  (an absolute AGENT_INBOX_RUNTIME_ROOT, else `~/.agent-inbox/runtime`, as
+   *  Setup's installers use it, #294); overridable so a test never touches the
+   *  real home directory. */
   runtimeRoot?: string
   /** issue #74: the app bundle root a release payload's contained relative
    *  path is resolved against (the directory setup-info.json itself lives
@@ -652,12 +653,21 @@ function conditionalSnapshot(
   }
 }
 
+// Where Setup's installers and prune keep runtimes: an absolute
+// AGENT_INBOX_RUNTIME_ROOT, as electron/setup-runner.cjs setupRuntimeRoot
+// reads it (a relative one is ignored here; Setup refuses it), else
+// ~/.agent-inbox/runtime (#294).
+function setupRuntimeRoot(): string {
+  const configured = process.env['AGENT_INBOX_RUNTIME_ROOT']
+  return configured && isAbsolute(configured) ? configured : resolve(homedir(), '.agent-inbox', 'runtime')
+}
+
 export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono {
   const app = new Hono()
   const bakedPath = opts.setupInfoPath ?? resolve(process.cwd(), 'setup-info.json')
   const stamp = opts.stamp ?? buildStamp
   const runtimeHostKey = opts.runtimeHostKey ?? `${process.platform}-${process.arch}`
-  const runtimeRoot = opts.runtimeRoot ?? resolve(homedir(), '.agent-inbox', 'runtime')
+  const runtimeRoot = opts.runtimeRoot ?? setupRuntimeRoot()
   // A release payload's contained relative path is resolved against the app
   // bundle root — the same directory setup-info.json itself lives in.
   const appRoot = opts.appRoot ?? dirname(bakedPath)

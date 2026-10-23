@@ -12,11 +12,14 @@
 // argument or anything else in it.
 //
 // A runtime's size is its manifest's recorded total. The bounded walk only
-// says whether the folder still matches that manifest, because the prune
-// refuses one that does not, so it runs for an unused runtime alone: this
-// app's runtime and one in use are kept whatever their folders hold. A walk
-// lstats every file (about 40 ms for a 4,000-file runtime), so viewer.ts keeps
-// both answers for as long as the folder's and its manifest's stamps hold.
+// says whether the folder still matches that manifest, because the prune keeps
+// one that does not (runtime-config.mjs `changed`), so it runs for an unused
+// runtime alone: this app's runtime and one in use are kept whatever their
+// folders hold. A walk lstats every file (about 40 ms for a 4,000-file
+// runtime), so viewer.ts keeps both answers for as long as the folder's and
+// its manifest's stamps hold. The prune's own check also hashes each file
+// (the main thread here cannot), so a file changed in place at the same size
+// and mode shows here as unused, and the prune keeps it and says why.
 import { lstatSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { basename, dirname, join, sep } from 'node:path'
 

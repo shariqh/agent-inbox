@@ -137,9 +137,10 @@ Run the build before `npm run electron`; the development shell starts the built
   payload (a checkout refuses it), through the same `agent-inbox:install`
   handler and gates; the script re-derives what to remove under the setup lock,
   so no runtime id or path becomes argv, and its dry run takes no lock and
-  writes nothing. It keeps its own runtime, anything a host config uses and
-  anything a running process names (`ps`; a failure refuses everything), and
-  removes the rest only through `runtime-payload.mjs prune`. "Uses" is ONE
+  writes nothing. It keeps its own runtime, anything a host config uses,
+  anything a running process names (`ps`; a failure refuses everything) and
+  anything that no longer verifies against its manifest (`changed`, never
+  attempted), and removes the rest only through `runtime-payload.mjs prune`. "Uses" is ONE
   rule in `scripts/runtime-config.mjs` (`scanRuntimeReferences`), shared with
   the installer's own prune and rollback: any value in `~/.claude.json` (every
   scope), `~/.claude/settings*.json`, `~/.copilot/mcp-config.json` or Claude

@@ -60,6 +60,8 @@ const { createSetupProcessRunner } = createRequire(import.meta.url)('../electron
 // process another file runs from a runtime with the same id would count here.
 const OLD = '1.2.2-p294'
 const OLDER_HOOKS = '1.2.4-p294'
+const CHANGED = '1.2.3-p294'
+const EDITED = '1.2.1-p294'
 const APP = '1.7.0-p294'
 
 const live = new Set<ChildProcess>()
@@ -96,7 +98,7 @@ function prune(f: Fixture, args: string[] = [], env: NodeJS.ProcessEnv = f.h.env
 interface Verdicts {
   status: 'ok' | 'unknown'
   reason?: string
-  runtimes: Array<{ runtimeId: string; version: string | null; verdict: string; usedBy: string[]; pids: number[] }>
+  runtimes: Array<{ runtimeId: string; version: string | null; verdict: string; usedBy: string[]; pids: number[]; problem?: string }>
 }
 
 function unused(f: Fixture, extra: string[] = []): Verdicts {
@@ -521,17 +523,35 @@ describe('prune-runtimes.sh (#294)', () => {
     expect(readFileSync(join(stray, 'notes.txt'), 'utf8')).toBe('mine\n')
   })
 
-  it('leaves a runtime that does not verify in place, and says why', () => {
+  // Finder writes a .DS_Store into a folder it opens. A runtime that no longer
+  // matches its manifest is kept and named, never attempted: prune itself would
+  // refuse it, and the whole run would then report a failure.
+  it('keeps a runtime that changed since Setup installed it, says why, and removes the rest', () => {
     const f = fixture()
     const old = installRuntime(f.h, OLD)
-    writeFileSync(join(old.dir, '.DS_Store'), 'finder\n')
+    const finder = installRuntime(f.h, CHANGED)
+    writeFileSync(join(finder.dir, '.DS_Store'), 'finder\n')
+    // the same size and mode, so only a check of its contents sees it
+    const edited = installRuntime(f.h, EDITED)
+    writeFileSync(join(edited.dir, 'dist', 'mcp-server.js'), 'process.exit(1)\n')
+
+    expect(verdictOf(f, finder.runtimeId)).toMatchObject({ verdict: 'changed', problem: 'unmanifested file present in payload: .DS_Store' })
+    expect(verdictOf(f, edited.runtimeId)).toMatchObject({ verdict: 'changed', problem: 'checksum mismatch for dist/mcp-server.js' })
+    const dry = prune(f)
+    expect(dry.status, dry.stderr).toBe(0)
+    expect(dry.stdout).toContain(`Would remove v${OLD} (${old.runtimeId}).`)
+    expect(dry.stdout).toContain('Run it again with --apply to remove 1 runtime.')
 
     const applied = prune(f, ['--apply'])
 
-    expect(applied.status).toBe(1)
-    expect(applied.stdout).toContain(`Could not remove v${OLD} (${old.runtimeId}):`)
-    expect(existsSync(join(old.dir, '.DS_Store'))).toBe(true)
-    expect(existsSync(join(old.dir, 'runtime-manifest.json'))).toBe(true)
+    expect(applied.status, applied.stdout + applied.stderr).toBe(0)
+    expect(applied.stdout).toContain(`Removed v${OLD} (${old.runtimeId}).`)
+    expect(applied.stdout).toContain(`Kept v${CHANGED} (${finder.runtimeId}): changed since Setup installed it (unmanifested file present in payload: .DS_Store).`)
+    expect(applied.stdout).toContain(`Kept v${EDITED} (${edited.runtimeId}): changed since Setup installed it (checksum mismatch for dist/mcp-server.js).`)
+    expect(applied.stdout).toContain('Removed 1 runtime.')
+    expect(applied.stdout).not.toContain('Could not remove')
+    expect(runtimes(f.h)).toEqual([finder.runtimeId, edited.runtimeId].sort())
+    expect(existsSync(join(finder.dir, '.DS_Store'))).toBe(true)
   })
 
   it('refuses outside a runtime, with a relative runtime root, with an unknown flag, or when its own runtime fails verification', () => {

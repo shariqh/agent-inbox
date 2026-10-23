@@ -516,6 +516,16 @@ export function processesUsingRuntime(processes, runtimeId, selfPid = process.pi
     .sort((a, b) => a - b)
 }
 
+// Why `dir` no longer verifies against its own manifest, or null when it does.
+function verificationProblem(dir, runtimeId, manifestFileName) {
+  try {
+    verifyPayload({ root: dir, manifestFileName, expect: { runtimeId } })
+    return null
+  } catch (err) {
+    return err?.message ?? String(err)
+  }
+}
+
 // The version a runtime folder's own manifest declares, when that manifest is
 // a plain file naming this folder as an Agent Inbox runtime; else undefined.
 function declaredVersion(dir, name, manifestFileName) {
@@ -531,15 +541,19 @@ function declaredVersion(dir, name, manifestFileName) {
 /**
  * Every runtime under runtimeRoot and whether prune-runtimes.sh may remove it
  * (issue #294). Read-only: it lists the root, reads manifests and host
- * configs and runs `ps`; it never writes, locks or cleans trash. A runtime is
- * a real directory directly in the root: never a symlink (never followed),
- * never a `.`-name (the `.trash-*` folders an interrupted prune leaves
- * included), never anything outside the root. `only` checks that one alone.
- * Each gets a verdict, in this order:
+ * configs, verifies a would-be-unused runtime and runs `ps`; it never writes,
+ * locks or cleans trash. A runtime is a real directory directly in the root:
+ * never a symlink (never followed), never a `.`-name (the `.trash-*` folders
+ * an interrupted prune leaves included), never anything outside the root.
+ * `only` checks that one alone. Each gets a verdict, in this order:
  *   current       — `current`, the runtime the caller runs from: kept
  *   not-a-runtime — no manifest naming this folder as a runtime: left alone
  *   used          — a host config uses it (`usedBy` names which): kept
  *   in-use        — a running process names it (`pids`): kept
+ *   changed       — it no longer verifies against its manifest (`problem`
+ *                   says how: a Finder .DS_Store is enough): kept, since
+ *                   prune would refuse it. The same full verifyPayload prune
+ *                   runs, about 0.25 s for a 171 MB runtime with a warm cache
  *   unused        — none of these: prune-runtimes.sh removes it
  * `status` is 'unknown', with `reason` and no runtimes, when a host config
  * exists but proves nothing or the process list cannot be read: nothing may
@@ -585,8 +599,14 @@ export function findUnusedRuntimes({
     for (const { runtimeId, version } of candidates) {
       const usedBy = [...new Set((scan.uses.get(runtimeId) ?? []).map((found) => found.label))]
       const pids = processesUsingRuntime(listed.processes, runtimeId)
-      const verdict = usedBy.length > 0 ? 'used' : pids.length > 0 ? 'in-use' : 'unused'
-      runtimes.push({ runtimeId, version, verdict, usedBy, pids })
+      if (usedBy.length > 0 || pids.length > 0) {
+        runtimes.push({ runtimeId, version, verdict: usedBy.length > 0 ? 'used' : 'in-use', usedBy, pids })
+        continue
+      }
+      const problem = verificationProblem(join(runtimeRoot, runtimeId), runtimeId, manifestFileName)
+      runtimes.push(problem === null
+        ? { runtimeId, version, verdict: 'unused', usedBy, pids }
+        : { runtimeId, version, verdict: 'changed', usedBy, pids, problem })
     }
   }
   runtimes.sort((a, b) => (a.runtimeId < b.runtimeId ? -1 : a.runtimeId > b.runtimeId ? 1 : 0))

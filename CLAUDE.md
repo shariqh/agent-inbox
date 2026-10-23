@@ -1481,7 +1481,11 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   directory directly in the runtime root carrying a manifest that names it (never a
   symlink, never a `.`-name such as `.trash-*`, never outside the root), and removes each
   other runtime only through `runtime-payload.mjs prune` (#211/#214 trash semantics),
-  after checking it again on its own; seconds still pass between that check and the
+  after checking it again on its own. A runtime that no longer verifies against its
+  manifest (a Finder `.DS_Store` is enough) is kept as `changed` and named, never
+  attempted: `unused` runs the same full `verifyPayload` prune would (about 0.25 s per
+  171 MB runtime with a warm cache), so `--apply` exits 0 whenever everything it tried was
+  removed. Seconds still pass between the re-check and the
   rename (prune cleans trash and hashes the folder first), and a config written then is
   not seen. What "uses" means is ONE rule in `scripts/runtime-config.mjs`
   (`scanRuntimeReferences`), which the installer's own prune and rollback
@@ -1523,8 +1527,12 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   running sessions report vX" from Live's rows. Each folder's size is its manifest's
   recorded total, and the bounded walk (an lstat per file, about 40 ms for a 4,000-file
   runtime, on Electron main in the packaged app) runs only for an unused runtime, because
-  only that one is offered for removal and the prune refuses a folder that no longer
-  matches its manifest (`changed`). `/api/setup` carries `runtimes {state, unreadable?,
+  only that one is offered for removal and the prune keeps a folder that no longer
+  matches its manifest (`changed`). The prune's check also hashes each file, which the main
+  thread cannot, so a file changed in place at the same size and mode shows as unused here
+  and the prune keeps it and says why. The list's root is Setup's own: an absolute
+  `AGENT_INBOX_RUNTIME_ROOT`, as `setupRuntimeRoot` in `electron/setup-runner.cjs` reads it,
+  else `~/.agent-inbox/runtime`. `/api/setup` carries `runtimes {state, unreadable?,
   reason?, removable, entries}`, `reason` in the script's own words and never the JSON
   parser's message, which can quote a secret from the file. The viewer keeps each
   folder's answer per stamp of the folder and its manifest and the whole inventory per

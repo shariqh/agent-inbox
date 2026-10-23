@@ -8,6 +8,7 @@ import { parseArgs } from 'node:util'
 import { APP_NAME, findNativeAddon } from './build-thin-app.mjs'
 import { runElectronSqliteCheck } from './electron-sqlite-check.mjs'
 import { verifyPackagedUpdateTrust } from './package-update-trust.mjs'
+import { assertEnglishOnlyElectronLocales } from './prune-electron-locales.mjs'
 import { assertPrunedNodeModules } from './prune-node-modules.mjs'
 import { assertRuntimeSourceCommit } from './runtime-provenance.mjs'
 import { verifyPayload } from './runtime-payload.mjs'
@@ -178,6 +179,7 @@ export function verifyWindowsThinApp({
   const runtimeAddon = findNativeAddon(runtimeRoot)
   assertElectronNotices(appRoot)
   verifyPackagedUpdateTrust(resources)
+  assertEnglishOnlyElectronLocales(appRoot, 'win32', 'packaged Windows app')
   assertPrunedNodeModules(resources, 'packaged Windows app')
   assertPrunedNodeModules(runtimeRoot, `packaged ${key} runtime`)
 

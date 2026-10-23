@@ -22,6 +22,7 @@ import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 import { loadReleaseInputs, sha256File } from './release-inputs.mjs'
 import { verifyPackagedUpdateTrust } from './package-update-trust.mjs'
+import { assertEnglishOnlyElectronLocales } from './prune-electron-locales.mjs'
 import { verifyPayload } from './runtime-payload.mjs'
 import { treeIdentity } from './tree-identity.mjs'
 import { probeRuntimeMcp } from './runtime-mcp-probe.mjs'
@@ -711,6 +712,7 @@ export async function verifyFinalDmg({
           [join(appResources, 'LICENSE.agent-inbox'), 'Agent Inbox license'],
         ]) requireNonemptyFile(path, label)
         verifyPackagedUpdateTrust(appResources)
+        assertEnglishOnlyElectronLocales(copiedApp, 'darwin', 'copied app')
 
         requireExactArchitectures(join(contents, 'MacOS', APP_NAME), ['arm64', 'x86_64'])
         requireExactArchitectures(

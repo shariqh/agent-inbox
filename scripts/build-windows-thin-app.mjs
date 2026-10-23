@@ -21,6 +21,7 @@ import {
   copyRequiredTree,
   pruneAppNodeModules,
 } from './build-thin-app.mjs'
+import { pruneElectronLocales } from './prune-electron-locales.mjs'
 import { copyTreePreservingMode, verifyPayload } from './runtime-payload.mjs'
 import { assertRuntimeSourceCommit } from './runtime-provenance.mjs'
 import { resolveSourceProvenance } from './source-provenance.mjs'
@@ -181,6 +182,7 @@ export async function buildWindowsThinApp({
     }
     const packaged = paths[0]
     if (!packaged) throw new WindowsThinAppBuildError('packager returned no Windows app folder')
+    pruneElectronLocales(packaged, 'win32')
     const initial = verifyWindowsThinApp({
       app: packaged,
       inputsPath,

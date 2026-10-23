@@ -9,8 +9,9 @@
 # The stage receives the same inputs as the release thin app, including the
 # checked-in package.json + package-lock.json pair, and `npm ci` installs that
 # lockfile's production graph. Like the release builders, it then drops what
-# nothing loads at runtime from node_modules (#291). Packaging stops if the
-# staged or packaged graph differs from package-lock.json (#139).
+# nothing loads at runtime from node_modules (#291) and every Electron locale
+# but US and British English from the packaged app (#292). Packaging stops if
+# the staged or packaged graph differs from package-lock.json (#139).
 #
 # Usage: npm run package:app   (any Node; the app itself needs none)
 set -euo pipefail
@@ -75,6 +76,20 @@ prune_modules() {
   esac
 }
 
+# Keep only the US and British English Electron locales, as the release
+# builders do (#292), requiring the tool's own confirmation.
+prune_locales() {
+  local app="$1" report
+  report="$(node "$ROOT/scripts/package-app-stage.mjs" locales "$app")"
+  case "$report" in
+    "package-app: kept only the US and British English Electron locales in "*) printf '%s\n' "$report" ;;
+    *)
+      echo "package-app: locale pruning did not confirm $app" >&2
+      exit 1
+      ;;
+  esac
+}
+
 cd "$ROOT"
 npm run generate:icons -- --check
 npm run build
@@ -121,6 +136,7 @@ npx --yes @electron/packager "$STAGE" "Agent Inbox" \
   --app-bundle-id=io.github.shariqh.agent-inbox
 
 APP="$OUT/Agent Inbox-darwin-arm64/Agent Inbox.app"
+prune_locales "$APP"
 verify_graph packaged "$APP/Contents/Resources/app"
 
 # Electron requires alert-style notifications for native action buttons on

@@ -19,6 +19,7 @@ import { packager } from '@electron/packager'
 import { installAppDependencies } from './app-dependencies.mjs'
 import { copyAgentInboxLicense } from './license.mjs'
 import { runElectronSqliteCheck } from './electron-sqlite-check.mjs'
+import { assertEnglishOnlyElectronLocales, pruneElectronLocales } from './prune-electron-locales.mjs'
 import { assertPrunedNodeModules, pruneNodeModules } from './prune-node-modules.mjs'
 import { copyTreePreservingMode, verifyPayload } from './runtime-payload.mjs'
 import { assertRuntimeSourceCommit } from './runtime-provenance.mjs'
@@ -231,7 +232,11 @@ export async function buildThinApp({
     if (paths.length !== 1) throw new ThinAppBuildError(`packager returned ${paths.length} output paths`)
     const app = join(paths[0], `${APP_NAME}.app`)
     copyElectronNotices(paths[0], app)
+    // Identically in both thin apps, so the universal merge sees one tree, and
+    // before anything signs the framework's resources (#292).
+    pruneElectronLocales(app, 'darwin')
     const resources = join(app, 'Contents', 'Resources', 'app')
+    assertEnglishOnlyElectronLocales(app, 'darwin', `packaged darwin-${arch} app`)
     assertPrunedNodeModules(resources, `packaged darwin-${arch} app`)
     for (const key of RUNTIME_KEYS) {
       assertPrunedNodeModules(join(resources, 'runtime', key), `packaged ${key} runtime`)

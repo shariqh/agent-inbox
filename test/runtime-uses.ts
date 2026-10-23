@@ -171,6 +171,12 @@ export const UNREADABLE_CONFIGS: Array<[string, (home: string) => string, string
     symlinkSync(join(home, 'unmounted', 'claude'), join(home, '.claude'))
     return join(home, '.claude')
   }, 'is a symlink to something that is not there'],
+  // stat's own message names the path alone; the code keeps one format (#337)
+  ['is a symlink loop', (home) => {
+    mkdirSync(join(home, '.claude'), { recursive: true })
+    symlinkSync(configFiles(home).settings, configFiles(home).settings)
+    return configFiles(home).settings
+  }, 'is unreadable (ELOOP)'],
   ['is larger than 64 MB', (home) => {
     writeJson(configFiles(home).desktopMac, {})
     truncateSync(configFiles(home).desktopMac, 64 * 1024 * 1024 + 1)

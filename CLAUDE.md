@@ -1395,6 +1395,20 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   false })`, no focus move) only when the ask holds a draft and the write succeeded, and the
   queue then returns focus to the Inbox's Review queue button, not to the tab it left.
 
+- **A host config that cannot be read is named, never quoted** *(#337)*. `~/.claude.json`,
+  `~/.copilot/mcp-config.json` and `~/.claude/settings.json` often hold other MCP servers'
+  API tokens, and since Node 20 a `JSON.parse` error quotes the text around the failure, as
+  jq does the value it fails on. So a reader that reports one it cannot read or parse
+  (`runtime-config.mjs` `registration`, `references`, `unused`, `hooks`, `foreign-hooks` and
+  `merge-json`, through `parseConfigFile`/`readConfigFile`; `prune-runtimes.sh`; the viewer's
+  `runtime-inventory.ts`) says its path and a fixed kind, `is not valid JSON` or
+  `is unreadable (EACCES)` (of a failed read only its error code), never a parser's, jq's or
+  fs error's message. A source checkout's `install-hooks.sh` drops jq's stderr on the steps
+  that read settings.json and names the file instead; `install-agents.sh`'s inline readers
+  only ever exit with a status; `agent-hosts.ts` returns closed kinds and no text at all.
+  `test/host-config-secrets.test.ts` runs every reader, the dry-run installers and
+  `/api/setup` over configs that put a fake token where the parser quotes it: a new reader
+  is one more row there. Unchanged on purpose: what each reader does with such a config.
 - **Agent setup is explicit, dry-run-first, and owns only marked text.**
   `scripts/install-agents.sh` is the supported bridge between two configuration systems:
   MCP registration can store a server command but cannot inject a global prompt, so the

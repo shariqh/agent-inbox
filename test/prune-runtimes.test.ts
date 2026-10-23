@@ -314,6 +314,11 @@ describe('what counts as using a runtime (#294)', () => {
       truncateSync(files(h).desktopMac, 64 * 1024 * 1024 + 1)
       return files(h).desktopMac
     }],
+    ['names more than 4096 paths in its launchers', (h) => {
+      const args = Array.from({ length: 4097 }, (_, i) => `/opt/tool-${i}`)
+      writeJson(files(h).claude, { mcpServers: { many: { command: 'node', args } } })
+      return files(h).claude
+    }],
   ]
 
   it.each(UNREADABLE)('removes nothing at all when a host config %s', (_label, arrange) => {

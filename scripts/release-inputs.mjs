@@ -11,6 +11,7 @@ import {
   nodeDistributionIdentity,
   targetFor,
 } from './runtime-targets.mjs'
+import { macosKindOf } from './macos-release-kind.mjs'
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 export const DEFAULT_RELEASE_INPUTS = resolve(REPO_ROOT, 'release', 'macos-inputs.json')
@@ -97,13 +98,19 @@ export function validateElectronReleaseInputs(electron, fields) {
 export function validateReleaseInputs(value) {
   requireExactKeys(
     value,
-    ['schema', 'product', 'bundleId', 'minimumMacosVersion', 'node', 'electron'],
+    ['schema', 'product', 'bundleId', 'minimumMacosVersion', 'macosArchitectures', 'node', 'electron'],
     'release inputs',
   )
   if (value.schema !== 1) throw new ReleaseInputError(`unsupported release input schema: ${value.schema}`)
   requireString(value.product, 'product')
   requireString(value.bundleId, 'bundleId', /^[A-Za-z0-9.-]+$/)
   requireString(value.minimumMacosVersion, 'minimumMacosVersion', /^\d+\.\d+$/)
+  // The CPU types the shipped app must have, which alone decide the release kind (#341).
+  try {
+    macosKindOf(value.macosArchitectures, 'macosArchitectures')
+  } catch (err) {
+    throw new ReleaseInputError(err.message)
+  }
   validateNodeReleaseInputs(value.node, RUNTIME_KEYS)
   validateElectronReleaseInputs(
     value.electron,

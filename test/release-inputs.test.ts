@@ -39,6 +39,21 @@ describe('macOS release inputs', () => {
     expect(validateInstalledReleaseTools(inputs, resolve(process.cwd()))).toBe(inputs)
   })
 
+  it('commits the expected macOS CPU types, the only input that sets the release kind (#341)', () => {
+    expect(loadReleaseInputs().macosArchitectures).toEqual(['arm64', 'x86_64'])
+    const arm64 = structuredClone(loadReleaseInputs())
+    arm64.macosArchitectures = ['arm64']
+    expect(validateReleaseInputs(arm64).macosArchitectures).toEqual(['arm64'])
+    for (const architectures of [['x86_64'], ['x86_64', 'arm64'], ['arm64', 'arm64'], [], 'arm64', null]) {
+      const invalid: Record<string, unknown> = structuredClone(loadReleaseInputs())
+      invalid.macosArchitectures = architectures
+      expect(() => validateReleaseInputs(invalid), JSON.stringify(architectures)).toThrow(/macosArchitectures/)
+    }
+    const missing: Record<string, unknown> = structuredClone(loadReleaseInputs())
+    delete missing.macosArchitectures
+    expect(() => validateReleaseInputs(missing)).toThrow(/keys must be exactly: .*macosArchitectures/)
+  })
+
   it('rejects release-tool drift from the authoritative manifest', () => {
     const inputs = structuredClone(loadReleaseInputs())
     inputs.electron.universalVersion = '3.0.5'

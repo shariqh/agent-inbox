@@ -395,24 +395,33 @@ The credentialed sequence is intentionally split:
 4. Revalidate that record before submitting a `ditto` ZIP of the app. Require an
    `Accepted` app ticket and matching notary log before stapling or validating the app.
 5. Build the final DMG from that stapled app, sign the DMG, submit it separately, and
-   require a distinct `Accepted` DMG ticket before stapling and validating the DMG.
+   require a distinct `Accepted` DMG ticket before stapling and validating the DMG. The
+   DMG's name comes from the expected macOS kind (below), never from a constant.
 6. Inspect the DMG's exact Developer ID authority and Team ID, mount the final post-staple
    DMG read-only, require its expected app/Applications-link shape, and copy the transported
    app with `ditto` into clean temporary storage. Verify the copied app's signature,
-   authority/team, staple, Gatekeeper assessment, universal executable/addon, both runtime
-   manifests and architectures, source/version/setup metadata, icon, notices, and that the
-   app ships only the US and British English Electron locales. Launch
+   authority/team, staple, Gatekeeper assessment, both runtime manifests and architectures,
+   source/version/setup metadata, icon, notices, and that the app ships only the US and
+   British English Electron locales. Measure the CPU types of its main executable and its
+   better-sqlite3 addon with `lipo -archs` (see "The macOS release kind" below). Launch
    that copied app under a disposable `HOME`, require its hardened loopback marker, and
    exercise portable-runtime install and prune without touching production
    `~/.agent-inbox`. Detach the DMG even when any check fails.
 7. Generate the macOS-only internal checksum only after mounted-copy acceptance and from
-   the final post-staple DMG bytes.
+   the final post-staple DMG bytes. The final evidence (`release-evidence.json`) names the
+   DMG from the measured kind and, for a universal release, carries the native Intel
+   record from step 3, which must have passed for this source, version and identity.
 8. In an unprivileged aggregation job, revalidate the four exact-run Linux package
    artifacts and reports, combine their final bytes with the notarized DMG, and generate
    the canonical `SHA256SUMS.txt` from all five binary packages in ascending bytewise
-   filename order. Generate deterministic `update-manifest.json` bytes from that same
-   package evidence, the annotated-tag timestamp, and the source commit's pinned update
-   key registry.
+   filename order. Recompute the macOS kind from the final evidence's measured sets
+   against the source commit's expected set, derive the DMG's name, `architecture` and
+   `target` from it, and copy the sets into the aggregate evidence as `architectures`
+   (with `nativeIntel: "passed"` for a universal release). Generate deterministic
+   `update-manifest.json` bytes from that same package evidence, the annotated-tag
+   timestamp, and the source commit's pinned update key registry. That v1 manifest can
+   describe only a universal DMG, so aggregation refuses an arm64 kind until the v2
+   manifest lands (#343).
 9. In a separate read-only protected job, scan every published stable release before the
    new version. The first signed-manifest release is allowed only when none of those
    releases contains either manifest asset. Later releases require an exact manifest/
@@ -432,6 +441,32 @@ The credentialed sequence is intentionally split:
    through the downloaded checksum manifest, and independently verifies the manifest
    signature and its package target metadata. Only one final API update installs the
    public title/notes and clears the draft bit.
+
+### The macOS release kind
+
+Whether a release's macOS package is universal or arm64 is measured, never labelled
+(#341; design §7.1 in
+`docs/superpowers/specs/2026-10-23-update-manifest-v2-design.md`). The committed expected
+set, `macosArchitectures` in `release/macos-inputs.json`, says what the build must
+contain: `["arm64", "x86_64"]` today. `verify-final-dmg` records the sorted `lipo -archs`
+output of the copied app's `Contents/MacOS/Agent Inbox` and of its
+`better_sqlite3.node` as `architectures: { executable, betterSqlite3 }` in the
+transported-app evidence, together with the `kind` they give, in place of the old
+`universalEnvelope: "passed"` flag. Both sets must equal each other and the expected set,
+and then one table in `scripts/macos-release-kind.mjs` gives everything else:
+
+| Measured sets | Kind | DMG name | `architecture` | `target` | Native Intel gate |
+| --- | --- | --- | --- | --- | --- |
+| `["arm64", "x86_64"]` | universal | `Agent-Inbox-vX.Y.Z-universal.dmg` | `universal` | `darwin-arm64+darwin-x64` | must have passed |
+| `["arm64"]` | arm64 | `Agent-Inbox-vX.Y.Z-arm64.dmg` | `arm64` | `darwin-arm64` | none |
+
+Any other set, `["x86_64"]` alone included, fails the release. The notarize job's
+`expected-kind` step names the DMG it builds, notarizes, verifies and describes in the
+release notes from the expected set; `final-evidence`, the publication check and
+aggregation each recompute the kind from the measured sets and refuse a DMG name, label
+or Intel result that disagrees. Changing `macosArchitectures` is the only way to change a
+release's kind. The trusted signer and publish job adopt the same check (G9) with the v2
+manifest (#343).
 
 The public allowlist is exactly:
 

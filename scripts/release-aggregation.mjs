@@ -15,6 +15,8 @@ import {
   validatePublicationInputs,
   validateReleaseContext,
 } from './macos-release-gates.mjs'
+import { macosKindOf, macosRelease } from './macos-release-kind.mjs'
+import { loadReleaseInputs } from './release-inputs.mjs'
 import {
   generateManifest,
   parseRegistry,
@@ -422,12 +424,15 @@ function validateDryRunMac({ macArtifactsRoot, context, repoRoot }) {
   ) {
     fail('macOS dry-run evidence must be non-publishable and use exact inputs')
   }
+  // A real release measures the app; the dry run names it from the same expected set (#341).
+  const { macosArchitectures } = loadReleaseInputs(join(repoRoot, 'release/macos-inputs.json'))
+  const macos = macosRelease({ kind: macosKindOf(macosArchitectures, 'macosArchitectures'), tag: `v${context.version}` })
   return {
     name: `${base}-provisional.dmg`,
-    expectedPublicName: `Agent-Inbox-v${context.version}-universal.dmg`,
+    expectedPublicName: macos.dmgName,
     packageType: 'DMG',
     platform: 'macos',
-    architecture: 'universal',
+    architecture: macos.architecture,
     size: lstatSync(join(root, `${base}-provisional.dmg`)).size,
     sha256: sha256File(join(root, `${base}-provisional.dmg`)),
     provisional: true,
@@ -468,11 +473,13 @@ export function validateDryRunReleaseArtifacts({
     assets: [...linux.evidence.assets, mac]
       .sort((left, right) => left.name < right.name ? -1 : 1),
     expectedPublicInventory: [
-      `Agent-Inbox-v${release.version}-linux-arm64.AppImage`,
-      `Agent-Inbox-v${release.version}-linux-x86_64.AppImage`,
-      `Agent-Inbox-v${release.version}-universal.dmg`,
-      `agent-inbox_${release.version}_amd64.deb`,
-      `agent-inbox_${release.version}_arm64.deb`,
+      ...[
+        `Agent-Inbox-v${release.version}-linux-arm64.AppImage`,
+        `Agent-Inbox-v${release.version}-linux-x86_64.AppImage`,
+        mac.expectedPublicName,
+        `agent-inbox_${release.version}_amd64.deb`,
+        `agent-inbox_${release.version}_arm64.deb`,
+      ].sort(),
       'SHA256SUMS.txt',
       'update-manifest.json',
       'update-manifest.json.sig',
@@ -501,12 +508,13 @@ function copyPackage(source, destination) {
   chmodSync(destination, mode)
 }
 
-function updateManifestAsset(asset) {
+function updateManifestAsset(asset, macos) {
   if (asset.platform === 'macos') {
     if (
       asset.packageType !== 'DMG'
-      || asset.architecture !== 'universal'
-      || asset.target !== 'darwin-arm64+darwin-x64'
+      || asset.name !== macos.dmgName
+      || asset.architecture !== macos.architecture
+      || asset.target !== macos.target
     ) {
       fail(`macOS update target evidence is malformed for ${asset.name}`)
     }
@@ -514,7 +522,7 @@ function updateManifestAsset(asset) {
       name: asset.name,
       packageType: 'dmg',
       platform: 'darwin',
-      architecture: 'universal',
+      architecture: macos.architecture,
       size: asset.size,
       sha256: asset.sha256,
     }
@@ -552,14 +560,21 @@ export function aggregateReleaseAssets({
 }) {
   const release = validateReleaseContext(context)
   const linux = validateLinux({ artifactsRoot, context: release, repoRoot, sourceTree })
+  const macosInputs = loadReleaseInputs(join(resolve(repoRoot), 'release/macos-inputs.json'))
+  // The kind, the DMG name and its labels come from the CPU types measured in the shipped
+  // app, checked against the committed expected set (#341).
   const mac = validatePublicationInputs({
     assetsDir: resolve(macAssetsDir),
     evidencePath: resolve(macEvidencePath),
     context: release,
+    expected: macosInputs.macosArchitectures,
   })
+  if (mac.macos.v1Manifest !== 'release') {
+    fail(`an ${mac.macos.kind} macOS release needs the v2 update manifest (#343): update-manifest.json can describe only a universal DMG`)
+  }
   const { output, assets } = prepareOutput(outputDir)
   const sources = new Map(linux.sources)
-  const dmgName = `Agent-Inbox-${release.tag}-universal.dmg`
+  const dmgName = mac.macos.dmgName
   sources.set(dmgName, mac.dmg)
   const packageNames = [...sources.keys()].sort()
   for (const name of packageNames) copyPackage(sources.get(name), join(assets, name))
@@ -592,8 +607,10 @@ export function aggregateReleaseAssets({
         name: dmgName,
         packageType: 'DMG',
         platform: 'macos',
-        architecture: 'universal',
-        target: 'darwin-arm64+darwin-x64',
+        architecture: mac.macos.architecture,
+        target: mac.macos.target,
+        architectures: mac.macos.architectures,
+        ...(mac.macos.needsNativeIntel ? { nativeIntel: 'passed' } : {}),
         size: macStat.size,
         sha256: sha256File(mac.dmg),
         notarization: {
@@ -617,10 +634,6 @@ export function aggregateReleaseAssets({
   }
   const registryPath = join(resolve(repoRoot), 'release/update-keys.json')
   const registry = parseRegistry(readFileSync(registryPath))
-  const macosInputs = readJson(
-    join(resolve(repoRoot), 'release/macos-inputs.json'),
-    'macOS release inputs',
-  )
   const { bytes: updateManifestBytes } = generateManifest({
     registry,
     evidence: {
@@ -628,7 +641,7 @@ export function aggregateReleaseAssets({
       packageVersion: evidence.packageVersion,
       sourceCommit: evidence.sourceCommit,
       sourceTree: evidence.sourceTree,
-      assets: evidence.assets.map(updateManifestAsset),
+      assets: evidence.assets.map((asset) => updateManifestAsset(asset, mac.macos)),
     },
     minimumMacosVersion: macosInputs.minimumMacosVersion,
     publishedAt: release.taggedAt,

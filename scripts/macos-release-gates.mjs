@@ -27,6 +27,7 @@ import { verifyPayload } from './runtime-payload.mjs'
 import { treeIdentity } from './tree-identity.mjs'
 import { probeRuntimeMcp } from './runtime-mcp-probe.mjs'
 import { createReleaseDmg } from './macos-dmg.mjs'
+import { macosKindOf, macosRelease, measuredMacosKind } from './macos-release-kind.mjs'
 
 const APP_NAME = 'Agent Inbox'
 const TAG_RE = /^v(\d+\.\d+\.\d+)$/
@@ -37,6 +38,7 @@ const KEY_ID_RE = /^[A-Z0-9]{10}$/
 const ISSUER_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const IDENTITY_RE = /^Developer ID Application: .+ \(([A-Z0-9]{10})\)$/
+const SHA256_RE = /^[0-9a-f]{64}$/
 
 export class ReleaseGateError extends Error {
   constructor(message) {
@@ -535,7 +537,7 @@ export async function buildFinalDmg({ app, version, appReceiptPath, output, icon
   runStapler('validate', app)
   command('/usr/bin/codesign', ['--verify', '--deep', '--strict', '--verbose=2', app])
   command('/usr/sbin/spctl', ['--assess', '--type', 'execute', '--verbose=4', app])
-  const expected = `Agent-Inbox-v${version}-universal.dmg`
+  const expected = expectedMacosRelease(`v${version}`).dmgName
   if (basename(output) !== expected) throw new ReleaseGateError(`final DMG must be named ${expected}`)
   mkdirSync(dirname(output), { recursive: true })
   await createReleaseDmg({ app, title: `${APP_NAME} v${version}`, icon, output })
@@ -574,6 +576,78 @@ function requireExactArchitectures(path, expected) {
     throw new ReleaseGateError(`architecture mismatch for ${path}: ${actual.join(', ')}`)
   }
   return actual
+}
+
+// What `lipo -archs` prints for one Mach-O file.
+function lipoArchitectures(path) {
+  return command('/usr/bin/lipo', ['-archs', path])
+}
+
+function lipoSet(output, label) {
+  if (typeof output !== 'string') throw new ReleaseGateError(`lipo -archs printed nothing for ${label}`)
+  return output.trim().split(/\s+/).filter(Boolean).sort()
+}
+
+/**
+ * The CPU types `lipo -archs` printed for the transported app's main executable and its
+ * better-sqlite3 addon, sorted, and the release kind they give (#341). Both sets must equal
+ * each other and the committed expected set; the DMG name and every label follow the kind.
+ */
+export function transportedAppArchitectures({ executable, betterSqlite3, expected }) {
+  const architectures = {
+    executable: lipoSet(executable, 'the app executable'),
+    betterSqlite3: lipoSet(betterSqlite3, 'the better-sqlite3 addon'),
+  }
+  return { architectures, kind: measuredMacosKind({ expected, ...architectures }) }
+}
+
+// The release the committed expected set (macosArchitectures) describes for this tag.
+function expectedMacosRelease(tag, expected = loadReleaseInputs().macosArchitectures) {
+  return macosRelease({ kind: macosKindOf(expected, 'macosArchitectures'), tag })
+}
+
+// A universal release also needs the native Intel gate's pass, recorded by `intel-evidence`
+// for this source, version and signing identity; an arm64 release has no Intel gate.
+function requireNativeIntel(macos, record, { sourceCommit, version, identity, teamId }) {
+  if (!macos.needsNativeIntel) {
+    if (record !== undefined) throw new ReleaseGateError(`an ${macos.kind} release has no native Intel gate`)
+    return
+  }
+  if (
+    record?.schema !== 1 ||
+    record.status !== 'passed' ||
+    record.runner !== 'native-intel' ||
+    record.sourceCommit !== sourceCommit ||
+    record.packageVersion !== version ||
+    record.identity !== identity ||
+    record.teamId !== teamId ||
+    !SHA256_RE.test(record.appArchiveSha256 ?? '') ||
+    !SHA256_RE.test(record.verificationReportSha256 ?? '') ||
+    typeof record.appTreeDigest !== 'string' ||
+    record.codesign !== 'passed' ||
+    record.x64RuntimeManifest !== 'passed' ||
+    record.x64RuntimeSelftest !== 'passed'
+  ) {
+    throw new ReleaseGateError(
+      `a ${macos.kind} release needs the native Intel gate to have passed for this source, version and identity`,
+    )
+  }
+}
+
+// The release a transported-app record describes: the kind recomputed from its measured
+// CPU types against the expected set, which must match the kind it records (#341).
+function transportedMacosRelease(transported, { tag, expected }) {
+  const { executable, betterSqlite3, ...extra } = transported?.architectures ?? {}
+  if (Object.keys(extra).length > 0) {
+    throw new ReleaseGateError('transported app CPU types must record only executable and betterSqlite3')
+  }
+  const kind = measuredMacosKind({ expected, executable, betterSqlite3 })
+  if (transported.kind !== kind) {
+    throw new ReleaseGateError(
+      `transported app evidence labels the release ${JSON.stringify(transported.kind)}, but its measured CPU types give ${kind}`,
+    )
+  }
+  return { ...macosRelease({ kind, tag }), architectures: { executable, betterSqlite3 } }
 }
 
 function requireNonemptyFile(path, label) {
@@ -714,11 +788,11 @@ export async function verifyFinalDmg({
         verifyPackagedUpdateTrust(appResources)
         assertEnglishOnlyElectronLocales(copiedApp, 'darwin', 'copied app')
 
-        requireExactArchitectures(join(contents, 'MacOS', APP_NAME), ['arm64', 'x86_64'])
-        requireExactArchitectures(
-          join(appResources, 'node_modules', 'better-sqlite3', 'build', 'Release', 'better_sqlite3.node'),
-          ['arm64', 'x86_64'],
-        )
+        const measured = transportedAppArchitectures({
+          executable: lipoArchitectures(join(contents, 'MacOS', APP_NAME)),
+          betterSqlite3: lipoArchitectures(join(appResources, 'node_modules', 'better-sqlite3', 'build', 'Release', 'better_sqlite3.node')),
+          expected: inputs.macosArchitectures,
+        })
         const setup = JSON.parse(readFileSync(join(appResources, 'setup-info.json'), 'utf8'))
         if (
           setup.schema !== 2 ||
@@ -766,7 +840,7 @@ export async function verifyFinalDmg({
           copiedAppCodesign: 'passed',
           copiedAppStapler: 'passed',
           copiedAppGatekeeper: 'passed',
-          universalEnvelope: 'passed',
+          ...measured,
           runtimeManifests: 'passed',
           releaseSetupInfo: 'passed',
           loopbackLaunch: 'passed',
@@ -786,9 +860,11 @@ export function buildFinalReleaseEvidence({
   appReceipt,
   dmgReceipt,
   transportEvidence,
+  intelEvidence,
   finalDmg,
   identity,
   teamId,
+  expected = loadReleaseInputs().macosArchitectures,
 }) {
   if (
     appReceipt?.kind !== 'app' ||
@@ -806,10 +882,16 @@ export function buildFinalReleaseEvidence({
   requireString(context?.sourceCommit, 'release context source commit', SHA_RE)
   requireString(identity, 'Developer ID identity', IDENTITY_RE)
   requireString(teamId, 'Developer ID team', TEAM_RE)
-  const expectedName = `Agent-Inbox-${context.tag}-universal.dmg`
-  if (basename(finalDmg) !== expectedName) {
-    throw new ReleaseGateError(`final DMG must be named ${expectedName}`)
+  const macos = transportedMacosRelease(transportEvidence, { tag: context.tag, expected })
+  if (basename(finalDmg) !== macos.dmgName) {
+    throw new ReleaseGateError(`final DMG must be named ${macos.dmgName}`)
   }
+  requireNativeIntel(macos, intelEvidence, {
+    sourceCommit: context.sourceCommit,
+    version: context.version,
+    identity,
+    teamId,
+  })
   const finalDmgSha256 = sha256File(finalDmg)
   if (
     transportEvidence?.schema !== 1 ||
@@ -823,7 +905,6 @@ export function buildFinalReleaseEvidence({
     transportEvidence.copiedAppCodesign !== 'passed' ||
     transportEvidence.copiedAppStapler !== 'passed' ||
     transportEvidence.copiedAppGatekeeper !== 'passed' ||
-    transportEvidence.universalEnvelope !== 'passed' ||
     transportEvidence.runtimeManifests !== 'passed' ||
     transportEvidence.releaseSetupInfo !== 'passed' ||
     transportEvidence.loopbackLaunch !== 'passed' ||
@@ -843,7 +924,8 @@ export function buildFinalReleaseEvidence({
     appNotarization: appReceipt,
     dmgNotarization: dmgReceipt,
     transportedApp: transportEvidence,
-    finalDmgName: expectedName,
+    ...(macos.needsNativeIntel ? { nativeIntel: intelEvidence } : {}),
+    finalDmgName: macos.dmgName,
     finalDmgSha256,
     verification: {
       appCodesign: 'passed',
@@ -859,13 +941,25 @@ export function buildFinalReleaseEvidence({
   }
 }
 
-export function validatePublicationInputs({ assetsDir, evidencePath, context }) {
+export function validatePublicationInputs({
+  assetsDir,
+  evidencePath,
+  context,
+  expected = loadReleaseInputs().macosArchitectures,
+}) {
   const evidence = readJson(evidencePath, 'final release evidence')
-  const dmgName = `Agent-Inbox-${context.tag}-universal.dmg`
-  const expected = [dmgName, 'SHA256SUMS.txt'].sort()
+  const macos = transportedMacosRelease(evidence.transportedApp, { tag: context.tag, expected })
+  requireNativeIntel(macos, evidence.nativeIntel, {
+    sourceCommit: context.sourceCommit,
+    version: context.version,
+    identity: evidence.identity,
+    teamId: evidence.teamId,
+  })
+  const dmgName = macos.dmgName
+  const allowlist = [dmgName, 'SHA256SUMS.txt'].sort()
   const actual = readdirSync(assetsDir).sort()
-  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
-    throw new ReleaseGateError(`release asset allowlist mismatch: expected ${expected.join(', ')}, found ${actual.join(', ')}`)
+  if (JSON.stringify(actual) !== JSON.stringify(allowlist)) {
+    throw new ReleaseGateError(`release asset allowlist mismatch: expected ${allowlist.join(', ')}, found ${actual.join(', ')}`)
   }
   const dmg = join(assetsDir, dmgName)
   const checksums = join(assetsDir, 'SHA256SUMS.txt')
@@ -905,7 +999,6 @@ export function validatePublicationInputs({ assetsDir, evidencePath, context }) 
     evidence.transportedApp?.copiedAppCodesign === 'passed' &&
     evidence.transportedApp?.copiedAppStapler === 'passed' &&
     evidence.transportedApp?.copiedAppGatekeeper === 'passed' &&
-    evidence.transportedApp?.universalEnvelope === 'passed' &&
     evidence.transportedApp?.runtimeManifests === 'passed' &&
     evidence.transportedApp?.releaseSetupInfo === 'passed' &&
     evidence.transportedApp?.loopbackLaunch === 'passed' &&
@@ -926,17 +1019,17 @@ export function validatePublicationInputs({ assetsDir, evidencePath, context }) 
   ) {
     throw new ReleaseGateError('final release evidence does not authorize publication')
   }
-  return { dmg, checksums, tag: context.tag, version: context.version }
+  return { dmg, checksums, tag: context.tag, version: context.version, macos }
 }
 
-export function validateRemoteDraft({ remotePath, tag }) {
+export function validateRemoteDraft({ remotePath, tag, expected = loadReleaseInputs().macosArchitectures }) {
   const remote = readJson(remotePath, 'remote draft release')
   const names = (remote.assets ?? []).map((asset) => asset.name).sort()
-  const expected = [`Agent-Inbox-${tag}-universal.dmg`, 'SHA256SUMS.txt'].sort()
+  const allowlist = [expectedMacosRelease(tag, expected).dmgName, 'SHA256SUMS.txt'].sort()
   if (
     remote.tagName !== tag ||
     remote.isDraft !== true ||
-    JSON.stringify(names) !== JSON.stringify(expected) ||
+    JSON.stringify(names) !== JSON.stringify(allowlist) ||
     remote.assets.some((asset) => !Number.isSafeInteger(asset.size) || asset.size <= 0)
   ) {
     throw new ReleaseGateError('remote draft release does not contain the exact nonempty asset allowlist')
@@ -976,6 +1069,7 @@ async function main(argv) {
       'app-receipt': { type: 'string' },
       'dmg-receipt': { type: 'string' },
       'transport-evidence': { type: 'string' },
+      'intel-evidence': { type: 'string' },
       dmg: { type: 'string' },
       icon: { type: 'string' },
       'assets-dir': { type: 'string' },
@@ -1146,6 +1240,9 @@ async function main(argv) {
     const appReceipt = readJson(resolve(values['app-receipt']), 'app receipt')
     const dmgReceipt = readJson(resolve(values['dmg-receipt']), 'DMG receipt')
     const transportEvidence = readJson(resolve(values['transport-evidence']), 'transported app evidence')
+    const intelEvidence = values['intel-evidence']
+      ? readJson(resolve(values['intel-evidence']), 'native Intel evidence')
+      : undefined
     const app = resolve(values.app)
     const dmg = resolve(values.dmg)
     verifySignatureIdentity(app, values.identity, values.team)
@@ -1159,6 +1256,7 @@ async function main(argv) {
       appReceipt,
       dmgReceipt,
       transportEvidence,
+      intelEvidence,
       finalDmg: dmg,
       identity: values.identity,
       teamId: values.team,
@@ -1185,6 +1283,12 @@ async function main(argv) {
       context,
     })
     process.stdout.write(`${JSON.stringify({ ok: true, ...result })}\n`)
+    return
+  }
+  if (commandName === 'expected-kind') {
+    const macos = expectedMacosRelease(requireString(values.tag, 'release tag', TAG_RE))
+    appendOutputs({ kind: macos.kind, 'dmg-name': macos.dmgName })
+    process.stdout.write(`${JSON.stringify(macos)}\n`)
     return
   }
   if (commandName === 'remote-draft') {

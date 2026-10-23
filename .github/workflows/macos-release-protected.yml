@@ -351,6 +351,11 @@ jobs:
           architecture: arm64
           package-manager-cache: false
       - run: npm ci
+      - id: kind
+        name: Derive the DMG name from the expected macOS CPU types
+        run: >-
+          node scripts/macos-release-gates.mjs expected-kind
+          --tag "${{ needs.authorize.outputs.tag }}"
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: developer-id-app
@@ -396,9 +401,10 @@ jobs:
           APPLE_DEVELOPER_ID_P12_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_P12_PASSWORD }}
         run: scripts/import-apple-signing.sh import
       - name: Build and sign final DMG from stapled app
+        env:
+          DMG: build/${{ steps.kind.outputs.dmg-name }}
         run: |
           set -euo pipefail
-          DMG="build/Agent-Inbox-${{ needs.authorize.outputs.tag }}-universal.dmg"
           node scripts/macos-release-gates.mjs build-dmg \
             --app "build/final-app/Agent Inbox.app" \
             --version "${{ needs.authorize.outputs.version }}" \
@@ -415,34 +421,42 @@ jobs:
       - name: Notarize and staple accepted DMG
         env:
           APPLE_NOTARY_PRIVATE_KEY_BASE64: ${{ secrets.APPLE_NOTARY_PRIVATE_KEY_BASE64 }}
+          DMG: build/${{ steps.kind.outputs.dmg-name }}
         run: >-
           scripts/notarize-macos.sh dmg
-          "build/Agent-Inbox-${{ needs.authorize.outputs.tag }}-universal.dmg"
-          "build/Agent-Inbox-${{ needs.authorize.outputs.tag }}-universal.dmg"
+          "$DMG"
+          "$DMG"
           build/dmg-notary-receipt.json
       - name: Mount final stapled DMG and verify transported app
+        env:
+          DMG: build/${{ steps.kind.outputs.dmg-name }}
         run: >-
           node scripts/macos-release-gates.mjs verify-final-dmg
-          --dmg "build/Agent-Inbox-${{ needs.authorize.outputs.tag }}-universal.dmg"
+          --dmg "$DMG"
           --identity "$APPLE_DEVELOPER_IDENTITY"
           --team "$APPLE_TEAM_ID"
           --source "${{ needs.authorize.outputs.source-commit }}"
           --version "${{ needs.authorize.outputs.version }}"
           --output build/transported-app-evidence.json
       - name: Generate final post-staple evidence and checksums
+        env:
+          DMG: build/${{ steps.kind.outputs.dmg-name }}
         run: >-
           node scripts/macos-release-gates.mjs final-evidence
           --context build/signed/release-context.json
           --app "build/final-app/Agent Inbox.app"
           --app-receipt build/app-notary-receipt.json
-          --dmg "build/Agent-Inbox-${{ needs.authorize.outputs.tag }}-universal.dmg"
+          --dmg "$DMG"
           --dmg-receipt build/dmg-notary-receipt.json
           --transport-evidence build/transported-app-evidence.json
+          --intel-evidence build/intel/intel-verification.json
           --identity "$APPLE_DEVELOPER_IDENTITY"
           --team "$APPLE_TEAM_ID"
           --assets-dir build/release-assets
           --output build/release-evidence.json
       - name: Write release notes
+        env:
+          DMG_NAME: ${{ steps.kind.outputs.dmg-name }}
         run: |
           printf '%s\n' \
             "# Agent Inbox ${{ needs.authorize.outputs.tag }}" \
@@ -450,7 +464,7 @@ jobs:
             "Desktop packages for macOS and supported glibc-based Linux systems." \
             "" \
             "## Packages" \
-            "- macOS 13.5 or later, Apple silicon or Intel: \`Agent-Inbox-${{ needs.authorize.outputs.tag }}-universal.dmg\`" \
+            "- macOS 13.5 or later, Apple silicon or Intel: \`$DMG_NAME\`" \
             "- Linux x86_64 AppImage: \`Agent-Inbox-${{ needs.authorize.outputs.tag }}-linux-x86_64.AppImage\`" \
             "- Linux arm64 AppImage: \`Agent-Inbox-${{ needs.authorize.outputs.tag }}-linux-arm64.AppImage\`" \
             "- Debian/Ubuntu amd64: \`agent-inbox_${{ needs.authorize.outputs.version }}_amd64.deb\`" \
@@ -467,7 +481,7 @@ jobs:
             "\`\`\`sh" \
             "# macOS" \
             "shasum -a 256 -c SHA256SUMS.txt" \
-            "spctl --assess --type open --context context:primary-signature --verbose=4 Agent-Inbox-${{ needs.authorize.outputs.tag }}-universal.dmg" \
+            "spctl --assess --type open --context context:primary-signature --verbose=4 $DMG_NAME" \
             "" \
             "# Linux" \
             "sha256sum -c SHA256SUMS.txt" \

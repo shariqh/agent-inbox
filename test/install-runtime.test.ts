@@ -19,6 +19,7 @@ import { basename, dirname, join, resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { readAgentHosts, registeredRuntimeVersion } from '../src/agent-hosts.js'
 import type { RuntimeVerifier } from '../src/agent-hosts.js'
+import { accentedRoot, RUNTIME_SPELLINGS } from './runtime-spellings.js'
 import { removeScratchDirs, scratchDir } from './scratch.js'
 
 const REPO = resolve(import.meta.dirname, '..')
@@ -401,6 +402,19 @@ describe('portable release installer', () => {
       ['a hook written as one command string', (f, dir) => settings(f, {
         hooks: { Stop: [{ hooks: [{ type: 'command', command: `${node(dir)} ${join(dir, 'dist', 'hook-cli.js')} stop` }] }] },
       })],
+      // each argument is one path, spaces and all (the review of #334)
+      ['a symlinked shortcut with a space in its path', (f, dir) => {
+        const shortcut = join(f.home, 'Library', 'Application Support', 'agent-inbox')
+        mkdirSync(shortcut, { recursive: true })
+        symlinkSync(node(dir), join(shortcut, 'node'))
+        symlinkSync(join(dir, 'dist', 'mcp-server.js'), join(shortcut, 'mcp-server.js'))
+        writeFileSync(f.copilotConfig, JSON.stringify({
+          mcpServers: { legacy: { command: join(shortcut, 'node'), args: [join(shortcut, 'mcp-server.js')] } },
+        }))
+      }],
+      ['an env value naming only its id', (f, dir) => writeFileSync(f.copilotConfig, JSON.stringify({
+        mcpServers: { legacy: { command: 'node', args: ['/work/app/server.js'], env: { AGENT_INBOX_RUNTIME: basename(dir) } } },
+      }))],
     ]
 
     it.each(REFERENCES)('keeps an older runtime that %s still uses', (_label, reference) => {
@@ -413,6 +427,64 @@ describe('portable release installer', () => {
 
       expect(result.status, result.stderr).toBe(0)
       expect(result.stderr).toContain(`retained runtime ${basename(oldest)} (referenced)`)
+      expect(runtimes(f)).toEqual([basename(oldest), basename(previous), payload.runtimeId].sort())
+    })
+
+    // A folder is compared by (dev, ino), never by how a path spells it. These
+    // spellings exist on macOS only (test/runtime-spellings.ts); elsewhere each
+    // names another file, so they are skipped there.
+    for (const [label, spell, here] of RUNTIME_SPELLINGS) {
+      it.skipIf(!here)(`keeps an older runtime a launcher reaches through ${label}`, () => {
+        const plain = fixture()
+        const runtimeRoot = accentedRoot(plain.home)
+        const f = { ...plain, runtimeRoot, env: { ...plain.env, AGENT_INBOX_RUNTIME_ROOT: runtimeRoot } }
+        const { oldest, previous } = olderRuntimes(f)
+        writeFileSync(f.copilotConfig, JSON.stringify({
+          mcpServers: { legacy: { command: spell(node(oldest)), args: [spell(join(oldest, 'dist', 'mcp-server.js'))] } },
+        }))
+        const payload = runtimePayload('1.0.0')
+
+        const result = install(f, payload)
+
+        expect(result.status, result.stderr).toBe(0)
+        expect(result.stderr).toContain(`retained runtime ${basename(oldest)} (referenced)`)
+        expect(runtimes(f)).toEqual([basename(oldest), basename(previous), payload.runtimeId].sort())
+      })
+    }
+
+    // Errors only ever keep: a path naming it that stat cannot follow.
+    it.skipIf(process.getuid?.() === 0)('keeps an older runtime that a path stat cannot follow names (EACCES)', () => {
+      const f = fixture()
+      const { oldest, previous } = olderRuntimes(f)
+      const locked = join(f.home, 'locked')
+      mkdirSync(join(locked, basename(oldest), 'bin'), { recursive: true })
+      writeFileSync(f.copilotConfig, JSON.stringify({ mcpServers: { legacy: { command: join(locked, basename(oldest), 'bin', 'node') } } }))
+      chmodSync(locked, 0o000)
+      try {
+        const payload = runtimePayload('1.0.0')
+
+        const result = install(f, payload)
+
+        expect(result.status, result.stderr).toBe(0)
+        expect(result.stderr).toContain(`retained runtime ${basename(oldest)} (referenced)`)
+        expect(runtimes(f)).toEqual([basename(oldest), basename(previous), payload.runtimeId].sort())
+      } finally {
+        chmodSync(locked, 0o755)
+      }
+    })
+
+    // A gate that cannot answer keeps everything, as a config it cannot read does.
+    it('keeps every older runtime, and still installs, when the reference check itself fails', () => {
+      const f = fixture()
+      const { oldest, previous } = olderRuntimes(f)
+      const preload = join(f.home, 'fail-references.cjs')
+      writeFileSync(preload, "if (/runtime-config\\.mjs$/.test(process.argv[1] || '') && process.argv[2] === 'references') process.exit(1)\n")
+      const payload = runtimePayload('1.0.0')
+
+      const result = install({ ...f, env: { ...f.env, NODE_OPTIONS: `--require ${preload}` } }, payload)
+
+      expect(result.status, result.stderr).toBe(0)
+      expect(result.stderr).toContain(`retained runtime ${basename(oldest)} (unknown)`)
       expect(runtimes(f)).toEqual([basename(oldest), basename(previous), payload.runtimeId].sort())
     })
 

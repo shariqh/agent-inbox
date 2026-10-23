@@ -127,7 +127,10 @@ FOUND=0
 REMOVED=0
 
 # One unused runtime, checked again on its own first: a host config or a
-# process may have started using it since the list was made.
+# process may have started using it since the list was made. Seconds still
+# pass between that check and the rename that removes it, while prune cleans
+# old trash and hashes the folder against its manifest; a config written in
+# that window is not seen (Setup's installers wait for this lock).
 remove_runtime() {
   local id="$1" name="$2" again verdict detail result
   again="$(verdicts --runtime-id "$id")" || {

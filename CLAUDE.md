@@ -730,7 +730,10 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   `hook-cli selftest` reaches no `public/` module, `scripts/runtime-mcp-probe.mjs`
   (`probeRuntimeMcp`) starts the runtime's own `dist/mcp-server.js` with its own Node against
   a scratch database and requires initialize + tools/list to answer, bounded by a timeout
-  and writing nothing to stdout. Staging, release assembly and the Intel release gate all
+  and writing nothing to stdout. Then it closes the server's stdin and lets it exit,
+  killing it only after a 2-second grace: on Windows a kill is TerminateProcess, which
+  would orphan a git the server runs for its presence write, still open inside the
+  runtime about to be renamed (#333). Staging, release assembly and the Intel release gate all
   run it beside the selftest.
 - **`waits_on` is agent-owned row content: labels, checked where it is written (issue #103,
   slice 2 PR C).** Design: [`docs/superpowers/specs/2026-10-21-plan-dependencies-design.md`](docs/superpowers/specs/2026-10-21-plan-dependencies-design.md)

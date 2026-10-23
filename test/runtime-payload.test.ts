@@ -2330,6 +2330,35 @@ describe('runtime-mcp-probe: the staged MCP server answers initialize and tools/
     expect(result.stderr).toMatch(/did not answer within 1500 ms/)
   })
 
+  // #333: on Windows a kill is TerminateProcess, which would orphan whatever the
+  // server was running (its presence write runs git) inside the runtime about
+  // to be renamed. A fixture with no SIGTERM handler is killed as abruptly.
+  it('lets the server finish what it is running and exit by itself before any kill', () => {
+    const root = probeFixture()
+    const server = join(root, 'dist', 'mcp-server.js')
+    writeFileSync(server, `${readFileSync(server, 'utf8')}
+import { execFileSync } from 'node:child_process'
+import { writeFileSync } from 'node:fs'
+process.stdin.on('end', () => {
+  execFileSync(process.execPath, ['-e', 'setTimeout(() => {}, 300)'])
+  writeFileSync(new URL('../finished', import.meta.url), 'after its child exited\\n')
+})
+`)
+    const result = probe(root)
+    expect(result.stderr).toBe('')
+    expect(result.status).toBe(0)
+    expect(readFileSync(join(root, 'finished'), 'utf8')).toBe('after its child exited\n')
+  })
+
+  it('still stops a server that does not exit when its stdin closes', () => {
+    const root = probeFixture()
+    const server = join(root, 'dist', 'mcp-server.js')
+    writeFileSync(server, `${readFileSync(server, 'utf8')}\nsetInterval(() => {}, 1000)\n`)
+    const result = probe(root)
+    expect(result.stderr).toBe('')
+    expect(result.status).toBe(0)
+  })
+
   it.skipIf(!existsSync(join(REPO, 'dist', 'mcp-server.js')))('passes this checkout’s real built server', () => {
     const result = probe(REPO)
     expect(result.stderr).toBe('')

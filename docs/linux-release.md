@@ -350,9 +350,9 @@ scratch tree, then requires the packaged in-process viewer to answer on
 (#292), so each gate also runs the app in a locale (`LANG`, with `LANGUAGE`, `LC_ALL` and
 `LC_MESSAGES` unset) and requires every renderer to have been started with the locale
 Chromium must choose for it: the FUSE gate runs as a French user, who falls back to
-`--lang=en-US`, the extraction gate as a British one, who keeps `--lang=en-GB`. The app
-sets its spellchecker to the system's languages at startup, since Chromium would otherwise
-seed a new profile with that English locale's dictionary
+`--lang=en-US`, the extraction gate as a British one, who keeps `--lang=en-GB`. Chromium
+would seed a new French profile with that English locale's spellchecker, so at startup the
+app sets the system's languages on a profile that has none in the system's first language
 ([Spellcheck](macos-release.md#what-electron-locales-ship-292)). The no-FUSE container has no
 `/dev/fuse`; the normal container receives the FUSE device explicitly.
 Because neither container has a `node` executable, that response cannot come

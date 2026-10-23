@@ -20,6 +20,17 @@ const AVAILABLE = [
   'tr', 'uk', 'vi',
 ]
 
+// app.getPreferredSystemLanguages() in Electron 43 on Linux, by LANG (and
+// LANGUAGE): GLib's variants of each entry, with any encoding dropped.
+const LINUX = {
+  fr_FR: ['fr-FR', 'fr-FR', 'fr', 'fr'],
+  en_GB: ['en-GB', 'en-GB', 'en', 'en'],
+  en_NZ: ['en-NZ', 'en-NZ', 'en', 'en'],
+  en_IN: ['en-IN', 'en-IN', 'en', 'en'],
+  en_NZ_en_GB_en: ['en-NZ', 'en', 'en-GB', 'en', 'en'],
+  fr_CA_en_CA: ['fr-CA', 'fr', 'en-CA', 'en'],
+}
+
 describe('spellcheckLanguagesFor (#292)', () => {
   it('takes the exact language first, then the base language', () => {
     expect(spellcheckLanguagesFor(['pt-PT'], AVAILABLE)).toEqual(['pt-PT'])
@@ -27,11 +38,22 @@ describe('spellcheckLanguagesFor (#292)', () => {
     expect(spellcheckLanguagesFor(['de-CH'], AVAILABLE)).toEqual(['de'])
   })
 
+  // Chromium has no dictionary for en-NZ, en-IN or en-ZA, and its bare en is
+  // the en-US one.
+  it('prefers a later dictionary of the same language to the bare base', () => {
+    expect(spellcheckLanguagesFor(LINUX.en_NZ_en_GB_en, AVAILABLE)).toEqual(['en-GB'])
+    // LANGUAGE=en_NZ:en_IN:en_GB: en-IN has no dictionary either
+    expect(spellcheckLanguagesFor(['en-NZ', 'en', 'en-IN', 'en', 'en-GB', 'en'], AVAILABLE)).toEqual(['en-GB'])
+    expect(spellcheckLanguagesFor(['fr-CA', 'fr-FR', 'en-US'], AVAILABLE)).toEqual(['fr-FR', 'en-US'])
+    expect(spellcheckLanguagesFor(['pt-AO', 'pt', 'pt-PT'], AVAILABLE)).toEqual(['pt-PT'])
+    expect(spellcheckLanguagesFor(['en-NZ', 'fr-FR', 'en-GB'], AVAILABLE)).toEqual(['en-GB', 'fr-FR'])
+    expect(spellcheckLanguagesFor(LINUX.en_NZ, AVAILABLE)).toEqual(['en'])
+  })
+
   it('keeps the system order, one dictionary per language', () => {
-    // what Electron reports on Linux for LANG=fr_FR.UTF-8
-    expect(spellcheckLanguagesFor(['fr-FR', 'fr-FR', 'fr', 'fr'], AVAILABLE)).toEqual(['fr-FR'])
+    expect(spellcheckLanguagesFor(LINUX.fr_FR, AVAILABLE)).toEqual(['fr-FR'])
     expect(spellcheckLanguagesFor(['de-DE', 'en-GB', 'en-US', 'en'], AVAILABLE)).toEqual(['de-DE', 'en-GB'])
-    expect(spellcheckLanguagesFor(['fr-CA', 'fr-FR', 'en-US'], AVAILABLE)).toEqual(['fr', 'en-US'])
+    expect(spellcheckLanguagesFor(['fr-CA', 'en-CA'], AVAILABLE)).toEqual(['fr', 'en-CA'])
   })
 
   it('matches regardless of case or an underscore', () => {
@@ -71,36 +93,70 @@ function fakes(preferred: string[], current: string[]) {
 
 describe('syncSpellcheckLanguages (#292)', () => {
   it.each(['linux', 'win32'])('points a new %s profile seeded with English at the system language', (platform) => {
-    const { app, session, set } = fakes(['fr-FR', 'fr-FR', 'fr', 'fr'], ['en-US'])
+    const { app, session, set } = fakes(LINUX.fr_FR, ['en-US'])
 
     expect(syncSpellcheckLanguages({ platform, app, session })).toEqual(['fr-FR'])
     expect(set).toEqual([['fr-FR']])
   })
 
-  it('leaves the languages alone when they already follow the system', () => {
+  // Chromium gives New Zealand, Indian and other Commonwealth English users
+  // the en-GB locale, so Electron seeds en-GB; matching their own languages
+  // would turn that into en, the US dictionary.
+  it('leaves a profile alone that already checks the first system language', () => {
     for (const [preferred, current] of [
-      [['en-GB', 'en-GB', 'en', 'en'], ['en-GB']],
+      [LINUX.en_NZ, ['en-GB']],
+      [LINUX.en_IN, ['en-GB']],
+      [LINUX.en_NZ_en_GB_en, ['en-GB']],
+      [LINUX.en_GB, ['en-GB']],
       [['en-US', 'en'], ['en-US']],
-      [['fr-CA', 'en-US'], ['fr', 'en-US']],
+      [LINUX.fr_FR, ['fr']],
+      [['fr-CA', 'en-CA'], ['fr']],
+      [['fr-FR', 'en-US'], ['en-US', 'fr-FR']],
     ]) {
       const { app, session, set } = fakes(preferred!, current!)
-      expect(syncSpellcheckLanguages({ platform: 'linux', app, session })).toBeNull()
+      expect(syncSpellcheckLanguages({ platform: 'linux', app, session }), preferred!.join()).toBeNull()
       expect(set).toEqual([])
     }
   })
 
-  it('follows the system order', () => {
-    const { app, session, set } = fakes(['fr-FR', 'en-US'], ['en-US', 'fr-FR'])
-
-    expect(syncSpellcheckLanguages({ platform: 'win32', app, session })).toEqual(['fr-FR', 'en-US'])
-    expect(set).toEqual([['fr-FR', 'en-US']])
+  it('follows a system that changed language', () => {
+    for (const [preferred, current, languages] of [
+      [LINUX.fr_FR, ['en-GB'], ['fr-FR']],
+      [LINUX.en_NZ_en_GB_en, ['fr-FR'], ['en-GB']],
+      [['fr-CA', 'en-CA'], ['en-US'], ['fr', 'en-CA']],
+      // Chromium gives this one the en-GB locale, from en_CA
+      [LINUX.fr_CA_en_CA, ['en-GB'], ['fr', 'en-CA']],
+    ]) {
+      const { app, session, set } = fakes(preferred!, current!)
+      expect(syncSpellcheckLanguages({ platform: 'win32', app, session }), preferred!.join()).toEqual(languages)
+      expect(set).toEqual([languages])
+    }
   })
 
-  it('adds a language the system gained', () => {
-    const { app, session, set } = fakes(['fr-FR', 'en-US'], ['fr-FR'])
+  it('judges by the first entry that is a language', () => {
+    const kept = fakes([null, ' ', 'en-IN', 'fr-FR'] as never, ['en-GB'])
+    expect(syncSpellcheckLanguages({ platform: 'linux', app: kept.app, session: kept.session })).toBeNull()
+    expect(kept.set).toEqual([])
 
-    expect(syncSpellcheckLanguages({ platform: 'linux', app, session })).toEqual(['fr-FR', 'en-US'])
-    expect(set).toEqual([['fr-FR', 'en-US']])
+    const switched = fakes([null, ' ', 'fr-FR', 'en-US'] as never, ['en-US'])
+    expect(syncSpellcheckLanguages({ platform: 'linux', app: switched.app, session: switched.session })).toEqual(['fr-FR', 'en-US'])
+  })
+
+  // With no dictionary for the first system language there is nothing to
+  // keep, so the profile follows the others, but only a list that differs is
+  // written.
+  it('writes only a list that differs when the first system language has no dictionary', () => {
+    for (const [preferred, current, writes] of [
+      [['ja-JP', 'en-US'], ['en-US'], []],
+      [['ja-JP', 'en-US', 'fr-FR'], ['en-US', 'fr-FR'], []],
+      [['ja-JP', 'en-US', 'fr-FR'], ['en-US'], [['en-US', 'fr-FR']]],
+      [['ja-JP', 'en-US', 'fr-FR'], ['fr-FR', 'en-US'], [['en-US', 'fr-FR']]],
+      [['ja-JP', 'en-US', 'fr-FR'], ['en-US', 'fr-FR', 'de'], [['en-US', 'fr-FR']]],
+    ] as Array<[string[], string[], string[][]]>) {
+      const { app, session, set } = fakes(preferred, current)
+      syncSpellcheckLanguages({ platform: 'linux', app, session })
+      expect(set, current.join()).toEqual(writes)
+    }
   })
 
   it('never clears the languages when no system language has a dictionary', () => {

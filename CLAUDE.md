@@ -1768,9 +1768,13 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   DevTools; the AppImage FUSE gates run in French (`en-US`) and the extraction gates in
   British English (`en-GB`). Electron seeds a new profile's spellchecker languages from
   Chromium's locale, so on Linux and Windows `electron/spellcheck-languages.cjs` points it
-  at `app.getPreferredSystemLanguages()` at startup, before the first window (exact code,
-  else base language, one per language, at most three, written only when it differs and
-  never to none); macOS keeps the system's own `NSSpellChecker`, which Chromium consults
+  at `app.getPreferredSystemLanguages()` at startup, before the first window, but only
+  when none of the profile's languages shares a base language with the system's first
+  one (exact code, else a later entry of the same language, else the base language; one
+  per language, at most three, written only when it differs and never to none). Never
+  widen that: Chromium seeds `en-GB` for New Zealand, Indian and other Commonwealth
+  English users, has no dictionary for their variants, and maps bare `en` to the US
+  dictionary. macOS keeps the system's own `NSSpellChecker`, which Chromium consults
   directly and Electron's `setSpellCheckerLanguages` cannot change.
 - **Signed update-manifest trust contract** *(#106 Layer 1)* — protected releases contain
   five packages, package-only `SHA256SUMS.txt`, deterministic `update-manifest.json`, and

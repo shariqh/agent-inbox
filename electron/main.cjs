@@ -1077,8 +1077,9 @@ app.whenReady().then(async () => {
 
   updateController = initializeUpdateController()
   // Only US and British English locales ship (#292), and Electron seeds a new
-  // profile's spellchecker from the app locale, so on Linux and Windows follow
-  // the system's languages instead, before the first page loads.
+  // profile's spellchecker from the app locale, so on Linux and Windows switch
+  // a profile with none of the system's first language to the system's
+  // languages, before the first page loads.
   try {
     syncSpellcheckLanguages({ platform: process.platform, app, session: session.defaultSession })
   } catch (err) {

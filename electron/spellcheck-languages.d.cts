@@ -3,8 +3,8 @@
 
 /**
  * Chromium's spellchecker codes for the system's languages, in their order:
- * exact match first, then the base language, one per base language, at most
- * three.
+ * exact match first, then a later entry of the same language with a
+ * dictionary, then the base language; one per base language, at most three.
  */
 export function spellcheckLanguagesFor(preferred: unknown, available: unknown): string[]
 
@@ -19,8 +19,9 @@ export interface SpellcheckSession {
 }
 
 /**
- * On Linux and Windows, set the session's spellchecker languages to the
- * system's when they differ, and never to none. Returns what it set, or null.
+ * On Linux and Windows, when none of the session's spellchecker languages is
+ * in the system's first language, set them to the system's languages, if
+ * that differs and is not none. Returns what it set, or null.
  */
 export function syncSpellcheckLanguages(options: {
   platform: string

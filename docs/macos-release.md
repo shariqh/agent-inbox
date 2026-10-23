@@ -183,24 +183,30 @@ is also the default locale of the dates the app formats, so keeping British Engl
   Notifications carry the app's own title, body and action labels, and macOS draws the
   rest. `app.getPreferredSystemLanguages()` still reports the user's languages, while on
   macOS `app.getSystemLocale()` (`NSLocale.currentLocale`) follows the app's language; the
-  app reads neither for its UI. Spellcheck still follows the user's languages (below).
+  app reads neither for its UI. Spellcheck still checks the user's language (below).
 - **Spellcheck.** Electron seeds a new profile's spellchecker languages from Chromium's
   locale (`ElectronBrowserContext`), so a new French or German profile on Linux, and on
   Windows once it ships, would check the reply boxes against the English dictionary. On
-  those two, `electron/spellcheck-languages.cjs` sets the spellchecker to the system's
-  languages at startup, before the first page loads: for each of
-  `app.getPreferredSystemLanguages()` in order, the code in
-  `session.availableSpellCheckerLanguages` it matches exactly, else its base language, one
-  per language and at most three (Chromium sets no limit), and only when that differs from
-  what the profile holds. A profile from an earlier release that holds `fr` moves to
-  `fr-FR`, the same dictionary file. A system language Chromium has no dictionary for, such
-  as Japanese, leaves the profile as it is, US English, as before. In Docker, a new
-  Electron 43 profile under `LANG=fr_FR.UTF-8` loads the French dictionary with the sync
-  and the US English one without it. macOS is unchanged: its spellchecker is the system's
-  own (`NSSpellChecker`). Chromium replaces the preference there with that checker's
-  language, Electron's `setSpellCheckerLanguages` does nothing, and a launch with
-  `-AppleLanguages '(fr)'` reports `fr` and accepts the same French words with or without
-  the prune.
+  those two, `electron/spellcheck-languages.cjs` runs at startup, before the first page
+  loads, and changes nothing while one of the profile's spellchecker languages shares a
+  base language with the system's first language. That keeps an existing `fr` profile on
+  a French system as it is, and the `en-GB` Chromium seeds for New Zealand, Indian, South
+  African and other Commonwealth English users: Chromium gives them the `en-GB` locale but
+  has no dictionary for their own variants, and its bare `en` is the US one. Otherwise,
+  for a new French profile seeded with English or a system that changed language, it sets
+  the system's languages: for each of `app.getPreferredSystemLanguages()` in order, the
+  code in `session.availableSpellCheckerLanguages` it matches exactly, else that of a
+  later entry of the same language (`en_NZ:en_GB` lists `en-GB` after `en-NZ`), else its
+  base language, one per language and at most three (Chromium sets no limit), and only
+  when that differs from what the profile holds and is not empty. A system language
+  Chromium has no dictionary for, such as Japanese, leaves a new profile on US English,
+  as before. In Docker, Electron 43 keeps `en-GB` under `LANG=en_NZ.UTF-8`, `en_IN` and
+  `en_ZA`, gives a new profile under `LANG=fr_FR.UTF-8` the French dictionary (the US one
+  without the sync), and moves an `en-GB` profile to `fr-FR` once the system is French.
+  macOS is unchanged: its spellchecker is the system's own (`NSSpellChecker`). Chromium
+  replaces the preference there with that checker's language, Electron's
+  `setSpellCheckerLanguages` does nothing, and a launch with `-AppleLanguages '(fr)'`
+  reports `fr` and accepts the same French words with or without the prune.
 - **Where.** Each thin-app builder prunes the packaged app once, right after
   `@electron/packager` (the only step that adds Electron's files) and before anything
   checks, hashes or publishes it, so both macOS thin apps carry the same locale set into

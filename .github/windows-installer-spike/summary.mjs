@@ -70,7 +70,8 @@ const shortcutText = (shortcuts) => {
   if (!shortcuts?.length) return 'none'
   return shortcuts.map((link) => `${link.path} → ${link.target}`).join('<br>')
 }
-const appIdText = (state) => (state?.appsFolder ?? []).map((entry) => entry.error ?? `${entry.name}: ${entry.appId}`).join('<br>') || 'not listed'
+const appIdText = (state) => (state?.appsFolder ?? [])
+  .map((entry) => (entry.error ? `not observable: ${entry.error}` : `${entry.name}: ${entry.appId}`)).join('<br>') || 'not listed'
 const launchText = (entry) => {
   if (!entry) return 'not run'
   if (entry.error) return `❌ ${entry.error}`
@@ -182,11 +183,12 @@ row("Unelevated per-user install under Windows Server's default installer policy
 row('Silent install as a standard user',
   `${ok(msi?.install?.run?.exitCode === 0 && msi?.install?.user?.isAdministrator === false)} ${runText(msi?.install)}; ${integrity(msi?.install)}`,
   `${ok(squirrel?.install?.run?.exitCode === 0 && squirrel?.install?.user?.isAdministrator === false)} ${runText(squirrel?.install)}; ${integrity(squirrel?.install)}`)
-row('App started by the installer itself', startedByInstall(msi?.install), startedByInstall(squirrel?.install))
+row('App processes during the install', startedByInstall(msi?.install), startedByInstall(squirrel?.install))
 row('Install location', msi?.install?.state?.appDirectory, squirrel?.install?.state?.appDirectory)
 row('Installed tree = verified folder', treeText(msi?.installCheck, 'msi'), treeText(squirrel?.installCheck, 'squirrel'))
+const cached = msi?.install?.state?.msiProducts?.[0]?.localPackageBytes
 row('Disk footprint after install',
-  `${MiB(msi?.installCheck?.footprint?.bytes)} in ${msi?.installCheck?.footprint?.root ?? '—'}`,
+  `${MiB(msi?.installCheck?.footprint?.bytes)} in ${msi?.installCheck?.footprint?.root ?? '—'}${cached ? ` + ${MiB(cached)} cached copy of the .msi in C:\\Windows\\Installer` : ''}`,
   `${MiB(squirrel?.installCheck?.footprint?.bytes)} in ${squirrel?.installCheck?.footprint?.root ?? '—'}`)
 const deepestText = (deepest) => deepest
   ? `${deepest.fullLength} characters for a user name of ${deepest.userNameLength}; fits MAX_PATH (260) for user names up to ${deepest.maxUserNameLength} characters (${deepest.relative})`
@@ -203,9 +205,13 @@ row('Toast activator COM registration',
   msi?.install?.state?.toastActivatorServer ? `MSI-owned: LocalServer32 = ${Object.values(msi.install.state.toastActivatorServer)[0]}` : 'none',
   squirrel?.shortcutStep?.state?.toastActivatorServer ? 'present' : 'none at install (Electron writes one at its first notification)')
 row('Launch from the shortcut, then quit', launchText(msi?.launchBase), launchText(squirrel?.launchBase))
-const upgradeRunningText = (entry, measured, kind) => entry
-  ? `${runText(entry)}; app ${entry.launch?.ready ? 'was running' : 'was not running'}; started during the run: ${appsDuring(entry).join(', ') || 'nothing'}; still running after: ${(entry.processesAfterRun ?? []).filter((p) => p.main).map((p) => p.path?.split('\\').slice(-2).join('\\')).join(', ') || 'nothing'}; tree ${treeText(measured, kind)}`
-  : 'not run'
+const upgradeRunningText = (entry, measured, kind) => {
+  if (!entry) return 'not run'
+  const after = (entry.processesAfterRun ?? []).filter((p) => p.main).map((p) => p.path?.split('\\').slice(-2).join('\\'))
+  const moved = typeof entry.rebootOperations === 'number' ? `; ${entry.rebootOperations} in-use files moved aside for deletion at the next reboot` : ''
+  const quit = after.length ? `; the old process then quit ${entry.quit?.graceful ? 'when asked' : `only when killed (${entry.quit?.method})`}` : ''
+  return `${runText(entry)}; app ${entry.launch?.ready ? 'was running' : 'was not running'}; app processes during the run: ${appsDuring(entry).join(', ') || 'none'}; still running afterwards: ${after.join(', ') || 'nothing'}${quit}${moved}; tree ${treeText(measured, kind)}`
+}
 row('Upgrade while the app is running', upgradeRunningText(msi?.upgradeRunning, msi?.upgradeRunningCheck, 'msi'), upgradeRunningText(squirrel?.upgradeRunning, squirrel?.upgradeRunningCheck, 'squirrel'))
 const upgradeText = (entry, measured, running, kind) => {
   if (!entry) return running && !running.error ? 'not needed: the upgrade while running succeeded' : 'not run'

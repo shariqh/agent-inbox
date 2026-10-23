@@ -1,0 +1,401 @@
+# Decision record: the Windows x64 installer (#87, PR 2a)
+
+**Date:** 2026-10-23
+**Status:** Recommendation, measured in CI. The owner's decisions are in §8.
+**Milestone:** v1.7. Refs #87.
+**Scope of this PR:** a CI-only spike workflow and this record. Nothing is signed, published or
+released. Setup and the in-app updater stay off on Windows, and the signed update manifest
+gains no Windows target: installed 1.3–1.6 apps accept only its exact five targets
+(`TARGET_SPECS` in `electron/update-manifest.cjs`).
+
+---
+
+## §0 — Summary
+
+**Recommendation: ship a per-user MSI built with WiX.** PR 2b should pin it, add the shortcut
+identity the app needs, and keep it unsigned until a signing provider is chosen.
+
+The spike built both candidates from the same verified Windows folder and drove each through
+install, launch, upgrade, repair and uninstall as a fresh standard (non-administrator) user on
+a `windows-2022` runner. The numbers below are from run
+[39893800330](https://github.com/shariqh/agent-inbox/actions/runs/39893800330) (1.6.0 upgraded
+to 1.6.1); every later run of the workflow repeats them and writes them to its job summary.
+
+1. **One install folder for every version.** The MSI installs to
+   `%LOCALAPPDATA%\Programs\Agent Inbox` and upgrades in place. Squirrel installs to
+   `%LOCALAPPDATA%\AgentInbox\app-<version>`, a new folder each version, and its Start-menu
+   shortcut kept pointing its working directory at the deleted old folder after an upgrade.
+2. **Both install exactly the verified bytes.** Each installed tree matched the folder's
+   verified digest file for file. Squirrel adds its own `squirrel.exe` and a log to every
+   version folder.
+3. **Repair exists only in the MSI.** `msiexec /f` put back a deleted `Agent Inbox.exe` and a
+   deleted script, byte for byte. It needs the original `.msi` file: with that file moved away,
+   repair failed (1603, no valid source). Squirrel has no repair; re-running Setup.exe deletes
+   the install and starts over.
+4. **Squirrel needs app changes before it can work properly.** Electron's executable declares
+   itself "Squirrel-aware", so Setup.exe creates no shortcut and instead starts the full app
+   with `--squirrel-install` during install (and `--squirrel-updated`, `--squirrel-uninstall`
+   later), then kills it. The app would have to handle those events. With today's app the
+   uninstall left the whole 560 MiB version folder, `Update.exe` and a Start-menu shortcut
+   behind. The MSI needs only the app to set the AppUserModelID and toast CLSID its shortcut
+   carries, and to exit when Windows asks (item 9).
+5. **Uninstall is clean only for the MSI.** It removed the app, its folder, its shortcut, its
+   registry entries and the COM registration it owns, and kept `%USERPROFILE%\.agent-inbox`.
+   Squirrel kept that data too, but left the points in item 4 behind.
+6. **Signing is simpler for the MSI.** Sign the 10 unsigned PE files in the folder, build, then
+   sign the one `.msi`. Squirrel adds three unsigned executables of its own, which can only be
+   signed inside its build step, so the signing provider must run there as a local `signtool`
+   command.
+7. **Smaller download.** The MSI is 161 MiB; Squirrel's Setup.exe is 203 MiB, and Squirrel
+   keeps another 205 MiB package copy on disk for its own updater.
+8. **Healthier tooling, one licence decision.** Squirrel.Windows has not released since 2020;
+   electron-winstaller bundles NuGet 2.8.3, 7-Zip 16.04 and a Windows 7 `signtool`. WiX v7 is
+   current but asks the owner to accept its Open Source Maintenance Fee EULA (§8.3); the spike
+   used WiX v5.0.2 (MS-RL, no EULA) to avoid accepting it on the owner's behalf.
+9. **Two caveats for the MSI.** Windows Server refuses an unelevated per-user MSI install by
+   default (Windows Installer's `DisableMSI` policy); Windows 10 and 11 allow it, and machines
+   that set that policy would need the portable ZIP. And an upgrade while the app runs
+   succeeded, but left the old process running until it was killed, so the app should exit
+   when Windows asks.
+
+Open decisions for the owner: the signing provider, a clean Windows 11 x64 test machine, and
+the WiX version and its licence (§8).
+
+---
+
+## §1 — What the spike did
+
+`.github/workflows/windows-installer-spike.yml` runs on `workflow_dispatch` and on pull
+requests that touch its own files. It has three jobs.
+
+1. **Verified folder.** It calls `windows-native-folder.yml`, now also callable, unchanged: the
+   native Node runtime, the Electron folder, the archive round trip, the PE/ABI gates and the
+   launch check. Its artifact is the installers' base input.
+2. **Upgrade folder.** The same commit with only its version bumped one patch
+   (`package.json`, `package-lock.json`, `src/version.ts`), committed locally so the build's
+   source provenance stays clean, then built by the same `package:windows-thin` builder, which
+   runs the same verifier on its output.
+3. **Installers.** Restores both folders and requires each to match its verified tree digest;
+   installs the pinned tools; builds an MSI and a Squirrel installer from each folder; records
+   the signing surface; then runs each installer's lifecycle as its own fresh standard user and
+   writes the job summary. The evidence is the `windows-installer-spike-evidence` artifact;
+   the unsigned installers are a separate seven-day artifact for manual tests, never a release
+   asset.
+
+### Pinned tools
+
+| Tool | Pin | How it is verified |
+| --- | --- | --- |
+| WiX .NET tool 5.0.2 (`5.0.2+aa65968c`) | nupkg SHA-512 `z+fu1deTcaV+TRCo4+6HrJ48Sdnj+yeQjjMStTI3GW7NxFEPaknYCdxrf0qEvgdXrjYdjLnkZKCsNSqTTOo2OA==` (nuget.org's catalog `packageHash`) and SHA-256 `f30ef0c74e2a986126539c5780be93ac24e8136eaf723b1937b26272703ae173` | Downloaded from its exact nuget.org URL; both digests checked; installed with `dotnet tool install` from a private feed holding only that file, into an empty package cache; the reported version and source commit checked; the package the tool store keeps must hash to the pin. |
+| electron-winstaller 5.4.4 | lockfile integrity `sha512-j9ETcBGJaXxAY/b6UBpR7LZfjdU4BAO+yvr4ifqHEdyuc3UNCy91PDGkWKY5UQ4coHNYfnwFggrqD6QPeFGAlg==` | `npm ci --ignore-scripts` from `.github/windows-installer-spike/package-lock.json` (every entry from registry.npmjs.org with a SHA-512 integrity); its one install script, which copies the host's 7-Zip into `vendor/`, is run explicitly. |
+| Squirrel.Windows binaries inside it | Update.exe 2.0.1, Setup.exe 1.9.1, NuGet 2.8.3, 7-Zip 16.04, signtool 6.1.7600, rcedit 0.2.0 | Pinned by the npm integrity above; the summary records each binary's SHA-256. |
+| .NET runtime for WiX 5 | Microsoft.NETCore.App 6.0.46 from the runner image | Recorded, not downloaded. |
+
+No step downloads anything else, restores an npm cache, or sets `npm_config_build_from_source`
+anywhere but the workflow's top-level `env` (#315); `test/windows-installer-spike.test.ts` pins
+all of it.
+
+### The lifecycle
+
+Each installer gets a new local account in the Users group, never Administrators. Every action
+runs in that account's own logon session (`Start-Process -Credential -LoadUserProfile`); every
+step fails unless its token is that user's and not an administrator's, and records its
+integrity level (Medium throughout). The steps are: install the base version silently; launch it from its Start-menu shortcut and quit
+it; upgrade while it runs; upgrade with it closed (when the first upgrade did not finish
+cleanly); launch again; for the MSI, repair after deleting files, both with the source `.msi`
+present and with it moved away; uninstall after writing a sentinel file into
+`%USERPROFILE%\.agent-inbox`. For Squirrel the spike then reinstalls the base and runs
+Squirrel's own updater (`Update.exe --update`), launches and uninstalls again. After every
+install, upgrade and repair, the installed app folder is compared file by file with the verified
+folder it came from.
+
+### What this evidence cannot show
+
+- The runner is Windows Server 2022, not a Windows 11 desktop. Start-menu indexing, toast
+  notifications, SmartScreen and browser downloads were not exercised.
+- Everything is unsigned.
+- The app is unmodified: it neither sets an AppUserModelID nor handles Squirrel's events.
+- The two builds differ only in version, so the upgrade proves replacement of the whole tree,
+  not a migration.
+
+---
+
+## §2 — Results
+
+Run [39893800330](https://github.com/shariqh/agent-inbox/actions/runs/39893800330), commit
+`f041c3bf`. Both versions hold 8,115 files and 560.5 MiB. Times are single runs on a hosted
+runner, so only their order of magnitude means anything.
+
+| Measurement | MSI (WiX 5.0.2, per-user) | Squirrel.Windows (electron-winstaller 5.4.4) |
+| --- | --- | --- |
+| Installer size | 161.3 MiB `.msi` (LZX) | 203.3 MiB `Setup.exe` |
+| Build time per installer | about 85 s | about 100 s |
+| Silent install as a standard user (Medium integrity) | exit 0 in 20 s | exit 0 in 34 s |
+| …under Windows Server's default installer policy | refused: 1625, "Non-assigned apps are disabled for non-admin users" | not subject to that policy |
+| App processes during install | none | the app, started with `--squirrel-install`; it created `.agent-inbox\inbox.db` before anyone launched it |
+| Install location | `%LOCALAPPDATA%\Programs\Agent Inbox` | `%LOCALAPPDATA%\AgentInbox\app-1.6.0` |
+| Installed tree = verified folder | yes | yes, plus Squirrel's `squirrel.exe` and its log |
+| Disk used after install | 560.5 MiB, plus a 161.3 MiB cached copy of the `.msi` in `C:\Windows\Installer` | 769.6 MiB (the app, plus a 205 MiB package copy kept for Squirrel's updater) |
+| Deepest installed path | 200 characters for an 8-character user name; fits MAX_PATH for user names up to 67 | the same: 200 and 67 |
+| Start-menu shortcut | `Programs\Agent Inbox.lnk` → the installed exe | none from Setup.exe; `Update.exe --createShortcut` (what an app's install hook runs) made `Programs\Shariq Hirani\Agent Inbox.lnk` → the root launcher stub |
+| Shortcut AppUserModelID | `io.github.shariqh.agent-inbox` (set by the MSI) | `com.squirrel.AgentInbox.AgentInbox` (Squirrel's fixed pattern) |
+| Shortcut toast activator CLSID | `{08973E92-A6EF-47B2-9E91-A876F4B8F210}`, with its `LocalServer32` registration owned by the MSI | `{FB7E709B-6561-538D-86A3-6C663B6BB412}`, derived from the ID; no registration |
+| Launch from the shortcut, then quit | ready in under a second; closed by its window; port released | the same |
+| Upgrade while the app runs | exit 0 in 46 s, tree = 1.6.1. The running 1.6.0 kept running from files Windows Installer had moved aside, and then quit only when killed | exit 0 in 30 s, tree = 1.6.1. Setup.exe killed the running app, deleted the 1.6.0 folder, and started 1.6.1 with `--squirrel-install` |
+| Install location after upgrade | the same folder | `app-1.6.1`; the shortcut's working directory still named the deleted `app-1.6.0` |
+| Installed-apps entries after upgrade | one, 1.6.1 | one, 1.6.1 |
+| Repair, `.msi` present | exit 0; deleted `Agent Inbox.exe` and `dist\store.js` restored | none |
+| Repair, `.msi` moved away | exit 1603 (1706, no valid source); nothing restored | none |
+| Uninstall | exit 0 in 20 s; folder, shortcut, registry and COM entries removed | exit 0 in 12 s; started the app with `--squirrel-uninstall`; left `%LOCALAPPDATA%\AgentInbox` (`.dead`, `Update.exe`, the whole `app-1.6.1`), `%LOCALAPPDATA%\SquirrelTemp` and the Start-menu shortcut |
+| `%USERPROFILE%\.agent-inbox` after uninstall | kept (sentinel file and `inbox.db`) | kept |
+| Left by either | `%APPDATA%\agent-inbox`, the Chromium profile the app itself creates | the same |
+| Squirrel's own updater, `Update.exe --update` | — | exit 0 in 29 s; `app-1.6.0` and `app-1.6.1` side by side (1.30 GiB); next launch ran 1.6.1; uninstall again left `app-1.6.1` |
+| PE files that need a signature | the folder's 10 unsigned files, then the `.msi` | the folder's 10, plus `squirrel.exe`/`Update.exe`, the stub and `Setup.exe` |
+| Other checks | ICE validation reports ICE38 ×8115, ICE64 ×1597 (errors) and ICE91 ×8115 (warnings), as WiX documents for `Files` in a per-user package; uninstall still removed every folder | electron-winstaller's default package list drops `LICENSES.chromium.html` and `version`; the spike supplies its own list |
+
+The start-apps list (`shell:AppsFolder`) listed nothing at all for either user in the runner's
+session, so whether Windows indexes each shortcut under its AppUserModelID is left to the clean
+Windows 11 machine.
+
+---
+
+## §3 — Findings
+
+### 3.1 Per-user install without elevation
+
+Both installed silently into the user's profile, with the standard user's own token at Medium
+integrity. On Windows Server, though, an unelevated per-user MSI install is refused unless the
+machine sets Windows Installer's `DisableMSI` policy to 0: Microsoft documents that server
+default as blocking unmanaged installs, client Windows allows them, and the runner (Windows
+Server 2022) refused one. The spike recorded that refusal, then set `DisableMSI=0` (the client
+default) for the rest of the MSI lifecycle.
+Machines whose administrators set the same policy will refuse the MSI; #87's portable ZIP
+covers them.
+
+### 3.2 What each installer runs
+
+Electron's executable carries `SquirrelAwareVersion=1` in its version resource, so Squirrel
+hands every lifecycle event to the app: it starts `Agent Inbox.exe --squirrel-install`
+(`--squirrel-updated`, `--squirrel-uninstall`) and waits up to 15 seconds (10 for uninstall)
+before killing it, and it creates no shortcut itself. Today's app treats those flags as a normal
+launch, so each install, upgrade and uninstall briefly ran the full app, which created the inbox
+database before the user had opened anything. Choosing Squirrel would mean handling those events in
+`electron/main.cjs` (create or remove the shortcut through `Update.exe`, then quit at once), the
+job `electron-squirrel-startup` does for other apps. The MSI starts nothing.
+
+### 3.3 Shortcut, AppUserModelID and notifications
+
+Electron's notification guide requires an unpackaged Windows app to have a Start-menu shortcut
+carrying the app's AppUserModelID and a matching toast activator CLSID. Electron 43 handles part
+of this itself, at the first notification
+(`shell/browser/notifications/win/windows_toast_activator.cc`): it looks for
+`Programs\<product name>.lnk`, adopts that shortcut's CLSID, rewrites the shortcut when its
+AppUserModelID, target or working directory differ from the running app's, and registers the
+CLSID's `LocalServer32` under `HKCU\Software\Classes\CLSID`.
+
+- **MSI.** Its shortcut is exactly `Programs\Agent Inbox.lnk`, with
+  `io.github.shariqh.agent-inbox` (the bundle ID the other platforms use) and a fixed CLSID, and
+  the MSI owns the matching COM registration, so uninstall removes it. The app still uses
+  Electron's default ID, `electron.app.Agent Inbox`, so 2b must call
+  `app.setAppUserModelId('io.github.shariqh.agent-inbox')` before the first notification;
+  otherwise Electron would rewrite the MSI's shortcut to its own ID. Electron also compares the
+  shortcut's working directory literally, and Windows Installer writes it with a trailing
+  backslash, so the first notification will rewrite the shortcut once, with the same ID and
+  CLSID; uninstall still removes it by name. 2c should confirm this on Windows 11.
+- **Squirrel.** Electron sets the `com.squirrel.<package>.<exe>` ID by itself when it finds
+  `..\Update.exe`, and that matches Squirrel's shortcut. But Squirrel puts its shortcut in a
+  folder named after the authors (`Programs\Shariq Hirani\`), where Electron does not look, so
+  the first notification would create a second shortcut that nothing removes.
+
+### 3.4 Upgrade
+
+The MSI upgrade removed 1.6.0 and installed 1.6.1 into the same folder, kept one
+installed-apps entry, and left the installed tree identical to the verified 1.6.1 folder, even
+with 1.6.0 running. Windows Installer's Restart Manager reported closing the app, but the app
+kept running from files moved aside for deletion at the next reboot, and then quit only when
+killed. The app should therefore exit when Windows asks it to (Restart Manager sends the
+session-end messages Electron reports as `query-session-end` and `session-end`), or the
+installer should close it first.
+
+Squirrel's Setup.exe treats a second install as a fresh one: it kills the app, deletes the whole
+install, installs `app-1.6.1`, and leaves the old shortcut pointing its working directory at a
+folder that no longer exists. Its own updater (`Update.exe --update`), which a notify-only
+design would not use, keeps both version folders until a later run cleans up.
+
+### 3.5 Repair
+
+Windows Installer repaired both a deleted executable and a deleted script, but only with the
+original `.msi` at the path it was installed from. Users who delete the download can still
+reinstall from a new copy. 2b's documentation should say so. Squirrel has nothing comparable.
+
+### 3.6 Uninstall and leftovers
+
+The MSI removed every file and folder it installed, including the now empty
+`%LOCALAPPDATA%\Programs`, plus its shortcut, its `HKCU` keys and the COM registration. Squirrel
+left the whole `app-1.6.1` folder, `Update.exe`, a `.dead` marker, its temp folder and the
+Start-menu shortcut. Part of that is today's app: the uninstall hook started it, and Squirrel
+deleted the folder while it was still shutting down. Both kept `%USERPROFILE%\.agent-inbox`,
+and neither removed `%APPDATA%\agent-inbox`, the Chromium profile the app creates; whether an
+uninstall should is a product question for 2b, not an installer difference.
+
+### 3.7 Tools and licences
+
+| | WiX | electron-winstaller / Squirrel.Windows |
+| --- | --- | --- |
+| Latest release | v7.0.0, 2026-04-06; annual majors | electron-winstaller 5.4.4, 2026-07-01; Squirrel.Windows 2.0.1, 2020-09-27, maintainers wanted |
+| Runs on | .NET 6 (v5) or .NET 8 (v7) | Node, plus .NET Framework binaries from 2014–2020: NuGet 2.8.3, 7-Zip 16.04, signtool 6.1.7600, rcedit 0.2.0 |
+| Licence | MS-RL source; v6+ binaries under the Open Source Maintenance Fee EULA (§8.3) | MIT |
+| Consumer security fixes | v5 ended 2026-02-05; v6 until 2027-02-05; v7 current | none upstream since 2020 |
+
+---
+
+## §4 — Recommendation and reasoning
+
+The plan going into the spike favoured the MSI for three reasons. The measurements support all
+three, and add more.
+
+1. **A fixed install folder.** Measured: the MSI upgraded in place; Squirrel moved to a new
+   `app-<version>` folder and left a stale working directory behind. Setup's runtime is copied
+   to `%USERPROFILE%\.agent-inbox\runtime`, so either layout works for the MCP runtime, but
+   everything that names the app's path (shortcuts, the toast activator's `LocalServer32`, a
+   user's pinned taskbar entry) stays valid only with a fixed folder.
+2. **Repair, upgrade and uninstall built in.** Measured: all three worked, with the caveat
+   that repair needs the original `.msi`. Squirrel has no repair, and its uninstall left most of
+   the install behind with today's app.
+3. **One container to sign.** Measured: ten app files plus the `.msi`, in plain steps any
+   provider supports; Squirrel adds three of its own executables that must be signed inside
+   its build.
+
+Further, the MSI starts nothing during install, needs a few lines of app code (its
+AppUserModelID and toast CLSID, and exiting when Windows asks) where Squirrel needs a handler
+for four lifecycle flags, downloads 42 MiB less, and is built by maintained tools. Its costs are the DisableMSI refusal on servers and locked-down
+machines (the portable ZIP covers those), the ICE errors (accepted for a per-user package, or
+avoided by a dual-purpose package, §6), and the WiX licence decision (§8.3).
+
+Squirrel's one real advantage, a built-in background updater with delta packages, is outside
+#87's scope: updates stay notify-only through the existing signed manifest.
+
+---
+
+## §5 — Signing
+
+The spike signs nothing. It records what a signing step would have to cover, from the files
+this build actually produced (`signing-surface.ps1`).
+
+### What needs a signature
+
+The verified folder holds 13 PE files. Three already carry valid, timestamped vendor
+signatures and keep them: `d3dcompiler_47.dll` and `dxil.dll` (Microsoft) and the runtime's
+`node.exe` (OpenJS Foundation). Ten have none: `Agent Inbox.exe`, `dxcompiler.dll`,
+`ffmpeg.dll`, `libEGL.dll`, `libGLESv2.dll`, `vk_swiftshader.dll`, `vulkan-1.dll`, and three
+native addons, the app's and the runtime's `better_sqlite3.node` and the runtime's
+`test_extension.node` (a test build of better-sqlite3 that should not ship at all).
+
+The runtime's files are listed, with their hashes, in its `runtime-manifest.json`, whose digest
+`setup-info.json` pins. So the macOS order applies on Windows too: sign the runtime's PE files,
+regenerate its manifest and the setup-info digest, sign the app's PE files, verify the folder,
+and only then package. Nested bytes must not change after that.
+
+### MSI
+
+1. Sign the folder's ten unsigned PE files in the order above.
+2. Build the MSI from the signed folder. Its cabinets are embedded.
+3. Sign the `.msi` last, SHA-256 with an RFC 3161 timestamp. The signature covers the embedded
+   cabinets.
+4. Verify the publisher, chain and timestamp of the `.msi` and of every PE file it installs.
+
+Every step signs one file in place, so every provider in #87's order fits: Azure Artifact
+Signing through its `signtool` client, SignPath (which can also sign an MSI's nested files and
+then the MSI itself from one submission), or an HSM-backed certificate with `signtool`.
+
+### Squirrel
+
+1. The same ten folder PE files.
+2. Plus three unsigned executables Squirrel adds: its `Update.exe` (shipped twice, inside
+   Setup.exe's payload and as `squirrel.exe` in every version folder), the launcher stub it
+   generates (`Agent Inbox_ExecutionStub.exe`, installed as `%LOCALAPPDATA%\AgentInbox\Agent
+   Inbox.exe`), and `Setup.exe`.
+3. The stub and Setup.exe only exist inside `Squirrel.exe --releasify`, and Setup.exe embeds the
+   package, so they can only be signed inside that step: through `--signWithParams` (raw
+   `signtool` arguments) or electron-winstaller's `windowsSign` hook. The bundled `signtool.exe`
+   is 6.1.7600 (Windows 7 SDK), far older than the 10.0.22621.755 that Azure Artifact Signing's
+   client requires, so the hook would have to replace it.
+4. The `.nupkg` and `RELEASES` files are not Authenticode-signed. Squirrel's own updater trusts
+   the SHA-1 in `RELEASES`.
+
+So Squirrel needs a provider that runs as a local, per-file signing command in the middle of
+its build. Azure Artifact Signing or an HSM certificate can; a submit-and-download service such
+as SignPath would need a per-file hook and per-file approval inside that step.
+
+---
+
+## §6 — What PR 2b needs
+
+PR 2b ("the chosen installer builder, pinned, unsigned, with the shortcut and AppUserModelID,
+plus `SHA256SUMS-windows.txt`") should:
+
+1. **Pin WiX** at the version §8.3 settles, the same way the spike does: exact URL, nuget.org
+   package hash and SHA-256, a private feed and an empty package cache, and a test like
+   `test/windows-installer-spike.test.ts`.
+2. **Keep the installer identity permanent:** the UpgradeCode
+   `{086C4AF7-CD48-4050-A328-CA911E7F7423}`, the AppUserModelID
+   `io.github.shariqh.agent-inbox` and the toast activator CLSID
+   `{08973E92-A6EF-47B2-9E91-A876F4B8F210}` in `.github/windows-installer-spike/tools.json`.
+   Nothing has shipped with them, so 2b may choose new ones once, but never again after that.
+3. **Call `app.setAppUserModelId` and `app.setToastActivatorCLSID`** with those values early in
+   `electron/main.cjs` on Windows, so Electron accepts the MSI's shortcut instead of rewriting it.
+4. **Make the app exit when Windows asks** (Restart Manager's session-end request), so an
+   upgrade or uninstall never leaves the old process running.
+5. **Decide the ICE question:** keep `Scope="perUser"` and accept ICE38/ICE64/ICE91, which
+   guard roaming and multi-user cases that do not apply, or use a dual-purpose
+   `perUserOrMachine` package, which WiX recommends for `Files` and which installs per-user by
+   default.
+6. **Name and hash the artifact** (`Agent-Inbox-vX.Y.Z-windows-x64.msi`, `SHA256SUMS-windows.txt`)
+   without adding a target to the update manifest.
+7. **Remember MSI versions hold only `major.minor.patch`.** A prerelease such as `1.7.0-rc.1`
+   cannot be expressed, and two builds of one version cannot upgrade each other.
+8. **Decide the minimum Windows check.** The inputs pin Windows 10.0.17763, but Windows
+   Installer reports Windows 10 and 11 as version 6.3 (`VersionNT` 603), so a launch condition
+   needs the real build number from the registry.
+
+Separately, and not part of any installer slice: the runtime payload still ships
+better-sqlite3's MSBuild `obj` and `.tlog` files and `test_extension.node`. They hold the deepest
+path (147 of the 200 characters above) and should be pruned like the app's copy, in its own
+issue.
+
+---
+
+## §7 — What this PR does not change
+
+- No release, aggregation or update-manifest wiring; no Windows target in `TARGET_SPECS`.
+- `windows-native-folder.yml` only gains `workflow_call:`; its steps, gates and artifact are
+  unchanged, and it still never mentions an installer tool.
+- Setup and the updater stay off on Windows. The app's code is unchanged.
+- The installers built here are unsigned CI artifacts with a seven-day retention.
+
+---
+
+## §8 — Open decisions for the owner
+
+1. **Signing provider.** #87's order stands: Azure Artifact Signing if Bundle LLC is eligible,
+   else SignPath Foundation, else an HSM-backed certificate. With the MSI, any of the three fits
+   the build (§5). Nothing in PR 2b depends on the choice; the signing slice does.
+2. **A clean Windows 11 x64 test machine.** 2c's acceptance needs a real Windows 11 desktop: an
+   x64 PC or an x64 cloud VM. A Windows-on-Arm VM on an Apple Silicon Mac does not count, because
+   the product is x64 and the acceptance criteria are x64. It is where Start-menu indexing,
+   toast notifications, SmartScreen on a browser download and the interactive install, upgrade
+   and uninstall get checked; the CI runner cannot show those.
+3. **WiX version and licence.** Each choice has a cost:
+   - **WiX v7.0.0** (current). Its binaries come under the Open Source Maintenance Fee EULA
+     v1.1: a fee applies only to users who use WiX for revenue-generating activities and have
+     annual gross revenue of at least US$10,000. Every build must pass `-acceptEula wix7` (or
+     run `wix eula accept wix7` first), which only the owner can agree to.
+   - **WiX v6.0.2.** The earlier OSMF EULA, without the revenue threshold; consumer security
+     fixes until 2027-02-05.
+   - **WiX v5.0.2** (what the spike used). MS-RL only, no EULA, but consumer security fixes
+     ended on 2026-02-05.
+   - **WiX built from source.** MS-RL only; the EULA covers just the published binaries. It
+     costs a pinned source build in CI.
+
+   The recommendation is v7 if the owner accepts its EULA, else WiX built from source. Either way
+   the authoring here carries over: it uses the v4 schema all four share.

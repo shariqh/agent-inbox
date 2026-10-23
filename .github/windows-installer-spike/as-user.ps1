@@ -484,7 +484,11 @@ try {
       $result.processesAfterRun = @(Get-AppProcesses)
       $result.quit = Stop-App
       if ($params.kind -eq 'squirrel') { $result.squirrelLog = Save-SquirrelLogs $params.label }
-      if ($command[2]) { $result.msiLog = Get-LogLines $command[2] 'Installation success or error status|Product: .* --|Error \d{4}|in use|Restart Manager|RmShutdown|RmGetList|reboot|1603|1612|3010' 40 }
+      if ($command[2]) {
+        $result.msiLog = Get-LogLines $command[2] 'Installation success or error status|Product: .* --|Error \d{4}|in use|Restart Manager|RmShutdown|RmGetList|1603|1612|3010' 40
+        # In-use files Windows Installer moved aside, to be deleted at the next reboot.
+        $result.rebootOperations = @(Select-String -LiteralPath $command[2] -Pattern 'Scheduling reboot operation' -ErrorAction SilentlyContinue).Count
+      }
       $result.state = Get-State
     }
     'repair' {

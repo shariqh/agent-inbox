@@ -305,6 +305,8 @@ function removePackagerIgnoredArtifacts(root) {
 const REQUIRED_SCRIPTS = [
   'install-agents.sh',
   'install-hooks.sh',
+  // Setup's `prune-runtimes` target runs this one from the app's payload (#294)
+  'prune-runtimes.sh',
   'runtime-payload.mjs',
   'runtime-config.mjs',
   'setup-filesystem.cjs',

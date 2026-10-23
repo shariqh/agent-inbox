@@ -571,3 +571,97 @@ describe('the Claude hooks target (#206)', () => {
     })
   })
 })
+
+// #294: the runtime prune is the one other fixed form a runtime's own script
+// takes. It runs the app's verified runtime payload's prune-runtimes.sh with
+// --apply and nothing else: the script decides what to remove itself, under the
+// setup lock, so no runtime id or path a caller names ever becomes argv.
+describe('the runtime prune target (#294)', () => {
+  /** A runtime payload as far as this boundary looks: a runtime manifest and its prune script. */
+  function payload(script = '#!/bin/bash\nexit 0\n'): string {
+    const root = scratchDir('setup-process-prune-')
+    mkdirSync(join(root, 'scripts'), { recursive: true })
+    writeFileSync(join(root, 'scripts', 'prune-runtimes.sh'), script)
+    writeFileSync(join(root, 'runtime-manifest.json'), '{}\n')
+    return root
+  }
+
+  it('runs exactly /bin/bash <payload>/scripts/prune-runtimes.sh --apply from that payload', async () => {
+    const root = payload()
+    const spawned = child()
+    let call: unknown[] = []
+    const runner = createSetupProcessRunner({
+      platform: 'darwin',
+      env: { HOME: '/Users/tester', PATH: '/usr/bin:/bin' },
+      spawnImpl: (...args) => {
+        call = args
+        queueMicrotask(() => spawned.emit('close', 0))
+        return spawned
+      },
+    })
+
+    const result = await runner.start({ repoRoot: root, target: 'prune-runtimes', runtime: null })
+
+    expect(call[0]).toBe('/bin/bash')
+    expect(call[1]).toEqual([join(root, 'scripts', 'prune-runtimes.sh'), '--apply'])
+    expect(call[2]).toMatchObject({ cwd: root, detached: true, stdio: ['ignore', 'pipe', 'pipe'] })
+    expect((call[2] as Record<string, unknown>)).not.toHaveProperty('shell')
+    expect(result).toMatchObject({ ok: true, exitCode: 0, target: 'prune-runtimes', timedOut: false, cancelled: false })
+  })
+
+  it.each([
+    ['a checkout, with no runtime manifest', () => {
+      const root = payload()
+      return { root, operation: { repoRoot: root, target: 'prune-runtimes', runtime: null }, rm: 'runtime-manifest.json' }
+    }, /only with a release build's verified runtime/i],
+    ['runtime source arguments', () => {
+      const root = payload()
+      return { root, operation: { repoRoot: root, target: 'prune-runtimes', runtime: { sourceRoot: root, manifestDigest: `sha256:${'a'.repeat(64)}` } } }
+    }, /only with a release build's verified runtime/i],
+    ['a payload with no prune script', () => {
+      const root = payload()
+      return { root, operation: { repoRoot: root, target: 'prune-runtimes', runtime: null }, rm: 'scripts/prune-runtimes.sh' }
+    }, /installer not found/i],
+    ['a relative payload directory', () => {
+      const root = payload()
+      return { root, operation: { repoRoot: 'runtime', target: 'prune-runtimes', runtime: null } }
+    }, /invalid setup repository root/i],
+  ] as const)('refuses %s without spawning', async (_label, arrange, error) => {
+    const { root, operation, rm } = arrange() as {
+      root: string
+      operation: { repoRoot: string; target: string; runtime: null | { sourceRoot: string; manifestDigest: string } }
+      rm?: string
+    }
+    if (rm) rmSync(join(root, rm))
+    const spawnImpl = vi.fn()
+    const runner = createSetupProcessRunner({ platform: 'linux', spawnImpl })
+
+    const result = await runner.start(operation)
+
+    expect(spawnImpl).not.toHaveBeenCalled()
+    expect(result).toMatchObject({ ok: false, exitCode: null, target: 'prune-runtimes' })
+    expect(result.output).toMatch(error)
+  })
+
+  it.each(['win32', 'aix'] as const)('fails closed for the prune on unsupported platform %s before spawn', async (platform) => {
+    const spawnImpl = vi.fn()
+    const runner = createSetupProcessRunner({ platform, spawnImpl })
+
+    const result = await runner.start({ repoRoot: payload(), target: 'prune-runtimes', runtime: null })
+
+    expect(spawnImpl).not.toHaveBeenCalled()
+    expect(result.output).toMatch(new RegExp(`unsupported on ${platform}`, 'i'))
+  })
+
+  it('accepts exactly five fixed targets and nothing that only looks like one', async () => {
+    const spawnImpl = vi.fn()
+    const runner = createSetupProcessRunner({ platform: 'linux', spawnImpl })
+    for (const target of ['prune', 'prune-runtimes --dry-run', 'Prune-Runtimes', 'toString', '__proto__', 'constructor']) {
+      const result = await runner.start({ repoRoot: payload(), target, runtime: null })
+      expect(result.output).toBe(`Invalid setup target: ${target}`)
+    }
+    expect(spawnImpl).not.toHaveBeenCalled()
+    const source = readFileSync(join(import.meta.dirname, '..', 'electron', 'setup-process.cjs'), 'utf8')
+    expect(source).toContain("const TARGETS = new Set(['all', 'claude', 'copilot', 'hooks', 'prune-runtimes'])")
+  })
+})

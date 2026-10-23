@@ -139,9 +139,21 @@ type RawRowLink = 'issue_repo' | 'issue_number'
 type RawPlanPin = 'issue_pin_repo' | 'issue_pin_number'
 interface IssueEcho { issue?: string; issue_rel?: IssueRel }
 
+// Issue #324 — the folder an item or a plan was written from serves the viewer
+// alone, which resolves repo-relative paths against it: it is a local path the
+// agent already knows, so no agent read spends tokens on it. pending() strips it
+// from items here, and shapeBoard from a titled board_get; summariseBoard never
+// copies it, and pending()'s rows never select it.
+type RepoRoot = 'repo_root'
+
+export function agentItem<T extends { repo_root?: string | null }>(item: T): Omit<T, RepoRoot> {
+  const { repo_root: _root, ...rest } = item
+  return rest
+}
+
 type RowWithoutHistory = Omit<BoardRow, 'history' | RawRowLink | 'waits_on'> & IssueEcho & { history_count?: number; waits_on?: string[] }
 export type ShapedRow = RowWithoutHistory | Trimmed<RowWithoutHistory>
-export type ShapedBoard = Omit<BoardWithRows, 'rows' | RawPlanPin> & IssueEcho & { rows: ShapedRow[] }
+export type ShapedBoard = Omit<BoardWithRows, 'rows' | RawPlanPin | RepoRoot> & IssueEcho & { rows: ShapedRow[] }
 
 /** issue_rel for the plan and for rows by id, read from the cache by the caller (§10). */
 export interface BoardIssueRelations {
@@ -180,7 +192,7 @@ export function shapeBoard(
 ): ShapedBoard {
   const full = opts.full === true
   if (full) for (const r of board.rows) opts.ledger.claim(rowKey(r.id), r.context)
-  const { issue_pin_repo, issue_pin_number, ...rest } = board
+  const { issue_pin_repo, issue_pin_number, repo_root: _root, ...rest } = board
   const issue = issueText(issue_pin_repo, issue_pin_number)
   // overriding `rows` in place keeps every key where it was before PR2
   return {

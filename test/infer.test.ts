@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { join, basename } from 'node:path'
+import { mkdirSync, realpathSync } from 'node:fs'
 import { execFileSync, spawnSync } from 'node:child_process'
-import { inferProject, inferStream, inferAgent, remoteUrl, parseRepoSlug, inferRepo, inferIssueRef, inferHeadRepo } from '../src/infer.js'
+import { inferProject, inferStream, inferAgent, remoteUrl, parseRepoSlug, inferRepo, inferIssueRef, inferHeadRepo, inferRepoRoot } from '../src/infer.js'
 import { scratchDir } from './scratch.js'
 
 const REPO_ROOT = new URL('..', import.meta.url).pathname
@@ -106,6 +107,22 @@ describe('inferRepo', () => {
   it('returns null with no remote, and outside any git repo', () => {
     expect(inferRepo(tmpGitRepo())).toBeNull()
     expect(inferRepo(scratchDir('plain-'))).toBeNull()
+  })
+})
+
+// issue #324 — the folder repo-relative paths in this session's items resolve
+// against: git's own answer for the working tree's top level, never the cwd.
+describe('inferRepoRoot', () => {
+  it('names the top of the working tree, resolved, even from a subfolder', () => {
+    const dir = tmpGitRepo()
+    mkdirSync(join(dir, 'docs', 'specs'), { recursive: true })
+    expect(inferRepoRoot(dir)).toBe(realpathSync(dir))
+    expect(inferRepoRoot(join(dir, 'docs', 'specs'))).toBe(realpathSync(dir))
+  })
+  it('returns null outside any git repo, and inside .git where there is no working tree', () => {
+    expect(inferRepoRoot(scratchDir('plain-'))).toBeNull()
+    expect(inferRepoRoot(join(tmpGitRepo(), '.git'))).toBeNull()
+    expect(inferRepoRoot(join(scratchDir('plain-'), 'gone'))).toBeNull()
   })
 })
 

@@ -25,3 +25,9 @@ export function verifyThinReports(options: {
   provenance: { sourceCommit: string; sourceDirty: boolean }
   mode: 'adhoc' | 'developer-id'
 }): Record<'arm64' | 'x64', Record<string, unknown>>
+export const RUNTIME_MACHO_FILES: readonly string[]
+export function signPortableRuntime(options: {
+  runtimeRoot: string
+  signing: { mode: 'adhoc' | 'developer-id'; identity: string; keychain?: string }
+  entitlementsRoot: string
+}): string[]

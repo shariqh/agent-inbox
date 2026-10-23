@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { basename } from 'node:path'
+import { basename, isAbsolute } from 'node:path'
 
 function git(cwd: string, args: string[]): string | null {
   try {
@@ -30,6 +30,23 @@ export function inferProject(cwd: string, remote: string | null = remoteUrl(cwd)
 
 export function inferStream(cwd: string): string {
   return git(cwd, ['branch', '--show-current']) ?? ''
+}
+
+// ── issue #324: the repository folder repo-relative paths resolve against ────
+//
+// The top of the working tree the session runs in, as git reports it (symlinks
+// resolved), so the viewer can open `docs/spec.md` or `public/app.js:7491` from
+// an item this session wrote. Read live, never cached: worktrees and checkouts
+// move. Null on any failure — no git, outside a repository, inside `.git` with
+// no working tree — and for anything that is not one plain absolute path, so an
+// item still inserts exactly as it would without it.
+const ROOT_CONTROL = /[\u0000-\u001f\u007f]/
+const MAX_ROOT_LENGTH = 4096
+
+export function inferRepoRoot(cwd: string): string | null {
+  const root = git(cwd, ['rev-parse', '--show-toplevel'])
+  if (!root || root.length > MAX_ROOT_LENGTH || ROOT_CONTROL.test(root) || !isAbsolute(root)) return null
+  return root
 }
 
 export function inferAgent(clientName: string | undefined): string {

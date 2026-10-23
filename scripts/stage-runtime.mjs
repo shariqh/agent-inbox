@@ -6,8 +6,11 @@
 // platform/arch, this project's production node_modules installed (WITH
 // lifecycle scripts — better-sqlite3's native binding has to be built) from
 // the EXACT repo lockfile, the built dist/, and the install scripts + docs
-// the staged runtime needs to register itself with a host agent. Before any
-// of that is pinned under a manifest, `bin/node dist/hook-cli.js selftest`
+// the staged runtime needs to register itself with a host agent. node_modules
+// is pruned of what nothing loads at runtime first (#291: better-sqlite3's
+// compile leftovers and sources, typings, source maps, non-license markdown),
+// so every check below runs against exactly what ships. Before any of that
+// is pinned under a manifest, `bin/node dist/hook-cli.js selftest`
 // and an allocation-driven SQLite cleanup check run against the staged tree,
 // proving the exact staged Node + better-sqlite3 combination loads and survives
 // garbage collection. The hook selftest is the same gate
@@ -47,6 +50,7 @@ import { dirname, join, posix, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { buildManifest, copyTreePreservingMode, isMainModule, verifyPayload, writeManifestFile } from './runtime-payload.mjs'
 import { copyAgentInboxLicense } from './license.mjs'
+import { pruneNodeModules } from './prune-node-modules.mjs'
 import { probeRuntimeMcp } from './runtime-mcp-probe.mjs'
 import {
   assertPlainFile,
@@ -419,7 +423,10 @@ function stageInto(stageDir, {
     copyNodeModulesDereferenced(srcModules, dereffed)
     rmSync(srcModules, { recursive: true, force: true })
     renameSync(dereffed, srcModules)
-    if (hasBetterSqlite) probeStagedNativeDependency(stageDir, nodeBin, 'after node_modules normalization')
+    // #291: better-sqlite3's compile leftovers, typings, source maps and
+    // markdown go before anything below tests, manifests or signs the tree
+    pruneNodeModules(stageDir)
+    if (hasBetterSqlite) probeStagedNativeDependency(stageDir, nodeBin, 'after node_modules normalization and pruning')
   }
 
   const distDir = join(repoRoot, 'dist')

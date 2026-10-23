@@ -162,8 +162,11 @@ if ($Validate) {
   # ICE38, ICE64 and ICE91 hold a per-user package to a per-machine or roaming layout:
   # WiX documents that Files in a per-user package trips them, and the lifecycle
   # proves what they guard (every installed file and folder is removed on uninstall).
-  # Every other ICE, and every warning, fails the build.
-  $suppressed = @('ICE38', 'ICE64', 'ICE91')
+  # ICE61 flags an upgrade that also removes its own version. AllowSameVersionUpgrades
+  # does that on purpose, so a second build of one version replaces the installed one
+  # instead of becoming a second product; the lifecycle proves the replacement and
+  # its clean uninstall. Every other ICE, and every warning, fails the build.
+  $suppressed = @('ICE38', 'ICE61', 'ICE64', 'ICE91')
   $timer = [Diagnostics.Stopwatch]::StartNew()
   Invoke-Wix @('msi', 'validate'; $acceptEula; '-wx'; $suppressed | ForEach-Object { '-sice', $_ }; $msi)
   $built.validation = [ordered]@{ passed = $true; suppressed = $suppressed; seconds = [math]::Round($timer.Elapsed.TotalSeconds, 1) }

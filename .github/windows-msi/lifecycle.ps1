@@ -27,10 +27,8 @@ $identity = [ordered]@{
   toastActivatorClsid = $pins.identity.toastActivatorClsid
 }
 $verified = Get-Content -Raw $Folders | ConvertFrom-Json
-$builds = @{
-  base = Get-Content -Raw (Join-Path $Build 'base.json') | ConvertFrom-Json
-  upgrade = Get-Content -Raw (Join-Path $Build 'upgrade.json') | ConvertFrom-Json
-}
+$builds = @{}
+foreach ($side in 'base', 'upgrade', 'rebuild') { $builds[$side] = Get-Content -Raw (Join-Path $Build "$side.json") | ConvertFrom-Json }
 $tree = Join-Path $PSScriptRoot 'tree.mjs'
 $pwsh = (Get-Command pwsh).Source
 
@@ -38,10 +36,12 @@ $pwsh = (Get-Command pwsh).Source
 $work = Join-Path $Shared 'msi'
 New-Item -ItemType Directory -Force (Join-Path $work 'results'), (Join-Path $work 'logs'), (Join-Path $work 'installers') | Out-Null
 Copy-Item (Join-Path $PSScriptRoot 'as-user.ps1'), (Join-Path $PSScriptRoot 'question.mjs') $work -Force
+# The rebuild has the base's version and so its file name: each MSI keeps its own folder.
 $installers = @{}
-foreach ($side in 'base', 'upgrade') {
-  $installers[$side] = Join-Path $work "installers\$($builds[$side].msi.name)"
-  Copy-Item (Join-Path $Build $builds[$side].msi.name) $installers[$side] -Force
+foreach ($side in 'base', 'upgrade', 'rebuild') {
+  New-Item -ItemType Directory -Force (Join-Path $work "installers\$side") | Out-Null
+  $installers[$side] = Join-Path $work "installers\$side\$($builds[$side].msi.name)"
+  Copy-Item (Join-Path $Build "$side\$($builds[$side].msi.name)") $installers[$side] -Force
 }
 
 # The disposable standard user. Its password exists only in this process.
@@ -202,6 +202,14 @@ try {
     Measure-Installed 'repair-after-source-returns' $restored 'upgrade' | Out-Null
   }
   Invoke-Step 'uninstall' @{ action = 'uninstall'; productCode = $productCode } | Out-Null
+
+  # A second build of one version (another pull request's artifact, or one commit
+  # built twice) has its own ProductCode. It must replace the first build, not install
+  # beside it as a second product sharing every component, and then uninstall cleanly.
+  Invoke-Step 'same-version-base' @{ action = 'install'; installer = $installers.base } | Out-Null
+  $rebuilt = Invoke-Step 'same-version-rebuild' @{ action = 'install'; installer = $installers.rebuild }
+  Measure-Installed 'same-version-rebuild' $rebuilt 'rebuild' | Out-Null
+  Invoke-Step 'same-version-uninstall' @{ action = 'uninstall'; productCode = $builds.rebuild.productCode } | Out-Null
 } catch {
   $failure = "$_"
   Write-Host "::error::[msi] lifecycle stopped: $failure"

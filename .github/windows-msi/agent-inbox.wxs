@@ -6,7 +6,11 @@
 
   - Per-user and unelevated: Scope="perUser", installed to
     %LOCALAPPDATA%\Programs\Agent Inbox, the same folder for every version, so a
-    major upgrade replaces the app in place.
+    major upgrade replaces the app in place. A second build of the same version
+    (another pull request's artifact, or one commit built twice) has its own
+    ProductCode, so AllowSameVersionUpgrades makes it replace the installed build
+    too, rather than install beside it as a second product that shares every
+    component; build-msi.ps1 waives ICE61, which flags exactly that.
   - The whole folder is harvested with Files, so the installed tree can be
     compared byte for byte with the folder's verified tree digest.
   - The Start-menu shortcut carries the AppUserModelID and toast activator CLSID
@@ -27,7 +31,7 @@
     Language="1033"
     Compressed="yes">
     <SummaryInformation Description="$(var.ProductName) $(var.Version)" />
-    <MajorUpgrade DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
+    <MajorUpgrade AllowSameVersionUpgrades="yes" DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
     <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
 
     <Property Id="AGENTINBOXWINDOWSBUILD">

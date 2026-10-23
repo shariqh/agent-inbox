@@ -91,23 +91,38 @@ and records what the runner showed.
 - **Per user, one folder.** The package is `Scope="perUser"`: it installs without
   elevation to `%LOCALAPPDATA%\Programs\Agent Inbox` for every version, and a major
   upgrade replaces the app in place and refuses a downgrade. An MSI version holds only
-  `major.minor.patch`, so the build refuses any other version.
+  `major.minor.patch`, so the build refuses any other version. Two builds of one version
+  (two pull requests' artifacts, say) have their own ProductCodes, so
+  `AllowSameVersionUpgrades` makes the later one replace the installed one too, rather
+  than install beside it as a second product sharing every component; among builds of
+  one version, the one installed last wins.
 - **Shortcut identity.** The Start-menu shortcut, `Programs\Agent Inbox.lnk`, carries the
   AppUserModelID `io.github.shariqh.agent-inbox` (the release inputs' `bundleId`) and the
   toast activator CLSID `{08973E92-A6EF-47B2-9E91-A876F4B8F210}`, and the MSI owns that
   CLSID's `LocalServer32` registration, which Windows uses to start the app from a
-  notification. On Windows, `electron/windows-app.cjs` sets the same two values at
-  startup, so the first notification keeps the shortcut's identity rather than writing
-  Electron's own. The UpgradeCode `{086C4AF7-CD48-4050-A328-CA911E7F7423}`, the ID and
-  the CLSID must never change once an MSI has shipped; `.github/windows-msi/installer.json`,
-  `release/windows-inputs.json` and the app hold them, and a test keeps them equal.
-- **Restart Manager.** When Restart Manager asks the running app to close, the app quits
-  through its own path (its page saves staged sends and drafts, `will-quit` flushes
-  storage) instead of Electron ending it at once; the lifecycle asks it and checks. A
-  silent upgrade does not ask, though: on the runner, Windows Installer's Restart Manager
-  found nothing to close, the old app kept running on its moved-aside files, and the next
-  launch ran the new version. Closing the app before an upgrade is left to the Windows
-  update slice (the decision record's §9).
+  notification. In a packaged Windows build, `electron/windows-app.cjs` sets the same two
+  values at startup, so the first notification keeps the shortcut's identity rather than
+  writing Electron's own. A development run (`electron .`) keeps Electron's identity: it
+  is the bare `electron.exe`, and with the installed app's identity its first
+  notification would write a shortcut to `electron.exe` and point the installed app's
+  toast activator registration at it. The UpgradeCode
+  `{086C4AF7-CD48-4050-A328-CA911E7F7423}`, the ID and the CLSID must never change once an
+  MSI has shipped; `.github/windows-msi/installer.json`, `release/windows-inputs.json` and
+  the app hold them, and a test keeps them equal.
+- **Restart Manager.** When Restart Manager asks the running app to close, the app logs
+  that and calls `app.quit()` instead of letting Electron end the process at once, and
+  logs again when the quit reaches `will-quit`. The lifecycle asks through Restart Manager
+  and requires both lines, in order, plus `RmShutdown` 0, every process gone and the port
+  released. That proves the quit took the normal path: the window closed through
+  Electron, which runs the page's `beforeunload` (staged sends, drafts), and the
+  `will-quit` handlers ran, including the one that asks Chromium to flush storage. It
+  proves no more: the run has no unsent drafts to lose, and Electron still ends the
+  process at once when a `before-quit` listener holds the quit, as `main.cjs`'s does while
+  Setup or an update install runs. Neither runs on Windows yet, and a change to `main.cjs`
+  re-runs this workflow. A silent upgrade does not ask, though: on the runner, Windows
+  Installer's Restart Manager found nothing to close, the old app kept running on its
+  moved-aside files, and the next launch ran the new version. Closing the app before an
+  upgrade is left to the Windows update slice (the decision record's §9).
 - **Uninstall** removes the app folder, the shortcut, the toast activator registration
   and the installed-apps entry, and keeps `%USERPROFILE%\.agent-inbox`, which the MSI
   never installs, and the Chromium profile the app creates in `%APPDATA%\agent-inbox`.
@@ -138,18 +153,21 @@ runs them:
   trace must name the pinned runtime.
 
 Before anything is uploaded, the build reads the package back and refuses any change to
-its identity, and ICE validation must pass with warnings as errors. Only ICE38, ICE64
-and ICE91 are waived: they hold a per-user package to a per-machine or roaming layout,
-WiX documents that `Files` in a per-user package trips them, and the lifecycle proves
-the uninstall they guard. Then a fresh, disposable standard user installs the MSI,
-launches it from its shortcut, triggers a notification (with the shortcut and without
-it), asks the running app to close through Restart Manager, closes it through its own
-window, upgrades it while it runs to
-the same commit rebuilt one patch version later, launches that, repairs it with and
-without its source and uninstalls it, and every installed tree is compared byte for byte
-with its verified folder. `summary.mjs` turns that evidence into the job summary and
-fails the job unless every requirement held; only then are the MSI and its checksum
-uploaded, as one seven-day artifact.
+its identity, and ICE validation must pass with warnings as errors. Only four ICEs are
+waived. ICE38, ICE64 and ICE91 hold a per-user package to a per-machine or roaming
+layout: WiX documents that `Files` in a per-user package trips them, and the lifecycle
+proves the uninstall they guard. ICE61 flags an upgrade that also removes its own
+version, which `AllowSameVersionUpgrades` does on purpose, and the lifecycle proves that
+replacement. Then a fresh, disposable standard user installs the MSI, launches it from
+its shortcut, closes it through its own window, triggers a notification (with the
+shortcut and without it), asks the running app to close through Restart Manager,
+upgrades it while it runs to the same commit rebuilt one patch version later, launches
+that, repairs it with and without its source and uninstalls it. It then installs the MSI
+again and a same-version rebuild over it (the base folder with one file removed and one
+added), which must leave one product holding exactly the rebuild's files, and uninstalls
+that. Every installed tree is compared byte for byte with its folder. `summary.mjs`
+turns that evidence into the job summary and fails the job unless every requirement
+held; only then are the MSI and its checksum uploaded, as one seven-day artifact.
 
 Nothing is signed, published or released, and the update manifest gains no Windows
 target: installed apps accept exactly its five targets, so Windows targets wait for

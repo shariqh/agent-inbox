@@ -46,6 +46,7 @@ describe('Windows MSI workflow (#87 PR 2b)', () => {
       '- ".github/workflows/windows-msi.yml"',
       '- ".github/workflows/windows-native-folder.yml"',
       '- ".github/windows-msi/**"',
+      '- "electron/main.cjs"',
       '- "electron/windows-app.cjs"',
       '- "release/windows-inputs.json"',
       '- "test/windows-msi.test.ts"',
@@ -69,9 +70,26 @@ describe('Windows MSI workflow (#87 PR 2b)', () => {
     expect(prepare).toContain('extractTreeArchive({')
     expect(text).toContain('npm run package:windows-thin --')
     expect(text).toContain('AGENT_INBOX_RELEASE_SOURCE_SHA=$(git rev-parse HEAD)')
-    // The MSI handed out is the verified folder's; the next build only proves the upgrade.
+    // The MSI handed out is the verified folder's; the other two only prove upgrades.
+    expect(text).toContain("foreach ($side in 'base', 'upgrade', 'rebuild') {")
     expect(text).toContain('-Validate:($side -eq \'base\')')
-    expect(text).toContain('Copy-Item "build/msi/builds/$($base.msi.name)" build/msi/artifact/')
+    // The rebuild has the base's version and so its file name: each build gets its own folder.
+    expect(text).toContain('-Output "build/msi/builds/$side"')
+    expect(text).toContain('Copy-Item "build/msi/builds/base/$($base.msi.name)" build/msi/artifact/')
+    const lifecycle = read(join(msiDir, 'lifecycle.ps1'))
+    expect(lifecycle).toContain('Copy-Item (Join-Path $Build "$side\\$($builds[$side].msi.name)") $installers[$side] -Force')
+  })
+
+  it('derives the same-version rebuild from the verified base folder, with one file out and one in', () => {
+    const prepare = read(join(msiDir, 'prepare-folders.mjs'))
+    expect(prepare).toContain("const REBUILD = { removed: 'LICENSES.chromium.html', added: 'same-version-rebuild.txt' }")
+    // Restored from the same verified archive, then changed so the installed tree shows
+    // whose files are in place: a leftover of the first build would be the removed file.
+    expect(prepare).toContain("destination: join(destination, 'rebuild'),")
+    expect(prepare).toContain('rmSync(join(root, REBUILD.removed))')
+    expect(prepare).toContain('writeFileSync(join(root, REBUILD.added), ')
+    expect(prepare).toContain("if (tree.digest === base.appTreeDigest) throw new Error('the rebuild folder must differ from the base folder')")
+    expect(prepare).toContain('JSON.stringify({ schema: 1, base, upgrade, rebuild }, null, 2)')
   })
 
   it('pins WiX v7 by exact version, nuget.org package hash and source commit', () => {
@@ -214,7 +232,8 @@ describe('Windows MSI authoring (#87 PR 2b)', () => {
     const text = wxs()
     expect(text).toContain('Scope="perUser"')
     expect(text).toMatch(/<StandardDirectory Id="LocalAppDataFolder">\s*<Directory Id="UserProgramsFolder" Name="Programs">\s*<Directory Id="INSTALLFOLDER" Name="\$\(var\.ProductName\)" \/>/)
-    expect(text).toContain('<MajorUpgrade DowngradeErrorMessage=')
+    // A second build of one version replaces the first rather than installing beside it.
+    expect(text).toContain('<MajorUpgrade AllowSameVersionUpgrades="yes" DowngradeErrorMessage=')
     expect(text).toContain('<Files Directory="INSTALLFOLDER" Include="$(var.AppDir)\\**" />')
     // It writes nothing per-machine, runs no custom code and never touches the inbox data.
     const authored = text.replace(/<!--[\s\S]*?-->/g, '')
@@ -265,9 +284,10 @@ describe('Windows MSI authoring (#87 PR 2b)', () => {
     expect(build).toContain('if ($failures.Count -gt 0) { throw "the MSI does not carry the installer identity')
   })
 
-  it('gates on ICE validation, waiving only the per-user checks WiX documents for Files', () => {
+  it('gates on ICE validation, waiving only the per-user checks WiX documents for Files and the same-version upgrade', () => {
     const build = read(join(msiDir, 'build-msi.ps1'))
-    expect(build).toContain("$suppressed = @('ICE38', 'ICE64', 'ICE91')")
+    expect(build).toContain("$suppressed = @('ICE38', 'ICE61', 'ICE64', 'ICE91')")
+    expect(build).toContain('# ICE61 flags an upgrade that also removes its own version.')
     expect(build).toContain("Invoke-Wix @('msi', 'validate'; $acceptEula; '-wx'; $suppressed | ForEach-Object { '-sice', $_ }; $msi)")
     // Validation's exit code is no longer data: a failure stops the build.
     expect(build).not.toMatch(/PSNativeCommandUseErrorActionPreference = \$false|LASTEXITCODE = 0/)
@@ -285,10 +305,13 @@ describe('Windows MSI lifecycle (#87 PR 2b)', () => {
     expect(asUser).toContain('[Security.Principal.WindowsBuiltInRole]::Administrator')
     expect(asUser).toMatch(/msiexec\.exe', "\/i `"\$Installer`" \/qn/)
     const order = ['install-under-server-policy', 'install-base', 'launch-base', 'notify-with-shortcut', 'notify-without-shortcut',
-      'restart-manager', 'upgrade-while-running', 'launch-upgrade', 'repair-with-source', 'repair-without-source', 'uninstall']
+      'restart-manager', 'upgrade-while-running', 'launch-upgrade', 'repair-with-source', 'repair-without-source', 'uninstall',
+      'same-version-base', 'same-version-rebuild', 'same-version-uninstall']
     const at = order.map((step) => lifecycle.indexOf(`Invoke-Step '${step}'`))
     order.forEach((step, index) => expect(at[index], step).toBeGreaterThan(-1))
     expect(at).toEqual([...at].sort((a, b) => a - b))
+    expect(lifecycle).toContain("Measure-Installed 'same-version-rebuild' $rebuilt 'rebuild'")
+    expect(lifecycle).toContain("Invoke-Step 'same-version-uninstall' @{ action = 'uninstall'; productCode = $builds.rebuild.productCode }")
     // The machine policy the run changes is put back, and its key is never re-created.
     expect(lifecycle).not.toMatch(/New-Item[^\n]*-Force[^\n]*\$policyKey|New-Item[^\n]*\$policyKey[^\n]*-Force/)
     expect(lifecycle.slice(lifecycle.lastIndexOf('} finally {'))).toContain(
@@ -328,13 +351,16 @@ describe('Windows MSI lifecycle (#87 PR 2b)', () => {
     // Before the upgrade it only looks: Windows Installer does the asking there.
     expect(asUser).toContain('[AgentInboxRestartManager]::Probe(@(Join-Path (Get-AppDirectory) "$product.exe"), $false, 0)')
     expect(asUser).toContain("$quitLine = 'Windows asked the app to close \\(Restart Manager\\); quitting'")
-    expect(read(join(root, 'electron', 'windows-app.cjs')))
-      .toContain("log('[agent-inbox] Windows asked the app to close (Restart Manager); quitting')")
+    expect(asUser).toContain("$willQuitLine = 'Windows asked the app to close \\(Restart Manager\\); reached will-quit'")
+    const windowsApp = read(join(root, 'electron', 'windows-app.cjs'))
+    expect(windowsApp).toContain("log('[agent-inbox] Windows asked the app to close (Restart Manager); quitting')")
+    expect(windowsApp).toContain("log('[agent-inbox] Windows asked the app to close (Restart Manager); reached will-quit')")
   })
 })
 
 describe('Windows MSI requirements (#87 PR 2b)', () => {
   const QUIT = '[agent-inbox] Windows asked the app to close (Restart Manager); quitting'
+  const WILL_QUIT = '[agent-inbox] Windows asked the app to close (Restart Manager); reached will-quit'
   const folder = '%USERPROFILE%\\AppData\\Local\\Programs\\Agent Inbox'
   const exe = `${folder}\\Agent Inbox.exe`
   const user = { name: 'msiuser', isAdministrator: false, integrity: 'Mandatory Label\\Medium Mandatory Level Label' }
@@ -350,6 +376,9 @@ describe('Windows MSI requirements (#87 PR 2b)', () => {
       toastActivatorClsid: identity.toastActivatorClsid,
     }
     const installed = { appDirectory: folder, startMenuShortcuts: [link], msiProducts: [{ version: '1.6.1' }] }
+    const removed = { appDirectory: null, msiRoot: null, startMenuShortcuts: [], msiProducts: [], uninstallEntries: [], toastActivator: null }
+    const first = '{11111111-1111-1111-1111-111111111111}'
+    const rebuild = '{22222222-2222-2222-2222-222222222222}'
     return {
       link,
       data: {
@@ -362,6 +391,7 @@ describe('Windows MSI requirements (#87 PR 2b)', () => {
         },
         builds: {
           base: {
+            productCode: first,
             upgradeCode: identity.upgradeCode,
             productVersion: '1.6.0',
             elevationNotRequired: true,
@@ -373,6 +403,7 @@ describe('Windows MSI requirements (#87 PR 2b)', () => {
             ],
           },
           upgrade: { msi: { name: 'Agent-Inbox-v1.6.1-windows-x64.msi' } },
+          rebuild: { productCode: rebuild, productVersion: '1.6.0', msi: { name: 'Agent-Inbox-v1.6.0-windows-x64.msi' } },
         },
         checksums: `${sha}  Agent-Inbox-v1.6.0-windows-x64.msi\n`,
         lifecycle: {
@@ -387,23 +418,29 @@ describe('Windows MSI requirements (#87 PR 2b)', () => {
               restartManager: { apps: [{ pid: 1, type: 'main window' }], shutdown: 0 },
               exited: true,
               portReleased: true,
-              appLog: [QUIT],
+              appLog: [QUIT, WILL_QUIT],
             },
             '08-upgrade-while-running': { user, run: { exitCode: 0 }, state: installed },
             '09-launch-upgrade': { user, launch: { ready: true } },
             '10-repair-with-source': { user, run: { exitCode: 0 }, restored: { 'Agent Inbox.exe': true } },
-            '13-uninstall': {
+            '13-uninstall': { user, run: { exitCode: 0 }, state: removed, sentinelSurvived: true, inboxDatabaseSurvived: true },
+            '14-same-version-base': {
               user,
               run: { exitCode: 0 },
-              state: { appDirectory: null, msiRoot: null, startMenuShortcuts: [], msiProducts: [], uninstallEntries: [], toastActivator: null },
-              sentinelSurvived: true,
-              inboxDatabaseSurvived: true,
+              state: { ...installed, msiProducts: [{ productCode: first, version: '1.6.0' }], uninstallEntries: [{ displayVersion: '1.6.0' }] },
             },
+            '15-same-version-rebuild': {
+              user,
+              run: { exitCode: 0 },
+              state: { ...installed, msiProducts: [{ productCode: rebuild, version: '1.6.0' }], uninstallEntries: [{ displayVersion: '1.6.0' }] },
+            },
+            '16-same-version-uninstall': { user, run: { exitCode: 0 }, state: removed },
           },
           checks: {
             'install-base': { matchesVerified: true },
             'upgrade-while-running': { matchesVerified: true },
             'repair-with-source': { matchesVerified: true },
+            'same-version-rebuild': { matchesVerified: true },
           },
         },
       },
@@ -422,8 +459,10 @@ describe('Windows MSI requirements (#87 PR 2b)', () => {
 
   it('read a one-element list that PowerShell wrote as the element itself', () => {
     const { data, link } = evidence()
-    steps(data)['07-restart-manager']!.appLog = QUIT
+    steps(data)['07-restart-manager']!.restartManager = { apps: { pid: 1, type: 'main window' }, shutdown: 0 }
     steps(data)['03-install-base']!.state = { ...steps(data)['03-install-base']!.state, startMenuShortcuts: link }
+    const rebuilt = steps(data)['15-same-version-rebuild']!.state!
+    rebuilt.msiProducts = (rebuilt.msiProducts as unknown[])[0]
     expect(summary.requirements(data).filter((entry) => !entry.passed)).toEqual([])
   })
 
@@ -464,6 +503,14 @@ describe('Windows MSI requirements (#87 PR 2b)', () => {
     }],
     ['the app stayed running', /Restart Manager/, (data) => { steps(data)['07-restart-manager']!.exited = false }],
     ['Electron ended the app without its own quit', /Restart Manager/, (data) => { steps(data)['07-restart-manager']!.appLog = [] }],
+    // Electron ends the process at once, after the quit line, when a before-quit
+    // listener holds the quit; only will-quit shows that the quit went on.
+    ['Electron ended the app after its quit line, before will-quit', /Restart Manager/, (data) => {
+      steps(data)['07-restart-manager']!.appLog = [QUIT]
+    }],
+    ['the will-quit line came from an earlier quit', /Restart Manager/, (data) => {
+      steps(data)['07-restart-manager']!.appLog = [WILL_QUIT, QUIT]
+    }],
     ['the upgrade left two products', /Upgrades in place/, (data) => {
       steps(data)['08-upgrade-while-running']!.state = { ...steps(data)['08-upgrade-while-running']!.state, msiProducts: [{ version: '1.6.0' }, { version: '1.6.1' }] }
     }],
@@ -473,6 +520,41 @@ describe('Windows MSI requirements (#87 PR 2b)', () => {
       steps(data)['13-uninstall']!.state = { ...steps(data)['13-uninstall']!.state, toastActivator: { name: 'left' } }
     }],
     ['uninstall removed the inbox', /keeps %USERPROFILE%\\\.agent-inbox/, (data) => { steps(data)['13-uninstall']!.inboxDatabaseSurvived = false }],
+    ['the first build of the version did not install', /rebuild of the same version replaces/, (data) => {
+      steps(data)['14-same-version-base']!.run = { exitCode: 1603 }
+    }],
+    ['the first build installed nothing', /rebuild of the same version replaces/, (data) => {
+      steps(data)['14-same-version-base']!.state!.msiProducts = []
+    }],
+    ['the rebuild installed beside the first build', /rebuild of the same version replaces/, (data) => {
+      const state = steps(data)['15-same-version-rebuild']!.state!
+      state.msiProducts = [...(state.msiProducts as unknown[]), { productCode: '{11111111-1111-1111-1111-111111111111}', version: '1.6.0' }]
+    }],
+    ["the rebuild kept the first build's ProductCode", /rebuild of the same version replaces/, (data) => {
+      data.builds.rebuild.productCode = '{11111111-1111-1111-1111-111111111111}'
+      steps(data)['15-same-version-rebuild']!.state!.msiProducts = [{ productCode: '{11111111-1111-1111-1111-111111111111}', version: '1.6.0' }]
+    }],
+    ['the product left has another version', /rebuild of the same version replaces/, (data) => {
+      steps(data)['15-same-version-rebuild']!.state!.msiProducts = [{ productCode: '{22222222-2222-2222-2222-222222222222}', version: '1.6.1' }]
+    }],
+    ['the rebuild went to another folder', /rebuild of the same version replaces/, (data) => {
+      steps(data)['15-same-version-rebuild']!.state!.appDirectory = '%USERPROFILE%\\AppData\\Local\\Programs\\Agent Inbox (1)'
+    }],
+    ['the product left is the first build', /rebuild of the same version replaces/, (data) => {
+      steps(data)['15-same-version-rebuild']!.state!.msiProducts = [{ productCode: '{11111111-1111-1111-1111-111111111111}', version: '1.6.0' }]
+    }],
+    ['installed apps list the version twice', /rebuild of the same version replaces/, (data) => {
+      steps(data)['15-same-version-rebuild']!.state!.uninstallEntries = [{ displayVersion: '1.6.0' }, { displayVersion: '1.6.0' }]
+    }],
+    ["the first build's files stayed", /rebuild of the same version replaces/, (data) => {
+      data.lifecycle.checks['same-version-rebuild'].matchesVerified = false
+    }],
+    ['uninstalling the rebuild left a product behind', /Uninstalling the rebuild/, (data) => {
+      steps(data)['16-same-version-uninstall']!.state = { ...steps(data)['16-same-version-uninstall']!.state, msiProducts: [{ version: '1.6.0' }] }
+    }],
+    ['uninstalling the rebuild left its files', /Uninstalling the rebuild/, (data) => {
+      steps(data)['16-same-version-uninstall']!.state = { ...steps(data)['16-same-version-uninstall']!.state, appDirectory: folder }
+    }],
     ['a notification rewrote the shortcut under another ID', /notification leaves/, (data, link) => {
       steps(data)['05-notify-with-shortcut']!.shortcutsAfter = [{ ...link, appUserModelId: 'electron.app.Agent Inbox' }]
     }],
@@ -487,6 +569,23 @@ describe('Windows MSI requirements (#87 PR 2b)', () => {
     const failed = summary.requirements(data).filter((entry) => !entry.passed).map((entry) => entry.label)
     expect(failed).toHaveLength(1)
     expect(failed[0]).toMatch(label)
+  })
+})
+
+describe('Windows MSI evidence (#87 PR 2b)', () => {
+  afterEach(() => removeScratchDirs())
+
+  it('loads the same-version rebuild\'s build report beside the other two', () => {
+    const dir = scratchDir('windows-msi-evidence-')
+    mkdirSync(join(dir, 'builds'))
+    for (const side of ['base', 'upgrade', 'rebuild']) {
+      // PowerShell's Set-Content -Encoding utf8 writes a byte order mark.
+      writeFileSync(join(dir, 'builds', `${side}.json`), `\uFEFF${JSON.stringify({ side })}`)
+    }
+    const loaded = (summary as unknown as { loadEvidence(dir: string, options: object): { builds: Record<string, { side: string }> } })
+      .loadEvidence(dir, { pins: pins(), release: release() })
+    expect(Object.fromEntries(Object.entries(loaded.builds).map(([side, build]) => [side, build.side])))
+      .toEqual({ base: 'base', upgrade: 'upgrade', rebuild: 'rebuild' })
   })
 })
 

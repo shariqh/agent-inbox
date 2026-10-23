@@ -468,16 +468,24 @@ package and passed ICE validation with warnings as errors.
 2. **Identity.** The spike's UpgradeCode, AppUserModelID and CLSID are now permanent. They are
    held in `installer.json`, `release/windows-inputs.json` and `electron/windows-app.cjs`; a
    test keeps them equal, and the build reads the package back and refuses any difference.
-3. **AppUserModelID and CLSID.** `electron/windows-app.cjs` sets both at startup on Windows
-   (§9.5).
-4. **Exit when Windows asks.** Done for Restart Manager's request, but a silent upgrade never
-   makes it, so an upgrade can still leave the old process running (§9.4).
+3. **AppUserModelID and CLSID.** `electron/windows-app.cjs` sets both at startup in a packaged
+   Windows build; a development run keeps Electron's own (§9.5).
+4. **Exit when Windows asks.** Done for Restart Manager's request, and the lifecycle requires the
+   app to reach `will-quit`, which Electron's immediate exit skips. A silent upgrade never makes
+   that request, though, so an upgrade can still leave the old process running (§9.4).
 5. **ICE.** `Scope="perUser"` stays. ICE validation passes with warnings as errors, waiving only
-   ICE38, ICE64 and ICE91.
+   ICE38, ICE64 and ICE91, which per-user `Files` trips, and ICE61, which item 7 trips.
 6. **Artifact.** Named as proposed, with `SHA256SUMS-windows.txt` in `sha256sum -c` form. No
    update-manifest target is added.
-7. **Versions.** The build refuses any version other than `major.minor.patch`. There is no
-   `AllowSameVersionUpgrades`, so a rebuild needs a new patch version.
+7. **Versions.** The build refuses any version other than `major.minor.patch`. Two builds of
+   one version, such as two pull requests' artifacts, have their own ProductCodes. Without
+   `AllowSameVersionUpgrades` the second would match neither the upgrade nor the downgrade
+   rule and install beside the first: two "Agent Inbox" entries sharing every
+   reference-counted component, so uninstalling either would leave the app's files to the
+   other. With it, the build installed last replaces the other, and ICE61, which flags
+   exactly that, is waived. The lifecycle installs
+   the MSI, then a rebuild of the same version that lacks one of its files and adds another,
+   and requires one product holding exactly the rebuild's files and a clean uninstall.
 8. **Minimum Windows.** A launch condition reads `CurrentBuildNumber` from the registry and
    refuses builds below 17763. `Installed OR` keeps it from blocking a repair or an uninstall.
 9. **.NET.** 10.0.13, as above.
@@ -485,9 +493,13 @@ package and passed ICE validation with warnings as errors.
 ### 9.3 Evidence
 
 Run [40021288282](https://github.com/shariqh/agent-inbox/actions/runs/40021288282), commit
-`d95dd504`, upgraded 1.6.0 to 1.6.1. Later commits changed only comments, documentation and how
-the evidence counts Windows' notification history. Every step ran as a fresh standard user in
-that user's own session at Medium integrity on `windows-2022`. Times are from that run.
+`d95dd504`, upgraded 1.6.0 to 1.6.1. Every step ran as a fresh standard user in that user's own
+session at Medium integrity on `windows-2022`. Times are from that run. The next two commits
+changed only comments, documentation and how the evidence counts Windows' notification
+history. The review follow-up after them added what the table does not show: the
+Restart Manager step also requires the `will-quit` line (§9.4), a same-version rebuild must
+replace the installed build and uninstall cleanly (§9.2, item 7), and a development run keeps
+Electron's identity (§9.5). Every later run's job summary shows those results.
 
 | Step | Result |
 | --- | --- |
@@ -522,7 +534,14 @@ PR 2b's runs found three things the spike missed.
   (`provjobd.exe`) that Restart Manager counts as critical also sometimes holds the executable
   (350). Asked about the SQLite addon, which only the main process loads, Restart Manager asks
   just the app's window. The app quits through `app.quit()`, and its child processes and port
-  go with it.
+  go with it. Exiting cleanly is not proof on its own: Electron ends the process at once after
+  `session-end`, with exit code 0, whenever a `before-quit` listener holds the quit, as
+  `main.cjs`'s does while Setup or an update install runs. So the app also logs when the quit
+  reaches `will-quit`, and the lifecycle requires that line after the first. It shows the
+  window closed through Electron, running the page's `beforeunload`, and that the `will-quit`
+  handlers ran, including the one that asks Chromium to flush storage. It does not show a
+  quit held by Setup or an update install, neither of which runs on Windows yet; a change to
+  `main.cjs` re-runs the MSI workflow.
 - **A silent upgrade does not ask at all.** Windows Installer opened Restart Manager sessions and
   logged "Successfully shut down all applications that held files in use" within 30 ms,
   without detecting the app; the spike read that line as closing it. The old app kept running
@@ -542,13 +561,17 @@ the app before an upgrade stays open for the Windows update slice (#343). The op
 
 `electron/windows-app.cjs` does nothing outside Windows. `main.cjs` calls it twice:
 
-- `setWindowsAppIdentity` at module load, before any window or notification. Otherwise
-  Electron's first notification would rewrite the MSI's shortcut to its default ID, or make up
-  a CLSID when there is no shortcut.
+- `setWindowsAppIdentity` at module load, before any window or notification, in a packaged
+  build. Otherwise Electron's first notification would rewrite the MSI's shortcut to its
+  default ID, or make up a CLSID when there is no shortcut. A development run (`electron .`)
+  is skipped: it is the bare `electron.exe`, and with the installed app's identity its first
+  notification would write `Programs\agent-inbox.lnk` to `electron.exe` and point the
+  installed app's `LocalServer32` at it.
 - `quitWhenRestartManagerAsks` on the window. A `session-end` whose reasons include `close-app`
   calls `app.quit()`, because Electron 43 otherwise ends the process at once on
   `WM_ENDSESSION`, skipping `beforeunload` (staged sends, drafts) and `will-quit`'s storage
-  flush. A shutdown or log-off keeps Electron's immediate exit.
+  flush. It logs once when asked and again when the quit reaches `will-quit`. A shutdown or
+  log-off keeps Electron's immediate exit.
 
 A failure to set the identity is logged and the app starts anyway.
 

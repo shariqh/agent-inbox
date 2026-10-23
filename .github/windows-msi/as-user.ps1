@@ -722,6 +722,8 @@ function ConvertTo-RestartManagerRecord([object]$Probe) {
 }
 
 $quitLine = 'Windows asked the app to close \(Restart Manager\); quitting'
+# Logged only once the quit reaches will-quit, which Electron's immediate exit skips.
+$willQuitLine = 'Windows asked the app to close \(Restart Manager\); reached will-quit'
 
 # Adds an open question through the installed app's own runtime, which the running
 # app's attention watch then announces with a Windows notification.
@@ -771,7 +773,7 @@ try {
       $command = Get-InstallerCommand $params.installer
       $result.dataBefore = Get-Names $paths.data
       $result.run = Invoke-Tool $command[0] $command[1] -SampleApp
-      $result.msiLog = @(Get-LogLines $command[2] 'Installation success or error status|Product: .* --|Error \d{4}|in use|Restart Manager|RmShutdown|1603|1612|1625')
+      $result.msiLog = @(Get-LogLines $command[2] 'Installation success or error status|Product: .* --|Error \d{4}|in use|Restart Manager|RmShutdown|1603|1612|1625|FindRelatedProducts: Found application')
       $result.dataAfterInstall = Get-Names $paths.data
       $result.state = Get-State
     }
@@ -845,6 +847,7 @@ try {
       $result.appLog = @(Read-AppLog $started)
       $result.chromiumLog = @(Read-ChromiumLog $started)
       $result.quitLogged = [bool](@($result.appLog | Where-Object { $_ -match $quitLine }).Count)
+      $result.willQuitLogged = [bool](@($result.appLog | Where-Object { $_ -match $willQuitLine }).Count)
       $result.processesAfter = @(Get-AppProcesses)
       if ($result.processesAfter.Count) {
         $result.windowsAfter = @(Get-AppWindows)

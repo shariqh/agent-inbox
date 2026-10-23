@@ -8,11 +8,15 @@ export const APP_USER_MODEL_ID: string
 export const TOAST_ACTIVATOR_CLSID: string
 
 export interface WindowsIdentityApp {
+  readonly isPackaged: boolean
   setAppUserModelId(id: string): void
   setToastActivatorCLSID(id: string): void
 }
 
-/** On Windows, set both values before any window or notification; returns whether it did. */
+/**
+ * In a packaged Windows build, set both values before any window or notification;
+ * returns whether it did. A development run keeps Electron's own identity.
+ */
 export function setWindowsAppIdentity(options: { app: WindowsIdentityApp, platform: string }): boolean
 
 export interface SessionEndWindow {
@@ -21,11 +25,12 @@ export interface SessionEndWindow {
 
 /**
  * On Windows, quit through the app's normal path when Restart Manager asks the window
- * to close (a session-end with the reason 'close-app'); returns whether it registered.
+ * to close (a session-end with the reason 'close-app'), and log once the quit reaches
+ * will-quit; returns whether it registered.
  */
 export function quitWhenRestartManagerAsks(options: {
   window: SessionEndWindow
-  app: { quit(): void }
+  app: { quit(): void, once(event: 'will-quit', listener: () => void): unknown }
   platform: string
   log?: (message: string) => void
 }): boolean

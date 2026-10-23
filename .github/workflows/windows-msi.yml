@@ -3,7 +3,8 @@ name: Windows x64 MSI
 # #87 PR 2b. Builds the unsigned per-user MSI from the verified Windows x64 folder
 # with WiX v7 on a pinned .NET 10 runtime (.github/windows-msi/installer.json), then
 # proves it on the runner as a fresh standard user: install, launch, notification
-# identity, Restart Manager exit, upgrade to the next build, repair and uninstall.
+# identity, Restart Manager exit, upgrade to the next build, repair, uninstall, and a
+# second build of the same version replacing the first.
 # The MSI and SHA256SUMS-windows.txt are workflow artifacts only: nothing is signed,
 # published or released, and the update manifest gains no Windows target (#343).
 
@@ -14,6 +15,9 @@ on:
       - ".github/workflows/windows-msi.yml"
       - ".github/workflows/windows-native-folder.yml"
       - ".github/windows-msi/**"
+      # main.cjs's before-quit listeners decide whether a Restart Manager request ends
+      # in will-quit or in Electron's immediate exit.
+      - "electron/main.cjs"
       - "electron/windows-app.cjs"
       - "release/windows-inputs.json"
       - "test/windows-msi.test.ts"
@@ -156,15 +160,17 @@ jobs:
           $PSNativeCommandUseErrorActionPreference = $true
           New-Item -ItemType Directory -Force build/msi/reports | Out-Null
           & "$env:MSI/install-tools.ps1" -Destination build/msi/tools -Report build/msi/reports/tools.json
+      # The rebuild has the base's version, and so its file name: every build gets its
+      # own folder.
       - id: msi-build
-        name: Build and validate the MSI, then build the next one
+        name: Build and validate the MSI, then build the next one and a same-version rebuild
         shell: pwsh
         run: |
           $PSNativeCommandUseErrorActionPreference = $true
-          foreach ($side in 'base', 'upgrade') {
+          foreach ($side in 'base', 'upgrade', 'rebuild') {
             & "$env:MSI/build-msi.ps1" `
               -App (Resolve-Path "build/msi/folders/$side/Agent Inbox").Path `
-              -Output build/msi/builds `
+              -Output "build/msi/builds/$side" `
               -Tools build/msi/reports/tools.json `
               -Icon (Resolve-Path electron/icon.ico).Path `
               -Inputs release/windows-inputs.json `
@@ -177,7 +183,7 @@ jobs:
           $PSNativeCommandUseErrorActionPreference = $true
           $base = Get-Content -Raw build/msi/builds/base.json | ConvertFrom-Json
           New-Item -ItemType Directory -Force build/msi/artifact | Out-Null
-          Copy-Item "build/msi/builds/$($base.msi.name)" build/msi/artifact/
+          Copy-Item "build/msi/builds/base/$($base.msi.name)" build/msi/artifact/
           node "$env:MSI/checksums.mjs" --dir build/msi/artifact --version $base.version
       - name: Prepare the standard user's workspace
         shell: pwsh

@@ -1,8 +1,8 @@
 // The per-user MSI (#87, PR 2b) gives the app a Start-menu shortcut that carries
-// the app's AppUserModelID and toast activator CLSID, and Windows Installer asks a
-// running app to close through Restart Manager. On Windows the app claims that
-// identity before any window or notification exists, and quits through its normal
-// path when Restart Manager asks; macOS and Linux are untouched.
+// the app's AppUserModelID and toast activator CLSID, and an installer can ask a
+// running app to close through Restart Manager. A packaged Windows build claims that
+// identity before any window or notification exists, and on Windows the app quits
+// through its normal path when Restart Manager asks; macOS and Linux are untouched.
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -13,14 +13,31 @@ const { APP_USER_MODEL_ID, TOAST_ACTIVATOR_CLSID, quitWhenRestartManagerAsks, se
 const root = join(import.meta.dirname, '..')
 const read = (path: string): string => readFileSync(join(root, path), 'utf8').replace(/\r\n/g, '\n')
 
-function fakeApp() {
+const QUIT = '[agent-inbox] Windows asked the app to close (Restart Manager); quitting'
+const WILL_QUIT = '[agent-inbox] Windows asked the app to close (Restart Manager); reached will-quit'
+
+// quitEmitsWillQuit models Electron with no window left, where app.quit() emits
+// will-quit before it returns.
+function fakeApp({ isPackaged = true, quitEmitsWillQuit = false } = {}) {
   const calls: string[] = []
-  return {
+  const willQuit: (() => void)[] = []
+  const app = {
     calls,
+    isPackaged,
     setAppUserModelId: (id: string) => { calls.push(`aumid:${id}`) },
     setToastActivatorCLSID: (id: string) => { calls.push(`clsid:${id}`) },
-    quit: () => { calls.push('quit') },
+    once: (name: 'will-quit', listener: () => void) => {
+      calls.push(`once:${name}`)
+      willQuit.push(listener)
+      return app
+    },
+    quit: () => {
+      calls.push('quit')
+      if (quitEmitsWillQuit) app.emitWillQuit()
+    },
+    emitWillQuit: () => { for (const listener of willQuit.splice(0)) listener() },
   }
+  return app
 }
 
 function fakeWindow() {
@@ -38,7 +55,7 @@ function fakeWindow() {
 }
 
 describe('Windows app identity (#87)', () => {
-  it('sets the AppUserModelID and toast activator CLSID the MSI shortcut carries, on Windows only', () => {
+  it('sets the AppUserModelID and toast activator CLSID the MSI shortcut carries, in a packaged Windows build only', () => {
     const app = fakeApp()
     expect(setWindowsAppIdentity({ app, platform: 'win32' })).toBe(true)
     expect(app.calls).toEqual([`aumid:${APP_USER_MODEL_ID}`, `clsid:${TOAST_ACTIVATOR_CLSID}`])
@@ -47,6 +64,15 @@ describe('Windows app identity (#87)', () => {
       expect(setWindowsAppIdentity({ app: other, platform })).toBe(false)
       expect(other.calls).toEqual([])
     }
+  })
+
+  it('leaves a development run on Windows with Electron\'s own identity', () => {
+    // `electron .` runs the bare electron.exe: with the installed app's identity, its
+    // first notification would write a shortcut to electron.exe and point the
+    // installed app's toast activator registration at it.
+    const dev = fakeApp({ isPackaged: false })
+    expect(setWindowsAppIdentity({ app: dev, platform: 'win32' })).toBe(false)
+    expect(dev.calls).toEqual([])
   })
 
   it('is exactly the identity the MSI installs and the Windows release inputs name', () => {
@@ -60,15 +86,28 @@ describe('Windows app identity (#87)', () => {
 })
 
 describe('Restart Manager exit (#87)', () => {
-  it('quits through the normal path when Restart Manager asks the app to close', () => {
+  it('quits through the normal path when Restart Manager asks the app to close, and says when it reaches will-quit', () => {
     const app = fakeApp()
     const window = fakeWindow()
     const logged: string[] = []
     expect(quitWhenRestartManagerAsks({ window, app, platform: 'win32', log: (line) => logged.push(line) })).toBe(true)
     expect(window.listeners.map(([name]) => name)).toEqual(['session-end'])
     window.emit({ reasons: ['close-app'] })
-    expect(app.calls).toEqual(['quit'])
-    expect(logged).toEqual(['[agent-inbox] Windows asked the app to close (Restart Manager); quitting'])
+    expect(app.calls).toEqual(['once:will-quit', 'quit'])
+    // Electron ends the process at once unless this quit began, so until will-quit the
+    // app has only said it was asked.
+    expect(logged).toEqual([QUIT])
+    app.emitWillQuit()
+    expect(logged).toEqual([QUIT, WILL_QUIT])
+  })
+
+  it('is listening for will-quit before it quits, as Electron with no window emits it inside app.quit()', () => {
+    const app = fakeApp({ quitEmitsWillQuit: true })
+    const window = fakeWindow()
+    const logged: string[] = []
+    quitWhenRestartManagerAsks({ window, app, platform: 'win32', log: (line) => logged.push(line) })
+    window.emit({ reasons: ['close-app'] })
+    expect(logged).toEqual([QUIT, WILL_QUIT])
   })
 
   it('leaves a shutdown or log-off to Electron, which ends the process at once', () => {
@@ -79,7 +118,7 @@ describe('Restart Manager exit (#87)', () => {
     window.emit({})
     expect(app.calls).toEqual([])
     window.emit({ reasons: ['close-app', 'critical'] })
-    expect(app.calls).toEqual(['quit'])
+    expect(app.calls).toEqual(['once:will-quit', 'quit'])
   })
 
   it('registers nothing on macOS or Linux', () => {

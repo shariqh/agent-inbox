@@ -11,7 +11,10 @@
 // the app sets both before any window or notification exists. The MSI reads the
 // same values from release/windows-inputs.json (bundleId) and
 // .github/windows-msi/installer.json; a test keeps them equal, and none of them may
-// change once an MSI has shipped.
+// change once an MSI has shipped. Only a packaged build claims them: a development
+// run (`electron .`) is the bare electron.exe, and with the installed app's identity
+// its first notification would write a shortcut to electron.exe and point the
+// installed app's toast activator registration at it.
 //
 // Restart Manager. An installer that needs files a running app holds can ask it to
 // close through Restart Manager: WM_QUERYENDSESSION, then WM_ENDSESSION with
@@ -19,14 +22,17 @@
 // the reason 'close-app'. Electron 43 then ends the process at once unless the app
 // has begun its own quit, which would skip the page's beforeunload (staged sends,
 // unsent drafts) and will-quit's storage flush. So the app quits through its normal
-// path instead. A shutdown or log-off keeps Electron's immediate exit. (A silent MSI
-// upgrade on the CI runner never asked: see the installer decision record, §9.)
+// path instead, and logs again once it reaches will-quit: a before-quit listener that
+// holds the quit (main.cjs's does while Setup or an update install runs) leaves
+// Electron's immediate exit in place, so only that second line shows the quit went
+// on. A shutdown or log-off keeps Electron's immediate exit. (A silent MSI upgrade on
+// the CI runner never asked: see the installer decision record, §9.)
 
 const APP_USER_MODEL_ID = 'io.github.shariqh.agent-inbox'
 const TOAST_ACTIVATOR_CLSID = '{08973E92-A6EF-47B2-9E91-A876F4B8F210}'
 
 function setWindowsAppIdentity({ app, platform }) {
-  if (platform !== 'win32') return false
+  if (platform !== 'win32' || !app.isPackaged) return false
   app.setAppUserModelId(APP_USER_MODEL_ID)
   app.setToastActivatorCLSID(TOAST_ACTIVATOR_CLSID)
   return true
@@ -37,6 +43,8 @@ function quitWhenRestartManagerAsks({ window, app, platform, log = console.log }
   window.on('session-end', (event) => {
     if (!Array.isArray(event?.reasons) || !event.reasons.includes('close-app')) return
     log('[agent-inbox] Windows asked the app to close (Restart Manager); quitting')
+    // Before quit(): with no window left, Electron emits will-quit inside it.
+    app.once('will-quit', () => log('[agent-inbox] Windows asked the app to close (Restart Manager); reached will-quit'))
     app.quit()
   })
   return true

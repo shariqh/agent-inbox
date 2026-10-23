@@ -173,11 +173,15 @@ Run the build before `npm run electron`; the development shell starts the built
   EULA on 2026-10-23; `-acceptEula wix7` on the WiX commands that need it is the
   only acceptance allowed. The UpgradeCode, AppUserModelID and toast activator
   CLSID are permanent and must stay equal across `installer.json`,
-  `release/windows-inputs.json` and `electron/windows-app.cjs`, which on Windows
-  only sets the ID and CLSID at startup and quits through `app.quit()` when
-  Restart Manager asks (`session-end` with `close-app`); a silent MSI upgrade
-  never asks, so closing the app before an upgrade is still open (decision
-  record §9). Windows Setup stays unavailable.
+  `release/windows-inputs.json` and `electron/windows-app.cjs`, which sets the
+  ID and CLSID at startup only in a packaged Windows build (never `electron .`)
+  and on Windows quits through `app.quit()` when Restart Manager asks
+  (`session-end` with `close-app`), logging again at `will-quit`, which the
+  lifecycle requires because a held `before-quit` lets Electron end the process
+  at once. A silent MSI upgrade never asks, so closing the app before an upgrade
+  is still open (decision record §9). `AllowSameVersionUpgrades` makes a
+  same-version rebuild replace the installed build (ICE61 waived). Windows
+  Setup stays unavailable.
 - **Shared presentation rules:** `public/attention.js` is the single attention
   predicate used by the viewer and Electron dock badge. Pure modules under
   `public/` hold grouping, ordering, search, badge, polling, and rendering rules;

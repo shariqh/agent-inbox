@@ -6,14 +6,18 @@
 // windows-native-folder workflow (archive round trip, PE/ABI gates, launch): the
 // MSI under test. --upgrade is the same commit rebuilt by windows-msi.yml with only
 // the version bumped, for the upgrade step; build-windows-thin-app.mjs runs the
-// same verifier on it.
-import { readFileSync, writeFileSync } from 'node:fs'
+// same verifier on it. The rebuild, for the same-version step, is the base folder
+// restored again with one file removed and one added, so the installed tree shows
+// whose files are in place: a leftover of the first build is the removed file.
+import { readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { parseArgs } from 'node:util'
 import { extractTreeArchive } from '../../scripts/archive-tree.mjs'
 import { measureTree } from './tree.mjs'
 
 const APP = 'Agent Inbox'
+// Chromium's notices file, which nothing at install or uninstall reads.
+const REBUILD = { removed: 'LICENSES.chromium.html', added: 'same-version-rebuild.txt' }
 
 function readJson(path) {
   return JSON.parse(readFileSync(path, 'utf8'))
@@ -61,6 +65,29 @@ function restore({ label, artifact, destination, expectedVersion, restoredReport
   }
 }
 
+function rebuildOf(base, { artifact, destination }) {
+  const root = extractTreeArchive({
+    archive: join(artifact, 'win32-x64-folder.tar.gz'),
+    destination: join(destination, 'rebuild'),
+    expectedRoot: APP,
+  })
+  rmSync(join(root, REBUILD.removed))
+  writeFileSync(join(root, REBUILD.added), `A rebuild of ${base.version} (${base.sourceCommit}) for the same-version upgrade check.\n`)
+  const tree = measureTree(root)
+  if (tree.digest === base.appTreeDigest) throw new Error('the rebuild folder must differ from the base folder')
+  return {
+    root,
+    version: base.version,
+    sourceCommit: base.sourceCommit,
+    appTreeDigest: tree.digest,
+    from: 'base',
+    removed: REBUILD.removed,
+    added: REBUILD.added,
+    files: tree.files,
+    bytes: tree.bytes,
+  }
+}
+
 const { values } = parseArgs({
   options: {
     base: { type: 'string' },
@@ -88,5 +115,6 @@ const upgrade = restore({
   expectedVersion: values['upgrade-version'],
 })
 if (base.appTreeDigest === upgrade.appTreeDigest) throw new Error('the upgrade folder must differ from the base folder')
-writeFileSync(resolve(values.out), `${JSON.stringify({ schema: 1, base, upgrade }, null, 2)}\n`)
-process.stdout.write(`${JSON.stringify({ ok: true, base: base.version, upgrade: upgrade.version })}\n`)
+const rebuild = rebuildOf(base, { artifact: resolve(values.base), destination: resolve(values.destination) })
+writeFileSync(resolve(values.out), `${JSON.stringify({ schema: 1, base, upgrade, rebuild }, null, 2)}\n`)
+process.stdout.write(`${JSON.stringify({ ok: true, base: base.version, upgrade: upgrade.version, rebuild: rebuild.version })}\n`)

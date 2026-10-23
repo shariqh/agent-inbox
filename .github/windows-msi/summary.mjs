@@ -10,6 +10,9 @@ import { parseArgs } from 'node:util'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const QUIT_LINE = '[agent-inbox] Windows asked the app to close (Restart Manager); quitting'
+// Logged only once the quit reaches will-quit: Electron ends the process at once after
+// the line above when a before-quit listener holds the quit.
+const WILL_QUIT_LINE = '[agent-inbox] Windows asked the app to close (Restart Manager); reached will-quit'
 const NOTIFY_LINE = '[agent-inbox] notifying: '
 
 export function loadEvidence(directory, { pins, release }) {
@@ -17,7 +20,7 @@ export function loadEvidence(directory, { pins, release }) {
     const path = join(directory, ...parts)
     return existsSync(path) ? JSON.parse(readFileSync(path, 'utf8').replace(/^\uFEFF/, '')) : null
   }
-  const builds = { base: load('builds', 'base.json'), upgrade: load('builds', 'upgrade.json') }
+  const builds = { base: load('builds', 'base.json'), upgrade: load('builds', 'upgrade.json'), rebuild: load('builds', 'rebuild.json') }
   const checksumPath = join(directory, 'artifact', 'SHA256SUMS-windows.txt')
   return {
     pins,
@@ -52,6 +55,11 @@ const onlyShortcut = (data, state) => {
 }
 const ranClean = (entry) => entry && !entry.error && entry.user?.isAdministrator === false
 const logged = (entry, line) => list(entry?.appLog).some((text) => text.includes(line))
+const lineAt = (entry, line) => list(entry?.appLog).findIndex((text) => text.includes(line))
+const removedEverything = (entry) => ranClean(entry) && entry.run?.exitCode === 0 && !entry.state?.appDirectory &&
+  entry.state?.msiRoot === null && list(entry.state?.startMenuShortcuts).length === 0 &&
+  list(entry.state?.msiProducts).length === 0 && list(entry.state?.uninstallEntries).length === 0 &&
+  entry.state?.toastActivator === null
 
 /** Whether the app announced a notification in this step at all; the runner's session decides. */
 export const notificationAttempted = (entry) => entry?.notification?.seen === true
@@ -94,10 +102,10 @@ export function requirements(data) {
     launch.quit?.graceful === true && launch.quit?.portReleased === true)
   const restart = step(data, 'restart-manager')
   const asked = list(restart?.restartManager?.apps)
-  require('Quits through its own path when Restart Manager asks it to close',
+  require('Quits through its own path, reaching will-quit, when Restart Manager asks it to close',
     ranClean(restart) && asked.length > 0 && asked.every((app) => app.type === 'main window') &&
     restart.restartManager?.shutdown === 0 && restart.exited === true && restart.portReleased === true &&
-    logged(restart, QUIT_LINE))
+    lineAt(restart, QUIT_LINE) >= 0 && lineAt(restart, WILL_QUIT_LINE) > lineAt(restart, QUIT_LINE))
   const upgrade = finalUpgrade(data)
   require('Upgrades in place from the previous build',
     ranClean(upgrade) && upgrade.run?.exitCode === 0 && finalUpgradeCheck(data)?.matchesVerified === true &&
@@ -110,12 +118,23 @@ export function requirements(data) {
     ranClean(repair) && repair.run?.exitCode === 0 && Object.values(repair.restored ?? {}).every((back) => back === true) &&
     Object.keys(repair.restored ?? {}).length > 0 && check(data, 'repair-with-source')?.matchesVerified === true)
   const uninstall = step(data, 'uninstall')
-  require('Uninstall removes the app, its shortcut, its toast activator and its installed-apps entry',
-    ranClean(uninstall) && uninstall.run?.exitCode === 0 && !uninstall.state?.appDirectory && uninstall.state?.msiRoot === null &&
-    list(uninstall.state?.startMenuShortcuts).length === 0 && list(uninstall.state?.msiProducts).length === 0 &&
-    list(uninstall.state?.uninstallEntries).length === 0 && uninstall.state?.toastActivator === null)
+  require('Uninstall removes the app, its shortcut, its toast activator and its installed-apps entry', removedEverything(uninstall))
   require('Uninstall keeps %USERPROFILE%\\.agent-inbox',
     uninstall?.sentinelSurvived === true && uninstall?.inboxDatabaseSurvived === true)
+  // Two builds of one version have their own ProductCodes; the second must replace the
+  // first rather than install beside it as a second product sharing every component.
+  const first = step(data, 'same-version-base')
+  const rebuilt = step(data, 'same-version-rebuild')
+  const products = list(rebuilt?.state?.msiProducts)
+  require('A rebuild of the same version replaces the installed build',
+    ranClean(first) && first.run?.exitCode === 0 &&
+    list(first.state?.msiProducts).map((product) => product.productCode).join() === data.builds.base?.productCode &&
+    typeof data.builds.rebuild?.productCode === 'string' && data.builds.rebuild.productCode !== data.builds.base?.productCode &&
+    ranClean(rebuilt) && rebuilt.run?.exitCode === 0 && products.length === 1 &&
+    products[0].productCode === data.builds.rebuild.productCode && products[0].version === data.folders?.base?.version &&
+    list(rebuilt.state.uninstallEntries).length === 1 && rebuilt.state.appDirectory === installedDirectory(data) &&
+    check(data, 'same-version-rebuild')?.matchesVerified === true)
+  require('Uninstalling the rebuild leaves nothing installed', removedEverything(step(data, 'same-version-uninstall')))
   // Whether a notification is shown depends on the runner's session; when the app
   // announced one, the identity it used must be the MSI's.
   for (const [suffix, label] of [
@@ -212,7 +231,7 @@ function rows(data) {
     runText(running),
     `before: ${restartManagerText(running.restartManagerBefore)}`,
     `Windows Installer: ${list(running.msiLog).filter((line) => /RESTART MANAGER/.test(line)).map((line) => line.replace(/^MSI \([^)]*\) \([^)]*\) \[[^\]]*\]: RESTART MANAGER: /, '')).join(' ') || 'no Restart Manager lines'}`,
-    `app ${logged(running, QUIT_LINE) ? 'quit when asked' : 'was not asked to quit'}; still running afterwards: ${list(running.processesAfterRun).filter((p) => p.main).length ? `yes, then ${quitText(running.quit)}` : 'no'}; ${running.rebootOperations ?? '—'} in-use files moved aside for the next reboot`,
+    `app ${logged(running, QUIT_LINE) ? 'quit when asked' : 'was not asked to quit'}; still running afterwards: ${list(running.processesAfterRun).filter((p) => p.main).length ? `yes, then ${quitText(running.quit)}` : 'no'}; ${running.rebootOperations ?? '—'} moved-aside copies of in-use files scheduled for deletion at the next reboot`,
     `tree ${treeText(check(data, 'upgrade-while-running'))}`,
   ].join('<br>') : 'not run')
   if (step(data, 'upgrade')) row('Upgrade with the app closed', `${runText(step(data, 'upgrade'))}; tree ${treeText(check(data, 'upgrade'))}`)
@@ -236,6 +255,16 @@ function rows(data) {
     }
     row('Left after uninstall (beyond .agent-inbox)', left.join('<br>') || 'nothing')
   }
+  const sameFirst = step(data, 'same-version-base')
+  const sameRebuild = step(data, 'same-version-rebuild')
+  const sameUninstall = step(data, 'same-version-uninstall')
+  const rebuildFolder = data.folders?.rebuild
+  row('Same version built twice', sameRebuild ? [
+    `first build ${data.builds.base?.productCode ?? '—'}: ${runText(sameFirst)}`,
+    `rebuild ${data.builds.rebuild?.productCode ?? '—'}${rebuildFolder ? ` (the base folder without ${rebuildFolder.removed}, with ${rebuildFolder.added})` : ''}: ${runText(sameRebuild)}; Windows Installer ${list(sameRebuild.msiLog).filter((line) => /Found application/.test(line)).map((line) => line.replace(/^.*Found application: ?/, 'found ')).join(', ') || 'found no related product'}`,
+    `installed afterwards: ${list(sameRebuild.state?.msiProducts).map((product) => product.error ?? `${product.productCode} ${product.version}`).join(', ') || 'nothing'}; installed-apps entries ${list(sameRebuild.state?.uninstallEntries).length}; tree ${treeText(check(data, 'same-version-rebuild'))}`,
+    `uninstall: ${runText(sameUninstall)}; app folder ${sameUninstall?.state?.appDirectory ? 'still present' : 'removed'}; products left ${list(sameUninstall?.state?.msiProducts).length}; installed-apps entries left ${list(sameUninstall?.state?.uninstallEntries).length}`,
+  ].join('<br>') : 'not run')
   return out
 }
 

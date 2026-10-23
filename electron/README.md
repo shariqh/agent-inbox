@@ -388,7 +388,10 @@ fnm exec --using=24 npm run electron
   own spellchecker.
 - On Windows, `windows-app.cjs` (#87) sets the AppUserModelID and toast activator CLSID
   that the per-user MSI's Start-menu shortcut carries, before any window or notification,
-  and quits through `app.quit()` when Restart Manager asks the window to close
-  (`session-end` with `close-app`), as an installer that needs its files can; Electron
-  would otherwise end the process at once. A shutdown or log-off keeps that immediate exit.
-  A silent MSI upgrade did not ask on the CI runner (installer decision record, §9).
+  in a packaged build only: `npm run electron` keeps Electron's own identity, so it never
+  rewrites the installed app's shortcut or toast activator registration. It quits through
+  `app.quit()` when Restart Manager asks the window to close (`session-end` with
+  `close-app`), as an installer that needs its files can, and logs again once the quit
+  reaches `will-quit`; Electron would otherwise end the process at once, as it still does
+  when a `before-quit` listener holds the quit. A shutdown or log-off keeps that immediate
+  exit. A silent MSI upgrade did not ask on the CI runner (installer decision record, §9).

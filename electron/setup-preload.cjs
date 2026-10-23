@@ -50,17 +50,19 @@ contextBridge.exposeInMainWorld('agentInboxTheme', {
 // what may open (electron/link-open.cjs). filesAvailable() only reads whether
 // this page may open local files: main says yes only while the window shows the
 // viewer this app started and proved it owns, and refuses file requests
-// otherwise, whatever the page asks.
+// otherwise, whatever the page asks. A repo-relative file (#324) also names the
+// folder its card recorded, which main joins it to.
 const LINK_REASONS = new Set([
   'folder', 'app', 'blocked', 'executable', 'special', 'type', 'requested', 'rule',
-  'invalid', 'missing', 'inaccessible', 'failed', 'unavailable', 'unowned', 'app-missing', 'app-refused',
+  'invalid', 'missing', 'outside', 'inaccessible', 'failed', 'unavailable', 'unowned', 'app-missing', 'app-refused',
 ])
 
 function linkRequest(request) {
   if (!request || typeof request !== 'object' || Array.isArray(request)) return null
   if (request.kind === 'web' && typeof request.url === 'string') return { kind: 'web', url: request.url }
   if (request.kind === 'file' && typeof request.path === 'string' && typeof request.reveal === 'boolean') {
-    return { kind: 'file', path: request.path, reveal: request.reveal }
+    if (request.root === undefined) return { kind: 'file', path: request.path, reveal: request.reveal }
+    if (typeof request.root === 'string') return { kind: 'file', path: request.path, root: request.root, reveal: request.reveal }
   }
   return null
 }

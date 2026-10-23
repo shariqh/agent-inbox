@@ -90,6 +90,12 @@ export interface Item {
   // pushes back where it fetches from records that ref (`refs/pull/<n>/head`)
   // instead, which no PR can verify against.
   head_repo: string | null
+  // issue #324 — the folder of the repository the asking session ran in (its
+  // `git rev-parse --show-toplevel`), against which the viewer resolves
+  // repo-relative paths in the item's text. NULL when none was detected and on
+  // every row an older server wrote: those paths then stay plain text. Viewer
+  // only: agent reads never carry it (src/shape.ts).
+  repo_root: string | null
   created_at: string
   updated_at: string
   resolved_at: string | null
@@ -113,6 +119,7 @@ export interface NewItem {
   repo?: string | null
   issue_ref?: number | null
   head_repo?: string | null
+  repo_root?: string | null
 }
 
 export function defaultDbPath(): string {
@@ -447,6 +454,11 @@ function runMigrations(db: Database.Database): void {
   // link columns: no statement an older process runs names it, so its writes
   // keep it (test/mixed-version.test.ts), and nothing is backfilled.
   ensureColumn(db, 'board_rows', 'waits_on', 'TEXT')
+  // issue #324 — the repository folder repo-relative paths resolve against.
+  // NULL on every legacy row and on every row an older server writes: its
+  // statements never name the column, so they can neither set nor clear it.
+  ensureColumn(db, 'items', 'repo_root', 'TEXT')
+  ensureColumn(db, 'boards', 'repo_root', 'TEXT')
 }
 
 // Issue #247 — the human's "Pin for later". NULL means not pinned, so there is
@@ -731,11 +743,11 @@ function insertItemRow(db: Database.Database, item: NewItem): string {
   db.prepare(
     `INSERT INTO items (
        id, project, stream, agent, action_agent, session, kind, title, detail, next_step,
-       action_owner, impact, next_after, context, options, repo, issue_ref, head_repo,
+       action_owner, impact, next_after, context, options, repo, issue_ref, head_repo, repo_root,
        status, created_at, updated_at)
      VALUES (
        @id, @project, @stream, @agent, @agent, @session, @kind, @title, @detail, @next_step,
-       @action_owner, @impact, @next_after, @context, @options, @repo, @issue_ref, @head_repo,
+       @action_owner, @impact, @next_after, @context, @options, @repo, @issue_ref, @head_repo, @repo_root,
        'open', @created_at, @updated_at)`,
   ).run({
     id,
@@ -755,6 +767,7 @@ function insertItemRow(db: Database.Database, item: NewItem): string {
     repo: item.repo ?? null,
     issue_ref: item.issue_ref ?? null,
     head_repo: item.head_repo ?? null,
+    repo_root: item.repo_root ?? null,
     created_at: now,
     updated_at: now,
   })
@@ -1307,6 +1320,9 @@ export interface Board {
   issue_ref: number | null
   // issue #157 — as on items; null on every board written before #157
   head_repo: string | null
+  // issue #324 — as on items, restamped by every board write that detected
+  // one; a write that detected none keeps the stored folder
+  repo_root: string | null
   // issue #103 PR2 — the plan's explicit issue pin, which outranks its PR and
   // branch issue (§4.2). Repository lowercased; both null when unpinned.
   issue_pin_repo: string | null
@@ -1658,6 +1674,8 @@ interface UpsertBoardInput {
   repo?: string | null
   issueRef?: number | null
   headRepo?: string | null
+  /** issue #324: null or omitted keeps the stored folder */
+  repoRoot?: string | null
   /** issue #103 PR2: omitted keeps the stored pin; null clears it */
   issuePin?: IssueLink | null
 }
@@ -1682,6 +1700,7 @@ export function upsertBoard(db: Database.Database, input: UpsertBoardInput): { b
       || before.repo !== (inp.repo ?? null)
       || before.issue_ref !== (inp.issueRef ?? null)
       || before.head_repo !== (inp.headRepo ?? null)
+      || rootChanged(before, inp.repoRoot)
     const boardId = ensureBoard(db, inp, now)
     boardChanged = setBoardIssuePin(db, boardId, inp.issuePin) || boardChanged
     const existing = db.prepare(`SELECT id, label, status, note, position, action_version, revision, waits_on FROM board_rows WHERE board_id = ?`).all(boardId) as Array<{
@@ -1832,6 +1851,8 @@ interface UpdateRowInput {
   repo?: string | null
   issueRef?: number | null
   headRepo?: string | null
+  /** issue #324: null or omitted keeps the stored folder */
+  repoRoot?: string | null
   /** issue #103 PR2: omitted keeps the stored link; null clears it */
   issue?: IssueLink | null
   /** issue #103 slice 2: labels of other rows of this plan; omitted keeps, [] clears */
@@ -2043,6 +2064,7 @@ export function updateBoardRow(db: Database.Database, input: UpdateRowInput): { 
       || before!.repo !== (inp.repo ?? null)
       || before!.issue_ref !== (inp.issueRef ?? null)
       || before!.head_repo !== (inp.headRepo ?? null)
+      || rootChanged(before!, inp.repoRoot)
     )
     const boardId = ensureBoard(db, inp, now)
     const priorWaits = waits === undefined ? undefined : planWaitsOn(db, boardId)
@@ -2149,7 +2171,10 @@ function syncBoardStatus(db: Database.Database, boardId: string): boolean {
 // Find-or-create the board row and stamp the last writer. Shared by upsertBoard/updateBoardRow.
 function ensureBoard(
   db: Database.Database,
-  inp: { project: string; stream: string; agent: string; title: string; repo?: string | null; issueRef?: number | null; headRepo?: string | null },
+  inp: {
+    project: string; stream: string; agent: string; title: string
+    repo?: string | null; issueRef?: number | null; headRepo?: string | null; repoRoot?: string | null
+  },
   now: string,
 ): string {
   const board = findBoard(db, inp.project, inp.title)
@@ -2157,11 +2182,14 @@ function ensureBoard(
   // exactly like stream and agent — the board follows whoever is writing to it
   // now. They belong on the `boards` row and nowhere near board_rows, whose
   // annotation column is the human's and must survive every re-upsert untouched.
+  // #324's repo_root follows the writer too, but only when its session found
+  // one: COALESCE keeps the stored folder through a write that detected none.
   if (board) {
     db.prepare(`UPDATE boards
-                   SET stream = ?, agent = ?, repo = ?, issue_ref = ?, head_repo = ?,
+                   SET stream = ?, agent = ?, repo = ?, issue_ref = ?, head_repo = ?, repo_root = COALESCE(?, repo_root),
                        updated_at = CASE
                          WHEN stream IS NOT ? OR agent IS NOT ? OR repo IS NOT ? OR issue_ref IS NOT ? OR head_repo IS NOT ?
+                           OR repo_root IS NOT COALESCE(?, repo_root)
                          THEN ? ELSE updated_at END
                  WHERE id = ?`)
       .run(
@@ -2170,20 +2198,28 @@ function ensureBoard(
         inp.repo ?? null,
         inp.issueRef ?? null,
         inp.headRepo ?? null,
+        inp.repoRoot ?? null,
         inp.stream,
         inp.agent,
         inp.repo ?? null,
         inp.issueRef ?? null,
         inp.headRepo ?? null,
+        inp.repoRoot ?? null,
         now,
         board.id,
       )
     return board.id
   }
   const boardId = randomUUID()
-  db.prepare(`INSERT INTO boards (id, project, stream, agent, title, repo, issue_ref, head_repo, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`)
-    .run(boardId, inp.project, inp.stream, inp.agent, inp.title, inp.repo ?? null, inp.issueRef ?? null, inp.headRepo ?? null, now, now)
+  db.prepare(`INSERT INTO boards (id, project, stream, agent, title, repo, issue_ref, head_repo, repo_root, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`)
+    .run(boardId, inp.project, inp.stream, inp.agent, inp.title, inp.repo ?? null, inp.issueRef ?? null, inp.headRepo ?? null, inp.repoRoot ?? null, now, now)
   return boardId
+}
+
+// Issue #324: whether a write moves the plan's repository folder. A write that
+// detected none never does (ensureBoard keeps the stored one).
+function rootChanged(before: Board, repoRoot: string | null | undefined): boolean {
+  return repoRoot != null && before.repo_root !== repoRoot
 }
 
 export function archiveBoard(db: Database.Database, boardId: string, expectedRevision: number): boolean {

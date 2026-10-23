@@ -16,7 +16,7 @@ import { describe, it, expect } from 'vitest'
 import { join } from 'node:path'
 import { advanceBoardRow, openDb, upsertBoard, listBoards, annotateBoardRow, listPendingRows, markAnnotationDelivered, markRowHandled, markHandledDelivered, pinBoardRow, stopBoardRowWatch } from '../src/store.js'
 import type { BoardWithRows } from '../src/store.js'
-import { trimContext, makeContextLedger, deliverContext, shapeBoard, summariseBoard, rowKey, itemKey } from '../src/shape.js'
+import { trimContext, makeContextLedger, deliverContext, shapeBoard, summariseBoard, rowKey, itemKey, agentItem } from '../src/shape.js'
 import { issueRelations } from '../src/issue-graph.js'
 import { at, row as snapRow, snapshot } from './issue-fixtures.js'
 import { scratchDir } from './scratch.js'
@@ -486,12 +486,32 @@ describe('issue links and issue_rel — titled board_get only (#103 PR2)', () =>
 
   it('an unlinked board keeps its previous key order, rows where they always were', () => {
     const { board } = boardWith([{ label: 'Plain', status: 'tracked' }])
-    const { issue_pin_repo: _repo, issue_pin_number: _number, ...before } = { ...board, rows: [] }
+    const { issue_pin_repo: _repo, issue_pin_number: _number, repo_root: _root, ...before } = { ...board, rows: [] }
     expect(Object.keys(shapeBoard(board, { ledger: makeContextLedger() }))).toEqual(Object.keys(before))
   })
 
   it('the title-less summary carries neither links nor issue_rel', () => {
     const { board } = linkedBoard()
     expect(JSON.stringify(summariseBoard(board))).not.toMatch(/issue/)
+  })
+})
+
+// Issue #324 — the folder an item or a plan was written from is for the viewer
+// alone, which resolves repo-relative paths against it. No agent read carries
+// it: not pending()'s items, not a titled board_get, not the summary.
+describe('the repository folder never reaches an agent (#324)', () => {
+  const ROOT = '/Users/s/Development/agent-inbox'
+
+  it('shapeBoard and summariseBoard drop it from the plan, and agentItem from an item', () => {
+    const db = openDb(join(scratchDir('shape-root-'), 'inbox.db'))
+    upsertBoard(db, { project: 'p', stream: 's', agent: 'a', title: 'plan', repoRoot: ROOT, rows: [{ label: 'Row', status: 'tracked', context: LONG }] })
+    const board = listBoards(db)[0]!
+    expect(board.repo_root).toBe(ROOT)
+    for (const out of [shapeBoard(board, { ledger: makeContextLedger() }), shapeBoard(board, { full: true, ledger: makeContextLedger() }), summariseBoard(board)]) {
+      expect(out).not.toHaveProperty('repo_root')
+      expect(JSON.stringify(out)).not.toContain(ROOT)
+    }
+    const item = { id: 'i1', title: 'q', context: LONG, repo: 'o/n', repo_root: ROOT }
+    expect(agentItem(item)).toEqual({ id: 'i1', title: 'q', context: LONG, repo: 'o/n' })
   })
 })

@@ -9,7 +9,7 @@
 // attention predicate, a badge or a count.
 import { issueKey } from './issue-key.js'
 import { fileLabel, githubRef, webLabel } from './links.js'
-import { issueRef, linkFor, safeHttpUrl } from './source.js'
+import { issueRef, linkFor, repoFilePath, safeHttpUrl } from './source.js'
 import { renderStructuredText } from './structured-text.js'
 
 // The agent-written fields of an item or a plan row, in card order. The
@@ -69,9 +69,13 @@ function ownLinks(entity, identity, index) {
 
 function stripLink(found, against) {
   if (found.kind === 'file') {
+    // a repo-relative file (#324) keys by the full path it names in its
+    // folder, so it shares one chip with the same file written out in full
+    const rooted = typeof found.root === 'string'
     return {
-      kind: 'file', key: `file:${found.path}`, path: found.path, line: found.line,
-      label: fileLabel(found.path, found.line), title: found.text, own: false,
+      kind: 'file', key: `file:${rooted ? repoFilePath(found.root, found.path) : found.path}`, path: found.path,
+      ...(rooted ? { root: found.root } : {}), line: found.line,
+      label: fileLabel(found.path, found.line), title: found.title ?? found.text, own: false,
     }
   }
   if (found.kind === 'web') {
@@ -84,11 +88,14 @@ function stripLink(found, against) {
 
 // [] when the text links nothing beyond the card's own PR and issue: its
 // origin chips already show those, right above where the strip would be.
+// Repo-relative paths (#324) resolve against the folder the item, or the plan
+// a row belongs to, recorded: `identity.repo_root`.
 export function cardLinks(entity, identity, index) {
   if (!entity || !identity) return []
   const against = typeof identity.repo === 'string' ? identity.repo : null
+  const root = typeof identity.repo_root === 'string' ? identity.repo_root : null
   const found = []
-  for (const text of linkSources(entity)) renderStructuredText(text, { repo: against, found })
+  for (const text of linkSources(entity)) renderStructuredText(text, { repo: against, root, found })
   const byKey = new Map()
   for (const link of [...ownLinks(entity, identity, index), ...found.map((one) => stripLink(one, against))]) {
     const seen = byKey.get(link.key)

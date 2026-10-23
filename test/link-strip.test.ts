@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { cardLinks } from '../public/link-strip.js'
 import type { CardLink } from '../public/link-strip.js'
-import { indexLinks, linkStripHtml } from '../public/source.js'
+import { indexLinks, linkStripHtml, repoFilePath } from '../public/source.js'
 import type { CachedLink } from '../public/source.js'
 
 const REPO = 'shariqh/agent-inbox'
@@ -131,5 +131,50 @@ describe('linkStripHtml (issue #300)', () => {
     expect(closed.indexOf('example.com/6')).toBeGreaterThan(closed.indexOf('<details'))
     expect(linkStripHtml(links(9), { key: 'links:i1', open: true })).toContain('data-context-key="links:i1" open>')
     expect(linkStripHtml(links(6), { key: 'links:i1' })).not.toContain('<details')
+  })
+})
+
+describe('repo-relative files in the strip (issue #324)', () => {
+  const ROOT = '/Users/s/Development/agent-inbox'
+
+  it('lists a relative path against the card’s folder, one chip with the same file named in full', () => {
+    const item = {
+      id: 'i7', repo: REPO, repo_root: ROOT,
+      detail: 'Spec at docs/spec.md:12, also /Users/s/Development/agent-inbox/docs/spec.md and public/app.js',
+    }
+    expect(cardLinks(item, item, null).map((l) => [l.kind, l.label, l.path, l.root, l.title, l.key])).toEqual([
+      ['file', 'spec.md:12', 'docs/spec.md', ROOT, `${ROOT}/docs/spec.md:12`, `file:${ROOT}/docs/spec.md`],
+      ['file', 'app.js', 'public/app.js', ROOT, `${ROOT}/public/app.js`, `file:${ROOT}/public/app.js`],
+    ])
+  })
+
+  it('reads a plan row against its plan’s folder, and lists nothing relative without one', () => {
+    const row = { id: 'r2', label: 'Draft docs/spec.md', note: 'See public/app.js:12' }
+    expect(cardLinks(row, { id: 'b2', repo: REPO, repo_root: ROOT }, null).map((l) => [l.path, l.root])).toEqual([
+      ['docs/spec.md', ROOT], ['public/app.js', ROOT],
+    ])
+    expect(cardLinks(row, { id: 'b3', repo: REPO }, null)).toEqual([])
+    expect(cardLinks(row, { id: 'b4', repo: REPO, repo_root: null }, null)).toEqual([])
+    // the row's own fields never name a folder: only its plan's counts
+    expect(cardLinks({ ...row, repo_root: ROOT }, { id: 'b5', repo: REPO }, null)).toEqual([])
+  })
+
+  it('draws a relative chip with its folder on the chip and both actions, and the full path in its title', () => {
+    const chip = { kind: 'file' as const, path: 'docs/a.md', root: '/Users/s/"r"', label: 'a.md', title: '/Users/s/"r"/docs/a.md:3' }
+    const html = linkStripHtml([chip], { key: 'k', actions: { reveal: 'Reveal in Finder' } })
+    expect(html).toContain('data-link-kind="file" data-link-path="docs/a.md" data-link-root="/Users/s/&quot;r&quot;" title="/Users/s/&quot;r&quot;/docs/a.md:3"')
+    expect(html.match(/data-link-path="docs\/a\.md" data-link-root="\/Users\/s\/&quot;r&quot;"/g)).toHaveLength(3)
+    expect(linkStripHtml([chip], { key: 'k', copyFiles: true })).toContain('title="Copy path: /Users/s/&quot;r&quot;/docs/a.md"')
+    expect(linkStripHtml([{ ...chip, root: '' }], { key: 'k' })).not.toContain('data-link-root')
+  })
+
+  it('names the full path whatever separators the folder ends in, in linear time', () => {
+    expect(repoFilePath('/Users/s/repo/', 'docs/a.md')).toBe('/Users/s/repo/docs/a.md')
+    expect(repoFilePath('C:\\repo\\', 'docs/a.md')).toBe('C:\\repo/docs/a.md')
+    expect(repoFilePath('/', 'docs/a.md')).toBe('/docs/a.md')
+    const folder = `/a${'/'.repeat(40_000)}b`
+    const started = performance.now()
+    expect(repoFilePath(folder, 'x.md')).toBe(`${folder}/x.md`)
+    expect(performance.now() - started).toBeLessThan(500)
   })
 })

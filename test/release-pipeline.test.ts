@@ -16,7 +16,7 @@ import {
 import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { dirname, join, relative, resolve } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { makeUniversalApp } from '@electron/universal'
 import { copyElectronNotices } from '../scripts/build-thin-app.mjs'
 import {
@@ -46,6 +46,7 @@ import { assertRuntimeSourceCommit } from '../scripts/runtime-provenance.mjs'
 import { resolveSourceProvenance } from '../scripts/source-provenance.mjs'
 import { RUNTIME_TARGETS } from '../scripts/runtime-targets.mjs'
 import { verifyPackagedUpdateTrust } from '../scripts/package-update-trust.mjs'
+import { assertEnglishOnlyElectronLocales, pruneElectronLocales } from '../scripts/prune-electron-locales.mjs'
 import { scratchDir } from './scratch.js'
 
 const root = resolve(process.cwd())
@@ -332,6 +333,50 @@ describe('native architecture release stages', () => {
     expect(thin.indexOf('assertPrunedNodeModules(resources, ')).toBeLessThan(thin.indexOf('publishAtomically(app, destination, force)'))
   })
 
+  it('prunes the Electron locales once, after packaging and before any check, hash or publication (#292)', () => {
+    const thin = readFileSync(join(root, 'scripts', 'build-thin-app.mjs'), 'utf8')
+    const prune = thin.indexOf("pruneElectronLocales(app, 'darwin')")
+    const gate = thin.indexOf("assertEnglishOnlyElectronLocales(app, 'darwin', ")
+    expect(prune).toBeGreaterThan(thin.indexOf('const paths = await packager({'))
+    expect(prune).toBeGreaterThan(thin.indexOf('copyElectronNotices(paths[0], app)'))
+    expect(gate).toBeGreaterThan(prune)
+    expect(gate).toBeLessThan(thin.indexOf('runElectronSqliteCheck({'))
+    expect(gate).toBeLessThan(thin.indexOf('publishAtomically(app, destination, force)'))
+    expect(gate).toBeLessThan(thin.indexOf('appTreeDigest: treeIdentity(destination)'))
+    for (const [file, call, verification] of [
+      ['build-linux-thin-app.mjs', "pruneElectronLocales(packaged, 'linux')", 'const verification = verifyLinuxThinApp({'],
+      ['build-windows-thin-app.mjs', "pruneElectronLocales(packaged, 'win32')", 'const initial = verifyWindowsThinApp({'],
+    ] as const) {
+      const source = readFileSync(join(root, 'scripts', file), 'utf8')
+      const at = source.indexOf(call)
+      expect(at, file).toBeGreaterThan(source.indexOf('const paths = await packager({'))
+      // the verification computes the tree digest the reports and packages bind to
+      expect(at, file).toBeLessThan(source.indexOf(verification))
+    }
+    // once per builder: nothing after the packager adds a locale back
+    for (const file of ['build-thin-app.mjs', 'build-linux-thin-app.mjs', 'build-windows-thin-app.mjs']) {
+      expect(readFileSync(join(root, 'scripts', file), 'utf8').match(/pruneElectronLocales\(/g), file).toHaveLength(1)
+    }
+  })
+
+  it('refuses another Electron locale, or a missing English one, in every thin-app, universal and final-DMG gate (#292)', () => {
+    for (const [file, gate] of [
+      ['build-thin-app.mjs', "assertEnglishOnlyElectronLocales(app, 'darwin', "],
+      ['verify-linux-thin-app.mjs', "assertEnglishOnlyElectronLocales(appRoot, 'linux', "],
+      ['verify-windows-thin-app.mjs', "assertEnglishOnlyElectronLocales(appRoot, 'win32', "],
+      ['assemble-macos-release.mjs', "assertEnglishOnlyElectronLocales(app, 'darwin', "],
+      ['macos-release-gates.mjs', "assertEnglishOnlyElectronLocales(copiedApp, 'darwin', "],
+    ] as const) {
+      expect(readFileSync(join(root, 'scripts', file), 'utf8'), file).toContain(gate)
+    }
+    const gates = readFileSync(join(root, 'scripts', 'macos-release-gates.mjs'), 'utf8')
+    const finalGate = gates.indexOf("assertEnglishOnlyElectronLocales(copiedApp, 'darwin', ")
+    expect(finalGate).toBeGreaterThan(gates.indexOf('export async function verifyFinalDmg({'))
+    expect(finalGate).toBeLessThan(gates.indexOf('await verifyCopiedAppLaunch({'))
+    const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+    expect(pkg.scripts['package:smoke']).toContain('test/prune-electron-locales.test.ts')
+  })
+
   it('uses the fixed native Windows archive adapter without changing POSIX tar selection', () => {
     const source = readFileSync(join(root, 'scripts', 'archive-tree.mjs'), 'utf8')
     expect(source).toContain("nativeRuntimeAdapterFor('win32-x64').archiveExecutable")
@@ -431,6 +476,73 @@ describe('universal finalization contract', () => {
       .toEqual(['arm64'])
     expect(archs(join(universalApp, 'Contents', 'Resources', 'app', 'runtime', 'darwin-x64', 'bin', 'node')))
       .toEqual(['x86_64'])
+  })
+
+  // Signing seals the framework's resources: it has to see the pruned set (#292).
+  it('checks the merged app ships only English before anything is signed (#292)', () => {
+    const source = readFileSync(join(root, 'scripts', 'assemble-macos-release.mjs'), 'utf8')
+    const gate = source.indexOf("assertEnglishOnlyElectronLocales(app, 'darwin', ")
+    expect(gate).toBeGreaterThan(source.indexOf('await makeUniversalApp({'))
+    expect(gate).toBeLessThan(source.indexOf('signedRuntimeMachOs[key] = signPortableRuntime({'))
+    expect(gate).toBeLessThan(source.indexOf('await signElectronEnvelope({'))
+  })
+
+  it.skipIf(process.platform !== 'darwin')('merges thin apps pruned alike, and refuses thin apps whose locales differ (#292)', async () => {
+    const temp = scratchDir('universal-locales-')
+    const source = join(temp, 'main.c')
+    writeFileSync(source, 'int main(void) { return 0; }\n')
+    const binaries = { arm64: join(temp, 'arm64'), x64: join(temp, 'x64') }
+    execFileSync('/usr/bin/xcrun', ['clang', '-arch', 'arm64', source, '-o', binaries.arm64])
+    execFileSync('/usr/bin/xcrun', ['clang', '-arch', 'x86_64', source, '-o', binaries.x64])
+    const frameworkResources = join('Contents', 'Frameworks', 'Electron Framework.framework', 'Versions', 'A', 'Resources')
+    const makeApp = (name: string, arch: 'arm64' | 'x64', prune: boolean) => {
+      const app = join(temp, `${name}.app`)
+      mkdirSync(join(app, 'Contents', 'MacOS'), { recursive: true })
+      mkdirSync(join(app, 'Contents', 'Resources', 'app'), { recursive: true })
+      cpSync(binaries[arch], join(app, 'Contents', 'MacOS', 'Fixture'))
+      writeFileSync(join(app, 'Contents', 'Resources', 'app', 'package.json'), '{"main":"index.js"}\n')
+      writeFileSync(join(app, 'Contents', 'Resources', 'app', 'index.js'), 'module.exports = {}\n')
+      writeFileSync(join(app, 'Contents', 'Info.plist'), [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
+        '<plist version="1.0"><dict><key>CFBundleExecutable</key><string>Fixture</string></dict></plist>',
+      ].join('\n'))
+      for (const locale of ['en', 'en_GB', 'en_GB_NEUTER', 'fr']) {
+        mkdirSync(join(app, 'Contents', 'Resources', `${locale}.lproj`), { recursive: true })
+        mkdirSync(join(app, frameworkResources, `${locale}.lproj`), { recursive: true })
+        writeFileSync(join(app, frameworkResources, `${locale}.lproj`, 'locale.pak'), `${locale}\n`)
+      }
+      if (prune) pruneElectronLocales(app, 'darwin')
+      return app
+    }
+    const merge = (arm64AppPath: string, x64AppPath: string, outAppPath: string) => makeUniversalApp({
+      arm64AppPath,
+      x64AppPath,
+      outAppPath,
+      force: true,
+      mergeASARs: false,
+      x64ArchFiles: UNIVERSAL_RUNTIME_GLOB,
+    })
+
+    const universal = join(temp, 'Universal.app')
+    await merge(makeApp('arm64', 'arm64', true), makeApp('x64', 'x64', true), universal)
+    expect(() => assertEnglishOnlyElectronLocales(universal, 'darwin', 'universal app')).not.toThrow()
+    expect(readdirSync(join(universal, frameworkResources))).toEqual(['en.lproj', 'en_GB.lproj'])
+
+    const reported = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      await expect(merge(makeApp('arm64-unpruned', 'arm64', false), makeApp('x64-pruned', 'x64', true), join(temp, 'Mixed.app')))
+        .rejects.toThrow(/found a mismatch/)
+      expect(reported).toHaveBeenCalledWith({
+        uniqueToX64: [],
+        uniqueToArm64: [
+          join(frameworkResources, 'en_GB_NEUTER.lproj', 'locale.pak'),
+          join(frameworkResources, 'fr.lproj', 'locale.pak'),
+        ],
+      })
+    } finally {
+      reported.mockRestore()
+    }
   })
 
   it('fails closed when Developer ID inputs are absent or malformed', () => {
@@ -627,6 +739,31 @@ describe('universal finalization contract', () => {
       ...options,
       mode: 'developer-id',
     })).toThrow(/requires clean source provenance/)
+  })
+
+  // The provisional app is launched as a French and as a British user: only US
+  // and British English ship (#292), so the first must fall back to en-US and
+  // the second keep en-GB, in its renderers and in the dates its page formats.
+  it('launches the provisional universal app in French and British English and checks each locale (#292)', () => {
+    const workflow = readFileSync(join(root, '.github', 'workflows', 'macos-universal.yml'), 'utf8')
+    const start = workflow.indexOf('- name: Mount, copy, launch, verify boundary, and remove portable runtime')
+    const step = workflow.slice(start, workflow.indexOf('- uses:', start))
+    const launch = step.slice(step.indexOf('launch_as() {'), step.indexOf('\n          }\n', step.indexOf('launch_as() {')))
+    expect(launch).toContain('-AppleLanguages "($language)" --remote-debugging-port="$((port + 100))"')
+    const boundary = launch.lastIndexOf("grep -qi '^x-agent-inbox-local-boundary: loopback-v1'")
+    const renderers = launch.indexOf(`pgrep -lf -P "$APP_PID" -- '--type=renderer'`)
+    const check = launch.indexOf('test "$locales" = "--lang=$expected"')
+    const dates = launch.indexOf('node scripts/launch-locale-probe.mjs --devtools-port "$((port + 100))" --viewer-port "$port" --expect "$expected"')
+    expect(renderers).toBeGreaterThan(boundary)
+    expect(check).toBeGreaterThan(renderers)
+    expect(dates).toBeGreaterThan(check)
+    const french = step.indexOf('\n          launch_as fr 14319 en-US\n')
+    const british = step.indexOf('\n          launch_as en-GB 14320 en-GB\n')
+    expect(french).toBeGreaterThan(step.indexOf('\n          }\n'))
+    expect(british).toBeGreaterThan(french)
+    expect(step.indexOf('\n          kill "$APP_PID"\n', british)).toBeGreaterThan(british)
+    const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+    expect(pkg.scripts['package:smoke']).toContain('test/launch-locale-probe.test.ts')
   })
 
   it('pins release workflow actions and resolves Node from the central manifest', () => {

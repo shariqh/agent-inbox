@@ -25,6 +25,7 @@ import {
   resolveLinuxCompilerEnvironment,
   validateInstalledLinuxReleaseTools,
 } from './linux-release-inputs.mjs'
+import { pruneElectronLocales } from './prune-electron-locales.mjs'
 import { copyTreePreservingMode, verifyPayload } from './runtime-payload.mjs'
 import { assertRuntimeSourceCommit } from './runtime-provenance.mjs'
 import { resolveSourceProvenance } from './source-provenance.mjs'
@@ -148,6 +149,7 @@ export async function buildLinuxThinApp({
     }
     const packaged = paths[0]
     if (!packaged) throw new LinuxThinAppBuildError('packager returned no Linux app folder')
+    pruneElectronLocales(packaged, 'linux')
     const verification = verifyLinuxThinApp({
       app: packaged,
       arch,

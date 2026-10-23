@@ -20,6 +20,7 @@ import { parseArgs } from 'node:util'
 import { makeUniversalApp } from '@electron/universal'
 import { sign } from '@electron/osx-sign'
 import { createReleaseDmg } from './macos-dmg.mjs'
+import { assertEnglishOnlyElectronLocales } from './prune-electron-locales.mjs'
 import {
   buildManifest,
   readManifestFile,
@@ -484,6 +485,8 @@ export async function assembleMacRelease({
       mergeASARs: false,
       x64ArchFiles: UNIVERSAL_RUNTIME_GLOB,
     })
+    // Signing below seals Electron Framework's resources as they are now (#292).
+    assertEnglishOnlyElectronLocales(app, 'darwin', 'universal app')
     const appResources = join(app, 'Contents', 'Resources', 'app')
     const entitlementsRoot = join(repoRoot, 'release', 'entitlements')
     markBuildProperties(app, mode, inputs.minimumMacosVersion)

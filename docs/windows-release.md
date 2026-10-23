@@ -58,6 +58,21 @@ against headers node-gyp would download. Neither file enters the runtime payload
 The folder and reports are short-lived CI artifacts only. They are unsigned and are not
 added to release aggregation.
 
+## Installer spike (#87, PR 2a)
+
+`.github/workflows/windows-installer-spike.yml` is CI-only evidence for choosing the
+installer. It reuses this folder workflow (now also callable), rebuilds the same commit
+with only its version bumped one patch, and builds a per-user MSI (WiX) and a
+Squirrel.Windows installer (electron-winstaller) from both folders. Then a fresh,
+disposable standard user installs, launches, upgrades, repairs and uninstalls each one,
+and every installed tree is compared byte for byte with its verified folder. The tools
+are pinned in `.github/windows-installer-spike/`: WiX by exact version, nuget.org package
+hash and SHA-256, installed from a private feed; electron-winstaller by lockfile
+integrity, installed without lifecycle scripts. The installers are unsigned, uploaded
+only as seven-day CI artifacts, and never published; the update manifest has no Windows
+target. The measurements, recommendation and open decisions are in
+[the installer decision record](superpowers/specs/2026-10-23-windows-installer-decision.md).
+
 ## Setup remains unavailable
 
 Schema-2 setup metadata embeds the exact `win32-x64` runtime so its packaging shape is

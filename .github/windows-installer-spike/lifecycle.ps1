@@ -19,7 +19,7 @@ $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
 
 $tools = Get-Content -Raw (Join-Path $PSScriptRoot 'tools.json') | ConvertFrom-Json
-$folders = Get-Content -Raw $Folders | ConvertFrom-Json
+$verified = Get-Content -Raw $Folders | ConvertFrom-Json
 $builds = @{
   base = Get-Content -Raw (Join-Path $Build 'base.json') | ConvertFrom-Json
   upgrade = Get-Content -Raw (Join-Path $Build 'upgrade.json') | ConvertFrom-Json
@@ -106,14 +106,14 @@ function Measure-Installed([string]$Name, [hashtable]$Result, [string]$Side) {
   $directory = $Result.state.appDirectoryFull
   $record = [ordered]@{ step = $Name; side = $Side; installed = [bool]$directory }
   if ($directory) {
-    $arguments = @($tree, '--root', $directory, '--compare', $folders.$Side.root)
+    $arguments = @($tree, '--root', $directory, '--compare', $verified.$Side.root)
     if ($Kind -eq 'squirrel') { $arguments += @('--exclude', 'squirrel.exe') }
     $measured = & node @arguments | ConvertFrom-Json -AsHashtable
     $userLength = $Result.user.name.Length
     $deepest = $directory.Length + 1 + $measured.deepestRelativeLength
     $record.appDirectory = $Result.state.appDirectory
     $record.digest = $measured.digest
-    $record.matchesVerified = $measured.digest -eq $folders.$Side.appTreeDigest
+    $record.matchesVerified = $measured.digest -eq $verified.$Side.appTreeDigest
     $record.compare = $measured.compare
     $record.deepestPath = [ordered]@{
       relative = $measured.deepestRelative

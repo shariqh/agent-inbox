@@ -67,7 +67,7 @@ $property = @{}
 foreach ($row in (Get-Rows $database 'SELECT `Property`, `Value` FROM `Property`')) { $property[$row[0]] = $row[1] }
 $summary = Invoke-Com $installer 'SummaryInformation' $get @($msi, 0)
 $wordCount = [int](Invoke-Com $summary 'Property' $get @(15))
-$report = [ordered]@{
+$built = [ordered]@{
   schema = 1
   kind = 'msi'
   version = $version
@@ -107,10 +107,10 @@ foreach ($line in $iceOutput) {
     $ices[$key] = 1 + ($ices[$key] ?? 0)
   }
 }
-$report.ice = [ordered]@{
+$built.ice = [ordered]@{
   exitCode = $iceExit
   counts = $ices
   sample = @($iceOutput | Select-Object -First 12)
 }
-$report | ConvertTo-Json -Depth 6 | Set-Content -Encoding utf8 $Report
-Write-Host "Built $($report.msi.name) ($($report.msi.bytes) bytes) in $($report.seconds)s; ICE exit $iceExit"
+$built | ConvertTo-Json -Depth 6 | Set-Content -Encoding utf8 $Report
+Write-Host "Built $($built.msi.name) ($($built.msi.bytes) bytes) in $($built.seconds)s; ICE exit $iceExit"

@@ -159,7 +159,7 @@ jobs:
         run: |
           $PSNativeCommandUseErrorActionPreference = $true
           npm ci --ignore-scripts --omit=optional --no-audit --no-fund
-          # electron-winstaller's one install script copies the host's 7-Zip into vendor/.
+          # electron-winstaller's one install script selects its bundled x64 7-Zip in vendor/.
           Push-Location node_modules/electron-winstaller
           try { node script/select-7z-arch.js } finally { Pop-Location }
       - id: msi-build

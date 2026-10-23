@@ -143,8 +143,19 @@ function Measure-Installed([string]$Name, [hashtable]$Result, [string]$Side) {
 }
 
 $failure = $null
+# The MSI lifecycle changes one machine policy value, DisableMSI, and the finally
+# below puts it back: the key is created only when missing, nothing else in it is
+# touched, and a key this run created is removed again once it is empty.
 $policyKey = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Installer'
-$policy = [ordered]@{ disableMsiBefore = (Get-ItemProperty -LiteralPath $policyKey -Name DisableMSI -ErrorAction SilentlyContinue).DisableMSI }
+$policy = [ordered]@{ keyExisted = $false; disableMsiBefore = $null; disableMsiKind = $null; keyCreated = $false; changed = $false }
+$policyRead = Get-Item -LiteralPath $policyKey -ErrorAction SilentlyContinue
+if ($policyRead) {
+  $policy.keyExisted = $true
+  if ($policyRead.GetValueNames() -contains 'DisableMSI') {
+    $policy.disableMsiBefore = $policyRead.GetValue('DisableMSI', $null, 'DoNotExpandEnvironmentNames')
+    $policy.disableMsiKind = "$($policyRead.GetValueKind('DisableMSI'))"
+  }
+}
 $checks['installer-policy'] = $policy
 try {
   Invoke-Step 'baseline' @{ action = 'baseline' } | Out-Null
@@ -156,7 +167,11 @@ try {
     if ($serverDefault.run.exitCode -eq 0) {
       Invoke-Step 'uninstall-after-server-policy' @{ action = 'uninstall'; productCode = $builds.base.productCode } | Out-Null
     }
-    New-Item -Force $policyKey | Out-Null
+    if (-not (Test-Path -LiteralPath $policyKey)) {
+      New-Item -Path $policyKey | Out-Null
+      $policy.keyCreated = $true
+    }
+    $policy.changed = $true
     Set-ItemProperty -LiteralPath $policyKey -Name DisableMSI -Value 0 -Type DWord
     $policy.disableMsiMeasured = (Get-ItemProperty -LiteralPath $policyKey -Name DisableMSI).DisableMSI
   }
@@ -208,6 +223,36 @@ try {
   Write-Host "::error::[$Kind] lifecycle stopped: $failure"
   Write-Host "$($_.InvocationInfo.PositionMessage)`n$($_.ScriptStackTrace)"
 } finally {
+  if ($policy.changed -or $policy.keyCreated) {
+    try {
+      if ($null -eq $policy.disableMsiBefore) {
+        Remove-ItemProperty -LiteralPath $policyKey -Name DisableMSI -ErrorAction SilentlyContinue
+      } else {
+        Set-ItemProperty -LiteralPath $policyKey -Name DisableMSI -Value $policy.disableMsiBefore -Type $policy.disableMsiKind
+      }
+      if ($policy.keyCreated) {
+        $createdKey = Get-Item -LiteralPath $policyKey
+        if ($createdKey.ValueCount -eq 0 -and $createdKey.SubKeyCount -eq 0) { Remove-Item -LiteralPath $policyKey }
+      }
+      $policyAfter = Get-Item -LiteralPath $policyKey -ErrorAction SilentlyContinue
+      $policy.keyExistsAfter = $null -ne $policyAfter
+      $policy.disableMsiAfter = if ($policyAfter -and $policyAfter.GetValueNames() -contains 'DisableMSI') {
+        $policyAfter.GetValue('DisableMSI', $null, 'DoNotExpandEnvironmentNames')
+      } else { $null }
+      $sameValue = if ($null -eq $policy.disableMsiBefore) { $null -eq $policy.disableMsiAfter } else {
+        $null -ne $policy.disableMsiAfter -and "$($policy.disableMsiAfter)" -ceq "$($policy.disableMsiBefore)"
+      }
+      $policy.restored = $sameValue -and $policy.keyExistsAfter -eq $policy.keyExisted
+      if (-not $policy.restored) {
+        throw "the Installer policy key exists=$($policy.keyExistsAfter) with DisableMSI=$($policy.disableMsiAfter ?? 'unset') after the run"
+      }
+    } catch {
+      $policy.restored = $false
+      $policy.restoreError = "$_"
+      Write-Host "::error::[$Kind] could not restore the Windows Installer policy: $_"
+      if (-not $failure) { $failure = "could not restore the Windows Installer policy: $_" }
+    }
+  }
   [ordered]@{
     schema = 1
     kind = $Kind

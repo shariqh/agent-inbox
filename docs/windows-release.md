@@ -67,14 +67,14 @@ Squirrel.Windows installer (electron-winstaller) from both folders. Then a fresh
 disposable standard user installs, launches, upgrades and uninstalls each one (and
 repairs the MSI), and every installed tree is compared byte for byte with its verified
 folder. Because Windows Server refuses unelevated per-user MSI installs by default, the
-MSI lifecycle records that refusal and then sets the `DisableMSI=0` policy that Windows
-10 and 11 use. The tools are pinned in `.github/windows-installer-spike/`: WiX by exact
-version, nuget.org package hash and SHA-256, installed from a private feed;
-electron-winstaller by lockfile integrity, installed without lifecycle scripts. The
-installers are unsigned, uploaded only as seven-day CI artifacts, and never published;
-the update manifest has no Windows target. The measurements, recommendation and open
-decisions are in [the installer decision
-record](superpowers/specs/2026-10-23-windows-installer-decision.md).
+MSI lifecycle records that refusal, sets the `DisableMSI=0` policy that Windows 10 and
+11 use for the rest of its run, and then restores the previous setting. The tools are
+pinned in `.github/windows-installer-spike/`: WiX by exact version, nuget.org package
+hash and SHA-256, installed from a private feed; electron-winstaller by lockfile
+integrity, installed without lifecycle scripts. The installers are unsigned, uploaded
+only as seven-day CI artifacts, and never published; the update manifest has no Windows
+target. The measurements, recommendation and open decisions are in [the installer
+decision record](superpowers/specs/2026-10-23-windows-installer-decision.md).
 
 ## Setup remains unavailable
 

@@ -176,7 +176,12 @@ row('Build time (base)', `${msi?.buildSeconds ?? '—'} s`, `${squirrel?.buildSe
 const serverPolicyText = (entry) => {
   if (!entry?.serverPolicy) return 'not run'
   const refusal = (entry.serverPolicy.msiLog ?? []).find((line) => /Rejecting product|disabled/i.test(line))
-  return `${runText(entry.serverPolicy)}${refusal ? `: ${refusal.replace(/^MSI \([^)]*\) \([^)]*\) \[[^\]]*\]: /, '')}` : ''}; DisableMSI was ${entry.policy?.disableMsiBefore ?? 'unset'}, then set to ${entry.policy?.disableMsiMeasured ?? '—'} (the Windows 10/11 default) for every other step`
+  return `${runText(entry.serverPolicy)}${refusal ? `: ${refusal.replace(/^MSI \([^)]*\) \([^)]*\) \[[^\]]*\]: /, '')}` : ''}; DisableMSI was ${entry.policy?.disableMsiBefore ?? 'unset'}, then set to ${entry.policy?.disableMsiMeasured ?? '—'} (the Windows 10/11 default) for every other step; ${policyRestoreText(entry.policy)}`
+}
+const policyRestoreText = (policy) => {
+  if (policy?.restored === true) return `restored to ${policy.disableMsiBefore ?? 'unset'} afterwards${policy.keyCreated ? ', removing the policy key the run created' : ''}`
+  if (policy?.restored === false) return `❌ not restored: ${policy.restoreError ?? 'no reason recorded'}`
+  return 'restore not recorded'
 }
 row("Unelevated per-user install under Windows Server's default installer policy",
   serverPolicyText(msi), 'not subject to Windows Installer policy')
@@ -235,8 +240,8 @@ row('Launch after upgrade', launchText(msi?.launchUpgrade), launchText(squirrel?
 const repairText = (entry, measured, kind) => entry?.error ? `error: ${entry.error}` : entry
   ? `${runText(entry)}; deleted ${entry.deleted?.join(', ')}; restored ${Object.entries(entry.restored ?? {}).map(([file, back]) => `${file} ${ok(back)}`).join(', ')}; tree ${treeText(measured, kind)}`
   : 'not run'
-row('Repair, installer source present', repairText(msi?.repairWithSource, msi?.repairWithSourceCheck, 'msi'), 'no repair: re-running Setup.exe deletes and reinstalls the app')
-row('Repair, installer source deleted', repairText(msi?.repairWithoutSource, msi?.repairWithoutSourceCheck, 'msi'), 'no repair')
+row('Silent repair by product code (msiexec /fomus), installer source in place', repairText(msi?.repairWithSource, msi?.repairWithSourceCheck, 'msi'), 'no repair: re-running Setup.exe deletes and reinstalls the app')
+row('Silent repair by product code (msiexec /fomus), installer source renamed away', repairText(msi?.repairWithoutSource, msi?.repairWithoutSourceCheck, 'msi'), 'no repair')
 const uninstallText = (entry) => entry
   ? `${runText(entry)}; app folder ${entry.state?.appDirectory ? 'still present' : 'removed'}; Start-menu shortcuts left: ${entry.state?.startMenuShortcuts?.length ?? '—'}; app started during uninstall: ${appsDuring(entry).join(', ') || 'no'}`
   : 'not run'

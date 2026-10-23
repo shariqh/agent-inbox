@@ -31,10 +31,11 @@ table to its job summary.
 2. **Both install exactly the verified bytes.** Each installed tree matched the folder's
    verified digest file for file. Squirrel adds its own `squirrel.exe` and a log to every
    version folder.
-3. **Repair exists only in the MSI.** `msiexec /f` put back a deleted `Agent Inbox.exe` and a
-   deleted script, byte for byte. It needs the original `.msi` file: with that file moved away,
-   repair failed (1603, no valid source). Squirrel has no repair; re-running Setup.exe deletes
-   the install and starts over.
+3. **Repair exists only in the MSI.** A silent repair by product code (`msiexec /fomus`) put back
+   a deleted `Agent Inbox.exe` and a deleted script, byte for byte. That repair needs the
+   original source: with the `.msi` the product was installed from renamed away, it failed (1603,
+   no valid source). Squirrel has no repair; re-running Setup.exe deletes the install and starts
+   over.
 4. **Squirrel needs app changes before it can work properly.** Electron's executable declares
    itself "Squirrel-aware", so Setup.exe creates no shortcut and instead starts the full app
    with `--squirrel-install` during install (and `--squirrel-updated`, `--squirrel-uninstall`
@@ -92,7 +93,7 @@ requests that touch its own files. It has three jobs.
 | Tool | Pin | How it is verified |
 | --- | --- | --- |
 | WiX .NET tool 5.0.2 (`5.0.2+aa65968c`) | nupkg SHA-512 `z+fu1deTcaV+TRCo4+6HrJ48Sdnj+yeQjjMStTI3GW7NxFEPaknYCdxrf0qEvgdXrjYdjLnkZKCsNSqTTOo2OA==` (nuget.org's catalog `packageHash`) and SHA-256 `f30ef0c74e2a986126539c5780be93ac24e8136eaf723b1937b26272703ae173` | Downloaded from its exact nuget.org URL; both digests checked; installed with `dotnet tool install` from a private feed holding only that file, into an empty package cache; the reported version and source commit checked; the package the tool store keeps must hash to the pin. |
-| electron-winstaller 5.4.4 | lockfile integrity `sha512-j9ETcBGJaXxAY/b6UBpR7LZfjdU4BAO+yvr4ifqHEdyuc3UNCy91PDGkWKY5UQ4coHNYfnwFggrqD6QPeFGAlg==` | `npm ci --ignore-scripts` from `.github/windows-installer-spike/package-lock.json` (every entry from registry.npmjs.org with a SHA-512 integrity); its one install script, which copies the host's 7-Zip into `vendor/`, is run explicitly. |
+| electron-winstaller 5.4.4 | lockfile integrity `sha512-j9ETcBGJaXxAY/b6UBpR7LZfjdU4BAO+yvr4ifqHEdyuc3UNCy91PDGkWKY5UQ4coHNYfnwFggrqD6QPeFGAlg==` | `npm ci --ignore-scripts` from `.github/windows-installer-spike/package-lock.json` (every entry from registry.npmjs.org with a SHA-512 integrity); its one install script, which selects the package's own bundled x64 7-Zip in `vendor/` (nothing from the runner), is run explicitly. |
 | Squirrel.Windows binaries inside it | Update.exe 2.0.1, Setup.exe 1.9.1, NuGet 2.8.3, 7-Zip 16.04, signtool 6.1.7600, rcedit 0.2.0 | Pinned by the npm integrity above; the summary records each binary's SHA-256. |
 | .NET runtime for WiX 5 | the runner image's .NET 6: 6.0.46 in the cited run, 6.0.47 on the runner of run 39899654879 | Recorded, not downloaded and not pinned, so it varies with the runner image. WiX 5 asks for .NET 6 with `rollForward: Major`, so it runs on .NET 6 whenever the image has it (§3.7). |
 
@@ -107,13 +108,12 @@ runs in that account's own logon session (`Start-Process -Credential -LoadUserPr
 step fails unless its token is that user's and not an administrator's, and records its
 integrity level (Medium throughout). The steps are: install the base version silently; launch
 it from its Start-menu shortcut and quit it; upgrade while it runs; upgrade with it closed (when
-the first upgrade did not finish cleanly); launch again; for the MSI, repair after deleting
-files, both with the source `.msi` present and with it moved away; uninstall after writing a
-sentinel file into
-`%USERPROFILE%\.agent-inbox`. For Squirrel the spike then reinstalls the base and runs
-Squirrel's own updater (`Update.exe --update`), launches and uninstalls again. After every
-install, upgrade and repair, the installed app folder is compared file by file with the verified
-folder it came from.
+the first upgrade did not finish cleanly); launch again; for the MSI, a silent repair by product
+code after deleting files, both with the source `.msi` in place and with it renamed away;
+uninstall after writing a sentinel file into `%USERPROFILE%\.agent-inbox`. For Squirrel the
+spike then reinstalls the base and runs Squirrel's own updater (`Update.exe --update`),
+launches and uninstalls again. After every install, upgrade and repair, the installed app folder
+is compared file by file with the verified folder it came from.
 
 ### What this evidence cannot show
 
@@ -151,8 +151,8 @@ magnitude means anything.
 | Upgrade while the app runs | exit 0 in 46 s, tree = 1.6.1. The running 1.6.0 kept running from 15 in-use files Windows Installer had moved aside for deletion at the next reboot (counted in run 39896941593), and then quit only when killed | exit 0 in 30 s, tree = 1.6.1. Setup.exe killed the running app, deleted the 1.6.0 folder, and started 1.6.1 with `--squirrel-install` |
 | Install location after upgrade | the same folder | `app-1.6.1`; the shortcut's working directory still named the deleted `app-1.6.0` |
 | Installed-apps entries after upgrade | one, 1.6.1 | one, 1.6.1 |
-| Repair, `.msi` present | exit 0; deleted `Agent Inbox.exe` and `dist\store.js` restored | none |
-| Repair, `.msi` moved away | exit 1603 (1706, no valid source); nothing restored | none |
+| Silent repair by product code (`msiexec /fomus`), `.msi` in place | exit 0; deleted `Agent Inbox.exe` and `dist\store.js` restored | none |
+| The same repair, `.msi` renamed away | exit 1603 (1706, no valid source); nothing restored | none |
 | Uninstall | exit 0 in 20 s; folder, shortcut, registry and COM entries removed | exit 0 in 12 s; started the app with `--squirrel-uninstall`; left `%LOCALAPPDATA%\AgentInbox` (`.dead`, `Update.exe`, the whole `app-1.6.1`), `%LOCALAPPDATA%\SquirrelTemp` and the Start-menu shortcut |
 | `%USERPROFILE%\.agent-inbox` after uninstall | kept (sentinel file and `inbox.db`) | kept |
 | Left by either | `%APPDATA%\agent-inbox`, the Chromium profile the app itself creates | the same |
@@ -175,7 +175,7 @@ integrity. On Windows Server, though, an unelevated per-user MSI install is refu
 machine sets Windows Installer's `DisableMSI` policy to 0: Microsoft documents that server
 default as blocking unmanaged installs, client Windows allows them, and the runner (Windows
 Server 2022) refused one. The spike recorded that refusal, then set `DisableMSI=0` (the client
-default) for the rest of the MSI lifecycle.
+default) for the rest of the MSI lifecycle, and put the previous setting back afterwards.
 Machines whose administrators set the same policy will refuse the MSI; #87's portable ZIP
 covers them.
 
@@ -233,9 +233,12 @@ design would not use, kept both version folders after updating and after the nex
 
 ### 3.5 Repair
 
-Windows Installer repaired both a deleted executable and a deleted script, but only with the
-original `.msi` at the path it was installed from. Users who delete the download can still
-reinstall from a new copy. 2b's documentation should say so. Squirrel has nothing comparable.
+A silent repair by product code (`msiexec /fomus {ProductCode} /qn`) restored both a deleted
+executable and a deleted script. With the `.msi` the product was installed from renamed away,
+the same repair failed (1603, error 1706: no valid source), so a silent product-code repair
+needs the original source. The spike tried no other route, such as repairing from a fresh copy
+of the `.msi`. Users who delete the download can still reinstall from a new copy; 2b's
+documentation should say so. Squirrel has nothing comparable.
 
 ### 3.6 Uninstall and leftovers
 
@@ -277,8 +280,8 @@ three, and add more.
    everything that names the app's path (shortcuts, the toast activator's `LocalServer32`, a
    user's pinned taskbar entry) stays valid only with a fixed folder.
 2. **Repair, upgrade and uninstall built in.** Measured: all three worked, with the caveat
-   that repair needs the original `.msi`. Squirrel has no repair, and its uninstall left most of
-   the install behind with today's app.
+   that the silent product-code repair needs the original source. Squirrel has no repair, and
+   its uninstall left most of the install behind with today's app.
 3. **One container to sign.** Measured: ten app files plus the `.msi`, in plain steps any
    provider supports; Squirrel adds three of its own executables that must be signed inside
    its build.

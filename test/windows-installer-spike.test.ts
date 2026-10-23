@@ -62,13 +62,24 @@ describe('Windows installer spike workflow (#87)', () => {
     expect(wix.sha256).toMatch(/^[0-9a-f]{64}$/)
     expect(wix.sourceCommit).toMatch(/^[0-9a-f]{40}$/)
     const install = read(join(spikeDir, 'install-wix.ps1'))
-    expect(install).toContain('Invoke-WebRequest -Uri $pin.url -OutFile $nupkg')
-    expect(install).toContain('[Security.Cryptography.SHA512]::HashData($bytes)')
-    expect(install).toContain('[Security.Cryptography.SHA256]::HashData($bytes)')
-    expect(install).toContain('$sha512 -cne $pin.sha512 -or $sha256 -cne $pin.sha256')
-    expect(install).toContain('<clear />')
-    expect(install).toContain('$env:NUGET_PACKAGES = $packages')
-    expect(install).toContain('dotnet tool install $pin.package --version $pin.version --tool-path $toolPath --configfile $config')
+    // A failed check must stop the script, so each guard is pinned with its throw, in order.
+    expect(install).toContain("\n$ErrorActionPreference = 'Stop'\n$PSNativeCommandUseErrorActionPreference = $true\n")
+    expect(install).toMatch(/^trap \{[^\n]*; break \}$/m)
+    const steps = [
+      'Invoke-WebRequest -Uri $pin.url -OutFile $nupkg',
+      '[Security.Cryptography.SHA512]::HashData($bytes)',
+      '[Security.Cryptography.SHA256]::HashData($bytes)',
+      'if ($sha512 -cne $pin.sha512 -or $sha256 -cne $pin.sha256) {\n  throw "WiX $($pin.version) package digest mismatch',
+      '<clear />',
+      '$env:NUGET_PACKAGES = $packages',
+      'dotnet tool install $pin.package --version $pin.version --tool-path $toolPath --configfile $config',
+      'if (-not $reported.StartsWith("$($pin.version)+$($pin.sourceCommit.Substring(0, 8))")) {\n  throw "installed WiX reports',
+      "if (@($store | Where-Object { $_.path -like '*.nupkg' -and $_.sha256 -ne $pin.sha256 }).Count -gt 0) {\n  throw 'the tool store holds a WiX package other than the verified one'",
+      '| Set-Content -Encoding utf8 -LiteralPath $Report',
+    ]
+    const at = steps.map((step) => install.indexOf(step))
+    steps.forEach((step, index) => expect(at[index], step).toBeGreaterThan(-1))
+    expect(at, 'install-wix.ps1 runs its checks in this order').toEqual([...at].sort((a, b) => a - b))
     for (const { name, text } of everything()) {
       if (name === 'install-wix.ps1') continue
       expect(text, `${name} must install no other .NET tool or package`).not.toMatch(/dotnet (tool|add)|nuget(\.exe)? install|wix extension/i)
@@ -169,6 +180,10 @@ describe('Windows installer spike workflow (#87)', () => {
     for (const step of ['install-base', 'upgrade-while-running', 'repair-with-source', 'repair-without-source', 'uninstall']) {
       expect(lifecycle).toContain(`'${step}'`)
     }
+    // The machine policy the MSI run changes is put back, and its key is never re-created.
+    expect(lifecycle).not.toMatch(/New-Item[^\n]*-Force[^\n]*\$policyKey|New-Item[^\n]*\$policyKey[^\n]*-Force/)
+    expect(lifecycle.slice(lifecycle.lastIndexOf('} finally {'))).toContain(
+      'Set-ItemProperty -LiteralPath $policyKey -Name DisableMSI -Value $policy.disableMsiBefore -Type $policy.disableMsiKind')
   })
 
   it('keeps the MSI per-user and its identity in tools.json', () => {

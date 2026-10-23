@@ -75,14 +75,53 @@ SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/agent-inbox-appimage-smoke.XXXXXX")"
 chmod 0700 "$SCRATCH"
 APP_PID=""
 LOG=""
+# Signals the app's whole process group and waits until no member is left.
+# `wait` alone covers only xvfb-run: Electron's helpers (zygote, renderer, GPU,
+# utility) can keep writing Local Storage, Cookies and the Crashpad database
+# under the scratch home for a moment longer, so removing it at once raced
+# them (#348). SIGTERM, then up to ~10 s; SIGKILL, then up to ~2 s more.
+stop_app_group() {
+  local pgid="$1" i
+  kill -TERM -- "-$pgid" >/dev/null 2>&1 || true
+  for ((i = 0; i < 100; i++)); do
+    kill -0 -- "-$pgid" >/dev/null 2>&1 || break
+    sleep 0.1
+  done
+  if kill -0 -- "-$pgid" >/dev/null 2>&1; then
+    echo "smoke-linux-appimage: process group $pgid outlived SIGTERM; sending SIGKILL" >&2
+    kill -KILL -- "-$pgid" >/dev/null 2>&1 || true
+    for ((i = 0; i < 20; i++)); do
+      kill -0 -- "-$pgid" >/dev/null 2>&1 || break
+      sleep 0.1
+    done
+  fi
+  wait "$pgid" >/dev/null 2>&1 || true
+  if kill -0 -- "-$pgid" >/dev/null 2>&1; then
+    echo "smoke-linux-appimage: process group $pgid still has members after SIGKILL" >&2
+  fi
+}
+
+# Removes a directory, retrying while a straggler may still be writing to it.
+remove_scratch() {
+  local dir="$1" attempt
+  for ((attempt = 0; attempt < 4; attempt++)); do
+    rm -rf "$dir" >/dev/null 2>&1 && return 0
+    sleep 0.5
+  done
+  rm -rf "$dir"
+}
+
+# Runs as the EXIT trap. It must neither replace a real failure's status nor
+# turn success into failure while the scratch home can still be removed, so
+# it turns errexit off and always ends with an explicit exit.
 cleanup() {
-  status=$?
+  local status=$?
+  set +e
   if [[ "$status" -ne 0 && -f "$LOG" ]]; then
     cat "$LOG" >&2
   fi
   if [[ -n "$APP_PID" ]]; then
-    kill -- "-$APP_PID" >/dev/null 2>&1 || true
-    wait "$APP_PID" >/dev/null 2>&1 || true
+    stop_app_group "$APP_PID"
   fi
   mounted=0
   for mount in "$SCRATCH"/tmp/.mount_*; do
@@ -94,10 +133,16 @@ cleanup() {
     fi
   done
   if [[ "$mounted" -eq 0 ]]; then
-    rm -rf "$SCRATCH"
+    if ! remove_scratch "$SCRATCH"; then
+      echo "smoke-linux-appimage: could not remove scratch directory $SCRATCH" >&2
+      if [[ "$status" -eq 0 ]]; then
+        status=1
+      fi
+    fi
   else
     echo "smoke-linux-appimage: retained mounted scratch path $SCRATCH" >&2
   fi
+  exit "$status"
 }
 trap cleanup EXIT
 

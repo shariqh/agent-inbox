@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process'
 import { join, resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { testLinuxSmokeReadiness } from './linux-smoke-readiness.js'
+import { testLinuxSmokeCleanup } from './linux-smoke-cleanup.js'
 import { removeScratchDirs, scratchDir } from './scratch.js'
 
 const root = resolve(process.cwd())
@@ -10,6 +11,7 @@ const workflowPath = join(root, '.github', 'workflows', 'linux-x64-appimage.yml'
 const arm64WorkflowPath = join(root, '.github', 'workflows', 'linux-arm64-appimage.yml')
 
 testLinuxSmokeReadiness(join(root, 'scripts', 'smoke-linux-appimage.sh'))
+testLinuxSmokeCleanup(join(root, 'scripts', 'smoke-linux-appimage.sh'))
 
 afterEach(removeScratchDirs)
 

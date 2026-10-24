@@ -21,6 +21,7 @@ import {
   deriveKeyId,
   generateManifest,
   generateManifestV2,
+  parseRegistry,
   projectV1,
   restampV1,
   signManifest,
@@ -55,11 +56,19 @@ const shippedPreferences = require(join(FIXTURES, 'v1.6.0', 'update-preferences.
 
 afterEach(removeScratchDirs)
 
-// A scratch key: the production key never signs anything in tests.
+// A scratch key stands in for the original key: the production key never signs anything in
+// tests. Apps from 1.2 to 1.6 trust it alone, for good. From 1.7.0, release/update-keys.json
+// also lists the backup key (#342), so every manifest from then lists both ids and
+// every app from then trusts both, while the original key alone signs.
 const scratchKey = generateKeyPairSync('ed25519')
 const publicKeySpkiBase64 = scratchKey.publicKey.export({ type: 'spki', format: 'der' }).toString('base64')
 const keyId = deriveKeyId(publicKeySpkiBase64)
-const registry = { schema: 1 as const, signingKeyId: keyId, keys: [{ keyId, algorithm: 'ed25519' as const, publicKeySpkiBase64 }] }
+const shippedRegistry = { schema: 1 as const, signingKeyId: keyId, keys: [{ keyId, algorithm: 'ed25519' as const, publicKeySpkiBase64 }] }
+// The backup key, found by its id, never as the key that doesn't sign: after the emergency
+// switch in docs/macos-release.md, that would be the original key.
+const BACKUP_KEY_ID = 'ed25519-c8adddea0de080d6'
+const production = parseRegistry(readFileSync(resolve(import.meta.dirname, '..', 'release', 'update-keys.json')))
+const registry = { ...shippedRegistry, keys: [...shippedRegistry.keys, ...production.keys.filter((key) => key.keyId === BACKUP_KEY_ID)] }
 const privateKeyPem = scratchKey.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString()
 
 const HOUR_MS = 60 * 60 * 1000
@@ -132,14 +141,16 @@ function publishHistory(): Published[] {
     const tag = `v${version}`
     const packages = packagesOf(version, kind === 'arm64' ? 'arm64' : 'universal')
     const evidence = { tag, packageVersion: version, sourceCommit: 'a'.repeat(40), sourceTree: 'b'.repeat(40), assets: packages }
+    // 1.6.0 was published before the backup key was added.
+    const publisher = kind === 'v1-only' ? shippedRegistry : registry
     const signed = (bytes: Buffer): Pair => ({
       bytes,
-      signature: signManifest({ manifestBytes: bytes, registry, privateKeyPem, now: taggedAt }).bytes,
+      signature: signManifest({ manifestBytes: bytes, registry: publisher, privateKeyPem, now: taggedAt }).bytes,
     })
     let v1: Pair
     let v2: Pair | undefined
     if (kind === 'v1-only') {
-      v1 = signed(generateManifest({ registry, evidence, minimumMacosVersion: '13.5', publishedAt: taggedAt }).bytes)
+      v1 = signed(generateManifest({ registry: publisher, evidence, minimumMacosVersion: '13.5', publishedAt: taggedAt }).bytes)
     } else {
       const v2Bytes = generateManifestV2({ registry, evidence, minimumMacosVersion: '13.5', publishedAt: taggedAt, kind }).bytes
       v2 = signed(v2Bytes)
@@ -260,7 +271,9 @@ function packagedMacAdapters() {
 /** One check by the app as it runs now; a check that fails is `unverified`, as the app shows it. */
 async function checkOnce(app: App, fetchImpl: ReturnType<typeof latest>, now: Date): Promise<Outcome> {
   const reader = readerOf(app.version)
-  const host = { fetchImpl, registry, currentVersion: app.version, automaticChecks: true, isPackaged: true, now: () => now, ...app.host.options }
+  // An app trusts the keys its own release shipped.
+  const trusted = reader === 'new' ? registry : shippedRegistry
+  const host = { fetchImpl, registry: trusted, currentVersion: app.version, automaticChecks: true, isPackaged: true, now: () => now, ...app.host.options }
   if (reader !== 'new') {
     const trust = shippedPreferences.createUpdateTrustState({ filePath: app.trustFile })
     try {
@@ -356,6 +369,18 @@ async function settle(app: App, fetchImpl: ReturnType<typeof latest>, now: Date)
 const installed = (outcomes: Outcome[]) => outcomes.filter((outcome) => outcome.status === 'available' && !outcome.blocked).map((outcome) => outcome.version)
 
 describe('the hand-off from update-manifest.json to update-manifest-v2.json', () => {
+  it('publishes every release from 1.7.0 with the backup key trusted beside the original, which signs alone (#342)', () => {
+    expect(registry.keys.map((key) => key.keyId)).toEqual([keyId, BACKUP_KEY_ID])
+    for (const published of PUBLISHED) {
+      const trusted = published.kind === 'v1-only' ? [keyId] : [keyId, BACKUP_KEY_ID].sort()
+      for (const pair of published.v2 ? [published.v1, published.v2] : [published.v1]) {
+        expect(JSON.parse(pair.bytes.toString('utf8')).trustedKeyIds, published.tag).toEqual(trusted)
+        const { signatures } = JSON.parse(pair.signature.toString('utf8')) as { signatures: Array<{ keyId: string }> }
+        expect(signatures.map((signed) => signed.keyId), published.tag).toEqual([keyId])
+      }
+    }
+  })
+
   it('takes every app on every host from 1.2.8 and 1.6.0 along the paths of design §4.4', async () => {
     const fleet = Object.values(HOSTS).flatMap((host) => ['1.2.8', '1.6.0'].map((version) => ({
       app: newApp(host, version),

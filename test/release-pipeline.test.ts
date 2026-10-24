@@ -202,7 +202,7 @@ describe('native architecture release stages', () => {
 
     expect(verifyPackagedUpdateTrust(appResources)).toEqual({
       signingKeyId: 'ed25519-99927ba2f6af6482',
-      trustedKeyIds: ['ed25519-99927ba2f6af6482'],
+      trustedKeyIds: ['ed25519-99927ba2f6af6482', 'ed25519-c8adddea0de080d6'],
     })
   })
 

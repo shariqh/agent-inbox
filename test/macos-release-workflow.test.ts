@@ -393,7 +393,7 @@ function runPublisher(
     publicMarkerMismatch?: boolean
     createResponseMismatch?: boolean
     fixture?: PublishFixture
-    /** The job's repository variable, as the publish step receives it. */
+    /** The job's `macos-release` environment variable, as the publish step receives it. */
     rotationOverride?: string
   } = {},
 ) {
@@ -1002,6 +1002,30 @@ describe('publishing both update manifests', () => {
     expect(log).not.toContain(`releases/assets/${listed('update-manifest-v2.json')}`)
     expect(log).toContain('--pattern Agent-Inbox-v1.2.3-arm64.dmg')
     expect(finalRequest).toMatchObject({ draft: false, make_latest: 'true' })
+  })
+
+  // #342: from 1.7.0 the registry also trusts the backup key, which never signs here. It is
+  // found by its id: after an emergency switch, the key that doesn't sign is the original.
+  it.each(['universal', 'arm64'] as const)('%s: publishes a release whose registry also trusts the backup key, after one that trusted the original alone', (kind) => {
+    const BACKUP_KEY_ID = 'ed25519-c8adddea0de080d6'
+    const original = makeScratchKey()
+    const production = readJson(join(root, 'release', 'update-keys.json')) as typeof original.registry
+    const backupKeys = production.keys.filter((entry) => entry.keyId === BACKUP_KEY_ID)
+    expect(backupKeys.map((entry) => entry.keyId)).toEqual([BACKUP_KEY_ID])
+    const registry = { ...original.registry, keys: [...original.registry.keys, ...backupKeys] }
+    const key = { ...original, registry, registryBytes: Buffer.from(`${JSON.stringify(registry, null, 2)}\n`) }
+    const history = releaseHistory(priorRelease('1.2.2', original, isoSeconds(Date.now() - 7 * DAY_MS), { v1Only: kind === 'universal' }))
+    const fixture = publishFixture(kind, { key, history })
+    const { result } = published(fixture)
+    expect(result.status, result.stderr).toBe(0)
+    const ids = registry.keys.map((entry) => entry.keyId).sort()
+    for (const name of ['update-manifest.json', 'update-manifest-v2.json']) {
+      expect(readJson(join(fixture.handoff, 'release-assets', name)).trustedKeyIds, name).toEqual(ids)
+      expect(readJson(join(fixture.handoff, 'release-assets', `${name}.sig`)).signatures.map((signed: { keyId: string }) => signed.keyId), name)
+        .toEqual([original.keyId])
+    }
+    expect(readJson(join(fixture.handoff, 'update-signing-evidence.json')))
+      .toMatchObject({ signingKeyId: original.keyId, trustedKeyIds: ids, originalKeySignature: 'passed' })
   })
 
   describe('the macOS kind, from the CPU types the shipped app measured (G9)', () => {

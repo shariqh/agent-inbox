@@ -555,7 +555,7 @@ Before pushing a release tag, configure the repository's `macos-release` environ
    | `APPLE_DEVELOPER_ID_P12_BASE64` | Canonical base64 of a password-protected P12 containing the Developer ID Application certificate and private key |
    | `APPLE_DEVELOPER_ID_P12_PASSWORD` | P12 export password |
    | `APPLE_NOTARY_PRIVATE_KEY_BASE64` | Canonical base64 of the App Store Connect Team API `.p8` PEM |
-   | `AGENT_INBOX_UPDATE_PRIVATE_KEY_BASE64` | Canonical base64 of the Ed25519 PKCS#8 PEM whose public SPKI matches `release/update-keys.json` |
+   | `AGENT_INBOX_UPDATE_PRIVATE_KEY_BASE64` | Canonical base64 of the Ed25519 PKCS#8 PEM whose public SPKI matches the `signingKeyId` entry of `release/update-keys.json` |
 
 4. Add these environment **variables**:
 
@@ -565,7 +565,7 @@ Before pushing a release tag, configure the repository's `macos-release` environ
    | `APPLE_TEAM_ID` | Ten-character Apple Developer Team ID matching the identity |
    | `APPLE_NOTARY_KEY_ID` | App Store Connect Team API Key ID |
    | `APPLE_NOTARY_ISSUER_ID` | App Store Connect Team API Issuer UUID |
-   | `AGENT_INBOX_UPDATE_KEY_ROTATION_OVERRIDE` | Normally unset; emergency rotation only: `ALLOW-UPDATE-KEY-ROTATION:vX.Y.Z:ed25519-<derived-id>`. It also waives G10 for that release, which cuts apps from 1.2 to 1.6 off |
+   | `AGENT_INBOX_UPDATE_KEY_ROTATION_OVERRIDE` | Normally unset; emergency rotation only: `ALLOW-UPDATE-KEY-ROTATION:vX.Y.Z:ed25519-<derived-id>`. It also waives G10 for that release, which cuts apps from 1.2 to 1.6 off (see "The backup update key" below) |
 
 Signature-envelope schema 1 is ready for safe overlap rotation, but the current protected
 signer intentionally accepts one secret and emits one signature. **Do not change
@@ -599,6 +599,128 @@ immediately after import; the generated keychain is deleted in an `if: always()`
 The update signer does not materialize its private key: one Node process decodes the
 environment value, derives and checks the public key, signs, and clears mutable key buffers
 on every path. No credential value is written to argv, logs, job output, or an artifact.
+
+### The backup update key
+
+`release/update-keys.json` lists two public keys (#342):
+
+| Key | Role |
+| --- | --- |
+| `ed25519-99927ba2f6af6482` | The original key, and `signingKeyId`: it signs every release. Apps from 1.2 to 1.6 trust only this key |
+| `ed25519-c8adddea0de080d6` | The backup key. It signs nothing. Its private half lives only in the owner's private 1Password vault, Document item "Agent Inbox backup update key" |
+
+Every manifest from 1.7.0 on lists both ids in `trustedKeyIds` and carries one signature,
+from the original key. Apps from 1.2 to 1.6 still verify it, because their readers never
+compare `trustedKeyIds` with the keys they hold (`test/shipped-updaters.test.ts` runs
+them). Every app from 1.7.0 on trusts both keys, including Intel Macs that stay on
+1.x-last for good.
+
+The backup key is for an emergency only: the original key is lost or compromised. A
+routine rotation needs the dual-key signer (#148) instead, with the original key still
+signing `update-manifest.json`.
+
+**Emergency procedure,** for the release `vX.Y.Z` that switches to the backup key. Step 1
+checks the key and step 4 the override before the tag exists: the sign job would otherwise
+catch a wrong one only after notarization, when the tag is already spent.
+
+1. Put the backup key into the `AGENT_INBOX_UPDATE_PRIVATE_KEY_BASE64` secret for this
+   release. These lines read the key from 1Password once, never write it to disk, and
+   upload it only if its key id is `c8adddea0de080d6`, because `gh secret set` would store
+   even an empty value:
+
+   ```sh
+   KEY_B64="$(op document get "Agent Inbox backup update key" | base64 | tr -d '\n')"
+   test "$(printf '%s' "$KEY_B64" | base64 -d | openssl pkey -pubout -outform DER | shasum -a 256 | cut -c1-16)" = c8adddea0de080d6 \
+     && printf '%s' "$KEY_B64" | gh secret set AGENT_INBOX_UPDATE_PRIVATE_KEY_BASE64 --env macos-release --repo shariqh/agent-inbox \
+     || echo 'NOT SET: wrong key, unreadable item, or LibreSSL openssl' >&2
+   unset KEY_B64
+   ```
+
+   NOT SET leaves the secret as it was. The key was wrong, the item couldn't be read (a
+   dismissed unlock prompt or an expired session gives nothing), or `openssl` can't read
+   Ed25519 keys: macOS's own `/usr/bin/openssl` (LibreSSL) can't, so put OpenSSL 3 or
+   later, such as Homebrew's, first on your `PATH` and run the lines again.
+
+   If the 1Password CLI can't read the item, make a private folder for it instead:
+
+   ```sh
+   KEYDIR="$(mktemp -d)" && echo "$KEYDIR"
+   ```
+
+   Save the document from the 1Password app into that folder as `backup-update-key.pem`.
+   Then run the same lines with only the first one changed, and delete the folder:
+
+   ```sh
+   KEY_B64="$(base64 < "$KEYDIR/backup-update-key.pem" | tr -d '\n')"
+   test "$(printf '%s' "$KEY_B64" | base64 -d | openssl pkey -pubout -outform DER | shasum -a 256 | cut -c1-16)" = c8adddea0de080d6 \
+     && printf '%s' "$KEY_B64" | gh secret set AGENT_INBOX_UPDATE_PRIVATE_KEY_BASE64 --env macos-release --repo shariqh/agent-inbox \
+     || echo 'NOT SET: wrong key, unreadable item, or LibreSSL openssl' >&2
+   unset KEY_B64
+   rm -rf "$KEYDIR"
+   ```
+
+2. In the release commit, change `signingKeyId` in `release/update-keys.json` to
+   `ed25519-c8adddea0de080d6`. Keep both keys listed: the signer verifies the release
+   before's manifests, which the original key signed, under this release's keys. The same
+   commit updates the tests that pin the signing key: `test/update-manifest.test.ts`,
+   `test/update-trust.test.ts`, `test/release-aggregation.test.ts`,
+   `test/release-pipeline.test.ts` and `test/linux-native-folder.test.ts`. Most only name
+   the key, but some assertions invert: "passes G10 with the original key's signature
+   alone" becomes an expected refusal unless the exact override is passed, and the tests
+   that say the original key signs must say the backup key does. Other tests find the
+   backup key by its id and keep passing.
+3. In one shell for the rest of the procedure, set the tag once, then set the
+   `macos-release` environment variable `AGENT_INBOX_UPDATE_KEY_ROTATION_OVERRIDE` from it.
+   The sign job and the publish job both read it. A repository variable of the same name
+   also works, but the environment's takes precedence. Keep the braces in `${TAG}`: zsh,
+   macOS's default shell, reads `$TAG:e…` as a modifier and would store the wrong string.
+
+   ```sh
+   TAG=vX.Y.Z
+   gh variable set AGENT_INBOX_UPDATE_KEY_ROTATION_OVERRIDE --env macos-release --repo shariqh/agent-inbox \
+     --body "ALLOW-UPDATE-KEY-ROTATION:${TAG}:ed25519-c8adddea0de080d6"
+   ```
+
+4. Before tagging, check the variable against the exact string:
+
+   ```sh
+   test "$(gh variable get AGENT_INBOX_UPDATE_KEY_ROTATION_OVERRIDE --env macos-release --repo shariqh/agent-inbox)" \
+     = "ALLOW-UPDATE-KEY-ROTATION:${TAG}:ed25519-c8adddea0de080d6" && echo 'override OK' || echo 'override WRONG' >&2
+   ```
+
+   Only after `override OK`, tag the release commit and push the tag with the same `$TAG`,
+   in place of the release runbook's tag commands, so the override names exactly the tag
+   that's pushed:
+
+   ```sh
+   git tag -a "${TAG}" -m "Agent Inbox ${TAG}"
+   git push origin "${TAG}"
+   ```
+
+5. Once the release is published, delete the secret and the variable:
+
+   ```sh
+   gh secret delete AGENT_INBOX_UPDATE_PRIVATE_KEY_BASE64 --env macos-release --repo shariqh/agent-inbox
+   gh variable delete AGENT_INBOX_UPDATE_KEY_ROTATION_OVERRIDE --env macos-release --repo shariqh/agent-inbox
+   ```
+
+What it cuts off: G10 is waived. `update-manifest.json` then carries no signature from the
+original key, the only key apps from 1.2 to 1.6 trust, so those apps lose updates for good:
+every check fails, and their users have to install a newer release by hand. Apps from 1.7.0
+on keep updating through both manifests.
+
+After the emergency release:
+
+- Every later release is signed by the backup key too, so it repeats steps 1, 3, 4 and 5
+  with its own tag: G10 can't pass again, and an override names one release. G10 then
+  protects nobody, because apps from 1.2 to 1.6 can never verify an update again; retiring
+  it in a reviewed change is the permanent alternative to an override on every later
+  release.
+- If the original key was compromised rather than lost, remove it from `keys` in the
+  release after the emergency one, so the apps that release ships stop trusting it; apps
+  installed before then still do. The emergency release itself must keep it (step 2).
+- No backup is left. Add a new backup public key the same way before relying on this
+  procedure again.
 
 ### Release runbook
 
@@ -677,7 +799,8 @@ on every path. No credential value is written to argv, logs, job output, or an a
   current one-key signer. The override is an audited emergency action bound to one exact
   tag and derived key id; using it accepts that clients without the new pinned key may need
   a manual update. Routine rotation requires first implementing the dual-key signing
-  extension and overlap sequence above.
+  extension and overlap sequence above. The emergency procedure is under "The backup update
+  key" above.
 - An unrelated default-branch advance after the tag is accepted when the tag remains on
   first-parent history. If trusted release tooling or pinned packaging inputs changed
   incompatibly before protected preflight, the handoff fails before credentials are

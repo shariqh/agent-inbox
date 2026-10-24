@@ -1930,12 +1930,27 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   `ORIGINAL_UPDATE_KEY` and again in the publish job. Only the exact
   `ALLOW-UPDATE-KEY-ROTATION:<tag>:<signingKeyId>` override waives it: checked before the
   key is touched, recorded in the evidence, and required again in the publish job's own
-  repository variable; using it knowingly cuts 1.2 to 1.6 off. The publish job, which has
+  `macos-release` environment variable (a repository variable of the same name also works);
+  using it knowingly cuts 1.2 to 1.6 off. The publish job, which has
   no checkout, recomputes the kind, verifies both envelopes, checks v2 and a universal v1
   against the release, re-checks an arm64 re-stamp on its own against the release listing
   and the earlier pair it fetches by asset id, and sends `make_latest: "true"`: apps read
   both manifests only through `/releases/latest`. Never delete or edit 1.x-last's files,
   and never publish a stable release by hand or with `make_latest: false`.
+  *(#342, design §10 decision 7)* `release/update-keys.json` also lists a backup key,
+  `ed25519-c8adddea0de080d6`, which signs nothing: `signingKeyId` stays the original,
+  so every manifest from 1.7.0 lists both ids in `trustedKeyIds` (sorted) and carries one
+  signature, the original key's. The 1.2 to 1.6 readers accept that, because they never
+  compare `trustedKeyIds` with the keys they hold; `test/shipped-updaters.test.ts` pins it.
+  The backup key exists for the emergency path alone (`docs/macos-release.md`, "The backup
+  update key"): if the original key is lost or compromised, a release signed with the
+  backup key under the exact override still reaches every app from 1.7.0 on, Intel Macs on
+  1.x-last included, waives G10 and knowingly cuts 1.2 to 1.6 off. Every later release the
+  backup key signs needs its own override, and the emergency release must keep the original
+  key listed so the history still verifies. Its private half lives only in the owner's
+  private 1Password vault. A routine rotation still needs the dual-key signer (#148).
+  Tests find the backup key by its id, never as the key that doesn't sign, which an
+  emergency switch would make the original.
 - **Rollback high-water mark** *(#148, rollback half only)* — the packaged notify-only
   checker (`electron/update-fetch.cjs` + `update-controller.cjs`) persists the highest
   release version whose manifest passed signature, schema and expiry verification in its

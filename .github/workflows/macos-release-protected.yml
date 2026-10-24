@@ -1097,7 +1097,7 @@ jobs:
           }
 
           // G10: the original key signed v1, or the signer recorded the waiver and this job's
-          // repository variable holds the exact override for this tag and signing key.
+          // macos-release environment variable holds the exact override for this tag and signing key.
           const originalEntry = v1Envelope.signatures.find((entry) => entry.keyId === ORIGINAL_KEY_ID)
           const originalKey = createPublicKey({ key: Buffer.from(ORIGINAL_KEY_SPKI, 'base64'), format: 'der', type: 'spki' })
           const originalSigned = Boolean(originalEntry) &&

@@ -144,7 +144,8 @@ export function runElectronSqliteCheck({
         aborted
           ? 'An abort here is the #135 crash: better-sqlite3 statement cleanup during garbage collection reaches '
             + "Node.js 24.19+'s node::ObjectWrap cleanup hooks without the runtime fix that Electron 43.6.0 and later "
-            + 'carry (electron/electron#53393). Refusing to ship this Electron and better_sqlite3.node combination.'
+            + 'carry (electron/electron#53393 in 43.6–43.7; upstream Node.js 24.22.0 from 43.8.0). '
+            + 'Refusing to ship this Electron and better_sqlite3.node combination.'
           : 'Refusing to ship an Electron and better_sqlite3.node combination that has not passed this check.',
         ...outputExcerpts(result),
       ].join('\n'))

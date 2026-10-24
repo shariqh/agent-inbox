@@ -28,7 +28,7 @@ describe('macOS release inputs', () => {
     expect(inputs.node.distributions['darwin-x64'].sha256)
       .toBe('f892c7895720f40d3750bde24f3554242d36f23602b5167b5b73ec4d13938aef')
     expect(inputs.electron).toEqual({
-      version: '43.8.0',
+      version: '43.8.3',
       packagerVersion: '20.3.0',
       rebuildVersion: '4.2.0',
       universalVersion: '3.0.6',

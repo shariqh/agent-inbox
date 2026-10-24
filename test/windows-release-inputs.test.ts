@@ -47,7 +47,7 @@ describe('Windows release inputs', () => {
         },
       },
       electron: {
-        version: '43.8.0',
+        version: '43.8.3',
         modulesAbi: '148',
         packagerVersion: '20.3.0',
         rebuildVersion: '4.2.0',
@@ -252,19 +252,19 @@ describe('Windows release inputs', () => {
     expect(() => validateWindowsReleaseInputs(extraTool)).toThrow(/keys must be exactly/)
   })
 
-  it('rejects a numerically-valid Electron ABI that does not match the pinned 43.8.0/ABI 148 release', () => {
+  it('rejects a numerically-valid Electron ABI that does not match the pinned 43.8.3/ABI 148 release', () => {
     // '999' passes the /^\d+$/ format check but is not the pinned ABI — same gap as the Node case.
     const numericWrongAbi = structuredClone(loadWindowsReleaseInputs())
     numericWrongAbi.electron.modulesAbi = '999'
     expect(() => validateWindowsReleaseInputs(numericWrongAbi))
-      .toThrow(/electron\.version\/electron\.modulesAbi must be 43\.8\.0\/148/)
+      .toThrow(/electron\.version\/electron\.modulesAbi must be 43\.8\.3\/148/)
   })
 
-  it('rejects a format-valid Electron version that is not the pinned 43.8.0/ABI 148 release', () => {
+  it('rejects a format-valid Electron version that is not the pinned 43.8.3/ABI 148 release', () => {
     const wrongVersion = structuredClone(loadWindowsReleaseInputs())
     wrongVersion.electron.version = '44.0.0'
     expect(() => validateWindowsReleaseInputs(wrongVersion))
-      .toThrow(/electron\.version\/electron\.modulesAbi must be 43\.8\.0\/148/)
+      .toThrow(/electron\.version\/electron\.modulesAbi must be 43\.8\.3\/148/)
   })
 
   it('keeps the existing macOS and Linux manifest schemas and target sets unchanged', () => {

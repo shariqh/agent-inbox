@@ -128,6 +128,7 @@ describe('Electron-embedded allocation-driven SQLite check (#135)', () => {
       expect(message).toMatch(/134/)
       expect(message).toMatch(/#135/)
       expect(message).toMatch(/43\.6\.0/)
+      expect(message).toContain('upstream Node.js 24.22.0 from 43.8.0')
       expect(message).toContain('Assertion failed: (env) != nullptr')
       expect(message).toContain('final native frame')
       expect(message).toMatch(/characters omitted/)

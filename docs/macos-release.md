@@ -619,31 +619,43 @@ The backup key is for an emergency only: the original key is lost or compromised
 routine rotation needs the dual-key signer (#148) instead, with the original key still
 signing `update-manifest.json`.
 
-**Emergency procedure,** for the release `vX.Y.Z` that switches to the backup key. Steps 1
-and 4 check the key and the override before the tag exists: the sign job would otherwise
+**Emergency procedure,** for the release `vX.Y.Z` that switches to the backup key. Step 1
+checks the key and step 4 the override before the tag exists: the sign job would otherwise
 catch a wrong one only after notarization, when the tag is already spent.
 
-1. Check the backup key, then put it into the `AGENT_INBOX_UPDATE_PRIVATE_KEY_BASE64`
-   secret for this release, straight from 1Password and without writing it to disk. The
-   first command must print `c8adddea0de080d6`. The check needs OpenSSL 3 or later, such
-   as Homebrew's: macOS's own `/usr/bin/openssl` (LibreSSL) can't read Ed25519 keys and
-   prints `e3b0c44298fc1c14` instead, the hash of empty input.
+1. Put the backup key into the `AGENT_INBOX_UPDATE_PRIVATE_KEY_BASE64` secret for this
+   release. These lines read the key from 1Password once, never write it to disk, and
+   upload it only if its key id is `c8adddea0de080d6`, because `gh secret set` would store
+   even an empty value:
 
    ```sh
-   op document get "Agent Inbox backup update key" \
-     | openssl pkey -pubout -outform DER | shasum -a 256 | cut -c1-16
-   op document get "Agent Inbox backup update key" | base64 | tr -d '\n' \
-     | gh secret set AGENT_INBOX_UPDATE_PRIVATE_KEY_BASE64 --env macos-release --repo shariqh/agent-inbox
+   KEY_B64="$(op document get "Agent Inbox backup update key" | base64 | tr -d '\n')"
+   test "$(printf '%s' "$KEY_B64" | base64 -d | openssl pkey -pubout -outform DER | shasum -a 256 | cut -c1-16)" = c8adddea0de080d6 \
+     && printf '%s' "$KEY_B64" | gh secret set AGENT_INBOX_UPDATE_PRIVATE_KEY_BASE64 --env macos-release --repo shariqh/agent-inbox \
+     || echo 'NOT SET: wrong key, unreadable item, or LibreSSL openssl' >&2
+   unset KEY_B64
    ```
 
-   If the 1Password CLI can't read the item, save it from the app into a private folder
-   instead, and delete the folder as soon as the check and `gh secret set` succeed:
+   NOT SET leaves the secret as it was. The key was wrong, the item couldn't be read (a
+   dismissed unlock prompt or an expired session gives nothing), or `openssl` can't read
+   Ed25519 keys: macOS's own `/usr/bin/openssl` (LibreSSL) can't, so put OpenSSL 3 or
+   later, such as Homebrew's, first on your `PATH` and run the lines again.
+
+   If the 1Password CLI can't read the item, make a private folder for it instead:
 
    ```sh
-   KEYDIR="$(mktemp -d)" && echo "$KEYDIR"   # save the item's file there as backup-update-key.pem
-   openssl pkey -in "$KEYDIR/backup-update-key.pem" -pubout -outform DER | shasum -a 256 | cut -c1-16
-   base64 < "$KEYDIR/backup-update-key.pem" | tr -d '\n' \
-     | gh secret set AGENT_INBOX_UPDATE_PRIVATE_KEY_BASE64 --env macos-release --repo shariqh/agent-inbox
+   KEYDIR="$(mktemp -d)" && echo "$KEYDIR"
+   ```
+
+   Save the document from the 1Password app into that folder as `backup-update-key.pem`.
+   Then run the same lines with only the first one changed, and delete the folder:
+
+   ```sh
+   KEY_B64="$(base64 < "$KEYDIR/backup-update-key.pem" | tr -d '\n')"
+   test "$(printf '%s' "$KEY_B64" | base64 -d | openssl pkey -pubout -outform DER | shasum -a 256 | cut -c1-16)" = c8adddea0de080d6 \
+     && printf '%s' "$KEY_B64" | gh secret set AGENT_INBOX_UPDATE_PRIVATE_KEY_BASE64 --env macos-release --repo shariqh/agent-inbox \
+     || echo 'NOT SET: wrong key, unreadable item, or LibreSSL openssl' >&2
+   unset KEY_B64
    rm -rf "$KEYDIR"
    ```
 
@@ -657,21 +669,32 @@ catch a wrong one only after notarization, when the tag is already spent.
    alone" becomes an expected refusal unless the exact override is passed, and the tests
    that say the original key signs must say the backup key does. Other tests find the
    backup key by its id and keep passing.
-3. Set the `macos-release` environment variable `AGENT_INBOX_UPDATE_KEY_ROTATION_OVERRIDE`
-   to exactly `ALLOW-UPDATE-KEY-ROTATION:vX.Y.Z:ed25519-c8adddea0de080d6`. The sign job and
-   the publish job both read it. A repository variable of the same name also works, but the
-   environment's takes precedence.
+3. In one shell for the rest of the procedure, set the tag once, then set the
+   `macos-release` environment variable `AGENT_INBOX_UPDATE_KEY_ROTATION_OVERRIDE` from it.
+   The sign job and the publish job both read it. A repository variable of the same name
+   also works, but the environment's takes precedence. Keep the braces in `${TAG}`: zsh,
+   macOS's default shell, reads `$TAG:e…` as a modifier and would store the wrong string.
 
    ```sh
+   TAG=vX.Y.Z
    gh variable set AGENT_INBOX_UPDATE_KEY_ROTATION_OVERRIDE --env macos-release --repo shariqh/agent-inbox \
-     --body 'ALLOW-UPDATE-KEY-ROTATION:vX.Y.Z:ed25519-c8adddea0de080d6'
+     --body "ALLOW-UPDATE-KEY-ROTATION:${TAG}:ed25519-c8adddea0de080d6"
    ```
 
-4. Before pushing the tag, check the variable against the exact string:
+4. Before tagging, check the variable against the exact string:
 
    ```sh
    test "$(gh variable get AGENT_INBOX_UPDATE_KEY_ROTATION_OVERRIDE --env macos-release --repo shariqh/agent-inbox)" \
-     = 'ALLOW-UPDATE-KEY-ROTATION:vX.Y.Z:ed25519-c8adddea0de080d6' && echo 'override OK'
+     = "ALLOW-UPDATE-KEY-ROTATION:${TAG}:ed25519-c8adddea0de080d6" && echo 'override OK' || echo 'override WRONG' >&2
+   ```
+
+   Only after `override OK`, tag the release commit and push the tag with the same `$TAG`,
+   in place of the release runbook's tag commands, so the override names exactly the tag
+   that's pushed:
+
+   ```sh
+   git tag -a "${TAG}" -m "Agent Inbox ${TAG}"
+   git push origin "${TAG}"
    ```
 
 5. Once the release is published, delete the secret and the variable:

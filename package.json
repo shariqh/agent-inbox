@@ -70,7 +70,7 @@
     "@modelcontextprotocol/sdk": "1.32.1",
     "better-sqlite3": "^12.11.1",
     "hono": "^4.13.13",
-    "zod": "^4.4.3"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@electron/osx-sign": "2.6.0",

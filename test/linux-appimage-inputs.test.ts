@@ -21,7 +21,7 @@ describe('Linux AppImage inputs', () => {
       compression: 'zstd',
       linuxInputs: {
         path: 'release/linux-inputs.json',
-        sha256: 'be3da8f46cb92ff341987b080be4f1f3d3412d9330b70ff04d09cc5af0a57fa7',
+        sha256: 'abea7934bf7b0d93cb666f97a13b1b5e38fb481550a8861f4166f2262cfef2e6',
       },
       tool: {
         name: 'appimagetool',

@@ -510,7 +510,7 @@ describe('multi-platform release aggregation', () => {
       },
       publishedAt: taggedAt,
       signingKeyId: 'ed25519-99927ba2f6af6482',
-      trustedKeyIds: ['ed25519-99927ba2f6af6482'],
+      trustedKeyIds: ['ed25519-99927ba2f6af6482', 'ed25519-c8adddea0de080d6'],
     })
     expect(updateManifest.targets).toHaveLength(5)
     expect(updateManifest.targets.map((target: {

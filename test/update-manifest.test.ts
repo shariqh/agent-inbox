@@ -90,6 +90,10 @@ const root = resolve(process.cwd())
 // --- Production registry constants supplied by the issue (public only). ---
 const PROD_KEY_ID = 'ed25519-99927ba2f6af6482'
 const PROD_PUBLIC_KEY_SPKI_BASE64 = 'MCowBQYDK2VwAyEAshsgCvPUphCyxSv/sgvDCBvdde/Ws+CU0Fgdl62SU/k='
+// The backup key (#342): trusted beside the original key, never signing unless the
+// emergency procedure in docs/macos-release.md switches to it.
+const BACKUP_KEY_ID = 'ed25519-c8adddea0de080d6'
+const BACKUP_PUBLIC_KEY_SPKI_BASE64 = 'MCowBQYDK2VwAyEAifNxVIclsvrJJ9+4Lx6Q0ahVR6dRpCt/dJ6B3U2hRLA='
 
 function makeEphemeralKeypair(): { keyId: string; publicKeySpkiBase64: string; privateKeyPem: string } {
   const { publicKey, privateKey } = generateKeyPairSync('ed25519')
@@ -230,17 +234,17 @@ describe('deriveKeyId', () => {
 })
 
 describe('release/update-keys.json (production registry)', () => {
-  it('parses and validates with the exact documented schema/keyId/algorithm/publicKey', () => {
+  it('lists the original key and the backup key, and still signs with the original', () => {
     const raw = readFileSync(join(root, 'release', 'update-keys.json'), 'utf8')
-    const registry = parseRegistry(raw)
-    expect(registry.schema).toBe(UPDATE_REGISTRY_SCHEMA)
-    expect(registry.signingKeyId).toBe(PROD_KEY_ID)
-    expect(registry.keys).toHaveLength(1)
-    expect(registry.keys[0]).toEqual({
-      keyId: PROD_KEY_ID,
-      algorithm: 'ed25519',
-      publicKeySpkiBase64: PROD_PUBLIC_KEY_SPKI_BASE64,
+    expect(parseRegistry(raw)).toEqual({
+      schema: UPDATE_REGISTRY_SCHEMA,
+      signingKeyId: PROD_KEY_ID,
+      keys: [
+        { keyId: PROD_KEY_ID, algorithm: 'ed25519', publicKeySpkiBase64: PROD_PUBLIC_KEY_SPKI_BASE64 },
+        { keyId: BACKUP_KEY_ID, algorithm: 'ed25519', publicKeySpkiBase64: BACKUP_PUBLIC_KEY_SPKI_BASE64 },
+      ],
     })
+    expect(deriveKeyId(BACKUP_PUBLIC_KEY_SPKI_BASE64)).toBe(BACKUP_KEY_ID)
   })
 
   it('never contains private key material', () => {
@@ -2568,3 +2572,137 @@ describe('bindSigningEvidence — signing evidence schema 2', () => {
   })
 })
 
+
+// The backup update key (#342, design §10 decision 7). The original key still signs every
+// manifest; the backup is only trusted, so a release signed with it under the exact override
+// still reaches every app from 1.7.0 on. Neither private half is available here: scratch keys
+// stand in for them wherever something is signed.
+describe('the backup update key (#342)', () => {
+  const production = () => parseRegistry(readFileSync(join(root, 'release', 'update-keys.json')))
+  const entry = (signer: Signer) => ({ keyId: signer.keyId, algorithm: 'ed25519' as const, publicKeySpkiBase64: signer.publicKeySpkiBase64 })
+  /** The production registry with a scratch key in the original key's place, and the backup key as it is. */
+  const asReleased = (original: Signer): UpdateRegistry => ({
+    schema: 1,
+    signingKeyId: original.keyId,
+    keys: [entry(original), ...production().keys.filter((key) => key.keyId !== PROD_KEY_ID)],
+  })
+
+  it('lists both keys in every manifest generated from the production registry, sorted, with the original signing', () => {
+    const registry = production()
+    // Whatever order the registry lists them in.
+    for (const keys of [registry.keys, [...registry.keys].reverse()]) {
+      const reg = { ...registry, keys }
+      const v2 = generateManifestV2({ registry: reg, evidence: buildEvidence(), minimumMacosVersion, publishedAt, kind: 'universal' })
+      for (const manifest of [
+        generateManifest({ registry: reg, evidence: buildEvidence(), minimumMacosVersion, publishedAt }).manifest,
+        projectV1(v2.bytes).manifest,
+        v2.manifest,
+        generateManifestV2({ registry: reg, evidence: buildArm64Evidence(), minimumMacosVersion, publishedAt, kind: 'arm64' }).manifest,
+      ]) {
+        expect(manifest.trustedKeyIds).toEqual([PROD_KEY_ID, BACKUP_KEY_ID])
+        expect(manifest.signingKeyId).toBe(PROD_KEY_ID)
+      }
+    }
+  })
+
+  it('signs each manifest once, with the original key, and refuses any other key', () => {
+    const original = makeEphemeralKeypair()
+    const registry = asReleased(original)
+    const v2 = generateManifestV2({ registry, evidence: buildEvidence(), minimumMacosVersion, publishedAt, kind: 'universal' })
+    for (const bytes of [v2.bytes, projectV1(v2.bytes).bytes]) {
+      expect(JSON.parse(bytes.toString('utf8')).trustedKeyIds).toEqual([original.keyId, BACKUP_KEY_ID].sort())
+      const { envelope } = signManifest({ manifestBytes: bytes, registry, privateKeyPem: original.privateKeyPem, now: publishedAt })
+      expect(envelope.signatures.map((signature) => signature.keyId)).toEqual([original.keyId])
+    }
+    // The backup key is registered, but it is not the signing key.
+    const backup = makeEphemeralKeypair()
+    const withBackup = makeRegistry(original, backup)
+    const manifestBytes = generateManifest({ registry: withBackup, evidence: buildEvidence(), minimumMacosVersion, publishedAt }).bytes
+    expect(() => signManifest({ manifestBytes, registry: withBackup, privateKeyPem: backup.privateKeyPem, now: publishedAt }))
+      .toThrow(`privateKeyPem derives key id ${backup.keyId}, which does not match registry.signingKeyId ${original.keyId}`)
+    // The production registry signs with the original key alone.
+    const stranger = makeEphemeralKeypair()
+    expect(() => signManifest({ manifestBytes, registry: production(), privateKeyPem: stranger.privateKeyPem, now: publishedAt }))
+      .toThrow(`which does not match registry.signingKeyId ${PROD_KEY_ID}`)
+  })
+
+  it('passes G10 with the original key\'s signature alone', () => {
+    expect(planOriginalKeySignature({ registry: production(), newTag: 'v1.7.0' })).toEqual({ originalKeySignature: 'passed' })
+    const original = makeEphemeralKeypair()
+    const registry = asReleased(original)
+    const { manifest, bytes } = generateManifest({ registry, evidence: buildEvidence(), minimumMacosVersion, publishedAt })
+    expect(manifest.trustedKeyIds).toEqual([original.keyId, BACKUP_KEY_ID].sort())
+    const { bytes: envelope } = signManifest({ manifestBytes: bytes, registry, privateKeyPem: original.privateKeyPem, now: publishedAt })
+    expect(checkOriginalKeySignature({ manifestBytes: bytes, envelope, registry, newTag: tag, originalKey: entry(original) }))
+      .toEqual({ originalKeySignature: 'passed' })
+  })
+
+  it('is accepted by the current v1 and v2 readers, whether they hold the original key alone or both', () => {
+    const original = makeEphemeralKeypair()
+    const registry = asReleased(original)
+    const v2 = generateManifestV2({ registry, evidence: buildEvidence(), minimumMacosVersion, publishedAt, kind: 'universal' })
+    const v1 = projectV1(v2.bytes)
+    expect(v1.manifest.trustedKeyIds).toEqual([original.keyId, BACKUP_KEY_ID].sort())
+    const sign = (bytes: Buffer) => signManifest({ manifestBytes: bytes, registry, privateKeyPem: original.privateKeyPem, now: publishedAt }).bytes
+    for (const trusted of [makeRegistry(original), registry]) {
+      expect(verifyManifest({ manifestBytes: v1.bytes, envelope: sign(v1.bytes), registry: trusted, now: publishedAt }).trustedKeyIds)
+        .toEqual(v1.manifest.trustedKeyIds)
+      expect(verifyManifestV2({ manifestBytes: v2.bytes, envelope: sign(v2.bytes), registry: trusted, now: publishedAt }).trustedKeyIds)
+        .toEqual(v2.manifest.trustedKeyIds)
+    }
+  })
+
+  // The emergency procedure in docs/macos-release.md: the original key is lost, so 1.7.1
+  // switches signingKeyId to the backup key, which 1.7.0 already trusts.
+  it('lets an emergency release sign with the backup key under the exact override, which every later release needs too', () => {
+    const original = makeEphemeralKeypair()
+    const backup = makeEphemeralKeypair()
+    const released = makeRegistry(original, backup)
+    const emergency: UpdateRegistry = { ...released, signingKeyId: backup.keyId }
+    const originalKey = entry(original)
+    const override = (releaseTag: string) => `ALLOW-UPDATE-KEY-ROTATION:${releaseTag}:${backup.keyId}`
+    const v170 = publishUniversal('1.7.0', original, released, '2026-11-16T12:00:00Z')
+    const plan = planReleaseHistory({ releases: [v170.listing], newTag: 'v1.7.1', kind: 'universal' })
+    const continueFrom = (manifest: 'v1' | 'v2', registry: UpdateRegistry) => authorizeReleaseHistory({
+      plan: plan[manifest],
+      priorManifestBytes: v170[manifest]!.bytes,
+      priorSignatureBytes: v170[manifest]!.signature,
+      registry,
+      newTag: 'v1.7.1',
+    })
+    // 1.7.0's manifests already trust the backup key, so the history needs no override...
+    expect(continueFrom('v1', emergency)).toMatchObject({ authorized: true, rotationOverrideUsed: false })
+    expect(continueFrom('v2', emergency)).toMatchObject({ authorized: true, rotationOverrideUsed: false })
+    // ...but only while the registry still lists the original key, which alone signed them.
+    expect(() => continueFrom('v1', makeRegistry(backup))).toThrow(/signature verification failed/)
+    // G10: only the exact override for this release lets the backup key sign v1, and the next
+    // release the backup key signs needs its own.
+    expect(() => planOriginalKeySignature({ registry: emergency, newTag: 'v1.7.1', originalKey })).toThrow(override('v1.7.1'))
+    expect(planOriginalKeySignature({ registry: emergency, newTag: 'v1.7.1', rotationOverride: override('v1.7.1'), originalKey }))
+      .toEqual({ originalKeySignature: 'waived', rotationOverride: override('v1.7.1') })
+    expect(() => planOriginalKeySignature({ registry: emergency, newTag: 'v1.7.2', rotationOverride: override('v1.7.1'), originalKey }))
+      .toThrow(override('v1.7.2'))
+    // One signature, by the backup key: apps that trust it accept the manifest, apps that
+    // trust only the original key (1.2 to 1.6) cannot verify it.
+    const { bytes } = generateManifest({ registry: emergency, evidence: buildEvidence({ tag: 'v1.7.1' }), minimumMacosVersion, publishedAt })
+    const { envelope, bytes: signature } = signManifest({ manifestBytes: bytes, registry: emergency, privateKeyPem: backup.privateKeyPem, now: publishedAt })
+    expect(envelope.signatures.map((signed) => signed.keyId)).toEqual([backup.keyId])
+    expect(checkOriginalKeySignature({ manifestBytes: bytes, envelope: signature, registry: emergency, newTag: 'v1.7.1', rotationOverride: override('v1.7.1'), originalKey }))
+      .toMatchObject({ originalKeySignature: 'waived' })
+    expect(verifyManifest({ manifestBytes: bytes, envelope: signature, registry: released }).tag).toBe('v1.7.1')
+    expect(() => verifyManifest({ manifestBytes: bytes, envelope: signature, registry: makeRegistry(original) })).toThrow(/signature verification failed/)
+    // If the original key was compromised, the release after the emergency one can drop it,
+    // because the backup key alone signed the emergency release.
+    const v171 = publishUniversal('1.7.1', backup, emergency, '2026-11-20T12:00:00Z')
+    const next = planReleaseHistory({ releases: [v170.listing, v171.listing], newTag: 'v1.7.2', kind: 'universal' })
+    for (const manifest of ['v1', 'v2'] as const) {
+      expect(authorizeReleaseHistory({
+        plan: next[manifest],
+        priorManifestBytes: v171[manifest]!.bytes,
+        priorSignatureBytes: v171[manifest]!.signature,
+        registry: makeRegistry(backup),
+        newTag: 'v1.7.2',
+      })).toMatchObject({ authorized: true, rotationOverrideUsed: false })
+    }
+  })
+})

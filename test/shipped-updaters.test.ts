@@ -69,6 +69,7 @@ interface ShippedFetch {
 
 interface ShippedManifestModule {
   verifyManifest(options: { manifestBytes: Buffer; envelope: Buffer; registry: unknown; now: Date }): {
+    trustedKeyIds: readonly string[]
     targets: readonly ShippedTarget[]
   }
 }
@@ -208,6 +209,7 @@ async function check(
   reader: (typeof READERS)[number],
   host: (typeof HOSTS)[number],
   served: { manifestBytes: Buffer; signatureBytes: Buffer },
+  trusted: unknown = registry,
 ) {
   const requested: string[] = []
   const fetchImpl = async (url: string) => {
@@ -219,7 +221,7 @@ async function check(
   try {
     return await reader.module.checkForUpdate({
       fetchImpl,
-      registry,
+      registry: trusted,
       currentVersion: reader.currentVersion,
       automaticChecks: true,
       isPackaged: true,
@@ -522,3 +524,76 @@ describe('the shipped readers and the v2 publisher (#343)', () => {
   })
 })
 
+
+// The backup update key (#342): from 1.7.0, release/update-keys.json trusts a second key
+// beside the original, so every manifest lists both ids in trustedKeyIds while the
+// original key alone signs. These readers trust the original key alone, for good.
+describe('the shipped readers and the backup update key (#342)', () => {
+  const production = JSON.parse(readFileSync(resolve(import.meta.dirname, '..', 'release', 'update-keys.json'), 'utf8')) as {
+    signingKeyId: string
+    keys: Array<{ keyId: string; algorithm: 'ed25519'; publicKeySpkiBase64: string }>
+  }
+  // Every key production trusts beside the one that signs: the backup key.
+  const backupKeys = production.keys.filter((key) => key.keyId !== production.signingKeyId)
+  const evidence = { tag: TAG, packageVersion: VERSION, sourceCommit: 'c'.repeat(40), sourceTree: 'd'.repeat(40), assets: PACKAGES }
+
+  function scratch() {
+    const pair = generateKeyPairSync('ed25519')
+    const spki = pair.publicKey.export({ type: 'spki', format: 'der' }).toString('base64')
+    return {
+      entry: { keyId: deriveKeyId(spki), algorithm: 'ed25519' as const, publicKeySpkiBase64: spki },
+      privateKeyPem: pair.privateKey.export({ type: 'pkcs8', format: 'pem' }),
+    }
+  }
+
+  /** A scratch key in the original key's place, whose id sorts before or after the backup key's. */
+  function standIn(position: 'first' | 'last') {
+    for (;;) {
+      const key = scratch()
+      if ((key.entry.keyId < backupKeys[0]!.keyId) !== (position === 'first')) continue
+      return {
+        ...key,
+        // What these apps hold, and what every release from 1.7.0 on is published with.
+        shipped: { schema: 1 as const, signingKeyId: key.entry.keyId, keys: [key.entry] },
+        released: { schema: 1 as const, signingKeyId: key.entry.keyId, keys: [key.entry, ...backupKeys] },
+      }
+    }
+  }
+
+  it('find the backup key beside the original in production', () => {
+    expect(backupKeys.map(({ keyId }) => keyId)).toEqual(['ed25519-c8adddea0de080d6'])
+  })
+
+  // In production the original key's id sorts first.
+  it.each(['first', 'last'] as const)('with the original key\'s id %s, accept a v1 manifest that lists both ids, signed by the original key alone', async (position) => {
+    const original = standIn(position)
+    const v1 = projectV1(generateManifestV2({ registry: original.released, evidence, minimumMacosVersion: '13.5', publishedAt: TAGGED_AT, kind: 'universal' }).bytes)
+    const ids = [original.entry.keyId, ...backupKeys.map(({ keyId }) => keyId)].sort()
+    expect(v1.manifest.trustedKeyIds).toEqual(ids)
+    const signature = signManifest({ manifestBytes: v1.bytes, registry: original.released, privateKeyPem: original.privateKeyPem, now: NOW })
+    expect(signature.envelope.signatures.map((signed) => signed.keyId)).toEqual([original.entry.keyId])
+    for (const reader of READERS) {
+      expect(reader.manifest.verifyManifest({ manifestBytes: v1.bytes, envelope: signature.bytes, registry: original.shipped, now: NOW }).trustedKeyIds, reader.name)
+        .toEqual(ids)
+      for (const host of HOSTS) {
+        const result = await check(reader, host, { manifestBytes: v1.bytes, signatureBytes: signature.bytes }, original.shipped)
+        expect({ status: result.status, version: result.available?.version }, `${reader.name} on ${host.name}`).toEqual({ status: 'available', version: VERSION })
+      }
+    }
+  })
+
+  // The emergency procedure in docs/macos-release.md signs with the backup key alone, which
+  // knowingly cuts these apps off.
+  it.each(READERS)('$name reject a manifest signed by the backup key alone, on every host', async (reader) => {
+    const original = scratch()
+    const backup = scratch()
+    const shipped = { schema: 1 as const, signingKeyId: original.entry.keyId, keys: [original.entry] }
+    const emergency = { schema: 1 as const, signingKeyId: backup.entry.keyId, keys: [original.entry, backup.entry] }
+    const { bytes } = generateManifest({ registry: emergency, evidence, minimumMacosVersion: '13.5', publishedAt: TAGGED_AT })
+    const signature = signManifest({ manifestBytes: bytes, registry: emergency, privateKeyPem: backup.privateKeyPem, now: NOW })
+    for (const host of HOSTS) {
+      await expect(check(reader, host, { manifestBytes: bytes, signatureBytes: signature.bytes }, shipped), host.name)
+        .rejects.toThrow('signature verification failed')
+    }
+  })
+})

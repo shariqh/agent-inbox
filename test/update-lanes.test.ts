@@ -64,8 +64,11 @@ const scratchKey = generateKeyPairSync('ed25519')
 const publicKeySpkiBase64 = scratchKey.publicKey.export({ type: 'spki', format: 'der' }).toString('base64')
 const keyId = deriveKeyId(publicKeySpkiBase64)
 const shippedRegistry = { schema: 1 as const, signingKeyId: keyId, keys: [{ keyId, algorithm: 'ed25519' as const, publicKeySpkiBase64 }] }
+// The backup key, found by its id, never as the key that doesn't sign: after the emergency
+// switch in docs/macos-release.md, that would be the original key.
+const BACKUP_KEY_ID = 'ed25519-c8adddea0de080d6'
 const production = parseRegistry(readFileSync(resolve(import.meta.dirname, '..', 'release', 'update-keys.json')))
-const registry = { ...shippedRegistry, keys: [...shippedRegistry.keys, ...production.keys.filter((key) => key.keyId !== production.signingKeyId)] }
+const registry = { ...shippedRegistry, keys: [...shippedRegistry.keys, ...production.keys.filter((key) => key.keyId === BACKUP_KEY_ID)] }
 const privateKeyPem = scratchKey.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString()
 
 const HOUR_MS = 60 * 60 * 1000
@@ -367,10 +370,9 @@ const installed = (outcomes: Outcome[]) => outcomes.filter((outcome) => outcome.
 
 describe('the hand-off from update-manifest.json to update-manifest-v2.json', () => {
   it('publishes every release from 1.7.0 with the backup key trusted beside the original, which signs alone (#342)', () => {
-    const backup = 'ed25519-c8adddea0de080d6'
-    expect(registry.keys.map((key) => key.keyId)).toEqual([keyId, backup])
+    expect(registry.keys.map((key) => key.keyId)).toEqual([keyId, BACKUP_KEY_ID])
     for (const published of PUBLISHED) {
-      const trusted = published.kind === 'v1-only' ? [keyId] : [keyId, backup].sort()
+      const trusted = published.kind === 'v1-only' ? [keyId] : [keyId, BACKUP_KEY_ID].sort()
       for (const pair of published.v2 ? [published.v1, published.v2] : [published.v1]) {
         expect(JSON.parse(pair.bytes.toString('utf8')).trustedKeyIds, published.tag).toEqual(trusted)
         const { signatures } = JSON.parse(pair.signature.toString('utf8')) as { signatures: Array<{ keyId: string }> }

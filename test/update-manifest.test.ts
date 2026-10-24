@@ -2580,11 +2580,11 @@ describe('bindSigningEvidence — signing evidence schema 2', () => {
 describe('the backup update key (#342)', () => {
   const production = () => parseRegistry(readFileSync(join(root, 'release', 'update-keys.json')))
   const entry = (signer: Signer) => ({ keyId: signer.keyId, algorithm: 'ed25519' as const, publicKeySpkiBase64: signer.publicKeySpkiBase64 })
-  /** The production registry with a scratch key in the original key's place, and the backup key as it is. */
+  /** The production registry with a scratch key in the original key's place, and the backup key, found by its id. */
   const asReleased = (original: Signer): UpdateRegistry => ({
     schema: 1,
     signingKeyId: original.keyId,
-    keys: [entry(original), ...production().keys.filter((key) => key.keyId !== PROD_KEY_ID)],
+    keys: [entry(original), ...production().keys.filter((key) => key.keyId === BACKUP_KEY_ID)],
   })
 
   it('lists both keys in every manifest generated from the production registry, sorted, with the original signing', () => {

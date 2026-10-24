@@ -529,12 +529,14 @@ describe('the shipped readers and the v2 publisher (#343)', () => {
 // beside the original, so every manifest lists both ids in trustedKeyIds while the
 // original key alone signs. These readers trust the original key alone, for good.
 describe('the shipped readers and the backup update key (#342)', () => {
+  // Found by its id, never as the key that doesn't sign: after the emergency switch in
+  // docs/macos-release.md, that would be the original key.
+  const BACKUP_KEY_ID = 'ed25519-c8adddea0de080d6'
   const production = JSON.parse(readFileSync(resolve(import.meta.dirname, '..', 'release', 'update-keys.json'), 'utf8')) as {
     signingKeyId: string
     keys: Array<{ keyId: string; algorithm: 'ed25519'; publicKeySpkiBase64: string }>
   }
-  // Every key production trusts beside the one that signs: the backup key.
-  const backupKeys = production.keys.filter((key) => key.keyId !== production.signingKeyId)
+  const backupKey = production.keys.find((key) => key.keyId === BACKUP_KEY_ID)
   const evidence = { tag: TAG, packageVersion: VERSION, sourceCommit: 'c'.repeat(40), sourceTree: 'd'.repeat(40), assets: PACKAGES }
 
   function scratch() {
@@ -548,27 +550,28 @@ describe('the shipped readers and the backup update key (#342)', () => {
 
   /** A scratch key in the original key's place, whose id sorts before or after the backup key's. */
   function standIn(position: 'first' | 'last') {
+    if (!backupKey) throw new Error(`release/update-keys.json does not list ${BACKUP_KEY_ID}`)
     for (;;) {
       const key = scratch()
-      if ((key.entry.keyId < backupKeys[0]!.keyId) !== (position === 'first')) continue
+      if ((key.entry.keyId < backupKey.keyId) !== (position === 'first')) continue
       return {
         ...key,
         // What these apps hold, and what every release from 1.7.0 on is published with.
         shipped: { schema: 1 as const, signingKeyId: key.entry.keyId, keys: [key.entry] },
-        released: { schema: 1 as const, signingKeyId: key.entry.keyId, keys: [key.entry, ...backupKeys] },
+        released: { schema: 1 as const, signingKeyId: key.entry.keyId, keys: [key.entry, backupKey] },
       }
     }
   }
 
-  it('find the backup key beside the original in production', () => {
-    expect(backupKeys.map(({ keyId }) => keyId)).toEqual(['ed25519-c8adddea0de080d6'])
+  it('find the backup key in production, by its id', () => {
+    expect(backupKey?.keyId).toBe(BACKUP_KEY_ID)
   })
 
   // In production the original key's id sorts first.
   it.each(['first', 'last'] as const)('with the original key\'s id %s, accept a v1 manifest that lists both ids, signed by the original key alone', async (position) => {
     const original = standIn(position)
     const v1 = projectV1(generateManifestV2({ registry: original.released, evidence, minimumMacosVersion: '13.5', publishedAt: TAGGED_AT, kind: 'universal' }).bytes)
-    const ids = [original.entry.keyId, ...backupKeys.map(({ keyId }) => keyId)].sort()
+    const ids = [original.entry.keyId, BACKUP_KEY_ID].sort()
     expect(v1.manifest.trustedKeyIds).toEqual(ids)
     const signature = signManifest({ manifestBytes: v1.bytes, registry: original.released, privateKeyPem: original.privateKeyPem, now: NOW })
     expect(signature.envelope.signatures.map((signed) => signed.keyId)).toEqual([original.entry.keyId])

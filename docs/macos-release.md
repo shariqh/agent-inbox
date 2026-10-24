@@ -616,33 +616,66 @@ The backup key is for an emergency only: the original key is lost or compromised
 routine rotation needs the dual-key signer (#148) instead, with the original key still
 signing `update-manifest.json`.
 
-**Emergency procedure,** for the release `vX.Y.Z` that switches to the backup key:
+**Emergency procedure,** for the release `vX.Y.Z` that switches to the backup key. Steps 1
+and 4 check the key and the override before the tag exists: the sign job would otherwise
+catch a wrong one only after notarization, when the tag is already spent.
 
-1. Export the PEM from the 1Password item into a private folder, and put it,
-   base64-encoded, into the `AGENT_INBOX_UPDATE_PRIVATE_KEY_BASE64` secret for this release:
+1. Check the backup key, then put it into the `AGENT_INBOX_UPDATE_PRIVATE_KEY_BASE64`
+   secret for this release, straight from 1Password and without writing it to disk. The
+   first command must print `c8adddea0de080d6`. The check needs OpenSSL 3 or later, such
+   as Homebrew's: macOS's own `/usr/bin/openssl` (LibreSSL) can't read Ed25519 keys and
+   prints `e3b0c44298fc1c14` instead, the hash of empty input.
 
    ```sh
-   umask 077 && cd "$(mktemp -d)"
-   # Save the item's file here as backup-update-key.pem, then:
-   base64 < backup-update-key.pem | tr -d '\n' \
+   op document get "Agent Inbox backup update key" \
+     | openssl pkey -pubout -outform DER | shasum -a 256 | cut -c1-16
+   op document get "Agent Inbox backup update key" | base64 | tr -d '\n' \
      | gh secret set AGENT_INBOX_UPDATE_PRIVATE_KEY_BASE64 --env macos-release --repo shariqh/agent-inbox
    ```
 
+   If the 1Password CLI can't read the item, save it from the app into a private folder
+   instead, and delete the folder as soon as the check and `gh secret set` succeed:
+
+   ```sh
+   KEYDIR="$(mktemp -d)" && echo "$KEYDIR"   # save the item's file there as backup-update-key.pem
+   openssl pkey -in "$KEYDIR/backup-update-key.pem" -pubout -outform DER | shasum -a 256 | cut -c1-16
+   base64 < "$KEYDIR/backup-update-key.pem" | tr -d '\n' \
+     | gh secret set AGENT_INBOX_UPDATE_PRIVATE_KEY_BASE64 --env macos-release --repo shariqh/agent-inbox
+   rm -rf "$KEYDIR"
+   ```
+
 2. In the release commit, change `signingKeyId` in `release/update-keys.json` to
-   `ed25519-c8adddea0de080d6`, and update the tests that pin it. Keep both keys listed:
-   the signer verifies the release before's manifests, which the original key signed,
-   under this release's keys.
-3. Before pushing the tag, set the `AGENT_INBOX_UPDATE_KEY_ROTATION_OVERRIDE` variable to
-   exactly `ALLOW-UPDATE-KEY-ROTATION:vX.Y.Z:ed25519-c8adddea0de080d6`; the sign job and
-   the publish job both require it. Once the release is published, unset it, delete the
-   secret again, and delete the private folder:
+   `ed25519-c8adddea0de080d6`. Keep both keys listed: the signer verifies the release
+   before's manifests, which the original key signed, under this release's keys. The same
+   commit updates the tests that pin the signing key: `test/update-manifest.test.ts`,
+   `test/update-trust.test.ts`, `test/release-aggregation.test.ts`,
+   `test/release-pipeline.test.ts` and `test/linux-native-folder.test.ts`. Most only name
+   the key, but some assertions invert: "passes G10 with the original key's signature
+   alone" becomes an expected refusal unless the exact override is passed, and the tests
+   that say the original key signs must say the backup key does. Other tests find the
+   backup key by its id and keep passing.
+3. Set the `macos-release` environment variable `AGENT_INBOX_UPDATE_KEY_ROTATION_OVERRIDE`
+   to exactly `ALLOW-UPDATE-KEY-ROTATION:vX.Y.Z:ed25519-c8adddea0de080d6`. The sign job and
+   the publish job both read it. A repository variable of the same name also works, but the
+   environment's takes precedence.
 
    ```sh
    gh variable set AGENT_INBOX_UPDATE_KEY_ROTATION_OVERRIDE --env macos-release --repo shariqh/agent-inbox \
      --body 'ALLOW-UPDATE-KEY-ROTATION:vX.Y.Z:ed25519-c8adddea0de080d6'
-   # After the release is published:
-   gh variable delete AGENT_INBOX_UPDATE_KEY_ROTATION_OVERRIDE --env macos-release --repo shariqh/agent-inbox
+   ```
+
+4. Before pushing the tag, check the variable against the exact string:
+
+   ```sh
+   test "$(gh variable get AGENT_INBOX_UPDATE_KEY_ROTATION_OVERRIDE --env macos-release --repo shariqh/agent-inbox)" \
+     = 'ALLOW-UPDATE-KEY-ROTATION:vX.Y.Z:ed25519-c8adddea0de080d6' && echo 'override OK'
+   ```
+
+5. Once the release is published, delete the secret and the variable:
+
+   ```sh
    gh secret delete AGENT_INBOX_UPDATE_PRIVATE_KEY_BASE64 --env macos-release --repo shariqh/agent-inbox
+   gh variable delete AGENT_INBOX_UPDATE_KEY_ROTATION_OVERRIDE --env macos-release --repo shariqh/agent-inbox
    ```
 
 What it cuts off: G10 is waived. `update-manifest.json` then carries no signature from the
@@ -652,8 +685,11 @@ on keep updating through both manifests.
 
 After the emergency release:
 
-- Every later release is signed by the backup key too, so it repeats steps 1 and 3 with
-  its own tag: G10 can't pass again, and an override names one release.
+- Every later release is signed by the backup key too, so it repeats steps 1, 3, 4 and 5
+  with its own tag: G10 can't pass again, and an override names one release. G10 then
+  protects nobody, because apps from 1.2 to 1.6 can never verify an update again; retiring
+  it in a reviewed change is the permanent alternative to an override on every later
+  release.
 - If the original key was compromised rather than lost, remove it from `keys` in the
   release after the emergency one, so the apps that release ships stop trusting it; apps
   installed before then still do. The emergency release itself must keep it (step 2).

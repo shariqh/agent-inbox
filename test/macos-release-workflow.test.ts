@@ -393,7 +393,7 @@ function runPublisher(
     publicMarkerMismatch?: boolean
     createResponseMismatch?: boolean
     fixture?: PublishFixture
-    /** The job's repository variable, as the publish step receives it. */
+    /** The job's `macos-release` environment variable, as the publish step receives it. */
     rotationOverride?: string
   } = {},
 ) {
@@ -1004,12 +1004,14 @@ describe('publishing both update manifests', () => {
     expect(finalRequest).toMatchObject({ draft: false, make_latest: 'true' })
   })
 
-  // #342: from 1.7.0 the registry also trusts the backup key, which never signs here.
+  // #342: from 1.7.0 the registry also trusts the backup key, which never signs here. It is
+  // found by its id: after an emergency switch, the key that doesn't sign is the original.
   it.each(['universal', 'arm64'] as const)('%s: publishes a release whose registry also trusts the backup key, after one that trusted the original alone', (kind) => {
+    const BACKUP_KEY_ID = 'ed25519-c8adddea0de080d6'
     const original = makeScratchKey()
     const production = readJson(join(root, 'release', 'update-keys.json')) as typeof original.registry
-    const backupKeys = production.keys.filter((entry) => entry.keyId !== production.signingKeyId)
-    expect(backupKeys.map((entry) => entry.keyId)).toEqual(['ed25519-c8adddea0de080d6'])
+    const backupKeys = production.keys.filter((entry) => entry.keyId === BACKUP_KEY_ID)
+    expect(backupKeys.map((entry) => entry.keyId)).toEqual([BACKUP_KEY_ID])
     const registry = { ...original.registry, keys: [...original.registry.keys, ...backupKeys] }
     const key = { ...original, registry, registryBytes: Buffer.from(`${JSON.stringify(registry, null, 2)}\n`) }
     const history = releaseHistory(priorRelease('1.2.2', original, isoSeconds(Date.now() - 7 * DAY_MS), { v1Only: kind === 'universal' }))

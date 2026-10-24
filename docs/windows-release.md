@@ -7,7 +7,7 @@ artifacts, not a downloadable Windows release.
 
 ## Pinned inputs
 
-`release/windows-inputs.json` pins the same Node **24.18.1** and Electron **43.8.1** as the
+`release/windows-inputs.json` pins the same Node **24.18.1** and Electron **43.8.3** as the
 macOS and Linux profiles, including the
 [Node 24.18.1 compatibility hold for #135](macos-release.md#node-24181-compatibility-hold-135);
 a test keeps the three profiles' Node and Electron pins identical. The official Windows

@@ -52,7 +52,7 @@ and store. Electron 43.6.0 backported the runtime fix
 ([electron/electron#53393](https://github.com/electron/electron/pull/53393)). Node 24.22.0
 then shipped the same fix upstream, so Electron 43.8.0 dropped those patches when it moved
 to that Node ([electron/electron#55003](https://github.com/electron/electron/pull/55003)).
-The pinned Electron 43.8.1 (Node 24.22.0) therefore needs no hold, but each build still
+The pinned Electron 43.8.3 (Node 24.22.0) therefore needs no hold, but each build still
 proves it:
 
 - After the `lipo` check, each native thin-app build runs `scripts/runtime-sqlite-check.mjs`
@@ -79,7 +79,7 @@ stated minimum before updating either pinned major.
 1. Stage, prune and self-test the arm64 and x64 Node runtime payloads independently
    ([What node_modules ships](#what-node_modules-ships-291)).
 2. Restore both verified payloads into each native thin Electron build.
-3. Compile `better-sqlite3` for Electron 43.8.1 on that architecture, prune the app's
+3. Compile `better-sqlite3` for Electron 43.8.3 on that architecture, prune the app's
    `node_modules`, then run the allocation-driven SQLite check under that packaged
    Electron ([Electron's embedded Node](#electrons-embedded-node)). The stage installs with
    `npm ci --ignore-scripts` and `@electron/rebuild` runs with `buildFromSource`

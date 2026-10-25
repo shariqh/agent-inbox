@@ -164,10 +164,14 @@ export function openDb(path: string = defaultDbPath()): Database.Database {
 //   - a trigger is never dropped or redefined. Its name carries a hash of its
 //     SQL, so a changed definition is a NEW trigger beside the old one, which
 //     keeps older processes sharing the file exact (at worst it moves a version
-//     for nothing);
+//     for nothing). Nor is snapshot_domains or any row of it ever dropped,
+//     reset or rewritten, nor a domain retired, since an older process may
+//     still read it; a future rebuild of a watched table must re-create every
+//     snapshot_ trigger the old table had, in the same transaction;
 //   - versions only grow, and commit or roll back with the write, so equal
 //     versions before and after a read prove that no write to the domain
-//     committed in between.
+//     committed in between. They start at a random 48-bit value, and a domain
+//     missing a trigger proves nothing (untrustedDomains below).
 // Tables no snapshot reads (presence, claim history, the hook and refresh
 // leases, reply intents, the pre-#157 source_links) carry no trigger: a write
 // there moves nothing, so presence, liveness and claims never rebuild a body.
@@ -224,7 +228,10 @@ export type SnapshotDomain = keyof typeof SNAPSHOT_DOMAINS
 export interface SnapshotReadState {
   /** the schema cookie: any DDL, VACUUM or backup restore moves it */
   schemaVersion: number
-  /** each domain's version; null when the hub has no row for it, which proves nothing */
+  /**
+   * each domain's version; null proves nothing: the hub has no row for the
+   * domain, or lacks one of its triggers, so a write could change it unseen
+   */
   domains: Record<SnapshotDomain, number | null>
   inTransaction: boolean
 }
@@ -239,13 +246,28 @@ export function readSnapshotState(db: Database.Database): SnapshotReadState {
     domain: string | null
     version: number | null
   }>
+  const schemaVersion = rows[0]!.schemaVersion
+  const untrusted = untrustedDomains(db, schemaVersion)
   const domains = Object.fromEntries(Object.keys(SNAPSHOT_DOMAINS).map((domain) => [domain, null])) as
     Record<SnapshotDomain, number | null>
   for (const row of rows) {
-    if (row.domain !== null && Object.hasOwn(domains, row.domain)) domains[row.domain as SnapshotDomain] = row.version
+    if (row.domain !== null && Object.hasOwn(domains, row.domain) && !untrusted.has(row.domain)) {
+      domains[row.domain as SnapshotDomain] = row.version
+    }
   }
-  return { schemaVersion: rows[0]!.schemaVersion, domains, inTransaction: db.inTransaction }
+  return { schemaVersion, domains, inTransaction: db.inTransaction }
 }
+
+interface SnapshotTrigger {
+  name: string
+  domain: string
+  sql: string
+}
+
+// A table, column or trigger name as an SQL identifier: double-quoted, with any
+// quote in it doubled, so a column a later build names with an SQL keyword
+// ("order", "group") cannot make every openDb throw.
+const quoted = (identifier: string): string => `"${identifier.replaceAll('"', '""')}"`
 
 // The triggers of each domain: one for inserts, one for deletes, and update
 // triggers. SQLite compiles every trigger a statement may fire into that
@@ -266,36 +288,60 @@ export function readSnapshotState(db: Database.Database): SnapshotReadState {
 // hash of the trigger's own text: an unchanged definition keeps its name, a
 // changed one gets a new trigger beside the old one, and nothing here ever
 // drops one.
-function snapshotDomainTriggers(db: Database.Database): Map<string, string> {
-  const triggers = new Map<string, string>()
+function snapshotDomainTriggers(db: Database.Database): SnapshotTrigger[] {
+  const triggers: SnapshotTrigger[] = []
   for (const [domain, spec] of Object.entries(SNAPSHOT_DOMAINS) as Array<[string, SnapshotDomainSpec]>) {
+    const table = quoted(spec.table)
     const add = (event: string, when: string): void => {
       const body = `${when}
     BEGIN
       UPDATE snapshot_domains SET version = version + 1 WHERE domain = '${domain}';
     END`
       const name = `snapshot_${domain}_${event}_${createHash('sha256').update(body).digest('hex').slice(0, 12)}`
-      triggers.set(name, `CREATE TRIGGER IF NOT EXISTS ${name}
-    ${body}`)
+      triggers.push({ name, domain, sql: `CREATE TRIGGER IF NOT EXISTS ${quoted(name)}
+    ${body}` })
     }
+    const list = (columns: readonly string[]): string => columns.map(quoted).join(', ')
     const changed = (columns: readonly string[]): string =>
-      columns.map((column) => `NEW.${column} IS NOT OLD.${column} COLLATE BINARY`).join(' OR ')
-    add('insert', `AFTER INSERT ON ${spec.table}`)
-    add('delete', `AFTER DELETE ON ${spec.table}`)
+      columns.map((column) => `NEW.${quoted(column)} IS NOT OLD.${quoted(column)} COLLATE BINARY`).join(' OR ')
+    add('insert', `AFTER INSERT ON ${table}`)
+    add('delete', `AFTER DELETE ON ${table}`)
     if (spec.columns) {
-      add('update', `AFTER UPDATE OF ${spec.columns.join(', ')} ON ${spec.table}
+      add('update', `AFTER UPDATE OF ${list(spec.columns)} ON ${table}
     WHEN ${changed(spec.columns)}`)
       continue
     }
     const columns = db.prepare(`SELECT name FROM pragma_table_info(?) ORDER BY cid`).pluck().all(spec.table) as string[]
     const restamped = new Set(spec.restamped)
-    add('update', `AFTER UPDATE OF ${columns.filter((column) => !restamped.has(column)).join(', ')} ON ${spec.table}`)
+    add('update', `AFTER UPDATE OF ${list(columns.filter((column) => !restamped.has(column)))} ON ${table}`)
     for (const column of columns.filter((name) => restamped.has(name))) {
-      add(`update_${column}`, `AFTER UPDATE OF ${column} ON ${spec.table}
+      add(`update_${column}`, `AFTER UPDATE OF ${list([column])} ON ${table}
     WHEN ${changed([column])}`)
     }
   }
   return triggers
+}
+
+// Review of #368: a version proves something only while every trigger that
+// moves it exists. One the hub lacks (dropped by hand, or not yet made for a
+// column a later build added, since this process opened the hub long before)
+// lets a write change the domain unseen, so the domain reads as null, served
+// fresh and never cached, until some process's openDb makes the trigger. The
+// triggers change only with the schema cookie, so this is decided once per
+// cookie, and never remembered from inside a transaction: a rollback takes the
+// cookie back, and a later commit can return it to the value it read.
+const ALL_DOMAINS: ReadonlySet<string> = new Set(Object.keys(SNAPSHOT_DOMAINS))
+const trustedSchemas = new WeakMap<Database.Database, { schemaVersion: number; untrusted: ReadonlySet<string> }>()
+
+function untrustedDomains(db: Database.Database, schemaVersion: number): ReadonlySet<string> {
+  const known = trustedSchemas.get(db)
+  if (known?.schemaVersion === schemaVersion) return known.untrusted
+  const existing = new Set(db.prepare(`SELECT name FROM sqlite_master WHERE type = 'trigger'`).pluck().all() as string[])
+  const untrusted = new Set(snapshotDomainTriggers(db).filter((trigger) => !existing.has(trigger.name)).map((trigger) => trigger.domain))
+  // the schema moved under these reads, so they prove nothing
+  if (db.prepare(`SELECT schema_version FROM pragma_schema_version`).pluck().get() !== schemaVersion) return ALL_DOMAINS
+  if (!db.inTransaction) trustedSchemas.set(db, { schemaVersion, untrusted })
+  return untrusted
 }
 
 // Last in runMigrations, after every column it may watch exists.
@@ -304,11 +350,14 @@ function migrateSnapshotDomains(db: Database.Database): void {
       domain TEXT PRIMARY KEY,
       version INTEGER NOT NULL DEFAULT 0
     ) WITHOUT ROWID`)
-  const seed = db.prepare(`INSERT OR IGNORE INTO snapshot_domains (domain, version) VALUES (?, 0)`)
+  // A version starts at a random 48-bit value (masked, since abs() overflows
+  // on the lowest random()), so a row seeded again after a reset cannot climb
+  // back to a version an idle viewer cached.
+  const seed = db.prepare(`INSERT OR IGNORE INTO snapshot_domains (domain, version) VALUES (?, random() & 281474976710655)`)
   for (const domain of Object.keys(SNAPSHOT_DOMAINS)) seed.run(domain)
   // Every process opens the hub, so skip the statements whose trigger exists.
   const existing = new Set(db.prepare(`SELECT name FROM sqlite_master WHERE type = 'trigger'`).pluck().all() as string[])
-  for (const [name, sql] of snapshotDomainTriggers(db)) if (!existing.has(name)) db.exec(sql)
+  for (const trigger of snapshotDomainTriggers(db)) if (!existing.has(trigger.name)) db.exec(trigger.sql)
 }
 
 function migrate(db: Database.Database): void {

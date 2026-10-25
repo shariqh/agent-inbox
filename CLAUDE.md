@@ -131,20 +131,34 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   `source_links`) carry no trigger, so `recordActivityCall` on every MCP call, the
   liveness tick, claims and the poller's leases rebuild nothing. The dock's
   waiting/parked split reads `/api/activity`, never a retained body, so the
-  attention projection reads items alone. Six rules hold. (1) **Never drop or
-  redefine a snapshot trigger.** Its name ends in a hash of its text, so a changed
-  definition is a new trigger beside the old one, which keeps an older process
-  sharing the file exact (at worst it moves a version for nothing).
+  attention projection reads items alone. Six rules hold. (1) **The
+  `snapshot_domains` contract is permanent.** Never drop or redefine a snapshot
+  trigger; never drop, reset or rewrite `snapshot_domains` or any of its rows;
+  never retire a domain, even one this build no longer reads, because an older
+  process sharing the file may still read it. A trigger's name ends in a hash of
+  its text, so a changed definition is a new trigger beside the old one, which
+  keeps an older process exact (at worst it moves a version for nothing);
   `test/fixtures/snapshot-triggers.txt` pins every name a fresh hub gets, because
   even a layout change to the generated text would add a second set of triggers
-  to every existing hub. (2) **The triggers are made last in every migration,
+  to every existing hub. A future rebuild of a watched table (create, copy, drop,
+  rename) must re-create every `snapshot_` trigger the old table had, from its
+  stored SQL, in the same transaction. Two guards back this up: a version starts
+  at a random 48-bit value, so a row seeded again after a reset cannot climb back
+  to a version an idle viewer cached; and whenever the schema cookie moves, a
+  viewer compares `sqlite_master` with every trigger it would make, so a domain
+  missing one reads as unproven (served fresh, never cached) until some v1.8+
+  `openDb` makes it again. (2) **The triggers are made last in every migration,
   from the live schema:** a whole-table domain's update triggers name every
   column its table has, so whichever build adds a column also adds a trigger
-  that watches it. Rowids are never written (VACUUM renumbers them but moves the
-  schema cookie). (3) **Versions only grow and commit with the write,** so equal
-  versions before and after a read prove that nothing it reads changed. A read
-  inside a transaction is still never published: a rollback takes a version back,
-  and a later commit can return it to the value the uncommitted read saw. The
+  that watches it. Every table, column and trigger name is a double-quoted
+  identifier (quotes doubled), so a column a later build names with an SQL
+  keyword (`order`, `group`) cannot make every `openDb` throw. Rowids are never
+  written (VACUUM renumbers them but moves the schema cookie). (3) **Versions
+  only grow and commit with the write,** so equal versions before and after a
+  read prove that nothing it reads changed. A read inside a transaction is still
+  never published: a rollback takes a version back, and a later commit can return
+  it to the value the uncommitted read saw. For the same reason trust is never
+  remembered from inside one, since a rollback takes the cookie back too. The
   schema cookie stays in every token, and a domain without a version row proves
   nothing. (4) **A new read needs its domains.** Give the snapshot every domain
   covering the tables and columns it reads. A column added to `items`, `boards`,

@@ -224,12 +224,18 @@ Run the build before `npm run electron`; the development shell starts the built
   `src/store.ts`). Triggers move those versions, so an older process's writes
   count too; tables no snapshot reads (presence, claim history, the hook and
   refresh leases, reply intents) have none, so activity and claim writes rebuild
-  nothing. Never drop or redefine a snapshot trigger (its name hashes its text;
-  `test/fixtures/snapshot-triggers.txt` pins the names), keep the triggers last in
-  every migration (they name the live columns), give a new read every domain it
-  needs, and classify a new column in `REVIEWED_COLUMNS` or a new table in
-  `UNREAD`. A read inside a transaction is never published: a rollback takes a
-  version back.
+  nothing. The `snapshot_domains` contract is permanent: never drop or redefine
+  a snapshot trigger (its name hashes its text;
+  `test/fixtures/snapshot-triggers.txt` pins the names), never drop, reset or
+  rewrite `snapshot_domains` or its rows, never retire a domain, and make any
+  future rebuild of a watched table re-create every `snapshot_` trigger it had,
+  in the same transaction. Keep the triggers last in every migration (they name
+  the live columns, double-quoted), give a new read every domain it needs, and
+  classify a new column in `REVIEWED_COLUMNS` or a new table in `UNREAD`. A read
+  inside a transaction is never published: a rollback takes a version back.
+  Versions start at a random 48-bit value, and when the schema cookie moves a
+  viewer distrusts (serves fresh, never caches) any domain missing a trigger
+  until an `openDb` makes it again.
 - `/api/items` pages closed history (#184): every open item, the 50 most recently
   touched closed items, the 4 newest outcome-bearing ones of open projects and a
   `history` summary that keeps every count exact. Only `load()` reads

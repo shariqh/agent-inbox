@@ -635,7 +635,9 @@ type SnapshotName = keyof typeof SNAPSHOT_SOURCES
 
 // Equal versions of the snapshot's own domains, read outside any transaction
 // under one schema, prove that no write that could change its bytes committed
-// between the two reads. A domain the hub has no version for proves nothing.
+// between the two reads. A version that reads as null (the hub has no row for
+// the domain, or lacks one of its triggers) proves nothing, so a body that
+// reads it is served fresh and never cached.
 function sameSnapshotState(domains: readonly SnapshotDomain[], a: SnapshotReadState, b: SnapshotReadState): boolean {
   return !a.inTransaction && !b.inTransaction && a.schemaVersion === b.schemaVersion
     && domains.every((domain) => a.domains[domain] !== null && a.domains[domain] === b.domains[domain])

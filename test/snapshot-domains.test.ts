@@ -334,8 +334,13 @@ describe('snapshot domains (issue #297)', () => {
     it('keeps a version for every domain and its triggers, named by their definition', () => {
       const fresh = openDb(join(dir, 'fresh.db'))
       try {
-        const versions = fresh.prepare(`SELECT domain, version FROM snapshot_domains ORDER BY domain`).all()
-        expect(versions).toEqual(Object.keys(SNAPSHOT_DOMAINS).sort().map((domain) => ({ domain, version: 0 })))
+        // every version starts at its own random 48-bit value
+        const versions = fresh.prepare(`SELECT domain, version FROM snapshot_domains ORDER BY domain`).all() as Array<{ domain: string; version: number }>
+        expect(versions.map((row) => row.domain)).toEqual(Object.keys(SNAPSHOT_DOMAINS).sort())
+        for (const { domain, version } of versions) {
+          expect(Number.isSafeInteger(version) && version >= 0 && version < 2 ** 48, `${domain}: ${version}`).toBe(true)
+        }
+        expect(new Set(versions.map((row) => row.version)).size).toBe(versions.length)
         const triggers = (fresh.prepare(`SELECT name, tbl_name AS tableName FROM sqlite_master
             WHERE type = 'trigger' AND name LIKE 'snapshot\\_%' ESCAPE '\\' ORDER BY name`).all() as Array<{ name: string; tableName: string }>)
         // One insert, one delete and one update trigger per domain, and one more
@@ -351,9 +356,11 @@ describe('snapshot domains (issue #297)', () => {
         // unwatched until some process opened the hub again.
         for (const [domain, spec] of Object.entries(DOMAINS)) {
           if (spec.columns) continue
-          const watched = (fresh.prepare(`SELECT sql FROM sqlite_master WHERE type = 'trigger'`).pluck().all() as string[])
-            .filter((sql) => sql.startsWith(`CREATE TRIGGER snapshot_${domain}_update_`))
-            .flatMap((sql) => /AFTER UPDATE OF (.+?) ON /.exec(sql)![1]!.split(', '))
+          const watched = (fresh.prepare(`SELECT name, sql FROM sqlite_master WHERE type = 'trigger'`).all() as Array<{ name: string; sql: string }>)
+            .filter(({ name }) => name.startsWith(`snapshot_${domain}_update_`))
+            // the quoted identifiers of each OF list, quotes undoubled
+            .flatMap(({ sql }) => [...(/AFTER UPDATE OF ((?:"(?:[^"]|"")*"(?:, )?)+) ON /.exec(sql)![1]!).matchAll(/"((?:[^"]|"")*)"/g)]
+              .map((match) => match[1]!.replaceAll('""', '"')))
           expect(watched.sort(), domain).toEqual(columnsOf(fresh, spec.table).map((column) => column.name).sort())
         }
         // A trigger's name ends in a hash of its text, and a hub keeps every
@@ -727,6 +734,176 @@ describe('snapshot domains (issue #297)', () => {
       expect(await probe('items', tags.items)).toMatchObject({ status: 304, rebuilt: true })
       insertItem(writer, { project: 'alpha', stream: '', agent: 'copilot', kind: 'note', title: 'Still seen' })
       expect((await probe('items', tags.items)).text).toContain('Still seen')
+    })
+  })
+
+  // Review of #368. A version proves something only while the triggers that move
+  // it exist, so a domain missing one (dropped, or not yet made for a column a
+  // later build added) is served fresh until some openDb makes it again; a
+  // column a later build names with an SQL keyword must not break that openDb;
+  // and a row seeded again after a reset must not land on a version a viewer
+  // cached.
+  describe('trusting only the triggers a hub has', () => {
+    const version = (domain: Domain) =>
+      writer.prepare(`SELECT version FROM snapshot_domains WHERE domain = ?`).pluck().get(domain) as number
+    const catchAll = (domain: Domain) => (writer.prepare(`SELECT name FROM sqlite_master WHERE type = 'trigger'`).pluck().all() as string[])
+      .find((name) => new RegExp(`^snapshot_${domain}_update_[0-9a-f]{12}$`).test(name))!
+    const moved = (before: Record<string, number | null>, after: Record<string, number | null>) =>
+      Object.keys(after).filter((domain) => after[domain] !== before[domain]).sort()
+    const retitle = (title: string) => writer.prepare(`UPDATE items SET title = ? WHERE id = ?`).run(title, fixture.asked)
+
+    it('watches columns a later build names with SQL keywords, or with a quote, once the hub is reopened', async () => {
+      const tags = await warm()
+      writer.exec(`ALTER TABLE board_rows ADD COLUMN "order" INTEGER;
+        ALTER TABLE items ADD COLUMN "values" TEXT;
+        ALTER TABLE items ADD COLUMN "group" TEXT;
+        ALTER TABLE items ADD COLUMN "say ""when""" TEXT`)
+      expect(() => openDb(path).close()).not.toThrow()
+      let before = readSnapshotState(db).domains
+      writer.prepare(`UPDATE board_rows SET "order" = 7 WHERE id = ?`).run(fixture.approve)
+      let after = readSnapshotState(db).domains
+      expect(moved(before, after)).toEqual(['board_rows'])
+      for (const column of ['"values"', '"group"', '"say ""when"""']) {
+        before = after
+        writer.prepare(`UPDATE items SET ${column} = 'set' WHERE id = ?`).run(fixture.asked)
+        after = readSnapshotState(db).domains
+        expect(moved(before, after), column).toEqual(['items'])
+      }
+      const items = await probe('items', tags.items)
+      expect(items.status).toBe(200)
+      const asked = (JSON.parse(items.text).needsYou as Array<{ items: Array<{ id: string }> }>)
+        .flatMap((group) => group.items).find((item) => item.id === fixture.asked)
+      expect(asked).toMatchObject({ values: 'set', group: 'set', 'say "when"': 'set' })
+      // /api/boards names its row columns, so the plans are rebuilt to the same bytes
+      expect(await probe('boards', tags.boards)).toMatchObject({ status: 304, rebuilt: true })
+    })
+
+    it('serves a domain fresh, never cached, while one of its triggers is missing, and trusts it again once a reopen makes it', async () => {
+      const tags = await warm()
+      const dropped = catchAll('items')
+      writer.exec(`DROP TRIGGER "${dropped}"`)
+      // the schema moved, so every body is rebuilt once; the plans are cached again
+      for (const name of SNAPSHOTS) expect((await probe(name, tags[name])).rebuilt, name).toBe(true)
+      for (const name of PLANS) expect((await probe(name, tags[name])).rebuilt, name).toBe(false)
+      // without the trigger an item write moves no version, yet it shows at once
+      const items = version('items')
+      retitle('Retitled while untrusted')
+      expect(version('items')).toBe(items)
+      for (const name of ['items', 'attention-items'] as const) {
+        const read = await probe(name, tags[name])
+        expect([read.status, read.rebuilt], name).toEqual([200, true])
+        expect(read.text, name).toContain('Retitled while untrusted')
+        expect((await probe(name, read.etag!)).rebuilt, `${name} was cached`).toBe(true)
+      }
+      // any process's openDb makes it again, and the domain is trusted again
+      openDb(path).close()
+      expect(catchAll('items')).toBe(dropped)
+      const current = (await probe('items', tags.items)).etag!
+      expect(await probe('items', current)).toMatchObject({ status: 304, rebuilt: false })
+      retitle('Retitled once trusted')
+      expect(version('items')).toBeGreaterThan(items)
+      const read = await probe('items', current)
+      expect([read.status, read.rebuilt]).toEqual([200, true])
+      expect(read.text).toContain('Retitled once trusted')
+    })
+
+    it('serves a domain fresh while a column a later build added has no trigger, and watches it once a reopen makes one', async () => {
+      const tags = await warm()
+      writer.exec(`ALTER TABLE items ADD COLUMN later_note TEXT`)
+      const first = await probe('items', tags.items)
+      expect(first.rebuilt).toBe(true)
+      const items = version('items')
+      writer.prepare(`UPDATE items SET later_note = ? WHERE id = ?`).run('before the reopen', fixture.asked)
+      expect(version('items')).toBe(items)
+      const fresh = await probe('items', first.etag!)
+      expect([fresh.status, fresh.rebuilt]).toEqual([200, true])
+      expect(fresh.text).toContain('"later_note":"before the reopen"')
+      openDb(path).close()
+      expect(await probe('items', fresh.etag!)).toMatchObject({ status: 304, rebuilt: true })
+      expect(await probe('items', fresh.etag!)).toMatchObject({ status: 304, rebuilt: false })
+      writer.prepare(`UPDATE items SET later_note = ? WHERE id = ?`).run('after the reopen', fixture.asked)
+      expect(version('items')).toBeGreaterThan(items)
+      const watched = await probe('items', fresh.etag!)
+      expect([watched.status, watched.rebuilt]).toEqual([200, true])
+      expect(watched.text).toContain('"later_note":"after the reopen"')
+    })
+
+    // Trust is remembered per schema cookie, so never from inside a transaction:
+    // a rollback takes the cookie back, and a later commit can return it to the
+    // value the transaction saw.
+    it('never remembers trust read inside a transaction a rollback can take back', () => {
+      const rollback = new Error('rollback fixture')
+      let seen = 0
+      expect(() => db.transaction(() => {
+        db.exec('CREATE TABLE scratch_trust (value TEXT)')
+        const state = readSnapshotState(db)
+        seen = state.schemaVersion
+        expect(state.domains.items).not.toBeNull()
+        throw rollback
+      })()).toThrow(rollback)
+      writer.exec(`DROP TRIGGER "${catchAll('items')}"`)
+      const state = readSnapshotState(db)
+      expect(state.schemaVersion).toBe(seen)
+      expect(state.domains.items).toBeNull()
+    })
+
+    it('trusts nothing it read across a schema change, and remembers none of it', () => {
+      writer.exec('CREATE TABLE scratch_first (value TEXT)')
+      const prepare = db.prepare.bind(db)
+      let moved = false
+      db.prepare = ((sql: string) => {
+        const statement = prepare(sql)
+        if (!moved && /SELECT name FROM sqlite_master WHERE type = 'trigger'/.test(sql)) {
+          const all = statement.all.bind(statement)
+          statement.all = ((...args: unknown[]) => {
+            const rows = all(...args)
+            moved = true
+            writer.exec('CREATE TABLE scratch_between (value TEXT)')
+            return rows
+          }) as typeof statement.all
+        }
+        return statement
+      }) as typeof db.prepare
+      try {
+        const state = readSnapshotState(db)
+        expect(moved).toBe(true)
+        expect(Object.values(state.domains).every((version) => version === null)).toBe(true)
+      } finally {
+        db.prepare = prepare
+      }
+      expect(Object.values(readSnapshotState(db).domains).every((version) => version !== null)).toBe(true)
+    })
+
+    it('reads the trigger list only when the schema cookie moves', async () => {
+      const tags = await warm()
+      const queries: string[] = []
+      const prepare = db.prepare.bind(db)
+      db.prepare = ((sql: string) => { queries.push(sql); return prepare(sql) }) as typeof db.prepare
+      try {
+        for (const name of SNAPSHOTS) await probe(name, tags[name])
+        expect(queries.filter((sql) => /sqlite_master|pragma_table_info/.test(sql))).toEqual([])
+        writer.exec('CREATE TABLE scratch_cookie (value TEXT)')
+        for (const name of SNAPSHOTS) await probe(name, tags[name])
+        expect(queries.filter((sql) => /FROM sqlite_master/.test(sql))).toHaveLength(1)
+      } finally {
+        db.prepare = prepare
+      }
+    })
+
+    // A version starts at a random 48-bit value: were it seeded at a fixed start,
+    // a row reset and seeded again could climb back to the version an idle
+    // viewer cached and revalidate bytes that changed.
+    it('seeds a version at a random start, so a row seeded again cannot revalidate what an idle viewer cached', async () => {
+      const tags = await warm()
+      const cached = version('items')
+      writer.exec(`DELETE FROM snapshot_domains WHERE domain = 'items'`)
+      openDb(path).close()
+      const seeded = version('items')
+      const climb = seeded < cached && cached - seeded <= 10_000 ? cached - seeded : 1
+      for (let n = 1; n <= climb; n++) retitle(`Retitled ${n} of ${climb}`)
+      const read = await probe('items', tags.items)
+      expect(read.status).toBe(200)
+      expect(read.text).toContain(`Retitled ${climb} of ${climb}`)
     })
   })
 })

@@ -233,17 +233,19 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   (`listArchivedSummary`, `SNAPSHOT_SOURCES['archived-summary']` = boards and
   board_rows): every archived plan in `listBoards`' order with every plan field and
   `progress` over all of its rows, but only the rows its surfaces read without the
-  complete list, each with only the fields they read (identity, label, status,
-  outcome and the row stamps `public/relay.js` `stamp` orders by): every row that
-  links an issue, so issue activity labels ("Done here", `public/issues.js`) read
-  the same, and each project's `RECENT_OUTCOMES` (4) newest outcome-bearing rows
-  plus ties, so the Dashboard's recent outcomes are proven for every lens without
-  an agent filter. Each plan's `omitted` gives the outcome-bearing rows it leaves
-  out and the newest stamp among them (never null while it omits any; the stamp
-  falls back to the plan's `updated_at`), so the Dashboard, Handoffs and every
-  count stay exact (`omittedOutcomes` in `public/boards.js`). The rail, the fold's
-  "Archived plans (N)", lingering decisions and the collapse-state pruning read
-  the brief through the same code as the complete list. `lastData.archivedBrief`
+  complete list, each with only the fields they read, as the complete list has
+  them: every row that links an issue, with its identity and content times, so
+  issue activity labels ("Done here", `public/issues.js`) read the same; and each
+  project's `RECENT_OUTCOMES` (4) newest outcome-bearing rows plus ties, with the
+  outcome and the stamps `public/relay.js` `stamp` orders it by, so the
+  Dashboard's recent outcomes are proven for every lens without an agent filter.
+  Ties matter: one upsert stamps all its outcomes alike, and a cut tie could never
+  be proven. Every other outcome, a linked row's included, is omitted: each plan's
+  `omitted` gives how many and the newest stamp among them (never null while it
+  omits any; the stamp falls back to the plan's `updated_at`), so the Dashboard,
+  Handoffs and every count stay exact (`omittedOutcomes` in `public/boards.js`).
+  The rail, the fold's "Archived plans (N)", lingering decisions and the
+  collapse-state pruning read the brief through the same code as the complete list. `lastData.archivedBrief`
   is the brief; `lastData.archived` is what surfaces read, the complete list while
   loaded and the brief otherwise; `lastData.archivedFull` is the complete list or
   null, and only it may be drawn whole (the fold's cards, lingering cards, Plan

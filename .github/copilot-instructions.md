@@ -250,10 +250,10 @@ Run the build before `npm run electron`; the development shell starts the built
   say older history is unavailable.
 - The poll carries archived plans in brief (#299): `/api/boards/archived/summary`
   (`listArchivedSummary`) keeps every archived plan's fields and `progress`, only
-  the rows that link an issue or hold one of their project's 4 newest outcomes
-  (plus ties), and per plan the outcomes it omits with their newest stamp, so
-  counts, the rail, issue activity labels and the Dashboard's default lens stay
-  exact. Only `load()` reads the complete `/api/boards/archived`, while
+  the rows that link an issue (identity and content times) or hold one of their
+  project's 4 newest outcomes plus ties (with the outcome and its stamps), and
+  per plan the outcomes it omits with their newest stamp, so counts, the rail,
+  issue activity labels and the Dashboard's default lens stay exact. Only `load()` reads the complete `/api/boards/archived`, while
   `archivedWanted()` says a surface needs it (the open archived fold, a lingering
   plan, a focused plan just archived, search, a waiting deep link, Handoffs or
   Plan flow on an archived plan, an unproven Dashboard lens), judged on the brief,

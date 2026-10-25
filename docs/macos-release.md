@@ -81,8 +81,9 @@ v24.22.1, ABI 137) passed its allocation-driven SQLite check (#135) in <seconds>
 24.21.0 shows the gate still works: that runtime passed its hook selftest, then aborted in
 this check at `hooks.cc:142` and was refused publication. The check has a 180-second
 ceiling. It took GitHub's Intel runners roughly 25–30 seconds when #187 raised the ceiling
-from 30 seconds, which had timed out about a quarter of their runs; it now takes about
-20–40 seconds there, and the packaged Electron's run of the same check about 35–65 seconds.
+from 30 seconds, which had timed out about a quarter of their runs. In recent runs there,
+the staged runtime's check and the packaged Electron's have both taken anywhere from about
+20 seconds to just over a minute.
 
 If a later Node release brings the abort back, hold the runtime again: **both the runtime
 and its addon must be rebuilt**, never patched into a signed payload. Each architecture

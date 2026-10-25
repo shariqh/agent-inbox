@@ -322,8 +322,9 @@ const REQUIRED_DOCS = [
 
 // The allocation-driven check runs 300,000 statements on purpose (#135). It took
 // GitHub's Intel macOS runners roughly 25-30 s when #187 raised this ceiling, after a
-// 30 s one timed out about a quarter of darwin-x64 (macos-15-intel) stagings; it now
-// takes about 20-40 s there. The loop is bounded and a real hang still fails.
+// 30 s one timed out about a quarter of darwin-x64 (macos-15-intel) stagings; in recent
+// runs it has taken anywhere from about 20 s to just over a minute there. The loop is
+// bounded and a real hang still fails.
 const SQLITE_CHECK_TIMEOUT_MS = 180_000
 
 /**

@@ -213,6 +213,31 @@ describe('a draft comes back where it was', () => {
     expect(recovery()).toBeNull()
   })
 
+  // Issue #299: only a row no active plan holds waits for the archived plans;
+  // one in an active plan comes back with the first data, as always.
+  it('puts an active row’s draft back with the first data though other plans are archived, reading none of them', async () => {
+    db = freshDb()
+    const blocked = plan(db).rows[0]!
+    const old = plan(db, 'Old plan')
+    expect(archiveBoard(db, old.id, old.revision)).toBe(true)
+    await bootApp(db)
+    await draftAnswer(blocked.id, 'Approved for Thursday.')
+
+    const reads: string[] = []
+    await reopen(db, {
+      interceptFetch: async (input, _init, next) => {
+        if (String(input) === '/api/boards/archived') reads.push(String(input))
+        return next()
+      },
+    })
+    expect(row(blocked.id)?.getAttribute('aria-expanded'), 'the restored draft reopens its card').toBe('true')
+    expect(reads).toEqual([])
+    await pollTick()
+    await showInbox()
+    expect(answerInput(blocked.id)?.value).toBe('Approved for Thursday.')
+    expect(reads).toEqual([])
+  })
+
   it('reopens the Plans panel of a finished row whose note was unsent, with finished rows hidden', async () => {
     db = freshDb()
     upsertBoard(db, {

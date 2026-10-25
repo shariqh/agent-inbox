@@ -6,7 +6,7 @@
 // the complete list on every tick.
 import { afterEach, describe, expect, it } from 'vitest'
 import type Database from 'better-sqlite3'
-import { archiveBoard, getBoard, updateBoardRow, upsertBoard } from '../../src/store.js'
+import { archiveBoard, getBoard, insertItem, resolveItem, updateBoardRow, upsertBoard } from '../../src/store.js'
 import {
   advanceClock, bootApp, buttonLabelled, click, expectConsoleError, freshDb, pollTick, searchFor, settle, useDomTest,
 } from './harness.js'
@@ -79,9 +79,9 @@ async function toggleFold(open: boolean): Promise<void> {
 }
 
 // An archived plan, written as an agent would, then archived.
-function archived(d: Database.Database, project: string, title: string, context: string, outcomes: string[] = []): string {
+function archived(d: Database.Database, project: string, title: string, context: string, outcomes: string[] = [], agent = 'copilot'): string {
   advanceClock()
-  const scope = { project, stream: 'main', agent: 'copilot' }
+  const scope = { project, stream: 'main', agent }
   upsertBoard(d, { ...scope, title, rows: [{ label: 'Step', status: 'tracked', context }] })
   for (const label of outcomes) {
     advanceClock()
@@ -300,24 +300,22 @@ describe('archived plans in brief (issue #299)', () => {
     expect(lane().textContent).toContain('Ship 1 shipped.')
   })
 
-  it('reads the complete list for a Dashboard lens only the archived plans can prove, and never older history for it', async () => {
+  it('reads the complete list for a Dashboard lens only the archived plans can prove, and not older history', async () => {
     db = freshDb()
-    seedHub(db)
-    // claude's two outcomes are older than alpha's four newest, so the brief omits them
     const claude = { project: 'alpha', stream: 'main', agent: 'claude' }
-    upsertBoard(db, { ...claude, title: 'Claude active', rows: [{ label: 'Work', status: 'tracked' }] })
-    advanceClock()
-    upsertBoard(db, { ...claude, title: 'Claude archived', rows: [{ label: 'Open', status: 'tracked' }] })
-    for (const label of ['C1', 'C2']) {
+    const resolved = (scope: typeof claude, title: string, outcome?: string) => {
       advanceClock()
-      updateBoardRow(db, {
-        ...claude, title: 'Claude archived', expectedBoardVersion: getBoard(db, 'alpha', 'Claude archived')!.revision,
-        label, status: 'done', outcome: `${label} shipped.`,
-      })
+      const id = insertItem(db!, { ...scope, kind: 'question', title })
+      advanceClock()
+      resolveItem(db!, id, outcome)
     }
-    const plan = getBoard(db, 'alpha', 'Claude archived')!
-    archiveBoard(db, plan.id, plan.revision)
-    // ...and alpha's newest outcomes, by copilot, newer than claude's
+    // claude's oldest outcome, which a hook sweep of 55 newer closures pushes off the page
+    resolved(claude, 'Old claude question', 'Old claude outcome.')
+    for (let index = 0; index < 55; index += 1) resolved({ project: 'sweep', stream: '', agent: 'hook' }, `Backstop ${index}`)
+    // claude's four recent outcomes, on the page
+    for (const index of [1, 2, 3, 4]) resolved(claude, `Claude item ${index}`, `Claude outcome ${index}.`)
+    // claude's archived outcomes, newer still, which alpha's four newest (copilot's) leave out of the brief
+    archived(db, 'alpha', 'Claude archived', 'Background.', ['C1', 'C2'], 'claude')
     archived(db, 'alpha', 'Newest copilot', 'Background.', ['N1', 'N2', 'N3', 'N4'])
     const archive = archivedControl()
     await bootApp(db, { interceptFetch: archive.interceptFetch })
@@ -329,8 +327,9 @@ describe('archived plans in brief (issue #299)', () => {
     agents.dispatchEvent(new Event('change', { bubbles: true }))
     await settle()
     expect(fullReads(archive.control.reads)).toEqual([200])
-    expect(signal('outcomes')).toBe('2')
-    expect(recentOutcomes()).toEqual(['C2', 'C1'])
+    expect(signal('outcomes')).toBe('7')
+    expect(recentOutcomes()).toEqual(['C2', 'C1', 'Claude item 4', 'Claude item 3'])
+    // the page alone proves claude's lens against older history: it is not read
     expect(archive.control.reads.some((read) => read.path === '/api/items/history')).toBe(false)
   })
 

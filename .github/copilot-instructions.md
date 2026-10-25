@@ -218,6 +218,18 @@ Run the build before `npm run electron`; the development shell starts the built
   Activity history changes with time alone, so it is conditional only on a hash
   of its freshly computed bytes plus the window and project that selected them;
   never validate it with store tokens or cache it server-side (#185).
+- A write rebuilds only the snapshots it can change (#297): each snapshot's token
+  is the schema cookie plus the versions of the store domains its bytes are built
+  from (`SNAPSHOT_SOURCES` in `src/viewer.ts` over `SNAPSHOT_DOMAINS` in
+  `src/store.ts`). Triggers move those versions, so an older process's writes
+  count too; tables no snapshot reads (presence, claim history, the hook and
+  refresh leases, reply intents) have none, so activity and claim writes rebuild
+  nothing. Never drop or redefine a snapshot trigger (its name hashes its text;
+  `test/fixtures/snapshot-triggers.txt` pins the names), keep the triggers last in
+  every migration (they name the live columns), give a new read every domain it
+  needs, and classify a new column in `REVIEWED_COLUMNS` or a new table in
+  `UNREAD`. A read inside a transaction is never published: a rollback takes a
+  version back.
 - `/api/items` pages closed history (#184): every open item, the 50 most recently
   touched closed items, the 4 newest outcome-bearing ones of open projects and a
   `history` summary that keeps every count exact. Only `load()` reads

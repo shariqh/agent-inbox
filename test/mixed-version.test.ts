@@ -31,6 +31,8 @@ import type { FoundLink } from '../public/links.js'
 import { renderStructuredText } from '../public/structured-text.js'
 import { at, facts, keySets, snapshot } from './issue-fixtures.js'
 import { scratchDir } from './scratch.js'
+import { SNAPSHOT_NAMES, rebuiltBy } from './snapshot-probe.js'
+import type { SnapshotName } from './snapshot-probe.js'
 
 const V131_SCHEMA = readFileSync(new URL('./fixtures/v1.3.1-schema.sql', import.meta.url), 'utf8')
 
@@ -160,6 +162,17 @@ const V131 = {
 }
 
 const REPO = 'shariqh/agent-inbox'
+
+// Issue #297: the snapshots an older process's write rebuilds, in the order
+// rebuiltBy reports them, and a clock that moves a second per write so a
+// timestamp it writes always changes.
+const only = (...names: SnapshotName[]): SnapshotName[] => SNAPSHOT_NAMES.filter((name) => names.includes(name))
+const ITEMS: SnapshotName[] = ['items', 'attention-items', 'history-items']
+const PLANS: SnapshotName[] = ['boards', 'attention-boards', 'archived-boards']
+function later(): string {
+  vi.setSystemTime(Date.now() + 1000)
+  return new Date().toISOString()
+}
 
 describe('a v1.3.1 process sharing a hub with this build (issue #103)', () => {
   let dir: string
@@ -357,6 +370,56 @@ describe('a v1.3.1 process sharing a hub with this build (issue #103)', () => {
     expect(entities.find((e) => e.id === board.id)).toMatchObject({ issue_pin_repo: REPO, issue_pin_number: 117 })
     expect(entities.filter((e) => e.kind === 'row').map((e) => [e.issue_repo, e.issue_number]).sort())
       .toEqual([['o/r', 5], [REPO, 120]])
+  })
+
+  // Issue #297: snapshot domains are kept by triggers, and a trigger fires for
+  // this process's statements too, even one it compiled against its own schema
+  // before this build migrated the hub under it (SQLite recompiles it). So each
+  // of its writes rebuilds exactly the snapshots it can change, its presence
+  // write rebuilds none, and replaying its migration keeps every trigger.
+  it('its writes rebuild exactly the snapshots they change, even through a statement prepared before the migration (#297)', async () => {
+    const old = oldProcess()
+    const insertBefore = old.prepare(V131.insertItem)
+    const presenceBefore = old.prepare(V131.upsertActivity)
+    const hub = newProcess()
+    const viewer = createViewer(hub)
+    const triggers = () => hub.prepare(`SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'snapshot_%' ORDER BY name`).all()
+    const created = triggers()
+    expect(created.length).toBeGreaterThan(0)
+    const item = (id: string, issue: number) => ({
+      id, project: 'agent-inbox', stream: `${issue}-work`, agent: 'old', session: null, kind: 'question',
+      title: `Old process asks about #${issue}`, detail: '', next_step: '', action_owner: null, impact: '', next_after: '',
+      context: '', options: null, repo: REPO, issue_ref: issue, head_repo: null, created_at: later(), updated_at: later(),
+    })
+    const presence = () => ({
+      session: 'old-mcp', project: 'agent-inbox', stream: '', agent: 'claude-code', doing: 'Working', detail: '', children: null,
+      idle: 0, claim: 1, server_version: '1.3.1', server_source: 'checkout', now: later(),
+    })
+
+    expect(await rebuiltBy(viewer, () => insertBefore.run(item('old-120', 120)))).toEqual(only(...ITEMS, 'links', 'issues'))
+    expect(await rebuiltBy(viewer, () => presenceBefore.run(presence()))).toEqual([])
+    expect(await rebuiltBy(viewer, () => old.prepare(V131.annotateItem).run('A note through the old viewer', later(), 'old-120')))
+      .toEqual(only(...ITEMS, 'issues'))
+    expect(await rebuiltBy(viewer, () => old.prepare(V131.insertBoard)
+      .run('old-board', 'agent-inbox', '117-umbrella', 'old', 'AHP integration', REPO, 117, null, later(), later())))
+      .toEqual(only(...PLANS, 'items', 'links', 'issues'))
+    expect(await rebuiltBy(viewer, () => old.prepare(V131.insertRow)
+      .run('old-row', 'old-board', 'Adapter', 'tracked', '', '', null, '', '', null, '', '', null, later(), later(), later(), 0)))
+      .toEqual(only(...PLANS, 'issues'))
+    expect(await rebuiltBy(viewer, () => old.prepare(V131.upsertRow).run({ status: 'blocked', note: 'Needs a key.', position: 0, now: later(), id: 'old-row' })))
+      .toEqual(only(...PLANS, 'issues'))
+    expect(await rebuiltBy(viewer, () => old.prepare(V131.bumpBoardRevision).get(later(), 'old-board'))).toEqual(only(...PLANS, 'issues'))
+    expect(await rebuiltBy(viewer, () => oldLink(old, '120-work'))).toEqual(only('links', 'issues'))
+    expect(await rebuiltBy(viewer, () => old.prepare(V131.recordLinkFailure)
+      .run({ repo: REPO, branch: '120-work', head_repo: REPO, error: 'offline', now: later() }))).toEqual(only('links'))
+    expect(await rebuiltBy(viewer, () => old.prepare(V131.syncBoardStatus).run('archived', later(), 'old-board')))
+      .toEqual(only(...PLANS, 'links', 'issues'))
+
+    old.close()
+    const restarted = oldProcess()
+    expect(triggers()).toEqual(created)
+    expect(await rebuiltBy(viewer, () => restarted.prepare(V131.insertItem).run(item('old-121', 121)))).toEqual(only(...ITEMS, 'links', 'issues'))
+    expect(await rebuiltBy(viewer, () => restarted.prepare(V131.upsertActivity).run(presence()))).toEqual([])
   })
 
   // #253: the hook links to a server only through the host it recorded. An old
@@ -1217,5 +1280,201 @@ describe('a v1.4.0 process answering a question this build replies to (#322, #32
       // a page from before #321 expects nothing, and replaces it as it always did
       expect(replyItem(hub, id, 'Older page', undefined, 'answer'), id).toMatchObject({ ok: true, wrote: true })
     }
+  })
+})
+
+// Issue #297 — the writes a v1.7.0 process runs, the last release before
+// snapshot domains, copied verbatim from src/store.ts at tag v1.7.0: its
+// presence, liveness and lease statements, which must rebuild nothing, and a
+// few that change what the viewer serves. None names snapshot_domains; only the
+// triggers move it.
+const V170 = {
+  upsertActivity: `INSERT INTO activity (session, project, stream, agent, doing, last_doing, detail, children, idle, started_at, updated_at, server_version, server_source, host_pid, server_pid)
+     VALUES (
+       @session, @project, @stream, @agent, @doing,
+       CASE WHEN @claim = 1 AND @idle = 0 AND @doing <> '' AND @doing <> 'open' THEN @doing ELSE '' END,
+       @detail, @children, @idle, @now, @now, @server_version, @server_source, @host_pid, @server_pid
+     )
+     ON CONFLICT(session) DO UPDATE SET
+       project = @project, stream = @stream, agent = @agent,
+       doing    = CASE WHEN @claim = 1 THEN @doing ELSE doing END,
+       last_doing = CASE
+         WHEN @claim = 1 AND @idle = 0 AND @doing <> '' AND @doing <> 'open' THEN @doing
+         ELSE last_doing
+       END,
+       detail   = CASE WHEN @claim = 1 THEN COALESCE(NULLIF(@detail, ''), detail) ELSE detail END,
+       children = CASE WHEN @claim = 1 THEN COALESCE(@children, children) ELSE children END,
+       idle     = CASE WHEN @claim = 1 THEN @idle ELSE idle END,
+       server_version = COALESCE(@server_version, server_version),
+       server_source  = COALESCE(@server_source, server_source),
+       host_pid   = COALESCE(@host_pid, host_pid),
+       server_pid = COALESCE(@server_pid, server_pid),
+       updated_at = @now, ended_at = NULL`,
+  // transitionClaimSpan's insert, for a claim that opens a span
+  openSpan: `INSERT INTO activity_spans (session, project, stream, agent, doing, started_at, last_active_at, ended_at)
+       VALUES (@session, @project, @stream, @agent, @doing, @now, @now, NULL)`,
+  // recordActivityCall: the presence row, then the open span
+  recordActivityCall: `UPDATE activity SET
+         doing    = CASE WHEN COALESCE(last_call_at, started_at) < @cold THEN 'open' ELSE doing END,
+         detail   = CASE WHEN COALESCE(last_call_at, started_at) < @cold THEN ''     ELSE detail END,
+         children = CASE WHEN COALESCE(last_call_at, started_at) < @cold THEN NULL   ELSE children END,
+         idle     = CASE WHEN COALESCE(last_call_at, started_at) < @cold THEN 1      ELSE idle END,
+         last_call_at = @now,
+         updated_at = @now
+       WHERE session = @session AND ended_at IS NULL`,
+  spanActive: `UPDATE activity_spans SET last_active_at = ? WHERE id = ?`,
+  touchActivity: `UPDATE activity SET updated_at = ? WHERE session = ? AND ended_at IS NULL`,
+  claimHookWatch: `INSERT INTO hook_watch_claims (claim_key, token, claimed_at) VALUES (?, ?, ?)
+                ON CONFLICT(claim_key) DO UPDATE SET token = excluded.token, claimed_at = excluded.claimed_at`,
+  // claimIssueRefresh's lease
+  leaseIssue: `INSERT INTO issue_refresh_claims (repo, number, owner, lease_until) VALUES (?, ?, ?, ?)`,
+  insertItem: `INSERT INTO items (
+       id, project, stream, agent, action_agent, session, kind, title, detail, next_step,
+       action_owner, impact, next_after, context, options, repo, issue_ref, head_repo, repo_root,
+       status, created_at, updated_at)
+     VALUES (
+       @id, @project, @stream, @agent, @agent, @session, @kind, @title, @detail, @next_step,
+       @action_owner, @impact, @next_after, @context, @options, @repo, @issue_ref, @head_repo, @repo_root,
+       'open', @created_at, @updated_at)`,
+  markReplySeen: `UPDATE items SET reply_seen_at =
+                CASE WHEN COALESCE(reply, '') <> '' THEN COALESCE(reply_seen_at, @now) ELSE reply_seen_at END,
+              annotation_seen_at =
+                CASE WHEN @annotations = 1 AND (annotated_at IS NOT NULL OR COALESCE(annotation, '') <> '')
+                     THEN COALESCE(annotation_seen_at, @now) ELSE annotation_seen_at END,
+              annotation_seen_by =
+                CASE WHEN @annotations = 1 AND (annotated_at IS NOT NULL OR COALESCE(annotation, '') <> '')
+                     THEN COALESCE(annotation_seen_by, @by) ELSE annotation_seen_by END
+              WHERE id = @id AND kind = 'question' AND status = 'open'
+                AND replied_at IS @repliedAt
+                AND (@revision IS NULL OR response_revision = @revision)`,
+  closeProject: `INSERT INTO projects (project, closed_at) VALUES (?, ?)
+     ON CONFLICT(project) DO UPDATE SET closed_at = excluded.closed_at`,
+  upsertIssueSnapshot: `INSERT INTO issue_snapshots (repo, number, snapshot, dependencies, fetched_at, checked_at, error)
+     VALUES (@repo, @number, @snapshot, @dependencies, @startedAt, @startedAt, NULL)
+     ON CONFLICT(repo, number) DO UPDATE SET
+       snapshot = excluded.snapshot, dependencies = excluded.dependencies,
+       fetched_at = excluded.fetched_at, checked_at = excluded.checked_at,
+       error = NULL, revision = issue_snapshots.revision + 1
+     WHERE excluded.checked_at > issue_snapshots.checked_at`,
+  setSourcePreview: `UPDATE source_links_by_head SET preview_url = @preview_url, preview_environment = @preview_environment,
+       preview_deployment_id = @preview_deployment_id, preview_updated_at = @preview_updated_at,
+       preview_error = @preview_error, revision = revision + 1
+     WHERE repo = @repo AND branch = @branch AND head_repo = @head_repo AND revision = @revision`,
+}
+
+describe('older processes sharing a hub with snapshot domains (#297)', () => {
+  let dir: string
+  let path: string
+  const open: Database.Database[] = []
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(Date.parse(at(60)))
+    dir = scratchDir('mixed-version-domains-')
+    path = join(dir, 'inbox.db')
+  })
+
+  afterEach(() => {
+    for (const connection of open.splice(0)) if (connection.open) connection.close()
+    rmSync(dir, { recursive: true, force: true })
+    vi.useRealTimers()
+  })
+
+  // an older openDb()'s pragmas, on a hub this build already migrated
+  function olderProcess(): Database.Database {
+    const db = new Database(path)
+    open.push(db)
+    db.pragma('busy_timeout = 5000')
+    db.pragma('journal_mode = WAL')
+    return db
+  }
+
+  function hub(): Database.Database {
+    const db = openDb(path)
+    open.push(db)
+    return db
+  }
+
+  it('v1.4.0 and v1.6.0 answers, row writes, pins, archives and issue snapshots rebuild exactly what they change', async () => {
+    const db = hub()
+    const old = olderProcess()
+    const viewer = createViewer(db)
+    const asked = insertItem(db, { project: 'agent-inbox', stream: '', agent: 'new', kind: 'question', title: 'Ship it?' })
+    upsertBoard(db, {
+      project: 'agent-inbox', stream: '', agent: 'new', title: 'Release',
+      rows: [{ label: 'Approve', status: 'blocked', note: 'Ready.', next_step: 'Approve it.', action_owner: 'task', impact: 'Ships.' }],
+    })
+    const board = () => getBoard(db, 'agent-inbox', 'Release') ?? listBoards(db, { status: 'archived' })[0]!
+    const row = board().rows[0]!
+
+    expect(await rebuiltBy(viewer, () => old.prepare(V140.replyItem)
+      .run({ id: asked, reply: 'Ship it', replyContext: null, kind: 'answer', now: later() }).changes === 1)).toEqual(only(...ITEMS, 'issues'))
+    expect(await rebuiltBy(viewer, () => {
+      const now = later()
+      return old.prepare(V140.annotateBoardRow).get('Approved', 'answer', now, now, row.id, null, null, null, null) !== undefined
+    })).toEqual(only(...PLANS, 'issues'))
+    expect(await rebuiltBy(viewer, () => old.prepare(V140.upsertIssueSnapshot)
+      .run({ repo: REPO, number: 120, snapshot: JSON.stringify(snapshot(`${REPO}#120`)), startedAt: later() }).changes === 1)).toEqual(only('issues'))
+    expect(await rebuiltBy(viewer, () => old.prepare(V140.recordIssueFailure)
+      .run({ repo: REPO, number: 120, error: 'offline', startedAt: later(), hard: 0 }).changes === 1)).toEqual(only('issues'))
+    expect(await rebuiltBy(viewer, () => old.prepare(V160.setBoardIssuePin)
+      .run(REPO, 117, board().id, REPO, 117).changes === 1)).toEqual(only(...PLANS, 'issues'))
+    expect(await rebuiltBy(viewer, () => old.prepare(V160.archiveBoard)
+      .run(later(), board().id, board().revision).changes === 1)).toEqual(only(...PLANS, 'links', 'issues'))
+  })
+
+  it('v1.7.0 presence, liveness and lease writes rebuild nothing; its item, pickup, project, issue and preview writes exactly what they change', async () => {
+    const db = hub()
+    const old = olderProcess()
+    const viewer = createViewer(db)
+    const answered = insertItem(db, { project: 'agent-inbox', stream: '', agent: 'new', kind: 'question', title: 'Which pool?' })
+    replyItem(db, answered, 'tank')
+    upsertSourceLink(db, { repo: REPO, branch: '120-work', pr_number: 41, pr_state: 'OPEN', preview_url: 'https://preview.example/41' })
+    const presence = (doing: string, claim: number) => ({
+      session: 'old-mcp', project: 'agent-inbox', stream: '', agent: 'claude-code', doing, detail: '', children: null,
+      idle: claim ? 0 : 1, claim, server_version: '1.7.0', server_source: 'runtime', host_pid: 1, server_pid: 2, now: later(),
+    })
+
+    expect(await rebuiltBy(viewer, () => old.prepare(V170.upsertActivity).run(presence('open', 0)))).toEqual([])
+    expect(await rebuiltBy(viewer, () => {
+      const claim = presence('Reviewing', 1)
+      old.prepare(V170.upsertActivity).run(claim)
+      return old.prepare(V170.openSpan).run({ session: claim.session, project: claim.project, stream: '', agent: claim.agent, doing: claim.doing, now: claim.now })
+    })).toEqual([])
+    expect(await rebuiltBy(viewer, () => {
+      const now = later()
+      old.prepare(V170.recordActivityCall).run({ session: 'old-mcp', now, cold: at(0) })
+      const span = old.prepare(`SELECT id FROM activity_spans WHERE session = 'old-mcp' AND ended_at IS NULL`).get() as { id: number }
+      return old.prepare(V170.spanActive).run(now, span.id)
+    })).toEqual([])
+    expect(await rebuiltBy(viewer, () => old.prepare(V170.touchActivity).run(later(), 'old-mcp'))).toEqual([])
+    expect(await rebuiltBy(viewer, () => old.prepare(V170.claimHookWatch).run('host:1', 'token-1', later()))).toEqual([])
+    expect(await rebuiltBy(viewer, () => old.prepare(V170.leaseIssue).run(REPO, 140, 'old-viewer', later()))).toEqual([])
+
+    expect(await rebuiltBy(viewer, () => {
+      const now = later()
+      return old.prepare(V170.insertItem).run({
+        id: 'old-item', project: 'agent-inbox', stream: '120-work', agent: 'old', session: 'old-mcp', kind: 'question', title: 'Old ask',
+        detail: '', next_step: '', action_owner: null, impact: '', next_after: '', context: '', options: null, repo: REPO, issue_ref: 120,
+        head_repo: null, repo_root: null, created_at: now, updated_at: now,
+      })
+    })).toEqual(only(...ITEMS, 'links', 'issues'))
+    expect(await rebuiltBy(viewer, () => {
+      const item = getItem(db, answered)!
+      return old.prepare(V170.markReplySeen).run({
+        id: answered, repliedAt: item.replied_at, revision: item.response_revision, now: later(), annotations: 0, by: null,
+      }).changes === 1
+    })).toEqual(only(...ITEMS))
+    expect(await rebuiltBy(viewer, () => old.prepare(V170.closeProject).run('agent-inbox', later()))).toEqual(only('items', 'links', 'issues'))
+    expect(await rebuiltBy(viewer, () => old.prepare(V170.upsertIssueSnapshot).run({
+      repo: REPO, number: 120, snapshot: JSON.stringify(snapshot(`${REPO}#120`)), dependencies: null, startedAt: later(),
+    }).changes === 1)).toEqual(only('issues'))
+    expect(await rebuiltBy(viewer, () => {
+      const { revision } = listSourceLinks(db)[0]!
+      return old.prepare(V170.setSourcePreview).run({
+        repo: REPO, branch: '120-work', head_repo: REPO, revision, preview_url: 'https://preview.example/42',
+        preview_environment: 'preview', preview_deployment_id: 42, preview_updated_at: later(), preview_error: null,
+      }).changes === 1
+    })).toEqual(only('links'))
   })
 })

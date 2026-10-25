@@ -170,8 +170,10 @@ export function openDb(path: string = defaultDbPath()): Database.Database {
 //     snapshot_ trigger the old table had, in the same transaction;
 //   - versions only grow, and commit or roll back with the write, so equal
 //     versions before and after a read prove that no write to the domain
-//     committed in between. They start at a random 48-bit value, and a domain
-//     missing a trigger proves nothing (untrustedDomains below).
+//     committed in between. They start at a random 48-bit value. A domain
+//     whose version proves nothing (no row, or a trigger missing:
+//     untrustedDomains below) falls back to the commit token every snapshot
+//     used before #297: rebuilt after any commit, a 304 otherwise.
 // Tables no snapshot reads (presence, claim history, the hook and refresh
 // leases, reply intents, the pre-#157 source_links) carry no trigger: a write
 // there moves nothing, so presence, liveness and claims never rebuild a body.
@@ -229,32 +231,37 @@ export interface SnapshotReadState {
   /** the schema cookie: any DDL, VACUUM or backup restore moves it */
   schemaVersion: number
   /**
-   * each domain's version; null proves nothing: the hub has no row for the
-   * domain, or lacks one of its triggers, so a write could change it unseen
+   * Each domain's token: its version, or, when the version proves nothing (the
+   * hub has no row for the domain, or lacks one of its triggers), the token
+   * every snapshot used before #297, `commits:<data_version>:<total_changes()>`,
+   * which moves with any commit from any connection.
    */
-  domains: Record<SnapshotDomain, number | null>
+  domains: Record<SnapshotDomain, number | string>
   inTransaction: boolean
 }
 
-// One statement, so the schema cookie and every version come from one read
-// snapshot. A read inside a transaction can see uncommitted versions that a
-// rollback takes back, so the viewer never publishes from one.
+// One statement, so the schema cookie, every version and the commit fallback
+// come from one read snapshot. A read inside a transaction can see uncommitted
+// versions that a rollback takes back, and total_changes() counts writes a
+// rollback undoes, so the viewer never publishes from one.
 export function readSnapshotState(db: Database.Database): SnapshotReadState {
-  const rows = db.prepare(`SELECT s.schema_version AS schemaVersion, d.domain AS domain, d.version AS version
-    FROM pragma_schema_version AS s LEFT JOIN snapshot_domains AS d ON 1`).all() as Array<{
+  const rows = db.prepare(`SELECT s.schema_version AS schemaVersion, c.data_version AS dataVersion,
+      total_changes() AS totalChanges, d.domain AS domain, d.version AS version
+    FROM pragma_schema_version AS s, pragma_data_version AS c LEFT JOIN snapshot_domains AS d ON 1`).all() as Array<{
     schemaVersion: number
+    dataVersion: number
+    totalChanges: number
     domain: string | null
     version: number | null
   }>
-  const schemaVersion = rows[0]!.schemaVersion
+  const { schemaVersion, dataVersion, totalChanges } = rows[0]!
   const untrusted = untrustedDomains(db, schemaVersion)
-  const domains = Object.fromEntries(Object.keys(SNAPSHOT_DOMAINS).map((domain) => [domain, null])) as
-    Record<SnapshotDomain, number | null>
-  for (const row of rows) {
-    if (row.domain !== null && Object.hasOwn(domains, row.domain) && !untrusted.has(row.domain)) {
-      domains[row.domain as SnapshotDomain] = row.version
-    }
-  }
+  const versions = new Map(rows.map((row) => [row.domain, row.version]))
+  const commits = `commits:${dataVersion}:${totalChanges}`
+  const domains = Object.fromEntries(Object.keys(SNAPSHOT_DOMAINS).map((domain) => {
+    const version = versions.get(domain)
+    return [domain, typeof version === 'number' && !untrusted.has(domain) ? version : commits]
+  })) as Record<SnapshotDomain, number | string>
   return { schemaVersion, domains, inTransaction: db.inTransaction }
 }
 
@@ -325,8 +332,12 @@ function snapshotDomainTriggers(db: Database.Database): SnapshotTrigger[] {
 // Review of #368: a version proves something only while every trigger that
 // moves it exists. One the hub lacks (dropped by hand, or not yet made for a
 // column a later build added, since this process opened the hub long before)
-// lets a write change the domain unseen, so the domain reads as null, served
-// fresh and never cached, until some process's openDb makes the trigger. The
+// lets a write change the domain unseen. Such a domain falls back to the
+// commit token in readSnapshotState: rebuilt after any commit, a 304
+// otherwise, as before #297. Only an openDb that generates the same trigger
+// text heals it: this build's, or a later one whose generator did not change.
+// A later build whose generator did change makes triggers under other names,
+// and the fallback lasts until a process of this build opens the hub. The
 // triggers change only with the schema cookie, so this is decided once per
 // cookie, and never remembered from inside a transaction: a rollback takes the
 // cookie back, and a later commit can return it to the value it read.

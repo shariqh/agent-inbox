@@ -633,14 +633,14 @@ export const SNAPSHOT_SOURCES = {
 
 type SnapshotName = keyof typeof SNAPSHOT_SOURCES
 
-// Equal versions of the snapshot's own domains, read outside any transaction
+// Equal tokens of the snapshot's own domains, read outside any transaction
 // under one schema, prove that no write that could change its bytes committed
-// between the two reads. A version that reads as null (the hub has no row for
-// the domain, or lacks one of its triggers) proves nothing, so a body that
-// reads it is served fresh and never cached.
+// between the two reads. A domain whose version proves nothing (the hub has no
+// row for it, or lacks one of its triggers) carries the commit token instead,
+// so such a body is rebuilt after any commit, as every body was before #297.
 function sameSnapshotState(domains: readonly SnapshotDomain[], a: SnapshotReadState, b: SnapshotReadState): boolean {
   return !a.inTransaction && !b.inTransaction && a.schemaVersion === b.schemaVersion
-    && domains.every((domain) => a.domains[domain] !== null && a.domains[domain] === b.domains[domain])
+    && domains.every((domain) => a.domains[domain] === b.domains[domain])
 }
 
 // GET/HEAD use weak comparison, as in Hono's ETag middleware. Generated opaque

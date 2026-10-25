@@ -696,7 +696,7 @@ describe('snapshot domains (issue #297)', () => {
       const tags = await warm()
       const rollback = new Error('rollback fixture')
       let transient: Promise<Response> | undefined
-      let seen: number | null = null
+      let seen = '' as number | string
       expect(() => db.transaction(() => {
         annotateItem(db, fixture.asked, 'Uncommitted correction')
         seen = readSnapshotState(db).domains.items
@@ -704,7 +704,8 @@ describe('snapshot domains (issue #297)', () => {
         throw rollback
       })()).toThrow(rollback)
       expect(await (await transient!).text()).toContain('Uncommitted correction')
-      expect(readSnapshotState(db).domains.items).toBeLessThan(seen!)
+      expect(typeof seen).toBe('number')
+      expect(readSnapshotState(db).domains.items).toBeLessThan(seen as number)
       expect(annotateItem(writer, fixture.asked, 'Committed correction')).toBe(true)
       // the same write, so the same triggers: the version the transaction saw is back
       expect(readSnapshotState(db).domains.items).toBe(seen)
@@ -723,32 +724,38 @@ describe('snapshot domains (issue #297)', () => {
       }
     })
 
-    it('never publishes a snapshot while a domain it reads has no version', async () => {
+    // Only a hand-edited hub lacks a version row. Its version proves nothing, so
+    // the domain falls back to the token every snapshot used before #297.
+    it('rebuilds after any commit, and only then, while a domain it reads has no version row', async () => {
       const tags = await warm()
       writer.exec(`DELETE FROM snapshot_domains WHERE domain = 'items'`)
       for (const name of SNAPSHOTS) {
         const read = await probe(name, tags[name])
         expect([read.status, read.rebuilt], name).toEqual([304, SNAPSHOT_SOURCES[name].includes('items' as never)])
       }
-      // and stays unproven: it is rebuilt again on the next read, never cached
+      // idle, a 304 from the cache; any commit, even to a table no snapshot reads, rebuilds it
+      expect(await probe('items', tags.items)).toMatchObject({ status: 304, rebuilt: false })
+      recordActivityCall(writer, 'mcp-1')
       expect(await probe('items', tags.items)).toMatchObject({ status: 304, rebuilt: true })
+      expect(await probe('items', tags.items)).toMatchObject({ status: 304, rebuilt: false })
       insertItem(writer, { project: 'alpha', stream: '', agent: 'copilot', kind: 'note', title: 'Still seen' })
       expect((await probe('items', tags.items)).text).toContain('Still seen')
     })
   })
 
   // Review of #368. A version proves something only while the triggers that move
-  // it exist, so a domain missing one (dropped, or not yet made for a column a
-  // later build added) is served fresh until some openDb makes it again; a
-  // column a later build names with an SQL keyword must not break that openDb;
-  // and a row seeded again after a reset must not land on a version a viewer
-  // cached.
+  // it exist. A domain missing one (dropped, or not yet made for a column a
+  // later build added) falls back to the commit token every snapshot used
+  // before #297, rebuilt after any commit and a 304 otherwise, until an openDb
+  // that makes the same trigger text makes it again. A column a later build
+  // names with an SQL keyword must not break that openDb, and a row seeded
+  // again after a reset must not land on a version a viewer cached.
   describe('trusting only the triggers a hub has', () => {
     const version = (domain: Domain) =>
       writer.prepare(`SELECT version FROM snapshot_domains WHERE domain = ?`).pluck().get(domain) as number
     const catchAll = (domain: Domain) => (writer.prepare(`SELECT name FROM sqlite_master WHERE type = 'trigger'`).pluck().all() as string[])
       .find((name) => new RegExp(`^snapshot_${domain}_update_[0-9a-f]{12}$`).test(name))!
-    const moved = (before: Record<string, number | null>, after: Record<string, number | null>) =>
+    const moved = (before: Record<string, number | string>, after: Record<string, number | string>) =>
       Object.keys(after).filter((domain) => after[domain] !== before[domain]).sort()
     const retitle = (title: string) => writer.prepare(`UPDATE items SET title = ? WHERE id = ?`).run(title, fixture.asked)
 
@@ -778,14 +785,24 @@ describe('snapshot domains (issue #297)', () => {
       expect(await probe('boards', tags.boards)).toMatchObject({ status: 304, rebuilt: true })
     })
 
-    it('serves a domain fresh, never cached, while one of its triggers is missing, and trusts it again once a reopen makes it', async () => {
+    it('rebuilds a domain after any commit, and only then, while one of its triggers is missing, and trusts its version again once a reopen makes it', async () => {
       const tags = await warm()
       const dropped = catchAll('items')
       writer.exec(`DROP TRIGGER "${dropped}"`)
-      // the schema moved, so every body is rebuilt once; the plans are cached again
+      // the schema moved, so every body is rebuilt once; idle, each is a 304 from the cache
       for (const name of SNAPSHOTS) expect((await probe(name, tags[name])).rebuilt, name).toBe(true)
-      for (const name of PLANS) expect((await probe(name, tags[name])).rebuilt, name).toBe(false)
-      // without the trigger an item write moves no version, yet it shows at once
+      for (const name of SNAPSHOTS) expect(await probe(name, tags[name]), name).toMatchObject({ status: 304, rebuilt: false })
+      // any commit, even to a table no snapshot reads, rebuilds what reads the items, and nothing else
+      recordActivityCall(writer, 'mcp-1')
+      for (const name of SNAPSHOTS) {
+        expect((await probe(name, tags[name])).rebuilt, name).toBe(SNAPSHOT_SOURCES[name].includes('items' as never))
+      }
+      // the viewer's own commit too, which only total_changes() sees
+      recordActivityCall(db, 'mcp-1')
+      for (const name of SNAPSHOTS) {
+        expect((await probe(name, tags[name])).rebuilt, name).toBe(SNAPSHOT_SOURCES[name].includes('items' as never))
+      }
+      // so an item write that moves no version without the trigger still shows at once
       const items = version('items')
       retitle('Retitled while untrusted')
       expect(version('items')).toBe(items)
@@ -793,12 +810,14 @@ describe('snapshot domains (issue #297)', () => {
         const read = await probe(name, tags[name])
         expect([read.status, read.rebuilt], name).toEqual([200, true])
         expect(read.text, name).toContain('Retitled while untrusted')
-        expect((await probe(name, read.etag!)).rebuilt, `${name} was cached`).toBe(true)
+        expect(await probe(name, read.etag!), name).toMatchObject({ status: 304, rebuilt: false })
       }
-      // any process's openDb makes it again, and the domain is trusted again
+      // an openDb that makes the same trigger text again makes the version proof again
       openDb(path).close()
       expect(catchAll('items')).toBe(dropped)
       const current = (await probe('items', tags.items)).etag!
+      expect(await probe('items', current)).toMatchObject({ status: 304, rebuilt: false })
+      recordActivityCall(writer, 'mcp-1')
       expect(await probe('items', current)).toMatchObject({ status: 304, rebuilt: false })
       retitle('Retitled once trusted')
       expect(version('items')).toBeGreaterThan(items)
@@ -807,11 +826,12 @@ describe('snapshot domains (issue #297)', () => {
       expect(read.text).toContain('Retitled once trusted')
     })
 
-    it('serves a domain fresh while a column a later build added has no trigger, and watches it once a reopen makes one', async () => {
+    it('rebuilds a domain after any commit while a column a later build added has no trigger, and watches it once a reopen makes one', async () => {
       const tags = await warm()
       writer.exec(`ALTER TABLE items ADD COLUMN later_note TEXT`)
       const first = await probe('items', tags.items)
       expect(first.rebuilt).toBe(true)
+      expect(await probe('items', first.etag!)).toMatchObject({ status: 304, rebuilt: false })
       const items = version('items')
       writer.prepare(`UPDATE items SET later_note = ? WHERE id = ?`).run('before the reopen', fixture.asked)
       expect(version('items')).toBe(items)
@@ -838,13 +858,13 @@ describe('snapshot domains (issue #297)', () => {
         db.exec('CREATE TABLE scratch_trust (value TEXT)')
         const state = readSnapshotState(db)
         seen = state.schemaVersion
-        expect(state.domains.items).not.toBeNull()
+        expect(typeof state.domains.items).toBe('number')
         throw rollback
       })()).toThrow(rollback)
       writer.exec(`DROP TRIGGER "${catchAll('items')}"`)
       const state = readSnapshotState(db)
       expect(state.schemaVersion).toBe(seen)
-      expect(state.domains.items).toBeNull()
+      expect(state.domains.items).toMatch(/^commits:/)
     })
 
     it('trusts nothing it read across a schema change, and remembers none of it', () => {
@@ -867,11 +887,11 @@ describe('snapshot domains (issue #297)', () => {
       try {
         const state = readSnapshotState(db)
         expect(moved).toBe(true)
-        expect(Object.values(state.domains).every((version) => version === null)).toBe(true)
+        expect(Object.values(state.domains).every((token) => typeof token === 'string')).toBe(true)
       } finally {
         db.prepare = prepare
       }
-      expect(Object.values(readSnapshotState(db).domains).every((version) => version !== null)).toBe(true)
+      expect(Object.values(readSnapshotState(db).domains).every((token) => typeof token === 'number')).toBe(true)
     })
 
     it('reads the trigger list only when the schema cookie moves', async () => {
@@ -882,6 +902,12 @@ describe('snapshot domains (issue #297)', () => {
       try {
         for (const name of SNAPSHOTS) await probe(name, tags[name])
         expect(queries.filter((sql) => /sqlite_master|pragma_table_info/.test(sql))).toEqual([])
+        // one SELECT per token: the schema cookie, every version and the commit fallback together
+        expect(queries.length).toBe(SNAPSHOTS.length)
+        for (const sql of queries) {
+          expect(sql).toMatch(/pragma_schema_version[\s\S]*pragma_data_version[\s\S]*snapshot_domains/)
+          expect(sql).toContain('total_changes()')
+        }
         writer.exec('CREATE TABLE scratch_cookie (value TEXT)')
         for (const name of SNAPSHOTS) await probe(name, tags[name])
         expect(queries.filter((sql) => /FROM sqlite_master/.test(sql))).toHaveLength(1)

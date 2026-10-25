@@ -233,9 +233,10 @@ Run the build before `npm run electron`; the development shell starts the built
   the live columns, double-quoted), give a new read every domain it needs, and
   classify a new column in `REVIEWED_COLUMNS` or a new table in `UNREAD`. A read
   inside a transaction is never published: a rollback takes a version back.
-  Versions start at a random 48-bit value, and when the schema cookie moves a
-  viewer distrusts (serves fresh, never caches) any domain missing a trigger
-  until an `openDb` makes it again.
+  Versions start at a random 48-bit value. When the schema cookie moves, a
+  viewer checks its triggers: a domain missing one (or its version row) falls
+  back to the pre-#297 commit token, rebuilt after any commit and a 304
+  otherwise. Only an `openDb` that generates the same trigger text heals it.
 - `/api/items` pages closed history (#184): every open item, the 50 most recently
   touched closed items, the 4 newest outcome-bearing ones of open projects and a
   `history` summary that keeps every count exact. Only `load()` reads

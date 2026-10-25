@@ -194,6 +194,41 @@ describe('per-window conditional snapshots', () => {
     await expect((await read(route)).json()).rejects.toThrow('Invalid snapshot payload')
   })
 
+  // Issue #299: the poll's archived plans in brief are a representation of
+  // their own, beside the complete list, each plan saying what it omits.
+  const brief = (omitted: unknown) => ({
+    id: 'plan', title: 'Shipped', project: 'alpha', agent: 'copilot', status: 'archived',
+    rows: [{ id: 'row', label: 'Child', status: 'done' }], progress: { done: 1, countable: 1, fraction: 1 }, omitted,
+  })
+
+  it('validates archived plans in brief apart from the complete archived list', async () => {
+    const summary = { plans: [brief({ outcomes: 2, latest: '2026-10-24T00:00:00.000Z' }), brief({ outcomes: 0, latest: null })] }
+    const json = (value: unknown, etag: string) => new Response(JSON.stringify(value), { headers: { etag } })
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(json(summary, '"same"'))
+      .mockResolvedValueOnce(json([], '"same"'))
+      .mockResolvedValueOnce(new Response(null, { status: 304 }))
+    const read = createSnapshotReader(fetcher)
+    const first = await (await read('/api/boards/archived/summary')).json()
+    expect(first).toEqual(summary)
+    expect(Object.isFrozen((first as typeof summary).plans[0]!.omitted)).toBe(true)
+    expect(await (await read('/api/boards/archived')).json()).toEqual([])
+    // the complete list's validator never revalidates the brief
+    expect(fetcher.mock.calls[1]?.[1]?.headers).toBeUndefined()
+    expect(await (await read('/api/boards/archived/summary')).json()).toBe(first)
+  })
+
+  it.each([
+    ['a bare list of plans', [brief({ outcomes: 0, latest: null })]],
+    ['a plan without its omissions', { plans: [brief(undefined)] }],
+    ['a negative count', { plans: [brief({ outcomes: -1, latest: null })] }],
+    ['omitted outcomes without a bound', { plans: [brief({ outcomes: 1, latest: null })] }],
+    ['a plan without progress', { plans: [{ ...brief({ outcomes: 0, latest: null }), progress: null }] }],
+  ])('rejects archived plans in brief with %s', async (_, value) => {
+    const read = createSnapshotReader(vi.fn().mockResolvedValue(new Response(JSON.stringify(value), { headers: { etag: '"bad"' } })))
+    await expect((await read('/api/boards/archived/summary')).json()).rejects.toThrow('Invalid snapshot payload')
+  })
+
   // #184 + #185: the page, the complete History list and activity history each
   // keep their own slot, even when every server tag is the same opaque string,
   // and the dock watcher's `?scope=attention` projections (#156, #287) can never

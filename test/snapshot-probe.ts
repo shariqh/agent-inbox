@@ -20,6 +20,7 @@ export const SNAPSHOT_ROUTES = {
   boards: '/api/boards',
   'attention-boards': '/api/boards?scope=attention',
   'archived-boards': '/api/boards/archived',
+  'archived-summary': '/api/boards/archived/summary',
   links: '/api/links',
   issues: '/api/issues',
 } as const satisfies Record<SnapshotName, string>

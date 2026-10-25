@@ -168,7 +168,7 @@ const REPO = 'shariqh/agent-inbox'
 // timestamp it writes always changes.
 const only = (...names: SnapshotName[]): SnapshotName[] => SNAPSHOT_NAMES.filter((name) => names.includes(name))
 const ITEMS: SnapshotName[] = ['items', 'attention-items', 'history-items']
-const PLANS: SnapshotName[] = ['boards', 'attention-boards', 'archived-boards']
+const PLANS: SnapshotName[] = ['boards', 'attention-boards', 'archived-boards', 'archived-summary']
 function later(): string {
   vi.setSystemTime(Date.now() + 1000)
   return new Date().toISOString()

@@ -19,6 +19,11 @@ const boards = (value) => Array.isArray(value) && value.every((board) =>
   strings(board, ['id', 'title', 'project', 'agent'])
   && Array.isArray(board.rows) && board.rows.every((row) => strings(row, ['id', 'label', 'status']))
   && record(board.progress) && ['done', 'countable', 'fraction'].every((key) => Number.isFinite(board.progress[key])))
+// Issue #299: every archived plan in brief, each with the outcomes it omits and,
+// when it omits any, the newest stamp among them.
+const archivedSummary = (value) => record(value) && boards(value.plans)
+  && value.plans.every((plan) => counts(plan.omitted, ['outcomes'])
+    && (typeof plan.omitted.latest === 'string' || (plan.omitted.latest === null && plan.omitted.outcomes === 0)))
 const spans = (value) => Array.isArray(value) && value.every(record)
 // Issue #288: the cached PR state, one record per (repo, branch, head).
 const links = (value) => Array.isArray(value) && value.every((link) => strings(link, ['repo', 'branch']))
@@ -37,6 +42,7 @@ const validators = new Map([
   ['/api/items/history', history],
   ['/api/boards', boards],
   ['/api/boards/archived', boards],
+  ['/api/boards/archived/summary', archivedSummary],
   ['/api/activity/history', spans],
   ['/api/issues', issueGraph],
   ['/api/links', links],

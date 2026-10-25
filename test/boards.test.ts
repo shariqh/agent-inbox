@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
-import { boardRowsView, boardRowLine, progressLabel, hiddenDoneCount, lingeringBoards } from '../public/boards.js'
+import { boardRowsView, boardRowLine, progressLabel, hiddenDoneCount, lingeringBoards, omittedOutcomes } from '../public/boards.js'
 
 type Row = Parameters<typeof boardRowsView>[0]['rows'][number]
 
@@ -117,6 +117,20 @@ describe('lingeringBoards', () => {
   })
   it('accepts a plain array of previously-active ids', () => {
     expect(lingeringBoards(['b1'], [], [bd('b1', 2, 2)]).map((b) => b.id)).toEqual(['b1'])
+  })
+})
+
+// Issue #299: archived plans in brief say what they omit from the outcome lists.
+describe('omittedOutcomes', () => {
+  it('sums what plans in brief omit, with the newest stamp among them; complete plans omit nothing', () => {
+    expect(omittedOutcomes([
+      { omitted: { outcomes: 2, latest: '2026-10-20T00:00:00.000Z' } },
+      { omitted: { outcomes: 0, latest: null } },
+      { omitted: { outcomes: 1, latest: '2026-10-22T00:00:00.000Z' } },
+      {},
+    ])).toEqual({ outcomes: 3, latest: '2026-10-22T00:00:00.000Z' })
+    expect(omittedOutcomes([{}, {}])).toEqual({ outcomes: 0, latest: null })
+    expect(omittedOutcomes(null)).toEqual({ outcomes: 0, latest: null })
   })
 })
 

@@ -28,9 +28,13 @@ export interface DashboardInput {
   nowMs: number
   liveSessionIds: Set<string> | string[]
   closedProjects?: Set<string> | string[]
-  /** issue #184: what the paged item snapshot omitted within this lens */
+  /**
+   * issue #184: what the paged item snapshot omitted within this lens; #299:
+   * the outcomes archived plans carried in brief omit (omittedOutcomes)
+   */
   history?: {
     older: { items: number; outcomes: number; latest: string | null; projects: string[]; agents?: string[] }
+    archived?: { outcomes: number; latest: string | null }
   }
 }
 
@@ -47,8 +51,10 @@ export interface DashboardModel {
   waitingEntries: RelayEntry[]
   agentEntries: RelayEntry[]
   recentOutcomes: RelayEntry[]
-  /** false while omitted closed history could still outrank a listed outcome */
+  /** false while omitted closed history or archived outcomes could still outrank a listed outcome */
   recentOutcomesComplete: boolean
+  /** which omitted source, read, would let the list be proven (#184, #299) */
+  recentOutcomesWait: { history: boolean; archived: boolean }
   sessions: Array<DashboardActivity & {
     synopsis: string
     historical: boolean

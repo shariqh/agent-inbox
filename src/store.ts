@@ -3039,6 +3039,124 @@ export function listBoardsWithBlockedRows(db: Database.Database): BoardWithRows[
   return out
 }
 
+// Issue #299: what the viewer's poll carries of archived plans. The full list
+// (/api/boards/archived: every row, with all of its background) is read only
+// while a surface needs it. This keeps every archived plan, in listBoards'
+// order, with every plan field and `progress` over all of its rows, but only
+// the rows the poll's own surfaces read, each with only the fields they read:
+//   - every row that links an issue: Agent Inbox activity labels
+//     (public/issues.js) say "Done here" for the issues archived plans name;
+//   - each project's `outcomeLimit` newest outcome-bearing rows, and any tied
+//     with the last: the Dashboard's recent outcomes, provable for any project
+//     lens without the full list.
+// `omitted` counts the outcome-bearing rows a plan leaves out, with the newest
+// Dashboard stamp among them, so every outcome count stays exact.
+export interface ArchivedRowBrief {
+  id: string
+  label: string
+  status: RowStatus
+  issue_repo: string | null
+  issue_number: number | null
+  outcome: string
+  // the stamps public/relay.js `stamp` orders a row's outcome by
+  outcome_at: string | null
+  annotation_seen_at: string | null
+  handled_seen_at: string | null
+  annotated_at: string | null
+  handled_at: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface ArchivedPlanBrief extends Board {
+  rows: ArchivedRowBrief[]
+  progress: Progress
+  omitted: {
+    /** outcome-bearing rows `rows` leaves out */
+    outcomes: number
+    /** the newest Dashboard stamp among them; null when none */
+    latest: string | null
+  }
+}
+
+export interface ArchivedSummary {
+  plans: ArchivedPlanBrief[]
+}
+
+// The instant public/relay.js `stamp` orders a row's outcome by: the first of
+// these a row has (rows carry no reply stamps). A row with none of them falls
+// back to its plan's updated_at, so an omitted outcome always has a bound.
+const ROW_OUTCOME_STAMP = `COALESCE(r.outcome_at, r.annotation_seen_at, r.handled_seen_at, r.annotated_at,
+  r.handled_at, r.updated_at, r.created_at, b.updated_at)`
+
+export function listArchivedSummary(db: Database.Database, outcomeLimit: number): ArchivedSummary {
+  // Read-only, so a deferred transaction suffices: it pins one snapshot across
+  // every statement, so a plan's rows, progress and omissions always agree.
+  return db.transaction((): ArchivedSummary => {
+    // listBoards' plan statement, so ties keep its order
+    const boards = db.prepare(`SELECT * FROM boards WHERE status = ? ORDER BY updated_at DESC`).all('archived') as Board[]
+    const rows = db.prepare(`SELECT r.board_id AS board_id, r.id AS id, r.status AS status, b.project AS project,
+        r.issue_number IS NOT NULL AS linked, r.outcome <> '' AS has_outcome, ${ROW_OUTCOME_STAMP} AS stamp_at
+      FROM board_rows r JOIN boards b ON b.id = r.board_id
+      WHERE b.status = 'archived'`).all() as Array<{
+      board_id: string
+      id: string
+      status: RowStatus
+      project: string
+      linked: number
+      has_outcome: number
+      stamp_at: string
+    }>
+    const byName = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0)
+    const carried = new Set(rows.filter((row) => row.linked).map((row) => row.id))
+    const outcomesByProject = new Map<string, typeof rows>()
+    for (const row of rows) {
+      if (!row.has_outcome) continue
+      const outcomes = outcomesByProject.get(row.project) ?? []
+      outcomes.push(row)
+      outcomesByProject.set(row.project, outcomes)
+    }
+    for (const outcomes of outcomesByProject.values()) {
+      outcomes.sort((a, b) => byName(b.stamp_at, a.stamp_at))
+      const edge = outcomes[outcomeLimit - 1]?.stamp_at
+      for (const [index, row] of outcomes.entries()) {
+        if (index >= outcomeLimit && row.stamp_at !== edge) break
+        carried.add(row.id)
+      }
+    }
+    const statuses = new Map<string, Array<{ status: RowStatus }>>()
+    const omitted = new Map<string, ArchivedPlanBrief['omitted']>()
+    for (const row of rows) {
+      const own = statuses.get(row.board_id) ?? []
+      own.push({ status: row.status })
+      statuses.set(row.board_id, own)
+      if (!row.has_outcome || carried.has(row.id)) continue
+      const left = omitted.get(row.board_id) ?? { outcomes: 0, latest: null }
+      left.outcomes += 1
+      if (left.latest === null || row.stamp_at > left.latest) left.latest = row.stamp_at
+      omitted.set(row.board_id, left)
+    }
+    const kept = new Map<string, ArchivedRowBrief[]>()
+    const brief = db.prepare(`SELECT board_id, id, label, status, issue_repo, issue_number, outcome, outcome_at,
+        annotation_seen_at, handled_seen_at, annotated_at, handled_at, created_at, updated_at
+      FROM board_rows WHERE id IN (SELECT value FROM json_each(?))
+      ORDER BY position ASC`).all(JSON.stringify([...carried])) as Array<ArchivedRowBrief & { board_id: string }>
+    for (const { board_id: boardId, ...row } of brief) {
+      const own = kept.get(boardId) ?? []
+      own.push(row)
+      kept.set(boardId, own)
+    }
+    return {
+      plans: boards.map((b) => ({
+        ...b,
+        rows: kept.get(b.id) ?? [],
+        progress: computeProgress((statuses.get(b.id) ?? []) as BoardRow[]),
+        omitted: omitted.get(b.id) ?? { outcomes: 0, latest: null },
+      })),
+    }
+  })()
+}
+
 // ── live activity: ephemeral presence, one row per session ──────────────────
 
 export interface ActivityChild {

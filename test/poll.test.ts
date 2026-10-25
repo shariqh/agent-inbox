@@ -9,6 +9,7 @@ import {
   pressHeld,
   scrollActive,
   shouldDeferRender,
+  pollMaySkipPaint,
   PRESS_GRACE_MS,
   SCROLL_IDLE_MS,
 } from '../public/poll.js'
@@ -174,5 +175,37 @@ describe('a press is not a pause — the hint vocabulary never learns about it',
 
   it('suspendHint stays null for a bare press — nothing is being held back from the human', () => {
     expect(suspendHint({ drafts: {}, pressedAt: t })).toBeNull()
+  })
+})
+
+// Issue #298: one case per condition, each the only one that fails.
+describe('pollMaySkipPaint — an idle tick keeps the frame', () => {
+  const object = Object.freeze({ done: [] })
+  const inputs = ['boot', object, '[]', NaN]
+  const painted = { inputs, at: 1_000_000 }
+  const skip = (over: Partial<Parameters<typeof pollMaySkipPaint>[0]> = {}) =>
+    pollMaySkipPaint({ inputs: [...inputs], painted, renderDirty: false, nowMs: painted.at + 29_999, ...over })
+
+  it('skips only when the same inputs painted a frame under 30 s ago and nothing is deferred', () => {
+    expect(skip()).toBe(true)
+    expect(skip({ nowMs: painted.at })).toBe(true)
+  })
+  it('paints when no complete frame is on screen', () => {
+    expect(skip({ painted: null })).toBe(false)
+  })
+  it('paints a deferred frame', () => {
+    expect(skip({ renderDirty: true })).toBe(false)
+  })
+  it('paints on the 30 s clock', () => {
+    expect(skip({ nowMs: painted.at + 30_000 })).toBe(false)
+  })
+  it('paints when the clock moved back', () => {
+    expect(skip({ nowMs: painted.at - 1 })).toBe(false)
+  })
+  it('paints when any input changed, by identity rather than by look', () => {
+    expect(skip({ inputs: ['boot', { done: [] }, '[]', NaN] })).toBe(false)
+    expect(skip({ inputs: ['restarted', object, '[]', NaN] })).toBe(false)
+    expect(skip({ inputs: ['boot', object, '[]'] })).toBe(false)
+    expect(skip({ inputs: ['boot', object, '[]', NaN, 0] })).toBe(false)
   })
 })

@@ -4,6 +4,7 @@ import type Database from 'better-sqlite3'
 import { insertItem, upsertBoard } from '../../src/store.js'
 import {
   advanceClock, bootApp, buttonLabelled, click, freshDb, pollTick, row, settle, showInbox, useDomTest,
+  changedPollTick,
 } from './harness.js'
 
 useDomTest()
@@ -44,7 +45,7 @@ describe('passive refresh while the viewer is unfocused', () => {
     const before = row(id)!
     before.focus()
     vi.spyOn(document, 'hasFocus').mockReturnValue(false)
-    await pollTick()
+    await changedPollTick(db)
     expect(before.isConnected).toBe(false)
     expect(document.activeElement?.tagName).toBe('BODY')
     expect(row(id)).not.toBeNull()
@@ -78,7 +79,7 @@ describe('passive refresh while the viewer is unfocused', () => {
     const before = buttonLabelled('Open details', document.getElementById('missionbox')!)!
     before.focus()
     vi.spyOn(document, 'hasFocus').mockReturnValue(false)
-    await pollTick()
+    await changedPollTick(db)
     expect(before.isConnected).toBe(false)
     expect(document.activeElement?.tagName).toBe('BODY')
     expect(document.getElementById('missionbox')?.hidden).toBe(false)

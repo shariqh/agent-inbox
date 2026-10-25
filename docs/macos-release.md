@@ -14,36 +14,40 @@ fnm exec --using=24 npm run release:inputs
 ```
 
 The Node SHA-256 values are copied from the official
-`https://nodejs.org/dist/v24.22.0/SHASUMS256.txt` distribution metadata, whose signature
+`https://nodejs.org/dist/v24.22.1/SHASUMS256.txt` distribution metadata, whose signature
 was checked against the Node.js release keys. Runtime staging rejects any hash, URL,
 archive root, platform, ABI, or architecture mismatch.
 
 ### Node 24.22.0 ends the #135 compatibility hold
 
-Portable runtimes use **Node 24.22.0**, the same Node the pinned Electron embeds. While
-Node 24.19.0 to 24.21.0 carried the abort below, they were held at Node 24.18.1 (#135);
-#362 ended the hold. This section records why there was one, why it ended and what
-proved it.
+Portable runtimes use **Node 24.22.1**, a security release one patch ahead of the Node
+24.22.0 that the pinned Electron 43.8.3 embeds; #371 tracks moving Electron to a 43.x
+release that embeds 24.22.1. While Node 24.19.0 to 24.21.0 carried the abort below, the
+runtimes were held at Node 24.18.1 (#135); #362 ended the hold. This section records why
+there was one, why it ended and what proved it.
 
 **Why there was a hold.** Node 24.19.0 added cleanup hooks to `node::ObjectWrap`
 ([nodejs/node#63642](https://github.com/nodejs/node/pull/63642)). A `better-sqlite3` built
 against those headers removes its hook through `node::RemoveEnvironmentCleanupHook` when a
-statement is garbage collected. In Node 24.19.0 to 24.21.0 that function looked up the
-current `Environment` and aborted on `CHECK_NOT_NULL(env)` (`src/api/hooks.cc:142`) when
-there was none. Allocation-driven GC collects statements in exactly that state, including
-at MCP and watcher startup ([upstream #65446](https://github.com/nodejs/node/issues/65446)).
-ABI 137 compatibility and a passing hook selftest did not reveal it, and an
-executable-only downgrade with a 24.19-built addon still aborted, so the hold rebuilt both
-the runtime and its addon at 24.18.1, whose headers predate the change.
+statement is garbage collected. Through Node 24.21.0 that function aborted on
+`CHECK_NOT_NULL(env)` (`src/api/hooks.cc:142`) when called without a current
+`Environment`, and before 24.19.0's headers no addon called it during GC. Allocation-driven
+GC collects statements in exactly that state, including at MCP and watcher startup
+([upstream #65446](https://github.com/nodejs/node/issues/65446)). ABI 137 compatibility
+and a passing hook selftest did not reveal it, and an executable-only downgrade with a
+24.19-built addon still aborted, so the hold rebuilt both the runtime and its addon at
+24.18.1, whose headers predate the change.
 
 **Why it ended.** Node 24.22.0 keeps a global registry of addon-provided cleanup hooks
 ([nodejs/node#63985](https://github.com/nodejs/node/pull/63985)) and fixes a
 use-after-free in running them ([nodejs/node#65630](https://github.com/nodejs/node/pull/65630)).
 `RemoveEnvironmentCleanupHook` now finds the hook by isolate and no longer needs a current
-`Environment`. Upstream #65446 is still open; the fix commits only reference it. Electron
-43.8.0 moved to Node 24.22.0 and dropped its own backport of the same fix
-([below](#electrons-embedded-node)), and the packaged Electron 43.8.x passed the
-allocation-driven check in every packaging job before the runtime followed it.
+`Environment`. Node 24.22.1's `src/api/hooks.cc` is byte-identical to 24.22.0's. Upstream
+#65446 is still open: #65630's commit references it, the v24.x commit of #63985 cites #63642
+and #63923 instead, and neither closes it. Electron 43.8.0 moved to Node 24.22.0 and
+dropped its own backport of the same fix ([below](#electrons-embedded-node)), and the
+packaged Electron 43.8.x passed the allocation-driven check in every packaging job before
+the runtime followed it.
 
 **What proved it, and still does.** The check that found the regression remains the gate.
 Staging rebuilds the addon from source using the verified distribution's own headers
@@ -53,10 +57,13 @@ releases 300,000 statements under ordinary allocation pressure; explicit `global
 is deliberately not a substitute. The MCP server probe then starts the staged server and
 lists its tools. Each architecture runs both natively, Intel included, and the staging log
 names the Node each check ran and how long it took (`stage-runtime: <key> runtime (Node
-v24.22.0, ABI 137) passed its allocation-driven SQLite check (#135) in <seconds> s (limit
-180 s)`). A failure, signal, or timeout refuses publication. The check has a
-180-second ceiling: GitHub's Intel runners need roughly 25–30 seconds for it, so the
-previous 30-second ceiling timed out about a quarter of their runs (#187).
+v24.22.1, ABI 137) passed its allocation-driven SQLite check (#135) in <seconds> s (limit
+180 s)`). A failure, signal, or timeout refuses publication. Staging the same tree on Node
+24.21.0 shows the gate still works: that runtime passed its hook selftest, then aborted in
+this check at `hooks.cc:142` and was refused publication. The check has a 180-second
+ceiling. It took GitHub's Intel runners roughly 25–30 seconds when #187 raised the ceiling
+from 30 seconds, which had timed out about a quarter of their runs; it now takes about
+35–60 seconds there.
 
 If a later Node release brings the abort back, hold the runtime again: **both the runtime
 and its addon must be rebuilt**, never patched into a signed payload. Each architecture

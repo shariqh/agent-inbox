@@ -17,16 +17,16 @@ import { scratchDir } from './scratch.js'
 describe('macOS release inputs', () => {
   it('pins the exact Node and Electron release contract in one validated manifest', () => {
     const inputs = loadReleaseInputs()
-    expect(inputs.node.version).toBe('v24.22.0')
+    expect(inputs.node.version).toBe('v24.22.1')
     expect(inputs.node.modulesAbi).toBe('137')
     expect(inputs.minimumMacosVersion).toBe('13.5')
     expect(RUNTIME_KEYS).toBe(MACOS_RUNTIME_KEYS)
     expect(RUNTIME_KEYS).toEqual(['darwin-arm64', 'darwin-x64'])
     expect(Object.keys(inputs.node.distributions)).toEqual(RUNTIME_KEYS)
     expect(inputs.node.distributions['darwin-arm64'].sha256)
-      .toBe('75ddfb875bbd868ebe57536f4442225f54dd10f6d2178dd439de869a5c648dc3')
+      .toBe('654ba79de6155647e22321932b45f2a1ccb705976cc337c9b8e278beb085a628')
     expect(inputs.node.distributions['darwin-x64'].sha256)
-      .toBe('b890d687983ddc811641f6739c3ce99d2912c58f9e44b68aa25944037b425305')
+      .toBe('65e450f90a6eaacd5000f611861c4ce65fadc87f813795dc4ed0c0e5f2fca2d4')
     expect(inputs.electron).toEqual({
       version: '43.8.3',
       packagerVersion: '20.3.0',

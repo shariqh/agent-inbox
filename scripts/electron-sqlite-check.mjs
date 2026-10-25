@@ -5,9 +5,9 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const SQLITE_CHECK_SCRIPT = join(dirname(fileURLToPath(import.meta.url)), 'runtime-sqlite-check.mjs')
-// Mirrors SQLITE_CHECK_TIMEOUT_MS in stage-runtime.mjs (#193): GitHub's Intel
-// runners need roughly 25-35 s for the 300,000 statements (#187), and a real
-// hang still fails.
+// Mirrors SQLITE_CHECK_TIMEOUT_MS in stage-runtime.mjs (#193): the 300,000 statements
+// took GitHub's Intel runners roughly 25-35 s when #187 raised the ceiling and now take
+// about 35-60 s there, and a real hang still fails.
 const SQLITE_CHECK_TIMEOUT_MS = 180_000
 const IDENTITY_TIMEOUT_MS = 30_000
 const OUTPUT_EXCERPT_CHARS = 2_000

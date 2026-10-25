@@ -17,7 +17,7 @@ parse Electron 43's deprecation-plus-visibility attribute ordering in the V8
 headers; the build verifies both compiler commands, the exact compiler version,
 and the native target tuple before rebuilding.
 
-The portable Node pin is **24.22.0**, matching the
+The portable Node pin is **24.22.1**, matching the
 [macOS profile, where the #135 hold ended](macos-release.md#node-24220-ends-the-135-compatibility-hold).
 Both architectures rebuild `better-sqlite3` against those verified archive headers
 and run the allocation-driven SQLite cleanup gate and the MCP server probe before

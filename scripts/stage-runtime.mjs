@@ -320,10 +320,10 @@ const REQUIRED_DOCS = [
   join('instructions', 'copilot-cli.md'),
 ]
 
-// The allocation-driven check runs 300,000 statements on purpose (#135). GitHub's
-// Intel macOS runners need roughly 25-30 s for it, so a 30 s ceiling timed out
-// about a quarter of darwin-x64 (macos-15-intel) stagings (#187). The loop is
-// bounded and a real hang still fails.
+// The allocation-driven check runs 300,000 statements on purpose (#135). It took
+// GitHub's Intel macOS runners roughly 25-30 s when #187 raised this ceiling, after a
+// 30 s one timed out about a quarter of darwin-x64 (macos-15-intel) stagings; it now
+// takes about 35-60 s there. The loop is bounded and a real hang still fails.
 const SQLITE_CHECK_TIMEOUT_MS = 180_000
 
 /**
@@ -356,7 +356,7 @@ function runStagedSelftest(stageDir, adapter, { nodeVersion, nodeModulesAbi }) {
   const scratchDir = mkdtempSync(join(tmpdir(), 'stage-runtime-selftest-'))
   try {
     for (const [label, args, timeout] of [
-      ['selftest (bin/node dist/hook-cli.js selftest)', [hookCli, 'selftest'], 30_000],
+      [`selftest (${adapter.payloadNodeExecRelPath} dist/hook-cli.js selftest)`, [hookCli, 'selftest'], 30_000],
       ['allocation-driven SQLite check (#135)', [
         join(SCRIPT_DIR, 'runtime-sqlite-check.mjs'), join(stageDir, 'dist', 'store.js'),
       ], SQLITE_CHECK_TIMEOUT_MS],

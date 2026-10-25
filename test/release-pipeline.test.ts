@@ -319,6 +319,12 @@ describe('native architecture release stages', () => {
     expect(manifest).toBeGreaterThan(selftest)
   })
 
+  it('names the staged node each platform runs in its selftest line, node.exe on Windows (#362)', () => {
+    const source = readFileSync(join(root, 'scripts', 'stage-runtime.mjs'), 'utf8')
+    expect(source).toContain('`selftest (${adapter.payloadNodeExecRelPath} dist/hook-cli.js selftest)`')
+    expect(source).not.toContain("'selftest (bin/node")
+  })
+
   it('refuses an unpruned app or runtime in every thin-app gate (#291)', () => {
     for (const [file, gates] of [
       ['verify-linux-thin-app.mjs', ['assertPrunedNodeModules(resources, ', 'assertPrunedNodeModules(runtimeRoot, ']],

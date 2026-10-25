@@ -21,27 +21,27 @@ describe('Windows release inputs', () => {
       bundleId: 'io.github.shariqh.agent-inbox',
       minimumWindowsVersion: '10.0.17763',
       node: {
-        version: 'v24.22.0',
+        version: 'v24.22.1',
         modulesAbi: '137',
         distributions: {
           'win32-x64': {
             platform: 'win32',
             arch: 'x64',
-            archive: 'node-v24.22.0-win-x64.zip',
-            root: 'node-v24.22.0-win-x64',
-            url: 'https://nodejs.org/dist/v24.22.0/node-v24.22.0-win-x64.zip',
-            sha256: 'f9683a19877e12a9b167305c8db71040d812876359de21f0d2e97c3f321f80c3',
+            archive: 'node-v24.22.1-win-x64.zip',
+            root: 'node-v24.22.1-win-x64',
+            url: 'https://nodejs.org/dist/v24.22.1/node-v24.22.1-win-x64.zip',
+            sha256: 'd2046d28c2c3dcd211ac5145c0bf30e2047ef9dfb306693c8c6e2eccd8b95fa5',
           },
         },
       },
       nodeHeaders: {
-        archive: 'node-v24.22.0-headers.tar.gz',
-        root: 'node-v24.22.0',
-        url: 'https://nodejs.org/dist/v24.22.0/node-v24.22.0-headers.tar.gz',
-        sha256: '00e9f08b9057f9f5428387a5ffd496e53f274565b40b144b7ba876700755352a',
+        archive: 'node-v24.22.1-headers.tar.gz',
+        root: 'node-v24.22.1',
+        url: 'https://nodejs.org/dist/v24.22.1/node-v24.22.1-headers.tar.gz',
+        sha256: '322e0a27db9088093ab8347bdc8c7e0aaa21dc9ed548390bf06b394494c09267',
         importLibraries: {
           'win32-x64': {
-            url: 'https://nodejs.org/dist/v24.22.0/win-x64/node.lib',
+            url: 'https://nodejs.org/dist/v24.22.1/win-x64/node.lib',
             sha256: 'a0a84aa03917b578d286010b7521837e9ff1136ffb2e4a406c14316c33fd06f7',
           },
         },
@@ -100,19 +100,19 @@ describe('Windows release inputs', () => {
 
   it('rejects a wrong archive, root, or unofficial Node URL', () => {
     const wrongArchive = structuredClone(loadWindowsReleaseInputs())
-    wrongArchive.node.distributions['win32-x64'].archive = 'node-v24.22.0-win-x64.tar.xz'
+    wrongArchive.node.distributions['win32-x64'].archive = 'node-v24.22.1-win-x64.tar.xz'
     expect(() => validateWindowsReleaseInputs(wrongArchive)).toThrow(/archive must be/)
 
     const wrongRoot = structuredClone(loadWindowsReleaseInputs())
-    wrongRoot.node.distributions['win32-x64'].root = 'node-v24.22.0-win32-x64'
+    wrongRoot.node.distributions['win32-x64'].root = 'node-v24.22.1-win32-x64'
     expect(() => validateWindowsReleaseInputs(wrongRoot)).toThrow(/root must be/)
 
     const unofficial = structuredClone(loadWindowsReleaseInputs())
-    unofficial.node.distributions['win32-x64'].url = 'https://example.invalid/node-v24.22.0-win-x64.zip'
+    unofficial.node.distributions['win32-x64'].url = 'https://example.invalid/node-v24.22.1-win-x64.zip'
     expect(() => validateWindowsReleaseInputs(unofficial)).toThrow(/official Node distribution URL/)
 
     const latestUrl = structuredClone(loadWindowsReleaseInputs())
-    latestUrl.node.distributions['win32-x64'].url = 'https://nodejs.org/dist/latest/node-v24.22.0-win-x64.zip'
+    latestUrl.node.distributions['win32-x64'].url = 'https://nodejs.org/dist/latest/node-v24.22.1-win-x64.zip'
     expect(() => validateWindowsReleaseInputs(latestUrl)).toThrow(/official Node distribution URL/)
 
     const badDigest = structuredClone(loadWindowsReleaseInputs())
@@ -126,7 +126,7 @@ describe('Windows release inputs', () => {
     expect(() => validateWindowsReleaseInputs(nonNumericAbi)).toThrow(/node\.modulesAbi is invalid/)
 
     const malformedVersion = structuredClone(loadWindowsReleaseInputs())
-    malformedVersion.node.version = '24.22.0'
+    malformedVersion.node.version = '24.22.1'
     expect(() => validateWindowsReleaseInputs(malformedVersion)).toThrow(/node\.version is invalid/)
   })
 
@@ -136,22 +136,25 @@ describe('Windows release inputs', () => {
     const numericWrongAbi = structuredClone(loadWindowsReleaseInputs())
     numericWrongAbi.node.modulesAbi = '999'
     expect(() => validateWindowsReleaseInputs(numericWrongAbi))
-      .toThrow(/node\.version\/node\.modulesAbi must be v24\.22\.0\/137/)
+      .toThrow(/node\.version\/node\.modulesAbi must be v24\.22\.1\/137/)
   })
 
-  it('rejects an internally-consistent Node release substitution that is not the pinned v24.22.0/ABI 137', () => {
+  it('rejects an internally-consistent Node release substitution that is not the pinned v24.22.1/ABI 137', () => {
     // A real, differently-versioned Node distribution with matching archive/root/url passes every
     // structural check (format, platform/arch, official URL derivation) — only an explicit pin
     // catches a substitution to a different-but-otherwise-valid official release, such as
-    // v24.19.0, whose runtime lacks the #135 cleanup-hook fix.
-    const substituted = structuredClone(loadWindowsReleaseInputs())
-    substituted.node.version = 'v24.19.0'
-    substituted.node.distributions['win32-x64'].archive = 'node-v24.19.0-win-x64.zip'
-    substituted.node.distributions['win32-x64'].root = 'node-v24.19.0-win-x64'
-    substituted.node.distributions['win32-x64'].url =
-      'https://nodejs.org/dist/v24.19.0/node-v24.19.0-win-x64.zip'
-    expect(() => validateWindowsReleaseInputs(substituted))
-      .toThrow(/node\.version\/node\.modulesAbi must be v24\.22\.0\/137/)
+    // v24.19.0, whose runtime lacks the #135 cleanup-hook fix, or v24.22.0, which has that fix
+    // but not v24.22.1's security fixes.
+    for (const version of ['v24.19.0', 'v24.22.0']) {
+      const substituted = structuredClone(loadWindowsReleaseInputs())
+      substituted.node.version = version
+      substituted.node.distributions['win32-x64'].archive = `node-${version}-win-x64.zip`
+      substituted.node.distributions['win32-x64'].root = `node-${version}-win-x64`
+      substituted.node.distributions['win32-x64'].url =
+        `https://nodejs.org/dist/${version}/node-${version}-win-x64.zip`
+      expect(() => validateWindowsReleaseInputs(substituted), version)
+        .toThrow(/node\.version\/node\.modulesAbi must be v24\.22\.1\/137/)
+    }
   })
 
   it('pins the same release headers and import library as the Node distribution (#135)', () => {
@@ -161,14 +164,14 @@ describe('Windows release inputs', () => {
 
     const otherRelease = structuredClone(loadWindowsReleaseInputs())
     otherRelease.nodeHeaders.archive = 'node-v24.19.0-headers.tar.gz'
-    expect(() => validateWindowsReleaseInputs(otherRelease)).toThrow(/nodeHeaders\.archive must be node-v24\.22\.0-headers\.tar\.gz/)
+    expect(() => validateWindowsReleaseInputs(otherRelease)).toThrow(/nodeHeaders\.archive must be node-v24\.22\.1-headers\.tar\.gz/)
 
     const wrongRoot = structuredClone(loadWindowsReleaseInputs())
-    wrongRoot.nodeHeaders.root = 'node-v24.22.0-headers'
-    expect(() => validateWindowsReleaseInputs(wrongRoot)).toThrow(/nodeHeaders\.root must be node-v24\.22\.0/)
+    wrongRoot.nodeHeaders.root = 'node-v24.22.1-headers'
+    expect(() => validateWindowsReleaseInputs(wrongRoot)).toThrow(/nodeHeaders\.root must be node-v24\.22\.1/)
 
     const unofficial = structuredClone(loadWindowsReleaseInputs())
-    unofficial.nodeHeaders.url = 'https://example.invalid/node-v24.22.0-headers.tar.gz'
+    unofficial.nodeHeaders.url = 'https://example.invalid/node-v24.22.1-headers.tar.gz'
     expect(() => validateWindowsReleaseInputs(unofficial)).toThrow(/official Node headers URL/)
 
     const badDigest = structuredClone(loadWindowsReleaseInputs())
@@ -176,7 +179,7 @@ describe('Windows release inputs', () => {
     expect(() => validateWindowsReleaseInputs(badDigest)).toThrow(/nodeHeaders\.sha256 is invalid/)
 
     const otherLibrary = structuredClone(loadWindowsReleaseInputs())
-    otherLibrary.nodeHeaders.importLibraries['win32-x64'].url = 'https://nodejs.org/dist/v24.22.0/win-x86/node.lib'
+    otherLibrary.nodeHeaders.importLibraries['win32-x64'].url = 'https://nodejs.org/dist/v24.22.1/win-x86/node.lib'
     expect(() => validateWindowsReleaseInputs(otherLibrary)).toThrow(/official node\.lib URL/)
 
     const badLibraryDigest = structuredClone(loadWindowsReleaseInputs())

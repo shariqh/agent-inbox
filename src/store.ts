@@ -3044,35 +3044,39 @@ export function listBoardsWithBlockedRows(db: Database.Database): BoardWithRows[
 // while a surface needs it. This keeps every archived plan, in listBoards'
 // order, with every plan field and `progress` over all of its rows, but only
 // the rows the poll's own surfaces read, each with only the fields they read:
-//   - every row that links an issue: Agent Inbox activity labels
-//     (public/issues.js) say "Done here" for the issues archived plans name;
+//   - every row that links an issue, with its identity and content times:
+//     Agent Inbox activity labels (public/issues.js) say "Done here" for the
+//     issues archived plans name;
 //   - each project's `outcomeLimit` newest outcome-bearing rows, and any tied
-//     with the last: the Dashboard's recent outcomes, provable for any project
-//     lens without the full list.
-// `omitted` counts the outcome-bearing rows a plan leaves out, with the newest
-// Dashboard stamp among them, so every outcome count stays exact.
+//     with the last, with their outcome and the stamps public/relay.js `stamp`
+//     orders it by: the Dashboard's recent outcomes, provable for any lens
+//     without an agent filter.
+// `omitted` counts the outcome-bearing rows whose outcome a plan leaves out,
+// with the newest Dashboard stamp among them, so every outcome count stays exact.
 export interface ArchivedRowBrief {
   id: string
   label: string
   status: RowStatus
   issue_repo: string | null
   issue_number: number | null
+  created_at: string
+  updated_at: string
+}
+
+export interface ArchivedOutcomeBrief extends ArchivedRowBrief {
   outcome: string
-  // the stamps public/relay.js `stamp` orders a row's outcome by
   outcome_at: string | null
   annotation_seen_at: string | null
   handled_seen_at: string | null
   annotated_at: string | null
   handled_at: string | null
-  created_at: string
-  updated_at: string
 }
 
 export interface ArchivedPlanBrief extends Board {
-  rows: ArchivedRowBrief[]
+  rows: Array<ArchivedRowBrief | ArchivedOutcomeBrief>
   progress: Progress
   omitted: {
-    /** outcome-bearing rows `rows` leaves out */
+    /** outcome-bearing rows whose outcome `rows` leaves out */
     outcomes: number
     /** the newest Dashboard stamp among them; null when none */
     latest: string | null
@@ -3088,6 +3092,13 @@ export interface ArchivedSummary {
 // back to its plan's updated_at, so an omitted outcome always has a bound.
 const ROW_OUTCOME_STAMP = `COALESCE(r.outcome_at, r.annotation_seen_at, r.handled_seen_at, r.annotated_at,
   r.handled_at, r.updated_at, r.created_at, b.updated_at)`
+
+// A carried row that is not one of its project's newest outcomes: its identity
+// and content times, which is all issue activity reads.
+function rowIdentity(row: ArchivedRowBrief): ArchivedRowBrief {
+  const { id, label, status, issue_repo, issue_number, created_at, updated_at } = row
+  return { id, label, status, issue_repo, issue_number, created_at, updated_at }
+}
 
 export function listArchivedSummary(db: Database.Database, outcomeLimit: number): ArchivedSummary {
   // Read-only, so a deferred transaction suffices: it pins one snapshot across
@@ -3108,7 +3119,8 @@ export function listArchivedSummary(db: Database.Database, outcomeLimit: number)
       stamp_at: string
     }>
     const byName = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0)
-    const carried = new Set(rows.filter((row) => row.linked).map((row) => row.id))
+    // each project's newest outcomes, and any tied with the last
+    const recent = new Set<string>()
     const outcomesByProject = new Map<string, typeof rows>()
     for (const row of rows) {
       if (!row.has_outcome) continue
@@ -3121,29 +3133,30 @@ export function listArchivedSummary(db: Database.Database, outcomeLimit: number)
       const edge = outcomes[outcomeLimit - 1]?.stamp_at
       for (const [index, row] of outcomes.entries()) {
         if (index >= outcomeLimit && row.stamp_at !== edge) break
-        carried.add(row.id)
+        recent.add(row.id)
       }
     }
+    const carried = new Set([...rows.filter((row) => row.linked).map((row) => row.id), ...recent])
     const statuses = new Map<string, Array<{ status: RowStatus }>>()
     const omitted = new Map<string, ArchivedPlanBrief['omitted']>()
     for (const row of rows) {
       const own = statuses.get(row.board_id) ?? []
       own.push({ status: row.status })
       statuses.set(row.board_id, own)
-      if (!row.has_outcome || carried.has(row.id)) continue
+      if (!row.has_outcome || recent.has(row.id)) continue
       const left = omitted.get(row.board_id) ?? { outcomes: 0, latest: null }
       left.outcomes += 1
       if (left.latest === null || row.stamp_at > left.latest) left.latest = row.stamp_at
       omitted.set(row.board_id, left)
     }
-    const kept = new Map<string, ArchivedRowBrief[]>()
-    const brief = db.prepare(`SELECT board_id, id, label, status, issue_repo, issue_number, outcome, outcome_at,
-        annotation_seen_at, handled_seen_at, annotated_at, handled_at, created_at, updated_at
+    const kept = new Map<string, ArchivedPlanBrief['rows']>()
+    const brief = db.prepare(`SELECT board_id, id, label, status, issue_repo, issue_number, created_at, updated_at,
+        outcome, outcome_at, annotation_seen_at, handled_seen_at, annotated_at, handled_at
       FROM board_rows WHERE id IN (SELECT value FROM json_each(?))
-      ORDER BY position ASC`).all(JSON.stringify([...carried])) as Array<ArchivedRowBrief & { board_id: string }>
+      ORDER BY position ASC`).all(JSON.stringify([...carried])) as Array<ArchivedOutcomeBrief & { board_id: string }>
     for (const { board_id: boardId, ...row } of brief) {
       const own = kept.get(boardId) ?? []
-      own.push(row)
+      own.push(recent.has(row.id) ? row : rowIdentity(row))
       kept.set(boardId, own)
     }
     return {

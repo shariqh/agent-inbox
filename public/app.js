@@ -3427,7 +3427,9 @@ function relayCardEl(entry, lane) {
   return card
 }
 
-function renderRelayLane(box, lane, entries, { count = entries.length, loading = false, wait = { history: true, archived: false } } = {}) {
+function renderRelayLane(box, lane, entries, {
+  count = entries.length, loading = false, wait = { history: true, archived: false },
+} = {}) {
   const host = box.querySelector(`[data-relay-lane="${lane}"]`)
   host.querySelector('.relay-count').textContent = String(count)
   const body = host.querySelector('.relay-body')

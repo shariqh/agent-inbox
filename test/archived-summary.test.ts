@@ -22,10 +22,12 @@ const BASE = Date.parse('2026-10-24T00:00:00.000Z')
 const REPO = 'shariqh/agent-inbox'
 // The Dashboard lists four recent outcomes, and the viewer carries as many.
 const RECENT = 4
-// What the brief keeps of a row: what public/issues.js and public/relay.js read.
-const BRIEF_ROW = [
-  'id', 'label', 'status', 'issue_repo', 'issue_number', 'outcome', 'outcome_at', 'annotation_seen_at',
-  'handled_seen_at', 'annotated_at', 'handled_at', 'created_at', 'updated_at',
+// What the brief keeps of a row: its identity and content times, which
+// public/issues.js reads, and for one of its project's newest outcomes, the
+// outcome and the stamps public/relay.js orders it by.
+const ROW_IDENTITY = ['id', 'label', 'status', 'issue_repo', 'issue_number', 'created_at', 'updated_at'].sort()
+const ROW_OUTCOME = [
+  ...ROW_IDENTITY, 'outcome', 'outcome_at', 'annotation_seen_at', 'handled_seen_at', 'annotated_at', 'handled_at',
 ].sort()
 
 let db: Database.Database
@@ -98,18 +100,21 @@ describe('listArchivedSummary (issue #299)', () => {
   })
 
   it('carries the rows that link an issue, each with only the fields its surfaces read, exactly as the complete list has them', () => {
+    // alpha's newest outcomes are another plan's, so this plan's own outcome is omitted
     const complete = archived('alpha', 'Linked', [
       { label: 'Plain', status: 'done', context: 'Not carried.' },
-      { label: 'Child', status: 'done', issue: { repo: REPO, number: 118 }, context: 'Carried without this.' },
+      { label: 'Child', status: 'done', issue: { repo: REPO, number: 118 }, context: 'Carried without this.', outcome: 'Old news.' },
       { label: 'Another', status: 'partial', issue: { repo: REPO, number: 119 } },
     ])
-    const [plan] = listArchivedSummary(db, RECENT).plans
-    expect(plan!.rows.map((row) => row.label)).toEqual(['Child', 'Another'])
-    for (const row of plan!.rows) {
-      expect(Object.keys(row).sort()).toEqual(BRIEF_ROW)
-      expect(row).toEqual(pick(complete.rows.find((full) => full.id === row.id)!, BRIEF_ROW))
+    archived('alpha', 'Newer', [], ['N1', 'N2', 'N3', 'N4'])
+    const plan = listArchivedSummary(db, RECENT).plans.find((candidate) => candidate.id === complete.id)!
+    expect(plan.rows.map((row) => row.label)).toEqual(['Child', 'Another'])
+    for (const row of plan.rows) {
+      expect(Object.keys(row).sort()).toEqual(ROW_IDENTITY)
+      expect(row).toEqual(pick(complete.rows.find((full) => full.id === row.id)!, ROW_IDENTITY))
     }
-    expect(plan!.omitted).toEqual({ outcomes: 0, latest: null })
+    expect(JSON.stringify(plan)).not.toContain('Old news.')
+    expect(plan.omitted).toEqual({ outcomes: 1, latest: complete.rows.find((row) => row.label === 'Child')!.outcome_at })
   })
 
   it('carries each project’s newest outcomes, and counts the rest with the newest stamp among them', () => {
@@ -128,8 +133,14 @@ describe('listArchivedSummary (issue #299)', () => {
     })
     expect(byId.get(newer.id)!.omitted).toEqual({ outcomes: 0, latest: null })
     const beta = plans.find((plan) => plan.project === 'beta')!
-    expect(beta.rows.map((row) => [row.label, row.outcome])).toEqual([['B1', 'B1 shipped.'], ['B2', 'B2 shipped.']])
+    expect(beta.rows.map((row) => [row.label, 'outcome' in row && row.outcome])).toEqual([['B1', 'B1 shipped.'], ['B2', 'B2 shipped.']])
     expect(beta.omitted).toEqual({ outcomes: 0, latest: null })
+    // each with the outcome and the stamps it is ordered by, exactly as the complete list has them
+    const complete = listBoards(db, { status: 'archived' }).flatMap((plan) => plan.rows)
+    for (const row of plans.flatMap((plan) => plan.rows)) {
+      expect(Object.keys(row).sort()).toEqual(ROW_OUTCOME)
+      expect(row).toEqual(pick(complete.find((full) => full.id === row.id)!, ROW_OUTCOME))
+    }
   })
 
   // public/issues.js says "Done here" for the issues archived plans name, by

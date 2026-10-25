@@ -14,7 +14,8 @@ useDomTest()
 let db: Database.Database | null = null
 afterEach(() => { db?.close(); db = null; vi.unstubAllGlobals() })
 
-const SNAPSHOTS = new Set(['/api/items', '/api/boards', '/api/boards/archived'])
+// The poll's archived read is the brief (#299); the complete list is read only on demand.
+const SNAPSHOTS = new Set(['/api/items', '/api/boards', '/api/boards/archived/summary'])
 const AGENT = { project: 'alpha', stream: 'main', agent: 'copilot' } as const
 interface Read { path: string; sent: string | null; tag: string | null; status: number }
 
@@ -72,7 +73,7 @@ describe('conditional snapshot polling', () => {
     await pollTick()
     // One tick's reads now finish in any order (#161), so compare them by route.
     expect(Object.fromEntries(reads.slice(-3).map((entry) => [entry.path, entry.status]))).toEqual({
-      '/api/items': 200, '/api/boards': 200, '/api/boards/archived': 304,
+      '/api/items': 200, '/api/boards': 200, '/api/boards/archived/summary': 304,
     })
     expect(document.title).toBe('Agent Inbox')
     click(document.querySelector('.tab[data-tab="boards"]'))

@@ -65,10 +65,12 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   default's active plans that hold a blocked row, in its order, each narrowed to
   those rows, every plan field and `progress` otherwise the default's),
   `/api/items/history` (issue #184, below), likewise its own registration and
-  validator, `/api/issues` (issue #103, below), the seventh, and `/api/links`
+  validator, `/api/issues` (issue #103, below), the seventh, `/api/links`
   (issue #288), the eighth: the cached PR state, whose bytes depend on the
   database alone because the PR poller writes them through `store.ts` and the
-  previews it keeps follow open items and active plans. Any other query string
+  previews it keeps follow open items and active plans, and
+  `/api/boards/archived/summary` (issue #299, below), the ninth: archived plans
+  in brief, a path of its own beside the complete archived list. Any other query string
   keeps the default items or boards response. The dock watcher reads its two
   projections through `electron/conditional-read.cjs`: each read sends the
   validator its last 200 carried and reuses what it parsed on a 304, an untagged
@@ -115,7 +117,9 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   a refused body is no links) and the sub-issue graph (#103) keep their
   fallbacks, any other failure still fails the whole tick (reported in the old
   serial order) without blanking the frame, and `loadGeneration` still discards
-  an older tick that finishes late.
+  an older tick that finishes late. Since #299 the archived read among the eight
+  is the brief; the complete archived list, like older closed history, is an
+  extra read only while a surface needs it.
 - **A write rebuilds only the snapshots it can change (issue #297).**
   `SNAPSHOT_SOURCES` in `src/viewer.ts` names, for each conditional snapshot, the
   store domains its bytes are built from; `SNAPSHOT_DOMAINS` in `src/store.ts`
@@ -224,9 +228,67 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   complete: search stays busy, History and Handoffs say older items are loading.
   A deep link waiting on older history lands only if the human has not navigated
   since (`navigationKey`) and no pointer is held; otherwise it waits or is dropped.
+- **Archived plans are paged out of the poll like closed history (issue #299).**
+  The poll's archived read is `/api/boards/archived/summary`
+  (`listArchivedSummary`, `SNAPSHOT_SOURCES['archived-summary']` = boards and
+  board_rows): every archived plan in `listBoards`' order with every plan field and
+  `progress` over all of its rows, but only the rows its surfaces read without the
+  complete list, each with only the fields they read, as the complete list has
+  them: every row that links an issue, with its identity and content times, so
+  issue activity labels ("Done here", `public/issues.js`) read the same; and each
+  project's `RECENT_OUTCOMES` (4) newest outcome-bearing rows plus ties, with the
+  outcome, the stamps `public/relay.js` `stamp` orders it by and what a Handoffs
+  outcome card shows of its action (`note`, `next_step`, `action_owner` and
+  `options`, parsed as the complete list parses them), so the Dashboard's recent
+  outcomes are proven for every lens without an agent filter, and Handoffs draws
+  the same outcome cards from the brief as from the complete list (its outcome
+  lane reads the complete list only while the lens omits an outcome). A surface
+  that draws an archived row's field from the brief must find that field in the
+  brief: add it to the brief's select and `test/archived-summary.test.ts`'s field
+  lists, never draw a field the brief does not carry. Ties matter: one upsert stamps all its outcomes alike, and a cut tie could
+  never be proven. Every other outcome, a linked row's included, is omitted: each
+  plan's `omitted` gives how many and the newest stamp among them (never null
+  while it omits any; the stamp falls back to the plan's `updated_at`), so every
+  count stays exact (`omittedOutcomes` in `public/boards.js`). The rail, the
+  fold's "Archived plans (N)", lingering decisions and the collapse-state pruning
+  read the brief through the same code as the complete list.
+  `lastData.archivedBrief` is the brief; `lastData.archived` is what surfaces
+  read, the complete list while loaded and the brief otherwise;
+  `lastData.archivedFull` is the complete list or null, and only it may be drawn
+  whole (the fold's cards, lingering cards, Plan flow, a deep link's landing,
+  `rowHolds`). The complete `/api/boards/archived` is unchanged and ONLY `load()`
+  reads it, while `archivedWanted()` says a surface needs it: a deep link to a
+  plan the brief names (`archivedLookup`, waiting and dropped exactly as #184's),
+  restored row drafts waiting on it (below), search in use (`searchInUse()`,
+  #184's rule), Plan flow open on an archived plan, Handoffs with omitted archived
+  outcomes, Plans with the archived fold open, a lingering plan or a focused plan
+  its agent just archived (the focus follows it into the fold), and a Dashboard
+  lens whose recent outcomes only the archived plans can prove
+  (`recentOutcomesWait.archived`; `.history` is #184's half). Judge on the BRIEF
+  (the applied one, or the tick's new one for the in-tick read that lets a plan
+  archived this tick linger at once), never on the complete list, whose plans
+  omit nothing. The two sources share #184's early-tick requests:
+  `requestHistory()`/`requestHistoryPaint()` act when `omittedWanted()` says either
+  is wanted and still omitted, so one tick reads both, and opening the fold (a
+  `toggle` that turns `showArchived` on, never one a rebuild fires) is an explicit
+  entry point. A failed read degrades like older history: the brief still applies,
+  the fold and lingering place say "Archived plans are unavailable right now.",
+  search stays busy with that line, and the Dashboard and Handoffs name whichever
+  source failed. An older viewer answers the brief with 404: the tick reads the
+  complete list in its place, as such a viewer's page did, and fails only if that
+  read fails too. Search is busy, never partial, while either source is omitted
+  ("Searching archived plans…"). A restored row draft (#279) whose row no active
+  plan holds may be an archived plan's, and only the complete list says whether
+  the server already holds its text (`rowHolds`): while archived plans are paged
+  out and their last read has not failed (`awaitsArchivedRow`),
+  `placeRestoredDrafts` keeps it restored, still the profile's copy, asks for an
+  early tick, and places it the same way on the first tick that read the complete
+  list, or as before once that read failed. A draft for a row in an active plan
+  comes back with the first data, as always. Archived plans never carry
+  attention: `public/attention.js`, the dock and the badge read none of this.
 - **`src/store.ts` is the only door to the database.** Every read/write goes through its
   exported functions — items: `insertItem`/`resolveItem`/`dismissItem`/`annotateItem`/
-  `replyItem`/`answerItem`/`listItems`/`listItemsPage`; boards: `upsertBoard`/`updateBoardRow`/`getBoard`/`listBoards`/
+  `replyItem`/`answerItem`/`listItems`/`listItemsPage`; boards: `upsertBoard`/`updateBoardRow`/`getBoard`/`listBoards`/`listArchivedSummary`/
   `archiveBoard`/`annotateBoardRow`/`markAnnotationDelivered`/`markRowHandled`/
   `clearRowHandled`/`markHandledDelivered`/`listPendingRows`; watch stops (#217):
   `stopItemWatch`/`stopBoardRowWatch`; pins for later (#247): `pinItem`/`pinBoardRow`;
@@ -1091,7 +1153,9 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   kept, and a fresh intent brings its own. The tab's
   reply identity itself stays in `sessionStorage`: shared, two windows would merge
   their counters and refuse each other's newer replies. Restoring happens once, in the
-  first applied `load()` before its `renderIfIdle()` (`placeRestoredDrafts`), and sends
+  first applied `load()` before its `renderIfIdle()` (`placeRestoredDrafts`; a row
+  draft whose row no active plan holds may wait for the complete archived plans,
+  #299 above), and sends
   nothing, focuses nothing and switches no tab. A draft whose target is unchanged and
   whose project is open goes back to its editor, the newest one in the queue reopens
   its card when none is open, a Plans-only row reopens its panel, and the next queue
@@ -1186,7 +1250,8 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   revalidated, so each snapshot is its identity, the closed set is its bytes,
   `/api/activity` is `activityFrameKey` (its bytes without `updated_at`, the
   liveness heartbeat nothing displays, kept only for a row with no other
-  activity time), fallback bodies are reduced to what they mean, and the
+  activity time), the archived brief and, while read, the complete list or its
+  error are snapshots too (#299), fallback bodies are reduced to what they mean, and the
   boot markers, activity-history URL, lens (`navigationKey()`, `openRowId`) are
   values. This window's own state is covered by `outsideChanges`, bumped by any
   human input (pointerdown, click, keydown, input, change, focus, resize,

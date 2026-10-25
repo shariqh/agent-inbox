@@ -8,7 +8,7 @@ import { basename, dirname, isAbsolute, resolve, sep } from 'node:path'
 import type Database from 'better-sqlite3'
 import {
   listItems, listItemsPage, listOpenQuestions, resolveItem, dismissItem, annotateItem, replyItem, snoozeItem,
-  stopItemWatch, stopBoardRowWatch, pinItem, pinBoardRow,
+  stopItemWatch, stopBoardRowWatch, pinItem, pinBoardRow, listArchivedSummary,
   listBoards, listBoardsWithBlockedRows, archiveBoard, unarchiveBoard, annotateBoardRow, snoozeBoardRow,
   markRowHandled, clearRowHandled, listActivity, listActivitySpans, listSourceLinks, defaultDbPath,
   closeProject, reopenProject, closedProjects, readSnapshotState, listIssueEntities, listIssueSnapshots,
@@ -607,7 +607,8 @@ const RECENT_CLOSED_ITEMS = 50
 // Plus the newest outcome-bearing closed items of open projects: the four the
 // Dashboard lists, so its default lens never needs older history, however many
 // closures without an outcome (Inbox resolve/dismiss, hook sweeps) fill the
-// recently touched slots.
+// recently touched slots. The archived summary (#299) carries as many of each
+// project's newest archived outcomes, for the same lens.
 const RECENT_OUTCOMES = 4
 
 // Issue #297: what each conditional snapshot's bytes are built from, as store
@@ -625,6 +626,8 @@ export const SNAPSHOT_SOURCES = {
   boards: ['boards', 'board_rows'],
   'attention-boards': ['boards', 'board_rows'],
   'archived-boards': ['boards', 'board_rows'],
+  // listArchivedSummary: archived plans and every one of their rows (#299)
+  'archived-summary': ['boards', 'board_rows'],
   // listSourceLinks, and listLinkTargets() once a cached preview needs it
   links: ['source_links_by_head', 'items_links', 'boards_links', 'projects'],
   // buildIssueGraph over listIssueSnapshots, listIssueEntities and the links
@@ -1071,7 +1074,14 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
   const attentionBoards = conditionalSnapshot(db, 'attention-boards', () => listBoardsWithBlockedRows(db))
   app.get('/api/boards', (c, next) => (c.req.query('scope') === 'attention' ? attentionBoards : allBoards)(c, next))
 
+  // Issue #299: the complete archived plans, every row with all of its
+  // background, read only while a surface needs them (the archived fold, a plan
+  // lingering after its agent archived it, search, a deep link, Handoffs or Plan
+  // flow). The poll reads the summary below instead: each archived plan in
+  // brief, so counts, the rail, issue activity and the Dashboard stay exact
+  // without the list. Each is its own representation with its own validator.
   app.get('/api/boards/archived', conditionalSnapshot(db, 'archived-boards', () => listBoards(db, { status: 'archived' })))
+  app.get('/api/boards/archived/summary', conditionalSnapshot(db, 'archived-summary', () => listArchivedSummary(db, RECENT_OUTCOMES)))
 
   app.post('/api/boards/:id/archive', async (c) => {
     const body = await c.req.json<{ expected_version?: number }>().catch(() => null)

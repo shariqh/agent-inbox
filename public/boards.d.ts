@@ -39,3 +39,6 @@ export function lingeringBoards<T extends { id: string; progress: ProgressLike }
   boards: Array<{ id: string }>,
   archived: T[],
 ): T[]
+export function omittedOutcomes(
+  plans: Array<{ omitted?: { outcomes: number; latest: string | null } }> | null | undefined,
+): { outcomes: number; latest: string | null }

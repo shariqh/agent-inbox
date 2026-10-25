@@ -8,8 +8,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type Database from 'better-sqlite3'
 import {
-  advanceBoardRow, annotateItem, answerItem, archiveBoard, closeProject, getBoard, getItem, insertItem, markReplySeen,
-  pinItem, replyItem, resolveItem, upsertBoard,
+  advanceBoardRow, annotateBoardRow, annotateItem, answerItem, archiveBoard, closeProject, getBoard, getItem, insertItem,
+  markReplySeen, pinItem, replyItem, resolveItem, upsertBoard,
 } from '../../src/store.js'
 import type { BootOptions, ViewerBridge } from './harness.js'
 import {
@@ -211,6 +211,31 @@ describe('a draft comes back where it was', () => {
     await settle()
     expect(panelInput(partial.id)?.value).toBe('Mention the migration.')
     expect(recovery()).toBeNull()
+  })
+
+  // Issue #299: only a row no active plan holds waits for the archived plans;
+  // one in an active plan comes back with the first data, as always.
+  it('puts an active row’s draft back with the first data though other plans are archived, reading none of them', async () => {
+    db = freshDb()
+    const blocked = plan(db).rows[0]!
+    const old = plan(db, 'Old plan')
+    expect(archiveBoard(db, old.id, old.revision)).toBe(true)
+    await bootApp(db)
+    await draftAnswer(blocked.id, 'Approved for Thursday.')
+
+    const reads: string[] = []
+    await reopen(db, {
+      interceptFetch: async (input, _init, next) => {
+        if (String(input) === '/api/boards/archived') reads.push(String(input))
+        return next()
+      },
+    })
+    expect(row(blocked.id)?.getAttribute('aria-expanded'), 'the restored draft reopens its card').toBe('true')
+    expect(reads).toEqual([])
+    await pollTick()
+    await showInbox()
+    expect(answerInput(blocked.id)?.value).toBe('Approved for Thursday.')
+    expect(reads).toEqual([])
   })
 
   it('reopens the Plans panel of a finished row whose note was unsent, with finished rows hidden', async () => {
@@ -454,6 +479,77 @@ describe('a draft whose target changed goes to the unsent responses', () => {
     expect(fold.textContent).not.toContain(SET_ASIDE)
     await saved()
     expect(Object.keys(stored())).toEqual([`row-recovery:${rowId}:${board.rows[0]!.revision}`])
+  })
+
+  // Issue #299: the poll carries archived plans in brief, without the human's
+  // notes. A restored row draft whose row no active plan holds waits for the
+  // complete archived list, so one an archived plan already holds is still
+  // retired, and is placed as before only when that list cannot be read.
+  function sentThenArchived(d: Database.Database, rowId: string, text: string): void {
+    const board = getBoard(d, 'alpha', 'Launch plan')!
+    expect(annotateBoardRow(d, rowId, text, 'answer', board.rows[0]!.revision, board.revision)).toBe(true)
+    const sent = getBoard(d, 'alpha', 'Launch plan')!
+    expect(archiveBoard(d, sent.id, sent.revision)).toBe(true)
+  }
+
+  it('retires a restored row draft its since-archived plan already holds, once the complete list is read', async () => {
+    db = freshDb()
+    const rowId = plan(db).rows[0]!.id
+    await bootApp(db)
+    await draftAnswer(rowId, 'Approve the original action.')
+    window.dispatchEvent(new Event('pagehide'))
+    // while the app is closed, that very answer lands and the plan is archived
+    sentThenArchived(db, rowId, 'Approve the original action.')
+
+    const reads: number[] = []
+    let hold: Promise<void> | null = null
+    let release!: () => void
+    hold = new Promise<void>((resolve) => { release = resolve })
+    const bridge = await reopen(db, {
+      interceptFetch: async (input, _init, next) => {
+        if (String(input) !== '/api/boards/archived') return next()
+        if (hold) await hold
+        const response = await next()
+        reads.push(response.status)
+        return response
+      },
+    })
+    // it waits for the complete list, unplaced and still the profile's copy
+    expect(recovery()).toBeNull()
+    await saved()
+    expect(Object.keys(stored())).toEqual([`row:${rowId}`])
+
+    hold = null
+    release()
+    await settle()
+    expect(reads).toEqual([200])
+    expect(bridge.posts).toHaveLength(0)
+    expect(recovery()).toBeNull()
+    await saved()
+    expect(stored()).toEqual({})
+    // nothing waits on the complete list any more
+    await pollTick()
+    expect(reads).toEqual([200])
+  })
+
+  it('places a restored row draft as before when the complete archived list cannot be read', async () => {
+    db = freshDb()
+    const rowId = plan(db).rows[0]!.id
+    await bootApp(db)
+    await draftAnswer(rowId, 'Approve the original action.')
+    window.dispatchEvent(new Event('pagehide'))
+    sentThenArchived(db, rowId, 'Approve the original action.')
+
+    await reopen(db, {
+      interceptFetch: async (input, _init, next) => (String(input) === '/api/boards/archived'
+        ? new Response('down', { status: 500 })
+        : next()),
+    })
+    await pollTick()
+    const fold = recovery()!
+    expect(fold.textContent).toContain(ACTION_CHANGED)
+    expect(fold.textContent).toContain('Approve the original action.')
+    expect(document.getElementById('status')?.textContent).toBe('')
   })
 
   it.each([

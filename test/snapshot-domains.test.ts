@@ -29,7 +29,7 @@ type Domain = keyof typeof SNAPSHOT_DOMAINS
 type Hub = Database.Database
 const DOMAINS: Record<Domain, { table: string; columns?: readonly string[]; restamped?: readonly string[] }> = SNAPSHOT_DOMAINS
 const ITEMS: Snapshot[] = ['items', 'attention-items', 'history-items']
-const PLANS: Snapshot[] = ['boards', 'attention-boards', 'archived-boards']
+const PLANS: Snapshot[] = ['boards', 'attention-boards', 'archived-boards', 'archived-summary']
 
 // Tables no snapshot reads, and why. Writes to them must never move a snapshot.
 const UNREAD: Record<string, string> = {
@@ -170,6 +170,16 @@ function seed(db: Hub): Fixture {
     ...alpha, stream: '123-old', title: 'Retired', repo: REPO, issueRef: 128,
     rows: [{ label: 'Old', status: 'partial', issue: { repo: REPO, number: 124 } }],
   })
+  // more recorded outcomes than the archived summary carries for one project
+  // (#299), each at its own time, so which it carries and what it omits
+  // depend on the outcome stamps
+  for (let i = 0; i < 5; i++) {
+    tick()
+    updateBoardRow(db, {
+      ...alpha, stream: '123-old', title: 'Retired', repo: REPO, issueRef: 128,
+      expectedBoardVersion: getBoard(db, 'alpha', 'Retired')!.revision, label: `Shipped ${i}`, status: 'done', outcome: `Outcome ${i}.`,
+    })
+  }
   const retired = getBoard(db, 'alpha', 'Retired')!
   archiveBoard(db, retired.id, retired.revision)
 

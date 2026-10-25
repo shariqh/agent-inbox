@@ -35,7 +35,7 @@ import { renderStructuredText } from '/structured-text.js'
 import { cardLinks } from '/link-strip.js'
 import { fileLinksCopy, initLinkOpening, linkFileActions, refreshLinkPermission } from '/link-open.js'
 import { refreshLinkSettings, renderLinkSettings } from '/link-settings.js'
-import { boardRowsView, boardRowLine, progressLabel, hiddenDoneCount, lingeringBoards } from '/boards.js'
+import { boardRowsView, boardRowLine, progressLabel, hiddenDoneCount, lingeringBoards, omittedOutcomes } from '/boards.js'
 import { titleWithBadge, focusHashFor, parseFocusHash } from '/badge.js'
 import { layoutMode, railLabel, NARROW_MAX, PROJECT_DISCLOSURE_MAX } from '/layout.js'
 import {
@@ -124,7 +124,11 @@ let historyTabPinned = false // History keeps an omitted target until the tab ch
 let historyRequestedFor = -1 // the applied tick an early poll was requested for
 let historyLoadScheduled = false // that early poll has not started yet
 let historyPaintRequestedFor = -1 // the applied tick a human's history read-and-paint started for
-let searchAwaitingHistory = false
+// Issue #299: the poll carries archived plans in brief (/api/boards/archived/summary);
+// the complete list is read from /api/boards/archived only while some surface
+// needs it (archivedWanted), through the same early-poll requests as history.
+let archivedLookup = null // a deep link to an archived plan the brief names
+let searchAwaitingHistory = false // search waits on older history or archived plans
 let preparedFrame = null
 let editablePanesPainted = false
 // issue #30 — the (repo, branch) → cached PR state index, rebuilt once per
@@ -498,6 +502,25 @@ async function closedHistoryBody(read) {
   }
 }
 
+// Archived plans in brief (#299), a read the tick needs like /api/boards. A
+// viewer older than the route answers 404: null, and the tick reads the
+// complete list in its place, as such a viewer's page always did.
+async function archivedSummaryBody(read) {
+  const response = settledValue(read)
+  if (response.status === 404) return null
+  return (await response.json()).plans
+}
+
+// The complete archived plans (#299) degrade like older history: a failed read
+// leaves this tick's brief applied, and the surfaces waiting on it say so.
+async function archivedBody(read) {
+  try {
+    return { plans: await settledValue(read).json(), error: null }
+  } catch {
+    return { plans: null, error: ARCHIVED_UNAVAILABLE }
+  }
+}
+
 // The sub-issue graph (#103) falls back like links: a 404 from an older viewer,
 // a network error or a body its validator refuses means "no graph", and every
 // surface renders its plain chips. Read after the boot decision, like every
@@ -534,14 +557,21 @@ async function load() {
     return response
   }
   // Decided from the previous frame, before any read starts: a passive poll reads
-  // closed history the page omitted only while a surface still needs it (#184).
+  // closed history the page omitted (#184), or the complete archived plans the
+  // brief stands in for (#299), only while a surface still needs them.
   const wantHistory = historyWanted()
+  const wantArchived = archivedWanted()
   const historyUrl = activityHistoryUrl(Date.now())
   try {
-    const [items, boardsRead, archivedRead, activityRead, historyRead, closedRead, linksRead, issuesRead, closedHistoryRead] = await Promise.allSettled([
+    const [
+      items, boardsRead, summaryRead, activityRead, historyRead, closedRead, linksRead, issuesRead, closedHistoryRead,
+      archivedRead,
+    ] = await Promise.allSettled([
       readSnapshot('/api/items').then(marked),
       readSnapshot('/api/boards').then(marked),
-      readSnapshot('/api/boards/archived').then(marked),
+      // Archived plans in brief (#299): what every surface but the archived
+      // ones reads. The complete list is the last read, while one needs it.
+      readSnapshot('/api/boards/archived/summary').then(marked),
       fetch('/api/activity').then(marked),
       readSnapshot(historyUrl).then(marked),
       // Projects the human closed (issue #32). Defensive on purpose: a viewer that
@@ -558,6 +588,7 @@ async function load() {
       // its own validator and the same fallback (issuesBody).
       readSnapshot('/api/issues').then(marked),
       wantHistory ? readSnapshot('/api/items/history').then(marked) : null,
+      wantArchived ? readSnapshot('/api/boards/archived').then(marked) : null,
     ])
     if (reloadRequested || generation < appliedLoadGeneration) return false
     const res = settledValue(items)
@@ -575,21 +606,31 @@ async function load() {
     // Bodies only after the live boot decision: a 304 resolves to cached data.
     const body = (read) => (read.status === 'fulfilled' ? read.value.json() : Promise.reject(read.reason))
     const bodies = await Promise.allSettled([
-      res.json(), body(boardsRead), body(archivedRead), body(activityRead), historyBody(historyRead),
+      res.json(), body(boardsRead), archivedSummaryBody(summaryRead), body(activityRead), historyBody(historyRead),
       wantHistory ? closedHistoryBody(closedHistoryRead) : null, issuesBody(issuesRead), linksBody(linksRead),
+      wantArchived ? archivedBody(archivedRead) : null,
     ])
-    const [g, boards, archived, activity, activityHistory, firstOlder, issues, links] = bodies.map(settledValue)
+    const [g, boards, brief, activity, activityHistory, firstOlder, issues, links, firstArchived] = bodies.map(settledValue)
     const closedSnapshot = settledValue(closedRead)
     if (reloadRequested || generation < appliedLoadGeneration) return false
     const nowMs = Date.now()
     const page = ageNotes(g, nowMs)
     let older = firstOlder
-    // Issue #184: this tick's own data may need older history the previous frame
-    // did not (a sweep moving the page's boundary past what History shows, say).
-    // Read it inside the same tick, under the same rules, rather than painting a
-    // frame that lacks it.
-    if (!wantHistory && lastData && historyWanted({ page, pageHistory: g.history ?? null, boards, archived, activity })) {
-      const [late] = await Promise.allSettled([readSnapshot('/api/items/history').then(marked)])
+    let complete = firstArchived
+    // Issues #184 and #299: this tick's own data may need what the previous
+    // frame did not: older history (a sweep moving the page's boundary past what
+    // History shows, say) or the complete archived plans (a plan the human
+    // watched, archived as it finished, lingers). A viewer older than #299
+    // serves no brief, so its complete list stands in. Read them inside the
+    // same tick, under the same rules, rather than painting a frame without them.
+    const view = { page, pageHistory: g.history ?? null, boards, archivedBrief: brief ?? [], activity }
+    const lateHistory = !wantHistory && Boolean(lastData) && historyWanted(view)
+    const lateArchived = !wantArchived && (brief === null || (Boolean(lastData) && archivedWanted(view)))
+    if (lateHistory || lateArchived) {
+      const [historyLate, archivedLate] = await Promise.allSettled([
+        lateHistory ? readSnapshot('/api/items/history').then(marked) : null,
+        lateArchived ? readSnapshot('/api/boards/archived').then(marked) : null,
+      ])
       if (reloadRequested || generation < appliedLoadGeneration) return false
       // As on the main path: only markers that disagree within this tick are a
       // restart between its reads. A restart already being held for unsent work
@@ -598,9 +639,13 @@ async function load() {
         refreshPending = true
         return false
       }
-      older = await closedHistoryBody(late)
+      if (lateHistory) older = await closedHistoryBody(historyLate)
+      if (lateArchived) complete = await archivedBody(archivedLate)
       if (reloadRequested || generation < appliedLoadGeneration) return false
     }
+    // Standing in for a brief, the complete list is a read the tick needs.
+    if (brief === null && !complete?.plans) throw new Error(complete?.error ?? ARCHIVED_UNAVAILABLE)
+    const archivedBrief = brief ?? complete.plans
     appliedLoadGeneration = generation
     if (closedSnapshot !== null) {
       appliedClosedGeneration = generation
@@ -619,7 +664,15 @@ async function load() {
       // why a surface that needed older history this tick is still waiting
       olderError: older?.error ?? null,
       boards,
-      archived,
+      // Issue #299: archived plans in brief, which alone decide whether the
+      // complete list is needed; `archived` is what surfaces read: the complete
+      // list while one is loaded, the brief until then. `archivedFull` is null
+      // while the complete list is not loaded, and `archivedError` says why a
+      // surface that needed it this tick is still waiting.
+      archivedBrief,
+      archived: complete?.plans ?? archivedBrief,
+      archivedFull: complete?.plans ?? null,
+      archivedError: complete?.error ?? null,
       activity,
       activityHistory,
       closed: [...authoritativeClosed],
@@ -631,9 +684,10 @@ async function load() {
       // liveness heartbeat). Fallback bodies are new values every tick, so
       // they are reduced to what they mean.
       reads: [
-        [...marks].join(' '), historyUrl, g, boards, archived, activityFrameKey(activity),
+        [...marks].join(' '), historyUrl, g, boards, archivedBrief, activityFrameKey(activity),
         activityHistory.state, activityHistory.message, activityHistory.state === 'ready' ? activityHistory.spans : null,
         links.length ? links : null, issues, older?.done ?? null, older?.error ?? null,
+        complete?.plans ?? null, complete?.error ?? null,
       ],
     }
     applyProjectMutationIntents()
@@ -651,6 +705,13 @@ async function load() {
     if (historyLookup && !omitsHistory() && !pressHeld(pressedAt, Date.now())) {
       const { id, source } = historyLookup
       historyLookup = null
+      focusItem(id, source)
+    }
+    // Likewise a deep link waiting on the complete archived plans (#299).
+    if (archivedLookup && archivedLookup.view !== navigationKey()) archivedLookup = null
+    if (archivedLookup && !omitsArchived() && !pressHeld(pressedAt, Date.now())) {
+      const { id, source } = archivedLookup
+      archivedLookup = null
       focusItem(id, source)
     }
     // Search results sit outside the editable gate; refresh the waiting list.
@@ -956,13 +1017,20 @@ function tabForItem(it) {
 function focusItem(id, source = null) {
   if (!lastData) return
   historyLookup = null
+  archivedLookup = null
   const item = allItems(lastData.g).find((i) => i.id === id)
-  const board = [...lastData.boards, ...lastData.archived].find((b) => b.id === id)
+  // an archived plan lands only once its complete rows are loaded (#299)
+  const board = [...lastData.boards, ...(lastData.archivedFull ?? [])].find((b) => b.id === id)
   const target = item ?? board
   if (!target) {
-    // Issue #184: the page may omit this closed item. load() retries the link
-    // once the complete history has been read.
-    if (omitsHistory()) {
+    // Issue #299: an archived plan the brief names. load() retries the link
+    // once the complete archived plans have been read.
+    if (omitsArchived() && lastData.archivedBrief.some((plan) => plan.id === id)) {
+      archivedLookup = { id, source, view: navigationKey() }
+      requestHistory()
+    } else if (omitsHistory()) {
+      // Issue #184: the page may omit this closed item. load() retries the link
+      // once the complete history has been read.
       historyLookup = { id, source, view: navigationKey() }
       requestHistory()
     }
@@ -1349,14 +1417,15 @@ function renderSearchResults() {
     return
   }
   if (!lastData) return
-  // Issue #184: results always cover all of History. While the closed history
-  // the page omits is still being read, keep any prior list busy rather than
+  // Issues #184 and #299: results always cover all of History and every
+  // archived plan. While the closed history the page omits, or the complete
+  // archived plans, are still being read, keep any prior list busy rather than
   // listing an incomplete result set. The read itself belongs to the human's
   // entry points (typing, focusing) or the next poll — never to a render.
-  if (omitsHistory()) {
+  if (omitsHistory() || omitsArchived()) {
     searchAwaitingHistory = true
     beginSearchUpdate()
-    if (status) status.textContent = olderHistoryWaitText('Searching older history…')
+    if (status) status.textContent = searchWaitText()
     return
   }
   searchAwaitingHistory = false
@@ -1479,15 +1548,37 @@ function omitsHistory() {
   return Boolean(summary && summary.loaded < summary.total)
 }
 
-// The page alone, through the same suppression and filters as the view.
+// Issue #299: whether surfaces still read archived plans in brief, the
+// complete list not loaded while at least one plan is archived.
+function omitsArchived() {
+  return Boolean(lastData && !lastData.archivedFull && lastData.archivedBrief.length)
+}
+
+// The page alone, through the same suppression and filters as the view:
+// archived plans in brief (#299), as the page carries them.
 function pageView(view = lastData) {
-  return filterData(withoutClosed({ g: view.page, boards: view.boards, archived: view.archived }))
+  return filterData(withoutClosed({ g: view.page, boards: view.boards, archived: view.archivedBrief }))
 }
 
 // What the human is looking at. A deep link still waiting on older history
 // lands only if this has not changed since it was followed (#184).
 function navigationKey() {
   return JSON.stringify([activeTab, projectFilter, agentFilter, settingsOpen()])
+}
+
+// Search covers every project, all of History and every archived plan while it
+// is in use: open results, a pending query, or a query focused in an active
+// window. Text left in a closed box, or in a background window that still
+// remembers focus on it (#233), waits for the human to return to it.
+function searchInUse() {
+  const input = document.getElementById('search')
+  return Boolean(input?.value.trim() && (searchIndexOpen || searchTimer || activeFocusElement() === input))
+}
+
+// The Live sessions the project and agent filters show the Dashboard.
+function lensActivity(view) {
+  return (view.activity ?? []).filter((a) =>
+    (!projectFilter || a.project === projectFilter) && (!agentFilter || a.agent === agentFilter))
 }
 
 // Which surfaces need the closed history the page omits. Judged on a PAGE
@@ -1497,32 +1588,65 @@ function navigationKey() {
 function historyWanted(view = lastData) {
   const summary = view?.pageHistory
   if (!summary || summary.loaded >= summary.total) return false
-  // A deep link may name any omitted item, and search covers every project
-  // while it is in use: open results, a pending query, or a query focused in an
-  // active window. Text left in a closed box, or in a background window that
-  // still remembers focus on it (#233), waits for the human to return to it.
+  // A deep link may name any omitted item, and search covers all of History.
   if (historyLookup?.view === navigationKey()) return true
-  const input = document.getElementById('search')
-  if (input?.value.trim() && (searchIndexOpen || searchTimer || activeFocusElement() === input)) return true
+  if (searchInUse()) return true
   const older = olderHistory(summary, olderLens())
   if (relayOpen && older.outcomes > 0) return true
   if (activeTab === 'done' && older.items > 0) {
     return historyTabPinned || shown.done > knownHistory(pageView(view).g.done, summary.before).length
   }
   if (activeTab === 'dashboard' && older.outcomes > 0) {
-    const activity = (view.activity ?? []).filter((a) =>
-      (!projectFilter || a.project === projectFilter) && (!agentFilter || a.agent === agentFilter))
-    return !dashboardModel(pageView(view), summary, activity).recentOutcomesComplete
+    return dashboardModel(pageView(view), summary, lensActivity(view)).recentOutcomesWait.history
   }
   return false
 }
 
-// Only load() reads older history. A navigation or render that needs it may
-// only ask for an early poll tick: that tick decides, reads and paints through
-// the poll's own gate, so no history path ever forces a frame. One request per
-// applied tick: a failed read is retried by the poll, never in a loop.
+// Issue #299: which surfaces need the complete archived plans the brief stands
+// in for. Judged on the BRIEF (the applied one, or a tick's new one before it
+// applies), as historyWanted is on a page, never on the complete list, whose
+// plans omit nothing: that would drop the list it just loaded.
+function archivedWanted(view = lastData) {
+  const brief = view?.archivedBrief
+  if (!brief?.length) return false
+  // Restored row drafts waiting to learn whether an archived row holds them.
+  if (restoredDrafts && [...restoredDrafts.values()].some(({ draft }) => awaitsArchivedRow(draft))) return true
+  // A deep link to an archived plan, search, and Plan flow open on one.
+  if (archivedLookup?.view === navigationKey()) return true
+  if (searchInUse()) return true
+  if (missionBoardId && brief.some((plan) => plan.id === missionBoardId)) return true
+  const lens = pageView(view)
+  const omitted = omittedOutcomes(lens.archived).outcomes
+  // Handoffs lists every recorded outcome.
+  if (relayOpen && omitted > 0) return true
+  // Plans draws archived plans whole: each one lingering after its agent
+  // archived it (§9), the archived fold while it is open, and a plan holding
+  // keyboard focus that just moved into the fold, which the focus follows.
+  if (activeTab === 'boards') {
+    const lingering = lingeringBoards(sessionActiveBoards, lens.boards, lens.archived).length
+    const focused = activeFocusElement()?.closest?.('#boards [data-card-id]')?.dataset.cardId
+    return lingering > 0 || (showArchived && lens.archived.length > lingering)
+      || lens.archived.some((plan) => plan.id === focused)
+  }
+  if (activeTab === 'dashboard' && omitted > 0) {
+    return dashboardModel(lens, view.pageHistory, lensActivity(view)).recentOutcomesWait.archived
+  }
+  return false
+}
+
+// What the page omits that a surface wants: older closed history (#184), or
+// the complete archived plans (#299). One early tick reads whatever is wanted.
+function omittedWanted() {
+  return (omitsHistory() && historyWanted()) || (omitsArchived() && archivedWanted())
+}
+
+// Only load() reads older history and the complete archived plans. A
+// navigation or render that needs them may only ask for an early poll tick:
+// that tick decides, reads and paints through the poll's own gate, so no such
+// path ever forces a frame. One request per applied tick: a failed read is
+// retried by the poll, never in a loop.
 function requestHistory() {
-  if (historyLoadScheduled || !omitsHistory() || historyRequestedFor === appliedLoadGeneration || !historyWanted()) return
+  if (historyLoadScheduled || historyRequestedFor === appliedLoadGeneration || !omittedWanted()) return
   historyRequestedFor = appliedLoadGeneration
   historyLoadScheduled = true
   setTimeout(() => {
@@ -1531,22 +1655,44 @@ function requestHistory() {
   }, 0)
 }
 
-// A human action that needs older history has just painted what is known; this
-// reads the rest and paints it outside the poll's gate, like every frame the
-// human asks for (#38): an unrelated draft or a focused Dashboard control must
-// not hide it. Called only from explicit entry points, never from forceRender,
-// a render or the poll, so passive paths still never force a paint.
+// A human action that needs older history or archived plans has just painted
+// what is known; this reads the rest and paints it outside the poll's gate,
+// like every frame the human asks for (#38): an unrelated draft or a focused
+// Dashboard control must not hide it. Called only from explicit entry points,
+// never from forceRender, a render or the poll, so passive paths still never
+// force a paint.
 function requestHistoryPaint() {
-  if (!lastData || !omitsHistory() || historyPaintRequestedFor === appliedLoadGeneration || !historyWanted()) return
+  if (!lastData || historyPaintRequestedFor === appliedLoadGeneration || !omittedWanted()) return
   historyPaintRequestedFor = appliedLoadGeneration
   void reloadAndPaint()
 }
 
 // Shown where a surface waits on older history the last tick could not read.
 const OLDER_HISTORY_UNAVAILABLE = 'Older history is unavailable right now.'
+// ...or on the complete archived plans (#299).
+const ARCHIVED_UNAVAILABLE = 'Archived plans are unavailable right now.'
 
 function olderHistoryWaitText(loading) {
   return lastData?.olderError ? OLDER_HISTORY_UNAVAILABLE : loading
+}
+
+function archivedWaitText(loading) {
+  return lastData?.archivedError ? ARCHIVED_UNAVAILABLE : loading
+}
+
+// A surface waiting on either says why when the read it waits on failed.
+function omittedWaitText(loading, { history, archived }) {
+  if (history && lastData?.olderError) return OLDER_HISTORY_UNAVAILABLE
+  if (archived && lastData?.archivedError) return ARCHIVED_UNAVAILABLE
+  return loading
+}
+
+function searchWaitText() {
+  const history = omitsHistory()
+  const archived = omitsArchived()
+  const loading = history && archived ? 'Searching older history and archived plans…'
+    : history ? 'Searching older history…' : 'Searching archived plans…'
+  return omittedWaitText(loading, { history, archived })
 }
 
 // the CURRENT server state for an item, not a row's closed-over render-time snapshot.
@@ -1686,7 +1832,8 @@ function renderDashboardAmbient(model) {
   }
   renderDashboardHistory(host.querySelector('.dashboard-activity'))
   renderDashboardDispatch(host.querySelector('.dashboard-live-list'), model.sessions)
-  renderDashboardOutcomes(host.querySelector('.dashboard-outcome-list'), model.recentOutcomes, model.recentOutcomesComplete)
+  renderDashboardOutcomes(host.querySelector('.dashboard-outcome-list'), model.recentOutcomes, model.recentOutcomesComplete,
+    model.recentOutcomesWait)
 }
 
 const DASHBOARD_SIGNAL_ICONS = {
@@ -1799,8 +1946,9 @@ function renderDashboardDispatch(list, sessions) {
   }
 }
 
-function renderDashboardOutcomes(list, entries, complete = true) {
-  // Issue #184: outcomes the page omits may still outrank what is listed.
+function renderDashboardOutcomes(list, entries, complete = true, wait = { history: true, archived: false }) {
+  // Issues #184 and #299: outcomes the page or the archived brief omits may
+  // still outrank what is listed.
   if (complete) list.removeAttribute('aria-busy')
   else list.setAttribute('aria-busy', 'true')
   const existing = new Map([...list.querySelectorAll('.dashboard-outcome')]
@@ -1839,7 +1987,7 @@ function renderDashboardOutcomes(list, entries, complete = true) {
     if (!rows.length) {
       list.innerHTML = complete
         ? '<div class="dashboard-empty" role="img" aria-label="No recorded outcomes" title="No recorded outcomes"><svg class="dashboard-empty-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"></circle><path d="m8 12 2.5 2.5L16 9"></path></svg></div>'
-        : `<div class="dashboard-empty" role="status">${esc(olderHistoryWaitText('Loading older outcomes…'))}</div>`
+        : `<div class="dashboard-empty" role="status">${esc(omittedWaitText('Loading older outcomes…', wait))}</div>`
     }
     if (focused) {
       const next = rows[Math.min(focusedIndex, rows.length - 1)]
@@ -1995,9 +2143,9 @@ function paintAmbient() {
   return { agents, g, boards, archived, live, dashboard }
 }
 
-// `summary` is what `view` omits from closed history (issue #184): omitted
-// outcomes still count, and listed recent outcomes are only those nothing
-// omitted could outrank.
+// `summary` is what `view` omits from closed history (issue #184), and archived
+// plans in brief carry what they omit themselves (#299): omitted outcomes still
+// count, and listed recent outcomes are only those nothing omitted could outrank.
 function dashboardModel({ g, boards, archived }, summary, activity) {
   return buildDashboard({
     items: allItems(g),
@@ -2007,7 +2155,7 @@ function dashboardModel({ g, boards, archived }, summary, activity) {
     nowMs: Date.now(),
     liveSessionIds: liveSessionIds(),
     closedProjects: dashboardClosedProjects(),
-    history: { older: olderHistory(summary, olderLens()) },
+    history: { older: olderHistory(summary, olderLens()), archived: omittedOutcomes(archived) },
   })
 }
 
@@ -3281,7 +3429,9 @@ function relayCardEl(entry, lane) {
   return card
 }
 
-function renderRelayLane(box, lane, entries, { count = entries.length, loading = false } = {}) {
+function renderRelayLane(box, lane, entries, {
+  count = entries.length, loading = false, wait = { history: true, archived: false },
+} = {}) {
   const host = box.querySelector(`[data-relay-lane="${lane}"]`)
   host.querySelector('.relay-count').textContent = String(count)
   const body = host.querySelector('.relay-body')
@@ -3300,7 +3450,7 @@ function renderRelayLane(box, lane, entries, { count = entries.length, loading =
     const note = document.createElement('div')
     note.className = 'relay-empty'
     note.setAttribute('role', 'status')
-    note.textContent = olderHistoryWaitText('Loading older outcomes…')
+    note.textContent = omittedWaitText('Loading older outcomes…', wait)
     body.appendChild(note)
   }
 }
@@ -3318,12 +3468,16 @@ function renderRelay() {
   )
   renderRelayLane(box, 'human', relay.human)
   renderRelayLane(box, 'agent', relay.agent)
-  // Issue #184: outcomes the page omits still count; until they are read, list
-  // only the outcomes none of them could outrank.
+  // Issues #184 and #299: outcomes the page or the archived brief omits still
+  // count; until they are read, list only the outcomes none of them could outrank.
   const older = olderHistory(lastData.older, olderLens())
-  const outcomes = relay.outcomes.length + older.outcomes
-  renderRelayLane(box, 'outcome', older.outcomes ? knownOutcomes(relay.outcomes, older.latest) : relay.outcomes,
-    { count: outcomes, loading: older.outcomes > 0 })
+  const archivedOlder = omittedOutcomes(scoped.archived)
+  const omitted = older.outcomes + archivedOlder.outcomes
+  const latest = [older, archivedOlder].reduce((newest, source) =>
+    (source.outcomes > 0 && (newest === null || source.latest > newest) ? source.latest : newest), null)
+  const outcomes = relay.outcomes.length + omitted
+  renderRelayLane(box, 'outcome', omitted ? knownOutcomes(relay.outcomes, latest) : relay.outcomes,
+    { count: outcomes, loading: omitted > 0, wait: { history: older.outcomes > 0, archived: archivedOlder.outcomes > 0 } })
   box.querySelector('.relay-summary').textContent =
     `${relay.human.length} waiting on you · ${relay.agent.length} with agent · ${outcomes} outcomes`
   box.hidden = false
@@ -3527,8 +3681,14 @@ function renderMission({ restoreFocus = true } = {}) {
     forceRender()
     return
   }
-  const board = [...lastData.boards, ...lastData.archived].find((candidate) => candidate.id === missionBoardId)
-  if (!board) { closeMission(); return }
+  const board = [...lastData.boards, ...(lastData.archivedFull ?? [])].find((candidate) => candidate.id === missionBoardId)
+  if (!board) {
+    // An archived plan's flow stays as last drawn while its complete rows are
+    // not loaded (#299): archivedWanted keeps reading them while it is open.
+    if (omitsArchived() && lastData.archivedBrief.some((plan) => plan.id === missionBoardId)) return
+    closeMission()
+    return
+  }
   const box = document.getElementById('missionbox')
   // the frame's issue view, as Plans draws it; nothing here fetches (§9.4)
   const mission = buildMission(board, { issues: issueView, links: linkIndex })
@@ -3612,9 +3772,11 @@ let activeTab = DEFAULT_TAB
 // without the other
 function selectTab(id, { paint = true } = {}) {
   if (!TAB_IDS.includes(id)) return
-  // Choosing a tab supersedes a deep link still waiting on older history, and
-  // leaving History releases the omitted target it was keeping loaded (#184).
+  // Choosing a tab supersedes a deep link still waiting on older history or
+  // archived plans, and leaving History releases the omitted target it was
+  // keeping loaded (#184, #299).
   historyLookup = null
+  archivedLookup = null
   if (id !== 'done') historyTabPinned = false
   activeTab = id
   for (const t of document.querySelectorAll('#tabs .tab')) {
@@ -5930,6 +6092,10 @@ function renderBoards(boards, archived) {
   const lingering = lingeringBoards(sessionActiveBoards, boards, archived)
   const lingerIds = new Set(lingering.map((b) => b.id))
   const rest = archived.filter((b) => !lingerIds.has(b.id))
+  // Issue #299: archived plans are drawn whole only from the complete list. The
+  // brief already knows which plans linger and how many are archived, so both
+  // keep their places and counts while it loads.
+  const whole = Boolean(lastData.archivedFull)
   if (!boards.length && !lingering.length && !rest.length) host.insertAdjacentHTML('beforeend', '<p class="empty">No plans yet.</p>')
   // Grouping only reorders active plans; lingering and archived ones stay flat (§7.2).
   const grouping = groupByParent ? planGroups(boards, issueView, linkIndex) : null
@@ -5947,20 +6113,41 @@ function renderBoards(boards, archived) {
     host.appendChild(el)
   })
   if (remaining > 0) host.appendChild(moreButton('boards', remaining))
-  for (const b of lingering) host.appendChild(boardEl(b, true, true))
+  if (whole) for (const b of lingering) host.appendChild(boardEl(b, true, true))
+  else if (lingering.length) host.appendChild(archivedWaitEl())
   if (rest.length) {
     // un-archive is the only undo for Archive, so archived boards fold in here —
     // they must never become unreachable (spec §9)
     const fold = document.createElement('details')
     fold.className = 'archived-fold'
     fold.open = showArchived
-    fold.addEventListener('toggle', () => { showArchived = fold.open })
+    // Opening the fold is a human entry point: it reads the complete archived
+    // plans it shows (#299). A fold rebuilt open asks for nothing.
+    fold.addEventListener('toggle', () => {
+      const opened = fold.open && !showArchived
+      showArchived = fold.open
+      if (opened) requestHistoryPaint()
+    })
     fold.innerHTML = `<summary>Archived plans (${rest.length})</summary>`
-    const page = paginateWithPending(rest, 'archived')
-    for (const b of page.visible) fold.appendChild(boardEl(b, true))
-    if (page.remaining > 0) fold.appendChild(moreButton('archived', page.remaining))
+    if (whole) {
+      const page = paginateWithPending(rest, 'archived')
+      for (const b of page.visible) fold.appendChild(boardEl(b, true))
+      if (page.remaining > 0) fold.appendChild(moreButton('archived', page.remaining))
+    } else {
+      fold.appendChild(archivedWaitEl())
+    }
     host.appendChild(fold)
   }
+}
+
+// Where archived plans are drawn whole while the complete list is not loaded
+// (#299): still loading, or unavailable when the last read of it failed.
+function archivedWaitEl() {
+  const wait = document.createElement('p')
+  wait.className = 'empty archived-loading'
+  wait.setAttribute('role', 'status')
+  wait.textContent = archivedWaitText('Loading archived plans…')
+  return wait
 }
 
 function boardEl(b, archived = false, lingering = false) {
@@ -6840,7 +7027,8 @@ function recoveryHolds(itemId, { text, context = '', kind = 'answer' }) {
 }
 
 function rowHolds(rowId, { text, kind }) {
-  const row = [...(lastData?.boards ?? []), ...(lastData?.archived ?? [])]
+  // an archived plan's rows hold their notes only in the complete list (#299)
+  const row = [...(lastData?.boards ?? []), ...(lastData?.archivedFull ?? [])]
     .flatMap((board) => board.rows).find((candidate) => candidate.id === rowId)
   return Boolean(row && (row.annotation ?? '') === text.trim() && (row.annotation_kind ?? 'answer') === kind)
 }
@@ -6983,16 +7171,29 @@ function placeRestoredDraft(key, draft) {
   }
 }
 
+// Issue #299: a restored row draft whose row no active plan holds may be an
+// archived plan's, and only the complete archived list says whether the server
+// already holds its text (rowHolds). While that list is paged out, and its last
+// read has not failed, the draft waits for it.
+function awaitsArchivedRow(draft) {
+  return (draft.type === 'row' || draft.type === 'row-recovery')
+    && omitsArchived() && !lastData.archivedError && !currentRow(draft.rowId)
+}
+
 // Once, with the first data and before the first render reads a draft. It
 // sends nothing, focuses nothing and opens no tab; it reopens the card of the
 // newest restored queue draft unless a card is already open, and the next
-// queue render opens any fold holding a restored draft.
+// queue render opens any fold holding a restored draft. A row draft that
+// awaits the archived plans (#299) stays restored, still the profile's copy,
+// and is placed the same way by the first tick that read them, or failed to.
 function placeRestoredDrafts() {
   if (!restoredDrafts) return
   const restored = [...restoredDrafts].sort(([, left], [, right]) => left.savedAt - right.savedAt)
-  restoredDrafts = null
+  const held = new Map(restored.filter(([, { draft }]) => awaitsArchivedRow(draft)))
+  restoredDrafts = held.size ? held : null
   let reopenId = null
   for (const [key, { draft }] of restored) {
+    if (held.has(key)) continue
     const placed = placeRestoredDraft(key, draft)
     if (!placed) continue
     revealDraftIds.add(placed.id)
@@ -7002,6 +7203,10 @@ function placeRestoredDrafts() {
     selectedId = reopenId
     setOpenRow(reopenId, { resume: false })
   }
+  // where a draft went is drawn by the next frame, whatever else it reads (#298)
+  if (held.size < restored.length) noteOutsideChange()
+  // an early tick reads the complete list the held drafts wait on
+  if (held.size) requestHistory()
 }
 
 function sendReply(...args) {

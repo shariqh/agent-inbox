@@ -39,3 +39,18 @@ export function lingeringBoards(prevActiveIds, boards, archived) {
   return archived.filter((b) =>
     seen.has(b.id) && !live.has(b.id) && b.progress.fraction === 1 && b.progress.countable > 0)
 }
+
+// Issue #299: the outcome-bearing rows archived plans carried in brief leave
+// out, and the newest Dashboard stamp among them, shaped like olderHistory()'s
+// (public/closed-history.js). A complete plan omits nothing.
+export function omittedOutcomes(plans) {
+  let outcomes = 0
+  let latest = null
+  for (const plan of plans ?? []) {
+    const omitted = plan?.omitted
+    if (!(omitted?.outcomes > 0)) continue
+    outcomes += omitted.outcomes
+    if (latest === null || omitted.latest > latest) latest = omitted.latest
+  }
+  return { outcomes, latest }
+}

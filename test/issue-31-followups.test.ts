@@ -121,6 +121,24 @@ describe('31.1 · changeAnswer paints the surface it just staged a draft into', 
     }
   })
 
+  // Issue #299: the complete archived plans follow #184's rules. Only load()
+  // reads them, and the requests that ask for an early tick are #184's own.
+  it('only load() reads the complete archived plans; the poll reads them in brief (#299)', () => {
+    const readers = [...js.matchAll(/'\/api\/boards\/archived'/g)].map((match) => {
+      const start = js.lastIndexOf('\nfunction ', match.index) + 1
+      const asyncStart = js.lastIndexOf('\nasync function ', match.index) + 1
+      return js.slice(Math.max(start, asyncStart), js.indexOf('(', Math.max(start, asyncStart)))
+    })
+    expect(readers.length).toBeGreaterThan(0)
+    expect(new Set(readers)).toEqual(new Set(['async function load']))
+    expect(topLevelFn('async function load()')).toContain("readSnapshot('/api/boards/archived/summary')")
+    expect(topLevelFn('async function load()')).toMatch(/wantArchived \? readSnapshot\('\/api\/boards\/archived'\)/)
+    for (const request of ['function requestHistory()', 'function requestHistoryPaint()']) {
+      expect(topLevelFn(request), request).toContain('omittedWanted()')
+    }
+    expect(topLevelFn('function omittedWanted()')).toMatch(/omitsArchived\(\) && archivedWanted\(\)/)
+  })
+
   // #38 + #184: history a human click asks for ends in a paint the poll gate
   // cannot hold (requestHistoryPaint → reloadAndPaint), so it is started only by
   // explicit entry points: never by forceRender (which render-time recovery

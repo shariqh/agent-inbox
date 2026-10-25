@@ -295,7 +295,15 @@ describe('#38 · archiving a board takes the board off the screen', () => {
     expect(listBoards(d, { status: 'active' }).map((b) => b.title), 'the server took it').toEqual(['BOARD B'])
     expect(boardTitles('active').filter((t) => t.includes('BOARD A')),
       'the human archived it and it stayed in the live list — the write is invisible').toEqual([])
+    // #299: the closed fold counts it from the archived brief; opening the fold
+    // is the human's own entry point, so it draws the plan past B's draft too
+    const fold = document.querySelector<HTMLDetailsElement>('#boards .archived-fold')
+    expect(fold?.querySelector('summary')?.textContent).toBe('Archived plans (1)')
+    fold!.open = true
+    fold!.dispatchEvent(new window.Event('toggle'))
+    await settle()
     expect(boardTitles('archived').join(' '), 'and it must be reachable in the fold, not gone').toContain('BOARD A')
+    expect(document.querySelector<HTMLInputElement>('#boards .row-panel .reply-input')?.value).toBe('half a thought')
   })
 
   it('un-archiving brings it back', async () => {

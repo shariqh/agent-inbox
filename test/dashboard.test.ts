@@ -268,6 +268,67 @@ describe('buildDashboard', () => {
     expect(proven.recentOutcomes).toHaveLength(4)
     expect(proven.recentOutcomesComplete).toBe(true)
   })
+
+  // Issue #299: archived plans in brief carry only their projects' newest
+  // outcomes and say what they omit; the counts stay exact, and the Dashboard
+  // says which omitted source, read, would prove its list.
+  it('counts outcomes archived plans omit, and names which omission keeps the list unproven', () => {
+    const outcome = (id: string, at: string) => ({
+      id, project: 'alpha', kind: 'question', status: 'resolved', title: id,
+      created_at: '2026-08-20T00:00:00.000Z', outcome: `${id} done`, outcome_at: at,
+    })
+    const plan = (rows: Array<[string, string]>) => ({
+      id: 'archive', project: 'alpha', title: 'Rollout',
+      rows: rows.map(([id, at]) => ({
+        id, label: id, status: 'done' as const, annotation: null, annotation_unseen: false, outcome: `${id} shipped.`, outcome_at: at,
+      })),
+    })
+    const base = { boards: [], activity: [], nowMs: NOW, liveSessionIds: new Set<string>() }
+    const none = { items: 0, outcomes: 0, latest: null, projects: [], agents: [] }
+    const ids = (model: ReturnType<typeof buildDashboard>) =>
+      model.recentOutcomes.map((entry) => entry.kind === 'item' ? entry.item.id : entry.row.id)
+
+    // Four carried outcomes newer than everything the brief omits: proven.
+    const proven = buildDashboard({
+      ...base,
+      items: [outcome('item', '2026-08-24T10:00:00.000Z')],
+      archived: [plan([['r19', '2026-08-24T19:00:00.000Z'], ['r18', '2026-08-24T18:00:00.000Z'],
+        ['r17', '2026-08-24T17:00:00.000Z'], ['r16', '2026-08-24T16:00:00.000Z']])],
+      history: { older: none, archived: { outcomes: 3, latest: '2026-08-24T15:00:00.000Z' } },
+    })
+    expect(proven.signals.outcomes).toBe(8)
+    expect(proven.ownership.outcome).toBe(8)
+    expect(ids(proven)).toEqual(['r19', 'r18', 'r17', 'r16'])
+    expect(proven.recentOutcomesComplete).toBe(true)
+    expect(proven.recentOutcomesWait).toEqual({ history: false, archived: false })
+
+    // An omitted archived outcome newer than the third: only the archived plans can prove it.
+    const archivedWait = buildDashboard({
+      ...base,
+      items: [outcome('item', '2026-08-24T10:00:00.000Z')],
+      archived: [plan([['r19', '2026-08-24T19:00:00.000Z'], ['r18', '2026-08-24T18:00:00.000Z']])],
+      history: { older: none, archived: { outcomes: 2, latest: '2026-08-24T17:30:00.000Z' } },
+    })
+    expect(archivedWait.signals.outcomes).toBe(5)
+    expect(ids(archivedWait)).toEqual(['r19', 'r18'])
+    expect(archivedWait.recentOutcomesComplete).toBe(false)
+    expect(archivedWait.recentOutcomesWait).toEqual({ history: false, archived: true })
+
+    // Both omit something; the list waits on whichever source alone cannot be proven.
+    const both = buildDashboard({
+      ...base,
+      items: [outcome('item', '2026-08-24T10:00:00.000Z')],
+      archived: [plan([['r19', '2026-08-24T19:00:00.000Z'], ['r18', '2026-08-24T18:00:00.000Z'],
+        ['r17', '2026-08-24T17:00:00.000Z'], ['r16', '2026-08-24T16:00:00.000Z']])],
+      history: {
+        older: { items: 1, outcomes: 1, latest: '2026-08-24T18:30:00.000Z', projects: ['alpha'], agents: ['copilot'] },
+        archived: { outcomes: 1, latest: '2026-08-24T12:00:00.000Z' },
+      },
+    })
+    expect(both.signals.outcomes).toBe(7)
+    expect(ids(both)).toEqual(['r19'])
+    expect(both.recentOutcomesWait).toEqual({ history: true, archived: false })
+  })
 })
 
 describe('buildActivitySeries', () => {

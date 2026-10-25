@@ -3,8 +3,11 @@ import { activitySynopsis, lastActivityAt, liveSummary } from './livebar.js'
 import { knownOutcomes } from './closed-history.js'
 
 const asSet = (values) => values instanceof Set ? values : new Set(values ?? [])
-// Issue #184: what the paged item snapshot omitted within this lens.
+// Issue #184: what the paged item snapshot omitted within this lens. Issue
+// #299 adds `archived`: the outcomes archived plans carried in brief omit
+// (omittedOutcomes in public/boards.js).
 const NO_OLDER_HISTORY = { older: { items: 0, outcomes: 0, latest: null, projects: [] } }
+const NO_OMITTED_OUTCOMES = { outcomes: 0, latest: null }
 // The recent outcomes the Dashboard lists, and so the most it needs to prove.
 const RECENT_OUTCOMES = 4
 
@@ -52,11 +55,16 @@ export function buildDashboard({
     .sort((a, b) => Number(a.idle) - Number(b.idle)
       || Date.parse(b.lastActiveAt) - Date.parse(a.lastActiveAt))
   // Omitted outcomes still count; a recent one is listed only once nothing
-  // omitted could outrank it.
-  const outcomes = relay.outcomes.length + history.older.outcomes
-  const recentOutcomes = (history.older.outcomes
-    ? knownOutcomes(relay.outcomes, history.older.latest)
-    : relay.outcomes).slice(0, RECENT_OUTCOMES)
+  // omitted could outrank it: older closed history (#184), archived plans (#299).
+  const archivedOlder = history.archived ?? NO_OMITTED_OUTCOMES
+  const omitted = [history.older, archivedOlder].filter((source) => source.outcomes > 0)
+  const outcomes = relay.outcomes.length + omitted.reduce((total, source) => total + source.outcomes, 0)
+  const listed = Math.min(RECENT_OUTCOMES, outcomes)
+  const latest = omitted.reduce((newest, source) => (newest === null || source.latest > newest ? source.latest : newest), null)
+  const recentOutcomes = (omitted.length ? knownOutcomes(relay.outcomes, latest) : relay.outcomes).slice(0, RECENT_OUTCOMES)
+  // Which omitted source still keeps the list from being proven: each is read
+  // on its own (#184's older history, #299's archived plans).
+  const keepsUnproven = (source) => source.outcomes > 0 && knownOutcomes(relay.outcomes, source.latest).length < listed
 
   return {
     signals: {
@@ -80,7 +88,8 @@ export function buildDashboard({
     waitingEntries: relay.human,
     agentEntries: relay.agent,
     recentOutcomes,
-    recentOutcomesComplete: recentOutcomes.length === Math.min(RECENT_OUTCOMES, outcomes),
+    recentOutcomesComplete: recentOutcomes.length === listed,
+    recentOutcomesWait: { history: keepsUnproven(history.older), archived: keepsUnproven(archivedOlder) },
     sessions,
   }
 }

@@ -86,3 +86,28 @@ export function reconcileOpenRow(openId, renderedIds) {
   const ids = renderedIds instanceof Set ? renderedIds : new Set(renderedIds ?? [])
   return ids.has(openId) ? openId : null
 }
+
+// ── the idle frame (issue #298) ──────────────────────────────────────────────
+// A poll tick that changed nothing used to rebuild the whole page every 3 s. The
+// poll may skip its paint only when the frame on screen was painted from exactly
+// the inputs this tick produced (each snapshot read reused its representation,
+// the fresh reads returned the same bytes, the same boot marker, history window
+// and lens) and nothing is waiting to paint. Time still moves every label that
+// reads the clock (ages, staleness, snooze expiry, follow-up due, dormancy), so
+// a frame older than CLOCK_REPAINT_MS repaints however idle the data is.
+// Relative ages are minute-granular (relMs), and every clock threshold is
+// minutes or longer, so a 30 s clock keeps each one within half a minute.
+const CLOCK_REPAINT_MS = 30_000
+
+function sameInputs(a, b) {
+  return a.length === b.length && a.every((value, index) => Object.is(value, b[index]))
+}
+
+// `painted` is { inputs, at } of the last complete frame, or null when none
+// is on screen (or the last one threw before finishing).
+export function pollMaySkipPaint({ inputs, painted, renderDirty, nowMs }) {
+  return painted != null && !renderDirty
+    // a clock that moved back repaints rather than holding the frame
+    && nowMs >= painted.at && nowMs - painted.at < CLOCK_REPAINT_MS
+    && sameInputs(painted.inputs, inputs)
+}

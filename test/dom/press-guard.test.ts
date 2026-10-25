@@ -61,6 +61,12 @@ const BOOT_SETTLE_MS = 20
  */
 async function toJustBeforeTick(lead = 100): Promise<void> {
   await vi.advanceTimersByTimeAsync(POLL_MS - BOOT_SETTLE_MS - lead)
+  // An idle tick paints nothing (#298): give this one fresh data to paint, so
+  // only the press guard can hold it back.
+  if (db) {
+    advanceClock()
+    insertItem(db, { ...AGENT, kind: 'note', title: 'Fresh data for the tick' })
+  }
 }
 async function crossTick(lead = 100): Promise<void> {
   await vi.advanceTimersByTimeAsync(lead + 50)

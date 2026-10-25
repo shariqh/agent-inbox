@@ -26,7 +26,7 @@ import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type Database from 'better-sqlite3'
-import { openDb } from '../../src/store.js'
+import { openDb, upsertActivity } from '../../src/store.js'
 import { createViewer } from '../../src/viewer.js'
 import type { ViewerOpts } from '../../src/viewer.js'
 import { scratchDir } from '../scratch.js'
@@ -381,6 +381,24 @@ export async function settle(): Promise<void> {
  */
 export async function pollTick(): Promise<void> {
   await vi.advanceTimersByTimeAsync(3000)
+}
+
+/**
+ * Run one poll cycle that has something to paint (#298). An idle tick keeps the
+ * frame on screen, so a test of what a rebuild preserves (focus, selection,
+ * open state) needs a changed read. A new idle Live session changes only
+ * /api/activity: no list, count or badge under test moves. It does add a
+ * `harness-tick` project to the rail, since the rail lists the projects of
+ * Live sessions too, so a rail test must allow for it.
+ */
+let changedTicks = 0
+export async function changedPollTick(db: Database.Database): Promise<void> {
+  changedTicks += 1
+  upsertActivity(db, {
+    session: `harness-tick-${changedTicks}`, project: 'harness-tick', stream: '', agent: 'harness',
+    doing: 'open', idle: true, claim: false,
+  })
+  await pollTick()
 }
 
 // ── stale-node-safe DOM accessors ───────────────────────────────────────────

@@ -7,6 +7,7 @@ import {
 import {
   advanceClock, answerInput, bootApp, click, collapseRow, expectConsoleError, freshDb, pollTick, row, rowTitles, settle,
   setViewport, showInbox, type, useDomTest,
+  changedPollTick,
 } from './harness.js'
 
 useDomTest()
@@ -185,7 +186,7 @@ describe('current ask time and queue sorting (#64)', () => {
     before.focus()
     expect(document.activeElement).toBe(before)
 
-    await pollTick()
+    await changedPollTick(d)
 
     const after = askedTime(oldId)
     expect(after).not.toBe(before)

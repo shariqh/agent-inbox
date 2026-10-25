@@ -7,6 +7,7 @@ import {
 import {
   answerInput, bootApp, buttonLabelled, click, collapseRow, expectConsoleError, freshDb, pollTick, row,
   settle, type, useDomTest,
+  changedPollTick,
 } from './harness.js'
 
 useDomTest()
@@ -1322,7 +1323,7 @@ describe('direct overlay draft reconciliation', () => {
     const lightbox = document.getElementById('lightbox')!
     const before = buttonLabelled('Hold', lightbox)!
     before.focus()
-    await pollTick()
+    await changedPollTick(db)
 
     const after = buttonLabelled('Hold', lightbox)!
     expect(before.isConnected).toBe(false)

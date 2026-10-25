@@ -1175,6 +1175,47 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   and clearing site data. `test/drafts.test.ts` and `test/dom/durable-drafts.test.ts`
   pin it; the DOM file removes a closed page's unload listeners itself, because jsdom
   keeps every boot's on one window.
+- **An idle tick paints nothing, and the clock still moves (#298).** Rebuilding
+  an unchanged page every 3 s cost about 1.3% renderer and 1.5% GPU CPU at idle.
+  `load()` calls `renderIfIdle()` unless `pollMaySkipPaint` (`public/poll.js`)
+  finds that the last COMPLETE frame (`paintedFrame`, written at the end of
+  `render()` and cleared at its start, so a frame that threw is never reused)
+  was painted from exactly this tick's `frameInputs()`, nothing is deferred
+  (`renderDirty`) and the frame is under `CLOCK_REPAINT_MS` (30 s) old. Inputs
+  compare by `Object.is`: a 304 resolves to the very representation it
+  revalidated, so each snapshot is its identity, the closed set is its bytes,
+  `/api/activity` is `activityFrameKey` (its bytes without `updated_at`, the
+  liveness heartbeat nothing displays, kept only for a row with no other
+  activity time), fallback bodies are reduced to what they mean, and the
+  boot markers, activity-history URL, lens (`navigationKey()`, `openRowId`) are
+  values. This window's own state is covered by `outsideChanges`, bumped by any
+  human input (pointerdown, click, keydown, input, change, focus, resize,
+  visibility) and every settled write, so the next tick paints exactly as it did
+  before; state answered by other reads after the input that asked for it
+  (`liveVersion`, `fileLinksCopy()`, `linkFileActions()`) is named directly.
+  **Adding render-read state that changes outside a paint means adding it to
+  `frameInputs()`**, or it waits up to 30 s. The clock is fixed rather than
+  computed per label: relative ages are minute-granular and every threshold
+  (stale, snooze, follow-up, issue freshness, dormancy) is minutes or longer, so
+  30 s bounds each one without enumerating them; a clock moved back repaints.
+  A frame whose `navigationKey()` (tab, project, agent, Settings) moved while it
+  painted, as draft recovery inside `render()` can do, is not recorded, so the
+  next tick paints it again. A move of the open row alone is recorded: it is
+  made by `setOpenRow` before the panes paint, so the frame already shows it.
+  **The visible window can lag the dock badge by up to ~33 s** for clock-only
+  changes (a snooze ending, the 72 h stale move): Electron main recomputes
+  attention every 3 s, while the page waits for its clock. Focusing the window
+  counts as input, so the next tick (within 3 s) repaints; a notification
+  click repaints at once only when it deep-links one item and so changes the
+  hash.
+  The skip lives inside the poll path: no third render entry, `forceRender`,
+  `reloadAndPaint()`, `resumeRender()` and direct `renderIfIdle()` callers paint
+  as before, and restart detection, `loadGeneration` and the all-settle rule run
+  before it. `test/dom/idle-frame.test.ts` pins it (one case per guard) and
+  `pollMaySkipPaint` is unit-tested in `test/poll.test.ts`. A test of what a
+  rebuild preserves or holds back must give the tick something to paint
+  (the harness's `changedPollTick(db)`, or fresh data as press-guard and
+  page-scroll insert), never rely on a `.focus()` counting as input.
 - **Dashboard focus must not freeze monitoring detail.** Mount the structural frame
   and native range selector once, then refresh ownership, dispatch, recent outcomes
   and history through the ambient painter as well as headline signals. Preserve the

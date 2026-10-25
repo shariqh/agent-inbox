@@ -12,3 +12,5 @@ export function sessionBuild(a: unknown, info: unknown): { label: string; older:
 export function hostOfAgent(agent: unknown): 'claude' | 'copilot' | null
 /** issue #197 part 2 — semver precedence (-1, 0, 1), or null unless both are strict semver. */
 export function compareVersions(a: unknown, b: unknown): -1 | 0 | 1 | null
+/** issue #298 — /api/activity as the poll compares it: its bytes without the liveness `updated_at`. */
+export function activityFrameKey(activity: unknown): string

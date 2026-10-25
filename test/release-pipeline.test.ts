@@ -310,13 +310,19 @@ describe('native architecture release stages', () => {
     const deref = source.indexOf('renameSync(dereffed, srcModules)')
     const prune = source.indexOf('pruneNodeModules(stageDir)')
     const probe = source.indexOf("probeStagedNativeDependency(stageDir, nodeBin, 'after node_modules normalization and pruning')")
-    const selftest = source.indexOf('\n  runStagedSelftest(stageDir, adapter)\n')
+    const selftest = source.indexOf('\n  runStagedSelftest(stageDir, adapter, { nodeVersion, nodeModulesAbi })\n')
     const manifest = source.indexOf('const manifest = buildManifest({')
     expect(deref).toBeGreaterThan(-1)
     expect(prune).toBeGreaterThan(deref)
     expect(probe).toBeGreaterThan(prune)
     expect(selftest).toBeGreaterThan(probe)
     expect(manifest).toBeGreaterThan(selftest)
+  })
+
+  it('names the staged node each platform runs in its selftest line, node.exe on Windows (#362)', () => {
+    const source = readFileSync(join(root, 'scripts', 'stage-runtime.mjs'), 'utf8')
+    expect(source).toContain('`selftest (${adapter.payloadNodeExecRelPath} dist/hook-cli.js selftest)`')
+    expect(source).not.toContain("'selftest (bin/node")
   })
 
   it('refuses an unpruned app or runtime in every thin-app gate (#291)', () => {

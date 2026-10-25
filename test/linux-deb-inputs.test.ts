@@ -66,7 +66,7 @@ describe('Linux DEB inputs', () => {
       },
       linuxInputs: {
         path: 'release/linux-inputs.json',
-        sha256: 'e3688d91ae503dff780f7a5fb752d89693f4b43ed8ad8e5616cabce5a7921e39',
+        sha256: '1bee7ed8e266765aa11dc9ec6d9cd84b7d61e468459cd5c86c988e0d23e5e9cc',
       },
       icon: {
         path: 'assets/icon-1024.png',

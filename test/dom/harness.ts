@@ -387,7 +387,9 @@ export async function pollTick(): Promise<void> {
  * Run one poll cycle that has something to paint (#298). An idle tick keeps the
  * frame on screen, so a test of what a rebuild preserves (focus, selection,
  * open state) needs a changed read. A new idle Live session changes only
- * /api/activity: no list, count or badge under test moves.
+ * /api/activity: no list, count or badge under test moves. It does add a
+ * `harness-tick` project to the rail, since the rail lists the projects of
+ * Live sessions too, so a rail test must allow for it.
  */
 let changedTicks = 0
 export async function changedPollTick(db: Database.Database): Promise<void> {

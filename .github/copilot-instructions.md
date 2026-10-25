@@ -524,10 +524,12 @@ Run the build before `npm run electron`; the development shell starts the built
   set, lens, human input and settled writes since, and the out-of-poll state
   render reads), nothing is deferred (`renderDirty`), and it is under 30 s old.
   Activity compares without its `updated_at` heartbeat (`activityFrameKey`),
-  and a frame whose lens moved while it painted is not recorded. The 30 s clock
-  repaints every clock-derived label, so a visible window can lag the dock badge
-  by up to ~33 s on clock-only changes; focus or a notification click repaints
-  at once. Any state render reads that changes outside a paint must join
+  and a frame whose `navigationKey()` (tab, project, agent, Settings) moved
+  while it painted is not recorded. The 30 s clock repaints every
+  clock-derived label, so a visible window can lag the dock badge by up to
+  ~33 s on clock-only changes; focusing the window repaints on the next tick
+  (within 3 s), and a notification click at once only when it deep-links one
+  item. Any state render reads that changes outside a paint must join
   `frameInputs()`.
 - A text selection is captured before and restored after each rebuild by both
   render entries (`public/selection.js`, #223). It never defers or suspends a

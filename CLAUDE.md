@@ -1132,12 +1132,16 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   computed per label: relative ages are minute-granular and every threshold
   (stale, snooze, follow-up, issue freshness, dormancy) is minutes or longer, so
   30 s bounds each one without enumerating them; a clock moved back repaints.
-  A frame whose lens moved while it painted (draft recovery inside `render()`
-  can change the tab, project or open row) is not recorded, so the next tick
-  paints it again. **The visible window can lag the dock badge by up to ~33 s**
-  for clock-only changes (a snooze ending, the 72 h stale move): Electron main
-  recomputes attention every 3 s, while the page waits for its clock. Focusing
-  the window or clicking the notification repaints at once.
+  A frame whose `navigationKey()` (tab, project, agent, Settings) moved while it
+  painted, as draft recovery inside `render()` can do, is not recorded, so the
+  next tick paints it again. A move of the open row alone is recorded: it is
+  made by `setOpenRow` before the panes paint, so the frame already shows it.
+  **The visible window can lag the dock badge by up to ~33 s** for clock-only
+  changes (a snooze ending, the 72 h stale move): Electron main recomputes
+  attention every 3 s, while the page waits for its clock. Focusing the window
+  counts as input, so the next tick (within 3 s) repaints; a notification
+  click repaints at once only when it deep-links one item and so changes the
+  hash.
   The skip lives inside the poll path: no third render entry, `forceRender`,
   `reloadAndPaint()`, `resumeRender()` and direct `renderIfIdle()` callers paint
   as before, and restart detection, `loadGeneration` and the all-settle rule run

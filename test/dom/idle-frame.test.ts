@@ -416,7 +416,7 @@ describe('clock-derived content still moves on an idle window (#298)', () => {
     expect(backAt - wakeAt).toBeLessThanOrEqual(CLOCK_LAG_MS)
   })
 
-  it('repaints at once when the clock moved back', async () => {
+  it('repaints on the next tick when the clock moved back', async () => {
     const d = open()
     const id = insertItem(d, { ...AGENT, kind: 'question', title: 'When was this?' })
     await bootApp(d)

@@ -2131,9 +2131,11 @@ function render() {
   restoreQueueView()
   restoreSelection(textSelection)
   editablePanesPainted = true
-  // Draft recovery may move the lens part way (reconcileDraftOwners →
-  // requestDraftRecovery): the panes then show data filtered for the old one,
-  // so the poll must not keep this frame as if it were drawn for the new one.
+  // Draft recovery may move navigationKey() part way (reconcileDraftOwners →
+  // requestDraftRecovery): the panes then show data filtered for the old tab,
+  // project or agent, so the poll must not keep this frame as if it were drawn
+  // for the new one. An open-row move alone is fine: setOpenRow runs before the
+  // panes paint, so they already show it.
   paintedFrame = navigationKey() === frameLens ? { inputs: frameInputs(), at: Date.now() } : null
 }
 

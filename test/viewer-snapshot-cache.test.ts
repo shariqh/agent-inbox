@@ -379,8 +379,9 @@ describe('viewer conditional snapshots', () => {
   it('invalidates on same-connection schema changes instead of hiding a missing table behind cached bytes', async () => {
     question()
     const initial = await tag('/api/items')
-    // A schema failure is not counted by total_changes(); this is deliberate
-    // fixture instrumentation, not a production schema-mutation path.
+    // Dropping the table moves no domain version (its rows are gone, not
+    // written), only the schema cookie every token carries (#297); this is
+    // deliberate fixture instrumentation, not a production schema-mutation path.
     db.exec('DROP TABLE items')
     const error = vi.spyOn(console, 'error').mockImplementation(() => {})
     const response = await conditional('/api/items', initial)

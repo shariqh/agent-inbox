@@ -1609,6 +1609,8 @@ function historyWanted(view = lastData) {
 function archivedWanted(view = lastData) {
   const brief = view?.archivedBrief
   if (!brief?.length) return false
+  // Restored row drafts waiting to learn whether an archived row holds them.
+  if (restoredDrafts && [...restoredDrafts.values()].some(({ draft }) => awaitsArchivedRow(draft))) return true
   // A deep link to an archived plan, search, and Plan flow open on one.
   if (archivedLookup?.view === navigationKey()) return true
   if (searchInUse()) return true
@@ -7169,16 +7171,29 @@ function placeRestoredDraft(key, draft) {
   }
 }
 
+// Issue #299: a restored row draft whose row no active plan holds may be an
+// archived plan's, and only the complete archived list says whether the server
+// already holds its text (rowHolds). While that list is paged out, and its last
+// read has not failed, the draft waits for it.
+function awaitsArchivedRow(draft) {
+  return (draft.type === 'row' || draft.type === 'row-recovery')
+    && omitsArchived() && !lastData.archivedError && !currentRow(draft.rowId)
+}
+
 // Once, with the first data and before the first render reads a draft. It
 // sends nothing, focuses nothing and opens no tab; it reopens the card of the
 // newest restored queue draft unless a card is already open, and the next
-// queue render opens any fold holding a restored draft.
+// queue render opens any fold holding a restored draft. A row draft that
+// awaits the archived plans (#299) stays restored, still the profile's copy,
+// and is placed the same way by the first tick that read them, or failed to.
 function placeRestoredDrafts() {
   if (!restoredDrafts) return
   const restored = [...restoredDrafts].sort(([, left], [, right]) => left.savedAt - right.savedAt)
-  restoredDrafts = null
+  const held = new Map(restored.filter(([, { draft }]) => awaitsArchivedRow(draft)))
+  restoredDrafts = held.size ? held : null
   let reopenId = null
   for (const [key, { draft }] of restored) {
+    if (held.has(key)) continue
     const placed = placeRestoredDraft(key, draft)
     if (!placed) continue
     revealDraftIds.add(placed.id)
@@ -7188,6 +7203,10 @@ function placeRestoredDrafts() {
     selectedId = reopenId
     setOpenRow(reopenId, { resume: false })
   }
+  // where a draft went is drawn by the next frame, whatever else it reads (#298)
+  if (held.size < restored.length) noteOutsideChange()
+  // an early tick reads the complete list the held drafts wait on
+  if (held.size) requestHistory()
 }
 
 function sendReply(...args) {

@@ -24,10 +24,12 @@ const REPO = 'shariqh/agent-inbox'
 const RECENT = 4
 // What the brief keeps of a row: its identity and content times, which
 // public/issues.js reads, and for one of its project's newest outcomes, the
-// outcome and the stamps public/relay.js orders it by.
+// outcome, the stamps public/relay.js orders it by and what a Handoffs outcome
+// card shows of its action.
 const ROW_IDENTITY = ['id', 'label', 'status', 'issue_repo', 'issue_number', 'created_at', 'updated_at'].sort()
 const ROW_OUTCOME = [
   ...ROW_IDENTITY, 'outcome', 'outcome_at', 'annotation_seen_at', 'handled_seen_at', 'annotated_at', 'handled_at',
+  'note', 'next_step', 'action_owner', 'options',
 ].sort()
 
 let db: Database.Database
@@ -166,6 +168,34 @@ describe('listArchivedSummary (issue #299)', () => {
     expect(brief.planWaits).toEqual(complete.planWaits)
     const labels = complete.relations.get(key(117))!.children.map((child) => [child.node.number, child.activity.label])
     expect(labels).toEqual([[118, 'Done here'], [119, 'Done here'], [120, 'Done here'], [121, 'Done here'], [122, 'None here']])
+  })
+
+  // public/app.js relayCardEl: a Handoffs outcome card shows the row's owner
+  // (action_owner, else options) and its note or next step.
+  it('carries what a Handoffs outcome card shows of each recent outcome’s action, as the complete list has it', () => {
+    tick()
+    upsertBoard(db, {
+      ...input('alpha', 'Cards'),
+      rows: [
+        {
+          label: 'Approve', status: 'done', note: 'Ready to ship.', next_step: 'Approve the release.',
+          action_owner: 'approval', outcome: 'Approved.',
+        },
+        { label: 'Pick', status: 'done', options: [{ label: 'Tuesday', recommended: true }, { label: 'Thursday' }], outcome: 'Tuesday.' },
+        { label: 'Open step', status: 'tracked' },
+      ],
+    })
+    const board = getBoard(db, 'alpha', 'Cards')!
+    archiveBoard(db, board.id, board.revision)
+    const complete = listBoards(db, { status: 'archived' })[0]!.rows
+    const [plan] = listArchivedSummary(db, RECENT).plans
+    expect(plan!.rows.map((row) => row.label)).toEqual(['Approve', 'Pick'])
+    for (const row of plan!.rows) {
+      expect(Object.keys(row).sort()).toEqual(ROW_OUTCOME)
+      expect(row).toEqual(pick(complete.find((full) => full.id === row.id)!, ROW_OUTCOME))
+    }
+    expect(plan!.rows[0]).toMatchObject({ note: 'Ready to ship.', next_step: 'Approve the release.', action_owner: 'approval' })
+    expect(plan!.rows[1]).toMatchObject({ options: [{ label: 'Tuesday', recommended: true }, { label: 'Thursday' }] })
   })
 
   it('carries every outcome tied with the last one it keeps', () => {

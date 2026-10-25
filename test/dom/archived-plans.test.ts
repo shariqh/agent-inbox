@@ -333,6 +333,44 @@ describe('archived plans in brief (issue #299)', () => {
     expect(archive.control.reads.some((read) => read.path === '/api/items/history')).toBe(false)
   })
 
+  // A project with no more archived outcomes than the brief carries: the open
+  // lane draws them from the brief, and each card must read as the complete
+  // list draws it (owner, then note or next step, then the outcome).
+  it('draws Handoffs outcome cards from the brief exactly as from the complete list', async () => {
+    db = freshDb()
+    advanceClock()
+    upsertBoard(db, {
+      ...ALPHA, title: 'Cards',
+      rows: [
+        {
+          label: 'Approve', status: 'done', note: 'Ready to ship.', next_step: 'Approve the release.',
+          action_owner: 'approval', outcome: 'Approved.',
+        },
+        { label: 'Pick', status: 'done', options: [{ label: 'Tuesday', recommended: true }, { label: 'Thursday' }], outcome: 'Tuesday.' },
+        { label: 'Open step', status: 'tracked' },
+      ],
+    })
+    const plan = getBoard(db, 'alpha', 'Cards')!
+    archiveBoard(db, plan.id, plan.revision)
+    const archive = archivedControl()
+    await bootApp(db, { interceptFetch: archive.interceptFetch })
+    click(document.querySelector('.relay-btn'))
+    await settle()
+    const lane = () => document.querySelector('#relaybox [data-relay-lane="outcome"] .relay-body')!
+    // drawn from the brief: nothing omitted, so the complete list is not read
+    expect(fullReads(archive.control.reads)).toEqual([])
+    const cards = [...lane().querySelectorAll('.relay-card')]
+    expect(cards.map((card) => card.querySelector('.relay-owner')?.textContent)).toEqual(['Ready after approval', 'Decision'])
+    expect(cards[0]?.querySelector('.relay-summary-text')?.textContent).toBe('Ready to ship.')
+    const fromBrief = lane().innerHTML
+
+    // the same lane from the complete list, as a viewer without the brief serves it
+    archive.control.briefMissing = true
+    await pollTick()
+    expect(fullReads(archive.control.reads)).toEqual([200])
+    expect(lane().innerHTML).toBe(fromBrief)
+  })
+
   it('keeps reading the complete list while Plan flow shows an archived plan', async () => {
     db = freshDb()
     const { rollout } = seedHub(db)

@@ -3048,9 +3048,11 @@ export function listBoardsWithBlockedRows(db: Database.Database): BoardWithRows[
 //     Agent Inbox activity labels (public/issues.js) say "Done here" for the
 //     issues archived plans name;
 //   - each project's `outcomeLimit` newest outcome-bearing rows, and any tied
-//     with the last, with their outcome and the stamps public/relay.js `stamp`
-//     orders it by: the Dashboard's recent outcomes, provable for any lens
-//     without an agent filter.
+//     with the last, with their outcome, the stamps public/relay.js `stamp`
+//     orders it by and what a Handoffs outcome card shows of its action
+//     (note, next step, owner and options): the Dashboard's recent outcomes,
+//     provable for any lens without an agent filter, and Handoffs' cards, the
+//     same as the complete list draws them.
 // `omitted` counts the outcome-bearing rows whose outcome a plan leaves out,
 // with the newest Dashboard stamp among them, so every outcome count stays exact.
 export interface ArchivedRowBrief {
@@ -3070,6 +3072,11 @@ export interface ArchivedOutcomeBrief extends ArchivedRowBrief {
   handled_seen_at: string | null
   annotated_at: string | null
   handled_at: string | null
+  // what a Handoffs outcome card shows besides it (relaySummaryText, actionOwnerLabel)
+  note: string
+  next_step: string
+  action_owner: ActionOwner | null
+  options: QuestionOption[] | null
 }
 
 export interface ArchivedPlanBrief extends Board {
@@ -3151,12 +3158,15 @@ export function listArchivedSummary(db: Database.Database, outcomeLimit: number)
     }
     const kept = new Map<string, ArchivedPlanBrief['rows']>()
     const brief = db.prepare(`SELECT board_id, id, label, status, issue_repo, issue_number, created_at, updated_at,
-        outcome, outcome_at, annotation_seen_at, handled_seen_at, annotated_at, handled_at
+        outcome, outcome_at, annotation_seen_at, handled_seen_at, annotated_at, handled_at,
+        note, next_step, action_owner, options
       FROM board_rows WHERE id IN (SELECT value FROM json_each(?))
-      ORDER BY position ASC`).all(JSON.stringify([...carried])) as Array<ArchivedOutcomeBrief & { board_id: string }>
-    for (const { board_id: boardId, ...row } of brief) {
+      ORDER BY position ASC`).all(JSON.stringify([...carried])) as Array<
+      Omit<ArchivedOutcomeBrief, 'options'> & { board_id: string; options: string | null }>
+    for (const { board_id: boardId, options, ...row } of brief) {
       const own = kept.get(boardId) ?? []
-      own.push(recent.has(row.id) ? row : rowIdentity(row))
+      // options parsed as the complete list parses them (withUnseen)
+      own.push(recent.has(row.id) ? { ...row, options: parseOptions(options) } : rowIdentity(row))
       kept.set(boardId, own)
     }
     return {

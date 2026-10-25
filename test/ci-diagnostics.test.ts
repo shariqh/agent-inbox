@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import { existsSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
@@ -38,6 +39,9 @@ describe('CI crash diagnostics (#359)', () => {
     const d = ciDiagnostics({ [CI_DIAGNOSTICS_ENV]: dir })
     expect(d?.execArgv).toEqual([
       '--report-on-fatalerror',
+      // the artifact is public: no runner environment, no network handles
+      '--report-exclude-env',
+      '--report-exclude-network',
       `--report-directory=${join(dir, 'node-reports')}`,
     ])
     expect(existsSync(join(dir, 'node-reports'))).toBe(true)
@@ -48,7 +52,8 @@ describe('CI crash diagnostics (#359)', () => {
   })
 
   it('names the exit code, signal and files when a worker exits unexpectedly', () => {
-    const d = ciDiagnostics({ [CI_DIAGNOSTICS_ENV]: scratchDir('ci-diagnostics-') })
+    const dir = scratchDir('ci-diagnostics-')
+    const d = ciDiagnostics({ [CI_DIAGNOSTICS_ENV]: dir })
     const logger = { outputStream: process.stdout, errorStream: process.stderr }
     const worker = d!.pool.createPoolWorker({
       distPath: root,
@@ -56,7 +61,8 @@ describe('CI crash diagnostics (#359)', () => {
       execArgv: [],
       env: {},
     } as unknown as PoolOptions)
-    const fork = new EventEmitter() as EventEmitter & { send: (m: unknown) => void }
+    const fork = new EventEmitter() as EventEmitter & { pid: number, send: (m: unknown) => void }
+    fork.pid = 4242
     fork.send = () => {}
     ;(worker as unknown as { _fork: unknown })._fork = fork
     const written: string[] = []
@@ -65,6 +71,8 @@ describe('CI crash diagnostics (#359)', () => {
       return true
     })
 
+    // a message shape Vitest might change must never break a worker's start
+    worker.send({ __vitest_worker_request__: true, type: 'run' } as never)
     worker.send({
       __vitest_worker_request__: true,
       type: 'run',
@@ -76,19 +84,43 @@ describe('CI crash diagnostics (#359)', () => {
 
     expect(onExit).toHaveBeenCalledOnce()
     expect(written.join('')).toMatch(
-      /^\[ci-diagnostics\] Vitest fork worker pid \S+ exited unexpectedly: code=null signal=SIGKILL free=\d+ MB of \d+ MB files=\/repo\/test\/dom\/a\.test\.ts\n$/,
+      /^\[ci-diagnostics\] Vitest fork worker pid 4242 exited unexpectedly: code=null signal=SIGKILL free=\d+ MB of \d+ MB files=\/repo\/test\/dom\/a\.test\.ts\n$/,
     )
+    expect(readFileSync(join(dir, 'worker-exits.log'), 'utf8')).toBe(written.join(''))
 
     // Vitest removes its listener before a requested stop: that exit stays silent
     worker.off('exit', onExit)
     expect(fork.listenerCount('exit')).toBe(0)
   })
 
+  // Vitest's pool API is experimental: if an update stops calling worker.on('exit')
+  // or renames _fork, this real run is what notices.
+  it('prints the line from a real Vitest run whose worker is killed', () => {
+    const dir = scratchDir('ci-diagnostics-')
+    const env: NodeJS.ProcessEnv = { ...process.env, [CI_DIAGNOSTICS_ENV]: dir }
+    for (const name of Object.keys(env)) if (name.startsWith('VITEST')) delete env[name]
+    delete env.NODE_OPTIONS
+    const run = spawnSync(process.execPath, [
+      join(root, 'node_modules', 'vitest', 'vitest.mjs'),
+      'run',
+      '--root',
+      join(root, 'test', 'fixtures', 'ci-diagnostics-crash'),
+    ], { cwd: root, env, encoding: 'utf8', timeout: 60_000 })
+    const output = `${run.stdout}${run.stderr}`
+    expect(run.error).toBeUndefined()
+    expect(run.status, output).not.toBe(0)
+    expect(output).toMatch(
+      /\[ci-diagnostics\] Vitest fork worker pid \d+ exited unexpectedly: code=null signal=SIGKILL free=\d+ MB of \d+ MB files=\S*kills-its-worker\.fixture\.ts\n/,
+    )
+    expect(readFileSync(join(dir, 'worker-exits.log'), 'utf8')).toMatch(/ pid \d+ .* signal=SIGKILL /)
+  }, 60_000)
+
   it('keeps the required check names and wraps only the full suite', () => {
     expect(workflow).toContain('    name: Node 24 / ${{ matrix.os }}\n')
     expect(workflow).toContain('        os: [ubuntu-latest, macos-14]\n')
     expect(workflow).not.toMatch(/^ {6}- run: npm test$/m)
     const run = step('Run the test suite with crash diagnostics')
+    expect(run).toContain('        id: suite\n')
     expect(run).toContain(
       '          AGENT_INBOX_CI_DIAGNOSTICS_DIR: ${{ github.workspace }}/ci-diagnostics\n',
     )
@@ -101,13 +133,21 @@ describe('CI crash diagnostics (#359)', () => {
   })
 
   it('collects and uploads diagnostics only when the job fails', () => {
+    // only when the suite itself failed: a failed typecheck pays no macOS wait
+    const onSuiteFailure = "        if: failure() && steps.suite.outcome == 'failure'\n"
     const collect = step('Collect crash diagnostics')
-    expect(collect).toContain('        if: failure()\n')
+    expect(collect).toContain(onSuiteFailure)
     expect(collect).toContain('-newer "$out/.started"')
+    // a bounded poll for one report per SIGABRT/SIGSEGV/SIGBUS worker, never a fixed sleep
+    expect(collect).toContain("grep -cE 'signal=(SIGABRT|SIGSEGV|SIGBUS) ' \"$exits\"")
+    expect(collect).toContain('for i in $(seq 30); do')
+    expect(collect).not.toMatch(/sleep (?!1$)\d+/m)
+    expect(collect).toContain('echo "sudo dmesg unavailable: $kernel"')
     expect(collect).toContain("-name 'node*.ips' -o -name 'node*.crash'")
     expect(collect).toContain('sudo -n dmesg')
     const upload = step('Upload crash diagnostics')
-    expect(upload).toContain('        if: failure()\n')
+    expect(upload).toContain(onSuiteFailure)
+    expect(workflow).not.toMatch(/^\s+if: failure\(\)$/m)
     expect(upload).toContain(`uses: ${UPLOAD}`)
     expect(upload).toContain('          path: ci-diagnostics/\n')
     expect(upload).toContain('          if-no-files-found: ignore\n')

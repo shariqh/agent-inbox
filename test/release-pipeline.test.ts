@@ -435,9 +435,11 @@ describe('native architecture release stages', () => {
       const packCall = source.slice(pack, source.indexOf('if (paths.length !== 1)', pack))
       expect(packCall, builder).toContain('electronVersion: inputs.electron.version,')
       expect(packCall, builder).toContain('download: { checksums: electronChecksums },')
-      // once each, and nothing spread in that could override either (a later key wins)
-      expect(packCall.match(/\belectronVersion\b['"\]]*\s*:/g), builder).toHaveLength(1)
-      expect(packCall.match(/\bdownload\b['"\]]*\s*:/g), builder).toHaveLength(1)
+      // once each, and nothing spread in that could override either (a later key wins). Count
+      // every mention, not only `key:`, so a shorthand property, a getter or a computed key
+      // can't add a second one either
+      expect(packCall.match(/\belectronVersion\b/g), builder).toHaveLength(1)
+      expect(packCall.match(/\bdownload\b/g), builder).toHaveLength(1)
       expect(packCall, builder).not.toContain('...')
       expect(packCall, builder).not.toMatch(/electronZipDir|unsafelyDisableChecksums/)
       // the zip whose hash is checked is the one packaged

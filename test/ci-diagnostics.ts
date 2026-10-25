@@ -61,7 +61,7 @@ class DiagnosticForksPoolWorker extends ForksPoolWorker implements PoolWorker {
     try {
       super.send(message)
     } catch (error) {
-      this.onWorkerError(error)
+      this.onWorkerError(this.child, error)
       throw error
     }
   }
@@ -71,15 +71,17 @@ class DiagnosticForksPoolWorker extends ForksPoolWorker implements PoolWorker {
   // dies can reach Vitest first as a failed write ('error' with EPIPE), after which
   // Vitest stops listening for 'exit' (#375): both paths print, exactly once.
   override on(event: string, callback: Listener): void {
+    // the child these listeners belong to, whether or not Vitest has cleared _fork since
+    const child = this.child
     const listener: Listener | undefined =
       event === 'exit'
         ? (code: number | null, signal?: NodeJS.Signals | null) => {
-          this.report(code, signal ?? null)
+          this.report(child, code, signal ?? null)
           callback(code)
         }
         : event === 'error'
           ? (error: unknown) => {
-            this.onWorkerError(error)
+            this.onWorkerError(child, error)
             callback(error)
           }
           : undefined
@@ -97,33 +99,40 @@ class DiagnosticForksPoolWorker extends ForksPoolWorker implements PoolWorker {
     super.off(event, listener)
   }
 
-  // Only while Vitest still expects the worker to run (it listens for 'exit'), and
-  // only for a child that has died or a write that says it has.
-  private onWorkerError(error: unknown): void {
-    const child = this.child
+  // Only while Vitest still expects the worker to run: a requested stop removes its
+  // 'exit' listener but not its 'error' one, and the stopped child's death or a write
+  // to it must not print a false line. And only for a child that has died or a write
+  // that says it has.
+  private onWorkerError(child: Child | undefined, error: unknown): void {
     if (this.reported || this.waiting || !child || !this.wrapped.get('exit')?.size) return
     const dead = child.exitCode !== null || child.signalCode !== null
     const code = (error as { code?: unknown } | null)?.code
     if (!dead && !(typeof code === 'string' && SEND_FAILURES.has(code))) return
-    if (dead) return this.report(child.exitCode, child.signalCode)
+    if (dead) return this.report(child, child.exitCode, child.signalCode)
     // a listener of our own: Vitest removes its 'exit' listener when it stops the worker
     this.waiting = true
     const done = (): void => {
       clearTimeout(timer)
       child.off('exit', done)
-      this.report(child.exitCode, child.signalCode, true)
+      this.report(child, child.exitCode, child.signalCode, true)
     }
-    const timer = setTimeout(done, EXIT_WAIT_MS)
+    // unref: the wait never holds Vitest's process open
+    const timer = setTimeout(done, EXIT_WAIT_MS).unref()
     child.once('exit', done)
   }
 
-  private report(code: number | null, signal: NodeJS.Signals | null, viaError = false): void {
+  private report(
+    child: Child | undefined,
+    code: number | null,
+    signal: NodeJS.Signals | null,
+    viaError = false,
+  ): void {
     if (this.reported) return
     this.reported = true
     // after a failed write, a child that never reported its exit is unknown, not null
     const unknown = viaError && code === null && signal === null
     const line =
-      `[ci-diagnostics] Vitest fork worker pid ${this.child?.pid ?? '?'} exited unexpectedly: ` +
+      `[ci-diagnostics] Vitest fork worker pid ${child?.pid ?? '?'} exited unexpectedly: ` +
       `code=${unknown ? '?' : code ?? 'null'} signal=${unknown ? '?' : signal ?? 'null'} ` +
       `free=${mb(freemem())} of ${mb(totalmem())} ` +
       `files=${this.files.length ? this.files.join(', ') : '(none)'}\n`

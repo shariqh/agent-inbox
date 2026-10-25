@@ -59,7 +59,8 @@ describe('CI crash diagnostics (#359)', () => {
   }
 
   // the custom pool's worker around a fake child, as Vitest's PoolRunner drives it:
-  // it listens for 'error' and 'exit' after start, and removes both before a stop
+  // it listens for 'error' and 'exit' after start, and a stop removes only 'exit'
+  // (cli-api L3025); 'error' stays until the child is gone
   function fakeWorker() {
     const dir = scratchDir('ci-diagnostics-')
     const d = ciDiagnostics({ [CI_DIAGNOSTICS_ENV]: dir })
@@ -93,16 +94,14 @@ describe('CI crash diagnostics (#359)', () => {
     worker.on('exit', onExit)
     const lines = (): string[] => written.join('').split('\n').filter(Boolean)
     const log = (): string => readFileSync(join(dir, 'worker-exits.log'), 'utf8')
-    const stop = (): void => {
-      worker.off('error', onError)
-      worker.off('exit', onExit)
-    }
+    const stop = (): void => worker.off('exit', onExit)
+    const exitLog = join(dir, 'worker-exits.log')
     // the child dies: Node sets these before it emits 'exit'
     const die = (signal: NodeJS.Signals): void => {
       child.signalCode = signal
       child.emit('exit', null, signal)
     }
-    return { worker, child, written, lines, log, onError, onExit, stop, die }
+    return { worker, child, written, lines, log, exitLog, onError, onExit, stop, die }
   }
 
   const epipe = (): Error => Object.assign(new Error('write EPIPE'), { code: 'EPIPE', errno: -32 })
@@ -130,10 +129,40 @@ describe('CI crash diagnostics (#359)', () => {
     expect(w.lines()[0]).toMatch(line('null', 'SIGKILL'))
     expect(w.log()).toBe(w.written.join(''))
 
-    // Vitest removes its listeners before a requested stop: that exit stays silent
+    // Vitest removes its 'exit' listener before a requested stop: that exit stays silent
     w.stop()
     expect(w.child.listenerCount('exit')).toBe(0)
-    expect(w.child.listenerCount('error')).toBe(0)
+    expect(w.child.listenerCount('error')).toBe(1)
+  })
+
+  it('stays silent when a stopped worker dies or a write to it fails', () => {
+    const w = fakeWorker()
+    w.stop()
+    w.child.signalCode = 'SIGTERM'
+    w.child.emit('error', epipe())
+    w.child.emit('exit', null, 'SIGTERM')
+    expect(w.onError).toHaveBeenCalledOnce()
+    expect(w.lines()).toHaveLength(0)
+    expect(existsSync(w.exitLog)).toBe(false)
+  })
+
+  it('names the pid of its own child after Vitest clears it', () => {
+    const w = fakeWorker()
+    ;(w.worker as unknown as { _fork: unknown })._fork = undefined
+    w.die('SIGKILL')
+    expect(w.lines()).toHaveLength(1)
+    expect(w.lines()[0]).toMatch(line('null', 'SIGKILL'))
+  })
+
+  it('reports a synchronous send failure and rethrows it unchanged', () => {
+    const w = fakeWorker()
+    const failure = Object.assign(new Error('channel closed'), { code: 'ERR_IPC_CHANNEL_CLOSED' })
+    w.child.signalCode = 'SIGKILL'
+    w.child.send = () => { throw failure }
+    expect(() => w.worker.send({ __vitest_worker_request__: true, type: 'cancel' } as never))
+      .toThrow(failure)
+    expect(w.lines()).toHaveLength(1)
+    expect(w.lines()[0]).toMatch(line('null', 'SIGKILL'))
   })
 
   // #375: the parent's next write fails before 'exit', and Vitest, handling that
@@ -149,10 +178,13 @@ describe('CI crash diagnostics (#359)', () => {
       w.stop()
       expect(w.lines()).toHaveLength(0)
 
+      expect(vi.getTimerCount()).toBe(1)
       w.die('SIGKILL')
       expect(w.lines()).toHaveLength(1)
       expect(w.lines()[0]).toMatch(line('null', 'SIGKILL'))
       expect(w.log()).toBe(w.written.join(''))
+      // the exit cancelled the fallback
+      expect(vi.getTimerCount()).toBe(0)
       vi.advanceTimersByTime(5000)
       expect(w.lines()).toHaveLength(1)
       expect(w.onExit).not.toHaveBeenCalled()

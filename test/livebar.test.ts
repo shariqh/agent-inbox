@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { liveSummary, lastActivityAt, isDormant, activitySynopsis, sessionBuild } from '../public/livebar.js'
+import { liveSummary, lastActivityAt, isDormant, activitySynopsis, sessionBuild, activityFrameKey } from '../public/livebar.js'
 
 const NOW = Date.parse('2026-07-24T12:00:00.000Z')
 const at = (msAgo: number) => new Date(NOW - msAgo).toISOString()
@@ -274,5 +274,31 @@ describe('sessionBuild', () => {
       expect(sessionBuild(sess({ server_version: '1.2.6', server_source: 'runtime' }), info), JSON.stringify(info))
         .toEqual({ label: 'v1.2.6', older: false, newer: false, hint: '' })
     }
+  })
+})
+
+// Issue #298: the poll compares /api/activity by what Live can show.
+describe('activityFrameKey', () => {
+  const key = (o: Partial<Record<string, unknown>> = {}) => activityFrameKey([sess(o)])
+
+  it('ignores the liveness heartbeat, which nothing displays', () => {
+    expect(key({ updated_at: at(1) })).toBe(key())
+  })
+  it('keeps every field Live displays or derives from', () => {
+    for (const change of [
+      { last_call_at: at(2) }, { started_at: at(2) }, { doing: 'other' }, { idle: true },
+      { children: [{ name: 'sub', doing: 'x' }] }, { last_doing: 'before' }, { detail: 'more' },
+      { server_version: '1.2.6' }, { server_source: 'checkout' }, { project: 'other' }, { agent: 'copilot' },
+    ]) expect(key(change), JSON.stringify(change)).not.toBe(key())
+  })
+  it('keeps the heartbeat when it is the only activity time a row has', () => {
+    const bare = { last_call_at: null, started_at: null }
+    expect(key({ ...bare, updated_at: at(1) })).not.toBe(key(bare))
+  })
+  it('keeps the order rows arrive in, and rows arriving or leaving', () => {
+    const a = sess({ session: 'a' })
+    const b = sess({ session: 'b' })
+    expect(activityFrameKey([a, b])).not.toBe(activityFrameKey([b, a]))
+    expect(activityFrameKey([a])).not.toBe(activityFrameKey([a, b]))
   })
 })

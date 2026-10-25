@@ -5,6 +5,7 @@ import { archiveBoard, getBoard, insertItem, upsertBoard } from '../../src/store
 import {
   advanceClock, bootApp, buttonLabelled, click, freshDb, navigateToHash, pollTick,
   settle, useDomTest,
+  changedPollTick,
 } from './harness.js'
 
 useDomTest()
@@ -145,7 +146,7 @@ describe('deep links across paginated tabs', () => {
       const before = document.activeElement
       expectFocusedSummary(id)
 
-      await pollTick()
+      await changedPollTick(db)
 
       expect(before?.isConnected).toBe(false)
       expectFocusedSummary(id)

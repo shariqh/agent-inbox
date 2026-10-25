@@ -1117,8 +1117,10 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   was painted from exactly this tick's `frameInputs()`, nothing is deferred
   (`renderDirty`) and the frame is under `CLOCK_REPAINT_MS` (30 s) old. Inputs
   compare by `Object.is`: a 304 resolves to the very representation it
-  revalidated, so each snapshot is its identity, `/api/activity` and the closed
-  set are their bytes, fallback bodies are reduced to what they mean, and the
+  revalidated, so each snapshot is its identity, the closed set is its bytes,
+  `/api/activity` is `activityFrameKey` (its bytes without `updated_at`, the
+  liveness heartbeat nothing displays, kept only for a row with no other
+  activity time), fallback bodies are reduced to what they mean, and the
   boot markers, activity-history URL, lens (`navigationKey()`, `openRowId`) are
   values. This window's own state is covered by `outsideChanges`, bumped by any
   human input (pointerdown, click, keydown, input, change, focus, resize,
@@ -1130,11 +1132,20 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   computed per label: relative ages are minute-granular and every threshold
   (stale, snooze, follow-up, issue freshness, dormancy) is minutes or longer, so
   30 s bounds each one without enumerating them; a clock moved back repaints.
+  A frame whose lens moved while it painted (draft recovery inside `render()`
+  can change the tab, project or open row) is not recorded, so the next tick
+  paints it again. **The visible window can lag the dock badge by up to ~33 s**
+  for clock-only changes (a snooze ending, the 72 h stale move): Electron main
+  recomputes attention every 3 s, while the page waits for its clock. Focusing
+  the window or clicking the notification repaints at once.
   The skip lives inside the poll path: no third render entry, `forceRender`,
   `reloadAndPaint()`, `resumeRender()` and direct `renderIfIdle()` callers paint
   as before, and restart detection, `loadGeneration` and the all-settle rule run
-  before it. `test/dom/idle-frame.test.ts` pins it; tests that check what holds
-  a frame back must give the tick something to paint (press-guard, page-scroll).
+  before it. `test/dom/idle-frame.test.ts` pins it (one case per guard) and
+  `pollMaySkipPaint` is unit-tested in `test/poll.test.ts`. A test of what a
+  rebuild preserves or holds back must give the tick something to paint
+  (the harness's `changedPollTick(db)`, or fresh data as press-guard and
+  page-scroll insert), never rely on a `.focus()` counting as input.
 - **Dashboard focus must not freeze monitoring detail.** Mount the structural frame
   and native range selector once, then refresh ownership, dispatch, recent outcomes
   and history through the ambient painter as well as headline signals. Preserve the

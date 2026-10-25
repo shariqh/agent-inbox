@@ -30,3 +30,10 @@ export function reconcileOpenRow(
   openId: string | null | undefined,
   renderedIds: string[] | Set<string> | null | undefined,
 ): string | null
+/** issue #298 — whether the poll may keep the frame on screen instead of repainting. */
+export function pollMaySkipPaint(state: {
+  inputs: readonly unknown[]
+  painted: { inputs: readonly unknown[]; at: number } | null
+  renderDirty: boolean
+  nowMs: number
+}): boolean

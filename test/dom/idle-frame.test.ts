@@ -9,19 +9,25 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type Database from 'better-sqlite3'
 import {
-  insertItem, recordActivityCall, snoozeItem, touchActivity, upsertActivity, upsertBoard,
+  insertItem, recordActivityCall, resolveItem, snoozeItem, touchActivity, upsertActivity, upsertBoard,
 } from '../../src/store.js'
 import { STALE_MS } from '../../public/attention.js'
 import {
-  advanceClock, answerInput, badgeCount, bootApp, click, freshDb, pollTick, row, rowTitles, sendButton, settle,
-  showInbox, T0, type, useDomTest,
+  advanceClock, answerInput, badgeCount, bootApp, buttonLabelled, click, expectConsoleError, freshDb, pollTick,
+  repaint, row, rowTitles, sendButton, setSystemDark, settle, showInbox, T0, type, useDomTest,
 } from './harness.js'
 import type { BootOptions } from './harness.js'
 
 useDomTest()
 
 let db: Database.Database | null = null
-afterEach(() => { db?.close(); db = null })
+afterEach(() => {
+  db?.close()
+  db = null
+  vi.unstubAllGlobals()
+  vi.restoreAllMocks()
+  Reflect.deleteProperty(window, 'agentInboxLinks')
+})
 
 const AGENT = { project: 'alpha', stream: 'main', agent: 'copilot' } as const
 const POLL_MS = 3000
@@ -116,7 +122,7 @@ describe('an idle tick (#298)', () => {
     expect(badgeCount()).toBe(2)
   })
 
-  it('repaints when a fresh read changed its bytes', async () => {
+  it('repaints when what Live shows changed, and not for the liveness heartbeat', async () => {
     const d = open()
     const id = insertItem(d, { ...AGENT, kind: 'question', title: 'Live changes' })
     upsertActivity(d, { ...AGENT, session: 'worker', doing: 'Building the idle frame' })
@@ -125,12 +131,16 @@ describe('an idle tick (#298)', () => {
     await showInbox()
     await pollTick()
     const before = row(id)!
-    // The liveness heartbeat changes only /api/activity, which is never a 304.
+    // The five-minute heartbeat moves only `updated_at`, which nothing shows.
     advanceClock()
     touchActivity(d, 'worker')
     await pollTick()
+    expect(row(id), 'a heartbeat repainted an unchanged frame').toBe(before)
+    // A new claim changes only /api/activity, which is never a 304.
+    upsertActivity(d, { ...AGENT, session: 'worker', doing: 'Reviewing the idle frame' })
+    await pollTick()
     expect(row(id)).not.toBe(before)
-    expect(strip()).toBe('1 reporting work')
+    expect(document.getElementById('liveDrawer')?.textContent).toContain('Reviewing the idle frame')
   })
 
   it('paints a press-deferred frame on the next tick, which reads only 304s', async () => {
@@ -182,6 +192,180 @@ describe('an idle tick (#298)', () => {
   })
 })
 
+// State that changes outside the poll's reads and outside any paint. Each guard
+// in frameInputs()/pollMaySkipPaint is the only thing that brings it to screen
+// before the 30 s clock; every case below fails without its guard.
+describe('changes outside the poll still reach an idle window (#298)', () => {
+  it('paints a theme change a focused Dashboard control held back, once focus leaves', async () => {
+    const d = open()
+    const id = insertItem(d, { ...AGENT, kind: 'question', title: 'Colour me' })
+    await bootApp(d)
+    click(document.getElementById('gear'))
+    click(document.querySelector('input[name="theme-preference"][value="system"]'))
+    click(document.getElementById('gear'))
+    await settle()
+    const wash = () => row(id)?.style.getPropertyValue('--wash')
+    const light = wash()
+    expect(light).toBeTruthy()
+    // A frame painted while a Dashboard control holds keyboard focus.
+    document.querySelector<HTMLElement>('#dashboard [data-dashboard-focus-key="flow:human"]')!.focus()
+    await repaint()
+    await pollTick()
+    // The OS switches theme: the Dashboard focus holds the editable frame (renderDirty).
+    setSystemDark(true)
+    expect(wash()).toBe(light)
+    // The window loses focus; the next tick reads only 304s.
+    vi.spyOn(document, 'hasFocus').mockReturnValue(false)
+    window.dispatchEvent(new Event('blur'))
+    await pollTick()
+    expect(wash()).toBeTruthy()
+    expect(wash(), 'rows kept the old theme’s project colours').not.toBe(light)
+  })
+
+  it('takes back a staged dismiss whose send failed', async () => {
+    const d = open()
+    const id = insertItem(d, { ...AGENT, kind: 'question', title: 'Noise' })
+    const bridge = await bootApp(d)
+    await showInbox()
+    await pollTick()
+    click(row(id)!.querySelector('.nrow-dismiss'))
+    await settle()
+    expect(buttonLabelled('Undo dismiss', row(id)!)).not.toBeNull()
+    bridge.failPostsWith(500)
+    expectConsoleError(/dismiss failed: HTTP 500/)
+    await vi.advanceTimersByTimeAsync(5000) // the undo window ends and the send fails
+    await pollTick()
+    expect(document.getElementById('status')?.textContent).toBe('')
+    expect(buttonLabelled('Undo dismiss', row(id)!), 'still showing a dismiss that never happened').toBeNull()
+    expect(row(id)?.classList.contains('staged')).toBe(false)
+  })
+
+  it('shows build advice /api/version gives after the first frame', async () => {
+    const d = open()
+    upsertActivity(d, {
+      project: 'beta', stream: 'main', agent: 'claude-code', session: 'stale', doing: 'Working in beta',
+      server_version: '1.2.6', server_source: 'checkout',
+    })
+    recordActivityCall(d, 'stale')
+    let answer!: () => void
+    const held = new Promise<void>((resolve) => { answer = resolve })
+    await bootApp(d, {
+      interceptFetch: async (input, _init, next) => {
+        if (String(input) !== '/api/version') return next()
+        await held
+        return Response.json({ current: '2.0.0', mode: 'dev', runtimeInstalled: null, updatable: false, hosts: {} })
+      },
+    })
+    const chip = () => [...document.querySelectorAll<HTMLElement>('#liveStripSessions .live-session')]
+      .find((el) => el.textContent?.startsWith('beta/'))
+    await pollTick()
+    expect(chip()).toBeDefined()
+    expect(chip()!.title).not.toMatch(/older build/)
+    answer()
+    await settle()
+    await pollTick()
+    expect(chip()?.title).toMatch(/^older build \(v1\.2\.6\)/)
+  })
+
+  // main's answer to whether this page may open local files lands when it lands
+  function heldFilePermission(): (permitted: boolean) => void {
+    let answer!: (permitted: boolean) => void
+    const permission = new Promise<boolean>((resolve) => { answer = resolve })
+    Object.defineProperty(window, 'agentInboxLinks', {
+      configurable: true,
+      value: { open: vi.fn(async () => ({ ok: true, action: 'opened' })), filesAvailable: vi.fn(() => permission) },
+    })
+    return answer
+  }
+  async function openFileCard(): Promise<string> {
+    const d = open()
+    const id = insertItem(d, { ...AGENT, kind: 'question', title: 'Read the spec', detail: 'Spec at /Users/s/docs/spec.md:12' })
+    await bootApp(d)
+    await showInbox()
+    click(row(id))
+    await settle()
+    await pollTick()
+    return id
+  }
+  const fileChip = (id: string) => row(id)?.querySelector<HTMLElement>('.card-links [data-link-kind="file"]') ?? null
+
+  it('offers Reveal once main says file links open here', async () => {
+    const answer = heldFilePermission()
+    const id = await openFileCard()
+    expect(fileChip(id)).not.toBeNull()
+    expect(row(id)!.querySelector('.card-links [data-link-action="reveal"]')).toBeNull()
+    answer(true)
+    await settle()
+    await pollTick()
+    expect(row(id)!.querySelector('.card-links [data-link-action="reveal"]')).not.toBeNull()
+  })
+
+  it('turns file links into Copy path once main says this page is not its viewer', async () => {
+    const answer = heldFilePermission()
+    const id = await openFileCard()
+    expect(fileChip(id)!.title).not.toMatch(/^Copy path/)
+    answer(false)
+    await settle()
+    await pollTick()
+    expect(fileChip(id)!.title).toBe('Copy path: /Users/s/docs/spec.md')
+  })
+
+  it('says a restarted viewer waits on unsent responses, though every read is a 304', async () => {
+    const reload = vi.fn()
+    vi.stubGlobal('location', { hash: '', reload })
+    const d = open()
+    const id = insertItem(d, {
+      ...AGENT, kind: 'question', title: 'Failed option', options: [{ label: 'Ship now', recommended: true }, { label: 'Hold' }],
+    })
+    let boot = 'original-viewer'
+    const bridge = await bootApp(d, {
+      interceptFetch: async (_input, _init, next) => {
+        const response = await next()
+        response.headers.set('x-inbox-boot', boot)
+        return response
+      },
+    })
+    await showInbox()
+    click(row(id))
+    await settle()
+    bridge.failPostsWith(503)
+    expectConsoleError(/reply failed: HTTP 503/)
+    click(row(id)!.querySelector('.opt-pill'))
+    await settle()
+    expect(document.querySelector('.stale-drafts-fold')?.textContent).toContain('Ship now')
+    await pollTick()
+    await pollTick()
+    const hint = () => document.getElementById('pauseHint')?.textContent ?? ''
+    expect(hint()).toBe('')
+    boot = 'restarted-viewer'
+    await pollTick()
+    expect(reload).not.toHaveBeenCalled()
+    expect(hint()).toContain('Viewer updated')
+  })
+
+  it('does not keep a frame drawn for the lens draft recovery replaced', async () => {
+    const d = open()
+    const id = insertItem(d, { ...AGENT, kind: 'question', title: 'Resolved under a draft' })
+    await bootApp(d)
+    await showInbox()
+    click(row(id))
+    await settle()
+    type(answerInput(id), 'An answer the agent never reads')
+    click(document.querySelector('.tab[data-tab="notes"]'))
+    await settle()
+    resolveItem(d, id)
+    await pollTick() // the draft holds the editable frame
+    // A tab change paints; draft recovery inside that frame moves the lens to the Inbox.
+    click(document.querySelector('.tab[data-tab="done"]'))
+    await settle()
+    expect(document.querySelector('.tab[data-tab="needsYou"]')?.getAttribute('aria-selected')).toBe('true')
+    const before = document.querySelector('#needsYouList .stale-drafts-fold')
+    expect(before?.textContent).toContain('An answer the agent never reads')
+    await pollTick()
+    expect(document.querySelector('#needsYouList .stale-drafts-fold'), 'the poll kept a frame drawn for History').not.toBe(before)
+  })
+})
+
 describe('clock-derived content still moves on an idle window (#298)', () => {
   // The activity-history window moves on the hour (#185), which is a changed
   // read. Start each case at twenty past, so no window below crosses an hour
@@ -230,6 +414,20 @@ describe('clock-derived content still moves on an idle window (#298)', () => {
     expect(badgeCount()).toBe(0)
     const backAt = await tickUntil(() => badgeCount() === 1, 20_000 + CLOCK_LAG_MS)
     expect(backAt - wakeAt).toBeLessThanOrEqual(CLOCK_LAG_MS)
+  })
+
+  it('repaints at once when the clock moved back', async () => {
+    const d = open()
+    const id = insertItem(d, { ...AGENT, kind: 'question', title: 'When was this?' })
+    await bootApp(d)
+    await showInbox()
+    advanceClock(5 * 60_000)
+    await pollTick()
+    const asked = () => row(id)?.querySelector('.nrow-asked')?.textContent ?? ''
+    expect(asked()).toContain('5m')
+    vi.setSystemTime(Date.now() - 4 * 60_000)
+    await pollTick()
+    expect(asked()).toContain('1m')
   })
 
   it('lets a Live claim go cold within the slow clock', async () => {

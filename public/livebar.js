@@ -49,6 +49,20 @@ export function lastActivityAt(a) {
   return a?.last_call_at ?? a?.started_at ?? a?.updated_at
 }
 
+// What the Live surfaces can show of /api/activity, as one comparable string
+// (issue #298). The liveness heartbeat moves only `updated_at`, which nothing
+// displays, so it is left out, or every five-minute heartbeat would repaint
+// an idle window; the server's 15-minute cutoff still drops a crashed row. A
+// row with neither stamp keeps it: then it is the row's activity time.
+export function activityFrameKey(activity) {
+  if (!Array.isArray(activity)) return JSON.stringify(activity ?? null)
+  return JSON.stringify(activity.map((row) => {
+    if (!row || typeof row !== 'object' || (row.last_call_at ?? row.started_at) == null) return row
+    const { updated_at: _liveness, ...shown } = row
+    return shown
+  }))
+}
+
 // Long-idle: not an error and not attention — just a terminal somebody left
 // open. The Live surface keeps it (the session IS present, and its questions
 // still classify as "waiting"), but it sorts last and reads as background.

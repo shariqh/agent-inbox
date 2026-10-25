@@ -24,7 +24,7 @@ import { cardSections, optionOrder, actionPresentation } from '/card.js'
 import { keyAction, rovingIndex, ariaAnswerLabel, livenessGlyph, deckEntryAt } from '/keys.js'
 import { createKeyboardUI, revealControl } from '/keyboard-ui.js'
 import { partitionNotes, unreadNoteCount, ambientChips, seenWatermark, markSeenIds } from '/notes.js'
-import { liveSummary, lastActivityAt, isDormant, activitySynopsis, sessionBuild } from '/livebar.js'
+import { liveSummary, lastActivityAt, isDormant, activitySynopsis, sessionBuild, activityFrameKey } from '/livebar.js'
 import { agentsAction, hooksGuidance, hooksNextStep, hostLabel, hostLine, restartGuidance } from '/agents.js'
 import { PROJECT_SCOPE_NOTE, RUNTIMES_LEAD, runtimeLines, runtimesAction, runtimesNote } from '/runtimes.js'
 import { esc } from '/esc.js'
@@ -627,10 +627,11 @@ async function load() {
       issues,
       // What this tick read, compared by identity (#298): a snapshot that
       // answered 304 resolves to the very representation it revalidated, and
-      // the fresh reads compare by their bytes. Fallback bodies are new values
-      // every tick, so they are reduced to what they mean.
+      // the fresh reads compare by what they can show (activity without its
+      // liveness heartbeat). Fallback bodies are new values every tick, so
+      // they are reduced to what they mean.
       reads: [
-        [...marks].join(' '), historyUrl, g, boards, archived, JSON.stringify(activity),
+        [...marks].join(' '), historyUrl, g, boards, archived, activityFrameKey(activity),
         activityHistory.state, activityHistory.message, activityHistory.state === 'ready' ? activityHistory.spans : null,
         links.length ? links : null, issues, older?.done ?? null, older?.error ?? null,
       ],
@@ -2093,6 +2094,8 @@ function render() {
   // The rebuild below detaches the nodes a text selection lives in (#223).
   const textSelection = preparedFrame ? preparedFrame.textSelection : captureSelection()
   const frame = preparedFrame ?? paintAmbient()
+  // The lens this frame's data was filtered through (#298).
+  const frameLens = navigationKey()
   frame.paintAllPanes = paintAllPanes
   preparedFrame = null
   const ownsFocus = document.hasFocus()
@@ -2128,7 +2131,10 @@ function render() {
   restoreQueueView()
   restoreSelection(textSelection)
   editablePanesPainted = true
-  paintedFrame = { inputs: frameInputs(), at: Date.now() }
+  // Draft recovery may move the lens part way (reconcileDraftOwners →
+  // requestDraftRecovery): the panes then show data filtered for the old one,
+  // so the poll must not keep this frame as if it were drawn for the new one.
+  paintedFrame = navigationKey() === frameLens ? { inputs: frameInputs(), at: Date.now() } : null
 }
 
 // one age vocabulary for every surface (§6): rows, chips, Live and tooltips all

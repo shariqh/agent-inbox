@@ -46,6 +46,89 @@ jobs:
           test/setup-lock.test.ts
       - name: Verify structured-text hostile-input performance
         run: npm run test:structured-text:perf
-      - run: npm test
+      # Crash diagnostics for #359: a fork worker that dies mid-run must name its cause.
+      - name: Mark the start of the test suite
+        run: mkdir -p ci-diagnostics && touch ci-diagnostics/.started
+      - name: Run the test suite with crash diagnostics
+        id: suite
+        env:
+          AGENT_INBOX_CI_DIAGNOSTICS_DIR: ${{ github.workspace }}/ci-diagnostics
+        run: |
+          if [ "$RUNNER_OS" = macOS ]; then
+            /usr/bin/time -l npm test
+          elif [ -x /usr/bin/time ]; then
+            /usr/bin/time -v npm test
+          else
+            echo "/usr/bin/time is unavailable; peak memory is not recorded"
+            npm test
+          fi
       - run: npm run typecheck
       - run: npm run build
+      - name: Collect crash diagnostics
+        if: failure() && steps.suite.outcome == 'failure'
+        run: |
+          out=ci-diagnostics
+          mkdir -p "$out/crash-reports"
+          if [ "$RUNNER_OS" = macOS ]; then
+            # ReportCrash writes an .ips seconds after a crash, and may write none for
+            # a repeat crash of the same process (seen in the #359 demonstration); the
+            # Node reports cover OOMs either way. Wait at most 30 s for one report per
+            # worker that died of SIGABRT/SIGSEGV/SIGBUS, and for a JetsamEvent report
+            # if one was SIGKILLed.
+            exits="$out/worker-exits.log"
+            want=$(grep -cE 'signal=(SIGABRT|SIGSEGV|SIGBUS) ' "$exits" 2>/dev/null || true)
+            killed=$(grep -cE 'signal=SIGKILL ' "$exits" 2>/dev/null || true)
+            dirs="$HOME/Library/Logs/DiagnosticReports /Library/Logs/DiagnosticReports"
+            reports() {
+              find $dirs -maxdepth 2 -type f -newer "$out/.started" \( "$@" \) 2>/dev/null | wc -l | tr -d " "
+            }
+            for i in $(seq 30); do
+              crashes=$(reports -name 'node*.ips' -o -name 'node*.crash')
+              jetsam=$(reports -name 'JetsamEvent*.ips')
+              [ "$crashes" -ge "${want:-0}" ] && { [ "${killed:-0}" -eq 0 ] || [ "$jetsam" -gt 0 ]; } && break
+              sleep 1
+            done
+            echo "macOS crash reports: $crashes of ${want:-0} expected, JetsamEvent reports: $jetsam (after ${i}s)"
+            for dir in $dirs; do
+              [ -d "$dir" ] || continue
+              find "$dir" -maxdepth 2 -type f -newer "$out/.started" \
+                \( -name 'node*.ips' -o -name 'node*.crash' -o -name 'JetsamEvent*.ips' \) \
+                -exec cp {} "$out/crash-reports/" \; 2>/dev/null || true
+            done
+            vm_stat > "$out/vm_stat.txt" 2>&1 || true
+            sysctl hw.memsize vm.swapusage > "$out/memory.txt" 2>&1 || true
+          else
+            # empty means dmesg ran and printed no matching line
+            if kernel=$(sudo -n dmesg -T 2>&1); then
+              printf '%s\n' "$kernel" \
+                | grep -iE 'out of memory|oom|killed process|segfault|traps:' \
+                > "$out/dmesg.txt" || true
+            else
+              echo "sudo dmesg unavailable: $kernel" | head -n 1 > "$out/dmesg.txt"
+            fi
+            free -m > "$out/memory.txt" 2>&1 || true
+          fi
+          echo "Crash diagnostics collected:"
+          find "$out" -type f ! -name .started | sort
+          for f in "$out"/node-reports/*.json; do
+            [ -f "$f" ] || continue
+            node -e '
+              const r = require(require("node:path").resolve(process.argv[1])), h = r.header || {}, heap = r.javascriptHeap || {}
+              console.log(process.argv[1] + ": " + h.event + " (" + h.trigger + ") pid " + h.processId +
+                " heap used " + heap.usedMemory + " of " + heap.totalMemory +
+                " maxRss " + (r.resourceUsage || {}).maxRss)
+              console.log((r.javascriptStack || {}).message || "")
+            ' "$f" || true
+          done
+          for f in "$out/worker-exits.log" "$out/dmesg.txt" "$out/memory.txt"; do
+            [ -s "$f" ] && { echo "--- $f"; cat "$f"; }
+          done
+          true
+      - name: Upload crash diagnostics
+        if: failure() && steps.suite.outcome == 'failure'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: crash-diagnostics-${{ matrix.os }}-attempt-${{ github.run_attempt }}
+          path: ci-diagnostics/
+          if-no-files-found: ignore
+          retention-days: 14

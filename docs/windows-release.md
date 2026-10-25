@@ -17,7 +17,9 @@ SHA-256 (all copied from that release's signed `SHASUMS256.txt`). Native staging
 both, lists and checks the headers tarball before extracting it, and adds them to the
 extracted distribution (`include/node` and `Release/node.lib`), so `better-sqlite3` is
 rebuilt against verified headers of exactly the shipped Node, as on macOS and Linux, never
-against headers node-gyp would download. Neither file enters the runtime payload.
+against headers node-gyp would download. Neither file enters the runtime payload. The
+packaged Electron zip must match the hash in the lockfile-pinned `electron` package's
+`checksums.json` ([Electron zips](macos-release.md#electron-zips-363)).
 
 ## What the native folder proves
 

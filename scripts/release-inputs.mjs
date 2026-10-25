@@ -157,6 +157,45 @@ export function validateInstalledReleaseToolsFor(inputs, toolPackages, repoRoot 
 export function validateInstalledReleaseTools(inputs, repoRoot = REPO_ROOT) {
   return validateInstalledReleaseToolsFor(inputs, RELEASE_TOOL_PACKAGES, repoRoot)
 }
+
+const CHECKSUM_FILE_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
+
+function readInstalledElectronJson(repoRoot, name) {
+  try {
+    return JSON.parse(readFileSync(resolve(repoRoot, 'node_modules', 'electron', name), 'utf8'))
+  } catch (err) {
+    throw new ReleaseInputError(`could not read node_modules/electron/${name}: ${err.message}`)
+  }
+}
+
+// The SHA-256 of every file in the Electron release, from the electron package's
+// checksums.json, whose bytes the lockfile's integrity pins: the hashes reviewed
+// when Electron was bumped (#363). Given to the packager as `download.checksums`,
+// they make @electron/get check the zip it downloads against them instead of
+// against the release's live SHASUMS256.txt, which can be replaced with the zip.
+export function loadElectronChecksums({ version, platform, arch, repoRoot = REPO_ROOT }) {
+  const installed = readInstalledElectronJson(repoRoot, 'package.json')
+  if (installed?.name !== 'electron' || installed.version !== version) {
+    throw new ReleaseInputError(
+      `node_modules/electron is ${installed?.name}@${installed?.version}, not electron@${version}`,
+    )
+  }
+  const checksums = readInstalledElectronJson(repoRoot, 'checksums.json')
+  if (!checksums || typeof checksums !== 'object' || Array.isArray(checksums) || !Object.keys(checksums).length) {
+    throw new ReleaseInputError('node_modules/electron/checksums.json must map file names to SHA-256 digests')
+  }
+  for (const [name, digest] of Object.entries(checksums)) {
+    if (!CHECKSUM_FILE_NAME_RE.test(name) || typeof digest !== 'string' || !SHA256_RE.test(digest)) {
+      throw new ReleaseInputError(`node_modules/electron/checksums.json has a malformed entry: ${JSON.stringify(name)}`)
+    }
+  }
+  const zip = `electron-v${version}-${platform}-${arch}.zip`
+  if (!Object.hasOwn(checksums, zip)) {
+    throw new ReleaseInputError(`node_modules/electron/checksums.json has no SHA-256 for ${zip}`)
+  }
+  return checksums
+}
+
 export function sha256File(path) {
   return createHash('sha256').update(readFileSync(path)).digest('hex')
 }

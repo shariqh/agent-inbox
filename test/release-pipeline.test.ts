@@ -413,6 +413,35 @@ describe('native architecture release stages', () => {
     expect(linux.indexOf('Object.assign(process.env, compilerEnvironment)'))
       .toBeLessThan(linux.indexOf('await installAppDependencies({'))
   })
+
+  it('checks every packaged Electron zip against the lockfile-pinned checksums.json (#363)', () => {
+    for (const [builder, platform, arch] of [
+      ['build-thin-app.mjs', "platform: 'darwin',", 'arch,'],
+      ['build-linux-thin-app.mjs', "platform: 'linux',", 'arch,'],
+      ['build-windows-thin-app.mjs', "platform: 'win32',", "arch: 'x64',"],
+    ] as const) {
+      const source = readFileSync(join(root, 'scripts', builder), 'utf8')
+      expect(source, builder).toMatch(/^import \{[^}]*\bloadElectronChecksums\b[^}]*\} from '\.\/release-inputs\.mjs'$/m)
+      // read before anything is built
+      const load = source.indexOf('const electronChecksums = loadElectronChecksums({')
+      expect(load, builder).toBeGreaterThan(-1)
+      expect(load, builder).toBeLessThan(source.indexOf("'run', 'build']"))
+      const loadCall = source.slice(load, source.indexOf('})', load))
+      expect(loadCall, builder).toContain('version: inputs.electron.version,')
+      expect(loadCall, builder).toContain('repoRoot,')
+      const pack = source.indexOf('await packager({')
+      const packCall = source.slice(pack, source.indexOf('if (paths.length !== 1)', pack))
+      expect(packCall, builder).toContain('electronVersion: inputs.electron.version,')
+      expect(packCall, builder).toContain('download: { checksums: electronChecksums },')
+      expect(packCall, builder).not.toMatch(/electronZipDir|unsafelyDisableChecksums/)
+      // the zip whose hash is checked is the one packaged
+      for (const call of [loadCall, packCall]) {
+        expect(call, builder).toContain(platform)
+        expect(call, builder).toContain(arch)
+      }
+      expect(source.match(/\bpackager\(/g), builder).toHaveLength(1)
+    }
+  })
 })
 
 describe('universal finalization contract', () => {

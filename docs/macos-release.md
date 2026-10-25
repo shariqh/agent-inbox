@@ -17,6 +17,18 @@ The Node SHA-256 values are copied from the official
 `https://nodejs.org/dist/v24.18.1/SHASUMS256.txt` distribution metadata. Runtime
 staging rejects any hash, URL, archive root, platform, ABI, or architecture mismatch.
 
+### Electron zips (#363)
+
+Every thin-app build (macOS, Linux and Windows) gives `@electron/packager` the pinned
+`electron.version` and the SHA-256 of each file in that Electron release, read from the
+lockfile-pinned `electron` package's `checksums.json` once that package is proven to be
+exactly `electron.version`. `@electron/get` then checks the zip it downloads, or finds in
+its cache, against those hashes instead of fetching the release's live `SHASUMS256.txt`.
+A zip that is not the one reviewed with the version bump therefore fails the build, even
+if the release's own `SHASUMS256.txt` was replaced along with it. The hashes change only
+with the lockfile: when bumping Electron, compare the new `checksums.json` with the
+release's official `SHASUMS256.txt`.
+
 ### Node 24.18.1 compatibility hold (#135)
 
 Portable runtimes use **Node 24.18.1**, including its security fixes over 24.18.0.

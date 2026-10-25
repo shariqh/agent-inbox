@@ -47,6 +47,12 @@ export function validateInstalledReleaseToolsFor<T>(
   toolPackages: Record<string, string>,
   repoRoot?: string,
 ): T
+export function loadElectronChecksums(options: {
+  version: string
+  platform: string
+  arch: string
+  repoRoot?: string
+}): Record<string, string>
 export function sha256File(path: string): string
 export function verifyArchiveDigest(path: string, expectedSha256: string): string
 export function downloadArchive(options: {

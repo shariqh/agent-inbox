@@ -4,7 +4,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { PoolOptions } from 'vitest/node'
-import { CI_DIAGNOSTICS_ENV, ciDiagnostics } from './ci-diagnostics.js'
+import { CI_DIAGNOSTICS_ENV, EXIT_WAIT_MS, ciDiagnostics } from './ci-diagnostics.js'
 import { removeScratchDirs, scratchDir } from './scratch.js'
 
 const root = resolve(process.cwd())
@@ -51,7 +51,16 @@ describe('CI crash diagnostics (#359)', () => {
     expect(workflow).not.toContain('--report-on-fatalerror')
   })
 
-  it('names the exit code, signal and files when a worker exits unexpectedly', () => {
+  type FakeChild = EventEmitter & {
+    pid: number
+    exitCode: number | null
+    signalCode: NodeJS.Signals | null
+    send: (m: unknown) => void
+  }
+
+  // the custom pool's worker around a fake child, as Vitest's PoolRunner drives it:
+  // it listens for 'error' and 'exit' after start, and removes both before a stop
+  function fakeWorker() {
     const dir = scratchDir('ci-diagnostics-')
     const d = ciDiagnostics({ [CI_DIAGNOSTICS_ENV]: dir })
     const logger = { outputStream: process.stdout, errorStream: process.stderr }
@@ -61,36 +70,141 @@ describe('CI crash diagnostics (#359)', () => {
       execArgv: [],
       env: {},
     } as unknown as PoolOptions)
-    const fork = new EventEmitter() as EventEmitter & { pid: number, send: (m: unknown) => void }
-    fork.pid = 4242
-    fork.send = () => {}
-    ;(worker as unknown as { _fork: unknown })._fork = fork
+    const child = Object.assign(new EventEmitter(), {
+      pid: 4242,
+      exitCode: null,
+      signalCode: null,
+      send: () => {},
+    }) as FakeChild
+    ;(worker as unknown as { _fork: unknown })._fork = child
     const written: string[] = []
     vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => {
       written.push(String(chunk))
       return true
     })
-
-    // a message shape Vitest might change must never break a worker's start
-    worker.send({ __vitest_worker_request__: true, type: 'run' } as never)
     worker.send({
       __vitest_worker_request__: true,
       type: 'run',
       context: { files: [{ filepath: '/repo/test/dom/a.test.ts' }] },
     } as never)
+    const onError = vi.fn()
     const onExit = vi.fn()
+    worker.on('error', onError)
     worker.on('exit', onExit)
-    fork.emit('exit', null, 'SIGKILL')
+    const lines = (): string[] => written.join('').split('\n').filter(Boolean)
+    const log = (): string => readFileSync(join(dir, 'worker-exits.log'), 'utf8')
+    const stop = (): void => {
+      worker.off('error', onError)
+      worker.off('exit', onExit)
+    }
+    // the child dies: Node sets these before it emits 'exit'
+    const die = (signal: NodeJS.Signals): void => {
+      child.signalCode = signal
+      child.emit('exit', null, signal)
+    }
+    return { worker, child, written, lines, log, onError, onExit, stop, die }
+  }
 
-    expect(onExit).toHaveBeenCalledOnce()
-    expect(written.join('')).toMatch(
-      /^\[ci-diagnostics\] Vitest fork worker pid 4242 exited unexpectedly: code=null signal=SIGKILL free=\d+ MB of \d+ MB files=\/repo\/test\/dom\/a\.test\.ts\n$/,
-    )
-    expect(readFileSync(join(dir, 'worker-exits.log'), 'utf8')).toBe(written.join(''))
+  const epipe = (): Error => Object.assign(new Error('write EPIPE'), { code: 'EPIPE', errno: -32 })
+  const line = (code: string, signal: string): RegExp => new RegExp(
+    `^\\[ci-diagnostics\\] Vitest fork worker pid 4242 exited unexpectedly: code=${code} ` +
+    `signal=${signal} free=\\d+ MB of \\d+ MB files=/repo/test/dom/a\\.test\\.ts$`,
+  )
 
-    // Vitest removes its listener before a requested stop: that exit stays silent
-    worker.off('exit', onExit)
-    expect(fork.listenerCount('exit')).toBe(0)
+  it('names the exit code, signal and files when a worker exits unexpectedly', () => {
+    const w = fakeWorker()
+    // a message shape Vitest might change must never break a worker's start
+    w.worker.send({ __vitest_worker_request__: true, type: 'collect' } as never)
+    w.worker.send({
+      __vitest_worker_request__: true,
+      type: 'run',
+      context: { files: [{ filepath: '/repo/test/dom/a.test.ts' }] },
+    } as never)
+    w.die('SIGKILL')
+    // a failed write after the exit adds nothing
+    w.child.emit('error', epipe())
+
+    expect(w.onExit).toHaveBeenCalledOnce()
+    expect(w.onError).toHaveBeenCalledOnce()
+    expect(w.lines()).toHaveLength(1)
+    expect(w.lines()[0]).toMatch(line('null', 'SIGKILL'))
+    expect(w.log()).toBe(w.written.join(''))
+
+    // Vitest removes its listeners before a requested stop: that exit stays silent
+    w.stop()
+    expect(w.child.listenerCount('exit')).toBe(0)
+    expect(w.child.listenerCount('error')).toBe(0)
+  })
+
+  // #375: the parent's next write fails before 'exit', and Vitest, handling that
+  // error, stops listening for 'exit' before the child's exit arrives
+  it('prints once when a failed write reaches Vitest before the exit', () => {
+    vi.useFakeTimers()
+    try {
+      const w = fakeWorker()
+      w.child.emit('error', epipe())
+      w.child.emit('error', epipe())
+      // Vitest's own handling is unchanged and immediate
+      expect(w.onError).toHaveBeenCalledTimes(2)
+      w.stop()
+      expect(w.lines()).toHaveLength(0)
+
+      w.die('SIGKILL')
+      expect(w.lines()).toHaveLength(1)
+      expect(w.lines()[0]).toMatch(line('null', 'SIGKILL'))
+      expect(w.log()).toBe(w.written.join(''))
+      vi.advanceTimersByTime(5000)
+      expect(w.lines()).toHaveLength(1)
+      expect(w.onExit).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('prints once when the exit follows a failed write while Vitest still listens', () => {
+    const w = fakeWorker()
+    w.child.emit('error', epipe())
+    w.die('SIGABRT')
+    expect(w.onExit).toHaveBeenCalledOnce()
+    expect(w.lines()).toHaveLength(1)
+    expect(w.lines()[0]).toMatch(line('null', 'SIGABRT'))
+    expect(w.log()).toBe(w.written.join(''))
+  })
+
+  it('prints what it knows when the exit never arrives after a failed write', () => {
+    vi.useFakeTimers()
+    try {
+      const w = fakeWorker()
+      w.child.emit('error', epipe())
+      w.stop()
+      vi.advanceTimersByTime(EXIT_WAIT_MS - 1)
+      expect(w.lines()).toHaveLength(0)
+      vi.advanceTimersByTime(1)
+      expect(w.lines()).toHaveLength(1)
+      expect(w.lines()[0]).toMatch(line('\\?', '\\?'))
+
+      // a late exit is not a second report
+      w.die('SIGKILL')
+      vi.advanceTimersByTime(5000)
+      expect(w.lines()).toHaveLength(1)
+      expect(w.log()).toBe(w.written.join(''))
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('reports a dead child at once and ignores other errors of a live one', () => {
+    const live = fakeWorker()
+    live.child.emit('error', new Error('something else'))
+    expect(live.onError).toHaveBeenCalledOnce()
+    expect(live.lines()).toHaveLength(0)
+    vi.restoreAllMocks()
+
+    const dead = fakeWorker()
+    dead.child.signalCode = 'SIGSEGV'
+    dead.child.emit('error', new Error('something else'))
+    expect(dead.lines()).toHaveLength(1)
+    expect(dead.lines()[0]).toMatch(line('null', 'SIGSEGV'))
   })
 
   // Vitest's pool API is experimental: if an update stops calling worker.on('exit')

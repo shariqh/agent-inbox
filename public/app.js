@@ -12,7 +12,7 @@ import { DEFAULT_TAB, TAB_IDS, tabCounts } from '/tabs.js'
 import { projectColor } from '/colors.js'
 import {
   SCROLL_IDLE_MS, pressHeld, scrollActive, shouldDeferRender,
-  suspendHint, pinOrder, reconcileOpenRow,
+  suspendHint, pinOrder, reconcileOpenRow, pollMaySkipPaint,
 } from '/poll.js'
 import { createStagedSend } from '/star.js'
 import {
@@ -238,6 +238,7 @@ async function withPendingResponse(action) {
     return await action()
   } finally {
     pendingWrites -= 1
+    noteOutsideChange()
     showPauseHint()
   }
 }
@@ -256,6 +257,8 @@ let pagedFocusId = null // non-Inbox focused card protected only for the current
 let lastInteractionScrollAt = null // bounded inspector/page scroll activity; never a suspension
 let interactionScrollTimer = null
 let renderDirty = false // fresh data arrived while an editable rebuild was deferred
+let paintedFrame = null // { inputs, at } of the last complete frame (#298)
+let outsideChanges = 0  // human input and settled writes since boot (#298)
 let pinnedIds = []      // sort order pinned for this render session
 let pressedAt = null    // pointerdown → pointerup, hard-bounded by PRESS_GRACE_MS (#38)
 
@@ -533,13 +536,14 @@ async function load() {
   // Decided from the previous frame, before any read starts: a passive poll reads
   // closed history the page omitted only while a surface still needs it (#184).
   const wantHistory = historyWanted()
+  const historyUrl = activityHistoryUrl(Date.now())
   try {
     const [items, boardsRead, archivedRead, activityRead, historyRead, closedRead, linksRead, issuesRead, closedHistoryRead] = await Promise.allSettled([
       readSnapshot('/api/items').then(marked),
       readSnapshot('/api/boards').then(marked),
       readSnapshot('/api/boards/archived').then(marked),
       fetch('/api/activity').then(marked),
-      readSnapshot(activityHistoryUrl(Date.now())).then(marked),
+      readSnapshot(historyUrl).then(marked),
       // Projects the human closed (issue #32). Defensive on purpose: a viewer that
       // predates this route answers 404 with HTML, a bare .json() would throw into
       // the catch below, and the WHOLE page would read 'disconnected'. An unknown
@@ -621,11 +625,23 @@ async function load() {
       closed: [...authoritativeClosed],
       links,
       issues,
+      // What this tick read, compared by identity (#298): a snapshot that
+      // answered 304 resolves to the very representation it revalidated, and
+      // the fresh reads compare by their bytes. Fallback bodies are new values
+      // every tick, so they are reduced to what they mean.
+      reads: [
+        [...marks].join(' '), historyUrl, g, boards, archived, JSON.stringify(activity),
+        activityHistory.state, activityHistory.message, activityHistory.state === 'ready' ? activityHistory.spans : null,
+        links.length ? links : null, issues, older?.done ?? null, older?.error ?? null,
+      ],
     }
     applyProjectMutationIntents()
     // #279: drafts restored at boot learn where they belong from the first data.
     placeRestoredDrafts()
-    renderIfIdle()
+    // An idle tick leaves the frame on screen alone (#298): nothing it shows
+    // changed, nothing deferred is waiting, and the clock has not moved far
+    // enough to age a label. Only the poll skips; every human path paints.
+    if (!pollMaySkipPaint({ inputs: frameInputs(), painted: paintedFrame, renderDirty, nowMs: Date.now() })) renderIfIdle()
     if (!bootFocusDone) { bootFocusDone = true; applyFocusHash() }
     // A deep link waiting on older history lands once it has been read, unless
     // the human has navigated since. A held press keeps it waiting for the next
@@ -740,6 +756,7 @@ async function postJSON(url, body) {
     return null
   } finally {
     pendingWrites -= 1
+    noteOutsideChange()
   }
 }
 
@@ -2034,7 +2051,43 @@ function paintEditableSurfaces({ agents, g, boards, archived, live, dashboard, p
   return restoreQueueView
 }
 
+// Everything a frame is painted from besides the clock (#298): the tick's reads,
+// the closed set after this window's own project intents, and the lens. A lens
+// change always paints through its own handler; it is here so a frame can never
+// be reused across one.
+//
+// Much of this window's own state (drafts, folds, filters, staged actions,
+// write failures) is changed by the human and painted by its own handler, but
+// not always at once: a handler may leave the frame to the next poll, as the
+// press and scroll guards do. So any human input, and any write settling, also
+// counts as a change, and the next tick paints exactly as it did before #298.
+// The state answered outside the poll by other reads (the build advice, whether
+// file links open here) is named below, since it lands after the input that
+// asked for it. Only a window nobody is using skips its frames.
+function frameInputs() {
+  return [
+    ...lastData.reads, JSON.stringify(lastData.closed), navigationKey(), openRowId,
+    outsideChanges, liveVersion, fileLinksCopy(), Boolean(linkFileActions()),
+  ]
+}
+
+function noteOutsideChange() {
+  outsideChanges += 1
+}
+
+// Capture phase on window, like the press guard, so nothing can stop it first.
+// Hover and scrolling change nothing a frame shows: the scroll guards already
+// mark a frame they hold back.
+function initIdleFrame() {
+  for (const type of ['pointerdown', 'click', 'keydown', 'input', 'change', 'focus', 'resize']) {
+    window.addEventListener(type, noteOutsideChange, true)
+  }
+  document.addEventListener('visibilitychange', noteOutsideChange)
+}
+
 function render() {
+  // A frame that throws part way is not a frame the poll may keep (#298).
+  paintedFrame = null
   // A prepared frame belongs to the poll; explicit forceRender enters without one.
   const paintAllPanes = preparedFrame === null || !editablePanesPainted
   // The rebuild below detaches the nodes a text selection lives in (#223).
@@ -2075,6 +2128,7 @@ function render() {
   restoreQueueView()
   restoreSelection(textSelection)
   editablePanesPainted = true
+  paintedFrame = { inputs: frameInputs(), at: Date.now() }
 }
 
 // one age vocabulary for every surface (§6): rows, chips, Live and tooltips all
@@ -9240,7 +9294,7 @@ async function renderSetup() {
 //   initTabs → initTriage → initRelay → initMission → initSearch →
 //   initResponsive → initSidebarCollapse → initPaneResizers → initProjectDisclosure →
 //   initKeys (Task 17) → initFocusHash (Task 17) → initStagedFlush →
-//   initDraftPersistence (#279) → initPressGuard (#38) → initScrollGuard → initAgentSelect →
+//   initDraftPersistence (#279) → initPressGuard (#38) → initScrollGuard → initIdleFrame (#298) → initAgentSelect →
 //   initStructuredTextCopy → initLinkOpening → initCopyOnSelect → initGear → initLiveBar → renderSetup → load →
 //   setInterval(load, 3000)
 initTabs()
@@ -9258,6 +9312,7 @@ initStagedFlush()
 initDraftPersistence()
 initPressGuard()
 initScrollGuard()
+initIdleFrame()
 initAgentSelect()
 initStructuredTextCopy()
 initLinkOpening()

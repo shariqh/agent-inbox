@@ -1109,6 +1109,32 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   and clearing site data. `test/drafts.test.ts` and `test/dom/durable-drafts.test.ts`
   pin it; the DOM file removes a closed page's unload listeners itself, because jsdom
   keeps every boot's on one window.
+- **An idle tick paints nothing, and the clock still moves (#298).** Rebuilding
+  an unchanged page every 3 s cost about 1.3% renderer and 1.5% GPU CPU at idle.
+  `load()` calls `renderIfIdle()` unless `pollMaySkipPaint` (`public/poll.js`)
+  finds that the last COMPLETE frame (`paintedFrame`, written at the end of
+  `render()` and cleared at its start, so a frame that threw is never reused)
+  was painted from exactly this tick's `frameInputs()`, nothing is deferred
+  (`renderDirty`) and the frame is under `CLOCK_REPAINT_MS` (30 s) old. Inputs
+  compare by `Object.is`: a 304 resolves to the very representation it
+  revalidated, so each snapshot is its identity, `/api/activity` and the closed
+  set are their bytes, fallback bodies are reduced to what they mean, and the
+  boot markers, activity-history URL, lens (`navigationKey()`, `openRowId`) are
+  values. This window's own state is covered by `outsideChanges`, bumped by any
+  human input (pointerdown, click, keydown, input, change, focus, resize,
+  visibility) and every settled write, so the next tick paints exactly as it did
+  before; state answered by other reads after the input that asked for it
+  (`liveVersion`, `fileLinksCopy()`, `linkFileActions()`) is named directly.
+  **Adding render-read state that changes outside a paint means adding it to
+  `frameInputs()`**, or it waits up to 30 s. The clock is fixed rather than
+  computed per label: relative ages are minute-granular and every threshold
+  (stale, snooze, follow-up, issue freshness, dormancy) is minutes or longer, so
+  30 s bounds each one without enumerating them; a clock moved back repaints.
+  The skip lives inside the poll path: no third render entry, `forceRender`,
+  `reloadAndPaint()`, `resumeRender()` and direct `renderIfIdle()` callers paint
+  as before, and restart detection, `loadGeneration` and the all-settle rule run
+  before it. `test/dom/idle-frame.test.ts` pins it; tests that check what holds
+  a frame back must give the tick something to paint (press-guard, page-scroll).
 - **Dashboard focus must not freeze monitoring detail.** Mount the structural frame
   and native range selector once, then refresh ownership, dispatch, recent outcomes
   and history through the ambient painter as well as headline signals. Preserve the

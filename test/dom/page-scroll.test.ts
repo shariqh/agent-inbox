@@ -9,6 +9,13 @@ useDomTest()
 let db: Database.Database | null = null
 afterEach(() => { db?.close(); db = null })
 
+// An idle tick paints nothing (#298), so a test of what holds a frame back
+// gives the tick something to paint.
+// It leaves the fake clock alone: the tests below count to the next tick from it.
+function freshNote(d: Database.Database): void {
+  insertItem(d, { project: 'alpha', stream: 'viewer', agent: 'copilot', kind: 'note', title: 'Fresh data for the tick' })
+}
+
 it('does not rebuild the expanded queue while page scroll momentum is active', async () => {
   db = freshDb()
   const id = insertItem(db, {
@@ -25,6 +32,8 @@ it('does not rebuild the expanded queue while page scroll momentum is active', a
   await settle()
   const before = row(id)
 
+  // The tick has fresh data to paint, so only the scroll guard can hold it (#298).
+  freshNote(db)
   const untilNextPoll = 3000 - ((Date.now() - T0) % 3000)
   await vi.advanceTimersByTimeAsync(untilNextPoll - 50)
   window.dispatchEvent(new Event('scroll'))
@@ -57,6 +66,8 @@ it('keeps polling normally during page scrolling when no row is expanded', async
   await bootApp(db)
   const before = row(id)
 
+  // The tick has fresh data to paint, so only the scroll guard can hold it (#298).
+  freshNote(db)
   const untilNextPoll = 3000 - ((Date.now() - T0) % 3000)
   await vi.advanceTimersByTimeAsync(untilNextPoll - 50)
   window.dispatchEvent(new Event('scroll'))

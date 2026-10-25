@@ -218,6 +218,25 @@ Run the build before `npm run electron`; the development shell starts the built
   Activity history changes with time alone, so it is conditional only on a hash
   of its freshly computed bytes plus the window and project that selected them;
   never validate it with store tokens or cache it server-side (#185).
+- A write rebuilds only the snapshots it can change (#297): each snapshot's token
+  is the schema cookie plus the versions of the store domains its bytes are built
+  from (`SNAPSHOT_SOURCES` in `src/viewer.ts` over `SNAPSHOT_DOMAINS` in
+  `src/store.ts`). Triggers move those versions, so an older process's writes
+  count too; tables no snapshot reads (presence, claim history, the hook and
+  refresh leases, reply intents) have none, so activity and claim writes rebuild
+  nothing. The `snapshot_domains` contract is permanent: never drop or redefine
+  a snapshot trigger (its name hashes its text;
+  `test/fixtures/snapshot-triggers.txt` pins the names), never drop, reset or
+  rewrite `snapshot_domains` or its rows, never retire a domain, and make any
+  future rebuild of a watched table re-create every `snapshot_` trigger it had,
+  in the same transaction. Keep the triggers last in every migration (they name
+  the live columns, double-quoted), give a new read every domain it needs, and
+  classify a new column in `REVIEWED_COLUMNS` or a new table in `UNREAD`. A read
+  inside a transaction is never published: a rollback takes a version back.
+  Versions start at a random 48-bit value. When the schema cookie moves, a
+  viewer checks its triggers: a domain missing one (or its version row) falls
+  back to the pre-#297 commit token, rebuilt after any commit and a 304
+  otherwise. Only an `openDb` that generates the same trigger text heals it.
 - `/api/items` pages closed history (#184): every open item, the 50 most recently
   touched closed items, the 4 newest outcome-bearing ones of open projects and a
   `history` summary that keeps every count exact. Only `load()` reads
@@ -517,6 +536,20 @@ Run the build before `npm run electron`; the development shell starts the built
   human-initiated write must end in `reloadAndPaint()` so an unrelated draft
   cannot hide the result. A held pointer defers rendering but is not a
   suspension and must not appear in `suspendState()`.
+- An idle tick paints nothing (#298): `load()` skips `renderIfIdle()` only when
+  `pollMaySkipPaint` (`public/poll.js`) finds the frame on screen was painted
+  from exactly this tick's `frameInputs()` (each snapshot's identical
+  representation, the fresh reads' displayed bytes, boot marker, history window, closed
+  set, lens, human input and settled writes since, and the out-of-poll state
+  render reads), nothing is deferred (`renderDirty`), and it is under 30 s old.
+  Activity compares without its `updated_at` heartbeat (`activityFrameKey`),
+  and a frame whose `navigationKey()` (tab, project, agent, Settings) moved
+  while it painted is not recorded. The 30 s clock repaints every
+  clock-derived label, so a visible window can lag the dock badge by up to
+  ~33 s on clock-only changes; focusing the window repaints on the next tick
+  (within 3 s), and a notification click at once only when it deep-links one
+  item. Any state render reads that changes outside a paint must join
+  `frameInputs()`.
 - A text selection is captured before and restored after each rebuild by both
   render entries (`public/selection.js`, #223). It never defers or suspends a
   frame, never focuses or scrolls, and is dropped when its text changed.

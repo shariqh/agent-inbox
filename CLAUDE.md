@@ -79,9 +79,10 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   decides, and a refused notification answer re-reads the default `/api/boards`.
   Matching `If-None-Match` returns a bodyless 304; unconditional
   clients still receive full JSON. Keep `Cache-Control: no-store` and the current
-  outer `x-inbox-boot` marker on 304 responses too. Store-only invalidation reads
-  combine `data_version`, `total_changes()`, `schema_version` and transaction state:
-  neither `updated_at` nor `data_version` alone observes every relevant write.
+  outer `x-inbox-boot` marker on 304 responses too. A snapshot's token is the
+  schema cookie, the versions of the store domains its bytes are built from and
+  transaction state (issue #297, next bullet); `updated_at` alone never observes
+  every relevant write.
   Publish a cache entry only when matching before/after tokens prove it was read
   outside a transaction without intervening changes. Never cache uncommitted data,
   label an old body with a newer token, or fall back to cached success on a read
@@ -115,6 +116,71 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   fallbacks, any other failure still fails the whole tick (reported in the old
   serial order) without blanking the frame, and `loadGeneration` still discards
   an older tick that finishes late.
+- **A write rebuilds only the snapshots it can change (issue #297).**
+  `SNAPSHOT_SOURCES` in `src/viewer.ts` names, for each conditional snapshot, the
+  store domains its bytes are built from; `SNAPSHOT_DOMAINS` in `src/store.ts`
+  defines a domain as one table, read whole or through listed columns, with a
+  version row in `snapshot_domains`. TRIGGERS move a version inside the writing
+  statement's own transaction, never callers, because older servers and viewers
+  share the file for days and run statements that know nothing of domains
+  (`increment_item_response_revision`'s precedent). Every insert and delete moves
+  each domain of its table. An update moves a whole-table domain whenever it sets
+  one of its columns, and a column domain only when one of the domain's values
+  changed. Tables no snapshot reads (`activity`, `activity_spans`,
+  `hook_watch_claims`, `issue_refresh_claims`, `item_reply_intents`, the pre-#157
+  `source_links`) carry no trigger, so `recordActivityCall` on every MCP call, the
+  liveness tick, claims and the poller's leases rebuild nothing. The dock's
+  waiting/parked split reads `/api/activity`, never a retained body, so the
+  attention projection reads items alone. Six rules hold. (1) **The
+  `snapshot_domains` contract is permanent.** Never drop or redefine a snapshot
+  trigger; never drop, reset or rewrite `snapshot_domains` or any of its rows;
+  never retire a domain, even one this build no longer reads, because an older
+  process sharing the file may still read it. A trigger's name ends in a hash of
+  its text, so a changed definition is a new trigger beside the old one, which
+  keeps an older process exact (at worst it moves a version for nothing);
+  `test/fixtures/snapshot-triggers.txt` pins every name a fresh hub gets, because
+  even a layout change to the generated text would add a second set of triggers
+  to every existing hub. A future rebuild of a watched table (create, copy, drop,
+  rename) must re-create every `snapshot_` trigger the old table had, from its
+  stored SQL, in the same transaction. Two guards back this up: a version starts
+  at a random 48-bit value, so a row seeded again after a reset cannot climb back
+  to a version an idle viewer cached; and whenever the schema cookie moves, a
+  viewer compares `sqlite_master` with every trigger it would make. A domain
+  missing one, or without a version row, falls back to the token every snapshot
+  used before #297 (`data_version` and `total_changes()`, read in the same
+  `SELECT` as the rest): rebuilt after any commit, a 304 otherwise. Only an
+  `openDb` that generates the same trigger text heals it: one by this build, or
+  by a later build whose generator did not change. A build whose generator
+  changed makes its triggers under other names, so the fallback lasts until a
+  process of this build opens the hub. (2) **The triggers are made last
+  in every migration, from the live schema:** a whole-table domain's update
+  triggers name every column its table has, so whichever build adds a column
+  also adds a trigger that watches it. Every table, column and trigger name is a
+  double-quoted identifier (quotes doubled), so a column a later build names
+  with an SQL keyword (`order`, `group`) cannot make every `openDb` throw.
+  Rowids are never written (VACUUM renumbers them but moves the schema cookie).
+  (3) **Versions only grow and commit with the write,** so equal versions before
+  and after a read prove that nothing it reads changed. A read inside a
+  transaction is still never published: a rollback takes a version back, and a
+  later commit can return it to the value the uncommitted read saw. For the same
+  reason trust is never remembered from inside one, since a rollback takes the
+  cookie back too. The schema cookie stays in every token. (4) **A new read
+  needs its domains.** Give the snapshot every domain covering the tables and
+  columns it reads. A column added to `items`, `boards`, `board_rows` or
+  `source_links_by_head` fails `REVIEWED_COLUMNS` until someone decides whether
+  each column domain of that table reads it; a new table needs a domain or a
+  reason in `UNREAD`. (5) **The generic check is the proof.** It
+  writes every column of every table, and inserts and deletes rows, then requires
+  every snapshot whose token did not move to serve identical bytes. Its fixture
+  makes the column dependencies observable (closed history past one page,
+  previews, issue identities from pins, PRs, branches and rows); keep that true
+  for a new read. (6) **Cost shapes the triggers.** SQLite compiles every trigger
+  a statement may fire into that statement, and `store.ts` prepares per call: a
+  WHEN over every column cost each prepared statement ~25 µs, so a whole-table
+  domain's catch-all trigger has none and fires even for an unchanged value (an
+  unchanged re-send). Only the delivery stamps `pending()` re-applies on every
+  poll (#37), its `restamped` columns, get one value-checked trigger each, so a
+  re-delivery rebuilds nothing.
 - **Closed history is paged out of the default items snapshot (issue #184).**
   `/api/items` carries every open item, the `RECENT_CLOSED_ITEMS` (50) most
   recently TOUCHED closed items (`listItemsPage`: the newest of every item stamp)
@@ -1109,6 +1175,47 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   and clearing site data. `test/drafts.test.ts` and `test/dom/durable-drafts.test.ts`
   pin it; the DOM file removes a closed page's unload listeners itself, because jsdom
   keeps every boot's on one window.
+- **An idle tick paints nothing, and the clock still moves (#298).** Rebuilding
+  an unchanged page every 3 s cost about 1.3% renderer and 1.5% GPU CPU at idle.
+  `load()` calls `renderIfIdle()` unless `pollMaySkipPaint` (`public/poll.js`)
+  finds that the last COMPLETE frame (`paintedFrame`, written at the end of
+  `render()` and cleared at its start, so a frame that threw is never reused)
+  was painted from exactly this tick's `frameInputs()`, nothing is deferred
+  (`renderDirty`) and the frame is under `CLOCK_REPAINT_MS` (30 s) old. Inputs
+  compare by `Object.is`: a 304 resolves to the very representation it
+  revalidated, so each snapshot is its identity, the closed set is its bytes,
+  `/api/activity` is `activityFrameKey` (its bytes without `updated_at`, the
+  liveness heartbeat nothing displays, kept only for a row with no other
+  activity time), fallback bodies are reduced to what they mean, and the
+  boot markers, activity-history URL, lens (`navigationKey()`, `openRowId`) are
+  values. This window's own state is covered by `outsideChanges`, bumped by any
+  human input (pointerdown, click, keydown, input, change, focus, resize,
+  visibility) and every settled write, so the next tick paints exactly as it did
+  before; state answered by other reads after the input that asked for it
+  (`liveVersion`, `fileLinksCopy()`, `linkFileActions()`) is named directly.
+  **Adding render-read state that changes outside a paint means adding it to
+  `frameInputs()`**, or it waits up to 30 s. The clock is fixed rather than
+  computed per label: relative ages are minute-granular and every threshold
+  (stale, snooze, follow-up, issue freshness, dormancy) is minutes or longer, so
+  30 s bounds each one without enumerating them; a clock moved back repaints.
+  A frame whose `navigationKey()` (tab, project, agent, Settings) moved while it
+  painted, as draft recovery inside `render()` can do, is not recorded, so the
+  next tick paints it again. A move of the open row alone is recorded: it is
+  made by `setOpenRow` before the panes paint, so the frame already shows it.
+  **The visible window can lag the dock badge by up to ~33 s** for clock-only
+  changes (a snooze ending, the 72 h stale move): Electron main recomputes
+  attention every 3 s, while the page waits for its clock. Focusing the window
+  counts as input, so the next tick (within 3 s) repaints; a notification
+  click repaints at once only when it deep-links one item and so changes the
+  hash.
+  The skip lives inside the poll path: no third render entry, `forceRender`,
+  `reloadAndPaint()`, `resumeRender()` and direct `renderIfIdle()` callers paint
+  as before, and restart detection, `loadGeneration` and the all-settle rule run
+  before it. `test/dom/idle-frame.test.ts` pins it (one case per guard) and
+  `pollMaySkipPaint` is unit-tested in `test/poll.test.ts`. A test of what a
+  rebuild preserves or holds back must give the tick something to paint
+  (the harness's `changedPollTick(db)`, or fresh data as press-guard and
+  page-scroll insert), never rely on a `.focus()` counting as input.
 - **Dashboard focus must not freeze monitoring detail.** Mount the structural frame
   and native range selector once, then refresh ownership, dispatch, recent outcomes
   and history through the ambient painter as well as headline signals. Preserve the

@@ -5,6 +5,7 @@ import { archiveBoard, getBoard, insertItem, upsertBoard } from '../../src/store
 import {
   advanceClock, bootApp, buttonLabelled, click, freshDb, navigateToHash, pollTick,
   settle, useDomTest,
+  changedPollTick,
 } from './harness.js'
 
 useDomTest()
@@ -145,7 +146,7 @@ describe('deep links across paginated tabs', () => {
       const before = document.activeElement
       expectFocusedSummary(id)
 
-      await pollTick()
+      await changedPollTick(db)
 
       expect(before?.isConnected).toBe(false)
       expectFocusedSummary(id)
@@ -155,21 +156,27 @@ describe('deep links across paginated tabs', () => {
     await settle()
     const background = card(noteId)?.querySelector<HTMLElement>('.card-context > summary')!
     background.focus()
-    await pollTick()
+    await changedPollTick(db)
+    expect(background.isConnected).toBe(false)
     expect(document.activeElement).toBe(card(noteId)?.querySelector('.card-context > summary'))
 
     const resolve = [...card(noteId)!.querySelectorAll<HTMLButtonElement>('button')]
       .find((button) => button.textContent === 'Resolve')!
     resolve.focus()
-    await pollTick()
+    await changedPollTick(db)
+    expect(resolve.isConnected).toBe(false)
     expect(document.activeElement).toBe(
       [...card(noteId)!.querySelectorAll<HTMLButtonElement>('button')]
         .find((button) => button.textContent === 'Resolve'),
     )
 
+    // The search box is not rebuilt; the card around the old focus is, and the
+    // rebuild must not pull focus back to it.
     const search = document.getElementById('search')!
+    const cardBefore = card(noteId)!
     search.focus()
-    await pollTick()
+    await changedPollTick(db)
+    expect(cardBefore.isConnected).toBe(false)
     expect(document.activeElement).toBe(search)
   })
 

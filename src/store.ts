@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { mkdirSync } from 'node:fs'
@@ -138,21 +138,237 @@ export function openDb(path: string = defaultDbPath()): Database.Database {
   return db
 }
 
+// ── snapshot domains: which writes can change which snapshot (issue #297) ────
+//
+// The viewer retains one serialized body per conditional snapshot and answers
+// 304 while its token holds (src/viewer.ts). The token used to be the whole
+// connection's data_version and total_changes(), so EVERY commit rebuilt every
+// body, the activity write behind each MCP call included. Now each snapshot
+// names the domains its bytes are built from (SNAPSHOT_SOURCES in viewer.ts),
+// and its token is their versions plus the schema cookie.
+//
+// A domain is one table, read whole or through some of its columns. TRIGGERS
+// move its version, inside the writing statement's own transaction, never the
+// callers: older servers and viewers share this file for days and run
+// statements that know nothing of domains, and a trigger fires for those too
+// (increment_item_response_revision's precedent). Hence:
+//   - every insert and delete moves each domain of its table. An update moves a
+//     whole-table domain when it sets any column, except that a delivery stamp
+//     pending() re-applies on every poll moves it only when its value changed;
+//     it moves a column domain only when one of the domain's values changed;
+//   - a whole-table domain's update triggers cover every column its table has
+//     when they are made, at the end of every migration, so whichever build
+//     adds a column also adds a trigger that watches it. A column domain's
+//     table fails test/snapshot-domains.test.ts when it gains a column, until
+//     someone decides whether the domain reads it;
+//   - a trigger is never dropped or redefined. Its name carries a hash of its
+//     SQL, so a changed definition is a NEW trigger beside the old one, which
+//     keeps older processes sharing the file exact (at worst it moves a version
+//     for nothing). Nor is snapshot_domains or any row of it ever dropped,
+//     reset or rewritten, nor a domain retired, since an older process may
+//     still read it; a future rebuild of a watched table must re-create every
+//     snapshot_ trigger the old table had, in the same transaction;
+//   - versions only grow, and commit or roll back with the write, so equal
+//     versions before and after a read prove that no write to the domain
+//     committed in between. They start at a random 48-bit value. A domain
+//     whose version proves nothing (no row, or a trigger missing:
+//     untrustedDomains below) falls back to the commit token every snapshot
+//     used before #297: rebuilt after any commit, a 304 otherwise.
+// Tables no snapshot reads (presence, claim history, the hook and refresh
+// leases, reply intents, the pre-#157 source_links) carry no trigger: a write
+// there moves nothing, so presence, liveness and claims never rebuild a body.
+interface SnapshotDomainSpec {
+  readonly table: string
+  /** omitted: every column, including any a later build adds (its migration adds a trigger watching it) */
+  readonly columns?: readonly string[]
+  /**
+   * Of a whole-table domain: the delivery stamps pending() re-applies, unchanged,
+   * on every poll (#37). Their triggers compare values, so a re-delivery moves
+   * nothing; every other column moves the domain whenever a statement sets it.
+   */
+  readonly restamped?: readonly string[]
+}
+
+export const SNAPSHOT_DOMAINS = {
+  items: { table: 'items', restamped: ['annotation_seen_at', 'annotation_seen_by', 'reply_seen_at'] },
+  // what listLinkTargets() and closedProjects() read of an item
+  items_links: { table: 'items', columns: ['created_at', 'head_repo', 'project', 'repo', 'status', 'stream'] },
+  // ...and listIssueEntities(), which adds the issue, the id and content time
+  items_issues: {
+    table: 'items',
+    columns: ['created_at', 'head_repo', 'id', 'issue_ref', 'project', 'repo', 'status', 'stream', 'updated_at'],
+  },
+  boards: { table: 'boards' },
+  // closedProjects(): a plan created in a closed project reopens it (#32)
+  boards_closure: { table: 'boards', columns: ['created_at', 'project'] },
+  boards_links: { table: 'boards', columns: ['created_at', 'head_repo', 'project', 'repo', 'status', 'stream'] },
+  boards_issues: {
+    table: 'boards',
+    columns: [
+      'created_at', 'head_repo', 'id', 'issue_pin_number', 'issue_pin_repo', 'issue_ref', 'project', 'repo',
+      'status', 'stream', 'updated_at',
+    ],
+  },
+  board_rows: {
+    table: 'board_rows',
+    restamped: ['annotation_seen_at', 'annotation_seen_by', 'handled_seen_at', 'handled_seen_by'],
+  },
+  // a linked row of an active or archived plan (listIssueEntities)
+  board_rows_issues: { table: 'board_rows', columns: ['board_id', 'id', 'issue_number', 'issue_repo', 'updated_at'] },
+  projects: { table: 'projects' },
+  issue_snapshots: { table: 'issue_snapshots' },
+  source_links_by_head: { table: 'source_links_by_head' },
+  // what issue identity (public/issue-key.js) reads of a cached PR
+  source_links_by_head_issues: {
+    table: 'source_links_by_head',
+    columns: ['branch', 'closing_refs', 'fetched_at', 'head_repo', 'issue_number', 'repo'],
+  },
+} as const satisfies Record<string, SnapshotDomainSpec>
+
+export type SnapshotDomain = keyof typeof SNAPSHOT_DOMAINS
+
 export interface SnapshotReadState {
-  dataVersion: number
-  totalChanges: number
+  /** the schema cookie: any DDL, VACUUM or backup restore moves it */
   schemaVersion: number
+  /**
+   * Each domain's token: its version, or, when the version proves nothing (the
+   * hub has no row for the domain, or lacks one of its triggers), the token
+   * every snapshot used before #297, `commits:<data_version>:<total_changes()>`,
+   * which moves with any commit from any connection.
+   */
+  domains: Record<SnapshotDomain, number | string>
   inTransaction: boolean
 }
 
+// One statement, so the schema cookie, every version and the commit fallback
+// come from one read snapshot. A read inside a transaction can see uncommitted
+// versions that a rollback takes back, and total_changes() counts writes a
+// rollback undoes, so the viewer never publishes from one.
 export function readSnapshotState(db: Database.Database): SnapshotReadState {
-  // data_version observes other connections; total_changes observes this one's
-  // row writes, and schema_version also catches its DDL/read failures.
-  // Transactional reads cannot be cached: a rollback does not undo total_changes.
-  const state = db.prepare(`SELECT data_version AS dataVersion, total_changes() AS totalChanges,
-      schema_version AS schemaVersion
-    FROM pragma_data_version, pragma_schema_version`).get() as Omit<SnapshotReadState, 'inTransaction'>
-  return { ...state, inTransaction: db.inTransaction }
+  const rows = db.prepare(`SELECT s.schema_version AS schemaVersion, c.data_version AS dataVersion,
+      total_changes() AS totalChanges, d.domain AS domain, d.version AS version
+    FROM pragma_schema_version AS s, pragma_data_version AS c LEFT JOIN snapshot_domains AS d ON 1`).all() as Array<{
+    schemaVersion: number
+    dataVersion: number
+    totalChanges: number
+    domain: string | null
+    version: number | null
+  }>
+  const { schemaVersion, dataVersion, totalChanges } = rows[0]!
+  const untrusted = untrustedDomains(db, schemaVersion)
+  const versions = new Map(rows.map((row) => [row.domain, row.version]))
+  const commits = `commits:${dataVersion}:${totalChanges}`
+  const domains = Object.fromEntries(Object.keys(SNAPSHOT_DOMAINS).map((domain) => {
+    const version = versions.get(domain)
+    return [domain, typeof version === 'number' && !untrusted.has(domain) ? version : commits]
+  })) as Record<SnapshotDomain, number | string>
+  return { schemaVersion, domains, inTransaction: db.inTransaction }
+}
+
+interface SnapshotTrigger {
+  name: string
+  domain: string
+  sql: string
+}
+
+// A table, column or trigger name as an SQL identifier: double-quoted, with any
+// quote in it doubled, so a column a later build names with an SQL keyword
+// ("order", "group") cannot make every openDb throw.
+const quoted = (identifier: string): string => `"${identifier.replaceAll('"', '""')}"`
+
+// The triggers of each domain: one for inserts, one for deletes, and update
+// triggers. SQLite compiles every trigger a statement may fire into that
+// statement, and store.ts prepares its statements per call, so the update
+// triggers are shaped by what they cost there:
+//   - a whole-table domain has one trigger over every column its table has
+//     when the triggers are made, at the end of every migration, so whichever
+//     build adds a column also adds a trigger that watches it. It fires when a
+//     statement SETS one of them, with no WHEN: comparing every column cost each
+//     prepared statement ~25 µs. Its restamped columns are left out of it and
+//     get one trigger each that fires only when the value changed;
+//   - a column domain has one trigger over its own columns that fires only when
+//     one of their values changed, so a write that restamps a plan's branch
+//     with the same branch moves nothing.
+// Rowids are never written by any statement (VACUUM renumbers them, but moves
+// the schema cookie). The comparisons are BINARY so that a NOCASE column, if
+// one is ever value-checked, cannot hide a change of case. Each name ends in a
+// hash of the trigger's own text: an unchanged definition keeps its name, a
+// changed one gets a new trigger beside the old one, and nothing here ever
+// drops one.
+function snapshotDomainTriggers(db: Database.Database): SnapshotTrigger[] {
+  const triggers: SnapshotTrigger[] = []
+  for (const [domain, spec] of Object.entries(SNAPSHOT_DOMAINS) as Array<[string, SnapshotDomainSpec]>) {
+    const table = quoted(spec.table)
+    const add = (event: string, when: string): void => {
+      const body = `${when}
+    BEGIN
+      UPDATE snapshot_domains SET version = version + 1 WHERE domain = '${domain}';
+    END`
+      const name = `snapshot_${domain}_${event}_${createHash('sha256').update(body).digest('hex').slice(0, 12)}`
+      triggers.push({ name, domain, sql: `CREATE TRIGGER IF NOT EXISTS ${quoted(name)}
+    ${body}` })
+    }
+    const list = (columns: readonly string[]): string => columns.map(quoted).join(', ')
+    const changed = (columns: readonly string[]): string =>
+      columns.map((column) => `NEW.${quoted(column)} IS NOT OLD.${quoted(column)} COLLATE BINARY`).join(' OR ')
+    add('insert', `AFTER INSERT ON ${table}`)
+    add('delete', `AFTER DELETE ON ${table}`)
+    if (spec.columns) {
+      add('update', `AFTER UPDATE OF ${list(spec.columns)} ON ${table}
+    WHEN ${changed(spec.columns)}`)
+      continue
+    }
+    const columns = db.prepare(`SELECT name FROM pragma_table_info(?) ORDER BY cid`).pluck().all(spec.table) as string[]
+    const restamped = new Set(spec.restamped)
+    add('update', `AFTER UPDATE OF ${list(columns.filter((column) => !restamped.has(column)))} ON ${table}`)
+    for (const column of columns.filter((name) => restamped.has(name))) {
+      add(`update_${column}`, `AFTER UPDATE OF ${list([column])} ON ${table}
+    WHEN ${changed([column])}`)
+    }
+  }
+  return triggers
+}
+
+// Review of #368: a version proves something only while every trigger that
+// moves it exists. One the hub lacks (dropped by hand, or not yet made for a
+// column a later build added, since this process opened the hub long before)
+// lets a write change the domain unseen. Such a domain falls back to the
+// commit token in readSnapshotState: rebuilt after any commit, a 304
+// otherwise, as before #297. Only an openDb that generates the same trigger
+// text heals it: this build's, or a later one whose generator did not change.
+// A later build whose generator did change makes triggers under other names,
+// and the fallback lasts until a process of this build opens the hub. The
+// triggers change only with the schema cookie, so this is decided once per
+// cookie, and never remembered from inside a transaction: a rollback takes the
+// cookie back, and a later commit can return it to the value it read.
+const ALL_DOMAINS: ReadonlySet<string> = new Set(Object.keys(SNAPSHOT_DOMAINS))
+const trustedSchemas = new WeakMap<Database.Database, { schemaVersion: number; untrusted: ReadonlySet<string> }>()
+
+function untrustedDomains(db: Database.Database, schemaVersion: number): ReadonlySet<string> {
+  const known = trustedSchemas.get(db)
+  if (known?.schemaVersion === schemaVersion) return known.untrusted
+  const existing = new Set(db.prepare(`SELECT name FROM sqlite_master WHERE type = 'trigger'`).pluck().all() as string[])
+  const untrusted = new Set(snapshotDomainTriggers(db).filter((trigger) => !existing.has(trigger.name)).map((trigger) => trigger.domain))
+  // the schema moved under these reads, so they prove nothing
+  if (db.prepare(`SELECT schema_version FROM pragma_schema_version`).pluck().get() !== schemaVersion) return ALL_DOMAINS
+  if (!db.inTransaction) trustedSchemas.set(db, { schemaVersion, untrusted })
+  return untrusted
+}
+
+// Last in runMigrations, after every column it may watch exists.
+function migrateSnapshotDomains(db: Database.Database): void {
+  db.exec(`CREATE TABLE IF NOT EXISTS snapshot_domains (
+      domain TEXT PRIMARY KEY,
+      version INTEGER NOT NULL DEFAULT 0
+    ) WITHOUT ROWID`)
+  // A version starts at a random 48-bit value (masked, since abs() overflows
+  // on the lowest random()), so a row seeded again after a reset cannot climb
+  // back to a version an idle viewer cached.
+  const seed = db.prepare(`INSERT OR IGNORE INTO snapshot_domains (domain, version) VALUES (?, random() & 281474976710655)`)
+  for (const domain of Object.keys(SNAPSHOT_DOMAINS)) seed.run(domain)
+  // Every process opens the hub, so skip the statements whose trigger exists.
+  const existing = new Set(db.prepare(`SELECT name FROM sqlite_master WHERE type = 'trigger'`).pluck().all() as string[])
+  for (const trigger of snapshotDomainTriggers(db)) if (!existing.has(trigger.name)) db.exec(trigger.sql)
 }
 
 function migrate(db: Database.Database): void {
@@ -459,6 +675,8 @@ function runMigrations(db: Database.Database): void {
   // statements never name the column, so they can neither set nor clear it.
   ensureColumn(db, 'items', 'repo_root', 'TEXT')
   ensureColumn(db, 'boards', 'repo_root', 'TEXT')
+  // issue #297 — keep this last: its triggers name the columns added above
+  migrateSnapshotDomains(db)
 }
 
 // Issue #247 — the human's "Pin for later". NULL means not pinned, so there is

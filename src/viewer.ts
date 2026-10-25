@@ -13,7 +13,7 @@ import {
   markRowHandled, clearRowHandled, listActivity, listActivitySpans, listSourceLinks, defaultDbPath,
   closeProject, reopenProject, closedProjects, readSnapshotState, listIssueEntities, listIssueSnapshots,
 } from './store.js'
-import type { ExpectedAnswer, ResponseKind, SnapshotReadState } from './store.js'
+import type { ExpectedAnswer, ResponseKind, SnapshotDomain, SnapshotReadState } from './store.js'
 import { groupItems } from './group.js'
 import { buildIssueGraph } from './issue-graph.js'
 import { issueKeySets } from '../public/issue-key.js'
@@ -610,10 +610,37 @@ const RECENT_CLOSED_ITEMS = 50
 // recently touched slots.
 const RECENT_OUTCOMES = 4
 
-function sameSnapshotState(a: SnapshotReadState, b: SnapshotReadState): boolean {
-  return !a.inTransaction && !b.inTransaction
-    && a.dataVersion === b.dataVersion && a.totalChanges === b.totalChanges
-    && a.schemaVersion === b.schemaVersion
+// Issue #297: what each conditional snapshot's bytes are built from, as store
+// domains (SNAPSHOT_DOMAINS in src/store.ts). A body is rebuilt only when one
+// of its domains moved, or the schema did; a write anywhere else cannot change
+// it, so presence, liveness and claim writes rebuild nothing.
+// test/snapshot-domains.test.ts holds each list to the reads behind its route.
+export const SNAPSHOT_SOURCES = {
+  // listItemsPage: every item column, and closedProjects() for its outcome lens
+  items: ['items', 'projects', 'boards_closure'],
+  // listOpenQuestions: items alone. The dock's waiting/parked split reads
+  // /api/activity, which is never retained, not this body.
+  'attention-items': ['items'],
+  'history-items': ['items'],
+  boards: ['boards', 'board_rows'],
+  'attention-boards': ['boards', 'board_rows'],
+  'archived-boards': ['boards', 'board_rows'],
+  // listSourceLinks, and listLinkTargets() once a cached preview needs it
+  links: ['source_links_by_head', 'items_links', 'boards_links', 'projects'],
+  // buildIssueGraph over listIssueSnapshots, listIssueEntities and the links
+  issues: ['issue_snapshots', 'source_links_by_head_issues', 'items_issues', 'boards_issues', 'board_rows_issues', 'projects'],
+} as const satisfies Record<string, readonly SnapshotDomain[]>
+
+type SnapshotName = keyof typeof SNAPSHOT_SOURCES
+
+// Equal tokens of the snapshot's own domains, read outside any transaction
+// under one schema, prove that no write that could change its bytes committed
+// between the two reads. A domain whose version proves nothing (the hub has no
+// row for it, or lacks one of its triggers) carries the commit token instead,
+// so such a body is rebuilt after any commit, as every body was before #297.
+function sameSnapshotState(domains: readonly SnapshotDomain[], a: SnapshotReadState, b: SnapshotReadState): boolean {
+  return !a.inTransaction && !b.inTransaction && a.schemaVersion === b.schemaVersion
+    && domains.every((domain) => a.domains[domain] === b.domains[domain])
 }
 
 // GET/HEAD use weak comparison, as in Hono's ETag middleware. Generated opaque
@@ -625,16 +652,17 @@ function etagMatches(requested: string | undefined, etag: string): boolean {
 
 function conditionalSnapshot(
   db: Database.Database,
-  name: 'items' | 'attention-items' | 'history-items' | 'boards' | 'attention-boards' | 'archived-boards' | 'issues' | 'links',
+  name: SnapshotName,
   read: () => object,
 ): Handler {
+  const domains: readonly SnapshotDomain[] = SNAPSHOT_SOURCES[name]
   // One representation per registration, local to this viewer instance.
   let cached: { state: SnapshotReadState; body: string; etag: string } | undefined
   return (c) => {
     c.header('Cache-Control', 'no-store')
     const before = readSnapshotState(db)
     let current = cached
-    if (!current || !sameSnapshotState(current.state, before)) {
+    if (!current || !sameSnapshotState(domains, current.state, before)) {
       cached = undefined
       const body = JSON.stringify(read())
       const after = readSnapshotState(db)
@@ -645,7 +673,7 @@ function conditionalSnapshot(
       }
       // Never publish old bytes under a token read after a concurrent commit.
       // An unstable/transactional read retains the uncached response behavior.
-      if (sameSnapshotState(before, after)) cached = current
+      if (sameSnapshotState(domains, before, after)) cached = current
     }
     c.header('ETag', current.etag)
     if (etagMatches(c.req.header('If-None-Match'), current.etag)) return c.body(null, 304)

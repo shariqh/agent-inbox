@@ -97,7 +97,8 @@ describe('issue snapshot store (issue #103)', () => {
       }
       const migrated = openDb(path)
       try {
-        expect(tables(migrated)).toEqual([...before.keys(), 'hook_watch_claims', 'issue_refresh_claims', 'issue_snapshots'].sort())
+        // #297 adds the snapshot domain versions, kept by triggers
+        expect(tables(migrated)).toEqual([...before.keys(), 'hook_watch_claims', 'issue_refresh_claims', 'issue_snapshots', 'snapshot_domains'].sort())
         for (const [name, shape] of before) {
           const now = columns(migrated, name) as Array<{ name: string; notnull: number; dflt_value: unknown; pk: number }>
           expect(now.slice(0, shape.length), name).toEqual(shape)

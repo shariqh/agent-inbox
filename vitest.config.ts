@@ -1,5 +1,9 @@
 import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vitest/config'
+import { ciDiagnostics } from './test/ci-diagnostics.js'
+
+// undefined unless ci.yml's test step asks for crash diagnostics (#359)
+const diagnostics = ciDiagnostics(process.env)
 
 export default defineConfig({
   // Vite would otherwise claim <root>/public as its static publicDir and refuse to
@@ -24,6 +28,7 @@ export default defineConfig({
     testTimeout: 15000,
     // removes each file's leftover scratchDir() directories once it ends (#245)
     setupFiles: ['test/scratch-setup.ts'],
+    ...(diagnostics ?? {}),
     // No global `environment`: the node suite (store, mcp, infer) stays on node and
     // DOM files opt in with a `// @vitest-environment jsdom` docblock.
   },

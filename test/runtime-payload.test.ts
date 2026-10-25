@@ -1891,6 +1891,8 @@ function realNodeDistRoot(): string | undefined {
 
 const REAL_NODE_ROOT = realNodeDistRoot()
 
+const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
 // Staging runs npm, the hook selftest, the 300,000-statement SQLite check and
 // the MCP server probe. That takes about 7-21 s alone, but a busy parallel
 // `npm test` has stretched it past 70 s (#238). These test bodies are
@@ -2060,10 +2062,22 @@ describe.skipIf(!REAL_NODE_ROOT || !['darwin', 'linux'].includes(process.platfor
         const outputParent = tmp('stage-full-happy-')
         const output = join(outputParent, 'runtime')
 
-        const result = runOk(STAGE_CLI, [
+        const run = runCli(STAGE_CLI, [
           '--node-root', REAL_NODE_ROOT as string, '--platform', process.platform, '--arch', process.arch,
           '--output', output, '--repo-root', repoRoot,
-        ]) as { ok: boolean; runtimeId: string; output: string }
+        ])
+        expect(run.status, run.stderr).toBe(0)
+        // each gate says what it proved, with the staged Node and its time (#362)
+        const runtime = `${process.platform}-${process.arch} runtime (Node ${process.version}, ABI ${process.versions.modules})`
+        const passed = (check: string, limit: number) => new RegExp(
+          `^stage-runtime: ${escapeRegExp(runtime)} passed its ${escapeRegExp(check)} in \\d+\\.\\d s \\(limit ${limit} s\\)$`,
+        )
+        expect(run.stderr.trimEnd().split('\n')).toEqual([
+          expect.stringMatching(passed('selftest (bin/node dist/hook-cli.js selftest)', 30)),
+          expect.stringMatching(passed('allocation-driven SQLite check (#135)', 180)),
+          expect.stringMatching(passed('MCP server probe (initialize + tools/list)', 30)),
+        ])
+        const result = JSON.parse(run.stdout) as { ok: boolean; runtimeId: string; output: string }
 
         expect(result.ok).toBe(true)
         expect(existsSync(output)).toBe(true)
@@ -2134,6 +2148,7 @@ describe.skipIf(!REAL_NODE_ROOT || !['darwin', 'linux'].includes(process.platfor
         ], { ...process.env, FAKE_SELFTEST_FAIL: '1' })
 
         expect(result.stderr).toMatch(/failed its selftest/)
+        expect(result.stderr).not.toMatch(/passed its/)
         expect(existsSync(output)).toBe(false)
         const siblings = readdirSync(outputParent)
         expect(siblings.some((e) => e.startsWith('.agent-inbox-stage-'))).toBe(false)
@@ -2153,6 +2168,9 @@ describe.skipIf(!REAL_NODE_ROOT || !['darwin', 'linux'].includes(process.platfor
         ], { ...process.env, [failure]: '1' })
 
         expect(result.stderr).toMatch(/failed its allocation-driven SQLite check/)
+        // only what passed is reported as passed (#362)
+        expect(result.stderr).toMatch(/passed its selftest/)
+        expect(result.stderr).not.toMatch(/passed its (allocation-driven SQLite check|MCP server probe)/)
         expect(existsSync(output)).toBe(false)
         expect(readdirSync(outputParent).some((entry) => entry.startsWith('.agent-inbox-stage-'))).toBe(false)
       },

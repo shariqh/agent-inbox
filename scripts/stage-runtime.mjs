@@ -51,7 +51,7 @@ import { fileURLToPath } from 'node:url'
 import { buildManifest, copyTreePreservingMode, isMainModule, verifyPayload, writeManifestFile } from './runtime-payload.mjs'
 import { copyAgentInboxLicense } from './license.mjs'
 import { pruneNodeModules } from './prune-node-modules.mjs'
-import { probeRuntimeMcp } from './runtime-mcp-probe.mjs'
+import { MCP_PROBE_TIMEOUT_MS, probeRuntimeMcp } from './runtime-mcp-probe.mjs'
 import {
   assertPlainFile,
   nativeRuntimeAdapterFor,
@@ -338,22 +338,30 @@ const SQLITE_CHECK_TIMEOUT_MS = 180_000
  * ~/.agent-inbox/inbox.db) so staging a runtime can never touch host state.
  * The separate allocation-driven check catches native statement cleanup
  * failures that open/close and explicit GC miss (#135). On failure this throws
- * before the caller can manifest or publish the tree.
+ * before the caller can manifest or publish the tree. Each check that passes
+ * is reported on stderr with the staged Node it ran and its time, so a native
+ * staging log shows what proved that runtime (#362).
  */
-function runStagedSelftest(stageDir, adapter) {
+function runStagedSelftest(stageDir, adapter, { nodeVersion, nodeModulesAbi }) {
   const stagedNode = join(stageDir, ...adapter.payloadNodeExecRelPath.split('/'))
   const hookCli = join(stageDir, 'dist', 'hook-cli.js')
   if (!existsSync(hookCli)) {
     throw new StageRuntimeError(`staged dist/ is missing hook-cli.js at ${hookCli} — cannot run the selftest gate`)
   }
+  const runtime = `${adapter.key} runtime (Node ${nodeVersion}, ABI ${nodeModulesAbi})`
+  const passed = (label, started, timeout) => {
+    const seconds = (Number(process.hrtime.bigint() - started) / 1e9).toFixed(1)
+    process.stderr.write(`stage-runtime: ${runtime} passed its ${label} in ${seconds} s (limit ${timeout / 1000} s)\n`)
+  }
   const scratchDir = mkdtempSync(join(tmpdir(), 'stage-runtime-selftest-'))
   try {
     for (const [label, args, timeout] of [
       ['selftest (bin/node dist/hook-cli.js selftest)', [hookCli, 'selftest'], 30_000],
-      ['allocation-driven SQLite check', [
+      ['allocation-driven SQLite check (#135)', [
         join(SCRIPT_DIR, 'runtime-sqlite-check.mjs'), join(stageDir, 'dist', 'store.js'),
       ], SQLITE_CHECK_TIMEOUT_MS],
     ]) {
+      const started = process.hrtime.bigint()
       try {
         execFileSync(stagedNode, args, {
           cwd: stageDir,
@@ -364,14 +372,17 @@ function runStagedSelftest(stageDir, adapter) {
       } catch (err) {
         throw new StageRuntimeError(`staged runtime failed its ${label} — refusing to publish: ${err.message}`)
       }
+      passed(label, started, timeout)
     }
     // hook-cli reaches no public/ module; only starting the MCP server proves
     // the runtime carries everything dist/mcp-server.js imports (#103 PR2)
+    const started = process.hrtime.bigint()
     try {
       probeRuntimeMcp(stagedNode, stageDir)
     } catch (err) {
       throw new StageRuntimeError(`staged runtime failed its MCP server probe — refusing to publish: ${err.message}`)
     }
+    passed('MCP server probe (initialize + tools/list)', started, MCP_PROBE_TIMEOUT_MS)
   } finally {
     rmSync(scratchDir, { recursive: true, force: true })
   }
@@ -438,7 +449,7 @@ function stageInto(stageDir, {
   copyTreePreservingMode(distDir, join(stageDir, 'dist'))
   stagePublicModules(repoRoot, stageDir)
 
-  runStagedSelftest(stageDir, adapter)
+  runStagedSelftest(stageDir, adapter, { nodeVersion, nodeModulesAbi })
 
   for (const name of REQUIRED_SCRIPTS) {
     const src = join(repoRoot, 'scripts', name)

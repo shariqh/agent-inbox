@@ -7,12 +7,12 @@ artifacts, not a downloadable Windows release.
 
 ## Pinned inputs
 
-`release/windows-inputs.json` pins the same Node **24.18.1** and Electron **43.8.3** as the
-macOS and Linux profiles, including the
-[Node 24.18.1 compatibility hold for #135](macos-release.md#node-24181-compatibility-hold-135);
+`release/windows-inputs.json` pins the same Node **24.22.0** and Electron **43.8.3** as the
+macOS and Linux profiles
+([where the #135 hold ended](macos-release.md#node-24220-ends-the-135-compatibility-hold));
 a test keeps the three profiles' Node and Electron pins identical. The official Windows
 ZIP carries neither Node's C/C++ headers nor `node.lib`, so the profile also pins the same
-release's `node-v24.18.1-headers.tar.gz` and `win-x64/node.lib` by official URL and
+release's `node-v24.22.0-headers.tar.gz` and `win-x64/node.lib` by official URL and
 SHA-256 (all copied from that release's signed `SHASUMS256.txt`). Native staging verifies
 both, lists and checks the headers tarball before extracting it, and adds them to the
 extracted distribution (`include/node` and `Release/node.lib`), so `better-sqlite3` is

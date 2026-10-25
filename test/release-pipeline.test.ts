@@ -310,7 +310,7 @@ describe('native architecture release stages', () => {
     const deref = source.indexOf('renameSync(dereffed, srcModules)')
     const prune = source.indexOf('pruneNodeModules(stageDir)')
     const probe = source.indexOf("probeStagedNativeDependency(stageDir, nodeBin, 'after node_modules normalization and pruning')")
-    const selftest = source.indexOf('\n  runStagedSelftest(stageDir, adapter)\n')
+    const selftest = source.indexOf('\n  runStagedSelftest(stageDir, adapter, { nodeVersion, nodeModulesAbi })\n')
     const manifest = source.indexOf('const manifest = buildManifest({')
     expect(deref).toBeGreaterThan(-1)
     expect(prune).toBeGreaterThan(deref)

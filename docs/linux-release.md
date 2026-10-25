@@ -15,7 +15,9 @@ Electron 43.8.3 ABI 148, and the exact Packager/Rebuild versions used by this
 layer. It also pins Clang 15.0.7 for native addon compilation. GCC 11 cannot
 parse Electron 43's deprecation-plus-visibility attribute ordering in the V8
 headers; the build verifies both compiler commands, the exact compiler version,
-and the native target tuple before rebuilding.
+and the native target tuple before rebuilding. The packaged Electron zip must
+match the hash in the lockfile-pinned `electron` package's `checksums.json`
+([Electron zips](macos-release.md#electron-zips-363)).
 
 The portable Node pin is **24.22.1**, matching the
 [macOS profile, where the #135 hold ended](macos-release.md#node-24220-ends-the-135-compatibility-hold).

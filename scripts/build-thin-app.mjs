@@ -23,7 +23,7 @@ import { assertEnglishOnlyElectronLocales, pruneElectronLocales } from './prune-
 import { assertPrunedNodeModules, pruneNodeModules } from './prune-node-modules.mjs'
 import { copyTreePreservingMode, verifyPayload } from './runtime-payload.mjs'
 import { assertRuntimeSourceCommit } from './runtime-provenance.mjs'
-import { loadReleaseInputs, RUNTIME_KEYS, validateInstalledReleaseTools } from './release-inputs.mjs'
+import { loadElectronChecksums, loadReleaseInputs, RUNTIME_KEYS, validateInstalledReleaseTools } from './release-inputs.mjs'
 import { resolveSourceProvenance } from './source-provenance.mjs'
 import { treeIdentity } from './tree-identity.mjs'
 
@@ -140,6 +140,12 @@ export async function buildThinApp({
   }
   const inputs = loadReleaseInputs(inputsPath)
   validateInstalledReleaseTools(inputs, repoRoot)
+  const electronChecksums = loadElectronChecksums({
+    version: inputs.electron.version,
+    platform: 'darwin',
+    arch,
+    repoRoot,
+  })
   const pkg = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8'))
   const provenance = resolveSourceProvenance(repoRoot)
   if (pkg.version !== JSON.parse(readFileSync(join(repoRoot, 'package-lock.json'), 'utf8')).version) {
@@ -215,6 +221,9 @@ export async function buildThinApp({
       productName: APP_NAME,
       platform: 'darwin',
       arch,
+      // the release's Electron, and only the zip reviewed with it (#363)
+      electronVersion: inputs.electron.version,
+      download: { checksums: electronChecksums },
       out: packagerOut,
       overwrite: true,
       asar: false,

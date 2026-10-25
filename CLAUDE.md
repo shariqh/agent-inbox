@@ -237,43 +237,55 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   them: every row that links an issue, with its identity and content times, so
   issue activity labels ("Done here", `public/issues.js`) read the same; and each
   project's `RECENT_OUTCOMES` (4) newest outcome-bearing rows plus ties, with the
-  outcome and the stamps `public/relay.js` `stamp` orders it by, so the
-  Dashboard's recent outcomes are proven for every lens without an agent filter.
-  Ties matter: one upsert stamps all its outcomes alike, and a cut tie could never
-  be proven. Every other outcome, a linked row's included, is omitted: each plan's
-  `omitted` gives how many and the newest stamp among them (never null while it
-  omits any; the stamp falls back to the plan's `updated_at`), so the Dashboard,
-  Handoffs and every count stay exact (`omittedOutcomes` in `public/boards.js`).
-  The rail, the fold's "Archived plans (N)", lingering decisions and the
-  collapse-state pruning read the brief through the same code as the complete list. `lastData.archivedBrief`
-  is the brief; `lastData.archived` is what surfaces read, the complete list while
-  loaded and the brief otherwise; `lastData.archivedFull` is the complete list or
-  null, and only it may be drawn whole (the fold's cards, lingering cards, Plan
-  flow, a deep link's landing, `rowHolds`). The complete `/api/boards/archived` is
-  unchanged and ONLY `load()` reads it, while `archivedWanted()` says a surface
-  needs it: a deep link to a plan the brief names (`archivedLookup`, waiting and
-  dropped exactly as #184's), search in use (`searchInUse()`, #184's rule), Plan
-  flow open on an archived plan, Handoffs with omitted archived outcomes, Plans
-  with the archived fold open, a lingering plan or a focused plan its agent just
-  archived (the focus follows it into the fold), and a Dashboard lens whose recent
-  outcomes only the archived plans can prove (`recentOutcomesWait.archived`;
-  `.history` is #184's half). Judge on the BRIEF (the applied one, or the tick's
-  new one for the in-tick read that lets a plan archived this tick linger at
-  once), never on the complete list, whose plans omit nothing. The two sources
-  share #184's early-tick requests: `requestHistory()`/`requestHistoryPaint()` act
-  when `omittedWanted()` says either is wanted and still omitted, so one tick reads
-  both, and opening the fold (a `toggle` that turns `showArchived` on, never one
-  a rebuild fires) is an explicit entry point. A failed read degrades like older
-  history: the brief still applies, the fold and lingering place say "Archived
-  plans are unavailable right now.", search stays busy with that line, and the
-  Dashboard and Handoffs name whichever source failed. An older viewer answers the
-  brief with 404: the tick reads the complete list in its place, as such a
-  viewer's page did, and fails only if that read fails too. Search is busy, never
-  partial, while either source is omitted ("Searching archived plans…").
-  Archived plans never carry attention: `public/attention.js`, the dock and the
-  badge read none of this. Accepted: a durable draft restored for a row whose plan
-  was archived since is kept as an unsent response unless the complete list
-  happens to be loaded (`rowHolds` can prove the server holds it only then).
+  outcome, the stamps `public/relay.js` `stamp` orders it by and what a Handoffs
+  outcome card shows of its action (`note`, `next_step`, `action_owner` and
+  `options`, parsed as the complete list parses them), so the Dashboard's recent
+  outcomes are proven for every lens without an agent filter, and Handoffs draws
+  the same outcome cards from the brief as from the complete list (its outcome
+  lane reads the complete list only while the lens omits an outcome). A surface
+  that draws an archived row's field from the brief must find that field in the
+  brief: add it to the brief's select and `test/archived-summary.test.ts`'s field
+  lists, never draw a field the brief does not carry. Ties matter: one upsert stamps all its outcomes alike, and a cut tie could
+  never be proven. Every other outcome, a linked row's included, is omitted: each
+  plan's `omitted` gives how many and the newest stamp among them (never null
+  while it omits any; the stamp falls back to the plan's `updated_at`), so every
+  count stays exact (`omittedOutcomes` in `public/boards.js`). The rail, the
+  fold's "Archived plans (N)", lingering decisions and the collapse-state pruning
+  read the brief through the same code as the complete list.
+  `lastData.archivedBrief` is the brief; `lastData.archived` is what surfaces
+  read, the complete list while loaded and the brief otherwise;
+  `lastData.archivedFull` is the complete list or null, and only it may be drawn
+  whole (the fold's cards, lingering cards, Plan flow, a deep link's landing,
+  `rowHolds`). The complete `/api/boards/archived` is unchanged and ONLY `load()`
+  reads it, while `archivedWanted()` says a surface needs it: a deep link to a
+  plan the brief names (`archivedLookup`, waiting and dropped exactly as #184's),
+  restored row drafts waiting on it (below), search in use (`searchInUse()`,
+  #184's rule), Plan flow open on an archived plan, Handoffs with omitted archived
+  outcomes, Plans with the archived fold open, a lingering plan or a focused plan
+  its agent just archived (the focus follows it into the fold), and a Dashboard
+  lens whose recent outcomes only the archived plans can prove
+  (`recentOutcomesWait.archived`; `.history` is #184's half). Judge on the BRIEF
+  (the applied one, or the tick's new one for the in-tick read that lets a plan
+  archived this tick linger at once), never on the complete list, whose plans
+  omit nothing. The two sources share #184's early-tick requests:
+  `requestHistory()`/`requestHistoryPaint()` act when `omittedWanted()` says either
+  is wanted and still omitted, so one tick reads both, and opening the fold (a
+  `toggle` that turns `showArchived` on, never one a rebuild fires) is an explicit
+  entry point. A failed read degrades like older history: the brief still applies,
+  the fold and lingering place say "Archived plans are unavailable right now.",
+  search stays busy with that line, and the Dashboard and Handoffs name whichever
+  source failed. An older viewer answers the brief with 404: the tick reads the
+  complete list in its place, as such a viewer's page did, and fails only if that
+  read fails too. Search is busy, never partial, while either source is omitted
+  ("Searching archived plans…"). A restored row draft (#279) whose row no active
+  plan holds may be an archived plan's, and only the complete list says whether
+  the server already holds its text (`rowHolds`): while archived plans are paged
+  out and their last read has not failed (`awaitsArchivedRow`),
+  `placeRestoredDrafts` keeps it restored, still the profile's copy, asks for an
+  early tick, and places it the same way on the first tick that read the complete
+  list, or as before once that read failed. A draft for a row in an active plan
+  comes back with the first data, as always. Archived plans never carry
+  attention: `public/attention.js`, the dock and the badge read none of this.
 - **`src/store.ts` is the only door to the database.** Every read/write goes through its
   exported functions — items: `insertItem`/`resolveItem`/`dismissItem`/`annotateItem`/
   `replyItem`/`answerItem`/`listItems`/`listItemsPage`; boards: `upsertBoard`/`updateBoardRow`/`getBoard`/`listBoards`/`listArchivedSummary`/
@@ -1141,7 +1153,9 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   kept, and a fresh intent brings its own. The tab's
   reply identity itself stays in `sessionStorage`: shared, two windows would merge
   their counters and refuse each other's newer replies. Restoring happens once, in the
-  first applied `load()` before its `renderIfIdle()` (`placeRestoredDrafts`), and sends
+  first applied `load()` before its `renderIfIdle()` (`placeRestoredDrafts`; a row
+  draft whose row no active plan holds may wait for the complete archived plans,
+  #299 above), and sends
   nothing, focuses nothing and switches no tab. A draft whose target is unchanged and
   whose project is open goes back to its editor, the newest one in the queue reopens
   its card when none is open, a Plans-only row reopens its panel, and the next queue

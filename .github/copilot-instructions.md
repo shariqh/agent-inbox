@@ -251,16 +251,21 @@ Run the build before `npm run electron`; the development shell starts the built
 - The poll carries archived plans in brief (#299): `/api/boards/archived/summary`
   (`listArchivedSummary`) keeps every archived plan's fields and `progress`, only
   the rows that link an issue (identity and content times) or hold one of their
-  project's 4 newest outcomes plus ties (with the outcome and its stamps), and
-  per plan the outcomes it omits with their newest stamp, so counts, the rail,
-  issue activity labels and the Dashboard's default lens stay exact. Only `load()` reads the complete `/api/boards/archived`, while
+  project's 4 newest outcomes plus ties (with the outcome, its stamps and what a
+  Handoffs outcome card shows: note, next step, owner, options), and per plan the
+  outcomes it omits with their newest stamp, so counts, the rail, issue activity
+  labels, the Dashboard's default lens and Handoffs' cards read as the complete
+  list draws them; a surface that draws a row field from the brief needs it in the
+  brief's select. Only `load()` reads the complete `/api/boards/archived`, while
   `archivedWanted()` says a surface needs it (the open archived fold, a lingering
-  plan, a focused plan just archived, search, a waiting deep link, Handoffs or
-  Plan flow on an archived plan, an unproven Dashboard lens), judged on the brief,
-  never on the complete list. `requestHistory()`/`requestHistoryPaint()` ask for
-  either source; a failed read degrades to "Archived plans are unavailable right
-  now.", and an older viewer's 404 for the brief reads the complete list in its
-  place. Archived plans are drawn whole only from `lastData.archivedFull`.
+  plan, a focused plan just archived, search, a waiting deep link, restored row
+  drafts whose row no active plan holds, Handoffs or Plan flow on an archived
+  plan, an unproven Dashboard lens), judged on the brief, never on the complete
+  list. `requestHistory()`/`requestHistoryPaint()` ask for either source; a failed
+  read degrades to "Archived plans are unavailable right now.", and an older
+  viewer's 404 for the brief reads the complete list in its place. Archived plans
+  are drawn whole only from `lastData.archivedFull`, and a held row draft is
+  placed by the first tick that read it (or failed to).
 - Plan pins and row issue links (#103 PR2) are agent-owned fields: omission keeps,
   MCP `""` clears, `board_advance` and a reblock keep them, and a pin outranks the
   PR and branch issue. MCP normalizes every accepted form to `owner/name#N` and

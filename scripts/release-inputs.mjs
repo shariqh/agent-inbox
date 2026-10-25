@@ -159,6 +159,13 @@ export function validateInstalledReleaseTools(inputs, repoRoot = REPO_ROOT) {
 }
 
 const CHECKSUM_FILE_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
+// @electron/get reads these before its options (#363). They can change the Electron
+// version it downloads and checks, and it checks nothing before 1.3.2, or the server
+// and file it downloads. npm also sets the npm_config_electron_* and
+// npm_package_config_electron_* forms for every `npm run` script, from an .npmrc or a
+// package.json `config`. Windows environment names have no case, so neither does this.
+const ELECTRON_DOWNLOAD_OVERRIDE_RE =
+  /^(?:npm_config_electron_|npm_package_config_electron_|electron_(?:custom_version|mirror|nightly_mirror|custom_dir|custom_filename)$)/i
 
 function readInstalledElectronJson(repoRoot, name) {
   try {
@@ -173,7 +180,16 @@ function readInstalledElectronJson(repoRoot, name) {
 // when Electron was bumped (#363). Given to the packager as `download.checksums`,
 // they make @electron/get check the zip it downloads against them instead of
 // against the release's live SHASUMS256.txt, which can be replaced with the zip.
-export function loadElectronChecksums({ version, platform, arch, repoRoot = REPO_ROOT }) {
+// That check holds only if nothing in the environment overrides the version or
+// source, so the builders' first step refuses to go on while anything could.
+export function loadElectronChecksums({ version, platform, arch, repoRoot = REPO_ROOT, env = process.env }) {
+  const overrides = Object.keys(env).filter((name) => ELECTRON_DOWNLOAD_OVERRIDE_RE.test(name) && env[name]).sort()
+  if (overrides.length) {
+    throw new ReleaseInputError(
+      `refusing to build while ${overrides.join(', ')} ${overrides.length === 1 ? 'is' : 'are'} set: `
+        + '@electron/get lets it choose the Electron version it downloads and checks, or where it downloads from',
+    )
+  }
   const installed = readInstalledElectronJson(repoRoot, 'package.json')
   if (installed?.name !== 'electron' || installed.version !== version) {
     throw new ReleaseInputError(

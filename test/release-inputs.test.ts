@@ -211,6 +211,47 @@ describe('Electron zip checksums (#363)', () => {
     }
   })
 
+  it('refuses to build while the environment can change the Electron version or download source', () => {
+    const file = JSON.parse(readFileSync(join(repoRoot, 'node_modules', 'electron', 'checksums.json'), 'utf8'))
+    const load = (env: Record<string, string>) => () =>
+      loadElectronChecksums({ version: electronVersionFor.linux(), platform: 'linux', arch: 'x64', repoRoot, env })
+    // @electron/get reads these before its options, in these spellings; any case is refused
+    for (const name of [
+      'ELECTRON_CUSTOM_VERSION',
+      'electron_custom_version',
+      'npm_config_electron_custom_version',
+      'npm_config_electron_customversion',
+      'NPM_CONFIG_ELECTRON_CUSTOM_VERSION',
+      'npm_package_config_electron_custom_version',
+      'npm_package_config_electron_customVersion',
+      'npm_config_electron_mirror',
+      'npm_package_config_electron_custom_dir',
+      'ELECTRON_MIRROR',
+      'electron_mirror',
+      'ELECTRON_NIGHTLY_MIRROR',
+      'ELECTRON_CUSTOM_DIR',
+      'ELECTRON_CUSTOM_FILENAME',
+    ]) {
+      const value = `https://attacker.invalid/${name}`
+      const refused = load({ PATH: '/usr/bin', [name]: value })
+      expect(refused, name).toThrow(ReleaseInputError)
+      expect(refused, name).toThrow(`refusing to build while ${name} is set`)
+      // the variable's name, never its value
+      expect(refused, name).not.toThrow(value)
+      expect(refused, name).not.toThrow('attacker')
+    }
+    expect(load({ ELECTRON_MIRROR: 'a', npm_config_electron_custom_version: '1.0.0', ELECTRON_CUSTOM_VERSION: '1.3.1' }))
+      .toThrow('refusing to build while ELECTRON_CUSTOM_VERSION, ELECTRON_MIRROR, npm_config_electron_custom_version are set')
+    // @electron/get ignores an empty value, and nothing else here reaches the download
+    expect(load({
+      ELECTRON_CUSTOM_VERSION: '',
+      npm_config_electron_mirror: '',
+      ELECTRON_RUN_AS_NODE: '1',
+      ELECTRON_ENABLE_LOGGING: '1',
+      npm_config_build_from_source: 'true',
+    })()).toEqual(file)
+  })
+
   it('has the packager check its Electron zip against that map instead of the release SHASUMS256.txt, and refuse a mismatch', async () => {
     const work = scratchDir('electron-zip-')
     const version = electronVersionFor.linux()
@@ -270,5 +311,24 @@ describe('Electron zip checksums (#363)', () => {
     // Before #363 nothing passed a map: the release's own SHASUMS256.txt vouched for the replaced zip.
     await expect(pack('unpinned')).resolves.toHaveLength(1)
     expect(requested.map((url) => url.slice(url.lastIndexOf('/') + 1))).toEqual([zipName, 'SHASUMS256.txt'])
+
+    // The environment can override the version @electron/get downloads and checks, and it checks
+    // nothing before 1.3.2: even with the pinned map, the replaced zip is then packaged.
+    const previous = process.env.ELECTRON_CUSTOM_VERSION
+    process.env.ELECTRON_CUSTOM_VERSION = '1.3.1'
+    try {
+      await expect(pack('custom-version', pinned)).resolves.toHaveLength(1)
+      expect(requested.map((url) => url.slice(url.lastIndexOf('/') + 1))).toEqual(['electron-v1.3.1-linux-x64.zip'])
+      // so the builders' first step, loading the map, refuses that environment before packaging
+      requested.length = 0
+      const build = async (run: string) =>
+        pack(run, loadElectronChecksums({ version, platform: 'linux', arch: 'x64', repoRoot }))
+      await expect(build('guarded')).rejects.toThrow('refusing to build while ELECTRON_CUSTOM_VERSION is set')
+      expect(requested).toEqual([])
+      expect(existsSync(join(work, 'guarded'))).toBe(false)
+    } finally {
+      if (previous === undefined) delete process.env.ELECTRON_CUSTOM_VERSION
+      else process.env.ELECTRON_CUSTOM_VERSION = previous
+    }
   })
 })

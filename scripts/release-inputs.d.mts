@@ -52,6 +52,7 @@ export function loadElectronChecksums(options: {
   platform: string
   arch: string
   repoRoot?: string
+  env?: Record<string, string | undefined>
 }): Record<string, string>
 export function sha256File(path: string): string
 export function verifyArchiveDigest(path: string, expectedSha256: string): string

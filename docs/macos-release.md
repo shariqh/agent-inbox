@@ -24,6 +24,13 @@ Every thin-app build (macOS, Linux and Windows) gives `@electron/packager` the p
 lockfile-pinned `electron` package's `checksums.json` once that package is proven to be
 exactly `electron.version`. `@electron/get` then checks the zip it downloads, or finds in
 its cache, against those hashes instead of fetching the release's live `SHASUMS256.txt`.
+`@electron/get` also lets the environment choose the version it downloads and checks (it
+checks nothing before 1.3.2) and the server and file it downloads. So before anything is
+built, the build refuses to go on while any of these is set to a non-empty value, in any
+case: `ELECTRON_CUSTOM_VERSION`, `ELECTRON_MIRROR`, `ELECTRON_NIGHTLY_MIRROR`,
+`ELECTRON_CUSTOM_DIR`, `ELECTRON_CUSTOM_FILENAME`, or any `npm_config_electron_*` or
+`npm_package_config_electron_*`. npm sets the last two for every `npm run` script from an
+`.npmrc` or a `package.json` `config`. The error names the variables, never their values.
 A zip that is not the one reviewed with the version bump therefore fails the build, even
 if the release's own `SHASUMS256.txt` was replaced along with it. The hashes change only
 with the lockfile: when bumping Electron, compare the new `checksums.json` with the

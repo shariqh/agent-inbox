@@ -429,10 +429,16 @@ describe('native architecture release stages', () => {
       const loadCall = source.slice(load, source.indexOf('})', load))
       expect(loadCall, builder).toContain('version: inputs.electron.version,')
       expect(loadCall, builder).toContain('repoRoot,')
+      // the real environment, which the refusal of download overrides reads
+      expect(loadCall, builder).not.toMatch(/\benv\b/)
       const pack = source.indexOf('await packager({')
       const packCall = source.slice(pack, source.indexOf('if (paths.length !== 1)', pack))
       expect(packCall, builder).toContain('electronVersion: inputs.electron.version,')
       expect(packCall, builder).toContain('download: { checksums: electronChecksums },')
+      // once each, and nothing spread in that could override either (a later key wins)
+      expect(packCall.match(/\belectronVersion\b['"\]]*\s*:/g), builder).toHaveLength(1)
+      expect(packCall.match(/\bdownload\b['"\]]*\s*:/g), builder).toHaveLength(1)
+      expect(packCall, builder).not.toContain('...')
       expect(packCall, builder).not.toMatch(/electronZipDir|unsafelyDisableChecksums/)
       // the zip whose hash is checked is the one packaged
       for (const call of [loadCall, packCall]) {

@@ -17,3 +17,5 @@ out/
 # local scratch (not part of the project)
 checkprod.mts
 seed-demo.mjs
+# CI crash diagnostics (#359)
+ci-diagnostics/

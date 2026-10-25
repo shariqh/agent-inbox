@@ -69,7 +69,7 @@ jobs:
           out=ci-diagnostics
           mkdir -p "$out/crash-reports"
           if [ "$RUNNER_OS" = macOS ]; then
-            sleep 5 # ReportCrash writes .ips files a moment after the process dies
+            sleep 20 # ReportCrash writes an .ips file seconds after the process dies
             for dir in "$HOME/Library/Logs/DiagnosticReports" /Library/Logs/DiagnosticReports; do
               [ -d "$dir" ] || continue
               find "$dir" -maxdepth 2 -type f -newer "$out/.started" \

@@ -26,6 +26,7 @@ import {
   validateInstalledLinuxReleaseTools,
 } from './linux-release-inputs.mjs'
 import { pruneElectronLocales } from './prune-electron-locales.mjs'
+import { loadElectronChecksums } from './release-inputs.mjs'
 import { copyTreePreservingMode, verifyPayload } from './runtime-payload.mjs'
 import { assertRuntimeSourceCommit } from './runtime-provenance.mjs'
 import { resolveSourceProvenance } from './source-provenance.mjs'
@@ -56,6 +57,12 @@ export async function buildLinuxThinApp({
   }
   const inputs = loadLinuxReleaseInputs(inputsPath)
   validateInstalledLinuxReleaseTools(inputs, repoRoot)
+  const electronChecksums = loadElectronChecksums({
+    version: inputs.electron.version,
+    platform: 'linux',
+    arch,
+    repoRoot,
+  })
   const compilerEnvironment = resolveLinuxCompilerEnvironment(inputs, arch)
   const key = `linux-${arch}`
   const distribution = inputs.node.distributions[key]
@@ -137,6 +144,9 @@ export async function buildLinuxThinApp({
       executableName: APP_NAME,
       platform: 'linux',
       arch,
+      // the release's Electron, and only the zip reviewed with it (#363)
+      electronVersion: inputs.electron.version,
+      download: { checksums: electronChecksums },
       out: packagerOut,
       overwrite: true,
       asar: false,

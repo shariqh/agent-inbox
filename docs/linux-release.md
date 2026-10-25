@@ -19,12 +19,12 @@ and the native target tuple before rebuilding. The packaged Electron zip must
 match the hash in the lockfile-pinned `electron` package's `checksums.json`
 ([Electron zips](macos-release.md#electron-zips-363)).
 
-The portable Node pin is **24.18.1**, matching the
-[macOS compatibility hold for #135](macos-release.md#node-24181-compatibility-hold-135).
+The portable Node pin is **24.22.1**, matching the
+[macOS profile, where the #135 hold ended](macos-release.md#node-24220-ends-the-135-compatibility-hold).
 Both architectures rebuild `better-sqlite3` against those verified archive headers
-and run the allocation-driven SQLite cleanup gate before publication. The pin
-avoids Node 24.19's header regression without dropping 24.18.1's security fixes;
-Linux native runtime verification remains required, not inferred from macOS tests.
+and run the allocation-driven SQLite cleanup gate and the MCP server probe before
+publication; Linux native runtime verification remains required, not inferred from
+macOS tests.
 Electron's embedded Node carried the same regression from Electron 43.5.0 until
 Electron 43.6.0's backported fix. Thin-folder verification therefore also runs that
 gate with the packaged Electron executable in Node mode, against its Electron-ABI

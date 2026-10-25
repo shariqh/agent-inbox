@@ -46,6 +46,65 @@ jobs:
           test/setup-lock.test.ts
       - name: Verify structured-text hostile-input performance
         run: npm run test:structured-text:perf
-      - run: npm test
+      # Crash diagnostics for #359: a fork worker that dies mid-run must name its cause.
+      - name: Mark the start of the test suite
+        run: mkdir -p ci-diagnostics && touch ci-diagnostics/.started
+      - name: Run the test suite with crash diagnostics
+        env:
+          AGENT_INBOX_CI_DIAGNOSTICS_DIR: ${{ github.workspace }}/ci-diagnostics
+        run: |
+          if [ "$RUNNER_OS" = macOS ]; then
+            /usr/bin/time -l npm test
+          elif [ -x /usr/bin/time ]; then
+            /usr/bin/time -v npm test
+          else
+            echo "/usr/bin/time is unavailable; peak memory is not recorded"
+            npm test
+          fi
       - run: npm run typecheck
       - run: npm run build
+      - name: Collect crash diagnostics
+        if: failure()
+        run: |
+          out=ci-diagnostics
+          mkdir -p "$out/crash-reports"
+          if [ "$RUNNER_OS" = macOS ]; then
+            sleep 5 # ReportCrash writes .ips files a moment after the process dies
+            for dir in "$HOME/Library/Logs/DiagnosticReports" /Library/Logs/DiagnosticReports; do
+              [ -d "$dir" ] || continue
+              find "$dir" -maxdepth 2 -type f -newer "$out/.started" \
+                \( -name 'node*.ips' -o -name 'node*.crash' -o -name 'JetsamEvent*.ips' \) \
+                -exec cp {} "$out/crash-reports/" \; 2>/dev/null || true
+            done
+            vm_stat > "$out/vm_stat.txt" 2>&1 || true
+            sysctl hw.memsize vm.swapusage > "$out/memory.txt" 2>&1 || true
+          else
+            sudo -n dmesg -T 2>/dev/null \
+              | grep -iE 'out of memory|oom|killed process|segfault|traps:' \
+              > "$out/dmesg.txt" || true
+            free -m > "$out/memory.txt" 2>&1 || true
+          fi
+          echo "Crash diagnostics collected:"
+          find "$out" -type f ! -name .started | sort
+          for f in "$out"/node-reports/*.json; do
+            [ -f "$f" ] || continue
+            node -e '
+              const r = require(process.argv[1]), h = r.header || {}, heap = r.javascriptHeap || {}
+              console.log(process.argv[1] + ": " + h.event + " (" + h.trigger + ") pid " + h.processId +
+                " heap used " + heap.usedMemory + " of " + heap.totalMemory +
+                " maxRss " + (r.resourceUsage || {}).maxRss)
+              console.log((r.javascriptStack || {}).message || "")
+            ' "$f" || true
+          done
+          for f in "$out/dmesg.txt" "$out/memory.txt"; do
+            [ -s "$f" ] && { echo "--- $f"; cat "$f"; }
+          done
+          true
+      - name: Upload crash diagnostics
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: crash-diagnostics-${{ matrix.os }}-attempt-${{ github.run_attempt }}
+          path: ci-diagnostics/
+          if-no-files-found: ignore
+          retention-days: 14

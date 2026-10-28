@@ -8,6 +8,10 @@
 //   packages, made by the publisher's own generateManifestV2. None of its files exists.
 // - update-manifest.json is 1.x-last's real published manifest re-stamped by the
 //   publisher's own restampV1, so its macOS target is the real, notarized 1.x-last DMG.
+// - An older update-manifest.json, below the v1 mark 1.x-last's own manifest sets: the real
+//   published manifest of the release before 1.x-last, re-stamped the same way. restampV1
+//   re-stamps the newest release with a universal DMG in the list it is given, so it gets
+//   the list as it stood when that release was the newest.
 //
 // The publisher code is this checkout's scripts/update-manifest.mjs. The code under test,
 // the reader, comes from the installed app and gets only `registry`, which trusts the
@@ -20,11 +24,28 @@ const { pathToFileURL } = require('node:url')
 const REPO_ROOT = path.resolve(__dirname, '..', '..')
 const DAY_MS = 24 * 60 * 60 * 1000
 const VERSION_RE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/
+const STABLE_TAG_RE = /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/
 // The four top-level fields a re-stamp changes (design §5.3); it copies every other one.
 const RESTAMPED_FIELDS = Object.freeze(['expiresAt', 'publishedAt', 'signingKeyId', 'trustedKeyIds'])
 
 function digest(algorithm, text) {
   return createHash(algorithm).update(text).digest('hex')
+}
+
+function compareTags(left, right) {
+  const [a, b] = [left, right].map((tag) => STABLE_TAG_RE.exec(tag).slice(1).map(BigInt))
+  const index = a.findIndex((part, at) => part !== b[at])
+  return index === -1 ? 0 : a[index] < b[index] ? -1 : 1
+}
+
+// The listing as it stood when `tag` was the newest stable release: every later stable
+// release left out, everything else kept for restampV1 to validate.
+function releasesThrough(releases, tag) {
+  return releases.filter((release) => (
+    typeof release?.tag_name !== 'string'
+    || !STABLE_TAG_RE.test(release.tag_name)
+    || compareTags(release.tag_name, tag) <= 0
+  ))
 }
 
 function nextPatch(version) {
@@ -60,18 +81,20 @@ function arm64Evidence(catalog, version) {
 }
 
 /**
- * Signs the rehearsal's two manifests with a fresh scratch key.
+ * Signs the rehearsal's manifests with a fresh scratch key.
  *
  * @param {object} options
  * @param {{ manifest: Buffer, signature: Buffer }} options.published 1.x-last's published
  *   update-manifest.json and its signature
+ * @param {{ manifest: Buffer, signature: Buffer }} options.older the same pair, as the
+ *   release before 1.x-last published it
  * @param {object[]} options.releases GitHub's release listing, as restampV1 reads it
  * @param {object} options.productionRegistry release/update-keys.json, whose original key
  *   signed the published pair
  * @param {string} options.next the version of the arm64-only release both manifests come from
  * @param {Date} [options.now] the clock: both manifests are published at its whole second
  */
-async function prepareManifests({ published, releases, productionRegistry, next, now = new Date() }) {
+async function prepareManifests({ published, older, releases, productionRegistry, next, now = new Date() }) {
   if (typeof next !== 'string' || !VERSION_RE.test(next)) throw new TypeError('next must be an X.Y.Z version')
   if (!(now instanceof Date) || !Number.isFinite(now.getTime())) throw new TypeError('now must be a valid Date')
   const publisher = await import(pathToFileURL(path.join(REPO_ROOT, 'scripts', 'update-manifest.mjs')).href)
@@ -83,6 +106,14 @@ async function prepareManifests({ published, releases, productionRegistry, next,
     registry: production,
   })
   const dmg = lastRelease.targets.find((target) => target.platform === 'darwin')
+  const olderRelease = publisher.verifyManifest({
+    manifestBytes: older.manifest,
+    envelope: older.signature,
+    registry: production,
+  })
+  if (compareTags(olderRelease.tag, lastRelease.tag) >= 0) {
+    throw new Error(`the older manifest describes ${olderRelease.tag}, which is not older than ${lastRelease.tag}`)
+  }
 
   const { publicKey, privateKey } = generateKeyPairSync('ed25519')
   const publicKeySpkiBase64 = publicKey.export({ type: 'spki', format: 'der' }).toString('base64')
@@ -106,26 +137,29 @@ async function prepareManifests({ published, releases, productionRegistry, next,
     publishedAt,
     kind: 'arm64',
   })
-  const restamp = (tag, at) => publisher.restampV1({
-    earlierManifestBytes: published.manifest,
-    earlierSignatureBytes: published.signature,
+  const restamp = (earlier, tag, at, listing) => publisher.restampV1({
+    earlierManifestBytes: earlier.manifest,
+    earlierSignatureBytes: earlier.signature,
     registry: signer,
     newTag: tag,
     publishedAt: at,
-    releases,
+    releases: listing,
   })
-  const v1 = restamp(`v${next}`, publishedAt)
+  const v1 = restamp(published, `v${next}`, publishedAt, releases)
   // The release after `next` re-stamps the same manifest a day later. Its signature beside
   // this release's manifest is the pair a reader gets while a release is being published.
-  const later = restamp(`v${nextPatch(next)}`, new Date(publishedAt.getTime() + DAY_MS))
+  const later = restamp(published, `v${nextPatch(next)}`, new Date(publishedAt.getTime() + DAY_MS), releases)
+  const olderV1 = restamp(older, `v${next}`, publishedAt, releasesThrough(releases, olderRelease.tag))
 
   return Object.freeze({
     registry,
     publishedAt: v1.manifest.publishedAt,
     describes: v1.describes,
+    olderDescribes: olderV1.describes,
     v2: Object.freeze(signed(v2.bytes)),
     v1: Object.freeze(signed(v1.bytes)),
     laterV1Signature: signed(later.bytes).signature,
+    olderV1: Object.freeze(signed(olderV1.bytes)),
   })
 }
 

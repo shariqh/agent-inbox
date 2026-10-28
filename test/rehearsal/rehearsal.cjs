@@ -23,10 +23,12 @@ const { RESTAMPED_FIELDS, nextPatch, prepareManifests, restampDifferences } = re
 const {
   EXPECTED_BUNDLE_ID,
   RELEASE_DOWNLOADS,
+  STAGE_RE,
   TEAM_ID,
   codesignVerifies,
   createLatest,
   createReport,
+  gatekeeper,
   infoPlist,
   runBadV1,
   runInstall,
@@ -40,11 +42,16 @@ const DEFAULT_APP = '/Applications/Agent Inbox.app'
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..')
 const VERSION_RE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/
+const STABLE_TAG_RE = /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/
 const LATEST_DOWNLOADS = 'https://github.com/shariqh/agent-inbox/releases/latest/download'
 const RELEASES_API = 'https://api.github.com/repos/shariqh/agent-inbox/releases'
+const SOURCE_FILES = 'https://raw.githubusercontent.com/shariqh/agent-inbox'
+// 3 marks run 1's install step: the helper has the swap, but only --verify can pass run 1.
+const EXIT = Object.freeze({ pass: 0, fail: 1, refused: 2, handedOff: 3 })
 const VIEWER_ORIGIN = 'http://127.0.0.1:4319/'
 const MANIFEST_MAX_BYTES = 256 * 1024
 const SIGNATURE_MAX_BYTES = 16 * 1024
+const SOURCE_MAX_BYTES = 1024 * 1024
 const PIN_GROUPS = Object.freeze([
   ['rosetta', 'passes `translated` and `hostArch`, hides Review release for "apple-silicon" and has the Rosetta notification'],
   ['macInstaller', 'registers the macOS installer with the options run 1 uses'],
@@ -67,15 +74,19 @@ const USAGE = `Usage (docs/macos-release.md has the full instructions):
 Runs:
   --run 2 | 3 | 2,3     2: the app is 1.x-last itself; 3: a bad or stale update-manifest.json
   --run 1 --older-app <app> --test-account
-                        install 1.x-last over a scratch copy of an older app; then the app reopens
-  --run 1 --verify      after run 1: check the swapped app and the app that opened
+                        run 1's install step, in a standard test account: install 1.x-last over a
+                        scratch copy of an older app, which then reopens; never a pass by itself
+  --run 1 --verify      run 1's result: check the swapped app and the app that opened
 
 Options:
   --work <folder>       scratch userData, downloads and reports (created if missing)
   --app <path>          the installed 1.x-last app (default: ${DEFAULT_APP})
   --last <X.Y.Z>        1.x-last's version (default: ${DEFAULT_LAST})
   --next <X.Y.Z>        the arm64-only release the scratch manifests describe (default: the next major)
-  --from <X.Y.Z>        the older version run 3 runs as (default: one step below --last)`
+  --from <X.Y.Z>        the older version run 3 runs as (default: one step below --last)
+
+Exit codes: 0 every check passed, 1 a check failed, 2 refused to start, 3 run 1's install
+step handed the swap to the helper (not a pass: run --run 1 --verify next)`
 
 class Refusal extends Error {}
 
@@ -291,10 +302,17 @@ async function releaseListing() {
   throw new Error('GitHub lists more than 1000 releases')
 }
 
-function preflight(report, { app, modules }) {
+// Nothing from the app is loaded until it passes both: its code signature and the
+// Gatekeeper assessment of a notarized Developer ID build, as the published app has.
+function signatureChecks(report, app) {
   report.heading('Preflight')
   const signature = codesignVerifies(app.path)
-  report.check(`the installed ${app.version} app's signature verifies for team ${TEAM_ID}, so its updater files are the release's`, signature.ok, signature.output)
+  report.check(`the installed ${app.version} app's signature verifies for team ${TEAM_ID}`, signature.ok, signature.output)
+  report.same('Gatekeeper accepts it as notarized', gatekeeper(app.path), { ok: true, source: 'Notarized Developer ID' })
+  return report.totals.fail === 0
+}
+
+function wiringChecks(report, modules) {
   for (const name of UPDATER_FILES) {
     report.note(`loaded ${name}.cjs  sha256 ${sha256(fs.readFileSync(path.join(modules.directory, `${name}.cjs`))).slice(0, 16)}`)
   }
@@ -322,36 +340,83 @@ function preflight(report, { app, modules }) {
   return urls
 }
 
-async function scratchManifests(report, { app, options, modules }) {
-  report.heading('Manifests')
-  const releases = await releaseListing()
-  const tag = `v${options.last}`
-  const listed = releases.find((release) => release.tag_name === tag)
-  const published = {
+// The newest published release before `last` with a universal DMG and an
+// update-manifest.json pair: the one 1.x-last's manifest replaced.
+function releaseBefore(releases, last) {
+  let found = null
+  for (const release of releases) {
+    if (release.draft !== false || release.prerelease !== false || !STABLE_TAG_RE.test(release.tag_name)) continue
+    const version = release.tag_name.slice(1)
+    if (compareVersions(version, last) >= 0 || (found !== null && compareVersions(version, found.tag_name.slice(1)) <= 0)) continue
+    const names = new Set((release.assets ?? []).map((asset) => asset.name))
+    if (['update-manifest.json', 'update-manifest.json.sig', `Agent-Inbox-${release.tag_name}-universal.dmg`].every((name) => names.has(name))) {
+      found = release
+    }
+  }
+  return found
+}
+
+// A release's published update-manifest.json pair, checked against GitHub's listing and
+// verified under the installed app's own keys.
+async function publishedPair(report, { release, tag, keys, modules }) {
+  const pair = {
     manifest: await download(`${RELEASE_DOWNLOADS}/${tag}/update-manifest.json`, MANIFEST_MAX_BYTES),
     signature: await download(`${RELEASE_DOWNLOADS}/${tag}/update-manifest.json.sig`, SIGNATURE_MAX_BYTES),
   }
   const asListed = (name, bytes) => {
-    const asset = listed?.assets?.find((candidate) => candidate.name === name)
+    const asset = release?.assets?.find((candidate) => candidate.name === name)
     return asset?.size === bytes.length && (!asset.digest || asset.digest === `sha256:${sha256(bytes)}`)
   }
   report.check(
     `${tag}'s published update-manifest.json and its signature are the files GitHub lists`,
-    asListed('update-manifest.json', published.manifest) && asListed('update-manifest.json.sig', published.signature),
-    listed ? 'size or SHA-256 differs from the release listing' : `GitHub lists no ${tag} release`,
+    asListed('update-manifest.json', pair.manifest) && asListed('update-manifest.json.sig', pair.signature),
+    release ? 'size or SHA-256 differs from the release listing' : `GitHub lists no ${tag} release`,
   )
-  const bundledKeys = modules.manifest.parseRegistry(fs.readFileSync(path.join(app.path, 'Contents', 'Resources', 'app', 'release', 'update-keys.json')))
-  let lastRelease = null
+  let verified = null
   try {
-    lastRelease = modules.manifest.verifyManifest({ manifestBytes: published.manifest, envelope: published.signature, registry: bundledKeys })
+    verified = modules.manifest.verifyManifest({ manifestBytes: pair.manifest, envelope: pair.signature, registry: keys })
   } catch (error) {
     report.note(error.message)
   }
-  report.check(`they verify under the installed app's own keys, as ${tag}`, lastRelease?.tag === tag)
-  if (lastRelease === null) return null
+  report.check(`  and verify under the installed app's own keys, as ${tag}`, verified?.tag === tag)
+  return verified === null ? null : { pair, manifest: verified }
+}
+
+// The updater files under test and main.cjs, compared byte for byte with the source commit
+// the release's signed manifest names. Returns the files that differ.
+async function sourceDifferences(modules, commit) {
+  const differ = []
+  for (const name of [...UPDATER_FILES, 'main']) {
+    const installed = fs.readFileSync(path.join(modules.directory, `${name}.cjs`))
+    const source = await download(`${SOURCE_FILES}/${commit}/electron/${name}.cjs`, SOURCE_MAX_BYTES)
+    if (!installed.equals(source)) differ.push(`${name}.cjs`)
+  }
+  return differ
+}
+
+async function scratchManifests(report, { app, options, modules }) {
+  report.heading('Manifests')
+  const releases = await releaseListing()
+  const tag = `v${options.last}`
+  const keys = modules.manifest.parseRegistry(fs.readFileSync(path.join(app.path, 'Contents', 'Resources', 'app', 'release', 'update-keys.json')))
+  const last = await publishedPair(report, { release: releases.find((release) => release.tag_name === tag), tag, keys, modules })
+  if (last === null) return null
+  const commit = last.manifest.source.commit
+  report.same(
+    `the installed updater files and main.cjs are ${tag}'s source, commit ${commit.slice(0, 12)}, which its signed manifest names`,
+    await sourceDifferences(modules, commit),
+    [],
+  )
+  const before = releaseBefore(releases, options.last)
+  if (before === null) {
+    report.check(`GitHub lists a release before ${tag} with a universal DMG and update-manifest.json`, false)
+    return null
+  }
+  const older = await publishedPair(report, { release: before, tag: before.tag_name, keys, modules })
+  if (older === null) return null
 
   const productionRegistry = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'release', 'update-keys.json'), 'utf8'))
-  const manifests = await prepareManifests({ published, releases, productionRegistry, next: options.next })
+  const manifests = await prepareManifests({ published: last.pair, older: older.pair, releases, productionRegistry, next: options.next })
   report.note(`scratch key ${manifests.registry.signingKeyId}, made for this run; both manifests published at ${manifests.publishedAt}`)
   const now = new Date()
   let v2 = null
@@ -369,14 +434,25 @@ async function scratchManifests(report, { app, options, modules }) {
   )
   report.same(
     `update-manifest.json re-stamps ${tag}'s, changing only ${RESTAMPED_FIELDS.join(', ')}`,
-    restampDifferences(published.manifest, manifests.v1.bytes),
+    restampDifferences(last.pair.manifest, manifests.v1.bytes),
     [...RESTAMPED_FIELDS],
   )
-  const lastDmg = lastRelease.targets.find((target) => target.platform === 'darwin')
+  const lastDmg = last.manifest.targets.find((target) => target.platform === 'darwin')
   report.same(
     `it verifies with the scratch key and names the real, notarized ${lastDmg.filename}`,
     v1?.targets.find((target) => target.platform === 'darwin'),
     lastDmg,
+  )
+  let olderV1 = null
+  try {
+    olderV1 = modules.manifest.verifyManifest({ manifestBytes: manifests.olderV1.bytes, envelope: manifests.olderV1.signature, registry: manifests.registry, now })
+  } catch (error) {
+    report.note(error.message)
+  }
+  report.same(
+    `run 3's older update-manifest.json re-stamps ${before.tag_name}'s the same way, from the release list cut at ${before.tag_name}, and verifies with the scratch key`,
+    { tag: olderV1?.tag, changed: restampDifferences(older.pair.manifest, manifests.olderV1.bytes) },
+    { tag: before.tag_name, changed: [...RESTAMPED_FIELDS] },
   )
   return { manifests, lastDmg }
 }
@@ -399,6 +475,10 @@ async function olderAppFor(options, app, host) {
   if (!options.testAccount) {
     refuse('run 1 installs 1.x-last and opens it in this user account, which then uses its ~/.agent-inbox: run it in a test account and pass --test-account')
   }
+  const groups = capture('/usr/bin/id', ['-Gn'])
+  if (groups === null || groups.split(/\s+/).includes('admin')) {
+    refuse('this account is an administrator (or `id -Gn` did not answer): run 1 needs a standard test account (docs/macos-release.md)')
+  }
   if (!options.olderApp) refuse('run 1 needs --older-app: a scratch copy of an older Agent Inbox.app (docs/macos-release.md)')
   const input = path.resolve(options.olderApp)
   let stat
@@ -419,10 +499,40 @@ async function olderAppFor(options, app, host) {
   if (versionParts(olderVersion) === null || compareVersions(olderVersion, options.last) >= 0) {
     refuse(`--older-app is ${olderVersion}, which is not older than ${options.last}: make a fresh copy of an older release`)
   }
+  // An earlier attempt's stage folder would hold a second Agent Inbox.app.previous.
+  const leftovers = fs.readdirSync(path.dirname(olderApp)).filter((name) => STAGE_RE.test(name))
+  if (leftovers.length > 0) {
+    refuse(`delete ${leftovers.map((name) => path.join(path.dirname(olderApp), name)).join(', ')} first: it holds an earlier attempt's copy`)
+  }
   if (await viewerAnswers()) {
     refuse(`an Agent Inbox viewer already answers on ${VIEWER_ORIGIN}: quit Agent Inbox in every account on this Mac, because the reopened app would use it`)
   }
   return { olderApp, olderVersion }
+}
+
+// The Summary block and the exit code. Only checks that all passed make a PASS. Run 1's
+// install step never does: it hands the swap to the helper, and only --run 1 --verify can
+// pass run 1.
+function summarize(report, hostLabel, reason) {
+  const lines = ['', 'Summary']
+  if (reason) lines.push(reason)
+  const outcome = (run) => (run.fail > 0 ? 'FAIL' : run.handedOff ? 'HANDED OFF' : 'PASS')
+  for (const run of report.runs) lines.push(`${run.name}: ${outcome(run)} (${run.pass} passed, ${run.fail} failed)`)
+  const on = `on ${hostLabel ?? 'this host'}`
+  if (report.totals.fail > 0 || report.runs.length === 0) return { lines: [...lines, `Result: FAIL ${on}`], exitCode: EXIT.fail }
+  if (report.runs.some((run) => run.handedOff)) {
+    return { lines: [...lines, `Result: HANDED OFF, not a pass until --run 1 --verify passes (${on})`], exitCode: EXIT.handedOff }
+  }
+  return { lines: [...lines, `Result: PASS ${on}`], exitCode: EXIT.pass }
+}
+
+function readHandoff(file) {
+  try {
+    const handoff = JSON.parse(fs.readFileSync(file, 'utf8'))
+    return typeof handoff?.runDir === 'string' && typeof handoff.attemptDirectory === 'string' ? handoff : null
+  } catch {
+    return null
+  }
 }
 
 function timestamp() {
@@ -439,46 +549,56 @@ async function main(argv) {
   let options
   let host
   let reportPath = null
-  let exitCode = 0
+  const finish = (reason) => {
+    const summary = summarize(report, host?.label, reason)
+    for (const line of summary.lines) write(line)
+    return summary.exitCode
+  }
   try {
     options = parseOptions(argv)
     if (options.help) {
       write(USAGE)
-      return 0
+      return EXIT.pass
     }
     const app = inspectApp(options)
     host = hostFacts()
+    const commit = checkoutCommit()
+    if (commit === null) {
+      refuse('run the harness from a git clone or worktree of this repository, so its report names the commit that ran (docs/macos-release.md)')
+    }
     if (options.work === app.path || options.work.startsWith(`${app.path}/`)) refuse('--work must be outside the installed app')
     fs.mkdirSync(options.work, { recursive: true, mode: 0o700 })
     const stamp = timestamp()
     reportPath = path.join(options.work, `report-${stamp}.txt`)
-    const modules = loadModules(app.path)
-    const commit = checkoutCommit()
     write(`Rehearsal of 1.x-last's update path (#344), ${new Date().toISOString()}`)
     write(`1.x-last: ${app.version}, ${app.path} (Electron ${process.versions.electron}, Node ${process.version})`)
     write(`Host: ${host.label}; ${host.model ?? 'unknown model'}, ${host.cpu ?? 'unknown CPU'}, macOS ${host.macos}`)
-    write(`Harness: ${commit ?? 'unknown commit'}; work folder ${options.work}`)
+    write(`Harness: ${commit}; work folder ${options.work}`)
     const handoffPath = path.join(options.work, 'run-1.json')
 
-    if (options.runs[0] === 1 && options.verify) {
-      let handoff
-      try {
-        handoff = JSON.parse(fs.readFileSync(handoffPath, 'utf8'))
-      } catch {
-        refuse(`no run 1 to verify in ${options.work}: run --run 1 first`)
-      }
+    let handoff = null
+    if (options.verify) {
+      handoff = readHandoff(handoffPath)
+      if (handoff === null) refuse(`no run 1 to verify in ${options.work}: run its install step first`)
+    }
+    const older = options.runs[0] === 1 && !options.verify ? await olderAppFor(options, app, host) : null
+    if (older) write(`Run 1 replaces ${older.olderApp} (${older.olderVersion}) and opens it in this account.`)
+    if (!signatureChecks(report, app)) {
+      return finish('Preflight failed: nothing from the app was loaded, and no run started.')
+    }
+    const modules = loadModules(app.path)
+
+    if (handoff !== null) {
       report.heading(`Run 1, after the restart: ${handoff.from} to ${handoff.to}`)
       report.beginRun('Run 1 --verify')
       await verifyInstall({ report, modules }, handoff)
-      return summarize(report, host)
+      return finish()
     }
 
-    const older = options.runs[0] === 1 ? await olderAppFor(options, app, host) : null
-    if (older) write(`Run 1 replaces ${older.olderApp} (${older.olderVersion}) and opens it in this account.`)
-    const urls = preflight(report, { app, modules })
-    if (report.totals.fail > 0) return summarize(report, host, 'Preflight failed: no run started.')
+    const urls = wiringChecks(report, modules)
+    if (report.totals.fail > 0) return finish('Preflight failed: no run started.')
     const prepared = await scratchManifests(report, { app, options, modules })
-    if (prepared === null || report.totals.fail > 0) return summarize(report, host, 'The scratch manifests are not right: no run started.')
+    if (prepared === null || report.totals.fail > 0) return finish('The scratch manifests are not right: no run started.')
 
     const latest = createLatest({ urls, scratchRelease: `${RELEASE_DOWNLOADS}/v${options.next}/`, fetchImpl: fetch })
     const context = (name) => ({
@@ -496,15 +616,16 @@ async function main(argv) {
       runDir: fs.mkdtempSync(path.join(options.work, `${name}-${stamp}-`)),
     })
     if (older) {
-      report.heading(`Run 1: ${older.olderVersion}, older than 1.x-last, installs ${options.last}`)
-      report.beginRun('Run 1')
-      const handoff = await runInstall(context('run-1'), older)
-      if (handoff !== null) {
-        fs.writeFileSync(handoffPath, `${JSON.stringify(handoff, null, 2)}\n`)
+      report.heading(`Run 1, install step: ${older.olderVersion}, older than 1.x-last, installs ${options.last}`)
+      report.beginRun('Run 1 (install step)')
+      const handed = await runInstall(context('run-1'), older)
+      if (handed !== null) {
+        fs.writeFileSync(handoffPath, `${JSON.stringify(handed, null, 2)}\n`)
+        report.handOff()
         report.note(`The helper waits for this process (${process.pid}) to exit, swaps ${older.olderApp} and opens it.`)
         report.note('Once the app has opened, run the same command with --run 1 --verify (no --older-app needed).')
       }
-      return summarize(report, host)
+      return finish()
     }
     for (const run of options.runs) {
       if (run === 2) {
@@ -517,35 +638,26 @@ async function main(argv) {
         await runBadV1(context('run-3'))
       }
     }
-    return summarize(report, host)
+    return finish()
   } catch (error) {
     if (error instanceof Refusal) {
       write(`REFUSED  ${error.message}`)
       if (options === undefined) write(`\n${USAGE}`)
-      exitCode = 2
-      return exitCode
+      return EXIT.refused
     }
     report.check('the rehearsal finished without an unexpected error', false, error?.stack ?? String(error))
-    return summarize(report, host)
+    return finish()
   } finally {
     if (reportPath !== null) {
       fs.writeFileSync(reportPath, `${lines.join('\n')}\n`)
       process.stdout.write(`\nReport: ${reportPath}\n`)
     }
   }
+}
 
-  function summarize(summaryReport, summaryHost, reason) {
-    write('')
-    write('Summary')
-    if (reason) write(reason)
-    for (const run of summaryReport.runs) {
-      write(`${run.name}: ${run.fail === 0 ? 'PASS' : 'FAIL'} (${run.pass} passed, ${run.fail} failed)`)
-    }
-    const passed = summaryReport.totals.fail === 0 && summaryReport.runs.length > 0
-    write(`Result: ${passed ? 'PASS' : 'FAIL'} on ${summaryHost?.label ?? 'this host'}`)
-    exitCode = passed ? 0 : 1
-    return exitCode
-  }
+module.exports = {
+  EXIT,
+  summarize,
 }
 
 if (require.main === module) {

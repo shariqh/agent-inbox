@@ -49,7 +49,11 @@ function createReport(write) {
       write(text)
     },
     beginRun(name) {
-      runs.push({ name, pass: 0, fail: 0 })
+      runs.push({ name, pass: 0, fail: 0, handedOff: false })
+    },
+    // Run 1's install step ends here: the helper has the swap, and only --verify can pass.
+    handOff() {
+      if (runs.length > 0) runs[runs.length - 1].handedOff = true
     },
     check(name, ok, detail) {
       const key = ok ? 'pass' : 'fail'
@@ -261,6 +265,35 @@ function megabytes(bytes) {
   return (bytes / 1e6).toFixed(1)
 }
 
+function twice(items) {
+  return [...items, ...items]
+}
+
+// Two scheduled checks, as the daily timer runs them, and what they did: the checks that
+// really ran, the notifications they sent and the requests they made.
+async function scheduledChecks(ctx, app) {
+  ctx.latest.take()
+  const checked = app.seen.checks.length
+  const notified = app.seen.notifications.length
+  await app.controller.runScheduledCheck()
+  await app.controller.runScheduledCheck()
+  return {
+    checks: app.seen.checks.slice(checked).map(({ result }) => ({ status: result?.status, blocked: result?.available?.blocked })),
+    notifications: app.seen.notifications
+      .slice(notified)
+      .map(({ version, downloadable, installable, rosetta }) => ({ version, downloadable, installable, rosetta })),
+    requests: ctx.latest.take(),
+  }
+}
+
+function readJson(file) {
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf8'))
+  } catch {
+    return null
+  }
+}
+
 // --- Run 2 ---------------------------------------------------------------------------------
 
 /** Run 2: the app is 1.x-last itself, so update-manifest.json offers nothing newer. */
@@ -326,26 +359,28 @@ async function runOnLast(ctx) {
       { refusal: 'not-feasible', workDirectory: false },
     )
 
-    // Scheduled checks, as the daily timer runs them, decide the notification.
+    // Scheduled checks decide the notification. Both must really run: with none, "no
+    // notification" would prove nothing.
     await app.preferences.setAutomatic(true)
-    ctx.latest.take()
-    await app.controller.runScheduledCheck()
-    await app.controller.runScheduledCheck()
-    const scheduled = ctx.latest.take()
-    const notifications = app.seen.notifications.map(({ version, downloadable, installable, rosetta }) => ({ version, downloadable, installable, rosetta }))
+    const scheduled = await scheduledChecks(ctx, app)
+    report.same(
+      `two scheduled checks run, each offering ${next} blocked "${blocked}"`,
+      scheduled.checks,
+      twice([{ status: 'available', blocked }]),
+    )
     if (blocked === 'apple-silicon') {
-      report.same('two scheduled checks send no notification: an Intel Mac can do nothing about it', notifications, [])
+      report.same('and send no notification: an Intel Mac can do nothing about it', scheduled.notifications, [])
     } else {
       report.same(
-        'two scheduled checks send one notification for the version, with the Rosetta copy',
-        notifications,
+        'and send one notification for the version, with the Rosetta copy',
+        scheduled.notifications,
         [{ version: next, downloadable: false, installable: false, rosetta: true }],
       )
     }
     report.same(
-      'and still request nothing but the manifests',
-      scheduled.filter((request) => request.answer !== 'scratch'),
-      [],
+      'and request update-manifest-v2.json, then update-manifest.json, twice, and nothing else',
+      scheduled.requests,
+      twice([...manifestUrls(ctx, 'v2'), ...manifestUrls(ctx, 'v1')]).map((url) => ({ url, answer: 'scratch' })),
     )
   } finally {
     app.controller.dispose()
@@ -373,18 +408,30 @@ async function nativeOnLast(ctx, app, { state, result, requests }) {
   )
   report.same('only the v2 mark is raised', await app.trustState.read(), { highestVerifiedVersion: null, highestVerifiedVersionV2: next })
   await app.preferences.setAutomatic(true)
-  await app.controller.runScheduledCheck()
-  await app.controller.runScheduledCheck()
+  const scheduled = await scheduledChecks(ctx, app)
+  report.same(`two scheduled checks run, each offering ${next}`, scheduled.checks, twice([{ status: 'available', blocked: undefined }]))
   report.same(
-    'two scheduled checks send one ordinary notification',
-    app.seen.notifications.map(({ version, installable, rosetta }) => ({ version, installable, rosetta })),
-    [{ version: next, installable: true, rosetta: undefined }],
+    'and send one ordinary notification',
+    scheduled.notifications,
+    [{ version: next, downloadable: true, installable: true, rosetta: undefined }],
+  )
+  report.same(
+    'and request only update-manifest-v2.json, twice',
+    scheduled.requests,
+    twice(manifestUrls(ctx, 'v2')).map((url) => ({ url, answer: 'scratch' })),
   )
 }
 
 // --- Run 3 ---------------------------------------------------------------------------------
 
-/** Run 3: a missing, mixed or stale update-manifest.json never costs a verified download. */
+/**
+ * Run 3: a missing, mixed or stale update-manifest.json never costs a verified download.
+ * Stale is a v1 manifest below the v1 mark, tested two ways: the real manifest of the
+ * release before 1.x-last, which restampV1 re-stamps from the release list cut at that
+ * release (it re-stamps the newest universal release in the list it gets), below the mark
+ * 1.x-last's manifest sets; and a mark raised above 1.x-last itself, which reaches the same
+ * comparison, more strictly.
+ */
 async function runBadV1(ctx) {
   const { report, host, manifests, from, last, next } = ctx
   const target = scratchTarget(ctx.runDir)
@@ -393,12 +440,14 @@ async function runBadV1(ctx) {
     ['a missing v1 pair', 'missing', { v2: manifests.v2, v1: null }],
     ['a v1 manifest and a signature from different releases', 'mixed', { v2: manifests.v2, v1: { bytes: manifests.v1.bytes, signature: manifests.laterV1Signature } }],
   ]
+  const older = { v2: manifests.v2, v1: manifests.olderV1 }
+  const olderLabel = `${manifests.olderDescribes}'s real update-manifest.json, below the v1 mark of ${last}`
   const above = ctx.markAbove
   const a = buildController(ctx, { currentVersion: from, userData: path.join(ctx.runDir, 'userData-a'), bundlePath: target })
   try {
     await a.controller.rendererReady()
     if (host.arm64) {
-      await nativeBadV1(ctx, a, { good, bad, above })
+      await nativeBadV1(ctx, a, { good, bad, older, olderLabel, above })
       return
     }
     for (const [label, cause, served] of bad) {
@@ -449,6 +498,14 @@ async function runBadV1(ctx) {
       report.check('  and the file still verifies', await stillVerifies(a, record))
     }
 
+    ;({ state, result } = await check(ctx, a, older))
+    report.same(
+      `${olderLabel}: the check returns "stale" and keeps the verified download`,
+      { result: result?.status, status: state.status, kept: sameRecord(a.controller.getVerifiedArtifact(), record) },
+      { result: 'stale', status: 'verified', kept: true },
+    )
+    report.check('  and the file still verifies', await stillVerifies(a, record))
+
     await a.trustState.recordVerifiedVersion(above, 'v1')
     ;({ state, result } = await check(ctx, a, good))
     report.same(
@@ -463,11 +520,23 @@ async function runBadV1(ctx) {
 
   const b = buildController(ctx, { currentVersion: from, userData: path.join(ctx.runDir, 'userData-b'), bundlePath: target })
   try {
-    await b.trustState.recordVerifiedVersion(above, 'v1')
     await b.controller.rendererReady()
-    const { state, result } = await check(ctx, b, good)
+    let { state, result } = await check(ctx, b, good)
     report.same(
-      `with no download, a v1 mark of ${above}: the check ends "stale", offering nothing`,
+      `with no download: the good pair offers ${last}, which sets the v1 mark`,
+      { status: state.status, version: state.available?.version, mark: (await b.trustState.read()).highestVerifiedVersion },
+      { status: 'available', version: last, mark: last },
+    )
+    ;({ state, result } = await check(ctx, b, older))
+    report.same(
+      `  ${olderLabel}: the check ends "stale", offering nothing`,
+      { result: result?.status, status: state.status, available: state.available },
+      { result: 'stale', status: 'stale', available: undefined },
+    )
+    await b.trustState.recordVerifiedVersion(above, 'v1')
+    ;({ state, result } = await check(ctx, b, good))
+    report.same(
+      `  a v1 mark of ${above}: the check ends "stale", offering nothing`,
       { result: result?.status, status: state.status, available: state.available },
       { result: 'stale', status: 'stale', available: undefined },
     )
@@ -479,9 +548,9 @@ async function runBadV1(ctx) {
 
 // On an arm64 process v2's arm64 DMG is offered directly, so update-manifest.json is never
 // read and no bad v1 matters: a control.
-async function nativeBadV1(ctx, app, { good, bad, above }) {
+async function nativeBadV1(ctx, app, { good, bad, older, olderLabel, above }) {
   const { report, next } = ctx
-  for (const [label, , served] of bad) {
+  for (const [label, , served] of [...bad, [olderLabel, 'stale', older]]) {
     const { state, result, requests } = await check(ctx, app, served)
     report.same(
       `${label}: still offered ${next} from v2, without reading update-manifest.json`,
@@ -551,6 +620,7 @@ async function runInstall(ctx, { olderApp, olderVersion }) {
     olderApp,
     from: olderVersion,
     to: last,
+    runDir: ctx.runDir,
     attemptDirectory: path.join(userData, 'update-install'),
     pid: process.pid,
     at: new Date().toISOString(),
@@ -637,11 +707,20 @@ function previousCopies(olderApp) {
 /** Run 1, second step: the helper's report, the swapped app and the app it opened. */
 async function verifyInstall(ctx, handoff) {
   const { report, modules } = ctx
-  const { olderApp, from, to, attemptDirectory } = handoff
-  const resultPath = path.join(attemptDirectory, 'last-attempt.result')
-  report.note(`waiting up to ${HELPER_RESULT_WAIT_MS / 1000} s for the helper's result`)
-  await waitFor(() => fs.existsSync(resultPath), HELPER_RESULT_WAIT_MS)
-  const attempt = await modules.install.createInstallAttemptStore({ directory: attemptDirectory }).take()
+  const { olderApp, from, to, runDir, attemptDirectory } = handoff
+  // take() deletes the helper's record and result, so the first --verify keeps them here
+  // and a later one, after a transient failure, reads them back.
+  const savedPath = path.join(runDir, 'helper-result.json')
+  let attempt = readJson(savedPath)
+  if (attempt !== null) {
+    report.note(`the helper's result, as an earlier --verify saved it: ${savedPath}`)
+  } else {
+    const resultPath = path.join(attemptDirectory, 'last-attempt.result')
+    report.note(`waiting up to ${HELPER_RESULT_WAIT_MS / 1000} s for the helper's result`)
+    await waitFor(() => fs.existsSync(resultPath), HELPER_RESULT_WAIT_MS)
+    attempt = await modules.install.createInstallAttemptStore({ directory: attemptDirectory }).take()
+    if (attempt !== null) fs.writeFileSync(savedPath, `${JSON.stringify(attempt, null, 2)}\n`)
+  }
   report.same(
     'the helper reports the swap done (exit 0)',
     attempt && { from: attempt.from, to: attempt.to, exitCode: attempt.exitCode },
@@ -673,12 +752,12 @@ async function verifyInstall(ctx, handoff) {
 module.exports = {
   EXPECTED_BUNDLE_ID,
   RELEASE_DOWNLOADS,
+  STAGE_RE,
   TEAM_ID,
-  CODE_REQUIREMENT,
-  VIEWER_VERSION_URL,
   codesignVerifies,
   createLatest,
   createReport,
+  gatekeeper,
   infoPlist,
   runBadV1,
   runInstall,

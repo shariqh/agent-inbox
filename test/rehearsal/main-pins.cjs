@@ -30,6 +30,9 @@ const SLICES = Object.freeze({
   initializeUpdateController: (main) => between(main, 'function initializeUpdateController()', 'async function startOwnServer()'),
   'the update-open-release handler': (main) => after(main, "ipcMain.handle('agent-inbox:update-open-release'", '\n})\n'),
   'the update notifier': (main) => between(SLICES.initializeUpdateController(main), 'notifier: (', 'emit: sendUpdateState'),
+  // The macOS installer's options alone: appImageInstallers() and the checker pass some of
+  // the same lines.
+  updateInstallers: (main) => after(main, 'function updateInstallers()', '\n}\n'),
   spawnedViewerPid: (main) => after(main, 'function spawnedViewerPid()', '\n}'),
 })
 
@@ -38,6 +41,7 @@ const matches = (slice, pattern) => Object.freeze({ slice, matches: pattern })
 const before = (slice, first, second) => Object.freeze({ slice, before: Object.freeze([first, second]) })
 
 const INITIALIZER = 'initializeUpdateController'
+const MAC_INSTALLER = 'updateInstallers'
 
 const MAIN_PINS = Object.freeze({
   // #343: the wiring behind the harness's `translated`, `hostArch`, Review release and
@@ -55,17 +59,17 @@ const MAIN_PINS = Object.freeze({
   // The macOS installer main registers, which run 1 builds the same way on a scratch app.
   macInstaller: Object.freeze([
     contains('main.cjs', "const { bundlePathFromExecPath, createMacInstaller } = require('./update-install-macos.cjs')"),
-    contains(INITIALIZER, "if (process.platform !== 'darwin' || !viewerOwned) return {}"),
     contains(INITIALIZER, 'installers: updateInstallers(),'),
-    contains(INITIALIZER, 'bundlePath: bundlePathFromExecPath(process.execPath),'),
-    contains(INITIALIZER, "expectedBundleId: 'io.github.shariqh.agent-inbox',"),
-    contains(INITIALIZER, "teamId: 'VVR2DKR923',"),
-    contains(INITIALIZER, 'systemVersion: process.getSystemVersion(),'),
-    contains(INITIALIZER, 'pid: process.pid,'),
-    contains(INITIALIZER, 'viewerPid: spawnedViewerPid,'),
-    contains(INITIALIZER, 'uid: process.getuid(),'),
-    contains(INITIALIZER, 'isPackaged: app.isPackaged,'),
-    contains(INITIALIZER, "workDirectory: path.join(app.getPath('userData'), 'update-install'),"),
+    contains(MAC_INSTALLER, "if (process.platform !== 'darwin' || !viewerOwned) return {}"),
+    contains(MAC_INSTALLER, 'bundlePath: bundlePathFromExecPath(process.execPath),'),
+    contains(MAC_INSTALLER, "expectedBundleId: 'io.github.shariqh.agent-inbox',"),
+    contains(MAC_INSTALLER, "teamId: 'VVR2DKR923',"),
+    contains(MAC_INSTALLER, 'systemVersion: process.getSystemVersion(),'),
+    contains(MAC_INSTALLER, 'pid: process.pid,'),
+    contains(MAC_INSTALLER, 'viewerPid: spawnedViewerPid,'),
+    contains(MAC_INSTALLER, 'uid: process.getuid(),'),
+    contains(MAC_INSTALLER, 'isPackaged: app.isPackaged,'),
+    contains(MAC_INSTALLER, "workDirectory: path.join(app.getPath('userData'), 'update-install'),"),
     contains(INITIALIZER, '`Version ${version} is available. Download and install it from Settings → Updates.`'),
     contains('main.cjs', "const { createInstallAttemptStore } = require('./update-install.cjs')"),
     contains(INITIALIZER, "attemptStore: createInstallAttemptStore({ directory: path.join(app.getPath('userData'), 'update-install') }),"),

@@ -16,8 +16,7 @@ import {
 import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { dirname, join, relative, resolve } from 'node:path'
-import { describe, expect, it, vi } from 'vitest'
-import { makeUniversalApp } from '@electron/universal'
+import { describe, expect, it } from 'vitest'
 import { copyElectronNotices } from '../scripts/build-thin-app.mjs'
 import {
   extractTreeArchive,
@@ -27,12 +26,12 @@ import {
 import {
   MacReleaseError,
   RUNTIME_MACHO_FILES,
-  UNIVERSAL_RUNTIME_GLOB,
   assertPublishedEntries,
   releaseDisposition,
   signPortableRuntime,
   validateSigningOptions,
-  verifyThinReports,
+  verifyMachOArchitectures,
+  verifyThinReport,
 } from '../scripts/assemble-macos-release.mjs'
 import {
   assertNativeRuntimeKey,
@@ -46,7 +45,6 @@ import { assertRuntimeSourceCommit } from '../scripts/runtime-provenance.mjs'
 import { resolveSourceProvenance } from '../scripts/source-provenance.mjs'
 import { RUNTIME_TARGETS } from '../scripts/runtime-targets.mjs'
 import { verifyPackagedUpdateTrust } from '../scripts/package-update-trust.mjs'
-import { assertEnglishOnlyElectronLocales, pruneElectronLocales } from '../scripts/prune-electron-locales.mjs'
 import { scratchDir } from './scratch.js'
 
 const root = resolve(process.cwd())
@@ -296,7 +294,7 @@ describe('native architecture release stages', () => {
     expect(existsSync(join(destination, 'hardlink-root'))).toBe(false)
   })
 
-  it('prunes the app copy, architecture-only rebuild caches included, before universal merging (#291)', () => {
+  it('prunes the app copy, architecture-only rebuild caches included, before packaging (#291)', () => {
     const source = readFileSync(join(root, 'scripts', 'build-thin-app.mjs'), 'utf8')
     expect(source).toContain("export function pruneAppNodeModules(stageRoot) {")
     expect(source).toContain('return pruneNodeModules(stageRoot)')
@@ -365,7 +363,7 @@ describe('native architecture release stages', () => {
     }
   })
 
-  it('refuses another Electron locale, or a missing English one, in every thin-app, universal and final-DMG gate (#292)', () => {
+  it('refuses another Electron locale, or a missing English one, in every thin-app, assembly and final-DMG gate (#292)', () => {
     for (const [file, gate] of [
       ['build-thin-app.mjs', "assertEnglishOnlyElectronLocales(app, 'darwin', "],
       ['verify-linux-thin-app.mjs', "assertEnglishOnlyElectronLocales(appRoot, 'linux', "],
@@ -458,134 +456,64 @@ describe('native architecture release stages', () => {
   })
 })
 
-describe('universal finalization contract', () => {
-  it('uses the ecosystem merger while preserving both keyed runtime trees as thin payloads', () => {
-    expect(UNIVERSAL_RUNTIME_GLOB).toBe('Contents/Resources/app/runtime/**')
+describe('macOS finalization contract', () => {
+  it('finalizes a copy of the one Apple silicon thin app, with no universal merge (#296)', () => {
     const source = readFileSync(join(root, 'scripts', 'assemble-macos-release.mjs'), 'utf8')
-    expect(source).toContain('makeUniversalApp({')
-    expect(source).toContain('x64ArchFiles: UNIVERSAL_RUNTIME_GLOB')
+    expect(source).not.toContain('@electron/universal')
+    expect(source).toContain("execFileSync('/usr/bin/ditto', [resolve(arm64App), app], {")
+    expect(source).toContain('verifyMachOArchitectures(app, appResources, inputs)')
     expect(source).toContain("RUNTIME_KEYS.map")
     expect(source).not.toContain("'--force', '--deep'")
   })
 
-  it.skipIf(process.platform !== 'darwin')('behaviorally preserves keyed thin runtimes while merging app Mach-Os', async () => {
-    const temp = scratchDir('universal-fixture-')
+  // The same committed expected set the final gate measures (#341), arm64 alone since #296: a
+  // universal or Intel slice fails the assembly too, as does a runtime of another architecture.
+  it.skipIf(process.platform !== 'darwin')('refuses Mach-Os whose CPU types are not the expected set', () => {
+    const temp = scratchDir('macho-architectures-')
     const source = join(temp, 'main.c')
     writeFileSync(source, 'int main(void) { return 0; }\n')
-    const binaries = {
-      arm64: join(temp, 'arm64'),
-      x64: join(temp, 'x64'),
-    }
+    const binaries = { arm64: join(temp, 'arm64'), x64: join(temp, 'x64'), universal: join(temp, 'universal') }
     execFileSync('/usr/bin/xcrun', ['clang', '-arch', 'arm64', source, '-o', binaries.arm64])
     execFileSync('/usr/bin/xcrun', ['clang', '-arch', 'x86_64', source, '-o', binaries.x64])
-
-    const makeApp = (arch: 'arm64' | 'x64') => {
-      const app = join(temp, `${arch}.app`)
-      const contents = join(app, 'Contents')
-      const resources = join(contents, 'Resources', 'app')
-      mkdirSync(join(contents, 'MacOS'), { recursive: true })
-      mkdirSync(join(resources, 'runtime', 'darwin-arm64', 'bin'), { recursive: true })
-      mkdirSync(join(resources, 'runtime', 'darwin-x64', 'bin'), { recursive: true })
-      mkdirSync(join(resources, 'node_modules', 'fixture', 'build', 'Release'), { recursive: true })
-      cpSync(binaries[arch], join(contents, 'MacOS', 'Fixture'))
-      cpSync(binaries.arm64, join(resources, 'runtime', 'darwin-arm64', 'bin', 'node'))
-      cpSync(binaries.x64, join(resources, 'runtime', 'darwin-x64', 'bin', 'node'))
-      cpSync(binaries[arch], join(resources, 'node_modules', 'fixture', 'build', 'Release', 'fixture.node'))
-      writeFileSync(join(resources, 'package.json'), '{"main":"index.js"}\n')
-      writeFileSync(join(resources, 'index.js'), 'module.exports = {}\n')
-      writeFileSync(join(contents, 'Info.plist'), [
-        '<?xml version="1.0" encoding="UTF-8"?>',
-        '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
-        '<plist version="1.0"><dict><key>CFBundleExecutable</key><string>Fixture</string></dict></plist>',
-      ].join('\n'))
-      return app
+    execFileSync('/usr/bin/lipo', ['-create', binaries.arm64, binaries.x64, '-output', binaries.universal])
+    const makeApp = (name: string, slices: { app?: keyof typeof binaries, node?: keyof typeof binaries, key?: string } = {}) => {
+      const app = join(temp, `${name}.app`)
+      const resources = join(app, 'Contents', 'Resources', 'app')
+      const addon = join(resources, 'node_modules', 'better-sqlite3', 'build', 'Release', 'better_sqlite3.node')
+      const node = join(resources, 'runtime', slices.key ?? 'darwin-arm64', 'bin', 'node')
+      for (const path of [join(app, 'Contents', 'MacOS', 'Agent Inbox'), addon, node]) mkdirSync(dirname(path), { recursive: true })
+      cpSync(binaries[slices.app ?? 'arm64'], join(app, 'Contents', 'MacOS', 'Agent Inbox'))
+      cpSync(binaries[slices.app ?? 'arm64'], addon)
+      cpSync(binaries[slices.node ?? 'arm64'], node)
+      return [app, resources] as const
     }
-    const arm64App = makeApp('arm64')
-    const x64App = makeApp('x64')
-    const universalApp = join(temp, 'Universal.app')
-    await makeUniversalApp({
-      arm64AppPath: arm64App,
-      x64AppPath: x64App,
-      outAppPath: universalApp,
-      force: true,
-      mergeASARs: false,
-      x64ArchFiles: UNIVERSAL_RUNTIME_GLOB,
+    const inputs = loadReleaseInputs()
+
+    const shipped = makeApp('shipped')
+    expect(verifyMachOArchitectures(...shipped, inputs)).toEqual({
+      app: [
+        { path: join('Contents', 'MacOS', 'Agent Inbox'), architectures: ['arm64'] },
+        { path: join('Contents', 'Resources', 'app', 'node_modules', 'better-sqlite3', 'build', 'Release', 'better_sqlite3.node'), architectures: ['arm64'] },
+      ],
+      runtime: [{ path: join('Contents', 'Resources', 'app', 'runtime', 'darwin-arm64', 'bin', 'node'), architectures: ['arm64'] }],
     })
-    const archs = (path: string) => execFileSync('/usr/bin/lipo', ['-archs', path], { encoding: 'utf8' }).trim().split(/\s+/).sort()
-    expect(archs(join(universalApp, 'Contents', 'MacOS', 'Fixture'))).toEqual(['arm64', 'x86_64'])
-    expect(archs(join(universalApp, 'Contents', 'Resources', 'app', 'node_modules', 'fixture', 'build', 'Release', 'fixture.node')))
-      .toEqual(['arm64', 'x86_64'])
-    expect(archs(join(universalApp, 'Contents', 'Resources', 'app', 'runtime', 'darwin-arm64', 'bin', 'node')))
-      .toEqual(['arm64'])
-    expect(archs(join(universalApp, 'Contents', 'Resources', 'app', 'runtime', 'darwin-x64', 'bin', 'node')))
-      .toEqual(['x86_64'])
+    expect(() => verifyMachOArchitectures(...makeApp('universal', { app: 'universal' }), inputs))
+      .toThrow(/Electron Mach-O has CPU types arm64,x86_64, not the expected arm64/)
+    expect(() => verifyMachOArchitectures(...makeApp('intel', { app: 'x64' }), inputs))
+      .toThrow(/Electron Mach-O has CPU types x86_64, not the expected arm64/)
+    expect(() => verifyMachOArchitectures(...makeApp('intel-runtime', { node: 'x64', key: 'darwin-x64' }), inputs))
+      .toThrow(/runtime Mach-O has wrong architecture \(x86_64\)/)
+    expect(() => verifyMachOArchitectures(...shipped, { ...inputs, macosArchitectures: ['arm64', 'x86_64'] }))
+      .toThrow(/CPU types arm64, not the expected arm64,x86_64/)
   })
 
   // Signing seals the framework's resources: it has to see the pruned set (#292).
-  it('checks the merged app ships only English before anything is signed (#292)', () => {
+  it('checks the copied app ships only English before anything is signed (#292)', () => {
     const source = readFileSync(join(root, 'scripts', 'assemble-macos-release.mjs'), 'utf8')
     const gate = source.indexOf("assertEnglishOnlyElectronLocales(app, 'darwin', ")
-    expect(gate).toBeGreaterThan(source.indexOf('await makeUniversalApp({'))
+    expect(gate).toBeGreaterThan(source.indexOf("execFileSync('/usr/bin/ditto', [resolve(arm64App), app], {"))
     expect(gate).toBeLessThan(source.indexOf('signedRuntimeMachOs[key] = signPortableRuntime({'))
     expect(gate).toBeLessThan(source.indexOf('await signElectronEnvelope({'))
-  })
-
-  it.skipIf(process.platform !== 'darwin')('merges thin apps pruned alike, and refuses thin apps whose locales differ (#292)', async () => {
-    const temp = scratchDir('universal-locales-')
-    const source = join(temp, 'main.c')
-    writeFileSync(source, 'int main(void) { return 0; }\n')
-    const binaries = { arm64: join(temp, 'arm64'), x64: join(temp, 'x64') }
-    execFileSync('/usr/bin/xcrun', ['clang', '-arch', 'arm64', source, '-o', binaries.arm64])
-    execFileSync('/usr/bin/xcrun', ['clang', '-arch', 'x86_64', source, '-o', binaries.x64])
-    const frameworkResources = join('Contents', 'Frameworks', 'Electron Framework.framework', 'Versions', 'A', 'Resources')
-    const makeApp = (name: string, arch: 'arm64' | 'x64', prune: boolean) => {
-      const app = join(temp, `${name}.app`)
-      mkdirSync(join(app, 'Contents', 'MacOS'), { recursive: true })
-      mkdirSync(join(app, 'Contents', 'Resources', 'app'), { recursive: true })
-      cpSync(binaries[arch], join(app, 'Contents', 'MacOS', 'Fixture'))
-      writeFileSync(join(app, 'Contents', 'Resources', 'app', 'package.json'), '{"main":"index.js"}\n')
-      writeFileSync(join(app, 'Contents', 'Resources', 'app', 'index.js'), 'module.exports = {}\n')
-      writeFileSync(join(app, 'Contents', 'Info.plist'), [
-        '<?xml version="1.0" encoding="UTF-8"?>',
-        '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
-        '<plist version="1.0"><dict><key>CFBundleExecutable</key><string>Fixture</string></dict></plist>',
-      ].join('\n'))
-      for (const locale of ['en', 'en_GB', 'en_GB_NEUTER', 'fr']) {
-        mkdirSync(join(app, 'Contents', 'Resources', `${locale}.lproj`), { recursive: true })
-        mkdirSync(join(app, frameworkResources, `${locale}.lproj`), { recursive: true })
-        writeFileSync(join(app, frameworkResources, `${locale}.lproj`, 'locale.pak'), `${locale}\n`)
-      }
-      if (prune) pruneElectronLocales(app, 'darwin')
-      return app
-    }
-    const merge = (arm64AppPath: string, x64AppPath: string, outAppPath: string) => makeUniversalApp({
-      arm64AppPath,
-      x64AppPath,
-      outAppPath,
-      force: true,
-      mergeASARs: false,
-      x64ArchFiles: UNIVERSAL_RUNTIME_GLOB,
-    })
-
-    const universal = join(temp, 'Universal.app')
-    await merge(makeApp('arm64', 'arm64', true), makeApp('x64', 'x64', true), universal)
-    expect(() => assertEnglishOnlyElectronLocales(universal, 'darwin', 'universal app')).not.toThrow()
-    expect(readdirSync(join(universal, frameworkResources))).toEqual(['en.lproj', 'en_GB.lproj'])
-
-    const reported = vi.spyOn(console, 'error').mockImplementation(() => {})
-    try {
-      await expect(merge(makeApp('arm64-unpruned', 'arm64', false), makeApp('x64-pruned', 'x64', true), join(temp, 'Mixed.app')))
-        .rejects.toThrow(/found a mismatch/)
-      expect(reported).toHaveBeenCalledWith({
-        uniqueToX64: [],
-        uniqueToArm64: [
-          join(frameworkResources, 'en_GB_NEUTER.lproj', 'locale.pak'),
-          join(frameworkResources, 'fr.lproj', 'locale.pak'),
-        ],
-      })
-    } finally {
-      reported.mockRestore()
-    }
   })
 
   it('fails closed when Developer ID inputs are absent or malformed', () => {
@@ -675,10 +603,11 @@ describe('universal finalization contract', () => {
       '@electron/osx-sign': '2.6.0',
       '@electron/packager': '20.3.0',
       '@electron/rebuild': '4.2.0',
-      '@electron/universal': '3.0.6',
       electron: '43.8.4',
       'electron-installer-dmg': '5.0.1',
     })
+    // No universal merge since #296.
+    expect(pkg.devDependencies).not.toHaveProperty('@electron/universal')
   })
 
   // Issue #197: one constant is the version the MCP server reports in its
@@ -704,81 +633,73 @@ describe('universal finalization contract', () => {
     expect(source).toContain('title: `${APP_NAME} ${pkg.version}`')
     const adhoc = releaseDisposition('adhoc')
     expect(adhoc).toMatchObject({ notaryEligible: false, validationEvidenceOnly: true })
-    expect(adhoc.layer3Required[0]).toMatch(/rebuild verified thin apps/)
+    expect(adhoc.layer3Required[0]).toMatch(/rebuild the verified thin app/)
     expect(adhoc.layer3Required.join(' ')).toMatch(/package:macos --mode developer-id/)
-    expect(adhoc.layer3Required.join(' ')).toMatch(/fresh native Intel.*exact Developer ID app/)
     const developerId = releaseDisposition('developer-id')
     expect(developerId).toMatchObject({ notaryEligible: true, validationEvidenceOnly: false })
-    expect(developerId.layer3Required[0]).toMatch(/fresh native Intel.*exact Developer ID app/)
-    expect(developerId.layer3Required[1]).toMatch(/submit the verified Developer ID app/)
+    expect(developerId.layer3Required[0]).toMatch(/submit the verified Developer ID app/)
+    // No native Intel gate since #296.
+    expect([...adhoc.layer3Required, ...developerId.layer3Required].join(' ')).not.toMatch(/Intel/)
   })
 
-  it('binds thin reports to app bytes and matching clean or dirty source provenance', () => {
+  it('binds the one thin report to app bytes and matching clean or dirty source provenance', () => {
     const temp = scratchDir('thin-provenance-')
     const inputs = loadReleaseInputs()
     const provenance = { sourceCommit: 'a'.repeat(40), sourceDirty: true }
-    const runtimeManifestDigests = {
-      'darwin-arm64': 'sha256:arm64',
-      'darwin-x64': 'sha256:x64',
+    const runtimeManifestDigests = { 'darwin-arm64': 'sha256:arm64' }
+    const app = join(temp, 'arm64.app')
+    const resources = join(app, 'Contents', 'Resources', 'app')
+    mkdirSync(resources, { recursive: true })
+    writeFileSync(join(resources, 'payload'), 'arm64')
+    writeFileSync(join(resources, 'setup-info.json'), JSON.stringify({
+      runtimePayloads: { 'darwin-arm64': { digest: runtimeManifestDigests['darwin-arm64'] } },
+    }))
+    const thinReport = {
+      schema: 1,
+      product: 'Agent Inbox',
+      packageVersion: '0.1.0',
+      ...provenance,
+      arch: 'arm64',
+      electronVersion: inputs.electron.version,
+      nodeVersion: inputs.node.version,
+      nodeModulesAbi: inputs.node.modulesAbi,
+      runtimeKeys: ['darwin-arm64'],
+      runtimeSourceCommit: provenance.sourceCommit,
+      runtimeManifestDigests,
+      appTreeDigest: treeIdentity(app),
+      nativeRuntimeSelftest: 'passed',
+      electronSqliteCheck: 'passed',
+      nativeAddonArchitectures: ['arm64'],
     }
-    const fixtures = (['arm64', 'x64'] as const).map((arch) => {
-      const app = join(temp, `${arch}.app`)
-      const resources = join(app, 'Contents', 'Resources', 'app')
-      mkdirSync(resources, { recursive: true })
-      writeFileSync(join(resources, 'payload'), arch)
-      writeFileSync(join(resources, 'setup-info.json'), JSON.stringify({
-        runtimePayloads: Object.fromEntries(
-          Object.entries(runtimeManifestDigests).map(([key, digest]) => [key, { digest }]),
-        ),
-      }))
-      const report = join(temp, `${arch}.json`)
-      writeFileSync(report, JSON.stringify({
-        schema: 1,
-        product: 'Agent Inbox',
-        packageVersion: '0.1.0',
-        ...provenance,
-        arch,
-        electronVersion: inputs.electron.version,
-        nodeVersion: inputs.node.version,
-        nodeModulesAbi: inputs.node.modulesAbi,
-        runtimeKeys: ['darwin-arm64', 'darwin-x64'],
-        runtimeSourceCommit: provenance.sourceCommit,
-        runtimeManifestDigests,
-        appTreeDigest: treeIdentity(app),
-        nativeRuntimeSelftest: 'passed',
-        electronSqliteCheck: 'passed',
-        nativeAddonArchitectures: [arch === 'arm64' ? 'arm64' : 'x86_64'],
-      }))
-      return { app, report }
-    })
-    const armFixture = fixtures[0]
-    const x64Fixture = fixtures[1]
-    if (!armFixture || !x64Fixture) throw new Error('missing thin fixture')
+    const writeReport = (name: string, report: Record<string, unknown>) => {
+      const path = join(temp, name)
+      writeFileSync(path, JSON.stringify(report))
+      return path
+    }
     const options = {
-      arm64App: armFixture.app,
-      x64App: x64Fixture.app,
-      arm64Report: armFixture.report,
-      x64Report: x64Fixture.report,
+      arm64App: app,
+      arm64Report: writeReport('arm64.json', thinReport),
       packageVersion: '0.1.0',
       inputs,
       provenance,
       mode: 'adhoc' as const,
     }
-    expect(verifyThinReports(options)).toHaveProperty('arm64.appTreeDigest')
-    const unchecked = JSON.parse(readFileSync(armFixture.report, 'utf8')) as Record<string, unknown>
-    delete unchecked.electronSqliteCheck
-    const uncheckedReport = join(temp, 'arm64-without-electron-sqlite-check.json')
-    writeFileSync(uncheckedReport, JSON.stringify(unchecked))
-    expect(() => verifyThinReports({ ...options, arm64Report: uncheckedReport }))
+    expect(verifyThinReport(options)).toHaveProperty('appTreeDigest', treeIdentity(app))
+    const { electronSqliteCheck: _unchecked, ...unchecked } = thinReport
+    expect(() => verifyThinReport({ ...options, arm64Report: writeReport('unchecked.json', unchecked) }))
       .toThrow(/thin arm64 verification report is invalid/)
-    expect(() => verifyThinReports({
+    // An Intel thin app, or one that still carries the darwin-x64 runtime, is not the build (#296).
+    expect(() => verifyThinReport({
       ...options,
-      arm64Report: x64Fixture.report,
-      x64Report: armFixture.report,
+      arm64Report: writeReport('x64.json', { ...thinReport, arch: 'x64', nativeAddonArchitectures: ['x86_64'] }),
     })).toThrow(/thin arm64 verification report is invalid/)
-    writeFileSync(join(armFixture.app, 'Contents', 'Resources', 'app', 'payload'), 'mutated')
-    expect(() => verifyThinReports(options)).toThrow(/does not match its verification report/)
-    expect(() => verifyThinReports({
+    expect(() => verifyThinReport({
+      ...options,
+      arm64Report: writeReport('two-runtimes.json', { ...thinReport, runtimeKeys: ['darwin-arm64', 'darwin-x64'] }),
+    })).toThrow(/thin arm64 verification report is invalid/)
+    writeFileSync(join(resources, 'payload'), 'mutated')
+    expect(() => verifyThinReport(options)).toThrow(/does not match its verification report/)
+    expect(() => verifyThinReport({
       ...options,
       mode: 'developer-id',
     })).toThrow(/requires clean source provenance/)
@@ -787,8 +708,8 @@ describe('universal finalization contract', () => {
   // The provisional app is launched as a French and as a British user: only US
   // and British English ship (#292), so the first must fall back to en-US and
   // the second keep en-GB, in its renderers and in the dates its page formats.
-  it('launches the provisional universal app in French and British English and checks each locale (#292)', () => {
-    const workflow = readFileSync(join(root, '.github', 'workflows', 'macos-universal.yml'), 'utf8')
+  it('launches the provisional app in French and British English and checks each locale (#292)', () => {
+    const workflow = readFileSync(join(root, '.github', 'workflows', 'macos-package.yml'), 'utf8')
     const start = workflow.indexOf('- name: Mount, copy, launch, verify boundary, and remove portable runtime')
     const step = workflow.slice(start, workflow.indexOf('- uses:', start))
     const launch = step.slice(step.indexOf('launch_as() {'), step.indexOf('\n          }\n', step.indexOf('launch_as() {')))
@@ -810,7 +731,7 @@ describe('universal finalization contract', () => {
   })
 
   it('pins release workflow actions and resolves Node from the central manifest', () => {
-    const workflow = readFileSync(join(root, '.github', 'workflows', 'macos-universal.yml'), 'utf8')
+    const workflow = readFileSync(join(root, '.github', 'workflows', 'macos-package.yml'), 'utf8')
     const refs = [...workflow.matchAll(/^\s*-\s+uses:\s+([^@\s]+)@([^\s#]+)(?:\s+#\s+(.+))?$/gm)]
     expect(refs.length).toBeGreaterThan(0)
     for (const [, action, ref, comment] of refs) {
@@ -825,7 +746,7 @@ describe('universal finalization contract', () => {
     expect(readFileSync(join(root, '.github', 'dependabot.yml'), 'utf8')).toContain('package-ecosystem: github-actions')
   })
 
-  it('runs the universal package gate for every transitive native staging module', () => {
+  it('runs the macOS package gate for every transitive native staging module', () => {
     const workflow = readFileSync(join(root, '.github', 'workflows', 'release-aggregate.yml'), 'utf8')
     const pullRequestTrigger = workflow.slice(
       workflow.indexOf('  pull_request:'),
@@ -836,14 +757,14 @@ describe('universal finalization contract', () => {
       ...transitiveLocalModules('scripts/stage-runtime.mjs'),
     ])
     for (const module of stagingModules) {
-      expect(pullRequestTrigger, `${module} must trigger the universal package gate`)
+      expect(pullRequestTrigger, `${module} must trigger the macOS package gate`)
         .toContain('      - "scripts/**"')
     }
     expect(stagingModules).toContain('scripts/setup-filesystem.cjs')
     expect(pullRequestTrigger).toContain('      - "scripts/**"')
   })
 
-  it('runs the universal package gate for the complete Electron Setup require chain', () => {
+  it('runs the macOS package gate for the complete Electron Setup require chain', () => {
     const workflow = readFileSync(join(root, '.github', 'workflows', 'release-aggregate.yml'), 'utf8')
     const pullRequestTrigger = workflow.slice(
       workflow.indexOf('  pull_request:'),
@@ -923,7 +844,7 @@ describe('universal finalization contract', () => {
     const staging = readFileSync(join(root, 'scripts', 'stage-runtime.mjs'), 'utf8')
     const ci = readFileSync(join(root, '.github', 'workflows', 'ci.yml'), 'utf8')
     const aggregate = readFileSync(join(root, '.github', 'workflows', 'release-aggregate.yml'), 'utf8')
-    const universal = readFileSync(join(root, '.github', 'workflows', 'macos-universal.yml'), 'utf8')
+    const macosPackage = readFileSync(join(root, '.github', 'workflows', 'macos-package.yml'), 'utf8')
     const trigger = aggregate.slice(
       aggregate.indexOf('  pull_request:'),
       aggregate.indexOf('\npermissions:'),
@@ -935,7 +856,7 @@ describe('universal finalization contract', () => {
     expect(ci).toContain('os: [ubuntu-latest, macos-14]')
     expect(ci).toContain('brew install flock')
     expect(ci).toContain('npx vitest run test/setup-lock.test.ts')
-    expect(universal).toContain('npx vitest run test/setup-lock.test.ts')
+    expect(macosPackage).toContain('npx vitest run test/setup-lock.test.ts')
     expect(trigger).toContain('      - "scripts/**"')
     expect(trigger).toContain('      - "test/setup-*.test.ts"')
   })
@@ -1027,7 +948,7 @@ describe('universal finalization contract', () => {
       })
     }
     // An npm that stops passing the variable to install scripts fails the release run itself
-    expect(readFileSync(join(root, '.github', 'workflows', 'macos-universal.yml'), 'utf8'))
+    expect(readFileSync(join(root, '.github', 'workflows', 'macos-package.yml'), 'utf8'))
       .toMatch(/^\s*- run: npx vitest run [^\n]*test\/app-dependencies\.test\.ts/m)
   })
 

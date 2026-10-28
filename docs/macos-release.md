@@ -1,6 +1,6 @@
-# Universal macOS release pipeline
+# macOS release pipeline
 
-Layer 2 builds a universal `Agent Inbox.app` and a conventional drag-to-Applications
+Layer 2 builds an Apple silicon `Agent Inbox.app` and a conventional drag-to-Applications
 DMG. Its artifacts are **provisional**: they are not public release assets and do not
 claim Gatekeeper trust or notarization.
 
@@ -73,21 +73,21 @@ Staging rebuilds the addon from source using the verified distribution's own hea
 Node against the staged `dist/store.js`. Its private in-memory store creates and
 releases 300,000 statements under ordinary allocation pressure; explicit `global.gc()`
 is deliberately not a substitute. The MCP server probe then starts the staged server and
-lists its tools. Each architecture runs both natively, Intel included, and the staging log
+lists its tools. Each runtime runs both natively on its own architecture, and the staging log
 names the Node each check ran and how long it took (`stage-runtime: <key> runtime (Node
 v24.22.1, ABI 137) passed its allocation-driven SQLite check (#135) in <seconds> s (limit
 180 s)`). A failure, signal, or timeout refuses publication. Staging the same tree on Node
 24.21.0 shows the gate still works: that runtime passed its hook selftest, then aborted in
 this check at `hooks.cc:142` and was refused publication. The check has a 180-second
 ceiling. It took GitHub's Intel runners roughly 25–30 seconds when #187 raised the ceiling
-from 30 seconds, which had timed out about a quarter of their runs. In recent runs there,
-the staged runtime's check and the packaged Electron's have both taken anywhere from about
-20 seconds to just over a minute.
+from 30 seconds, which had timed out about a quarter of their runs. In their later runs,
+until #296 removed the Intel build, the staged runtime's check and the packaged Electron's
+both took anywhere from about 20 seconds to just over a minute.
 
 If a later Node release brings the abort back, hold the runtime again: **both the runtime
 and its addon must be rebuilt**, never patched into a signed payload. Each architecture
-needs its own native release evidence; Apple-silicon or emulated x64 results do not
-establish native Intel or Linux behavior.
+needs its own native release evidence; Apple silicon results do not establish Linux
+behavior.
 
 #### Electron's embedded Node
 
@@ -115,21 +115,23 @@ no hold, but each build still proves it:
   fuses, so `RunAsNode` remains enabled.
 - The check has the same 180-second ceiling as runtime staging.
 - A failure, signal or timeout fails the build.
-- The thin report records `electronSqliteCheck: "passed"`, and universal assembly requires it.
+- The thin report records `electronSqliteCheck: "passed"`, and macOS assembly requires it.
 
-**Requires macOS 13.5 (Ventura) or later.** Release builds support both Apple silicon and
-Intel. Electron 43 itself supports macOS 12, but the bundled official Node 24 runtime
-requires macOS 13.5, so the shipped product must use the stricter minimum. Revisit the
-stated minimum before updating either pinned major.
+**Requires macOS 13.5 (Ventura) or later.** Release builds run only on Apple silicon (#296);
+v1.8.0 is the last release for Intel Macs (1.x-last, below).
+Electron 43 itself supports macOS 12, but the bundled official Node 24 runtime requires
+macOS 13.5, so the shipped product must use the stricter minimum. Revisit the stated
+minimum before updating either pinned major.
 
 ## Architecture pipeline
 
-`.github/workflows/macos-universal.yml` uses native macOS runners:
+`.github/workflows/macos-package.yml` uses native Apple silicon runners. Since #296 the app
+is built for Apple silicon only: one arm64 runtime, one thin app, no universal merge.
 
-1. Stage, prune and self-test the arm64 and x64 Node runtime payloads independently
+1. Stage, prune and self-test the arm64 Node runtime payload
    ([What node_modules ships](#what-node_modules-ships-291)).
-2. Restore both verified payloads into each native thin Electron build.
-3. Compile `better-sqlite3` for Electron 43.8.4 on that architecture, prune the app's
+2. Restore the verified payload into the native thin Electron build.
+3. Compile `better-sqlite3` for Electron 43.8.4 on arm64, prune the app's
    `node_modules`, then run the allocation-driven SQLite check under that packaged
    Electron ([Electron's embedded Node](#electrons-embedded-node)). The stage installs with
    `npm ci --ignore-scripts` and `@electron/rebuild` runs with `buildFromSource`
@@ -138,18 +140,17 @@ stated minimum before updating either pinned major.
    downloaded prebuild, JavaScript included, without checking a digest (#315). The
    packaged thin app keeps only the US and British English Electron locales
    ([What Electron locales ship](#what-electron-locales-ship-292)).
-4. Preserve each thin app with a tar archive so framework symlinks and executable
+4. Preserve the thin app with a tar archive so framework symlinks and executable
    modes survive artifact transfer.
-5. Merge the thin apps with `@electron/universal`. The two
-   `Contents/Resources/app/runtime/darwin-*` trees are excluded from `lipo`; Electron,
-   helpers, frameworks, and `better_sqlite3.node` must be universal.
+5. Finalize a copy of the thin app. Every Electron Mach-O, helper, framework and
+   `better_sqlite3.node` must hold exactly the expected CPU types (`macosArchitectures`,
+   below), and every Mach-O of the `Contents/Resources/app/runtime/darwin-arm64` tree
+   exactly arm64, so a universal or Intel slice fails the build.
 6. Launch the provisional app from its DMG as a French user (`-AppleLanguages '(fr)'`)
    and then as a British one (`'(en-GB)'`), and require its hardened loopback marker,
    every renderer's `--lang` (`en-US`, then `en-GB`) and, read from the page over
    DevTools by `scripts/launch-locale-probe.mjs`, the dates the app formats in that
    locale.
-7. Run a second, native Intel job against the finalized signed x64 runtime and
-   publish its verification record beside the provisional universal artifact.
 
 Set `SOURCE_DATE_EPOCH` to the source commit time for repeatable `setup-info.json`
 metadata. No build script downloads an unpinned `latest` tool or Node archive.
@@ -164,7 +165,7 @@ those that hold the signing and notary secrets, and prebuild-install would other
 unpack a cached or downloaded prebuild, JavaScript included, and load it without
 checking a digest.
 node-gyp compiles it against headers it downloads for the runner's Node and checks
-against that release's `SHASUMS256.txt`. The universal workflow also runs
+against that release's `SHASUMS256.txt`. The macOS package workflow also runs
 `test/app-dependencies.test.ts` under the pinned release Node, so an npm that stopped
 passing the variable to install scripts would fail the release run itself. `ci.yml`,
 which holds no secret, keeps the prebuilds.
@@ -262,12 +263,12 @@ is also the default locale of the dates the app formats, so keeping British Engl
   reports `fr` and accepts the same French words with or without the prune.
 - **Where.** Each thin-app builder prunes the packaged app once, right after
   `@electron/packager` (the only step that adds Electron's files) and before anything
-  checks, hashes or publishes it, so both macOS thin apps carry the same locale set into
-  the universal merge. The prune refuses, before removing anything, an app without US or
+  checks, hashes or publishes it, so the macOS thin app reaches assembly with only those
+  locales. The prune refuses, before removing anything, an app without US or
   British English, or one that reaches either through a link (a linked `locales/` or
   `Resources` folder, which the walk never follows, could hide every other locale). The
   macOS thin build, the Linux and Windows folder gates (which every DEB and AppImage build
-  and verification repeats on the folder it packages or extracted), the universal assembly
+  and verification repeats on the folder it packages or extracted), the macOS assembly
   before anything is signed, and the final DMG gate refuse an app that lacks either,
   reaches either through a link, or ships any other locale.
 - **Launch evidence.** The provisional DMG's app is launched in French and in British
@@ -279,26 +280,27 @@ is also the default locale of the dates the app formats, so keeping British Engl
 - **Signing.** Electron's prebuilt app is only linker-signed: its framework has no
   `_CodeSignature` and seals no resources, and the prune removes no Mach-O, so nothing
   already signed changes. The framework's signature and its
-  `_CodeSignature/CodeResources` are made by release signing, after the merge, and seal
+  `_CodeSignature/CodeResources` are made by release signing, after assembly, and seal
   exactly the two English locales.
 
 ## Finalization order
 
 `scripts/assemble-macos-release.mjs` enforces this order:
 
-1. Finish the merged app layout and mark it provisional.
-2. Sign every Mach-O in both portable runtime trees. Each must hold exactly two, `bin/node`
+1. Copy the verified thin app, which keeps the tree its report binds, and mark the copy
+   provisional.
+2. Sign every Mach-O in the portable runtime tree. It must hold exactly two, `bin/node`
    and `better_sqlite3.node`; any other Mach-O, such as the `test_extension.node` releases
    before #291 signed, is refused before anything is signed.
-3. Regenerate and fully verify both runtime manifests from the signed bytes.
+3. Regenerate and fully verify the runtime manifest from the signed bytes.
 4. Rewrite `setup-info.json` from those final manifests.
 5. Snapshot every runtime file hash.
 6. Sign Electron helpers, frameworks, native modules, and the outer app while
-   explicitly excluding the already-finalized runtime trees.
+   explicitly excluding the already-finalized runtime tree.
 7. Require every runtime hash to remain unchanged.
-8. Verify signatures, universal/thin architectures, both manifests, current setup
-   digests, native runtime selftests, the copied-app loopback boundary, and portable
-   runtime install/removal.
+8. Verify signatures, the expected CPU types of every Mach-O, the runtime manifest, current
+   setup digests, the native runtime selftest, the copied-app loopback boundary, and
+   portable runtime install/removal.
 
 There is no signing-time `codesign --deep`. Deep verification is allowed; a late deep
 signature is not.
@@ -343,17 +345,14 @@ fnm exec --using=24 npm run package:macos -- \
   --identity "Developer ID Application: Example Corp (TEAMID1234)" \
   --keychain /absolute/path/to/ephemeral.keychain-db \
   --arm64-app /absolute/path/to/arm64/Agent\ Inbox.app \
-  --x64-app /absolute/path/to/x64/Agent\ Inbox.app \
   --arm64-report /absolute/path/to/arm64-report.json \
-  --x64-report /absolute/path/to/x64-report.json \
   --output /absolute/path/to/output
 ```
 
 Both identity and keychain are mandatory. The script never falls back from
 Developer ID to ad-hoc. It logs neither keychain passwords nor certificate material.
 Layer 3 owns importing credentials into an ephemeral keychain. Developer ID mode also
-requires both thin apps to have clean, matching commit provenance and refuses dirty
-inputs. Only a successfully verified Developer ID output sets `notaryEligible: true`.
+requires the thin app to have clean commit provenance and refuses dirty inputs. Only a successfully verified Developer ID output sets `notaryEligible: true`.
 
 The reviewed entitlements grant only `com.apple.security.cs.allow-jit` to Electron
 processes and the portable Node executables. Runtime libraries receive an empty
@@ -362,31 +361,26 @@ entitlement set. There is no App Sandbox, provisioning profile,
 
 ## Layer 3 handoff
 
-The output directory contains deterministic filenames for the universal app archive,
-provisional DMG, verification report, metadata, the exact input manifest, and
-checksums. The report records source commit, version, build mode, architecture proofs,
-runtime digests, selftests, thin-app tree identities, source dirty state, and the
-unchanged-runtime-hash gate. Each thin report is bound to the complete restored app
-tree; swapping or modifying an app or report is rejected before merging.
+The output directory contains deterministic filenames (`Agent-Inbox-<version>-macos-<mode>`)
+for the app archive, provisional DMG, verification report, metadata, the exact input
+manifest, and checksums. The report records source commit, version, build mode, the CPU
+types of every Mach-O, runtime digests, selftests, the thin-app tree identity, source dirty
+state, and the unchanged-runtime-hash gate. The thin report is bound to the complete
+restored app tree; swapping or modifying the app or its report is rejected before
+assembly.
 
-CI additionally emits `macos-universal-x64-final-verification` and
-`macos-layer3-reproducible-inputs`. The latter retains both mode/symlink-preserving
-thin archives, their reports, the central input manifest, and checksums for inspection.
-Pull-request artifacts expire and are validation evidence only; a release workflow
-must rebuild the same thin inputs from the signed tag rather than assume PR artifacts
-are available across workflows. The x64 verification record proves only the exact
-**ad-hoc** runtime bytes produced by this workflow. Developer ID signing changes those
-Mach-O bytes and regenerates their manifests, so that record is not final release
-evidence.
+CI additionally emits `macos-layer3-reproducible-inputs`, which retains the
+mode/symlink-preserving thin archive (its report inside), the central input manifest, and
+checksums for inspection. Pull-request artifacts expire and are validation evidence only;
+a release workflow must rebuild the same thin input from the signed tag rather than
+assume PR artifacts are available across workflows.
 
 When the Layer 2 report says `buildMode: adhoc`, Layer 3 must first rebuild the verified
-thin apps from the signed tag, import credentials into an ephemeral keychain, and run
+thin app from the signed tag, import credentials into an ephemeral keychain, and run
 `package:macos --mode developer-id`. After that clean re-finalization verifies with
-`notaryEligible: true`, Layer 3 may ZIP and submit the app, wait for acceptance, staple
-and validate the app only after running a fresh native Intel manifest, selftest, and
-signature verification against that exact Developer ID app. Layer 3 then rebuilds the
-final DMG from the stapled app, notarizes/staples/validates the DMG, writes final
-checksums, and publishes. It must not submit or publish Layer 2's ad-hoc app or
+`notaryEligible: true`, Layer 3 may ZIP and submit the app, wait for acceptance, then
+staple and validate the app. Layer 3 then rebuilds the final DMG from the stapled app,
+notarizes/staples/validates the DMG, writes final checksums, and publishes. It must not submit or publish Layer 2's ad-hoc app or
 provisional DMG.
 
 ## Protected multi-platform GitHub Release
@@ -395,7 +389,7 @@ Layer 3 uses a two-workflow trust boundary:
 
 - `.github/workflows/macos-release.yml` is the unprivileged
   `Multi-platform release inputs` producer that runs only for a `vX.Y.Z` tag push. It
-  validates the tag, rebuilds both macOS native runtimes and thin apps, and calls all four
+  validates the tag, rebuilds the Apple silicon runtime and thin app, and calls all four
   native Linux package workflows with read-only repository permissions and no environment
   access. The run cannot succeed unless both AppImages and both DEBs pass their independent
   reproducibility, launch/install, Setup, sandbox, persistence, and rehash gates.
@@ -411,8 +405,8 @@ The producer immediately refuses:
 - a checkout whose `HEAD`, `GITHUB_SHA`, and annotated-tag target differ; or
 - tracked working-tree changes.
 
-The producer does not reuse Layer 2 or pull-request artifacts. It rebuilds both pinned
-Node runtimes and both thin Electron apps from the exact tagged commit. Only the
+The producer does not reuse Layer 2 or pull-request artifacts. It rebuilds the pinned
+Node runtime and the thin Electron app from the exact tagged commit. Only the
 Developer ID signing, Apple notarization/finalization, and GitHub publication jobs
 reference the protected `macos-release` environment.
 
@@ -428,10 +422,13 @@ second-parent or arbitrary-ancestor release tags.
 Authorization runs from `github.workflow_sha`. After that trust proof succeeds, the
 no-secret `verify-handoff` job checks out the validated tag commit and uses that commit's
 Node version, release inputs, package code, and provenance checks. It downloads the
-triggering run's thin archives by exact run ID, extracts them only through the trusted
-archive validator, checks both reports against complete app tree identities and clean
+triggering run's thin archive by exact run ID, extracts it only through the trusted
+archive validator, checks its report against the complete app tree identity and clean
 source provenance, and publishes a new allowlisted handoff artifact inside the protected
-run. Every source-dependent downstream job also checks out this validated source commit;
+run. The same job finds the release Intel Macs stay on, for the release notes: the newest
+published release with a universal DMG in GitHub's listing (`intel-release`), the release
+this one's re-stamped `update-manifest.json` describes (G6). It fails, before anything is
+signed, when no published release has one. Every source-dependent downstream job also checks out this validated source commit;
 the newer trusted workflow SHA remains audit evidence only. Credentialed jobs consume only
 the protected handoff. No artifact-provided script is sourced or executed during preflight.
 
@@ -439,32 +436,32 @@ The credentialed sequence is intentionally split:
 
 1. Import the P12 into a generated, ephemeral keychain and validate exactly one
    configured Developer ID Application identity and its Team ID.
-2. Re-run `package:macos --mode developer-id` from the freshly rebuilt thin inputs.
+2. Re-run `package:macos --mode developer-id` from the freshly rebuilt thin input.
    Only the app archive and its verification report cross the job boundary; the
-   provisional DMG is discarded.
-3. On a native Intel runner, re-extract the exact archive and bind its SHA-256, complete
-   app-tree identity, finalization report, signature identity, x64 runtime manifest, and
-   x64 selftest into a verification record.
-4. Revalidate that record before submitting a `ditto` ZIP of the app. Require an
-   `Accepted` app ticket and matching notary log before stapling or validating the app.
-5. Build the final DMG from that stapled app, sign the DMG, submit it separately, and
+   provisional DMG is discarded. There is no native Intel job: #296 removed it with the
+   x64 runtime it checked.
+3. Submit a `ditto` ZIP of the exact app archive. Require an `Accepted` app ticket and
+   matching notary log before stapling or validating the app.
+4. Build the final DMG from that stapled app, sign the DMG, submit it separately, and
    require a distinct `Accepted` DMG ticket before stapling and validating the DMG. The
    DMG's name comes from the expected macOS kind (below), never from a constant.
-6. Inspect the DMG's exact Developer ID authority and Team ID, mount the final post-staple
+5. Inspect the DMG's exact Developer ID authority and Team ID, mount the final post-staple
    DMG read-only, require its expected app/Applications-link shape, and copy the transported
    app with `ditto` into clean temporary storage. Verify the copied app's signature,
-   authority/team, staple, Gatekeeper assessment, both runtime manifests and architectures,
+   authority/team, staple, Gatekeeper assessment, its runtime manifest and architecture,
    source/version/setup metadata, icon, notices, and that the app ships only the US and
    British English Electron locales. Measure the CPU types of its main executable and its
    better-sqlite3 addon with `lipo -archs` (see "The macOS release kind" below). Launch
    that copied app under a disposable `HOME`, require its hardened loopback marker, and
    exercise portable-runtime install and prune without touching production
    `~/.agent-inbox`. Detach the DMG even when any check fails.
-7. Generate the macOS-only internal checksum only after mounted-copy acceptance and from
+6. Generate the macOS-only internal checksum only after mounted-copy acceptance and from
    the final post-staple DMG bytes. The final evidence (`release-evidence.json`) names the
-   DMG from the measured kind and, for a universal release, carries the native Intel
-   record from step 3, which must have passed for this source, version and identity.
-8. In an unprivileged aggregation job, revalidate the four exact-run Linux package
+   DMG from the measured kind. A universal kind would also need a native Intel record that
+   passed for this source, version and identity; nothing makes one since #296, so a
+   universal release can no longer be published. The release notes name the release Intel
+   Macs stay on, found by `verify-handoff`.
+7. In an unprivileged aggregation job, revalidate the four exact-run Linux package
    artifacts and reports, combine their final bytes with the notarized DMG, and generate
    the canonical `SHA256SUMS.txt` from all five binary packages in ascending bytewise
    filename order. Recompute the macOS kind from the final evidence's measured sets
@@ -475,7 +472,7 @@ The credentialed sequence is intentionally split:
    packages) from that same package evidence, the annotated-tag timestamp, and the source
    commit's pinned update key registry. Aggregation writes only the v2 manifest; the
    trusted signer derives `update-manifest.json` from verified inputs (#343).
-9. In a separate read-only protected job, trusted default-branch code checks and signs both
+8. In a separate read-only protected job, trusted default-branch code checks and signs both
    manifests (see "Two update manifests" below); the YAML only moves files between
    subcommands of `scripts/update-manifest.mjs`. `check-release` re-hashes the five
    packages and requires the unsigned v2 manifest to be exactly what this release's
@@ -496,7 +493,7 @@ The credentialed sequence is intentionally split:
    on the signed envelope, and writes signing evidence schema 2. Signature-envelope schema
    1 is an ordered array: production emits one entry today, while a future rotation
    release can carry both old- and new-key signatures without changing the schema.
-10. Revalidate the complete aggregate/signing evidence and exact ten-file public
+9. Revalidate the complete aggregate/signing evidence and exact ten-file public
    allowlist. Immediately before draft creation, the sole write-token step re-reads the remote tag
    ref, requires an annotated tag object, peels it to a commit, and requires that commit
    to remain the authorized source commit. Publication starts as a private draft with
@@ -516,7 +513,7 @@ Whether a release's macOS package is universal or arm64 is measured, never label
 (#341; design §7.1 in
 `docs/superpowers/specs/2026-10-23-update-manifest-v2-design.md`). The committed expected
 set, `macosArchitectures` in `release/macos-inputs.json`, says what the build must
-contain: `["arm64", "x86_64"]` today. `verify-final-dmg` records the sorted `lipo -archs`
+contain: `["arm64"]` since #296, `["arm64", "x86_64"]` through 1.x-last. `verify-final-dmg` records the sorted `lipo -archs`
 output of the copied app's `Contents/MacOS/Agent Inbox` and of its
 `better_sqlite3.node` as `architectures: { executable, betterSqlite3 }` in the
 transported-app evidence, together with the `kind` they give, in place of the old
@@ -528,7 +525,11 @@ and then one table in `scripts/macos-release-kind.mjs` gives everything else:
 | `["arm64", "x86_64"]` | universal | `Agent-Inbox-vX.Y.Z-universal.dmg` | `universal` | `darwin-arm64+darwin-x64` | must have passed | This release: its v2 manifest with schema 1 |
 | `["arm64"]` | arm64 | `Agent-Inbox-vX.Y.Z-arm64.dmg` | `arm64` | `darwin-arm64` | none | Re-stamp of the newest universal release's |
 
-Any other set, `["x86_64"]` alone included, fails the release. The notarize job's
+Any other set, `["x86_64"]` alone included, fails the release. #296 removed the native
+Intel gate and the x64 runtime it checked, so the universal row can no longer pass: the
+expected set is `["arm64"]`, and a universal or Intel slice in the shipped app fails every
+gate that measures it (the assembly, `verify-final-dmg`, `final-evidence`, aggregation,
+the signer and the publish job). The notarize job's
 `expected-kind` step names the DMG it builds, notarizes, verifies and describes in the
 release notes from the expected set; `final-evidence`, the publication check and
 aggregation each recompute the kind from the measured sets and refuse a DMG name, label
@@ -552,15 +553,18 @@ only (#296) can reach Apple silicon Macs without breaking the apps already insta
 In an arm64 release the v1 manifest is a re-stamp: the release before's v1 manifest, which
 must verify, with only `publishedAt` (this release's tag time), `expiresAt`, `signingKeyId`
 and `trustedKeyIds` changed. Its targets must still be the files GitHub lists for the
-release they describe. Intel Macs therefore stay on the last universal release (1.x-last),
-which keeps working; its Settings → Updates explains that newer versions need Apple silicon.
+release they describe. Intel Macs therefore stay on the last universal release (1.x-last,
+v1.8.0), which keeps working; its Settings → Updates explains that newer versions need Apple
+silicon. From 2.0.0, the first release built by #296, every release is arm64 and its
+`update-manifest.json` re-stamps v1.8.0's; its notes name that release for Intel Macs.
 
 Operating rules:
 
 - Never delete or edit 1.x-last's files: every later v1 manifest points at them.
-- Once 1.x-last is chosen, edit its published notes by hand, once, to say Intel Macs stay on
-  it, keeping the `<!-- agent-inbox-release:… -->` marker line unchanged. A later re-run of
-  that release's publish job then fails its exact-notes check without changing anything.
+- 1.x-last is v1.8.0 (decided 2026-10-28). Before 2.0.0, edit its published notes by hand,
+  once, to say Intel Macs stay on it, keeping the `<!-- agent-inbox-release:… -->` marker
+  line unchanged. A later re-run of that release's publish job then fails its exact-notes
+  check without changing anything.
 - Publish a release at least every 150 days: both manifests expire 180 days after the
   latest release's tag.
 - Never publish a stable release by hand, or with `make_latest: false`: apps read both
@@ -568,7 +572,7 @@ Operating rules:
 
 The public allowlist is exactly:
 
-- `Agent-Inbox-vX.Y.Z-universal.dmg`, or `Agent-Inbox-vX.Y.Z-arm64.dmg` for an arm64 release
+- `Agent-Inbox-vX.Y.Z-arm64.dmg` (`Agent-Inbox-vX.Y.Z-universal.dmg` through 1.x-last)
 - `Agent-Inbox-vX.Y.Z-linux-x86_64.AppImage`
 - `Agent-Inbox-vX.Y.Z-linux-arm64.AppImage`
 - `agent-inbox_X.Y.Z_amd64.deb`
@@ -971,9 +975,15 @@ Rosetta (macos-15, arch -x86_64): Run 1 --verify: PASS    Run 2: PASS    Run 3: 
 
 ### Release runbook
 
-1. Confirm the portable-runtime and universal-package prerequisite changes are merged,
+1. Confirm the portable-runtime and macOS package prerequisite changes are merged,
    the default branch is green, and `package.json` plus both lockfile version fields are
-   the intended `X.Y.Z`.
+   the intended `X.Y.Z`. Before tagging 2.0.0, the first Apple silicon-only release
+   (#296), also:
+   - run the rehearsal of #344 against the published v1.8.0 on an Intel Mac and on an
+     Apple silicon Mac under Rosetta, and post its results on #296: v1.8.0's Intel path
+     can't be patched once 2.0.0 is tagged;
+   - edit v1.8.0's published notes by hand to say Intel Macs stay on it, keeping the
+     `<!-- agent-inbox-release:… -->` marker line unchanged.
 2. Run the no-secret gates locally:
 
    ```sh
@@ -996,11 +1006,14 @@ Rosetta (macos-15, arch -x86_64): Run 1 --verify: PASS    Run 2: PASS    Run 3: 
 5. Require all jobs to finish. Do not treat an uploaded Actions artifact, provisional
    package, or private draft release as published success.
 6. CI already mounts the final DMG and validates a copied app, Setup runtime lifecycle,
-   and loopback launch in disposable state. Separately, on a clean Apple-silicon Mac and
-   a clean Intel Mac, download the public DMG in a browser so quarantine is present, copy
-   the app to `/Applications` in Finder, launch it from Finder, run in-app Setup, and
-   confirm a later offline launch. This clean-Mac browser/Finder/quarantine check cannot
-   be replaced by CI; keep issue #74 open until both checks pass with real credentials.
+   and loopback launch in disposable state. Separately, on a clean Apple silicon Mac,
+   download the public DMG in a browser so quarantine is present, copy the app to
+   `/Applications` in Finder, launch it from Finder, run in-app Setup, and confirm a later
+   offline launch. This clean-Mac browser/Finder/quarantine check cannot be replaced by CI.
+   After 2.0.0, also check what design §4.3 step 7 lists: the `update-manifest.json` at
+   latest describes v1.8.0, a 1.6 app on an Intel Mac is offered v1.8.0, v1.8.0 on an
+   Intel Mac shows the Apple silicon copy without Review release, and v1.8.0 on an Apple
+   silicon Mac installs 2.0.0.
 
 ### Failure recovery
 
@@ -1022,7 +1035,7 @@ Rosetta (macos-15, arch -x86_64): Run 1 --verify: PASS    Run 2: PASS    Run 3: 
   identity. An exact already-public rerun requires that marker, downloads and re-verifies
   the full inventory, and exits as a no-op. Any existing draft or conflicting public
   marker, asset, metadata, byte, or checksum fails closed without mutation.
-- A signing, Intel, notarization, stapling, Gatekeeper, provenance, or checksum failure
+- A signing, notarization, stapling, Gatekeeper, provenance, or checksum failure
   cannot reach publication because every downstream job has a hard `needs` dependency.
 - Stapling starts only after Apple has accepted the submission, and only fetches and
   checks the ticket through Apple's CloudKit ticket service. Every `xcrun stapler` call in
@@ -1068,7 +1081,7 @@ asset's exact manifest entry (running the manifest wholesale requires downloadin
 five packages):
 
 ```sh
-ASSET=Agent-Inbox-vX.Y.Z-universal.dmg   # or Agent-Inbox-vX.Y.Z-arm64.dmg
+ASSET=Agent-Inbox-vX.Y.Z-arm64.dmg   # Agent-Inbox-vX.Y.Z-universal.dmg through 1.x-last
 grep -F "  $ASSET" SHA256SUMS.txt | shasum -a 256 -c -
 xcrun stapler validate "$ASSET"
 spctl --assess --type open --context context:primary-signature --verbose=4 \

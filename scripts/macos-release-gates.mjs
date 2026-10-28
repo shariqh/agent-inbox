@@ -20,14 +20,14 @@ import { tmpdir } from 'node:os'
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
-import { loadReleaseInputs, sha256File } from './release-inputs.mjs'
+import { loadReleaseInputs, RUNTIME_KEYS, sha256File } from './release-inputs.mjs'
 import { verifyPackagedUpdateTrust } from './package-update-trust.mjs'
 import { assertEnglishOnlyElectronLocales } from './prune-electron-locales.mjs'
 import { verifyPayload } from './runtime-payload.mjs'
 import { treeIdentity } from './tree-identity.mjs'
-import { probeRuntimeMcp } from './runtime-mcp-probe.mjs'
 import { createReleaseDmg } from './macos-dmg.mjs'
 import { macosKindOf, macosRelease, measuredMacosKind } from './macos-release-kind.mjs'
+import { newestUniversalRelease } from './update-manifest.mjs'
 
 const APP_NAME = 'Agent Inbox'
 const TAG_RE = /^v(\d+\.\d+\.\d+)$/
@@ -367,129 +367,17 @@ function verifySignatureIdentity(path, identity, teamId, { deep = true } = {}) {
   }
 }
 
-export function verifyDeveloperIdApp({
-  app,
-  archive,
-  reportPath,
-  identity,
-  teamId,
-  sourceCommit,
-  version,
-  output,
-}) {
-  const report = readJson(reportPath, 'Developer ID verification report')
-  if (
-    report.schema !== 1 ||
-    report.packageVersion !== version ||
-    report.sourceCommit !== sourceCommit ||
-    report.sourceDirty !== false ||
-    report.buildMode !== 'developer-id' ||
-    report.notaryEligible !== true ||
-    report.signing !== 'developer-id' ||
-    report.runtimeHashesUnchangedAfterOuterSign !== true
-  ) {
-    throw new ReleaseGateError('Developer ID report does not satisfy release gates')
-  }
-  const appTreeDigest = treeIdentity(app)
-  if (report.appTreeDigest !== appTreeDigest) {
-    throw new ReleaseGateError('Developer ID app bytes do not match the finalization report')
-  }
-  verifySignatureIdentity(app, identity, teamId)
-  const bundleVersion = command('/usr/libexec/PlistBuddy', [
-    '-c', 'Print :CFBundleShortVersionString',
-    join(app, 'Contents', 'Info.plist'),
-  ])
-  if (bundleVersion !== version) throw new ReleaseGateError(`app bundle version mismatch: ${bundleVersion}`)
-  const inputs = loadReleaseInputs()
-  const runtime = join(app, 'Contents', 'Resources', 'app', 'runtime', 'darwin-x64')
-  verifyPayload({
-    root: runtime,
-    expect: {
-      product: 'agent-inbox-runtime',
-      packageVersion: version,
-      sourceCommit,
-      platform: 'darwin',
-      arch: 'x64',
-      nodeVersion: inputs.node.version,
-      nodeModulesAbi: inputs.node.modulesAbi,
-    },
-  })
-  const scratchDb = join(dirname(output), 'intel-selftest.db')
-  command(join(runtime, 'bin', 'node'), [join(runtime, 'dist', 'hook-cli.js'), 'selftest'], {
-    cwd: runtime,
-    env: { ...process.env, AGENT_INBOX_DB: scratchDb },
-  })
-  try {
-    probeRuntimeMcp(join(runtime, 'bin', 'node'), runtime)
-  } catch (err) {
-    throw new ReleaseGateError(`Intel runtime: ${err.message}`)
-  }
-  const evidence = {
-    schema: 1,
-    status: 'passed',
-    runner: 'native-intel',
-    sourceCommit,
-    packageVersion: version,
-    identity,
-    teamId,
-    appArchiveSha256: sha256File(archive),
-    appTreeDigest,
-    verificationReportSha256: sha256File(reportPath),
-    codesign: 'passed',
-    x64RuntimeManifest: 'passed',
-    x64RuntimeSelftest: 'passed',
-  }
-  writeJson(output, evidence)
-  return evidence
-}
-
-export function validateIntelEvidence({
-  archive,
-  reportPath,
-  evidencePath,
-  identity,
-  teamId,
-  sourceCommit,
-  version,
-}) {
-  const report = readJson(reportPath, 'Developer ID verification report')
-  const evidence = readJson(evidencePath, 'native Intel evidence')
-  if (
-    evidence.schema !== 1 ||
-    evidence.status !== 'passed' ||
-    evidence.runner !== 'native-intel' ||
-    evidence.sourceCommit !== sourceCommit ||
-    evidence.packageVersion !== version ||
-    evidence.identity !== identity ||
-    evidence.teamId !== teamId ||
-    evidence.appArchiveSha256 !== sha256File(archive) ||
-    evidence.verificationReportSha256 !== sha256File(reportPath) ||
-    evidence.appTreeDigest !== report.appTreeDigest ||
-    evidence.codesign !== 'passed' ||
-    evidence.x64RuntimeManifest !== 'passed' ||
-    evidence.x64RuntimeSelftest !== 'passed'
-  ) {
-    throw new ReleaseGateError('native Intel evidence is stale or does not match the Developer ID app')
-  }
-  return evidence
-}
-
 export async function buildThinHandoff({
   arm64Archive,
-  x64Archive,
   arm64App,
-  x64App,
   arm64Report,
-  x64Report,
   context,
 }) {
   const release = validateReleaseContext(context)
-  const { verifyThinReports } = await import('./assemble-macos-release.mjs')
-  const reports = verifyThinReports({
+  const { verifyThinReport } = await import('./assemble-macos-release.mjs')
+  const report = verifyThinReport({
     arm64App,
-    x64App,
     arm64Report,
-    x64Report,
     packageVersion: release.version,
     inputs: loadReleaseInputs(),
     provenance: { sourceCommit: release.sourceCommit, sourceDirty: false },
@@ -501,17 +389,15 @@ export async function buildThinHandoff({
     packageVersion: release.version,
     archives: {
       'thin-darwin-arm64.tar.gz': sha256File(arm64Archive),
-      'thin-darwin-x64.tar.gz': sha256File(x64Archive),
     },
     appTreeDigests: {
-      arm64: reports.arm64.appTreeDigest,
-      x64: reports.x64.appTreeDigest,
+      arm64: report.appTreeDigest,
     },
     verifiedByTrustedWorkflow: true,
   }
 }
 
-export function validateThinHandoff({ arm64Archive, x64Archive, evidencePath, context }) {
+export function validateThinHandoff({ arm64Archive, evidencePath, context }) {
   const release = validateReleaseContext(context)
   const evidence = readJson(evidencePath, 'trusted thin handoff evidence')
   if (
@@ -519,10 +405,9 @@ export function validateThinHandoff({ arm64Archive, x64Archive, evidencePath, co
     evidence.sourceCommit !== release.sourceCommit ||
     evidence.packageVersion !== release.version ||
     evidence.verifiedByTrustedWorkflow !== true ||
-    evidence.archives?.['thin-darwin-arm64.tar.gz'] !== sha256File(arm64Archive) ||
-    evidence.archives?.['thin-darwin-x64.tar.gz'] !== sha256File(x64Archive) ||
-    typeof evidence.appTreeDigests?.arm64 !== 'string' ||
-    typeof evidence.appTreeDigests?.x64 !== 'string'
+    JSON.stringify(Object.keys(evidence.archives ?? {})) !== JSON.stringify(['thin-darwin-arm64.tar.gz']) ||
+    evidence.archives['thin-darwin-arm64.tar.gz'] !== sha256File(arm64Archive) ||
+    typeof evidence.appTreeDigests?.arm64 !== 'string'
   ) {
     throw new ReleaseGateError('thin handoff does not match trusted preflight evidence')
   }
@@ -606,8 +491,9 @@ function expectedMacosRelease(tag, expected = loadReleaseInputs().macosArchitect
   return macosRelease({ kind: macosKindOf(expected, 'macosArchitectures'), tag })
 }
 
-// A universal release also needs the native Intel gate's pass, recorded by `intel-evidence`
-// for this source, version and signing identity; an arm64 release has no Intel gate.
+// A universal release also needs the native Intel gate's pass for this source, version and
+// signing identity; an arm64 release has no Intel gate. #296 removed that gate and the x64
+// runtime it checked, so nothing records a pass any more and a universal kind cannot pass.
 function requireNativeIntel(macos, record, { sourceCommit, version, identity, teamId }) {
   if (!macos.needsNativeIntel) {
     if (record !== undefined) throw new ReleaseGateError(`an ${macos.kind} release has no native Intel gate`)
@@ -800,11 +686,11 @@ export async function verifyFinalDmg({
           setup.commit !== sourceCommit ||
           'repoRoot' in setup ||
           'nodeBin' in setup ||
-          JSON.stringify(Object.keys(setup.runtimePayloads ?? {}).sort()) !== JSON.stringify(['darwin-arm64', 'darwin-x64'])
+          JSON.stringify(Object.keys(setup.runtimePayloads ?? {}).sort()) !== JSON.stringify([...RUNTIME_KEYS].sort())
         ) {
           throw new ReleaseGateError('copied app release setup-info is invalid')
         }
-        for (const key of ['darwin-arm64', 'darwin-x64']) {
+        for (const key of RUNTIME_KEYS) {
           const distribution = inputs.node.distributions[key]
           const runtime = join(appResources, 'runtime', key)
           verifyPayload({
@@ -822,7 +708,7 @@ export async function verifyFinalDmg({
           if (setup.runtimePayloads[key]?.digest !== `sha256:${sha256File(join(runtime, 'runtime-manifest.json'))}`) {
             throw new ReleaseGateError(`copied app setup-info digest is stale for ${key}`)
           }
-          requireExactArchitectures(join(runtime, 'bin', 'node'), key === 'darwin-arm64' ? ['arm64'] : ['x86_64'])
+          requireExactArchitectures(join(runtime, 'bin', 'node'), [distribution.arch === 'x64' ? 'x86_64' : distribution.arch])
         }
 
         const nativeRuntime = join(appResources, 'runtime', `darwin-${process.arch}`)
@@ -1037,6 +923,27 @@ export function validateRemoteDraft({ remotePath, tag, expected = loadReleaseInp
   return remote
 }
 
+/**
+ * The release Intel Macs stay on (design §4.4): the newest published stable release with a
+ * universal DMG, which every arm64 release's update-manifest.json re-stamps (G6). The release
+ * notes name it, read from GitHub's listing (`gh api --paginate --slurp`) like the signer's.
+ */
+export function intelRelease({ pages, tag }) {
+  if (!Array.isArray(pages) || pages.some((page) => !Array.isArray(page))) {
+    throw new ReleaseGateError('GitHub release pagination response is malformed')
+  }
+  // A re-run after publication lists this release too, which is not an earlier one.
+  const releases = pages.flat().filter((release) => release?.tag_name !== tag)
+  let release
+  try {
+    release = newestUniversalRelease(releases, tag)
+  } catch (err) {
+    throw new ReleaseGateError(err.message)
+  }
+  if (!release) throw new ReleaseGateError('no published release has a universal DMG, so none is the last for Intel Macs')
+  return { tag: release.tag_name, version: release.tag_name.slice(1) }
+}
+
 function appendOutputs(values) {
   if (!process.env.GITHUB_OUTPUT) return
   const lines = Object.entries(values).map(([key, value]) => `${key}=${value}`).join('\n')
@@ -1058,8 +965,6 @@ async function main(argv) {
       'submit-json': { type: 'string' },
       'log-json': { type: 'string' },
       app: { type: 'string' },
-      archive: { type: 'string' },
-      report: { type: 'string' },
       evidence: { type: 'string' },
       identity: { type: 'string' },
       team: { type: 'string' },
@@ -1069,21 +974,18 @@ async function main(argv) {
       'app-receipt': { type: 'string' },
       'dmg-receipt': { type: 'string' },
       'transport-evidence': { type: 'string' },
-      'intel-evidence': { type: 'string' },
       dmg: { type: 'string' },
       icon: { type: 'string' },
       'assets-dir': { type: 'string' },
       remote: { type: 'string' },
+      releases: { type: 'string' },
       tag: { type: 'string' },
       input: { type: 'string' },
       'trusted-sha': { type: 'string' },
       'run-head-sha': { type: 'string' },
       'arm64-archive': { type: 'string' },
-      'x64-archive': { type: 'string' },
       'arm64-app': { type: 'string' },
-      'x64-app': { type: 'string' },
       'arm64-report': { type: 'string' },
-      'x64-report': { type: 'string' },
       handoff: { type: 'string' },
     },
   })
@@ -1125,11 +1027,8 @@ async function main(argv) {
     const context = validateReleaseContext(readJson(resolve(values.context), 'release context'))
     const result = await buildThinHandoff({
       arm64Archive: resolve(values['arm64-archive']),
-      x64Archive: resolve(values['x64-archive']),
       arm64App: resolve(values['arm64-app']),
-      x64App: resolve(values['x64-app']),
       arm64Report: resolve(values['arm64-report']),
-      x64Report: resolve(values['x64-report']),
       context,
     })
     if (!values.output) throw new ReleaseGateError('--output is required')
@@ -1141,7 +1040,6 @@ async function main(argv) {
     const context = validateReleaseContext(readJson(resolve(values.context), 'release context'))
     validateThinHandoff({
       arm64Archive: resolve(values['arm64-archive']),
-      x64Archive: resolve(values['x64-archive']),
       evidencePath: resolve(values.handoff),
       context,
     })
@@ -1150,16 +1048,6 @@ async function main(argv) {
   }
   if (commandName === 'credentials') {
     const result = validateCredentialEnvironment(process.env, values.scope)
-    process.stdout.write(`${JSON.stringify(result)}\n`)
-    return
-  }
-  if (commandName === 'identity') {
-    const source = values.input
-      ? readJson(resolve(values.input), 'signing identity')
-      : { identity: process.env.APPLE_DEVELOPER_IDENTITY, teamId: process.env.APPLE_TEAM_ID }
-    const result = validateSigningIdentity(source)
-    if (values.output) writeJson(resolve(values.output), result)
-    appendOutputs({ identity: result.identity, team: result.teamId })
     process.stdout.write(`${JSON.stringify(result)}\n`)
     return
   }
@@ -1183,33 +1071,6 @@ async function main(argv) {
   if (commandName === 'stapler') {
     if (positionals.length !== 3) throw new ReleaseGateError('usage: stapler staple|validate TARGET')
     runStapler(positionals[1], positionals[2])
-    return
-  }
-  if (commandName === 'intel-evidence') {
-    const result = verifyDeveloperIdApp({
-      app: resolve(values.app),
-      archive: resolve(values.archive),
-      reportPath: resolve(values.report),
-      identity: values.identity,
-      teamId: values.team,
-      sourceCommit: values.source,
-      version: values.version,
-      output: resolve(values.output),
-    })
-    process.stdout.write(`${JSON.stringify({ ok: true, appArchiveSha256: result.appArchiveSha256 })}\n`)
-    return
-  }
-  if (commandName === 'verify-intel-evidence') {
-    validateIntelEvidence({
-      archive: resolve(values.archive),
-      reportPath: resolve(values.report),
-      evidencePath: resolve(values.evidence),
-      identity: values.identity,
-      teamId: values.team,
-      sourceCommit: values.source,
-      version: values.version,
-    })
-    process.stdout.write('{"ok":true}\n')
     return
   }
   if (commandName === 'build-dmg') {
@@ -1240,9 +1101,6 @@ async function main(argv) {
     const appReceipt = readJson(resolve(values['app-receipt']), 'app receipt')
     const dmgReceipt = readJson(resolve(values['dmg-receipt']), 'DMG receipt')
     const transportEvidence = readJson(resolve(values['transport-evidence']), 'transported app evidence')
-    const intelEvidence = values['intel-evidence']
-      ? readJson(resolve(values['intel-evidence']), 'native Intel evidence')
-      : undefined
     const app = resolve(values.app)
     const dmg = resolve(values.dmg)
     verifySignatureIdentity(app, values.identity, values.team)
@@ -1256,7 +1114,6 @@ async function main(argv) {
       appReceipt,
       dmgReceipt,
       transportEvidence,
-      intelEvidence,
       finalDmg: dmg,
       identity: values.identity,
       teamId: values.team,
@@ -1289,6 +1146,15 @@ async function main(argv) {
     const macos = expectedMacosRelease(requireString(values.tag, 'release tag', TAG_RE))
     appendOutputs({ kind: macos.kind, 'dmg-name': macos.dmgName })
     process.stdout.write(`${JSON.stringify(macos)}\n`)
+    return
+  }
+  if (commandName === 'intel-release') {
+    const result = intelRelease({
+      pages: readJson(resolve(requireString(values.releases, '--releases')), 'GitHub release listing'),
+      tag: requireString(values.tag, 'release tag', TAG_RE),
+    })
+    appendOutputs({ 'intel-tag': result.tag })
+    process.stdout.write(`${JSON.stringify(result)}\n`)
     return
   }
   if (commandName === 'remote-draft') {

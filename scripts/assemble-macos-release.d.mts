@@ -1,4 +1,3 @@
-export const UNIVERSAL_RUNTIME_GLOB: string
 export class MacReleaseError extends Error {}
 export function assertPublishedEntries(directory: string, expectedNames: string[]): string[]
 export function releaseDisposition(mode: string): {
@@ -15,16 +14,29 @@ export function validateSigningOptions(options: {
   identity: string
   keychain?: string
 }
-export function verifyThinReports(options: {
+export function verifyThinReport(options: {
   arm64App: string
-  x64App: string
   arm64Report: string
-  x64Report: string
   packageVersion: string
   inputs: unknown
   provenance: { sourceCommit: string; sourceDirty: boolean }
   mode: 'adhoc' | 'developer-id'
-}): Record<'arm64' | 'x64', Record<string, unknown>>
+}): Record<string, unknown>
+/**
+ * Every Electron Mach-O of the assembled app has exactly the expected CPU types
+ * (macosArchitectures) and every runtime Mach-O exactly its own runtime's.
+ */
+export function verifyMachOArchitectures(
+  app: string,
+  appResources: string,
+  inputs: {
+    macosArchitectures: readonly string[]
+    node: { distributions: Record<string, { arch: string }> }
+  },
+): {
+  app: Array<{ path: string; architectures: string[] }>
+  runtime: Array<{ path: string; architectures: string[] }>
+}
 export const RUNTIME_MACHO_FILES: readonly string[]
 export function signPortableRuntime(options: {
   runtimeRoot: string

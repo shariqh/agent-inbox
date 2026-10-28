@@ -2383,9 +2383,11 @@ process.stdin.on('end', () => {
     expect(result.status).toBe(0)
   }, 60_000)
 
-  it('runs wherever the staged selftest runs: staging, release assembly and the Intel release gate', () => {
-    for (const file of ['stage-runtime.mjs', 'assemble-macos-release.mjs', 'macos-release-gates.mjs']) {
+  it('runs wherever the staged selftest runs: staging and release assembly', () => {
+    for (const file of ['stage-runtime.mjs', 'assemble-macos-release.mjs']) {
       expect(readFileSync(join(REPO, 'scripts', file), 'utf8'), file).toMatch(/probeRuntimeMcp\(/)
     }
+    // #296 removed the native Intel gate, the release gates' only run of the staged runtime.
+    expect(readFileSync(join(REPO, 'scripts', 'macos-release-gates.mjs'), 'utf8')).not.toMatch(/'selftest'/)
   })
 })

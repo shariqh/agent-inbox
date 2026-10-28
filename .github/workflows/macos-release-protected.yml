@@ -86,6 +86,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       node-version: ${{ steps.release-inputs.outputs.node-version }}
+      intel-tag: ${{ steps.intel.outputs.intel-tag }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -108,9 +109,8 @@ jobs:
           github-token: ${{ github.token }}
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          pattern: release-thin-darwin-*
+          name: release-thin-darwin-arm64
           path: build/upstream-thin
-          merge-multiple: true
           run-id: ${{ needs.authorize.outputs.run-id }}
           github-token: ${{ github.token }}
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -137,6 +137,20 @@ jobs:
           path: build/upstream-linux/linux-arm64-deb
           run-id: ${{ needs.authorize.outputs.run-id }}
           github-token: ${{ github.token }}
+      - id: intel
+        name: Find the release Intel Macs stay on
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # The newest published release with a universal DMG, which this release's re-stamped
+          # update-manifest.json describes (G6); the release notes name it for Intel Macs.
+          mkdir -p build
+          gh api --paginate --slurp "repos/$GH_REPO/releases?per_page=100" > build/release-pages.json
+          node scripts/macos-release-gates.mjs intel-release \
+            --releases build/release-pages.json \
+            --tag "${{ needs.authorize.outputs.tag }}"
       - name: Revalidate source context and bind exact thin artifacts
         run: |
           set -euo pipefail
@@ -151,25 +165,17 @@ jobs:
             --archive build/upstream-thin/thin-darwin-arm64.tar.gz \
             --destination build/verified-thin \
             --expected-root darwin-arm64
-          node scripts/archive-tree.mjs extract \
-            --archive build/upstream-thin/thin-darwin-x64.tar.gz \
-            --destination build/verified-thin \
-            --expected-root darwin-x64
           node scripts/macos-release-gates.mjs thin-handoff \
             --context build/source-release-context.json \
             --arm64-archive build/upstream-thin/thin-darwin-arm64.tar.gz \
-            --x64-archive build/upstream-thin/thin-darwin-x64.tar.gz \
             --arm64-app "build/verified-thin/darwin-arm64/Agent Inbox.app" \
-            --x64-app "build/verified-thin/darwin-x64/Agent Inbox.app" \
             --arm64-report "build/verified-thin/darwin-arm64/Agent Inbox.app.thin-report.json" \
-            --x64-report "build/verified-thin/darwin-x64/Agent Inbox.app.thin-report.json" \
             --output build/thin-handoff-evidence.json
           mkdir -p build/protected-handoff
           cp build/upstream-thin/thin-darwin-arm64.tar.gz build/protected-handoff/
-          cp build/upstream-thin/thin-darwin-x64.tar.gz build/protected-handoff/
           cp build/source-release-context.json build/protected-handoff/release-context.json
           cp build/thin-handoff-evidence.json build/protected-handoff/
-          test "$(find build/protected-handoff -maxdepth 1 -type f | wc -l | tr -d ' ')" = 4
+          test "$(find build/protected-handoff -maxdepth 1 -type f | wc -l | tr -d ' ')" = 3
           SOURCE_TREE="$(git rev-parse '${{ needs.authorize.outputs.source-commit }}^{tree}')"
           node scripts/release-aggregation.mjs linux-handoff \
             --artifacts-root build/upstream-linux \
@@ -222,16 +228,14 @@ jobs:
         with:
           name: protected-thin-handoff
           path: build/handoff
-      - name: Restore exact thin inputs
+      - name: Restore the exact thin input
         run: |
           mkdir -p build/thin
           node scripts/macos-release-gates.mjs verify-handoff \
             --context build/handoff/release-context.json \
             --arm64-archive build/handoff/thin-darwin-arm64.tar.gz \
-            --x64-archive build/handoff/thin-darwin-x64.tar.gz \
             --handoff build/handoff/thin-handoff-evidence.json
           node scripts/archive-tree.mjs extract --archive build/handoff/thin-darwin-arm64.tar.gz --destination build/thin --expected-root darwin-arm64
-          node scripts/archive-tree.mjs extract --archive build/handoff/thin-darwin-x64.tar.gz --destination build/thin --expected-root darwin-x64
           cp build/handoff/release-context.json build/release-context.json
       - id: signing
         name: Import and validate ephemeral Developer ID identity
@@ -239,7 +243,7 @@ jobs:
           APPLE_DEVELOPER_ID_P12_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_P12_BASE64 }}
           APPLE_DEVELOPER_ID_P12_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_P12_PASSWORD }}
         run: scripts/import-apple-signing.sh import
-      - name: Re-finalize exact thin apps with Developer ID
+      - name: Re-finalize the exact thin app with Developer ID
         env:
           AGENT_INBOX_RELEASE_SOURCE_SHA: ${{ needs.authorize.outputs.source-commit }}
         run: >-
@@ -248,9 +252,7 @@ jobs:
           --identity "${{ steps.signing.outputs.identity }}"
           --keychain "${{ steps.signing.outputs.keychain }}"
           --arm64-app "build/thin/darwin-arm64/Agent Inbox.app"
-          --x64-app "build/thin/darwin-x64/Agent Inbox.app"
           --arm64-report "build/thin/darwin-arm64/Agent Inbox.app.thin-report.json"
-          --x64-report "build/thin/darwin-x64/Agent Inbox.app.thin-report.json"
           --output out/developer-id
       - name: Remove ephemeral signing keychain and material
         if: ${{ always() }}
@@ -258,70 +260,16 @@ jobs:
       - name: Stage exact Developer ID app and evidence
         run: |
           set -euo pipefail
-          BASE="Agent-Inbox-${{ needs.authorize.outputs.version }}-macos-universal-developer-id"
+          BASE="Agent-Inbox-${{ needs.authorize.outputs.version }}-macos-developer-id"
           mkdir -p build/signed-transfer
           cp "out/developer-id/$BASE.tar.gz" build/signed-transfer/
           cp "out/developer-id/$BASE-verification.json" build/signed-transfer/
           cp build/release-context.json build/signed-transfer/
-          node scripts/macos-release-gates.mjs identity \
-            --output build/signed-transfer/signing-identity.json >/dev/null
-          test "$(find build/signed-transfer -maxdepth 1 -type f | wc -l | tr -d ' ')" = 4
+          test "$(find build/signed-transfer -maxdepth 1 -type f | wc -l | tr -d ' ')" = 3
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: developer-id-app
           path: build/signed-transfer
-          if-no-files-found: error
-          retention-days: 7
-  verify-intel:
-    name: Verify Intel / ${{ needs.authorize.outputs.tag }} @ ${{ needs.authorize.outputs.source-commit }}
-    needs:
-      - authorize
-      - sign-developer-id
-      - verify-handoff
-    runs-on: macos-15-intel
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          ref: ${{ needs.authorize.outputs.source-commit }}
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: ${{ needs.verify-handoff.outputs.node-version }}
-          architecture: x64
-          package-manager-cache: false
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: developer-id-app
-          path: build/signed
-      - name: Restore exact Developer ID app bytes
-        run: |
-          set -euo pipefail
-          BASE="Agent-Inbox-${{ needs.authorize.outputs.version }}-macos-universal-developer-id"
-          mkdir -p build/intel-app
-          node scripts/archive-tree.mjs extract \
-            --archive "build/signed/$BASE.tar.gz" \
-            --destination build/intel-app \
-            --expected-root "Agent Inbox.app"
-      - id: identity
-        name: Load validated public signing identity
-        run: >-
-          node scripts/macos-release-gates.mjs identity
-          --input build/signed/signing-identity.json
-      - name: Verify exact Developer ID bytes natively on Intel
-        run: >-
-          node scripts/macos-release-gates.mjs intel-evidence
-          --app "build/intel-app/Agent Inbox.app"
-          --archive "build/signed/Agent-Inbox-${{ needs.authorize.outputs.version }}-macos-universal-developer-id.tar.gz"
-          --report "build/signed/Agent-Inbox-${{ needs.authorize.outputs.version }}-macos-universal-developer-id-verification.json"
-          --identity "${{ steps.identity.outputs.identity }}"
-          --team "${{ steps.identity.outputs.team }}"
-          --source "${{ needs.authorize.outputs.source-commit }}"
-          --version "${{ needs.authorize.outputs.version }}"
-          --output build/intel-verification.json
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: developer-id-intel-verification
-          path: build/intel-verification.json
           if-no-files-found: error
           retention-days: 7
 
@@ -330,7 +278,6 @@ jobs:
     needs:
       - authorize
       - sign-developer-id
-      - verify-intel
       - verify-handoff
     runs-on: macos-15
     environment: macos-release
@@ -360,22 +307,10 @@ jobs:
         with:
           name: developer-id-app
           path: build/signed
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: developer-id-intel-verification
-          path: build/intel
-      - name: Revalidate native Intel evidence
+      - name: Restore exact Developer ID app bytes
         run: |
           set -euo pipefail
-          BASE="Agent-Inbox-${{ needs.authorize.outputs.version }}-macos-universal-developer-id"
-          node scripts/macos-release-gates.mjs verify-intel-evidence \
-            --archive "build/signed/$BASE.tar.gz" \
-            --report "build/signed/$BASE-verification.json" \
-            --evidence build/intel/intel-verification.json \
-            --identity "$APPLE_DEVELOPER_IDENTITY" \
-            --team "$APPLE_TEAM_ID" \
-            --source "${{ needs.authorize.outputs.source-commit }}" \
-            --version "${{ needs.authorize.outputs.version }}"
+          BASE="Agent-Inbox-${{ needs.authorize.outputs.version }}-macos-developer-id"
           mkdir -p build/final-app
           node scripts/archive-tree.mjs extract \
             --archive "build/signed/$BASE.tar.gz" \
@@ -449,7 +384,6 @@ jobs:
           --dmg "$DMG"
           --dmg-receipt build/dmg-notary-receipt.json
           --transport-evidence build/transported-app-evidence.json
-          --intel-evidence build/intel/intel-verification.json
           --identity "$APPLE_DEVELOPER_IDENTITY"
           --team "$APPLE_TEAM_ID"
           --assets-dir build/release-assets
@@ -457,18 +391,23 @@ jobs:
       - name: Write release notes
         env:
           DMG_NAME: ${{ steps.kind.outputs.dmg-name }}
+          INTEL_TAG: ${{ needs.verify-handoff.outputs.intel-tag }}
         run: |
+          set -euo pipefail
+          test -n "$INTEL_TAG"
           printf '%s\n' \
             "# Agent Inbox ${{ needs.authorize.outputs.tag }}" \
             "" \
             "Desktop packages for macOS and supported glibc-based Linux systems." \
             "" \
             "## Packages" \
-            "- macOS 13.5 or later, Apple silicon or Intel: \`$DMG_NAME\`" \
+            "- macOS 13.5 or later on Apple silicon: \`$DMG_NAME\`" \
             "- Linux x86_64 AppImage: \`Agent-Inbox-${{ needs.authorize.outputs.tag }}-linux-x86_64.AppImage\`" \
             "- Linux arm64 AppImage: \`Agent-Inbox-${{ needs.authorize.outputs.tag }}-linux-arm64.AppImage\`" \
             "- Debian/Ubuntu amd64: \`agent-inbox_${{ needs.authorize.outputs.version }}_amd64.deb\`" \
             "- Debian/Ubuntu arm64: \`agent-inbox_${{ needs.authorize.outputs.version }}_arm64.deb\`" \
+            "" \
+            "This release needs a Mac with Apple silicon. Agent Inbox $INTEL_TAG is the last version for Intel Macs, and it keeps working. On an Intel Mac, the in-app updater of an older version offers $INTEL_TAG instead." \
             "" \
             "Linux packages require kernel 4.18+, glibc 2.34+, and GLIBCXX_3.4.29+; tested representative floors are Ubuntu 22.04, Debian 12, and RHEL 9." \
             "AppImages may use \`APPIMAGE_EXTRACT_AND_RUN=1\` with a private mode-0700 TMPDIR when FUSE is unavailable." \

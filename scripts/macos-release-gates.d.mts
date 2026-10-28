@@ -68,7 +68,7 @@ export function buildFinalReleaseEvidence(options: {
   appReceipt: Record<string, unknown>
   dmgReceipt: Record<string, unknown>
   transportEvidence: Record<string, unknown>
-  /** The native Intel gate's record; a universal release requires its pass. */
+  /** The native Intel gate's record; a universal release requires its pass, which nothing records since #296. */
   intelEvidence?: Record<string, unknown>
   finalDmg: string
   identity: string
@@ -86,17 +86,13 @@ export function withMountedDmg<T>(options: {
 
 export function buildThinHandoff(options: {
   arm64Archive: string
-  x64Archive: string
   arm64App: string
-  x64App: string
   arm64Report: string
-  x64Report: string
   context: ReleaseContext
 }): Promise<Record<string, any>>
 
 export function validateThinHandoff(options: {
   arm64Archive: string
-  x64Archive: string
   evidencePath: string
   context: ReleaseContext
 }): Record<string, any>
@@ -121,3 +117,12 @@ export function validateRemoteDraft(options: {
   /** Defaults to `macosArchitectures` in release/macos-inputs.json. */
   expected?: readonly string[]
 }): Record<string, any>
+
+/**
+ * The release Intel Macs stay on: the newest published stable release with a universal
+ * DMG, from GitHub's paginated release listing (`gh api --paginate --slurp`).
+ */
+export function intelRelease(options: {
+  pages: unknown
+  tag: string
+}): { tag: string; version: string }

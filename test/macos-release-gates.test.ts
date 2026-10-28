@@ -15,6 +15,7 @@ import {
   ReleaseGateError,
   buildThinHandoff,
   buildFinalReleaseEvidence,
+  intelRelease,
   parseNotaryReceipt,
   validateCredentialEnvironment,
   validatePublicationInputs,
@@ -333,7 +334,7 @@ function runBuildDmg(failures: StaplerFailure[]) {
       '--version', '1.2.3',
       '--app-receipt', appReceipt,
       '--icon', join(root, 'electron', 'icon.icns'),
-      '--output', join(temp, 'Agent-Inbox-v1.2.3-universal.dmg'),
+      '--output', join(temp, 'Agent-Inbox-v1.2.3-arm64.dmg'),
     ], {
       cwd: root,
       env: { ...process.env, ...fakes.env },
@@ -350,7 +351,7 @@ const evidenceTeam = 'AB12CD34EF'
 const UNIVERSAL = ['arm64', 'x86_64']
 const ARM64_ONLY = ['arm64']
 
-// What the native Intel job records (`intel-evidence`) for this source and identity.
+// What the native Intel job recorded, before #296 removed it, for this source and identity.
 function nativeIntelRecord(context: { sourceCommit: string; version: string }) {
   return {
     schema: 1,
@@ -369,12 +370,13 @@ function nativeIntelRecord(context: { sourceCommit: string; version: string }) {
   }
 }
 
-// A final stapled DMG and what verify-final-dmg recorded about the app copied out of it.
+// A final stapled DMG and what verify-final-dmg recorded about the app copied out of it: by
+// default an Apple silicon release, the kind release/macos-inputs.json expects since #296.
 function finalDmgFixture({
-  dmgName = 'Agent-Inbox-v1.2.3-universal.dmg',
-  executable = UNIVERSAL,
+  dmgName = 'Agent-Inbox-v1.2.3-arm64.dmg',
+  executable = ARM64_ONLY,
   betterSqlite3 = executable,
-  kind = 'universal',
+  kind = 'arm64',
 }: { dmgName?: string; executable?: string[]; betterSqlite3?: string[]; kind?: string } = {}) {
   const temp = scratchDir('release-assets-')
   const assets = join(temp, 'assets')
@@ -410,6 +412,11 @@ function finalDmgFixture({
   return { temp, assets, context, transportEvidence, finalDmg: join(assets, dmgName) }
 }
 
+// A universal release, which nothing builds since #296 but the kind table still describes.
+function universalFixture(overrides: Parameters<typeof finalDmgFixture>[0] = {}) {
+  return finalDmgFixture({ dmgName: 'Agent-Inbox-v1.2.3-universal.dmg', executable: UNIVERSAL, kind: 'universal', ...overrides })
+}
+
 function finalEvidence(
   fixture: ReturnType<typeof finalDmgFixture>,
   overrides: Partial<Parameters<typeof buildFinalReleaseEvidence>[0]> = {},
@@ -427,7 +434,6 @@ function finalEvidence(
       status: 'Accepted',
     },
     transportEvidence: fixture.transportEvidence,
-    intelEvidence: nativeIntelRecord(fixture.context),
     finalDmg: fixture.finalDmg,
     identity: evidenceIdentity,
     teamId: evidenceTeam,
@@ -589,63 +595,41 @@ describe('macOS release gates', () => {
     })
 
     const temp = scratchDir('release-thin-handoff-')
-    const runtimeManifestDigests = {
-      'darwin-arm64': 'a'.repeat(64),
-      'darwin-x64': 'b'.repeat(64),
-    }
-    const reports: Record<string, string> = {}
-    const apps: Record<string, string> = {}
-    for (const arch of ['arm64', 'x64'] as const) {
-      const app = join(temp, `${arch}.app`)
-      const resources = join(app, 'Contents', 'Resources', 'app')
-      mkdirSync(resources, { recursive: true })
-      writeFileSync(join(resources, 'setup-info.json'), `${JSON.stringify({
-        runtimePayloads: {
-          'darwin-arm64': { digest: runtimeManifestDigests['darwin-arm64'] },
-          'darwin-x64': { digest: runtimeManifestDigests['darwin-x64'] },
-        },
-      })}\n`)
-      writeFileSync(join(resources, 'arch.txt'), `${arch}\n`)
-      const report = join(temp, `${arch}.json`)
-      writeFileSync(report, `${JSON.stringify({
-        schema: 1,
-        product: 'Agent Inbox',
-        arch,
-        packageVersion: context.version,
-        electronVersion: loadReleaseInputs().electron.version,
-        nodeVersion: loadReleaseInputs().node.version,
-        nodeModulesAbi: '137',
-        sourceCommit: context.sourceCommit,
-        sourceDirty: false,
-        runtimeSourceCommit: context.sourceCommit,
-        nativeRuntimeSelftest: 'passed',
-        electronSqliteCheck: 'passed',
-        runtimeKeys: ['darwin-arm64', 'darwin-x64'],
-        nativeAddonArchitectures: arch === 'arm64' ? ['arm64'] : ['x86_64'],
-        appTreeDigest: treeIdentity(app),
-        runtimeManifestDigests,
-      })}\n`)
-      apps[arch] = app
-      reports[arch] = report
-    }
+    const runtimeManifestDigests = { 'darwin-arm64': 'a'.repeat(64) }
+    const app = join(temp, 'arm64.app')
+    const resources = join(app, 'Contents', 'Resources', 'app')
+    mkdirSync(resources, { recursive: true })
+    writeFileSync(join(resources, 'setup-info.json'), `${JSON.stringify({
+      runtimePayloads: { 'darwin-arm64': { digest: runtimeManifestDigests['darwin-arm64'] } },
+    })}\n`)
+    writeFileSync(join(resources, 'arch.txt'), 'arm64\n')
+    const report = join(temp, 'arm64.json')
+    writeFileSync(report, `${JSON.stringify({
+      schema: 1,
+      product: 'Agent Inbox',
+      arch: 'arm64',
+      packageVersion: context.version,
+      electronVersion: loadReleaseInputs().electron.version,
+      nodeVersion: loadReleaseInputs().node.version,
+      nodeModulesAbi: '137',
+      sourceCommit: context.sourceCommit,
+      sourceDirty: false,
+      runtimeSourceCommit: context.sourceCommit,
+      nativeRuntimeSelftest: 'passed',
+      electronSqliteCheck: 'passed',
+      runtimeKeys: ['darwin-arm64'],
+      nativeAddonArchitectures: ['arm64'],
+      appTreeDigest: treeIdentity(app),
+      runtimeManifestDigests,
+    })}\n`)
     const arm64Archive = join(temp, 'thin-darwin-arm64.tar.gz')
-    const x64Archive = join(temp, 'thin-darwin-x64.tar.gz')
     writeFileSync(arm64Archive, 'arm64 archive bytes')
-    writeFileSync(x64Archive, 'x64 archive bytes')
-    const handoff = await buildThinHandoff({
-      arm64Archive,
-      x64Archive,
-      arm64App: apps.arm64!,
-      x64App: apps.x64!,
-      arm64Report: reports.arm64!,
-      x64Report: reports.x64!,
-      context,
-    })
+    const handoff = await buildThinHandoff({ arm64Archive, arm64App: app, arm64Report: report, context })
+    expect(Object.keys(handoff.archives)).toEqual(['thin-darwin-arm64.tar.gz'])
     const handoffPath = join(temp, 'thin-handoff.json')
     writeFileSync(handoffPath, `${JSON.stringify(handoff)}\n`)
     expect(validateThinHandoff({
       arm64Archive,
-      x64Archive,
       evidencePath: handoffPath,
       context,
     })).toMatchObject({
@@ -653,6 +637,13 @@ describe('macOS release gates', () => {
       packageVersion: '1.2.3',
       verifiedByTrustedWorkflow: true,
     })
+    // The macOS release is built from the Apple silicon thin app alone (#296).
+    writeFileSync(handoffPath, `${JSON.stringify({
+      ...handoff,
+      archives: { ...handoff.archives, 'thin-darwin-x64.tar.gz': 'b'.repeat(64) },
+    })}\n`)
+    expect(() => validateThinHandoff({ arm64Archive, evidencePath: handoffPath, context }))
+      .toThrow(/does not match trusted preflight evidence/)
   })
 
   it('rejects a tag reachable only through a merged second parent', () => {
@@ -804,20 +795,20 @@ describe('macOS release gates', () => {
     const evidence = finalEvidence(fixture)
     const evidencePath = writePublicationInputs(fixture, evidence)
     const { assets, context } = fixture
-    const dmgName = 'Agent-Inbox-v1.2.3-universal.dmg'
+    const dmgName = 'Agent-Inbox-v1.2.3-arm64.dmg'
     expect(validatePublicationInputs({ assetsDir: assets, evidencePath, context })).toEqual({
       dmg: join(assets, dmgName),
       checksums: join(assets, 'SHA256SUMS.txt'),
       tag: 'v1.2.3',
       version: '1.2.3',
       macos: {
-        kind: 'universal',
+        kind: 'arm64',
         dmgName,
-        architecture: 'universal',
-        target: 'darwin-arm64+darwin-x64',
-        needsNativeIntel: true,
-        v1Manifest: 'projection',
-        architectures: { executable: ['arm64', 'x86_64'], betterSqlite3: ['arm64', 'x86_64'] },
+        architecture: 'arm64',
+        target: 'darwin-arm64',
+        needsNativeIntel: false,
+        v1Manifest: 'restamp',
+        architectures: { executable: ['arm64'], betterSqlite3: ['arm64'] },
       },
     })
 
@@ -1128,47 +1119,41 @@ describe('the macOS release kind comes from the measured CPU types (#341)', () =
   })
 
   it('names the final DMG from the kind and carries a universal release\'s Intel gate', () => {
-    const universal = finalDmgFixture()
-    const evidence = finalEvidence(universal)
-    expect(evidence.finalDmgName).toBe('Agent-Inbox-v1.2.3-universal.dmg')
-    expect(evidence.transportedApp).toMatchObject({
-      architectures: { executable: UNIVERSAL, betterSqlite3: UNIVERSAL },
-      kind: 'universal',
-    })
-    expect(evidence.transportedApp).not.toHaveProperty('universalEnvelope')
-    expect(evidence.nativeIntel).toEqual(nativeIntelRecord(universal.context))
-
-    const arm64 = finalDmgFixture({ dmgName: 'Agent-Inbox-v1.2.3-arm64.dmg', executable: ARM64_ONLY, kind: 'arm64' })
-    const arm64Evidence = finalEvidence(arm64, { expected: ARM64_ONLY, intelEvidence: undefined })
+    const arm64 = finalDmgFixture()
+    const arm64Evidence = finalEvidence(arm64)
     expect(arm64Evidence.finalDmgName).toBe('Agent-Inbox-v1.2.3-arm64.dmg')
+    expect(arm64Evidence.transportedApp).toMatchObject({
+      architectures: { executable: ARM64_ONLY, betterSqlite3: ARM64_ONLY },
+      kind: 'arm64',
+    })
+    expect(arm64Evidence.transportedApp).not.toHaveProperty('universalEnvelope')
     expect(arm64Evidence).not.toHaveProperty('nativeIntel')
+
+    const universal = universalFixture()
+    const evidence = finalEvidence(universal, { expected: UNIVERSAL, intelEvidence: nativeIntelRecord(universal.context) })
+    expect(evidence.finalDmgName).toBe('Agent-Inbox-v1.2.3-universal.dmg')
+    expect(evidence.nativeIntel).toEqual(nativeIntelRecord(universal.context))
   })
 
   const intelRecord = nativeIntelRecord({ sourceCommit: 'a'.repeat(40), version: '1.2.3' })
   it.each([
     {
       refused: 'arm64-only sets with the universal DMG name',
-      fixture: { executable: ARM64_ONLY, kind: 'arm64' },
-      overrides: { expected: ARM64_ONLY, intelEvidence: undefined },
+      fixture: { dmgName: 'Agent-Inbox-v1.2.3-universal.dmg' },
+      overrides: {},
       error: /final DMG must be named Agent-Inbox-v1\.2\.3-arm64\.dmg/,
     },
     {
       refused: 'arm64-only sets with the universal label',
-      fixture: { dmgName: 'Agent-Inbox-v1.2.3-arm64.dmg', executable: ARM64_ONLY, kind: 'universal' },
-      overrides: { expected: ARM64_ONLY, intelEvidence: undefined },
+      fixture: { kind: 'universal' },
+      overrides: {},
       error: /labels the release "universal", but its measured CPU types give arm64/,
     },
     {
-      refused: 'arm64-only sets where universal is expected',
-      fixture: { executable: ARM64_ONLY, kind: 'arm64' },
-      overrides: {},
-      error: /differ from the expected \["arm64","x86_64"\]/,
-    },
-    {
-      refused: 'sets that differ between the executable and the addon',
-      fixture: { betterSqlite3: ARM64_ONLY },
-      overrides: {},
-      error: /differ from the better-sqlite3 addon's \["arm64"\]/,
+      refused: 'universal sets, now that the committed expected set is arm64 alone (#296)',
+      fixture: { dmgName: 'Agent-Inbox-v1.2.3-universal.dmg', executable: UNIVERSAL, kind: 'universal' },
+      overrides: { intelEvidence: intelRecord },
+      error: /\["arm64","x86_64"\] differ from the expected \["arm64"\] in release\/macos-inputs\.json/,
     },
     {
       refused: 'x86_64 alone',
@@ -1177,44 +1162,52 @@ describe('the macOS release kind comes from the measured CPU types (#341)', () =
       error: /\["x86_64"\] give no macOS release kind/,
     },
     {
-      refused: 'a universal kind without the native Intel gate',
+      refused: 'an Intel slice in the better-sqlite3 addon alone',
+      fixture: { betterSqlite3: UNIVERSAL },
+      overrides: {},
+      error: /\["arm64"\] differ from the better-sqlite3 addon's \["arm64","x86_64"\]/,
+    },
+    {
+      refused: 'arm64-only sets where universal is expected',
       fixture: {},
-      overrides: { intelEvidence: undefined },
+      overrides: { expected: UNIVERSAL },
+      error: /differ from the expected \["arm64","x86_64"\]/,
+    },
+    {
+      refused: 'a universal kind without the native Intel gate',
+      fixture: { dmgName: 'Agent-Inbox-v1.2.3-universal.dmg', executable: UNIVERSAL, kind: 'universal' },
+      overrides: { expected: UNIVERSAL },
       error: /native Intel gate/,
     },
     {
       refused: 'a universal kind whose Intel gate did not pass',
-      fixture: {},
-      overrides: { intelEvidence: { ...intelRecord, status: 'failed' } },
+      fixture: { dmgName: 'Agent-Inbox-v1.2.3-universal.dmg', executable: UNIVERSAL, kind: 'universal' },
+      overrides: { expected: UNIVERSAL, intelEvidence: { ...intelRecord, status: 'failed' } },
       error: /native Intel gate/,
     },
     {
       refused: 'a universal kind whose Intel gate checked another source',
-      fixture: {},
-      overrides: { intelEvidence: { ...intelRecord, sourceCommit: 'e'.repeat(40) } },
+      fixture: { dmgName: 'Agent-Inbox-v1.2.3-universal.dmg', executable: UNIVERSAL, kind: 'universal' },
+      overrides: { expected: UNIVERSAL, intelEvidence: { ...intelRecord, sourceCommit: 'e'.repeat(40) } },
       error: /native Intel gate/,
     },
     {
       refused: 'an arm64 kind that claims an Intel gate',
-      fixture: { dmgName: 'Agent-Inbox-v1.2.3-arm64.dmg', executable: ARM64_ONLY, kind: 'arm64' },
-      overrides: { expected: ARM64_ONLY },
+      fixture: {},
+      overrides: { intelEvidence: intelRecord },
       error: /an arm64 release has no native Intel gate/,
     },
   ])('refuses $refused in the final evidence', ({ fixture, overrides, error }) => {
     expect(() => finalEvidence(finalDmgFixture(fixture), overrides)).toThrow(error)
   })
 
-  it('publishes an arm64 release only under an arm64 expected set, named from its kind', () => {
-    const fixture = finalDmgFixture({ dmgName: 'Agent-Inbox-v1.2.3-arm64.dmg', executable: ARM64_ONLY, kind: 'arm64' })
-    const evidencePath = writePublicationInputs(
-      fixture,
-      finalEvidence(fixture, { expected: ARM64_ONLY, intelEvidence: undefined }),
-    )
+  it('publishes an arm64 release under the committed expected set, and a universal one only under its own', () => {
+    const fixture = finalDmgFixture()
+    const evidencePath = writePublicationInputs(fixture, finalEvidence(fixture))
     expect(validatePublicationInputs({
       assetsDir: fixture.assets,
       evidencePath,
       context: fixture.context,
-      expected: ARM64_ONLY,
     }).macos).toMatchObject({
       kind: 'arm64',
       dmgName: 'Agent-Inbox-v1.2.3-arm64.dmg',
@@ -1222,9 +1215,23 @@ describe('the macOS release kind comes from the measured CPU types (#341)', () =
       target: 'darwin-arm64',
       architectures: { executable: ARM64_ONLY, betterSqlite3: ARM64_ONLY },
     })
-    // The committed expected set is universal, so the same evidence cannot be published.
-    expect(() => validatePublicationInputs({ assetsDir: fixture.assets, evidencePath, context: fixture.context }))
+    expect(() => validatePublicationInputs({ assetsDir: fixture.assets, evidencePath, context: fixture.context, expected: UNIVERSAL }))
       .toThrow(/differ from the expected \["arm64","x86_64"\]/)
+
+    // A universal release, which only a universal expected set could publish (#296 committed arm64).
+    const universal = universalFixture()
+    const universalPath = writePublicationInputs(universal, finalEvidence(universal, {
+      expected: UNIVERSAL,
+      intelEvidence: nativeIntelRecord(universal.context),
+    }))
+    expect(validatePublicationInputs({
+      assetsDir: universal.assets,
+      evidencePath: universalPath,
+      context: universal.context,
+      expected: UNIVERSAL,
+    }).macos).toMatchObject({ kind: 'universal', dmgName: 'Agent-Inbox-v1.2.3-universal.dmg' })
+    expect(() => validatePublicationInputs({ assetsDir: universal.assets, evidencePath: universalPath, context: universal.context }))
+      .toThrow(/\["arm64","x86_64"\] differ from the expected \["arm64"\]/)
   })
 
   it.each([
@@ -1248,11 +1255,17 @@ describe('the macOS release kind comes from the measured CPU types (#341)', () =
       error: /labels the release "universal", but its measured CPU types give arm64/,
     },
     {
+      refused: 'universal sets under the committed arm64 set (#296)',
+      tamper: () => {},
+      expected: undefined,
+      error: /\["arm64","x86_64"\] differ from the expected \["arm64"\]/,
+    },
+    {
       refused: 'sets that differ between the executable and the addon',
       tamper: (evidence: Record<string, any>) => {
         evidence.transportedApp.architectures.betterSqlite3 = ARM64_ONLY
       },
-      expected: undefined,
+      expected: UNIVERSAL,
       error: /differ from the better-sqlite3 addon's/,
     },
     {
@@ -1261,7 +1274,7 @@ describe('the macOS release kind comes from the measured CPU types (#341)', () =
         evidence.transportedApp.architectures = { executable: ARM64_ONLY, betterSqlite3: ARM64_ONLY }
         evidence.transportedApp.kind = 'arm64'
       },
-      expected: undefined,
+      expected: UNIVERSAL,
       error: /differ from the expected \["arm64","x86_64"\]/,
     },
     {
@@ -1271,7 +1284,7 @@ describe('the macOS release kind comes from the measured CPU types (#341)', () =
         delete evidence.transportedApp.kind
         evidence.transportedApp.universalEnvelope = 'passed'
       },
-      expected: undefined,
+      expected: UNIVERSAL,
       error: /give no macOS release kind/,
     },
     {
@@ -1279,7 +1292,7 @@ describe('the macOS release kind comes from the measured CPU types (#341)', () =
       tamper: (evidence: Record<string, any>) => {
         evidence.transportedApp.architectures.helper = ARM64_ONLY
       },
-      expected: undefined,
+      expected: UNIVERSAL,
       error: /must record only executable and betterSqlite3/,
     },
     {
@@ -1287,7 +1300,7 @@ describe('the macOS release kind comes from the measured CPU types (#341)', () =
       tamper: (evidence: Record<string, any>) => {
         delete evidence.nativeIntel
       },
-      expected: undefined,
+      expected: UNIVERSAL,
       error: /native Intel gate/,
     },
     {
@@ -1295,12 +1308,12 @@ describe('the macOS release kind comes from the measured CPU types (#341)', () =
       tamper: (evidence: Record<string, any>) => {
         evidence.nativeIntel.identity = 'Developer ID Application: Someone Else (ZZ12CD34EF)'
       },
-      expected: undefined,
+      expected: UNIVERSAL,
       error: /native Intel gate/,
     },
   ])('refuses publication evidence with $refused', ({ tamper, expected, error }) => {
-    const fixture = finalDmgFixture()
-    const evidence = structuredClone(finalEvidence(fixture))
+    const fixture = universalFixture()
+    const evidence = structuredClone(finalEvidence(fixture, { expected: UNIVERSAL, intelEvidence: nativeIntelRecord(fixture.context) }))
     tamper(evidence)
     const evidencePath = writePublicationInputs(fixture, { ...evidence, finalDmgName: 'Agent-Inbox-v1.2.3-universal.dmg' })
     expect(() => validatePublicationInputs({
@@ -1319,8 +1332,8 @@ describe('the macOS release kind comes from the measured CPU types (#341)', () =
       '--tag', 'v1.2.3',
     ], { cwd: root, env: { ...process.env, GITHUB_OUTPUT: outputs }, encoding: 'utf8' })
     expect(run.status, run.stderr).toBe(0)
-    expect(readFileSync(outputs, 'utf8')).toBe('kind=universal\ndmg-name=Agent-Inbox-v1.2.3-universal.dmg\n')
-    expect(JSON.parse(run.stdout)).toMatchObject({ kind: 'universal', dmgName: 'Agent-Inbox-v1.2.3-universal.dmg' })
+    expect(readFileSync(outputs, 'utf8')).toBe('kind=arm64\ndmg-name=Agent-Inbox-v1.2.3-arm64.dmg\n')
+    expect(JSON.parse(run.stdout)).toMatchObject({ kind: 'arm64', dmgName: 'Agent-Inbox-v1.2.3-arm64.dmg' })
   })
 
   it('expects the remote draft to hold the DMG named from the expected kind', () => {
@@ -1330,11 +1343,12 @@ describe('the macOS release kind comes from the measured CPU types (#341)', () =
       isDraft: true,
       assets: [{ name: dmgName, size: 1 }, { name: 'SHA256SUMS.txt', size: 1 }],
     }))
-    draft('Agent-Inbox-v1.2.3-universal.dmg')
-    expect(validateRemoteDraft({ remotePath, tag: 'v1.2.3' }).tagName).toBe('v1.2.3')
-    expect(() => validateRemoteDraft({ remotePath, tag: 'v1.2.3', expected: ARM64_ONLY })).toThrow(/allowlist/)
     draft('Agent-Inbox-v1.2.3-arm64.dmg')
-    expect(validateRemoteDraft({ remotePath, tag: 'v1.2.3', expected: ARM64_ONLY }).tagName).toBe('v1.2.3')
+    expect(validateRemoteDraft({ remotePath, tag: 'v1.2.3' }).tagName).toBe('v1.2.3')
+    expect(() => validateRemoteDraft({ remotePath, tag: 'v1.2.3', expected: UNIVERSAL })).toThrow(/allowlist/)
+    draft('Agent-Inbox-v1.2.3-universal.dmg')
+    expect(() => validateRemoteDraft({ remotePath, tag: 'v1.2.3' })).toThrow(/allowlist/)
+    expect(validateRemoteDraft({ remotePath, tag: 'v1.2.3', expected: UNIVERSAL }).tagName).toBe('v1.2.3')
   })
 
   it('measures the copied app with lipo and names, labels and targets the DMG only through the mapping', () => {
@@ -1358,5 +1372,51 @@ describe('the macOS release kind comes from the measured CPU types (#341)', () =
       expect(source, file).not.toMatch(/['"`]universal['"`]/)
       expect(source, file).not.toMatch(/\[\s*'arm64',\s*'x86_64'\s*\]/)
     }
+  })
+})
+
+// An arm64 release's notes name the release Intel Macs stay on (#296): the newest published
+// release with a universal DMG, the one its update-manifest.json re-stamps (G6).
+describe('the release Intel Macs stay on', () => {
+  let nextAssetId = 900
+  const listed = (tag: string, names: string[], draft = false) => ({
+    tag_name: tag,
+    draft,
+    prerelease: false,
+    assets: names.map((name) => ({
+      id: (nextAssetId += 1),
+      name,
+      size: 10,
+      browser_download_url: `https://github.com/shariqh/agent-inbox/releases/download/${tag}/${name}`,
+    })),
+  })
+  const universal = (tag: string, draft = false) => listed(tag, [`Agent-Inbox-${tag}-universal.dmg`, 'update-manifest.json'], draft)
+  const arm64 = (tag: string) => listed(tag, [`Agent-Inbox-${tag}-arm64.dmg`, 'update-manifest.json', 'update-manifest-v2.json'])
+
+  it('is the newest published release with a universal DMG, read from every page of the listing', () => {
+    const pages = [[arm64('v2.0.1'), arm64('v2.0.0')], [universal('v1.9.0', true), universal('v1.8.0'), universal('v1.7.0')]]
+    expect(intelRelease({ pages, tag: 'v2.0.2' })).toEqual({ tag: 'v1.8.0', version: '1.8.0' })
+    // A re-run after publication lists this release too, which is not an earlier one.
+    expect(intelRelease({ pages: [[arm64('v2.0.2'), ...pages[0]!], pages[1]!], tag: 'v2.0.2' }))
+      .toEqual({ tag: 'v1.8.0', version: '1.8.0' })
+    expect(() => intelRelease({ pages: [[arm64('v2.0.0')]], tag: 'v2.0.1' })).toThrow(/no published release has a universal DMG/)
+    expect(() => intelRelease({ pages: [[universal('v1.8.0'), arm64('v2.1.0')]], tag: 'v2.0.1' }))
+      .toThrow(/prior stable release v2\.1\.0 is not older than the new release v2\.0\.1/)
+    expect(() => intelRelease({ pages: [universal('v1.8.0')], tag: 'v2.0.1' })).toThrow(/pagination response is malformed/)
+  })
+
+  it('hands the release notes its tag as a step output', () => {
+    const temp = scratchDir('intel-release-')
+    const releases = join(temp, 'release-pages.json')
+    const outputs = join(temp, 'github-output')
+    writeFileSync(releases, JSON.stringify([[arm64('v2.0.0'), universal('v1.8.0')]]))
+    const run = spawnSync(process.execPath, [
+      join(root, 'scripts', 'macos-release-gates.mjs'),
+      'intel-release',
+      '--releases', releases,
+      '--tag', 'v2.0.1',
+    ], { cwd: root, env: { ...process.env, GITHUB_OUTPUT: outputs }, encoding: 'utf8' })
+    expect(run.status, run.stderr).toBe(0)
+    expect(readFileSync(outputs, 'utf8')).toBe('intel-tag=v1.8.0\n')
   })
 })

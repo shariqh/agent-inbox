@@ -234,10 +234,11 @@ the app started the server.
 
 ### Portable agent runtime staging
 
-Release packages carry separate Node 24 payloads for MCP, hooks, and watchers. Stage each
-architecture from a full Node distribution; the staging command uses that distribution's
-own Node/npm, installs the locked production dependencies, runs the native-addon selftest,
-and writes `runtime-manifest.json`:
+Release packages carry a Node 24 payload for MCP, hooks, and watchers; the macOS app is
+built for Apple silicon only (#296), so it carries one, `darwin-arm64`. Stage it from a full
+Node distribution; the staging command uses that distribution's own Node/npm, installs the
+locked production dependencies, runs the native-addon selftest, and writes
+`runtime-manifest.json`:
 
 ```sh
 npm run build
@@ -245,18 +246,13 @@ npm run stage:runtime -- \
   --node-root /path/to/node-v24-darwin-arm64 \
   --platform darwin --arch arm64 \
   --output build/runtime/darwin-arm64
-npm run stage:runtime -- \
-  --node-root /path/to/node-v24-darwin-x64 \
-  --platform darwin --arch x64 \
-  --output build/runtime/darwin-x64
 
 AGENT_INBOX_RUNTIME_DARWIN_ARM64="$PWD/build/runtime/darwin-arm64" \
-AGENT_INBOX_RUNTIME_DARWIN_X64="$PWD/build/runtime/darwin-x64" \
   npm run package:app
 ```
 
-Portable mode requires both payloads and writes architecture-keyed release metadata with
-no builder checkout or Node path. Electron selects only its exact
+Portable mode writes architecture-keyed release metadata with no builder checkout or Node
+path. Electron selects only its exact
 `process.platform`/`process.arch` key; there is no `uname` or Rosetta fallback. Setup
 atomically copies the selected payload to
 `~/.agent-inbox/runtime/<content-derived-runtime-id>/`, then registers that installed
@@ -326,7 +322,7 @@ locking, host-mutation, or process-cancellation semantics needed to enable Windo
 `electron/runtime-targets.cjs`, re-exported to ESM builders by
 `scripts/runtime-targets.mjs`, is the single target vocabulary and source of official Node
 artifact/layout facts. Release setup-info callers declare their exact required key set;
-the macOS release profile remains exactly `darwin-arm64` plus `darwin-x64`. Packaged Setup
+the macOS release profile is exactly `darwin-arm64` since #296. Packaged Setup
 accepts only the exact process-derived Darwin/Linux x64/arm64 key and routes it through the
 fixed-purpose POSIX installer adapter. The native Windows folder embeds a verified
 `win32-x64` payload under schema-2 metadata but still cannot advertise or run Setup.

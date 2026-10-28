@@ -103,6 +103,7 @@ describe('Linux release inputs', () => {
       'node',
       'electron',
     ])
-    expect(Object.keys(macos.node.distributions)).toEqual(['darwin-arm64', 'darwin-x64'])
+    // Apple silicon only since #296.
+    expect(Object.keys(macos.node.distributions)).toEqual(['darwin-arm64'])
   })
 })

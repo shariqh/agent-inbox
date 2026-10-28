@@ -21,7 +21,6 @@ export const RELEASE_TOOL_PACKAGES = {
   version: 'electron',
   packagerVersion: '@electron/packager',
   rebuildVersion: '@electron/rebuild',
-  universalVersion: '@electron/universal',
   osxSignVersion: '@electron/osx-sign',
   dmgVersion: 'electron-installer-dmg',
 }
@@ -114,7 +113,7 @@ export function validateReleaseInputs(value) {
   validateNodeReleaseInputs(value.node, RUNTIME_KEYS)
   validateElectronReleaseInputs(
     value.electron,
-    ['version', 'packagerVersion', 'rebuildVersion', 'universalVersion', 'osxSignVersion', 'dmgVersion'],
+    ['version', 'packagerVersion', 'rebuildVersion', 'osxSignVersion', 'dmgVersion'],
   )
   return value
 }

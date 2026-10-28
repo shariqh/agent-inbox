@@ -9,7 +9,7 @@ const producerPath = '.github/workflows/macos-release.yml'
 const protectedPath = '.github/workflows/macos-release-protected.yml'
 const validationPath = '.github/workflows/release-aggregate.yml'
 const reusable = [
-  '.github/workflows/macos-universal.yml',
+  '.github/workflows/macos-package.yml',
   '.github/workflows/linux-x64-appimage.yml',
   '.github/workflows/linux-arm64-appimage.yml',
   '.github/workflows/linux-x64-deb.yml',

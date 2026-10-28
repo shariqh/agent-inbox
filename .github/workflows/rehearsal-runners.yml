@@ -1,0 +1,256 @@
+name: Rehearse 1.x-last on hosted runners
+
+# The #344 rehearsal of 1.x-last's Intel and Rosetta update path on GitHub's own macOS
+# runners (#381): all three runs on macos-15-intel, and under `arch -x86_64` on macos-15,
+# against the published 1.x-last installed from its real DMG. Started by hand only.
+# docs/macos-release.md says what it proves and what it doesn't: its results are
+# hosted-runner evidence, not the human gate.
+
+on:
+  workflow_dispatch:
+    inputs:
+      last:
+        description: "1.x-last, installed from its published DMG"
+        required: true
+        default: "1.8.0"
+      older:
+        description: "The older release whose app run 1 replaces"
+        required: true
+        default: "1.7.0"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rehearsal-runners-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # Every npm install in this workflow compiles better-sqlite3 rather than load an
+  # unpinned prebuild; no job or step may override it (#315). It runs none today.
+  npm_config_build_from_source: "true"
+
+jobs:
+  rehearse:
+    name: ${{ matrix.host }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - host: Intel
+            key: intel
+            runner: macos-15-intel
+            rosetta: false
+          - host: Rosetta
+            key: rosetta
+            runner: macos-15
+            rosetta: true
+    env:
+      LAST: ${{ inputs.last }}
+      OLDER: ${{ inputs.older }}
+      HOST: ${{ matrix.host }}
+      ROSETTA: ${{ matrix.rosetta }}
+      APP: /Applications/Agent Inbox.app
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Check the inputs and describe the runner
+        run: |
+          for version in "$LAST" "$OLDER"; do
+            if ! [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+              echo "::error::$version is not an X.Y.Z version"
+              exit 1
+            fi
+          done
+          if [ -e "$APP" ]; then
+            echo "::error::$APP is already installed on this runner"
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/rehearsal/logs"
+          {
+            echo "WORK=$RUNNER_TEMP/rehearsal"
+            echo "LOGS=$RUNNER_TEMP/rehearsal/logs"
+            echo "RELEASES=$RUNNER_TEMP/releases"
+          } >> "$GITHUB_ENV"
+          {
+            echo "### $HOST: the runner"
+            echo
+            echo '```text'
+            echo "image $ImageOS $ImageVersion, macOS $(sw_vers -productVersion), $(sysctl -n machdep.cpu.brand_string)"
+            echo "user $(id -un), groups: $(id -Gn)"
+            csrutil status 2>&1 || true
+            spctl --status 2>&1 || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Write the harness command
+        run: |
+          # The installed app's own Electron in Node mode, under Rosetta on the Rosetta host.
+          cat > "$RUNNER_TEMP/harness" <<'SCRIPT'
+          #!/bin/bash
+          set -euo pipefail
+          electron="$APP/Contents/MacOS/Agent Inbox"
+          harness="$GITHUB_WORKSPACE/test/rehearsal/rehearsal.cjs"
+          if [ "$ROSETTA" = true ]; then
+            exec env ELECTRON_RUN_AS_NODE=1 /usr/bin/arch -x86_64 "$electron" "$harness" "$@"
+          fi
+          exec env ELECTRON_RUN_AS_NODE=1 "$electron" "$harness" "$@"
+          SCRIPT
+          chmod +x "$RUNNER_TEMP/harness"
+      - name: Download the published DMGs and check them
+        run: |
+          # Each DMG must be the file its release's SHA256SUMS.txt and signed
+          # update-manifest.json both list, before anything mounts it.
+          for version in "$LAST" "$OLDER"; do
+            tag="v$version"
+            folder="$RELEASES/$tag"
+            mkdir -p "$folder"
+            for asset in "Agent-Inbox-$tag-universal.dmg" SHA256SUMS.txt update-manifest.json update-manifest.json.sig; do
+              curl --fail --silent --show-error --location --retry 3 --proto '=https' --proto-redir '=https' \
+                --output "$folder/$asset" "https://github.com/shariqh/agent-inbox/releases/download/$tag/$asset"
+            done
+            node test/rehearsal/published-dmg.cjs "$folder" "$version"
+          done
+      - name: Install 1.x-last in /Applications from its DMG, as a user would
+        run: |
+          mount="$RUNNER_TEMP/mount-last"
+          mkdir -p "$mount"
+          hdiutil attach -readonly -nobrowse -noautoopen -mountpoint "$mount" "$RELEASES/v$LAST/Agent-Inbox-v$LAST-universal.dmg"
+          ditto "$mount/Agent Inbox.app" "$APP"
+          hdiutil detach "$mount"
+          test "$(plutil -extract CFBundleShortVersionString raw "$APP/Contents/Info.plist")" = "$LAST"
+      - name: Copy the older release's app into the runner's home for run 1
+        run: |
+          mount="$RUNNER_TEMP/mount-older"
+          mkdir -p "$mount" "$HOME/Rehearsal/Older"
+          hdiutil attach -readonly -nobrowse -noautoopen -mountpoint "$mount" "$RELEASES/v$OLDER/Agent-Inbox-v$OLDER-universal.dmg"
+          ditto "$mount/Agent Inbox.app" "$HOME/Rehearsal/Older/Agent Inbox.app"
+          hdiutil detach "$mount"
+      # Each run records its exit code and its whole output, and the job goes on, so every
+      # report is uploaded. The job's own read-only token lifts GitHub's API rate limit for
+      # the release listing; nothing else receives it.
+      - name: Run 2
+        id: run2
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set +e
+          "$RUNNER_TEMP/harness" --run 2 --last "$LAST" --work "$WORK" --hosted-runner 2>&1 | tee "$LOGS/run-2.txt"
+          echo "exit=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+      - name: Run 3
+        id: run3
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set +e
+          "$RUNNER_TEMP/harness" --run 3 --last "$LAST" --work "$WORK" --hosted-runner 2>&1 | tee "$LOGS/run-3.txt"
+          echo "exit=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+      - name: Run 1, install step
+        id: run1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set +e
+          "$RUNNER_TEMP/harness" --run 1 --last "$LAST" --work "$WORK" --older-app "$HOME/Rehearsal/Older/Agent Inbox.app" \
+            --test-account --hosted-runner 2>&1 | tee "$LOGS/run-1-install.txt"
+          echo "exit=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+      - name: Run 1, verify
+        id: verify
+        if: steps.run1.outputs.exit == '3'
+        run: |
+          set +e
+          "$RUNNER_TEMP/harness" --run 1 --verify --last "$LAST" --work "$WORK" --hosted-runner 2>&1 | tee "$LOGS/run-1-verify.txt"
+          echo "exit=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+      - name: Results
+        if: always()
+        env:
+          RUN1: ${{ steps.run1.outputs.exit }}
+          VERIFY: ${{ steps.verify.outputs.exit }}
+          RUN2: ${{ steps.run2.outputs.exit }}
+          RUN3: ${{ steps.run3.outputs.exit }}
+        run: |
+          # Run 1's install step hands off (exit 3); only its --verify can pass it.
+          outcome() {
+            if [ -z "$1" ]; then echo 'not run'
+            elif [ "$1" = "$2" ]; then echo "$3"
+            else echo "FAIL (exit $1)"
+            fi
+          }
+          run1="$(outcome "$RUN1" 3 'HANDED OFF')"
+          verify="$(outcome "$VERIFY" 0 PASS)"
+          run2="$(outcome "$RUN2" 0 PASS)"
+          run3="$(outcome "$RUN3" 0 PASS)"
+          work="${WORK:-$RUNNER_TEMP/rehearsal}"
+          mkdir -p "$work"
+          printf '{"host":"%s","run1":"%s","verify":"%s","run2":"%s","run3":"%s"}\n' \
+            "$HOST" "$run1" "$verify" "$run2" "$run3" > "$work/results.json"
+          {
+            echo "### $HOST: hosted-runner evidence, not the human gate"
+            echo
+            echo "| Run 1, install step | Run 1 --verify | Run 2 | Run 3 |"
+            echo "| --- | --- | --- | --- |"
+            echo "| $run1 | $verify | $run2 | $run3 |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          test "$run1|$verify|$run2|$run3" = "HANDED OFF|PASS|PASS|PASS"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: rehearsal-${{ matrix.key }}
+          path: |
+            ${{ runner.temp }}/rehearsal/report-*.txt
+            ${{ runner.temp }}/rehearsal/logs/*.txt
+            ${{ runner.temp }}/rehearsal/run-1.json
+            ${{ runner.temp }}/rehearsal/run-1-*/helper-result.json
+            ${{ runner.temp }}/rehearsal/results.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  result:
+    name: Result
+    needs: rehearse
+    if: always()
+    runs-on: ubuntu-latest
+    env:
+      LAST: ${{ inputs.last }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true
+        with:
+          pattern: rehearsal-*
+          path: results
+      - name: Every run on every host
+        env:
+          REPORTS: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}#artifacts
+        run: |
+          # FAIL unless both hosts passed every run.
+          failed=0
+          rows=""
+          for key in intel rosetta; do
+            file="results/rehearsal-$key/results.json"
+            if [ -f "$file" ]; then
+              rows+="$(jq -r '"| \(.host) | \(.run1) | \(.verify) | \(.run2) | \(.run3) |"' "$file")"$'\n'
+              if [ "$(jq -r '[.run1, .verify, .run2, .run3] | join("|")' "$file")" != "HANDED OFF|PASS|PASS|PASS" ]; then failed=1; fi
+            else
+              rows+="| $key | no result | no result | no result | no result |"$'\n'
+              failed=1
+            fi
+          done
+          if [ "$failed" = 0 ]; then result=PASS; else result=FAIL; fi
+          {
+            echo "## Rehearsal of 1.x-last v$LAST on hosted runners: $result"
+            echo
+            echo "Hosted-runner evidence, not the human gate (docs/macos-release.md)."
+            echo
+            echo "| Host | Run 1, install step | Run 1 --verify | Run 2 | Run 3 |"
+            echo "| --- | --- | --- | --- | --- |"
+            printf '%s' "$rows"
+            echo
+            echo "Reports: $REPORTS"
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$failed"

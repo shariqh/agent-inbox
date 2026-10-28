@@ -24,14 +24,14 @@ export const WINDOWS_RELEASE_TOOL_PACKAGES = {
 
 // This profile is pinned to one exact Node/Electron release pairing: Node v24.22.1 ABI 137
 // (the security release on top of 24.22.0's #135 cleanup-hook fix, which every portable
-// runtime shares; see docs/macos-release.md) and Electron 43.8.3 ABI 148, the same versions
+// runtime shares; see docs/macos-release.md) and Electron 43.8.4 ABI 148, the same versions
 // the macOS and Linux profiles pin. Format-only checks (VERSION_RE, /^\d+$/) accept any
 // internally-consistent official release, so a substituted-but-otherwise-valid manifest
 // (e.g. a real Node v24.19.0 distribution with matching archive/root/url) would slip through
 // unnoticed. These constants make the pin explicit and reject any other version/ABI pairing.
 const PINNED_NODE_VERSION = 'v24.22.1'
 const PINNED_NODE_MODULES_ABI = '137'
-const PINNED_ELECTRON_VERSION = '43.8.3'
+const PINNED_ELECTRON_VERSION = '43.8.4'
 const PINNED_ELECTRON_MODULES_ABI = '148'
 const SHA256_RE = /^[0-9a-f]{64}$/
 

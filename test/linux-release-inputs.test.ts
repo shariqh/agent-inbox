@@ -60,7 +60,7 @@ describe('Linux release inputs', () => {
         },
       },
       electron: {
-        version: '43.8.3',
+        version: '43.8.4',
         modulesAbi: '148',
         packagerVersion: '20.3.0',
         rebuildVersion: '4.2.0',

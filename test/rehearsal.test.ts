@@ -307,7 +307,8 @@ describe('the hosted-runner override (#381)', () => {
       env: { PATH: process.env.PATH ?? '', ...env },
       encoding: 'utf8',
     })
-    for (const env of [{}, { GITHUB_ACTIONS: 'true', RUNNER_ENVIRONMENT: 'self-hosted' }]) {
+    const outside: Record<string, string>[] = [{}, { GITHUB_ACTIONS: 'true', RUNNER_ENVIRONMENT: 'self-hosted' }]
+    for (const env of outside) {
       const refused = run(env)
       expect(refused.status).toBe(EXIT.refused)
       expect(refused.stdout).toContain('REFUSED  --hosted-runner is only for GitHub-hosted runners')

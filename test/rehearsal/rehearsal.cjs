@@ -84,6 +84,11 @@ Options:
   --last <X.Y.Z>        1.x-last's version (default: ${DEFAULT_LAST})
   --next <X.Y.Z>        the arm64-only release the scratch manifests describe (default: the next major)
   --from <X.Y.Z>        the older version run 3 runs as (default: one step below --last)
+  --hosted-runner       on a GitHub-hosted runner only (GITHUB_ACTIONS=true and
+                        RUNNER_ENVIRONMENT=github-hosted): lets run 1 run in the runner's own
+                        administrator account and marks every result hosted-runner evidence;
+                        refused anywhere else, and run 1 --verify needs it again whenever
+                        run 1's install step had it
 
 Exit codes: 0 every check passed, 1 a check failed, 2 refused to start, 3 run 1's install
 step handed the swap to the helper (not a pass: run --run 1 --verify next)`
@@ -92,6 +97,29 @@ class Refusal extends Error {}
 
 function refuse(message) {
   throw new Refusal(message)
+}
+
+// The one exception to run 1's standard-account rule (#381): GitHub's hosted macOS runner, a
+// throwaway VM whose only user is an administrator and owns the GUI session the relaunch
+// needs. It takes the --hosted-runner flag and both variables such a runner sets, exactly.
+// Without the flag nothing changes; the flag anywhere else is refused.
+const HOSTED_RUNNER_EVIDENCE = 'HOSTED RUNNER: hosted-runner evidence (docs/macos-release.md lists what it does not prove)'
+const HOSTED_RUNNER_REFUSAL = '--hosted-runner is only for GitHub-hosted runners: it needs GITHUB_ACTIONS=true and RUNNER_ENVIRONMENT=github-hosted'
+const HOSTED_RUNNER_VERIFY_REFUSAL =
+  "run 1's install step ran under --hosted-runner (run-1.json), so --run 1 --verify must too: add --hosted-runner, on the GitHub-hosted runner that ran the install step"
+
+function hostedRunnerOverride(flag, env) {
+  if (flag !== true) return { active: false, refusal: null }
+  if (env?.GITHUB_ACTIONS === 'true' && env?.RUNNER_ENVIRONMENT === 'github-hosted') return { active: true, refusal: null }
+  return { active: false, refusal: HOSTED_RUNNER_REFUSAL }
+}
+
+// Run 1 opens 1.x-last in this account, so it needs a standard test account; only an active
+// hosted-runner override lifts that, and only for an account `id -Gn` could read.
+function accountRefusal(groups, hostedRunner) {
+  const admin = groups === null || groups.split(/\s+/).includes('admin')
+  if (!admin || (hostedRunner === true && groups !== null)) return null
+  return 'this account is an administrator (or `id -Gn` did not answer): run 1 needs a standard test account (docs/macos-release.md)'
 }
 
 function versionParts(version) {
@@ -136,6 +164,7 @@ function parseOptions(argv) {
         from: { type: 'string' },
         'older-app': { type: 'string' },
         'test-account': { type: 'boolean' },
+        'hosted-runner': { type: 'boolean' },
         verify: { type: 'boolean' },
         help: { type: 'boolean' },
       },
@@ -167,6 +196,7 @@ function parseOptions(argv) {
     from,
     olderApp: values['older-app'],
     testAccount: values['test-account'] === true,
+    hostedRunner: values['hosted-runner'] === true,
     verify: values.verify === true,
   }
 }
@@ -468,7 +498,7 @@ async function viewerAnswers() {
 
 // Run 1 replaces --older-app and opens it in this account, so it must be a scratch copy of
 // an older Agent Inbox in this user's home folder, never an installed app.
-async function olderAppFor(options, app, host) {
+async function olderAppFor(options, app, host, hostedRunner) {
   if (host.arm64) {
     refuse('run 1 installs through the Intel path, which needs an x64 process: run it on an Intel Mac, or with arch -x86_64 on Apple silicon')
   }
@@ -476,9 +506,9 @@ async function olderAppFor(options, app, host) {
     refuse('run 1 installs 1.x-last and opens it in this user account, which then uses its ~/.agent-inbox: run it in a test account and pass --test-account')
   }
   const groups = capture('/usr/bin/id', ['-Gn'])
-  if (groups === null || groups.split(/\s+/).includes('admin')) {
-    refuse('this account is an administrator (or `id -Gn` did not answer): run 1 needs a standard test account (docs/macos-release.md)')
-  }
+  const refusal = accountRefusal(groups, hostedRunner)
+  if (refusal !== null) refuse(refusal)
+  const administrator = groups.split(/\s+/).includes('admin')
   if (!options.olderApp) refuse('run 1 needs --older-app: a scratch copy of an older Agent Inbox.app (docs/macos-release.md)')
   const input = path.resolve(options.olderApp)
   let stat
@@ -507,23 +537,31 @@ async function olderAppFor(options, app, host) {
   if (await viewerAnswers()) {
     refuse(`an Agent Inbox viewer already answers on ${VIEWER_ORIGIN}: quit Agent Inbox in every account on this Mac, because the reopened app would use it`)
   }
-  return { olderApp, olderVersion }
+  return { olderApp, olderVersion, administrator }
 }
 
 // The Summary block and the exit code. Only checks that all passed make a PASS. Run 1's
 // install step never does: it hands the swap to the helper, and only --run 1 --verify can
 // pass run 1.
-function summarize(report, hostLabel, reason) {
+function summarize(report, hostLabel, reason, hostedRunner = false) {
   const lines = ['', 'Summary']
   if (reason) lines.push(reason)
   const outcome = (run) => (run.fail > 0 ? 'FAIL' : run.handedOff ? 'HANDED OFF' : 'PASS')
   for (const run of report.runs) lines.push(`${run.name}: ${outcome(run)} (${run.pass} passed, ${run.fail} failed)`)
-  const on = `on ${hostLabel ?? 'this host'}`
+  if (hostedRunner === true) lines.push(HOSTED_RUNNER_EVIDENCE)
+  const on = `on ${hostLabel ?? 'this host'}${hostedRunner === true ? ', hosted-runner evidence' : ''}`
   if (report.totals.fail > 0 || report.runs.length === 0) return { lines: [...lines, `Result: FAIL ${on}`], exitCode: EXIT.fail }
   if (report.runs.some((run) => run.handedOff)) {
     return { lines: [...lines, `Result: HANDED OFF, not a pass until --run 1 --verify passes (${on})`], exitCode: EXIT.handedOff }
   }
   return { lines: [...lines, `Result: PASS ${on}`], exitCode: EXIT.pass }
+}
+
+// Run 1's hand-off to --verify. It records whether the install step ran under the
+// hosted-runner override (#381), which --verify then needs too, so a PASS from a runner keeps
+// its label instead of reading as a run on a real Mac.
+function writeHandoff(file, handed, hostedRunner) {
+  fs.writeFileSync(file, `${JSON.stringify({ ...handed, hostedRunner: hostedRunner === true }, null, 2)}\n`)
 }
 
 function readHandoff(file) {
@@ -533,6 +571,12 @@ function readHandoff(file) {
   } catch {
     return null
   }
+}
+
+function handoffRefusal(handoff, work, hostedRunner) {
+  if (handoff === null) return `no run 1 to verify in ${work}: run its install step first`
+  if (handoff.hostedRunner === true && hostedRunner !== true) return HOSTED_RUNNER_VERIFY_REFUSAL
+  return null
 }
 
 function timestamp() {
@@ -548,9 +592,10 @@ async function main(argv) {
   const report = createReport(write)
   let options
   let host
+  let hostedRunner = false
   let reportPath = null
   const finish = (reason) => {
-    const summary = summarize(report, host?.label, reason)
+    const summary = summarize(report, host?.label, reason, hostedRunner)
     for (const line of summary.lines) write(line)
     return summary.exitCode
   }
@@ -559,6 +604,16 @@ async function main(argv) {
     if (options.help) {
       write(USAGE)
       return EXIT.pass
+    }
+    const override = hostedRunnerOverride(options.hostedRunner, process.env)
+    if (override.refusal !== null) refuse(override.refusal)
+    hostedRunner = override.active
+    // --verify continues run 1's install step, under the same hosted-runner override if it had it
+    const handoffPath = path.join(options.work, 'run-1.json')
+    const handoff = options.verify ? readHandoff(handoffPath) : null
+    if (options.verify) {
+      const refusal = handoffRefusal(handoff, options.work, hostedRunner)
+      if (refusal !== null) refuse(refusal)
     }
     const app = inspectApp(options)
     host = hostFacts()
@@ -574,15 +629,16 @@ async function main(argv) {
     write(`1.x-last: ${app.version}, ${app.path} (Electron ${process.versions.electron}, Node ${process.version})`)
     write(`Host: ${host.label}; ${host.model ?? 'unknown model'}, ${host.cpu ?? 'unknown CPU'}, macOS ${host.macos}`)
     write(`Harness: ${commit}; work folder ${options.work}`)
-    const handoffPath = path.join(options.work, 'run-1.json')
-
-    let handoff = null
-    if (options.verify) {
-      handoff = readHandoff(handoffPath)
-      if (handoff === null) refuse(`no run 1 to verify in ${options.work}: run its install step first`)
+    if (hostedRunner) {
+      const image = [process.env.ImageOS, process.env.ImageVersion].filter(Boolean).join(' ') || 'unknown image'
+      write('')
+      write(`HOSTED RUNNER  --hosted-runner is in effect: GITHUB_ACTIONS=true, RUNNER_ENVIRONMENT=github-hosted, ${image}.`)
+      write("               Run 1 may run in this administrator account, the throwaway runner's own user.")
+      write('               Every result below is hosted-runner evidence, not a run on a real Mac.')
     }
-    const older = options.runs[0] === 1 && !options.verify ? await olderAppFor(options, app, host) : null
+    const older = options.runs[0] === 1 && !options.verify ? await olderAppFor(options, app, host, hostedRunner) : null
     if (older) write(`Run 1 replaces ${older.olderApp} (${older.olderVersion}) and opens it in this account.`)
+    if (older?.administrator) write('Run 1 runs in an administrator account: the hosted-runner override lifted its refusal.')
     if (!signatureChecks(report, app)) {
       return finish('Preflight failed: nothing from the app was loaded, and no run started.')
     }
@@ -620,7 +676,7 @@ async function main(argv) {
       report.beginRun('Run 1 (install step)')
       const handed = await runInstall(context('run-1'), older)
       if (handed !== null) {
-        fs.writeFileSync(handoffPath, `${JSON.stringify(handed, null, 2)}\n`)
+        writeHandoff(handoffPath, handed, hostedRunner)
         report.handOff()
         report.note(`The helper waits for this process (${process.pid}) to exit, swaps ${older.olderApp} and opens it.`)
         report.note('Once the app has opened, run the same command with --run 1 --verify (no --older-app needed).')
@@ -657,7 +713,11 @@ async function main(argv) {
 
 module.exports = {
   EXIT,
+  accountRefusal,
+  hostedRunnerOverride,
+  parseOptions,
   summarize,
+  writeHandoff,
 }
 
 if (require.main === module) {

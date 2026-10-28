@@ -4,16 +4,20 @@
 // The harness itself (test/rehearsal/rehearsal.cjs) runs only on a Mac, under the installed
 // app's own Electron. What runs here is its manifest preparation, against byte-exact copies
 // of the pairs v1.8.0, 1.x-last, and v1.7.0, the release before it, published
-// (test/fixtures/rehearsal/, from `gh release download`), and the source pins it shares
-// with test/electron-updates.test.ts.
-import { createHash } from 'node:crypto'
-import { readFileSync } from 'node:fs'
+// (test/fixtures/rehearsal/, from `gh release download`), the source pins it shares with
+// test/electron-updates.test.ts, its hosted-runner override (#381), and the check the
+// hosted-runner workflow makes of a published DMG before installing it.
+import { spawnSync } from 'node:child_process'
+import { createHash, generateKeyPairSync } from 'node:crypto'
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { join, resolve } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 
 import updateManifest from '../electron/update-manifest.cjs'
 import type { UpdateRegistry } from '../electron/update-manifest.cjs'
+import { deriveKeyId, generateManifest, signManifest } from '../scripts/update-manifest.mjs'
+import { removeScratchDirs, scratchDir } from './scratch.js'
 
 type Pair = { bytes: Buffer; signature: Buffer }
 type Prepared = {
@@ -51,10 +55,20 @@ type Report = {
   handOff(): void
 }
 const { createReport } = require('./rehearsal/runs.cjs') as { createReport(write: (line: string) => void): Report }
-const { EXIT, summarize } = require('./rehearsal/rehearsal.cjs') as {
+type Override = { active: boolean; refusal: string | null }
+const { EXIT, accountRefusal, hostedRunnerOverride, parseOptions, summarize, writeHandoff } = require('./rehearsal/rehearsal.cjs') as {
   EXIT: Record<'pass' | 'fail' | 'refused' | 'handedOff', number>
-  summarize(report: Report, hostLabel?: string, reason?: string): { lines: string[]; exitCode: number }
+  accountRefusal(groups: string | null, hostedRunner: boolean): string | null
+  hostedRunnerOverride(flag: unknown, env: Record<string, string | undefined>): Override
+  parseOptions(argv: string[]): { hostedRunner: boolean }
+  summarize(report: Report, hostLabel?: string, reason?: string, hostedRunner?: boolean): { lines: string[]; exitCode: number }
+  writeHandoff(file: string, handed: Record<string, string>, hostedRunner: boolean): void
 }
+const { checkPublishedDmg } = require('./rehearsal/published-dmg.cjs') as {
+  checkPublishedDmg(options: { folder: string; version: string; registry?: UpdateRegistry }): Promise<{ dmg: string; sha256: string; byteLength: number }>
+}
+
+afterEach(removeScratchDirs)
 const { parseRegistry, verifyManifest, verifyManifestV2 } = updateManifest
 
 const FIXTURES = resolve(import.meta.dirname, 'fixtures', 'rehearsal')
@@ -233,5 +247,207 @@ describe('the rehearsal summary', () => {
       lines: ['', 'Summary', 'Run 1 --verify: PASS (1 passed, 0 failed)', `Result: PASS on ${host}`],
       exitCode: EXIT.pass,
     })
+  })
+})
+
+describe('the hosted-runner override (#381)', () => {
+  const hosted = { GITHUB_ACTIONS: 'true', RUNNER_ENVIRONMENT: 'github-hosted' }
+  // Each lacks one thing a GitHub-hosted runner sets, exactly.
+  const elsewhere = [
+    {},
+    { GITHUB_ACTIONS: 'true' },
+    { RUNNER_ENVIRONMENT: 'github-hosted' },
+    { GITHUB_ACTIONS: 'true', RUNNER_ENVIRONMENT: 'self-hosted' },
+    { GITHUB_ACTIONS: 'false', RUNNER_ENVIRONMENT: 'github-hosted' },
+    { GITHUB_ACTIONS: 'TRUE', RUNNER_ENVIRONMENT: 'github-hosted' },
+    { GITHUB_ACTIONS: '1', RUNNER_ENVIRONMENT: 'github-hosted' },
+    { GITHUB_ACTIONS: 'true', RUNNER_ENVIRONMENT: 'GitHub-hosted' },
+    { GITHUB_ACTIONS: 'true', RUNNER_ENVIRONMENT: 'github-hosted ' },
+  ]
+  const administrator = 'staff everyone localaccounts _appserverusr admin _appserveradm'
+
+  it('takes effect only with the flag, GITHUB_ACTIONS=true and RUNNER_ENVIRONMENT=github-hosted', () => {
+    expect(hostedRunnerOverride(true, hosted)).toEqual({ active: true, refusal: null })
+    for (const env of [hosted, ...elsewhere]) {
+      // Without the flag nothing changes, wherever it runs; a flag that isn't true is no flag.
+      expect(hostedRunnerOverride(false, env)).toEqual({ active: false, refusal: null })
+      expect(hostedRunnerOverride('true', env)).toEqual({ active: false, refusal: null })
+    }
+    for (const env of elsewhere) {
+      // With it, anywhere else, it is refused rather than ignored.
+      expect(hostedRunnerOverride(true, env), JSON.stringify(env)).toEqual({
+        active: false,
+        refusal: '--hosted-runner is only for GitHub-hosted runners: it needs GITHUB_ACTIONS=true and RUNNER_ENVIRONMENT=github-hosted',
+      })
+    }
+  })
+
+  it('lifts run 1\'s administrator refusal only when it is in effect', () => {
+    const refusal = accountRefusal(administrator, false)
+    expect(refusal).toBe('this account is an administrator (or `id -Gn` did not answer): run 1 needs a standard test account (docs/macos-release.md)')
+    for (const flag of [false, true]) {
+      for (const env of [hosted, ...elsewhere]) {
+        const { active } = hostedRunnerOverride(flag, env)
+        expect(accountRefusal(administrator, active), `${flag} ${JSON.stringify(env)}`).toBe(flag && env === hosted ? null : refusal)
+      }
+    }
+    expect(accountRefusal('staff everyone localaccounts', false)).toBeNull()
+    // An account `id -Gn` can't read is refused even then.
+    expect(accountRefusal(null, true)).toBe(refusal)
+  })
+
+  it('is off unless the command line asks for it', () => {
+    expect(parseOptions(['--run', '1', '--work', 'w']).hostedRunner).toBe(false)
+    expect(parseOptions(['--run', '1', '--work', 'w', '--hosted-runner']).hostedRunner).toBe(true)
+  })
+
+  it('is refused on the command line outside a GitHub-hosted runner, before anything else happens', () => {
+    const work = join(scratchDir('agent-inbox-rehearsal-cli-'), 'work')
+    const harness = resolve(import.meta.dirname, 'rehearsal', 'rehearsal.cjs')
+    const run = (env: Record<string, string>) => spawnSync(process.execPath, [harness, '--run', '2', '--work', work, '--hosted-runner'], {
+      env: { PATH: process.env.PATH ?? '', ...env },
+      encoding: 'utf8',
+    })
+    const outside: Record<string, string>[] = [{}, { GITHUB_ACTIONS: 'true', RUNNER_ENVIRONMENT: 'self-hosted' }]
+    for (const env of outside) {
+      const refused = run(env)
+      expect(refused.status).toBe(EXIT.refused)
+      expect(refused.stdout).toContain('REFUSED  --hosted-runner is only for GitHub-hosted runners')
+    }
+    // On a hosted runner it passes the gate, and the next check refuses this Node.
+    const next = run(hosted)
+    expect(next.status).toBe(EXIT.refused)
+    expect(next.stdout).not.toContain('--hosted-runner is only')
+    expect(next.stdout).toMatch(/REFUSED {2}(the rehearsal runs on macOS only|run this with the installed app's own Electron)/)
+    expect(existsSync(work)).toBe(false)
+  })
+
+  it('makes run 1 --verify run under the override its install step ran under', () => {
+    const harness = resolve(import.meta.dirname, 'rehearsal', 'rehearsal.cjs')
+    const verify = (work: string, env: Record<string, string>, flag: boolean) =>
+      spawnSync(process.execPath, [harness, '--run', '1', '--verify', '--work', work, ...(flag ? ['--hosted-runner'] : [])], {
+        env: { PATH: process.env.PATH ?? '', ...env },
+        encoding: 'utf8',
+      })
+    const handed = {
+      olderApp: '/Users/runner/Rehearsal/Older/Agent Inbox.app',
+      from: '1.7.0',
+      to: '1.8.0',
+      runDir: '/Users/runner/work/_temp/rehearsal/run-1',
+      attemptDirectory: '/Users/runner/work/_temp/rehearsal/run-1/userData/update-install',
+    }
+    const refusal = "REFUSED  run 1's install step ran under --hosted-runner (run-1.json), so --run 1 --verify must too"
+    const nextCheck = /REFUSED {2}(the rehearsal runs on macOS only|run this with the installed app's own Electron)/
+
+    const onRunner = scratchDir('agent-inbox-rehearsal-verify-')
+    writeHandoff(join(onRunner, 'run-1.json'), handed, true)
+    expect(JSON.parse(readFileSync(join(onRunner, 'run-1.json'), 'utf8'))).toEqual({ ...handed, hostedRunner: true })
+    // Without the flag, here or on the runner itself, --verify refuses before anything else
+    const withoutFlag: Record<string, string>[] = [{}, hosted]
+    for (const env of withoutFlag) {
+      const refused = verify(onRunner, env, false)
+      expect(refused.status).toBe(EXIT.refused)
+      expect(refused.stdout).toContain(refusal)
+      expect(refused.stdout).not.toMatch(nextCheck)
+    }
+    // Under the override it gets past the hand-off, and the next check refuses this Node
+    const resumed = verify(onRunner, hosted, true)
+    expect(resumed.status).toBe(EXIT.refused)
+    expect(resumed.stdout).not.toContain(refusal)
+    expect(resumed.stdout).toMatch(nextCheck)
+
+    // An install step without the override asks nothing of --verify
+    const onMac = scratchDir('agent-inbox-rehearsal-verify-')
+    writeHandoff(join(onMac, 'run-1.json'), handed, false)
+    expect(JSON.parse(readFileSync(join(onMac, 'run-1.json'), 'utf8'))).toEqual({ ...handed, hostedRunner: false })
+    const plain = verify(onMac, {}, false)
+    expect(plain.status).toBe(EXIT.refused)
+    expect(plain.stdout).not.toContain(refusal)
+    expect(plain.stdout).toMatch(nextCheck)
+    // main() writes the record after run 1's install step, which runs only under the app's Electron
+    expect(readFileSync(harness, 'utf8')).toContain('writeHandoff(handoffPath, handed, hostedRunner)')
+  })
+
+  it('marks every result hosted-runner evidence', () => {
+    const host = 'an Intel Mac, x64 process'
+    const report = createReport(() => {})
+    report.beginRun('Run 2')
+    report.check('a check', true)
+    expect(summarize(report, host, undefined, true)).toEqual({
+      lines: [
+        '',
+        'Summary',
+        'Run 2: PASS (1 passed, 0 failed)',
+        'HOSTED RUNNER: hosted-runner evidence (docs/macos-release.md lists what it does not prove)',
+        `Result: PASS on ${host}, hosted-runner evidence`,
+      ],
+      exitCode: EXIT.pass,
+    })
+    report.beginRun('Run 1 (install step)')
+    report.handOff()
+    expect(summarize(report, host, undefined, true).lines.at(-1))
+      .toBe(`Result: HANDED OFF, not a pass until --run 1 --verify passes (on ${host}, hosted-runner evidence)`)
+  })
+})
+
+describe('the published DMG check of the hosted-runner workflow (#381)', () => {
+  // A release folder as the workflow downloads it, signed with a scratch key.
+  function release() {
+    const key = generateKeyPairSync('ed25519')
+    const publicKeySpkiBase64 = key.publicKey.export({ type: 'spki', format: 'der' }).toString('base64')
+    const keyId = deriveKeyId(publicKeySpkiBase64)
+    const registry = { schema: 1 as const, signingKeyId: keyId, keys: [{ keyId, algorithm: 'ed25519' as const, publicKeySpkiBase64 }] }
+    const folder = scratchDir('agent-inbox-published-dmg-')
+    const filename = 'Agent-Inbox-v1.8.0-universal.dmg'
+    const dmg = Buffer.from('a stand-in for the universal DMG')
+    writeFileSync(join(folder, filename), dmg)
+    const asset = (name: string, platform: 'darwin' | 'linux', architecture: 'universal' | 'arm64' | 'x64', packageType: 'dmg' | 'appimage' | 'deb', bytes: Buffer) => (
+      { name, platform, architecture, packageType, size: bytes.length, sha256: sha256(bytes) }
+    )
+    const assets = [
+      asset(filename, 'darwin', 'universal', 'dmg', dmg),
+      asset('Agent-Inbox-v1.8.0-linux-arm64.AppImage', 'linux', 'arm64', 'appimage', Buffer.from('arm64 AppImage')),
+      asset('agent-inbox_1.8.0_arm64.deb', 'linux', 'arm64', 'deb', Buffer.from('arm64 deb')),
+      asset('Agent-Inbox-v1.8.0-linux-x86_64.AppImage', 'linux', 'x64', 'appimage', Buffer.from('x64 AppImage')),
+      asset('agent-inbox_1.8.0_amd64.deb', 'linux', 'x64', 'deb', Buffer.from('x64 deb')),
+    ]
+    const evidence = { tag: 'v1.8.0', packageVersion: '1.8.0', sourceCommit: 'a'.repeat(40), sourceTree: 'b'.repeat(40), assets }
+    const { bytes } = generateManifest({ registry, evidence, minimumMacosVersion: '13.5', publishedAt: '2026-10-28T17:46:28Z' })
+    const privateKeyPem = key.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString()
+    writeFileSync(join(folder, 'update-manifest.json'), bytes)
+    writeFileSync(join(folder, 'update-manifest.json.sig'), signManifest({ manifestBytes: bytes, registry, privateKeyPem, now: '2026-10-28T18:00:00Z' }).bytes)
+    const sums = (entries: Array<{ name: string; sha256: string }>) => entries.map((entry) => `${entry.sha256}  ${entry.name}\n`).join('')
+    writeFileSync(join(folder, 'SHA256SUMS.txt'), sums(assets))
+    return { folder, registry, filename, dmg, assets, sums }
+  }
+
+  it('accepts the DMG SHA256SUMS.txt and the signed update-manifest.json both list', async () => {
+    const { folder, registry, filename, dmg } = release()
+    await expect(checkPublishedDmg({ folder, version: '1.8.0', registry })).resolves.toEqual({
+      dmg: join(folder, filename),
+      sha256: sha256(dmg),
+      byteLength: dmg.length,
+    })
+  })
+
+  it('refuses a DMG either list disagrees with, and a manifest the keys did not sign', async () => {
+    const changed = release()
+    appendFileSync(join(changed.folder, changed.filename), 'x')
+    await expect(checkPublishedDmg({ folder: changed.folder, version: '1.8.0', registry: changed.registry })).rejects.toThrow(/is not the one SHA256SUMS\.txt lists/)
+
+    // SHA256SUMS.txt agrees with the changed DMG, the signed manifest doesn't.
+    const relisted = release()
+    const bytes = Buffer.concat([relisted.dmg, Buffer.from('x')])
+    writeFileSync(join(relisted.folder, relisted.filename), bytes)
+    writeFileSync(join(relisted.folder, 'SHA256SUMS.txt'), relisted.sums([{ name: relisted.filename, sha256: sha256(bytes) }]))
+    await expect(checkPublishedDmg({ folder: relisted.folder, version: '1.8.0', registry: relisted.registry })).rejects.toThrow(/not the file update-manifest\.json describes/)
+
+    const unlisted = release()
+    writeFileSync(join(unlisted.folder, 'SHA256SUMS.txt'), unlisted.sums(unlisted.assets.slice(1)))
+    await expect(checkPublishedDmg({ folder: unlisted.folder, version: '1.8.0', registry: unlisted.registry })).rejects.toThrow(/lists Agent-Inbox-v1\.8\.0-universal\.dmg 0 times/)
+
+    const other = release()
+    await expect(checkPublishedDmg({ folder: other.folder, version: '1.8.0', registry: release().registry })).rejects.toThrow(/signature verification failed/)
+    await expect(checkPublishedDmg({ folder: other.folder, version: '1.7.0', registry: other.registry })).rejects.toThrow(/describes v1\.8\.0, not v1\.7\.0/)
   })
 })

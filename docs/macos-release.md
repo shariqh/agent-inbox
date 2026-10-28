@@ -782,7 +782,14 @@ After 2.0.0 the Intel path can't be patched: release tags must increase, and eve
 build is arm64 only. So before 2.0.0 is tagged, 1.x-last's own updater code runs once more,
 on an Intel Mac and under Rosetta, against scratch-signed manifests, through a real install
 of its real DMG. 1.x-last is v1.8.0, published 2026-10-28; milestone v1.9 lands on `main`
-but no 1.9 release is cut. Passing on both hosts is a gate for the 2.0.0 tag (#296).
+but no 1.9 release is cut.
+
+The gate for the 2.0.0 tag (#296) is one PASS of the
+[hosted-runner workflow](#on-githubs-hosted-runners-381), dispatched from `main`: all three
+runs pass on both hosts, and the result is posted on #296 as hosted-runner evidence. Runs on
+a real Intel Mac, or under Rosetta on a real Apple silicon Mac in a standard test account,
+are optional extra evidence; they aren't required. The owner decided this on 2026-10-28 and
+accepted the risk the workflow leaves untested, which its section lists.
 
 The harness, `test/rehearsal/rehearsal.cjs`, is committed but never packaged, and it adds
 nothing to the app:
@@ -814,16 +821,17 @@ nothing to the app:
 | 2 | 1.x-last | The offer is blocked, `apple-silicon` on an Intel Mac and `rosetta` under Rosetta, with the fixed copy and no artifact; only the four manifest files are fetched, never the arm64 DMG; Review release is hidden on an Intel Mac; the installer refuses the arm64 DMG; two scheduled checks really run, and notify once under Rosetta and never on an Intel Mac |
 | 3 | One release below 1.x-last (`--from`) | A missing `update-manifest.json` pair, or a manifest and signature from different releases, ends `unverified`; once 1.x-last's real DMG is downloaded and verified, both keep it. A v1 manifest below the v1 mark ends `stale` and keeps the download too. It is tested two ways: the real manifest of the release before 1.x-last, re-stamped by `restampV1` from the release list cut at that release (`restampV1` re-stamps the newest universal release in the list it gets), and a v1 mark raised above 1.x-last itself |
 
-Run all three on an Intel Mac, and on an Apple silicon Mac under Rosetta. On Apple silicon
-without Rosetta, runs 2 and 3 check the arm64 path instead, as a control rather than a gate
-result, and run 1 refuses.
+To run it on a real Mac, which is optional, run all three on an Intel Mac or under Rosetta on
+an Apple silicon Mac. On Apple silicon without Rosetta, runs 2 and 3 check the arm64 path
+instead, as a control, and run 1 refuses.
 
 To prepare each Mac:
 
 1. Create a standard user account for the rehearsal (System Settings → Users & Groups) and
    log in to it. Run 1 opens 1.x-last in that account, where it uses the account's
    `~/.agent-inbox` and `~/Library/Application Support/Agent Inbox`. Run 1 refuses in an
-   administrator account. Delete the account afterwards.
+   administrator account, except on a GitHub-hosted runner (below). Delete the account
+   afterwards.
 2. Quit Agent Inbox in every account on the Mac. Its viewer listens on 127.0.0.1:4319 for
    the whole Mac, and the app run 1 opens would use a viewer another account left running.
    Run 1 refuses while anything answers there.
@@ -871,6 +879,7 @@ ELECTRON_RUN_AS_NODE=1 arch -x86_64 "$APP/Contents/MacOS/Agent Inbox" test/rehea
 | `--from` | One step below `--last`, `1.7.0` | The version run 3 runs as |
 | `--older-app` | None | Run 1's copy of an older app, inside your home folder |
 | `--work` | None (required) | Scratch `userData`, downloads, run 1's hand-off and the reports |
+| `--hosted-runner` | Off | Only for the hosted-runner workflow (below): lets run 1 run in an administrator account and marks every result as hosted-runner evidence. Refused unless `GITHUB_ACTIONS` is `true` and `RUNNER_ENVIRONMENT` is `github-hosted`. `--run 1 --verify` needs it again after an install step that had it |
 
 Run 1 turns the copy at `--older-app` into 1.x-last, keeps the old copy beside it in a
 hidden `.agent-inbox-update-*` folder as `Agent Inbox.app.previous`, and opens 1.x-last in
@@ -888,9 +897,9 @@ Run 1's install step never passes on its own: when it has handed the swap to the
 prints `Result: HANDED OFF, not a pass until --run 1 --verify passes` and exits with 3.
 Only `--run 1 --verify` can pass run 1.
 
-Before 2.0.0 is tagged, post the results on #296: one comment per host, with the Summary
-lines of `--run 1 --verify`, run 2 and run 3, and the full reports, the install step's
-included, in a collapsed `<details>` block. For example:
+To add a real Mac's runs to the evidence, post them on #296: one comment per host, with the
+Summary lines of `--run 1 --verify`, run 2 and run 3, and the full reports, the install
+step's included, in a collapsed `<details>` block. For example:
 
 ```text
 Rehearsal of 1.x-last's update path (#344): v1.8.0
@@ -899,7 +908,77 @@ Harness: <the commit the reports print>
 Run 1 --verify: PASS    Run 2: PASS    Run 3: PASS
 ```
 
-Tag 2.0.0 only once both hosts have posted a PASS for all three.
+#### On GitHub's hosted runners (#381)
+
+The workflow Rehearse 1.x-last on hosted runners (`.github/workflows/rehearsal-runners.yml`)
+runs all three runs on GitHub's `macos-15-intel` runner, an Intel Mac, and under
+`arch -x86_64` on its `macos-15` runner, an Apple silicon Mac. Each runner is a throwaway
+virtual machine, and its own user stands in for the test account. The workflow starts only
+by hand, with read-only permissions and no secrets. Start it on `main` from Actions →
+Rehearse 1.x-last on hosted runners → Run workflow, or:
+
+```sh
+gh workflow run rehearsal-runners.yml --ref main -f last=1.8.0 -f older=1.7.0
+```
+
+`last` is 1.x-last, and `older` is the release whose app run 1 replaces. On each runner the
+workflow:
+
+1. Downloads both releases' DMGs, `SHA256SUMS.txt` files and `update-manifest.json` pairs.
+   It checks each DMG with `test/rehearsal/published-dmg.cjs` before mounting it: its SHA-256
+   must be the one `SHA256SUMS.txt` lists, and its size and SHA-256 those of the macOS target
+   of the update manifest, whose signature must verify under `release/update-keys.json`.
+2. Installs 1.x-last by copying the app from its DMG into `/Applications`, as a user would,
+   and copies the older app into `~/Rehearsal/Older`. The harness's preflight then checks the
+   installed app as it does on any Mac: its signature, Gatekeeper's `Notarized Developer ID`,
+   and its updater files against the commit the signed manifest names.
+3. Runs run 2, run 3 and run 1's install step, then `--run 1 --verify` once the install step
+   has handed off. Each passes `--hosted-runner`.
+
+A runner's only user is an administrator, which run 1 refuses. `--hosted-runner` lifts that
+one refusal, and only when `GITHUB_ACTIONS` is `true` and `RUNNER_ENVIRONMENT` is
+`github-hosted`. Anywhere else the harness refuses the flag before it does anything. Every
+report says at the top that the override is in effect, and its result line ends
+`hosted-runner evidence`. Run 1's hand-off records the override, and
+`--run 1 --verify` refuses to run without it after an install step that had it, so run 1's
+PASS from a runner carries that label too.
+
+The run's summary and log show each runner's macOS, System Integrity Protection and
+Gatekeeper status, then the summary shows PASS or FAIL for each run on each host. The
+workflow fails unless both hosts' jobs succeeded and passed every run: run 1's install step
+handed off, its `--verify` passed, and runs 2 and 3 passed. Each host uploads an artifact,
+`rehearsal-intel` or `rehearsal-rosetta`, kept for 30 days. It holds the reports, each run's
+whole output in `logs/`, run 1's hand-off and the helper's result. To retry one host, use
+Re-run failed jobs: each job starts on a fresh runner and replaces its host's artifact.
+
+It proves that the published 1.x-last's own updater takes each path on an Intel Mac and
+under Rosetta: the blocked offer, the bad and stale manifests, and a real download, install,
+swap and relaunch. It doesn't prove:
+
+- That macOS's App Management protection lets the helper swap the app on a real Mac with
+  System Integrity Protection on. GitHub's macOS 15 runners run with it disabled (each
+  run's log prints `csrutil status`), and may have a pre-seeded privacy (TCC) database. On
+  a real Mac the harness swaps the app with Terminal as the responsible process, not Agent
+  Inbox, so neither a runner nor a real-Mac run exercises the same-developer App Management
+  exemption a real in-app update gets.
+- Anything on a macOS other than the runner images' macOS 15.
+- That run 1 works in a standard account. On a runner it runs as an administrator.
+
+The owner accepted that risk on 2026-10-28 and made one PASS of this workflow, dispatched
+from `main`, the 2.0.0 gate. Runs on real Macs are optional extra evidence (above).
+
+For the gate, dispatch the workflow from `main`, then add one comment on #296 for that run.
+Give its link, the commit the reports name and the result of each run on each host, and say
+it is hosted-runner evidence. Put both artifacts' reports in a collapsed `<details>` block.
+For example:
+
+```text
+Rehearsal of 1.x-last's update path (#344): v1.8.0, hosted-runner evidence, dispatched from main
+Workflow run: https://github.com/shariqh/agent-inbox/actions/runs/<id>
+Harness: <the commit the reports print, on main>
+Intel (macos-15-intel): Run 1 --verify: PASS    Run 2: PASS    Run 3: PASS
+Rosetta (macos-15, arch -x86_64): Run 1 --verify: PASS    Run 2: PASS    Run 3: PASS
+```
 
 ### Release runbook
 
@@ -907,9 +986,10 @@ Tag 2.0.0 only once both hosts have posted a PASS for all three.
    the default branch is green, and `package.json` plus both lockfile version fields are
    the intended `X.Y.Z`. Before tagging 2.0.0, the first Apple silicon-only release
    (#296), also:
-   - run the rehearsal of #344 against the published v1.8.0 on an Intel Mac and on an
-     Apple silicon Mac under Rosetta, and post its results on #296: v1.8.0's Intel path
-     can't be patched once 2.0.0 is tagged;
+   - dispatch the [hosted-runner rehearsal](#on-githubs-hosted-runners-381) of #344 from
+     `main` against the published v1.8.0, and post its PASS on #296 as hosted-runner
+     evidence: v1.8.0's Intel path can't be patched once 2.0.0 is tagged. Runs on real Macs
+     are optional;
    - edit v1.8.0's published notes by hand to say Intel Macs stay on it, keeping the
      `<!-- agent-inbox-release:… -->` marker line unchanged.
 2. Run the no-secret gates locally:

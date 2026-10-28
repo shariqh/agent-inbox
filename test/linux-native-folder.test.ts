@@ -1,4 +1,4 @@
-import { cpSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, cpSync, mkdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -10,7 +10,7 @@ import {
   listPlainElfFiles,
   readElfArchitecture,
 } from '../scripts/linux-binary-gates.mjs'
-import { buildLinuxThinApp } from '../scripts/build-linux-thin-app.mjs'
+import { buildLinuxThinApp, dropGroupAndOtherWrite } from '../scripts/build-linux-thin-app.mjs'
 import { resolveLinuxCompilerEnvironment } from '../scripts/linux-release-inputs.mjs'
 import { PROCESS_PROBE } from '../scripts/verify-linux-thin-app.mjs'
 import { verifyPackagedUpdateTrust } from '../scripts/package-update-trust.mjs'
@@ -259,6 +259,42 @@ describe('native Linux folder gates', () => {
     expect(build).toContain('write-setup-info.mjs')
     expect(build).toContain("'--runtime-key', key")
     expect(build).not.toMatch(/AppImage|\.deb\b|electron-builder|electron-forge/i)
+  })
+
+  it("restores 0644/0755 modes on the Electron zip's 0666/0777 files, not following links (#371)", () => {
+    const scratch = scratchDir('linux-electron-modes-')
+    const root = join(scratch, 'electron')
+    mkdirSync(join(root, 'locales'), { recursive: true })
+    // [mode stored in Electron 43.8.4's Linux zip, mode the thin folder must have]
+    const files = {
+      'chrome-sandbox': [0o777, 0o755],
+      electron: [0o777, 0o755],
+      'resources.pak': [0o666, 0o644],
+      'locales/en-US.pak': [0o666, 0o644],
+      'icudtl.dat': [0o644, 0o644],
+    }
+    for (const [name, [stored]] of Object.entries(files)) {
+      writeFileSync(join(root, name), name)
+      chmodSync(join(root, name), stored!)
+    }
+    chmodSync(join(root, 'locales'), 0o777)
+    const outside = join(scratch, 'outside')
+    writeFileSync(outside, 'outside')
+    chmodSync(outside, 0o666)
+    symlinkSync(outside, join(root, 'link'))
+
+    dropGroupAndOtherWrite(root)
+
+    for (const [name, [, expected]] of Object.entries(files)) {
+      expect(statSync(join(root, name)).mode & 0o7777, name).toBe(expected)
+    }
+    expect(statSync(join(root, 'locales')).mode & 0o7777).toBe(0o755)
+    expect(statSync(outside).mode & 0o7777).toBe(0o666)
+
+    // on Electron's own files, as extracted: the packager runs it before copying the app in
+    const build = readFileSync(join(resolve(process.cwd()), 'scripts', 'build-linux-thin-app.mjs'), 'utf8')
+    const pack = build.slice(build.indexOf('await packager({'), build.indexOf('if (paths.length !== 1)'))
+    expect(pack).toContain('afterExtract: [({ buildPath }) => dropGroupAndOtherWrite(buildPath)],')
   })
 
   it('loads the shipped update verifier and pinned registry from a Linux app folder', () => {

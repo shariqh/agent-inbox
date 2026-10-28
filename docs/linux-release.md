@@ -94,7 +94,11 @@ Each job:
    `node_modules` the same way;
 5. creates a thin Electron application folder containing only the matching
    Linux runtime key and only Electron's `locales/en-US.pak` and `locales/en-GB.pak`
-   ([What Electron locales ship](macos-release.md#what-electron-locales-ship-292));
+   ([What Electron locales ship](macos-release.md#what-electron-locales-ship-292)).
+   Electron's Linux zips store `0666` and `0777` modes since 43.8.4, and the extractor
+   applies them as stored, so the build clears group and other write on Electron's files
+   as soon as they are extracted. The folder keeps the `0644` and `0755` modes of every
+   earlier zip (#371);
 6. verifies ELF architecture, libc symbol floors, Electron/Node versions and
    ABIs, both native addons, pruned app and runtime `node_modules`, the US and British
    English Electron locales, schema-2 Setup metadata, and exact-host payload selection, then runs
@@ -165,7 +169,7 @@ then reruns the complete thin-folder ELF, ABI, addon, runtime, Setup-selection,
 source-commit, and single matching `linux-x64` or `linux-arm64` payload gates. The extracted inner
 application tree and version must exactly match the already-verified source
 folder; the sole permission transformation is the standard AppImage
-`chrome-sandbox` mode from the Electron archive's exact `0755` to the packaged
+`chrome-sandbox` mode from the thin folder's exact `0755` to the packaged
 setuid-root `4755`; the builder rejects privileged mode bits on every source
 entry, and the final verifier requires the sandbox to be the sole privileged
 entry. appimagetool runs from an empty isolated working directory and HOME

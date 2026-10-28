@@ -1,0 +1,77 @@
+{
+  "tag_name": "v1.8.0",
+  "draft": false,
+  "prerelease": false,
+  "assets": [
+    {
+      "id": 686078057,
+      "name": "Agent-Inbox-v1.8.0-linux-arm64.AppImage",
+      "size": 153639432,
+      "digest": "sha256:3f230e044b96787dd0bc09730350db1912ee79403d31ccbe7a85270990213ed1",
+      "browser_download_url": "https://github.com/shariqh/agent-inbox/releases/download/v1.8.0/Agent-Inbox-v1.8.0-linux-arm64.AppImage"
+    },
+    {
+      "id": 686078059,
+      "name": "Agent-Inbox-v1.8.0-linux-x86_64.AppImage",
+      "size": 154032632,
+      "digest": "sha256:a8046258883498d9e1f6b9d873debc2b7462e05833eb24f3444487491c62daea",
+      "browser_download_url": "https://github.com/shariqh/agent-inbox/releases/download/v1.8.0/Agent-Inbox-v1.8.0-linux-x86_64.AppImage"
+    },
+    {
+      "id": 686078061,
+      "name": "Agent-Inbox-v1.8.0-universal.dmg",
+      "size": 232016051,
+      "digest": "sha256:68cb7deb189f2bfe2a58dcc0013137d6d1730e6be3978a7d7423410060fe3039",
+      "browser_download_url": "https://github.com/shariqh/agent-inbox/releases/download/v1.8.0/Agent-Inbox-v1.8.0-universal.dmg"
+    },
+    {
+      "id": 686078058,
+      "name": "agent-inbox_1.8.0_amd64.deb",
+      "size": 116012264,
+      "digest": "sha256:1bcab182b62bc0e098f982ca5a86288151481f0923ce711e58f6923d644fb7cc",
+      "browser_download_url": "https://github.com/shariqh/agent-inbox/releases/download/v1.8.0/agent-inbox_1.8.0_amd64.deb"
+    },
+    {
+      "id": 686078055,
+      "name": "agent-inbox_1.8.0_arm64.deb",
+      "size": 109848468,
+      "digest": "sha256:fadd1abd6ae5f700dc81a4b841a785ed5ecab4417f61aceebdfa1326ba7e41e3",
+      "browser_download_url": "https://github.com/shariqh/agent-inbox/releases/download/v1.8.0/agent-inbox_1.8.0_arm64.deb"
+    },
+    {
+      "id": 686078671,
+      "name": "SHA256SUMS.txt",
+      "size": 500,
+      "digest": "sha256:c3b62df68b895d50e80b6dc4814c36cfa12b59b027559a68cbd07bdfecf7f56d",
+      "browser_download_url": "https://github.com/shariqh/agent-inbox/releases/download/v1.8.0/SHA256SUMS.txt"
+    },
+    {
+      "id": 686078732,
+      "name": "update-manifest-v2.json",
+      "size": 2758,
+      "digest": "sha256:6c3f64bdcfa5dc1923dfb5476dc646124b2e9a0a7c520df2f3fdb3c995d2edd5",
+      "browser_download_url": "https://github.com/shariqh/agent-inbox/releases/download/v1.8.0/update-manifest-v2.json"
+    },
+    {
+      "id": 686078748,
+      "name": "update-manifest-v2.json.sig",
+      "size": 324,
+      "digest": "sha256:722db116be986227091ab86f09f921e77ceaf0b610a4947cdf419c2740b33ea6",
+      "browser_download_url": "https://github.com/shariqh/agent-inbox/releases/download/v1.8.0/update-manifest-v2.json.sig"
+    },
+    {
+      "id": 686078694,
+      "name": "update-manifest.json",
+      "size": 2758,
+      "digest": "sha256:766a1a48b531740f76dfbc916e38dd49517a578acc1f78c89d6f1cb4299b940d",
+      "browser_download_url": "https://github.com/shariqh/agent-inbox/releases/download/v1.8.0/update-manifest.json"
+    },
+    {
+      "id": 686078712,
+      "name": "update-manifest.json.sig",
+      "size": 324,
+      "digest": "sha256:986471b26302e1409ed3aeca04add6d779dd62714f457cfc1ba1f82f71b391d8",
+      "browser_download_url": "https://github.com/shariqh/agent-inbox/releases/download/v1.8.0/update-manifest.json.sig"
+    }
+  ]
+}

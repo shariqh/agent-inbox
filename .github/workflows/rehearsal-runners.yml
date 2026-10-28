@@ -7,6 +7,9 @@ name: Rehearse 1.x-last on hosted runners
 # hosted-runner evidence, not the human gate.
 
 on:
+  # TEMPORARY (#381): runs this branch for real before review; reverted before the PR opens.
+  push:
+    branches: [rehearsal-runner-381]
   workflow_dispatch:
     inputs:
       last:
@@ -48,8 +51,8 @@ jobs:
             runner: macos-15
             rosetta: true
     env:
-      LAST: ${{ inputs.last }}
-      OLDER: ${{ inputs.older }}
+      LAST: ${{ inputs.last || '1.8.0' }}
+      OLDER: ${{ inputs.older || '1.7.0' }}
       HOST: ${{ matrix.host }}
       ROSETTA: ${{ matrix.rosetta }}
       APP: /Applications/Agent Inbox.app
@@ -217,7 +220,7 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     env:
-      LAST: ${{ inputs.last }}
+      LAST: ${{ inputs.last || '1.8.0' }}
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         continue-on-error: true

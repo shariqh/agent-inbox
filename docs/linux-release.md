@@ -4,7 +4,7 @@ Issue #86's first delivery layer produces native, architecture-matched release
 inputs for `linux-x64` and `linux-arm64`. The AppImage and DEB layers package
 both verified folders as deterministic, architecture-matched artifacts. The
 protected multi-platform release flow consumes those exact native artifacts,
-combines them with the notarized universal macOS DMG, and publishes only after
+combines them with the notarized Apple silicon macOS DMG, and publishes only after
 the complete remote draft has been downloaded and rehashed.
 
 ## Pinned compatibility contract
@@ -386,7 +386,7 @@ digests to agree before any protected job receives credentials.
 
 The public allowlist is exactly:
 
-- `Agent-Inbox-vX.Y.Z-universal.dmg`, or `Agent-Inbox-vX.Y.Z-arm64.dmg` for an arm64 release
+- `Agent-Inbox-vX.Y.Z-arm64.dmg` (`Agent-Inbox-vX.Y.Z-universal.dmg` through 1.x-last, v1.8.0)
 - `Agent-Inbox-vX.Y.Z-linux-x86_64.AppImage`
 - `Agent-Inbox-vX.Y.Z-linux-arm64.AppImage`
 - `agent-inbox_X.Y.Z_amd64.deb`

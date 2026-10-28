@@ -91,7 +91,7 @@ jobs:
             csrutil status 2>&1 || true
             spctl --status 2>&1 || true
             echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Write the harness command
         run: |
           # The installed app's own Electron in Node mode, under Rosetta on the Rosetta host.

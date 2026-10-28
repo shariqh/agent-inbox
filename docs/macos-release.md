@@ -772,6 +772,120 @@ After the emergency release:
 - No backup is left. Add a new backup public key the same way before relying on this
   procedure again.
 
+### Rehearsing 1.x-last's Intel update path (#344)
+
+After 2.0.0 the Intel path can't be patched: release tags must increase, and every 2.x
+build is arm64 only. So before 2.0.0 is tagged, 1.x-last's own updater code runs once more,
+on an Intel Mac and under Rosetta, against scratch-signed manifests, through a real install
+of its real DMG. 1.x-last is v1.8.0, published 2026-10-28; milestone v1.9 lands on `main`
+but no 1.9 release is cut. Passing on both hosts is a gate for the 2.0.0 tag (#296).
+
+The harness, `test/rehearsal/rehearsal.cjs`, is committed but never packaged, and it adds
+nothing to the app:
+
+- It loads `Contents/Resources/app/electron/update-*.cjs` from the installed app and runs
+  them with that app's own Electron in Node mode (`ELECTRON_RUN_AS_NODE=1`).
+- It builds the update controller the way `electron/main.cjs` does and injects only a
+  scratch key registry, a `fetch` that answers the four manifest URLs with scratch-signed
+  files (every other request goes to the network), the running version, `translated` (from
+  `sysctl.proc_translated`), the macOS version (from `sw_vers`) and scratch `userData`
+  folders.
+- Before any run it checks the installed app's code signature, then applies the source pins
+  it shares with `test/electron-updates.test.ts` (`test/rehearsal/main-pins.cjs`) to the
+  app's own `main.cjs`. They prove the wiring the harness bypasses is there: `translated`,
+  `hostArch`, Review release hidden for `apple-silicon`, and the Rosetta notification.
+- It signs both manifests with an Ed25519 key it makes at run time and never writes to
+  disk. `update-manifest-v2.json` lists only an arm64 DMG of the next major release and the
+  four Linux packages. `update-manifest.json` is 1.x-last's published manifest re-stamped by
+  the publisher's own `restampV1`, so its macOS target is the real, notarized 1.x-last DMG.
+  The publisher code comes from the checkout, which needs no `npm install`.
+
+| Run | Runs as | It passes when |
+| --- | --- | --- |
+| 1 | The older app given as `--older-app`, which the installer replaces | 1.x-last is offered from `update-manifest.json`; its real DMG downloads and verifies; `prepare()` passes codesign, Gatekeeper and the slice check; once the harness exits, the helper swaps the copy and opens it; `--verify` then finds the helper's exit code 0, the swapped app signed, notarized and running, and its viewer reporting 1.x-last |
+| 2 | 1.x-last | The offer is blocked, `apple-silicon` on an Intel Mac and `rosetta` under Rosetta, with the fixed copy and no artifact; only the four manifest files are fetched, never the arm64 DMG; Review release is hidden on an Intel Mac; the installer refuses the arm64 DMG; scheduled checks notify once under Rosetta and never on an Intel Mac |
+| 3 | One release below 1.x-last (`--from`) | A missing `update-manifest.json` pair, or a manifest and signature from different releases, ends `unverified`; once 1.x-last's real DMG is downloaded and verified, both keep it; a v1 rollback mark above 1.x-last ends `stale`, and keeps the download too |
+
+Run all three on an Intel Mac, and on an Apple silicon Mac under Rosetta. On Apple silicon
+without Rosetta, runs 2 and 3 check the arm64 path instead, as a control rather than a gate
+result, and run 1 refuses.
+
+To prepare each Mac:
+
+1. Create a standard user account for the rehearsal (System Settings → Users & Groups) and
+   log in to it. Run 1 opens 1.x-last in that account, where it uses the account's
+   `~/.agent-inbox` and `~/Library/Application Support/Agent Inbox`. Delete the account
+   afterwards.
+2. Quit Agent Inbox in every account on the Mac. Its viewer listens on 127.0.0.1:4319 for
+   the whole Mac, and the app run 1 opens would use a viewer another account left running.
+   Run 1 refuses while anything answers there.
+3. Install 1.x-last in `/Applications` from its release page, if it isn't there. The
+   harness only reads it.
+4. Get this repository at `main`, with `git clone https://github.com/shariqh/agent-inbox.git`
+   or as a downloaded ZIP. Neither Node.js nor `npm install` is needed. On Apple silicon,
+   `arch -x86_64 /usr/bin/true` must succeed; if it doesn't, install Rosetta with
+   `softwareupdate --install-rosetta --agree-to-license`.
+5. For run 1, copy an older release into your home folder, for example 1.7.0:
+
+   ```sh
+   mkdir -p ~/Rehearsal/mnt ~/Rehearsal/Older && cd ~/Rehearsal
+   curl -fLO https://github.com/shariqh/agent-inbox/releases/download/v1.7.0/Agent-Inbox-v1.7.0-universal.dmg
+   hdiutil attach -readonly -nobrowse -mountpoint ~/Rehearsal/mnt Agent-Inbox-v1.7.0-universal.dmg
+   ditto ~/Rehearsal/mnt/"Agent Inbox.app" ~/Rehearsal/Older/"Agent Inbox.app"
+   hdiutil detach ~/Rehearsal/mnt
+   ```
+
+Then run it from the checkout, in Terminal. On an Intel Mac:
+
+```sh
+APP="/Applications/Agent Inbox.app"
+ELECTRON_RUN_AS_NODE=1 "$APP/Contents/MacOS/Agent Inbox" test/rehearsal/rehearsal.cjs --run 2,3 --work ~/Rehearsal/work
+ELECTRON_RUN_AS_NODE=1 "$APP/Contents/MacOS/Agent Inbox" test/rehearsal/rehearsal.cjs --run 1 --work ~/Rehearsal/work \
+  --older-app ~/Rehearsal/Older/"Agent Inbox.app" --test-account
+# once Agent Inbox has opened:
+ELECTRON_RUN_AS_NODE=1 "$APP/Contents/MacOS/Agent Inbox" test/rehearsal/rehearsal.cjs --run 1 --verify --work ~/Rehearsal/work
+```
+
+On an Apple silicon Mac, put `arch -x86_64` before `"$APP/Contents/MacOS/Agent Inbox"` in
+each of the three commands, for example:
+
+```sh
+ELECTRON_RUN_AS_NODE=1 arch -x86_64 "$APP/Contents/MacOS/Agent Inbox" test/rehearsal/rehearsal.cjs --run 2,3 --work ~/Rehearsal/work
+```
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `--app` | `/Applications/Agent Inbox.app` | The installed 1.x-last app, whose Electron runs the harness |
+| `--last` | `1.8.0` | 1.x-last's version, which the app must have |
+| `--next` | The next major version, `2.0.0` | The arm64-only release the scratch manifests describe |
+| `--from` | One step below `--last`, `1.7.0` | The version run 3 runs as |
+| `--older-app` | None | Run 1's copy of an older app, inside your home folder |
+| `--work` | None (required) | Scratch `userData`, downloads, run 1's hand-off and the reports |
+
+Run 1 turns the copy at `--older-app` into 1.x-last, keeps the old copy beside it in a
+`.agent-inbox-update-*` folder as `Agent Inbox.app.previous`, and opens 1.x-last in the
+account. To run it again, make a fresh copy. If macOS reports that Terminal was prevented
+from modifying apps, the helper couldn't move the copy aside and `--verify` shows exit code
+70: allow Terminal under System Settings → Privacy & Security → App Management, then run
+it again with a fresh copy. Afterwards quit Agent Inbox, delete `~/Rehearsal` and delete the
+test account.
+
+Every check prints PASS or FAIL. The harness exits with 0 when every check passed, 1 when
+one failed and 2 when it refused to start, and writes `report-<time>.txt` into `--work`.
+
+Before 2.0.0 is tagged, post the results on #296: one comment per host, with its Summary
+lines for runs 1 (and `--verify`), 2 and 3, and the full reports in a collapsed
+`<details>` block. For example:
+
+```text
+Rehearsal of 1.x-last's update path (#344): v1.8.0
+Host: an Intel Mac, x64 process; MacBookPro16,1, macOS 15.7
+Harness: <the commit the reports print>
+Run 1: PASS    Run 1 --verify: PASS    Run 2: PASS    Run 3: PASS
+```
+
+Tag 2.0.0 only once both hosts have posted a full PASS.
+
 ### Release runbook
 
 1. Confirm the portable-runtime and universal-package prerequisite changes are merged,

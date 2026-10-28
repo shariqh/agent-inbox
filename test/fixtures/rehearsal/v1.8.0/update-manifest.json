@@ -1,0 +1,72 @@
+{
+  "schema": 1,
+  "kind": "agent-inbox-update-manifest",
+  "repository": "shariqh/agent-inbox",
+  "version": "1.8.0",
+  "tag": "v1.8.0",
+  "source": {
+    "commit": "b008824c49d58df86915e115d95117d069bd6bba",
+    "tree": "d50d1d5c4b79b148c4643857b7fee9a462a2de5c"
+  },
+  "publishedAt": "2026-10-28T17:46:28Z",
+  "expiresAt": "2027-04-26T17:46:28Z",
+  "releaseUrl": "https://github.com/shariqh/agent-inbox/releases/tag/v1.8.0",
+  "signingKeyId": "ed25519-99927ba2f6af6482",
+  "trustedKeyIds": [
+    "ed25519-99927ba2f6af6482",
+    "ed25519-c8adddea0de080d6"
+  ],
+  "targets": [
+    {
+      "platform": "darwin",
+      "architecture": "universal",
+      "packageType": "dmg",
+      "filename": "Agent-Inbox-v1.8.0-universal.dmg",
+      "url": "https://github.com/shariqh/agent-inbox/releases/download/v1.8.0/Agent-Inbox-v1.8.0-universal.dmg",
+      "byteLength": 232016051,
+      "sha256": "68cb7deb189f2bfe2a58dcc0013137d6d1730e6be3978a7d7423410060fe3039",
+      "installStrategy": "macos-dmg",
+      "minimumSystemVersion": "13.5"
+    },
+    {
+      "platform": "linux",
+      "architecture": "arm64",
+      "packageType": "appimage",
+      "filename": "Agent-Inbox-v1.8.0-linux-arm64.AppImage",
+      "url": "https://github.com/shariqh/agent-inbox/releases/download/v1.8.0/Agent-Inbox-v1.8.0-linux-arm64.AppImage",
+      "byteLength": 153639432,
+      "sha256": "3f230e044b96787dd0bc09730350db1912ee79403d31ccbe7a85270990213ed1",
+      "installStrategy": "appimage-self-replace"
+    },
+    {
+      "platform": "linux",
+      "architecture": "arm64",
+      "packageType": "deb",
+      "filename": "agent-inbox_1.8.0_arm64.deb",
+      "url": "https://github.com/shariqh/agent-inbox/releases/download/v1.8.0/agent-inbox_1.8.0_arm64.deb",
+      "byteLength": 109848468,
+      "sha256": "fadd1abd6ae5f700dc81a4b841a785ed5ecab4417f61aceebdfa1326ba7e41e3",
+      "installStrategy": "deb-notify"
+    },
+    {
+      "platform": "linux",
+      "architecture": "x64",
+      "packageType": "appimage",
+      "filename": "Agent-Inbox-v1.8.0-linux-x86_64.AppImage",
+      "url": "https://github.com/shariqh/agent-inbox/releases/download/v1.8.0/Agent-Inbox-v1.8.0-linux-x86_64.AppImage",
+      "byteLength": 154032632,
+      "sha256": "a8046258883498d9e1f6b9d873debc2b7462e05833eb24f3444487491c62daea",
+      "installStrategy": "appimage-self-replace"
+    },
+    {
+      "platform": "linux",
+      "architecture": "x64",
+      "packageType": "deb",
+      "filename": "agent-inbox_1.8.0_amd64.deb",
+      "url": "https://github.com/shariqh/agent-inbox/releases/download/v1.8.0/agent-inbox_1.8.0_amd64.deb",
+      "byteLength": 116012264,
+      "sha256": "1bcab182b62bc0e098f982ca5a86288151481f0923ce711e58f6923d644fb7cc",
+      "installStrategy": "deb-notify"
+    }
+  ]
+}

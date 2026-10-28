@@ -5,3 +5,7 @@ marketing/vendor/** -text
 # The updater code installed apps shipped is pinned byte for byte by
 # test/shipped-updaters.test.ts, so Git never converts its line endings either.
 test/fixtures/shipped-updaters/** -text
+
+# The rehearsal's copy of 1.x-last's published update-manifest.json is signed byte for
+# byte (test/rehearsal.test.ts), so Git never converts its line endings either.
+test/fixtures/rehearsal/** -text

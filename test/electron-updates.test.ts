@@ -16,6 +16,13 @@ const setupRunner = createRequire(import.meta.url)('../electron/setup-runner.cjs
   }
 }
 
+// main.cjs's updater wiring, pinned once for these tests and for the rehearsal harness (#344),
+// which applies the same pins to 1.x-last's bundled main.cjs.
+const { MAIN_PINS, pinFailures } = createRequire(import.meta.url)('./rehearsal/main-pins.cjs') as {
+  MAIN_PINS: Record<'rosetta' | 'macInstaller' | 'recorder' | 'downloads', readonly unknown[]>
+  pinFailures(main: string, pins: readonly unknown[]): string[]
+}
+
 function read(relPath: string): string {
   return readFileSync(join(import.meta.dirname, '..', relPath), 'utf8')
 }
@@ -360,21 +367,7 @@ describe('Electron updater integration', () => {
   })
 
   it('tells the checker about Rosetta, the installer about this process, and never opens a release an Intel Mac cannot run', () => {
-    const main = read('electron/main.cjs')
-    const initializer = main.slice(
-      main.indexOf('function initializeUpdateController()'),
-      main.indexOf('async function startOwnServer()'),
-    )
-    expect(initializer).toMatch(/checkForUpdate\(\{[^}]*\n\s+arch: process\.arch,\n\s+translated: app\.runningUnderARM64Translation === true,\n/)
-    expect(initializer).toMatch(/createMacInstaller\(\{[^}]*\n\s+hostArch: process\.arch,\n/)
-    const openRelease = main.slice(main.indexOf("ipcMain.handle('agent-inbox:update-open-release'"), main.indexOf('\n})\n', main.indexOf("ipcMain.handle('agent-inbox:update-open-release'")))
-    expect(main).toContain("const { MANUAL_RELEASES_URL, createUpdateController, reviewReleaseOffered } = require('./update-controller.cjs')")
-    expect(openRelease).toContain('if (!reviewReleaseOffered(state)) return false')
-    expect(openRelease.indexOf('reviewReleaseOffered(state)')).toBeLessThan(openRelease.indexOf('shell.openExternal('))
-    const notifier = initializer.slice(initializer.indexOf('notifier: ('), initializer.indexOf('emit: sendUpdateState'))
-    expect(notifier).toContain('notifier: ({ version, downloadable, installable, rosetta }) => {')
-    expect(notifier).toContain('body: rosetta\n')
-    expect(notifier).toContain('`Version ${version} is available. Reopen Agent Inbox without Rosetta to install it.`')
+    expect(pinFailures(read('electron/main.cjs'), MAIN_PINS.rosetta)).toEqual([])
   })
 
   it('restarts only on an argument-free request and reports only a plain true', async () => {
@@ -590,8 +583,7 @@ describe('Electron updater integration', () => {
     }
     expect(handler('agent-inbox:update-download')).toContain('updateController.downloadNow().catch(() => {})')
     expect(handler('agent-inbox:update-download')).not.toContain('await')
-    expect(main).toContain('includeArtifact: true')
-    expect(main).toContain("directory: path.join(app.getPath('userData'), 'update-downloads')")
+    expect(pinFailures(main, MAIN_PINS.downloads)).toEqual([])
     expect(main).toMatch(/app\.on\('will-quit'[\s\S]*updateController\?\.dispose\(\)/)
   })
 
@@ -773,45 +765,11 @@ describe('Electron updater integration', () => {
   })
 
   it('registers the macOS installer with the running bundle, its processes and constant identities', () => {
-    const main = read('electron/main.cjs')
-    const initializer = main.slice(
-      main.indexOf('function initializeUpdateController()'),
-      main.indexOf('async function startOwnServer()'),
-    )
-
-    expect(main).toContain("const { bundlePathFromExecPath, createMacInstaller } = require('./update-install-macos.cjs')")
-    expect(initializer).toContain("if (process.platform !== 'darwin' || !viewerOwned) return {}")
-    expect(initializer).toContain('installers: updateInstallers(),')
-    expect(initializer).toContain('bundlePath: bundlePathFromExecPath(process.execPath),')
-    expect(initializer).toContain("expectedBundleId: 'io.github.shariqh.agent-inbox',")
-    expect(initializer).toContain("teamId: 'VVR2DKR923',")
-    expect(initializer).toContain('systemVersion: process.getSystemVersion(),')
-    expect(initializer).toContain('pid: process.pid,')
-    expect(initializer).toContain('viewerPid: spawnedViewerPid,')
-    expect(initializer).toContain('uid: process.getuid(),')
-    expect(initializer).toContain('isPackaged: app.isPackaged,')
-    expect(initializer).toContain("workDirectory: path.join(app.getPath('userData'), 'update-install'),")
-    expect(initializer).toContain('`Version ${version} is available. Download and install it from Settings → Updates.`')
-    expect(main).toContain("const { createInstallAttemptStore } = require('./update-install.cjs')")
-    expect(initializer).toContain("attemptStore: createInstallAttemptStore({ directory: path.join(app.getPath('userData'), 'update-install') }),")
-    expect(initializer).toContain('notifyInstallFailure: ({ message }) => {')
-    expect(initializer).toContain("title: 'Agent Inbox update was not installed',")
-    const viewerPid = main.slice(main.indexOf('function spawnedViewerPid()'), main.indexOf('\n}', main.indexOf('function spawnedViewerPid()')))
-    expect(viewerPid).toContain('spawnedViewer.exitCode === null')
-    expect(viewerPid).toContain('spawnedViewer.signalCode === null')
+    expect(pinFailures(read('electron/main.cjs'), MAIN_PINS.macInstaller)).toEqual([])
   })
 
   it('forwards the verified-version recorder and lets stale update states reach the renderer', () => {
-    const main = read('electron/main.cjs')
-    const initializer = main.slice(
-      main.indexOf('function initializeUpdateController()'),
-      main.indexOf('async function startOwnServer()'),
-    )
-
-    expect(main).toContain("const { createUpdatePreferences, createUpdateTrustState } = require('./update-preferences.cjs')")
-    expect(initializer).toContain('trustState: createUpdateTrustState({ app }),')
-    expect(initializer).toContain('checker: ({ currentVersion, automaticChecks, recordVerifiedVersion }) => checkForUpdate({')
-    expect(initializer).toMatch(/checkForUpdate\(\{[^}]*\n\s+recordVerifiedVersion,\n/)
+    expect(pinFailures(read('electron/main.cjs'), MAIN_PINS.recorder)).toEqual([])
     expect(read('electron/setup-preload.cjs')).toMatch(/const UPDATE_STATE_VALUES = new Set\(\[[^\]]*'stale'/)
   })
 

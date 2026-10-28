@@ -223,7 +223,7 @@ describe("the hosted-runner workflow's result (#381)", () => {
     const { status, result, summary } = results(scratch, 'Intel', { RUN1: '3', VERIFY: '0', RUN2: '0', RUN3: '0' })
     expect(status).toBe(0)
     expect(result).toEqual({ host: 'Intel', ...ALL_PASSED })
-    expect(summary).toContain('### Intel: hosted-runner evidence, not the human gate')
+    expect(summary).toContain('### Intel: hosted-runner evidence')
     expect(summary).toContain('| HANDED OFF | PASS | PASS | PASS |')
   })
 

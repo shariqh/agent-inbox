@@ -368,7 +368,7 @@ describe('the hosted-runner override (#381)', () => {
     expect(readFileSync(harness, 'utf8')).toContain('writeHandoff(handoffPath, handed, hostedRunner)')
   })
 
-  it('marks every result hosted-runner evidence, not the human gate', () => {
+  it('marks every result hosted-runner evidence', () => {
     const host = 'an Intel Mac, x64 process'
     const report = createReport(() => {})
     report.beginRun('Run 2')
@@ -378,15 +378,15 @@ describe('the hosted-runner override (#381)', () => {
         '',
         'Summary',
         'Run 2: PASS (1 passed, 0 failed)',
-        'HOSTED RUNNER: hosted-runner evidence, not the human gate (docs/macos-release.md)',
-        `Result: PASS on ${host}, hosted-runner evidence, not the human gate`,
+        'HOSTED RUNNER: hosted-runner evidence (docs/macos-release.md lists what it does not prove)',
+        `Result: PASS on ${host}, hosted-runner evidence`,
       ],
       exitCode: EXIT.pass,
     })
     report.beginRun('Run 1 (install step)')
     report.handOff()
     expect(summarize(report, host, undefined, true).lines.at(-1))
-      .toBe(`Result: HANDED OFF, not a pass until --run 1 --verify passes (on ${host}, hosted-runner evidence, not the human gate)`)
+      .toBe(`Result: HANDED OFF, not a pass until --run 1 --verify passes (on ${host}, hosted-runner evidence)`)
   })
 })
 

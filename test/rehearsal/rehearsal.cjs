@@ -103,7 +103,7 @@ function refuse(message) {
 // throwaway VM whose only user is an administrator and owns the GUI session the relaunch
 // needs. It takes the --hosted-runner flag and both variables such a runner sets, exactly.
 // Without the flag nothing changes; the flag anywhere else is refused.
-const HOSTED_RUNNER_EVIDENCE = 'HOSTED RUNNER: hosted-runner evidence, not the human gate (docs/macos-release.md)'
+const HOSTED_RUNNER_EVIDENCE = 'HOSTED RUNNER: hosted-runner evidence (docs/macos-release.md lists what it does not prove)'
 const HOSTED_RUNNER_REFUSAL = '--hosted-runner is only for GitHub-hosted runners: it needs GITHUB_ACTIONS=true and RUNNER_ENVIRONMENT=github-hosted'
 const HOSTED_RUNNER_VERIFY_REFUSAL =
   "run 1's install step ran under --hosted-runner (run-1.json), so --run 1 --verify must too: add --hosted-runner, on the GitHub-hosted runner that ran the install step"
@@ -549,7 +549,7 @@ function summarize(report, hostLabel, reason, hostedRunner = false) {
   const outcome = (run) => (run.fail > 0 ? 'FAIL' : run.handedOff ? 'HANDED OFF' : 'PASS')
   for (const run of report.runs) lines.push(`${run.name}: ${outcome(run)} (${run.pass} passed, ${run.fail} failed)`)
   if (hostedRunner === true) lines.push(HOSTED_RUNNER_EVIDENCE)
-  const on = `on ${hostLabel ?? 'this host'}${hostedRunner === true ? ', hosted-runner evidence, not the human gate' : ''}`
+  const on = `on ${hostLabel ?? 'this host'}${hostedRunner === true ? ', hosted-runner evidence' : ''}`
   if (report.totals.fail > 0 || report.runs.length === 0) return { lines: [...lines, `Result: FAIL ${on}`], exitCode: EXIT.fail }
   if (report.runs.some((run) => run.handedOff)) {
     return { lines: [...lines, `Result: HANDED OFF, not a pass until --run 1 --verify passes (${on})`], exitCode: EXIT.handedOff }
@@ -559,7 +559,7 @@ function summarize(report, hostLabel, reason, hostedRunner = false) {
 
 // Run 1's hand-off to --verify. It records whether the install step ran under the
 // hosted-runner override (#381), which --verify then needs too, so a PASS from a runner keeps
-// its label instead of reading as the human gate.
+// its label instead of reading as a run on a real Mac.
 function writeHandoff(file, handed, hostedRunner) {
   fs.writeFileSync(file, `${JSON.stringify({ ...handed, hostedRunner: hostedRunner === true }, null, 2)}\n`)
 }
@@ -634,7 +634,7 @@ async function main(argv) {
       write('')
       write(`HOSTED RUNNER  --hosted-runner is in effect: GITHUB_ACTIONS=true, RUNNER_ENVIRONMENT=github-hosted, ${image}.`)
       write("               Run 1 may run in this administrator account, the throwaway runner's own user.")
-      write('               Every result below is hosted-runner evidence, not the human gate.')
+      write('               Every result below is hosted-runner evidence, not a run on a real Mac.')
     }
     const older = options.runs[0] === 1 && !options.verify ? await olderAppFor(options, app, host, hostedRunner) : null
     if (older) write(`Run 1 replaces ${older.olderApp} (${older.olderVersion}) and opens it in this account.`)

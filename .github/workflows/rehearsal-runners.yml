@@ -3,8 +3,8 @@ name: Rehearse 1.x-last on hosted runners
 # The #344 rehearsal of 1.x-last's Intel and Rosetta update path on GitHub's own macOS
 # runners (#381): all three runs on macos-15-intel, and under `arch -x86_64` on macos-15,
 # against the published 1.x-last installed from its real DMG. Started by hand only.
-# docs/macos-release.md says what it proves and what it doesn't: its results are
-# hosted-runner evidence, not the human gate.
+# One PASS of it, dispatched from main, is the 2.0.0 gate (#296). docs/macos-release.md
+# says what it proves and what it doesn't.
 
 on:
   workflow_dispatch:
@@ -191,7 +191,7 @@ jobs:
           printf '{"host":"%s","run1":"%s","verify":"%s","run2":"%s","run3":"%s"}\n' \
             "$HOST" "$run1" "$verify" "$run2" "$run3" > "$work/results.json"
           {
-            echo "### $HOST: hosted-runner evidence, not the human gate"
+            echo "### $HOST: hosted-runner evidence"
             echo
             echo "| Run 1, install step | Run 1 --verify | Run 2 | Run 3 |"
             echo "| --- | --- | --- | --- |"
@@ -250,7 +250,7 @@ jobs:
           {
             echo "## Rehearsal of 1.x-last v$LAST on hosted runners: $result"
             echo
-            echo "Hosted-runner evidence, not the human gate (docs/macos-release.md)."
+            echo "Hosted-runner evidence (docs/macos-release.md lists what it doesn't prove)."
             echo
             echo "The rehearsal jobs: $REHEARSE."
             echo

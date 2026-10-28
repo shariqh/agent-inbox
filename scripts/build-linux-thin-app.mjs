@@ -1,8 +1,11 @@
 #!/usr/bin/env node
 import { execFileSync } from 'node:child_process'
 import {
+  chmodSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -37,6 +40,19 @@ export class LinuxThinAppBuildError extends Error {
     super(message)
     this.name = 'LinuxThinAppBuildError'
   }
+}
+
+// Electron's Linux zips store 0666 and 0777 modes since 43.8.4 (#371), and the packager's
+// extractor applies a zip's modes as stored. Clearing group and other write restores the
+// 0644/0755 tree of every earlier zip, which the Linux packages require: chrome-sandbox must
+// be a plain 0755 file before packaging makes it setuid. A symlink is skipped, because chmod
+// would follow it.
+export function dropGroupAndOtherWrite(path) {
+  const stat = lstatSync(path)
+  if (stat.isSymbolicLink()) return
+  if ((stat.mode & 0o022) !== 0) chmodSync(path, stat.mode & 0o7755)
+  if (!stat.isDirectory()) return
+  for (const name of readdirSync(path)) dropGroupAndOtherWrite(join(path, name))
 }
 
 export async function buildLinuxThinApp({
@@ -147,6 +163,8 @@ export async function buildLinuxThinApp({
       // the release's Electron, and only the zip reviewed with it (#363)
       electronVersion: inputs.electron.version,
       download: { checksums: electronChecksums },
+      // Electron's own files, as extracted and before the app is copied in
+      afterExtract: [({ buildPath }) => dropGroupAndOtherWrite(buildPath)],
       out: packagerOut,
       overwrite: true,
       asar: false,

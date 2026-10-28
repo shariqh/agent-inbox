@@ -39,11 +39,10 @@ release's official `SHASUMS256.txt`.
 
 ### Node 24.22.0 ends the #135 compatibility hold
 
-Portable runtimes use **Node 24.22.1**, a security release one patch ahead of the Node
-24.22.0 that the pinned Electron 43.8.3 embeds; #371 tracks moving Electron to a 43.x
-release that embeds 24.22.1. While Node 24.19.0 to 24.21.0 carried the abort below, the
-runtimes were held at Node 24.18.1 (#135); #362 ended the hold. This section records why
-there was one, why it ended and what proved it.
+Portable runtimes use **Node 24.22.1**, the October 2026 security release, which the pinned
+Electron 43.8.4 also embeds (#371). While Node 24.19.0 to 24.21.0 carried the abort below,
+the runtimes were held at Node 24.18.1 (#135); #362 ended the hold. This section records
+why there was one, why it ended and what proved it.
 
 **Why there was a hold.** Node 24.19.0 added cleanup hooks to `node::ObjectWrap`
 ([nodejs/node#63642](https://github.com/nodejs/node/pull/63642)). A `better-sqlite3` built
@@ -101,8 +100,10 @@ and store. Electron 43.6.0 backported the runtime fix
 ([electron/electron#53393](https://github.com/electron/electron/pull/53393)). Node 24.22.0
 then shipped the same fix upstream, so Electron 43.8.0 dropped those patches when it moved
 to that Node ([electron/electron#55003](https://github.com/electron/electron/pull/55003)).
-The pinned Electron 43.8.3 (Node 24.22.0) therefore needs no hold, but each build still
-proves it:
+Electron 43.8.4 then moved to Node 24.22.1
+([electron/electron#55161](https://github.com/electron/electron/pull/55161)), whose
+`src/api/hooks.cc` is unchanged. The pinned Electron 43.8.4 (Node 24.22.1) therefore needs
+no hold, but each build still proves it:
 
 - After the `lipo` check, each native thin-app build runs `scripts/runtime-sqlite-check.mjs`
   with the packaged `Contents/MacOS/Agent Inbox` in Node mode (`ELECTRON_RUN_AS_NODE=1`).
@@ -128,7 +129,7 @@ stated minimum before updating either pinned major.
 1. Stage, prune and self-test the arm64 and x64 Node runtime payloads independently
    ([What node_modules ships](#what-node_modules-ships-291)).
 2. Restore both verified payloads into each native thin Electron build.
-3. Compile `better-sqlite3` for Electron 43.8.3 on that architecture, prune the app's
+3. Compile `better-sqlite3` for Electron 43.8.4 on that architecture, prune the app's
    `node_modules`, then run the allocation-driven SQLite check under that packaged
    Electron ([Electron's embedded Node](#electrons-embedded-node)). The stage installs with
    `npm ci --ignore-scripts` and `@electron/rebuild` runs with `buildFromSource`

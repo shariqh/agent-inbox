@@ -11,7 +11,7 @@ the complete remote draft has been downloaded and rehashed.
 
 `release/linux-inputs.json` is the source of truth for both architectures. It
 pins official Node 24 archive names, roots, URLs, SHA-256 values, Node ABI 137,
-Electron 43.8.3 ABI 148, and the exact Packager/Rebuild versions used by this
+Electron 43.8.4 ABI 148, and the exact Packager/Rebuild versions used by this
 layer. It also pins Clang 15.0.7 for native addon compilation. GCC 11 cannot
 parse Electron 43's deprecation-plus-visibility attribute ordering in the V8
 headers; the build verifies both compiler commands, the exact compiler version,
@@ -60,7 +60,7 @@ The final native folders set the product floor:
 - representative vendor floors: Ubuntu 22.04, Debian 12, and RHEL 9
 
 Node 24's official `BUILDING.md` support table supplies the kernel baseline and
-its portable binary requires glibc 2.28. Electron 43.8.3's executable requires
+its portable binary requires glibc 2.28. Electron 43.8.4's executable requires
 glibc 2.25. The two native `better_sqlite3.node` builds produced on the pinned
 Ubuntu 22.04/Clang toolchain raise the complete folder to glibc 2.34 and
 `GLIBCXX_3.4.29`; the representative distribution floors are the first
@@ -94,7 +94,11 @@ Each job:
    `node_modules` the same way;
 5. creates a thin Electron application folder containing only the matching
    Linux runtime key and only Electron's `locales/en-US.pak` and `locales/en-GB.pak`
-   ([What Electron locales ship](macos-release.md#what-electron-locales-ship-292));
+   ([What Electron locales ship](macos-release.md#what-electron-locales-ship-292)).
+   Electron's Linux zips store `0666` and `0777` modes since 43.8.4, and the extractor
+   applies them as stored, so the build clears group and other write on Electron's files
+   as soon as they are extracted. The folder keeps the `0644` and `0755` modes of every
+   earlier zip (#371);
 6. verifies ELF architecture, libc symbol floors, Electron/Node versions and
    ABIs, both native addons, pruned app and runtime `node_modules`, the US and British
    English Electron locales, schema-2 Setup metadata, and exact-host payload selection, then runs
@@ -165,7 +169,7 @@ then reruns the complete thin-folder ELF, ABI, addon, runtime, Setup-selection,
 source-commit, and single matching `linux-x64` or `linux-arm64` payload gates. The extracted inner
 application tree and version must exactly match the already-verified source
 folder; the sole permission transformation is the standard AppImage
-`chrome-sandbox` mode from the Electron archive's exact `0755` to the packaged
+`chrome-sandbox` mode from the thin folder's exact `0755` to the packaged
 setuid-root `4755`; the builder rejects privileged mode bits on every source
 entry, and the final verifier requires the sandbox to be the sole privileged
 entry. appimagetool runs from an empty isolated working directory and HOME
@@ -176,8 +180,10 @@ reports. The builder normalizes every AppDir directory to `0755`, pins AppRun
 and the outer artifact to `0755`, pins desktop/icon/checksum/report metadata to
 `0644`, and the final verifier reads every stored directory mode plus the
 AppRun, desktop, icon, and sole privileged sandbox modes directly from numeric
-SquashFS metadata before extraction. It rejects every other privileged entry
-and requires the extracted directory count to match that metadata. Content
+SquashFS metadata before extraction. It rejects every other privileged entry,
+and any other regular file whose mode is not exactly `0644` or `0755`, so a
+group- or world-writable file in the thin folder cannot ship (#371). It also
+requires the extracted directory count to match that metadata. Content
 extraction runs in a dedicated child process with a zero umask so extracted
 file modes retain their stored values for exact inner-tree identity without
 changing the verifier process's ambient umask. The package therefore does not

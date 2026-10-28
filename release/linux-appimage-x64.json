@@ -5,7 +5,7 @@
   "compression": "zstd",
   "linuxInputs": {
     "path": "release/linux-inputs.json",
-    "sha256": "1bee7ed8e266765aa11dc9ec6d9cd84b7d61e468459cd5c86c988e0d23e5e9cc"
+    "sha256": "5a5625603d39984e0bf4771ed42511e28f63c93feb999da4cf996812471303c5"
   },
   "tool": {
     "name": "appimagetool",

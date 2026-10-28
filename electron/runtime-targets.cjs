@@ -31,7 +31,8 @@ const RUNTIME_TARGETS = Object.freeze({
   'win32-x64': defineTarget('win32-x64', 'win32', 'x64', 'win', WINDOWS_LAYOUT),
 })
 
-const MACOS_RUNTIME_KEYS = Object.freeze(['darwin-arm64', 'darwin-x64'])
+// The macOS app is built for Apple silicon only (#296), so it carries one runtime.
+const MACOS_RUNTIME_KEYS = Object.freeze(['darwin-arm64'])
 const LINUX_RUNTIME_KEYS = Object.freeze(['linux-arm64', 'linux-x64'])
 const WINDOWS_RUNTIME_KEYS = Object.freeze(['win32-x64'])
 const POSIX_SETUP_RUNTIME_KEYS = Object.freeze([

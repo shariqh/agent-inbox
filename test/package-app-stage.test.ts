@@ -158,20 +158,15 @@ function fakeCheckout(stageTool: string, { pinnedRebuild = true } = {}) {
     writeFileSync(recorder, '#!/bin/sh\necho "$(basename "$0") cwd=$(pwd -P) $*" >> "$CALLS"\n')
     chmodSync(recorder, 0o755)
   }
-  const runtimes: Record<string, string> = {}
-  for (const key of ['darwin-arm64', 'darwin-x64']) {
-    runtimes[key] = join(work, 'runtime', key)
-    mkdirSync(runtimes[key], { recursive: true })
-    writeFileSync(join(runtimes[key], 'runtime-manifest.json'), '{}\n')
-  }
+  // The app carries the Apple silicon runtime alone (#296).
+  const runtime = join(work, 'runtime', 'darwin-arm64')
+  mkdirSync(runtime, { recursive: true })
+  writeFileSync(join(runtime, 'runtime-manifest.json'), '{}\n')
   return {
     work,
     repo,
     stage: join(repo, 'build', 'stage'),
-    portableEnv: {
-      AGENT_INBOX_RUNTIME_DARWIN_ARM64: runtimes['darwin-arm64'],
-      AGENT_INBOX_RUNTIME_DARWIN_X64: runtimes['darwin-x64'],
-    },
+    portableEnv: { AGENT_INBOX_RUNTIME_DARWIN_ARM64: runtime },
     run(env: NodeJS.ProcessEnv = {}, script = join(repo, 'scripts', 'package-app.sh')) {
       return spawnSync('bash', [script], {
         encoding: 'utf8',

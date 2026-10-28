@@ -110,7 +110,8 @@ describe('portable runtime target contract', () => {
       expect(Object.isFrozen(target)).toBe(true)
     }
     expect(Object.isFrozen(MACOS_RUNTIME_KEYS)).toBe(true)
-    expect(MACOS_RUNTIME_KEYS).toEqual(['darwin-arm64', 'darwin-x64'])
+    // The macOS app is built for Apple silicon only (#296); Setup still knows the x64 target.
+    expect(MACOS_RUNTIME_KEYS).toEqual(['darwin-arm64'])
     expect(Object.isFrozen(LINUX_RUNTIME_KEYS)).toBe(true)
     expect(LINUX_RUNTIME_KEYS).toEqual(['linux-arm64', 'linux-x64'])
     expect(Object.isFrozen(POSIX_SETUP_RUNTIME_KEYS)).toBe(true)

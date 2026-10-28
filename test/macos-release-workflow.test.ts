@@ -604,27 +604,40 @@ describe('notarized macOS release workflow', () => {
     const runtime = inputs.indexOf('runtime:')
     const thin = inputs.indexOf('thin:')
     const sign = protectedWorkflow.indexOf('sign-developer-id:')
-    const intel = protectedWorkflow.indexOf('verify-intel:')
     const notarize = protectedWorkflow.indexOf('notarize-and-finalize:')
     const publish = protectedWorkflow.indexOf('publish:')
     expect(gate).toBeGreaterThan(-1)
     expect(runtime).toBeGreaterThan(gate)
     expect(thin).toBeGreaterThan(runtime)
     expect(sign).toBeGreaterThan(-1)
-    expect(intel).toBeGreaterThan(sign)
-    expect(notarize).toBeGreaterThan(intel)
+    expect(notarize).toBeGreaterThan(sign)
     expect(publish).toBeGreaterThan(notarize)
     expect(inputs).not.toContain('environment: macos-release')
     expect(protectedWorkflow.match(/environment: macos-release/g)).toHaveLength(4)
     expect(protectedWorkflow).toContain('npm run package:macos --')
     expect(protectedWorkflow).toContain('--mode developer-id')
-    expect(`${inputs}\n${protectedWorkflow}`).not.toContain('macos-universal-provisional')
-    const intelJob = protectedWorkflow.slice(
-      protectedWorkflow.indexOf('  verify-intel:'),
-      protectedWorkflow.indexOf('  notarize-and-finalize:'),
-    )
-    expect(intelJob).not.toContain('vars.APPLE_')
-    expect(intelJob).toContain('signing-identity.json')
+    expect(`${inputs}\n${protectedWorkflow}`).not.toContain('macos-provisional')
+  })
+
+  // #296: one native Apple silicon runtime and thin app, signed and notarized once; no Intel
+  // runner, x64 runtime or native Intel gate anywhere in the release.
+  it('builds, signs and notarizes the Apple silicon app alone', () => {
+    const inputs = readFileSync(inputsPath, 'utf8')
+    const protectedWorkflow = readFileSync(protectedPath, 'utf8')
+    // The build and its gates; the signer and publisher still know both kinds (#343).
+    const building = protectedWorkflow.slice(0, protectedWorkflow.indexOf('  verify-publication:'))
+    const macosPackage = readFileSync(join(root, '.github', 'workflows', 'macos-package.yml'), 'utf8')
+    for (const [name, workflow] of [['inputs', inputs], ['protected', building], ['package', macosPackage]] as const) {
+      expect(workflow, name).not.toMatch(/macos-1\d-intel|darwin-x64|--x64-|verify-intel|intel-evidence|native Intel/i)
+      expect(workflow, name).not.toContain('matrix.')
+    }
+    for (const workflow of [inputs, macosPackage]) {
+      expect(workflow).toContain('--key darwin-arm64')
+      expect(workflow).toContain('--runtime-arm64 build/runtimes/darwin-arm64')
+    }
+    expect(protectedWorkflow.match(/npm run package:macos --/g)).toHaveLength(1)
+    expect(protectedWorkflow.match(/scripts\/notarize-macos\.sh app/g)).toHaveLength(1)
+    expect(protectedWorkflow.match(/scripts\/notarize-macos\.sh dmg/g)).toHaveLength(1)
   })
 
   it('pivots to trusted default-branch code before exposing credentials', () => {
@@ -648,7 +661,7 @@ describe('notarized macOS release workflow', () => {
     expect(sourceDependent).toContain('name: protected-thin-handoff')
     expect(sourceDependent).toContain('scripts/macos-release-gates.mjs thin-handoff')
     expect(sourceDependent.match(/ref: \$\{\{ needs\.authorize\.outputs\.source-commit \}\}/g)?.length)
-      .toBeGreaterThanOrEqual(5)
+      .toBeGreaterThanOrEqual(4)
     expect(sourceDependent).not.toContain('ref: ${{ needs.authorize.outputs.trusted-sha }}')
     expect(sourceDependent).toContain(
       'AGENT_INBOX_RELEASE_SOURCE_SHA: ${{ needs.authorize.outputs.source-commit }}',
@@ -664,14 +677,13 @@ describe('notarized macOS release workflow', () => {
 
   it('keeps app and DMG notarization ordered and publication fail closed', () => {
     const workflow = readFileSync(protectedPath, 'utf8')
-    const intelEvidence = workflow.indexOf('Verify exact Developer ID bytes natively on Intel')
     const appSubmit = workflow.indexOf('Notarize and staple accepted app')
     const finalDmg = workflow.indexOf('Build and sign final DMG from stapled app')
     const dmgSubmit = workflow.indexOf('Notarize and staple accepted DMG')
     const transportedApp = workflow.indexOf('Mount final stapled DMG and verify transported app')
     const checksums = workflow.indexOf('Generate final post-staple evidence and checksums')
     const publish = workflow.indexOf('Publish exact verified handoff through a fail-closed draft')
-    expect(appSubmit).toBeGreaterThan(intelEvidence)
+    expect(appSubmit).toBeGreaterThan(workflow.indexOf('Restore exact Developer ID app bytes'))
     expect(finalDmg).toBeGreaterThan(appSubmit)
     expect(dmgSubmit).toBeGreaterThan(finalDmg)
     expect(transportedApp).toBeGreaterThan(dmgSubmit)
@@ -736,29 +748,56 @@ describe('notarized macOS release workflow', () => {
       expect(block, step).toContain('"$DMG"')
       expect(block, step).not.toContain('needs.authorize.outputs.tag }}.dmg')
     }
-    expect(stepBlock(notarize, 'Generate final post-staple evidence and checksums'))
-      .toContain('--intel-evidence build/intel/intel-verification.json')
+    // A universal release needed the native Intel gate's record; #296 removed that gate.
+    expect(stepBlock(notarize, 'Generate final post-staple evidence and checksums')).not.toContain('--intel-evidence')
+  })
 
+  // #296: the notes name the release Intel Macs stay on, found in GitHub's listing like the
+  // release the re-stamped update-manifest.json describes (G6), never a constant.
+  it('names the last release for Intel Macs in the release notes, from the release listing', () => {
+    const workflow = readFileSync(protectedPath, 'utf8')
+    const handoff = workflow.slice(workflow.indexOf('  verify-handoff:'), workflow.indexOf('  sign-developer-id:'))
+    expect(handoff).toContain('      intel-tag: ${{ steps.intel.outputs.intel-tag }}\n')
+    const find = stepBlock(handoff, 'Find the release Intel Macs stay on')
+    expect(find).toContain('- id: intel')
+    expect(find).toContain('GH_TOKEN: ${{ github.token }}')
+    expect(find).toContain('gh api --paginate --slurp "repos/$GH_REPO/releases?per_page=100" > build/release-pages.json')
+    expect(find).toContain('node scripts/macos-release-gates.mjs intel-release')
+    expect(handoff.indexOf(find)).toBeLessThan(handoff.indexOf('Revalidate source context and bind exact thin artifacts'))
+
+    const notarize = workflow.slice(workflow.indexOf('  notarize-and-finalize:'), workflow.indexOf('  verify-publication:'))
     const notes = stepBlock(notarize, 'Write release notes')
     expect(notes).toContain('DMG_NAME: ${{ steps.kind.outputs.dmg-name }}')
-    const temp = scratchDir('release-notes-')
-    mkdirSync(join(temp, 'build'))
+    expect(notes).toContain('INTEL_TAG: ${{ needs.verify-handoff.outputs.intel-tag }}')
+    expect(notes).not.toMatch(/v1\.\d+\.\d+/)
     const script = runScript(notes)
-      .replaceAll('${{ needs.authorize.outputs.tag }}', 'v1.2.3')
-      .replaceAll('${{ needs.authorize.outputs.version }}', '1.2.3')
+      .replaceAll('${{ needs.authorize.outputs.tag }}', 'v2.0.0')
+      .replaceAll('${{ needs.authorize.outputs.version }}', '2.0.0')
     expect(script).not.toContain('${{')
-    const written = spawnSync('bash', ['-c', script], {
-      cwd: temp,
-      env: { PATH: process.env.PATH, DMG_NAME: 'Agent-Inbox-v1.2.3-universal.dmg' },
-      encoding: 'utf8',
-    })
-    expect(written.status, written.stderr).toBe(0)
-    const rendered = readFileSync(join(temp, 'build', 'RELEASE_NOTES.md'), 'utf8')
-    expect(rendered).toContain('- macOS 13.5 or later, Apple silicon or Intel: `Agent-Inbox-v1.2.3-universal.dmg`\n')
+    const render = (intelTag: string) => {
+      const temp = scratchDir('release-notes-')
+      mkdirSync(join(temp, 'build'))
+      const written = spawnSync('bash', ['-c', script], {
+        cwd: temp,
+        env: { PATH: process.env.PATH, DMG_NAME: 'Agent-Inbox-v2.0.0-arm64.dmg', INTEL_TAG: intelTag },
+        encoding: 'utf8',
+      })
+      return { status: written.status, notes: existsSync(join(temp, 'build', 'RELEASE_NOTES.md')) ? readFileSync(join(temp, 'build', 'RELEASE_NOTES.md'), 'utf8') : '' }
+    }
+    const { status, notes: rendered } = render('v1.8.0')
+    expect(status).toBe(0)
+    expect(rendered).toContain('- macOS 13.5 or later on Apple silicon: `Agent-Inbox-v2.0.0-arm64.dmg`\n')
     expect(rendered).toContain(
-      'spctl --assess --type open --context context:primary-signature --verbose=4 Agent-Inbox-v1.2.3-universal.dmg\n',
+      'This release needs a Mac with Apple silicon. Agent Inbox v1.8.0 is the last version for Intel Macs, and it keeps working. '
+        + 'On an Intel Mac, the in-app updater of an older version offers v1.8.0 instead.\n',
     )
-    expect(rendered).not.toContain('DMG_NAME')
+    expect(rendered).not.toMatch(/Apple silicon or Intel|universal/)
+    expect(rendered).toContain(
+      'spctl --assess --type open --context context:primary-signature --verbose=4 Agent-Inbox-v2.0.0-arm64.dmg\n',
+    )
+    expect(rendered).not.toMatch(/DMG_NAME|INTEL_TAG/)
+    // No release for Intel Macs, no notes.
+    expect(render('').status).not.toBe(0)
   })
 
   it('confines Apple secrets to protected jobs and names no secret in artifact paths', () => {
@@ -1180,7 +1219,7 @@ describe('publishing both update manifests', () => {
     const workflow = readFileSync(protectedPath, 'utf8')
     const jobs = workflow.slice(workflow.indexOf('\njobs:\n'))
     expect([...jobs.matchAll(/^ {2}([a-z][a-z-]*):$/gm)].map((match) => match[1])).toEqual([
-      'authorize', 'verify-handoff', 'sign-developer-id', 'verify-intel', 'notarize-and-finalize', 'verify-publication', 'sign-update-manifest', 'publish',
+      'authorize', 'verify-handoff', 'sign-developer-id', 'notarize-and-finalize', 'verify-publication', 'sign-update-manifest', 'publish',
     ])
     const sign = workflow.slice(workflow.indexOf('  sign-update-manifest:'), workflow.indexOf('  publish:'))
     const publish = workflow.slice(workflow.indexOf('  publish:'))
@@ -1218,7 +1257,12 @@ describe('publishing both update manifests', () => {
 // The sign job's three steps, run as written against a fake `git` and `gh`, into the real
 // publish script: the YAML only moves files between the trusted subcommands.
 describe('the sign job, step by step, into the publish job', () => {
-  function runSignJob(kind: Kind, history: History, key: ScratchKey, options: { rotationOverride?: string; tamper?: (handoff: string) => void; source?: string } = {}) {
+  function runSignJob(
+    kind: Kind,
+    history: History,
+    key: ScratchKey,
+    options: { rotationOverride?: string; tamper?: (handoff: string) => void; source?: string; macosInputs?: string } = {},
+  ) {
     const work = scratchDir('release-sign-job-')
     // The trusted checkout's code, copied so nothing is written into this repository.
     for (const file of ['scripts/update-manifest.mjs', 'scripts/macos-release-kind.mjs', 'electron/update-manifest.cjs']) {
@@ -1230,7 +1274,8 @@ describe('the sign job, step by step, into the publish job', () => {
     const releaseCommit = join(work, 'release-commit')
     mkdirSync(releaseCommit)
     writeFileSync(join(releaseCommit, 'update-keys.json'), key.registryBytes)
-    writeFileSync(join(releaseCommit, 'macos-inputs.json'), `${JSON.stringify({ macosArchitectures: [...MACOS[kind].sets], minimumMacosVersion: '13.5' }, null, 2)}\n`)
+    writeFileSync(join(releaseCommit, 'macos-inputs.json'), options.macosInputs
+      ?? `${JSON.stringify({ macosArchitectures: [...MACOS[kind].sets], minimumMacosVersion: '13.5' }, null, 2)}\n`)
     const assetDir = join(work, 'assets-by-id')
     mkdirSync(assetDir)
     for (const [id, bytes] of history.assetsById) writeFileSync(join(assetDir, String(id)), bytes)
@@ -1326,6 +1371,62 @@ fi
     const { result, finalRequest } = runPublisher(sourceCommit, 'match', sourceCommit, { fixture, rotationOverride: override })
     expect(result.status, result.stderr).toBe(0)
     expect(finalRequest).toMatchObject({ make_latest: 'true' })
+  })
+
+  // #296: the expected set committed in release/macos-inputs.json, read at the release commit as
+  // the signer reads it, makes an Apple silicon release whose update-manifest.json freezes to
+  // the newest universal release, and refuses a universal app before the key is touched.
+  describe('under the committed release/macos-inputs.json', () => {
+    const committed = readFileSync(join(root, 'release', 'macos-inputs.json'), 'utf8')
+
+    it('signs an arm64 release that re-stamps 1.x-last, and the publish job accepts it', () => {
+      const key = makeScratchKey()
+      const history = releaseHistory(
+        priorRelease('1.2.1', key, isoSeconds(Date.now() - 14 * DAY_MS)),
+        priorRelease('1.2.2', key, isoSeconds(Date.now() - 7 * DAY_MS)),
+      )
+      const override = `ALLOW-UPDATE-KEY-ROTATION:${TAG}:${key.keyId}`
+      const run = runSignJob('arm64', history, key, { rotationOverride: override, macosInputs: committed })
+      expect(statuses(run).every(({ status }) => status === 0), JSON.stringify(statuses(run))).toBe(true)
+      const evidence = readJson(join(run.handoff, 'update-signing-evidence.json'))
+      expect(evidence.macos).toEqual({
+        kind: 'arm64',
+        architectures: { executable: ['arm64'], betterSqlite3: ['arm64'] },
+        expected: ['arm64'],
+      })
+      expect(evidence.manifests.v1).toMatchObject({ made: 'restamp', tag: 'v1.2.2', history: { priorTag: 'v1.2.2', describes: 'v1.2.2' } })
+      const assets = join(run.handoff, 'release-assets')
+      const v2 = readJson(join(assets, 'update-manifest-v2.json'))
+      expect(v2.targets.filter((target: { platform: string }) => target.platform === 'darwin')).toEqual([
+        expect.objectContaining({ architecture: 'arm64', filename: 'Agent-Inbox-v1.2.3-arm64.dmg' }),
+      ])
+      // The frozen v1: 1.2.2's own manifest, re-stamped. Its keys are this release's, the same
+      // here, so only its lifetime moves to this release's tag time.
+      const earlier = JSON.parse(history.before!.pairs.v1.bytes.toString('utf8'))
+      const v1 = readJson(join(assets, 'update-manifest.json'))
+      expect(Object.keys(v1).filter((field) => JSON.stringify(v1[field]) !== JSON.stringify(earlier[field])).sort())
+        .toEqual(['expiresAt', 'publishedAt'])
+      expect(v1).toMatchObject({ version: '1.2.2', publishedAt: taggedAt })
+      expect(v1.targets.find((target: { platform: string }) => target.platform === 'darwin').filename)
+        .toBe('Agent-Inbox-v1.2.2-universal.dmg')
+      const fixture: PublishFixture = { kind: 'arm64', handoff: run.handoff, key, history, pin: 'production', override }
+      const { result, finalRequest } = runPublisher(sourceCommit, 'match', sourceCommit, { fixture, rotationOverride: override })
+      expect(result.status, result.stderr).toBe(0)
+      expect(finalRequest).toMatchObject({ make_latest: 'true' })
+    })
+
+    it('refuses a universal app before anything is downloaded or signed', () => {
+      const key = makeScratchKey()
+      const run = runSignJob('universal', releaseHistory(), key, {
+        rotationOverride: `ALLOW-UPDATE-KEY-ROTATION:${TAG}:${key.keyId}`,
+        macosInputs: committed,
+      })
+      expect(run.results).toHaveLength(1)
+      expect(run.results[0]!.output)
+        .toContain('the shipped app\'s CPU types ["arm64","x86_64"] differ from the expected ["arm64"] in release/macos-inputs.json')
+      expect(run.calls).not.toContain('gh ')
+      expect(existsSync(run.handoff)).toBe(false)
+    })
   })
 
   it('stops before the key when the original key would not sign v1 and no exact override is set (G10)', () => {

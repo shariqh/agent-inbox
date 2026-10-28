@@ -121,20 +121,21 @@ export function pruneAppNodeModules(stageRoot) {
   const addon = join(stageRoot, 'node_modules', 'better-sqlite3', 'build', 'Release', 'better_sqlite3.node')
   if (!existsSync(addon)) throw new ThinAppBuildError(`Electron rebuild did not produce ${addon}`)
   // Keeps only what better-sqlite3 loads, so the rebuild's architecture-only
-  // caches are gone before the universal merge, and drops typings, source
-  // maps and non-license markdown from every package (#291).
+  // caches are gone before packaging, and drops typings, source maps and
+  // non-license markdown from every package (#291).
   return pruneNodeModules(stageRoot)
 }
 
+// The macOS app is built for Apple silicon only (#296): one native arm64 app carrying the
+// darwin-arm64 runtime. The release gates measure what it ships against macosArchitectures.
 export async function buildThinApp({
-  arch,
   runtimeArm64,
-  runtimeX64,
   output,
   repoRoot,
   inputsPath,
   force = false,
 }) {
+  const arch = 'arm64'
   if (process.platform !== 'darwin' || process.arch !== arch) {
     throw new ThinAppBuildError(`thin ${arch} app must be built natively on darwin/${arch}; this process is ${process.platform}/${process.arch}`)
   }
@@ -151,22 +152,20 @@ export async function buildThinApp({
   if (pkg.version !== JSON.parse(readFileSync(join(repoRoot, 'package-lock.json'), 'utf8')).version) {
     throw new ThinAppBuildError('package.json and package-lock.json versions differ')
   }
-  for (const [key, root] of [['darwin-arm64', runtimeArm64], ['darwin-x64', runtimeX64]]) {
-    const distribution = inputs.node.distributions[key]
-    const manifest = verifyPayload({
-      root,
-      expect: {
-        product: 'agent-inbox-runtime',
-        packageVersion: pkg.version,
-        platform: distribution.platform,
-        arch: distribution.arch,
-        nodeVersion: inputs.node.version,
-        nodeModulesAbi: inputs.node.modulesAbi,
-        sourceCommit: provenance.sourceCommit,
-      },
-    })
-    assertRuntimeSourceCommit(manifest, provenance.sourceCommit, key)
-  }
+  const distribution = inputs.node.distributions['darwin-arm64']
+  const manifest = verifyPayload({
+    root: runtimeArm64,
+    expect: {
+      product: 'agent-inbox-runtime',
+      packageVersion: pkg.version,
+      platform: distribution.platform,
+      arch: distribution.arch,
+      nodeVersion: inputs.node.version,
+      nodeModulesAbi: inputs.node.modulesAbi,
+      sourceCommit: provenance.sourceCommit,
+    },
+  })
+  assertRuntimeSourceCommit(manifest, provenance.sourceCommit, 'darwin-arm64')
 
   execFileSync(process.execPath, [npmCliForCurrentNode(), 'run', 'generate:icons', '--', '--check'], {
     cwd: repoRoot,
@@ -188,7 +187,6 @@ export async function buildThinApp({
     copyRequiredTree(repoRoot, stageRoot)
     mkdirSync(join(stageRoot, 'runtime'), { recursive: true })
     copyTreePreservingMode(runtimeArm64, join(stageRoot, 'runtime', 'darwin-arm64'))
-    copyTreePreservingMode(runtimeX64, join(stageRoot, 'runtime', 'darwin-x64'))
 
     await installAppDependencies({
       stageRoot,
@@ -204,9 +202,7 @@ export async function buildThinApp({
       '--source-root', repoRoot,
       '--payload-root', stageRoot,
       '--runtime-key', 'darwin-arm64',
-      '--runtime-key', 'darwin-x64',
       '--payload', 'darwin-arm64=runtime/darwin-arm64',
-      '--payload', 'darwin-x64=runtime/darwin-x64',
     ], {
       cwd: repoRoot,
       env: process.env,
@@ -241,8 +237,7 @@ export async function buildThinApp({
     if (paths.length !== 1) throw new ThinAppBuildError(`packager returned ${paths.length} output paths`)
     const app = join(paths[0], `${APP_NAME}.app`)
     copyElectronNotices(paths[0], app)
-    // Identically in both thin apps, so the universal merge sees one tree, and
-    // before anything signs the framework's resources (#292).
+    // Before anything signs the framework's resources (#292).
     pruneElectronLocales(app, 'darwin')
     const resources = join(app, 'Contents', 'Resources', 'app')
     assertEnglishOnlyElectronLocales(app, 'darwin', `packaged darwin-${arch} app`)
@@ -251,7 +246,7 @@ export async function buildThinApp({
       assertPrunedNodeModules(join(resources, 'runtime', key), `packaged ${key} runtime`)
     }
     const nativeAddon = findNativeAddon(resources)
-    const expectedLipoArch = arch === 'x64' ? 'x86_64' : 'arm64'
+    const expectedLipoArch = 'arm64'
     const nativeAddonArchitectures = lipoArchs(nativeAddon)
     if (!nativeAddonArchitectures.includes(expectedLipoArch)) {
       throw new ThinAppBuildError(
@@ -319,28 +314,24 @@ async function main(argv) {
   const { values } = parseArgs({
     args: argv,
     options: {
-      arch: { type: 'string' },
       'runtime-arm64': { type: 'string' },
-      'runtime-x64': { type: 'string' },
       output: { type: 'string' },
       'repo-root': { type: 'string', default: resolve(import.meta.dirname, '..') },
       inputs: { type: 'string' },
       force: { type: 'boolean' },
     },
   })
-  for (const field of ['arch', 'runtime-arm64', 'runtime-x64', 'output']) {
+  for (const field of ['runtime-arm64', 'output']) {
     if (!values[field]) throw new ThinAppBuildError(`--${field} is required`)
   }
   const result = await buildThinApp({
-    arch: values.arch,
     runtimeArm64: resolve(values['runtime-arm64']),
-    runtimeX64: resolve(values['runtime-x64']),
     output: resolve(values.output),
     repoRoot: resolve(values['repo-root']),
     inputsPath: values.inputs && resolve(values.inputs),
     force: Boolean(values.force),
   })
-  process.stdout.write(`${JSON.stringify({ ok: true, app: result.app, arch: values.arch })}\n`)
+  process.stdout.write(`${JSON.stringify({ ok: true, app: result.app, arch: result.report.arch })}\n`)
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

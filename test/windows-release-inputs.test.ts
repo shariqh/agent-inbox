@@ -281,7 +281,8 @@ describe('Windows release inputs', () => {
       'node',
       'electron',
     ])
-    expect(Object.keys(macos.node.distributions)).toEqual(['darwin-arm64', 'darwin-x64'])
+    // Apple silicon only since #296.
+    expect(Object.keys(macos.node.distributions)).toEqual(['darwin-arm64'])
 
     const linux = JSON.parse(readFileSync(resolve('release/linux-inputs.json'), 'utf8'))
     expect(Object.keys(linux.node.distributions)).toEqual(['linux-arm64', 'linux-x64'])

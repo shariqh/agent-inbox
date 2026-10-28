@@ -19,9 +19,7 @@
 //     --version <semver> \
 //     --payload-root <dir> \
 //     --runtime-key darwin-arm64 \
-//     --runtime-key darwin-x64 \
 //     --payload darwin-arm64=<relDir> \
-//     --payload darwin-x64=<relDir> \
 //     [--source-root <path>] [--commit <sha>]
 //
 // Bakes { schema: 2, version, commit?, builtAt, runtimePayloads } — NEVER

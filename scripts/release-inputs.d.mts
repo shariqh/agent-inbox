@@ -22,7 +22,7 @@ export type ReleaseInputs = {
     modulesAbi: string
     distributions: Record<RuntimeKey, {
       platform: 'darwin'
-      arch: 'arm64' | 'x64'
+      arch: 'arm64'
       archive: string
       root: string
       url: string
@@ -33,7 +33,6 @@ export type ReleaseInputs = {
     version: string
     packagerVersion: string
     rebuildVersion: string
-    universalVersion: string
     osxSignVersion: string
     dmgVersion: string
   }

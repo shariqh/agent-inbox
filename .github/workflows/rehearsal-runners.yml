@@ -198,10 +198,12 @@ jobs:
             echo "| $run1 | $verify | $run2 | $run3 |"
           } >> "$GITHUB_STEP_SUMMARY"
           test "$run1|$verify|$run2|$run3" = "HANDED OFF|PASS|PASS|PASS"
+      # A re-run replaces its host's artifact from an earlier attempt rather than add a second.
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: rehearsal-${{ matrix.key }}
+          overwrite: true
           path: |
             ${{ runner.temp }}/rehearsal/report-*.txt
             ${{ runner.temp }}/rehearsal/logs/*.txt
@@ -226,10 +228,13 @@ jobs:
           path: results
       - name: Every run on every host
         env:
+          REHEARSE: ${{ needs.rehearse.result }}
           REPORTS: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}#artifacts
         run: |
-          # FAIL unless both hosts passed every run.
+          # FAIL unless both hosts' jobs succeeded and passed every run. The artifacts alone
+          # are not enough: a host whose job failed may have left an earlier attempt's.
           failed=0
+          if [ "$REHEARSE" != success ]; then failed=1; fi
           rows=""
           for key in intel rosetta; do
             file="results/rehearsal-$key/results.json"
@@ -246,6 +251,8 @@ jobs:
             echo "## Rehearsal of 1.x-last v$LAST on hosted runners: $result"
             echo
             echo "Hosted-runner evidence, not the human gate (docs/macos-release.md)."
+            echo
+            echo "The rehearsal jobs: $REHEARSE."
             echo
             echo "| Host | Run 1, install step | Run 1 --verify | Run 2 | Run 3 |"
             echo "| --- | --- | --- | --- | --- |"

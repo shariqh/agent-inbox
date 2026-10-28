@@ -872,7 +872,7 @@ ELECTRON_RUN_AS_NODE=1 arch -x86_64 "$APP/Contents/MacOS/Agent Inbox" test/rehea
 | `--from` | One step below `--last`, `1.7.0` | The version run 3 runs as |
 | `--older-app` | None | Run 1's copy of an older app, inside your home folder |
 | `--work` | None (required) | Scratch `userData`, downloads, run 1's hand-off and the reports |
-| `--hosted-runner` | Off | Only for the hosted-runner workflow (below): lets run 1 run in an administrator account and marks every result as hosted-runner evidence. Refused unless `GITHUB_ACTIONS` is `true` and `RUNNER_ENVIRONMENT` is `github-hosted` |
+| `--hosted-runner` | Off | Only for the hosted-runner workflow (below): lets run 1 run in an administrator account and marks every result as hosted-runner evidence. Refused unless `GITHUB_ACTIONS` is `true` and `RUNNER_ENVIRONMENT` is `github-hosted`. `--run 1 --verify` needs it again after an install step that had it |
 
 Run 1 turns the copy at `--older-app` into 1.x-last, keeps the old copy beside it in a
 hidden `.agent-inbox-update-*` folder as `Agent Inbox.app.previous`, and opens 1.x-last in
@@ -937,15 +937,17 @@ A runner's only user is an administrator, which run 1 refuses. `--hosted-runner`
 one refusal, and only when `GITHUB_ACTIONS` is `true` and `RUNNER_ENVIRONMENT` is
 `github-hosted`. Anywhere else the harness refuses the flag before it does anything. Every
 report says at the top that the override is in effect, and its result line ends
-`hosted-runner evidence, not the human gate`.
+`hosted-runner evidence, not the human gate`. Run 1's hand-off records the override, and
+`--run 1 --verify` refuses to run without it after an install step that had it, so run 1's
+PASS from a runner carries that label too.
 
 The run's summary and log show each runner's macOS, System Integrity Protection and
 Gatekeeper status, then the summary shows PASS or FAIL for each run on each host. The
-workflow fails unless both hosts passed every run: run 1's install step handed off, its
-`--verify` passed, and runs 2 and 3 passed. Each host uploads an artifact, `rehearsal-intel`
-or `rehearsal-rosetta`, kept for 30 days. It holds the reports, each run's whole output in
-`logs/`, run 1's hand-off and the helper's result. To retry one host, use Re-run failed jobs:
-each job starts on a fresh runner.
+workflow fails unless both hosts' jobs succeeded and passed every run: run 1's install step
+handed off, its `--verify` passed, and runs 2 and 3 passed. Each host uploads an artifact,
+`rehearsal-intel` or `rehearsal-rosetta`, kept for 30 days. It holds the reports, each run's
+whole output in `logs/`, run 1's hand-off and the helper's result. To retry one host, use
+Re-run failed jobs: each job starts on a fresh runner and replaces its host's artifact.
 
 It proves that the published 1.x-last's own updater takes each path on an Intel Mac and
 under Rosetta: the blocked offer, the bad and stale manifests, and a real download, install,
@@ -953,7 +955,10 @@ swap and relaunch. It doesn't prove:
 
 - That macOS's App Management protection lets the helper swap the app on a real Mac with
   System Integrity Protection on. GitHub's macOS 15 runners run with it disabled (each
-  run's log prints `csrutil status`), and may have a pre-seeded privacy (TCC) database.
+  run's log prints `csrutil status`), and may have a pre-seeded privacy (TCC) database. On
+  a real Mac the harness swaps the app with Terminal as the responsible process, not Agent
+  Inbox, so neither a runner nor a real-Mac run exercises the same-developer App Management
+  exemption a real in-app update gets.
 - Anything on a macOS other than the runner images' macOS 15.
 - That run 1 works in a standard account. On a runner it runs as an administrator.
 

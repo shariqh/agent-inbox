@@ -87,7 +87,8 @@ Options:
   --hosted-runner       on a GitHub-hosted runner only (GITHUB_ACTIONS=true and
                         RUNNER_ENVIRONMENT=github-hosted): lets run 1 run in the runner's own
                         administrator account and marks every result hosted-runner evidence;
-                        refused anywhere else
+                        refused anywhere else, and run 1 --verify needs it again whenever
+                        run 1's install step had it
 
 Exit codes: 0 every check passed, 1 a check failed, 2 refused to start, 3 run 1's install
 step handed the swap to the helper (not a pass: run --run 1 --verify next)`
@@ -104,6 +105,8 @@ function refuse(message) {
 // Without the flag nothing changes; the flag anywhere else is refused.
 const HOSTED_RUNNER_EVIDENCE = 'HOSTED RUNNER: hosted-runner evidence, not the human gate (docs/macos-release.md)'
 const HOSTED_RUNNER_REFUSAL = '--hosted-runner is only for GitHub-hosted runners: it needs GITHUB_ACTIONS=true and RUNNER_ENVIRONMENT=github-hosted'
+const HOSTED_RUNNER_VERIFY_REFUSAL =
+  "run 1's install step ran under --hosted-runner (run-1.json), so --run 1 --verify must too: add --hosted-runner, on the GitHub-hosted runner that ran the install step"
 
 function hostedRunnerOverride(flag, env) {
   if (flag !== true) return { active: false, refusal: null }
@@ -554,6 +557,13 @@ function summarize(report, hostLabel, reason, hostedRunner = false) {
   return { lines: [...lines, `Result: PASS ${on}`], exitCode: EXIT.pass }
 }
 
+// Run 1's hand-off to --verify. It records whether the install step ran under the
+// hosted-runner override (#381), which --verify then needs too, so a PASS from a runner keeps
+// its label instead of reading as the human gate.
+function writeHandoff(file, handed, hostedRunner) {
+  fs.writeFileSync(file, `${JSON.stringify({ ...handed, hostedRunner: hostedRunner === true }, null, 2)}\n`)
+}
+
 function readHandoff(file) {
   try {
     const handoff = JSON.parse(fs.readFileSync(file, 'utf8'))
@@ -561,6 +571,12 @@ function readHandoff(file) {
   } catch {
     return null
   }
+}
+
+function handoffRefusal(handoff, work, hostedRunner) {
+  if (handoff === null) return `no run 1 to verify in ${work}: run its install step first`
+  if (handoff.hostedRunner === true && hostedRunner !== true) return HOSTED_RUNNER_VERIFY_REFUSAL
+  return null
 }
 
 function timestamp() {
@@ -592,6 +608,13 @@ async function main(argv) {
     const override = hostedRunnerOverride(options.hostedRunner, process.env)
     if (override.refusal !== null) refuse(override.refusal)
     hostedRunner = override.active
+    // --verify continues run 1's install step, under the same hosted-runner override if it had it
+    const handoffPath = path.join(options.work, 'run-1.json')
+    const handoff = options.verify ? readHandoff(handoffPath) : null
+    if (options.verify) {
+      const refusal = handoffRefusal(handoff, options.work, hostedRunner)
+      if (refusal !== null) refuse(refusal)
+    }
     const app = inspectApp(options)
     host = hostFacts()
     const commit = checkoutCommit()
@@ -612,13 +635,6 @@ async function main(argv) {
       write(`HOSTED RUNNER  --hosted-runner is in effect: GITHUB_ACTIONS=true, RUNNER_ENVIRONMENT=github-hosted, ${image}.`)
       write("               Run 1 may run in this administrator account, the throwaway runner's own user.")
       write('               Every result below is hosted-runner evidence, not the human gate.')
-    }
-    const handoffPath = path.join(options.work, 'run-1.json')
-
-    let handoff = null
-    if (options.verify) {
-      handoff = readHandoff(handoffPath)
-      if (handoff === null) refuse(`no run 1 to verify in ${options.work}: run its install step first`)
     }
     const older = options.runs[0] === 1 && !options.verify ? await olderAppFor(options, app, host, hostedRunner) : null
     if (older) write(`Run 1 replaces ${older.olderApp} (${older.olderVersion}) and opens it in this account.`)
@@ -660,7 +676,7 @@ async function main(argv) {
       report.beginRun('Run 1 (install step)')
       const handed = await runInstall(context('run-1'), older)
       if (handed !== null) {
-        fs.writeFileSync(handoffPath, `${JSON.stringify(handed, null, 2)}\n`)
+        writeHandoff(handoffPath, handed, hostedRunner)
         report.handOff()
         report.note(`The helper waits for this process (${process.pid}) to exit, swaps ${older.olderApp} and opens it.`)
         report.note('Once the app has opened, run the same command with --run 1 --verify (no --older-app needed).')
@@ -701,6 +717,7 @@ module.exports = {
   hostedRunnerOverride,
   parseOptions,
   summarize,
+  writeHandoff,
 }
 
 if (require.main === module) {

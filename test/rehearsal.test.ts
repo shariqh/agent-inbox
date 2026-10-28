@@ -56,12 +56,13 @@ type Report = {
 }
 const { createReport } = require('./rehearsal/runs.cjs') as { createReport(write: (line: string) => void): Report }
 type Override = { active: boolean; refusal: string | null }
-const { EXIT, accountRefusal, hostedRunnerOverride, parseOptions, summarize } = require('./rehearsal/rehearsal.cjs') as {
+const { EXIT, accountRefusal, hostedRunnerOverride, parseOptions, summarize, writeHandoff } = require('./rehearsal/rehearsal.cjs') as {
   EXIT: Record<'pass' | 'fail' | 'refused' | 'handedOff', number>
   accountRefusal(groups: string | null, hostedRunner: boolean): string | null
   hostedRunnerOverride(flag: unknown, env: Record<string, string | undefined>): Override
   parseOptions(argv: string[]): { hostedRunner: boolean }
   summarize(report: Report, hostLabel?: string, reason?: string, hostedRunner?: boolean): { lines: string[]; exitCode: number }
+  writeHandoff(file: string, handed: Record<string, string>, hostedRunner: boolean): void
 }
 const { checkPublishedDmg } = require('./rehearsal/published-dmg.cjs') as {
   checkPublishedDmg(options: { folder: string; version: string; registry?: UpdateRegistry }): Promise<{ dmg: string; sha256: string; byteLength: number }>
@@ -319,6 +320,52 @@ describe('the hosted-runner override (#381)', () => {
     expect(next.stdout).not.toContain('--hosted-runner is only')
     expect(next.stdout).toMatch(/REFUSED {2}(the rehearsal runs on macOS only|run this with the installed app's own Electron)/)
     expect(existsSync(work)).toBe(false)
+  })
+
+  it('makes run 1 --verify run under the override its install step ran under', () => {
+    const harness = resolve(import.meta.dirname, 'rehearsal', 'rehearsal.cjs')
+    const verify = (work: string, env: Record<string, string>, flag: boolean) =>
+      spawnSync(process.execPath, [harness, '--run', '1', '--verify', '--work', work, ...(flag ? ['--hosted-runner'] : [])], {
+        env: { PATH: process.env.PATH ?? '', ...env },
+        encoding: 'utf8',
+      })
+    const handed = {
+      olderApp: '/Users/runner/Rehearsal/Older/Agent Inbox.app',
+      from: '1.7.0',
+      to: '1.8.0',
+      runDir: '/Users/runner/work/_temp/rehearsal/run-1',
+      attemptDirectory: '/Users/runner/work/_temp/rehearsal/run-1/userData/update-install',
+    }
+    const refusal = "REFUSED  run 1's install step ran under --hosted-runner (run-1.json), so --run 1 --verify must too"
+    const nextCheck = /REFUSED {2}(the rehearsal runs on macOS only|run this with the installed app's own Electron)/
+
+    const onRunner = scratchDir('agent-inbox-rehearsal-verify-')
+    writeHandoff(join(onRunner, 'run-1.json'), handed, true)
+    expect(JSON.parse(readFileSync(join(onRunner, 'run-1.json'), 'utf8'))).toEqual({ ...handed, hostedRunner: true })
+    // Without the flag, here or on the runner itself, --verify refuses before anything else
+    const withoutFlag: Record<string, string>[] = [{}, hosted]
+    for (const env of withoutFlag) {
+      const refused = verify(onRunner, env, false)
+      expect(refused.status).toBe(EXIT.refused)
+      expect(refused.stdout).toContain(refusal)
+      expect(refused.stdout).not.toMatch(nextCheck)
+    }
+    // Under the override it gets past the hand-off, and the next check refuses this Node
+    const resumed = verify(onRunner, hosted, true)
+    expect(resumed.status).toBe(EXIT.refused)
+    expect(resumed.stdout).not.toContain(refusal)
+    expect(resumed.stdout).toMatch(nextCheck)
+
+    // An install step without the override asks nothing of --verify
+    const onMac = scratchDir('agent-inbox-rehearsal-verify-')
+    writeHandoff(join(onMac, 'run-1.json'), handed, false)
+    expect(JSON.parse(readFileSync(join(onMac, 'run-1.json'), 'utf8'))).toEqual({ ...handed, hostedRunner: false })
+    const plain = verify(onMac, {}, false)
+    expect(plain.status).toBe(EXIT.refused)
+    expect(plain.stdout).not.toContain(refusal)
+    expect(plain.stdout).toMatch(nextCheck)
+    // main() writes the record after run 1's install step, which runs only under the app's Electron
+    expect(readFileSync(harness, 'utf8')).toContain('writeHandoff(handoffPath, handed, hostedRunner)')
   })
 
   it('marks every result hosted-runner evidence, not the human gate', () => {

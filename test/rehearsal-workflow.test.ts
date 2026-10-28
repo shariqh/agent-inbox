@@ -5,8 +5,8 @@
 // installed from its real DMG. Its boundary is checked here: started by hand only,
 // read-only, no secrets, inputs only through env, each DMG checked before it is mounted,
 // and --hosted-runner on every harness run so every report says what it is. Its harness
-// command and its two result scripts run here as written, so a run that failed, or never
-// ran, can never add up to PASS.
+// command and its two result scripts run here as written, so a run that failed, never ran,
+// or left only an earlier attempt's artifact can never add up to PASS.
 import { spawnSync } from 'node:child_process'
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
@@ -174,9 +174,13 @@ describe('the hosted-runner rehearsal workflow (#381)', () => {
     for (const path of ['report-*.txt', 'logs/*.txt', 'run-1.json', 'run-1-*/helper-result.json', 'results.json']) {
       expect(lines).toContain(`\${{ runner.temp }}/rehearsal/${path}`)
     }
+    // A re-run replaces its host's artifact from an earlier attempt
+    expect(lines).toContain('overwrite: true')
     const result = blockAt(lineOf('result:')).map((line) => line.trim())
     expect(result).toContain('needs: rehearse')
     expect(result).toContain('if: always()')
+    // The combined result reads the rehearsal jobs' own result, not just their artifacts
+    expect(step('Every run on every host').map((line) => line.trim())).toContain('REHEARSE: ${{ needs.rehearse.result }}')
   })
 })
 
@@ -203,10 +207,11 @@ describe("the hosted-runner workflow's result (#381)", () => {
     }
   }
 
-  function combined(scratch: string) {
+  function combined(scratch: string, rehearse = 'success') {
     const summary = summaryFile(scratch)
     const ran = bash(script('Every run on every host'), {
       LAST: '1.8.0',
+      REHEARSE: rehearse,
       REPORTS: 'https://github.com/shariqh/agent-inbox/actions/runs/1#artifacts',
       GITHUB_STEP_SUMMARY: summary,
     }, scratch)
@@ -244,6 +249,7 @@ describe("the hosted-runner workflow's result (#381)", () => {
     const passed = combined(scratch)
     expect(passed.status).toBe(0)
     expect(passed.summary).toContain('## Rehearsal of 1.x-last v1.8.0 on hosted runners: PASS')
+    expect(passed.summary).toContain('The rehearsal jobs: success.')
     expect(passed.summary).toContain('| Intel | HANDED OFF | PASS | PASS | PASS |')
     expect(passed.summary).toContain('| Rosetta | HANDED OFF | PASS | PASS | PASS |')
 
@@ -262,5 +268,17 @@ describe("the hosted-runner workflow's result (#381)", () => {
     expect(missing.status).not.toBe(0)
     expect(missing.summary).toContain('## Rehearsal of 1.x-last v1.8.0 on hosted runners: FAIL')
     expect(missing.summary).toContain('| rosetta | no result | no result | no result | no result |')
+  })
+
+  // A re-run whose host job failed, its upload too, leaves that host's earlier PASS artifact
+  it.each(['failure', 'cancelled', 'skipped', ''])('fails when the rehearsal jobs ended "%s", whatever their artifacts say', (rehearse) => {
+    const scratch = scratchDir('agent-inbox-rehearsal-results-')
+    results(scratch, 'Intel', { RUN1: '3', VERIFY: '0', RUN2: '0', RUN3: '0' })
+    results(scratch, 'Rosetta', { RUN1: '3', VERIFY: '0', RUN2: '0', RUN3: '0' })
+    const stale = combined(scratch, rehearse)
+    expect(stale.status).not.toBe(0)
+    expect(stale.summary).toContain('## Rehearsal of 1.x-last v1.8.0 on hosted runners: FAIL')
+    expect(stale.summary).toContain(`The rehearsal jobs: ${rehearse}.`)
+    expect(stale.summary).toContain('| Rosetta | HANDED OFF | PASS | PASS | PASS |')
   })
 })

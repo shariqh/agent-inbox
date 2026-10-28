@@ -819,7 +819,8 @@ To prepare each Mac:
 1. Create a standard user account for the rehearsal (System Settings → Users & Groups) and
    log in to it. Run 1 opens 1.x-last in that account, where it uses the account's
    `~/.agent-inbox` and `~/Library/Application Support/Agent Inbox`. Run 1 refuses in an
-   administrator account. Delete the account afterwards.
+   administrator account, except on a GitHub-hosted runner (below). Delete the account
+   afterwards.
 2. Quit Agent Inbox in every account on the Mac. Its viewer listens on 127.0.0.1:4319 for
    the whole Mac, and the app run 1 opens would use a viewer another account left running.
    Run 1 refuses while anything answers there.
@@ -867,6 +868,7 @@ ELECTRON_RUN_AS_NODE=1 arch -x86_64 "$APP/Contents/MacOS/Agent Inbox" test/rehea
 | `--from` | One step below `--last`, `1.7.0` | The version run 3 runs as |
 | `--older-app` | None | Run 1's copy of an older app, inside your home folder |
 | `--work` | None (required) | Scratch `userData`, downloads, run 1's hand-off and the reports |
+| `--hosted-runner` | Off | Only for the hosted-runner workflow (below): lets run 1 run in an administrator account and marks every result as hosted-runner evidence. Refused unless `GITHUB_ACTIONS` is `true` and `RUNNER_ENVIRONMENT` is `github-hosted` |
 
 Run 1 turns the copy at `--older-app` into 1.x-last, keeps the old copy beside it in a
 hidden `.agent-inbox-update-*` folder as `Agent Inbox.app.previous`, and opens 1.x-last in
@@ -895,7 +897,77 @@ Harness: <the commit the reports print>
 Run 1 --verify: PASS    Run 2: PASS    Run 3: PASS
 ```
 
-Tag 2.0.0 only once both hosts have posted a PASS for all three.
+Tag 2.0.0 only once #296 has a PASS for all three runs on both hosts: from the hosted-runner
+workflow below, and from a real Apple silicon Mac under Rosetta, in a standard test account.
+If an Intel Mac is available, post its runs too; the Intel runner stands in for one, with the
+limits below.
+
+#### On GitHub's hosted runners (#381)
+
+The workflow Rehearse 1.x-last on hosted runners (`.github/workflows/rehearsal-runners.yml`)
+runs all three runs on GitHub's `macos-15-intel` runner, an Intel Mac, and under
+`arch -x86_64` on its `macos-15` runner, an Apple silicon Mac. Each runner is a throwaway
+virtual machine, and its own user stands in for the test account. The workflow starts only
+by hand, with read-only permissions and no secrets. Start it on `main` from Actions →
+Rehearse 1.x-last on hosted runners → Run workflow, or:
+
+```sh
+gh workflow run rehearsal-runners.yml --ref main -f last=1.8.0 -f older=1.7.0
+```
+
+`last` is 1.x-last, and `older` is the release whose app run 1 replaces. On each runner the
+workflow:
+
+1. Downloads both releases' DMGs, `SHA256SUMS.txt` files and `update-manifest.json` pairs.
+   It checks each DMG with `test/rehearsal/published-dmg.cjs` before mounting it: its SHA-256
+   must be the one `SHA256SUMS.txt` lists, and its size and SHA-256 those of the macOS target
+   of the update manifest, whose signature must verify under `release/update-keys.json`.
+2. Installs 1.x-last by copying the app from its DMG into `/Applications`, as a user would,
+   and copies the older app into `~/Rehearsal/Older`. The harness's preflight then checks the
+   installed app as it does on any Mac: its signature, Gatekeeper's `Notarized Developer ID`,
+   and its updater files against the commit the signed manifest names.
+3. Runs run 2, run 3 and run 1's install step, then `--run 1 --verify` once the install step
+   has handed off. Each passes `--hosted-runner`.
+
+A runner's only user is an administrator, which run 1 refuses. `--hosted-runner` lifts that
+one refusal, and only when `GITHUB_ACTIONS` is `true` and `RUNNER_ENVIRONMENT` is
+`github-hosted`. Anywhere else the harness refuses the flag before it does anything. Every
+report says at the top that the override is in effect, and its result line ends
+`hosted-runner evidence, not the human gate`.
+
+The run's summary and log show each runner's macOS, System Integrity Protection and
+Gatekeeper status, then the summary shows PASS or FAIL for each run on each host. The
+workflow fails unless both hosts passed every run: run 1's install step handed off, its
+`--verify` passed, and runs 2 and 3 passed. Each host uploads an artifact, `rehearsal-intel`
+or `rehearsal-rosetta`, kept for 30 days. It holds the reports, each run's whole output in
+`logs/`, run 1's hand-off and the helper's result. To retry one host, use Re-run failed jobs:
+each job starts on a fresh runner.
+
+It proves that the published 1.x-last's own updater takes each path on an Intel Mac and
+under Rosetta: the blocked offer, the bad and stale manifests, and a real download, install,
+swap and relaunch. It doesn't prove:
+
+- That macOS's App Management protection lets the helper swap the app on a real Mac with
+  System Integrity Protection on. GitHub's macOS 15 runners run with it disabled (each
+  run's log prints `csrutil status`), and may have a pre-seeded privacy (TCC) database.
+- Anything on a macOS other than the runner images' macOS 15.
+- That run 1 works in a standard account. On a runner it runs as an administrator.
+
+So the Rosetta runs still need a real Apple silicon Mac, in a standard test account, before
+2.0.0 is tagged.
+
+To post the results on #296, add one comment for the workflow run. Give its link, the commit
+the reports name and the result of each run on each host, and say it is hosted-runner
+evidence. Put both artifacts' reports in a collapsed `<details>` block, as for a Mac. For
+example:
+
+```text
+Rehearsal of 1.x-last's update path (#344): v1.8.0, hosted-runner evidence, not the human gate
+Workflow run: https://github.com/shariqh/agent-inbox/actions/runs/<id>
+Harness: <the commit the reports print>
+Intel (macos-15-intel): Run 1 --verify: PASS    Run 2: PASS    Run 3: PASS
+Rosetta (macos-15, arch -x86_64): Run 1 --verify: PASS    Run 2: PASS    Run 3: PASS
+```
 
 ### Release runbook
 

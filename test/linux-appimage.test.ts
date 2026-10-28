@@ -259,6 +259,22 @@ describe('Linux AppImage packaging', () => {
       `${listing}\n-rwsr-xr-x 0/0 10 2026-08-19 20:00 squashfs-root/unexpected-suid`,
       options,
     )).toThrow(/unexpected privileged mode/)
+
+    // every other regular file is exactly 0644 or 0755, whatever the thin folder held (#371)
+    const ordinary = [
+      listing,
+      '-rw-r--r-- 0/0                      10 2026-08-19 20:00 squashfs-root/usr/lib/Agent Inbox/resources.pak',
+      '-rwxr-xr-x 0/0                      10 2026-08-19 20:00 squashfs-root/usr/lib/Agent Inbox/Agent Inbox',
+      'lrwxrwxrwx 0/0                      15 2026-08-19 20:00 squashfs-root/.DirIcon -> agent-inbox.png',
+    ].join('\n')
+    expect(verifySquashfsModes(ordinary, options)).toMatchObject({ directoryCount: 3 })
+    for (const [line, found] of [
+      ['-rw-rw-rw- 0/0                      10 2026-08-19 20:00 squashfs-root/usr/lib/Agent Inbox/resources.pak', '0666'],
+      ['-rwxrwxrwx 0/0                      10 2026-08-19 20:00 squashfs-root/usr/lib/Agent Inbox/libffmpeg.so', '0777'],
+    ] as const) {
+      expect(() => verifySquashfsModes(`${listing}\n${line}`, options))
+        .toThrow(new RegExp(`mode must be 0644 or 0755, found ${found}$`))
+    }
   })
 
   it('accepts the pinned unsquashfs version command exact exit-1 contract only', () => {

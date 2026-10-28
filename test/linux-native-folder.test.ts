@@ -1,4 +1,4 @@
-import { chmodSync, cpSync, mkdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, cpSync, lchmodSync, mkdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -282,6 +282,11 @@ describe('native Linux folder gates', () => {
     writeFileSync(outside, 'outside')
     chmodSync(outside, 0o666)
     symlinkSync(outside, join(root, 'link'))
+    // A link is 0777 on Linux but 0755 on macOS, where only lchmod gives it the write bits
+    // that make a missing symlink guard chmod (and so follow) it. Node has lchmod only there.
+    if (process.platform === 'darwin' && typeof lchmodSync === 'function') {
+      lchmodSync(join(root, 'link'), 0o777)
+    }
 
     dropGroupAndOtherWrite(root)
 

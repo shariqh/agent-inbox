@@ -180,8 +180,10 @@ reports. The builder normalizes every AppDir directory to `0755`, pins AppRun
 and the outer artifact to `0755`, pins desktop/icon/checksum/report metadata to
 `0644`, and the final verifier reads every stored directory mode plus the
 AppRun, desktop, icon, and sole privileged sandbox modes directly from numeric
-SquashFS metadata before extraction. It rejects every other privileged entry
-and requires the extracted directory count to match that metadata. Content
+SquashFS metadata before extraction. It rejects every other privileged entry,
+and any other regular file whose mode is not exactly `0644` or `0755`, so a
+group- or world-writable file in the thin folder cannot ship (#371). It also
+requires the extracted directory count to match that metadata. Content
 extraction runs in a dedicated child process with a zero umask so extracted
 file modes retain their stored values for exact inner-tree identity without
 changing the verifier process's ambient umask. The package therefore does not

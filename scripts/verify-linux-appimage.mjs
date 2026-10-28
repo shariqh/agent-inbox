@@ -192,6 +192,13 @@ export function verifySquashfsModes(listing, { expectedModes, privilegedPath }) 
         `SquashFS path ${path} has unexpected privileged mode 0${mode.toString(8)}`,
       )
     }
+    // The builder copies the thin folder's modes as they are, so a group- or world-writable
+    // file (Electron 43.8.4's Linux zips store 0666 and 0777, #371) would otherwise ship.
+    if (symbolic.startsWith('-') && path !== privilegedPath && mode !== 0o644 && mode !== 0o755) {
+      throw new LinuxAppImageVerificationError(
+        `SquashFS file ${path} mode must be 0644 or 0755, found 0${mode.toString(8)}`,
+      )
+    }
   }
   if (!foundRoot || directoryCount === 0) {
     throw new LinuxAppImageVerificationError('SquashFS metadata is missing its root directory')

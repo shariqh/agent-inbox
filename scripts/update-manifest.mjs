@@ -587,7 +587,8 @@ function releaseKindOf(release) {
 }
 
 // G6: the release every v1 manifest describes, the newest published one with a universal DMG.
-function newestUniversalRelease(releases, newTag) {
+// The release notes of an arm64 release name it as the last for Intel Macs (#296).
+export function newestUniversalRelease(releases, newTag) {
   let newest = null
   for (const release of qualifyingStableReleases(releases, newTag)) {
     if (!findAsset(release, dmgNameOf('universal', release))) continue

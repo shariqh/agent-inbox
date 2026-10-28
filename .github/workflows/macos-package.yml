@@ -1,4 +1,4 @@
-name: Universal macOS package
+name: macOS package
 
 on:
   workflow_call:
@@ -8,7 +8,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: macos-universal-${{ github.workflow }}-${{ github.ref }}
+  group: macos-package-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -36,19 +36,9 @@ jobs:
       - run: npx vitest run test/release-inputs.test.ts test/release-pipeline.test.ts test/app-dependencies.test.ts
 
   runtime:
-    name: Native runtime / ${{ matrix.key }}
+    name: Native runtime / darwin-arm64
     needs: inputs
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - key: darwin-arm64
-            arch: arm64
-            runner: macos-15
-          - key: darwin-x64
-            arch: x64
-            runner: macos-15-intel
-    runs-on: ${{ matrix.runner }}
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -59,7 +49,7 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ steps.release-inputs.outputs.node-version }}
-          architecture: ${{ matrix.arch }}
+          architecture: arm64
           package-manager-cache: false
       - run: npm ci
       - name: Verify native Setup lock lease
@@ -69,34 +59,24 @@ jobs:
       - name: Stage verified native runtime
         run: >-
           npm run stage:runtime:native --
-          --key "${{ matrix.key }}"
-          --output "build/runtime/${{ matrix.key }}"
+          --key darwin-arm64
+          --output build/runtime/darwin-arm64
       - name: Preserve runtime modes
         run: >-
           node scripts/archive-tree.mjs create
-          --source "build/runtime/${{ matrix.key }}"
-          --archive "build/${{ matrix.key }}.tar.gz"
+          --source build/runtime/darwin-arm64
+          --archive build/darwin-arm64.tar.gz
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: runtime-${{ matrix.key }}
-          path: build/${{ matrix.key }}.tar.gz
+          name: runtime-darwin-arm64
+          path: build/darwin-arm64.tar.gz
           if-no-files-found: error
           retention-days: 7
 
   thin:
-    name: Thin Electron app / ${{ matrix.key }}
+    name: Thin Electron app / darwin-arm64
     needs: runtime
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - key: darwin-arm64
-            arch: arm64
-            runner: macos-15
-          - key: darwin-x64
-            arch: x64
-            runner: macos-15-intel
-    runs-on: ${{ matrix.runner }}
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -107,41 +87,37 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ steps.release-inputs.outputs.node-version }}
-          architecture: ${{ matrix.arch }}
+          architecture: arm64
           package-manager-cache: false
       - run: npm ci
       - run: echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)" >> "$GITHUB_ENV"
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          pattern: runtime-darwin-*
+          name: runtime-darwin-arm64
           path: build/runtime-artifacts
-          merge-multiple: true
-      - name: Restore both runtime payloads
+      - name: Restore the runtime payload
         run: |
           mkdir -p build/runtimes
           node scripts/archive-tree.mjs extract --archive build/runtime-artifacts/darwin-arm64.tar.gz --destination build/runtimes --expected-root darwin-arm64
-          node scripts/archive-tree.mjs extract --archive build/runtime-artifacts/darwin-x64.tar.gz --destination build/runtimes --expected-root darwin-x64
-      - name: Build architecture-correct thin app
+      - name: Build the Apple silicon thin app
         run: >-
           npm run package:thin --
-          --arch "${{ matrix.arch }}"
           --runtime-arm64 build/runtimes/darwin-arm64
-          --runtime-x64 build/runtimes/darwin-x64
-          --output "build/thin/${{ matrix.key }}/Agent Inbox.app"
+          --output "build/thin/darwin-arm64/Agent Inbox.app"
       - name: Preserve app symlinks and modes
         run: >-
           node scripts/archive-tree.mjs create
-          --source "build/thin/${{ matrix.key }}"
-          --archive "build/thin-${{ matrix.key }}.tar.gz"
+          --source build/thin/darwin-arm64
+          --archive build/thin-darwin-arm64.tar.gz
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: thin-${{ matrix.key }}
-          path: build/thin-${{ matrix.key }}.tar.gz
+          name: thin-darwin-arm64
+          path: build/thin-darwin-arm64.tar.gz
           if-no-files-found: error
           retention-days: 7
 
-  universal:
-    name: Ad-hoc universal app and provisional DMG
+  package:
+    name: Ad-hoc app and provisional DMG
     needs: thin
     runs-on: macos-15
     steps:
@@ -160,28 +136,24 @@ jobs:
       - run: echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)" >> "$GITHUB_ENV"
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          pattern: thin-darwin-*
+          name: thin-darwin-arm64
           path: build/thin-artifacts
-          merge-multiple: true
-      - name: Restore thin apps
+      - name: Restore the thin app
         run: |
           mkdir -p build/thin
           node scripts/archive-tree.mjs extract --archive build/thin-artifacts/thin-darwin-arm64.tar.gz --destination build/thin --expected-root darwin-arm64
-          node scripts/archive-tree.mjs extract --archive build/thin-artifacts/thin-darwin-x64.tar.gz --destination build/thin --expected-root darwin-x64
-      - name: Merge, finalize, sign ad-hoc, and create provisional DMG
+      - name: Finalize, sign ad-hoc, and create provisional DMG
         run: >-
           npm run package:macos --
           --mode adhoc
           --arm64-app "build/thin/darwin-arm64/Agent Inbox.app"
-          --x64-app "build/thin/darwin-x64/Agent Inbox.app"
           --arm64-report "build/thin/darwin-arm64/Agent Inbox.app.thin-report.json"
-          --x64-report "build/thin/darwin-x64/Agent Inbox.app.thin-report.json"
-          --output out/macos-universal
+          --output out/macos-package
       - name: Mount, copy, launch, verify boundary, and remove portable runtime
         shell: bash
         run: |
           set -euo pipefail
-          DMG="$(find out/macos-universal -maxdepth 1 -name '*-provisional.dmg' -print -quit)"
+          DMG="$(find out/macos-package -maxdepth 1 -name '*-provisional.dmg' -print -quit)"
           MOUNT="$RUNNER_TEMP/agent-inbox-dmg"
           COPIED="$RUNNER_TEMP/Agent Inbox.app"
           TEST_HOME="$RUNNER_TEMP/agent-inbox-home"
@@ -232,8 +204,8 @@ jobs:
           trap - EXIT
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: macos-universal-provisional
-          path: out/macos-universal
+          name: macos-provisional
+          path: out/macos-package
           if-no-files-found: error
           retention-days: 7
       - name: Retain reproducible Layer 3 inputs
@@ -248,51 +220,3 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  verify-x64-final:
-    name: Native x64 signed-runtime verification
-    needs: universal
-    runs-on: macos-15-intel
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - id: release-inputs
-        name: Resolve pinned Node version
-        run: echo "node-version=$(node scripts/release-inputs.mjs --node-version)" >> "$GITHUB_OUTPUT"
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: ${{ steps.release-inputs.outputs.node-version }}
-          architecture: x64
-          package-manager-cache: false
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: macos-universal-provisional
-          path: build/final-artifact
-      - name: Verify finalized x64 runtime natively
-        shell: bash
-        run: |
-          set -euo pipefail
-          ARCHIVE="$(find build/final-artifact -maxdepth 1 -name '*-universal-adhoc.tar.gz' -print -quit)"
-          mkdir -p build/final-app build/x64-selftest
-          node scripts/archive-tree.mjs extract \
-            --archive "$ARCHIVE" \
-            --destination build/final-app \
-            --expected-root "Agent Inbox.app"
-          APP="$PWD/build/final-app/Agent Inbox.app"
-          RUNTIME="$APP/Contents/Resources/app/runtime/darwin-x64"
-          codesign --verify --deep --strict --verbose=2 "$APP"
-          test "$(/usr/bin/lipo -archs "$RUNTIME/bin/node")" = "x86_64"
-          AGENT_INBOX_DB="$PWD/build/x64-selftest/inbox.db" \
-            "$RUNTIME/bin/node" "$RUNTIME/dist/hook-cli.js" selftest
-          NODE_VERSION="$(node -p "require('./release/macos-inputs.json').node.version")"
-          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
-          "$RUNTIME/bin/node" "$RUNTIME/scripts/runtime-payload.mjs" verify \
-            --root "$RUNTIME" --platform darwin --arch x64 \
-            --node-version "$NODE_VERSION" --package-version "$PACKAGE_VERSION" \
-            > build/x64-final-verification.json
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: macos-universal-x64-final-verification
-          path: build/x64-final-verification.json
-          if-no-files-found: error
-          retention-days: 7

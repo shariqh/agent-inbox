@@ -381,7 +381,7 @@ export function validateLinuxReleaseArtifacts(options) {
 }
 
 function validateDryRunMac({ macArtifactsRoot, context, repoRoot }) {
-  const base = `Agent-Inbox-${context.version}-macos-universal-adhoc`
+  const base = `Agent-Inbox-${context.version}-macos-adhoc`
   const names = [
     `${base}.tar.gz`,
     `${base}-provisional.dmg`,

@@ -68,19 +68,17 @@ async function buildImage(output: string, volume: string, build: () => unknown) 
 }
 
 // Nothing runs the executable. The in-app updater reads its Mach-O header (#343), so it is
-// a fat header naming x86_64 and arm64, as the shipped app's is.
-function universalHeader() {
-  const header = Buffer.alloc(48)
-  header.writeUInt32BE(0xcafebabe, 0)
-  header.writeUInt32BE(2, 4)
-  header.writeUInt32BE(0x01000007, 8)
-  header.writeUInt32BE(0x0100000c, 28)
+// a thin 64-bit header naming arm64, as the shipped app's is since #296.
+function arm64Header() {
+  const header = Buffer.alloc(32)
+  header.writeUInt32LE(0xfeedfacf, 0)
+  header.writeUInt32LE(0x0100000c, 4)
   return header
 }
 
 function writeApp(app: string) {
   mkdirSync(join(app, 'Contents', 'MacOS'), { recursive: true })
-  writeFileSync(join(app, 'Contents', 'MacOS', 'Agent Inbox'), universalHeader(), { mode: 0o755 })
+  writeFileSync(join(app, 'Contents', 'MacOS', 'Agent Inbox'), arm64Header(), { mode: 0o755 })
   writeFileSync(join(app, 'Contents', 'Info.plist'), [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
@@ -113,7 +111,7 @@ describe.skipIf(process.platform !== 'darwin')('a release DMG built on macOS', (
     temp = realpathSync(scratchDir('release-dmg-'))
     const app = join(temp, 'build', 'Agent Inbox.app')
     writeApp(app)
-    dmg = join(temp, `Agent-Inbox-v${VERSION}-universal.dmg`)
+    dmg = join(temp, `Agent-Inbox-v${VERSION}-arm64.dmg`)
     const title = `Agent Inbox DMG test ${process.pid}`
     await buildImage(dmg, title, () => createReleaseDmg({
       app,
@@ -173,16 +171,18 @@ describe.skipIf(process.platform !== 'darwin')('a release DMG built on macOS', (
       workDirectory: join(temp, 'update-install'),
       execFileImpl,
       binaries: { codesign: '/usr/bin/true', spctl: '/usr/bin/true' },
+      // The Mac that installs an Apple silicon DMG, whatever runs the test.
+      hostArch: 'arm64',
     })
     const bytes = readFileSync(dmg)
     const record: VerifiedArtifact = {
       path: dmg,
       version: VERSION,
       tag: `v${VERSION}`,
-      filename: `Agent-Inbox-v${VERSION}-universal.dmg`,
+      filename: `Agent-Inbox-v${VERSION}-arm64.dmg`,
       sha256: createHash('sha256').update(bytes).digest('hex'),
       byteLength: bytes.length,
-      architecture: 'universal',
+      architecture: 'arm64',
       packageType: 'dmg',
       installStrategy: 'macos-dmg',
       minimumSystemVersion: '13.5',

@@ -158,7 +158,7 @@ function bakeRelease(args: string[]): { code: number; stdout: string; stderr: st
 }
 
 describe('scripts/write-setup-info.mjs --release (issue #74)', () => {
-  it('emits schema/version/commit/builtAt and both mandatory runtimePayloads keys, with no repoRoot/nodeBin', () => {
+  it('emits schema/version/commit/builtAt and every declared runtimePayloads key, with no repoRoot/nodeBin', () => {
     const payloadRoot = scratchDir('payload-root-')
     stagePayloadDir(payloadRoot, 'runtime/darwin-arm64', 'darwin', 'arm64')
     stagePayloadDir(payloadRoot, 'runtime/darwin-x64', 'darwin', 'x64')
@@ -427,7 +427,7 @@ describe('scripts/write-setup-info.mjs --release (issue #74)', () => {
 describe('the packager delegates to it', () => {
   const sh = readFileSync(join(REPO, 'scripts', 'package-app.sh'), 'utf8')
   const thin = readFileSync(join(REPO, 'scripts', 'build-thin-app.mjs'), 'utf8')
-  const universal = readFileSync(join(REPO, 'scripts', 'assemble-macos-release.mjs'), 'utf8')
+  const assemble = readFileSync(join(REPO, 'scripts', 'assemble-macos-release.mjs'), 'utf8')
 
   it('package-app.sh calls the script instead of writing setup-info.json inline', () => {
     expect(sh).toContain('write-setup-info.mjs')
@@ -450,11 +450,11 @@ describe('the packager delegates to it', () => {
     expect(sh).toMatch(/write-setup-info\.mjs" "\$ROOT" "\$STAGE\/setup-info\.json"/)
   })
 
-  it('keeps every existing macOS release caller explicit and Darwin-only', () => {
-    for (const source of [sh, thin, universal]) {
+  it('keeps every existing macOS release caller explicit, Darwin-only and Apple silicon only (#296)', () => {
+    for (const source of [sh, thin, assemble]) {
       expect(source).toContain('--runtime-key')
       expect(source).toContain('darwin-arm64')
-      expect(source).toContain('darwin-x64')
+      expect(source).not.toContain('darwin-x64')
       expect(source).not.toContain("'linux-x64=runtime/linux-x64'")
       expect(source).not.toContain('linux-x64=runtime/linux-x64')
     }

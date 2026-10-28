@@ -17,7 +17,6 @@ import {
 import { basename, dirname, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
-import { makeUniversalApp } from '@electron/universal'
 import { sign } from '@electron/osx-sign'
 import { createReleaseDmg } from './macos-dmg.mjs'
 import { assertEnglishOnlyElectronLocales } from './prune-electron-locales.mjs'
@@ -39,7 +38,8 @@ import { treeIdentity } from './tree-identity.mjs'
 import { probeRuntimeMcp } from './runtime-mcp-probe.mjs'
 
 const APP_NAME = 'Agent Inbox'
-export const UNIVERSAL_RUNTIME_GLOB = 'Contents/Resources/app/runtime/**'
+// lipo's name for each Node runtime architecture.
+const LIPO_ARCH = Object.freeze({ arm64: 'arm64', x64: 'x86_64' })
 
 export class MacReleaseError extends Error {
   constructor(message) {
@@ -117,11 +117,10 @@ export function releaseDisposition(mode) {
       notaryEligible: false,
       validationEvidenceOnly: true,
       layer3Required: [
-        'rebuild verified thin apps and reports from the release tag',
+        'rebuild the verified thin app and report from the release tag',
         'import Developer ID credentials into an ephemeral keychain',
-        'run package:macos --mode developer-id from those verified thin inputs',
+        'run package:macos --mode developer-id from that verified thin input',
         'verify the Developer ID output and require notaryEligible=true',
-        'run fresh native Intel manifest, selftest, and signature verification against that exact Developer ID app',
         'ZIP and submit the Developer ID app to notary',
         'wait for app notarization acceptance',
         'staple and validate the app',
@@ -136,7 +135,6 @@ export function releaseDisposition(mode) {
       notaryEligible: true,
       validationEvidenceOnly: false,
       layer3Required: [
-        'run fresh native Intel manifest, selftest, and signature verification against this exact Developer ID app',
         'ZIP and submit the verified Developer ID app to notary',
         'wait for app notarization acceptance',
         'staple and validate the app',
@@ -229,9 +227,7 @@ function writeSetupInfo({ repoRoot, appResources, packageVersion }) {
     '--source-root', repoRoot,
     '--payload-root', appResources,
     '--runtime-key', 'darwin-arm64',
-    '--runtime-key', 'darwin-x64',
     '--payload', 'darwin-arm64=runtime/darwin-arm64',
-    '--payload', 'darwin-x64=runtime/darwin-x64',
   ], {
     cwd: repoRoot,
     env: process.env,
@@ -277,33 +273,36 @@ async function signElectronEnvelope({ app, appResources, signing, entitlementsRo
   })
 }
 
-function verifyUniversalMachOs(app, appResources) {
+// Every Electron Mach-O must hold exactly the expected CPU types (macosArchitectures, which
+// the final gates measure again), and every runtime Mach-O exactly its own runtime's.
+export function verifyMachOArchitectures(app, appResources, inputs) {
   const runtimeRoot = join(appResources, 'runtime') + sep
-  const universal = []
+  const expected = [...inputs.macosArchitectures].sort()
+  const electron = []
   const runtime = []
   for (const path of walkFiles(app).filter(isMachO)) {
     const arches = lipoArchs(path)
     if (path.startsWith(runtimeRoot)) {
-      const key = path.includes(`${sep}darwin-arm64${sep}`) ? 'darwin-arm64' : 'darwin-x64'
-      const expected = key === 'darwin-arm64' ? ['arm64'] : ['x86_64']
-      if (JSON.stringify(arches) !== JSON.stringify(expected)) {
+      const key = path.slice(runtimeRoot.length).split(sep)[0]
+      const own = LIPO_ARCH[inputs.node.distributions[key]?.arch]
+      if (!own || JSON.stringify(arches) !== JSON.stringify([own])) {
         throw new MacReleaseError(`runtime Mach-O has wrong architecture (${arches.join(',')}): ${path}`)
       }
       runtime.push({ path: relative(app, path), architectures: arches })
     } else {
-      if (!arches.includes('arm64') || !arches.includes('x86_64')) {
-        throw new MacReleaseError(`Electron Mach-O is not universal (${arches.join(',')}): ${path}`)
+      if (JSON.stringify(arches) !== JSON.stringify(expected)) {
+        throw new MacReleaseError(`Electron Mach-O has CPU types ${arches.join(',')}, not the expected ${expected.join(',')}: ${path}`)
       }
-      universal.push({ path: relative(app, path), architectures: arches })
+      electron.push({ path: relative(app, path), architectures: arches })
     }
   }
-  if (!universal.some((entry) => entry.path === join('Contents', 'MacOS', APP_NAME))) {
-    throw new MacReleaseError('universal app executable was not inspected')
+  if (!electron.some((entry) => entry.path === join('Contents', 'MacOS', APP_NAME))) {
+    throw new MacReleaseError('app executable was not inspected')
   }
-  if (!universal.some((entry) => entry.path.endsWith('better_sqlite3.node'))) {
-    throw new MacReleaseError('universal better_sqlite3.node was not inspected')
+  if (!electron.some((entry) => entry.path.endsWith('better_sqlite3.node'))) {
+    throw new MacReleaseError('app better_sqlite3.node was not inspected')
   }
-  return { universal, runtime }
+  return { app: electron, runtime }
 }
 
 function verifySetupInfo(appResources, packageVersion) {
@@ -342,11 +341,10 @@ function runNativeRuntimeSelftest(appResources) {
   }
 }
 
-export function verifyThinReports({
+// The one thin app the macOS release is made from: the native arm64 build (#296).
+export function verifyThinReport({
   arm64App,
-  x64App,
   arm64Report,
-  x64Report,
   packageVersion,
   inputs,
   provenance,
@@ -355,48 +353,37 @@ export function verifyThinReports({
   if (mode === 'developer-id' && provenance.sourceDirty) {
     throw new MacReleaseError('developer-id mode requires clean source provenance')
   }
-  const reports = {}
-  for (const [arch, appPath, reportPath] of [
-    ['arm64', arm64App, arm64Report],
-    ['x64', x64App, x64Report],
-  ]) {
-    const report = JSON.parse(readFileSync(reportPath, 'utf8'))
-    const expectedAddonArch = arch === 'arm64' ? ['arm64'] : ['x86_64']
-    if (
-      report.schema !== 1 ||
-      report.product !== APP_NAME ||
-      report.arch !== arch ||
-      report.packageVersion !== packageVersion ||
-      report.electronVersion !== inputs.electron.version ||
-      report.nodeVersion !== inputs.node.version ||
-      report.nodeModulesAbi !== inputs.node.modulesAbi ||
-      report.sourceCommit !== provenance.sourceCommit ||
-      report.sourceDirty !== provenance.sourceDirty ||
-      report.runtimeSourceCommit !== provenance.sourceCommit ||
-      report.nativeRuntimeSelftest !== 'passed' ||
-      report.electronSqliteCheck !== 'passed' ||
-      JSON.stringify(report.runtimeKeys) !== JSON.stringify(RUNTIME_KEYS) ||
-      JSON.stringify(report.nativeAddonArchitectures?.slice().sort()) !== JSON.stringify(expectedAddonArch)
-    ) {
-      throw new MacReleaseError(`thin ${arch} verification report is invalid`)
-    }
-    const app = resolve(appPath)
-    if (report.appTreeDigest !== treeIdentity(app)) {
-      throw new MacReleaseError(`thin ${arch} app does not match its verification report`)
-    }
-    const setup = JSON.parse(readFileSync(join(app, 'Contents', 'Resources', 'app', 'setup-info.json'), 'utf8'))
-    const expectedRuntimeDigests = Object.fromEntries(
-      RUNTIME_KEYS.map((key) => [key, setup.runtimePayloads?.[key]?.digest]),
-    )
-    if (JSON.stringify(report.runtimeManifestDigests) !== JSON.stringify(expectedRuntimeDigests)) {
-      throw new MacReleaseError(`thin ${arch} runtime manifest digests do not match its app`)
-    }
-    reports[arch] = report
+  const report = JSON.parse(readFileSync(arm64Report, 'utf8'))
+  if (
+    report.schema !== 1 ||
+    report.product !== APP_NAME ||
+    report.arch !== 'arm64' ||
+    report.packageVersion !== packageVersion ||
+    report.electronVersion !== inputs.electron.version ||
+    report.nodeVersion !== inputs.node.version ||
+    report.nodeModulesAbi !== inputs.node.modulesAbi ||
+    report.sourceCommit !== provenance.sourceCommit ||
+    report.sourceDirty !== provenance.sourceDirty ||
+    report.runtimeSourceCommit !== provenance.sourceCommit ||
+    report.nativeRuntimeSelftest !== 'passed' ||
+    report.electronSqliteCheck !== 'passed' ||
+    JSON.stringify(report.runtimeKeys) !== JSON.stringify(RUNTIME_KEYS) ||
+    JSON.stringify(report.nativeAddonArchitectures?.slice().sort()) !== JSON.stringify(['arm64'])
+  ) {
+    throw new MacReleaseError('thin arm64 verification report is invalid')
   }
-  if (JSON.stringify(reports.arm64.runtimeManifestDigests) !== JSON.stringify(reports.x64.runtimeManifestDigests)) {
-    throw new MacReleaseError('thin app runtime contracts do not match')
+  const app = resolve(arm64App)
+  if (report.appTreeDigest !== treeIdentity(app)) {
+    throw new MacReleaseError('thin arm64 app does not match its verification report')
   }
-  return reports
+  const setup = JSON.parse(readFileSync(join(app, 'Contents', 'Resources', 'app', 'setup-info.json'), 'utf8'))
+  const expectedRuntimeDigests = Object.fromEntries(
+    RUNTIME_KEYS.map((key) => [key, setup.runtimePayloads?.[key]?.digest]),
+  )
+  if (JSON.stringify(report.runtimeManifestDigests) !== JSON.stringify(expectedRuntimeDigests)) {
+    throw new MacReleaseError('thin arm64 runtime manifest digests do not match its app')
+  }
+  return report
 }
 
 function publishDirectory(stage, output, force) {
@@ -442,9 +429,7 @@ export function assertPublishedEntries(directory, expectedNames) {
 
 export async function assembleMacRelease({
   arm64App,
-  x64App,
   arm64Report,
-  x64Report,
   output,
   repoRoot,
   inputsPath,
@@ -453,17 +438,15 @@ export async function assembleMacRelease({
   keychain,
   force = false,
 }) {
-  if (process.platform !== 'darwin') throw new MacReleaseError('universal macOS assembly requires macOS')
+  if (process.platform !== 'darwin') throw new MacReleaseError('macOS release assembly requires macOS')
   const signing = validateSigningOptions({ mode, identity, keychain })
   const inputs = loadReleaseInputs(inputsPath)
   validateInstalledReleaseTools(inputs, repoRoot)
   const pkg = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8'))
   const provenance = resolveSourceProvenance(repoRoot)
-  const thinReports = verifyThinReports({
+  const thinReport = verifyThinReport({
     arm64App,
-    x64App,
     arm64Report,
-    x64Report,
     packageVersion: pkg.version,
     inputs,
     provenance,
@@ -477,16 +460,13 @@ export async function assembleMacRelease({
 
   try {
     const app = join(stage, `${APP_NAME}.app`)
-    await makeUniversalApp({
-      x64AppPath: resolve(x64App),
-      arm64AppPath: resolve(arm64App),
-      outAppPath: app,
-      force: true,
-      mergeASARs: false,
-      x64ArchFiles: UNIVERSAL_RUNTIME_GLOB,
+    // A copy, so the verified thin app keeps the tree its report binds.
+    execFileSync('/usr/bin/ditto', [resolve(arm64App), app], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 10 * 60_000,
     })
     // Signing below seals Electron Framework's resources as they are now (#292).
-    assertEnglishOnlyElectronLocales(app, 'darwin', 'universal app')
+    assertEnglishOnlyElectronLocales(app, 'darwin', 'macOS app')
     const appResources = join(app, 'Contents', 'Resources', 'app')
     const entitlementsRoot = join(repoRoot, 'release', 'entitlements')
     markBuildProperties(app, mode, inputs.minimumMacosVersion)
@@ -535,11 +515,11 @@ export async function assembleMacRelease({
       timeout: 60_000,
     })
 
-    const architectures = verifyUniversalMachOs(app, appResources)
+    const architectures = verifyMachOArchitectures(app, appResources, inputs)
     const nativeSelftest = runNativeRuntimeSelftest(appResources)
     const appTreeDigest = treeIdentity(app)
     const { sourceCommit, sourceDirty } = provenance
-    const base = `Agent-Inbox-${pkg.version}-macos-universal-${mode}`
+    const base = `Agent-Inbox-${pkg.version}-macos-${mode}`
     const archiveName = `${base}.tar.gz`
     const dmgName = `${base}-provisional.dmg`
     const reportName = `${base}-verification.json`
@@ -583,12 +563,8 @@ export async function assembleMacRelease({
       appTreeDigest,
       thinReports: {
         arm64: {
-          appTreeDigest: thinReports.arm64.appTreeDigest,
-          nativeRuntimeSelftest: thinReports.arm64.nativeRuntimeSelftest,
-        },
-        x64: {
-          appTreeDigest: thinReports.x64.appTreeDigest,
-          nativeRuntimeSelftest: thinReports.x64.nativeRuntimeSelftest,
+          appTreeDigest: thinReport.appTreeDigest,
+          nativeRuntimeSelftest: thinReport.nativeRuntimeSelftest,
         },
       },
       runtimeHashesUnchangedAfterOuterSign: true,
@@ -631,9 +607,7 @@ async function main(argv) {
     args: argv,
     options: {
       'arm64-app': { type: 'string' },
-      'x64-app': { type: 'string' },
       'arm64-report': { type: 'string' },
-      'x64-report': { type: 'string' },
       output: { type: 'string' },
       mode: { type: 'string', default: 'adhoc' },
       identity: { type: 'string' },
@@ -643,14 +617,12 @@ async function main(argv) {
       force: { type: 'boolean' },
     },
   })
-  for (const field of ['arm64-app', 'x64-app', 'arm64-report', 'x64-report', 'output']) {
+  for (const field of ['arm64-app', 'arm64-report', 'output']) {
     if (!values[field]) throw new MacReleaseError(`--${field} is required`)
   }
   const result = await assembleMacRelease({
     arm64App: resolve(values['arm64-app']),
-    x64App: resolve(values['x64-app']),
     arm64Report: resolve(values['arm64-report']),
-    x64Report: resolve(values['x64-report']),
     output: resolve(values.output),
     repoRoot: resolve(values['repo-root']),
     inputsPath: values.inputs && resolve(values.inputs),

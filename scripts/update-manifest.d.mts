@@ -141,6 +141,12 @@ export function serializeManifestV2(manifest: UpdateManifestV2): Buffer
  */
 export function projectV1(v2ManifestBytes: Buffer | string): { manifest: UpdateManifest; bytes: Buffer }
 
+/**
+ * G6: the newest published stable release older than `newTag` with a universal DMG, the
+ * release every v1 manifest describes; null when none has one. Every record is validated.
+ */
+export function newestUniversalRelease(releases: readonly ReleaseLike[], newTag: string): ReleaseLike | null
+
 export type RestampedManifest = {
   manifest: UpdateManifest
   bytes: Buffer

@@ -861,8 +861,8 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   and writing nothing to stdout. Then it closes the server's stdin and lets it exit,
   killing it only after a 2-second grace: on Windows a kill is TerminateProcess, which
   would orphan a git the server runs for its presence write, still open inside the
-  runtime about to be renamed (#333). Staging, release assembly and the Intel release gate all
-  run it beside the selftest.
+  runtime about to be renamed (#333). Staging and release assembly both run it beside the
+  selftest.
 - **`waits_on` is agent-owned row content: labels, checked where it is written (issue #103,
   slice 2 PR C).** Design: [`docs/superpowers/specs/2026-10-21-plan-dependencies-design.md`](docs/superpowers/specs/2026-10-21-plan-dependencies-design.md)
   §4. `board_rows.waits_on` is one additive column holding the sorted, de-duplicated JSON
@@ -1985,12 +1985,13 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   may name again: nothing from the checkout's install ships, but scripts and tests load
   its addon in jobs that build the release or hold signing and notary secrets, and a
   workflow-wide value reaches every npm spelling (`npm --prefix . ci`, `clean-install`,
-  `ic`). `test/release-pipeline.test.ts` pins all of it, `macos-universal.yml` runs
+  `ic`). `test/release-pipeline.test.ts` pins all of it, `macos-package.yml` runs
   `test/app-dependencies.test.ts` under the release Node, and `ci.yml` keeps its
   prebuilds.
-- **Portable release runtime** *(#74 Layer 1)* — the app may additionally embed
-  `darwin-arm64` and `darwin-x64` Node 24 payloads staged outside the Electron dependency
-  tree. Each payload has a content-derived `runtime-manifest.json`; Electron selects only
+- **Portable release runtime** *(#74 Layer 1)* — the app may additionally embed a Node 24
+  payload staged outside the Electron dependency tree: `darwin-arm64` alone since #296,
+  which builds the macOS app for Apple silicon only (`darwin-x64` too through 1.x-last).
+  Each payload has a content-derived `runtime-manifest.json`; Electron selects only
   `process.platform`/`process.arch`, and Setup atomically installs it under
   `~/.agent-inbox/runtime/<runtime-id>/`. Packaged upgrades/uninstalls touch only exact
   manifest-owned registrations/hooks, share one kernel lock, and retain every runtime
@@ -2025,10 +2026,10 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   date formats, while every other language gets `en-US`: Chromium's pak strings, AppKit's
   own strings and the two default-locale dates (the update check's "Last checked" and the
   asked-at tooltip) in US English. Each thin-app builder prunes once, right after
-  `@electron/packager` and before anything checks, hashes or publishes the app, so both
-  macOS thin apps merge alike; the prune refuses an app without either English locale
-  before removing anything. The macOS thin build, the Linux and Windows folder gates (and
-  so every DEB/AppImage build and verification), the universal assembly before signing and
+  `@electron/packager` and before anything checks, hashes or publishes the app; the prune
+  refuses an app without either English locale before removing anything. The macOS thin
+  build, the Linux and Windows folder gates (and so every DEB/AppImage build and
+  verification), the macOS assembly before signing and
   the final DMG gate refuse an app that lacks one or ships another
   (`assertEnglishOnlyElectronLocales`). Every folder on the way to an English locale must
   be a real one: `lstat` follows a link anywhere but in a path's last part, so a linked
@@ -2090,7 +2091,14 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   reported for the shipped executable and better-sqlite3 addon must equal
   `macosArchitectures` in `release/macos-inputs.json`, and one table
   (`scripts/macos-release-kind.mjs`) gives the DMG name, its labels, the Intel gate and how
-  v1 is made (G9). Aggregation writes only v2. The sign job's YAML only moves files between
+  v1 is made (G9). *(#296)* That set is `["arm64"]`: the macOS app is built for Apple silicon
+  only, from one native thin app carrying the `darwin-arm64` runtime, with no
+  `@electron/universal` merge, x64 runtime or native Intel gate, so a universal kind can no
+  longer pass; the assembly also requires every Electron Mach-O to hold exactly that set
+  (`verifyMachOArchitectures`). 1.x-last is v1.8.0: every release from 2.0.0 re-stamps its
+  `update-manifest.json`, and its notes name it for Intel Macs, found by `verify-handoff`'s
+  `intel-release` in GitHub's listing with the G6 rule (`newestUniversalRelease`), never a
+  constant. Aggregation writes only v2. The sign job's YAML only moves files between
   trusted subcommands of `scripts/update-manifest.mjs`: `check-release` (G7, G9: re-hashes
   the packages and binds the authorized tag and commit), `inspect-history --kind`,
   `history-assets`, `authorize-history` (both earlier pairs, fetched by asset id, verified

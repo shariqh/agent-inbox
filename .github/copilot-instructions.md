@@ -85,7 +85,7 @@ Run the build before `npm run electron`; the development shell starts the built
   British English Electron locales (#292): `scripts/prune-electron-locales.mjs` keeps
   `en.lproj` and `en_GB.lproj` on macOS and `locales/en-US.pak` and `en-GB.pak` on Linux
   and Windows, once, right after `@electron/packager` and before anything checks, hashes
-  or signs the app; the thin-app, universal and final-DMG gates refuse an app with any
+  or signs the app; the thin-app, assembly and final-DMG gates refuse an app with any
   other locale, without either of those, or reaching either through a linked folder.
   Electron seeds a new profile's spellchecker from that locale, so on Linux and Windows
   `electron/spellcheck-languages.cjs` sets the system's languages at startup on a profile

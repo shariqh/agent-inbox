@@ -28,14 +28,10 @@ REBUILD="$ROOT/node_modules/.bin/electron-rebuild"
   echo "package-app: $REBUILD is missing; run npm ci in the checkout first" >&2
   exit 1
 }
+# The app is built for Apple silicon only (#296), so it carries one runtime.
 RUNTIME_ARM64="${AGENT_INBOX_RUNTIME_DARWIN_ARM64:-}"
-RUNTIME_X64="${AGENT_INBOX_RUNTIME_DARWIN_X64:-}"
 PORTABLE_RELEASE=0
-if [ -n "$RUNTIME_ARM64" ] || [ -n "$RUNTIME_X64" ]; then
-  [ -n "$RUNTIME_ARM64" ] && [ -n "$RUNTIME_X64" ] || {
-    echo "package-app: portable staging requires both AGENT_INBOX_RUNTIME_DARWIN_ARM64 and AGENT_INBOX_RUNTIME_DARWIN_X64" >&2
-    exit 1
-  }
+if [ -n "$RUNTIME_ARM64" ]; then
   PORTABLE_RELEASE=1
 fi
 
@@ -101,17 +97,14 @@ require_staged_manifest
 if [ "$PORTABLE_RELEASE" -eq 1 ]; then
   mkdir -p "$STAGE/runtime"
   cp -R "$RUNTIME_ARM64" "$STAGE/runtime/darwin-arm64"
-  cp -R "$RUNTIME_X64" "$STAGE/runtime/darwin-x64"
   VERSION="$(node -p "require('$ROOT/package.json').version")"
   node "$ROOT/scripts/write-setup-info.mjs" --release "$STAGE/setup-info.json" \
     --version "$VERSION" --source-root "$ROOT" --payload-root "$STAGE" \
     --runtime-key darwin-arm64 \
-    --runtime-key darwin-x64 \
-    --payload darwin-arm64=runtime/darwin-arm64 \
-    --payload darwin-x64=runtime/darwin-x64
+    --payload darwin-arm64=runtime/darwin-arm64
 else
   # Development package compatibility: keep the checkout-backed setup path.
-  # Release callers must provide both architecture payloads above.
+  # Release callers must provide the darwin-arm64 payload above.
   node "$ROOT/scripts/write-setup-info.mjs" "$ROOT" "$STAGE/setup-info.json"
 fi
 
@@ -147,7 +140,7 @@ PLIST="$APP/Contents/Info.plist"
 
 if [ "$PORTABLE_RELEASE" -eq 1 ]; then
   # Intentionally unsigned in Layer 1. Layer 2 must finalize layout, sign every
-  # nested runtime Mach-O, regenerate both manifests and setup-info, then sign
+  # nested runtime Mach-O, regenerate the manifest and setup-info, then sign
   # only the outer app without --deep and verify every signature/manifest.
   echo "Portable package staged unsigned; Layer 2 owns nested and outer signing."
 else

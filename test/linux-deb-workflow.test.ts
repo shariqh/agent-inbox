@@ -231,7 +231,7 @@ describe('Linux x64 DEB workflow', () => {
     const macosWorkflows = [
       '.github/workflows/macos-release.yml',
       '.github/workflows/macos-release-protected.yml',
-      '.github/workflows/macos-universal.yml',
+      '.github/workflows/macos-package.yml',
     ].map((path) => readFileSync(join(root, path), 'utf8'))
     for (const workflow of macosWorkflows) {
       expect(workflow).not.toContain('package:linux-deb')

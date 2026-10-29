@@ -1896,6 +1896,9 @@ function renderDashboardAmbient(model, { forced = false } = {}) {
   renderDashRibbon(host.querySelector('.dashboard-activity'), model)
   renderDashboardOutcomes(host.querySelector('.dashboard-outcome-list'), model.recentOutcomes, model.recentOutcomesComplete,
     model.recentOutcomesWait, model.recentOutcomesHidden)
+  meshView?.paint(host, {
+    activity: liveInLens(), attention: model.waitingEntries, closed: dashboardClosedProjects(), nowMs: Date.now(),
+  })
 }
 
 // Only a changed value is written, so an unchanged lane keeps its text nodes
@@ -1980,6 +1983,7 @@ const laneAsks = new Map() // session → { first, oldest } attention entries, r
 const laneFilters = { project: null, agent: null }
 let focusSession = null // the session the focus panel shows, if open
 let lastDashModel = null // the model the last paint drew, for a handler's own repaint
+let meshView = null // Mesh M1 (#397): the opt-in Agents view, loaded by loadMeshView() only
 
 function dashLanesEl() {
   const section = document.createElement('section')
@@ -3044,6 +3048,13 @@ function paintAmbient() {
   return { agents, g, boards, archived, live, dashboard }
 }
 
+// The Agents view's input (#397): exactly paintAmbient's pillLive, the Live
+// sessions the rail's project and agent lens shows, which the lanes read too.
+function liveInLens() {
+  return (lastData.activity ?? []).filter((a) =>
+    (!projectFilter || a.project === projectFilter) && (!agentFilter || a.agent === agentFilter))
+}
+
 // `summary` is what `view` omits from closed history (issue #184), and archived
 // plans in brief carry what they omit themselves (#299): omitted outcomes still
 // count, and listed recent outcomes are only those nothing omitted could outrank.
@@ -3119,6 +3130,7 @@ function frameInputs() {
   return [
     ...lastData.reads, JSON.stringify(lastData.closed), navigationKey(), openRowId,
     focusSession, laneFilters.project, laneFilters.agent, outsideChanges, liveVersion, fileLinksCopy(), Boolean(linkFileActions()),
+    meshView,
   ]
 }
 
@@ -5763,6 +5775,26 @@ function refreshLiveVersion() {
     .catch(() => {})
 }
 
+// Mesh M1 (#397, design §2.4b and §10.2): the Agents view exists only when the
+// page's FIRST /api/version read carries `mesh.agentsView`, which the viewer
+// adds only while mesh.json turns it on. Only then is /mesh-view.js requested.
+// Off, nothing here reads, fetches, paints or listens. On or off takes a window
+// reload. Its paint joins renderDashboardAmbient, so both render entries draw
+// it; `meshView` (declared beside the lanes' state) is in frameInputs(), so the
+// tick after it lands paints.
+let meshRequested = false
+
+function loadMeshView() {
+  if (meshRequested || liveVersion?.mesh?.agentsView !== true) return
+  meshRequested = true
+  import('/mesh-view.js')
+    .then((mod) => {
+      meshView = mod.installMeshView({ jumpToAsk })
+      meshView.renderSettings(document.querySelector('#setup .setup-body'))
+    })
+    .catch((err) => console.error('Agents view could not load', err))
+}
+
 // A session's build label for the drawer, and its hint when it runs an older
 // build — or, once its host was matched back to this app, a newer one. Both
 // empty when its version is unknown: never a guess.
@@ -5987,7 +6019,7 @@ function initLiveBar() {
   })
   // #197: read outside the poll; the next paint shows the hints. A failed or
   // older viewer leaves the build state unknown, which hides every hint.
-  refreshLiveVersion()
+  refreshLiveVersion().then(loadMeshView)
 }
 
 // dismissing noise must not cost an expansion: staged 5s, undoable, flushed on blur

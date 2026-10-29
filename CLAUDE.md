@@ -1507,8 +1507,11 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   (`sinceLastLooked`, §14) is one line under the Now strip for the time between
   `lastVisitAt` (the previous page load) and this page load (`visitAt`), shown only after
   a 30-minute gap, until the human has looked: their first pointerdown or keydown anywhere
-  in the window while it shows on the Dashboard dismisses it for the page's life (a press
-  on the line itself, to select it, does not). Input only reaches a window being used, so a
+  in the window while it shows on the Dashboard dismisses it for the page's life. Reading
+  it does not (`sinceKeepsOn`): a press on the line, a ⌘/Ctrl shortcut (⌘C, ⌘-Tab) or any
+  key while the selection is in it. Only trusted input counts (`trustedInput`); jsdom can
+  dispatch only untrusted events, so `test/dom/dashboard-ribbon.test.ts` mocks that one
+  seam and `test/dom/dashboard.test.ts` keeps the real check. Input only reaches a window being used, so a
   background window nobody looked at keeps it however many polls pass; the listener holds
   its own element (`sinceEl`), so an older module instance cannot hide a newer one's. It
   shows when something happened: outcomes landed, new asks, and sessions

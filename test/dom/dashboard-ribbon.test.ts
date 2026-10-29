@@ -12,6 +12,15 @@ import {
   T0, advanceClock, badgeCount, bootApp, click, freshDb, pollTick, settle, tabCount, useDomTest,
 } from './harness.js'
 
+// jsdom can only dispatch untrusted events, and the app ignores those for
+// "Since you last looked" (#305 review). This file stands in for the human's
+// own input; test/dom/dashboard.test.ts keeps the real check and shows a
+// scripted key press does not dismiss the line.
+vi.mock('../../public/ribbon.js', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../public/ribbon.js')>(),
+  trustedInput: () => true,
+}))
+
 useDomTest()
 
 let db: Database.Database | null = null
@@ -305,6 +314,28 @@ describe('Since you last looked (#305)', () => {
     await settle()
     click(document.querySelector('.tab[data-tab="dashboard"]'))
     await settle()
+    expect(since().hidden).toBe(true)
+  })
+
+  // #305 review: ⌘C on the line used to dismiss it before the copy ran.
+  it('stays while the human copies it, and goes on a plain key or a click elsewhere', async () => {
+    const d = open()
+    localStorage.setItem('agent-inbox-last-visit', new Date(T0 - 3 * HOUR).toISOString())
+    land(d, 'Away outcome')
+    await bootApp(d)
+    const selection = document.getSelection()!
+    selection.selectAllChildren(since())
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'c', metaKey: true, bubbles: true }))
+    expect(since().hidden).toBe(false)
+    // Any key while the line is selected is still reading it.
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
+    expect(since().hidden).toBe(false)
+    // So is a shortcut with nothing selected (Ctrl+C, ⌘-Tab).
+    selection.removeAllRanges()
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', metaKey: true, bubbles: true }))
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'c', ctrlKey: true, bubbles: true }))
+    expect(since().hidden).toBe(false)
+    document.querySelector('.dash-now')!.dispatchEvent(new Event('pointerdown', { bubbles: true }))
     expect(since().hidden).toBe(true)
   })
 

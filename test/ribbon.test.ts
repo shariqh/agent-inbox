@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildRibbon, sinceLastLooked } from '../public/ribbon.js'
+import { buildRibbon, sinceKeepsOn, sinceLastLooked, trustedInput } from '../public/ribbon.js'
 
 // #305: the Today ribbon and "Since you last looked", pure.
 const HOUR = 3_600_000
@@ -145,5 +145,35 @@ describe('sinceLastLooked', () => {
     expect(sinceLastLooked({ ...input, outcomesAfter: iso(END - 4 * HOUR), asksAfter: iso(since - HOUR), spans: null }))
       .toBe('3+ outcomes landed, 2 new asks')
     expect(sinceLastLooked({ sinceMs: since, untilMs: END, asksAfter: iso(END - HOUR) })).toBeNull()
+  })
+})
+
+describe('dismissing "Since you last looked" (#305 review)', () => {
+  const inside = {} as Node
+  const outside = {} as Node
+  const line = { contains: (node: Node | null) => node === inside } as unknown as Node
+
+  it('keeps it while the human reads or copies it', () => {
+    expect(sinceKeepsOn({ metaKey: true, target: outside as EventTarget }, line, null)).toBe(true)
+    expect(sinceKeepsOn({ ctrlKey: true, target: outside as EventTarget }, line, null)).toBe(true)
+    expect(sinceKeepsOn({ target: inside as EventTarget }, line, null)).toBe(true)
+    expect(sinceKeepsOn({ target: outside as EventTarget }, line, { anchorNode: inside })).toBe(true)
+    expect(sinceKeepsOn({ target: outside as EventTarget }, line, { anchorNode: outside })).toBe(false)
+    expect(sinceKeepsOn({ target: outside as EventTarget }, line, null)).toBe(false)
+  })
+
+  it('counts only input the browser produced', () => {
+    expect(trustedInput({ isTrusted: true })).toBe(true)
+    expect(trustedInput({ isTrusted: false })).toBe(false)
+    expect(trustedInput(undefined)).toBe(false)
+  })
+})
+
+describe('a bar that just started', () => {
+  it('stays inside the track at its minimum width', () => {
+    const ribbon = buildRibbon({ spans: [span('alpha', END - 1000, null)], startMs: START, endMs: END })
+    const [bar] = ribbon.lanes[0]!.bars
+    expect(bar!.width).toBe(0.2)
+    expect(bar!.left + bar!.width).toBeLessThanOrEqual(100)
   })
 })

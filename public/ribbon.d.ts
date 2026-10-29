@@ -60,3 +60,13 @@ export function sinceLastLooked(input: {
   outcomesAfter?: string | null
   spans?: Array<DashboardSpan & { project?: string }> | null
 }): string | null
+
+/** #305 review: true while the human is reading the "Since you last looked" line */
+export function sinceKeepsOn(
+  event: { metaKey?: boolean; ctrlKey?: boolean; target?: EventTarget | null } | null | undefined,
+  line: Node,
+  selection: { anchorNode?: Node | null } | null | undefined,
+): boolean
+
+/** true only for input the browser itself produced (`event.isTrusted`) */
+export function trustedInput(event: { isTrusted?: boolean } | null | undefined): boolean

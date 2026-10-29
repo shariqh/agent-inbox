@@ -83,15 +83,11 @@ export function buildRibbon({ spans, asks = [], outcomes = [], startMs, endMs, m
       asks: lane.marks.filter((mark) => mark.kind === 'ask').length,
       openAsks: lane.marks.filter((mark) => mark.kind === 'ask' && mark.open).length,
       outcomes: lane.marks.filter((mark) => mark.kind === 'outcome').length,
-      bars: merged[index].map((segment) => ({
-        left: pct(segment.start, startMs, endMs),
-        width: Math.max(0.2, pct(segment.end, startMs, endMs) - pct(segment.start, startMs, endMs)),
-        // Where the striped "now" tail starts, as a share of the bar.
-        liveFrom: segment.liveFrom == null ? null
-          : Math.round(((segment.liveFrom - segment.start) / (segment.end - segment.start || 1)) * 1000) / 10,
-        from: new Date(segment.start).toISOString(),
-        to: new Date(segment.end).toISOString(),
-      })),
+      bars: merged[index].map((segment) => {
+        const width = Math.max(0.2, pct(segment.end, startMs, endMs) - pct(segment.start, startMs, endMs))
+        // A bar that just started keeps its minimum width inside the track.
+        return { left: Math.min(pct(segment.start, startMs, endMs), Math.round((100 - width) * 10) / 10), width, ...barEnds(segment) }
+      }),
       marks: lane.marks.map((mark) => ({
         kind: mark.kind,
         key: mark.key,
@@ -102,6 +98,29 @@ export function buildRibbon({ spans, asks = [], outcomes = [], startMs, endMs, m
       })),
     })),
   }
+}
+
+function barEnds(segment) {
+  return {
+    // Where the striped "now" tail starts, as a share of the bar.
+    liveFrom: segment.liveFrom == null ? null
+      : Math.round(((segment.liveFrom - segment.start) / (segment.end - segment.start || 1)) * 1000) / 10,
+    from: new Date(segment.start).toISOString(),
+    to: new Date(segment.end).toISOString(),
+  }
+}
+
+// "Since you last looked" stays while the human is reading it (#305 review): a
+// press on the line, a shortcut (⌘C, ⌘-Tab, Ctrl+C) or a key with the line
+// selected is not moving on.
+export function sinceKeepsOn(event, line, selection) {
+  return Boolean(event?.metaKey || event?.ctrlKey || line.contains(event?.target ?? null)
+    || (selection?.anchorNode && line.contains(selection.anchorNode)))
+}
+
+// Only the human's own input dismisses anything; a scripted event is not them.
+export function trustedInput(event) {
+  return event?.isTrusted === true
 }
 
 // Merge touching spans per lane, then widen the merge gap until every lane fits

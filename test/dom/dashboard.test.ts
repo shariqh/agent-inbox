@@ -419,6 +419,23 @@ describe('Live Operations Desk dashboard', () => {
     expect(document.activeElement).toBe(range)
   })
 
+  // #305 review: only the human's own input dismisses "Since you last looked";
+  // jsdom's events are untrusted, so a scripted key press must leave it.
+  it('keeps "Since you last looked" through scripted input', async () => {
+    const d = open()
+    localStorage.setItem('agent-inbox-last-visit', new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString())
+    advanceClock()
+    const id = insertItem(d, { project: 'alpha', stream: 'main', agent: 'copilot', kind: 'done', title: 'Away outcome' })
+    resolveItem(d, id, 'Landed.')
+    await bootApp(d)
+    const line = document.querySelector<HTMLElement>('.dash-since')!
+    expect(line.hidden).toBe(false)
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'j', bubbles: true }))
+    document.body.dispatchEvent(new Event('pointerdown', { bubbles: true }))
+    await pollTick()
+    expect(line.hidden).toBe(false)
+  })
+
   it('keeps a focused outcome button while updating its text and surrounding recent results', async () => {
     const d = open()
     const first = insertItem(d, { project: 'alpha', stream: 'main', agent: 'copilot', kind: 'done', title: 'First result' })

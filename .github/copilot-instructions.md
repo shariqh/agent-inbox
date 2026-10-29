@@ -627,7 +627,9 @@ Run the build before `npm run electron`; the development shell starts the built
   a branch with no open PR hides nothing. It highlights a new outcome once under
   `motion.activityMotion()` with the Dashboard visible. "Since you last looked" covers
   `lastVisitAt` to this page load after a 30-minute gap, with "N+" where omitted history
-  could add more, until the human's first click or key press on the Dashboard.
+  could add more, until the human's first trusted click or key press on the
+  Dashboard that is not reading it (a press on the line, ⌘/Ctrl shortcuts, keys
+  with the line selected).
 - Browser snapshot reuse is window-local and immutable; a 304 belongs to the
   representation that request sent, and its live boot header still controls safe
   refresh. Passive polls may retain inactive document panes, but navigation and

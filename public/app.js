@@ -48,7 +48,7 @@ import { actionCategory, actionOwnerLabel, agentFollowupChip, changeKind, lifecy
 import { buildRelay, stamp } from '/relay.js'
 import { buildMission } from '/mission.js'
 import { buildDashboard } from '/dashboard.js'
-import { buildRibbon, sinceLastLooked } from '/ribbon.js'
+import { buildRibbon, sinceKeepsOn, sinceLastLooked, trustedInput } from '/ribbon.js'
 import { MAX_LANES, calledLanes, pinLaneOrder } from '/lanes.js'
 import { PANE_DEFAULTS, paneKeyValue, paneValueFromPointer, resolvePaneLayout } from '/panes.js'
 import { createThemeController } from '/theme.js'
@@ -2286,13 +2286,15 @@ function renderDashSince(el, model) {
 // The line is about the time before this visit, so it goes once the human has
 // looked: their first click or key press anywhere in the window while it shows
 // on the Dashboard. Input only reaches a window the human is using, so a
-// background window they never looked at keeps it; a click on the line itself
-// (to select or copy it) does not count.
+// background window they never looked at keeps it. Only the human's own input
+// counts (a scripted event is not them), and reading the line does not: a click
+// on it, a shortcut such as ⌘C or ⌘-Tab, or any key while it is selected.
 let sinceSeen = false
 let sinceEl = null
 function dismissSince(event) {
   const el = sinceEl
-  if (sinceSeen || activeTab !== 'dashboard' || !el?.isConnected || el.hidden || el.contains(event.target)) return
+  if (sinceSeen || activeTab !== 'dashboard' || !el?.isConnected || el.hidden) return
+  if (!trustedInput(event) || sinceKeepsOn(event, el, document.getSelection())) return
   sinceSeen = true
   el.hidden = true
 }

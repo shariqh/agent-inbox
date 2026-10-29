@@ -5,7 +5,7 @@ import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type Database from 'better-sqlite3'
-import { openDb, insertItem, listItems, getItem, annotateItem, replyItem, snoozeItem, answerItem, markReplySeen, upsertBoard as writeBoard, listBoards, annotateBoardRow, snoozeBoardRow, markRowHandled, markHandledDelivered, upsertActivity, endActivity, closeProject, closedProjects, upsertSourceLink, archiveBoard, resolveItem, upsertIssueSnapshot, stopItemWatch, stopBoardRowWatch } from '../src/store.js'
+import { openDb, insertItem, listItems, getItem, annotateItem, replyItem, snoozeItem, answerItem, markReplySeen, upsertBoard as writeBoard, listBoards, annotateBoardRow, snoozeBoardRow, markRowHandled, markHandledDelivered, upsertActivity, endActivity, recordActivityCall, touchActivity, closeProject, closedProjects, upsertSourceLink, archiveBoard, resolveItem, upsertIssueSnapshot, stopItemWatch, stopBoardRowWatch } from '../src/store.js'
 import { createViewer } from '../src/viewer.js'
 import { releaseRuntime, registerHost } from './release-runtime.js'
 import { facts, snapshot } from './issue-fixtures.js'
@@ -122,6 +122,43 @@ describe('viewer api', () => {
       'agent', 'children', 'detail', 'doing', 'idle', 'last_call_at', 'last_doing',
       'project', 'server_source', 'server_version', 'session', 'started_at', 'stream', 'updated_at',
     ])
+  })
+
+  // issue #306 — the call trace adds at most ~150 bytes a session (proposal §10).
+  it('GET /api/activity carries the call trace in at most 150 more bytes a session, even saturated', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      const start = Date.parse('2026-10-28T09:00:00.000Z')
+      vi.setSystemTime(start)
+      const scope = (session: string) => ({ session, project: 'agent-inbox', stream: 'dash2-phase4-306', agent: 'copilot', doing: 'Drawing the trace' })
+      for (const session of ['quiet', 'typical', 'saturated']) upsertActivity(db, scope(session))
+      const bytes = async (session: string) => {
+        const body = await (await createViewer(db).request('/api/activity')).json() as Array<Record<string, unknown>>
+        return JSON.stringify(body.find((row) => row.session === session)).length
+      }
+      const before = { typical: await bytes('typical'), saturated: await bytes('saturated') }
+      // typical: a call every 15 s for 30 minutes; saturated: 999 or more every minute
+      for (let minute = 0; minute < 30; minute++) {
+        for (let call = 0; call < 4; call++) {
+          vi.setSystemTime(start + minute * 60_000 + call * 15_000)
+          recordActivityCall(db, 'typical')
+        }
+        db.prepare(`UPDATE activity SET call_minute = ?, call_counts = ? WHERE session = 'saturated'`)
+          .run(Math.floor((start + minute * 60_000) / 60_000), Array(minute + 1).fill(999).join(','))
+      }
+      // the presence rows the trace does not move stay live through their liveness tick
+      touchActivity(db, 'saturated')
+      touchActivity(db, 'quiet')
+      const added = { typical: await bytes('typical') - before.typical, saturated: await bytes('saturated') - before.saturated }
+      // `last_call_at` was null before the first call: count the trace's own bytes only
+      const stamp = '"2026-10-28T09:29:45.000Z"'.length - 'null'.length
+      expect(added.typical - stamp).toBeLessThanOrEqual(90)
+      expect(added.saturated).toBeLessThanOrEqual(150)
+      const body = await (await createViewer(db).request('/api/activity')).json() as Array<Record<string, unknown>>
+      expect(body.find((row) => row.session === 'quiet')).not.toHaveProperty('calls')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   describe('GET /api/version — what a restarted session would load (#197)', () => {

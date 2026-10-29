@@ -498,6 +498,8 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
         // issue #324 — a null (none found) keeps the plan's stored folder
         repoRoot: scope.rootFor(),
         issuePin,
+        // issue #306 — this server's presence id, so the Dashboard puts the plan on its lane
+        session: sessionId,
       })
       const watches = s.agent === 'copilot' && newActions.size
         ? getBoard(db, s.project, title)?.rows
@@ -579,6 +581,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
         issueRef: s.issue,
         headRepo: s.repo ? scope.headFor(s.stream) : null,
         repoRoot: scope.rootFor(),
+        session: sessionId,
       })
       const watch = s.agent === 'copilot' && newAsk
         ? rowWatch({ id: out.rowId, label, action_version: (existing?.action_version ?? 0) + 1 }, s.project)

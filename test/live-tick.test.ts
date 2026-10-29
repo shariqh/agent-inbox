@@ -150,6 +150,10 @@ describe('the liveness tick moves liveness and nothing else (#45)', () => {
     recordActivityCall(db, 's1') // the status({doing}) call that made the claim
     const madeAt = listActivity(db)[0]!.last_call_at
     expect(madeAt).toBe(new Date(START).toISOString())
+    // #306: the call trace is work too, and the tick must never write it
+    const traceOf = () => db.prepare(`SELECT call_minute, call_counts FROM activity WHERE session = 's1'`).get()
+    const trace = traceOf()
+    expect(trace).toEqual({ call_minute: Math.floor(START / 60_000), call_counts: '1' })
 
     // exactly what the process does when the human walks away: the timer fires
     // every five minutes and the agent calls nothing at all
@@ -164,6 +168,7 @@ describe('the liveness tick moves liveness and nothing else (#45)', () => {
     expect(live[0]!.doing).toBe('open')           // …so the 12-hour-old claim is no longer advertised
     expect(live[0]!.idle).toBe(true)
     expect(live[0]!.detail).toBe('')
+    expect(traceOf()).toEqual(trace)              // and not one call bucket moved
   })
 
   it('recordActivityCall has exactly one call expression in src/mcp.ts, and it is inside heartbeat()', () => {

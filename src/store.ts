@@ -675,6 +675,12 @@ function runMigrations(db: Database.Database): void {
   // statements never name the column, so they can neither set nor clear it.
   ensureColumn(db, 'items', 'repo_root', 'TEXT')
   ensureColumn(db, 'boards', 'repo_root', 'TEXT')
+  // issue #306 — the call trace (written by recordActivityCall alone) and the
+  // MCP session that last wrote a plan. NULL on every legacy row; no statement
+  // an older process runs names them, so its writes neither clear nor fake them.
+  ensureColumn(db, 'activity', 'call_minute', 'INTEGER')
+  ensureColumn(db, 'activity', 'call_counts', 'TEXT')
+  ensureColumn(db, 'boards', 'session', 'TEXT')
   // issue #297 — keep this last: its triggers name the columns added above
   migrateSnapshotDomains(db)
 }
@@ -1602,6 +1608,10 @@ export interface Board {
   // issue #324 — as on items, restamped by every board write that detected
   // one; a write that detected none keeps the stored folder
   repo_root: string | null
+  // issue #306 — the MCP session that last wrote the plan with board_upsert or
+  // board_row (a server process's presence id). The Dashboard puts the plan on
+  // that session's lane. NULL before #306 and when the writer passed none.
+  session: string | null
   // issue #103 PR2 — the plan's explicit issue pin, which outranks its PR and
   // branch issue (§4.2). Repository lowercased; both null when unpinned.
   issue_pin_repo: string | null
@@ -1955,6 +1965,8 @@ interface UpsertBoardInput {
   headRepo?: string | null
   /** issue #324: null or omitted keeps the stored folder */
   repoRoot?: string | null
+  /** issue #306: the writing MCP session; null or omitted keeps the stored one, '' clears it */
+  session?: string | null
   /** issue #103 PR2: omitted keeps the stored pin; null clears it */
   issuePin?: IssueLink | null
 }
@@ -2132,6 +2144,8 @@ interface UpdateRowInput {
   headRepo?: string | null
   /** issue #324: null or omitted keeps the stored folder */
   repoRoot?: string | null
+  /** issue #306: the writing MCP session; null or omitted keeps the stored one, '' clears it */
+  session?: string | null
   /** issue #103 PR2: omitted keeps the stored link; null clears it */
   issue?: IssueLink | null
   /** issue #103 slice 2: labels of other rows of this plan; omitted keeps, [] clears */
@@ -2453,6 +2467,7 @@ function ensureBoard(
   inp: {
     project: string; stream: string; agent: string; title: string
     repo?: string | null; issueRef?: number | null; headRepo?: string | null; repoRoot?: string | null
+    session?: string | null
   },
   now: string,
 ): string {
@@ -2463,9 +2478,14 @@ function ensureBoard(
   // annotation column is the human's and must survive every re-upsert untouched.
   // #324's repo_root follows the writer too, but only when its session found
   // one: COALESCE keeps the stored folder through a write that detected none.
+  // #306's session follows the writer the same way (null keeps, '' clears), but
+  // a change of writer alone is not content: it moves neither updated_at nor,
+  // in the callers, the board revision, so a sibling's board_version stays good.
+  const session = inp.session === '' ? null : inp.session ?? undefined
   if (board) {
     db.prepare(`UPDATE boards
                    SET stream = ?, agent = ?, repo = ?, issue_ref = ?, head_repo = ?, repo_root = COALESCE(?, repo_root),
+                       session = CASE WHEN ? THEN ? ELSE session END,
                        updated_at = CASE
                          WHEN stream IS NOT ? OR agent IS NOT ? OR repo IS NOT ? OR issue_ref IS NOT ? OR head_repo IS NOT ?
                            OR repo_root IS NOT COALESCE(?, repo_root)
@@ -2478,6 +2498,8 @@ function ensureBoard(
         inp.issueRef ?? null,
         inp.headRepo ?? null,
         inp.repoRoot ?? null,
+        session === undefined ? 0 : 1,
+        session ?? null,
         inp.stream,
         inp.agent,
         inp.repo ?? null,
@@ -2490,8 +2512,8 @@ function ensureBoard(
     return board.id
   }
   const boardId = randomUUID()
-  db.prepare(`INSERT INTO boards (id, project, stream, agent, title, repo, issue_ref, head_repo, repo_root, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`)
-    .run(boardId, inp.project, inp.stream, inp.agent, inp.title, inp.repo ?? null, inp.issueRef ?? null, inp.headRepo ?? null, inp.repoRoot ?? null, now, now)
+  db.prepare(`INSERT INTO boards (id, project, stream, agent, title, repo, issue_ref, head_repo, repo_root, session, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`)
+    .run(boardId, inp.project, inp.stream, inp.agent, inp.title, inp.repo ?? null, inp.issueRef ?? null, inp.headRepo ?? null, inp.repoRoot ?? null, session ?? null, now, now)
   return boardId
 }
 
@@ -3207,6 +3229,13 @@ export interface Activity {
   server_version: string | null
   /** Where that server runs from: 'runtime' or 'checkout' (issue #197). NULL when unknown. */
   server_source: string | null
+  /**
+   * Issue #306 — MCP calls per minute, oldest first, the last one counting the
+   * minute `calls_at` (minutes since the epoch). At most 30, with no leading
+   * zeros; present only while `calls_at` is inside the 30-minute window.
+   */
+  calls?: number[]
+  calls_at?: number
 }
 
 export interface ActivityUpdate {
@@ -3368,11 +3397,18 @@ const PRESENCE_STALE_MINUTES = 15
 // calling. Expressed as one conditional UPDATE (never SELECT-then-UPDATE) so the
 // clear and the stamp cannot be split. `last_doing` deliberately stays out of
 // this UPDATE: it is a historical caption, never a current claim.
+//
+// Issue #306: it is also the ONLY writer of the call trace, so the trace counts
+// work and never liveness. It reads the stored buckets before it writes, so the
+// transaction is .immediate(): the write lock is held from the read on.
 export function recordActivityCall(db: Database.Database, session: string): void {
   db.transaction(() => {
     const now = new Date().toISOString()
     const nowMs = Date.now()
     const cold = claimCutoff(nowMs)
+    const prior = db.prepare(`SELECT call_minute, call_counts FROM activity WHERE session = ? AND ended_at IS NULL`)
+      .get(session) as { call_minute: number | null; call_counts: string | null } | undefined
+    const trace = countCall(prior?.call_minute ?? null, prior?.call_counts ?? null, Math.floor(nowMs / 60000))
     db.prepare(
       `UPDATE activity SET
          doing    = CASE WHEN COALESCE(last_call_at, started_at) < @cold THEN 'open' ELSE doing END,
@@ -3380,9 +3416,10 @@ export function recordActivityCall(db: Database.Database, session: string): void
          children = CASE WHEN COALESCE(last_call_at, started_at) < @cold THEN NULL   ELSE children END,
          idle     = CASE WHEN COALESCE(last_call_at, started_at) < @cold THEN 1      ELSE idle END,
          last_call_at = @now,
+         call_minute = @minute, call_counts = @counts,
          updated_at = @now
        WHERE session = @session AND ended_at IS NULL`,
-    ).run({ session, now, cold })
+    ).run({ session, now, cold, ...trace })
     // Mirror the same warm/cold split onto the open span, if any: still warm
     // just proves continued work (bump last_active_at to now); already cold
     // closes it at the exact cap it went stale at — never extended to now, or
@@ -3398,7 +3435,36 @@ export function recordActivityCall(db: Database.Database, session: string): void
         db.prepare(`UPDATE activity_spans SET last_active_at = ? WHERE id = ?`).run(now, open.id)
       }
     }
-  })()
+  }).immediate()
+}
+
+// ── issue #306: the call trace, 30 one-minute buckets on the activity row ────
+//
+// `call_counts` is the counts as comma-separated text, oldest first, and
+// `call_minute` the minute (since the epoch) the LAST one counts. A write rolls
+// the window forward to now: a gap appends that many empty minutes, at most 30
+// are kept, and leading empty minutes are dropped, so the text stays short and
+// never grows. A stored minute ahead of the clock (it was moved back) counts as
+// now, as a draft's future stamp does (#279). A count saturates at 999, which
+// bounds what /api/activity carries per session.
+export const CALL_TRACE_MINUTES = 30
+const CALL_COUNT_CAP = 999
+
+function parseCallCounts(text: string | null): number[] | null {
+  const parts = text ? text.split(',') : []
+  if (!parts.length || parts.length > CALL_TRACE_MINUTES || !parts.every((part) => /^\d{1,3}$/.test(part))) return null
+  return parts.map(Number)
+}
+
+function countCall(minute: number | null, text: string | null, now: number): { minute: number; counts: string } {
+  let counts = parseCallCounts(text) ?? []
+  const gap = minute === null ? CALL_TRACE_MINUTES : now - minute
+  if (gap >= CALL_TRACE_MINUTES) counts = []
+  else if (gap > 0) counts = [...counts, ...Array<number>(gap).fill(0)]
+  if (!counts.length) counts.push(0)
+  counts[counts.length - 1] = Math.min(CALL_COUNT_CAP, counts[counts.length - 1]! + 1)
+  counts = counts.slice(-CALL_TRACE_MINUTES)
+  return { minute: now, counts: counts.slice(counts.findIndex((count) => count > 0)).join(',') }
 }
 
 export function listActivity(db: Database.Database, opts: { staleMinutes?: number } = {}): Activity[] {
@@ -3406,21 +3472,28 @@ export function listActivity(db: Database.Database, opts: { staleMinutes?: numbe
   const cutoff = new Date(now - (opts.staleMinutes ?? PRESENCE_STALE_MINUTES) * 60000).toISOString()
   const cold = claimCutoff(now)
   const rows = db
-    .prepare(`SELECT session, project, stream, agent, doing, last_doing, detail, children, idle, started_at, updated_at, last_call_at, server_version, server_source
+    .prepare(`SELECT session, project, stream, agent, doing, last_doing, detail, children, idle, started_at, updated_at, last_call_at, server_version, server_source,
+                     call_minute, call_counts
               FROM activity WHERE ended_at IS NULL AND updated_at >= ?`)
-    .all(cutoff) as Array<Omit<Activity, 'children' | 'idle'> & { children: string | null; idle: number }>
+    .all(cutoff) as Array<Omit<Activity, 'children' | 'idle'> & {
+      children: string | null; idle: number; call_minute: number | null; call_counts: string | null
+    }>
+  const nowMinute = Math.floor(now / 60000)
   // The row is kept whatever happens here — the session really is present, and
   // public/attention.js classifies an item as "waiting" iff its session id is in
   // this list, so dropping the row would silently downgrade a live blocker. Only
   // the CLAIM decays.
-  const out = rows.map((r): Activity => {
+  const out = rows.map(({ call_minute, call_counts, ...r }): Activity => {
     const live = (r.last_call_at ?? r.started_at) >= cold
+    // #306: the trace is served only while its newest minute is in the window
+    const calls = call_minute !== null && nowMinute - call_minute < CALL_TRACE_MINUTES ? parseCallCounts(call_counts) : null
     return {
       ...r,
       idle: live ? r.idle === 1 : true,
       doing: live ? r.doing : 'open',
       detail: live ? r.detail : '',
       children: live && r.children ? (JSON.parse(r.children) as ActivityChild[]) : [],
+      ...(calls ? { calls, calls_at: call_minute! } : {}),
     }
   })
   // Working sessions first (longest-running first, as before). Everything else

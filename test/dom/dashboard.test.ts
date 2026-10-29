@@ -85,7 +85,14 @@ describe('Live Operations Desk dashboard', () => {
     expect(lanes()[0]!.querySelector('.dash-lane-plan-count')?.textContent).toBe('0/1')
     expect(lanes()[0]!.querySelector('.dash-lane-plan-title')?.textContent).toBe('Release plan')
     expect(document.querySelector('.dashboard-outcome')?.textContent).toContain('Package verified.')
-    expect(document.querySelector('.dashboard-bars')).not.toBeNull()
+    // #305: the Today ribbon replaces the bar chart: alpha's live work, its asks and its outcome.
+    expect(document.querySelector('.dashboard-activity h2')?.textContent).toBe('Today')
+    const lane = document.querySelector<HTMLElement>('.dash-ribbon-lane[data-ribbon-project="alpha"]')!
+    expect(lane.querySelectorAll('.dash-ribbon-bar.live')).toHaveLength(1)
+    expect([...lane.querySelectorAll('.dash-ribbon-mark')].map((mark) => mark.getAttribute('title')?.split(':')[0]).sort())
+      .toEqual(['Asked you', 'Asking you', 'Landed'])
+    expect(lane.getAttribute('aria-label')).toBe('alpha: 1m of work, working now, 2 asks (1 open), 1 outcome')
+    expect(document.querySelector('.dashboard-outcomes h2')?.textContent).toBe('Just landed')
   })
 
   it('uses visuals instead of explanatory dashboard subtext', async () => {
@@ -374,7 +381,9 @@ describe('Live Operations Desk dashboard', () => {
     expect(document.querySelector('.dash-lanes-idle')?.textContent).toBe('+1 idle connection')
     expect(document.querySelector('.dashboard-outcome')?.textContent).toContain('Checks completed.')
     expect(document.querySelector('.dashboard-activity-total strong')?.textContent).toBe('2m')
-    expect(document.querySelectorAll('.dashboard-bar')).toHaveLength(14)
+    expect(document.querySelector('.dash-ribbon-title')?.textContent).toBe('Last 7 days')
+    expect(document.querySelector('.dash-ribbon-from')?.textContent).toBe('7d ago')
+    expect(document.querySelectorAll('.dash-ribbon-lane')).toHaveLength(1)
     expect(document.querySelector('.dashboard-range')).toBe(range)
     expect(range.value).toBe(String(7 * 24 * 60 * 60 * 1000))
     expect(document.activeElement).toBe(range)
@@ -398,14 +407,14 @@ describe('Live Operations Desk dashboard', () => {
     failHistory = true
     await pollTick()
     expect(document.querySelector('.dashboard-history-error')?.textContent).toBe('History unavailable')
-    expect(document.querySelector('.dashboard-bars')).toBeNull()
+    expect(document.querySelector('.dash-ribbon-lane')).toBeNull()
     expect(document.querySelector('.dashboard-range')).toBe(range)
     expect(document.activeElement).toBe(range)
 
     failHistory = false
     await pollTick()
     expect(document.querySelector('.dashboard-history-error')).toBeNull()
-    expect(document.querySelector('.dashboard-bars')).not.toBeNull()
+    expect(document.querySelector('.dash-ribbon-lane')).not.toBeNull()
     expect(document.querySelector('.dashboard-range')).toBe(range)
     expect(document.activeElement).toBe(range)
   })

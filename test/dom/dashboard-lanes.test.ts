@@ -295,6 +295,28 @@ describe('one-shot activity motion (#304: no infinite animation)', () => {
     expect(lane('b')!.classList.contains('pulse')).toBe(false)
   })
 
+  // #305 (from #304's review): a cancelled one-shot (Calm switched on, the
+  // Dashboard left mid-pulse) drops its class too, so it never replays later.
+  it('removes a one-shot class when its animation is cancelled', async () => {
+    const d = open()
+    work(d, 'a', 'Working')
+    await bootApp(d)
+    advanceClock()
+    recordActivityCall(d, 'a')
+    await pollTick()
+    expect(lane('a')!.classList.contains('pulse')).toBe(true)
+    const other = new Event('animationcancel')
+    Object.defineProperty(other, 'animationName', { value: 'dash-lane-sweep' })
+    lane('a')!.dispatchEvent(other)
+    expect(lane('a')!.classList.contains('pulse')).toBe(true)
+    const cancel = new Event('animationcancel')
+    Object.defineProperty(cancel, 'animationName', { value: 'dash-lane-pulse' })
+    lane('a')!.dispatchEvent(cancel)
+    expect(lane('a')!.classList.contains('pulse')).toBe(false)
+    await pollTick()
+    expect(lane('a')!.classList.contains('pulse')).toBe(false)
+  })
+
   it.each([
     ['reduced motion', () => { (window.matchMedia('(prefers-reduced-motion: reduce)') as { matches: boolean }).matches = true }],
     ['Calm', () => { localStorage.setItem('agent-inbox-motion', 'calm') }],

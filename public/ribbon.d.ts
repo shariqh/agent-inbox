@@ -1,0 +1,60 @@
+import type { DashboardSpan, RibbonMark } from './dashboard.js'
+
+export interface RibbonBar {
+  left: number
+  width: number
+  /** where the static striped "now" tail starts, as a percentage of the bar */
+  liveFrom: number | null
+  from: string
+  to: string
+}
+
+export interface RibbonLaneMark {
+  kind: 'ask' | 'outcome'
+  key: string
+  left: number
+  open: boolean
+  title: string
+  at: string
+}
+
+export interface RibbonLane {
+  project: string
+  workMs: number
+  live: boolean
+  asks: number
+  openAsks: number
+  outcomes: number
+  bars: RibbonBar[]
+  marks: RibbonLaneMark[]
+}
+
+export interface Ribbon {
+  totalMs: number
+  startMs: number
+  endMs: number
+  /** percentage before which markers are not drawn, or null */
+  marksFrom: number | null
+  /** projects past the lane budget */
+  more: number
+  lanes: RibbonLane[]
+}
+
+export function buildRibbon(input: {
+  spans: Array<DashboardSpan & { project?: string }> | null | undefined
+  asks?: RibbonMark[]
+  outcomes?: RibbonMark[]
+  startMs: number
+  endMs: number
+  marksAfter?: string | null
+}): Ribbon
+
+export function sinceLastLooked(input: {
+  sinceMs: number
+  untilMs: number
+  asks?: RibbonMark[]
+  outcomes?: RibbonMark[]
+  asksAfter?: string | null
+  outcomesAfter?: string | null
+  spans?: Array<DashboardSpan & { project?: string }> | null
+}): string | null

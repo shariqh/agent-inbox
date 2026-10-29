@@ -45,9 +45,10 @@ import {
 import { buildIssueView, planGroups, rowParentRuns } from '/issues.js'
 import { buildSummary } from '/buildstamp.js'
 import { actionCategory, actionOwnerLabel, agentFollowupChip, changeKind, lifecycleReceipt, responseLabel } from '/action.js'
-import { buildRelay } from '/relay.js'
+import { buildRelay, stamp } from '/relay.js'
 import { buildMission } from '/mission.js'
-import { buildActivitySeries, buildDashboard } from '/dashboard.js'
+import { buildDashboard } from '/dashboard.js'
+import { buildRibbon, sinceLastLooked } from '/ribbon.js'
 import { MAX_LANES, calledLanes, pinLaneOrder } from '/lanes.js'
 import { PANE_DEFAULTS, paneKeyValue, paneValueFromPointer, resolvePaneLayout } from '/panes.js'
 import { createThemeController } from '/theme.js'
@@ -192,6 +193,8 @@ const NOTES_SEEN_KEY = 'agent-inbox-notes-seen'
 const NOTES_SEEN_IDS_KEY = 'agent-inbox-notes-seen-ids'
 const LAST_VISIT_KEY = 'agent-inbox-last-visit'
 const lastVisitAt = localStorage.getItem(LAST_VISIT_KEY)
+// #305: "Since you last looked" covers the previous visit up to this one.
+const visitAt = Date.now()
 localStorage.setItem(LAST_VISIT_KEY, new Date().toISOString())
 let notesSeenAt = localStorage.getItem(NOTES_SEEN_KEY) || null
 let notesSeenIds = new Set()
@@ -1801,9 +1804,10 @@ function renderDashboardAmbient(model, { forced = false } = {}) {
   const host = document.querySelector('#dashboard .dashboard')
   if (!host?.querySelector('.dashboard-grid')) return
   renderDashNow(host.querySelector('.dash-now'), model)
+  renderDashSince(host.querySelector('.dash-since'), model)
   renderDashLanes(host.querySelector('.dash-lanes'), model, { forced })
   renderDashRail(host.querySelector('.dash-rail'), model.rail, { forced })
-  renderDashboardHistory(host.querySelector('.dashboard-activity'))
+  renderDashRibbon(host.querySelector('.dashboard-activity'), model)
   renderDashboardOutcomes(host.querySelector('.dashboard-outcome-list'), model.recentOutcomes, model.recentOutcomesComplete,
     model.recentOutcomesWait)
 }
@@ -1934,20 +1938,26 @@ function dashLaneEl(session) {
 }
 
 // One iteration of a CSS one-shot, restarted when it is still running and
-// removed on animationend so nothing lingers. Never a loop (#304).
-function playOnce(el, name) {
+// removed when it ends or is cancelled (Calm switched on, the Dashboard left
+// mid-pulse), so nothing lingers to replay later. Never a loop (#304).
+function playOnce(el, name, animation = `dash-lane-${name}`) {
   if (el.classList.contains(name)) {
     el.classList.remove(name)
     void el.offsetWidth
   }
   el.classList.add(name)
   const done = (event) => {
-    if (event.animationName !== `dash-lane-${name}`) return
+    if (event.animationName !== animation) return
     el.classList.remove(name)
     el.removeEventListener('animationend', done)
+    el.removeEventListener('animationcancel', done)
   }
   el.addEventListener('animationend', done)
+  el.addEventListener('animationcancel', done)
 }
+
+// Activity motion runs only where the human allows it and can see it.
+const dashboardMotion = () => motion.activityMotion() && !document.getElementById('dashboard')?.hidden
 
 function updateDashLane(el, lane) {
   const color = pcolor(lane.project).dot
@@ -2018,7 +2028,7 @@ function renderDashLanes(section, model, { forced = false } = {}) {
   const called = calledLanes(laneCalls, drawn)
   laneCalls.clear()
   for (const lane of model.lanes) laneCalls.set(lane.session, lane.lastCallAt)
-  const animate = motion.activityMotion() && !document.getElementById('dashboard')?.hidden
+  const animate = dashboardMotion()
   const existing = new Map([...list.children].map((el) => [el.dataset.lane, el]))
   const nodes = drawn.map((lane) => {
     const el = existing.get(lane.session) ?? dashLaneEl(lane.session)
@@ -2080,57 +2090,198 @@ function formatDuration(ms) {
   return minutes ? `${hours}h ${minutes}m` : `${hours}h`
 }
 
-function renderDashboardHistory(panel) {
-  const head = panel.querySelector('.dashboard-card-head')
-  for (const child of [...panel.children]) if (child !== head) child.remove()
-  panel.classList.remove('is-empty')
-  const endMs = Date.now()
-  const bucketCount = dashboardRangeMs === 86400000 ? 24 : dashboardRangeMs === 604800000 ? 14 : 30
-  const history = lastData.activityHistory ?? { state: 'ready', spans: [], message: '' }
-  const historySpans = (history.spans ?? []).filter((span) =>
+// ── the Today ribbon (#305, proposal §4) ─────────────────────────────────────
+// One thin swimlane per project over the range menu's span: work from
+// /api/activity/history, a static striped tail for work happening now, ◆ where
+// an agent asked you and ● where an outcome landed. The structure is mounted
+// once; a lane's track is redrawn only when its geometry changes, and nothing
+// in it animates (#304's rule: no infinite animation for activity).
+const RIBBON_RANGES = new Map([
+  [86400000, ['Today', '24h ago']],
+  [604800000, ['Last 7 days', '7d ago']],
+  [2592000000, ['Last 30 days', '30d ago']],
+])
+
+function lensSpans(history) {
+  return (history?.spans ?? []).filter((span) =>
     !dashboardClosedSet().has(span.project)
     && (!projectFilter || span.project === projectFilter)
     && (!agentFilter || span.agent === agentFilter))
-  const series = buildActivitySeries(historySpans, {
+}
+
+function dashboardHistory() {
+  return lastData.activityHistory ?? { state: 'ready', spans: [], message: '' }
+}
+
+const laterOf = (a, b) => (Date.parse(a) > Date.parse(b) || !b ? a : b) || null
+
+function ribbonTime(iso) {
+  const options = dashboardRangeMs > 86400000
+    ? { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }
+    : { hour: 'numeric', minute: '2-digit' }
+  return new Date(iso).toLocaleString(undefined, options)
+}
+
+function dashRibbonEl() {
+  const panel = document.createElement('section')
+  panel.className = 'dashboard-card dashboard-activity'
+  panel.innerHTML = `
+    <div class="dashboard-card-head"><h2 class="dash-ribbon-title"></h2></div>
+    <div class="dashboard-activity-total"><strong></strong><span class="dash-ribbon-legend" aria-hidden="true"><span class="dash-ribbon-key now"></span>now <span class="dash-ribbon-key-ask">◆</span> asked you <span class="dash-ribbon-key-outcome">●</span> landed</span></div>
+    <div class="dash-ribbon"></div>
+    <div class="dash-ribbon-axis" aria-hidden="true"><span class="dash-ribbon-from"></span><span class="dash-ribbon-note"></span><span>now</span></div>
+    <div class="dash-ribbon-more" hidden></div>`
+  const range = document.createElement('select')
+  range.className = 'dashboard-range'
+  range.dataset.dashboardFocusKey = 'activity-range'
+  range.setAttribute('aria-label', 'Dashboard activity range')
+  for (const [value, [label]] of RIBBON_RANGES) {
+    const option = document.createElement('option')
+    option.textContent = label === 'Today' ? '24 hours' : label.replace('Last ', '')
+    option.value = String(value)
+    range.appendChild(option)
+  }
+  range.value = String(dashboardRangeMs)
+  range.addEventListener('change', () => {
+    dashboardRangeMs = Number(range.value)
+    forceRender()
+  })
+  panel.querySelector('.dashboard-card-head').appendChild(range)
+  return panel
+}
+
+function renderDashRibbon(panel, model) {
+  if (!panel) return
+  const [title, from] = RIBBON_RANGES.get(dashboardRangeMs) ?? RIBBON_RANGES.get(86400000)
+  setText(panel.querySelector('.dash-ribbon-title'), title)
+  const history = dashboardHistory()
+  const endMs = Date.now()
+  const ribbon = buildRibbon({
+    spans: history.state === 'ready' ? lensSpans(history) : [],
+    asks: model.marks.asks,
+    outcomes: model.marks.outcomes,
     startMs: endMs - dashboardRangeMs,
     endMs,
-    bucketCount,
+    marksAfter: laterOf(model.marks.asksAfter, model.marks.outcomesAfter),
   })
-  if (history.state === 'error') {
-    panel.classList.add('is-empty')
-    const error = document.createElement('div')
-    error.className = 'dashboard-history-empty dashboard-history-error'
-    error.title = history.message
-    error.innerHTML = '<strong>History unavailable</strong>'
-    panel.appendChild(error)
-  } else if (!series.hasHistory) {
-    panel.classList.add('is-empty')
-    const empty = document.createElement('div')
-    empty.className = 'dashboard-history-empty'
-    empty.setAttribute('role', 'img')
-    empty.setAttribute('aria-label', 'No activity history yet')
-    empty.title = 'No activity history yet'
-    empty.innerHTML = '<svg class="dashboard-empty-icon" viewBox="0 0 32 20" aria-hidden="true"><path d="M1 15h5l3-9 5 12 4-8 3 5h10"></path></svg>'
-    panel.appendChild(empty)
-  } else {
-    const total = document.createElement('div')
-    total.className = 'dashboard-activity-total'
-    total.innerHTML = `<strong>${esc(formatDuration(series.totalActiveMs))}</strong>`
-    panel.appendChild(total)
-    const max = Math.max(...series.buckets.map((bucket) => bucket.activeMs), 1)
-    const bars = document.createElement('div')
-    bars.className = 'dashboard-bars'
-    bars.setAttribute('role', 'img')
-    bars.setAttribute('aria-label', `${formatDuration(series.totalActiveMs)} of agent claim time`)
-    for (const bucket of series.buckets) {
-      const bar = document.createElement('span')
-      bar.className = 'dashboard-bar'
-      bar.style.height = `${Math.max(4, (bucket.activeMs / max) * 100)}%`
-      bar.title = `${formatDuration(bucket.activeMs)} · ${bucket.sessions} session${bucket.sessions === 1 ? '' : 's'}`
-      bars.appendChild(bar)
+  const failed = history.state === 'error'
+  const empty = !failed && !ribbon.lanes.length
+  // The error and empty states hold no control, so they come and go whole.
+  let notice = panel.querySelector('.dashboard-history-empty')
+  const kind = failed ? 'error' : empty ? 'empty' : null
+  if (notice && notice.dataset.kind !== kind) { notice.remove(); notice = null }
+  if (kind && !notice) {
+    notice = document.createElement('div')
+    notice.dataset.kind = kind
+    if (failed) {
+      notice.className = 'dashboard-history-empty dashboard-history-error'
+      notice.innerHTML = '<strong>History unavailable</strong>'
+    } else {
+      notice.className = 'dashboard-history-empty'
+      notice.setAttribute('role', 'img')
+      notice.setAttribute('aria-label', 'No activity history yet')
+      notice.title = 'No activity history yet'
+      notice.innerHTML = '<svg class="dashboard-empty-icon" viewBox="0 0 32 20" aria-hidden="true"><path d="M1 15h5l3-9 5 12 4-8 3 5h10"></path></svg>'
     }
-    panel.appendChild(bars)
+    panel.querySelector('.dashboard-card-head').after(notice)
   }
+  if (failed) setAttr(notice, 'title', history.message ?? '')
+  panel.classList.toggle('is-empty', Boolean(kind))
+  for (const part of ['.dashboard-activity-total', '.dash-ribbon', '.dash-ribbon-axis']) setHidden(panel.querySelector(part), Boolean(kind))
+  setText(panel.querySelector('.dashboard-activity-total strong'), formatDuration(ribbon.totalMs))
+  setText(panel.querySelector('.dash-ribbon-from'), from)
+  setText(panel.querySelector('.dash-ribbon-note'), ribbon.marksFrom == null ? ''
+    : `Asks and outcomes from ${ribbonTime(laterOf(model.marks.asksAfter, model.marks.outcomesAfter))}`)
+  const more = panel.querySelector('.dash-ribbon-more')
+  setText(more, ribbon.more > 0 ? `+${plural(ribbon.more, 'more project')}` : '')
+  setHidden(more, Boolean(kind) || ribbon.more <= 0)
+  const list = panel.querySelector('.dash-ribbon')
+  const existing = new Map([...list.children].map((el) => [el.dataset.ribbonProject, el]))
+  const nodes = (kind ? [] : ribbon.lanes).map((lane) => {
+    let el = existing.get(lane.project)
+    existing.delete(lane.project)
+    if (!el) {
+      el = document.createElement('div')
+      el.className = 'dash-ribbon-lane'
+      el.dataset.ribbonProject = lane.project
+      el.setAttribute('role', 'img')
+      el.innerHTML = '<span class="dash-ribbon-name"></span><span class="dash-ribbon-track"></span>'
+    }
+    updateRibbonLane(el, lane)
+    return el
+  })
+  for (const el of existing.values()) el.remove()
+  nodes.forEach((el, index) => {
+    if (list.children[index] !== el) list.insertBefore(el, list.children[index] ?? null)
+  })
+}
+
+function updateRibbonLane(el, lane) {
+  const color = pcolor(lane.project).dot
+  if (el.style.getPropertyValue('--lane-color') !== color) el.style.setProperty('--lane-color', color)
+  setText(el.querySelector('.dash-ribbon-name'), lane.project)
+  setAttr(el, 'aria-label', [
+    `${lane.project}: ${formatDuration(lane.workMs)} of work`,
+    lane.live ? 'working now' : '',
+    lane.asks ? `${plural(lane.asks, 'ask')}${lane.openAsks ? ` (${lane.openAsks} open)` : ''}` : '',
+    lane.outcomes ? plural(lane.outcomes, 'outcome') : '',
+  ].filter(Boolean).join(', '))
+  const track = el.querySelector('.dash-ribbon-track')
+  const key = JSON.stringify([lane.bars, lane.marks, dashboardRangeMs > 86400000])
+  if (track.dataset.key === key) return
+  track.dataset.key = key
+  track.innerHTML = [
+    ...lane.bars.map((bar) => {
+      const live = bar.liveFrom != null
+      const style = `left:${bar.left}%;width:${bar.width}%${live ? `;--live-from:${bar.liveFrom}%` : ''}`
+      const label = `${ribbonTime(bar.from)}–${live ? 'now (working)' : ribbonTime(bar.to)}`
+      return `<span class="dash-ribbon-bar${live ? ' live' : ''}" style="${style}" title="${esc(label)}"></span>`
+    }),
+    ...lane.marks.map((mark) => {
+      const label = `${mark.kind === 'ask' ? (mark.open ? 'Asking you' : 'Asked you') : 'Landed'}: ${mark.title} · ${ribbonTime(mark.at)}`
+      return `<span class="dash-ribbon-mark ${mark.kind}${mark.open ? ' open' : ''}" style="left:${mark.left}%" title="${esc(label)}">${mark.kind === 'ask' ? '◆' : '●'}</span>`
+    }),
+  ].join('')
+}
+
+// "Since you last looked" (#305, §14): one line about the time between the
+// previous visit and this one, only after a gap.
+function renderDashSince(el, model) {
+  if (!el) return
+  const history = dashboardHistory()
+  const text = sinceLastLooked({
+    sinceMs: Date.parse(lastVisitAt ?? ''),
+    untilMs: visitAt,
+    asks: model.marks.asks,
+    outcomes: model.marks.outcomes,
+    asksAfter: model.marks.asksAfter,
+    outcomesAfter: model.marks.outcomesAfter,
+    spans: history.state === 'ready' ? lensSpans(history) : null,
+  })
+  setText(el, text ? `Since you last looked: ${text}` : '')
+  setAttr(el, 'title', lastVisitAt ? `Since ${new Date(lastVisitAt).toLocaleString()}` : '')
+  setHidden(el, !text)
+}
+
+// Just landed (#305): an outcome newer than anything drawn before gets one
+// arrival highlight, under the same gate as the lanes' pulse. The first paint
+// only seeds what is already there.
+let landedSeen = null
+let landedHigh = -Infinity
+
+function markLanded(rows, entries) {
+  const animate = dashboardMotion()
+  const seen = landedSeen ?? new Set()
+  let high = landedHigh
+  entries.forEach((entry, index) => {
+    const key = rows[index].dataset.dashboardFocusKey
+    const at = stamp(entry.kind === 'item' ? entry.item : entry.row)
+    if (landedSeen && animate && !seen.has(key) && at > landedHigh) playOnce(rows[index], 'arrived', 'dash-landed-arrive')
+    seen.add(key)
+    high = Math.max(high, at)
+  })
+  landedSeen = seen
+  landedHigh = high
 }
 
 function renderDashboardOutcomes(list, entries, complete = true, wait = { history: true, archived: false }) {
@@ -2162,6 +2313,7 @@ function renderDashboardOutcomes(list, entries, complete = true, wait = { histor
     row.querySelector('small').textContent = dashboardEntryProject(entry) ?? ''
     return row
   })
+  markLanded(rows, entries.slice(0, 4))
   if (focused && rows.includes(focused)) {
     // Move the other rows around the focused button; detaching that button would
     // lose native keyboard ownership even if it were immediately reinserted.
@@ -2411,39 +2563,20 @@ function renderDashboard(model) {
   if (!host || host.querySelector('.dashboard-grid')) return
 
   host.appendChild(dashNowEl())
+  const since = document.createElement('p')
+  since.className = 'dash-since'
+  since.hidden = true
+  host.appendChild(since)
 
   const grid = document.createElement('div')
   grid.className = 'dashboard-grid'
   grid.appendChild(dashLanesEl())
   grid.appendChild(dashRailEl())
-
-  const activityPanel = document.createElement('section')
-  activityPanel.className = 'dashboard-card dashboard-activity'
-  const activityHead = document.createElement('div')
-  activityHead.className = 'dashboard-card-head'
-  activityHead.innerHTML = '<h2>Agent activity</h2>'
-  const range = document.createElement('select')
-  range.className = 'dashboard-range'
-  range.dataset.dashboardFocusKey = 'activity-range'
-  range.setAttribute('aria-label', 'Dashboard activity range')
-  for (const [label, value] of [['24 hours', 86400000], ['7 days', 604800000], ['30 days', 2592000000]]) {
-    const option = document.createElement('option')
-    option.textContent = label
-    option.value = String(value)
-    range.appendChild(option)
-  }
-  range.value = String(dashboardRangeMs)
-  range.addEventListener('change', () => {
-    dashboardRangeMs = Number(range.value)
-    forceRender()
-  })
-  activityHead.appendChild(range)
-  activityPanel.appendChild(activityHead)
-  grid.appendChild(activityPanel)
+  grid.appendChild(dashRibbonEl())
 
   const outcomes = document.createElement('section')
   outcomes.className = 'dashboard-card dashboard-outcomes'
-  outcomes.innerHTML = '<div class="dashboard-card-head"><h2>Recent outcomes</h2></div>'
+  outcomes.innerHTML = '<div class="dashboard-card-head"><h2>Just landed</h2></div>'
   const outcomeList = document.createElement('div')
   outcomeList.className = 'dashboard-outcome-list'
   outcomes.appendChild(outcomeList)
@@ -2511,7 +2644,7 @@ function dashboardModel({ g, boards, archived }, summary, activity) {
     nowMs: Date.now(),
     liveSessionIds: liveSessionIds(),
     closedProjects: dashboardClosedProjects(),
-    history: { older: olderHistory(summary, olderLens()), archived: omittedOutcomes(archived) },
+    history: { older: olderHistory(summary, olderLens()), archived: omittedOutcomes(archived), before: summary?.before ?? null },
   })
 }
 

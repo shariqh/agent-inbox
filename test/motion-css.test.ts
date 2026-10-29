@@ -183,6 +183,25 @@ describe('motion foundation in public/style.css (#302)', () => {
     }
   })
 
+  // #305: the ribbon's "now" stripes are static: nothing in the ribbon animates
+  // or transitions, and Just landed's arrival is a one-shot app.js starts.
+  it('draws the ribbon statically and the arrival as a gated one-shot', () => {
+    const ribbon = rules.filter((r) => r.selectors.some((sel) => sel.includes('dash-ribbon')))
+    expect(ribbon.length).toBeGreaterThan(0)
+    for (const rule of ribbon) {
+      expect([...rule.decls.keys()].filter((prop) => prop.startsWith('animation') || prop.startsWith('transition')), rule.selectors.join(', ')).toEqual([])
+    }
+    expect(ribbon.some((r) => r.selectors.includes('.dash-ribbon-bar.live::after') && /repeating-linear-gradient/.test(r.decls.get('background') ?? ''))).toBe(true)
+    const arrival = keyframes.find((frames) => frames.name === 'dash-landed-arrive')
+    expect([...arrival!.props]).toEqual(['opacity'])
+    const shots = rules.filter((r) => !r.media && /dash-landed-arrive/.test(r.decls.get('animation') ?? ''))
+    expect(shots.map((r) => [r.selectors, r.decls.get('animation')]))
+      .toEqual([[['.dashboard-outcome.arrived::before'], 'dash-landed-arrive var(--motion-slow) var(--motion-ease-out) 1']])
+    const sel = '.dashboard-outcome.arrived::before'
+    expect(rules.some((r) => r.media && REDUCED.test(r.media) && isNone(r) && r.selectors.includes(sel))).toBe(true)
+    expect(rules.some((r) => !r.media && isNone(r) && r.selectors.includes(`${CALM} ${sel}`))).toBe(true)
+  })
+
   // The live indicator is static: a solid dot and the word, the same in every mode.
   it('draws "live" as static text on every lane', () => {
     const live = rules.filter((r) => r.selectors.some((sel) => sel.endsWith('.dash-lane-live')))

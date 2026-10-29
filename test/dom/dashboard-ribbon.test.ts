@@ -6,7 +6,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type Database from 'better-sqlite3'
 import {
-  endActivity, insertItem, recordActivityCall, resolveItem, upsertActivity, upsertBoard,
+  endActivity, insertItem, recordActivityCall, resolveItem, upsertActivity, upsertBoard, upsertSourceLink,
 } from '../../src/store.js'
 import {
   T0, advanceClock, badgeCount, bootApp, click, freshDb, pollTick, settle, tabCount, useDomTest,
@@ -130,6 +130,28 @@ describe('the Today ribbon (#305)', () => {
     expect(track.firstElementChild).toBe(bar)
   })
 
+  // #305 review: a live bar grows with the clock; its node and tooltip stay.
+  it('moves a live bar in place across ticks instead of rewriting its track', async () => {
+    const d = open()
+    vi.setSystemTime(T0 - 10 * MIN)
+    upsertActivity(d, { ...A, session: 'live', doing: 'Shipping', idle: false })
+    vi.setSystemTime(T0)
+    await bootApp(d)
+    const track = document.querySelector<HTMLElement>('.dash-ribbon-track')!
+    const bar = track.querySelector<HTMLElement>('.dash-ribbon-bar.live')!
+    const before = bar.getAttribute('style')
+    const writes = vi.spyOn(Element.prototype, 'innerHTML', 'set')
+    for (let tick = 0; tick < 4; tick += 1) {
+      advanceClock(5 * MIN)
+      recordActivityCall(d, 'live')
+      await pollTick()
+    }
+    expect(writes.mock.contexts.filter((el) => el === track)).toEqual([])
+    expect(track.querySelector('.dash-ribbon-bar.live')).toBe(bar)
+    expect(bar.getAttribute('style')).not.toBe(before)
+    expect(bar.getAttribute('title')).toMatch(/–now \(working\)$/)
+  })
+
   it('draws no marker before what the page proves complete, and says so (#184)', async () => {
     const d = open()
     vi.setSystemTime(T0 - 20 * HOUR)
@@ -142,19 +164,46 @@ describe('the Today ribbon (#305)', () => {
     const titles = [...document.querySelectorAll('.dash-ribbon-mark')].map((mark) => mark.getAttribute('title'))
     expect(titles.some((title) => title?.includes('Early ask'))).toBe(false)
     expect(document.querySelector('.dash-ribbon-note')?.textContent).toMatch(/^Asks and outcomes from /)
+    // Heard as well as seen: the note is outside anything hidden from assistive tech.
+    expect(document.querySelector('.dash-ribbon-note')?.closest('[aria-hidden="true"]')).toBeNull()
   })
 })
 
 describe('Just landed (#305)', () => {
-  it('never lists an open ask\'s PR, and keeps a fixed budget of four rows', async () => {
+  const openPr = (d: Database.Database, branch: string) => upsertSourceLink(d, {
+    repo: 'acme/app', branch, pr_number: 7, pr_state: 'OPEN', pr_title: 'Open PR', pr_url: 'https://github.com/acme/app/pull/7',
+  })
+
+  it('never lists an open ask\'s open PR, says how many it leaves out, and keeps four rows', async () => {
     const d = open()
     const pr = { repo: 'acme/app', stream: 'feat-x' }
     for (let index = 0; index < 5; index += 1) land(d, `Other ${index}`)
     land(d, 'Merged feat-x', pr)
     insertItem(d, { ...A, ...pr, kind: 'question', title: 'Merge PR feat-x?' })
+    openPr(d, 'feat-x')
     await bootApp(d)
-    expect(landedTitles()).toEqual(['Other 4', 'Other 3', 'Other 2', 'Other 1'])
+    expect(landedTitles()).toEqual(['Other 4', 'Other 3', 'Other 2'])
+    expect(document.querySelector('.dash-landed-waiting')?.textContent).toBe('1 on a PR still waiting on you')
     expect(document.querySelector('.dashboard-outcomes h2')?.textContent).toBe('Just landed')
+  })
+
+  // #305 review: one open ask on `main` hid every outcome on `main`, showed "No
+  // recorded outcomes" and read older history on every tick.
+  it.each([false, true])('reads no older history for an open ask on a busy branch (open PR on it: %s)', async (withPr) => {
+    const d = open()
+    const main = { repo: 'acme/app', stream: 'main' }
+    for (let index = 0; index < 70; index += 1) land(d, `Main ${index}`, main)
+    insertItem(d, { ...A, ...main, kind: 'question', title: 'Deploy main?' })
+    if (withPr) openPr(d, 'main')
+    const reads: string[] = []
+    await bootApp(d, { interceptFetch: async (input, _init, next) => { reads.push(String(input).split('?')[0]!); return next() } })
+    for (let tick = 0; tick < 3; tick += 1) await pollTick()
+    expect(reads.filter((url) => url === '/api/items/history')).toEqual([])
+    expect(landedTitles()).toEqual(withPr ? [] : ['Main 69', 'Main 68', 'Main 67', 'Main 66'])
+    const waiting = document.querySelector<HTMLElement>('.dash-landed-waiting')!
+    expect(waiting.hidden).toBe(!withPr)
+    if (withPr) expect(waiting.textContent).toBe('4 on PRs still waiting on you')
+    expect(document.querySelector('.dashboard-outcome-list .dashboard-empty')).toBeNull()
   })
 
   it('highlights each new outcome once, never on first paint, a poll or older history', async () => {
@@ -182,6 +231,21 @@ describe('Just landed (#305)', () => {
     land(d, 'Third new')
     await pollTick()
     expect(started.titles()).toEqual(['First new', 'Third new', 'Second new'])
+  })
+
+  // #305 review: an outcome older than what was drawn entering the rows is not
+  // an arrival, here through a lens change that brings beta's into view.
+  it('starts no highlight for an older outcome that enters the rows', async () => {
+    const d = open()
+    land(d, 'Older beta', { project: 'beta' })
+    for (let index = 0; index < 4; index += 1) land(d, `Alpha ${index}`)
+    const started = arrivals()
+    await bootApp(d)
+    expect(landedTitles()).toEqual(['Alpha 3', 'Alpha 2', 'Alpha 1', 'Alpha 0'])
+    click(document.querySelector('#rail .rail-tab[data-project="beta"]'))
+    await settle()
+    expect(landedTitles()).toEqual(['Older beta'])
+    expect(started.titles()).toEqual([])
   })
 
   it.each([
@@ -220,6 +284,43 @@ describe('Since you last looked (#305)', () => {
     await bootApp(d)
     expect(since().hidden).toBe(false)
     expect(since().textContent).toBe('Since you last looked: 1 outcome landed, 1 new ask, 1 session finished')
+  })
+
+  it('stays through polls in a window the human has not used, and goes on their first click or key', async () => {
+    const d = open()
+    localStorage.setItem('agent-inbox-last-visit', new Date(T0 - 3 * HOUR).toISOString())
+    land(d, 'Away outcome')
+    await bootApp(d)
+    vi.spyOn(document, 'hasFocus').mockReturnValue(false)
+    for (let tick = 0; tick < 3; tick += 1) { advanceClock(MIN); await pollTick() }
+    expect(since().hidden).toBe(false)
+    // Selecting the line itself is reading it, not moving on.
+    since().dispatchEvent(new Event('pointerdown', { bubbles: true }))
+    expect(since().hidden).toBe(false)
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'j', bubbles: true }))
+    expect(since().hidden).toBe(true)
+    land(d, 'Later outcome')
+    await pollTick()
+    click(document.querySelector('.tab[data-tab="needsYou"]'))
+    await settle()
+    click(document.querySelector('.tab[data-tab="dashboard"]'))
+    await settle()
+    expect(since().hidden).toBe(true)
+  })
+
+  it('is not dismissed by input while another tab is showing', async () => {
+    const d = open()
+    localStorage.setItem('agent-inbox-last-visit', new Date(T0 - 3 * HOUR).toISOString())
+    land(d, 'Away outcome')
+    insertItem(d, { ...A, kind: 'question', title: 'Away ask' })
+    await bootApp(d)
+    click(document.querySelector('.tab[data-tab="needsYou"]'))
+    await settle()
+    expect(document.getElementById('dashboard')!.hidden).toBe(true)
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'j', bubbles: true }))
+    click(document.querySelector('.tab[data-tab="dashboard"]'))
+    await settle()
+    expect(since().hidden).toBe(false)
   })
 
   it('stays hidden without a gap or a previous visit', async () => {

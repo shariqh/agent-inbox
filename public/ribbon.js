@@ -64,12 +64,17 @@ export function buildRibbon({ spans, asks = [], outcomes = [], startMs, endMs, m
   const kept = ranked.slice(0, RIBBON_LANES).sort((a, b) => a.project.localeCompare(b.project))
   for (const lane of kept) lane.segments.sort((a, b) => a.start - b.start)
   const merged = mergeToBudget(kept, endMs - startMs)
-  const keptMarks = new Set(kept.flatMap((lane) => lane.marks).sort((a, b) => b.at - a.at).slice(0, RIBBON_MARKS))
+  // Past the marker budget the floor rises to the newest marker cut, ties at
+  // that instant cut too, so what is drawn is still every marker after it.
+  const drawn = kept.flatMap((lane) => lane.marks).sort((a, b) => b.at - a.at)
+  const floor = drawn.length > RIBBON_MARKS ? Math.max(markFloor, drawn[RIBBON_MARKS].at) : markFloor
+  for (const lane of kept) lane.marks = lane.marks.filter((mark) => mark.at > floor)
   return {
     totalMs,
     startMs,
     endMs,
-    marksFrom: markFloor > startMs ? pct(markFloor, startMs, endMs) : null,
+    marksFrom: floor > startMs ? pct(floor, startMs, endMs) : null,
+    marksFromAt: floor > startMs ? new Date(floor).toISOString() : null,
     more: ranked.length - kept.length,
     lanes: kept.map((lane, index) => ({
       project: lane.project,
@@ -87,7 +92,7 @@ export function buildRibbon({ spans, asks = [], outcomes = [], startMs, endMs, m
         from: new Date(segment.start).toISOString(),
         to: new Date(segment.end).toISOString(),
       })),
-      marks: lane.marks.filter((mark) => keptMarks.has(mark)).map((mark) => ({
+      marks: lane.marks.map((mark) => ({
         kind: mark.kind,
         key: mark.key,
         left: pct(mark.at, startMs, endMs),

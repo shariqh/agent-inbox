@@ -1809,7 +1809,7 @@ function renderDashboardAmbient(model, { forced = false } = {}) {
   renderDashRail(host.querySelector('.dash-rail'), model.rail, { forced })
   renderDashRibbon(host.querySelector('.dashboard-activity'), model)
   renderDashboardOutcomes(host.querySelector('.dashboard-outcome-list'), model.recentOutcomes, model.recentOutcomesComplete,
-    model.recentOutcomesWait)
+    model.recentOutcomesWait, model.recentOutcomesHidden)
 }
 
 // Only a changed value is written, so an unchanged lane keeps its text nodes
@@ -1939,8 +1939,18 @@ function dashLaneEl(session) {
 
 // One iteration of a CSS one-shot, restarted when it is still running and
 // removed when it ends or is cancelled (Calm switched on, the Dashboard left
-// mid-pulse), so nothing lingers to replay later. Never a loop (#304).
+// mid-pulse), so nothing lingers to replay later. Never a loop (#304). A
+// restart first drops the running one's handler: the cancel its removal fires
+// would otherwise remove the class the restart just added.
+const oneShots = new WeakMap() // element → Map(class → its end handler)
 function playOnce(el, name, animation = `dash-lane-${name}`) {
+  const handlers = oneShots.get(el) ?? new Map()
+  oneShots.set(el, handlers)
+  const previous = handlers.get(name)
+  if (previous) {
+    el.removeEventListener('animationend', previous)
+    el.removeEventListener('animationcancel', previous)
+  }
   if (el.classList.contains(name)) {
     el.classList.remove(name)
     void el.offsetWidth
@@ -1951,7 +1961,9 @@ function playOnce(el, name, animation = `dash-lane-${name}`) {
     el.classList.remove(name)
     el.removeEventListener('animationend', done)
     el.removeEventListener('animationcancel', done)
+    handlers.delete(name)
   }
+  handlers.set(name, done)
   el.addEventListener('animationend', done)
   el.addEventListener('animationcancel', done)
 }
@@ -2129,7 +2141,7 @@ function dashRibbonEl() {
     <div class="dashboard-card-head"><h2 class="dash-ribbon-title"></h2></div>
     <div class="dashboard-activity-total"><strong></strong><span class="dash-ribbon-legend" aria-hidden="true"><span class="dash-ribbon-key now"></span>now <span class="dash-ribbon-key-ask">◆</span> asked you <span class="dash-ribbon-key-outcome">●</span> landed</span></div>
     <div class="dash-ribbon"></div>
-    <div class="dash-ribbon-axis" aria-hidden="true"><span class="dash-ribbon-from"></span><span class="dash-ribbon-note"></span><span>now</span></div>
+    <div class="dash-ribbon-axis"><span class="dash-ribbon-from" aria-hidden="true"></span><span class="dash-ribbon-note"></span><span aria-hidden="true">now</span></div>
     <div class="dash-ribbon-more" hidden></div>`
   const range = document.createElement('select')
   range.className = 'dashboard-range'
@@ -2190,8 +2202,9 @@ function renderDashRibbon(panel, model) {
   for (const part of ['.dashboard-activity-total', '.dash-ribbon', '.dash-ribbon-axis']) setHidden(panel.querySelector(part), Boolean(kind))
   setText(panel.querySelector('.dashboard-activity-total strong'), formatDuration(ribbon.totalMs))
   setText(panel.querySelector('.dash-ribbon-from'), from)
-  setText(panel.querySelector('.dash-ribbon-note'), ribbon.marksFrom == null ? ''
-    : `Asks and outcomes from ${ribbonTime(laterOf(model.marks.asksAfter, model.marks.outcomesAfter))}`)
+  // Read aloud too: the axis labels are hidden from assistive tech, the note is not.
+  setText(panel.querySelector('.dash-ribbon-note'), ribbon.marksFromAt == null ? ''
+    : `Asks and outcomes from ${ribbonTime(ribbon.marksFromAt)}`)
   const more = panel.querySelector('.dash-ribbon-more')
   setText(more, ribbon.more > 0 ? `+${plural(ribbon.more, 'more project')}` : '')
   setHidden(more, Boolean(kind) || ribbon.more <= 0)
@@ -2226,22 +2239,29 @@ function updateRibbonLane(el, lane) {
     lane.asks ? `${plural(lane.asks, 'ask')}${lane.openAsks ? ` (${lane.openAsks} open)` : ''}` : '',
     lane.outcomes ? plural(lane.outcomes, 'outcome') : '',
   ].filter(Boolean).join(', '))
+  // The track is rebuilt only when its shape changes (bars, which are live,
+  // which markers); positions and tooltips move in place, so a live bar that
+  // grows with the clock keeps its node (#305 review).
   const track = el.querySelector('.dash-ribbon-track')
-  const key = JSON.stringify([lane.bars, lane.marks, dashboardRangeMs > 86400000])
-  if (track.dataset.key === key) return
-  track.dataset.key = key
-  track.innerHTML = [
-    ...lane.bars.map((bar) => {
-      const live = bar.liveFrom != null
-      const style = `left:${bar.left}%;width:${bar.width}%${live ? `;--live-from:${bar.liveFrom}%` : ''}`
-      const label = `${ribbonTime(bar.from)}–${live ? 'now (working)' : ribbonTime(bar.to)}`
-      return `<span class="dash-ribbon-bar${live ? ' live' : ''}" style="${style}" title="${esc(label)}"></span>`
-    }),
-    ...lane.marks.map((mark) => {
-      const label = `${mark.kind === 'ask' ? (mark.open ? 'Asking you' : 'Asked you') : 'Landed'}: ${mark.title} · ${ribbonTime(mark.at)}`
-      return `<span class="dash-ribbon-mark ${mark.kind}${mark.open ? ' open' : ''}" style="left:${mark.left}%" title="${esc(label)}">${mark.kind === 'ask' ? '◆' : '●'}</span>`
-    }),
-  ].join('')
+  const shape = JSON.stringify([lane.bars.map((bar) => bar.liveFrom != null), lane.marks.map((mark) => [mark.kind, mark.key, mark.open])])
+  if (track.dataset.key !== shape) {
+    track.dataset.key = shape
+    track.innerHTML = [
+      ...lane.bars.map((bar) => `<span class="dash-ribbon-bar${bar.liveFrom != null ? ' live' : ''}"></span>`),
+      ...lane.marks.map((mark) => `<span class="dash-ribbon-mark ${mark.kind}${mark.open ? ' open' : ''}">${mark.kind === 'ask' ? '◆' : '●'}</span>`),
+    ].join('')
+  }
+  const nodes = track.children
+  lane.bars.forEach((bar, index) => {
+    const live = bar.liveFrom != null
+    setAttr(nodes[index], 'style', `left:${bar.left}%;width:${bar.width}%${live ? `;--live-from:${bar.liveFrom}%` : ''}`)
+    setAttr(nodes[index], 'title', `${ribbonTime(bar.from)}–${live ? 'now (working)' : ribbonTime(bar.to)}`)
+  })
+  lane.marks.forEach((mark, index) => {
+    const node = nodes[lane.bars.length + index]
+    setAttr(node, 'style', `left:${mark.left}%`)
+    setAttr(node, 'title', `${mark.kind === 'ask' ? (mark.open ? 'Asking you' : 'Asked you') : 'Landed'}: ${mark.title} · ${ribbonTime(mark.at)}`)
+  })
 }
 
 // "Since you last looked" (#305, §14): one line about the time between the
@@ -2260,8 +2280,24 @@ function renderDashSince(el, model) {
   })
   setText(el, text ? `Since you last looked: ${text}` : '')
   setAttr(el, 'title', lastVisitAt ? `Since ${new Date(lastVisitAt).toLocaleString()}` : '')
-  setHidden(el, !text)
+  setHidden(el, !text || sinceSeen)
 }
+
+// The line is about the time before this visit, so it goes once the human has
+// looked: their first click or key press anywhere in the window while it shows
+// on the Dashboard. Input only reaches a window the human is using, so a
+// background window they never looked at keeps it; a click on the line itself
+// (to select or copy it) does not count.
+let sinceSeen = false
+let sinceEl = null
+function dismissSince(event) {
+  const el = sinceEl
+  if (sinceSeen || activeTab !== 'dashboard' || !el?.isConnected || el.hidden || el.contains(event.target)) return
+  sinceSeen = true
+  el.hidden = true
+}
+document.addEventListener('pointerdown', dismissSince, true)
+document.addEventListener('keydown', dismissSince, true)
 
 // Just landed (#305): an outcome newer than anything drawn before gets one
 // arrival highlight, under the same gate as the lanes' pulse. The first paint
@@ -2284,11 +2320,17 @@ function markLanded(rows, entries) {
   landedHigh = high
 }
 
-function renderDashboardOutcomes(list, entries, complete = true, wait = { history: true, archived: false }) {
+function renderDashboardOutcomes(list, entries, complete = true, wait = { history: true, archived: false }, hidden = 0) {
   // Issues #184 and #299: outcomes the page or the archived brief omits may
   // still outrank what is listed.
   if (complete) list.removeAttribute('aria-busy')
   else list.setAttribute('aria-busy', 'true')
+  // #305: proven outcomes left out because their open PR still waits on you.
+  const waiting = list.parentElement?.querySelector('.dash-landed-waiting')
+  if (waiting) {
+    setText(waiting, hidden ? `${hidden} on ${hidden === 1 ? 'a PR' : 'PRs'} still waiting on you` : '')
+    setHidden(waiting, !hidden)
+  }
   const existing = new Map([...list.querySelectorAll('.dashboard-outcome')]
     .map((row) => [row.dataset.dashboardFocusKey, row]))
   const active = activeFocusElement()?.closest?.('.dashboard-outcome')
@@ -2323,7 +2365,7 @@ function renderDashboardOutcomes(list, entries, complete = true, wait = { histor
     focused.after(...rows.slice(index + 1))
   } else {
     list.replaceChildren(...rows)
-    if (!rows.length) {
+    if (!rows.length && !(complete && hidden)) {
       list.innerHTML = complete
         ? '<div class="dashboard-empty" role="img" aria-label="No recorded outcomes" title="No recorded outcomes"><svg class="dashboard-empty-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"></circle><path d="m8 12 2.5 2.5L16 9"></path></svg></div>'
         : `<div class="dashboard-empty" role="status">${esc(omittedWaitText('Loading older outcomes…', wait))}</div>`
@@ -2567,6 +2609,7 @@ function renderDashboard(model) {
   since.className = 'dash-since'
   since.hidden = true
   host.appendChild(since)
+  sinceEl = since
 
   const grid = document.createElement('div')
   grid.className = 'dashboard-grid'
@@ -2580,6 +2623,10 @@ function renderDashboard(model) {
   const outcomeList = document.createElement('div')
   outcomeList.className = 'dashboard-outcome-list'
   outcomes.appendChild(outcomeList)
+  const waiting = document.createElement('p')
+  waiting.className = 'dash-landed-waiting'
+  waiting.hidden = true
+  outcomes.appendChild(waiting)
   grid.appendChild(outcomes)
 
   host.appendChild(grid)
@@ -2645,6 +2692,7 @@ function dashboardModel({ g, boards, archived }, summary, activity) {
     liveSessionIds: liveSessionIds(),
     closedProjects: dashboardClosedProjects(),
     history: { older: olderHistory(summary, olderLens()), archived: omittedOutcomes(archived), before: summary?.before ?? null },
+    links: linkIndex,
   })
 }
 

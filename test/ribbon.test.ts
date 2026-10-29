@@ -95,6 +95,22 @@ describe('buildRibbon', () => {
     expect(first.at(-1)!.left + first.at(-1)!.width).toBeGreaterThan(80)
   })
 
+  // #305 review: the marker budget used to drop older markers silently.
+  it('raises the marker floor past the budget, drawing every marker after it', () => {
+    const START30 = END - 30 * 24 * HOUR
+    const asks = Array.from({ length: 300 }, (_, i) => mark(`p${i % 3}`, START30 + (i + 1) * 2 * HOUR, `a${i}`))
+    // A tie at the cut instant goes with the cut.
+    asks.push(mark('p0', asks[179]!.at, 'tie'))
+    const ribbon = buildRibbon({ spans: [], asks, startMs: START30, endMs: END })
+    const drawn = ribbon.lanes.flatMap((lane) => lane.marks)
+    expect(drawn.length).toBeLessThanOrEqual(120)
+    const floor = Date.parse(ribbon.marksFromAt!)
+    expect(floor).toBe(asks[179]!.at)
+    expect(drawn.map((m) => m.key).sort()).toEqual(asks.filter((m) => m.at > floor).map((m) => m.key).sort())
+    expect(ribbon.marksFrom).toBeGreaterThan(0)
+    expect(ribbon.lanes.reduce((total, lane) => total + lane.asks, 0)).toBe(drawn.length)
+  })
+
   it('refuses a range that is not finite and ascending', () => {
     expect(() => buildRibbon({ spans: [], startMs: END, endMs: START })).toThrow(RangeError)
   })

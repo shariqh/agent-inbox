@@ -1856,6 +1856,8 @@ body.settings-open #liveBar { opacity: .32; }
 .dash-ribbon-more[hidden], .dashboard-activity [hidden] { display: none; }
 .dash-since { margin: 10px 0 0; color: var(--app-muted); font-size: 12.5px; }
 .dash-since[hidden] { display: none; }
+.dash-landed-waiting { margin: 8px 0 0; color: var(--app-muted); font-size: 12px; }
+.dash-landed-waiting[hidden] { display: none; }
 /* #303: the Needs you rail. Compact cards over the Inbox's own answer controls;
    the written-answer editor shows only on an expanded card. */
 .dash-rail-cards { display: grid; gap: 10px; }

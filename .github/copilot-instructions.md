@@ -618,12 +618,16 @@ Run the build before `npm run electron`; the development shell starts the built
   (nothing in the ribbon animates or transitions; `test/motion-css.test.ts` pins it),
   ◆ asks (open only through `attentionEntries`/`laterEntries`), ● outcomes, ≤ 200 bars,
   and no marker before what the page proves complete (#184's `before`, #299's newest
-  omitted outcome). Lanes are keyed and a track is rewritten only when its geometry
-  changes; the range `<select>` keeps identity, value and focus. Just landed keeps the
-  `recentOutcomes` proof, hides an outcome on an open ask's PR, holds four fixed rows,
-  and highlights a new outcome once under `motion.activityMotion()` with the Dashboard
-  visible. "Since you last looked" covers `lastVisitAt` to this page load after a
-  30-minute gap, with "N+" where omitted history could add more.
+  omitted outcome), past 120 markers the floor rises to the newest cut, and the
+  "Asks and outcomes from …" note is audible. Lanes are keyed and a track is rebuilt
+  only when its shape changes; geometry and tooltips update in place. The range
+  `<select>` keeps identity, value and focus. Just landed proves the newest four exactly
+  as before (reads byte-identical to main), then leaves out only proven rows whose OPEN
+  PR (`linkIndex`) is an open ask's open PR, named as "N on PRs still waiting on you";
+  a branch with no open PR hides nothing. It highlights a new outcome once under
+  `motion.activityMotion()` with the Dashboard visible. "Since you last looked" covers
+  `lastVisitAt` to this page load after a 30-minute gap, with "N+" where omitted history
+  could add more, until the human's first click or key press on the Dashboard.
 - Browser snapshot reuse is window-local and immutable; a 304 belongs to the
   representation that request sent, and its live boot header still controls safe
   refresh. Passive polls may retain inactive document panes, but navigation and

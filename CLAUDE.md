@@ -1469,7 +1469,10 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   `buildRibbon` (`public/ribbon.js`, pure) draws one thin lane per project over the range:
   `/api/activity/history` spans clipped to it (a span with neither `ended_at` nor
   `effective_ended_at` is live and its bar gets a striped tail from where it started), ◆ for
-  every question raised plus every open ask, ● for every recorded outcome. A ◆ is drawn open
+  every question raised and every ask an active plan's row has made (its current action
+  when blocked or once answered, owned or handled, and each earlier action in its `history`
+  with an owner or a response; an earlier step closed with neither, which only a
+  pre-action-field writer makes, is not counted), ● for every recorded outcome. A ◆ is drawn open
   only when its entry is in `attentionEntries` or `laterEntries` (`buildDashboard`'s
   `marks`), so the ribbon never shows an ask the badge does not know. Budgets: the 12 most
   recently active projects (drawn by name so a lane keeps its place; the rest "+N more
@@ -1477,24 +1480,38 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   fit) and 120 markers. Markers older than what the page proves complete are not drawn:
   items created after the page's `before` are all on it (#184) and outcomes stamped after
   the newest omitted one are all loaded (#299), so `marks.asksAfter`/`outcomesAfter` set a
-  floor and the axis says "Asks and outcomes from …"; the ribbon never asks for older
-  history itself. **Nothing in the ribbon animates**: #304's rule, so the "now" stripes are a
+  floor. Past 120 markers the floor rises to the newest one cut (ties at that instant are
+  cut too), so what is drawn is always every marker after the floor, never a silent
+  subset. Either way the axis says "Asks and outcomes from …" (`marksFromAt`), and that
+  note is outside the `aria-hidden` axis labels so it is heard. The ribbon never asks for
+  older history itself (a follow-up may read it when the human changes the range). **Nothing in the ribbon animates**: #304's rule, so the "now" stripes are a
   static `repeating-linear-gradient` on `.dash-ribbon-bar.live::after`, and
   `test/motion-css.test.ts` refuses any animation or transition on a ribbon rule. Lanes are
-  keyed by project; a lane's track is rewritten only when its bars or markers change
-  (percentages rounded to 0.1%), so an unchanged poll touches nothing. Just landed is the
-  former Recent outcomes list (same fields, `recentOutcomes*`, and the same #184/#299
-  proof) with two rules: an outcome whose PR (`linkKey` of repo, `stream`, head repo) is
-  that of an open or deferred ask is not listed (that PR has not landed) but still counts,
-  and it holds a fixed budget of four 60px rows. A list cut by that filter stays unproven
-  while omitted history could still fill it. A new outcome (unseen key, stamped after
+  keyed by project; a lane's track is rebuilt only when its SHAPE changes (how many bars,
+  which are live, which markers), never for its geometry: positions, `--live-from` and
+  tooltips are written in place with `setAttr`, so a live bar growing with the clock keeps
+  its node and an unchanged poll writes nothing. Just landed is the former Recent outcomes
+  list: the newest four are proven EXACTLY as before #305 (`listed`, `keepsUnproven`,
+  `recentOutcomesComplete` and so `historyWanted`/`archivedWanted` over the unfiltered
+  outcomes, so its reads are byte-identical to main's), and only then are the proven rows
+  whose OPEN PR in the frame's `linkIndex` (`linkFor`, `pr_state` OPEN) is also the open PR
+  of an open or deferred ask left out: that PR has not landed. A branch with no open PR
+  (`main`, a merged PR) hides nothing, which the review of #391 found the hard way: matching
+  by branch alone let one open ask on `main` empty the list and read older history on every
+  tick. The rows left out still count and are named, "N on PRs still waiting on you"
+  (`recentOutcomesHidden`), instead of the empty state. It holds four 60px rows. A new outcome (unseen key, stamped after
   everything drawn before) gets one `arrived` highlight through `playOnce`, only when
   `dashboardMotion()` allows it (Full, no OS reduced motion, visible page, Dashboard on
   screen); the first paint, a poll, a tab switch and older history arriving start nothing,
   and an outcome that arrives while motion is off is marked seen. "Since you last looked"
   (`sinceLastLooked`, §14) is one line under the Now strip for the time between
   `lastVisitAt` (the previous page load) and this page load (`visitAt`), shown only after
-  a 30-minute gap and when something happened: outcomes landed, new asks, and sessions
+  a 30-minute gap, until the human has looked: their first pointerdown or keydown anywhere
+  in the window while it shows on the Dashboard dismisses it for the page's life (a press
+  on the line itself, to select it, does not). Input only reaches a window being used, so a
+  background window nobody looked at keeps it however many polls pass; the listener holds
+  its own element (`sinceEl`), so an older module instance cannot hide a newer one's. It
+  shows when something happened: outcomes landed, new asks, and sessions
   whose last span ended in the window and that are not live now (left out when history
   failed). A count omitted history could add to reads "3+", and one it could wholly hold
   is left out rather than "0". None of it reaches attention, a badge, a tab or the dock,

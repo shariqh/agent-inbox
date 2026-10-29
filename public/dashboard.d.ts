@@ -39,6 +39,8 @@ export interface DashboardInput {
     /** #184: the page's touch boundary; every item created after it is on the page */
     before?: string | null
   }
+  /** #305: the frame's PR index (indexLinks), so Just landed can skip an open ask's open PR */
+  links?: Map<string, any> | null
 }
 
 export interface DashboardModel {
@@ -54,6 +56,8 @@ export interface DashboardModel {
   waitingEntries: RelayEntry[]
   agentEntries: RelayEntry[]
   recentOutcomes: RelayEntry[]
+  /** #305: proven outcomes Just landed leaves out because their open PR still waits on you */
+  recentOutcomesHidden: number
   /** false while omitted closed history or archived outcomes could still outrank a listed outcome */
   recentOutcomesComplete: boolean
   /** which omitted source, read, would let the list be proven (#184, #299) */

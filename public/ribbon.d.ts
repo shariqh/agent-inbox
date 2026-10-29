@@ -35,6 +35,8 @@ export interface Ribbon {
   endMs: number
   /** percentage before which markers are not drawn, or null */
   marksFrom: number | null
+  /** the same floor as a time: markers before it are not drawn (omitted history or the marker budget) */
+  marksFromAt: string | null
   /** projects past the lane budget */
   more: number
   lanes: RibbonLane[]

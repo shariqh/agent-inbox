@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { buildActivitySeries, buildDashboard } from '../public/dashboard.js'
+import { buildDashboard } from '../public/dashboard.js'
+import { indexLinks } from '../public/source.js'
 import { attentionEntries, sortNeedsYou, sortRail } from '../public/attention.js'
 import type { DashboardModel } from '../public/dashboard.js'
 
@@ -363,49 +364,115 @@ describe('buildDashboard', () => {
   })
 })
 
-describe('buildActivitySeries', () => {
-  const startMs = Date.parse('2026-08-24T00:00:00.000Z')
-  const endMs = Date.parse('2026-08-24T02:00:00.000Z')
-
-  it('clips truthful span overlap into fixed buckets', () => {
-    const series = buildActivitySeries([
-      {
-        session: 'a',
-        started_at: '2026-08-24T00:15:00.000Z',
-        effective_ended_at: '2026-08-24T01:15:00.000Z',
-      },
-      {
-        session: 'b',
-        started_at: '2026-08-24T00:30:00.000Z',
-        effective_ended_at: '2026-08-24T00:45:00.000Z',
-      },
-    ], { startMs, endMs, bucketCount: 2 })
-
-    expect(series.hasHistory).toBe(true)
-    expect(series.totalActiveMs).toBe(75 * 60 * 1000)
-    expect(series.buckets.map((bucket) => bucket.activeMs)).toEqual([
-      60 * 60 * 1000,
-      15 * 60 * 1000,
-    ])
-    expect(series.buckets.map((bucket) => bucket.sessions)).toEqual([2, 1])
+describe('Just landed and the ribbon markers (#305)', () => {
+  const base = { boards: [], archived: [], activity: [], nowMs: NOW, liveSessionIds: new Set<string>() }
+  const pr = { repo: 'acme/app', stream: 'feat-x' }
+  const ids = (model: ReturnType<typeof buildDashboard>) =>
+    model.recentOutcomes.map((entry) => entry.kind === 'item' ? entry.item.id : entry.row.id)
+  const landed = (id: string, at: string, extra: Record<string, unknown> = {}) => ({
+    id, project: 'alpha', kind: 'question', status: 'resolved', title: id,
+    created_at: '2026-08-24T08:00:00.000Z', outcome: `${id} done`, outcome_at: at, ...extra,
   })
 
-  it('uses the selected range end for a genuinely open span', () => {
-    const series = buildActivitySeries([{
-      session: 'open',
-      started_at: '2026-08-24T01:30:00.000Z',
-      effective_ended_at: null,
-    }], { startMs, endMs, bucketCount: 2 })
+  const open = (branch: string, extra: Record<string, unknown> = {}) =>
+    indexLinks([{ repo: 'acme/app', branch, pr_number: 7, pr_state: 'OPEN', ...extra }] as unknown as Parameters<typeof indexLinks>[0])
 
-    expect(series.totalActiveMs).toBe(30 * 60 * 1000)
-    expect(series.buckets.map((bucket) => bucket.activeMs)).toEqual([0, 30 * 60 * 1000])
-  })
-
-  it('renders no-history state instead of a synthetic zero trend', () => {
-    expect(buildActivitySeries([], { startMs, endMs, bucketCount: 2 })).toEqual({
-      hasHistory: false,
-      totalActiveMs: 0,
-      buckets: [],
+  it('never lists an outcome on an open ask\'s open PR, and still counts it', () => {
+    const items = [
+      ask('merge-x', '2026-08-24T19:30:00.000Z', pr),
+      landed('x-landed', '2026-08-24T19:00:00.000Z', pr),
+      landed('other-pr', '2026-08-24T18:00:00.000Z', { repo: 'acme/app', stream: 'feat-y' }),
+      landed('fork-head', '2026-08-24T17:00:00.000Z', { ...pr, head_repo: 'fork/app' }),
+    ]
+    const model = buildDashboard({ ...base, items, links: open('feat-x') })
+    expect(ids(model)).toEqual(['other-pr', 'fork-head'])
+    expect(model.recentOutcomesHidden).toBe(1)
+    expect(model.signals.outcomes).toBe(3)
+    expect(model.recentOutcomesComplete).toBe(true)
+    // A branch with no PR, or a PR that is no longer open, hides nothing.
+    for (const links of [null, open('feat-x', { pr_state: 'MERGED' })]) {
+      const plain = buildDashboard({ ...base, items, links })
+      expect(ids(plain)).toEqual(['x-landed', 'other-pr', 'fork-head'])
+      expect(plain.recentOutcomesHidden).toBe(0)
+    }
+    // Once the ask is answered, its PR's outcome is listed again.
+    const answered = buildDashboard({
+      ...base, links: open('feat-x'),
+      items: [ask('merge-x', '2026-08-24T19:30:00.000Z', { ...pr, status: 'resolved' }), landed('x-landed', '2026-08-24T19:00:00.000Z', pr)],
     })
+    expect(ids(answered)).toEqual(['x-landed'])
+  })
+
+  // #305 review: one open ask on `main` used to hide every outcome on `main`,
+  // and the list it left unproven read older history on every tick.
+  it('proves the newest four exactly as before, whatever Just landed leaves out', () => {
+    const main = { repo: 'acme/app', stream: 'main' }
+    const items = [
+      ask('on-main', '2026-08-24T19:30:00.000Z', main),
+      ...['19', '18', '17', '16', '15'].map((hour) => landed(`at-${hour}`, `2026-08-24T${hour}:00:00.000Z`, main)),
+    ]
+    const older = { items: 70, outcomes: 70, latest: '2026-08-24T12:00:00.000Z', projects: ['alpha'], agents: ['copilot'] }
+    const plain = buildDashboard({ ...base, items, history: { older } })
+    expect(ids(plain)).toEqual(['at-19', 'at-18', 'at-17', 'at-16'])
+    expect(plain.recentOutcomesComplete).toBe(true)
+    expect(plain.recentOutcomesWait).toEqual({ history: false, archived: false })
+    // With an open PR on main, the same four are proven and the same nothing is read.
+    const waiting = buildDashboard({ ...base, items, history: { older }, links: open('main') })
+    expect(ids(waiting)).toEqual([])
+    expect(waiting.recentOutcomesHidden).toBe(4)
+    expect(waiting.recentOutcomesComplete).toBe(true)
+    expect(waiting.recentOutcomesWait).toEqual(plain.recentOutcomesWait)
+  })
+
+  it('marks a plan row\'s answered asks too, current and earlier, never a plain row', () => {
+    const model = buildDashboard({
+      ...base,
+      items: [],
+      boards: [{
+        id: 'b', project: 'beta', title: 'Plan', rows: [
+          { id: 'answered', label: 'Approve', status: 'done', action_owner: 'approval', annotation: 'Yes', annotation_unseen: false,
+            action_started_at: '2026-08-24T15:00:00.000Z',
+            history: [{ started_at: '2026-08-24T10:00:00.000Z', action_owner: 'decision', response: 'A' }, { started_at: '2026-08-24T12:00:00.000Z' }] },
+          { id: 'plain', label: 'Build', status: 'done', action_started_at: '2026-08-24T11:00:00.000Z', annotation: null, annotation_unseen: false },
+        ],
+      }],
+    })
+    expect(model.marks.asks.map((mark) => [mark.key, mark.at, mark.open])).toEqual([
+      ['row:answered:0', Date.parse('2026-08-24T10:00:00.000Z'), false],
+      ['row:answered', Date.parse('2026-08-24T15:00:00.000Z'), false],
+    ])
+  })
+
+  it('marks every question and every open ask, open only through the attention set or Later', () => {
+    const model = buildDashboard({
+      ...base,
+      items: [
+        ask('open', '2026-08-24T19:00:00.000Z'),
+        ask('answered', '2026-08-24T18:00:00.000Z', { reply: 'yes' }),
+        ask('pinned', '2026-08-24T17:00:00.000Z', { pinned_at: '2026-08-24T17:30:00.000Z' }),
+        landed('done', '2026-08-24T16:00:00.000Z'),
+        { id: 'note', project: 'alpha', kind: 'note', status: 'open', title: 'note', created_at: '2026-08-24T15:00:00.000Z' },
+      ],
+      boards: [{
+        id: 'b', project: 'beta', title: 'Plan', rows: [
+          { id: 'blocked', label: 'Approve', status: 'blocked', action_started_at: '2026-08-24T14:00:00.000Z', annotation: null, annotation_unseen: false },
+        ],
+      }],
+    })
+    const asks = Object.fromEntries(model.marks.asks.map((mark) => [mark.key, [mark.project, mark.at, mark.open]]))
+    expect(asks).toEqual({
+      'item:open': ['alpha', Date.parse('2026-08-24T19:00:00.000Z'), true],
+      'item:answered': ['alpha', Date.parse('2026-08-24T18:00:00.000Z'), false],
+      'item:pinned': ['alpha', Date.parse('2026-08-24T17:00:00.000Z'), true],
+      'item:done': ['alpha', Date.parse('2026-08-24T08:00:00.000Z'), false],
+      'row:blocked': ['beta', Date.parse('2026-08-24T14:00:00.000Z'), true],
+    })
+    expect(model.marks.outcomes.map((mark) => [mark.key, mark.at])).toEqual([['item:done', Date.parse('2026-08-24T16:00:00.000Z')]])
+    expect(model.marks).toMatchObject({ asksAfter: null, outcomesAfter: null })
+    const paged = buildDashboard({
+      ...base, items: [],
+      history: { older: { items: 2, outcomes: 1, latest: '2026-08-24T12:00:00.000Z', projects: ['alpha'] }, before: '2026-08-24T13:00:00.000Z' },
+    })
+    expect(paged.marks).toMatchObject({ asksAfter: '2026-08-24T13:00:00.000Z', outcomesAfter: '2026-08-24T12:00:00.000Z' })
   })
 })

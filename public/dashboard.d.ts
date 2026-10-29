@@ -36,7 +36,11 @@ export interface DashboardInput {
   history?: {
     older: { items: number; outcomes: number; latest: string | null; projects: string[]; agents?: string[] }
     archived?: { outcomes: number; latest: string | null }
+    /** #184: the page's touch boundary; every item created after it is on the page */
+    before?: string | null
   }
+  /** #305: the frame's PR index (indexLinks), so Just landed can skip an open ask's open PR */
+  links?: Map<string, any> | null
 }
 
 export interface DashboardModel {
@@ -52,10 +56,19 @@ export interface DashboardModel {
   waitingEntries: RelayEntry[]
   agentEntries: RelayEntry[]
   recentOutcomes: RelayEntry[]
+  /** #305: proven outcomes Just landed leaves out because their open PR still waits on you */
+  recentOutcomesHidden: number
   /** false while omitted closed history or archived outcomes could still outrank a listed outcome */
   recentOutcomesComplete: boolean
   /** which omitted source, read, would let the list be proven (#184, #299) */
   recentOutcomesWait: { history: boolean; archived: boolean }
+  /** #305: the ribbon's ◆ and ● markers, and from when each list is complete */
+  marks: {
+    asks: RibbonMark[]
+    outcomes: RibbonMark[]
+    asksAfter: string | null
+    outcomesAfter: string | null
+  }
   /** #304: one lane per working session, in model order (newest call first) */
   lanes: Lane[]
   /** connected sessions with no live claim, folded into "+N idle connections" */
@@ -64,15 +77,12 @@ export interface DashboardModel {
   now: NowStrip
 }
 
-export interface ActivityBucket {
-  startAt: string
-  endAt: string
-  activeMs: number
-  sessions: number
+export interface RibbonMark {
+  key: string
+  project: string
+  at: number
+  title: string
+  open?: boolean
 }
 
 export function buildDashboard(input: DashboardInput): DashboardModel
-export function buildActivitySeries(
-  spans: DashboardSpan[],
-  range: { startMs: number; endMs: number; bucketCount: number },
-): { hasHistory: boolean; totalActiveMs: number; buckets: ActivityBucket[] }

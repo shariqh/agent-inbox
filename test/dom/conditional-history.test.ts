@@ -20,7 +20,7 @@ interface Read { url: string; sent: string | null; tag: string | null; status: n
 const isHistory = (input: RequestInfo | URL): boolean => String(input).split('?')[0] === '/api/activity/history'
 const total = (): string | null | undefined => document.querySelector('.dashboard-activity-total strong')?.textContent
 const bars = (): string[] =>
-  [...document.querySelectorAll<HTMLElement>('.dashboard-bar')].map((bar) => `${bar.style.height} ${bar.title}`)
+  [...document.querySelectorAll<HTMLElement>('.dash-ribbon-bar')].map((bar) => `${bar.style.left} ${bar.style.width} ${bar.title}`)
 
 function span(d: Database.Database, session: string, startMs: number, endMs: number): void {
   vi.setSystemTime(startMs)
@@ -60,7 +60,7 @@ describe('conditional activity history polling (issue #185)', () => {
     expect(reads[0]!.tag).toMatch(/^"[^"]+"$/)
     expect(total()).toBe('25m')
     const painted = bars()
-    expect(painted).toHaveLength(24)
+    expect(painted).toHaveLength(1)
 
     await pollTick()
     await pollTick()
@@ -74,7 +74,8 @@ describe('conditional activity history polling (issue #185)', () => {
     // Another range derives its own view from the same reused spans.
     await chooseRange(7 * DAY)
     expect(total()).toBe('25m')
-    expect(document.querySelectorAll('.dashboard-bar')).toHaveLength(14)
+    expect(bars()).toHaveLength(1)
+    expect(bars()).not.toEqual(painted)
   })
 
   it('repaints history when only the clock carries an open span past its cold cutoff', async () => {
@@ -138,7 +139,7 @@ describe('conditional activity history polling (issue #185)', () => {
     await pollTick()
     expect(reads.at(-1)).toMatchObject({ status: 503, sent: good })
     expect(document.querySelector('.dashboard-history-error')?.textContent).toBe('History unavailable')
-    expect(document.querySelector('.dashboard-bars')).toBeNull()
+    expect(bars()).toEqual([])
     expect(document.getElementById('status')?.textContent).toBe('')
 
     failing = false
@@ -192,6 +193,6 @@ describe('conditional activity history polling (issue #185)', () => {
     expect(returned).toEqual(['older', 'recent'])
     await chooseRange(30 * DAY)
     expect(total()).toBe('10m')
-    expect(document.querySelectorAll('.dashboard-bar')).toHaveLength(30)
+    expect(bars()).toHaveLength(1)
   })
 })

@@ -57,7 +57,7 @@ async function surfaces() {
     title: document.title,
     badge: badgeCount(),
     tabs: ['needsYou', 'notes', 'boards', 'done'].map(tabCount),
-    rail: [...document.querySelectorAll('#dashRail [data-rail-card]')].map((el) => el.textContent?.replace(/\s+/g, ' ').trim()),
+    rail: [...document.querySelectorAll('#dashRail [data-rail-card] .dash-rail-title')].map((el) => el.textContent),
     needsYou: await (async () => { await showInbox(); return rows().map((el) => el.querySelector('.nrow-title')?.textContent) })(),
   }
 }
@@ -72,8 +72,19 @@ function countMeshLoads(): { count: number } {
   return loads
 }
 
-const lists: Record<string, string[]> = {}
-const offSurfaces: Record<string, unknown> = {}
+// What every boot of seed() makes and shows, the same with the mesh off or on
+// (each test checks itself against these, so any one runs alone with -t). The
+// boot reads, then one poll tick's eight reads.
+const POLL = ['/api/items', '/api/boards', '/api/boards/archived/summary', '/api/activity',
+  '/api/activity/history?since_ms=1781949600000', '/api/projects/closed', '/api/links', '/api/issues']
+const BOOT_REQUESTS = ['/api/version', '/api/setup', ...POLL, ...POLL]
+const SURFACES = {
+  title: '(3) Agent Inbox',
+  badge: 3,
+  tabs: ['3', '1', '1', ''],
+  rail: ['Approve it.', 'Ship the search ranking?', 'Retry 4xx?'],
+  needsYou: ['Approve it.', 'Ship the search ranking?', 'Retry 4xx?'],
+}
 
 describe('Agents view off (§2.4b)', () => {
   it('baseline: a build with no mesh option', async () => {
@@ -83,7 +94,8 @@ describe('Agents view off (§2.4b)', () => {
     await bootApp(db, { interceptFetch: async (input, _init, next) => { requests.push(route(input)); return next() } })
     await pollTick()
     await settle()
-    lists['baseline'] = requests
+    expect(requests).toEqual(BOOT_REQUESTS)
+    expect(await surfaces()).toEqual(SURFACES)
   })
 
   it('no mesh.json: the same requests, the same bytes and ETags, no Mesh section, no /mesh-view.js', async () => {
@@ -95,7 +107,7 @@ describe('Agents view off (§2.4b)', () => {
     await bootApp(db, { viewer: opts, interceptFetch: async (input, _init, next) => { requests.push(route(input)); return next() } })
     await pollTick()
     await settle()
-    expect(requests).toEqual(lists['baseline'])
+    expect(requests).toEqual(BOOT_REQUESTS)
     expect(requests.some((url) => url.includes('mesh'))).toBe(false)
     expect(loads.count).toBe(0)
     expect(document.getElementById('mesh-settings')).toBeNull()
@@ -112,7 +124,7 @@ describe('Agents view off (§2.4b)', () => {
       const [a, b] = [await withMesh.request(url), await without.request(url)]
       expect([a.status, a.headers.get('etag'), await a.text()], url).toEqual([b.status, b.headers.get('etag'), await b.text()])
     }
-    Object.assign(offSurfaces, await surfaces())
+    expect(await surfaces()).toEqual(SURFACES)
   })
 })
 
@@ -134,11 +146,15 @@ describe('Agents view on', () => {
     await pollTick()
     await settle()
     // the module itself fetches nothing: the page reads what the baseline reads
-    expect([...new Set(requests)].sort()).toEqual([...new Set(lists['baseline'])].sort())
+    expect([...new Set(requests)].sort()).toEqual([...new Set(BOOT_REQUESTS)].sort())
 
     const settings = document.getElementById('mesh-settings')
     expect(settings?.querySelector('h3')?.textContent).toBe('Mesh')
-    expect(settings?.querySelector('pre')?.textContent).toBe('agent-inbox-meshctl disable --apply')
+    expect([...settings!.querySelectorAll('pre')].map((el) => el.textContent)).toEqual([
+      'npm run meshctl -- disable --apply',
+      '~/.agent-inbox/runtime/<runtime-id>/bin/node ~/.agent-inbox/runtime/<runtime-id>/dist/meshctl.js disable --apply',
+    ])
+    expect(settings?.textContent).toContain('Or delete mesh.json from its folder')
     expect(settings?.previousElementSibling?.id).toBe('link-settings')
 
     const lens = [...document.querySelectorAll<HTMLButtonElement>('.mesh-lens [data-mesh-lens]')]
@@ -167,7 +183,7 @@ describe('Agents view on', () => {
     expect(document.querySelectorAll('.mesh-agents script, .mesh-agents img')).toHaveLength(0)
 
     // with the Agents lens drawn, the human's attention reads as it does with the mesh off
-    expect(await surfaces()).toEqual(offSurfaces)
+    expect(await surfaces()).toEqual(SURFACES)
   })
 
   it('the poll bodies and the dock projection are the same with the view on and off', async () => {

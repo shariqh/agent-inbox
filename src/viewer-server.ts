@@ -3,10 +3,19 @@ import { openDb } from './store.js'
 import { createViewer } from './viewer.js'
 import { startGithubPoller } from './issue-poller.js'
 import { startLocalViewer } from './viewer-network.js'
+import { meshDir, meshFile, watchMeshConfig } from './mesh-config.js'
 
 const port = Number(process.env.AGENT_INBOX_PORT ?? 4319)
 const db = openDb()
-const app = createViewer(db, { ownerToken: process.env.AGENT_INBOX_OWNER_TOKEN })
+// Mesh M1 (#397): the viewer's one stated exception to "nothing changes when
+// the mesh is off" (design §2.1): mesh.json is stat'ed now and once a minute,
+// and read only when that stat says it changed. A missing file costs one
+// failed stat a minute. Started here, never in createViewer, like the poller.
+const mesh = watchMeshConfig(meshFile(meshDir()))
+const app = createViewer(db, {
+  ownerToken: process.env.AGENT_INBOX_OWNER_TOKEN,
+  meshAgentsView: () => mesh.current()?.agentsView === true,
+})
 // issue #30 — this is the ONE process allowed to run `gh` (the stdio MCP server
 // never may). Started here rather than inside createViewer because every viewer
 // test constructs the app with app.request(...) and a timer there would leak

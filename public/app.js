@@ -49,7 +49,7 @@ import { buildRelay, stamp } from '/relay.js'
 import { buildMission } from '/mission.js'
 import { buildDashboard } from '/dashboard.js'
 import { buildRibbon, sinceKeepsOn, sinceLastLooked, trustedInput } from '/ribbon.js'
-import { MAX_LANES, calledLanes, pinLaneOrder } from '/lanes.js'
+import { MAX_LANES, calledLanes, pinLaneOrder, tracePath } from '/lanes.js'
 import { PANE_DEFAULTS, paneKeyValue, paneValueFromPointer, resolvePaneLayout } from '/panes.js'
 import { createThemeController } from '/theme.js'
 import { createMotionController } from '/motion.js'
@@ -1923,6 +1923,10 @@ function dashLaneEl(session) {
     </div>
     <div class="dash-lane-detail"></div>
     <div class="dash-lane-meta"></div>
+    <div class="dash-lane-trace" hidden>
+      <svg class="dash-lane-spark" viewBox="0 0 60 12" preserveAspectRatio="none" role="img"><path></path></svg>
+      <span class="dash-lane-trace-count"></span>
+    </div>
     <div class="dash-lane-plan" hidden>
       <span class="dash-lane-bar" role="img"><span data-seg="done"></span><span data-seg="partial"></span><span data-seg="waiting"></span><span data-seg="todo"></span></span>
       <span class="dash-lane-plan-count"></span><span class="dash-lane-plan-title"></span>
@@ -1986,6 +1990,13 @@ function updateDashLane(el, lane) {
   setHidden(detail, !lane.detail)
   setText(el.querySelector('.dash-lane-meta'), [lane.agent, lane.project, lane.branch].filter(Boolean).join(' · '))
   setAttr(el, 'aria-label', `${lane.agent} in ${lane.project}: ${lane.doing}`)
+  // #306: the heartbeat trace, static and redrawn only when its bars change
+  const trace = el.querySelector('.dash-lane-trace')
+  const calls = lane.trace.reduce((sum, count) => sum + count, 0)
+  setHidden(trace, !calls)
+  setAttr(trace.querySelector('path'), 'd', tracePath(lane.trace))
+  setAttr(trace.querySelector('svg'), 'aria-label', `${plural(calls, 'MCP call')} in the last 30 minutes`)
+  setText(trace.querySelector('.dash-lane-trace-count'), `${calls} in 30m`)
   const plan = el.querySelector('.dash-lane-plan')
   setHidden(plan, !lane.plan)
   if (lane.plan) {

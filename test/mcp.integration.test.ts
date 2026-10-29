@@ -233,6 +233,67 @@ describe('mcp round-trip', () => {
     }
   })
 
+  // Issue #306: every tool call counts into the session's trace, and a board
+  // write stamps the plan with the same session id its presence row carries.
+  it('tool calls fill the call trace and board writes stamp the plan with this session (#306)', async () => {
+    const dbPath = join(scratchDir('mcp-trace-'), 'inbox.db')
+    const transport = new StdioClientTransport({
+      command: join(REPO_ROOT, 'node_modules', '.bin', 'tsx'),
+      args: [join(REPO_ROOT, 'src', 'mcp-server.ts')],
+      env: { ...process.env, AGENT_INBOX_DB: dbPath },
+    })
+    const client = new Client({ name: 'copilot', version: '1.0.0' })
+    await client.connect(transport)
+    const text = async (name: string, args: Record<string, unknown>) => {
+      const result = await client.callTool({ name, arguments: args })
+      expect(result.isError, JSON.stringify(result)).not.toBe(true)
+      return (result.content as Array<{ text: string }>)[0]!.text
+    }
+    const call = async (name: string, args: Record<string, unknown>) => JSON.parse(await text(name, args))
+    const db = openDb(dbPath)
+    try {
+      await call('register', { project: 'trace', stream: 'main' })
+      for (let i = 0; i < 3; i++) await call('pending', {})
+      await call('board_upsert', { title: 'plan', rows: [{ label: 'a', status: 'tracked' }] })
+      const [live] = listActivity(db)
+      const total = (live!.calls ?? []).reduce((sum, count) => sum + count, 0)
+      // register, three polls and the upsert; a call that lands on the next
+      // minute starts a new bucket, so the sum is what counts
+      expect(total).toBe(5)
+      expect(live!.calls_at).toBe(Math.floor(Date.now() / 60_000))
+      expect(getBoard(db, 'trace', 'plan')!.session).toBe(live!.session)
+
+      // a board_row from another server process moves the plan to that session
+      const other = new Client({ name: 'claude-code', version: '1.0.0' })
+      await other.connect(new StdioClientTransport({
+        command: join(REPO_ROOT, 'node_modules', '.bin', 'tsx'),
+        args: [join(REPO_ROOT, 'src', 'mcp-server.ts')],
+        env: { ...process.env, AGENT_INBOX_DB: dbPath },
+      }))
+      try {
+        await other.callTool({ name: 'register', arguments: { project: 'trace', stream: 'main' } })
+        const plan = getBoard(db, 'trace', 'plan')!
+        await other.callTool({ name: 'board_row', arguments: {
+          title: 'plan', board_version: plan.revision, label: 'a', expected_revision: plan.rows[0]!.revision, status: 'partial',
+        } })
+        const second = listActivity(db).find((row) => row.session !== live!.session)!
+        expect(getBoard(db, 'trace', 'plan')).toMatchObject({ session: second.session, revision: plan.revision + 1 })
+      } finally {
+        await other.close()
+      }
+
+      // agents never read it back
+      for (const [name, args] of [['board_get', { title: 'plan' }], ['board_get', { title: 'plan', full: true }], ['board_get', {}], ['pending', {}]] as const) {
+        const body = await text(name, args)
+        expect(body, name).not.toContain(live!.session)
+        expect(body, name).not.toContain('"session"')
+      }
+    } finally {
+      await client.close()
+      db.close()
+    }
+  }, 20000)
+
   it('returns a host-launched answer watcher only for Copilot questions', async () => {
     const dbPath = join(scratchDir('mcp-copilot-watch-'), 'inbox.db')
     const transport = new StdioClientTransport({

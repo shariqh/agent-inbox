@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { QUIET_MS, buildLanes, calledLanes, pinLaneOrder } from '../public/lanes.js'
+import { QUIET_MS, TRACE_MINUTES, buildLanes, calledLanes, callTrace, pinLaneOrder, tracePath } from '../public/lanes.js'
 import { attentionEntries, sortRail } from '../public/attention.js'
 import type { Lane } from '../public/lanes.js'
 
@@ -121,7 +121,7 @@ describe('lane order and motion (#304, proposal §10)', () => {
   it('pulses a lane only when its last call moves forward, and sweeps the newest of those', () => {
     const lane = (id: string, sinceMs: number): Lane => ({
       session: id, project: 'alpha', branch: 'main', agent: 'copilot', doing: 'x', detail: '', lastCallAt: ago(sinceMs),
-      sinceMs, quiet: false, children: [], plan: null, asks: [], waiting: null,
+      sinceMs, quiet: false, children: [], plan: null, trace: [], asks: [], waiting: null,
     })
     const drawn = [lane('moved', 2000), lane('newest', 1000), lane('same', 60_000), lane('new-lane', 500)]
     const seen = new Map([['moved', ago(30_000)], ['newest', ago(30_000)], ['same', ago(60_000)]])
@@ -130,5 +130,60 @@ describe('lane order and motion (#304, proposal §10)', () => {
     expect(calledLanes(new Map(), drawn)).toEqual({ pulse: new Set(), sweep: null })
     // A clock moved back never reads as a new call.
     expect(calledLanes(new Map([['same', ago(0)]]), [lane('same', 60_000)])).toEqual({ pulse: new Set(), sweep: null })
+  })
+})
+
+describe('heartbeat trace and the session-to-plan link (#306)', () => {
+  const MINUTE = Math.floor(NOW / MIN)
+
+  it('rolls the stored buckets to the clock: newest last, older ones shifted, expired ones gone', () => {
+    expect(TRACE_MINUTES).toBe(30)
+    const zeros = Array<number>(30).fill(0)
+    expect(callTrace(session('s'), NOW)).toEqual(zeros)
+    const stored = session('s', { calls: [3, 0, 1], calls_at: MINUTE })
+    expect(callTrace(stored, NOW)).toEqual([...zeros.slice(3), 3, 0, 1])
+    // two minutes on with no call, the same buckets sit two minutes back
+    expect(callTrace(stored, NOW + 2 * MIN)).toEqual([...zeros.slice(5), 3, 0, 1, 0, 0])
+    // a bucket that has left the window is dropped, and so is everything 30 minutes on
+    expect(callTrace(stored, NOW + 28 * MIN)).toEqual([0, 1, ...zeros.slice(2)])
+    expect(callTrace(stored, NOW + 30 * MIN)).toEqual(zeros)
+    // a newest minute ahead of the clock counts as now; a malformed trace draws nothing
+    expect(callTrace(session('s', { calls: [2], calls_at: MINUTE + 90 }), NOW)).toEqual([...zeros.slice(1), 2])
+    expect(callTrace(session('s', { calls: 'x', calls_at: MINUTE }), NOW)).toEqual(zeros)
+    expect(lanesOf([stored]).lanes[0]!.trace).toEqual(callTrace(stored, NOW))
+  })
+
+  it('draws bars scaled to the busiest minute, and nothing for an empty trace', () => {
+    expect(tracePath(Array<number>(30).fill(0))).toBe('')
+    const trace = [...Array<number>(27).fill(0), 4, 0, 1]
+    expect(tracePath(trace)).toBe('M54 12v-12h1.5v12zM58 12v-3h1.5v3z')
+    // a single call among many still shows
+    expect(tracePath([...Array<number>(28).fill(0), 999, 1])).toBe('M56 12v-12h1.5v12zM58 12v-1h1.5v1z')
+  })
+
+  it('puts a plan on the lane its session stamped, ahead of the project, branch and agent join', () => {
+    const boards = [
+      plan('joined', ago(0), [{ status: 'done' }]),
+      plan('stamped', ago(30 * MIN), [{ status: 'partial' }], { session: 's', stream: 'elsewhere', agent: 'claude-code' }),
+      plan('stamped-older', ago(60 * MIN), [{ status: 'partial' }], { session: 's' }),
+    ]
+    expect(lanesOf([session('s')], boards).lanes[0]!.plan?.id).toBe('stamped')
+    expect(lanesOf([session('t')], boards).lanes[0]!.plan?.id).toBe('joined')
+  })
+
+  it('never joins a plan another working session stamped; a stamp whose session is idle or gone joins as before', () => {
+    const boards = [
+      plan('theirs', ago(0), [{ status: 'done' }], { session: 'other' }),
+      plan('older', ago(10 * MIN), [{ status: 'done' }]),
+    ]
+    const both = lanesOf([session('s'), session('other', { stream: 'feature' })], boards).lanes
+    expect(both.find((lane) => lane.session === 's')!.plan?.id).toBe('older')
+    expect(both.find((lane) => lane.session === 'other')!.plan?.id).toBe('theirs')
+    // a plan an open but idle session stamped shows on the working lane on its branch
+    expect(lanesOf([session('s'), session('other', { idle: true })], boards).lanes[0]!.plan?.id).toBe('theirs')
+    // so does one stamped by a session whose claim went cold
+    expect(lanesOf([session('s'), session('other', { last_call_at: ago(40 * MIN) })], boards).lanes[0]!.plan?.id).toBe('theirs')
+    // once `other` is gone, its stamp no longer keeps the plan from the join
+    expect(lanesOf([session('s')], boards).lanes[0]!.plan?.id).toBe('theirs')
   })
 })

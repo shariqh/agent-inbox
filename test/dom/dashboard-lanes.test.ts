@@ -4,6 +4,8 @@
 // pointer and a background window never stop them or pull focus; the Now strip
 // reads the lanes' own model; and nothing here reaches attention.
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import type Database from 'better-sqlite3'
 import { getBoard, getItem, insertItem, recordActivityCall, snoozeItem, touchActivity, upsertActivity, upsertBoard } from '../../src/store.js'
 import { attentionEntries, sortRail } from '../../public/attention.js'
@@ -415,6 +417,71 @@ describe('the Dashboard element budget (#304, proposal §10)', () => {
   })
 })
 
+describe('heartbeat trace and the session-to-plan link (#306)', () => {
+  const spark = (session: string) => lane(session)!.querySelector<SVGPathElement>('.dash-lane-spark path')!
+  const traceCount = (session: string) => lane(session)!.querySelector('.dash-lane-trace-count')?.textContent
+
+  it('draws the 30-minute trace as a static path, redrawn in place by a call and by the clock alone', async () => {
+    const d = open()
+    work(d, 'busy', 'Step one')
+    recordActivityCall(d, 'busy')
+    recordActivityCall(d, 'busy')
+    await bootApp(d)
+    const path = spark('busy')
+    const first = path.getAttribute('d')
+    expect(first).toMatch(/^M58 12v-12h1\.5v12z$/)
+    expect(traceCount('busy')).toBe('3 in 30m')
+    expect(lane('busy')!.querySelector('.dash-lane-spark')?.getAttribute('aria-label')).toBe('3 MCP calls in the last 30 minutes')
+    expect(lane('busy')!.querySelector<HTMLElement>('.dash-lane-trace')!.hidden).toBe(false)
+
+    // a call two minutes on adds a bar to the same path; the old one moves back
+    advanceClock(2 * MIN)
+    recordActivityCall(d, 'busy')
+    await pollTick()
+    expect(spark('busy')).toBe(path)
+    expect(path.getAttribute('d')).toBe('M54 12v-12h1.5v12zM58 12v-4h1.5v4z')
+    expect(traceCount('busy')).toBe('4 in 30m')
+
+    // with no call, the clock alone rolls the bars back once the frame is repainted
+    advanceClock(2 * MIN)
+    await pollTick()
+    expect(spark('busy')).toBe(path)
+    expect(path.getAttribute('d')).toBe('M50 12v-12h1.5v12zM54 12v-4h1.5v4z')
+
+    // nothing about it is animated: no SMIL, no animation class, no CSS animation on it
+    expect(lane('busy')!.querySelector('animate, animateTransform, animateMotion')).toBeNull()
+    const css = readFileSync(join(process.cwd(), 'public', 'style.css'), 'utf8')
+    const rules = css.match(/[^}]*\.dash-lane-(?:spark|trace)[^{]*\{[^}]*\}/g) ?? []
+    expect(rules.length).toBeGreaterThan(0)
+    for (const rule of rules) expect(rule).not.toMatch(/animation|transition/)
+  })
+
+  it('puts the plan a session stamped on its lane, ahead of the project, branch and agent join', async () => {
+    const d = open()
+    work(d, 'one', 'First lane')
+    work(d, 'two', 'Second lane')
+    upsertBoard(d, { ...A, title: 'Two plan', session: 'two', rows: [{ label: 'Build', status: 'done' }, { label: 'Ship', status: 'missing' }] })
+    advanceClock()
+    upsertBoard(d, { ...A, title: 'Shared plan', rows: [{ label: 'Build', status: 'missing' }] })
+    await bootApp(d)
+    const title = (session: string) => lane(session)!.querySelector('.dash-lane-plan-title')?.textContent
+    // `two` stamped its plan; `one` joins the newest plan nobody present stamped
+    expect(title('two')).toBe('Two plan')
+    expect(title('one')).toBe('Shared plan')
+
+    // `one` writes `two`'s plan: it moves to `one`'s lane, and `two` joins what is left
+    advanceClock()
+    const plan = getBoard(d, 'alpha', 'Two plan')!
+    upsertBoard(d, {
+      ...A, title: 'Two plan', session: 'one', expectedVersion: plan.revision,
+      rows: plan.rows.map((row) => ({ label: row.label, status: row.status, revision: row.revision })),
+    })
+    await pollTick()
+    expect(title('one')).toBe('Two plan')
+    expect(title('two')).toBe('Shared plan')
+  })
+})
+
 describe('attention parity with lanes present (#304)', () => {
   const surfaces = async () => {
     const dock = await fetch('/api/items?scope=attention')
@@ -440,12 +507,13 @@ describe('attention parity with lanes present (#304)', () => {
     await bootApp(d, { interceptFetch: async (input, _init, next) => { reads.add(String(input).split('?')[0]!); return next() } })
     const before = await surfaces()
 
-    // Only what lanes draw moves: the claim, its detail, subagents, the plan's progress, quiet time.
+    // Only what lanes draw moves: the claim, its detail, subagents, the plan's
+    // progress, quiet time, the call trace and (#306) the plan's session stamp.
     advanceClock(6 * MIN)
     work(d, 'asker', 'Step two', { detail: 'more', children: [{ name: 'helper', doing: 'Helping' }] })
     const plan = getBoard(d, 'alpha', 'Plan')!
     upsertBoard(d, {
-      ...A, title: 'Plan', expectedVersion: plan.revision,
+      ...A, title: 'Plan', expectedVersion: plan.revision, session: 'asker',
       rows: [
         { label: 'Build', status: 'done', revision: plan.rows[0]!.revision },
         { label: 'Test', status: 'missing', revision: plan.rows[1]!.revision },
@@ -457,6 +525,7 @@ describe('attention parity with lanes present (#304)', () => {
 
     expect(laneIds()).toEqual(['asker', 'second'])
     expect(lane('asker')!.querySelector('.dash-lane-plan-count')?.textContent).toBe('1/2')
+    expect(lane('asker')!.querySelector('.dash-lane-trace-count')?.textContent).toBe('2 in 30m')
     expect(await surfaces()).toEqual(before)
     // The lane's ask is the attention set's own, and a snoozed one is not drawn.
     const asks = sortRail(attentionEntries([getItem(d, asked)!, getItem(d, snoozed)!], [], Date.now(), ['asker', 'second']), Date.now())

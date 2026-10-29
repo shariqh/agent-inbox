@@ -27,15 +27,58 @@ export function isWorking(row, nowMs) {
 
 const doingText = (value) => typeof value === 'string' && value.trim() && value.trim() !== 'open' ? value.trim() : ''
 
-// D4: the session's plan is the most recently updated active plan with the same
-// project, branch (`stream`) and agent. Phase 4 may stamp it instead.
-export function linkedPlan(row, boards) {
-  let best = null
+// #306: a plan stamped with this session (`boards.session`, the MCP session
+// that last wrote it) is its plan, the most recently updated one when several
+// are. Otherwise D4's join: the most recently updated active plan with the same
+// project, branch (`stream`) and agent, leaving out any plan stamped with
+// another session that is still WORKING, which is that session's own lane's
+// plan. A stamp naming a session that is idle or gone (or none, from an older
+// server) joins, so an idle session's plan never drops off every lane.
+export function linkedPlan(row, boards, working = new Set()) {
+  let stamped = null
+  let joined = null
+  const newer = (board, best) => !best || String(board.updated_at ?? '') > String(best.updated_at ?? '')
   for (const board of boards ?? []) {
+    if (board.session && board.session === row.session) {
+      if (newer(board, stamped)) stamped = board
+      continue
+    }
+    if (board.session && working.has(board.session)) continue
     if (board.project !== row.project || board.stream !== row.stream || board.agent !== row.agent) continue
-    if (!best || String(board.updated_at ?? '') > String(best.updated_at ?? '')) best = board
+    if (newer(board, joined)) joined = board
   }
-  return best
+  return stamped ?? joined
+}
+
+// #306: the session's MCP calls over the last 30 minutes, oldest first, one
+// count a minute ending at the current one. /api/activity carries the stored
+// buckets (`calls`, the last counting minute `calls_at`); the clock rolls them
+// here, so the bytes change only with a call. A `calls_at` ahead of the clock
+// counts as now, as the store does.
+export const TRACE_MINUTES = 30
+
+export function callTrace(row, nowMs) {
+  const trace = new Array(TRACE_MINUTES).fill(0)
+  const counts = Array.isArray(row?.calls) ? row.calls : []
+  if (!Number.isInteger(row?.calls_at) || !counts.length) return trace
+  const shift = Math.max(0, Math.floor(nowMs / 60_000) - row.calls_at)
+  counts.forEach((count, index) => {
+    const at = TRACE_MINUTES - 1 - shift - (counts.length - 1 - index)
+    if (at >= 0 && at < TRACE_MINUTES && Number.isFinite(count) && count > 0) trace[at] = count
+  })
+  return trace
+}
+
+// The trace drawn as one SVG path of bars on a 60 × 12 box, scaled to its
+// busiest minute: static, so it redraws by attribute and never animates.
+export function tracePath(trace) {
+  const peak = Math.max(0, ...trace)
+  if (!peak) return ''
+  return trace.map((count, index) => {
+    if (!count) return ''
+    const height = Math.max(1, Math.round((count / peak) * 120) / 10)
+    return `M${index * 2} 12v-${height}h1.5v${height}z`
+  }).join('')
 }
 
 // The plan's bar: done, in progress, waiting on you (the attention predicate's
@@ -67,11 +110,12 @@ const askMs = (entry) => {
 export function buildLanes({ activity, boards, asks, nowMs }) {
   const lanes = []
   let idle = 0
+  const working = new Set((activity ?? []).filter((row) => isWorking(row, nowMs)).map((row) => row.session))
   for (const row of activity ?? []) {
     if (!isWorking(row, nowMs)) { idle += 1; continue }
     const at = callAt(row)
     const sinceMs = Math.max(0, nowMs - at)
-    const board = linkedPlan(row, boards)
+    const board = linkedPlan(row, boards, working)
     const laneAsks = (asks ?? []).filter((entry) => entry.kind === 'item'
       ? entry.item.session === row.session
       : Boolean(board) && entry.board.id === board.id)
@@ -90,6 +134,7 @@ export function buildLanes({ activity, boards, asks, nowMs }) {
       children: (Array.isArray(row.children) ? row.children : [])
         .map((child) => ({ name: String(child?.name ?? ''), doing: doingText(child?.doing) })),
       plan: board ? planBar(board, nowMs) : null,
+      trace: callTrace(row, nowMs),
       asks: laneAsks,
       waiting: oldest ? { entry: oldest, ms: Number.isFinite(askMs(oldest)) ? Math.max(0, nowMs - askMs(oldest)) : 0 } : null,
     })

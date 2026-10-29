@@ -1951,6 +1951,10 @@ body.settings-open #liveBar { opacity: .32; }
 .dash-lane.quiet .dash-lane-recency { padding: 0 6px; border-radius: 999px; background: color-mix(in srgb, var(--app-plan) 16%, transparent); color: var(--app-text); }
 .dash-lane-detail { overflow: hidden; color: var(--app-muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .dash-lane-meta { color: var(--app-text-soft); font-size: 11px; }
+.dash-lane-trace { display: flex; align-items: center; gap: 8px; color: var(--app-text-soft); font-size: 11px; }
+.dash-lane-spark { width: 140px; height: 14px; flex: none; border-bottom: 1px solid var(--app-border-strong); }
+.dash-lane-spark path { fill: var(--lane-color, var(--app-text-soft)); }
+.dash-lane-trace-count { font-variant-numeric: tabular-nums; }
 .dash-lane-plan { display: flex; min-width: 0; align-items: center; gap: 8px; font-size: 11px; }
 .dash-lane-bar { display: flex; width: 140px; height: 6px; flex: none; gap: 2px; }
 .dash-lane-bar > span { min-width: 4px; border-radius: 2px; }

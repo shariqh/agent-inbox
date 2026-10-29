@@ -54,6 +54,7 @@ import {
 } from '../src/store.js'
 import type { BoardRow, BoardWithRows, RowStatus } from '../src/store.js'
 import { scratchDir } from './scratch.js'
+import { livenessTick } from '../src/mcp.js'
 
 function freshDb(): Database.Database {
   const dir = scratchDir('inbox-')
@@ -1379,6 +1380,174 @@ describe('live activity — the server build a session registered with (#197)', 
     expect(row()).toMatchObject({ server_version: null, server_source: null })
     register(BUILD)
     expect(row()).toMatchObject(BUILD)
+  })
+})
+
+// ── #306: the per-session call trace, 30 one-minute buckets on the activity row ──
+describe('live activity — the call trace (#306)', () => {
+  let db: Database.Database
+  // a minute boundary, so `minute(n)` is exactly n minutes in
+  const START = Date.parse('2026-10-28T09:00:00.000Z')
+  const MINUTE = Math.floor(START / 60_000)
+  const at = (minutes: number, seconds = 0): void => { vi.setSystemTime(START + minutes * 60_000 + seconds * 1000) }
+  const SCOPE = { session: 's1', project: 'agent-inbox', stream: 'main', agent: 'copilot' } as const
+
+  beforeEach(() => {
+    db = freshDb()
+    vi.useFakeTimers()
+    at(0)
+    upsertActivity(db, { ...SCOPE, doing: 'open', idle: true, claim: false })
+  })
+  afterEach(() => { vi.useRealTimers() })
+
+  const row = () => listActivity(db).find((a) => a.session === 's1')!
+  const stored = () => db.prepare(`SELECT call_minute, call_counts FROM activity WHERE session = 's1'`).get()
+  const calls = (n: number): void => { for (let i = 0; i < n; i++) recordActivityCall(db, 's1') }
+
+  it('only a real call counts: registration, claims, the liveness tick and livenessTick never write a bucket', () => {
+    expect(row()).not.toHaveProperty('calls')
+    upsertActivity(db, { ...SCOPE, doing: 'Shipping', detail: 'step 1' })
+    touchActivity(db, 's1')
+    livenessTick(db, 's1')
+    expect(stored()).toEqual({ call_minute: null, call_counts: null })
+    calls(3)
+    expect(row()).toMatchObject({ calls: [3], calls_at: MINUTE })
+    const counted = stored()
+    // twelve modelled hours of liveness ticks move liveness and never the trace
+    for (let tick = 1; tick <= 144; tick++) {
+      at(tick * 5)
+      touchActivity(db, 's1')
+      livenessTick(db, 's1')
+      upsertActivity(db, { ...SCOPE, doing: 'open', idle: true, claim: false })
+    }
+    expect(stored()).toEqual(counted)
+  })
+
+  it('rolls forward a minute at a time, fills gaps with zeros and keeps 30 minutes at most', () => {
+    calls(3)
+    at(1, 30)
+    calls(1)
+    expect(row()).toMatchObject({ calls: [3, 1], calls_at: MINUTE + 1 })
+    at(6)
+    calls(2)
+    expect(row()).toMatchObject({ calls: [3, 1, 0, 0, 0, 0, 2], calls_at: MINUTE + 6 })
+    // 29 minutes on, the first bucket is still in the window; 30 drops it
+    at(29)
+    calls(1)
+    expect(row().calls).toEqual([3, 1, 0, 0, 0, 0, 2, ...Array(22).fill(0), 1])
+    at(30)
+    calls(1)
+    expect(row().calls).toEqual([1, 0, 0, 0, 0, 2, ...Array(22).fill(0), 1, 1])
+    // a call every minute for 100 minutes never stores more than 30 buckets
+    for (let m = 31; m < 131; m++) { at(m); calls(1) }
+    expect(row()).toMatchObject({ calls: Array(30).fill(1), calls_at: MINUTE + 130 })
+    // leading zeros are dropped, so a quiet stretch shrinks the stored text
+    at(150)
+    calls(1)
+    expect(row().calls).toEqual([1, 1, 1, 1, 1, 1, 1, 1, 1, 1, ...Array(19).fill(0), 1])
+    // a gap of the whole window or more starts over
+    at(180)
+    calls(2)
+    expect(row()).toMatchObject({ calls: [2], calls_at: MINUTE + 180 })
+    expect(stored()).toEqual({ call_minute: MINUTE + 180, call_counts: '2' })
+  })
+
+  it('a clock moved back counts the stored minute as now; one moved forward by days starts over', () => {
+    calls(2)
+    at(1)
+    calls(1)
+    at(-120) // NTP stepped the clock back two hours
+    calls(1)
+    expect(row()).toMatchObject({ calls: [2, 2], calls_at: MINUTE - 120 })
+    at(-119)
+    calls(1)
+    expect(row()).toMatchObject({ calls: [2, 2, 1], calls_at: MINUTE - 119 })
+    at(3 * 24 * 60)
+    calls(1)
+    expect(row()).toMatchObject({ calls: [1], calls_at: MINUTE + 3 * 24 * 60 })
+  })
+
+  it('is served only while its newest bucket is inside the window, and a count saturates at 999', () => {
+    calls(1200)
+    expect(row().calls).toEqual([999])
+    at(29, 59)
+    touchActivity(db, 's1') // the presence row itself lasts only while its liveness tick runs
+    expect(row()).toMatchObject({ calls: [999], calls_at: MINUTE })
+    at(30)
+    expect(row()).not.toHaveProperty('calls')
+    expect(row()).not.toHaveProperty('calls_at')
+  })
+
+  it('an unreadable stored trace reads as none, and the next call starts over', () => {
+    calls(1)
+    db.prepare(`UPDATE activity SET call_counts = 'x,1' WHERE session = 's1'`).run()
+    expect(row()).not.toHaveProperty('calls')
+    calls(1)
+    expect(row()).toMatchObject({ calls: [1], calls_at: MINUTE })
+  })
+
+  it('a call for a session with no row, or an ended one, writes nothing', () => {
+    recordActivityCall(db, 'nobody')
+    endActivity(db, 's1')
+    recordActivityCall(db, 's1')
+    expect(db.prepare(`SELECT COUNT(*) FROM activity WHERE call_counts IS NOT NULL`).pluck().get()).toBe(0)
+  })
+})
+
+// ── #306: boards.session, the MCP session that last wrote the plan ──────────
+describe('boards.session (#306)', () => {
+  let db: Database.Database
+  beforeEach(() => {
+    db = freshDb()
+    vi.useFakeTimers()
+    vi.setSystemTime(Date.parse('2026-10-28T09:00:00.000Z'))
+  })
+  afterEach(() => { vi.useRealTimers() })
+
+  const PLAN = { project: 'p', stream: 'main', agent: 'copilot', title: 'Plan' } as const
+  const plan = () => boardState(db, 'p', 'Plan')!
+
+  it('board writes stamp the writing session; another session’s write moves it; omission and null keep it; "" clears it', () => {
+    upsertBoard(db, { ...PLAN, session: 'mcp-a', rows: [{ label: 'a', status: 'tracked' }] })
+    expect(plan().session).toBe('mcp-a')
+    updateBoardRow(db, { ...PLAN, session: 'mcp-b', label: 'a', status: 'partial' })
+    expect(plan().session).toBe('mcp-b')
+    upsertBoard(db, { ...PLAN, session: 'mcp-a', rows: [{ label: 'a', status: 'partial' }] })
+    expect(plan().session).toBe('mcp-a')
+    upsertBoard(db, { ...PLAN, rows: [{ label: 'a', status: 'done' }, { label: 'b', status: 'tracked' }] })
+    updateBoardRow(db, { ...PLAN, session: null, label: 'b', status: 'partial' })
+    expect(plan().session).toBe('mcp-a')
+    updateBoardRow(db, { ...PLAN, session: '', label: 'b', status: 'tracked' })
+    expect(plan().session).toBeNull()
+    // a plan created by a single board_row is stamped too; one written with no session has none
+    updateBoardRow(db, { ...PLAN, title: 'Row-made', session: 'mcp-c', label: 'x', status: 'tracked' })
+    expect(boardState(db, 'p', 'Row-made')!.session).toBe('mcp-c')
+    upsertBoard(db, { ...PLAN, title: 'Legacy', rows: [] })
+    expect(boardState(db, 'p', 'Legacy')!.session).toBeNull()
+  })
+
+  it('a change of writer alone is not content: neither the board revision nor updated_at moves', () => {
+    upsertBoard(db, { ...PLAN, session: 'mcp-a', rows: [{ label: 'a', status: 'tracked' }] })
+    const before = plan()
+    vi.setSystemTime(Date.parse('2026-10-28T09:05:00.000Z'))
+    upsertBoard(db, { ...PLAN, session: 'mcp-b', rows: [{ label: 'a', status: 'tracked' }] })
+    updateBoardRow(db, { ...PLAN, session: 'mcp-c', label: 'a', status: 'tracked' })
+    expect(plan()).toMatchObject({ session: 'mcp-c', revision: before.revision, updated_at: before.updated_at })
+  })
+
+  it('board_advance and the human’s writes leave it alone', () => {
+    upsertBoard(db, {
+      ...PLAN, session: 'mcp-a',
+      rows: [{ label: 'a', status: 'blocked', note: 'Ready.', next_step: 'Approve.', action_owner: 'task', impact: 'Ships.' }],
+    })
+    const board = plan()
+    annotateBoardRow(db, board.rows[0]!.id, 'done', 'answer', board.rows[0]!.revision, board.revision)
+    const now = plan()
+    expect(advanceBoardRow(db, {
+      project: 'p', title: 'Plan', label: 'a', agent: 'claude-code', expectedBoardVersion: now.revision,
+      expectedRevision: now.rows[0]!.revision, note: 'Next.', next_step: 'Approve again.', action_owner: 'task', impact: 'Ships.',
+    }).ok).toBe(true)
+    expect(plan().session).toBe('mcp-a')
   })
 })
 

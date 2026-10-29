@@ -2120,7 +2120,12 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   only, from one native thin app carrying the `darwin-arm64` runtime, with no
   `@electron/universal` merge, x64 runtime or native Intel gate, so a universal kind can no
   longer pass; the assembly also requires every Electron Mach-O to hold exactly that set
-  (`verifyMachOArchitectures`). 1.x-last is v1.8.0: every release from 2.0.0 re-stamps its
+  (`verifyMachOArchitectures`). *(#383)* That sweep finds each Mach-O by its magic bytes,
+  read in-process (never `file`, which reads fat64 as data and can fail or time out), and a
+  file it cannot read fails the build. The notarize job re-checks the restored app against
+  the sign job's Developer ID report (its fields, the app's tree identity, bundle version
+  and signing identity) before zipping it for notarization (`verify-developer-id`).
+  1.x-last is v1.8.0: every release from 2.0.0 re-stamps its
   `update-manifest.json`, and its notes name it for Intel Macs, found by `verify-handoff`'s
   `intel-release` in GitHub's listing with the G6 rule (`newestUniversalRelease`), never a
   constant. Aggregation writes only v2. The sign job's YAML only moves files between

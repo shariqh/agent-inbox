@@ -145,7 +145,9 @@ is built for Apple silicon only: one arm64 runtime, one thin app, no universal m
 5. Finalize a copy of the thin app. Every Electron Mach-O, helper, framework and
    `better_sqlite3.node` must hold exactly the expected CPU types (`macosArchitectures`,
    below), and every Mach-O of the `Contents/Resources/app/runtime/darwin-arm64` tree
-   exactly arm64, so a universal or Intel slice fails the build.
+   exactly arm64, so a universal or Intel slice fails the build. The sweep finds every
+   Mach-O by its magic bytes (thin 32- and 64-bit in either byte order, fat and fat64),
+   read in-process, and a file it cannot read fails the build (#383).
 6. Launch the provisional app from its DMG as a French user (`-AppleLanguages '(fr)'`)
    and then as a British one (`'(en-GB)'`), and require its hardened loopback marker,
    every renderer's `--lang` (`en-US`, then `en-GB`) and, read from the page over
@@ -440,8 +442,12 @@ The credentialed sequence is intentionally split:
    Only the app archive and its verification report cross the job boundary; the
    provisional DMG is discarded. There is no native Intel job: #296 removed it with the
    x64 runtime it checked.
-3. Submit a `ditto` ZIP of the exact app archive. Require an `Accepted` app ticket and
-   matching notary log before stapling or validating the app.
+3. Re-check the restored app against that report (`verify-developer-id`, #383): it must
+   describe a clean (`sourceDirty: false`), notary-eligible Developer ID build of the
+   authorized source and version, the app's complete tree identity must still match it,
+   and the app must carry that bundle version and the configured Developer ID authority
+   and Team ID. Then submit a `ditto` ZIP of the exact app archive. Require an `Accepted`
+   app ticket and matching notary log before stapling or validating the app.
 4. Build the final DMG from that stapled app, sign the DMG, submit it separately, and
    require a distinct `Accepted` DMG ticket before stapling and validating the DMG. The
    DMG's name comes from the expected macOS kind (below), never from a constant.

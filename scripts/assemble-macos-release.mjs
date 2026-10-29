@@ -2,12 +2,16 @@
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import {
+  closeSync,
+  constants,
   cpSync,
   existsSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readFileSync,
+  readSync,
   readdirSync,
   renameSync,
   rmSync,
@@ -63,16 +67,32 @@ function walkFiles(root) {
   return files.sort()
 }
 
+// A Mach-O's first four bytes, read big-endian: a thin 32- or 64-bit header in either byte
+// order, or a fat or fat64 header, which is always big-endian.
+const THIN_MACHO_MAGICS = new Set([0xfeedface, 0xcefaedfe, 0xfeedfacf, 0xcffaedfe])
+const FAT_MAGIC = 0xcafebabe
+const FAT_MAGIC_64 = 0xcafebabf
+
+// Read in-process, not with `file`, which reports a fat64 binary as data and can fail or time
+// out, leaving the file unchecked. A file this cannot read fails the build (#383).
 function isMachO(path) {
+  const header = Buffer.alloc(8)
+  let fd
+  let length
   try {
-    return execFileSync('/usr/bin/file', ['-b', path], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: 5000,
-    }).includes('Mach-O')
-  } catch {
-    return false
+    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+    length = readSync(fd, header, 0, header.length, 0)
+  } catch (err) {
+    throw new MacReleaseError(`could not read ${path} to look for a Mach-O header: ${err.message}`)
+  } finally {
+    if (fd !== undefined) closeSync(fd)
   }
+  if (length < 4) return false
+  const magic = header.readUInt32BE(0)
+  if (THIN_MACHO_MAGICS.has(magic) || magic === FAT_MAGIC_64) return true
+  // A Java class file starts with the fat magic too, then its version (major 45 or later)
+  // where a fat header holds its architecture count.
+  return magic === FAT_MAGIC && (length < 8 || header.readUInt32BE(4) < 45)
 }
 
 function lipoArchs(path) {

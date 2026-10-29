@@ -77,6 +77,11 @@ export interface ViewerOpts {
   /** issue #294: how one runtime folder is measured, injected so a test can
    *  count the manifest reads and walks its cache exists to avoid. */
   runtimeMeasurer?: RuntimeMeasurer
+  /** Mesh M1 (#397): whether `mesh.json` turns the Agents view on, as the
+   *  viewer process's stat watch last read it (src/mesh-config.ts, started by
+   *  viewer-server.ts). Absent or false, /api/version is byte-identical to a
+   *  build without the mesh. */
+  meshAgentsView?: () => boolean
 }
 
 /** Split a fixed `darwin-arm64`/`darwin-x64` runtime key into platform/arch —
@@ -473,6 +478,8 @@ interface AgentVersion {
   runtimeInstalled: boolean | null
   updatable: boolean
   hosts: { claude: HostVersion; copilot: HostVersion }
+  /** Mesh M1 (#397): present only while mesh.json turns the Agents view on. */
+  mesh?: { agentsView: true }
 }
 
 type HostVersion = Pick<HostRegistration, 'kind' | 'version'>
@@ -886,8 +893,11 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
     const baked = readBakedInfo(bakedPath)
     const registered = agentHosts(baked)
     const hosts = { claude: hostVersion(registered.claude), copilot: hostVersion(registered.copilot) }
+    // Mesh M1 (#397, design §2.4b): the one key that tells the page the mesh
+    // is on, appended last and only while it is, so "off" keeps today's bytes.
+    const mesh = opts.meshAgentsView?.() === true ? { mesh: { agentsView: true as const } } : {}
     if (baked?.schema !== 2) {
-      return c.json({ current: AGENT_INBOX_VERSION, mode: 'dev', runtimeInstalled: null, updatable: false, hosts } satisfies AgentVersion)
+      return c.json({ current: AGENT_INBOX_VERSION, mode: 'dev', runtimeInstalled: null, updatable: false, hosts, ...mesh } satisfies AgentVersion)
     }
     const lookup = releaseRuntime(baked)
     return c.json({
@@ -896,6 +906,7 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
       runtimeInstalled: lookup?.runtime ? true : lookup?.source ? false : null,
       updatable: canUpdateAgents(baked, lookup),
       hosts,
+      ...mesh,
     } satisfies AgentVersion)
   })
 

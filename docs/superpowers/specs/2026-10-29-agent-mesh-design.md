@@ -125,10 +125,13 @@ writes the host config atomically with a backup; `uninstall-bridge` removes only
 ### 2.3 What changes in the shipped app, exactly
 
 - **App package (`package.json`, `src/`, `public/`, `dist/`):** new files `src/registry-server.ts`,
-  `src/mesh-store.ts`, `src/mesh-console.ts`, `src/mesh-relay.ts`, `src/meshctl.ts` and
+  `src/mesh-store.ts`, `src/mesh-console.ts`, `src/mesh-relay.ts`, `src/meshctl.ts`,
+  `src/mesh-config.ts` (M1: the shared `mesh.json` reader and the viewer's stat watch) and
   `public/mesh-view.js`; two new `bin` entries, `agent-inbox-registry` and `agent-inbox-meshctl`.
   They use only Node core, `hono`, `@hono/node-server` and `better-sqlite3`, which the app already
-  ships. **`package-lock.json` does not change.** `meshctl` lives here because M1 needs it and it
+  ships. **The dependency graph in `package-lock.json` does not change.** npm's lockfile v3
+  records the root package's `bin` map in its root entry (`packages[""]`), so each new `bin`
+  entry adds one line there and nothing else. `meshctl` lives here because M1 needs it and it
   needs nothing new.
 - **Runtime payload:** the same `dist/` files are staged into every runtime, so the runtime's
   manifest and id change as they do for any release. The registry runs under the runtime's own
@@ -149,8 +152,13 @@ writes the host config atomically with a backup; `uninstall-bridge` removes only
   bodies and ETags for all eight poll reads and `/api/version`, the same request list, no Settings
   → Mesh section, and that `/mesh-view.js` was never requested. Turning the view on or off takes a
   window reload.
-- **(c) No new dependency** in the app: `package-lock.json` is byte-identical (a test compares it
-  with the base branch's).
+- **(c) No new dependency** in the app: `package-lock.json` changes only by the root entry's `bin`
+  map (§2.3), and its dependency set is unchanged. A test holds this without the base branch,
+  so it runs in CI: `test/fixtures/app-dependencies.txt` pins `package.json`'s dependency and
+  devDependency names and every lockfile package path (as `snapshot-triggers.txt` pins
+  triggers), so any new package fails it; every mesh module imports only Node core and the
+  app's own modules (never `store.ts` from `meshctl`); and the lockfile's root entry declares
+  exactly `package.json`'s dependencies and bins.
 - **(d) No hub schema change in any phase.** `test/fixtures/snapshot-triggers.txt` stays
   byte-identical. The relay writes only through existing `store.ts` functions: `upsertBoard` (to
   create a new plan only), `updateBoardRow`, `advanceBoardRow`, `archiveBoard`,
@@ -1166,6 +1174,28 @@ Shariq asked whether to adopt Eureka, for mockups, and for a way to measure the 
 5. Small additions for the metrics, all in `mesh.db` or the bridge, none in the hub: chain
    `verdict`, bench tag and bridge counters, ask `touches`, a refusal counter, three registry
    routes (§5.3) and one viewer route (§4.3). Off still means off.
+
+### 14.5 Changes while building M1 (2026-10-29, #397)
+
+1. **Lockfile (§2.3, §2.4c):** "`package-lock.json` does not change" could not hold: npm's lockfile
+   v3 root entry records `bin`, so adding `agent-inbox-meshctl` adds one line there. The claim is
+   now that the dependency set does not change. Instead of comparing with the base branch, which
+   CI does not have, the test checks the set against a checked-in pin,
+   `test/fixtures/app-dependencies.txt` (package names from `package.json` and every lockfile
+   package path), and checks the mesh modules' imports. A deliberate dependency change outside
+   the mesh refreshes the pin; the test's failure message says how.
+5. **How to run `meshctl`:** the package is private and nothing installs its `bin` on `PATH`, so
+   §2.1's bare `agent-inbox-meshctl` works only after `npm link`. M1 documents
+   `npm run meshctl -- …` from a checkout and `<runtime>/bin/node <runtime>/dist/meshctl.js …`
+   with an installed runtime, and Settings → Mesh adds that deleting `mesh.json` turns M1 off.
+2. **A shared reader (§2.3):** M1 adds `src/mesh-config.ts`, Node core only, holding the one rule
+   for reading `mesh.json` (a regular file of at most 64 KiB, a JSON object, `schema` 1; anything
+   else is off) and the viewer's stat watch, so `meshctl` and the viewer cannot disagree. M3's
+   `mesh-console.ts` builds on it.
+3. **Where `mesh.json` lives:** an absolute `AGENT_INBOX_MESH_DIR`, else the folder of
+   `AGENT_INBOX_DB`, else `~/.agent-inbox`, so a scratch hub never reads the real home's switch.
+4. **The lens is window-local** (§10.1): a fresh window opens on Sessions, like the lanes' quick
+   filters and the attention-first cold launch.
 
 ---
 

@@ -52,6 +52,7 @@ const REPO = new URL('..', import.meta.url).pathname
 const ALLOWED = new Map<string, string>([
   ['colors.js:RESERVED_HUE', 'the reserved state-band constant test/colors.test.ts asserts every palette hue against (spec §2) — an invariant, not a call site'],
   ['colors.js:overrideHue', 'spec §2 hue-pinning seam: the store-backed writer a future gear-panel picker calls. Delete it on purpose, never by drift'],
+  ['mesh-view.js:installMeshView', "Mesh M1 (#397): app.js calls it through `import('/mesh-view.js')`, the dynamic import that keeps the module unrequested while the mesh is off; this scan reads static imports only"],
   ['store.ts:listClosedProjects', 'the RAW projects-table reader (issue #32). CLAUDE.md makes store.ts the only door to the DB, so "closing twice leaves ONE row" has no other way to be asserted; production must use closedProjects(), the EFFECTIVE set, and its doc comment says so. Wire it into the viewer if and when the "closed 3d ago" chip is actually built'],
 ])
 
@@ -65,6 +66,8 @@ const ENTRY_POINTS = new Map<string, string>([
   ['src/viewer-server.ts', 'the viewer entry — `npm run view`'],
   ['src/hook-cli.ts', 'the hooks entry the Claude Code settings block invokes'],
   ['src/watch-cli.ts', 'the exact-question watcher entry launched by Copilot from flag metadata'],
+  ['src/meshctl.ts', 'the agent-inbox-meshctl entry (Mesh M1, #397) — `npm run meshctl`, dist/meshctl.js'],
+  ['public/mesh-view.js', "loaded only by app.js's dynamic import('/mesh-view.js') while mesh.json turns the Agents view on (#397)"],
   ['electron/main.cjs', "Electron's main-process entry"],
   ['electron/setup-preload.cjs', 'loaded by BrowserWindow webPreferences.preload'],
 ])

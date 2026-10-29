@@ -21,7 +21,8 @@
   "bin": {
     "agent-inbox-mcp": "./dist/mcp-server.js",
     "agent-inbox-hook": "./dist/hook-cli.js",
-    "agent-inbox-watch": "./dist/watch-cli.js"
+    "agent-inbox-watch": "./dist/watch-cli.js",
+    "agent-inbox-meshctl": "./dist/meshctl.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
@@ -30,6 +31,7 @@
     "marketing": "node scripts/serve-marketing.mjs",
     "hook": "tsx src/hook-cli.ts",
     "watch": "tsx src/watch-cli.ts",
+    "meshctl": "tsx src/meshctl.ts",
     "generate:icons": "bash scripts/generate-icons.sh",
     "install:agents": "bash scripts/install-agents.sh",
     "install:hooks": "bash scripts/install-hooks.sh",

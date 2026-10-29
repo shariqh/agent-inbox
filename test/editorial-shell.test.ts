@@ -229,3 +229,16 @@ describe('the session focus panel placement (#307)', () => {
     expect(narrow).toMatch(/z-index:\s*auto;/)
   })
 })
+
+// Mesh M1 (#397): jsdom cannot lay out the Agents view's grid, so its two
+// layout promises are pinned in the source.
+describe('the Agents view layout (#397)', () => {
+  it('never needs a card wider than the screen', () => {
+    expect(css).toMatch(/\.mesh-agent-list \{[^}]*grid-template-columns: repeat\(auto-fit, minmax\(min\(320px, 100%\), 1fr\)\)/)
+  })
+
+  it('stacks the branch under the project rather than squeezing it beside it', () => {
+    expect(css).toMatch(/\.mesh-where \{[^}]*flex-direction: column;[^}]*\}/)
+    expect(css).toMatch(/\.mesh-project, \.mesh-branch \{ max-width: 100%; \}/)
+  })
+})

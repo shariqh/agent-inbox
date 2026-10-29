@@ -453,6 +453,32 @@ as `.command`, `.pkg` or `.dmg`) can't have a rule at all. In the desktop app ev
 file chip also has **Reveal in Finder** and **Copy path**. Both, and Settings →
 Links itself, work only in the viewer the app started itself.
 
+## Agents view (opt-in)
+
+The Dashboard can group your Live sessions by agent (Copilot, Claude Code, …) as
+well as by session. It is off unless you turn it on. It adds no poll read, no
+network traffic beyond this machine and nothing to your badges; when it is on,
+the page loads one more script, `/mesh-view.js`.
+
+From a source checkout:
+
+```sh
+npm run meshctl -- enable --agents-view           # dry run: shows the file it would write
+npm run meshctl -- enable --agents-view --apply   # writes ~/.agent-inbox/mesh.json
+npm run meshctl -- status
+npm run meshctl -- disable --apply                # turns it off again (keeps a backup)
+```
+
+With the agent runtime Setup installed, run the same commands as
+`~/.agent-inbox/runtime/<runtime-id>/bin/node ~/.agent-inbox/runtime/<runtime-id>/dist/meshctl.js …`.
+Nothing puts `agent-inbox-meshctl` on your `PATH`; it works by that name only after
+`npm link` in a checkout. Deleting `mesh.json` by hand also turns the mesh off.
+
+Reload the Agent Inbox window after turning it on or off; a **Sessions | Agents**
+switch then appears above the Dashboard's lanes, and Settings → Mesh shows how to
+turn it off. This is the first phase of the
+[agent mesh design](docs/superpowers/specs/2026-10-29-agent-mesh-design.md).
+
 ## Architecture
 
 - **`src/store.ts`** owns schema, migrations, WAL configuration, and every database

@@ -702,6 +702,16 @@ describe('the poller runs in the viewer process only', () => {
     expect(read('src/viewer.ts')).not.toMatch(/startGithubPoller|startPrPoller|issue-poller/)
   })
 
+  // Mesh M1 (#397, design §2.4a): the stdio server reaches no mesh module.
+  it('no mesh module enters the stdio MCP import graph', () => {
+    const MESH = ['src/mesh-config.ts', 'src/meshctl.ts', 'public/mesh-view.js']
+    for (const file of MESH) expect(STDIO_GRAPH, `${file} is in the stdio graph`).not.toContain(file)
+    for (const file of STDIO_GRAPH) {
+      const reached = specifiers(read(file)).map((spec) => resolveSpec(file, spec))
+      expect(reached.filter((target) => MESH.includes(target) || /mesh/i.test(target)), `${file} pulls a mesh module into MCP`).toEqual([])
+    }
+  })
+
   it('the local HTTP boundary never enters the stdio MCP import graph', () => {
     for (const file of STDIO_GRAPH) {
       expect(specifiers(read(file)).map((spec) => resolveSpec(file, spec)), `${file} pulls the local HTTP boundary into MCP`)

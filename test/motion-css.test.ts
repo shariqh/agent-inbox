@@ -164,6 +164,15 @@ describe('motion foundation in public/style.css (#302)', () => {
     }
   })
 
+  // #304: the sweep marks the latest activity, so it runs on one lane only;
+  // laneMotion (test/lanes.test.ts) picks it and keeps every loop within 12.
+  it('sweeps only the lane laneMotion picks as the newest call', () => {
+    const sweeps = rules.filter((r) => !r.media && [...r.decls].some(([prop, value]) => prop.startsWith('animation') && /dash-lane-sweep/.test(value)))
+    expect(sweeps.flatMap((r) => r.selectors)).toEqual(['.dash-lane.sweep::before'])
+    expect(appJs.match(/classList\.toggle\('sweep'/g)).toEqual(["classList.toggle('sweep'"])
+    expect(appJs).toContain("el.classList.toggle('sweep', motion.sweep === lane.session)")
+  })
+
   it('scrolls through the motion controller instead of a literal smooth behaviour', () => {
     expect(appJs).not.toMatch(/behavior:\s*['"\x60]smooth/)
     const scrolls = appJs.match(/scrollIntoView\(\{ behavior: [^,}]+/g) ?? []

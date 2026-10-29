@@ -81,7 +81,7 @@ describe('an idle tick (#298)', () => {
 
   // Each surface's own rebuilt node: these are replaced by every painted frame.
   for (const [where, enter, node] of [
-    ['the Dashboard', async () => {}, () => document.querySelector('#dashboard .dashboard-live-list > *')],
+    ['the Dashboard', async () => {}, () => document.querySelector('#dashboard .dashboard-activity > :not(.dashboard-card-head)')],
     ['an open inspector', async (id: string) => {
       await showInbox()
       click(row(id))

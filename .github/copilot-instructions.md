@@ -588,14 +588,24 @@ Run the build before `npm run electron`; the development shell starts the built
   behaviour. The setting is layout only and never reaches attention.
 - The Dashboard's Needs you rail (#303) replaced Ownership flow and is the only
   answer surface on the Dashboard. Its cards are `sortRail(attentionEntries)` (waiting
-  asks first, ordering only) cut to three, with "+N more · N in Later"; the Needs you
-  signal card owns the count. Cards reuse `answerEl`/`rowAnswerEl` (`surface: 'rail'`)
+  asks first, ordering only) cut to three, with "+N more · N in Later"; the Now
+  strip's "Waiting on you" owns the count. Cards reuse `answerEl`/`rowAnswerEl` (`surface: 'rail'`)
   and the shared `snoozeAsk`/`pinAsk`, so drafts join `suspendState()`, recovery,
   durable drafts and the restart hold, and `expect_answer` is unchanged. It paints in
   the ambient painter: a poll leaves it alone while one of its asks holds a draft or a
   background window remembers focus in it, and `render()`'s `forcedAmbient` makes a
   human's `reloadAndPaint()` rebuild it anyway. It restores its own focus only while
   the document has focus.
+- Live lanes and the Now strip (#304) are one model, `buildLanes` in
+  `public/lanes.js`, over reads the poll already makes. A lane is a session whose claim
+  is not idle and whose `last_call_at ?? started_at` is within 30 minutes; `updated_at`
+  is never read, so a heartbeat-only session folds into "+N idle connections". "quiet
+  12m" after 5 minutes without a call. Its plan joins by project + branch + agent (most
+  recently updated); its asks come from the attention set in rail order and jump to the
+  rail card (D2). The Now strip's plan steps are the lanes' bars, each plan once. The
+  ambient painter updates lanes in place, keyed by session, writing only changed text;
+  order is pinned and only a forced paint re-sorts; `laneMotion` keeps the sweep on the
+  newest-call lane and every loop within 12. Nothing reaches attention.
 - Browser snapshot reuse is window-local and immutable; a 304 belongs to the
   representation that request sent, and its live boot header still controls safe
   refresh. Passive polls may retain inactive document panes, but navigation and

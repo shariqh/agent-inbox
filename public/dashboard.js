@@ -1,5 +1,5 @@
 import { buildRelay } from './relay.js'
-import { activitySynopsis, lastActivityAt, liveSummary } from './livebar.js'
+import { buildLanes } from './lanes.js'
 import { knownOutcomes } from './closed-history.js'
 import { laterEntries, sortRail } from './attention.js'
 
@@ -18,16 +18,6 @@ function validProject(entity, closed) {
   return entity?.project && !closed.has(entity.project)
 }
 
-function sessionModel(activity) {
-  const synopsis = activitySynopsis(activity)
-  return {
-    ...activity,
-    synopsis: synopsis.text,
-    historical: synopsis.historical,
-    lastActiveAt: lastActivityAt(activity),
-  }
-}
-
 export function buildDashboard({
   items,
   boards,
@@ -43,20 +33,15 @@ export function buildDashboard({
   const visibleBoards = (boards ?? []).filter((board) => validProject(board, closed))
   const visibleActivity = (activity ?? []).filter((row) => validProject(row, closed))
   const relay = buildRelay(items, boards, archived, nowMs, liveSessionIds, closedProjects)
-  const live = liveSummary(visibleActivity, nowMs)
-  const reportedChildren = visibleActivity.reduce((count, row) =>
-    count + (!row.idle && Array.isArray(row.children) ? row.children.length : 0), 0)
-  const workingLanes = live.count + reportedChildren
+  const railOrder = sortRail(relay.human, nowMs)
+  // #304: lanes and the Now strip come from one model, so their numbers agree.
+  const lanes = buildLanes({ activity: visibleActivity, boards: visibleBoards, asks: railOrder, nowMs })
   const projects = new Set([
     ...visibleItems.map((item) => item.project),
     ...visibleBoards.map((board) => board.project),
     ...visibleActivity.map((row) => row.project),
     ...history.older.projects,
   ])
-  const sessions = visibleActivity
-    .map(sessionModel)
-    .sort((a, b) => Number(a.idle) - Number(b.idle)
-      || Date.parse(b.lastActiveAt) - Date.parse(a.lastActiveAt))
   // Omitted outcomes still count; a recent one is listed only once nothing
   // omitted could outrank it: older closed history (#184), archived plans (#299).
   const archivedOlder = history.archived ?? NO_OMITTED_OUTCOMES
@@ -71,12 +56,6 @@ export function buildDashboard({
 
   return {
     signals: {
-      agents: {
-        working: workingLanes,
-        quiet: live.idleCount,
-        total: workingLanes + live.idleCount,
-        reportedChildren,
-      },
       waiting: relay.human.length,
       withAgents: relay.agent.length,
       plans: visibleBoards.length,
@@ -85,13 +64,15 @@ export function buildDashboard({
     },
     // Issue #303: the Needs you rail, from the one attention set (relay.human is
     // attentionEntries) in the rail's order; deferred asks count, never show.
-    rail: railModel(sortRail(relay.human, nowMs), laterEntries(visibleItems, visibleBoards, nowMs).length),
+    rail: railModel(railOrder, laterEntries(visibleItems, visibleBoards, nowMs).length),
     waitingEntries: relay.human,
     agentEntries: relay.agent,
     recentOutcomes,
     recentOutcomesComplete: recentOutcomes.length === listed,
     recentOutcomesWait: { history: keepsUnproven(history.older), archived: keepsUnproven(archivedOlder) },
-    sessions,
+    lanes: lanes.lanes,
+    idleConnections: lanes.idle,
+    now: lanes.now,
   }
 }
 

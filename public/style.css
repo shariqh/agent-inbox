@@ -1738,78 +1738,37 @@ body.settings-open #liveBar { opacity: .32; }
   max-width: 1500px;
   margin: 0 auto;
 }
-.dashboard-signals {
+/* #304: the Now strip, one line of four links over the lanes' own model. */
+.dash-now {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 14px;
-}
-.dashboard-signal {
-  position: relative;
-  display: grid;
-  min-width: 0;
-  min-height: 104px;
-  grid-template-rows: auto 1fr;
-  gap: 8px;
-  padding: 15px 16px 14px 20px;
-  overflow: hidden;
   border: 1px solid var(--app-border);
   border-radius: 10px;
   background: var(--app-surface);
+}
+.dash-now-item {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 6px;
+  padding: 10px 14px;
+  border: 0;
+  border-left: 1px solid var(--app-border);
+  background: transparent;
   color: var(--app-text);
   text-align: left;
 }
-.dashboard-signal-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.dashboard-signal::before {
-  position: absolute;
-  inset: 15px auto 15px 0;
-  width: 1px;
-  border-radius: 2px;
-  background: var(--signal);
-  content: "";
-}
-.dashboard-signal:hover { border-color: var(--app-border-strong); background: var(--app-soft); }
-.dashboard-signal:focus-visible { outline: 2px solid var(--app-focus); outline-offset: 2px; }
-.dashboard-signal-label { color: var(--app-text); font-size: 12.5px; font-weight: 650; }
-.dashboard-signal-icon {
-  width: 20px;
-  height: 20px;
-  flex: 0 0 auto;
-  fill: none;
-  stroke: var(--signal);
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-width: 1.35;
-}
-.dashboard-value-group { display: flex; align-self: end; align-items: baseline; gap: 2px; }
-.dashboard-value {
-  color: var(--signal);
-  font-size: 32px;
-  font-weight: 680;
-  font-variant-numeric: tabular-nums;
-  letter-spacing: -.045em;
-  line-height: 1;
-}
-.dashboard-value-total { color: var(--app-text-soft); font-size: 17px; font-weight: 550; font-variant-numeric: tabular-nums; }
-.dashboard-agent-dots {
-  display: flex;
-  max-width: calc(100% - 24px);
-  flex-wrap: wrap;
-  align-self: end;
-  gap: 4px;
-}
-.dashboard-agent-dot {
-  width: 5px;
-  height: 5px;
-  flex: 0 0 5px;
-  border-radius: 50%;
-  background: var(--app-border-strong);
-}
-.dashboard-agent-dot.active { background: var(--signal); }
-.dashboard-signal-arrow { position: absolute; right: 14px; bottom: 13px; color: var(--signal); }
-.dashboard-signal.tone-agent { --signal: var(--app-agent); }
-.dashboard-signal.tone-attention { --signal: var(--app-attention); }
-.dashboard-signal.tone-plan { --signal: var(--app-plan); }
-.dashboard-signal.tone-outcome { --signal: var(--app-outcome); }
+.dash-now-item:first-child { border-left: 0; }
+.dash-now-item:hover { background: var(--app-soft); }
+.dash-now-item:focus-visible { outline: 2px solid var(--app-focus); outline-offset: -2px; }
+.dash-now-label { min-width: 0; overflow: hidden; color: var(--app-muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.dashboard-value { order: -1; color: var(--signal); font-size: 20px; font-weight: 700; letter-spacing: -.03em; font-variant-numeric: tabular-nums; }
+.dashboard-value-total { order: -1; margin-left: -6px; color: var(--app-text-soft); font-size: 13px; font-variant-numeric: tabular-nums; }
+.dash-now-sub { margin-left: auto; color: var(--app-text-soft); font-size: 11px; white-space: nowrap; }
+.dash-now-item.tone-agents { --signal: var(--app-agent); }
+.dash-now-item.tone-waiting { --signal: var(--app-attention); }
+.dash-now-item.tone-plans { --signal: var(--app-plan); }
+.dash-now-item.tone-outcomes { --signal: var(--app-outcome); }
 .dashboard-grid {
   display: grid;
   grid-template-columns: repeat(12, minmax(0, 1fr));
@@ -1834,11 +1793,11 @@ body.settings-open #liveBar { opacity: .32; }
   background: var(--app-soft);
   color: var(--app-text);
 }
-.dashboard-activity { grid-column: span 8; min-height: 360px; }
-.dashboard-activity.is-empty { min-height: 220px; }
+.dash-lanes { grid-column: span 8; }
 .dash-rail { grid-column: span 4; min-width: 0; }
-.dashboard-dispatch { grid-column: span 5; }
-.dashboard-outcomes { grid-column: span 7; }
+.dashboard-activity { grid-column: span 7; min-height: 300px; }
+.dashboard-activity.is-empty { min-height: 220px; }
+.dashboard-outcomes { grid-column: span 5; }
 .dashboard-history-empty {
   display: grid;
   min-height: 150px;
@@ -1914,8 +1873,90 @@ body.settings-open #liveBar { opacity: .32; }
 .dash-rail-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; }
 .dash-rail-more { padding: 0; border: 0; background: transparent; color: var(--app-muted); font-size: 12px; }
 .dash-rail-review { margin-left: auto; font-size: 12px; }
-.dashboard-live-list, .dashboard-outcome-list { display: grid; }
-.dashboard-live-session, .dashboard-outcome {
+/* #304: live lanes, one per working session, updated in place. The pulse
+   beats while the claim is live; the top-edge sweep runs only on the lane
+   with the newest call (laneMotion keeps every loop within §10's cap of 12). */
+.dash-lane-list { display: grid; gap: 10px; }
+.dash-lane {
+  position: relative;
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+  padding: 12px 14px;
+  overflow: hidden;
+  border: 1px solid var(--app-border);
+  border-left: 3px solid var(--lane-color, var(--app-agent));
+  border-radius: 8px;
+  background: var(--app-soft);
+}
+.dash-lane.sweep::before {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 30%;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, var(--lane-color, var(--app-agent)), transparent);
+  content: "";
+  animation: dash-lane-sweep 4s var(--motion-ease-in-out) infinite;
+}
+.dash-lane-head { display: flex; min-width: 0; align-items: baseline; gap: 8px; }
+.dash-lane-pulse {
+  position: relative;
+  flex: none;
+  width: 8px;
+  height: 8px;
+  align-self: center;
+  border-radius: 50%;
+  background: var(--lane-color, var(--app-agent));
+}
+.dash-lane.pulse .dash-lane-pulse::after,
+.dash-lane-child.pulse::before {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: var(--lane-color, var(--app-agent));
+  content: "";
+}
+.dash-lane.pulse .dash-lane-pulse::after { animation: dash-lane-pulse 2s var(--motion-ease-out) infinite; }
+.dash-lane-live { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+.dash-lane-doing { min-width: 0; flex: 1; overflow: hidden; font-size: 14.5px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.dash-lane-recency { flex: none; color: var(--app-text-soft); font-size: 11px; font-variant-numeric: tabular-nums; }
+.dash-lane.quiet .dash-lane-recency { padding: 0 6px; border-radius: 999px; background: color-mix(in srgb, var(--app-plan) 16%, transparent); color: var(--app-text); }
+.dash-lane-detail { overflow: hidden; color: var(--app-muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.dash-lane-meta { color: var(--app-text-soft); font-size: 11px; }
+.dash-lane-plan { display: flex; min-width: 0; align-items: center; gap: 8px; font-size: 11px; }
+.dash-lane-bar { display: flex; width: 140px; height: 6px; flex: none; gap: 2px; }
+.dash-lane-bar > span { min-width: 4px; border-radius: 2px; }
+.dash-lane-bar > [data-seg="done"] { background: var(--app-outcome); }
+.dash-lane-bar > [data-seg="partial"] { background: var(--app-plan); }
+.dash-lane-bar > [data-seg="waiting"] { background: var(--app-attention); }
+.dash-lane-bar > [data-seg="todo"] { background: var(--app-border-strong); }
+.dash-lane-plan-count { font-weight: 650; font-variant-numeric: tabular-nums; }
+.dash-lane-plan-title { min-width: 0; overflow: hidden; color: var(--app-muted); text-overflow: ellipsis; white-space: nowrap; }
+.dash-lane-children { display: flex; flex-wrap: wrap; gap: 4px; }
+.dash-lane-children:empty { display: none; }
+.dash-lane-child { position: relative; display: inline-flex; align-items: center; gap: 4px; padding: 1px 7px 1px 15px; border: 1px solid var(--app-border); border-radius: 999px; color: var(--app-muted); font-size: 10.5px; }
+.dash-lane-child::after { position: absolute; top: 50%; left: 6px; width: 5px; height: 5px; margin-top: -2.5px; border-radius: 50%; background: var(--lane-color, var(--app-agent)); content: ""; }
+.dash-lane-child.pulse::before { inset: auto; top: 50%; left: 6px; width: 5px; height: 5px; margin-top: -2.5px; animation: dash-lane-pulse 2s var(--motion-ease-out) .6s infinite; }
+.dash-lane-ask { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding-top: 4px; border-top: 1px dashed var(--app-border); }
+.dash-lane-asking { min-width: 0; flex: 1; overflow: hidden; padding: 0; border: 0; background: transparent; color: var(--app-text); font-size: 12px; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+.dash-lane-ask-label { color: var(--app-attention); font-weight: 650; }
+.dash-lane-waiting { padding: 0 7px; border: 0; border-radius: 999px; background: color-mix(in srgb, var(--app-attention) 14%, transparent); color: var(--app-attention); font-size: 10.5px; font-weight: 650; }
+.dash-lanes-empty[hidden], .dash-lane [hidden] { display: none; }
+.dash-lanes-foot { display: flex; gap: 12px; margin-top: 10px; }
+.dash-lanes-foot button { padding: 0; border: 0; background: transparent; color: var(--app-muted); font-size: 12px; }
+.dash-lanes-foot button[hidden] { display: none; }
+@keyframes dash-lane-pulse {
+  from { opacity: .7; transform: scale(1); }
+  to { opacity: 0; transform: scale(2.6); }
+}
+@keyframes dash-lane-sweep {
+  from { opacity: 0; transform: translateX(-100%); }
+  20% { opacity: 1; }
+  60%, to { opacity: 0; transform: translateX(340%); }
+}
+.dashboard-outcome-list { display: grid; }
+.dashboard-outcome {
   display: grid;
   min-width: 0;
   gap: 3px;
@@ -1926,12 +1967,7 @@ body.settings-open #liveBar { opacity: .32; }
   color: var(--app-text);
   text-align: left;
 }
-.dashboard-live-session:first-child, .dashboard-outcome:first-child { border-top: 0; }
-.dashboard-live-session { grid-template-columns: minmax(0, 1fr) auto; }
-.dashboard-live-session strong, .dashboard-live-session span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dashboard-live-session span { grid-column: 1 / -1; color: var(--app-muted); font-size: 12px; }
-.dashboard-live-session small { grid-column: 2; grid-row: 1; color: var(--app-agent); font-size: 10px; font-weight: 700; text-transform: uppercase; }
-.dashboard-live-session.idle small { color: var(--app-text-soft); }
+.dashboard-outcome:first-child { border-top: 0; }
 .dashboard-outcome { position: relative; width: 100%; padding-right: 28px; }
 .dashboard-outcome:hover strong { color: var(--app-outcome); }
 .dashboard-outcome::after { position: absolute; top: 50%; right: 4px; color: var(--app-outcome); content: "→"; transform: translateY(-50%); }
@@ -1986,15 +2022,14 @@ body.settings-open #liveBar { opacity: .32; }
 .history-row > .card { padding: 2px 14px 16px 34px; }
 
 @container operations-desk (max-width: 900px) {
-  .dashboard-signals { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .dashboard-activity, .dash-rail { grid-column: span 12; }
-  .dashboard-dispatch, .dashboard-outcomes { grid-column: span 6; }
+  .dash-now { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .dash-now-item:nth-child(3) { border-left: 0; }
+  .dash-lanes, .dash-rail, .dashboard-activity, .dashboard-outcomes { grid-column: span 12; }
 }
 
 @container operations-desk (max-width: 620px) {
-  .dashboard-signals { grid-template-columns: minmax(0, 1fr); }
-  .dashboard-dispatch, .dashboard-outcomes { grid-column: span 12; }
-  .dashboard-signal { min-height: 96px; }
+  .dash-now { grid-template-columns: minmax(0, 1fr); }
+  .dash-now-item { border-left: 0; }
   .dashboard-activity { min-height: 300px; }
   .dashboard-history-empty { min-height: 200px; }
   .history-summary { grid-template-columns: 10px minmax(0, 1fr) 16px; }
@@ -2180,7 +2215,18 @@ body.sidebar-collapsed .gear[data-shortcut]::after { display: none; }
 :root[data-page-hidden] *::before,
 :root[data-page-hidden] *::after { animation-play-state: paused !important; }
 
+/* Every infinite animation, off under Calm (and below, under reduced motion). */
+:root[data-motion="calm"] .dash-lane.sweep::before,
+:root[data-motion="calm"] .dash-lane.pulse .dash-lane-pulse::after,
+:root[data-motion="calm"] .dash-lane-child.pulse::before { animation: none !important; }
+/* Without the pulse, a live lane says so in words. */
+:root[data-motion="calm"] .dash-lane.pulse .dash-lane-live { position: static; width: auto; height: auto; clip: auto; color: var(--app-agent); font-size: 10px; font-weight: 700; text-transform: uppercase; }
+
 @media (prefers-reduced-motion: reduce) {
+  .dash-lane.sweep::before,
+  .dash-lane.pulse .dash-lane-pulse::after,
+  .dash-lane-child.pulse::before { animation: none !important; }
+  .dash-lane.pulse .dash-lane-live { position: static; width: auto; height: auto; clip: auto; color: var(--app-agent); font-size: 10px; font-weight: 700; text-transform: uppercase; }
   *,
   *::before,
   *::after {

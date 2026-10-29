@@ -1,4 +1,5 @@
 import type { RelayBoard, RelayEntry, RelayItem } from './relay.js'
+import type { Lane, NowStrip } from './lanes.js'
 
 export interface DashboardActivity {
   session: string
@@ -40,7 +41,6 @@ export interface DashboardInput {
 
 export interface DashboardModel {
   signals: {
-    agents: { working: number; quiet: number; total: number; reportedChildren: number }
     waiting: number
     withAgents: number
     plans: number
@@ -56,11 +56,12 @@ export interface DashboardModel {
   recentOutcomesComplete: boolean
   /** which omitted source, read, would let the list be proven (#184, #299) */
   recentOutcomesWait: { history: boolean; archived: boolean }
-  sessions: Array<DashboardActivity & {
-    synopsis: string
-    historical: boolean
-    lastActiveAt: string | undefined
-  }>
+  /** #304: one lane per working session, in model order (newest call first) */
+  lanes: Lane[]
+  /** connected sessions with no live claim, folded into "+N idle connections" */
+  idleConnections: number
+  /** #304: the Now strip, from the same model as the lanes */
+  now: NowStrip
 }
 
 export interface ActivityBucket {

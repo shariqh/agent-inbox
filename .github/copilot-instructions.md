@@ -576,6 +576,16 @@ Run the build before `npm run electron`; the development shell starts the built
   Copy text when selected (#222) is an opt-in setting that copies only a
   selection changed by the gesture, outside editors, through structured-copy's
   `writeClipboard`; it never stops or prevents an event.
+- Motion (#302, Dashboard 2.0 proposal §10) is CSS-only: keyframes animate only
+  `transform` and `opacity`, transitions take `--motion-*` tokens, at most 12
+  infinite animations are on screen, and motion never moves focus, scrolls or
+  reorders under the pointer. Every infinite-animation selector is listed with
+  `animation: none !important` in the `@media (prefers-reduced-motion: reduce)`
+  block (which also makes one-shots instant) and under
+  `:root[data-motion="calm"]`; `test/motion-css.test.ts` checks both lists.
+  `public/motion.js` sets `data-motion` (Settings → Motion: Full or Calm) and
+  `data-page-hidden` (CSS pauses animations), and gives `scrollIntoView` its
+  behaviour. The setting is layout only and never reaches attention.
 - Browser snapshot reuse is window-local and immutable; a 304 belongs to the
   representation that request sent, and its live boot header still controls safe
   refresh. Passive polls may retain inactive document panes, but navigation and

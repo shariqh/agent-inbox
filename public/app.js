@@ -50,6 +50,7 @@ import { buildMission } from '/mission.js'
 import { buildActivitySeries, buildDashboard } from '/dashboard.js'
 import { PANE_DEFAULTS, paneKeyValue, paneValueFromPointer, resolvePaneLayout } from '/panes.js'
 import { createThemeController } from '/theme.js'
+import { createMotionController } from '/motion.js'
 import { activityHistoryUrl, createSnapshotReader } from '/snapshots.js'
 import { knownHistory, knownOutcomes, mergeClosedHistory, olderHistory } from '/closed-history.js'
 import { DRAFTS_KEY, draftEntry, draftExpired, draftKey, mergeDrafts, readDrafts } from '/drafts.js'
@@ -111,6 +112,14 @@ const themeController = createThemeController({
     // inline project colors can wait for the poll gate so drafts and scroll stay put.
     if (changed && lastData) renderIfIdle()
   },
+})
+// Motion (#302): the Settings choice and the hidden-page pause, published as
+// root attributes before the first render. Layout only, like the default sort.
+const motion = createMotionController({
+  storage: localStorage,
+  root: document.documentElement,
+  media: window.matchMedia('(prefers-reduced-motion: reduce)'),
+  doc: document,
 })
 let authoritativeClosed = []
 let loadGeneration = 0
@@ -1102,7 +1111,7 @@ function focusItem(id, source = null) {
     const sourceEl = applySearchJumpHighlight()
     const scrollTarget = sourceEl ?? el
     revealDetailsAncestors(scrollTarget)
-    scrollTarget.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    scrollTarget.scrollIntoView({ behavior: motion.scrollBehavior(), block: 'center' })
     const contextSummary = sourceEl?.closest('.card-context')?.querySelector(':scope > summary')
     const focusTarget = contextSummary
       ?? (el.matches('details') ? el.querySelector(':scope > summary') : el)
@@ -3599,7 +3608,7 @@ function focusMissionRow(board, row) {
   forceRender()
   requestAnimationFrame(() => {
     const target = document.querySelector(`[data-row-id="${CSS.escape(row.id)}"]`)
-    target?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    target?.scrollIntoView({ behavior: motion.scrollBehavior(), block: 'center' })
   })
 }
 
@@ -3753,7 +3762,7 @@ function jumpToCard(tabId, cardId) {
   const card = document.querySelector(`[data-card-id="${CSS.escape(cardId)}"]`)
   if (!card) return
   if (card instanceof HTMLDetailsElement) card.open = true
-  card.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  card.scrollIntoView({ behavior: motion.scrollBehavior(), block: 'start' })
 }
 
 function setCount(id, n) {
@@ -9024,6 +9033,41 @@ function renderSortSettings(host) {
   host.appendChild(section)
 }
 
+function renderMotionSettings(host) {
+  const section = document.createElement('section')
+  section.className = 'setup-block motion-settings'
+  const title = document.createElement('h3')
+  title.textContent = 'Motion'
+  const hint = document.createElement('p')
+  hint.className = 'setup-hint'
+  hint.id = 'motion-hint'
+  hint.textContent = 'Full shows live activity with gentle movement. Calm keeps everything still and only fades things in. Reduce motion in your system settings turns movement off either way.'
+  const select = document.createElement('select')
+  select.setAttribute('aria-label', 'Motion')
+  select.setAttribute('aria-describedby', hint.id)
+  for (const [value, label] of [['full', 'Full'], ['calm', 'Calm']]) {
+    const option = document.createElement('option')
+    option.value = value
+    option.textContent = label
+    select.appendChild(option)
+  }
+  select.value = motion.level
+  select.addEventListener('change', () => {
+    try {
+      motion.setLevel(select.value)
+    } catch (err) {
+      select.value = motion.level
+      console.error('Motion setting could not be saved', err)
+      document.getElementById('status').textContent = 'motion setting not saved'
+      return
+    }
+    // The human's own choice: renderIfIdle() would hold it behind any open draft.
+    forceRender()
+  })
+  section.append(title, hint, select)
+  host.appendChild(section)
+}
+
 function renderLaterSettings(host) {
   const section = document.createElement('section')
   section.className = 'setup-block later-settings'
@@ -9426,6 +9470,7 @@ async function renderSetup() {
   renderThemeSettings(host)
   renderUpdateSettings(host)
   renderSortSettings(host)
+  renderMotionSettings(host)
   renderLaterSettings(host)
   renderPlanSettings(host)
   renderCopySettings(host)

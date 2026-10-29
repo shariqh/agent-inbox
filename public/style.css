@@ -36,6 +36,16 @@
   --app-shadow: 0 1px 2px rgba(15, 23, 31, .12);
   --sidebar-width: 220px;
   --inspector-width: 520px;
+  /* Motion tokens (#302, proposal §10). Every transition takes its duration
+     and easing from here; Dashboard animations use them for one-shots. */
+  --motion-fast: 120ms;
+  --motion-base: 150ms;
+  --motion-moderate: 200ms;
+  --motion-slow: 500ms;
+  --motion-ease: ease;
+  --motion-ease-out: ease-out;
+  --motion-ease-in-out: ease-in-out;
+  --motion-linear: linear;
 }
 .tab-count { color: var(--app-text); }
 :root[data-theme="dark"] {
@@ -134,7 +144,7 @@ header { flex-wrap: wrap; }
 .lb-close { border: none; background: transparent; cursor: pointer; font-size: 15px; opacity: .55; color: inherit; }
 .lb-close:hover { opacity: 1; }
 .lb-progress { height: 6px; overflow: hidden; border-radius: 999px; background: color-mix(in srgb, var(--app-text) 9%, transparent); }
-.lb-progress-fill { display: block; width: 100%; height: 100%; border-radius: inherit; background: var(--app-accent); transform: scaleX(0); transform-origin: left center; transition: transform .2s ease-out; }
+.lb-progress-fill { display: block; width: 100%; height: 100%; border-radius: inherit; background: var(--app-accent); transform: scaleX(0); transform-origin: left center; transition: transform var(--motion-moderate) var(--motion-ease-out); }
 .lb-mix { margin: 8px 1px 12px; color: color-mix(in srgb, var(--app-text) 55%, transparent); font-size: 11.5px; }
 .lb-card { overflow-y: auto; padding: 2px 1px; }
 .lb-card details.item { margin-bottom: 0; }
@@ -528,7 +538,7 @@ body.settings-open .floating-search { opacity: .32; }
   opacity: 0;
   pointer-events: none;
   transform: translateY(2px);
-  transition: opacity 120ms ease, transform 120ms ease;
+  transition: opacity var(--motion-fast) var(--motion-ease), transform var(--motion-fast) var(--motion-ease);
 }
 .nrow-asked:hover::after, .nrow-asked:focus-visible::after { opacity: 1; transform: translateY(0); }
 .pdot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
@@ -839,7 +849,7 @@ header { position: static; background: transparent; }
   background: transparent;
   content: "";
   transform-origin: center;
-  transition: background-color .12s ease-out, transform .12s ease-out;
+  transition: background-color var(--motion-fast) var(--motion-ease-out), transform var(--motion-fast) var(--motion-ease-out);
 }
 .pane-resizer:hover::after,
 .pane-resizer:focus-visible::after,
@@ -923,7 +933,7 @@ body.resizing-pane, body.resizing-pane * { cursor: col-resize !important; user-s
   text-align: center;
 }
 .project-disclosure-count[hidden] { display: none; }
-.project-disclosure-caret { width: 14px; height: 14px; flex: 0 0 auto; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.5; transition: transform .15s ease; }
+.project-disclosure-caret { width: 14px; height: 14px; flex: 0 0 auto; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.5; transition: transform var(--motion-base) var(--motion-ease); }
 .project-disclosure[data-open="true"] .project-disclosure-toggle { border-color: color-mix(in srgb, var(--app-accent) 40%, var(--app-border)); }
 .project-disclosure[data-open="true"] .project-disclosure-caret { transform: rotate(180deg); }
 .tabstrip { display: flex; flex-direction: column; gap: 3px; margin: 0; overflow: visible; border: 0; }
@@ -1564,8 +1574,8 @@ body:has(.nrow[data-open="1"]) .inspector-empty { display: none; }
   outline: 2px solid var(--app-focus);
   outline-offset: 2px;
 }
-.sort-settings { padding-bottom: 18px; border-bottom: 1px solid var(--app-border); }
-.sort-settings select {
+.sort-settings, .motion-settings { padding-bottom: 18px; border-bottom: 1px solid var(--app-border); }
+.sort-settings select, .motion-settings select {
   min-width: 200px;
   max-width: 100%;
   margin-top: 6px;
@@ -1577,7 +1587,7 @@ body:has(.nrow[data-open="1"]) .inspector-empty { display: none; }
   font: inherit;
   font-size: 13px;
 }
-.sort-settings select:focus { outline: 2px solid color-mix(in srgb, var(--app-focus) 24%, transparent); outline-offset: 1px; border-color: var(--app-focus); }
+.sort-settings select:focus, .motion-settings select:focus { outline: 2px solid color-mix(in srgb, var(--app-focus) 24%, transparent); outline-offset: 1px; border-color: var(--app-focus); }
 .updates-settings {
   display: grid;
   gap: 10px;
@@ -1953,7 +1963,7 @@ body.settings-open #liveBar { opacity: .32; }
 .history-outcome { color: var(--app-muted); font-size: 11.5px; }
 .history-meta { display: grid; justify-items: end; color: var(--app-text-soft); font-size: 10.5px; }
 .history-meta time { color: var(--app-outcome); }
-.history-arrow { color: var(--app-text-soft); font-size: 18px; transition: transform .16s ease-out; }
+.history-arrow { color: var(--app-text-soft); font-size: 18px; transition: transform var(--motion-base) var(--motion-ease-out); }
 .history-row[open] { margin: 6px 0; border: 1px solid var(--app-border); border-radius: 10px; background: var(--app-surface); }
 .history-row[open] .history-arrow { transform: rotate(90deg); }
 .history-row > .card { padding: 2px 14px 16px 34px; }
@@ -2140,8 +2150,34 @@ body.sidebar-collapsed .gear[data-shortcut]::after { display: none; }
 .key-hint.is-match { outline: 2px solid var(--app-accent); outline-offset: 2px; }
 .key-hint.is-dim { opacity: .28; }
 
+/* ── motion (#302, Dashboard 2.0 proposal §10) ───────────────────────────────
+   Animate only transform and opacity, CSS only, at most 12 infinite animations
+   on screen, and never move focus, scroll or reorder under the pointer.
+   Every selector with an infinite animation is listed twice below, with
+   `animation: none !important`: in the reduced-motion block and under
+   :root[data-motion="calm"] (test/motion-css.test.ts checks both lists).
+   Reduced motion also makes every one-shot instant; Calm keeps one-shots.
+   motion.js sets data-page-hidden while document.hidden. These rules use
+   !important, so they hold wherever they sit in the cascade. */
+:root[data-page-hidden] *,
+:root[data-page-hidden] *::before,
+:root[data-page-hidden] *::after { animation-play-state: paused !important; }
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0s !important;
+    animation-delay: 0s !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0s !important;
+    transition-delay: 0s !important;
+    scroll-behavior: auto !important;
+  }
+}
+
 /* ── responsive (spec §14) ───────────────────────────────────────────────────
-   The ONLY @media block in the file — deliberately last so it wins over the
+   The only width @media block in the file — deliberately last so it wins over the
    shell (Task 6), boards chrome (Task 13) and focus rules (Task 17) above it.
    Under 1280px the fixed sidebar becomes a compact masthead. The project and agent
    selectors share a row below the library at 900px; at 620px the full library gets

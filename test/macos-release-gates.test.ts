@@ -24,6 +24,7 @@ import {
   validateReleaseTag,
   validateRemoteDraft,
   validateThinHandoff,
+  verifyDeveloperIdApp,
   withMountedDmg,
 } from '../scripts/macos-release-gates.mjs'
 import { macosKindOf, macosRelease } from '../scripts/macos-release-kind.mjs'
@@ -1418,5 +1419,113 @@ describe('the release Intel Macs stay on', () => {
     ], { cwd: root, env: { ...process.env, GITHUB_OUTPUT: outputs }, encoding: 'utf8' })
     expect(run.status, run.stderr).toBe(0)
     expect(readFileSync(outputs, 'utf8')).toBe('intel-tag=v1.8.0\n')
+  })
+})
+
+// The notarize job re-checks the sign job's Developer ID report against the app it restored,
+// before zipping it for notarization (#383). The native Intel job did this until #296.
+describe('the Developer ID report, re-checked before notarization (#383)', () => {
+  const sourceCommit = 'a'.repeat(40)
+  const plist = (version: string) => `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleExecutable</key><string>Agent Inbox</string>
+<key>CFBundleIdentifier</key><string>com.example.agent-inbox-test</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+<key>CFBundleShortVersionString</key><string>${version}</string>
+</dict></plist>
+`
+  function developerIdApp(executable: Buffer | string = 'signed app bytes', version = '1.2.3') {
+    const temp = scratchDir('developer-id-report-')
+    const app = join(temp, 'Agent Inbox.app')
+    mkdirSync(join(app, 'Contents', 'MacOS'), { recursive: true })
+    writeFileSync(join(app, 'Contents', 'Info.plist'), plist(version))
+    writeFileSync(join(app, 'Contents', 'MacOS', 'Agent Inbox'), executable)
+    chmodSync(join(app, 'Contents', 'MacOS', 'Agent Inbox'), 0o755)
+    const reportPath = join(temp, 'Agent-Inbox-1.2.3-macos-developer-id-verification.json')
+    const write = (report: Record<string, unknown>) => writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`)
+    const bind = () => {
+      const report = {
+        schema: 1,
+        packageVersion: '1.2.3',
+        sourceCommit,
+        sourceDirty: false,
+        buildMode: 'developer-id',
+        notaryEligible: true,
+        signing: 'developer-id',
+        runtimeHashesUnchangedAfterOuterSign: true,
+        appTreeDigest: treeIdentity(app),
+      }
+      write(report)
+      return report
+    }
+    const check = (overrides: Partial<Parameters<typeof verifyDeveloperIdApp>[0]> = {}) => () => verifyDeveloperIdApp({
+      app,
+      reportPath,
+      identity: evidenceIdentity,
+      teamId: evidenceTeam,
+      sourceCommit,
+      version: '1.2.3',
+      ...overrides,
+    })
+    return { temp, app, write, bind, check }
+  }
+
+  it('refuses a report that is not a clean, notary-eligible Developer ID build of this source and version', () => {
+    const { write, bind, check } = developerIdApp()
+    const report = bind()
+    for (const tampered of [
+      { schema: 2 },
+      { packageVersion: '1.2.4' },
+      { sourceCommit: 'b'.repeat(40) },
+      { sourceDirty: true },
+      { buildMode: 'adhoc' },
+      { notaryEligible: false },
+      { signing: 'ad-hoc' },
+      { runtimeHashesUnchangedAfterOuterSign: false },
+    ]) {
+      write({ ...report, ...tampered })
+      expect(check(), JSON.stringify(tampered)).toThrow('Developer ID report does not satisfy release gates')
+    }
+    for (const field of Object.keys(report).filter((key) => key !== 'appTreeDigest')) {
+      write(Object.fromEntries(Object.entries(report).filter(([key]) => key !== field)))
+      expect(check(), field).toThrow('Developer ID report does not satisfy release gates')
+    }
+    write(report)
+    expect(check({ sourceCommit: 'b'.repeat(40) })).toThrow('Developer ID report does not satisfy release gates')
+    expect(check({ version: '1.2.4' })).toThrow('Developer ID report does not satisfy release gates')
+    expect(check({ sourceCommit: undefined })).toThrow('source commit is missing or invalid')
+    expect(check({ teamId: 'ZZ12CD34EF' })).toThrow('Developer ID identity and team ID differ')
+  })
+
+  it('refuses an app whose tree is not the one the report binds', () => {
+    const { app, write, bind, check } = developerIdApp()
+    const report = bind()
+    const executable = join(app, 'Contents', 'MacOS', 'Agent Inbox')
+    for (const tamper of [
+      () => writeFileSync(executable, 'other app bytes'),
+      () => chmodSync(executable, 0o644),
+      () => writeFileSync(join(app, 'Contents', 'MacOS', 'extra'), ''),
+    ]) {
+      tamper()
+      expect(check()).toThrow('Developer ID app bytes do not match the finalization report')
+      bind()
+    }
+    write({ ...report, appTreeDigest: undefined })
+    expect(check()).toThrow('Developer ID app bytes do not match the finalization report')
+  })
+
+  it.skipIf(process.platform !== 'darwin')('refuses an app of another version, or not signed by this identity and team', () => {
+    const other = developerIdApp('signed app bytes', '1.2.4')
+    other.bind()
+    expect(other.check()).toThrow('app bundle version mismatch: 1.2.4')
+
+    const temp = scratchDir('developer-id-adhoc-')
+    writeFileSync(join(temp, 'main.c'), 'int main(void) { return 0; }\n')
+    execFileSync('/usr/bin/xcrun', ['clang', join(temp, 'main.c'), '-o', join(temp, 'main')])
+    const adhoc = developerIdApp(readFileSync(join(temp, 'main')))
+    execFileSync('/usr/bin/codesign', ['--force', '--sign', '-', adhoc.app], { stdio: 'ignore' })
+    adhoc.bind()
+    expect(adhoc.check()).toThrow(`Developer ID signature identity/team mismatch for ${adhoc.app}`)
   })
 })

@@ -367,6 +367,38 @@ function verifySignatureIdentity(path, identity, teamId, { deep = true } = {}) {
   }
 }
 
+// The notarize job re-checks the sign job's Developer ID report against the app it restored,
+// before zipping that app for notarization (#383); the native Intel job did until #296.
+export function verifyDeveloperIdApp({ app, reportPath, identity, teamId, sourceCommit, version }) {
+  validateSigningIdentity({ identity, teamId })
+  requireString(sourceCommit, 'source commit', SHA_RE)
+  requireString(version, 'release version', /^\d+\.\d+\.\d+$/)
+  const report = readJson(reportPath, 'Developer ID verification report')
+  if (
+    report.schema !== 1 ||
+    report.packageVersion !== version ||
+    report.sourceCommit !== sourceCommit ||
+    report.sourceDirty !== false ||
+    report.buildMode !== 'developer-id' ||
+    report.notaryEligible !== true ||
+    report.signing !== 'developer-id' ||
+    report.runtimeHashesUnchangedAfterOuterSign !== true
+  ) {
+    throw new ReleaseGateError('Developer ID report does not satisfy release gates')
+  }
+  const appTreeDigest = treeIdentity(app)
+  if (report.appTreeDigest !== appTreeDigest) {
+    throw new ReleaseGateError('Developer ID app bytes do not match the finalization report')
+  }
+  const bundleVersion = command('/usr/libexec/PlistBuddy', [
+    '-c', 'Print :CFBundleShortVersionString',
+    join(app, 'Contents', 'Info.plist'),
+  ])
+  if (bundleVersion !== version) throw new ReleaseGateError(`app bundle version mismatch: ${bundleVersion}`)
+  verifySignatureIdentity(app, identity, teamId)
+  return { appTreeDigest }
+}
+
 export async function buildThinHandoff({
   arm64Archive,
   arm64App,
@@ -965,6 +997,7 @@ async function main(argv) {
       'submit-json': { type: 'string' },
       'log-json': { type: 'string' },
       app: { type: 'string' },
+      report: { type: 'string' },
       evidence: { type: 'string' },
       identity: { type: 'string' },
       team: { type: 'string' },
@@ -1071,6 +1104,18 @@ async function main(argv) {
   if (commandName === 'stapler') {
     if (positionals.length !== 3) throw new ReleaseGateError('usage: stapler staple|validate TARGET')
     runStapler(positionals[1], positionals[2])
+    return
+  }
+  if (commandName === 'verify-developer-id') {
+    const result = verifyDeveloperIdApp({
+      app: resolve(requireString(values.app, '--app')),
+      reportPath: resolve(requireString(values.report, '--report')),
+      identity: values.identity,
+      teamId: values.team,
+      sourceCommit: values.source,
+      version: values.version,
+    })
+    process.stdout.write(`${JSON.stringify({ ok: true, appTreeDigest: result.appTreeDigest })}\n`)
     return
   }
   if (commandName === 'build-dmg') {

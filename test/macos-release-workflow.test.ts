@@ -28,6 +28,7 @@ import {
   signManifest,
 } from '../scripts/update-manifest.mjs'
 import type { ReleaseLike } from '../scripts/update-manifest.d.mts'
+import { treeIdentity } from '../scripts/tree-identity.mjs'
 import { scratchDir } from './scratch.js'
 
 const root = resolve(process.cwd())
@@ -71,6 +72,14 @@ function runScript(step: string) {
     .split('\n')
     .map((line) => line.startsWith('          ') ? line.slice(10) : line)
     .join('\n')
+}
+
+/** A step's folded `run: >-` command, on one line as YAML folds it. */
+function foldedCommand(step: string) {
+  const marker = '        run: >-\n'
+  const start = step.indexOf(marker)
+  if (start < 0) throw new Error('folded run block not found')
+  return step.slice(start + marker.length).split('\n').map((line) => line.trim()).filter(Boolean).join(' ')
 }
 
 const sha256 = (bytes: Buffer | string) => createHash('sha256').update(bytes).digest('hex')
@@ -722,6 +731,84 @@ describe('notarized macOS release workflow', () => {
     expect(workflow).toContain('permissions:')
     expect(workflow).toContain('contents: write')
     expect(workflow).toContain('if: ${{ always() }}')
+  })
+
+  // #383: the native Intel job re-checked the sign job's Developer ID report until #296, so
+  // the notarize job now does, between restoring the app and zipping it for notarization.
+  it('re-checks the Developer ID report against the restored app before notarizing it (#383)', () => {
+    const workflow = readFileSync(protectedPath, 'utf8')
+    const sign = workflow.slice(workflow.indexOf('  sign-developer-id:'), workflow.indexOf('  notarize-and-finalize:'))
+    const notarize = workflow.slice(workflow.indexOf('  notarize-and-finalize:'), workflow.indexOf('  verify-publication:'))
+    expect(stepBlock(sign, 'Stage exact Developer ID app and evidence'))
+      .toContain('cp "out/developer-id/$BASE-verification.json" build/signed-transfer/')
+    expect(notarize).toContain('APPLE_DEVELOPER_IDENTITY: ${{ vars.APPLE_DEVELOPER_IDENTITY }}')
+    expect(notarize).toContain('APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}')
+    const check = stepBlock(notarize, 'Re-check the Developer ID report before notarizing')
+    expect(notarize.indexOf(check)).toBeGreaterThan(notarize.indexOf(stepBlock(notarize, 'Restore exact Developer ID app bytes')))
+    expect(notarize.indexOf(check)).toBeLessThan(notarize.indexOf(stepBlock(notarize, 'Package app for notarization')))
+    const command = foldedCommand(check)
+    expect(command).toBe([
+      'node scripts/macos-release-gates.mjs verify-developer-id',
+      '--app "build/final-app/Agent Inbox.app"',
+      '--report "build/signed/Agent-Inbox-${{ needs.authorize.outputs.version }}-macos-developer-id-verification.json"',
+      '--identity "$APPLE_DEVELOPER_IDENTITY"',
+      '--team "$APPLE_TEAM_ID"',
+      '--source "${{ needs.authorize.outputs.source-commit }}"',
+      '--version "${{ needs.authorize.outputs.version }}"',
+    ].join(' '))
+
+    // The step itself, on a restored app and the report bound to it, then tampered.
+    const script = command
+      .replace('node scripts/macos-release-gates.mjs', `'${process.execPath}' '${join(root, 'scripts', 'macos-release-gates.mjs')}'`)
+      .replaceAll('${{ needs.authorize.outputs.version }}', VERSION)
+      .replaceAll('${{ needs.authorize.outputs.source-commit }}', sourceCommit)
+    expect(script).not.toContain('${{')
+    const temp = scratchDir('developer-id-recheck-')
+    const app = join(temp, 'build', 'final-app', 'Agent Inbox.app')
+    const executable = join(app, 'Contents', 'MacOS', 'Agent Inbox')
+    mkdirSync(join(app, 'Contents', 'MacOS'), { recursive: true })
+    writeFileSync(executable, 'Developer ID app bytes')
+    const reportPath = join(temp, 'build', 'signed', `Agent-Inbox-${VERSION}-macos-developer-id-verification.json`)
+    mkdirSync(join(temp, 'build', 'signed'))
+    const report = {
+      schema: 1,
+      packageVersion: VERSION,
+      sourceCommit,
+      sourceDirty: false,
+      buildMode: 'developer-id',
+      notaryEligible: true,
+      signing: 'developer-id',
+      runtimeHashesUnchangedAfterOuterSign: true,
+      appTreeDigest: treeIdentity(app),
+    }
+    const run = (value: Record<string, unknown>) => {
+      writeFileSync(reportPath, `${JSON.stringify(value)}\n`)
+      return spawnSync('/bin/bash', ['-c', script], {
+        cwd: temp,
+        env: {
+          PATH: process.env.PATH,
+          APPLE_DEVELOPER_IDENTITY: 'Developer ID Application: Example Corp (AB12CD34EF)',
+          APPLE_TEAM_ID: 'AB12CD34EF',
+        },
+        encoding: 'utf8',
+      })
+    }
+    const refusal = /Developer ID report does not satisfy|do not match the finalization report/
+    // Bound and eligible, so the step goes on to the bundle version and signature, which
+    // this unsigned fixture cannot pass.
+    const bound = run(report)
+    expect(bound.status).toBe(1)
+    expect(bound.stderr).toMatch(/^macos-release-gates: /m)
+    expect(bound.stderr).not.toMatch(refusal)
+    for (const tampered of [{ notaryEligible: false }, { buildMode: 'adhoc' }, { sourceDirty: true }, { sourceCommit: 'b'.repeat(40) }]) {
+      const result = run({ ...report, ...tampered })
+      expect(result.status, JSON.stringify(tampered)).toBe(1)
+      expect(result.stderr).toContain('Developer ID report does not satisfy release gates')
+    }
+    writeFileSync(executable, 'other app bytes')
+    const swapped = run(report)
+    expect(swapped.status).toBe(1)
+    expect(swapped.stderr).toContain('Developer ID app bytes do not match the finalization report')
   })
 
   it('builds, notarizes, verifies and names the DMG from the expected macOS kind (#341)', () => {

@@ -2235,6 +2235,12 @@ function jumpToAsk(entry) {
   }
   for (const other of document.querySelectorAll('#dashRail [data-rail-card]')) other.tabIndex = other === card ? 0 : -1
   railSelectedId = id
+  // #307: the jump goes to the rail, so the session panel steps aside first;
+  // focus goes to the card, never back to the lane.
+  if (focusSession) {
+    focusSession = null
+    paintSessionFocus()
+  }
   card.focus()
 }
 
@@ -2328,8 +2334,7 @@ function renderDashFocus(aside, model) {
   setFocusPart(aside, aside.querySelector('.dash-focus-asks'), lane.asks.map((entry) => {
     const id = needsEntryId(entry)
     return `<div class="dash-focus-ask"><span class="dash-focus-ask-title">${esc(dashboardEntryTitle(entry) ?? '')}</span>` +
-      // the panel sits over the rail, so it closes before the jump
-      focusButton(`${entry.kind}:${id}`, onRail.has(id) ? 'Answer in rail' : 'Answer in Inbox', () => { closeSessionFocus(); jumpToAsk(entry) },
+      focusButton(`${entry.kind}:${id}`, onRail.has(id) ? 'Answer in rail' : 'Answer in Inbox', () => jumpToAsk(entry),
         { attrs: ` data-focus-ask="${esc(`${entry.kind}:${id}`)}"` }) + '</div>'
   }).join('') || '<p class="dash-focus-none">Nothing waiting on you.</p>')
   const plan = lane.plan
@@ -2384,6 +2389,16 @@ function closeSessionFocus() {
   ;(lane ?? document.getElementById('dashLanesTitle'))?.focus({ preventScroll: true })
 }
 
+// A press outside the panel that is not on a lane (a lane toggles it itself)
+// closes it, moving no focus. Capture phase, like the press guard.
+function closeSessionFocusOnPress(event) {
+  if (!focusSession || !(event.target instanceof Element)) return
+  if (event.target.closest('#dashboard .dash-focus, #dashboard .dash-lane')) return
+  focusSession = null
+  paintSessionFocus()
+}
+document.addEventListener('pointerdown', closeSessionFocusOnPress, true)
+
 function toggleSessionFocus(session) {
   if (focusSession === session) closeSessionFocus()
   else openSessionFocus(session)
@@ -2402,6 +2417,7 @@ function jumpToSession(session) {
   resetSearch()
   selectTab('dashboard', { paint: false })
   forceRender()
+  requestHistoryPaint() // an explicit entry point (#184)
   if (document.hasFocus()) document.getElementById('dashFocusTitle')?.focus({ preventScroll: true })
 }
 
@@ -2926,7 +2942,11 @@ function renderDashboard(model) {
 
   const grid = document.createElement('div')
   grid.className = 'dashboard-grid'
-  grid.appendChild(dashLanesEl())
+  const lanes = dashLanesEl()
+  // #307: the session panel belongs to the lanes column: over its right part
+  // on a desktop, below the lanes in flow on a narrow screen.
+  lanes.appendChild(dashFocusEl())
+  grid.appendChild(lanes)
   grid.appendChild(dashRailEl())
   grid.appendChild(dashRibbonEl())
 
@@ -2943,7 +2963,6 @@ function renderDashboard(model) {
   grid.appendChild(outcomes)
 
   host.appendChild(grid)
-  host.appendChild(dashFocusEl())
   renderDashboardAmbient(model, { forced: true })
 }
 

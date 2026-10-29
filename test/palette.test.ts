@@ -19,9 +19,14 @@ describe('⌘K actions (#307)', () => {
     expect(paletteResults('answer ', targets, contains).map((r) => r.key)).toEqual(['answer:item:q1', 'answer:row:r1'])
     expect(paletteResults('Answer approve', targets, contains).map((r) => r.title)).toEqual(['Approve the spec'])
     expect(paletteResults('open plan dash', targets, contains).map((r) => r.action)).toEqual([{ type: 'plan', id: 'b1' }])
-    expect(paletteResults('plan ', targets, contains)).toHaveLength(1)
     expect(paletteResults('jump to session paint', targets, contains).map((r) => r.action)).toEqual([{ type: 'session', id: 's1' }])
-    expect(paletteResults('session ', targets, contains)[0]).toMatchObject({ section: 'actions', sectionLabel: 'Actions', kind: 'Jump to session' })
+    expect(paletteResults('jump to session ', targets, contains)[0]).toMatchObject({ section: 'actions', sectionLabel: 'Actions', kind: 'Jump to session' })
+    // only the full names are commands: a search that starts with a word of one stays a search
+    for (const query of ['plan flow', 'plan ', 'session paint', 'jump paint', 'jump to paint']) {
+      // at most a suggestion, which only fills in the full name
+      expect(paletteResults(query, targets, contains).filter((r) => r.action.type !== 'command'), query).toEqual([])
+    }
+    expect(paletteResults('plan flow', targets, contains)).toEqual([])
   })
 
   it('suggests a command for a prefix of its name and never takes over a plain search', () => {

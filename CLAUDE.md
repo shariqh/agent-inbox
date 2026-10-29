@@ -1567,12 +1567,16 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   Dashboard's keys as help-only (`legacy`) commands in `public/keys.js`, group "Dashboard":
   the rail's J/K, 1–4, S, P and Enter, which `onDashRailKey` handles only on a rail card,
   and Esc for the panel. Never make them non-legacy: the global handler would then take
-  S and P everywhere. (3) **The session focus panel** (`.dash-focus`, mounted once beside
-  the grid): a lane's title is a button (`.dash-lane-open`, `aria-expanded`), and a click
+  S and P everywhere. (3) **The session focus panel** (`.dash-focus`, mounted once inside
+  the lanes card: on a desktop it overlays the right part of the lanes column, so the
+  rail and the Now strip stay usable; below 1280px it is static, in flow below the lanes,
+  never fixed over the masthead; `test/editorial-shell.test.ts` pins both, since jsdom
+  cannot evaluate `@media`): a lane's title is a button (`.dash-lane-open`, `aria-expanded`), and a click
   elsewhere on the lane that is not a control or a text selection opens it too. It is
   READ-ONLY (D2: the rail is the Dashboard's one answer surface): the lane's asks (from
-  the attention set) each close the panel (it sits over the rail) and jump to the rail
-  card or, past the top three, the Inbox card (`jumpToAsk`); the plan and each recent outcome open through `focusItem`. `sessionFocus`
+  the attention set) each jump to the rail card or, past the top three, the Inbox card
+  (`jumpToAsk`, which closes the panel without moving focus back to the lane whenever it
+  lands on a rail card, from the panel, a lane's "Asking you" or ⌘K); the plan and each recent outcome open through `focusItem`. `sessionFocus`
   (`public/lanes.js`, pure) picks the plan, the session's newest item (the source of its
   PR/CI chips when it has no plan) and its last three outcomes from `outcomeEntries`. PR and
   CI chips are `sourceChipsHtml`'s, ambient: nothing there reaches attention
@@ -1583,17 +1587,19 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   markup changes (`setFocusPart`), so an unchanged poll writes nothing and a keyboard user
   keeps the same control by its focus key. Opening focuses the panel heading and closing
   (×, Esc in the panel, Esc on its lane) returns focus to the lane only when the window
-  has focus (and, for closing, focus was in the panel). A session that stops working (or
+  has focus (and, for closing, focus was in the panel). A `pointerdown` outside the panel
+  that is not on a lane closes it and moves no focus. A session that stops working (or
   leaves the filters) keeps the panel open with one line saying so. Its one-shot entrance
   (`dash-focus-in`) takes the motion tokens, is instant under reduced motion and listed
   under Calm. `focusSession` and `laneFilters` are in `frameInputs()`; their handlers
   repaint only their own region from `lastDashModel` (the model the last paint drew),
   never through a new render entry, so the lanes never re-sort under the pointer. (4) **⌘K
-  actions** (`public/palette.js`, pure): "answer …", "open plan …" (or "plan …") and
-  "jump to session …" (or "jump …", "session …") with a space after the name list their
+  actions** (`public/palette.js`, pure): only the FULL names "answer ", "open plan " and
+  "jump to session " (with the space) are commands, so a search such as "plan flow
+  rollout" stays a search; they list their
   targets over every open project (the attention set in rail order, active plans, working
-  sessions) ahead of ordinary results; a two-letter-or-longer prefix of a name only
-  suggests the command (it fills the box), placed after the results when the first is an
+  sessions) ahead of ordinary results; a two-letter-or-longer prefix of a name or of a
+  hint ("plan", "session") only suggests the command (it fills the box), placed after the results when the first is an
   Open item, so the strongest Open-item match keeps first place. Among trim-equivalent
   edits only the one that turns a name into its command re-runs search (`commandShape`).
   Answer jumps to the rail card when the Dashboard shows it and otherwise opens the Inbox

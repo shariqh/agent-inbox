@@ -3,15 +3,17 @@
 // (the attention set in rail order, active plans, working sessions) and the
 // fuzzy engine; activation routes through the app's existing paths.
 //
-// A command is its name followed by a space, so a plain search for "plan"
-// stays a search. A prefix of a name (two letters or more) only suggests the
-// command, which fills the box with it.
+// A command is its full name followed by a space, so a plain search for "plan
+// flow" stays a search. A prefix of a name or hint (two letters or more) only
+// suggests the command, which fills the box with its full name.
 import { createBoundedMatcher } from './search.js'
 
+// Only the full name, then a space, is a command (`name`); a search that merely
+// starts with "plan" or "session" stays a search. `hints` only suggest it.
 const COMMANDS = [
-  { id: 'answer', label: 'Answer…', kind: 'Answer', targets: 'asks', phrases: ['answer'] },
-  { id: 'plan', label: 'Open plan…', kind: 'Open plan', targets: 'plans', phrases: ['open plan', 'plan'] },
-  { id: 'session', label: 'Jump to session…', kind: 'Jump to session', targets: 'sessions', phrases: ['jump to session', 'jump to', 'jump', 'session'] },
+  { id: 'answer', label: 'Answer…', kind: 'Answer', targets: 'asks', name: 'answer', hints: [] },
+  { id: 'plan', label: 'Open plan…', kind: 'Open plan', targets: 'plans', name: 'open plan', hints: ['plan'] },
+  { id: 'session', label: 'Jump to session…', kind: 'Jump to session', targets: 'sessions', name: 'jump to session', hints: ['session'] },
 ]
 const SECTION = { section: 'actions', sectionLabel: 'Actions' }
 const LIMIT = 8
@@ -19,9 +21,7 @@ const LIMIT = 8
 function parse(query) {
   const text = String(query ?? '').replace(/^\s+/, '').toLowerCase()
   for (const command of COMMANDS) {
-    for (const phrase of command.phrases) {
-      if (text.startsWith(`${phrase} `)) return { command, rest: text.slice(phrase.length).trim() }
-    }
+    if (text.startsWith(`${command.name} `)) return { command, rest: text.slice(command.name.length).trim() }
   }
   return { text: text.trim() }
 }
@@ -49,7 +49,7 @@ export function paletteResults(query, targets, searchFn) {
       .map((target) => result(`${command.id}:${target.key}`, command.kind, target.title, target.context, target.action))
   }
   if (parsed.text.length < 2) return []
-  return COMMANDS.filter((command) => command.phrases.some((phrase) => phrase.startsWith(parsed.text)))
+  return COMMANDS.filter((command) => [command.name, ...command.hints].some((phrase) => phrase.startsWith(parsed.text)))
     .map((command) => result(`command:${command.id}`, 'Action', command.label, 'Type to choose',
-      { type: 'command', fill: `${command.phrases[0]} ` }))
+      { type: 'command', fill: `${command.name} ` }))
 }

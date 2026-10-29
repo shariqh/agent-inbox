@@ -1985,17 +1985,20 @@ body.settings-open #liveBar { opacity: .32; }
 .dash-lane { cursor: pointer; }
 .dash-lane-open { display: flex; min-width: 0; flex: 1; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
 .dash-lane-open[aria-expanded="true"] .dash-lane-doing { color: var(--app-accent); }
-/* #307: the session focus panel, a read-only side panel over the Dashboard,
-   below search results, Live and every dialog. Its one-shot entrance uses the
+/* #307: the session focus panel, a read-only side panel inside the lanes card,
+   over the right part of the lanes column, so the rail (the Dashboard's answer
+   surface) and the Now strip stay visible. Below 1280px it is in flow under
+   the lanes (the compact block at the end). Its one-shot entrance uses the
    motion tokens; reduced motion makes it instant and Calm drops it. */
+.dash-lanes { position: relative; }
 .dash-focus {
-  position: fixed;
-  top: 72px;
-  right: 16px;
-  z-index: 35;
-  max-height: calc(100vh - 128px);
+  position: absolute;
+  top: 52px;
+  right: 12px;
+  z-index: 5;
+  max-height: max(320px, calc(100% - 64px));
   display: grid;
-  width: min(380px, calc(100vw - 32px));
+  width: min(380px, calc(100% - 24px));
   align-content: start;
   gap: 8px;
   padding: 16px;
@@ -2344,6 +2347,9 @@ body.sidebar-collapsed .gear[data-shortcut]::after { display: none; }
    .rail-filter stays inside the menu whenever >12 projects means it is
    rendered (RAIL_FILTER_THRESHOLD, rail.js). */
 @media (max-width: 1279px) {
+  /* #307: the session panel joins the flow below the lanes, never fixed over
+     the masthead's selectors, tabs or project menu. */
+  .dash-focus { position: static; z-index: auto; width: auto; max-height: none; margin-top: 12px; box-shadow: none; }
   body { padding: 0 10px 48px; }
   .layout { gap: 10px; }
 

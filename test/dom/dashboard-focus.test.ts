@@ -184,6 +184,44 @@ describe('the session focus panel (#307)', () => {
     expect(document.getElementById('boards')?.hidden).toBe(false)
   })
 
+  it("closes when a lane's own ask jumps to the rail card", async () => {
+    const d = open()
+    const { ask } = seed(d)
+    await bootApp(d)
+    click(openButton('mine'))
+    expect(panel()!.hidden).toBe(false)
+    click(lane('mine')!.querySelector('.dash-lane-asking'))
+    expect(panel()!.hidden).toBe(true)
+    expect(openButton('mine')!.getAttribute('aria-expanded')).toBe('false')
+    expect(document.activeElement).toBe(document.querySelector(`#dashRail [data-rail-card="${ask}"]`))
+  })
+
+  it('closes on a press outside it that is not a lane, without moving focus', async () => {
+    const d = open()
+    seed(d)
+    await bootApp(d)
+    click(openButton('mine'))
+    const press = (el: Element) => el.dispatchEvent(new Event('pointerdown', { bubbles: true }))
+    press(panel()!.querySelector('.dash-focus-doing')!)
+    press(lane('theirs')!)
+    expect(panel()!.hidden).toBe(false)
+    const focused = document.activeElement
+    const focus = vi.spyOn(HTMLElement.prototype, 'focus')
+    press(document.querySelector('#dashRail')!)
+    expect(panel()!.hidden).toBe(true)
+    expect(openButton('mine')!.getAttribute('aria-expanded')).toBe('false')
+    expect(focus).not.toHaveBeenCalled()
+    expect(document.activeElement).toBe(focused)
+  })
+
+  it('sits in the lanes card, never over the rail', async () => {
+    const d = open()
+    seed(d)
+    await bootApp(d)
+    expect(panel()!.closest('.dash-lanes')).not.toBeNull()
+    expect(panel()!.closest('.dash-rail')).toBeNull()
+  })
+
   it('opens and closes without pulling focus in a background window', async () => {
     const d = open()
     seed(d)
@@ -274,6 +312,42 @@ describe('⌘K actions (#307)', () => {
     click(option)
     await settle()
   }
+
+  const firstOption = () => document.querySelector<HTMLElement>('#searchResults [role="option"]')
+
+  it('keeps a plain search that starts with a command word a search, and Enter opens the best Open item', async () => {
+    const d = open()
+    const q = insertItem(d, { ...A, kind: 'question', title: 'Plan flow rollout' })
+    upsertBoard(d, { ...A, title: 'Flow board', rows: [{ label: 'Flow', status: 'missing' }] })
+    work(d, 'flowing', 'Flow work')
+    await bootApp(d)
+    for (const query of ['plan flow', 'session flow', 'jump flow']) {
+      document.getElementById('search')!.focus()
+      await searchFor(query)
+      expect([...document.querySelectorAll('#searchResults .search-result-kind')].map((el) => el.textContent), query)
+        .not.toContain('Open plan')
+      expect([...document.querySelectorAll('#searchResults .search-result-kind')].map((el) => el.textContent), query)
+        .not.toContain('Jump to session')
+    }
+    await searchFor('plan flow')
+    expect(firstOption()?.dataset.searchTarget).toBe(q)
+    document.getElementById('search')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+    await settle()
+    expect(location.hash).toBe(`#item/${q}`)
+    expect(document.getElementById('needsYou')?.hidden).toBe(false)
+  })
+
+  it('never puts a command suggestion above the best Open-item match', async () => {
+    const d = open()
+    const q = insertItem(d, { ...A, kind: 'question', title: 'Plan the release' })
+    await bootApp(d)
+    document.getElementById('search')!.focus()
+    await searchFor('pl')
+    expect(firstOption()?.dataset.searchTarget).toBe(q)
+    const titles = [...document.querySelectorAll('#searchResults .search-result-main')].map((el) => el.textContent)
+    expect(titles).toContain('Open plan…')
+    expect(document.getElementById('search')!.getAttribute('aria-activedescendant')).toBe(firstOption()?.id)
+  })
 
   it('"answer…" opens an ask past the rail in its Inbox card through the deep link', async () => {
     const d = open()

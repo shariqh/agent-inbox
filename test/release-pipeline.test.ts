@@ -507,6 +507,97 @@ describe('macOS finalization contract', () => {
       .toThrow(/CPU types arm64, not the expected arm64,x86_64/)
   })
 
+  // #383: the sweep reads each file's magic bytes itself. `file` reported a fat64 binary as
+  // "data" and an unreadable one as "cannot open", and the sweep skipped both.
+  const machOSweepFixture = () => {
+    const temp = scratchDir('macho-sweep-')
+    const source = join(temp, 'main.c')
+    writeFileSync(source, 'int main(void) { return 0; }\n')
+    const built = (name: string, args: string[]) => {
+      execFileSync('/usr/bin/xcrun', ['clang', ...args, source, '-o', join(temp, name)])
+      return readFileSync(join(temp, name))
+    }
+    const arm64 = built('arm64', ['-arch', 'arm64'])
+    const x64 = built('x64', ['-arch', 'x86_64'])
+    const app = join(temp, 'Agent Inbox.app')
+    const resources = join(app, 'Contents', 'Resources', 'app')
+    const at = {
+      executable: join(app, 'Contents', 'MacOS', 'Agent Inbox'),
+      helper: join(app, 'Contents', 'Frameworks', 'Agent Inbox Helper.app', 'Contents', 'MacOS', 'Agent Inbox Helper'),
+      framework: join(app, 'Contents', 'Frameworks', 'Electron Framework.framework', 'Versions', 'A', 'Electron Framework'),
+      addon: join(resources, 'node_modules', 'better-sqlite3', 'build', 'Release', 'better_sqlite3.node'),
+      node: join(resources, 'runtime', 'darwin-arm64', 'bin', 'node'),
+    }
+    const put = (path: string, bytes: Buffer | string) => {
+      mkdirSync(dirname(path), { recursive: true })
+      rmSync(path, { force: true })
+      writeFileSync(path, bytes)
+    }
+    for (const path of Object.values(at)) put(path, arm64)
+    const inputs = loadReleaseInputs()
+    const sweep = () => verifyMachOArchitectures(app, resources, inputs)
+    const inspected = () => {
+      const { app: electron, runtime } = sweep()
+      return [...electron, ...runtime].map((entry) => join(app, entry.path)).sort()
+    }
+    return { temp, source, arm64, x64, resources, at, put, sweep, inspected }
+  }
+
+  it.skipIf(process.platform !== 'darwin')('finds every Mach-O by its magic bytes and skips every other file (#383)', () => {
+    const { temp, source, arm64, x64, resources, at, put, sweep, inspected } = machOSweepFixture()
+    // Not Mach-O: a Java class file (the fat magic, then its version, 65.0), a script, a file
+    // too short to hold a magic, and an empty one.
+    put(join(resources, 'Main.class'), Buffer.from([0xca, 0xfe, 0xba, 0xbe, 0, 0, 0, 65, 0, 16]))
+    put(join(resources, 'run.sh'), '#!/bin/sh\nexit 0\n')
+    put(join(resources, 'short'), Buffer.from([0xcf, 0xfa, 0xed]))
+    put(join(resources, 'empty'), '')
+    expect(inspected()).toEqual(Object.values(at).sort())
+
+    const fat64 = join(temp, 'fat64')
+    execFileSync('/usr/bin/lipo', ['-create', '-fat64', join(temp, 'arm64'), join(temp, 'x64'), '-output', fat64])
+    expect(readFileSync(fat64).readUInt32BE(0)).toBe(0xcafebabf)
+    put(at.helper, readFileSync(fat64))
+    expect(sweep).toThrow(`Electron Mach-O has CPU types arm64,x86_64, not the expected arm64: ${at.helper}`)
+    put(at.helper, arm64)
+    put(at.node, readFileSync(fat64))
+    expect(sweep).toThrow(`runtime Mach-O has wrong architecture (arm64,x86_64): ${at.node}`)
+    put(at.node, arm64)
+
+    // Thin 32-bit, little-endian on disk.
+    execFileSync('/usr/bin/xcrun', ['clang', '-arch', 'i386', '-c', source, '-o', join(temp, 'i386.o')])
+    put(at.framework, readFileSync(join(temp, 'i386.o')))
+    expect(sweep).toThrow(`Electron Mach-O has CPU types i386, not the expected arm64: ${at.framework}`)
+    put(at.framework, x64)
+    expect(sweep).toThrow(`Electron Mach-O has CPU types x86_64, not the expected arm64: ${at.framework}`)
+    put(at.framework, arm64)
+
+    // Thin big-endian, 32- and 64-bit (no toolchain here builds one): lipo knows the header
+    // but will not list its CPU types, so finding it fails the sweep.
+    for (const [magic, cpuType] of [[0xfeedface, 18], [0xfeedfacf, 0x01000012]] as const) {
+      const header = Buffer.alloc(32)
+      header.writeUInt32BE(magic, 0)
+      header.writeUInt32BE(cpuType, 4)
+      header.writeUInt32BE(1, 12)
+      put(at.addon, header)
+      expect(sweep).toThrow(`lipo -archs ${at.addon}`)
+    }
+    put(at.addon, arm64)
+    expect(inspected()).toEqual(Object.values(at).sort())
+  })
+
+  it.skipIf(process.platform !== 'darwin' || process.getuid?.() === 0)('fails the Mach-O sweep on a file it cannot read (#383)', () => {
+    const { x64, at, put, sweep } = machOSweepFixture()
+    put(at.helper, x64)
+    chmodSync(at.helper, 0o000)
+    try {
+      expect(sweep).toThrow(MacReleaseError)
+      expect(sweep).toThrow(`could not read ${at.helper} to look for a Mach-O header: EACCES`)
+    } finally {
+      chmodSync(at.helper, 0o755)
+    }
+    expect(sweep).toThrow(`Electron Mach-O has CPU types x86_64, not the expected arm64: ${at.helper}`)
+  })
+
   // Signing seals the framework's resources: it has to see the pruned set (#292).
   it('checks the copied app ships only English before anything is signed (#292)', () => {
     const source = readFileSync(join(root, 'scripts', 'assemble-macos-release.mjs'), 'utf8')
@@ -577,6 +668,13 @@ describe('macOS finalization contract', () => {
         + 'node_modules/better-sqlite3/build/Release/test_extension.node',
     )
     // refused before anything was signed
+    expect(readFileSync(join(runtime, 'bin', 'node')).equals(unsigned)).toBe(true)
+    // #383: a fat64 one too, which `file` reported as data
+    rmSync(leftover)
+    execFileSync('/usr/bin/lipo', ['-create', '-fat64', binary, '-output', leftover])
+    expect(() => signPortableRuntime({ runtimeRoot: runtime, signing, entitlementsRoot }))
+      .toThrow('found bin/node, node_modules/better-sqlite3/build/Release/better_sqlite3.node, '
+        + 'node_modules/better-sqlite3/build/Release/test_extension.node')
     expect(readFileSync(join(runtime, 'bin', 'node')).equals(unsigned)).toBe(true)
 
     rmSync(leftover)

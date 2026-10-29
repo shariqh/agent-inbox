@@ -145,7 +145,9 @@ is built for Apple silicon only: one arm64 runtime, one thin app, no universal m
 5. Finalize a copy of the thin app. Every Electron Mach-O, helper, framework and
    `better_sqlite3.node` must hold exactly the expected CPU types (`macosArchitectures`,
    below), and every Mach-O of the `Contents/Resources/app/runtime/darwin-arm64` tree
-   exactly arm64, so a universal or Intel slice fails the build.
+   exactly arm64, so a universal or Intel slice fails the build. The sweep finds every
+   Mach-O by its magic bytes (thin 32- and 64-bit in either byte order, fat and fat64),
+   read in-process, and a file it cannot read fails the build (#383).
 6. Launch the provisional app from its DMG as a French user (`-AppleLanguages '(fr)'`)
    and then as a British one (`'(en-GB)'`), and require its hardened loopback marker,
    every renderer's `--lang` (`en-US`, then `en-GB`) and, read from the page over

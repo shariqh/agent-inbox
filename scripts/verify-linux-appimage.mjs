@@ -530,6 +530,7 @@ export function verifyLinuxAppImage({
       arch,
       inputsPath: linuxInputsFile,
       sourceCommit,
+      extractedPackage: true,
     })
     return {
       schema: 1,

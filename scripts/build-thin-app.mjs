@@ -26,6 +26,7 @@ import { assertRuntimeSourceCommit } from './runtime-provenance.mjs'
 import { loadElectronChecksums, loadReleaseInputs, RUNTIME_KEYS, validateInstalledReleaseTools } from './release-inputs.mjs'
 import { resolveSourceProvenance } from './source-provenance.mjs'
 import { treeIdentity } from './tree-identity.mjs'
+import { assertSafeTreeModes } from './tree-modes.mjs'
 
 export const APP_NAME = 'Agent Inbox'
 
@@ -245,6 +246,7 @@ export async function buildThinApp({
     for (const key of RUNTIME_KEYS) {
       assertPrunedNodeModules(join(resources, 'runtime', key), `packaged ${key} runtime`)
     }
+    assertSafeTreeModes(app, { label: `packaged darwin-${arch} app` })
     const nativeAddon = findNativeAddon(resources)
     const expectedLipoArch = 'arm64'
     const nativeAddonArchitectures = lipoArchs(nativeAddon)

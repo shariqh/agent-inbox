@@ -92,7 +92,11 @@ Run the build before `npm run electron`; the development shell starts the built
   Electron seeds a new profile's spellchecker from that locale, so on Linux and Windows
   `electron/spellcheck-languages.cjs` sets the system's languages at startup on a profile
   with none in the system's first language (a seeded `en-GB` for Commonwealth English
-  users stays); macOS keeps its own `NSSpellChecker`.
+  users stays); macOS keeps its own `NSSpellChecker`. The Linux folder gate (which the
+  DEB and AppImage verifiers re-run on their extracted inner apps) and the macOS thin,
+  signed-app and final-DMG gates refuse any group- or other-writable entry and any
+  setuid, setgid or sticky bit (#378, `scripts/tree-modes.mjs`); only a package's
+  extracted `chrome-sandbox` may be `04755`.
 - **Setup path:** `scripts/install-agents.sh` is the canonical dry-run-first
   installer for MCP registration and managed host instructions. Electron exposes
   only fixed setup targets through `electron/setup-preload.cjs` and invokes that

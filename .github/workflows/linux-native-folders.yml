@@ -31,11 +31,13 @@ on:
       - "scripts/stage-native-runtime.mjs"
       - "scripts/stage-runtime.mjs"
       - "scripts/tree-identity.mjs"
+      - "scripts/tree-modes.mjs"
       - "scripts/verify-linux-thin-app.mjs"
       - "scripts/write-setup-info.mjs"
       - "test/linux-native-folder.test.ts"
       - "test/linux-release-inputs.test.ts"
       - "test/linux-release-workflow.test.ts"
+      - "test/tree-modes.test.ts"
 
 permissions:
   contents: read
@@ -84,6 +86,7 @@ jobs:
             test/linux-release-inputs.test.ts \
             test/linux-native-folder.test.ts \
             test/linux-release-workflow.test.ts \
+            test/tree-modes.test.ts \
             test/native-runtime-adapter.test.ts \
             test/package-stamp.test.ts \
             test/setup-runner.test.ts

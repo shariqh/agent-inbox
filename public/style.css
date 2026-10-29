@@ -2128,7 +2128,8 @@ body.settings-open #liveBar { opacity: .32; }
 .mesh-agents[hidden], .mesh-agents-empty[hidden] { display: none; }
 .mesh-agents-note { color: var(--app-text-soft); font-size: 11.5px; }
 .mesh-agents-empty { margin: 0; color: var(--app-muted); font-size: 12.5px; }
-.mesh-agent-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; }
+/* min(): a card narrower than 320px (a phone) takes the full width rather than overflowing */
+.mesh-agent-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr)); gap: 12px; }
 .mesh-agent { min-width: 0; padding: 12px 14px; border: 1px solid var(--app-border); border-radius: 8px; background: var(--app-soft); }
 .mesh-agent-top { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 6px; }
 .mesh-agent-name { margin: 0; font-size: 15px; font-weight: 680; }
@@ -2153,9 +2154,9 @@ body.settings-open #liveBar { opacity: .32; }
 .mesh-session.idle, .mesh-session.dormant { color: var(--app-muted); }
 .mesh-dot { width: 8px; height: 8px; border: 1.5px solid var(--app-border-strong); border-radius: 50%; }
 .mesh-session.working .mesh-dot { border-color: var(--app-agent); background: var(--app-agent); }
-.mesh-where { display: flex; min-width: 0; align-items: baseline; gap: 8px; overflow: hidden; }
-.mesh-project { flex: none; max-width: 100%; }
-.mesh-branch { min-width: 0; }
+/* project over branch, as mockup a1 draws them, so a short branch is never cut */
+.mesh-where { display: flex; min-width: 0; flex-direction: column; align-items: flex-start; gap: 0; overflow: hidden; }
+.mesh-project, .mesh-branch { max-width: 100%; }
 .mesh-project, .mesh-branch { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mesh-branch { color: var(--app-text-soft); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; }
 .mesh-doing { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

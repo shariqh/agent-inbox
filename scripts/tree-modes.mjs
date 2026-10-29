@@ -18,12 +18,17 @@ function octal(mode) {
 // tree (#378). `privileged` maps a relative path to the exact modes its regular file may
 // carry with a special bit (chrome-sandbox's 04755 in a Linux package). A symlink is not
 // judged: Linux has no link modes and access goes through its target, which is checked as
-// an entry of its own when it lies in the tree. Links are never followed.
+// an entry of its own when it lies in the tree. Links are never followed, and the root
+// itself must not be one.
 export function assertSafeTreeModes(root, { label, privileged = {} } = {}) {
   const found = []
   const visit = (path, rel) => {
     const stat = lstatSync(path)
-    if (stat.isSymbolicLink()) return
+    if (stat.isSymbolicLink()) {
+      // Later checks reach the tree through its root, so a linked root would go unchecked.
+      if (rel === '.') throw new UnsafeTreeModeError(`${label ?? root} must not be a symlink`)
+      return
+    }
     const mode = stat.mode & 0o7777
     const reasons = []
     if (mode & 0o022) reasons.push('group/other-writable')

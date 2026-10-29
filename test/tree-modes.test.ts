@@ -78,6 +78,19 @@ describe('assertSafeTreeModes (#378)', () => {
     expect(() => assertSafeTreeModes(app, { label: 'app' })).not.toThrow()
   })
 
+  it('refuses a symlinked root instead of skipping the tree behind it', () => {
+    const scratch = scratchDir('tree-modes-root-link-')
+    const target = dir(join(scratch, 'target'), 0o777)
+    file(join(target, 'agent-inbox'), 0o4777)
+    const link = join(scratch, 'Agent Inbox')
+    symlinkSync(target, link)
+    expect(modeError(() => assertSafeTreeModes(link, { label: 'packaged app' })))
+      .toBe('packaged app must not be a symlink')
+    expect(() => assertSafeTreeModes(link, { label: 'packaged app' })).toThrow(UnsafeTreeModeError)
+    expect(modeError(() => verifyLinuxThinApp({ app: link, arch: 'x64' })))
+      .toBe('packaged Linux app must not be a symlink')
+  })
+
   it('refuses a world-writable file, naming its path and mode', () => {
     const app = linuxApp()
     chmodSync(join(app, 'resources.pak'), 0o666)
@@ -125,6 +138,19 @@ describe('assertSafeTreeModes (#378)', () => {
     chmodSync(join(app, 'agent-inbox'), 0o4755)
     expect(modeError(() => assertSafeTreeModes(app, { label: 'app', privileged })))
       .toContain('agent-inbox 4755 (setuid/setgid/sticky)')
+    chmodSync(join(app, 'agent-inbox'), 0o755)
+    // the allowance names a relative path, not a basename
+    file(join(app, 'resources', 'chrome-sandbox'), 0o4755)
+    expect(modeError(() => assertSafeTreeModes(app, { label: 'app', privileged })))
+      .toBe('app has 1 unsafe file mode(s): resources/chrome-sandbox 4755 (setuid/setgid/sticky)')
+  })
+
+  it('allows a special bit only on a regular file, never a directory at the privileged path', () => {
+    const app = dir(join(scratchDir('tree-modes-privileged-dir-'), 'Agent Inbox'))
+    dir(join(app, 'chrome-sandbox'), 0o4755)
+    expect(statSync(join(app, 'chrome-sandbox')).mode & 0o7777).toBe(0o4755)
+    expect(modeError(() => assertSafeTreeModes(app, { label: 'app', privileged: { 'chrome-sandbox': [0o4755] } })))
+      .toBe('app has 1 unsafe file mode(s): chrome-sandbox 4755 (setuid/setgid/sticky)')
   })
 
   it('lists at most ten offenders and counts the rest', () => {

@@ -31,9 +31,10 @@ const doingText = (value) => typeof value === 'string' && value.trim() && value.
 // that last wrote it) is its plan, the most recently updated one when several
 // are. Otherwise D4's join: the most recently updated active plan with the same
 // project, branch (`stream`) and agent, leaving out any plan stamped with
-// another session that is still present, which is that session's own plan. A
-// stamp naming a session that has gone (or none, from an older server) joins.
-export function linkedPlan(row, boards, present = new Set()) {
+// another session that is still WORKING, which is that session's own lane's
+// plan. A stamp naming a session that is idle or gone (or none, from an older
+// server) joins, so an idle session's plan never drops off every lane.
+export function linkedPlan(row, boards, working = new Set()) {
   let stamped = null
   let joined = null
   const newer = (board, best) => !best || String(board.updated_at ?? '') > String(best.updated_at ?? '')
@@ -42,7 +43,7 @@ export function linkedPlan(row, boards, present = new Set()) {
       if (newer(board, stamped)) stamped = board
       continue
     }
-    if (board.session && present.has(board.session)) continue
+    if (board.session && working.has(board.session)) continue
     if (board.project !== row.project || board.stream !== row.stream || board.agent !== row.agent) continue
     if (newer(board, joined)) joined = board
   }
@@ -109,12 +110,12 @@ const askMs = (entry) => {
 export function buildLanes({ activity, boards, asks, nowMs }) {
   const lanes = []
   let idle = 0
-  const present = new Set((activity ?? []).map((row) => row?.session).filter(Boolean))
+  const working = new Set((activity ?? []).filter((row) => isWorking(row, nowMs)).map((row) => row.session))
   for (const row of activity ?? []) {
     if (!isWorking(row, nowMs)) { idle += 1; continue }
     const at = callAt(row)
     const sinceMs = Math.max(0, nowMs - at)
-    const board = linkedPlan(row, boards, present)
+    const board = linkedPlan(row, boards, working)
     const laneAsks = (asks ?? []).filter((entry) => entry.kind === 'item'
       ? entry.item.session === row.session
       : Boolean(board) && entry.board.id === board.id)

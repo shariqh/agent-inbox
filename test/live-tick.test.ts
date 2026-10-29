@@ -198,3 +198,28 @@ describe('the liveness tick moves liveness and nothing else (#45)', () => {
     expect(() => livenessTick(db, 's1')).not.toThrow()
   })
 })
+
+// #306: recordActivityCall now READS the call buckets before it writes them. A
+// deferred transaction that reads first cannot wait for the writer: promoted
+// mid-transaction it fails at once with SQLITE_BUSY(_SNAPSHOT), and heartbeat()
+// swallows that, so a contended call would silently record no work at all. No
+// runtime suite can provoke that race reliably, so the shape is pinned here:
+// the function's only transaction is run through `.immediate()`.
+describe('recordActivityCall takes the write lock before it reads (#306)', () => {
+  const store = ts.createSourceFile('store.ts', readFileSync(new URL('../src/store.ts', import.meta.url), 'utf8'), ts.ScriptTarget.ESNext, true)
+  let body: ts.Node | undefined
+  walk(store, (n) => { if (ts.isFunctionDeclaration(n) && n.name?.text === 'recordActivityCall') body = n.body })
+
+  it('runs its db.transaction(...) through .immediate(), never a bare deferred call', () => {
+    expect(body).toBeDefined()
+    const transactions: ts.CallExpression[] = []
+    walk(body!, (n) => {
+      if (ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression) && n.expression.name.text === 'transaction') transactions.push(n)
+    })
+    expect(transactions).toHaveLength(1)
+    // the transaction function's only use: `<db.transaction(...)>.immediate(...)`
+    const use = transactions[0]!.parent
+    expect(ts.isPropertyAccessExpression(use) && use.name.text === 'immediate').toBe(true)
+    expect(ts.isCallExpression(use.parent) && use.parent.expression === use).toBe(true)
+  })
+})

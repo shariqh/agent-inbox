@@ -511,12 +511,16 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   `board_version` stays valid; `/api/boards` still rebuilds, because the whole-table `boards`
   domain's trigger fires on the `ensureBoard` UPDATE (column domains do not read it;
   `REVIEWED_COLUMNS` says so). `board_advance` restamps no plan field, this one included, and
-  neither do the human's writes or any older server's statements. Agent reads never carry it
-  (`shapeBoard` strips it; `pending()` and the title-less summary never select it). The
+  neither do the human's writes or any older server's statements. This build's agent reads
+  never carry it (`shapeBoard` strips it; `pending()` and the title-less summary never select
+  it); an older server sharing a migrated hub (v1.8.0's `shapeBoard` spreads the row) passes
+  it through on a titled `board_get`, as with #324's `repo_root`. The
   Dashboard's join (`linkedPlan` in `public/lanes.js`): a plan stamped with the lane's
   session wins (the newest such); otherwise D4's project + branch + agent join, leaving out
-  plans stamped with another session still present in `/api/activity`; a stamp naming a
-  session that has gone joins as before.
+  plans stamped with another session that is WORKING (`isWorking`); a stamp naming a session
+  that is idle or gone joins as before, so an idle CLI's plan never drops off every lane.
+  Existing hubs keep v1.8.0's `boards` update trigger beside the new one that also watches
+  `session`, so one boards UPDATE moves that domain's version twice: harmless, as #297 allows.
 - **Session scope is Solo-style** (`src/scope.ts`): inferred lazily per call, overridable via
   `register`. The one memo is a FOUND origin remote (#159): once `git remote get-url origin`
   succeeds, the server reuses it for both `project` and `repo` for the process's life (the

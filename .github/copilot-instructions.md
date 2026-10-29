@@ -441,9 +441,13 @@ Run the build before `npm run electron`; the development shell starts the built
 - `boards.session` (#306) is the writing MCP session's id, stamped by
   `board_upsert`/`board_row` (null/omitted keeps, `''` clears). A writer change
   alone moves neither `updated_at` nor the board revision; `board_advance`, human
-  writes and older servers never touch it; agent reads never carry it. The
-  Dashboard puts a plan on its stamped session's lane first, then falls back to
-  project + branch + agent, skipping plans another present session stamped.
+  writes and older servers never touch it; this build's agent reads never carry
+  it (an older server's titled `board_get` on a migrated hub passes it through,
+  as with `repo_root`). Existing hubs keep the old `boards` update trigger
+  beside the new one, so a boards UPDATE moves that version twice, harmlessly.
+  The Dashboard puts a plan on its stamped session's lane first, then falls
+  back to project + branch + agent, skipping plans another WORKING session
+  stamped (an idle or gone session's stamp joins).
 - MCP stdout is the protocol channel. Never add `console.log` in the MCP server
   path or let subprocess stdout inherit it. Capture subprocess output. Viewer
   logging is allowed. Hook CLI stdout/stderr and exit codes are also protocol

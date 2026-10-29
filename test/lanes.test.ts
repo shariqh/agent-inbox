@@ -171,7 +171,7 @@ describe('heartbeat trace and the session-to-plan link (#306)', () => {
     expect(lanesOf([session('t')], boards).lanes[0]!.plan?.id).toBe('joined')
   })
 
-  it('never joins a plan another present session stamped; a stamp whose session has gone joins as before', () => {
+  it('never joins a plan another working session stamped; a stamp whose session is idle or gone joins as before', () => {
     const boards = [
       plan('theirs', ago(0), [{ status: 'done' }], { session: 'other' }),
       plan('older', ago(10 * MIN), [{ status: 'done' }]),
@@ -179,8 +179,10 @@ describe('heartbeat trace and the session-to-plan link (#306)', () => {
     const both = lanesOf([session('s'), session('other', { stream: 'feature' })], boards).lanes
     expect(both.find((lane) => lane.session === 's')!.plan?.id).toBe('older')
     expect(both.find((lane) => lane.session === 'other')!.plan?.id).toBe('theirs')
-    // an idle presence row still owns its plan
-    expect(lanesOf([session('s'), session('other', { idle: true })], boards).lanes[0]!.plan?.id).toBe('older')
+    // a plan an open but idle session stamped shows on the working lane on its branch
+    expect(lanesOf([session('s'), session('other', { idle: true })], boards).lanes[0]!.plan?.id).toBe('theirs')
+    // so does one stamped by a session whose claim went cold
+    expect(lanesOf([session('s'), session('other', { last_call_at: ago(40 * MIN) })], boards).lanes[0]!.plan?.id).toBe('theirs')
     // once `other` is gone, its stamp no longer keeps the plan from the join
     expect(lanesOf([session('s')], boards).lanes[0]!.plan?.id).toBe('theirs')
   })

@@ -68,7 +68,7 @@ export interface NowStrip {
 export const QUIET_MS: number
 export const MAX_LANES: number
 export function isWorking(row: LaneActivity, nowMs: number): boolean
-export function linkedPlan<B extends LaneBoard>(row: LaneActivity, boards: B[], present?: Set<string>): B | null
+export function linkedPlan<B extends LaneBoard>(row: LaneActivity, boards: B[], working?: Set<string>): B | null
 export const TRACE_MINUTES: number
 export function callTrace(row: LaneActivity, nowMs: number): number[]
 export function tracePath(trace: number[]): string

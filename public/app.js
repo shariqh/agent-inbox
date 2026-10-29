@@ -48,7 +48,7 @@ import { actionCategory, actionOwnerLabel, agentFollowupChip, changeKind, lifecy
 import { buildRelay } from '/relay.js'
 import { buildMission } from '/mission.js'
 import { buildActivitySeries, buildDashboard } from '/dashboard.js'
-import { MAX_LANES, laneMotion, pinLaneOrder } from '/lanes.js'
+import { MAX_LANES, calledLanes, pinLaneOrder } from '/lanes.js'
 import { PANE_DEFAULTS, paneKeyValue, paneValueFromPointer, resolvePaneLayout } from '/panes.js'
 import { createThemeController } from '/theme.js'
 import { createMotionController } from '/motion.js'
@@ -1884,6 +1884,7 @@ function renderDashNow(strip, model) {
 // place, new ones append, and only a forced paint re-sorts. An ask is answered
 // in the rail alone (D2): a lane's "Asking you" strip jumps to its rail card.
 let laneOrder = []
+const laneCalls = new Map() // session → the last call a paint has seen, for the one-shot pulse
 const laneAsks = new Map() // session → { first, oldest } attention entries, read by the lane's buttons
 
 function dashLanesEl() {
@@ -1932,11 +1933,25 @@ function dashLaneEl(session) {
   return lane
 }
 
-function updateDashLane(el, lane, motion) {
+// One iteration of a CSS one-shot, restarted when it is still running and
+// removed on animationend so nothing lingers. Never a loop (#304).
+function playOnce(el, name) {
+  if (el.classList.contains(name)) {
+    el.classList.remove(name)
+    void el.offsetWidth
+  }
+  el.classList.add(name)
+  const done = (event) => {
+    if (event.animationName !== `dash-lane-${name}`) return
+    el.classList.remove(name)
+    el.removeEventListener('animationend', done)
+  }
+  el.addEventListener('animationend', done)
+}
+
+function updateDashLane(el, lane) {
   const color = pcolor(lane.project).dot
   if (el.style.getPropertyValue('--lane-color') !== color) el.style.setProperty('--lane-color', color)
-  el.classList.toggle('pulse', motion.pulse.has(lane.session))
-  el.classList.toggle('sweep', motion.sweep === lane.session)
   el.classList.toggle('quiet', lane.quiet)
   setText(el.querySelector('.dash-lane-doing'), lane.doing)
   const recency = el.querySelector('.dash-lane-recency')
@@ -1964,12 +1979,12 @@ function updateDashLane(el, lane, motion) {
       `${title}: ${done} done, ${segments.partial} in progress, ${segments.waiting} waiting on you, ${segments.todo} to do`)
   }
   const children = el.querySelector('.dash-lane-children')
-  const childKey = JSON.stringify(lane.children.map((child, index) => [child.name, child.doing, motion.childPulse.has(`${lane.session}\u0000${index}`)]))
+  const childKey = JSON.stringify(lane.children.map((child) => [child.name, child.doing]))
   if (children.dataset.key !== childKey) {
     children.dataset.key = childKey
-    children.replaceChildren(...lane.children.map((child, index) => {
+    children.replaceChildren(...lane.children.map((child) => {
       const chip = document.createElement('span')
-      chip.className = `dash-lane-child${motion.childPulse.has(`${lane.session}\u0000${index}`) ? ' pulse' : ''}`
+      chip.className = 'dash-lane-child'
       chip.textContent = child.name
       if (child.doing) chip.title = child.doing
       return chip
@@ -1998,12 +2013,19 @@ function renderDashLanes(section, model, { forced = false } = {}) {
   laneOrder = pinLaneOrder(forced ? [] : laneOrder, model.lanes)
   const bySession = new Map(model.lanes.map((lane) => [lane.session, lane]))
   const drawn = laneOrder.slice(0, MAX_LANES).map((session) => bySession.get(session))
-  const motionPlan = laneMotion(drawn)
+  // A real call since the last paint pulses its lane once; only drawn lanes on a
+  // visible Dashboard, and only when the human's motion setting allows it.
+  const called = calledLanes(laneCalls, drawn)
+  laneCalls.clear()
+  for (const lane of model.lanes) laneCalls.set(lane.session, lane.lastCallAt)
+  const animate = motion.activityMotion() && !document.getElementById('dashboard')?.hidden
   const existing = new Map([...list.children].map((el) => [el.dataset.lane, el]))
   const nodes = drawn.map((lane) => {
     const el = existing.get(lane.session) ?? dashLaneEl(lane.session)
     existing.delete(lane.session)
-    updateDashLane(el, lane, motionPlan)
+    updateDashLane(el, lane)
+    if (animate && called.pulse.has(lane.session)) playOnce(el, 'pulse')
+    if (animate && called.sweep === lane.session) playOnce(el, 'sweep')
     return el
   })
   for (const [session, el] of existing) {

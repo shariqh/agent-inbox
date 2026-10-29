@@ -164,26 +164,30 @@ describe('motion foundation in public/style.css (#302)', () => {
     }
   })
 
-  // #304: the sweep marks the latest activity, so it runs on one lane only;
-  // laneMotion (test/lanes.test.ts) picks it and keeps every loop within 12.
-  it('sweeps only the lane laneMotion picks as the newest call', () => {
-    const sweeps = rules.filter((r) => !r.media && [...r.decls].some(([prop, value]) => prop.startsWith('animation') && /dash-lane-sweep/.test(value)))
-    expect(sweeps.flatMap((r) => r.selectors)).toEqual(['.dash-lane.sweep::before'])
-    // Stopped (Calm, reduced motion), the sweep's bar must not stay drawn.
-    expect(sweeps[0]!.decls.get('opacity')).toBe('0')
-    expect(appJs.match(/classList\.toggle\('sweep'/g)).toEqual(["classList.toggle('sweep'"])
-    expect(appJs).toContain("el.classList.toggle('sweep', motion.sweep === lane.session)")
+  // #304: an infinite loop cost ~5.6 pp of renderer and ~34 pp of GPU CPU, so
+  // lanes use no infinite animation; activity motion is one-shot per real call.
+  it('runs no infinite animation in the lanes, only one-shots app.js starts', () => {
+    const lane = rules.filter((r) => r.selectors.some((sel) => sel.includes('dash-lane')))
+    expect(lane.filter(isInfinite).flatMap((r) => r.selectors)).toEqual([])
+    const shots = lane.filter((r) => !r.media && /dash-lane-(pulse|sweep)/.test(r.decls.get('animation') ?? ''))
+    expect(shots.flatMap((r) => r.selectors)).toEqual(['.dash-lane.sweep::before', '.dash-lane.pulse .dash-lane-pulse::after'])
+    for (const rule of shots) {
+      expect(rule.decls.get('animation')).toMatch(/^dash-lane-\w+ var\(--motion-slow\) var\(--motion-ease[\w-]*\) 1$/)
+      // At rest (and once Calm or reduced motion stops it) nothing stays drawn.
+      expect(rule.decls.get('opacity')).toBe('0')
+    }
+    // Calm and reduced motion stop them as a backstop to app.js's own check.
+    for (const sel of ['.dash-lane.sweep::before', '.dash-lane.pulse .dash-lane-pulse::after']) {
+      expect(rules.some((r) => r.media && REDUCED.test(r.media) && isNone(r) && r.selectors.includes(sel)), sel).toBe(true)
+      expect(rules.some((r) => !r.media && isNone(r) && r.selectors.includes(`${CALM} ${sel}`)), sel).toBe(true)
+    }
   })
 
-  // #304 review: without the pulse, every live lane says "live" in words, not
-  // only the lanes the 12-loop budget gave a pulse.
-  it('shows the word "live" on every lane under Calm and reduced motion', () => {
-    const shown = rules.filter((r) => r.decls.get('position') === 'static'
-      && r.selectors.some((sel) => sel.endsWith('.dash-lane-live')))
-    const calm = shown.filter((r) => !r.media).flatMap((r) => r.selectors)
-    const reduced = shown.filter((r) => r.media && REDUCED.test(r.media)).flatMap((r) => r.selectors)
-    expect(calm).toEqual([`${CALM} .dash-lane .dash-lane-live`])
-    expect(reduced).toEqual(['.dash-lane .dash-lane-live'])
+  // The live indicator is static: a solid dot and the word, the same in every mode.
+  it('draws "live" as static text on every lane', () => {
+    const live = rules.filter((r) => r.selectors.some((sel) => sel.endsWith('.dash-lane-live')))
+    expect(live.map((r) => [r.media, r.selectors])).toEqual([[null, ['.dash-lane-live']]])
+    expect(live[0]!.decls.has('position')).toBe(false)
   })
 
   it('scrolls through the motion controller instead of a literal smooth behaviour', () => {

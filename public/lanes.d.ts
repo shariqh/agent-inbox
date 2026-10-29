@@ -61,7 +61,6 @@ export interface NowStrip {
 }
 
 export const QUIET_MS: number
-export const MAX_LOOPS: number
 export const MAX_LANES: number
 export function isWorking(row: LaneActivity, nowMs: number): boolean
 export function linkedPlan<B extends LaneBoard>(row: LaneActivity, boards: B[]): B | null
@@ -73,4 +72,4 @@ export function buildLanes(input: {
   nowMs: number
 }): { lanes: Lane[]; idle: number; now: NowStrip }
 export function pinLaneOrder(previous: string[], lanes: Array<{ session: string }>): string[]
-export function laneMotion(drawn: Lane[]): { sweep: string | null; pulse: Set<string>; childPulse: Set<string> }
+export function calledLanes(previous: Map<string, string>, drawn: Lane[]): { pulse: Set<string>; sweep: string | null }

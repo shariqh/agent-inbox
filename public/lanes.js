@@ -14,8 +14,7 @@ const CLAIM_COLD_MS = 30 * 60_000 // src/store.ts CLAIM_COLD_MS
 // decays. The proposal leaves N open; 5 minutes is where freshnessTone
 // (rowview.js AGING_MS) already calls a session quiet.
 export const QUIET_MS = 5 * 60_000
-// §10: at most 12 infinite animations, and the Dashboard draws at most 12 lanes.
-export const MAX_LOOPS = 12
+// The Dashboard draws at most 12 lanes (§10 DOM budget).
 export const MAX_LANES = 12
 
 const callAt = (row) => Date.parse(row?.last_call_at ?? row?.started_at ?? '')
@@ -124,20 +123,20 @@ export function pinLaneOrder(previous, lanes) {
   return [...kept, ...lanes.map((lane) => lane.session).filter((session) => !known.has(session))]
 }
 
-// Which drawn lanes animate, within MAX_LOOPS: the top-edge sweep only on the
-// lane with the newest call, then lane pulses in drawn order, then subagent
-// pulses. A quiet lane's claim is still live, so it still pulses.
-export function laneMotion(drawn) {
-  let newest = null
-  for (const lane of drawn) if (!newest || lane.sinceMs < newest.sinceMs) newest = lane
-  let budget = MAX_LOOPS - (newest ? 1 : 0)
+// Lanes run no infinite animation (#304: a loop cost ~5.6 pp of renderer and
+// ~34 pp of GPU CPU). Motion is one-shot per real event: a lane pulses once when
+// its `last_call_at` moves forward, and the sweep runs once on the lane whose
+// call is the newest of those. `previous` maps session → the last call already
+// seen; a session it has not seen (first paint, a lane that just appeared) never
+// pulses, and an unchanged call never does either.
+export function calledLanes(previous, drawn) {
   const pulse = new Set()
-  const childPulse = new Set()
-  for (const lane of drawn) if (budget > 0) { pulse.add(lane.session); budget -= 1 }
+  let sweep = null
   for (const lane of drawn) {
-    lane.children.forEach((_, index) => {
-      if (budget > 0) { childPulse.add(`${lane.session}\u0000${index}`); budget -= 1 }
-    })
+    const seen = previous.get(lane.session)
+    if (seen === undefined || !(Date.parse(lane.lastCallAt) > Date.parse(seen))) continue
+    pulse.add(lane.session)
+    if (!sweep || lane.sinceMs < sweep.sinceMs) sweep = lane
   }
-  return { sweep: newest?.session ?? null, pulse, childPulse }
+  return { pulse, sweep: sweep?.session ?? null }
 }

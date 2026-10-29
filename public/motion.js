@@ -38,6 +38,10 @@ export function createMotionController({ storage, root, media, doc }) {
     get level() { return level },
     // A smooth scroll is a one-shot: instant under the OS setting, kept by Calm.
     scrollBehavior() { return media.matches ? 'auto' : 'smooth' },
+    // Activity motion (#304: a lane's one-shot pulse per real MCP call) runs only
+    // at Full, never under the OS setting, and never on a hidden page. Calm stops
+    // it too: a pulse on every call is motion a human can opt out of.
+    activityMotion() { return !media.matches && level === 'full' && !doc.hidden },
     setLevel(next) {
       if (!MOTION_LEVELS.includes(next)) throw new TypeError(`Invalid motion level: ${String(next)}`)
       storage.setItem(MOTION_STORAGE_KEY, next)

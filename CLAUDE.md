@@ -1437,19 +1437,29 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   their subagents, the attention set and its oldest age, and plan steps as the lanes' bars
   added up, each plan once; the card headings carry no numbers. `renderDashLanes` keeps
   lanes keyed by session and writes only changed text and attributes (`setText`/`setAttr`),
-  so an unchanged lane keeps its nodes, selection and animations; a rail draft never stops
+  so an unchanged lane keeps its nodes and selection; a rail draft never stops
   it, and a held pointer stops it with the rest of `paintAmbient`. A focused lane control
   that leaves (lane gone, ask strip hidden, moved by a re-sort) hands focus to the adjacent
   lane control or the lanes heading, the outcomes list's rule, and only when the document
   had focus before the update: removing the focused node can itself make `hasFocus()`
   false. A background window's remembered focus is never moved. Lanes carry `data-lane`,
-  an identity attribute in `public/selection.js`, and under Calm and reduced motion every
-  lane, pulsed or not, says "live" in words.
+  an identity attribute in `public/selection.js`.
   Order is pinned (`pinLaneOrder`): a session keeps its place, new ones append, and only a
   forced paint (`forcedAmbient`) re-sorts, newest call first. At most `MAX_LANES` (12) are
-  drawn, the rest "+N more working". `laneMotion` spends the 12-loop budget: the top-edge
-  sweep only on the lane with the newest call, then lane pulses in drawn order, then
-  subagent pulses. Presence, not attention: nothing here reaches `public/attention.js`, a
+  drawn, the rest "+N more working". **Lanes use no infinite animation; activity motion is
+  one-shot per real event.** Measured A/B against main with four working sessions, the
+  first version's loops (lane and subagent pulses, a top-edge sweep) cost +5.6 pp of
+  renderer and +34 pp of GPU CPU just for being on screen, undoing #298, and even one loop
+  cost ~+4.7 pp. So a live lane is static, a solid dot and the word "live" in every mode,
+  and `calledLanes` (pure) names the drawn lanes whose `last_call_at` moved forward since
+  the last paint (`laneCalls`, refreshed for every model lane on every paint): each pulses
+  once and the newest of them also sweeps once (`playOnce`: a class whose one-iteration
+  CSS animation takes the motion tokens and is removed on `animationend`). Nothing starts
+  on first paint, for a lane that just appeared, on an unchanged poll or a forced repaint,
+  for a lane that is not drawn, or while the Dashboard pane is hidden; and nothing starts
+  unless `motion.activityMotion()` allows it: Full only, never under the OS reduced-motion
+  setting or a hidden page. Calm stops these pulses too (a pulse per call is motion a human
+  may opt out of), with a CSS backstop in both lists. Presence, not attention: nothing here reaches `public/attention.js`, a
   badge, a tab or the dock (`test/dom/dashboard-lanes.test.ts`).
 - **Motion is CSS-only, compositor-only and always switchable off (#302, Dashboard 2.0
   phase 0).** Design: [`2026-10-22-dashboard-2-proposal.md`](docs/superpowers/specs/2026-10-22-dashboard-2-proposal.md)
@@ -1460,7 +1470,9 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   infinite animation is listed twice with `animation: none !important`: in the
   `@media (prefers-reduced-motion: reduce)` block and as `:root[data-motion="calm"] <selector>`.
   That block also makes every one-shot instant (`*` durations and delays 0s, iteration
-  count 1, `scroll-behavior: auto`). (4) At most 12 infinite animations on screen. (5) Motion
+  count 1, `scroll-behavior: auto`). (4) At most 12 infinite animations on screen, and none at all for
+  activity: #304 measured a single loop at ~+4.7 pp of renderer CPU, so motion that marks
+  activity is one-shot per real event (see live lanes above). (5) Motion
   never moves focus, scrolls or reorders under the pointer, and updates are keyed rather than
   rebuilt, so the held-pointer guard keeps working and there is no third render entry.
   `public/motion.js` (`createMotionController`, created at app.js top level before the first

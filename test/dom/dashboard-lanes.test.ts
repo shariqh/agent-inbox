@@ -63,9 +63,9 @@ describe('live lanes (#304)', () => {
     expect([lane('second'), lane('first')]).toEqual(nodes)
     expect(doing('first')).toBe('Running the tests')
     expect(lane('first')!.querySelector('.dash-lane-detail')?.textContent).toBe('vitest, 2 workers')
-    // Only the lane with the newest call sweeps.
-    expect([...document.querySelectorAll<HTMLElement>('.dash-lane.sweep')].map((el) => el.dataset.lane)).toEqual(['third'])
-    expect(document.querySelectorAll('.dash-lane.pulse')).toHaveLength(3)
+    // A lane that only just appeared does not pulse; the one whose call moved does.
+    expect([...document.querySelectorAll<HTMLElement>('.dash-lane.pulse')].map((el) => el.dataset.lane)).toEqual(['first'])
+    expect([...document.querySelectorAll<HTMLElement>('.dash-lane.sweep')].map((el) => el.dataset.lane)).toEqual(['first'])
 
     // A frame the human asked for re-sorts.
     click(document.querySelector('.tab[data-tab="dashboard"]'))
@@ -246,6 +246,89 @@ describe('lanes keep moving while the rest of the Dashboard holds (#304)', () =>
   })
 })
 
+describe('one-shot activity motion (#304: no infinite animation)', () => {
+  // Every class a paint starts a one-shot with, as [session, name].
+  function shots(): Array<[string, string]> {
+    const started: Array<[string, string]> = []
+    const add = DOMTokenList.prototype.add
+    vi.spyOn(DOMTokenList.prototype, 'add').mockImplementation(function (this: DOMTokenList, ...names: string[]) {
+      const lane = document.querySelector<HTMLElement>('.dash-lane-list')
+      for (const name of names) {
+        if (name !== 'pulse' && name !== 'sweep') continue
+        const owner = [...(lane?.children ?? [])].find((el) => el.classList === this) as HTMLElement | undefined
+        if (owner) started.push([owner.dataset.lane!, name])
+      }
+      return add.apply(this, names)
+    })
+    return started
+  }
+
+  it('pulses once when a call arrives, never on first paint, an unchanged poll or a forced repaint', async () => {
+    const d = open()
+    work(d, 'a', 'Working')
+    work(d, 'b', 'Also working')
+    const started = shots()
+    await bootApp(d)
+    expect(started).toEqual([])
+
+    await pollTick()
+    advanceClock()
+    insertItem(d, { project: 'beta', stream: 'main', agent: 'claude', kind: 'note', title: 'Unrelated' })
+    await pollTick()
+    expect(started).toEqual([])
+
+    advanceClock()
+    recordActivityCall(d, 'b')
+    await pollTick()
+    expect(started).toEqual([['b', 'pulse'], ['b', 'sweep']])
+    expect(lane('b')!.classList.contains('pulse')).toBe(true)
+
+    await pollTick()
+    click(document.querySelector('.tab[data-tab="dashboard"]'))
+    await settle()
+    expect(started).toHaveLength(2)
+
+    // The one-shot cleans itself up when its animation ends.
+    const end = new Event('animationend', { bubbles: true })
+    Object.defineProperty(end, 'animationName', { value: 'dash-lane-pulse' })
+    lane('b')!.dispatchEvent(end)
+    expect(lane('b')!.classList.contains('pulse')).toBe(false)
+  })
+
+  it.each([
+    ['reduced motion', () => { (window.matchMedia('(prefers-reduced-motion: reduce)') as { matches: boolean }).matches = true }],
+    ['Calm', () => { localStorage.setItem('agent-inbox-motion', 'calm') }],
+    ['a hidden page', () => { vi.spyOn(document, 'hidden', 'get').mockReturnValue(true) }],
+  ] as const)('starts nothing under %s', async (_name, set) => {
+    const d = open()
+    work(d, 'a', 'Working')
+    if (_name === 'Calm') set()
+    const started = shots()
+    await bootApp(d)
+    if (_name !== 'Calm') set()
+    advanceClock()
+    recordActivityCall(d, 'a')
+    await pollTick()
+    expect(doing('a')).toBe('Working')
+    expect(started).toEqual([])
+  })
+
+  it('starts nothing while the Dashboard is not on screen, nor on coming back to it', async () => {
+    const d = open()
+    work(d, 'a', 'Working')
+    const started = shots()
+    await bootApp(d)
+    click(document.querySelector('.tab[data-tab="needsYou"]'))
+    await settle()
+    advanceClock()
+    recordActivityCall(d, 'a')
+    await pollTick()
+    click(document.querySelector('.tab[data-tab="dashboard"]'))
+    await settle()
+    expect(started).toEqual([])
+  })
+})
+
 describe('focus when a lane control leaves (#304 review)', () => {
   const finish = (d: Database.Database, session: string) =>
     upsertActivity(d, { ...A, session, doing: 'open', idle: true })
@@ -305,8 +388,6 @@ describe('the Dashboard element budget (#304, proposal §10)', () => {
     await bootApp(d)
     expect(document.querySelectorAll('#dashboard .dash-lane')).toHaveLength(12)
     expect(document.querySelector('.dash-lanes-more')?.textContent).toBe('+2 more working')
-    expect(document.querySelectorAll('.dash-lane.pulse').length + document.querySelectorAll('.dash-lane-child.pulse').length
-      + document.querySelectorAll('.dash-lane.sweep').length).toBe(12)
     const count = document.querySelectorAll('#dashboard *').length
     expect(count).toBeLessThanOrEqual(1500)
   })

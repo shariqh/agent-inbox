@@ -1873,9 +1873,13 @@ body.settings-open #liveBar { opacity: .32; }
 .dash-rail-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; }
 .dash-rail-more { padding: 0; border: 0; background: transparent; color: var(--app-muted); font-size: 12px; }
 .dash-rail-review { margin-left: auto; font-size: 12px; }
-/* #304: live lanes, one per working session, updated in place. The pulse
-   beats while the claim is live; the top-edge sweep runs only on the lane
-   with the newest call (laneMotion keeps every loop within §10's cap of 12). */
+/* #304: live lanes, one per working session, updated in place. Lanes run no
+   infinite animation (a loop cost ~5.6 pp of renderer and ~34 pp of GPU CPU):
+   a live lane has a solid dot and the word "live", and motion is one-shot per
+   real event. playOnce() adds .pulse when the lane's last_call_at moves
+   forward, and .sweep on the lane with the newest such call, and removes each
+   on animationend; app.js adds neither under Calm, reduced motion or a hidden
+   page. */
 .dash-lane-list { display: grid; gap: 10px; }
 .dash-lane {
   position: relative;
@@ -1897,9 +1901,8 @@ body.settings-open #liveBar { opacity: .32; }
   height: 2px;
   background: linear-gradient(90deg, transparent, var(--lane-color, var(--app-agent)), transparent);
   content: "";
-  /* Hidden unless the sweep runs, so Calm and reduced motion leave no stray bar. */
   opacity: 0;
-  animation: dash-lane-sweep 4s var(--motion-ease-in-out) infinite;
+  animation: dash-lane-sweep var(--motion-slow) var(--motion-ease-in-out) 1;
 }
 .dash-lane-head { display: flex; min-width: 0; align-items: baseline; gap: 8px; }
 .dash-lane-pulse {
@@ -1911,16 +1914,15 @@ body.settings-open #liveBar { opacity: .32; }
   border-radius: 50%;
   background: var(--lane-color, var(--app-agent));
 }
-.dash-lane.pulse .dash-lane-pulse::after,
-.dash-lane-child.pulse::before {
+.dash-lane.pulse .dash-lane-pulse::after {
   position: absolute;
   inset: 0;
   border-radius: 50%;
   background: var(--lane-color, var(--app-agent));
   content: "";
 }
-.dash-lane.pulse .dash-lane-pulse::after { animation: dash-lane-pulse 2s var(--motion-ease-out) infinite; }
-.dash-lane-live { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+.dash-lane.pulse .dash-lane-pulse::after { opacity: 0; animation: dash-lane-pulse var(--motion-slow) var(--motion-ease-out) 1; }
+.dash-lane-live { color: var(--app-agent); font-size: 10px; font-weight: 700; text-transform: uppercase; }
 .dash-lane-doing { min-width: 0; flex: 1; overflow: hidden; font-size: 14.5px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
 .dash-lane-recency { flex: none; color: var(--app-text-soft); font-size: 11px; font-variant-numeric: tabular-nums; }
 .dash-lane.quiet .dash-lane-recency { padding: 0 6px; border-radius: 999px; background: color-mix(in srgb, var(--app-plan) 16%, transparent); color: var(--app-text); }
@@ -1939,7 +1941,6 @@ body.settings-open #liveBar { opacity: .32; }
 .dash-lane-children:empty { display: none; }
 .dash-lane-child { position: relative; display: inline-flex; align-items: center; gap: 4px; padding: 1px 7px 1px 15px; border: 1px solid var(--app-border); border-radius: 999px; color: var(--app-muted); font-size: 10.5px; }
 .dash-lane-child::after { position: absolute; top: 50%; left: 6px; width: 5px; height: 5px; margin-top: -2.5px; border-radius: 50%; background: var(--lane-color, var(--app-agent)); content: ""; }
-.dash-lane-child.pulse::before { inset: auto; top: 50%; left: 6px; width: 5px; height: 5px; margin-top: -2.5px; animation: dash-lane-pulse 2s var(--motion-ease-out) .6s infinite; }
 .dash-lane-ask { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding-top: 4px; border-top: 1px dashed var(--app-border); }
 .dash-lane-asking { min-width: 0; flex: 1; overflow: hidden; padding: 0; border: 0; background: transparent; color: var(--app-text); font-size: 12px; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
 .dash-lane-ask-label { color: var(--app-attention); font-weight: 650; }
@@ -2217,18 +2218,14 @@ body.sidebar-collapsed .gear[data-shortcut]::after { display: none; }
 :root[data-page-hidden] *::before,
 :root[data-page-hidden] *::after { animation-play-state: paused !important; }
 
-/* Every infinite animation, off under Calm (and below, under reduced motion). */
+/* #304: Calm stops the lanes' activity one-shots too (app.js does not start
+   them; this is the backstop). Other one-shots stay under Calm. */
 :root[data-motion="calm"] .dash-lane.sweep::before,
-:root[data-motion="calm"] .dash-lane.pulse .dash-lane-pulse::after,
-:root[data-motion="calm"] .dash-lane-child.pulse::before { animation: none !important; }
-/* Without the pulse, a live lane says so in words. */
-:root[data-motion="calm"] .dash-lane .dash-lane-live { position: static; width: auto; height: auto; clip: auto; color: var(--app-agent); font-size: 10px; font-weight: 700; text-transform: uppercase; }
+:root[data-motion="calm"] .dash-lane.pulse .dash-lane-pulse::after { animation: none !important; }
 
 @media (prefers-reduced-motion: reduce) {
   .dash-lane.sweep::before,
-  .dash-lane.pulse .dash-lane-pulse::after,
-  .dash-lane-child.pulse::before { animation: none !important; }
-  .dash-lane .dash-lane-live { position: static; width: auto; height: auto; clip: auto; color: var(--app-agent); font-size: 10px; font-weight: 700; text-transform: uppercase; }
+  .dash-lane.pulse .dash-lane-pulse::after { animation: none !important; }
   *,
   *::before,
   *::after {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { MAX_LOOPS, QUIET_MS, buildLanes, laneMotion, pinLaneOrder } from '../public/lanes.js'
+import { QUIET_MS, buildLanes, calledLanes, pinLaneOrder } from '../public/lanes.js'
 import { attentionEntries, sortRail } from '../public/attention.js'
 import type { Lane } from '../public/lanes.js'
 
@@ -118,22 +118,17 @@ describe('lane order and motion (#304, proposal §10)', () => {
     expect(pinLaneOrder(['a', 'b', 'c'], lanes('c', 'a'))).toEqual(['a', 'c'])
   })
 
-  it('keeps every loop within the cap and sweeps only the lane with the newest call', () => {
-    const lane = (id: string, sinceMs: number, children = 3): Lane => ({
+  it('pulses a lane only when its last call moves forward, and sweeps the newest of those', () => {
+    const lane = (id: string, sinceMs: number): Lane => ({
       session: id, project: 'alpha', branch: 'main', agent: 'copilot', doing: 'x', detail: '', lastCallAt: ago(sinceMs),
-      sinceMs, quiet: false, children: Array.from({ length: children }, (_, i) => ({ name: `c${i}`, doing: '' })),
-      plan: null, asks: [], waiting: null,
+      sinceMs, quiet: false, children: [], plan: null, asks: [], waiting: null,
     })
-    const crowded = Array.from({ length: 12 }, (_, i) => lane(`l${i}`, (12 - i) * 1000))
-    const busy = laneMotion(crowded)
-    expect(busy.sweep).toBe('l11')
-    expect(busy.pulse.size + busy.childPulse.size + 1).toBe(MAX_LOOPS)
-    expect(busy.childPulse.size).toBe(0)
-
-    const few = laneMotion([lane('a', 5000, 2), lane('b', 1000, 1)])
-    expect(few.sweep).toBe('b')
-    expect([...few.pulse]).toEqual(['a', 'b'])
-    expect(few.childPulse.size).toBe(3)
-    expect(laneMotion([])).toEqual({ sweep: null, pulse: new Set(), childPulse: new Set() })
+    const drawn = [lane('moved', 2000), lane('newest', 1000), lane('same', 60_000), lane('new-lane', 500)]
+    const seen = new Map([['moved', ago(30_000)], ['newest', ago(30_000)], ['same', ago(60_000)]])
+    expect(calledLanes(seen, drawn)).toEqual({ pulse: new Set(['moved', 'newest']), sweep: 'newest' })
+    // First paint: nothing seen yet, nothing pulses.
+    expect(calledLanes(new Map(), drawn)).toEqual({ pulse: new Set(), sweep: null })
+    // A clock moved back never reads as a new call.
+    expect(calledLanes(new Map([['same', ago(0)]]), [lane('same', 60_000)])).toEqual({ pulse: new Set(), sweep: null })
   })
 })

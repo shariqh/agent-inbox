@@ -185,3 +185,39 @@ export function calledLanes(previous, drawn) {
   }
   return { pulse, sweep: sweep?.session ?? null }
 }
+
+// #307: the lanes' quick filters, window-local view state like the lens. They
+// narrow the drawn lanes only: the Now strip, the rail, attention, the badge
+// and the dock never read them.
+export function laneMatches(lane, filters) {
+  return (!filters?.project || lane.project === filters.project) && (!filters?.agent || lane.agent === filters.agent)
+}
+
+// The choices each filter offers: what the lanes hold, plus a chosen value no
+// lane holds any more, so the select still says what it filters by.
+export function laneFilterChoices(lanes, filters) {
+  const pick = (key) => [...new Set([...lanes.map((lane) => lane[key]), filters?.[key]].filter(Boolean))].sort()
+  return { project: pick('project'), agent: pick('agent') }
+}
+
+// #307: the session focus panel reads a lane and the data the Dashboard
+// already has: the lane's plan, the newest item the session wrote (the source
+// of its ambient PR and CI chips when it has no plan) and its recent outcomes,
+// newest first as `outcomes` (relay order) has them. Its asks are the lane's
+// own, from the attention set.
+const FOCUS_OUTCOMES = 3
+
+export function sessionFocus(lane, { items = [], boards = [], outcomes = [] } = {}) {
+  const board = lane.plan ? boards.find((candidate) => candidate.id === lane.plan.id) ?? null : null
+  let newest = null
+  for (const item of items) {
+    if (item.session === lane.session && (!newest || String(item.created_at ?? '') > String(newest.created_at ?? ''))) newest = item
+  }
+  return {
+    board,
+    source: board ?? newest,
+    outcomes: outcomes.filter((entry) => (entry.kind === 'item'
+      ? entry.item.session === lane.session
+      : Boolean(board) && entry.board.id === board.id)).slice(0, FOCUS_OUTCOMES),
+  }
+}

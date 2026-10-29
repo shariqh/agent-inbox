@@ -1976,6 +1976,58 @@ body.settings-open #liveBar { opacity: .32; }
 .dash-lanes-foot { display: flex; gap: 12px; margin-top: 10px; }
 .dash-lanes-foot button { padding: 0; border: 0; background: transparent; color: var(--app-muted); font-size: 12px; }
 .dash-lanes-foot button[hidden] { display: none; }
+/* #307: the lanes' quick filters, and the button that opens a lane's session
+   focus panel (the lane's own title, so the lane reads as before). */
+.dash-lane-filters { display: flex; gap: 6px; }
+.dash-lane-filter { max-width: 150px; padding: 3px 6px; border: 1px solid var(--app-border); border-radius: 6px; background: var(--app-surface); color: var(--app-text); font: inherit; font-size: 12px; }
+.dash-lanes-none { margin: 0; color: var(--app-muted); font-size: 12.5px; }
+.dash-lanes-none[hidden] { display: none; }
+.dash-lane { cursor: pointer; }
+.dash-lane-open { display: flex; min-width: 0; flex: 1; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.dash-lane-open[aria-expanded="true"] .dash-lane-doing { color: var(--app-accent); }
+/* #307: the session focus panel, a read-only side panel over the Dashboard,
+   below search results, Live and every dialog. Its one-shot entrance uses the
+   motion tokens; reduced motion makes it instant and Calm drops it. */
+.dash-focus {
+  position: fixed;
+  top: 72px;
+  right: 16px;
+  bottom: 56px;
+  z-index: 35;
+  display: grid;
+  width: min(380px, calc(100vw - 32px));
+  align-content: start;
+  gap: 8px;
+  padding: 16px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--app-border);
+  border-radius: 10px;
+  background: var(--app-surface);
+  box-shadow: 0 12px 32px color-mix(in srgb, var(--app-text) 14%, transparent);
+  animation: dash-focus-in var(--motion-moderate) var(--motion-ease-out) 1;
+}
+.dash-focus[hidden], .dash-focus [hidden] { display: none; }
+.dash-focus-head { display: flex; align-items: center; gap: 8px; }
+.dash-focus-head h2 { min-width: 0; flex: 1; margin: 0; font-size: 14px; font-weight: 680; }
+.dash-focus-close { padding: 0 6px; border: 0; background: transparent; color: var(--app-muted); font-size: 18px; line-height: 1; }
+.dash-focus p { margin: 0; }
+.dash-focus-meta, .dash-focus-none, .dash-focus-gone { color: var(--app-muted); font-size: 12px; }
+.dash-focus-doing { font-size: 14.5px; font-weight: 650; }
+.dash-focus-detail { color: var(--app-text-soft); font-size: 12.5px; }
+.dash-focus-part { display: grid; gap: 6px; padding-top: 8px; border-top: 1px solid var(--app-border); }
+.dash-focus-part h3 { margin: 0; color: var(--app-muted); font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+.dash-focus-ask, .dash-focus-plan { display: flex; min-width: 0; align-items: baseline; gap: 8px; font-size: 12.5px; }
+.dash-focus-ask-title, .dash-focus-plan-title { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dash-focus-plan-count { color: var(--app-muted); font-size: 12px; }
+.dash-focus-go { flex: none; justify-self: start; padding: 2px 8px; border: 1px solid var(--app-border); border-radius: 6px; background: var(--app-soft); color: var(--app-text); font-size: 12px; }
+.dash-focus-outcome { display: grid; min-width: 0; gap: 1px; padding: 4px 0; border: 0; background: transparent; color: var(--app-text); font: inherit; font-size: 12.5px; text-align: left; }
+.dash-focus-outcome span { overflow: hidden; color: var(--app-muted); text-overflow: ellipsis; white-space: nowrap; }
+.dash-focus-source { display: flex; flex-wrap: wrap; gap: 6px; }
+@keyframes dash-focus-in {
+  from { opacity: 0; transform: translateX(16px); }
+  to { opacity: 1; transform: none; }
+}
 @keyframes dash-lane-pulse {
   from { opacity: .7; transform: scale(1); }
   to { opacity: 0; transform: scale(2.6); }
@@ -2259,7 +2311,8 @@ body.sidebar-collapsed .gear[data-shortcut]::after { display: none; }
    them; this is the backstop). Other one-shots stay under Calm. */
 :root[data-motion="calm"] .dash-lane.sweep::before,
 :root[data-motion="calm"] .dash-lane.pulse .dash-lane-pulse::after,
-:root[data-motion="calm"] .dashboard-outcome.arrived::before { animation: none !important; }
+:root[data-motion="calm"] .dashboard-outcome.arrived::before,
+:root[data-motion="calm"] .dash-focus { animation: none !important; }
 
 @media (prefers-reduced-motion: reduce) {
   .dash-lane.sweep::before,

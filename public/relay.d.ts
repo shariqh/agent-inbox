@@ -18,6 +18,10 @@ export interface RelayRow extends AttentionRow {
   annotated_at?: string | null
   outcome?: string
   outcome_at?: string | null
+  action_started_at?: string | null
+  handled_at?: string | null
+  /** earlier actions (#305 marks the ones that were asks) */
+  history?: Array<{ started_at?: string; action_owner?: string | null; response?: string | null; handled?: boolean }>
 }
 
 export interface RelayBoard extends Omit<AttentionBoard, 'rows'> {

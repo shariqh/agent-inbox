@@ -150,6 +150,10 @@ describe('the liveness tick moves liveness and nothing else (#45)', () => {
     recordActivityCall(db, 's1') // the status({doing}) call that made the claim
     const madeAt = listActivity(db)[0]!.last_call_at
     expect(madeAt).toBe(new Date(START).toISOString())
+    // #306: the call trace is work too, and the tick must never write it
+    const traceOf = () => db.prepare(`SELECT call_minute, call_counts FROM activity WHERE session = 's1'`).get()
+    const trace = traceOf()
+    expect(trace).toEqual({ call_minute: Math.floor(START / 60_000), call_counts: '1' })
 
     // exactly what the process does when the human walks away: the timer fires
     // every five minutes and the agent calls nothing at all
@@ -164,6 +168,7 @@ describe('the liveness tick moves liveness and nothing else (#45)', () => {
     expect(live[0]!.doing).toBe('open')           // …so the 12-hour-old claim is no longer advertised
     expect(live[0]!.idle).toBe(true)
     expect(live[0]!.detail).toBe('')
+    expect(traceOf()).toEqual(trace)              // and not one call bucket moved
   })
 
   it('recordActivityCall has exactly one call expression in src/mcp.ts, and it is inside heartbeat()', () => {
@@ -191,5 +196,30 @@ describe('the liveness tick moves liveness and nothing else (#45)', () => {
   it('never throws, whatever the db does — presence must not take the server down', () => {
     db.close()
     expect(() => livenessTick(db, 's1')).not.toThrow()
+  })
+})
+
+// #306: recordActivityCall now READS the call buckets before it writes them. A
+// deferred transaction that reads first cannot wait for the writer: promoted
+// mid-transaction it fails at once with SQLITE_BUSY(_SNAPSHOT), and heartbeat()
+// swallows that, so a contended call would silently record no work at all. No
+// runtime suite can provoke that race reliably, so the shape is pinned here:
+// the function's only transaction is run through `.immediate()`.
+describe('recordActivityCall takes the write lock before it reads (#306)', () => {
+  const store = ts.createSourceFile('store.ts', readFileSync(new URL('../src/store.ts', import.meta.url), 'utf8'), ts.ScriptTarget.ESNext, true)
+  let body: ts.Node | undefined
+  walk(store, (n) => { if (ts.isFunctionDeclaration(n) && n.name?.text === 'recordActivityCall') body = n.body })
+
+  it('runs its db.transaction(...) through .immediate(), never a bare deferred call', () => {
+    expect(body).toBeDefined()
+    const transactions: ts.CallExpression[] = []
+    walk(body!, (n) => {
+      if (ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression) && n.expression.name.text === 'transaction') transactions.push(n)
+    })
+    expect(transactions).toHaveLength(1)
+    // the transaction function's only use: `<db.transaction(...)>.immediate(...)`
+    const use = transactions[0]!.parent
+    expect(ts.isPropertyAccessExpression(use) && use.name.text === 'immediate').toBe(true)
+    expect(ts.isCallExpression(use.parent) && use.parent.expression === use).toBe(true)
   })
 })

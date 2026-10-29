@@ -164,6 +164,51 @@ describe('motion foundation in public/style.css (#302)', () => {
     }
   })
 
+  // #304: an infinite loop cost ~5.6 pp of renderer and ~34 pp of GPU CPU, so
+  // lanes use no infinite animation; activity motion is one-shot per real call.
+  it('runs no infinite animation in the lanes, only one-shots app.js starts', () => {
+    const lane = rules.filter((r) => r.selectors.some((sel) => sel.includes('dash-lane')))
+    expect(lane.filter(isInfinite).flatMap((r) => r.selectors)).toEqual([])
+    const shots = lane.filter((r) => !r.media && /dash-lane-(pulse|sweep)/.test(r.decls.get('animation') ?? ''))
+    expect(shots.flatMap((r) => r.selectors)).toEqual(['.dash-lane.sweep::before', '.dash-lane.pulse .dash-lane-pulse::after'])
+    for (const rule of shots) {
+      expect(rule.decls.get('animation')).toMatch(/^dash-lane-\w+ var\(--motion-slow\) var\(--motion-ease[\w-]*\) 1$/)
+      // At rest (and once Calm or reduced motion stops it) nothing stays drawn.
+      expect(rule.decls.get('opacity')).toBe('0')
+    }
+    // Calm and reduced motion stop them as a backstop to app.js's own check.
+    for (const sel of ['.dash-lane.sweep::before', '.dash-lane.pulse .dash-lane-pulse::after']) {
+      expect(rules.some((r) => r.media && REDUCED.test(r.media) && isNone(r) && r.selectors.includes(sel)), sel).toBe(true)
+      expect(rules.some((r) => !r.media && isNone(r) && r.selectors.includes(`${CALM} ${sel}`)), sel).toBe(true)
+    }
+  })
+
+  // #305: the ribbon's "now" stripes are static: nothing in the ribbon animates
+  // or transitions, and Just landed's arrival is a one-shot app.js starts.
+  it('draws the ribbon statically and the arrival as a gated one-shot', () => {
+    const ribbon = rules.filter((r) => r.selectors.some((sel) => sel.includes('dash-ribbon')))
+    expect(ribbon.length).toBeGreaterThan(0)
+    for (const rule of ribbon) {
+      expect([...rule.decls.keys()].filter((prop) => prop.startsWith('animation') || prop.startsWith('transition')), rule.selectors.join(', ')).toEqual([])
+    }
+    expect(ribbon.some((r) => r.selectors.includes('.dash-ribbon-bar.live::after') && /repeating-linear-gradient/.test(r.decls.get('background') ?? ''))).toBe(true)
+    const arrival = keyframes.find((frames) => frames.name === 'dash-landed-arrive')
+    expect([...arrival!.props]).toEqual(['opacity'])
+    const shots = rules.filter((r) => !r.media && /dash-landed-arrive/.test(r.decls.get('animation') ?? ''))
+    expect(shots.map((r) => [r.selectors, r.decls.get('animation')]))
+      .toEqual([[['.dashboard-outcome.arrived::before'], 'dash-landed-arrive var(--motion-slow) var(--motion-ease-out) 1']])
+    const sel = '.dashboard-outcome.arrived::before'
+    expect(rules.some((r) => r.media && REDUCED.test(r.media) && isNone(r) && r.selectors.includes(sel))).toBe(true)
+    expect(rules.some((r) => !r.media && isNone(r) && r.selectors.includes(`${CALM} ${sel}`))).toBe(true)
+  })
+
+  // The live indicator is static: a solid dot and the word, the same in every mode.
+  it('draws "live" as static text on every lane', () => {
+    const live = rules.filter((r) => r.selectors.some((sel) => sel.endsWith('.dash-lane-live')))
+    expect(live.map((r) => [r.media, r.selectors])).toEqual([[null, ['.dash-lane-live']]])
+    expect(live[0]!.decls.has('position')).toBe(false)
+  })
+
   it('scrolls through the motion controller instead of a literal smooth behaviour', () => {
     expect(appJs).not.toMatch(/behavior:\s*['"\x60]smooth/)
     const scrolls = appJs.match(/scrollIntoView\(\{ behavior: [^,}]+/g) ?? []

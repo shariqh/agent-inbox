@@ -1,12 +1,13 @@
 import { paginate, paginateGroups } from '/search.js'
 import { buildSearchResults } from '/search-index.js'
+import { paletteResults } from '/palette.js'
 import {
   closedFoldLabel, closedRailEntries, filterRailEntries, railEntries, railProjects,
   shouldShowRailFilter, splitClosed, suppressedTotal,
 } from '/rail.js'
 import {
   attentionCount, attentionEntries, awaitingAgentRows, classifyLiveness, countsByProject,
-  isAskingQuestion, isBlockedRowAttention, laterEntries, staleEntries,
+  isAskingQuestion, isBlockedRowAttention, laterEntries, sortRail, staleEntries,
 } from '/attention.js'
 import { DEFAULT_TAB, TAB_IDS, tabCounts } from '/tabs.js'
 import { projectColor } from '/colors.js'
@@ -45,9 +46,13 @@ import {
 import { buildIssueView, planGroups, rowParentRuns } from '/issues.js'
 import { buildSummary } from '/buildstamp.js'
 import { actionCategory, actionOwnerLabel, agentFollowupChip, changeKind, lifecycleReceipt, responseLabel } from '/action.js'
-import { buildRelay } from '/relay.js'
+import { buildRelay, stamp } from '/relay.js'
 import { buildMission } from '/mission.js'
-import { buildActivitySeries, buildDashboard } from '/dashboard.js'
+import { buildDashboard } from '/dashboard.js'
+import { buildRibbon, ribbonWait, sinceKeepsOn, sinceLastLooked, trustedInput } from '/ribbon.js'
+import {
+  MAX_LANES, calledLanes, isWorking, laneFilterChoices, laneMatches, pinLaneOrder, sessionFocus, tracePath,
+} from '/lanes.js'
 import { PANE_DEFAULTS, paneKeyValue, paneValueFromPointer, resolvePaneLayout } from '/panes.js'
 import { createThemeController } from '/theme.js'
 import { createMotionController } from '/motion.js'
@@ -191,6 +196,8 @@ const NOTES_SEEN_KEY = 'agent-inbox-notes-seen'
 const NOTES_SEEN_IDS_KEY = 'agent-inbox-notes-seen-ids'
 const LAST_VISIT_KEY = 'agent-inbox-last-visit'
 const lastVisitAt = localStorage.getItem(LAST_VISIT_KEY)
+// #305: "Since you last looked" covers the previous visit up to this one.
+const visitAt = Date.now()
 localStorage.setItem(LAST_VISIT_KEY, new Date().toISOString())
 let notesSeenAt = localStorage.getItem(NOTES_SEEN_KEY) || null
 let notesSeenIds = new Set()
@@ -1213,6 +1220,10 @@ function activateSearchResult(index = searchActiveIndex) {
   if (searchUpdating || searchTimer) return
   const result = searchResultCache[index]
   if (!result) return
+  if (result.action) {
+    runPaletteAction(result.action)
+    return
+  }
   const available = lastData && (
     allItems(lastData.g).some((item) => item.id === result.targetId)
     || [...lastData.boards, ...lastData.archived].some((board) => board.id === result.targetId)
@@ -1416,6 +1427,75 @@ function markLaterResults(results) {
   ))
 }
 
+// ── ⌘K actions (#307) ──────────────────────────────────────────────────────
+// "answer…", "open plan…" and "jump to session…" over every open project, not
+// the lens: each one lands the way a deep link does. Answer reads the one
+// attention set; an ask is answered in the rail or its Inbox card, never in a
+// new editor.
+const paletteHaystack = (...parts) => parts.filter(Boolean).join(' ').toLowerCase()
+
+function paletteAsks(nowMs = Date.now()) {
+  return sortRail(attentionEntries(allItems(lastData.g), lastData.boards, nowMs, liveSessionIds(), lastData.closed ?? []), nowMs)
+}
+
+function paletteTargets() {
+  const nowMs = Date.now()
+  const closed = closedSet()
+  const asks = paletteAsks(nowMs).map((entry) => {
+    const entity = dashboardEntryEntity(entry)
+    const project = dashboardEntryProject(entry)
+    const agent = entry.kind === 'row' ? entry.board.agent : entry.item.agent
+    const title = dashboardEntryTitle(entry) ?? ''
+    return { key: needsEntryId(entry), title, context: [project, agent].filter(Boolean).join(' · '),
+      haystack: paletteHaystack(title, project, agent, entity?.next_step), action: { type: 'answer', id: needsEntryId(entry) } }
+  })
+  const plans = lastData.boards.filter((board) => !closed.has(board.project)).map((board) => ({
+    key: board.id, title: board.title, context: [board.project, board.agent].filter(Boolean).join(' · '),
+    haystack: paletteHaystack(board.title, board.project, board.agent, board.stream), action: { type: 'plan', id: board.id },
+  }))
+  const sessions = (lastData.activity ?? []).filter((row) => isWorking(row, nowMs) && !closed.has(row.project)).map((row) => {
+    const title = typeof row.doing === 'string' && row.doing.trim() && row.doing.trim() !== 'open' ? row.doing.trim() : 'No task reported yet'
+    return { key: row.session, title, context: [row.agent, row.project, row.stream].filter(Boolean).join(' · '),
+      haystack: paletteHaystack(title, row.agent, row.project, row.stream, row.detail), action: { type: 'session', id: row.session } }
+  })
+  return { asks, plans, sessions }
+}
+
+// With no targets a command lists nothing and a name's prefix suggests it.
+const NO_PALETTE_TARGETS = { asks: [], plans: [], sessions: [] }
+const commandShape = (query) => paletteResults(query, NO_PALETTE_TARGETS, fuzzySearch).length
+
+function runPaletteAction(action) {
+  if (action.type === 'command') {
+    const { input } = searchElements()
+    input.value = action.fill
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    input.focus({ preventScroll: true })
+    return
+  }
+  if (action.type === 'plan') {
+    focusItem(action.id)
+    return
+  }
+  if (action.type === 'session') {
+    jumpToSession(action.id)
+    return
+  }
+  const entry = paletteAsks().find((candidate) => needsEntryId(candidate) === action.id)
+  if (!entry) {
+    renderSearchResults()
+    return
+  }
+  // D2: on the Dashboard the rail is the answer surface; elsewhere, or past
+  // its top three, the ask's own Inbox card.
+  if (activeTab === 'dashboard' && document.querySelector(`#dashRail [data-rail-card="${CSS.escape(action.id)}"]`)) {
+    resetSearch()
+    jumpToAsk(entry)
+  } else {
+    openAskInInbox(entry)
+  }
+}
+
 function renderSearchResults() {
   const { input, results, status } = searchElements()
   if (!input || !results) return
@@ -1440,7 +1520,12 @@ function renderSearchResults() {
   searchAwaitingHistory = false
   const previousActiveKey = searchResultCache[searchActiveIndex]?.key
   const previousResults = searchResultCache
-  const nextResults = markLaterResults(buildSearchResults(lastData, query, fuzzySearch))
+  const found = markLaterResults(buildSearchResults(lastData, query, fuzzySearch))
+  // #307: ⌘K actions lead when a command is typed; a suggestion never pushes
+  // the strongest Open-item match off the first place.
+  const actions = paletteResults(searchQuery, paletteTargets(), fuzzySearch)
+  const suggests = actions[0]?.action.type === 'command'
+  const nextResults = suggests && found[0]?.section === 'open' ? [...found, ...actions] : [...actions, ...found]
   const nextSignature = JSON.stringify([query, nextResults])
   if (!results.hidden && searchResultSignature === nextSignature) {
     searchResultCache = nextResults
@@ -1605,8 +1690,10 @@ function historyWanted(view = lastData) {
   if (activeTab === 'done' && older.items > 0) {
     return historyTabPinned || shown.done > knownHistory(pageView(view).g.done, summary.before).length
   }
-  if (activeTab === 'dashboard' && older.outcomes > 0) {
-    return dashboardModel(pageView(view), summary, lensActivity(view)).recentOutcomesWait.history
+  // Recent outcomes, and the ribbon at a range longer than the default (#392).
+  if (activeTab === 'dashboard' && (older.outcomes > 0 || (older.items > 0 && ribbonReadsOlder()))) {
+    const model = dashboardModel(pageView(view), summary, lensActivity(view))
+    return model.recentOutcomesWait.history || ribbonRangeWait(model).history
   }
   return false
 }
@@ -1638,7 +1725,8 @@ function archivedWanted(view = lastData) {
       || lens.archived.some((plan) => plan.id === focused)
   }
   if (activeTab === 'dashboard' && omitted > 0) {
-    return dashboardModel(lens, view.pageHistory, lensActivity(view)).recentOutcomesWait.archived
+    const model = dashboardModel(lens, view.pageHistory, lensActivity(view))
+    return model.recentOutcomesWait.archived || ribbonRangeWait(model).archived
   }
   return false
 }
@@ -1796,82 +1884,552 @@ function restoreDashboardFocus(key) {
   return document.activeElement === target
 }
 
-function renderDashboardAmbient(model) {
+function renderDashboardAmbient(model, { forced = false } = {}) {
   const host = document.querySelector('#dashboard .dashboard')
   if (!host?.querySelector('.dashboard-grid')) return
-  const values = {
-    agents: model.signals.agents.working,
-    waiting: model.signals.waiting,
-    plans: model.signals.plans,
-    outcomes: model.signals.outcomes,
-  }
-  for (const [name, value] of Object.entries(values)) {
-    const el = document.querySelector(`[data-dashboard-signal="${name}"] .dashboard-value`)
-    if (el) el.textContent = String(value)
-  }
-  const total = document.querySelector('[data-dashboard-signal="agents"] .dashboard-value-total')
-  if (total) total.textContent = `/${model.signals.agents.total}`
-  const dots = document.querySelector('[data-dashboard-signal="agents"] .dashboard-agent-dots')
-  if (dots) {
-    const fragment = document.createDocumentFragment()
-    for (let index = 0; index < model.signals.agents.total; index += 1) {
-      const dot = document.createElement('span')
-      dot.className = `dashboard-agent-dot ${index < model.signals.agents.working ? 'active' : 'quiet'}`
-      fragment.appendChild(dot)
-    }
-    dots.replaceChildren(fragment)
-  }
-  const childCount = model.signals.agents.reportedChildren
-  const childContribution = childCount > 0
-    ? `, including ${childCount} reported child agent${childCount === 1 ? '' : 's'}`
-    : ''
-  const labels = {
-    agents: `Agents reporting work: ${model.signals.agents.working} of ${model.signals.agents.total}${childContribution}`,
-    waiting: `Needs you: ${model.signals.waiting} open action${model.signals.waiting === 1 ? '' : 's'}`,
-    plans: `Plans: ${model.signals.plans} across ${model.signals.projects} project${model.signals.projects === 1 ? '' : 's'}`,
-    outcomes: `Recorded outcomes: ${model.signals.outcomes} across items and plan rows`,
-  }
-  for (const [name, label] of Object.entries(labels)) {
-    const card = document.querySelector(`[data-dashboard-signal="${name}"]`)
-    if (card) card.setAttribute('aria-label', label)
-  }
-  for (const [owner, count] of Object.entries(model.ownership)) {
-    const value = host.querySelector(`.flow-${owner} strong`)
-    if (value) value.textContent = String(count)
-  }
-  renderDashboardHistory(host.querySelector('.dashboard-activity'))
-  renderDashboardDispatch(host.querySelector('.dashboard-live-list'), model.sessions)
+  lastDashModel = model
+  renderDashNow(host.querySelector('.dash-now'), model)
+  renderDashSince(host.querySelector('.dash-since'), model)
+  renderDashLanes(host.querySelector('.dash-lanes'), model, { forced })
+  renderDashRail(host.querySelector('.dash-rail'), model.rail, { forced })
+  renderDashFocus(host.querySelector('.dash-focus'), model)
+  renderDashRibbon(host.querySelector('.dashboard-activity'), model)
   renderDashboardOutcomes(host.querySelector('.dashboard-outcome-list'), model.recentOutcomes, model.recentOutcomesComplete,
-    model.recentOutcomesWait)
+    model.recentOutcomesWait, model.recentOutcomesHidden)
 }
 
-const DASHBOARD_SIGNAL_ICONS = {
-  agents: '<circle cx="8" cy="4" r="2"></circle><circle cx="4" cy="12" r="2"></circle><circle cx="12" cy="12" r="2"></circle><path d="M8 6v3M6.5 9.5 5 10.5M9.5 9.5l1.5 1"></path>',
-  waiting: '<path d="M2 3h12v10H2zM2 9h3l1.5 2h3L11 9h3"></path>',
-  plans: '<path d="M3 2h10v12H3zM5.5 5h5M5.5 8h5M5.5 11h3"></path>',
-  outcomes: '<circle cx="8" cy="8" r="6"></circle><path d="m5 8 2 2 4-4"></path>',
+// Only a changed value is written, so an unchanged lane keeps its text nodes
+// (and any selection in them) and its animations never restart.
+function setText(el, text) {
+  if (el.textContent !== text) el.textContent = text
 }
 
-function dashboardSignal({ name, label, value, total = null, target, tone, meter = false }) {
-  const card = document.createElement('button')
-  card.type = 'button'
-  card.className = `dashboard-signal tone-${tone}`
-  card.dataset.dashboardSignal = name
-  card.dataset.dashboardTarget = target
-  card.dataset.dashboardFocusKey = `signal:${name}`
-  card.innerHTML = `
-    <span class="dashboard-signal-head">
-      <span class="dashboard-signal-label">${esc(label)}</span>
-      <svg class="dashboard-signal-icon" viewBox="0 0 16 16" aria-hidden="true">${DASHBOARD_SIGNAL_ICONS[name] ?? ''}</svg>
-    </span>
-    <span class="dashboard-value-group">
-      <span class="dashboard-value">${esc(String(value))}</span>
-      ${total == null ? '' : `<span class="dashboard-value-total">/${esc(String(total))}</span>`}
-    </span>
-    ${meter ? '<span class="dashboard-agent-dots" aria-hidden="true"></span>' : ''}
-    <span class="dashboard-signal-arrow" aria-hidden="true">→</span>`
-  card.addEventListener('click', () => dashboardTarget(target))
-  return card
+function setAttr(el, name, value) {
+  if (el.getAttribute(name) !== value) el.setAttribute(name, value)
+}
+
+function setHidden(el, hidden) {
+  if (el.hidden !== hidden) el.hidden = hidden
+}
+
+const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`
+// relMs says "moments" under a minute; a chip says "<1m".
+const ageText = (ms) => relMs(ms) === 'moments' ? '<1m' : relMs(ms)
+
+// ── the Now strip (#304) ─────────────────────────────────────────────────────
+// One line of four links, from the same model as the lanes: its plan steps are
+// the lanes' bars added up, each plan once. The headings around it carry no
+// numbers of their own.
+const DASH_NOW = [
+  ['agents', 'Working', 'live'],
+  ['waiting', 'Waiting on you', 'needsYou'],
+  ['plans', 'Plan steps', 'boards'],
+  ['outcomes', 'Recorded outcomes', 'outcomes'],
+]
+
+function dashNowEl() {
+  const strip = document.createElement('div')
+  strip.className = 'dash-now'
+  strip.setAttribute('role', 'group')
+  strip.setAttribute('aria-label', 'Now')
+  for (const [name, label, target] of DASH_NOW) {
+    const item = document.createElement('button')
+    item.type = 'button'
+    item.className = `dash-now-item tone-${name}`
+    item.dataset.dashboardSignal = name
+    item.dataset.dashboardTarget = target
+    item.dataset.dashboardFocusKey = `signal:${name}`
+    item.innerHTML = `<span class="dash-now-label">${esc(label)}</span><span class="dashboard-value"></span>${name === 'plans' ? '<span class="dashboard-value-total"></span>' : ''}<span class="dash-now-sub"></span>`
+    item.addEventListener('click', () => dashboardTarget(target))
+    strip.appendChild(item)
+  }
+  return strip
+}
+
+function renderDashNow(strip, model) {
+  if (!strip) return
+  const now = model.now
+  const oldest = now.oldestWaitingMs == null ? '' : `oldest ${ageText(now.oldestWaitingMs)}`
+  const parts = {
+    agents: [now.working, now.subagents ? `+${plural(now.subagents, 'subagent')}` : '',
+      `Agents working: ${now.working}${now.subagents ? `, plus ${plural(now.subagents, 'subagent')}` : ''}`],
+    waiting: [now.waiting, oldest, `Waiting on you: ${plural(now.waiting, 'open action')}${oldest ? `, ${oldest}` : ''}`],
+    plans: [now.plans.done, 'in lanes',
+      `Plan steps done in the plans agents are working on: ${now.plans.done} of ${now.plans.countable}`],
+    outcomes: [model.signals.outcomes, '', `Recorded outcomes: ${model.signals.outcomes} across items and plan rows`],
+  }
+  for (const [name, [value, sub, label]] of Object.entries(parts)) {
+    const item = strip.querySelector(`[data-dashboard-signal="${name}"]`)
+    setText(item.querySelector('.dashboard-value'), String(value))
+    setText(item.querySelector('.dash-now-sub'), sub)
+    setAttr(item, 'aria-label', label)
+  }
+  setText(strip.querySelector('[data-dashboard-signal="plans"] .dashboard-value-total'), `/${now.plans.countable}`)
+}
+
+// ── live lanes (#304, proposal §4) ───────────────────────────────────────────
+// One lane per working session. The ambient painter updates each lane in place,
+// keyed by session, so a draft in the rail never stops them and a poll changes
+// text and attributes only. Order is pinned (§10 rule 5): a session keeps its
+// place, new ones append, and only a forced paint re-sorts. An ask is answered
+// in the rail alone (D2): a lane's "Asking you" strip jumps to its rail card.
+let laneOrder = []
+const laneCalls = new Map() // session → the last call a paint has seen, for the one-shot pulse
+const laneAsks = new Map() // session → { first, oldest } attention entries, read by the lane's buttons
+// #307: window-local view state, never persisted, read by no attention surface.
+const laneFilters = { project: null, agent: null }
+let focusSession = null // the session the focus panel shows, if open
+let lastDashModel = null // the model the last paint drew, for a handler's own repaint
+
+function dashLanesEl() {
+  const section = document.createElement('section')
+  section.className = 'dashboard-card dash-lanes'
+  section.setAttribute('aria-labelledby', 'dashLanesTitle')
+  section.innerHTML = `
+    <div class="dashboard-card-head"><h2 id="dashLanesTitle" tabindex="-1">What's being worked on</h2>
+      <div class="dash-lane-filters" role="group" aria-label="Filter lanes">
+        <select class="dash-lane-filter" data-lane-filter="project" aria-label="Lanes by project" data-dashboard-focus-key="lanes:filter:project"><option value="">All projects</option></select>
+        <select class="dash-lane-filter" data-lane-filter="agent" aria-label="Lanes by agent" data-dashboard-focus-key="lanes:filter:agent"><option value="">All agents</option></select>
+      </div>
+    </div>
+    <div class="dash-lane-list" role="list" aria-labelledby="dashLanesTitle"></div>
+    <p class="dash-lanes-none" hidden>No working session matches these filters.</p>
+    <div class="dashboard-empty dash-lanes-empty" role="img" aria-label="No agent connections" title="No agent connections"><svg class="dashboard-empty-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v4M12 18v4M2 12h4M18 12h4"></path></svg></div>
+    <div class="dash-lanes-foot">
+      <button type="button" class="dash-lanes-more" data-dashboard-focus-key="lanes:more" hidden></button>
+      <button type="button" class="dash-lanes-idle" data-dashboard-focus-key="lanes:idle" hidden></button>
+    </div>`
+  for (const select of section.querySelectorAll('[data-lane-filter]')) {
+    select.addEventListener('change', () => {
+      laneFilters[select.dataset.laneFilter] = select.value || null
+      if (lastDashModel) renderDashLanes(section, lastDashModel)
+    })
+  }
+  section.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && focusSession && !event.defaultPrevented && event.target.closest?.('.dash-lane')) {
+      event.preventDefault()
+      closeSessionFocus()
+    }
+  })
+  for (const button of section.querySelectorAll('.dash-lanes-foot button')) {
+    button.title = 'Open Live sessions'
+    button.addEventListener('click', () => dashboardTarget('live'))
+  }
+  return section
+}
+
+function dashLaneEl(session) {
+  const lane = document.createElement('article')
+  lane.className = 'dash-lane'
+  lane.dataset.lane = session
+  lane.setAttribute('role', 'listitem')
+  lane.innerHTML = `
+    <div class="dash-lane-head">
+      <span class="dash-lane-pulse" aria-hidden="true"></span><span class="dash-lane-live">live</span>
+      <button type="button" class="dash-lane-open" aria-expanded="false" aria-controls="dashFocus" title="Open this session's focus panel" data-dashboard-focus-key="lane:${esc(session)}:open"><strong class="dash-lane-doing"></strong></button>
+      <time class="dash-lane-recency"></time>
+    </div>
+    <div class="dash-lane-detail"></div>
+    <div class="dash-lane-meta"></div>
+    <div class="dash-lane-trace" hidden>
+      <svg class="dash-lane-spark" viewBox="0 0 60 12" preserveAspectRatio="none" role="img"><path></path></svg>
+      <span class="dash-lane-trace-count"></span>
+    </div>
+    <div class="dash-lane-plan" hidden>
+      <span class="dash-lane-bar" role="img"><span data-seg="done"></span><span data-seg="partial"></span><span data-seg="waiting"></span><span data-seg="todo"></span></span>
+      <span class="dash-lane-plan-count"></span><span class="dash-lane-plan-title"></span>
+    </div>
+    <div class="dash-lane-children"></div>
+    <div class="dash-lane-ask" hidden>
+      <button type="button" class="dash-lane-asking" data-dashboard-focus-key="lane:${esc(session)}:ask"><span class="dash-lane-ask-label">Asking you</span> <span class="dash-lane-ask-title"></span><span class="dash-lane-ask-more"></span></button>
+      <button type="button" class="dash-lane-waiting" data-dashboard-focus-key="lane:${esc(session)}:waiting"></button>
+    </div>`
+  lane.querySelector('.dash-lane-asking').addEventListener('click', () => jumpToAsk(laneAsks.get(session)?.first))
+  lane.querySelector('.dash-lane-waiting').addEventListener('click', () => jumpToAsk(laneAsks.get(session)?.oldest))
+  lane.querySelector('.dash-lane-open').addEventListener('click', () => toggleSessionFocus(session))
+  // A click anywhere else on the lane opens it too, but never one that ends a
+  // text selection or lands on a control.
+  lane.addEventListener('click', (event) => {
+    if (event.target.closest('button, a, select, [data-link-kind]') || String(getSelection?.() ?? '')) return
+    toggleSessionFocus(session)
+  })
+  return lane
+}
+
+// One iteration of a CSS one-shot, restarted when it is still running and
+// removed when it ends or is cancelled (Calm switched on, the Dashboard left
+// mid-pulse), so nothing lingers to replay later. Never a loop (#304). A
+// restart first drops the running one's handler: the cancel its removal fires
+// would otherwise remove the class the restart just added.
+const oneShots = new WeakMap() // element → Map(class → its end handler)
+function playOnce(el, name, animation = `dash-lane-${name}`) {
+  const handlers = oneShots.get(el) ?? new Map()
+  oneShots.set(el, handlers)
+  const previous = handlers.get(name)
+  if (previous) {
+    el.removeEventListener('animationend', previous)
+    el.removeEventListener('animationcancel', previous)
+  }
+  if (el.classList.contains(name)) {
+    el.classList.remove(name)
+    void el.offsetWidth
+  }
+  el.classList.add(name)
+  const done = (event) => {
+    if (event.animationName !== animation) return
+    el.classList.remove(name)
+    el.removeEventListener('animationend', done)
+    el.removeEventListener('animationcancel', done)
+    handlers.delete(name)
+  }
+  handlers.set(name, done)
+  el.addEventListener('animationend', done)
+  el.addEventListener('animationcancel', done)
+}
+
+// Activity motion runs only where the human allows it and can see it.
+const dashboardMotion = () => motion.activityMotion() && !document.getElementById('dashboard')?.hidden
+
+function updateDashLane(el, lane) {
+  const color = pcolor(lane.project).dot
+  if (el.style.getPropertyValue('--lane-color') !== color) el.style.setProperty('--lane-color', color)
+  el.classList.toggle('quiet', lane.quiet)
+  setText(el.querySelector('.dash-lane-doing'), lane.doing)
+  const recency = el.querySelector('.dash-lane-recency')
+  const since = relMs(lane.sinceMs)
+  setText(recency, lane.quiet ? `quiet ${since}` : since === 'moments' ? 'just now' : `${since} ago`)
+  setAttr(recency, 'datetime', lane.lastCallAt)
+  setAttr(recency, 'title', lane.quiet ? `Claims work, but no call for ${since}` : 'Last MCP call')
+  const detail = el.querySelector('.dash-lane-detail')
+  setText(detail, lane.detail)
+  setHidden(detail, !lane.detail)
+  setText(el.querySelector('.dash-lane-meta'), [lane.agent, lane.project, lane.branch].filter(Boolean).join(' · '))
+  setAttr(el, 'aria-label', `${lane.agent} in ${lane.project}: ${lane.doing}`)
+  setAttr(el.querySelector('.dash-lane-open'), 'aria-expanded', String(focusSession === lane.session))
+  // #306: the heartbeat trace, static and redrawn only when its bars change
+  const trace = el.querySelector('.dash-lane-trace')
+  const calls = lane.trace.reduce((sum, count) => sum + count, 0)
+  setHidden(trace, !calls)
+  setAttr(trace.querySelector('path'), 'd', tracePath(lane.trace))
+  setAttr(trace.querySelector('svg'), 'aria-label', `${plural(calls, 'MCP call')} in the last 30 minutes`)
+  setText(trace.querySelector('.dash-lane-trace-count'), `${calls} in 30m`)
+  const plan = el.querySelector('.dash-lane-plan')
+  setHidden(plan, !lane.plan)
+  if (lane.plan) {
+    const { segments, done, countable, title } = lane.plan
+    for (const [name, value] of Object.entries(segments)) {
+      const segment = plan.querySelector(`[data-seg="${name}"]`)
+      setAttr(segment, 'style', `flex-grow: ${value}`)
+      setHidden(segment, value === 0)
+    }
+    setText(plan.querySelector('.dash-lane-plan-count'), `${done}/${countable}`)
+    setText(plan.querySelector('.dash-lane-plan-title'), title)
+    setAttr(plan.querySelector('.dash-lane-bar'), 'aria-label',
+      `${title}: ${done} done, ${segments.partial} in progress, ${segments.waiting} waiting on you, ${segments.todo} to do`)
+  }
+  const children = el.querySelector('.dash-lane-children')
+  const childKey = JSON.stringify(lane.children.map((child) => [child.name, child.doing]))
+  if (children.dataset.key !== childKey) {
+    children.dataset.key = childKey
+    children.replaceChildren(...lane.children.map((child) => {
+      const chip = document.createElement('span')
+      chip.className = 'dash-lane-child'
+      chip.textContent = child.name
+      if (child.doing) chip.title = child.doing
+      return chip
+    }))
+  }
+  const ask = el.querySelector('.dash-lane-ask')
+  setHidden(ask, !lane.asks.length)
+  if (lane.asks.length) {
+    laneAsks.set(lane.session, { first: lane.asks[0], oldest: lane.waiting.entry })
+    setText(ask.querySelector('.dash-lane-ask-title'), dashboardEntryTitle(lane.asks[0]) ?? '')
+    setText(ask.querySelector('.dash-lane-ask-more'), lane.asks.length > 1 ? ` +${lane.asks.length - 1} more` : '')
+    setText(ask.querySelector('.dash-lane-waiting'), `waiting on you ${ageText(lane.waiting.ms)}`)
+  } else {
+    laneAsks.delete(lane.session)
+  }
+}
+
+function renderDashLanes(section, model, { forced = false } = {}) {
+  if (!section) return
+  const list = section.querySelector('.dash-lane-list')
+  // The outcomes list's rule: a focused lane control that leaves (its lane gone,
+  // its ask strip hidden, or moved by a re-sort) hands focus to the adjacent
+  // control, or the heading, and only in a window that owns focus.
+  const focused = activeFocusElement()
+  const focusIndex = focused && list.contains(focused) ? laneControls(list).indexOf(focused) : -1
+  laneOrder = pinLaneOrder(forced ? [] : laneOrder, model.lanes)
+  const bySession = new Map(model.lanes.map((lane) => [lane.session, lane]))
+  // #307: the quick filters narrow what is drawn after the order is pinned, so
+  // clearing them puts every lane back where it was.
+  paintLaneFilters(section, model.lanes)
+  const matching = laneOrder.map((session) => bySession.get(session)).filter((lane) => laneMatches(lane, laneFilters))
+  const drawn = matching.slice(0, MAX_LANES)
+  // A real call since the last paint pulses its lane once; only drawn lanes on a
+  // visible Dashboard, and only when the human's motion setting allows it.
+  const called = calledLanes(laneCalls, drawn)
+  laneCalls.clear()
+  for (const lane of model.lanes) laneCalls.set(lane.session, lane.lastCallAt)
+  const animate = dashboardMotion()
+  const existing = new Map([...list.children].map((el) => [el.dataset.lane, el]))
+  const nodes = drawn.map((lane) => {
+    const el = existing.get(lane.session) ?? dashLaneEl(lane.session)
+    existing.delete(lane.session)
+    updateDashLane(el, lane)
+    if (animate && called.pulse.has(lane.session)) playOnce(el, 'pulse')
+    if (animate && called.sweep === lane.session) playOnce(el, 'sweep')
+    return el
+  })
+  for (const [session, el] of existing) {
+    laneAsks.delete(session)
+    el.remove()
+  }
+  // Move only a lane that is out of place: a pinned order moves nothing.
+  nodes.forEach((el, index) => {
+    if (list.children[index] !== el) list.insertBefore(el, list.children[index] ?? null)
+  })
+  setHidden(section.querySelector('.dash-lanes-empty'), model.lanes.length > 0 || model.idleConnections > 0)
+  const more = section.querySelector('.dash-lanes-more')
+  const extra = matching.length - drawn.length
+  setHidden(section.querySelector('.dash-lanes-none'), !model.lanes.length || matching.length > 0)
+  setText(more, extra > 0 ? `+${extra} more working` : '')
+  setHidden(more, extra <= 0)
+  const idle = section.querySelector('.dash-lanes-idle')
+  setText(idle, model.idleConnections ? `+${plural(model.idleConnections, 'idle connection')}` : '')
+  setHidden(idle, !model.idleConnections)
+  // focusIndex is set only while the document had focus (activeFocusElement):
+  // removing the focused node can itself make hasFocus() false.
+  if (focusIndex < 0 || document.activeElement === focused) return
+  const controls = laneControls(list)
+  const next = controls.includes(focused) ? focused
+    : controls[Math.min(focusIndex, controls.length - 1)] ?? section.querySelector('#dashLanesTitle')
+  next.focus({ preventScroll: true })
+}
+
+function paintLaneFilters(section, lanes) {
+  const choices = laneFilterChoices(lanes, laneFilters)
+  for (const select of section.querySelectorAll('[data-lane-filter]')) {
+    const name = select.dataset.laneFilter
+    const values = choices[name]
+    const shape = JSON.stringify(values)
+    if (select.dataset.choices !== shape) {
+      select.dataset.choices = shape
+      select.replaceChildren(select.options[0], ...values.map((value) => new Option(value, value)))
+    }
+    const value = laneFilters[name] ?? ''
+    if (select.value !== value) select.value = value
+  }
+}
+
+function laneControls(list) {
+  return [...list.querySelectorAll('.dash-lane button')].filter((button) => !button.closest('[hidden]'))
+}
+
+// D2: the rail is the one answer surface, so a lane's ask jumps to its rail
+// card; an ask past the rail's top three opens in the Inbox instead.
+function jumpToAsk(entry) {
+  if (!entry) return
+  const id = needsEntryId(entry)
+  const card = document.querySelector(`#dashRail [data-rail-card="${CSS.escape(id)}"]`)
+  if (!card) {
+    openAskInInbox(entry)
+    return
+  }
+  for (const other of document.querySelectorAll('#dashRail [data-rail-card]')) other.tabIndex = other === card ? 0 : -1
+  railSelectedId = id
+  // #307: the jump goes to the rail, so the session panel steps aside first;
+  // focus goes to the card, never back to the lane.
+  if (focusSession) {
+    focusSession = null
+    paintSessionFocus()
+  }
+  card.focus()
+}
+
+// ── the session focus panel (#307, proposal §14) ────────────────────────────
+// A lane opens a read-only side panel: the session's asks (the lane's own, from
+// the attention set), its plan, recent outcomes, ambient PR/CI chips and the
+// links its text shows (#300). D2 keeps the rail the one answer surface, so
+// every ask here jumps there (or to its Inbox card) and the panel holds no
+// editor and no draft. The ambient painter updates it in place: each part is
+// rewritten only when its markup changes. Opening or closing it moves focus
+// only in a window that has it.
+const focusTargets = new Map() // data-focus-* value → what its button opens
+const focusPartHtml = new WeakMap()
+
+function dashFocusEl() {
+  const aside = document.createElement('aside')
+  aside.id = 'dashFocus'
+  aside.className = 'dash-focus'
+  aside.hidden = true
+  aside.setAttribute('aria-labelledby', 'dashFocusTitle')
+  aside.innerHTML = `
+    <div class="dash-focus-head">
+      <h2 id="dashFocusTitle" tabindex="-1"></h2>
+      <button type="button" class="dash-focus-close" aria-label="Close the session panel" title="Close (Esc)" data-dashboard-focus-key="focus:close">×</button>
+    </div>
+    <p class="dash-focus-meta"></p>
+    <p class="dash-focus-doing"></p>
+    <p class="dash-focus-detail"></p>
+    <p class="dash-focus-gone" hidden>This session has stopped working, or is outside the current filters.</p>
+    <section class="dash-focus-part" aria-label="Asking you"><h3>Asking you</h3><div class="dash-focus-asks"></div></section>
+    <section class="dash-focus-part" aria-label="Plan"><h3>Plan</h3><div class="dash-focus-planbox"></div></section>
+    <section class="dash-focus-part" aria-label="Recent outcomes"><h3>Recent outcomes</h3><div class="dash-focus-outcomes"></div></section>
+    <section class="dash-focus-part" aria-label="Pull request"><h3>Pull request</h3><div class="dash-focus-source"></div></section>
+    <section class="dash-focus-part" aria-label="Links"><div class="dash-focus-links"></div></section>`
+  aside.addEventListener('click', (event) => {
+    const control = event.target.closest?.('[data-focus-target], .dash-focus-close')
+    if (!control) return
+    if (control.matches('.dash-focus-close')) closeSessionFocus()
+    else focusTargets.get(control.dataset.focusTarget)?.()
+  })
+  aside.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape' || event.defaultPrevented) return
+    event.preventDefault()
+    event.stopPropagation()
+    closeSessionFocus()
+  })
+  return aside
+}
+
+// Rewrite one part only when its markup changed, keeping a keyboard user on
+// the same control (by its focus key) when the window has focus.
+function setFocusPart(aside, el, html) {
+  setHidden(el.closest('section'), !html)
+  if (focusPartHtml.get(el) === html) return
+  focusPartHtml.set(el, html)
+  const key = activeFocusElement()?.closest?.('[data-dashboard-focus-key]')
+  const focusKey = key && el.contains(key) ? key.dataset.dashboardFocusKey : null
+  el.innerHTML = html
+  bindContextDisclosures(el)
+  if (!focusKey || !document.hasFocus()) return
+  const next = el.querySelector(`[data-dashboard-focus-key="${CSS.escape(focusKey)}"]`) ?? aside.querySelector('#dashFocusTitle')
+  next.focus({ preventScroll: true })
+}
+
+function focusButton(target, label, open, { className = '', attrs = '' } = {}) {
+  focusTargets.set(target, open)
+  return `<button type="button" class="dash-focus-go${className ? ` ${className}` : ''}" data-focus-target="${esc(target)}" ` +
+    `data-dashboard-focus-key="focus:${esc(target)}"${attrs}>${esc(label)}</button>`
+}
+
+function renderDashFocus(aside, model) {
+  if (!aside) return
+  setHidden(aside, !focusSession)
+  if (!focusSession) return
+  setAttr(aside, 'data-session', focusSession)
+  const lane = model.lanes.find((candidate) => candidate.session === focusSession)
+  setHidden(aside.querySelector('.dash-focus-gone'), Boolean(lane))
+  for (const el of aside.querySelectorAll('.dash-focus-meta, .dash-focus-doing, .dash-focus-detail')) setHidden(el, !lane)
+  focusTargets.clear()
+  if (!lane) {
+    for (const el of aside.querySelectorAll('.dash-focus-part > div')) setFocusPart(aside, el, '')
+    return
+  }
+  setText(aside.querySelector('#dashFocusTitle'), `${lane.agent} in ${lane.project}`)
+  setText(aside.querySelector('.dash-focus-meta'), [lane.branch, `last call ${ageText(lane.sinceMs)} ago`].filter(Boolean).join(' · '))
+  setText(aside.querySelector('.dash-focus-doing'), lane.doing)
+  setText(aside.querySelector('.dash-focus-detail'), lane.detail)
+  setHidden(aside.querySelector('.dash-focus-detail'), !lane.detail)
+  const focus = sessionFocus(lane, { items: allItems(visibleData.g), boards: visibleData.boards, outcomes: model.outcomeEntries })
+  const onRail = new Set(model.rail.cards.map(needsEntryId))
+  setFocusPart(aside, aside.querySelector('.dash-focus-asks'), lane.asks.map((entry) => {
+    const id = needsEntryId(entry)
+    return `<div class="dash-focus-ask"><span class="dash-focus-ask-title">${esc(dashboardEntryTitle(entry) ?? '')}</span>` +
+      focusButton(`${entry.kind}:${id}`, onRail.has(id) ? 'Answer in rail' : 'Answer in Inbox', () => jumpToAsk(entry),
+        { attrs: ` data-focus-ask="${esc(`${entry.kind}:${id}`)}"` }) + '</div>'
+  }).join('') || '<p class="dash-focus-none">Nothing waiting on you.</p>')
+  const plan = lane.plan
+  setFocusPart(aside, aside.querySelector('.dash-focus-planbox'), plan
+    ? `<div class="dash-focus-plan"><span class="dash-focus-plan-title">${esc(plan.title)}</span> <span class="dash-focus-plan-count">${plan.done}/${plan.countable} done</span></div>` +
+      focusButton(`plan:${plan.id}`, 'Open plan', () => focusItem(plan.id), { className: 'dash-focus-plan-open' })
+    : '<p class="dash-focus-none">No plan linked to this session.</p>')
+  setFocusPart(aside, aside.querySelector('.dash-focus-outcomes'), focus.outcomes.map((entry) => {
+    const id = needsEntryId(entry)
+    focusTargets.set(`outcome:${id}`, () => (entry.kind === 'item' ? focusItem(entry.item.id) : focusItem(entry.board.id, { rowId: entry.row.id })))
+    return `<button type="button" class="dash-focus-outcome" data-focus-target="${esc(`outcome:${id}`)}" data-dashboard-focus-key="focus:outcome:${esc(id)}">` +
+      `<strong>${esc(dashboardEntryTitle(entry) ?? 'Recorded outcome')}</strong><span>${esc(dashboardEntryEntity(entry)?.outcome ?? '')}</span></button>`
+  }).join('') || '<p class="dash-focus-none">No recorded outcomes yet.</p>')
+  // PR and CI state is ambient (#30): drawn here, read by no attention surface.
+  const source = focus.source
+  setFocusPart(aside, aside.querySelector('.dash-focus-source'), source
+    ? sourceChipsHtml(linkIndex, source, Date.now(), { ...sourceOptions(source, source), tabbable: true }) : '')
+  const links = new Map()
+  const linked = [...lane.asks.map((entry) => [dashboardEntryEntity(entry), entry.kind === 'row' ? entry.board : entry.item]),
+    ...(focus.board ? [[focus.board, focus.board]] : [])]
+  for (const [entity, identity] of linked) {
+    for (const link of cardLinks(entity, identity, linkIndex)) if (!links.has(link.key)) links.set(link.key, link)
+  }
+  const linksKey = `links:session:${lane.session}`
+  setFocusPart(aside, aside.querySelector('.dash-focus-links'), linkStripHtml([...links.values()], {
+    key: linksKey, open: openContexts.has(linksKey), actions: linkFileActions(), copyFiles: fileLinksCopy(),
+  }))
+}
+
+function paintSessionFocus() {
+  if (!lastDashModel) return
+  renderDashFocus(document.querySelector('#dashboard .dash-focus'), lastDashModel)
+  for (const button of document.querySelectorAll('#dashboard .dash-lane-open')) {
+    setAttr(button, 'aria-expanded', String(button.closest('.dash-lane')?.dataset.lane === focusSession))
+  }
+}
+
+function openSessionFocus(session) {
+  focusSession = session
+  paintSessionFocus()
+  if (document.hasFocus()) document.getElementById('dashFocusTitle')?.focus({ preventScroll: true })
+}
+
+function closeSessionFocus() {
+  const session = focusSession
+  const aside = document.querySelector('#dashboard .dash-focus')
+  const owned = Boolean(aside?.contains(activeFocusElement()))
+  focusSession = null
+  paintSessionFocus()
+  if (!owned || !document.hasFocus()) return
+  const lane = document.querySelector(`#dashboard .dash-lane[data-lane="${CSS.escape(session)}"] .dash-lane-open`)
+  ;(lane ?? document.getElementById('dashLanesTitle'))?.focus({ preventScroll: true })
+}
+
+// A trusted click outside the panel that is not on a lane (a lane toggles it
+// itself) closes it, moving no focus. A click, never a pointerdown: it fires
+// once the press has completed on one element, so nothing moves under the
+// pointer mid-press. In the compact layout the panel is in flow (static) and
+// part of the page, with its own close and Esc, so an outside click never
+// closes it there: the rail below it would jump up under the press.
+function closeSessionFocusOnClick(event) {
+  if (!focusSession || !trustedInput(event) || !(event.target instanceof Element)) return
+  if (event.target.closest('#dashboard .dash-focus, #dashboard .dash-lane')) return
+  const aside = document.querySelector('#dashboard .dash-focus')
+  if (!aside || getComputedStyle(aside).position === 'static') return
+  focusSession = null
+  paintSessionFocus()
+}
+document.addEventListener('click', closeSessionFocusOnClick, true)
+
+function toggleSessionFocus(session) {
+  if (focusSession === session) closeSessionFocus()
+  else openSessionFocus(session)
+}
+
+// "Jump to session…" (#307): the Dashboard, scoped to the session's project as
+// a deep link scopes to its item's, with that session's panel open.
+function jumpToSession(session) {
+  const row = (lastData.activity ?? []).find((candidate) => candidate.session === session)
+  if (!row) return
+  projectFilter = row.project
+  agentFilter = null
+  laneFilters.project = null
+  laneFilters.agent = null
+  focusSession = session
+  resetSearch()
+  selectTab('dashboard', { paint: false })
+  forceRender()
+  // An explicit entry point (#184). Defensive: ⌘K lists results only once the
+  // older history is read, so it finds nothing omitted on the path that exists.
+  requestHistoryPaint()
+  if (document.hasFocus()) document.getElementById('dashFocusTitle')?.focus({ preventScroll: true })
 }
 
 function formatDuration(ms) {
@@ -1882,84 +2440,258 @@ function formatDuration(ms) {
   return minutes ? `${hours}h ${minutes}m` : `${hours}h`
 }
 
-function renderDashboardHistory(panel) {
-  const head = panel.querySelector('.dashboard-card-head')
-  for (const child of [...panel.children]) if (child !== head) child.remove()
-  panel.classList.remove('is-empty')
-  const endMs = Date.now()
-  const bucketCount = dashboardRangeMs === 86400000 ? 24 : dashboardRangeMs === 604800000 ? 14 : 30
-  const history = lastData.activityHistory ?? { state: 'ready', spans: [], message: '' }
-  const historySpans = (history.spans ?? []).filter((span) =>
+// ── the Today ribbon (#305, proposal §4) ─────────────────────────────────────
+// One thin swimlane per project over the range menu's span: work from
+// /api/activity/history, a static striped tail for work happening now, ◆ where
+// an agent asked you and ● where an outcome landed. The structure is mounted
+// once; a lane's track is redrawn only when its geometry changes, and nothing
+// in it animates (#304's rule: no infinite animation for activity).
+const RIBBON_DEFAULT_MS = 86400000
+const RIBBON_RANGES = new Map([
+  [RIBBON_DEFAULT_MS, ['Today', '24h ago']],
+  [604800000, ['Last 7 days', '7d ago']],
+  [2592000000, ['Last 30 days', '30d ago']],
+])
+
+// Issue #392: only a range the human picked past the default reads what the
+// page omits. At 24 hours the ribbon keeps #305's cut-off note and reads
+// nothing more, as before.
+function ribbonReadsOlder() {
+  return dashboardRangeMs > RIBBON_DEFAULT_MS
+}
+
+function ribbonRangeWait(model) {
+  return ribbonReadsOlder() ? ribbonWait(model.marks, Date.now() - dashboardRangeMs) : { history: false, archived: false }
+}
+
+function lensSpans(history) {
+  return (history?.spans ?? []).filter((span) =>
     !dashboardClosedSet().has(span.project)
     && (!projectFilter || span.project === projectFilter)
     && (!agentFilter || span.agent === agentFilter))
-  const series = buildActivitySeries(historySpans, {
+}
+
+function dashboardHistory() {
+  return lastData.activityHistory ?? { state: 'ready', spans: [], message: '' }
+}
+
+const laterOf = (a, b) => (Date.parse(a) > Date.parse(b) || !b ? a : b) || null
+
+function ribbonTime(iso) {
+  const options = dashboardRangeMs > RIBBON_DEFAULT_MS
+    ? { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }
+    : { hour: 'numeric', minute: '2-digit' }
+  return new Date(iso).toLocaleString(undefined, options)
+}
+
+function dashRibbonEl() {
+  const panel = document.createElement('section')
+  panel.className = 'dashboard-card dashboard-activity'
+  panel.innerHTML = `
+    <div class="dashboard-card-head"><h2 class="dash-ribbon-title"></h2></div>
+    <div class="dashboard-activity-total"><strong></strong><span class="dash-ribbon-legend" aria-hidden="true"><span class="dash-ribbon-key now"></span>now <span class="dash-ribbon-key-ask">◆</span> asked you <span class="dash-ribbon-key-outcome">●</span> landed</span></div>
+    <div class="dash-ribbon"></div>
+    <div class="dash-ribbon-axis"><span class="dash-ribbon-from" aria-hidden="true"></span><span class="dash-ribbon-note"></span><span aria-hidden="true">now</span></div>
+    <div class="dash-ribbon-more" hidden></div>`
+  const range = document.createElement('select')
+  range.className = 'dashboard-range'
+  range.dataset.dashboardFocusKey = 'activity-range'
+  range.setAttribute('aria-label', 'Dashboard activity range')
+  for (const [value, [label]] of RIBBON_RANGES) {
+    const option = document.createElement('option')
+    option.textContent = label === 'Today' ? '24 hours' : label.replace('Last ', '')
+    option.value = String(value)
+    range.appendChild(option)
+  }
+  range.value = String(dashboardRangeMs)
+  range.addEventListener('change', () => {
+    dashboardRangeMs = Number(range.value)
+    forceRender()
+    // The human's own change is the only path that reads what a longer range
+    // needs (#392); the poll keeps it while historyWanted/archivedWanted say so.
+    requestHistoryPaint()
+  })
+  panel.querySelector('.dashboard-card-head').appendChild(range)
+  return panel
+}
+
+function renderDashRibbon(panel, model) {
+  if (!panel) return
+  const [title, from] = RIBBON_RANGES.get(dashboardRangeMs) ?? RIBBON_RANGES.get(RIBBON_DEFAULT_MS)
+  setText(panel.querySelector('.dash-ribbon-title'), title)
+  const history = dashboardHistory()
+  const endMs = Date.now()
+  const ribbon = buildRibbon({
+    spans: history.state === 'ready' ? lensSpans(history) : [],
+    asks: model.marks.asks,
+    outcomes: model.marks.outcomes,
     startMs: endMs - dashboardRangeMs,
     endMs,
-    bucketCount,
+    marksAfter: laterOf(model.marks.asksAfter, model.marks.outcomesAfter),
   })
-  if (history.state === 'error') {
-    panel.classList.add('is-empty')
-    const error = document.createElement('div')
-    error.className = 'dashboard-history-empty dashboard-history-error'
-    error.title = history.message
-    error.innerHTML = '<strong>History unavailable</strong>'
-    panel.appendChild(error)
-  } else if (!series.hasHistory) {
-    panel.classList.add('is-empty')
-    const empty = document.createElement('div')
-    empty.className = 'dashboard-history-empty'
-    empty.setAttribute('role', 'img')
-    empty.setAttribute('aria-label', 'No activity history yet')
-    empty.title = 'No activity history yet'
-    empty.innerHTML = '<svg class="dashboard-empty-icon" viewBox="0 0 32 20" aria-hidden="true"><path d="M1 15h5l3-9 5 12 4-8 3 5h10"></path></svg>'
-    panel.appendChild(empty)
-  } else {
-    const total = document.createElement('div')
-    total.className = 'dashboard-activity-total'
-    total.innerHTML = `<strong>${esc(formatDuration(series.totalActiveMs))}</strong>`
-    panel.appendChild(total)
-    const max = Math.max(...series.buckets.map((bucket) => bucket.activeMs), 1)
-    const bars = document.createElement('div')
-    bars.className = 'dashboard-bars'
-    bars.setAttribute('role', 'img')
-    bars.setAttribute('aria-label', `${formatDuration(series.totalActiveMs)} of agent claim time`)
-    for (const bucket of series.buckets) {
-      const bar = document.createElement('span')
-      bar.className = 'dashboard-bar'
-      bar.style.height = `${Math.max(4, (bucket.activeMs / max) * 100)}%`
-      bar.title = `${formatDuration(bucket.activeMs)} · ${bucket.sessions} session${bucket.sessions === 1 ? '' : 's'}`
-      bars.appendChild(bar)
+  const failed = history.state === 'error'
+  const empty = !failed && !ribbon.lanes.length
+  // The error and empty states hold no control, so they come and go whole.
+  let notice = panel.querySelector('.dashboard-history-empty')
+  const kind = failed ? 'error' : empty ? 'empty' : null
+  if (notice && notice.dataset.kind !== kind) { notice.remove(); notice = null }
+  if (kind && !notice) {
+    notice = document.createElement('div')
+    notice.dataset.kind = kind
+    if (failed) {
+      notice.className = 'dashboard-history-empty dashboard-history-error'
+      notice.innerHTML = '<strong>History unavailable</strong>'
+    } else {
+      notice.className = 'dashboard-history-empty'
+      notice.setAttribute('role', 'img')
+      notice.setAttribute('aria-label', 'No activity history yet')
+      notice.title = 'No activity history yet'
+      notice.innerHTML = '<svg class="dashboard-empty-icon" viewBox="0 0 32 20" aria-hidden="true"><path d="M1 15h5l3-9 5 12 4-8 3 5h10"></path></svg>'
     }
-    panel.appendChild(bars)
+    panel.querySelector('.dashboard-card-head').after(notice)
   }
+  if (failed) setAttr(notice, 'title', history.message ?? '')
+  panel.classList.toggle('is-empty', Boolean(kind))
+  for (const part of ['.dashboard-activity-total', '.dash-ribbon', '.dash-ribbon-axis']) setHidden(panel.querySelector(part), Boolean(kind))
+  setText(panel.querySelector('.dashboard-activity-total strong'), formatDuration(ribbon.totalMs))
+  setText(panel.querySelector('.dash-ribbon-from'), from)
+  // Read aloud too: the axis labels are hidden from assistive tech, the note is not.
+  // A read the range waits on that failed says so beside the note (#392).
+  const wait = ribbonRangeWait(model)
+  const unavailable = [
+    wait.history && lastData?.olderError ? OLDER_HISTORY_UNAVAILABLE : '',
+    wait.archived && lastData?.archivedError ? ARCHIVED_UNAVAILABLE : '',
+  ].filter(Boolean)
+  setText(panel.querySelector('.dash-ribbon-note'), ribbon.marksFromAt == null ? ''
+    : [`Asks and outcomes from ${ribbonTime(ribbon.marksFromAt)}`, ...unavailable].join(' · '))
+  const more = panel.querySelector('.dash-ribbon-more')
+  setText(more, ribbon.more > 0 ? `+${plural(ribbon.more, 'more project')}` : '')
+  setHidden(more, Boolean(kind) || ribbon.more <= 0)
+  const list = panel.querySelector('.dash-ribbon')
+  const existing = new Map([...list.children].map((el) => [el.dataset.ribbonProject, el]))
+  const nodes = (kind ? [] : ribbon.lanes).map((lane) => {
+    let el = existing.get(lane.project)
+    existing.delete(lane.project)
+    if (!el) {
+      el = document.createElement('div')
+      el.className = 'dash-ribbon-lane'
+      el.dataset.ribbonProject = lane.project
+      el.setAttribute('role', 'img')
+      el.innerHTML = '<span class="dash-ribbon-name"></span><span class="dash-ribbon-track"></span>'
+    }
+    updateRibbonLane(el, lane)
+    return el
+  })
+  for (const el of existing.values()) el.remove()
+  nodes.forEach((el, index) => {
+    if (list.children[index] !== el) list.insertBefore(el, list.children[index] ?? null)
+  })
 }
 
-function renderDashboardDispatch(list, sessions) {
-  list.replaceChildren()
-  if (!sessions.length) {
-    list.innerHTML = '<div class="dashboard-empty" role="img" aria-label="No agent connections" title="No agent connections"><svg class="dashboard-empty-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v4M12 18v4M2 12h4M18 12h4"></path></svg></div>'
-    return
+function updateRibbonLane(el, lane) {
+  const color = pcolor(lane.project).dot
+  if (el.style.getPropertyValue('--lane-color') !== color) el.style.setProperty('--lane-color', color)
+  setText(el.querySelector('.dash-ribbon-name'), lane.project)
+  setAttr(el, 'aria-label', [
+    `${lane.project}: ${formatDuration(lane.workMs)} of work`,
+    lane.live ? 'working now' : '',
+    lane.asks ? `${plural(lane.asks, 'ask')}${lane.openAsks ? ` (${lane.openAsks} open)` : ''}` : '',
+    lane.outcomes ? plural(lane.outcomes, 'outcome') : '',
+  ].filter(Boolean).join(', '))
+  // The track is rebuilt only when its shape changes (bars, which are live,
+  // which markers); positions and tooltips move in place, so a live bar that
+  // grows with the clock keeps its node (#305 review).
+  const track = el.querySelector('.dash-ribbon-track')
+  const shape = JSON.stringify([lane.bars.map((bar) => bar.liveFrom != null), lane.marks.map((mark) => [mark.kind, mark.key, mark.open])])
+  if (track.dataset.key !== shape) {
+    track.dataset.key = shape
+    track.innerHTML = [
+      ...lane.bars.map((bar) => `<span class="dash-ribbon-bar${bar.liveFrom != null ? ' live' : ''}"></span>`),
+      ...lane.marks.map((mark) => `<span class="dash-ribbon-mark ${mark.kind}${mark.open ? ' open' : ''}">${mark.kind === 'ask' ? '◆' : '●'}</span>`),
+    ].join('')
   }
-  for (const session of sessions.slice(0, 4)) {
-    const row = document.createElement('div')
-    row.className = `dashboard-live-session${session.idle ? ' idle' : ''}`
-    const identity = document.createElement('strong')
-    identity.textContent = `${session.project} / ${session.agent}`
-    const doing = document.createElement('span')
-    doing.textContent = session.historical ? `Last report: ${session.synopsis}` : session.synopsis
-    const state = document.createElement('small')
-    state.textContent = session.idle ? 'Connected' : 'Reported work'
-    row.append(identity, doing, state)
-    list.appendChild(row)
-  }
+  const nodes = track.children
+  lane.bars.forEach((bar, index) => {
+    const live = bar.liveFrom != null
+    setAttr(nodes[index], 'style', `left:${bar.left}%;width:${bar.width}%${live ? `;--live-from:${bar.liveFrom}%` : ''}`)
+    setAttr(nodes[index], 'title', `${ribbonTime(bar.from)}–${live ? 'now (working)' : ribbonTime(bar.to)}`)
+  })
+  lane.marks.forEach((mark, index) => {
+    const node = nodes[lane.bars.length + index]
+    setAttr(node, 'style', `left:${mark.left}%`)
+    setAttr(node, 'title', `${mark.kind === 'ask' ? (mark.open ? 'Asking you' : 'Asked you') : 'Landed'}: ${mark.title} · ${ribbonTime(mark.at)}`)
+  })
 }
 
-function renderDashboardOutcomes(list, entries, complete = true, wait = { history: true, archived: false }) {
+// "Since you last looked" (#305, §14): one line about the time between the
+// previous visit and this one, only after a gap.
+function renderDashSince(el, model) {
+  if (!el) return
+  const history = dashboardHistory()
+  const text = sinceLastLooked({
+    sinceMs: Date.parse(lastVisitAt ?? ''),
+    untilMs: visitAt,
+    asks: model.marks.asks,
+    outcomes: model.marks.outcomes,
+    asksAfter: model.marks.asksAfter,
+    outcomesAfter: model.marks.outcomesAfter,
+    spans: history.state === 'ready' ? lensSpans(history) : null,
+  })
+  setText(el, text ? `Since you last looked: ${text}` : '')
+  setAttr(el, 'title', lastVisitAt ? `Since ${new Date(lastVisitAt).toLocaleString()}` : '')
+  setHidden(el, !text || sinceSeen)
+}
+
+// The line is about the time before this visit, so it goes once the human has
+// looked: their first click or key press anywhere in the window while it shows
+// on the Dashboard. Input only reaches a window the human is using, so a
+// background window they never looked at keeps it. Only the human's own input
+// counts (a scripted event is not them), and reading the line does not: a click
+// on it, a shortcut such as ⌘C or ⌘-Tab, or any key while it is selected.
+let sinceSeen = false
+let sinceEl = null
+function dismissSince(event) {
+  const el = sinceEl
+  if (sinceSeen || activeTab !== 'dashboard' || !el?.isConnected || el.hidden) return
+  if (!trustedInput(event) || sinceKeepsOn(event, el, document.getSelection())) return
+  sinceSeen = true
+  el.hidden = true
+}
+document.addEventListener('pointerdown', dismissSince, true)
+document.addEventListener('keydown', dismissSince, true)
+
+// Just landed (#305): an outcome newer than anything drawn before gets one
+// arrival highlight, under the same gate as the lanes' pulse. The first paint
+// only seeds what is already there.
+let landedSeen = null
+let landedHigh = -Infinity
+
+function markLanded(rows, entries) {
+  const animate = dashboardMotion()
+  const seen = landedSeen ?? new Set()
+  let high = landedHigh
+  entries.forEach((entry, index) => {
+    const key = rows[index].dataset.dashboardFocusKey
+    const at = stamp(entry.kind === 'item' ? entry.item : entry.row)
+    if (landedSeen && animate && !seen.has(key) && at > landedHigh) playOnce(rows[index], 'arrived', 'dash-landed-arrive')
+    seen.add(key)
+    high = Math.max(high, at)
+  })
+  landedSeen = seen
+  landedHigh = high
+}
+
+function renderDashboardOutcomes(list, entries, complete = true, wait = { history: true, archived: false }, hidden = 0) {
   // Issues #184 and #299: outcomes the page or the archived brief omits may
   // still outrank what is listed.
   if (complete) list.removeAttribute('aria-busy')
   else list.setAttribute('aria-busy', 'true')
+  // #305: proven outcomes left out because their open PR still waits on you.
+  const waiting = list.parentElement?.querySelector('.dash-landed-waiting')
+  if (waiting) {
+    setText(waiting, hidden ? `${hidden} on ${hidden === 1 ? 'a PR' : 'PRs'} still waiting on you` : '')
+    setHidden(waiting, !hidden)
+  }
   const existing = new Map([...list.querySelectorAll('.dashboard-outcome')]
     .map((row) => [row.dataset.dashboardFocusKey, row]))
   const active = activeFocusElement()?.closest?.('.dashboard-outcome')
@@ -1984,6 +2716,7 @@ function renderDashboardOutcomes(list, entries, complete = true, wait = { histor
     row.querySelector('small').textContent = dashboardEntryProject(entry) ?? ''
     return row
   })
+  markLanded(rows, entries.slice(0, 4))
   if (focused && rows.includes(focused)) {
     // Move the other rows around the focused button; detaching that button would
     // lose native keyboard ownership even if it were immediately reinserted.
@@ -1993,7 +2726,7 @@ function renderDashboardOutcomes(list, entries, complete = true, wait = { histor
     focused.after(...rows.slice(index + 1))
   } else {
     list.replaceChildren(...rows)
-    if (!rows.length) {
+    if (!rows.length && !(complete && hidden)) {
       list.innerHTML = complete
         ? '<div class="dashboard-empty" role="img" aria-label="No recorded outcomes" title="No recorded outcomes"><svg class="dashboard-empty-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"></circle><path d="m8 12 2.5 2.5L16 9"></path></svg></div>'
         : `<div class="dashboard-empty" role="status">${esc(omittedWaitText('Loading older outcomes…', wait))}</div>`
@@ -2006,109 +2739,268 @@ function renderDashboardOutcomes(list, entries, complete = true, wait = { histor
   }
 }
 
+// ── the Needs you rail (#303, Dashboard 2.0 phase 1) ─────────────────────────
+// The top three asks of the one attention set (buildDashboard's `rail`, from
+// attentionEntries through sortRail), each a compact card answered with the
+// Inbox's own controls and writes (answerEl, rowAnswerEl, snoozeAsk, pinAsk),
+// so drafts land in draftReplies/rowDrafts and join suspendState(), recovery,
+// durable drafts and the viewer-restart hold like any other editor (D2: the
+// only answer surface on the Dashboard). It paints in the ambient painter so
+// counts and cards keep moving while the rest of the Dashboard keeps focus,
+// and a draft in it pauses the rail alone: a poll leaves the rail as it is
+// while one of its asks holds a draft, and only a frame the human asked for
+// (forceRender) rebuilds it. A held pointer already stops paintAmbient.
+const RAIL_SNOOZE_MS = 4 * 60 * 60_000
+const railExpanded = new Set() // ask ids whose card shows the written-answer editor
+let railSelectedId = null      // the card Tab lands on; J/K move it
+
+const RAIL_ICONS = {
+  snooze: '<circle cx="8" cy="8" r="6"></circle><path d="M8 4.5V8l2.5 1.5"></path>',
+  pin: '<path d="M6 2h4l-.5 4 2.5 2.5H4L6.5 6 6 2zM8 8.5V14"></path>',
+  open: '<path d="M9 3h4v4M13 3 7 9M11 9.5V13H3V5h3.5"></path>',
+}
+
+function dashRailEl() {
+  const section = document.createElement('section')
+  section.className = 'dashboard-card dash-rail'
+  section.id = 'dashRail' // scopes the draft focus bookmark to this copy of an editor
+  section.setAttribute('aria-labelledby', 'dashRailTitle')
+  section.innerHTML = `
+    <div class="dashboard-card-head"><h2 id="dashRailTitle">Needs you</h2></div>
+    <div class="dash-rail-cards" role="list" aria-labelledby="dashRailTitle"></div>
+    <div class="dash-rail-foot">
+      <button type="button" class="dash-rail-more" data-dashboard-focus-key="rail:more" hidden></button>
+      <button type="button" class="dash-rail-review" data-dashboard-focus-key="rail:review" data-shortcut-id="review">Open Review queue</button>
+    </div>`
+  section.querySelector('.dash-rail-more').addEventListener('click', () => selectTab('needsYou'))
+  section.querySelector('.dash-rail-review').addEventListener('click', openTriage)
+  section.addEventListener('keydown', onDashRailKey)
+  return section
+}
+
+// A poll leaves the rail alone while one of its asks holds a draft, or while a
+// background window remembers focus inside it: rebuilding would drop that focus,
+// and restoring it would pull focus into a window the human is not using.
+function dashRailHeld(list) {
+  const remembered = document.activeElement
+  if (!document.hasFocus() && remembered && list.contains(remembered)) return true
+  return [...list.querySelectorAll('[data-rail-card]')].some((card) => holdsDraft(card.dataset.railCard))
+}
+
+function renderDashRail(section, rail, { forced = false } = {}) {
+  if (!section) return
+  const list = section.querySelector('.dash-rail-cards')
+  // The count line is plain text: it stays current even while the cards are held.
+  const more = section.querySelector('.dash-rail-more')
+  const parts = [rail.more ? `+${rail.more} more` : '', rail.later ? `${rail.later} in Later` : ''].filter(Boolean)
+  more.textContent = parts.join(' · ')
+  more.hidden = !parts.length
+  more.title = 'Open the Inbox'
+  // An incoming card that holds a draft holds the rail too: building its editor
+  // from a poll could run draft recovery, which switches tabs and moves focus.
+  if (!forced && (dashRailHeld(list) || rail.cards.some((entry) => holdsDraft(needsEntryId(entry))))) return
+  const focusedCard = activeFocusElement()?.closest?.('[data-rail-card]')
+  const bookmark = focusedCard && list.contains(focusedCard)
+    ? captureCardFocus(focusedCard, focusedCard.dataset.railCard)
+    : null
+  const focusIndex = bookmark ? [...list.children].indexOf(focusedCard) : -1
+  const ids = rail.cards.map(needsEntryId)
+  for (const id of railExpanded) if (!ids.includes(id)) railExpanded.delete(id)
+  if (!ids.includes(railSelectedId)) railSelectedId = ids[0] ?? null
+  const nowMs = Date.now()
+  const cards = rail.cards.map((entry) => dashRailCardEl(entry, nowMs))
+  list.replaceChildren(...cards)
+  if (!cards.length) {
+    const empty = document.createElement('div')
+    empty.className = 'dash-rail-empty'
+    empty.textContent = 'Nothing needs you now'
+    list.appendChild(empty)
+  }
+  if (bookmark) restoreDashRailFocus(section, bookmark, focusIndex)
+}
+
+function restoreDashRailFocus(section, bookmark, index) {
+  const cards = [...section.querySelectorAll('[data-rail-card]')]
+  const card = cards.find((el) => el.dataset.railCard === bookmark.id)
+  if (!card) {
+    const next = cards[Math.min(index, cards.length - 1)] ?? section.querySelector('.dash-rail-review')
+    if (next?.dataset.railCard) railSelectedId = next.dataset.railCard
+    next?.focus({ preventScroll: true })
+    return
+  }
+  const matches = bookmark.key
+    ? cardFocusTargets(card).filter((target) => cardFocusKey(target) === bookmark.key)
+    : []
+  const target = matches[bookmark.ordinal] ?? card
+  target.focus({ preventScroll: true })
+  if (target instanceof HTMLTextAreaElement) target.setSelectionRange(target.value.length, target.value.length)
+}
+
+function railIconButton(action, label, title, onClick) {
+  const button = btn('', onClick)
+  button.type = 'button'
+  button.className = `dash-rail-icon dash-rail-${action}`
+  button.dataset.railAction = action
+  button.title = title
+  button.setAttribute('aria-label', title)
+  button.innerHTML = `<svg viewBox="0 0 16 16" aria-hidden="true">${RAIL_ICONS[action]}</svg><span>${esc(label)}</span>`
+  return button
+}
+
+function dashRailCardEl(entry, nowMs) {
+  const id = needsEntryId(entry)
+  const ask = entryEntity(entry)
+  const owner = entry.kind === 'row' ? entry.board : entry.item
+  const m = rowModel(entry, { lastVisitAt })
+  const expanded = railExpanded.has(id) || holdsDraft(id)
+  const card = document.createElement('article')
+  card.className = `dash-rail-card${expanded ? ' expanded' : ''}`
+  card.dataset.railCard = id
+  card.setAttribute('role', 'listitem')
+  card.tabIndex = id === railSelectedId ? 0 : -1
+  card.setAttribute('aria-label', `${m.title}. ${m.ownerLabel}.`)
+  const asked = askTimeModel(m.askedAt, nowMs)
+  card.innerHTML = `
+    <div class="dash-rail-meta">
+      <span class="pdot" style="background:${pcolor(owner.project).dot}" aria-hidden="true"></span>
+      <span class="dash-rail-project">${esc(owner.project)}</span>
+      <span class="nrow-owner owner-${esc(m.actionCategory)}">${esc(m.ownerLabel)}</span>
+      ${entry.liveness === 'waiting' ? '<span class="dash-rail-waiting" title="The agent that asked is live and waiting on your answer">agent waiting</span>' : ''}
+      ${asked ? `<time class="dash-rail-asked" datetime="${esc(asked.datetime)}" title="${esc(asked.exact)}">${esc(asked.text)}</time>` : ''}
+    </div>
+    <div class="dash-rail-title" title="${esc(m.originalTitle)}">${esc(m.title)}</div>
+    ${m.secondary ? `<div class="dash-rail-tldr">${esc(m.secondary)}</div>` : ''}
+    ${cardLinksHtml(ask, owner)}`
+  bindContextDisclosures(card)
+  card.appendChild(entry.kind === 'row'
+    ? rowAnswerEl(entry.board, entry.row, null, { surface: 'rail' })
+    : answerEl(entry.item, { surface: 'rail' }))
+  const actions = document.createElement('div')
+  actions.className = 'dash-rail-actions'
+  const write = btn(expanded ? 'Hide reply' : 'Reply', () => toggleRailCard(card, id, write))
+  write.type = 'button'
+  write.title = 'Write an answer here (Enter)'
+  write.className = 'dash-rail-write'
+  write.dataset.railAction = 'expand'
+  write.setAttribute('aria-expanded', String(expanded))
+  actions.appendChild(write)
+  actions.appendChild(railIconButton('snooze', 'Snooze', 'Snooze for 4 hours (S)',
+    () => snoozeAsk(entry, new Date(Date.now() + RAIL_SNOOZE_MS).toISOString())))
+  if (pinOffered(ask, entry.kind)) actions.appendChild(railIconButton('pin', 'Pin', 'Pin for later (P): it waits in Later until you bring it back', () => pinAsk(entry)))
+  actions.appendChild(railIconButton('open', 'Open', 'Open in Inbox', () => openAskInInbox(entry)))
+  card.appendChild(actions)
+  card.addEventListener('focusin', () => { railSelectedId = id })
+  return card
+}
+
+function toggleRailCard(card, id, button) {
+  const open = !card.classList.contains('expanded')
+  if (!open && holdsDraft(id)) return // a draft keeps its editor on screen
+  if (open) railExpanded.add(id)
+  else railExpanded.delete(id)
+  card.classList.toggle('expanded', open)
+  button.textContent = open ? 'Hide reply' : 'Reply'
+  button.setAttribute('aria-expanded', String(open))
+  if (open) card.querySelector('textarea.reply-input:not(.reply-context-input)')?.focus({ preventScroll: true })
+}
+
+// Open the ask's own card in the Inbox, as a deep link does.
+function openAskInInbox(entry) {
+  if (entry.kind === 'item') {
+    focusItem(entry.item.id)
+    return
+  }
+  const id = entry.row.id
+  projectFilter = entry.board.project
+  agentFilter = null
+  actionFilter = 'all'
+  changedOnly = false
+  resetSearch()
+  selectTab('needsYou', { paint: false })
+  forceRender()
+  const target = needsYouRowEl(id)
+  if (!target) return
+  revealDetailsAncestors(target)
+  selectRow(id)
+  setOpenRow(id)
+  forceRender()
+}
+
+// J/K move between cards, 1–4 choose an option, S snoozes, P pins and Enter
+// opens the written answer. Only on a card or its buttons, never while typing.
+function onDashRailKey(event) {
+  if (event.defaultPrevented || event.isComposing || event.metaKey || event.ctrlKey || event.altKey) return
+  const target = event.target
+  if (!(target instanceof Element) || target.closest('textarea, input, select, [contenteditable="true"]')) return
+  const card = target.closest('[data-rail-card]')
+  if (!card) return
+  const key = event.key.length === 1 ? event.key.toLowerCase() : event.key
+  const action = (name) => card.querySelector(`[data-rail-action="${name}"]`)
+  let handled = null
+  if (key === 'j' || key === 'k') {
+    const cards = [...card.parentElement.querySelectorAll('[data-rail-card]')]
+    handled = cards[cards.indexOf(card) + (key === 'j' ? 1 : -1)] ?? null
+    if (handled) {
+      for (const other of cards) other.tabIndex = other === handled ? 0 : -1
+      railSelectedId = handled.dataset.railCard
+      handled.focus()
+    } else handled = card // at either end: stay put, but the key is still the rail's
+  } else if (key === 'Enter' && target === card) {
+    handled = action('expand')
+  } else if (/^[1-4]$/.test(key)) {
+    handled = card.querySelectorAll('.opt-pill')[Number(key) - 1] ?? null
+  } else if (key === 's') {
+    handled = action('snooze')
+  } else if (key === 'p') {
+    handled = action('pin')
+  }
+  if (!handled) return
+  event.preventDefault()
+  event.stopPropagation()
+  if (handled !== card && !handled.matches('[data-rail-card]')) handled.click()
+}
+
 function renderDashboard(model) {
   const host = document.querySelector('#dashboard .dashboard')
   // Keep native controls mounted; ambient updates replace only their data regions.
   if (!host || host.querySelector('.dashboard-grid')) return
 
-  const signals = document.createElement('div')
-  signals.className = 'dashboard-signals'
-  signals.append(
-    dashboardSignal({
-      name: 'agents',
-      label: 'Reported work',
-      value: model.signals.agents.working,
-      total: model.signals.agents.total,
-      target: 'live',
-      tone: 'agent',
-      meter: true,
-    }),
-    dashboardSignal({
-      name: 'waiting',
-      label: 'Needs you',
-      value: model.signals.waiting,
-      target: 'needsYou',
-      tone: 'attention',
-    }),
-    dashboardSignal({
-      name: 'plans',
-      label: 'Plans',
-      value: model.signals.plans,
-      target: 'boards',
-      tone: 'plan',
-    }),
-    dashboardSignal({
-      name: 'outcomes',
-      label: 'Recorded outcomes',
-      value: model.signals.outcomes,
-      target: 'outcomes',
-      tone: 'outcome',
-    }),
-  )
-  host.appendChild(signals)
+  host.appendChild(dashNowEl())
+  const since = document.createElement('p')
+  since.className = 'dash-since'
+  since.hidden = true
+  host.appendChild(since)
+  sinceEl = since
 
   const grid = document.createElement('div')
   grid.className = 'dashboard-grid'
-
-  const activityPanel = document.createElement('section')
-  activityPanel.className = 'dashboard-card dashboard-activity'
-  const activityHead = document.createElement('div')
-  activityHead.className = 'dashboard-card-head'
-  activityHead.innerHTML = '<h2>Agent activity</h2>'
-  const range = document.createElement('select')
-  range.className = 'dashboard-range'
-  range.dataset.dashboardFocusKey = 'activity-range'
-  range.setAttribute('aria-label', 'Dashboard activity range')
-  for (const [label, value] of [['24 hours', 86400000], ['7 days', 604800000], ['30 days', 2592000000]]) {
-    const option = document.createElement('option')
-    option.textContent = label
-    option.value = String(value)
-    range.appendChild(option)
-  }
-  range.value = String(dashboardRangeMs)
-  range.addEventListener('change', () => {
-    dashboardRangeMs = Number(range.value)
-    forceRender()
-  })
-  activityHead.appendChild(range)
-  activityPanel.appendChild(activityHead)
-  grid.appendChild(activityPanel)
-
-  const ownership = document.createElement('section')
-  ownership.className = 'dashboard-card dashboard-ownership'
-  ownership.innerHTML = `
-    <div class="dashboard-card-head"><h2>Ownership flow</h2></div>
-    <div class="dashboard-flow">
-      <button type="button" data-flow-target="needsYou" data-dashboard-focus-key="flow:human" class="flow-human"><span>Waiting on you</span><strong>${esc(String(model.ownership.human))}</strong></button>
-      <div class="dashboard-flow-line" aria-hidden="true"></div>
-      <button type="button" data-flow-target="needsYou" data-dashboard-focus-key="flow:agent" class="flow-agent"><span>With agents</span><strong>${esc(String(model.ownership.agent))}</strong></button>
-      <div class="dashboard-flow-line" aria-hidden="true"></div>
-      <button type="button" data-flow-target="outcomes" data-dashboard-focus-key="flow:outcome" class="flow-outcome"><span>Outcome</span><strong>${esc(String(model.ownership.outcome))}</strong></button>
-    </div>`
-  for (const button of ownership.querySelectorAll('[data-flow-target]')) {
-    button.addEventListener('click', () => dashboardTarget(button.dataset.flowTarget))
-  }
-  grid.appendChild(ownership)
-
-  const live = document.createElement('section')
-  live.className = 'dashboard-card dashboard-dispatch'
-  live.innerHTML = '<div class="dashboard-card-head"><h2>Live dispatch</h2></div>'
-  const sessionList = document.createElement('div')
-  sessionList.className = 'dashboard-live-list'
-  live.appendChild(sessionList)
-  grid.appendChild(live)
+  const lanes = dashLanesEl()
+  // #307: the session panel belongs to the lanes column: over its right part
+  // on a desktop, below the lanes in flow on a narrow screen.
+  lanes.appendChild(dashFocusEl())
+  grid.appendChild(lanes)
+  grid.appendChild(dashRailEl())
+  grid.appendChild(dashRibbonEl())
 
   const outcomes = document.createElement('section')
   outcomes.className = 'dashboard-card dashboard-outcomes'
-  outcomes.innerHTML = '<div class="dashboard-card-head"><h2>Recent outcomes</h2></div>'
+  outcomes.innerHTML = '<div class="dashboard-card-head"><h2>Just landed</h2></div>'
   const outcomeList = document.createElement('div')
   outcomeList.className = 'dashboard-outcome-list'
   outcomes.appendChild(outcomeList)
+  const waiting = document.createElement('p')
+  waiting.className = 'dash-landed-waiting'
+  waiting.hidden = true
+  outcomes.appendChild(waiting)
   grid.appendChild(outcomes)
 
   host.appendChild(grid)
-  renderDashboardAmbient(model)
+  renderDashboardAmbient(model, { forced: true })
 }
+
+// True only while render() paints a frame the human asked for (forceRender):
+// the Dashboard rail rebuilds then even while it holds a draft (#303).
+let forcedAmbient = false
 
 function paintAmbient() {
   applyBadge()
@@ -2146,7 +3038,7 @@ function paintAmbient() {
   const live = pillLive
   const dashboard = dashboardModel(filtered, lastData.older, live)
   renderLiveBar(lastData.activity ?? [])    // collapsed strip — GLOBAL, never scoped (§7 filter-blindness, generalized)
-  renderDashboardAmbient(dashboard)
+  renderDashboardAmbient(dashboard, { forced: forcedAmbient })
   paintTabCounts(g, boards)
   paintLaterSectionHint()
   return { agents, g, boards, archived, live, dashboard }
@@ -2164,7 +3056,8 @@ function dashboardModel({ g, boards, archived }, summary, activity) {
     nowMs: Date.now(),
     liveSessionIds: liveSessionIds(),
     closedProjects: dashboardClosedProjects(),
-    history: { older: olderHistory(summary, olderLens()), archived: omittedOutcomes(archived) },
+    history: { older: olderHistory(summary, olderLens()), archived: omittedOutcomes(archived), before: summary?.before ?? null },
+    links: linkIndex,
   })
 }
 
@@ -2225,7 +3118,7 @@ function paintEditableSurfaces({ agents, g, boards, archived, live, dashboard, p
 function frameInputs() {
   return [
     ...lastData.reads, JSON.stringify(lastData.closed), navigationKey(), openRowId,
-    outsideChanges, liveVersion, fileLinksCopy(), Boolean(linkFileActions()),
+    focusSession, laneFilters.project, laneFilters.agent, outsideChanges, liveVersion, fileLinksCopy(), Boolean(linkFileActions()),
   ]
 }
 
@@ -2250,7 +3143,13 @@ function render() {
   const paintAllPanes = preparedFrame === null || !editablePanesPainted
   // The rebuild below detaches the nodes a text selection lives in (#223).
   const textSelection = preparedFrame ? preparedFrame.textSelection : captureSelection()
-  const frame = preparedFrame ?? paintAmbient()
+  forcedAmbient = preparedFrame === null
+  let frame
+  try {
+    frame = preparedFrame ?? paintAmbient()
+  } finally {
+    forcedAmbient = false
+  }
   // The lens this frame's data was filtered through (#298).
   const frameLens = navigationKey()
   frame.paintAllPanes = paintAllPanes
@@ -2463,9 +3362,16 @@ function openTriage() {
 
 function closeTriage({ restoreFocus = true } = {}) {
   const returnFocus = triageReturnFocus
+  const lightbox = document.getElementById('lightbox')
+  // A draft edited in the deck may be newer than a held copy of its editor on
+  // the page (the Dashboard rail, an Inbox card): repaint so none is stale.
+  // Only on the human's own close; recovery closes from inside a render.
+  const heldDraft = restoreFocus
+    && [...lightbox.querySelectorAll('textarea.reply-input')].some((input) => input.value.trim() !== '')
   triageDeck = null
   triageReturnFocus = null
-  document.getElementById('lightbox').hidden = true
+  lightbox.hidden = true
+  if (heldDraft) forceRender()
   if (restoreFocus) restoreTriageReturnFocus(returnFocus)
 }
 
@@ -2561,7 +3467,9 @@ const UNHANDLED_LABEL = 'Not done after all'
 // `onPin` is passed only for an unanswered ask that is not pinned yet, and only
 // while the Later section is on (#247): the pin is offered first, above the
 // snooze choices it replaces.
-function dispositionEl(onResponse, onSnooze, key, onPin = null) {
+// `label` names the menu: the Dashboard rail (#303) calls it "More…", since its
+// card already shows Snooze and Pin.
+function dispositionEl(onResponse, onSnooze, key, onPin = null, { label = 'More responses' } = {}) {
   const menu = document.createElement('details')
   menu.className = 'disposition-menu'
   menu.open = openDispositionMenus.has(key)
@@ -2570,7 +3478,7 @@ function dispositionEl(onResponse, onSnooze, key, onPin = null) {
     else openDispositionMenus.delete(key)
   })
   const summary = document.createElement('summary')
-  summary.textContent = 'More responses'
+  summary.textContent = label
   const wrap = document.createElement('div')
   wrap.className = 'disposition-actions'
   if (onPin) {
@@ -2632,6 +3540,37 @@ function deferWaitStop(entry, url, until, pins, options) {
   return deferAsk(entry, url, { until, defer: true, ...pins }, options)
 }
 
+const ROW_CHANGED_REFUSAL = 'This action changed before your click; refreshed without applying it.'
+const ITEM_CHANGED_REFUSAL = 'This question changed before your click; refreshed without applying it.'
+
+// The snooze and pin writes for one ask, shared by every card that offers them:
+// the Inbox and Review queue cards, the plan panel and the Dashboard rail (#303).
+function snoozeAsk(entry, until, { onSaved = null } = {}) {
+  if (entry.kind === 'item') return deferAsk(entry, `/api/items/${entry.item.id}/snooze`, { until })
+  const { row: r, board: b } = entry
+  return deferAsk(entry, `/api/boards/${b.id}/rows/${r.id}/snooze`,
+    { until, expected_revision: r.revision, expected_board_version: b.revision }, { onSaved })
+}
+
+function pinAsk(entry, { onSaved = null } = {}) {
+  if (entry.kind === 'item') {
+    return deferAsk(entry, `/api/items/${entry.item.id}/later`, { pinned: true }, { refusal: ITEM_CHANGED_REFUSAL })
+  }
+  const { row: r, board: b } = entry
+  return deferAsk(entry, `/api/boards/${b.id}/rows/${r.id}/later`,
+    { pinned: true, expected_revision: r.revision, expected_board_version: b.revision },
+    { onSaved, refusal: ROW_CHANGED_REFUSAL })
+}
+
+// Pin for later is offered on an unanswered ask that is not pinned yet, and only
+// while the Later section is on (#247). A question's Note is feedback, not an
+// answer, so only a row's annotation or handled mark counts.
+function pinOffered(entity, kind) {
+  if (!laterSection || entity.pinned_at) return false
+  if (kind === 'item') return !entity.reply && !entity.reply_kind
+  return !entity.annotation && !entity.annotation_kind && !entity.handled_at
+}
+
 // The test suspendState() applies: a draft is more than whitespace.
 function holdsDraft(id) {
   return [draftReplies[id], draftReplyContexts[id], rowDrafts[id]]
@@ -2648,6 +3587,9 @@ function keepDraftInView(entry) {
   if (triageDeck && activeTab !== 'needsYou') {
     selectTab('needsYou', { paint: false })
     triageReturnFocus = { kind: 'triageButton' }
+  } else if (activeTab === 'dashboard') {
+    // #303: the rail shows no deferred ask, so its draft goes to the Inbox card.
+    selectTab('needsYou', { paint: false })
   }
   const ask = entryEntity(entry)
   if (openRowId === ask.id) return
@@ -2829,7 +3771,10 @@ function bindReplyEditor(editor, submit) {
 // the two answers to one question ("what do you want to tell the agent?"), and
 // because the single `.write-error` slot below is then where a refusal on EITHER
 // of them appears.
-function rowAnswerEl(b, r, onSaved) {
+// `surface: 'rail'` is the Dashboard rail's compact card (#303): the same
+// controls and writes, with ★ on the recommended option, its own disclosure
+// state, and "I'll take a while" under More… (Snooze and Pin are on the card).
+function rowAnswerEl(b, r, onSaved, { surface = null } = {}) {
   recoverMismatchedRenderedRowDraft(b, r)
   const wrap = document.createElement('div')
   wrap.className = 'row-answer'
@@ -2981,7 +3926,7 @@ function rowAnswerEl(b, r, onSaved) {
       box.className = 'option'
       const pill = document.createElement('button')
       pill.className = `opt-pill${option.recommended ? ' rec' : ''}`
-      pill.innerHTML = `${esc(option.label)}${option.recommended ? '<span class="rec-tag">recommended</span>' : ''}`
+      pill.innerHTML = optionPillHtml(option, surface)
       pill.addEventListener('click', () => {
         input.value = option.label
         input.dataset.responseKind = 'answer'
@@ -3008,34 +3953,28 @@ function rowAnswerEl(b, r, onSaved) {
     }
     wrap.appendChild(choices)
   }
+  const keyPrefix = surface ? `${surface}:` : ''
   if (r.status === 'blocked' && !r.annotation && !r.annotation_kind && !r.handled_at) {
-    wrap.appendChild(dispositionEl(
+    const entry = { kind: 'row', row: r, board: b }
+    const menu = dispositionEl(
       (kind, text) => {
         input.value = text
         input.dataset.responseKind = kind
         rowDraftKinds[r.id] = kind
         save()
       },
-      (until) => deferAsk(
-        { kind: 'row', row: r, board: b },
-        `/api/boards/${b.id}/rows/${r.id}/snooze`,
-        { until, expected_revision: r.revision, expected_board_version: b.revision },
-        { onSaved },
-      ),
-      `row:${r.id}`,
-      r.pinned_at || !laterSection ? null : () => deferAsk(
-        { kind: 'row', row: r, board: b },
-        `/api/boards/${b.id}/rows/${r.id}/later`,
-        { pinned: true, expected_revision: r.revision, expected_board_version: b.revision },
-        { onSaved, refusal: 'This action changed before your click; refreshed without applying it.' },
-      ),
-    ))
+      (until) => snoozeAsk(entry, until, { onSaved }),
+      `${keyPrefix}row:${r.id}`,
+      surface || !pinOffered(r, 'row') ? null : () => pinAsk(entry, { onSaved }),
+      surface ? { label: 'More…' } : {},
+    )
+    wrap.appendChild(menu)
     const waitStop = waitStopEl(r, {
-      key: `wait:row:${r.id}`,
+      key: `${keyPrefix}wait:row:${r.id}`,
       onStop: async (until) => {
         const url = `/api/boards/${b.id}/rows/${r.id}/stop-waiting`
         const pins = { expected_revision: r.revision, expected_board_version: b.revision }
-        const refusal = 'This action changed before your click; refreshed without applying it.'
+        const refusal = ROW_CHANGED_REFUSAL
         if (laterSection) {
           await deferWaitStop({ kind: 'row', row: r, board: b }, url, until, pins, { refusal, onSaved })
           return
@@ -3046,7 +3985,7 @@ function rowAnswerEl(b, r, onSaved) {
         await reloadAndPaint()
       },
     })
-    if (waitStop) wrap.appendChild(waitStop)
+    if (waitStop) (surface ? menu.querySelector('.disposition-actions') : wrap).appendChild(waitStop)
   } else if (r.status === 'blocked') {
     const reminder = waitStopEl(r, { answered: true, pickedUp: rowPickup(r).pickedUp })
     if (reminder) wrap.appendChild(reminder)
@@ -7575,9 +8514,19 @@ async function submitItemReply(
   await reloadAndPaint()
 }
 
+// One option's pill. The rail (#303) marks the recommendation with ★ and keeps
+// the word for assistive technology.
+function optionPillHtml(option, surface = null) {
+  if (!option.recommended) return esc(option.label)
+  return surface === 'rail'
+    ? `<span class="rec-star" aria-hidden="true">★</span>${esc(option.label)}<span class="rec-tag visually-hidden">recommended</span>`
+    : `${esc(option.label)}<span class="rec-tag">recommended</span>`
+}
+
 // the answer surface on an unanswered question: option pills (recommended
 // first), a Compare toggle for the tradeoffs, and a free-text answer
-function answerEl(it) {
+// `surface: 'rail'`: the Dashboard rail's compact card (#303); see rowAnswerEl.
+function answerEl(it, { surface = null } = {}) {
   const wrap = document.createElement('div')
   wrap.className = `options${closedCompares.has(it.id) ? '' : ' comparing'}`
   setHintOwner(wrap, it)
@@ -7588,7 +8537,7 @@ function answerEl(it) {
     box.className = 'option'
     const pill = document.createElement('button')
     pill.className = `opt-pill${o.recommended ? ' rec' : ''}`
-    pill.innerHTML = `${esc(o.label)}${o.recommended ? '<span class="rec-tag">recommended</span>' : ''}`
+    pill.innerHTML = optionPillHtml(o, surface)
     pill.addEventListener('click', () => sendReply(
       it.id, o.label, effectiveReplyContext(it), 'answer', editorGeneration,
     ))
@@ -7665,28 +8614,27 @@ function answerEl(it) {
   // Change answer's prefill was not typed here: pin it to the question it is shown against.
   if (itemDraftMeta[it.id]?.answer === undefined
     && (draftReplies[it.id] !== undefined || draftReplyContexts[it.id] !== undefined)) rememberDraftOwner()
-  wrap.appendChild(dispositionEl(
+  const keyPrefix = surface ? `${surface}:` : ''
+  const entry = { kind: 'item', item: it }
+  const menu = dispositionEl(
     (kind, text) => sendReply(
       it.id, text, effectiveReplyContext(it), kind, editorGeneration,
     ),
-    (until) => deferAsk({ kind: 'item', item: it }, `/api/items/${it.id}/snooze`, { until }),
-    `item:${it.id}`,
-    it.reply || it.reply_kind || it.pinned_at || !laterSection ? null : () => deferAsk(
-      { kind: 'item', item: it },
-      `/api/items/${it.id}/later`,
-      { pinned: true },
-      { refusal: 'This question changed before your click; refreshed without applying it.' },
-    ),
-  ))
+    (until) => snoozeAsk(entry, until),
+    `${keyPrefix}item:${it.id}`,
+    surface || !pinOffered(it, 'item') ? null : () => pinAsk(entry),
+    surface ? { label: 'More…' } : {},
+  )
+  wrap.appendChild(menu)
   const waitStop = waitStopEl(it, {
     // A chat-recorded answer reuses this surface as a correction form, but the
     // agent recorded it itself: nothing is waiting, so nothing can be stopped.
     answered: Boolean(it.reply || it.reply_kind),
     pickedUp: Boolean(it.reply_seen_at),
-    key: `wait:item:${it.id}`,
+    key: `${keyPrefix}wait:item:${it.id}`,
     onStop: async (until) => {
       const url = `/api/items/${it.id}/stop-waiting`
-      const refusal = 'This question changed before your click; refreshed without applying it.'
+      const refusal = ITEM_CHANGED_REFUSAL
       if (laterSection) {
         await deferWaitStop({ kind: 'item', item: it }, url, until, {}, { refusal })
         return
@@ -7697,7 +8645,7 @@ function answerEl(it) {
       await reloadAndPaint()
     },
   })
-  if (waitStop) wrap.appendChild(waitStop)
+  if (waitStop) (surface ? menu.querySelector('.disposition-actions') : wrap).appendChild(waitStop)
   return wrap
 }
 
@@ -8420,7 +9368,9 @@ function initSearch() {
       resetSearch()
       return
     }
-    const queryChanged = searchQuery.trim() !== value.trim()
+    // a trailing space turns a command's name into the command (#307): only
+    // that edit counts among trim-equivalent ones
+    const queryChanged = searchQuery.trim() !== value.trim() || commandShape(searchQuery) !== commandShape(value)
     if (!queryChanged) {
       finishSearchUpdate()
       setSearchActive(searchActiveIndex)

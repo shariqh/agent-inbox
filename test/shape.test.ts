@@ -486,7 +486,7 @@ describe('issue links and issue_rel — titled board_get only (#103 PR2)', () =>
 
   it('an unlinked board keeps its previous key order, rows where they always were', () => {
     const { board } = boardWith([{ label: 'Plain', status: 'tracked' }])
-    const { issue_pin_repo: _repo, issue_pin_number: _number, repo_root: _root, ...before } = { ...board, rows: [] }
+    const { issue_pin_repo: _repo, issue_pin_number: _number, repo_root: _root, session: _session, ...before } = { ...board, rows: [] }
     expect(Object.keys(shapeBoard(board, { ledger: makeContextLedger() }))).toEqual(Object.keys(before))
   })
 
@@ -513,5 +513,20 @@ describe('the repository folder never reaches an agent (#324)', () => {
     }
     const item = { id: 'i1', title: 'q', context: LONG, repo: 'o/n', repo_root: ROOT }
     expect(agentItem(item)).toEqual({ id: 'i1', title: 'q', context: LONG, repo: 'o/n' })
+  })
+})
+
+// Issue #306 — a plan's `session` is the writing server's presence id, for the
+// Dashboard's lanes alone. No agent read carries it.
+describe('the plan’s writing session never reaches an agent (#306)', () => {
+  it('shapeBoard and summariseBoard drop it', () => {
+    const db = openDb(join(scratchDir('shape-session-'), 'inbox.db'))
+    upsertBoard(db, { project: 'p', stream: 's', agent: 'a', title: 'plan', session: 'mcp-1234', rows: [{ label: 'Row', status: 'tracked' }] })
+    const board = listBoards(db)[0]!
+    expect(board.session).toBe('mcp-1234')
+    for (const out of [shapeBoard(board, { ledger: makeContextLedger() }), shapeBoard(board, { full: true, ledger: makeContextLedger() }), summariseBoard(board)]) {
+      expect(out).not.toHaveProperty('session')
+      expect(JSON.stringify(out)).not.toContain('mcp-1234')
+    }
   })
 })

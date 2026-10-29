@@ -28,8 +28,16 @@ export const KEYBOARD_COMMANDS = [
   { id: 'resolve', key: 'e', display: 'E', label: 'Resolve the current item', group: 'Work through items', legacy: true },
   { id: 'dismiss', key: 'x', display: 'X', label: 'Dismiss the current item with its undo window', group: 'Work through items', legacy: true },
   { id: 'review', key: 't', display: 'T', label: 'Open the review queue', group: 'Work through items', legacy: true },
+  // #307: the Dashboard's own keys, listed here only (legacy: the rail and the
+  // lanes handle them where focus is, so they never collide with the Inbox's).
+  { id: 'railMove', key: 'j', display: 'J / K', label: 'Move between the Needs you rail cards', group: 'Dashboard', legacy: true },
+  { id: 'railOption', key: '1-4', display: '1-4', label: "Choose a rail card's option", group: 'Dashboard', legacy: true },
+  { id: 'railSnooze', key: 's', display: 'S', label: 'Snooze the rail card', group: 'Dashboard', legacy: true },
+  { id: 'railPin', key: 'p', display: 'P', label: 'Pin the rail card for later', group: 'Dashboard', legacy: true },
+  { id: 'railOpen', key: 'Enter', display: 'Enter', label: "Write an answer on a rail card, or open a lane's session focus panel", group: 'Dashboard', legacy: true },
+  { id: 'focusClose', key: 'Escape', display: 'Esc', label: 'Close the session focus panel and return to its lane', group: 'Dashboard', legacy: true },
   { id: 'focus', key: 'Tab', display: 'Tab / Shift Tab', label: 'Move through controls; use arrows for pickers and pane dividers', group: 'Every control', legacy: true },
-  { id: 'escape', key: 'Escape', display: 'Esc', label: 'Leave hints, cancel a shortcut, or close the current surface', group: 'Every control', legacy: true, selector: '.keyboard-close, .lb-close, .relay-close, .mission-close, .mission-detail-close' },
+  { id: 'escape', key: 'Escape', display: 'Esc', label: 'Leave hints, cancel a shortcut, or close the current surface', group: 'Every control', legacy: true, selector: '.keyboard-close, .lb-close, .relay-close, .mission-close, .mission-detail-close, .dash-focus-close' },
 ]
 
 // ctx: { typing, deckOpen, expanded, peeking, optionCount }

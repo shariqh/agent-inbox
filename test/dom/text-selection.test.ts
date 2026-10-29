@@ -17,7 +17,7 @@
 // rebuilding.
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type Database from 'better-sqlite3'
-import { insertItem, listBoards, replyItem, resolveItem, upsertActivity, upsertBoard } from '../../src/store.js'
+import { insertItem, listBoards, replyItem, resolveItem, upsertBoard } from '../../src/store.js'
 import {
   advanceClock, answerInput, badgeCount, bootApp, buttonLabelled, click, freshDb, pollTick, repaint, row,
   settle, showInbox, tabCount, type, useDomTest,
@@ -75,6 +75,13 @@ async function openQuestion(detail = DETAIL): Promise<{ d: Database.Database, id
   await settle()
   expect(cardOf(id)?.querySelector('.card-tldr-body')?.textContent).toContain(DETAIL)
   return { d, id }
+}
+
+// A recorded outcome on the Dashboard's Just landed list.
+function landed(d: Database.Database): void {
+  const id = insertItem(d, { ...AGENT, kind: 'done', title: 'Shipped' })
+  resolveItem(d, id, 'Published the release notes.')
+  advanceClock()
 }
 
 function arrive(d: Database.Database, title: string): string {
@@ -253,27 +260,25 @@ describe('#223 · a text selection survives the 3-second rebuild', () => {
   it('restores a selection in a surface the ambient painter rebuilds', async () => {
     const d = freshDb()
     db = d
-    upsertActivity(d, {
-      session: 'live', ...AGENT, doing: 'Building the release dashboard', idle: false,
-    })
+    landed(d)
     await bootApp(d)
-    const node = selectText(document.querySelector('#dashboard .dashboard-live-list'), 'release dashboard')
+    // #304/#305: lanes and the ribbon update in place; Just landed still
+    // rewrites its rows' text on every paint.
+    const node = selectText(document.querySelector('#dashboard .dashboard-outcome span'), 'release notes')
     arrive(d, 'A question')
 
     await pollTick()
 
     expect(badgeCount()).toBe(1)
-    expect(node.isConnected, 'the ambient painter rebuilt the dispatch list').toBe(false)
-    expect(selected()).toBe('release dashboard')
+    expect(node.isConnected, 'the ambient painter rewrote the outcome row').toBe(false)
+    expect(selected()).toBe('release notes')
   })
 
   it('restores a selection an ambient repaint replaced while a draft holds the editable frame', async () => {
     const d = freshDb()
     db = d
     const id = insertItem(d, { ...AGENT, kind: 'question', title: 'Approve the rollout?' })
-    upsertActivity(d, {
-      session: 'live', ...AGENT, doing: 'Building the release dashboard', idle: false,
-    })
+    landed(d)
     await bootApp(d)
     await showInbox()
     click(row(id))
@@ -281,15 +286,15 @@ describe('#223 · a text selection survives the 3-second rebuild', () => {
     type(answerInput(id), 'half-typed answer')
     click(document.querySelector('.tab[data-tab="dashboard"]'))
     await settle()
-    const node = selectText(document.querySelector('#dashboard .dashboard-live-list'), 'release dashboard')
+    const node = selectText(document.querySelector('#dashboard .dashboard-outcome span'), 'release notes')
     arrive(d, 'Second question')
 
     await pollTick()
 
     expect(document.getElementById('pauseHint')?.textContent, 'the draft must hold the editable frame').not.toBe('')
     expect(badgeCount()).toBe(2)
-    expect(node.isConnected, 'the ambient painter rebuilt the dispatch list').toBe(false)
-    expect(selected()).toBe('release dashboard')
+    expect(node.isConnected, 'the ambient painter rewrote the outcome row').toBe(false)
+    expect(selected()).toBe('release notes')
   })
 
   it('leaves the caret in a reply box the repaint focused (Change answer)', async () => {

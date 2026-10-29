@@ -1,4 +1,5 @@
 import type { RelayBoard, RelayEntry, RelayItem } from './relay.js'
+import type { Lane, NowStrip } from './lanes.js'
 
 export interface DashboardActivity {
   session: string
@@ -35,42 +36,57 @@ export interface DashboardInput {
   history?: {
     older: { items: number; outcomes: number; latest: string | null; projects: string[]; agents?: string[] }
     archived?: { outcomes: number; latest: string | null }
+    /** #184: the page's touch boundary; every item created after it is on the page */
+    before?: string | null
   }
+  /** #305: the frame's PR index (indexLinks), so Just landed can skip an open ask's open PR */
+  links?: Map<string, any> | null
 }
 
 export interface DashboardModel {
   signals: {
-    agents: { working: number; quiet: number; total: number; reportedChildren: number }
     waiting: number
     withAgents: number
     plans: number
     outcomes: number
     projects: number
   }
-  ownership: { human: number; agent: number; outcome: number }
+  /** #303: the top three attention entries in rail order, how many more, and how many wait in Later */
+  rail: { cards: RelayEntry[]; more: number; later: number }
   waitingEntries: RelayEntry[]
   agentEntries: RelayEntry[]
+  /** every loaded outcome, newest first (#307) */
+  outcomeEntries: RelayEntry[]
   recentOutcomes: RelayEntry[]
+  /** #305: proven outcomes Just landed leaves out because their open PR still waits on you */
+  recentOutcomesHidden: number
   /** false while omitted closed history or archived outcomes could still outrank a listed outcome */
   recentOutcomesComplete: boolean
   /** which omitted source, read, would let the list be proven (#184, #299) */
   recentOutcomesWait: { history: boolean; archived: boolean }
-  sessions: Array<DashboardActivity & {
-    synopsis: string
-    historical: boolean
-    lastActiveAt: string | undefined
-  }>
+  /** #305: the ribbon's ◆ and ● markers, and from when each list is complete */
+  marks: {
+    asks: RibbonMark[]
+    outcomes: RibbonMark[]
+    asksAfter: string | null
+    outcomesAfter: string | null
+    /** #392: the newest outcome archived plans in brief omit, or null */
+    archivedAfter: string | null
+  }
+  /** #304: one lane per working session, in model order (newest call first) */
+  lanes: Lane[]
+  /** connected sessions with no live claim, folded into "+N idle connections" */
+  idleConnections: number
+  /** #304: the Now strip, from the same model as the lanes */
+  now: NowStrip
 }
 
-export interface ActivityBucket {
-  startAt: string
-  endAt: string
-  activeMs: number
-  sessions: number
+export interface RibbonMark {
+  key: string
+  project: string
+  at: number
+  title: string
+  open?: boolean
 }
 
 export function buildDashboard(input: DashboardInput): DashboardModel
-export function buildActivitySeries(
-  spans: DashboardSpan[],
-  range: { startMs: number; endMs: number; bucketCount: number },
-): { hasHistory: boolean; totalActiveMs: number; buckets: ActivityBucket[] }

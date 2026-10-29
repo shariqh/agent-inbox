@@ -20,12 +20,6 @@ describe('the editorial desk shell', () => {
     expect(css).not.toContain('rebeccapurple')
   })
 
-  it('uses the agent accent and a neutral quiet state for dashboard lane dots', () => {
-    expect(css).toMatch(/\.dashboard-agent-dot\s*\{[^}]*background:\s*var\(--app-border-strong\)/s)
-    expect(css).toMatch(/\.dashboard-agent-dot\.active\s*\{[^}]*background:\s*var\(--signal\)/s)
-    expect(css).toMatch(/\.dashboard-agent-dots\s*\{[^}]*flex-wrap:\s*wrap/s)
-  })
-
   it('moves navigation into a real sidebar and gives the work area an editorial heading', () => {
     expect(html).toContain('class="sidebar-shell"')
     expect(html).toContain('id="pageTitle"')
@@ -211,5 +205,27 @@ describe('the editorial desk shell', () => {
     expect(compact).toMatch(/\.page-heading\s*\{[^}]*flex:\s*0 1 auto/s)
     expect(compact).toMatch(/\.floating-search\s*\{[^}]*width:\s*min\(520px,\s*100%\)[^}]*flex:\s*1 1 300px/s)
     expect(compact).not.toMatch(/\.topbar-tools\s*\{/)
+  })
+})
+
+// #307: jsdom never matches the compact @media block, so the session panel's
+// placement is pinned on the source.
+describe('the session focus panel placement (#307)', () => {
+  const compact = css.slice(css.indexOf('@media (max-width: 1279px)'))
+  const desktop = css.slice(0, css.indexOf('@media (max-width: 1279px)'))
+  const rule = (sheet: string) => sheet.match(/(?:^|\n)\s*\.dash-focus\s*\{([^}]*)\}/)?.[1] ?? ''
+
+  it('sits inside the lanes card on a desktop, never fixed over the page', () => {
+    expect(desktop).toMatch(/\.dash-lanes\s*\{\s*position:\s*relative;\s*\}/)
+    expect(rule(desktop)).toMatch(/position:\s*absolute;/)
+    expect(rule(desktop)).not.toMatch(/position:\s*fixed/)
+    expect(app).toMatch(/lanes\.appendChild\(dashFocusEl\(\)\)/)
+  })
+
+  it('joins the flow below the lanes under 1280px, never over the masthead', () => {
+    const narrow = rule(compact)
+    expect(narrow).toMatch(/position:\s*static;/)
+    expect(narrow).toMatch(/max-height:\s*none;/)
+    expect(narrow).toMatch(/z-index:\s*auto;/)
   })
 })

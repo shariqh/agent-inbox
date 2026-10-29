@@ -58,7 +58,7 @@ const REVIEWED_COLUMNS: Record<string, string[]> = {
   ],
   boards: [
     'agent', 'created_at', 'head_repo', 'id', 'issue_pin_number', 'issue_pin_repo', 'issue_ref', 'last_read_at',
-    'project', 'repo', 'repo_root', 'revision', 'status', 'stream', 'title', 'updated_at',
+    'project', 'repo', 'repo_root', 'revision', 'session', 'status', 'stream', 'title', 'updated_at',
   ],
   board_rows: [
     'action_agent', 'action_agent_version', 'action_owner', 'action_started_at', 'action_version', 'annotated_at',
@@ -555,6 +555,15 @@ describe('snapshot domains (issue #297)', () => {
         return upsertBoard(on(), {
           project: 'alpha', stream: '117-umbrella', agent: 'claude-code', title: 'Release', repo: REPO, issueRef: 117, expectedVersion: plan.revision,
           rows: plan.rows.map((row) => ({ label: row.label, status: row.status, revision: row.revision, note: row.note })),
+        })
+      }, PLANS],
+      // #306: a plan re-sent by another MCP session moves only its `session`,
+      // which /api/boards carries, so the plans rebuild though no revision moved
+      ['a plan re-sent by another session', () => {
+        const plan = getBoard(on(), 'alpha', 'Release')!
+        return upsertBoard(on(), {
+          project: 'alpha', stream: '117-umbrella', agent: 'claude-code', title: 'Release', repo: REPO, issueRef: 117, expectedVersion: plan.revision,
+          session: 'mcp-other', rows: plan.rows.map((row) => ({ label: row.label, status: row.status, revision: row.revision, note: row.note })),
         })
       }, PLANS],
       ['a row pinned for later', (f: Fixture) => {

@@ -205,14 +205,17 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   focused in an active window, not text left in a closed box, even one a
   background window still reports as focused (#233) — the Handoffs overlay,
   History paged past what the page proves, a History deep link, a pending deep
-  link to an omitted item, or
-  Dashboard recent outcomes the page cannot prove), or, within the same tick and
+  link to an omitted item,
+  Dashboard recent outcomes the page cannot prove, or (#392) the Today ribbon at
+  a range longer than 24 hours that starts before the page's `before`; at 24
+  hours the ribbon keeps its cut-off note and reads nothing), or, within the same tick and
   under the same boot-marker and generation rules, when the tick's own new page
   needs it, so a sweep never paints a blank History frame. Decide on a PAGE
   (`lastData.page`, or the tick's new one), never on merged data, or loading
   history would end the need for it. Explicit human entry points (tab select, the
   History pager, rail project/agent picks, opening Handoffs, a deep link that
-  found its target) call `requestHistoryPaint()`, which ends in `reloadAndPaint()`
+  found its target, the ribbon's range menu (#392), which is not saved, so boot
+  always starts at 24 hours) call `requestHistoryPaint()`, which ends in `reloadAndPaint()`
   so an unrelated draft or a focused Dashboard control cannot hide the frame the
   click asked for (#38). Typing or focusing search, and a deep link waiting on an
   omitted item, only call `requestHistory()`: it schedules an early `load()` and
@@ -264,7 +267,11 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   outcomes, Plans with the archived fold open, a lingering plan or a focused plan
   its agent just archived (the focus follows it into the fold), and a Dashboard
   lens whose recent outcomes only the archived plans can prove
-  (`recentOutcomesWait.archived`; `.history` is #184's half). Judge on the BRIEF
+  (`recentOutcomesWait.archived`; `.history` is #184's half), or (#392) a ribbon
+  range past 24 hours that starts before the newest outcome the brief omits
+  (`ribbonWait` in `public/ribbon.js`, over the model's `asksAfter` and
+  `archivedAfter`; a failed read adds the unavailable line to the ribbon's
+  cut-off note instead of blanking it). Judge on the BRIEF
   (the applied one, or the tick's new one for the in-tick read that lets a plan
   archived this tick linger at once), never on the complete list, whose plans
   omit nothing. The two sources share #184's early-tick requests:
@@ -486,6 +493,41 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   participates in working/idle state, freshness, attention, or sorting. Its additive migration
   backfills atomically from a legacy non-`open` claim (or a preserved idle detail) so upgrading
   cannot erase the only synopsis a session reported.
+- **The call trace counts work, never liveness (issue #306, D5).** `activity.call_minute` (the
+  epoch minute the newest bucket counts) and `activity.call_counts` (comma-separated counts,
+  oldest first, at most 30, no leading zeros, each capped at 999) are written by
+  `recordActivityCall` ALONE, inside its `.immediate()` transaction (it reads the buckets
+  before it writes them). `touchActivity`/`livenessTick`, registration and claims never name
+  them; `test/live-tick.test.ts`'s AST pins plus `test/store.test.ts` hold that. A write rolls
+  the window to now: a gap appends empty minutes, 30 or more starts over, and a stored minute
+  ahead of the clock (it moved back) counts as now. `listActivity` serves them as `calls`
+  (array) and `calls_at` only while `calls_at` is within 30 minutes of now, and omits both
+  otherwise; at most 150 bytes a session (`test/viewer.test.ts` measures the saturated case).
+  The browser rolls them to its own clock (`callTrace` in `public/lanes.js`), so
+  `/api/activity`'s bytes move only with a call (which moves `last_call_at` anyway) and once
+  at expiry; `activityFrameKey` needs nothing new. The lane's sparkline is one static SVG
+  path (`tracePath`), written by attribute only when its bars change and never animated (the
+  #304 rule); the 30-second clock repaint (#298) rolls it with no new read. `activity` is in
+  no snapshot, so none of this rebuilds anything; older servers' statements never name the
+  columns (their calls record no trace, and they never clear one).
+- **`boards.session` puts a plan on its lane (issue #306, D4).** Additive, nullable: the
+  writing MCP server's `sessionId` (the same id its presence row carries), stamped by
+  `board_upsert` and `board_row` through `ensureBoard`. The plan follows its latest writer,
+  like `stream` and `agent`: null or omitted keeps it, `''` clears it. A change of writer
+  ALONE is not content: it moves neither `updated_at` nor the board revision, so a sibling's
+  `board_version` stays valid; `/api/boards` still rebuilds, because the whole-table `boards`
+  domain's trigger fires on the `ensureBoard` UPDATE (column domains do not read it;
+  `REVIEWED_COLUMNS` says so). `board_advance` restamps no plan field, this one included, and
+  neither do the human's writes or any older server's statements. This build's agent reads
+  never carry it (`shapeBoard` strips it; `pending()` and the title-less summary never select
+  it); an older server sharing a migrated hub (v1.8.0's `shapeBoard` spreads the row) passes
+  it through on a titled `board_get`, as with #324's `repo_root`. The
+  Dashboard's join (`linkedPlan` in `public/lanes.js`): a plan stamped with the lane's
+  session wins (the newest such); otherwise D4's project + branch + agent join, leaving out
+  plans stamped with another session that is WORKING (`isWorking`); a stamp naming a session
+  that is idle or gone joins as before, so an idle CLI's plan never drops off every lane.
+  Existing hubs keep v1.8.0's `boards` update trigger beside the new one that also watches
+  `session`, so one boards UPDATE moves that domain's version twice: harmless, as #297 allows.
 - **Session scope is Solo-style** (`src/scope.ts`): inferred lazily per call, overridable via
   `register`. The one memo is a FOUND origin remote (#159): once `git remote get-url origin`
   succeeds, the server reuses it for both `project` and `repo` for the process's life (the
@@ -1282,13 +1324,43 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   (the harness's `changedPollTick(db)`, or fresh data as press-guard and
   page-scroll insert), never rely on a `.focus()` counting as input.
 - **Dashboard focus must not freeze monitoring detail.** Mount the structural frame
-  and native range selector once, then refresh ownership, dispatch, recent outcomes
-  and history through the ambient painter as well as headline signals. Preserve the
+  and native range selector once, then refresh the Now strip, live lanes, the Needs you
+  rail, recent outcomes and history through the ambient painter. Preserve the
   range control's identity, value and focus across polls and history error/recovery.
   Reuse a focused outcome button while its result remains present; move focus to an
   adjacent control only when that result actually leaves and the viewer owns focus.
   This must not bypass the global held-pointer guard, create a third render entry,
   or pull keyboard ownership back from a background viewer.
+- **The Dashboard's Needs you rail is the one answer surface there, and it reads only the
+  one predicate (#303, Dashboard 2.0 phase 1, decisions D2, D3, D8).** It replaced Ownership
+  flow. `buildDashboard`'s `rail` is `sortRail(relay.human)` (`public/attention.js`) cut to
+  three cards, plus how many more and how many wait in Later (`laterEntries`): relay.human
+  IS `attentionEntries` under the Dashboard's lens, so the rail, the badge, the tabs and the
+  dock cannot disagree. `sortRail` only reorders: an item whose session is live
+  (`classifyLiveness` → `waiting`) comes first with an "agent waiting" chip, the rest keep
+  `sortNeedsYou` order; never filter or add an entry there. The Now strip's "Waiting on you"
+  owns the count (#304); the rail head and its Open Review queue button carry no number. Each card
+  mounts the Inbox's own `answerEl`/`rowAnswerEl` with `surface: 'rail'` (★ on the
+  recommended option, More… holding Clarify, Decline and "I'll take a while", its own
+  disclosure keys) plus Snooze (4 h), Pin and Open icons whose writes are the shared
+  `snoozeAsk`/`pinAsk` (through `deferAsk`), so a rail draft lives in `draftReplies` /
+  `rowDrafts` and joins `suspendState()`, durable drafts (#279), recovery and the
+  viewer-restart hold like any editor; `expect_answer` (#321) is the Inbox editor's own.
+  The editor shows only on an expanded card (CSS; a card holding a draft is always
+  expanded), and the rail lives in `#dashRail` so `restoreDraftFocus` scopes to it. The
+  rail paints in the ambient painter (`renderDashRail`), so it moves while the rest of the
+  Dashboard holds focus, with three rules. (1) A poll leaves it untouched while one of its
+  asks holds a draft (a rail draft pauses only the rail; the rest of the Dashboard keeps
+  refreshing) or while a background window remembers focus inside it. (2) A frame the human
+  asked for rebuilds it anyway: `render()` sets `forcedAmbient` around its own
+  `paintAmbient()`, so every write still ends in `reloadAndPaint()` and shows its result;
+  there is no third render entry. (3) It restores its own focused control
+  (`captureCardFocus`) only while the document has focus, and never puts
+  `data-dashboard-focus-key` on a card, or `restoreDashboardFocus` would move focus off the
+  control onto it. A deferral from the Dashboard of an ask holding a draft switches to the
+  Inbox (`keepDraftInView`), since the rail never shows a deferred ask. Keys on a card (never
+  while typing): J/K move, 1–4 choose, S snooze, P pin, Enter expands.
+  `test/dom/dashboard-rail.test.ts` pins all of it, including attention parity.
 - **Remembered DOM focus is not keyboard ownership.** A blurred tab or embedded viewer
   keeps its last `document.activeElement`. Passive polling must capture focus bookmarks
   only while `document.hasFocus()` is true, before replacing DOM; otherwise restoring a
@@ -1387,6 +1459,163 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   repeats inside its 1.6 s window are not re-announced. Listeners bind once per
   document and never prevent a default or stop propagation: clicks, the press guard
   and attention are unchanged. `test/dom/copy-on-select.test.ts` pins each rule.
+- **Live lanes and the Now strip are one model, updated in place (#304, Dashboard 2.0
+  phase 2, decisions D2, D4).** They replaced Live dispatch and the four signal cards.
+  `buildLanes` (`public/lanes.js`, pure, called by `buildDashboard`) reads only the reads
+  the poll already makes: one lane per WORKING session, where working is the claim and
+  `last_call_at` alone (`isWorking`: not `idle`, and `last_call_at ?? started_at` within
+  the 30-minute `CLAIM_COLD_MS`, re-checked against the clock because a snapshot ages);
+  `updated_at` is never read there, so a session that only heartbeats folds into "+N idle
+  connections". A working lane with no call for `QUIET_MS` (5 minutes, where
+  `freshnessTone` already says quiet; the proposal left N open) reads "quiet 12m". Its plan
+  is the most recently updated active plan with the same project, branch (`stream`) and
+  agent (D4; phase 4 may stamp it), drawn as done / in progress / waiting on you / to do
+  over the Plans tab's own `countable`, where "waiting on you" is only rows
+  `isBlockedRowAttention` counts. Its asks are the attention set in rail order (an item
+  whose `session` is the lane's, or a row of its plan), so a lane can never draw an ask the
+  badge does not count; "Asking you" jumps to the rail card (D2: the rail is the one answer
+  surface) or, past the top three, opens the ask in the Inbox, and "waiting on you 2h"
+  jumps to the oldest. The Now strip's numbers come from the same call: working lanes and
+  their subagents, the attention set and its oldest age, and plan steps as the lanes' bars
+  added up, each plan once; the card headings carry no numbers. `renderDashLanes` keeps
+  lanes keyed by session and writes only changed text and attributes (`setText`/`setAttr`),
+  so an unchanged lane keeps its nodes and selection; a rail draft never stops
+  it, and a held pointer stops it with the rest of `paintAmbient`. A focused lane control
+  that leaves (lane gone, ask strip hidden, moved by a re-sort) hands focus to the adjacent
+  lane control or the lanes heading, the outcomes list's rule, and only when the document
+  had focus before the update: removing the focused node can itself make `hasFocus()`
+  false. A background window's remembered focus is never moved. Lanes carry `data-lane`,
+  an identity attribute in `public/selection.js`.
+  Order is pinned (`pinLaneOrder`): a session keeps its place, new ones append, and only a
+  forced paint (`forcedAmbient`) re-sorts, newest call first. At most `MAX_LANES` (12) are
+  drawn, the rest "+N more working". **Lanes use no infinite animation; activity motion is
+  one-shot per real event.** Measured A/B against main with four working sessions, the
+  first version's loops (lane and subagent pulses, a top-edge sweep) cost +5.6 pp of
+  renderer and +34 pp of GPU CPU just for being on screen, undoing #298, and even one loop
+  cost ~+4.7 pp. So a live lane is static, a solid dot and the word "live" in every mode,
+  and `calledLanes` (pure) names the drawn lanes whose `last_call_at` moved forward since
+  the last paint (`laneCalls`, refreshed for every model lane on every paint): each pulses
+  once and the newest of them also sweeps once (`playOnce`: a class whose one-iteration
+  CSS animation takes the motion tokens and is removed on `animationend` or, since #305,
+  `animationcancel`, so one cancelled by Calm or by leaving the Dashboard never replays). Nothing starts
+  on first paint, for a lane that just appeared, on an unchanged poll or a forced repaint,
+  for a lane that is not drawn, or while the Dashboard pane is hidden; and nothing starts
+  unless `motion.activityMotion()` allows it: Full only, never under the OS reduced-motion
+  setting or a hidden page. Calm stops these pulses too (a pulse per call is motion a human
+  may opt out of), with a CSS backstop in both lists. Presence, not attention: nothing here reaches `public/attention.js`, a
+  badge, a tab or the dock (`test/dom/dashboard-lanes.test.ts`).
+- **The Today ribbon, Just landed and "Since you last looked" read only what the poll
+  already reads (#305, Dashboard 2.0 phase 3, D8).** The ribbon replaced the Agent activity
+  bar chart; the range menu is the same native `<select>`, mounted once in the panel head,
+  so polls, ribbon changes and history errors keep its identity, value and focus.
+  `buildRibbon` (`public/ribbon.js`, pure) draws one thin lane per project over the range:
+  `/api/activity/history` spans clipped to it (a span with neither `ended_at` nor
+  `effective_ended_at` is live and its bar gets a striped tail from where it started), ◆ for
+  every question raised and every ask an active plan's row has made (its current action
+  when blocked or once answered, owned or handled, and each earlier action in its `history`
+  with an owner or a response; an earlier step closed with neither, which only a
+  pre-action-field writer makes, is not counted), ● for every recorded outcome. A ◆ is drawn open
+  only when its entry is in `attentionEntries` or `laterEntries` (`buildDashboard`'s
+  `marks`), so the ribbon never shows an ask the badge does not know. Budgets: the 12 most
+  recently active projects (drawn by name so a lane keeps its place; the rest "+N more
+  projects"), at most 200 bars (touching spans merge, then the merge gap doubles until they
+  fit) and 120 markers. Markers older than what the page proves complete are not drawn:
+  items created after the page's `before` are all on it (#184) and outcomes stamped after
+  the newest omitted one are all loaded (#299), so `marks.asksAfter`/`outcomesAfter` set a
+  floor. Past 120 markers the floor rises to the newest one cut (ties at that instant are
+  cut too), so what is drawn is always every marker after the floor, never a silent
+  subset. Either way the axis says "Asks and outcomes from …" (`marksFromAt`), and that
+  note is outside the `aria-hidden` axis labels so it is heard. The ribbon never asks for
+  older history itself (a follow-up may read it when the human changes the range). **Nothing in the ribbon animates**: #304's rule, so the "now" stripes are a
+  static `repeating-linear-gradient` on `.dash-ribbon-bar.live::after`, and
+  `test/motion-css.test.ts` refuses any animation or transition on a ribbon rule. Lanes are
+  keyed by project; a lane's track is rebuilt only when its SHAPE changes (how many bars,
+  which are live, which markers), never for its geometry: positions, `--live-from` and
+  tooltips are written in place with `setAttr`, so a live bar growing with the clock keeps
+  its node and an unchanged poll writes nothing. Just landed is the former Recent outcomes
+  list: the newest four are proven EXACTLY as before #305 (`listed`, `keepsUnproven`,
+  `recentOutcomesComplete` and so `historyWanted`/`archivedWanted` over the unfiltered
+  outcomes, so its reads are byte-identical to main's), and only then are the proven rows
+  whose OPEN PR in the frame's `linkIndex` (`linkFor`, `pr_state` OPEN) is also the open PR
+  of an open or deferred ask left out: that PR has not landed. A branch with no open PR
+  (`main`, a merged PR) hides nothing, which the review of #391 found the hard way: matching
+  by branch alone let one open ask on `main` empty the list and read older history on every
+  tick. The rows left out still count and are named, "N on PRs still waiting on you"
+  (`recentOutcomesHidden`), instead of the empty state. It holds four 60px rows. A new outcome (unseen key, stamped after
+  everything drawn before) gets one `arrived` highlight through `playOnce`, only when
+  `dashboardMotion()` allows it (Full, no OS reduced motion, visible page, Dashboard on
+  screen); the first paint, a poll, a tab switch and older history arriving start nothing,
+  and an outcome that arrives while motion is off is marked seen. "Since you last looked"
+  (`sinceLastLooked`, §14) is one line under the Now strip for the time between
+  `lastVisitAt` (the previous page load) and this page load (`visitAt`), shown only after
+  a 30-minute gap, until the human has looked: their first pointerdown or keydown anywhere
+  in the window while it shows on the Dashboard dismisses it for the page's life. Reading
+  it does not (`sinceKeepsOn`): a press on the line, a ⌘/Ctrl shortcut (⌘C, ⌘-Tab) or any
+  key while the selection is in it. Only trusted input counts (`trustedInput`); jsdom can
+  dispatch only untrusted events, so `test/dom/dashboard-ribbon.test.ts` mocks that one
+  seam and `test/dom/dashboard.test.ts` keeps the real check. Input only reaches a window being used, so a
+  background window nobody looked at keeps it however many polls pass; the listener holds
+  its own element (`sinceEl`), so an older module instance cannot hide a newer one's. It
+  shows when something happened: outcomes landed, new asks, and sessions
+  whose last span ended in the window and that are not live now (left out when history
+  failed). A count omitted history could add to reads "3+", and one it could wholly hold
+  is left out rather than "0". None of it reaches attention, a badge, a tab or the dock,
+  and the poll gains no read (`test/dom/dashboard-ribbon.test.ts`, which also counts the
+  worst case: 30 days of 40 projects with 12 lanes and a full rail is ~590 Dashboard
+  elements against the 1,500 budget).
+- **Command-center polish reads nothing new and answers nowhere new (#307, Dashboard 2.0
+  phase 5, D2).** Four parts. (1) **Quick filters on lanes:** a project and an agent
+  `<select>` in the lanes head (`laneFilters`, window-local like the lens, never stored).
+  `renderDashLanes` pins the order over EVERY lane first and filters what it draws after
+  (`laneMatches`), so clearing a filter puts each lane back where it was; a chosen value no
+  lane holds stays a choice (`laneFilterChoices`), and "No working session matches these
+  filters" replaces the list. They narrow only the drawn lanes: the Now strip, the rail,
+  the badge, the tabs and the dock never read them. (2) **Keyboard help** lists the
+  Dashboard's keys as help-only (`legacy`) commands in `public/keys.js`, group "Dashboard":
+  the rail's J/K, 1–4, S, P and Enter, which `onDashRailKey` handles only on a rail card,
+  and Esc for the panel. Never make them non-legacy: the global handler would then take
+  S and P everywhere. (3) **The session focus panel** (`.dash-focus`, mounted once inside
+  the lanes card: on a desktop it overlays the right part of the lanes column, so the
+  rail and the Now strip stay usable; below 1280px it is static, in flow below the lanes,
+  never fixed over the masthead; `test/editorial-shell.test.ts` pins both, since jsdom
+  cannot evaluate `@media`): a lane's title is a button (`.dash-lane-open`, `aria-expanded`), and a click
+  elsewhere on the lane that is not a control or a text selection opens it too. It is
+  READ-ONLY (D2: the rail is the Dashboard's one answer surface): the lane's asks (from
+  the attention set) each jump to the rail card or, past the top three, the Inbox card
+  (`jumpToAsk`, which closes the panel without moving focus back to the lane whenever it
+  lands on a rail card, from the panel, a lane's "Asking you" or ⌘K); the plan and each recent outcome open through `focusItem`. `sessionFocus`
+  (`public/lanes.js`, pure) picks the plan, the session's newest item (the source of its
+  PR/CI chips when it has no plan) and its last three outcomes from `outcomeEntries`. PR and
+  CI chips are `sourceChipsHtml`'s, ambient: nothing there reaches attention
+  (`test/dom/dashboard-focus.test.ts` compares badge, title, tabs, rail, Now strip and both
+  dock projections with and without `/api/links`). Links are #300's `cardLinks` of the asks
+  and the plan, drawn by `linkStripHtml`, so `link-open.js` and main's checks own every
+  click. The ambient painter updates it in place: each part is rewritten only when its
+  markup changes (`setFocusPart`), so an unchanged poll writes nothing and a keyboard user
+  keeps the same control by its focus key. Opening focuses the panel heading and closing
+  (×, Esc in the panel, Esc on its lane) returns focus to the lane only when the window
+  has focus (and, for closing, focus was in the panel). A trusted `click` (`trustedInput`)
+  outside the panel that is not on a lane closes it and moves no focus, and only while
+  it overlays the lanes: never a `pointerdown` (closing mid-press moved what was under the
+  pointer), and never in the compact layout, where the panel is in flow (`position:
+  static`) above the rail and closing it would lift the rail under the press. A session that stops working (or
+  leaves the filters) keeps the panel open with one line saying so. Its one-shot entrance
+  (`dash-focus-in`) takes the motion tokens, is instant under reduced motion and listed
+  under Calm. `focusSession` and `laneFilters` are in `frameInputs()`; their handlers
+  repaint only their own region from `lastDashModel` (the model the last paint drew),
+  never through a new render entry, so the lanes never re-sort under the pointer. (4) **⌘K
+  actions** (`public/palette.js`, pure): only the FULL names "answer ", "open plan " and
+  "jump to session " (with the space) are commands, so a search such as "plan flow
+  rollout" stays a search; they list their
+  targets over every open project (the attention set in rail order, active plans, working
+  sessions) ahead of ordinary results; a two-letter-or-longer prefix of a name or of a
+  hint ("plan", "session") only suggests the command (it fills the box), placed after the results when the first is an
+  Open item, so the strongest Open-item match keeps first place. Among trim-equivalent
+  edits only the one that turns a name into its command re-runs search (`commandShape`).
+  Answer jumps to the rail card when the Dashboard shows it and otherwise opens the Inbox
+  card (`openAskInInbox`, so `focusItem` and its hash for an item); open plan is
+  `focusItem`; jump to session is the Dashboard, scoped to the session's project as a deep
+  link scopes to its item's, with that panel open. No action opens a new editor.
 - **Motion is CSS-only, compositor-only and always switchable off (#302, Dashboard 2.0
   phase 0).** Design: [`2026-10-22-dashboard-2-proposal.md`](docs/superpowers/specs/2026-10-22-dashboard-2-proposal.md)
   §10. Rules every later phase follows: (1) Keyframes animate only `transform` and
@@ -1396,7 +1625,9 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   infinite animation is listed twice with `animation: none !important`: in the
   `@media (prefers-reduced-motion: reduce)` block and as `:root[data-motion="calm"] <selector>`.
   That block also makes every one-shot instant (`*` durations and delays 0s, iteration
-  count 1, `scroll-behavior: auto`). (4) At most 12 infinite animations on screen. (5) Motion
+  count 1, `scroll-behavior: auto`). (4) At most 12 infinite animations on screen, and none at all for
+  activity: #304 measured a single loop at ~+4.7 pp of renderer CPU, so motion that marks
+  activity is one-shot per real event (see live lanes above). (5) Motion
   never moves focus, scrolls or reorders under the pointer, and updates are keyed rather than
   rebuilt, so the held-pointer guard keeps working and there is no third render entry.
   `public/motion.js` (`createMotionController`, created at app.js top level before the first

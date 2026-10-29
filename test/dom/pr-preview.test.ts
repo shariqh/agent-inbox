@@ -57,11 +57,12 @@ describe('preview links in actual approval cards', () => {
     const title = document.title
     seedLink(db)
     await pollTick()
-    const approval = document.querySelector<HTMLElement>(`[data-key-hint-owner="row:${id}"]`)
+    // #303: the Dashboard rail draws this row too; the Inbox's copy is the one under test.
+    const approval = document.querySelector<HTMLElement>(`#needsYouList [data-key-hint-owner="row:${id}"]`)
     expect(approval?.querySelector(`a[href="${PREVIEW}"]`)).not.toBeNull()
     click(approval)
     await settle()
-    expect(approval?.querySelector(`.card-origin a[href="${PREVIEW}"]`) ?? document.querySelector(`[data-key-hint-owner="row:${id}"] .card-origin a[href="${PREVIEW}"]`)).not.toBeNull()
+    expect(approval?.querySelector(`.card-origin a[href="${PREVIEW}"]`) ?? document.querySelector(`#needsYouList [data-key-hint-owner="row:${id}"] .card-origin a[href="${PREVIEW}"]`)).not.toBeNull()
     expect(document.title).toBe(title)
   })
 

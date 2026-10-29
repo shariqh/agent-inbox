@@ -243,7 +243,9 @@ Run the build before `npm run electron`; the development shell starts the built
   `history` summary that keeps every count exact. Only `load()` reads
   `/api/items/history`, while `historyWanted()` says a surface needs older items,
   judged on a page alone (`lastData.page` or the tick's new one), never on merged
-  data. Explicit human entry points use `requestHistoryPaint()` (ends in
+  data. The Today ribbon wants it only at a range past 24 hours that starts
+  before the page's `before` (#392). Explicit human entry points (the ribbon's
+  range menu included) use `requestHistoryPaint()` (ends in
   `reloadAndPaint()`, #38); search and waiting deep links use `requestHistory()`,
   which only schedules that `load()`; `forceRender`, renders and the poll use
   neither. A failed read degrades: the page still applies and waiting surfaces
@@ -260,7 +262,8 @@ Run the build before `npm run electron`; the development shell starts the built
   `archivedWanted()` says a surface needs it (the open archived fold, a lingering
   plan, a focused plan just archived, search, a waiting deep link, restored row
   drafts whose row no active plan holds, Handoffs or Plan flow on an archived
-  plan, an unproven Dashboard lens), judged on the brief, never on the complete
+  plan, an unproven Dashboard lens, a ribbon range past 24 hours its omitted
+  outcomes fall in), judged on the brief, never on the complete
   list. `requestHistory()`/`requestHistoryPaint()` ask for either source; a failed
   read degrades to "Archived plans are unavailable right now.", and an older
   viewer's 404 for the brief reads the complete list in its place. Archived plans
@@ -431,6 +434,23 @@ Run the build before `npm run electron`; the development shell starts the built
   `server_version`/`server_source` (#197) are display-only build identity carried
   by existing presence/status writes; an omitted value keeps the stored one, and
   neither is ever evidence of liveness, work or attention.
+- The call trace (#306) is `activity.call_minute`/`call_counts`: 30 one-minute
+  MCP call counts, written only by `recordActivityCall` (an `.immediate()` read
+  then write), never by `touchActivity`, `livenessTick`, registration or claims.
+  It rolls to now on each call (a clock moved back counts the stored minute as
+  now), is served as `calls`/`calls_at` only while inside the window, stays
+  within 150 bytes a session, and the browser rolls it to its own clock. The
+  lane sparkline is one static SVG path updated by attribute; never animate it.
+- `boards.session` (#306) is the writing MCP session's id, stamped by
+  `board_upsert`/`board_row` (null/omitted keeps, `''` clears). A writer change
+  alone moves neither `updated_at` nor the board revision; `board_advance`, human
+  writes and older servers never touch it; this build's agent reads never carry
+  it (an older server's titled `board_get` on a migrated hub passes it through,
+  as with `repo_root`). Existing hubs keep the old `boards` update trigger
+  beside the new one, so a boards UPDATE moves that version twice, harmlessly.
+  The Dashboard puts a plan on its stamped session's lane first, then falls
+  back to project + branch + agent, skipping plans another WORKING session
+  stamped (an idle or gone session's stamp joins).
 - MCP stdout is the protocol channel. Never add `console.log` in the MCP server
   path or let subprocess stdout inherit it. Capture subprocess output. Viewer
   logging is allowed. Hook CLI stdout/stderr and exit codes are also protocol
@@ -578,7 +598,7 @@ Run the build before `npm run electron`; the development shell starts the built
   `writeClipboard`; it never stops or prevents an event.
 - Motion (#302, Dashboard 2.0 proposal §10) is CSS-only: keyframes animate only
   `transform` and `opacity`, transitions take `--motion-*` tokens, at most 12
-  infinite animations are on screen, and motion never moves focus, scrolls or
+  infinite animations are on screen (none for activity, which is one-shot per event, #304), and motion never moves focus, scrolls or
   reorders under the pointer. Every infinite-animation selector is listed with
   `animation: none !important` in the `@media (prefers-reduced-motion: reduce)`
   block (which also makes one-shots instant) and under
@@ -586,6 +606,69 @@ Run the build before `npm run electron`; the development shell starts the built
   `public/motion.js` sets `data-motion` (Settings → Motion: Full or Calm) and
   `data-page-hidden` (CSS pauses animations), and gives `scrollIntoView` its
   behaviour. The setting is layout only and never reaches attention.
+- The Dashboard's Needs you rail (#303) replaced Ownership flow and is the only
+  answer surface on the Dashboard. Its cards are `sortRail(attentionEntries)` (waiting
+  asks first, ordering only) cut to three, with "+N more · N in Later"; the Now
+  strip's "Waiting on you" owns the count. Cards reuse `answerEl`/`rowAnswerEl` (`surface: 'rail'`)
+  and the shared `snoozeAsk`/`pinAsk`, so drafts join `suspendState()`, recovery,
+  durable drafts and the restart hold, and `expect_answer` is unchanged. It paints in
+  the ambient painter: a poll leaves it alone while one of its asks holds a draft or a
+  background window remembers focus in it, and `render()`'s `forcedAmbient` makes a
+  human's `reloadAndPaint()` rebuild it anyway. It restores its own focus only while
+  the document has focus.
+- Live lanes and the Now strip (#304) are one model, `buildLanes` in
+  `public/lanes.js`, over reads the poll already makes. A lane is a session whose claim
+  is not idle and whose `last_call_at ?? started_at` is within 30 minutes; `updated_at`
+  is never read, so a heartbeat-only session folds into "+N idle connections". "quiet
+  12m" after 5 minutes without a call. Its plan joins by project + branch + agent (most
+  recently updated); its asks come from the attention set in rail order and jump to the
+  rail card (D2). The Now strip's plan steps are the lanes' bars, each plan once. The
+  ambient painter updates lanes in place, keyed by session, writing only changed text;
+  order is pinned and only a forced paint re-sorts. Lanes use no infinite animation
+  (a loop measured +5.6 pp renderer, +34 pp GPU CPU): a live lane is a static dot and
+  "live", and activity motion is one-shot per real event, a pulse (and the sweep on the
+  newest) when `last_call_at` moves forward on a poll, never on first paint, an unchanged
+  poll or a forced repaint, and only when `motion.activityMotion()` allows it (Full, no OS
+  reduced motion, page visible). Nothing reaches attention. A cancelled one-shot
+  (`animationcancel`) drops its class like a finished one (#305).
+- The Today ribbon, Just landed and "Since you last looked" (#305) replaced the
+  activity bar chart and Recent outcomes with no new read. `buildRibbon`
+  (`public/ribbon.js`, pure): one lane per project (12 most recently active, drawn by
+  name), history spans clipped to the range with a STATIC striped tail for a live span
+  (nothing in the ribbon animates or transitions; `test/motion-css.test.ts` pins it),
+  ◆ asks (open only through `attentionEntries`/`laterEntries`), ● outcomes, ≤ 200 bars,
+  and no marker before what the page proves complete (#184's `before`, #299's newest
+  omitted outcome), past 120 markers the floor rises to the newest cut, and the
+  "Asks and outcomes from …" note is audible. Lanes are keyed and a track is rebuilt
+  only when its shape changes; geometry and tooltips update in place. The range
+  `<select>` keeps identity, value and focus. Just landed proves the newest four exactly
+  as before (reads byte-identical to main), then leaves out only proven rows whose OPEN
+  PR (`linkIndex`) is an open ask's open PR, named as "N on PRs still waiting on you";
+  a branch with no open PR hides nothing. It highlights a new outcome once under
+  `motion.activityMotion()` with the Dashboard visible. "Since you last looked" covers
+  `lastVisitAt` to this page load after a 30-minute gap, with "N+" where omitted history
+  could add more, until the human's first trusted click or key press on the
+  Dashboard that is not reading it (a press on the line, ⌘/Ctrl shortcuts, keys
+  with the line selected).
+- Command-center polish (#307) adds no read and no answer surface. Lane quick
+  filters (project, agent) are window-local and narrow only the drawn lanes, after
+  the order is pinned over every lane. The keyboard help's "Dashboard" group is
+  help-only (`legacy`) entries in `public/keys.js`; keep them legacy. The session
+  focus panel (`.dash-focus`, from a lane's title button, mounted inside the lanes
+  card: over the lanes column on a desktop, static below the lanes under 1280px,
+  closed by a trusted outside `click` that is not a lane, never a `pointerdown`, and
+  never while it is in flow) is read-only (D2): its
+  asks come from the attention set and jump to the rail or Inbox card, its plan and
+  outcomes open through `focusItem`, its PR/CI chips are ambient `sourceChipsHtml`
+  and its links are #300's `cardLinks`/`linkStripHtml`. Parts are rewritten only when
+  their markup changes; opening and closing move focus only in a focused window. Its
+  handlers repaint their own region from `lastDashModel`, never a new render entry,
+  and `focusSession`/`laneFilters` are in `frameInputs()`. ⌘K actions
+  (`public/palette.js`): only the full names "answer ", "open plan ", "jump to
+  session " (with the space) are commands and list targets first; a prefix of a
+  name or hint only suggests the command and never
+  outranks the top Open-item match. Answer lands on the rail card or the Inbox card,
+  never a new editor.
 - Browser snapshot reuse is window-local and immutable; a 304 belongs to the
   representation that request sent, and its live boot header still controls safe
   refresh. Passive polls may retain inactive document panes, but navigation and

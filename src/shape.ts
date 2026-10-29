@@ -153,7 +153,9 @@ export function agentItem<T extends { repo_root?: string | null }>(item: T): Omi
 
 type RowWithoutHistory = Omit<BoardRow, 'history' | RawRowLink | 'waits_on'> & IssueEcho & { history_count?: number; waits_on?: string[] }
 export type ShapedRow = RowWithoutHistory | Trimmed<RowWithoutHistory>
-export type ShapedBoard = Omit<BoardWithRows, 'rows' | RawPlanPin | RepoRoot> & IssueEcho & { rows: ShapedRow[] }
+// Issue #306 — a plan's `session` is the writing server's own presence id, read
+// by the Dashboard to put the plan on that session's lane; no agent read carries it.
+export type ShapedBoard = Omit<BoardWithRows, 'rows' | RawPlanPin | RepoRoot | 'session'> & IssueEcho & { rows: ShapedRow[] }
 
 /** issue_rel for the plan and for rows by id, read from the cache by the caller (§10). */
 export interface BoardIssueRelations {
@@ -192,7 +194,7 @@ export function shapeBoard(
 ): ShapedBoard {
   const full = opts.full === true
   if (full) for (const r of board.rows) opts.ledger.claim(rowKey(r.id), r.context)
-  const { issue_pin_repo, issue_pin_number, repo_root: _root, ...rest } = board
+  const { issue_pin_repo, issue_pin_number, repo_root: _root, session: _session, ...rest } = board
   const issue = issueText(issue_pin_repo, issue_pin_number)
   // overriding `rows` in place keeps every key where it was before PR2
   return {

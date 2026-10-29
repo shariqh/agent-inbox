@@ -54,6 +54,37 @@ function extractPublisherScript(workflow: string) {
     .join('\n')
 }
 
+// From 2.0.0 the macOS app is for Apple silicon only (#296). README and INSTALL may name
+// Intel only in this sentence, which sends Intel Macs to 1.x-last (#384).
+const INTEL_STAYS = 'Intel Macs stay on [v1.8.0](https://github.com/shariqh/agent-inbox/releases/tag/v1.8.0), '
+  + 'the last version for them.'
+
+/**
+ * What README or INSTALL says about Macs that the release being built does not do. The
+ * tag-time job runs this on the tagged tree, so the rule follows that tree's version: a
+ * universal release (through 1.x-last) supports Intel, and from 2.0.0 nothing but the one
+ * sentence above may mention it.
+ */
+function macDocProblems(text: string, version: string): string[] {
+  const flat = text.replace(/\s+/g, ' ')
+  if (Number(version.split('.')[0]) < 2) {
+    return /Apple silicon and Intel/i.test(flat) ? [] : ['does not say the app supports Apple silicon and Intel']
+  }
+  const parts = flat.split(INTEL_STAYS)
+  const rest = parts.join(' ')
+  const problems = parts.length === 2 ? [] : [`has the Intel sentence ${parts.length - 1} times, not once`]
+  const forbidden: Array<[RegExp, string]> = [
+    [/\bIntel\b/i, 'Intel'],
+    [/universal/i, 'the universal DMG'],
+    [/darwin-x64/i, 'the darwin-x64 runtime'],
+    [/Rosetta/i, 'Rosetta'],
+  ]
+  for (const [pattern, what] of forbidden) if (pattern.test(rest)) problems.push(`mentions ${what}`)
+  if (!rest.includes('`Agent-Inbox-vX.Y.Z-arm64.dmg`')) problems.push('does not name the arm64 DMG')
+  if (!/Apple silicon/i.test(rest)) problems.push('does not say the app needs Apple silicon')
+  return problems
+}
+
 /** One step of a job: from its `- ` line to the next step at the same indentation. */
 function stepBlock(job: string, name: string) {
   const named = job.indexOf(`name: ${name}\n`)
@@ -714,11 +745,12 @@ describe('notarized macOS release workflow', () => {
     expect(docs).toContain('official Node 24 runtime')
     const readme = readFileSync(join(root, 'README.md'), 'utf8')
     const install = readFileSync(join(root, 'docs', 'INSTALL.md'), 'utf8')
+    const { version } = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as { version: string }
     for (const publicDoc of [readme, install]) {
       expect(publicDoc).toContain('https://github.com/shariqh/agent-inbox/releases')
       expect(publicDoc).toContain('When a public release is available')
       expect(publicDoc).toContain('macOS 13.5')
-      expect(publicDoc).toMatch(/Apple\s+silicon and Intel/i)
+      expect(macDocProblems(publicDoc, version)).toEqual([])
       expect(publicDoc).not.toContain('v0.1 distribution')
     }
     expect(install).not.toContain('is distributed through')
@@ -731,6 +763,39 @@ describe('notarized macOS release workflow', () => {
     expect(workflow).toContain('permissions:')
     expect(workflow).toContain('contents: write')
     expect(workflow).toContain('if: ${{ always() }}')
+  })
+
+  // #384: a 2.0.0 tag must not pass while README or INSTALL still describe the universal app.
+  it('checks the public docs against the release they ship with (#384)', () => {
+    const universalReadme = [
+      '- macOS 13.5 (Ventura) or later on Apple silicon or Intel for the notarized desktop app',
+      'On macOS, download the universal DMG from GitHub Releases, drag **Agent Inbox**',
+      'to `/Applications`, and launch it. The universal app supports Apple silicon and Intel',
+      'Release packages carry separate `darwin-arm64` and `darwin-x64` Node 24 agent runtimes;',
+    ].join('\n')
+    const universalInstall = [
+      '| Notarized desktop app | macOS 13.5+ on Apple silicon and Intel |',
+      'ASSET=Agent-Inbox-vX.Y.Z-universal.dmg',
+    ].join('\n')
+    for (const old of [universalReadme, universalInstall]) {
+      expect(macDocProblems(old, '1.8.0')).toEqual([])
+      expect(macDocProblems(old, '2.0.0')).toEqual(expect.arrayContaining([
+        'has the Intel sentence 0 times, not once',
+        'mentions Intel',
+        'mentions the universal DMG',
+        'does not name the arm64 DMG',
+      ]))
+    }
+    expect(macDocProblems(universalReadme, '2.0.0')).toContain('mentions the darwin-x64 runtime')
+
+    const arm64 = 'download `Agent-Inbox-vX.Y.Z-arm64.dmg`. The app requires a Mac with Apple silicon.\n'
+      + 'Intel Macs stay on [v1.8.0](https://github.com/shariqh/agent-inbox/releases/tag/v1.8.0),\nthe last version for them.'
+    expect(macDocProblems(arm64, '2.0.0')).toEqual([])
+    expect(macDocProblems(arm64, '2.1.0')).toEqual([])
+    expect(macDocProblems(`${arm64}\n${INTEL_STAYS}`, '2.0.0')).toEqual(['has the Intel sentence 2 times, not once'])
+    expect(macDocProblems(`${arm64} Run it under Rosetta on an Intel Mac.`, '2.0.0'))
+      .toEqual(['mentions Intel', 'mentions Rosetta'])
+    expect(macDocProblems(arm64, '1.8.0')).toEqual(['does not say the app supports Apple silicon and Intel'])
   })
 
   // #383: the native Intel job re-checked the sign job's Developer ID report until #296, so

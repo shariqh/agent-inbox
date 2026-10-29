@@ -18,7 +18,7 @@ import { join } from 'node:path'
 import Database from 'better-sqlite3'
 import {
   getBoard, getItem, insertItem, listActivity, listBoards, listHostSessions, listIssueEntities, listIssueSnapshots, listItems, listSourceLinks,
-  markReplySeen, openDb, pinBoardRow, pinItem, recordIssueFailure, replyItem, stopBoardRowWatch, stopItemWatch, updateBoardRow, upsertActivity,
+  markReplySeen, openDb, pinBoardRow, pinItem, recordActivityCall, recordIssueFailure, replyItem, stopBoardRowWatch, stopItemWatch, updateBoardRow, upsertActivity,
   upsertBoard, upsertIssueSnapshot, upsertSourceLink,
 } from '../src/store.js'
 import type { IssueDependencies } from '../src/store.js'
@@ -1476,5 +1476,119 @@ describe('older processes sharing a hub with snapshot domains (#297)', () => {
         preview_environment: 'preview', preview_deployment_id: 42, preview_updated_at: later(), preview_error: null,
       }).changes === 1
     })).toEqual(only('links'))
+  })
+})
+
+// Issue #306 — the plan writes a v1.8.0 process runs, copied verbatim from
+// src/store.ts at tag v1.8.0 (its activity statements are V170's, unchanged
+// since). None names `boards.session`, `activity.call_minute` or
+// `activity.call_counts`: its writes neither clear a trace or a plan's session
+// this build stored, nor make one up.
+const V180 = {
+  ensureBoard: `UPDATE boards
+                   SET stream = ?, agent = ?, repo = ?, issue_ref = ?, head_repo = ?, repo_root = COALESCE(?, repo_root),
+                       updated_at = CASE
+                         WHEN stream IS NOT ? OR agent IS NOT ? OR repo IS NOT ? OR issue_ref IS NOT ? OR head_repo IS NOT ?
+                           OR repo_root IS NOT COALESCE(?, repo_root)
+                         THEN ? ELSE updated_at END
+                 WHERE id = ?`,
+  insertBoard: `INSERT INTO boards (id, project, stream, agent, title, repo, issue_ref, head_repo, repo_root, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
+}
+
+describe('a v1.8.0 process sharing a hub with call traces and plan sessions (#306)', () => {
+  let dir: string
+  let path: string
+  const open: Database.Database[] = []
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(Date.parse(at(60)))
+    dir = scratchDir('mixed-version-trace-')
+    path = join(dir, 'inbox.db')
+  })
+
+  afterEach(() => {
+    for (const connection of open.splice(0)) if (connection.open) connection.close()
+    rmSync(dir, { recursive: true, force: true })
+    vi.useRealTimers()
+  })
+
+  function olderProcess(): Database.Database {
+    const db = new Database(path)
+    open.push(db)
+    db.pragma('busy_timeout = 5000')
+    db.pragma('journal_mode = WAL')
+    return db
+  }
+
+  function hub(): Database.Database {
+    const db = openDb(path)
+    open.push(db)
+    return db
+  }
+
+  const presence = (session: string, doing: string, claim: number) => ({
+    session, project: 'agent-inbox', stream: 'main', agent: 'claude-code', doing, detail: '', children: null,
+    idle: claim ? 0 : 1, claim, server_version: '1.8.0', server_source: 'runtime', host_pid: 1, server_pid: 2, now: new Date().toISOString(),
+  })
+
+  it('its presence, claim, call and liveness writes keep this build’s trace, and its own calls make none', () => {
+    const db = hub()
+    const old = olderProcess()
+    upsertActivity(db, { session: 'new-mcp', project: 'agent-inbox', stream: 'main', agent: 'copilot', doing: 'open', idle: true, claim: false })
+    recordActivityCall(db, 'new-mcp')
+    recordActivityCall(db, 'new-mcp')
+    const trace = () => db.prepare(`SELECT call_minute, call_counts FROM activity WHERE session = ?`).get('new-mcp')
+    const kept = trace()
+    expect(kept).toEqual({ call_minute: Math.floor(Date.now() / 60_000), call_counts: '2' })
+
+    // the same session id written by the older statements, as a mixed fan-out
+    // or a downgrade-then-upgrade sharing the file would
+    old.prepare(V170.upsertActivity).run(presence('new-mcp', 'open', 0))
+    old.prepare(V170.upsertActivity).run(presence('new-mcp', 'Reviewing', 1))
+    old.prepare(V170.recordActivityCall).run({ session: 'new-mcp', now: new Date().toISOString(), cold: at(0) })
+    old.prepare(V170.touchActivity).run(new Date().toISOString(), 'new-mcp')
+    expect(trace()).toEqual(kept)
+
+    // a session only the older process serves has no trace, however much it calls
+    old.prepare(V170.upsertActivity).run(presence('old-mcp', 'Reviewing', 1))
+    for (let i = 0; i < 5; i++) old.prepare(V170.recordActivityCall).run({ session: 'old-mcp', now: new Date().toISOString(), cold: at(0) })
+    const rows = Object.fromEntries(listActivity(db).map((row) => [row.session, row]))
+    expect(rows['old-mcp']).not.toHaveProperty('calls')
+    expect(rows['new-mcp']).toMatchObject({ calls: [2], calls_at: Math.floor(Date.now() / 60_000) })
+  })
+
+  it('none of its plan writes, board_advance and archive included, clears a plan’s session; its new plans have none', () => {
+    const db = hub()
+    const old = olderProcess()
+    upsertBoard(db, {
+      project: 'agent-inbox', stream: 'main', agent: 'new', title: 'Trace', session: 'new-mcp',
+      rows: [{ label: 'Draw', status: 'tracked' }, { label: 'Ship', status: 'tracked' }],
+    })
+    const board = getBoard(db, 'agent-inbox', 'Trace')!
+    const session = () => (getBoard(db, 'agent-inbox', 'Trace') ?? listBoards(db, { status: 'archived' })[0]!).session
+    expect(session()).toBe('new-mcp')
+
+    vi.setSystemTime(Date.parse(at(61)))
+    const now = at(61)
+    old.prepare(V180.ensureBoard).run('main', 'old', REPO, null, null, null, 'main', 'old', REPO, null, null, null, now, board.id)
+    old.prepare(V160.bumpBoardRevision).get(now, board.id)
+    const ship = board.rows.find((row) => row.label === 'Ship')!.id
+    old.prepare(V160.beginNewRowAction).run(now, 2, 'old', 2, '[]', now, ship)
+    old.prepare(V160.advanceRow).run('Check it.', 'Approve it.', 'task', 'Ships it.', '', null, null, null, now, ship)
+    old.prepare(V160.syncBoardStatus).run('archived', now, board.id)
+    old.prepare(V160.syncBoardStatus).run('active', now, board.id)
+    const revision = (old.prepare(V160.bumpBoardRevision).get(now, board.id) as { revision: number }).revision
+    old.prepare(V160.archiveBoard).run(now, board.id, revision)
+    expect(session()).toBe('new-mcp')
+
+    // a plan it creates has none, until this build writes it
+    old.prepare(V180.insertBoard).run('old-plan', 'agent-inbox', 'main', 'old', 'Old plan', REPO, null, null, null, now, now)
+    expect(getBoard(db, 'agent-inbox', 'Old plan')!.session).toBeNull()
+    upsertBoard(db, {
+      project: 'agent-inbox', stream: 'main', agent: 'new', title: 'Old plan', rows: [], session: 'new-mcp',
+      expectedVersion: getBoard(db, 'agent-inbox', 'Old plan')!.revision,
+    })
+    expect(getBoard(db, 'agent-inbox', 'Old plan')!.session).toBe('new-mcp')
   })
 })

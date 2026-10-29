@@ -190,6 +190,24 @@ describe('lanes keep moving while the rest of the Dashboard holds (#304)', () =>
     expect(document.querySelector<HTMLTextAreaElement>(`[data-rail-card="${id}"] .reply-input`)?.value).toBe('Thursday')
   })
 
+  it('writes nothing to an unchanged lane, whether the tick is idle or changed elsewhere', async () => {
+    const d = open()
+    work(d, 'busy', 'Step one', { children: [{ name: 'tester', doing: 'Testing' }] })
+    upsertBoard(d, { ...A, title: 'Plan', rows: [{ label: 'Build', status: 'done' }, { label: 'Ship', status: 'missing' }] })
+    await bootApp(d)
+    const mutations: MutationRecord[] = []
+    const observer = new MutationObserver((records) => mutations.push(...records))
+    observer.observe(document.querySelector('.dash-lane-list')!, { subtree: true, childList: true, characterData: true, attributes: true })
+
+    await pollTick()
+    insertItem(d, { project: 'beta', stream: 'main', agent: 'claude', kind: 'note', title: 'Unrelated' })
+    await pollTick()
+    observer.disconnect()
+
+    expect(document.querySelector('#dashboard')?.textContent).toContain('Step one')
+    expect(mutations).toEqual([])
+  })
+
   it('holds lanes through a pointer press, then updates the same nodes', async () => {
     const d = open()
     work(d, 'busy', 'Step one')
@@ -225,6 +243,26 @@ describe('lanes keep moving while the rest of the Dashboard holds (#304)', () =>
     expect(lane('asker')!.querySelector('.dash-lane-asking')).toBe(button)
     expect(document.activeElement).toBe(button)
     expect(focus).not.toHaveBeenCalled()
+  })
+})
+
+describe('the Dashboard element budget (#304, proposal §10)', () => {
+  it('stays within 1,500 elements with twelve busy lanes, more working and a full rail', async () => {
+    const d = open()
+    for (let index = 0; index < 14; index += 1) {
+      const scope = { ...A, stream: `branch-${index}` }
+      upsertBoard(d, { ...scope, title: `Plan ${index}`, rows: Array.from({ length: 8 }, (_, row) => ({ label: `Step ${row}`, status: row < 3 ? 'done' : 'missing' })) })
+      work(d, `s${index}`, `Lane ${index}`, { stream: scope.stream, detail: 'Detail', children: [{ name: 'a', doing: 'x' }, { name: 'b', doing: 'y' }, { name: 'c', doing: 'z' }] })
+      insertItem(d, { ...scope, kind: 'question', title: `Ask ${index}`, session: `s${index}` })
+      advanceClock()
+    }
+    await bootApp(d)
+    expect(document.querySelectorAll('#dashboard .dash-lane')).toHaveLength(12)
+    expect(document.querySelector('.dash-lanes-more')?.textContent).toBe('+2 more working')
+    expect(document.querySelectorAll('.dash-lane.pulse').length + document.querySelectorAll('.dash-lane-child.pulse').length
+      + document.querySelectorAll('.dash-lane.sweep').length).toBe(12)
+    const count = document.querySelectorAll('#dashboard *').length
+    expect(count).toBeLessThanOrEqual(1500)
   })
 })
 

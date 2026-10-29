@@ -1818,6 +1818,10 @@ function setAttr(el, name, value) {
   if (el.getAttribute(name) !== value) el.setAttribute(name, value)
 }
 
+function setHidden(el, hidden) {
+  if (el.hidden !== hidden) el.hidden = hidden
+}
+
 const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`
 // relMs says "moments" under a minute; a chip says "<1m".
 const ageText = (ms) => relMs(ms) === 'moments' ? '<1m' : relMs(ms)
@@ -1929,7 +1933,8 @@ function dashLaneEl(session) {
 }
 
 function updateDashLane(el, lane, motion) {
-  el.style.setProperty('--lane-color', pcolor(lane.project).dot)
+  const color = pcolor(lane.project).dot
+  if (el.style.getPropertyValue('--lane-color') !== color) el.style.setProperty('--lane-color', color)
   el.classList.toggle('pulse', motion.pulse.has(lane.session))
   el.classList.toggle('sweep', motion.sweep === lane.session)
   el.classList.toggle('quiet', lane.quiet)
@@ -1941,17 +1946,17 @@ function updateDashLane(el, lane, motion) {
   setAttr(recency, 'title', lane.quiet ? `Claims work, but no call for ${since}` : 'Last MCP call')
   const detail = el.querySelector('.dash-lane-detail')
   setText(detail, lane.detail)
-  detail.hidden = !lane.detail
+  setHidden(detail, !lane.detail)
   setText(el.querySelector('.dash-lane-meta'), [lane.agent, lane.project, lane.branch].filter(Boolean).join(' · '))
   setAttr(el, 'aria-label', `${lane.agent} in ${lane.project}: ${lane.doing}`)
   const plan = el.querySelector('.dash-lane-plan')
-  plan.hidden = !lane.plan
+  setHidden(plan, !lane.plan)
   if (lane.plan) {
     const { segments, done, countable, title } = lane.plan
     for (const [name, value] of Object.entries(segments)) {
       const segment = plan.querySelector(`[data-seg="${name}"]`)
       setAttr(segment, 'style', `flex-grow: ${value}`)
-      segment.hidden = value === 0
+      setHidden(segment, value === 0)
     }
     setText(plan.querySelector('.dash-lane-plan-count'), `${done}/${countable}`)
     setText(plan.querySelector('.dash-lane-plan-title'), title)
@@ -1971,7 +1976,7 @@ function updateDashLane(el, lane, motion) {
     }))
   }
   const ask = el.querySelector('.dash-lane-ask')
-  ask.hidden = !lane.asks.length
+  setHidden(ask, !lane.asks.length)
   if (lane.asks.length) {
     laneAsks.set(lane.session, { first: lane.asks[0], oldest: lane.waiting.entry })
     setText(ask.querySelector('.dash-lane-ask-title'), dashboardEntryTitle(lane.asks[0]) ?? '')
@@ -2004,14 +2009,14 @@ function renderDashLanes(section, model, { forced = false } = {}) {
   nodes.forEach((el, index) => {
     if (list.children[index] !== el) list.insertBefore(el, list.children[index] ?? null)
   })
-  section.querySelector('.dash-lanes-empty').hidden = model.lanes.length > 0 || model.idleConnections > 0
+  setHidden(section.querySelector('.dash-lanes-empty'), model.lanes.length > 0 || model.idleConnections > 0)
   const more = section.querySelector('.dash-lanes-more')
   const extra = model.lanes.length - drawn.length
   setText(more, extra > 0 ? `+${extra} more working` : '')
-  more.hidden = extra <= 0
+  setHidden(more, extra <= 0)
   const idle = section.querySelector('.dash-lanes-idle')
   setText(idle, model.idleConnections ? `+${plural(model.idleConnections, 'idle connection')}` : '')
-  idle.hidden = !model.idleConnections
+  setHidden(idle, !model.idleConnections)
 }
 
 // D2: the rail is the one answer surface, so a lane's ask jumps to its rail

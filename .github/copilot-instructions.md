@@ -431,6 +431,19 @@ Run the build before `npm run electron`; the development shell starts the built
   `server_version`/`server_source` (#197) are display-only build identity carried
   by existing presence/status writes; an omitted value keeps the stored one, and
   neither is ever evidence of liveness, work or attention.
+- The call trace (#306) is `activity.call_minute`/`call_counts`: 30 one-minute
+  MCP call counts, written only by `recordActivityCall` (an `.immediate()` read
+  then write), never by `touchActivity`, `livenessTick`, registration or claims.
+  It rolls to now on each call (a clock moved back counts the stored minute as
+  now), is served as `calls`/`calls_at` only while inside the window, stays
+  within 150 bytes a session, and the browser rolls it to its own clock. The
+  lane sparkline is one static SVG path updated by attribute; never animate it.
+- `boards.session` (#306) is the writing MCP session's id, stamped by
+  `board_upsert`/`board_row` (null/omitted keeps, `''` clears). A writer change
+  alone moves neither `updated_at` nor the board revision; `board_advance`, human
+  writes and older servers never touch it; agent reads never carry it. The
+  Dashboard puts a plan on its stamped session's lane first, then falls back to
+  project + branch + agent, skipping plans another present session stamped.
 - MCP stdout is the protocol channel. Never add `console.log` in the MCP server
   path or let subprocess stdout inherit it. Capture subprocess output. Viewer
   logging is allowed. Hook CLI stdout/stderr and exit codes are also protocol

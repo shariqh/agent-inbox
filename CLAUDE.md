@@ -486,6 +486,37 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   participates in working/idle state, freshness, attention, or sorting. Its additive migration
   backfills atomically from a legacy non-`open` claim (or a preserved idle detail) so upgrading
   cannot erase the only synopsis a session reported.
+- **The call trace counts work, never liveness (issue #306, D5).** `activity.call_minute` (the
+  epoch minute the newest bucket counts) and `activity.call_counts` (comma-separated counts,
+  oldest first, at most 30, no leading zeros, each capped at 999) are written by
+  `recordActivityCall` ALONE, inside its `.immediate()` transaction (it reads the buckets
+  before it writes them). `touchActivity`/`livenessTick`, registration and claims never name
+  them; `test/live-tick.test.ts`'s AST pins plus `test/store.test.ts` hold that. A write rolls
+  the window to now: a gap appends empty minutes, 30 or more starts over, and a stored minute
+  ahead of the clock (it moved back) counts as now. `listActivity` serves them as `calls`
+  (array) and `calls_at` only while `calls_at` is within 30 minutes of now, and omits both
+  otherwise; at most 150 bytes a session (`test/viewer.test.ts` measures the saturated case).
+  The browser rolls them to its own clock (`callTrace` in `public/lanes.js`), so
+  `/api/activity`'s bytes move only with a call (which moves `last_call_at` anyway) and once
+  at expiry; `activityFrameKey` needs nothing new. The lane's sparkline is one static SVG
+  path (`tracePath`), written by attribute only when its bars change and never animated (the
+  #304 rule); the 30-second clock repaint (#298) rolls it with no new read. `activity` is in
+  no snapshot, so none of this rebuilds anything; older servers' statements never name the
+  columns (their calls record no trace, and they never clear one).
+- **`boards.session` puts a plan on its lane (issue #306, D4).** Additive, nullable: the
+  writing MCP server's `sessionId` (the same id its presence row carries), stamped by
+  `board_upsert` and `board_row` through `ensureBoard`. The plan follows its latest writer,
+  like `stream` and `agent`: null or omitted keeps it, `''` clears it. A change of writer
+  ALONE is not content: it moves neither `updated_at` nor the board revision, so a sibling's
+  `board_version` stays valid; `/api/boards` still rebuilds, because the whole-table `boards`
+  domain's trigger fires on the `ensureBoard` UPDATE (column domains do not read it;
+  `REVIEWED_COLUMNS` says so). `board_advance` restamps no plan field, this one included, and
+  neither do the human's writes or any older server's statements. Agent reads never carry it
+  (`shapeBoard` strips it; `pending()` and the title-less summary never select it). The
+  Dashboard's join (`linkedPlan` in `public/lanes.js`): a plan stamped with the lane's
+  session wins (the newest such); otherwise D4's project + branch + agent join, leaving out
+  plans stamped with another session still present in `/api/activity`; a stamp naming a
+  session that has gone joins as before.
 - **Session scope is Solo-style** (`src/scope.ts`): inferred lazily per call, overridable via
   `register`. The one memo is a FOUND origin remote (#159): once `git remote get-url origin`
   succeeds, the server reuses it for both `project` and `repo` for the process's life (the

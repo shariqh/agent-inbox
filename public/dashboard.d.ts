@@ -70,6 +70,8 @@ export interface DashboardModel {
     outcomes: RibbonMark[]
     asksAfter: string | null
     outcomesAfter: string | null
+    /** #392: the newest outcome archived plans in brief omit, or null */
+    archivedAfter: string | null
   }
   /** #304: one lane per working session, in model order (newest call first) */
   lanes: Lane[]

@@ -5,6 +5,9 @@
 // the rail alone, drafts join recovery, durable storage and the viewer-restart
 // hold, a background window keeps its focus, and the press guard holds.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import type Database from 'better-sqlite3'
 import {
   getItem, insertItem, listBoards, resolveItem, upsertActivity, upsertBoard,
@@ -369,5 +372,13 @@ describe('the Needs you rail (#303)', () => {
     expect(getItem(db, id)?.snoozed_until).toBeTruthy()
     expect(document.getElementById('needsYou')?.hidden).toBe(false)
     expect(answerInput(id)?.value).toBe('keep this')
+  })
+
+  // jsdom cannot evaluate the stylesheet, so the compact card's CSS half is pinned as source.
+  it('shows the written-answer editor only on an expanded card, and adds no motion', () => {
+    const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'public', 'style.css'), 'utf8')
+    const rail = css.slice(css.indexOf('/* #303: the Needs you rail.'), css.indexOf('.dashboard-live-list, .dashboard-outcome-list'))
+    expect(rail).toMatch(/\.dash-rail-card:not\(\.expanded\) \.reply-input,\s*\.dash-rail-card:not\(\.expanded\) \.reply-context-row,\s*\.dash-rail-card:not\(\.expanded\) \.reply-row > \[data-shortcut-id="submit"\] \{ display: none; \}/)
+    expect(rail).not.toMatch(/animation|transition/)
   })
 })

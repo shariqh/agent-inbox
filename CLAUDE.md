@@ -1282,13 +1282,43 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   (the harness's `changedPollTick(db)`, or fresh data as press-guard and
   page-scroll insert), never rely on a `.focus()` counting as input.
 - **Dashboard focus must not freeze monitoring detail.** Mount the structural frame
-  and native range selector once, then refresh ownership, dispatch, recent outcomes
+  and native range selector once, then refresh the Needs you rail, dispatch, recent outcomes
   and history through the ambient painter as well as headline signals. Preserve the
   range control's identity, value and focus across polls and history error/recovery.
   Reuse a focused outcome button while its result remains present; move focus to an
   adjacent control only when that result actually leaves and the viewer owns focus.
   This must not bypass the global held-pointer guard, create a third render entry,
   or pull keyboard ownership back from a background viewer.
+- **The Dashboard's Needs you rail is the one answer surface there, and it reads only the
+  one predicate (#303, Dashboard 2.0 phase 1, decisions D2, D3, D8).** It replaced Ownership
+  flow. `buildDashboard`'s `rail` is `sortRail(relay.human)` (`public/attention.js`) cut to
+  three cards, plus how many more and how many wait in Later (`laterEntries`): relay.human
+  IS `attentionEntries` under the Dashboard's lens, so the rail, the badge, the tabs and the
+  dock cannot disagree. `sortRail` only reorders: an item whose session is live
+  (`classifyLiveness` → `waiting`) comes first with an "agent waiting" chip, the rest keep
+  `sortNeedsYou` order; never filter or add an entry there. The "Needs you" signal card owns
+  the count; the rail head and its Open Review queue button carry no number. Each card
+  mounts the Inbox's own `answerEl`/`rowAnswerEl` with `surface: 'rail'` (★ on the
+  recommended option, More… holding Clarify, Decline and "I'll take a while", its own
+  disclosure keys) plus Snooze (4 h), Pin and Open icons whose writes are the shared
+  `snoozeAsk`/`pinAsk` (through `deferAsk`), so a rail draft lives in `draftReplies` /
+  `rowDrafts` and joins `suspendState()`, durable drafts (#279), recovery and the
+  viewer-restart hold like any editor; `expect_answer` (#321) is the Inbox editor's own.
+  The editor shows only on an expanded card (CSS; a card holding a draft is always
+  expanded), and the rail lives in `#dashRail` so `restoreDraftFocus` scopes to it. The
+  rail paints in the ambient painter (`renderDashRail`), so it moves while the rest of the
+  Dashboard holds focus, with three rules. (1) A poll leaves it untouched while one of its
+  asks holds a draft (a rail draft pauses only the rail; the rest of the Dashboard keeps
+  refreshing) or while a background window remembers focus inside it. (2) A frame the human
+  asked for rebuilds it anyway: `render()` sets `forcedAmbient` around its own
+  `paintAmbient()`, so every write still ends in `reloadAndPaint()` and shows its result;
+  there is no third render entry. (3) It restores its own focused control
+  (`captureCardFocus`) only while the document has focus, and never puts
+  `data-dashboard-focus-key` on a card, or `restoreDashboardFocus` would move focus off the
+  control onto it. A deferral from the Dashboard of an ask holding a draft switches to the
+  Inbox (`keepDraftInView`), since the rail never shows a deferred ask. Keys on a card (never
+  while typing): J/K move, 1–4 choose, S snooze, P pin, Enter expands.
+  `test/dom/dashboard-rail.test.ts` pins all of it, including attention parity.
 - **Remembered DOM focus is not keyboard ownership.** A blurred tab or embedded viewer
   keeps its last `document.activeElement`. Passive polling must capture focus bookmarks
   only while `document.hasFocus()` is true, before replacing DOM; otherwise restoring a

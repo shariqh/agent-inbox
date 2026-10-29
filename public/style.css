@@ -1895,10 +1895,10 @@ body.settings-open #liveBar { opacity: .32; }
 .dash-rail-asked { margin-left: auto; color: var(--app-text-soft); }
 .dash-rail-title { overflow-wrap: anywhere; font-size: 13px; font-weight: 650; line-height: 1.35; }
 .dash-rail-tldr { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; color: var(--app-muted); font-size: 12px; line-height: 1.4; }
-.dash-rail-card .options, .dash-rail-card .row-answer { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 6px; margin: 0; }
+.dash-rail-card .options, .dash-rail-card .options.comparing, .dash-rail-card .row-answer { display: flex; flex-direction: row; flex-wrap: wrap; align-items: flex-start; gap: 6px; margin: 0; }
 .dash-rail-card .row-options { display: flex; flex-wrap: wrap; gap: 6px; }
 .dash-rail-card .option { display: contents; }
-.dash-rail-card .opt-pill { width: auto; padding: 5px 9px; font-size: 12px; }
+.dash-rail-card .options.comparing .opt-pill, .dash-rail-card .opt-pill { width: auto; padding: 5px 9px; font-size: 12px; }
 .dash-rail-card .rec-star { margin-right: 4px; }
 .dash-rail-card .opt-detail, .dash-rail-card .compare-toggle { display: none; }
 .dash-rail-card .reply-row, .dash-rail-card .reply-context-row { flex: 1 1 100%; }
@@ -1906,9 +1906,9 @@ body.settings-open #liveBar { opacity: .32; }
 .dash-rail-card:not(.expanded) .reply-context-row,
 .dash-rail-card:not(.expanded) .reply-row > [data-shortcut-id="submit"] { display: none; }
 .dash-rail-card .disposition-menu { flex: 1 1 100%; font-size: 12px; }
-.dash-rail-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
-.dash-rail-write { margin-right: auto; font-size: 12px; }
-.dash-rail-icon { display: inline-flex; align-items: center; gap: 4px; padding: 3px 7px; font-size: 11.5px; }
+.dash-rail-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.dash-rail-write { margin-right: auto; padding: 3px 7px; font-size: 11.5px; }
+.dash-rail-icon { display: inline-flex; align-items: center; gap: 3px; padding: 3px 6px; font-size: 11.5px; }
 .dash-rail-icon svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.4; }
 .dash-rail-empty { padding: 18px 0; color: var(--app-text-soft); font-size: 12.5px; text-align: center; }
 .dash-rail-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; }

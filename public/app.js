@@ -2138,8 +2138,9 @@ function dashRailCardEl(entry, nowMs) {
     : answerEl(entry.item, { surface: 'rail' }))
   const actions = document.createElement('div')
   actions.className = 'dash-rail-actions'
-  const write = btn(expanded ? 'Hide answer' : 'Write an answer', () => toggleRailCard(card, id, write))
+  const write = btn(expanded ? 'Hide reply' : 'Reply', () => toggleRailCard(card, id, write))
   write.type = 'button'
+  write.title = 'Write an answer here (Enter)'
   write.className = 'dash-rail-write'
   write.dataset.railAction = 'expand'
   write.setAttribute('aria-expanded', String(expanded))
@@ -2159,7 +2160,7 @@ function toggleRailCard(card, id, button) {
   if (open) railExpanded.add(id)
   else railExpanded.delete(id)
   card.classList.toggle('expanded', open)
-  button.textContent = open ? 'Hide answer' : 'Write an answer'
+  button.textContent = open ? 'Hide reply' : 'Reply'
   button.setAttribute('aria-expanded', String(open))
   if (open) card.querySelector('textarea.reply-input:not(.reply-context-input)')?.focus({ preventScroll: true })
 }

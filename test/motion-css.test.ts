@@ -173,6 +173,17 @@ describe('motion foundation in public/style.css (#302)', () => {
     expect(appJs).toContain("el.classList.toggle('sweep', motion.sweep === lane.session)")
   })
 
+  // #304 review: without the pulse, every live lane says "live" in words, not
+  // only the lanes the 12-loop budget gave a pulse.
+  it('shows the word "live" on every lane under Calm and reduced motion', () => {
+    const shown = rules.filter((r) => r.decls.get('position') === 'static'
+      && r.selectors.some((sel) => sel.endsWith('.dash-lane-live')))
+    const calm = shown.filter((r) => !r.media).flatMap((r) => r.selectors)
+    const reduced = shown.filter((r) => r.media && REDUCED.test(r.media)).flatMap((r) => r.selectors)
+    expect(calm).toEqual([`${CALM} .dash-lane .dash-lane-live`])
+    expect(reduced).toEqual(['.dash-lane .dash-lane-live'])
+  })
+
   it('scrolls through the motion controller instead of a literal smooth behaviour', () => {
     expect(appJs).not.toMatch(/behavior:\s*['"\x60]smooth/)
     const scrolls = appJs.match(/scrollIntoView\(\{ behavior: [^,}]+/g) ?? []

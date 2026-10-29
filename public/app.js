@@ -1891,7 +1891,7 @@ function dashLanesEl() {
   section.className = 'dashboard-card dash-lanes'
   section.setAttribute('aria-labelledby', 'dashLanesTitle')
   section.innerHTML = `
-    <div class="dashboard-card-head"><h2 id="dashLanesTitle">What's being worked on</h2></div>
+    <div class="dashboard-card-head"><h2 id="dashLanesTitle" tabindex="-1">What's being worked on</h2></div>
     <div class="dash-lane-list" role="list" aria-labelledby="dashLanesTitle"></div>
     <div class="dashboard-empty dash-lanes-empty" role="img" aria-label="No agent connections" title="No agent connections"><svg class="dashboard-empty-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v4M12 18v4M2 12h4M18 12h4"></path></svg></div>
     <div class="dash-lanes-foot">
@@ -1990,6 +1990,11 @@ function updateDashLane(el, lane, motion) {
 function renderDashLanes(section, model, { forced = false } = {}) {
   if (!section) return
   const list = section.querySelector('.dash-lane-list')
+  // The outcomes list's rule: a focused lane control that leaves (its lane gone,
+  // its ask strip hidden, or moved by a re-sort) hands focus to the adjacent
+  // control, or the heading, and only in a window that owns focus.
+  const focused = activeFocusElement()
+  const focusIndex = focused && list.contains(focused) ? laneControls(list).indexOf(focused) : -1
   laneOrder = pinLaneOrder(forced ? [] : laneOrder, model.lanes)
   const bySession = new Map(model.lanes.map((lane) => [lane.session, lane]))
   const drawn = laneOrder.slice(0, MAX_LANES).map((session) => bySession.get(session))
@@ -2017,6 +2022,17 @@ function renderDashLanes(section, model, { forced = false } = {}) {
   const idle = section.querySelector('.dash-lanes-idle')
   setText(idle, model.idleConnections ? `+${plural(model.idleConnections, 'idle connection')}` : '')
   setHidden(idle, !model.idleConnections)
+  // focusIndex is set only while the document had focus (activeFocusElement):
+  // removing the focused node can itself make hasFocus() false.
+  if (focusIndex < 0 || document.activeElement === focused) return
+  const controls = laneControls(list)
+  const next = controls.includes(focused) ? focused
+    : controls[Math.min(focusIndex, controls.length - 1)] ?? section.querySelector('#dashLanesTitle')
+  next.focus({ preventScroll: true })
+}
+
+function laneControls(list) {
+  return [...list.querySelectorAll('.dash-lane button')].filter((button) => !button.closest('[hidden]'))
 }
 
 // D2: the rail is the one answer surface, so a lane's ask jumps to its rail

@@ -246,6 +246,52 @@ describe('lanes keep moving while the rest of the Dashboard holds (#304)', () =>
   })
 })
 
+describe('focus when a lane control leaves (#304 review)', () => {
+  const finish = (d: Database.Database, session: string) =>
+    upsertActivity(d, { ...A, session, doing: 'open', idle: true })
+
+  it('hands focus to the adjacent lane control, then to the heading', async () => {
+    const d = open()
+    work(d, 'first', 'Asking first')
+    insertItem(d, { ...A, kind: 'question', title: 'First ask', session: 'first' })
+    advanceClock()
+    work(d, 'second', 'Asking second')
+    insertItem(d, { ...A, kind: 'question', title: 'Second ask', session: 'second' })
+    await bootApp(d)
+    expect(laneIds()).toEqual(['second', 'first'])
+    lane('second')!.querySelector<HTMLButtonElement>('.dash-lane-asking')!.focus()
+
+    finish(d, 'second')
+    await pollTick()
+    expect(lane('second')).toBeNull()
+    expect(document.activeElement).toBe(lane('first')!.querySelector('.dash-lane-asking'))
+
+    finish(d, 'first')
+    await pollTick()
+    expect(document.activeElement).toBe(document.getElementById('dashLanesTitle'))
+  })
+
+  it('never pulls focus in a background window when a focused lane leaves', async () => {
+    const d = open()
+    work(d, 'first', 'Asking first')
+    insertItem(d, { ...A, kind: 'question', title: 'First ask', session: 'first' })
+    work(d, 'second', 'Working')
+    await bootApp(d)
+    const button = lane('first')!.querySelector<HTMLButtonElement>('.dash-lane-asking')!
+    button.focus()
+    vi.spyOn(document, 'hasFocus').mockReturnValue(false)
+    button.dispatchEvent(new FocusEvent('blur'))
+    button.dispatchEvent(new FocusEvent('focusout', { bubbles: true }))
+    const focus = vi.spyOn(HTMLElement.prototype, 'focus')
+
+    finish(d, 'first')
+    await pollTick()
+
+    expect(lane('first')).toBeNull()
+    expect(focus).not.toHaveBeenCalled()
+  })
+})
+
 describe('the Dashboard element budget (#304, proposal §10)', () => {
   it('stays within 1,500 elements with twelve busy lanes, more working and a full rail', async () => {
     const d = open()

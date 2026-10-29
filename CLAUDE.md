@@ -1438,7 +1438,13 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   added up, each plan once; the card headings carry no numbers. `renderDashLanes` keeps
   lanes keyed by session and writes only changed text and attributes (`setText`/`setAttr`),
   so an unchanged lane keeps its nodes, selection and animations; a rail draft never stops
-  it, a held pointer stops it with the rest of `paintAmbient`, and it never moves focus.
+  it, and a held pointer stops it with the rest of `paintAmbient`. A focused lane control
+  that leaves (lane gone, ask strip hidden, moved by a re-sort) hands focus to the adjacent
+  lane control or the lanes heading, the outcomes list's rule, and only when the document
+  had focus before the update: removing the focused node can itself make `hasFocus()`
+  false. A background window's remembered focus is never moved. Lanes carry `data-lane`,
+  an identity attribute in `public/selection.js`, and under Calm and reduced motion every
+  lane, pulsed or not, says "live" in words.
   Order is pinned (`pinLaneOrder`): a session keeps its place, new ones append, and only a
   forced paint (`forcedAmbient`) re-sorts, newest call first. At most `MAX_LANES` (12) are
   drawn, the rest "+N more working". `laneMotion` spends the 12-loop budget: the top-edge

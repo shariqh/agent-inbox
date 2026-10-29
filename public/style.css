@@ -2220,13 +2220,13 @@ body.sidebar-collapsed .gear[data-shortcut]::after { display: none; }
 :root[data-motion="calm"] .dash-lane.pulse .dash-lane-pulse::after,
 :root[data-motion="calm"] .dash-lane-child.pulse::before { animation: none !important; }
 /* Without the pulse, a live lane says so in words. */
-:root[data-motion="calm"] .dash-lane.pulse .dash-lane-live { position: static; width: auto; height: auto; clip: auto; color: var(--app-agent); font-size: 10px; font-weight: 700; text-transform: uppercase; }
+:root[data-motion="calm"] .dash-lane .dash-lane-live { position: static; width: auto; height: auto; clip: auto; color: var(--app-agent); font-size: 10px; font-weight: 700; text-transform: uppercase; }
 
 @media (prefers-reduced-motion: reduce) {
   .dash-lane.sweep::before,
   .dash-lane.pulse .dash-lane-pulse::after,
   .dash-lane-child.pulse::before { animation: none !important; }
-  .dash-lane.pulse .dash-lane-live { position: static; width: auto; height: auto; clip: auto; color: var(--app-agent); font-size: 10px; font-weight: 700; text-transform: uppercase; }
+  .dash-lane .dash-lane-live { position: static; width: auto; height: auto; clip: auto; color: var(--app-agent); font-size: 10px; font-weight: 700; text-transform: uppercase; }
   *,
   *::before,
   *::after {

@@ -6,7 +6,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type Database from 'better-sqlite3'
 import {
-  endActivity, insertItem, recordActivityCall, resolveItem, upsertActivity, upsertBoard, upsertSourceLink,
+  archiveBoard, endActivity, getBoard, insertItem, recordActivityCall, resolveItem, updateBoardRow, upsertActivity,
+  upsertBoard, upsertSourceLink,
 } from '../../src/store.js'
 import {
   T0, advanceClock, badgeCount, bootApp, click, freshDb, pollTick, settle, tabCount, useDomTest,
@@ -175,6 +176,205 @@ describe('the Today ribbon (#305)', () => {
     expect(document.querySelector('.dash-ribbon-note')?.textContent).toMatch(/^Asks and outcomes from /)
     // Heard as well as seen: the note is outside anything hidden from assistive tech.
     expect(document.querySelector('.dash-ribbon-note')?.closest('[aria-hidden="true"]')).toBeNull()
+  })
+})
+
+// #392: a longer range the page cannot prove reads the complete closed history
+// (and archived plans) once, on the human's own change; passive paths never do.
+describe('older history for a longer ribbon range (#392)', () => {
+  const HISTORY = '/api/items/history'
+  const ARCHIVED = '/api/boards/archived'
+  const note = () => document.querySelector('.dash-ribbon-note')?.textContent ?? ''
+  const markTitles = () => [...document.querySelectorAll('.dash-ribbon-mark')].map((mark) => mark.getAttribute('title') ?? '')
+  const pick = async (ms: number) => {
+    range().value = String(ms)
+    range().dispatchEvent(new Event('change', { bubbles: true }))
+    await settle()
+  }
+
+  // An ask closed three days ago, then sixty outcomes in the last hour push it
+  // off the page: the page proves 24 hours, not 7 days.
+  function seedOldAsk(d: Database.Database): void {
+    vi.setSystemTime(T0 - 3 * DAY)
+    resolveItem(d, insertItem(d, { ...A, kind: 'question', title: 'Early ask' }))
+    vi.setSystemTime(T0 - HOUR)
+    for (let index = 0; index < 60; index += 1) land(d, `Closed ${index}`)
+    vi.setSystemTime(T0)
+  }
+
+  function recorder(fail: { history?: boolean; archived?: boolean } = {}) {
+    const reads: string[] = []
+    const statuses: Array<{ path: string; status: number }> = []
+    return {
+      reads,
+      statuses,
+      interceptFetch: async (input: RequestInfo | URL, init: RequestInit | undefined, next: () => Promise<Response>) => {
+        const path = String(input).split('?')[0]!
+        if ((init?.method ?? 'GET') === 'GET') reads.push(path)
+        const response = (fail.history && path === HISTORY) || (fail.archived && path === ARCHIVED)
+          ? new Response('unavailable', { status: 500 })
+          : await next()
+        statuses.push({ path, status: response.status })
+        return response
+      },
+    }
+  }
+
+  it('reads no older history at 24 hours, across several polls', async () => {
+    const d = open()
+    seedOldAsk(d)
+    const { reads, interceptFetch } = recorder()
+    await bootApp(d, { interceptFetch })
+    for (let tick = 0; tick < 3; tick += 1) await pollTick()
+    expect(reads.filter((path) => path === HISTORY)).toEqual([])
+    expect(note()).toMatch(/^Asks and outcomes from /)
+  })
+
+  it('reads it once when the human picks 7 days, then draws the older ask and drops the note', async () => {
+    const d = open()
+    seedOldAsk(d)
+    const { reads, interceptFetch } = recorder()
+    await bootApp(d, { interceptFetch })
+    expect(markTitles().some((title) => title.includes('Early ask'))).toBe(false)
+    reads.length = 0
+    await pick(7 * DAY)
+    expect(reads.filter((path) => path === HISTORY)).toHaveLength(1)
+    expect(markTitles().some((title) => title.includes('Early ask'))).toBe(true)
+    expect(note()).toBe('')
+    // The next poll keeps it: historyWanted judges the page, which still omits it.
+    await pollTick()
+    expect(markTitles().some((title) => title.includes('Early ask'))).toBe(true)
+    expect(note()).toBe('')
+  })
+
+  it('stops reading once the range returns to 24 hours', async () => {
+    const d = open()
+    seedOldAsk(d)
+    const { reads, interceptFetch } = recorder()
+    await bootApp(d, { interceptFetch })
+    await pick(7 * DAY)
+    await pick(DAY)
+    reads.length = 0
+    for (let tick = 0; tick < 3; tick += 1) await pollTick()
+    expect(reads.filter((path) => path === HISTORY)).toEqual([])
+    expect(note()).toMatch(/^Asks and outcomes from /)
+  })
+
+  it('reads nothing at a range the page proves, and reads at one it does not', async () => {
+    const d = open()
+    // Everything the page omits closed more than eight days ago: 7 days is
+    // proven, 30 days is not.
+    vi.setSystemTime(T0 - 10 * DAY)
+    resolveItem(d, insertItem(d, { ...A, kind: 'question', title: 'Old ask' }))
+    vi.setSystemTime(T0 - 8 * DAY)
+    for (let index = 0; index < 60; index += 1) land(d, `Closed ${index}`)
+    vi.setSystemTime(T0)
+    const { reads, interceptFetch } = recorder()
+    await bootApp(d, { interceptFetch })
+    await pick(7 * DAY)
+    await pollTick()
+    expect(reads.filter((path) => path === HISTORY)).toEqual([])
+    expect(note()).toBe('')
+    await pick(30 * DAY)
+    expect(reads.filter((path) => path === HISTORY)).toHaveLength(1)
+    expect(markTitles().some((title) => title.includes('Old ask'))).toBe(true)
+  })
+
+  it('keeps the note and says older history is unavailable when the read fails', async () => {
+    const d = open()
+    seedOldAsk(d)
+    const fail = { history: true }
+    const { interceptFetch } = recorder(fail)
+    await bootApp(d, { interceptFetch })
+    await pick(7 * DAY)
+    expect(note()).toMatch(/^Asks and outcomes from .* · Older history is unavailable right now\.$/)
+    expect(ribbonLanes()).toEqual(['alpha'])
+    // A later poll that reads it fills the ribbon in.
+    fail.history = false
+    await pollTick()
+    expect(note()).toBe('')
+    expect(markTitles().some((title) => title.includes('Early ask'))).toBe(true)
+  })
+
+  // Six outcomes on one archived plan, two of them three days old: the brief
+  // carries the project's newest four, so 7 days needs the complete list.
+  function seedArchived(d: Database.Database): void {
+    const scope = { ...A, title: 'Shipped plan' }
+    vi.setSystemTime(T0 - 3 * DAY)
+    upsertBoard(d, { ...scope, rows: [{ label: 'Step', status: 'tracked' }] })
+    // Six outcomes: the brief carries the project's newest four.
+    for (let index = 0; index < 6; index += 1) {
+      vi.setSystemTime(index < 2 ? T0 - 3 * DAY + index * MIN : T0 - HOUR + index * MIN)
+      updateBoardRow(d, {
+        ...scope, expectedBoardVersion: getBoard(d, A.project, scope.title)!.revision,
+        label: `Row ${index}`, status: 'done', outcome: `Row ${index} shipped.`,
+      })
+    }
+    vi.setSystemTime(T0 - 10 * MIN)
+    const board = getBoard(d, A.project, scope.title)!
+    expect(archiveBoard(d, board.id, board.revision)).toBe(true)
+    vi.setSystemTime(T0)
+  }
+
+  it('reads the complete archived plans once when their omitted outcomes fall in the range', async () => {
+    const d = open()
+    seedArchived(d)
+    const { reads, interceptFetch } = recorder()
+    await bootApp(d, { interceptFetch })
+    for (let tick = 0; tick < 2; tick += 1) await pollTick()
+    expect(reads.filter((path) => path === ARCHIVED)).toEqual([])
+    reads.length = 0
+    await pick(7 * DAY)
+    expect(reads.filter((path) => path === ARCHIVED)).toHaveLength(1)
+    expect(markTitles().filter((title) => title.startsWith('Landed: Row'))).toHaveLength(6)
+    expect(note()).toBe('')
+  })
+
+  it('keeps the note and says archived plans are unavailable when that read fails', async () => {
+    const d = open()
+    seedArchived(d)
+    const { interceptFetch } = recorder({ archived: true })
+    await bootApp(d, { interceptFetch })
+    await pick(7 * DAY)
+    expect(note()).toMatch(/^Asks and outcomes from .* · Archived plans are unavailable right now\.$/)
+    expect(ribbonLanes()).toEqual(['alpha'])
+  })
+
+  it('stays idle at 7 days: the history read revalidates and the ribbon is not rebuilt', async () => {
+    const d = open()
+    seedOldAsk(d)
+    const { statuses, interceptFetch } = recorder()
+    await bootApp(d, { interceptFetch })
+    await pick(7 * DAY)
+    await pollTick()
+    const part = () => document.querySelector('#dashboard .dashboard-activity > :not(.dashboard-card-head)')
+    const node = part()
+    expect(node).not.toBeNull()
+    statuses.length = 0
+    for (let tick = 0; tick < 3; tick += 1) {
+      await pollTick()
+      expect(part()).toBe(node)
+    }
+    expect(statuses.filter((read) => read.path === HISTORY).map((read) => read.status)).toEqual([304, 304, 304])
+  })
+
+  it('changes no attention surface and keeps the eight poll reads at 24 hours', async () => {
+    const d = open()
+    seedOldAsk(d)
+    insertItem(d, { ...A, kind: 'question', title: 'Ship it?' })
+    const { reads, interceptFetch } = recorder()
+    await bootApp(d, { interceptFetch })
+    const before = { title: document.title, badge: badgeCount(), tabs: ['needsYou', 'notes', 'boards'].map(tabCount) }
+    await pick(7 * DAY)
+    expect({ title: document.title, badge: badgeCount(), tabs: ['needsYou', 'notes', 'boards'].map(tabCount) }).toEqual(before)
+    await pick(DAY)
+    reads.length = 0
+    await pollTick()
+    expect(new Set(reads)).toEqual(new Set([
+      '/api/activity', '/api/activity/history', '/api/boards', '/api/boards/archived/summary', '/api/issues',
+      '/api/items', '/api/links', '/api/projects/closed',
+    ]))
+    expect(reads).toHaveLength(8)
   })
 })
 

@@ -138,6 +138,8 @@ export function buildDashboard({
       // outcomes after the newest omitted one's stamp are all loaded (#299).
       asksAfter: history.older.items > 0 ? history.before ?? null : null,
       outcomesAfter: latest,
+      // the archived half of outcomesAfter, read on its own (#392)
+      archivedAfter: archivedOlder.outcomes > 0 ? archivedOlder.latest : null,
     },
     lanes: lanes.lanes,
     idleConnections: lanes.idle,

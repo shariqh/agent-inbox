@@ -49,7 +49,7 @@ import { actionCategory, actionOwnerLabel, agentFollowupChip, changeKind, lifecy
 import { buildRelay, stamp } from '/relay.js'
 import { buildMission } from '/mission.js'
 import { buildDashboard } from '/dashboard.js'
-import { buildRibbon, sinceKeepsOn, sinceLastLooked, trustedInput } from '/ribbon.js'
+import { buildRibbon, ribbonWait, sinceKeepsOn, sinceLastLooked, trustedInput } from '/ribbon.js'
 import {
   MAX_LANES, calledLanes, isWorking, laneFilterChoices, laneMatches, pinLaneOrder, sessionFocus, tracePath,
 } from '/lanes.js'
@@ -1690,8 +1690,10 @@ function historyWanted(view = lastData) {
   if (activeTab === 'done' && older.items > 0) {
     return historyTabPinned || shown.done > knownHistory(pageView(view).g.done, summary.before).length
   }
-  if (activeTab === 'dashboard' && older.outcomes > 0) {
-    return dashboardModel(pageView(view), summary, lensActivity(view)).recentOutcomesWait.history
+  // Recent outcomes, and the ribbon at a range longer than the default (#392).
+  if (activeTab === 'dashboard' && (older.outcomes > 0 || (older.items > 0 && ribbonReadsOlder()))) {
+    const model = dashboardModel(pageView(view), summary, lensActivity(view))
+    return model.recentOutcomesWait.history || ribbonRangeWait(model).history
   }
   return false
 }
@@ -1723,7 +1725,8 @@ function archivedWanted(view = lastData) {
       || lens.archived.some((plan) => plan.id === focused)
   }
   if (activeTab === 'dashboard' && omitted > 0) {
-    return dashboardModel(lens, view.pageHistory, lensActivity(view)).recentOutcomesWait.archived
+    const model = dashboardModel(lens, view.pageHistory, lensActivity(view))
+    return model.recentOutcomesWait.archived || ribbonRangeWait(model).archived
   }
   return false
 }
@@ -2443,11 +2446,23 @@ function formatDuration(ms) {
 // an agent asked you and ● where an outcome landed. The structure is mounted
 // once; a lane's track is redrawn only when its geometry changes, and nothing
 // in it animates (#304's rule: no infinite animation for activity).
+const RIBBON_DEFAULT_MS = 86400000
 const RIBBON_RANGES = new Map([
-  [86400000, ['Today', '24h ago']],
+  [RIBBON_DEFAULT_MS, ['Today', '24h ago']],
   [604800000, ['Last 7 days', '7d ago']],
   [2592000000, ['Last 30 days', '30d ago']],
 ])
+
+// Issue #392: only a range the human picked past the default reads what the
+// page omits. At 24 hours the ribbon keeps #305's cut-off note and reads
+// nothing more, as before.
+function ribbonReadsOlder() {
+  return dashboardRangeMs > RIBBON_DEFAULT_MS
+}
+
+function ribbonRangeWait(model) {
+  return ribbonReadsOlder() ? ribbonWait(model.marks, Date.now() - dashboardRangeMs) : { history: false, archived: false }
+}
 
 function lensSpans(history) {
   return (history?.spans ?? []).filter((span) =>
@@ -2463,7 +2478,7 @@ function dashboardHistory() {
 const laterOf = (a, b) => (Date.parse(a) > Date.parse(b) || !b ? a : b) || null
 
 function ribbonTime(iso) {
-  const options = dashboardRangeMs > 86400000
+  const options = dashboardRangeMs > RIBBON_DEFAULT_MS
     ? { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }
     : { hour: 'numeric', minute: '2-digit' }
   return new Date(iso).toLocaleString(undefined, options)
@@ -2492,6 +2507,9 @@ function dashRibbonEl() {
   range.addEventListener('change', () => {
     dashboardRangeMs = Number(range.value)
     forceRender()
+    // The human's own change is the only path that reads what a longer range
+    // needs (#392); the poll keeps it while historyWanted/archivedWanted say so.
+    requestHistoryPaint()
   })
   panel.querySelector('.dashboard-card-head').appendChild(range)
   return panel
@@ -2499,7 +2517,7 @@ function dashRibbonEl() {
 
 function renderDashRibbon(panel, model) {
   if (!panel) return
-  const [title, from] = RIBBON_RANGES.get(dashboardRangeMs) ?? RIBBON_RANGES.get(86400000)
+  const [title, from] = RIBBON_RANGES.get(dashboardRangeMs) ?? RIBBON_RANGES.get(RIBBON_DEFAULT_MS)
   setText(panel.querySelector('.dash-ribbon-title'), title)
   const history = dashboardHistory()
   const endMs = Date.now()
@@ -2538,8 +2556,14 @@ function renderDashRibbon(panel, model) {
   setText(panel.querySelector('.dashboard-activity-total strong'), formatDuration(ribbon.totalMs))
   setText(panel.querySelector('.dash-ribbon-from'), from)
   // Read aloud too: the axis labels are hidden from assistive tech, the note is not.
+  // A read the range waits on that failed says so beside the note (#392).
+  const wait = ribbonRangeWait(model)
+  const unavailable = [
+    wait.history && lastData?.olderError ? OLDER_HISTORY_UNAVAILABLE : '',
+    wait.archived && lastData?.archivedError ? ARCHIVED_UNAVAILABLE : '',
+  ].filter(Boolean)
   setText(panel.querySelector('.dash-ribbon-note'), ribbon.marksFromAt == null ? ''
-    : `Asks and outcomes from ${ribbonTime(ribbon.marksFromAt)}`)
+    : [`Asks and outcomes from ${ribbonTime(ribbon.marksFromAt)}`, ...unavailable].join(' · '))
   const more = panel.querySelector('.dash-ribbon-more')
   setText(more, ribbon.more > 0 ? `+${plural(ribbon.more, 'more project')}` : '')
   setHidden(more, Boolean(kind) || ribbon.more <= 0)

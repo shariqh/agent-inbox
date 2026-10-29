@@ -205,14 +205,17 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   focused in an active window, not text left in a closed box, even one a
   background window still reports as focused (#233) — the Handoffs overlay,
   History paged past what the page proves, a History deep link, a pending deep
-  link to an omitted item, or
-  Dashboard recent outcomes the page cannot prove), or, within the same tick and
+  link to an omitted item,
+  Dashboard recent outcomes the page cannot prove, or (#392) the Today ribbon at
+  a range longer than 24 hours that starts before the page's `before`; at 24
+  hours the ribbon keeps its cut-off note and reads nothing), or, within the same tick and
   under the same boot-marker and generation rules, when the tick's own new page
   needs it, so a sweep never paints a blank History frame. Decide on a PAGE
   (`lastData.page`, or the tick's new one), never on merged data, or loading
   history would end the need for it. Explicit human entry points (tab select, the
   History pager, rail project/agent picks, opening Handoffs, a deep link that
-  found its target) call `requestHistoryPaint()`, which ends in `reloadAndPaint()`
+  found its target, the ribbon's range menu (#392), which is not saved, so boot
+  always starts at 24 hours) call `requestHistoryPaint()`, which ends in `reloadAndPaint()`
   so an unrelated draft or a focused Dashboard control cannot hide the frame the
   click asked for (#38). Typing or focusing search, and a deep link waiting on an
   omitted item, only call `requestHistory()`: it schedules an early `load()` and
@@ -264,7 +267,11 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   outcomes, Plans with the archived fold open, a lingering plan or a focused plan
   its agent just archived (the focus follows it into the fold), and a Dashboard
   lens whose recent outcomes only the archived plans can prove
-  (`recentOutcomesWait.archived`; `.history` is #184's half). Judge on the BRIEF
+  (`recentOutcomesWait.archived`; `.history` is #184's half), or (#392) a ribbon
+  range past 24 hours that starts before the newest outcome the brief omits
+  (`ribbonWait` in `public/ribbon.js`, over the model's `asksAfter` and
+  `archivedAfter`; a failed read adds the unavailable line to the ribbon's
+  cut-off note instead of blanking it). Judge on the BRIEF
   (the applied one, or the tick's new one for the in-tick read that lets a plan
   archived this tick linger at once), never on the complete list, whose plans
   omit nothing. The two sources share #184's early-tick requests:

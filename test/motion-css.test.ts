@@ -60,7 +60,7 @@ function parse(source: string, media: string | null = null, out = { rules: [] as
 }
 
 const isInfinite = (rule: Rule) => [...rule.decls].some(([prop, value]) => prop.startsWith('animation') && /\binfinite\b/.test(value))
-const isNone = (rule: Rule) => /^none\b/.test(rule.decls.get('animation') ?? '')
+const isNone = (rule: Rule) => /^none\b.*!important/.test(rule.decls.get('animation') ?? '')
 
 /** Selectors with an infinite animation that the reduced-motion block or Calm leaves running. */
 function uncoveredLoops(source: string): { reduced: string[]; calm: string[] } {
@@ -93,6 +93,13 @@ describe('motion checker discrimination', () => {
       @media (prefers-reduced-motion: reduce) { .now .orbit { animation: none !important; } }
       ${CALM} .now .orbit { animation: none !important; }`
     expect(uncoveredLoops(sheet)).toEqual({ reduced: [], calm: [] })
+  })
+
+  it('does not count a listing without !important as switched off', () => {
+    const sheet = `.lane .pulse::after { animation: m-pulse 2s ease-out infinite; }
+      @media (prefers-reduced-motion: reduce) { .lane .pulse::after { animation: none; } }
+      ${CALM} .lane .pulse::after { animation: none; }`
+    expect(uncoveredLoops(sheet)).toEqual({ reduced: ['.lane .pulse::after'], calm: ['.lane .pulse::after'] })
   })
 
   it('reads keyframe properties so a background-position animation is caught', () => {
@@ -158,7 +165,9 @@ describe('motion foundation in public/style.css (#302)', () => {
   })
 
   it('scrolls through the motion controller instead of a literal smooth behaviour', () => {
-    expect(appJs).not.toMatch(/behavior:\s*'smooth'/)
-    expect(appJs).toMatch(/behavior: motion\.scrollBehavior\(\)/)
+    expect(appJs).not.toMatch(/behavior:\s*['"\x60]smooth/)
+    const scrolls = appJs.match(/scrollIntoView\(\{ behavior: [^,}]+/g) ?? []
+    expect(scrolls).toHaveLength(3)
+    for (const call of scrolls) expect(call).toBe('scrollIntoView({ behavior: motion.scrollBehavior()')
   })
 })

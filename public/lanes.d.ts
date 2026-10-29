@@ -81,3 +81,11 @@ export function buildLanes(input: {
 }): { lanes: Lane[]; idle: number; now: NowStrip }
 export function pinLaneOrder(previous: string[], lanes: Array<{ session: string }>): string[]
 export function calledLanes(previous: Map<string, string>, drawn: Lane[]): { pulse: Set<string>; sweep: string | null }
+export interface LaneFilters { project: string | null; agent: string | null }
+export function laneMatches(lane: { project: string; agent: string }, filters: LaneFilters): boolean
+export function laneFilterChoices(lanes: Array<{ project: string; agent: string }>, filters: LaneFilters): { project: string[]; agent: string[] }
+export function sessionFocus(lane: Lane, input: { items?: any[]; boards?: any[]; outcomes?: any[] }): {
+  board: any | null
+  source: any | null
+  outcomes: any[]
+}

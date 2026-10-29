@@ -118,6 +118,8 @@ export function buildDashboard({
     rail: railModel(railOrder, later.length),
     waitingEntries: relay.human,
     agentEntries: relay.agent,
+    // #307: every loaded outcome, newest first, for the session focus panel
+    outcomeEntries: relay.outcomes,
     recentOutcomes,
     // proven outcomes Just landed leaves out because their PR still waits on you
     recentOutcomesHidden: proven.length - recentOutcomes.length,

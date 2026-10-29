@@ -55,6 +55,8 @@ export interface DashboardModel {
   rail: { cards: RelayEntry[]; more: number; later: number }
   waitingEntries: RelayEntry[]
   agentEntries: RelayEntry[]
+  /** every loaded outcome, newest first (#307) */
+  outcomeEntries: RelayEntry[]
   recentOutcomes: RelayEntry[]
   /** #305: proven outcomes Just landed leaves out because their open PR still waits on you */
   recentOutcomesHidden: number

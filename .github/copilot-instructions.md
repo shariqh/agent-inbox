@@ -647,6 +647,25 @@ Run the build before `npm run electron`; the development shell starts the built
   could add more, until the human's first trusted click or key press on the
   Dashboard that is not reading it (a press on the line, ⌘/Ctrl shortcuts, keys
   with the line selected).
+- Command-center polish (#307) adds no read and no answer surface. Lane quick
+  filters (project, agent) are window-local and narrow only the drawn lanes, after
+  the order is pinned over every lane. The keyboard help's "Dashboard" group is
+  help-only (`legacy`) entries in `public/keys.js`; keep them legacy. The session
+  focus panel (`.dash-focus`, from a lane's title button, mounted inside the lanes
+  card: over the lanes column on a desktop, static below the lanes under 1280px,
+  closed by a trusted outside `click` that is not a lane, never a `pointerdown`, and
+  never while it is in flow) is read-only (D2): its
+  asks come from the attention set and jump to the rail or Inbox card, its plan and
+  outcomes open through `focusItem`, its PR/CI chips are ambient `sourceChipsHtml`
+  and its links are #300's `cardLinks`/`linkStripHtml`. Parts are rewritten only when
+  their markup changes; opening and closing move focus only in a focused window. Its
+  handlers repaint their own region from `lastDashModel`, never a new render entry,
+  and `focusSession`/`laneFilters` are in `frameInputs()`. ⌘K actions
+  (`public/palette.js`): only the full names "answer ", "open plan ", "jump to
+  session " (with the space) are commands and list targets first; a prefix of a
+  name or hint only suggests the command and never
+  outranks the top Open-item match. Answer lands on the rail card or the Inbox card,
+  never a new editor.
 - Browser snapshot reuse is window-local and immutable; a 304 belongs to the
   representation that request sent, and its live boot header still controls safe
   refresh. Passive polls may retain inactive document panes, but navigation and

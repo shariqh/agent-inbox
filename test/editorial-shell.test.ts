@@ -207,3 +207,25 @@ describe('the editorial desk shell', () => {
     expect(compact).not.toMatch(/\.topbar-tools\s*\{/)
   })
 })
+
+// #307: jsdom never matches the compact @media block, so the session panel's
+// placement is pinned on the source.
+describe('the session focus panel placement (#307)', () => {
+  const compact = css.slice(css.indexOf('@media (max-width: 1279px)'))
+  const desktop = css.slice(0, css.indexOf('@media (max-width: 1279px)'))
+  const rule = (sheet: string) => sheet.match(/(?:^|\n)\s*\.dash-focus\s*\{([^}]*)\}/)?.[1] ?? ''
+
+  it('sits inside the lanes card on a desktop, never fixed over the page', () => {
+    expect(desktop).toMatch(/\.dash-lanes\s*\{\s*position:\s*relative;\s*\}/)
+    expect(rule(desktop)).toMatch(/position:\s*absolute;/)
+    expect(rule(desktop)).not.toMatch(/position:\s*fixed/)
+    expect(app).toMatch(/lanes\.appendChild\(dashFocusEl\(\)\)/)
+  })
+
+  it('joins the flow below the lanes under 1280px, never over the masthead', () => {
+    const narrow = rule(compact)
+    expect(narrow).toMatch(/position:\s*static;/)
+    expect(narrow).toMatch(/max-height:\s*none;/)
+    expect(narrow).toMatch(/z-index:\s*auto;/)
+  })
+})

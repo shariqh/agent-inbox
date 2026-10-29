@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { QUIET_MS, TRACE_MINUTES, buildLanes, calledLanes, callTrace, pinLaneOrder, tracePath } from '../public/lanes.js'
+import {
+  QUIET_MS, TRACE_MINUTES, buildLanes, calledLanes, callTrace, laneFilterChoices, laneMatches, pinLaneOrder, sessionFocus, tracePath,
+} from '../public/lanes.js'
 import { attentionEntries, sortRail } from '../public/attention.js'
 import type { Lane } from '../public/lanes.js'
 
@@ -185,5 +187,40 @@ describe('heartbeat trace and the session-to-plan link (#306)', () => {
     expect(lanesOf([session('s'), session('other', { last_call_at: ago(40 * MIN) })], boards).lanes[0]!.plan?.id).toBe('theirs')
     // once `other` is gone, its stamp no longer keeps the plan from the join
     expect(lanesOf([session('s')], boards).lanes[0]!.plan?.id).toBe('theirs')
+  })
+})
+
+describe('quick filters and the session focus panel (#307)', () => {
+  const two = () => lanesOf([
+    session('a1'), session('b1', { project: 'beta', agent: 'claude-code' }), session('a2', { agent: 'claude-code' }),
+  ]).lanes
+
+  it('narrows lanes by project and agent and keeps a chosen value as a choice', () => {
+    const lanes = two()
+    expect(lanes.filter((lane) => laneMatches(lane, { project: 'alpha', agent: null })).map((l) => l.session).sort()).toEqual(['a1', 'a2'])
+    expect(lanes.filter((lane) => laneMatches(lane, { project: 'alpha', agent: 'claude-code' })).map((l) => l.session)).toEqual(['a2'])
+    expect(laneFilterChoices(lanes, { project: null, agent: null })).toEqual({ project: ['alpha', 'beta'], agent: ['claude-code', 'copilot'] })
+    expect(laneFilterChoices([], { project: 'gone', agent: null })).toEqual({ project: ['gone'], agent: [] })
+  })
+
+  it("collects a session's plan, its newest item and its recent outcomes", () => {
+    const board = plan('p', ago(MIN), [{ status: 'done', outcome: 'Merged' }])
+    const [lane] = lanesOf([session('s')], [board]).lanes
+    const items = [
+      { id: 'old', session: 's', created_at: ago(9 * MIN) },
+      { id: 'new', session: 's', created_at: ago(2 * MIN) },
+      { id: 'other', session: 'x', created_at: ago(0) },
+    ]
+    const outcomes = [
+      { kind: 'item', item: { id: 'o1', session: 'x' } },
+      { kind: 'row', row: board.rows[0], board },
+      { kind: 'item', item: { id: 'o2', session: 's' } },
+    ]
+    const focus = sessionFocus(lane!, { items, boards: [board], outcomes })
+    expect(focus.board).toBe(board)
+    expect(focus.source).toBe(board)
+    expect(focus.outcomes.map((entry: any) => entry.item?.id ?? entry.row.id)).toEqual(['p-0', 'o2'])
+    const [bare] = lanesOf([session('s')]).lanes
+    expect(sessionFocus(bare!, { items, boards: [], outcomes }).source).toBe(items[1])
   })
 })

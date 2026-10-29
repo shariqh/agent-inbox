@@ -1556,6 +1556,59 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   and the poll gains no read (`test/dom/dashboard-ribbon.test.ts`, which also counts the
   worst case: 30 days of 40 projects with 12 lanes and a full rail is ~590 Dashboard
   elements against the 1,500 budget).
+- **Command-center polish reads nothing new and answers nowhere new (#307, Dashboard 2.0
+  phase 5, D2).** Four parts. (1) **Quick filters on lanes:** a project and an agent
+  `<select>` in the lanes head (`laneFilters`, window-local like the lens, never stored).
+  `renderDashLanes` pins the order over EVERY lane first and filters what it draws after
+  (`laneMatches`), so clearing a filter puts each lane back where it was; a chosen value no
+  lane holds stays a choice (`laneFilterChoices`), and "No working session matches these
+  filters" replaces the list. They narrow only the drawn lanes: the Now strip, the rail,
+  the badge, the tabs and the dock never read them. (2) **Keyboard help** lists the
+  Dashboard's keys as help-only (`legacy`) commands in `public/keys.js`, group "Dashboard":
+  the rail's J/K, 1–4, S, P and Enter, which `onDashRailKey` handles only on a rail card,
+  and Esc for the panel. Never make them non-legacy: the global handler would then take
+  S and P everywhere. (3) **The session focus panel** (`.dash-focus`, mounted once inside
+  the lanes card: on a desktop it overlays the right part of the lanes column, so the
+  rail and the Now strip stay usable; below 1280px it is static, in flow below the lanes,
+  never fixed over the masthead; `test/editorial-shell.test.ts` pins both, since jsdom
+  cannot evaluate `@media`): a lane's title is a button (`.dash-lane-open`, `aria-expanded`), and a click
+  elsewhere on the lane that is not a control or a text selection opens it too. It is
+  READ-ONLY (D2: the rail is the Dashboard's one answer surface): the lane's asks (from
+  the attention set) each jump to the rail card or, past the top three, the Inbox card
+  (`jumpToAsk`, which closes the panel without moving focus back to the lane whenever it
+  lands on a rail card, from the panel, a lane's "Asking you" or ⌘K); the plan and each recent outcome open through `focusItem`. `sessionFocus`
+  (`public/lanes.js`, pure) picks the plan, the session's newest item (the source of its
+  PR/CI chips when it has no plan) and its last three outcomes from `outcomeEntries`. PR and
+  CI chips are `sourceChipsHtml`'s, ambient: nothing there reaches attention
+  (`test/dom/dashboard-focus.test.ts` compares badge, title, tabs, rail, Now strip and both
+  dock projections with and without `/api/links`). Links are #300's `cardLinks` of the asks
+  and the plan, drawn by `linkStripHtml`, so `link-open.js` and main's checks own every
+  click. The ambient painter updates it in place: each part is rewritten only when its
+  markup changes (`setFocusPart`), so an unchanged poll writes nothing and a keyboard user
+  keeps the same control by its focus key. Opening focuses the panel heading and closing
+  (×, Esc in the panel, Esc on its lane) returns focus to the lane only when the window
+  has focus (and, for closing, focus was in the panel). A trusted `click` (`trustedInput`)
+  outside the panel that is not on a lane closes it and moves no focus, and only while
+  it overlays the lanes: never a `pointerdown` (closing mid-press moved what was under the
+  pointer), and never in the compact layout, where the panel is in flow (`position:
+  static`) above the rail and closing it would lift the rail under the press. A session that stops working (or
+  leaves the filters) keeps the panel open with one line saying so. Its one-shot entrance
+  (`dash-focus-in`) takes the motion tokens, is instant under reduced motion and listed
+  under Calm. `focusSession` and `laneFilters` are in `frameInputs()`; their handlers
+  repaint only their own region from `lastDashModel` (the model the last paint drew),
+  never through a new render entry, so the lanes never re-sort under the pointer. (4) **⌘K
+  actions** (`public/palette.js`, pure): only the FULL names "answer ", "open plan " and
+  "jump to session " (with the space) are commands, so a search such as "plan flow
+  rollout" stays a search; they list their
+  targets over every open project (the attention set in rail order, active plans, working
+  sessions) ahead of ordinary results; a two-letter-or-longer prefix of a name or of a
+  hint ("plan", "session") only suggests the command (it fills the box), placed after the results when the first is an
+  Open item, so the strongest Open-item match keeps first place. Among trim-equivalent
+  edits only the one that turns a name into its command re-runs search (`commandShape`).
+  Answer jumps to the rail card when the Dashboard shows it and otherwise opens the Inbox
+  card (`openAskInInbox`, so `focusItem` and its hash for an item); open plan is
+  `focusItem`; jump to session is the Dashboard, scoped to the session's project as a deep
+  link scopes to its item's, with that panel open. No action opens a new editor.
 - **Motion is CSS-only, compositor-only and always switchable off (#302, Dashboard 2.0
   phase 0).** Design: [`2026-10-22-dashboard-2-proposal.md`](docs/superpowers/specs/2026-10-22-dashboard-2-proposal.md)
   §10. Rules every later phase follows: (1) Keyframes animate only `transform` and

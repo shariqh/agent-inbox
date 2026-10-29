@@ -17,7 +17,9 @@ parse Electron 43's deprecation-plus-visibility attribute ordering in the V8
 headers; the build verifies both compiler commands, the exact compiler version,
 and the native target tuple before rebuilding. The packaged Electron zip must
 match the hash in the lockfile-pinned `electron` package's `checksums.json`
-([Electron zips](macos-release.md#electron-zips-363)).
+([Electron zips](macos-release.md#electron-zips-363)), and `better-sqlite3` is compiled
+for Electron against the headers tarball pinned in `electronHeaders`, never headers
+node-gyp would download ([Electron headers](macos-release.md#electron-headers-369)).
 
 The portable Node pin is **24.22.1**, matching the
 [macOS profile, where the #135 hold ended](macos-release.md#node-24220-ends-the-135-compatibility-hold).

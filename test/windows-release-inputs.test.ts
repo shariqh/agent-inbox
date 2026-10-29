@@ -280,6 +280,8 @@ describe('Windows release inputs', () => {
       'macosArchitectures',
       'node',
       'electron',
+      // the headers better-sqlite3 is compiled against (#369)
+      'electronHeaders',
     ])
     // Apple silicon only since #296.
     expect(Object.keys(macos.node.distributions)).toEqual(['darwin-arm64'])

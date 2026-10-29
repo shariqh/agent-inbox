@@ -94,10 +94,70 @@ export function validateElectronReleaseInputs(electron, fields) {
   return electron
 }
 
+// The headers better-sqlite3 is compiled against for Electron (#369). @electron/rebuild
+// would have node-gyp fetch them from this server and check them only against the
+// SHASUMS256.txt served beside them, so each profile pins the tarball's SHA-256 (and, on
+// Windows, the import library's) for exactly its Electron version, and the builders
+// compile against a verified local copy instead. The URLs are the ones node-gyp builds
+// from `--dist-url`, so an Electron bump that leaves this pin behind is refused here.
+export const ELECTRON_HEADERS_BASE_URL = 'https://www.electronjs.org/headers'
+export const ELECTRON_HEADERS_ROOT = 'node_headers'
+
+export function electronHeadersIdentity(version) {
+  const archive = `node-v${version}-headers.tar.gz`
+  return {
+    archive,
+    root: ELECTRON_HEADERS_ROOT,
+    url: `${ELECTRON_HEADERS_BASE_URL}/v${version}/${archive}`,
+  }
+}
+
+export function electronImportLibraryUrl(version, key) {
+  const target = targetFor(key)
+  return `${ELECTRON_HEADERS_BASE_URL}/v${version}/${target.nodeDistPlatform}-${target.arch}/node.lib`
+}
+
+export function requireElectronHeadersPin(value) {
+  if (value && typeof value === 'object' && !Array.isArray(value) && !Object.hasOwn(value, 'electronHeaders')) {
+    throw new ReleaseInputError(
+      `electronHeaders is missing: pin the SHA-256 of Electron ${value.electron?.version}'s headers tarball (#369)`,
+    )
+  }
+}
+
+export function validateElectronHeaders(headers, version, importLibraryKeys = []) {
+  requireString(version, 'electron.version', SEMVER_RE)
+  const fields = ['archive', 'root', 'url', 'sha256']
+  requireExactKeys(headers, importLibraryKeys.length ? [...fields, 'importLibraries'] : fields, 'electronHeaders')
+  const expected = electronHeadersIdentity(version)
+  if (headers.archive !== expected.archive) {
+    throw new ReleaseInputError(`electronHeaders.archive must be ${expected.archive} for Electron ${version}`)
+  }
+  if (headers.root !== expected.root) throw new ReleaseInputError(`electronHeaders.root must be ${expected.root}`)
+  if (headers.url !== expected.url) {
+    throw new ReleaseInputError(`electronHeaders.url must be the official Electron headers URL for ${version}: ${expected.url}`)
+  }
+  requireString(headers.sha256, 'electronHeaders.sha256', SHA256_RE)
+  if (importLibraryKeys.length) {
+    requireExactKeys(headers.importLibraries, importLibraryKeys, 'electronHeaders.importLibraries')
+    for (const key of importLibraryKeys) {
+      const library = headers.importLibraries[key]
+      requireExactKeys(library, ['url', 'sha256'], `electronHeaders.importLibraries.${key}`)
+      const url = electronImportLibraryUrl(version, key)
+      if (library.url !== url) {
+        throw new ReleaseInputError(`electronHeaders.importLibraries.${key}.url must be the official node.lib URL for ${version}: ${url}`)
+      }
+      requireString(library.sha256, `electronHeaders.importLibraries.${key}.sha256`, SHA256_RE)
+    }
+  }
+  return headers
+}
+
 export function validateReleaseInputs(value) {
+  requireElectronHeadersPin(value)
   requireExactKeys(
     value,
-    ['schema', 'product', 'bundleId', 'minimumMacosVersion', 'macosArchitectures', 'node', 'electron'],
+    ['schema', 'product', 'bundleId', 'minimumMacosVersion', 'macosArchitectures', 'node', 'electron', 'electronHeaders'],
     'release inputs',
   )
   if (value.schema !== 1) throw new ReleaseInputError(`unsupported release input schema: ${value.schema}`)
@@ -115,6 +175,7 @@ export function validateReleaseInputs(value) {
     value.electron,
     ['version', 'packagerVersion', 'rebuildVersion', 'osxSignVersion', 'dmgVersion'],
   )
+  validateElectronHeaders(value.electronHeaders, value.electron.version)
   return value
 }
 
@@ -224,7 +285,16 @@ export function verifyArchiveDigest(path, expectedSha256) {
   return actual
 }
 
-export async function downloadArchive({ url, destination, expectedSha256, fetchImpl = globalThis.fetch }) {
+// followRedirects is for hosts that serve their documented URL through a redirect
+// (www.electronjs.org/headers sends it to artifacts.electronjs.org): the pinned
+// SHA-256, not the host, is what vouches for the bytes.
+export async function downloadArchive({
+  url,
+  destination,
+  expectedSha256,
+  fetchImpl = globalThis.fetch,
+  followRedirects = false,
+}) {
   if (typeof fetchImpl !== 'function') throw new ReleaseInputError('no fetch implementation is available')
   await mkdir(dirname(destination), { recursive: true })
   const partial = `${destination}.partial-${process.pid}`
@@ -232,7 +302,7 @@ export async function downloadArchive({ url, destination, expectedSha256, fetchI
   try {
     let response
     try {
-      response = await fetchImpl(url, { redirect: 'error' })
+      response = await fetchImpl(url, { redirect: followRedirects === true ? 'follow' : 'error' })
     } catch (err) {
       throw new ReleaseInputError(`download failed for ${url}: ${err.message}`)
     }

@@ -24,5 +24,11 @@
     "rebuildVersion": "4.2.0",
     "osxSignVersion": "2.6.0",
     "dmgVersion": "5.0.1"
+  },
+  "electronHeaders": {
+    "archive": "node-v43.8.4-headers.tar.gz",
+    "root": "node_headers",
+    "url": "https://www.electronjs.org/headers/v43.8.4/node-v43.8.4-headers.tar.gz",
+    "sha256": "cccb253b87b50b5957d8bab8c80abaca744cae779a5aba8e4184fbcc087c9dbb"
   }
 }

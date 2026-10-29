@@ -127,6 +127,8 @@ export async function buildLinuxThinApp({
         stageRoot,
         npmCli: npmCliForCurrentNode(),
         electronVersion: inputs.electron.version,
+        // the headers reviewed with this Electron, never ones node-gyp would fetch (#369)
+        electronHeaders: inputs.electronHeaders,
         arch,
       })
     } finally {

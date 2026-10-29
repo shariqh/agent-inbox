@@ -1,3 +1,4 @@
+import type { ElectronHeaders } from './release-inputs.mjs'
 import { WINDOWS_RUNTIME_KEYS } from './runtime-targets.mjs'
 
 export const DEFAULT_WINDOWS_RELEASE_INPUTS: string
@@ -36,6 +37,9 @@ export type WindowsReleaseInputs = {
     modulesAbi: string
     packagerVersion: string
     rebuildVersion: string
+  }
+  electronHeaders: ElectronHeaders & {
+    importLibraries: Record<WindowsRuntimeKey, { url: string, sha256: string }>
   }
 }
 export function validateWindowsReleaseInputs(value: unknown): WindowsReleaseInputs

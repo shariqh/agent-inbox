@@ -418,6 +418,23 @@ describe('native architecture release stages', () => {
       .toBeLessThan(linux.indexOf('await installAppDependencies({'))
   })
 
+  it('compiles each thin app against the pinned Electron headers of its own release inputs (#369)', () => {
+    for (const builder of ['build-thin-app.mjs', 'build-linux-thin-app.mjs', 'build-windows-thin-app.mjs']) {
+      const source = readFileSync(join(root, 'scripts', builder), 'utf8')
+      const install = source.indexOf('await installAppDependencies({')
+      const call = source.slice(install, source.indexOf('})', install))
+      expect(call, builder).toContain('electronVersion: inputs.electron.version,')
+      expect(call, builder).toContain('electronHeaders: inputs.electronHeaders,')
+      expect(call.match(/\belectronHeaders\b/g), builder).toHaveLength(2)
+      // nothing that could replace the downloader, the rebuild or the headers
+      expect(call, builder).not.toMatch(/\b(?:download|rebuildImpl)\b|\.\.\.inputs/)
+    }
+    const dependencies = readFileSync(join(root, 'scripts', 'app-dependencies.mjs'), 'utf8')
+    const rebuildCall = dependencies.slice(dependencies.indexOf('await rebuildImpl({'))
+    expect(rebuildCall.slice(0, rebuildCall.indexOf('})'))).toContain('headerURL: UNREACHABLE_HEADER_URL,')
+    expect(dependencies).toContain("export const UNREACHABLE_HEADER_URL = 'https://electron-headers.invalid'")
+  })
+
   it('checks every packaged Electron zip against the lockfile-pinned checksums.json (#363)', () => {
     for (const [builder, platform, arch] of [
       ['build-thin-app.mjs', "platform: 'darwin',", 'arch,'],

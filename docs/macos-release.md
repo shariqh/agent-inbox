@@ -37,6 +37,51 @@ if the release's own `SHASUMS256.txt` was replaced along with it. The hashes cha
 with the lockfile: when bumping Electron, compare the new `checksums.json` with the
 release's official `SHASUMS256.txt`.
 
+### Electron headers (#369)
+
+Every thin-app build also compiles `better-sqlite3` against Electron's headers, which go
+into the addon every packaged app loads in its main process. `@electron/rebuild` would
+have node-gyp download `node-v<electron>-headers.tar.gz` (and, on Windows,
+`win-x64/node.lib`) from `https://www.electronjs.org/headers` and check them only against
+the `SHASUMS256.txt` served beside them, and the `electron` package's `checksums.json`
+does not list them. So each profile pins them as `electronHeaders`: the tarball's archive
+name, its `node_headers` root, its URL and SHA-256, plus `importLibraries.win32-x64` (URL
+and SHA-256 of `node.lib`) in `release/windows-inputs.json`. The validators tie the
+archive name and every URL to `electron.version`, so an Electron bump that leaves this pin
+behind fails before anything is built, and a profile without it names the missing pin.
+
+`scripts/app-dependencies.mjs` downloads the tarball once into a private
+`.electron-headers-*` folder beside the stage (following the server's redirect to
+`artifacts.electronjs.org`; the digest, not the host, vouches for the bytes), checks its
+SHA-256, lists it (one `node_headers` root, no unsafe or duplicate paths), unpacks it,
+and refuses anything but plain files and folders, a tree that differs from the listing,
+missing `include/node` files (`common.gypi`, `config.gypi`, `node_version.h`, `node.h`,
+`node_api.h`, `v8.h`) or a `config.gypi` that does not say `built_with_electron`. On
+Windows it puts the pinned `node.lib` at `Release/node.lib`, where node-gyp links a
+`--nodedir` Release build. It then runs `@electron/rebuild` with `npm_config_nodedir` set
+to that folder and the node-gyp dist-url set to `https://electron-headers.invalid`, so a
+build that stopped using the nodedir fails rather than fetching headers, refuses to start
+while the environment sets anything node-gyp would read as another nodedir, dist-url,
+tarball, devdir, target or runtime (`npm_config_nodedir`, `npm_config_dist_url`, any
+`npm_package_config_node_gyp_*`, in any case), and checks afterwards that
+better-sqlite3's `build/config.gypi` names exactly that nodedir. The build log carries
+both lines (`app-dependencies: compiling … at nodedir …` and `… configured better-sqlite3
+against nodedir …`). The development `npm run package:app` path is not a release and
+still lets node-gyp fetch the headers.
+
+When bumping Electron, fetch the new version's tarball and `win-x64/node.lib`, hash them,
+compare both with `https://www.electronjs.org/headers/v<version>/SHASUMS256.txt`, and
+update `electronHeaders` in all three profiles (and the Linux packaging inputs' pinned
+SHA-256 of `release/linux-inputs.json`):
+
+```sh
+v=43.8.4
+curl -fsSLO "https://www.electronjs.org/headers/v$v/node-v$v-headers.tar.gz"
+curl -fsSL -o node.lib "https://www.electronjs.org/headers/v$v/win-x64/node.lib"
+shasum -a 256 "node-v$v-headers.tar.gz" node.lib
+curl -fsSL "https://www.electronjs.org/headers/v$v/SHASUMS256.txt" | grep -E ' (node-v[0-9.]+-headers\.tar\.gz|win-x64/node\.lib)$'
+```
+
 ### Node 24.22.0 ends the #135 compatibility hold
 
 Portable runtimes use **Node 24.22.1**, the October 2026 security release, which the pinned

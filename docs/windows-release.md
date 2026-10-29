@@ -19,7 +19,11 @@ extracted distribution (`include/node` and `Release/node.lib`), so `better-sqlit
 rebuilt against verified headers of exactly the shipped Node, as on macOS and Linux, never
 against headers node-gyp would download. Neither file enters the runtime payload. The
 packaged Electron zip must match the hash in the lockfile-pinned `electron` package's
-`checksums.json` ([Electron zips](macos-release.md#electron-zips-363)).
+`checksums.json` ([Electron zips](macos-release.md#electron-zips-363)). The Electron-ABI
+`better-sqlite3` is compiled against Electron's own headers tarball and linked against its
+own `win-x64/node.lib`, both pinned in `electronHeaders` and placed in a private nodedir
+(`include/node` and `Release/node.lib`), never ones node-gyp would download
+([Electron headers](macos-release.md#electron-headers-369)).
 
 ## What the native folder proves
 

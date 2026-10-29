@@ -28,6 +28,8 @@ npm run mcp         # run the MCP stdio server via tsx (local iteration)
 npm run view        # run the viewer on http://127.0.0.1:4319 via tsx
 npm run install:hooks           # DRY RUN of the opt-in backstop hooks installer (docs/hooks.md)
 npm run install:hooks -- --apply    # …and actually write ~/.claude/settings.json
+npm run meshctl -- status                         # Mesh M1 (#397): what mesh.json turns on
+npm run meshctl -- enable --agents-view [--apply] # DRY RUN unless --apply; disable likewise
 npx vitest run test/mcp.integration.test.ts   # single file
 npx vitest run test/dom/                      # the jsdom viewer tests only
 ```
@@ -2094,6 +2096,46 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   sourcing it by path extends the already retained verify-to-execute race
   rather than closing it.
 
+- **The mesh is opt-in, and off means off (Mesh M1, #397).** Design:
+  [`docs/superpowers/specs/2026-10-29-agent-mesh-design.md`](docs/superpowers/specs/2026-10-29-agent-mesh-design.md)
+  §2, §10.1–10.2. `mesh.json` (in an absolute `AGENT_INBOX_MESH_DIR`, else beside
+  `AGENT_INBOX_DB`, else `~/.agent-inbox`) is the one switch, and only `src/meshctl.ts`
+  (`agent-inbox-meshctl`, `npm run meshctl`) writes it: dry run by default, `--apply` writes a
+  temp file and renames it over the target with a timestamped `mesh.json.bak-*` of any file it
+  replaces, keeps keys it does not own, and refuses a symlink, a non-regular file, unreadable
+  JSON or a newer `schema`, naming the reason in fixed words (never a parser's message).
+  `disable --apply` is a list of steps that today only deletes the file (with a backup); M4
+  puts its pause and `@mesh` archive steps before that one. `src/mesh-config.ts` holds the one
+  reading rule both sides share (a regular file ≤ 64 KiB, a JSON object, `schema` 1; anything
+  else is off). Both are Node core only and never import `store.ts`. **The viewer's one stated
+  exception** (§2.1): `viewer-server.ts` (never `createViewer`) starts `watchMeshConfig`, one
+  `lstat` at start and one per minute on an unref'd interval, reading the file only when the
+  stat changed; a missing file costs that failed stat and nothing else. `createViewer`'s
+  `meshAgentsView` option is the only way the state reaches a route: `/api/version` appends
+  `mesh: { agentsView: true }` as its LAST key while a valid file says so, and is otherwise
+  byte-identical. No other route, poll read or snapshot changes, and no mesh module may enter
+  the stdio MCP graph (`test/prstate.test.ts`). **The page:** only the FIRST `/api/version`
+  read (`initLiveBar` → `loadMeshView`) can turn it on, so on or off takes a window reload;
+  then, and only then, `app.js` runs `import('/mesh-view.js')` (an `ENTRY_POINTS` and
+  `ALLOWED` entry in `test/dead-exports.test.ts`, since the scan reads static imports only).
+  `public/mesh-view.js` adds a Sessions | Agents lens above the Dashboard lanes and Settings →
+  Mesh (state, and the exact `agent-inbox-meshctl disable --apply`; the browser never writes
+  `mesh.json`). The lens is window-local like the lane filters: a fresh window opens on
+  Sessions. The Agents lens hides `.dash-lanes` and shows `.mesh-agents` in its grid place,
+  drawn from `renderDashboardAmbient` (so both render entries, no third) with `liveInLens()`,
+  the lanes' own input. It groups presence by `agent`, then project and branch, with the
+  lanes' `isWorking` and Live's `isDormant` (working / idle / dormant), "last call" from
+  `last_call_at` (never `updated_at`), the summed `callTrace`, and an "Asking you: N" READ from
+  the frame's `waitingEntries` (the attention set), keyed by an item's `agent` or a row's
+  `action_agent` (else its plan's agent). Nothing it draws reaches `public/attention.js`, a
+  badge, count, tab, the rail or the dock; it fetches nothing, runs no timer and no animation,
+  and rebuilds its cards only when what they show changed. `meshView` is in `frameInputs()`, so
+  the tick after the module lands paints; the lens itself changes only through a click, which
+  is input. `test/mesh.test.ts` and `test/dom/mesh-view.test.ts` hold all of it, including the
+  off boot's identical requests, bytes and ETags and identical attention surfaces with the
+  Agents lens on. `package-lock.json` changes only by the root entry's `bin` map (npm
+  lockfile v3 records it); the dependency graph does not change.
+
 ### DOM harness — what it can and cannot see
 
 `test/dom/` boots the **real** viewer frontend in jsdom: `test/dom/harness.ts` bridges
@@ -3189,6 +3231,9 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   reconciles them into `blocks` edges and `issue_rel` (`waits_on_issues`, `unblocks`), C adds
   the agent-written `waits_on` row field, D draws dependencies in Plans, E in Plan flow, and F
   adds opt-in grouping by parent issue (see the invariants above). Sibling context stays later.
+- **Agent mesh** *(M1 #397 shipped: the opt-in Agents view and `meshctl`; see the invariant
+  above)* — M2–M9 per [`2026-10-29-agent-mesh-design.md`](docs/superpowers/specs/2026-10-29-agent-mesh-design.md)
+  §11, each behind its own `mesh.json` key and each with its own "off" tests (§2.4).
 Keep all of these additive and behind the existing seams — don't break v1's local,
 zero-config, no-auth path.
 

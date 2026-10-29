@@ -453,6 +453,24 @@ as `.command`, `.pkg` or `.dmg`) can't have a rule at all. In the desktop app ev
 file chip also has **Reveal in Finder** and **Copy path**. Both, and Settings →
 Links itself, work only in the viewer the app started itself.
 
+## Agents view (opt-in)
+
+The Dashboard can group your Live sessions by agent (Copilot, Claude Code, …) as
+well as by session. It is off unless you turn it on, and it adds no request, no
+network traffic and nothing to your badges:
+
+```sh
+agent-inbox-meshctl enable --agents-view           # dry run: shows the file it would write
+agent-inbox-meshctl enable --agents-view --apply   # writes ~/.agent-inbox/mesh.json
+agent-inbox-meshctl status
+agent-inbox-meshctl disable --apply                # turns it off again (keeps a backup)
+```
+
+From a source checkout use `npm run meshctl -- …`. Reload the Agent Inbox window
+after turning it on or off; a **Sessions | Agents** switch then appears above the
+Dashboard's lanes, and Settings → Mesh shows how to turn it off. This is the first
+phase of the [agent mesh design](docs/superpowers/specs/2026-10-29-agent-mesh-design.md).
+
 ## Architecture
 
 - **`src/store.ts`** owns schema, migrations, WAL configuration, and every database

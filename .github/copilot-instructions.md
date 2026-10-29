@@ -33,6 +33,8 @@ npm run install:agents                # dry-run MCP + host-instructions setup
 npm run install:agents -- --apply     # install for Claude Code and Copilot CLI
 npm run install:hooks                 # dry-run the Claude hook installer
 npm run install:hooks -- --apply      # write the hook configuration
+npm run meshctl -- status             # Mesh M1: what mesh.json turns on
+npm run meshctl -- enable --agents-view --apply   # opt in (dry run without --apply)
 ```
 
 `npm run build` must continue to use `tsconfig.build.json`: its `rootDir: "src"`
@@ -182,6 +184,20 @@ Run the build before `npm run electron`; the development shell starts the built
   is still open (decision record §9). `AllowSameVersionUpgrades` makes a
   same-version rebuild replace the installed build (ICE61 waived). Windows
   Setup stays unavailable.
+- **Opt-in mesh (Mesh M1, #397):** `mesh.json` (absolute `AGENT_INBOX_MESH_DIR`,
+  else beside `AGENT_INBOX_DB`, else `~/.agent-inbox`) is the one switch; only
+  `src/meshctl.ts` writes it (dry run first, `--apply` with backup and atomic rename,
+  unknown keys kept; refuses symlinks, non-regular files, bad JSON and newer schemas).
+  `src/mesh-config.ts` is the shared Node-core reader. `viewer-server.ts` stats the
+  file at start and once a minute (unref'd) and reads it only when the stat changes;
+  `/api/version` gains a trailing `mesh: { agentsView: true }` only while it is on and
+  is otherwise byte-identical. Only the page's first `/api/version` read can trigger
+  `import('/mesh-view.js')`, which adds a window-local Sessions | Agents lens and
+  Settings → Mesh. The view reads `liveInLens()`, the lanes' `isWorking`, Live's
+  `isDormant`, `last_call_at` and the frame's attention entries; it never feeds
+  attention, a badge, count, tab, rail or the dock, fetches nothing, and animates
+  nothing. No mesh module enters the stdio MCP graph, the hub schema is untouched,
+  and the lockfile changes only by the root `bin` entry.
 - **Shared presentation rules:** `public/attention.js` is the single attention
   predicate used by the viewer and Electron dock badge. Pure modules under
   `public/` hold grouping, ordering, search, badge, polling, and rendering rules;

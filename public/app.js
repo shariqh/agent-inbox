@@ -537,6 +537,19 @@ async function archivedBody(read) {
   }
 }
 
+// The lingering plans (#373) degrade like the complete list. A viewer older
+// than the route answers 404: `missing`, and the tick reads the complete list
+// in their place, as such a viewer's page always did.
+async function lingeringBody(read) {
+  try {
+    const response = settledValue(read)
+    if (response.status === 404) return { plans: null, error: null, missing: true }
+    return { plans: await response.json(), error: null }
+  } catch {
+    return { plans: null, error: ARCHIVED_UNAVAILABLE }
+  }
+}
+
 // The sub-issue graph (#103) falls back like links: a 404 from an older viewer,
 // a network error or a body its validator refuses means "no graph", and every
 // surface renders its plain chips. Read after the boot decision, like every
@@ -577,11 +590,14 @@ async function load() {
   // brief stands in for (#299), only while a surface still needs them.
   const wantHistory = historyWanted()
   const wantArchived = archivedWanted()
+  // ...and a plan lingering in Plans whole, on its own, while the complete
+  // list is not wanted (#373).
+  const lingerUrl = wantArchived ? null : lingeringUrl()
   const historyUrl = activityHistoryUrl(Date.now())
   try {
     const [
       items, boardsRead, summaryRead, activityRead, historyRead, closedRead, linksRead, issuesRead, closedHistoryRead,
-      archivedRead,
+      archivedRead, lingerSettled,
     ] = await Promise.allSettled([
       readSnapshot('/api/items').then(marked),
       readSnapshot('/api/boards').then(marked),
@@ -605,6 +621,7 @@ async function load() {
       readSnapshot('/api/issues').then(marked),
       wantHistory ? readSnapshot('/api/items/history').then(marked) : null,
       wantArchived ? readSnapshot('/api/boards/archived').then(marked) : null,
+      lingerUrl ? readSnapshot(lingerUrl).then(marked) : null,
     ])
     if (reloadRequested || generation < appliedLoadGeneration) return false
     const res = settledValue(items)
@@ -624,39 +641,62 @@ async function load() {
     const bodies = await Promise.allSettled([
       res.json(), body(boardsRead), archivedSummaryBody(summaryRead), body(activityRead), historyBody(historyRead),
       wantHistory ? closedHistoryBody(closedHistoryRead) : null, issuesBody(issuesRead), linksBody(linksRead),
-      wantArchived ? archivedBody(archivedRead) : null,
+      wantArchived ? archivedBody(archivedRead) : null, lingerUrl ? lingeringBody(lingerSettled) : null,
     ])
-    const [g, boards, brief, activity, activityHistory, firstOlder, issues, links, firstArchived] = bodies.map(settledValue)
+    const [g, boards, brief, activity, activityHistory, firstOlder, issues, links, firstArchived, firstLinger] =
+      bodies.map(settledValue)
     const closedSnapshot = settledValue(closedRead)
     if (reloadRequested || generation < appliedLoadGeneration) return false
     const nowMs = Date.now()
     const page = ageNotes(g, nowMs)
     let older = firstOlder
     let complete = firstArchived
+    let linger = firstLinger
+    let lingerReadUrl = lingerUrl
     // Issues #184 and #299: this tick's own data may need what the previous
     // frame did not: older history (a sweep moving the page's boundary past what
     // History shows, say) or the complete archived plans (a plan the human
-    // watched, archived as it finished, lingers). A viewer older than #299
-    // serves no brief, so its complete list stands in. Read them inside the
+    // watched, archived as it finished, lingers: its own read since #373). A
+    // viewer older than #299 serves no brief, and one older than #373 no
+    // lingering plans, so its complete list stands in. Read them inside the
     // same tick, under the same rules, rather than painting a frame without them.
     const view = { page, pageHistory: g.history ?? null, boards, archivedBrief: brief ?? [], activity }
     const lateHistory = !wantHistory && Boolean(lastData) && historyWanted(view)
     const lateArchived = !wantArchived && (brief === null || (Boolean(lastData) && archivedWanted(view)))
-    if (lateHistory || lateArchived) {
-      const [historyLate, archivedLate] = await Promise.allSettled([
-        lateHistory ? readSnapshot('/api/items/history').then(marked) : null,
-        lateArchived ? readSnapshot('/api/boards/archived').then(marked) : null,
-      ])
-      if (reloadRequested || generation < appliedLoadGeneration) return false
-      // As on the main path: only markers that disagree within this tick are a
-      // restart between its reads. A restart already being held for unsent work
-      // keeps applying ticks, whose markers all name the new server.
+    const lateLingerUrl = wantArchived || lateArchived ? null : lingeringUrl(view)
+    const lateLinger = lateLingerUrl !== null && lateLingerUrl !== lingerUrl
+    // As on the main path: only markers that disagree within this tick are a
+    // restart between its reads. A restart already being held for unsent work
+    // keeps applying ticks, whose markers all name the new server.
+    const readLate = async (reads) => {
+      const settled = await Promise.allSettled(reads)
+      if (reloadRequested || generation < appliedLoadGeneration) return null
       if (new Set(boots.filter(Boolean)).size > 1) {
         refreshPending = true
-        return false
+        return null
       }
+      return settled
+    }
+    if (lateHistory || lateArchived || lateLinger) {
+      const late = await readLate([
+        lateHistory ? readSnapshot('/api/items/history').then(marked) : null,
+        lateArchived ? readSnapshot('/api/boards/archived').then(marked) : null,
+        lateLinger ? readSnapshot(lateLingerUrl).then(marked) : null,
+      ])
+      if (!late) return false
+      const [historyLate, archivedLate, lingerLate] = late
       if (lateHistory) older = await closedHistoryBody(historyLate)
       if (lateArchived) complete = await archivedBody(archivedLate)
+      if (lateLinger) {
+        linger = await lingeringBody(lingerLate)
+        lingerReadUrl = lateLingerUrl
+      }
+      if (reloadRequested || generation < appliedLoadGeneration) return false
+    }
+    if (linger?.missing && !complete) {
+      const late = await readLate([readSnapshot('/api/boards/archived').then(marked)])
+      if (!late) return false
+      complete = await archivedBody(late[0])
       if (reloadRequested || generation < appliedLoadGeneration) return false
     }
     // Standing in for a brief, the complete list is a read the tick needs.
@@ -689,6 +729,12 @@ async function load() {
       archived: complete?.plans ?? archivedBrief,
       archivedFull: complete?.plans ?? null,
       archivedError: complete?.error ?? null,
+      // Issue #373: the plans lingering in Plans, whole, from their own read
+      // (`lingerUrl`, the read this tick made, or null), and why it failed.
+      // Surfaces draw them only where the complete list is not loaded.
+      lingering: linger?.plans ?? null,
+      lingerUrl: lingerReadUrl,
+      lingerError: linger?.error ?? null,
       activity,
       activityHistory,
       closed: [...authoritativeClosed],
@@ -703,7 +749,7 @@ async function load() {
         [...marks].join(' '), historyUrl, g, boards, archivedBrief, activityFrameKey(activity),
         activityHistory.state, activityHistory.message, activityHistory.state === 'ready' ? activityHistory.spans : null,
         links.length ? links : null, issues, older?.done ?? null, older?.error ?? null,
-        complete?.plans ?? null, complete?.error ?? null,
+        complete?.plans ?? null, complete?.error ?? null, lingerReadUrl, linger?.plans ?? null, linger?.error ?? null,
       ],
     }
     applyProjectMutationIntents()
@@ -1036,7 +1082,7 @@ function focusItem(id, source = null) {
   archivedLookup = null
   const item = allItems(lastData.g).find((i) => i.id === id)
   // an archived plan lands only once its complete rows are loaded (#299)
-  const board = [...lastData.boards, ...(lastData.archivedFull ?? [])].find((b) => b.id === id)
+  const board = [...lastData.boards, ...wholeArchived()].find((b) => b.id === id)
   const target = item ?? board
   if (!target) {
     // Issue #299: an archived plan the brief names. load() retries the link
@@ -1715,14 +1761,17 @@ function archivedWanted(view = lastData) {
   const omitted = omittedOutcomes(lens.archived).outcomes
   // Handoffs lists every recorded outcome.
   if (relayOpen && omitted > 0) return true
-  // Plans draws archived plans whole: each one lingering after its agent
-  // archived it (§9), the archived fold while it is open, and a plan holding
-  // keyboard focus that just moved into the fold, which the focus follows.
+  // Plans draws archived plans whole: the archived fold while it is open, and
+  // a plan holding keyboard focus that just moved into the fold, which the
+  // focus follows. A plan lingering after its agent archived it (§9) is read
+  // whole on its own (#373, lingeringUrl), unless too many linger for that.
   if (activeTab === 'boards') {
-    const lingering = lingeringBoards(sessionActiveBoards, lens.boards, lens.archived).length
+    const lingering = lingeringBoards(sessionActiveBoards, lens.boards, lens.archived)
+    const ownRead = lingeringIds(view).length <= LINGERING_READ_LIMIT
+    const lingers = new Set(ownRead ? lingering.map((plan) => plan.id) : [])
     const focused = activeFocusElement()?.closest?.('#boards [data-card-id]')?.dataset.cardId
-    return lingering > 0 || (showArchived && lens.archived.length > lingering)
-      || lens.archived.some((plan) => plan.id === focused)
+    return (lingering.length > 0 && !ownRead) || (showArchived && lens.archived.length > lingering.length)
+      || lens.archived.some((plan) => plan.id === focused && !lingers.has(plan.id))
   }
   if (activeTab === 'dashboard' && omitted > 0) {
     const model = dashboardModel(lens, view.pageHistory, lensActivity(view))
@@ -1731,10 +1780,44 @@ function archivedWanted(view = lastData) {
   return false
 }
 
-// What the page omits that a surface wants: older closed history (#184), or
-// the complete archived plans (#299). One early tick reads whatever is wanted.
+// Issue #373: a plan lingering in Plans (§9) is drawn whole from its own read
+// while the complete list is not wanted; at most this many plans are read that
+// way (the route's own limit), and more read the complete list.
+const LINGERING_READ_LIMIT = 50
+
+// Every plan lingering in Plans, across every project and agent, so a lens
+// change asks for no new read. Judged on the brief, as archivedWanted is.
+function lingeringIds(view = lastData) {
+  if (!view?.archivedBrief?.length) return []
+  return lingeringBoards(sessionActiveBoards, view.boards, view.archivedBrief).map((plan) => plan.id).sort()
+}
+
+// The read that draws them, one representation per set of plans, while Plans
+// shows them. load() reads it only while the complete list is not wanted.
+function lingeringUrl(view = lastData) {
+  if (activeTab !== 'boards') return null
+  const ids = lingeringIds(view)
+  return ids.length && ids.length <= LINGERING_READ_LIMIT ? `/api/boards/archived/plans?ids=${ids.join(',')}` : null
+}
+
+// Lingering plans the applied tick did not read, and the complete list does
+// not stand in for. A read that failed was read: the poll retries it.
+function lingeringWanted() {
+  const url = lingeringUrl()
+  return Boolean(lastData && url && !lastData.archivedFull && url !== lastData.lingerUrl)
+}
+
+// Archived plans as they are drawn whole: the complete list while loaded, else
+// the plans lingering in Plans, read on their own (#373).
+function wholeArchived() {
+  return lastData?.archivedFull ?? lastData?.lingering ?? []
+}
+
+// What the page omits that a surface wants: older closed history (#184), the
+// complete archived plans (#299), or the plans lingering in Plans (#373). One
+// early tick reads whatever is wanted.
 function omittedWanted() {
-  return (omitsHistory() && historyWanted()) || (omitsArchived() && archivedWanted())
+  return (omitsHistory() && historyWanted()) || (omitsArchived() && archivedWanted()) || lingeringWanted()
 }
 
 // Only load() reads older history and the complete archived plans. A
@@ -1773,8 +1856,8 @@ function olderHistoryWaitText(loading) {
   return lastData?.olderError ? OLDER_HISTORY_UNAVAILABLE : loading
 }
 
-function archivedWaitText(loading) {
-  return lastData?.archivedError ? ARCHIVED_UNAVAILABLE : loading
+function archivedWaitText(loading, error = lastData?.archivedError) {
+  return error ? ARCHIVED_UNAVAILABLE : loading
 }
 
 // A surface waiting on either says why when the read it waits on failed.
@@ -4641,7 +4724,7 @@ function renderMission({ restoreFocus = true } = {}) {
     forceRender()
     return
   }
-  const board = [...lastData.boards, ...(lastData.archivedFull ?? [])].find((candidate) => candidate.id === missionBoardId)
+  const board = [...lastData.boards, ...wholeArchived()].find((candidate) => candidate.id === missionBoardId)
   if (!board) {
     // An archived plan's flow stays as last drawn while its complete rows are
     // not loaded (#299): archivedWanted keeps reading them while it is open.
@@ -7072,10 +7155,13 @@ function renderBoards(boards, archived) {
   const lingering = lingeringBoards(sessionActiveBoards, boards, archived)
   const lingerIds = new Set(lingering.map((b) => b.id))
   const rest = archived.filter((b) => !lingerIds.has(b.id))
-  // Issue #299: archived plans are drawn whole only from the complete list. The
-  // brief already knows which plans linger and how many are archived, so both
-  // keep their places and counts while it loads.
+  // Issue #299: archived plans are drawn whole only from the complete list, or
+  // a lingering one from its own read (#373). The brief already knows which
+  // plans linger and how many are archived, so both keep their places and
+  // counts while they load.
   const whole = Boolean(lastData.archivedFull)
+  const lingerWhole = new Map(wholeArchived().map((plan) => [plan.id, plan]))
+  const drawn = lingering.flatMap((b) => lingerWhole.get(b.id) ?? [])
   if (!boards.length && !lingering.length && !rest.length) host.insertAdjacentHTML('beforeend', '<p class="empty">No plans yet.</p>')
   // Grouping only reorders active plans; lingering and archived ones stay flat (§7.2).
   const grouping = groupByParent ? planGroups(boards, issueView, linkIndex) : null
@@ -7093,8 +7179,8 @@ function renderBoards(boards, archived) {
     host.appendChild(el)
   })
   if (remaining > 0) host.appendChild(moreButton('boards', remaining))
-  if (whole) for (const b of lingering) host.appendChild(boardEl(b, true, true))
-  else if (lingering.length) host.appendChild(archivedWaitEl())
+  for (const b of drawn) host.appendChild(boardEl(b, true, true))
+  if (drawn.length < lingering.length) host.appendChild(archivedWaitEl(lastData.archivedError ?? lastData.lingerError))
   if (rest.length) {
     // un-archive is the only undo for Archive, so archived boards fold in here —
     // they must never become unreachable (spec §9)
@@ -7121,12 +7207,13 @@ function renderBoards(boards, archived) {
 }
 
 // Where archived plans are drawn whole while the complete list is not loaded
-// (#299): still loading, or unavailable when the last read of it failed.
-function archivedWaitEl() {
+// (#299), or a lingering plan's own read (#373): still loading, or unavailable
+// when the last read it waits on failed.
+function archivedWaitEl(error = lastData?.archivedError) {
   const wait = document.createElement('p')
   wait.className = 'empty archived-loading'
   wait.setAttribute('role', 'status')
-  wait.textContent = archivedWaitText('Loading archived plans…')
+  wait.textContent = archivedWaitText('Loading archived plans…', error)
   return wait
 }
 
@@ -8007,8 +8094,8 @@ function recoveryHolds(itemId, { text, context = '', kind = 'answer' }) {
 }
 
 function rowHolds(rowId, { text, kind }) {
-  // an archived plan's rows hold their notes only in the complete list (#299)
-  const row = [...(lastData?.boards ?? []), ...(lastData?.archivedFull ?? [])]
+  // an archived plan's rows hold their notes only when it is read whole (#299)
+  const row = [...(lastData?.boards ?? []), ...wholeArchived()]
     .flatMap((board) => board.rows).find((candidate) => candidate.id === rowId)
   return Boolean(row && (row.annotation ?? '') === text.trim() && (row.annotation_kind ?? 'answer') === kind)
 }

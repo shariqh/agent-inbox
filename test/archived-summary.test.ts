@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { join } from 'node:path'
 import type Database from 'better-sqlite3'
 import {
-  archiveBoard, getBoard, insertItem, listArchivedSummary, listBoards, listSourceLinks, openDb, updateBoardRow,
+  archiveBoard, getBoard, insertItem, listArchivedPlans, listArchivedSummary, listBoards, listSourceLinks, openDb, updateBoardRow,
   upsertBoard, upsertSourceLink,
 } from '../src/store.js'
 import type { BoardWithRows, NewBoardRow } from '../src/store.js'
@@ -241,5 +241,84 @@ describe('GET /api/boards/archived/summary (issue #299)', () => {
     const changed = await app.request('/api/boards/archived/summary', { headers: { 'If-None-Match': etag } })
     expect(changed.status).toBe(200)
     expect(((await changed.json()) as { plans: unknown[] }).plans).toHaveLength(2)
+  })
+})
+
+// Issue #373: a plan lingering in the viewer's Plans tab is read whole on its
+// own, so the poll need not read every archived plan for it.
+describe('GET /api/boards/archived/plans (issue #373)', () => {
+  const PLANS = '/api/boards/archived/plans'
+
+  it('serves the named archived plans exactly as the complete list has them, and nothing else', async () => {
+    const older = archived('alpha', 'Older', [{ label: 'Build', status: 'done', context: 'Long background '.repeat(40) }], ['A1'])
+    archived('beta', 'Unnamed', [{ label: 'Other', status: 'done' }])
+    const newer = archived('alpha', 'Newer', [{ label: 'Ship', status: 'done', note: 'Shipped.' }])
+    tick()
+    upsertBoard(db, { ...input('alpha', 'Still active'), rows: [{ label: 'Work', status: 'tracked' }] })
+    const active = getBoard(db, 'alpha', 'Still active')!
+
+    const complete = listBoards(db, { status: 'archived' })
+    // an active plan and an unknown id are left out; the order is the complete list's
+    const plans = listArchivedPlans(db, [older.id, active.id, 'no-such-plan', newer.id])
+    expect(plans.map((plan) => plan.title)).toEqual(['Newer', 'Older'])
+    expect(plans).toEqual(complete.filter((plan) => plan.id === older.id || plan.id === newer.id))
+
+    const app = createViewer(db)
+    const res = await app.request(`${PLANS}?ids=${older.id},${newer.id}`)
+    expect(res.status).toBe(200)
+    expect(res.headers.get('cache-control')).toBe('no-store')
+    expect(await res.json()).toEqual(JSON.parse(JSON.stringify(plans)))
+  })
+
+  it('revalidates on its own bytes and ids, apart from the complete list and the brief', async () => {
+    // finished, so the store archives it at 100% and keeps it there while its agent writes
+    tick()
+    upsertBoard(db, { ...input('alpha', 'One'), rows: [{ label: 'Step', status: 'done' }] })
+    const one = listBoards(db, { status: 'archived' }).find((plan) => plan.title === 'One')!
+    const two = archived('alpha', 'Two', [{ label: 'Step', status: 'done' }])
+    tick()
+    upsertBoard(db, { ...input('alpha', 'Still active'), rows: [{ label: 'Work', status: 'tracked' }] })
+    const app = createViewer(db)
+    const url = `${PLANS}?ids=${one.id}`
+    const etag = (await app.request(url)).headers.get('etag')!
+    const conditional = (path: string, tag: string) => app.request(path, { headers: { 'If-None-Match': tag } })
+    expect((await conditional(url, etag)).status).toBe(304)
+    // no two sets, nor the other archived representations, share a validator
+    expect((await conditional(`${PLANS}?ids=${one.id},${two.id}`, etag)).status).toBe(200)
+    expect((await conditional('/api/boards/archived', etag)).status).toBe(200)
+    expect((await conditional('/api/boards/archived/summary', etag)).status).toBe(200)
+
+    // a write to another plan, active or archived, leaves its bytes alone
+    tick()
+    const active = getBoard(db, 'alpha', 'Still active')!
+    updateBoardRow(db, {
+      ...input('alpha', 'Still active'), expectedBoardVersion: active.revision,
+      label: 'Work', status: 'partial', expectedRevision: active.rows[0]!.revision,
+    })
+    archived('beta', 'Later', [{ label: 'Step', status: 'done' }])
+    expect((await conditional(url, etag)).status).toBe(304)
+
+    // a write to the plan itself, which keeps it archived, changes them
+    tick()
+    updateBoardRow(db, {
+      ...input('alpha', 'One'), expectedBoardVersion: one.revision,
+      label: 'Step', status: 'done', note: 'Verified.', expectedRevision: one.rows[0]!.revision,
+    })
+    expect(listBoards(db, { status: 'archived' }).find((plan) => plan.id === one.id)?.rows[0]?.note).toBe('Verified.')
+    const changed = await conditional(url, etag)
+    expect(changed.status).toBe(200)
+    expect(((await changed.json()) as BoardWithRows[])[0]!.rows[0]!.note).toBe('Verified.')
+  })
+
+  it.each([
+    ['no ids', PLANS],
+    ['an empty list', `${PLANS}?ids=`],
+    ['an empty id', `${PLANS}?ids=a,,b`],
+    ['an id that is no plan id', `${PLANS}?ids=${encodeURIComponent('a b')}`],
+    ['more than 50 ids', `${PLANS}?ids=${Array.from({ length: 51 }, (_, i) => `p${i}`).join(',')}`],
+  ])('refuses %s before reading the store', async (_name, path) => {
+    const res = await createViewer(db).request(path)
+    expect(res.status).toBe(400)
+    expect(await res.json()).toMatchObject({ ok: false })
   })
 })

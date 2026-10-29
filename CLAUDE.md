@@ -106,9 +106,10 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   load's cache entry; older completions cannot overwrite a newer validator/body.
   A query string selects one representation of its route; the reader retains only
   each route's newest one and reuses it only for the exact URL that fetched it.
-  Only `/api/activity/history` takes a query in the reader: any other (such as the
-  dock watcher's `?scope=attention`) is refused, so it can never share or evict
-  the page's slot, and `/api/items/history` is a path of its own (#184).
+  Only `/api/activity/history` and `/api/boards/archived/plans` (#373) take a query
+  in the reader: any other (such as the dock watcher's `?scope=attention`) is
+  refused, so it can never share or evict the page's slot, and
+  `/api/items/history` is a path of its own (#184).
   Read the live boot header before consuming cached data. Untagged servers retain
   full-fetch behavior, malformed replies fail explicitly, and no snapshot content
   is persisted to browser storage (the human's unsent drafts, #279, are not snapshot
@@ -260,14 +261,16 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   `lastData.archivedBrief` is the brief; `lastData.archived` is what surfaces
   read, the complete list while loaded and the brief otherwise;
   `lastData.archivedFull` is the complete list or null, and only it may be drawn
-  whole (the fold's cards, lingering cards, Plan flow, a deep link's landing,
-  `rowHolds`). The complete `/api/boards/archived` is unchanged and ONLY `load()`
+  whole (the fold's cards, Plan flow, a deep link's landing, `rowHolds`), with
+  one exception, lingering cards (#373, next paragraph); `wholeArchived()` is the
+  one lookup those surfaces use. The complete `/api/boards/archived` is unchanged and ONLY `load()`
   reads it, while `archivedWanted()` says a surface needs it: a deep link to a
   plan the brief names (`archivedLookup`, waiting and dropped exactly as #184's),
   restored row drafts waiting on it (below), search in use (`searchInUse()`,
   #184's rule), Plan flow open on an archived plan, Handoffs with omitted archived
-  outcomes, Plans with the archived fold open, a lingering plan or a focused plan
-  its agent just archived (the focus follows it into the fold), and a Dashboard
+  outcomes, Plans with the archived fold open, more than 50 lingering plans or a
+  focused plan its agent just archived that does not linger (the focus follows it
+  into the fold), and a Dashboard
   lens whose recent outcomes only the archived plans can prove
   (`recentOutcomesWait.archived`; `.history` is #184's half), or (#392) a ribbon
   range past 24 hours that starts before the newest outcome the brief omits
@@ -295,9 +298,41 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   list, or as before once that read failed. A draft for a row in an active plan
   comes back with the first data, as always. Archived plans never carry
   attention: `public/attention.js`, the dock and the badge read none of this.
+  **A lingering plan reads only itself (issue #373).** A plan the human watched
+  lingers in Plans for the session once its agent archives it (§9), and reading
+  the complete list for its card on every Plans poll gave back #299's saving:
+  after any plan write the server rebuilt and hashed the whole list on Electron
+  main, and after any archived plan changed the page fetched, parsed and froze
+  all of it again. While the complete list is not wanted,
+  `load()` instead reads `/api/boards/archived/plans?ids=…` (`lingeringUrl`): the
+  sorted ids of every plan lingering in the brief across all projects and agents
+  (`lingeringIds`, so a lens change reads nothing new), only on the Plans tab, at
+  most 50 (`LINGERING_READ_LIMIT`, the route's own limit; more fall back to the
+  complete list through `archivedWanted()`). `listArchivedPlans` serves exactly
+  the complete list's entries for those ids (archived plans only, unknown ids
+  left out) in one read transaction. Like `/api/activity/history` it is never
+  retained server-side and has no `SNAPSHOT_SOURCES` entry: its bytes are built
+  fresh on each read (a few plans), depend on the
+  database alone, and its tag hashes them with the ids, so a 304 means identical
+  bytes and no two sets, nor the complete list or the brief, share a validator.
+  Its ids are validated before any store call (1-50 comma-separated plan ids,
+  else `400`). The reader keeps one representation per set, which changes only
+  when a plan starts or stops lingering. `lastData.lingering` holds those plans,
+  `lastData.lingerUrl` the read the tick made and `lastData.lingerError` why it
+  failed; they join `lastData.reads` for #298. Lingering cards draw from
+  `wholeArchived()`: the complete list while it is loaded (the fold is open,
+  search…), else these plans; a plan in neither keeps its place with "Loading
+  archived plans…", or the unavailable line after a failed read, exactly as
+  #299's reads degrade. A plan archived this tick lingers at once through the
+  same in-tick read the complete list used, and returning to Plans asks for an
+  early tick through `requestHistoryPaint()` (`lingeringWanted()` joins
+  `omittedWanted()`; a read that failed was read, so it never loops). A viewer
+  older than #373 answers the route 404, and the tick reads the complete list in
+  its place. No schema, trigger or snapshot-domain change, and nothing reaches
+  attention.
 - **`src/store.ts` is the only door to the database.** Every read/write goes through its
   exported functions — items: `insertItem`/`resolveItem`/`dismissItem`/`annotateItem`/
-  `replyItem`/`answerItem`/`listItems`/`listItemsPage`; boards: `upsertBoard`/`updateBoardRow`/`getBoard`/`listBoards`/`listArchivedSummary`/
+  `replyItem`/`answerItem`/`listItems`/`listItemsPage`; boards: `upsertBoard`/`updateBoardRow`/`getBoard`/`listBoards`/`listArchivedSummary`/`listArchivedPlans`/
   `archiveBoard`/`annotateBoardRow`/`markAnnotationDelivered`/`markRowHandled`/
   `clearRowHandled`/`markHandledDelivered`/`listPendingRows`; watch stops (#217):
   `stopItemWatch`/`stopBoardRowWatch`; pins for later (#247): `pinItem`/`pinBoardRow`;

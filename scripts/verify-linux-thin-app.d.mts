@@ -29,4 +29,5 @@ export function verifyLinuxThinApp(options: {
   arch: string
   inputsPath?: string
   sourceCommit?: string
+  extractedPackage?: boolean
 }): LinuxThinReport

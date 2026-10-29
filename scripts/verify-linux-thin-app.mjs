@@ -18,6 +18,7 @@ import { assertPrunedNodeModules } from './prune-node-modules.mjs'
 import { assertRuntimeSourceCommit } from './runtime-provenance.mjs'
 import { verifyPayload } from './runtime-payload.mjs'
 import { treeIdentity } from './tree-identity.mjs'
+import { assertSafeTreeModes } from './tree-modes.mjs'
 
 const require = createRequire(import.meta.url)
 const { selectRuntimePayload } = require('../electron/setup-runner.cjs')
@@ -98,11 +99,26 @@ function assertKnownElfEvidence(appRoot, compatibility, knownFiles) {
   }
 }
 
+// chrome-sandbox is a plain 0755 file in a thin folder; only a package makes it setuid (#378).
+const PACKAGED_CHROME_SANDBOX_MODES = Object.freeze({ 'chrome-sandbox': Object.freeze([0o4755]) })
+
+function assertLinuxTreeModes(appRoot, extractedPackage) {
+  try {
+    assertSafeTreeModes(appRoot, {
+      label: extractedPackage ? "a Linux package's inner app" : 'packaged Linux app',
+      privileged: extractedPackage ? PACKAGED_CHROME_SANDBOX_MODES : {},
+    })
+  } catch (err) {
+    throw new LinuxThinVerificationError(err.message)
+  }
+}
+
 export function verifyLinuxThinApp({
   app,
   arch,
   inputsPath,
   sourceCommit,
+  extractedPackage = false,
 }) {
   const inputs = loadLinuxReleaseInputs(inputsPath)
   if (!['arm64', 'x64'].includes(arch)) {
@@ -110,6 +126,7 @@ export function verifyLinuxThinApp({
   }
   const key = `linux-${arch}`
   const appRoot = resolve(app)
+  assertLinuxTreeModes(appRoot, extractedPackage)
   const executable = join(appRoot, APP_NAME)
   const resources = join(appRoot, 'resources', 'app')
   const runtimeRoot = join(resources, 'runtime', key)

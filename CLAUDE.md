@@ -2318,6 +2318,12 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   gates refuse an unpruned app or runtime (`assertPrunedNodeModules`), and
   `signPortableRuntime` signs exactly `RUNTIME_MACHO_FILES` (`bin/node` and the addon),
   refusing any other Mach-O before signing a byte.
+  *(#378)* `scripts/tree-modes.mjs` refuses any group- or other-writable entry and any
+  setuid, setgid or sticky bit, never following or judging a symlink: in
+  `verifyLinuxThinApp` before anything else (so the DEB and AppImage verifiers check their
+  extracted inner apps too, passing `extractedPackage: true`, the only context where
+  `chrome-sandbox` may be exactly `04755`), and on macOS in the thin build, after assembly's
+  `codesign --verify` and in the final DMG gate.
   *(#292)* The UI is English-only, so `scripts/prune-electron-locales.mjs` keeps only US
   and British English: `en.lproj` and `en_GB.lproj` (and `Base.lproj`, if Electron ever
   ships one) wherever a `.lproj` sits in a macOS bundle outside `Contents/Resources/app`

@@ -395,6 +395,7 @@ export function verifyLinuxDeb({
       arch,
       inputsPath: linuxInputsFile,
       sourceCommit,
+      extractedPackage: true,
     })
     const extractedNoticesLink = join(extracted.root, ...inputs.layout.chromiumLicenses.split('/'))
     if (

@@ -285,6 +285,26 @@ is also the default locale of the dates the app formats, so keeping British Engl
   `_CodeSignature/CodeResources` are made by release signing, after assembly, and seal
   exactly the two English locales.
 
+### Which file modes ship (#378)
+
+No entry of a shipped app tree may be group- or other-writable, or carry a setuid, setgid or
+sticky bit. `scripts/tree-modes.mjs` walks the tree without following links and lists the
+first ten offenders by relative path and octal mode. Symlinks are not judged: Linux has no
+link modes, and access goes through the target, which is checked as an entry of its own
+when it lies in the tree. The one exception is Linux's `chrome-sandbox`, a plain `0755`
+file in a thin folder that only a package makes `04755`: the AppImage and DEB verifiers,
+which re-run the folder gate on the inner app they extracted, allow it exactly `04755`
+there (or still `0755`, as an unprivileged extraction may leave it), and nothing else.
+
+- **Linux.** `verify-linux-thin-app.mjs` checks the folder before anything else, so the
+  native folder build, the restored folder, and every DEB and AppImage build and
+  verification refuse it. Electron's Linux zips store `0666` and `0777` modes since 43.8.4
+  (#371); the build clears those bits as the packager extracts them, before this gate runs.
+- **macOS.** The thin build checks the app after the locale prune and before anything runs
+  or publishes it; assembly checks the signed app after `codesign --verify`, its
+  `_CodeSignature` folders, framework links and helper apps included; and the final DMG
+  gate checks the app copied from the DMG.
+
 ## Finalization order
 
 `scripts/assemble-macos-release.mjs` enforces this order:

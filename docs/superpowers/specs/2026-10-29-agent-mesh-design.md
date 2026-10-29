@@ -2,8 +2,10 @@
 
 **Date:** 2026-10-29 (revised the same day after an independent design review, §14.3, and again
 after Shariq's round-3 questions, §14.4)
-**Status:** Design only, for Shariq's review. Nothing here is built. No implementation issues
-are opened until Shariq accepts the phases (§11) and answers the open questions (§13).
+**Status:** Accepted by Shariq on 2026-10-29 (§14.1): the phases (§11) and proposals P1–P14
+(§14.2) are the plan of record, with P13's Eureka-compatible membership API replacing D2's
+`a2a-lib` shape. M1 starts first. The remaining open questions (§13) are answered as each phase
+needs them, and every phase still waits for its own go/pivot checkpoint.
 **Scope of this PR:** this document. No source, test or workflow changes.
 **Related:** #8 and its design
 ([`2026-07-26-remote-hosted-mode-design.md`](2026-07-26-remote-hosted-mode-design.md)),
@@ -1058,8 +1060,8 @@ container, docs without Tailscale; a Go `tsnet` binary only if asked for.
 11. **Claude wake path:** accept "the human resumes a Claude agent" if a background `meshctl wait`
     does not wake it, or add a mesh mode to the Claude hook's watch later?
 12. **Should chain deadlines pause while the origin Mac sleeps?**
-13. **Eureka (P13, §15):** replace `a2a-lib`'s membership routes with a Eureka-compatible subset,
-    as proposed? Or keep D2 as written?
+13. **Eureka (P13, §15): answered 2026-10-29.** Yes: a Eureka-compatible membership subset
+    replaces `a2a-lib`'s routes (§14.1).
 14. **Verdicts (§17):** is a one-click Accept / Needed rework / Not used on each finished chain
     acceptable attention, or should acceptance come only from the bench and from proxies (a
     follow-up correction counts as rework)?
@@ -1074,7 +1076,7 @@ container, docs without Tailscale; a Go `tsnet` binary only if asked for.
 |---|---|---|
 | 2026-10-28 | Goal: agents discover and delegate over A2A; a Eureka-like registry; ideally over Tailscale; personal first, publishable later; wrappers for non-A2A tools; Agent Cards with load in the Dashboard; Agent Inbox as the human console. | Shariq |
 | 2026-10-29 | **D1.** Claude auth for wrappers: subscription for personal use, API keys for anything published. | Shariq accepted the default |
-| 2026-10-29 | **D2.** Registry built into Agent Inbox as a headless `--registry` mode, matching `a2a-lib`'s REST shape, without depending on it. (This design ships it as a command of the same package and defers an Electron flag, §5.1. **Round 3 proposes replacing "matching `a2a-lib`'s REST shape" with a Eureka-compatible subset: P13, §15.**) | Shariq accepted the default |
+| 2026-10-29 | **D2.** Registry built into Agent Inbox as a headless `--registry` mode, matching `a2a-lib`'s REST shape, without depending on it. (This design ships it as a command of the same package and defers an Electron flag, §5.1. **Amended on 2026-10-29 by P13: membership uses a Eureka-compatible subset instead of `a2a-lib`'s shape, §15.**) | Shariq accepted the default; amended by P13 |
 | 2026-10-29 | **D3.** The existing stdio MCP server stays network-free; a separate opt-in MCP bridge provides `discover`, `delegate`, `status` and `reply`. | Shariq accepted the default |
 | 2026-10-29 | **D4.** The first hand-off in each chain needs the human's click; later hops run within budget; hop limits and a kill switch always apply. | Shariq accepted the default |
 | 2026-10-29 | **D5.** Tailscale optional: its identity when present, tokens or OIDC otherwise. (This design always requires a token too, §9.2.) | Shariq accepted the default |
@@ -1082,6 +1084,7 @@ container, docs without Tailscale; a Go `tsnet` binary only if asked for.
 | 2026-10-29 | **D7.** Spend caps per chain and per host from day one. | Shariq accepted the default |
 | 2026-10-29 | **R1.** Opt-in and triggerable: off by default, each piece on or off alone and removable; nothing changes for anyone who does not enable it. | Shariq (hard requirement) |
 | 2026-10-29 | **R2.** Built piece by piece and tested as built: small phases, each useful alone, with validation criteria and a go/pivot checkpoint; the first phase small, cheap and observable, with no delegation. | Shariq (hard requirement) |
+| 2026-10-29 | **Accepted.** The design, its phases and proposals P1–P14 are the plan of record. P13 is confirmed (Q13): the TypeScript registry speaks a Eureka-compatible membership subset; no Eureka fork or backend. Start M1. Open questions are answered as each phase needs them. | Shariq ("Approve with the Eureka API; start M1") |
 
 ### 14.2 Proposed in this design, for Shariq to confirm or change
 

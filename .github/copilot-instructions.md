@@ -243,7 +243,9 @@ Run the build before `npm run electron`; the development shell starts the built
   `history` summary that keeps every count exact. Only `load()` reads
   `/api/items/history`, while `historyWanted()` says a surface needs older items,
   judged on a page alone (`lastData.page` or the tick's new one), never on merged
-  data. Explicit human entry points use `requestHistoryPaint()` (ends in
+  data. The Today ribbon wants it only at a range past 24 hours that starts
+  before the page's `before` (#392). Explicit human entry points (the ribbon's
+  range menu included) use `requestHistoryPaint()` (ends in
   `reloadAndPaint()`, #38); search and waiting deep links use `requestHistory()`,
   which only schedules that `load()`; `forceRender`, renders and the poll use
   neither. A failed read degrades: the page still applies and waiting surfaces
@@ -260,7 +262,8 @@ Run the build before `npm run electron`; the development shell starts the built
   `archivedWanted()` says a surface needs it (the open archived fold, a lingering
   plan, a focused plan just archived, search, a waiting deep link, restored row
   drafts whose row no active plan holds, Handoffs or Plan flow on an archived
-  plan, an unproven Dashboard lens), judged on the brief, never on the complete
+  plan, an unproven Dashboard lens, a ribbon range past 24 hours its omitted
+  outcomes fall in), judged on the brief, never on the complete
   list. `requestHistory()`/`requestHistoryPaint()` ask for either source; a failed
   read degrades to "Archived plans are unavailable right now.", and an older
   viewer's 404 for the brief reads the complete list in its place. Archived plans

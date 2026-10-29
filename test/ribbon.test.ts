@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildRibbon, sinceKeepsOn, sinceLastLooked, trustedInput } from '../public/ribbon.js'
+import { buildRibbon, ribbonWait, sinceKeepsOn, sinceLastLooked, trustedInput } from '../public/ribbon.js'
 
 // #305: the Today ribbon and "Since you last looked", pure.
 const HOUR = 3_600_000
@@ -175,5 +175,14 @@ describe('a bar that just started', () => {
     const [bar] = ribbon.lanes[0]!.bars
     expect(bar!.width).toBe(0.2)
     expect(bar!.left + bar!.width).toBeLessThanOrEqual(100)
+  })
+})
+
+describe('ribbonWait (#392)', () => {
+  const start = Date.parse('2026-07-13T10:00:00.000Z')
+  it('waits on each omitted source only while its bound falls after the range start', () => {
+    expect(ribbonWait({ asksAfter: '2026-07-20T09:00:00.000Z', archivedAfter: null }, start)).toEqual({ history: true, archived: false })
+    expect(ribbonWait({ asksAfter: null, archivedAfter: '2026-07-14T00:00:00.000Z' }, start)).toEqual({ history: false, archived: true })
+    expect(ribbonWait({ asksAfter: '2026-07-13T10:00:00.000Z', archivedAfter: '2026-07-01T00:00:00.000Z' }, start)).toEqual({ history: false, archived: false })
   })
 })

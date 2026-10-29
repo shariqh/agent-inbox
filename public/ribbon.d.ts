@@ -51,6 +51,12 @@ export function buildRibbon(input: {
   marksAfter?: string | null
 }): Ribbon
 
+/** #392: which omitted source keeps the range starting at `startMs` from being proven */
+export function ribbonWait(
+  marks: { asksAfter?: string | null; archivedAfter?: string | null } | null | undefined,
+  startMs: number,
+): { history: boolean; archived: boolean }
+
 export function sinceLastLooked(input: {
   sinceMs: number
   untilMs: number

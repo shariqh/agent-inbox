@@ -110,6 +110,14 @@ function barEnds(segment) {
   }
 }
 
+// Which omitted source keeps a range from being proven (#392): older closed
+// history while the page's boundary falls after the range's start, archived
+// plans while an outcome their brief omits does. Each is read on its own.
+export function ribbonWait(marks, startMs) {
+  const after = (bound) => Date.parse(bound ?? '') > startMs
+  return { history: after(marks?.asksAfter), archived: after(marks?.archivedAfter) }
+}
+
 // "Since you last looked" stays while the human is reading it (#305 review): a
 // press on the line, a shortcut (⌘C, ⌘-Tab, Ctrl+C) or a key with the line
 // selected is not moving on.

@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<title>Mesh value panel</title>
+<!-- Mockup for docs/superpowers/specs/2026-10-29-agent-mesh-design.md §17. Synthetic data. -->
+<link rel="stylesheet" href="../../../../../public/style.css">
+<link rel="stylesheet" href="mesh-mockup.css">
+<style>
+.tiles { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; }
+.tile { padding: 11px 13px; }
+.tile .lbl { font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--app-text-soft); font-weight: 700; }
+.tile .big { font-size: 25px; font-weight: 750; letter-spacing: -.02em; margin: 2px 0; font-variant-numeric: tabular-nums; }
+.tile .sub { font-size: 11.5px; color: var(--app-muted); }
+.tile .tgt { font-size: 10.5px; margin-top: 4px; }
+.ok { color: var(--app-success); } .warn { color: var(--app-danger); }
+.row2 { display: grid; grid-template-columns: 1.15fr 1fr; gap: 12px; }
+.bars { display: flex; align-items: flex-end; gap: 9px; height: 120px; padding-top: 6px; }
+.bars .d { flex: 1; display: flex; flex-direction: column-reverse; gap: 1px; }
+.bars .d i { display: block; border-radius: 2px; }
+.bars .lab { display: flex; gap: 9px; font-size: 10.5px; color: var(--app-text-soft); }
+.bars .lab span { flex: 1; text-align: center; }
+.legend { display: flex; gap: 12px; font-size: 11px; color: var(--app-muted); }
+.legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
+table.t { width: 100%; border-collapse: collapse; font-size: 12px; }
+table.t th { text-align: left; font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--app-text-soft); padding: 4px 6px; border-bottom: 1px solid var(--app-border); }
+table.t td { padding: 5px 6px; border-bottom: 1px solid var(--app-border); font-variant-numeric: tabular-nums; }
+.cmp { display: grid; grid-template-columns: 110px 1fr 70px; gap: 8px; align-items: center; font-size: 11.5px; padding: 3px 0; }
+.cmp .bar { height: 9px; }
+</style>
+</head>
+<body>
+<div class="m-shell">
+  <aside class="m-side">
+    <div class="m-brand"><img src="../../../../../public/favicon-32.png" alt=""><span><strong>Agent Inbox</strong><small>Local workspace</small></span></div>
+    <div class="m-tab on">Dashboard<b></b></div><div class="m-tab">Inbox<b>1</b></div><div class="m-tab">Plans<b>2</b></div><div class="m-tab">Notes<b>1</b></div><div class="m-tab">History<b></b></div>
+    <div class="m-label">Projects</div>
+    <div class="m-proj on" style="--c:var(--app-text-soft)"><i></i>All<b>1</b></div><div class="m-proj" style="--c:#38d6c0"><i></i>agent-inbox<b></b></div><div class="m-proj" style="--c:#4cc9f0"><i></i>demo-service<b></b></div><div class="m-proj" style="--c:#8f99a3"><i></i>@mesh<b>1</b></div>
+  </aside>
+  <main class="m-main">
+    <div class="m-head"><div><div class="m-kicker">Agents · value</div><h1 class="m-h1">Is the mesh worth it?</h1></div><div class="m-sub">last 7 days · M7</div><span class="m-spacer"></span><span class="m-lens"><span>Real use</span><span>Bench</span><span class="on">Both</span></span><span class="m-lens"><span class="on">7d</span><span>30d</span></span><span class="m-btn small">Export JSON</span></div>
+    <div class="tiles">
+      <section class="m-card tile"><div class="lbl">Accepted results</div><div class="big">19 <span style="font-size:15px" class="m-soft">/ 23 done</span></div><div class="sub">83 % accepted · 2 rework · 2 not used</div><div class="tgt ok">target ≥ 80 % ✓</div></section>
+      <section class="m-card tile"><div class="lbl">Your attention</div><div class="big">1.3</div><div class="sub">clicks per delegated task · 1.1 approvals per chain · median decision 1m 40s</div><div class="tgt ok">target ≤ 2 clicks ✓</div></section>
+      <section class="m-card tile"><div class="lbl">Your time, net</div><div class="big">+3h 10m</div><div class="sub">saved this week, bench-calibrated (§17.1)</div><div class="tgt ok">target &gt; 0 ✓</div></section>
+      <section class="m-card tile"><div class="lbl">Spend</div><div class="big">1.1 <span style="font-size:15px" class="m-soft">units</span></div><div class="sub">per accepted result · in-session 0.9 (bench)</div><div class="tgt ok">target ≤ 1.5× ✓</div></section>
+      <section class="m-card tile"><div class="lbl">Failures and timeouts</div><div class="big warn">12 %</div><div class="sub">3 of 26 tasks: 2 failed, 1 timed out, all during ubi-llm model swaps</div><div class="tgt warn">target ≤ 10 % ✗</div></section>
+    </div>
+    <div class="row2">
+      <section class="m-card">
+        <div class="m-card-head"><h2>Delegated tasks per day</h2><span class="m-spacer"></span><span class="legend"><span><i style="background:var(--app-outcome)"></i>accepted</span><span><i style="background:var(--app-plan)"></i>rework</span><span><i style="background:var(--app-text-soft)"></i>not used</span><span><i style="background:var(--app-danger)"></i>failed</span></span></div>
+        <div class="bars">
+          <div class="d"><i style="height:22px;background:var(--app-outcome)"></i></div>
+          <div class="d"><i style="height:33px;background:var(--app-outcome)"></i><i style="height:11px;background:var(--app-plan)"></i></div>
+          <div class="d"><i style="height:44px;background:var(--app-outcome)"></i><i style="height:11px;background:var(--app-danger)"></i></div>
+          <div class="d"><i style="height:22px;background:var(--app-outcome)"></i><i style="height:11px;background:var(--app-text-soft)"></i></div>
+          <div class="d"><i style="height:55px;background:var(--app-outcome)"></i><i style="height:11px;background:var(--app-plan)"></i><i style="height:11px;background:var(--app-danger)"></i></div>
+          <div class="d"><i style="height:11px;background:var(--app-outcome)"></i></div>
+          <div class="d"><i style="height:22px;background:var(--app-outcome)"></i><i style="height:11px;background:var(--app-text-soft)"></i><i style="height:11px;background:var(--app-danger)"></i></div>
+        </div>
+        <div class="bars lab" style="height:auto"><span>Thu</span><span>Fri</span><span>Sat</span><span>Sun</span><span>Mon</span><span>Tue</span><span>Wed</span></div>
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:10px;font-size:11.5px">
+          <div><b>Parallelism</b><br><span class="m-muted">peak 4 agents working · 1.8 agent-min per wall-min in chains</span></div>
+          <div><b>Wake overhead</b><br><span class="m-muted">median 1 status call · 0.3 idle polls per delegation</span></div>
+          <div><b>Safety rails</b><br><span class="m-muted">6 refusals (grant 3, budget 2, ask rate 1) · 0 escapes · pause p95 3.4 s</span></div>
+        </div>
+      </section>
+      <section class="m-card">
+        <div class="m-card-head"><h2>Time to result</h2><small>median of 3 bench runs, delegated vs in-session</small></div>
+        <div class="cmp"><span>S1 review</span><span class="bar"><i style="--w:55%;--c:var(--app-agent)"></i></span><span class="num">6m 10s</span></div>
+        <div class="cmp"><span class="m-soft">in-session</span><span class="bar"><i style="--w:62%;--c:var(--app-text-soft)"></i></span><span class="num">7m 00s</span></div>
+        <div class="cmp"><span>S3 tests</span><span class="bar"><i style="--w:78%;--c:var(--app-agent)"></i></span><span class="num">8m 40s</span></div>
+        <div class="cmp"><span class="m-soft">in-session</span><span class="bar"><i style="--w:70%;--c:var(--app-text-soft)"></i></span><span class="num">7m 50s</span></div>
+        <div class="cmp"><span>S10 fan-out ×3</span><span class="bar"><i style="--w:48%;--c:var(--app-agent)"></i></span><span class="num">5m 20s</span></div>
+        <div class="cmp"><span class="m-soft">in-session</span><span class="bar"><i style="--w:96%;--c:var(--app-text-soft)"></i></span><span class="num">10m 40s</span></div>
+        <div class="m-soft" style="font-size:11px;margin-top:6px">Delegated time includes the wait for your approval (median 1m 40s).</div>
+      </section>
+    </div>
+    <section class="m-card">
+      <div class="m-card-head"><h2>By agent</h2><small>chain ledger + verdicts · bench runs tagged</small></div>
+      <table class="t"><tr><th>Agent</th><th>Tasks</th><th>Accepted</th><th>Rework</th><th>p95</th><th>Units / accepted</th><th>Clicks / task</th><th>Fail + timeout</th><th>Rails</th></tr>
+      <tr><td>shariq/copilot-review</td><td>11</td><td>10 of 11 (91 %)</td><td>1</td><td>3m</td><td>0.8</td><td>1.1</td><td>0</td><td>2</td></tr>
+      <tr><td>shariq/claude-edit</td><td>7</td><td>4 of 6 (67 %)</td><td>1</td><td>6m</td><td>2.1</td><td>2.0</td><td>1</td><td>3</td></tr>
+      <tr><td>shariq/second-opinion</td><td>8</td><td>5 of 6 (83 %)</td><td>0</td><td>48s</td><td>0.3</td><td>1.0</td><td>2</td><td>1</td></tr></table>
+    </section>
+    <div class="m-banner" style="font-size:12px"><span class="m-chip t-plan">M7 checkpoint</span><span>4 of 5 targets met. Failures are above 10 %, all on ubi-llm during model swaps: <b>change</b> how a swap is reported (busy, not failed) before M8, rather than stop.</span></div>
+  </main>
+</div>
+</body>
+</html>

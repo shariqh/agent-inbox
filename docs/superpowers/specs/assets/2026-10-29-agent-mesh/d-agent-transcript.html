@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<title>Agent-side tooling: discover, delegate, wait, use</title>
+<!-- Mockup for docs/superpowers/specs/2026-10-29-agent-mesh-design.md §16. Synthetic data. -->
+<link rel="stylesheet" href="../../../../../public/style.css">
+<link rel="stylesheet" href="mesh-mockup.css">
+<style>
+.page { display: grid; grid-template-columns: 960px 1fr; gap: 18px; padding: 20px 24px; height: 900px; }
+.term { height: 860px; font-size: 12px; line-height: 1.5; }
+.notes { display: flex; flex-direction: column; gap: 9px; }
+.notes h1 { margin: 0 0 4px; font-size: 20px; letter-spacing: -.01em; }
+.note { display: grid; grid-template-columns: 20px 1fr; gap: 8px; padding: 9px 11px; border-radius: 9px; background: #fff3a8; color: #2b2400; font: 600 11.5px/1.42 ui-sans-serif, -apple-system, sans-serif; }
+.note .pin { box-shadow: none; }
+.tag { display: inline-block; padding: 0 5px; border-radius: 4px; background: #fff3a8; color: #2b2400; font: 700 10px/1.5 ui-sans-serif, -apple-system, sans-serif; }
+</style>
+</head>
+<body>
+<div class="page">
+<div class="term"><div class="term-bar"><i></i><i></i><i></i><span style="margin-left:8px">copilot · ~/code/demo-service (main) · MCP: agent-inbox, agent-inbox-mesh</span></div><span class="p">❯</span> <b>Review the billing retry change for anything a caller could abuse, and meanwhile
+  update the changelog.</b>
+
+<span class="k">●</span> I'll hand the review to a reviewer agent and do the changelog myself.
+
+<span class="k">●</span> <b>agent-inbox-mesh-discover</b> <span class="c">(skill: "code-review")</span>                                 <span class="tag">1</span>
+  <span class="c">⎿</span> 2 agents with an up instance
+     shariq/copilot-review   code-review, triage   up 2 (mac 2/2 busy, homelab 1/2)   p95 3m
+                              card sha256:5d0a…e1c4   description <span class="y">[untrusted]</span> "Read-only diff review"
+     shariq/claude-review    code-review           up 1 (mac 0/1)                      p95 6m
+
+<span class="k">●</span> <b>agent-inbox-mesh-delegate</b>                                                             <span class="tag">2</span>
+  <span class="c">⎿</span> agent: "shariq/copilot-review"   workspace: { repo: "demo-service", ref: "main" }
+     budget: { maxUnits: 4, maxMinutes: 30 }   message: "Review the diff of HEAD~1..HEAD in
+     src/billing/retry.ts. List anything a caller could abuse. Do not edit. ≤ 300 words."
+  <span class="c">⎿</span> { chain_id: "c-7f3a", state: "awaiting_approval",
+       ask: "Approve a hand-off to copilot-review? (Agent Inbox → Needs you)",
+       watch: { shell_command: "agent-inbox-meshctl wait --chain c-7f3a",
+                mode: "async", detach: true, timeout_seconds: 1800 } }
+
+<span class="k">●</span> <b>Bash</b> <span class="c">(agent-inbox-meshctl wait --chain c-7f3a)</span>  <span class="m">[detached background]</span>              <span class="tag">3</span>
+  <span class="c">⎿</span> Started shell meshwait-c-7f3a; you'll be notified when it exits.
+
+<span class="k">●</span> While the review waits for approval, I'll update the changelog.
+<span class="k">●</span> <b>Edit</b> CHANGELOG.md  <span class="p">+6</span> <span class="r">−0</span>
+
+  <span class="c">— 4 min later —</span>                                                                         <span class="tag">4</span>
+<span class="y">◆</span> Background shell meshwait-c-7f3a exited 0: <b>chain c-7f3a completed</b>                        <span class="tag">5</span>
+
+<span class="k">●</span> <b>agent-inbox-mesh-status</b> <span class="c">(chain_id: "c-7f3a")</span>
+  <span class="c">⎿</span> completed · 1 task · 1.4 of 4 units · approval 1m 40s · work 3m 12s
+     t-1 copilot-review @ homelab: COMPLETED
+     artifact <span class="y">[untrusted]</span> (812 of 812 chars):
+       1. retry() retries on 4xx responses, so a caller can force 5 calls per request.
+       2. No jitter on the backoff; many clients retry in lockstep.
+
+<span class="k">●</span> I checked both against the code before using them:                                    <span class="tag">6</span>
+  1. Real: <span class="mono">isRetryable()</span> returns true for 429 <b>and</b> every other 4xx. Fixing it.
+  2. Real, minor: adding ±20 % jitter.
+<span class="k">●</span> <b>Edit</b> src/billing/retry.ts  <span class="p">+9</span> <span class="r">−4</span>     <b>Bash</b> <span class="c">(npm test)</span>  <span class="p">✓ 142 passed</span>
+
+<span class="k">●</span> Done. The reviewer's findings are fixed and tested; the changelog is updated.
+  Delegation cost: 1 approval click, 1.4 units, 1 status call.</div>
+<div class="notes">
+  <h1>The delegating agent's view</h1>
+  <div class="note"><span class="pin">1</span><span><span class="mono">discover</span> lists only agents with an <i>up</i> lease. Descriptions are trimmed and marked untrusted; matching uses names, skill ids and tags, never descriptions.</span></div>
+  <div class="note"><span class="pin">2</span><span><span class="mono">delegate</span> opens a chain and nothing else: no work starts until the human approves. The bridge keeps the chain capability in memory and never shows it to the agent.</span></div>
+  <div class="note"><span class="pin">3</span><span>The returned watch is launched detached, as Copilot does for a flag. The agent spends no turns polling; Claude's wake path is open question Q11.</span></div>
+  <div class="note"><span class="pin">4</span><span>Meanwhile the human sees the first-hop ask in Agent Inbox and approves the exact binding (mockup b1).</span></div>
+  <div class="note"><span class="pin">5</span><span>The watcher exits when the chain is approved and finished, declined or failed; the host's completion notice wakes the session.</span></div>
+  <div class="note"><span class="pin">6</span><span>Results are data, not instructions. The agent verifies them before acting. The last line is what §17 measures: clicks, units and status calls per delegation.</span></div>
+</div>
+</div>
+</body>
+</html>

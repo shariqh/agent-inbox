@@ -280,15 +280,17 @@ Run the build before `npm run electron`; the development shell starts the built
   list draws them; a surface that draws a row field from the brief needs it in the
   brief's select. Only `load()` reads the complete `/api/boards/archived`, while
   `archivedWanted()` says a surface needs it (the open archived fold, more than
-  50 lingering plans, a focused plan just archived that does not linger, search, a waiting deep link, restored row
-  drafts whose row no active plan holds, Handoffs or Plan flow on an archived
-  plan, an unproven Dashboard lens, a ribbon range past 24 hours its omitted
-  outcomes fall in), judged on the brief, never on the complete
-  list. `requestHistory()`/`requestHistoryPaint()` ask for either source; a failed
-  read degrades to "Archived plans are unavailable right now.", and an older
-  viewer's 404 for the brief reads the complete list in its place. Archived plans
-  are drawn whole only from `lastData.archivedFull`, and a held row draft is
-  placed by the first tick that read it (or failed to). The one exception is a
+  50 lingering plans, a focused plan just archived that does not linger, search,
+  a waiting deep link, restored row drafts whose row no active plan holds,
+  Handoffs or Plan flow on an archived plan, an unproven Dashboard lens, a
+  ribbon range past 24 hours its omitted outcomes fall in), judged on the brief,
+  never on the complete list. `requestHistory()`/`requestHistoryPaint()` ask for
+  either source; a failed read degrades to "Archived plans are unavailable right
+  now.", and an older viewer's 404 for the brief reads the complete list in its
+  place. Every surface
+  that draws an archived plan whole reads it through `wholeArchived()`
+  (`lastData.archivedFull`, else the lingering read below), and a held row draft
+  is placed by the first tick that read the complete list (or failed to). For a
   plan lingering in Plans (#373): while the complete list is not wanted, `load()`
   reads only the lingering plans, `/api/boards/archived/plans?ids=…`
   (`lingeringUrl`, every lingering plan's sorted ids across all lenses, Plans tab
@@ -296,7 +298,8 @@ Run the build before `npm run electron`; the development shell starts the built
   `lastData.lingering`, and lingering cards draw from `wholeArchived()` (the
   complete list while loaded, else those). A failed read degrades like #299's, a
   404 from an older viewer reads the complete list instead, and
-  `lingeringWanted()` joins `omittedWanted()` so returning to Plans reads it at once.
+  `lingeringWanted()` joins `omittedWanted()`, so returning to Plans reads it at
+  once.
 - Plan pins and row issue links (#103 PR2) are agent-owned fields: omission keeps,
   MCP `""` clears, `board_advance` and a reblock keep them, and a pin outranks the
   PR and branch issue. MCP normalizes every accepted form to `owner/name#N` and

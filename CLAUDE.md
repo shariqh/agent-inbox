@@ -260,12 +260,14 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   read the brief through the same code as the complete list.
   `lastData.archivedBrief` is the brief; `lastData.archived` is what surfaces
   read, the complete list while loaded and the brief otherwise;
-  `lastData.archivedFull` is the complete list or null, and only it may be drawn
-  whole (the fold's cards, Plan flow, a deep link's landing, `rowHolds`), with
-  one exception, lingering cards (#373, next paragraph); `wholeArchived()` is the
-  one lookup those surfaces use. The complete `/api/boards/archived` is unchanged and ONLY `load()`
-  reads it, while `archivedWanted()` says a surface needs it: a deep link to a
-  plan the brief names (`archivedLookup`, waiting and dropped exactly as #184's),
+  `lastData.archivedFull` is the complete list or null. Every surface that looks
+  up an archived plan whole (the fold's cards, lingering cards, Plan flow, a deep
+  link's landing, `rowHolds`) goes through `wholeArchived()`: the complete list
+  while loaded, else the lingering read (#373, next paragraph), which holds only
+  the lingering plans; the brief is never drawn whole. The complete
+  `/api/boards/archived` is unchanged and ONLY `load()` reads it, while
+  `archivedWanted()` says a surface needs it: a deep link to a plan the brief
+  names (`archivedLookup`, waiting and dropped exactly as #184's),
   restored row drafts waiting on it (below), search in use (`searchInUse()`,
   #184's rule), Plan flow open on an archived plan, Handoffs with omitted archived
   outcomes, Plans with the archived fold open, more than 50 lingering plans or a

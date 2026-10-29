@@ -285,6 +285,10 @@ describe('GET /api/boards/archived/plans (issue #373)', () => {
     expect((await conditional(url, etag)).status).toBe(304)
     // no two sets, nor the other archived representations, share a validator
     expect((await conditional(`${PLANS}?ids=${one.id},${two.id}`, etag)).status).toBe(200)
+    // the ids are part of the tag: another set with the very same bytes still differs
+    const sameBytes = await conditional(`${PLANS}?ids=${one.id},no-such-plan`, etag)
+    expect(sameBytes.status).toBe(200)
+    expect(await sameBytes.text()).toBe(await (await app.request(url)).text())
     expect((await conditional('/api/boards/archived', etag)).status).toBe(200)
     expect((await conditional('/api/boards/archived/summary', etag)).status).toBe(200)
 

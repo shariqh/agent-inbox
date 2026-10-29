@@ -2328,7 +2328,8 @@ function renderDashFocus(aside, model) {
   setFocusPart(aside, aside.querySelector('.dash-focus-asks'), lane.asks.map((entry) => {
     const id = needsEntryId(entry)
     return `<div class="dash-focus-ask"><span class="dash-focus-ask-title">${esc(dashboardEntryTitle(entry) ?? '')}</span>` +
-      focusButton(`${entry.kind}:${id}`, onRail.has(id) ? 'Answer in rail' : 'Answer in Inbox', () => jumpToAsk(entry),
+      // the panel sits over the rail, so it closes before the jump
+      focusButton(`${entry.kind}:${id}`, onRail.has(id) ? 'Answer in rail' : 'Answer in Inbox', () => { closeSessionFocus(); jumpToAsk(entry) },
         { attrs: ` data-focus-ask="${esc(`${entry.kind}:${id}`)}"` }) + '</div>'
   }).join('') || '<p class="dash-focus-none">Nothing waiting on you.</p>')
   const plan = lane.plan

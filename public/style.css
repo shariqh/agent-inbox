@@ -1992,8 +1992,8 @@ body.settings-open #liveBar { opacity: .32; }
   position: fixed;
   top: 72px;
   right: 16px;
-  bottom: 56px;
   z-index: 35;
+  max-height: calc(100vh - 128px);
   display: grid;
   width: min(380px, calc(100vw - 32px));
   align-content: start;
@@ -2010,6 +2010,7 @@ body.settings-open #liveBar { opacity: .32; }
 .dash-focus[hidden], .dash-focus [hidden] { display: none; }
 .dash-focus-head { display: flex; align-items: center; gap: 8px; }
 .dash-focus-head h2 { min-width: 0; flex: 1; margin: 0; font-size: 14px; font-weight: 680; }
+#dashFocusTitle:focus { outline: none; } /* a landing heading, not a control */
 .dash-focus-close { padding: 0 6px; border: 0; background: transparent; color: var(--app-muted); font-size: 18px; line-height: 1; }
 .dash-focus p { margin: 0; }
 .dash-focus-meta, .dash-focus-none, .dash-focus-gone { color: var(--app-muted); font-size: 12px; }

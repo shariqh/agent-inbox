@@ -1571,8 +1571,8 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   the grid): a lane's title is a button (`.dash-lane-open`, `aria-expanded`), and a click
   elsewhere on the lane that is not a control or a text selection opens it too. It is
   READ-ONLY (D2: the rail is the Dashboard's one answer surface): the lane's asks (from
-  the attention set) each jump to the rail card or, past the top three, the Inbox card
-  (`jumpToAsk`); the plan and each recent outcome open through `focusItem`. `sessionFocus`
+  the attention set) each close the panel (it sits over the rail) and jump to the rail
+  card or, past the top three, the Inbox card (`jumpToAsk`); the plan and each recent outcome open through `focusItem`. `sessionFocus`
   (`public/lanes.js`, pure) picks the plan, the session's newest item (the source of its
   PR/CI chips when it has no plan) and its last three outcomes from `outcomeEntries`. PR and
   CI chips are `sourceChipsHtml`'s, ambient: nothing there reaches attention

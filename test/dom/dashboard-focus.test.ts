@@ -174,7 +174,10 @@ describe('the session focus panel (#307)', () => {
     click(openButton('mine'))
     click(panel()!.querySelector(`[data-focus-ask="item:${ask}"]`))
     expect(document.activeElement).toBe(document.querySelector(`#dashRail [data-rail-card="${ask}"]`))
+    // the panel sits over the rail: it closed before the jump
+    expect(panel()!.hidden).toBe(true)
 
+    click(openButton('mine'))
     click(panel()!.querySelector('.dash-focus-plan-open'))
     await settle()
     expect(location.hash).toBe(`#item/${board}`)

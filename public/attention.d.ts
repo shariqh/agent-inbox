@@ -130,3 +130,5 @@ export function countsByProject(
   liveSessionIds: LiveSessionIds,
 ): Map<string, { total: number; escalated: number }>
 export function sortNeedsYou(entries: AttentionEntry[], nowMs: number): AttentionEntry[]
+/** #303: the Dashboard rail's order — waiting asks first, then Needs-you order. Never changes membership. */
+export function sortRail(entries: AttentionEntry[], nowMs: number): AttentionEntry[]

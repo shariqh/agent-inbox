@@ -250,3 +250,14 @@ export function sortNeedsYou(entries, nowMs) {
     })
     .map((k) => k.e)
 }
+
+// Issue #303: the Dashboard's Needs you rail. Its entries ARE the attention set
+// (the caller hands in attentionEntries' result and gets the same entries
+// back); this only orders them. An ask whose agent is waiting on you right now
+// (classifyLiveness → waiting) comes first, oldest first; everything else
+// keeps Needs-you order. Ordering only, never membership.
+export function sortRail(entries, nowMs) {
+  const sorted = sortNeedsYou(entries, nowMs)
+  const waiting = (e) => e.kind === 'item' && e.liveness === 'waiting'
+  return [...sorted.filter(waiting), ...sorted.filter((e) => !waiting(e))]
+}

@@ -1,8 +1,61 @@
 import { describe, expect, it } from 'vitest'
 import { buildActivitySeries, buildDashboard } from '../public/dashboard.js'
+import { attentionEntries, sortNeedsYou, sortRail } from '../public/attention.js'
 import type { DashboardModel } from '../public/dashboard.js'
 
 const NOW = Date.parse('2026-08-24T20:00:00.000Z')
+
+const ask = (id: string, created: string, extra: Record<string, unknown> = {}) => ({
+  id, project: 'alpha', agent: 'copilot', kind: 'question', status: 'open', title: id,
+  created_at: created, reply: null, ...extra,
+})
+const railIds = (model: DashboardModel): string[] =>
+  model.rail.cards.map((entry) => entry.kind === 'item' ? entry.item.id : entry.row.id)
+
+describe('the Needs you rail (#303)', () => {
+  const items = [
+    ask('parked-old', '2026-08-24T12:00:00.000Z'),
+    ask('waiting-new', '2026-08-24T19:00:00.000Z', { session: 'live' }),
+    ask('waiting-old', '2026-08-24T18:00:00.000Z', { session: 'live' }),
+    ask('snoozed', '2026-08-24T11:00:00.000Z', { snoozed_until: '2026-08-25T00:00:00.000Z' }),
+    ask('pinned', '2026-08-24T11:00:00.000Z', { pinned_at: '2026-08-24T19:00:00.000Z' }),
+    ask('closed', '2026-08-24T11:00:00.000Z', { project: 'retired' }),
+  ]
+  const boards = [{
+    id: 'b', project: 'alpha', title: 'Plan', rows: [
+      { id: 'blocked', label: 'Approve', status: 'blocked', position: 0, annotation: null, annotation_unseen: false },
+      { id: 'tracked', label: 'Build', status: 'tracked', position: 1, annotation: null, annotation_unseen: false },
+    ],
+  }]
+  const input = {
+    items, boards, archived: [], activity: [], nowMs: NOW, liveSessionIds: ['live'], closedProjects: ['retired'],
+  }
+
+  it('holds exactly the attention set: three cards, the rest counted, deferred asks only counted', () => {
+    const model = buildDashboard(input)
+    const all = sortRail(attentionEntries(items, boards, NOW, ['live'], ['retired']), NOW)
+      .map((entry) => entry.kind === 'item' ? entry.item.id : entry.row.id)
+    expect(all).toHaveLength(4)
+    expect(railIds(model)).toEqual(all.slice(0, 3))
+    expect(model.rail.more).toBe(1)
+    expect(model.rail.cards.length + model.rail.more).toBe(model.signals.waiting)
+    expect(model.rail.later).toBe(2)
+  })
+
+  it('ranks asks an agent is waiting on first without changing membership', () => {
+    expect(railIds(buildDashboard(input))).toEqual(['waiting-old', 'waiting-new', 'blocked'])
+    const parked = buildDashboard({ ...input, liveSessionIds: [] })
+    // Nobody is live: Needs-you order, blocked rows first, and the same four asks.
+    expect(railIds(parked)).toEqual(['blocked', 'parked-old', 'waiting-old'])
+    expect(parked.rail.more).toBe(1)
+    const entries = attentionEntries(items, boards, NOW, ['live'], ['retired'])
+    expect(new Set(sortRail(entries, NOW))).toEqual(new Set(entries))
+    expect(sortRail(entries, NOW).map((entry) => entry.kind === 'item' ? entry.item.id : entry.row.id))
+      .toEqual(['waiting-old', 'waiting-new', ...sortNeedsYou(entries, NOW)
+        .filter((entry) => !(entry.kind === 'item' && entry.liveness === 'waiting'))
+        .map((entry) => entry.kind === 'item' ? entry.item.id : entry.row.id)])
+  })
+})
 
 describe('buildDashboard', () => {
   it('keeps the reported child count in the exported model contract', () => {
@@ -112,7 +165,7 @@ describe('buildDashboard', () => {
       outcomes: 2,
       projects: 1,
     })
-    expect(model.ownership).toEqual({ human: 1, agent: 1, outcome: 2 })
+    expect(model.rail).toEqual({ cards: [expect.objectContaining({ kind: 'item' })], more: 0, later: 0 })
     expect(model.sessions.map((session) => session.session)).toEqual(['working', 'quiet'])
     expect(model.recentOutcomes.map((entry) => entry.kind === 'item' ? entry.item.id : entry.row.id))
       .toEqual(['row-done', 'done'])
@@ -252,7 +305,6 @@ describe('buildDashboard', () => {
       history: { older: { items: 5, outcomes: 2, latest: '2026-08-24T12:00:00.000Z', projects: ['alpha', 'archive-only'], agents: ['copilot'] } },
     })
     expect(paged.signals.outcomes).toBe(complete.signals.outcomes + 2)
-    expect(paged.ownership.outcome).toBe(complete.ownership.outcome + 2)
     expect(paged.signals.projects).toBe(2)
     expect(paged.recentOutcomes.map((entry) => entry.kind === 'item' ? entry.item.id : entry.row.id))
       .toEqual(['newest', 'row'])
@@ -297,7 +349,6 @@ describe('buildDashboard', () => {
       history: { older: none, archived: { outcomes: 3, latest: '2026-08-24T15:00:00.000Z' } },
     })
     expect(proven.signals.outcomes).toBe(8)
-    expect(proven.ownership.outcome).toBe(8)
     expect(ids(proven)).toEqual(['r19', 'r18', 'r17', 'r16'])
     expect(proven.recentOutcomesComplete).toBe(true)
     expect(proven.recentOutcomesWait).toEqual({ history: false, archived: false })

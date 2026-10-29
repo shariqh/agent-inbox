@@ -208,7 +208,7 @@ describe('changes outside the poll still reach an idle window (#298)', () => {
     const light = wash()
     expect(light).toBeTruthy()
     // A frame painted while a Dashboard control holds keyboard focus.
-    document.querySelector<HTMLElement>('#dashboard [data-dashboard-focus-key="flow:human"]')!.focus()
+    document.querySelector<HTMLElement>('#dashboard [data-dashboard-focus-key="signal:waiting"]')!.focus()
     await repaint()
     await pollTick()
     // The OS switches theme: the Dashboard focus holds the editable frame (renderDirty).

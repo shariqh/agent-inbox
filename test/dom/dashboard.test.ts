@@ -21,6 +21,9 @@ function open(): Database.Database {
 const signal = (name: string): string =>
   document.querySelector(`[data-dashboard-signal="${name}"] .dashboard-value`)?.textContent ?? ''
 
+const railIds = (): string[] =>
+  [...document.querySelectorAll<HTMLElement>('#dashRail [data-rail-card]')].map((card) => card.dataset.railCard!)
+
 const agentDots = (): Element[] =>
   [...document.querySelectorAll('[data-dashboard-signal="agents"] .dashboard-agent-dot')]
 
@@ -311,7 +314,9 @@ describe('Live Operations Desk dashboard', () => {
     expect(document.activeElement).toBe(range)
     expect(document.querySelector('.dashboard-range')).toBe(range)
     expect(document.getElementById('pauseHint')?.textContent).toContain('paused')
-    expect(document.querySelector('.flow-human strong')?.textContent).toBe('2')
+    // #303: the rail holds the drafted ask's card, editor and all, while the rest refreshes.
+    expect(railIds()).toEqual([first])
+    expect(document.querySelector<HTMLTextAreaElement>(`[data-rail-card="${first}"] .reply-input`)?.value).toBe('unfinished answer')
     expect(answerInput(first)?.value).toBe('unfinished answer')
   })
 
@@ -374,8 +379,9 @@ describe('Live Operations Desk dashboard', () => {
 
     expect(signal('waiting')).toBe('6')
     expect(signal('agents')).toBe('0')
-    expect(document.querySelector('.flow-human strong')?.textContent).toBe('6')
-    expect(document.querySelector('.flow-outcome strong')?.textContent).toBe('1')
+    expect(railIds()).toHaveLength(3)
+    expect(document.querySelector('.dash-rail-more')?.textContent).toBe('+3 more')
+    expect(signal('outcomes')).toBe('1')
     expect(document.querySelector('.dashboard-live-session small')?.textContent).toBe('Connected')
     expect(document.querySelector('.dashboard-live-session span')?.textContent).toBe('Last report: Running release checks')
     expect(document.querySelector('.dashboard-outcome')?.textContent).toContain('Checks completed.')
@@ -479,7 +485,7 @@ describe('Live Operations Desk dashboard', () => {
     await pollTick()
     expect(document.title).toBe('(4) Agent Inbox')
     expect(signal('waiting')).toBe('2')
-    expect(document.querySelector('.flow-human strong')?.textContent).toBe('2')
+    expect(railIds()).toHaveLength(2)
     expect(document.querySelectorAll('.dashboard-live-session')).toHaveLength(1)
     expect(document.querySelector('.dashboard-live-session strong')?.textContent).toContain('alpha')
     expect(document.activeElement).toBe(range)
@@ -496,12 +502,12 @@ describe('Live Operations Desk dashboard', () => {
     insertItem(d, { project: 'alpha', stream: 'main', agent: 'copilot', kind: 'question', title: 'Next decision' })
     await vi.advanceTimersByTimeAsync(200)
     expect(signal('waiting')).toBe('1')
-    expect(document.querySelector('.flow-human strong')?.textContent).toBe('1')
+    expect(railIds()).toHaveLength(1)
     expect(document.getElementById('pauseHint')?.textContent).toBe('')
     range.dispatchEvent(new Event('pointerup', { bubbles: true }))
     await pollTick()
     expect(signal('waiting')).toBe('2')
-    expect(document.querySelector('.flow-human strong')?.textContent).toBe('2')
+    expect(railIds()).toHaveLength(2)
     expect(document.querySelector('.dashboard-range')).toBe(range)
   })
 

@@ -1836,7 +1836,7 @@ body.settings-open #liveBar { opacity: .32; }
 }
 .dashboard-activity { grid-column: span 8; min-height: 360px; }
 .dashboard-activity.is-empty { min-height: 220px; }
-.dashboard-ownership { grid-column: span 4; }
+.dash-rail { grid-column: span 4; min-width: 0; }
 .dashboard-dispatch { grid-column: span 5; }
 .dashboard-outcomes { grid-column: span 7; }
 .dashboard-history-empty {
@@ -1876,27 +1876,44 @@ body.settings-open #liveBar { opacity: .32; }
   border-radius: 2px 2px 0 0;
   background: var(--app-agent);
 }
-.dashboard-flow { display: grid; gap: 8px; }
-.dashboard-flow button {
-  display: flex;
-  min-height: 68px;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 12px 13px;
+/* #303: the Needs you rail. Compact cards over the Inbox's own answer controls;
+   the written-answer editor shows only on an expanded card. */
+.dash-rail-cards { display: grid; gap: 10px; }
+.dash-rail-card {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+  padding: 11px 12px;
   border: 1px solid var(--app-border);
-  border-radius: 7px;
+  border-radius: 8px;
   background: var(--app-soft);
-  color: var(--app-text);
-  text-align: left;
 }
-.dashboard-flow button:hover { border-color: var(--flow); }
-.dashboard-flow button span { color: var(--app-muted); font-size: 12px; }
-.dashboard-flow button strong { color: var(--flow); font-size: 24px; font-variant-numeric: tabular-nums; }
-.dashboard-flow .flow-human { --flow: var(--app-attention); }
-.dashboard-flow .flow-agent { --flow: var(--app-agent); }
-.dashboard-flow .flow-outcome { --flow: var(--app-outcome); }
-.dashboard-flow-line { width: 1px; height: 8px; margin: -8px 0 -8px 22px; background: var(--app-border-strong); }
+.dash-rail-card:focus-visible { outline: 2px solid var(--app-focus); outline-offset: 1px; }
+.dash-rail-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; color: var(--app-muted); font-size: 11px; }
+.dash-rail-project { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dash-rail-waiting { padding: 0 6px; border-radius: 999px; background: color-mix(in srgb, var(--app-attention) 14%, transparent); color: var(--app-attention); font-size: 9.5px; font-weight: 650; letter-spacing: .04em; text-transform: uppercase; }
+.dash-rail-asked { margin-left: auto; color: var(--app-text-soft); }
+.dash-rail-title { overflow-wrap: anywhere; font-size: 13px; font-weight: 650; line-height: 1.35; }
+.dash-rail-tldr { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; color: var(--app-muted); font-size: 12px; line-height: 1.4; }
+.dash-rail-card .options, .dash-rail-card .options.comparing, .dash-rail-card .row-answer { display: flex; flex-direction: row; flex-wrap: wrap; align-items: flex-start; gap: 6px; margin: 0; }
+.dash-rail-card .row-options { display: flex; flex-wrap: wrap; gap: 6px; }
+.dash-rail-card .option { display: contents; }
+.dash-rail-card .options.comparing .opt-pill, .dash-rail-card .opt-pill { width: auto; padding: 5px 9px; font-size: 12px; }
+.dash-rail-card .rec-star { margin-right: 4px; }
+.dash-rail-card .opt-detail, .dash-rail-card .compare-toggle { display: none; }
+.dash-rail-card .reply-row, .dash-rail-card .reply-context-row { flex: 1 1 100%; }
+.dash-rail-card:not(.expanded) .reply-input,
+.dash-rail-card:not(.expanded) .reply-context-row,
+.dash-rail-card:not(.expanded) .reply-row > [data-shortcut-id="submit"] { display: none; }
+.dash-rail-card .disposition-menu { flex: 1 1 100%; font-size: 12px; }
+.dash-rail-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.dash-rail-write { margin-right: auto; padding: 3px 7px; font-size: 11.5px; }
+.dash-rail-icon { display: inline-flex; align-items: center; gap: 3px; padding: 3px 6px; font-size: 11.5px; }
+.dash-rail-icon svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.4; }
+.dash-rail-empty { padding: 18px 0; color: var(--app-text-soft); font-size: 12.5px; text-align: center; }
+.dash-rail-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; }
+.dash-rail-more { padding: 0; border: 0; background: transparent; color: var(--app-muted); font-size: 12px; }
+.dash-rail-review { margin-left: auto; font-size: 12px; }
 .dashboard-live-list, .dashboard-outcome-list { display: grid; }
 .dashboard-live-session, .dashboard-outcome {
   display: grid;
@@ -1970,7 +1987,7 @@ body.settings-open #liveBar { opacity: .32; }
 
 @container operations-desk (max-width: 900px) {
   .dashboard-signals { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .dashboard-activity, .dashboard-ownership { grid-column: span 12; }
+  .dashboard-activity, .dash-rail { grid-column: span 12; }
   .dashboard-dispatch, .dashboard-outcomes { grid-column: span 6; }
 }
 

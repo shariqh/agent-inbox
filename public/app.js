@@ -1796,7 +1796,7 @@ function restoreDashboardFocus(key) {
   return document.activeElement === target
 }
 
-function renderDashboardAmbient(model) {
+function renderDashboardAmbient(model, { forced = false } = {}) {
   const host = document.querySelector('#dashboard .dashboard')
   if (!host?.querySelector('.dashboard-grid')) return
   const values = {
@@ -1835,10 +1835,7 @@ function renderDashboardAmbient(model) {
     const card = document.querySelector(`[data-dashboard-signal="${name}"]`)
     if (card) card.setAttribute('aria-label', label)
   }
-  for (const [owner, count] of Object.entries(model.ownership)) {
-    const value = host.querySelector(`.flow-${owner} strong`)
-    if (value) value.textContent = String(count)
-  }
+  renderDashRail(host.querySelector('.dash-rail'), model.rail, { forced })
   renderDashboardHistory(host.querySelector('.dashboard-activity'))
   renderDashboardDispatch(host.querySelector('.dashboard-live-list'), model.sessions)
   renderDashboardOutcomes(host.querySelector('.dashboard-outcome-list'), model.recentOutcomes, model.recentOutcomesComplete,
@@ -2006,6 +2003,227 @@ function renderDashboardOutcomes(list, entries, complete = true, wait = { histor
   }
 }
 
+// ── the Needs you rail (#303, Dashboard 2.0 phase 1) ─────────────────────────
+// The top three asks of the one attention set (buildDashboard's `rail`, from
+// attentionEntries through sortRail), each a compact card answered with the
+// Inbox's own controls and writes (answerEl, rowAnswerEl, snoozeAsk, pinAsk),
+// so drafts land in draftReplies/rowDrafts and join suspendState(), recovery,
+// durable drafts and the viewer-restart hold like any other editor (D2: the
+// only answer surface on the Dashboard). It paints in the ambient painter so
+// counts and cards keep moving while the rest of the Dashboard keeps focus,
+// and a draft in it pauses the rail alone: a poll leaves the rail as it is
+// while one of its asks holds a draft, and only a frame the human asked for
+// (forceRender) rebuilds it. A held pointer already stops paintAmbient.
+const RAIL_SNOOZE_MS = 4 * 60 * 60_000
+const railExpanded = new Set() // ask ids whose card shows the written-answer editor
+let railSelectedId = null      // the card Tab lands on; J/K move it
+
+const RAIL_ICONS = {
+  snooze: '<circle cx="8" cy="8" r="6"></circle><path d="M8 4.5V8l2.5 1.5"></path>',
+  pin: '<path d="M6 2h4l-.5 4 2.5 2.5H4L6.5 6 6 2zM8 8.5V14"></path>',
+  open: '<path d="M9 3h4v4M13 3 7 9M11 9.5V13H3V5h3.5"></path>',
+}
+
+function dashRailEl() {
+  const section = document.createElement('section')
+  section.className = 'dashboard-card dash-rail'
+  section.id = 'dashRail' // scopes the draft focus bookmark to this copy of an editor
+  section.setAttribute('aria-labelledby', 'dashRailTitle')
+  section.innerHTML = `
+    <div class="dashboard-card-head"><h2 id="dashRailTitle">Needs you</h2></div>
+    <div class="dash-rail-cards" role="list" aria-labelledby="dashRailTitle"></div>
+    <div class="dash-rail-foot">
+      <button type="button" class="dash-rail-more" data-dashboard-focus-key="rail:more" hidden></button>
+      <button type="button" class="dash-rail-review" data-dashboard-focus-key="rail:review" data-shortcut-id="review">Open Review queue</button>
+    </div>`
+  section.querySelector('.dash-rail-more').addEventListener('click', () => selectTab('needsYou'))
+  section.querySelector('.dash-rail-review').addEventListener('click', openTriage)
+  section.addEventListener('keydown', onDashRailKey)
+  return section
+}
+
+// A poll leaves the rail alone while one of its asks holds a draft, or while a
+// background window remembers focus inside it: rebuilding would drop that focus,
+// and restoring it would pull focus into a window the human is not using.
+function dashRailHeld(list) {
+  const remembered = document.activeElement
+  if (!document.hasFocus() && remembered && list.contains(remembered)) return true
+  return [...list.querySelectorAll('[data-rail-card]')].some((card) => holdsDraft(card.dataset.railCard))
+}
+
+function renderDashRail(section, rail, { forced = false } = {}) {
+  if (!section) return
+  const list = section.querySelector('.dash-rail-cards')
+  // The count line is plain text: it stays current even while the cards are held.
+  const more = section.querySelector('.dash-rail-more')
+  const parts = [rail.more ? `+${rail.more} more` : '', rail.later ? `${rail.later} in Later` : ''].filter(Boolean)
+  more.textContent = parts.join(' · ')
+  more.hidden = !parts.length
+  more.title = 'Open the Inbox'
+  // An incoming card that holds a draft holds the rail too: building its editor
+  // from a poll could run draft recovery, which switches tabs and moves focus.
+  if (!forced && (dashRailHeld(list) || rail.cards.some((entry) => holdsDraft(needsEntryId(entry))))) return
+  const focusedCard = activeFocusElement()?.closest?.('[data-rail-card]')
+  const bookmark = focusedCard && list.contains(focusedCard)
+    ? captureCardFocus(focusedCard, focusedCard.dataset.railCard)
+    : null
+  const focusIndex = bookmark ? [...list.children].indexOf(focusedCard) : -1
+  const ids = rail.cards.map(needsEntryId)
+  for (const id of railExpanded) if (!ids.includes(id)) railExpanded.delete(id)
+  if (!ids.includes(railSelectedId)) railSelectedId = ids[0] ?? null
+  const nowMs = Date.now()
+  const cards = rail.cards.map((entry) => dashRailCardEl(entry, nowMs))
+  list.replaceChildren(...cards)
+  if (!cards.length) {
+    const empty = document.createElement('div')
+    empty.className = 'dash-rail-empty'
+    empty.textContent = 'Nothing needs you now'
+    list.appendChild(empty)
+  }
+  if (bookmark) restoreDashRailFocus(section, bookmark, focusIndex)
+}
+
+function restoreDashRailFocus(section, bookmark, index) {
+  const cards = [...section.querySelectorAll('[data-rail-card]')]
+  const card = cards.find((el) => el.dataset.railCard === bookmark.id)
+  if (!card) {
+    const next = cards[Math.min(index, cards.length - 1)] ?? section.querySelector('.dash-rail-review')
+    if (next?.dataset.railCard) railSelectedId = next.dataset.railCard
+    next?.focus({ preventScroll: true })
+    return
+  }
+  const matches = bookmark.key
+    ? cardFocusTargets(card).filter((target) => cardFocusKey(target) === bookmark.key)
+    : []
+  const target = matches[bookmark.ordinal] ?? card
+  target.focus({ preventScroll: true })
+  if (target instanceof HTMLTextAreaElement) target.setSelectionRange(target.value.length, target.value.length)
+}
+
+function railIconButton(action, label, title, onClick) {
+  const button = btn('', onClick)
+  button.type = 'button'
+  button.className = `dash-rail-icon dash-rail-${action}`
+  button.dataset.railAction = action
+  button.title = title
+  button.setAttribute('aria-label', title)
+  button.innerHTML = `<svg viewBox="0 0 16 16" aria-hidden="true">${RAIL_ICONS[action]}</svg><span>${esc(label)}</span>`
+  return button
+}
+
+function dashRailCardEl(entry, nowMs) {
+  const id = needsEntryId(entry)
+  const ask = entryEntity(entry)
+  const owner = entry.kind === 'row' ? entry.board : entry.item
+  const m = rowModel(entry, { lastVisitAt })
+  const expanded = railExpanded.has(id) || holdsDraft(id)
+  const card = document.createElement('article')
+  card.className = `dash-rail-card${expanded ? ' expanded' : ''}`
+  card.dataset.railCard = id
+  card.setAttribute('role', 'listitem')
+  card.tabIndex = id === railSelectedId ? 0 : -1
+  card.setAttribute('aria-label', `${m.title}. ${m.ownerLabel}.`)
+  const asked = askTimeModel(m.askedAt, nowMs)
+  card.innerHTML = `
+    <div class="dash-rail-meta">
+      <span class="pdot" style="background:${pcolor(owner.project).dot}" aria-hidden="true"></span>
+      <span class="dash-rail-project">${esc(owner.project)}</span>
+      <span class="nrow-owner owner-${esc(m.actionCategory)}">${esc(m.ownerLabel)}</span>
+      ${entry.liveness === 'waiting' ? '<span class="dash-rail-waiting" title="The agent that asked is live and waiting on your answer">agent waiting</span>' : ''}
+      ${asked ? `<time class="dash-rail-asked" datetime="${esc(asked.datetime)}" title="${esc(asked.exact)}">${esc(asked.text)}</time>` : ''}
+    </div>
+    <div class="dash-rail-title" title="${esc(m.originalTitle)}">${esc(m.title)}</div>
+    ${m.secondary ? `<div class="dash-rail-tldr">${esc(m.secondary)}</div>` : ''}
+    ${cardLinksHtml(ask, owner)}`
+  bindContextDisclosures(card)
+  card.appendChild(entry.kind === 'row'
+    ? rowAnswerEl(entry.board, entry.row, null, { surface: 'rail' })
+    : answerEl(entry.item, { surface: 'rail' }))
+  const actions = document.createElement('div')
+  actions.className = 'dash-rail-actions'
+  const write = btn(expanded ? 'Hide reply' : 'Reply', () => toggleRailCard(card, id, write))
+  write.type = 'button'
+  write.title = 'Write an answer here (Enter)'
+  write.className = 'dash-rail-write'
+  write.dataset.railAction = 'expand'
+  write.setAttribute('aria-expanded', String(expanded))
+  actions.appendChild(write)
+  actions.appendChild(railIconButton('snooze', 'Snooze', 'Snooze for 4 hours (S)',
+    () => snoozeAsk(entry, new Date(Date.now() + RAIL_SNOOZE_MS).toISOString())))
+  if (pinOffered(ask, entry.kind)) actions.appendChild(railIconButton('pin', 'Pin', 'Pin for later (P): it waits in Later until you bring it back', () => pinAsk(entry)))
+  actions.appendChild(railIconButton('open', 'Open', 'Open in Inbox', () => openAskInInbox(entry)))
+  card.appendChild(actions)
+  card.addEventListener('focusin', () => { railSelectedId = id })
+  return card
+}
+
+function toggleRailCard(card, id, button) {
+  const open = !card.classList.contains('expanded')
+  if (!open && holdsDraft(id)) return // a draft keeps its editor on screen
+  if (open) railExpanded.add(id)
+  else railExpanded.delete(id)
+  card.classList.toggle('expanded', open)
+  button.textContent = open ? 'Hide reply' : 'Reply'
+  button.setAttribute('aria-expanded', String(open))
+  if (open) card.querySelector('textarea.reply-input:not(.reply-context-input)')?.focus({ preventScroll: true })
+}
+
+// Open the ask's own card in the Inbox, as a deep link does.
+function openAskInInbox(entry) {
+  if (entry.kind === 'item') {
+    focusItem(entry.item.id)
+    return
+  }
+  const id = entry.row.id
+  projectFilter = entry.board.project
+  agentFilter = null
+  actionFilter = 'all'
+  changedOnly = false
+  resetSearch()
+  selectTab('needsYou', { paint: false })
+  forceRender()
+  const target = needsYouRowEl(id)
+  if (!target) return
+  revealDetailsAncestors(target)
+  selectRow(id)
+  setOpenRow(id)
+  forceRender()
+}
+
+// J/K move between cards, 1–4 choose an option, S snoozes, P pins and Enter
+// opens the written answer. Only on a card or its buttons, never while typing.
+function onDashRailKey(event) {
+  if (event.defaultPrevented || event.isComposing || event.metaKey || event.ctrlKey || event.altKey) return
+  const target = event.target
+  if (!(target instanceof Element) || target.closest('textarea, input, select, [contenteditable="true"]')) return
+  const card = target.closest('[data-rail-card]')
+  if (!card) return
+  const key = event.key.length === 1 ? event.key.toLowerCase() : event.key
+  const action = (name) => card.querySelector(`[data-rail-action="${name}"]`)
+  let handled = null
+  if (key === 'j' || key === 'k') {
+    const cards = [...card.parentElement.querySelectorAll('[data-rail-card]')]
+    handled = cards[cards.indexOf(card) + (key === 'j' ? 1 : -1)] ?? null
+    if (handled) {
+      for (const other of cards) other.tabIndex = other === handled ? 0 : -1
+      railSelectedId = handled.dataset.railCard
+      handled.focus()
+    } else handled = card // at either end: stay put, but the key is still the rail's
+  } else if (key === 'Enter' && target === card) {
+    handled = action('expand')
+  } else if (/^[1-4]$/.test(key)) {
+    handled = card.querySelectorAll('.opt-pill')[Number(key) - 1] ?? null
+  } else if (key === 's') {
+    handled = action('snooze')
+  } else if (key === 'p') {
+    handled = action('pin')
+  }
+  if (!handled) return
+  event.preventDefault()
+  event.stopPropagation()
+  if (handled !== card && !handled.matches('[data-rail-card]')) handled.click()
+}
+
 function renderDashboard(model) {
   const host = document.querySelector('#dashboard .dashboard')
   // Keep native controls mounted; ambient updates replace only their data regions.
@@ -2074,21 +2292,7 @@ function renderDashboard(model) {
   activityPanel.appendChild(activityHead)
   grid.appendChild(activityPanel)
 
-  const ownership = document.createElement('section')
-  ownership.className = 'dashboard-card dashboard-ownership'
-  ownership.innerHTML = `
-    <div class="dashboard-card-head"><h2>Ownership flow</h2></div>
-    <div class="dashboard-flow">
-      <button type="button" data-flow-target="needsYou" data-dashboard-focus-key="flow:human" class="flow-human"><span>Waiting on you</span><strong>${esc(String(model.ownership.human))}</strong></button>
-      <div class="dashboard-flow-line" aria-hidden="true"></div>
-      <button type="button" data-flow-target="needsYou" data-dashboard-focus-key="flow:agent" class="flow-agent"><span>With agents</span><strong>${esc(String(model.ownership.agent))}</strong></button>
-      <div class="dashboard-flow-line" aria-hidden="true"></div>
-      <button type="button" data-flow-target="outcomes" data-dashboard-focus-key="flow:outcome" class="flow-outcome"><span>Outcome</span><strong>${esc(String(model.ownership.outcome))}</strong></button>
-    </div>`
-  for (const button of ownership.querySelectorAll('[data-flow-target]')) {
-    button.addEventListener('click', () => dashboardTarget(button.dataset.flowTarget))
-  }
-  grid.appendChild(ownership)
+  grid.appendChild(dashRailEl())
 
   const live = document.createElement('section')
   live.className = 'dashboard-card dashboard-dispatch'
@@ -2107,8 +2311,12 @@ function renderDashboard(model) {
   grid.appendChild(outcomes)
 
   host.appendChild(grid)
-  renderDashboardAmbient(model)
+  renderDashboardAmbient(model, { forced: true })
 }
+
+// True only while render() paints a frame the human asked for (forceRender):
+// the Dashboard rail rebuilds then even while it holds a draft (#303).
+let forcedAmbient = false
 
 function paintAmbient() {
   applyBadge()
@@ -2146,7 +2354,7 @@ function paintAmbient() {
   const live = pillLive
   const dashboard = dashboardModel(filtered, lastData.older, live)
   renderLiveBar(lastData.activity ?? [])    // collapsed strip — GLOBAL, never scoped (§7 filter-blindness, generalized)
-  renderDashboardAmbient(dashboard)
+  renderDashboardAmbient(dashboard, { forced: forcedAmbient })
   paintTabCounts(g, boards)
   paintLaterSectionHint()
   return { agents, g, boards, archived, live, dashboard }
@@ -2250,7 +2458,13 @@ function render() {
   const paintAllPanes = preparedFrame === null || !editablePanesPainted
   // The rebuild below detaches the nodes a text selection lives in (#223).
   const textSelection = preparedFrame ? preparedFrame.textSelection : captureSelection()
-  const frame = preparedFrame ?? paintAmbient()
+  forcedAmbient = preparedFrame === null
+  let frame
+  try {
+    frame = preparedFrame ?? paintAmbient()
+  } finally {
+    forcedAmbient = false
+  }
   // The lens this frame's data was filtered through (#298).
   const frameLens = navigationKey()
   frame.paintAllPanes = paintAllPanes
@@ -2463,9 +2677,16 @@ function openTriage() {
 
 function closeTriage({ restoreFocus = true } = {}) {
   const returnFocus = triageReturnFocus
+  const lightbox = document.getElementById('lightbox')
+  // A draft edited in the deck may be newer than a held copy of its editor on
+  // the page (the Dashboard rail, an Inbox card): repaint so none is stale.
+  // Only on the human's own close; recovery closes from inside a render.
+  const heldDraft = restoreFocus
+    && [...lightbox.querySelectorAll('textarea.reply-input')].some((input) => input.value.trim() !== '')
   triageDeck = null
   triageReturnFocus = null
-  document.getElementById('lightbox').hidden = true
+  lightbox.hidden = true
+  if (heldDraft) forceRender()
   if (restoreFocus) restoreTriageReturnFocus(returnFocus)
 }
 
@@ -2561,7 +2782,9 @@ const UNHANDLED_LABEL = 'Not done after all'
 // `onPin` is passed only for an unanswered ask that is not pinned yet, and only
 // while the Later section is on (#247): the pin is offered first, above the
 // snooze choices it replaces.
-function dispositionEl(onResponse, onSnooze, key, onPin = null) {
+// `label` names the menu: the Dashboard rail (#303) calls it "More…", since its
+// card already shows Snooze and Pin.
+function dispositionEl(onResponse, onSnooze, key, onPin = null, { label = 'More responses' } = {}) {
   const menu = document.createElement('details')
   menu.className = 'disposition-menu'
   menu.open = openDispositionMenus.has(key)
@@ -2570,7 +2793,7 @@ function dispositionEl(onResponse, onSnooze, key, onPin = null) {
     else openDispositionMenus.delete(key)
   })
   const summary = document.createElement('summary')
-  summary.textContent = 'More responses'
+  summary.textContent = label
   const wrap = document.createElement('div')
   wrap.className = 'disposition-actions'
   if (onPin) {
@@ -2632,6 +2855,37 @@ function deferWaitStop(entry, url, until, pins, options) {
   return deferAsk(entry, url, { until, defer: true, ...pins }, options)
 }
 
+const ROW_CHANGED_REFUSAL = 'This action changed before your click; refreshed without applying it.'
+const ITEM_CHANGED_REFUSAL = 'This question changed before your click; refreshed without applying it.'
+
+// The snooze and pin writes for one ask, shared by every card that offers them:
+// the Inbox and Review queue cards, the plan panel and the Dashboard rail (#303).
+function snoozeAsk(entry, until, { onSaved = null } = {}) {
+  if (entry.kind === 'item') return deferAsk(entry, `/api/items/${entry.item.id}/snooze`, { until })
+  const { row: r, board: b } = entry
+  return deferAsk(entry, `/api/boards/${b.id}/rows/${r.id}/snooze`,
+    { until, expected_revision: r.revision, expected_board_version: b.revision }, { onSaved })
+}
+
+function pinAsk(entry, { onSaved = null } = {}) {
+  if (entry.kind === 'item') {
+    return deferAsk(entry, `/api/items/${entry.item.id}/later`, { pinned: true }, { refusal: ITEM_CHANGED_REFUSAL })
+  }
+  const { row: r, board: b } = entry
+  return deferAsk(entry, `/api/boards/${b.id}/rows/${r.id}/later`,
+    { pinned: true, expected_revision: r.revision, expected_board_version: b.revision },
+    { onSaved, refusal: ROW_CHANGED_REFUSAL })
+}
+
+// Pin for later is offered on an unanswered ask that is not pinned yet, and only
+// while the Later section is on (#247). A question's Note is feedback, not an
+// answer, so only a row's annotation or handled mark counts.
+function pinOffered(entity, kind) {
+  if (!laterSection || entity.pinned_at) return false
+  if (kind === 'item') return !entity.reply && !entity.reply_kind
+  return !entity.annotation && !entity.annotation_kind && !entity.handled_at
+}
+
 // The test suspendState() applies: a draft is more than whitespace.
 function holdsDraft(id) {
   return [draftReplies[id], draftReplyContexts[id], rowDrafts[id]]
@@ -2648,6 +2902,9 @@ function keepDraftInView(entry) {
   if (triageDeck && activeTab !== 'needsYou') {
     selectTab('needsYou', { paint: false })
     triageReturnFocus = { kind: 'triageButton' }
+  } else if (activeTab === 'dashboard') {
+    // #303: the rail shows no deferred ask, so its draft goes to the Inbox card.
+    selectTab('needsYou', { paint: false })
   }
   const ask = entryEntity(entry)
   if (openRowId === ask.id) return
@@ -2829,7 +3086,10 @@ function bindReplyEditor(editor, submit) {
 // the two answers to one question ("what do you want to tell the agent?"), and
 // because the single `.write-error` slot below is then where a refusal on EITHER
 // of them appears.
-function rowAnswerEl(b, r, onSaved) {
+// `surface: 'rail'` is the Dashboard rail's compact card (#303): the same
+// controls and writes, with ★ on the recommended option, its own disclosure
+// state, and "I'll take a while" under More… (Snooze and Pin are on the card).
+function rowAnswerEl(b, r, onSaved, { surface = null } = {}) {
   recoverMismatchedRenderedRowDraft(b, r)
   const wrap = document.createElement('div')
   wrap.className = 'row-answer'
@@ -2981,7 +3241,7 @@ function rowAnswerEl(b, r, onSaved) {
       box.className = 'option'
       const pill = document.createElement('button')
       pill.className = `opt-pill${option.recommended ? ' rec' : ''}`
-      pill.innerHTML = `${esc(option.label)}${option.recommended ? '<span class="rec-tag">recommended</span>' : ''}`
+      pill.innerHTML = optionPillHtml(option, surface)
       pill.addEventListener('click', () => {
         input.value = option.label
         input.dataset.responseKind = 'answer'
@@ -3008,34 +3268,28 @@ function rowAnswerEl(b, r, onSaved) {
     }
     wrap.appendChild(choices)
   }
+  const keyPrefix = surface ? `${surface}:` : ''
   if (r.status === 'blocked' && !r.annotation && !r.annotation_kind && !r.handled_at) {
-    wrap.appendChild(dispositionEl(
+    const entry = { kind: 'row', row: r, board: b }
+    const menu = dispositionEl(
       (kind, text) => {
         input.value = text
         input.dataset.responseKind = kind
         rowDraftKinds[r.id] = kind
         save()
       },
-      (until) => deferAsk(
-        { kind: 'row', row: r, board: b },
-        `/api/boards/${b.id}/rows/${r.id}/snooze`,
-        { until, expected_revision: r.revision, expected_board_version: b.revision },
-        { onSaved },
-      ),
-      `row:${r.id}`,
-      r.pinned_at || !laterSection ? null : () => deferAsk(
-        { kind: 'row', row: r, board: b },
-        `/api/boards/${b.id}/rows/${r.id}/later`,
-        { pinned: true, expected_revision: r.revision, expected_board_version: b.revision },
-        { onSaved, refusal: 'This action changed before your click; refreshed without applying it.' },
-      ),
-    ))
+      (until) => snoozeAsk(entry, until, { onSaved }),
+      `${keyPrefix}row:${r.id}`,
+      surface || !pinOffered(r, 'row') ? null : () => pinAsk(entry, { onSaved }),
+      surface ? { label: 'More…' } : {},
+    )
+    wrap.appendChild(menu)
     const waitStop = waitStopEl(r, {
-      key: `wait:row:${r.id}`,
+      key: `${keyPrefix}wait:row:${r.id}`,
       onStop: async (until) => {
         const url = `/api/boards/${b.id}/rows/${r.id}/stop-waiting`
         const pins = { expected_revision: r.revision, expected_board_version: b.revision }
-        const refusal = 'This action changed before your click; refreshed without applying it.'
+        const refusal = ROW_CHANGED_REFUSAL
         if (laterSection) {
           await deferWaitStop({ kind: 'row', row: r, board: b }, url, until, pins, { refusal, onSaved })
           return
@@ -3046,7 +3300,7 @@ function rowAnswerEl(b, r, onSaved) {
         await reloadAndPaint()
       },
     })
-    if (waitStop) wrap.appendChild(waitStop)
+    if (waitStop) (surface ? menu.querySelector('.disposition-actions') : wrap).appendChild(waitStop)
   } else if (r.status === 'blocked') {
     const reminder = waitStopEl(r, { answered: true, pickedUp: rowPickup(r).pickedUp })
     if (reminder) wrap.appendChild(reminder)
@@ -7575,9 +7829,19 @@ async function submitItemReply(
   await reloadAndPaint()
 }
 
+// One option's pill. The rail (#303) marks the recommendation with ★ and keeps
+// the word for assistive technology.
+function optionPillHtml(option, surface = null) {
+  if (!option.recommended) return esc(option.label)
+  return surface === 'rail'
+    ? `<span class="rec-star" aria-hidden="true">★</span>${esc(option.label)}<span class="rec-tag visually-hidden">recommended</span>`
+    : `${esc(option.label)}<span class="rec-tag">recommended</span>`
+}
+
 // the answer surface on an unanswered question: option pills (recommended
 // first), a Compare toggle for the tradeoffs, and a free-text answer
-function answerEl(it) {
+// `surface: 'rail'`: the Dashboard rail's compact card (#303); see rowAnswerEl.
+function answerEl(it, { surface = null } = {}) {
   const wrap = document.createElement('div')
   wrap.className = `options${closedCompares.has(it.id) ? '' : ' comparing'}`
   setHintOwner(wrap, it)
@@ -7588,7 +7852,7 @@ function answerEl(it) {
     box.className = 'option'
     const pill = document.createElement('button')
     pill.className = `opt-pill${o.recommended ? ' rec' : ''}`
-    pill.innerHTML = `${esc(o.label)}${o.recommended ? '<span class="rec-tag">recommended</span>' : ''}`
+    pill.innerHTML = optionPillHtml(o, surface)
     pill.addEventListener('click', () => sendReply(
       it.id, o.label, effectiveReplyContext(it), 'answer', editorGeneration,
     ))
@@ -7665,28 +7929,27 @@ function answerEl(it) {
   // Change answer's prefill was not typed here: pin it to the question it is shown against.
   if (itemDraftMeta[it.id]?.answer === undefined
     && (draftReplies[it.id] !== undefined || draftReplyContexts[it.id] !== undefined)) rememberDraftOwner()
-  wrap.appendChild(dispositionEl(
+  const keyPrefix = surface ? `${surface}:` : ''
+  const entry = { kind: 'item', item: it }
+  const menu = dispositionEl(
     (kind, text) => sendReply(
       it.id, text, effectiveReplyContext(it), kind, editorGeneration,
     ),
-    (until) => deferAsk({ kind: 'item', item: it }, `/api/items/${it.id}/snooze`, { until }),
-    `item:${it.id}`,
-    it.reply || it.reply_kind || it.pinned_at || !laterSection ? null : () => deferAsk(
-      { kind: 'item', item: it },
-      `/api/items/${it.id}/later`,
-      { pinned: true },
-      { refusal: 'This question changed before your click; refreshed without applying it.' },
-    ),
-  ))
+    (until) => snoozeAsk(entry, until),
+    `${keyPrefix}item:${it.id}`,
+    surface || !pinOffered(it, 'item') ? null : () => pinAsk(entry),
+    surface ? { label: 'More…' } : {},
+  )
+  wrap.appendChild(menu)
   const waitStop = waitStopEl(it, {
     // A chat-recorded answer reuses this surface as a correction form, but the
     // agent recorded it itself: nothing is waiting, so nothing can be stopped.
     answered: Boolean(it.reply || it.reply_kind),
     pickedUp: Boolean(it.reply_seen_at),
-    key: `wait:item:${it.id}`,
+    key: `${keyPrefix}wait:item:${it.id}`,
     onStop: async (until) => {
       const url = `/api/items/${it.id}/stop-waiting`
-      const refusal = 'This question changed before your click; refreshed without applying it.'
+      const refusal = ITEM_CHANGED_REFUSAL
       if (laterSection) {
         await deferWaitStop({ kind: 'item', item: it }, url, until, {}, { refusal })
         return
@@ -7697,7 +7960,7 @@ function answerEl(it) {
       await reloadAndPaint()
     },
   })
-  if (waitStop) wrap.appendChild(waitStop)
+  if (waitStop) (surface ? menu.querySelector('.disposition-actions') : wrap).appendChild(waitStop)
   return wrap
 }
 

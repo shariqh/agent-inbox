@@ -47,7 +47,8 @@ export interface DashboardModel {
     outcomes: number
     projects: number
   }
-  ownership: { human: number; agent: number; outcome: number }
+  /** #303: the top three attention entries in rail order, how many more, and how many wait in Later */
+  rail: { cards: RelayEntry[]; more: number; later: number }
   waitingEntries: RelayEntry[]
   agentEntries: RelayEntry[]
   recentOutcomes: RelayEntry[]

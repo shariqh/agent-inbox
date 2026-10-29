@@ -425,8 +425,10 @@ describe('C2 · a REFUSED change-answer must not freeze the viewer', () => {
     // The orphan named directly, in the two halves that make it an orphan:
     // the refusal built no answer surface, so there is no input anywhere that
     // could hold or clear a draft…
-    expect(document.querySelectorAll('.reply-input').length,
+    // (#303: the Dashboard rail draws the SECOND question's own editor; only this item's counts.)
+    expect([...document.querySelectorAll('.reply-input')].filter((input) => !input.closest('#dashRail')).length,
       'a refused change-answer leaves the item answered, so no answer surface is built').toBe(0)
+    expect(document.querySelector(`#dashRail [data-rail-card="${id}"]`)).toBeNull()
     // …and #pauseHint is the app's own report of suspendReason(). Pre-fix this reads
     // "paused — updating when you're done" forever: a viewer paused on a draft with
     // no home. THIS is the assertion that discriminates the C2 hunk.

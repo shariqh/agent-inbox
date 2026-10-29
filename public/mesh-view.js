@@ -234,7 +234,9 @@ export function installMeshView({ doc = globalThis.document, jumpToAsk }) {
     const focusKey = list.contains(doc.activeElement) ? doc.activeElement?.dataset?.dashboardFocusKey : null
     list.replaceChildren(...groups.map(cardEl))
     if (focusKey && doc.hasFocus?.()) {
-      list.querySelector(`[data-dashboard-focus-key="${globalThis.CSS?.escape?.(focusKey) ?? focusKey}"]`)?.focus({ preventScroll: true })
+      // matched by value, never through a selector built from agent text
+      ;[...list.querySelectorAll('[data-dashboard-focus-key]')]
+        .find((el) => el.dataset.dashboardFocusKey === focusKey)?.focus({ preventScroll: true })
     }
   }
 

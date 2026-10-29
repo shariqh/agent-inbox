@@ -2134,12 +2134,28 @@ body.settings-open #liveBar { opacity: .32; }
 .mesh-agent-name { margin: 0; font-size: 15px; font-weight: 680; }
 .mesh-chip { padding: 0 7px; border-radius: 999px; background: color-mix(in srgb, var(--app-text-soft) 14%, transparent); color: var(--app-muted); font-size: 10.5px; font-weight: 650; }
 .mesh-chip.tone-agent, .mesh-session.working .mesh-state { background: color-mix(in srgb, var(--app-agent) 14%, transparent); color: var(--app-agent); }
-.mesh-session { display: grid; grid-template-columns: 10px minmax(90px, 140px) minmax(0, 1fr) auto auto; align-items: center; gap: 10px; padding: 7px 0; border-top: 1px solid var(--app-border); font-size: 12.5px; }
+.mesh-session {
+  display: grid;
+  grid-template-areas: "dot where recency state" ". doing doing doing";
+  grid-template-columns: 10px minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 2px 10px;
+  padding: 7px 0;
+  border-top: 1px solid var(--app-border);
+  font-size: 12.5px;
+}
+.mesh-dot { grid-area: dot; }
+.mesh-where { grid-area: where; }
+.mesh-recency { grid-area: recency; }
+.mesh-state { grid-area: state; }
+.mesh-doing { grid-area: doing; }
 .mesh-session:first-child { border-top: 0; }
 .mesh-session.idle, .mesh-session.dormant { color: var(--app-muted); }
 .mesh-dot { width: 8px; height: 8px; border: 1.5px solid var(--app-border-strong); border-radius: 50%; }
 .mesh-session.working .mesh-dot { border-color: var(--app-agent); background: var(--app-agent); }
-.mesh-where { display: grid; min-width: 0; }
+.mesh-where { display: flex; min-width: 0; align-items: baseline; gap: 8px; overflow: hidden; }
+.mesh-project { flex: none; max-width: 100%; }
+.mesh-branch { min-width: 0; }
 .mesh-project, .mesh-branch { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mesh-branch { color: var(--app-text-soft); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; }
 .mesh-doing { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

@@ -11,7 +11,7 @@
 //   meshctl status                           say what mesh.json turns on
 //
 // Exit codes: 0 done (or nothing to do), 1 refused or failed, 2 usage.
-import { closeSync, constants, copyFileSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, unlinkSync, writeSync } from 'node:fs'
+import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, unlinkSync, writeSync } from 'node:fs'
 import { randomBytes } from 'node:crypto'
 import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
@@ -71,17 +71,33 @@ function backupName(file: string, now: Date): string {
   return `${file}.bak-${t}`
 }
 
-/** Copies the current file aside without ever replacing another backup. */
+/** Copies the current file aside, never through a symlink and never over another backup. */
 function writeBackup(file: string, now: Date): string {
+  const source = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+  let bytes: Buffer
+  try {
+    if (!fstatSync(source).isFile()) throw new Error('not a regular file')
+    bytes = readFileSync(source)
+  } finally {
+    closeSync(source)
+  }
   const base = backupName(file, now)
   for (let n = 0; n < 100; n++) {
     const target = n ? `${base}-${n}` : base
+    let fd: number
     try {
-      copyFileSync(file, target, constants.COPYFILE_EXCL)
-      return target
+      fd = openSync(target, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600)
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+      if ((error as NodeJS.ErrnoException).code === 'EEXIST') continue
+      throw error
     }
+    try {
+      writeSync(fd, bytes)
+      fsyncSync(fd)
+    } finally {
+      closeSync(fd)
+    }
+    return target
   }
   throw new Error('no free backup name')
 }

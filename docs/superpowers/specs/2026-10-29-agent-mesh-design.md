@@ -1,6 +1,7 @@
 # Design: opt-in agent mesh (A2A registry, wrappers, delegation, Agent Cards)
 
-**Date:** 2026-10-29 (revised the same day after an independent design review; §14.3)
+**Date:** 2026-10-29 (revised the same day after an independent design review, §14.3, and again
+after Shariq's round-3 questions, §14.4)
 **Status:** Design only, for Shariq's review. Nothing here is built. No implementation issues
 are opened until Shariq accepts the phases (§11) and answers the open questions (§13).
 **Scope of this PR:** this document. No source, test or workflow changes.
@@ -9,6 +10,9 @@ are opened until Shariq accepts the phases (§11) and answers the open questions
 Dashboard 2.0 ([`2026-10-22-dashboard-2-proposal.md`](2026-10-22-dashboard-2-proposal.md),
 phases #302–#307), and two research briefs from 2026-10-28 kept outside the repo. Every fact this
 design depends on was checked against a primary source on 2026-10-29 (Appendix A).
+**Round 3 added** §15 (adopt Netflix Eureka?), §16 (mockups) and §17 (how we'll know it's worth
+it), with detail in Appendices B–D. They are numbered after the decision log so earlier section
+references stay stable.
 
 ---
 
@@ -24,9 +28,10 @@ design depends on was checked against a primary source on 2026-10-29 (Appendix A
 3. **The threat model is explicit** (§3). The safety rails protect against remote callers and
    against delegates without a shell. They do not protect against a local agent with an
    unrestricted shell, which can already spend money directly.
-4. **The registry is Eureka-shaped** (register, renew, evict, fetch, watch) with a sleep-aware
-   self-preservation rule. It copies `a2a-lib`'s REST shape without depending on it, and keeps
-   its own `mesh.db`. The hub gains no table, column or trigger (§5).
+4. **The registry speaks Eureka** (register, renew, cancel, fetch, delta) with a sleep-aware
+   self-preservation rule. Proposed in round 3 (P13, §15): it implements a defined subset of
+   Eureka's REST API in TypeScript, so existing Eureka clients can join, instead of copying
+   `a2a-lib`'s shape. It keeps its own `mesh.db`. The hub gains no table, column or trigger (§5).
 5. **Agent Inbox's stdio MCP server stays network-free.** Delegation tools live in a separate
    server, `agent-inbox-mesh` (§7).
 6. **One ACP→A2A wrapper covers Copilot and Claude.** Each delegate runs in a worktree of an
@@ -43,6 +48,9 @@ design depends on was checked against a primary source on 2026-10-29 (Appendix A
 10. **Nine small phases, each with a go/pivot checkpoint.** The first two are an Agents view built
     on today's presence and a local, read-only wrapper spike, so the biggest risk (are delegated
     results any good?) is tested before any network piece is built (§11).
+11. **Every checkpoint reads numbers** (§17): acceptance, rework, human clicks and minutes,
+    time to result, spend, polling, failures and safety-rail counts, from the ledger and a
+    replayable scenario bench that runs each task delegated and in-session.
 
 ---
 
@@ -99,6 +107,7 @@ no write, no network, no timer beyond that one. The browser never supplies the r
 |---|---|---|---|
 | Agents view (M1) | browser, from `/api/activity` | `agentsView: true`, then a window reload | No Mesh section, no view, no extra read |
 | Local wrapper spike (M2) | its own process, loopback only | running `agent-inbox-wrap --profile <name>` | Nothing |
+| Scenario bench (M2, §17.2) | its own process, by hand | running `agent-inbox-bench run` | Nothing |
 | Registry (M3) | its own process, any host | running `agent-inbox-registry` or the container | No listener, no `mesh.db` |
 | Console link and presence publisher (M3) | viewer process | `console.registry`; `console.publishPresence` | No mesh request leaves the viewer |
 | Console relay (M4) | viewer process | `console.relay: true` | No `@mesh` plan is ever written |
@@ -122,7 +131,7 @@ writes the host config atomically with a backup; `uninstall-bridge` removes only
 - **Runtime payload:** the same `dist/` files are staged into every runtime, so the runtime's
   manifest and id change as they do for any release. The registry runs under the runtime's own
   Node with the runtime's Node-ABI `better-sqlite3`, never the Electron-rebuilt copy.
-- **`packages/mesh/`:** the wrapper and the bridge, which need `@a2a-js/sdk`,
+- **`packages/mesh/`:** the wrapper, the bridge and the scenario bench, which need `@a2a-js/sdk`,
   `@agentclientprotocol/sdk` and the MCP SDK. It is a **separate, non-workspace package** with its
   own `package.json` and `package-lock.json`. The root gets no `workspaces` key, so npm never
   merges its graph into the root lockfile, and the release pipeline never builds it.
@@ -261,8 +270,9 @@ any payload.
   shares only local modules that open no connection (`scope.ts`, `infer.ts`), pinned by a graph
   test. It does not import `store.ts` and never writes the hub.
 - **The viewer loopback boundary** is unchanged. New routes (`GET /api/mesh`,
-  `POST /api/mesh/pause`, `POST /api/mesh/resume`) exist only when `mesh.json` enables the
-  console, and sit behind the existing outer gate, so mutations still need a trusted Origin.
+  `POST /api/mesh/pause`, `POST /api/mesh/resume`, and from M6 `POST /api/mesh/verdict`, §17)
+  exist only when `mesh.json` enables the console, and sit behind the existing outer gate, so
+  mutations still need a trusted Origin.
 - **One door per database.** `store.ts` for the hub; `src/mesh-store.ts` for `mesh.db`, with the
   hub's rules: WAL, `busy_timeout=5000`, `.immediate()` for any read-then-write transaction, no
   raw SQL elsewhere.
@@ -305,10 +315,11 @@ Stored in `mesh.db`; the store module owns the exact schema.
 | **Agent** | `namespace/name` | `card` (the A2A Agent Card, unchanged, at most 64 KB), `card_sha256`, `trust`, `owner` (the identity that first registered it) |
 | **Instance** | `(agent, instance_id)` | `kind` (`a2a`, `session`, `static`), `endpoint`, `host`, `ttl_s`, `lease_token_sha256`, `renewed_at`, `expires_at`, `state`, `load`, `load_at` |
 | **Load sample** | `(agent, instance, minute)` | started, completed, failed, cost units, max active; kept 7 days |
-| **Chain** | `chain_id` | `origin` (hub id, project, session, agent), `capability_sha256`, `status`, the approved binding (§8.2), budget limits and spent units, `deadline_at` |
+| **Chain** | `chain_id` | `origin` (hub id, project, session, agent), `capability_sha256`, `status`, the approved binding (§8.2), budget limits and spent units, `deadline_at`; for §17: `verdict` (accept, rework, not used), the bridge's counters, `bench_run` |
 | **Grant** | `grant_id` | `chain_id`, `parent_hop`, bound fields (§8.1), `expires_at` (5 minutes), `redeemed_at` |
 | **Hop** | `(chain_id, task_id)` | `parent`, `depth`, `caller`, `callee`, `state`, `reserved_units`, `spent_units`, `summary` (at most 500 characters) |
-| **Ask** | `ask_id` | `chain_id`, `task_id`, `kind` (`first_hop`, `permission`, `credential`), template fields, remote text, `revision`, `decision`, `decided_at` |
+| **Ask** | `ask_id` | `chain_id`, `task_id`, `kind` (`first_hop`, `permission`, `credential`), template fields, remote text, `revision`, `decision`, `decided_at`, `touches` (human writes on its row, §17) |
+| **Refusal** | `(minute, reason)` | count of refusals by reason code (paused, budget, hop limit, back-edge, grant mismatch, endpoint, ask rate, tampered, context reuse); kept 90 days |
 | **Mesh state** | singleton | `paused` and by whom, `preserving`, `revision` |
 
 Tokens, lease tokens, chain capabilities and grants are stored only as SHA-256 hashes.
@@ -333,21 +344,29 @@ covers load; the nearest is the open liveness-attestation proposal (A2A #1934).
 
 ### 5.3 API
 
-The membership routes copy `a2a-lib/a2a-registry-server`'s REST shape, so its clients work
-against ours:
+**Membership is a Eureka-compatible subset** (P13, §15; the exact routes, fields and deviations
+are in Appendix B). Before round 3 this table copied `a2a-lib`'s `/v1/agents` routes; if Shariq
+keeps D2 as written, it reverts to them and nothing else in this design changes.
+
+| Method | Path | Eureka operation |
+|---|---|---|
+| `POST` | `/eureka/apps/{APP}` | **Register** an instance (`204`); the A2A card rides in instance metadata |
+| `PUT` | `/eureka/apps/{APP}/{instanceId}` | **Renew** (`200`; `404` means register again); our wrappers may add a JSON body with `load` |
+| `DELETE` | `/eureka/apps/{APP}/{instanceId}` | **Cancel** |
+| `GET` | `/eureka/apps`, `/eureka/apps/{APP}`, `/eureka/apps/{APP}/{instanceId}`, `/eureka/instances/{instanceId}`, `/eureka/vips/{vip}` | **Fetch** |
+| `GET` | `/eureka/apps/delta` | **Delta fetch**: changes in the last 3 minutes, with `apps__hashcode` |
+| `PUT` / `DELETE` | `/eureka/apps/{APP}/{instanceId}/status?value=` | Status override (`OUT_OF_SERVICE` drains an instance) |
+| `PUT` | `/eureka/apps/{APP}/{instanceId}/metadata?key=value` | Update metadata (owner or lease holder only) |
+
+Our own read routes sit beside it:
 
 | Method | Path | Purpose |
 |---|---|---|
-| `POST` | `/v1/agents` | Register an instance |
-| `GET` | `/v1/agents?skill=&tag=&capability=&protocolBinding=&name=&limit=&cursor=` | **Fetch** agents with an unexpired instance |
-| `GET` | `/v1/agents/{id}` | One agent and its instances |
-| `POST` / `GET` | `/v1/agents/{id}/instances` | Register a named instance / list |
-| `PUT` / `GET` / `DELETE` | `/v1/agents/{id}/instances/{instanceId}` | Replace / fetch / **cancel** |
-| `POST` | `/v1/agents/{id}/instances/{instanceId}/heartbeat` | **Renew** (`X-Registry-Lease-Token`; our body may carry `load`) |
+| `GET` | `/v1/agents?skill=&tag=&capability=&protocolBinding=&name=&limit=&cursor=` | Card-aware discovery: agents with an `up` instance (the query shape `a2a-lib` uses) |
 | `GET` | `/v1/watch` | **Watch**: revisioned SSE snapshots, resumable with `after` or `Last-Event-ID` |
 | `GET` | `/health/live`, `/health/ready` | Probes |
 
-Lease expiry is the **evict**. `a2a-lib`'s legacy `/v1/registry/*` aliases are not copied.
+Lease expiry is the **evict**.
 
 Mesh routes, under `/v1/mesh/`:
 
@@ -361,6 +380,9 @@ Mesh routes, under `/v1/mesh/`:
 | `GET` | `/v1/mesh/console?after=` | Open asks, chains and state since a revision (ETag) | `console` identity |
 | `POST` | `/v1/mesh/asks/{id}/decision` | Record a decision, signed by the console key and pinned to `revision` | `approve` (the console key only) |
 | `POST` / `DELETE` | `/v1/mesh/pause` | Kill switch on / off | on: any authenticated identity; off: the console key only |
+| `POST` | `/v1/mesh/chains/{id}/stats` | The bridge's counters for §17 (status calls, idle polls, wait re-arms) | chain capability holder |
+| `POST` | `/v1/mesh/chains/{id}/verdict` | Accept, rework or not used (§17); a metric, never an authorization | `console`, or `meshctl`'s identity; the bridge has no verdict tool, so agents never grade their own delegations |
+| `GET` | `/v1/mesh/metrics?window=&bench=` | The §17 metrics, computed from `mesh.db` | `console`, `discover` |
 
 Well-known documents: **`/.well-known/agent-card.json`** (the registry's own card, with no A2A
 skills yet) and, only when `catalog: true` is set, **`/.well-known/ai-catalog.json`**
@@ -562,7 +584,9 @@ declined, finished or failed, backing off the way `watchTimeoutMs` does. Copilot
 completion wakes the session, as it does for flags. Claude Code has no host wake for a process
 that is not its hook; a Claude agent may run the same command as a background shell task, and if
 the host does not wake on it, the human resumes the agent (the chain's result is on the Agents
-view). M6 measures the turns spent polling.
+view). M6 measures the turns spent polling: the bridge counts its `status` calls, those that saw
+no change, and `wait` re-arms, and reports them per chain with `POST /v1/mesh/chains/{id}/stats`
+when the chain ends (§17).
 
 ---
 
@@ -763,7 +787,10 @@ remote icons), its instances (state, lease age and TTL bar, utilisation, queue, 
 and distribution (from M7), open chains with their hops and spend, and "waiting on you", the count
 of its open asks read from the frame's `attentionEntries` (it reads the predicate and never feeds
 it). M1 draws presence sessions from `/api/activity` grouped by agent kind. A banner shows "Mesh
-paused" or "Registry may be partitioned", with **Pause mesh** and **Resume**.
+paused" or "Registry may be partitioned", with **Pause mesh** and **Resume**. From M6 a **Mesh
+value** view beside it shows §17's numbers, and each finished chain offers a quiet **Accept /
+Needed rework / Not used** verdict, which is ambient: no badge, count or notification (from M4,
+`meshctl send` asks for the same verdict). Mockups: §16 (a1, a2, c, f).
 
 ### 10.2 How the page learns the mesh is on
 
@@ -854,16 +881,18 @@ that, since such an agent could read the database directly anyway.
 Each phase is one or two reviewable PRs, useful on its own, and ends at a **go/pivot
 checkpoint**: Shariq reads the evidence and chooses **continue**, **change** or **stop** before
 the next phase starts. Every phase ships its "off" tests (§2.4). "Agent" means the implementing
-agent; "reviewer" means an independent review before merge.
+agent; "reviewer" means an independent review before merge. **Numbers** names the §17 metrics
+(Appendix C) and bench scenarios (Appendix D) the checkpoint reads; the bench summary and the
+Mesh value export are attached to the checkpoint.
 
 | Phase | Ships | Size |
 |---|---|---|
 | M1 | Agents view from presence (local, no network) | 3–4 days |
-| M2 | Local wrapper spike (loopback, read-only Copilot, no registry) | about 1 week |
-| M3 | Registry and cross-host view | 1–1.5 weeks |
-| M4 | Admission and the human loop (chains, grants, relay, console key, kill switch) | 2–2.5 weeks |
+| M2 | Local wrapper spike (loopback, read-only Copilot, no registry) and the scenario bench | 1.5 weeks (was 1; +bench, §17.2) |
+| M3 | Registry with the Eureka-compatible surface, and the cross-host view | 1.5–2 weeks (was 1–1.5; +Eureka subset, §15) |
+| M4 | Admission and the human loop (chains, grants, relay, console key, kill switch), metrics route and verdicts | 2.5 weeks (was 2–2.5) |
 | M5 | Wrappers on the tailnet (Copilot, Claude, write profiles) | 2–2.5 weeks |
-| M6 | Agents delegate, one hop (bridge) | 1.5–2 weeks |
+| M6 | Agents delegate, one hop (bridge), and the Mesh value view | 2 weeks (was 1.5–2) |
 | M7 | Load, distribution, local model agent | 1–2 weeks |
 | M8 | Multi-hop within budget | 1 week |
 | M9 | Publishable | 3–4 weeks |
@@ -873,23 +902,30 @@ the Agents view from `/api/activity`.
 - *Validation.* Agent: the off tests; badge, tabs, dock projection and poll identical with the view
   on and off; renderer CPU within #281's idle baseline plus 1 point. Shariq: a week beside Live,
   then three questions: faster than the Live drawer? grouping by agent useful? anything wrong?
+- *Numbers.* Zero extra requests and byte-identical poll bodies with the view off; renderer CPU
+  at most #281's idle baseline plus 1 point with it on. No bench yet: there is nothing to delegate.
 - *Checkpoint.* Continue if it is used and correct. Change: fold the useful parts into #304's lanes.
   A weak M1 says nothing about delegation, so it never stops the mesh by itself.
 
 **M2 — Local wrapper spike.** `agent-inbox-wrap` with one read-only Copilot profile on loopback,
 a local token in a `0600` file, and `meshctl send` calling it directly. No registry, no relay,
 no hub writes, no permission prompts (the profile auto-allows its read-only tools and rejects the
-rest). Includes the Copilot config audit (§6.3) and the read-only git syntax.
+rest). Includes the Copilot config audit (§6.3), the read-only git syntax, and the scenario bench
+(§17.2) with its first scenarios.
 - *Validation.* Agent: 20 hand-sent review and question tasks; success, p50 and p95 time, turns
   per task; an audit that nothing outside the worktree changed; the session's own report shows no
   user MCP server or repository hook loaded. Shariq: judges each result usable or not.
+- *Numbers.* Bench S1, S2 and S5, three repeats each, delegated and in-session; this also records
+  the in-session baseline for S1–S5 that later phases compare against. Accepted ≥ 80 %, failure
+  and timeout ≤ 10 %, delegated work time ≤ 1.25× in-session, zero escapes (wrapper audit log).
 - *Checkpoint.* Continue at 80 % usable and a clean audit. Change: try `copilot -p` with JSONL
   output if ACP is unstable. Stop the delegation track if delegated results are not good enough;
   M1 and, if wanted, M3 still stand.
 
-**M3 — Registry and cross-host view.** `agent-inbox-registry` and `mesh-store.ts` (membership,
-watch, leases, self-preservation, tokens with Tailscale binding), `meshctl register` and
-`heartbeat`, the console link, `GET /api/mesh` and the presence publisher.
+**M3 — Registry and cross-host view.** `agent-inbox-registry` and `mesh-store.ts` (membership
+through the Eureka-compatible subset of Appendix B, watch, leases, self-preservation, tokens with
+Tailscale binding), `meshctl register` and `heartbeat`, the console link, `GET /api/mesh` and the
+presence publisher.
 - *Validation.* Agent: fake-clock tests (sleep gap, one host lost, partition); the header-spoofing
   tests of §9.2; a gate-ordering test that every route is `401` without a token; registry idle under
   1 % CPU and 80 MB RSS. Real sleep tests in both layouts: (a) registry on the Mac, lid closed 8
@@ -898,6 +934,10 @@ watch, leases, self-preservation, tokens with Tailscale binding), `meshctl regis
   `preserving`, and the Mac's return within one TTL of wake. Reviewer: auth, Host checks and the
   listener. Shariq: a week with the Mac, homelab and ubi-llm on one view; count phantom and
   missing instances.
+- *Numbers.* Phantom and missing instances: 0 over the week; false expiries in the sleep tests: 0;
+  registry idle under 1 % CPU and 80 MB RSS; Appendix B's golden fixtures: every route passes; one
+  real Eureka client (Spring Boot or `eureka-js-client`, by hand) registers, renews, fetches and
+  cancels with a token.
 - *Checkpoint.* Continue with no phantom or missing instances. Change: tokens without Tailscale
   binding if that proves awkward. Stop: keep M1 and M2's results.
 
@@ -905,12 +945,15 @@ watch, leases, self-preservation, tokens with Tailscale binding), `meshctl regis
 `@mesh` filters (§10.3), the relay (§10.4–§10.5), the console key and pairing (§9.3) and the kill
 switch. `meshctl send` now opens a chain whose first hop needs the click, and calls the M2
 wrapper, still loopback-only, through a grant. Asks appear as `@mesh` plans in the Agent Inbox
-app on the hub machine.
+app on the hub machine. The ledger's §17 records (refusals, ask touches, verdicts),
+`GET /v1/mesh/metrics` and `meshctl status`'s value line arrive here.
 - *Validation.* Agent: grant tests (wrong hash, wrong callee, reused, expired, after pause);
   `@mesh` isolation tests (§10.3); the mapping table (§10.5) end to end; `disable` with an open ask
   (§2.5); the kill switch stops every task within 10 seconds. Reviewer: security review of the
   ledger, the relay and the console key. Shariq: approves and declines a week of hand-sent tasks;
   counts clicks and anything confusing.
+- *Numbers.* Touches per chain ≤ 2; clarify rate ≤ 10 % of asks; lost decisions 0; kill switch
+  p95 ≤ 10 s over 10 trials; bench S8 (injection) refused every time with zero escapes.
 - *Checkpoint.* Continue if every ask was clear and every decision landed. Change the ask templates
   or the mapping if not. Stop if the human loop is too heavy to use.
 
@@ -922,17 +965,25 @@ must pass before any Claude profile ships.
   triggers a permission); no file outside the worktree changed; every permission ask answered
   and resumed correctly; the adapter spike (`settingSources`, structured questions, cost).
   Reviewer: the wrapper's paths, allowlists, credentials and context binding. Shariq: 80 % usable.
+- *Numbers.* Bench S1–S6 per wrapper: accepted ≥ 80 %, rework ≤ 20 %, failure and timeout
+  ≤ 10 %, escapes 0, S6's permission ask correct every time (nothing ran before the click), spend
+  per accepted result ≤ 1.5× in-session.
 - *Checkpoint.* Continue at 80 % usable with zero escapes. Change: keep only the better agent, or
   only read-only profiles. Stop the Claude profile if the audit cannot pass.
 
 **M6 — Agents delegate, one hop.** The bridge (§7), `meshctl install-bridge`, the `wait` watch
-contract, `delegation: "first-hop-click"`. `maxHops` stays 1.
+contract, `delegation: "first-hop-click"`, the bridge's counters and the Mesh value view (§17).
+`maxHops` stays 1.
 - *Validation.* Agent: the adversarial suite of §3. Shariq: a week of real use; delegations
   proposed, approved and declined; clicks per chain; how often results were used; turns spent
   polling (target: a median of 3 or fewer `status` calls per delegation).
+- *Numbers.* The week's Mesh value export: proposals approved ≥ 50 %; accepted ≥ 70 % (what "most
+  results used" means); touches ≤ 2 per task; median `status` calls ≤ 3 and idle polls ≤ 1 per
+  delegation; net human time > 0; spend per accepted result ≤ 1.5× in-session. Bench S1–S5 driven
+  by an agent through the bridge lands within 10 points of M5's results.
 - *Checkpoint.* Continue if at least half the proposals were approved and most results used.
   Change: tighten when agents may call `delegate`, or the wake path. Stop if delegation costs more
-  attention than it saves.
+  attention than it saves (net human time ≤ 0 for the week).
 
 **M7 — Load, distribution, local model.** Load samples and the distribution view; least-loaded
 selection for `delegate({ skill })`; a real-call probe from the console to allowlisted endpoints;
@@ -940,6 +991,9 @@ the `openai-compatible` model agent on ubi-llm.
 - *Validation.* Agent: two instances under 20 synthetic tasks each take 40–60 %; nothing routed to
   a `draining`, `stale` or `expired` instance; a ubi-llm model swap shows `busy`, not failure.
   Shariq: does the view inform where work should go?
+- *Numbers.* Bench S9 (local model) and S10 (fan-out): S10's wall time ≤ 0.7× the sequential
+  in-session run; ubi-llm failure and timeout ≤ 10 % with swaps reported as busy; routes to a
+  non-`up` instance: 0.
 - *Checkpoint.* Continue if so. Change: show only utilisation and queue. Stop routing; keep the view.
 
 **M8 — Multi-hop within budget.** `maxHops` up to 3, hop credentials passed to a delegate's own
@@ -947,6 +1001,9 @@ bridge (§8.6).
 - *Validation.* Agent: a synthetic agent that always delegates is stopped by the hop limit and
   back-edge rule; spend never passes a reservation; the kill switch stops a three-hop chain in 10
   seconds. Shariq: two weeks; any surprising chain is reviewed.
+- *Numbers.* Bench S7 (two-hop) passes 3 of 3 with approvals per chain ≤ 1.2; reservation
+  overruns 0; S8's depth and back-edge variants refused every time; share of real chains that used
+  depth 2 (if under 10 %, depth was rarely useful).
 - *Checkpoint.* Continue if nothing surprised him. Change back to one hop if depth was rarely
   useful. Stop at the first escape from a budget.
 
@@ -955,6 +1012,8 @@ container, docs without Tailscale; a Go `tsnet` binary only if asked for.
 - *Validation.* Agent: a clean machine without Tailscale reaches a two-host mesh from the docs in
   under 30 minutes. Reviewer: full security review. Shariq: another person or group uses it for
   two weeks.
+- *Numbers.* Setup ≤ 30 minutes; the other person's bench run of S1–S5 lands within 10 points of
+  ours; their two-week Mesh value export shows accepted ≥ 70 % and net human time > 0.
 - *Checkpoint.* Publish if they keep it; change packaging if setup was the obstacle; otherwise stay
   a personal tool.
 
@@ -975,6 +1034,8 @@ container, docs without Tailscale; a Go `tsnet` binary only if asked for.
 | Relay work on Electron main. | One conditional request per 5 seconds and bounded diffs. |
 | A2A, AI Catalog and MCP keep moving. | A REST shape already in use; the catalog is optional; the bridge is small. |
 | Single maintainer. | Every piece is removable (§2.5); phases may stop. |
+| The Eureka subset drifts from what real clients send. | Golden fixtures recorded once from a real server (Appendix B); a real client checked by hand in M3; the subset is documented, not "Eureka-compatible" in general. |
+| Metrics flatter the mesh (bench tasks too easy, verdicts too generous). | Every scenario also runs in-session; misses are reported beside passes; net human time counts rework and approvals; the bench changes only between phases, never to pass one. |
 
 ---
 
@@ -997,6 +1058,11 @@ container, docs without Tailscale; a Go `tsnet` binary only if asked for.
 11. **Claude wake path:** accept "the human resumes a Claude agent" if a background `meshctl wait`
     does not wake it, or add a mesh mode to the Claude hook's watch later?
 12. **Should chain deadlines pause while the origin Mac sleeps?**
+13. **Eureka (P13, §15):** replace `a2a-lib`'s membership routes with a Eureka-compatible subset,
+    as proposed? Or keep D2 as written?
+14. **Verdicts (§17):** is a one-click Accept / Needed rework / Not used on each finished chain
+    acceptable attention, or should acceptance come only from the bench and from proxies (a
+    follow-up correction counts as rework)?
 
 ---
 
@@ -1008,7 +1074,7 @@ container, docs without Tailscale; a Go `tsnet` binary only if asked for.
 |---|---|---|
 | 2026-10-28 | Goal: agents discover and delegate over A2A; a Eureka-like registry; ideally over Tailscale; personal first, publishable later; wrappers for non-A2A tools; Agent Cards with load in the Dashboard; Agent Inbox as the human console. | Shariq |
 | 2026-10-29 | **D1.** Claude auth for wrappers: subscription for personal use, API keys for anything published. | Shariq accepted the default |
-| 2026-10-29 | **D2.** Registry built into Agent Inbox as a headless `--registry` mode, matching `a2a-lib`'s REST shape, without depending on it. (This design ships it as a command of the same package and defers an Electron flag, §5.1.) | Shariq accepted the default |
+| 2026-10-29 | **D2.** Registry built into Agent Inbox as a headless `--registry` mode, matching `a2a-lib`'s REST shape, without depending on it. (This design ships it as a command of the same package and defers an Electron flag, §5.1. **Round 3 proposes replacing "matching `a2a-lib`'s REST shape" with a Eureka-compatible subset: P13, §15.**) | Shariq accepted the default |
 | 2026-10-29 | **D3.** The existing stdio MCP server stays network-free; a separate opt-in MCP bridge provides `discover`, `delegate`, `status` and `reply`. | Shariq accepted the default |
 | 2026-10-29 | **D4.** The first hand-off in each chain needs the human's click; later hops run within budget; hop limits and a kill switch always apply. | Shariq accepted the default |
 | 2026-10-29 | **D5.** Tailscale optional: its identity when present, tokens or OIDC otherwise. (This design always requires a token too, §9.2.) | Shariq accepted the default |
@@ -1033,6 +1099,8 @@ container, docs without Tailscale; a Go `tsnet` binary only if asked for.
 | P10 | The threat model of §3, including that the development viewer cannot approve. | §3 |
 | P11 | A reserved `@mesh` project, filtered in `store.ts` and refused by the MCP server. | §10.3 |
 | P12 | A local, read-only wrapper spike (M2) before any network piece. | §11 |
+| P13 | Don't fork or run Netflix Eureka. Build the TypeScript registry with a defined Eureka-compatible REST subset for membership, replacing D2's `a2a-lib` shape; no Eureka backend; an optional outbound Eureka mirror in M9 at most. | §15, §5.3, Appendix B |
+| P14 | Measure the mesh with §17's metrics, a human verdict per finished chain, and a replayable scenario bench run delegated and in-session at every phase from M2; each checkpoint reads named numbers. | §17, §11, Appendices C–D |
 
 ### 14.3 Changes after review (2026-10-29)
 
@@ -1075,6 +1143,201 @@ the hub id under `mesh/` (§10.4). The verification log moved to Appendix A.
 
 ---
 
+### 14.4 Changes after review, round 3 (2026-10-29)
+
+Shariq asked whether to adopt Eureka, for mockups, and for a way to measure the benefit.
+
+1. **§15, adopt Netflix Eureka?** Checked its status, API and cost (including a local run of a
+   Spring Cloud Netflix server). Proposal P13: a Eureka-compatible subset in our TypeScript
+   registry. **This changes D2's "matching `a2a-lib`'s REST shape"** and §5.3's membership routes;
+   it needs Shariq's confirmation (Q13).
+2. **§16, mockups:** eight renders of the Agents view (M1 and M7), both ask kinds, the chain
+   view, an agent's transcript, `meshctl` and the Mesh value view, built on `public/style.css`.
+3. **§17, how we'll know it's worth it:** metrics with sources and targets (Appendix C), a
+   scenario bench (Appendix D), and how both feed each checkpoint (P14, Q14).
+4. **§11 changed:** every phase gains a *Numbers* line; M2 gains the bench (+0.5 week), M3 the
+   Eureka subset (+0.5 week), M4 the metric records and route (+0.25), M6 the Mesh value view
+   (+0.25). M6's "costs more attention than it saves" is now measured as net human time ≤ 0, and
+   "most results used" as accepted ≥ 70 %; both are readings of the existing checkpoint, not new
+   rules. No phase was added, removed or reordered.
+5. Small additions for the metrics, all in `mesh.db` or the bridge, none in the hub: chain
+   `verdict`, bench tag and bridge counters, ask `touches`, a refusal counter, three registry
+   routes (§5.3) and one viewer route (§4.3). Off still means off.
+
+---
+
+## §15 — Adopt Netflix Eureka?
+
+Shariq asked (2026-10-29): Eureka is open source; does it make sense to pull it in and modify it?
+Short answer: **take its contract, not its code.** Facts are dated in Appendix A.
+
+### 15.1 What Eureka is today
+
+- **Netflix Eureka** ([Netflix/eureka](https://github.com/Netflix/eureka)): Apache-2.0, Java.
+  The current line is 2.0.x (v2.0.6, 2026-03-23); 1.10.x still gets release candidates
+  (v1.10.19-rc.4, 2026-08-06); last push 2026-08-24; support is "community-driven mostly". The
+  old "Eureka 2.0" rewrite was discontinued. Today's 2.0.0 (2022-12-14) is the 1.x code moved to
+  Jakarta EE, and its notes say the HTTP API and wire formats "have not changed". The same notes
+  say the `eureka-server` module "does not build a functional WAR" and recommend Spring Cloud
+  Netflix for running a server.
+- **Spring Cloud Netflix** ([spring-cloud/spring-cloud-netflix](https://github.com/spring-cloud/spring-cloud-netflix)):
+  Apache-2.0, maintained, v5.0.3 (2026-10-23; Spring Boot 4.0, Java 17). Its Eureka server "does
+  not support Spring AOT transformations or native images", so it cannot become a small native
+  binary. It has no authentication of its own: the docs say to add Spring Security.
+- **API:** register, renew, cancel, fetch (full, per app, per instance, per VIP), a delta fetch
+  (changes of the last 3 minutes plus an `apps__hashcode` check), status overrides and a metadata
+  update, in JSON or XML (Appendix B).
+- **Instance model:** app, instance id, host, IP, ports, VIP addresses, status (`UP`, `DOWN`,
+  `STARTING`, `OUT_OF_SERVICE`, `UNKNOWN`) with an override, a lease (renew every 30 s, expire
+  after 90 s), and **metadata, a flat string-to-string map**.
+- **Measured here** (M1 Max, JDK 17, a standalone server from Spring Initializr with Spring Cloud
+  2025.1.4, idle): a 61 MB jar on a 304 MB JDK; started in 2.7–3.3 s; **373 MB RSS** with the
+  default heap and **184 MB** with `-Xmx64m` and the serial collector. A registration showed in
+  the delta at once, while the full `GET /eureka/apps` stayed empty until its 30-second read cache
+  refreshed. An unauthenticated local process registered an instance (`204`).
+
+### 15.2 Three options
+
+| | (a) Fork and modify Eureka | (b) Unmodified Eureka as an optional backend | (c) Our registry, Eureka-compatible subset |
+|---|---|---|---|
+| **What changes** | Card in metadata (fits as a string, no code); lease timings (config); host-based self-preservation (registry code); auth with token binding (Spring Security); AI Catalog feed (new controller); and the whole §8 ledger, grants, asks and kill switch, in Java | An adapter maps our registry interface onto Eureka's REST for membership; the ledger still runs in our registry, so there are two services | Our TypeScript registry answers a documented subset of Eureka's routes and JSON |
+| **Cost on a single-user Mac** | A JVM sidecar: 184–373 MB RSS against M3's 80 MB target; 3 s start; a JDK or `jlink` image to ship, sign (each Mach-O joins #291's signing list) and update; Spring Boot's security releases | The same JVM for whoever opts in; 30 s stale reads; Eureka's percentage self-preservation, wrong at five instances (§5.4); every A2A field squeezed into strings | None beyond today's Node process |
+| **Effort** | 6–10 weeks, then a second language forever | About a week for the adapter, plus running and securing a Spring app, which becomes (a) | 2–3 extra days in M3 |
+| **Risk** | High: the security-critical ledger in a codebase nobody here maintains | Medium: two sources of truth for membership | Low: a fixed subset with golden fixtures |
+| **Fit with the decisions** | Breaks D6 (TypeScript first), R1 (a new runtime and process in the app) and P7 | Optional and removable, but a JVM for the people who opt in | Keeps every decision; `package-lock.json` unchanged |
+
+### 15.3 Recommendation (P13, for Shariq to confirm)
+
+**(c).** Eureka's semantics and wire format become the membership contract; our code implements
+them.
+
+1. **Membership is the Eureka subset** of Appendix B, JSON only. A Spring Cloud app, a Steeltoe
+   app, `eureka-js-client` or `py-eureka-client` can register and fetch with a URL and a token,
+   which makes workflows and automations targetable (G3) without a wrapper.
+2. **A2A data rides in metadata** (`a2a.card`, `a2a.cardSha256`, `a2a.kind`). Load rides an
+   optional JSON body on renew, which plain Eureka clients do not send: they join as membership
+   only, like `static` instances.
+3. **Deliberate deviations,** each a reason we would not run Eureka itself: a token on every
+   request (HTTP Basic with the token as password, which Eureka clients send from credentials in
+   their service URL, or Bearer); consistent reads with no 30-second cache; self-preservation by
+   host (§5.4); routing to `up` only; no XML, peer replication, regions or AWS routes.
+4. **Our own routes stay:** card-aware discovery (`GET /v1/agents?skill=`), the SSE watch and every
+   `/v1/mesh/*` route.
+5. **No Eureka backend.** Instead, because our wrappers' membership client speaks the same subset,
+   M9 may add an optional outbound **mirror**: a wrapper also registers with an existing Eureka
+   server so Spring apps there can find it. Membership only; admission never depends on it.
+
+**Where this changes the design.** D2 accepted "matching `a2a-lib`'s REST shape". P13 drops
+`a2a-lib`'s `/v1/agents` membership routes (one repository, 1 star, npm 0.3.1) for Eureka's (12.7k
+stars, maintained Spring clients) and keeps `a2a-lib`'s discovery query. The rest of D2 stands: a
+headless registry mode of Agent Inbox with no dependency. §5.3 and M3 change; nothing else does.
+If Shariq keeps D2 as written, §5.3 reverts and M3 loses the 2–3 days.
+
+---
+
+## §16 — Mockups
+
+Static HTML on the app's own `public/style.css` and its tokens, with synthetic data, rendered
+offline with Electron (`render.cjs`, `file://` only). Files:
+[`assets/2026-10-29-agent-mesh/`](assets/2026-10-29-agent-mesh/).
+
+**(a) The Agents view in M1, presence only:** sessions grouped by agent kind; no registry, no
+extra request.
+
+![Agents view in M1](assets/2026-10-29-agent-mesh/a1-agents-view-m1.png)
+
+**The Agents view from M7:** skills, trust, hosts, instances with lease age and TTL, slot use,
+queue, distribution, p95, and open chains.
+
+![Agents view in M7](assets/2026-10-29-agent-mesh/a2-agents-view-m7.png)
+
+**(b) The first-hop ask:** the bound callee and card hash, message hash, repository and ref,
+write flag and budget, the exact message, and fixed-template options.
+
+![First-hop approval ask](assets/2026-10-29-agent-mesh/b1-ask-first-hop.png)
+
+**The permission (`AUTH_REQUIRED`) ask:** the raw tool name and arguments in a fenced, unlinked
+block.
+
+![Permission ask](assets/2026-10-29-agent-mesh/b2-ask-permission.png)
+
+**(c) The chain view:** hops across agents and hosts, states, spend against the caps, the ledger
+with a fired rail, and the kill switch.
+
+![Chain view](assets/2026-10-29-agent-mesh/c-chain-view.png)
+
+**(d) The delegating agent's side:** a Copilot session calls `discover`, then `delegate`,
+launches the returned `wait` watch, keeps working, wakes on completion, checks the result and
+uses it.
+
+![Agent transcript](assets/2026-10-29-agent-mesh/d-agent-transcript.png)
+
+**(e) `meshctl`:** `enable` (dry run, then `--apply`), `status`, `send` with a verdict, the bench,
+`pause` and `disable`.
+
+![meshctl](assets/2026-10-29-agent-mesh/e-meshctl.png)
+
+**(f) The Mesh value view (§17),** at an M7 checkpoint that misses one target.
+
+![Mesh value](assets/2026-10-29-agent-mesh/f-mesh-value.png)
+
+---
+
+## §17 — How we'll know it's worth it
+
+The mesh is worth keeping only if it saves Shariq more time and attention than it costs, at an
+acceptable spend, without a safety escape. Every number below comes from records the design
+already keeps, plus three small additions (§14.4, item 5). None is attention: the numbers never
+reach a badge, a count or the dock.
+
+### 17.1 Metrics
+
+Definitions, formulas and data sources are in Appendix C.
+
+| Metric | In one line | Good |
+|---|---|---|
+| Delegated tasks completed and accepted | Completed hops; share the human marked Accept | ≥ 80 % accepted (M2, M5); ≥ 70 % in real use (M6) |
+| Rework | Verdict "Needed rework", or a follow-up correction into a finished task's context | ≤ 20 % |
+| Human attention | Touches (decisions, clarifies, snoozes, verdicts) per delegated task; approvals per chain; decision latency | ≤ 2 touches per task; ≤ 1.2 approvals per chain |
+| Net human time | Bench-calibrated minutes the accepted tasks would have cost in-session, minus minutes spent on approvals, verdicts and rework | > 0, rising |
+| Time to result | Chain opened → result, split into approval wait and work; delegated against in-session on the bench | Work ≤ 1.25× in-session; fan-out wall time ≤ 0.7× sequential |
+| Parallelism | Peak agents working at once; agent-minutes per wall-minute in a chain; depth used | > 1.3 in fan-out chains |
+| Spend per accepted result | Settled units (and dollars where a CLI reports them) per accepted task | ≤ 1.5× the in-session bench cost |
+| Wake and poll overhead | `status` calls, idle polls and `wait` re-arms per delegation | Median ≤ 3 calls, ≤ 1 idle |
+| Failure and timeout rate | Hops failed, rejected, timed out or cancelled by no human, plus expired asks | ≤ 10 % |
+| Safety rails | Refusals by reason; pauses and time to stop; escapes from the worktree audit | Escapes 0, always; stop ≤ 10 s; every refusal on honest traffic explained |
+| Membership quality (M3+) | Phantom and missing instances; false expiries | 0 |
+
+The **Mesh value** view (mockup f) shows them for 7 or 30 days, real use and bench apart or
+together; `meshctl status` prints a one-line summary and `GET /v1/mesh/metrics` exports them.
+
+### 17.2 The scenario bench
+
+A fixed set of representative tasks (Appendix D: S1–S10), replayed at every phase from M2.
+
+- **Where:** `packages/mesh/bench/`, with its runner `agent-inbox-bench`; never in the app.
+  Fixtures are small generated repositories (a tiny TypeScript library with planted bugs, a long
+  generated document), never Agent Inbox itself or customer content.
+- **How it runs:** by hand, before each checkpoint and after any CLI or wrapper upgrade. Each
+  scenario runs three times **in-session** (the same CLI and model doing the task directly in a
+  scratch worktree, as the baseline) and three times **delegated** (`meshctl send` in M2–M5, a
+  driver agent calling `delegate` from M6, a chain from M8), within a per-run unit cap.
+- **Scoring:** automatic where possible (tests pass, seeded mutants killed, `git apply --check`,
+  planted bugs found by file and line, facts recalled by a keyword rubric), an optional local-model
+  rubric that never decides alone, and the human's verdict click. A run passes when its automatic
+  score meets the scenario's threshold and the human accepts it.
+- **Output:** JSONL and a `summary.md` under `~/.agent-inbox/mesh/bench/<run>/`; with a registry,
+  bench chains are tagged so the Mesh value view can separate them from real use.
+
+### 17.3 How the numbers drive each checkpoint
+
+Each phase's *Numbers* line (§11) names the metrics and scenarios its checkpoint reads. The
+agent attaches the bench summary and the Mesh value export; Shariq reads them beside the
+qualitative evidence. A met target supports **continue**; a miss points to the phase's
+**change** option first and to **stop** only where the phase says so. The in-session baseline is
+recorded once in M2 and re-recorded when a CLI or model changes, so improvements are not an
+artefact of a newer model. The bench changes only between phases, never to make one pass.
+
 ## Appendix A — Verification log
 
 Facts this design depends on, checked against primary sources on 2026-10-29.
@@ -1087,7 +1350,7 @@ Facts this design depends on, checked against primary sources on 2026-10-29.
 | SSRF guidance | Reject 127/8, 10/8, 172.16/12, 192.168/16, localhost and link-local for webhooks | same |
 | Card discovery and signing | `/.well-known/agent-card.json`; JWS over RFC 8785 JCS (§8.4) | same |
 | `@a2a-js/sdk` | v1.3.0 (2026-09-29), Apache-2.0, A2A 1.0, JSON-RPC, HTTP+JSON, gRPC; **server adapters are Express** | [a2a-js](https://github.com/a2aproject/a2a-js) |
-| `a2a-lib` registry | REST shape of §5.3; default TTL 60 s; **binds `0.0.0.0` with no write token by default**; npm **0.3.1** (GitHub v0.2.5, Docker 0.3.0); 1 star | [README](https://github.com/a2a-lib/a2a-registry-server) |
+| `a2a-lib` registry | The REST shape §5.3 copied before round 3; default TTL 60 s; **binds `0.0.0.0` with no write token by default**; npm **0.3.1** (GitHub v0.2.5, Docker 0.3.0); 1 star | [README](https://github.com/a2a-lib/a2a-registry-server) |
 | `claude-agent-acp` | v0.99.0 (2026-10-28), Apache-2.0, permission requests, subagent sessions | [repo](https://github.com/agentclientprotocol/claude-agent-acp) |
 | `copilot --acp` | Public preview; stdio default; TCP on `127.0.0.1`; tool filters and effort fixed at server start; BYOK without GitHub login | [ACP server](https://docs.github.com/en/copilot/reference/copilot-cli-reference/acp-server) |
 | Copilot headless auth | `COPILOT_GITHUB_TOKEN`, then `GH_TOKEN`, then `GITHUB_TOKEN` | [CLI reference](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference) |
@@ -1101,6 +1364,12 @@ Facts this design depends on, checked against primary sources on 2026-10-29.
 | `tsidp` | v0.0.18 (2026-10-21), BSD-3-Clause | [repo](https://github.com/tailscale/tsidp) |
 | AI Catalog | Draft in a temporary LF repo, now "Common AI Catalog and Registry Standard"; **no registry API yet**; A2A cards typed `application/a2a-agent-card+json`; ADR-0029 is new | [repo](https://github.com/Agent-Card/ai-catalog) |
 | Eureka | Three missed renewals; self-preservation above 15 % | [wiki](https://github.com/Netflix/eureka/wiki/Server-Self-Preservation-Mode) |
+| Netflix Eureka status | Apache-2.0, Java, 12.7k stars, not archived; v2.0.6 (2026-03-23), v1.10.19-rc.4 (2026-08-06), last push 2026-08-24; "community-driven mostly"; the old 2.x rewrite discontinued ("use at your own risk") | [repo](https://github.com/Netflix/eureka), [releases](https://github.com/Netflix/eureka/releases), [wiki](https://github.com/Netflix/eureka/wiki) |
+| Eureka 2.0.0 | 2022-12-14; Jakarta EE 9; wire formats unchanged; `eureka-server` builds no functional WAR, run a server through Spring Cloud Netflix | [v2.0.0 notes](https://github.com/Netflix/eureka/releases/tag/v2.0.0) |
+| Eureka REST and model | Routes of Appendix B; register `204`, renew `200` or `404`; `InstanceInfo` fields; metadata `Map<String,String>`; lease 30 s / 90 s; server defaults: `renewalPercentThreshold` 0.85, eviction every 60 s, delta retention 3 min, read cache 30 s (2.x branch source) | [REST operations](https://github.com/Netflix/eureka/wiki/Eureka-REST-operations), [source](https://github.com/Netflix/eureka/tree/2.x) |
+| Spring Cloud Netflix | Apache-2.0; v5.0.3 and v5.1.0-RC1 (2026-10-23); Spring Boot 4.0, Java 17; Eureka server: no AOT or native image; secure it with Spring Security; clients send Basic auth from URL credentials; registration can take up to three heartbeats to be seen | [releases](https://github.com/spring-cloud/spring-cloud-netflix/releases), [reference 5.0.3](https://docs.spring.io/spring-cloud-netflix/reference/spring-cloud-netflix.html) |
+| Eureka server, measured | 2026-10-29 on an M1 Max with JDK 17: Initializr project (Spring Boot 4.1.2, Spring Cloud 2025.1.4), standalone, idle: 61 MB jar, 304 MB JDK, start 2.7–3.3 s, RSS 373 MB (default heap) and 184 MB (`-Xmx64m`, serial GC); full fetch empty for up to 30 s after a register; unauthenticated register `204` | local run, bound to `127.0.0.1`, deleted afterwards |
+| Other Eureka clients | `eureka-js-client` 4.5.0 (MIT, last published 2022-06-17); `py-eureka-client` 0.13.3 (2026-01-21); Steeltoe (.NET, Apache-2.0, active) | [npm](https://www.npmjs.com/package/eureka-js-client), [PyPI](https://pypi.org/project/py-eureka-client/), [Steeltoe](https://github.com/SteeltoeOSS/Steeltoe) |
 | Ollama | `OLLAMA_NUM_PARALLEL` default 1, queue 512, 503 when full | [FAQ](https://docs.ollama.com/faq) |
 | Local frameworks | Strands `A2AServer`; FastA2A **v2.1.1** (the brief said v2.0.0) | [Strands](https://strandsagents.com/latest/documentation/docs/user-guide/concepts/multi-agent/agent-to-agent/), [PyPI](https://pypi.org/project/fasta2a/) |
 | Open issues | claude-code#104852, A2A #1934 and #1824 are open | GitHub |
@@ -1108,3 +1377,97 @@ Facts this design depends on, checked against primary sources on 2026-10-29.
 
 Not re-checked, because the design does not depend on them: agentgateway, kagent, AGNTCY
 Directory, the MCP Registry, cloud registries and the Copilot SDK's API.
+
+---
+
+## Appendix B — The Eureka-compatible surface (P13)
+
+**Routes.** Under `/eureka/`, JSON only (XML is refused with `406`; a missing `Accept` gets
+JSON). The Netflix wiki's `/eureka/v2/...` prefix is accepted as an alias, because Spring's docs
+tell clients that want a version to put `v2` in their service URL.
+
+| Route | Kept | Notes |
+|---|---|---|
+| `POST /apps/{APP}` | yes | `204`. Requires `instanceId`, `hostName`, `app`, `ipAddr`, `dataCenterInfo.name` (`400` otherwise, as Eureka) |
+| `PUT /apps/{APP}/{id}` | yes | Renew; `404` when unknown or expired, so clients register again. Optional JSON body `{ "load": … }` (§5.2) |
+| `DELETE /apps/{APP}/{id}` | yes | Cancel |
+| `GET /apps`, `/apps/{APP}`, `/apps/{APP}/{id}`, `/instances/{id}`, `/vips/{vip}` | yes | Consistent reads with an ETag; no read cache |
+| `GET /apps/delta` | yes | Changes of the last 3 minutes and `apps__hashcode`; a mismatch makes clients fetch in full, as in Eureka |
+| `PUT` / `DELETE /apps/{APP}/{id}/status` | yes | `OUT_OF_SERVICE` maps to `draining` |
+| `PUT /apps/{APP}/{id}/metadata` | yes | Owner or lease holder; `a2a.card` changes follow §5.2's card rules |
+| `GET /svips/{v}`, regions, `/asg`, peer replication (`x-netflix-discovery-replication`, `/peerreplication/batch`), XML | no | One registry, no AWS |
+
+**Identity mapping.** Eureka's `APP` is the agent's `name` inside the namespace of the caller's
+token (case-insensitive; Eureka clients upper-case it), so `shariq/copilot-review` is
+`COPILOT-REVIEW` for a `shariq` token. `instanceId` is our instance id. `status` maps `UP` →
+`up`, `STARTING` → `starting` (not routed), `OUT_OF_SERVICE` → `draining`, `DOWN` and `UNKNOWN` →
+`down` (not routed); lease expiry → `expired`, or `stale` while preserving (§5.4). `leaseInfo` is
+accepted within the kind's bounds (§5.4). The endpoint rules of §8.8 apply to `hostName`, the ports
+and `homePageUrl` exactly as to native registrations.
+
+**Metadata keys.** `a2a.card` (the Agent Card as a JSON string, at most 64 KB), `a2a.cardSha256`
+(checked against the card), `a2a.kind` (`a2a` by default; `static` for clients that only declare
+themselves). Other keys are kept as strings and shown, never interpreted.
+
+**Auth.** Every route needs a token: `Authorization: Bearer <token>`, or HTTP Basic with the
+identity name as user and the token as password, which Eureka clients send from credentials in
+their service URL. Tailscale binding applies as in §9.2.
+
+**Conformance.** Golden request and response fixtures, recorded once from a real Spring Cloud
+Netflix server (as the local run in Appendix A did) and committed with the registry, check every
+kept route in CI without a JVM. In M3 a real client registers, renews, fetches and cancels, by
+hand.
+
+---
+
+## Appendix C — Metric definitions
+
+Window: 7 or 30 days. "Task" is a hop; "delegated task" excludes bench runs unless the bench
+filter is on. Sources: the **ledger** (`mesh.db` chains, hops, grants, asks, refusals), **relay
+rows** (human writes on `@mesh` rows, counted by the relay into the ask's `touches` when it posts
+the decision), **verdicts**, **bridge counters**, **wrapper logs** (`~/.agent-inbox/mesh/logs/`,
+per-task JSONL with turns, tool calls and the audit result) and the hub's **activity history**
+(`/api/activity/history`, #185) for concurrent sessions.
+
+| Metric | Formula | Source |
+|---|---|---|
+| Completed | hops reaching `COMPLETED` | ledger |
+| Accepted rate | verdict = accept ÷ completed with a verdict | verdicts |
+| Rework rate | (verdict = rework, or a `reply` into a completed task's context within 24 h) ÷ completed | verdicts, ledger |
+| Touches per task | Σ ask `touches` + verdict clicks, ÷ delegated tasks | relay rows, verdicts |
+| Approvals per chain | first-hop and later-binding asks ÷ chains | ledger |
+| Decision latency | ask `decided_at` − ask created; on the bench, while the human is at the bench, it stands in for effort | ledger |
+| Net human time | Σ over accepted tasks of the scenario class's in-session human minutes (bench) − Σ (decision effort + verdict + rework minutes) | bench, ledger |
+| Time to result | first result − chain opened; approval wait = decided − opened; work = Σ hop run time on the critical path | ledger, bench |
+| Parallelism | peak concurrent working sessions (activity history) and active hops; Σ hop minutes ÷ chain wall minutes | activity history, ledger |
+| Spend per accepted | Σ settled units (and reported dollars) ÷ accepted | ledger |
+| Poll overhead | median `status` calls, idle polls and `wait` re-arms per delegation | bridge counters |
+| Failure and timeout rate | hops `FAILED`, `REJECTED`, deadline-expired or cancelled without a human or pause, plus expired asks, ÷ hops | ledger |
+| Safety rails | refusals by reason; pause → last task stopped; escapes = audit failures (a file changed outside the worktree, forbidden config loaded) | refusal counter, wrapper logs |
+| Membership quality | instances shown `up` that failed a probe; instances alive but not shown; expiries followed by a renew within one TTL | registry, probes |
+
+Net human time is an estimate and is labelled as one: it depends on the bench's in-session
+minutes per scenario class, which the human times once per class.
+
+---
+
+## Appendix D — The scenario bench
+
+| # | Scenario | Fixture | Automatic score | From |
+|---|---|---|---|---|
+| S1 | Read-only review of a diff with 3 planted bugs | generated TS library | planted bugs found by file and line; false positives | M2 |
+| S2 | Summarise a long generated document | 12-page doc with 10 key facts | facts recalled (keyword rubric) | M2 |
+| S3 | Write tests for an untested module | generated TS library | tests pass on the original and kill 3 of 3 seeded mutants | M5 |
+| S4 | Small edit with hidden tests | generated TS library | hidden tests pass; `git apply --check` on the base | M5 |
+| S5 | Answer a question about the repository | generated TS library | exact answer (file and setting) | M2 |
+| S6 | A task that needs a tool outside the profile | generated TS library | a permission ask is raised; nothing ran before the click | M5 |
+| S7 | Two-hop chain: a reviewer delegates the fix to an editor | generated TS library | tests pass; depth ≤ 2; no reservation overrun | M8 |
+| S8 | Injection in a fixture README asks the delegate to push or delegate | generated TS library | refused; zero escapes; a rail fires | M4 |
+| S9 | Bulk-read summary on the local model | generated logs | facts recalled; a model swap reads busy, not failed | M7 |
+| S10 | Fan-out: three independent reviews at once | three generated diffs | bugs found; wall time against the three run in sequence | M7 |
+
+Each scenario declares its prompt, fixture generator, profile, budget, scorer and pass threshold
+in `packages/mesh/bench/scenarios/<id>.json`. Runs repeat three times per mode and report the
+median and spread. A run costs at most its declared units, and a whole phase's bench stays under
+one host's daily cap.
+

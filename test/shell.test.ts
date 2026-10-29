@@ -117,10 +117,14 @@ describe('shell css', () => {
   // round 1 — pin it so a future task can't slip a responsive rule in earlier
   // (matching `@media (`, not just the string "@media", so this doesn't trip
   // on the block's own explanatory comment mentioning "@media block").
-  it('has exactly one @media rule, appended at EOF', () => {
+  // #302 added the one other @media rule, the reduced-motion block, which is
+  // not responsive and sits before this one (test/motion-css.test.ts pins it).
+  it('has exactly one responsive @media rule, appended at EOF', () => {
     const mediaRules = css.match(/@media\s*\([^)]*\)\s*\{/g) ?? []
-    expect(mediaRules.length).toBe(1)
-    const idx = css.search(/@media\s*\(/)
+    expect(mediaRules.filter((rule) => !/prefers-reduced-motion/.test(rule))).toEqual(['@media (max-width: 1279px) {'])
+    expect(mediaRules.filter((rule) => /prefers-reduced-motion/.test(rule)).length).toBe(1)
+    const idx = css.indexOf('@media (max-width: 1279px)')
+    expect(css.search(/@media\s*\(prefers-reduced-motion/)).toBeLessThan(idx)
     expect(idx).toBeGreaterThan(-1)
     const tail = css.slice(idx)
     const lastClose = tail.lastIndexOf('}')

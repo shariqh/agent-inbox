@@ -1387,6 +1387,30 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   repeats inside its 1.6 s window are not re-announced. Listeners bind once per
   document and never prevent a default or stop propagation: clicks, the press guard
   and attention are unchanged. `test/dom/copy-on-select.test.ts` pins each rule.
+- **Motion is CSS-only, compositor-only and always switchable off (#302, Dashboard 2.0
+  phase 0).** Design: [`2026-10-22-dashboard-2-proposal.md`](docs/superpowers/specs/2026-10-22-dashboard-2-proposal.md)
+  §10. Rules every later phase follows: (1) Keyframes animate only `transform` and
+  `opacity` (stripes move on a transformed pseudo-element, never `background-position`), and
+  no JS animation loop, canvas or chart library. (2) Durations and easings come from the
+  `--motion-*` tokens on `:root`; every `transition` uses them. (3) Every selector with an
+  infinite animation is listed twice with `animation: none !important`: in the
+  `@media (prefers-reduced-motion: reduce)` block and as `:root[data-motion="calm"] <selector>`.
+  That block also makes every one-shot instant (`*` durations and delays 0s, iteration
+  count 1, `scroll-behavior: auto`). (4) At most 12 infinite animations on screen. (5) Motion
+  never moves focus, scrolls or reorders under the pointer, and updates are keyed rather than
+  rebuilt, so the held-pointer guard keeps working and there is no third render entry.
+  `public/motion.js` (`createMotionController`, created at app.js top level before the first
+  render) publishes `data-motion="full|calm"` (Settings → Motion, `agent-inbox-motion` in
+  localStorage, Full by default, unknown values read as Full) and `data-page-hidden` while
+  `document.hidden`, under which CSS pauses every animation; a visible but unfocused window
+  keeps its motion. Calm turns infinite animations off and keeps one-shots; the OS setting
+  turns both off whatever the choice. JS-driven motion goes through the controller too:
+  `scrollIntoView` takes `motion.scrollBehavior()` (instant under the OS setting), never a
+  literal `'smooth'`. The setting is layout only, like the default sort (#221): a change
+  repaints through `forceRender()` and never reaches attention, a badge, a count or the
+  dock. jsdom cannot evaluate the media block, so `test/motion-css.test.ts` pins the CSS
+  (its checker is also run on synthetic sheets) and `test/dom/motion.test.ts` the setting,
+  the hidden-page attribute and the scroll behaviour.
 
 - **The hooks runtime is a SECOND OS process on the same db — and it still goes through
   `store.ts`.** `src/hook.ts` (+ the `src/hook-cli.ts` entry) is spawned by Claude Code, not
@@ -1883,8 +1907,9 @@ source order, `!important`, `:has()` and `color-mix()` — that is what makes th
 regression. **Five verified blind spots; only literal lengths and keywords are trustworthy:**
 
 1. **`@media` never matches.** jsdom's media-list evaluation only answers `all`/`screen`,
-   so style.css's single `@media (max-width: 1279px)` block — the ENTIRE spec §14 responsive
-   layer — never applies. Do not assert anything about it; cover the JS half instead
+   so style.css's single width block, `@media (max-width: 1279px)` — the ENTIRE spec §14
+   responsive layer — never applies, and neither does #302's
+   `@media (prefers-reduced-motion: reduce)` block (source-pinned in `test/motion-css.test.ts`). Do not assert anything about it; cover the JS half instead
    (`setViewport('narrow')` + readable `railLabel` output, in `test/dom/boot.test.ts`) and
    source-pin compact geometry/container-query rules in `test/editorial-shell.test.ts`.
 2. **`var()` is returned unresolved.**
@@ -2705,7 +2730,7 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   520px default / 360–720px, with at least 400px left for the queue. Preferences persist under
   `agent-inbox-sidebar-width` and `agent-inbox-inspector-width`; mouse drag, separator keyboard
   controls, viewport reclamping and double-click reset must update CSS and ARIA together. Inside
-  the single EOF `@media (max-width: 1279px)` block the splitters hide, the item card returns
+  the single EOF width block, `@media (max-width: 1279px)`, the splitters hide, the item card returns
   to static inline layout, and the library becomes a compact masthead. At desktop width the
   agent picker belongs at the bottom of the library sidebar above Settings. In the broad masthead
   it sits immediately right of the project selector; at 900px those controls share a second row,
@@ -2766,6 +2791,8 @@ v1 was deliberately local + triage-only. These have since landed — don't re-pl
   The Later section *(#247)* is the other one, for the same reason: Settings → Inbox → Later
   section (`agent-inbox-later-section`, on unless it reads `'false'`) only chooses where
   pinned and snoozed asks are drawn, and repaints at once through `forceRender()`.
+  Settings → Motion *(#302)* (`agent-inbox-motion`, Full unless it reads `'calm'`) is saved
+  and repainted the same way, and is equally layout only.
 - **Build stamp + staleness signal** *(#40)* — `scripts/write-setup-info.mjs` (called by the
   packager, and executable in a test the way `package-app.sh` never can be) bakes `commit` +
   `builtAt` beside the paths setup-info.json already carried; `src/stamp.ts` reads the checkout's

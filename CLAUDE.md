@@ -1486,7 +1486,7 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   former Recent outcomes list (same fields, `recentOutcomes*`, and the same #184/#299
   proof) with two rules: an outcome whose PR (`linkKey` of repo, `stream`, head repo) is
   that of an open or deferred ask is not listed (that PR has not landed) but still counts,
-  and it holds a fixed budget of four 52px rows. A list cut by that filter stays unproven
+  and it holds a fixed budget of four 60px rows. A list cut by that filter stays unproven
   while omitted history could still fill it. A new outcome (unseen key, stamped after
   everything drawn before) gets one `arrived` highlight through `playOnce`, only when
   `dashboardMotion()` allows it (Full, no OS reduced motion, visible page, Dashboard on

@@ -58,17 +58,6 @@ describe('the Needs you rail (#303)', () => {
 })
 
 describe('buildDashboard', () => {
-  it('keeps the reported child count in the exported model contract', () => {
-    const agents: DashboardModel['signals']['agents'] = {
-      working: 3,
-      quiet: 1,
-      total: 4,
-      reportedChildren: 2,
-    }
-
-    expect(agents.reportedChildren).toBe(2)
-  })
-
   it('projects current data through the existing ownership and live models', () => {
     const model = buildDashboard({
       items: [
@@ -158,7 +147,6 @@ describe('buildDashboard', () => {
     })
 
     expect(model.signals).toEqual({
-      agents: { working: 1, quiet: 1, total: 2, reportedChildren: 0 },
       waiting: 1,
       withAgents: 1,
       plans: 1,
@@ -166,12 +154,13 @@ describe('buildDashboard', () => {
       projects: 1,
     })
     expect(model.rail).toEqual({ cards: [expect.objectContaining({ kind: 'item' })], more: 0, later: 0 })
-    expect(model.sessions.map((session) => session.session)).toEqual(['working', 'quiet'])
+    expect(model.lanes.map((lane) => lane.session)).toEqual(['working'])
+    expect(model.idleConnections).toBe(1)
     expect(model.recentOutcomes.map((entry) => entry.kind === 'item' ? entry.item.id : entry.row.id))
       .toEqual(['row-done', 'done'])
   })
 
-  it('counts child lanes only under visible working parents', () => {
+  it('counts subagents only under visible working lanes', () => {
     const model = buildDashboard({
       items: [],
       boards: [],
@@ -239,17 +228,9 @@ describe('buildDashboard', () => {
       closedProjects: ['closed-project'],
     })
 
-    expect(model.signals.agents).toEqual({
-      working: 4,
-      quiet: 1,
-      total: 5,
-      reportedChildren: 2,
-    })
-    expect(model.sessions.map((session) => session.session)).toEqual([
-      'manager',
-      'malformed',
-      'quiet',
-    ])
+    expect(model.now).toMatchObject({ working: 2, subagents: 2 })
+    expect(model.idleConnections).toBe(1)
+    expect(model.lanes.map((lane) => lane.session)).toEqual(['manager', 'malformed'])
   })
 
   it('returns an empty, honest model when no work exists', () => {
@@ -263,14 +244,14 @@ describe('buildDashboard', () => {
     })
 
     expect(model.signals).toEqual({
-      agents: { working: 0, quiet: 0, total: 0, reportedChildren: 0 },
       waiting: 0,
       withAgents: 0,
       plans: 0,
       outcomes: 0,
       projects: 0,
     })
-    expect(model.sessions).toEqual([])
+    expect(model.lanes).toEqual([])
+    expect(model.now).toEqual({ working: 0, subagents: 0, waiting: 0, oldestWaitingMs: null, plans: { done: 0, countable: 0 } })
     expect(model.recentOutcomes).toEqual([])
   })
 

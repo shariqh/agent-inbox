@@ -470,7 +470,7 @@ describe('the Needs you rail (#303)', () => {
   // jsdom cannot evaluate the stylesheet, so the compact card's CSS half is pinned as source.
   it('shows the written-answer editor only on an expanded card, and adds no motion', () => {
     const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'public', 'style.css'), 'utf8')
-    const rail = css.slice(css.indexOf('/* #303: the Needs you rail.'), css.indexOf('.dashboard-live-list, .dashboard-outcome-list'))
+    const rail = css.slice(css.indexOf('/* #303: the Needs you rail.'), css.indexOf('/* #304: live lanes'))
     expect(rail).toMatch(/\.dash-rail-card:not\(\.expanded\) \.reply-input,\s*\.dash-rail-card:not\(\.expanded\) \.reply-context-row,\s*\.dash-rail-card:not\(\.expanded\) \.reply-row > \[data-shortcut-id="submit"\] \{ display: none; \}/)
     expect(rail).not.toMatch(/animation|transition/)
   })

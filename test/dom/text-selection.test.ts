@@ -256,15 +256,17 @@ describe('#223 · a text selection survives the 3-second rebuild', () => {
     upsertActivity(d, {
       session: 'live', ...AGENT, doing: 'Building the release dashboard', idle: false,
     })
+    advanceClock(60_000)
     await bootApp(d)
-    const node = selectText(document.querySelector('#dashboard .dashboard-live-list'), 'release dashboard')
+    // #304: lanes update in place; the activity panel is still rebuilt by every paint.
+    const node = selectText(document.querySelector('#dashboard .dashboard-activity-total'), '1m')
     arrive(d, 'A question')
 
     await pollTick()
 
     expect(badgeCount()).toBe(1)
-    expect(node.isConnected, 'the ambient painter rebuilt the dispatch list').toBe(false)
-    expect(selected()).toBe('release dashboard')
+    expect(node.isConnected, 'the ambient painter rebuilt the activity panel').toBe(false)
+    expect(selected()).toBe('1m')
   })
 
   it('restores a selection an ambient repaint replaced while a draft holds the editable frame', async () => {
@@ -274,6 +276,7 @@ describe('#223 · a text selection survives the 3-second rebuild', () => {
     upsertActivity(d, {
       session: 'live', ...AGENT, doing: 'Building the release dashboard', idle: false,
     })
+    advanceClock(60_000)
     await bootApp(d)
     await showInbox()
     click(row(id))
@@ -281,15 +284,15 @@ describe('#223 · a text selection survives the 3-second rebuild', () => {
     type(answerInput(id), 'half-typed answer')
     click(document.querySelector('.tab[data-tab="dashboard"]'))
     await settle()
-    const node = selectText(document.querySelector('#dashboard .dashboard-live-list'), 'release dashboard')
+    const node = selectText(document.querySelector('#dashboard .dashboard-activity-total'), '1m')
     arrive(d, 'Second question')
 
     await pollTick()
 
     expect(document.getElementById('pauseHint')?.textContent, 'the draft must hold the editable frame').not.toBe('')
     expect(badgeCount()).toBe(2)
-    expect(node.isConnected, 'the ambient painter rebuilt the dispatch list').toBe(false)
-    expect(selected()).toBe('release dashboard')
+    expect(node.isConnected, 'the ambient painter rebuilt the activity panel').toBe(false)
+    expect(selected()).toBe('1m')
   })
 
   it('leaves the caret in a reply box the repaint focused (Change answer)', async () => {

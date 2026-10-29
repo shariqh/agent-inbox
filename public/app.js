@@ -48,6 +48,7 @@ import { actionCategory, actionOwnerLabel, agentFollowupChip, changeKind, lifecy
 import { buildRelay } from '/relay.js'
 import { buildMission } from '/mission.js'
 import { buildActivitySeries, buildDashboard } from '/dashboard.js'
+import { MAX_LANES, calledLanes, pinLaneOrder } from '/lanes.js'
 import { PANE_DEFAULTS, paneKeyValue, paneValueFromPointer, resolvePaneLayout } from '/panes.js'
 import { createThemeController } from '/theme.js'
 import { createMotionController } from '/motion.js'
@@ -1799,76 +1800,276 @@ function restoreDashboardFocus(key) {
 function renderDashboardAmbient(model, { forced = false } = {}) {
   const host = document.querySelector('#dashboard .dashboard')
   if (!host?.querySelector('.dashboard-grid')) return
-  const values = {
-    agents: model.signals.agents.working,
-    waiting: model.signals.waiting,
-    plans: model.signals.plans,
-    outcomes: model.signals.outcomes,
-  }
-  for (const [name, value] of Object.entries(values)) {
-    const el = document.querySelector(`[data-dashboard-signal="${name}"] .dashboard-value`)
-    if (el) el.textContent = String(value)
-  }
-  const total = document.querySelector('[data-dashboard-signal="agents"] .dashboard-value-total')
-  if (total) total.textContent = `/${model.signals.agents.total}`
-  const dots = document.querySelector('[data-dashboard-signal="agents"] .dashboard-agent-dots')
-  if (dots) {
-    const fragment = document.createDocumentFragment()
-    for (let index = 0; index < model.signals.agents.total; index += 1) {
-      const dot = document.createElement('span')
-      dot.className = `dashboard-agent-dot ${index < model.signals.agents.working ? 'active' : 'quiet'}`
-      fragment.appendChild(dot)
-    }
-    dots.replaceChildren(fragment)
-  }
-  const childCount = model.signals.agents.reportedChildren
-  const childContribution = childCount > 0
-    ? `, including ${childCount} reported child agent${childCount === 1 ? '' : 's'}`
-    : ''
-  const labels = {
-    agents: `Agents reporting work: ${model.signals.agents.working} of ${model.signals.agents.total}${childContribution}`,
-    waiting: `Needs you: ${model.signals.waiting} open action${model.signals.waiting === 1 ? '' : 's'}`,
-    plans: `Plans: ${model.signals.plans} across ${model.signals.projects} project${model.signals.projects === 1 ? '' : 's'}`,
-    outcomes: `Recorded outcomes: ${model.signals.outcomes} across items and plan rows`,
-  }
-  for (const [name, label] of Object.entries(labels)) {
-    const card = document.querySelector(`[data-dashboard-signal="${name}"]`)
-    if (card) card.setAttribute('aria-label', label)
-  }
+  renderDashNow(host.querySelector('.dash-now'), model)
+  renderDashLanes(host.querySelector('.dash-lanes'), model, { forced })
   renderDashRail(host.querySelector('.dash-rail'), model.rail, { forced })
   renderDashboardHistory(host.querySelector('.dashboard-activity'))
-  renderDashboardDispatch(host.querySelector('.dashboard-live-list'), model.sessions)
   renderDashboardOutcomes(host.querySelector('.dashboard-outcome-list'), model.recentOutcomes, model.recentOutcomesComplete,
     model.recentOutcomesWait)
 }
 
-const DASHBOARD_SIGNAL_ICONS = {
-  agents: '<circle cx="8" cy="4" r="2"></circle><circle cx="4" cy="12" r="2"></circle><circle cx="12" cy="12" r="2"></circle><path d="M8 6v3M6.5 9.5 5 10.5M9.5 9.5l1.5 1"></path>',
-  waiting: '<path d="M2 3h12v10H2zM2 9h3l1.5 2h3L11 9h3"></path>',
-  plans: '<path d="M3 2h10v12H3zM5.5 5h5M5.5 8h5M5.5 11h3"></path>',
-  outcomes: '<circle cx="8" cy="8" r="6"></circle><path d="m5 8 2 2 4-4"></path>',
+// Only a changed value is written, so an unchanged lane keeps its text nodes
+// (and any selection in them) and its animations never restart.
+function setText(el, text) {
+  if (el.textContent !== text) el.textContent = text
 }
 
-function dashboardSignal({ name, label, value, total = null, target, tone, meter = false }) {
-  const card = document.createElement('button')
-  card.type = 'button'
-  card.className = `dashboard-signal tone-${tone}`
-  card.dataset.dashboardSignal = name
-  card.dataset.dashboardTarget = target
-  card.dataset.dashboardFocusKey = `signal:${name}`
-  card.innerHTML = `
-    <span class="dashboard-signal-head">
-      <span class="dashboard-signal-label">${esc(label)}</span>
-      <svg class="dashboard-signal-icon" viewBox="0 0 16 16" aria-hidden="true">${DASHBOARD_SIGNAL_ICONS[name] ?? ''}</svg>
-    </span>
-    <span class="dashboard-value-group">
-      <span class="dashboard-value">${esc(String(value))}</span>
-      ${total == null ? '' : `<span class="dashboard-value-total">/${esc(String(total))}</span>`}
-    </span>
-    ${meter ? '<span class="dashboard-agent-dots" aria-hidden="true"></span>' : ''}
-    <span class="dashboard-signal-arrow" aria-hidden="true">→</span>`
-  card.addEventListener('click', () => dashboardTarget(target))
-  return card
+function setAttr(el, name, value) {
+  if (el.getAttribute(name) !== value) el.setAttribute(name, value)
+}
+
+function setHidden(el, hidden) {
+  if (el.hidden !== hidden) el.hidden = hidden
+}
+
+const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`
+// relMs says "moments" under a minute; a chip says "<1m".
+const ageText = (ms) => relMs(ms) === 'moments' ? '<1m' : relMs(ms)
+
+// ── the Now strip (#304) ─────────────────────────────────────────────────────
+// One line of four links, from the same model as the lanes: its plan steps are
+// the lanes' bars added up, each plan once. The headings around it carry no
+// numbers of their own.
+const DASH_NOW = [
+  ['agents', 'Working', 'live'],
+  ['waiting', 'Waiting on you', 'needsYou'],
+  ['plans', 'Plan steps', 'boards'],
+  ['outcomes', 'Recorded outcomes', 'outcomes'],
+]
+
+function dashNowEl() {
+  const strip = document.createElement('div')
+  strip.className = 'dash-now'
+  strip.setAttribute('role', 'group')
+  strip.setAttribute('aria-label', 'Now')
+  for (const [name, label, target] of DASH_NOW) {
+    const item = document.createElement('button')
+    item.type = 'button'
+    item.className = `dash-now-item tone-${name}`
+    item.dataset.dashboardSignal = name
+    item.dataset.dashboardTarget = target
+    item.dataset.dashboardFocusKey = `signal:${name}`
+    item.innerHTML = `<span class="dash-now-label">${esc(label)}</span><span class="dashboard-value"></span>${name === 'plans' ? '<span class="dashboard-value-total"></span>' : ''}<span class="dash-now-sub"></span>`
+    item.addEventListener('click', () => dashboardTarget(target))
+    strip.appendChild(item)
+  }
+  return strip
+}
+
+function renderDashNow(strip, model) {
+  if (!strip) return
+  const now = model.now
+  const oldest = now.oldestWaitingMs == null ? '' : `oldest ${ageText(now.oldestWaitingMs)}`
+  const parts = {
+    agents: [now.working, now.subagents ? `+${plural(now.subagents, 'subagent')}` : '',
+      `Agents working: ${now.working}${now.subagents ? `, plus ${plural(now.subagents, 'subagent')}` : ''}`],
+    waiting: [now.waiting, oldest, `Waiting on you: ${plural(now.waiting, 'open action')}${oldest ? `, ${oldest}` : ''}`],
+    plans: [now.plans.done, 'in lanes',
+      `Plan steps done in the plans agents are working on: ${now.plans.done} of ${now.plans.countable}`],
+    outcomes: [model.signals.outcomes, '', `Recorded outcomes: ${model.signals.outcomes} across items and plan rows`],
+  }
+  for (const [name, [value, sub, label]] of Object.entries(parts)) {
+    const item = strip.querySelector(`[data-dashboard-signal="${name}"]`)
+    setText(item.querySelector('.dashboard-value'), String(value))
+    setText(item.querySelector('.dash-now-sub'), sub)
+    setAttr(item, 'aria-label', label)
+  }
+  setText(strip.querySelector('[data-dashboard-signal="plans"] .dashboard-value-total'), `/${now.plans.countable}`)
+}
+
+// ── live lanes (#304, proposal §4) ───────────────────────────────────────────
+// One lane per working session. The ambient painter updates each lane in place,
+// keyed by session, so a draft in the rail never stops them and a poll changes
+// text and attributes only. Order is pinned (§10 rule 5): a session keeps its
+// place, new ones append, and only a forced paint re-sorts. An ask is answered
+// in the rail alone (D2): a lane's "Asking you" strip jumps to its rail card.
+let laneOrder = []
+const laneCalls = new Map() // session → the last call a paint has seen, for the one-shot pulse
+const laneAsks = new Map() // session → { first, oldest } attention entries, read by the lane's buttons
+
+function dashLanesEl() {
+  const section = document.createElement('section')
+  section.className = 'dashboard-card dash-lanes'
+  section.setAttribute('aria-labelledby', 'dashLanesTitle')
+  section.innerHTML = `
+    <div class="dashboard-card-head"><h2 id="dashLanesTitle" tabindex="-1">What's being worked on</h2></div>
+    <div class="dash-lane-list" role="list" aria-labelledby="dashLanesTitle"></div>
+    <div class="dashboard-empty dash-lanes-empty" role="img" aria-label="No agent connections" title="No agent connections"><svg class="dashboard-empty-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v4M12 18v4M2 12h4M18 12h4"></path></svg></div>
+    <div class="dash-lanes-foot">
+      <button type="button" class="dash-lanes-more" data-dashboard-focus-key="lanes:more" hidden></button>
+      <button type="button" class="dash-lanes-idle" data-dashboard-focus-key="lanes:idle" hidden></button>
+    </div>`
+  for (const button of section.querySelectorAll('.dash-lanes-foot button')) {
+    button.title = 'Open Live sessions'
+    button.addEventListener('click', () => dashboardTarget('live'))
+  }
+  return section
+}
+
+function dashLaneEl(session) {
+  const lane = document.createElement('article')
+  lane.className = 'dash-lane'
+  lane.dataset.lane = session
+  lane.setAttribute('role', 'listitem')
+  lane.innerHTML = `
+    <div class="dash-lane-head">
+      <span class="dash-lane-pulse" aria-hidden="true"></span><span class="dash-lane-live">live</span>
+      <strong class="dash-lane-doing"></strong>
+      <time class="dash-lane-recency"></time>
+    </div>
+    <div class="dash-lane-detail"></div>
+    <div class="dash-lane-meta"></div>
+    <div class="dash-lane-plan" hidden>
+      <span class="dash-lane-bar" role="img"><span data-seg="done"></span><span data-seg="partial"></span><span data-seg="waiting"></span><span data-seg="todo"></span></span>
+      <span class="dash-lane-plan-count"></span><span class="dash-lane-plan-title"></span>
+    </div>
+    <div class="dash-lane-children"></div>
+    <div class="dash-lane-ask" hidden>
+      <button type="button" class="dash-lane-asking" data-dashboard-focus-key="lane:${esc(session)}:ask"><span class="dash-lane-ask-label">Asking you</span> <span class="dash-lane-ask-title"></span><span class="dash-lane-ask-more"></span></button>
+      <button type="button" class="dash-lane-waiting" data-dashboard-focus-key="lane:${esc(session)}:waiting"></button>
+    </div>`
+  lane.querySelector('.dash-lane-asking').addEventListener('click', () => jumpToAsk(laneAsks.get(session)?.first))
+  lane.querySelector('.dash-lane-waiting').addEventListener('click', () => jumpToAsk(laneAsks.get(session)?.oldest))
+  return lane
+}
+
+// One iteration of a CSS one-shot, restarted when it is still running and
+// removed on animationend so nothing lingers. Never a loop (#304).
+function playOnce(el, name) {
+  if (el.classList.contains(name)) {
+    el.classList.remove(name)
+    void el.offsetWidth
+  }
+  el.classList.add(name)
+  const done = (event) => {
+    if (event.animationName !== `dash-lane-${name}`) return
+    el.classList.remove(name)
+    el.removeEventListener('animationend', done)
+  }
+  el.addEventListener('animationend', done)
+}
+
+function updateDashLane(el, lane) {
+  const color = pcolor(lane.project).dot
+  if (el.style.getPropertyValue('--lane-color') !== color) el.style.setProperty('--lane-color', color)
+  el.classList.toggle('quiet', lane.quiet)
+  setText(el.querySelector('.dash-lane-doing'), lane.doing)
+  const recency = el.querySelector('.dash-lane-recency')
+  const since = relMs(lane.sinceMs)
+  setText(recency, lane.quiet ? `quiet ${since}` : since === 'moments' ? 'just now' : `${since} ago`)
+  setAttr(recency, 'datetime', lane.lastCallAt)
+  setAttr(recency, 'title', lane.quiet ? `Claims work, but no call for ${since}` : 'Last MCP call')
+  const detail = el.querySelector('.dash-lane-detail')
+  setText(detail, lane.detail)
+  setHidden(detail, !lane.detail)
+  setText(el.querySelector('.dash-lane-meta'), [lane.agent, lane.project, lane.branch].filter(Boolean).join(' · '))
+  setAttr(el, 'aria-label', `${lane.agent} in ${lane.project}: ${lane.doing}`)
+  const plan = el.querySelector('.dash-lane-plan')
+  setHidden(plan, !lane.plan)
+  if (lane.plan) {
+    const { segments, done, countable, title } = lane.plan
+    for (const [name, value] of Object.entries(segments)) {
+      const segment = plan.querySelector(`[data-seg="${name}"]`)
+      setAttr(segment, 'style', `flex-grow: ${value}`)
+      setHidden(segment, value === 0)
+    }
+    setText(plan.querySelector('.dash-lane-plan-count'), `${done}/${countable}`)
+    setText(plan.querySelector('.dash-lane-plan-title'), title)
+    setAttr(plan.querySelector('.dash-lane-bar'), 'aria-label',
+      `${title}: ${done} done, ${segments.partial} in progress, ${segments.waiting} waiting on you, ${segments.todo} to do`)
+  }
+  const children = el.querySelector('.dash-lane-children')
+  const childKey = JSON.stringify(lane.children.map((child) => [child.name, child.doing]))
+  if (children.dataset.key !== childKey) {
+    children.dataset.key = childKey
+    children.replaceChildren(...lane.children.map((child) => {
+      const chip = document.createElement('span')
+      chip.className = 'dash-lane-child'
+      chip.textContent = child.name
+      if (child.doing) chip.title = child.doing
+      return chip
+    }))
+  }
+  const ask = el.querySelector('.dash-lane-ask')
+  setHidden(ask, !lane.asks.length)
+  if (lane.asks.length) {
+    laneAsks.set(lane.session, { first: lane.asks[0], oldest: lane.waiting.entry })
+    setText(ask.querySelector('.dash-lane-ask-title'), dashboardEntryTitle(lane.asks[0]) ?? '')
+    setText(ask.querySelector('.dash-lane-ask-more'), lane.asks.length > 1 ? ` +${lane.asks.length - 1} more` : '')
+    setText(ask.querySelector('.dash-lane-waiting'), `waiting on you ${ageText(lane.waiting.ms)}`)
+  } else {
+    laneAsks.delete(lane.session)
+  }
+}
+
+function renderDashLanes(section, model, { forced = false } = {}) {
+  if (!section) return
+  const list = section.querySelector('.dash-lane-list')
+  // The outcomes list's rule: a focused lane control that leaves (its lane gone,
+  // its ask strip hidden, or moved by a re-sort) hands focus to the adjacent
+  // control, or the heading, and only in a window that owns focus.
+  const focused = activeFocusElement()
+  const focusIndex = focused && list.contains(focused) ? laneControls(list).indexOf(focused) : -1
+  laneOrder = pinLaneOrder(forced ? [] : laneOrder, model.lanes)
+  const bySession = new Map(model.lanes.map((lane) => [lane.session, lane]))
+  const drawn = laneOrder.slice(0, MAX_LANES).map((session) => bySession.get(session))
+  // A real call since the last paint pulses its lane once; only drawn lanes on a
+  // visible Dashboard, and only when the human's motion setting allows it.
+  const called = calledLanes(laneCalls, drawn)
+  laneCalls.clear()
+  for (const lane of model.lanes) laneCalls.set(lane.session, lane.lastCallAt)
+  const animate = motion.activityMotion() && !document.getElementById('dashboard')?.hidden
+  const existing = new Map([...list.children].map((el) => [el.dataset.lane, el]))
+  const nodes = drawn.map((lane) => {
+    const el = existing.get(lane.session) ?? dashLaneEl(lane.session)
+    existing.delete(lane.session)
+    updateDashLane(el, lane)
+    if (animate && called.pulse.has(lane.session)) playOnce(el, 'pulse')
+    if (animate && called.sweep === lane.session) playOnce(el, 'sweep')
+    return el
+  })
+  for (const [session, el] of existing) {
+    laneAsks.delete(session)
+    el.remove()
+  }
+  // Move only a lane that is out of place: a pinned order moves nothing.
+  nodes.forEach((el, index) => {
+    if (list.children[index] !== el) list.insertBefore(el, list.children[index] ?? null)
+  })
+  setHidden(section.querySelector('.dash-lanes-empty'), model.lanes.length > 0 || model.idleConnections > 0)
+  const more = section.querySelector('.dash-lanes-more')
+  const extra = model.lanes.length - drawn.length
+  setText(more, extra > 0 ? `+${extra} more working` : '')
+  setHidden(more, extra <= 0)
+  const idle = section.querySelector('.dash-lanes-idle')
+  setText(idle, model.idleConnections ? `+${plural(model.idleConnections, 'idle connection')}` : '')
+  setHidden(idle, !model.idleConnections)
+  // focusIndex is set only while the document had focus (activeFocusElement):
+  // removing the focused node can itself make hasFocus() false.
+  if (focusIndex < 0 || document.activeElement === focused) return
+  const controls = laneControls(list)
+  const next = controls.includes(focused) ? focused
+    : controls[Math.min(focusIndex, controls.length - 1)] ?? section.querySelector('#dashLanesTitle')
+  next.focus({ preventScroll: true })
+}
+
+function laneControls(list) {
+  return [...list.querySelectorAll('.dash-lane button')].filter((button) => !button.closest('[hidden]'))
+}
+
+// D2: the rail is the one answer surface, so a lane's ask jumps to its rail
+// card; an ask past the rail's top three opens in the Inbox instead.
+function jumpToAsk(entry) {
+  if (!entry) return
+  const id = needsEntryId(entry)
+  const card = document.querySelector(`#dashRail [data-rail-card="${CSS.escape(id)}"]`)
+  if (!card) {
+    openAskInInbox(entry)
+    return
+  }
+  for (const other of document.querySelectorAll('#dashRail [data-rail-card]')) other.tabIndex = other === card ? 0 : -1
+  railSelectedId = id
+  card.focus()
 }
 
 function formatDuration(ms) {
@@ -1929,26 +2130,6 @@ function renderDashboardHistory(panel) {
       bars.appendChild(bar)
     }
     panel.appendChild(bars)
-  }
-}
-
-function renderDashboardDispatch(list, sessions) {
-  list.replaceChildren()
-  if (!sessions.length) {
-    list.innerHTML = '<div class="dashboard-empty" role="img" aria-label="No agent connections" title="No agent connections"><svg class="dashboard-empty-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v4M12 18v4M2 12h4M18 12h4"></path></svg></div>'
-    return
-  }
-  for (const session of sessions.slice(0, 4)) {
-    const row = document.createElement('div')
-    row.className = `dashboard-live-session${session.idle ? ' idle' : ''}`
-    const identity = document.createElement('strong')
-    identity.textContent = `${session.project} / ${session.agent}`
-    const doing = document.createElement('span')
-    doing.textContent = session.historical ? `Last report: ${session.synopsis}` : session.synopsis
-    const state = document.createElement('small')
-    state.textContent = session.idle ? 'Connected' : 'Reported work'
-    row.append(identity, doing, state)
-    list.appendChild(row)
   }
 }
 
@@ -2229,44 +2410,12 @@ function renderDashboard(model) {
   // Keep native controls mounted; ambient updates replace only their data regions.
   if (!host || host.querySelector('.dashboard-grid')) return
 
-  const signals = document.createElement('div')
-  signals.className = 'dashboard-signals'
-  signals.append(
-    dashboardSignal({
-      name: 'agents',
-      label: 'Reported work',
-      value: model.signals.agents.working,
-      total: model.signals.agents.total,
-      target: 'live',
-      tone: 'agent',
-      meter: true,
-    }),
-    dashboardSignal({
-      name: 'waiting',
-      label: 'Needs you',
-      value: model.signals.waiting,
-      target: 'needsYou',
-      tone: 'attention',
-    }),
-    dashboardSignal({
-      name: 'plans',
-      label: 'Plans',
-      value: model.signals.plans,
-      target: 'boards',
-      tone: 'plan',
-    }),
-    dashboardSignal({
-      name: 'outcomes',
-      label: 'Recorded outcomes',
-      value: model.signals.outcomes,
-      target: 'outcomes',
-      tone: 'outcome',
-    }),
-  )
-  host.appendChild(signals)
+  host.appendChild(dashNowEl())
 
   const grid = document.createElement('div')
   grid.className = 'dashboard-grid'
+  grid.appendChild(dashLanesEl())
+  grid.appendChild(dashRailEl())
 
   const activityPanel = document.createElement('section')
   activityPanel.className = 'dashboard-card dashboard-activity'
@@ -2291,16 +2440,6 @@ function renderDashboard(model) {
   activityHead.appendChild(range)
   activityPanel.appendChild(activityHead)
   grid.appendChild(activityPanel)
-
-  grid.appendChild(dashRailEl())
-
-  const live = document.createElement('section')
-  live.className = 'dashboard-card dashboard-dispatch'
-  live.innerHTML = '<div class="dashboard-card-head"><h2>Live dispatch</h2></div>'
-  const sessionList = document.createElement('div')
-  sessionList.className = 'dashboard-live-list'
-  live.appendChild(sessionList)
-  grid.appendChild(live)
 
   const outcomes = document.createElement('section')
   outcomes.className = 'dashboard-card dashboard-outcomes'

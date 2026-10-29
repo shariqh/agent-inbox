@@ -1897,6 +1897,8 @@ body.settings-open #liveBar { opacity: .32; }
   height: 2px;
   background: linear-gradient(90deg, transparent, var(--lane-color, var(--app-agent)), transparent);
   content: "";
+  /* Hidden unless the sweep runs, so Calm and reduced motion leave no stray bar. */
+  opacity: 0;
   animation: dash-lane-sweep 4s var(--motion-ease-in-out) infinite;
 }
 .dash-lane-head { display: flex; min-width: 0; align-items: baseline; gap: 8px; }

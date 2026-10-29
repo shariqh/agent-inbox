@@ -169,6 +169,8 @@ describe('motion foundation in public/style.css (#302)', () => {
   it('sweeps only the lane laneMotion picks as the newest call', () => {
     const sweeps = rules.filter((r) => !r.media && [...r.decls].some(([prop, value]) => prop.startsWith('animation') && /dash-lane-sweep/.test(value)))
     expect(sweeps.flatMap((r) => r.selectors)).toEqual(['.dash-lane.sweep::before'])
+    // Stopped (Calm, reduced motion), the sweep's bar must not stay drawn.
+    expect(sweeps[0]!.decls.get('opacity')).toBe('0')
     expect(appJs.match(/classList\.toggle\('sweep'/g)).toEqual(["classList.toggle('sweep'"])
     expect(appJs).toContain("el.classList.toggle('sweep', motion.sweep === lane.session)")
   })

@@ -202,7 +202,7 @@ describe('local marketing page', () => {
   it('has a complete, self-contained light-first page with no live inbox connection', () => {
     const { html } = boot({ dark: true })
     expect(document.title).toContain('Agent Inbox')
-    expect(document.querySelector('.release-line .version')?.textContent).toBe('v1.8.0')
+    expect(document.querySelector('.release-line .version')?.textContent).toBe('v2.0.0')
     expect(document.documentElement.dataset.theme).toBe('light')
     expect(document.querySelectorAll('h1')).toHaveLength(1)
     expect(document.querySelector('h1')?.textContent).toContain('every terminal.')
@@ -631,6 +631,14 @@ describe('local marketing page', () => {
     expect(privacy).toContain('Optional update checks and downloads contact GitHub')
     expect(privacy).toContain('pull request and issue lookups when the GitHub CLI is installed and signed in')
     expect(privacy).not.toContain('Optional update checks and pull request lookups contact GitHub.')
+    // From 2.0.0 the macOS app is for Apple silicon only; Intel Macs stay on v1.8.0 (#384).
+    const hosts = faq('Where can I run Agent Inbox?')
+    expect(hosts).toContain('Desktop packages are available for macOS 13.5+ on Apple silicon, and Linux on x64 and arm64.')
+    expect(hosts).toContain('Intel Macs stay on v1.8.0, the last version for them.')
+    expect(document.querySelector('details.faq-item a[href="https://github.com/shariqh/agent-inbox/releases/tag/v1.8.0"]')?.textContent)
+      .toBe('v1.8.0')
+    expect(document.querySelector('.install-footnote')?.textContent).toBe('macOS 13.5+ on Apple silicon · Linux x64 & arm64')
+    expect(document.body.textContent ?? '').not.toMatch(/Apple silicon and Intel|universal/i)
   })
 
   it('supports feature tabs with keyboard navigation and an exposed selected state', () => {

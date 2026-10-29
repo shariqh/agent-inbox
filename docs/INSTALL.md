@@ -4,7 +4,7 @@
 
 | Surface | Support |
 |---|---|
-| Notarized desktop app | macOS 13.5+ on Apple silicon and Intel |
+| Notarized desktop app | macOS 13.5+ on Apple silicon |
 | Portable Linux desktop app | x64/arm64 AppImage; kernel 4.18+, glibc 2.34+, GLIBCXX_3.4.29+ |
 | Debian package | Ubuntu 22.04+/Debian 12+ on amd64 or arm64 |
 | MCP server and browser viewer | macOS and Linux with Node 24 |
@@ -184,10 +184,12 @@ withdraws that permission until the app has checked again.
 
 ## Recommended macOS installation
 
-When a public release is available, download the DMG from GitHub Releases, drag
-**Agent Inbox** to `/Applications`, and launch it. The app requires macOS 13.5
-(Ventura) or later and supports Apple silicon and Intel. It includes the matching Node
-24 agent runtime; no system Node installation is required.
+When a public release is available, download `Agent-Inbox-vX.Y.Z-arm64.dmg` from GitHub
+Releases, drag **Agent Inbox** to `/Applications`, and launch it. The app requires macOS
+13.5 (Ventura) or later on a Mac with Apple silicon. It includes the matching Node 24 agent
+runtime; no system Node installation is required.
+Intel Macs stay on [v1.8.0](https://github.com/shariqh/agent-inbox/releases/tag/v1.8.0),
+the last version for them.
 
 On first launch, open **Setup**, select GitHub Copilot CLI, Claude Code, or both, then
 choose **Install now**. Setup verifies and installs the bundled architecture-specific
@@ -197,7 +199,7 @@ server, and adds the reporting instructions. Start a fresh agent session afterwa
 Verify the selected DMG against the release checksum manifest:
 
 ```sh
-ASSET=Agent-Inbox-vX.Y.Z-universal.dmg
+ASSET=Agent-Inbox-vX.Y.Z-arm64.dmg
 grep -F "  $ASSET" SHA256SUMS.txt | shasum -a 256 -c -
 xcrun stapler validate "$ASSET"
 spctl --assess --type open --context context:primary-signature --verbose=4 "$ASSET"

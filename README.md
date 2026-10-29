@@ -39,7 +39,7 @@ branch, background, and delivery timeline.
 
 ### Requirements
 
-- macOS 13.5 (Ventura) or later on Apple silicon or Intel for the notarized desktop app
+- macOS 13.5 (Ventura) or later on Apple silicon for the notarized desktop app
 - Linux x64 or arm64 with kernel 4.18+, glibc 2.34+, and GLIBCXX_3.4.29+ for AppImage/DEB packages
 - **Node.js 24** for source builds, the MCP server, and the browser viewer
 - macOS or Linux for the source-build path
@@ -51,10 +51,12 @@ matching macOS DMG, Linux AppImage, or Debian package from
 
 ### 1. Install a desktop package
 
-On macOS, download the universal DMG from
+On macOS, download `Agent-Inbox-vX.Y.Z-arm64.dmg` from
 [GitHub Releases](https://github.com/shariqh/agent-inbox/releases), drag **Agent Inbox**
-to `/Applications`, and launch it. The universal app supports Apple silicon and Intel
-and includes the Node 24 agent runtime, so it does not require a system Node installation.
+to `/Applications`, and launch it. The app requires a Mac with Apple silicon and includes
+the Node 24 agent runtime, so it does not require a system Node installation.
+Intel Macs stay on [v1.8.0](https://github.com/shariqh/agent-inbox/releases/tag/v1.8.0),
+the last version for them.
 
 On Linux, choose the filename matching the machine:
 
@@ -121,7 +123,7 @@ open "out/Agent Inbox-darwin-arm64/Agent Inbox.app"
 ```
 
 The protected release pipeline builds and verifies every native package, signs/notarizes
-the universal macOS DMG, and publishes the DMG plus both AppImages and both DEBs only
+the Apple silicon macOS DMG, and publishes the DMG plus both AppImages and both DEBs only
 after remote download and rehash. Release inputs, platform evidence, and the publication
 runbook are documented in [`docs/macos-release.md`](docs/macos-release.md) and
 [`docs/linux-release.md`](docs/linux-release.md).
@@ -136,7 +138,7 @@ dimensions, SVG copies, and the complete ICNS representation set without
 rerasterizing. Generation requires `rsvg-convert`; generation and checking use
 macOS `iconutil`.
 
-Release packages carry separate `darwin-arm64` and `darwin-x64` Node 24 agent runtimes;
+The macOS package carries a `darwin-arm64` Node 24 agent runtime;
 see [`electron/README.md`](electron/README.md#portable-agent-runtime-staging). Setup
 installs the matching payload under `~/.agent-inbox/runtime/`, so registered agents do
 not depend on the app bundle remaining in place.

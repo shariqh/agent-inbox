@@ -202,14 +202,20 @@ describe('older history for a longer ribbon range (#392)', () => {
     vi.setSystemTime(T0)
   }
 
-  function recorder(fail: { history: boolean } = { history: false }) {
+  function recorder(fail: { history?: boolean; archived?: boolean } = {}) {
     const reads: string[] = []
+    const statuses: Array<{ path: string; status: number }> = []
     return {
       reads,
+      statuses,
       interceptFetch: async (input: RequestInfo | URL, init: RequestInit | undefined, next: () => Promise<Response>) => {
         const path = String(input).split('?')[0]!
         if ((init?.method ?? 'GET') === 'GET') reads.push(path)
-        return fail.history && path === HISTORY ? new Response('unavailable', { status: 500 }) : next()
+        const response = (fail.history && path === HISTORY) || (fail.archived && path === ARCHIVED)
+          ? new Response('unavailable', { status: 500 })
+          : await next()
+        statuses.push({ path, status: response.status })
+        return response
       },
     }
   }
@@ -290,8 +296,9 @@ describe('older history for a longer ribbon range (#392)', () => {
     expect(markTitles().some((title) => title.includes('Early ask'))).toBe(true)
   })
 
-  it('reads the complete archived plans once when their omitted outcomes fall in the range', async () => {
-    const d = open()
+  // Six outcomes on one archived plan, two of them three days old: the brief
+  // carries the project's newest four, so 7 days needs the complete list.
+  function seedArchived(d: Database.Database): void {
     const scope = { ...A, title: 'Shipped plan' }
     vi.setSystemTime(T0 - 3 * DAY)
     upsertBoard(d, { ...scope, rows: [{ label: 'Step', status: 'tracked' }] })
@@ -307,6 +314,11 @@ describe('older history for a longer ribbon range (#392)', () => {
     const board = getBoard(d, A.project, scope.title)!
     expect(archiveBoard(d, board.id, board.revision)).toBe(true)
     vi.setSystemTime(T0)
+  }
+
+  it('reads the complete archived plans once when their omitted outcomes fall in the range', async () => {
+    const d = open()
+    seedArchived(d)
     const { reads, interceptFetch } = recorder()
     await bootApp(d, { interceptFetch })
     for (let tick = 0; tick < 2; tick += 1) await pollTick()
@@ -316,6 +328,34 @@ describe('older history for a longer ribbon range (#392)', () => {
     expect(reads.filter((path) => path === ARCHIVED)).toHaveLength(1)
     expect(markTitles().filter((title) => title.startsWith('Landed: Row'))).toHaveLength(6)
     expect(note()).toBe('')
+  })
+
+  it('keeps the note and says archived plans are unavailable when that read fails', async () => {
+    const d = open()
+    seedArchived(d)
+    const { interceptFetch } = recorder({ archived: true })
+    await bootApp(d, { interceptFetch })
+    await pick(7 * DAY)
+    expect(note()).toMatch(/^Asks and outcomes from .* · Archived plans are unavailable right now\.$/)
+    expect(ribbonLanes()).toEqual(['alpha'])
+  })
+
+  it('stays idle at 7 days: the history read revalidates and the ribbon is not rebuilt', async () => {
+    const d = open()
+    seedOldAsk(d)
+    const { statuses, interceptFetch } = recorder()
+    await bootApp(d, { interceptFetch })
+    await pick(7 * DAY)
+    await pollTick()
+    const part = () => document.querySelector('#dashboard .dashboard-activity > :not(.dashboard-card-head)')
+    const node = part()
+    expect(node).not.toBeNull()
+    statuses.length = 0
+    for (let tick = 0; tick < 3; tick += 1) {
+      await pollTick()
+      expect(part()).toBe(node)
+    }
+    expect(statuses.filter((read) => read.path === HISTORY).map((read) => read.status)).toEqual([304, 304, 304])
   })
 
   it('changes no attention surface and keeps the eight poll reads at 24 hours', async () => {

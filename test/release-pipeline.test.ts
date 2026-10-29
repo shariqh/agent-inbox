@@ -571,15 +571,15 @@ describe('macOS finalization contract', () => {
     expect(sweep).toThrow(`Electron Mach-O has CPU types x86_64, not the expected arm64: ${at.framework}`)
     put(at.framework, arm64)
 
-    // Thin big-endian, 32- and 64-bit (no toolchain here builds one): lipo knows the header
-    // but will not list its CPU types, so finding it fails the sweep.
+    // Thin big-endian, 32- and 64-bit (no toolchain here builds one). Older lipo lists their
+    // CPU types (ppc, ppc64) and newer lipo refuses to; either way the sweep fails on the file.
     for (const [magic, cpuType] of [[0xfeedface, 18], [0xfeedfacf, 0x01000012]] as const) {
       const header = Buffer.alloc(32)
       header.writeUInt32BE(magic, 0)
       header.writeUInt32BE(cpuType, 4)
       header.writeUInt32BE(1, 12)
       put(at.addon, header)
-      expect(sweep).toThrow(`lipo -archs ${at.addon}`)
+      expect(sweep).toThrow(at.addon)
     }
     put(at.addon, arm64)
     expect(inspected()).toEqual(Object.values(at).sort())

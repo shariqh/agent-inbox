@@ -759,7 +759,7 @@ describe('notarized macOS release workflow', () => {
 
     // The step itself, on a restored app and the report bound to it, then tampered.
     const script = command
-      .replace('node scripts/macos-release-gates.mjs', `node '${join(root, 'scripts', 'macos-release-gates.mjs')}'`)
+      .replace('node scripts/macos-release-gates.mjs', `'${process.execPath}' '${join(root, 'scripts', 'macos-release-gates.mjs')}'`)
       .replaceAll('${{ needs.authorize.outputs.version }}', VERSION)
       .replaceAll('${{ needs.authorize.outputs.source-commit }}', sourceCommit)
     expect(script).not.toContain('${{')
@@ -783,7 +783,7 @@ describe('notarized macOS release workflow', () => {
     }
     const run = (value: Record<string, unknown>) => {
       writeFileSync(reportPath, `${JSON.stringify(value)}\n`)
-      return spawnSync('bash', ['-c', script], {
+      return spawnSync('/bin/bash', ['-c', script], {
         cwd: temp,
         env: {
           PATH: process.env.PATH,
@@ -798,7 +798,7 @@ describe('notarized macOS release workflow', () => {
     // this unsigned fixture cannot pass.
     const bound = run(report)
     expect(bound.status).toBe(1)
-    expect(bound.stderr).toMatch(/^macos-release-gates: /)
+    expect(bound.stderr).toMatch(/^macos-release-gates: /m)
     expect(bound.stderr).not.toMatch(refusal)
     for (const tampered of [{ notaryEligible: false }, { buildMode: 'adhoc' }, { sourceDirty: true }, { sourceCommit: 'b'.repeat(40) }]) {
       const result = run({ ...report, ...tampered })

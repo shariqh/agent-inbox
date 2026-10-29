@@ -1,6 +1,7 @@
 import { buildRelay } from './relay.js'
 import { activitySynopsis, lastActivityAt, liveSummary } from './livebar.js'
 import { knownOutcomes } from './closed-history.js'
+import { laterEntries, sortRail } from './attention.js'
 
 const asSet = (values) => values instanceof Set ? values : new Set(values ?? [])
 // Issue #184: what the paged item snapshot omitted within this lens. Issue
@@ -10,6 +11,8 @@ const NO_OLDER_HISTORY = { older: { items: 0, outcomes: 0, latest: null, project
 const NO_OMITTED_OUTCOMES = { outcomes: 0, latest: null }
 // The recent outcomes the Dashboard lists, and so the most it needs to prove.
 const RECENT_OUTCOMES = 4
+// Issue #303 (D3): the rail holds the top three asks; Inbox and Review queue hold the rest.
+const RAIL_CARDS = 3
 
 function validProject(entity, closed) {
   return entity?.project && !closed.has(entity.project)
@@ -80,11 +83,9 @@ export function buildDashboard({
       outcomes,
       projects: projects.size,
     },
-    ownership: {
-      human: relay.human.length,
-      agent: relay.agent.length,
-      outcome: outcomes,
-    },
+    // Issue #303: the Needs you rail, from the one attention set (relay.human is
+    // attentionEntries) in the rail's order; deferred asks count, never show.
+    rail: railModel(sortRail(relay.human, nowMs), laterEntries(visibleItems, visibleBoards, nowMs).length),
     waitingEntries: relay.human,
     agentEntries: relay.agent,
     recentOutcomes,
@@ -92,6 +93,11 @@ export function buildDashboard({
     recentOutcomesWait: { history: keepsUnproven(history.older), archived: keepsUnproven(archivedOlder) },
     sessions,
   }
+}
+
+function railModel(ordered, later) {
+  const cards = ordered.slice(0, RAIL_CARDS)
+  return { cards, more: ordered.length - cards.length, later }
 }
 
 export function buildActivitySeries(spans, { startMs, endMs, bucketCount }) {

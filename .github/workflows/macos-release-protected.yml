@@ -316,6 +316,15 @@ jobs:
             --archive "build/signed/$BASE.tar.gz" \
             --destination build/final-app \
             --expected-root "Agent Inbox.app"
+      - name: Re-check the Developer ID report before notarizing
+        run: >-
+          node scripts/macos-release-gates.mjs verify-developer-id
+          --app "build/final-app/Agent Inbox.app"
+          --report "build/signed/Agent-Inbox-${{ needs.authorize.outputs.version }}-macos-developer-id-verification.json"
+          --identity "$APPLE_DEVELOPER_IDENTITY"
+          --team "$APPLE_TEAM_ID"
+          --source "${{ needs.authorize.outputs.source-commit }}"
+          --version "${{ needs.authorize.outputs.version }}"
       - name: Package app for notarization
         run: >-
           /usr/bin/ditto -c -k --keepParent

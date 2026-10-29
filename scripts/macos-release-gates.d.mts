@@ -44,6 +44,21 @@ export function validateSigningIdentity(options: {
   teamId: string
 }
 
+/**
+ * The sign job's Developer ID verification report, re-checked against the restored app
+ * before it is zipped for notarization (#383): a clean, notary-eligible Developer ID build of
+ * this source and version, whose tree identity the app still has, carrying this bundle
+ * version and signed by this identity and team.
+ */
+export function verifyDeveloperIdApp(options: {
+  app: string
+  reportPath: string
+  identity: string
+  teamId: string
+  sourceCommit: string
+  version: string
+}): { appTreeDigest: string }
+
 export function parseNotaryReceipt(options: {
   kind: 'app' | 'dmg'
   submitted: string

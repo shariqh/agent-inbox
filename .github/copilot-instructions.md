@@ -653,7 +653,8 @@ Run the build before `npm run electron`; the development shell starts the built
   help-only (`legacy`) entries in `public/keys.js`; keep them legacy. The session
   focus panel (`.dash-focus`, from a lane's title button, mounted inside the lanes
   card: over the lanes column on a desktop, static below the lanes under 1280px,
-  closed by an outside `pointerdown` that is not a lane) is read-only (D2): its
+  closed by a trusted outside `click` that is not a lane, never a `pointerdown`, and
+  never while it is in flow) is read-only (D2): its
   asks come from the attention set and jump to the rail or Inbox card, its plan and
   outcomes open through `focusItem`, its PR/CI chips are ambient `sourceChipsHtml`
   and its links are #300's `cardLinks`/`linkStripHtml`. Parts are rewritten only when

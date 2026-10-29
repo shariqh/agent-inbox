@@ -1587,8 +1587,11 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   markup changes (`setFocusPart`), so an unchanged poll writes nothing and a keyboard user
   keeps the same control by its focus key. Opening focuses the panel heading and closing
   (×, Esc in the panel, Esc on its lane) returns focus to the lane only when the window
-  has focus (and, for closing, focus was in the panel). A `pointerdown` outside the panel
-  that is not on a lane closes it and moves no focus. A session that stops working (or
+  has focus (and, for closing, focus was in the panel). A trusted `click` (`trustedInput`)
+  outside the panel that is not on a lane closes it and moves no focus, and only while
+  it overlays the lanes: never a `pointerdown` (closing mid-press moved what was under the
+  pointer), and never in the compact layout, where the panel is in flow (`position:
+  static`) above the rail and closing it would lift the rail under the press. A session that stops working (or
   leaves the filters) keeps the panel open with one line saying so. Its one-shot entrance
   (`dash-focus-in`) takes the motion tokens, is instant under reduced motion and listed
   under Calm. `focusSession` and `laneFilters` are in `frameInputs()`; their handlers

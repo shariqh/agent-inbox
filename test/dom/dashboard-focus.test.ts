@@ -8,13 +8,21 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type Database from 'better-sqlite3'
 import { insertItem, recordActivityCall, resolveItem, upsertActivity, upsertBoard, upsertSourceLink } from '../../src/store.js'
 import {
-  advanceClock, badgeCount, bootApp, click, freshDb, pollTick, row, searchFor, settle, tabCount, useDomTest,
+  advanceClock, attachStylesheet, badgeCount, bootApp, click, freshDb, pollTick, row, searchFor, settle, tabCount, useDomTest,
 } from './harness.js'
+
+// jsdom dispatches only untrusted events, and an outside click closes the panel
+// only on trusted input (as "Since you last looked" does): stub that one seam.
+const trust = vi.hoisted(() => ({ on: true }))
+vi.mock('../../public/ribbon.js', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../public/ribbon.js')>(),
+  trustedInput: () => trust.on,
+}))
 
 useDomTest()
 
 let db: Database.Database | null = null
-afterEach(() => { db?.close(); db = null; vi.restoreAllMocks() })
+afterEach(() => { db?.close(); db = null; trust.on = true; vi.restoreAllMocks() })
 
 const REPO = 'shariqh/agent-inbox'
 const A = { project: 'alpha', stream: '307-polish', agent: 'copilot' } as const
@@ -196,22 +204,55 @@ describe('the session focus panel (#307)', () => {
     expect(document.activeElement).toBe(document.querySelector(`#dashRail [data-rail-card="${ask}"]`))
   })
 
-  it('closes on a press outside it that is not a lane, without moving focus', async () => {
+  const press = (el: Element) => el.dispatchEvent(new Event('pointerdown', { bubbles: true }))
+
+  it('closes on a trusted click outside it that is not a lane, never on a press alone, moving no focus', async () => {
+    const d = open()
+    seed(d)
+    await bootApp(d)
+    attachStylesheet()
+    click(openButton('mine'))
+    expect(getComputedStyle(panel()!).position).toBe('absolute')
+    click(panel()!.querySelector('.dash-focus-doing'))
+    click(lane('theirs')!.querySelector('.dash-lane-meta'))
+    expect(panel()!.dataset.session).toBe('theirs')
+    expect(panel()!.hidden).toBe(false)
+    const rail = document.querySelector('#dashRail')!
+    press(rail)
+    expect(panel()!.hidden).toBe(false)
+    const focused = document.activeElement
+    const focus = vi.spyOn(HTMLElement.prototype, 'focus')
+    click(rail)
+    expect(panel()!.hidden).toBe(true)
+    expect(focus).not.toHaveBeenCalled()
+    expect(document.activeElement).toBe(focused)
+  })
+
+  it('ignores a scripted click', async () => {
+    const d = open()
+    seed(d)
+    await bootApp(d)
+    attachStylesheet()
+    click(openButton('mine'))
+    trust.on = false
+    click(document.querySelector('#dashRail'))
+    expect(panel()!.hidden).toBe(false)
+  })
+
+  it('never closes on an outside press or click while it is in flow (the compact layout)', async () => {
     const d = open()
     seed(d)
     await bootApp(d)
     click(openButton('mine'))
-    const press = (el: Element) => el.dispatchEvent(new Event('pointerdown', { bubbles: true }))
-    press(panel()!.querySelector('.dash-focus-doing')!)
-    press(lane('theirs')!)
+    const real = window.getComputedStyle
+    vi.spyOn(window, 'getComputedStyle').mockImplementation((el: Element, pseudo?: string | null) => {
+      const style = real(el, pseudo)
+      return el.classList?.contains('dash-focus') ? ({ ...style, position: 'static' } as CSSStyleDeclaration) : style
+    })
+    const rail = document.querySelector('#dashRail')!
+    press(rail)
+    click(rail)
     expect(panel()!.hidden).toBe(false)
-    const focused = document.activeElement
-    const focus = vi.spyOn(HTMLElement.prototype, 'focus')
-    press(document.querySelector('#dashRail')!)
-    expect(panel()!.hidden).toBe(true)
-    expect(openButton('mine')!.getAttribute('aria-expanded')).toBe('false')
-    expect(focus).not.toHaveBeenCalled()
-    expect(document.activeElement).toBe(focused)
   })
 
   it('sits in the lanes card, never over the rail', async () => {

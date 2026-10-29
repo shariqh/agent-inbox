@@ -2389,15 +2389,21 @@ function closeSessionFocus() {
   ;(lane ?? document.getElementById('dashLanesTitle'))?.focus({ preventScroll: true })
 }
 
-// A press outside the panel that is not on a lane (a lane toggles it itself)
-// closes it, moving no focus. Capture phase, like the press guard.
-function closeSessionFocusOnPress(event) {
-  if (!focusSession || !(event.target instanceof Element)) return
+// A trusted click outside the panel that is not on a lane (a lane toggles it
+// itself) closes it, moving no focus. A click, never a pointerdown: it fires
+// once the press has completed on one element, so nothing moves under the
+// pointer mid-press. In the compact layout the panel is in flow (static) and
+// part of the page, with its own close and Esc, so an outside click never
+// closes it there: the rail below it would jump up under the press.
+function closeSessionFocusOnClick(event) {
+  if (!focusSession || !trustedInput(event) || !(event.target instanceof Element)) return
   if (event.target.closest('#dashboard .dash-focus, #dashboard .dash-lane')) return
+  const aside = document.querySelector('#dashboard .dash-focus')
+  if (!aside || getComputedStyle(aside).position === 'static') return
   focusSession = null
   paintSessionFocus()
 }
-document.addEventListener('pointerdown', closeSessionFocusOnPress, true)
+document.addEventListener('click', closeSessionFocusOnClick, true)
 
 function toggleSessionFocus(session) {
   if (focusSession === session) closeSessionFocus()
@@ -2417,7 +2423,9 @@ function jumpToSession(session) {
   resetSearch()
   selectTab('dashboard', { paint: false })
   forceRender()
-  requestHistoryPaint() // an explicit entry point (#184)
+  // An explicit entry point (#184). Defensive: ⌘K lists results only once the
+  // older history is read, so it finds nothing omitted on the path that exists.
+  requestHistoryPaint()
   if (document.hasFocus()) document.getElementById('dashFocusTitle')?.focus({ preventScroll: true })
 }
 

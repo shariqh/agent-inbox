@@ -203,15 +203,41 @@ describe('no new dependency (design §2.3, §2.4c)', () => {
     expect(ctlSpecs.filter((spec) => !spec.startsWith('node:'))).toEqual(['./mesh-config.js', './mesh-config.js'])
   })
 
-  it('the lockfile root declares exactly package.json’s dependencies', () => {
+  // The app's whole dependency set, pinned by name: package.json's dependencies and
+  // devDependencies and every package path in the lockfile. A version bump changes
+  // none of these; a new package (direct or transitive) changes one and fails here.
+  const DEPENDENCY_FIXTURE = new URL('./fixtures/app-dependencies.txt', import.meta.url)
+  function dependencySet(): string {
+    const pkg = JSON.parse(readFileSync(join(REPO, 'package.json'), 'utf8'))
+    const lock = JSON.parse(readFileSync(join(REPO, 'package-lock.json'), 'utf8'))
+    const names = (deps: Record<string, string> | undefined) => Object.keys(deps ?? {}).sort()
+    return [
+      '# dependencies', ...names(pkg.dependencies),
+      '# devDependencies', ...names(pkg.devDependencies),
+      '# package-lock.json packages', ...Object.keys(lock.packages).filter((key) => key !== '').sort(),
+    ].join('\n') + '\n'
+  }
+
+  it('the dependency set is exactly the pinned one', () => {
+    if (process.env['AGENT_INBOX_UPDATE_DEPENDENCY_FIXTURE'] === '1') writeFileSync(DEPENDENCY_FIXTURE, dependencySet())
+    expect(dependencySet(), [
+      'The app\'s dependency set changed (package.json or package-lock.json gained or lost a package).',
+      'The mesh may never add one (design §2.4c). If this change is a deliberate dependency change',
+      'outside the mesh, review it and refresh the pin with:',
+      '  AGENT_INBOX_UPDATE_DEPENDENCY_FIXTURE=1 npx vitest run test/mesh.test.ts -t "dependency set"',
+      'and commit test/fixtures/app-dependencies.txt with it.',
+    ].join('\n')).toBe(readFileSync(DEPENDENCY_FIXTURE, 'utf8'))
+  })
+
+  it('the lockfile root declares exactly package.json’s dependencies and only meshctl’s bin is new', () => {
     const pkg = JSON.parse(readFileSync(join(REPO, 'package.json'), 'utf8'))
     const lock = JSON.parse(readFileSync(join(REPO, 'package-lock.json'), 'utf8'))
     const root = lock.packages['']
     expect(root.dependencies).toEqual(pkg.dependencies)
     expect(root.devDependencies).toEqual(pkg.devDependencies)
     // npm's lockfile v3 records the root bin map; meshctl's entry is the only mesh change there
+    expect(root.bin).toEqual(Object.fromEntries(Object.entries(pkg.bin as Record<string, string>).map(([k, v]) => [k, v.replace(/^\.\//, '')])))
     expect(root.bin['agent-inbox-meshctl']).toBe('dist/meshctl.js')
-    expect(Object.keys(lock.packages).filter((key) => /mesh/i.test(key))).toEqual([])
   })
 })
 

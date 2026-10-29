@@ -137,6 +137,13 @@ describe('31.1 · changeAnswer paints the surface it just staged a draft into', 
       expect(topLevelFn(request), request).toContain('omittedWanted()')
     }
     expect(topLevelFn('function omittedWanted()')).toMatch(/omitsArchived\(\) && archivedWanted\(\)/)
+    // #373: a lingering plan's own read follows the same rules
+    expect([...js.matchAll(/\/api\/boards\/archived\/plans/g)]).toHaveLength(1)
+    expect(topLevelFn('function lingeringUrl(view = lastData)')).toContain('/api/boards/archived/plans?ids=')
+    expect(js.match(/readSnapshot\((?:late)?[lL]ingerUrl\)/g)).toHaveLength(2)
+    expect(topLevelFn('async function load()')).toMatch(/lingerUrl \? readSnapshot\(lingerUrl\)/)
+    expect(topLevelFn('async function load()')).toMatch(/lateLinger \? readSnapshot\(lateLingerUrl\)/)
+    expect(topLevelFn('function omittedWanted()')).toMatch(/lingeringWanted\(\)/)
   })
 
   // #38 + #184: history a human click asks for ends in a paint the poll gate

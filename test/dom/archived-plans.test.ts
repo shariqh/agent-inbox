@@ -6,7 +6,7 @@
 // the complete list on every tick.
 import { afterEach, describe, expect, it } from 'vitest'
 import type Database from 'better-sqlite3'
-import { archiveBoard, getBoard, insertItem, resolveItem, updateBoardRow, upsertBoard } from '../../src/store.js'
+import { archiveBoard, getBoard, insertItem, listBoards, resolveItem, updateBoardRow, upsertBoard } from '../../src/store.js'
 import {
   advanceClock, bootApp, buttonLabelled, click, expectConsoleError, freshDb, pollTick, searchFor, settle, useDomTest,
 } from './harness.js'
@@ -254,7 +254,7 @@ describe('archived plans in brief (issue #299)', () => {
     expect(status()).toBe('')
   })
 
-  it('reads the complete list within the tick that archives a plan the human watched, so it lingers', async () => {
+  it('reads a plan the human watched within the tick that archives it, so it lingers (#373: on its own)', async () => {
     db = freshDb()
     upsertBoard(db, { ...ALPHA, title: 'Watched', rows: [{ label: 'First', status: 'done' }, { label: 'Last', status: 'tracked' }] })
     const archive = archivedControl()
@@ -269,7 +269,9 @@ describe('archived plans in brief (issue #299)', () => {
       label: 'Last', status: 'done', expectedRevision: getBoard(db, 'alpha', 'Watched')!.rows[1]!.revision,
     })
     await pollTick()
-    expect(fullReads(archive.control.reads)).toEqual([200])
+    expect(fullReads(archive.control.reads)).toEqual([])
+    expect(archive.control.reads.filter((read) => read.path.startsWith('/api/boards/archived/plans?ids=')).map((read) => read.status))
+      .toEqual([200])
     const lingering = document.querySelector('#boards .boards > .board.lingering')
     expect(lingering?.querySelector('.linger-badge')?.textContent).toBe('completed — archived')
     expect(buttonLabelled('Un-archive', lingering!)).not.toBeNull()
@@ -429,5 +431,173 @@ describe('archived plans in brief (issue #299)', () => {
     expect(status()).toBe('disconnected')
     // the frame on screen stays
     expect(signal('outcomes')).toBe('6')
+  })
+})
+
+// Issue #373: a plan the human watched lingers in Plans once its agent archives
+// it, for the rest of the session. It is drawn whole from its own read
+// (/api/boards/archived/plans?ids=…), so the poll stops reading every archived
+// plan for it, and the card stays complete and current.
+describe('a lingering plan reads only itself (issue #373)', () => {
+  const PLANS = '/api/boards/archived/plans'
+  const lingerReads = (reads: Read[]): number[] =>
+    reads.filter((read) => read.path.startsWith(`${PLANS}?`)).map((read) => read.status)
+  const lingeringCard = (): HTMLElement | null => document.querySelector('#boards .boards > .board.lingering')
+  const cardRows = (card: HTMLElement | null): string[] =>
+    [...card?.querySelectorAll('.board-row') ?? []].map((tr) =>
+      `${tr.querySelector('.row-label')?.textContent}: ${tr.querySelector('.note-line')?.textContent}${tr.querySelector('.more-dot') ? ' …' : ''}`)
+
+  // A watched plan the agent finishes, which the store archives at 100%, beside
+  // an unrelated active plan and archived plans the human never watched.
+  async function lingering(d: Database.Database, archive: ReturnType<typeof archivedControl>): Promise<void> {
+    seedHub(d)
+    upsertBoard(d, {
+      ...ALPHA, title: 'Watched',
+      rows: [{ label: 'First', status: 'done', note: 'Landed.', context: 'First background.' }, { label: 'Last', status: 'tracked', context: 'Last background.' }],
+    })
+    // every row of a finished plan is done: show them, to check the card draws each
+    localStorage.setItem('agent-inbox-hide-completed', 'false')
+    await bootApp(d, { interceptFetch: archive.interceptFetch })
+    await selectTab('boards')
+    advanceClock()
+    const watched = getBoard(d, 'alpha', 'Watched')!
+    updateBoardRow(d, {
+      ...ALPHA, title: 'Watched', expectedBoardVersion: watched.revision,
+      label: 'Last', status: 'done', note: 'Shipped.', expectedRevision: watched.rows[1]!.revision,
+    })
+    await pollTick()
+    expect(watchedArchived(d)).toBeDefined()
+  }
+  const watchedArchived = (d: Database.Database) => listBoards(d, { status: 'archived' }).find((plan) => plan.title === 'Watched')
+
+  // An agent's write to the unrelated active plan: the boards and board_rows
+  // domains move, so before #373 the complete list was rebuilt and read again.
+  function unrelatedWrite(d: Database.Database, note: string): void {
+    advanceClock()
+    const plan = getBoard(d, 'alpha', 'Active plan')!
+    updateBoardRow(d, {
+      ...ALPHA, title: 'Active plan', expectedBoardVersion: plan.revision,
+      label: 'Work', status: 'tracked', note, expectedRevision: plan.rows[0]!.revision,
+    })
+  }
+
+  it('stops reading the complete archived list once the lingering card is in hand', async () => {
+    db = freshDb()
+    const archive = archivedControl()
+    await lingering(db, archive)
+    const card = lingeringCard()
+    expect(card?.querySelector('.linger-badge')?.textContent).toBe('completed — archived')
+    expect(cardRows(card)).toEqual(['First: Landed. …', 'Last: Shipped. …'])
+    expect(buttonLabelled('Un-archive', card!)).not.toBeNull()
+    expect(document.querySelector('#boards .boards > .archived-loading')).toBeNull()
+    const before = fullReads(archive.control.reads).length
+
+    for (let tick = 0; tick < 4; tick++) {
+      unrelatedWrite(db, `Edit ${tick}.`)
+      await pollTick()
+      expect(cardRows(lingeringCard()), `tick ${tick + 1}`).toEqual(['First: Landed. …', 'Last: Shipped. …'])
+    }
+    expect(fullReads(archive.control.reads).length - before).toBe(0)
+    expect(fullReads(archive.control.reads)).toEqual([])
+    // one read of the lingering plan in the tick that archived it, then a
+    // revalidation per poll: its bytes did not change
+    expect(lingerReads(archive.control.reads)).toEqual([200, 304, 304, 304, 304])
+    // an idle poll revalidates it and paints nothing (#298)
+    const painted = lingeringCard()
+    await pollTick()
+    expect(lingerReads(archive.control.reads).at(-1)).toBe(304)
+    expect(lingeringCard()).toBe(painted)
+    expect(fold()?.querySelector('summary')?.textContent).toBe('Archived plans (3)')
+    expect(foldWait()).toBe('Loading archived plans…')
+  })
+
+  it('redraws the lingering card when its agent writes to the archived plan', async () => {
+    db = freshDb()
+    const archive = archivedControl()
+    await lingering(db, archive)
+    advanceClock()
+    const watched = watchedArchived(db)!
+    updateBoardRow(db, {
+      ...ALPHA, title: 'Watched', expectedBoardVersion: watched.revision,
+      label: 'First', status: 'done', note: 'Landed, then verified.', expectedRevision: watched.rows[0]!.revision,
+    })
+    expect(watchedArchived(db)?.rows[0]?.note).toBe('Landed, then verified.')
+    await pollTick()
+    expect(cardRows(lingeringCard())).toEqual(['First: Landed, then verified. …', 'Last: Shipped. …'])
+    expect(lingerReads(archive.control.reads)).toEqual([200, 200])
+    expect(fullReads(archive.control.reads)).toEqual([])
+  })
+
+  it('reads the lingering plan at once when the human returns to Plans, and only while Plans shows it', async () => {
+    db = freshDb()
+    const archive = archivedControl()
+    await lingering(db, archive)
+    await selectTab('needsYou')
+    await pollTick()
+    await pollTick()
+    expect(lingerReads(archive.control.reads)).toEqual([200])
+    await selectTab('boards')
+    expect(lingerReads(archive.control.reads)).toEqual([200, 304])
+    expect(cardRows(lingeringCard())).toEqual(['First: Landed. …', 'Last: Shipped. …'])
+    expect(fullReads(archive.control.reads)).toEqual([])
+  })
+
+  it('draws the lingering card from the complete list while the fold is open, and goes back to its own read', async () => {
+    db = freshDb()
+    const archive = archivedControl()
+    await lingering(db, archive)
+    await toggleFold(true)
+    expect(fullReads(archive.control.reads)).toEqual([200])
+    expect(foldTitles()).toHaveLength(3)
+    expect(cardRows(lingeringCard())).toEqual(['First: Landed. …', 'Last: Shipped. …'])
+    await pollTick()
+    expect(lingerReads(archive.control.reads)).toEqual([200])
+    await toggleFold(false)
+    await pollTick()
+    await pollTick()
+    expect(fullReads(archive.control.reads)).toEqual([200, 304])
+    expect(lingerReads(archive.control.reads)).toEqual([200, 304, 304])
+    expect(cardRows(lingeringCard())).toEqual(['First: Landed. …', 'Last: Shipped. …'])
+  })
+
+  it('degrades a failed read of the lingering plan to an unavailable line, and recovers', async () => {
+    db = freshDb()
+    const archive = archivedControl()
+    const failing = { on: false }
+    const intercept: NonNullable<BootOptions['interceptFetch']> = async (input, init, next) => {
+      if (failing.on && String(input).startsWith(`${PLANS}?`)) {
+        archive.control.reads.push({ path: String(input), status: 500 })
+        return new Response('unavailable', { status: 500 })
+      }
+      return archive.interceptFetch(input, init, next)
+    }
+    await lingering(db, { ...archive, interceptFetch: intercept })
+    failing.on = true
+    unrelatedWrite(db, 'Edit.')
+    await pollTick()
+    expect(lingeringCard()).toBeNull()
+    expect(document.querySelector('#boards .boards > .archived-loading')?.textContent).toBe(UNAVAILABLE)
+    expect(status()).toBe('')
+    expect(document.querySelector('#boards .boards > .board .board-title')?.textContent).toContain('Active plan')
+    failing.on = false
+    await pollTick()
+    expect(cardRows(lingeringCard())).toEqual(['First: Landed. …', 'Last: Shipped. …'])
+    expect(fullReads(archive.control.reads)).toEqual([])
+  })
+
+  it('reads the complete list in place of its own read from a viewer older than #373', async () => {
+    db = freshDb()
+    const archive = archivedControl()
+    const intercept: NonNullable<BootOptions['interceptFetch']> = async (input, init, next) => {
+      if (String(input).startsWith(`${PLANS}?`)) {
+        archive.control.reads.push({ path: String(input), status: 404 })
+        return new Response('Not Found', { status: 404 })
+      }
+      return archive.interceptFetch(input, init, next)
+    }
+    await lingering(db, { ...archive, interceptFetch: intercept })
+    expect(cardRows(lingeringCard())).toEqual(['First: Landed. …', 'Last: Shipped. …'])
+    expect(fullReads(archive.control.reads)).toEqual([200])
+    expect(status()).toBe('')
   })
 })

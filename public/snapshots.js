@@ -43,15 +43,18 @@ const validators = new Map([
   ['/api/boards', boards],
   ['/api/boards/archived', boards],
   ['/api/boards/archived/summary', archivedSummary],
+  // Issue #373: the lingering archived plans, whole, named by `?ids=`
+  ['/api/boards/archived/plans', boards],
   ['/api/activity/history', spans],
   ['/api/issues', issueGraph],
   ['/api/links', links],
 ])
-// The only route whose query string selects one of its own representations
-// (#185). Anywhere else a query names a different representation, such as the
-// dock watcher's `/api/items?scope=attention`, which must never enter (and so
-// never share or evict) the slot of the route it shares a path with.
-const QUERY_ROUTES = new Set(['/api/activity/history'])
+// The only routes whose query string selects one of their own representations:
+// the activity history window (#185) and the lingering archived plans (#373).
+// Anywhere else a query names a different representation, such as the dock
+// watcher's `/api/items?scope=attention`, which must never enter (and so never
+// share or evict) the slot of the route it shares a path with.
+const QUERY_ROUTES = new Set(['/api/activity/history', '/api/boards/archived/plans'])
 
 const HISTORY_WINDOW_MS = 30 * 24 * 60 * 60 * 1000
 const HISTORY_STEP_MS = 60 * 60 * 1000

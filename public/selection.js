@@ -15,7 +15,7 @@
 
 const IDENTITY_ATTRIBUTES = [
   'data-card-id', 'data-row-id', 'data-context-key', 'data-note-item', 'data-project', 'data-tab',
-  'data-relay-lane', 'data-dashboard-signal', 'data-dashboard-focus-key', 'data-flow-target',
+  'data-relay-lane', 'data-dashboard-signal', 'data-dashboard-focus-key', 'data-rail-card',
 ]
 const EDITABLE_SELECTOR = 'input, textarea, select, [contenteditable]:not([contenteditable="false"])'
 

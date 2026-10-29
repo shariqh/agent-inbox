@@ -10,7 +10,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type Database from 'better-sqlite3'
 import {
-  getItem, insertItem, listBoards, resolveItem, upsertActivity, upsertBoard,
+  annotateItem, getItem, insertItem, listBoards, resolveItem, upsertActivity, upsertBoard,
 } from '../../src/store.js'
 import type { ViewerBridge } from './harness.js'
 import {
@@ -372,6 +372,99 @@ describe('the Needs you rail (#303)', () => {
     expect(getItem(db, id)?.snoozed_until).toBeTruthy()
     expect(document.getElementById('needsYou')?.hidden).toBe(false)
     expect(answerInput(id)?.value).toBe('keep this')
+  })
+
+  // Review of #389, finding 1: a card that arrives holding a draft whose row the
+  // agent changed must not run draft recovery from a poll (it switches tabs and
+  // moves focus); the rail holds until a frame the human asks for.
+  it('holds the rail when a drafted row moves into it, so a poll never switches tabs or moves focus', async () => {
+    db = freshDb()
+    upsertActivity(db, { ...AGENT, session: 'live', doing: 'Waiting', idle: false })
+    const waiting = [1, 2, 3].map((n) => question(db!, `Waiting ${n}`, { session: 'live' }))
+    const task = blockedRow(db, 'Paddle account')
+    await bootApp(db)
+    expect(railIds()).toEqual(waiting)
+    await showInbox()
+    click(row(task))
+    await settle()
+    type(answerInput(task), 'Done, see the receipt')
+    click(document.querySelector('.tab[data-tab="dashboard"]'))
+    await settle()
+    const range = document.querySelector<HTMLSelectElement>('.dashboard-range')!
+    range.focus()
+    range.blur() // nothing in the Dashboard owns focus; the window still does
+    const before = document.activeElement
+
+    advanceClock()
+    const board = listBoards(db).find((b) => b.title === 'Plan for Paddle account')!
+    upsertBoard(db, {
+      ...AGENT, title: board.title, expectedVersion: board.revision,
+      rows: [{ label: 'Paddle account', revision: board.rows[0]!.revision, status: 'blocked', note: 'The agent rewrote this.' }],
+    })
+    resolveItem(db, waiting[0]!, 'Done.')
+    await pollTick()
+    await settle()
+    expect(document.getElementById('dashboard')?.hidden).toBe(false)
+    expect(document.getElementById('needsYou')?.hidden).toBe(true)
+    expect(document.activeElement).toBe(before)
+    expect(signal('waiting')).toBe('3')
+  })
+
+  it('keeps "+N more" current while a rail draft holds the cards', async () => {
+    db = freshDb()
+    const first = question(db, 'First')
+    for (const n of [2, 3, 4]) question(db, `Ask ${n}`)
+    await bootApp(db)
+    expect(document.querySelector('.dash-rail-more')?.textContent).toBe('+1 more')
+    click(railAction(first, 'expand'))
+    type(railEditor(first), 'holding the rail')
+    question(db, 'Ask 5')
+    await pollTick()
+    expect(railEditor(first)?.value).toBe('holding the rail')
+    expect(document.querySelector('.dash-rail-more')?.textContent).toBe('+2 more')
+  })
+
+  it('still offers Pin for later on a question that carries a Note, in the Inbox and on the rail', async () => {
+    db = freshDb()
+    const id = question(db, 'Annotated question')
+    annotateItem(db, id, 'Feedback, not an answer')
+    await bootApp(db)
+    expect(railAction(id, 'pin')).not.toBeNull()
+    await showInbox()
+    click(row(id))
+    await settle()
+    click(row(id)!.querySelector('.disposition-menu > summary'))
+    expect(buttonLabelled('Pin for later', row(id)!)).not.toBeNull()
+  })
+
+  it('shows a draft edited in the Review queue in the rail once the queue closes', async () => {
+    db = freshDb()
+    const id = question(db, 'Edit me in the deck')
+    await bootApp(db)
+    click(railAction(id, 'expand'))
+    type(railEditor(id), 'foo')
+    click(document.querySelector('.dash-rail-review'))
+    await settle()
+    type(document.querySelector<HTMLTextAreaElement>('#lightbox .reply-input:not(.reply-context-input)'), 'foobar')
+    click(document.querySelector('#lightbox .lb-close'))
+    await settle()
+    expect(railEditor(id)?.value).toBe('foobar')
+    type(railEditor(id), `${railEditor(id)!.value}!`)
+    click(buttonLabelled('Send', railCard(id)!))
+    await settle()
+    expect(getItem(db, id)?.reply).toBe('foobar!')
+  })
+
+  it('pins the row and board revisions on a row option sent from the rail', async () => {
+    db = freshDb()
+    const id = blockedRow(db, 'Approve', { action_owner: 'approval', options: [{ label: 'Approve', recommended: true }, { label: 'Hold' }] })
+    const bridge = await bootApp(db)
+    const board = listBoards(db)[0]!
+    click(pill(id, 'Approve'))
+    await settle()
+    const sent = body(bridge, `/rows/${id}/annotate`)
+    expect(sent).toMatchObject({ text: 'Approve', kind: 'answer', expected_revision: board.rows[0]!.revision, expected_board_version: board.revision })
+    expect(listBoards(db)[0]!.rows[0]!.annotation).toBe('Approve')
   })
 
   // jsdom cannot evaluate the stylesheet, so the compact card's CSS half is pinned as source.

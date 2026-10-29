@@ -2054,7 +2054,15 @@ function dashRailHeld(list) {
 function renderDashRail(section, rail, { forced = false } = {}) {
   if (!section) return
   const list = section.querySelector('.dash-rail-cards')
-  if (!forced && dashRailHeld(list)) return
+  // The count line is plain text: it stays current even while the cards are held.
+  const more = section.querySelector('.dash-rail-more')
+  const parts = [rail.more ? `+${rail.more} more` : '', rail.later ? `${rail.later} in Later` : ''].filter(Boolean)
+  more.textContent = parts.join(' · ')
+  more.hidden = !parts.length
+  more.title = 'Open the Inbox'
+  // An incoming card that holds a draft holds the rail too: building its editor
+  // from a poll could run draft recovery, which switches tabs and moves focus.
+  if (!forced && (dashRailHeld(list) || rail.cards.some((entry) => holdsDraft(needsEntryId(entry))))) return
   const focusedCard = activeFocusElement()?.closest?.('[data-rail-card]')
   const bookmark = focusedCard && list.contains(focusedCard)
     ? captureCardFocus(focusedCard, focusedCard.dataset.railCard)
@@ -2072,11 +2080,6 @@ function renderDashRail(section, rail, { forced = false } = {}) {
     empty.textContent = 'Nothing needs you now'
     list.appendChild(empty)
   }
-  const more = section.querySelector('.dash-rail-more')
-  const parts = [rail.more ? `+${rail.more} more` : '', rail.later ? `${rail.later} in Later` : ''].filter(Boolean)
-  more.textContent = parts.join(' · ')
-  more.hidden = !parts.length
-  more.title = 'Open the Inbox'
   if (bookmark) restoreDashRailFocus(section, bookmark, focusIndex)
 }
 
@@ -2147,7 +2150,7 @@ function dashRailCardEl(entry, nowMs) {
   actions.appendChild(write)
   actions.appendChild(railIconButton('snooze', 'Snooze', 'Snooze for 4 hours (S)',
     () => snoozeAsk(entry, new Date(Date.now() + RAIL_SNOOZE_MS).toISOString())))
-  if (pinOffered(ask)) actions.appendChild(railIconButton('pin', 'Pin', 'Pin for later (P): it waits in Later until you bring it back', () => pinAsk(entry)))
+  if (pinOffered(ask, entry.kind)) actions.appendChild(railIconButton('pin', 'Pin', 'Pin for later (P): it waits in Later until you bring it back', () => pinAsk(entry)))
   actions.appendChild(railIconButton('open', 'Open', 'Open in Inbox', () => openAskInInbox(entry)))
   card.appendChild(actions)
   card.addEventListener('focusin', () => { railSelectedId = id })
@@ -2674,9 +2677,16 @@ function openTriage() {
 
 function closeTriage({ restoreFocus = true } = {}) {
   const returnFocus = triageReturnFocus
+  const lightbox = document.getElementById('lightbox')
+  // A draft edited in the deck may be newer than a held copy of its editor on
+  // the page (the Dashboard rail, an Inbox card): repaint so none is stale.
+  // Only on the human's own close; recovery closes from inside a render.
+  const heldDraft = restoreFocus
+    && [...lightbox.querySelectorAll('textarea.reply-input')].some((input) => input.value.trim() !== '')
   triageDeck = null
   triageReturnFocus = null
-  document.getElementById('lightbox').hidden = true
+  lightbox.hidden = true
+  if (heldDraft) forceRender()
   if (restoreFocus) restoreTriageReturnFocus(returnFocus)
 }
 
@@ -2868,10 +2878,12 @@ function pinAsk(entry, { onSaved = null } = {}) {
 }
 
 // Pin for later is offered on an unanswered ask that is not pinned yet, and only
-// while the Later section is on (#247).
-function pinOffered(entity) {
-  return laterSection && !entity.pinned_at && !entity.reply && !entity.reply_kind
-    && !entity.annotation && !entity.annotation_kind && !entity.handled_at
+// while the Later section is on (#247). A question's Note is feedback, not an
+// answer, so only a row's annotation or handled mark counts.
+function pinOffered(entity, kind) {
+  if (!laterSection || entity.pinned_at) return false
+  if (kind === 'item') return !entity.reply && !entity.reply_kind
+  return !entity.annotation && !entity.annotation_kind && !entity.handled_at
 }
 
 // The test suspendState() applies: a draft is more than whitespace.
@@ -3268,7 +3280,7 @@ function rowAnswerEl(b, r, onSaved, { surface = null } = {}) {
       },
       (until) => snoozeAsk(entry, until, { onSaved }),
       `${keyPrefix}row:${r.id}`,
-      surface || !pinOffered(r) ? null : () => pinAsk(entry, { onSaved }),
+      surface || !pinOffered(r, 'row') ? null : () => pinAsk(entry, { onSaved }),
       surface ? { label: 'More…' } : {},
     )
     wrap.appendChild(menu)
@@ -7925,7 +7937,7 @@ function answerEl(it, { surface = null } = {}) {
     ),
     (until) => snoozeAsk(entry, until),
     `${keyPrefix}item:${it.id}`,
-    surface || !pinOffered(it) ? null : () => pinAsk(entry),
+    surface || !pinOffered(it, 'item') ? null : () => pinAsk(entry),
     surface ? { label: 'More…' } : {},
   )
   wrap.appendChild(menu)

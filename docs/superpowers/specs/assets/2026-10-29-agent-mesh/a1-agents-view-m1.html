@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<title>Agents view, M1 (presence only)</title>
+<!-- Mockup for docs/superpowers/specs/2026-10-29-agent-mesh-design.md §16. Synthetic data. -->
+<link rel="stylesheet" href="../../../../../public/style.css">
+<link rel="stylesheet" href="mesh-mockup.css">
+<style>
+.grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; }
+.ag-top { display: flex; align-items: center; gap: 10px; }
+.ag-top h3 { font-size: 16px; }
+.inst { display: grid; grid-template-columns: 12px 130px 1fr 92px 70px; gap: 10px; align-items: center; padding: 8px 0; border-top: 1px solid var(--app-border); font-size: 12.5px; }
+.inst:first-of-type { border-top: 0; }
+.inst .doing { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.inst.idle { opacity: .62; }
+.foot { display: flex; gap: 14px; align-items: center; margin-top: 10px; font-size: 12px; color: var(--app-muted); }
+.ghost { border-style: dashed; background: transparent; color: var(--app-muted); font-size: 12.5px; display: flex; flex-direction: column; gap: 6px; justify-content: center; }
+</style>
+</head>
+<body>
+<div class="m-shell">
+  <aside class="m-side">
+    <div class="m-brand"><img src="../../../../../public/favicon-32.png" alt=""><span><strong>Agent Inbox</strong><small>Local workspace</small></span></div>
+    <div class="m-tab on">Dashboard<b></b></div><div class="m-tab">Inbox<b>3</b></div><div class="m-tab">Plans<b>2</b></div><div class="m-tab">Notes<b>1</b></div><div class="m-tab">History<b></b></div>
+    <div class="m-label">Projects</div>
+    <div class="m-proj on" style="--c:var(--app-text-soft)"><i></i>All<b>3</b></div><div class="m-proj" style="--c:#38d6c0"><i></i>agent-inbox<b>2</b></div><div class="m-proj" style="--c:#4cc9f0"><i></i>demo-service<b>1</b></div><div class="m-proj" style="--c:#c77dff"><i></i>docs-site<b></b></div>
+  </aside>
+  <main class="m-main">
+    <div class="m-head"><div><div class="m-kicker">Dashboard</div><h1 class="m-h1">Mission control</h1></div><div class="m-sub">4 projects · updated 3s ago</div><span class="m-spacer"></span><span class="pin">1</span><span class="m-lens"><span>Sessions</span><span class="on">Agents</span></span><span class="m-btn">Search <kbd>⌘K</kbd></span></div>
+    <div class="m-banner"><span class="m-chip t-mute">M1 · local only</span><span>Grouped from this Mac's Live presence (<span class="mono">/api/activity</span>). No registry, no network request, no new poll read.</span><span class="m-spacer"></span><span class="m-soft">Settings → Mesh → Agents view: on</span></div>
+    <div class="grid">
+      <section class="m-card">
+        <div class="ag-top"><h3>copilot</h3><span class="m-chip t-agent">3 sessions</span><span class="m-chip t-mute">2 working</span><span class="m-spacer"></span><span class="m-soft" style="font-size:12px">this Mac</span></div>
+        <div style="margin-top:8px">
+          <div class="inst"><span class="dot up"></span><span><b>agent-inbox</b><br><span class="m-soft mono" style="font-size:11px">feat/412-search</span></span><span class="doing">Writing jsdom tests for search ranking</span><span class="m-soft num">last call 8s <span class="pin">2</span></span><span class="m-chip t-agent">working</span></div>
+          <div class="inst"><span class="dot up"></span><span><b>demo-service</b><br><span class="m-soft mono" style="font-size:11px">main</span></span><span class="doing">Reviewing PR #57 for the billing retry</span><span class="m-soft num">last call 41s</span><span class="m-chip t-agent">working</span></div>
+          <div class="inst idle"><span class="dot off"></span><span><b>docs-site</b><br><span class="m-soft mono" style="font-size:11px">fix/typos</span></span><span class="doing">was: Proofreading the setup guide</span><span class="m-soft num">idle 47m</span><span class="m-chip t-mute">idle</span></div>
+        </div>
+        <div class="foot"><span>Asking you: <b style="color:var(--app-attention)">1</b> → <span class="pin">3</span></span><span>MCP calls, 30 min</span><svg class="spark" viewBox="0 0 200 22" preserveAspectRatio="none" style="width:200px"><path class="area" d="M0,18 L20,16 L40,12 L60,14 L80,9 L100,6 L120,9 L140,5 L160,8 L180,6 L200,7 L200,22 L0,22Z"/><path d="M0,18 L20,16 L40,12 L60,14 L80,9 L100,6 L120,9 L140,5 L160,8 L180,6 L200,7"/></svg></div>
+      </section>
+      <section class="m-card">
+        <div class="ag-top"><h3>claude-code</h3><span class="m-chip t-agent">2 sessions</span><span class="m-chip t-mute">1 working</span><span class="m-spacer"></span><span class="m-soft" style="font-size:12px">this Mac</span></div>
+        <div style="margin-top:8px">
+          <div class="inst"><span class="dot up"></span><span><b>agent-inbox</b><br><span class="m-soft mono" style="font-size:11px">spec-agent-mesh</span></span><span class="doing">Drafting the mesh metrics section</span><span class="m-soft num">last call 3s</span><span class="m-chip t-agent">working</span></div>
+          <div class="inst idle"><span class="dot off"></span><span><b>demo-service</b><br><span class="m-soft mono" style="font-size:11px">main</span></span><span class="doing">was: Triage of flaky integration test</span><span class="m-soft num">idle 2h</span><span class="m-chip t-mute">idle</span></div>
+        </div>
+        <div class="foot"><span>Asking you: <b style="color:var(--app-attention)">2</b> →</span><span>MCP calls, 30 min</span><svg class="spark" viewBox="0 0 200 22" preserveAspectRatio="none" style="width:200px;--c:var(--app-agent)"><path class="area" d="M0,14 L20,15 L40,16 L60,12 L80,13 L100,15 L120,10 L140,11 L160,6 L180,8 L200,5 L200,22 L0,22Z"/><path d="M0,14 L20,15 L40,16 L60,12 L80,13 L100,15 L120,10 L140,11 L160,6 L180,8 L200,5"/></svg></div>
+      </section>
+      <section class="m-card ghost">
+        <strong style="color:var(--app-text)">Skills, hosts, leases and load come later</strong>
+        <span>M1 knows only what presence knows: agent kind, project, branch, the last real MCP call and the session's own <span class="mono">doing</span> line.</span>
+        <span>From M3 each card also lists registered skills, every host's instances and lease ages; from M7, load and distribution.</span>
+      </section>
+      <section class="m-card">
+        <div class="m-card-head"><h2>What M1 measures</h2><small>local, in this window only</small></div>
+        <dl class="kv"><dt>Grouping</dt><dd>by inferred agent kind, then project</dd><dt>Liveness</dt><dd>the same classification as Live (working / idle / dormant)</dd><dt>Attention</dt><dd>"Asking you" reads <span class="mono">attentionEntries</span>; never feeds it</dd><dt>Idle cost</dt><dd>no extra request; the frame skips when nothing changed (#298)</dd></dl>
+      </section>
+    </div>
+    <div class="m-notes">
+      <div><span class="pin">1</span><span>Sessions | Agents is a lens above the lanes. It is drawn only when <span class="mono">mesh.json</span> turns the view on; off, the page never requests <span class="mono">/mesh-view.js</span>.</span></div>
+      <div><span class="pin">2</span><span>"last call" is <span class="mono">last_call_at</span> (real MCP work), never the 5-minute liveness heartbeat, so a quiet session reads idle.</span></div>
+      <div><span class="pin">3</span><span>"Asking you" counts this kind's open questions from the frame's <span class="mono">attentionEntries</span>. It reads the predicate and never feeds a badge.</span></div>
+    </div>
+  </main>
+</div>
+</body>
+</html>

@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<title>First-hop approval ask</title>
+<!-- Mockup for docs/superpowers/specs/2026-10-29-agent-mesh-design.md §16. Synthetic data. -->
+<link rel="stylesheet" href="../../../../../public/style.css">
+<link rel="stylesheet" href="mesh-mockup.css">
+<style>
+.cols { display: grid; grid-template-columns: 1fr 640px; gap: 16px; min-height: 0; flex: 1; padding-bottom: 96px; }
+.q { display: flex; flex-direction: column; gap: 8px; }
+.qrow { display: grid; grid-template-columns: 8px 1fr auto; gap: 10px; align-items: center; padding: 10px 12px; border: 1px solid var(--app-border); border-radius: 10px; background: var(--app-surface); font-size: 12.5px; }
+.qrow.on { border-color: var(--app-accent); box-shadow: 0 0 0 3px var(--app-accent-soft); }
+.qrow strong { display: block; font-size: 13.5px; }
+.insp { overflow: hidden; display: flex; flex-direction: column; gap: 10px; }
+.insp h3 { font-size: 19px; letter-spacing: -.01em; }
+.facts { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.fact { padding: 7px 10px; border-radius: 8px; background: var(--app-soft); font-size: 12px; }
+.fact b { display: block; font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--app-text-soft); margin-bottom: 1px; }
+.opts { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.acts { display: flex; gap: 8px; align-items: center; font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="m-shell">
+  <aside class="m-side">
+    <div class="m-brand"><img src="../../../../../public/favicon-32.png" alt=""><span><strong>Agent Inbox</strong><small>Local workspace</small></span></div>
+    <div class="m-tab">Dashboard<b></b></div><div class="m-tab on">Inbox<b>3</b></div><div class="m-tab">Plans<b>2</b></div><div class="m-tab">Notes<b>1</b></div><div class="m-tab">History<b></b></div>
+    <div class="m-label">Projects</div>
+    <div class="m-proj on" style="--c:var(--app-text-soft)"><i></i>All<b>3</b></div><div class="m-proj" style="--c:#38d6c0"><i></i>agent-inbox<b>1</b></div><div class="m-proj" style="--c:#4cc9f0"><i></i>demo-service<b></b></div><div class="m-proj" style="--c:#8f99a3"><i></i>@mesh<b>2</b></div>
+  </aside>
+  <main class="m-main">
+    <div class="m-head"><div><div class="m-kicker">Inbox</div><h1 class="m-h1">Needs you</h1></div><div class="m-sub">3 waiting · oldest 20 min</div><span class="m-spacer"></span><span class="m-btn">Review queue <kbd>T</kbd></span></div>
+    <div class="cols">
+      <div class="q">
+        <div class="qrow on"><i class="dot" style="--c:#8f99a3"></i><span><span class="m-soft">@mesh · relay</span><strong>Approve a hand-off to copilot-review?</strong><span class="m-muted">claude-code asks copilot-review to review a diff</span></span><span class="m-chip t-att">Approval</span></div>
+        <div class="qrow"><i class="dot" style="--c:#8f99a3"></i><span><span class="m-soft">@mesh · relay</span><strong>Allow claude-edit to run a tool?</strong><span class="m-muted">npm test in its worktree</span></span><span class="m-chip t-att">Approval</span></div>
+        <div class="qrow"><i class="dot" style="--c:#38d6c0"></i><span><span class="m-soft">agent-inbox · copilot</span><strong>Merge PR #415 (search ranking)?</strong><span class="m-muted">CI green, review clean</span></span><span class="m-chip t-att">Approval</span></div>
+        <div class="m-card" style="margin-top:6px;font-size:12px"><b>Why this is safe to click</b><ul style="margin:6px 0 0 16px;padding:0;line-height:1.6" class="m-muted"><li>The title, note, next step and options come from fixed relay templates.</li><li>Agents cannot read or answer <span class="mono">@mesh</span> rows; only this window can.</li><li>Your click is signed by the console key and bound to the facts on the right.</li></ul></div>
+      </div>
+      <section class="m-card insp">
+        <div style="display:flex;gap:8px;align-items:center;font-size:11.5px"><span class="m-chip t-att">Approval</span><span class="m-soft">@mesh · Mesh a-7f3a · asked 2 min ago · expires in 28 min (counts as Decline)</span></div>
+        <h3>Approve a hand-off to copilot-review?</h3>
+        <div class="m-muted" style="font-size:13px">claude-code wants copilot-review to do one read-only task in agent-inbox at <span class="mono">main</span>, within 4 units and 30 minutes.</div>
+        <div style="font-size:12.5px"><b>Next step:</b> Approve this hand-off, or decline it.</div>
+        <div class="facts">
+          <div class="fact"><b>Callee <span class="pin">1</span></b>shariq/copilot-review · card <span class="mono">sha256:5d0a…e1c4</span></div>
+          <div class="fact"><b>Asked by</b>claude-code · agent-inbox · spec-agent-mesh (this Mac)</div>
+          <div class="fact"><b>Repository · ref</b>agent-inbox @ <span class="mono">main</span> (allowlisted)</div>
+          <div class="fact"><b>Write</b>no — read-only profile, worktree only</div>
+          <div class="fact"><b>Message <span class="pin">2</span></b><span class="mono">sha256:9c1e…4b07</span> · 1.2 KB</div>
+          <div class="fact"><b>Budget</b>4 units now · chain cap 10 · 30 min · ≤ 5 tasks</div>
+        </div>
+        <div class="fence-head"><span>Message the callee will receive · from claude-code@mac (agent text, shown as data, links inert)</span></div>
+<pre class="fence">Review the diff between main and the branch spec-agent-mesh in
+docs/superpowers/specs/2026-10-29-agent-mesh-design.md. Look only at §8
+(delegation safety). List any rule that a remote caller could bypass,
+with the sentence that allows it. Do not edit files. Reply in under
+300 words.</pre>
+        <div class="opts"><div class="opt"><strong>Approve this hand-off</strong>Opens the chain. Later depth-1 tasks to the same callee, repo, ref and write flag run within budget without asking.</div><div class="opt"><strong>Decline</strong>The chain closes; claude-code is told "declined by the human".</div></div>
+        <div class="acts"><span class="m-btn small">Ask for detail</span><span class="m-btn small">Snooze</span><span class="m-btn small">Pin for later</span><span class="m-spacer"></span><span class="m-soft">A written reply is not a decision <span class="pin">3</span></span></div>
+      </section>
+    </div>
+    <div class="m-notes">
+      <div><span class="pin">1</span><span>The approved binding: callee and card hash, message hash, repository, ref, write flag and budget. The first grant must match it exactly (§8.2).</span></div>
+      <div><span class="pin">2</span><span>The hash is of the exact bytes shown. A different message to the same callee later is allowed only inside this binding; anything else asks again.</span></div>
+      <div><span class="pin">3</span><span>Free text is not mapped to a decision; "Ask for detail" (clarify) re-asks once with the full arguments (§10.5).</span></div>
+    </div>
+  </main>
+</div>
+</body>
+</html>

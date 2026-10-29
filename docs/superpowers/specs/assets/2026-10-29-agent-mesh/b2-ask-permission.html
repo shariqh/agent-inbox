@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<title>Permission (AUTH_REQUIRED) ask</title>
+<!-- Mockup for docs/superpowers/specs/2026-10-29-agent-mesh-design.md §16. Synthetic data. -->
+<link rel="stylesheet" href="../../../../../public/style.css">
+<link rel="stylesheet" href="mesh-mockup.css">
+<style>
+.cols { display: grid; grid-template-columns: 1fr 640px; gap: 16px; min-height: 0; flex: 1; padding-bottom: 96px; }
+.q { display: flex; flex-direction: column; gap: 8px; }
+.qrow { display: grid; grid-template-columns: 8px 1fr auto; gap: 10px; align-items: center; padding: 10px 12px; border: 1px solid var(--app-border); border-radius: 10px; background: var(--app-surface); font-size: 12.5px; }
+.qrow.on { border-color: var(--app-accent); box-shadow: 0 0 0 3px var(--app-accent-soft); }
+.qrow strong { display: block; font-size: 13.5px; }
+.insp { overflow: hidden; display: flex; flex-direction: column; gap: 10px; }
+.insp h3 { font-size: 19px; letter-spacing: -.01em; }
+.facts { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.fact { padding: 7px 10px; border-radius: 8px; background: var(--app-soft); font-size: 12px; }
+.fact b { display: block; font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--app-text-soft); margin-bottom: 1px; }
+.opts { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.acts { display: flex; gap: 8px; align-items: center; font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="m-shell">
+  <aside class="m-side">
+    <div class="m-brand"><img src="../../../../../public/favicon-32.png" alt=""><span><strong>Agent Inbox</strong><small>Local workspace</small></span></div>
+    <div class="m-tab">Dashboard<b></b></div><div class="m-tab on">Inbox<b>3</b></div><div class="m-tab">Plans<b>2</b></div><div class="m-tab">Notes<b>1</b></div><div class="m-tab">History<b></b></div>
+    <div class="m-label">Projects</div>
+    <div class="m-proj on" style="--c:var(--app-text-soft)"><i></i>All<b>3</b></div><div class="m-proj" style="--c:#38d6c0"><i></i>agent-inbox<b>1</b></div><div class="m-proj" style="--c:#4cc9f0"><i></i>demo-service<b></b></div><div class="m-proj" style="--c:#8f99a3"><i></i>@mesh<b>2</b></div>
+  </aside>
+  <main class="m-main">
+    <div class="m-head"><div><div class="m-kicker">Inbox</div><h1 class="m-h1">Needs you</h1></div><div class="m-sub">3 waiting · oldest 20 min</div><span class="m-spacer"></span><span class="m-btn">Review queue <kbd>T</kbd></span></div>
+    <div class="cols">
+      <div class="q">
+        <div class="qrow"><i class="dot" style="--c:#8f99a3"></i><span><span class="m-soft">@mesh · relay</span><strong>Approve a hand-off to copilot-review?</strong><span class="m-muted">claude-code asks copilot-review to review a diff</span></span><span class="m-chip t-att">Approval</span></div>
+        <div class="qrow on"><i class="dot" style="--c:#8f99a3"></i><span><span class="m-soft">@mesh · relay</span><strong>Allow claude-edit to run a tool?</strong><span class="m-muted">npm test in its worktree</span></span><span class="m-chip t-att">Approval</span></div>
+        <div class="qrow"><i class="dot" style="--c:#38d6c0"></i><span><span class="m-soft">agent-inbox · copilot</span><strong>Merge PR #415 (search ranking)?</strong><span class="m-muted">CI green, review clean</span></span><span class="m-chip t-att">Approval</span></div>
+        <div class="m-card" style="margin-top:6px;font-size:12px"><b>Why this is safe to click</b><ul style="margin:6px 0 0 16px;padding:0;line-height:1.6" class="m-muted"><li>The title, note, next step and options come from fixed relay templates.</li><li>Agents cannot read or answer <span class="mono">@mesh</span> rows; only this window can.</li><li>Your click is signed by the console key and bound to the facts on the right.</li></ul></div>
+      </div>
+      <section class="m-card insp">
+        <div style="display:flex;gap:8px;align-items:center;font-size:11.5px"><span class="m-chip t-att">Approval</span><span class="m-soft">@mesh · Mesh a-91b2 · asked 40s ago · expires in 29 min (counts as Deny)</span></div>
+        <h3>Allow claude-edit to run a tool?</h3>
+        <div class="m-muted" style="font-size:13px">claude-edit paused task 2 of chain c-91b2 to ask for one tool call outside its auto-allow list. Nothing has run.</div>
+        <div style="font-size:12.5px"><b>Next step:</b> Allow this one call, or deny it.</div>
+        <div class="facts">
+          <div class="fact"><b>Agent</b>shariq/claude-edit on mac (write profile)</div>
+          <div class="fact"><b>Tool <span class="pin">1</span></b><span class="mono">Bash</span> (name reduced to [A-Za-z0-9_.-])</div>
+          <div class="fact"><b>Chain</b>c-91b2 · origin copilot · demo-service · main</div>
+          <div class="fact"><b>Where</b>its worktree of demo-service @ <span class="mono">main</span>, nothing pushed</div>
+          <div class="fact"><b>Asks on this hop</b>1 of 3 allowed · chain 2 of 10 per hour</div>
+          <div class="fact"><b>Budget left</b>3.1 of 6 units · 18 of 45 min</div>
+        </div>
+        <div class="fence-head"><span>From claude-edit@mac: the raw tool name and arguments, exactly as they would run <span class="pin">2</span></span></div>
+<pre class="fence">tool: Bash
+arguments:
+{
+  "command": "npm test -- --reporter=dot && curl -sS https://status.example.invalid/ping",
+  "description": "Run the unit tests after the retry change",
+  "timeout": 120000
+}</pre>
+        <div class="opts"><div class="opt"><strong>Allow once</strong>Runs exactly this call, then the task continues. The next tool outside the list asks again.</div><div class="opt"><strong>Deny</strong>The call is refused; claude-edit is told and may try another way or stop.</div></div>
+        <div class="acts"><span class="m-btn small">Ask for detail</span><span class="m-btn small">Snooze</span><span class="m-spacer"></span><span class="m-soft">The delegating agent cannot answer this <span class="pin">3</span></span></div>
+      </section>
+    </div>
+    <div class="m-notes">
+      <div><span class="pin">1</span><span>Title, note, next step and options are relay templates. Only the tool name enters them, reduced and capped at 64 characters (§8.5).</span></div>
+      <div><span class="pin">2</span><span>Remote text appears only here, fenced, rendered inertly: the URL is not a link. No option is starred: the relay never judges a request.</span></div>
+      <div><span class="pin">3</span><span>Permissions go only to the human (P5): the caller is another model and could be injected (§6.5).</span></div>
+    </div>
+  </main>
+</div>
+</body>
+</html>

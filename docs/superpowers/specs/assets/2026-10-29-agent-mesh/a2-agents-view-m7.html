@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<title>Agents view, M7 (registry, load and distribution)</title>
+<!-- Mockup for docs/superpowers/specs/2026-10-29-agent-mesh-design.md §16. Synthetic data. -->
+<link rel="stylesheet" href="../../../../../public/style.css">
+<link rel="stylesheet" href="mesh-mockup.css">
+<style>
+.grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+.ag-top { display: flex; align-items: center; gap: 8px; }
+.ag-top h3 { font-size: 15.5px; }
+.skills { display: flex; gap: 5px; flex-wrap: wrap; margin: 6px 0 4px; }
+.inst { display: grid; grid-template-columns: 12px 84px 70px 150px 1fr 44px; gap: 9px; align-items: center; padding: 6px 0; border-top: 1px solid var(--app-border); font-size: 12px; }
+.inst.dim { opacity: .55; }
+.lease { display: flex; flex-direction: column; gap: 3px; }
+.lease small { font-size: 10.5px; color: var(--app-text-soft); }
+.foot { display: grid; grid-template-columns: 150px 1fr auto; gap: 12px; align-items: center; margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--app-border); font-size: 11.5px; color: var(--app-muted); }
+.dist { display: flex; height: 8px; border-radius: 4px; overflow: hidden; }
+.dist i { background: var(--c); }
+.stats { display: flex; gap: 10px; white-space: nowrap; }
+.stats b { color: var(--app-text); }
+</style>
+</head>
+<body>
+<div class="m-shell">
+  <aside class="m-side">
+    <div class="m-brand"><img src="../../../../../public/favicon-32.png" alt=""><span><strong>Agent Inbox</strong><small>Local workspace</small></span></div>
+    <div class="m-tab on">Dashboard<b></b></div><div class="m-tab">Inbox<b>3</b></div><div class="m-tab">Plans<b>2</b></div><div class="m-tab">Notes<b>1</b></div><div class="m-tab">History<b></b></div>
+    <div class="m-label">Projects</div>
+    <div class="m-proj on" style="--c:var(--app-text-soft)"><i></i>All<b>3</b></div><div class="m-proj" style="--c:#38d6c0"><i></i>agent-inbox<b>1</b></div><div class="m-proj" style="--c:#4cc9f0"><i></i>demo-service<b></b></div><div class="m-proj" style="--c:#8f99a3"><i></i>@mesh<b>2</b></div>
+  </aside>
+  <main class="m-main">
+    <div class="m-head"><div><div class="m-kicker">Dashboard</div><h1 class="m-h1">Mission control</h1></div><div class="m-sub">registry on homelab · revision 1842 · 2s ago</div><span class="m-spacer"></span><span class="m-lens"><span>Sessions</span><span class="on">Agents</span></span><span class="m-lens"><span>1h</span><span class="on">24h</span><span>7d</span></span></div>
+    <div class="m-banner"><span class="dot up"></span><b>Mesh running</b><span class="m-soft">4 agents · 5 instances up · 1 draining · 2 open chains, 1 waiting on you</span><span class="pin">4</span><span class="m-spacer"></span><span class="m-btn small">Mesh value →</span><span class="m-btn small danger">Pause mesh</span></div>
+    <div class="grid">
+      <section class="m-card">
+        <div class="ag-top"><h3>copilot-review</h3><span class="m-soft">shariq/</span><span class="m-chip t-out">token + tailnet</span><span class="m-spacer"></span><span class="m-soft">mac, homelab</span></div>
+        <div class="skills"><span class="m-chip t-agent">code-review</span><span class="m-chip t-agent">triage</span><span class="m-chip t-mute">read-only</span></div>
+        <div class="inst"><span class="dot up"></span><b>mac-1</b><span class="m-chip t-out">up</span><span class="lease"><span class="bar"><i style="--w:13%;--c:var(--app-success)"></i></span><small>renewed 12s · TTL 90s</small></span><span><span class="slots"><i class="on"></i><i class="on"></i></span> 2/2 · queued 1</span><span class="m-soft num">62%</span></div>
+        <div class="inst"><span class="dot drain"></span><b>homelab-1</b><span class="m-chip t-plan">draining</span><span class="lease"><span class="bar"><i style="--w:28%;--c:var(--app-warning)"></i></span><small>renewed 25s · TTL 90s</small></span><span><span class="slots"><i class="on"></i><i></i></span> 1/2</span><span class="m-soft num">38%</span></div>
+        <div class="inst dim"><span class="dot off"></span><b>mac-2</b><span class="m-chip t-mute">expired</span><span class="lease"><small>last seen 3h ago</small></span><span></span><span></span></div>
+        <div class="foot"><span>tasks 24h <svg class="spark" viewBox="0 0 120 20" preserveAspectRatio="none" style="width:70px;height:16px;vertical-align:middle"><path class="area" d="M0,18 L15,15 L30,8 L45,11 L60,16 L75,17 L90,12 L105,9 L120,13 L120,20 L0,20Z"/><path d="M0,18 L15,15 L30,8 L45,11 L60,16 L75,17 L90,12 L105,9 L120,13"/></svg></span><span class="dist" title="distribution"><i style="--c:var(--app-agent);width:62%"></i><i style="--c:color-mix(in srgb,var(--app-agent) 45%,transparent);width:38%"></i></span><span class="stats"><span><b>24</b> tasks</span><span>ok <b>96%</b></span><span>p95 <b>3m</b></span></span></div>
+      </section>
+      <section class="m-card">
+        <div class="ag-top"><h3>claude-edit</h3><span class="m-soft">shariq/</span><span class="m-chip t-out">token + tailnet</span><span class="m-spacer"></span><span class="m-soft">mac</span></div>
+        <div class="skills"><span class="m-chip t-agent">small-edit</span><span class="m-chip t-agent">test-writing</span><span class="m-chip t-plan">write</span></div>
+        <div class="inst"><span class="dot up"></span><b>mac-1</b><span class="m-chip t-out">up</span><span class="lease"><span class="bar"><i style="--w:6%;--c:var(--app-success)"></i></span><small>renewed 5s · TTL 90s</small></span><span><span class="slots"><i class="ask"></i></span> 1/1 · <b style="color:var(--app-attention)">waits on you</b> <span class="pin">1</span></span><span class="m-soft num">100%</span></div>
+        <div class="foot"><span>tasks 24h <svg class="spark" viewBox="0 0 120 20" preserveAspectRatio="none" style="width:70px;height:16px;vertical-align:middle"><path class="area" d="M0,19 L15,19 L30,14 L45,16 L60,12 L75,15 L90,10 L105,11 L120,8 L120,20 L0,20Z"/><path d="M0,19 L15,19 L30,14 L45,16 L60,12 L75,15 L90,10 L105,11 L120,8"/></svg></span><span class="m-soft">units today <b style="color:var(--app-text)">14</b> / 50 <span class="bar" style="display:inline-block;width:90px;vertical-align:middle"><i style="--w:28%;--c:var(--app-plan)"></i></span></span><span class="stats"><span><b>9</b> tasks</span><span>ok <b>89%</b></span><span>p95 <b>6m</b></span></span></div>
+      </section>
+      <section class="m-card">
+        <div class="ag-top"><h3>second-opinion</h3><span class="m-soft">shariq/</span><span class="m-chip t-out">token</span><span class="m-spacer"></span><span class="m-soft">ubi-llm</span></div>
+        <div class="skills"><span class="m-chip t-agent">second-opinion</span><span class="m-chip t-agent">bulk-read</span><span class="m-chip t-agent">summarize</span><span class="m-chip t-mute">no tools</span></div>
+        <div class="inst"><span class="dot up"></span><b>ubi-llm-1</b><span class="m-chip t-plan">busy</span><span class="lease"><span class="bar"><i style="--w:20%;--c:var(--app-success)"></i></span><small>renewed 18s · TTL 90s</small></span><span><span class="slots"><i class="on"></i></span> 1/1 · queued 2 · swapping model <span class="pin">2</span></span><span class="m-soft num">100%</span></div>
+        <div class="foot"><span>tasks 24h <svg class="spark" viewBox="0 0 120 20" preserveAspectRatio="none" style="width:70px;height:16px;vertical-align:middle"><path class="area" d="M0,12 L15,10 L30,13 L45,9 L60,8 L75,11 L90,6 L105,8 L120,5 L120,20 L0,20Z"/><path d="M0,12 L15,10 L30,13 L45,9 L60,8 L75,11 L90,6 L105,8 L120,5"/></svg></span><span class="m-soft">probe ok 40s ago</span><span class="stats"><span><b>31</b> tasks</span><span>ok <b>100%</b></span><span>p95 <b>48s</b></span></span></div>
+      </section>
+      <section class="m-card">
+        <div class="ag-top"><h3>release-notes</h3><span class="m-soft">shariq/</span><span class="m-chip t-mute">declared</span><span class="m-spacer"></span><span class="m-soft">homelab</span></div>
+        <div class="skills"><span class="m-chip t-agent">release-notes</span><span class="m-chip t-mute">Eureka client</span></div>
+        <div class="inst"><span class="dot off"></span><b>static</b><span class="m-chip t-mute">declared</span><span class="lease"><small>no lease · never routed</small></span><span class="m-soft">registered with a plain Eureka client <span class="pin">3</span></span><span></span></div>
+        <div class="foot"><span>tasks 24h —</span><span class="m-soft">routed only after a console probe proves it (M7)</span><span class="stats"><span><b>0</b> tasks</span></span></div>
+      </section>
+    </div>
+    <section class="m-card" style="padding:10px 14px">
+      <div class="m-card-head" style="margin-bottom:6px"><h2>Open chains</h2><small>from the registry's chain ledger · click for the chain view</small></div>
+      <div style="display:grid;grid-template-columns:90px 1fr 210px 190px 150px;gap:10px;font-size:12.5px;align-items:center;padding:5px 0;border-top:1px solid var(--app-border)"><b class="mono">c-91b2</b><span>fix the billing retry · copilot · demo-service</span><span>3 hops, depth 2 · <span class="m-chip t-att">waits on you</span></span><span class="num">2.9 spent + 3.9 reserved / 10</span><span class="m-soft">14 min · deadline 45</span></div>
+      <div style="display:grid;grid-template-columns:90px 1fr 210px 190px 150px;gap:10px;font-size:12.5px;align-items:center;padding:5px 0;border-top:1px solid var(--app-border)"><b class="mono">c-7f3a</b><span>review §8 for bypasses · claude-code · agent-inbox</span><span>0 hops · <span class="m-chip t-att">awaiting approval</span></span><span class="num">0 / 10</span><span class="m-soft">2 min · expires in 28</span></div>
+    </section>
+    <div class="m-notes" style="--cols:4">
+      <div><span class="pin">1</span><span>A pending permission ask fills the slot in the attention colour; the count is read from <span class="mono">attentionEntries</span>.</span></div>
+      <div><span class="pin">2</span><span>A model swap on ubi-llm shows as busy with a queue, never as a failure (M7's check).</span></div>
+      <div><span class="pin">3</span><span>Anything that speaks Eureka's REST subset can join as membership only (§15).</span></div>
+      <div><span class="pin">4</span><span>Lease, load, trust and "paused" are ambient. None reaches a badge, a count or the dock.</span></div>
+    </div>
+  </main>
+</div>
+</body>
+</html>

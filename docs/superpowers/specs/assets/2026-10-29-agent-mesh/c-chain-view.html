@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<title>Chain view</title>
+<!-- Mockup for docs/superpowers/specs/2026-10-29-agent-mesh-design.md §16. Synthetic data. -->
+<link rel="stylesheet" href="../../../../../public/style.css">
+<link rel="stylesheet" href="mesh-mockup.css">
+<style>
+.wrap { display: grid; grid-template-columns: 1fr 360px; gap: 14px; }
+.graph { position: relative; height: 330px; }
+.graph svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+.graph svg path { fill: none; stroke: var(--app-border-strong); stroke-width: 1.5; }
+.graph svg path.live { stroke: var(--app-agent); stroke-dasharray: 5 4; }
+.node { position: absolute; width: 228px; padding: 9px 11px; border: 1px solid var(--app-border); border-radius: 10px; background: var(--app-surface); font-size: 11.5px; box-shadow: var(--app-shadow); }
+.node strong { font-size: 13px; display: block; }
+.node .row { display: flex; gap: 6px; align-items: center; margin-top: 4px; }
+.node.ask { border-color: var(--app-attention); box-shadow: 0 0 0 3px var(--app-accent-soft); }
+.node.origin { background: var(--app-elevated); }
+.meter { display: grid; grid-template-columns: 110px 1fr 92px; gap: 10px; align-items: center; font-size: 12px; padding: 5px 0; }
+.meter .bar { height: 8px; }
+.ev { display: grid; grid-template-columns: 46px 1fr; gap: 8px; font-size: 11.5px; padding: 4px 0; border-top: 1px solid var(--app-border); }
+.ev:first-of-type { border-top: 0; }
+.ev time { color: var(--app-text-soft); font-variant-numeric: tabular-nums; }
+.kill { border-color: color-mix(in srgb, var(--app-danger) 45%, var(--app-border)); }
+</style>
+</head>
+<body>
+<div class="m-shell">
+  <aside class="m-side">
+    <div class="m-brand"><img src="../../../../../public/favicon-32.png" alt=""><span><strong>Agent Inbox</strong><small>Local workspace</small></span></div>
+    <div class="m-tab on">Dashboard<b></b></div><div class="m-tab">Inbox<b>3</b></div><div class="m-tab">Plans<b>2</b></div><div class="m-tab">Notes<b>1</b></div><div class="m-tab">History<b></b></div>
+    <div class="m-label">Projects</div>
+    <div class="m-proj on" style="--c:var(--app-text-soft)"><i></i>All<b>3</b></div><div class="m-proj" style="--c:#38d6c0"><i></i>agent-inbox<b>1</b></div><div class="m-proj" style="--c:#4cc9f0"><i></i>demo-service<b></b></div><div class="m-proj" style="--c:#8f99a3"><i></i>@mesh<b>2</b></div>
+  </aside>
+  <main class="m-main">
+    <div class="m-head"><div><div class="m-kicker">Agents · chain</div><h1 class="m-h1">c-91b2 · fix the billing retry</h1></div><div class="m-sub">opened by copilot · demo-service · main · 14 min ago</div><span class="m-spacer"></span><span class="m-chip t-agent">running</span><span class="m-btn small">Back to Agents</span></div>
+    <div class="wrap">
+      <section class="m-card">
+        <div class="m-card-head"><h2>Hops</h2><small>depth 2 of 3 · paths come from the registry's hop records, never from a caller's claim</small></div>
+        <div class="graph">
+          <svg viewBox="0 0 760 330" preserveAspectRatio="none"><path d="M240,60 C290,60 290,60 300,60"/><path d="M240,60 C270,60 270,200 300,200"/><path class="live" d="M528,200 C545,200 545,200 560,200"/></svg>
+          <div class="node origin" style="left:10px;top:20px"><span class="m-soft">origin session</span><strong>copilot @ mac</strong><div class="row">demo-service · main</div><div class="row"><span class="m-chip t-mute">bridge holds the chain capability</span></div></div>
+          <div class="node" style="left:300px;top:20px"><span class="m-soft">hop 1 · depth 1 · task t-1</span><strong>copilot-review @ homelab</strong><div class="row"><span class="m-chip t-out">completed</span><span class="num">3m 12s · 1.4 of 2 units</span></div><div class="row m-muted">"2 issues: missing jitter, retry on 4xx"</div></div>
+          <div class="node ask" style="left:300px;top:160px"><span class="m-soft">hop 2 · depth 1 · task t-2 · new binding, ask a-8e21</span><strong>claude-edit @ mac</strong><div class="row"><span class="m-chip t-att">auth required</span><span>waits on you</span></div><div class="row num">reserved 3 units · 0.9 used · 6m</div></div>
+          <div class="node" style="left:560px;top:160px;width:190px"><span class="m-soft">hop 3 · depth 2 · child of t-2</span><strong>second-opinion @ ubi-llm</strong><div class="row"><span class="m-chip t-agent">working</span></div><div class="row num">reserved 0.5 · 40s</div></div>
+          <div style="position:absolute;left:300px;top:290px;font-size:11.5px" class="m-soft">Not allowed here: back-edges (claude-edit → copilot → …), depth 4, a chain opened by a wrapper.</div>
+        </div>
+      </section>
+      <div style="display:flex;flex-direction:column;gap:12px">
+        <section class="m-card">
+          <div class="m-card-head"><h2>Spend against the cap</h2><small>hard ceilings (D7)</small></div>
+          <div class="meter"><span>Units</span><span class="bar"><i style="--w:29%;--c:var(--app-plan)"></i><i style="--w:39%;left:29%;--c:color-mix(in srgb,var(--app-plan) 35%,transparent)"></i></span><span class="num">2.9 + 3.9 res / 10</span></div>
+          <div class="meter"><span>Tasks</span><span class="bar"><i style="--w:60%"></i></span><span class="num">3 / 5</span></div>
+          <div class="meter"><span>Depth</span><span class="bar"><i style="--w:66%"></i></span><span class="num">2 / 3</span></div>
+          <div class="meter"><span>Wall time</span><span class="bar"><i style="--w:31%"></i></span><span class="num">14 / 45 min</span></div>
+          <div class="meter"><span>Host mac today</span><span class="bar"><i style="--w:28%;--c:var(--app-plan)"></i></span><span class="num">14 / 50 units</span></div>
+        </section>
+        <section class="m-card kill">
+          <div class="m-card-head"><h2>Kill switch</h2><small>any terminal: <span class="mono">meshctl pause</span></small></div>
+          <div style="display:flex;gap:8px"><span class="m-btn danger">Pause mesh</span><span class="m-btn">Cancel this chain</span></div>
+          <div class="m-muted" style="font-size:11.5px;margin-top:8px">Pause refuses every new chain, grant and reservation and cancels running turns; target: all tasks stopped within 10 s. Resuming needs the console key.</div>
+        </section>
+      </div>
+      <section class="m-card" style="grid-column:1 / span 2">
+        <div class="m-card-head"><h2>Ledger</h2><small>from mesh.db · every line is a registry record</small><span class="m-spacer"></span><span class="m-chip t-mute">rails fired: 1</span></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 24px">
+          <div>
+            <div class="ev"><time>11:02</time><span>Chain opened by copilot's bridge; first-hop ask <b>a-7c10</b> raised</span></div>
+            <div class="ev"><time>11:03</time><span>You approved a-7c10 (signed, revision 1) · binding: copilot-review, demo-service @ main, read-only, 10 units</span></div>
+            <div class="ev"><time>11:03</time><span>Grant g-1 redeemed by copilot-review @ homelab · message hash matched · 2 units reserved</span></div>
+            <div class="ev"><time>11:06</time><span>t-1 completed · settled 1.4 units (reservation 2)</span></div>
+          </div>
+          <div>
+            <div class="ev"><time>11:08</time><span>New approval needed: claude-edit is a different callee with write → ask <b>a-8e21</b>; you approved</span></div>
+            <div class="ev"><time>11:12</time><span style="color:var(--app-danger)">Refused: grant for second-opinion with a different message hash (grant_mismatch); re-granted</span></div>
+            <div class="ev"><time>11:13</time><span>t-3 started at depth 2 under t-2 (M8)</span></div>
+            <div class="ev"><time>11:15</time><span>claude-edit asked to run Bash → ask <b>a-91b2</b> (waits on you)</span></div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </main>
+</div>
+</body>
+</html>

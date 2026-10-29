@@ -153,10 +153,12 @@ writes the host config atomically with a backup; `uninstall-bridge` removes only
   → Mesh section, and that `/mesh-view.js` was never requested. Turning the view on or off takes a
   window reload.
 - **(c) No new dependency** in the app: `package-lock.json` changes only by the root entry's `bin`
-  map (§2.3), and its dependency graph is unchanged. A test holds this without the base branch,
-  so it runs in CI: every mesh module imports only Node core and the app's own modules (never
-  `store.ts` from `meshctl`), the lockfile's root entry declares exactly `package.json`'s
-  dependencies, and no lockfile package path names the mesh.
+  map (§2.3), and its dependency set is unchanged. A test holds this without the base branch,
+  so it runs in CI: `test/fixtures/app-dependencies.txt` pins `package.json`'s dependency and
+  devDependency names and every lockfile package path (as `snapshot-triggers.txt` pins
+  triggers), so any new package fails it; every mesh module imports only Node core and the
+  app's own modules (never `store.ts` from `meshctl`); and the lockfile's root entry declares
+  exactly `package.json`'s dependencies and bins.
 - **(d) No hub schema change in any phase.** `test/fixtures/snapshot-triggers.txt` stays
   byte-identical. The relay writes only through existing `store.ts` functions: `upsertBoard` (to
   create a new plan only), `updateBoardRow`, `advanceBoardRow`, `archiveBoard`,
@@ -1177,8 +1179,15 @@ Shariq asked whether to adopt Eureka, for mockups, and for a way to measure the 
 
 1. **Lockfile (§2.3, §2.4c):** "`package-lock.json` does not change" could not hold: npm's lockfile
    v3 root entry records `bin`, so adding `agent-inbox-meshctl` adds one line there. The claim is
-   now that the dependency graph does not change, and the test reads the lockfile and the mesh
-   modules' imports instead of comparing with the base branch, which CI does not have.
+   now that the dependency set does not change. Instead of comparing with the base branch, which
+   CI does not have, the test checks the set against a checked-in pin,
+   `test/fixtures/app-dependencies.txt` (package names from `package.json` and every lockfile
+   package path), and checks the mesh modules' imports. A deliberate dependency change outside
+   the mesh refreshes the pin; the test's failure message says how.
+5. **How to run `meshctl`:** the package is private and nothing installs its `bin` on `PATH`, so
+   §2.1's bare `agent-inbox-meshctl` works only after `npm link`. M1 documents
+   `npm run meshctl -- …` from a checkout and `<runtime>/bin/node <runtime>/dist/meshctl.js …`
+   with an installed runtime, and Settings → Mesh adds that deleting `mesh.json` turns M1 off.
 2. **A shared reader (§2.3):** M1 adds `src/mesh-config.ts`, Node core only, holding the one rule
    for reading `mesh.json` (a regular file of at most 64 KiB, a JSON object, `schema` 1; anything
    else is off) and the viewer's stat watch, so `meshctl` and the viewer cannot disagree. M3's

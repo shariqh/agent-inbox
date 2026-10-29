@@ -240,24 +240,30 @@ export function installMeshView({ doc = globalThis.document, jumpToAsk }) {
     }
   }
 
-  /** Settings → Mesh: what is on, and the exact command that turns it off. */
+  /**
+   * Settings → Mesh: what is on, and the commands that really turn it off. The
+   * package is private and nothing installs its bin on PATH, so the bare
+   * `agent-inbox-meshctl` is offered only for a checkout that ran `npm link`.
+   */
   function renderSettings(host) {
     if (!host || host.querySelector('.mesh-settings')) return
     const section = make('section', 'setup-block mesh-settings')
     section.id = 'mesh-settings'
-    const off = 'agent-inbox-meshctl disable --apply'
-    const command = make('pre', 'mesh-off-command', off)
+    const runtime = '~/.agent-inbox/runtime/<runtime-id>'
     section.append(
       make('h3', '', 'Mesh'),
       make('p', 'setup-hint', 'Agents view: on. The Dashboard offers a Sessions | Agents lens that groups Live sessions by agent. It reads nothing new and sends nothing anywhere.'),
-      make('p', 'setup-hint', 'mesh.json turns it on, and this page reads it when it loads. To turn it off, run this, then reload the window:'),
-      command,
-      make('p', 'setup-hint', 'From a source checkout: npm run meshctl -- disable --apply'),
+      make('p', 'setup-hint', 'mesh.json turns it on, and this page reads it when it loads. To turn it off, run one of these, then reload the window. From a source checkout:'),
+      make('pre', 'mesh-off-command', 'npm run meshctl -- disable --apply'),
+      make('p', 'setup-hint', 'With the agent runtime Setup installed (the runtime folder is listed under Runtimes):'),
+      make('pre', 'mesh-off-command', `${runtime}/bin/node ${runtime}/dist/meshctl.js disable --apply`),
+      make('p', 'setup-hint', 'agent-inbox-meshctl disable --apply works on its own only after npm link in a checkout.'),
+      make('p', 'setup-hint', 'Or delete mesh.json from its folder: ~/.agent-inbox, or AGENT_INBOX_MESH_DIR, or the folder of AGENT_INBOX_DB when one of those is set for the viewer. In this phase that turns the mesh off completely.'),
     )
     const after = host.querySelector('#link-settings')
     if (after) after.after(section)
     else host.appendChild(section)
   }
 
-  return { paint, renderSettings }
+  return { paint, renderSettings, lens: () => lens }
 }

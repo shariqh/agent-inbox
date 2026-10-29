@@ -3130,7 +3130,7 @@ function frameInputs() {
   return [
     ...lastData.reads, JSON.stringify(lastData.closed), navigationKey(), openRowId,
     focusSession, laneFilters.project, laneFilters.agent, outsideChanges, liveVersion, fileLinksCopy(), Boolean(linkFileActions()),
-    meshView,
+    meshView, meshView?.lens(),
   ]
 }
 

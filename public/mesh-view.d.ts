@@ -36,4 +36,6 @@ export function sessionRecency(session: MeshSession): string
 export function installMeshView(options: { doc?: Document; jumpToAsk: (entry: AttentionEntry) => void }): {
   paint(host: Element, input: { activity: LaneActivity[]; attention: AttentionEntry[]; closed?: Iterable<string>; nowMs: number }): void
   renderSettings(host: Element | null): void
+  /** the window-local lens, for frameInputs() */
+  lens(): 'sessions' | 'agents'
 }

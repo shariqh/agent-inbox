@@ -2119,8 +2119,10 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   then, and only then, `app.js` runs `import('/mesh-view.js')` (an `ENTRY_POINTS` and
   `ALLOWED` entry in `test/dead-exports.test.ts`, since the scan reads static imports only).
   `public/mesh-view.js` adds a Sessions | Agents lens above the Dashboard lanes and Settings →
-  Mesh (state, and the exact `agent-inbox-meshctl disable --apply`; the browser never writes
-  `mesh.json`). The lens is window-local like the lane filters: a fresh window opens on
+  Mesh (state, and the commands that really turn it off: `npm run meshctl -- disable --apply`
+  from a checkout, the runtime's `bin/node … dist/meshctl.js`, or deleting `mesh.json`; the
+  package is private and nothing puts the `agent-inbox-meshctl` bin on PATH short of `npm link`;
+  the browser never writes `mesh.json`). The lens is window-local like the lane filters: a fresh window opens on
   Sessions. The Agents lens hides `.dash-lanes` and shows `.mesh-agents` in its grid place,
   drawn from `renderDashboardAmbient` (so both render entries, no third) with `liveInLens()`,
   the lanes' own input. It groups presence by `agent`, then project and branch, with the
@@ -2129,12 +2131,16 @@ the server with a CLI, pin the **absolute Node 24 binary path**, never bare `nod
   the frame's `waitingEntries` (the attention set), keyed by an item's `agent` or a row's
   `action_agent` (else its plan's agent). Nothing it draws reaches `public/attention.js`, a
   badge, count, tab, the rail or the dock; it fetches nothing, runs no timer and no animation,
-  and rebuilds its cards only when what they show changed. `meshView` is in `frameInputs()`, so
-  the tick after the module lands paints; the lens itself changes only through a click, which
-  is input. `test/mesh.test.ts` and `test/dom/mesh-view.test.ts` hold all of it, including the
+  and rebuilds its cards only when what they show changed. `meshView` and its lens are in
+  `frameInputs()`, so the tick after the module lands paints and a lens change is never
+  reused across. `test/mesh.test.ts` and `test/dom/mesh-view.test.ts` hold all of it, including the
   off boot's identical requests, bytes and ETags and identical attention surfaces with the
   Agents lens on. `package-lock.json` changes only by the root entry's `bin` map (npm
-  lockfile v3 records it); the dependency graph does not change.
+  lockfile v3 records it); the dependency set does not change, and
+  `test/fixtures/app-dependencies.txt` pins it (package.json's dependency and devDependency
+  names and every lockfile package path), so a new package fails `test/mesh.test.ts`. A
+  deliberate dependency change outside the mesh refreshes the pin with
+  `AGENT_INBOX_UPDATE_DEPENDENCY_FIXTURE=1 npx vitest run test/mesh.test.ts -t "dependency set"`.
 
 ### DOM harness — what it can and cannot see
 

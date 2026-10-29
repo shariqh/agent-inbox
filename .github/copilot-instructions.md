@@ -197,7 +197,8 @@ Run the build before `npm run electron`; the development shell starts the built
   `isDormant`, `last_call_at` and the frame's attention entries; it never feeds
   attention, a badge, count, tab, rail or the dock, fetches nothing, and animates
   nothing. No mesh module enters the stdio MCP graph, the hub schema is untouched,
-  and the lockfile changes only by the root `bin` entry.
+  and the lockfile changes only by the root `bin` entry; `test/fixtures/app-dependencies.txt`
+  pins the dependency set. Nothing puts the bin on PATH: document `npm run meshctl -- …`.
 - **Shared presentation rules:** `public/attention.js` is the single attention
   predicate used by the viewer and Electron dock badge. Pure modules under
   `public/` hold grouping, ordering, search, badge, polling, and rendering rules;

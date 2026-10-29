@@ -7,4 +7,4 @@
 //
 // A leaf module on purpose: no imports, so both the stdio MCP graph and the
 // viewer can read it without pulling either one's dependencies into the other.
-export const AGENT_INBOX_VERSION = '2.0.0'
+export const AGENT_INBOX_VERSION = '2.1.0'

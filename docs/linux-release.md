@@ -99,7 +99,8 @@ Each job:
    applies them as stored, so the build clears group and other write on Electron's files
    as soon as they are extracted. The folder keeps the `0644` and `0755` modes of every
    earlier zip (#371);
-6. verifies ELF architecture, libc symbol floors, Electron/Node versions and
+6. verifies file modes ([Which file modes ship](macos-release.md#which-file-modes-ship-378)),
+   ELF architecture, libc symbol floors, Electron/Node versions and
    ABIs, both native addons, pruned app and runtime `node_modules`, the US and British
    English Electron locales, schema-2 Setup metadata, and exact-host payload selection, then runs
    the allocation-driven SQLite check under the packaged Electron (180-second ceiling,

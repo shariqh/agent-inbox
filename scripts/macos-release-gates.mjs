@@ -25,6 +25,7 @@ import { verifyPackagedUpdateTrust } from './package-update-trust.mjs'
 import { assertEnglishOnlyElectronLocales } from './prune-electron-locales.mjs'
 import { verifyPayload } from './runtime-payload.mjs'
 import { treeIdentity } from './tree-identity.mjs'
+import { assertSafeTreeModes } from './tree-modes.mjs'
 import { createReleaseDmg } from './macos-dmg.mjs'
 import { macosKindOf, macosRelease, measuredMacosKind } from './macos-release-kind.mjs'
 import { newestUniversalRelease } from './update-manifest.mjs'
@@ -705,6 +706,7 @@ export async function verifyFinalDmg({
         ]) requireNonemptyFile(path, label)
         verifyPackagedUpdateTrust(appResources)
         assertEnglishOnlyElectronLocales(copiedApp, 'darwin', 'copied app')
+        assertSafeTreeModes(copiedApp, { label: 'copied app' })
 
         const measured = transportedAppArchitectures({
           executable: lipoArchitectures(join(contents, 'MacOS', APP_NAME)),

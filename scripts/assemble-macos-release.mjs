@@ -39,6 +39,7 @@ import {
 import { resolveSourceProvenance } from './source-provenance.mjs'
 import { assertRuntimeSourceCommit } from './runtime-provenance.mjs'
 import { treeIdentity } from './tree-identity.mjs'
+import { assertSafeTreeModes } from './tree-modes.mjs'
 import { probeRuntimeMcp } from './runtime-mcp-probe.mjs'
 
 const APP_NAME = 'Agent Inbox'
@@ -534,6 +535,8 @@ export async function assembleMacRelease({
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: 60_000,
     })
+    // The signed tree, _CodeSignature folders and helper apps included (#378).
+    assertSafeTreeModes(app, { label: 'signed macOS app' })
 
     const architectures = verifyMachOArchitectures(app, appResources, inputs)
     const nativeSelftest = runNativeRuntimeSelftest(appResources)

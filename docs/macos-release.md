@@ -60,11 +60,17 @@ missing `include/node` files (`common.gypi`, `config.gypi`, `node_version.h`, `n
 Windows it puts the pinned `node.lib` at `Release/node.lib`, where node-gyp links a
 `--nodedir` Release build. It then runs `@electron/rebuild` with `npm_config_nodedir` set
 to that folder and the node-gyp dist-url set to `https://electron-headers.invalid`, so a
-build that stopped using the nodedir fails rather than fetching headers, refuses to start
-while the environment sets anything node-gyp would read as another nodedir, dist-url,
-tarball, devdir, target or runtime (`npm_config_nodedir`, `npm_config_dist_url`, any
+build that stopped using the nodedir cannot fetch headers, refuses to start while the
+environment sets anything node-gyp would read as another nodedir, dist-url, tarball,
+devdir, target or runtime, or that would change how it installs headers
+(`npm_config_nodedir`, `npm_config_dist_url`, `npm_config_disturl`,
+`npm_config_tarball`, `npm_config_devdir`, `npm_config_target`, `npm_config_runtime`,
+`npm_config_ensure`, `npm_config_force_process_config`, any
 `npm_package_config_node_gyp_*`, in any case), and checks afterwards that
-better-sqlite3's `build/config.gypi` names exactly that nodedir. The build log carries
+better-sqlite3's `build/config.gypi` names exactly that nodedir. That last check is what
+fails a build whose nodedir stopped reaching node-gyp while `~/.electron-gyp/<version>`
+holds cached headers (`package:app` fills it): node-gyp would use those unverified
+headers without touching the network, so the unreachable dist-url alone would not stop it. The build log carries
 both lines (`app-dependencies: compiling … at nodedir …` and `… configured better-sqlite3
 against nodedir …`). The development `npm run package:app` path is not a release and
 still lets node-gyp fetch the headers.

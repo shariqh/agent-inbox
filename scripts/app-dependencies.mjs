@@ -22,7 +22,10 @@
 // once, verifies them, unpacks them into a private folder and hands node-gyp that
 // folder as its nodedir. node-gyp then never runs its own header install, and its
 // dist-url points at a name that cannot resolve, so a nodedir that stopped
-// reaching it would fail the build rather than fetch unverified headers.
+// reaching it could not fetch unverified headers. It could still use headers an
+// earlier build cached in ~/.electron-gyp/<version> (`package:app` fills it)
+// without touching the network; the build/config.gypi nodedir check after the
+// rebuild is what fails the build then.
 import { execFileSync } from 'node:child_process'
 import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import { dirname, join, posix, resolve, win32 } from 'node:path'
@@ -69,7 +72,8 @@ function runTar(tar, args, options) {
 }
 
 // Every path under root, as archive-relative posix paths, refusing anything
-// that is neither a plain file nor a directory.
+// that is neither a plain file nor a directory, and any file with another link:
+// its bytes could be changed through a path outside the verified tree.
 function walkPlainTree(parent, root) {
   const found = []
   const visit = (relative) => {
@@ -79,6 +83,9 @@ function walkPlainTree(parent, root) {
       found.push(relative)
       for (const name of readdirSync(path).sort()) visit(posix.join(relative, name))
     } else if (stat.isFile()) {
+      if (stat.nlink > 1) {
+        throw new AppDependenciesError(`Electron headers contain a hard-linked file: ${relative}`)
+      }
       found.push(relative)
     } else {
       throw new AppDependenciesError(`Electron headers contain something other than a file or folder: ${relative}`)
@@ -123,9 +130,9 @@ export async function provisionElectronHeaders({
   const listed = runTar(tar, ['-tzf', archive], { encoding: 'utf8' }).split(/\r?\n/).filter(Boolean)
   let entries
   try {
-    entries = validateArchiveEntries(listed, headers.root)
+    entries = validateArchiveEntries(listed, headers.root, 'Electron headers archive')
   } catch (err) {
-    throw new AppDependenciesError(`Electron headers archive: ${err.message}`)
+    throw new AppDependenciesError(err.message)
   }
 
   const extracted = join(parent, 'extracted')

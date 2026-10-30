@@ -18,7 +18,7 @@
 // resolve, so a build that ignored the pin would fail rather than download.
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, linkSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -315,7 +315,7 @@ const sha256 = (bytes: Buffer | string): string => createHash('sha256').update(b
 const ELECTRON_CONFIG = "# Do not edit.\n{ 'variables': {\n    'built_with_electron': 1,\n    'node_module_version': 148,\n} }\n"
 const HEADER_FILES = ['common.gypi', 'node_version.h', 'node.h', 'node_api.h', 'v8.h']
 
-type Entry = string | { symlink: string }
+type Entry = string | { symlink: string } | { hardlink: string }
 function headerTree(overrides: Record<string, Entry | null> = {}): Record<string, Entry> {
   const files: Record<string, Entry | null> = {
     'node_headers/include/node/config.gypi': ELECTRON_CONFIG,
@@ -331,7 +331,8 @@ function tarball(files: Record<string, Entry>): Buffer {
   for (const [path, entry] of Object.entries(files)) {
     mkdirSync(dirname(join(content, path)), { recursive: true })
     if (typeof entry === 'string') writeFileSync(join(content, path), entry)
-    else symlinkSync(entry.symlink, join(content, path))
+    else if ('symlink' in entry) symlinkSync(entry.symlink, join(content, path))
+    else linkSync(join(content, entry.hardlink), join(content, path))
   }
   const archive = join(root, 'headers.tar.gz')
   execFileSync('tar', ['-czf', archive, '-C', content, ...new Set(Object.keys(files).map((path) => path.split('/')[0]!))], {
@@ -412,8 +413,11 @@ describe('pinned Electron headers (#369)', () => {
   })
 
   it.each([
-    ['a second root', { 'extra/file.h': 'x' }, /outside node_headers/],
+    // the message names the archive it checked, not the Node distribution
+    ['a second root', { 'extra/file.h': 'x' }, /^Electron headers archive contains a path outside node_headers: extra$/],
     ['a symbolic link', { 'node_headers/include/node/link.h': { symlink: '/etc/hosts' } }, /other than a file or folder/],
+    // tar records the second name as a link to the first, and unpacking makes it one
+    ['a hard link', { 'node_headers/include/node/linked.h': { hardlink: 'node_headers/include/node/v8.h' } }, /^Electron headers contain a hard-linked file: node_headers\/include\/node\/(?:linked|v8)\.h$/],
     ['no config.gypi', { 'node_headers/include/node/config.gypi': null }, /lack include\/node\/config\.gypi/],
     ['no node.h', { 'node_headers/include/node/node.h': null }, /lack include\/node\/node\.h/],
     ["Node's own config.gypi", { 'node_headers/include/node/config.gypi': "{ 'variables': { 'node_module_version': 137 } }\n" }, /not Electron headers/],

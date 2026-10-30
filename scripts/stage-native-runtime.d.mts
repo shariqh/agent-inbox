@@ -2,7 +2,7 @@ import type { NativeRuntimeAdapter } from './native-runtime-adapter.mjs'
 
 export class NativeRuntimeStageError extends Error {}
 export function assertNativeRuntimeKey(key: string, platform?: string, arch?: string): void
-export function validateArchiveEntries(entries: string[], expectedRoot: string): string[]
+export function validateArchiveEntries(entries: string[], expectedRoot: string, label?: string): string[]
 export type NodeHeadersIdentity = {
   headers: {
     archive: string

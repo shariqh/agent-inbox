@@ -131,10 +131,11 @@ export function assertSystemTool(path, label) {
   return path
 }
 
-export function validateArchiveEntries(entries, expectedRoot) {
+// label names the archive in errors: the Node distribution by default.
+export function validateArchiveEntries(entries, expectedRoot, label = 'Node archive') {
   assertSafeRelativePath(expectedRoot, 'expected archive root')
   if (!Array.isArray(entries) || entries.length === 0) {
-    throw new NativeRuntimeAdapterError('Node archive is empty')
+    throw new NativeRuntimeAdapterError(`${label} is empty`)
   }
 
   const normalized = []
@@ -142,18 +143,18 @@ export function validateArchiveEntries(entries, expectedRoot) {
   const prefix = `${expectedRoot}/`
   for (const rawEntry of entries) {
     if (typeof rawEntry !== 'string' || !rawEntry) {
-      throw new NativeRuntimeAdapterError('Node archive contains an empty path')
+      throw new NativeRuntimeAdapterError(`${label} contains an empty path`)
     }
     if (rawEntry.endsWith('//')) {
-      throw new NativeRuntimeAdapterError(`Node archive entry contains an empty path segment: ${rawEntry}`)
+      throw new NativeRuntimeAdapterError(`${label} entry contains an empty path segment: ${rawEntry}`)
     }
     const entry = rawEntry.endsWith('/') ? rawEntry.slice(0, -1) : rawEntry
-    assertSafeRelativePath(entry, 'Node archive entry')
+    assertSafeRelativePath(entry, `${label} entry`)
     if (entry !== expectedRoot && !entry.startsWith(prefix)) {
-      throw new NativeRuntimeAdapterError(`Node archive contains a path outside ${expectedRoot}: ${entry}`)
+      throw new NativeRuntimeAdapterError(`${label} contains a path outside ${expectedRoot}: ${entry}`)
     }
     if (seen.has(entry)) {
-      throw new NativeRuntimeAdapterError(`Node archive contains a duplicate path: ${entry}`)
+      throw new NativeRuntimeAdapterError(`${label} contains a duplicate path: ${entry}`)
     }
     seen.add(entry)
     normalized.push(entry)

@@ -8,7 +8,7 @@ import { basename, dirname, isAbsolute, resolve, sep } from 'node:path'
 import type Database from 'better-sqlite3'
 import {
   listItems, listItemsPage, listOpenQuestions, resolveItem, dismissItem, annotateItem, replyItem, snoozeItem,
-  stopItemWatch, stopBoardRowWatch, pinItem, pinBoardRow, listArchivedSummary,
+  stopItemWatch, stopBoardRowWatch, pinItem, pinBoardRow, listArchivedSummary, listArchivedPlans,
   listBoards, listBoardsWithBlockedRows, archiveBoard, unarchiveBoard, annotateBoardRow, snoozeBoardRow,
   markRowHandled, clearRowHandled, listActivity, listActivitySpans, listSourceLinks, defaultDbPath,
   closeProject, reopenProject, closedProjects, readSnapshotState, listIssueEntities, listIssueSnapshots,
@@ -660,6 +660,19 @@ function etagMatches(requested: string | undefined, etag: string): boolean {
     || requested?.split(',').some((tag) => tag.trim().replace(/^W\//, '') === etag) === true
 }
 
+// Issue #373: how many lingering plans one read of /api/boards/archived/plans
+// may name; public/app.js reads the complete list for more.
+const MAX_LINGERING_PLANS = 50
+const PLAN_ID = /^[A-Za-z0-9_-]{1,64}$/
+
+// The ids /api/boards/archived/plans names: 1 to MAX_LINGERING_PLANS plan ids,
+// comma-separated. null = invalid, refused before any store call.
+function lingeringPlanIds(value: string | undefined): string[] | null {
+  const ids = value?.split(',') ?? []
+  if (!ids.length || ids.length > MAX_LINGERING_PLANS || !ids.every((id) => PLAN_ID.test(id))) return null
+  return ids
+}
+
 function conditionalSnapshot(
   db: Database.Database,
   name: SnapshotName,
@@ -1093,6 +1106,25 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
   // without the list. Each is its own representation with its own validator.
   app.get('/api/boards/archived', conditionalSnapshot(db, 'archived-boards', () => listBoards(db, { status: 'archived' })))
   app.get('/api/boards/archived/summary', conditionalSnapshot(db, 'archived-summary', () => listArchivedSummary(db, RECENT_OUTCOMES)))
+
+  // Issue #373: the archived plans a viewer draws whole while they linger in
+  // Plans (§9), named by `ids`, so a lingering plan no longer keeps the
+  // complete list above loading. Like /api/activity/history (#185) the query
+  // selects the representation: its bytes are built fresh on every read (a few
+  // plans) and depend on the database alone, and its tag hashes them with the
+  // ids that selected them, so a 304 means identical bytes and no two sets
+  // share a validator. Nothing is retained server-side.
+  app.get('/api/boards/archived/plans', (c) => {
+    const ids = lingeringPlanIds(c.req.query('ids'))
+    if (!ids) return c.json({ ok: false, error: `ids must be 1-${MAX_LINGERING_PLANS} comma-separated plan ids` }, 400)
+    c.header('Cache-Control', 'no-store')
+    const body = JSON.stringify(listArchivedPlans(db, ids))
+    // JSON.stringify never emits a raw newline, so the key cannot run into the body.
+    const etag = `"archived-plans-${createHash('sha256').update(`${JSON.stringify(ids)}\n`).update(body).digest('hex')}"`
+    c.header('ETag', etag)
+    if (etagMatches(c.req.header('If-None-Match'), etag)) return c.body(null, 304)
+    return c.body(body, 200, { 'Content-Type': 'application/json' })
+  })
 
   app.post('/api/boards/:id/archive', async (c) => {
     const body = await c.req.json<{ expected_version?: number }>().catch(() => null)

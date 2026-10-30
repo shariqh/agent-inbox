@@ -3040,6 +3040,24 @@ export function listBoards(db: Database.Database, opts: { status?: 'active' | 'a
   })
 }
 
+// Issue #373: the archived plans with these ids, each exactly as listBoards'
+// archived list has it: every plan field, every row with all of its background
+// and `progress`. What a plan lingering in the viewer's Plans tab is drawn from,
+// so the poll need not read every archived plan for it. Ids that name no
+// archived plan are left out. Read-only, so a deferred transaction suffices: it
+// pins one snapshot, so a plan's fields, rows and progress always agree.
+export function listArchivedPlans(db: Database.Database, ids: readonly string[]): BoardWithRows[] {
+  return db.transaction((): BoardWithRows[] => {
+    const boards = db.prepare(`SELECT * FROM boards WHERE status = 'archived'
+      AND id IN (SELECT value FROM json_each(?)) ORDER BY updated_at DESC`).all(JSON.stringify(ids)) as Board[]
+    const rowStmt = db.prepare(`SELECT ${ROW_COLUMNS} FROM board_rows WHERE board_id = ? ORDER BY position ASC`)
+    return boards.map((b) => {
+      const rows = withUnseen(rowStmt.all(b.id) as BoardRowRecord[])
+      return { ...b, rows, progress: computeProgress(rows) }
+    })
+  })()
+}
+
 // Issue #287: the plans for the Electron dock watcher's 3-second poll. Of a plan,
 // the shared predicate and the response watch read only its blocked rows, so
 // this keeps listBoards' active plans that hold one, in its order, each narrowed

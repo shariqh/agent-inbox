@@ -6,6 +6,10 @@ import { join, resolve } from 'node:path'
 // they stay small and point to docs/architecture/, whose files load only when an agent
 // reads or edits a file matching their globs (through the .claude/rules/ and
 // .github/instructions/ symlinks). Grow a subsystem doc, not these two files.
+//
+// The link checks need a checkout with real symlinks (`core.symlinks` true). On Windows
+// with symlinks disabled Git writes each link as a one-line text file, so this test is
+// expected to fail there; CI runs the full suite only on macOS and Linux.
 const REPO = resolve(import.meta.dirname, '..')
 const read = (rel: string) => readFileSync(join(REPO, rel), 'utf8')
 const lineCount = (text: string) => text.split('\n').length - (text.endsWith('\n') ? 1 : 0)

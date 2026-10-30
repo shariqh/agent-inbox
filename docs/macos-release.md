@@ -37,6 +37,57 @@ if the release's own `SHASUMS256.txt` was replaced along with it. The hashes cha
 with the lockfile: when bumping Electron, compare the new `checksums.json` with the
 release's official `SHASUMS256.txt`.
 
+### Electron headers (#369)
+
+Every thin-app build also compiles `better-sqlite3` against Electron's headers, which go
+into the addon every packaged app loads in its main process. `@electron/rebuild` would
+have node-gyp download `node-v<electron>-headers.tar.gz` (and, on Windows,
+`win-x64/node.lib`) from `https://www.electronjs.org/headers` and check them only against
+the `SHASUMS256.txt` served beside them, and the `electron` package's `checksums.json`
+does not list them. So each profile pins them as `electronHeaders`: the tarball's archive
+name, its `node_headers` root, its URL and SHA-256, plus `importLibraries.win32-x64` (URL
+and SHA-256 of `node.lib`) in `release/windows-inputs.json`. The validators tie the
+archive name and every URL to `electron.version`, so an Electron bump that leaves this pin
+behind fails before anything is built, and a profile without it names the missing pin.
+
+`scripts/app-dependencies.mjs` downloads the tarball once into a private
+`.electron-headers-*` folder beside the stage (following the server's redirect to
+`artifacts.electronjs.org`; the digest, not the host, vouches for the bytes), checks its
+SHA-256, lists it (one `node_headers` root, no unsafe or duplicate paths), unpacks it,
+and refuses anything but plain files and folders, a tree that differs from the listing,
+missing `include/node` files (`common.gypi`, `config.gypi`, `node_version.h`, `node.h`,
+`node_api.h`, `v8.h`) or a `config.gypi` that does not say `built_with_electron`. On
+Windows it puts the pinned `node.lib` at `Release/node.lib`, where node-gyp links a
+`--nodedir` Release build. It then runs `@electron/rebuild` with `npm_config_nodedir` set
+to that folder and the node-gyp dist-url set to `https://electron-headers.invalid`, so a
+build that stopped using the nodedir cannot fetch headers, refuses to start while the
+environment sets anything node-gyp would read as another nodedir, dist-url, tarball,
+devdir, target or runtime, or that would change how it installs headers
+(`npm_config_nodedir`, `npm_config_dist_url`, `npm_config_disturl`,
+`npm_config_tarball`, `npm_config_devdir`, `npm_config_target`, `npm_config_runtime`,
+`npm_config_ensure`, `npm_config_force_process_config`, any
+`npm_package_config_node_gyp_*`, in any case), and checks afterwards that
+better-sqlite3's `build/config.gypi` names exactly that nodedir. That last check is what
+fails a build whose nodedir stopped reaching node-gyp while `~/.electron-gyp/<version>`
+holds cached headers (`package:app` fills it): node-gyp would use those unverified
+headers without touching the network, so the unreachable dist-url alone would not stop it. The build log carries
+both lines (`app-dependencies: compiling … at nodedir …` and `… configured better-sqlite3
+against nodedir …`). The development `npm run package:app` path is not a release and
+still lets node-gyp fetch the headers.
+
+When bumping Electron, fetch the new version's tarball and `win-x64/node.lib`, hash them,
+compare both with `https://www.electronjs.org/headers/v<version>/SHASUMS256.txt`, and
+update `electronHeaders` in all three profiles (and the Linux packaging inputs' pinned
+SHA-256 of `release/linux-inputs.json`):
+
+```sh
+v=43.8.4
+curl -fsSLO "https://www.electronjs.org/headers/v$v/node-v$v-headers.tar.gz"
+curl -fsSL -o node.lib "https://www.electronjs.org/headers/v$v/win-x64/node.lib"
+shasum -a 256 "node-v$v-headers.tar.gz" node.lib
+curl -fsSL "https://www.electronjs.org/headers/v$v/SHASUMS256.txt" | grep -E ' (node-v[0-9.]+-headers\.tar\.gz|win-x64/node\.lib)$'
+```
+
 ### Node 24.22.0 ends the #135 compatibility hold
 
 Portable runtimes use **Node 24.22.1**, the October 2026 security release, which the pinned
@@ -1055,6 +1106,18 @@ Rosetta (macos-15, arch -x86_64): Run 1 --verify: PASS    Run 2: PASS    Run 3: 
   pre-publication signing failure. Recover only from the corrected source as `v1.0.1`;
   never move, replace, or delete `v1.0.0`.
 - A failure before publication creates no GitHub Release.
+- The draft request names only the existing tag, never `target_commitish`. With a
+  `target_commitish`, GitHub checks whether the token could create a ref at that commit,
+  which needs workflow write permission once main's `.github/workflows` files differ from
+  the tagged commit's. v2.1.0's first publish failed that way with `403 Resource not
+  accessible by integration`, after a workflow change merged between tag and publish. The
+  tag itself is proven at the source commit (`check_remote_tag`) just before the draft is
+  created and again before publication.
+- The protected workflow runs from main's copy of its YAML (a `workflow_run` workflow), and
+  "Re-run failed jobs" reuses the original run's copy. To pick up a fix to the publish job,
+  re-run the tag's "Multi-platform release inputs" run instead: its completion starts a
+  fresh protected run on main's YAML, which signs, notarizes and publishes again from the
+  same tag.
 - Draft creation uses the Releases API response directly; no second tag lookup is trusted
   to discover ownership. Its private machine marker binds schema, tag, source commit/tree,
   producer run ID/attempt, and the aggregate inventory digest. Cleanup GETs only that

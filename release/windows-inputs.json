@@ -34,5 +34,17 @@
     "modulesAbi": "148",
     "packagerVersion": "20.3.0",
     "rebuildVersion": "4.2.0"
+  },
+  "electronHeaders": {
+    "archive": "node-v43.8.4-headers.tar.gz",
+    "root": "node_headers",
+    "url": "https://www.electronjs.org/headers/v43.8.4/node-v43.8.4-headers.tar.gz",
+    "sha256": "cccb253b87b50b5957d8bab8c80abaca744cae779a5aba8e4184fbcc087c9dbb",
+    "importLibraries": {
+      "win32-x64": {
+        "url": "https://www.electronjs.org/headers/v43.8.4/win-x64/node.lib",
+        "sha256": "fc79cff84e32422258435de641f9f89aa121584c54ea0a34c4a29b9a0885a8e1"
+      }
+    }
   }
 }

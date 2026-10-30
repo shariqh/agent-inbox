@@ -11,6 +11,7 @@ on:
       - "package.json"
       - "package-lock.json"
       - "release/linux-inputs.json"
+      - "scripts/app-dependencies.mjs"
       - "scripts/archive-tree.mjs"
       - "scripts/build-linux-thin-app.mjs"
       - "scripts/build-thin-app.mjs"

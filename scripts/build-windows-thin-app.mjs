@@ -149,6 +149,8 @@ export async function buildWindowsThinApp({
       stageRoot,
       npmCli,
       electronVersion: inputs.electron.version,
+      // the headers reviewed with this Electron, never ones node-gyp would fetch (#369)
+      electronHeaders: inputs.electronHeaders,
       arch: 'x64',
       env: {
         ...process.env,

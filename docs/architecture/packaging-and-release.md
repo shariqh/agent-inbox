@@ -80,6 +80,11 @@ These landed after v1 and still hold invariants; the release history itself is i
   `ic`). `test/release-pipeline.test.ts` pins all of it, `macos-package.yml` runs
   `test/app-dependencies.test.ts` under the release Node, and `ci.yml` keeps its
   prebuilds.
+  *(#369)* The thin-app builders compile it only against the Electron headers tarball
+  (and Windows `node.lib`) pinned by SHA-256 in each profile's `electronHeaders`, unpacked
+  by `scripts/app-dependencies.mjs` into a private nodedir, with node-gyp's dist-url at an
+  unresolvable host and header overrides in the environment refused; the validators tie
+  the pin's URLs to `electron.version`, so every Electron bump moves it too.
 - **Portable release runtime** *(#74 Layer 1)* — the app may additionally embed a Node 24
   payload staged outside the Electron dependency tree: `darwin-arm64` alone since #296,
   which builds the macOS app for Apple silicon only (`darwin-x64` too through 1.x-last).

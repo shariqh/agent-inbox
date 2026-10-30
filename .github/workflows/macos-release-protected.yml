@@ -1419,8 +1419,12 @@ jobs:
           writeFileSync(publicMarkerPath, publicMarkerText)
           writeFileSync(finalNotesPath, `${humanNotes}\n\n${publicMarkerText}\n`)
           writeFileSync(requestPath, `${JSON.stringify({
+            // No target_commitish: the tag already exists and check_remote_tag has just proven
+            // it names this source commit, so GitHub would ignore it. Sending it makes GitHub
+            // check whether this token could create a ref at that commit, which needs workflow
+            // write permission once main's workflow files differ from the tagged commit's (a
+            // 403 on v2.1.0 after a workflow change landed between tag and publish).
             tag_name: tag,
-            target_commitish: sourceCommit,
             name: title,
             body: stagingMarkerText,
             draft: true,

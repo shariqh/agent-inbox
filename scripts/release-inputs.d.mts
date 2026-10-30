@@ -10,6 +10,20 @@ export function requireString(value: unknown, field: string, pattern?: RegExp): 
 export function validateNodeReleaseInputs<T>(node: T, runtimeKeys: readonly string[]): T
 export function validateElectronReleaseInputs<T>(electron: T, fields: readonly string[]): T
 
+export type ElectronHeaders = {
+  archive: string
+  root: string
+  url: string
+  sha256: string
+  importLibraries?: Record<string, { url: string, sha256: string }>
+}
+export const ELECTRON_HEADERS_BASE_URL: string
+export const ELECTRON_HEADERS_ROOT: string
+export function electronHeadersIdentity(version: string): { archive: string, root: string, url: string }
+export function electronImportLibraryUrl(version: string, key: string): string
+export function requireElectronHeadersPin(value: unknown): void
+export function validateElectronHeaders<T>(headers: T, version: string, importLibraryKeys?: readonly string[]): T
+
 export type RuntimeKey = (typeof RUNTIME_KEYS)[number]
 export type ReleaseInputs = {
   schema: 1
@@ -36,6 +50,7 @@ export type ReleaseInputs = {
     osxSignVersion: string
     dmgVersion: string
   }
+  electronHeaders: ElectronHeaders
 }
 
 export function validateReleaseInputs(value: unknown): ReleaseInputs
@@ -60,4 +75,5 @@ export function downloadArchive(options: {
   destination: string
   expectedSha256: string
   fetchImpl?: typeof fetch
+  followRedirects?: boolean
 }): Promise<string>

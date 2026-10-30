@@ -1,3 +1,4 @@
+import type { ElectronHeaders } from './release-inputs.mjs'
 import { LINUX_RUNTIME_KEYS } from './runtime-targets.mjs'
 
 export const DEFAULT_LINUX_RELEASE_INPUTS: string
@@ -42,6 +43,7 @@ export type LinuxReleaseInputs = {
     packagerVersion: string
     rebuildVersion: string
   }
+  electronHeaders: ElectronHeaders
 }
 export function validateLinuxReleaseInputs(value: unknown): LinuxReleaseInputs
 export function loadLinuxReleaseInputs(path?: string): LinuxReleaseInputs

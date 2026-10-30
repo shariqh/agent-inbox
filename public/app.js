@@ -3128,6 +3128,9 @@ function paintAmbient() {
   renderDashboardAmbient(dashboard, { forced: forcedAmbient })
   paintTabCounts(g, boards)
   paintLaterSectionHint()
+  // #407: a poll held back by a draft, a press or a scroll still ends a stale
+  // hold line; it writes in place and builds the deck only while held
+  paintTriageHold()
   return { agents, g, boards, archived, live, dashboard }
 }
 
@@ -3213,6 +3216,7 @@ function frameInputs() {
   return [
     ...lastData.reads, JSON.stringify(lastData.closed), navigationKey(), openRowId,
     focusSession, laneFilters.project, laneFilters.agent, outsideChanges, liveVersion, fileLinksCopy(), Boolean(linkFileActions()),
+    triageHeld,
     meshView, meshView?.lens(),
   ]
 }
@@ -3258,9 +3262,14 @@ function render() {
   const plansHeaderFocusId = activeFocusElement()?.closest?.('#boards .tab-header [id]')?.id ?? null
   pagedFocusId = pagedFocus?.id ?? null
   // a rebuilt unsent response keeps the control a keyboard user is on (#321)
-  const recoveryControl = activeFocusElement()?.closest?.('.stale-draft-line[data-recovery-line] button') ?? null
+  const recoveryControl = activeFocusElement()?.closest?.('.stale-draft-line[data-recovery-line] button')
+    ?? (activeFocusElement()?.matches?.('.stale-draft-line[data-recovery-line]') ? activeFocusElement() : null)
   draftRecoveryFocusControl = recoveryControl
-    ? { line: recoveryControl.closest('.stale-draft-line').dataset.recoveryLine, label: recoveryControl.textContent }
+    ? {
+        line: recoveryControl.closest('.stale-draft-line').dataset.recoveryLine,
+        // null: the line itself, as the Review queue's hold line focuses it (#407)
+        label: recoveryControl.matches('button') ? recoveryControl.textContent : null,
+      }
     : null
   if (activeFocusElement()?.closest?.('.stale-drafts-fold')) draftRecoveryFocusPending = true
   reconcileDraftOwners()
@@ -3441,16 +3450,132 @@ function restoreTriageReturnFocus(bookmark) {
   target?.focus({ preventScroll: true })
 }
 
-function openTriage() {
-  if (hasDraftRecovery()) {
-    requestDraftRecovery()
-    restoreDraftRecoveryFocus()
+// Issue #407: the unsent responses that hold the Review queue back. The hold
+// exists so an unsent response is never hidden behind a deck that asks for the
+// same target (bbc3d886): the deck would offer a second editor for an ask whose
+// earlier answer still waits in the unsent responses, and a row recovery on the
+// row's current revision is even copied into the deck's own editor. Only an
+// entry whose target the deck shows can do that: a question recovery or Note
+// attempt whose open question is in the deck, and a row recovery whose row is
+// in the deck on the same action (same revision, or same action_version when
+// the entry recorded one). Entries for a closed, gone or since-changed target
+// (most "this question is closed" / "this action changed" entries) never meet
+// the deck, so they stay listed and the queue opens.
+function heldDraftRecoveries(deck = buildDeck()) {
+  const questions = new Set(deck.filter((entry) => entry.type === 'q').map((entry) => entry.id))
+  const rows = new Map(deck.filter((entry) => entry.type === 'row')
+    .map((entry) => [entry.rowId, currentRow(entry.rowId)]))
+  const held = []
+  for (const [key, draft] of Object.entries(staleItemDrafts)) {
+    if (questions.has(draft.itemId)) held.push({ line: key })
+  }
+  for (const [key, draft] of Object.entries(staleRowDrafts)) {
+    const owner = rows.get(draft.rowId)
+    if (!owner) continue
+    const inline = owner.row.revision === draft.revision
+    const sameAction = draft.actionVersion != null && draft.actionVersion === owner.row.action_version
+    if (inline || sameAction) {
+      held.push({
+        line: key,
+        inline: inline ? { rowId: draft.rowId, revision: draft.revision, project: owner.board.project } : null,
+      })
+    }
+  }
+  for (const [id, draft] of Object.entries(itemNoteDrafts)) {
+    if (!draft.pending && questions.has(id)) held.push({ line: `note:${id}` })
+  }
+  return held
+}
+
+// Set when the Review queue was held back, so the Inbox header says why; it
+// lasts until the queue opens, the held entries are gone, or the human leaves
+// the Inbox.
+let triageHeld = false
+
+function triageHoldText(count) {
+  return count === 1
+    ? 'Finish or clear the 1 unsent response first.'
+    : `Finish or clear the ${count} unsent responses first.`
+}
+
+// Writes the hold line in the Needs-you header, which is never rebuilt, so a
+// Clear can update it even while the list's own rebuild is held back.
+function paintTriageHold() {
+  const count = triageHeld ? heldDraftRecoveries().length : 0
+  if (!count) triageHeld = false
+  const hold = needsYouHeaderNode?.querySelector('.triage-hold')
+  if (!hold) return
+  const text = hold.querySelector('.triage-hold-text')
+  const message = count ? triageHoldText(count) : ''
+  if (text.textContent !== message) text.textContent = message
+  const show = hold.querySelector('.triage-hold-show')
+  const label = count === 1 ? 'Show it' : 'Show them'
+  if (show.textContent !== label) show.textContent = label
+  // hiding the focused Show would drop focus to <body>
+  const hadFocus = !count && !show.hidden && document.activeElement === show && document.hasFocus()
+  show.hidden = !count
+  if (hadFocus) {
+    const next = document.querySelector('.stale-drafts-fold summary') ?? document.querySelector('.triage-btn')
+    next?.focus({ preventScroll: true })
+  }
+  hold.classList.toggle('active', Boolean(count))
+}
+
+function holdTriage() {
+  triageHeld = true
+  // nothing passive moves focus to the off-screen fold; the hold line does
+  draftRecoveryFocusPending = false
+  if (triageDeck) closeTriage({ restoreFocus: false })
+  if (missionBoardId) closeMission({ restoreFocus: false })
+  if (relayOpen) closeRelay()
+  selectTab('needsYou', { paint: false })
+  forceRender()
+  paintTriageHold()
+  const show = needsYouHeaderNode?.querySelector('.triage-hold-show')
+  if (show && !show.hidden && document.hasFocus()) {
+    show.focus({ preventScroll: true })
+    show.closest('.triage-hold')?.scrollIntoView({ behavior: motion.scrollBehavior(), block: 'nearest' })
+  }
+}
+
+// The hold line's control: an explicit navigation, so it reveals and focuses
+// the first held response (#407), never through passive focus restoration.
+function revealHeldDraft() {
+  const first = heldDraftRecoveries()[0]
+  if (!first) {
+    paintTriageHold()
+    document.querySelector('.triage-btn')?.focus({ preventScroll: true })
     return
   }
+  if (first.inline) {
+    requestDraftRecovery(first.inline)
+    draftRecoveryFocusPending = false
+  }
+  forceRender()
+  const target = (first.inline
+    ? needsYouRowEl(first.inline.rowId)?.querySelector('.reply-input[data-recovered-draft="1"]')
+    : null)
+    ?? document.querySelector(`.stale-drafts-fold .stale-draft-line[data-recovery-line="${CSS.escape(first.line)}"]`)
+    ?? document.querySelector('.stale-drafts-fold summary')
+  if (!target) return
+  revealDetailsAncestors(target)
+  revealControl(target, document.getElementById('needsYou'))
+  ;(target.closest('.nrow') ?? target).scrollIntoView({ behavior: motion.scrollBehavior(), block: 'center' })
+  target.focus({ preventScroll: true })
+}
+
+function openTriage() {
+  const entries = buildDeck()
+  if (heldDraftRecoveries(entries).length) {
+    holdTriage()
+    return
+  }
+  triageHeld = false
+  paintTriageHold()
   triageReturnFocus = captureTriageReturnFocus()
   if (relayOpen) closeRelay()
   if (missionBoardId) closeMission({ restoreFocus: false })
-  triageDeck = { entries: buildDeck(), index: 0 }
+  triageDeck = { entries, index: 0 }
   renderTriage()
   document.querySelector('#lightbox .lb-panel')?.focus({ preventScroll: true })
 }
@@ -4822,6 +4947,7 @@ function selectTab(id, { paint = true } = {}) {
   archivedLookup = null
   if (id !== 'done') historyTabPinned = false
   activeTab = id
+  if (id !== 'needsYou') triageHeld = false
   for (const t of document.querySelectorAll('#tabs .tab')) {
     t.setAttribute('aria-selected', String(t.dataset.tab === id))
     t.tabIndex = t.dataset.tab === id ? 0 : -1 // roving tabindex (spec §13)
@@ -6181,6 +6307,7 @@ function syncNeedsYouHeader(bar) {
   changed.disabled = !lastVisitAt
   const sort = bar.querySelector('.queue-sort select')
   if (sort.value !== askSort) sort.value = askSort
+  paintTriageHold()
 }
 
 function appendSortOptions(select) {
@@ -6240,7 +6367,18 @@ function needsYouHeader() {
   const tri = btn('Review queue', openTriage, 'review')
   tri.className = 'triage-btn'
   tools.appendChild(tri)
-  bar.append(filters, tools)
+  // #407: why the Review queue did not open, in a polite live region that is
+  // always in the document, so a new message is announced.
+  const hold = document.createElement('div')
+  hold.className = 'triage-hold'
+  const holdText = document.createElement('span')
+  holdText.className = 'triage-hold-text'
+  holdText.setAttribute('role', 'status')
+  const holdShow = btn('Show it', revealHeldDraft)
+  holdShow.className = 'triage-hold-show'
+  holdShow.hidden = true
+  hold.append(holdText, holdShow)
+  bar.append(filters, tools, hold)
   needsYouHeaderNode = bar
   syncNeedsYouHeader(bar)
   return bar
@@ -6531,10 +6669,18 @@ function renderOrphanedDrafts(host) {
   summary.tabIndex = 0
   summary.textContent = `unsent responses (${entries.length})`
   fold.appendChild(summary)
+  // #407: what the two buttons do, so Clear is not a guess
+  const help = document.createElement('p')
+  help.className = 'stale-drafts-help'
+  help.textContent = entries.some((entry) => entry.retry)
+    ? 'Retry sends a response again; Clear discards it for good.'
+    : 'Clear discards a response for good.'
+  fold.appendChild(help)
   for (const entry of entries) {
     const line = document.createElement('div')
     line.className = 'stale-draft-line'
     line.dataset.recoveryLine = entry.id
+    line.tabIndex = -1 // the Review queue's hold line can take the human here (#407)
     if (entry.textClass) {
       const text = document.createElement('span')
       text.className = entry.textClass
@@ -6561,10 +6707,19 @@ function renderOrphanedDrafts(host) {
         forceRender()
         return
       }
+      // a keyboard user keeps a place in the list rather than <body> (#407)
+      const hadFocus = line.contains(document.activeElement) && document.hasFocus()
+      let next = line.nextElementSibling
+      while (next && !next.matches('.stale-draft-line')) next = next.nextElementSibling
       line.remove()
       const remaining = fold.querySelectorAll('.stale-draft-line').length
       if (remaining) summary.textContent = `unsent responses (${remaining})`
       else fold.remove()
+      if (hadFocus) {
+        const target = next ?? (fold.isConnected ? summary : null) ?? document.querySelector('.triage-btn')
+        target?.focus({ preventScroll: true })
+      }
+      paintTriageHold()
       renderIfIdle()
     })
     clear.className = 'undo-btn'
@@ -7663,9 +7818,11 @@ function restoreDraftRecoveryFocus() {
   const line = control
     ? document.querySelector(`.stale-drafts-fold .stale-draft-line[data-recovery-line="${CSS.escape(control.line)}"]`)
     : null
-  const sameControl = line
-    ? [...line.querySelectorAll('button')].find((button) => button.textContent === control.label && !button.disabled) ?? null
-    : null
+  const sameControl = line && control.label === null
+    ? line
+    : line
+      ? [...line.querySelectorAll('button')].find((button) => button.textContent === control.label && !button.disabled) ?? null
+      : null
   const target = visibleInline ?? sameControl ?? document.querySelector('.stale-drafts-fold summary')
   if (!target) return false
   target.focus({ preventScroll: true })

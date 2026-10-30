@@ -267,7 +267,11 @@ after your last edit and never reach the hub or an agent until you send them.
 Nothing is sent for you. A draft whose request is unchanged comes back in its
 card. One whose request changed meanwhile (answered elsewhere, closed, or a plan
 row with a new action), or whose project you closed, waits under **unsent
-responses** with the reason. If you had already sent it and no answer came back,
+responses** with the reason. **Retry** sends it again and **Clear** discards it for good.
+While one of these is for a question or plan step the Review queue would show, the
+queue waits and the Inbox says "Finish or clear the 1 unsent response first", with
+a **Show it** button; one for a question or step that has since closed or moved on
+never holds the queue. If you had already sent it and no answer came back,
 it says the send was not confirmed rather than that it was never sent. When you
 send or retry such a response, the question is checked first: if it already holds
 exactly your answer, nothing is sent again; if its answer changed since, yours is

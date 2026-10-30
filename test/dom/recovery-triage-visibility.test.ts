@@ -51,10 +51,14 @@ describe('draft recovery visibility from Review queue', () => {
     expect(document.activeElement).toBe(fold?.querySelector('summary'))
     expect(lightbox.querySelector('.lb-count')?.textContent).not.toBe('all clear')
 
+    // #407: its row is gone, so nothing in the deck can meet it: the queue
+    // opens, and the response stays listed behind it
     click(buttonLabelled('Review queue'))
-    expect(lightbox.hidden).toBe(true)
-    expect(document.activeElement).toBe(fold?.querySelector('summary'))
-    click(buttonLabelled('Clear', fold))
+    expect(lightbox.hidden).toBe(false)
+    expect(document.querySelector('.stale-drafts-fold')?.textContent).toContain('Preserve triage response')
+    click(lightbox.querySelector('.lb-close'))
+    await settle()
+    click(buttonLabelled('Clear', document.querySelector('.stale-drafts-fold')!))
     await settle()
     expect(document.querySelector('.stale-drafts-fold')).toBeNull()
   })
@@ -146,19 +150,24 @@ describe('draft recovery visibility from Review queue', () => {
     expect(recovered?.value).toBe('Retry this exact action')
     expect(document.activeElement).toBe(recovered)
 
+    // #407: the row is in the deck on the same revision, so the queue is held,
+    // the header says why, and its control takes the human to the response
     click(buttonLabelled('Review queue'))
     expect(lightbox.hidden).toBe(true)
-    expect(document.activeElement).toBe(recovered)
+    expect(document.querySelector('.triage-hold-text')?.textContent)
+      .toBe('Finish or clear the 1 unsent response first.')
+    click(buttonLabelled('Show it'))
+    expect(document.activeElement).toBe(answerInput(target.id))
+    expect(answerInput(target.id)?.value).toBe('Retry this exact action')
 
     click(sendButton(target.id))
     await settle()
     expect(getBoard(db, 'alpha', 'Shared launch')!.rows[0]!.annotation).toBe('Retry this exact action')
-    click(buttonLabelled('Review queue'))
-    expect(lightbox.hidden).toBe(true)
-    click(buttonLabelled('Clear', document.querySelector('.stale-drafts-fold')!))
-    await settle()
+    expect(document.querySelector('.triage-hold-text')?.textContent).toBe('')
+    // only the removed row's response is left, and the deck cannot meet it
     click(buttonLabelled('Review queue'))
     expect(lightbox.hidden).toBe(false)
+    expect(document.querySelector('.stale-drafts-fold')?.textContent).toContain('Unrelated removed recovery')
   })
 
   it('opens a closed deferred fold before focusing its same-revision recovery', async () => {

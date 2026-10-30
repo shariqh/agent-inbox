@@ -384,6 +384,7 @@ body.settings-open .floating-search { opacity: .32; }
 .write-error { font-size: 12px; color: var(--app-danger); margin-left: 8px; }
 .stale-draft { margin: 5px 0 0; }
 .stale-drafts-fold { opacity: .85; }
+.stale-drafts-help { margin: 2px 8px 4px; font-size: 12px; color: var(--app-muted); }
 .stale-draft-line { display: flex; align-items: center; gap: 8px; padding: 5px 8px; font-size: 12px; color: color-mix(in srgb, var(--app-danger) 70%, var(--app-text)); }
 /* what an unsent response's Retry would replace (#321) */
 .replace-notice { font-weight: 600; }
@@ -1323,6 +1324,11 @@ body:has(.nrow[data-open="1"]) .inspector-empty { display: none; }
 .tab-header { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 7px; margin: 0 0 14px; padding-bottom: 12px; border-bottom: 1px solid var(--app-border); }
 .queue-filter-group, .queue-tool-group { display: flex; min-width: 0; align-items: center; gap: 7px; }
 .queue-tool-group { justify-content: flex-end; }
+/* #407: why the Review queue did not open. Out of sight but still in the
+   accessibility tree while empty, so its live region announces a new message. */
+.triage-hold { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; font-size: 12.5px; color: var(--app-text); }
+.triage-hold:not(.active) { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.triage-hold-show { padding: 4px 9px; border: 1px solid var(--app-border); border-radius: 8px; background: transparent; color: inherit; font: inherit; font-weight: 600; cursor: pointer; }
 .header-toggle, .triage-btn, .relay-btn {
   padding: 6px 10px;
   border: 1px solid var(--app-border);

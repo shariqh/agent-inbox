@@ -212,7 +212,8 @@ describe('motion foundation in public/style.css (#302)', () => {
   it('scrolls through the motion controller instead of a literal smooth behaviour', () => {
     expect(appJs).not.toMatch(/behavior:\s*['"\x60]smooth/)
     const scrolls = appJs.match(/scrollIntoView\(\{ behavior: [^,}]+/g) ?? []
-    expect(scrolls).toHaveLength(3)
+    // deep links, the Plans focus, Plan flow, and #407's hold line and its Show control
+    expect(scrolls).toHaveLength(5)
     for (const call of scrolls) expect(call).toBe('scrollIntoView({ behavior: motion.scrollBehavior()')
   })
 })

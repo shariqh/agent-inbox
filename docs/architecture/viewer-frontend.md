@@ -243,6 +243,32 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   and clearing site data. `test/drafts.test.ts` and `test/dom/durable-drafts.test.ts`
   pin it; the DOM file removes a closed page's unload listeners itself, because jsdom
   keeps every boot's on one window.
+- **An unsent response holds the Review queue back only when the deck would ask for
+  the same thing, and says so (#407).** The hold (bbc3d886) keeps an unsent response
+  from being hidden behind a deck that offers a second editor for its target; a row
+  recovery on the row's current revision is even copied into the deck's own editor.
+  `heldDraftRecoveries(deck)` is the one rule, read by `openTriage` over the deck it
+  is about to open: a question recovery or an unconfirmed Note attempt whose question
+  is in the deck, and a row recovery whose row is in the deck on the same action (the
+  same revision, or the same `action_version` when the entry recorded one). Anything
+  else (a closed, gone or since-advanced target) stays in the unsent responses and
+  the queue opens over it. `hasDraftRecovery()` still guards the viewer-restart
+  reload, which protects every entry. A held queue never moves focus to the
+  off-screen fold: every door (the Dashboard rail's button, the Inbox toolbar's
+  button and `t`) switches to the Inbox and writes "Finish or clear the N unsent
+  response(s) first." into the Needs-you header's polite `role="status"` region,
+  with a Show control that focuses it. That header node is never rebuilt, so
+  `paintTriageHold()` writes it in place (Clear calls it too, even while the list's
+  rebuild is held back); `triageHeld` is in `frameInputs()` and ends when the queue
+  opens, the held entries are gone or the human leaves the Inbox. Show is an
+  explicit navigation: it opens the row (`requestDraftRecovery(target)`) for an
+  inline recovery, then `revealDetailsAncestors`, `revealControl` and a
+  `motion.scrollBehavior()` scroll of the in-flow row or line, and focuses the
+  editor or the line (`tabIndex = -1`, kept across rebuilds by the recovery focus
+  bookmark). The fold says what its buttons do ("Retry sends a response again;
+  Clear discards it for good.", or the Clear half when no entry can retry). Nothing
+  here reaches attention, a badge or the dock. `test/dom/review-queue-hold.test.ts`
+  and `review-queue-hold-key.test.ts` pin it.
 - **An idle tick paints nothing, and the clock still moves (#298).** Rebuilding
   an unchanged page every 3 s cost about 1.3% renderer and 1.5% GPU CPU at idle.
   `load()` calls `renderIfIdle()` unless `pollMaySkipPaint` (`public/poll.js`)

@@ -1080,9 +1080,16 @@ describe('dependencies in Plan flow (slice 2 PR E)', () => {
 
   it('moves focus to a step only from its button: the reveal is never part of a restore path', () => {
     const app = readFileSync(join(REPO, 'public/app.js'), 'utf8')
-    expect(app.match(/revealControl\(/g)).toHaveLength(1)
-    const reveal = app.indexOf('revealControl(')
-    expect(app.lastIndexOf('function focusMissionStep(', reveal)).toBeGreaterThan(app.lastIndexOf('\nfunction ', reveal) - 1)
+    // two explicit navigations call it: this one, and #407's Show control on the
+    // Review queue's hold line, whose only caller is that button
+    expect(app.match(/revealControl\(/g)).toHaveLength(2)
+    const callers = [...app.matchAll(/revealControl\(/g)].map((match) => {
+      const start = app.lastIndexOf('\nfunction ', match.index)
+      return /^\nfunction (\w+)/.exec(app.slice(start))![1]
+    })
+    expect(callers.sort()).toEqual(['focusMissionStep', 'revealHeldDraft'])
+    expect(app.match(/revealHeldDraft\b/g)).toHaveLength(2)
+    expect(app).toContain("btn('Show it', revealHeldDraft)")
     // its one caller is the step button's click listener
     expect(app.match(/focusMissionStep\(/g)).toHaveLength(2)
     expect(app).toMatch(/step\.addEventListener\('click', \(event\) => \{\n\s+event\.stopPropagation\(\)\n\s+focusMissionStep\(step\.dataset\.missionStep\)/)

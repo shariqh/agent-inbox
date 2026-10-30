@@ -1,0 +1,1 @@
+../../docs/architecture/setup-and-installers.md

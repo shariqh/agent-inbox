@@ -290,7 +290,7 @@ describe('#36 · the mark survives the agent, and only a status change retires t
 // typed and no agent chose deliberately: `handled_seen_by` / `annotation_seen_by`
 // come from inferAgent(clientName), which returns an unrecognised MCP client name
 // VERBATIM (src/infer.ts) — so it is whatever string a client declared itself as.
-// CLAUDE.md designates that class attacker-influenced, and removing the esc() on
+// docs/architecture/viewer-frontend.md designates that class attacker-influenced, and removing the esc() on
 // it killed ZERO of 1092 tests. Pinning the escape, not the wording.
 describe('#36 · the delivery attribution escapes the client-declared agent name', () => {
   it('renders a hostile agent name as text, injecting no element and running no handler', async () => {

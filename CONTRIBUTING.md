@@ -91,7 +91,8 @@ npm run build
 ```
 
 Keep changes focused, add regression coverage for behavior changes, and preserve the
-architecture invariants documented in [`CLAUDE.md`](CLAUDE.md). Bug reports should
+architecture invariants documented in [`CLAUDE.md`](CLAUDE.md) and the subsystem docs it
+points to in [`docs/architecture/`](docs/architecture/). Bug reports should
 include reproduction steps, expected behavior, actual behavior, operating system and
 Node version.
 

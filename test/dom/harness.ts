@@ -16,7 +16,7 @@
 //    is bridged onto `createViewer(db).request()`. No port is opened, no store is mocked.
 //  - Fake timers turn the 3s poll into `await pollTick()`.
 //
-// READ THE BLIND-SPOT LIST in CLAUDE.md ("DOM harness — what it can and cannot see")
+// READ THE BLIND-SPOT LIST in docs/architecture/testing.md ("DOM harness — what it can and cannot see")
 // before trusting a passing assertion. In particular: `@media` never matches,
 // `var()` is never resolved, and window/document listeners accumulate across boots
 // within one file.
@@ -506,7 +506,7 @@ export function navigateToHash(hash: string): void {
  * Attach public/style.css as a real <style> (a <link> never loads in jsdom).
  *
  * Only literal lengths and keywords are trustworthy afterwards — see the blind-spot
- * list in CLAUDE.md.
+ * list in docs/architecture/testing.md.
  */
 export function attachStylesheet(): void {
   const css = readPublic('style.css')

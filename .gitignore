@@ -12,8 +12,9 @@ dist/
 # packaged app artifacts
 build/
 out/
-# Claude Code local state
-.claude/
+# Claude Code local state; .claude/rules/ is tracked (#379: path-scoped links to docs/architecture)
+.claude/*
+!.claude/rules/
 # local scratch (not part of the project)
 checkprod.mts
 seed-demo.mjs

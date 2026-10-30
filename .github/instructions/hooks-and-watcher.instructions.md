@@ -1,0 +1,1 @@
+../../docs/architecture/hooks-and-watcher.md

@@ -12,7 +12,7 @@
 //
 // ONE boot on purpose: jsdom's document outlives the module registry, so every
 // extra bootApp() in a file leaves another keydown listener attached and a key
-// press would run in several app.js instances at once (CLAUDE.md, DOM harness).
+// press would run in several app.js instances at once (docs/architecture/testing.md, DOM harness).
 import { describe, it, expect, afterEach } from 'vitest'
 import type Database from 'better-sqlite3'
 import { insertItem, listBoards, upsertBoard } from '../../src/store.js'

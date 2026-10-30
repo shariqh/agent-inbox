@@ -1,0 +1,1 @@
+../../docs/architecture/viewer-frontend.md

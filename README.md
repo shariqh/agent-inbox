@@ -533,8 +533,9 @@ The test suite uses real temporary SQLite databases and real stdio MCP integrati
 round trips. Node 24 is required because this checkout's `better-sqlite3` binding is
 compiled for that ABI.
 
-Before contributing, read [CONTRIBUTING.md](CONTRIBUTING.md) and the architectural
-invariants in [CLAUDE.md](CLAUDE.md).
+Before contributing, read [CONTRIBUTING.md](CONTRIBUTING.md), the architectural
+invariants in [CLAUDE.md](CLAUDE.md), and the subsystem docs in
+[docs/architecture/](docs/architecture/) that it points to.
 
 ## Roadmap
 

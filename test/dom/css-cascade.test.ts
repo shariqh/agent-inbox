@@ -15,7 +15,7 @@
 //     `border: 1px solid color-mix(…)` reads back as borderStyle 'none' /
 //     borderTopWidth 'medium', so asserting the `.row-expand { border: none }` half of
 //     that same historical bug would pass VACUOUSLY on the buggy sheet.
-// See CLAUDE.md, "DOM harness — what it can and cannot see".
+// See docs/architecture/testing.md, "DOM harness — what it can and cannot see".
 import { describe, it, expect, afterEach } from 'vitest'
 import type Database from 'better-sqlite3'
 import { upsertBoard } from '../../src/store.js'
@@ -65,7 +65,7 @@ describe('the blocked-row Answer CTA keeps its designed geometry', () => {
     expect(s.padding).toBe('1px 10px')
     // NOT fontWeight. `.answer-btn` declares `font: inherit; … font-weight: 600`, and
     // jsdom reads that back as 'normal' — the shorthand clobbers the later longhand.
-    // Measured, not assumed; see the blind-spot list in CLAUDE.md.
+    // Measured, not assumed; see the blind-spot list in docs/architecture/testing.md.
   })
 
   it('renders a .row-expand for the non-blocked row it shares a table with', async () => {

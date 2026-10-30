@@ -2534,7 +2534,7 @@ describe('per-row annotation delivery (#37)', () => {
     expect(board().rows[0]!.annotation_unseen).toBe(false)
   })
 
-  // upsertBoard's contract (CLAUDE.md): the human's per-row notes are sacred and
+  // upsertBoard's contract (docs/architecture/delivery-and-responses.md): the human's per-row notes are sacred and
   // survive a full re-upsert. #37 adds two more columns that must survive with them
   // — a re-upsert that reset the stamp would re-attribute the note to whoever
   // polled next and reset the "delivered 3h ago" age the human reads as evidence.

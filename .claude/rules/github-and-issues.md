@@ -1,0 +1,1 @@
+../../docs/architecture/github-and-issues.md

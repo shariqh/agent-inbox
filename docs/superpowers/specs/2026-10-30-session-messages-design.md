@@ -3,7 +3,7 @@
 **Date:** 2026-10-30 (revised after design review, same day)
 **Status:** Approved to build after changes. Three questions for the owner are in §11.
 **Milestone:** v2.2.0. Closes #411 when the third PR lands.
-**Scope of this PR:** this document only. No source or test changes.
+**Scope:** this document lands with PR 1 (#417), which also builds §9's PR 1.
 
 ---
 
@@ -60,7 +60,8 @@
   omits it keeps it, like `server_version`. A send to a session without it is refused with
   `session_cannot_receive`. A flag rather than a semver comparison, because a checkout reports
   `2.1.0` until the release bump and must still receive in development. `listActivity` serves
-  it as a boolean. `activity` has no snapshot domain, so the column costs nothing there.
+  it as `receives_messages: true` or not at all (never `false`), so the PR 2 UI must read an
+  absent field as false. `activity` has no snapshot domain, so the column costs nothing there.
 
 ## §2 — Storage
 
@@ -108,7 +109,7 @@ test's fixture adds an open, a delivered and a closed message.
 
 | Function | Who | Condition | Moves |
 |---|---|---|---|
-| `sendSessionMessage({id, session, text})` | viewer | `.immediate()`. First looks up `id`: same session and text is a replay and returns `ok` before any other check, so retrying the 20th message, or after the session ended, still succeeds; a different session or text is `id_conflict`. Otherwise: the presence row must be listed, not ended and carry `receives_messages`; the session's open messages must stay within 20 and 8000 UTF-16 units in total with this one; then `INSERT`. Prunes closed messages, and open ones, older than 30 days. | new row |
+| `sendSessionMessage({id, session, text})` | viewer | `.immediate()`. First looks up `id`: same session and text is a replay and returns `ok` before any other check, so retrying the 20th message, or after the session ended, still succeeds; a different session or text is `id_conflict`. Otherwise: the presence row must be listed, not ended and carry `receives_messages`; the session's open messages must stay within 20 and 8000 UTF-16 units in total with this one; then `INSERT`. Every send but a replay first prunes, across the hub, closed messages whose `closed_at` and open ones whose `created_at` is over 30 days old, before the caps are counted. Pruning happens only on a send; nothing deletes on a timer. | new row |
 | `markMessageDelivered(id, session, reader)` | MCP `pending` | `SET delivered_at = COALESCE(delivered_at, now), delivered_by = COALESCE(delivered_by, ?) WHERE id = ? AND session = ? AND status = 'open'`; true only while still open | nothing (restamped) |
 | `ackMessage(id, session, outcome)` | MCP `ack_message` | `SET status = 'acknowledged', outcome = ?, closed_at = now, revision = revision + 1 WHERE id = ? AND session = ? AND status = 'open'` | revision |
 | `withdrawSessionMessage(id, revision)` | viewer | `SET status = 'withdrawn', closed_at = now, revision = revision + 1 WHERE id = ? AND status = 'open' AND revision = ?` | revision |
@@ -191,7 +192,9 @@ servers and ignores messages (the session sees them when it next checks Agent In
 - **Known gap.** A message that arrives during a `stop_hook_active` continuation is baselined by
   that Stop's `watch` and cannot block that `stop`; the next prompt or the next ordinary Stop
   carries it. A session idle longer than the watch window (`AGENT_INBOX_WATCH_SECS`, 29 min)
-  also sees it only then (§11, question 1).
+  also sees it only then (§11, question 1). And a narrow race: `stop` and `watch` are separate
+  processes on the same Stop, so a message sent after `stop` reads the open messages but before
+  `watch` reads its baseline is in neither (milliseconds); the next prompt or Stop carries it.
 - `rewakeSummary` stays "your answer arrived": it is part of `hooksSettingsBlock`, the installed
   shape Setup and `install-hooks.sh` share, and changing a label should not make every install
   need re-applying. The hooks only read; they never stamp delivery or print message text.
@@ -275,9 +278,9 @@ sorting, filters, pagination, keyboard order and the empty state, and would be a
 a badge. Instead the Live drawer ends with one fold, "Not delivered (N)": every open message whose
 session is no longer listed, until the human withdraws it, newest first, 10 shown with "+M more".
 Each has Copy text and Withdraw and reads "Not delivered: this session is no longer running" or
-"Picked up, but the session ended before acknowledging". There is no time window, so nothing
-disappears on its own and the clock never changes the fold (no idle-frame repaint, #298). The
-Live strip names nothing.
+"Picked up, but the session ended before acknowledging". The fold has no time window: the clock
+never changes it (no idle-frame repaint, #298). A message leaves it when the human withdraws it,
+or when §2's 30-day prune, which runs on a later send, deletes it. The Live strip names nothing.
 
 **Reads and paint.** `/api/messages` is one more concurrent poll read through `readSnapshot`,
 with the links-style fallback (404, network error or refused body = no messages, never a failed
@@ -405,4 +408,4 @@ of one per ask plus one per session.
 2. **One Copilot watcher per session for its life** (~40 MB, a read every 5 s, a re-arm turn a
    day). **Recommend:** yes, subject to the PR 3 spikes.
 3. **Acknowledged outcomes after the session ends.** v2.2.0 shows them only in a listed session's
-   history and keeps them 30 days. **Recommend:** a follow-up issue for Just landed and History.
+   history, and a later send prunes them after 30 days. **Recommend:** a follow-up issue for Just landed and History.

@@ -235,13 +235,14 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   (viewer, `POST /api/sessions/:session/messages` with a page-generated lowercase UUID
   and 1–4000 characters) answers an exact replay of an id (same session and text) with
   `ok` BEFORE any other check, so a retry of an unconfirmed send succeeds even past the
-  caps or after the session ended; any other reuse is `id_conflict`. Otherwise the
-  session must be listed (not ended, refreshed within 15 minutes) and its presence must
+  caps or after the session ended; any other reuse is `id_conflict`. Every other send
+  first prunes the hub's closed messages over 30 days past `closed_at` and open ones over
+  30 days past `created_at` (only sends prune; nothing runs on a timer), so month-old open
+  messages never count toward the caps. Then the session must be listed (not ended, refreshed within 15 minutes) and its presence must
   carry `activity.receives_messages = 1`, which only this build's presence writes set
   (an omitted value keeps it, like `server_version`; older servers never name it, so a
   send to one is `session_cannot_receive`), and the session may hold at most 20 open
-  messages and 8000 UTF-16 units of open text. It prunes closed and open messages over 30
-  days old. (2) `markMessageDelivered` stamps `delivered_at`/`delivered_by` with
+  messages and 8000 UTF-16 units of open text. (2) `markMessageDelivered` stamps `delivered_at`/`delivered_by` with
   `COALESCE`, conditioned on `id`, `session` and `status = 'open'`; true means the
   message is still open, so it is safe to hand over. (3) `ackMessage` closes it with a
   1–240 character outcome, conditioned on the same three. (4) `withdrawSessionMessage`

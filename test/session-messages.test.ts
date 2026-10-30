@@ -9,6 +9,9 @@ import {
   markMessageDelivered, openDb, sendSessionMessage, upsertActivity, withdrawSessionMessage,
 } from '../src/store.js'
 import { createViewer } from '../src/viewer.js'
+import { startLocalViewer } from '../src/viewer-network.js'
+import { once } from 'node:events'
+import type { AddressInfo } from 'node:net'
 import { removeScratchDirs, scratchDir } from './scratch.js'
 
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`
@@ -102,6 +105,17 @@ describe('sending a message (store)', () => {
     sendSessionMessage(db, { id: id(3), session: 'mcp-a', text: 'new' })
     expect(listSessionMessages(db)).toEqual({ open: [expect.objectContaining({ id: id(3) })], closed: [] })
   })
+
+  it('prunes before it counts the caps, so month-old open messages never fill a session', () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(Date.parse('2026-09-01T12:00:00Z'))
+    present('mcp-a')
+    for (let n = 1; n <= 20; n++) sendSessionMessage(db, { id: id(n), session: 'mcp-a', text: `old ${n}` })
+    vi.setSystemTime(Date.parse('2026-10-15T12:00:00Z'))
+    present('mcp-a')
+    expect(sendSessionMessage(db, { id: id(21), session: 'mcp-a', text: 'new' })).toMatchObject({ ok: true, replayed: false })
+    expect(listSessionMessages(db).open.map((message) => message.id)).toEqual([id(21)])
+  })
 })
 
 describe('delivery and acknowledgement (store)', () => {
@@ -166,6 +180,21 @@ describe('the viewer’s message routes', () => {
     const sent = await post(app, '/api/sessions/mcp-a/messages', { id: id(1), text: 'Also update the docs.' })
     expect(sent).toMatchObject({ status: 200, json: { ok: true, replayed: false, message: { id: id(1), session: 'mcp-a' } } })
     expect((await post(app, '/api/sessions/mcp-a/messages', { id: id(1), text: 'Also update the docs.' })).json).toMatchObject({ ok: true, replayed: true })
+  })
+
+  it('refuses both writes without a trusted Origin at the network boundary', async () => {
+    present('mcp-a')
+    const server = startLocalViewer(createViewer(db), 0)
+    if (!server.listening) await once(server, 'listening')
+    try {
+      const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
+      const send = (path: string, body: unknown) => fetch(`${base}${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+      expect((await send('/api/sessions/mcp-a/messages', { id: id(1), text: 'hi' })).status).toBe(403)
+      expect((await send(`/api/messages/${id(1)}/withdraw`, { revision: 1 })).status).toBe(403)
+      expect(listSessionMessages(db).open).toEqual([])
+    } finally {
+      await new Promise((resolve) => server.close(resolve))
+    }
   })
 
   it('withdraws by revision, with a 400 for anything but a positive integer', async () => {

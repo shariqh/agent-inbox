@@ -3695,6 +3695,11 @@ export function sendSessionMessage(
     }
     const nowMs = Date.now()
     const now = new Date(nowMs).toISOString()
+    // every send but a replay prunes the hub's month-old messages first, so old
+    // open ones never count toward this session's caps
+    const old = new Date(nowMs - MESSAGE_RETENTION_MS).toISOString()
+    db.prepare(`DELETE FROM session_messages
+                 WHERE (status <> 'open' AND closed_at < ?) OR (status = 'open' AND created_at < ?)`).run(old, old)
     const cutoff = new Date(nowMs - PRESENCE_STALE_MINUTES * 60000).toISOString()
     const presence = db.prepare(`SELECT project, stream, agent, receives_messages FROM activity
                                   WHERE session = ? AND ended_at IS NULL AND updated_at >= ?`)
@@ -3707,9 +3712,6 @@ export function sendSessionMessage(
     if (open.reduce((sum, text) => sum + text.length, 0) + input.text.length > MESSAGE_MAX_OPEN_TEXT) {
       return { ok: false, reason: 'too_much_open' }
     }
-    const old = new Date(nowMs - MESSAGE_RETENTION_MS).toISOString()
-    db.prepare(`DELETE FROM session_messages
-                 WHERE (status <> 'open' AND closed_at < ?) OR (status = 'open' AND created_at < ?)`).run(old, old)
     db.prepare(`INSERT INTO session_messages (id, session, project, stream, agent, text, created_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?)`)
       .run(input.id, input.session, presence.project, presence.stream, presence.agent, input.text, now)

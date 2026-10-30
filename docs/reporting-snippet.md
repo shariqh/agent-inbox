@@ -34,10 +34,11 @@ Call `flag` when:
   longer each time the same question is still unanswered. If the watcher says the human asked
   you to stop waiting, do not re-arm it; their answer still arrives through `pending()` or
   chat. Clients without a returned watcher keep using their native wake
-  path. Also **poll `pending()`** between work steps: it returns `{ items, rows }` — your open questions with `reply` once answered (an
+  path. Also **poll `pending()`** between work steps: it returns `{ items, rows, messages }` — your open questions with `reply` once answered (an
   option label or free text — follow it either way), plus optional `reply_context` when they
   attach extra direction with their answer, **and `rows`: the human's per-row notes on your
-  boards** (see Boards below). Act on both: call `resolve` after handling a question item,
+  boards** (see Boards below), and `messages`: the human's messages to your session (see
+  Messages from the human below). Act on items and rows: call `resolve` after handling a question item,
   passing `expected_response_revision` from that item's `response_revision`,
   and move a board row out of `blocked` after handling its response. `pending()` is the ONE poll —
   everything they have said to you arrives through it. Do

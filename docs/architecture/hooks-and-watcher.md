@@ -116,7 +116,8 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   ever tell the human a message will wake the session. The nudge adds one clause per
   kind; with no messages it is byte-identical to before. A message that arrives during a
   `stop_hook_active` continuation, or after the watch window ends, waits for the next
-  prompt or ordinary Stop.
+  prompt or ordinary Stop, as does one sent in the milliseconds between `stop` reading the
+  open messages and `watch` reading its baseline (separate processes on the same Stop).
 
 ## History (shipped since v1)
 

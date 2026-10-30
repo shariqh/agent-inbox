@@ -4576,10 +4576,10 @@ export function listClosedProjects(db: Database.Database): ClosedProject[] {
 // test/store.test.ts pins the boundary in both directions on a frozen clock.
 //
 // WHY derived rather than deleting the row inside insertItem: insertItem is the
-// one path CLAUDE.md says must never lose a flag, and this way it gains no new
-// write and no new failure mode; there is no window in which the item exists but
-// the un-close has not run yet; and one rule covers boards and every future
-// writer for free.
+// one path that must never lose a flag (CLAUDE.md; docs/architecture/mcp-server.md),
+// and this way it gains no new write and no new failure mode; there is no
+// window in which the item exists but the un-close has not run yet; and one rule
+// covers boards and every future writer for free.
 //
 // created_at and closed_at are both ISO-8601 UTC strings from
 // `new Date().toISOString()` everywhere in this file, so lexicographic `>` is

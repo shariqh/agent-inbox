@@ -14,7 +14,7 @@ server). See [`README.md`](README.md) for the full picture and
 tracking boards).
 
 MCP tools: `flag`, `pending`, `answer`, `resolve`, `register`, `whoami` (items/scope),
-`board_upsert`, `board_row`, `board_get`, `board_archive` (boards) and `status` (live
+`board_upsert`, `board_row`, `board_advance`, `board_get`, `board_archive` (boards) and `status` (live
 presence) — all defined in `src/mcp.ts`.
 
 ## Commands
@@ -74,6 +74,7 @@ One line each; the detail, the reasons and the regressions behind them are in th
 - Closed history (#184) and archived plans (#299) are paged out of the poll; only `load()`
   reads the complete lists. → store-and-snapshots
 - MCP stdout is the protocol channel: no `console.log`, subprocesses capture stdout. → mcp-server
+- Fail-open, never lose a flag: failed inference attributes to `unknown` and still inserts. → mcp-server
 - No network in the MCP process; `prstate`/`issue-poller` stay viewer-only. → overview, github-and-issues
 - `src/shape.ts` trims agent reads only; the viewer never imports it (#42). → mcp-server
 - Human annotations, handled marks and delivery stamps are sacred: upserts never reset them. → delivery-and-responses
@@ -98,7 +99,8 @@ One line each; the detail, the reasons and the regressions behind them are in th
 - Installers are transactional: fd 9 lock, rollback on signals, never quote a host config (#337). → setup-and-installers
 - Installs are granted to the owned viewer window and revoked on navigation (#216). → electron-app
 - Never edit `test/fixtures/shipped-updaters/`; never add a key to `update-preferences.json`. → updates
-- Every shipped `node_modules` is pruned before it is tested, hashed or signed (#291, #292). → packaging-and-release
+- Every shipped `node_modules` is pruned before it is tested, hashed or signed (#291); Electron
+  locales are English-only (#292). → packaging-and-release
 - Mesh is opt-in: off means off (#397). → mesh
 
 ## Conventions

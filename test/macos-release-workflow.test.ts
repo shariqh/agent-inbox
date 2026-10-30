@@ -493,6 +493,13 @@ elif [[ "$1 $2 \${3:-}" == "api --method POST" && "\${4:-}" == repos/*/releases 
   REQUEST="$2" OWNED_RELEASE_STATE="$OWNED_RELEASE_STATE" CREATE_RESPONSE_MISMATCH="$CREATE_RESPONSE_MISMATCH" node <<'NODE'
 const { readFileSync, writeFileSync } = require('node:fs')
 const request = JSON.parse(readFileSync(process.env.REQUEST, 'utf8'))
+// The draft names only the existing tag (#405): any other key, target_commitish above all,
+// fails the job here as GitHub's 403 did.
+const keys = Object.keys(request).sort().join(',')
+if (keys !== 'body,draft,name,prerelease,tag_name') {
+  process.stderr.write('gh: Resource not accessible by integration (HTTP 403)\\n')
+  process.exit(1)
+}
 const release = {
   id: 42,
   tag_name: request.tag_name,
@@ -986,6 +993,23 @@ describe('notarized macOS release workflow', () => {
     expect(publishJob).toContain('for name in "${ASSET_NAMES[@]}"; do')
     expect(publishJob).toContain('cmp "$WORK/release-assets/$name" "$WORK/remote-assets/$name"')
     expect(publishJob).toContain('gh api --method POST "repos/$GH_REPO/releases"')
+    // The draft names only the existing tag: target_commitish would make GitHub check ref
+    // creation at the source commit, which needs workflow write permission once main's
+    // workflow files differ from the tagged commit's (v2.1.0's publish 403). The tag must be
+    // proven at the source commit just before the POST, and again before publication.
+    const createRequest = publishJob.slice(
+      publishJob.indexOf('writeFileSync(requestPath'),
+      publishJob.indexOf('})}\\n`)', publishJob.indexOf('writeFileSync(requestPath')),
+    )
+    expect(createRequest).toContain('tag_name: tag,')
+    expect(createRequest).toContain('draft: true,')
+    expect(createRequest).not.toMatch(/^\s*target_commitish:/m)
+    const createAt = publishJob.indexOf('gh api --method POST "repos/$GH_REPO/releases"')
+    expect(publishJob.lastIndexOf('\n          check_remote_tag\n', createAt)).toBeGreaterThan(
+      publishJob.indexOf('could not prove release $RELEASE_TAG is absent'),
+    )
+    expect(publishJob.indexOf('\n          check_remote_tag\n', createAt))
+      .toBeLessThan(publishJob.indexOf('PUBLICATION_ATTEMPTED=true'))
     expect(publishJob).toContain('producerRunAttempt')
     expect(publishJob).toContain('inventorySha256')
     expect(publishJob).toContain('agent-inbox-release-public')

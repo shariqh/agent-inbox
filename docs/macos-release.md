@@ -1106,6 +1106,18 @@ Rosetta (macos-15, arch -x86_64): Run 1 --verify: PASS    Run 2: PASS    Run 3: 
   pre-publication signing failure. Recover only from the corrected source as `v1.0.1`;
   never move, replace, or delete `v1.0.0`.
 - A failure before publication creates no GitHub Release.
+- The draft request names only the existing tag, never `target_commitish`. With a
+  `target_commitish`, GitHub checks whether the token could create a ref at that commit,
+  which needs workflow write permission once main's `.github/workflows` files differ from
+  the tagged commit's. v2.1.0's first publish failed that way with `403 Resource not
+  accessible by integration`, after a workflow change merged between tag and publish. The
+  tag itself is proven at the source commit (`check_remote_tag`) just before the draft is
+  created and again before publication.
+- The protected workflow runs from main's copy of its YAML (a `workflow_run` workflow), and
+  "Re-run failed jobs" reuses the original run's copy. To pick up a fix to the publish job,
+  re-run the tag's "Multi-platform release inputs" run instead: its completion starts a
+  fresh protected run on main's YAML, which signs, notarizes and publishes again from the
+  same tag.
 - Draft creation uses the Releases API response directly; no second tag lookup is trusted
   to discover ownership. Its private machine marker binds schema, tag, source commit/tree,
   producer run ID/attempt, and the aggregate inventory digest. Cleanup GETs only that

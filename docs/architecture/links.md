@@ -1,13 +1,14 @@
 ---
 paths:
   - "public/links.js"
+  - "public/source.js"
   - "public/link-open.js"
   - "public/link-strip.js"
   - "public/link-settings.js"
   - "public/structured-text.js"
   - "electron/link-open.cjs"
   - "electron/link-preferences.cjs"
-applyTo: "public/links.js,public/link-open.js,public/link-strip.js,public/link-settings.js,public/structured-text.js,electron/link-open.cjs,electron/link-preferences.cjs"
+applyTo: "public/links.js,public/source.js,public/link-open.js,public/link-strip.js,public/link-settings.js,public/structured-text.js,electron/link-open.cjs,electron/link-preferences.cjs"
 ---
 
 # Links in agent text

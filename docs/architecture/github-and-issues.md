@@ -4,7 +4,8 @@ paths:
   - "src/issue-poller.ts"
   - "src/issue-graph.ts"
   - "public/issue-key.js"
-applyTo: "src/prstate.ts,src/issue-poller.ts,src/issue-graph.ts,public/issue-key.js"
+  - "src/store.ts"
+applyTo: "src/prstate.ts,src/issue-poller.ts,src/issue-graph.ts,public/issue-key.js,src/store.ts"
 ---
 
 # GitHub data: PR state, issue snapshots and dependencies

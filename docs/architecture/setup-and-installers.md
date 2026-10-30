@@ -17,7 +17,8 @@ paths:
   - "public/agents.js"
   - "public/runtimes.js"
   - "public/buildstamp.js"
-applyTo: "scripts/install-agents.sh,scripts/install-hooks.sh,scripts/setup-lock.sh,scripts/runtime-config.mjs,scripts/runtime-payload.mjs,scripts/prune-runtimes.sh,scripts/run-isolated.mjs,scripts/setup-filesystem.cjs,scripts/write-setup-info.mjs,electron/setup-*.cjs,electron/runtime-verify.cjs,src/agent-hosts.ts,src/runtime-inventory.ts,src/stamp.ts,public/agents.js,public/runtimes.js,public/buildstamp.js"
+  - "electron/runtime-targets.cjs"
+applyTo: "scripts/install-agents.sh,scripts/install-hooks.sh,scripts/setup-lock.sh,scripts/runtime-config.mjs,scripts/runtime-payload.mjs,scripts/prune-runtimes.sh,scripts/run-isolated.mjs,scripts/setup-filesystem.cjs,scripts/write-setup-info.mjs,electron/setup-*.cjs,electron/runtime-verify.cjs,src/agent-hosts.ts,src/runtime-inventory.ts,src/stamp.ts,public/agents.js,public/runtimes.js,public/buildstamp.js,electron/runtime-targets.cjs"
 ---
 
 # Setup and installers

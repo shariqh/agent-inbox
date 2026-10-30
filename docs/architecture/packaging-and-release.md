@@ -19,7 +19,10 @@ paths:
   - "electron/windows-app.cjs"
   - "electron/spellcheck-languages.cjs"
   - "release/**"
-applyTo: "scripts/package-app.sh,scripts/package-app-stage.mjs,scripts/prune-node-modules.mjs,scripts/prune-electron-locales.mjs,scripts/build-*.mjs,scripts/stage-*.mjs,scripts/app-dependencies.mjs,scripts/macos-*.mjs,scripts/*windows*.mjs,scripts/*linux*.mjs,scripts/assemble-macos-release.mjs,scripts/release-*.mjs,scripts/runtime-*.mjs,scripts/tree-*.mjs,.github/workflows/**,.github/windows-msi/**,electron/windows-app.cjs,electron/spellcheck-languages.cjs,release/**"
+  - "scripts/notarize-macos.sh"
+  - "scripts/import-apple-signing.sh"
+  - "scripts/native-runtime-adapter.mjs"
+applyTo: "scripts/package-app.sh,scripts/package-app-stage.mjs,scripts/prune-node-modules.mjs,scripts/prune-electron-locales.mjs,scripts/build-*.mjs,scripts/stage-*.mjs,scripts/app-dependencies.mjs,scripts/macos-*.mjs,scripts/*windows*.mjs,scripts/*linux*.mjs,scripts/assemble-macos-release.mjs,scripts/release-*.mjs,scripts/runtime-*.mjs,scripts/tree-*.mjs,.github/workflows/**,.github/windows-msi/**,electron/windows-app.cjs,electron/spellcheck-languages.cjs,release/**,scripts/notarize-macos.sh,scripts/import-apple-signing.sh,scripts/native-runtime-adapter.mjs"
 ---
 
 # Packaging and release

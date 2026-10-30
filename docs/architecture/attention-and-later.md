@@ -5,7 +5,11 @@ paths:
   - "public/badge.js"
   - "public/rail.js"
   - "electron/reply-watch.cjs"
-applyTo: "public/attention.js,public/relay.js,public/badge.js,public/rail.js,electron/reply-watch.cjs"
+  - "src/store.ts"
+  - "src/viewer.ts"
+  - "public/app.js"
+  - "src/watch.ts"
+applyTo: "public/attention.js,public/relay.js,public/badge.js,public/rail.js,electron/reply-watch.cjs,src/store.ts,src/viewer.ts,public/app.js,src/watch.ts"
 ---
 
 # Attention, snooze, pin and the watch stop

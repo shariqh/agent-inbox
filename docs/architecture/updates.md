@@ -5,7 +5,9 @@ paths:
   - "scripts/package-update-trust.mjs"
   - "scripts/macos-release-kind.mjs"
   - "release/update-keys.json"
-applyTo: "electron/update-*.cjs,scripts/update-manifest.mjs,scripts/package-update-trust.mjs,scripts/macos-release-kind.mjs,release/update-keys.json"
+  - ".github/workflows/macos-release*.yml"
+  - "test/fixtures/shipped-updaters/**"
+applyTo: "electron/update-*.cjs,scripts/update-manifest.mjs,scripts/package-update-trust.mjs,scripts/macos-release-kind.mjs,release/update-keys.json,.github/workflows/macos-release*.yml,test/fixtures/shipped-updaters/**"
 ---
 
 # Updates: signed manifests, download and install

@@ -5,10 +5,15 @@ a Hono viewer, a plain-JavaScript frontend, and an Electron wrapper. There are n
 model calls.
 
 `CLAUDE.md` is the single source for commands, the architecture in one screen, the
-invariants that break things when missed, conventions and gotchas. Copilot CLI, the
-cloud agent and code review load it as agent instructions, so this file does not repeat
-it. Use Node 24 (`fnm use 24`) in every shell; `npm test` spawns the MCP server under
-the active Node.
+invariants that break things when missed, conventions and gotchas. Copilot CLI and, on
+GitHub.com, the cloud agent and code review load it as agent instructions, so this file
+does not repeat it. Use Node 24 (`fnm use 24`) in every shell; `npm test` spawns the
+MCP server under the active Node.
+
+Exceptions, per GitHub's custom-instructions support table: VS Code Copilot Chat and
+VS Code code review do not read `CLAUDE.md` (Chat does load the path-specific files
+below; code review reads only this file). There, read `CLAUDE.md` and the matching
+`docs/architecture/*.md` yourself before changing or reviewing code.
 
 The detailed invariants, and the regressions that established them, live in
 `docs/architecture/*.md`, one file per subsystem. Each is symlinked as

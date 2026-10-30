@@ -164,11 +164,17 @@ New store read `listOpenMessages(sessions)`: `id`, `session` of open messages fo
 All four subcommands use `sessionScope`'s linked servers; an unlinked hook cannot know its
 servers and ignores messages (the session sees them when it next checks Agent Inbox).
 
-- **`stop`** blocks for open messages whose ids are not yet in the harness session's marker,
-  then records those ids there (`SessionMarker.messagesNudged`, the newest 50). So it blocks at
-  most once per message, and an ignored message, or one the agent cannot ack (two Agent Inbox
-  registrations, a denied tool), cannot loop. It never blocks on `stop_hook_active`, and it does
-  not block for messages when the event has no `session_id` (nothing to record against).
+- **`stop`** blocks for open messages whose ids it has not nudged for yet, then records those
+  ids. So it blocks at most once per message, and an ignored message, or one the agent cannot
+  ack (two Agent Inbox registrations, a denied tool), cannot loop. It never blocks on
+  `stop_hook_active`. The nudged ids live in their own file beside the session markers,
+  `host-<pid>.nudged.json`, keyed by the Claude Code process the link proved (the same key as the
+  watch lease), written only by `stop` (temp file and rename) and pruned to ids still open. Not in
+  `SessionMarker`: `readMarker` rebuilds a fixed shape, `cmdNotification` and
+  `cmdNotificationCommit` write fresh objects (the commit writes back after its 90 s grace, over
+  `stop`'s write), and the marker is keyed by the harness `session_id`, which `/clear` changes
+  while the server id does not. A reused host pid inherits only ids of messages to servers it
+  does not link, which it never counts.
 - **`prompt-submit` and `session-start`** remind about every open message on each event, inside
   their existing shapes. Reminding a human-driven turn cannot loop.
 - **`watch`** reads the open message ids at arming into a baseline, as `answered` is today
@@ -212,15 +218,17 @@ host-owned contract question watchers already prove.
   starts `released:`. It never steals a fresh lease (not `claimHookWatch`'s newest-wins). A
   watcher that does not get it exits 3. Refresh is `UPDATE … SET claimed_at = now WHERE
   claim_key = ? AND token = ?` every 60 s; 0 rows means it was taken over, and it exits 3
-  silently.
+  silently. **Every exit path releases in a `finally`**, token-conditioned: `UPDATE … SET token =
+  'released:' || token WHERE claim_key = ? AND token = ?`. So a re-run after any exit (0, 3 or
+  124) takes the lease at once instead of finding a fresh lease it does not own and exiting 3,
+  and a watcher that lost its lease while asleep cannot release its successor's.
 - **Exits.** It polls every 5 s.
   - **0**, an open message that was undelivered at launch or arrived after it (open messages
     already delivered at launch are its baseline, so one being worked on cannot loop it).
-    Stdout: "Agent Inbox message waiting: call pending(), then re-run this same command." The argv is stable, so re-arming needs no
-    new contract. Before exiting it sets its token to `released:…` (keeping `claimed_at`), so
-    `pending()` does not re-offer while the agent re-arms, and the re-run takes the lease at
-    once. If the agent never re-arms, the row goes stale after 3 minutes and `pending()` offers
-    again.
+    Stdout: "Agent Inbox message waiting: call pending(), then re-run this same command." The
+    argv is stable, so re-arming needs no new contract. The release keeps `claimed_at`, so
+    `pending()` does not re-offer while the agent re-arms. If the agent never re-arms, the row
+    goes stale after 3 minutes and `pending()` offers again.
   - **3**, do not re-arm: the session's presence row is ended, gone or silent for over 15
     minutes, or its `server_pid` is not running (`process.kill(pid, 0)`, as `hook.ts`
     `running()`), or another watcher holds the lease. One stdout line, no message text.
@@ -264,10 +272,12 @@ started". Open messages offer **Withdraw**, pinned to `revision`, ending in `rel
 
 **Undelivered messages.** Not in the Inbox: a third entry kind would touch `needsYouEntries`,
 sorting, filters, pagination, keyboard order and the empty state, and would be attention without
-a badge. Instead the Live drawer ends with one fold, "Not delivered (N)": open messages whose
-session is no longer listed, sent within 24 hours, each with Copy text and Withdraw, reading "Not
-delivered: this session is no longer running" or "Picked up, but the session ended before
-acknowledging". The Live strip names nothing.
+a badge. Instead the Live drawer ends with one fold, "Not delivered (N)": every open message whose
+session is no longer listed, until the human withdraws it, newest first, 10 shown with "+M more".
+Each has Copy text and Withdraw and reads "Not delivered: this session is no longer running" or
+"Picked up, but the session ended before acknowledging". There is no time window, so nothing
+disappears on its own and the clock never changes the fold (no idle-frame repaint, #298). The
+Live strip names nothing.
 
 **Reads and paint.** `/api/messages` is one more concurrent poll read through `readSnapshot`,
 with the links-style fallback (404, network error or refused body = no messages, never a failed
@@ -353,14 +363,16 @@ appendices, so `install:agents --apply` refreshes the managed blocks; a test pin
 - **Hook (acceptance):** a linked `watch` exits 2 on a new message to its own server, not on one
   to a sibling, not on one open at arming, and after its server restarts under the same parent; a
   message delivered by another reader still counts; `stop` blocks once per id and never on
-  `stop_hook_active`; reminder shapes; the `m1:` token and `host:` supersession; unlinked hooks
-  ignore messages; stdout bytes unchanged.
+  `stop_hook_active`, and a notification hook between two Stops does not make it block again;
+  reminder shapes; the `m1:` token and `host:` supersession; unlinked hooks ignore messages;
+  stdout bytes unchanged.
 - **Mixed version:** the cases in §2, plus an older hook's `host:` lease not counting as `wakes`.
 - **DOM (PR 2):** compose from the drawer, focus panel and Agents view; status across polls;
   Withdraw and withdrawn-after-pickup copy; the capability gate; the "Not delivered" fold; drafts
   across polls, reload and an unconfirmed send; the 404 fallback; attention parity on every surface.
 - **Watcher (PR 3):** exits 0, 3 and 124 with their streams; no steal of a fresh lease; takeover
-  of a stale or released one; refresh loss; dead `server_pid`; the offer rules and memo.
+  of a stale or released one; a 124 followed by a re-run takes the lease; a watcher that lost its
+  lease releases nothing; refresh loss; dead `server_pid`; the offer rules and memo.
 - `dead-exports`, `prstate` (no new stdio import) and `instructions-budget` stay green.
 
 ## §9 — Phasing

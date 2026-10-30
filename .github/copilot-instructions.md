@@ -97,6 +97,12 @@ Run the build before `npm run electron`; the development shell starts the built
   signed-app and final-DMG gates refuse any group- or other-writable entry and any
   setuid, setgid or sticky bit (#378, `scripts/tree-modes.mjs`); only a package's
   extracted `chrome-sandbox` may be `04755`.
+  The thin-app builders compile better-sqlite3 for Electron only against the headers
+  tarball (and Windows `node.lib`) pinned by SHA-256 in each profile's `electronHeaders`
+  (#369): `scripts/app-dependencies.mjs` verifies and unpacks it into a private nodedir,
+  points node-gyp's dist-url at an unresolvable host, refuses node-gyp header overrides
+  in the environment and checks `build/config.gypi` names that nodedir. The validators
+  tie its URLs to `electron.version`, so an Electron bump must move this pin too.
 - **Setup path:** `scripts/install-agents.sh` is the canonical dry-run-first
   installer for MCP registration and managed host instructions. Electron exposes
   only fixed setup targets through `electron/setup-preload.cjs` and invokes that

@@ -10,14 +10,16 @@ import {
   ReleaseInputError,
   RUNTIME_KEYS,
   downloadArchive,
+  electronHeadersIdentity,
   loadElectronChecksums,
+  validateElectronHeaders,
   loadReleaseInputs,
   validateReleaseInputs,
   validateInstalledReleaseTools,
   verifyArchiveDigest,
 } from '../scripts/release-inputs.mjs'
-import { loadLinuxReleaseInputs } from '../scripts/linux-release-inputs.mjs'
-import { loadWindowsReleaseInputs } from '../scripts/windows-release-inputs.mjs'
+import { loadLinuxReleaseInputs, validateLinuxReleaseInputs } from '../scripts/linux-release-inputs.mjs'
+import { loadWindowsReleaseInputs, validateWindowsReleaseInputs } from '../scripts/windows-release-inputs.mjs'
 import { RUNTIME_TARGETS } from '../scripts/runtime-targets.mjs'
 import { removeScratchDirs, scratchDir } from './scratch.js'
 
@@ -98,6 +100,108 @@ describe('macOS release inputs', () => {
 })
 
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex')
+
+// The headers better-sqlite3 is compiled against for Electron (#369). The digests were
+// read from the tarball and node.lib themselves and match the SHASUMS256.txt served at
+// https://www.electronjs.org/headers/v43.8.4/SHASUMS256.txt.
+const ELECTRON_HEADERS_SHA256 = 'cccb253b87b50b5957d8bab8c80abaca744cae779a5aba8e4184fbcc087c9dbb'
+const ELECTRON_WIN_X64_NODE_LIB_SHA256 = 'fc79cff84e32422258435de641f9f89aa121584c54ea0a34c4a29b9a0885a8e1'
+const profiles = [
+  ['macOS', () => loadReleaseInputs(), validateReleaseInputs],
+  ['Linux', () => loadLinuxReleaseInputs(), validateLinuxReleaseInputs],
+  ['Windows', () => loadWindowsReleaseInputs(), validateWindowsReleaseInputs],
+] as const
+
+describe('Electron headers pins (#369)', () => {
+  it('pins the same headers tarball for the same Electron in every profile, and node.lib for Windows', () => {
+    const headers = {
+      archive: 'node-v43.8.4-headers.tar.gz',
+      root: 'node_headers',
+      url: 'https://www.electronjs.org/headers/v43.8.4/node-v43.8.4-headers.tar.gz',
+      sha256: ELECTRON_HEADERS_SHA256,
+    }
+    expect(loadReleaseInputs().electronHeaders).toEqual(headers)
+    expect(loadLinuxReleaseInputs().electronHeaders).toEqual(headers)
+    expect(loadWindowsReleaseInputs().electronHeaders).toEqual({
+      ...headers,
+      importLibraries: {
+        'win32-x64': {
+          url: 'https://www.electronjs.org/headers/v43.8.4/win-x64/node.lib',
+          sha256: ELECTRON_WIN_X64_NODE_LIB_SHA256,
+        },
+      },
+    })
+    for (const [name, load] of profiles) {
+      expect(electronHeadersIdentity(load().electron.version), name).toEqual({
+        archive: headers.archive,
+        root: headers.root,
+        url: headers.url,
+      })
+    }
+  })
+
+  it.each(profiles)('refuses %s release inputs without a headers pin', (_name, load, validate) => {
+    const inputs: Record<string, unknown> = structuredClone(load())
+    delete inputs.electronHeaders
+    expect(() => validate(inputs)).toThrow('electronHeaders is missing: pin the SHA-256 of Electron 43.8.4\'s headers tarball (#369)')
+  })
+
+  // The Windows profile also pins the exact Electron version in code, which refuses a bump
+  // before the headers are read, so its headers pin is checked on its own here.
+  const headersGates = [
+    ['macOS', () => loadReleaseInputs(), validateReleaseInputs],
+    ['Linux', () => loadLinuxReleaseInputs(), validateLinuxReleaseInputs],
+    ['Windows', () => loadWindowsReleaseInputs(), (value: { electron: { version: string }, electronHeaders: unknown }) =>
+      validateElectronHeaders(value.electronHeaders, value.electron.version, ['win32-x64'])],
+  ] as const
+  it.each(headersGates)('refuses an Electron bump in the %s profile that leaves the headers pin behind', (_name, load, validate) => {
+    const bumped = structuredClone(load())
+    bumped.electron.version = '43.8.5'
+    expect(() => validate(bumped)).toThrow(/electronHeaders\.archive must be node-v43\.8\.5-headers\.tar\.gz for Electron 43\.8\.5/)
+
+    // moving the archive name alone is not enough: the URL names the version too
+    const halfBumped = structuredClone(bumped)
+    halfBumped.electronHeaders.archive = 'node-v43.8.5-headers.tar.gz'
+    expect(() => validate(halfBumped)).toThrow(/official Electron headers URL for 43\.8\.5/)
+
+    const malformed = structuredClone(load())
+    malformed.electronHeaders.sha256 = 'not-a-digest'
+    expect(() => validate(malformed)).toThrow('electronHeaders.sha256 is invalid')
+
+    const rootless = structuredClone(load())
+    rootless.electronHeaders.root = 'node-v43.8.4'
+    expect(() => validate(rootless)).toThrow('electronHeaders.root must be node_headers')
+  })
+
+  it('takes node.lib only where node-gyp links against it, from the same Electron release', () => {
+    const macos = structuredClone(loadReleaseInputs()) as unknown as { electronHeaders: Record<string, unknown> }
+    macos.electronHeaders.importLibraries = structuredClone(loadWindowsReleaseInputs().electronHeaders.importLibraries)
+    expect(() => validateReleaseInputs(macos)).toThrow(/electronHeaders keys must be exactly: archive, root, sha256, url$/)
+
+    const windows = structuredClone(loadWindowsReleaseInputs())
+    windows.electronHeaders.importLibraries['win32-x64'].url = 'https://www.electronjs.org/headers/v43.8.3/win-x64/node.lib'
+    expect(() => validateWindowsReleaseInputs(windows))
+      .toThrow(/importLibraries\.win32-x64\.url must be the official node\.lib URL for 43\.8\.4/)
+    const libraryless = structuredClone(loadWindowsReleaseInputs()) as unknown as { electronHeaders: Record<string, unknown> }
+    delete libraryless.electronHeaders.importLibraries
+    expect(() => validateWindowsReleaseInputs(libraryless)).toThrow(/electronHeaders keys must be exactly: .*importLibraries/)
+  })
+
+  it('follows redirects only when asked, since the pinned digest vouches for the bytes', async () => {
+    const bytes = Buffer.from('headers')
+    const redirects: Array<string | undefined> = []
+    const fetchImpl = (async (_url: string, init?: RequestInit) => {
+      redirects.push(init?.redirect)
+      return new Response(new Uint8Array(bytes))
+    }) as typeof fetch
+    const dir = scratchDir('release-download-')
+    for (const [name, followRedirects] of [['a', undefined], ['b', true]] as const) {
+      await downloadArchive({ url: 'https://example.invalid/x', destination: join(dir, name), expectedSha256: sha256(bytes), fetchImpl, followRedirects })
+    }
+    expect(redirects).toEqual(['error', 'follow'])
+  })
+})
+
 
 // A stored (uncompressed) zip: enough of an Electron release zip for the
 // packager to unpack it and rename its `electron` executable.

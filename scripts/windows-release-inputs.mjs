@@ -5,8 +5,10 @@ import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 import {
   ReleaseInputError,
+  requireElectronHeadersPin,
   requireExactKeys,
   requireString,
+  validateElectronHeaders,
   validateElectronReleaseInputs,
   validateInstalledReleaseToolsFor,
   validateNodeReleaseInputs,
@@ -83,9 +85,10 @@ function validateWindowsNodeHeaders(headers, version) {
 }
 
 export function validateWindowsReleaseInputs(value) {
+  requireElectronHeadersPin(value)
   requireExactKeys(
     value,
-    ['schema', 'product', 'bundleId', 'minimumWindowsVersion', 'node', 'nodeHeaders', 'electron'],
+    ['schema', 'product', 'bundleId', 'minimumWindowsVersion', 'node', 'nodeHeaders', 'electron', 'electronHeaders'],
     'Windows release inputs',
   )
   if (value.schema !== 1) throw new ReleaseInputError(`unsupported release input schema: ${value.schema}`)
@@ -100,6 +103,9 @@ export function validateWindowsReleaseInputs(value) {
     ['version', 'modulesAbi', 'packagerVersion', 'rebuildVersion'],
   )
   requireExactElectronAbiPin(value.electron)
+  // Electron's own headers and import library, which the Electron-ABI addon is compiled
+  // and linked against, unlike nodeHeaders above, which serve the Node runtime (#369).
+  validateElectronHeaders(value.electronHeaders, value.electron.version, WINDOWS_RUNTIME_KEYS)
   return value
 }
 

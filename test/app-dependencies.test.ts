@@ -12,16 +12,29 @@
 // the real npm, prebuild-install, @electron/rebuild and node-gyp. Nothing
 // reaches the network: the packages are local tarballs, node-gyp compiles
 // against this Node's own headers, and the prebuild host is a closed port, so
-// a cache miss fails instead of downloading.
+// a cache miss fails instead of downloading. installAppDependencies gets those
+// headers as a pinned "Electron headers" tarball (#369), served by a fetch that
+// knows only its URL, and points node-gyp's dist-url at a name that cannot
+// resolve, so a build that ignored the pin would fail rather than download.
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { cpSync, existsSync, linkSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
+import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { rebuild } from '@electron/rebuild'
-import { installAppDependencies } from '../scripts/app-dependencies.mjs'
+import {
+  UNREACHABLE_HEADER_URL,
+  assertNoNodeGypHeaderOverrides,
+  configuredNodedir,
+  installAppDependencies,
+  provisionElectronHeaders,
+} from '../scripts/app-dependencies.mjs'
+import { downloadArchive, electronHeadersIdentity, electronImportLibraryUrl } from '../scripts/release-inputs.mjs'
+import type { ElectronHeaders } from '../scripts/release-inputs.mjs'
 import { pruneAppNodeModules } from '../scripts/build-thin-app.mjs'
-import { scratchDir } from './scratch.js'
+import { removeScratchDirs, scratchDir } from './scratch.js'
 
 const REPO = resolve(import.meta.dirname, '..')
 const requireHere = createRequire(import.meta.url)
@@ -73,6 +86,40 @@ NAPI_MODULE(NODE_GYP_MODULE_NAME, Init)
 let tarballs: { addon: string }
 let cache: string
 let mirrorEnv: Record<string, string>
+let headersPin: ElectronHeaders
+let headersTarball: Buffer
+
+// This Node's headers, packed the way Electron's are (a node_headers/ root and a
+// config.gypi that says built_with_electron), so the addon still loads here.
+function packHeaders(root: string): void {
+  const tree = join(root, 'headers', 'node_headers', 'include', 'node')
+  mkdirSync(dirname(tree), { recursive: true })
+  cpSync(join(NODE_PREFIX, 'include', 'node'), tree, { recursive: true, dereference: true })
+  const config = join(tree, 'config.gypi')
+  const text = readFileSync(config, 'utf8')
+  const marked = text.replace(/(["']variables["']\s*:\s*\{)/, `$1\n    "built_with_electron": 1,`)
+  if (marked === text) throw new Error(`no variables in ${config}`)
+  writeFileSync(config, marked)
+  const archive = join(root, 'headers.tar.gz')
+  execFileSync('tar', ['-czf', archive, '-C', join(root, 'headers'), 'node_headers'], {
+    env: { ...process.env, COPYFILE_DISABLE: '1' },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  headersTarball = readFileSync(archive)
+  headersPin = {
+    ...electronHeadersIdentity(ELECTRON_VERSION),
+    sha256: createHash('sha256').update(headersTarball).digest('hex'),
+  }
+}
+
+// The real downloader and digest check, over a fetch that serves only the pinned URL.
+const offlineDownload = (options: Parameters<typeof downloadArchive>[0]) => downloadArchive({
+  ...options,
+  fetchImpl: (async (url: string) => {
+    if (url !== headersPin.url) throw new Error(`unexpected fetch: ${url}`)
+    return new Response(new Uint8Array(headersTarball))
+  }) as typeof fetch,
+})
 
 function npm(args: string[], cwd: string, env: NodeJS.ProcessEnv = process.env): string {
   return execFileSync(process.execPath, [NPM_CLI!, ...args], {
@@ -175,6 +222,7 @@ describe.skipIf(!NPM_CLI || !HAS_NODE_HEADERS)('staged app dependencies never ta
     }))
     writeFileSync(join(addon, 'src', 'addon.c'), ADDON_SOURCE)
     tarballs = { addon: pack(addon, root) }
+    packHeaders(root)
 
     // What npm's install script would fetch for this Node, and what
     // @electron/rebuild would fetch for the pinned Electron.
@@ -226,14 +274,28 @@ describe.skipIf(!NPM_CLI || !HAS_NODE_HEADERS)('staged app dependencies never ta
     expect(requireHere(moduleFile(root, 'build', 'Release', 'better_sqlite3.node')).origin).toBe(COMPILED_ORIGIN)
   }, 120_000)
 
-  it('compiles the addon from source and keeps none of the planted files', async () => {
+  it('compiles the addon from source against the pinned headers and keeps none of the planted files', async () => {
+    // installAppDependencies sets the nodedir itself and refuses one already set.
+    vi.stubEnv('npm_config_nodedir', undefined)
     const root = stage()
+    const lines: string[] = []
     await installAppDependencies({
       stageRoot: root,
       npmCli: NPM_CLI!,
       electronVersion: ELECTRON_VERSION,
       arch: process.arch,
+      electronHeaders: headersPin,
+      download: offlineDownload,
+      log: (line) => lines.push(line),
     })
+    // node-gyp configured against the unpacked pin, which is gone again afterwards
+    const nodedir = configuredNodedir(root)
+    expect(nodedir).toMatch(/[\\/]\.electron-headers-[^\\/]+[\\/]extracted[\\/]node_headers$/)
+    expect(dirname(dirname(dirname(nodedir)))).toBe(dirname(root))
+    expect(existsSync(nodedir)).toBe(false)
+    expect(lines.join('\n')).toContain(`at nodedir ${nodedir}`)
+    expect(lines.join('\n')).toContain(headersPin.sha256)
+    expect(process.env.npm_config_nodedir).toBeUndefined()
     pruneAppNodeModules(root)
 
     expect(readFileSync(moduleFile(root, 'lib', 'index.js'), 'utf8')).toBe(GENUINE_JS)
@@ -247,4 +309,251 @@ describe.skipIf(!NPM_CLI || !HAS_NODE_HEADERS)('staged app dependencies never ta
     // Built against this Node's headers here, so this process can load it.
     expect(requireHere(addon).origin).toBe(COMPILED_ORIGIN)
   }, 120_000)
+})
+
+const sha256 = (bytes: Buffer | string): string => createHash('sha256').update(bytes).digest('hex')
+const ELECTRON_CONFIG = "# Do not edit.\n{ 'variables': {\n    'built_with_electron': 1,\n    'node_module_version': 148,\n} }\n"
+const HEADER_FILES = ['common.gypi', 'node_version.h', 'node.h', 'node_api.h', 'v8.h']
+
+type Entry = string | { symlink: string } | { hardlink: string }
+function headerTree(overrides: Record<string, Entry | null> = {}): Record<string, Entry> {
+  const files: Record<string, Entry | null> = {
+    'node_headers/include/node/config.gypi': ELECTRON_CONFIG,
+    ...Object.fromEntries(HEADER_FILES.map((name) => [`node_headers/include/node/${name}`, `// ${name}\n`])),
+    ...overrides,
+  }
+  return Object.fromEntries(Object.entries(files).filter((entry): entry is [string, Entry] => entry[1] !== null))
+}
+
+function tarball(files: Record<string, Entry>): Buffer {
+  const root = scratchDir('electron-headers-src-')
+  const content = join(root, 'content')
+  for (const [path, entry] of Object.entries(files)) {
+    mkdirSync(dirname(join(content, path)), { recursive: true })
+    if (typeof entry === 'string') writeFileSync(join(content, path), entry)
+    else if ('symlink' in entry) symlinkSync(entry.symlink, join(content, path))
+    else linkSync(join(content, entry.hardlink), join(content, path))
+  }
+  const archive = join(root, 'headers.tar.gz')
+  execFileSync('tar', ['-czf', archive, '-C', content, ...new Set(Object.keys(files).map((path) => path.split('/')[0]!))], {
+    env: { ...process.env, COPYFILE_DISABLE: '1' },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  return readFileSync(archive)
+}
+
+const VERSION = '43.8.4'
+function pinFor(bytes: Buffer, version = VERSION) {
+  return { ...electronHeadersIdentity(version), sha256: sha256(bytes) }
+}
+
+// downloadArchive itself, over a fetch that serves exactly these URLs
+function servedBy(files: Record<string, Buffer>, requests: Array<{ url: string, redirect?: string }> = []) {
+  return (options: Parameters<typeof downloadArchive>[0]) => downloadArchive({
+    ...options,
+    fetchImpl: (async (url: string, init?: RequestInit) => {
+      requests.push({ url, redirect: init?.redirect })
+      const body = files[url]
+      if (!body) throw new Error(`unexpected fetch: ${url}`)
+      return new Response(new Uint8Array(body))
+    }) as typeof fetch,
+  })
+}
+
+describe('pinned Electron headers (#369)', () => {
+  afterEach(() => removeScratchDirs())
+
+  it('downloads the pinned tarball, checks its SHA-256 and unpacks it as the nodedir', async () => {
+    const bytes = tarball(headerTree())
+    const headers = pinFor(bytes)
+    const requests: Array<{ url: string, redirect?: string }> = []
+    const parent = scratchDir('electron-headers-')
+    const nodedir = await provisionElectronHeaders({
+      headers,
+      electronVersion: VERSION,
+      platform: 'darwin',
+      arch: 'arm64',
+      parent,
+      download: servedBy({ [headers.url]: bytes }, requests),
+    })
+    expect(nodedir).toBe(join(parent, 'extracted', 'node_headers'))
+    expect(readFileSync(join(nodedir, 'include', 'node', 'config.gypi'), 'utf8')).toBe(ELECTRON_CONFIG)
+    expect(existsSync(join(nodedir, 'Release'))).toBe(false)
+    // www.electronjs.org redirects to its artifact host; the digest vouches for the bytes
+    expect(requests).toEqual([{ url: `https://www.electronjs.org/headers/v${VERSION}/node-v${VERSION}-headers.tar.gz`, redirect: 'follow' }])
+  })
+
+  it('refuses a tarball whose SHA-256 is not the pinned one, before unpacking anything', async () => {
+    const headers = pinFor(tarball(headerTree()))
+    const replaced = tarball(headerTree({ 'node_headers/include/node/v8.h': '// replaced\n' }))
+    const parent = scratchDir('electron-headers-')
+    await expect(provisionElectronHeaders({
+      headers,
+      electronVersion: VERSION,
+      platform: 'linux',
+      arch: 'x64',
+      parent,
+      download: servedBy({ [headers.url]: replaced }),
+    })).rejects.toThrow(/SHA-256 mismatch/)
+    expect(readdirSync(parent)).toEqual([])
+  })
+
+  it('refuses to build without a pin, or with a pin left behind by an Electron bump', async () => {
+    const bytes = tarball(headerTree())
+    const parent = scratchDir('electron-headers-')
+    const download = servedBy({})
+    await expect(provisionElectronHeaders({ headers: undefined, electronVersion: VERSION, platform: 'darwin', arch: 'arm64', parent, download }))
+      .rejects.toThrow(`no pinned Electron headers (electronHeaders) for Electron ${VERSION}`)
+    await expect(provisionElectronHeaders({ headers: pinFor(bytes, '43.8.3'), electronVersion: VERSION, platform: 'darwin', arch: 'arm64', parent, download }))
+      .rejects.toThrow(/electronHeaders\.archive must be node-v43\.8\.4-headers\.tar\.gz/)
+    const url = { ...pinFor(bytes), url: `https://artifacts.electronjs.org/headers/dist/v${VERSION}/node-v${VERSION}-headers.tar.gz` }
+    await expect(provisionElectronHeaders({ headers: url, electronVersion: VERSION, platform: 'darwin', arch: 'arm64', parent, download }))
+      .rejects.toThrow(/official Electron headers URL/)
+    expect(readdirSync(parent)).toEqual([])
+  })
+
+  it.each([
+    // the message names the archive it checked, not the Node distribution
+    ['a second root', { 'extra/file.h': 'x' }, /^Electron headers archive contains a path outside node_headers: extra$/],
+    ['a symbolic link', { 'node_headers/include/node/link.h': { symlink: '/etc/hosts' } }, /other than a file or folder/],
+    // tar records the second name as a link to the first, and unpacking makes it one
+    ['a hard link', { 'node_headers/include/node/linked.h': { hardlink: 'node_headers/include/node/v8.h' } }, /^Electron headers contain a hard-linked file: node_headers\/include\/node\/(?:linked|v8)\.h$/],
+    ['no config.gypi', { 'node_headers/include/node/config.gypi': null }, /lack include\/node\/config\.gypi/],
+    ['no node.h', { 'node_headers/include/node/node.h': null }, /lack include\/node\/node\.h/],
+    ["Node's own config.gypi", { 'node_headers/include/node/config.gypi': "{ 'variables': { 'node_module_version': 137 } }\n" }, /not Electron headers/],
+  ] as const)('refuses a correctly pinned tarball with %s', async (_label, overrides, error) => {
+    const bytes = tarball(headerTree(overrides as Record<string, Entry | null>))
+    const headers = pinFor(bytes)
+    await expect(provisionElectronHeaders({
+      headers,
+      electronVersion: VERSION,
+      platform: 'darwin',
+      arch: 'arm64',
+      parent: scratchDir('electron-headers-'),
+      download: servedBy({ [headers.url]: bytes }),
+    })).rejects.toThrow(error)
+  })
+
+  it('puts the pinned Windows import library where node-gyp links a --nodedir Release build', async () => {
+    const bytes = tarball(headerTree())
+    const library = Buffer.from('electron node.lib')
+    const libraryUrl = electronImportLibraryUrl(VERSION, 'win32-x64')
+    expect(libraryUrl).toBe(`https://www.electronjs.org/headers/v${VERSION}/win-x64/node.lib`)
+    const headers = { ...pinFor(bytes), importLibraries: { 'win32-x64': { url: libraryUrl, sha256: sha256(library) } } }
+    const options = { electronVersion: VERSION, platform: 'win32', arch: 'x64', tar: '/usr/bin/tar' }
+    const nodedir = await provisionElectronHeaders({
+      ...options,
+      headers,
+      parent: scratchDir('electron-headers-'),
+      download: servedBy({ [headers.url]: bytes, [libraryUrl]: library }),
+    })
+    expect(readFileSync(join(nodedir, 'Release', 'node.lib'), 'utf8')).toBe('electron node.lib')
+
+    await expect(provisionElectronHeaders({
+      ...options,
+      headers,
+      parent: scratchDir('electron-headers-'),
+      download: servedBy({ [headers.url]: bytes, [libraryUrl]: Buffer.from('another node.lib') }),
+    })).rejects.toThrow(/SHA-256 mismatch/)
+    const { importLibraries: _, ...withoutLibrary } = headers
+    await expect(provisionElectronHeaders({
+      ...options,
+      headers: withoutLibrary,
+      parent: scratchDir('electron-headers-'),
+      download: servedBy({}),
+    })).rejects.toThrow(/electronHeaders keys must be exactly: .*importLibraries/)
+  })
+
+  it('refuses every environment variable node-gyp would read as another nodedir, dist-url or header source', () => {
+    for (const name of [
+      'npm_config_nodedir',
+      'NPM_CONFIG_NODEDIR',
+      'npm_config_dist_url',
+      'npm_config_dist-url',
+      'npm_config_disturl',
+      'npm_config_tarball',
+      'npm_config_devdir',
+      'npm_config_target',
+      'npm_config_runtime',
+      'npm_package_config_node_gyp_nodedir',
+      'npm_package_config_node_gyp_anything',
+    ]) {
+      expect(() => assertNoNodeGypHeaderOverrides({ [name]: '' }), name).toThrow(`refusing to compile while ${name} is set`)
+    }
+    expect(() => assertNoNodeGypHeaderOverrides({
+      npm_config_build_from_source: 'true',
+      npm_config_node_gyp: '/usr/lib/node_modules/npm/node_modules/node-gyp/bin/node-gyp.js',
+      npm_config_cache: '/cache',
+    })).not.toThrow()
+  })
+
+  describe.skipIf(!NPM_CLI)('installAppDependencies', () => {
+    function emptyStage(): string {
+      const root = scratchDir('app-stage-empty-')
+      const pkg = { name: 'app-stage', version: '1.0.0', private: true }
+      writeFileSync(join(root, 'package.json'), JSON.stringify(pkg))
+      writeFileSync(join(root, 'package-lock.json'), JSON.stringify({
+        ...pkg, lockfileVersion: 3, requires: true, packages: { '': pkg },
+      }))
+      return root
+    }
+    const configure = (root: string, nodedir: string): void => {
+      const build = join(root, 'node_modules', 'better-sqlite3', 'build')
+      mkdirSync(build, { recursive: true })
+      writeFileSync(join(build, 'config.gypi'), `# Do not edit.\n${JSON.stringify({ variables: { nodedir } }, null, 2)}\n`)
+    }
+
+    afterEach(() => vi.unstubAllEnvs())
+
+    it('hands node-gyp the pinned nodedir and an unreachable dist-url, and checks what it configured against', async () => {
+      const bytes = tarball(headerTree())
+      const headers = pinFor(bytes)
+      const root = emptyStage()
+      let seen: { options: Record<string, unknown>, nodedir: string | undefined } | undefined
+      await installAppDependencies({
+        stageRoot: root,
+        npmCli: NPM_CLI!,
+        electronVersion: VERSION,
+        arch: process.arch,
+        electronHeaders: headers,
+        download: servedBy({ [headers.url]: bytes }),
+        log: () => {},
+        rebuildImpl: async (options) => {
+          seen = { options, nodedir: process.env.npm_config_nodedir }
+          configure(root, process.env.npm_config_nodedir!)
+        },
+      })
+      expect(seen!.options).toMatchObject({ buildFromSource: true, headerURL: UNREACHABLE_HEADER_URL, electronVersion: VERSION })
+      expect(UNREACHABLE_HEADER_URL).toMatch(/^https:\/\/[a-z-]+\.invalid$/)
+      expect(seen!.nodedir).toMatch(/[\\/]extracted[\\/]node_headers$/)
+      expect(process.env.npm_config_nodedir).toBeUndefined()
+
+      await expect(installAppDependencies({
+        stageRoot: root,
+        npmCli: NPM_CLI!,
+        electronVersion: VERSION,
+        arch: process.arch,
+        electronHeaders: headers,
+        download: servedBy({ [headers.url]: bytes }),
+        log: () => {},
+        rebuildImpl: async () => configure(root, join(homedir(), '.electron-gyp', VERSION)),
+      })).rejects.toThrow(/configured against .*\.electron-gyp.*, not the pinned headers/)
+      expect(process.env.npm_config_nodedir).toBeUndefined()
+    })
+
+    it('refuses a header override in the environment before installing anything', async () => {
+      vi.stubEnv('npm_package_config_node_gyp_nodedir', '/elsewhere')
+      const root = emptyStage()
+      await expect(installAppDependencies({
+        stageRoot: root,
+        npmCli: NPM_CLI!,
+        electronVersion: VERSION,
+        arch: process.arch,
+        electronHeaders: pinFor(Buffer.from('unused')),
+        download: servedBy({}),
+        rebuildImpl: async () => { throw new Error('rebuild must not run') },
+      })).rejects.toThrow(/npm_package_config_node_gyp_nodedir is set/)
+      expect(existsSync(join(root, 'node_modules'))).toBe(false)
+    })
+  })
 })

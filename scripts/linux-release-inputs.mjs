@@ -5,8 +5,10 @@ import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 import {
   ReleaseInputError,
+  requireElectronHeadersPin,
   requireExactKeys,
   requireString,
+  validateElectronHeaders,
   validateElectronReleaseInputs,
   validateInstalledReleaseToolsFor,
   validateNodeReleaseInputs,
@@ -25,6 +27,7 @@ export const LINUX_RELEASE_TOOL_PACKAGES = {
 export const LINUX_COMPILER_PROBE_TIMEOUT_MS = 30_000
 
 export function validateLinuxReleaseInputs(value) {
+  requireElectronHeadersPin(value)
   requireExactKeys(
     value,
     [
@@ -39,6 +42,7 @@ export function validateLinuxReleaseInputs(value) {
       'compiler',
       'node',
       'electron',
+      'electronHeaders',
     ],
     'Linux release inputs',
   )
@@ -72,6 +76,7 @@ export function validateLinuxReleaseInputs(value) {
     value.electron,
     ['version', 'modulesAbi', 'packagerVersion', 'rebuildVersion'],
   )
+  validateElectronHeaders(value.electronHeaders, value.electron.version)
   return value
 }
 

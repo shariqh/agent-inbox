@@ -493,6 +493,13 @@ elif [[ "$1 $2 \${3:-}" == "api --method POST" && "\${4:-}" == repos/*/releases 
   REQUEST="$2" OWNED_RELEASE_STATE="$OWNED_RELEASE_STATE" CREATE_RESPONSE_MISMATCH="$CREATE_RESPONSE_MISMATCH" node <<'NODE'
 const { readFileSync, writeFileSync } = require('node:fs')
 const request = JSON.parse(readFileSync(process.env.REQUEST, 'utf8'))
+// The draft names only the existing tag (#405): any other key, target_commitish above all,
+// fails the job here as GitHub's 403 did.
+const keys = Object.keys(request).sort().join(',')
+if (keys !== 'body,draft,name,prerelease,tag_name') {
+  process.stderr.write('gh: Resource not accessible by integration (HTTP 403)\\n')
+  process.exit(1)
+}
 const release = {
   id: 42,
   tag_name: request.tag_name,

@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type Database from 'better-sqlite3'
 import { advanceBoardRow, getBoard, insertItem, resolveItem, updateBoardRow, upsertBoard } from '../../src/store.js'
 import {
-  advanceClock, answerInput, bootApp, buttonLabelled, click, freshDb, settle, useDomTest,
+  advanceClock, answerInput, bootApp, buttonLabelled, changedPollTick, click, freshDb, pollTick, settle, type, useDomTest,
 } from './harness.js'
 
 useDomTest()
@@ -247,6 +247,83 @@ describe('Review queue and unsent responses (#407)', () => {
     await settle()
     expect(lightbox().hidden).toBe(true)
     expect(holdText()).toBe('Finish or clear the 1 unsent response first.')
+  })
+
+  it('ends a stale hold line on a poll whose repaint a draft holds back', async () => {
+    db = freshDb()
+    const r = plan(db).rows[0]!
+    seed(rowRecovery(r.id, r.revision, r.action_version, 'Approve as written.'))
+    await bootApp(db)
+    click(document.querySelector('.tab[data-tab="needsYou"]'))
+    await settle()
+    click(buttonLabelled('Review queue'))
+    await settle()
+    expect(holdText()).toBe('Finish or clear the 1 unsent response first.')
+    click(buttonLabelled('Show it'))
+    await settle()
+    // typing turns the recovery into a live draft, which holds the list back
+    type(answerInput(r.id), 'Approve as written, today.')
+    await changedPollTick(db)
+    expect(holdText()).toBe('')
+    expect(answerInput(r.id)?.value).toBe('Approve as written, today.')
+    click(buttonLabelled('Review queue'))
+    await settle()
+    expect(lightbox().hidden).toBe(false)
+  })
+
+  it('names two held responses, and keeps focus in the list as each is cleared', async () => {
+    db = freshDb()
+    const first = insertItem(db, { ...AGENT, kind: 'question', title: 'Release day?' })
+    advanceClock()
+    const second = insertItem(db, { ...AGENT, kind: 'question', title: 'Release time?' })
+    seed({ ...itemRecovery(first, 'Friday.', QUESTION_CHANGED), ...itemRecovery(second, 'Noon.', QUESTION_CHANGED) })
+    await bootApp(db)
+    click(document.querySelector('.tab[data-tab="needsYou"]'))
+    await settle()
+    const toolbar = buttonLabelled('Review queue')!
+    toolbar.focus()
+    click(toolbar)
+    await settle()
+    expect(holdText()).toBe('Finish or clear the 2 unsent responses first.')
+    expect(document.activeElement?.textContent).toBe('Show them')
+
+    click(buttonLabelled('Show them'))
+    await settle()
+    const lines = () => [...fold()!.querySelectorAll<HTMLElement>('.stale-draft-line')]
+    expect(document.activeElement).toBe(lines()[0])
+    const firstClear = buttonLabelled('Clear', lines()[0]!)!
+    firstClear.focus()
+    click(firstClear)
+    await settle()
+    expect(lines()).toHaveLength(1)
+    expect(document.activeElement).toBe(lines()[0])
+    expect(holdText()).toBe('Finish or clear the 1 unsent response first.')
+    const lastClear = buttonLabelled('Clear', lines()[0]!)!
+    lastClear.focus()
+    click(lastClear)
+    await settle()
+    expect(fold()).toBeNull()
+    expect(document.activeElement).toBe(document.querySelector('.triage-btn'))
+    expect(holdText()).toBe('')
+  })
+
+  it('moves focus off Show when a poll ends the hold', async () => {
+    db = freshDb()
+    const id = insertItem(db, { ...AGENT, kind: 'question', title: 'Release day?' })
+    seed(itemRecovery(id, 'Friday.', QUESTION_CHANGED))
+    await bootApp(db)
+    click(document.querySelector('.tab[data-tab="needsYou"]'))
+    await settle()
+    const toolbar = buttonLabelled('Review queue')!
+    toolbar.focus()
+    click(toolbar)
+    await settle()
+    expect(document.activeElement?.textContent).toBe('Show it')
+    // the question closes: the response stays listed but no longer holds the queue
+    resolveItem(db, id)
+    await pollTick()
+    expect(holdText()).toBe('')
+    expect(document.activeElement).toBe(fold()!.querySelector('summary'))
   })
 
   it('explains Retry and Clear in the unsent responses', async () => {

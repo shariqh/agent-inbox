@@ -3128,6 +3128,9 @@ function paintAmbient() {
   renderDashboardAmbient(dashboard, { forced: forcedAmbient })
   paintTabCounts(g, boards)
   paintLaterSectionHint()
+  // #407: a poll held back by a draft, a press or a scroll still ends a stale
+  // hold line; it writes in place and builds the deck only while held
+  paintTriageHold()
   return { agents, g, boards, archived, live, dashboard }
 }
 
@@ -3508,7 +3511,13 @@ function paintTriageHold() {
   const show = hold.querySelector('.triage-hold-show')
   const label = count === 1 ? 'Show it' : 'Show them'
   if (show.textContent !== label) show.textContent = label
+  // hiding the focused Show would drop focus to <body>
+  const hadFocus = !count && !show.hidden && document.activeElement === show && document.hasFocus()
   show.hidden = !count
+  if (hadFocus) {
+    const next = document.querySelector('.stale-drafts-fold summary') ?? document.querySelector('.triage-btn')
+    next?.focus({ preventScroll: true })
+  }
   hold.classList.toggle('active', Boolean(count))
 }
 
@@ -6698,10 +6707,18 @@ function renderOrphanedDrafts(host) {
         forceRender()
         return
       }
+      // a keyboard user keeps a place in the list rather than <body> (#407)
+      const hadFocus = line.contains(document.activeElement) && document.hasFocus()
+      let next = line.nextElementSibling
+      while (next && !next.matches('.stale-draft-line')) next = next.nextElementSibling
       line.remove()
       const remaining = fold.querySelectorAll('.stale-draft-line').length
       if (remaining) summary.textContent = `unsent responses (${remaining})`
       else fold.remove()
+      if (hadFocus) {
+        const target = next ?? (fold.isConnected ? summary : null) ?? document.querySelector('.triage-btn')
+        target?.focus({ preventScroll: true })
+      }
       paintTriageHold()
       renderIfIdle()
     })

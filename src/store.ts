@@ -223,6 +223,8 @@ export const SNAPSHOT_DOMAINS = {
     table: 'source_links_by_head',
     columns: ['branch', 'closing_refs', 'fetched_at', 'head_repo', 'issue_number', 'repo'],
   },
+  // issue #411 — pending() re-applies the first-delivery stamp on every poll
+  session_messages: { table: 'session_messages', restamped: ['delivered_at', 'delivered_by'] },
 } as const satisfies Record<string, SnapshotDomainSpec>
 
 export type SnapshotDomain = keyof typeof SNAPSHOT_DOMAINS
@@ -578,6 +580,24 @@ function runMigrations(db: Database.Database): void {
       token TEXT NOT NULL,
       claimed_at TEXT NOT NULL
     );
+    -- issue #411 — the human's messages to one MCP session (see sendSessionMessage)
+    CREATE TABLE IF NOT EXISTS session_messages (
+      id TEXT PRIMARY KEY,
+      session TEXT NOT NULL,
+      project TEXT NOT NULL,
+      stream TEXT NOT NULL DEFAULT '',
+      agent TEXT NOT NULL DEFAULT 'unknown',
+      text TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      revision INTEGER NOT NULL DEFAULT 1,
+      status TEXT NOT NULL DEFAULT 'open',
+      delivered_at TEXT,
+      delivered_by TEXT,
+      outcome TEXT NOT NULL DEFAULT '',
+      closed_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_session_messages_session ON session_messages(session, status, created_at);
+    CREATE INDEX IF NOT EXISTS idx_session_messages_closed ON session_messages(status, closed_at);
   `)
   ensureColumn(db, 'board_rows', 'context', `TEXT NOT NULL DEFAULT ''`)
   ensureColumn(db, 'board_rows', 'annotated_at', 'TEXT')
@@ -681,6 +701,10 @@ function runMigrations(db: Database.Database): void {
   ensureColumn(db, 'activity', 'call_minute', 'INTEGER')
   ensureColumn(db, 'activity', 'call_counts', 'TEXT')
   ensureColumn(db, 'boards', 'session', 'TEXT')
+  // issue #411 — 1 when this session's MCP server delivers session messages,
+  // written by its own presence and status writes. NULL on legacy rows and on
+  // every row an older server writes: a send to such a session is refused.
+  ensureColumn(db, 'activity', 'receives_messages', 'INTEGER')
   // issue #297 — keep this last: its triggers name the columns added above
   migrateSnapshotDomains(db)
 }
@@ -3254,6 +3278,8 @@ export interface Activity {
    */
   calls?: number[]
   calls_at?: number
+  /** Issue #411 — present, and true, only when this session's server delivers session messages. */
+  receives_messages?: true
 }
 
 export interface ActivityUpdate {
@@ -3296,6 +3322,8 @@ export interface ActivityUpdate {
    */
   host_pid?: number
   server_pid?: number
+  /** Issue #411 — this server delivers session messages. Kept on omission. */
+  receives_messages?: boolean
 }
 
 // One statement for the `activity` presence row, plus (when this write is a
@@ -3308,11 +3336,11 @@ const upsertActivityTxn = (db: Database.Database, a: ActivityUpdate): void => {
   // One statement, two modes. Registration can create idle presence but can
   // neither replace a live claim nor write its historical caption.
   db.prepare(
-    `INSERT INTO activity (session, project, stream, agent, doing, last_doing, detail, children, idle, started_at, updated_at, server_version, server_source, host_pid, server_pid)
+    `INSERT INTO activity (session, project, stream, agent, doing, last_doing, detail, children, idle, started_at, updated_at, server_version, server_source, host_pid, server_pid, receives_messages)
      VALUES (
        @session, @project, @stream, @agent, @doing,
        CASE WHEN @claim = 1 AND @idle = 0 AND @doing <> '' AND @doing <> 'open' THEN @doing ELSE '' END,
-       @detail, @children, @idle, @now, @now, @server_version, @server_source, @host_pid, @server_pid
+       @detail, @children, @idle, @now, @now, @server_version, @server_source, @host_pid, @server_pid, @receives_messages
      )
      ON CONFLICT(session) DO UPDATE SET
        project = @project, stream = @stream, agent = @agent,
@@ -3328,6 +3356,7 @@ const upsertActivityTxn = (db: Database.Database, a: ActivityUpdate): void => {
        server_source  = COALESCE(@server_source, server_source),
        host_pid   = COALESCE(@host_pid, host_pid),
        server_pid = COALESCE(@server_pid, server_pid),
+       receives_messages = COALESCE(@receives_messages, receives_messages),
        updated_at = @now, ended_at = NULL`,
   ).run({
     session: a.session,
@@ -3343,6 +3372,7 @@ const upsertActivityTxn = (db: Database.Database, a: ActivityUpdate): void => {
     server_source: a.server_source ?? null,
     host_pid: a.host_pid ?? null,
     server_pid: a.server_pid ?? null,
+    receives_messages: a.receives_messages === undefined ? null : a.receives_messages ? 1 : 0,
     now,
   })
   // Registration (`claim: false`) never touches spans — it is not speaking for
@@ -3491,17 +3521,17 @@ export function listActivity(db: Database.Database, opts: { staleMinutes?: numbe
   const cold = claimCutoff(now)
   const rows = db
     .prepare(`SELECT session, project, stream, agent, doing, last_doing, detail, children, idle, started_at, updated_at, last_call_at, server_version, server_source,
-                     call_minute, call_counts
+                     call_minute, call_counts, receives_messages
               FROM activity WHERE ended_at IS NULL AND updated_at >= ?`)
-    .all(cutoff) as Array<Omit<Activity, 'children' | 'idle'> & {
-      children: string | null; idle: number; call_minute: number | null; call_counts: string | null
+    .all(cutoff) as Array<Omit<Activity, 'children' | 'idle' | 'receives_messages'> & {
+      children: string | null; idle: number; call_minute: number | null; call_counts: string | null; receives_messages: number | null
     }>
   const nowMinute = Math.floor(now / 60000)
   // The row is kept whatever happens here — the session really is present, and
   // public/attention.js classifies an item as "waiting" iff its session id is in
   // this list, so dropping the row would silently downgrade a live blocker. Only
   // the CLAIM decays.
-  const out = rows.map(({ call_minute, call_counts, ...r }): Activity => {
+  const out = rows.map(({ call_minute, call_counts, receives_messages, ...r }): Activity => {
     const live = (r.last_call_at ?? r.started_at) >= cold
     // #306: the trace is served only while its newest minute is in the window
     const calls = call_minute !== null && nowMinute - call_minute < CALL_TRACE_MINUTES ? parseCallCounts(call_counts) : null
@@ -3512,6 +3542,7 @@ export function listActivity(db: Database.Database, opts: { staleMinutes?: numbe
       detail: live ? r.detail : '',
       children: live && r.children ? (JSON.parse(r.children) as ActivityChild[]) : [],
       ...(calls ? { calls, calls_at: call_minute! } : {}),
+      ...(receives_messages === 1 ? { receives_messages: true as const } : {}),
     }
   })
   // Working sessions first (longest-running first, as before). Everything else
@@ -3581,6 +3612,177 @@ export function holdsHookWatch(db: Database.Database, key: string, token: string
 
 export function releaseHookWatch(db: Database.Database, key: string, token: string): void {
   db.prepare(`DELETE FROM hook_watch_claims WHERE claim_key = ? AND token = ?`).run(key, token)
+}
+
+// ── issue #411: the human's messages to one MCP session ─────────────────────
+//
+// A message addresses one MCP server's `session` (one CLI process, subagents
+// included) and is delivered only to it: every read and write the MCP side
+// makes is conditioned on the caller's own session id, which no tool accepts as
+// an argument. Its text never changes once sent, so the status is the only pin
+// delivery needs. The first-delivery stamp never moves and is not an
+// acknowledgement: an open message comes back on every pending() until the
+// addressed session acks it. Design:
+// docs/superpowers/specs/2026-10-30-session-messages-design.md.
+export const MESSAGE_MAX_TEXT = 4000
+const MESSAGE_MAX_OPEN = 20
+const MESSAGE_MAX_OPEN_TEXT = 8000
+export const MESSAGE_MAX_OUTCOME = 240
+// closed messages /api/messages carries, newest first
+const RECENT_CLOSED_MESSAGES = 100
+const MESSAGE_RETENTION_MS = 30 * 24 * 60 * 60000
+
+export type SessionMessageStatus = 'open' | 'acknowledged' | 'withdrawn'
+
+export interface SessionMessage {
+  id: string
+  session: string
+  project: string
+  stream: string
+  agent: string
+  text: string
+  created_at: string
+  revision: number
+  status: SessionMessageStatus
+  delivered_at: string | null
+  delivered_by: string | null
+  outcome: string
+  closed_at: string | null
+}
+
+export type SendMessageRefusal =
+  | 'id_conflict' | 'session_gone' | 'session_cannot_receive' | 'too_many_open' | 'too_much_open'
+
+export type SendMessageResult =
+  | { ok: true; message: SessionMessage; replayed: boolean }
+  | { ok: false; reason: SendMessageRefusal }
+
+export type MessageChangeResult =
+  | { ok: true; message: SessionMessage }
+  | { ok: false; reason: 'not_found' | 'revision_changed' }
+  | { ok: false; reason: 'not_open'; status: SessionMessageStatus; outcome: string }
+
+const MESSAGE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+
+export function validMessageId(id: unknown): id is string {
+  return typeof id === 'string' && MESSAGE_ID.test(id)
+}
+
+export function validMessageText(text: unknown): text is string {
+  return typeof text === 'string' && text.trim() !== '' && text.length <= MESSAGE_MAX_TEXT
+}
+
+function getSessionMessage(db: Database.Database, id: string): SessionMessage | undefined {
+  return db.prepare(`SELECT * FROM session_messages WHERE id = ?`).get(id) as SessionMessage | undefined
+}
+
+// The human's send, from the viewer. One .immediate() transaction: it reads
+// before it writes. An exact replay (same id, session and text) is answered
+// before any other check, so a retry of an unconfirmed send succeeds even when
+// the message filled the caps or the session has since ended.
+export function sendSessionMessage(
+  db: Database.Database,
+  input: { id: string; session: string; text: string },
+): SendMessageResult {
+  if (!validMessageId(input.id)) throw new Error('message id must be a lowercase UUID')
+  if (!validMessageText(input.text)) throw new Error(`message text must be 1-${MESSAGE_MAX_TEXT} characters`)
+  return db.transaction((): SendMessageResult => {
+    const existing = getSessionMessage(db, input.id)
+    if (existing) {
+      return existing.session === input.session && existing.text === input.text
+        ? { ok: true, message: existing, replayed: true }
+        : { ok: false, reason: 'id_conflict' }
+    }
+    const nowMs = Date.now()
+    const now = new Date(nowMs).toISOString()
+    const cutoff = new Date(nowMs - PRESENCE_STALE_MINUTES * 60000).toISOString()
+    const presence = db.prepare(`SELECT project, stream, agent, receives_messages FROM activity
+                                  WHERE session = ? AND ended_at IS NULL AND updated_at >= ?`)
+      .get(input.session, cutoff) as { project: string; stream: string; agent: string; receives_messages: number | null } | undefined
+    if (!presence) return { ok: false, reason: 'session_gone' }
+    if (presence.receives_messages !== 1) return { ok: false, reason: 'session_cannot_receive' }
+    const open = db.prepare(`SELECT text FROM session_messages WHERE session = ? AND status = 'open'`)
+      .pluck().all(input.session) as string[]
+    if (open.length >= MESSAGE_MAX_OPEN) return { ok: false, reason: 'too_many_open' }
+    if (open.reduce((sum, text) => sum + text.length, 0) + input.text.length > MESSAGE_MAX_OPEN_TEXT) {
+      return { ok: false, reason: 'too_much_open' }
+    }
+    const old = new Date(nowMs - MESSAGE_RETENTION_MS).toISOString()
+    db.prepare(`DELETE FROM session_messages
+                 WHERE (status <> 'open' AND closed_at < ?) OR (status = 'open' AND created_at < ?)`).run(old, old)
+    db.prepare(`INSERT INTO session_messages (id, session, project, stream, agent, text, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)`)
+      .run(input.id, input.session, presence.project, presence.stream, presence.agent, input.text, now)
+    return { ok: true, message: getSessionMessage(db, input.id)!, replayed: false }
+  }).immediate()
+}
+
+// The open messages addressed to this session, oldest first.
+export function listPendingMessages(db: Database.Database, session: string): SessionMessage[] {
+  return db.prepare(`SELECT * FROM session_messages WHERE session = ? AND status = 'open'
+                      ORDER BY created_at ASC, id ASC`).all(session) as SessionMessage[]
+}
+
+// The first delivery to the addressed session. COALESCE keeps the first stamp,
+// whose age is the human's evidence; true means the message is still open, so
+// it is safe to hand over (a withdrawn one is dropped). Not an acknowledgement.
+export function markMessageDelivered(db: Database.Database, id: string, session: string, reader: string): boolean {
+  return db.prepare(`UPDATE session_messages
+                        SET delivered_at = COALESCE(delivered_at, ?), delivered_by = COALESCE(delivered_by, ?)
+                      WHERE id = ? AND session = ? AND status = 'open'`)
+    .run(new Date().toISOString(), reader, id, session).changes === 1
+}
+
+function messageRefusal(db: Database.Database, id: string, session?: string): MessageChangeResult {
+  const message = getSessionMessage(db, id)
+  // another session's message reads as not found: its existence is not this caller's to learn
+  if (!message || (session !== undefined && message.session !== session)) return { ok: false, reason: 'not_found' }
+  if (message.status !== 'open') return { ok: false, reason: 'not_open', status: message.status, outcome: message.outcome }
+  return { ok: false, reason: 'revision_changed' }
+}
+
+// The addressed session's acknowledgement, with its one-line outcome.
+export function ackMessage(db: Database.Database, input: { id: string; session: string; outcome: string }): MessageChangeResult {
+  const outcome = input.outcome.trim()
+  if (!outcome || outcome.length > MESSAGE_MAX_OUTCOME) throw new Error(`outcome must be 1-${MESSAGE_MAX_OUTCOME} characters`)
+  return db.transaction((): MessageChangeResult => {
+    const changed = db.prepare(`UPDATE session_messages
+                                   SET status = 'acknowledged', outcome = ?, closed_at = ?, revision = revision + 1
+                                 WHERE id = ? AND session = ? AND status = 'open'`)
+      .run(outcome, new Date().toISOString(), input.id, input.session).changes
+    return changed === 1 ? { ok: true, message: getSessionMessage(db, input.id)! } : messageRefusal(db, input.id, input.session)
+  }).immediate()
+}
+
+// The human takes an open message back, pinned to the revision they saw.
+export function withdrawSessionMessage(db: Database.Database, id: string, revision: number): MessageChangeResult {
+  return db.transaction((): MessageChangeResult => {
+    const changed = db.prepare(`UPDATE session_messages
+                                   SET status = 'withdrawn', closed_at = ?, revision = revision + 1
+                                 WHERE id = ? AND status = 'open' AND revision = ?`)
+      .run(new Date().toISOString(), id, revision).changes
+    return changed === 1 ? { ok: true, message: getSessionMessage(db, id)! } : messageRefusal(db, id)
+  }).immediate()
+}
+
+// GET /api/messages: every open message, oldest first, and the newest closed
+// ones. Built from the database alone, so a store token validates it.
+export function listSessionMessages(db: Database.Database): { open: SessionMessage[]; closed: SessionMessage[] } {
+  return {
+    open: db.prepare(`SELECT * FROM session_messages WHERE status = 'open' ORDER BY created_at ASC, id ASC`)
+      .all() as SessionMessage[],
+    closed: db.prepare(`SELECT * FROM session_messages WHERE status <> 'open' ORDER BY closed_at DESC, id DESC LIMIT ?`)
+      .all(RECENT_CLOSED_MESSAGES) as SessionMessage[],
+  }
+}
+
+// What a Claude Code hook may know: which messages to its linked servers are
+// still open. Ids only; a hook never reads or prints the text.
+export function listOpenMessages(db: Database.Database, sessions: readonly string[]): Array<{ id: string; session: string }> {
+  if (sessions.length === 0) return []
+  return db.prepare(`SELECT id, session FROM session_messages
+                      WHERE status = 'open' AND session IN (SELECT value FROM json_each(?))
+                      ORDER BY created_at ASC, id ASC`).all(JSON.stringify(sessions)) as Array<{ id: string; session: string }>
 }
 
 // ── activity spans: truthful claim intervals, read-only for the dashboard ────

@@ -94,6 +94,30 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   (exit 124, unchanged). `board_get({watch:true})` returns no watch for a row stopped for
   good: re-arming it would only cost another wake.
 
+- **The hooks wake a linked session for the human's messages (issue #411).** Only a
+  linked hook (#253) knows its servers, so only it counts messages; an unlinked one
+  ignores them. It counts OPEN messages to those servers (`listOpenMessages`, ids
+  only, never the text), never undelivered ones: a subagent's `pending()` stamps
+  delivery for a message the top-level agent never saw. `prompt-submit` and
+  `session-start` remind about every open message on each event. `stop` blocks for
+  the open messages it has not yet blocked for, never on `stop_hook_active`, and
+  records them in its OWN file, `<state>/host-<pid>.nudged.json`, keyed by the Claude
+  Code process the link proved and written only by `stop` (temp file and rename),
+  holding only ids still open. Not in the session marker: `readMarker` rebuilds a fixed
+  shape, the notification hooks rewrite it whole (the commit after its grace window),
+  and it is keyed by the harness session id, which `/clear` changes. So `stop` blocks
+  once per message, and one the agent ignores or cannot ack never loops a Stop. `watch`
+  baselines the messages open when it arms (`stop`, on the same event, owns those, as
+  `answered` excludes answers), re-reads the live servers of its host on every poll (a
+  server restarted under the same Claude Code process stays covered), and wakes with
+  exit 2 for any other open message, unless superseded. Its lease keeps the key
+  `host:<pid>`, so supersession is unchanged, and its token starts `m1:`: every hook
+  since #253 claims the same key without waking for messages, so only a marked token may
+  ever tell the human a message will wake the session. The nudge adds one clause per
+  kind; with no messages it is byte-identical to before. A message that arrives during a
+  `stop_hook_active` continuation, or after the watch window ends, waits for the next
+  prompt or ordinary Stop.
+
 ## History (shipped since v1)
 
 These landed after v1 and still hold invariants; the release history itself is in `CHANGELOG.md`.

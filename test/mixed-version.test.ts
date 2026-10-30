@@ -19,7 +19,7 @@ import Database from 'better-sqlite3'
 import {
   getBoard, getItem, insertItem, listActivity, listBoards, listHostSessions, listIssueEntities, listIssueSnapshots, listItems, listSourceLinks,
   markReplySeen, openDb, pinBoardRow, pinItem, recordActivityCall, recordIssueFailure, replyItem, stopBoardRowWatch, stopItemWatch, updateBoardRow, upsertActivity,
-  upsertBoard, upsertIssueSnapshot, upsertSourceLink,
+  upsertBoard, upsertIssueSnapshot, upsertSourceLink, sendSessionMessage, listSessionMessages, readSnapshotState,
 } from '../src/store.js'
 import type { IssueDependencies } from '../src/store.js'
 import { issueQueue } from '../src/issue-poller.js'
@@ -1590,5 +1590,71 @@ describe('a v1.8.0 process sharing a hub with call traces and plan sessions (#30
       expectedVersion: getBoard(db, 'agent-inbox', 'Old plan')!.revision,
     })
     expect(getBoard(db, 'agent-inbox', 'Old plan')!.session).toBe('new-mcp')
+  })
+})
+
+// Issue #411: v2.1.0 knows nothing of session messages. Its presence statement
+// is v1.7.0's, verbatim (checked against the v2.1.0 tag when this was written),
+// so it never sets receives_messages: a send to a session it serves is refused,
+// and none of its statements can change a message or move the messages domain.
+describe('a v2.1.0 process sharing a hub with session messages (#411)', () => {
+  let dir: string
+  let path: string
+  const open: Database.Database[] = []
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(Date.parse(at(60)))
+    dir = scratchDir('mixed-version-messages-')
+    path = join(dir, 'inbox.db')
+  })
+
+  afterEach(() => {
+    for (const connection of open.splice(0)) if (connection.open) connection.close()
+    rmSync(dir, { recursive: true, force: true })
+    vi.useRealTimers()
+  })
+
+  function connect(older: boolean): Database.Database {
+    const db = older ? new Database(path) : openDb(path)
+    if (older) {
+      db.pragma('busy_timeout = 5000')
+      db.pragma('journal_mode = WAL')
+    }
+    open.push(db)
+    return db
+  }
+
+  const presence = (session: string, doing: string, claim: number) => ({
+    session, project: 'agent-inbox', stream: 'main', agent: 'claude-code', doing, detail: '', children: null,
+    idle: claim ? 0 : 1, claim, server_version: '2.1.0', server_source: 'runtime', host_pid: 1, server_pid: 2, now: new Date().toISOString(),
+  })
+  const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`
+
+  it('a session its presence statement wrote is refused, while this build’s flag survives its writes to the same row', () => {
+    const db = connect(false)
+    const old = connect(true)
+    old.prepare(V170.upsertActivity).run(presence('old-mcp', 'open', 0))
+    expect(sendSessionMessage(db, { id: id(1), session: 'old-mcp', text: 'Hello?' })).toEqual({ ok: false, reason: 'session_cannot_receive' })
+    upsertActivity(db, { session: 'new-mcp', project: 'agent-inbox', stream: 'main', agent: 'copilot', doing: 'open', idle: true, claim: false, receives_messages: true })
+    old.prepare(V170.upsertActivity).run(presence('new-mcp', 'Reviewing', 1))
+    old.prepare(V170.touchActivity).run(new Date().toISOString(), 'new-mcp')
+    expect(sendSessionMessage(db, { id: id(2), session: 'new-mcp', text: 'Hello.' }).ok).toBe(true)
+  })
+
+  it('none of its presence, call, item or answer statements changes a message or moves the messages domain', () => {
+    const db = connect(false)
+    const old = connect(true)
+    upsertActivity(db, { session: 'new-mcp', project: 'agent-inbox', stream: 'main', agent: 'copilot', doing: 'open', idle: true, claim: false, receives_messages: true })
+    sendSessionMessage(db, { id: id(1), session: 'new-mcp', text: 'Run the tests.' })
+    const asked = insertItem(db, { project: 'agent-inbox', stream: '', agent: 'new', kind: 'question', title: 'Ship it?' })
+    const before = { messages: listSessionMessages(db), version: readSnapshotState(db).domains.session_messages }
+    old.prepare(V170.upsertActivity).run(presence('new-mcp', 'Reviewing', 1))
+    old.prepare(V170.recordActivityCall).run({ session: 'new-mcp', now: new Date().toISOString(), cold: at(0) })
+    old.prepare(V170.touchActivity).run(new Date().toISOString(), 'new-mcp')
+    old.prepare(V140.replyItem).run({ id: asked, reply: 'Ship it', replyContext: null, kind: 'answer', now: new Date().toISOString() })
+    // its day-old housekeeping removes presence rows, never messages
+    old.prepare(`DELETE FROM activity WHERE (ended_at IS NOT NULL AND ended_at < ?) OR updated_at < ?`).run(at(9999), at(9999))
+    expect({ messages: listSessionMessages(db), version: readSnapshotState(db).domains.session_messages }).toEqual(before)
   })
 })

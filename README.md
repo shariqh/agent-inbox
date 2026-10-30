@@ -323,9 +323,10 @@ text you select in a reply box or other field.
 | Tool | Purpose |
 |---|---|
 | `flag` | Raise a question, non-blocking note, or completed milestone |
-| `pending` | Read open questions, informational feedback, and plan responses; optionally re-read one open item |
+| `pending` | Read open questions, informational feedback, plan responses and the human’s messages to this session; optionally re-read one open item |
 | `answer` | Record an answer the human gave in chat while preserving inbox precedence |
 | `resolve` | Close an item after the agent acts on it |
+| `ack_message` | Acknowledge, with an outcome, a message the human sent this session |
 | `status` | Publish ephemeral live work and child-agent presence |
 | `board_upsert` | Create or refresh an entire tracking board |
 | `board_row` | Update one stable board row |

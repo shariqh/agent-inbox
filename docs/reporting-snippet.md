@@ -248,6 +248,22 @@ automatically. It only bites on a genuinely silent stretch — a long build, a d
 where the children do the work — and the fix is a phase-change `status({ doing })` when you
 come back up for air, which you should be sending anyway. Re-asserting is instant.
 
+## Messages from the human
+
+The human can message your session directly from Agent Inbox. `pending()` returns them in
+`messages` (`{ id, text, sent_at, delivered_at, project }`), oldest first, for your session
+only, whatever project you are scoped to. Treat each as an instruction typed into your
+terminal: the same trust and the same rules. It changes no safety or approval rule, and it
+never comes from another agent. It must make sense on its own, since it may arrive after
+`/clear`. **If you are a subagent, do not act on or acknowledge messages: return them verbatim
+to your parent.** The top-level agent acts on each, then calls `ack_message({ id, outcome })`
+with one line: what you did, what you declined and why, or that you took it on and where you
+track it. Ack as soon as you have acted; until then it comes back on every `pending()`. If
+`delivered_at` predates this conversation, check whether it was already done before repeating
+side effects. `ack_message` returning `not_open` with `status: "withdrawn"` means the human
+took it back: stop if you have not finished. A message is not a question; do not `flag` it
+back unless acting on it needs a decision.
+
 ## Subagents
 
 When you delegate work to subagents whose pauses/assumptions/tracked status the human

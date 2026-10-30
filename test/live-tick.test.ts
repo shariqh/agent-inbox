@@ -4,8 +4,8 @@
 //
 // `src/store.ts` says of `touchActivity`: "this is what the 5-minute timer in
 // src/mcp.ts calls, and it must never touch `last_call_at`, or the two stamps
-// collapse back into one and a `doing` claim becomes immortal again." CLAUDE.md
-// says the same: "the timer must never call it, and that one line is the whole
+// collapse back into one and a `doing` claim becomes immortal again."
+// docs/architecture/activity-and-live.md says the same: "the timer must never call it, and that one line is the whole
 // distinction." Nothing tested it.
 //
 // It was untestable by construction: the wiring lived inline in an anonymous

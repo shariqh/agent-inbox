@@ -7,7 +7,7 @@
 // the × actually retires a tab, the badge actually drops, a peek actually does
 // NOT reopen, and a new flag actually brings the project back.
 //
-// Read the blind-spot list in CLAUDE.md before adding a CSS assertion here:
+// Read the blind-spot list in docs/architecture/testing.md before adding a CSS assertion here:
 // `@media` never matches in jsdom, so nothing about the narrow-width
 // close/reopen rules can be verified from this file.
 import { describe, it, expect, afterEach } from 'vitest'

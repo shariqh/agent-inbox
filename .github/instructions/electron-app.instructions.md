@@ -1,0 +1,1 @@
+../../docs/architecture/electron-app.md

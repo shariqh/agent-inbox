@@ -1,0 +1,1 @@
+../../docs/architecture/store-and-snapshots.md

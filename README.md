@@ -9,8 +9,9 @@
 Agent Inbox gives GitHub Copilot CLI and Claude Code one shared place to surface
 decisions, handoffs, notes, milestones, and multi-step plans. You respond in the
 Electron app; agents pick the response up through MCP and continue working.
-Its default Live Operations Desk shows active claims, trustworthy attention,
-ownership flow, plan movement, and recorded outcomes across every project.
+The app opens on the Dashboard: a lane for each working session, a Needs you rail
+you can answer from, a Today ribbon of each project's activity, and what just
+landed. You can also send a message to a running session.
 
 ![Agent Inbox showing a synthetic decision queue, plan row, response options, and live agents](docs/assets/agent-inbox-overview.png)
 
@@ -22,11 +23,12 @@ share one SQLite database on your machine.
 
 | Capability | What you get |
 |---|---|
-| **Live operations dashboard** | Real current state plus locally persisted agent-claim history, with every signal drilling into a working view |
+| **Dashboard** | A Needs you rail you answer from, a lane per working session with its plan's progress and recent activity, and a Today ribbon of asks and outcomes |
 | **Cross-project inbox** | Questions and handoffs from every active coding session in one prioritized queue |
 | **Action-aware responses** | Recommended options, free-text answers, snooze, pin for later, clarify, and decline controls |
 | **Durable plans** | Tracking boards with stable rows, progress, next steps, outcomes, and human-owned actions |
 | **Live sessions** | Ambient status for active agents and their current work without turning activity into alerts |
+| **Session messages** | Write to a running session, and see before you send whether it arrives now or at the session's next check |
 | **Dual-host setup** | Audited installers and instructions for GitHub Copilot CLI and Claude Code |
 | **Local security boundary** | A loopback-only viewer with strict Host, Origin, Fetch Metadata, and anti-framing checks |
 
@@ -205,8 +207,8 @@ without changing the current session scope. Each re-arm of the same unanswered
 request waits longer (30 minutes, then 1, 2 and 4 hours), so a long wait costs the
 agent a few wakes instead of dozens. On a Copilot request you can also choose
 **I'll take a while**: stop the agent waiting (it will not wake on its own, so
-message it after you answer) or ask it to wait quietly for a few hours or until
-tomorrow. With the Later section on (the default), the same choice also sets the
+prompt it in its terminal after you answer) or ask it to wait quietly for a few
+hours or until tomorrow. With the Later section on (the default), the same choice also sets the
 request aside: **Stop waiting** pins it in Later, and a quiet wait snoozes it there
 until the same time. With the section off, the request stays in Needs you. A
 snooze also keeps its watcher quiet, checking in at most once a day. The choice
@@ -233,6 +235,79 @@ first, and a session running from a source checkout is told to update and rebuil
 it. After Setup matches agents back to an older app, sessions still on the newer
 build are marked too. A server too old to report its build shows nothing rather than
 a guess.
+
+## The Dashboard
+
+The app opens on the Dashboard (`G D`), for all projects and agents.
+
+- **Needs you** lists the requests waiting on you, the same set the badge counts,
+  with requests whose agent is still waiting on the answer first. The top three are
+  cards you can answer right there, with the Inbox's own options and editor, or set
+  aside with **Snooze** (4 hours) or **Pin**. On a card, `J`/`K` move, `1`-`4`
+  choose, `S` snoozes, `P` pins and `Enter` expands. The rail also says how many
+  more requests wait in the Inbox and how many are in Later.
+- **The Now strip** counts working sessions and their subagents, the requests
+  waiting on you and how long the oldest has waited, and the plan steps of the
+  working sessions' plans.
+- **Live lanes** give each working session a lane: what it reports, its plan's
+  progress (done, in progress, waiting on you, to do), the requests it is asking
+  you, and a small trace of its MCP calls over the last 30 minutes. A lane whose
+  session has made no MCP call for 5 minutes says how long it has been quiet. A
+  session that reports no current work, or has made no call for 30 minutes, gets no
+  lane and is counted among the idle connections. Filter the lanes by project or
+  agent. Click a lane's title to open its session panel: its requests, its plan,
+  its recent outcomes, PR and CI state, links, and a place to message it.
+- **The Today ribbon** draws one line per project over the last 24 hours, 7 days or
+  30 days: when its agents worked, ◆ where one asked you something and ● where an
+  outcome landed.
+- **Just landed** shows the four newest outcomes. An outcome on a pull request that
+  is still waiting on you is counted there instead of shown.
+- After at least 30 minutes away, one line says what happened since you last looked.
+
+In search (`Cmd/Ctrl K`), type `answer `, `open plan ` or `jump to session ` to list
+those targets first.
+
+**Settings → Motion** chooses Full or Calm. Calm turns off looping animation and the
+brief pulse a lane gives when its session makes a call. Your system's Reduce motion
+setting turns motion off whichever you choose.
+
+## Messaging a running session
+
+You can write to a connected session without finding its terminal. Each session in
+**Live sessions** (the strip at the foot of the window) has a **Message** button, and
+a session's Dashboard panel has a **Message** section. Messages go to the whole CLI
+session: any of its agents, a subagent included, may pick one up first. A message
+can be up to 4,000 characters, and it never changes a badge or a count.
+
+Before you send, the composer says how the message will arrive:
+
+| Delivery | When |
+|---|---|
+| **Arrives now** | A Claude Code session started with the channels flag (below), or one whose wake-up hooks ([`docs/hooks.md`](docs/hooks.md)) are waiting |
+| **It sees this when it next checks Agent Inbox** | Any other session on v2.2.0 or later, including every Copilot CLI session: it reads the message the next time it calls `pending` |
+| **Can't receive** | A session still running an older build; restart it to load v2.2.0 or later |
+
+Each message then shows **Sent · not picked up yet**, **Picked up · working on it**
+or **Acknowledged**, with the outcome the agent recorded through `ack_message`.
+**Withdraw** takes back a message the session has not acknowledged; after pickup the
+agent may already have started. **Not delivered** at the foot of Live sessions lists
+messages to sessions that ended, with **Copy text** and **Withdraw**. An unsent
+message is kept like any other draft, and a send that was not confirmed never sends
+twice.
+
+**Claude Code channels (research preview).** Claude Code can push a message straight
+into a running session, even an idle one, through its channels feature. It is a
+Claude Code research preview: it needs a claude.ai or Console login, works only in
+interactive sessions, and Team and Enterprise organizations must allow channels. The
+MCP registration must be named `agent-inbox`, which the installer does. Start Claude
+Code with
+
+```sh
+claude --dangerously-load-development-channels server:agent-inbox
+```
+
+and accept its warning. The push carries only a notice to call `pending`, never the
+message text.
 
 ## Setting requests aside
 
@@ -458,10 +533,11 @@ as `.command`, `.pkg` or `.dmg`) can't have a rule at all. In the desktop app ev
 file chip also has **Reveal in Finder** and **Copy path**. Both, and Settings →
 Links itself, work only in the viewer the app started itself.
 
-## Agents view (opt-in)
+## Agents view (opt-in, experimental)
 
 The Dashboard can group your Live sessions by agent (Copilot, Claude Code, …) as
-well as by session. It is off unless you turn it on. It adds no poll read, no
+well as by session. It is experimental and off unless you turn it on. Each session
+line there also has a **Message** button. It adds no poll read, no
 network traffic beyond this machine and nothing to your badges; when it is on,
 the page loads one more script, `/mesh-view.js`.
 

@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { spawn, execFileSync } from 'node:child_process'
 import type { ChildProcessByStdio } from 'node:child_process'
 import type { Readable, Writable } from 'node:stream'
+import { z } from 'zod'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { ReadBuffer, serializeMessage } from '@modelcontextprotocol/sdk/shared/stdio.js'
@@ -2131,6 +2132,79 @@ describe('session messages (#411)', () => {
     } finally {
       await a.close()
       await b.close()
+    }
+  }, 30000)
+})
+
+// Issue #411 (channels, research preview): a Claude Code client is told the
+// server is a channel and gets one `notifications/claude/channel` per message to
+// its own session, carrying the id only. Copilot's handshake, context and tools
+// are unchanged, and it is pushed nothing.
+describe('channel push into Claude Code (#411)', () => {
+  it('pushes exactly one id-only notice to the addressed Claude Code session, and nothing to Copilot', async () => {
+    const dbPath = join(scratchDir('mcp-channel-'), 'inbox.db')
+    const ChannelNotification = z.object({
+      method: z.literal('notifications/claude/channel'),
+      params: z.object({ content: z.string(), meta: z.record(z.string(), z.string()) }),
+    })
+    type Notice = z.infer<typeof ChannelNotification>['params']
+    const connect = async (name: string) => {
+      const client = new Client({ name, version: '1.0.0' })
+      const notices: Notice[] = []
+      client.setNotificationHandler(ChannelNotification, async ({ params }) => { notices.push(params) })
+      await client.connect(new StdioClientTransport({
+        command: 'npx', args: ['tsx', 'src/mcp-server.ts'],
+        env: { ...process.env, AGENT_INBOX_DB: dbPath, AGENT_INBOX_CHANNEL_POLL_MS: '100' },
+      }))
+      return { client, notices }
+    }
+    const call = async (client: Client, name: string, args: Record<string, unknown>) =>
+      JSON.parse((((await client.callTool({ name, arguments: args })).content) as Array<{ text: string }>)[0]!.text)
+    const claude = await connect('claude-code')
+    const copilot = await connect('copilot')
+    try {
+      // only Claude Code is told this server is a channel, and what an event means
+      expect(claude.client.getServerCapabilities()?.experimental).toEqual({ 'claude/channel': {} })
+      expect(claude.client.getInstructions()).toContain('<channel source="agent-inbox"')
+      expect(copilot.client.getServerCapabilities()?.experimental).toBeUndefined()
+      expect(copilot.client.getInstructions()).toBeUndefined()
+      const tools = async (client: Client) => (await client.listTools()).tools
+      expect(await tools(copilot.client)).toEqual(await tools(claude.client))
+
+      await call(claude.client, 'pending', {})
+      await call(copilot.client, 'pending', {})
+      const db = openDb(dbPath)
+      const sessionOf = (agent: string) => listActivity(db).find((row) => row.agent === agent)!
+      // the test runner's process was not launched with a channel flag
+      expect(sessionOf('claude-code').push_wake).toBeUndefined()
+      const viewer = createViewer(db)
+      const send = async (agent: string, id: string, text: string) => {
+        const res = await viewer.request(`/api/sessions/${sessionOf(agent).session}/messages`, {
+          method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id, text }),
+        })
+        expect(await res.json()).toMatchObject({ ok: true })
+      }
+      const mine = '11111111-2222-4333-8444-777777777777'
+      await send('copilot', '11111111-2222-4333-8444-888888888888', 'Copilot only.')
+      await send('claude-code', mine, 'Also run the DOM tests.')
+      const end = Date.now() + 5000
+      while (claude.notices.length === 0 && Date.now() < end) await new Promise((resolve) => setTimeout(resolve, 50))
+      await new Promise((resolve) => setTimeout(resolve, 600)) // several more ticks
+      expect(claude.notices).toEqual([{
+        content: 'The human sent this session a message in Agent Inbox. Call pending() to read it, act on it, then ack_message({id, outcome}).',
+        meta: { message_id: mine },
+      }])
+      expect(copilot.notices).toEqual([])
+
+      // the push is only a wake: delivery and ack still go through pending()
+      expect((await call(claude.client, 'pending', {})).messages).toEqual([expect.objectContaining({ id: mine, text: 'Also run the DOM tests.' })])
+      expect(await call(claude.client, 'ack_message', { id: mine, outcome: 'Ran them.' })).toEqual({ ok: true })
+      await new Promise((resolve) => setTimeout(resolve, 300))
+      expect(claude.notices).toHaveLength(1)
+      db.close()
+    } finally {
+      await claude.client.close()
+      await copilot.client.close()
     }
   }, 30000)
 })

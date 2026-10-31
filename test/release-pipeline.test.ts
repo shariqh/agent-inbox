@@ -734,7 +734,7 @@ describe('macOS finalization contract', () => {
     const mcp = readFileSync(join(root, 'src', 'mcp.ts'), 'utf8')
     expect(pkg.version).toBe('2.1.0')
     expect(version).toContain(`export const AGENT_INBOX_VERSION = '${pkg.version}'`)
-    expect(mcp).toContain(`new McpServer({ name: 'agent-inbox', version: AGENT_INBOX_VERSION })`)
+    expect(mcp).toMatch(/new McpServer\(\s*\{ name: 'agent-inbox', version: AGENT_INBOX_VERSION \}/)
     expect(mcp).toContain('server_version: AGENT_INBOX_VERSION')
   })
 

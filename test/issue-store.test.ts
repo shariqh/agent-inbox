@@ -93,7 +93,7 @@ describe('issue snapshot store (issue #103)', () => {
         items: ['watch_stopped_at', 'watch_stopped_until', 'action_agent', 'pinned_at', 'repo_root'],
         boards: ['issue_pin_repo', 'issue_pin_number', 'repo_root', 'session'],
         board_rows: ['watch_stopped_at', 'watch_stopped_until', 'action_agent', 'action_agent_version', 'issue_repo', 'issue_number', 'pinned_at', 'waits_on'],
-        activity: ['host_pid', 'server_pid', 'call_minute', 'call_counts', 'receives_messages'],
+        activity: ['host_pid', 'server_pid', 'call_minute', 'call_counts', 'receives_messages', 'push_wake'],
       }
       const migrated = openDb(path)
       try {

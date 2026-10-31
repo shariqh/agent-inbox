@@ -39,6 +39,15 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   The Dashboard puts a plan on its stamped session's lane first, then falls
   back to project + branch + agent, skipping plans another WORKING session
   stamped (an idle or gone session's stamp joins).
+- `receives_messages` and `push_wake` (#411) are capability flags carried by the
+  same presence writes, kept on omission and served only as `true`.
+  `push_wake` says a message is pushed into the session at once: its Claude
+  Code was launched with `--dangerously-load-development-channels
+  server:agent-inbox` (read from the parent process's arguments, since Claude
+  Code reports nothing). It is evidence, not proof: an org policy, a non-claude.ai
+  login or a refused registration drops the push silently, and a launch through a
+  wrapper process or under another registration name reads as absent. Never
+  liveness, work or attention; `/api/activity` stays a bare array.
 
 ## Invariants in detail
 

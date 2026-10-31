@@ -705,6 +705,10 @@ function runMigrations(db: Database.Database): void {
   // written by its own presence and status writes. NULL on legacy rows and on
   // every row an older server writes: a send to such a session is refused.
   ensureColumn(db, 'activity', 'receives_messages', 'INTEGER')
+  // issue #411 (channels spike) — 1 when this session's Claude Code was launched
+  // naming this server as a channel, so a message pushes a turn at once. Written
+  // by this build's presence writes only, kept on omission like the flag above.
+  ensureColumn(db, 'activity', 'push_wake', 'INTEGER')
   // issue #297 — keep this last: its triggers name the columns added above
   migrateSnapshotDomains(db)
 }
@@ -3280,6 +3284,12 @@ export interface Activity {
   calls_at?: number
   /** Issue #411 — present, and true, only when this session's server delivers session messages. */
   receives_messages?: true
+  /**
+   * Issue #411 (channels) — present, and true, only when this session's Claude
+   * Code was launched with a channel flag naming this server, so a message is
+   * pushed into it at once. Evidence, not proof: Claude Code acknowledges nothing.
+   */
+  push_wake?: true
 }
 
 export interface ActivityUpdate {
@@ -3324,6 +3334,8 @@ export interface ActivityUpdate {
   server_pid?: number
   /** Issue #411 — this server delivers session messages. Kept on omission. */
   receives_messages?: boolean
+  /** Issue #411 (channels) — a message is pushed into this session. Kept on omission. */
+  push_wake?: boolean
 }
 
 // One statement for the `activity` presence row, plus (when this write is a
@@ -3336,11 +3348,11 @@ const upsertActivityTxn = (db: Database.Database, a: ActivityUpdate): void => {
   // One statement, two modes. Registration can create idle presence but can
   // neither replace a live claim nor write its historical caption.
   db.prepare(
-    `INSERT INTO activity (session, project, stream, agent, doing, last_doing, detail, children, idle, started_at, updated_at, server_version, server_source, host_pid, server_pid, receives_messages)
+    `INSERT INTO activity (session, project, stream, agent, doing, last_doing, detail, children, idle, started_at, updated_at, server_version, server_source, host_pid, server_pid, receives_messages, push_wake)
      VALUES (
        @session, @project, @stream, @agent, @doing,
        CASE WHEN @claim = 1 AND @idle = 0 AND @doing <> '' AND @doing <> 'open' THEN @doing ELSE '' END,
-       @detail, @children, @idle, @now, @now, @server_version, @server_source, @host_pid, @server_pid, @receives_messages
+       @detail, @children, @idle, @now, @now, @server_version, @server_source, @host_pid, @server_pid, @receives_messages, @push_wake
      )
      ON CONFLICT(session) DO UPDATE SET
        project = @project, stream = @stream, agent = @agent,
@@ -3357,6 +3369,7 @@ const upsertActivityTxn = (db: Database.Database, a: ActivityUpdate): void => {
        host_pid   = COALESCE(@host_pid, host_pid),
        server_pid = COALESCE(@server_pid, server_pid),
        receives_messages = COALESCE(@receives_messages, receives_messages),
+       push_wake = COALESCE(@push_wake, push_wake),
        updated_at = @now, ended_at = NULL`,
   ).run({
     session: a.session,
@@ -3373,6 +3386,7 @@ const upsertActivityTxn = (db: Database.Database, a: ActivityUpdate): void => {
     host_pid: a.host_pid ?? null,
     server_pid: a.server_pid ?? null,
     receives_messages: a.receives_messages === undefined ? null : a.receives_messages ? 1 : 0,
+    push_wake: a.push_wake === undefined ? null : a.push_wake ? 1 : 0,
     now,
   })
   // Registration (`claim: false`) never touches spans — it is not speaking for
@@ -3521,17 +3535,17 @@ export function listActivity(db: Database.Database, opts: { staleMinutes?: numbe
   const cold = claimCutoff(now)
   const rows = db
     .prepare(`SELECT session, project, stream, agent, doing, last_doing, detail, children, idle, started_at, updated_at, last_call_at, server_version, server_source,
-                     call_minute, call_counts, receives_messages
+                     call_minute, call_counts, receives_messages, push_wake
               FROM activity WHERE ended_at IS NULL AND updated_at >= ?`)
-    .all(cutoff) as Array<Omit<Activity, 'children' | 'idle' | 'receives_messages'> & {
-      children: string | null; idle: number; call_minute: number | null; call_counts: string | null; receives_messages: number | null
+    .all(cutoff) as Array<Omit<Activity, 'children' | 'idle' | 'receives_messages' | 'push_wake'> & {
+      children: string | null; idle: number; call_minute: number | null; call_counts: string | null; receives_messages: number | null; push_wake: number | null
     }>
   const nowMinute = Math.floor(now / 60000)
   // The row is kept whatever happens here — the session really is present, and
   // public/attention.js classifies an item as "waiting" iff its session id is in
   // this list, so dropping the row would silently downgrade a live blocker. Only
   // the CLAIM decays.
-  const out = rows.map(({ call_minute, call_counts, receives_messages, ...r }): Activity => {
+  const out = rows.map(({ call_minute, call_counts, receives_messages, push_wake, ...r }): Activity => {
     const live = (r.last_call_at ?? r.started_at) >= cold
     // #306: the trace is served only while its newest minute is in the window
     const calls = call_minute !== null && nowMinute - call_minute < CALL_TRACE_MINUTES ? parseCallCounts(call_counts) : null
@@ -3543,6 +3557,7 @@ export function listActivity(db: Database.Database, opts: { staleMinutes?: numbe
       children: live && r.children ? (JSON.parse(r.children) as ActivityChild[]) : [],
       ...(calls ? { calls, calls_at: call_minute! } : {}),
       ...(receives_messages === 1 ? { receives_messages: true as const } : {}),
+      ...(push_wake === 1 ? { push_wake: true as const } : {}),
     }
   })
   // Working sessions first (longest-running first, as before). Everything else

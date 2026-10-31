@@ -14,3 +14,8 @@
 - The hooks also wake this session for a message the human sends it from Agent Inbox: `Stop`
   bounces the agent back once per message, and `asyncRewake` resumes an idle session within the
   watch window. Call `pending()`, act on each message, then `ack_message` it with an outcome.
+- A `<channel source="agent-inbox" message_id="…">` event (Claude Code channels, opt-in) means
+  the same: the human sent this session a message. It carries no text; call `pending()`, act,
+  then `ack_message`. Turn it on by launching Claude Code with
+  `--dangerously-load-development-channels server:agent-inbox` (the registration must be named
+  `agent-inbox`), for example `alias claude-inbox='claude --dangerously-load-development-channels server:agent-inbox'`.

@@ -3668,18 +3668,161 @@ export function releaseHookWatch(db: Database.Database, key: string, token: stri
   db.prepare(`DELETE FROM hook_watch_claims WHERE claim_key = ? AND token = ?`).run(key, token)
 }
 
-// ── issue #412: the sessions a driver drives ────────────────────────────────
+// ── issue #412: the leases of a driver and the sessions it drives ───────────
 //
 // A driver (`agent-inbox-driver`) runs one agent child over ACP and holds, in
-// hook_watch_claims (no snapshot reads it, so refreshes rebuild nothing),
-// `driven:<session>` for each MCP session it linked by ancestry. Its token is
-// `<launch id>:<driver pid>:<nonce>`, so a lease's identity is the launch. A
-// lease is fresh for 90 s; the driver refreshes it every 30 s. Design:
-// docs/superpowers/specs/2026-10-31-driven-sessions-design.md §5.1 and §6.
+// hook_watch_claims (no snapshot reads it, so refreshes rebuild nothing):
+// `driver:<pid>` for itself, `driven:<session>` for each MCP session it linked
+// by ancestry, and reads `driver-stop:<launch id>`, the Stop the runtime CLI
+// writes. Every token is `<launch id>:<driver pid>:<nonce>`, so a lease's
+// identity is the launch. A lease is fresh for 90 s; the driver refreshes every
+// 30 s. Design: docs/superpowers/specs/2026-10-31-driven-sessions-design.md
+// §5.1, §6 and §7.
 const DRIVER_LEASE_FRESH_MS = 90_000
+const LAUNCH_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+const LEASE_NONCE = /^[A-Za-z0-9_-]{1,64}$/
+
+export interface DriverLease {
+  launchId: string
+  pid: number
+  nonce: string
+}
+
+export type DriverSlotResult =
+  | { ok: true }
+  | { ok: false; running: Array<{ launch: string; pid: number }> }
+
+function driverToken(lease: DriverLease): string {
+  if (!LAUNCH_ID.test(lease.launchId)) throw new Error('launch id must be a lowercase UUID')
+  if (!Number.isInteger(lease.pid) || lease.pid <= 0) throw new Error('driver pid must be a positive integer')
+  if (!LEASE_NONCE.test(lease.nonce)) throw new Error('lease nonce must be 1-64 letters, digits, - or _')
+  return `${lease.launchId}:${lease.pid}:${lease.nonce}`
+}
 
 function freshLeaseCutoff(nowMs: number): string {
   return new Date(nowMs - DRIVER_LEASE_FRESH_MS).toISOString()
+}
+
+// A driver's start: at most `max` drivers per host, counted from the fresh
+// `driver:` leases inside this one .immediate() transaction, so two starts
+// cannot both see a free slot. A refusal names the launches already running.
+// Only Copilot is driven in #412, so every driver lease counts; per-host caps come with Claude (#421).
+export function claimDriverSlot(db: Database.Database, lease: DriverLease, max: number): DriverSlotResult {
+  const token = driverToken(lease)
+  const nowMs = Date.now()
+  return db.transaction((): DriverSlotResult => {
+    db.prepare(`DELETE FROM hook_watch_claims WHERE claimed_at < ?`).run(new Date(nowMs - 24 * 60 * 60000).toISOString())
+    const others = db.prepare(`SELECT token FROM hook_watch_claims
+                                WHERE claim_key LIKE 'driver:%' AND claimed_at >= ? AND token <> ?
+                                ORDER BY claimed_at ASC`)
+      .pluck().all(freshLeaseCutoff(nowMs), token) as string[]
+    if (others.length >= max) {
+      return {
+        ok: false,
+        running: others.map((t) => {
+          const [launch = '', pid = ''] = t.split(':')
+          return { launch, pid: Number(pid) }
+        }),
+      }
+    }
+    db.prepare(`INSERT INTO hook_watch_claims (claim_key, token, claimed_at) VALUES (?, ?, ?)
+                ON CONFLICT(claim_key) DO UPDATE SET token = excluded.token, claimed_at = excluded.claimed_at`)
+      .run(`driver:${lease.pid}`, token, new Date(nowMs).toISOString())
+    return { ok: true }
+  }).immediate()
+}
+
+// The driver's 30-second refresh: its own `driver:` lease, plus exactly the
+// given `driven:` sessions. A session another launch holds freshly is not
+// taken; a session this driver held but no longer names is released. Returns
+// whether the driver still holds its own lease (false: another process took the
+// key, so it must stop) and the sessions it now holds.
+export function holdDriverLeases(
+  db: Database.Database,
+  lease: DriverLease,
+  sessions: readonly string[],
+): { driver: boolean; held: string[] } {
+  const token = driverToken(lease)
+  const nowMs = Date.now()
+  const now = new Date(nowMs).toISOString()
+  return db.transaction(() => {
+    const driver = db.prepare(`UPDATE hook_watch_claims SET claimed_at = ? WHERE claim_key = ? AND token = ?`)
+      .run(now, `driver:${lease.pid}`, token).changes === 1
+    const wanted = new Set(sessions)
+    const mine = db.prepare(`SELECT claim_key FROM hook_watch_claims WHERE token = ? AND claim_key LIKE 'driven:%'`)
+      .pluck().all(token) as string[]
+    for (const key of mine) {
+      if (!wanted.has(key.slice('driven:'.length))) {
+        db.prepare(`DELETE FROM hook_watch_claims WHERE claim_key = ? AND token = ?`).run(key, token)
+      }
+    }
+    const held: string[] = []
+    const take = db.prepare(`INSERT INTO hook_watch_claims (claim_key, token, claimed_at) VALUES (?, ?, ?)
+                              ON CONFLICT(claim_key) DO UPDATE SET token = excluded.token, claimed_at = excluded.claimed_at
+                              WHERE hook_watch_claims.token = excluded.token OR hook_watch_claims.claimed_at < ?`)
+    for (const session of wanted) {
+      if (take.run(`driven:${session}`, token, now, freshLeaseCutoff(nowMs)).changes === 1) held.push(session)
+    }
+    return { driver, held }
+  }).immediate()
+}
+
+// Every lease this driver process holds, and its launch's Stop request.
+// Compare-and-delete by token, so a newer driver's leases are never dropped.
+export function releaseDriverLeases(db: Database.Database, lease: DriverLease): void {
+  const token = driverToken(lease)
+  db.prepare(`DELETE FROM hook_watch_claims WHERE token = ? OR claim_key = ?`).run(token, `driver-stop:${lease.launchId}`)
+}
+
+// Step 2's Stop, written by the runtime CLI (`driver-cli.js stop <launch id>`).
+export function requestDriverStop(db: Database.Database, launchId: string): void {
+  if (!LAUNCH_ID.test(launchId)) throw new Error('launch id must be a lowercase UUID')
+  claimHookWatch(db, `driver-stop:${launchId}`, 'stop')
+}
+
+export function driverStopRequested(db: Database.Database, launchId: string): boolean {
+  return db.prepare(`SELECT 1 FROM hook_watch_claims WHERE claim_key = ?`).get(`driver-stop:${launchId}`) !== undefined
+}
+
+// The hub's commit counter as this connection sees it: it moves when another
+// connection commits, so a driver polls it once a second to learn the human sent
+// a message, answered an ask, or asked it to stop (§2). A failing read is how the
+// driver learns it cannot see the hub (fail closed, §7).
+export function hubDataVersion(db: Database.Database): number {
+  return db.pragma('data_version', { simple: true }) as number
+}
+
+// The human's answers a driver pings its sessions about (§5.3): open questions
+// these sessions raised and blocked rows of plans they wrote, answered and not
+// yet picked up. A reserved project is never included: approvals are answered on
+// the driver's own terminal. The key moves with each new response, so one answer
+// is pinged once.
+export interface SessionAnswer {
+  key: string
+  title: string
+}
+
+export function listAnsweredSessionAsks(db: Database.Database, sessions: readonly string[]): SessionAnswer[] {
+  if (sessions.length === 0) return []
+  const list = JSON.stringify(sessions)
+  const items = db.prepare(`SELECT id, response_revision, title, project FROM items
+                             WHERE status = 'open' AND kind = 'question'
+                               AND session IN (SELECT value FROM json_each(?))
+                               AND (COALESCE(reply, '') <> '' OR reply_kind IS NOT NULL)
+                               AND reply_seen_at IS NULL
+                             ORDER BY replied_at ASC, id ASC`)
+    .all(list) as Array<{ id: string; response_revision: number; title: string; project: string }>
+  const rows = db.prepare(`SELECT r.id, r.revision, r.label, b.project FROM board_rows r JOIN boards b ON b.id = r.board_id
+                            WHERE b.status = 'active' AND r.status = 'blocked'
+                              AND b.session IN (SELECT value FROM json_each(?))
+                              AND (((COALESCE(r.annotation, '') <> '' OR r.annotation_kind IS NOT NULL) AND r.annotation_seen_at IS NULL)
+                                   OR (r.handled_at IS NOT NULL AND r.handled_seen_at IS NULL))
+                            ORDER BY r.updated_at ASC, r.id ASC`)
+    .all(list) as Array<{ id: string; revision: number; label: string; project: string }>
+  return [
+    ...items.filter((it) => !isReservedProject(it.project)).map((it) => ({ key: `item:${it.id}:${it.response_revision}`, title: it.title })),
+    ...rows.filter((r) => !isReservedProject(r.project)).map((r) => ({ key: `row:${r.id}:${r.revision}`, title: r.label })),
+  ]
 }
 
 // Whether a driver holds this MCP session's fresh `driven:` lease: its server
@@ -3851,6 +3994,49 @@ export function listSessionMessages(db: Database.Database): { open: SessionMessa
     closed: db.prepare(`SELECT * FROM session_messages WHERE status <> 'open' ORDER BY closed_at DESC, id DESC LIMIT ?`)
       .all(RECENT_CLOSED_MESSAGES) as SessionMessage[],
   }
+}
+
+// Issue #412 — a driver pushes the text itself, so it needs the open messages
+// of the sessions it drives with their text (listOpenMessages carries ids only).
+export function listOpenMessagesWithText(db: Database.Database, sessions: readonly string[]): SessionMessage[] {
+  if (sessions.length === 0) return []
+  return db.prepare(`SELECT * FROM session_messages
+                      WHERE status = 'open' AND session IN (SELECT value FROM json_each(?))
+                      ORDER BY created_at ASC, id ASC`).all(JSON.stringify(sessions)) as SessionMessage[]
+}
+
+export type ReaddressResult =
+  | { ok: true; moved: string[] }
+  | { ok: false; reason: 'same_session' | 'from_live' | 'not_one_launch' | 'target_not_launch_host' }
+
+// Issue #412 (§5.2) — the one exception to #411's "a message to an ended session
+// is not re-addressed": proof by launch. A driver that proved by ancestry that
+// `from` (ended) and `to` (live) are one launch's sessions moves `from`'s open
+// messages to `to`. One .immediate() transaction, conditioned on `from` being
+// ended (its presence ended or gone, or its server process dead as the driver
+// reports), on both `driven:` leases carrying `launchId` (whichever driver
+// process wrote them), and on `to` being live with `host_pid` = the launch's
+// own native host, never a nested CLI. No other path re-addresses.
+export function readdressMessages(
+  db: Database.Database,
+  input: { from: string; to: string; launchId: string; hostPid: number; fromServerDead?: boolean },
+): ReaddressResult {
+  if (!LAUNCH_ID.test(input.launchId)) throw new Error('launch id must be a lowercase UUID')
+  if (input.from === input.to) return { ok: false, reason: 'same_session' }
+  return db.transaction((): ReaddressResult => {
+    const from = db.prepare(`SELECT ended_at FROM activity WHERE session = ?`).get(input.from) as { ended_at: string | null } | undefined
+    if (from && from.ended_at === null && input.fromServerDead !== true) return { ok: false, reason: 'from_live' }
+    const launchOf = (session: string): string | undefined => {
+      const token = db.prepare(`SELECT token FROM hook_watch_claims WHERE claim_key = ?`).pluck().get(`driven:${session}`) as string | undefined
+      return token?.split(':')[0]
+    }
+    if (launchOf(input.from) !== input.launchId || launchOf(input.to) !== input.launchId) return { ok: false, reason: 'not_one_launch' }
+    const to = db.prepare(`SELECT host_pid FROM activity WHERE session = ? AND ended_at IS NULL`).get(input.to) as { host_pid: number | null } | undefined
+    if (!to || to.host_pid !== input.hostPid) return { ok: false, reason: 'target_not_launch_host' }
+    const moved = db.prepare(`UPDATE session_messages SET session = ? WHERE session = ? AND status = 'open' RETURNING id`)
+      .pluck().all(input.to, input.from) as string[]
+    return { ok: true, moved: moved.sort() }
+  }).immediate()
 }
 
 // What a Claude Code hook may know: which messages to its linked servers are

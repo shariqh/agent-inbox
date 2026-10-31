@@ -67,6 +67,7 @@ const ENTRY_POINTS = new Map<string, string>([
   ['src/hook-cli.ts', 'the hooks entry the Claude Code settings block invokes'],
   ['src/watch-cli.ts', 'the exact-question watcher entry launched by Copilot from flag metadata'],
   ['src/meshctl.ts', 'the agent-inbox-meshctl entry (Mesh M1, #397) — `npm run meshctl`, dist/meshctl.js'],
+  ['src/driver-cli.ts', 'the agent-inbox-driver entry (#412 step 2) — `npm run driver`, dist/driver-cli.js'],
   ['public/mesh-view.js', "loaded only by app.js's dynamic import('/mesh-view.js') while mesh.json turns the Agents view on (#397)"],
   ['electron/main.cjs', "Electron's main-process entry"],
   ['electron/setup-preload.cjs', 'loaded by BrowserWindow webPreferences.preload'],

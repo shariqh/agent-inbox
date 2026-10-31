@@ -31,6 +31,7 @@
     "marketing": "node scripts/serve-marketing.mjs",
     "hook": "tsx src/hook-cli.ts",
     "watch": "tsx src/watch-cli.ts",
+    "driver": "tsx src/driver-cli.ts",
     "meshctl": "tsx src/meshctl.ts",
     "generate:icons": "bash scripts/generate-icons.sh",
     "install:agents": "bash scripts/install-agents.sh",

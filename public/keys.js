@@ -36,6 +36,9 @@ export const KEYBOARD_COMMANDS = [
   { id: 'railPin', key: 'p', display: 'P', label: 'Pin the rail card for later', group: 'Dashboard', legacy: true },
   { id: 'railOpen', key: 'Enter', display: 'Enter', label: "Write an answer on a rail card, or open a lane's session focus panel", group: 'Dashboard', legacy: true },
   { id: 'focusClose', key: 'Escape', display: 'Esc', label: 'Close the session focus panel and return to its lane', group: 'Dashboard', legacy: true },
+  // #411: the message composer's keys, handled by the composer itself
+  { id: 'messageSend', key: 'mod+Enter', display: 'Mod Enter', label: 'Send a message from its composer', group: 'Messages', legacy: true },
+  { id: 'messageClose', key: 'Escape', display: 'Esc', label: 'Close the Live drawer’s message composer and keep its text', group: 'Messages', legacy: true },
   { id: 'focus', key: 'Tab', display: 'Tab / Shift Tab', label: 'Move through controls; use arrows for pickers and pane dividers', group: 'Every control', legacy: true },
   { id: 'escape', key: 'Escape', display: 'Esc', label: 'Leave hints, cancel a shortcut, or close the current surface', group: 'Every control', legacy: true, selector: '.keyboard-close, .lb-close, .relay-close, .mission-close, .mission-detail-close, .dash-focus-close' },
 ]

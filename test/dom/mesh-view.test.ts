@@ -74,9 +74,9 @@ function countMeshLoads(): { count: number } {
 
 // What every boot of seed() makes and shows, the same with the mesh off or on
 // (each test checks itself against these, so any one runs alone with -t). The
-// boot reads, then one poll tick's eight reads.
+// boot reads, then one poll tick's nine reads.
 const POLL = ['/api/items', '/api/boards', '/api/boards/archived/summary', '/api/activity',
-  '/api/activity/history?since_ms=1781949600000', '/api/projects/closed', '/api/links', '/api/issues']
+  '/api/activity/history?since_ms=1781949600000', '/api/projects/closed', '/api/links', '/api/issues', '/api/messages']
 const BOOT_REQUESTS = ['/api/version', '/api/setup', ...POLL, ...POLL]
 const SURFACES = {
   title: '(3) Agent Inbox',
@@ -184,6 +184,29 @@ describe('Agents view on', () => {
 
     // with the Agents lens drawn, the human's attention reads as it does with the mesh off
     expect(await surfaces()).toEqual(SURFACES)
+  })
+
+  it('a session line’s Message button opens the Live drawer with that session’s composer, focused (#411)', async () => {
+    db = freshDb()
+    seed(db)
+    upsertActivity(db, { session: 'k2', agent: 'claude-code', project: 'demo', stream: 'main', doing: 'open', idle: true, claim: false, receives_messages: true })
+    await bootApp(db, { viewer: { meshAgentsView: () => true } })
+    await vi.waitFor(() => expect(document.getElementById('mesh-settings')).not.toBeNull())
+    await pollTick()
+    await settle()
+    click(document.querySelector('.mesh-lens [data-mesh-lens="agents"]'))
+    const line = [...document.querySelectorAll<HTMLElement>('.mesh-session')].find((el) => el.dataset.meshSession === 'k2')
+    click(line?.querySelector('.mesh-message'))
+    await settle()
+    const drawer = document.getElementById('liveDrawer')!
+    expect(drawer.hidden).toBe(false)
+    // an idle session's composer sits in the idle fold, which opens for it
+    expect(drawer.querySelector<HTMLDetailsElement>('.idle-fold')?.open).toBe(true)
+    const composer = drawer.querySelector<HTMLElement>('.msg-composer')
+    expect(composer?.dataset.msgSession).toBe('k2')
+    expect(document.activeElement).toBe(composer?.querySelector('textarea'))
+    expect(composer?.querySelector('label')?.textContent).toBe('Message to claude-code · demo · main')
+    drawer.hidden = true // leaves later boots' drawer listeners idle
   })
 
   it('the poll bodies and the dock projection are the same with the view on and off', async () => {

@@ -437,6 +437,31 @@ hook wake for sessions that have the push.
   driver. This also retires §11 question 2 and the PR 3 spikes.
 - **2026-10-30, three delivery states (Shariq).** PR 2's composer says "arrives now" (a push, a
   driver, or an armed hook watch), "when it next checks", or "can't receive".
+- **2026-10-31, PR 2 as built.** (1) Each composer is one node kept for the page's
+  life and updated in place, so the drawer (moved to the ambient painter) is held only
+  while a composer in it has focus; a draft alone survives every rebuild in that node.
+  The focus panel's composer is its own section and is never rewritten. (2) Cancel
+  closes the drawer composer and keeps the text, as Esc does; clearing the text is how
+  a draft is discarded. (3) `wakes` is served only as `true`, like `receives_messages`
+  and `push_wake`. (4) The focus panel shows the composer while the session is listed,
+  working or not. (5) Message drafts share `agent-inbox-drafts-v1`, so a build older
+  than this one sharing the profile drops them on its next write. (6) A draft whose
+  session leaves (or cannot receive) moves to the unsent responses on the next frame.
+- **2026-10-31, PR 2 review fixes.** (1) **A viewer restart waits only for a message
+  that is sending or a composer in use (focused), not for every message draft**, which
+  amends §5's "Message drafts join the viewer-restart hold": a draft in a closed
+  composer is stored and restored after the reload, so holding for it protected
+  nothing and, unseen, held the reload forever. Its Message button reads "Message ·
+  draft". (2) A message waiting in the unsent responses is stored under its own key,
+  `message-recovery:<session>`, so a new draft to the same session never overwrites
+  it; when its session is listed and can receive again (back within the presence
+  window), its text returns to the composer unless the composer already holds one or
+  the human is typing in one of the session's composers.
+  (3) The drawer rebuilds on a poll only when what it draws changed (`liveDrawKey`:
+  the presence rows without `updated_at`, open entries and composers, message
+  changes, the minute, the build advice and the theme, plus the messages snapshot's
+  identity); a rebuild keeps the drawer's scroll and, when the window has focus, the
+  focused control by identity.
 - **2026-10-30, spike findings.** Claude Code's handshake says nothing about listening, so the
   push loop runs for every Claude Code client and presence reads the launch flags
   (`push_wake`). The pushed set stays in memory; no hub schema change for it. End to end on

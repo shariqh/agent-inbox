@@ -358,7 +358,7 @@ describe('older history for a longer ribbon range (#392)', () => {
     expect(statuses.filter((read) => read.path === HISTORY).map((read) => read.status)).toEqual([304, 304, 304])
   })
 
-  it('changes no attention surface and keeps the eight poll reads at 24 hours', async () => {
+  it('changes no attention surface and keeps the nine poll reads at 24 hours', async () => {
     const d = open()
     seedOldAsk(d)
     insertItem(d, { ...A, kind: 'question', title: 'Ship it?' })
@@ -372,9 +372,9 @@ describe('older history for a longer ribbon range (#392)', () => {
     await pollTick()
     expect(new Set(reads)).toEqual(new Set([
       '/api/activity', '/api/activity/history', '/api/boards', '/api/boards/archived/summary', '/api/issues',
-      '/api/items', '/api/links', '/api/projects/closed',
+      '/api/items', '/api/links', '/api/messages', '/api/projects/closed',
     ]))
-    expect(reads).toHaveLength(8)
+    expect(reads).toHaveLength(9)
   })
 })
 
@@ -600,7 +600,7 @@ describe('attention parity and the budget with the ribbon (#305)', () => {
     expect(await surfaces()).toEqual(before)
     expect([...reads].sort()).toEqual([
       '/api/activity', '/api/activity/history', '/api/boards', '/api/boards/archived/summary', '/api/issues',
-      '/api/items', '/api/links', '/api/projects/closed',
+      '/api/items', '/api/links', '/api/messages', '/api/projects/closed',
     ])
   })
 

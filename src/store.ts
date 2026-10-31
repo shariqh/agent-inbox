@@ -3290,6 +3290,13 @@ export interface Activity {
    * pushed into it at once. Evidence, not proof: Claude Code acknowledges nothing.
    */
   push_wake?: true
+  /**
+   * Issue #411 (PR 2) — present, and true, only while a Claude hook watch that
+   * also wakes for session messages is armed for this session's Claude Code
+   * process: an `m1:` lease on `host:<host_pid>` claimed within the last 30
+   * minutes (the watch window is 29). Evidence, like `push_wake`.
+   */
+  wakes?: true
 }
 
 export interface ActivityUpdate {
@@ -3529,23 +3536,36 @@ function countCall(minute: number | null, text: string | null, now: number): { m
   return { minute: now, counts: counts.slice(counts.findIndex((count) => count > 0)).join(',') }
 }
 
+// #411: how long after its claim a message-capable hook watch counts as armed.
+// The watch itself gives up after 29 minutes (AGENT_INBOX_WATCH_SECS).
+const WAKE_LEASE_MS = 30 * 60000
+
 export function listActivity(db: Database.Database, opts: { staleMinutes?: number } = {}): Activity[] {
   const now = Date.now()
   const cutoff = new Date(now - (opts.staleMinutes ?? PRESENCE_STALE_MINUTES) * 60000).toISOString()
   const cold = claimCutoff(now)
+  // #411: the lease a message-capable Claude hook watch holds for this
+  // session's Claude Code process (`m1:` marks it; older hooks claim the same
+  // key without it). The key is unique, so the join adds no row.
   const rows = db
-    .prepare(`SELECT session, project, stream, agent, doing, last_doing, detail, children, idle, started_at, updated_at, last_call_at, server_version, server_source,
-                     call_minute, call_counts, receives_messages, push_wake
-              FROM activity WHERE ended_at IS NULL AND updated_at >= ?`)
-    .all(cutoff) as Array<Omit<Activity, 'children' | 'idle' | 'receives_messages' | 'push_wake'> & {
+    .prepare(`SELECT a.session, a.project, a.stream, a.agent, a.doing, a.last_doing, a.detail, a.children, a.idle, a.started_at, a.updated_at,
+                     a.last_call_at, a.server_version, a.server_source, a.call_minute, a.call_counts, a.receives_messages, a.push_wake,
+                     (w.claim_key IS NOT NULL) AS wakes
+              FROM activity a
+              LEFT JOIN hook_watch_claims w
+                ON a.host_pid IS NOT NULL AND w.claim_key = 'host:' || a.host_pid
+               AND substr(w.token, 1, 3) = 'm1:' AND w.claimed_at >= ?
+              WHERE a.ended_at IS NULL AND a.updated_at >= ?`)
+    .all(new Date(now - WAKE_LEASE_MS).toISOString(), cutoff) as Array<Omit<Activity, 'children' | 'idle' | 'receives_messages' | 'push_wake' | 'wakes'> & {
       children: string | null; idle: number; call_minute: number | null; call_counts: string | null; receives_messages: number | null; push_wake: number | null
+      wakes: number
     }>
   const nowMinute = Math.floor(now / 60000)
   // The row is kept whatever happens here — the session really is present, and
   // public/attention.js classifies an item as "waiting" iff its session id is in
   // this list, so dropping the row would silently downgrade a live blocker. Only
   // the CLAIM decays.
-  const out = rows.map(({ call_minute, call_counts, receives_messages, push_wake, ...r }): Activity => {
+  const out = rows.map(({ call_minute, call_counts, receives_messages, push_wake, wakes, ...r }): Activity => {
     const live = (r.last_call_at ?? r.started_at) >= cold
     // #306: the trace is served only while its newest minute is in the window
     const calls = call_minute !== null && nowMinute - call_minute < CALL_TRACE_MINUTES ? parseCallCounts(call_counts) : null
@@ -3558,6 +3578,7 @@ export function listActivity(db: Database.Database, opts: { staleMinutes?: numbe
       ...(calls ? { calls, calls_at: call_minute! } : {}),
       ...(receives_messages === 1 ? { receives_messages: true as const } : {}),
       ...(push_wake === 1 ? { push_wake: true as const } : {}),
+      ...(wakes === 1 ? { wakes: true as const } : {}),
     }
   })
   // Working sessions first (longest-running first, as before). Everything else

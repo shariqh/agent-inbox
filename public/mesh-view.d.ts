@@ -33,7 +33,12 @@ export function agentGroups(input: {
   nowMs: number
 }): MeshAgentGroup[]
 export function sessionRecency(session: MeshSession): string
-export function installMeshView(options: { doc?: Document; jumpToAsk: (entry: AttentionEntry) => void }): {
+export function installMeshView(options: {
+  doc?: Document
+  jumpToAsk: (entry: AttentionEntry) => void
+  /** #411: open the Live drawer with this session's message composer, focused */
+  openMessage?: (session: string) => void
+}): {
   paint(host: Element, input: { activity: LaneActivity[]; attention: AttentionEntry[]; closed?: Iterable<string>; nowMs: number }): void
   renderSettings(host: Element | null): void
   /** the window-local lens, for frameInputs() */

@@ -81,6 +81,7 @@ One line each; the detail, the reasons and the regressions behind them are in th
 - Delivery is not acknowledgement: a blocked row is re-delivered until an agent flips its status (#37). → delivery-and-responses
 - Every row action and mark-seen write is version-pinned; resolve needs `expected_response_revision`. → delivery-and-responses
 - Session messages reach only their own session (no tool takes a session id) and come back until `ack_message` (#411). → delivery-and-responses
+- The message composer is presence: kept nodes, a reused id per text, never attention (#411). → viewer-frontend
 - The Claude Code channel push (#411, research preview) is declared to Claude Code clients only and carries a message id, never text. → mcp-server
 - The inbox answer always wins over a chat-recorded one; never last-write-wins. → delivery-and-responses
 - `updated_at` means content changed; delivery stamps, moves, pins and watch stops never bump it. → delivery-and-responses

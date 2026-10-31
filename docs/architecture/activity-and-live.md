@@ -54,6 +54,20 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   says "when it next checks", never "can't receive", which only a missing
   `receives_messages` means. Never liveness, work or attention; `/api/activity`
   stays a bare array.
+- `wakes` (#411 PR 2) is the third: true while a message-capable Claude hook watch
+  is armed for the session's Claude Code process, read by `listActivity` in its one
+  query (a `LEFT JOIN` on `hook_watch_claims`' unique key `host:<host_pid>`, so it
+  adds no row): the lease's token starts `m1:` and was claimed within 30 minutes
+  (`WAKE_LEASE_MS`; the watch gives up at 29). Served only as `true`, like the
+  other two. An older hook's lease (no `m1:`), an unlinked watcher's `session:`/
+  `project:` key, a released lease or one older than 30 minutes reads as absent. It
+  is evidence too: a watcher killed without releasing its lease reads as armed for
+  up to 30 minutes. The composer's delivery state (`deliveryState` in
+  `public/messages.js`) reads these three and nothing else: no `receives_messages`
+  is "can't receive" (Send disabled); `push_wake`, `wakes` or a session Agent
+  Inbox drives (#412's seam, the `driven` option, unused until then) is "arrives
+  now"; anything else is "when it next checks Agent Inbox". `activityFrameKey`
+  compares bytes, so a flip repaints.
 
 ## Invariants in detail
 

@@ -97,6 +97,20 @@ describe('draftEntry', () => {
       type: 'item-recovery', itemId: 'q1', title: 'Q', text: 'x', context: '', kind: 'answer', intent: null, reason: '',
     })!)).toBeNull()
   })
+
+  it('keeps a message draft per session, with the id and text its send claimed (#411)', () => {
+    const message = {
+      type: 'message', session: 'mcp-a', project: 'alpha', agent: 'copilot', stream: 'main', text: 'Run the tests.',
+      intent: { id: '00000000-0000-4000-8000-000000000001', text: 'Run the tests.' }, reason: '',
+    }
+    expect(draftEntry({ ...message, extra: 1 })).toEqual(message)
+    expect(draftKey(draftEntry(message)!)).toBe('message:mcp-a')
+    expect(draftKey(draftEntry({ ...message, reason: 'Not sent: this session is no longer running' })!)).toBe('message-recovery:mcp-a')
+    expect(draftEntry({ ...message, intent: null, stream: undefined })).toEqual({ ...message, intent: null, stream: '' })
+    for (const bad of [{ text: '  ' }, { session: '' }, { intent: { id: '' , text: 'x' } }, { intent: 'id' }, { reason: 7 }]) {
+      expect(draftEntry({ ...message, ...bad }), JSON.stringify(bad)).toBeNull()
+    }
+  })
 })
 
 describe('readDrafts', () => {

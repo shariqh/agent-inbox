@@ -264,8 +264,9 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   (`hooks-and-watcher.md`), a Claude Code channel push (`mcp-server.md`, research
   preview), or its next `pending()`. A push carries only the id and changes none of the
   rules above.
-  Until the viewer's composer ships (#411 part 2), a message can be sent by hand, with the
-  session id from `/api/activity` and the Origin every unsafe request needs:
+  The viewer's composer (#411 part 2, `viewer-frontend.md`) is the human's way to send
+  and withdraw one; a message can still be sent by hand, with the session id from
+  `/api/activity` and the Origin every unsafe request needs:
   `curl -s -X POST -H 'Origin: http://127.0.0.1:4319' -H 'content-type: application/json'
   -d "{\"id\":\"$(uuidgen | tr A-Z a-z)\",\"text\":\"…\"}"
   http://127.0.0.1:4319/api/sessions/<session>/messages`.

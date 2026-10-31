@@ -8,7 +8,8 @@ paths:
   - "public/keyboard-ui.js"
   - "public/esc.js"
   - "public/structured-copy.js"
-applyTo: "public/app.js,public/poll.js,public/drafts.js,public/selection.js,public/copy-on-select.js,public/keyboard-ui.js,public/esc.js,public/structured-copy.js"
+  - "public/messages.js"
+applyTo: "public/app.js,public/poll.js,public/drafts.js,public/selection.js,public/copy-on-select.js,public/keyboard-ui.js,public/esc.js,public/structured-copy.js,public/messages.js"
 ---
 
 # Viewer frontend: poll, render, drafts, focus and selection
@@ -76,8 +77,91 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   sent. Never send to get past a notice. A
   window deletes only the copy it loaded or last wrote, and its leaving save
   writes back a draft another window deleted; the viewer-restart hold stays.
+- Messages to a running session (#411 PR 2) are written in one composer per
+  session, in the Live drawer and the Dashboard session focus panel, and read
+  from `/api/messages`, the poll's ninth read (a 404, error or refused body is no
+  messages). Each composer is one node kept for the page's life and updated in
+  place; the drawer, now painted by the ambient painter, is left as it is while a
+  composer in it holds focus. A send claims an id once and reuses it while its
+  text is unchanged, so a retry never sends twice. Message drafts are durable
+  (`type: 'message'`) and never pause the list; only a send in flight or a composer
+  in use holds a viewer restart's reload. The drawer rebuilds on a poll only when
+  what it draws changed (`liveDrawKey`).
+  Nothing about messages reaches attention, a badge, a count or the dock.
 
 ## Invariants in detail
+
+- **Messages to a running session are presence, written in one kept node (issue #411,
+  PR 2).** Design: [`docs/superpowers/specs/2026-10-30-session-messages-design.md`](../superpowers/specs/2026-10-30-session-messages-design.md)
+  §5 and §12. `public/messages.js` is pure: the delivery state (`deliveryState`, three
+  states from the session's `/api/activity` flags, `activity-and-live.md`), each
+  message's status line (sent, picked up, acknowledged with its outcome, withdrawn, or
+  "Withdrawn after pickup: it may have started"), one session's history (newest
+  first, five shown, "+N earlier") and the "Not delivered" list. `app.js` mounts
+  `composerEl(where, session)`: a labelled textarea, a counter, Send (and, in the
+  drawer, Cancel, which closes and keeps the text, like Esc), the delivery line, the
+  sharing line ("Any agent of this session, a subagent included, may pick it up
+  first."), a `role="status"` slot and the history. Each is ONE node per
+  (`drawer`|`focus`, session) kept in `composerEls` and updated in place
+  (`updateComposer`, written only on a change, so an unchanged paint writes nothing);
+  the two hosts share one draft per session. The Live drawer moved from the editable
+  surfaces to `paintAmbient()` (so a status moves under an unrelated draft); its
+  rebuild re-attaches the same composer nodes. A poll rebuilds it only when what it
+  draws changed: `liveDrawKey` (the rows as `activityFrameKey` compares them, the open
+  entries and composers, `messageVersion`, the minute, `liveVersion`, the theme and
+  every listed session's id, since "Not delivered" ignores the lens)
+  or the identity of the messages snapshot; otherwise, and whenever focus is in a
+  drawer composer (remembered focus in a background window counts), it only updates
+  the composers, so an unrelated draft's ticks never disturb focus, hover or scroll
+  in it. A rebuild, forced or not, keeps the drawer's `scrollTop`, and gives focus
+  back, the composer's caret included, only when the window had focus before it (a
+  detached node takes the focus with it): a composer node is refocused as itself,
+  any other control by its `data-live-focus` identity, matched by value.
+  `messageVersion` is deliberately not in `frameInputs()`: every message change comes
+  from human input or a settled write (both already count), the first load's restore
+  or `reconcileMessageDrafts` inside a paint. The focus panel's composer is its own section
+  (`.dash-focus-message`), never rewritten by `setFocusPart`. A drawer entry's
+  Message button (`data-msg-open`, read back through `dataset`, never a selector)
+  opens its composer, opening the idle fold for an idle session; an explicit open
+  focuses the textarea, nothing passive does. ⌘/Ctrl+Enter sends; Esc in the drawer
+  closes the composer, keeps the draft and returns focus to its button when the
+  window has focus; Esc in the focus panel closes the panel. The Agents view's
+  Message button calls the injected `openMessage(session)`: the drawer, that
+  composer open and focused. A send claims `{ id, text }` (`claimMessageIntent`),
+  stored before the POST, and reuses the id while the text is unchanged, so a retry
+  after an unconfirmed send replays exactly; a refusal (`session_gone`,
+  `session_cannot_receive`, `too_many_open`, `too_much_open`, `id_conflict`) drops
+  the intent and keeps the text with its reason; an unconfirmed send keeps both and
+  says "Your send was not confirmed. Send again: it will not send twice." Every
+  applied frame `reconcileMessageDrafts()` retires a draft whose intent the snapshot
+  holds with the same text (it did land) and moves one whose session is no longer
+  listed, or cannot receive, to the unsent responses (`messageRecoveries`), whose
+  Retry reuses the id the same way. Withdraw posts the revision the history showed.
+  Every write ends in `reloadAndPaint()`, and `messageVersion` is in `frameInputs()`.
+  The "Not delivered (N)" fold ends the drawer: every open message whose session is
+  no longer listed (global, not lens-filtered), newest first, ten shown and "+M
+  more", each with Copy text and Withdraw, until withdrawn or a later send's 30-day
+  prune deletes it; the clock never changes it and the Live strip names nothing.
+  Drafts (#279): `type: 'message'`, key `message:<session>`, with `intent`; one in the
+  unsent responses carries a `reason` and is stored as `message-recovery:<session>`,
+  so a new draft to the same session never overwrites it. They share
+  `agent-inbox-drafts-v1`, so a build older than #411 sharing the profile drops only
+  the `message` entries on its next write (the exception `drafts.js` names). A
+  restored draft for a listed session that can receive goes back to its composer,
+  opening and focusing nothing (an unconfirmed intent says so); one the snapshot holds
+  retires; any other goes to the unsent responses. A waiting one whose session is
+  listed and can receive again goes back to its composer unless that holds a draft
+  or one of the session's composer textareas has focus (`updateComposer` leaves a
+  focused textarea alone, so the next keystroke would replace the text unseen);
+  then both stay, each under its key. A closed composer holding text marks its button
+  "Message · draft". Only a send in flight or a composer in use (focus inside it)
+  holds a viewer restart's reload (`hasUnsentResponses`); a stored draft does not, as
+  it comes back after the reload. None of it is in `suspendState()`, so it never
+  pauses the list. Agent and human text go through `esc()`/`textContent`; an outcome is
+  agent text and goes through `renderStructuredText`. No animation. Nothing here
+  reaches `public/attention.js`, `relay.js`, `reply-watch.cjs`, a badge, a count,
+  the rail or the dock: `test/dom/session-messages.test.ts` compares every attention
+  surface with and without messages, a draft, a send, a delivery and an ack.
 
 - **Viewer escapes all agent-authored text.** `public/app.js` runs every interpolated field
   (item title/detail/annotation/project/stream/agent, board title/meta, row label/note/

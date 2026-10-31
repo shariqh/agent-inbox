@@ -361,6 +361,20 @@ describe('the Not delivered fold (#411)', () => {
     await pollTick()
     expect(fold()?.querySelector('summary')?.textContent).toBe('Not delivered (11)')
   })
+  it('shows a message at once when a session outside the project lens ends (#420 review)', async () => {
+    db = freshDb()
+    present(db, { session: 'mcp-a', project: 'alpha' })
+    present(db, { session: 'mcp-b', project: 'beta' })
+    sendSessionMessage(db, { id: '00000000-0000-4000-8000-000000000001', session: 'mcp-b', text: 'Lost in beta' })
+    await bootApp(db)
+    click(document.querySelector('#rail button.rail-tab[data-project="alpha"]'))
+    await settle()
+    openDrawer()
+    expect(drawer().querySelector('.msg-undelivered')).toBeNull()
+    endActivity(db, 'mcp-b')
+    await pollTick()
+    expect(drawer().querySelector('.msg-undelivered summary')?.textContent).toBe('Not delivered (1)')
+  })
 })
 
 describe('durable message drafts (#411, #279)', () => {
@@ -391,6 +405,57 @@ describe('durable message drafts (#411, #279)', () => {
     type(box, 'Written before it went quiet, and more')
     await vi.advanceTimersByTimeAsync(300)
     expect(Object.values(stored()).map((entry) => entry.draft['text'])).toEqual(['Written before it went quiet, and more'])
+  })
+
+  describe('never returns waiting text into a composer the human is typing in (#420 review)', () => {
+    const seedBoth = () => {
+      const entry = (text: string, reason: string) => ({ savedAt: Date.now(), draft: {
+        type: 'message', session: 'mcp-a', project: 'alpha', agent: 'copilot', stream: 'main', text, intent: null, reason,
+      } })
+      localStorage.setItem(KEY, JSON.stringify({ v: 1, entries: {
+        'message-recovery:mcp-a': entry('First words', 'Not sent: this session is no longer running'),
+        'message:mcp-a': entry('Second words', ''),
+      } }))
+    }
+    const storedTexts = () => Object.fromEntries(Object.entries(stored()).map(([key, value]) => [key, value.draft['text']]))
+    const waiting = () => document.querySelector('#needsYouList .stale-draft-line[data-recovery-line="message:mcp-a"]')
+
+    it('in the focus panel, after a send that leaves focus in its textarea', async () => {
+      db = freshDb()
+      present(db, { session: 'mcp-a' })
+      seedBoth()
+      const bridge = await bootApp(db)
+      click(document.querySelector('#dashboard .dash-lane[data-lane="mcp-a"] .dash-lane-open'))
+      await settle()
+      const box = input('mcp-a', document.querySelector('#dashboard .dash-focus')!)!
+      expect(box.value).toBe('Second words')
+      box.focus()
+      box.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Enter', metaKey: true, bubbles: true, cancelable: true }))
+      await settle()
+      await pollTick()
+      expect(messagePosts(bridge).map((p) => p.body['text'])).toEqual(['Second words'])
+      expect([box.value, document.activeElement === box]).toEqual(['', true])
+      type(box, 'Hi')
+      await vi.advanceTimersByTimeAsync(300)
+      expect(storedTexts()).toEqual({ 'message-recovery:mcp-a': 'First words', 'message:mcp-a': 'Hi' })
+      await showInbox()
+      expect(waiting()?.textContent).toContain('First words')
+    })
+
+    it('in a drawer composer on a passive tick', async () => {
+      db = freshDb()
+      present(db, { session: 'mcp-a' })
+      seedBoth()
+      await bootApp(db)
+      const box = await openComposer('mcp-a')
+      expect([box.value, document.activeElement === box]).toEqual(['Second words', true])
+      type(box, '')
+      await changedPollTick(db)
+      expect([box.value, document.activeElement === box]).toEqual(['', true])
+      type(box, 'Hi')
+      await vi.advanceTimersByTimeAsync(300)
+      expect(storedTexts()).toEqual({ 'message-recovery:mcp-a': 'First words', 'message:mcp-a': 'Hi' })
+    })
   })
 
   it('stores a draft and a waiting unsent message to one session under their own keys', async () => {

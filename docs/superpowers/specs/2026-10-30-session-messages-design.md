@@ -455,7 +455,8 @@ hook wake for sessions that have the push.
   draft". (2) A message waiting in the unsent responses is stored under its own key,
   `message-recovery:<session>`, so a new draft to the same session never overwrites
   it; when its session is listed and can receive again (back within the presence
-  window), its text returns to the composer unless the composer already holds one.
+  window), its text returns to the composer unless the composer already holds one or
+  the human is typing in one of the session's composers.
   (3) The drawer rebuilds on a poll only when what it draws changed (`liveDrawKey`:
   the presence rows without `updated_at`, open entries and composers, message
   changes, the minute, the build advice and the theme, plus the messages snapshot's

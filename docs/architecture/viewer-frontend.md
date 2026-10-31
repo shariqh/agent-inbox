@@ -108,7 +108,8 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   surfaces to `paintAmbient()` (so a status moves under an unrelated draft); its
   rebuild re-attaches the same composer nodes. A poll rebuilds it only when what it
   draws changed: `liveDrawKey` (the rows as `activityFrameKey` compares them, the open
-  entries and composers, `messageVersion`, the minute, `liveVersion` and the theme)
+  entries and composers, `messageVersion`, the minute, `liveVersion`, the theme and
+  every listed session's id, since "Not delivered" ignores the lens)
   or the identity of the messages snapshot; otherwise, and whenever focus is in a
   drawer composer (remembered focus in a background window counts), it only updates
   the composers, so an unrelated draft's ticks never disturb focus, hover or scroll
@@ -149,7 +150,9 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   restored draft for a listed session that can receive goes back to its composer,
   opening and focusing nothing (an unconfirmed intent says so); one the snapshot holds
   retires; any other goes to the unsent responses. A waiting one whose session is
-  listed and can receive again goes back to its composer unless that holds a draft;
+  listed and can receive again goes back to its composer unless that holds a draft
+  or one of the session's composer textareas has focus (`updateComposer` leaves a
+  focused textarea alone, so the next keystroke would replace the text unseen);
   then both stay, each under its key. A closed composer holding text marks its button
   "Message · draft". Only a send in flight or a composer in use (focus inside it)
   holds a viewer restart's reload (`hasUnsentResponses`); a stored draft does not, as

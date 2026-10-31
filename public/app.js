@@ -251,6 +251,12 @@ function hasUnsentResponses() {
   return Boolean(suspendHint(suspendState())) || hasDraftRecovery() || sendingMessages.size > 0 || composerInUse()
 }
 
+// Whether a textarea of this session's composers (drawer or focus panel) has focus.
+function composerFocused(session) {
+  const active = document.activeElement
+  return [...composerEls.values()].some((el) => el.dataset.msgSession === session && el.querySelector('textarea') === active)
+}
+
 function composerInUse() {
   return Boolean(document.activeElement?.closest?.('.msg-composer'))
 }
@@ -6097,6 +6103,8 @@ function liveDrawKey(entries) {
   return JSON.stringify([
     activityFrameKey(entries), [...openLive], [...openComposers], messageVersion, Math.floor(Date.now() / 60000),
     liveVersion, renderedTheme,
+    // "Not delivered" reads every listed session, not the lens's
+    (lastData?.activity ?? []).map((row) => row?.session).sort(),
   ])
 }
 
@@ -6567,8 +6575,10 @@ function reconcileMessageDrafts() {
     }
     // its session is listed and can receive again (it came back within the
     // presence window): the text goes back to its composer, unless one already
-    // holds a draft, in which case both stay, each under its own stored key
-    if (messageDrafts.has(session) || !deliveryState(activityRow(session)).canSend) continue
+    // holds a draft, in which case both stay, each under its own stored key.
+    // Never into a composer the human is typing in: updateComposer leaves a
+    // focused textarea alone, so the next keystroke would replace the text unseen.
+    if (messageDrafts.has(session) || composerFocused(session) || !deliveryState(activityRow(session)).canSend) continue
     const { reason: _reason, ...text } = draft
     messageRecoveries.delete(session)
     messageDrafts.set(session, text)

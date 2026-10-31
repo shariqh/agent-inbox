@@ -263,7 +263,7 @@ describe('CI crash diagnostics (#359)', () => {
 
   it('keeps the required check names and wraps only the full suite', () => {
     expect(workflow).toContain('    name: Node 24 / ${{ matrix.os }}\n')
-    expect(workflow).toContain('        os: [ubuntu-latest, macos-14]\n')
+    expect(workflow).toContain('        os: [ubuntu-latest, macos-15]\n')
     expect(workflow).not.toMatch(/^ {6}- run: npm test$/m)
     const run = step('Run the test suite with crash diagnostics')
     expect(run).toContain('        id: suite\n')

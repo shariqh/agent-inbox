@@ -535,7 +535,7 @@ describe('attention parity with lanes present (#304)', () => {
     // No new poll reads.
     expect([...reads].sort()).toEqual([
       '/api/activity', '/api/activity/history', '/api/boards', '/api/boards/archived/summary', '/api/issues',
-      '/api/items', '/api/links', '/api/projects/closed',
+      '/api/items', '/api/links', '/api/messages', '/api/projects/closed',
     ])
   })
 })

@@ -37,6 +37,11 @@ const issueGraph = (value) => record(value) && value.version === 1
   && Array.isArray(value.edges) && value.edges.every((edge) => strings(edge, ['from', 'to']))
   && Array.isArray(value.roots) && value.roots.every((root) => strings(root, ['key']) && HIERARCHY.has(root.hierarchy))
   && record(value.aliases)
+// Issue #411: the human's messages to MCP sessions, open and recently closed.
+const message = (value) => strings(value, ['id', 'session', 'text', 'status', 'created_at'])
+  && Number.isInteger(value.revision)
+const messages = (value) => record(value) && Array.isArray(value.open) && value.open.every(message)
+  && Array.isArray(value.closed) && value.closed.every(message)
 const validators = new Map([
   ['/api/items', items],
   ['/api/items/history', history],
@@ -48,6 +53,7 @@ const validators = new Map([
   ['/api/activity/history', spans],
   ['/api/issues', issueGraph],
   ['/api/links', links],
+  ['/api/messages', messages],
 ])
 // The only routes whose query string selects one of their own representations:
 // the activity history window (#185) and the lingering archived plans (#373).

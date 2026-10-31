@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { join } from 'node:path'
 import type Database from 'better-sqlite3'
 import {
-  ackMessage, endActivity, listActivity, listOpenMessages, listPendingMessages, listSessionMessages,
+  ackMessage, claimHookWatch, endActivity, listActivity, releaseHookWatch, listOpenMessages, listPendingMessages, listSessionMessages,
   markMessageDelivered, openDb, sendSessionMessage, upsertActivity, withdrawSessionMessage,
 } from '../src/store.js'
 import { createViewer } from '../src/viewer.js'
@@ -221,5 +221,36 @@ describe('the viewer’s message routes', () => {
     expect((await app.request('/api/messages', { headers: { 'If-None-Match': etag } })).status).toBe(304)
     markMessageDelivered(db, id(1), 'mcp-a', 'claude-code')
     expect((await app.request('/api/messages', { headers: { 'If-None-Match': etag } })).status).toBe(200)
+  })
+})
+
+// PR 2: `wakes` tells the composer a Claude hook watch that also wakes for
+// messages (an `m1:` lease on the session's Claude Code process) is armed.
+describe('wakes: an armed message-capable hook watch (#411)', () => {
+  const hosted = (session: string, host: number | undefined) => upsertActivity(db, {
+    session, project: 'alpha', stream: 'main', agent: 'claude-code', doing: 'open', idle: true, claim: false,
+    receives_messages: true, ...(host === undefined ? {} : { host_pid: host }),
+  })
+  const wakes = (session: string) => listActivity(db).find((row) => row.session === session)?.wakes
+
+  it('is true only while an m1: lease on the session’s host was claimed within 30 minutes', () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(Date.parse('2026-10-30T12:00:00Z'))
+    hosted('mcp-a', 4100)
+    hosted('mcp-b', 4100)
+    hosted('mcp-c', 4200)
+    hosted('mcp-d', undefined)
+    expect(listActivity(db).some((row) => 'wakes' in row)).toBe(false)
+    claimHookWatch(db, 'host:4100', 'm1:9001-abc')
+    claimHookWatch(db, 'host:4200', '9002-def') // an older hook: wakes for answers only
+    claimHookWatch(db, 'session:harness:alpha', 'm1:9003-ghi') // unlinked: names no host
+    expect([wakes('mcp-a'), wakes('mcp-b'), wakes('mcp-c'), wakes('mcp-d')]).toEqual([true, true, undefined, undefined])
+    vi.setSystemTime(Date.parse('2026-10-30T12:31:00Z'))
+    hosted('mcp-a', 4100) // presence stays fresh; the lease does not
+    expect(wakes('mcp-a')).toBeUndefined()
+    claimHookWatch(db, 'host:4100', 'm1:9004-jkl')
+    expect(wakes('mcp-a')).toBe(true)
+    releaseHookWatch(db, 'host:4100', 'm1:9004-jkl')
+    expect(wakes('mcp-a')).toBeUndefined()
   })
 })

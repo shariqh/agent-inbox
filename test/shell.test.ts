@@ -177,7 +177,12 @@ describe('Live footer strip is global, never rail-scoped (spec §16 / §7 genera
   it('keeps renderLive on the filtered `live` local — the drawer stays rail-scoped', () => {
     const line = js.split('\n').find((l) => l.includes('renderLive('))
     expect(line, 'no renderLive( call found in app.js').toBeTruthy()
-    expect(line, line).toMatch(/renderLive\(\s*live\s*\)/)
+    // #411: painted by the ambient painter, with the frame's forced flag; every
+    // other caller passes liveInLens(), the same rail-scoped list
+    expect(line, line).toMatch(/renderLive\(\s*live\s*[,)]/)
+    const calls = js.match(/renderLive\((?!entries)[^)]*\)?/g) ?? []
+    expect(calls.length).toBeGreaterThan(1)
+    expect(calls.filter((call) => !/^renderLive\(\s*(live\b|liveInLens\(\))/.test(call))).toEqual([])
   })
 })
 
@@ -492,12 +497,15 @@ describe('#38 · the poll keeps its gate, the human bypasses it', () => {
     expect(body).toMatch(/if \(pressHeld\([^)]*\)\)[\s\S]*const frame = paintAmbient\(\)[\s\S]*dashboardInteractionActive\(\)[\s\S]*shouldDeferRender\(/)
 
     const ambient = sourceFn('function paintAmbient()', '\nfunction paintEditableSurfaces(')
-    for (const call of ['applyBadge()', 'renderRail()', 'renderLiveBar(', 'setCount(']) {
+    // #411: the drawer is ambient too, so a composer's status moves under an
+    // unrelated draft; a composer the human is in holds it (renderLive)
+    for (const call of ['applyBadge()', 'renderRail()', 'renderLiveBar(', 'renderLive(', 'setCount(']) {
       expect(ambient, `${call} must stay outside the draft gate`).toContain(call)
     }
 
     const editable = sourceFn('function paintEditableSurfaces(', '\nfunction render(')
-    for (const call of ['renderLive(', 'renderNeedsYou(', 'renderGroups(', 'renderDone(', 'renderBoards(']) {
+    expect(editable).not.toContain('renderLive(')
+    for (const call of ['renderNeedsYou(', 'renderGroups(', 'renderDone(', 'renderBoards(']) {
       expect(editable, `${call} must stay protected by the draft gate`).toContain(call)
     }
   })

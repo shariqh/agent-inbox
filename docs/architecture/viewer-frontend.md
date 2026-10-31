@@ -8,7 +8,8 @@ paths:
   - "public/keyboard-ui.js"
   - "public/esc.js"
   - "public/structured-copy.js"
-applyTo: "public/app.js,public/poll.js,public/drafts.js,public/selection.js,public/copy-on-select.js,public/keyboard-ui.js,public/esc.js,public/structured-copy.js"
+  - "public/messages.js"
+applyTo: "public/app.js,public/poll.js,public/drafts.js,public/selection.js,public/copy-on-select.js,public/keyboard-ui.js,public/esc.js,public/structured-copy.js,public/messages.js"
 ---
 
 # Viewer frontend: poll, render, drafts, focus and selection
@@ -76,8 +77,72 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   sent. Never send to get past a notice. A
   window deletes only the copy it loaded or last wrote, and its leaving save
   writes back a draft another window deleted; the viewer-restart hold stays.
+- Messages to a running session (#411 PR 2) are written in one composer per
+  session, in the Live drawer and the Dashboard session focus panel, and read
+  from `/api/messages`, the poll's ninth read (a 404, error or refused body is no
+  messages). Each composer is one node kept for the page's life and updated in
+  place; the drawer, now painted by the ambient painter, is left as it is while a
+  composer in it holds focus. A send claims an id once and reuses it while its
+  text is unchanged, so a retry never sends twice. Message drafts are durable
+  (`type: 'message'`), hold a viewer restart's reload, and never pause the list.
+  Nothing about messages reaches attention, a badge, a count or the dock.
 
 ## Invariants in detail
+
+- **Messages to a running session are presence, written in one kept node (issue #411,
+  PR 2).** Design: [`docs/superpowers/specs/2026-10-30-session-messages-design.md`](../superpowers/specs/2026-10-30-session-messages-design.md)
+  §5 and §12. `public/messages.js` is pure: the delivery state (`deliveryState`, three
+  states from the session's `/api/activity` flags, `activity-and-live.md`), each
+  message's status line (sent, picked up, acknowledged with its outcome, withdrawn, or
+  "Withdrawn after pickup: it may have started"), one session's history (newest
+  first, five shown, "+N earlier") and the "Not delivered" list. `app.js` mounts
+  `composerEl(where, session)`: a labelled textarea, a counter, Send (and, in the
+  drawer, Cancel, which closes and keeps the text, like Esc), the delivery line, the
+  sharing line ("Any agent of this session, a subagent included, may pick it up
+  first."), a `role="status"` slot and the history. Each is ONE node per
+  (`drawer`|`focus`, session) kept in `composerEls` and updated in place
+  (`updateComposer`, written only on a change, so an unchanged paint writes nothing);
+  the two hosts share one draft per session. The Live drawer moved from the editable
+  surfaces to `paintAmbient()` (so a status moves under an unrelated draft); its
+  rebuild re-attaches the same composer nodes, and a poll that finds focus in a
+  drawer composer (remembered focus in a background window counts) leaves the list
+  as it is and only updates the composers. A forced paint rebuilds it and gives the
+  focus and caret back only when the window had focus before the rebuild (a detached
+  node takes the focus with it). The focus panel's composer is its own section
+  (`.dash-focus-message`), never rewritten by `setFocusPart`. A drawer entry's
+  Message button (`data-msg-open`, read back through `dataset`, never a selector)
+  opens its composer, opening the idle fold for an idle session; an explicit open
+  focuses the textarea, nothing passive does. ⌘/Ctrl+Enter sends; Esc in the drawer
+  closes the composer, keeps the draft and returns focus to its button when the
+  window has focus; Esc in the focus panel closes the panel. The Agents view's
+  Message button calls the injected `openMessage(session)`: the drawer, that
+  composer open and focused. A send claims `{ id, text }` (`claimMessageIntent`),
+  stored before the POST, and reuses the id while the text is unchanged, so a retry
+  after an unconfirmed send replays exactly; a refusal (`session_gone`,
+  `session_cannot_receive`, `too_many_open`, `too_much_open`, `id_conflict`) drops
+  the intent and keeps the text with its reason; an unconfirmed send keeps both and
+  says "Your send was not confirmed. Send again: it will not send twice." Every
+  applied frame `reconcileMessageDrafts()` retires a draft whose intent the snapshot
+  holds with the same text (it did land) and moves one whose session is no longer
+  listed, or cannot receive, to the unsent responses (`messageRecoveries`), whose
+  Retry reuses the id the same way. Withdraw posts the revision the history showed.
+  Every write ends in `reloadAndPaint()`, and `messageVersion` is in `frameInputs()`.
+  The "Not delivered (N)" fold ends the drawer: every open message whose session is
+  no longer listed (global, not lens-filtered), newest first, ten shown and "+M
+  more", each with Copy text and Withdraw, until withdrawn or a later send's 30-day
+  prune deletes it; the clock never changes it and the Live strip names nothing.
+  Drafts (#279): `type: 'message'`, key `message:<session>`, with `intent` and a
+  `reason` while in the unsent responses; an older build sharing the profile drops
+  them on its next write (the module's rule for any new kind). A restored draft for a
+  listed session that can receive goes back to its composer, opening and focusing
+  nothing (an unconfirmed intent says so); one the snapshot holds retires; any other
+  goes to the unsent responses. Message drafts and sends hold a viewer restart's
+  reload (`hasUnsentResponses`) but are not in `suspendState()`, so they never pause
+  the list. Agent and human text go through `esc()`/`textContent`; an outcome is
+  agent text and goes through `renderStructuredText`. No animation. Nothing here
+  reaches `public/attention.js`, `relay.js`, `reply-watch.cjs`, a badge, a count,
+  the rail or the dock: `test/dom/session-messages.test.ts` compares every attention
+  surface with and without messages, a draft, a send, a delivery and an ack.
 
 - **Viewer escapes all agent-authored text.** `public/app.js` runs every interpolated field
   (item title/detail/annotation/project/stream/agent, board title/meta, row label/note/

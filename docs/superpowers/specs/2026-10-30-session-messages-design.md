@@ -437,6 +437,16 @@ hook wake for sessions that have the push.
   driver. This also retires §11 question 2 and the PR 3 spikes.
 - **2026-10-30, three delivery states (Shariq).** PR 2's composer says "arrives now" (a push, a
   driver, or an armed hook watch), "when it next checks", or "can't receive".
+- **2026-10-31, PR 2 as built.** (1) Each composer is one node kept for the page's
+  life and updated in place, so the drawer (moved to the ambient painter) is held only
+  while a composer in it has focus; a draft alone survives every rebuild in that node.
+  The focus panel's composer is its own section and is never rewritten. (2) Cancel
+  closes the drawer composer and keeps the text, as Esc does; clearing the text is how
+  a draft is discarded. (3) `wakes` is served only as `true`, like `receives_messages`
+  and `push_wake`. (4) The focus panel shows the composer while the session is listed,
+  working or not. (5) Message drafts share `agent-inbox-drafts-v1`, so a build older
+  than this one sharing the profile drops them on its next write. (6) A draft whose
+  session leaves (or cannot receive) moves to the unsent responses on the next frame.
 - **2026-10-30, spike findings.** Claude Code's handshake says nothing about listening, so the
   push loop runs for every Claude Code client and presence reads the launch flags
   (`push_wake`). The pushed set stays in memory; no hub schema change for it. End to end on

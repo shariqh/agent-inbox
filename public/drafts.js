@@ -109,6 +109,19 @@ export function draftEntry(raw) {
         setAside: raw.setAside === true, reason,
       }
     }
+    case 'message': {
+      // #411: one per session. `intent` is the id a send claimed and the text it
+      // sent, so a retry of that text replays exactly; a `reason` means it is in
+      // the unsent responses, its session gone or unable to receive.
+      const intent = raw.intent ?? null
+      if (intent !== null && (typeof intent !== 'object' || !isId(intent.id, 64) || !isText(intent.text))) return null
+      if (!isId(raw.session) || !isText(raw.project, MAX_LABEL) || !isText(raw.agent, MAX_LABEL)
+        || !isText(raw.stream ?? '', MAX_LABEL) || !isText(raw.text) || !filled(raw.text) || !isText(reason, MAX_LABEL)) return null
+      return {
+        type: 'message', session: raw.session, project: raw.project, agent: raw.agent, stream: raw.stream ?? '',
+        text: raw.text, intent: intent && { id: intent.id, text: intent.text }, reason,
+      }
+    }
     case 'note': {
       // an empty text is a Note attempt that clears the stored note
       if (!isId(raw.itemId) || !isText(raw.title, MAX_LABEL) || !isText(raw.text) || !isText(raw.error, MAX_LABEL)
@@ -128,6 +141,7 @@ export function draftKey(draft) {
     case 'row': return `row:${draft.rowId}`
     case 'row-recovery': return `row-recovery:${draft.rowId}:${draft.revision}`
     case 'note': return `note:${draft.itemId}`
+    case 'message': return `message:${draft.session}`
     default: return null
   }
 }

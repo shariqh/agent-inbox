@@ -1642,6 +1642,15 @@ describe('a v2.1.0 process sharing a hub with session messages (#411)', () => {
     expect(sendSessionMessage(db, { id: id(2), session: 'new-mcp', text: 'Hello.' }).ok).toBe(true)
   })
 
+  it('its hook’s watch lease, which wakes for answers only, never counts as wakes', () => {
+    const db = connect(false)
+    const old = connect(true)
+    old.prepare(V170.upsertActivity).run(presence('old-hosted', 'open', 0))
+    upsertActivity(db, { session: 'new-hosted', project: 'agent-inbox', stream: 'main', agent: 'claude-code', doing: 'open', idle: true, claim: false, receives_messages: true, host_pid: 1 })
+    old.prepare(V170.claimHookWatch).run('host:1', `${process.pid}-older-token`, new Date().toISOString())
+    expect(listActivity(db).filter((row) => row.wakes)).toEqual([])
+  })
+
   it('none of its presence, call, item or answer statements changes a message or moves the messages domain', () => {
     const db = connect(false)
     const old = connect(true)

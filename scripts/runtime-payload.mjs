@@ -117,11 +117,21 @@ function assertSafePathComponent(value, label) {
 /**
  * A runtime id never carries the reserved trash prefix: a runtime being
  * pruned is renamed into a `.trash-*` folder, so nothing named that way is
- * ever installed, listed, pruned or trusted as a runtime (#211).
+ * ever installed, listed, pruned or trusted as a runtime (#211). Nor is it
+ * `.pins`, where a running agent-inbox-driver pins its runtime (#412).
  */
+const PINS_DIR = '.pins'
+
+function isReservedName(name) {
+  return isTrashName(name) || name === PINS_DIR
+}
+
 function assertNotTrashName(value, label) {
   if (isTrashName(value)) {
     throw new RuntimeIntegrityError(`unsafe ${label}: ${JSON.stringify(value)} is a reserved trash name`)
+  }
+  if (value === PINS_DIR) {
+    throw new RuntimeIntegrityError(`unsafe ${label}: ${JSON.stringify(value)} is where drivers pin runtimes`)
   }
 }
 
@@ -607,13 +617,14 @@ export function pruneRuntime({ runtimeRoot, runtimeId, manifestFileName = DEFAUL
  * List every direct child of `runtimeRoot`, reporting whether each one is a
  * validly-owned runtime directory. Never mutates anything — used by prune
  * tooling and runtime-config.mjs's ownership checks to enumerate candidates.
- * Trash folders left by an interrupted prune are not runtimes and are skipped.
+ * Trash folders left by an interrupted prune, and the `.pins` folder drivers
+ * pin runtimes in (#412), are not runtimes and are skipped.
  */
 export function listRuntimes({ runtimeRoot, manifestFileName = DEFAULT_MANIFEST_FILE }) {
   if (!existsSync(runtimeRoot)) return []
   const out = []
   for (const entry of readdirSync(runtimeRoot, { withFileTypes: true })) {
-    if (!entry.isDirectory() || entry.isSymbolicLink() || isTrashName(entry.name)) continue
+    if (!entry.isDirectory() || entry.isSymbolicLink() || isReservedName(entry.name)) continue
     const dir = join(runtimeRoot, entry.name)
     try {
       const manifest = verifyPayload({ root: dir, manifestFileName })

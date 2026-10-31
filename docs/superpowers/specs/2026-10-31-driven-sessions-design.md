@@ -2,8 +2,9 @@
 
 **Date:** 2026-10-31 (revised the same day after an independent design review, §14)
 **Status:** Approved by the independent design review after two rounds (§14). Design only; nothing
-here is built. Five questions for Shariq are in §13, with the reviewer's views; open items for the
-implementation PRs are in §14.3.
+here is built. Shariq answered §13 on 2026-10-31: **Copilot only for now; driving Claude is
+deferred to the backlog (#421)**, and Claude sessions get push through Claude Code channels
+(#418). Open items for the implementation PRs are in §14.3.
 **Scope of this PR:** this document. No source, test or workflow changes.
 **Related:** #411 and its design
 ([`2026-10-30-session-messages-design.md`](2026-10-30-session-messages-design.md), on
@@ -126,7 +127,10 @@ The child env drops `COPILOT_ALLOW_ALL` and sets `COPILOT_AUTO_UPDATE=false` (§
 Copilot login, or `COPILOT_GITHUB_TOKEN` from the env. GitHub's ACP reference names custom
 frontends as a use case.
 
-### 3.3 Claude (Agent SDK through `claude-agent-acp`), after channels
+### 3.3 Claude (Agent SDK through `claude-agent-acp`) — deferred to #421
+
+**Deferred (2026-10-31).** Shariq chose not to drive Claude for now. This section is kept as the
+design for #421. Claude sessions get push through Claude Code channels (#418) instead.
 
 **Gate.** PR #418's channels spike showed a real `claude` take a pushed turn and ack it. Claude
 work starts only after that spike's go/pivot note.
@@ -623,7 +627,7 @@ foreground from the installed runtime.
 - the off tests and the reused-viewer refusal test;
 - `docs/architecture/driven-sessions.md`.
 
-**4. Claude** (`Part of #412`):
+**4. Claude** — deferred to #421, not part of #412 (2026-10-31):
 - the host;
 - API-key auth on fd 3;
 - driver-enforced USD;
@@ -660,6 +664,16 @@ foreground from the installed runtime.
    the list snapshot, and the dialog warns not to paste secrets into it.*
 5. **Budgets.** Use active turn time (2 h), park after 2 h idle, 500 tool calls, and a required
    dollar cap enforced by the driver for API-key Claude? *Recommend and reviewer: yes.*
+
+
+**Answered by Shariq, 2026-10-31:**
+1. **Claude auth:** moot. Driving Claude is deferred to the backlog (#421). Claude push uses
+   channels with his subscription (#418).
+2. **App quit:** accepted. Driven sessions keep running, and a quit prompt lists them.
+3. **Host order:** Copilot only for #412. Claude is in #421.
+4. **First prompt:** accepted. Stored, served per launch, with a warning against pasting secrets.
+5. **Budgets:** accepted: active turn time, park when idle, 500 tool calls. The dollar cap
+   applies only if #421 is built.
 
 ## §14 — Changes after review (2026-10-31)
 

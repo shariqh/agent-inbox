@@ -126,6 +126,18 @@ export function defaultDbPath(): string {
   return process.env.AGENT_INBOX_DB ?? join(homedir(), '.agent-inbox', 'inbox.db')
 }
 
+// Issue #412 (driven sessions §4.2, mesh §10.3): projects no agent, hook or
+// session reads. A driver files its approval alerts in `@sessions`, and the mesh
+// will file its asks in `@mesh`, so no session in the asks' real project wakes
+// on them or answers them. Exactly these two names: a folder with no remote can
+// legitimately be named with a leading `@`. The viewer shows them like any
+// project, so attention is unchanged.
+const RESERVED_PROJECTS: readonly string[] = ['@sessions', '@mesh']
+
+export function isReservedProject(project: string): boolean {
+  return RESERVED_PROJECTS.includes(project)
+}
+
 export function openDb(path: string = defaultDbPath()): Database.Database {
   mkdirSync(dirname(path), { recursive: true })
   const db = new Database(path)
@@ -1300,6 +1312,7 @@ export function listPending(
 ): Item[] {
   // Hooks/backstops retain their question-only default. MCP explicitly opts in
   // to informational feedback, with a targeted recovery path after pickup.
+  if (isReservedProject(project)) return []
   const rows = db
     .prepare(`SELECT * FROM items
       WHERE status = 'open' AND project = @project
@@ -3005,6 +3018,7 @@ export function listUnansweredBoardRows(
   db: Database.Database,
   project: string,
 ): Array<Pick<BoardRow, 'id' | 'action_version'>> {
+  if (isReservedProject(project)) return []
   return db.prepare(`SELECT r.id, r.action_version
     FROM board_rows r JOIN boards b ON b.id = r.board_id
     WHERE b.project = ? AND b.status = 'active' AND r.status = 'blocked'
@@ -3013,6 +3027,7 @@ export function listUnansweredBoardRows(
 }
 
 export function listPendingRows(db: Database.Database, project: string): PendingRow[] {
+  if (isReservedProject(project)) return []
   const now = new Date().toISOString()
   const rows = db
     .prepare(
@@ -3297,6 +3312,12 @@ export interface Activity {
    * minutes (the watch window is 29). Evidence, like `push_wake`.
    */
   wakes?: true
+  /**
+   * Issue #412 — present, and true, only while an Agent Inbox driver holds this
+   * session's `driven:` lease, refreshed within the last 90 s: a message is
+   * pushed into it as a new turn.
+   */
+  driven?: true
 }
 
 export interface ActivityUpdate {
@@ -3550,22 +3571,24 @@ export function listActivity(db: Database.Database, opts: { staleMinutes?: numbe
   const rows = db
     .prepare(`SELECT a.session, a.project, a.stream, a.agent, a.doing, a.last_doing, a.detail, a.children, a.idle, a.started_at, a.updated_at,
                      a.last_call_at, a.server_version, a.server_source, a.call_minute, a.call_counts, a.receives_messages, a.push_wake,
-                     (w.claim_key IS NOT NULL) AS wakes
+                     (w.claim_key IS NOT NULL) AS wakes, (d.claim_key IS NOT NULL) AS driven
               FROM activity a
               LEFT JOIN hook_watch_claims w
                 ON a.host_pid IS NOT NULL AND w.claim_key = 'host:' || a.host_pid
                AND substr(w.token, 1, 3) = 'm1:' AND w.claimed_at >= ?
+              LEFT JOIN hook_watch_claims d
+                ON d.claim_key = 'driven:' || a.session AND d.claimed_at >= ?
               WHERE a.ended_at IS NULL AND a.updated_at >= ?`)
-    .all(new Date(now - WAKE_LEASE_MS).toISOString(), cutoff) as Array<Omit<Activity, 'children' | 'idle' | 'receives_messages' | 'push_wake' | 'wakes'> & {
+    .all(new Date(now - WAKE_LEASE_MS).toISOString(), freshLeaseCutoff(now), cutoff) as Array<Omit<Activity, 'children' | 'idle' | 'receives_messages' | 'push_wake' | 'wakes' | 'driven'> & {
       children: string | null; idle: number; call_minute: number | null; call_counts: string | null; receives_messages: number | null; push_wake: number | null
-      wakes: number
+      wakes: number; driven: number
     }>
   const nowMinute = Math.floor(now / 60000)
   // The row is kept whatever happens here — the session really is present, and
   // public/attention.js classifies an item as "waiting" iff its session id is in
   // this list, so dropping the row would silently downgrade a live blocker. Only
   // the CLAIM decays.
-  const out = rows.map(({ call_minute, call_counts, receives_messages, push_wake, wakes, ...r }): Activity => {
+  const out = rows.map(({ call_minute, call_counts, receives_messages, push_wake, wakes, driven, ...r }): Activity => {
     const live = (r.last_call_at ?? r.started_at) >= cold
     // #306: the trace is served only while its newest minute is in the window
     const calls = call_minute !== null && nowMinute - call_minute < CALL_TRACE_MINUTES ? parseCallCounts(call_counts) : null
@@ -3579,6 +3602,7 @@ export function listActivity(db: Database.Database, opts: { staleMinutes?: numbe
       ...(receives_messages === 1 ? { receives_messages: true as const } : {}),
       ...(push_wake === 1 ? { push_wake: true as const } : {}),
       ...(wakes === 1 ? { wakes: true as const } : {}),
+      ...(driven === 1 ? { driven: true as const } : {}),
     }
   })
   // Working sessions first (longest-running first, as before). Everything else
@@ -3615,7 +3639,8 @@ export function listHostSessions(db: Database.Database, hostPid: number): HostSe
 }
 
 // The open questions these MCP sessions raised, whatever project each was
-// filed under.
+// filed under, except a reserved one (#412): a driver files its approval
+// alerts under the driven session's id, and no hook may wake on them.
 export function listSessionQuestions(db: Database.Database, sessions: readonly string[]): Item[] {
   if (sessions.length === 0) return []
   const rows = db
@@ -3624,7 +3649,7 @@ export function listSessionQuestions(db: Database.Database, sessions: readonly s
                  AND session IN (SELECT value FROM json_each(?))
                ORDER BY created_at ASC`)
     .all(JSON.stringify(sessions)) as StoredItem[]
-  return rows.map(parseItem)
+  return rows.filter((row) => !isReservedProject(row.project)).map(parseItem)
 }
 
 // The Claude hook's answer-watcher lease: one row per watched host (or harness
@@ -3648,6 +3673,27 @@ export function holdsHookWatch(db: Database.Database, key: string, token: string
 
 export function releaseHookWatch(db: Database.Database, key: string, token: string): void {
   db.prepare(`DELETE FROM hook_watch_claims WHERE claim_key = ? AND token = ?`).run(key, token)
+}
+
+// ── issue #412: the sessions a driver drives ────────────────────────────────
+//
+// A driver (`agent-inbox-driver`) runs one agent child over ACP and holds, in
+// hook_watch_claims (no snapshot reads it, so refreshes rebuild nothing),
+// `driven:<session>` for each MCP session it linked by ancestry. Its token is
+// `<launch id>:<driver pid>:<nonce>`, so a lease's identity is the launch. A
+// lease is fresh for 90 s; the driver refreshes it every 30 s. Design:
+// docs/superpowers/specs/2026-10-31-driven-sessions-design.md §5.1 and §6.
+const DRIVER_LEASE_FRESH_MS = 90_000
+
+function freshLeaseCutoff(nowMs: number): string {
+  return new Date(nowMs - DRIVER_LEASE_FRESH_MS).toISOString()
+}
+
+// Whether a driver holds this MCP session's fresh `driven:` lease: its server
+// is told "woken automatically" and hands out no watch contract (§5.3).
+export function isDrivenSession(db: Database.Database, session: string): boolean {
+  return db.prepare(`SELECT 1 FROM hook_watch_claims WHERE claim_key = ? AND claimed_at >= ?`)
+    .get(`driven:${session}`, freshLeaseCutoff(Date.now())) !== undefined
 }
 
 // ── issue #411: the human's messages to one MCP session ─────────────────────
@@ -4781,11 +4827,15 @@ export interface ClosedProject {
 }
 
 // Idempotent: re-closing after an implicit reopen simply re-stamps closed_at.
-export function closeProject(db: Database.Database, project: string): void {
+// A reserved project is refused (false): closing `@sessions` would mute every
+// driven session's approvals (#412).
+export function closeProject(db: Database.Database, project: string): boolean {
+  if (isReservedProject(project)) return false
   db.prepare(
     `INSERT INTO projects (project, closed_at) VALUES (?, ?)
      ON CONFLICT(project) DO UPDATE SET closed_at = excluded.closed_at`,
   ).run(project, new Date().toISOString())
+  return true
 }
 
 export function reopenProject(db: Database.Database, project: string): void {
@@ -4833,6 +4883,9 @@ export function listClosedProjects(db: Database.Database): ClosedProject[] {
 // content arrives. Closing is the human's explicit act, and one new flag undoes
 // it — but "nothing can be permanently muted" is not true of that one case, and
 // saying otherwise would be an overclaim.
+//
+// A reserved project (#412) is never closed, even when an older viewer sharing
+// the hub wrote the row: closing `@sessions` would mute every driver's approvals.
 export function closedProjects(db: Database.Database): string[] {
   const rows = db
     .prepare(
@@ -4842,5 +4895,5 @@ export function closedProjects(db: Database.Database): string[] {
         ORDER BY p.project`,
     )
     .all() as { project: string }[]
-  return rows.map((r) => r.project)
+  return rows.map((r) => r.project).filter((project) => !isReservedProject(project))
 }

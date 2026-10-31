@@ -2385,3 +2385,55 @@ describe('hook: docs contract', () => {
     }
   })
 })
+
+// Issue #412: a driver files its approval alerts in the reserved project
+// `@sessions`, under the driven agent's own MCP session. No hook reports,
+// wakes on or watches one, and a folder that happens to be named like a
+// reserved project gets no hook behaviour at all.
+describe('hook: reserved projects (#412)', () => {
+  const brief = { AGENT_INBOX_WATCH_SECS: '1', AGENT_INBOX_WATCH_POLL_MS: '20' }
+
+  function reservedAsks(db: ReturnType<typeof openDb>): void {
+    replyItem(db, question(db, '@sessions', 'Allow copilot to run `npm test`?', 'mcp-1'), 'allow_once')
+    const row = waitingRow(db, '@sessions')
+    annotateBoardRow(db, row.id, 'allow_once')
+  }
+
+  it('never reports an answered @sessions alert raised under its own linked server', async () => {
+    const { env, dbPath } = freshEnv()
+    const db = openDb(dbPath)
+    linkServer(db, 'mcp-1', PROJECT)
+    reservedAsks(db)
+    for (const sub of ['stop', 'prompt-submit', 'session-start'] as const) {
+      expect(await runHook([sub], ev(), env)).toEqual({ stdout: '' })
+    }
+    db.close()
+  })
+
+  it('watch never wakes for an @sessions alert, waiting at arming or raised later', async () => {
+    const { env, dbPath } = freshEnv(brief)
+    const db = openDb(dbPath)
+    linkServer(db, 'mcp-1', PROJECT)
+    question(db, '@sessions', 'Allow copilot to run `git status`?', 'mcp-1')
+    const running = runHook(['watch'], ev(), env)
+    await armed(dbPath)
+    reservedAsks(db)
+    expect(await running).toEqual({ stdout: '' })
+    db.close()
+  })
+
+  it('does nothing in a folder named @sessions: no backstop, no nudge, no watch', async () => {
+    const { env, dbPath } = freshEnv(brief)
+    const cwd = join(scratchDir('hook-reserved-'), '@sessions')
+    mkdirSync(cwd)
+    const db = openDb(dbPath)
+    reservedAsks(db)
+    expect(await runHook(['notification'], ev({ cwd }), env)).toEqual({ stdout: '' })
+    expect(await runHook(['notification-commit', ev({ cwd })], '', env)).toEqual({ stdout: '' })
+    for (const sub of ['stop', 'prompt-submit', 'session-start', 'watch'] as const) {
+      expect(await runHook([sub], ev({ cwd }), env)).toEqual({ stdout: '' })
+    }
+    expect(listItems(db).filter((item) => item.agent === 'hook')).toEqual([])
+    db.close()
+  })
+})

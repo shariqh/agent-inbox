@@ -124,6 +124,7 @@ function stagePayloadDir(
     if (opts.omitFile !== 'scripts/install-agents.sh') writeFileSync(join(dir, 'scripts', 'install-agents.sh'), installerScript)
     if (opts.omitFile !== 'scripts/runtime-payload.mjs') writeFileSync(join(dir, 'scripts', 'runtime-payload.mjs'), '// verifier helper\n')
     if (opts.omitFile !== 'scripts/runtime-config.mjs') writeFileSync(join(dir, 'scripts', 'runtime-config.mjs'), '// config helper\n')
+    if (opts.omitFile !== 'scripts/runtime-pins.mjs') writeFileSync(join(dir, 'scripts', 'runtime-pins.mjs'), '// pins helper\n')
     if (opts.omitFile !== 'scripts/setup-filesystem.cjs') writeFileSync(join(dir, 'scripts', 'setup-filesystem.cjs'), '// filesystem adapter\n')
     if (opts.omitFile !== 'scripts/setup-lock.sh') writeFileSync(join(dir, 'scripts', 'setup-lock.sh'), '# shared setup lock\n')
     if (opts.omitFile !== 'scripts/run-isolated.mjs') writeFileSync(join(dir, 'scripts', 'run-isolated.mjs'), '// rollback step isolation\n')
@@ -930,6 +931,7 @@ describe('selectRuntimePayload (issue #74)', () => {
     ['missing installer', { omitFile: 'scripts/install-agents.sh' }],
     ['missing runtime verifier', { omitFile: 'scripts/runtime-payload.mjs' }],
     ['missing config helper', { omitFile: 'scripts/runtime-config.mjs' }],
+    ['missing pins helper', { omitFile: 'scripts/runtime-pins.mjs' }],
     ['missing filesystem adapter', { omitFile: 'scripts/setup-filesystem.cjs' }],
     ['missing setup lock helper', { omitFile: 'scripts/setup-lock.sh' }],
     ['missing rollback step helper', { omitFile: 'scripts/run-isolated.mjs' }],

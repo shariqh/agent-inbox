@@ -17,7 +17,7 @@ import type { RuntimeInventory, RuntimeMeasurer } from '../src/runtime-inventory
 import { hooksHome, installRuntime, installStaged, stageRuntime } from './hooks-runtime.js'
 import { installRuntimeVersion, registerHost, releaseRuntime } from './release-runtime.js'
 import type { HooksHome, StagedRuntime } from './hooks-runtime.js'
-import { configFiles, hooksOf, launcher, notUses, UNREADABLE_CONFIGS, USE_SHAPES, writeJson } from './runtime-uses.js'
+import { configFiles, hooksOf, launcher, notUses, PIN_CASES, startOf, UNREADABLE_CONFIGS, USE_SHAPES, writeJson, writePinFile } from './runtime-uses.js'
 import { accentedRoot, RUNTIME_SPELLINGS } from './runtime-spellings.js'
 import { removeScratchDirs, scratchDir } from './scratch.js'
 
@@ -274,6 +274,43 @@ describe('readRuntimes agrees with the prune gate (#294)', () => {
 // /api/setup carries the inventory to the Setup panel. Electron serves the
 // viewer from its main process, so a read with nothing changed reads stamps
 // alone, and a folder is walked again only when its own stamps moved.
+describe('readRuntimes agrees with the prune gate about driver pins (#412)', () => {
+  it.each(PIN_CASES)('%s', (_label, arrange, keeps) => {
+    const h = hooksHome()
+    const old = installRuntime(h, OLD)
+    arrange(h.runtimeRoot, old.runtimeId)
+    expect(viewerAnswer(h)).toEqual(scriptAnswer(h))
+    expect(viewerAnswer(h)).toEqual({
+      state: 'ok',
+      runtimes: [{ runtimeId: old.runtimeId, verdict: keeps ? 'used' : 'unused', usedBy: keeps ? [`a running agent-inbox-driver (pid ${process.pid})`] : [] }],
+    })
+  })
+
+  it('a pin folder that cannot be read: both offer nothing and name it', () => {
+    if (process.getuid?.() === 0) return // root reads it anyway
+    const h = hooksHome()
+    const old = installRuntime(h, OLD)
+    writePinFile(h.runtimeRoot, old.runtimeId, { pid: process.pid, startedAt: startOf(process.pid) })
+    const folder = join(h.runtimeRoot, '.pins', old.runtimeId)
+    chmodSync(folder, 0o000)
+    try {
+      expect(viewerAnswer(h)).toEqual(scriptAnswer(h))
+      expect(viewerAnswer(h)).toEqual({ state: 'unknown', why: `${folder.split(h.home).join('~')} is unreadable (EACCES)` })
+      expect(read(h).entries).toEqual([expect.objectContaining({ runtimeId: old.runtimeId, status: 'unchecked' })])
+    } finally {
+      chmodSync(folder, 0o700)
+    }
+  })
+
+  it('never lists .pins as a runtime', () => {
+    const h = hooksHome()
+    const old = installRuntime(h, OLD)
+    writePinFile(h.runtimeRoot, old.runtimeId, { pid: process.pid, startedAt: startOf(process.pid) })
+    expect(read(h).entries.map((e) => e.runtimeId)).toEqual([old.runtimeId])
+    expect(scriptAnswer(h)).toMatchObject({ runtimes: [{ runtimeId: old.runtimeId }] })
+  })
+})
+
 describe('/api/setup runtimes (#294)', () => {
   type Runtimes = { state: string; removable: boolean; entries: Array<{ runtimeId: string; status: string; bytes: number | null; usedBy: string[] }> }
   const db = () => openDb(join(scratchDir('runtimes-db-'), 'inbox.db'))

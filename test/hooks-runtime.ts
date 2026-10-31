@@ -26,6 +26,7 @@ const SCRIPTS = [
   'prune-runtimes.sh',
   'runtime-payload.mjs',
   'runtime-config.mjs',
+  'runtime-pins.mjs',
   'setup-filesystem.cjs',
   'setup-lock.sh',
   'run-isolated.mjs',

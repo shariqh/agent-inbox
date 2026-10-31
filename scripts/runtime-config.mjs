@@ -55,6 +55,7 @@ import { execFileSync } from 'node:child_process'
 import { parseArgs } from 'node:util'
 import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path'
 import { DEFAULT_MANIFEST_FILE, isMainModule, readManifestFile, verifyPayload } from './runtime-payload.mjs'
+import { PINS_DIR, pinLabel, processIdentities, runtimePins, sweepStalePins } from './runtime-pins.mjs'
 
 /** Resolve a path to its real, canonical filesystem identity, or null if it cannot be resolved (missing, unreadable, a loop). */
 function tryCanonicalize(path) {
@@ -487,11 +488,16 @@ export function scanRuntimeReferences({ runtimeRoot, runtimeIds, files, home = n
  *   'unreferenced' — every file is missing or readable without using it
  * `matches` names each file that uses it ({file, label}), never its contents.
  */
-export function classifyRuntimeReference({ runtimeRoot, runtimeId, files, home = null }) {
+export function classifyRuntimeReference({ runtimeRoot, runtimeId, files, home = null, identities = processIdentities }) {
   const scan = scanRuntimeReferences({ runtimeRoot, runtimeIds: [runtimeId], files, home })
-  const matches = scan.uses.get(runtimeId) ?? []
-  const status = matches.length > 0 ? 'referenced' : scan.unknown.length > 0 ? 'unknown' : 'unreferenced'
-  return { status, runtimeId, matches, files: scan.files }
+  // a running driver pinned to it uses it too (#412); pins that cannot be read prove nothing
+  const pins = runtimePins({ runtimeRoot, identities })
+  const pinned = pins.status === 'ok'
+    ? (pins.live.get(runtimeId) ?? []).map(({ launchId, pid }) => ({ file: join(runtimeRoot, PINS_DIR, runtimeId, launchId), label: pinLabel(pid) }))
+    : []
+  const matches = [...(scan.uses.get(runtimeId) ?? []), ...pinned]
+  const status = matches.length > 0 ? 'referenced' : scan.unknown.length > 0 || pins.status !== 'ok' ? 'unknown' : 'unreferenced'
+  return { status, runtimeId, matches, files: scan.files, ...(pins.status === 'ok' ? {} : { pins: pins.reason }) }
 }
 
 // ── which runtimes a running process still uses (issue #294) ────────────
@@ -544,6 +550,10 @@ export function processesUsingRuntime(processes, runtimeId, selfPid = process.pi
     .sort((a, b) => a - b)
 }
 
+// Runtimes a running driver is pinned to (#412) are decided in
+// ./runtime-pins.mjs, which runtime-payload.mjs's prune also reads after it
+// moves a runtime aside; this module adds them to "uses" below.
+
 // Why `dir` no longer verifies against its own manifest, or null when it does.
 function verificationProblem(dir, runtimeId, manifestFileName) {
   try {
@@ -576,7 +586,8 @@ function declaredVersion(dir, name, manifestFileName) {
  * `only` checks that one alone. Each gets a verdict, in this order:
  *   current       — `current`, the runtime the caller runs from: kept
  *   not-a-runtime — no manifest naming this folder as a runtime: left alone
- *   used          — a host config uses it (`usedBy` names which): kept
+ *   used          — a host config uses it, or a running driver is pinned to
+ *                   it (#412; `usedBy` names which): kept
  *   in-use        — a running process names it (`pids`): kept
  *   changed       — it no longer verifies against its manifest (`problem`
  *                   says how: a Finder .DS_Store is enough): kept, since
@@ -584,8 +595,8 @@ function declaredVersion(dir, name, manifestFileName) {
  *                   runs, about 0.25 s for a 171 MB runtime with a warm cache
  *   unused        — none of these: prune-runtimes.sh removes it
  * `status` is 'unknown', with `reason` and no runtimes, when a host config
- * exists but proves nothing or the process list cannot be read: nothing may
- * then be removed at all.
+ * exists but proves nothing, the pins cannot be read, or the process list
+ * cannot be read: nothing may then be removed at all.
  */
 export function findUnusedRuntimes({
   runtimeRoot,
@@ -594,6 +605,7 @@ export function findUnusedRuntimes({
   only = null,
   manifestFileName = DEFAULT_MANIFEST_FILE,
   processList = listProcesses,
+  identities = processIdentities,
 }) {
   let names
   try {
@@ -622,10 +634,15 @@ export function findUnusedRuntimes({
     if (scan.unknown.length > 0) {
       return { status: 'unknown', reason: scan.unknown.map(({ file, reason }) => `${file} ${reason}`).join('; '), runtimes: [] }
     }
+    const pins = runtimePins({ runtimeRoot, identities })
+    if (pins.status !== 'ok') return { status: 'unknown', reason: pins.reason, runtimes: [] }
     const listed = processList()
     if (!listed.ok) return { status: 'unknown', reason: `the running processes cannot be listed: ${listed.reason}`, runtimes: [] }
     for (const { runtimeId, version } of candidates) {
-      const usedBy = [...new Set((scan.uses.get(runtimeId) ?? []).map((found) => found.label))]
+      const usedBy = [...new Set([
+        ...(scan.uses.get(runtimeId) ?? []).map((found) => found.label),
+        ...(pins.live.get(runtimeId) ?? []).map(({ pid }) => pinLabel(pid)),
+      ])]
       const pids = processesUsingRuntime(listed.processes, runtimeId)
       if (usedBy.length > 0 || pids.length > 0) {
         runtimes.push({ runtimeId, version, verdict: usedBy.length > 0 ? 'used' : 'in-use', usedBy, pids })
@@ -1274,6 +1291,47 @@ function runUnusedCmd(argv) {
 }
 
 /**
+ * `pins` — the running drivers pinned to runtimes under --runtime-root (#412):
+ * what install-agents.sh --uninstall consults before it changes anything.
+ * Read-only.
+ *
+ *   runtime-config.mjs pins --runtime-root <abs>
+ *
+ * stdout: {status:'ok', live:[{runtimeId, launchId, pid}], stale:<count>}
+ *   or {status:'unknown', reason}.
+ * exit 0: always, whatever the answer; 2: a missing or relative --runtime-root.
+ */
+function runPinsCmd(argv) {
+  const { values } = parseArgs({ args: argv, options: { 'runtime-root': { type: 'string' } } })
+  const runtimeRoot = requireString(values, 'runtime-root', 'pins')
+  if (!isAbsolute(runtimeRoot)) throw new UsageError('pins: --runtime-root must be an absolute path')
+  const pins = runtimePins({ runtimeRoot })
+  const result = pins.status === 'ok'
+    ? {
+        status: 'ok',
+        live: [...pins.live].flatMap(([runtimeId, list]) => list.map(({ launchId, pid }) => ({ runtimeId, launchId, pid }))),
+        stale: pins.stale.length,
+      }
+    : pins
+  process.stdout.write(`${JSON.stringify(result)}\n`)
+}
+
+/**
+ * `sweep-pins` — removes stale pins (sweepStalePins): what each prune runs
+ * under the setup lock before it decides anything.
+ *
+ *   runtime-config.mjs sweep-pins --runtime-root <abs>
+ *
+ * stdout: {status, removed, reason?}. exit 0: always; 2: usage.
+ */
+function runSweepPinsCmd(argv) {
+  const { values } = parseArgs({ args: argv, options: { 'runtime-root': { type: 'string' } } })
+  const runtimeRoot = requireString(values, 'runtime-root', 'sweep-pins')
+  if (!isAbsolute(runtimeRoot)) throw new UsageError('sweep-pins: --runtime-root must be an absolute path')
+  process.stdout.write(`${JSON.stringify(sweepStalePins({ runtimeRoot }))}\n`)
+}
+
+/**
  * `registration` — the install/upgrade/uninstall safety gate for a host's
  * MCP server registration:
  *
@@ -1477,12 +1535,14 @@ function main(argv) {
       case 'classify': runClassifyCmd(rest); break
       case 'references': runReferencesCmd(rest); break
       case 'unused': runUnusedCmd(rest); break
+      case 'pins': runPinsCmd(rest); break
+      case 'sweep-pins': runSweepPinsCmd(rest); break
       case 'registration': runRegistrationCmd(rest); break
       case 'merge-json': runMergeJsonCmd(rest); break
       case 'hooks': runHooksCmd(rest); break
       case 'foreign-hooks': runForeignHooksCmd(rest); break
       default:
-        throw new UsageError('usage: runtime-config.mjs <classify|references|unused|registration|merge-json|hooks|foreign-hooks> [flags]')
+        throw new UsageError('usage: runtime-config.mjs <classify|references|unused|pins|sweep-pins|registration|merge-json|hooks|foreign-hooks> [flags]')
     }
   } catch (err) {
     process.stderr.write(err instanceof HookRefusal ? `${err.message}\n` : `runtime-config: ${err.message}\n`)

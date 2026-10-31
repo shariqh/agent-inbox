@@ -9,10 +9,13 @@
 #   - no host config uses: ~/.claude.json (every scope in it),
 #     ~/.claude/settings.json, ~/.claude/settings.local.json,
 #     ~/.copilot/mcp-config.json or Claude Desktop's config, and
+#   - no running agent-inbox-driver is pinned to (#412: a pin in
+#     $RUNTIME_ROOT/.pins/<runtime-id>/ whose driver still runs), and
 #   - no running process names, and
 #   - still verifies against its manifest (a Finder .DS_Store is enough to
 #     change it: such a runtime is kept and named, never attempted),
 # checking each one again just before runtime-payload.mjs prune removes it.
+# --apply first removes up to 64 stale pins, whose drivers are gone.
 # A host config that cannot be read means nothing is removed. Project-scope
 # configs (<project>/.mcp.json, <project>/.claude/settings*.json) are not read.
 #
@@ -82,6 +85,12 @@ CURRENT="$("$NODE" -e '
   echo "prune-runtimes: this runtime's manifest names no runtime id, so nothing was removed" >&2
   exit 1
 }
+
+# Stale pins first (#412): a driver that crashed leaves its pin behind, and a
+# pin whose driver is gone never keeps a runtime. Best effort, under the lock.
+if [ "$APPLY" -eq 1 ]; then
+  "$NODE" "$CONFIG_HELPER" sweep-pins --runtime-root "$RUNTIME_ROOT" </dev/null >/dev/null 2>&1 || true
+fi
 
 # runtime-config.mjs unused as tab-separated lines: verdict, runtime id,
 # version, detail ("-" for none). When it cannot tell, one line: unknown and why.
@@ -159,12 +168,17 @@ EOF
     kept "$verdict" "$name" "$detail"
     return
   fi
-  if result="$("$NODE" "$PAYLOAD_HELPER" prune --runtime-root "$RUNTIME_ROOT" --runtime-id "$id" 2>&1 </dev/null)"; then
+  local status=0
+  result="$("$NODE" "$PAYLOAD_HELPER" prune --runtime-root "$RUNTIME_ROOT" --runtime-id "$id" 2>&1 </dev/null)" || status=$?
+  if [ "$status" -eq 0 ]; then
     REMOVED=$((REMOVED + 1))
     case "$result" in
       *'"retained":'*) echo "Removed $name. Some of its files are left in a .trash-* folder in $RUNTIME_ROOT, which the next install or prune deletes." ;;
       *) echo "Removed $name." ;;
     esac
+  elif [ "$status" -eq 4 ]; then
+    # #412: a driver pinned it after the check above; prune put it back
+    echo "Kept $name: an agent-inbox-driver started running from it."
   else
     FAILED=1
     echo "Could not remove $name: ${result#runtime-payload: }"

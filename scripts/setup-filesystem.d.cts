@@ -50,6 +50,8 @@ export interface StageDirectoryResult<T> {
 export interface RemoveDirectoryResult {
   readonly path: string
   readonly identity: SetupPathIdentity
+  // #412: why the tree was put back instead of removed
+  readonly kept?: string
 }
 
 export interface LeftoverTrashResult {
@@ -72,6 +74,8 @@ export interface SetupFilesystem {
   removeDirectory(options: {
     target: string
     validate(target: string): void
+    // #412: asked once the tree is moved aside; a reason puts it back
+    keep?(moved: string): string | null | undefined
   }): RemoveDirectoryResult
   removeLeftoverTrash(parent: string): LeftoverTrashResult
 }

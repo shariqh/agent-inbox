@@ -446,6 +446,21 @@ function runtimeRootStamp(runtimeRoot: string): [string | null, Array<[string, s
   return [entryStamp(runtimeRoot), installed]
 }
 
+// Issue #412: the driver pins under `<runtime root>/.pins/<id>/`. A pin added
+// or removed moves its folder's stamp, so Setup's list follows a driver
+// starting or stopping; a driver that crashed leaves its pin until a prune
+// sweeps it, and reads as used until then.
+function pinsStamp(runtimeRoot: string): [string | null, Array<[string, string | null]> | null] {
+  const pins = resolve(runtimeRoot, '.pins')
+  let ids: Array<[string, string | null]> | null
+  try {
+    ids = readdirSync(pins).sort().map((name) => [name, entryStamp(resolve(pins, name))])
+  } catch {
+    ids = null
+  }
+  return [entryStamp(pins), ids]
+}
+
 function releaseRuntimeKey(baked: BakedInfo, hostKey: string, runtimeRoot: string, appRoot: string): string {
   const payload = baked.runtimePayloads?.[hostKey]
   const source = payload && isContainedRelativePath(payload.path) ? resolve(appRoot, payload.path) : null
@@ -816,6 +831,7 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
     const key = JSON.stringify([
       referenceFiles(agentHome).map((file) => [entryStamp(file), targetStamp(file)]),
       runtimeRootStamp(runtimeRoot),
+      pinsStamp(runtimeRoot),
       current,
     ])
     const now = Date.now()

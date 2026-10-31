@@ -1013,6 +1013,17 @@ Accepted by the coordinator while building step 2's driver (PR 2 of 3):
   and refuses to start unless that file is owned by the user or root and is not writable by group or
   others, the check §8 sets for step 3's executables. (§8)
 
+- **Pins, as built (PR 3).** A pin records the driver's pid and its start identity, which never
+  moves while it runs: `/proc/<pid>/stat` start ticks with the boot id on Linux (not `ps -o
+  lstart=`, which moves when the clock is stepped), `ps -o lstart=` on macOS. Anything that is not
+  a real file owned by the user under real `.pins` folders is ignored. The driver removes its pin
+  on every exit it sees; each prune sweeps up to 64 stale ones under the setup lock, and re-reads
+  the pins after moving a runtime aside, putting it back if one now holds it; the driver checks
+  its runtime is still there after pinning. Uninstall refuses on a running driver's pin, never on
+  a stale one. The viewer's mirror checks the pid alone (it starts no process), so it errs toward
+  keeping. The installed command is `<runtime>/bin/node <runtime>/dist/driver-cli.js copilot …`,
+  which the installer prints; nothing is put on PATH. (§7, §11)
+
 ## Appendix A — Verification log
 
 | # | Fact | Source | Checked |

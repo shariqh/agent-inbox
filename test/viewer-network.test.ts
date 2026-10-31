@@ -1,4 +1,6 @@
 import { once } from 'node:events'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { request } from 'node:http'
 import type { Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
@@ -6,6 +8,9 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { serveStatic } from '@hono/node-server/serve-static'
 import { Hono } from 'hono'
 import { startLocalViewer } from '../src/viewer-network.js'
+
+// #412: scripts only from this origin, no plugins, <base> or form submissions, no framing.
+const CSP = "script-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 
 interface HttpResult {
   status: number
@@ -85,8 +90,33 @@ describe('local viewer network boundary', () => {
     expect(response.status).toBe(200)
     expect(response.body).toBe('viewer')
     expect(response.headers['x-agent-inbox-local-boundary']).toBe('loopback-v1')
-    expect(response.headers['content-security-policy']).toBe("frame-ancestors 'none'")
+    expect(response.headers['content-security-policy']).toBe(CSP)
     expect(response.headers['x-frame-options']).toBe('DENY')
+  })
+
+  it.each([
+    ['GET', '/index.html', 200, 'text/html'],
+    ['HEAD', '/index.html', 200, 'text/html'],
+    ['GET', '/app.js', 200, 'javascript'],
+    ['GET', '/api/secret', 200, 'application/json'],
+    ['GET', '/missing-module.js', 404, undefined],
+  ] as const)('sends the full CSP on %s %s', async (method, path, status, type) => {
+    const response = await send(path, { method })
+    expect(response.status).toBe(status)
+    if (type) expect(String(response.headers['content-type'])).toContain(type)
+    expect(response.headers['content-security-policy']).toBe(CSP)
+    expect(response.headers['x-frame-options']).toBe('DENY')
+  })
+
+  it('keeps Electron reuse independent of the CSP string', () => {
+    // An older app (v2.2.0) accepts a newer viewer, and a newer app an older one,
+    // because reuse and ownership compare only the boundary marker. Never bump the
+    // marker or make main read the CSP to tighten the policy.
+    const main = readFileSync(join(process.cwd(), 'electron/main.cjs'), 'utf8')
+    const network = readFileSync(join(process.cwd(), 'src/viewer-network.ts'), 'utf8')
+    expect(main).toContain("const BOUNDARY_VERSION = 'loopback-v1'")
+    expect(network).toContain("const BOUNDARY_VERSION = 'loopback-v1'")
+    expect(main.toLowerCase()).not.toContain('content-security-policy')
   })
 
   describe.each(['GET', 'HEAD'])('%s cache policy', (method) => {

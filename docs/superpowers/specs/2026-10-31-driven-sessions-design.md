@@ -632,10 +632,11 @@ mode and what it permits (§4.1), the budgets, and the first 300 characters of t
 Spawning needs **Start**, as mesh §8.2 binds a click to what the human saw. The spec it showed
 is the spec it sends.
 
-**CSP first.** A separate PR before the UI adds `script-src 'self'` (and `object-src 'none'`) to
-the viewer's CSP, which today is only `frame-ancestors 'none'`. Without it, any injected script
-in the owned viewer could call `start()` or `approve()`. The confirmation dialog and signed
-approvals do not depend on it, but it narrows what a page can do.
+**CSP first** *(done)*. A separate PR before the UI added `script-src 'self'`, `object-src
+'none'`, `base-uri 'none'` and `form-action 'none'` to the viewer's CSP, which was only
+`frame-ancestors 'none'` (see `docs/architecture/viewer-network.md`). Without it, any injected
+script in the owned viewer could call `start()` or `approve()`. The confirmation dialog and
+signed approvals do not depend on it, but it narrows what a page can do.
 
 **`electron/driver-process.cjs`** mirrors `setup-process.cjs`.
 - **Argv:** exactly `[<runtime>/bin/node, <runtime>/dist/driver-cli.js, 'run', <launchId>,
@@ -738,7 +739,7 @@ tolerantly, like Links), and a browser cannot turn it on. While it is off:
 | 1. Spike | Recorded fixtures and a go/pivot note | 2–3 days |
 | 2. Copilot from a terminal | Foreground driver; ancestry linking; push-once; `@sessions`; runtime pins | ≈ 1½ weeks |
 | 2b. Terminal mode (optional, any time) | New session that opens Terminal, no ACP | 2–3 days |
-| CSP PR | `script-src 'self'` before any launch UI | 1–2 days |
+| CSP PR *(done)* | `script-src 'self'` before any launch UI | 1–2 days |
 | 3. Electron launch | Confirmation, detach, `launches`, signed approvals, UI, park and minimal resume | 2–2½ weeks |
 | 4. Claude | After the #418 channels go/pivot | 1 week |
 | 5. Resume and Take over | Full resume, handing off to a terminal | 1 week |
@@ -800,7 +801,7 @@ foreground from the installed runtime.
   - mixed-version tests.
 
 **3. Electron launch** (`Part of #412`):
-- the CSP PR first;
+- the CSP PR first (done);
 - `driver-process.cjs`, the native confirmation, the `launch` grant and IPC;
 - signed approvals;
 - `launches` and its routes;

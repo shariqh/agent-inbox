@@ -597,7 +597,8 @@ different file and `AGENT_INBOX_PORT` to change the viewer port.
 
 The viewer binds one IPv4 listener to `127.0.0.1`, accepts only exact loopback
 authorities, requires a trusted Origin for mutations, rejects cross-site Fetch
-Metadata, and denies framing. Electron reuses only viewers carrying the expected
+Metadata, denies framing, and lets the page run only script files from its own
+origin (CSP `script-src 'self'`). Electron reuses only viewers carrying the expected
 local-boundary marker.
 
 This is an intentionally unauthenticated **single-user workstation** boundary.

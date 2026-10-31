@@ -1,12 +1,13 @@
 # Design: driven sessions — start an agent session from Agent Inbox and push messages into it (#412)
 
 **Date:** 2026-10-31 (revised the same day after an independent design review, §14)
-**Status:** Approved to build after the changes in §14. Design only; nothing here is built.
-Five questions for Shariq are in §13, with the reviewer's views.
+**Status:** Approved by the independent design review after two rounds (§14). Design only; nothing
+here is built. Five questions for Shariq are in §13, with the reviewer's views; open items for the
+implementation PRs are in §14.3.
 **Scope of this PR:** this document. No source, test or workflow changes.
 **Related:** #411 and its design
 ([`2026-10-30-session-messages-design.md`](2026-10-30-session-messages-design.md), on
-`feat-411-session-messages` until PR #417 merges); PR #418 (Claude channels spike); the mesh
+main since PR #417); PR #418 (Claude channels spike); the mesh
 design ([`2026-10-29-agent-mesh-design.md`](2026-10-29-agent-mesh-design.md)) §2, §3, §6, §8.2,
 §8.4 and §10.3; the 2026-10-30 research brief on pushing into a running session (kept outside
 the repo). External facts were checked on 2026-10-30/31 (Appendix A).
@@ -718,6 +719,22 @@ with older servers, and step 2 schema-free.
   - The MCP registration name is read from the host config, or the driver refuses to start.
   - Step 2's Stop uses the runtime CLI.
   - The terminal driver refuses to run without a TTY.
+
+### 14.3 Open items for implementation (final check, 2026-10-31)
+
+The final design check approved the design with no High findings and listed these for the
+implementation PRs, which get their own reviews:
+- **Nested-host test and npm-installed Copilot (Medium).** Rule 4 identifies agent hosts by `comm`,
+  which reads `node` for an npm-installed `copilot`. Match on `command=` (the argv path, for example
+  `@github/copilot`), and run the nested-CLI test against a real npm install.
+- **Re-addressing after a long park (Medium, step 3).** The `from` lease is pruned after a day, so
+  prove `from` through the `launches` row, or keep the leases of parked launches.
+- **Unambiguous signing input.** Length-prefix `item ‖ response_revision ‖ optionId`, and add a fixed
+  label to the key derivation, since the master key is shared with the mesh console key.
+- **`pushed.json` versus the database.** After a crash between `readdressMessages` and the file
+  write, the database is the truth.
+- **Interactive env capture can hang.** `-i` with stdin closed can block on rc prompts. A timeout is
+  the visible "Refresh environment" failure, never a retry loop.
 
 ## Appendix A — Verification log
 

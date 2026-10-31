@@ -6,6 +6,17 @@ const LOOPBACK_HOST = '127.0.0.1'
 const BOUNDARY_HEADER = 'x-agent-inbox-local-boundary'
 const BOUNDARY_VERSION = 'loopback-v1'
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS'])
+// Scripts only from this origin's files (no inline code, `javascript:` URLs or eval),
+// no plugins, no <base> or form submissions, and no framing (#412). Styles, images,
+// fonts and fetch stay unrestricted. Electron's reuse check reads BOUNDARY_HEADER
+// only, never this string, so older and newer apps and viewers still reuse each other.
+const CONTENT_SECURITY_POLICY = [
+  "script-src 'self'",
+  "object-src 'none'",
+  "base-uri 'none'",
+  "form-action 'none'",
+  "frame-ancestors 'none'",
+].join('; ')
 
 function listenerPort(server: Server | null, configuredPort: number): number {
   const address = server?.address()
@@ -76,7 +87,7 @@ export function startLocalViewer(app: Hono, port: number): Server {
     // The unversioned ESM graph must not mix heuristically cached releases.
     c.header('Cache-Control', 'no-store')
     c.header(BOUNDARY_HEADER, BOUNDARY_VERSION)
-    c.header('Content-Security-Policy', "frame-ancestors 'none'")
+    c.header('Content-Security-Policy', CONTENT_SECURITY_POLICY)
     c.header('X-Frame-Options', 'DENY')
   })
 

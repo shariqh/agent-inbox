@@ -136,7 +136,7 @@ header { flex-wrap: wrap; }
 .msg-actions button:disabled { cursor: default; opacity: .55; }
 .msg-composer { display: grid; gap: 6px; margin: 0 0 10px; padding: 10px 12px; border: 1px solid var(--app-border); border-radius: 8px; background: var(--app-surface); font-size: 12.5px; }
 .idle-fold .msg-composer { margin-left: 14px; }
-.msg-composer p { margin: 0; }
+.msg-composer p, .msg-undelivered p { margin: 0; }
 .msg-label { font-weight: 650; }
 .msg-input { min-height: 56px; max-height: 200px; resize: vertical; padding: 7px 9px; border: 1px solid var(--app-border); border-radius: 8px; background: var(--app-surface); color: var(--app-text); font: inherit; font-size: 13px; line-height: 1.4; }
 .msg-input:focus { outline: 2px solid color-mix(in srgb, var(--app-focus) 20%, transparent); border-color: var(--app-focus); }

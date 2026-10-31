@@ -6379,6 +6379,14 @@ function setMessageDraft(session, text, source = null) {
   bumpMessages()
 }
 
+// A draft that was sent leaves every composer of its session, the focused one too
+// (updateComposer leaves a focused textarea alone, so typing is never overwritten).
+function clearComposerText(session) {
+  for (const el of composerEls.values()) {
+    if (el.dataset.msgSession === session) el.querySelector('textarea').value = ''
+  }
+}
+
 function updateSessionComposers(session) {
   for (const el of composerEls.values()) if (el.dataset.msgSession === session) updateComposer(el)
 }
@@ -6461,8 +6469,10 @@ async function sendMessage(session) {
   const current = messageDrafts.get(session)
   if (result?.ok === true) {
     // sent: the draft goes, unless the human typed something else meanwhile
-    if (current?.text === intent.text) messageDrafts.delete(session)
-    else if (current) current.intent = null
+    if (current?.text === intent.text) {
+      messageDrafts.delete(session)
+      clearComposerText(session)
+    } else if (current) current.intent = null
   } else if (result?.ok === false && REFUSALS.has(result.reason)) {
     if (current?.intent?.id === intent.id) current.intent = null
     messageNotes.set(session, refusalText(result))
@@ -6494,6 +6504,7 @@ function reconcileMessageDrafts() {
     if (sent(draft)) {
       messageDrafts.delete(session)
       messageNotes.delete(session)
+      clearComposerText(session)
       changed = true
       continue
     }

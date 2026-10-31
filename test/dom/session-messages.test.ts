@@ -262,9 +262,12 @@ describe('the session focus panel’s composer (#411)', () => {
     click(messageButton('mcp-a'))
     await settle()
     expect(input('mcp-a')?.value).toBe('From the panel')
+    // sent from the panel with its textarea focused: the text leaves both
+    input('mcp-a', aside)!.focus()
     click(composer('mcp-a', aside)!.querySelector('.msg-send'))
     await settle()
     expect(messagePosts(bridge).map((p) => p.body['text'])).toEqual(['From the panel'])
+    expect(document.activeElement).toBe(input('mcp-a', aside))
     expect(input('mcp-a', aside)?.value).toBe('')
     expect(input('mcp-a')?.value).toBe('')
   })

@@ -10,12 +10,12 @@
 // The stdout contract is per-subcommand and exact — see docs/hooks.md.
 import { spawn } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, statSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, statSync, rmSync, renameSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type Database from 'better-sqlite3'
 import {
-  claimHookWatch, defaultDbPath, holdsHookWatch, insertItem, listHostSessions, listItems, listPending, listPendingRows,
-  listSessionQuestions, listUnansweredBoardRows, openDb, releaseHookWatch, resolveItem,
+  claimHookWatch, defaultDbPath, holdsHookWatch, insertItem, listHostSessions, listItems, listOpenMessages, listPending,
+  listPendingRows, listSessionQuestions, listUnansweredBoardRows, openDb, releaseHookWatch, resolveItem,
 } from './store.js'
 import type { Item } from './store.js'
 import { inferProject, inferStream } from './infer.js'
@@ -200,7 +200,22 @@ export function shouldBackstop({ pending, sessionId, nowMs, marker, opts }: Back
 // One nudge for every response waiting in the session's projects (#253): how
 // many, where, and the pending() call that reads each project whatever this
 // session is currently scoped to.
-export function nudgeText(responses: ReadonlyArray<readonly [project: string, count: number]>): string {
+//
+// Issue #411: and the human's messages to this session's own servers, which
+// pending() returns whatever project the session is scoped to.
+export function nudgeText(responses: ReadonlyArray<readonly [project: string, count: number]>, messages = 0): string {
+  const parts = responses.length ? [responsesText(responses)] : []
+  if (messages > 0) {
+    parts.push(
+      `agent-inbox: the human sent this session ${messages} message(s) — call the agent-inbox \`pending\` tool now ` +
+      `and act on each message in \`messages\` as an instruction typed in this terminal, ` +
+      `then \`ack_message\` it with a one-line outcome.`,
+    )
+  }
+  return parts.join(' ')
+}
+
+function responsesText(responses: ReadonlyArray<readonly [project: string, count: number]>): string {
   const total = responses.reduce((sum, [, n]) => sum + n, 0)
   const where = responses.length === 1
     ? `in project ${responses[0]![0]}`
@@ -288,6 +303,40 @@ function writeMarker(dbPath: string, sessionId: string, marker: SessionMarker): 
     writeFileSync(markerPath(dbPath, sessionId), JSON.stringify(marker))
   } catch {
     /* fail open: a marker we cannot persist only costs rate limiting */
+  }
+}
+
+// Issue #411: the message ids `stop` has already blocked for, so it blocks at
+// most once per message. Their own file, written by `stop` alone: the session
+// marker is rebuilt to a fixed shape by readMarker and rewritten whole by the
+// notification hooks (the commit after its grace window), and it is keyed by
+// the harness session id, which /clear changes while the MCP server's does not.
+// This file is keyed by the Claude Code process the link proved, as the watch
+// lease is, and holds only ids still open.
+function nudgedPath(dbPath: string, host: number): string {
+  return join(stateDir(dbPath), `host-${host}.nudged.json`)
+}
+
+function readNudged(dbPath: string, host: number): Set<string> {
+  try {
+    const raw = JSON.parse(readFileSync(nudgedPath(dbPath, host), 'utf8')) as unknown
+    const ids = raw !== null && typeof raw === 'object' && Array.isArray((raw as { ids?: unknown }).ids) ? (raw as { ids: unknown[] }).ids : []
+    return new Set(ids.filter((id): id is string => typeof id === 'string'))
+  } catch {
+    return new Set()
+  }
+}
+
+function writeNudged(dbPath: string, host: number, ids: readonly string[]): void {
+  const file = nudgedPath(dbPath, host)
+  const temp = `${file}.${process.pid}.tmp`
+  try {
+    mkdirSync(stateDir(dbPath), { recursive: true })
+    writeFileSync(temp, JSON.stringify({ ids }))
+    renameSync(temp, file)
+  } catch {
+    /* fail open: an unrecorded nudge only costs one more block */
+    try { rmSync(temp, { force: true }) } catch { /* nothing to remove */ }
   }
 }
 
@@ -636,20 +685,30 @@ function cmdSessionStep(ctx: Ctx): HookResult {
       disarm(ctx.dbPath, ctx.ev.session_id)
     }
     if (ctx.sub === 'session-end') return EMPTY
-    const responses = unpickedResponses(db, sessionScope(db, ctx, project).projects)
-    if (responses.length === 0) return EMPTY
-    const text = nudgeText(responses)
+    const scope = sessionScope(db, ctx, project)
+    const responses = unpickedResponses(db, scope.projects)
+    // #411: messages are counted while open, never by delivery, since a
+    // subagent's poll can pick one up that the session itself never saw
+    const open = scope.host === null ? [] : listOpenMessages(db, [...scope.servers]).map((message) => message.id)
+    if (ctx.sub === 'stop') {
+      // The loop guard is non-negotiable: blocking twice in a row traps the
+      // human in a session they cannot exit.
+      if (ctx.ev.stop_hook_active === true) return EMPTY
+      // and it blocks once per message: one the agent ignores, or cannot ack,
+      // must not bounce every Stop
+      const nudged = scope.host === null ? new Set<string>() : readNudged(ctx.dbPath, scope.host)
+      const fresh = open.filter((id) => !nudged.has(id))
+      if (responses.length === 0 && fresh.length === 0) return EMPTY
+      if (fresh.length && scope.host !== null) writeNudged(ctx.dbPath, scope.host, open)
+      return { stdout: JSON.stringify({ decision: 'block', reason: nudgeText(responses, fresh.length) }) }
+    }
+    if (responses.length === 0 && open.length === 0) return EMPTY
+    const text = nudgeText(responses, open.length)
     if (ctx.sub === 'prompt-submit') {
       // VERIFIED: additionalContext must be nested inside hookSpecificOutput —
       // a top-level copy is not ignored, it earns a user-visible
       // "unrecognized keys" warning on every nudge.
       return { stdout: JSON.stringify({ hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: text }, suppressOutput: true }) }
-    }
-    if (ctx.sub === 'stop') {
-      // The loop guard is non-negotiable: blocking twice in a row traps the
-      // human in a session they cannot exit.
-      if (ctx.ev.stop_hook_active === true) return EMPTY
-      return { stdout: JSON.stringify({ decision: 'block', reason: text }) }
     }
     return { stdout: `${text}\n` } // session-start: plain stdout is added to context
   } finally {
@@ -673,9 +732,21 @@ function respond(responses: Map<string, number>, project: string): void {
   responses.set(project, (responses.get(project) ?? 0) + 1)
 }
 
-function wake(responses: ReadonlyArray<readonly [string, number]>): HookResult {
-  return { stdout: '', stderr: `${nudgeText(responses)}\n`, exitCode: 2 }
+function wake(responses: ReadonlyArray<readonly [string, number]>, messages = 0): HookResult {
+  return { stdout: '', stderr: `${nudgeText(responses, messages)}\n`, exitCode: 2 }
 }
+
+// Issue #411: the servers of this Claude Code process that still run, read
+// again on every poll, so a server restarted under the same process stays covered.
+function liveServers(db: Database.Database, host: number): string[] {
+  return listHostSessions(db, host).filter((server) => running(server.server_pid)).map((server) => server.session)
+}
+
+// The watch lease's token says what its watcher wakes for. `m1:` marks one
+// that also wakes for session messages (#411); every hook since #253 claims the
+// same `host:<pid>` key, so supersession is unchanged, and only a marked
+// token may tell the human a message will wake this session.
+const MESSAGE_WATCH_TOKEN = 'm1:'
 
 // The open questions a watcher can see: every one in the session's projects,
 // plus any its linked servers raised under another project.
@@ -704,7 +775,7 @@ async function cmdWatch(ctx: Ctx): Promise<HookResult> {
   const { project } = scopeOf(ctx.ev)
   const db = openDb(ctx.dbPath) // opened ONCE for the whole loop
   const parent = process.ppid
-  const lease = { key: '', token: `${process.pid}-${randomUUID()}`, held: false }
+  const lease = { key: '', token: `${MESSAGE_WATCH_TOKEN}${process.pid}-${randomUUID()}`, held: false }
   const claim = (): void => {
     claimHookWatch(db, lease.key, lease.token)
     lease.held = true
@@ -720,6 +791,9 @@ async function cmdWatch(ctx: Ctx): Promise<HookResult> {
     const answered = new Set(asked.filter((item) => item.reply).map((item) => item.id))
     const awaited = new Set(asked.filter((item) => !item.reply).map((item) => item.id))
     const watchedRows = scope.projects.flatMap((p) => listUnansweredBoardRows(db, p).map((row) => ({ ...row, project: p })))
+    // #411: messages open now are `stop`'s (it runs on this same Stop), so only
+    // a message that arrives later wakes this watcher
+    const seenMessages = new Set(scope.host === null ? [] : listOpenMessages(db, [...scope.servers]).map((message) => message.id))
     const ready = unpickedResponses(db, scope.projects)
     if (ready.length && ctx.ev.stop_hook_active !== true) return wake(ready)
     // a linked watcher stays for the session's later questions, even with nothing waiting yet
@@ -744,14 +818,17 @@ async function cmdWatch(ctx: Ctx): Promise<HookResult> {
         if (state === 'reply') respond(responses, row.project)
         if (state === undefined) waiting = true
       }
+      // A newer watcher covers the session's messages; an unlinked one cannot see them.
+      const messages = superseded || scope.host === null ? 0
+        : listOpenMessages(db, liveServers(db, scope.host)).filter((message) => !seenMessages.has(message.id)).length
       // Only these requests can wake this host; delivery is not acknowledgement.
-      if (responses.size) {
+      if (responses.size || messages) {
         // the cwd project first, then the session's others; a project it registered after arming last
         const rank = (p: string): number => {
           const at = scope.projects.indexOf(p)
           return at === -1 ? scope.projects.length : at
         }
-        return wake([...responses].sort(([a], [b]) => rank(a) - rank(b)))
+        return wake([...responses].sort(([a], [b]) => rank(a) - rank(b)), messages)
       }
       if (superseded || (scope.host === null && !waiting)) return EMPTY
       await delay(ctx.opts.watchPollMs)

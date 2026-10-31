@@ -59,6 +59,14 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
 - Item/row `updated_at` is for content changes only. Delivery stamp writes must
   never bump it or the New/changed filter becomes a polling firehose.
 
+- Session messages (#411) are the human's instructions to ONE MCP session, in
+  their own table, `session_messages`. `pending()` returns only the caller's
+  own session's open messages (no tool takes a session argument), re-delivered
+  until `ack_message`; the first-delivery stamp never moves and is not an
+  acknowledgement. Only the addressed session can ack; the human withdraws by
+  revision. A send needs a listed session whose presence carries
+  `receives_messages`, and an exact replay of an id always succeeds.
+
 ## Invariants in detail
 
 - **Boards: the human's annotations are sacred.** A board is idempotent by
@@ -215,6 +223,46 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   (`upsertBoard`: `note: r.note ?? prev.note`), and only an explicit `''` (or
   `options: []`) clears it. Do not "fix" `note` to clear on omission: agents re-send
   full tables, and that would wipe every row's TL;DR.
+
+- **Session messages are delivered only to their session, until acknowledged (issue #411).**
+  Design: [`docs/superpowers/specs/2026-10-30-session-messages-design.md`](../superpowers/specs/2026-10-30-session-messages-design.md).
+  A message addresses one MCP server's `sessionId` (one CLI process, its subagents
+  included), follows that session whatever project it registers, and is never
+  re-addressed: a restart is a new id, and the old id's open messages stay undelivered.
+  It lives in `session_messages`, not `items`, so nothing that reads items (history
+  paging, links, issues, search, the dock, `public/attention.js`) sees it. Four writes,
+  each one statement or one `.immediate()` transaction. (1) `sendSessionMessage`
+  (viewer, `POST /api/sessions/:session/messages` with a page-generated lowercase UUID
+  and 1–4000 characters) answers an exact replay of an id (same session and text) with
+  `ok` BEFORE any other check, so a retry of an unconfirmed send succeeds even past the
+  caps or after the session ended; any other reuse is `id_conflict`. Every other send
+  first prunes the hub's closed messages over 30 days past `closed_at` and open ones over
+  30 days past `created_at` (only sends prune; nothing runs on a timer), so month-old open
+  messages never count toward the caps. Then the session must be listed (not ended, refreshed within 15 minutes) and its presence must
+  carry `activity.receives_messages = 1`, which only this build's presence writes set
+  (an omitted value keeps it, like `server_version`; older servers never name it, so a
+  send to one is `session_cannot_receive`), and the session may hold at most 20 open
+  messages and 8000 UTF-16 units of open text. (2) `markMessageDelivered` stamps `delivered_at`/`delivered_by` with
+  `COALESCE`, conditioned on `id`, `session` and `status = 'open'`; true means the
+  message is still open, so it is safe to hand over. (3) `ackMessage` closes it with a
+  1–240 character outcome, conditioned on the same three. (4) `withdrawSessionMessage`
+  (viewer, `POST /api/messages/:id/withdraw`) is pinned to `revision`. The text never
+  changes, so the status is the only pin delivery needs, and another session's message
+  reads as `not_found`. `pending()` stamps each of its own session's open messages, reads
+  them back (so `delivered_at` is the first delivery and a message withdrawn in between
+  is dropped) and returns `messages: [{ id, text, sent_at, delivered_at, project }]`,
+  always present, `[]` for a targeted `pending({item_id})`, and ignoring the `project`
+  argument. It is re-delivered on every poll until `ack_message`, like a blocked row
+  (#37), and never trimmed (it is human text). Subagents share the server, so a
+  subagent's poll receives and stamps them: the contract tells it to return them to its
+  parent verbatim and never act on or ack them, and the Claude hooks count OPEN messages,
+  never undelivered ones (`hooks-and-watcher.md`). `ack_message` is its own tool, not
+  `resolve` or `answer`, whose version-pinned item contracts stay byte for byte.
+  Until the viewer's composer ships (#411 part 2), a message can be sent by hand, with the
+  session id from `/api/activity` and the Origin every unsafe request needs:
+  `curl -s -X POST -H 'Origin: http://127.0.0.1:4319' -H 'content-type: application/json'
+  -d "{\"id\":\"$(uuidgen | tr A-Z a-z)\",\"text\":\"…\"}"
+  http://127.0.0.1:4319/api/sessions/<session>/messages`.
 
 ## History (shipped since v1)
 

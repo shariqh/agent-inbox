@@ -14,6 +14,7 @@ import {
   openDb, insertItem, listItems, replyItem, markReplySeen, resolveItem,
   upsertBoard, getBoard, annotateBoardRow, markRowHandled, markAnnotationDelivered,
   updateBoardRow, archiveBoard, advanceBoardRow, upsertActivity, endActivity,
+  sendSessionMessage, markMessageDelivered, ackMessage,
 } from '../src/store.js'
 import type { Item } from '../src/store.js'
 import { installRuntimeVersion } from './release-runtime.js'
@@ -256,8 +257,26 @@ function waitingRow(db: ReturnType<typeof openDb>, project = PROJECT) {
 function linkServer(db: ReturnType<typeof openDb>, session: string, project: string, over: { host_pid?: number; server_pid?: number } = {}) {
   upsertActivity(db, {
     session, project, stream: '', agent: 'claude-code', doing: 'open', idle: true, claim: false,
-    host_pid: process.ppid, server_pid: process.pid, ...over,
+    host_pid: process.ppid, server_pid: process.pid, receives_messages: true, ...over,
   })
+}
+
+// #411: the human's message to one MCP session, sent as the viewer sends it
+let messageCount = 0
+function message(db: ReturnType<typeof openDb>, session: string, text = 'Also run the DOM tests.'): string {
+  const id = `00000000-0000-4000-8000-${String(++messageCount).padStart(12, '0')}`
+  const sent = sendSessionMessage(db, { id, session, text })
+  if (!sent.ok) throw new Error(`message refused: ${sent.reason}`)
+  return id
+}
+
+function leaseTokens(dbPath: string): Array<{ claim_key: string; token: string }> {
+  const db = openDb(dbPath)
+  try {
+    return db.prepare(`SELECT claim_key, token FROM hook_watch_claims`).all() as Array<{ claim_key: string; token: string }>
+  } finally {
+    db.close()
+  }
 }
 
 function question(db: ReturnType<typeof openDb>, project: string, title: string, session?: string): string {
@@ -1092,6 +1111,118 @@ describe("hook: the session's own projects and the newest watcher (#253)", () =>
       expect(await running).toEqual({ stdout: '' })
       db.close()
     })
+  })
+})
+
+// Issue #411: the human's messages to this Claude Code session's own servers.
+// Counted while open, never by delivery; `stop` blocks once per message,
+// `watch` wakes only for one that arrives after it armed, and the reminders
+// ride on the existing shapes.
+describe('hook: session messages (#411)', () => {
+  const fast = { AGENT_INBOX_WATCH_SECS: '4', AGENT_INBOX_WATCH_POLL_MS: '20' }
+  const brief = { AGENT_INBOX_WATCH_SECS: '1', AGENT_INBOX_WATCH_POLL_MS: '20' }
+
+  it('watch wakes with exit 2 for a message sent to its own server after it armed, and marks its lease', async () => {
+    const { env, dbPath } = freshEnv(fast)
+    const db = openDb(dbPath)
+    linkServer(db, 'mcp-1', PROJECT)
+    const running = runHook(['watch'], ev(), env)
+    await armed(dbPath)
+    expect(leaseTokens(dbPath)).toEqual([{ claim_key: `host:${process.ppid}`, token: expect.stringMatching(/^m1:\d+-/) }])
+    const id = message(db, 'mcp-1')
+    // a sibling reader's pickup does not hide it: it is counted while open
+    markMessageDelivered(db, id, 'mcp-1', 'a-subagent')
+    const result = await running
+    expect(result).toMatchObject({ stdout: '', exitCode: 2 })
+    expect(result.stderr).toContain('the human sent this session 1 message(s)')
+    expect(result.stderr).toContain('ack_message')
+    expect(result.stderr).not.toContain('Also run the DOM tests.')
+    db.close()
+  })
+
+  it('watch never wakes for a message to another session, or one already open when it armed', async () => {
+    const { env, dbPath } = freshEnv(brief)
+    const db = openDb(dbPath)
+    linkServer(db, 'mcp-1', PROJECT)
+    linkServer(db, 'mcp-other', PROJECT, { host_pid: process.ppid + 100_000 })
+    message(db, 'mcp-1', 'Open before the Stop: stop’s to nudge')
+    const running = runHook(['watch'], ev(), env)
+    await armed(dbPath)
+    message(db, 'mcp-other')
+    expect(await running).toEqual({ stdout: '' })
+    db.close()
+  })
+
+  it('watch still wakes after its server restarts under the same Claude Code process', async () => {
+    const { env, dbPath } = freshEnv(fast)
+    const db = openDb(dbPath)
+    linkServer(db, 'mcp-1', PROJECT)
+    const running = runHook(['watch'], ev(), env)
+    await armed(dbPath)
+    endActivity(db, 'mcp-1')
+    linkServer(db, 'mcp-2', PROJECT)
+    message(db, 'mcp-2')
+    expect(await running).toMatchObject({ stdout: '', exitCode: 2, stderr: expect.stringContaining('1 message(s)') })
+    db.close()
+  })
+
+  it('stop blocks once per message, never on stop_hook_active, and not again after a notification or /clear', async () => {
+    const { env, dbPath } = freshEnv()
+    const db = openDb(dbPath)
+    linkServer(db, 'mcp-1', PROJECT)
+    const first = message(db, 'mcp-1')
+    // the continuation guard records nothing, so the next ordinary Stop still blocks
+    expect(await runHook(['stop'], ev({ stop_hook_active: true }), env)).toEqual({ stdout: '' })
+    const blocked = JSON.parse((await runHook(['stop'], ev(), env)).stdout)
+    expect(blocked).toEqual({ decision: 'block', reason: expect.stringContaining('the human sent this session 1 message(s)') })
+    expect(await runHook(['stop'], ev(), env)).toEqual({ stdout: '' })
+    // a notification hook rewrites the session marker; the nudged ids live elsewhere
+    await backstop(env)
+    expect(await runHook(['stop'], ev(), env)).toEqual({ stdout: '' })
+    // /clear gives the harness a new session id; the Claude Code process is the same
+    expect(await runHook(['stop'], ev({ session_id: 'after-clear' }), env)).toEqual({ stdout: '' })
+    // a new message blocks once more, counting only itself
+    message(db, 'mcp-1', 'And then open the PR.')
+    expect(JSON.parse((await runHook(['stop'], ev(), env)).stdout).reason).toContain('1 message(s)')
+    expect(await runHook(['stop'], ev(), env)).toEqual({ stdout: '' })
+    ackMessage(db, { id: first, session: 'mcp-1', outcome: 'Done.' })
+    db.close()
+  })
+
+  it('prompt-submit and session-start remind about every open message in their existing shapes', async () => {
+    const { env, dbPath } = freshEnv()
+    const db = openDb(dbPath)
+    linkServer(db, 'mcp-1', PROJECT)
+    const id = message(db, 'mcp-1')
+    message(db, 'mcp-1', 'Second.')
+    for (const _ of [1, 2]) {
+      const prompt = JSON.parse((await runHook(['prompt-submit'], ev(), env)).stdout)
+      expect(Object.keys(prompt).sort()).toEqual(['hookSpecificOutput', 'suppressOutput'])
+      expect(prompt.hookSpecificOutput).toEqual({ hookEventName: 'UserPromptSubmit', additionalContext: expect.stringContaining('2 message(s)') })
+      const start = await runHook(['session-start'], ev(), env)
+      expect(start.stdout).toMatch(/2 message\(s\).*\n$/)
+      expect(start.stdout.split('\n')).toHaveLength(2)
+    }
+    ackMessage(db, { id, session: 'mcp-1', outcome: 'Done.' })
+    expect(JSON.parse((await runHook(['prompt-submit'], ev(), env)).stdout).hookSpecificOutput.additionalContext).toContain('1 message(s)')
+    db.close()
+  })
+
+  it('an unlinked hook ignores messages: it cannot know its servers', async () => {
+    const { env, dbPath } = freshEnv()
+    const db = openDb(dbPath)
+    linkServer(db, 'mcp-elsewhere', PROJECT, { host_pid: process.ppid + 100_000 })
+    message(db, 'mcp-elsewhere')
+    for (const sub of ['stop', 'prompt-submit', 'session-start']) expect(await runHook([sub], ev(), env), sub).toEqual({ stdout: '' })
+    db.close()
+  })
+
+  it('names responses and messages in one nudge, and keeps the response wording without messages', () => {
+    expect(nudgeText([['homelab', 1]], 0)).toBe(nudgeText([['homelab', 1]]))
+    const both = nudgeText([['homelab', 1]], 2)
+    expect(both).toContain('1 response(s) in project homelab')
+    expect(both).toContain('2 message(s)')
+    expect(nudgeText([], 1)).toMatch(/^agent-inbox: the human sent this session 1 message\(s\)/)
   })
 })
 

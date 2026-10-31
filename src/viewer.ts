@@ -12,6 +12,7 @@ import {
   listBoards, listBoardsWithBlockedRows, archiveBoard, unarchiveBoard, annotateBoardRow, snoozeBoardRow,
   markRowHandled, clearRowHandled, listActivity, listActivitySpans, listSourceLinks, defaultDbPath,
   closeProject, reopenProject, closedProjects, readSnapshotState, listIssueEntities, listIssueSnapshots,
+  listSessionMessages, sendSessionMessage, withdrawSessionMessage, validMessageId, validMessageText, MESSAGE_MAX_TEXT,
 } from './store.js'
 import type { ExpectedAnswer, ResponseKind, SnapshotDomain, SnapshotReadState } from './store.js'
 import { groupItems } from './group.js'
@@ -639,6 +640,8 @@ export const SNAPSHOT_SOURCES = {
   links: ['source_links_by_head', 'items_links', 'boards_links', 'projects'],
   // buildIssueGraph over listIssueSnapshots, listIssueEntities and the links
   issues: ['issue_snapshots', 'source_links_by_head_issues', 'items_issues', 'boards_issues', 'board_rows_issues', 'projects'],
+  // listSessionMessages (#411)
+  messages: ['session_messages'],
 } as const satisfies Record<string, readonly SnapshotDomain[]>
 
 type SnapshotName = keyof typeof SNAPSHOT_SOURCES
@@ -970,6 +973,11 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
   // bytes. Empty until the viewer's poller (PR1b) writes snapshots.
   app.get('/api/issues', conditionalSnapshot(db, 'issues', () =>
     buildIssueGraph(listIssueSnapshots(db), issueKeySets(listIssueEntities(db), listSourceLinks(db)))))
+
+  // Issue #411: the human's messages to MCP sessions, open ones and the newest
+  // closed ones. Built from the database alone, so it is a retained
+  // representation with its own validator.
+  app.get('/api/messages', conditionalSnapshot(db, 'messages', () => listSessionMessages(db)))
 
   app.post('/api/items/:id/resolve', (c) => {
     resolveItem(db, c.req.param('id'))
@@ -1353,6 +1361,30 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
     if (project === null) return c.json({ ok: false, error: 'project required' }, 400)
     reopenProject(db, project)
     return c.json({ ok: true })
+  })
+
+  // Issue #411: send a message to one listed MCP session. The id is generated
+  // by the page, so a retry of an unconfirmed send replays exactly and never
+  // adds a second message. Like every unsafe request, it needs a trusted
+  // Origin (src/viewer-network.ts).
+  app.post('/api/sessions/:session/messages', async (c) => {
+    const session = c.req.param('session')
+    const body = await c.req.json<{ id?: unknown; text?: unknown }>().catch(() => null)
+    if (!session || session.length > 200) return c.json({ ok: false, error: 'session required' }, 400)
+    if (!validMessageId(body?.id)) return c.json({ ok: false, error: 'id must be a lowercase UUID' }, 400)
+    if (!validMessageText(body?.text)) {
+      return c.json({ ok: false, error: `text must be a non-blank string of at most ${MESSAGE_MAX_TEXT} characters` }, 400)
+    }
+    return c.json(sendSessionMessage(db, { id: body.id, session, text: body.text }))
+  })
+
+  app.post('/api/messages/:id/withdraw', async (c) => {
+    const body = await c.req.json<{ revision?: unknown }>().catch(() => null)
+    const revision = body?.revision
+    if (!Number.isSafeInteger(revision) || (revision as number) < 1) {
+      return c.json({ ok: false, error: 'revision must be a positive integer' }, 400)
+    }
+    return c.json(withdrawSessionMessage(db, c.req.param('id'), revision as number))
   })
 
   return app

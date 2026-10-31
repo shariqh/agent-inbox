@@ -134,7 +134,11 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   database alone because the PR poller writes them through `store.ts` and the
   previews it keeps follow open items and active plans, and
   `/api/boards/archived/summary` (issue #299, below), the ninth: archived plans
-  in brief, a path of its own beside the complete archived list. Any other query string
+  in brief, a path of its own beside the complete archived list, and `/api/messages`
+  (issue #411, `delivery-and-responses.md`), the tenth: every open session message and
+  the 100 newest closed ones, over the whole-table `session_messages` domain, whose
+  `delivered_at`/`delivered_by` are restamped columns, so `pending()` re-delivering a
+  message on every poll rebuilds nothing. Any other query string
   keeps the default items or boards response. The dock watcher reads its two
   projections through `electron/conditional-read.cjs`: each read sends the
   validator its last 200 carried and reuses what it parsed on a 304, an untagged

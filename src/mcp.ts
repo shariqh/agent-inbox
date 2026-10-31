@@ -2,7 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { z } from 'zod'
 import type Database from 'better-sqlite3'
 import { randomUUID } from 'node:crypto'
-import { insertItem, resolveItem, listPending, markReplySeen, markItemAnnotationDelivered, answerItem, upsertBoard, updateBoardRow, advanceBoardRow, findBoard, archiveBoard, getBoard, getBoardByTitle, listBoards, markBoardRead, markAnnotationDelivered, markHandledDelivered, listPendingRows, upsertActivity, endActivity, touchActivity, recordActivityCall, listIssueSnapshots, listSourceLinks } from './store.js'
+import { insertItem, resolveItem, listPending, markReplySeen, markItemAnnotationDelivered, answerItem, upsertBoard, updateBoardRow, advanceBoardRow, findBoard, archiveBoard, getBoard, getBoardByTitle, listBoards, markBoardRead, markAnnotationDelivered, markHandledDelivered, listPendingRows, upsertActivity, endActivity, touchActivity, recordActivityCall, listIssueSnapshots, listSourceLinks, listPendingMessages, markMessageDelivered, ackMessage, MESSAGE_MAX_OUTCOME } from './store.js'
 import type { ActionOwner, BoardRow, BoardWithRows, IssueLink, QuestionOption } from './store.js'
 import { makeContextLedger, deliverContext, shapeBoard, summariseBoard, rowKey, itemKey, agentItem } from './shape.js'
 import type { BoardIssueRelations } from './shape.js'
@@ -83,7 +83,8 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
   // checkout (detected once, here) — so Live can say which sessions need a
   // restart and what would update each one. That rides on this existing write
   // and never counts as activity.
-  const build = { server_version: AGENT_INBOX_VERSION, server_source: detectServerSource(import.meta.url) }
+  // Issue #411 — and that it delivers session messages, which a send requires.
+  const build = { server_version: AGENT_INBOX_VERSION, server_source: detectServerSource(import.meta.url), receives_messages: true }
   // Issue #253 — and which process started this server. Claude Code starts a
   // stdio server and its hooks directly, so a hook finds the servers of its own
   // session by its parent pid; the server's own pid lets it check they still run.
@@ -236,11 +237,31 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     },
   )
 
+  // issue #411 — the addressed session's acknowledgement of a human message.
+  // Not resolve or answer: those are version-pinned item paths with their own
+  // contracts. Only this server's own session can ack its messages.
+  server.registerTool(
+    'ack_message',
+    {
+      description: 'Acknowledge a message the human sent THIS session (from pending().messages) once you have acted on it: done, declined, or taken on as tracked work. outcome is the one line the human sees: what you did, what you declined and why, or where you are tracking it. Until acked, a message comes back on every pending(). If you are a subagent, do not ack or act on messages: return them verbatim to your parent. Returns {ok:true}, or {ok:false, reason}: not_open with status "withdrawn" means the human took it back (stop if you have not finished); not_found means it is not a message to this session.',
+      inputSchema: {
+        id: z.string().min(1),
+        outcome: z.string().min(1).max(MESSAGE_MAX_OUTCOME).refine((value) => value.trim() !== '', 'outcome must not be blank'),
+      },
+    },
+    async ({ id, outcome }) => {
+      heartbeat()
+      const result = ackMessage(db, { id, session: sessionId, outcome })
+      const reply = result.ok ? { ok: true } : result
+      return { content: [{ type: 'text', text: JSON.stringify(reply) }] }
+    },
+  )
+
   server.registerTool(
     'pending',
     {
       description:
-        'Poll for human responses in this project — the ONE polling call. Returns {items, rows}. Items include open questions plus unpicked annotations on open notes/milestones. Informational feedback (including a clear: empty annotation with annotated_at) normally leaves this queue after pickup; it does not create human attention or auto-resolve the item. Use pending({item_id:id}) to re-read one current open item even after pickup, including its response_revision; this targeted read returns no board rows. Pickup means handed to a reader, not acted on by the intended session, and informational feedback has no new automatic host-wake guarantee. Questions reappear until resolve; blocked rows until status changes. Read reply_kind/annotation_kind: answer = act normally; clarify = rewrite the ask; decline = cancel and record an outcome. handled_at means the human completed their task; snoozed_until means they deferred it; pinned_at means they set it aside with no time: keep the ask open and do not re-ask; an answer still arrives through pending(). When the item itself is complete, resolve with outcome and expected_response_revision from the exact response handled; move a board row out of blocked with outcome, or use board_advance for its next human step. Changed snapshots are withheld rather than handing over superseded words. Human text is never trimmed. Agent context is handed over once per SERVER PROCESS, recoverable with pending({full:true}), pending({item_id:id,full:true}), or board_get({title, full:true}); context_chars counts UTF-16 code units.',
+        'Poll for human responses in this project — the ONE polling call. Returns {items, rows, messages}. Items include open questions plus unpicked annotations on open notes/milestones. Informational feedback (including a clear: empty annotation with annotated_at) normally leaves this queue after pickup; it does not create human attention or auto-resolve the item. Use pending({item_id:id}) to re-read one current open item even after pickup, including its response_revision; this targeted read returns no board rows or messages. Pickup means handed to a reader, not acted on by the intended session, and informational feedback has no new automatic host-wake guarantee. Questions reappear until resolve; blocked rows until status changes. Read reply_kind/annotation_kind: answer = act normally; clarify = rewrite the ask; decline = cancel and record an outcome. handled_at means the human completed their task; snoozed_until means they deferred it; pinned_at means they set it aside with no time: keep the ask open and do not re-ask; an answer still arrives through pending(). When the item itself is complete, resolve with outcome and expected_response_revision from the exact response handled; move a board row out of blocked with outcome, or use board_advance for its next human step. Changed snapshots are withheld rather than handing over superseded words. messages are the human’s instructions to THIS session (never another’s), oldest first, re-delivered on every poll until you call ack_message({id, outcome}): act on each as if typed in your terminal, then ack it. A subagent returns messages verbatim to its parent and never acts on or acks them. Human text is never trimmed. Agent context is handed over once per SERVER PROCESS, recoverable with pending({full:true}), pending({item_id:id,full:true}), or board_get({title, full:true}); context_chars counts UTF-16 code units.',
       inputSchema: {
         full: z.boolean().optional(),
         project: z.string().min(1).optional().describe('Read responses for this project without changing the session scope. Use the project in a watcher launch contract after a restart or scope change.'),
@@ -291,10 +312,23 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
       // `context_chars` for text a sibling consumed. Asking is always allowed and
       // always answered — that is what keeps the ledger an optimisation rather
       // than a delivery guarantee it cannot make.
+      // issue #411 — the human's messages to THIS server's session, and only
+      // its own: the session is never an argument. Stamped before they are
+      // read back, so delivered_at is the first delivery, and a message
+      // withdrawn in between is dropped. A targeted read carries none, as it
+      // carries no rows. Re-delivered until ack_message; never trimmed.
+      let messages: Array<{ id: string; text: string; sent_at: string; delivered_at: string | null; project: string }> = []
+      if (item_id === undefined) {
+        const handed = new Set(listPendingMessages(db, sessionId)
+          .filter((m) => markMessageDelivered(db, m.id, sessionId, s.agent)).map((m) => m.id))
+        messages = listPendingMessages(db, sessionId).filter((m) => handed.has(m.id))
+          .map((m) => ({ id: m.id, text: m.text, sent_at: m.created_at, delivered_at: m.delivered_at, project: m.project }))
+      }
       return {
         content: [{ type: 'text', text: JSON.stringify({
           items: items.map((it) => deliverContext(agentItem(it), itemKey(it.id), ledger, { full })),
           rows: rows.map((r) => deliverContext(r, rowKey(r.row_id), ledger, { full })),
+          messages,
         }) }],
       }
     },

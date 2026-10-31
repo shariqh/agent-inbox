@@ -20,6 +20,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { readAgentHosts, registeredRuntimeVersion } from '../src/agent-hosts.js'
 import type { RuntimeVerifier } from '../src/agent-hosts.js'
 import { accentedRoot, RUNTIME_SPELLINGS } from './runtime-spellings.js'
+import { goneProcess, startOf, writePinFile } from './runtime-uses.js'
 import { removeScratchDirs, scratchDir } from './scratch.js'
 
 const REPO = resolve(import.meta.dirname, '..')
@@ -41,7 +42,7 @@ function copy(src: string, dest: string): void {
 
 function runtimePayload(
   version: string,
-  options: { committedFailure?: 'exact' | 'substituted' } = {},
+  options: { committedFailure?: 'exact' | 'substituted'; driver?: boolean } = {},
 ): { root: string; digest: string; runtimeId: string } {
   const root = temp(`agent-runtime-${version}-`)
   mkdirSync(join(root, 'bin'), { recursive: true })
@@ -54,6 +55,7 @@ function runtimePayload(
     "if (process.argv[2] === 'selftest') process.stdout.write('ok\\n')\n",
   )
   writeFileSync(join(root, 'dist', 'watch-cli.js'), 'process.exit(0)\n')
+  if (options.driver) writeFileSync(join(root, 'dist', 'driver-cli.js'), 'process.exit(0)\n')
   writeFileSync(join(root, 'package.json'), JSON.stringify({ type: 'module' }))
 
   for (const script of [
@@ -246,6 +248,97 @@ function registration(path: string): { command: string; args: string[] } | undef
 // as #243 found for the staging tests. Allow them two minutes, four times the
 // 30 s bound the installer gives each isolated step.
 const MULTI_INSTALL_TEST_TIMEOUT_MS = 120_000
+
+// Issue #412: a running agent-inbox-driver pins the runtime it runs from, and
+// the installer honours the pin in its prune and refuses to uninstall under it.
+describe('the installer and driver pins (#412)', () => {
+  const LAUNCH = '11111111-2222-4333-8444-555555555555'
+  const standIns: ReturnType<typeof spawn>[] = []
+  afterEach(() => {
+    for (const child of standIns.splice(0)) child.kill('SIGKILL')
+  })
+  /** A running stand-in for a driver: only its pin can keep a runtime, since its command names none. */
+  function driver(): number {
+    const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60_000)'], { stdio: 'ignore' })
+    standIns.push(child)
+    return child.pid!
+  }
+  function olderRuntimes(f: Fixture): { oldest: string; previous: string } {
+    const [oldest, previous] = ['0.9.0', '0.9.1'].map((version, i) => {
+      const payload = runtimePayload(version)
+      const dir = join(f.runtimeRoot, payload.runtimeId)
+      mkdirSync(f.runtimeRoot, { recursive: true })
+      cpSync(payload.root, dir, { recursive: true })
+      const at = new Date(Date.now() - (2 - i) * 3_600_000)
+      utimesSync(dir, at, at)
+      return dir
+    }) as [string, string]
+    return { oldest, previous }
+  }
+
+  it('keeps an older runtime a running driver is pinned to, then removes it and sweeps the pin once the driver is gone', () => {
+    const f = fixture()
+    const { oldest } = olderRuntimes(f)
+    const pid = driver()
+    writePinFile(f.runtimeRoot, basename(oldest), { pid, startedAt: startOf(pid) })
+    const first = install(f, runtimePayload('1.0.0'))
+    expect(first.status, first.stderr).toBe(0)
+    expect(first.stderr).toContain(`install-agents: retained runtime ${basename(oldest)} (referenced)`)
+    expect(existsSync(oldest)).toBe(true)
+
+    const pin = writePinFile(f.runtimeRoot, basename(oldest), { pid: goneProcess(), startedAt: 'Thu Jan 1 00:00:00 1970' })
+    const second = install(f, runtimePayload('1.0.1'))
+    expect(second.status, second.stderr).toBe(0)
+    expect(second.stderr).toContain(`install-agents: removed unreferenced runtime ${basename(oldest)}`)
+    expect(existsSync(oldest)).toBe(false)
+    expect(existsSync(pin)).toBe(false)
+  }, MULTI_INSTALL_TEST_TIMEOUT_MS)
+
+  it('refuses to uninstall while a driver runs, naming it and its stop command, and changes nothing', () => {
+    const f = fixture()
+    const payload = runtimePayload('1.0.0')
+    expect(install(f, payload).status).toBe(0)
+    const installed = join(f.runtimeRoot, payload.runtimeId)
+    const pid = driver()
+    writePinFile(f.runtimeRoot, payload.runtimeId, { pid, startedAt: startOf(pid), launchId: LAUNCH })
+    const before = [readFileSync(f.claudeConfig, 'utf8'), readFileSync(f.copilotConfig, 'utf8')]
+    for (const flags of [['--apply', '--uninstall'], ['--uninstall']]) {
+      const refused = spawnSync('/bin/bash', [join(installed, 'scripts', 'install-agents.sh'), ...flags], { encoding: 'utf8', env: f.env })
+      expect(refused.status).toBe(1)
+      expect(refused.stderr).toBe([
+        `install-agents: refusing to uninstall: an agent-inbox-driver is running from ${payload.runtimeId} (launch ${LAUNCH}, pid ${pid}); `
+          + `stop it with: ${installed}/bin/node ${installed}/dist/driver-cli.js stop ${LAUNCH}`,
+        'install-agents: nothing was changed',
+        '',
+      ].join('\n'))
+    }
+    expect([readFileSync(f.claudeConfig, 'utf8'), readFileSync(f.copilotConfig, 'utf8')]).toEqual(before)
+    expect(existsSync(installed)).toBe(true)
+  })
+
+  it('uninstalls over a stale pin, whose driver is gone', () => {
+    const f = fixture()
+    const payload = runtimePayload('1.0.0')
+    expect(install(f, payload).status).toBe(0)
+    const installed = join(f.runtimeRoot, payload.runtimeId)
+    writePinFile(f.runtimeRoot, payload.runtimeId, { pid: goneProcess(), startedAt: 'Thu Jan 1 00:00:00 1970', launchId: LAUNCH })
+    const removed = spawnSync('/bin/bash', [join(installed, 'scripts', 'install-agents.sh'), '--apply', '--uninstall'], { encoding: 'utf8', env: f.env })
+    expect(removed.status, removed.stderr).toBe(0)
+    expect(registration(f.claudeConfig)).toBeUndefined()
+    expect(existsSync(installed)).toBe(false)
+    expect(existsSync(join(f.runtimeRoot, '.pins', payload.runtimeId, LAUNCH))).toBe(false)
+  })
+
+  it('prints the driver command of the runtime it installed, only when that runtime carries one', () => {
+    const f = fixture()
+    const withDriver = runtimePayload('1.0.0', { driver: true })
+    const result = install(f, withDriver)
+    expect(result.status, result.stderr).toBe(0)
+    const dir = join(f.runtimeRoot, withDriver.runtimeId)
+    expect(result.stderr).toContain(`Driven Copilot sessions (preview): ${dir}/bin/node ${dir}/dist/driver-cli.js copilot --cwd <folder> --mode ask --prompt-file <task file>`)
+    expect(install(fixture(), runtimePayload('1.0.1')).stderr).not.toContain('Driven Copilot sessions')
+  })
+})
 
 describe('portable release installer', () => {
   it('rolls back a newly published exact runtime when the helper reports a committed failure', () => {

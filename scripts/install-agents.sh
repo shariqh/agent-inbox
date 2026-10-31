@@ -645,6 +645,31 @@ else
   fi
 fi
 
+# Uninstall refuses while an agent-inbox-driver runs from a runtime here
+# (#412): it names each one and how to stop it, and changes nothing. A pin
+# whose driver is gone does not count; pins that cannot be checked refuse.
+if [ "$RUNTIME_MODE" -eq 1 ] && [ "$UNINSTALL" -eq 1 ]; then
+  driver_pins="$("$SOURCE_NODE" "$CONFIG_HELPER" pins --runtime-root "$RUNTIME_ROOT" </dev/null 2>/dev/null)" || driver_pins=""
+  driver_refusal="$("$SOURCE_NODE" -e '
+    let result
+    try { result = JSON.parse(process.argv[1]) } catch { result = { status: "unknown", reason: "the pins could not be read" } }
+    const root = process.argv[2]
+    if (result.status !== "ok") {
+      process.stdout.write(`could not check whether an agent-inbox-driver is running (${String(result.reason ?? "unknown").replace(/[\r\n]+/g, " ")})`)
+    } else if (result.live.length > 0) {
+      process.stdout.write(result.live.map(({ runtimeId, launchId, pid }) =>
+        `an agent-inbox-driver is running from ${runtimeId} (launch ${launchId}, pid ${pid}); stop it with: ${root}/${runtimeId}/bin/node ${root}/${runtimeId}/dist/driver-cli.js stop ${launchId}`).join("\n"))
+    }
+  ' "$driver_pins" "$RUNTIME_ROOT")" || driver_refusal="could not check whether an agent-inbox-driver is running"
+  if [ -n "$driver_refusal" ]; then
+    while IFS= read -r line; do echo "install-agents: refusing to uninstall: $line" >&2; done <<EOF
+$driver_refusal
+EOF
+    echo "install-agents: nothing was changed" >&2
+    exit 1
+  fi
+fi
+
 verify_expected_runtime() {
   [ "$RUNTIME_MODE" -eq 1 ] || return 1
   [ -d "$RUNTIME_PATH" ] && [ ! -L "$RUNTIME_PATH" ] || return 1
@@ -773,6 +798,8 @@ prune_runtime_if_unreferenced() {
 prune_old_runtimes() {
   local remove_current="${1:-0}" list ids id previous_kept=0 current_deferred=0
   [ "$RUNTIME_MODE" -eq 1 ] || return
+  # Stale pins first (#412): a pin whose agent-inbox-driver is gone keeps nothing.
+  "$SOURCE_NODE" "$CONFIG_HELPER" sweep-pins --runtime-root "$RUNTIME_ROOT" </dev/null >/dev/null 2>&1 || true
   list="$("$SOURCE_NODE" "$PAYLOAD_HELPER" list --runtime-root "$RUNTIME_ROOT" 2>/dev/null)" || {
     echo "install-agents: warning: could not enumerate installed runtimes; none were removed" >&2
     return
@@ -1129,3 +1156,7 @@ if [ "$RUNTIME_MODE" -eq 1 ]; then
   if [ "$UNINSTALL" -eq 1 ]; then prune_old_runtimes 1; else prune_old_runtimes 0; fi
 fi
 echo "Start a fresh agent session to load MCP and instruction changes." >&2
+# #412: the driven-session command this runtime carries, printed, never put on PATH
+if [ "$RUNTIME_MODE" -eq 1 ] && [ "$UNINSTALL" -eq 0 ] && [ -f "$RUNTIME_PATH/dist/driver-cli.js" ]; then
+  echo "Driven Copilot sessions (preview): $NODE $RUNTIME_PATH/dist/driver-cli.js copilot --cwd <folder> --mode ask --prompt-file <task file>" >&2
+fi

@@ -17,7 +17,7 @@ import { readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import Database from 'better-sqlite3'
 import {
-  claimHookWatch, closedProjects, isDrivenSession,
+  claimHookWatch, closedProjects, endActivity, isDrivenSession, readdressMessages,
   getBoard, getItem, insertItem, listActivity, listBoards, listHostSessions, listIssueEntities, listIssueSnapshots, listItems, listSourceLinks,
   markReplySeen, openDb, pinBoardRow, pinItem, recordActivityCall, recordIssueFailure, replyItem, stopBoardRowWatch, stopItemWatch, updateBoardRow, upsertActivity,
   upsertBoard, upsertIssueSnapshot, upsertSourceLink, sendSessionMessage, listSessionMessages, readSnapshotState,
@@ -1680,6 +1680,13 @@ const V220 = {
   releaseHookWatch: `DELETE FROM hook_watch_claims WHERE claim_key = ? AND token = ?`,
   closeProject: `INSERT INTO projects (project, closed_at) VALUES (?, ?)
      ON CONFLICT(project) DO UPDATE SET closed_at = excluded.closed_at`,
+  // ackMessage and markMessageDelivered, both conditioned on the addressed session
+  ackMessage: `UPDATE session_messages
+                                   SET status = 'acknowledged', outcome = ?, closed_at = ?, revision = revision + 1
+                                 WHERE id = ? AND session = ? AND status = 'open'`,
+  markMessageDelivered: `UPDATE session_messages
+                        SET delivered_at = COALESCE(delivered_at, ?), delivered_by = COALESCE(delivered_by, ?)
+                      WHERE id = ? AND session = ? AND status = 'open'`,
 }
 
 describe('a v2.2.0 process sharing a hub with driven sessions (#412)', () => {
@@ -1726,6 +1733,24 @@ describe('a v2.2.0 process sharing a hub with driven sessions (#412)', () => {
     expect(isDrivenSession(db, 'driven')).toBe(true)
     expect(listActivity(db).map((row) => [row.session, row.driven ?? false, row.wakes ?? false]).sort())
       .toEqual([['driven', true, false], ['hosted', false, true]])
+  })
+
+  it('after a re-address, its old session can neither pick up nor ack the moved message; the new one can', () => {
+    const db = connect(false)
+    const old = connect(true)
+    for (const [session, server] of [['ended', 76734], ['restarted', 76900]] as const) {
+      upsertActivity(db, { session, project: 'agent-inbox', stream: 'main', agent: 'copilot', doing: 'open', idle: true, claim: false, receives_messages: true, host_pid: 76681, server_pid: server })
+      claimHookWatch(db, `driven:${session}`, `${LAUNCH}:4242:n1`)
+    }
+    const id = '00000000-0000-4000-8000-000000000001'
+    expect(sendSessionMessage(db, { id, session: 'ended', text: 'Run the tests.' }).ok).toBe(true)
+    endActivity(db, 'ended')
+    expect(readdressMessages(db, { from: 'ended', to: 'restarted', launchId: LAUNCH, hostPid: 76681 })).toEqual({ ok: true, moved: [id] })
+    const now = new Date().toISOString()
+    expect(old.prepare(V220.markMessageDelivered).run(now, 'copilot', id, 'ended').changes).toBe(0)
+    expect(old.prepare(V220.ackMessage).run('Done.', now, id, 'ended').changes).toBe(0)
+    expect(old.prepare(V220.ackMessage).run('Done.', now, id, 'restarted').changes).toBe(1)
+    expect(listSessionMessages(db).closed).toEqual([expect.objectContaining({ id, session: 'restarted', outcome: 'Done.' })])
   })
 
   it('its viewer closing @sessions never mutes a driver’s approvals', () => {

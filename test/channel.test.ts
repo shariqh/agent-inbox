@@ -1,7 +1,11 @@
 // Issue #411 (channels, research preview): the server pushes one notice per new
 // message into a Claude Code session that listens on Claude Code's channel
 // extension, and records in presence whether the session was launched listening.
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { EventEmitter } from 'node:events'
+import { Client } from '@modelcontextprotocol/sdk/client/index.js'
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
+import { buildMcpServer } from '../src/mcp.js'
 import { join } from 'node:path'
 import type Database from 'better-sqlite3'
 import { ackMessage, listActivity, openDb, sendSessionMessage, upsertActivity, withdrawSessionMessage } from '../src/store.js'
@@ -31,6 +35,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  vi.useRealTimers()
   db.close()
   removeScratchDirs()
 })
@@ -134,5 +139,41 @@ describe('whether Claude Code was launched listening (namesChannel)', () => {
     expect(inferProcessArgs(0)).toBeNull()
     expect(inferProcessArgs(1.5)).toBeNull()
     expect(inferProcessArgs(2 ** 30)).toBeNull()
+  })
+})
+
+describe('the server runs the push loop only for Claude Code, and stops it on close', () => {
+  it('starts one interval for a Claude Code client, none for Copilot, and clears it when the connection closes', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    const events: EventEmitter = process
+    const signals = ['exit', 'SIGHUP', 'SIGINT', 'SIGTERM'] as const
+    const listeners = new Map(signals.map((signal) => [signal, events.listeners(signal)]))
+    // connects one client to its own server, and returns the intervals that added
+    const open = async (name: string) => {
+      const before = vi.getTimerCount()
+      const server = buildMcpServer(db, process.cwd())
+      const client = new Client({ name, version: 'test' })
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+      await server.connect(serverTransport)
+      await client.connect(clientTransport)
+      await client.listTools() // the initialized notification has been handled by now
+      return { client, added: () => vi.getTimerCount() - before }
+    }
+    try {
+      // one interval is the 5-minute liveness tick every server has
+      const copilot = await open('copilot')
+      expect(copilot.added()).toBe(1)
+      const claude = await open('claude-code')
+      expect(claude.added()).toBe(2)
+      await claude.client.close()
+      expect(claude.added()).toBe(1)
+      await copilot.client.close()
+    } finally {
+      for (const [signal, before] of listeners) {
+        for (const listener of events.listeners(signal)) {
+          if (!before.includes(listener)) events.removeListener(signal, listener as (...args: unknown[]) => void)
+        }
+      }
+    }
   })
 })

@@ -19,3 +19,5 @@
   then `ack_message`. Turn it on by launching Claude Code with
   `--dangerously-load-development-channels server:agent-inbox` (the registration must be named
   `agent-inbox`), for example `alias claude-inbox='claude --dangerously-load-development-channels server:agent-inbox'`.
+  Every such launch shows a full-screen warning dialog to accept, and it needs a claude.ai or
+  Console login.

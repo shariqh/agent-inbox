@@ -228,9 +228,12 @@ https://code.claude.com/docs/en/channels-reference.
 - **No signal back.** Claude Code acknowledges nothing and its initialize request is the same
   with and without the flag (measured on v2.1.312), so the loop runs for every Claude Code
   client. Presence carries `push_wake: true` when the launching Claude Code process's
-  arguments name `server:agent-inbox` in the development flag: evidence, not proof (org
-  policy or auth can still drop it; a wrapper process or another registration name reads as
-  absent).
+  arguments name `server:agent-inbox` in the development flag: evidence, not proof. Org
+  policy or auth can still drop a push. A wrapper process, a session hosted by Claude Code's
+  background daemon (parent `claude bg-spare … claim.sock`, without the user's flags) or
+  another registration name reads as absent, so **absent means unknown**: PR 2 shows "when it
+  next checks" for it, never "can't receive". On macOS a quoted prompt holding the flag tokens
+  can read as true, because `ps` arguments are re-split on spaces.
 - **Beside the hooks.** The hook wake still runs; a session with both may take two turns for
   one message, and the second `pending()` finds it acked or in hand.
 - **SDK trap.** Claude Code's v2 MCP runtime does not register a channel server that
@@ -251,7 +254,7 @@ The composer shows one of three states (amended, §12):
 | State | When |
 |---|---|
 | **Arrives now** | `push_wake` (a channel push), a #412 driver that owns the session, or `wakes` (an armed Claude hook watch) |
-| **When it next checks** | `receives_messages` and none of the above |
+| **When it next checks** | `receives_messages` and none of the above (an absent `push_wake` is unknown, not "won't wake") |
 | **Can't receive** | no `receives_messages` (Send disabled) |
 
 `listActivity` adds `wakes: boolean`, read from the lease table in its existing query: true for a

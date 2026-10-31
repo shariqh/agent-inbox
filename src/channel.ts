@@ -97,7 +97,16 @@ export function startChannelPush(opts: {
 // push is live: Claude Code reports nothing about it in the MCP handshake (its
 // initialize request is byte-identical with and without the flag), and an org
 // policy (`channelsEnabled`), a non-claude.ai auth or a refused registration
-// still drops events silently. Only the development flag counts: during the
+// still drops events silently. Claude Code's background daemon hosts a session
+// under `claude bg-spare … claim.sock`, whose arguments lack the user's flags,
+// so such a session (like one launched through a wrapper) reads as false:
+// absent `push_wake` means "unknown", never "won't wake". On macOS `ps` joins the
+// arguments with spaces and they are split again here, so a quoted prompt that
+// itself contains `--dangerously-load-development-channels server:agent-inbox`
+// reads as true. Counting the flag only before the first positional argument
+// would need a table of which flags take values (`--allowedTools a b` takes
+// several), and guessing makes ordinary launches read false, so it is not done.
+// Linux reads /proc and is exact. Only the development flag counts: during the
 // research preview `--channels` registers allowlisted plugins only, never a
 // bare `server:` entry. `-p`/`--print` sessions never register channels.
 export function namesChannel(args: readonly string[], name: string = CHANNEL_SERVER_NAME): boolean {

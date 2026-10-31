@@ -83,6 +83,13 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   the notice silently. Presence records the closest local evidence instead: `push_wake`
   (below) from the launch flags of the Claude Code process that started the server
   (`inferProcessArgs(process.ppid)`: `/proc` on Linux, `ps` on macOS, captured, once).
+  So `push_wake` can only err one way in practice: a wrapper process, a session hosted by
+  Claude Code's background daemon (parent `claude bg-spare … claim.sock`, which carries none
+  of the user's flags) or another registration name reads as absent, and absent means
+  unknown, never "won't wake". (The one false positive: on macOS `ps` joins the arguments
+  with spaces, so a quoted prompt that contains the flag tokens reads as true; Linux reads
+  `/proc` exactly.) The loop is stopped when the connection closes (`server.server.onclose`)
+  and never started after it.
   Two traps. The server's name is the registration's, which the server never learns, so
   presence recognises only `server:agent-inbox`, the name the installer registers. And
   Claude Code's v2 MCP runtime will not register a channel server that negotiates protocol

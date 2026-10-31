@@ -45,9 +45,15 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   Code was launched with `--dangerously-load-development-channels
   server:agent-inbox` (read from the parent process's arguments, since Claude
   Code reports nothing). It is evidence, not proof: an org policy, a non-claude.ai
-  login or a refused registration drops the push silently, and a launch through a
-  wrapper process or under another registration name reads as absent. Never
-  liveness, work or attention; `/api/activity` stays a bare array.
+  login or a refused registration drops the push silently. A launch through a
+  wrapper process, a session Claude Code hosts through its background daemon
+  (parent `claude bg-spare … claim.sock`, whose arguments lack the user's flags)
+  or one under another registration name reads as absent; and on macOS, where
+  `ps` arguments are re-split on spaces, a quoted prompt holding the flag tokens
+  can read as true. So absent means unknown, never "won't wake": the composer
+  says "when it next checks", never "can't receive", which only a missing
+  `receives_messages` means. Never liveness, work or attention; `/api/activity`
+  stays a bare array.
 
 ## Invariants in detail
 

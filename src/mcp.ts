@@ -124,18 +124,28 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
   // loop runs for every Claude Code client (a notice it does not listen for is
   // dropped silently) and presence reads the launch flags of the Claude Code
   // process that started this server. Started once, after the handshake, because
-  // the client's name is known only then.
+  // the client's name is known only then. Stopped when the connection closes, and
+  // never started after it has.
   let pushWake: boolean | undefined
+  let stopPush: (() => void) | undefined
+  let closed = false
   const channel = (): { push_wake?: boolean } => {
-    if (pushWake === undefined && isClaude(clientName())) {
+    if (pushWake === undefined && !closed && isClaude(clientName())) {
       pushWake = namesChannel(inferProcessArgs(process.ppid) ?? [])
-      startChannelPush({
+      stopPush = startChannelPush({
         db,
         session: sessionId,
         send: (notice) => server.server.notification({ method: CHANNEL_METHOD, params: { ...notice } }),
       })
     }
     return pushWake === undefined ? {} : { push_wake: pushWake }
+  }
+  const priorOnClose = server.server.onclose
+  server.server.onclose = () => {
+    closed = true
+    stopPush?.()
+    stopPush = undefined
+    priorOnClose?.()
   }
   const registerPresence = (): void => {
     try {

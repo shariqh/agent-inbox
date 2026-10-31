@@ -4,7 +4,9 @@
 //
 // Deliberately NOT named *.test.ts: it is imported, never collected.
 import { cpSync, mkdirSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
 import { basename, dirname, join } from 'node:path'
+import { processStartedAt } from '../src/driver-pin.js'
 
 export function writeJson(path: string, value: unknown): void {
   mkdirSync(dirname(path), { recursive: true })
@@ -187,4 +189,61 @@ export const UNREADABLE_CONFIGS: Array<[string, (home: string) => string, string
     writeJson(configFiles(home).claude, { mcpServers: { many: { command: 'node', args } } })
     return configFiles(home).claude
   }, 'names more than 4096 paths in its launchers'],
+]
+
+// ── driver pins (#412) ──────────────────────────────────────────────────────
+// A running agent-inbox-driver pins the runtime it runs from in
+// <runtime root>/.pins/<runtime id>/<launch id>. These cases are shared by the
+// script's tests (runtime-pins.test.ts) and the viewer's agreement test.
+
+export const PIN_LAUNCH = '11111111-2222-4333-8444-555555555555'
+
+/** When `pid` started, exactly as a driver records it (src/driver-pin.ts). */
+export function startOf(pid: number): string {
+  const started = processStartedAt(pid)
+  if (!started) throw new Error(`ps cannot say when ${pid} started`)
+  return started
+}
+
+/** A pid that is no longer running. */
+export function goneProcess(): number {
+  return spawnSync(process.execPath, ['-e', '']).pid!
+}
+
+/** Writes a pin file, as a driver does, and returns its path. */
+export function writePinFile(runtimeRoot: string, runtimeId: string, pin: { pid: number; startedAt: string; launchId?: string }, raw?: string): string {
+  const launchId = pin.launchId ?? PIN_LAUNCH
+  const dir = join(runtimeRoot, '.pins', runtimeId)
+  mkdirSync(dir, { recursive: true })
+  const path = join(dir, launchId)
+  writeFileSync(path, raw ?? JSON.stringify({ v: 1, launchId, pid: pin.pid, startedAt: pin.startedAt }))
+  return path
+}
+
+const livePin = () => ({ pid: process.pid, startedAt: startOf(process.pid) })
+
+/** Pins and look-alikes, and whether each keeps the runtime `runtimeId` (this process stands in for the driver). */
+export const PIN_CASES: Array<[string, (runtimeRoot: string, runtimeId: string) => void, boolean]> = [
+  ['a running driver\'s pin', (root, id) => { writePinFile(root, id, livePin()) }, true],
+  ['a pin whose driver has exited', (root, id) => { writePinFile(root, id, { pid: goneProcess(), startedAt: 'Thu Jan 1 00:00:00 1970' }) }, false],
+  ['a running driver\'s pin on another runtime', (root) => { writePinFile(root, 'another-runtime', livePin()) }, false],
+  ['a pin whose name is no launch id', (root, id) => { writePinFile(root, id, { ...livePin(), launchId: 'not-a-launch' }) }, false],
+  ['a pin naming another launch than its own', (root, id) => {
+    writePinFile(root, id, livePin(), JSON.stringify({ v: 1, launchId: '99999999-2222-4333-8444-555555555555', ...livePin() }))
+  }, false],
+  ['a pin that is not JSON', (root, id) => { writePinFile(root, id, livePin(), '{"v":1,') }, false],
+  ['a symlink to a running driver\'s pin', (root, id) => {
+    const real = writePinFile(join(root, '..', 'elsewhere'), id, livePin())
+    mkdirSync(join(root, '.pins', id), { recursive: true })
+    symlinkSync(real, join(root, '.pins', id, PIN_LAUNCH))
+  }, false],
+  ['a symlinked pin folder', (root, id) => {
+    writePinFile(join(root, '..', 'elsewhere'), id, livePin())
+    mkdirSync(join(root, '.pins'), { recursive: true })
+    symlinkSync(join(root, '..', 'elsewhere', '.pins', id), join(root, '.pins', id))
+  }, false],
+  ['a symlinked .pins', (root, id) => {
+    writePinFile(join(root, '..', 'elsewhere'), id, livePin())
+    symlinkSync(join(root, '..', 'elsewhere', '.pins'), join(root, '.pins'))
+  }, false],
 ]

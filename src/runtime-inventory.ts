@@ -11,6 +11,15 @@
 // memory and dropped: only which runtimes it uses is kept, never a command, an
 // argument or anything else in it.
 //
+// A runtime a running agent-inbox-driver is pinned to (#412) is used too: a
+// pin under `<runtime root>/.pins/<id>/` read by the script's own rules
+// (runtime-config.mjs readRuntimePins). The script checks a pin's driver by
+// pid AND start time through `ps`; this process runs nothing, so it checks the
+// pid alone (`kill(pid, 0)`, a probe that starts no process). A pid reused
+// after a crash therefore reads as used here until the next prune sweeps the
+// stale pin: the panel errs toward keeping, never toward offering a Remove
+// the prune would refuse.
+//
 // A runtime's size is its manifest's recorded total. The bounded walk only
 // says whether the folder still matches that manifest, because the prune keeps
 // one that does not (runtime-config.mjs `changed`), so it runs for an unused
@@ -27,11 +36,11 @@ export type RuntimeStatus = 'current' | 'used' | 'unused' | 'changed' | 'not-a-r
 
 /**
  * current       — this app's own runtime
- * used          — a host config uses it (`usedBy` names which)
+ * used          — a host config uses it, or a running driver is pinned to it (`usedBy` names which)
  * unused        — nothing does: Setup's prune removes it
  * changed       — no longer matches its manifest, so the prune leaves it
  * not-a-runtime — a folder without a manifest naming it, which the prune leaves
- * unchecked     — a host config could not be read, so nothing is offered
+ * unchecked     — a host config or the driver pins could not be read, so nothing is offered
  */
 export interface RuntimeEntry {
   runtimeId: string
@@ -43,7 +52,7 @@ export interface RuntimeEntry {
 }
 
 export interface RuntimeInventory {
-  /** 'unknown' when a host config exists but proves nothing */
+  /** 'unknown' when a host config or the driver pins exist but prove nothing */
   state: 'ok' | 'unknown'
   /** that config, under `~/` when it is in the home folder */
   unreadable?: string
@@ -381,6 +390,91 @@ function scanUses(home: string, runtimeRoot: string, ids: string[]): { uses: Map
   return { uses }
 }
 
+const PINS_DIR = '.pins'
+const PIN_MAX_BYTES = 1024
+const LAUNCH_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+
+// runtime-config.mjs pinLabel
+const pinLabel = (pid: number): string => `a running agent-inbox-driver (pid ${pid})`
+
+function ownedByMe(st: import('node:fs').Stats): boolean {
+  return typeof process.getuid !== 'function' || st.uid === process.getuid()
+}
+
+function running(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (err) {
+    return errorCode(err) === 'EPERM'
+  }
+}
+
+// The runtimes a running driver is pinned to, by label; or the pins folder or
+// pin that is there but cannot be read, and why. runtime-config.mjs runtimePins.
+function scanPins(runtimeRoot: string): { live: Map<string, Set<string>> } | { unreadable: string; reason: string } {
+  const live = new Map<string, Set<string>>()
+  const pinsDir = join(runtimeRoot, PINS_DIR)
+  let top: import('node:fs').Stats
+  try {
+    top = lstatSync(pinsDir)
+  } catch (err) {
+    const code = errorCode(err)
+    return code === 'ENOENT' || code === 'ENOTDIR' ? { live } : { unreadable: pinsDir, reason: unreadable(err) }
+  }
+  if (!top.isDirectory() || !ownedByMe(top)) return { live }
+  let ids: string[]
+  try {
+    ids = readdirSync(pinsDir).sort()
+  } catch (err) {
+    return { unreadable: pinsDir, reason: unreadable(err) }
+  }
+  for (const runtimeId of ids) {
+    if (runtimeId.startsWith('.')) continue
+    const dir = join(pinsDir, runtimeId)
+    let st: import('node:fs').Stats
+    try {
+      st = lstatSync(dir)
+    } catch (err) {
+      if (errorCode(err) === 'ENOENT') continue
+      return { unreadable: dir, reason: unreadable(err) }
+    }
+    if (!st.isDirectory() || !ownedByMe(st)) continue
+    let names: string[]
+    try {
+      names = readdirSync(dir).sort()
+    } catch (err) {
+      return { unreadable: dir, reason: unreadable(err) }
+    }
+    for (const launchId of names) {
+      if (!LAUNCH_ID.test(launchId)) continue
+      const path = join(dir, launchId)
+      let raw: string
+      try {
+        const file = lstatSync(path)
+        if (!file.isFile() || !ownedByMe(file) || file.size > PIN_MAX_BYTES) continue
+        raw = readFileSync(path, 'utf8')
+      } catch (err) {
+        if (errorCode(err) === 'ENOENT') continue
+        return { unreadable: path, reason: unreadable(err) }
+      }
+      let pin: unknown
+      try {
+        pin = JSON.parse(raw)
+      } catch {
+        continue
+      }
+      if (!isPlainObject(pin)) continue
+      const pid = pin['pid']
+      const startedAt = pin['startedAt']
+      if (pin['v'] !== 1 || pin['launchId'] !== launchId || typeof pid !== 'number' || !Number.isSafeInteger(pid) || pid <= 0
+        || typeof startedAt !== 'string' || startedAt.length === 0 || startedAt.length > 64) continue
+      if (running(pid)) live.set(runtimeId, (live.get(runtimeId) ?? new Set()).add(pinLabel(pid)))
+    }
+  }
+  return { live }
+}
+
 function shown(file: string, home: string): string {
   return isUnder(home, file) ? `~${file.slice(home.length)}` : file
 }
@@ -418,14 +512,18 @@ export function readRuntimes({ home, runtimeRoot, current, measure }: {
     else if (name === current) entries.push({ runtimeId: name, version: measured.version, bytes: measured.bytes, status: 'current', usedBy: [] })
     else candidates.push({ runtimeId: name, dir, measured })
   }
-  const scan = candidates.length > 0 ? scanUses(home, runtimeRoot, candidates.map((c) => c.runtimeId)) : { uses: new Map<string, Set<string>>() }
+  const configs = candidates.length > 0 ? scanUses(home, runtimeRoot, candidates.map((c) => c.runtimeId)) : { uses: new Map<string, Set<string>>() }
+  // the script reads the pins only once the configs proved something, as here
+  const pins = candidates.length > 0 && !('unreadable' in configs) ? scanPins(runtimeRoot) : { live: new Map<string, Set<string>>() }
+  const scan = 'unreadable' in configs ? configs : 'unreadable' in pins ? pins : configs
   for (const { runtimeId, dir, measured } of candidates) {
     const base = { runtimeId, version: measured.version, bytes: measured.bytes }
     if ('unreadable' in scan) {
       entries.push({ ...base, status: 'unchecked', usedBy: [] })
       continue
     }
-    const usedBy = [...(scan.uses.get(runtimeId) ?? [])]
+    const pinned = 'live' in pins ? pins.live.get(runtimeId) ?? [] : []
+    const usedBy = [...new Set([...(scan.uses.get(runtimeId) ?? []), ...pinned])]
     if (usedBy.length > 0) {
       entries.push({ ...base, status: 'used', usedBy })
       continue

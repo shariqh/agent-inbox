@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import { chmodSync, existsSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import links from '../electron/link-open.cjs'
 import type { LinkRules } from '../electron/link-open.cjs'
 import preferences from '../electron/link-preferences.cjs'
@@ -740,7 +740,10 @@ describe('Settings → Links rules, applied after the safety policy (issue #300 
     expect(openWebLink('https://example.com/b', shell, { platform: 'darwin', spawnImpl, readRules: async () => webApp })).toBe(true)
     expect(openWebLink('https://example.com/c', shell, { platform: 'darwin', spawnImpl, readRules: async () => { throw new Error('unreadable') } })).toBe(true)
     expect(openWebLink('file:///etc/passwd', shell, { platform: 'darwin', spawnImpl, readRules: async () => webApp })).toBe(false)
-    await new Promise((resolve) => setTimeout(resolve, 10))
+    await vi.waitFor(() => {
+      expect(calls).toHaveLength(2)
+      expect(shellCalls).toHaveLength(1)
+    }, { timeout: 2000 })
     expect(calls.map((call) => call.args)).toEqual([['-a', realApp, '--', 'https://example.com/a'], ['-a', realApp, '--', 'https://example.com/b']])
     expect(shellCalls).toEqual([['openExternal', 'https://example.com/c']])
   })
@@ -748,7 +751,6 @@ describe('Settings → Links rules, applied after the safety policy (issue #300 
   it('falls back to the default browser on the window’s own path when the chosen one has gone, is refused or fails', async () => {
     const { root, app, realApp } = files()
     const runner = bundle(root, 'Terminal')
-    const settle = () => new Promise((resolve) => setTimeout(resolve, 10))
     for (const [chosen, spawned, exitCode] of [
       ['/Volumes/Gone/Firefox.app', false, 0],
       [runner, false, 0],
@@ -758,7 +760,8 @@ describe('Settings → Links rules, applied after the safety policy (issue #300 
       const { calls: shellCalls, shell } = recordingShell()
       const webApp = rules({ web: { handler: 'app', app: chosen } })
       expect(openWebLink('https://example.com/pr/1', shell, { platform: 'darwin', spawnImpl, readRules: async () => webApp })).toBe(true)
-      await settle()
+      // openExternal is the last step of every case, so spawn calls are final once it has run
+      await vi.waitFor(() => expect(shellCalls).toHaveLength(1), { timeout: 2000 })
       expect(calls.map((call) => call.args), chosen).toEqual(spawned ? [['-a', realApp, '--', 'https://example.com/pr/1']] : [])
       expect(shellCalls, chosen).toEqual([['openExternal', 'https://example.com/pr/1']])
     }

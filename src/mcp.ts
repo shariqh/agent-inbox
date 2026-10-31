@@ -4,7 +4,7 @@ import type { InitializeRequest, InitializeResult } from '@modelcontextprotocol/
 import { z } from 'zod'
 import type Database from 'better-sqlite3'
 import { randomUUID } from 'node:crypto'
-import { insertItem, resolveItem, listPending, markReplySeen, markItemAnnotationDelivered, answerItem, upsertBoard, updateBoardRow, advanceBoardRow, findBoard, archiveBoard, getBoard, getBoardByTitle, listBoards, markBoardRead, markAnnotationDelivered, markHandledDelivered, listPendingRows, upsertActivity, endActivity, touchActivity, recordActivityCall, listIssueSnapshots, listSourceLinks, listPendingMessages, markMessageDelivered, ackMessage, MESSAGE_MAX_OUTCOME } from './store.js'
+import { insertItem, resolveItem, listPending, markReplySeen, markItemAnnotationDelivered, answerItem, upsertBoard, updateBoardRow, advanceBoardRow, findBoard, archiveBoard, getBoard, getBoardByTitle, listBoards, markBoardRead, markAnnotationDelivered, markHandledDelivered, listPendingRows, upsertActivity, endActivity, touchActivity, recordActivityCall, listIssueSnapshots, listSourceLinks, listPendingMessages, markMessageDelivered, ackMessage, MESSAGE_MAX_OUTCOME, getItem, isReservedProject, isDrivenSession } from './store.js'
 import type { ActionOwner, BoardRow, BoardWithRows, IssueLink, QuestionOption } from './store.js'
 import { makeContextLedger, deliverContext, shapeBoard, summariseBoard, rowKey, itemKey, agentItem } from './shape.js'
 import type { BoardIssueRelations } from './shape.js'
@@ -198,6 +198,35 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
   })
   const boardWatchDescription = ' Copilot: a new blocked action returns a host-owned watch (or watches for a full board). Immediately launch each returned shell_command as the specified detached background task; the MCP server never launches it. On completion follow on_completion, then acknowledge the response with a status change and outcome. Routine edits do not start another watch; use board_get({title, watch:true}) to re-arm after a timeout or session restart, and each re-arm of an unchanged ask waits longer. If the watcher says the human asked you to stop waiting, do not re-arm it.'
 
+  // Issue #412 (driven sessions §4.2, mesh §10.3): `@sessions` and `@mesh` hold
+  // a driver's approval alerts and the mesh's asks. No agent reads or writes
+  // them, whatever its scope: register refuses one, and every item or plan tool
+  // refuses a scope, a project argument or an item id in one.
+  const refuseReserved = (project: string): void => {
+    if (isReservedProject(project)) {
+      throw new Error(`project "${project}" is reserved for Agent Inbox; agents cannot read or write it`)
+    }
+  }
+  const agentScope = () => {
+    const s = scope.get(clientName())
+    refuseReserved(s.project)
+    return s
+  }
+  const refuseReservedItem = (id: string): void => {
+    const item = getItem(db, id)
+    if (item) refuseReserved(item.project)
+  }
+  // Issue #412 (§5.3) — a session an Agent Inbox driver runs gets each answer
+  // and message pushed as a new turn, so it is told so in the response and is
+  // handed no watch contract. Read fresh on every call: the lease is the driver's.
+  const pushedWake = (): boolean => {
+    try {
+      return isDrivenSession(db, sessionId)
+    } catch {
+      return false
+    }
+  }
+
   const requireActionShape = (
     label: string,
     owner: ActionOwner | null | undefined,
@@ -240,7 +269,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     async ({ kind, title, detail, next_step, action_owner, impact, next_after, context, stream, options }) => {
       heartbeat()
       if (kind === 'question') requireActionShape(title, action_owner, impact ?? '', options)
-      const s = scope.get(clientName())
+      const s = agentScope()
       // issue #30 — a per-call `stream` override changes which BRANCH this item
       // was raised on, so the issue has to follow it. scope.issueFor owns the
       // override-then-infer precedence; branch-parsing policy never leaks in here.
@@ -270,9 +299,12 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
         context,
         options,
       })
-      const result = kind === 'question' && s.agent === 'copilot'
-        ? { id, watch: copilotWatchLaunch(id, { project: s.project }) }
-        : { id }
+      const pushed = kind === 'question' && pushedWake()
+      const result = pushed
+        ? { id, woken: 'pushed' }
+        : kind === 'question' && s.agent === 'copilot'
+          ? { id, watch: copilotWatchLaunch(id, { project: s.project }) }
+          : { id }
       return { content: [{ type: 'text', text: JSON.stringify(result) }] }
     },
   )
@@ -290,6 +322,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     },
     async ({ id, outcome, expected_response_revision }) => {
       heartbeat()
+      refuseReservedItem(id)
       const result = resolveItem(db, id, outcome, { expectedRevision: expected_response_revision })
       return { content: [{ type: 'text', text: JSON.stringify(result) }] }
     },
@@ -328,8 +361,9 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     },
     async ({ full, project, item_id }) => {
       heartbeat()
-      const s = scope.get(clientName())
+      const s = agentScope()
       const responseProject = project ?? s.project
+      refuseReserved(responseProject)
       const items = listPending(db, responseProject, { includeInformational: true, itemId: item_id })
         .filter((it) => it.kind === 'question'
           ? markReplySeen(db, it.id, it.replied_at, it.response_revision, s.agent)
@@ -387,6 +421,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
           items: items.map((it) => deliverContext(agentItem(it), itemKey(it.id), ledger, { full })),
           rows: rows.map((r) => deliverContext(r, rowKey(r.row_id), ledger, { full })),
           messages,
+          ...(pushedWake() ? { woken: 'pushed' } : {}),
         }) }],
       }
     },
@@ -413,6 +448,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
       // can legitimately differ from the asking one (different cwd, subagent,
       // worktree), and losing the human's answer is worse than a cross-project
       // write only an id typo can cause. kind/status/precedence guard the rest.
+      refuseReservedItem(id)
       const out = answerItem(db, id, text, context, kind)
       return { content: [{ type: 'text', text: JSON.stringify(out) }] }
     },
@@ -460,6 +496,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     },
     async ({ project, stream, repo, issue }) => {
       heartbeat()
+      if (project !== undefined) refuseReserved(project)
       scope.override({ project, stream, repo, issue })
       registerPresence()
       return { content: [{ type: 'text', text: JSON.stringify(scope.get(clientName())) }] }
@@ -552,7 +589,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     },
     async ({ title, board_version, issue, rows }) => {
       heartbeat()
-      const s = scope.get(clientName())
+      const s = agentScope()
       const issuePin = issue === undefined ? undefined : normalizeIssue(issue, s.repo)
       const linked = rows.map((row) => ({ ...row, issue: row.issue === undefined ? undefined : normalizeIssue(row.issue, s.repo) }))
       const existing = getBoardByTitle(db, s.project, title)
@@ -593,13 +630,14 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
         // issue #306 — this server's presence id, so the Dashboard puts the plan on its lane
         session: sessionId,
       })
-      const watches = s.agent === 'copilot' && newActions.size
+      const pushed = newActions.size > 0 && pushedWake()
+      const watches = s.agent === 'copilot' && newActions.size && !pushed
         ? getBoard(db, s.project, title)?.rows
           .filter((row) => row.status === 'blocked' && newActions.get(row.label) === row.action_version)
           .map((row) => rowWatch(row, s.project)) ?? []
         : []
       return { content: [{ type: 'text', text: JSON.stringify({
-        ...out, ...(watches.length ? { watches } : {}),
+        ...out, ...(watches.length ? { watches } : {}), ...(pushed ? { woken: 'pushed' } : {}),
       }) }] }
     },
   )
@@ -629,7 +667,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     },
     async ({ title, board_version, label, expected_revision, status, note, next_step, action_owner, impact, next_after, options, outcome, context, issue, waits_on }) => {
       heartbeat()
-      const s = scope.get(clientName())
+      const s = agentScope()
       const issueLink = issue === undefined ? undefined : normalizeIssue(issue, s.repo)
       const existingBoard = getBoardByTitle(db, s.project, title)
       const existing = existingBoard?.rows.find((row) => row.label === label)
@@ -675,10 +713,11 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
         repoRoot: scope.rootFor(),
         session: sessionId,
       })
-      const watch = s.agent === 'copilot' && newAsk
+      const pushed = newAsk && pushedWake()
+      const watch = s.agent === 'copilot' && newAsk && !pushed
         ? rowWatch({ id: out.rowId, label, action_version: (existing?.action_version ?? 0) + 1 }, s.project)
         : undefined
-      return { content: [{ type: 'text', text: JSON.stringify({ ...out, watch }) }] }
+      return { content: [{ type: 'text', text: JSON.stringify({ ...out, watch, ...(pushed ? { woken: 'pushed' } : {}) }) }] }
     },
   )
 
@@ -704,7 +743,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     async ({ title, label, board_version, expected_revision, note, next_step, action_owner, impact, next_after, options, context }) => {
       heartbeat()
       requireBlockedShape(label, 'blocked', note, next_step, action_owner, impact, options)
-      const s = scope.get(clientName())
+      const s = agentScope()
       const previous = getBoard(db, s.project, title)?.rows.find((row) => row.label === label)
       const out = advanceBoardRow(db, {
         project: s.project,
@@ -721,10 +760,11 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
         options,
         context,
       })
-      const watch = s.agent === 'copilot' && previous && out.ok
+      const pushed = out.ok && pushedWake()
+      const watch = s.agent === 'copilot' && previous && out.ok && !pushed
         ? rowWatch({ ...previous, action_version: out.action_version }, s.project)
         : undefined
-      return { content: [{ type: 'text', text: JSON.stringify({ ...out, watch }) }] }
+      return { content: [{ type: 'text', text: JSON.stringify({ ...out, watch, ...(pushed ? { woken: 'pushed' } : {}) }) }] }
     },
   )
 
@@ -736,7 +776,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     },
     async ({ title, board_version }) => {
       heartbeat()
-      const s = scope.get(clientName())
+      const s = agentScope()
       const board = findBoard(db, s.project, title)
       const ok = board ? archiveBoard(db, board.id, board_version) : false
       return { content: [{ type: 'text', text: JSON.stringify({ ok }) }] }
@@ -779,7 +819,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     },
     async ({ title, full, watch }) => {
       heartbeat()
-      const s = scope.get(clientName())
+      const s = agentScope()
       if (watch && (title === undefined || s.agent !== 'copilot')) {
         throw new Error('watch requires a board title and a Copilot client; other hosts use their hook adapter')
       }
@@ -812,7 +852,8 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
         }
         const board = getBoardByTitle(db, s.project, title)
         if (board && !deliver(board)) continue
-        const watches = watch && board?.status === 'active'
+        const pushed = watch === true && pushedWake()
+        const watches = watch && !pushed && board?.status === 'active'
           ? board.rows.filter((row) => row.status === 'blocked')
             .map((row) => ({ row, ask: rowWatchedAsk(row) }))
             .filter(({ ask }) => !watchStoppedForGood(ask))
@@ -820,7 +861,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
           : undefined
         const payload = board ? shapeBoard(board, { full, ledger, issues: boardIssueRelations(board) }) : { found: false }
         return {
-          content: [{ type: 'text', text: JSON.stringify({ ...payload, ...(watches ? { watches } : {}) }) }],
+          content: [{ type: 'text', text: JSON.stringify({ ...payload, ...(watches ? { watches } : {}), ...(pushed ? { woken: 'pushed' } : {}) }) }],
         }
       }
       throw new Error('Board responses changed during the read; retry board_get before acting or updating.')

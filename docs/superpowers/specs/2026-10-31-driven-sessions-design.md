@@ -1,14 +1,15 @@
 # Design: driven sessions — start an agent session from Agent Inbox and push messages into it (#412)
 
-**Date:** 2026-10-31
-**Status:** Proposed. Design only; nothing here is built. Five questions for Shariq are in §13.
+**Date:** 2026-10-31 (revised the same day after an independent design review, §14)
+**Status:** Approved to build after the changes in §14. Design only; nothing here is built.
+Five questions for Shariq are in §13, with the reviewer's views.
 **Scope of this PR:** this document. No source, test or workflow changes.
 **Related:** #411 and its design
 ([`2026-10-30-session-messages-design.md`](2026-10-30-session-messages-design.md), on
-`feat-411-session-messages` until PR #417 merges); the mesh design
-([`2026-10-29-agent-mesh-design.md`](2026-10-29-agent-mesh-design.md)) §2, §3 and §6; the
-2026-10-30 research brief on pushing into a running session (kept outside the repo). External
-facts were checked on 2026-10-30/31 (Appendix A).
+`feat-411-session-messages` until PR #417 merges); PR #418 (Claude channels spike); the mesh
+design ([`2026-10-29-agent-mesh-design.md`](2026-10-29-agent-mesh-design.md)) §2, §3, §6, §8.2,
+§8.4 and §10.3; the 2026-10-30 research brief on pushing into a running session (kept outside
+the repo). External facts were checked on 2026-10-30/31 (Appendix A).
 **Built on:** Shariq chose **push-first** on 2026-10-30. A session Agent Inbox starts is
 *driven* by Agent Inbox, so a human message (#411) arrives as a new turn pushed into the
 session, with no watcher and no time window.
@@ -17,500 +18,639 @@ session, with no watcher and no time window.
 
 ## §0 — Summary
 
-1. **New session** starts Copilot CLI or Claude Code on a known project with a prompt, in the
-   background (driven) or a terminal (not driven). The human picks the permission mode on
-   every launch, never `--yolo` or `bypassPermissions`, and the choice is recorded.
-2. **One `agent-inbox-driver` process per launch,** started detached by Electron main through
-   a fixed-purpose boundary, `electron/driver-process.cjs` (exact argv, no shell). It runs from
-   the installed runtime, survives an app quit and owns one agent child. No HTTP route starts
-   anything (§2).
-3. **ACP to both hosts:** `copilot --acp --stdio`, and Claude through the Apache-2.0
-   `claude-agent-acp` adapter, which runs the Claude Agent SDK in streaming-input mode. The
-   ACP client is a small Node-core module, so the app's dependency set does not change (§3).
-4. **Pushed delivery.** Reading the hub only through `store.ts`, the driver sends each #411
-   message to its session as the next `session/prompt` turn, and does the same for answers to
-   the session's own asks. `pending()`/`ack_message` stay the bookkeeping. The composer says
-   **Arrives now** (§5).
-5. **Linking.** The driver supplies the session's `agent-inbox` MCP entry with
-   `AGENT_INBOX_LAUNCH=<id>.<secret>` in that entry's env only. The server claims the launch
-   with one conditioned write and tags its presence; it stays network-free and starts nothing.
-6. **Permissions become approval questions** counted by the one attention predicate. Only an
-   inbox answer from the human approves; an agent's `answer`, a closure or a crash never does
-   (§4).
-7. **Writing launches get a fresh worktree.** Every launch has hard budgets, Stop, an event log
-   and a transcript panel (§7).
-8. **Off means off** (§9): the Settings switch is off by default, and nothing changes for
-   anyone who never starts a session.
-9. **Phasing:** a spike, then four PRs, about 5½–6½ weeks of agent time; Copilot first, as the
-   host with no wake path at all for a hand-started session today (§11).
+1. **A driver owns each driven session.** `agent-inbox-driver` runs one agent child over ACP
+   and reads and writes the hub only through `store.ts`. It begins life as a foreground
+   terminal command (step 2), and Electron main later starts it detached (step 3). No HTTP route
+   ever starts it.
+2. **One protocol for both hosts.** `copilot --acp --stdio`, and later Claude through the
+   `claude-agent-acp` adapter, which runs the Claude Agent SDK in streaming-input mode. The ACP
+   client is Node core, so the app's dependency set is unchanged.
+3. **Linking is by process ancestry.** Every presence row whose `host_pid` descends from the
+   driver's child belongs to the launch. Fresh `driven:<session>` leases in `hook_watch_claims`
+   make `listActivity` report `driven`, so #411's composer can say **Arrives now**. There is no
+   secret, no env claim, and no new column in the first build.
+4. **Delivery is pushed, re-checked and batched.**
+   - Queued messages are re-read just before each `session/prompt` and sent as one turn.
+   - A new answer to one of the session's own asks also gets a ping turn.
+   - `pending()`/`ack_message` stay the bookkeeping.
+   - `flag` and `pending` say "you are woken automatically" in their responses.
+5. **Permissions cannot escalate or leak.**
+   - Every mode is explicit and verified on `session/new`, `load` and `resume`.
+   - Any mode change outside the launch's allowed set ends it (`error:mode_escalation`).
+   - A driver-side allow-list drops every option that switches to bypass or auto.
+   - Asks live in the reserved project `@sessions`, which no agent, hook or older server reads.
+6. **Only the human at the app approves.** In step 2 that is the driver's own terminal. From
+   step 3, main signs `(item, response_revision, optionId)` with a per-launch key through
+   owned-viewer IPC. Every launch from the app needs a native confirmation, and a
+   `script-src 'self'` CSP lands first.
+7. **Budgets count active turn time and tool calls,** with a required, driver-enforced dollar
+   cap for API-key Claude. An idle launch is parked, not ended: a later send becomes **Resume
+   and send**. The driver fails closed when it cannot read the hub.
+8. **Off means off** (§9). Nothing changes for anyone who never runs a driver.
+9. **Phasing** (§11): a spike, then Copilot from a terminal (about 1½ weeks), then the Electron
+   launch, then Claude after channels, then Resume and Take over. Terminal mode can ship alone
+   as a quick New session.
 
 ## §1 — Goals and non-goals
 
-**Goals.** (G1) Start a session on a known project without opening a terminal. (G2) Driven
-sessions take human messages, answers and approvals as pushed turns. (G3) Their asks reach the
-inbox, badge and dock through the existing predicate. (G4) Bounded cost, and a Stop that works.
-(G5) Share launch code with the mesh wrapper without needing the mesh.
+**Goals.**
+- (G1) Start a session on a known project without opening a terminal.
+- (G2) Driven sessions take human messages and answers as pushed turns.
+- (G3) Their asks reach the badge and dock through the existing predicate, and no other session.
+- (G4) Bounded cost, a working Stop, and no permission escalation.
+- (G5) Share launch code with the mesh wrapper without needing the mesh.
 
-**Non-goals.** Driving sessions the human started by hand (#411's hooks and watcher cover
-those). An autopilot loop: the driver prompts only with the first prompt, messages and answers.
-Windows, remote launch (#8), agent-to-agent delegation (the mesh's), and Codex for now (§3.4).
+**Non-goals.**
+- Driving sessions the human started by hand. #411's hooks and watcher cover those, and
+  Claude channels (#418) may later.
+- Autopilot loops.
+- Windows.
+- Remote launch (#8).
+- Agent-to-agent delegation.
+- Codex, for now.
 
 ## §2 — Where the driver runs
 
 | | (a) Electron main | (b) `agent-inbox-driver`, one per launch (**recommended**) | (c) the mesh's `agent-inbox-wrap` |
 |---|---|---|---|
-| Survives app quit and update | No | Yes: detached, and runs from the installed runtime, not the bundle | Yes |
-| New dependencies | The ACP and Claude SDKs in the app lockfile; the Claude SDK's darwin-arm64 binary is ~310 MB | None: a Node-core ACP client in `src/`; the user installs `claude-agent-acp` | `packages/mesh`, which the release pipeline never builds |
-| Hub writes (asks, launches, delivery) | Through `store.ts` | Through `store.ts`, as `hook-cli.ts` does | Never: the wrapper and bridge don't write the hub (mesh §4.3) |
+| Survives app quit and update | No | Yes: runs from the installed runtime, pinned against prune (§7) | Yes |
+| New dependencies | ACP and Claude SDKs in the app lockfile; the Claude SDK's darwin-arm64 binary is ~310 MB | None: a Node-core ACP client in `src/`; the user installs `claude-agent-acp` | `packages/mesh`, never built by the release pipeline |
+| Hub writes (asks, delivery, leases) | Through `store.ts` | Through `store.ts`, like `hook-cli.ts` | Never (mesh §4.3) |
 | UI-thread load | JSON-RPC streams on Electron main | None | None |
 | Needs `mesh.json`, a listener and grants | No | No | Yes, which #412 must not need |
 
 **Recommendation: (b).** The driver is a third host-adapter entry beside `hook-cli.ts` and
-`watch-cli.ts`. Its code lives in `src/driver*.ts` and `src/acp-client.ts`, is staged into
-every runtime payload, and runs on the runtime's own Node and `better-sqlite3`.
+`watch-cli.ts` (`src/driver*.ts`, `src/acp-client.ts`). It is staged into every runtime payload
+and runs on the runtime's own Node and `better-sqlite3`. Each launch gets one process, not a
+daemon: a daemon needs a control channel a page could reach indirectly. Only a human at a
+terminal (step 2), or Electron main after a native confirmation (step 3), starts a driver.
 
-It is one process per launch, not a daemon. A daemon needs a control channel, and any local
-socket or hub "launch queue" is a door a page could reach indirectly. One driver per launch
-keeps a single rule: only Electron main starts a driver, and only after the click. Running
-controls are hub rows written through `store.ts`: Stop, messages and answers. The driver
-checks `PRAGMA data_version` once a second to see them. Graph tests pin that no driver module
-enters the stdio MCP graph or the viewer graph, and the driver binds no listener.
+Running controls are hub rows: Stop, messages and answers. The driver checks
+`PRAGMA data_version` once a second. Graph tests pin that no driver module enters the stdio MCP
+graph or the viewer graph, and the driver binds no listener.
 
-The mesh wrapper (M2/M5) can reuse `acp-client.ts` and the host table in `driver-hosts.ts`,
-which open no connection. Mesh §6.1 assumed `@agentclientprotocol/sdk`; this design avoids it
-on purpose: it is 8.3 MB and needs `@modelcontextprotocol/server@^2`, while the app ships
-`@modelcontextprotocol/sdk@1`.
+The mesh wrapper can reuse `acp-client.ts`, the host table and the option allow-list (§4).
+Mesh §6.1 assumed `@agentclientprotocol/sdk`; this design avoids it, because it is 8.3 MB and
+its peer is `@modelcontextprotocol/server@^2` where the app ships `@modelcontextprotocol/sdk@1`.
 
 ## §3 — Hosts and modes
 
 ### 3.1 One protocol: ACP v1
 
-`src/acp-client.ts` implements the client half of ACP v1 in Node core, in about 300 lines,
-over NDJSON on the child's stdio. It calls `initialize`, `session/new`, `session/load` or
-`session/resume` when advertised, `session/prompt` and `session/cancel`, and handles
-`session/update` and `session/request_permission`. It declares no `fs` or `terminal`
-capabilities, so the agent uses its own tools in its own working directory. One turn runs at a
-time: a message that arrives mid-turn is sent when the turn ends, which is also how Claude's
-SDK queues ("interrupt and send" is later work). The child's stdout is the protocol channel,
-its stderr goes to the launch log, and the driver writes only protocol messages to its stdin.
+`src/acp-client.ts` is Node core, about 300 lines, speaking NDJSON over the child's stdio.
+- **Calls:** `initialize`, `session/new`, `session/load` or `session/resume` when the agent
+  advertises them, `session/prompt`, `session/cancel` and `session/set_mode`.
+- **Handles:** `session/update`, including `current_mode_update` (§4), and
+  `session/request_permission`.
+- **Declares** no `fs` or `terminal` capabilities.
+- **Turns:** one at a time. A message waits until the whole turn ends, and a turn blocked on an
+  approval does not end until that approval is answered (§5).
+- **Streams:** the child's stderr goes to the launch log. The driver writes only protocol
+  messages to the child's stdin.
 
 ### 3.2 Copilot (`copilot --acp --stdio`, public preview)
 
-Argv is fixed per permission mode (§4): `copilot --acp --stdio --disable-mcp-server
-agent-inbox [--allow-tool …] [--deny-tool …] [--model M] [--effort E]`. Copilot fixes tool
-filters and effort when the server starts, which suits one server per launch.
+Argv is fixed per mode (§4): `copilot --acp --stdio --allow-tool agent-inbox [--mode M]
+[--allow-tool …] [--deny-tool …] [--model M] [--effort E]`. Tool filters and effort are fixed
+when the server starts, which suits one server per launch.
 
-The env sets `COPILOT_AUTO_UPDATE=false` and removes `COPILOT_ALLOW_ALL`. The user's
-`agent-inbox` server is disabled by name, and the driver's own arrives in `session/new`'s
-`mcpServers`. Everything else (other MCP servers, instructions, skills) loads as in a
-terminal: this is the human's session, not a mesh delegate.
+The session uses the user's own `agent-inbox` MCP registration, as in a terminal, and its tools
+are pre-allowed. Otherwise every `pending`, `flag` and `ack_message` would become an approval.
+The driver supplies a server in `session/new`'s `mcpServers` only when the host config has none.
+It never adds a second one, which removes the duplicate-server risk.
 
-Auth is the Copilot login, or `COPILOT_GITHUB_TOKEN` from the Keychain (§8). GitHub's ACP
-reference names custom frontends as a use case.
+The child env drops `COPILOT_ALLOW_ALL` and sets `COPILOT_AUTO_UPDATE=false` (§8). Auth is the
+Copilot login, or `COPILOT_GITHUB_TOKEN` from the env. GitHub's ACP reference names custom
+frontends as a use case.
 
-### 3.3 Claude (Agent SDK through `claude-agent-acp`)
+### 3.3 Claude (Agent SDK through `claude-agent-acp`), after channels
 
-`@agentclientprotocol/claude-agent-acp` v0.99.1 is built on the SDK's streaming input. It
-supports permission requests, `session/cancel` (`interrupt()`), `session/load` and
-`session/resume`, client MCP servers, and SDK options in `_meta.claudeCode.options`. The user
-installs it (`npm i -g @agentclientprotocol/claude-agent-acp`). The app never vendors the SDK,
-which is under Anthropic's Commercial Terms. The driver passes `permissionMode` (§4),
-`maxBudgetUsd`, `maxTurns`, and `pathToClaudeCodeExecutable` set to the user's `claude`.
-Settings load as in a terminal, minus the user's `agent-inbox` server, and
+**Gate.** PR #418's channels spike showed a real `claude` take a pushed turn and ack it. Claude
+work starts only after that spike's go/pivot note.
+
+**The adapter.** `@agentclientprotocol/claude-agent-acp` v0.99.1 (Apache-2.0) is built on the
+SDK's streaming input. It supports permission requests, cancel (`interrupt()`), load and resume,
+and SDK options in `_meta.claudeCode.options`. The user installs it. The app never vendors the
+SDK, which is under Anthropic's Commercial Terms.
+
+**Options passed on every `new`, `load` and `resume`:**
+- an explicit `permissionMode` (§4);
+- `allowedTools: ['mcp__agent-inbox__*']`;
+- `maxBudgetUsd` and `maxTurns`;
+- `pathToClaudeCodeExecutable`, the user's `claude`.
+
 `AGENT_INBOX_HOOKS=0` silences Agent Inbox's hooks, whose Stop nudge and `watch` would
 duplicate the push.
 
-**Auth.** The SDK docs bar third parties from offering claude.ai login without approval. So,
-as in mesh decision 1, the default is `ANTHROPIC_API_KEY` from the Keychain, and the
-subscription is used only behind an explicit "personal" switch that published docs never offer
-(§13 Q1). **Fallback:** if the spike finds the adapter cannot carry these options, PR B spawns
-a thin SDK adapter from `packages/mesh` that serves the same ACP surface; the driver does not
-change.
+**Auth.** The SDK docs bar third parties from offering claude.ai login without approval, so the
+default is `ANTHROPIC_API_KEY`. A "personal" subscription switch exists in checkout builds only,
+and never in a release. If the adapter cannot carry these options, a thin SDK adapter in
+`packages/mesh` serves the same ACP surface.
 
 ### 3.4 Codex later
 
-`codex app-server` (`sendUserTurn`) follows the same pattern. It becomes a third row behind
-the driver's `HostAdapter` interface (`start`, `prompt`, `cancel`, `load`, `events`,
-`onPermission`) when it is needed. Track `openai/codex#15299`.
+`codex app-server` (`sendUserTurn`) becomes a third row behind the same `HostAdapter` interface
+when it is needed. Track `openai/codex#15299`.
 
 ### 3.5 Background, terminal, and taking over
 
-**Background** is driven, and it is the only mode with push.
+**Background** is driven, and is the only mode with push.
 
-**Terminal** is not driven. Main writes a `0700` `.command` script into the launch folder,
-with every value validated and shell-quoted and the prompt in a `0600` file. It then runs
-`/usr/bin/open -a Terminal -- <script>`. The script `cd`s into the working directory and runs
-`claude "$(cat prompt.txt)"` or `copilot -i "$(cat prompt.txt)"`. That is a hand-started
-session, so #411's hooks or watcher deliver its messages.
+**Terminal** is not driven, and can ship alone as a quick New session with no ACP.
+1. Main writes a `0700` `.command` script into the launch folder, every value validated and
+   shell-quoted, with the prompt in a `0600` file.
+2. Main runs `/usr/bin/open -a Terminal -- <script>`.
+3. The script runs `claude "$(cat prompt.txt)"` or `copilot -i "$(cat prompt.txt)"` in the
+   chosen folder.
 
-**Nothing can attach live to a driven session.** An ACP stdio server has exactly one client.
-`claude attach` works only for `claude --bg` sessions, and SDK sessions are not those. No ACP
-client UI can join our pipe.
+Messages to it use #411's hooks or watcher.
 
-**Take over in a terminal** (PR D) instead: the driver cancels any running turn, closes the
-child and marks the launch `handed_off`, then main opens a terminal on `claude --resume <acp
-id>` or `copilot --resume <id>` (the spike confirms Copilot persists ACP sessions). Two writers
-never share a session; handing a session back to the driver is later work.
+**No live attach.** An ACP stdio server has one client, `claude attach` covers only
+`claude --bg` sessions, and no ACP client UI can join the driver's pipe.
+
+**Take over in a terminal** (step 5). The driver cancels the turn, closes the child and marks
+the launch `handed_off`. Main then opens a terminal on `claude --resume <id>` or
+`copilot --resume <id>`. Two writers never share a session.
 
 ### 3.6 What the human sees
 
-Each driver appends `<hub dir>/launches/<id>/events.ndjson`: agent text (coalesced) and plans;
-tool calls (title, kind, status, input capped at 4 KB); permission requests and answers;
-injected turns by message id; stop reasons and usage. It rotates at 20 MB and keeps two files.
+**Event log.** Each driver appends `<hub dir>/launches/<id>/events.ndjson`. It holds:
+- agent text and plans;
+- tool calls (input capped at 4 KB);
+- permission requests, offered and dropped options, and answers;
+- mode updates;
+- injected turns by message id;
+- stop reasons and usage.
 
-The transcript panel (PR C) opens from a launch tag. It reads
-`GET /api/launches/:id/events?after=<offset>`, at most 256 KiB at a time and only while the
-panel is open, and shows the last 200 events with "load earlier". Agent text goes through
-`renderStructuredText` and everything else through `esc()`. Lanes, Live and the Agents view
-show only the launch tag and its state, from the launches snapshot; no transcript joins the
-poll.
+The log rotates at 20 MB.
+
+**Transcript panel** (step 3). It reads `GET /api/launches/:id/events?after=<offset>`, at most
+256 KiB at a time and only while the panel is open. Agent text goes through
+`renderStructuredText`, and everything else through `esc()`. Lanes, Live and the Agents view
+show only a tag and a state.
 
 ## §4 — Permissions
 
-The human chooses a mode on every launch; nothing is preselected, and main refuses a launch
-without one. The value, and the argv or options derived from it, are stored in the launch row
-and shown on its tag.
+### 4.1 Modes, with escalation closed
 
-| Mode (UI) | Claude `permissionMode` | Copilot flags | Writes |
+The human chooses one per launch, with no preselection. Each mode has an **allowed set** of
+mode ids the session may be in.
+
+| Mode (UI) | Claude `permissionMode` → allowed set | Copilot → allowed set | What it really permits |
 |---|---|---|---|
-| Ask for everything | `default` | none | a click each |
-| Read-only | `dontAsk` + read tools: everything else is denied | `--deny-tool write` + the M2 read-only git allow-list; other shell asks (deny rules beat allow rules, so an exact "deny the rest" is a spike item) | impossible |
-| Plan first | `plan` | `--mode plan` (spike) | a click each |
-| Edits in the worktree allowed | `acceptEdits` | `--allow-tool 'write(<worktree>/**)'` (spike) | shell, network and push still ask |
+| Ask for everything | `default` → {default} | interactive → {interactive} | Each tool call asks, except your own settings' allow rules |
+| Read-only | `dontAsk` + `disallowedTools: [Write, Edit, NotebookEdit]` → {dontAsk} | `--deny-tool write` → {interactive} | File-edit tools denied; shell commands follow your settings or are denied (Claude) / ask (Copilot) |
+| Plan first | `plan` → {plan, default} | `--mode plan` → {plan, interactive} (spike) | Plan, then ask-for-everything |
+| Edits in the worktree | `acceptEdits` → {acceptEdits} | `--allow-tool 'write(<worktree>/**)'` → {interactive} | Edits auto-approved; shell, network and push ask |
 
-**Never offered:** `bypassPermissions`; `auto` (a model classifier approving is still
-auto-approval); `--yolo`, `--allow-all-tools` and `COPILOT_ALLOW_ALL`. v1 has no mid-session
-mode change, and a later version may only tighten the mode.
+The UI says this plainly: **once any shell command is allowed, the session can run anything.**
+For example, "Allow always" on `npm test` with edits allowed is arbitrary code execution, since
+the agent can edit what `npm test` runs. "Read-only" therefore promises only that edit tools are
+denied; it does not claim "writes impossible". User and project settings (`permissions.allow`,
+`defaultMode`) load as in a terminal, and that is exactly what they would allow there.
 
-**The mapping.** A `session/request_permission` becomes one question item through
-`insertItem`. A Claude `AskUserQuestion` (however the adapter surfaces it) becomes the same kind
-of item with Claude's own choices as options, and the human's inbox answer is passed back as the
-answer; the allow rule below applies only to permission requests.
-- **Item fields:** `kind: 'question'`, `action_owner: 'approval'`, the new `origin: 'driver'`
-  (§6), the presence `session`, the project, the branch as `stream`, and the agent as both
-  `agent` and `action_agent`.
-- **Text:** the title "Allow copilot to run `git push origin ai/x`?"; `next_step` "Choose
-  whether copilot may do this."; `impact` "The session is paused until you answer."; and in
-  `context` the tool kind, its input (capped at 4 KB), the worktree and the launch id.
-- **Options:** the agent's own, at most four (Allow once, Allow always with its stated scope,
-  Deny, Deny always), and none recommended.
-- **Attention.** The session is live, so the question is `waiting`. The badge, dock and
-  notifications follow the one predicate, with `public/attention.js` unchanged. No board row
-  is written for the ask: one ask, one surface.
+**The escalation guard.** The driver:
+1. passes the explicit mode on every `session/new`, `session/load` and `session/resume`;
+2. checks the returned `currentModeId` against the allowed set, and refuses to prompt on a
+   mismatch. A resumed Claude session otherwise continues in the transcript's last mode
+   (`resolveInitialPermissionMode`);
+3. on any `current_mode_update` outside the allowed set, sends `session/cancel`, answers pending
+   requests `cancelled`, and ends the launch with `error:mode_escalation`;
+4. never calls `session/set_mode` except to re-assert the launch's own mode.
 
-**Answer authority.** Only an inbox reply (`reply_source = 'inbox'`, `reply_kind` answer)
-whose text equals an allow option's label exactly approves. The driver then answers `selected`
-with that option id and resolves the item ("Allowed once by you"), pinned to the handled
-`response_revision`. Anything else (another label, free text, clarify, decline) is sent as
-`reject_once`, or `cancelled` when the agent offered no reject option, and free text is queued
-as the next turn. This build's MCP `answer` and `resolve` refuse `origin = 'driver'` items
-(`reason: 'driver_ask'`); an older server could still record an answer, so the source check is
-the backstop, and a closure without an inbox reply counts as Deny. Prompts never time out (SDK
-docs): the ask waits until it is answered or the launch stops, when the driver resolves it
-"Session stopped". A lost driver's asks are closed by the human's **Close** (§7).
+**The option allow-list.** A per-host table of permitted `optionId`s (and kinds), recorded in
+the spike, is applied to every `session/request_permission`.
+- **Dropped:** any option that changes the mode to bypass, auto, or "clear context and bypass".
+  Claude's exit-plan-mode request offers "bypass" and "auto" as allow options
+  (`buildExitPlanModePermissionOptions`; `ALLOW_BYPASS = !IS_ROOT || IS_SANDBOX`), so these are
+  real.
+- **Unknown ids:** also dropped. If no allow option is left, the driver answers with a reject
+  option, or `cancelled`.
+- **Never offered:** `bypassPermissions`, `auto`, `--yolo`, `--allow-all-tools` and
+  `COPILOT_ALLOW_ALL`.
+- **The spike checks Copilot's plan exit** for the same escape: whether exiting plan can switch
+  to autopilot.
 
-## §5 — Identity, linking and pushed delivery
+### 4.2 Where asks live: the reserved project `@sessions`
 
-**The claim.**
-1. Main makes the launch id and a 32-byte secret. The row stores only the secret's SHA-256.
-2. The driver puts `AGENT_INBOX_LAUNCH=<id>.<secret>` in the env of the `agent-inbox` MCP
-   server entry it supplies, never in the agent's own env. Tool shells and nested CLIs
-   therefore cannot inherit it.
-3. `src/mcp.ts` reads the variable once at startup and deletes it from `process.env`. On
-   registration it calls `claimLaunchSession(id, secret, sessionId)`, one `.immediate()`
-   transaction. It checks the hash, a `starting` or `running` status, and that no other live
-   session holds the launch; sets `launches.session`; and moves the launch's open
-   `session_messages` from its previous session, so a server restart or a resume loses none.
-   That is proof by launch, not the guess #411 forbids.
-4. The server writes `activity.launch_id`. A later write that omits it keeps it, as with
-   `server_version`.
+`listPending` reads by project (`store.ts`), and the Claude hooks read the whole project
+(`hook.ts` cmdWatch and the stop/prompt readers). An ask filed in the session's own project
+would therefore reach every session there, older servers included. They would wake on it, and
+an older server's `resolve` would count as Deny.
 
-No variable, a bad one or a refused claim leaves the server exactly as it is today. The driver
-learns the session only from `launches.session`, never from the agent or argv.
+So every driver ask is filed in the reserved project **`@sessions`**, using mesh §10.3's
+mechanism: projects starting with `@` are reserved.
+- `listPending`, `listPendingRows`, `listUnansweredBoardRows` and every hook reader return
+  nothing for a reserved project.
+- MCP `register` refuses one, and `pending`, `flag`, `answer`, `resolve` and `board_*` refuse any
+  scope or item id in one.
+- `closeProject` refuses `@` projects, so approvals cannot be muted.
 
-**The lease.** The driver refreshes `driver:<launchId>` in `hook_watch_claims` every 30 s.
-That table is already unread by any snapshot, so the refresh rebuilds nothing.
-`listActivity` serves `launch_id`, and `driven: true` while the lease is under 90 s old.
+All of this ships in step 2 and serves the mesh too. The real project and branch go in the
+item's `stream` (`agent-inbox · feat-x`), the title and `context`, and the viewer shows them.
+Older servers lack the filters; an agent that registers `@sessions` on one could read the asks,
+which §8's threat model accepts.
 
-**Delivery.** When `data_version` moves, the driver calls `listOpenMessages([session])` (#411
-PR 1). Each message id it has not injected yet (the injected ids are kept in
-`launches/<id>/injected.json`) becomes one turn:
+Each ask is a question item:
+- **Fields:** `action_owner: 'approval'`, the agent's MCP `session` (so it classifies as
+  `waiting`), and `agent`/`action_agent`.
+- **Text:** title "Allow copilot to run `git push origin ai/x`?".
+- **Context:** the tool kind, the input (4 KB), the cwd and the launch.
+- **Options:** the surviving options, at most four, matched by `optionId` and never by label.
+  None is marked recommended.
 
-> Message from the human via Agent Inbox (id m-…). It is also in pending(); act on it once,
-> then ack_message({ id, outcome }).
->
-> <verbatim text>
+A Claude `AskUserQuestion` becomes the same kind of item, with Claude's choices. The badge, dock
+and notifications follow the one predicate, and `public/attention.js` is unchanged.
 
-Mid-turn, the message waits until the current turn ends. Once its turn is sent, the driver
-calls `markMessageDelivered(id, session, 'agent-inbox-driver')`, and `delivered_by` lets the UI
-say "pushed into the session". `pending()` still returns the message until `ack_message`, so
-`/clear` and compaction lose nothing; #411's contract is unchanged.
+### 4.3 Who can approve
 
-**Answers to the session's own asks.** A new reply, annotation or handled mark on its
-questions (`items.session`), or on rows of plans it wrote (`boards.session`, #306), gets one
-turn: "The human answered '<title>'; call pending()". No answer text is copied into that turn.
-A driven session therefore gets no `flag` watch contract and no #411 PR 3 `session_watch`; its
-appendix says it is woken automatically.
+- **Step 2 (terminal driver).** The foreground driver prompts on its own TTY, and only an answer
+  there approves. The inbox item is an alert (`action_owner: 'task'`, "Answer in the terminal
+  running the driver") with no options. The driver resolves it when the TTY answers. No inbox
+  reply approves anything in step 2.
+- **Step 3 (app launches).** An approval goes through owned-viewer IPC,
+  `agentInboxLaunch.approve({ item, revision, optionId })`.
+  1. Main checks the `launch` grant (§8).
+  2. Main signs `HMAC-SHA256(launchKey, item ‖ response_revision ‖ optionId)` with the
+     per-launch key it sent the driver on fd 3.
+  3. Main writes the reply through `store.ts`: `reply = optionId`, `reply_context` = the
+     signature.
+  4. The driver accepts only a valid signature over its own item, at the revision it recorded
+     when filing, for an option still on the allow-list. Anything else is a rejection.
+- **Never approved by:** the viewer's ordinary reply route, a browser tab, a reused viewer,
+  hosted mode, or an agent (which cannot reach `@sessions` at all). In those places the page
+  shows "Approve in the Agent Inbox app".
+- **No timeout.** Asks never time out. Stop resolves them "Session stopped".
+
+## §5 — Linking and pushed delivery
+
+### 5.1 Linking by ancestry
+
+The driver knows its child's pid, process group and start time. Every 2 s it reads
+`listActivity` and checks each row's `host_pid` with `ps -o pid=,ppid=,lstart=`. Every presence
+row whose `host_pid` is the child or one of its descendants belongs to the launch: the session's
+own server, a restarted server, and a CLI the agent started in its shell.
+
+For each such session the driver holds a lease `driven:<session>` in `hook_watch_claims`, plus
+`driver:<pid>` for itself. The token names the driver, and both are refreshed every 30 s.
+`hook_watch_claims` is already read by no snapshot, so the refreshes rebuild nothing.
+`listActivity` serves `driven: true` while the session's lease is under 90 s old; that comes from
+the `/api/activity` read, which is fresh on every request.
+
+Every session in the launch gets pushed messages and answer pings, and no watch contracts. A
+restarted MCP server is linked on the next scan: there is no claim to wait out and no secret to
+rotate. Resume links the same way, by the new child's ancestry.
+
+### 5.2 Re-addressing: the one exception (#411 amendment)
+
+#411 §1 says a message to an ended session "is not re-addressed". This design adds one exception,
+to be written into #411's design doc when this lands (in #417 if it is still open, otherwise in
+step 2's PR).
+
+> **Proof by launch.** When a driver has proved by ancestry that an ended session and a live
+> session belong to one launch, `readdressMessages(from, to, driverToken)` moves the open
+> messages from one to the other. It is one `.immediate()` transaction, conditioned on `from`'s
+> presence being ended and on both sessions holding `driven:` leases with that driver's token.
+> No other path re-addresses.
+
+### 5.3 Delivery
+
+The driver needs one new read, `listOpenMessagesWithText(sessions)`, because
+`listOpenMessages` returns ids only. When `data_version` moves and the session is idle:
+1. Re-read every queued message's status immediately before prompting. Acked or withdrawn ones
+   are dropped.
+2. Send all that remain as **one** turn:
+   > The human sent you N message(s) via Agent Inbox. Each is also in pending(); act on each
+   > once, then ack_message({ id, outcome }).
+   >
+   > [m-1] <verbatim text> …
+3. Call `markMessageDelivered(id, session, 'agent-inbox-driver')` for each.
+
+While a turn runs, messages queue. #411's composer shows the state:
+- "Queued — it's mid-task (12m)";
+- "Queued — waiting on your approval" (with a link to the ask);
+- **Interrupt and send**, an explicit choice: `session/cancel`, then the turn.
+
+`pending()` still returns each message until `ack_message`, so #411's contract is unchanged.
+
+**Answer pings.** When the human answers one of the session's own questions (`items.session`)
+or rows of plans it wrote (`boards.session`), the driver sends "The human answered '<title>';
+call pending()" with no answer text. Approvals are excluded: they live in `@sessions` and are
+answered through §4.3.
+
+**Woken automatically, said at runtime.** When the calling session holds a fresh `driven:`
+lease, `flag` returns no `watch` contract and adds `woken: "pushed"`. `pending()` adds the same
+field, so the agent learns it from the response, not from a static appendix.
 
 **Composer states** (#411 PR 2), checked in this order:
-1. **Arrives now** (`driven`): "Agent Inbox started this session and sends this straight in,
-   after its current step if it is working."
-2. **Wakes for it**: #411's Claude hook lease, within its 29-minute window.
-3. **When it next checks**: the session can receive messages, but nothing wakes it.
-4. **Can't receive**: no `receives_messages`.
+1. **Arrives now**, or **Queued**, when the session is driven.
+2. **Wakes for it**, with #411's Claude hook lease.
+3. **When it next checks**.
+4. **Can't receive**.
+
+A **parked** launch (§7) shows **Resume and send**.
 
 ## §6 — Storage
 
-The changes are additive migrations with triggers made last, through `store.ts` only.
+**Step 2 adds no table and no column.** It adds `store.ts` functions:
+- the reserved-project filters and refusals (§4.2);
+- `listOpenMessagesWithText`;
+- `readdressMessages`;
+- the `driven:`/`driver:` lease helpers over `hook_watch_claims`;
+- a `driven` field in `listActivity`.
 
-```sql
-CREATE TABLE IF NOT EXISTS launches (
-  id TEXT PRIMARY KEY,                     -- main-generated UUID
-  project TEXT NOT NULL, repo_root TEXT NOT NULL, cwd TEXT NOT NULL,
-  branch TEXT, base_ref TEXT, worktree INTEGER NOT NULL DEFAULT 0,
-  host TEXT NOT NULL,                      -- copilot | claude
-  mode TEXT NOT NULL,                      -- background | terminal
-  permission_mode TEXT NOT NULL,           -- §4's ids
-  host_config TEXT NOT NULL,               -- JSON: executable real path + version, argv, options
-  auth TEXT NOT NULL,                      -- login | api-key | personal; never the secret
-  prompt TEXT NOT NULL,                    -- the human's first prompt, 1–16000 units (§13 Q4)
-  budget TEXT NOT NULL,                    -- JSON: wall_minutes, idle_minutes, tool_calls, usd?
-  token_hash TEXT NOT NULL,                -- never served
-  session TEXT, acp_session TEXT,          -- current MCP session; ACP id for resume/take-over
-  status TEXT NOT NULL DEFAULT 'starting', -- starting|running|stopping|ended|failed|handed_off
-  end_reason TEXT NOT NULL DEFAULT '',     -- stopped|budget:<which>|idle|exited|error:<code>
-  usage TEXT NOT NULL DEFAULT '{}',        -- JSON: turns, tool_calls, usd?; written per turn
-  stop_requested_at TEXT, driver_pid INTEGER,
-  created_at TEXT NOT NULL, started_at TEXT, ended_at TEXT,
-  revision INTEGER NOT NULL DEFAULT 1
-);
-```
+The Stop control in step 2 is Ctrl-C, or a stop lease, `driver-stop:<pid>`, in
+`hook_watch_claims`, written by `npm run driver -- stop <pid>`.
 
-Two columns are added: `activity.launch_id TEXT`, which no snapshot reads, and `items.origin
-TEXT` (`'driver'` or NULL), listed in `REVIEWED_COLUMNS` as read by no column domain. Each
-write is one statement or one `.immediate()` transaction:
+**Step 3 adds `launches`**, once Copilot ACP has been used through step 2. Changes from the first
+draft:
+- **No `token_hash`, `revision` pinning or derived `lost` in the snapshot.** `GET /api/launches`
+  (whole-table domain) serves launch facts only: project, host, mode, budgets, status and
+  end_reason, with no clock-derived state. Lease freshness (running or lost) comes from
+  `/api/activity`'s fresh read, and from a fresh `GET /api/launches/:id`.
+- **`prompt` is not in the list snapshot.** It is served per launch by
+  `GET /api/launches/:id/prompt`, and the dialog warns not to paste secrets into it.
+- **Stop is idempotent and not pinned.** `requestLaunchStop(id)` sets `stop_requested_at` once
+  (`COALESCE`), because per-turn `usage` writes move `revision`.
+- **`closeLostLaunch(id)` re-checks, inside its `.immediate()` transaction, that the driver
+  lease is stale.** It then ends the launch, resolves its `@sessions` asks, and returns the
+  child's pgid and start time for main to kill (§7).
+- **Columns** add `child_pgid`, `child_started_at`, `parked_at`, `acp_session` and the active
+  time used. `spec_version` records the fd-3 spec version.
 
-| Function | Caller | What it does |
-|---|---|---|
-| `createLaunch` | driver | Inserts its validated spec. |
-| `claimLaunchDriver(id, pid)` | driver | Claims a `starting` launch with no live lease, so a re-run never double-drives. |
-| `claimLaunchSession` | MCP server | The claim described in §5. |
-| `updateLaunch(id, revision, patch)` | driver | Updates status and usage, pinned to `revision`. |
-| `requestLaunchStop(id, revision)` | IPC, or a trusted-Origin route | Sets `stop_requested_at` and nothing else. It can only stop, so it is the one launch write an HTTP route may make. |
-| `closeLostLaunch(id, revision)` | the human | Ends a lost launch and dismisses its open driver asks. |
-| `pruneLaunches` | `createLaunch` | Deletes ended launches over 30 days old, with their folders. |
+Older processes never name the table. `snapshot-triggers.txt` only gains names.
 
-**Snapshot.** `launches` is a whole-table domain, with `SNAPSHOT_SOURCES.launches =
-['launches']`. `GET /api/launches` serves every launch that has not ended plus the 50 newest
-ended ones, without `token_hash`. `test/fixtures/snapshot-triggers.txt` only gains names. A
-`running` launch whose lease is over 2 minutes stale reads as `lost`; that is derived on read,
-never written.
+## §7 — Budgets and lifecycle
 
-**Mixed versions.** Older processes never name the new table or columns. An older runtime's
-MCP server ignores the launch env, so it never claims; the driver reports "this runtime is too
-old" and stops.
+**Budgets.**
+- **Active turn time**, summed while a turn runs (default 2 h). Idle time does not count.
+- **Tool calls:** 500, counted from `tool_call` updates.
+- **USD:** required for API-key Claude. It is passed as `maxBudgetUsd`, and the driver also
+  enforces it itself from the adapter's `total_cost_usd`, ending the launch at the cap.
+  Copilot's tag says "premium requests not tracked".
 
-## §7 — Working directory, budgets and lifecycle
+When a budget runs out, the driver cancels, waits up to 10 s, closes the child and ends the
+launch with `budget:<which>`.
 
-**Worktree.** A launch whose mode can write gets a fresh worktree: `git worktree add
-<root>/<repo>/<branch> -b <branch> <base>`, run with `execFile`. Read-only and plan launches
-may use the project's checkout. The root defaults to `~/.agent-inbox/worktrees` (changeable),
-the base to `origin/<default>` after a fetch, and the branch to `ai/<slug>-<4 hex>` (editable,
-checked with `git check-ref-format`). The driver never pushes: a push is the agent's own tool
-call and asks like any other. **Remove worktree** is offered only when the worktree is clean
-and has no unpushed commits; the branch is kept.
+**Park, not end.** After 2 h idle, the driver closes the child, keeps `acp_session`, marks the
+launch `parked` and exits. Sending to a parked launch is **Resume and send**: the click is the
+gesture main needs to start a driver. That driver runs `session/load` or `session/resume` with
+the explicit mode (§4.1) and then sends. Step 3 ships this minimal resume. In step 2, a parked
+launch is resumed with `agent-inbox-driver resume <id>`.
 
-**Budgets.** Every launch has all four, and none moves mid-launch: wall clock (4 h default,
-24 h at most); idle (2 h with no turn running); tool calls (500, counted by the driver from
-`tool_call` updates for both hosts); and USD for Claude only, through SDK `maxBudgetUsd`, an
-estimate set with headroom. Copilot reports no cost over ACP, so its tag says "premium requests
-not tracked". When a budget runs out, the driver sends `session/cancel`, waits up to 10 s,
-closes the child and ends the launch with `end_reason: 'budget:<which>'`.
+**Stop.** The driver answers pending permission requests `cancelled`, resolves its asks
+"Session stopped", sends `session/cancel`, and closes the child's stdin. After 10 s it sends
+SIGTERM to the recorded pgid.
 
-**Stop.** Within a second of `stop_requested_at`, the driver sends `session/cancel`, answers
-pending permission requests `cancelled`, resolves its asks "Session stopped", and closes the
-child's stdin so the ACP server exits, with SIGTERM to the child's group after 10 s. Main
-signals a driver only when its launch is `lost`, and only if `driver_pid`'s start time
-(`ps -o lstart`) matches the one recorded by the lease.
+**Orphans.** The driver records the child's pgid and start time (in its lease token, and from
+step 3 in `launches`). **Close** on a lost launch kills that group only when the start time
+still matches.
 
-**Logs** go to `<hub dir>/launches/<id>/` (`0700`): `events.ndjson` and `driver.log` (stderr,
-capped at 5 MB). The folder sits under the hub directory, not Electron's userData, so the
-viewer, the driver and a browser all find it. No log holds the env or a secret.
+**Fail closed** (mesh §8.4). After 30 s with no successful hub read, the driver cancels the
+turn, denies every pending ask, and exits. It cannot see Stop, so it stops.
 
-**App quit.** Drivers are detached (`setsid`, stdio to files, `unref`) and keep running.
-`beginAppQuit()` refuses new launches through a `launchGate`, like `createInstallGate`. A
-macOS update swaps the app bundle, not the runtime the driver runs from, and `prune-runtimes`
-keeps any runtime that a running process names.
+**Concurrency.** At most 2 Copilot drivers and 1 Claude driver per host, counted from fresh
+`driver:` leases inside one `.immediate()` claim. A refused start says which sessions are
+running.
 
-**Crash.** When a driver dies, its child's stdin closes and the ACP server exits (the spike
-checks both hosts). The launch then reads as `lost`, and its asks stay parked until the human
-chooses **Resume** or **Close**. Nothing restarts on its own.
+**Runtime pins.** `install-agents.sh`'s own `prune_old_runtimes` has no running-process check,
+so two installs or an Uninstall could delete a live driver's runtime. Each driver writes
+`<runtime>/.pins/<pid>`, and removes it on exit.
+- Both prunes (`prune-runtimes.sh` and `prune_old_runtimes`) keep any runtime with a pin whose
+  pid is alive, and share `prune-runtimes.sh`'s `ps` check.
+- Uninstall refuses while a pinned driver runs, naming it and its stop command.
+- This ships in step 2.
 
-**Resume** (PR D) needs a click. A new driver claims the launch and calls `session/load`, or
-`session/resume` if that is what the agent advertises. The Claude adapter supports both; the
-spike checks Copilot's `loadSession`. The new MCP server's claim moves open messages to it
-(§5). An agent that cannot load says "This session can't be resumed; start a new one".
+**App quit** (step 3). Detached drivers keep running. Quit shows a native prompt listing them,
+with Stop all or Keep running. `beginAppQuit()` refuses new launches through a `launchGate`.
+After quit, approvals stall until the app is open again, since only the app signs (§4.3), and
+messages need a viewer.
 
-## §8 — The Electron boundary and security
+## §8 — The Electron boundary and security (step 3)
 
-**`electron/driver-process.cjs`** mirrors `setup-process.cjs`. It builds exactly
-`[<runtime>/bin/node, <runtime>/dist/driver-cli.js, 'run', <launchId>, <hub db>]` from the
-installed runtime, verified against the signed digest before spawn (#206's path), or from the
-checkout's `dist/` in development. No shell, no caller-supplied argv, detached, with stdio to
-files main opens. One extra pipe, fd 3, carries the spec in as one JSON line; the driver
-answers `ready` or `error` within 10 s and closes it. Anything but darwin fails closed before
-spawn.
+**A native confirmation for every launch.** Before spawning, main shows a `dialog.showMessageBox`
+that it builds itself, never from page text. It lists the project and folder, the host, the
+mode and what it permits (§4.1), the budgets, and the first 300 characters of the prompt.
+Spawning needs **Start**, as mesh §8.2 binds a click to what the human saw. The spec it showed
+is the spec it sends.
 
-**IPC and the grant.** The preload exposes `agentInboxLaunch.available()`, `start(spec)`,
-`stop(id, revision)` and `takeOver(id)`, each with exact arity. They are served only to the
-viewer window's top frame on the viewer origin.
+**CSP first.** A separate PR before the UI adds `script-src 'self'` (and `object-src 'none'`) to
+the viewer's CSP, which today is only `frame-ancestors 'none'`. Without it, any injected script
+in the owned viewer could call `start()` or `approve()`. The confirmation dialog and signed
+approvals do not depend on it, but it narrows what a page can do.
 
-`createInstallBinding()` gains a fourth grant, `launch`, under the same rule as `files`. The
-window must show the viewer this app started and proved it owns, re-proved after every
-navigation (#216). The Settings switch must also be on, and no quit begun. A reused or
-failed-over viewer gets `{ available: false, error: 'unowned' }`. No HTTP route creates a
-launch.
+**`electron/driver-process.cjs`** mirrors `setup-process.cjs`.
+- **Argv:** exactly `[<runtime>/bin/node, <runtime>/dist/driver-cli.js, 'run', <launchId>,
+  <hub db>]`, from the installed runtime verified against the signed digest (#206).
+- **Spawn:** detached, no shell, stdio to files.
+- **Spec:** fd 3 carries a versioned spec (`{ v: 1, … }`) and the launch key. Main first checks
+  that the runtime's version understands that spec version, and asks to update agents if not.
+- **Platform:** any platform but darwin fails closed.
 
-**What the renderer may send.** Main validates the spec `{ project, host, mode,
-permissionMode, model?, effort?, worktree: { branch?, base? }, budget, auth, prompt }`.
-`project` names a `repo_root` that main reads itself (`listRepoRoots()`, new), or a folder
-from main's own `dialog.showOpenDialog`; either way it must be an absolute, uid-owned git top
-level. Enums come from fixed tables, budgets have bounds, and the prompt (1–16,000 units)
-never goes in argv. The renderer never sends a path, an executable, argv or env.
+**IPC and the grant.** The preload exposes `available()`, `start(spec)`, `stop(id)`,
+`approve({ item, revision, optionId })`, `resume(id)` and `takeOver(id)`, each with exact arity.
+They are served only to the viewer window's top frame, under a new fourth grant, `launch`,
+issued by `createInstallBinding()`. The grant follows the `files` rule: an owned viewer,
+re-proved after every navigation (#216), with the switch on and no quit begun.
 
-**Executables.** The driver resolves `copilot` or `claude-agent-acp` on a fixed search path:
-`~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, then `PATH`. The result must be a real
-path, owned by the uid or root, not group- or world-writable, and at least a minimum
-`--version`. The path and version are recorded in `host_config`.
+**What the renderer may send.**
+- A known `repo_root` (or a folder from main's own dialog), plus enums and bounded budgets.
+- Never a path, executable, argv or env.
 
-**Env and secrets.** The child's env is an allow-list: `HOME`, `PATH`, `LANG`, `TERM=dumb`,
-`AGENT_INBOX_HOOKS=0`, plus the host's auth variable when the human chose a key or token.
-Secrets live in Electron `safeStorage` (the Keychain) and reach the driver on the fd-3 line.
-They never appear in argv, a file, SQLite or a log. API-key auth is unavailable when
-`safeStorage` has only its plain-text fallback. The agent's tool shells can read its env, as
-in a terminal; that is inside the trust boundary.
+**Executables and the shebang.** The driver resolves the host executable on the captured PATH
+(below) to a real path, owned by the uid or root and not group- or world-writable. If its first
+line is `#!/usr/bin/env node` (or names any interpreter), the driver resolves that interpreter on
+the same PATH. It spawns `[interpreter, script, …]` explicitly, records both, and checks
+`--version` minimums.
 
-**Threat model:** mesh §3's. The gates protect against a local web page (Origin checks, no
-route that starts anything), an agent approving its own permissions (`origin`, the
-reply-source check, fail-closed mapping) and runaway cost (hard budgets, Stop). They do not
-protect against a same-user process with a shell, which can run `copilot --yolo` itself.
-Injected prompts from repository or tool content remain the agent's normal risk. The
-permission gate is the control, which is why no mode auto-approves shell, network or push.
+**Environment** (decided: a login-shell capture, then a denylist).
+- **Capture.** A Finder-launched Electron has a minimal PATH, with no nvm, volta, mise or asdf.
+  So when the human turns the feature on (and again on **Refresh environment**), main runs
+  `$SHELL -l -c 'env -0'` once, with a 10 s timeout and stdin closed. It keeps the result in
+  memory and never writes it to disk.
+- **Denylist.** From that env the driver removes `ELECTRON_*`, `AGENT_INBOX_*` (it sets
+  `AGENT_INBOX_HOOKS=0` itself), `NODE_OPTIONS` and `COPILOT_ALLOW_ALL`.
+- **Kept on purpose:** `SSH_AUTH_SOCK`, `TMPDIR`, proxy variables, `NODE_EXTRA_CA_CERTS`,
+  `COPILOT_HOME`, `CLAUDE_CONFIG_DIR` and `XDG_CONFIG_HOME`.
+- **Step 2** inherits the terminal's env through the same denylist.
+- **The spike** checks `npm test` and an SSH `git push` from a driven session.
+
+**Secrets.** API keys live in `safeStorage` and travel on fd 3, never in argv, a file or SQLite.
+The driver never writes env or auth values to its logs. The agent output it records can contain
+anything the agent printed, including secrets the agent read, so the logs stay `0600` in a
+`0700` folder and are pruned with the launch.
+
+**Threat model** (mesh §3, stated plainly). A driven session is the human's agent with the
+permissions the human chose.
+- **What holds:** no local page or browser tab can start a session or approve an ask. No agent,
+  hook or other session can read or answer an approval (`@sessions`, signatures). The mode
+  cannot escalate past the launch's allowed set. Cost is capped.
+- **What does not hold:** once any shell command is allowed, the agent can run anything, in its
+  worktree and beyond. A same-user process with a shell can do all of this without Agent Inbox.
+  Injected prompts from repository or tool content stay the agent's normal risk. The human's
+  defence is to choose the mode and answer asks with that in mind, and the copy says so.
 
 ## §9 — The opt-in contract
 
-The switch is **Settings → Agent sessions → "Start sessions from Agent Inbox"**. It is off by
-default. Main owns it in `userData/session-launch.json`, written by `createLockedFile` and
-read tolerantly, like Links (#300). A browser cannot turn it on.
+**Step 2** is opt-in by its nature: nothing runs unless a human runs `agent-inbox-driver`.
 
-While it is off:
-- **(a) MCP.** `tools/list` and every response are byte-identical. The server reads one absent
-  variable, and refuses `answer`/`resolve` only for `origin = 'driver'` items, of which there
-  are none.
-- **(b) The page** asks `available()` at load and when Settings opens. Only `enabled: true`
-  adds New session, the launches read and launch tags. A DOM test boots with the switch off and
-  asserts the same requests, bodies and ETags.
+**Step 3's app path** sits behind **Settings → Agent sessions → "Start sessions from Agent
+Inbox"**. It is off by default, owned by main in `userData/session-launch.json` (read
+tolerantly, like Links), and a browser cannot turn it on. While it is off:
+- **(a) MCP.** `tools/list` and every response are byte-identical, apart from refusals for `@`
+  projects, which no one uses.
+- **(b) Page.** The page reads nothing new, adds no control, and its bodies and ETags are
+  unchanged (DOM test).
 - **(c) Dependencies.** `test/fixtures/app-dependencies.txt` is unchanged.
-- **(d) The hub** gains an empty table and two nullable columns. The table's domain never moves
-  without a launch, and existing snapshots stay byte-identical.
-- **(e) Main** spawns nothing and resolves no host executable.
-
-Switching it off refuses new launches. Running drivers keep running and can still be stopped.
+- **(d) Hub.** It has an empty `launches` table, and existing snapshots are byte-identical.
+- **(e) Main** captures no env, spawns nothing and resolves no host executable.
 
 ## §10 — Platforms
 
-macOS (arm64 releases, `darwin` in development) is first. Linux follows Setup's rules: the
-boundary allows `linux` once Setup's Linux release path does, and terminal mode there needs a
-chosen terminal app. Windows is refused before spawn, as Windows Setup is.
+- **macOS** first.
+- **Linux** follows Setup's rules: the boundary allows `linux` once Setup's Linux release path
+  does, and terminal mode needs a chosen terminal app.
+- **Windows** is refused before spawn.
 
 ## §11 — Phasing
 
 | Step | Ships | Effort |
 |---|---|---|
-| Spike | Recorded fixtures and a go/pivot note | 2–3 days |
-| PR A | Driver core, Copilot, linking, pushed delivery, asks, budgets, Stop | 1.5–2 weeks |
-| PR B | Claude | 1 week |
-| PR C | Electron boundary and UI | 2 weeks |
-| PR D | Resume, Take over, terminal mode (`Closes #412`) | 1 week |
-| **Total** | | **≈ 5½–6½ weeks** |
+| 1. Spike | Recorded fixtures and a go/pivot note | 2–3 days |
+| 2. Copilot from a terminal | Foreground driver; ancestry linking; push; `@sessions`; runtime pins | ≈ 1½ weeks |
+| 2b. Terminal mode (optional, any time) | New session that opens Terminal, no ACP | 2–3 days |
+| CSP PR | `script-src 'self'` before any launch UI | 1–2 days |
+| 3. Electron launch | Confirmation, detach, `launches`, signed approvals, UI, park and minimal resume | 2–2½ weeks |
+| 4. Claude | After the #418 channels go/pivot | 1 week |
+| 5. Resume and Take over | Full resume, handing off to a terminal | 1 week |
 
-**Spike.** Real runs of `copilot --acp` and `claude-agent-acp`, recorded as test fixtures.
-For Copilot: `--allow-tool`, `--deny-tool`, `--mode plan` and `--disable-mcp-server` under
-`--acp`, the read-only git syntax (shared with mesh M2), `loadSession`, `--resume` of an ACP
-session, and exit on stdin close. For both: MCP env passing, and which `agent-inbox` entry
-wins. For the adapter: its `_meta.claudeCode.options` keys, how `AskUserQuestion` surfaces,
-and cost reporting. Pivots: an adapter that falls short moves PR B to `packages/mesh`; an
-unstable Copilot ACP falls back to `copilot -p` with JSONL and no push.
+**1. Spike.** Real `copilot --acp` and `claude-agent-acp` runs, recorded as fixtures.
+- Option ids per host, Copilot's plan exit (can it escape to autopilot?), and `currentModeId`
+  and `current_mode_update` behaviour on new, load and resume.
+- `--allow-tool agent-inbox` and `allowedTools: ['mcp__agent-inbox__*']`.
+- `loadSession`.
+- Child exit on stdin close.
+- Ancestry: whose child is the MCP server.
+- `npm test` and an SSH `git push` under the env rules.
+- Adapter options and `total_cost_usd`.
 
-**PR A** (`Part of #412`, after #411 PR 1) ships the launches table, `launch_id`, `origin` and
-the claim; the ACP client, driver, host table and CLI; the Copilot host, asks, pushed messages
-and answers, budgets, Stop, logs and `/api/launches`; and a human-run `npm run driver --
-launch …`. It is useful alone (CLI-started Copilot sessions get pushed messages and inbox
-permission asks) and safe alone (no page can start anything). Tests: a fake ACP agent
-exercising every method; the claim race; an MCP integration test where the driven server
-claims and an undriven one ignores; answer authority, including that an agent answer never
-approves; budgets and Stop; mixed-version and graph tests.
+**2. Copilot from a terminal** (`Part of #412`, after #411 PR 1):
+`agent-inbox-driver copilot --cwd . --mode ask|read-only --prompt-file f`, run in the
+foreground from the installed runtime.
+- **Excluded:** detach, Electron, worktree, Keychain, transcript UI and Resume.
+- **Stop:** Ctrl-C or `driver -- stop <pid>`.
+- **Budgets:** active time and tool calls.
+- **Linking and delivery:** ancestry plus leases, re-checked and batched pushes, answer pings,
+  and `woken` in `flag`/`pending`.
+- **Asks:** TTY approvals with an `@sessions` alert, the escalation guard, and the option
+  allow-list.
+- **Infrastructure:** reserved-project filters in `listPending`, `listPendingRows` and the hook
+  readers, MCP refusals, fail-closed, concurrency caps and runtime pins.
+- **Schema:** no new table or column.
+- **Tests:** a fake ACP agent (mode escalation, bypass options dropped, unknown ids dropped); an
+  MCP integration test that no session in any scope sees an `@sessions` ask; hooks ignoring
+  `@sessions`; ancestry linking with a nested CLI; re-check before push; prune keeping a pinned
+  runtime; mixed-version tests.
 
-**PR B** (`Part of #412`): the Claude host, API-key auth over fd 3, the personal switch, and
-the adapter version check.
+**3. Electron launch** (`Part of #412`):
+- the CSP PR first;
+- `driver-process.cjs`, the native confirmation, the `launch` grant and IPC;
+- signed approvals;
+- `launches` and its routes;
+- the quit prompt and `launchGate`;
+- the New session dialog (project, host, mode with its plain copy, budgets, worktree);
+- tags, Stop and Close in Live, lanes and the Agents view;
+- the transcript panel, Arrives now, Queued and Interrupt and send;
+- park and Resume and send;
+- the off tests and the reused-viewer refusal test;
+- `docs/architecture/driven-sessions.md`.
 
-**PR C** (`Part of #412`): the boundary, the `launch` grant, IPC and preload, `launchGate` and
-the Settings switch; New session (Dashboard lanes head, ⌘K "new session"); tags and Stop in
-Live, lanes and the Agents view; the transcript panel, the Arrives now state and worktree
-removal; §9's off tests and the DOM test that refuses a reused or unowned viewer; and
-`docs/architecture/driven-sessions.md`.
+**4. Claude** (`Part of #412`):
+- the host;
+- API-key auth on fd 3;
+- driver-enforced USD;
+- the personal switch, in checkout builds only;
+- the adapter version check.
 
-**PR D:** Resume, Take over and terminal mode.
+**5. Resume and Take over** (`Closes #412`).
 
 ## §12 — Risks
 
-- **Churn.** ACP is a preview on Copilot, and the adapter ships often (v0.99.1 came out the day
-  this was written). Mitigations: a pinned minimum version, protocol v1 only, recorded
-  fixtures, and a client small enough to follow the spec.
-- **Unattended cost.** Four budgets are on by default, Stop is one click, and usage shows on
-  the tag.
-- **Permission fatigue.** The modes trade it off explicitly, and the "always" options are the
-  agent's own scoped approvals.
-- **Duplicate `agent-inbox` servers** if excluding the user's server fails. The claim ignores
-  the unlaunched one, but presence shows two rows, so the spike blocks on this.
-- **Claude auth policy** (§3.3, Q1).
-- **ACP v1 has no mid-turn input.** A pushed message waits for the current turn to end, and the
-  copy says so.
-- **Hand-started sessions stay on #411's paths.** Claude `--channels` could push into them, but
-  it is a research preview, interactive-only and ignored under the SDK. It is tracked, not
-  built.
+- **Churn.** Copilot's ACP is a preview, and the adapter ships often. Mitigations: recorded
+  fixtures, a minimum version, protocol v1, and the option allow-list failing closed on unknown
+  ids. Step 2 proves the Copilot path before any permanent schema exists.
+- **Shell means anything.** No mode makes shell access safe. The copy says so, and the
+  confirmation dialog repeats it.
+- **Approvals stall after quit** until the app reopens.
+- **An older server registering `@sessions`** can read asks. This is accepted, as in mesh §10.3.
+- **Ancestry needs `host_pid`** (from #253). Older servers can't receive messages anyway.
+- **ACP v1 has no mid-turn input.** The copy shows Queued, and offers Interrupt and send.
+- **Login-shell capture** can be slow or fail. When it does, the feature says so and offers
+  Refresh environment; there is no silent fallback to Finder's PATH.
 
-## §13 — Questions for Shariq
+## §13 — Questions for Shariq (with the reviewer's views)
 
-1. **Claude auth.** API key from the Keychain by default, and your subscription only behind a
-   "personal" switch the docs never offer? *Recommend: yes, mirroring mesh decision 1.*
-2. **App quit.** Do driven sessions keep running, bounded by their budgets, or stop with the
-   app? *Recommend: keep running.*
-3. **Host order.** Copilot first (PR A), then Claude (PR B)? *Recommend: yes.* Copilot has no
-   wake path today, and driven Copilot sessions could shrink #411 PR 3's standing watcher to a
-   fallback.
-4. **First prompt.** Store it in the launch row and show it on the tag and in the transcript,
-   pruned after 30 days? *Recommend: yes.*
-5. **Default budgets.** 4 h wall clock, 2 h idle and 500 tool calls, with a USD cap required
-   for API-key Claude launches? *Recommend: yes.*
+1. **Claude auth.** Use an API key by default, with your subscription behind a "personal"
+   switch? *Recommend and reviewer: yes, with the switch in checkout builds only, never in a
+   release.*
+2. **App quit.** Should driven sessions keep running? *Recommend and reviewer: yes, plus a quit
+   prompt listing running sessions.* Approvals stall until the app reopens, and messages need a
+   viewer (a browser viewer can send messages but never approve).
+3. **Host order.** Copilot first? *Recommend and reviewer: yes; Claude after the #418 channels
+   spike.*
+4. **First prompt.** Store it? *Recommend and reviewer: yes, served per launch rather than in
+   the list snapshot, and the dialog warns not to paste secrets into it.*
+5. **Budgets.** Use active turn time (2 h), park after 2 h idle, 500 tool calls, and a required
+   dollar cap enforced by the driver for API-key Claude? *Recommend and reviewer: yes.*
+
+## §14 — Changes after review (2026-10-31)
+
+The reviewer's verdict was **build after changes**. They endorsed the driver-per-launch shape,
+ACP, hub writes through `store.ts` only, and the opt-in contract.
+
+- **High 1, mode escalation.** An explicit mode on new, load and resume; `currentModeId`
+  verified; out-of-set updates end the launch (`error:mode_escalation`); an option allow-list
+  that drops bypass and auto; "writes impossible" dropped; Copilot's plan exit added to the
+  spike. (§4.1)
+- **High 2, leaking asks.** Asks moved to the reserved `@sessions` project, with the filters and
+  MCP refusals in the first PR. `items.origin` dropped. Approvals left out of answer pings.
+  (§4.2, §5.3)
+- **High 3, a weak grant.** A native confirmation per launch; the CSP PR first; approvals only
+  through owned-viewer IPC with a per-launch HMAC, or the TTY in step 2; the threat model and
+  mode copy rewritten. (§4.3, §8)
+- **Medium 4.** The agent-inbox tools are pre-allowed. The user's own registration is used, so
+  no duplicate server is added. Every descendant presence row is part of the launch. (§3.2, §5.1)
+- **Medium 5.** The env claim and secret are replaced by ancestry linking: there is no claim to
+  wait out and nothing to rotate. The #411 amendment is written out. (§5.1, §5.2)
+- **Medium 6.** Runtime pins honoured by both prunes; Uninstall refuses while drivers run. (§7)
+- **Medium 7.** No clock-derived state in snapshots; Stop idempotent and unpinned;
+  `closeLostLaunch` re-checks inside its transaction; the prompt served per launch. (§6)
+- **Medium 8.** Login-shell env capture with a denylist; explicit shebang resolution; the kept
+  variables listed; `npm test` and SSH push added to the spike. (§8)
+- **Medium 9.** Active-time budgets; park instead of end; Resume and send; minimal resume in
+  step 3; the USD cap enforced by the driver too. (§7)
+- **Medium 10.** Re-check before each prompt; batching; a read that returns the text; Queued
+  copy; Interrupt and send. (§5.3)
+- **Medium 11.** pgid and start time recorded; fail-closed after 30 s; concurrency caps. (§7)
+- **Medium 12.** Claude gated on #418; the personal switch in checkout builds only. (§3.3)
+- **Low.** No schema until step 3; a versioned fd-3 spec with a runtime check; `woken` in the
+  responses; approvals matched by option id; the log wording fixed.
+- **Phasing** restructured around the reviewer's smallest first slice. Terminal mode is noted
+  as shippable alone. (§11)
 
 ## Appendix A — Verification log
 
 | # | Fact | Source | Checked |
 |---|---|---|---|
-| 1 | Streaming input (`AsyncGenerator<SDKUserMessage>`), queued messages, a long-lived process | code.claude.com/docs/en/agent-sdk/streaming-input | 2026-10-31 |
-| 2 | Permission order; modes `default`, `dontAsk`, `acceptEdits`, `bypassPermissions`, `plan`, `auto`; `canUseTool`; prompts never time out | …/agent-sdk/permissions; …/typescript (`CanUseTool`) | 2026-10-31 |
-| 3 | `continue`, `resume` and fork; the session id on init and result messages | …/agent-sdk/sessions | 2026-10-31 |
-| 4 | `maxBudgetUsd`, `maxTurns`, `settingSources`; `env` replaces the process env; `pathToClaudeCodeExecutable`; `interrupt()`; stdio MCP `env` | …/agent-sdk/typescript | 2026-10-31 |
-| 5 | Commercial Terms; no claude.ai login for third parties without approval | …/agent-sdk/overview | 2026-10-31 |
-| 6 | SDK 0.3.316 with optional per-platform binaries; the darwin-arm64 binary is ~310 MB unpacked | `npm view` | 2026-10-31 |
-| 7 | One `claude` subprocess per session, over stdio | …/agent-sdk/hosting | 2026-10-31 |
-| 8 | `copilot --acp`: one stdio client, exits when stdin closes; tool filters and effort fixed at start; `session/new` carries cwd and MCP servers | docs.github.com/…/copilot-cli-reference/acp-server | 2026-10-31 |
-| 9 | Copilot 1.0.105: `--allow-tool`, `--deny-tool`, `--disable-mcp-server`, `--mode`, `--yolo`, `--session-id`, `COPILOT_HOME`, `COPILOT_ALLOW_ALL` | local `copilot --help`, `help environment`, `help permissions` | 2026-10-31 |
-| 10 | Claude 2.1.312: `--bg` and `attach` apply only to background sessions; `--permission-prompts host` means the SDK host | local `claude --help` | 2026-10-31 |
-| 11 | ACP `session/new`, `session/load` (`loadSession`), `session/resume`; MCP servers with `env` | agentclientprotocol.com/protocol/session-setup | 2026-10-31 |
-| 12 | The prompt turn and stop reasons; `session/cancel` answers pending permissions `cancelled` | agentclientprotocol.com/protocol/prompt-turn | 2026-10-31 |
-| 13 | `session/request_permission` and its option kinds; the agent owns remembered decisions | agentclientprotocol.com/protocol/tool-calls | 2026-10-31 |
-| 14 | `@agentclientprotocol/sdk` 2.2.0: Apache-2.0, 8.3 MB, peer `@modelcontextprotocol/server@^2.4` | `npm view` | 2026-10-31 |
-| 15 | `claude-agent-acp` 0.99.1: Apache-2.0, built on the Agent SDK; `_meta.claudeCode.options`; cancel, load and resume | `npm view`; repository README | 2026-10-31 |
-| 16 | Channels are a research preview, interactive-only and ignored under the SDK; Copilot has no inbound push; Codex #15299 is open | research brief, 2026-10-30 | 2026-10-30 |
+| 1 | Streaming input, queued messages, a long-lived process | code.claude.com/docs/en/agent-sdk/streaming-input | 2026-10-31 |
+| 2 | Permission order; modes incl. `dontAsk`, `plan`, `auto`, `bypassPermissions`; deny rules apply in every mode; prompts never time out | …/agent-sdk/permissions; …/typescript (`CanUseTool`) | 2026-10-31 |
+| 3 | `maxBudgetUsd`, `maxTurns`, `allowedTools` with `mcp__<server>__*`, `settingSources`, `env`, `pathToClaudeCodeExecutable`, `interrupt()` | …/agent-sdk/typescript; …/permissions | 2026-10-31 |
+| 4 | Commercial Terms; no claude.ai login for third parties without approval | …/agent-sdk/overview | 2026-10-31 |
+| 5 | SDK 0.3.316; darwin-arm64 binary ~310 MB | `npm view` | 2026-10-31 |
+| 6 | `copilot --acp`: one stdio client, exits on stdin close, tool filters fixed at start | docs.github.com/…/copilot-cli-reference/acp-server | 2026-10-31 |
+| 7 | Copilot 1.0.105: `--allow-tool <server>`, `--deny-tool`, deny beats allow, `--mode interactive\|plan\|autopilot`, `--disable-mcp-server`, `COPILOT_ALLOW_ALL` | local `copilot --help`, `help permissions`, `help environment` | 2026-10-31 |
+| 8 | ACP new, load, resume and modes; `current_mode_update`; prompt turn and cancel; `request_permission` option kinds | agentclientprotocol.com/protocol/{session-setup,session-modes,prompt-turn,tool-calls} | 2026-10-31 |
+| 9 | `@agentclientprotocol/sdk` 2.2.0: 8.3 MB, peer `@modelcontextprotocol/server@^2.4` | `npm view` | 2026-10-31 |
+| 10 | `claude-agent-acp` 0.99.1: `_meta.claudeCode.options`, cancel, load and resume; exit-plan-mode offers bypass and auto (`buildExitPlanModePermissionOptions`, `ALLOW_BYPASS`); resume keeps the last mode (`resolveInitialPermissionMode`) | `npm view`; README; reviewer's source citations | 2026-10-31 |
+| 11 | `listPending` reads by project; `prune_old_runtimes` has no process check | `git show origin/main:src/store.ts`, `scripts/install-agents.sh` | 2026-10-31 |
+| 12 | Channels: research preview, interactive-only; #418 spike open | research brief; `gh pr view 418` | 2026-10-31 |

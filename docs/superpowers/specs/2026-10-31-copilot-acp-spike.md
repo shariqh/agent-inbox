@@ -304,6 +304,8 @@ relies on, not nvm itself.
 
 ## Design changes needed
 
+The coordinator's decisions on these are folded into the design doc; its §14.4 lists them.
+
 1. **§3.2, §4.1 — mode ids and the `--mode` flag.** Use the URL mode ids (`…/session-modes#agent`,
    `#plan`, `#autopilot`); the table's Copilot column becomes `#agent` where it says interactive.
    Drop `[--mode M]` from the argv: ACP ignores it. Set the mode with `session/set_mode` right after

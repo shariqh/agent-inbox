@@ -56,6 +56,13 @@ Amended 2026-10-30 (§12): a Claude Code channel push, and no Copilot standing w
   with a new UUID. An open message to the old id can no longer be delivered, and it is not
   re-addressed: guessing a successor by project, branch and agent could hand an instruction to
   the wrong session. The UI says "This session is no longer running" (§5).
+  **One exception, proof by launch (#412, driven sessions §5.2):** when an Agent Inbox driver
+  has proved by process ancestry that an ended session and a live session belong to one
+  launch, `readdressMessages(from, to, launchId)` moves the open messages from one to the other.
+  `to` must be the server whose `host_pid` is the launch's own native host, never a nested CLI.
+  It is one `.immediate()` transaction, conditioned on `from` being ended (its presence ended,
+  or its `server_pid` dead as the driver reports) and on both sessions' `driven:` leases
+  carrying that launch id, whichever driver process wrote them. No other path re-addresses.
 - **Who can be addressed.** Any session `/api/activity` lists: working, idle or dormant; not
   ended and not silent for 15 minutes. Idle and dormant sessions are the main use.
 - **Capability gate.** This build's presence writes (registration and `status`) set a new

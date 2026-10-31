@@ -107,6 +107,7 @@ One line each; the detail, the reasons and the regressions behind them are in th
 - Every shipped `node_modules` is pruned before it is tested, hashed or signed (#291); Electron
   locales are English-only (#292). → packaging-and-release
 - Mesh is opt-in: off means off (#397). → mesh
+- The driver approves only at the generation the human saw; no prompt starts with `/` (#412). → driven-sessions
 
 ## Conventions
 
@@ -147,6 +148,7 @@ read or edit a matching file. Read it yourself before changing these areas:
 | update manifests, keys, download, install | `updates.md` |
 | packaging, runtime staging, pruning, locales, MSI, workflows | `packaging-and-release.md` |
 | mesh | `mesh.md` |
+| `agent-inbox-driver`, ACP | `driven-sessions.md` |
 | tests and the DOM harness | `testing.md` |
 | TS, build, dead exports, hygiene | `conventions.md` |
 

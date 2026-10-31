@@ -309,6 +309,24 @@ claude --dangerously-load-development-channels server:agent-inbox
 and accept its warning. The push carries only a notice to call `pending`, never the
 message text.
 
+**Driven Copilot sessions (preview).** Agent Inbox can start a Copilot CLI session
+and drive it from a terminal, so your messages and answers arrive in it as new turns
+(**Arrives now**). Run it from the runtime the installer set up; the installer prints
+the exact command at the end of an install:
+
+```sh
+~/.agent-inbox/runtime/<runtime-id>/bin/node ~/.agent-inbox/runtime/<runtime-id>/dist/driver-cli.js \
+  copilot --cwd <folder> --mode ask --prompt-file <task file>
+```
+
+`--mode` is `ask` (every tool call asks) or `read-only` (file edits are denied). Each
+approval is answered in that terminal; its card in the inbox says so. Stop it with
+Ctrl-C, by typing `stop`, or with `… dist/driver-cli.js stop <launch id>`, which it
+prints when it starts. From a source checkout, `npm run driver -- copilot …` does the
+same. Once any shell command is allowed, the session can run anything: answer each
+ask with that in mind. Design:
+[`docs/superpowers/specs/2026-10-31-driven-sessions-design.md`](docs/superpowers/specs/2026-10-31-driven-sessions-design.md).
+
 ## Setting requests aside
 
 A request's **More responses** menu can set it aside. **Pin for later** keeps it

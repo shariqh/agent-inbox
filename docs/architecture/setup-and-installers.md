@@ -95,6 +95,8 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   a folder that is not there), or a launcher path leading into it, compared by
   `(dev, ino)` and never as a string. A config that exists but cannot be read
   means nothing is removed. Project-scope configs are deliberately not read.
+  A running `agent-inbox-driver` pins its runtime (#412, "Runtime pins" below), and a pin
+  counts as a use in both prunes and in the mirror; `--uninstall` refuses while one runs.
   Setup's Runtimes block (#294 part B) lists the runtimes from `src/runtime-inventory.ts`, a
   viewer-only, read-only mirror of that rule held to agreement with the script
   by `test/runtime-inventory.test.ts`; it walks only unused runtimes, keeps
@@ -515,3 +517,44 @@ These landed after v1 and still hold invariants; the release history itself is i
   like "claude" into `claude-code`, so a Claude Desktop session is advised by Claude Code's registration;
   only user-scope registrations are read, not a project or local one that shadows it; and a checkout's
   version is not read, so its sessions keep the checkout advice.
+
+## Runtime pins (#412)
+
+- **Where and what.** `<runtime root>/.pins/<runtime id>/<launch id>`, written by a running
+  `agent-inbox-driver` (`src/driver-pin.ts`): `{v: 1, launchId, pid, startedAt}`, `startedAt`
+  being `ps -o lstart=` under `TZ=UTC` and `LC_ALL=C`, spaces collapsed. OUTSIDE the runtime's
+  folder, because verification rejects any file the manifest does not list.
+- **One rule, beside "uses".** `runtimePins` in `scripts/runtime-config.mjs` decides, and both
+  prunes read it: `classifyRuntimeReference` (the installer's `references`, so its prune and
+  rollback) counts a pinned runtime as `referenced`, and `findUnusedRuntimes` (prune-runtimes.sh's
+  `unused`) as `used`, labelled `a running agent-inbox-driver (pid N)`. The viewer's mirror
+  (`src/runtime-inventory.ts` `scanPins`) applies the same reading rules and checks the pid alone
+  (`kill(pid, 0)`, which starts no process), so a pid reused after a crash reads as used there until
+  a prune sweeps the stale pin: it errs toward keeping. `test/runtime-inventory.test.ts` holds the
+  two to agreement over the shared `PIN_CASES` in `test/runtime-uses.ts`; the viewer's cache key
+  includes the stamps of `.pins` and each `.pins/<id>/`, so a pin added or removed is seen at once.
+- **What counts.** A real file (never a symlink) owned by this user, at most 1 KB, named by a
+  lowercase UUID equal to its `launchId`, in a real `.pins/<id>/` folder owned by this user, under
+  a real `.pins` owned by this user, whose pid `ps` lists with the recorded start time. Anything
+  else is ignored; a pin naming a runtime that is not there pins nothing.
+- **Errors only keep.** A `.pins`, `.pins/<id>/` or pin that is there but cannot be read, or a `ps`
+  that fails, makes the answer unknown: the installer keeps the runtime, prune-runtimes.sh and the
+  mirror remove and offer nothing. With no pin at all, no `ps` runs.
+- **Expiry.** The driver removes its own pin on every exit it sees. A pin whose driver is gone (or
+  whose pid now runs another process) is stale and never counts; `sweepStalePins` removes up to 64
+  a pass, then empty `.pins/<id>/` folders, never following a link and removing nothing when the
+  answer is unknown. Each prune runs it under the setup lock (`runtime-config.mjs sweep-pins`:
+  prune-runtimes.sh with `--apply` only, and `prune_old_runtimes`); a dry run sweeps nothing.
+- **`.pins` is never a runtime.** `runtime-payload.mjs` `list` skips it, and `install`/`prune` refuse
+  it as a runtime id, as they do `.trash-*`; `findUnusedRuntimes` and the mirror skip every `.`-name.
+- **Uninstall.** `install-agents.sh --uninstall` (dry run included) asks `runtime-config.mjs pins`
+  before it changes anything and refuses while a driver runs, naming its runtime, launch and pid and
+  its stop command (`<runtime>/bin/node <runtime>/dist/driver-cli.js stop <launch id>`). A stale pin
+  never refuses; pins that cannot be checked refuse.
+- **Mixed versions.** Older builds read no pins. An older `list` reports `.pins` as an invalid
+  runtime, which an older installer's prune filters out (`valid` only); an older prune-runtimes skips
+  every `.`-name and still keeps a runtime a running driver names on its command line (the `ps`
+  rule). An older installer's own prune can remove a pinned runtime that no host config uses and that
+  is not its newest previous one; the driver keeps running from memory, and the pins are honoured
+  from this build on.
+

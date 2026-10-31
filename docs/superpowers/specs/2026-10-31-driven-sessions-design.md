@@ -4,7 +4,9 @@
 **Status:** Approved by the independent design review after two rounds (§14). Design only; nothing
 here is built. Shariq answered §13 on 2026-10-31: **Copilot only for now; driving Claude is
 deferred to the backlog (#421)**, and Claude sessions get push through Claude Code channels
-(#418). Open items for the implementation PRs are in §14.3.
+(#418). Open items for the implementation PRs are in §14.3. The Copilot ACP spike (step 1)
+amended the design the same day (§14.4;
+[`2026-10-31-copilot-acp-spike.md`](2026-10-31-copilot-acp-spike.md)).
 **Scope of this PR:** this document. No source, test or workflow changes.
 **Related:** #411 and its design
 ([`2026-10-30-session-messages-design.md`](2026-10-30-session-messages-design.md), on
@@ -28,19 +30,23 @@ session, with no watcher and no time window.
    `claude-agent-acp` adapter, which runs the Claude Agent SDK in streaming-input mode. The ACP
    client is Node core, so the app's dependency set is unchanged.
 3. **Linking is by process ancestry.** A presence row whose live server's parent is its
-   `host_pid`, started after the child, with the driver's child as the first agent host above
-   it, belongs to the launch; a nested CLI is its own session. Fresh `driven:<session>` leases
-   in `hook_watch_claims` make `listActivity` report `driven`, so #411's composer can say
-   **Arrives now**. There is no secret, no env claim, and no new column in the first build.
+   `host_pid`, started after the child, and whose `host_pid` is exactly the launch's recorded
+   Copilot host, belongs to the launch; a nested CLI is its own session. Fresh
+   `driven:<session>` leases in `hook_watch_claims` make `listActivity` report `driven`, so
+   #411's composer can say **Arrives now**. There is no secret, no env claim, and no new column
+   in the first build.
 4. **Delivery is pushed, re-checked and batched.**
    - Queued messages are re-read just before each `session/prompt` and sent as one turn.
    - A new answer to one of the session's own asks also gets a ping turn.
    - `pending()`/`ack_message` stay the bookkeeping.
    - `flag` and `pending` say "you are woken automatically" in their responses.
 5. **Permissions cannot escalate or leak.**
-   - Every mode is explicit and verified on `session/new`, `load` and `resume`.
-   - Any mode change outside the launch's allowed set ends it (`error:mode_escalation`).
+   - Every mode is explicit and verified on `session/new` and `session/load`, and so is
+     Copilot's `allow_all` switch.
+   - Any mode change outside the launch's allowed set, or `allow_all` turning on, ends it
+     (`error:mode_escalation`).
    - A driver-side allow-list drops every option that switches to bypass or auto.
+   - Prompt text never starts with `/`, so no human text can run a slash command.
    - Asks live in the reserved project `@sessions`, which no agent, hook or older server reads.
 6. **Only the human at the app approves.** In step 2 that is the driver's own terminal. From
    step 3, main signs `(item, response_revision, optionId)` with a per-launch key through
@@ -101,31 +107,51 @@ its peer is `@modelcontextprotocol/server@^2` where the app ships `@modelcontext
 ### 3.1 One protocol: ACP v1
 
 `src/acp-client.ts` is Node core, about 300 lines, speaking NDJSON over the child's stdio.
-- **Calls:** `initialize`, `session/new`, `session/load` or `session/resume` when the agent
-  advertises them, `session/prompt`, `session/cancel` and `session/set_mode`.
-- **Handles:** `session/update`, including `current_mode_update` (§4), and
-  `session/request_permission`.
+- **Calls:** `initialize`, `session/new`, `session/load` when the agent advertises
+  `loadSession`, `session/prompt`, `session/cancel`, `session/set_mode` and, for Copilot's
+  `allow_all` only, `session/set_config_option` (§4.1). Copilot 1.0.105 advertises no
+  `session/resume`, so a resume is always `session/load` (§7).
+- **Handles:** `session/update`, including `current_mode_update` and `config_option_update`
+  (§4), and `session/request_permission`.
 - **Declares** no `fs` or `terminal` capabilities.
 - **Turns:** one at a time. A message waits until the whole turn ends, and a turn blocked on an
-  approval does not end until that approval is answered (§5).
+  approval does not end until that approval is answered (§5). The driver must hold to this
+  itself: a second `session/prompt` during a turn makes Copilot cancel the running turn
+  (`stopReason: "cancelled"`, about 10 ms later) and start the new one at once. The cancelled
+  request stays in the conversation, so the agent may finish it in the next turn.
+- **Attribution:** updates belong to the request in flight. The old turn's chunks can arrive
+  after a new `session/prompt` is sent and before the old response, so "the latest prompt" is
+  the wrong key.
+- **Prompt text** never starts with `/` (§4.1).
 - **Streams:** the child's stderr goes to the launch log. The driver writes only protocol
   messages to the child's stdin.
 
 ### 3.2 Copilot (`copilot --acp --stdio`, public preview)
 
-Argv is fixed per mode (§4): `copilot --acp --stdio --allow-tool <name> [--mode M]
-[--allow-tool …] [--deny-tool …] [--model M] [--effort E]`. Tool filters and effort are fixed
-when the server starts, which suits one server per launch.
+Argv is fixed per mode (§4): `copilot --acp --stdio --allow-tool <name> [--allow-tool …]
+[--deny-tool …] [--model M] [--effort E]`. Tool filters and effort are fixed when the server
+starts, which suits one server per launch. There is **no `--mode`** in the argv: ACP's
+`session/new` ignores it and always starts in `…/session-modes#agent`. The mode is set with
+`session/set_mode` and verified (§4.1).
 
 The session uses the user's own `agent-inbox` MCP registration, as in a terminal, and its tools
 are pre-allowed. Otherwise every `pending`, `flag` and `ack_message` would become an approval.
 `<name>` is read from the host config: the entry the installer manages (`agent-hosts.ts`'s
 rule), whatever it is called there. If none is found, the driver refuses to start.
-The driver never supplies a server of its own, which removes the duplicate-server risk.
+The driver never supplies a server of its own, which removes the duplicate-server risk. It
+could not anyway: Copilot ignores client-supplied stdio servers in `session/new` (no error;
+only its own log says "Rejecting non-http/sse MCP server … from client"), so the driver sends
+`mcpServers: []`.
 
-The child env drops `COPILOT_ALLOW_ALL` and sets `COPILOT_AUTO_UPDATE=false` (§8). Auth is the
-Copilot login, or `COPILOT_GITHUB_TOKEN` from the env. GitHub's ACP reference names custom
-frontends as a use case.
+That server inherits the copilot child's whole environment, with the registration's own `env`
+on top, and the user's registration usually sets none. So the child env carries the driver's
+own `AGENT_INBOX_DB` when the driver reads a non-default hub. Otherwise the session's presence
+would land in a different hub and never link (§5.1). The child env also drops `COPILOT_ALLOW_ALL`,
+drops every `COPILOT_*` variable inherited from a parent Copilot session (such as
+`COPILOT_AGENT_SESSION_ID`, `COPILOT_LOADER_PID` and `COPILOT_CLI_RESOLVED_DIST_DIR`, there when
+the driver is run from inside one), keeps only `COPILOT_HOME` and `COPILOT_GITHUB_TOKEN`, and
+sets `COPILOT_AUTO_UPDATE=false` (§8). Auth is the Copilot login, or `COPILOT_GITHUB_TOKEN`
+from the env. GitHub's ACP reference names custom frontends as a use case.
 
 ### 3.3 Claude (Agent SDK through `claude-agent-acp`) — deferred to #421
 
@@ -202,42 +228,109 @@ show only a tag and a state.
 ### 4.1 Modes, with escalation closed
 
 The human chooses one per launch, with no preselection. Each mode has an **allowed set** of
-mode ids the session may be in.
+mode ids the session may be in. Copilot's mode ids are URLs: `#agent` below is
+`https://agentclientprotocol.com/protocol/session-modes#agent` (the CLI's "interactive"), and
+likewise `#plan` and `#autopilot`. `session/set_mode` refuses any other id, `interactive`
+included.
 
 | Mode (UI) | Claude `permissionMode` → allowed set | Copilot → allowed set | What it really permits |
 |---|---|---|---|
-| Ask for everything | `default` → {default} | interactive → {interactive} | Each tool call asks, except your own settings' allow rules |
-| Read-only | `dontAsk` + `disallowedTools: [Write, Edit, NotebookEdit]` → {dontAsk} | `--deny-tool write` → {interactive} | File-edit tools denied; shell commands follow your settings or are denied (Claude) / ask (Copilot) |
-| Plan first | `plan` → {plan, default} | `--mode plan` → {plan, interactive} (spike) | Plan, then ask-for-everything |
-| Edits in the worktree | `acceptEdits` → {acceptEdits} | `--allow-tool 'write(<worktree>/**)'` → {interactive} | Edits auto-approved; shell, network and push ask |
+| Ask for everything | `default` → {default} | `set_mode #agent` → {#agent} | Each tool call asks, except your own settings' allow rules |
+| Read-only | `dontAsk` + `disallowedTools: [Write, Edit, NotebookEdit]` → {dontAsk} | `--deny-tool write`, `set_mode #agent` → {#agent} | File-edit tools denied; shell commands follow your settings or are denied (Claude) / ask (Copilot) |
+| Plan first | `plan` → {plan, default} | `set_mode #plan` → {#plan} until the plan is approved, then {#agent} (§4.1 phases) | Plan, then ask-for-everything |
+| Edits in the worktree | `acceptEdits` → {acceptEdits} | `--allow-tool 'write(<worktree>/**)'`, `set_mode #agent` → {#agent} | Edits auto-approved; shell, network and push ask |
+
+For Copilot every allowed set also requires `allow_all: "off"`. `allow_all` is a separate
+session config option (`configOptions`, category `permissions`): `#autopilot` turns it on, and
+so do `session/set_config_option` and the `/allow-all` slash command, in any mode. Checking
+`currentModeId` alone therefore does not prove "no allow-all".
+
+**Plan first on Copilot.** Copilot's ACP plan mode has no exit tool and no plan-exit permission
+request: the agent writes its plan and the turn ends, still in `#plan`. So the driver leaves
+plan mode itself, and the mode that is valid depends on the launch's **phase**:
+1. **`awaiting_plan_approval`** (from launch until the human approves): only `#plan` is valid.
+   When a turn ends in `#plan`, the driver files an ask ("Approve the plan and continue?").
+   A decline keeps the session in this phase.
+2. **`switching`** (after approval): the driver sends exactly one `session/set_mode #agent`.
+   The only change accepted is that request's own result. Copilot sends the
+   `current_mode_update` to `#agent` just before the response, and the `config_option_update`
+   (mode `#agent`, `allow_all` off) just before or after it. The driver then verifies `#agent`
+   with `allow_all` off and sends the plan-approval control message (§5.3).
+3. **`executing`**: only `#agent` is valid.
+
+Any other mode change ends the launch with `error:mode_escalation`: an unsolicited `#agent`
+before approval, a return to `#plan`, or a second switch. Copilot's plan exit cannot escape to
+autopilot, because the only way out is the driver's own call. The other three launch modes have
+a single phase, `executing`, with the set in the table.
 
 The UI says this plainly: **once any shell command is allowed, the session can run anything.**
-For example, "Allow always" on `npm test` with edits allowed is arbitrary code execution, since
-the agent can edit what `npm test` runs. "Read-only" therefore promises only that edit tools are
+For example, approving `npm test` with edits allowed is arbitrary code execution, since the
+agent can edit what `npm test` runs. "Read-only" therefore promises only that edit tools are
 denied; it does not claim "writes impossible". User and project settings (`permissions.allow`,
 `defaultMode`) load as in a terminal, and that is exactly what they would allow there.
 
 **The escalation guard.** The driver:
-1. passes the explicit mode on every `session/new`, `session/load` and `session/resume`;
-2. checks the returned `currentModeId` against the allowed set, and refuses to prompt on a
-   mismatch. A resumed Claude session otherwise continues in the transcript's last mode
-   (`resolveInitialPermissionMode`);
-3. on any `current_mode_update` outside the allowed set, sends `session/cancel`, answers pending
-   requests `cancelled`, and ends the launch with `error:mode_escalation`;
-4. never calls `session/set_mode` except to re-assert the launch's own mode.
+1. sets the explicit mode after every `session/new` and `session/load` with `session/set_mode`
+   (Claude: passes it in the options), never through the argv;
+2. checks the resulting `currentModeId` against the allowed set and, for Copilot, that
+   `allow_all` is `off`, and refuses to prompt on a mismatch. A loaded session otherwise
+   continues in its last mode: a Copilot session left in `#autopilot` loads as `#autopilot` with
+   `allow_all: on`, and a resumed Claude session continues in the transcript's last mode
+   (`resolveInitialPermissionMode`). If `allow_all` is `on` after `new` or `load`, the driver may
+   re-assert it off once (`set_config_option allow_all=off`, or `set_mode #agent` out of
+   autopilot). It continues only when the next `config_option_update` verifies `off`; otherwise
+   the launch ends;
+3. on any `current_mode_update` outside the phase's valid set, or any `config_option_update` with
+   `allow_all: "on"` after that check, sends `session/cancel`, answers pending requests
+   `cancelled`, and ends the launch with `error:mode_escalation`. Updates that a
+   `session/load` replays before it answers are history, not live changes (§7);
+4. never calls `session/set_mode` except to set or re-assert the launch's own mode or to leave
+   `#plan` after an approved plan, and never calls `session/set_config_option` except to set
+   `allow_all` off;
+5. never sends prompt text whose first non-space character is `/`. Copilot runs a prompt like
+   that as a slash command, without the model, even with leading whitespace. `/allow-all` turns
+   `allow_all` on and `/autopilot` switches mode. Every human message, the first prompt
+   included, therefore goes through the framed format, and every prompt the driver writes
+   itself is a framed control message (§5.3).
+   Not every state change is reported (`/allow-all off` sent no update), so updates are not a
+   complete record of state.
+
+**Ordering: one serialized state machine.** An approval must never be applied against a security
+state the human did not see. So the driver has one state machine that consumes, one at a time and
+in arrival order, both the ACP frames it reads from the child and the **approval intents**: a TTY
+answer in step 2, or a signed inbox reply in step 3 (§4.3).
+- An intent is queued behind every ACP frame already read, so an update that arrived first is
+  always applied first.
+- The **security state** is the current mode plus `allow_all`. Its **generation** goes up on
+  every `current_mode_update` and every `config_option_update`, even one that changes neither
+  value, and on the driver's own `set_mode` and `set_config_option` results.
+- Each ask records the generation, mode and `allow_all` when it is filed.
+- Immediately before answering a `session/request_permission`, the driver re-validates. The
+  generation must equal the ask's, and the state must be valid for the launch's phase. Only then
+  may an approval answer `allow_once`.
+- If the generation moved, the driver answers `reject_once` and resolves the ask "Not applied:
+  the session's permissions changed while you were answering". If the state is invalid, the
+  escalation rule (3 above) applies and the launch ends with every open request answered
+  `cancelled`. Neither path ever answers `allow_once`.
 
 **The option allow-list.** A per-host table of permitted `optionId`s (and kinds), recorded in
 the spike, is applied to every `session/request_permission`.
+- **Copilot (1.0.105):** every request offers the same three options, and each `optionId`
+  equals its kind: `allow_once` ("Allow once"), `allow_always` ("Always allow") and
+  `reject_once` ("Deny"). This holds for shell (`execute`), file (`edit`), URL (`fetch`) and MCP
+  (`other`) requests.
+- **v1 never selects `allow_always`.** A human approval answers `allow_once`, and a decline
+  answers `reject_once`. On Copilot, Deny ends the agent's whole turn (`Operation cancelled by
+  user`, `stopReason: "end_turn"`), not only that action. The ask's copy says so: "Declining
+  stops the agent's current turn."
 - **Dropped:** any option that changes the mode to bypass, auto, or "clear context and bypass".
   Claude's exit-plan-mode request offers "bypass" and "auto" as allow options
   (`buildExitPlanModePermissionOptions`; `ALLOW_BYPASS = !IS_ROOT || IS_SANDBOX`), so these are
   real.
 - **Unknown ids:** also dropped. If no allow option is left, the driver answers with a reject
   option, or `cancelled`.
-- **Never offered:** `bypassPermissions`, `auto`, `--yolo`, `--allow-all-tools` and
-  `COPILOT_ALLOW_ALL`.
-- **The spike checks Copilot's plan exit** for the same escape: whether exiting plan can switch
-  to autopilot.
+- **Never offered:** `bypassPermissions`, `auto`, `#autopilot`, `allow_all: on`, `--yolo`,
+  `--allow-all-tools` and `COPILOT_ALLOW_ALL`.
 
 ### 4.2 Where asks live: the reserved project `@sessions`
 
@@ -263,10 +356,15 @@ which §8's threat model accepts.
 Each ask is a question item:
 - **Fields:** `action_owner: 'approval'`, the agent's MCP `session` (so it classifies as
   `waiting`), and `agent`/`action_agent`.
-- **Text:** title "Allow copilot to run `git push origin ai/x`?".
-- **Context:** the tool kind, the input (4 KB), the cwd and the launch.
+- **Text:** title "Allow copilot to run `git push origin ai/x`?". The tool name comes from the
+  `tool_call` update's title (`agent-inbox-whoami`), not the permission request's, which is the
+  bare tool name (`whoami`).
+- **Context:** the tool kind, the input (4 KB; an `edit` request's input is a whole diff), the
+  cwd and the launch.
 - **Options:** the surviving options, at most four, matched by `optionId` and never by label.
-  None is marked recommended.
+  None is marked recommended. On Copilot that is Allow once (`allow_once`) and Deny
+  (`reject_once`), since v1 never offers `allow_always` (§4.1). The copy says that declining
+  stops the agent's current turn.
 
 A Claude `AskUserQuestion` becomes the same kind of item, with Claude's choices. The badge, dock
 and notifications follow the one predicate, and `public/attention.js` is unchanged.
@@ -274,10 +372,11 @@ and notifications follow the one predicate, and `public/attention.js` is unchang
 ### 4.3 Who can approve
 
 - **Step 2 (terminal driver).** The foreground driver refuses to start without a TTY on stdin.
-  It prompts on that TTY, and only an answer
-  there approves. The inbox item is an alert (`action_owner: 'task'`, "Answer in the terminal
-  running the driver") with no options. The driver resolves it when the TTY answers. No inbox
-  reply approves anything in step 2.
+  It prompts on that TTY, and only an answer there approves. The answer is an approval intent in
+  the driver's state machine, re-validated before it is applied (§4.1, Ordering). The inbox item
+  is an alert (`action_owner: 'task'`, "Answer in the terminal running the driver") with no
+  options. The driver resolves it when the TTY answers. No inbox reply approves anything in
+  step 2.
 - **Step 3 (app launches).** An approval goes through owned-viewer IPC,
   `agentInboxLaunch.approve({ item, revision, optionId })`.
   1. Main checks the `launch` grant (§8).
@@ -291,6 +390,8 @@ and notifications follow the one predicate, and `public/attention.js` is unchang
      signature.
   4. The driver accepts only a valid signature over its own item, at the revision it recorded
      when filing, for an option still on the allow-list. Anything else is a rejection.
+  5. A valid reply becomes an approval intent in the driver's state machine, so it is re-validated
+     against the security-state generation before it is answered (§4.1, Ordering).
 - **Never approved by:** the viewer's ordinary reply route, a browser tab, a reused viewer,
   hosted mode, or an agent (which cannot reach `@sessions` at all). In those places the page
   shows "Approve in the Agent Inbox app".
@@ -301,13 +402,29 @@ and notifications follow the one predicate, and `public/attention.js` is unchang
 ### 5.1 Linking by ancestry
 
 The driver knows its child's pid, process group and start time, and makes a **launch id** (a
-UUID) when it starts. Every 2 s it reads `listActivity` and runs one `ps -o
-pid=,ppid=,lstart=,comm=`. A presence row joins the launch only if all of these hold:
+UUID) when it starts. For an npm-installed Copilot the child is the npm loader (`node
+…/bin/copilot`, `ucomm` `node`). The loader stays alive and starts the native host
+`…/@github/copilot-darwin-arm64/copilot` as its own child, which is the parent of every MCP
+server and so the `host_pid` they record. The driver therefore records **both pids** right after
+spawn: the loader (its child) and the launch's **native host**. The native host is the loader's
+child that is an agent host: its `ucomm` is `copilot`, `claude` or `claude-agent-acp`, or its
+command line contains `@github/copilot`. When the executable is the native binary itself, the two
+are one process. On macOS `ps -o comm` prints the full executable path, cut to 16 characters
+unless it is the last column, so the driver reads `ucomm` (the basename: `copilot` for the native
+host) and keeps `command` last. Every 2 s it reads `listActivity` and runs one `ps -o
+pid=,ppid=,lstart=,ucomm=,command=`. A presence row joins the launch only if all of these hold:
 1. its `server_pid` is alive now;
 2. its current parent is its `host_pid`;
 3. its start time is at or after the child's;
-4. the walk up from `host_pid` reaches the driver's child before it reaches any other agent host
-   (a process named `copilot`, `claude` or `claude-agent-acp`).
+4. its `host_pid` **equals** the launch's recorded native host pid.
+
+Rule 4 is an exact equality, with no walk. Classification starts at `host_pid`, which is the
+server's own agent host. A walk that began at `host_pid`'s parent would over-link, as the
+spike's recorded nested chain shows. A `copilot -p` started by the driven agent's shell runs as
+nested loader 76815 → nested host 76817 → its server 76850 (`host_pid` 76817), under the driven
+host 76681. Walking up from 76815 passes the nested loader, which is not an agent host, and
+reaches 76681, so the nested server would join the launch. With equality, 76817 ≠ 76681 and it
+stays unlinked.
 
 Rule 4 means a `copilot` or `claude` the agent starts in its own shell is **its own session**,
 not driven. Messages to it use #411's ordinary paths, so a push never lands in the parent's turn
@@ -335,11 +452,11 @@ step 2's PR).
 
 > **Proof by launch.** When a driver has proved by ancestry that an ended session and a live
 > session belong to one launch, `readdressMessages(from, to, launchId)` moves the open
-> messages from one to the other. `to` must be the server whose `host_pid` is the driver's own
-> child, never a nested CLI. It is one `.immediate()` transaction, conditioned on `from` being
-> ended (its presence ended, or its `server_pid` dead as the driver reports) and on both
-> sessions' `driven:` leases carrying that launch id, whichever driver process wrote them. No
-> other path re-addresses.
+> messages from one to the other. `to` must be the server whose `host_pid` is the launch's own
+> native host (§5.1), never a nested CLI. It is one `.immediate()` transaction, conditioned on
+> `from` being ended (its presence ended, or its `server_pid` dead as the driver reports) and on
+> both sessions' `driven:` leases carrying that launch id, whichever driver process wrote them.
+> No other path re-addresses.
 
 ### 5.3 Delivery
 
@@ -363,17 +480,39 @@ When `data_version` moves and the session is idle:
 3. Record the ids in `pushed.json` before the prompt is sent, then call
    `markMessageDelivered(id, session, 'agent-inbox-driver')` for each.
 
+**Every prompt is framed.** The driver sends prompt text of exactly two shapes, so no human
+text and no stored title can start a prompt with `/` and run a slash command (§4.1 rule 5):
+- **Human text**, in the message format above. The first prompt (step 2's `--prompt-file`,
+  step 3's dialog) uses it too: "The human started this session via Agent Inbox with this
+  task:", a blank line, then the verbatim text.
+- **Control messages**, written by the driver. Each starts with the fixed prefix `Agent Inbox:`
+  followed by fixed text, with any agent-authored value only inside quotes:
+  - plan approval (§4.1): `Agent Inbox: The human approved your plan. Carry it out now; tool
+    calls still ask for approval as before.`
+  - answer ping (below): `Agent Inbox: The human answered '<title>'; call pending().`
+  - interrupt notice (below): the line `Agent Inbox: The human interrupted your previous turn.`,
+    a blank line, then the human-text message format.
+
+Every prompt of either shape passes the same last check: if its first non-space character is
+`/`, the driver refuses to send it.
+
 While a turn runs, messages queue. #411's composer shows the state:
 - "Queued — it's mid-task (12m)";
 - "Queued — waiting on your approval" (with a link to the ask);
-- **Interrupt and send**, an explicit choice: `session/cancel`, then the turn.
+- **Interrupt and send**, an explicit choice. The driver sends `session/cancel` and waits for the
+  running `session/prompt` to answer `cancelled`. It answers any open permission request
+  `cancelled` and resolves its ask "Interrupted". Only then does it send the turn, framed with
+  the interrupt notice control message (above). Copilot would cancel the running
+  turn on a bare second prompt too (§3.1), but this order keeps every update attributed to the
+  right request. The interrupted request stays in the conversation, so the agent may pick it up
+  again.
 
 `pending()` still returns each message until `ack_message`, so #411's contract is unchanged.
 
 **Answer pings.** When the human answers one of the session's own questions (`items.session`)
-or rows of plans it wrote (`boards.session`), the driver sends "The human answered '<title>';
-call pending()" with no answer text. Approvals are excluded: they live in `@sessions` and are
-answered through §4.3.
+or rows of plans it wrote (`boards.session`), the driver sends the answer-ping control message
+(`Agent Inbox: The human answered '<title>'; call pending().`) with no answer text. Approvals
+are excluded: they live in `@sessions` and are answered through §4.3.
 
 **Woken automatically, said at runtime.** When the calling session holds a fresh `driven:`
 lease, `flag` returns no `watch` contract and adds `woken: "pushed"`. `pending()` adds the same
@@ -386,10 +525,11 @@ field, so the agent learns it from the response, not from a static appendix.
 4. **Can't receive**.
 
 A **parked** launch (§7, step 3) shows **Resume and send**. That click starts a driver that
-resumes the ACP session, waits up to 60 s for the new MCP server to link (§5.1), re-addresses
-the parked session's open messages to it, and only then sends. It never sends to the ended
-session, which #411 would refuse with `session_gone`. If nothing links in time, the text stays a
-draft, with "The session didn't come back; try again or start a new one".
+loads the ACP session (`session/load`, §7), waits up to 60 s for the new MCP server to link
+(§5.1), re-addresses the parked session's open messages to it, and only then sends. It never
+sends to the ended session, which #411 would refuse with `session_gone`. If nothing links in
+time, the text stays a draft, with "The session didn't come back; try again or start a new
+one".
 
 ## §6 — Storage
 
@@ -437,17 +577,25 @@ launch with `budget:<which>`.
 **Park, not end (step 3).** After 2 h idle, the driver closes the child, keeps `acp_session` in
 the launch row, marks the launch `parked` and exits. Sending to a parked launch is **Resume and
 send** (§5.3): the click is the gesture main needs to start a driver. That driver runs
-`session/load` or `session/resume` with the explicit mode (§4.1), links, and then sends. Step 3
+`session/load` (Copilot advertises `loadSession` and no `session/resume`, so a resume is always
+a load), links, and then sends. A load replays the session's history before it answers:
+`user_message_chunk`, `tool_call`, agent text and every past `current_mode_update`. The driver
+ignores updates for that session until the `session/load` response, then sets and verifies the
+mode and `allow_all` exactly as after `session/new` (§4.1). A session that was never prompted is
+not persisted (`session/load` answers `-32002 Resource not found`), so a launch parked before its
+first turn cannot be resumed; Resume and send starts a fresh session there. Step 3
 ships this minimal resume. **Step 2 has no park or resume:** it has no launch row to hold
 `acp_session`, so after 2 h idle the terminal driver ends the session cleanly and exits.
 
 **Stop.** The driver answers pending permission requests `cancelled`, resolves its asks
 "Session stopped", sends `session/cancel`, and closes the child's stdin. After 10 s it sends
-SIGTERM to the recorded pgid.
+SIGTERM to the recorded pgid. (Copilot answers the open prompt `cancelled` within about 10 ms of
+`session/cancel`, even with a permission request still unanswered, and exits about 1 s after
+stdin closes, its MCP servers with it.)
 
-**Orphans.** The driver records the child's pgid and start time (in its lease token, and from
-step 3 in `launches`). **Close** on a lost launch kills that group only when the start time
-still matches.
+**Orphans.** The driver records the child's pgid and start time, and the native host's pid (§5.1)
+(in its lease token, and from step 3 in `launches`). **Close** on a lost launch kills that group
+only when the start time still matches.
 
 **Fail closed** (mesh §8.4). After 30 s with no successful hub read, the driver cancels the
 turn, denies every pending ask, and exits. It cannot see Stop, so it stops.
@@ -511,22 +659,40 @@ re-proved after every navigation (#216), with the switch on and no quit begun.
 (below) to a real path, owned by the uid or root and not group- or world-writable. If its first
 line is `#!/usr/bin/env node` (or names any interpreter), the driver resolves that interpreter on
 the same PATH. It spawns `[interpreter, script, …]` explicitly, records both, and checks
-`--version` minimums.
+`--version` minimums. An npm-installed Copilot is exactly this case: `…/bin/copilot` is
+`npm-loader.js` (`#!/usr/bin/env node`), which runs on the first `node` on the captured PATH and
+starts the native host as its child (§5.1).
 
 **Environment** (decided: a login-shell capture, then a denylist).
 - **Capture.** A Finder-launched Electron has a minimal PATH, with no nvm, volta, mise or asdf.
-  So when the human turns the feature on (and again on **Refresh environment**), main runs
-  `$SHELL -i -l -c` once, with a 10 s timeout and stdin closed. The `-i` matters: zsh reads
-  `.zshrc` only for interactive shells, and that is where nvm, volta and mise are usually set
-  up. The command prints a random start marker, `env -0`, and an end marker; main parses only
-  what lies between them, so banners and rc output are ignored, as VS Code's shell-env resolver
-  does. It keeps the result in memory and never writes it to disk.
-- **Denylist.** From that env the driver removes `ELECTRON_*`, `AGENT_INBOX_*` (it sets
-  `AGENT_INBOX_HOOKS=0` itself), `NODE_OPTIONS` and `COPILOT_ALLOW_ALL`.
+  So for each launch main runs `$SHELL -i -l -c` once, **with cwd set to the launch folder**, a
+  10 s timeout and stdin closed (about 2 s on the spike's Mac). **Refresh environment** re-runs it
+  after a failure. The `-i` matters: zsh reads `.zshrc` only for interactive shells, and that is
+  where nvm, volta and mise are usually set up. The cwd matters too: per-folder version managers
+  (fnm `--use-on-cd`, nvm auto-use) choose a version when the shell starts in a folder, and their
+  cd hooks never fire in the agent's own shells. The command prints a random start marker,
+  `env -0`, and an end marker; main parses only what lies between them, so banners and rc output
+  are ignored, as VS Code's shell-env resolver does. It keeps the result in memory and never
+  writes it to disk.
+- **Denylist.** From that env the driver removes `ELECTRON_*`, `AGENT_INBOX_*`, `NODE_OPTIONS`,
+  `COPILOT_ALLOW_ALL`, and every other `COPILOT_*` variable except `COPILOT_HOME` and
+  `COPILOT_GITHUB_TOKEN` (a parent Copilot session's `COPILOT_AGENT_SESSION_ID`,
+  `COPILOT_LOADER_PID`, …). It then sets `AGENT_INBOX_HOOKS=0`, and `AGENT_INBOX_DB` to the hub
+  it reads itself whenever that is not the default, because the session's agent-inbox server
+  inherits the child's env (§3.2).
 - **Kept on purpose:** `SSH_AUTH_SOCK`, `TMPDIR`, proxy variables, `NODE_EXTRA_CA_CERTS`,
   `COPILOT_HOME`, `CLAUDE_CONFIG_DIR` and `XDG_CONFIG_HOME`.
+- **What the capture brings, as a terminal does.** The capture is exactly what a fresh login
+  shell in that folder gets, including what the user's rc files export. On the spike's Mac that
+  was a 1Password service-account token (`OP_SERVICE_ACCOUNT_TOKEN`), which the agent and every
+  MCP server then inherit. It was also the wrong Node: `.zshrc` re-runs `brew shellenv` after
+  fnm, so Homebrew's Node 26 wins on PATH even in a folder whose `.node-version` says 24. A
+  terminal session started the same way has the same exposure and the same Node. Whether to pass
+  Copilot's `--secret-env-vars` for secret-shaped names is open (§14.3).
 - **Step 2** inherits the terminal's env through the same denylist.
-- **The spike** checks `npm test` and an SSH `git push` from a driven session.
+- **The spike** ran `npm test` and SSH (`ssh -T git@github.com`, `git ls-remote` over SSH) in a
+  session on a captured env, through the agent socket. No push was made; it uses the same
+  transport.
 
 **Secrets.** API keys live in `safeStorage` and travel on fd 3, never in argv, a file or SQLite.
 The driver never writes env or auth values to its logs. The agent output it records can contain
@@ -578,6 +744,9 @@ tolerantly, like Links), and a browser cannot turn it on. While it is off:
 | 5. Resume and Take over | Full resume, handing off to a terminal | 1 week |
 
 **1. Spike.** Real `copilot --acp` and `claude-agent-acp` runs, recorded as fixtures.
+**Done for Copilot on 2026-10-31:** go, with the amendments in §14.4. Report:
+[`2026-10-31-copilot-acp-spike.md`](2026-10-31-copilot-acp-spike.md); fixtures:
+`test/fixtures/acp/copilot-1.0.105/`. The Claude items moved to #421 with the host.
 - Option ids per host, Copilot's plan exit (can it escape to autopilot?), and `currentModeId`
   and `current_mode_update` behaviour on new, load and resume.
 - `--allow-tool <name>` and `allowedTools: ['mcp__<name>__*']` with the registered name.
@@ -604,11 +773,27 @@ foreground from the installed runtime.
   readers, MCP refusals, fail-closed, concurrency caps and runtime pins.
 - **Schema:** no new table or column.
 - **Tests:**
-  - a fake ACP agent: mode escalation, bypass options dropped, unknown ids dropped;
+  - a fake ACP agent replaying the spike's fixtures: mode escalation, `allow_all` turning on,
+    bypass options dropped, unknown ids dropped, `allow_always` never selected, a load replay
+    holding an autopilot `current_mode_update`, the mid-turn cancel, and a first prompt starting
+    with `/` refused;
+  - Plan first: an unsolicited `current_mode_update` to `#agent` before the plan is approved ends
+    the launch with `error:mode_escalation`; after approval, only the driver's own one
+    `set_mode #agent` is accepted, and a later `#plan` ends the launch;
+  - ordering, both directions: an escalation or config update that arrives just before an
+    approval is applied first, so the approval answers `reject_once` (or the launch ends) and
+    never `allow_once`; an approval intent that lands while an update is already queued waits
+    behind it and is re-validated against the new generation;
+  - control messages: the plan-approval, answer-ping and interrupt prompts start with
+    `Agent Inbox:`, and any prompt text whose first non-space character is `/` is refused;
   - an MCP integration test that no session in any scope sees an `@sessions` ask;
   - hooks ignoring `@sessions`;
-  - ancestry: a nested CLI stays unlinked, a reused stale `host_pid` is refused, and a dead
-    `server_pid` counts as ended;
+  - ancestry: a nested CLI stays unlinked, a reused stale `host_pid` is refused, a dead
+    `server_pid` counts as ended, and an npm loader with its native host child links. The
+    spike's recorded nested chain is an explicit case: driver child (loader) 76679 → launch host
+    76681 → nested loader 76815 → nested host 76817 → nested server 76850 with `host_pid`
+    76817. The nested server stays unlinked because 76817 ≠ 76681, and the launch's own server
+    (`host_pid` 76681) links;
   - a message pushed once and never again while idle, with re-check before push;
   - pins outside the payload keeping a runtime through both prunes while it still verifies;
   - the TTY refusal;
@@ -646,7 +831,10 @@ foreground from the installed runtime.
 - **Approvals stall after quit** until the app reopens.
 - **An older server registering `@sessions`** can read asks. This is accepted, as in mesh §10.3.
 - **Ancestry needs `host_pid`** (from #253). Older servers can't receive messages anyway.
-- **ACP v1 has no mid-turn input.** The copy shows Queued, and offers Interrupt and send.
+- **ACP v1 has no mid-turn input.** On Copilot a second prompt cancels the running turn instead
+  (§3.1), so the driver queues. The copy shows Queued, and offers Interrupt and send.
+- **Slash commands in prompt text** can change permissions (§4.1 rule 5). Framing every prompt
+  closes it; the escalation guard is the backstop.
 - **Login-shell capture** can be slow or fail. When it does, the feature says so and offers
   Refresh environment; there is no silent fallback to Finder's PATH.
 
@@ -738,9 +926,10 @@ with older servers, and step 2 schema-free.
 
 The final design check approved the design with no High findings and listed these for the
 implementation PRs, which get their own reviews:
-- **Nested-host test and npm-installed Copilot (Medium).** Rule 4 identifies agent hosts by `comm`,
-  which reads `node` for an npm-installed `copilot`. Match on `command=` (the argv path, for example
-  `@github/copilot`), and run the nested-CLI test against a real npm install.
+- **Nested-host test and npm-installed Copilot (Medium).** *Settled by the spike (§14.4):* the
+  npm loader reads `node`, and the MCP servers' parent is the native host, whose `ucomm` is
+  `copilot`. §5.1 now records both pids and matches hosts on `ucomm` or `@github/copilot` in the
+  command line. The nested-CLI test still runs against a real npm install.
 - **Re-addressing after a long park (Medium, step 3).** The `from` lease is pruned after a day, so
   prove `from` through the `launches` row, or keep the leases of parked launches.
 - **Unambiguous signing input.** Length-prefix `item ‖ response_revision ‖ optionId`, and add a fixed
@@ -749,6 +938,65 @@ implementation PRs, which get their own reviews:
   write, the database is the truth.
 - **Interactive env capture can hang.** `-i` with stdin closed can block on rc prompts. A timeout is
   the visible "Refresh environment" failure, never a retry loop.
+- **Secret-shaped variables in the captured env (from the spike).** Whether to pass Copilot's
+  `--secret-env-vars` for names such as `*_TOKEN`, `*_SECRET`, `*_KEY` and `*_PASSWORD`. It strips
+  them from the agent's shell and MCP environments and redacts them from output. That also hides
+  them from an MCP server that needs one, and a terminal session has the same exposure today
+  (§8).
+
+### 14.4 Spike amendments (2026-10-31)
+
+The Copilot ACP spike (step 1) recorded 15 transcripts against Copilot CLI 1.0.105 and reported
+**go** ([`2026-10-31-copilot-acp-spike.md`](2026-10-31-copilot-acp-spike.md); fixtures in
+`test/fixtures/acp/copilot-1.0.105/`). The coordinator's decisions on its findings, now folded
+into the sections named:
+- **(a) No `allow_always` in v1.** A human approval answers `allow_once` and a decline
+  `reject_once`. The ask's copy says that declining stops the agent's current turn, because on
+  Copilot it does. (§4.1, §4.2)
+- **(b) `allow_all: on` is escalation.** It is checked after `session/new` and after
+  `session/load`. Any `on` ends the launch, unless the driver re-asserts it off and verifies
+  that. Later, any update to `on` ends it. (§0, §4.1)
+- **(c) No prompt text starts with `/`.** Copilot runs it as a slash command (`/allow-all`,
+  `/autopilot`), even after leading spaces. Every human message, the first prompt included, goes
+  through the framed format. (§3.1, §4.1, §5.3, §12)
+- **(d) Modes by `session/set_mode` with the URL ids, verified.** There is no `--mode` in the
+  argv, because ACP's `session/new` ignores it. (§3.2, §4.1)
+- **(e) Plan first.** Copilot's ACP plan mode has no exit tool, so it cannot escape to autopilot.
+  After the human approves the plan, the driver switches the mode to `#agent` itself. (§4.1)
+- **(f) Interrupt and send.** `session/cancel`, then wait for the turn's `cancelled` response,
+  then `session/prompt`. A bare second prompt would cancel the running turn anyway. Updates are
+  attributed by the request in flight. (§3.1, §5.3, §12)
+- **(g) Two pids.** The driver records the npm loader (its child) and the native host (the MCP
+  servers' parent). Hosts match on `ucomm` `copilot` or `@github/copilot` in the command line.
+  (§5.1, §5.2, §7, §8)
+- **(h) Env for the MCP server.** The driver passes its own `AGENT_INBOX_DB` through and strips
+  `COPILOT_*` inherited from a parent Copilot session. Client-supplied stdio MCP servers are
+  ignored by Copilot, so the driver sends `mcpServers: []`. (§3.2, §8)
+- **(i) Resume is `session/load`.** Replayed updates are ignored until it answers, then the mode
+  and `allow_all` are re-checked. A never-prompted session cannot be resumed. (§3.1, §5.3, §7)
+- **(j) Env capture runs in the launch folder.** rc files can export secrets, and the wrong Node
+  can win on PATH, exactly as in a terminal. `--secret-env-vars` is an open item. (§8, §14.3)
+
+**Review amendments (2026-10-31, PR #423 review).** A review of the folded amendments found four
+design gaps, fixed as follows:
+- **(1) Nested sessions over-linked.** A walk that started at `host_pid`'s parent let a nested
+  CLI's server pass its own host and reach the launch's host. The recorded chain is
+  76815 → 76817 → server, under 76681. Rule 4 is now exact equality: `host_pid` = the launch's
+  recorded native host pid. The recorded chain is a step 2 test. This supersedes (g)'s matching
+  for linking; host matching now only finds the native host after spawn. (§0, §5.1, §11)
+- **(2) Plan first let `#agent` in early.** A single allowed set {#plan, #agent} accepted an
+  unsolicited `#agent` before approval. Mode validity is now per phase:
+  `awaiting_plan_approval` allows only `#plan`. `switching` accepts exactly the result of the
+  driver's own one `set_mode #agent`. `executing` allows only `#agent`. Anything else ends the
+  launch. (§4.1, §11)
+- **(3) No ordering between updates and approvals.** One serialized state machine now consumes
+  ACP frames and approval intents in arrival order. Each ask records a security-state generation
+  (mode plus `allow_all`, bumped on every mode or config update). Before answering, the driver
+  re-validates: a moved generation answers `reject_once`, an invalid state ends the launch, and
+  neither answers `allow_once`. Ordering is tested in both directions. (§4.1, §4.3, §11)
+- **(4) Control messages are framed.** "Proceed with the plan" was a raw prompt. Plan approval,
+  answer pings and the interrupt notice are now control messages with the fixed prefix
+  `Agent Inbox:`, under the same leading-`/` check. (§4.1, §5.3, §11)
 
 ## Appendix A — Verification log
 
@@ -766,3 +1014,4 @@ implementation PRs, which get their own reviews:
 | 10 | `claude-agent-acp` 0.99.1: `_meta.claudeCode.options`, cancel, load and resume; exit-plan-mode offers bypass and auto (`buildExitPlanModePermissionOptions`, `ALLOW_BYPASS`); resume keeps the last mode (`resolveInitialPermissionMode`) | `npm view`; README; reviewer's source citations | 2026-10-31 |
 | 11 | `listPending` reads by project; `prune_old_runtimes` has no process check | `git show origin/main:src/store.ts`, `scripts/install-agents.sh` | 2026-10-31 |
 | 12 | Channels: research preview, interactive-only; #418 spike open | research brief; `gh pr view 418` | 2026-10-31 |
+| 13 | Copilot 1.0.105 over ACP: URL mode ids; `--mode` ignored by `session/new`; `allow_all` config option; slash commands in prompt text; a second prompt cancels the running turn; `loadSession` only, load restores autopilot; client stdio MCP servers rejected; option ids `allow_once`/`allow_always`/`reject_once`; loader and native host pids | the spike's recorded runs ([`2026-10-31-copilot-acp-spike.md`](2026-10-31-copilot-acp-spike.md)) | 2026-10-31 |

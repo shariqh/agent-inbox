@@ -6,11 +6,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { join } from 'node:path'
 import type Database from 'better-sqlite3'
 import {
-  claimHookWatch, closeProject, closedProjects, getItem, insertItem, isDrivenSession, isReservedProject, listActivity,
+  claimHookWatch, closeProject, closedProjects, getItem, insertItem, isDrivenSession, listActivity,
   listPending, listPendingRows, listSessionQuestions, listUnansweredBoardRows, openDb, releaseHookWatch, replyItem,
   upsertActivity, upsertBoard,
 } from '../src/store.js'
 import { createViewer } from '../src/viewer.js'
+import { isReservedProject } from '../public/reserved-projects.js'
 import { removeScratchDirs, scratchDir } from './scratch.js'
 
 // a driver's lease token: `<launch id>:<driver pid>:<nonce>` (§5.1)

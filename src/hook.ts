@@ -14,10 +14,11 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, sta
 import { dirname, join } from 'node:path'
 import type Database from 'better-sqlite3'
 import {
-  claimHookWatch, defaultDbPath, holdsHookWatch, insertItem, isReservedProject, listHostSessions, listItems, listOpenMessages, listPending,
+  claimHookWatch, defaultDbPath, holdsHookWatch, insertItem, listHostSessions, listItems, listOpenMessages, listPending,
   listPendingRows, listSessionQuestions, listUnansweredBoardRows, openDb, releaseHookWatch, resolveItem,
 } from './store.js'
 import type { Item } from './store.js'
+import { isReservedProject } from '../public/reserved-projects.js'
 import { inferProject, inferStream } from './infer.js'
 import { boardResponseState } from './watch.js'
 

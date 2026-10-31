@@ -4,7 +4,8 @@ import type { InitializeRequest, InitializeResult } from '@modelcontextprotocol/
 import { z } from 'zod'
 import type Database from 'better-sqlite3'
 import { randomUUID } from 'node:crypto'
-import { insertItem, resolveItem, listPending, markReplySeen, markItemAnnotationDelivered, answerItem, upsertBoard, updateBoardRow, advanceBoardRow, findBoard, archiveBoard, getBoard, getBoardByTitle, listBoards, markBoardRead, markAnnotationDelivered, markHandledDelivered, listPendingRows, upsertActivity, endActivity, touchActivity, recordActivityCall, listIssueSnapshots, listSourceLinks, listPendingMessages, markMessageDelivered, ackMessage, MESSAGE_MAX_OUTCOME, getItem, isReservedProject, isDrivenSession } from './store.js'
+import { insertItem, resolveItem, listPending, markReplySeen, markItemAnnotationDelivered, answerItem, upsertBoard, updateBoardRow, advanceBoardRow, findBoard, archiveBoard, getBoard, getBoardByTitle, listBoards, markBoardRead, markAnnotationDelivered, markHandledDelivered, listPendingRows, upsertActivity, endActivity, touchActivity, recordActivityCall, listIssueSnapshots, listSourceLinks, listPendingMessages, markMessageDelivered, ackMessage, MESSAGE_MAX_OUTCOME, getItem, isDrivenSession } from './store.js'
+import { isReservedProject } from '../public/reserved-projects.js'
 import type { ActionOwner, BoardRow, BoardWithRows, IssueLink, QuestionOption } from './store.js'
 import { makeContextLedger, deliverContext, shapeBoard, summariseBoard, rowKey, itemKey, agentItem } from './shape.js'
 import type { BoardIssueRelations } from './shape.js'
@@ -219,6 +220,8 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
   // Issue #412 (§5.3) — a session an Agent Inbox driver runs gets each answer
   // and message pushed as a new turn, so it is told so in the response and is
   // handed no watch contract. Read fresh on every call: the lease is the driver's.
+  // A board answer is pinged only for plans whose `session` is this server's,
+  // so board_advance and board_get({watch}) say "pushed" only for those.
   const pushedWake = (): boolean => {
     try {
       return isDrivenSession(db, sessionId)
@@ -744,7 +747,8 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
       heartbeat()
       requireBlockedShape(label, 'blocked', note, next_step, action_owner, impact, options)
       const s = agentScope()
-      const previous = getBoard(db, s.project, title)?.rows.find((row) => row.label === label)
+      const plan = getBoard(db, s.project, title)
+      const previous = plan?.rows.find((row) => row.label === label)
       const out = advanceBoardRow(db, {
         project: s.project,
         title,
@@ -760,7 +764,9 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
         options,
         context,
       })
-      const pushed = out.ok && pushedWake()
+      // board_advance never restamps the plan's session (#306), so the driver
+      // pings this answer only when this session already wrote the plan
+      const pushed = out.ok && plan?.session === sessionId && pushedWake()
       const watch = s.agent === 'copilot' && previous && out.ok && !pushed
         ? rowWatch({ ...previous, action_version: out.action_version }, s.project)
         : undefined
@@ -852,7 +858,8 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
         }
         const board = getBoardByTitle(db, s.project, title)
         if (board && !deliver(board)) continue
-        const pushed = watch === true && pushedWake()
+        // a driver pings only rows of plans this session wrote (boards.session)
+        const pushed = watch === true && board?.session === sessionId && pushedWake()
         const watches = watch && !pushed && board?.status === 'active'
           ? board.rows.filter((row) => row.status === 'blocked')
             .map((row) => ({ row, ask: rowWatchedAsk(row) }))

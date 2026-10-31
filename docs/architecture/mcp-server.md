@@ -116,9 +116,12 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
 - **A driven session is told its answers are pushed (issue #412, §5.3).** `isDrivenSession`
   reads the session's `driven:<session>` lease in `hook_watch_claims`, fresh for 90 s,
   which a driver refreshes every 30 s. While it holds, `flag` (a question), `pending`,
-  `board_upsert`/`board_row`/`board_advance` (a new ask) and `board_get({watch:true})` add
-  `woken: "pushed"` and return no `watch`/`watches`: the driver pushes each answer ping and
-  message as a new turn, so a watcher would only cost a wake. The lease is read fresh on
+  `board_upsert`/`board_row` (a new ask) add `woken: "pushed"` and return no
+  `watch`/`watches`: the driver pushes each answer ping and message as a new turn, so a
+  watcher would only cost a wake. The driver pings only rows of plans whose `boards.session`
+  is the driven session, so `board_advance` (which restamps no plan field, #306) and
+  `board_get({watch:true})` say "pushed" only when the plan's `session` is this server's id,
+  and otherwise return the normal watch contracts. The lease is read fresh on
   every call; tool descriptions are unchanged, so `tools/list` is byte-identical.
 - **Fail-open / never lose a flag.** If inference fails, attribute to `unknown` and still
   insert. If a write fails, surface an MCP error — don't crash.

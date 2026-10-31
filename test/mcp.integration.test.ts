@@ -9,7 +9,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { ReadBuffer, serializeMessage } from '@modelcontextprotocol/sdk/shared/stdio.js'
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
-import { openDb, listItems, listBoards, getBoard, updateBoardRow, annotateBoardRow, markRowHandled, listPendingRows, pinBoardRow, pinItem, replyItem, listActivity, listActivitySpans, upsertIssueSnapshot, insertItem, getItem, upsertBoard, claimHookWatch, releaseHookWatch } from '../src/store.js'
+import { openDb, listItems, listBoards, getBoard, updateBoardRow, annotateBoardRow, markRowHandled, listPendingRows, pinBoardRow, pinItem, replyItem, listActivity, listActivitySpans, upsertIssueSnapshot, insertItem, getItem, upsertBoard, claimHookWatch, releaseHookWatch, isDrivenSession } from '../src/store.js'
 import { createViewer } from '../src/viewer.js'
 import { scratchDir } from './scratch.js'
 
@@ -2345,6 +2345,16 @@ describe('reserved projects and driven sessions (#412)', () => {
       expect(rowed).toMatchObject({ woken: 'pushed' })
       expect(rowed.watch).toBeUndefined()
 
+      // board_advance on its own plan: the plan's session is still this one
+      const own = await call(client, 'board_get', { title: 'Plan' })
+      const upload = own.rows.find((r: { label: string }) => r.label === 'Upload')
+      const advanced = await call(client, 'board_advance', {
+        title: 'Plan', label: 'Upload', board_version: own.revision, expected_revision: upload.revision,
+        note: 'Next step.', next_step: 'Upload the second build.', action_owner: 'task', impact: 'Unblocks the release.',
+      })
+      expect(advanced).toMatchObject({ ok: true, woken: 'pushed' })
+      expect(advanced.watch).toBeUndefined()
+
       releaseHookWatch(db, `driven:${session}`, token)
       expect(listActivity(db)[0]!.driven).toBeUndefined()
       const after = await call(client, 'flag', { kind: 'question', title: 'Which pool?', ...QUESTION_SHAPE })
@@ -2356,4 +2366,40 @@ describe('reserved projects and driven sessions (#412)', () => {
       await client.close()
     }
   }, 30000)
+
+  it('hands a driven session the normal watches for a plan another session wrote, since only its own plans are pinged', async () => {
+    const dbPath = join(scratchDir('mcp-driven-other-'), 'inbox.db')
+    const cwd = scratchDir('mcp-driven-shared-')
+    const driven = await serve({ AGENT_INBOX_DB: dbPath }, 'copilot', cwd)
+    await call(driven, 'pending')
+    const db = openDb(dbPath)
+    const session = listActivity(db)[0]!.session
+    const other = await serve({ AGENT_INBOX_DB: dbPath }, 'copilot', cwd)
+    try {
+      await call(other, 'board_upsert', { title: 'Other', rows: [blockedRow('Sign')] })
+      const project = (await call(other, 'whoami')).project as string
+      const writer = getBoard(db, project, 'Other')!.session
+      expect(writer).not.toBe(session)
+      claimHookWatch(db, `driven:${session}`, `${LAUNCH}:${process.pid}:test`)
+      expect(isDrivenSession(db, session)).toBe(true)
+
+      const read = await call(driven, 'board_get', { title: 'Other', watch: true })
+      expect(read.woken).toBeUndefined()
+      expect(read.watches).toEqual([expect.objectContaining({ label: 'Sign', shell_command: expect.any(String) })])
+      const sign = read.rows.find((r: { label: string }) => r.label === 'Sign')
+      const advanced = await call(driven, 'board_advance', {
+        title: 'Other', label: 'Sign', board_version: read.revision, expected_revision: sign.revision,
+        note: 'Next step.', next_step: 'Sign the second build.', action_owner: 'task', impact: 'Unblocks the release.',
+      })
+      expect(advanced.woken).toBeUndefined()
+      expect(advanced.watch).toMatchObject({ label: 'Sign', shell_command: expect.any(String) })
+      // board_advance restamps no plan field (#306): the plan is still the other session's
+      expect(getBoard(db, project, 'Other')!.session).toBe(writer)
+    } finally {
+      db.close()
+      await driven.close()
+      await other.close()
+    }
+  }, 30000)
 })
+

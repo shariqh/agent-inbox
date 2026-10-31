@@ -4,6 +4,7 @@ import { homedir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { mkdirSync } from 'node:fs'
 import type { ServerSource } from './server-source.js'
+import { isReservedProject } from '../public/reserved-projects.js'
 
 export type Kind = 'question' | 'note' | 'done'
 export type Status = 'open' | 'resolved' | 'dismissed'
@@ -126,17 +127,9 @@ export function defaultDbPath(): string {
   return process.env.AGENT_INBOX_DB ?? join(homedir(), '.agent-inbox', 'inbox.db')
 }
 
-// Issue #412 (driven sessions §4.2, mesh §10.3): projects no agent, hook or
-// session reads. A driver files its approval alerts in `@sessions`, and the mesh
-// will file its asks in `@mesh`, so no session in the asks' real project wakes
-// on them or answers them. Exactly these two names: a folder with no remote can
-// legitimately be named with a leading `@`. The viewer shows them like any
-// project, so attention is unchanged.
-const RESERVED_PROJECTS: readonly string[] = ['@sessions', '@mesh']
-
-export function isReservedProject(project: string): boolean {
-  return RESERVED_PROJECTS.includes(project)
-}
+// Issue #412: `@sessions` and `@mesh` are reserved (isReservedProject, from the
+// one list the page shares). The viewer shows them like any project, so
+// attention is unchanged; every project-scoped reader below returns nothing.
 
 export function openDb(path: string = defaultDbPath()): Database.Database {
   mkdirSync(dirname(path), { recursive: true })

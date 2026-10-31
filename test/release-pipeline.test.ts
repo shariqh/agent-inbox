@@ -968,7 +968,7 @@ describe('macOS finalization contract', () => {
     expect(pkg.scripts['package:smoke']).toContain('test/setup-lock.test.ts')
     expect(verifier).toContain("'scripts/setup-lock.sh'")
     expect(staging).toContain("'setup-lock.sh'")
-    expect(ci).toContain('os: [ubuntu-latest, macos-14]')
+    expect(ci).toContain('os: [ubuntu-latest, macos-15]')
     expect(ci).toContain('brew install flock')
     expect(ci).toContain('npx vitest run test/setup-lock.test.ts')
     expect(macosPackage).toContain('npx vitest run test/setup-lock.test.ts')

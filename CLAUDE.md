@@ -83,6 +83,8 @@ One line each; the detail, the reasons and the regressions behind them are in th
 - Session messages reach only their own session (no tool takes a session id) and come back until `ack_message` (#411). → delivery-and-responses
 - The message composer is presence: kept nodes, a reused id per text, never attention (#411). → viewer-frontend
 - The Claude Code channel push (#411, research preview) is declared to Claude Code clients only and carries a message id, never text. → mcp-server
+- `@sessions` and `@mesh` are reserved: no agent, hook or project-scoped read reaches them, and they
+  never close (#412). → mcp-server, hooks-and-watcher, store-and-snapshots
 - The inbox answer always wins over a chat-recorded one; never last-write-wins. → delivery-and-responses
 - `updated_at` means content changed; delivery stamps, moves, pins and watch stops never bump it. → delivery-and-responses
 - Omitting a row field keeps it, `''` clears it; a ROW omitted from `board_upsert` is deleted. → delivery-and-responses

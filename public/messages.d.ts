@@ -25,7 +25,7 @@ export type DeliveryStateName = 'now' | 'next-check' | 'cannot' | 'gone'
 export const MESSAGE_MAX_TEXT: number
 export const MESSAGE_SHARED: string
 export const MESSAGE_UNCONFIRMED: string
-export function deliveryState(row: unknown, options?: { driven?: boolean }): { state: DeliveryStateName; text: string; canSend: boolean }
+export function deliveryState(row: unknown): { state: DeliveryStateName; text: string; canSend: boolean }
 export function composerLabel(session: { agent?: string; project?: string; stream?: string }): string
 export function messageStatus(message: SessionMessage, ago: (iso: string | null) => string): {
   tone: string

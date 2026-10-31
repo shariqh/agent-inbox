@@ -407,8 +407,18 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   `stopItemWatch`/`stopBoardRowWatch`; pins for later (#247): `pinItem`/`pinBoardRow`;
   projects: `closeProject`/`reopenProject`/`listClosedProjects`/`closedProjects`;
   issue snapshots (#103): `upsertIssueSnapshot`/`recordIssueFailure`/`listIssueSnapshots`/
-  `listIssueEntities`/`pruneIssueSnapshots`/`claimIssueRefresh`/`completeIssueRefresh` — plus `openDb`. No raw SQL anywhere else. To change
+  `listIssueEntities`/`pruneIssueSnapshots`/`claimIssueRefresh`/`completeIssueRefresh`;
+  driven sessions (#412): `isReservedProject`/`isDrivenSession` — plus `openDb`. No raw SQL anywhere else. To change
   storage, reimplement this module; nothing else touches SQLite.
+- **Reserved projects are filtered in the store (issue #412).** `@sessions` and `@mesh`
+  (exactly those, `isReservedProject`) hold a driver's approval alerts and the mesh's asks.
+  `listPending`, `listPendingRows` and `listUnansweredBoardRows` return nothing for one,
+  `listSessionQuestions` skips items filed in one, `closeProject` refuses one and
+  `closedProjects()` never reports one. The viewer's reads (`listItems`, `listItemsPage`,
+  `listBoards`, the snapshots) are unchanged, so the human sees them and attention counts
+  them. No column, table or trigger was added: a driver's leases (`driven:<session>`,
+  token `<launch id>:<driver pid>:<nonce>`, fresh for 90 s) live in `hook_watch_claims`,
+  which no snapshot reads.
 - **`store.ts`/`mcp.ts`/`viewer.ts` inverse round-trip:** the store's `Item` and
   `BoardWithRows` shapes are the contract shared by MCP writes/reads and viewer reads.
   Change them in `store.ts` and update both consumers (+ `group.ts` for items;

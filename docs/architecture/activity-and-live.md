@@ -64,10 +64,16 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   is evidence too: a watcher killed without releasing its lease reads as armed for
   up to 30 minutes. The composer's delivery state (`deliveryState` in
   `public/messages.js`) reads these three and nothing else: no `receives_messages`
-  is "can't receive" (Send disabled); `push_wake`, `wakes` or a session Agent
-  Inbox drives (#412's seam, the `driven` option, unused until then) is "arrives
+  is "can't receive" (Send disabled); `driven`, `push_wake` or `wakes` is "arrives
   now"; anything else is "when it next checks Agent Inbox". `activityFrameKey`
   compares bytes, so a flip repaints.
+- `driven` (#412) is the fourth: true while an Agent Inbox driver holds the
+  session's `driven:<session>` lease in `hook_watch_claims`, claimed within the
+  last 90 s (the driver refreshes it every 30 s), read by the same query through a
+  second `LEFT JOIN` on the unique key. Served only as `true`. The lease's token is
+  `<launch id>:<driver pid>:<nonce>`; a Claude hook's `host:` lease never reads as
+  driven, and a `driven:` lease never as `wakes`. The composer says "Arrives now:
+  Agent Inbox runs this session."
 
 ## Invariants in detail
 

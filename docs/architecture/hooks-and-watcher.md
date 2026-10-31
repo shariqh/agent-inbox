@@ -25,6 +25,10 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   Its wait backs off statelessly from the ask's age through one function
   (`watchTimeoutMs`) that both the contract and the watcher evaluate (#217).
 
+- Hooks never read a reserved project (#412): a driver's `@sessions` approval
+  alerts carry the driven agent's MCP session, yet no hook reports, wakes on or
+  watches one, and a folder named `@sessions` or `@mesh` gets no hook behaviour.
+
 ## Invariants in detail
 
 - **The hooks runtime is a SECOND OS process on the same db — and it still goes through
@@ -94,6 +98,16 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   (exit 124, unchanged). `board_get({watch:true})` returns no watch for a row stopped for
   good: re-arming it would only cost another wake.
 
+- **Hooks ignore the reserved projects (issue #412, driven sessions §4.2).** A driver files
+  its approval alerts in `@sessions` with the driven agent's own MCP `session`, so a hook
+  linked to that server would otherwise find them through `listSessionQuestions`. The
+  store keeps them out of every hook read: `listPending`, `listPendingRows` and
+  `listUnansweredBoardRows` return nothing for a reserved project, and
+  `listSessionQuestions` skips items filed in one. `sessionScope` drops reserved projects
+  from the linked servers' set, and every subcommand but `selftest` returns at once,
+  writing nothing, when the cwd project itself is reserved (a folder with no remote named
+  `@sessions` or `@mesh`), so no backstop is filed where no reader could clear it. Pinned
+  in `test/hook.test.ts` ("hook: reserved projects (#412)").
 - **The hooks wake a linked session for the human's messages (issue #411).** Only a
   linked hook (#253) knows its servers, so only it counts messages; an unlinked one
   ignores them. It counts OPEN messages to those servers (`listOpenMessages`, ids

@@ -211,3 +211,7 @@ These landed after v1 and still hold invariants; the release history itself is i
   nothing new while it polls `pending()`, so closing that project mutes a genuinely-live blocker
   until fresh content arrives. "Nothing can be permanently muted" is true of everything except that
   case — do not restate it unqualified.
+  *(#412)* The reserved projects `@sessions` and `@mesh` can never be closed: `closeProject`
+  refuses one (the route answers 200 `{ ok: false, reason: 'reserved_project' }`) and
+  `closedProjects()` leaves one out even when an older viewer wrote the row, because closing
+  `@sessions` would mute every driven session's approvals.

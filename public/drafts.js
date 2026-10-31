@@ -10,6 +10,9 @@
 // a window deletes only the copy it last loaded or wrote (compare-and-delete on
 // `savedAt`), and never touches an entry it was not told about. Any write drops
 // what this build cannot read, so a later build that adds a kind needs a new key.
+// One deliberate exception: the human's messages to a session (#411) share this
+// key, as their design asks. A build older than #411 sharing the profile drops
+// only the `message` entries on its next write; every other kind survives it.
 // A stamp from the future (the clock was set back) is never yet expired, and
 // any write brings it back to now, so it can be overwritten and does expire.
 
@@ -141,7 +144,9 @@ export function draftKey(draft) {
     case 'row': return `row:${draft.rowId}`
     case 'row-recovery': return `row-recovery:${draft.rowId}:${draft.revision}`
     case 'note': return `note:${draft.itemId}`
-    case 'message': return `message:${draft.session}`
+    // a message waiting in the unsent responses is its own entry, so a new draft
+    // to the same session never overwrites it
+    case 'message': return `${draft.reason ? 'message-recovery' : 'message'}:${draft.session}`
     default: return null
   }
 }

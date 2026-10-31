@@ -213,6 +213,8 @@ describe('the drawer composer (#411)', () => {
     expect(drawer().hidden).toBe(false)
     expect(composer('mcp-a')).toBeUndefined()
     expect(document.activeElement).toBe(messageButton('mcp-a'))
+    // a closed composer that holds text says so on its button
+    expect(messageButton('mcp-a')?.textContent).toBe('Message · draft')
     await vi.advanceTimersByTimeAsync(300)
     expect(stored()['message:mcp-a']?.draft).toMatchObject({ type: 'message', session: 'mcp-a', text: 'One more.', intent: null })
     click(messageButton('mcp-a'))
@@ -237,6 +239,52 @@ describe('the drawer composer (#411)', () => {
     await pollTick()
     expect(rows().map((el) => el.querySelector('.nrow-title')?.textContent)).toEqual(['A new question'])
     expect(document.getElementById('pauseHint')?.hidden).toBe(true)
+  })
+})
+
+describe('the drawer under an unrelated draft (#420 review)', () => {
+  const ask = (d: Database.Database) => insertItem(d, { project: 'alpha', stream: 'main', agent: 'copilot', kind: 'question', title: 'Hold a draft' })
+  async function withReplyDraft(asked: string): Promise<void> {
+    await showInbox()
+    click(rows().find((el) => el.dataset.cardId === asked))
+    await settle()
+    type(document.querySelector<HTMLTextAreaElement>('.nrow-card .reply-input:not(.reply-context-input)'), 'Half an answer')
+  }
+
+  it('rebuilds nothing in the drawer on ticks that change nothing it draws', async () => {
+    db = freshDb()
+    present(db, { session: 'mcp-a' })
+    const asked = ask(db)
+    await bootApp(db)
+    await withReplyDraft(asked)
+    openDrawer()
+    await pollTick()
+    const list = drawer().querySelector('.live-list')!
+    const mutations: MutationRecord[] = []
+    const observer = new MutationObserver((records) => mutations.push(...records))
+    observer.observe(list, { subtree: true, childList: true, characterData: true, attributes: true })
+    for (let n = 0; n < 3; n++) {
+      advanceClock(1000)
+      insertItem(db, { project: 'beta', stream: 'main', agent: 'claude', kind: 'note', title: `Unrelated ${n}` })
+      await pollTick()
+    }
+    observer.disconnect()
+    expect(document.getElementById('pauseHint')?.hidden).toBe(false)
+    expect(mutations).toEqual([])
+  })
+
+  it('keeps keyboard focus on a Message button when a changed tick rebuilds the drawer', async () => {
+    db = freshDb()
+    present(db, { session: 'mcp-a' })
+    const asked = ask(db)
+    await bootApp(db)
+    await withReplyDraft(asked)
+    openDrawer()
+    messageButton('mcp-a')!.focus()
+    await changedPollTick(db) // a new idle session: the drawer is rebuilt
+    expect(drawer().querySelectorAll('.idle-row').length).toBeGreaterThan(0)
+    expect(document.activeElement).toBe(messageButton('mcp-a'))
+    expect(document.activeElement?.isConnected).toBe(true)
   })
 })
 
@@ -316,6 +364,59 @@ describe('the Not delivered fold (#411)', () => {
 })
 
 describe('durable message drafts (#411, #279)', () => {
+  it('keeps both texts when a session drops out of Live and comes back (#420 review)', async () => {
+    db = freshDb()
+    present(db, { session: 'mcp-a' })
+    await bootApp(db)
+    type(await openComposer('mcp-a'), 'Written before it went quiet')
+    input('mcp-a')!.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
+    await settle()
+    // silent past the presence window: Live drops it, and the draft waits in the unsent responses
+    advanceClock(16 * 60_000)
+    await pollTick()
+    await vi.advanceTimersByTimeAsync(300)
+    expect(Object.keys(stored())).toEqual(['message-recovery:mcp-a'])
+    await showInbox()
+    expect(document.querySelector('.stale-draft-line[data-recovery-line="message:mcp-a"]')?.textContent)
+      .toContain('Not sent: this session is no longer running · Message: Written before it went quiet')
+    // it heartbeats again: the text goes back to its composer, and nothing is lost when it is edited
+    present(db, { session: 'mcp-a' })
+    await pollTick()
+    await vi.advanceTimersByTimeAsync(300)
+    expect(document.querySelector('.stale-draft-line[data-recovery-line="message:mcp-a"]')).toBeNull()
+    expect(stored()['message:mcp-a']?.draft).toMatchObject({ text: 'Written before it went quiet', reason: '' })
+    expect(stored()['message-recovery:mcp-a']).toBeUndefined()
+    const box = await openComposer('mcp-a')
+    expect(box.value).toBe('Written before it went quiet')
+    type(box, 'Written before it went quiet, and more')
+    await vi.advanceTimersByTimeAsync(300)
+    expect(Object.values(stored()).map((entry) => entry.draft['text'])).toEqual(['Written before it went quiet, and more'])
+  })
+
+  it('stores a draft and a waiting unsent message to one session under their own keys', async () => {
+    db = freshDb()
+    present(db, { session: 'mcp-a' })
+    const entry = (text: string, reason: string) => ({ savedAt: Date.now(), draft: {
+      type: 'message', session: 'mcp-a', project: 'alpha', agent: 'copilot', stream: 'main', text, intent: null, reason,
+    } })
+    localStorage.setItem(KEY, JSON.stringify({ v: 1, entries: {
+      'message-recovery:mcp-a': entry('The older one', 'Not sent: this session is no longer running'),
+      'message:mcp-a': entry('The newer one', ''),
+    } }))
+    await bootApp(db)
+    openDrawer()
+    click(messageButton('mcp-a'))
+    await settle()
+    expect(input('mcp-a')?.value).toBe('The newer one')
+    await showInbox()
+    expect(document.querySelector('.stale-draft-line[data-recovery-line="message:mcp-a"]')?.textContent).toContain('The older one')
+    type(input('mcp-a'), 'The newer one, edited')
+    await vi.advanceTimersByTimeAsync(300)
+    expect(Object.fromEntries(Object.entries(stored()).map(([key, value]) => [key, value.draft['text']]))).toEqual({
+      'message-recovery:mcp-a': 'The older one', 'message:mcp-a': 'The newer one, edited',
+    })
+  })
+
   it('brings a draft back into its composer after a reload, opening and focusing nothing', async () => {
     db = freshDb()
     present(db, { session: 'mcp-a' })
@@ -491,5 +592,45 @@ describe('an older viewer and attention parity (#411)', () => {
     ackMessage(db, { id: sent, session: 'mcp-a', outcome: 'On it.' })
     await pollTick()
     expect(await surfaces()).toEqual(before)
+  })
+})
+
+describe('a viewer restart with message drafts (#420 review)', () => {
+  let reload: ReturnType<typeof vi.fn>
+  beforeEach(() => {
+    reload = vi.fn()
+    vi.stubGlobal('location', { hash: '', reload })
+  })
+  afterEach(() => { vi.unstubAllGlobals() })
+
+  async function bootWithRestart(d: Database.Database) {
+    let boot = 'original-viewer'
+    await bootApp(d, {
+      interceptFetch: async (_input, _init, next) => {
+        const response = await next()
+        response.headers.set('x-inbox-boot', boot)
+        return response
+      },
+    })
+    return () => { boot = 'restarted-viewer' }
+  }
+
+  it('waits only while a composer is in use, never for a stored draft in a closed one', async () => {
+    db = freshDb()
+    present(db, { session: 'mcp-a' })
+    const restart = await bootWithRestart(db)
+    const box = await openComposer('mcp-a')
+    type(box, 'Kept across the reload')
+    restart()
+    await pollTick()
+    expect(reload).not.toHaveBeenCalled()
+    expect(document.getElementById('pauseHint')?.textContent).toBe('Viewer updated — finish or clear unsent responses to refresh.')
+    box.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
+    await settle()
+    expect(messageButton('mcp-a')?.textContent).toBe('Message · draft')
+    await pollTick()
+    expect(reload).toHaveBeenCalledTimes(1)
+    // the reload loses nothing: the draft was stored
+    expect(stored()['message:mcp-a']?.draft).toMatchObject({ text: 'Kept across the reload' })
   })
 })

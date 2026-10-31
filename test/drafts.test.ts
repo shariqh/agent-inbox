@@ -105,6 +105,7 @@ describe('draftEntry', () => {
     }
     expect(draftEntry({ ...message, extra: 1 })).toEqual(message)
     expect(draftKey(draftEntry(message)!)).toBe('message:mcp-a')
+    expect(draftKey(draftEntry({ ...message, reason: 'Not sent: this session is no longer running' })!)).toBe('message-recovery:mcp-a')
     expect(draftEntry({ ...message, intent: null, stream: undefined })).toEqual({ ...message, intent: null, stream: '' })
     for (const bad of [{ text: '  ' }, { session: '' }, { intent: { id: '' , text: 'x' } }, { intent: 'id' }, { reason: 7 }]) {
       expect(draftEntry({ ...message, ...bad }), JSON.stringify(bad)).toBeNull()

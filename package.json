@@ -22,7 +22,8 @@
     "agent-inbox-mcp": "./dist/mcp-server.js",
     "agent-inbox-hook": "./dist/hook-cli.js",
     "agent-inbox-watch": "./dist/watch-cli.js",
-    "agent-inbox-meshctl": "./dist/meshctl.js"
+    "agent-inbox-meshctl": "./dist/meshctl.js",
+    "agent-inbox-driver": "./dist/driver-cli.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",

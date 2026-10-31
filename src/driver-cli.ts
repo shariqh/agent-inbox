@@ -19,9 +19,11 @@ import {
 } from 'node:fs'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { createInterface } from 'node:readline'
+import { fileURLToPath } from 'node:url'
 import { Driver } from './driver.js'
 import type { EndReason } from './driver.js'
 import { createTerminal, installStopHandlers, reapProcessGroup } from './driver-tty.js'
+import { installedRuntimeOf, processStartedAt, removePin, writePin } from './driver-pin.js'
 import { findNativeHost, linkSessions, readProcesses } from './driver-link.js'
 import { childEnv, copilotAgentInboxServer, copilotArgs, terminalSafe } from './driver-policy.js'
 import type { LaunchMode } from './driver-policy.js'
@@ -158,6 +160,26 @@ async function runCopilot(argv: string[]): Promise<void> {
   if (!slot.ok) {
     fail(`${slot.running.length} driven sessions are already running (launches ${slot.running.map((r) => r.launch).join(', ')}); stop one first`)
   }
+  // Run from an installed runtime, the driver pins it for as long as it runs,
+  // so no prune removes the runtime under it (§7). Every exit path, forced or
+  // not, ends in process.exit, whose 'exit' handler removes the pin; a pin a
+  // crash leaves never counts once this process is gone, and the next prune
+  // sweeps it.
+  const runtime = installedRuntimeOf(fileURLToPath(import.meta.url))
+  if (runtime) {
+    const startedAt = processStartedAt(process.pid)
+    let pinPath: string | null = null
+    try {
+      if (startedAt) pinPath = writePin(runtime, { launchId, pid: process.pid, startedAt })
+    } catch { /* reported below */ }
+    if (!pinPath) {
+      try { releaseDriverLeases(db, lease) } catch { /* the hub is gone */ }
+      fail(`could not pin the runtime it runs from in ${join(runtime.root, '.pins')}, so a prune could remove it mid-session`, 1)
+    }
+    const pinned = pinPath
+    process.on('exit', () => removePin(pinned, launchId))
+  }
+
   const launchDir = join(hubDir, 'launches', launchId)
   const log = eventLog(launchDir)
   const stderrLog = createWriteStream(join(launchDir, 'copilot.stderr.log'), { flags: 'a', mode: 0o600 })

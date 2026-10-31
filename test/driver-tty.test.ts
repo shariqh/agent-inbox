@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest'
 import { EventEmitter } from 'node:events'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { createTerminal, installStopHandlers } from '../src/driver-tty.js'
+import { createTerminal, installStopHandlers, reapProcessGroup } from '../src/driver-tty.js'
 
 const REPO = new URL('..', import.meta.url).pathname
 const ESC = '\u001b'
@@ -93,7 +93,7 @@ describe('stopping on signals and a closed terminal (#412 review)', () => {
       isFinished: () => finished,
     }
     const exits: number[] = []
-    installStopHandlers({ signals, input, driver, exit: (code) => exits.push(code), notice: (t) => calls.push(`notice:${t}`), boundMs: 30 })
+    installStopHandlers({ signals, input, driver, exit: (code) => exits.push(code), notice: (t) => calls.push(`notice:${t}`), silence: () => calls.push('silence'), boundMs: 30 })
     return { signals, input, calls, exits }
   }
 
@@ -102,12 +102,12 @@ describe('stopping on signals and a closed terminal (#412 review)', () => {
     ok.signals.emit(signal)
     ok.signals.emit(signal)
     await new Promise((resolve) => setTimeout(resolve, 60))
-    expect(ok.calls.filter((c) => !c.startsWith('notice:'))).toEqual(['stop'])
+    expect(ok.calls.filter((c) => !c.startsWith('notice:') && c !== 'silence')).toEqual(['stop'])
     expect(ok.exits).toEqual([])
     const stuck = rig()
     stuck.signals.emit(signal)
     await new Promise((resolve) => setTimeout(resolve, 60))
-    expect(stuck.calls.filter((c) => !c.startsWith('notice:'))).toEqual(['stop', 'forceStop'])
+    expect(stuck.calls.filter((c) => !c.startsWith('notice:') && c !== 'silence')).toEqual(['stop', 'forceStop'])
     expect(stuck.exits).toEqual([signal === 'SIGHUP' ? 129 : 143])
   })
 
@@ -123,5 +123,89 @@ describe('stopping on signals and a closed terminal (#412 review)', () => {
     r.signals.emit('SIGINT')
     expect(r.calls.filter((c) => !c.startsWith('notice:'))).toEqual(['stop', 'forceStop'])
     expect(r.exits).toEqual([130])
+  })
+})
+
+describe('a terminal that has gone away (#412 review, round 2)', () => {
+  it('a hang-up silences the terminal before the stop and prints nothing', () => {
+    const signals = new EventEmitter()
+    const calls: string[] = []
+    installStopHandlers({
+      signals, input: new EventEmitter(),
+      driver: { stop: () => calls.push('stop'), forceStop: () => calls.push('forceStop'), isFinished: () => false },
+      exit: () => calls.push('exit'), notice: (t) => calls.push(`notice:${t}`), silence: () => calls.push('silence'),
+    })
+    signals.emit('SIGHUP')
+    expect(calls).toEqual(['silence', 'stop'])
+  })
+
+  it('a notice that throws (EIO) never stops the stop', () => {
+    const signals = new EventEmitter()
+    const calls: string[] = []
+    installStopHandlers({
+      signals, input: new EventEmitter(),
+      driver: { stop: () => calls.push('stop'), forceStop: () => calls.push('forceStop'), isFinished: () => false },
+      exit: (code) => calls.push(`exit:${code}`),
+      notice: () => { throw Object.assign(new Error('write EIO'), { code: 'EIO' }) },
+      silence: () => undefined,
+    })
+    expect(() => signals.emit('SIGTERM')).not.toThrow()
+    expect(() => signals.emit('SIGINT')).not.toThrow()
+    expect(() => signals.emit('SIGINT')).not.toThrow()
+    expect(calls).toEqual(['stop', 'forceStop', 'exit:130'])
+  })
+
+  it('goes silent after the first failed write, and after silence(), without throwing', () => {
+    let failing = false
+    const written: string[] = []
+    const terminal = createTerminal({
+      write: (text) => {
+        if (failing) throw Object.assign(new Error('write EIO'), { code: 'EIO' })
+        written.push(text)
+      },
+      answer: () => undefined, stop: () => undefined, interrupt: () => undefined,
+    })
+    terminal.ui.text('before\n')
+    failing = true
+    expect(() => terminal.ui.notice('lost')).not.toThrow()
+    failing = false
+    terminal.ui.text('after\n')
+    terminal.ui.settled('none', 'x')
+    expect(written).toEqual(['before\n'])
+    const other = createTerminal({ write: (text) => written.push(text), answer: () => undefined, stop: () => undefined, interrupt: () => undefined })
+    other.silence()
+    other.ui.ask({ id: 'a', kind: 'permission', title: 't', detail: 'd' })
+    expect(written).toEqual(['before\n'])
+  })
+
+  it('a second Ctrl-C after the driver finished still forces: forceStop signals a child that has not gone', () => {
+    const signals = new EventEmitter()
+    const calls: string[] = []
+    installStopHandlers({
+      signals, input: new EventEmitter(),
+      driver: { stop: () => calls.push('stop'), forceStop: () => calls.push('forceStop'), isFinished: () => true },
+      exit: (code) => calls.push(`exit:${code}`), notice: (t) => calls.push(`notice:${t}`), silence: () => undefined,
+    })
+    signals.emit('SIGINT')
+    signals.emit('SIGINT')
+    expect(calls).toEqual(['notice:Waiting for Copilot to exit… (Ctrl-C again to force)', 'forceStop', 'exit:130'])
+  })
+
+  it('reaps the child’s process group: SIGKILL only when SIGTERM did not end it in time', () => {
+    const signals: Array<[number, unknown]> = []
+    let aliveFor = 3
+    const gone = reapProcessGroup(4242, {
+      kill: (pid, signal) => {
+        signals.push([pid, signal])
+        if (signal === 0 && aliveFor-- <= 0) throw Object.assign(new Error('ESRCH'), { code: 'ESRCH' })
+      },
+      sleep: () => undefined,
+    })
+    expect(gone).toBe('gone')
+    expect(signals.every(([pid, signal]) => pid === -4242 && signal === 0)).toBe(true)
+    const stuck: Array<[number, unknown]> = []
+    expect(reapProcessGroup(4242, { kill: (pid, signal) => { stuck.push([pid, signal]) }, sleep: () => undefined, graceMs: 200 })).toBe('killed')
+    expect(stuck.at(-1)).toEqual([-4242, 'SIGKILL'])
+    expect(stuck.filter(([, signal]) => signal === 0)).toHaveLength(5)
   })
 })

@@ -114,8 +114,17 @@ Claude Code and Copilot CLI load this file automatically when they read or edit 
   one-line help (design §14.5). `installStopHandlers`: Ctrl-C, SIGHUP (the terminal closed), SIGTERM
   and the end of the terminal's input all run the ordered Stop. A second Ctrl-C, or a Stop that has
   not finished within 15 s, calls `Driver.forceStop()` before exiting: synchronous and idempotent, it
-  answers open requests `cancelled`, resolves the asks "Session stopped.", releases the leases and
-  sends SIGTERM to the child's group, so no alert stays as attention and no lease blocks a restart.
+  answers open requests `cancelled`, resolves the asks "Session stopped." and releases the leases,
+  so no alert stays as attention and no lease blocks a restart; and whether or not the driver had
+  already finished, a child still running gets SIGTERM to its group, then the CLI's
+  `reapProcessGroup` waits up to 2 s and sends SIGKILL.
+- **A closed terminal never stops the cleanup.** Writing to a hung-up terminal fails with `EIO`,
+  emitted as `'error'`; with no listener that throws and kills the driver before its Stop runs. The
+  CLI listens for `'error'` on stdout, stderr and stdin and silences the terminal; the terminal
+  writer also catches a throwing write and goes silent; SIGHUP silences it before the Stop and prints
+  nothing; and no cleanup step depends on a write. `test/driver-pty.test.ts` proves it on a real
+  pseudo-terminal (Python's `pty` module, a fake `copilot` on PATH, the master end closed while an
+  approval is open): the alert is resolved and the lease released.
 - **The child** (`driver-cli.ts`): `copilot` resolved on PATH to a real path owned by the user or
   root and not group/world-writable, or the driver refuses to start (design §14.5); spawned detached (its own process group, so the terminal's
   Ctrl-C reaches only the driver), argv only, `mcpServers: []`; its env is the terminal's through

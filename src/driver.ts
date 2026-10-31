@@ -188,6 +188,8 @@ export class Driver {
   private ending: EndReason | null = null
   private finished = false
   private childGone = false
+  // set as the child exits, even after the queue has stopped (forceStop reads it)
+  private childExited = false
   private readonly timers: NodeJS.Timeout[] = []
   private resolveEnd!: (reason: EndReason) => void
   readonly done: Promise<EndReason>
@@ -203,7 +205,11 @@ export class Driver {
       output: options.output,
       onFrame: (frame) => this.enqueue({ type: 'frame', frame }),
     })
-    options.child.exited.then(() => this.enqueue({ type: 'child_exit' }), () => this.enqueue({ type: 'child_exit' }))
+    const exited = () => {
+      this.childExited = true
+      this.enqueue({ type: 'child_exit' })
+    }
+    options.child.exited.then(exited, exited)
   }
 
   // ── public intents: each one queues behind every frame already read ──────
@@ -235,27 +241,30 @@ export class Driver {
 
   /**
    * The forced exit (a second Ctrl-C, or a stop that did not finish in time):
-   * synchronous, so it completes before process.exit. Open requests are answered
-   * cancelled, asks resolved "Session stopped.", leases released and the child's
-   * group sent SIGTERM. Idempotent; a no-op once the driver has finished.
+   * synchronous, so it completes before process.exit, and it depends on no
+   * terminal write. Unless the driver already finished: open requests answered
+   * cancelled, asks resolved "Session stopped.", leases released. Then, whether
+   * or not the driver had finished, a child still running gets SIGTERM to its
+   * group (the CLI follows with SIGKILL if it does not go). Idempotent.
    */
   forceStop(): void {
-    if (this.finished) return
-    this.ending ??= 'stopped'
-    this.o.log({ event: 'forced_stop' })
-    for (const ask of [...this.asks.values()]) {
-      if (ask.rpcId !== undefined) this.conn.respond(ask.rpcId, { outcome: { outcome: 'cancelled' } })
-      this.settle(ask, 'Session stopped.')
+    if (!this.finished) {
+      this.ending ??= 'stopped'
+      this.o.log({ event: 'forced_stop' })
+      for (const ask of [...this.asks.values()]) {
+        if (ask.rpcId !== undefined) this.conn.respond(ask.rpcId, { outcome: { outcome: 'cancelled' } })
+        this.settle(ask, 'Session stopped.')
+      }
+      this.finished = true
+      for (const timer of this.timers) clearTimeout(timer)
+      this.conn.close()
+      try {
+        releaseDriverLeases(this.o.db, this.o.lease)
+      } catch { /* the hub is gone: the leases go stale in 90 s */ }
+      this.o.log({ event: 'ended', reason: this.ending, forced: true })
+      this.resolveEnd(this.ending)
     }
-    this.finished = true
-    for (const timer of this.timers) clearTimeout(timer)
-    this.conn.close()
-    try {
-      releaseDriverLeases(this.o.db, this.o.lease)
-    } catch { /* the hub is gone: the leases go stale in 90 s */ }
-    if (!this.childGone) this.o.child.kill('SIGTERM')
-    this.o.log({ event: 'ended', reason: this.ending, forced: true })
-    this.resolveEnd(this.ending)
+    if (!this.childExited) this.o.child.kill('SIGTERM')
   }
 
   isFinished(): boolean {

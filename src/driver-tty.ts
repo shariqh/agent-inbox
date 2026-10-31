@@ -20,6 +20,8 @@ export interface Terminal {
   print(text: string): void
   /** The human typed a line: an answer to the open ask, or a command. */
   line(text: string): void
+  /** The terminal is gone (an `EIO`, a hang-up): every later write is a no-op. */
+  silence(): void
 }
 
 export function createTerminal(opts: {
@@ -28,12 +30,23 @@ export function createTerminal(opts: {
   stop: () => void
   interrupt: () => void
 }): Terminal {
-  const write = (text: string) => opts.write(terminalSafe(text))
+  // a write to a terminal that has gone must never throw into the driver's
+  // cleanup; once one fails, the terminal is silent for good
+  let dead = false
+  const raw = (text: string) => {
+    if (dead) return
+    try {
+      opts.write(text)
+    } catch {
+      dead = true
+    }
+  }
+  const write = (text: string) => raw(terminalSafe(text))
   const asks: AskView[] = []
   const showAsk = () => {
     const ask = asks[0]
     if (!ask) return
-    opts.write(SGR_RESET)
+    raw(SGR_RESET)
     write(`\n\n── ${ask.title}\n${ask.detail}\n`)
     write(ask.kind === 'plan'
       ? 'Approve the plan and let the agent carry it out? [y/N] '
@@ -57,6 +70,7 @@ export function createTerminal(opts: {
   return {
     ui,
     print: write,
+    silence() { dead = true },
     line(text) {
       const answer = text.trim().toLowerCase()
       const ask = asks[0]
@@ -73,10 +87,10 @@ export function createTerminal(opts: {
 
 /**
  * Stops the session on Ctrl-C, SIGHUP (the terminal closed), SIGTERM and the
- * end of the terminal's input, through the driver's ordered stop. A second
- * Ctrl-C, or a stop that has not finished within `boundMs`, forces it: the
- * driver's synchronous cleanup (asks resolved, leases released, the child's
- * group sent SIGTERM) runs before `exit`.
+ * end of the terminal's input, through the driver's ordered stop. A hang-up
+ * silences the terminal first and prints nothing: a write to a closed terminal
+ * fails with EIO. A second Ctrl-C, or a stop that has not finished within
+ * `boundMs`, forces it: the driver's synchronous cleanup runs, then `exit`.
  */
 export function installStopHandlers(opts: {
   signals: { on(signal: 'SIGINT' | 'SIGHUP' | 'SIGTERM', handler: () => void): unknown }
@@ -84,6 +98,7 @@ export function installStopHandlers(opts: {
   driver: { stop(): void; forceStop(): void; isFinished(): boolean }
   exit: (code: number) => void
   notice: (text: string) => void
+  silence: () => void
   boundMs?: number
 }): void {
   let stopping = false
@@ -91,11 +106,16 @@ export function installStopHandlers(opts: {
     opts.driver.forceStop()
     opts.exit(code)
   }
-  const stop = (why: string, code: number) => {
+  const tell = (text: string) => {
+    try {
+      opts.notice(text)
+    } catch { /* the terminal is gone; the stop goes on */ }
+  }
+  const stop = (why: string | null, code: number) => {
     if (stopping || opts.driver.isFinished()) return
     stopping = true
-    opts.notice(why)
     opts.driver.stop()
+    if (why) tell(why)
     const timer = setTimeout(() => {
       if (!opts.driver.isFinished()) force(code)
     }, opts.boundMs ?? 15_000)
@@ -103,10 +123,43 @@ export function installStopHandlers(opts: {
   }
   let interrupts = 0
   opts.signals.on('SIGINT', () => {
-    if (++interrupts === 1) return stop('Stopping the session… (Ctrl-C again to force)', 130)
+    // the second Ctrl-C forces, even after the driver finished: a child that
+    // ignores its closed stdin still has to go (forceStop signals it)
+    if (++interrupts === 1 && !opts.driver.isFinished()) return stop('Stopping the session… (Ctrl-C again to force)', 130)
+    if (interrupts === 1) return tell('Waiting for Copilot to exit… (Ctrl-C again to force)')
     force(130)
   })
-  opts.signals.on('SIGHUP', () => stop('The terminal closed: stopping the session.', 129))
+  opts.signals.on('SIGHUP', () => {
+    opts.silence()
+    stop(null, 129)
+  })
   opts.signals.on('SIGTERM', () => stop('Asked to terminate: stopping the session.', 143))
   opts.input.on('close', () => stop('The terminal’s input ended: stopping the session.', 1))
+}
+
+/**
+ * The CLI's forced exit, after `forceStop` sent SIGTERM: wait synchronously up
+ * to `graceMs` for the child's process group to go, then SIGKILL it. Every
+ * effect is injected, so it is tested without a process.
+ */
+export function reapProcessGroup(pgid: number, io: {
+  kill: (pid: number, signal: NodeJS.Signals | 0) => void
+  sleep: (ms: number) => void
+  graceMs?: number
+}): 'gone' | 'killed' {
+  const alive = () => {
+    try {
+      io.kill(-pgid, 0)
+      return true
+    } catch {
+      return false
+    }
+  }
+  const grace = io.graceMs ?? 2000
+  for (let waited = 0; waited < grace && alive(); waited += 50) io.sleep(50)
+  if (!alive()) return 'gone'
+  try {
+    io.kill(-pgid, 'SIGKILL')
+  } catch { /* gone in between */ }
+  return 'killed'
 }

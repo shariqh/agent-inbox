@@ -21,7 +21,7 @@ import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { createInterface } from 'node:readline'
 import { Driver } from './driver.js'
 import type { EndReason } from './driver.js'
-import { createTerminal, installStopHandlers } from './driver-tty.js'
+import { createTerminal, installStopHandlers, reapProcessGroup } from './driver-tty.js'
 import { findNativeHost, linkSessions, readProcesses } from './driver-link.js'
 import { childEnv, copilotAgentInboxServer, copilotArgs, terminalSafe } from './driver-policy.js'
 import type { LaunchMode } from './driver-policy.js'
@@ -195,32 +195,46 @@ async function runCopilot(argv: string[]): Promise<void> {
     return { hostPid, linked: linked.linked, dead: linked.dead }
   }
 
+  const rawLinkWait = Number(process.env.AGENT_INBOX_DRIVER_LINK_WAIT_MS)
+  const linkWaitMs = Number.isInteger(rawLinkWait) && rawLinkWait >= 0 && rawLinkWait <= 10_000 ? rawLinkWait : undefined
+
   // the terminal: every write is sanitized (driver-tty.ts), one approval at a time
   let driver: Driver | null = null
   const terminal = createTerminal({
-    write: (text) => process.stdout.write(text),
+    write: (text) => { process.stdout.write(text) },
     answer: (askId, approve) => driver?.answer(askId, approve),
     stop: () => driver?.stop(),
     interrupt: () => driver?.interrupt(),
   })
   const out = terminal.print
   const ui = terminal.ui
+  // a closed terminal makes writes fail with EIO, emitted as 'error': with no
+  // listener that throws and kills the driver before its cleanup (#412 review)
+  for (const stream of [process.stdout, process.stderr, process.stdin]) stream.on('error', () => terminal.silence())
 
   driver = new Driver({
     db, lease, mode: args.mode, cwd, project: inferProject(cwd), stream: inferStream(cwd), task,
     input: child.stdout, output: child.stdin,
     child: { kill: (signal) => { if (child.pid) try { process.kill(-child.pid, signal) } catch { /* gone */ } }, exited },
     ui, log, stateDir: join(hubDir, 'drivers', launchId), scan,
+    // a test seam, bounded: how long the first prompt waits for linking (default 10 s)
+    ...(linkWaitMs === undefined ? {} : { timing: { linkWaitMs } }),
   })
 
   const rl = createInterface({ input: process.stdin, terminal: false })
   rl.on('line', (line) => terminal.line(line))
+  const sleep = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
   installStopHandlers({
     signals: process,
     input: rl,
     driver,
-    exit: (code) => process.exit(code),
+    exit: (code) => {
+      // forceStop sent the child's group SIGTERM; SIGKILL it if it does not go
+      if (child.pid && child.exitCode === null && child.signalCode === null) reapProcessGroup(child.pid, { kill: (pid, signal) => { process.kill(pid, signal) }, sleep })
+      process.exit(code)
+    },
     notice: (text) => ui.notice(text),
+    silence: () => terminal.silence(),
   })
 
   out(`Agent Inbox drives this Copilot session (launch ${launchId}, mode ${args.mode}).\n`)

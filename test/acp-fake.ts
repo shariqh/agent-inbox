@@ -95,6 +95,8 @@ export interface FakeScript {
   keepAllowAll?: boolean
   /** An agent that answers set_config_option allow_all=off without turning it off. */
   ignoreAllowAllOff?: boolean
+  /** A stuck child: it does not exit when its stdin closes. */
+  ignoreStdinClose?: boolean
 }
 
 export function fakeAgent(script: FakeScript = {}): FakeAgent {
@@ -152,7 +154,7 @@ export function fakeAgent(script: FakeScript = {}): FakeAgent {
       handle(message)
     }
   })
-  stdin.on('end', () => exitNow())
+  stdin.on('end', () => { if (!script.ignoreStdinClose) exitNow() })
 
   const handle = (m: Json) => {
     const params = (m.params ?? {}) as Json

@@ -509,7 +509,7 @@ describe('the terminal going away (#412 review)', () => {
     const signals = new EventEmitter()
     const input = new EventEmitter()
     const exits: number[] = []
-    installStopHandlers({ signals, input, driver: h.driver, exit: (code) => exits.push(code), notice: () => undefined, boundMs: 2000 })
+    installStopHandlers({ signals, input, driver: h.driver, exit: (code) => exits.push(code), notice: () => undefined, silence: () => undefined, boundMs: 2000 })
     return { signals, input, exits }
   }
   const alerts = (h: Harness) => listItems(h.human).filter((item) => item.project === '@sessions')
@@ -555,5 +555,29 @@ describe('the terminal going away (#412 review)', () => {
     expect(await h.answerTo(900)).toEqual({ outcome: 'cancelled' })
     h.driver.forceStop() // idempotent
     expect(killed).toBe('SIGTERM')
+  })
+})
+
+describe('a child that outlives the driver (#412 review, round 2)', () => {
+  it('a second Ctrl-C after the driver finished still sends the child’s group SIGTERM', async () => {
+    const h = start({ script: { onPrompt: () => undefined, ignoreStdinClose: true }, timing: { stopGraceMs: 5000 } })
+    await h.ready()
+    const kills: string[] = []
+    h.fake.kill = (signal) => { kills.push(signal) }
+    const signals = new EventEmitter()
+    const exits: number[] = []
+    installStopHandlers({ signals, input: new EventEmitter(), driver: h.driver, exit: (code) => exits.push(code), notice: () => undefined, silence: () => undefined })
+    h.driver.stop()
+    expect(await h.done).toBe('stopped')
+    expect(h.driver.isFinished()).toBe(true)
+    signals.emit('SIGINT')
+    signals.emit('SIGINT')
+    expect(kills).toEqual(['SIGTERM'])
+    expect(exits).toEqual([130])
+    // once the child has exited, nothing is signalled
+    h.fake.exit()
+    await new Promise((resolve) => setImmediate(resolve))
+    h.driver.forceStop()
+    expect(kills).toEqual(['SIGTERM'])
   })
 })

@@ -80,6 +80,9 @@ export function connectAcp(opts: {
     return { kind: 'invalid', reason: 'a response to no request' }
   }
 
+  // a child that has exited closes its stdin: EPIPE must not throw from the stream
+  opts.output.on('error', () => { closed = true })
+  opts.input.on('error', () => { closed = true })
   opts.input.setEncoding('utf8')
   opts.input.on('data', (chunk: string) => {
     buffer += chunk

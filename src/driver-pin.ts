@@ -10,11 +10,15 @@
 // and removes it on every exit it sees; a pin a crash leaves behind never
 // counts, and the next prune sweeps it.
 //
-// Whether this is a runtime at all is decided by LOCATION, never by whether a
-// manifest happens to be readable: a driver whose own file is inside the
-// runtime root must be `<root>/<id>/dist/driver-cli.js` of a runtime whose
-// manifest names it, or it refuses to start. Anything outside the root (a
-// checkout, an app's bundled payload) is never pruned and pins nothing.
+// It is an installed runtime when EITHER (i) the folder above its `dist/`
+// holds a runtime manifest naming that very folder, wherever it is: the pin
+// then goes under that folder's parent, the root that installed it, so a
+// custom root needs no AGENT_INBOX_RUNTIME_ROOT in the driver's own
+// environment; OR (ii) its file sits under the configured runtime root, where
+// it must be `<root>/<id>/dist/driver-cli.js` of a runtime whose manifest
+// names it, or it refuses to start rather than run unpinned. A manifest that
+// cannot be read refuses too. Anything else (a checkout, an app's bundled
+// payload, whose manifest names no folder of that name) pins nothing.
 import { closeSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, unlinkSync, writeSync, constants } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
@@ -22,6 +26,7 @@ import { PINS_DIR } from '../scripts/runtime-pins.mjs'
 
 const MANIFEST_FILE = 'runtime-manifest.json'
 const ENTRY = ['dist', 'driver-cli.js']
+const UNREADABLE = "its runtime's manifest cannot be read"
 
 export interface InstalledRuntime {
   root: string
@@ -52,18 +57,28 @@ function manifestProblem(dir: string, runtimeId: string): string | null {
     return null
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code
-    return code === 'ENOENT' ? 'its runtime has no manifest' : `its runtime's manifest cannot be read${code ? ` (${code})` : ''}`
+    return code === 'ENOENT' ? 'its runtime has no manifest' : `${UNREADABLE}${code ? ` (${code})` : ''}`
   }
 }
 
 /**
  * Whether `entryFile` (this process's `dist/driver-cli.js`) runs from an
- * installed runtime under `runtimeRoot`, from somewhere else (a checkout),
- * or from inside the runtime root where it cannot be pinned (refuse).
+ * installed runtime (rule (i) or (ii) above), from somewhere that is never
+ * pruned (a checkout), or from where it cannot be pinned (refuse).
  */
 export function locateRuntime(entryFile: string, runtimeRoot: string): Located {
   const folder = real(dirname(entryFile))
   const entry = real(entryFile) ?? (folder === null ? resolve(entryFile) : join(folder, basename(entryFile)))
+
+  // (i) the folder above dist/ is a runtime that names itself
+  const dir = dirname(dirname(entry))
+  if (basename(entry) === ENTRY[1] && basename(dirname(entry)) === ENTRY[0]) {
+    const problem = manifestProblem(dir, basename(dir))
+    if (problem === null) return { kind: 'runtime', runtime: { root: dirname(dir), runtimeId: basename(dir) } }
+    if (problem.startsWith(UNREADABLE)) return { kind: 'refuse', reason: `${dir} looks like a runtime, but ${problem}` }
+  }
+
+  // (ii) anything under the configured root must have been (i)
   const root = real(runtimeRoot)
   const inside = (base: string) => entry.startsWith(base.endsWith(sep) ? base : base + sep)
   if (root === null) {
@@ -77,8 +92,7 @@ export function locateRuntime(entryFile: string, runtimeRoot: string): Located {
     return { kind: 'refuse', reason: `it runs from inside the runtime root ${root} but not from a runtime's ${ENTRY.join('/')}` }
   }
   const problem = manifestProblem(join(root, runtimeId), runtimeId)
-  if (problem) return { kind: 'refuse', reason: `it runs from the runtime root ${root}, but ${problem}` }
-  return { kind: 'runtime', runtime: { root, runtimeId } }
+  return { kind: 'refuse', reason: `it runs from the runtime root ${root}, but ${problem ?? 'its runtime cannot be identified'}` }
 }
 
 // A folder this user owns, made 0700 when missing; never a symlink.

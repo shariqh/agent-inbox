@@ -10,7 +10,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { chmodSync, existsSync, mkdirSync, readdirSync, renameSync, rmdirSync, writeFileSync } from 'node:fs'
 import { spawn, spawnSync } from 'node:child_process'
 import type { ChildProcess } from 'node:child_process'
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { locateRuntime, pinRuntime, removePin, writePin } from '../src/driver-pin.js'
 import { linuxIdentity, linuxProcessStart, processIdentities, processIdentity, runtimePins, sweepStalePins } from '../scripts/runtime-pins.mjs'
@@ -219,6 +219,42 @@ describe('where the driver runs from, and pinning it (#412)', () => {
     expect(locateRuntime(join(trashed, 'driver-cli.js'), h.runtimeRoot)).toMatchObject({ kind: 'refuse' })
     // a root that is not there holds nothing
     expect(locateRuntime(join(bare, 'dist', 'driver-cli.js'), join(h.home, 'no-runtimes'))).toEqual({ kind: 'checkout' })
+  })
+
+  // The installer, Setup and prune-runtimes.sh read AGENT_INBOX_RUNTIME_ROOT
+  // from their own environment, and the printed command does not carry it: a
+  // runtime is known by the manifest beside its dist/, and pinned in the root
+  // that holds it, whatever the driver's own environment says.
+  it('pins under the root that holds its runtime, whatever root its own environment names', () => {
+    const h = hooksHome()
+    const runtime = installRuntime(h, OLD)
+    const entry = join(runtime.dir, 'dist', 'driver-cli.js')
+    const pinIn = (configured: string) => {
+      const located = locateRuntime(entry, configured)
+      if (located.kind !== 'runtime') throw new Error(JSON.stringify(located))
+      expect(located.runtime.runtimeId).toBe(runtime.runtimeId)
+      const path = pinRuntime(located.runtime, { launchId: PIN_LAUNCH, pid: process.pid, startedAt: startedAt() })
+      const pins = runtimePins({ runtimeRoot: h.runtimeRoot })
+      expect(pins.status === 'ok' && [...pins.live.keys()]).toEqual([runtime.runtimeId])
+      removePin(path, PIN_LAUNCH)
+    }
+    // installed into a custom root, run without the variable: the default root is elsewhere (and absent)
+    pinIn(join(h.home, '.agent-inbox', 'runtime'))
+    // the variable names another root that exists, while the runtime sits in this one
+    pinIn(scratchDir('pin-other-root-'))
+  })
+
+  it('a manifest naming another folder is no runtime: outside the root it pins nothing, under it it refuses', () => {
+    const h = hooksHome()
+    const elsewhere = join(scratchDir('pin-not-a-runtime-'), 'darwin-arm64')
+    mkdirSync(join(elsewhere, 'dist'), { recursive: true })
+    writeFileSync(join(elsewhere, 'dist', 'driver-cli.js'), '')
+    // an app's bundled payload: its manifest names a runtime id, not this folder
+    writeFileSync(join(elsewhere, 'runtime-manifest.json'), JSON.stringify({ product: 'agent-inbox-runtime', runtimeId: 'agent-inbox-runtime-9.9.9-x' }))
+    expect(locateRuntime(join(elsewhere, 'dist', 'driver-cli.js'), h.runtimeRoot)).toEqual({ kind: 'checkout' })
+    // the same folder under the configured root
+    expect(locateRuntime(join(elsewhere, 'dist', 'driver-cli.js'), dirname(elsewhere)))
+      .toMatchObject({ kind: 'refuse', reason: expect.stringContaining('does not name runtime darwin-arm64') })
   })
 
   it('removes its pin and refuses when the runtime was moved aside after it pinned', () => {

@@ -565,10 +565,15 @@ These landed after v1 and still hold invariants; the release history itself is i
   driver, for its part, checks after pinning that its runtime's manifest is still there and
   names it, and otherwise removes its pin and refuses to start: a pin written after the prune's
   re-read finds the runtime gone.
-- **Runtime or not is decided by location.** A driver whose own file is inside the runtime root
-  (`AGENT_INBOX_RUNTIME_ROOT` when absolute, else `~/.agent-inbox/runtime`, compared by real path)
-  must be `<root>/<id>/dist/driver-cli.js` of a runtime whose manifest names `<id>`, or it
-  refuses; anything outside it (a checkout, an app's bundled payload) pins nothing.
+- **Which runtime a driver pins.** It is an installed runtime when EITHER the folder above its
+  `dist/` holds a runtime manifest naming that very folder (it is then pinned under that folder's
+  parent, the root that installed it, wherever that is and whatever `AGENT_INBOX_RUNTIME_ROOT` the
+  driver's own environment holds), OR its file sits under the configured root
+  (`AGENT_INBOX_RUNTIME_ROOT` when absolute, else `~/.agent-inbox/runtime`, by real path), where it
+  must be `<root>/<id>/dist/driver-cli.js` of a runtime whose manifest names `<id>`, or it refuses.
+  A manifest beside `dist/` that cannot be read refuses too. Anything else (a checkout, an app's
+  bundled payload, whose manifest names no folder of that name) pins nothing. So the command the
+  installer prints needs no variable in front of it, even for a custom root.
 - **Expiry.** The driver removes its own pin on every exit it sees. A pin whose driver is gone (or
   whose pid now runs another process) is stale and never counts; `sweepStalePins` removes up to 64
   a pass, then empty `.pins/<id>/` folders (`rmdir`, so only empty ones, owned by this user),

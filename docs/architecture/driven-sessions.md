@@ -144,9 +144,10 @@ Claude Code and Copilot CLI load this file automatically when they read or edit 
   replaying the spike's recorded frames (`test/fixtures/acp/copilot-1.0.105/`);
   `test/driver-policy.test.ts` holds the pure rules and the recorded nested chain;
   `test/driver-cli.test.ts` the TTY refusal, the Stop lease and the graph pins.
-- **Runtime pins** (`driver-pin.ts`, design §7). Whether it runs from an installed runtime is
-  decided by location: a driver inside the runtime root must be `<root>/<id>/dist/driver-cli.js`
-  of a runtime whose manifest names it, or it refuses to start. It then writes
+- **Runtime pins** (`driver-pin.ts`, design §7). It runs from an installed runtime when the
+  folder above its `dist/` holds a manifest naming that folder (pinned under that folder's parent,
+  whatever root its own environment names), or when its file sits under the configured runtime
+  root, where anything else refuses to start. It then writes
   `<runtime root>/.pins/<runtime id>/<launch id>` before it starts copilot: `{v: 1, launchId, pid,
   startedAt}`, 0600 in 0700 folders it owns (never through a symlink), by temp file and rename,
   retrying once if a sweep removed the empty folder under it. `startedAt` is its start identity

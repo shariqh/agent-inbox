@@ -1,4 +1,6 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
+import { InitializeRequestSchema } from '@modelcontextprotocol/sdk/types.js'
+import type { InitializeRequest, InitializeResult } from '@modelcontextprotocol/sdk/types.js'
 import { z } from 'zod'
 import type Database from 'better-sqlite3'
 import { randomUUID } from 'node:crypto'
@@ -14,6 +16,8 @@ import { copilotWatchLaunch, rowWatchedAsk, watchStoppedForGood } from './watch.
 import type { WatchedAsk } from './watch.js'
 import { AGENT_INBOX_VERSION } from './version.js'
 import { detectServerSource } from './server-source.js'
+import { inferAgent, inferProcessArgs } from './infer.js'
+import { CHANNEL_CAPABILITY, CHANNEL_INSTRUCTIONS, CHANNEL_METHOD, namesChannel, startChannelPush } from './channel.js'
 
 // The 5-minute liveness tick, hoisted OUT of its setInterval callback on purpose
 // (#45). This is the line the two-stamp distinction rests on — it moves
@@ -49,7 +53,32 @@ function normalizeIssue(value: string, sessionRepo: string | null): IssueLink | 
 }
 
 export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
-  const server = new McpServer({ name: 'agent-inbox', version: AGENT_INBOX_VERSION })
+  // Issue #411 (channels, research preview): declare Claude Code's
+  // `claude/channel` capability, with instructions saying what an event means.
+  // Only Claude Code clients are told (see the initialize handler below).
+  const server = new McpServer(
+    { name: 'agent-inbox', version: AGENT_INBOX_VERSION },
+    { capabilities: { experimental: { [CHANNEL_CAPABILITY]: {} } }, instructions: CHANNEL_INSTRUCTIONS },
+  )
+  const isClaude = (name: string | undefined): boolean => inferAgent(name) === 'claude-code'
+  // The SDK declares capabilities and instructions for every client alike, and
+  // refuses to change them once connected. So the initialize answer is taken from
+  // its own handler and, for any client but Claude Code, returned without the
+  // channel capability and instructions: Copilot's context and handshake stay as
+  // they were. If an SDK upgrade removes `_oninitialize`, this falls back to
+  // declaring both to everyone, which a client that does not know them ignores;
+  // test/mcp.integration.test.ts fails on that, so it cannot happen silently.
+  const sdkInitialize = (server.server as unknown as { _oninitialize?: (r: InitializeRequest) => Promise<InitializeResult> })._oninitialize
+  if (typeof sdkInitialize === 'function') {
+    server.server.setRequestHandler(InitializeRequestSchema, async (request) => {
+      const result = await sdkInitialize.call(server.server, request)
+      if (isClaude(request.params.clientInfo.name)) return result
+      const { instructions: _instructions, capabilities, ...rest } = result
+      const { [CHANNEL_CAPABILITY]: _channel, ...experimental } = capabilities.experimental ?? {}
+      const { experimental: _experimental, ...others } = capabilities
+      return { ...rest, capabilities: Object.keys(experimental).length ? { ...others, experimental } : others }
+    })
+  }
   const scope = makeScope(cwd)
   // issue #42 — what THIS SERVER PROCESS has already handed over. Per-process,
   // NOT per session or per agent: this server is long-lived and a subagent's
@@ -88,7 +117,36 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
   // Issue #253 — and which process started this server. Claude Code starts a
   // stdio server and its hooks directly, so a hook finds the servers of its own
   // session by its parent pid; the server's own pid lets it check they still run.
-  const host = () => ({ host_pid: process.ppid, server_pid: process.pid })
+  const host = () => ({ host_pid: process.ppid, server_pid: process.pid, ...channel() })
+  // Issue #411 (channels) — for a Claude Code client only: push a notice for
+  // each new message to this session, and say in presence whether Claude Code
+  // was launched listening for it. Claude Code gives no signal either way, so the
+  // loop runs for every Claude Code client (a notice it does not listen for is
+  // dropped silently) and presence reads the launch flags of the Claude Code
+  // process that started this server. Started once, after the handshake, because
+  // the client's name is known only then. Stopped when the connection closes, and
+  // never started after it has.
+  let pushWake: boolean | undefined
+  let stopPush: (() => void) | undefined
+  let closed = false
+  const channel = (): { push_wake?: boolean } => {
+    if (pushWake === undefined && !closed && isClaude(clientName())) {
+      pushWake = namesChannel(inferProcessArgs(process.ppid) ?? [])
+      stopPush = startChannelPush({
+        db,
+        session: sessionId,
+        send: (notice) => server.server.notification({ method: CHANNEL_METHOD, params: { ...notice } }),
+      })
+    }
+    return pushWake === undefined ? {} : { push_wake: pushWake }
+  }
+  const priorOnClose = server.server.onclose
+  server.server.onclose = () => {
+    closed = true
+    stopPush?.()
+    stopPush = undefined
+    priorOnClose?.()
+  }
   const registerPresence = (): void => {
     try {
       const s = scope.get(clientName())

@@ -118,6 +118,11 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   `stop_hook_active` continuation, or after the watch window ends, waits for the next
   prompt or ordinary Stop, as does one sent in the milliseconds between `stop` reading the
   open messages and `watch` reading its baseline (separate processes on the same Stop).
+  A Claude Code session launched with the channel flag needs none of that window: the MCP
+  server pushes it a notice per message (`mcp-server.md`). The hooks still run beside it,
+  so a message can wake such a session twice; the agent's second `pending()` finds it
+  acked or already in hand. Copilot has no standing watcher: a hand-started Copilot
+  session sees a message at its next `pending()`.
 
 ## History (shipped since v1)
 

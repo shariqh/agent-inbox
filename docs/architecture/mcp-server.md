@@ -26,6 +26,11 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   PR/check state is ambient information and must not enter the human-attention
   predicate.
 
+- The server declares Claude Code's `claude/channel` capability and pushes a
+  message notice into a Claude Code session (#411, research preview); only a
+  Claude Code client sees the capability or its instructions, and the notice
+  carries a message id, never text.
+
 ## Invariants in detail
 
 - **One process per CLI (stdio), one shared file.** A server is spawned per *client process*, not
@@ -56,6 +61,41 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   stdout from server code, and any subprocess (e.g. git in `infer.ts`) must **capture**
   stdout (`stdio: ['ignore','pipe','ignore']`), never inherit it. A handler throw is fine:
   the SDK wraps it into `{ isError: true }` and the process survives.
+- **Claude Code channels push a message notice, and only to Claude Code (issue #411,
+  research preview).** `src/channel.ts`. The `McpServer` is built with
+  `capabilities.experimental['claude/channel'] = {}` and `instructions` saying what an
+  event means, as Claude Code's channels reference requires. The SDK sends both to every
+  client and refuses to change capabilities once connected, so `mcp.ts` replaces the
+  initialize handler with one that calls the SDK's own `_oninitialize` and, for any client
+  `inferAgent` does not call `claude-code`, strips the capability and the instructions:
+  Copilot's handshake, context and `tools/list` stay as they were
+  (`test/mcp.integration.test.ts` fails if an SDK upgrade drops `_oninitialize`, which
+  would fall back to declaring both to everyone). After the handshake a Claude Code client
+  starts `startChannelPush`: every 2 s one indexed read of the server's own open message ids
+  (`listOpenMessages(db, [sessionId])`, through `store.ts`), and one
+  `notifications/claude/channel` per id it has not pushed, `{ content: <fixed notice>,
+  meta: { message_id } }`. Never the text: delivery, isolation and the record stay
+  `pending()` and `ack_message`. The pushed set is in memory (bounded by the open ids, so
+  the schema is unchanged); a failed send is retried next tick, a sent one never repeated.
+  Claude Code acknowledges nothing and says nothing in its handshake about listening
+  (measured on v2.1.312: the initialize request is byte-identical with and without the
+  flag), so the loop runs for every Claude Code client, and one that is not listening drops
+  the notice silently. Presence records the closest local evidence instead: `push_wake`
+  (below) from the launch flags of the Claude Code process that started the server
+  (`inferProcessArgs(process.ppid)`: `/proc` on Linux, `ps` on macOS, captured, once).
+  So `push_wake` can only err one way in practice: a wrapper process, a session hosted by
+  Claude Code's background daemon (parent `claude bg-spare … claim.sock`, which carries none
+  of the user's flags) or another registration name reads as absent, and absent means
+  unknown, never "won't wake". (The one false positive: on macOS `ps` joins the arguments
+  with spaces, so a quoted prompt that contains the flag tokens reads as true; Linux reads
+  `/proc` exactly.) The loop is stopped when the connection closes (`server.server.onclose`)
+  and never started after it.
+  Two traps. The server's name is the registration's, which the server never learns, so
+  presence recognises only `server:agent-inbox`, the name the installer registers. And
+  Claude Code's v2 MCP runtime will not register a channel server that negotiates protocol
+  revision 2026-07-28: SDK 1.x answers on the earlier revision, so upgrading
+  `@modelcontextprotocol/sdk` to 2.x turns the push off (`MCP_PROTOCOL_NEGOTIATION=legacy`
+  is Claude Code's escape hatch).
 - **Fail-open / never lose a flag.** If inference fails, attribute to `unknown` and still
   insert. If a write fails, surface an MCP error — don't crash.
 - **`src/shape.ts` is AGENT-SIDE ONLY (issue #42).** `context` is written for the human

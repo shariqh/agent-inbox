@@ -39,6 +39,21 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   The Dashboard puts a plan on its stamped session's lane first, then falls
   back to project + branch + agent, skipping plans another WORKING session
   stamped (an idle or gone session's stamp joins).
+- `receives_messages` and `push_wake` (#411) are capability flags carried by the
+  same presence writes, kept on omission and served only as `true`.
+  `push_wake` says a message is pushed into the session at once: its Claude
+  Code was launched with `--dangerously-load-development-channels
+  server:agent-inbox` (read from the parent process's arguments, since Claude
+  Code reports nothing). It is evidence, not proof: an org policy, a non-claude.ai
+  login or a refused registration drops the push silently. A launch through a
+  wrapper process, a session Claude Code hosts through its background daemon
+  (parent `claude bg-spare … claim.sock`, whose arguments lack the user's flags)
+  or one under another registration name reads as absent; and on macOS, where
+  `ps` arguments are re-split on spaces, a quoted prompt holding the flag tokens
+  can read as true. So absent means unknown, never "won't wake": the composer
+  says "when it next checks", never "can't receive", which only a missing
+  `receives_messages` means. Never liveness, work or attention; `/api/activity`
+  stays a bare array.
 
 ## Invariants in detail
 

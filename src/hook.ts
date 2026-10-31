@@ -18,6 +18,7 @@ import {
   listPendingRows, listSessionQuestions, listUnansweredBoardRows, openDb, releaseHookWatch, resolveItem,
 } from './store.js'
 import type { Item } from './store.js'
+import { isReservedProject } from '../public/reserved-projects.js'
 import { inferProject, inferStream } from './infer.js'
 import { boardResponseState } from './watch.js'
 
@@ -443,7 +444,9 @@ function sessionScope(db: Database.Database, ctx: Ctx, cwdProject: string): Sess
     const servers = new Set(live.map((server) => server.session))
     // a project registered earlier stays in scope while one of its questions is open
     const asked = listSessionQuestions(db, [...servers])
-    const projects = new Set([cwdProject, ...live.map((server) => server.project), ...asked.map((q) => q.project)])
+    // #412: a reserved project (`@sessions`, `@mesh`) is never a hook's to watch
+    const projects = new Set([cwdProject, ...live.map((server) => server.project), ...asked.map((q) => q.project)]
+      .filter((p) => !isReservedProject(p)))
     return { projects: [...projects], servers, host }
   } catch (err) {
     logLine(ctx.dbPath, `scope: ${err instanceof Error ? err.message : String(err)} — using ${cwdProject} alone`)
@@ -556,6 +559,7 @@ function cmdNotification(ctx: Ctx): HookResult {
     // a committer is already in flight for this session
     if (marker?.pendingPromptAt && ctx.nowMs - marker.pendingPromptAt < ctx.opts.graceMs) return EMPTY
     const { project } = scopeOf(ctx.ev)
+    if (isReservedProject(project)) return EMPTY
     if (!shouldBackstop({ pending: listPending(db, project), sessionId, nowMs: ctx.nowMs, marker, opts: ctx.opts })) return EMPTY
     writeMarker(ctx.dbPath, sessionId, {
       insertCount: marker?.insertCount ?? 0,
@@ -629,6 +633,10 @@ async function cmdNotificationCommit(ctx: Ctx): Promise<HookResult> {
     sweepStale(db, Date.now(), ctx.opts.maxAgeMs)
     const { project, stream, cwd } = scopeOf(ctx.ev)
     const nowMs = Date.now()
+    if (isReservedProject(project)) {
+      disarm(ctx.dbPath, sessionId)
+      return EMPTY
+    }
     if (!shouldBackstop({ pending: listPending(db, project), sessionId, nowMs, marker, opts: ctx.opts })) {
       disarm(ctx.dbPath, sessionId)
       return EMPTY
@@ -680,6 +688,7 @@ function cmdSessionStep(ctx: Ctx): HookResult {
   try {
     const { project } = scopeOf(ctx.ev)
     sweepStale(db, ctx.nowMs, ctx.opts.maxAgeMs)
+    if (isReservedProject(project)) return EMPTY
     if (ctx.ev.session_id) {
       sweepSession(db, project, ctx.ev.session_id)
       disarm(ctx.dbPath, ctx.ev.session_id)
@@ -773,6 +782,7 @@ function visibleQuestions(db: Database.Database, scope: SessionScope): Item[] {
 // requests was answered since its last poll.
 async function cmdWatch(ctx: Ctx): Promise<HookResult> {
   const { project } = scopeOf(ctx.ev)
+  if (isReservedProject(project)) return EMPTY
   const db = openDb(ctx.dbPath) // opened ONCE for the whole loop
   const parent = process.ppid
   const lease = { key: '', token: `${MESSAGE_WATCH_TOKEN}${process.pid}-${randomUUID()}`, held: false }

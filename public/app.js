@@ -60,6 +60,7 @@ import {
 import { PANE_DEFAULTS, paneKeyValue, paneValueFromPointer, resolvePaneLayout } from '/panes.js'
 import { createThemeController } from '/theme.js'
 import { createMotionController } from '/motion.js'
+import { isReservedProject } from '/reserved-projects.js'
 import { activityHistoryUrl, createSnapshotReader } from '/snapshots.js'
 import { knownHistory, knownOutcomes, mergeClosedHistory, olderHistory } from '/closed-history.js'
 import { DRAFTS_KEY, draftEntry, draftExpired, draftKey, mergeDrafts, readDrafts } from '/drafts.js'
@@ -5456,7 +5457,10 @@ function railRowEl(e, { withFilter, closed = false }) {
   })
   // the keyboard half of close/reopen, since the button itself is out of the tab
   // order. `ev` is the keyboard event; `e` is the rail entry — do not merge them.
-  if (e.key !== '__all__') b.addEventListener('keydown', (ev) => {
+  // #412: a reserved project (`@sessions`, `@mesh`) holds driven sessions'
+  // approvals and can never be archived, so it gets no control and no key
+  const archivable = e.key !== '__all__' && (closed || !isReservedProject(e.key))
+  if (archivable) b.addEventListener('keydown', (ev) => {
     if (ev.key !== 'Delete' && ev.key !== 'Backspace') return
     ev.preventDefault()
     closed
@@ -5465,7 +5469,7 @@ function railRowEl(e, { withFilter, closed = false }) {
   })
   wrap.appendChild(b)
   // 'All' is not a project and cannot be retired
-  if (e.key !== '__all__') wrap.appendChild(railActionEl(e, closed))
+  if (archivable) wrap.appendChild(railActionEl(e, closed))
   return wrap
 }
 
@@ -10143,10 +10147,18 @@ async function closeProjectAction(name, { focusArchived = false } = {}) {
   forceRender()
   if (focusArchived) focusProjectControl('closedProjectsTrigger', generation)
   let restoreFocus = false
-  const res = await queueProjectMutation(
+  let res = await queueProjectMutation(
     name,
     () => postJSON('/api/projects/close', { project: name }),
   )
+  // a 200 `{ ok: false }` is the store refusing (#412: a reserved project):
+  // nothing was archived, so it unwinds exactly like a failed write
+  if (res !== null && res.ok === false) {
+    document.getElementById('status').textContent = res.reason === 'reserved_project'
+      ? `${name} can’t be archived: it holds sessions’ approvals`
+      : `${name} was not archived`
+    res = null
+  }
   if (res !== null) {
     const confirmedAfterLoad = loadGeneration
     const current = ownsProjectMutation(name, generation)

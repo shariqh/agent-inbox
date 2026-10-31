@@ -30,6 +30,10 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   message notice into a Claude Code session (#411, research preview); only a
   Claude Code client sees the capability or its instructions, and the notice
   carries a message id, never text.
+- `@sessions` and `@mesh` are reserved projects (#412): `register` refuses one, and
+  `flag`, `pending`, `answer`, `resolve` and every `board_*` tool refuse a scope, a
+  `project` argument or an item id in one. A session a driver holds a fresh
+  `driven:` lease for gets `woken: "pushed"` and no watch contract.
 
 ## Invariants in detail
 
@@ -96,6 +100,29 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   revision 2026-07-28: SDK 1.x answers on the earlier revision, so upgrading
   `@modelcontextprotocol/sdk` to 2.x turns the push off (`MCP_PROTOCOL_NEGOTIATION=legacy`
   is Claude Code's escape hatch).
+- **Reserved projects are unreachable from MCP (issue #412, driven sessions §4.2, mesh
+  §10.3).** A driver files its approval alerts in `@sessions` (and the mesh will file its
+  asks in `@mesh`) under the driven agent's own MCP session, so no session in the asks' real
+  project wakes on them, and an older server's `resolve` can never count as Deny. Exactly
+  those two names (`isReservedProject` in `store.ts`): a folder with no remote can be named
+  with a leading `@`. `mcp.ts` refuses with one fixed message: `register` with a reserved
+  project; `flag`, `pending` and every `board_*` tool when the session's scope is one
+  (`agentScope()`, which covers an inferred folder name too), `pending` also for a reserved
+  `project` argument; `answer` and `resolve` for an item filed in one. The store backs it
+  up: `listPending`, `listPendingRows` and `listUnansweredBoardRows` return nothing for a
+  reserved project, whoever calls them. `status` and `whoami` are not refused (presence is
+  not attention). An older server lacks the refusals, so an agent that registers
+  `@sessions` on one can read the alerts; the design's threat model accepts that.
+- **A driven session is told its answers are pushed (issue #412, §5.3).** `isDrivenSession`
+  reads the session's `driven:<session>` lease in `hook_watch_claims`, fresh for 90 s,
+  which a driver refreshes every 30 s. While it holds, `flag` (a question), `pending`,
+  `board_upsert`/`board_row` (a new ask) add `woken: "pushed"` and return no
+  `watch`/`watches`: the driver pushes each answer ping and message as a new turn, so a
+  watcher would only cost a wake. The driver pings only rows of plans whose `boards.session`
+  is the driven session, so `board_advance` (which restamps no plan field, #306) and
+  `board_get({watch:true})` say "pushed" only when the plan's `session` is this server's id,
+  and otherwise return the normal watch contracts. The lease is read fresh on
+  every call; tool descriptions are unchanged, so `tools/list` is byte-identical.
 - **Fail-open / never lose a flag.** If inference fails, attribute to `unknown` and still
   insert. If a write fails, surface an MCP error — don't crash.
 - **`src/shape.ts` is AGENT-SIDE ONLY (issue #42).** `context` is written for the human

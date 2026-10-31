@@ -1352,7 +1352,8 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
   app.post('/api/projects/close', async (c) => {
     const project = validProject(await c.req.json().catch(() => null))
     if (project === null) return c.json({ ok: false, error: 'project required' }, 400)
-    closeProject(db, project)
+    // #412: a reserved project (`@sessions`, `@mesh`) holds approvals; closing it is refused
+    if (!closeProject(db, project)) return c.json({ ok: false, reason: 'reserved_project' })
     return c.json({ ok: true })
   })
 

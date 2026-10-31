@@ -17,6 +17,7 @@ import { readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import Database from 'better-sqlite3'
 import {
+  claimHookWatch, closedProjects, isDrivenSession,
   getBoard, getItem, insertItem, listActivity, listBoards, listHostSessions, listIssueEntities, listIssueSnapshots, listItems, listSourceLinks,
   markReplySeen, openDb, pinBoardRow, pinItem, recordActivityCall, recordIssueFailure, replyItem, stopBoardRowWatch, stopItemWatch, updateBoardRow, upsertActivity,
   upsertBoard, upsertIssueSnapshot, upsertSourceLink, sendSessionMessage, listSessionMessages, readSnapshotState,
@@ -1665,5 +1666,75 @@ describe('a v2.1.0 process sharing a hub with session messages (#411)', () => {
     // its day-old housekeeping removes presence rows, never messages
     old.prepare(`DELETE FROM activity WHERE (ended_at IS NOT NULL AND ended_at < ?) OR updated_at < ?`).run(at(9999), at(9999))
     expect({ messages: listSessionMessages(db), version: readSnapshotState(db).domains.session_messages }).toEqual(before)
+  })
+})
+
+// Issue #412 (step 2): a driver's leases live in hook_watch_claims beside the
+// Claude hook's, and its approval alerts in the reserved project `@sessions`.
+// The statements of a v2.2.0 process, copied verbatim from src/store.ts at
+// tag v2.2.0 (claimHookWatch, releaseHookWatch, closeProject).
+const V220 = {
+  pruneClaims: `DELETE FROM hook_watch_claims WHERE claimed_at < ?`,
+  claimHookWatch: `INSERT INTO hook_watch_claims (claim_key, token, claimed_at) VALUES (?, ?, ?)
+                ON CONFLICT(claim_key) DO UPDATE SET token = excluded.token, claimed_at = excluded.claimed_at`,
+  releaseHookWatch: `DELETE FROM hook_watch_claims WHERE claim_key = ? AND token = ?`,
+  closeProject: `INSERT INTO projects (project, closed_at) VALUES (?, ?)
+     ON CONFLICT(project) DO UPDATE SET closed_at = excluded.closed_at`,
+}
+
+describe('a v2.2.0 process sharing a hub with driven sessions (#412)', () => {
+  let dir: string
+  let path: string
+  const open: Database.Database[] = []
+  const LAUNCH = '11111111-2222-4333-8444-555555555555'
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(Date.parse(at(60)))
+    dir = scratchDir('mixed-version-driven-')
+    path = join(dir, 'inbox.db')
+  })
+
+  afterEach(() => {
+    for (const connection of open.splice(0)) if (connection.open) connection.close()
+    rmSync(dir, { recursive: true, force: true })
+    vi.useRealTimers()
+  })
+
+  function connect(older: boolean): Database.Database {
+    const db = older ? new Database(path) : openDb(path)
+    if (older) {
+      db.pragma('busy_timeout = 5000')
+      db.pragma('journal_mode = WAL')
+    }
+    open.push(db)
+    return db
+  }
+
+  it('its hook’s lease housekeeping keeps a fresh driver’s lease, and its watch lease never reads as driven', () => {
+    const db = connect(false)
+    const old = connect(true)
+    upsertActivity(db, { session: 'driven', project: 'agent-inbox', stream: 'main', agent: 'copilot', doing: 'open', idle: true, claim: false, receives_messages: true, host_pid: 76681 })
+    upsertActivity(db, { session: 'hosted', project: 'agent-inbox', stream: 'main', agent: 'claude-code', doing: 'open', idle: true, claim: false, receives_messages: true, host_pid: 1 })
+    claimHookWatch(db, 'driven:driven', `${LAUNCH}:4242:n1`)
+    const now = Date.now()
+    old.transaction(() => {
+      old.prepare(V220.pruneClaims).run(new Date(now - 24 * 60 * 60000).toISOString())
+      old.prepare(V220.claimHookWatch).run('host:1', `m1:${process.pid}-older`, new Date(now).toISOString())
+    }).immediate()
+    old.prepare(V220.releaseHookWatch).run('host:1', `m1:${process.pid}-other`)
+    expect(isDrivenSession(db, 'driven')).toBe(true)
+    expect(listActivity(db).map((row) => [row.session, row.driven ?? false, row.wakes ?? false]).sort())
+      .toEqual([['driven', true, false], ['hosted', false, true]])
+  })
+
+  it('its viewer closing @sessions never mutes a driver’s approvals', () => {
+    const db = connect(false)
+    const old = connect(true)
+    insertItem(db, { project: '@sessions', stream: 'agent-inbox · main', agent: 'copilot', session: 'driven', kind: 'question', title: 'Allow copilot to run `npm test`?' })
+    vi.setSystemTime(Date.parse(at(61)))
+    old.prepare(V220.closeProject).run('@sessions', new Date().toISOString())
+    old.prepare(V220.closeProject).run('agent-inbox', new Date().toISOString())
+    expect(closedProjects(db)).toEqual(['agent-inbox'])
   })
 })

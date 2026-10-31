@@ -650,6 +650,7 @@ describe('the poller runs in the viewer process only', () => {
     'src/mcp.ts', 'src/mcp-server.ts', 'src/store.ts', 'src/scope.ts', 'src/infer.ts', 'src/group.ts',
     'src/hook.ts', 'src/hook-cli.ts', 'src/shape.ts', 'src/watch.ts', 'src/watch-cli.ts', 'src/version.ts',
     'src/server-source.ts', 'src/channel.ts', 'src/issue-graph.ts', 'public/issue-key.js', 'public/source.js', 'public/esc.js',
+    'public/reserved-projects.js',
   ]
   // Every relative module a file names, in either quote style: static
   // (`from '…'`), side-effect (`import '…'`), dynamic `import('…')` and

@@ -20,17 +20,17 @@ export const MESSAGE_UNCONFIRMED = 'Your send was not confirmed. Send again: it 
  * What happens to a message sent now, from the session's /api/activity row
  * (design §4, "The delivery state"). Every flag is served only when true, so an
  * absent one is false; an absent `push_wake` means unknown, never "won't wake".
- * `driven` is the seam for a session Agent Inbox drives itself (#412), which
- * gets each message as a prompt.
+ * `driven` marks a session an Agent Inbox driver runs (#412): it gets each
+ * message as a new turn, pushed by the driver.
  * @param {any} row the session's /api/activity row, or null when it is no longer listed
  * @returns {{state: 'now'|'next-check'|'cannot'|'gone', text: string, canSend: boolean}}
  */
-export function deliveryState(row, { driven = false } = {}) {
+export function deliveryState(row) {
   if (!row) return { state: 'gone', text: 'This session is no longer running.', canSend: false }
   if (row.receives_messages !== true) {
     return { state: 'cannot', text: `Can’t receive: restart this session to load ${RECEIVING_VERSION} or later.`, canSend: false }
   }
-  if (driven) return { state: 'now', text: 'Arrives now: Agent Inbox runs this session.', canSend: true }
+  if (row.driven === true) return { state: 'now', text: 'Arrives now: Agent Inbox runs this session.', canSend: true }
   if (row.push_wake === true) return { state: 'now', text: 'Arrives now: Agent Inbox pushes it into this session.', canSend: true }
   if (row.wakes === true) return { state: 'now', text: 'Arrives now: this session wakes for it.', canSend: true }
   return { state: 'next-check', text: 'It sees this when it next checks Agent Inbox.', canSend: true }

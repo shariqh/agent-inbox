@@ -17,7 +17,7 @@ describe('deliveryState', () => {
     const row = { session: 'a', receives_messages: true }
     expect(deliveryState({ ...row, push_wake: true })).toMatchObject({ state: 'now', canSend: true })
     expect(deliveryState({ ...row, wakes: true })).toMatchObject({ state: 'now', text: 'Arrives now: this session wakes for it.' })
-    expect(deliveryState(row, { driven: true })).toMatchObject({ state: 'now', canSend: true })
+    expect(deliveryState({ ...row, driven: true })).toEqual({ state: 'now', text: 'Arrives now: Agent Inbox runs this session.', canSend: true })
     // an absent push_wake is unknown, never "won't wake"
     expect(deliveryState(row)).toEqual({ state: 'next-check', text: 'It sees this when it next checks Agent Inbox.', canSend: true })
   })

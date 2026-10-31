@@ -93,7 +93,7 @@ describe('structured-text performance CI gate', () => {
   it('runs the isolated gate on both required Node 24 CI platforms', () => {
     const testJob = jobSource('test')
     expect(testJob).toContain('node-version: 24')
-    expect(testJob).toContain('os: [ubuntu-latest, macos-14]')
+    expect(testJob).toContain('os: [ubuntu-latest, macos-15]')
     const stepMarker = '- name: Verify structured-text hostile-input performance\n'
     const stepStart = testJob.indexOf(stepMarker)
     const afterStep = testJob.slice(stepStart + stepMarker.length)

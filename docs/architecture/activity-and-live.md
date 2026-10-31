@@ -39,6 +39,35 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   The Dashboard puts a plan on its stamped session's lane first, then falls
   back to project + branch + agent, skipping plans another WORKING session
   stamped (an idle or gone session's stamp joins).
+- `receives_messages` and `push_wake` (#411) are capability flags carried by the
+  same presence writes, kept on omission and served only as `true`.
+  `push_wake` says a message is pushed into the session at once: its Claude
+  Code was launched with `--dangerously-load-development-channels
+  server:agent-inbox` (read from the parent process's arguments, since Claude
+  Code reports nothing). It is evidence, not proof: an org policy, a non-claude.ai
+  login or a refused registration drops the push silently. A launch through a
+  wrapper process, a session Claude Code hosts through its background daemon
+  (parent `claude bg-spare … claim.sock`, whose arguments lack the user's flags)
+  or one under another registration name reads as absent; and on macOS, where
+  `ps` arguments are re-split on spaces, a quoted prompt holding the flag tokens
+  can read as true. So absent means unknown, never "won't wake": the composer
+  says "when it next checks", never "can't receive", which only a missing
+  `receives_messages` means. Never liveness, work or attention; `/api/activity`
+  stays a bare array.
+- `wakes` (#411 PR 2) is the third: true while a message-capable Claude hook watch
+  is armed for the session's Claude Code process, read by `listActivity` in its one
+  query (a `LEFT JOIN` on `hook_watch_claims`' unique key `host:<host_pid>`, so it
+  adds no row): the lease's token starts `m1:` and was claimed within 30 minutes
+  (`WAKE_LEASE_MS`; the watch gives up at 29). Served only as `true`, like the
+  other two. An older hook's lease (no `m1:`), an unlinked watcher's `session:`/
+  `project:` key, a released lease or one older than 30 minutes reads as absent. It
+  is evidence too: a watcher killed without releasing its lease reads as armed for
+  up to 30 minutes. The composer's delivery state (`deliveryState` in
+  `public/messages.js`) reads these three and nothing else: no `receives_messages`
+  is "can't receive" (Send disabled); `push_wake`, `wakes` or a session Agent
+  Inbox drives (#412's seam, the `driven` option, unused until then) is "arrives
+  now"; anything else is "when it next checks Agent Inbox". `activityFrameKey`
+  compares bytes, so a flip repaints.
 
 ## Invariants in detail
 

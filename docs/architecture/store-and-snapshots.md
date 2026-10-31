@@ -180,13 +180,14 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   full-fetch behavior, malformed replies fail explicitly, and no snapshot content
   is persisted to browser storage (the human's unsent drafts, #279, are not snapshot
   content). Derive mutable view state rather than changing
-  authoritative cached records. A poll tick starts its eight reads together (#161)
+  authoritative cached records. A poll tick starts its nine reads together (#161)
   and applies nothing until all settle: history, closed projects, links (read as a
   snapshot since #288, its body through `linksBody`, so a 404, a network error or
-  a refused body is no links) and the sub-issue graph (#103) keep their
+  a refused body is no links), the sub-issue graph (#103) and the session messages
+  (#411, `messagesBody`: the same three mean no messages) keep their
   fallbacks, any other failure still fails the whole tick (reported in the old
   serial order) without blanking the frame, and `loadGeneration` still discards
-  an older tick that finishes late. Since #299 the archived read among the eight
+  an older tick that finishes late. Since #299 the archived read among the nine
   is the brief; the complete archived list, like older closed history, is an
   extra read only while a surface needs it.
 - **A write rebuilds only the snapshots it can change (issue #297).**

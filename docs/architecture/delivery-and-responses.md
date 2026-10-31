@@ -66,6 +66,8 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   acknowledgement. Only the addressed session can ack; the human withdraws by
   revision. A send needs a listed session whose presence carries
   `receives_messages`, and an exact replay of an id always succeeds.
+  A Claude Code session launched with the channel flag is also pushed a notice per
+  message (`mcp-server.md`); it is only a wake, never the delivery.
 
 ## Invariants in detail
 
@@ -258,8 +260,13 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   parent verbatim and never act on or ack them, and the Claude hooks count OPEN messages,
   never undelivered ones (`hooks-and-watcher.md`). `ack_message` is its own tool, not
   `resolve` or `answer`, whose version-pinned item contracts stay byte for byte.
-  Until the viewer's composer ships (#411 part 2), a message can be sent by hand, with the
-  session id from `/api/activity` and the Origin every unsafe request needs:
+  How a session hears of a message is separate from all of this: the Claude hooks
+  (`hooks-and-watcher.md`), a Claude Code channel push (`mcp-server.md`, research
+  preview), or its next `pending()`. A push carries only the id and changes none of the
+  rules above.
+  The viewer's composer (#411 part 2, `viewer-frontend.md`) is the human's way to send
+  and withdraw one; a message can still be sent by hand, with the session id from
+  `/api/activity` and the Origin every unsafe request needs:
   `curl -s -X POST -H 'Origin: http://127.0.0.1:4319' -H 'content-type: application/json'
   -d "{\"id\":\"$(uuidgen | tr A-Z a-z)\",\"text\":\"…\"}"
   http://127.0.0.1:4319/api/sessions/<session>/messages`.

@@ -85,7 +85,8 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   focus panel (`.dash-focus`, from a lane's title button, mounted inside the lanes
   card: over the lanes column on a desktop, static below the lanes under 1280px,
   closed by a trusted outside `click` that is not a lane, never a `pointerdown`, and
-  never while it is in flow) is read-only (D2): its
+  never while it is in flow) answers nothing (D2): its one editor is the session's
+  message composer (#411, `viewer-frontend.md`), and its
   asks come from the attention set and jump to the rail or Inbox card, its plan and
   outcomes open through `focusItem`, its PR/CI chips are ambient `sourceChipsHtml`
   and its links are #300's `cardLinks`/`linkStripHtml`. Parts are rewritten only when
@@ -258,8 +259,10 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   rail and the Now strip stay usable; below 1280px it is static, in flow below the lanes,
   never fixed over the masthead; `test/editorial-shell.test.ts` pins both, since jsdom
   cannot evaluate `@media`): a lane's title is a button (`.dash-lane-open`, `aria-expanded`), and a click
-  elsewhere on the lane that is not a control or a text selection opens it too. It is
-  READ-ONLY (D2: the rail is the Dashboard's one answer surface): the lane's asks (from
+  elsewhere on the lane that is not a control or a text selection opens it too. It
+  ANSWERS NOTHING (D2: the rail is the Dashboard's one answer surface; its one editor,
+  since #411, is the session's message composer, shown while the session is listed in
+  `/api/activity`, working or not): the lane's asks (from
   the attention set) each jump to the rail card or, past the top three, the Inbox card
   (`jumpToAsk`, which closes the panel without moving focus back to the lane whenever it
   lands on a rail card, from the panel, a lane's "Asking you" or ⌘K); the plan and each recent outcome open through `focusItem`. `sessionFocus`

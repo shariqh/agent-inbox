@@ -86,10 +86,11 @@ export function sessionRecency(session) {
 const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`
 
 /**
- * @param {{ doc?: Document, jumpToAsk: (entry: any) => void }} options
+ * @param {{ doc?: Document, jumpToAsk: (entry: any) => void, openMessage?: (session: string) => void }} options
  *   `jumpToAsk` is the lanes' own: it opens an ask on the rail or in the Inbox.
+ *   `openMessage` (#411) opens the Live drawer with a session's composer.
  */
-export function installMeshView({ doc = globalThis.document, jumpToAsk }) {
+export function installMeshView({ doc = globalThis.document, jumpToAsk, openMessage }) {
   // Window-local, like the lanes' quick filters: a fresh window opens on Sessions.
   let lens = 'sessions'
   let last = null
@@ -159,6 +160,14 @@ export function installMeshView({ doc = globalThis.document, jumpToAsk }) {
       const doing = make('span', 'mesh-doing', session.historical && session.text !== 'No task reported yet' ? `was: ${session.text}` : session.text)
       doing.title = doing.textContent
       line.append(dot, where, doing, make('span', 'mesh-recency', sessionRecency(session)), make('span', 'mesh-chip mesh-state', session.state))
+      if (openMessage) {
+        const message = make('button', 'mesh-message', 'Message')
+        message.type = 'button'
+        message.title = 'Message this session from the Live drawer'
+        message.dataset.dashboardFocusKey = `mesh:message:${session.session}`
+        message.addEventListener('click', () => openMessage(session.session))
+        line.append(message)
+      }
       sessions.appendChild(line)
     }
     const foot = make('div', 'mesh-agent-foot')

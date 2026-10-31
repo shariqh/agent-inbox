@@ -10,6 +10,9 @@
 // a window deletes only the copy it last loaded or wrote (compare-and-delete on
 // `savedAt`), and never touches an entry it was not told about. Any write drops
 // what this build cannot read, so a later build that adds a kind needs a new key.
+// One deliberate exception: the human's messages to a session (#411) share this
+// key, as their design asks. A build older than #411 sharing the profile drops
+// only the `message` entries on its next write; every other kind survives it.
 // A stamp from the future (the clock was set back) is never yet expired, and
 // any write brings it back to now, so it can be overwritten and does expire.
 
@@ -109,6 +112,19 @@ export function draftEntry(raw) {
         setAside: raw.setAside === true, reason,
       }
     }
+    case 'message': {
+      // #411: one per session. `intent` is the id a send claimed and the text it
+      // sent, so a retry of that text replays exactly; a `reason` means it is in
+      // the unsent responses, its session gone or unable to receive.
+      const intent = raw.intent ?? null
+      if (intent !== null && (typeof intent !== 'object' || !isId(intent.id, 64) || !isText(intent.text))) return null
+      if (!isId(raw.session) || !isText(raw.project, MAX_LABEL) || !isText(raw.agent, MAX_LABEL)
+        || !isText(raw.stream ?? '', MAX_LABEL) || !isText(raw.text) || !filled(raw.text) || !isText(reason, MAX_LABEL)) return null
+      return {
+        type: 'message', session: raw.session, project: raw.project, agent: raw.agent, stream: raw.stream ?? '',
+        text: raw.text, intent: intent && { id: intent.id, text: intent.text }, reason,
+      }
+    }
     case 'note': {
       // an empty text is a Note attempt that clears the stored note
       if (!isId(raw.itemId) || !isText(raw.title, MAX_LABEL) || !isText(raw.text) || !isText(raw.error, MAX_LABEL)
@@ -128,6 +144,9 @@ export function draftKey(draft) {
     case 'row': return `row:${draft.rowId}`
     case 'row-recovery': return `row-recovery:${draft.rowId}:${draft.revision}`
     case 'note': return `note:${draft.itemId}`
+    // a message waiting in the unsent responses is its own entry, so a new draft
+    // to the same session never overwrites it
+    case 'message': return `${draft.reason ? 'message-recovery' : 'message'}:${draft.session}`
     default: return null
   }
 }

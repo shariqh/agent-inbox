@@ -2,7 +2,8 @@
 
 **Date:** 2026-10-30 (revised after design review, same day)
 **Status:** Approved to build after changes. Three questions for the owner are in §11.
-**Milestone:** v2.2.0. Closes #411 when the third PR lands.
+Amended 2026-10-30 (§12): a Claude Code channel push, and no Copilot standing watcher.
+**Milestone:** v2.2.0. Closes #411 when the UI PR lands.
 **Scope:** this document lands with PR 1 (#417), which also builds §9's PR 1.
 
 ---
@@ -26,14 +27,16 @@
    blocks once per message, `watch` wakes for messages that arrive after it arms, and
    `prompt-submit`/`session-start` remind. Output shapes and exit codes do not change. The
    watch lease's token carries a capability marker.
-7. **Copilot wake:** a standing per-session watcher (`watch-cli --session <id> <db>`), launched
-   by the top-level agent from a contract `pending()` returns. The MCP server never spawns it.
-   It ships last, after two spikes.
-8. The UI shows sent, picked up and acknowledged, with the outcome, and says honestly whether
-   the session wakes for it or sees it when it next checks Agent Inbox.
-9. An unsent message is a durable draft (#279). Nothing reaches `public/attention.js`, a badge,
+7. **Claude push (§4, amended):** a Claude Code session launched with the channel flag is pushed
+   a notice per message through Claude Code's `claude/channel` extension: no watcher and no
+   time window. Research preview, opt-in at launch.
+8. **Copilot:** no standing watcher (amended, §12). A Copilot session started by hand sees a
+   message when it next calls `pending()`; push for Copilot comes from #412's ACP driver.
+9. The UI shows sent, picked up and acknowledged, with the outcome, and one of three delivery
+   states: "arrives now", "when it next checks" or "can't receive".
+10. An unsent message is a durable draft (#279). Nothing reaches `public/attention.js`, a badge,
    a count, the Inbox queue or the dock.
-10. Three PRs: the agent side with the Claude wake; the UI; the Copilot watcher.
+11. Three PRs: the agent side with the Claude wake; the Claude channel push; the UI.
 
 ---
 
@@ -199,53 +202,65 @@ servers and ignores messages (the session sees them when it next checks Agent In
   shape Setup and `install-hooks.sh` share, and changing a label should not make every install
   need re-applying. The hooks only read; they never stamp delivery or print message text.
 
-### Copilot: a standing session watcher (PR 3)
+### Claude Code: a channel push (research preview, amended 2026-10-30)
 
-| | (a) standing watcher (recommended) | (b) next check only |
-|---|---|---|
-| Idle session | wakes within ~5 s | sees it when the human next types in that terminal |
-| Cost | one detached Node process per Copilot session (~40 MB), one indexed read every 5 s, a 60 s lease refresh, one re-arm turn a day | none |
+Claude Code's channels extension lets an MCP server push an event that starts a turn in a
+running session: the server declares `capabilities.experimental['claude/channel'] = {}` and
+sends `notifications/claude/channel` with `{ content, meta }`, which Claude renders as
+`<channel source="agent-inbox" …>content</channel>`. No watcher, no window, idle or busy (busy
+sessions get queued events on their next turn). Built in `src/channel.ts`; the docs are
+https://code.claude.com/docs/en/channels-reference.
 
-(b) makes messaging an idle Copilot session pointless, which is the main case. (a) reuses the
-host-owned contract question watchers already prove.
+- **Declared to Claude Code only.** The capability and an `instructions` string ("an event
+  means the human sent this session a message: call `pending()`, act, `ack_message`") are
+  stripped from the initialize answer for every other client, so Copilot's handshake and
+  context do not change. `tools/list` is identical for both.
+- **Push on arrival.** After the handshake, a Claude Code client's server reads its own open
+  message ids every 2 s (`listOpenMessages`, one indexed read) and sends one notice per id it
+  has not pushed: `content` is a fixed sentence, `meta` is `{ message_id }`, never the text.
+  Delivery, isolation and the record stay `pending()` and `ack_message`. The pushed set is in
+  memory, so the schema is unchanged.
+- **Opt-in.** Claude Code listens only when launched with
+  `--dangerously-load-development-channels server:agent-inbox` (custom channels are not on the
+  preview allowlist, so `--channels` does not register them), interactively, after a warning
+  dialog, with claude.ai or Console auth, and where `channelsEnabled` allows it. The name must
+  be the MCP registration's. A notice it is not listening for is dropped silently.
+- **No signal back.** Claude Code acknowledges nothing and its initialize request is the same
+  with and without the flag (measured on v2.1.312), so the loop runs for every Claude Code
+  client. Presence carries `push_wake: true` when the launching Claude Code process's
+  arguments name `server:agent-inbox` in the development flag: evidence, not proof. Org
+  policy or auth can still drop a push. A wrapper process, a session hosted by Claude Code's
+  background daemon (parent `claude bg-spare … claim.sock`, without the user's flags) or
+  another registration name reads as absent, so **absent means unknown**: PR 2 shows "when it
+  next checks" for it, never "can't receive". On macOS a quoted prompt holding the flag tokens
+  can read as true, because `ps` arguments are re-split on spaces.
+- **Beside the hooks.** The hook wake still runs; a session with both may take two turns for
+  one message, and the second `pending()` finds it acked or in hand.
+- **SDK trap.** Claude Code's v2 MCP runtime does not register a channel server that
+  negotiates protocol revision 2026-07-28; SDK 1.x answers on the earlier one. Upgrading to
+  SDK 2.x needs a plan for this first.
 
-- **Contract.** `pending()` adds `session_watch` (the `copilotWatchLaunch` shape; `shell_id:
-  agent-inbox-session-<id>`, `timeout_seconds: 86400`, argv `[node, …execArgv, watch-cli,
-  --session, <id>, <db>]`) only when `inferAgent` is `copilot` and no lease row covers the
-  session or its row is stale (a first arm, or a crash). An in-process memo stops a second offer
-  within 2 minutes of one, until a lease has been claimed after it. The contract and appendix
-  say only the top-level session launches it.
-- **Lease.** In `hook_watch_claims` (already `UNREAD`), key `copilot-session:<id>`, which no hook
-  key (`host:`, `session:`, `project:`) can collide with. `claimSessionWatch` is ONE conditioned
-  upsert: insert, or take over a row whose `claimed_at` is over 3 minutes old or whose token
-  starts `released:`. It never steals a fresh lease (not `claimHookWatch`'s newest-wins). A
-  watcher that does not get it exits 3. Refresh is `UPDATE … SET claimed_at = now WHERE
-  claim_key = ? AND token = ?` every 60 s; 0 rows means it was taken over, and it exits 3
-  silently. **Every exit path releases in a `finally`**, token-conditioned: `UPDATE … SET token =
-  'released:' || token WHERE claim_key = ? AND token = ?`. So a re-run after any exit (0, 3 or
-  124) takes the lease at once instead of finding a fresh lease it does not own and exiting 3,
-  and a watcher that lost its lease while asleep cannot release its successor's.
-- **Exits.** It polls every 5 s.
-  - **0**, an open message that was undelivered at launch or arrived after it (open messages
-    already delivered at launch are its baseline, so one being worked on cannot loop it).
-    Stdout: "Agent Inbox message waiting: call pending(), then re-run this same command." The
-    argv is stable, so re-arming needs no new contract. The release keeps `claimed_at`, so
-    `pending()` does not re-offer while the agent re-arms. If the agent never re-arms, the row
-    goes stale after 3 minutes and `pending()` offers again.
-  - **3**, do not re-arm: the session's presence row is ended, gone or silent for over 15
-    minutes, or its `server_pid` is not running (`process.kill(pid, 0)`, as `hook.ts`
-    `running()`), or another watcher holds the lease. One stdout line, no message text.
-  - **124** after 24 hours, on stderr as `watch-cli.ts:44` does: re-run this same command.
-- **Spikes before PR 3.** (1) Does a detached task launched by a Copilot subagent notify the
-  parent session, or only the subagent? (2) Does a 24-hour detached task survive `/clear` and
-  compaction and still notify? If either fails, PR 3 narrows to what holds, and the copy says so.
+### Copilot: no standing watcher (amended 2026-10-30)
 
-### The wake indicator (PR 2, Claude only until PR 3)
+The standing per-session watcher this section designed (old PR 3) is dropped (§12). A Copilot
+session started by hand sees a message when it next calls `pending()`, and the composer says
+so. Push for Copilot comes from #412's ACP driver: a session Agent Inbox starts through
+`copilot --acp` gets each message as a `session/prompt` call.
+
+### The delivery state (PR 2)
+
+The composer shows one of three states (amended, §12):
+
+| State | When |
+|---|---|
+| **Arrives now** | `push_wake` (a channel push), a #412 driver that owns the session, or `wakes` (an armed Claude hook watch) |
+| **When it next checks** | `receives_messages` and none of the above (an absent `push_wake` is unknown, not "won't wake") |
+| **Can't receive** | no `receives_messages` (Send disabled) |
 
 `listActivity` adds `wakes: boolean`, read from the lease table in its existing query: true for a
-row whose `host:<host_pid>` lease has an `m1:` token claimed within 30 minutes. PR 3 adds a fresh,
-non-released `copilot-session:<session>` lease. `/api/activity` stays a bare array, never
-retained; `activityFrameKey` compares bytes, so a flip repaints. Presence, not attention.
+row whose `host:<host_pid>` lease has an `m1:` token claimed within 30 minutes. `push_wake`
+(channels) is already served. `/api/activity` stays a bare array, never retained;
+`activityFrameKey` compares bytes, so a flip repaints. Presence, not attention.
 
 ## §5 — UI (PR 2)
 
@@ -261,9 +276,9 @@ per-session view, the undelivered list); `app.js` mounts `composerEl(session)`:
   drawer with that session's composer open and focused; the Agents view still fetches nothing.
 
 **Composer.** A labelled textarea ("Message to copilot · agent-inbox · feat-x"), a counter, and
-**Send**/**Cancel**. One line says what happens next: "It wakes for this now" (`wakes`), "It sees
-this when it next checks Agent Inbox", or "Restart this session to load v2.2.0 or later" (no
-`receives_messages`, Send disabled). It also says that any agent of the session may pick it up
+**Send**/**Cancel**. One line says what happens next, from §4's three delivery states: "Arrives
+now", "It sees this when it next checks Agent Inbox", or "Can't receive: restart this session to
+load v2.2.0 or later" (no `receives_messages`, Send disabled). It also says that any agent of the session may pick it up
 first. The id is generated when a send is first claimed and reused by retries, so a replay is
 exact. A refusal keeps the text, with its reason in the composer's `role="status"` slot.
 
@@ -327,11 +342,10 @@ with and without messages; sending, delivery and ack announce nothing.
 The `pending` description adds: "`messages` are the human's instructions to THIS session,
 re-delivered until ack_message({id, outcome}); a subagent returns them to its parent verbatim
 and never acts on or acks them." `ack_message`'s description repeats the subagent rule. The Claude
-appendix adds that the hooks also wake for messages. PR 3's Copilot appendix adds: "Call
-`pending()` once at session start. Only the top-level session launches a returned
-`session_watch`, like a question watch. Exit 0: call `pending()`, then re-run the same command.
-Exit 3: do not re-arm. Exit 124: re-run the same command." The installer inlines the snippet and
-appendices, so `install:agents --apply` refreshes the managed blocks; a test pins the new text.
+appendix adds that the hooks also wake for messages, and (channels PR) what a
+`<channel source="agent-inbox">` event means and how to turn it on. There is no Copilot watcher
+contract (§12). The installer inlines the snippet and appendices, so `install:agents --apply`
+refreshes the managed blocks; a test pins the new text.
 
 ## §7 — Security
 
@@ -373,9 +387,11 @@ appendices, so `install:agents --apply` refreshes the managed blocks; a test pin
 - **DOM (PR 2):** compose from the drawer, focus panel and Agents view; status across polls;
   Withdraw and withdrawn-after-pickup copy; the capability gate; the "Not delivered" fold; drafts
   across polls, reload and an unconfirmed send; the 404 fallback; attention parity on every surface.
-- **Watcher (PR 3):** exits 0, 3 and 124 with their streams; no steal of a fresh lease; takeover
-  of a stale or released one; a 124 followed by a re-run takes the lease; a watcher that lost its
-  lease releases nothing; refresh loss; dead `server_pid`; the offer rules and memo.
+- **Channel push (channels PR):** a real stdio round trip pushes exactly one id-only
+  `notifications/claude/channel` per message to a Claude Code client, nothing for another
+  session's message, and nothing, no capability and no instructions to a Copilot client; the
+  loop pushes once, retries a failed send, forgets closed messages; `push_wake` from the launch
+  flags; and one end-to-end run with real Claude Code.
 - `dead-exports`, `prstate` (no new stdio import) and `instructions-budget` stay green.
 
 ## §9 — Phasing
@@ -390,22 +406,64 @@ appendices, so `install:agents --apply` refreshes the managed blocks; a test pin
 - **PR 2, the UI (`Part of #411`):** `public/messages.js`, the composer in the drawer, focus panel
   and Agents view, history and status, the "Not delivered" fold, drafts, `wakes` (Claude's `m1:`
   lease only), `viewer-frontend.md` and `activity-and-live.md`.
-- **PR 3, Copilot (`Closes #411`):** after both spikes, the session watcher, its lease and offer,
-  the Copilot appendix, and `hooks-and-watcher.md`.
+- **Channels PR (`Part of #411`):** the Claude Code channel push (§4), `push_wake`, the Claude
+  appendix and the docs. Off unless the human launches Claude Code with the flag.
+- ~~PR 3, Copilot~~: dropped (§12). PR 2 now `Closes #411`.
 
 **Non-goals for v2.2.0:** a ⌘K command, editing or re-addressing a message, a notification on
 ack, message search, and any Inbox queue entry.
 
 ## §10 — Future work
 
-One watcher per Copilot session that also covers that session's own questions and rows, instead
-of one per ask plus one per session.
+Push into Copilot sessions through #412's ACP driver. Depend on Claude Code channels without
+the development flag once Agent Inbox is on an allowlist (or ships as a plugin), and revisit the
+hook wake for sessions that have the push.
 
 ## §11 — Questions for the owner
 
 1. **Claude's 29-minute watch window.** Longer means a longer hook `timeout` and re-running
    `install:hooks --apply` everywhere. **Recommend:** keep it for v2.2.0; the copy is honest.
-2. **One Copilot watcher per session for its life** (~40 MB, a read every 5 s, a re-arm turn a
-   day). **Recommend:** yes, subject to the PR 3 spikes.
+2. ~~**One Copilot watcher per session for its life.**~~ Answered 2026-10-30: no (§12).
 3. **Acknowledged outcomes after the session ends.** v2.2.0 shows them only in a listed session's
    history, and a later send prunes them after 30 days. **Recommend:** a follow-up issue for Just landed and History.
+
+## §12 — Decision log
+
+- **2026-10-30, push first (Shariq).** Add the Claude Code channel push (§4): the one mechanism
+  that wakes a hand-started session with no watcher and no window. Research preview and opt-in
+  at launch, so it sits beside the hook wake rather than replacing it.
+- **2026-10-30, no Copilot standing watcher (Shariq).** Old PR 3 is dropped. A Copilot session
+  started by hand gets a message when it next checks; push for Copilot comes from #412's ACP
+  driver. This also retires §11 question 2 and the PR 3 spikes.
+- **2026-10-30, three delivery states (Shariq).** PR 2's composer says "arrives now" (a push, a
+  driver, or an armed hook watch), "when it next checks", or "can't receive".
+- **2026-10-31, PR 2 as built.** (1) Each composer is one node kept for the page's
+  life and updated in place, so the drawer (moved to the ambient painter) is held only
+  while a composer in it has focus; a draft alone survives every rebuild in that node.
+  The focus panel's composer is its own section and is never rewritten. (2) Cancel
+  closes the drawer composer and keeps the text, as Esc does; clearing the text is how
+  a draft is discarded. (3) `wakes` is served only as `true`, like `receives_messages`
+  and `push_wake`. (4) The focus panel shows the composer while the session is listed,
+  working or not. (5) Message drafts share `agent-inbox-drafts-v1`, so a build older
+  than this one sharing the profile drops them on its next write. (6) A draft whose
+  session leaves (or cannot receive) moves to the unsent responses on the next frame.
+- **2026-10-31, PR 2 review fixes.** (1) **A viewer restart waits only for a message
+  that is sending or a composer in use (focused), not for every message draft**, which
+  amends §5's "Message drafts join the viewer-restart hold": a draft in a closed
+  composer is stored and restored after the reload, so holding for it protected
+  nothing and, unseen, held the reload forever. Its Message button reads "Message ·
+  draft". (2) A message waiting in the unsent responses is stored under its own key,
+  `message-recovery:<session>`, so a new draft to the same session never overwrites
+  it; when its session is listed and can receive again (back within the presence
+  window), its text returns to the composer unless the composer already holds one or
+  the human is typing in one of the session's composers.
+  (3) The drawer rebuilds on a poll only when what it draws changed (`liveDrawKey`:
+  the presence rows without `updated_at`, open entries and composers, message
+  changes, the minute, the build advice and the theme, plus the messages snapshot's
+  identity); a rebuild keeps the drawer's scroll and, when the window has focus, the
+  focused control by identity.
+- **2026-10-30, spike findings.** Claude Code's handshake says nothing about listening, so the
+  push loop runs for every Claude Code client and presence reads the launch flags
+  (`push_wake`). The pushed set stays in memory; no hub schema change for it. End to end on
+  Claude Code v2.1.312 an idle session took a turn and acknowledged a message about 7 s after it
+  was sent, with no prompt typed.

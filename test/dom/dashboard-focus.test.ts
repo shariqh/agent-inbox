@@ -159,8 +159,10 @@ describe('the session focus panel (#307)', () => {
     expect(document.activeElement).toBe(aside.querySelector('#dashFocusTitle'))
     expect(aside.querySelector('.dash-focus-doing')?.textContent).toBe('Painting the panel')
     expect([...aside.querySelectorAll('.dash-focus-ask-title')].map((el) => el.textContent)).toEqual(['Which panel width?'])
-    // read-only: it jumps to the rail, it never draws an editor or an option
-    expect(aside.querySelector('textarea, .opt-pill')).toBeNull()
+    // it answers nothing: asks jump to the rail, and its one editor is the
+    // session's message composer (#411)
+    expect(aside.querySelector('.reply-input, .opt-pill')).toBeNull()
+    expect([...aside.querySelectorAll('textarea')].map((el) => el.closest('.dash-focus-message') !== null)).toEqual([true])
     expect(aside.querySelector(`[data-focus-ask="item:${ask}"]`)?.textContent).toBe('Answer in rail')
     expect(aside.querySelector('.dash-focus-plan-title')?.textContent).toBe('Polish plan')
     expect([...aside.querySelectorAll('.dash-focus-outcome strong')].map((el) => el.textContent))

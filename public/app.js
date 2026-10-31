@@ -29,7 +29,11 @@ import { liveSummary, lastActivityAt, isDormant, activitySynopsis, sessionBuild,
 import { agentsAction, hooksGuidance, hooksNextStep, hostLabel, hostLine, restartGuidance } from '/agents.js'
 import { PROJECT_SCOPE_NOTE, RUNTIMES_LEAD, runtimeLines, runtimesAction, runtimesNote } from '/runtimes.js'
 import { esc } from '/esc.js'
-import { initStructuredTextCopy } from '/structured-copy.js'
+import { initStructuredTextCopy, writeClipboard } from '/structured-copy.js'
+import {
+  MESSAGE_MAX_TEXT, MESSAGE_SHARED, MESSAGE_UNCONFIRMED, composerLabel, deliveryState, messageStatus, refusalText,
+  sessionMessages, snapshotHolds, undeliveredMessages, undeliveredReason,
+} from '/messages.js'
 import { captureSelection, restoreSelection } from '/selection.js'
 import { createCopyOnSelect } from '/copy-on-select.js'
 import { renderStructuredText } from '/structured-text.js'
@@ -239,8 +243,22 @@ let refreshPending = false
 let reloadRequested = false
 let pendingWrites = 0
 
+// #411: a message still sending, or a composer the human is in, holds a viewer
+// restart's reload; neither pauses the list (they are not in suspendState). A
+// draft in a closed composer does not: it is stored (#279) and comes back in its
+// composer after the reload, so holding for it would protect nothing.
 function hasUnsentResponses() {
-  return Boolean(suspendHint(suspendState())) || hasDraftRecovery()
+  return Boolean(suspendHint(suspendState())) || hasDraftRecovery() || sendingMessages.size > 0 || composerInUse()
+}
+
+// Whether a textarea of this session's composers (drawer or focus panel) has focus.
+function composerFocused(session) {
+  const active = document.activeElement
+  return [...composerEls.values()].some((el) => el.dataset.msgSession === session && el.querySelector('textarea') === active)
+}
+
+function composerInUse() {
+  return Boolean(document.activeElement?.closest?.('.msg-composer'))
 }
 
 function shouldDeferBootReload() {
@@ -574,6 +592,17 @@ async function linksBody(read) {
   }
 }
 
+// The human's messages to MCP sessions (#411) fall back like links: a 404 from
+// a viewer older than the route, a network error or a body its validator
+// refuses means no messages, never a failed tick.
+async function messagesBody(read) {
+  try {
+    return await settledValue(read).json()
+  } catch {
+    return null
+  }
+}
+
 async function load() {
   if (reloadRequested) return false
   const generation = ++loadGeneration
@@ -597,7 +626,7 @@ async function load() {
   try {
     const [
       items, boardsRead, summaryRead, activityRead, historyRead, closedRead, linksRead, issuesRead, closedHistoryRead,
-      archivedRead, lingerSettled,
+      archivedRead, lingerSettled, messagesRead,
     ] = await Promise.allSettled([
       readSnapshot('/api/items').then(marked),
       readSnapshot('/api/boards').then(marked),
@@ -622,6 +651,9 @@ async function load() {
       wantHistory ? readSnapshot('/api/items/history').then(marked) : null,
       wantArchived ? readSnapshot('/api/boards/archived').then(marked) : null,
       lingerUrl ? readSnapshot(lingerUrl).then(marked) : null,
+      // The human's messages to sessions (#411): a conditional snapshot with its
+      // own validator and the links fallback (messagesBody).
+      readSnapshot('/api/messages').then(marked),
     ])
     if (reloadRequested || generation < appliedLoadGeneration) return false
     const res = settledValue(items)
@@ -642,8 +674,9 @@ async function load() {
       res.json(), body(boardsRead), archivedSummaryBody(summaryRead), body(activityRead), historyBody(historyRead),
       wantHistory ? closedHistoryBody(closedHistoryRead) : null, issuesBody(issuesRead), linksBody(linksRead),
       wantArchived ? archivedBody(archivedRead) : null, lingerUrl ? lingeringBody(lingerSettled) : null,
+      messagesBody(messagesRead),
     ])
-    const [g, boards, brief, activity, activityHistory, firstOlder, issues, links, firstArchived, firstLinger] =
+    const [g, boards, brief, activity, activityHistory, firstOlder, issues, links, firstArchived, firstLinger, messages] =
       bodies.map(settledValue)
     const closedSnapshot = settledValue(closedRead)
     if (reloadRequested || generation < appliedLoadGeneration) return false
@@ -740,6 +773,8 @@ async function load() {
       closed: [...authoritativeClosed],
       links,
       issues,
+      // #411: null when the read failed or the viewer predates the route
+      messages,
       // What this tick read, compared by identity (#298): a snapshot that
       // answered 304 resolves to the very representation it revalidated, and
       // the fresh reads compare by what they can show (activity without its
@@ -750,6 +785,7 @@ async function load() {
         activityHistory.state, activityHistory.message, activityHistory.state === 'ready' ? activityHistory.spans : null,
         links.length ? links : null, issues, older?.done ?? null, older?.error ?? null,
         complete?.plans ?? null, complete?.error ?? null, lingerReadUrl, linger?.plans ?? null, linger?.error ?? null,
+        messages,
       ],
     }
     applyProjectMutationIntents()
@@ -2338,10 +2374,11 @@ function jumpToAsk(entry) {
 // A lane opens a read-only side panel: the session's asks (the lane's own, from
 // the attention set), its plan, recent outcomes, ambient PR/CI chips and the
 // links its text shows (#300). D2 keeps the rail the one answer surface, so
-// every ask here jumps there (or to its Inbox card) and the panel holds no
-// editor and no draft. The ambient painter updates it in place: each part is
-// rewritten only when its markup changes. Opening or closing it moves focus
-// only in a window that has it.
+// every ask here jumps there (or to its Inbox card); its one editor is the
+// session's message composer (#411), not an answer. The ambient painter
+// updates it in place: each part is rewritten only when its markup changes,
+// and the composer is one node kept across paints. Opening or closing it moves
+// focus only in a window that has it.
 const focusTargets = new Map() // data-focus-* value → what its button opens
 const focusPartHtml = new WeakMap()
 
@@ -2364,7 +2401,8 @@ function dashFocusEl() {
     <section class="dash-focus-part" aria-label="Plan"><h3>Plan</h3><div class="dash-focus-planbox"></div></section>
     <section class="dash-focus-part" aria-label="Recent outcomes"><h3>Recent outcomes</h3><div class="dash-focus-outcomes"></div></section>
     <section class="dash-focus-part" aria-label="Pull request"><h3>Pull request</h3><div class="dash-focus-source"></div></section>
-    <section class="dash-focus-part" aria-label="Links"><div class="dash-focus-links"></div></section>`
+    <section class="dash-focus-part" aria-label="Links"><div class="dash-focus-links"></div></section>
+    <section class="dash-focus-message" aria-label="Message" hidden><h3>Message</h3><div class="dash-focus-composer"></div></section>`
   aside.addEventListener('click', (event) => {
     const control = event.target.closest?.('[data-focus-target], .dash-focus-close')
     if (!control) return
@@ -2406,6 +2444,8 @@ function renderDashFocus(aside, model) {
   setHidden(aside, !focusSession)
   if (!focusSession) return
   setAttr(aside, 'data-session', focusSession)
+  // #411: a listed session can be messaged whether or not it is working now
+  paintFocusComposer(aside)
   const lane = model.lanes.find((candidate) => candidate.session === focusSession)
   setHidden(aside.querySelector('.dash-focus-gone'), Boolean(lane))
   for (const el of aside.querySelectorAll('.dash-focus-meta, .dash-focus-doing, .dash-focus-detail')) setHidden(el, !lane)
@@ -2452,6 +2492,20 @@ function renderDashFocus(aside, model) {
   setFocusPart(aside, aside.querySelector('.dash-focus-links'), linkStripHtml([...links.values()], {
     key: linksKey, open: openContexts.has(linksKey), actions: linkFileActions(), copyFiles: fileLinksCopy(),
   }))
+}
+
+// The panel's message part: the session's composer and history, one node per
+// session kept across paints, so a poll never replaces the text being typed.
+function paintFocusComposer(aside) {
+  const part = aside.querySelector('.dash-focus-message')
+  const slot = part?.querySelector('.dash-focus-composer')
+  if (!slot) return
+  const listed = Boolean(activityRow(focusSession))
+  setHidden(part, !listed)
+  if (!listed) return
+  const el = composerEl('focus', focusSession)
+  if (slot.firstElementChild !== el) slot.replaceChildren(el)
+  updateComposer(el)
 }
 
 function paintSessionFocus() {
@@ -3125,6 +3179,10 @@ function paintAmbient() {
   const live = pillLive
   const dashboard = dashboardModel(filtered, lastData.older, live)
   renderLiveBar(lastData.activity ?? [])    // collapsed strip — GLOBAL, never scoped (§7 filter-blindness, generalized)
+  // #411: a message the snapshot now holds was sent; one whose session left
+  // goes to the unsent responses. Then the drawer, which holds a composer.
+  reconcileMessageDrafts()
+  renderLive(live, { forced: forcedAmbient }) // drawer's expanded list — stays FILTERED (rail-scoped, like every other tab)
   renderDashboardAmbient(dashboard, { forced: forcedAmbient })
   paintTabCounts(g, boards)
   paintLaterSectionHint()
@@ -3170,11 +3228,10 @@ function paintTabCounts(g, boards) {
   for (const id of TAB_IDS) setCount(id, counts[id])
 }
 
-function paintEditableSurfaces({ agents, g, boards, archived, live, dashboard, paintAllPanes }) {
+function paintEditableSurfaces({ agents, g, boards, archived, dashboard, paintAllPanes }) {
   renderSearchResults()
   renderClosedBanner()
   renderAgentSelect(agents)
-  renderLive(live) // drawer's expanded list — stays FILTERED (rail-scoped, like every other tab)
   renderDashboard(dashboard)
   // Keep the action/recovery queue and overlays current. Only inactive document
   // panes skip ordinary polls; boot and explicit human repaints remain complete.
@@ -5998,7 +6055,7 @@ function loadMeshView() {
   meshRequested = true
   import('/mesh-view.js')
     .then((mod) => {
-      meshView = mod.installMeshView({ jumpToAsk })
+      meshView = mod.installMeshView({ jumpToAsk, openMessage })
       meshView.renderSettings(document.querySelector('#setup .setup-body'))
     })
     .catch((err) => console.error('Agents view could not load', err))
@@ -6028,13 +6085,55 @@ function paintLiveProjectDot(dot, project, state) {
   dot.style.setProperty('--project-wash', color.wash)
 }
 
-function renderLive(entries) {
+// The drawer's expanded list, painted by the ambient painter (#411) so a
+// composer's status keeps moving under an unrelated draft. A composer the human
+// is in (its node holds focus, remembered in a background window too) keeps the
+// list as it is: only the composers update in place, and a forced paint, the
+// human's own, rebuilds it around the same composer nodes.
+//
+// A poll whose drawer would look the same (`liveDrawKey`, plus the identity of
+// the messages snapshot) rebuilds nothing either, so focus, hover and scroll in
+// it are never disturbed by an unrelated draft's ticks. When it does rebuild,
+// the drawer keeps its scroll, and a keyboard user keeps the same control by
+// identity (`data-live-focus`) when the window has focus.
+let liveDrawnKey = null
+let liveDrawnMessages
+function liveDrawKey(entries) {
+  // the clock enters at minute granularity: every age it draws is in minutes
+  return JSON.stringify([
+    activityFrameKey(entries), [...openLive], [...openComposers], messageVersion, Math.floor(Date.now() / 60000),
+    liveVersion, renderedTheme,
+    // "Not delivered" reads every listed session, not the lens's
+    (lastData?.activity ?? []).map((row) => row?.session).sort(),
+  ])
+}
+
+function renderLive(entries, { forced = false } = {}) {
   const host = document.querySelector('#liveDrawer .live-list')
-  const active = entries.filter((a) => !a.idle)
+  if (!host) return
+  const key = liveDrawKey(entries)
+  const messages = lastData?.messages ?? null
+  const active = document.activeElement
+  const inComposer = active instanceof Element && host.contains(active) && active.closest('.msg-composer') ? active : null
+  if (!forced && ((key === liveDrawnKey && messages === liveDrawnMessages) || inComposer)) {
+    for (const el of host.querySelectorAll('.msg-composer')) updateComposer(el)
+    return
+  }
+  const caret = inComposer?.matches('textarea') ? [inComposer.selectionStart, inComposer.selectionEnd] : null
+  const focusKey = !inComposer && active instanceof Element && host.contains(active)
+    ? active.closest('[data-live-focus]')?.dataset.liveFocus ?? null
+    : null
+  // read before the rebuild detaches it: a removed node takes the focus with it
+  const ownsFocus = Boolean(inComposer || focusKey) && document.hasFocus()
+  const drawer = host.closest('#liveDrawer')
+  const scrollTop = drawer?.scrollTop ?? 0
+  liveDrawnKey = key
+  liveDrawnMessages = messages
+  const activeRows = entries.filter((a) => !a.idle)
   const idle = entries.filter((a) => a.idle)
   host.title = 'Connections can be shared by multiple agents. Task reports are not proof an agent is running.'
   host.innerHTML = entries.length ? '' : '<p class="empty">No agent connections.</p>'
-  for (const a of active) {
+  for (const a of activeRows) {
     const el = document.createElement('details')
     el.className = 'live-entry'
     if (openLive.has(a.session)) el.open = true
@@ -6046,7 +6145,7 @@ function renderLive(entries) {
     const kids = a.children.length ? `<span class="live-kids">▸ ${a.children.length} reported agent${a.children.length > 1 ? 's' : ''}</span>` : ''
     const build = liveBuildHtml(a)
     el.innerHTML = `
-      <summary class="card-summary live-summary">
+      <summary class="card-summary live-summary" data-live-focus="${esc(`entry:${a.session}`)}">
         <span class="live-dot"></span>
         <span class="live-session-copy">
           <span class="live-session-heading">
@@ -6059,6 +6158,7 @@ function renderLive(entries) {
         </span>
         ${kids}
         <span class="live-age ${fresh}" title="connected ${esc(rel(a.started_at))} ago">${esc(age)}</span>
+        ${messageButtonHtml(a)}
       </summary>
       ${a.detail ? `<div class="detail live-detail">${renderStructuredText(a.detail)}</div>` : ''}`
     const dot = el.querySelector('.live-dot')
@@ -6078,6 +6178,7 @@ function renderLive(entries) {
       el.appendChild(table)
     }
     host.appendChild(el)
+    mountDrawerComposer(host, a.session)
   }
   if (idle.length) {
     // idle sessions are the parents of everything — present but quiet,
@@ -6092,7 +6193,7 @@ function renderLive(entries) {
     const builds = new Map(idle.map((a) => [a, liveBuildHtml(a)]))
     const older = [...builds.values()].filter((b) => b.older).length
     const newer = [...builds.values()].filter((b) => b.newer).length
-    fold.innerHTML = `<summary>${idle.length} connection${idle.length > 1 ? 's' : ''} · no task reported${older ? ` · ${older} on an older build` : ''}${newer ? ` · ${newer} on a newer build` : ''}</summary>`
+    fold.innerHTML = `<summary data-live-focus="idle">${idle.length} connection${idle.length > 1 ? 's' : ''} · no task reported${older ? ` · ${older} on an older build` : ''}${newer ? ` · ${newer} on a newer build` : ''}</summary>`
     for (const a of idle) {
       const row = document.createElement('div')
       // #45: hours-quiet sessions keep their row (they ARE present, and their
@@ -6117,14 +6218,452 @@ function renderLive(entries) {
           <span class="live-doing ${synopsis.historical ? 'historical' : 'empty-summary'}">${synopsis.historical ? 'Last report: ' : ''}${esc(synopsis.text)}</span>
           ${build.hint}
         </span>
-        <span class="live-age ${fresh}" title="${esc(age)}">${esc(age)}</span>`
+        <span class="live-age ${fresh}" title="${esc(age)}">${esc(age)}</span>
+        ${messageButtonHtml(a)}`
       const dot = row.querySelector('.live-dot')
       paintLiveProjectDot(dot, a.project, 'idle-session')
       dot.title = `${a.project} · connected · ${age}`
       fold.appendChild(row)
+      mountDrawerComposer(fold, a.session)
     }
     host.appendChild(fold)
   }
+  renderUndelivered(host)
+  if (drawer && drawer.scrollTop !== scrollTop) drawer.scrollTop = scrollTop
+  if (!ownsFocus) return
+  if (inComposer?.isConnected) {
+    inComposer.focus({ preventScroll: true })
+    if (caret) inComposer.setSelectionRange(caret[0], caret[1])
+  } else if (focusKey) {
+    // matched by value, never through a selector built from a session id
+    ;[...host.querySelectorAll('[data-live-focus]')].find((el) => el.dataset.liveFocus === focusKey)?.focus({ preventScroll: true })
+  }
+}
+
+// ── messages to a running session (#411, design §5) ─────────────────────────
+// One composer per session, in the Live drawer (opened by its Message button)
+// and in the Dashboard session focus panel, sharing one draft. Each composer is
+// one node kept for the page's life and updated in place, so a rebuild around
+// it never loses its text, caret or focus. Presence, not attention: nothing here
+// reaches public/attention.js, a badge, a count, the rail or the dock.
+const messageDrafts = new Map() // session → { text, project, agent, stream, intent: { id, text } | null }
+const messageRecoveries = new Map() // session → { ...draft, reason }: in the unsent responses
+const messageNotes = new Map() // session → what its composer's status slot says
+const messageWriteNotes = new Map() // message id → why its Withdraw was refused
+const openComposers = new Set() // sessions whose drawer composer is open
+const composerEls = new Map() // `${where}:${session}` → its composer node
+const sendingMessages = new Set() // sessions with a send in flight
+const openMessageFolds = new Set() // "+N earlier" and "+M more" folds the human opened
+// Every change above, for the drawer's own key (liveDrawKey). It is not in
+// frameInputs(): each change comes from human input or a settled write (both
+// already count, #298), from a restore in the first load (which always paints)
+// or from reconcileMessageDrafts inside a paint, so it never waits on a tick.
+let messageVersion = 0
+let composerSeq = 0
+
+function bumpMessages() {
+  messageVersion += 1
+  showPauseHint() // queues the draft save (#279)
+}
+
+function activityRow(session) {
+  return (lastData?.activity ?? []).find((row) => row?.session === session) ?? null
+}
+
+// A closed composer holding text says so on its button: the draft is kept.
+function messageButtonHtml(a) {
+  const open = openComposers.has(a.session)
+  const draft = !open && messageDrafts.has(a.session)
+  return `<button type="button" class="live-msg-btn${draft ? ' has-draft' : ''}" data-msg-open="${esc(a.session)}" ` +
+    `data-live-focus="${esc(`msg:${a.session}`)}" aria-expanded="${open}" ` +
+    `title="${draft ? 'Message this session: your unsent draft is kept' : 'Message this session'}">${draft ? 'Message · draft' : 'Message'}</button>`
+}
+
+function mountDrawerComposer(parent, session) {
+  if (!openComposers.has(session)) return
+  const el = composerEl('drawer', session)
+  parent.appendChild(el)
+  updateComposer(el)
+}
+
+function composerEl(where, session) {
+  const key = `${where}:${session}`
+  const held = composerEls.get(key)
+  if (held) return held
+  const el = document.createElement('div')
+  el.className = 'msg-composer'
+  el.dataset.msgSession = session
+  el.dataset.msgHost = where
+  const id = `msgInput${++composerSeq}`
+  el.innerHTML = `
+    <label class="msg-label" for="${id}"></label>
+    <textarea id="${id}" class="msg-input" rows="3" maxlength="${MESSAGE_MAX_TEXT}" aria-describedby="${id}Delivery ${id}Shared"></textarea>
+    <p class="msg-delivery" id="${id}Delivery"></p>
+    <p class="msg-shared" id="${id}Shared"></p>
+    <div class="msg-actions">
+      <span class="msg-count"></span>
+      <button type="button" class="msg-send" title="Send (${navigator.platform?.startsWith('Mac') ? '⌘' : 'Ctrl'}+Enter)">Send</button>
+      ${where === 'drawer' ? '<button type="button" class="msg-cancel" title="Close; your text is kept (Esc)">Cancel</button>' : ''}
+    </div>
+    <p class="msg-status" role="status"></p>
+    <div class="msg-history"></div>`
+  const input = el.querySelector('textarea')
+  input.value = messageDrafts.get(session)?.text ?? ''
+  input.addEventListener('input', () => setMessageDraft(session, input.value, input))
+  input.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !event.isComposing) {
+      event.preventDefault()
+      sendMessage(session)
+    }
+  })
+  el.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape' || where !== 'drawer' || event.defaultPrevented) return
+    event.preventDefault()
+    event.stopPropagation()
+    closeComposer(session)
+  })
+  el.addEventListener('click', (event) => {
+    const control = event.target instanceof Element ? event.target.closest('button') : null
+    if (!control || !el.contains(control)) return
+    if (control.matches('.msg-send')) sendMessage(session)
+    else if (control.matches('.msg-cancel')) closeComposer(session)
+    else if (control.dataset.msgWithdraw) withdrawMessage(control.dataset.msgWithdraw, Number(control.dataset.msgRevision))
+  })
+  el.addEventListener('toggle', (event) => {
+    const fold = event.target
+    if (!(fold instanceof HTMLDetailsElement) || !fold.dataset.msgFold) return
+    if (fold.open) openMessageFolds.add(fold.dataset.msgFold)
+    else openMessageFolds.delete(fold.dataset.msgFold)
+  }, true)
+  composerEls.set(key, el)
+  return el
+}
+
+// One session's history, newest first: the human's words, then a status line;
+// an acknowledgement's outcome is agent text and renders as such.
+function messageHistoryHtml(session) {
+  const { shown, earlier } = sessionMessages(lastData?.messages, session)
+  const line = (message) => {
+    const status = messageStatus(message, (iso) => rel(iso))
+    const note = messageWriteNotes.get(message.id)
+    return `<div class="msg-item ${status.tone}" data-msg-id="${esc(message.id)}">` +
+      `<p class="msg-text">${esc(message.text)}</p>` +
+      `<p class="msg-state">${esc(status.text)}</p>` +
+      (status.outcome !== null ? `<div class="msg-outcome">${renderStructuredText(status.outcome)}</div>` : '') +
+      (note ? `<p class="msg-refused">${esc(note)}</p>` : '') +
+      (status.withdrawable
+        ? `<button type="button" class="msg-withdraw" data-msg-withdraw="${esc(message.id)}" data-msg-revision="${message.revision}">Withdraw</button>`
+        : '') +
+      '</div>'
+  }
+  if (!shown.length) return ''
+  const foldKey = `earlier:${session}`
+  return shown.map(line).join('') + (earlier.length
+    ? `<details class="msg-earlier" data-msg-fold="${esc(foldKey)}"${openMessageFolds.has(foldKey) ? ' open' : ''}>` +
+      `<summary>+${earlier.length} earlier</summary>${earlier.map(line).join('')}</details>`
+    : '')
+}
+
+const composerHistoryHtml = new WeakMap()
+
+function updateComposer(el) {
+  const session = el.dataset.msgSession
+  const row = activityRow(session)
+  const draft = messageDrafts.get(session)
+  const delivery = deliveryState(row)
+  const input = el.querySelector('textarea')
+  const text = draft?.text ?? ''
+  if (input.value !== text && document.activeElement !== input) input.value = text
+  setText(el.querySelector('.msg-label'), composerLabel(row ?? draft ?? {}))
+  const deliveryEl = el.querySelector('.msg-delivery')
+  setText(deliveryEl, delivery.text)
+  setAttr(deliveryEl, 'data-state', delivery.state)
+  setText(el.querySelector('.msg-shared'), delivery.canSend ? MESSAGE_SHARED : '')
+  const sending = sendingMessages.has(session)
+  // written only on a change, so an unchanged paint writes nothing at all
+  if (input.disabled !== !delivery.canSend) input.disabled = !delivery.canSend
+  const length = input.value.length
+  setText(el.querySelector('.msg-count'), `${length} / ${MESSAGE_MAX_TEXT}`)
+  const send = el.querySelector('.msg-send')
+  const blocked = !delivery.canSend || sending || !input.value.trim()
+  if (send.disabled !== blocked) send.disabled = blocked
+  setText(send, sending ? 'Sending…' : 'Send')
+  setText(el.querySelector('.msg-status'), messageNotes.get(session) ?? '')
+  const history = el.querySelector('.msg-history')
+  const html = messageHistoryHtml(session)
+  if (composerHistoryHtml.get(history) === html) return
+  composerHistoryHtml.set(history, html)
+  const focused = activeFocusElement()
+  const withdrawFocus = focused && history.contains(focused) ? focused.dataset?.msgWithdraw ?? null : null
+  history.innerHTML = html
+  if (withdrawFocus && document.hasFocus()) {
+    // matched by value, never through a selector built from the id
+    ;([...history.querySelectorAll('[data-msg-withdraw]')].find((b) => b.dataset.msgWithdraw === withdrawFocus)
+      ?? el.querySelector('textarea'))?.focus({ preventScroll: true })
+  }
+}
+
+function setMessageDraft(session, text, source = null) {
+  const row = activityRow(session)
+  const draft = messageDrafts.get(session)
+  if (!text.trim()) {
+    // an emptied composer holds no draft, and nothing left to retry or explain
+    if (draft) messageDrafts.delete(session)
+    messageNotes.delete(session)
+  } else {
+    messageDrafts.set(session, {
+      project: row?.project ?? draft?.project ?? '',
+      agent: row?.agent ?? draft?.agent ?? '',
+      stream: row?.stream ?? draft?.stream ?? '',
+      intent: draft?.intent ?? null,
+      text,
+    })
+  }
+  // the session's other composer shows the same draft
+  for (const [key, el] of composerEls) {
+    if (!key.endsWith(`:${session}`) || el.dataset.msgSession !== session) continue
+    const input = el.querySelector('textarea')
+    if (input !== source && input.value !== text) input.value = text
+    updateComposer(el)
+  }
+  bumpMessages()
+}
+
+// A draft that was sent leaves every composer of its session, the focused one too
+// (updateComposer leaves a focused textarea alone, so typing is never overwritten).
+function clearComposerText(session) {
+  for (const el of composerEls.values()) {
+    if (el.dataset.msgSession === session) el.querySelector('textarea').value = ''
+  }
+}
+
+function updateSessionComposers(session) {
+  for (const el of composerEls.values()) if (el.dataset.msgSession === session) updateComposer(el)
+}
+
+function openComposer(session, { focus = true } = {}) {
+  const row = activityRow(session)
+  if (!row) return
+  openComposers.add(session)
+  if (row.idle) openLive.add('__idle__')
+  bumpMessages()
+  renderLive(liveInLens(), { forced: true })
+  if (!focus) return
+  const input = composerEl('drawer', session).querySelector('textarea')
+  // an explicit click: the composer takes focus, and the drawer scrolls to it
+  if (input.isConnected && !input.disabled) input.focus()
+}
+
+function closeComposer(session) {
+  const el = composerEls.get(`drawer:${session}`)
+  const owned = Boolean(el?.contains(document.activeElement)) && document.hasFocus()
+  openComposers.delete(session)
+  bumpMessages()
+  // focus leaves the composer first, so the rebuild below is not held
+  if (owned) document.activeElement.blur()
+  renderLive(liveInLens(), { forced: true })
+  if (!owned) return
+  const button = [...document.querySelectorAll('#liveDrawer [data-msg-open]')].find((b) => b.dataset.msgOpen === session)
+  button?.focus({ preventScroll: true })
+}
+
+// The Agents view's Message button (#411): the drawer, with this session's
+// composer open and focused.
+function openMessage(session) {
+  toggleLiveDrawer(true)
+  openComposer(session)
+}
+
+function initMessages() {
+  const list = document.querySelector('#liveDrawer .live-list')
+  list?.addEventListener('click', (event) => {
+    const button = event.target instanceof Element ? event.target.closest('[data-msg-open]') : null
+    if (!button) return
+    // a button in a <summary> must not also fold its entry
+    event.preventDefault()
+    const session = button.dataset.msgOpen
+    if (openComposers.has(session)) closeComposer(session)
+    else openComposer(session)
+  })
+}
+
+function postMessage(session, intent) {
+  return postJSON(`/api/sessions/${encodeURIComponent(session)}/messages`, { id: intent.id, text: intent.text })
+}
+
+// A send claims an id once and reuses it while its text is unchanged, so a
+// retry after an unconfirmed send replays exactly and never sends twice.
+function claimMessageIntent(draft) {
+  if (!draft.intent || draft.intent.text !== draft.text) draft.intent = { id: globalThis.crypto.randomUUID(), text: draft.text }
+  return draft.intent
+}
+
+const REFUSALS = new Set(['session_gone', 'session_cannot_receive', 'too_many_open', 'too_much_open', 'id_conflict'])
+
+async function sendMessage(session) {
+  const draft = messageDrafts.get(session)
+  if (!draft?.text.trim() || sendingMessages.has(session) || !deliveryState(activityRow(session)).canSend) return
+  const intent = claimMessageIntent(draft)
+  sendingMessages.add(session)
+  messageNotes.delete(session)
+  // stored before it goes, so a page that dies mid-send still knows its id
+  saveDrafts()
+  updateSessionComposers(session)
+  bumpMessages()
+  let result = null
+  try {
+    result = await withPendingResponse(() => postMessage(session, intent))
+  } finally {
+    sendingMessages.delete(session)
+  }
+  const current = messageDrafts.get(session)
+  if (result?.ok === true) {
+    // sent: the draft goes, unless the human typed something else meanwhile
+    if (current?.text === intent.text) {
+      messageDrafts.delete(session)
+      clearComposerText(session)
+    } else if (current) current.intent = null
+  } else if (result?.ok === false && REFUSALS.has(result.reason)) {
+    if (current?.intent?.id === intent.id) current.intent = null
+    messageNotes.set(session, refusalText(result))
+  } else {
+    messageNotes.set(session, MESSAGE_UNCONFIRMED)
+  }
+  bumpMessages()
+  await reloadAndPaint()
+}
+
+async function withdrawMessage(id, revision) {
+  if (!Number.isSafeInteger(revision)) return
+  const result = await withPendingResponse(() => postJSON(`/api/messages/${encodeURIComponent(id)}/withdraw`, { revision }))
+  if (result?.ok === true) messageWriteNotes.delete(id)
+  else messageWriteNotes.set(id, result ? refusalText(result, 'withdraw') : 'Not withdrawn: the viewer did not answer.')
+  bumpMessages()
+  await reloadAndPaint()
+}
+
+// Every applied frame: a draft whose send the snapshot now holds was sent
+// (an unconfirmed send that did land), and a draft whose session is no longer
+// listed, or cannot receive, moves to the unsent responses with its reason.
+function reconcileMessageDrafts() {
+  const snapshot = lastData?.messages ?? null
+  let changed = false
+  const sent = (draft) => Boolean(snapshot && draft.intent && draft.intent.text === draft.text && snapshotHolds(snapshot, draft.intent.id))
+  for (const [session, draft] of messageDrafts) {
+    if (sendingMessages.has(session)) continue
+    if (sent(draft)) {
+      messageDrafts.delete(session)
+      messageNotes.delete(session)
+      clearComposerText(session)
+      changed = true
+      continue
+    }
+    const delivery = deliveryState(activityRow(session))
+    // one in the unsent responses already: this one stays a draft, still stored
+    // under its own key, rather than overwrite it
+    if (delivery.canSend || messageRecoveries.has(session)) continue
+    messageDrafts.delete(session)
+    messageRecoveries.set(session, { ...draft, reason: messageRecoveryReason(delivery, draft) })
+    changed = true
+  }
+  for (const [session, draft] of messageRecoveries) {
+    if (sendingMessages.has(session)) continue
+    if (sent(draft)) {
+      messageRecoveries.delete(session)
+      changed = true
+      continue
+    }
+    // its session is listed and can receive again (it came back within the
+    // presence window): the text goes back to its composer, unless one already
+    // holds a draft, in which case both stay, each under its own stored key.
+    // Never into a composer the human is typing in: updateComposer leaves a
+    // focused textarea alone, so the next keystroke would replace the text unseen.
+    if (messageDrafts.has(session) || composerFocused(session) || !deliveryState(activityRow(session)).canSend) continue
+    const { reason: _reason, ...text } = draft
+    messageRecoveries.delete(session)
+    messageDrafts.set(session, text)
+    if (text.intent?.text === text.text) messageNotes.set(session, MESSAGE_UNCONFIRMED)
+    changed = true
+  }
+  // a composer whose session left is not kept once nothing shows it
+  for (const [key, el] of composerEls) {
+    if (!el.isConnected && !activityRow(el.dataset.msgSession)) composerEls.delete(key)
+  }
+  if (!changed) return
+  for (const el of composerEls.values()) updateComposer(el)
+  bumpMessages()
+}
+
+function messageRecoveryReason(delivery, draft) {
+  const where = delivery.state === 'cannot' ? 'this session can’t receive messages' : 'this session is no longer running'
+  return draft.intent && draft.intent.text === draft.text ? `Your send was not confirmed, and ${where}` : `Not sent: ${where}`
+}
+
+// An unsent message's Retry (design §5): the id it last claimed while its text
+// is unchanged, so a send that did land replays and is not sent twice.
+async function retryMessageRecovery(session) {
+  const draft = messageRecoveries.get(session)
+  if (!draft || sendingMessages.has(session)) return
+  const intent = claimMessageIntent(draft)
+  sendingMessages.add(session)
+  saveDrafts()
+  bumpMessages()
+  let result = null
+  try {
+    result = await withPendingResponse(() => postMessage(session, intent))
+  } finally {
+    sendingMessages.delete(session)
+  }
+  if (result?.ok === true) messageRecoveries.delete(session)
+  else if (result?.ok === false && REFUSALS.has(result.reason)) {
+    draft.intent = null
+    draft.reason = refusalText(result).replace(/\.$/, '')
+  } else draft.reason = 'Your send was not confirmed'
+  bumpMessages()
+  await reloadAndPaint()
+}
+
+// The end of the Live drawer: every open message whose session /api/activity
+// no longer lists, until the human withdraws it or a later send's 30-day prune
+// deletes it. Global, like the strip: a lens never hides an undelivered message.
+function renderUndelivered(host) {
+  const lost = undeliveredMessages(lastData?.messages, lastData?.activity)
+  if (!lost.total) return
+  const fold = document.createElement('details')
+  fold.className = 'msg-undelivered'
+  fold.dataset.msgFold = 'undelivered'
+  fold.open = openMessageFolds.has('undelivered')
+  const line = (message) => {
+    const note = messageWriteNotes.get(message.id)
+    return `<div class="msg-item msg-lost" data-msg-id="${esc(message.id)}">` +
+      `<p class="msg-lost-who">${esc(composerLabel(message))}</p>` +
+      `<p class="msg-text">${esc(message.text)}</p>` +
+      `<p class="msg-state">${esc(undeliveredReason(message))} · sent ${esc(rel(message.created_at))} ago</p>` +
+      (note ? `<p class="msg-refused">${esc(note)}</p>` : '') +
+      `<span class="msg-lost-actions"><button type="button" data-msg-copy="${esc(message.id)}" data-live-focus="${esc(`copy:${message.id}`)}">Copy text</button>` +
+      `<button type="button" class="msg-withdraw" data-msg-withdraw="${esc(message.id)}" data-msg-revision="${message.revision}" data-live-focus="${esc(`withdraw:${message.id}`)}">Withdraw</button></span>` +
+      '</div>'
+  }
+  fold.innerHTML = `<summary data-live-focus="undelivered">Not delivered (${lost.total})</summary>` + lost.shown.map(line).join('') + (lost.more.length
+    ? `<details class="msg-earlier" data-msg-fold="undelivered-more"${openMessageFolds.has('undelivered-more') ? ' open' : ''}>` +
+      `<summary data-live-focus="undelivered-more">+${lost.more.length} more</summary>${lost.more.map(line).join('')}</details>`
+    : '')
+  fold.addEventListener('toggle', (event) => {
+    const target = event.target
+    if (!(target instanceof HTMLDetailsElement) || !target.dataset.msgFold) return
+    if (target.open) openMessageFolds.add(target.dataset.msgFold)
+    else openMessageFolds.delete(target.dataset.msgFold)
+  }, true)
+  fold.addEventListener('click', (event) => {
+    const button = event.target instanceof Element ? event.target.closest('button') : null
+    if (!button) return
+    if (button.dataset.msgWithdraw) withdrawMessage(button.dataset.msgWithdraw, Number(button.dataset.msgRevision))
+    else if (button.dataset.msgCopy) {
+      const message = (lastData?.messages?.open ?? []).find((m) => m.id === button.dataset.msgCopy)
+      if (message) writeClipboard(document, message.text)
+    }
+  })
+  host.appendChild(fold)
 }
 
 // The always-visible footer strip (spec §16). Ambient only: never steals focus,
@@ -6645,6 +7184,19 @@ function renderOrphanedDrafts(host) {
           draft.context ? `context: ${draft.context}` : '',
         ].filter(Boolean).join(' · '),
       })),
+    ...[...messageRecoveries].map(([session, draft]) => ({
+      id: `message:${session}`,
+      draft,
+      retry: () => retryMessageRecovery(session),
+      clear: () => {
+        if (sendingMessages.has(session)) return false
+        messageRecoveries.delete(session)
+        bumpMessages()
+        return true
+      },
+      text: `${composerLabel(draft)} · ${draft.reason} · Message: ${draft.text}`,
+      pending: sendingMessages.has(session),
+    })),
     ...Object.entries(itemNoteDrafts)
       .filter(([, draft]) => !draft.pending || draft.error)
       .map(([id, draft]) => ({
@@ -7782,7 +8334,7 @@ function reusableDraftIntent(id, generation) {
 
 function hasDraftRecovery() {
   return Object.keys(staleItemDrafts).length > 0 || Object.keys(staleRowDrafts).length > 0
-    || Object.values(itemNoteDrafts).some((draft) => !draft.pending)
+    || Object.values(itemNoteDrafts).some((draft) => !draft.pending) || messageRecoveries.size > 0
 }
 
 function requestDraftRecovery(target = draftRecoveryTarget) {
@@ -8046,6 +8598,13 @@ function collectDrafts() {
   }
   for (const [id, draft] of Object.entries(itemNoteDrafts)) {
     add({ type: 'note', itemId: id, title: draft.title, text: draft.text, error: draft.error ?? '', pending: Boolean(draft.pending) })
+  }
+  // #411: one per session, in its composer or in the unsent responses
+  for (const [session, draft] of [...messageRecoveries, ...messageDrafts]) {
+    add({
+      type: 'message', session, project: draft.project, agent: draft.agent, stream: draft.stream ?? '', text: draft.text,
+      intent: draft.intent ?? null, reason: draft.reason ?? '',
+    })
   }
   return drafts
 }
@@ -8378,6 +8937,32 @@ function placeRestoredDraft(key, draft) {
         reason: draft.reason,
       }
       return null
+    case 'message': {
+      // #411: a send the snapshot holds went through; a listed session that
+      // can receive gets its text back in its composer, nothing opened or
+      // focused; anything else waits in the unsent responses
+      const session = draft.session
+      const restored = {
+        project: draft.project, agent: draft.agent, stream: draft.stream, text: draft.text,
+        intent: draft.intent ? { ...draft.intent } : null,
+      }
+      if (restored.intent?.text === restored.text && snapshotHolds(lastData.messages, restored.intent.id)) return null
+      const delivery = deliveryState(activityRow(session))
+      const recovery = { ...restored, reason: draft.reason || messageRecoveryReason(delivery, restored) }
+      // A waiting one stays waiting here; reconcileMessageDrafts gives it back to
+      // its composer once nothing else holds that, so a draft restored beside it
+      // keeps the composer whichever entry is placed first.
+      if (!draft.reason && delivery.canSend && !messageDrafts.has(session)) {
+        messageDrafts.set(session, restored)
+        if (restored.intent?.text === restored.text) messageNotes.set(session, MESSAGE_UNCONFIRMED)
+      } else if (!messageRecoveries.has(session)) messageRecoveries.set(session, recovery)
+      // one already waits in the unsent responses: this one stays a draft, stored
+      // under its own key, as reconcileMessageDrafts keeps it
+      else if (!messageDrafts.has(session)) messageDrafts.set(session, restored)
+      else messageRecoveries.set(session, recovery)
+      messageVersion += 1
+      return null
+    }
     case 'note': {
       const item = freshItem(draft.itemId)
       if (item && (item.annotation ?? '') === draft.text) return null
@@ -10803,6 +11388,7 @@ initLinkOpening()
 initCopyOnSelect()
 initGear()
 initLiveBar()
+initMessages()
 renderSetup()
 // The LAST two lines that may ever call the gated load() directly: the boot paint
 // and the poll itself. Every other caller is a human action and goes through

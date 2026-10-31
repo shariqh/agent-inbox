@@ -25,10 +25,11 @@ session, with no watcher and no time window.
 2. **One protocol for both hosts.** `copilot --acp --stdio`, and later Claude through the
    `claude-agent-acp` adapter, which runs the Claude Agent SDK in streaming-input mode. The ACP
    client is Node core, so the app's dependency set is unchanged.
-3. **Linking is by process ancestry.** Every presence row whose `host_pid` descends from the
-   driver's child belongs to the launch. Fresh `driven:<session>` leases in `hook_watch_claims`
-   make `listActivity` report `driven`, so #411's composer can say **Arrives now**. There is no
-   secret, no env claim, and no new column in the first build.
+3. **Linking is by process ancestry.** A presence row whose live server's parent is its
+   `host_pid`, started after the child, with the driver's child as the first agent host above
+   it, belongs to the launch; a nested CLI is its own session. Fresh `driven:<session>` leases
+   in `hook_watch_claims` make `listActivity` report `driven`, so #411's composer can say
+   **Arrives now**. There is no secret, no env claim, and no new column in the first build.
 4. **Delivery is pushed, re-checked and batched.**
    - Queued messages are re-read just before each `session/prompt` and sent as one turn.
    - A new answer to one of the session's own asks also gets a ping turn.
@@ -110,14 +111,15 @@ its peer is `@modelcontextprotocol/server@^2` where the app ships `@modelcontext
 
 ### 3.2 Copilot (`copilot --acp --stdio`, public preview)
 
-Argv is fixed per mode (§4): `copilot --acp --stdio --allow-tool agent-inbox [--mode M]
+Argv is fixed per mode (§4): `copilot --acp --stdio --allow-tool <name> [--mode M]
 [--allow-tool …] [--deny-tool …] [--model M] [--effort E]`. Tool filters and effort are fixed
 when the server starts, which suits one server per launch.
 
 The session uses the user's own `agent-inbox` MCP registration, as in a terminal, and its tools
 are pre-allowed. Otherwise every `pending`, `flag` and `ack_message` would become an approval.
-The driver supplies a server in `session/new`'s `mcpServers` only when the host config has none.
-It never adds a second one, which removes the duplicate-server risk.
+`<name>` is read from the host config: the entry the installer manages (`agent-hosts.ts`'s
+rule), whatever it is called there. If none is found, the driver refuses to start.
+The driver never supplies a server of its own, which removes the duplicate-server risk.
 
 The child env drops `COPILOT_ALLOW_ALL` and sets `COPILOT_AUTO_UPDATE=false` (§8). Auth is the
 Copilot login, or `COPILOT_GITHUB_TOKEN` from the env. GitHub's ACP reference names custom
@@ -135,7 +137,8 @@ SDK, which is under Anthropic's Commercial Terms.
 
 **Options passed on every `new`, `load` and `resume`:**
 - an explicit `permissionMode` (§4);
-- `allowedTools: ['mcp__agent-inbox__*']`;
+- `allowedTools: ['mcp__<name>__*']`, with `<name>` read from the host config as for Copilot
+  (§3.2);
 - `maxBudgetUsd` and `maxTurns`;
 - `pathToClaudeCodeExecutable`, the user's `claude`.
 
@@ -239,12 +242,13 @@ would therefore reach every session there, older servers included. They would wa
 an older server's `resolve` would count as Deny.
 
 So every driver ask is filed in the reserved project **`@sessions`**, using mesh §10.3's
-mechanism: projects starting with `@` are reserved.
+mechanism. Exactly two names are reserved, `@sessions` and `@mesh`, not every `@…` project,
+because a folder with no remote can legitimately be named with a leading `@`.
 - `listPending`, `listPendingRows`, `listUnansweredBoardRows` and every hook reader return
   nothing for a reserved project.
 - MCP `register` refuses one, and `pending`, `flag`, `answer`, `resolve` and `board_*` refuse any
   scope or item id in one.
-- `closeProject` refuses `@` projects, so approvals cannot be muted.
+- `closeProject` refuses the reserved projects, so approvals cannot be muted.
 
 All of this ships in step 2 and serves the mesh too. The real project and branch go in the
 item's `stream` (`agent-inbox · feat-x`), the title and `context`, and the viewer shows them.
@@ -264,15 +268,20 @@ and notifications follow the one predicate, and `public/attention.js` is unchang
 
 ### 4.3 Who can approve
 
-- **Step 2 (terminal driver).** The foreground driver prompts on its own TTY, and only an answer
+- **Step 2 (terminal driver).** The foreground driver refuses to start without a TTY on stdin.
+  It prompts on that TTY, and only an answer
   there approves. The inbox item is an alert (`action_owner: 'task'`, "Answer in the terminal
   running the driver") with no options. The driver resolves it when the TTY answers. No inbox
   reply approves anything in step 2.
 - **Step 3 (app launches).** An approval goes through owned-viewer IPC,
   `agentInboxLaunch.approve({ item, revision, optionId })`.
   1. Main checks the `launch` grant (§8).
-  2. Main signs `HMAC-SHA256(launchKey, item ‖ response_revision ‖ optionId)` with the
-     per-launch key it sent the driver on fd 3.
+  2. Main signs `HMAC-SHA256(launchKey, item ‖ response_revision ‖ optionId)`, where
+     `launchKey = HMAC-SHA256(masterKey, launchId)`. `masterKey` is the console key of mesh §3,
+     held only in Electron `safeStorage`. Main derives `launchKey` and sends it to the driver on
+     fd 3, so a quit, update or crash loses nothing: the relaunched app derives the same key and
+     can approve every running driver's asks. If `safeStorage` reports only its plain-text
+     fallback, the app refuses launches entirely.
   3. Main writes the reply through `store.ts`: `reply = optionId`, `reply_context` = the
      signature.
   4. The driver accepts only a valid signature over its own item, at the revision it recorded
@@ -286,20 +295,32 @@ and notifications follow the one predicate, and `public/attention.js` is unchang
 
 ### 5.1 Linking by ancestry
 
-The driver knows its child's pid, process group and start time. Every 2 s it reads
-`listActivity` and checks each row's `host_pid` with `ps -o pid=,ppid=,lstart=`. Every presence
-row whose `host_pid` is the child or one of its descendants belongs to the launch: the session's
-own server, a restarted server, and a CLI the agent started in its shell.
+The driver knows its child's pid, process group and start time, and makes a **launch id** (a
+UUID) when it starts. Every 2 s it reads `listActivity` and runs one `ps -o
+pid=,ppid=,lstart=,comm=`. A presence row joins the launch only if all of these hold:
+1. its `server_pid` is alive now;
+2. its current parent is its `host_pid`;
+3. its start time is at or after the child's;
+4. the walk up from `host_pid` reaches the driver's child before it reaches any other agent host
+   (a process named `copilot`, `claude` or `claude-agent-acp`).
 
-For each such session the driver holds a lease `driven:<session>` in `hook_watch_claims`, plus
-`driver:<pid>` for itself. The token names the driver, and both are refreshed every 30 s.
+Rule 4 means a `copilot` or `claude` the agent starts in its own shell is **its own session**,
+not driven. Messages to it use #411's ordinary paths, so a push never lands in the parent's turn
+for a session the parent cannot `ack_message` (#411 §1 holds). Rules 1–3 defeat PID reuse: a
+crashed foreign session whose stale `host_pid` now belongs to a tool shell fails them. A row
+whose `server_pid` is dead counts as ended, whatever its presence row says.
+
+For each linked session the driver holds a lease `driven:<session>` in `hook_watch_claims`, plus
+`driver:<pid>` for itself. Each token is `<launch id>:<driver pid>:<nonce>`, so its identity is
+the launch, not the driver process. Both leases are refreshed every 30 s.
 `hook_watch_claims` is already read by no snapshot, so the refreshes rebuild nothing.
 `listActivity` serves `driven: true` while the session's lease is under 90 s old; that comes from
 the `/api/activity` read, which is fresh on every request.
 
 Every session in the launch gets pushed messages and answer pings, and no watch contracts. A
 restarted MCP server is linked on the next scan: there is no claim to wait out and no secret to
-rotate. Resume links the same way, by the new child's ancestry.
+rotate. A resumed launch (step 3) keeps its launch id, so its new driver's leases carry the same
+identity.
 
 ### 5.2 Re-addressing: the one exception (#411 amendment)
 
@@ -308,23 +329,34 @@ to be written into #411's design doc when this lands (in #417 if it is still ope
 step 2's PR).
 
 > **Proof by launch.** When a driver has proved by ancestry that an ended session and a live
-> session belong to one launch, `readdressMessages(from, to, driverToken)` moves the open
-> messages from one to the other. It is one `.immediate()` transaction, conditioned on `from`'s
-> presence being ended and on both sessions holding `driven:` leases with that driver's token.
-> No other path re-addresses.
+> session belong to one launch, `readdressMessages(from, to, launchId)` moves the open
+> messages from one to the other. `to` must be the server whose `host_pid` is the driver's own
+> child, never a nested CLI. It is one `.immediate()` transaction, conditioned on `from` being
+> ended (its presence ended, or its `server_pid` dead as the driver reports) and on both
+> sessions' `driven:` leases carrying that launch id, whichever driver process wrote them. No
+> other path re-addresses.
 
 ### 5.3 Delivery
 
 The driver needs one new read, `listOpenMessagesWithText(sessions)`, because
-`listOpenMessages` returns ids only. When `data_version` moves and the session is idle:
-1. Re-read every queued message's status immediately before prompting. Acked or withdrawn ones
-   are dropped.
+`listOpenMessages` returns ids only. Each message is pushed **once per launch**. The driver keeps
+the pushed ids per session in `<hub dir>/drivers/<launch id>/pushed.json` (`0600`, written by
+temp file and rename), and moves them with `readdressMessages`. A message it already pushed is
+never pushed again, even if it is still open: declined, forgotten or un-ackable. Otherwise
+every `data_version` change, including other sessions' presence writes, would re-push it, at a
+premium request each. It is re-pushed only after a Resume (step 3), since the new process may
+not hold the old turn. It stays in `pending()` either way.
+
+When `data_version` moves and the session is idle:
+1. Re-read the status of each open message not yet pushed, immediately before prompting.
+   Acked or withdrawn ones are dropped.
 2. Send all that remain as **one** turn:
    > The human sent you N message(s) via Agent Inbox. Each is also in pending(); act on each
    > once, then ack_message({ id, outcome }).
    >
    > [m-1] <verbatim text> …
-3. Call `markMessageDelivered(id, session, 'agent-inbox-driver')` for each.
+3. Record the ids in `pushed.json` before the prompt is sent, then call
+   `markMessageDelivered(id, session, 'agent-inbox-driver')` for each.
 
 While a turn runs, messages queue. #411's composer shows the state:
 - "Queued — it's mid-task (12m)";
@@ -348,7 +380,11 @@ field, so the agent learns it from the response, not from a static appendix.
 3. **When it next checks**.
 4. **Can't receive**.
 
-A **parked** launch (§7) shows **Resume and send**.
+A **parked** launch (§7, step 3) shows **Resume and send**. That click starts a driver that
+resumes the ACP session, waits up to 60 s for the new MCP server to link (§5.1), re-addresses
+the parked session's open messages to it, and only then sends. It never sends to the ended
+session, which #411 would refuse with `session_gone`. If nothing links in time, the text stays a
+draft, with "The session didn't come back; try again or start a new one".
 
 ## §6 — Storage
 
@@ -359,8 +395,9 @@ A **parked** launch (§7) shows **Resume and send**.
 - the `driven:`/`driver:` lease helpers over `hook_watch_claims`;
 - a `driven` field in `listActivity`.
 
-The Stop control in step 2 is Ctrl-C, or a stop lease, `driver-stop:<pid>`, in
-`hook_watch_claims`, written by `npm run driver -- stop <pid>`.
+The Stop control in step 2 is Ctrl-C, or a stop lease, `driver-stop:<launch id>`, in
+`hook_watch_claims`, written by the runtime's own CLI: `<runtime>/bin/node
+<runtime>/dist/driver-cli.js stop <launch id>`, which the driver prints at start.
 
 **Step 3 adds `launches`**, once Copilot ACP has been used through step 2. Changes from the first
 draft:
@@ -392,11 +429,12 @@ Older processes never name the table. `snapshot-triggers.txt` only gains names.
 When a budget runs out, the driver cancels, waits up to 10 s, closes the child and ends the
 launch with `budget:<which>`.
 
-**Park, not end.** After 2 h idle, the driver closes the child, keeps `acp_session`, marks the
-launch `parked` and exits. Sending to a parked launch is **Resume and send**: the click is the
-gesture main needs to start a driver. That driver runs `session/load` or `session/resume` with
-the explicit mode (§4.1) and then sends. Step 3 ships this minimal resume. In step 2, a parked
-launch is resumed with `agent-inbox-driver resume <id>`.
+**Park, not end (step 3).** After 2 h idle, the driver closes the child, keeps `acp_session` in
+the launch row, marks the launch `parked` and exits. Sending to a parked launch is **Resume and
+send** (§5.3): the click is the gesture main needs to start a driver. That driver runs
+`session/load` or `session/resume` with the explicit mode (§4.1), links, and then sends. Step 3
+ships this minimal resume. **Step 2 has no park or resume:** it has no launch row to hold
+`acp_session`, so after 2 h idle the terminal driver ends the session cleanly and exits.
 
 **Stop.** The driver answers pending permission requests `cancelled`, resolves its asks
 "Session stopped", sends `session/cancel`, and closes the child's stdin. After 10 s it sends
@@ -414,10 +452,17 @@ turn, denies every pending ask, and exits. It cannot see Stop, so it stops.
 running.
 
 **Runtime pins.** `install-agents.sh`'s own `prune_old_runtimes` has no running-process check,
-so two installs or an Uninstall could delete a live driver's runtime. Each driver writes
-`<runtime>/.pins/<pid>`, and removes it on exit.
-- Both prunes (`prune-runtimes.sh` and `prune_old_runtimes`) keep any runtime with a pin whose
-  pid is alive, and share `prune-runtimes.sh`'s `ps` check.
+so two installs or an Uninstall could delete a live driver's runtime. Pins must sit **outside
+the payload**: verification rejects any unmanifested file (`runtime-payload.mjs` "unmanifested
+file present in payload"; Electron's `runtime-verify.cjs` through `setup-runner.cjs`; the
+driver's own check). A pin inside the runtime would make it read `changed`. So each driver
+writes `<runtime root>/.pins/<runtime id>/<launch id>`, containing its pid and start time, and
+removes it on exit.
+- The runtime list (`runtime-payload.mjs list`, `runtime-inventory.ts` and the prune scripts)
+  skips `.pins`, as it skips `.trash-*`, and `.pins` is never a runtime id.
+- Both prunes (`prune-runtimes.sh` and `prune_old_runtimes`) key on the runtime id. They keep
+  any runtime with a pin whose pid is alive with a matching start time, and share
+  `prune-runtimes.sh`'s `ps` check. A stale pin is removed by the prune that finds it.
 - Uninstall refuses while a pinned driver runs, naming it and its stop command.
 - This ships in step 2.
 
@@ -466,8 +511,11 @@ the same PATH. It spawns `[interpreter, script, …]` explicitly, records both, 
 **Environment** (decided: a login-shell capture, then a denylist).
 - **Capture.** A Finder-launched Electron has a minimal PATH, with no nvm, volta, mise or asdf.
   So when the human turns the feature on (and again on **Refresh environment**), main runs
-  `$SHELL -l -c 'env -0'` once, with a 10 s timeout and stdin closed. It keeps the result in
-  memory and never writes it to disk.
+  `$SHELL -i -l -c` once, with a 10 s timeout and stdin closed. The `-i` matters: zsh reads
+  `.zshrc` only for interactive shells, and that is where nvm, volta and mise are usually set
+  up. The command prints a random start marker, `env -0`, and an end marker; main parses only
+  what lies between them, so banners and rc output are ignored, as VS Code's shell-env resolver
+  does. It keeps the result in memory and never writes it to disk.
 - **Denylist.** From that env the driver removes `ELECTRON_*`, `AGENT_INBOX_*` (it sets
   `AGENT_INBOX_HOOKS=0` itself), `NODE_OPTIONS` and `COPILOT_ALLOW_ALL`.
 - **Kept on purpose:** `SSH_AUTH_SOCK`, `TMPDIR`, proxy variables, `NODE_EXTRA_CA_CERTS`,
@@ -517,7 +565,7 @@ tolerantly, like Links), and a browser cannot turn it on. While it is off:
 | Step | Ships | Effort |
 |---|---|---|
 | 1. Spike | Recorded fixtures and a go/pivot note | 2–3 days |
-| 2. Copilot from a terminal | Foreground driver; ancestry linking; push; `@sessions`; runtime pins | ≈ 1½ weeks |
+| 2. Copilot from a terminal | Foreground driver; ancestry linking; push-once; `@sessions`; runtime pins | ≈ 1½ weeks |
 | 2b. Terminal mode (optional, any time) | New session that opens Terminal, no ACP | 2–3 days |
 | CSP PR | `script-src 'self'` before any launch UI | 1–2 days |
 | 3. Electron launch | Confirmation, detach, `launches`, signed approvals, UI, park and minimal resume | 2–2½ weeks |
@@ -527,7 +575,8 @@ tolerantly, like Links), and a browser cannot turn it on. While it is off:
 **1. Spike.** Real `copilot --acp` and `claude-agent-acp` runs, recorded as fixtures.
 - Option ids per host, Copilot's plan exit (can it escape to autopilot?), and `currentModeId`
   and `current_mode_update` behaviour on new, load and resume.
-- `--allow-tool agent-inbox` and `allowedTools: ['mcp__agent-inbox__*']`.
+- `--allow-tool <name>` and `allowedTools: ['mcp__<name>__*']` with the registered name.
+- nvm loaded from `.zshrc` only, found by the `-i -l -c` capture.
 - `loadSession`.
 - Child exit on stdin close.
 - Ancestry: whose child is the MCP server.
@@ -538,7 +587,9 @@ tolerantly, like Links), and a browser cannot turn it on. While it is off:
 `agent-inbox-driver copilot --cwd . --mode ask|read-only --prompt-file f`, run in the
 foreground from the installed runtime.
 - **Excluded:** detach, Electron, worktree, Keychain, transcript UI and Resume.
-- **Stop:** Ctrl-C or `driver -- stop <pid>`.
+- **Stop:** Ctrl-C, or the runtime CLI's `stop <launch id>`.
+- **Refuses to run** when stdin is not a TTY, since approvals happen on that TTY.
+- **No park or resume:** 2 h idle ends the session (§7).
 - **Budgets:** active time and tool calls.
 - **Linking and delivery:** ancestry plus leases, re-checked and batched pushes, answer pings,
   and `woken` in `flag`/`pending`.
@@ -547,10 +598,16 @@ foreground from the installed runtime.
 - **Infrastructure:** reserved-project filters in `listPending`, `listPendingRows` and the hook
   readers, MCP refusals, fail-closed, concurrency caps and runtime pins.
 - **Schema:** no new table or column.
-- **Tests:** a fake ACP agent (mode escalation, bypass options dropped, unknown ids dropped); an
-  MCP integration test that no session in any scope sees an `@sessions` ask; hooks ignoring
-  `@sessions`; ancestry linking with a nested CLI; re-check before push; prune keeping a pinned
-  runtime; mixed-version tests.
+- **Tests:**
+  - a fake ACP agent: mode escalation, bypass options dropped, unknown ids dropped;
+  - an MCP integration test that no session in any scope sees an `@sessions` ask;
+  - hooks ignoring `@sessions`;
+  - ancestry: a nested CLI stays unlinked, a reused stale `host_pid` is refused, and a dead
+    `server_pid` counts as ended;
+  - a message pushed once and never again while idle, with re-check before push;
+  - pins outside the payload keeping a runtime through both prunes while it still verifies;
+  - the TTY refusal;
+  - mixed-version tests.
 
 **3. Electron launch** (`Part of #412`):
 - the CSP PR first;
@@ -637,6 +694,30 @@ ACP, hub writes through `store.ts` only, and the opt-in contract.
   responses; approvals matched by option id; the log wording fixed.
 - **Phasing** restructured around the reviewer's smallest first slice. Terminal mode is noted
   as shippable alone. (§11)
+
+**Round 2 (the last fix round).** The reviewer confirmed Highs 1–3 resolved, `@sessions` safe
+with older servers, and step 2 schema-free.
+- **Pins broke verification.** Pins moved outside the payload, to
+  `<runtime root>/.pins/<runtime id>/<launch id>`. Runtime lists skip `.pins`, and both prunes key
+  on the runtime id. (§7)
+- **Ancestry over-linked.** A server is linked only while alive, parented by its `host_pid` and
+  started after the child, and the walk stops at the first agent host, so nested CLIs are their
+  own sessions. A dead `server_pid` counts as ended. `readdressMessages` targets only the
+  child's own server. (§5.1, §5.2)
+- **Repeated pushes.** Each message is pushed once per launch, recorded in `pushed.json`, and
+  re-pushed only on Resume. (§5.3)
+- **The approval key died with the app.** It is now `HMAC(masterKey, launchId)`, from the
+  `safeStorage` console key, and launches are refused on the plaintext fallback. (§4.3)
+- **nvm in `.zshrc`.** The env capture uses `$SHELL -i -l -c` with marker-bracketed `env -0`,
+  and the spike gains an nvm-in-`.zshrc` case. (§8, §11)
+- **Park and resume didn't connect.** Leases carry the launch id. Resume and send waits for the
+  new session to link, re-addresses, then sends. Park and resume are dropped from step 2, where
+  idle ends the session. (§5.1, §5.3, §7)
+- **Low.**
+  - Only `@sessions` and `@mesh` are reserved.
+  - The MCP registration name is read from the host config, or the driver refuses to start.
+  - Step 2's Stop uses the runtime CLI.
+  - The terminal driver refuses to run without a TTY.
 
 ## Appendix A — Verification log
 

@@ -20,9 +20,10 @@ import {
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { createInterface } from 'node:readline'
 import { Driver } from './driver.js'
-import type { AskView, EndReason } from './driver.js'
+import type { EndReason } from './driver.js'
+import { createTerminal, installStopHandlers } from './driver-tty.js'
 import { findNativeHost, linkSessions, readProcesses } from './driver-link.js'
-import { childEnv, copilotAgentInboxServer, copilotArgs } from './driver-policy.js'
+import { childEnv, copilotAgentInboxServer, copilotArgs, terminalSafe } from './driver-policy.js'
 import type { LaunchMode } from './driver-policy.js'
 import { inferProject, inferStream } from './infer.js'
 import { claimDriverSlot, defaultDbPath, listHostSessions, openDb, releaseDriverLeases, requestDriverStop } from './store.js'
@@ -35,7 +36,7 @@ const MAX_PROMPT = 64 * 1024
 const LOG_ROTATE_BYTES = 20 * 1024 * 1024
 
 function fail(message: string, code = 2): never {
-  process.stderr.write(`agent-inbox-driver: ${message}\n`)
+  process.stderr.write(`agent-inbox-driver: ${terminalSafe(message)}\n`)
   process.exit(code)
 }
 
@@ -194,34 +195,18 @@ async function runCopilot(argv: string[]): Promise<void> {
     return { hostPid, linked: linked.linked, dead: linked.dead }
   }
 
-  // the terminal: agent text, notices, and one approval at a time
-  const asks: AskView[] = []
-  const out = (text: string) => process.stdout.write(text)
-  const showAsk = () => {
-    const ask = asks[0]
-    if (!ask) return
-    out(`\n\n── ${ask.title}\n${ask.detail}\n`)
-    out(ask.kind === 'plan'
-      ? 'Approve the plan and let the agent carry it out? [y/N] '
-      : 'Allow once? Declining stops the agent’s current turn. [y/N] ')
-  }
-  const ui = {
-    ask(ask: AskView) {
-      asks.push(ask)
-      if (asks.length === 1) showAsk()
-    },
-    settled(askId: string, outcome: string) {
-      const index = asks.findIndex((a) => a.id === askId)
-      if (index === -1) return
-      asks.splice(index, 1)
-      out(`${outcome}\n`)
-      if (index === 0) showAsk()
-    },
-    text(chunk: string) { out(chunk) },
-    notice(line: string) { out(`\n[agent-inbox] ${line}\n`) },
-  }
+  // the terminal: every write is sanitized (driver-tty.ts), one approval at a time
+  let driver: Driver | null = null
+  const terminal = createTerminal({
+    write: (text) => process.stdout.write(text),
+    answer: (askId, approve) => driver?.answer(askId, approve),
+    stop: () => driver?.stop(),
+    interrupt: () => driver?.interrupt(),
+  })
+  const out = terminal.print
+  const ui = terminal.ui
 
-  const driver = new Driver({
+  driver = new Driver({
     db, lease, mode: args.mode, cwd, project: inferProject(cwd), stream: inferStream(cwd), task,
     input: child.stdout, output: child.stdin,
     child: { kill: (signal) => { if (child.pid) try { process.kill(-child.pid, signal) } catch { /* gone */ } }, exited },
@@ -229,26 +214,13 @@ async function runCopilot(argv: string[]): Promise<void> {
   })
 
   const rl = createInterface({ input: process.stdin, terminal: false })
-  rl.on('line', (line) => {
-    const answer = line.trim().toLowerCase()
-    const ask = asks[0]
-    if (ask) {
-      driver.answer(ask.id, answer === 'y' || answer === 'yes')
-      return
-    }
-    if (answer === 'stop') driver.stop()
-    else if (answer === 'interrupt') driver.interrupt()
-    else if (answer) ui.notice('Type "interrupt" to interrupt the running turn and send queued messages, or "stop" to end the session.')
-  })
-  let interrupts = 0
-  process.on('SIGINT', () => {
-    if (++interrupts === 1) {
-      ui.notice('Stopping the session… (Ctrl-C again to force)')
-      driver.stop()
-      return
-    }
-    if (child.pid) try { process.kill(-child.pid, 'SIGTERM') } catch { /* gone */ }
-    process.exit(130)
+  rl.on('line', (line) => terminal.line(line))
+  installStopHandlers({
+    signals: process,
+    input: rl,
+    driver,
+    exit: (code) => process.exit(code),
+    notice: (text) => ui.notice(text),
   })
 
   out(`Agent Inbox drives this Copilot session (launch ${launchId}, mode ${args.mode}).\n`)

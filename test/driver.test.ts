@@ -9,7 +9,9 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type Database from 'better-sqlite3'
+import { EventEmitter } from 'node:events'
 import { Driver } from '../src/driver.js'
+import { installStopHandlers } from '../src/driver-tty.js'
 import type { AskView, DriverTiming, EndReason, ScanResult } from '../src/driver.js'
 import type { LaunchMode } from '../src/driver-policy.js'
 import {
@@ -87,7 +89,7 @@ function start(opts: {
   const driver = new Driver({
     db, lease, mode: opts.mode ?? 'ask', cwd: dir, project: 'agent-inbox', stream: 'main',
     task: opts.task ?? 'Fix the failing test.',
-    input: fake.stdout, output: fake.stdin, child: { kill: fake.kill, exited: fake.exited },
+    input: fake.stdout, output: fake.stdin, child: { kill: (signal) => fake.kill(signal), exited: fake.exited },
     ui: { ask: (a) => asks.push(a), settled: (id, outcome) => settled.push({ id, outcome }), text: () => undefined, notice: () => undefined },
     log: (e) => log.push(e),
     stateDir: join(dir, 'drivers', LAUNCH),
@@ -499,5 +501,59 @@ describe('budgets, Stop and failing closed (§7)', () => {
     open[0]!.close() // the driver's own connection
     expect(await h.done).toBe('error:hub_unreachable')
     expect(await h.answerTo(900)).toEqual({ outcome: 'cancelled' })
+  })
+})
+
+describe('the terminal going away (#412 review)', () => {
+  function wire(h: Harness) {
+    const signals = new EventEmitter()
+    const input = new EventEmitter()
+    const exits: number[] = []
+    installStopHandlers({ signals, input, driver: h.driver, exit: (code) => exits.push(code), notice: () => undefined, boundMs: 2000 })
+    return { signals, input, exits }
+  }
+  const alerts = (h: Harness) => listItems(h.human).filter((item) => item.project === '@sessions')
+
+  it.each(['SIGHUP', 'SIGTERM'] as const)('%s ends the launch with its asks resolved and its leases released', async (signal) => {
+    const h = start({ script: asking() })
+    await h.ready()
+    await until(() => h.asks[0], 'the ask')
+    const rig = wire(h)
+    rig.signals.emit(signal)
+    expect(await h.done).toBe('stopped')
+    expect(await h.answerTo(900)).toEqual({ outcome: 'cancelled' })
+    expect(alerts(h).map((item) => [item.status, item.outcome])).toEqual([['resolved', 'Session stopped.']])
+    expect(isDrivenSession(h.human, 'mcp-1')).toBe(false)
+    expect(claimDriverSlot(h.human, { launchId: '22222222-2222-4333-8444-555555555555', pid: 4243, nonce: 'next' }, 1)).toEqual({ ok: true })
+    expect(rig.exits).toEqual([])
+  })
+
+  it('a closed terminal input ends the launch the same way', async () => {
+    const h = start({ script: asking() })
+    await h.ready()
+    await until(() => h.asks[0], 'the ask')
+    wire(h).input.emit('close')
+    expect(await h.done).toBe('stopped')
+    expect(alerts(h)[0]!.status).toBe('resolved')
+  })
+
+  it('a double Ctrl-C resolves the asks, releases the leases and signals the child before exiting, synchronously', async () => {
+    const h = start({ script: asking() })
+    await h.ready()
+    await until(() => h.asks[0], 'the ask')
+    let killed: string | null = null
+    h.fake.kill = (signal) => { killed = signal }
+    const rig = wire(h)
+    rig.signals.emit('SIGINT')
+    rig.signals.emit('SIGINT')
+    // no await between the second Ctrl-C and these checks: the cleanup ran before exit
+    expect(rig.exits).toEqual([130])
+    expect(alerts(h).map((item) => [item.status, item.outcome])).toEqual([['resolved', 'Session stopped.']])
+    expect(isDrivenSession(h.human, 'mcp-1')).toBe(false)
+    expect(h.driver.isFinished()).toBe(true)
+    expect(await h.done).toBe('stopped')
+    expect(await h.answerTo(900)).toEqual({ outcome: 'cancelled' })
+    h.driver.forceStop() // idempotent
+    expect(killed).toBe('SIGTERM')
   })
 })

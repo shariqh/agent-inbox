@@ -21,7 +21,7 @@ import { ACP_PROTOCOL_VERSION, connectAcp } from './acp-client.js'
 import type { AcpConnection, AcpFrame, JsonRpcId } from './acp-client.js'
 import {
   MODE_AGENT, MODE_PLAN, PLAN_APPROVED_PROMPT, answerPingPrompt, askTitle, cappedInput, filterOptions, firstPrompt,
-  initialPhase, interruptPrompt, messagesPrompt, phaseMode, promptSafe, stateValid,
+  initialPhase, interruptPrompt, messagesPrompt, phaseMode, promptSafe, stateValid, terminalSafe,
 } from './driver-policy.js'
 import type { LaunchMode, Phase, PushedMessage } from './driver-policy.js'
 import {
@@ -231,6 +231,35 @@ export class Driver {
 
   stop(): void {
     this.enqueue({ type: 'stop', reason: 'stopped' })
+  }
+
+  /**
+   * The forced exit (a second Ctrl-C, or a stop that did not finish in time):
+   * synchronous, so it completes before process.exit. Open requests are answered
+   * cancelled, asks resolved "Session stopped.", leases released and the child's
+   * group sent SIGTERM. Idempotent; a no-op once the driver has finished.
+   */
+  forceStop(): void {
+    if (this.finished) return
+    this.ending ??= 'stopped'
+    this.o.log({ event: 'forced_stop' })
+    for (const ask of [...this.asks.values()]) {
+      if (ask.rpcId !== undefined) this.conn.respond(ask.rpcId, { outcome: { outcome: 'cancelled' } })
+      this.settle(ask, 'Session stopped.')
+    }
+    this.finished = true
+    for (const timer of this.timers) clearTimeout(timer)
+    this.conn.close()
+    try {
+      releaseDriverLeases(this.o.db, this.o.lease)
+    } catch { /* the hub is gone: the leases go stale in 90 s */ }
+    if (!this.childGone) this.o.child.kill('SIGTERM')
+    this.o.log({ event: 'ended', reason: this.ending, forced: true })
+    this.resolveEnd(this.ending)
+  }
+
+  isFinished(): boolean {
+    return this.finished
   }
 
   // ── the queue ─────────────────────────────────────────────────────────────
@@ -477,12 +506,13 @@ export class Driver {
       agent: 'copilot',
       session: this.linked.find((s) => !this.ended.has(s)),
       kind: 'question',
-      title,
+      // the viewer escapes HTML, but control and invisible characters still mislead
+      title: terminalSafe(title),
       detail: 'A session Agent Inbox drives is waiting for your approval in its terminal.',
       next_step: 'Answer in the terminal running the driver.',
       action_owner: 'task',
       impact: 'The agent waits until you answer.',
-      context,
+      context: terminalSafe(context),
     })
   }
 

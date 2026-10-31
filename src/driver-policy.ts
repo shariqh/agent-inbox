@@ -121,9 +121,29 @@ export function messagesPrompt(messages: readonly PushedMessage[]): string {
   return [head, ...messages.map((m) => `[${m.id}] ${m.text}`)].join('\n\n')
 }
 
-// An agent-authored value is quoted, single-line and bounded.
+// ── text the human reads (#412 review) ─────────────────────────────────────
+
+// C0 controls but \n, DEL and C1, which a terminal acts on (ESC starts CSI and OSC
+// sequences: erase a line, hide text, write the clipboard with OSC 52), and the
+// Unicode format characters that reorder or hide text (bidi embeddings,
+// overrides and isolates; zero-width spaces, joiners and marks; the BOM).
+const UNSAFE = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g
+
+/**
+ * Agent-controlled text made safe to show the human: on the driver's terminal
+ * and in the `@sessions` alert. Every unsafe character becomes visible (`\x1b`,
+ * `<U+202E>`); a tab becomes a space; newlines stay.
+ */
+export function terminalSafe(text: string): string {
+  return text.replace(/\t/g, ' ').replace(UNSAFE, (ch) => {
+    const code = ch.codePointAt(0)!
+    return code <= 0x9f ? `\\x${code.toString(16).padStart(2, '0')}` : `<U+${code.toString(16).toUpperCase().padStart(4, '0')}>`
+  })
+}
+
+// An agent-authored value is quoted, single-line, visible and bounded.
 function quoted(value: string): string {
-  const flat = value.replace(/[\r\n\t]+/g, ' ').replace(/'/g, '’').trim()
+  const flat = terminalSafe(value).replace(/[\r\n]+/g, ' ').replace(/'/g, '’').trim()
   return flat.length > 120 ? `${flat.slice(0, 119)}…` : flat
 }
 

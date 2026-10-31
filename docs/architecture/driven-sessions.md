@@ -4,8 +4,9 @@ paths:
   - "src/driver-cli.ts"
   - "src/driver-link.ts"
   - "src/driver-policy.ts"
+  - "src/driver-tty.ts"
   - "src/acp-client.ts"
-applyTo: "src/driver.ts,src/driver-cli.ts,src/driver-link.ts,src/driver-policy.ts,src/acp-client.ts"
+applyTo: "src/driver.ts,src/driver-cli.ts,src/driver-link.ts,src/driver-policy.ts,src/driver-tty.ts,src/acp-client.ts"
 ---
 
 # Driven sessions (#412)
@@ -99,9 +100,22 @@ Claude Code and Copilot CLI load this file automatically when they read or edit 
   answered `cancelled`, asks resolved "Session stopped.", `session/cancel`, wait up to 10 s for the
   turn, close the child's stdin, SIGTERM its process group after 10 s more, release the leases. After
   30 s without a successful hub read the driver fails closed (`error:hub_unreachable`).
-- **The terminal** (`driver-cli.ts`): `y`/`n` answer the open approval (one at a time, in order);
+- **What the human reads is made visible** (`terminalSafe` in `driver-policy.ts`). A tool's title,
+  command, kind and input, agent text and error messages are agent-controlled: ESC sequences could
+  erase the real ask and print a fake one, OSC 52 could write the clipboard, and bidi or zero-width
+  characters could reorder or hide text. C0 controls but `\n` (a tab becomes a space), DEL and C1
+  become `\xNN`, and U+200B–U+200F, U+202A–U+202E, U+2066–U+2069 and U+FEFF become `<U+XXXX>`.
+  Every terminal write goes through `createTerminal` (`driver-tty.ts`), whose only raw bytes are the
+  SGR reset (`ESC[0m`) before each ask; the `@sessions` alert's title and context are sanitized the
+  same way. `test/driver-tty.test.ts` runs the terminal against a fake TTY that fails on any unsafe
+  byte and pins the CLI's few direct writes.
+- **The terminal** (`driver-tty.ts`): `y`/`n` answer the open approval (one at a time, in order);
   with none open, `interrupt` is Interrupt and send and `stop` is the Stop; anything else prints a
-  one-line help (design §14.5). Ctrl-C stops in order; a second Ctrl-C SIGTERMs the child's group.
+  one-line help (design §14.5). `installStopHandlers`: Ctrl-C, SIGHUP (the terminal closed), SIGTERM
+  and the end of the terminal's input all run the ordered Stop. A second Ctrl-C, or a Stop that has
+  not finished within 15 s, calls `Driver.forceStop()` before exiting: synchronous and idempotent, it
+  answers open requests `cancelled`, resolves the asks "Session stopped.", releases the leases and
+  sends SIGTERM to the child's group, so no alert stays as attention and no lease blocks a restart.
 - **The child** (`driver-cli.ts`): `copilot` resolved on PATH to a real path owned by the user or
   root and not group/world-writable, or the driver refuses to start (design §14.5); spawned detached (its own process group, so the terminal's
   Ctrl-C reaches only the driver), argv only, `mcpServers: []`; its env is the terminal's through

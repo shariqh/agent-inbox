@@ -75,7 +75,8 @@ Claude Code and Copilot CLI load this file automatically when they read or edit 
   is `copilot`, else the loader's child that is an agent host. Rows come from
   `listHostSessions(db, nativeHost)` (rule 4, exact equality) and must have a live server whose
   parent is the host and which started at or after the child. A dead server counts as ended. The
-  first prompt waits up to `linkWaitMs` for a link, so alerts carry the session.
+  first prompt waits up to `linkWaitMs` (10 s) for a link, so alerts carry the session and pushes
+  can start (design §14.5).
 - **Leases** (`store.ts`): `claimDriverSlot` (at most 2 drivers, counted from fresh `driver:` leases
   in one `.immediate()`; per-host caps come with #421), `holdDriverLeases` every 30 s and on every link
   change (exactly the linked sessions plus ended ones not yet re-addressed), `releaseDriverLeases` at
@@ -98,8 +99,11 @@ Claude Code and Copilot CLI load this file automatically when they read or edit 
   answered `cancelled`, asks resolved "Session stopped.", `session/cancel`, wait up to 10 s for the
   turn, close the child's stdin, SIGTERM its process group after 10 s more, release the leases. After
   30 s without a successful hub read the driver fails closed (`error:hub_unreachable`).
+- **The terminal** (`driver-cli.ts`): `y`/`n` answer the open approval (one at a time, in order);
+  with none open, `interrupt` is Interrupt and send and `stop` is the Stop; anything else prints a
+  one-line help (design §14.5). Ctrl-C stops in order; a second Ctrl-C SIGTERMs the child's group.
 - **The child** (`driver-cli.ts`): `copilot` resolved on PATH to a real path owned by the user or
-  root and not group/world-writable; spawned detached (its own process group, so the terminal's
+  root and not group/world-writable, or the driver refuses to start (design §14.5); spawned detached (its own process group, so the terminal's
   Ctrl-C reaches only the driver), argv only, `mcpServers: []`; its env is the terminal's through
   `childEnv` (no `ELECTRON_*`, `AGENT_INBOX_*`, `NODE_OPTIONS`, or `COPILOT_*` but `COPILOT_HOME` and
   `COPILOT_GITHUB_TOKEN`; then `AGENT_INBOX_HOOKS=0`, `COPILOT_AUTO_UPDATE=false`, and

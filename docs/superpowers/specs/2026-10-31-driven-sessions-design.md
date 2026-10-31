@@ -998,6 +998,21 @@ design gaps, fixed as follows:
   answer pings and the interrupt notice are now control messages with the fixed prefix
   `Agent Inbox:`, under the same leading-`/` check. (§4.1, §5.3, §11)
 
+### 14.5 Build amendments (step 2, 2026-10-31)
+
+Accepted by the coordinator while building step 2's driver (PR 2 of 3):
+- **The first prompt waits for linking.** The driver holds the first prompt until the session's
+  agent-inbox MCP server links by ancestry (§5.1), at most 10 s (`linkWaitMs`), then sends it either
+  way. Copilot starts that server during `session/new`, so this normally costs a scan or two; it
+  makes the first approval alert carry the driven session's MCP `session` (§4.2), so it classifies
+  as waiting, and makes the first pushes possible. (§5.1, §5.3)
+- **Terminal commands.** Besides `y`/`n` for an open approval, the step-2 terminal takes
+  `interrupt` (Interrupt and send, §5.3, when a message is queued mid-turn) and `stop` (the same Stop
+  as Ctrl-C or `stop <launch id>`, §7). Any other line prints a one-line help. (§4.3, §11)
+- **A trusted `copilot`.** The step-2 driver resolves `copilot` on the terminal's PATH to a real path
+  and refuses to start unless that file is owned by the user or root and is not writable by group or
+  others, the check §8 sets for step 3's executables. (§8)
+
 ## Appendix A — Verification log
 
 | # | Fact | Source | Checked |

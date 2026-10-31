@@ -251,9 +251,10 @@ The app opens on the Dashboard (`G D`), for all projects and agents.
   working sessions' plans.
 - **Live lanes** give each working session a lane: what it reports, its plan's
   progress (done, in progress, waiting on you, to do), the requests it is asking
-  you, and a small trace of its MCP calls over the last 30 minutes. A lane with no
-  call for 5 minutes says how long it has been quiet; sessions that only keep their
-  connection alive are counted as idle connections. Filter the lanes by project or
+  you, and a small trace of its MCP calls over the last 30 minutes. A lane whose
+  session has made no MCP call for 5 minutes says how long it has been quiet. A
+  session that reports no current work, or has made no call for 30 minutes, gets no
+  lane and is counted among the idle connections. Filter the lanes by project or
   agent. Click a lane's title to open its session panel: its requests, its plan,
   its recent outcomes, PR and CI state, links, and a place to message it.
 - **The Today ribbon** draws one line per project over the last 24 hours, 7 days or

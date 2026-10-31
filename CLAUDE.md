@@ -14,8 +14,8 @@ server). See [`README.md`](README.md) for the full picture and
 tracking boards).
 
 MCP tools: `flag`, `pending`, `answer`, `resolve`, `register`, `whoami` (items/scope),
-`board_upsert`, `board_row`, `board_advance`, `board_get`, `board_archive` (boards) and `status` (live
-presence) — all defined in `src/mcp.ts`.
+`board_upsert`, `board_row`, `board_advance`, `board_get`, `board_archive` (boards), `ack_message`
+(session messages, #411) and `status` (live presence) — all defined in `src/mcp.ts`.
 
 ## Commands
 
@@ -80,6 +80,7 @@ One line each; the detail, the reasons and the regressions behind them are in th
 - Human annotations, handled marks and delivery stamps are sacred: upserts never reset them. → delivery-and-responses
 - Delivery is not acknowledgement: a blocked row is re-delivered until an agent flips its status (#37). → delivery-and-responses
 - Every row action and mark-seen write is version-pinned; resolve needs `expected_response_revision`. → delivery-and-responses
+- Session messages reach only their own session (no tool takes a session id) and come back until `ack_message` (#411). → delivery-and-responses
 - The inbox answer always wins over a chat-recorded one; never last-write-wins. → delivery-and-responses
 - `updated_at` means content changed; delivery stamps, moves, pins and watch stops never bump it. → delivery-and-responses
 - Omitting a row field keeps it, `''` clears it; a ROW omitted from `board_upsert` is deleted. → delivery-and-responses

@@ -227,11 +227,11 @@ runtime; `src/hook-cli.ts` is the thin entry that owns stdin and the exit code.
 |---|---|---|---|---|
 | `Notification` (no matcher) | `notification` | 5s | arms the #10 backstop for this session — writes **nothing** yet | *(empty)* |
 | *(internal, not an event)* | `notification-commit` | — | the deferred half: after the grace window, inserts the backstop item if the session is still stuck | *(empty)* |
-| `SessionStart` (`startup\|resume`) | `session-start` | 5s | clears this session's backstop; nudges if an answer is unpicked | plain text |
+| `SessionStart` (`startup\|resume`) | `session-start` | 5s | clears this session's backstop; nudges if an answer is unpicked or a message to this session is open | plain text |
 | `SessionEnd` | `session-end` | 5s | clears this session's backstop | *(empty)* |
-| `UserPromptSubmit` | `prompt-submit` | 10s | clears this session's backstop; nudges if an answer is unpicked | one JSON object |
-| `Stop` | `stop` | 10s | clears this session's backstop; bounces the agent back to work if an answer is unpicked | one JSON object |
-| `Stop` (asyncRewake) | `watch` | 1800s | polls until the human answers one of this session's requests, then exits **2** to wake the model | *(empty; stderr carries the payload)* |
+| `UserPromptSubmit` | `prompt-submit` | 10s | clears this session's backstop; nudges if an answer is unpicked or a message to this session is open | one JSON object |
+| `Stop` | `stop` | 10s | clears this session's backstop; bounces the agent back to work if an answer is unpicked, or once per new message to this session | one JSON object |
+| `Stop` (asyncRewake) | `watch` | 1800s | polls until the human answers one of this session's requests or messages it, then exits **2** to wake the model | *(empty; stderr carries the payload)* |
 | *(manual/cron)* | `sweep` | — | runs the 24h janitor over orphaned backstop items | *(empty)* |
 | *(installer only)* | `selftest` | — | proves the resolved Node can load `better-sqlite3`. The ONE subcommand allowed to exit non-zero on failure | one line |
 
@@ -353,6 +353,30 @@ process that started it is gone, since nothing is left to wake.
 
 The nudge names every project that has responses and the `pending({project:"…"})`
 call that reads each one without changing the session's scope.
+
+## #411: messages the human sends this session
+
+The human can message one Agent Inbox session from the viewer. Only a hook linked to
+its servers (above) can tell which messages are this session's, so an unlinked hook
+ignores them; that session sees them at its next `pending()`.
+
+- `session-start` and `prompt-submit` remind about every open message to the linked
+  servers, on every event, inside their existing output.
+- `stop` bounces the agent back once per message: it records the ids it blocked for
+  in `host-<pid>.nudged.json` beside the session markers, keyed by the Claude Code
+  process, so neither a notification hook nor a `/clear` makes it block again. It
+  never blocks on `stop_hook_active`.
+- `watch` wakes (exit 2, payload on stderr) for a message that arrives after it armed,
+  including one sent to a server that restarted under the same Claude Code process.
+  Messages already open when it armed are `stop`'s.
+- A message counts while it is open (not yet acknowledged with `ack_message`), even
+  after another reader of the same server, such as a subagent, picked it up.
+- The hooks read message ids only; they never print the text.
+
+A message that arrives during a `stop_hook_active` continuation, or after the watch
+window (`AGENT_INBOX_WATCH_SECS`) ends, waits for the next prompt or ordinary Stop. So
+does one sent in the milliseconds between `stop` reading the open messages and `watch`
+reading its baseline: they are separate processes on the same Stop.
 
 ## #10: how a backstop item behaves
 

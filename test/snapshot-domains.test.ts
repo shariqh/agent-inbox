@@ -17,7 +17,7 @@ import {
   markBoardRead, markReplySeen, openDb, pinBoardRow, pinItem, readSnapshotState, recordActivityCall,
   recordIssueFailure, recordLinkFailure, releaseHookWatch, reopenProject, replyItem, resolveItem,
   setSourcePreview, touchActivity, updateBoardRow, upsertActivity, upsertBoard, upsertIssueSnapshot,
-  upsertSourceLink,
+  upsertSourceLink, sendSessionMessage, markMessageDelivered, ackMessage, withdrawSessionMessage,
 } from '../src/store.js'
 import { SNAPSHOT_SOURCES, createViewer } from '../src/viewer.js'
 import { snapshot } from './issue-fixtures.js'
@@ -95,7 +95,11 @@ interface Fixture {
   answered: string
   release: string
   approve: string
+  message: string
+  delivered: string
 }
+
+const MESSAGE = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`
 
 // A hub built so that the columns each snapshot reads reach its bytes, which is
 // what lets the generic test below catch a column left out of a domain:
@@ -212,14 +216,26 @@ function seed(db: Hub): Fixture {
 
   // the tables no snapshot reads
   tick()
-  upsertActivity(db, { ...alpha, session: 'mcp-1', stream: '', doing: 'Working' })
+  upsertActivity(db, { ...alpha, session: 'mcp-1', stream: '', doing: 'Working', receives_messages: true })
   recordActivityCall(db, 'mcp-1')
   claimHookWatch(db, 'host:1', 'token-1')
   claimIssueRefresh(db, { owner: 'viewer-1', queue: [{ repo: REPO, number: 125, checked_at: null }], limit: 1, leaseMs: 60_000, nowMs: clock })
   db.prepare(`INSERT INTO source_links (repo, branch, checked_at) VALUES (?, ?, ?)`).run(REPO, 'legacy', new Date(clock).toISOString())
 
+  // #411: an open message, a delivered one and two closed ones
+  tick()
+  for (const n of [1, 2, 3, 4]) expect(sendSessionMessage(db, { id: MESSAGE(n), session: 'mcp-1', text: `Message ${n}` }).ok).toBe(true)
+  tick()
+  markMessageDelivered(db, MESSAGE(2), 'mcp-1', 'claude-code')
+  ackMessage(db, { id: MESSAGE(3), session: 'mcp-1', outcome: 'Done.' })
+  tick()
+  withdrawSessionMessage(db, MESSAGE(4), 1)
+
   const release = getBoard(db, 'alpha', 'Release')!
-  return { asked, answered, release: release.id, approve: release.rows.find((row) => row.label === 'Approve')!.id }
+  return {
+    asked, answered, release: release.id, approve: release.rows.find((row) => row.label === 'Approve')!.id,
+    message: MESSAGE(1), delivered: MESSAGE(2),
+  }
 }
 
 function tablesOf(db: Hub): string[] {
@@ -595,6 +611,13 @@ describe('snapshot domains (issue #297)', () => {
         dismissItem(on(), f.asked)
         return true
       }, [...ITEMS, 'links', 'issues']],
+      // #411: a session message, its first delivery, its ack and its withdrawal
+      // rebuild only /api/messages; a delivery handed over again rebuilds nothing
+      ['a message sent', () => sendSessionMessage(on(), { id: MESSAGE(9), session: 'mcp-1', text: 'Also run the tests.' }).ok, ['messages']],
+      ['a message handed to its session', (f: Fixture) => markMessageDelivered(on(), f.message, 'mcp-1', 'claude-code'), ['messages']],
+      ['a message handed to its session again', (f: Fixture) => markMessageDelivered(on(), f.delivered, 'mcp-1', 'claude-code'), []],
+      ['a message acknowledged', (f: Fixture) => ackMessage(on(), { id: f.delivered, session: 'mcp-1', outcome: 'Ran them.' }).ok, ['messages']],
+      ['a message withdrawn', (f: Fixture) => withdrawSessionMessage(on(), f.message, 1).ok, ['messages']],
     ] as Array<[string, (f: Fixture) => unknown, Snapshot[], ((f: Fixture) => unknown)?]>)('%s', async (_, write, expected, prepare) => {
       if (prepare) expect(prepare(fixture)).not.toBe(false)
       expect(await rebuiltBy(() => write(fixture))).toEqual(SNAPSHOTS.filter((name) => expected.includes(name)))

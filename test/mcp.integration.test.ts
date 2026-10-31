@@ -2061,3 +2061,76 @@ describe('step dependencies: waits_on (#103 slice 2 PR C)', () => {
     await c.close()
   }, 20000)
 })
+
+// Issue #411 (acceptance): a message reaches only the session it addresses,
+// comes back on every poll until that session acks it, and the ack is recorded.
+describe('session messages (#411)', () => {
+  it('delivers a message only to its session, re-delivers it until ack_message, and records the outcome', async () => {
+    const dbPath = join(scratchDir('mcp-messages-'), 'inbox.db')
+    const connect = async (name: string) => {
+      const client = new Client({ name, version: '1.0.0' })
+      await client.connect(new StdioClientTransport({ command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath } }))
+      return client
+    }
+    const call = async (client: Client, name: string, args: Record<string, unknown>) =>
+      JSON.parse((((await client.callTool({ name, arguments: args })).content) as Array<{ text: string }>)[0]!.text)
+    const a = await connect('claude-code')
+    const b = await connect('copilot')
+    try {
+      // both register presence in the same project, each with its own session
+      await call(a, 'pending', {})
+      await call(b, 'pending', {})
+      const db = openDb(dbPath)
+      const sessions = listActivity(db)
+      const sessionOf = (agent: string) => sessions.find((row) => row.agent === agent)!
+      expect(sessionOf('claude-code').project).toBe(sessionOf('copilot').project)
+      expect(sessionOf('claude-code').receives_messages).toBe(true)
+      const viewer = createViewer(db)
+      const id = '11111111-2222-4333-8444-555555555555'
+      const sent = await viewer.request(`/api/sessions/${sessionOf('claude-code').session}/messages`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id, text: 'Also run the DOM tests.' }),
+      })
+      expect(await sent.json()).toMatchObject({ ok: true })
+
+      // the sibling in the same project never sees it, on any read
+      expect((await call(b, 'pending', {})).messages).toEqual([])
+      expect((await call(b, 'pending', { full: true })).messages).toEqual([])
+      expect(await call(b, 'ack_message', { id, outcome: 'Taken.' })).toEqual({ ok: false, reason: 'not_found' })
+
+      const first = (await call(a, 'pending', {})).messages
+      expect(first).toEqual([{ id, text: 'Also run the DOM tests.', sent_at: expect.any(String), delivered_at: expect.any(String), project: sessionOf('claude-code').project }])
+      // delivery is not acknowledgement: it comes back, with the first stamp, until acked
+      expect((await call(a, 'pending', { project: 'somewhere-else' })).messages).toEqual(first)
+      expect((await call(a, 'pending', {})).messages).toEqual(first)
+      expect((await call(a, 'pending', { item_id: 'nothing' })).messages).toEqual([])
+
+      expect(await call(a, 'ack_message', { id, outcome: 'Ran them: 412 passed.' })).toEqual({ ok: true })
+      expect((await call(a, 'pending', {})).messages).toEqual([])
+      expect(await call(a, 'ack_message', { id, outcome: 'Again.' }))
+        .toEqual({ ok: false, reason: 'not_open', status: 'acknowledged', outcome: 'Ran them: 412 passed.' })
+      const closed = (await (await viewer.request('/api/messages')).json() as { closed: Array<Record<string, unknown>> }).closed
+      expect(closed).toEqual([expect.objectContaining({ id, status: 'acknowledged', outcome: 'Ran them: 412 passed.', delivered_by: 'claude-code' })])
+
+      // a withdrawn message is never handed over, and its ack says so
+      const withdrawn = '11111111-2222-4333-8444-666666666666'
+      await viewer.request(`/api/sessions/${sessionOf('claude-code').session}/messages`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: withdrawn, text: 'Never mind' }),
+      })
+      await viewer.request(`/api/messages/${withdrawn}/withdraw`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ revision: 1 }),
+      })
+      expect((await call(a, 'pending', {})).messages).toEqual([])
+      expect(await call(a, 'ack_message', { id: withdrawn, outcome: 'Done.' })).toEqual({ ok: false, reason: 'not_open', status: 'withdrawn', outcome: '' })
+
+      // the contract is on the tool definitions an agent reads
+      const tools = new Map((await a.listTools()).tools.map((tool) => [tool.name, tool]))
+      expect(tools.get('pending')!.description).toContain('ack_message({id, outcome})')
+      expect(tools.get('pending')!.description).toContain('A subagent returns messages verbatim to its parent')
+      expect(tools.get('ack_message')!.description).toContain('If you are a subagent, do not ack or act on messages')
+      db.close()
+    } finally {
+      await a.close()
+      await b.close()
+    }
+  }, 30000)
+})

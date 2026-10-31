@@ -25,8 +25,12 @@ One JSON object per line, in the order the client saw them:
   `<SPIKE>/repo`, a throwaway git repository with a trivial `package.json`.
 - Model lists (`availableModels` and the `model` config option) are cut to `auto`,
   `claude-sonnet-5.5` and `claude-haiku-4.5`. Every other byte of each message is as recorded.
-- Token-shaped strings were redacted; none were found. Streamed thought chunks can hold
-  fragments of local paths that the placeholders cannot match.
+- Token-shaped strings were redacted; none were found.
+- Streamed chunks can split a path across messages, where the placeholders cannot match it.
+  The local username in those is `<user>`: the chunk where it starts says `<user>` (for example
+  `Users/<user>`), and the part that ran into later chunks was removed, which can leave a chunk's
+  `text` empty. The rest of such a path (the scratch folder's name) is kept as streamed. The
+  public GitHub handle `shariqh` is kept, as in the `ssh -T` greeting.
 - `COPILOT_HOME` was a scratch folder, so the `agent-inbox` MCP server registered there wrote to a
   scratch hub, never a real one.
 

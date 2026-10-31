@@ -199,8 +199,8 @@ Driven session, during a prompt (`captured-env-npm-test-and-ssh.jsonl`):
 74776 74771 node             node s7-env.mjs                          ← the driver (spike client)
 74861 74776 node             node /opt/homebrew/bin/copilot --acp --stdio …   ← spawned child: npm loader
 74862 74861 /opt/homebrew/li …/@github/copilot-darwin-arm64/copilot --acp --stdio …   ← native host
-74893 74862 /Users/shariqhir <HOME>/.local/share/fnm/…/bin/node …/dist/mcp-server.js   ← agent-inbox
-74894 74862 /Users/shariqhir …/bin/node …/probe-mcp.mjs
+74893 74862 <HOME>/…         <HOME>/.local/share/fnm/…/bin/node …/dist/mcp-server.js   ← agent-inbox
+74894 74862 <HOME>/…         …/bin/node …/probe-mcp.mjs
 ```
 
 The scratch hub's presence row for that session reads `host_pid 74862, server_pid 74893`.

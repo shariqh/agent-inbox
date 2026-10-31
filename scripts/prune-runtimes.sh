@@ -168,12 +168,17 @@ EOF
     kept "$verdict" "$name" "$detail"
     return
   fi
-  if result="$("$NODE" "$PAYLOAD_HELPER" prune --runtime-root "$RUNTIME_ROOT" --runtime-id "$id" 2>&1 </dev/null)"; then
+  local status=0
+  result="$("$NODE" "$PAYLOAD_HELPER" prune --runtime-root "$RUNTIME_ROOT" --runtime-id "$id" 2>&1 </dev/null)" || status=$?
+  if [ "$status" -eq 0 ]; then
     REMOVED=$((REMOVED + 1))
     case "$result" in
       *'"retained":'*) echo "Removed $name. Some of its files are left in a .trash-* folder in $RUNTIME_ROOT, which the next install or prune deletes." ;;
       *) echo "Removed $name." ;;
     esac
+  elif [ "$status" -eq 4 ]; then
+    # #412: a driver pinned it after the check above; prune put it back
+    echo "Kept $name: an agent-inbox-driver started running from it."
   else
     FAILED=1
     echo "Could not remove $name: ${result#runtime-payload: }"

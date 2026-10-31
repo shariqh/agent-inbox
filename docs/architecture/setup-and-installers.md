@@ -4,6 +4,7 @@ paths:
   - "scripts/install-hooks.sh"
   - "scripts/setup-lock.sh"
   - "scripts/runtime-config.mjs"
+  - "scripts/runtime-pins.mjs"
   - "scripts/runtime-payload.mjs"
   - "scripts/prune-runtimes.sh"
   - "scripts/run-isolated.mjs"
@@ -18,7 +19,7 @@ paths:
   - "public/runtimes.js"
   - "public/buildstamp.js"
   - "electron/runtime-targets.cjs"
-applyTo: "scripts/install-agents.sh,scripts/install-hooks.sh,scripts/setup-lock.sh,scripts/runtime-config.mjs,scripts/runtime-payload.mjs,scripts/prune-runtimes.sh,scripts/run-isolated.mjs,scripts/setup-filesystem.cjs,scripts/write-setup-info.mjs,electron/setup-*.cjs,electron/runtime-verify.cjs,src/agent-hosts.ts,src/runtime-inventory.ts,src/stamp.ts,public/agents.js,public/runtimes.js,public/buildstamp.js,electron/runtime-targets.cjs"
+applyTo: "scripts/install-agents.sh,scripts/install-hooks.sh,scripts/setup-lock.sh,scripts/runtime-config.mjs,scripts/runtime-pins.mjs,scripts/runtime-payload.mjs,scripts/prune-runtimes.sh,scripts/run-isolated.mjs,scripts/setup-filesystem.cjs,scripts/write-setup-info.mjs,electron/setup-*.cjs,electron/runtime-verify.cjs,src/agent-hosts.ts,src/runtime-inventory.ts,src/stamp.ts,public/agents.js,public/runtimes.js,public/buildstamp.js,electron/runtime-targets.cjs"
 ---
 
 # Setup and installers
@@ -522,29 +523,59 @@ These landed after v1 and still hold invariants; the release history itself is i
 
 - **Where and what.** `<runtime root>/.pins/<runtime id>/<launch id>`, written by a running
   `agent-inbox-driver` (`src/driver-pin.ts`): `{v: 1, launchId, pid, startedAt}`, `startedAt`
-  being `ps -o lstart=` under `TZ=UTC` and `LC_ALL=C`, spaces collapsed. OUTSIDE the runtime's
-  folder, because verification rejects any file the manifest does not list.
-- **One rule, beside "uses".** `runtimePins` in `scripts/runtime-config.mjs` decides, and both
-  prunes read it: `classifyRuntimeReference` (the installer's `references`, so its prune and
-  rollback) counts a pinned runtime as `referenced`, and `findUnusedRuntimes` (prune-runtimes.sh's
-  `unused`) as `used`, labelled `a running agent-inbox-driver (pid N)`. The viewer's mirror
-  (`src/runtime-inventory.ts` `scanPins`) applies the same reading rules and checks the pid alone
-  (`kill(pid, 0)`, which starts no process), so a pid reused after a crash reads as used there until
-  a prune sweeps the stale pin: it errs toward keeping. `test/runtime-inventory.test.ts` holds the
-  two to agreement over the shared `PIN_CASES` in `test/runtime-uses.ts`; the viewer's cache key
-  includes the stamps of `.pins` and each `.pins/<id>/`, so a pin added or removed is seen at once.
+  being the driver's start identity. OUTSIDE the runtime's folder, because verification rejects
+  any file the manifest does not list.
+- **One module.** `scripts/runtime-pins.mjs` (Node core only, a payload script and a Setup
+  required file) holds the whole rule: the start identity (`processIdentity`/`processIdentities`),
+  reading pins, `runtimePins`, `sweepStalePins` and `pinHolds`. The driver writes with it,
+  `runtime-config.mjs` adds live pins to "uses" for both prunes (`classifyRuntimeReference`, so
+  the installer's prune and rollback, counts a pinned runtime as `referenced`; `findUnusedRuntimes`,
+  prune-runtimes.sh's `unused`, as `used`, labelled `a running agent-inbox-driver (pid N)`), and
+  `runtime-payload.mjs`'s prune reads it again after the move (below). `dist/` imports it as
+  `../scripts/runtime-pins.mjs`, so staging refuses a `dist/` import of any script it does not ship.
+- **Start identity.** It must not move while the process runs. Linux: `linux:<boot id>:<ticks>`,
+  field 22 of `/proc/<pid>/stat` (counted after the LAST `)`, since the command name may hold
+  spaces and parens) with `/proc/sys/kernel/random/boot_id`, read directly; never procps's
+  `ps -o lstart=`, which adds the ticks to the boot time, and that moves when the wall clock is
+  stepped (NTP, chrony, a VM's time sync), so a live pin would read as stale and its runtime be
+  pruned. A zombie counts as gone. macOS: `darwin:` + `ps -o lstart=` under `TZ=UTC` and
+  `LC_ALL=C`, spaces collapsed (the kernel's start time is fixed at fork). Anything else, or any
+  read that fails: unknown.
+- **The viewer mirror.** `src/runtime-inventory.ts` `scanPins` applies the same reading rules and
+  checks the pid alone (`kill(pid, 0)`, which starts no process), so a pid reused after a crash
+  reads as used there until a prune sweeps the stale pin: it errs toward keeping.
+  `test/runtime-inventory.test.ts` holds the two to agreement over the shared `PIN_CASES` in
+  `test/runtime-uses.ts`; the viewer's cache key includes the stamps of `.pins` and each
+  `.pins/<id>/`, so a pin added or removed is seen at once.
 - **What counts.** A real file (never a symlink) owned by this user, at most 1 KB, named by a
-  lowercase UUID equal to its `launchId`, in a real `.pins/<id>/` folder owned by this user, under
-  a real `.pins` owned by this user, whose pid `ps` lists with the recorded start time. Anything
-  else is ignored; a pin naming a runtime that is not there pins nothing.
-- **Errors only keep.** A `.pins`, `.pins/<id>/` or pin that is there but cannot be read, or a `ps`
-  that fails, makes the answer unknown: the installer keeps the runtime, prune-runtimes.sh and the
-  mirror remove and offer nothing. With no pin at all, no `ps` runs.
+  lowercase UUID equal to its `launchId`, with a `startedAt` of 1 to 128 characters, in a real
+  `.pins/<id>/` folder owned by this user, under a real `.pins` owned by this user, whose pid still
+  has the recorded start identity. Anything else is ignored; a pin naming a runtime that is not
+  there pins nothing.
+- **Errors only keep.** A `.pins`, `.pins/<id>/` or pin that is there but cannot be read, or an
+  identity that cannot be read, makes the answer unknown: the installer keeps the runtime,
+  prune-runtimes.sh and the mirror remove and offer nothing. With no pin at all, nothing is read.
+- **The gap between check and prune.** The driver pins without the setup lock, and every prune
+  decides before it renames. So `pruneRuntime` passes `removeDirectory` a `keep` callback
+  (`pinHolds`), asked once the runtime is in its `.trash-*` folder and before anything is
+  deleted: a live pin, or pins that cannot be read, put it back (parent, trash and tree
+  identity-checked, the name still free) and `prune` prints `{pruned: false, kept: true, reason}`
+  and exits 4; install-agents.sh and prune-runtimes.sh report it as kept. A restore that cannot be
+  made is `restore-failed` and retains the tree in its trash folder, marked for recovery. The
+  driver, for its part, checks after pinning that its runtime's manifest is still there and
+  names it, and otherwise removes its pin and refuses to start: a pin written after the prune's
+  re-read finds the runtime gone.
+- **Runtime or not is decided by location.** A driver whose own file is inside the runtime root
+  (`AGENT_INBOX_RUNTIME_ROOT` when absolute, else `~/.agent-inbox/runtime`, compared by real path)
+  must be `<root>/<id>/dist/driver-cli.js` of a runtime whose manifest names `<id>`, or it
+  refuses; anything outside it (a checkout, an app's bundled payload) pins nothing.
 - **Expiry.** The driver removes its own pin on every exit it sees. A pin whose driver is gone (or
   whose pid now runs another process) is stale and never counts; `sweepStalePins` removes up to 64
-  a pass, then empty `.pins/<id>/` folders, never following a link and removing nothing when the
-  answer is unknown. Each prune runs it under the setup lock (`runtime-config.mjs sweep-pins`:
-  prune-runtimes.sh with `--apply` only, and `prune_old_runtimes`); a dry run sweeps nothing.
+  a pass, then empty `.pins/<id>/` folders (`rmdir`, so only empty ones, owned by this user),
+  never following a link and removing nothing when the answer is unknown. A driver whose folder a
+  sweep removed between making it and opening its pin retries once. Each prune sweeps under the
+  setup lock (`runtime-config.mjs sweep-pins`: prune-runtimes.sh with `--apply` only, and
+  `prune_old_runtimes`); a dry run sweeps nothing.
 - **`.pins` is never a runtime.** `runtime-payload.mjs` `list` skips it, and `install`/`prune` refuse
   it as a runtime id, as they do `.trash-*`; `findUnusedRuntimes` and the mirror skip every `.`-name.
 - **Uninstall.** `install-agents.sh --uninstall` (dry run included) asks `runtime-config.mjs pins`
@@ -557,4 +588,3 @@ These landed after v1 and still hold invariants; the release history itself is i
   rule). An older installer's own prune can remove a pinned runtime that no host config uses and that
   is not its newest previous one; the driver keeps running from memory, and the pins are honoured
   from this build on.
-

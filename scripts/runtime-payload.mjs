@@ -27,7 +27,9 @@
 //                        never a glob, never "everything old". It renames the
 //                        directory into a `.trash-*` folder before deleting
 //                        it, so an interrupted prune never leaves a
-//                        half-deleted tree under a runtime id (#211).
+//                        half-deleted tree under a runtime id (#211). A
+//                        runtime a running driver pinned in the meantime
+//                        is renamed back and kept (#412, runtime-pins.mjs).
 //
 // The manifest is an INTEGRITY contract, not an authenticity one: it proves
 // "this is the tree that was built", not "you should trust this tree". Code
@@ -53,6 +55,7 @@ import {
 import { parseArgs } from 'node:util'
 import { dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { PINS_DIR, pinHolds } from './runtime-pins.mjs'
 
 const require = createRequire(import.meta.url)
 const { createSetupFilesystem, isTrashName } = require('./setup-filesystem.cjs')
@@ -120,7 +123,6 @@ function assertSafePathComponent(value, label) {
  * ever installed, listed, pruned or trusted as a runtime (#211). Nor is it
  * `.pins`, where a running agent-inbox-driver pins its runtime (#412).
  */
-const PINS_DIR = '.pins'
 
 function isReservedName(name) {
   return isTrashName(name) || name === PINS_DIR
@@ -585,16 +587,24 @@ function removeLeftoverTrash(runtimeRoot) {
  * runtime id is free, and if deleting the trash then fails, the prune still
  * succeeds and reports the folder as `retained` for a later install or prune
  * to remove. Leftover trash from earlier prunes is removed first.
+ *
+ * #412: a driver may pin the runtime after the caller decided it was unused.
+ * So once the rename has moved it aside, the pins are read again; while one
+ * holds it, or they cannot be read, it is renamed back (identity-checked) and
+ * reported as `{pruned: false, kept: true, reason}`. A driver that pins it
+ * after that read finds its manifest gone and refuses to start.
  */
-export function pruneRuntime({ runtimeRoot, runtimeId, manifestFileName = DEFAULT_MANIFEST_FILE }) {
+export function pruneRuntime({ runtimeRoot, runtimeId, manifestFileName = DEFAULT_MANIFEST_FILE, identities }) {
   const targetDir = assertRuntimeIdContained(runtimeRoot, runtimeId)
   removeLeftoverTrash(runtimeRoot)
+  let removed
   try {
-    setupFilesystem.removeDirectory({
+    removed = setupFilesystem.removeDirectory({
       target: targetDir,
       validate(path) {
         verifyPayload({ root: path, manifestFileName, expect: { runtimeId } })
       },
+      keep: () => pinHolds({ runtimeRoot, runtimeId, ...(identities ? { identities } : {}) }),
     })
   } catch (err) {
     if (err instanceof RuntimeIntegrityError) throw err
@@ -610,6 +620,7 @@ export function pruneRuntime({ runtimeRoot, runtimeId, manifestFileName = DEFAUL
     }
     throw err
   }
+  if (removed.kept) return { pruned: false, kept: true, runtimeId, path: targetDir, reason: removed.kept }
   return { pruned: true, runtimeId, path: targetDir }
 }
 
@@ -641,7 +652,10 @@ export function listRuntimes({ runtimeRoot, manifestFileName = DEFAULT_MANIFEST_
 // Every subcommand prints one JSON object/array to stdout and exits 0 on
 // success. Usage is 2, ordinary failure is 1, and an install failure that
 // reports `committed:true` is 3 so the shell can verify and roll back a
-// published runtime instead of treating it as wholly uncommitted.
+// published runtime instead of treating it as wholly uncommitted. A prune
+// that kept the runtime because a running driver pinned it (#412) prints
+// `{pruned: false, kept: true, reason}` and exits 4: nothing was removed.
+const PRUNE_KEPT_EXIT = 4
 
 function runManifestCmd(argv) {
   const { values } = parseArgs({
@@ -746,6 +760,8 @@ function runPruneCmd(argv) {
     manifestFileName: values['manifest-file'] ?? DEFAULT_MANIFEST_FILE,
   })
   process.stdout.write(`${JSON.stringify(result)}\n`)
+  // #412: a running driver pinned it after the caller's check, so it stayed
+  if (result.kept) process.exitCode = PRUNE_KEPT_EXIT
 }
 
 function runListCmd(argv) {

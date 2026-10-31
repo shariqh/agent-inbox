@@ -13,8 +13,8 @@
 //
 // A runtime a running agent-inbox-driver is pinned to (#412) is used too: a
 // pin under `<runtime root>/.pins/<id>/` read by the script's own rules
-// (runtime-config.mjs readRuntimePins). The script checks a pin's driver by
-// pid AND start time through `ps`; this process runs nothing, so it checks the
+// (scripts/runtime-pins.mjs readRuntimePins). The script checks a pin's driver
+// by pid AND start identity; this process runs nothing, so it checks the
 // pid alone (`kill(pid, 0)`, a probe that starts no process). A pid reused
 // after a crash therefore reads as used here until the next prune sweeps the
 // stale pin: the panel errs toward keeping, never toward offering a Remove
@@ -394,7 +394,7 @@ const PINS_DIR = '.pins'
 const PIN_MAX_BYTES = 1024
 const LAUNCH_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
-// runtime-config.mjs pinLabel
+// scripts/runtime-pins.mjs pinLabel
 const pinLabel = (pid: number): string => `a running agent-inbox-driver (pid ${pid})`
 
 function ownedByMe(st: import('node:fs').Stats): boolean {
@@ -411,7 +411,7 @@ function running(pid: number): boolean {
 }
 
 // The runtimes a running driver is pinned to, by label; or the pins folder or
-// pin that is there but cannot be read, and why. runtime-config.mjs runtimePins.
+// pin that is there but cannot be read, and why. scripts/runtime-pins.mjs runtimePins.
 function scanPins(runtimeRoot: string): { live: Map<string, Set<string>> } | { unreadable: string; reason: string } {
   const live = new Map<string, Set<string>>()
   const pinsDir = join(runtimeRoot, PINS_DIR)
@@ -468,7 +468,7 @@ function scanPins(runtimeRoot: string): { live: Map<string, Set<string>> } | { u
       const pid = pin['pid']
       const startedAt = pin['startedAt']
       if (pin['v'] !== 1 || pin['launchId'] !== launchId || typeof pid !== 'number' || !Number.isSafeInteger(pid) || pid <= 0
-        || typeof startedAt !== 'string' || startedAt.length === 0 || startedAt.length > 64) continue
+        || typeof startedAt !== 'string' || startedAt.length === 0 || startedAt.length > 128) continue
       if (running(pid)) live.set(runtimeId, (live.get(runtimeId) ?? new Set()).add(pinLabel(pid)))
     }
   }

@@ -6,7 +6,7 @@
 import { cpSync, mkdirSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { basename, dirname, join } from 'node:path'
-import { processStartedAt } from '../src/driver-pin.js'
+import { processIdentity } from '../scripts/runtime-pins.mjs'
 
 export function writeJson(path: string, value: unknown): void {
   mkdirSync(dirname(path), { recursive: true })
@@ -198,10 +198,10 @@ export const UNREADABLE_CONFIGS: Array<[string, (home: string) => string, string
 
 export const PIN_LAUNCH = '11111111-2222-4333-8444-555555555555'
 
-/** When `pid` started, exactly as a driver records it (src/driver-pin.ts). */
+/** `pid`'s start identity, exactly as a driver records it (scripts/runtime-pins.mjs processIdentity). */
 export function startOf(pid: number): string {
-  const started = processStartedAt(pid)
-  if (!started) throw new Error(`ps cannot say when ${pid} started`)
+  const started = processIdentity(pid)
+  if (!started) throw new Error(`the start identity of ${pid} cannot be read`)
   return started
 }
 
@@ -232,6 +232,7 @@ export const PIN_CASES: Array<[string, (runtimeRoot: string, runtimeId: string) 
     writePinFile(root, id, livePin(), JSON.stringify({ v: 1, launchId: '99999999-2222-4333-8444-555555555555', ...livePin() }))
   }, false],
   ['a pin that is not JSON', (root, id) => { writePinFile(root, id, livePin(), '{"v":1,') }, false],
+  ['a pin whose start identity is too long to be one', (root, id) => { writePinFile(root, id, { pid: process.pid, startedAt: 'x'.repeat(129) }) }, false],
   ['a symlink to a running driver\'s pin', (root, id) => {
     const real = writePinFile(join(root, '..', 'elsewhere'), id, livePin())
     mkdirSync(join(root, '.pins', id), { recursive: true })

@@ -63,6 +63,7 @@ function runtimePayload(
     'install-hooks.sh',
     'runtime-payload.mjs',
     'runtime-config.mjs',
+    'runtime-pins.mjs',
     'setup-filesystem.cjs',
     'setup-lock.sh',
     'run-isolated.mjs',
@@ -143,7 +144,7 @@ function sourceCheckout(): string {
   writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'agent-inbox', version: '1.3.2' }))
   mkdirSync(join(root, 'dist'))
   writeFileSync(join(root, 'dist', 'hook-cli.js'), "if (process.argv[2] === 'selftest') process.stdout.write('ok\\n')\n")
-  for (const script of ['install-hooks.sh', 'setup-lock.sh', 'runtime-config.mjs', 'runtime-payload.mjs', 'setup-filesystem.cjs']) {
+  for (const script of ['install-hooks.sh', 'setup-lock.sh', 'runtime-config.mjs', 'runtime-pins.mjs', 'runtime-payload.mjs', 'setup-filesystem.cjs']) {
     copy(join(REPO, 'scripts', script), join(root, 'scripts', script))
   }
   return root

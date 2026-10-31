@@ -144,14 +144,17 @@ Claude Code and Copilot CLI load this file automatically when they read or edit 
   replaying the spike's recorded frames (`test/fixtures/acp/copilot-1.0.105/`);
   `test/driver-policy.test.ts` holds the pure rules and the recorded nested chain;
   `test/driver-cli.test.ts` the TTY refusal, the Stop lease and the graph pins.
-- **Runtime pins** (`driver-pin.ts`, design §7). Run from an installed runtime (its folder's manifest
-  names it), the driver writes `<runtime root>/.pins/<runtime id>/<launch id>` before it starts
-  copilot: `{v: 1, launchId, pid, startedAt}`, 0600 in 0700 folders it owns (never through a
-  symlink), by temp file and rename. `startedAt` is its own start as `ps -o lstart=` prints it under
-  `TZ=UTC` and `LC_ALL=C`, spaces collapsed: exactly what `scripts/runtime-config.mjs`
-  `processStartTimes` reads, so a pin counts only while that very process runs. The pin sits outside
-  the runtime's folder because verification rejects any unmanifested file. If it cannot pin, the
-  driver refuses to start. A `process.on('exit')` handler removes it on every exit path, forced or
-  not; a SIGKILL leaves a stale pin, which never counts and which the next prune sweeps. A checkout
-  pins nothing. The rules that read pins are in `setup-and-installers.md` ("Runtime pins").
-
+- **Runtime pins** (`driver-pin.ts`, design §7). Whether it runs from an installed runtime is
+  decided by location: a driver inside the runtime root must be `<root>/<id>/dist/driver-cli.js`
+  of a runtime whose manifest names it, or it refuses to start. It then writes
+  `<runtime root>/.pins/<runtime id>/<launch id>` before it starts copilot: `{v: 1, launchId, pid,
+  startedAt}`, 0600 in 0700 folders it owns (never through a symlink), by temp file and rename,
+  retrying once if a sweep removed the empty folder under it. `startedAt` is its start identity
+  from `scripts/runtime-pins.mjs` (`processIdentity`: `/proc/<pid>/stat` ticks and the boot id on
+  Linux, `ps -o lstart=` on macOS), the one function the prunes compare it with, so a pin counts
+  only while that very process runs. After pinning it checks its runtime's manifest is still
+  there: a prune that moved the runtime aside first means the pin is removed and the driver
+  refuses. If it cannot pin, it refuses to start. A `process.on('exit')` handler removes the pin
+  on every exit path, forced or not; a SIGKILL leaves a stale pin, which never counts and which
+  the next prune sweeps. A checkout pins nothing. The rules that read pins are in
+  `setup-and-installers.md` ("Runtime pins").

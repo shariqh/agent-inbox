@@ -4,55 +4,81 @@
 //
 // The pin is <runtime root>/.pins/<runtime id>/<launch id>, OUTSIDE the
 // runtime's folder (verification rejects any file the manifest does not list):
-// {v: 1, launchId, pid, startedAt}, where startedAt is this process's start as
-// `ps -o lstart=` prints it under TZ=UTC and LC_ALL=C, spaces collapsed, which
-// is exactly what scripts/runtime-config.mjs (processStartTimes) compares when
-// a prune decides whether the pin still counts. The driver writes it before it
-// starts copilot and removes it on every exit it sees; a pin a crash leaves
-// behind never counts, and the next prune sweeps it.
-import { execFileSync } from 'node:child_process'
-import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeSync, constants } from 'node:fs'
-import { basename, dirname, join } from 'node:path'
+// {v: 1, launchId, pid, startedAt}, where startedAt is this process's start
+// identity from scripts/runtime-pins.mjs (processIdentity), the one function
+// every prune compares it with. The driver writes it before it starts copilot
+// and removes it on every exit it sees; a pin a crash leaves behind never
+// counts, and the next prune sweeps it.
+//
+// Whether this is a runtime at all is decided by LOCATION, never by whether a
+// manifest happens to be readable: a driver whose own file is inside the
+// runtime root must be `<root>/<id>/dist/driver-cli.js` of a runtime whose
+// manifest names it, or it refuses to start. Anything outside the root (a
+// checkout, an app's bundled payload) is never pruned and pins nothing.
+import { closeSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, unlinkSync, writeSync, constants } from 'node:fs'
+import { homedir } from 'node:os'
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { PINS_DIR } from '../scripts/runtime-pins.mjs'
 
 const MANIFEST_FILE = 'runtime-manifest.json'
-const PINS_DIR = '.pins'
+const ENTRY = ['dist', 'driver-cli.js']
 
 export interface InstalledRuntime {
   root: string
   runtimeId: string
 }
 
-/**
- * The installed runtime `entryFile` (this process's `dist/driver-cli.js`) runs
- * from: its folder's manifest names it as an Agent Inbox runtime. Null for a
- * checkout, which pins nothing.
- */
-export function installedRuntimeOf(entryFile: string): InstalledRuntime | null {
-  const dir = dirname(dirname(entryFile))
+type Located = { kind: 'checkout' } | { kind: 'runtime'; runtime: InstalledRuntime } | { kind: 'refuse'; reason: string }
+
+/** Where Setup's installers and prunes keep runtimes: an absolute AGENT_INBOX_RUNTIME_ROOT, else ~/.agent-inbox/runtime. */
+export function runtimeRootFor(env: NodeJS.ProcessEnv): string {
+  const configured = env['AGENT_INBOX_RUNTIME_ROOT']
+  return configured && isAbsolute(configured) ? configured : resolve(homedir(), '.agent-inbox', 'runtime')
+}
+
+const real = (path: string): string | null => {
   try {
-    const manifest = JSON.parse(readFileSync(join(dir, MANIFEST_FILE), 'utf8')) as { product?: unknown; runtimeId?: unknown }
-    if (manifest.product !== 'agent-inbox-runtime' || manifest.runtimeId !== basename(dir)) return null
-    return { root: dirname(dir), runtimeId: basename(dir) }
+    return realpathSync(path)
   } catch {
     return null
   }
 }
 
-/** When `pid` started, as the prunes read it; null when ps cannot say. */
-export function processStartedAt(pid: number): string | null {
+// Why the runtime folder `dir` (named `runtimeId`) is not one whose manifest names it, or null when it is.
+function manifestProblem(dir: string, runtimeId: string): string | null {
   try {
-    const ps = ['/bin/ps', '/usr/bin/ps'].find((path) => existsSync(path))
-    if (!ps) return null
-    const out = execFileSync(ps, ['-o', 'lstart=', '-p', String(pid)], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-      env: { PATH: '/usr/bin:/bin', TZ: 'UTC', LC_ALL: 'C' },
-      timeout: 10_000,
-    }).trim().replace(/\s+/g, ' ')
-    return out || null
-  } catch {
+    const manifest = JSON.parse(readFileSync(join(dir, MANIFEST_FILE), 'utf8')) as { product?: unknown; runtimeId?: unknown }
+    if (manifest.product !== 'agent-inbox-runtime' || manifest.runtimeId !== runtimeId) return `its manifest does not name runtime ${runtimeId}`
     return null
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code
+    return code === 'ENOENT' ? 'its runtime has no manifest' : `its runtime's manifest cannot be read${code ? ` (${code})` : ''}`
   }
+}
+
+/**
+ * Whether `entryFile` (this process's `dist/driver-cli.js`) runs from an
+ * installed runtime under `runtimeRoot`, from somewhere else (a checkout),
+ * or from inside the runtime root where it cannot be pinned (refuse).
+ */
+export function locateRuntime(entryFile: string, runtimeRoot: string): Located {
+  const folder = real(dirname(entryFile))
+  const entry = real(entryFile) ?? (folder === null ? resolve(entryFile) : join(folder, basename(entryFile)))
+  const root = real(runtimeRoot)
+  const inside = (base: string) => entry.startsWith(base.endsWith(sep) ? base : base + sep)
+  if (root === null) {
+    // a root that is not there holds nothing; one that cannot be resolved is judged as written
+    return inside(resolve(runtimeRoot)) ? { kind: 'refuse', reason: `the runtime root ${runtimeRoot} cannot be resolved` } : { kind: 'checkout' }
+  }
+  if (!inside(root)) return { kind: 'checkout' }
+  const parts = relative(root, entry).split(sep)
+  const runtimeId = parts[0] ?? ''
+  if (parts.length !== 3 || parts[1] !== ENTRY[0] || parts[2] !== ENTRY[1] || runtimeId === '' || runtimeId.startsWith('.')) {
+    return { kind: 'refuse', reason: `it runs from inside the runtime root ${root} but not from a runtime's ${ENTRY.join('/')}` }
+  }
+  const problem = manifestProblem(join(root, runtimeId), runtimeId)
+  if (problem) return { kind: 'refuse', reason: `it runs from the runtime root ${root}, but ${problem}` }
+  return { kind: 'runtime', runtime: { root, runtimeId } }
 }
 
 // A folder this user owns, made 0700 when missing; never a symlink.
@@ -68,12 +94,14 @@ function ownFolder(path: string): void {
   }
 }
 
-/** Writes the pin (temp file, fsync, rename) and returns its path. Throws when it cannot. */
-export function writePin(runtime: InstalledRuntime, pin: { launchId: string; pid: number; startedAt: string }): string {
+interface PinFields { launchId: string; pid: number; startedAt: string }
+
+function writePinOnce(runtime: InstalledRuntime, pin: PinFields, beforeOpen?: (dir: string) => void): string {
   const pins = join(runtime.root, PINS_DIR)
   ownFolder(pins)
   const dir = join(pins, runtime.runtimeId)
   ownFolder(dir)
+  beforeOpen?.(dir)
   const path = join(dir, pin.launchId)
   const temp = join(dir, `.${pin.launchId}.${process.pid}.tmp`)
   const fd = openSync(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600)
@@ -84,6 +112,38 @@ export function writePin(runtime: InstalledRuntime, pin: { launchId: string; pid
     closeSync(fd)
   }
   renameSync(temp, path)
+  return path
+}
+
+/**
+ * Writes the pin (temp file, fsync, rename) and returns its path. A prune's
+ * sweep removes an EMPTY `.pins/<id>` folder, which can happen between this
+ * making the folder and opening the file in it, so an ENOENT is retried once.
+ * Throws when it cannot.
+ */
+export function writePin(runtime: InstalledRuntime, pin: PinFields, hooks: { beforeOpen?: (dir: string) => void } = {}): string {
+  try {
+    return writePinOnce(runtime, pin, hooks.beforeOpen)
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
+    return writePinOnce(runtime, pin)
+  }
+}
+
+/**
+ * Pins `runtime` for this launch, then checks the runtime is still there: a
+ * prune that moved it aside before it could see the pin has taken its
+ * manifest with it, so the pin is removed and this throws, and the driver
+ * refuses to start. Returns the pin's path.
+ */
+export function pinRuntime(runtime: InstalledRuntime, pin: PinFields, hooks: { afterWrite?: () => void } = {}): string {
+  const path = writePin(runtime, pin)
+  hooks.afterWrite?.()
+  const problem = manifestProblem(join(runtime.root, runtime.runtimeId), runtime.runtimeId)
+  if (problem) {
+    removePin(path, pin.launchId)
+    throw new Error(`the runtime it runs from is being removed (${problem})`)
+  }
   return path
 }
 

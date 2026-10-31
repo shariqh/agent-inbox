@@ -23,7 +23,8 @@ import { fileURLToPath } from 'node:url'
 import { Driver } from './driver.js'
 import type { EndReason } from './driver.js'
 import { createTerminal, installStopHandlers, reapProcessGroup } from './driver-tty.js'
-import { installedRuntimeOf, processStartedAt, removePin, writePin } from './driver-pin.js'
+import { locateRuntime, pinRuntime, removePin, runtimeRootFor } from './driver-pin.js'
+import { processIdentity } from '../scripts/runtime-pins.mjs'
 import { findNativeHost, linkSessions, readProcesses } from './driver-link.js'
 import { childEnv, copilotAgentInboxServer, copilotArgs, terminalSafe } from './driver-policy.js'
 import type { LaunchMode } from './driver-policy.js'
@@ -165,18 +166,24 @@ async function runCopilot(argv: string[]): Promise<void> {
   // not, ends in process.exit, whose 'exit' handler removes the pin; a pin a
   // crash leaves never counts once this process is gone, and the next prune
   // sweeps it.
-  const runtime = installedRuntimeOf(fileURLToPath(import.meta.url))
-  if (runtime) {
-    const startedAt = processStartedAt(process.pid)
+  const located = locateRuntime(fileURLToPath(import.meta.url), runtimeRootFor(process.env))
+  const refuse = (why: string) => {
+    try { releaseDriverLeases(db, lease) } catch { /* the hub is gone */ }
+    fail(why, 1)
+  }
+  if (located.kind === 'refuse') refuse(`cannot pin the runtime it runs from: ${located.reason}`)
+  if (located.kind === 'runtime') {
+    const runtime = located.runtime
+    const startedAt = processIdentity(process.pid)
     let pinPath: string | null = null
+    let why = startedAt ? '' : 'this process\'s start identity cannot be read'
     try {
-      if (startedAt) pinPath = writePin(runtime, { launchId, pid: process.pid, startedAt })
-    } catch { /* reported below */ }
-    if (!pinPath) {
-      try { releaseDriverLeases(db, lease) } catch { /* the hub is gone */ }
-      fail(`could not pin the runtime it runs from in ${join(runtime.root, '.pins')}, so a prune could remove it mid-session`, 1)
+      if (startedAt) pinPath = pinRuntime(runtime, { launchId, pid: process.pid, startedAt })
+    } catch (err) {
+      why = (err as Error).message
     }
-    const pinned = pinPath
+    if (!pinPath) refuse(`could not pin the runtime it runs from in ${join(runtime.root, '.pins')} (${why}), so a prune could remove it mid-session`)
+    const pinned = pinPath as string
     process.on('exit', () => removePin(pinned, launchId))
   }
 

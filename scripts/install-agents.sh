@@ -499,6 +499,8 @@ ISOLATE_NODE=""
 # lock (fd 9), which stays held until the step has ended.
 ROLLBACK_ISOLATION=0
 ISOLATED_TIMEOUT_STATUS=124
+# runtime-payload.mjs prune kept the runtime: a running driver pinned it (#412)
+PRUNE_KEPT_STATUS=4
 ROLLBACK_STEP_TIMEOUT_MS="${AGENT_INBOX_ROLLBACK_STEP_TIMEOUT_MS:-30000}"
 case "$ROLLBACK_STEP_TIMEOUT_MS" in
   ''|*[!0-9]*|0*|??????????*) ROLLBACK_STEP_TIMEOUT_MS=30000 ;;
@@ -771,6 +773,9 @@ rollback_runtime() {
   status=$?
   if [ "$status" -eq 0 ]; then
     echo "install-agents: removed unreferenced runtime after failed install: $RUNTIME_PATH" >&2
+  elif [ "$status" -eq "$PRUNE_KEPT_STATUS" ]; then
+    ROLLBACK_INCOMPLETE=1
+    echo "install-agents: retained newly installed runtime because a running agent-inbox-driver pinned it: $RUNTIME_PATH" >&2
   else
     ROLLBACK_INCOMPLETE=1
     if [ "$status" -eq "$ISOLATED_TIMEOUT_STATUS" ]; then
@@ -787,9 +792,13 @@ prune_runtime_if_unreferenced() {
     echo "install-agents: retained runtime $id ($status)" >&2
     return
   fi
-  if "$SOURCE_NODE" "$PAYLOAD_HELPER" prune \
-    --runtime-root "$RUNTIME_ROOT" --runtime-id "$id" >/dev/null 2>&1; then
+  "$SOURCE_NODE" "$PAYLOAD_HELPER" prune \
+    --runtime-root "$RUNTIME_ROOT" --runtime-id "$id" >/dev/null 2>&1
+  status=$?
+  if [ "$status" -eq 0 ]; then
     echo "install-agents: removed unreferenced runtime $id" >&2
+  elif [ "$status" -eq "$PRUNE_KEPT_STATUS" ]; then
+    echo "install-agents: retained runtime $id (a running agent-inbox-driver pinned it)" >&2
   else
     echo "install-agents: warning: could not remove unreferenced runtime $id" >&2
   fi

@@ -58,6 +58,7 @@ function writePayload(payloadDir: string, version: string, opts: PayloadOptions 
     'scripts/prune-runtimes.sh': '#!/bin/bash\necho noop\n',
     'scripts/runtime-payload.mjs': '// helper\n',
     'scripts/runtime-config.mjs': '// config helper\n',
+    'scripts/runtime-pins.mjs': '// pins helper\n',
     'scripts/setup-filesystem.cjs': '// filesystem adapter\n',
     'scripts/setup-lock.sh': '# shared setup lock\n',
     'scripts/run-isolated.mjs': '// rollback step isolation\n',

@@ -34,6 +34,7 @@ const CONFIG_CLI = join(REPO, 'scripts', 'runtime-config.mjs')
 const STAGE_CLI = join(REPO, 'scripts', 'stage-runtime.mjs')
 const SQLITE_CHECK_CLI = join(REPO, 'scripts', 'runtime-sqlite-check.mjs')
 const SETUP_FILESYSTEM = join(REPO, 'scripts', 'setup-filesystem.cjs')
+const RUNTIME_PINS = join(REPO, 'scripts', 'runtime-pins.mjs')
 const FAKE_NODE_FIXTURE = join(REPO, 'test', 'fixtures', 'runtime', 'fake-node.sh')
 const FAKE_XATTR_FAIL_FIXTURE = join(REPO, 'test', 'fixtures', 'runtime', 'fake-xattr-fail.sh')
 const FAKE_XATTR_RECORD_FIXTURE = join(REPO, 'test', 'fixtures', 'runtime', 'fake-xattr-record.sh')
@@ -75,6 +76,7 @@ function committedFailureCli(): string {
   const root = tmp('committed-runtime-cli-')
   const cli = join(root, 'runtime-payload.mjs')
   copyFileSync(PAYLOAD_CLI, cli)
+  copyFileSync(RUNTIME_PINS, join(root, 'runtime-pins.mjs'))
   writeFileSync(join(root, 'setup-filesystem.cjs'), `
 const original = require(${JSON.stringify(SETUP_FILESYSTEM)})
 module.exports = {
@@ -2037,6 +2039,7 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     'prune-runtimes.sh',
     'runtime-payload.mjs',
     'runtime-config.mjs',
+    'runtime-pins.mjs',
     'setup-filesystem.cjs',
     'setup-lock.sh',
     'run-isolated.mjs',
@@ -2246,7 +2249,7 @@ describe('runtime SQLite cleanup gate', () => {
 // ═══════════════════════════════════════════════════════════════════════
 describe('main-entrypoint detection: symlinked ancestor / alias paths', () => {
   it('runtime-payload.mjs runs its CLI (not a silent no-op) when invoked through a symlinked parent directory', () => {
-    const [aliasedPayloadCli] = createSymlinkedAlias([PAYLOAD_CLI, SETUP_FILESYSTEM])
+    const [aliasedPayloadCli] = createSymlinkedAlias([PAYLOAD_CLI, SETUP_FILESYSTEM, RUNTIME_PINS])
     const payloadRoot = tmp('sym-payload-')
     buildFixturePayload(payloadRoot)
 
@@ -2257,10 +2260,10 @@ describe('main-entrypoint detection: symlinked ancestor / alias paths', () => {
   })
 
   it('runtime-config.mjs runs its CLI (not a silent no-op) when invoked through a symlinked parent directory', () => {
-    // runtime-config.mjs imports from './runtime-payload.mjs' — both must be
-    // copied into the same aliased directory for the relative import to
-    // resolve once reached through the alias.
-    const [aliasedConfigCli] = createSymlinkedAlias([CONFIG_CLI, PAYLOAD_CLI, SETUP_FILESYSTEM])
+    // runtime-config.mjs imports from './runtime-payload.mjs' and
+    // './runtime-pins.mjs' — all must be copied into the same aliased
+    // directory for the relative imports to resolve once reached through it.
+    const [aliasedConfigCli] = createSymlinkedAlias([CONFIG_CLI, PAYLOAD_CLI, SETUP_FILESYSTEM, RUNTIME_PINS])
     const dir = tmp('sym-config-')
     const configFile = join(dir, 'config.json')
     writeFileSync(configFile, JSON.stringify({}))

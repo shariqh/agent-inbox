@@ -229,9 +229,10 @@ copilot -p … --allow-tool agent-inbox`):
   loader and host contain `copilot` in argv: the loader as `/opt/homebrew/bin/copilot`, the host as
   `@github/copilot-darwin-arm64/copilot`.
 - **Rule 4 as written fails for the driven server itself.** The walk "up from `host_pid`" starts
-  at 76681, an agent host that is not the driver's child (76679). With the rule changed as below,
-  the driven row links (76681's parent is 76679) and the nested row does not (76817 → 76815 → 76681,
-  another host, before 76679).
+  at 76681, an agent host that is not the driver's child (76679). Starting the walk at
+  `host_pid`'s parent instead would over-link the nested row: 76817 → 76815 (a loader, not an
+  agent host) → 76681, the launch's own host. The rule that fits both rows is exact equality,
+  `host_pid` = the launch's native host pid: 76681 links, and 76817 does not.
 - **Copilot also starts short-lived `git` and `gh` children** under the native host. They are not
   agent hosts.
 
@@ -342,9 +343,10 @@ The coordinator's decisions on these are folded into the design doc; its §14.4 
    since the agent may otherwise resume it.
 7. **§5.1 rule 4 — the host is the loader's child.** Record two pids for the launch: the spawned
    child (the npm loader, `comm` `node`) and its native child, the host, whose argv contains
-   `@github/copilot` and whose `comm` basename is `copilot`. Rule 4 becomes: `host_pid` is the
-   launch's host pid, or the walk from `host_pid`'s parent reaches the launch's child or host
-   before any other agent host. An agent host is a process whose last-column `comm` basename is
+   `@github/copilot` and whose `comm` basename is `copilot`. Rule 4 becomes exact equality:
+   `host_pid` is the launch's recorded native host pid. A walk from `host_pid`'s parent would
+   link the nested chain above (corrected in review). An agent host, used to find the native
+   host among the loader's children, is a process whose last-column `comm` basename is
    `copilot`, `claude` or `claude-agent-acp`, or whose `command` matches `@github/copilot`. This
    settles §14.3's first item for npm installs. A standalone (non-npm) Copilot was not tested.
 8. **§3.2, §8 — the MCP server's hub follows the child's env.** The user's registration usually

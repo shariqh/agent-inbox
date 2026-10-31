@@ -26,11 +26,14 @@ One JSON object per line, in the order the client saw them:
 - Model lists (`availableModels` and the `model` config option) are cut to `auto`,
   `claude-sonnet-5.5` and `claude-haiku-4.5`. Every other byte of each message is as recorded.
 - Token-shaped strings were redacted; none were found.
-- Streamed chunks can split a path across messages, where the placeholders cannot match it.
-  The local username in those is `<user>`: the chunk where it starts says `<user>` (for example
-  `Users/<user>`), and the part that ran into later chunks was removed, which can leave a chunk's
-  `text` empty. The rest of such a path (the scratch folder's name) is kept as streamed. The
-  public GitHub handle `shariqh` is kept, as in the `ssh -T` greeting.
+- Streamed chunks can split a path across messages, where a line-by-line replacement cannot
+  match it. Those were rewritten over the joined stream: the scratch folder's path becomes
+  `<SPIKE>` and the local username `<user>`, in the chunk where the match starts, and the rest
+  of the match is removed from the chunks it ran into. Some chunks' `text` is empty as a result.
+  The public GitHub handle `shariqh` is kept, as in the `ssh -T` greeting.
+- The only `session-state` paths left are Copilot's own folder for the driven session inside
+  the scratch `COPILOT_HOME` (`<SPIKE>/copilot-home/session-state/<ACP session id>/plan.md`).
+  They are evidence of where plan mode writes its plan.
 - `COPILOT_HOME` was a scratch folder, so the `agent-inbox` MCP server registered there wrote to a
   scratch hub, never a real one.
 

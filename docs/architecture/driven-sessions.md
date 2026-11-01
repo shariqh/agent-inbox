@@ -23,8 +23,13 @@ Claude Code and Copilot CLI load this file automatically when they read or edit 
 ## In brief
 
 - Step 2 (this build): `agent-inbox-driver copilot --cwd <dir> --mode ask|read-only --prompt-file <f>
-  [--model <id>]`, in the FOREGROUND, approvals on its own terminal; `stop <launch id>` writes the
-  Stop lease. Copilot only (Claude is #421). No detach, Electron, worktree, transcript UI or resume.
+  [--model <id>] [--reasoning-effort <level>]`, in the FOREGROUND, approvals on its own terminal;
+  `stop <launch id>` writes the Stop lease. Copilot only (Claude is #421). No detach, Electron,
+  worktree, transcript UI or resume.
+- **Reasoning effort.** Copilot applies the user's own `~/.copilot/settings.json`, so an
+  `effortLevel` there reaches a driven session. A model that takes no effort (for example
+  `claude-haiku-4.5` in 1.0.105) then refuses `session/new`; the driver prints a hint, and
+  `--reasoning-effort none` (passed through from Copilot's own list of levels only) fixes it.
 - **The installed command.** Every runtime payload carries `dist/driver-cli.js` (a `bin` entry, so a
   manifest entrypoint). A human runs it from the installed runtime with that runtime's own Node:
   `~/.agent-inbox/runtime/<runtime id>/bin/node ~/.agent-inbox/runtime/<runtime id>/dist/driver-cli.js

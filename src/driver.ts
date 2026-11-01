@@ -21,7 +21,7 @@ import { ACP_PROTOCOL_VERSION, connectAcp } from './acp-client.js'
 import type { AcpConnection, AcpFrame, JsonRpcId } from './acp-client.js'
 import {
   MODE_AGENT, MODE_PLAN, PLAN_APPROVED_PROMPT, answerPingPrompt, askTitle, cappedInput, filterOptions, firstPrompt,
-  initialPhase, interruptPrompt, messagesPrompt, phaseMode, promptSafe, stateValid, terminalSafe,
+  initialPhase, interruptPrompt, messagesPrompt, phaseMode, promptSafe, setupRefusalHint, stateValid, terminalSafe,
 } from './driver-policy.js'
 import type { LaunchMode, Phase, PushedMessage } from './driver-policy.js'
 import {
@@ -346,6 +346,8 @@ export class Driver {
     this.setupRpc = null
     if (frame.error) {
       this.o.ui.notice(`Copilot refused ${frame.method}: ${frame.error.message}`)
+      const hint = setupRefusalHint(frame.error.message)
+      if (hint) this.o.ui.notice(hint)
       return this.end('error:setup')
     }
     const result = isRecord(frame.result) ? frame.result : {}

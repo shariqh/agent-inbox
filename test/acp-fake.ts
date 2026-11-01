@@ -97,6 +97,8 @@ export interface FakeScript {
   ignoreAllowAllOff?: boolean
   /** A stuck child: it does not exit when its stdin closes. */
   ignoreStdinClose?: boolean
+  /** Copilot refusing session/new with this message (a model the user's settings do not fit). */
+  refuseSessionNew?: string
 }
 
 export function fakeAgent(script: FakeScript = {}): FakeAgent {
@@ -161,6 +163,7 @@ export function fakeAgent(script: FakeScript = {}): FakeAgent {
     switch (m.method) {
       case 'initialize': return fake.respond(m.id, INITIALIZE)
       case 'session/new': {
+        if (script.refuseSessionNew) return fake.send({ id: m.id, error: { code: -32603, message: script.refuseSessionNew } })
         const result = clone(SESSION_NEW)
         result.sessionId = fake.session
         ;(result.modes as Json).currentModeId = fake.mode

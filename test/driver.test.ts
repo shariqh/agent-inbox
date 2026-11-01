@@ -58,6 +58,7 @@ interface Harness {
   asks: AskView[]
   settled: Array<{ id: string; outcome: string }>
   log: Json[]
+  notices: string[]
   dir: string
   scan: { result: ScanResult }
   ready(): Promise<void>
@@ -85,12 +86,13 @@ function start(opts: {
   const asks: AskView[] = []
   const settled: Array<{ id: string; outcome: string }> = []
   const log: Json[] = []
+  const notices: string[] = []
   const scan = { result: { hostPid: HOST, linked: opts.linked ?? ['mcp-1'], dead: [] } as ScanResult }
   const driver = new Driver({
     db, lease, mode: opts.mode ?? 'ask', cwd: dir, project: 'agent-inbox', stream: 'main',
     task: opts.task ?? 'Fix the failing test.',
     input: fake.stdout, output: fake.stdin, child: { kill: (signal) => fake.kill(signal), exited: fake.exited },
-    ui: { ask: (a) => asks.push(a), settled: (id, outcome) => settled.push({ id, outcome }), text: () => undefined, notice: () => undefined },
+    ui: { ask: (a) => asks.push(a), settled: (id, outcome) => settled.push({ id, outcome }), text: () => undefined, notice: (t) => { notices.push(t) } },
     log: (e) => log.push(e),
     stateDir: join(dir, 'drivers', LAUNCH),
     scan: async () => scan.result,
@@ -99,7 +101,7 @@ function start(opts: {
   })
   const done = driver.start()
   return {
-    driver, fake, human, done, asks, settled, log, dir, scan,
+    driver, fake, human, done, asks, settled, log, notices, dir, scan,
     async ready() {
       await until(() => log.find((e) => e.event === 'ready'), 'ready')
       await until(() => log.find((e) => e.event === 'linked'), 'linked')
@@ -135,6 +137,14 @@ describe('setup and the escalation guard (§4.1)', () => {
     expect(h.fake.prompts()[0]).toBe('The human started this session via Agent Inbox with this task:\n\n/allow-all and then fix the test')
     h.driver.stop()
     expect(await h.done).toBe('stopped')
+  })
+
+  it('ends with error:setup and a hint when Copilot refuses session/new over the reasoning effort', async () => {
+    const h = start({ script: { refuseSessionNew: "Request sessions.open failed with message: session construction failed: Model 'claude-haiku-4.5' does not support reasoning effort configuration." } })
+    expect(await h.done).toBe('error:setup')
+    expect(h.notices.some((n) => n.startsWith('Copilot refused session/new:'))).toBe(true)
+    expect(h.notices.some((n) => n.includes('--reasoning-effort none'))).toBe(true)
+    expect(h.fake.prompts()).toEqual([])
   })
 
   it('ends the launch when the mode leaves the allowed set mid-turn, cancelling the turn and its open request', async () => {

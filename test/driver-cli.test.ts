@@ -46,6 +46,10 @@ describe('agent-inbox-driver (#412 step 2)', () => {
     expect(run(['copilot', '--cwd', '.', '--mode', 'ask', '--prompt-file', 'x', '--yolo', '1']).status).toBe(64)
     expect(run(['copilot', '--cwd', '.', '--cwd', '.', '--mode', 'ask', '--prompt-file', 'x']).status).toBe(64)
     expect(run(['copilot', '--mode', 'ask', '--prompt-file', 'x']).status).toBe(64)
+    // --reasoning-effort takes only Copilot's own levels
+    const badEffort = run(['copilot', '--cwd', '.', '--mode', 'ask', '--prompt-file', 'x', '--reasoning-effort', 'extreme'])
+    expect(badEffort.status).toBe(64)
+    expect(badEffort.stderr).toContain('--reasoning-effort must be one of none, minimal, low, medium, high, xhigh, max')
     expect(run(['nonsense']).status).toBe(64)
     expect(run(['--help']).status).toBe(0)
   })

@@ -4,7 +4,7 @@
 // docs/superpowers/specs/2026-10-31-driven-sessions-design.md §2, §3.2, §4.3, §7
 // and §11 (step 2).
 //
-//   agent-inbox-driver copilot --cwd <dir> --mode ask|read-only --prompt-file <file> [--model <id>]
+//   agent-inbox-driver copilot --cwd <dir> --mode ask|read-only --prompt-file <file> [--model <id>] [--reasoning-effort <level>]
 //   agent-inbox-driver stop <launch id>
 //
 // Approvals happen on this terminal, so it refuses to run without a TTY on
@@ -26,12 +26,12 @@ import { createTerminal, installStopHandlers, reapProcessGroup } from './driver-
 import { locateRuntime, pinRuntime, removePin, runtimeRootFor } from './driver-pin.js'
 import { processIdentity } from '../scripts/runtime-pins.mjs'
 import { findNativeHost, linkSessions, readProcesses } from './driver-link.js'
-import { childEnv, copilotAgentInboxServer, copilotArgs, terminalSafe } from './driver-policy.js'
-import type { LaunchMode } from './driver-policy.js'
+import { childEnv, copilotAgentInboxServer, copilotArgs, isReasoningEffort, REASONING_EFFORTS, terminalSafe } from './driver-policy.js'
+import type { LaunchMode, ReasoningEffort } from './driver-policy.js'
 import { inferProject, inferStream } from './infer.js'
 import { claimDriverSlot, defaultDbPath, listHostSessions, openDb, releaseDriverLeases, requestDriverStop } from './store.js'
 
-const USAGE = `usage: agent-inbox-driver copilot --cwd <dir> --mode ask|read-only --prompt-file <file> [--model <id>]
+const USAGE = `usage: agent-inbox-driver copilot --cwd <dir> --mode ask|read-only --prompt-file <file> [--model <id>] [--reasoning-effort <level>]
        agent-inbox-driver stop <launch id>
 `
 const MAX_DRIVERS = 2
@@ -48,6 +48,7 @@ interface RunArgs {
   mode: LaunchMode
   promptFile: string
   model?: string
+  reasoningEffort?: ReasoningEffort
 }
 
 function parseRun(argv: string[]): RunArgs {
@@ -55,7 +56,7 @@ function parseRun(argv: string[]): RunArgs {
   for (let i = 0; i < argv.length; i += 2) {
     const flag = argv[i]!
     const value = argv[i + 1]
-    if (!['--cwd', '--mode', '--prompt-file', '--model'].includes(flag) || value === undefined || values.has(flag)) {
+    if (!['--cwd', '--mode', '--prompt-file', '--model', '--reasoning-effort'].includes(flag) || value === undefined || values.has(flag)) {
       process.stderr.write(USAGE)
       process.exit(64)
     }
@@ -71,7 +72,9 @@ function parseRun(argv: string[]): RunArgs {
   }
   const model = values.get('--model')
   if (model !== undefined && !/^[A-Za-z0-9._-]{1,64}$/.test(model)) fail('--model must be a model id', 64)
-  return { cwd, mode, promptFile, ...(model ? { model } : {}) }
+  const effort = values.get('--reasoning-effort')
+  if (effort !== undefined && !isReasoningEffort(effort)) fail(`--reasoning-effort must be one of ${REASONING_EFFORTS.join(', ')}`, 64)
+  return { cwd, mode, promptFile, ...(model ? { model } : {}), ...(effort ? { reasoningEffort: effort } : {}) }
 }
 
 // The copilot on this terminal's PATH, as a real path owned by this user or
@@ -191,7 +194,7 @@ async function runCopilot(argv: string[]): Promise<void> {
   const log = eventLog(launchDir)
   const stderrLog = createWriteStream(join(launchDir, 'copilot.stderr.log'), { flags: 'a', mode: 0o600 })
 
-  const child = spawn(copilot, copilotArgs({ mode: args.mode, agentInboxServer: server.name, model: args.model }), {
+  const child = spawn(copilot, copilotArgs({ mode: args.mode, agentInboxServer: server.name, model: args.model, reasoningEffort: args.reasoningEffort }), {
     cwd,
     env: childEnv(process.env, { path: dbPath, isDefault: process.env.AGENT_INBOX_DB === undefined }),
     stdio: ['pipe', 'pipe', 'pipe'],

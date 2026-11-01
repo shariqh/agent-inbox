@@ -51,11 +51,30 @@ export function stateValid(phase: Phase, state: { mode: string; allowAll: string
  * agent-inbox registration is pre-allowed by name (§3.2), and Read-only denies
  * the write tool. Never `--yolo`, `--allow-all-tools` or `--allow-all`.
  */
-export function copilotArgs(opts: { mode: LaunchMode; agentInboxServer: string; model?: string }): string[] {
+export function copilotArgs(opts: { mode: LaunchMode; agentInboxServer: string; model?: string; reasoningEffort?: ReasoningEffort }): string[] {
   const args = ['--acp', '--stdio', '--allow-tool', opts.agentInboxServer]
   if (opts.mode === 'read-only') args.push('--deny-tool', 'write')
   if (opts.model) args.push('--model', opts.model)
+  if (opts.reasoningEffort) args.push('--reasoning-effort', opts.reasoningEffort)
   return args
+}
+
+/** Copilot 1.0.105's `--reasoning-effort` values, passed through only from this list. */
+export const REASONING_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const
+export type ReasoningEffort = (typeof REASONING_EFFORTS)[number]
+
+export function isReasoningEffort(value: string): value is ReasoningEffort {
+  return (REASONING_EFFORTS as readonly string[]).includes(value)
+}
+
+/**
+ * A hint for a refused session/new. Copilot applies the user's own settings
+ * (an `effortLevel` in ~/.copilot/settings.json), and a model that takes no
+ * reasoning effort then refuses to start.
+ */
+export function setupRefusalHint(message: string): string | null {
+  if (!/does not support reasoning effort/i.test(message)) return null
+  return 'Your Copilot settings set a reasoning effort this model does not take. Add --reasoning-effort none, or choose another --model.'
 }
 
 // ── the option allow-list (§4.1) ────────────────────────────────────────────

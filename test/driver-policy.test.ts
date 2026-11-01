@@ -9,7 +9,7 @@ import type { AcpFrame } from '../src/acp-client.js'
 import { findNativeHost, linkSessions, parsePs } from '../src/driver-link.js'
 import {
   MODE_AGENT, MODE_PLAN, PLAN_APPROVED_PROMPT, answerPingPrompt, askTitle, cappedInput, childEnv, copilotAgentInboxServer,
-  copilotArgs, filterOptions, firstPrompt, initialPhase, interruptPrompt, messagesPrompt, promptSafe, stateValid, terminalSafe,
+  copilotArgs, filterOptions, firstPrompt, initialPhase, interruptPrompt, messagesPrompt, promptSafe, setupRefusalHint, stateValid, terminalSafe,
 } from '../src/driver-policy.js'
 import { removeScratchDirs, scratchDir } from './scratch.js'
 
@@ -51,6 +51,15 @@ describe('modes, phases and the option allow-list (§4.1)', () => {
     expect(copilotArgs({ mode: 'ask', agentInboxServer: 'agent-inbox' })).toEqual(['--acp', '--stdio', '--allow-tool', 'agent-inbox'])
     expect(copilotArgs({ mode: 'read-only', agentInboxServer: 'agent-inbox', model: 'claude-haiku-4.5' }))
       .toEqual(['--acp', '--stdio', '--allow-tool', 'agent-inbox', '--deny-tool', 'write', '--model', 'claude-haiku-4.5'])
+    expect(copilotArgs({ mode: 'ask', agentInboxServer: 'agent-inbox', model: 'claude-haiku-4.5', reasoningEffort: 'none' }))
+      .toEqual(['--acp', '--stdio', '--allow-tool', 'agent-inbox', '--model', 'claude-haiku-4.5', '--reasoning-effort', 'none'])
+  })
+
+  it('explains a session/new refused because the user’s settings set a reasoning effort the model does not take', () => {
+    // Copilot 1.0.105 with effortLevel "high" in ~/.copilot/settings.json and --model claude-haiku-4.5
+    const refused = "Request sessions.open failed with message: session construction failed: Model 'claude-haiku-4.5' does not support reasoning effort configuration. Use models.list to check which models support reasoning effort."
+    expect(setupRefusalHint(refused)).toContain('--reasoning-effort none')
+    expect(setupRefusalHint('Request sessions.open failed: not authenticated')).toBeNull()
   })
 
   it('makes each phase valid for exactly its own mode, and never with allow_all on', () => {

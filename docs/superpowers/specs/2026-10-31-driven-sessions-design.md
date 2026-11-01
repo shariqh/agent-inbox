@@ -129,7 +129,7 @@ its peer is `@modelcontextprotocol/server@^2` where the app ships `@modelcontext
 ### 3.2 Copilot (`copilot --acp --stdio`, public preview)
 
 Argv is fixed per mode (§4): `copilot --acp --stdio --allow-tool <name> [--allow-tool …]
-[--deny-tool …] [--model M] [--effort E]`. Tool filters and effort are fixed when the server
+[--deny-tool …] [--model M] [--reasoning-effort E]`. Tool filters and effort are fixed when the server
 starts, which suits one server per launch. There is **no `--mode`** in the argv: ACP's
 `session/new` ignores it and always starts in `…/session-modes#agent`. The mode is set with
 `session/set_mode` and verified (§4.1).

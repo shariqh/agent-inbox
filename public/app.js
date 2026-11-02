@@ -6520,6 +6520,7 @@ function openMessage(session) {
 function initLaunches() {
   launchUi = createLaunchUi({
     fetchJson: (url) => fetch(url).then((r) => (r.ok ? r.json() : null)),
+    postJSON,
     activity: () => lastData?.activity ?? [],
     launches: () => lastData?.launches ?? null,
     rel,

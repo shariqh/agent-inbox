@@ -28,6 +28,8 @@ import { buildIssueGraph } from '../src/issue-graph.js'
 import { runHook } from '../src/hook.js'
 import { issueKeyFor } from '../public/issue-key.js'
 import { createViewer } from '../src/viewer.js'
+import { appAsks } from '../src/driver-launch.js'
+import { sign } from './launch-fixtures.js'
 import type { FoundLink } from '../public/links.js'
 import { renderStructuredText } from '../public/structured-text.js'
 import { at, facts, keySets, snapshot } from './issue-fixtures.js'
@@ -1687,6 +1689,16 @@ const V220 = {
   markMessageDelivered: `UPDATE session_messages
                         SET delivered_at = COALESCE(delivered_at, ?), delivered_by = COALESCE(delivered_by, ?)
                       WHERE id = ? AND session = ? AND status = 'open'`,
+  // replyItem's write (its viewer's reply route), with v2.2.0's EXPECTED_ANSWER_SQL inlined
+  replyItem: `UPDATE items
+                   SET reply = @reply, reply_context = @replyContext, replied_at = @now, reply_seen_at = NULL,
+                       reply_source = 'inbox', reply_kind = @kind,
+                       snoozed_until = NULL, pinned_at = NULL, updated_at = @now
+                 WHERE id = @id AND kind = 'question' AND status = 'open'
+                   AND (@expect = 0
+  OR (replied_at IS @expectedAt AND reply_source IS @expectedSource
+      AND reply_kind IS @expectedKind AND reply IS @expectedReply)
+  OR (COALESCE(reply, '') = '' AND reply_kind IS NULL))`,
 }
 
 describe('a v2.2.0 process sharing a hub with driven sessions (#412)', () => {
@@ -1761,5 +1773,32 @@ describe('a v2.2.0 process sharing a hub with driven sessions (#412)', () => {
     old.prepare(V220.closeProject).run('@sessions', new Date().toISOString())
     old.prepare(V220.closeProject).run('agent-inbox', new Date().toISOString())
     expect(closedProjects(db)).toEqual(['agent-inbox'])
+  })
+
+  // step 3: an app launch's approval is main's signed reply, and nothing else
+  it('its viewer’s reply to an app launch’s approval never approves it, and leaves the launches domain alone', () => {
+    const db = connect(false)
+    const old = connect(true)
+    const key = Buffer.alloc(32, 3)
+    const asks = appAsks({ db, launchId: LAUNCH, launchKey: key, project: 'agent-inbox', stream: 'main', log: () => undefined })
+    const item = asks.file({
+      kind: 'permission', title: 'Allow copilot to run `npm test`?', context: 'Tool kind: execute', session: 'driven',
+      choices: [
+        { id: 'allow_once', label: 'Allow once', detail: '', approve: true },
+        { id: 'reject_once', label: 'Deny', detail: '', approve: false },
+      ],
+    })
+    const version = readSnapshotState(db).domains.launches
+    const write = (reply: string, replyContext: string | null) => old.prepare(V220.replyItem).run({
+      id: item, reply, replyContext, kind: 'answer', now: new Date().toISOString(),
+      expect: 0, expectedAt: null, expectedSource: null, expectedKind: null, expectedReply: null,
+    }).changes
+    expect(write('Allow once', null)).toBe(1)
+    expect(asks.answers()).toEqual([])
+    expect(write('allow_once', 'not a signature')).toBe(1)
+    expect(asks.answers()).toEqual([])
+    expect(readSnapshotState(db).domains.launches).toBe(version)
+    replyItem(db, item, 'allow_once', sign(key, item, 0, 'allow_once'))
+    expect(asks.answers()).toEqual([{ itemId: item, approve: true }])
   })
 })

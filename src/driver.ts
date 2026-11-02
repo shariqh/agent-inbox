@@ -43,6 +43,38 @@ export interface AskView {
   detail: string
 }
 
+/** One ask the driver files, and the choices it offers by id (an app launch signs them). */
+export interface AskFiling {
+  kind: 'permission' | 'plan'
+  title: string
+  context: string
+  /** The driven agent's MCP session, so the ask classifies as waiting. */
+  session: string | undefined
+  choices: Array<{ id: string; label: string; detail: string; approve: boolean }>
+}
+
+/**
+ * Where asks are filed and answered. Step 2's terminal files an alert and takes
+ * its answers on the TTY (terminalAsks); an app launch files an approval whose
+ * answers Electron main signs (driver-launch.ts). Either way an answer is an
+ * intent the driver queues and re-validates (§4.1, Ordering).
+ */
+export interface AskChannel {
+  /** Where the human answers, as outcomes say it: "in the terminal". */
+  readonly where: string
+  file(ask: AskFiling): string
+  settle(itemId: string, outcome: string): void
+  /** Verified answers since the last call, by item. Read when the hub changed. */
+  answers(): Array<{ itemId: string; approve: boolean }>
+}
+
+/** What the driver learns as it runs, for an app launch's row. */
+export interface DriverHooks {
+  host?(pid: number): void
+  linked?(sessions: readonly string[]): void
+  usage?(usage: { activeMs: number; toolCalls: number }): void
+}
+
 export interface DriverUi {
   ask(ask: AskView): void
   settled(askId: string, outcome: string): void
@@ -103,8 +135,40 @@ export interface DriverOptions {
   stateDir: string
   scan: () => Promise<ScanResult>
   timing?: Partial<DriverTiming>
-  /** Step 3's resume: load this ACP session instead of creating one. */
+  /** Step 3's resume: load this ACP session instead of creating one; its task was sent before. */
   loadSessionId?: string
+  /**
+   * Step 3's resume: the MCP sessions an earlier driver of this launch linked
+   * (the launch row's record). Their open messages move to the new server
+   * (§5.2, proof by the launch row, §14.3); `dead` when the server is gone.
+   */
+  priorSessions?: ReadonlyArray<{ session: string; dead: boolean }>
+  /** Default: the terminal's alerts (step 2). */
+  asks?: AskChannel
+  hooks?: DriverHooks
+}
+
+// Step 2's asks: an alert in @sessions, answered on the driver's own terminal.
+function terminalAsks(db: Database.Database, project: string, stream: string): AskChannel {
+  return {
+    where: 'in the terminal',
+    file: (ask) => insertItem(db, {
+      project: '@sessions',
+      stream: [project, stream].filter(Boolean).join(' · '),
+      agent: 'copilot',
+      session: ask.session,
+      kind: 'question',
+      // the viewer escapes HTML, but control and invisible characters still mislead
+      title: terminalSafe(ask.title),
+      detail: 'A session Agent Inbox drives is waiting for your approval in its terminal.',
+      next_step: 'Answer in the terminal running the driver.',
+      action_owner: 'task',
+      impact: 'The agent waits until you answer.',
+      context: terminalSafe(ask.context),
+    }),
+    settle: (itemId, outcome) => { resolveItem(db, itemId, outcome) },
+    answers: () => [],
+  }
 }
 
 interface SecurityState {
@@ -185,6 +249,7 @@ export class Driver {
   private held: string[] = []
   private pushed: PushedFile
   private readonly pinged = new Set<string>()
+  private readonly askChannel: AskChannel
   private ending: EndReason | null = null
   private finished = false
   private childGone = false
@@ -198,6 +263,14 @@ export class Driver {
     this.o = options
     this.t = { ...DEFAULT_TIMING, ...options.timing }
     this.phase = initialPhase(options.mode)
+    this.askChannel = options.asks ?? terminalAsks(options.db, options.project, options.stream)
+    // a loaded session was prompted with its task before it was parked (§7)
+    this.taskSent = options.loadSessionId !== undefined
+    for (const prior of options.priorSessions ?? []) {
+      this.linked.push(prior.session)
+      this.ended.set(prior.session, prior.dead)
+      this.held.push(prior.session)
+    }
     this.pushed = this.readPushed()
     this.done = new Promise((resolve) => { this.resolveEnd = resolve })
     this.conn = connectAcp({
@@ -269,6 +342,15 @@ export class Driver {
 
   isFinished(): boolean {
     return this.finished
+  }
+
+  /** The ACP session a later resume can load: only one that was prompted is persisted (§7). */
+  resumableSession(): string | null {
+    return this.taskSent ? this.sessionId : null
+  }
+
+  usage(): { activeMs: number; toolCalls: number } {
+    return { activeMs: this.activeMs, toolCalls: this.toolCalls }
   }
 
   // ── the queue ─────────────────────────────────────────────────────────────
@@ -497,7 +579,7 @@ export class Driver {
     const input = cappedInput(rawInput)
     const title = askTitle(toolTitle, rawInput)
     const id = `ask-${++this.askSeq}`
-    const itemId = this.fileAlert(title, [
+    const itemId = this.fileAsk('permission', title, [
       `Tool kind: ${kind || 'unknown'}`,
       `Folder: ${this.o.cwd}`,
       `Launch: ${this.o.lease.launchId}`,
@@ -505,32 +587,22 @@ export class Driver {
       '',
       'Input:',
       input,
-    ].join('\n'))
+    ].join('\n'), [
+      { id: options.allow, label: 'Allow once', detail: 'Lets this one tool call run. Later calls still ask.', approve: true },
+      { id: options.reject ?? 'decline', label: 'Deny', detail: 'Declining stops the agent’s current turn.', approve: false },
+    ])
     this.asks.set(id, { id, kind: 'permission', itemId, rpcId: frame.id, allow: options.allow, reject: options.reject, generation: this.state.generation })
     this.o.ui.ask({ id, kind: 'permission', title, detail: `${kind ? `${kind}: ` : ''}${input}` })
   }
 
-  private fileAlert(title: string, context: string): string {
-    return insertItem(this.o.db, {
-      project: '@sessions',
-      stream: [this.o.project, this.o.stream].filter(Boolean).join(' · '),
-      agent: 'copilot',
-      session: this.linked.find((s) => !this.ended.has(s)),
-      kind: 'question',
-      // the viewer escapes HTML, but control and invisible characters still mislead
-      title: terminalSafe(title),
-      detail: 'A session Agent Inbox drives is waiting for your approval in its terminal.',
-      next_step: 'Answer in the terminal running the driver.',
-      action_owner: 'task',
-      impact: 'The agent waits until you answer.',
-      context: terminalSafe(context),
-    })
+  private fileAsk(kind: AskFiling['kind'], title: string, context: string, choices: AskFiling['choices']): string {
+    return this.askChannel.file({ kind, title, context, session: this.linked.find((s) => !this.ended.has(s)), choices })
   }
 
   private settle(ask: PendingAsk, outcome: string): void {
     this.asks.delete(ask.id)
     try {
-      resolveItem(this.o.db, ask.itemId, outcome)
+      this.askChannel.settle(ask.itemId, outcome)
     } catch (error) {
       this.o.log({ event: 'hub_write_failed', what: 'resolve ask', message: error instanceof Error ? error.message : String(error) })
     }
@@ -545,7 +617,7 @@ export class Driver {
     if (!approve) {
       this.conn.respond(rpcId, ask.reject ? { outcome: { outcome: 'selected', optionId: ask.reject } } : { outcome: { outcome: 'cancelled' } })
       this.o.log({ event: 'permission_answer', id: rpcId, answer: ask.reject ?? 'cancelled' })
-      return this.settle(ask, 'Declined in the terminal; the agent’s turn stopped.')
+      return this.settle(ask, `Declined ${this.askChannel.where}; the agent’s turn stopped.`)
     }
     // re-validate against the state the human saw (§4.1, Ordering)
     if (ask.generation !== this.state.generation) {
@@ -556,7 +628,7 @@ export class Driver {
     if (!stateValid(this.phase, this.state)) return this.escalate('invalid state at approval')
     this.conn.respond(rpcId, { outcome: { outcome: 'selected', optionId: ask.allow! } })
     this.o.log({ event: 'permission_answer', id: rpcId, answer: ask.allow })
-    this.settle(ask, 'Allowed once in the terminal.')
+    this.settle(ask, `Allowed once ${this.askChannel.where}.`)
   }
 
   // ── Plan first (§4.1 phases) ─────────────────────────────────────────────
@@ -565,19 +637,22 @@ export class Driver {
     if ([...this.asks.values()].some((ask) => ask.kind === 'plan')) return
     const id = `ask-${++this.askSeq}`
     const title = 'Approve the plan and continue?'
-    const itemId = this.fileAlert(title, [
+    const itemId = this.fileAsk('plan', title, [
       `Folder: ${this.o.cwd}`,
       `Launch: ${this.o.lease.launchId}`,
       'Approving switches the session from plan mode to agent mode; tool calls still ask for approval.',
-    ].join('\n'))
+    ].join('\n'), [
+      { id: 'approve', label: 'Approve the plan', detail: 'Switches to agent mode; tool calls still ask for approval.', approve: true },
+      { id: 'decline', label: 'Not yet', detail: 'The session stays in plan mode.', approve: false },
+    ])
     this.asks.set(id, { id, kind: 'plan', itemId, generation: this.state.generation })
     this.o.ui.ask({ id, kind: 'plan', title, detail: 'The agent wrote its plan. Approve it to let the agent carry it out.' })
   }
 
   private onPlanAnswer(ask: PendingAsk, approve: boolean): void {
-    if (!approve) return this.settle(ask, 'Declined in the terminal; the session stays in plan mode.')
+    if (!approve) return this.settle(ask, `Declined ${this.askChannel.where}; the session stays in plan mode.`)
     if (this.phase !== 'awaiting_plan_approval' || !stateValid(this.phase, this.state)) return this.escalate('invalid state at plan approval')
-    this.settle(ask, 'Approved in the terminal.')
+    this.settle(ask, `Approved ${this.askChannel.where}.`)
     this.phase = 'switching'
     this.switchSeen = false
     this.switchRpc = this.conn.request('session/set_mode', { sessionId: this.sessionId, modeId: MODE_AGENT })
@@ -675,6 +750,7 @@ export class Driver {
     const result = isRecord(frame.result) ? frame.result : {}
     const stopReason = typeof result.stopReason === 'string' ? result.stopReason : frame.error ? 'error' : 'unknown'
     this.o.log({ event: 'turn_end', id: turn.rpcId, kind: turn.kind, stopReason, usage: result.usage ?? null })
+    this.report(() => this.o.hooks?.usage?.(this.usage()))
     this.o.ui.notice(`Turn ended (${stopReason}).`)
     if (this.ending) return this.finish()
     if (this.activeMs >= this.t.activeMs) return this.end('budget:active_time')
@@ -722,7 +798,33 @@ export class Driver {
     if (!this.turn && this.asks.size === 0 && Date.now() - this.lastActivity >= this.t.idleMs) return this.end('idle')
     if (version !== this.dataVersion || !this.taskSent) {
       this.dataVersion = version
+      this.takeAnswers()
       this.maybePrompt()
+    }
+  }
+
+  // Verified answers from the hub (an app launch's signed approvals) become
+  // intents queued behind every frame already read, then re-validated (§4.1).
+  private takeAnswers(): void {
+    let answers: Array<{ itemId: string; approve: boolean }>
+    try {
+      answers = this.askChannel.answers()
+    } catch (error) {
+      this.o.log({ event: 'hub_read_failed', what: 'answers', message: error instanceof Error ? error.message : String(error) })
+      return
+    }
+    for (const answer of answers) {
+      const ask = [...this.asks.values()].find((a) => a.itemId === answer.itemId)
+      if (ask) this.enqueue({ type: 'answer', askId: ask.id, approve: answer.approve })
+    }
+  }
+
+  // A hook's failure never stops the session: the row is a report, not the state.
+  private report(call: () => void): void {
+    try {
+      call()
+    } catch (error) {
+      this.o.log({ event: 'hub_write_failed', what: 'report', message: error instanceof Error ? error.message : String(error) })
     }
   }
 
@@ -738,6 +840,8 @@ export class Driver {
     if (this.hostPid === null) {
       this.hostPid = result.hostPid
       this.o.log({ event: 'native_host', pid: result.hostPid })
+      const pid = result.hostPid
+      this.report(() => this.o.hooks?.host?.(pid))
     }
     let changed = false
     for (const session of result.linked) {
@@ -754,7 +858,10 @@ export class Driver {
       changed = true
       this.o.log({ event: 'session_ended', session })
     }
-    if (changed) this.refreshLeases()
+    if (changed) {
+      this.refreshLeases()
+      this.report(() => this.o.hooks?.linked?.([...this.linked]))
+    }
     this.readdressEnded()
     if (changed) this.maybePrompt()
   }

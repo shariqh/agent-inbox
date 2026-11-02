@@ -221,7 +221,11 @@ Claude Code and Copilot CLI load this file automatically when they read or edit 
   session cannot be loaded) and forgets the processes; a Stop that arrived meanwhile ends it
   instead. A `resume` spec claims the parked row (`resumeLaunch`, parked → running, once), loads the
   session (`session/load`, history ignored until it answers, then the mode and `allow_all` verified)
-  without re-sending the task, or starts a fresh one and sends the stored task when there is none.
+  without re-sending the task, or starts a fresh one and sends the stored task when there is none or
+  the load answers `-32002` (never prompted, so never persisted). Any other load failure ends the
+  driver with `error:load`, and the launch is parked again with its ACP session and a `park_reason`
+  ("Copilot could not load the session: …", sanitized, at most 300 characters of Copilot's message)
+  that the UI shows, so the human can retry; a later resume clears it.
   The row's earlier `sessions` prove "from" (§14.3): the new driver re-takes their `driven:` leases
   under the same launch id, so `readdressMessages` moves their open messages to the new server once
   it links, and `pushed.json` starts empty, so they are pushed again (§5.3).

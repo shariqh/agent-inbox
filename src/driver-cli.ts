@@ -440,6 +440,8 @@ async function runLaunch(argv: string[]): Promise<void> {
   // the launch's facts: from the spec, or, resuming, from the row the first driver wrote
   let facts: { cwd: string; mode: LaunchMode; model?: string; reasoningEffort?: ReasoningEffort; activeMs: number; toolCalls: number; prompt: string; project: string; stream: string }
   let resume: Pick<DriverOptions, 'loadSessionId' | 'priorSessions'> = {}
+  // the session a resume tries to load, kept on the row if the load fails
+  let loading: string | null = null
   if (spec.kind === 'new') {
     let cwd: string
     try {
@@ -488,6 +490,7 @@ async function runLaunch(argv: string[]): Promise<void> {
       if (pid === null) return false
       try { process.kill(pid, 0); return true } catch { return false }
     }
+    loading = row.acp_session
     resume = {
       ...(row.acp_session ? { loadSessionId: row.acp_session } : {}),
       priorSessions: row.sessions.map((session) => ({ session, dead: alive.has(session) && !serverAlive(alive.get(session) ?? null) })),
@@ -542,7 +545,10 @@ async function runLaunch(argv: string[]): Promise<void> {
     const usage = driver.usage()
     try {
       if (reason === 'idle') parkLaunch(db, launchId, { acpSession: driver.resumableSession(), ...usage })
-      else endLaunch(db, launchId, { reason, ...usage })
+      // a load that failed for another reason than "never prompted" parks it again, to retry (§7)
+      else if (reason === 'error:load') {
+        parkLaunch(db, launchId, { acpSession: loading, ...usage, reason: `Copilot could not load the session: ${driver.loadFailure() ?? 'unknown error'}` })
+      } else endLaunch(db, launchId, { reason, ...usage })
     } catch { /* the hub is gone: the launch reads as lost */ }
   }
   const sleep = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)

@@ -625,6 +625,7 @@ function runMigrations(db: Database.Database): void {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       parked_at TEXT,
+      park_reason TEXT,
       ended_at TEXT,
       stop_requested_at TEXT,
       acp_session TEXT,
@@ -3924,6 +3925,8 @@ export interface LaunchRecord {
   created_at: string
   updated_at: string
   parked_at: string | null
+  /** Why the launch was parked, when it was not for idling: a resume that could not load its session. */
+  park_reason: string | null
   ended_at: string | null
   stop_requested_at: string | null
   acp_session: string | null
@@ -4025,7 +4028,7 @@ export function listLaunches(db: Database.Database): Launch[] {
 export function resumeLaunch(db: Database.Database, id: string, driverPid: number): LaunchRecord | null {
   if (!LAUNCH_ID.test(id)) return null
   const row = db.prepare(`UPDATE launches
-                             SET status = 'running', parked_at = NULL, driver_pid = ?, updated_at = ?, revision = revision + 1
+                             SET status = 'running', parked_at = NULL, park_reason = NULL, driver_pid = ?, updated_at = ?, revision = revision + 1
                            WHERE id = ? AND status = 'parked'
                        RETURNING *`).get(driverPid, new Date().toISOString(), id) as (Omit<LaunchRecord, 'sessions'> & { sessions: string | null }) | undefined
   return row ? parseLaunch(row) : null
@@ -4062,13 +4065,14 @@ export function recordLaunchProgress(db: Database.Database, id: string, progress
 export function parkLaunch(
   db: Database.Database,
   id: string,
-  park: { acpSession: string | null; activeMs: number; toolCalls: number },
+  park: { acpSession: string | null; activeMs: number; toolCalls: number; reason?: string },
 ): LaunchStatus | null {
   const now = new Date().toISOString()
   const row = db.prepare(`UPDATE launches
                              SET status = CASE WHEN stop_requested_at IS NULL THEN 'parked' ELSE 'ended' END,
                                  end_reason = CASE WHEN stop_requested_at IS NULL THEN NULL ELSE 'stopped' END,
                                  parked_at = CASE WHEN stop_requested_at IS NULL THEN @now ELSE NULL END,
+                                 park_reason = CASE WHEN stop_requested_at IS NULL THEN @reason ELSE NULL END,
                                  ended_at = CASE WHEN stop_requested_at IS NULL THEN NULL ELSE @now END,
                                  acp_session = @acp, active_ms = @activeMs, tool_calls = @toolCalls,
                                  driver_pid = NULL, child_pgid = NULL, child_started_at = NULL, host_pid = NULL,
@@ -4076,6 +4080,7 @@ export function parkLaunch(
                            WHERE id = @id AND status = 'running'
                        RETURNING status`).get({
     now, id, acp: park.acpSession, activeMs: Math.max(0, Math.round(park.activeMs)), toolCalls: park.toolCalls,
+    reason: park.reason ?? null,
   }) as { status: LaunchStatus } | undefined
   return row?.status ?? null
 }
@@ -4087,7 +4092,7 @@ export function endLaunch(
 ): boolean {
   const now = new Date().toISOString()
   return db.prepare(`UPDATE launches
-                        SET status = 'ended', end_reason = @reason, ended_at = @now, parked_at = NULL,
+                        SET status = 'ended', end_reason = @reason, ended_at = @now, parked_at = NULL, park_reason = NULL,
                             active_ms = COALESCE(@activeMs, active_ms), tool_calls = COALESCE(@toolCalls, tool_calls),
                             updated_at = @now, revision = revision + 1
                       WHERE id = @id AND status <> 'ended'`).run({
@@ -4113,7 +4118,7 @@ export function requestLaunchStop(db: Database.Database, id: string): 'stopping'
     }
     if (status === 'parked') {
       db.prepare(`UPDATE launches SET status = 'ended', end_reason = 'stopped', stop_requested_at = ?, ended_at = ?,
-                         parked_at = NULL, updated_at = ?, revision = revision + 1
+                         parked_at = NULL, park_reason = NULL, updated_at = ?, revision = revision + 1
                    WHERE id = ? AND status = 'parked'`).run(now, now, now, id)
       return 'ended'
     }

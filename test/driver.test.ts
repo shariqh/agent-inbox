@@ -77,6 +77,7 @@ function start(opts: {
   linked?: string[]
   /** An app launch: its asks and row (driver-launch.ts) instead of the terminal's. */
   app?: boolean
+  refuseLoad?: FakeScript['refuseLoad']
   priorSessions?: DriverOptions['priorSessions']
 } = {}): Harness {
   const dir = scratchDir('driver-')
@@ -87,7 +88,7 @@ function start(opts: {
   presence(human, 'mcp-1')
   const lease = { launchId: LAUNCH, pid: process.pid, nonce: 'test' }
   expect(claimDriverSlot(db, lease, 2)).toEqual({ ok: true })
-  const fake = fakeAgent(opts.script ?? { onPrompt: () => undefined })
+  const fake = fakeAgent({ ...(opts.script ?? { onPrompt: () => undefined }), ...(opts.refuseLoad ? { refuseLoad: opts.refuseLoad } : {}) })
   const asks: AskView[] = []
   const settled: Array<{ id: string; outcome: string }> = []
   const log: Json[] = []
@@ -699,6 +700,27 @@ describe('app launches: signed approvals (§4.3)', () => {
 })
 
 describe('app launches: the row, park and resume (§6, §7)', () => {
+  it('a load refused as never prompted (-32002) starts a fresh session and sends the stored task', async () => {
+    const h = start({ app: true, script: ended, loadSessionId: 'never-prompted', refuseLoad: { code: -32002, message: 'Resource not found' } })
+    await h.ready()
+    await until(() => h.fake.prompts().length === 1, 'the task')
+    expect(h.fake.received.map((m) => m.method).filter((m) => m === 'session/load' || m === 'session/new')).toEqual(['session/load', 'session/new'])
+    expect(h.fake.prompts()[0]).toContain('Fix the failing test.')
+    expect(h.log.some((e) => e.event === 'load_not_found')).toBe(true)
+    expect(h.driver.loadFailure()).toBeNull()
+    h.driver.stop()
+    await h.done
+    expect(h.driver.resumableSession()).toBe(h.fake.session)
+  })
+
+  it('any other load failure ends the driver with error:load and its reason, before any prompt', async () => {
+    const h = start({ app: true, script: ended, loadSessionId: 'acp-1', refuseLoad: { code: -32603, message: 'Internal error\u001b[2J' } })
+    expect(await h.done).toBe('error:load')
+    expect(h.driver.loadFailure()).toBe('Internal error\\x1b[2J')
+    expect(h.fake.prompts()).toEqual([])
+    expect(h.fake.received.some((m) => m.method === 'session/new')).toBe(false)
+  })
+
   it('reports the native host, linked sessions and usage to the launch row', async () => {
     const h = start({ app: true, script: ended })
     await h.ready()

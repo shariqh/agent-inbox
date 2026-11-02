@@ -41,6 +41,7 @@ process.stdin.on('data', (chunk) => {
     buffer = buffer.slice(end + 1)
     fs.appendFileSync(process.env.FAKE_LOG, JSON.stringify(m) + '\\n')
     if (m.method === 'initialize') send({ id: m.id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true } } })
+    else if (m.method === 'session/load' && process.env.FAKE_LOAD_ERROR) send({ id: m.id, error: JSON.parse(process.env.FAKE_LOAD_ERROR) })
     else if (m.method === 'session/new' || m.method === 'session/load') send({ id: m.id, result: { ...(m.method === 'session/new' ? { sessionId: 's-1' } : {}), modes: { currentModeId: agent }, configOptions: config(agent) } })
     else if (m.method === 'session/set_mode') {
       update({ sessionUpdate: 'current_mode_update', currentModeId: m.params.modeId })
@@ -254,4 +255,27 @@ describe('agent-inbox-driver run (#412 step 3)', () => {
     expect(getLaunch(r.hub, LAUNCH)).toMatchObject({ status: 'ended', end_reason: 'error:start' })
     expect(readFileSync(r.fakeLog, 'utf8')).toBe('')
   })
+
+  it('a resume whose load fails parks the launch again with the reason; one never prompted starts fresh and sends the task', async () => {
+    const r = rig()
+    const first = runDriver(r, newSpec(r), { AGENT_INBOX_DRIVER_IDLE_MS: '400' })
+    expect(await first.status()).toEqual({ ok: true, launch: LAUNCH })
+    expect(await first.exited).toBe(0)
+    const resumeSpec = (env: Record<string, string>) => ({ v: 1, kind: 'resume', launchId: LAUNCH, env: { ...r.env, ...env }, launchKey: LAUNCH_KEY.toString('base64') })
+
+    const failed = runDriver(r, resumeSpec({ FAKE_LOAD_ERROR: JSON.stringify({ code: -32603, message: 'Internal error' }) }))
+    expect(await failed.status()).toEqual({ ok: true, launch: LAUNCH })
+    expect(await failed.exited).toBe(1)
+    expect(getLaunch(r.hub, LAUNCH)).toMatchObject({
+      status: 'parked', acp_session: 's-1', park_reason: 'Copilot could not load the session: Internal error', end_reason: null,
+    })
+
+    const fresh = runDriver(r, resumeSpec({ FAKE_LOAD_ERROR: JSON.stringify({ code: -32002, message: 'Resource not found' }) }))
+    expect(await fresh.status()).toEqual({ ok: true, launch: LAUNCH })
+    await until(() => received(r).filter((m) => m.method === 'session/prompt').length === 2, 'the task again')
+    expect(received(r).filter((m) => m.method === 'session/new')).toHaveLength(2)
+    expect(getLaunch(r.hub, LAUNCH)).toMatchObject({ status: 'running', park_reason: null })
+    requestLaunchStop(r.hub, LAUNCH)
+    expect(await fresh.exited).toBe(0)
+  }, 40_000)
 })

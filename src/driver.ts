@@ -34,6 +34,8 @@ export type EndReason =
   | 'stopped' | 'idle' | 'child_exit'
   | 'budget:active_time' | 'budget:tool_calls'
   | 'error:mode_escalation' | 'error:setup' | 'error:hub_unreachable' | 'error:lease_lost' | 'error:protocol'
+  /** A resume whose session/load failed for a reason other than "never prompted": the launch can be retried. */
+  | 'error:load'
 
 export interface AskView {
   id: string
@@ -251,6 +253,7 @@ export class Driver {
   private readonly pinged = new Set<string>()
   private readonly askChannel: AskChannel
   private ending: EndReason | null = null
+  private loadError: string | null = null
   private finished = false
   private childGone = false
   // set as the child exits, even after the queue has stopped (forceStop reads it)
@@ -349,6 +352,11 @@ export class Driver {
     return this.taskSent ? this.sessionId : null
   }
 
+  /** Why a resume's session/load failed, when it ended the launch with `error:load`. */
+  loadFailure(): string | null {
+    return this.loadError
+  }
+
   usage(): { activeMs: number; toolCalls: number } {
     return { activeMs: this.activeMs, toolCalls: this.toolCalls }
   }
@@ -426,6 +434,22 @@ export class Driver {
 
   private onSetupResponse(frame: Extract<AcpFrame, { kind: 'response' }>): void {
     this.setupRpc = null
+    if (frame.error && frame.method === 'session/load') {
+      this.loading = false
+      // a session that was never prompted is not persisted, so it cannot be
+      // loaded: start a fresh one and send the stored task (§7)
+      if (frame.error.code === -32002) {
+        this.o.log({ event: 'load_not_found', sessionId: this.sessionId })
+        this.sessionId = null
+        this.taskSent = false
+        this.setupRpc = this.conn.request('session/new', { cwd: this.o.cwd, mcpServers: [] })
+        return
+      }
+      // anything else may pass: the launch is parked again, with the reason, to retry
+      this.loadError = terminalSafe(frame.error.message).slice(0, 300)
+      this.o.ui.notice(`Copilot could not load the session: ${frame.error.message}`)
+      return this.end('error:load')
+    }
     if (frame.error) {
       this.o.ui.notice(`Copilot refused ${frame.method}: ${frame.error.message}`)
       const hint = setupRefusalHint(frame.error.message)

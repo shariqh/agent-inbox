@@ -70,11 +70,12 @@ describe('the launch row (§6)', () => {
     expect(recordLaunchProgress(db, ID(1), { toolCalls: 9 })).toBe(false)
   })
 
-  it('a resume takes a parked row back exactly once', () => {
+  it('a resume takes a parked row back exactly once, clearing why it was parked', () => {
     createLaunch(db, launch(1))
     expect(resumeLaunch(db, ID(1), 5000)).toBeNull()
-    parkLaunch(db, ID(1), { acpSession: null, activeMs: 0, toolCalls: 0 })
-    expect(resumeLaunch(db, ID(1), 5000)).toMatchObject({ status: 'running', driver_pid: 5000, parked_at: null, acp_session: null })
+    parkLaunch(db, ID(1), { acpSession: 'acp-1', activeMs: 0, toolCalls: 0, reason: 'Copilot could not load the session: busy' })
+    expect(getLaunch(db, ID(1))).toMatchObject({ status: 'parked', acp_session: 'acp-1', park_reason: 'Copilot could not load the session: busy' })
+    expect(resumeLaunch(db, ID(1), 5000)).toMatchObject({ status: 'running', driver_pid: 5000, parked_at: null, park_reason: null, acp_session: 'acp-1' })
     expect(resumeLaunch(db, ID(1), 5001)).toBeNull()
   })
 

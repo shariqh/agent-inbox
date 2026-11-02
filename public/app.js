@@ -6138,7 +6138,7 @@ let liveDrawnMessages
 function liveDrawKey(entries) {
   // the clock enters at minute granularity: every age it draws is in minutes
   return JSON.stringify([
-    activityFrameKey(entries), [...openLive], [...openComposers], messageVersion, Math.floor(Date.now() / 60000),
+    activityFrameKey(entries), [...openLive], [...openComposers], messageVersion, Math.floor(Date.now() / 60000), launchesOn(),
     liveVersion, renderedTheme,
     // "Not delivered" reads every listed session, not the lens's
     (lastData?.activity ?? []).map((row) => row?.session).sort(),
@@ -6188,6 +6188,7 @@ function renderLive(entries, { forced = false } = {}) {
           <span class="live-session-heading">
             <span class="live-state-label working">Reported work</span>
             <span class="live-who">${esc(a.agent)} · ${esc(a.project)}${stream}</span>
+            ${startedHereHtml(a)}
             ${build.label}
           </span>
           <span class="live-doing">${esc(a.doing)}</span>
@@ -6250,6 +6251,7 @@ function renderLive(entries, { forced = false } = {}) {
           <span class="live-session-heading">
             <span class="live-state-label idle">Connected</span>
             <span class="live-who">${esc(a.agent)} · ${esc(a.project)}${stream}</span>
+            ${startedHereHtml(a)}
             ${build.label}
           </span>
           <span class="live-doing ${synopsis.historical ? 'historical' : 'empty-summary'}">${synopsis.historical ? 'Last report: ' : ''}${esc(synopsis.text)}</span>
@@ -6307,6 +6309,14 @@ function activityRow(session) {
   return (lastData?.activity ?? []).find((row) => row?.session === session) ?? null
 }
 
+// #412 step 3: a driven session's own row says it was started here, so it is
+// found among the connections; nothing at all with the switch off.
+function startedHereHtml(a) {
+  return launchesOn() && a.driven === true && typeof a.driven_launch === 'string'
+    ? '<span class="live-started-here">Started here</span>'
+    : ''
+}
+
 // A closed composer holding text says so on its button: the draft is kept.
 function messageButtonHtml(a) {
   const open = openComposers.has(a.session)
@@ -6340,7 +6350,7 @@ function composerEl(where, session) {
     <div class="msg-actions">
       <span class="msg-count"></span>
       <button type="button" class="msg-send" title="Send (${navigator.platform?.startsWith('Mac') ? '⌘' : 'Ctrl'}+Enter)">Send</button>
-      ${where === 'drawer' ? '<button type="button" class="msg-cancel" title="Close; your text is kept (Esc)">Cancel</button>' : ''}
+      ${where === 'drawer' || where === 'launch' ? '<button type="button" class="msg-cancel" title="Close; your text is kept (Esc)">Cancel</button>' : ''}
     </div>
     <p class="msg-status" role="status"></p>
     <div class="msg-history"></div>`
@@ -6354,17 +6364,17 @@ function composerEl(where, session) {
     }
   })
   el.addEventListener('keydown', (event) => {
-    if (event.key !== 'Escape' || where !== 'drawer' || event.defaultPrevented) return
+    if (event.key !== 'Escape' || (where !== 'drawer' && where !== 'launch') || event.defaultPrevented) return
     event.preventDefault()
     event.stopPropagation()
-    closeComposer(session)
+    closeComposerIn(where, session)
   })
   el.addEventListener('click', (event) => {
     const control = event.target instanceof Element ? event.target.closest('button') : null
     if (!control || !el.contains(control)) return
     if (control.matches('.msg-send')) sendMessage(session)
     else if (control.matches('.msg-interrupt')) interruptAndSend(session)
-    else if (control.matches('.msg-cancel')) closeComposer(session)
+    else if (control.matches('.msg-cancel')) closeComposerIn(where, session)
     else if (control.dataset.msgWithdraw) withdrawMessage(control.dataset.msgWithdraw, Number(control.dataset.msgRevision))
   })
   el.addEventListener('toggle', (event) => {
@@ -6493,6 +6503,11 @@ function openComposer(session, { focus = true } = {}) {
   if (input.isConnected && !input.disabled) input.focus()
 }
 
+function closeComposerIn(where, session) {
+  if (where === 'launch') launchUi?.closeMessage(session)
+  else closeComposer(session)
+}
+
 function closeComposer(session) {
   const el = composerEls.get(`drawer:${session}`)
   const owned = Boolean(el?.contains(document.activeElement)) && document.hasFocus()
@@ -6524,6 +6539,13 @@ function initLaunches() {
     activity: () => lastData?.activity ?? [],
     launches: () => lastData?.launches ?? null,
     rel,
+    // the launch row's own composer for the session: the same draft and state as the drawer's
+    composer: (session) => {
+      const el = composerEl('launch', session)
+      updateComposer(el)
+      return el
+    },
+    hasDraft: (session) => messageDrafts.has(session),
     sendTo: async (session, text) => {
       // the resumed session is new to this page: read it before sending
       await reloadAndPaint()

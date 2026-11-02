@@ -68,14 +68,18 @@ describe('the driver’s terminal (#412 review)', () => {
   it('the CLI writes to the terminal only through the sanitized writer', () => {
     const cli = readFileSync(join(REPO, 'src', 'driver-cli.ts'), 'utf8')
     const writes = [...cli.matchAll(/process\.(stdout|stderr)\.write\(([^)]*)\)/g)].map((m) => m[2]!.trim())
-    // the terminal's own writer, USAGE, the sanitized fail() and stop's confirmation of a validated launch id
+    // the terminal's own writer, USAGE, the sanitized fail() and stop's confirmation of a validated launch id;
+    // step 3's `run` adds its fixed usage line and its one JSON status line (JSON.stringify escapes every
+    // control character), read by Electron main, never a terminal
     expect(writes.sort()).toEqual([
       'USAGE', 'USAGE', 'USAGE', 'USAGE',
+      "'usage: agent-inbox-driver run <launch id> <absolute hub db path>\\n'",
+      '`${JSON.stringify(status',
       '`Asked the driver of launch ${id} to stop.\\n`',
       '`agent-inbox-driver: ${terminalSafe(message',
       'text',
     ].sort())
-    for (const file of ['driver.ts', 'driver-tty.ts', 'driver-link.ts', 'driver-policy.ts', 'acp-client.ts']) {
+    for (const file of ['driver.ts', 'driver-tty.ts', 'driver-link.ts', 'driver-policy.ts', 'acp-client.ts', 'driver-launch.ts', 'launch-spec.ts', 'launch-sign.ts']) {
       expect(readFileSync(join(REPO, 'src', file), 'utf8'), file).not.toMatch(/process\.(stdout|stderr)\.write|console\./)
     }
   })

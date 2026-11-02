@@ -12,13 +12,15 @@ import type Database from 'better-sqlite3'
 import { EventEmitter } from 'node:events'
 import { Driver } from '../src/driver.js'
 import { installStopHandlers } from '../src/driver-tty.js'
-import type { AskView, DriverTiming, EndReason, ScanResult } from '../src/driver.js'
+import type { AskChannel, AskView, DriverHooks, DriverOptions, DriverTiming, EndReason, ScanResult } from '../src/driver.js'
+import { appAsks, launchHooks } from '../src/driver-launch.js'
 import type { LaunchMode } from '../src/driver-policy.js'
 import {
   annotateBoardRow, claimDriverSlot, getBoard, getItem, insertItem, isDrivenSession, listItems, listPending,
   listSessionMessages, openDb, replyItem, requestDriverStop, sendSessionMessage, upsertActivity, upsertBoard,
-  withdrawSessionMessage, endActivity,
+  withdrawSessionMessage, endActivity, createLaunch, getLaunch, dismissItem, resolveItem,
 } from '../src/store.js'
+import { LAUNCH_KEY, sign } from './launch-fixtures.js'
 import { MODE, configUpdate, fakeAgent, permissionRequest, toolCall } from './acp-fake.js'
 import type { FakeAgent, FakeScript } from './acp-fake.js'
 import { removeScratchDirs, scratchDir } from './scratch.js'
@@ -73,6 +75,11 @@ function start(opts: {
   timing?: Partial<DriverTiming>
   loadSessionId?: string
   linked?: string[]
+  /** An app launch: its asks and row (driver-launch.ts) instead of the terminal's. */
+  app?: boolean
+  refuseLoad?: FakeScript['refuseLoad']
+  priorSessions?: DriverOptions['priorSessions']
+  usage?: DriverOptions['usage']
 } = {}): Harness {
   const dir = scratchDir('driver-')
   const dbPath = join(dir, 'inbox.db')
@@ -82,12 +89,23 @@ function start(opts: {
   presence(human, 'mcp-1')
   const lease = { launchId: LAUNCH, pid: process.pid, nonce: 'test' }
   expect(claimDriverSlot(db, lease, 2)).toEqual({ ok: true })
-  const fake = fakeAgent(opts.script ?? { onPrompt: () => undefined })
+  const fake = fakeAgent({ ...(opts.script ?? { onPrompt: () => undefined }), ...(opts.refuseLoad ? { refuseLoad: opts.refuseLoad } : {}) })
   const asks: AskView[] = []
   const settled: Array<{ id: string; outcome: string }> = []
   const log: Json[] = []
   const notices: string[] = []
   const scan = { result: { hostPid: HOST, linked: opts.linked ?? ['mcp-1'], dead: [] } as ScanResult }
+  let app: { asks: AskChannel; hooks: DriverHooks } | undefined
+  if (opts.app) {
+    createLaunch(db, {
+      id: LAUNCH, host: 'copilot', project: 'agent-inbox', stream: 'main', cwd: dir, mode: opts.mode ?? 'ask',
+      budgetActiveMs: 7_200_000, budgetToolCalls: 500, prompt: 'Fix the failing test.', specVersion: 1, driverPid: process.pid,
+    })
+    app = {
+      asks: appAsks({ db, launchId: LAUNCH, launchKey: LAUNCH_KEY, project: 'agent-inbox', stream: 'main', log: (e) => log.push(e) }),
+      hooks: launchHooks(db, LAUNCH),
+    }
+  }
   const driver = new Driver({
     db, lease, mode: opts.mode ?? 'ask', cwd: dir, project: 'agent-inbox', stream: 'main',
     task: opts.task ?? 'Fix the failing test.',
@@ -98,6 +116,9 @@ function start(opts: {
     scan: async () => scan.result,
     timing: { pollMs: 10, scanMs: 10, leaseMs: 40, setupWaitMs: 400, stopGraceMs: 50, ...opts.timing },
     ...(opts.loadSessionId ? { loadSessionId: opts.loadSessionId } : {}),
+    ...(opts.priorSessions ? { priorSessions: opts.priorSessions } : {}),
+    ...(opts.usage ? { usage: opts.usage } : {}),
+    ...(app ?? {}),
   })
   const done = driver.start()
   return {
@@ -589,5 +610,210 @@ describe('a child that outlives the driver (#412 review, round 2)', () => {
     await new Promise((resolve) => setImmediate(resolve))
     h.driver.forceStop()
     expect(kills).toEqual(['SIGTERM'])
+  })
+})
+
+// Issue #412 step 3: an app launch's asks are approved only by a reply Electron
+// main signed under the launch's key (§4.3), and its driver reports to the
+// launch row, parks when idle and resumes by loading its session (§6, §7).
+describe('app launches: signed approvals (§4.3)', () => {
+  const askItem = (h: Harness) => until(() => listItems(h.human).find((item) => item.project === '@sessions' && item.status === 'open'), 'the ask')
+
+  it('files an approval ask in @sessions with its choices, and a signed allow_once answers allow_once', async () => {
+    const h = start({ app: true, script: asking() })
+    await h.ready()
+    const item = await askItem(h)
+    expect(item).toMatchObject({
+      kind: 'question', action_owner: 'approval', session: 'mcp-1', next_step: 'Approve or decline in the Agent Inbox app.',
+      options: [{ label: 'Allow once', detail: 'Lets this one tool call run. Later calls still ask.' }, { label: 'Deny', detail: 'Declining stops the agent’s current turn.' }],
+    })
+    replyItem(h.human, item.id, 'allow_once', sign(LAUNCH_KEY, item.id, 0, 'allow_once'))
+    expect(await h.answerTo(900)).toEqual({ outcome: 'selected', optionId: 'allow_once' })
+    await until(() => getItem(h.human, item.id)!.status === 'resolved', 'resolved')
+    expect(getItem(h.human, item.id)!.outcome).toBe('Allowed once in Agent Inbox.')
+    expect(h.human.prepare(`SELECT COUNT(*) FROM launch_asks`).pluck().get()).toBe(0)
+    h.driver.stop()
+    await h.done
+  })
+
+  it('a mapped ask closed without a valid answer (an older viewer, a hand edit) is declined, never left waiting', async () => {
+    const h = start({ app: true, script: asking() })
+    await h.ready()
+    const item = await askItem(h)
+    // an unsigned reply, then a Dismiss from a viewer that does not refuse it
+    replyItem(h.human, item.id, 'allow_once')
+    dismissItem(h.human, item.id)
+    expect(await h.answerTo(900)).toEqual({ outcome: 'selected', optionId: 'reject_once' })
+    await until(() => getItem(h.human, item.id)!.outcome !== '', 'settled')
+    expect(getItem(h.human, item.id)!.outcome).toBe('Closed without an approval; the agent’s turn stopped.')
+    expect(h.log.find((e) => e.event === 'ask_closed')).toMatchObject({ item: item.id, status: 'dismissed' })
+    expect(h.human.prepare(`SELECT COUNT(*) FROM launch_asks`).pluck().get()).toBe(0)
+    h.driver.stop()
+    await h.done
+  })
+
+  it('a closed plan ask keeps the session in plan mode', async () => {
+    const h = start({ app: true, mode: 'plan', script: { onPrompt(fake, id) { fake.respond(id, { stopReason: 'end_turn' }) } } })
+    await h.ready()
+    const item = await askItem(h)
+    resolveItem(h.human, item.id)
+    await until(() => h.log.find((e) => e.event === 'ask_closed'), 'closed')
+    await until(() => getItem(h.human, item.id)!.outcome !== '', 'settled')
+    expect(getItem(h.human, item.id)!.outcome).toBe('Closed without an approval; the session stays in plan mode.')
+    expect(h.fake.received.filter((m) => m.method === 'session/set_mode')).toHaveLength(1)
+    h.driver.stop()
+    await h.done
+  })
+
+  it('a signed decline answers reject_once', async () => {
+    const h = start({ app: true, script: asking() })
+    await h.ready()
+    const item = await askItem(h)
+    replyItem(h.human, item.id, 'reject_once', sign(LAUNCH_KEY, item.id, 0, 'reject_once'))
+    expect(await h.answerTo(900)).toEqual({ outcome: 'selected', optionId: 'reject_once' })
+    h.driver.stop()
+    await h.done
+  })
+
+  it('never answers on an unsigned, forged, replayed or foreign reply: the ask stays open until main signs it', async () => {
+    const h = start({ app: true, script: asking() })
+    await h.ready()
+    const item = await askItem(h)
+    const refusals = () => h.log.filter((e) => e.event === 'approval_refused').length
+    const other = Buffer.alloc(32, 9)
+    // the ordinary reply route (an older viewer, a browser): no signature
+    replyItem(h.human, item.id, 'allow_once')
+    await until(() => refusals() === 1, 'refused unsigned')
+    // a signature under another launch's key, over another revision, another item, or another option
+    replyItem(h.human, item.id, 'allow_once', sign(other, item.id, 0, 'allow_once'))
+    await until(() => refusals() === 2, 'refused foreign key')
+    replyItem(h.human, item.id, 'allow_once', sign(LAUNCH_KEY, item.id, 1, 'allow_once'))
+    await until(() => refusals() === 3, 'refused other revision')
+    replyItem(h.human, item.id, 'allow_once', sign(LAUNCH_KEY, 'another-item', 0, 'allow_once'))
+    await until(() => refusals() === 4, 'refused other item')
+    replyItem(h.human, item.id, 'allow_always', sign(LAUNCH_KEY, item.id, 0, 'allow_always'))
+    await until(() => refusals() === 5, 'refused an option the ask does not offer')
+    expect(h.log.filter((e) => e.event === 'approval_refused').map((e) => e.why)).toEqual(['signature', 'signature', 'signature', 'signature', 'option'])
+    expect(h.fake.received.some((m) => m.id === 900 && 'result' in m)).toBe(false)
+    expect(getItem(h.human, item.id)!.status).toBe('open')
+    // then main's own signature over the revision at filing approves it
+    replyItem(h.human, item.id, 'allow_once', sign(LAUNCH_KEY, item.id, 0, 'allow_once'))
+    expect(await h.answerTo(900)).toEqual({ outcome: 'selected', optionId: 'allow_once' })
+    h.driver.stop()
+    await h.done
+  })
+
+  it('re-validates a signed approval like a terminal one: a config update read first makes it answer reject_once', async () => {
+    const h = start({ app: true, script: asking() })
+    await h.ready()
+    const item = await askItem(h)
+    h.fake.update(configUpdate(MODE.agent, 'off'))
+    await until(() => h.log.filter((e) => e.event === 'config_update').length >= 2, 'the update read')
+    replyItem(h.human, item.id, 'allow_once', sign(LAUNCH_KEY, item.id, 0, 'allow_once'))
+    expect(await h.answerTo(900)).toEqual({ outcome: 'selected', optionId: 'reject_once' })
+    expect(getItem(h.human, item.id)!.outcome).toBe('Not applied: the session’s permissions changed while you were answering.')
+    h.driver.stop()
+    await h.done
+  })
+
+  it('Plan first: a signed approval of the plan switches to #agent and sends the control prompt', async () => {
+    const h = start({ app: true, mode: 'plan', script: { onPrompt(fake, id) { fake.respond(id, { stopReason: 'end_turn' }) } } })
+    await h.ready()
+    const item = await askItem(h)
+    expect(item.title).toBe('Approve the plan and continue?')
+    replyItem(h.human, item.id, 'approve', sign(LAUNCH_KEY, item.id, 0, 'approve'))
+    await until(() => h.fake.prompts().length === 2, 'the control prompt')
+    expect(h.fake.prompts()[1]).toBe('Agent Inbox: The human approved your plan. Carry it out now; tool calls still ask for approval as before.')
+    expect(getItem(h.human, item.id)!.outcome).toBe('Approved in Agent Inbox.')
+    h.driver.stop()
+    await h.done
+  })
+})
+
+describe('app launches: the row, park and resume (§6, §7)', () => {
+  it('counts its budgets from the launch’s usage so far: a resumed launch ends at the original total', async () => {
+    const h = start({
+      app: true, loadSessionId: 'acp-1', linked: [], usage: { activeMs: 0, toolCalls: 4 }, timing: { maxToolCalls: 5 },
+      script: { onPrompt(fake) { fake.update(toolCall()) } },
+    })
+    await until(() => h.log.find((e) => e.event === 'ready'), 'ready')
+    h.fake.update(toolCall())
+    expect(await h.done).toBe('budget:tool_calls')
+    expect(h.driver.usage().toolCalls).toBe(5)
+    expect(getLaunch(h.human, LAUNCH)!.tool_calls).toBe(0)
+  })
+
+  it('a resumed launch already at a budget ends at once, before any prompt', async () => {
+    for (const [usage, reason] of [[{ activeMs: 0, toolCalls: 5 }, 'budget:tool_calls'], [{ activeMs: 60_000, toolCalls: 0 }, 'budget:active_time']] as const) {
+      const h = start({ app: true, loadSessionId: 'acp-1', script: ended, usage, timing: { maxToolCalls: 5, activeMs: 60_000 } })
+      expect(await h.done).toBe(reason)
+      expect(h.fake.prompts()).toEqual([])
+    }
+  })
+
+  it('a load refused as never prompted (-32002) starts a fresh session and sends the stored task', async () => {
+    const h = start({ app: true, script: ended, loadSessionId: 'never-prompted', refuseLoad: { code: -32002, message: 'Resource not found' } })
+    await h.ready()
+    await until(() => h.fake.prompts().length === 1, 'the task')
+    expect(h.fake.received.map((m) => m.method).filter((m) => m === 'session/load' || m === 'session/new')).toEqual(['session/load', 'session/new'])
+    expect(h.fake.prompts()[0]).toContain('Fix the failing test.')
+    expect(h.log.some((e) => e.event === 'load_not_found')).toBe(true)
+    expect(h.driver.loadFailure()).toBeNull()
+    h.driver.stop()
+    await h.done
+    expect(h.driver.resumableSession()).toBe(h.fake.session)
+  })
+
+  it('any other load failure ends the driver with error:load and its reason, before any prompt', async () => {
+    const h = start({ app: true, script: ended, loadSessionId: 'acp-1', refuseLoad: { code: -32603, message: 'Internal error\u001b[2J' } })
+    expect(await h.done).toBe('error:load')
+    expect(h.driver.loadFailure()).toBe('Internal error\\x1b[2J')
+    expect(h.fake.prompts()).toEqual([])
+    expect(h.fake.received.some((m) => m.method === 'session/new')).toBe(false)
+  })
+
+  it('reports the native host, linked sessions and usage to the launch row', async () => {
+    const h = start({ app: true, script: ended })
+    await h.ready()
+    await until(() => h.log.find((e) => e.event === 'turn_end'), 'the first turn')
+    await until(() => getLaunch(h.human, LAUNCH)!.host_pid === HOST, 'the host recorded')
+    expect(getLaunch(h.human, LAUNCH)).toMatchObject({ sessions: ['mcp-1'], status: 'running' })
+    expect(getLaunch(h.human, LAUNCH)!.revision).toBeGreaterThan(1)
+    h.driver.stop()
+    await h.done
+  })
+
+  it('a session is resumable once its task was sent, and not before (a never-prompted session cannot be loaded)', async () => {
+    const h = start({ app: true, script: ended, linked: [], timing: { linkWaitMs: 10_000, idleMs: 60 } })
+    await until(() => h.log.find((e) => e.event === 'ready'), 'ready')
+    expect(h.driver.resumableSession()).toBeNull()
+    h.driver.stop()
+    await h.done
+    const later = start({ app: false, script: ended, timing: { idleMs: 60 } })
+    expect(await later.done).toBe('idle')
+    expect(later.driver.resumableSession()).toBe(later.fake.session)
+  })
+
+  it('resumes by loading the session: no task re-sent, the earlier sessions’ open messages move to the new server and are pushed again', async () => {
+    const id = '00000000-0000-4000-8000-000000000009'
+    const h = start({
+      app: true, script: ended, loadSessionId: '57b24380-5e36-4758-89a3-69f04ce06a40', linked: [],
+      priorSessions: [{ session: 'mcp-old', dead: true }],
+    })
+    // the parked launch's earlier session, ended with an open message
+    presence(h.human, 'mcp-old', { server_pid: 76000 })
+    sendSessionMessage(h.human, { id, session: 'mcp-old', text: 'Also run lint.' })
+    endActivity(h.human, 'mcp-old')
+    await until(() => h.log.find((e) => e.event === 'ready'), 'ready')
+    expect(h.fake.received.some((m) => m.method === 'session/load')).toBe(true)
+    // the resumed driver's new server links
+    h.scan.result = { hostPid: HOST, linked: ['mcp-1'], dead: [] }
+    await until(() => h.log.find((e) => e.event === 'readdress' && (e.result as Json).ok), 'readdress')
+    expect(listSessionMessages(h.human).open.map((m) => [m.id, m.session])).toEqual([[id, 'mcp-1']])
+    await until(() => h.fake.prompts().length === 1, 'the push')
+    expect(h.fake.prompts()[0]).toContain('[00000000-0000-4000-8000-000000000009] Also run lint.')
+    expect(h.fake.prompts().some((p) => p.includes('Fix the failing test.'))).toBe(false)
+    h.driver.stop()
+    await h.done
   })
 })

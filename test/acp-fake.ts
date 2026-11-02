@@ -99,6 +99,8 @@ export interface FakeScript {
   ignoreStdinClose?: boolean
   /** Copilot refusing session/new with this message (a model the user's settings do not fit). */
   refuseSessionNew?: string
+  /** Copilot refusing session/load: -32002 for a session never prompted (spike), anything else a failure. */
+  refuseLoad?: { code: number; message: string }
 }
 
 export function fakeAgent(script: FakeScript = {}): FakeAgent {
@@ -174,6 +176,7 @@ export function fakeAgent(script: FakeScript = {}): FakeAgent {
         return fake.respond(m.id, result)
       }
       case 'session/load': {
+        if (script.refuseLoad) return fake.send({ id: m.id, error: script.refuseLoad })
         fake.session = params.sessionId as string
         const replay = fixture('load-restores-autopilot')
         const frames: Json[] = []

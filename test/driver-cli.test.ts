@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { spawnSync } from 'node:child_process'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join, posix } from 'node:path'
-import { driverStopRequested, openDb } from '../src/store.js'
+import { createLaunch, driverStopRequested, getLaunch, openDb, parkLaunch } from '../src/store.js'
 import { removeScratchDirs, scratchDir } from './scratch.js'
 
 const REPO = new URL('..', import.meta.url).pathname
@@ -66,6 +66,38 @@ describe('agent-inbox-driver (#412 step 2)', () => {
     }
     expect(run(['stop', 'not-a-launch']).status).toBe(64)
   })
+
+  it('stop <launch id> also asks an app launch’s driver to stop, and ends a parked launch at once (step 3)', () => {
+    const dir = scratchDir('driver-cli-launch-')
+    const path = join(dir, 'inbox.db')
+    const parked = '11111111-2222-4333-8444-000000000002'
+    const seed = openDb(path)
+    for (const id of [LAUNCH, parked]) {
+      createLaunch(seed, {
+        id, host: 'copilot', project: 'p', stream: '', cwd: dir, mode: 'ask', budgetActiveMs: 60_000, budgetToolCalls: 1,
+        prompt: 'x', specVersion: 1, driverPid: 1,
+      })
+    }
+    parkLaunch(seed, parked, { acpSession: 'acp', activeMs: 0, toolCalls: 0 })
+    seed.close()
+    expect(run(['stop', LAUNCH], { AGENT_INBOX_DB: path }).status).toBe(0)
+    expect(run(['stop', parked], { AGENT_INBOX_DB: path }).status).toBe(0)
+    const db = openDb(path)
+    try {
+      expect(getLaunch(db, LAUNCH)!.stop_requested_at).not.toBeNull()
+      expect(getLaunch(db, parked)).toMatchObject({ status: 'ended', end_reason: 'stopped' })
+    } finally {
+      db.close()
+    }
+  })
+
+  it('run takes exactly a launch id and an absolute hub path, and writes nothing to stdout for a usage error', () => {
+    for (const args of [['run'], ['run', LAUNCH], ['run', 'not-a-launch', '/x/inbox.db'], ['run', LAUNCH, 'relative.db'], ['run', LAUNCH, '/x/inbox.db', 'extra']]) {
+      const result = run(args)
+      expect(result.status, args.join(' ')).toBe(64)
+      expect(result.stdout).toBe('')
+    }
+  })
 })
 
 describe('the driver stays out of the MCP server’s and the viewer’s graphs (§2)', () => {
@@ -86,7 +118,10 @@ describe('the driver stays out of the MCP server’s and the viewer’s graphs (
     }
     return seen
   }
-  const DRIVER = ['src/driver.ts', 'src/driver-cli.ts', 'src/driver-link.ts', 'src/driver-policy.ts', 'src/driver-tty.ts', 'src/acp-client.ts']
+  const DRIVER = [
+    'src/driver.ts', 'src/driver-cli.ts', 'src/driver-link.ts', 'src/driver-policy.ts', 'src/driver-tty.ts', 'src/acp-client.ts',
+    'src/driver-launch.ts', 'src/launch-spec.ts', 'src/launch-sign.ts',
+  ]
 
   it('no driver module is reachable from the stdio MCP server, the hook, the watcher or the viewer', () => {
     for (const entry of ['src/mcp-server.ts', 'src/hook-cli.ts', 'src/watch-cli.ts', 'src/viewer-server.ts']) {

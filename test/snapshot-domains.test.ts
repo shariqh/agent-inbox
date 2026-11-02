@@ -18,6 +18,7 @@ import {
   recordIssueFailure, recordLinkFailure, releaseHookWatch, reopenProject, replyItem, resolveItem,
   setSourcePreview, touchActivity, updateBoardRow, upsertActivity, upsertBoard, upsertIssueSnapshot,
   upsertSourceLink, sendSessionMessage, markMessageDelivered, ackMessage, withdrawSessionMessage,
+  createLaunch, fileLaunchAsk, recordLaunchProgress, parkLaunch, endLaunch, requestLaunchStop,
 } from '../src/store.js'
 import { SNAPSHOT_SOURCES, createViewer } from '../src/viewer.js'
 import { snapshot } from './issue-fixtures.js'
@@ -38,6 +39,7 @@ const UNREAD: Record<string, string> = {
   hook_watch_claims: "the Claude hook watcher's leases (#253)",
   issue_refresh_claims: "the issue poller's leases (#103 PR1b): listIssueSnapshots never reads them",
   item_reply_intents: "replyItem's replay ledger (#322)",
+  launch_asks: "which launch filed each @sessions approval (#412 step 3): its driver and Electron main read it, never a page",
   source_links: 'the pre-#157 PR cache, kept only for older processes; nothing in this build reads it',
   snapshot_domains: 'the domain versions themselves',
   sqlite_sequence: "SQLite's AUTOINCREMENT counter for activity_spans",
@@ -100,6 +102,7 @@ interface Fixture {
 }
 
 const MESSAGE = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`
+const LAUNCH = (n: number) => `11111111-2222-4333-8444-${String(n).padStart(12, '0')}`
 
 // A hub built so that the columns each snapshot reads reach its bytes, which is
 // what lets the generic test below catch a column left out of a domain:
@@ -230,6 +233,21 @@ function seed(db: Hub): Fixture {
   ackMessage(db, { id: MESSAGE(3), session: 'mcp-1', outcome: 'Done.' })
   tick()
   withdrawSessionMessage(db, MESSAGE(4), 1)
+
+  // #412 step 3: a running launch with an ask, a parked one and an ended one
+  tick()
+  for (const n of [1, 2, 3]) {
+    createLaunch(db, {
+      id: LAUNCH(n), host: 'copilot', project: 'alpha', stream: 'main', cwd: '/work/alpha', mode: 'ask', model: 'claude-haiku-4.5',
+      reasoningEffort: 'none', budgetActiveMs: 7_200_000, budgetToolCalls: 500, prompt: `Task ${n}`, specVersion: 1, driverPid: 4000 + n,
+    })
+  }
+  recordLaunchProgress(db, LAUNCH(1), { childPgid: 5001, childStartedAt: 'Mon Nov  2 08:00:00 2026', hostPid: 5002, sessions: ['mcp-1'], activeMs: 1000, toolCalls: 2 })
+  fileLaunchAsk(db, LAUNCH(1), { project: '@sessions', stream: 'alpha · main', agent: 'copilot', session: 'mcp-1', kind: 'question', title: 'Allow copilot to run `npm test`?', action_owner: 'approval', options: [{ label: 'Allow once' }, { label: 'Deny' }] }, [
+    { optionId: 'allow_once', label: 'Allow once' }, { optionId: 'reject_once', label: 'Deny' },
+  ])
+  parkLaunch(db, LAUNCH(2), { acpSession: 'acp-2', activeMs: 2000, toolCalls: 3 })
+  endLaunch(db, LAUNCH(3), { reason: 'budget:tool_calls' })
 
   const release = getBoard(db, 'alpha', 'Release')!
   return {
@@ -618,6 +636,13 @@ describe('snapshot domains (issue #297)', () => {
       ['a message handed to its session again', (f: Fixture) => markMessageDelivered(on(), f.delivered, 'mcp-1', 'claude-code'), []],
       ['a message acknowledged', (f: Fixture) => ackMessage(on(), { id: f.delivered, session: 'mcp-1', outcome: 'Ran them.' }).ok, ['messages']],
       ['a message withdrawn', (f: Fixture) => withdrawSessionMessage(on(), f.message, 1).ok, ['messages']],
+      // #412 step 3: a launch's writes rebuild only /api/launches; its asks are
+      // items (in @sessions), and the ask's mapping rebuilds nothing more
+      ['a launch reporting progress', () => recordLaunchProgress(on(), LAUNCH(1), { activeMs: 5000, toolCalls: 9 }), ['launches']],
+      ['a launch asked to stop', () => requestLaunchStop(on(), LAUNCH(1)) === 'stopping', ['launches']],
+      ['a launch ask filed', () => fileLaunchAsk(on(), LAUNCH(1), { project: '@sessions', stream: 'alpha · main', agent: 'copilot', kind: 'question', title: 'Approve the plan and continue?', action_owner: 'approval', options: [{ label: 'Approve the plan' }, { label: 'Not yet' }] }, [
+        { optionId: 'approve', label: 'Approve the plan' }, { optionId: 'decline', label: 'Not yet' },
+      ]).itemId !== '', [...ITEMS, 'links', 'issues']],
     ] as Array<[string, (f: Fixture) => unknown, Snapshot[], ((f: Fixture) => unknown)?]>)('%s', async (_, write, expected, prepare) => {
       if (prepare) expect(prepare(fixture)).not.toBe(false)
       expect(await rebuiltBy(() => write(fixture))).toEqual(SNAPSHOTS.filter((name) => expected.includes(name)))

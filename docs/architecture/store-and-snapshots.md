@@ -138,7 +138,12 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   (issue #411, `delivery-and-responses.md`), the tenth: every open session message and
   the 100 newest closed ones, over the whole-table `session_messages` domain, whose
   `delivered_at`/`delivered_by` are restamped columns, so `pending()` re-delivering a
-  message on every poll rebuilds nothing. Any other query string
+  message on every poll rebuilds nothing, and `/api/launches` (issue #412 step 3,
+  `driven-sessions.md`), the eleventh: every running and parked launch and the 50 newest
+  ended ones, launch facts only (no prompt, process ids or ACP session id, and no
+  clock-derived state), over the whole-table `launches` domain. Its per-launch reads
+  (`/api/launches/:id`, which adds whether the driver's lease is fresh, and
+  `/api/launches/:id/prompt`) are fresh. `launch_asks` is read by no snapshot. Any other query string
   keeps the default items or boards response. The dock watcher reads its two
   projections through `electron/conditional-read.cjs`: each read sends the
   validator its last 200 carried and reuses what it parsed on a 304, an untagged

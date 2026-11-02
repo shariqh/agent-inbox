@@ -6,22 +6,32 @@
 //
 //   agent-inbox-driver copilot --cwd <dir> --mode ask|read-only --prompt-file <file> [--model <id>] [--reasoning-effort <level>]
 //   agent-inbox-driver stop <launch id>
+//   agent-inbox-driver run <launch id> <hub db>     (step 3: Electron main only)
 //
 // Approvals happen on this terminal, so it refuses to run without a TTY on
 // stdin. The copilot child gets its own pipes: its stdout carries ACP only, its
 // stderr goes to the launch's log, and nothing of it reaches this terminal
 // except what the driver prints.
-import { spawn } from 'node:child_process'
+//
+// `run` is step 3's detached driver (§8): Electron main starts it, after a
+// native confirmation, with the launch spec on fd 3 (launch-spec.ts). It needs
+// no terminal: approvals are signed by the app (driver-launch.ts). It writes
+// exactly one JSON line to stdout, `{"ok":true,"launch":<id>}` once the session
+// is starting or `{"ok":false,"error":…}`, and everything else to the launch's
+// logs and row.
+import { execFileSync, spawn } from 'node:child_process'
 import { randomBytes, randomUUID } from 'node:crypto'
 import {
-  accessSync, appendFileSync, constants, createWriteStream, mkdirSync, readFileSync, realpathSync, renameSync,
-  statSync,
+  accessSync, appendFileSync, closeSync, constants, createWriteStream, fstatSync, mkdirSync, openSync, readFileSync, readSync,
+  realpathSync, renameSync, rmSync, statSync,
 } from 'node:fs'
-import { dirname, isAbsolute, join, resolve } from 'node:path'
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { createInterface } from 'node:readline'
 import { fileURLToPath } from 'node:url'
 import { Driver } from './driver.js'
-import type { EndReason } from './driver.js'
+import type { DriverOptions, EndReason, ScanResult } from './driver.js'
+import { appAsks, launchHooks } from './driver-launch.js'
+import { LAUNCH_SPEC_VERSION, parseLaunchSpec, readSpec } from './launch-spec.js'
 import { createTerminal, installStopHandlers, reapProcessGroup } from './driver-tty.js'
 import { locateRuntime, pinRuntime, removePin, runtimeRootFor } from './driver-pin.js'
 import { processIdentity } from '../scripts/runtime-pins.mjs'
@@ -29,11 +39,19 @@ import { findNativeHost, linkSessions, readProcesses } from './driver-link.js'
 import { childEnv, copilotAgentInboxServer, copilotArgs, isReasoningEffort, REASONING_EFFORTS, terminalSafe } from './driver-policy.js'
 import type { LaunchMode, ReasoningEffort } from './driver-policy.js'
 import { inferProject, inferStream } from './infer.js'
-import { claimDriverSlot, defaultDbPath, listHostSessions, openDb, releaseDriverLeases, requestDriverStop } from './store.js'
+import {
+  claimDriverSlot, createLaunch, defaultDbPath, endLaunch, listHostSessions, liveSessionServers, openDb, parkLaunch,
+  recordLaunchProgress, releaseDriverLeases, requestDriverStop, requestLaunchStop, resumeLaunch,
+} from './store.js'
+import type Database from 'better-sqlite3'
 
 const USAGE = `usage: agent-inbox-driver copilot --cwd <dir> --mode ask|read-only --prompt-file <file> [--model <id>] [--reasoning-effort <level>]
        agent-inbox-driver stop <launch id>
 `
+const LAUNCH_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+const MODES: readonly LaunchMode[] = ['ask', 'read-only', 'plan']
+// npm-installed Copilot's loader (§8) needs a current Node
+const MIN_NODE_MAJOR = 22
 const MAX_DRIVERS = 2
 const MAX_PROMPT = 64 * 1024
 const LOG_ROTATE_BYTES = 20 * 1024 * 1024
@@ -77,25 +95,88 @@ function parseRun(argv: string[]): RunArgs {
   return { cwd, mode, promptFile, ...(model ? { model } : {}), ...(effort ? { reasoningEffort: effort } : {}) }
 }
 
-// The copilot on this terminal's PATH, as a real path owned by this user or
-// root and not writable by group or others (§8).
-function resolveCopilot(path: string | undefined): string {
+// An executable on PATH, as a real path owned by this user or root and not
+// writable by group or others (§8). The first one found decides: an untrusted
+// one refuses rather than falling through to the next.
+function findExecutable(name: string, path: string | undefined): { path: string } | { error: string } {
   for (const dir of (path ?? '').split(':')) {
     if (!dir || !isAbsolute(dir)) continue
-    const candidate = join(dir, 'copilot')
+    const candidate = join(dir, name)
+    let real: string
     try {
       accessSync(candidate, constants.X_OK)
-      const real = realpathSync(candidate)
-      const info = statSync(real)
-      if (!info.isFile()) continue
-      const uid = process.getuid?.() ?? -1
-      if ((info.uid !== uid && info.uid !== 0) || (info.mode & 0o022) !== 0) {
-        fail(`${real} is not owned by you or root, or is writable by others; refusing to run it`)
-      }
-      return real
-    } catch { /* not here */ }
+      real = realpathSync(candidate)
+      if (!statSync(real).isFile()) continue
+    } catch {
+      continue
+    }
+    return trusted(real) ? { path: real } : { error: `${real} is not owned by you or root, or is writable by others; refusing to run it` }
   }
-  return fail('no copilot executable on PATH (install GitHub Copilot CLI first)')
+  return { error: name === 'copilot' ? 'no copilot executable on PATH (install GitHub Copilot CLI first)' : `no ${name} executable on PATH` }
+}
+
+function trusted(real: string): boolean {
+  const info = statSync(real)
+  const uid = process.getuid?.() ?? -1
+  return (info.uid === uid || info.uid === 0) && (info.mode & 0o022) === 0
+}
+
+// The copilot on this terminal's PATH (step 2).
+function resolveCopilot(path: string | undefined): string {
+  const found = findExecutable('copilot', path)
+  return 'error' in found ? fail(found.error) : found.path
+}
+
+// Step 3 (§8): the host executable on the captured PATH, and, when it is a
+// script, its interpreter resolved on the same PATH and checked the same way,
+// so the launch spawns `[interpreter, script, …]` explicitly and records both.
+// An npm-installed Copilot is exactly this: `…/bin/copilot` is npm-loader.js
+// (`#!/usr/bin/env node`).
+function resolveHost(path: string | undefined): { command: string; args: string[]; script: string } | { error: string } {
+  const found = findExecutable('copilot', path)
+  if ('error' in found) return found
+  let head = ''
+  try {
+    const fd = openSync(found.path, 'r')
+    try {
+      const buffer = Buffer.alloc(256)
+      head = buffer.toString('utf8', 0, readSync(fd, buffer, 0, buffer.length, 0))
+    } finally {
+      closeSync(fd)
+    }
+  } catch {
+    return { error: `cannot read ${found.path}` }
+  }
+  if (!head.startsWith('#!')) return { command: found.path, args: [], script: found.path }
+  // `#!/usr/bin/env <name>` or `#!<absolute interpreter>`, with no arguments:
+  // the kernel would pass any as one word, and none is needed to run Copilot
+  const words = head.slice(2).split('\n')[0]!.trim().split(/\s+/)
+  const unresolved = { error: `${found.path} names an interpreter this driver does not resolve` }
+  let interpreter: { path: string } | { error: string }
+  if (words[0] === '/usr/bin/env') {
+    const name = words[1] ?? ''
+    if (words.length !== 2 || !/^[A-Za-z0-9._-]+$/.test(name)) return unresolved
+    interpreter = findExecutable(name, path)
+  } else {
+    const named = words[0] ?? ''
+    if (words.length !== 1 || !isAbsolute(named)) return unresolved
+    try {
+      const real = realpathSync(named)
+      interpreter = trusted(real) ? { path: real } : { error: `${real} is not owned by you or root, or is writable by others; refusing to run it` }
+    } catch {
+      interpreter = { error: `${found.path} names an interpreter that does not exist` }
+    }
+  }
+  if ('error' in interpreter) return interpreter
+  if (basename(interpreter.path) === 'node') {
+    let version = ''
+    try {
+      version = execFileSync(interpreter.path, ['--version'], { encoding: 'utf8', timeout: 10_000, stdio: ['ignore', 'pipe', 'ignore'], env: { PATH: '/usr/bin:/bin' } })
+    } catch { /* checked below */ }
+    const major = Number(/^v(\d+)\./.exec(version.trim())?.[1])
+    if (!(major >= MIN_NODE_MAJOR)) return { error: `${interpreter.path} is not Node ${MIN_NODE_MAJOR} or later, which Copilot needs` }
+  }
+  return { command: interpreter.path, args: [found.path], script: found.path }
 }
 
 // <hub dir>/launches/<id>/events.ndjson, 0600 in a 0700 folder, rotated at 20 MB (§3.6)
@@ -116,6 +197,80 @@ function eventLog(dir: string): (event: Record<string, unknown>) => void {
   }
 }
 
+// A test seam read from the driver's own environment, bounded; undefined when unset or out of bounds.
+function boundedMs(value: string | undefined, min: number, max: number): number | undefined {
+  const ms = Number(value)
+  return value !== undefined && Number.isInteger(ms) && ms >= min && ms <= max ? ms : undefined
+}
+
+// Run from an installed runtime, the driver pins it for as long as it runs, so
+// no prune removes the runtime under it (§7). Every exit path, forced or not,
+// ends in process.exit, whose 'exit' handler removes the pin; a pin a crash
+// leaves never counts once this process is gone, and the next prune sweeps it.
+// Returns why it could not pin, or null.
+function pinOwnRuntime(launchId: string): string | null {
+  const located = locateRuntime(fileURLToPath(import.meta.url), runtimeRootFor(process.env))
+  if (located.kind === 'refuse') return `cannot pin the runtime it runs from: ${located.reason}`
+  if (located.kind === 'checkout') return null
+  const runtime = located.runtime
+  const startedAt = processIdentity(process.pid)
+  let pinPath: string | null = null
+  let why = startedAt ? '' : 'this process\'s start identity cannot be read'
+  try {
+    if (startedAt) pinPath = pinRuntime(runtime, { launchId, pid: process.pid, startedAt })
+  } catch (err) {
+    why = (err as Error).message
+  }
+  if (!pinPath) return `could not pin the runtime it runs from in ${join(runtime.root, '.pins')} (${why}), so a prune could remove it mid-session`
+  const pinned = pinPath
+  process.on('exit', () => removePin(pinned, launchId))
+  return null
+}
+
+// The copilot child, in its own process group (so a terminal's Ctrl-C reaches
+// only the driver, which stops the session in order, §7), with its stdout
+// carrying ACP only and its stderr in the launch's log; and the ancestry scan
+// that links its MCP servers (§5.1).
+function spawnSession(o: {
+  db: Database.Database
+  launchDir: string
+  command: string
+  args: string[]
+  cwd: string
+  env: NodeJS.ProcessEnv
+  spawnLog: Record<string, unknown>
+}) {
+  const log = eventLog(o.launchDir)
+  const stderrLog = createWriteStream(join(o.launchDir, 'copilot.stderr.log'), { flags: 'a', mode: 0o600 })
+  const child = spawn(o.command, o.args, { cwd: o.cwd, env: o.env, stdio: ['pipe', 'pipe', 'pipe'], detached: true })
+  child.stderr.pipe(stderrLog)
+  const exited = new Promise<unknown>((resolveExit) => {
+    child.once('exit', (code, signal) => {
+      log({ event: 'child_exit', code, signal })
+      resolveExit(undefined)
+    })
+    child.once('error', (error) => {
+      log({ event: 'child_error', message: error.message })
+      resolveExit(undefined)
+    })
+  })
+  log({ event: 'spawn', ...o.spawnLog, pid: child.pid ?? null })
+
+  let childStartMs: number | null = null
+  const scan = async (): Promise<ScanResult> => {
+    const procs = await readProcesses()
+    if (child.pid === undefined) return { hostPid: null, linked: [], dead: [] }
+    childStartMs ??= procs.get(child.pid)?.startMs ?? null
+    const hostPid = findNativeHost(procs, child.pid)
+    if (hostPid === null || childStartMs === null) return { hostPid: null, linked: [], dead: [] }
+    const rows = listHostSessions(o.db, hostPid).map((row) => ({ ...row, host_pid: hostPid }))
+    const linked = linkSessions(rows, procs, { hostPid, childStartMs })
+    return { hostPid, linked: linked.linked, dead: linked.dead }
+  }
+  const kill = (signal: NodeJS.Signals) => { if (child.pid) try { process.kill(-child.pid, signal) } catch { /* gone */ } }
+  return { child, exited, log, stderrLog, scan, kill }
+}
+
 function stopCommand(argv: string[]): void {
   const id = argv[0]
   if (argv.length !== 1 || !id) {
@@ -125,6 +280,8 @@ function stopCommand(argv: string[]): void {
   const db = openDb(defaultDbPath())
   try {
     requestDriverStop(db, id)
+    // an app launch's driver polls its row; a parked one has no driver and ends here
+    requestLaunchStop(db, id)
   } catch (error) {
     fail(error instanceof Error ? error.message : String(error), 64)
   } finally {
@@ -164,71 +321,21 @@ async function runCopilot(argv: string[]): Promise<void> {
   if (!slot.ok) {
     fail(`${slot.running.length} driven sessions are already running (launches ${slot.running.map((r) => r.launch).join(', ')}); stop one first`)
   }
-  // Run from an installed runtime, the driver pins it for as long as it runs,
-  // so no prune removes the runtime under it (§7). Every exit path, forced or
-  // not, ends in process.exit, whose 'exit' handler removes the pin; a pin a
-  // crash leaves never counts once this process is gone, and the next prune
-  // sweeps it.
-  const located = locateRuntime(fileURLToPath(import.meta.url), runtimeRootFor(process.env))
   const refuse = (why: string) => {
     try { releaseDriverLeases(db, lease) } catch { /* the hub is gone */ }
     fail(why, 1)
   }
-  if (located.kind === 'refuse') refuse(`cannot pin the runtime it runs from: ${located.reason}`)
-  if (located.kind === 'runtime') {
-    const runtime = located.runtime
-    const startedAt = processIdentity(process.pid)
-    let pinPath: string | null = null
-    let why = startedAt ? '' : 'this process\'s start identity cannot be read'
-    try {
-      if (startedAt) pinPath = pinRuntime(runtime, { launchId, pid: process.pid, startedAt })
-    } catch (err) {
-      why = (err as Error).message
-    }
-    if (!pinPath) refuse(`could not pin the runtime it runs from in ${join(runtime.root, '.pins')} (${why}), so a prune could remove it mid-session`)
-    const pinned = pinPath as string
-    process.on('exit', () => removePin(pinned, launchId))
-  }
+  const unpinned = pinOwnRuntime(launchId)
+  if (unpinned) refuse(unpinned)
 
-  const launchDir = join(hubDir, 'launches', launchId)
-  const log = eventLog(launchDir)
-  const stderrLog = createWriteStream(join(launchDir, 'copilot.stderr.log'), { flags: 'a', mode: 0o600 })
-
-  const child = spawn(copilot, copilotArgs({ mode: args.mode, agentInboxServer: server.name, model: args.model, reasoningEffort: args.reasoningEffort }), {
-    cwd,
-    env: childEnv(process.env, { path: dbPath, isDefault: process.env.AGENT_INBOX_DB === undefined }),
-    stdio: ['pipe', 'pipe', 'pipe'],
-    // its own process group, so this terminal's Ctrl-C reaches only the driver,
-    // which stops the session in order (§7)
-    detached: true,
+  const { child, exited, log, stderrLog, scan, kill } = spawnSession({
+    db, launchDir: join(hubDir, 'launches', launchId), command: copilot,
+    args: copilotArgs({ mode: args.mode, agentInboxServer: server.name, model: args.model, reasoningEffort: args.reasoningEffort }),
+    cwd, env: childEnv(process.env, { path: dbPath, isDefault: process.env.AGENT_INBOX_DB === undefined }),
+    spawnLog: { launch: launchId, mode: args.mode, cwd },
   })
-  child.stderr.pipe(stderrLog)
-  const exited = new Promise<unknown>((resolveExit) => {
-    child.once('exit', (code, signal) => {
-      log({ event: 'child_exit', code, signal })
-      resolveExit(undefined)
-    })
-    child.once('error', (error) => {
-      log({ event: 'child_error', message: error.message })
-      resolveExit(undefined)
-    })
-  })
-  log({ event: 'spawn', launch: launchId, mode: args.mode, cwd, pid: child.pid ?? null })
 
-  let childStartMs: number | null = null
-  const scan = async () => {
-    const procs = await readProcesses()
-    if (child.pid === undefined) return { hostPid: null, linked: [], dead: [] }
-    childStartMs ??= procs.get(child.pid)?.startMs ?? null
-    const hostPid = findNativeHost(procs, child.pid)
-    if (hostPid === null || childStartMs === null) return { hostPid: null, linked: [], dead: [] }
-    const rows = listHostSessions(db, hostPid).map((row) => ({ ...row, host_pid: hostPid }))
-    const linked = linkSessions(rows, procs, { hostPid, childStartMs })
-    return { hostPid, linked: linked.linked, dead: linked.dead }
-  }
-
-  const rawLinkWait = Number(process.env.AGENT_INBOX_DRIVER_LINK_WAIT_MS)
-  const linkWaitMs = Number.isInteger(rawLinkWait) && rawLinkWait >= 0 && rawLinkWait <= 10_000 ? rawLinkWait : undefined
+  const linkWaitMs = boundedMs(process.env.AGENT_INBOX_DRIVER_LINK_WAIT_MS, 0, 10_000)
 
   // the terminal: every write is sanitized (driver-tty.ts), one approval at a time
   let driver: Driver | null = null
@@ -247,7 +354,7 @@ async function runCopilot(argv: string[]): Promise<void> {
   driver = new Driver({
     db, lease, mode: args.mode, cwd, project: inferProject(cwd), stream: inferStream(cwd), task,
     input: child.stdout, output: child.stdin,
-    child: { kill: (signal) => { if (child.pid) try { process.kill(-child.pid, signal) } catch { /* gone */ } }, exited },
+    child: { kill, exited },
     ui, log, stateDir: join(hubDir, 'drivers', launchId), scan,
     // a test seam, bounded: how long the first prompt waits for linking (default 10 s)
     ...(linkWaitMs === undefined ? {} : { timing: { linkWaitMs } }),
@@ -287,9 +394,217 @@ async function runCopilot(argv: string[]): Promise<void> {
   process.exit(reason === 'stopped' || reason === 'idle' || reason === 'child_exit' ? 0 : 1)
 }
 
+// ── step 3: `run <launch id> <hub db>`, started by Electron main (§8) ───────
+
+async function runLaunch(argv: string[]): Promise<void> {
+  let reported = false
+  // the one stdout line main reads; nothing else is ever written to stdout
+  const report = (status: Record<string, unknown>) => {
+    if (reported) return
+    reported = true
+    try { process.stdout.write(`${JSON.stringify(status)}\n`) } catch { /* main stopped reading */ }
+  }
+  const refuseStart = (error: string, code: number): never => {
+    report({ ok: false, error })
+    return fail(error, code)
+  }
+  for (const stream of [process.stdout, process.stderr]) stream.on('error', () => undefined)
+  const [launchId, dbPath] = argv
+  if (argv.length !== 2 || !launchId || !LAUNCH_ID.test(launchId) || !dbPath || !isAbsolute(dbPath)) {
+    process.stderr.write('usage: agent-inbox-driver run <launch id> <absolute hub db path>\n')
+    process.exit(64)
+  }
+  if (process.platform !== 'darwin' && process.platform !== 'linux') refuseStart(`${process.platform} is not supported`, 2)
+  // fd 3 must be main's pipe: without one, Node's own event loop holds that
+  // descriptor (on macOS its kqueue, which fstat reports as a FIFO with no
+  // permission bits), and reading or closing it aborts the process. Only a
+  // socket (Node's 'pipe' stdio) or a real FIFO is read, and only a descriptor
+  // verified and read is closed.
+  let specPipe = false
+  try {
+    const kind = fstatSync(3)
+    specPipe = kind.isSocket() || (kind.isFIFO() && (kind.mode & 0o777) !== 0)
+  } catch { /* not open */ }
+  if (!specPipe) refuseStart('no launch spec on fd 3 (Electron main passes it on a pipe)', 65)
+  const text = readSpec(3)
+  // fd 3 carried the launch key: close it before anything starts, so copilot
+  // and every shell it runs never inherit it
+  try { closeSync(3) } catch { /* already closed */ }
+  if (typeof text !== 'string') refuseStart(text.error, 65)
+  const parsed = parseLaunchSpec(text as string, launchId)
+  if (!parsed.ok) return refuseStart(parsed.error, 65)
+  const spec = parsed.spec
+
+  const db = openDb(dbPath)
+  const hubDir = dirname(dbPath)
+  const lease = { launchId, pid: process.pid, nonce: randomBytes(8).toString('hex') }
+  const slot = claimDriverSlot(db, lease, MAX_DRIVERS)
+  if (!slot.ok) {
+    refuseStart(`${slot.running.length} driven sessions are already running (launches ${slot.running.map((r) => r.launch).join(', ')}); stop one first`, 75)
+  }
+  // a refusal after the row is ours ends a new launch, and parks a resumed one
+  // again as it was, so a failed Resume loses nothing
+  let undoRow: (() => void) | null = null
+  const refuse = (why: string): never => {
+    try { undoRow?.() } catch { /* the hub is gone */ }
+    try { releaseDriverLeases(db, lease) } catch { /* the hub is gone */ }
+    return refuseStart(why, 1)
+  }
+
+  // the launch's facts: from the spec, or, resuming, from the row the first driver wrote
+  let facts: { cwd: string; mode: LaunchMode; model?: string; reasoningEffort?: ReasoningEffort; activeMs: number; toolCalls: number; prompt: string; project: string; stream: string }
+  // the launch's usage so far: the budgets are per-launch totals across park and resume
+  let used = { activeMs: 0, toolCalls: 0 }
+  let resume: Pick<DriverOptions, 'loadSessionId' | 'priorSessions'> = {}
+  // the session a resume tries to load, kept on the row if the load fails
+  let loading: string | null = null
+  if (spec.kind === 'new') {
+    let cwd: string
+    try {
+      cwd = realpathSync(spec.cwd)
+      if (!statSync(cwd).isDirectory()) throw new Error('not a folder')
+    } catch {
+      return refuse(`${spec.cwd} is not a folder`)
+    }
+    facts = {
+      cwd, mode: spec.mode, ...(spec.model ? { model: spec.model } : {}), ...(spec.reasoningEffort ? { reasoningEffort: spec.reasoningEffort } : {}),
+      activeMs: spec.budgets.activeMs, toolCalls: spec.budgets.toolCalls, prompt: spec.prompt,
+      project: inferProject(cwd), stream: inferStream(cwd),
+    }
+    let pruned: string[]
+    try {
+      pruned = createLaunch(db, {
+        id: launchId, host: 'copilot', project: facts.project, stream: facts.stream, cwd, mode: facts.mode,
+        model: facts.model ?? null, reasoningEffort: facts.reasoningEffort ?? null, budgetActiveMs: facts.activeMs,
+        budgetToolCalls: facts.toolCalls, prompt: facts.prompt, specVersion: LAUNCH_SPEC_VERSION, driverPid: process.pid,
+      }).pruned
+    } catch {
+      return refuse(`launch ${launchId} already exists`)
+    }
+    undoRow = () => { endLaunch(db, launchId, { reason: 'error:start' }) }
+    // logs are pruned with their launch (§8)
+    for (const old of pruned) {
+      if (!LAUNCH_ID.test(old)) continue
+      for (const dir of ['launches', 'drivers']) rmSync(join(hubDir, dir, old), { recursive: true, force: true })
+    }
+  } else {
+    const row = resumeLaunch(db, launchId, process.pid)
+    if (!row) return refuse(`launch ${launchId} is not parked`)
+    undoRow = () => { parkLaunch(db, launchId, { acpSession: row.acp_session, activeMs: row.active_ms, toolCalls: row.tool_calls }) }
+    const mode = MODES.find((m) => m === row.mode)
+    const effort = row.reasoning_effort !== null && isReasoningEffort(row.reasoning_effort) ? row.reasoning_effort : undefined
+    if (!mode) return refuse(`launch ${launchId} has an unknown mode`)
+    facts = {
+      cwd: row.cwd, mode, ...(row.model ? { model: row.model } : {}), ...(effort ? { reasoningEffort: effort } : {}),
+      activeMs: row.budget_active_ms, toolCalls: row.budget_tool_calls, prompt: row.prompt, project: row.project, stream: row.stream,
+    }
+    used = { activeMs: row.active_ms, toolCalls: row.tool_calls }
+    // a launch that already used a budget ends here, before anything starts
+    const spent = row.tool_calls >= row.budget_tool_calls ? 'budget:tool_calls' : row.active_ms >= row.budget_active_ms ? 'budget:active_time' : null
+    if (spent) {
+      undoRow = () => { endLaunch(db, launchId, { reason: spent }) }
+      return refuse(`launch ${launchId} has used its ${spent === 'budget:tool_calls' ? 'tool-call' : 'active-time'} budget`)
+    }
+    // the earlier driver's sessions, proved by the row (§14.3): their open
+    // messages move to the new server once it links; a server still alive is
+    // not ended, so readdressMessages waits for it
+    const alive = new Map(liveSessionServers(db, row.sessions).map((a) => [a.session, a.server_pid]))
+    const serverAlive = (pid: number | null) => {
+      if (pid === null) return false
+      try { process.kill(pid, 0); return true } catch { return false }
+    }
+    loading = row.acp_session
+    resume = {
+      ...(row.acp_session ? { loadSessionId: row.acp_session } : {}),
+      priorSessions: row.sessions.map((session) => ({ session, dead: alive.has(session) && !serverAlive(alive.get(session) ?? null) })),
+    }
+    // after a Resume every open message is pushed again: the new process may not hold the old turn (§5.3)
+    rmSync(join(hubDir, 'drivers', launchId, 'pushed.json'), { force: true })
+  }
+
+  const unpinned = pinOwnRuntime(launchId)
+  if (unpinned) refuse(unpinned)
+  const server = copilotAgentInboxServer(spec.env)
+  if ('error' in server) refuse(server.error)
+  const host = resolveHost(spec.env.PATH)
+  if ('error' in host) return refuse(host.error)
+  const home = spec.env.HOME && isAbsolute(spec.env.HOME) ? spec.env.HOME : null
+  const isDefault = home !== null && dbPath === join(home, '.agent-inbox', 'inbox.db')
+
+  const { child, exited, log, stderrLog, scan, kill } = spawnSession({
+    db, launchDir: join(hubDir, 'launches', launchId), command: host.command,
+    args: [...host.args, ...copilotArgs({ mode: facts.mode, agentInboxServer: (server as { name: string }).name, model: facts.model, reasoningEffort: facts.reasoningEffort })],
+    cwd: facts.cwd, env: childEnv(spec.env, { path: dbPath, isDefault }),
+    spawnLog: { launch: launchId, mode: facts.mode, cwd: facts.cwd, kind: spec.kind, host: host.script, interpreter: host.command === host.script ? null : host.command },
+  })
+  if (child.pid !== undefined) {
+    const startedAt = processIdentity(child.pid)
+    try {
+      recordLaunchProgress(db, launchId, { childPgid: child.pid, ...(startedAt ? { childStartedAt: startedAt } : {}) })
+    } catch { /* a report, not the state */ }
+  }
+
+  // test seams from the driver's own environment, bounded
+  const linkWaitMs = boundedMs(process.env.AGENT_INBOX_DRIVER_LINK_WAIT_MS, 0, 10_000)
+  const idleMs = boundedMs(process.env.AGENT_INBOX_DRIVER_IDLE_MS, 50, 2 * 60 * 60_000)
+  const driver = new Driver({
+    db, lease, mode: facts.mode, cwd: facts.cwd, project: facts.project, stream: facts.stream, task: facts.prompt,
+    input: child.stdout, output: child.stdin, child: { kill, exited },
+    ui: { ask: () => undefined, settled: () => undefined, text: () => undefined, notice: (text) => log({ event: 'notice', text }) },
+    log, stateDir: join(hubDir, 'drivers', launchId), scan,
+    asks: appAsks({ db, launchId, launchKey: spec.launchKey, project: facts.project, stream: facts.stream, log }),
+    hooks: launchHooks(db, launchId),
+    usage: used,
+    ...resume,
+    timing: {
+      activeMs: facts.activeMs, maxToolCalls: facts.toolCalls,
+      ...(linkWaitMs === undefined ? {} : { linkWaitMs }),
+      ...(idleMs === undefined ? {} : { idleMs }),
+    },
+  })
+
+  // SIGTERM or SIGHUP stops in order; a second signal, or a Stop that has not
+  // finished in 15 s, forces. Either way the row records how it ended.
+  const closeRow = (reason: EndReason) => {
+    const usage = driver.usage()
+    try {
+      if (reason === 'idle') parkLaunch(db, launchId, { acpSession: driver.resumableSession(), ...usage })
+      // a load that failed for another reason than "never prompted" parks it again, to retry (§7)
+      else if (reason === 'error:load') {
+        parkLaunch(db, launchId, { acpSession: loading, ...usage, reason: `Copilot could not load the session: ${driver.loadFailure() ?? 'unknown error'}` })
+      } else endLaunch(db, launchId, { reason, ...usage })
+    } catch { /* the hub is gone: the launch reads as lost */ }
+  }
+  const sleep = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+  installStopHandlers({
+    signals: process,
+    input: { on: () => undefined },
+    driver,
+    exit: (code) => {
+      closeRow('stopped')
+      if (child.pid && child.exitCode === null && child.signalCode === null) reapProcessGroup(child.pid, { kill: (pid, signal) => { process.kill(pid, signal) }, sleep })
+      process.exit(code)
+    },
+    notice: (text) => log({ event: 'notice', text }),
+    silence: () => undefined,
+  })
+
+  report({ ok: true, launch: launchId })
+  const reason: EndReason = await driver.start()
+  // the child exits about 1 s after its stdin closes (spike §1); after 10 s its group gets SIGTERM
+  const settled = await Promise.race([exited.then(() => true), new Promise<boolean>((r) => setTimeout(() => r(false), 10_000).unref())])
+  if (!settled) kill('SIGTERM')
+  closeRow(reason)
+  try { releaseDriverLeases(db, lease) } catch { /* the hub is gone */ }
+  db.close()
+  stderrLog.end()
+  process.exit(reason === 'stopped' || reason === 'idle' || reason === 'child_exit' ? 0 : 1)
+}
+
 const [command, ...rest] = process.argv.slice(2)
 if (command === 'copilot') await runCopilot(rest)
 else if (command === 'stop') stopCommand(rest)
+else if (command === 'run') await runLaunch(rest)
 else {
   process.stderr.write(USAGE)
   process.exit(command === '--help' || command === '-h' ? 0 : 64)

@@ -13,6 +13,7 @@ import {
   markRowHandled, clearRowHandled, listActivity, listActivitySpans, listSourceLinks, defaultDbPath,
   closeProject, reopenProject, closedProjects, readSnapshotState, listIssueEntities, listIssueSnapshots,
   listSessionMessages, sendSessionMessage, withdrawSessionMessage, validMessageId, validMessageText, MESSAGE_MAX_TEXT,
+  listLaunches, getLaunch, launchView, launchDriverAlive, isLaunchAsk,
 } from './store.js'
 import type { ExpectedAnswer, ResponseKind, SnapshotDomain, SnapshotReadState } from './store.js'
 import { groupItems } from './group.js'
@@ -657,6 +658,8 @@ export const SNAPSHOT_SOURCES = {
   issues: ['issue_snapshots', 'source_links_by_head_issues', 'items_issues', 'boards_issues', 'board_rows_issues', 'projects'],
   // listSessionMessages (#411)
   messages: ['session_messages'],
+  // listLaunches (#412 step 3): launch facts only, no clock-derived state
+  launches: ['launches'],
 } as const satisfies Record<string, readonly SnapshotDomain[]>
 
 type SnapshotName = keyof typeof SNAPSHOT_SOURCES
@@ -995,12 +998,37 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
   // representation with its own validator.
   app.get('/api/messages', conditionalSnapshot(db, 'messages', () => listSessionMessages(db)))
 
+  // Issue #412 step 3: driven-session launches. The list is launch facts only
+  // (no prompt, no process ids), so it is a retained representation; whether a
+  // running launch's driver is alive is read fresh, per launch, from its lease.
+  // The page reads none of these unless the app's "Start sessions from Agent
+  // Inbox" switch is on (design §9).
+  app.get('/api/launches', conditionalSnapshot(db, 'launches', () => listLaunches(db)))
+  app.get('/api/launches/:id', (c) => {
+    c.header('Cache-Control', 'no-store')
+    const launch = getLaunch(db, c.req.param('id'))
+    if (!launch) return c.json({ ok: false, error: 'no such launch' }, 404)
+    const driver = launch.status !== 'running' ? null : launchDriverAlive(db, launch.id) ? 'running' : 'lost'
+    return c.json({ ...launchView(launch), driver })
+  })
+  app.get('/api/launches/:id/prompt', (c) => {
+    c.header('Cache-Control', 'no-store')
+    const launch = getLaunch(db, c.req.param('id'))
+    if (!launch) return c.json({ ok: false, error: 'no such launch' }, 404)
+    return c.json({ prompt: launch.prompt })
+  })
+
+  // Issue #412 step 3: closing an app launch's ask here would leave its driver
+  // waiting on a request nobody can answer, so these refuse it like the reply
+  // route (a store-level refusal, 200); the driver settles its own asks.
   app.post('/api/items/:id/resolve', (c) => {
+    if (isLaunchAsk(db, c.req.param('id'))) return c.json({ ok: false, reason: 'launch_ask' })
     resolveItem(db, c.req.param('id'))
     return c.json({ ok: true })
   })
 
   app.post('/api/items/:id/dismiss', (c) => {
+    if (isLaunchAsk(db, c.req.param('id'))) return c.json({ ok: false, reason: 'launch_ask' })
     dismissItem(db, c.req.param('id'))
     return c.json({ ok: true })
   })
@@ -1008,6 +1036,7 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
   app.post('/api/items/:id/annotate', async (c) => {
     const body = await c.req.json<{ text?: unknown }>().catch(() => null)
     if (typeof body?.text !== 'string') return c.json({ ok: false, error: 'text must be a string' }, 400)
+    if (isLaunchAsk(db, c.req.param('id'))) return c.json({ ok: false, reason: 'launch_ask' })
     const ok = annotateItem(db, c.req.param('id'), body.text)
     return c.json({ ok })
   })
@@ -1059,6 +1088,11 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
     )) {
       return c.json({ ok: false, error: 'invalid reply intent metadata' }, 400)
     }
+    // Issue #412 step 3: an app launch's ask is answered only by Electron main's
+    // signed answer (the driver ignores any other), so this route refuses it, a
+    // store-level refusal like any other (200), rather than record an answer
+    // that nothing will act on.
+    if (isLaunchAsk(db, c.req.param('id'))) return c.json({ ok: false, reason: 'launch_ask' })
     // A refusal is ok:false (an already-picked-up reply cannot be silently
     // blanked out, src/store.ts). Issue #322 adds, additively, whether this
     // request wrote anything (an exact replay is answered from its record) and

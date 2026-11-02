@@ -24,6 +24,7 @@ export const SNAPSHOT_ROUTES = {
   links: '/api/links',
   issues: '/api/issues',
   messages: '/api/messages',
+  launches: '/api/launches',
 } as const satisfies Record<SnapshotName, string>
 
 export const SNAPSHOT_NAMES = Object.keys(SNAPSHOT_ROUTES) as SnapshotName[]

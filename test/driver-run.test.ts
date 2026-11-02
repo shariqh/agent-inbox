@@ -236,7 +236,9 @@ describe('agent-inbox-driver run (#412 step 3)', () => {
     await until(() => received(r).find((m) => m.method === 'session/prompt'), 'the task')
     const work = realpathSync(join(r.dir, 'work'))
     expect(received(r)[0]!.argv).toEqual([
-      '--acp', '--stdio', '--allow-tool', 'agent-inbox', '--allow-tool', `write(${work}/**)`, '--deny-tool', `write(${work}/.git/**)`,
+      '--acp', '--stdio', '--allow-tool', 'agent-inbox', '--allow-tool', `write(${work}/**)`,
+      '--deny-tool', `write(${work}/.git)`, '--deny-tool', `write(${work}/.git/**)`,
+      '--deny-tool', `write(${work}/**/.git)`, '--deny-tool', `write(${work}/**/.git/**)`,
       '--model', 'claude-haiku-4.5', '--reasoning-effort', 'none',
     ])
     expect(requestLaunchStop(r.hub, LAUNCH)).toBe('stopping')

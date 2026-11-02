@@ -57,11 +57,15 @@ describe('modes, phases and the option allow-list (§4.1)', () => {
 
   it('Edits in the worktree allows writes under its folder and denies its .git, refusing a folder it cannot pattern safely (#412 step 3)', () => {
     const folder = editsFolder('/work/alpha', '/Users/me')!
-    expect(folder).toEqual({ allow: 'write(/work/alpha/**)', denyGit: 'write(/work/alpha/.git/**)' })
-    expect(copilotArgs({ mode: 'edits', agentInboxServer: 'agent-inbox', editsFolder: folder }))
-      .toEqual(['--acp', '--stdio', '--allow-tool', 'agent-inbox', '--allow-tool', 'write(/work/alpha/**)', '--deny-tool', 'write(/work/alpha/.git/**)'])
+    const deny = ['write(/work/alpha/.git)', 'write(/work/alpha/.git/**)', 'write(/work/alpha/**/.git)', 'write(/work/alpha/**/.git/**)']
+    expect(folder).toEqual({ allow: 'write(/work/alpha/**)', deny })
+    // a .git file or folder, at the top or nested, and all under one: each its own --deny-tool
+    expect(copilotArgs({ mode: 'edits', agentInboxServer: 'agent-inbox', editsFolder: folder })).toEqual([
+      '--acp', '--stdio', '--allow-tool', 'agent-inbox', '--allow-tool', 'write(/work/alpha/**)',
+      ...deny.flatMap((pattern) => ['--deny-tool', pattern]),
+    ])
     expect(() => copilotArgs({ mode: 'edits', agentInboxServer: 'agent-inbox' })).toThrow(/checked folder/)
-    expect(editsFolder('/Users/me/dev/alpha/', '/Users/me')).toEqual({ allow: 'write(/Users/me/dev/alpha/**)', denyGit: 'write(/Users/me/dev/alpha/.git/**)' })
+    expect(editsFolder('/Users/me/dev/alpha/', '/Users/me')).toMatchObject({ allow: 'write(/Users/me/dev/alpha/**)' })
     for (const bad of ['/', 'work/alpha', '/Users/me', '/Users', '/work/a)b', '/work/a*', '/work/a?b', '/work/[a]', '/work/{a}', '/work/a,b', '/work/a\\b', '/work/a\nb']) {
       expect(editsFolder(bad, '/Users/me'), JSON.stringify(bad)).toBeNull()
     }

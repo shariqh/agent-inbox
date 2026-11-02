@@ -300,7 +300,7 @@ describe('the launch controller', () => {
     expect(confirmation.detail).toContain('Task: Fix the failing test.')
     // Edits in the worktree says what runs unasked, and the page offers the same words (#412 step 3, PR 4)
     const edits = controllerModule.confirmation({ project: 'alpha', folder: '/w', mode: 'edits', budgets: { activeMs: 90_000, toolCalls: 3 }, prompt: 'x' })
-    expect(edits.detail).toContain('Mode: Edits in the worktree. File edits inside the project folder run without asking, never inside its .git folder;')
+    expect(edits.detail).toContain('Mode: Edits in the worktree. File edits inside the project folder run without asking, never a .git folder or file;')
     expect(controllerModule.launchRequest({ ...REQUEST, mode: 'edits' })).toMatchObject({ mode: 'edits' })
     const page = await import('../public/launches.js')
     for (const mode of page.LAUNCH_MODES) expect(controllerModule.MODES[mode.id], mode.id).toEqual({ label: mode.label, copy: mode.copy })

@@ -358,7 +358,7 @@ It is off until you turn it on, and it works only in the macOS app, not in a bro
 | **Ask for everything** | Nothing, except what your own Copilot settings already allow |
 | **Read-only** | Nothing; file-edit tools are denied, and shell commands still ask |
 | **Plan first** | Nothing: it writes a plan, and once you approve it, each tool call asks |
-| **Edits in the worktree** | File edits inside the project folder (never inside its `.git` folder); shell commands, network and anything outside the folder still ask |
+| **Edits in the worktree** | File edits inside the project folder (never a `.git` folder or file, at the top or nested); shell commands, network and anything outside the folder still ask |
 
 Once any shell command is allowed, the session can run anything, in its folder and
 beyond, and an edited file can change what an allowed command then runs. Answer each

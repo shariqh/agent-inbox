@@ -58,7 +58,8 @@ export function copilotArgs(opts: {
   if (opts.mode === 'read-only') args.push('--deny-tool', 'write')
   if (opts.mode === 'edits') {
     if (!opts.editsFolder) throw new Error('Edits in the worktree needs its checked folder')
-    args.push('--allow-tool', opts.editsFolder.allow, '--deny-tool', opts.editsFolder.denyGit)
+    args.push('--allow-tool', opts.editsFolder.allow)
+    for (const deny of opts.editsFolder.deny) args.push('--deny-tool', deny)
   }
   if (opts.model) args.push('--model', opts.model)
   if (opts.reasoningEffort) args.push('--reasoning-effort', opts.reasoningEffort)
@@ -70,12 +71,14 @@ export function copilotArgs(opts: {
 const PATTERN_UNSAFE = /[()*?[\]{},\\\u0000-\u001f\u007f]/
 
 /** The checked tool patterns of Edits in the worktree. */
-export interface EditsFolder { allow: string; denyGit: string }
+export interface EditsFolder { allow: string; deny: readonly string[] }
 
 /**
  * Edits in the worktree (§4.1): Copilot writes files under the launch folder
- * with no ask (`write(<folder>/**)`), never under its `.git` (deny beats allow,
- * so hooks and config cannot be edited unasked), and asks for everything else.
+ * with no ask (`write(<folder>/**)`), never a `.git` folder or file, at the top
+ * or nested, nor anything under one (deny beats allow, so hooks, config and a
+ * worktree's or submodule's `gitdir:` pointer cannot be edited unasked), and
+ * asks for everything else.
  * The folder must be the real path the driver resolved, absolute, and neither
  * the filesystem root nor the home folder or one above it; a folder whose
  * name holds a pattern character is refused rather than escaped. Null means
@@ -90,7 +93,12 @@ export function editsFolder(folder: string, home: string | null): EditsFolder | 
     // the home folder itself, or a folder that contains it
     if (up === '' || (!up.startsWith('..') && !isAbsolute(up))) return null
   }
-  return { allow: `write(${dir}/**)`, denyGit: `write(${dir}/.git/**)` }
+  // a `.git` folder or file (a linked worktree's or a submodule's pointer),
+  // at the top or nested, and everything under one
+  return {
+    allow: `write(${dir}/**)`,
+    deny: [`write(${dir}/.git)`, `write(${dir}/.git/**)`, `write(${dir}/**/.git)`, `write(${dir}/**/.git/**)`],
+  }
 }
 
 /** Copilot 1.0.105's `--reasoning-effort` values, passed through only from this list. */

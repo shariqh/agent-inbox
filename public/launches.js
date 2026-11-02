@@ -26,7 +26,7 @@ export const LAUNCH_MODES = Object.freeze([
   {
     id: 'edits',
     label: 'Edits in the worktree',
-    copy: 'File edits inside the project folder run without asking, never inside its .git folder; shell commands, network and anything outside the folder still ask. An edited file can change what a command you allow then runs.',
+    copy: 'File edits inside the project folder run without asking, never a .git folder or file; shell commands, network and anything outside the folder still ask. An edited file can change what a command you allow then runs.',
   },
 ])
 

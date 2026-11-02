@@ -398,16 +398,25 @@ Approve), `public/launches.js` (pure rules) and `public/launch-settings.js` (Set
   `releaseDriverLeases` drops an untaken request with the driver.
 - **Edits in the worktree (§4.1).** The fourth mode, `edits`, in the spec, the controller (its copy is the
   page's, a test holds the two equal) and the dialog. "The worktree" is the launch folder itself: no new
-  git worktree is created. Copilot's argv gains `--allow-tool 'write(<folder>/**)'` and
-  `--deny-tool 'write(<folder>/.git/**)'` (deny beats allow, so hooks and git config are never written
-  unasked); every other tool call asks, and the allowed mode set is `#agent` as for Ask for everything.
+  git worktree is created (#432 tracks that). Copilot's argv gains `--allow-tool 'write(<folder>/**)'`
+  and four `--deny-tool` patterns, `write(<folder>/.git)`, `write(<folder>/.git/**)`,
+  `write(<folder>/**/.git)` and `write(<folder>/**/.git/**)`: a `.git` folder or file at the top or
+  nested, and everything under one. Deny beats allow, so hooks, git config and a linked worktree's or
+  submodule's `gitdir:` pointer file (which could point git at hooks of the agent's making) are never
+  written unasked. Every other tool call asks, and the allowed mode set is `#agent` as for Ask for
+  everything.
   `editsFolder` (`driver-policy.ts`) takes only the folder as the driver resolved it now (a resume whose
   folder resolves elsewhere does not start), absolute, not `/`, not the home folder or a folder above it
   (compared as written and as resolved), and with none of `( ) * ? [ ] { } , \` or a control character,
   which Copilot's patterns would read: such a folder is refused, never escaped. Checked against Copilot
-  1.0.105 on 2026-11-02 with one real session (claude-haiku-4.5, effort none, scratch `COPILOT_HOME` and
-  hub): a file created inside the folder ran with no request, a file under its `.git` was refused by the
-  deny rule with no request, and a file outside the folder raised a permission request.
+  1.0.105 on 2026-11-02 with two real sessions (claude-haiku-4.5, effort none, scratch `COPILOT_HOME`
+  and hub). In a plain repository: a file created inside the folder ran with no request, a file under its
+  `.git` was refused by the deny rule, and a file outside the folder raised a permission request. In a
+  linked worktree (its `.git` a file) holding a nested repository, with all four patterns: `notes.txt` ran
+  with no request, an edit of the `.git` file was refused (`write(<folder>/.git)` matched; the file was
+  unchanged), `sub/.git/x.txt` was refused (`write(<folder>/**/.git/**)` matched; nothing was created),
+  and a file outside the folder raised a permission request. Repeated `--deny-tool` flags each count, and
+  `**` matched the dot-folder `.git`. Reads are not limited by this mode.
 - **The Agents view (#397).** A session line whose `/api/activity` row is `driven` gets a `driven` chip,
   and `started here` when it is a session of one of this app's launches (only with the switch on), drawn
   inside the project and branch column so the row's grid is unchanged.

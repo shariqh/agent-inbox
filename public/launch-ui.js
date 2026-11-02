@@ -11,7 +11,7 @@
 // public/attention.js, a badge, a count, the rail or the dock.
 import {
   LAUNCH_MODES, PROMPT_WARNING, REASONING_EFFORTS, SHELL_WARNING,
-  launchOfSession, launchStatus, launchSummary, newSessionRequest, transcriptLines,
+  launchOfSession, launchSessions, launchStatus, launchSummary, newSessionRequest, transcriptLines,
 } from '/launches.js'
 
 const DEFAULT_ACTIVE_HOURS = 2
@@ -31,6 +31,8 @@ const ENDED_SHOWN = 5
  *   launches: () => any[] | null,
  *   rel: (iso: string) => string,
  *   sendTo: (session: string, text: string) => Promise<boolean>,
+ *   composer: (session: string) => HTMLElement | null,
+ *   hasDraft: (session: string) => boolean,
  *   changed: () => void,
  *   settled: () => Promise<unknown>,
  *   pending: <T>(action: () => Promise<T>) => Promise<T>,
@@ -52,6 +54,9 @@ export function createLaunchUi(deps) {
   const busy = new Set()
   const rows = new Map()
   const resumeInputs = new Map()
+  // launches whose row shows the session's #411 composer, and the node holding it
+  const openMessages = new Set()
+  const slots = new Map()
   let dialog = null
   let transcript = null
 
@@ -103,6 +108,8 @@ export function createLaunchUi(deps) {
     if (!drawer || !on()) {
       section?.remove()
       rows.clear()
+      slots.clear()
+      openMessages.clear()
       return
     }
     if (!section) {
@@ -130,6 +137,8 @@ export function createLaunchUi(deps) {
       if (!keep.has(id)) {
         el.remove()
         rows.delete(id)
+        slots.delete(id)
+        openMessages.delete(id)
       }
     }
     if (!shown.length && !list.querySelector('.empty')) list.replaceChildren(make('p', 'empty', 'No sessions started here yet.'))
@@ -154,11 +163,21 @@ export function createLaunchUi(deps) {
     const status = launchStatus(launch, deps.activity(), nowMs)
     // a note about the state it was in goes once that state changes
     if (el.dataset.state && el.dataset.state !== status.state) notes.delete(launch.id)
-    const key = JSON.stringify([launch.revision, launch.status, status.state, status.text, granted(), busy.has(launch.id), notes.get(launch.id) ?? '', launch.resumable])
-    if (el.dataset.key === key) return
+    const session = granted() && status.state === 'running' ? messageSession(launch) : null
+    if (!session) openMessages.delete(launch.id)
+    const open = session !== null && openMessages.has(launch.id)
+    const composer = open ? deps.composer(session) : null
+    const key = JSON.stringify([
+      launch.revision, launch.status, status.state, status.text, granted(), busy.has(launch.id), notes.get(launch.id) ?? '', launch.resumable,
+      session, open, session !== null && !open && deps.hasDraft(session),
+    ])
+    // the composer keeps its own node, so it is only kept in step, never rebuilt
+    if (composer && el.dataset.key === key && slots.get(launch.id)?.contains(composer)) return
+    if (el.dataset.key === key && !open) return
     // a focused control keeps its node: rewritten only when the human is elsewhere
     const focused = doc.activeElement
-    const holdsFocus = focused instanceof doc.defaultView.Element && el.contains(focused)
+    let slot = slots.get(launch.id) ?? null
+    const holdsFocus = focused instanceof doc.defaultView.Element && el.contains(focused) && !slot?.contains(focused)
     el.dataset.key = key
     el.dataset.state = status.state
     const parts = []
@@ -171,6 +190,13 @@ export function createLaunchUi(deps) {
       else if (granted() && action === 'stop') actions.append(button(launch.status === 'parked' ? 'End' : 'Stop', 'stop'))
       else if (granted() && action === 'close') actions.append(button('Close', 'close'))
       else if (granted() && action === 'park') actions.append(button('Park now', 'park'))
+    }
+    if (session) {
+      const draft = !open && deps.hasDraft(session)
+      const message = button(draft ? 'Message · draft' : 'Message', 'message')
+      message.setAttribute('aria-expanded', String(open))
+      message.title = draft ? 'Message this session: your unsent draft is kept' : 'Message this session'
+      actions.prepend(message)
     }
     parts.push(actions)
     if (status.actions.includes('resume') && granted()) {
@@ -202,6 +228,17 @@ export function createLaunchUi(deps) {
       line.setAttribute('role', 'status')
       parts.push(line)
     }
+    if (composer) {
+      if (!slot) {
+        slot = make('div', 'live-launch-composer')
+        slots.set(launch.id, slot)
+      }
+      if (!slot.contains(composer)) slot.replaceChildren(composer)
+      parts.push(slot)
+    } else {
+      slots.delete(launch.id)
+      slot = null
+    }
     if (holdsFocus) {
       const action = focused.dataset?.launchAction
       el.replaceChildren(...parts)
@@ -210,8 +247,39 @@ export function createLaunchUi(deps) {
         ?? el.querySelector('[data-launch-action]')
       if (again && doc.activeElement !== again && doc.hasFocus()) again.focus({ preventScroll: true })
     } else {
-      el.replaceChildren(...parts)
+      // the composer's node, with focus and caret in it, stays where it is
+      for (const child of [...el.children]) if (child !== slot) child.remove()
+      el.prepend(...parts.filter((part) => part !== slot))
+      if (slot && !slot.isConnected) el.append(slot)
     }
+  }
+
+  // The session a launch's Message goes to: its newest live one in Live.
+  function messageSession(launch) {
+    const live = launchSessions(launch, deps.activity())
+    let newest = null
+    for (const row of live) {
+      if (!newest || String(row.started_at ?? '') >= String(newest.started_at ?? '')) newest = row
+    }
+    return newest?.session ?? null
+  }
+
+  function toggleMessage(id) {
+    if (openMessages.has(id)) openMessages.delete(id)
+    else openMessages.add(id)
+    bump()
+    if (openMessages.has(id)) slots.get(id)?.querySelector('textarea')?.focus()
+  }
+
+  // Cancel or Esc in a launch row's composer: the row's Message button gets focus back.
+  function closeMessage(session) {
+    const launch = (deps.launches() ?? []).find((l) => rows.has(l.id) && openMessages.has(l.id) && messageSession(l) === session)
+    if (!launch) return
+    const owned = Boolean(slots.get(launch.id)?.contains(doc.activeElement))
+    openMessages.delete(launch.id)
+    if (owned) doc.activeElement.blur()
+    bump()
+    if (owned) rows.get(launch.id)?.querySelector('[data-launch-action="message"]')?.focus({ preventScroll: true })
   }
 
   function setDraft(key, text) {
@@ -230,6 +298,7 @@ export function createLaunchUi(deps) {
     else if (action === 'stop' && id) stop(id)
     else if (action === 'close' && id) close(id)
     else if (action === 'park' && id) park(id)
+    else if (action === 'message' && id) toggleMessage(id)
     else if (action === 'resume' && id) resumeAndSend(id)
   }
 
@@ -563,5 +632,6 @@ export function createLaunchUi(deps) {
     paintDrawer,
     paintLane,
     approve,
+    closeMessage,
   }
 }

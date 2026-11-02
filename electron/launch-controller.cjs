@@ -73,14 +73,31 @@ function approvalRequest(value) {
   return { item: value.item, revision: value.revision, optionId: value.optionId }
 }
 
-// Text main shows in its own dialogs: control, bidi and zero-width characters
-// become visible, so a task cannot hide or reorder what the human reads.
+// Text main shows in its own dialogs. C0 controls but the newline, DEL and C1;
+// every Unicode format character (Cf: bidi marks, embeddings, overrides and
+// isolates, zero-width characters, word joiners and invisible operators, the
+// Arabic letter mark, the BOM, tags); and the line and paragraph separators
+// (Zl, Zp), which macOS alerts draw as line breaks. Each becomes visible, so
+// agent-controlled text cannot hide, reorder or add lines. The driver's
+// terminalSafe (src/driver-policy.ts) escapes the same set; a test pins both.
+// eslint-disable-next-line no-control-regex
+const UNSAFE = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\p{Cf}\p{Zl}\p{Zp}]/gu
+
 function displaySafe(text) {
   return String(text)
     .replace(/\r\n?/g, '\n')
-    // eslint-disable-next-line no-control-regex
-    .replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, (c) => `\\x${c.charCodeAt(0).toString(16).padStart(2, '0')}`)
-    .replace(/[\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g, (c) => `<U+${c.charCodeAt(0).toString(16).toUpperCase().padStart(4, '0')}>`)
+    .replace(UNSAFE, (ch) => {
+      const code = ch.codePointAt(0)
+      return code <= 0x9f ? `\\x${code.toString(16).padStart(2, '0')}` : `<U+${code.toString(16).toUpperCase().padStart(4, '0')}>`
+    })
+}
+
+// One line of at most DISPLAY_MAX characters: a project or folder name, which
+// an agent can set (MCP register) and a folder name can carry newlines.
+const DISPLAY_MAX = 120
+function displayLine(text) {
+  const flat = Array.from(displaySafe(text).replace(/\n/g, '\\x0a'))
+  return flat.length > DISPLAY_MAX ? `${flat.slice(0, DISPLAY_MAX - 1).join('')}…` : flat.join('')
 }
 
 function duration(ms) {
@@ -95,9 +112,9 @@ function duration(ms) {
 function confirmation({ project, folder, mode, model, reasoningEffort, budgets, prompt }) {
   const preview = prompt.length > PROMPT_PREVIEW ? `${prompt.slice(0, PROMPT_PREVIEW)}…` : prompt
   return {
-    message: `Start a Copilot session in ${displaySafe(project)}?`,
+    message: `Start a Copilot session in ${displayLine(project)}?`,
     detail: [
-      `Folder: ${displaySafe(folder)}`,
+      `Folder: ${displayLine(folder)}`,
       `Mode: ${MODES[mode].label}. ${MODES[mode].copy}`,
       `Model: ${model ?? 'your Copilot default'}${reasoningEffort ? `, reasoning effort ${reasoningEffort}` : ''}`,
       `Budgets: up to ${duration(budgets.activeMs)} of active turn time and ${budgets.toolCalls} tool calls.`,
@@ -114,7 +131,7 @@ function confirmation({ project, folder, mode, model, reasoningEffort, budgets, 
  * No Cancel: the quit has already begun (beginAppQuit), and it is not undone.
  */
 async function quitChoice({ running, showMessageBox }) {
-  const lines = running.map((launch) => `• ${displaySafe(launch.project)} · ${MODES[launch.mode]?.label ?? launch.mode}`)
+  const lines = running.map((launch) => `• ${displayLine(launch.project)} · ${MODES[launch.mode]?.label ?? launch.mode}`)
   const { response } = await showMessageBox({
     type: 'question',
     message: `${running.length === 1 ? 'A session' : `${running.length} sessions`} Agent Inbox started ${running.length === 1 ? 'is' : 'are'} still running.`,
@@ -154,6 +171,7 @@ function createLaunchController(deps) {
     randomUUID, realDirectory, processStart, kill,
   } = deps
   let quitting = false
+  // the starts in flight, so the quit prompt can wait for the launch rows they write
   const starting = new Set()
 
   // every action but Stop and Close needs the switch on, macOS and a key store
@@ -186,6 +204,9 @@ function createLaunchController(deps) {
     const late = blocked()
     if (late) return late
     const launchKey = await keys.launchKey(launchId)
+    // ...and again after the key read, immediately before anything spawns
+    const later = blocked()
+    if (later) return later
     return startDriver({
       platform, node: runtime.node, entry: runtime.entry, launchId, hubPath,
       logPath: path.join(path.dirname(hubPath), 'launches', launchId, 'driver.log'),
@@ -193,15 +214,17 @@ function createLaunchController(deps) {
     })
   }
 
-  async function guarded(token, work) {
-    starting.add(token)
-    try {
-      return await work()
-    } catch {
-      return refused('The session could not be started.')
-    } finally {
-      starting.delete(token)
-    }
+  function guarded(work) {
+    const run = (async () => {
+      try {
+        return await work()
+      } catch {
+        return refused('The session could not be started.')
+      }
+    })()
+    starting.add(run)
+    run.finally(() => starting.delete(run))
+    return run
   }
 
   return Object.freeze({
@@ -228,7 +251,7 @@ function createLaunchController(deps) {
       if (why) return Promise.resolve(why)
       const request = launchRequest(value)
       if (!request) return Promise.resolve(refused('The new session request is not valid.'))
-      return guarded(Symbol('start'), async () => {
+      return guarded(async () => {
         let folder
         let project
         if (request.root !== null) {
@@ -269,7 +292,7 @@ function createLaunchController(deps) {
       const why = blocked()
       if (why) return Promise.resolve(why)
       if (typeof id !== 'string' || !LAUNCH_ID.test(id)) return Promise.resolve(refused('The launch is not valid.'))
-      return guarded(Symbol('resume'), async () => {
+      return guarded(async () => {
         const launch = await viewer.getJson(`/api/launches/${id}`)
         if (!launch || launch.status !== 'parked') return refused('This session is not parked.')
         const real = realDirectory(launch.cwd)
@@ -346,8 +369,12 @@ function createLaunchController(deps) {
     beginQuit() {
       quitting = true
     },
-    starting: () => starting.size > 0,
+    /**
+     * Settles once every start or resume in flight has settled: one that got
+     * past the gate before the quit began has spawned and written its row.
+     */
+    settled: () => Promise.allSettled([...starting]).then(() => undefined),
   })
 }
 
-module.exports = { MODES, approvalRequest, confirmation, createLaunchController, displaySafe, launchEnv, launchRequest, quitChoice }
+module.exports = { MODES, approvalRequest, confirmation, createLaunchController, displayLine, displaySafe, launchEnv, launchRequest, quitChoice }

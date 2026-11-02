@@ -129,7 +129,11 @@ Claude Code and Copilot CLI load this file automatically when they read or edit 
   command, kind and input, agent text and error messages are agent-controlled: ESC sequences could
   erase the real ask and print a fake one, OSC 52 could write the clipboard, and bidi or zero-width
   characters could reorder or hide text. C0 controls but `\n` (a tab becomes a space), DEL and C1
-  become `\xNN`, and U+200B–U+200F, U+202A–U+202E, U+2066–U+2069 and U+FEFF become `<U+XXXX>`.
+  become `\xNN`, and every Unicode format character (`\p{Cf}`: bidi marks, embeddings, overrides and
+  isolates, zero-width characters, U+2060–U+2064, the Arabic letter mark U+061C, the BOM, tags) and
+  the line and paragraph separators (U+2028, U+2029, which some renderers draw as line breaks) become
+  `<U+XXXX>`. Main's `displaySafe` (`electron/launch-controller.cjs`) escapes exactly the same set, and
+  a test compares the two over every code point.
   Every terminal write goes through `createTerminal` (`driver-tty.ts`), whose only raw bytes are the
   SGR reset (`ESC[0m`) before each ask; the `@sessions` alert's title and context are sanitized the
   same way. `test/driver-tty.test.ts` runs the terminal against a fake TTY that fails on any unsafe
@@ -282,7 +286,10 @@ Everything main does for a driven session is injected and tested without Electro
   own, an executable, argv or env. Bounds match the spec's.
 - **The native confirmation** (`confirmation`): built by main from the checked facts (project, folder, mode
   and its plain copy, model and effort, budgets, the "once any shell command is allowed…" warning, and the
-  task's first 300 characters, with control, bidi and zero-width characters made visible). Start spawns
+  task's first 300 characters, made visible by `displaySafe`). The project (which any agent can set
+  through MCP `register`) and the folder go through `displayLine`: newlines too made visible, one line,
+  at most 120 characters with an ellipsis, so they cannot add a fake folder or mode line; the bold
+  message line is fixed text plus that project alone. Start spawns
   exactly what it showed. The login shell runs only after Start, so no rc file runs for a launch the human
   did not confirm. Resume and send needs no second confirmation (the click is the gesture, §7); main
   re-checks that the launch is parked, the grant and the switch.
@@ -315,6 +322,8 @@ Everything main does for a driven session is injected and tested without Electro
   stop a session through them (low risk: the human's own capability), but it cannot forge an approval:**
   only main's signature counts, and the driver verifies it.
 - **Quit** (§7): `beginAppQuit()` closes the launch gate (nothing starts once a quit has begun, even a
-  start whose dialog was open) and drops the `launch` grant. With the switch on, the first quit asks once,
-  listing the sessions whose driver runs: **Keep running** (the default) or **Stop all**. There is no Cancel,
+  start whose dialog was open: the gate is checked again after the key read, immediately before the
+  spawn) and drops the `launch` grant. With the switch on, the first quit asks once, after any start
+  already past the gate has written its row (`settled()`, within the same 3 s bound), listing the
+  sessions whose driver runs: **Keep running** (the default) or **Stop all**. There is no Cancel,
   because the quit has already begun. An update restart does not ask; sessions survive it.

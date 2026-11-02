@@ -16,6 +16,7 @@ import shellEnv from '../electron/shell-env.cjs'
 import driverProcess from '../electron/driver-process.cjs'
 import controllerModule from '../electron/launch-controller.cjs'
 import launchIpc from '../electron/launch-ipc.cjs'
+import { terminalSafe } from '../src/driver-policy.js'
 import { verifyApproval } from '../src/launch-sign.js'
 import { parseLaunchSpec } from '../src/launch-spec.js'
 import { launchKey as fixtureLaunchKey, sign as fixtureSign } from './launch-fixtures.js'
@@ -321,6 +322,35 @@ describe('the launch controller', () => {
     expect(text.detail).toContain('Model: your Copilot default')
   })
 
+  it('keeps a project an agent named to one capped line, with separators and format characters visible (#430 review)', () => {
+    const project = 'alpha\u2028\u2028Folder: /Users/me/alpha\u2028Mode: Read-only.'
+    const text = controllerModule.confirmation({ project, folder: '/w\nMode: Read-only.', mode: 'ask', budgets: { activeMs: 90_000, toolCalls: 3 }, prompt: 'x' })
+    expect(text.message).toBe('Start a Copilot session in alpha<U+2028><U+2028>Folder: /Users/me/alpha<U+2028>Mode: Read-only.?')
+    expect(text.message).not.toMatch(/[\n\u2028\u2029]/)
+    expect(text.detail.split('\n')[0]).toBe('Folder: /w\\x0aMode: Read-only.')
+    for (const ch of ['\u2029', '\u061c', '\u2060', '\u2061', '\u2062', '\u2063', '\u2064', '\u00ad', '\u{e0041}']) {
+      expect(controllerModule.displayLine(`a${ch}b`), JSON.stringify(ch)).toBe(`a<U+${ch.codePointAt(0)!.toString(16).toUpperCase().padStart(4, '0')}>b`)
+    }
+    const long = controllerModule.confirmation({ project: 'p'.repeat(500), folder: `/${'f'.repeat(500)}`, mode: 'ask', budgets: { activeMs: 90_000, toolCalls: 3 }, prompt: 'x' })
+    expect(long.message).toBe(`Start a Copilot session in ${'p'.repeat(119)}…?`)
+    expect(long.detail.split('\n')[0]).toBe(`Folder: /${'f'.repeat(118)}…`)
+    const quit = controllerModule.displayLine('😀'.repeat(200))
+    expect(Array.from(quit)).toHaveLength(120)
+  })
+
+  it('escapes exactly the characters the driver’s terminalSafe escapes', () => {
+    const differs: string[] = []
+    for (let code = 0; code <= 0x10ffff; code++) {
+      if (code >= 0xd800 && code <= 0xdfff) continue
+      // a tab, a newline and a carriage return are each side's own line handling
+      if (code === 0x09 || code === 0x0a || code === 0x0d) continue
+      const ch = String.fromCodePoint(code)
+      if ((controllerModule.displaySafe(ch) !== ch) !== (terminalSafe(ch) !== ch)) differs.push(code.toString(16))
+    }
+    expect(differs).toEqual([])
+    expect(terminalSafe('a\u2028b\u061cc\u2060d')).toBe('a<U+2028>b<U+061C>c<U+2060>d')
+  })
+
   it('takes a folder only from the repository folders the hub knows, or from main’s own dialog', async () => {
     const r = rig()
     expect(await r.controller.start({ ...REQUEST, root: '/etc' })).toMatchObject({ ok: false, error: expect.stringMatching(/not one Agent Inbox knows/) })
@@ -360,6 +390,36 @@ describe('the launch controller', () => {
       expect(result.ok, late).toBe(false)
       expect(r.calls, late).not.toContain('startDriver')
     }
+  })
+
+  it('starts nothing when a quit begins or the switch goes off during the key read, and settled() waits for a start in flight', async () => {
+    for (const late of ['off', 'quit'] as const) {
+      const r = rig()
+      const read = r.deps.keys.launchKey
+      r.deps.keys.launchKey = async (id: string) => {
+        const key = await read(id)
+        if (late === 'off') r.state.enabled = false
+        else r.controller.beginQuit()
+        return key
+      }
+      const result = await r.controller.start(REQUEST)
+      expect(result, late).toMatchObject({ ok: false })
+      expect(r.calls, late).toContain('keys.launchKey')
+      expect(r.calls, late).not.toContain('startDriver')
+    }
+    const r = rig()
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const read = r.deps.keys.launchKey
+    r.deps.keys.launchKey = async (id: string) => { await gate; return read(id) }
+    const started = r.controller.start(REQUEST)
+    let settled = false
+    const waiting = r.controller.settled().then(() => { settled = true })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(settled).toBe(false)
+    release()
+    await waiting
+    expect(await started).toEqual({ ok: true, launch: ID })
   })
 
   it('off means off (§9 e): no env, no runtime, no spawn, no folder read, no key, and available() says off', async () => {
@@ -606,6 +666,9 @@ describe('main’s wiring (source)', () => {
     const begin = main.slice(main.indexOf('function beginAppQuit()'), main.indexOf('return installGate.beginQuit()'))
     expect(begin).toContain('launchWebContentsId = null')
     expect(begin).toContain('launchController?.beginQuit()')
+    // the quit prompt waits for a start already past the gate, so it lists that launch too
+    const ask = main.slice(main.indexOf('async function askAboutRunningSessions()'))
+    expect(ask.slice(0, ask.indexOf('quitChoice('))).toMatch(/settled\(\)\.then\(\(\) => launchControllerFor\(\)\.running\(\)\)/)
   })
 
   it('registers the launch IPC once, behind the viewer-window sender check, and opens no launch channel of its own', () => {

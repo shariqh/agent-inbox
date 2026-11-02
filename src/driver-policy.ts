@@ -143,10 +143,13 @@ export function messagesPrompt(messages: readonly PushedMessage[]): string {
 // ── text the human reads (#412 review) ─────────────────────────────────────
 
 // C0 controls but \n, DEL and C1, which a terminal acts on (ESC starts CSI and OSC
-// sequences: erase a line, hide text, write the clipboard with OSC 52), and the
-// Unicode format characters that reorder or hide text (bidi embeddings,
-// overrides and isolates; zero-width spaces, joiners and marks; the BOM).
-const UNSAFE = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g
+// sequences: erase a line, hide text, write the clipboard with OSC 52); every
+// Unicode format character (Cf), which reorders or hides text (bidi marks,
+// embeddings, overrides and isolates; zero-width characters, word joiners and
+// invisible operators; the Arabic letter mark; the BOM; tags); and the line and
+// paragraph separators (Zl, Zp), which some renderers draw as line breaks.
+// electron/launch-controller.cjs displaySafe escapes the same set (a test pins both).
+const UNSAFE = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\p{Cf}\p{Zl}\p{Zp}]/gu
 
 /**
  * Agent-controlled text made safe to show the human: on the driver's terminal

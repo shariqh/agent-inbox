@@ -600,8 +600,10 @@ registerLaunchIpc({
 
 // The quit prompt (§7): sessions keep running unless the human stops them all.
 async function askAboutRunningSessions() {
+  // a start that got past the gate before the quit began has spawned: wait for
+  // its row, so the prompt lists it (bounded like the read itself)
   const running = await Promise.race([
-    launchControllerFor().running(),
+    launchControllerFor().settled().then(() => launchControllerFor().running()),
     new Promise((resolve) => setTimeout(() => resolve([]), 3000)),
   ])
   if (!running.length) return

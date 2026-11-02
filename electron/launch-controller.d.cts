@@ -11,7 +11,7 @@ export interface LaunchController {
   running(): Promise<Array<{ id: string; project: string; mode: string }>>
   stopAll(launches: Array<{ id: string }>): Promise<void>
   beginQuit(): void
-  starting(): boolean
+  settled(): Promise<void>
 }
 export const MODES: Readonly<Record<string, { label: string; copy: string }>>
 export function createLaunchController(deps: Record<string, unknown>): LaunchController
@@ -19,6 +19,7 @@ export function launchRequest(value: unknown): Record<string, unknown> | null
 export function approvalRequest(value: unknown): { item: string; revision: number; optionId: string } | null
 export function launchEnv(env: Record<string, unknown>): Record<string, string>
 export function displaySafe(text: string): string
+export function displayLine(text: string): string
 export function confirmation(facts: {
   project: string
   folder: string

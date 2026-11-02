@@ -1040,13 +1040,18 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
     const ask = getLaunchAsk(db, c.req.param('id'))
     return ask ? c.json(ask) : c.json({ ok: false, error: 'no such ask' }, 404)
   })
+  // Exactly { revision, optionId, signature }: a non-negative integer, an option
+  // id and 64 lowercase hex characters. Anything else is a 400 before any store
+  // call; the driver still verifies the signature itself.
   app.post('/api/launch-asks/:id/answer', async (c) => {
-    const body = await c.req.json().catch(() => null) as Record<string, unknown> | null
-    const revision = body?.revision
-    const optionId = body?.optionId
-    const signature = body?.signature
-    if (!Number.isSafeInteger(revision) || (revision as number) < 0 || typeof optionId !== 'string' || typeof signature !== 'string') {
-      return c.json({ ok: false, error: 'revision, optionId and signature are required' }, 400)
+    const body = await c.req.json().catch(() => null) as unknown
+    const fields = body !== null && typeof body === 'object' && !Array.isArray(body) ? body as Record<string, unknown> : null
+    const { revision, optionId, signature } = fields ?? {}
+    if (!fields || Object.keys(fields).sort().join() !== 'optionId,revision,signature'
+      || !Number.isSafeInteger(revision) || (revision as number) < 0
+      || typeof optionId !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(optionId)
+      || typeof signature !== 'string' || !/^[0-9a-f]{64}$/.test(signature)) {
+      return c.json({ ok: false, error: 'the body must be exactly { revision, optionId, signature }' }, 400)
     }
     return c.json(answerLaunchAsk(db, c.req.param('id'), { revision: revision as number, optionId, signature }))
   })

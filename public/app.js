@@ -40,6 +40,8 @@ import { renderStructuredText } from '/structured-text.js'
 import { cardLinks } from '/link-strip.js'
 import { fileLinksCopy, initLinkOpening, linkFileActions, refreshLinkPermission } from '/link-open.js'
 import { refreshLinkSettings, renderLinkSettings } from '/link-settings.js'
+import { createLaunchUi } from '/launch-ui.js'
+import { refreshLaunchSettings, renderLaunchSettings } from '/launch-settings.js'
 import { boardRowsView, boardRowLine, progressLabel, hiddenDoneCount, lingeringBoards, omittedOutcomes } from '/boards.js'
 import { titleWithBadge, focusHashFor, parseFocusHash } from '/badge.js'
 import { layoutMode, railLabel, NARROW_MAX, PROJECT_DISCLOSURE_MAX } from '/layout.js'
@@ -265,7 +267,7 @@ function composerInUse() {
 function shouldDeferBootReload() {
   const now = Date.now()
   return hasUnsentResponses() || pendingWrites > 0
-    || stagedStars.size > 0 || stagedDismiss.size > 0
+    || stagedStars.size > 0 || stagedDismiss.size > 0 || launchUi?.held() === true
     || pressHeld(pressedAt, now) || scrollActive(lastInteractionScrollAt, now)
 }
 
@@ -300,6 +302,7 @@ let paintedFrame = null // { inputs, at } of the last complete frame (#298)
 let outsideChanges = 0  // human input and settled writes since boot (#298)
 let pinnedIds = []      // sort order pinned for this render session
 let pressedAt = null    // pointerdown → pointerup, hard-bounded by PRESS_GRACE_MS (#38)
+let launchUi = null     // driven sessions (#412 step 3), made at boot; inert unless the app's switch is on
 
 // What SUSPENDS the poll — deliberately not the same set as what DEFERS it.
 // `pressedAt` is missing on purpose and must stay missing: showPauseHint() reads
@@ -309,6 +312,8 @@ function suspendState() {
   for (const [id, value] of Object.entries(draftReplies)) drafts[`reply:${id}`] = value
   for (const [id, value] of Object.entries(draftReplyContexts)) drafts[`context:${id}`] = value
   for (const [id, value] of Object.entries(rowDrafts)) drafts[`row:${id}`] = value
+  // #412 step 3: a New session task while its dialog is open
+  for (const [key, value] of launchUi?.drafts() ?? []) drafts[`launch:${key}`] = value
   return {
     drafts,
   }
@@ -604,6 +609,12 @@ async function messagesBody(read) {
   }
 }
 
+// #412 step 3 (§9 b): the launches are read only in the viewer the app owns,
+// with "Start sessions from Agent Inbox" on.
+function launchesOn() {
+  return launchUi?.on() === true
+}
+
 async function load() {
   if (reloadRequested) return false
   const generation = ++loadGeneration
@@ -627,7 +638,7 @@ async function load() {
   try {
     const [
       items, boardsRead, summaryRead, activityRead, historyRead, closedRead, linksRead, issuesRead, closedHistoryRead,
-      archivedRead, lingerSettled, messagesRead,
+      archivedRead, lingerSettled, messagesRead, launchesRead,
     ] = await Promise.allSettled([
       readSnapshot('/api/items').then(marked),
       readSnapshot('/api/boards').then(marked),
@@ -655,6 +666,9 @@ async function load() {
       // The human's messages to sessions (#411): a conditional snapshot with its
       // own validator and the links fallback (messagesBody).
       readSnapshot('/api/messages').then(marked),
+      // Driven sessions (#412 step 3): read only in the viewer the app owns, with
+      // its switch on (§9 b). Off, the tick makes exactly the reads it always made.
+      launchesOn() ? readSnapshot('/api/launches').then(marked) : null,
     ])
     if (reloadRequested || generation < appliedLoadGeneration) return false
     const res = settledValue(items)
@@ -676,8 +690,9 @@ async function load() {
       wantHistory ? closedHistoryBody(closedHistoryRead) : null, issuesBody(issuesRead), linksBody(linksRead),
       wantArchived ? archivedBody(archivedRead) : null, lingerUrl ? lingeringBody(lingerSettled) : null,
       messagesBody(messagesRead),
+      launchesOn() ? messagesBody(launchesRead) : null,
     ])
-    const [g, boards, brief, activity, activityHistory, firstOlder, issues, links, firstArchived, firstLinger, messages] =
+    const [g, boards, brief, activity, activityHistory, firstOlder, issues, links, firstArchived, firstLinger, messages, launches] =
       bodies.map(settledValue)
     const closedSnapshot = settledValue(closedRead)
     if (reloadRequested || generation < appliedLoadGeneration) return false
@@ -776,6 +791,8 @@ async function load() {
       issues,
       // #411: null when the read failed or the viewer predates the route
       messages,
+      // #412 step 3: null with the switch off, or when the read failed
+      launches: Array.isArray(launches) ? launches : null,
       // What this tick read, compared by identity (#298): a snapshot that
       // answered 304 resolves to the very representation it revalidated, and
       // the fresh reads compare by what they can show (activity without its
@@ -786,7 +803,7 @@ async function load() {
         activityHistory.state, activityHistory.message, activityHistory.state === 'ready' ? activityHistory.spans : null,
         links.length ? links : null, issues, older?.done ?? null, older?.error ?? null,
         complete?.plans ?? null, complete?.error ?? null, lingerReadUrl, linger?.plans ?? null, linger?.error ?? null,
-        messages,
+        messages, launches ?? null,
       ],
     }
     applyProjectMutationIntents()
@@ -2279,6 +2296,8 @@ function updateDashLane(el, lane) {
   } else {
     laneAsks.delete(lane.session)
   }
+  // #412 step 3: "Started here" and Stop on a launch's lane, only with the switch on
+  launchUi?.paintLane(el, lane.session)
 }
 
 function renderDashLanes(section, model, { forced = false } = {}) {
@@ -3190,6 +3209,7 @@ function paintAmbient() {
   // goes to the unsent responses. Then the drawer, which holds a composer.
   reconcileMessageDrafts()
   renderLive(live, { forced: forcedAmbient }) // drawer's expanded list — stays FILTERED (rail-scoped, like every other tab)
+  launchUi?.paintDrawer(Date.now()) // #412 step 3: "Started from Agent Inbox", only with the switch on
   renderDashboardAmbient(dashboard, { forced: forcedAmbient })
   paintTabCounts(g, boards)
   paintLaterSectionHint()
@@ -3282,6 +3302,7 @@ function frameInputs() {
     focusSession, laneFilters.project, laneFilters.agent, outsideChanges, liveVersion, fileLinksCopy(), Boolean(linkFileActions()),
     triageHeld,
     meshView, meshView?.lens(),
+    launchUi?.version() ?? null,
   ]
 }
 
@@ -6001,6 +6022,7 @@ function showPanel(id) {
     refreshSetupAvailability()
     refreshLinkPermission()
     refreshLinkSettings()
+    refreshLaunchSettings()
   }
 }
 
@@ -6336,6 +6358,7 @@ function composerEl(where, session) {
     const control = event.target instanceof Element ? event.target.closest('button') : null
     if (!control || !el.contains(control)) return
     if (control.matches('.msg-send')) sendMessage(session)
+    else if (control.matches('.msg-interrupt')) interruptAndSend(session)
     else if (control.matches('.msg-cancel')) closeComposer(session)
     else if (control.dataset.msgWithdraw) withdrawMessage(control.dataset.msgWithdraw, Number(control.dataset.msgRevision))
   })
@@ -6380,7 +6403,7 @@ function updateComposer(el) {
   const session = el.dataset.msgSession
   const row = activityRow(session)
   const draft = messageDrafts.get(session)
-  const delivery = deliveryState(row)
+  const delivery = deliveryState(row, rel)
   const input = el.querySelector('textarea')
   const text = draft?.text ?? ''
   if (input.value !== text && document.activeElement !== input) input.value = text
@@ -6398,6 +6421,7 @@ function updateComposer(el) {
   const blocked = !delivery.canSend || sending || !input.value.trim()
   if (send.disabled !== blocked) send.disabled = blocked
   setText(send, sending ? 'Sending…' : 'Send')
+  paintInterrupt(el, session, row, delivery, blocked)
   setText(el.querySelector('.msg-status'), messageNotes.get(session) ?? '')
   const history = el.querySelector('.msg-history')
   const html = messageHistoryHtml(session)
@@ -6484,6 +6508,35 @@ function openMessage(session) {
   openComposer(session)
 }
 
+// Issue #412 step 3: driven sessions on the page. Made at boot; it asks main
+// once (window.agentInboxLaunch), and only the viewer the app owns, with its
+// switch on, gets anything: in a browser, a reused viewer or with the switch
+// off it reads, draws and binds nothing (§9 b).
+function initLaunches() {
+  launchUi = createLaunchUi({
+    fetchJson: (url) => fetch(url).then((r) => (r.ok ? r.json() : null)),
+    postJSON,
+    activity: () => lastData?.activity ?? [],
+    launches: () => lastData?.launches ?? null,
+    rel,
+    sendTo: async (session, text) => {
+      // the resumed session is new to this page: read it before sending
+      await reloadAndPaint()
+      setMessageDraft(session, text)
+      return sendMessage(session)
+    },
+    changed: () => {
+      noteOutsideChange()
+      showPauseHint()
+      if (lastData) launchUi?.paintDrawer(Date.now())
+    },
+    settled: () => reloadAndPaint(),
+    pending: (action) => withPendingResponse(action),
+  })
+  // a changed answer is drawn by the next tick, which reads the launches once on
+  launchUi.refresh()
+}
+
 function initMessages() {
   const list = document.querySelector('#liveDrawer .live-list')
   list?.addEventListener('click', (event) => {
@@ -6512,7 +6565,7 @@ const REFUSALS = new Set(['session_gone', 'session_cannot_receive', 'too_many_op
 
 async function sendMessage(session) {
   const draft = messageDrafts.get(session)
-  if (!draft?.text.trim() || sendingMessages.has(session) || !deliveryState(activityRow(session)).canSend) return
+  if (!draft?.text.trim() || sendingMessages.has(session) || !deliveryState(activityRow(session)).canSend) return false
   const intent = claimMessageIntent(draft)
   sendingMessages.add(session)
   messageNotes.delete(session)
@@ -6541,6 +6594,47 @@ async function sendMessage(session) {
   }
   bumpMessages()
   await reloadAndPaint()
+  return result?.ok === true
+}
+
+// #412 step 3 (§5.3): the running launch a driven session belongs to, while
+// the switch is on; the composer offers Interrupt and send only for it.
+function interruptibleLaunch(row) {
+  if (!launchesOn() || typeof row?.driven_launch !== 'string') return null
+  return (lastData?.launches ?? []).find((launch) => launch.id === row.driven_launch && launch.status === 'running' && !launch.stop_requested_at) ?? null
+}
+
+// Made only when it applies, so a page with the switch off adds no control.
+function paintInterrupt(el, session, row, delivery, blocked) {
+  let button = el.querySelector('.msg-interrupt')
+  const launch = delivery.interrupt ? interruptibleLaunch(row) : null
+  if (!launch) {
+    button?.remove()
+    return
+  }
+  if (!button) {
+    button = document.createElement('button')
+    button.type = 'button'
+    button.className = 'msg-interrupt'
+    button.textContent = 'Interrupt and send'
+    button.title = 'Cancel what it is doing now, then send this'
+    el.querySelector('.msg-send').after(button)
+  }
+  if (button.disabled !== blocked) button.disabled = blocked
+}
+
+// Interrupt and send: the message goes first, then the driver is asked to
+// cancel the running turn; it sends the message framed with the interrupt notice.
+async function interruptAndSend(session) {
+  const launch = interruptibleLaunch(activityRow(session))
+  if (!launch) return
+  if (!(await sendMessage(session))) return
+  const result = await withPendingResponse(() => postJSON(`/api/launches/${encodeURIComponent(launch.id)}/interrupt`))
+  if (result?.ok !== true) {
+    messageNotes.set(session, 'Sent, but the session could not be interrupted: it arrives when the turn ends.')
+    bumpMessages()
+    updateSessionComposers(session)
+  }
 }
 
 async function withdrawMessage(id, revision) {
@@ -9029,7 +9123,23 @@ function placeRestoredDrafts() {
 }
 
 function sendReply(...args) {
+  // #412 step 3 (§4.3): in the app's own window, a launch's approval is
+  // answered by main, which signs the choice; anywhere else the route refuses it.
+  const it = freshItem(args[0])
+  if (isLaunchAskItem(it) && launchUi?.granted()) return withPendingResponse(() => approveLaunchAsk(it, args[1], args[3]))
   return withPendingResponse(() => submitItemReply(...args))
+}
+
+async function approveLaunchAsk(it, label, kind = 'answer') {
+  const error = kind && kind !== 'answer'
+    ? 'Choose Allow once or Deny: only the app can answer this approval, and only with one of its options.'
+    : await launchUi.approve(it, String(label ?? '').trim())
+  showWriteError(it.id, error ?? '')
+  if (error) {
+    resumeRender()
+    return
+  }
+  await reloadAndPaint()
 }
 
 // savedIntentRule found exactly this response on the server: a send of it
@@ -11319,6 +11429,7 @@ async function renderSetup() {
   renderPlanSettings(host)
   renderCopySettings(host)
   renderLinkSettings(host)
+  renderLaunchSettings(host, { onChange: (state) => launchUi?.setState(state) })
   try {
     const s = await (await fetch('/api/setup')).json()
     const block = (title, text, hint) => {
@@ -11397,7 +11508,8 @@ async function renderSetup() {
 //   initResponsive → initSidebarCollapse → initPaneResizers → initProjectDisclosure →
 //   initKeys (Task 17) → initFocusHash (Task 17) → initStagedFlush →
 //   initDraftPersistence (#279) → initPressGuard (#38) → initScrollGuard → initIdleFrame (#298) → initAgentSelect →
-//   initStructuredTextCopy → initLinkOpening → initCopyOnSelect → initGear → initLiveBar → renderSetup → load →
+//   initStructuredTextCopy → initLinkOpening → initCopyOnSelect → initGear → initLiveBar → initMessages →
+//   initLaunches (#412 step 3) → renderSetup → load →
 //   setInterval(load, 3000)
 initTabs()
 initTriage()
@@ -11422,6 +11534,7 @@ initCopyOnSelect()
 initGear()
 initLiveBar()
 initMessages()
+initLaunches()
 renderSetup()
 // The LAST two lines that may ever call the gated load() directly: the boot paint
 // and the poll itself. Every other caller is a human action and goes through

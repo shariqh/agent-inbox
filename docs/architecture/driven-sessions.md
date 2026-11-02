@@ -329,3 +329,54 @@ Everything main does for a driven session is injected and tested without Electro
   still in progress (a dialog left open, a slow shell) never hides them; it lists the sessions whose
   driver runs: **Keep running** (the default) or **Stop all**. There is no Cancel,
   because the quit has already begun. An update restart does not ask; sessions survive it.
+
+## Step 3, part 3: the page
+
+Everything on the page lives in `public/launch-ui.js` (the drawer section, the dialogs, the lane tag and
+Approve), `public/launches.js` (pure rules) and `public/launch-settings.js` (Settings → Agent sessions);
+`app.js` only wires them. DOM coverage is `test/dom/driven-sessions.test.ts`.
+
+- **Off is off (§9 b).** The page asks main once per load (`agentInboxLaunch.available()`) and again when
+  Settings opens or the switch changes. In a browser, a viewer the app does not own, or with the switch
+  off, `load()` makes exactly the reads it made before (no `/api/launch*`), no element is created and no
+  listener is bound; the owned viewer draws only the Settings switch. `/api/launches` joins the tick only
+  while the switch is on, as a conditional snapshot with its own validator and the messages fallback; its
+  representation and `launchUi.version()` are in `frameInputs()` (#298).
+- **The Live drawer's "Started from Agent Inbox" section** sits above the session list in its own
+  container, painted by the ambient painter and updated in place (a row is rewritten only when its key
+  changes, a focused control keeps its place). Each launch reads Starting…, Running (one of its sessions
+  is in `/api/activity`), Not responding (running, no session, no update for 2 minutes: Close is offered),
+  Stopping…, Parked (with the reason a resume failed, if any) or Ended (its reason in words). Stop, Close,
+  New session… and Resume and send go to main through the bridge and appear only in the granted window;
+  the transcript works wherever the section shows. The newest five ended launches stay listed.
+- **New session** is a modal `<dialog>` outside the render tree: a project from
+  `GET /api/launch-folders` or "Choose folder…" (`root: null`, main's own dialog), the agent fixed to
+  Copilot, the three modes with their plain copy and the shell warning, an optional model and reasoning
+  effort, budgets (default 2 h and 500 tool calls, bounds as main's), and the task with its no-secrets
+  warning. `newSessionRequest` builds exactly the request main checks again; main's own confirmation is
+  the one the human answers.
+- **Drafts.** The dialog's task is a draft in `suspendState()` while the dialog is open (the dialog is
+  modal, so the paused list is under it); a cancelled task is kept to fill the next dialog and holds
+  nothing. A Resume and send text sits in the ambient drawer, which no draft pauses, so like a message
+  composer's it only holds a viewer restart's reload (`launchUi.held()` in `shouldDeferBootReload`).
+  Neither is written to browser storage.
+- **Approve and Decline (§4.3).** In the granted window, an option chosen on an `@sessions` approval
+  (pill, ★ or keyboard: all go through `sendReply`) goes to `agentInboxLaunch.approve({ item, revision,
+  optionId })`, the option id read from `GET /api/launch-asks/:id` by its label; main signs it. A typed
+  answer, Clarify or Decline-with-text is refused on the card. Anywhere else the reply route's refusal
+  shows "Not sent — approve this from Agent Inbox's own window."
+- **The composer's delivery states (§5.3).** A driven session's row carries `driven_launch` and, while
+  its driver's turn runs, `driven_turn { state, since }` (the driver's `driver-turn:` claim, written on a
+  change only; `hook_watch_claims` is in no snapshot). `deliveryState(row, rel)` reads Arrives now, Queued
+  mid-task (with how long) or Queued behind an approval. For a running launch the composer adds
+  **Interrupt and send**, made only when it applies: the message is sent first, then
+  `POST /api/launches/:id/interrupt` records a request the driver takes once on its next tick, cancels the
+  turn and sends the queued messages with the interrupt notice.
+- **Resume and send.** `resume(id)` (no second confirmation, §7), then the page polls `/api/activity` for
+  up to 60 s for a driven session of that launch that receives messages, reads it in, and sends the text
+  through the ordinary message path; otherwise the text stays with "The session didn't come back".
+- **The transcript** is a `<dialog>` reading `GET /api/launches/:id/events?after=N` on its own 2 s timer
+  only while open (whole lines, 256 KiB a read, `rotated` restarts it, at most 5000 events kept). Agent
+  text, tool calls, asks and answers are drawn as `textContent` lines only.
+- **Lanes (#304).** A running launch's working session gets a "Started here" tag and, in the granted
+  window, Stop. Nothing here reaches `public/attention.js`, a badge, a count, the rail or the dock.

@@ -148,6 +148,48 @@ header { flex-wrap: wrap; }
 .msg-count { margin-right: auto; font-variant-numeric: tabular-nums; }
 .msg-status:empty { display: none; }
 .msg-status, .msg-refused { color: var(--app-warning); font-size: 12px; }
+.msg-delivery[data-state="queued"] { color: var(--app-text); }
+/* #412 step 3: sessions started from Agent Inbox. Drawn only with the app's
+   switch on; nothing here animates or transitions. */
+.live-launches { margin: 0 0 12px; padding: 10px 12px; border: 1px solid var(--app-border); border-radius: 8px; background: var(--app-surface); font-size: 12.5px; }
+.live-launches-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+.live-launches-title { font-weight: 650; }
+.live-launches-note:empty { display: none; }
+.live-launches-note, .live-launch-summary, .live-launch-status { color: var(--app-muted); }
+.live-launches p { margin: 0; }
+.live-launch { display: grid; gap: 4px; padding: 8px 0; border-top: 1px solid var(--app-border); }
+.live-launch[data-state="lost"] .live-launch-status { color: var(--app-warning); }
+.live-launch-actions, .live-launch-resume { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 6px; }
+.live-launch-resume-input { flex: 1 1 220px; min-height: 40px; resize: vertical; padding: 6px 8px; border: 1px solid var(--app-border); border-radius: 8px; background: var(--app-surface); color: var(--app-text); font: inherit; font-size: 13px; }
+.launch-action, .msg-interrupt, .dash-lane-stop, .launch-dialog button, .launch-transcript button {
+  padding: 2px 8px; border: 1px solid var(--app-border); border-radius: 6px; background: var(--app-soft); color: var(--app-text); font: inherit; font-size: 12px; cursor: pointer;
+}
+.launch-action.primary, .launch-dialog button.primary { border-color: var(--app-accent); background: var(--app-accent); color: #fff; }
+.launch-action:disabled, .msg-interrupt:disabled, .launch-dialog button:disabled { cursor: default; opacity: .55; }
+.live-launch-note { color: var(--app-warning); }
+.launch-dialog, .launch-transcript { width: min(640px, calc(100vw - 32px)); max-height: calc(100vh - 64px); overflow: auto; overscroll-behavior: contain; padding: 16px 18px; border: 1px solid var(--app-border); border-radius: 10px; background: var(--app-surface); color: var(--app-text); }
+.launch-dialog h2, .launch-transcript h2 { margin: 0 0 10px; font-size: 16px; }
+.launch-form { display: grid; gap: 10px; font-size: 13px; }
+.launch-field { display: grid; gap: 3px; }
+.launch-field-label { font-weight: 600; }
+.launch-field-hint, .launch-mode-copy { color: var(--app-muted); font-size: 12px; }
+.launch-field input, .launch-field select, .launch-prompt { padding: 5px 8px; border: 1px solid var(--app-border); border-radius: 6px; background: var(--app-surface); color: var(--app-text); font: inherit; }
+.launch-prompt { min-height: 96px; resize: vertical; }
+.launch-modes { display: grid; gap: 6px; margin: 0; padding: 8px 10px; border: 1px solid var(--app-border); border-radius: 8px; }
+.launch-mode { display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 8px; }
+.launch-mode .launch-mode-copy { grid-column: 2; }
+.launch-warning { margin: 0; color: var(--app-warning); font-size: 12px; }
+.launch-dialog-message:empty { display: none; }
+.launch-dialog-message { margin: 0; color: var(--app-warning); }
+.launch-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.launch-transcript-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.launch-transcript-status:empty { display: none; }
+.launch-transcript-lines { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; font-size: 12.5px; }
+.launch-line { white-space: pre-wrap; overflow-wrap: anywhere; }
+.launch-line.tool, .launch-line.ask { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.launch-line.note, .launch-line.answer { color: var(--app-muted); }
+.dash-lane-launch { display: flex; align-items: center; gap: 8px; font-size: 11px; }
+.dash-lane-launch-tag { padding: 0 6px; border: 1px solid var(--app-border); border-radius: 999px; color: var(--app-text-soft); }
 .msg-history { display: grid; gap: 6px; }
 .msg-history:empty { display: none; }
 .msg-item { display: grid; gap: 2px; padding-top: 6px; border-top: 1px solid var(--app-border); }

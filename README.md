@@ -29,6 +29,7 @@ share one SQLite database on your machine.
 | **Durable plans** | Tracking boards with stable rows, progress, next steps, outcomes, and human-owned actions |
 | **Live sessions** | Ambient status for active agents and their current work without turning activity into alerts |
 | **Session messages** | Write to a running session, and see before you send whether it arrives now or at the session's next check |
+| **Session launcher** | On macOS, start a Copilot CLI session from the app, approve its tool calls from the inbox, and message it from Live. Off until you turn it on |
 | **Dual-host setup** | Audited installers and instructions for GitHub Copilot CLI and Claude Code |
 | **Local security boundary** | A loopback-only viewer with strict Host, Origin, Fetch Metadata, and anti-framing checks |
 
@@ -319,8 +320,8 @@ the exact command at the end of an install:
   copilot --cwd <folder> --mode ask --prompt-file <task file>
 ```
 
-`--mode` is `ask` (every tool call asks) or `read-only` (file edits are denied). Each
-approval is answered in that terminal; its card in the inbox says so. Stop it with
+`--mode` is `ask` (every tool call asks) or `read-only` (file edits are denied). `--reasoning-effort <level>` sets the effort for models that refuse the one in your Copilot settings. Each
+approval is answered y/n in that terminal and also shows as an alert in the **@sessions** project. Stop it with
 Ctrl-C, by typing `stop`, or with `… dist/driver-cli.js stop <launch id>`, which it
 prints when it starts. From a source checkout, `npm run driver -- copilot …` does the
 same. Once any shell command is allowed, the session can run anything: answer each

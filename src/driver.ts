@@ -97,6 +97,8 @@ export interface DriverTiming {
   hubFailMs: number
   stopGraceMs: number
   setupWaitMs: number
+  /** How long Copilot may take to start (or load) a session before the launch gives up. */
+  setupDeadlineMs: number
   /** How long the first prompt waits for the session's MCP server to link. */
   linkWaitMs: number
   idleMs: number
@@ -111,6 +113,7 @@ const DEFAULT_TIMING: DriverTiming = {
   hubFailMs: 30_000,
   stopGraceMs: 10_000,
   setupWaitMs: 10_000,
+  setupDeadlineMs: 2 * 60_000,
   linkWaitMs: 10_000,
   idleMs: 2 * 60 * 60_000,
   activeMs: 2 * 60 * 60_000,
@@ -211,6 +214,7 @@ type Event =
   | { type: 'scan'; result: ScanResult }
   | { type: 'child_exit' }
   | { type: 'setup_timeout'; step: number }
+  | { type: 'setup_deadline' }
 
 interface PushedFile {
   v: 1
@@ -318,6 +322,9 @@ export class Driver {
     this.timers.push(setInterval(() => this.enqueue({ type: 'tick' }), this.t.pollMs))
     this.timers.push(setInterval(() => this.runScan(), this.t.scanMs))
     this.timers.push(setInterval(() => this.refreshLeases(), this.t.leaseMs))
+    // a Copilot that never finishes starting would otherwise hold a driver slot
+    // until a human stops it: give up after the deadline
+    this.timers.push(setTimeout(() => this.enqueue({ type: 'setup_deadline' }), this.t.setupDeadlineMs))
     for (const timer of this.timers) timer.unref()
     return this.done
   }
@@ -439,7 +446,24 @@ export class Driver {
           this.o.log({ event: 'setup_failed', reason: 'allow_all was not verified off' })
           this.end('error:mode_escalation')
         }
+        return
+      case 'setup_deadline':
+        return this.onSetupDeadline()
     }
+  }
+
+  private onSetupDeadline(): void {
+    if (this.setup === 5 || this.ending) return
+    const seconds = Math.round(this.t.setupDeadlineMs / 1000)
+    this.o.log({ event: 'setup_failed', reason: 'deadline', step: this.setup })
+    // a resume keeps its session: it is parked again, with the reason, to retry
+    if (this.o.loadSessionId && !this.loadNotFound) {
+      this.loadError = `Copilot did not finish loading the session within ${seconds} s.`
+      this.o.ui.notice(this.loadError)
+      return this.end('error:load')
+    }
+    this.o.ui.notice(`Copilot did not finish starting the session within ${seconds} s.`)
+    return this.end('error:setup')
   }
 
   // ── frames ────────────────────────────────────────────────────────────────

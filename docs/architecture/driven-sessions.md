@@ -7,7 +7,10 @@ paths:
   - "src/driver-tty.ts"
   - "src/driver-pin.ts"
   - "src/acp-client.ts"
-applyTo: "src/driver.ts,src/driver-cli.ts,src/driver-link.ts,src/driver-policy.ts,src/driver-tty.ts,src/driver-pin.ts,src/acp-client.ts"
+  - "src/driver-launch.ts"
+  - "src/launch-spec.ts"
+  - "src/launch-sign.ts"
+applyTo: "src/driver.ts,src/driver-cli.ts,src/driver-link.ts,src/driver-policy.ts,src/driver-tty.ts,src/driver-pin.ts,src/acp-client.ts,src/driver-launch.ts,src/launch-spec.ts,src/launch-sign.ts"
 ---
 
 # Driven sessions (#412)
@@ -38,7 +41,12 @@ Claude Code and Copilot CLI load this file automatically when they read or edit 
 - The driver is a separate process and entry (`src/driver-cli.ts`). No driver module may enter the
   stdio MCP server's, the hooks', the watcher's or the viewer's import graph, and the driver binds no
   listener (`test/driver-cli.test.ts`). It reads and writes the hub only through `store.ts`.
-- Nothing changes for anyone who never runs it: no table, column or trigger.
+- Step 3 (the Electron launch) is being built in parts. Part 1, on main: the `launches` and
+  `launch_asks` tables, the read routes, and `driver-cli.js run <launch id> <hub db>`, the detached
+  driver main will start. Nothing starts it yet, the page reads none of it, and a hub nobody launches
+  from keeps an empty `launches` table (design §9).
+- Nothing changes for anyone who never runs it: step 2 adds no table, column or trigger; step 3's
+  tables stay empty and no other snapshot moves.
 
 ## Invariants in detail
 
@@ -164,3 +172,62 @@ Claude Code and Copilot CLI load this file automatically when they read or edit 
   on every exit path, forced or not; a SIGKILL leaves a stale pin, which never counts and which
   the next prune sweeps. A checkout pins nothing. The rules that read pins are in
   `setup-and-installers.md` ("Runtime pins").
+
+## Step 3, part 1: storage and the detached `run` mode
+
+- **The launch row** (`launches`, `store.ts`, design §6). The DRIVER writes it, from the fd-3 spec,
+  after `claimDriverSlot` succeeds (`createLaunch`, status `running`), so a refused start leaves no
+  row. It holds launch facts only (host, project, stream, cwd, mode, model, effort, budgets, prompt,
+  spec version, status `running|parked|ended`, end reason) and the progress the driver reports
+  (`recordLaunchProgress`: child pgid and start identity, native host pid, linked sessions, active
+  time, tool calls). Nothing clock-derived: whether a running launch's driver is alive is
+  `launchDriverAlive`, its fresh `driver:` lease. `/api/launches` (whole-table domain `launches`)
+  serves `launchView`: no prompt, process ids or ACP session id; `GET /api/launches/:id` (fresh) adds
+  `driver: running|lost|null`; `GET /api/launches/:id/prompt` serves the prompt per launch. Ended
+  rows older than 30 days are pruned at `createLaunch`, with their log folders.
+- **Stop** (`requestLaunchStop`) is idempotent and unpinned: `stop_requested_at` is set once
+  (usage writes move `revision`); a parked launch has no driver, so it ends at once.
+  `driverStopRequested` reads both step 2's lease and this column; `driver-cli.js stop <id>`
+  writes both.
+- **The spec** (`launch-spec.ts`) is versioned (`LAUNCH_SPEC_VERSION = 1`), at most 1 MiB, read
+  from fd 3 to its end, and validated strictly: exact fields (any unknown one, such as an
+  executable or argv, refuses), the launch id must equal argv's, `cwd` absolute, modes `ask`,
+  `read-only` and `plan`, Copilot's own effort levels, bounded budgets (active time 1 min to 8 h,
+  tool calls 1 to 2000), a 1 to 65536-character prompt, an env of name → string, and a 32-byte
+  base64 launch key. A `resume` spec carries only the id, env and key: the facts come from the row.
+- **`run <launch id> <hub db>`** (`driver-cli.ts`): no TTY. It writes exactly one stdout line,
+  `{"ok":true,"launch":<id>}` once the session is starting or `{"ok":false,"error":…}` (exit 65 for
+  a bad spec, 75 at the driver cap, 1 otherwise), and everything else to the launch's logs and row.
+  It pins its runtime like step 2, resolves `copilot` on the spec's PATH and, when that is a script,
+  its `#!` interpreter on the same PATH with the same ownership checks (§8), requiring Node 22 or
+  later for a `node` interpreter, and spawns `[interpreter, script, …copilotArgs]`. The child's env is
+  the spec's env through `childEnv`, with `AGENT_INBOX_DB` set unless the hub is the spec's
+  `$HOME/.agent-inbox/inbox.db`. SIGTERM or SIGHUP stops in order; a second signal forces.
+- **Signed approvals** (`driver-launch.ts`, `launch-sign.ts`, §4.3). An app launch files each ask as
+  an `approval` question in `@sessions` with its choices as options (`Allow once`/`Deny`, or
+  `Approve the plan`/`Not yet`), and records in `launch_asks` (read by no snapshot) the launch, the
+  response revision at filing and the option ids, in one transaction with the item
+  (`fileLaunchAsk`). Main answers with `reply = <option id>` and `reply_context` = the hex
+  HMAC-SHA256, under the launch key, of the length-prefixed parts
+  `agent-inbox/launch-approval/v1 ‖ item ‖ filing revision ‖ option id`; the launch key is
+  `HMAC-SHA256(masterKey, len ‖ 'agent-inbox/launch-key/v1' ‖ len ‖ launchId)` (§14.3). On a hub
+  change the driver reads its asks' replies (`listLaunchAskReplies`) and queues only a verified one
+  as an approval intent, behind every frame already read and re-validated like a TTY answer. Any
+  other reply (the ordinary reply route, an older viewer, another key, another revision, item or
+  option) is logged as `approval_refused` and ignored: the ask stays open and nothing is allowed or
+  declined on its strength. `settleLaunchAsk` resolves the item and removes its mapping.
+- **Park and minimal resume** (§7). In `run` mode, 2 h idle parks the launch (`parkLaunch`): the
+  child is closed, the row keeps `acp_session` only when the task was sent (a never-prompted
+  session cannot be loaded) and forgets the processes; a Stop that arrived meanwhile ends it
+  instead. A `resume` spec claims the parked row (`resumeLaunch`, parked → running, once), loads the
+  session (`session/load`, history ignored until it answers, then the mode and `allow_all` verified)
+  without re-sending the task, or starts a fresh one and sends the stored task when there is none.
+  The row's earlier `sessions` prove "from" (§14.3): the new driver re-takes their `driven:` leases
+  under the same launch id, so `readdressMessages` moves their open messages to the new server once
+  it links, and `pushed.json` starts empty, so they are pushed again (§5.3).
+- **Tests**: `test/launches.test.ts` (rows, Stop, liveness, pruning, asks, routes, §9 d),
+  `test/launch-spec.test.ts` (the spec and the MAC against an independent implementation in
+  `test/launch-fixtures.ts`), `test/driver.test.ts` (signed approvals, ordering, Plan first, the row,
+  resume), `test/driver-run.test.ts` (`run` end to end against a fake `copilot`: status line, row,
+  Stop, park, resume by load, a signed approval, refusals), `test/mixed-version.test.ts` (a v2.2.0
+  viewer's reply never approves).

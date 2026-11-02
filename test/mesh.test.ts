@@ -297,6 +297,18 @@ describe('the Agents lens model', () => {
     expect(claude.trace.reduce((a, b) => a + b, 0)).toBe(1)
   })
 
+  it('marks a driven session, and one this app started (#412 step 3)', () => {
+    const activity = [
+      row({ session: 'd1', agent: 'copilot', project: 'p', doing: 'Working', last_call_at: at(1000), driven: true } as never),
+      row({ session: 'd2', agent: 'copilot', project: 'p', doing: 'Working', last_call_at: at(1000), driven: true } as never),
+      row({ session: 'plain', agent: 'copilot', project: 'p', doing: 'Working', last_call_at: at(1000) }),
+    ]
+    const [group] = agentGroups({ activity, attention: [], startedHere: ['d2', 'plain'], nowMs: NOW })
+    expect(group!.sessions.map((s) => [s.session, s.driven, s.startedHere])).toEqual([
+      ['d1', true, false], ['d2', true, true], ['plain', false, false],
+    ])
+  })
+
   it('a working session with no call yet says so', () => {
     const [group] = agentGroups({ activity: [row({ session: 'n', agent: 'copilot', project: 'p', doing: 'Starting', started_at: at(60_000), last_call_at: null })], attention: [], nowMs: NOW })
     expect(sessionRecency(group!.sessions[0]!)).toBe('no call yet')

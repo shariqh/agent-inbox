@@ -3800,14 +3800,17 @@ function dispositionEl(onResponse, onSnooze, key, onPin = null, { label = 'More 
   snooze('Not now · 4h', 4 * 60 * 60_000)
   snooze('Tomorrow', 24 * 60 * 60_000)
   snooze('Next week', 7 * 24 * 60 * 60_000)
-  const clarify = btn('Needs clarification', () => {
-    onResponse('clarify', 'Please clarify the exact decision or task you need from me.')
-  })
-  clarify.className = 'disposition-btn'
-  wrap.appendChild(clarify)
-  const decline = btn('Decline', () => onResponse('decline', 'Declined'))
-  decline.className = 'disposition-btn decline'
-  wrap.appendChild(decline)
+  // an ask answered only with its own options (#412 step 3) offers no other response
+  if (onResponse) {
+    const clarify = btn('Needs clarification', () => {
+      onResponse('clarify', 'Please clarify the exact decision or task you need from me.')
+    })
+    clarify.className = 'disposition-btn'
+    wrap.appendChild(clarify)
+    const decline = btn('Decline', () => onResponse('decline', 'Declined'))
+    decline.className = 'disposition-btn decline'
+    wrap.appendChild(decline)
+  }
   menu.append(summary, wrap)
   return menu
 }
@@ -6515,7 +6518,6 @@ function openMessage(session) {
 function initLaunches() {
   launchUi = createLaunchUi({
     fetchJson: (url) => fetch(url).then((r) => (r.ok ? r.json() : null)),
-    postJSON,
     activity: () => lastData?.activity ?? [],
     launches: () => lastData?.launches ?? null,
     rel,
@@ -8581,6 +8583,11 @@ const DRAFT_REASONS = {
   ],
   projectClosed: ['Kept because this project is closed.', 'Your send was not confirmed, and this project is closed.'],
   actionChanged: [ROW_ACTION_CHANGED, 'Your send was not confirmed, and this action has changed since.'],
+  // #412 step 3: an app launch's approval takes only its own options, so typed text never goes back to it
+  launchAsk: [
+    'Not sent: this approval takes only its own options.',
+    'Your send was not confirmed, and this approval takes only its own options.',
+  ],
 }
 const draftReason = (cause, unconfirmed) => DRAFT_REASONS[cause][unconfirmed ? 1 : 0]
 // Issue #322: the server answered a replay from its record of the earlier send,
@@ -8933,7 +8940,9 @@ function placeRestoredDraft(key, draft) {
       if (itemHolds(item, draft)) return null
       const unchanged = Boolean(item) && cardSections(item).showAnswer && sameAnswer(draft.answer, draftAnswerOf(item))
       const projectClosed = Boolean(item) && closedSet().has(item.project)
-      const inPlace = unchanged && !projectClosed
+      // an app launch's approval has no editor to put it back in (#412 step 3)
+      const launchAsk = isLaunchAskItem(item)
+      const inPlace = unchanged && !projectClosed && !launchAsk
         && draftReplies[id] === undefined && draftReplyContexts[id] === undefined
       if (!inPlace && recoveryHolds(id, draft)) return null
       const generation = bumpDraftGeneration(itemDraftGenerations, id)
@@ -8948,7 +8957,8 @@ function placeRestoredDraft(key, draft) {
         if (intent) itemDraftRetryIntents[id] = { generation, intent: { ...intent } }
         return { id, queue: true }
       }
-      const cause = item?.status !== 'open' ? 'questionClosed' : unchanged && projectClosed ? 'projectClosed' : 'questionChanged'
+      const cause = item?.status !== 'open' ? 'questionClosed' : unchanged && projectClosed ? 'projectClosed'
+        : unchanged && launchAsk ? 'launchAsk' : 'questionChanged'
       preserveItemDraftRecovery(id, {
         title: draft.title,
         text: draft.text,
@@ -9139,6 +9149,12 @@ async function approveLaunchAsk(it, label, kind = 'answer') {
     resumeRender()
     return
   }
+  // answered: no text typed on this card waits any longer (a draft would keep the list paused)
+  bumpDraftGeneration(itemDraftGenerations, it.id)
+  delete draftReplies[it.id]
+  delete draftReplyContexts[it.id]
+  delete itemDraftMeta[it.id]
+  delete itemDraftRetryIntents[it.id]
   await reloadAndPaint()
 }
 
@@ -9540,6 +9556,9 @@ function answerEl(it, { surface = null } = {}) {
     }
     wrap.appendChild(box)
   }
+  // #412 step 3: an app launch's approval is answered only with one of its own
+  // options, which main signs; it has no answer or context box to type into
+  const launchAsk = isLaunchAskItem(it)
   const row = document.createElement('div')
   row.className = 'reply-row'
   if (opts.some((o) => o.detail)) {
@@ -9549,6 +9568,20 @@ function answerEl(it, { surface = null } = {}) {
     })
     cmp.className = 'compare-toggle'
     row.appendChild(cmp)
+  }
+  if (launchAsk) {
+    row.appendChild(writeErrorEl(it.id))
+    wrap.appendChild(row)
+    const entry = { kind: 'item', item: it }
+    const keyPrefix = surface ? `${surface}:` : ''
+    wrap.appendChild(dispositionEl(
+      null,
+      (until) => snoozeAsk(entry, until),
+      `${keyPrefix}item:${it.id}`,
+      surface || !pinOffered(it, 'item') ? null : () => pinAsk(entry),
+      surface ? { label: 'More…' } : {},
+    ))
+    return wrap
   }
   const input = document.createElement('textarea')
   input.className = 'reply-input'

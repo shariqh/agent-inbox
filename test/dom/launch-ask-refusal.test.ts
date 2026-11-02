@@ -6,7 +6,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import type Database from 'better-sqlite3'
 import { createLaunch, fileLaunchAsk, getItem, insertItem } from '../../src/store.js'
-import { answerInput, bootApp, buttonLabelled, click, freshDb, row, sendButton, settle, type, useDomTest } from './harness.js'
+import { answerInput, bootApp, buttonLabelled, click, freshDb, row, settle, useDomTest } from './harness.js'
 
 useDomTest()
 
@@ -70,17 +70,19 @@ describe('an app launch’s ask in the ordinary viewer (#412 step 3)', () => {
     expect(getItem(db, id)!.status).toBe('open')
   })
 
-  it('refuses a typed answer the same way and keeps the text in its editor', async () => {
+  it('draws no answer or context box for it, and no Clarify or Decline: only its own options', async () => {
     db = freshDb()
     const id = launchAsk(db)
     await bootApp(db)
     click(row(id))
     await settle()
-    type(answerInput(id), 'Yes, go ahead.')
-    click(sendButton(id))
-    await settle()
-    expect(errorText(id)).toBe('Not sent — approve this from Agent Inbox’s own window.')
-    expect(answerInput(id)!.value).toBe('Yes, go ahead.')
-    expect(getItem(db, id)!.reply).toBeNull()
+    expect(answerInput(id)).toBeNull()
+    expect(row(id)!.querySelector('.reply-context-input, textarea')).toBeNull()
+    expect(buttonLabelled('Needs clarification', row(id)!)).toBeNull()
+    expect(buttonLabelled('Decline', row(id)!)).toBeNull()
+    expect(buttonLabelled('Allow once', row(id)!)).not.toBeNull()
+    expect(buttonLabelled('Deny', row(id)!)).not.toBeNull()
+    expect(buttonLabelled('Not now · 4h', row(id)!)).not.toBeNull()
   })
+
 })

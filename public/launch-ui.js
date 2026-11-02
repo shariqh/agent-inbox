@@ -26,7 +26,6 @@ const ENDED_SHOWN = 5
  *   bridge?: () => any,
  *   documentRef?: Document,
  *   fetchJson: (url: string) => Promise<any>,
- *   postJSON: (url: string, body?: object) => Promise<any>,
  *   activity: () => any[],
  *   launches: () => any[] | null,
  *   rel: (iso: string) => string,
@@ -551,7 +550,5 @@ export function createLaunchUi(deps) {
     paintDrawer,
     paintLane,
     approve,
-    interrupt: (launchId) => deps.postJSON(`/api/launches/${encodeURIComponent(launchId)}/interrupt`),
-    openNewSession,
   }
 }

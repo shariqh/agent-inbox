@@ -302,8 +302,10 @@ describe('the transcript’s events route (§3.6)', () => {
     const file = log(ID(1))
     writeFileSync(file, '{"event":"prompt","kind":"task"}\nnot json\n{"event":"agent_text","text":"hal')
     const first = await read(app, `/api/launches/${ID(1)}/events?after=0`)
-    expect(first.body).toMatchObject({ events: [{ event: 'prompt', kind: 'task' }], more: true, rotated: false })
+    // an unfinished last line is waited on at the page's pace: no "more" to re-read at once
+    expect(first.body).toMatchObject({ events: [{ event: 'prompt', kind: 'task' }], more: false, rotated: false })
     const next = first.body.next as number
+    expect((await read(app, `/api/launches/${ID(1)}/events?after=${next}`)).body).toEqual({ events: [], next, more: false, rotated: false })
     appendFileSync(file, 'f"}\n')
     expect((await read(app, `/api/launches/${ID(1)}/events?after=${next}`)).body).toMatchObject({ events: [{ event: 'agent_text', text: 'half' }], more: false })
     writeFileSync(file, '{"event":"ended","reason":"stopped"}\n')

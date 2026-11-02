@@ -11,7 +11,7 @@ import { dirname, join } from 'node:path'
 import type Database from 'better-sqlite3'
 import {
   claimDriverSlot, createLaunch, fileLaunchAsk, getItem, holdDriverLeases, insertItem, listSessionMessages, markDriverTurn,
-  parkLaunch, recordActivityCall, recordLaunchProgress, upsertActivity,
+  parkLaunch, recordActivityCall, recordLaunchProgress, resolveItem, upsertActivity,
 } from '../../src/store.js'
 import type { ViewerBridge } from './harness.js'
 import { bootApp, buttonLabelled, changedPollTick, click, freshDb, row, settle, type, useDomTest } from './harness.js'
@@ -303,6 +303,35 @@ describe('Approve on an @sessions ask (§4.3)', () => {
     await settle()
     expect(api.approve).toHaveBeenCalledWith({ item: id, revision: 0, optionId: 'reject_once' })
     expect(bridge.posts.filter((p) => p.url.includes(`/api/items/${id}`))).toEqual([])
+  })
+
+  it.each([
+    ['context typed for it', { text: '', context: 'Careful with the cache.' }],
+    ['its option typed as an answer', { text: 'Allow once', context: '' }],
+  ])('text kept from before (%s) waits in the unsent responses, never pauses the list, and an approval still lands (review of #431)', async (_, typed) => {
+    const api = launchBridge()
+    db = freshDb()
+    const id = launchAsk(db)
+    // text an earlier page kept for this ask, when approval cards still had text boxes
+    localStorage.setItem('agent-inbox-drafts-v1', JSON.stringify({ v: 1, entries: {
+      [`reply:${id}`]: { savedAt: Date.now(), draft: { type: 'reply', itemId: id, title: 'Allow copilot to run `npm test`?', ...typed, answer: { at: null, source: null, kind: null, text: null }, intent: null } },
+    } }))
+    await bootApp(db)
+    await changedPollTick(db)
+    expect(document.getElementById('pauseHint')?.textContent ?? '').toBe('')
+    expect(document.querySelector('#needsYouList .stale-drafts-fold')?.textContent).toContain('Not sent: this approval takes only its own options.')
+    click(row(id))
+    await settle()
+    click(buttonLabelled('Allow once', row(id)!))
+    await settle()
+    expect(api.approve).toHaveBeenCalledWith({ item: id, revision: 0, optionId: 'allow_once' })
+    for (let i = 0; i < 3; i++) await changedPollTick(db)
+    expect(document.getElementById('pauseHint')?.textContent ?? '').toBe('')
+    // the driver settles the ask
+    resolveItem(db, id)
+    await changedPollTick(db)
+    expect(row(id)).toBeNull()
+    expect(document.getElementById('pauseHint')?.textContent ?? '').toBe('')
   })
 
   it('anywhere else the route refuses it, with the plain message', async () => {

@@ -362,9 +362,12 @@ Approve), `public/launches.js` (pure rules) and `public/launch-settings.js` (Set
   Neither is written to browser storage.
 - **Approve and Decline (§4.3).** In the granted window, an option chosen on an `@sessions` approval
   (pill, ★ or keyboard: all go through `sendReply`) goes to `agentInboxLaunch.approve({ item, revision,
-  optionId })`, the option id read from `GET /api/launch-asks/:id` by its label; main signs it. A typed
-  answer, Clarify or Decline-with-text is refused on the card. Anywhere else the reply route's refusal
-  shows "Not sent — approve this from Agent Inbox's own window."
+  optionId })`, the option id read from `GET /api/launch-asks/:id` by its label; main signs it. The card
+  draws only the ask's own options and the deferrals (no answer or context box, no Clarify or Decline),
+  since main sends nothing else; an approval clears anything kept for the card, and text an earlier page
+  kept for it goes to the unsent responses ("this approval takes only its own options"), never back into
+  a hidden editor that would pause the list. Anywhere else the reply route's refusal shows "Not sent —
+  approve this from Agent Inbox's own window."
 - **The composer's delivery states (§5.3).** A driven session's row carries `driven_launch` and, while
   its driver's turn runs, `driven_turn { state, since }` (the driver's `driver-turn:` claim, written on a
   change only; `hook_watch_claims` is in no snapshot). `deliveryState(row, rel)` reads Arrives now, Queued
@@ -376,7 +379,9 @@ Approve), `public/launches.js` (pure rules) and `public/launch-settings.js` (Set
   up to 60 s for a driven session of that launch that receives messages, reads it in, and sends the text
   through the ordinary message path; otherwise the text stays with "The session didn't come back".
 - **The transcript** is a `<dialog>` reading `GET /api/launches/:id/events?after=N` on its own 2 s timer
-  only while open (whole lines, 256 KiB a read, `rotated` restarts it, at most 5000 events kept). Agent
+  only while open (whole lines, 256 KiB a read, `rotated` restarts it, at most 5000 events kept; `more`
+  asks for the next read at once only when a read stopped at the cap, so an unfinished last line from a
+  driver that died mid-write is re-read every 2 s, never in a loop). Agent
   text, tool calls, asks and answers are drawn as `textContent` lines only.
 - **Lanes (#304).** A running launch's working session gets a "Started here" tag and, in the granted
   window, Stop. Nothing here reaches `public/attention.js`, a badge, a count, the rail or the dock.

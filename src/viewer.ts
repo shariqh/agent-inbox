@@ -704,7 +704,9 @@ function launchEventsPath(db: Database.Database, id: string): string | null {
 }
 
 // Whole lines from `after`, at most 256 KiB, each parsed (an unreadable one is
-// skipped). `next` is where the next read starts.
+// skipped). `next` is where the next read starts. `more` only when this read
+// stopped at the cap: an unfinished last line (a driver that died mid-write)
+// is waited on at the page's own pace, never re-read at once in a loop.
 function readLaunchEvents(file: string | null, after: number): { events: unknown[]; next: number; more: boolean; rotated: boolean } {
   const empty = { events: [], next: 0, more: false, rotated: false }
   if (!file) return empty
@@ -723,7 +725,8 @@ function readLaunchEvents(file: string | null, after: number): { events: unknown
     const read = length > 0 ? readSync(fd, buffer, 0, length, start) : 0
     const end = buffer.subarray(0, read).lastIndexOf(0x0a)
     // no whole line yet; a line longer than one read is skipped, never waited on
-    if (end < 0) return { events: [], next: read === LAUNCH_EVENTS_MAX ? start + read : start, more: start < size, rotated }
+    const capped = read === LAUNCH_EVENTS_MAX
+    if (end < 0) return { events: [], next: capped ? start + read : start, more: capped, rotated }
     const events: unknown[] = []
     for (const line of buffer.subarray(0, end).toString('utf8').split('\n')) {
       if (!line) continue
@@ -732,7 +735,7 @@ function readLaunchEvents(file: string | null, after: number): { events: unknown
       } catch { /* a line this cannot read is skipped */ }
     }
     const next = start + end + 1
-    return { events, next, more: next < size, rotated }
+    return { events, next, more: capped && next < size, rotated }
   } finally {
     closeSync(fd)
   }

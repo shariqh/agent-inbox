@@ -60,19 +60,31 @@ export function appAsks(o: {
       settleLaunchAsk(o.db, itemId, outcome)
     },
     answers() {
-      const out: Array<{ itemId: string; approve: boolean }> = []
-      for (const row of listLaunchAskReplies(o.db, o.launchId)) {
-        const ask = filed.get(row.item_id)
-        if (!ask || row.status !== 'open' || !row.reply || ask.seen === row.response_revision) continue
-        ask.seen = row.response_revision
-        const choice = ask.choices.find((c) => c.id === row.reply)
-        const signed = choice !== undefined
-          && verifyApproval(o.launchKey, { item: row.item_id, revision: ask.revision, optionId: choice.id }, row.reply_context)
-        if (!choice || !signed) {
-          o.log({ event: 'approval_refused', item: row.item_id, why: choice ? 'signature' : 'option' })
+      const out: Array<{ itemId: string; approve: boolean; closed?: boolean }> = []
+      const rows = new Map(listLaunchAskReplies(o.db, o.launchId).map((row) => [row.item_id, row]))
+      for (const [itemId, ask] of filed) {
+        const row = rows.get(itemId)
+        const choice = row?.reply ? ask.choices.find((c) => c.id === row.reply) : undefined
+        const signed = row !== undefined && choice !== undefined
+          && verifyApproval(o.launchKey, { item: itemId, revision: ask.revision, optionId: choice.id }, row.reply_context)
+        // closed (an older viewer, a hand edit) or gone with no valid answer:
+        // a decline, so the request never waits on an ask nobody can answer
+        if (!row || row.status !== 'open') {
+          if (signed) {
+            out.push({ itemId, approve: choice!.approve })
+          } else {
+            o.log({ event: 'ask_closed', item: itemId, status: row?.status ?? 'missing' })
+            out.push({ itemId, approve: false, closed: true })
+          }
           continue
         }
-        out.push({ itemId: row.item_id, approve: choice.approve })
+        if (!row.reply || ask.seen === row.response_revision) continue
+        ask.seen = row.response_revision
+        if (!choice || !signed) {
+          o.log({ event: 'approval_refused', item: itemId, why: choice ? 'signature' : 'option' })
+          continue
+        }
+        out.push({ itemId, approve: choice.approve })
       }
       return out
     },

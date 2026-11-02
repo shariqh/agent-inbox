@@ -18,7 +18,7 @@ import type { LaunchMode } from '../src/driver-policy.js'
 import {
   annotateBoardRow, claimDriverSlot, getBoard, getItem, insertItem, isDrivenSession, listItems, listPending,
   listSessionMessages, openDb, replyItem, requestDriverStop, sendSessionMessage, upsertActivity, upsertBoard,
-  withdrawSessionMessage, endActivity, createLaunch, getLaunch,
+  withdrawSessionMessage, endActivity, createLaunch, getLaunch, dismissItem, resolveItem,
 } from '../src/store.js'
 import { LAUNCH_KEY, sign } from './launch-fixtures.js'
 import { MODE, configUpdate, fakeAgent, permissionRequest, toolCall } from './acp-fake.js'
@@ -632,6 +632,35 @@ describe('app launches: signed approvals (§4.3)', () => {
     await until(() => getItem(h.human, item.id)!.status === 'resolved', 'resolved')
     expect(getItem(h.human, item.id)!.outcome).toBe('Allowed once in Agent Inbox.')
     expect(h.human.prepare(`SELECT COUNT(*) FROM launch_asks`).pluck().get()).toBe(0)
+    h.driver.stop()
+    await h.done
+  })
+
+  it('a mapped ask closed without a valid answer (an older viewer, a hand edit) is declined, never left waiting', async () => {
+    const h = start({ app: true, script: asking() })
+    await h.ready()
+    const item = await askItem(h)
+    // an unsigned reply, then a Dismiss from a viewer that does not refuse it
+    replyItem(h.human, item.id, 'allow_once')
+    dismissItem(h.human, item.id)
+    expect(await h.answerTo(900)).toEqual({ outcome: 'selected', optionId: 'reject_once' })
+    await until(() => getItem(h.human, item.id)!.outcome !== '', 'settled')
+    expect(getItem(h.human, item.id)!.outcome).toBe('Closed without an approval; the agent’s turn stopped.')
+    expect(h.log.find((e) => e.event === 'ask_closed')).toMatchObject({ item: item.id, status: 'dismissed' })
+    expect(h.human.prepare(`SELECT COUNT(*) FROM launch_asks`).pluck().get()).toBe(0)
+    h.driver.stop()
+    await h.done
+  })
+
+  it('a closed plan ask keeps the session in plan mode', async () => {
+    const h = start({ app: true, mode: 'plan', script: { onPrompt(fake, id) { fake.respond(id, { stopReason: 'end_turn' }) } } })
+    await h.ready()
+    const item = await askItem(h)
+    resolveItem(h.human, item.id)
+    await until(() => h.log.find((e) => e.event === 'ask_closed'), 'closed')
+    await until(() => getItem(h.human, item.id)!.outcome !== '', 'settled')
+    expect(getItem(h.human, item.id)!.outcome).toBe('Closed without an approval; the session stays in plan mode.')
+    expect(h.fake.received.filter((m) => m.method === 'session/set_mode')).toHaveLength(1)
     h.driver.stop()
     await h.done
   })

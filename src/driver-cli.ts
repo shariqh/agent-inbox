@@ -22,7 +22,7 @@
 import { execFileSync, spawn } from 'node:child_process'
 import { randomBytes, randomUUID } from 'node:crypto'
 import {
-  accessSync, appendFileSync, closeSync, constants, createWriteStream, mkdirSync, openSync, readFileSync, readSync,
+  accessSync, appendFileSync, closeSync, constants, createWriteStream, fstatSync, mkdirSync, openSync, readFileSync, readSync,
   realpathSync, renameSync, rmSync, statSync,
 } from 'node:fs'
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
@@ -415,6 +415,17 @@ async function runLaunch(argv: string[]): Promise<void> {
     process.exit(64)
   }
   if (process.platform !== 'darwin' && process.platform !== 'linux') refuseStart(`${process.platform} is not supported`, 2)
+  // fd 3 must be main's pipe: without one, Node's own event loop holds that
+  // descriptor (on macOS its kqueue, which fstat reports as a FIFO with no
+  // permission bits), and reading or closing it aborts the process. Only a
+  // socket (Node's 'pipe' stdio) or a real FIFO is read, and only a descriptor
+  // verified and read is closed.
+  let specPipe = false
+  try {
+    const kind = fstatSync(3)
+    specPipe = kind.isSocket() || (kind.isFIFO() && (kind.mode & 0o777) !== 0)
+  } catch { /* not open */ }
+  if (!specPipe) refuseStart('no launch spec on fd 3 (Electron main passes it on a pipe)', 65)
   const text = readSpec(3)
   // fd 3 carried the launch key: close it before anything starts, so copilot
   // and every shell it runs never inherit it

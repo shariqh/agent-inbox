@@ -217,6 +217,10 @@ describe('the ordinary reply and note routes refuse a launch’s ask (#412 step 
       text: 'allow_once', context: 'f'.repeat(64), intent_client_id: 'c', intent_sequence: 1, intent_action_id: 'a',
     })).toEqual({ status: 200, body: { ok: false, reason: 'launch_ask' } })
     expect(await post(`/api/items/${itemId}/annotate`, { text: 'Looks fine.' })).toEqual({ status: 200, body: { ok: false, reason: 'launch_ask' } })
+    // closing it here would strand its driver: Resolve and Dismiss refuse it too
+    expect(await post(`/api/items/${itemId}/resolve`, undefined)).toEqual({ status: 200, body: { ok: false, reason: 'launch_ask' } })
+    expect(await post(`/api/items/${itemId}/dismiss`, undefined)).toEqual({ status: 200, body: { ok: false, reason: 'launch_ask' } })
+    expect(getItem(db, itemId)!.status).toBe('open')
     expect(getItem(db, itemId)).toMatchObject({ reply: null, reply_context: null, annotation: null, response_revision: 0 })
     // invalid input is still a 400 first
     expect((await post(`/api/items/${itemId}/reply`, { text: 1 })).status).toBe(400)

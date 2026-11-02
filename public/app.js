@@ -954,6 +954,10 @@ function showWriteError(id, msg) {
 const WRITE_FAILED = 'Not sent — nothing was lost; press Send to retry.'
 // #412 step 3: an app launch's approval counts only from the app's own window
 const LAUNCH_ASK_REFUSED = 'Not sent — approve this from Agent Inbox’s own window.'
+// An app launch's approval (#412 step 3): only its driver closes it, after the
+// app's own window answers, so the page draws no Resolve or Dismiss for it.
+// The viewer's routes refuse those writes anyway; this only keeps from offering them.
+const isLaunchAskItem = (it) => it?.project === '@sessions' && it?.action_owner === 'approval'
 
 function allItems(g) {
   return [...g.needsYou.flatMap((x) => x.items), ...g.notes.flatMap((x) => x.items), ...g.done]
@@ -6788,7 +6792,7 @@ const dismissStage = createStagedSend({
 // the one staged-dismiss entry point: the row ✕ and Task 17's `x` key both call
 // this, so mouse and keyboard share one undo window
 function stageDismiss(id) {
-  if (stagedDismiss.has(id)) return
+  if (stagedDismiss.has(id) || isLaunchAskItem(freshItem(id))) return
   stagedDismiss.add(id)
   dismissStage.stage(`dismiss:${id}`, { id })
   forceRender()
@@ -7411,7 +7415,7 @@ function needsRowEl(m, entry, nowMs) {
   // Items only. Board rows deliberately have no line-level ✕: their expanded
   // card owns the truthful dispositions (snooze, clarify, decline, or do/answer).
   // The old ✕ advertised the x key and did nothing.
-  const dismissBit = m.kind === 'item' ? '<button class="nrow-dismiss" title="Dismiss (x)" aria-label="Dismiss">✕</button>' : ''
+  const dismissBit = m.kind === 'item' && !isLaunchAskItem(entry.item) ? '<button class="nrow-dismiss" title="Dismiss (x)" aria-label="Dismiss">✕</button>' : ''
   // The Later section calls both ways back "Back to inbox"; the separate
   // snoozed fold keeps its Wake now.
   const wakeBit = m.later
@@ -9593,8 +9597,10 @@ function itemCardEl(it, {
   if (s.showActions) {
     const actions = document.createElement('div')
     actions.className = 'actions'
-    actions.appendChild(btn('Resolve', () => act(it.id, 'resolve'), 'resolve'))
-    actions.appendChild(btn('Dismiss', () => act(it.id, 'dismiss')))
+    if (!isLaunchAskItem(it)) {
+      actions.appendChild(btn('Resolve', () => act(it.id, 'resolve'), 'resolve'))
+      actions.appendChild(btn('Dismiss', () => act(it.id, 'dismiss')))
+    }
     if (s.answered && !s.showAnswer) {
       // fix round 1 (hardening): a small inline slot beside the button for the
       // refusal message changeAnswer() surfaces when the server refuses (spec req #2)
@@ -9818,7 +9824,7 @@ function runIntent(intent) {
       if (it) stageDismiss(it.id)
       return
     case 'resolve':
-      if (it) act(it.id, 'resolve') // deck-aware target — never a bare selectedId
+      if (it && !isLaunchAskItem(it)) act(it.id, 'resolve') // deck-aware target — never a bare selectedId
       return
     case 'search':
       focusSearch()
@@ -10046,6 +10052,10 @@ function moreButton(section, remaining) {
 async function act(id, action) {
   const res = await postJSON(`/api/items/${id}/${action}`)
   if (res === null) return // network failure — postJSON already signaled it
+  if (res.ok === false && res.reason === 'launch_ask') {
+    showWriteError(id, LAUNCH_ASK_REFUSED)
+    return
+  }
   await reloadAndPaint()
 }
 

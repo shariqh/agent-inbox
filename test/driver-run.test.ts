@@ -5,6 +5,7 @@
 // approval, and its refusals before anything starts.
 import { afterEach, describe, expect, it } from 'vitest'
 import { spawn } from 'node:child_process'
+import { once } from 'node:events'
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type { Duplex } from 'node:stream'
@@ -327,4 +328,17 @@ describe('agent-inbox-driver run (#412 step 3)', () => {
     expect(getLaunch(r.hub, LAUNCH)).toMatchObject({ status: 'ended', end_reason: 'budget:tool_calls', tool_calls: 3 })
     expect(readFileSync(r.fakeLog, 'utf8').split('\n').filter((line) => line.includes('"argv"'))).toHaveLength(starts)
   }, 40_000)
+
+  it('refuses without touching fd 3 when main passed no spec pipe there: exit 65 and the status line, never an abort', async () => {
+    const r = rig()
+    const child = spawn(process.execPath, ['--import', 'tsx', join(REPO, 'src', 'driver-cli.ts'), 'run', LAUNCH, r.db], {
+      cwd: REPO, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, AGENT_INBOX_DB: join(r.dir, 'elsewhere.db') },
+    })
+    let stdout = ''
+    child.stdout!.on('data', (chunk) => { stdout += chunk })
+    const [code, signal] = await once(child, 'exit') as [number | null, NodeJS.Signals | null]
+    expect({ code, signal }).toEqual({ code: 65, signal: null })
+    expect(JSON.parse(stdout.trim())).toEqual({ ok: false, error: 'no launch spec on fd 3 (Electron main passes it on a pipe)' })
+    expect(getLaunch(r.hub, LAUNCH)).toBeNull()
+  })
 })

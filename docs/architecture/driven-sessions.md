@@ -195,8 +195,11 @@ Claude Code and Copilot CLI load this file automatically when they read or edit 
   `read-only` and `plan`, Copilot's own effort levels, bounded budgets (active time 1 min to 8 h,
   tool calls 1 to 2000), a 1 to 65536-character prompt, an env of name → string, and a 32-byte
   base64 launch key. A `resume` spec carries only the id, env and key: the facts come from the row.
-  The driver closes fd 3 as soon as it has read it, before anything starts, so copilot and its tool
-  shells never inherit the launch-key channel; main passes the spec over a pipe, never a file.
+  The driver reads fd 3 only after `fstat` shows a socket (Node's `'pipe'` stdio) or a real FIFO;
+  anything else (no pipe passed, where Node's own kqueue holds fd 3 as a FIFO with no permission
+  bits) refuses with exit 65 and the status line, without touching the descriptor. It closes fd 3 as
+  soon as it has read it, before anything starts, so copilot and its tool shells never inherit the
+  launch-key channel; main passes the spec over a pipe, never a file.
 - **`run <launch id> <hub db>`** (`driver-cli.ts`): no TTY. It writes exactly one stdout line,
   `{"ok":true,"launch":<id>}` once the session is starting or `{"ok":false,"error":…}` (exit 65 for
   a bad spec, 75 at the driver cap, 1 otherwise), and everything else to the launch's logs and row.
@@ -221,7 +224,11 @@ Claude Code and Copilot CLI load this file automatically when they read or edit 
   human never sees an answer recorded that nothing acts on, the viewer's ordinary reply and note
   routes refuse an item mapped in `launch_asks` (`isLaunchAsk`) with `200 {ok:false,
   reason:'launch_ask'}`, and the page says "Not sent — approve this from Agent Inbox's own window."
-  and keeps any typed text.
+  and keeps any typed text. Resolve and Dismiss refuse it the same way, since a closed ask would
+  strand its driver, and the page draws neither (nor the row's ✕) for an `@sessions` approval. As
+  defence in depth, a mapped ask the driver finds closed or gone without a valid signed answer (an
+  older viewer, a hand edit) is settled as a decline (`reject_once`, logged `ask_closed`; a plan ask
+  stays in plan mode), never left waiting.
 - **Park and minimal resume** (§7). In `run` mode, 2 h idle parks the launch (`parkLaunch`): the
   child is closed, the row keeps `acp_session` only when the task was sent (a never-prompted
   session cannot be loaded) and forgets the processes; a Stop that arrived meanwhile ends it

@@ -5,7 +5,7 @@
 // human typed.
 import { afterEach, describe, expect, it } from 'vitest'
 import type Database from 'better-sqlite3'
-import { createLaunch, fileLaunchAsk, getItem } from '../../src/store.js'
+import { createLaunch, fileLaunchAsk, getItem, insertItem } from '../../src/store.js'
 import { answerInput, bootApp, buttonLabelled, click, freshDb, row, sendButton, settle, type, useDomTest } from './harness.js'
 
 useDomTest()
@@ -41,6 +41,33 @@ describe('an app launch’s ask in the ordinary viewer (#412 step 3)', () => {
     await settle()
     expect(errorText(id)).toBe('Not sent — approve this from Agent Inbox’s own window.')
     expect(getItem(db, id)).toMatchObject({ status: 'open', reply: null, reply_context: null, response_revision: 0 })
+  })
+
+  it('draws no Resolve, Dismiss or ✕ for it, and the keyboard closes nothing', async () => {
+    db = freshDb()
+    const id = launchAsk(db)
+    const other = insertItem(db, { project: 'alpha', stream: '', agent: 'claude', kind: 'question', title: 'Plain?' })
+    await bootApp(db)
+    expect(row(id)!.querySelector('.nrow-dismiss')).toBeNull()
+    expect(row(other)!.querySelector('.nrow-dismiss')).not.toBeNull()
+    click(row(id))
+    await settle()
+    expect(buttonLabelled('Resolve', row(id)!)).toBeNull()
+    expect(buttonLabelled('Dismiss', row(id)!)).toBeNull()
+    for (const key of ['x', 'e']) document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }))
+    await settle()
+    expect(getItem(db, id)!.status).toBe('open')
+  })
+
+  it('says where to answer if a Resolve or Dismiss reaches the viewer anyway', async () => {
+    db = freshDb()
+    const id = launchAsk(db)
+    await bootApp(db)
+    click(row(id))
+    await settle()
+    const response = await fetch(`/api/items/${id}/dismiss`, { method: 'POST' })
+    expect(await response.json()).toEqual({ ok: false, reason: 'launch_ask' })
+    expect(getItem(db, id)!.status).toBe('open')
   })
 
   it('refuses a typed answer the same way and keeps the text in its editor', async () => {

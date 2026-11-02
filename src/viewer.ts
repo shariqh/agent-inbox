@@ -1018,12 +1018,17 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
     return c.json({ prompt: launch.prompt })
   })
 
+  // Issue #412 step 3: closing an app launch's ask here would leave its driver
+  // waiting on a request nobody can answer, so these refuse it like the reply
+  // route (a store-level refusal, 200); the driver settles its own asks.
   app.post('/api/items/:id/resolve', (c) => {
+    if (isLaunchAsk(db, c.req.param('id'))) return c.json({ ok: false, reason: 'launch_ask' })
     resolveItem(db, c.req.param('id'))
     return c.json({ ok: true })
   })
 
   app.post('/api/items/:id/dismiss', (c) => {
+    if (isLaunchAsk(db, c.req.param('id'))) return c.json({ ok: false, reason: 'launch_ask' })
     dismissItem(db, c.req.param('id'))
     return c.json({ ok: true })
   })

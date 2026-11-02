@@ -66,8 +66,12 @@ export interface AskChannel {
   readonly where: string
   file(ask: AskFiling): string
   settle(itemId: string, outcome: string): void
-  /** Verified answers since the last call, by item. Read when the hub changed. */
-  answers(): Array<{ itemId: string; approve: boolean }>
+  /**
+   * Verified answers since the last call, by item, read when the hub changed.
+   * `closed`: the ask was closed (or vanished) with no valid answer, which the
+   * driver settles as a decline rather than leave the request waiting.
+   */
+  answers(): Array<{ itemId: string; approve: boolean; closed?: boolean }>
 }
 
 /** What the driver learns as it runs, for an app launch's row. */
@@ -198,7 +202,7 @@ type Turn = { rpcId: number; startedAt: number; kind: 'task' | 'messages' | 'pin
 
 type Event =
   | { type: 'frame'; frame: AcpFrame }
-  | { type: 'answer'; askId: string; approve: boolean }
+  | { type: 'answer'; askId: string; approve: boolean; closed?: boolean }
   | { type: 'interrupt' }
   | { type: 'stop'; reason: EndReason }
   | { type: 'tick' }
@@ -402,7 +406,7 @@ export class Driver {
   private handle(event: Event): void {
     switch (event.type) {
       case 'frame': return this.onFrame(event.frame)
-      case 'answer': return this.onAnswer(event.askId, event.approve)
+      case 'answer': return this.onAnswer(event.askId, event.approve, event.closed === true)
       case 'interrupt': return this.onInterrupt()
       case 'stop': return this.end(event.reason)
       case 'tick': return this.onTick()
@@ -643,15 +647,17 @@ export class Driver {
     this.o.ui.settled(ask.id, outcome)
   }
 
-  private onAnswer(askId: string, approve: boolean): void {
+  private onAnswer(askId: string, approve: boolean, closed = false): void {
     const ask = this.asks.get(askId)
     if (!ask || this.ending) return
-    if (ask.kind === 'plan') return this.onPlanAnswer(ask, approve)
+    // closed without a valid answer (#412 review): a decline, never left waiting
+    const declined = closed ? 'Closed without an approval' : `Declined ${this.askChannel.where}`
+    if (ask.kind === 'plan') return this.onPlanAnswer(ask, approve && !closed, declined)
     const rpcId = ask.rpcId!
-    if (!approve) {
+    if (!approve || closed) {
       this.conn.respond(rpcId, ask.reject ? { outcome: { outcome: 'selected', optionId: ask.reject } } : { outcome: { outcome: 'cancelled' } })
-      this.o.log({ event: 'permission_answer', id: rpcId, answer: ask.reject ?? 'cancelled' })
-      return this.settle(ask, `Declined ${this.askChannel.where}; the agent’s turn stopped.`)
+      this.o.log({ event: 'permission_answer', id: rpcId, answer: ask.reject ?? 'cancelled', ...(closed ? { why: 'ask closed' } : {}) })
+      return this.settle(ask, `${declined}; the agent’s turn stopped.`)
     }
     // re-validate against the state the human saw (§4.1, Ordering)
     if (ask.generation !== this.state.generation) {
@@ -683,8 +689,8 @@ export class Driver {
     this.o.ui.ask({ id, kind: 'plan', title, detail: 'The agent wrote its plan. Approve it to let the agent carry it out.' })
   }
 
-  private onPlanAnswer(ask: PendingAsk, approve: boolean): void {
-    if (!approve) return this.settle(ask, `Declined ${this.askChannel.where}; the session stays in plan mode.`)
+  private onPlanAnswer(ask: PendingAsk, approve: boolean, declined: string): void {
+    if (!approve) return this.settle(ask, `${declined}; the session stays in plan mode.`)
     if (this.phase !== 'awaiting_plan_approval' || !stateValid(this.phase, this.state)) return this.escalate('invalid state at plan approval')
     this.settle(ask, `Approved ${this.askChannel.where}.`)
     this.phase = 'switching'
@@ -840,7 +846,7 @@ export class Driver {
   // Verified answers from the hub (an app launch's signed approvals) become
   // intents queued behind every frame already read, then re-validated (§4.1).
   private takeAnswers(): void {
-    let answers: Array<{ itemId: string; approve: boolean }>
+    let answers: Array<{ itemId: string; approve: boolean; closed?: boolean }>
     try {
       answers = this.askChannel.answers()
     } catch (error) {
@@ -849,7 +855,7 @@ export class Driver {
     }
     for (const answer of answers) {
       const ask = [...this.asks.values()].find((a) => a.itemId === answer.itemId)
-      if (ask) this.enqueue({ type: 'answer', askId: ask.id, approve: answer.approve })
+      if (ask) this.enqueue({ type: 'answer', askId: ask.id, approve: answer.approve, ...(answer.closed ? { closed: true } : {}) })
     }
   }
 

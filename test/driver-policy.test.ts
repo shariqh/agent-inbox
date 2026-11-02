@@ -225,6 +225,9 @@ describe('text the human reads is made visible (#412 review)', () => {
     expect(terminalSafe('a\u009b31mb\u007fc\u0000d')).toBe('a\\x9b31mb\\x7fc\\x00d')
     expect(terminalSafe('rm -rf /\u202Etxt.exe\u2066x\u2069\u200B\uFEFF')).toBe('rm -rf /<U+202E>txt.exe<U+2066>x<U+2069><U+200B><U+FEFF>')
     expect(terminalSafe('line 1\nline\t2\r')).toBe('line 1\nline 2\\x0d')
+    // line and paragraph separators and every format character (#430 review)
+    expect(terminalSafe('alpha\u2028\u2028Folder: /x\u2029Mode')).toBe('alpha<U+2028><U+2028>Folder: /x<U+2029>Mode')
+    expect(terminalSafe('a\u061cb\u2060c\u2061d\u2062e\u2063f\u2064g\u00adh\u{e0041}i')).toBe('a<U+061C>b<U+2060>c<U+2061>d<U+2062>e<U+2063>f<U+2064>g<U+00AD>h<U+E0041>i')
     for (let code = 0; code < 0xa0; code++) {
       const out = terminalSafe(String.fromCharCode(code))
       expect([...out].every((ch) => ch === '\n' || (ch.charCodeAt(0) >= 0x20 && ch.charCodeAt(0) < 0x7f)), `U+${code.toString(16)}`).toBe(true)

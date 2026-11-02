@@ -35,7 +35,8 @@ These landed after v1 and still hold invariants; the release history itself is i
   (3) A newer navigation, a renderer crash or the window closing discards a proof still
   running; a crash revokes and the window's next load may re-bind under the same proof; a
   closed window never binds again; nothing binds once a quit has begun (#205). (4) Setup
-  is granted only while `setupInstallEnabled`, update installs and (#300) local file links
+  is granted only while `setupInstallEnabled`, driven sessions (#412 step 3, the `launch` grant) only
+  while `viewerOwned` with their switch on, on macOS (see `driven-sessions.md`), update installs and (#300) local file links
   only while `viewerOwned`; with none of them (a reused or failed-over viewer) nothing is
   probed. The UI is honest as well:
   the controller publishes `available.installPermitted` from main's

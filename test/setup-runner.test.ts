@@ -11,7 +11,7 @@ import { removeScratchDirs, scratchDir } from './scratch.js'
 const require = createRequire(import.meta.url)
 const PAYLOAD_CLI = resolve(import.meta.dirname, '..', 'scripts', 'runtime-payload.mjs')
 const SETUP_INFO_CLI = resolve(import.meta.dirname, '..', 'scripts', 'write-setup-info.mjs')
-type InstallBindingGrant = { setup: boolean; update: boolean; files: boolean }
+type InstallBindingGrant = { setup: boolean; update: boolean; files: boolean; launch: boolean }
 type InstallBinding = {
   navigationStarted(url: string): void
   navigationCommitted(url: string): Promise<boolean>
@@ -36,6 +36,7 @@ const {
     setupAllowed(): boolean
     updateAllowed(): boolean
     filesAllowed?(): boolean
+    launchAllowed?(): boolean
     isQuitting(): boolean
     proveOwnership(): Promise<boolean>
     apply(grant: InstallBindingGrant): void
@@ -476,8 +477,9 @@ describe('createInstallGate (#205)', () => {
 // the one this app started.
 describe('createInstallBinding (#216)', () => {
   const VIEWER = 'http://127.0.0.1:4319/'
-  const NONE: InstallBindingGrant = { setup: false, update: false, files: false }
-  const BOTH: InstallBindingGrant = { setup: true, update: true, files: true }
+  // the launch grant (#412 step 3) stays off unless the caller allows it
+  const NONE: InstallBindingGrant = { setup: false, update: false, files: false, launch: false }
+  const BOTH: InstallBindingGrant = { setup: true, update: true, files: true, launch: false }
   type Deferred<T> = { promise: Promise<T>; resolve(value: T): void; reject(error: unknown): void }
 
   function deferred<T>(): Deferred<T> {
@@ -594,13 +596,13 @@ describe('createInstallBinding (#216)', () => {
     [{ setup: false, update: false, files: true }],
   ])('rebinds only what this app may grant: %j', async (allowed) => {
     const h = loaded(allowed)
-    expect(h.granted).toEqual(allowed)
+    expect(h.granted).toEqual({ ...allowed, launch: false })
     h.binding.navigationStarted(VIEWER)
     expect(h.granted).toEqual(NONE)
     const rebound = h.binding.navigationCommitted(VIEWER)
     h.proof().resolve(true)
     await expect(rebound).resolves.toBe(true)
-    expect(h.granted).toEqual(allowed)
+    expect(h.granted).toEqual({ ...allowed, launch: false })
   })
 
   it('grants no local file links unless the caller allows them (#300)', async () => {
@@ -614,7 +616,7 @@ describe('createInstallBinding (#216)', () => {
       apply(grant) { Object.assign(granted, grant) },
     })
     binding.navigationStarted(VIEWER)
-    expect(granted).toEqual({ setup: true, update: true, files: false })
+    expect(granted).toEqual({ setup: true, update: true, files: false, launch: false })
   })
 
   it('never binds once a quit has begun: before the first load, before the commit, or while the proof runs', async () => {
@@ -709,7 +711,7 @@ describe('createInstallBinding (#216)', () => {
   // Main's own wiring text, evaluated against the real helper and a real gate,
   // so a wiring that skips the proof, the owned-viewer rule or the quit gate
   // fails here rather than in a user's window.
-  function mainWiring(flags: { setupInstallEnabled: boolean; viewerOwned: boolean }) {
+  function mainWiring(flags: { setupInstallEnabled: boolean; viewerOwned: boolean; launchEnabled?: boolean; platform?: string }) {
     const main = readFileSync(join(import.meta.dirname, '..', 'electron', 'main.cjs'), 'utf8')
     const start = main.indexOf('  installBinding = createInstallBinding({')
     const end = main.indexOf('\n  })\n', start)
@@ -724,9 +726,11 @@ describe('createInstallBinding (#216)', () => {
     })
     const refreshInstallPermission = vi.fn()
     const wiring = new Function(
-      'createInstallBinding', 'URL_BASE', 'installGate', 'reproveOwnership', 'updateController', 'flags',
+      'createInstallBinding', 'URL_BASE', 'installGate', 'reproveOwnership', 'updateController', 'flags', 'process',
       `let setupInstallEnabled = flags.setupInstallEnabled
       let viewerOwned = flags.viewerOwned
+      let launchEnabled = flags.launchEnabled === true
+      let launchWebContentsId = null
       let setupInstallWebContentsId = null
       let updateInstallWebContentsId = null
       let fileLinkWebContentsId = null
@@ -735,11 +739,11 @@ describe('createInstallBinding (#216)', () => {
       ${main.slice(start, end + '\n  })'.length)}
       return {
         installBinding,
-        ids: () => ({ setup: setupInstallWebContentsId, update: updateInstallWebContentsId, files: fileLinkWebContentsId }),
+        ids: () => ({ setup: setupInstallWebContentsId, update: updateInstallWebContentsId, files: fileLinkWebContentsId, launch: launchWebContentsId }),
       }`,
-    )(createInstallBinding, VIEWER, gate, reproveOwnership, { refreshInstallPermission }, flags) as {
+    )(createInstallBinding, VIEWER, gate, reproveOwnership, { refreshInstallPermission }, flags, { platform: flags.platform ?? 'darwin' }) as {
       installBinding: InstallBinding
-      ids(): { setup: number | null; update: number | null; files: number | null }
+      ids(): { setup: number | null; update: number | null; files: number | null; launch: number | null }
     }
     return { ...wiring, gate, reproveOwnership, refreshInstallPermission, proof: () => proofs.at(-1)! }
   }
@@ -747,24 +751,24 @@ describe('createInstallBinding (#216)', () => {
   it('main rebinds its window to the owned viewer only after the startup proof passes again', async () => {
     const w = mainWiring({ setupInstallEnabled: true, viewerOwned: true })
     w.installBinding.navigationStarted(VIEWER)
-    expect(w.ids()).toEqual({ setup: 7, update: 7, files: 7 })
+    expect(w.ids()).toEqual({ setup: 7, update: 7, files: 7, launch: null })
     expect(w.refreshInstallPermission).toHaveBeenCalledTimes(1)
 
     w.installBinding.navigationStarted(VIEWER)
-    expect(w.ids()).toEqual({ setup: null, update: null, files: null })
+    expect(w.ids()).toEqual({ setup: null, update: null, files: null, launch: null })
     // Settings learns at once that this window may no longer install.
     expect(w.refreshInstallPermission).toHaveBeenCalledTimes(2)
     const failed = w.installBinding.navigationCommitted(VIEWER)
     expect(w.reproveOwnership).toHaveBeenCalledOnce()
     w.proof().resolve(false)
     await expect(failed).resolves.toBe(false)
-    expect(w.ids()).toEqual({ setup: null, update: null, files: null })
+    expect(w.ids()).toEqual({ setup: null, update: null, files: null, launch: null })
 
     w.installBinding.navigationStarted(VIEWER)
     const rebound = w.installBinding.navigationCommitted(VIEWER)
     w.proof().resolve(true)
     await expect(rebound).resolves.toBe(true)
-    expect(w.ids()).toEqual({ setup: 7, update: 7, files: 7 })
+    expect(w.ids()).toEqual({ setup: 7, update: 7, files: 7, launch: null })
     expect(w.refreshInstallPermission).toHaveBeenLastCalledWith()
 
     w.installBinding.navigationStarted(VIEWER)
@@ -772,25 +776,46 @@ describe('createInstallBinding (#216)', () => {
     expect(w.gate.beginQuit()).toBeNull()
     w.proof().resolve(true)
     await expect(quitting).resolves.toBe(false)
-    expect(w.ids()).toEqual({ setup: null, update: null, files: null })
+    expect(w.ids()).toEqual({ setup: null, update: null, files: null, launch: null })
   })
 
   it('main grants Setup only while Setup is enabled, and nothing (not even local file links, #300) to a viewer it does not own', async () => {
     const updatesOnly = mainWiring({ setupInstallEnabled: false, viewerOwned: true })
     updatesOnly.installBinding.navigationStarted(VIEWER)
-    expect(updatesOnly.ids()).toEqual({ setup: null, update: 7, files: 7 })
+    expect(updatesOnly.ids()).toEqual({ setup: null, update: 7, files: 7, launch: null })
     updatesOnly.installBinding.navigationStarted(VIEWER)
     const rebound = updatesOnly.installBinding.navigationCommitted(VIEWER)
     updatesOnly.proof().resolve(true)
     await rebound
-    expect(updatesOnly.ids()).toEqual({ setup: null, update: 7, files: 7 })
+    expect(updatesOnly.ids()).toEqual({ setup: null, update: 7, files: 7, launch: null })
 
     const reused = mainWiring({ setupInstallEnabled: false, viewerOwned: false })
     reused.installBinding.navigationStarted(VIEWER)
     reused.installBinding.navigationStarted(VIEWER)
     await expect(reused.installBinding.navigationCommitted(VIEWER)).resolves.toBe(false)
     expect(reused.reproveOwnership).not.toHaveBeenCalled()
-    expect(reused.ids()).toEqual({ setup: null, update: null, files: null })
+    expect(reused.ids()).toEqual({ setup: null, update: null, files: null, launch: null })
+  })
+
+  it('main grants driven sessions (#412 step 3) only to the owned viewer with the switch on, on macOS, re-proved like files', async () => {
+    const on = mainWiring({ setupInstallEnabled: false, viewerOwned: true, launchEnabled: true })
+    on.installBinding.navigationStarted(VIEWER)
+    expect(on.ids()).toEqual({ setup: null, update: 7, files: 7, launch: 7 })
+    on.installBinding.navigationStarted(VIEWER)
+    expect(on.ids().launch).toBeNull()
+    const rebound = on.installBinding.navigationCommitted(VIEWER)
+    on.proof().resolve(true)
+    await rebound
+    expect(on.ids().launch).toBe(7)
+    for (const flags of [
+      { setupInstallEnabled: true, viewerOwned: true, launchEnabled: false },
+      { setupInstallEnabled: false, viewerOwned: false, launchEnabled: true },
+      { setupInstallEnabled: true, viewerOwned: true, launchEnabled: true, platform: 'linux' },
+    ]) {
+      const w = mainWiring(flags)
+      w.installBinding.navigationStarted(VIEWER)
+      expect(w.ids().launch, JSON.stringify(flags)).toBeNull()
+    }
   })
 
   it('main re-proves ownership with the startup proof, and a spawned viewer must still be running', async () => {

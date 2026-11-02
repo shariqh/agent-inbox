@@ -151,6 +151,75 @@ contextBridge.exposeInMainWorld('agentInboxLinkSettings', {
   },
 })
 
+// Issue #412 step 3: driven sessions. Each method takes exactly its arguments,
+// passes them on as plain data, and hands back a checked answer. Main decides
+// everything: the switch, the grant, the folder, the native confirmation. The
+// renderer names a known repository folder (or none, for main's own dialog),
+// never a path of its own, an executable, argv or env.
+const LAUNCH_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+
+function launchResult(value) {
+  if (!value || typeof value !== 'object' || typeof value.ok !== 'boolean') return { ok: false, error: 'Agent Inbox did not answer.' }
+  const out = { ok: value.ok }
+  if (typeof value.error === 'string') out.error = value.error.slice(0, 500)
+  if (typeof value.launch === 'string' && LAUNCH_ID.test(value.launch)) out.launch = value.launch
+  if (value.cancelled === true) out.cancelled = true
+  if (typeof value.status === 'string') out.status = value.status
+  if (typeof value.enabled === 'boolean') out.enabled = value.enabled
+  if (typeof value.killed === 'boolean') out.killed = value.killed
+  if (value.reason === 'environment') out.reason = 'environment'
+  return out
+}
+
+function launchAvailability(value) {
+  const off = { owned: false, enabled: false, available: false, canEnable: false }
+  if (!value || typeof value !== 'object') return off
+  const out = {
+    owned: value.owned === true,
+    enabled: value.enabled === true,
+    available: value.available === true && value.enabled === true && value.owned === true,
+    canEnable: value.canEnable === true,
+  }
+  if (typeof value.error === 'string') out.error = value.error.slice(0, 500)
+  return out
+}
+
+const failedLaunch = () => ({ ok: false, error: 'Agent Inbox did not answer.' })
+const launchCall = (channel, arg) => ipcRenderer.invoke(channel, arg).then(launchResult, failedLaunch)
+const isLaunchId = (value) => typeof value === 'string' && LAUNCH_ID.test(value)
+const isPlainObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value)
+
+contextBridge.exposeInMainWorld('agentInboxLaunch', {
+  available(...args) {
+    if (args.length !== 0) return Promise.resolve(launchAvailability(null))
+    return ipcRenderer.invoke('agent-inbox:launch-available').then(launchAvailability, () => launchAvailability(null))
+  },
+  setEnabled(...args) {
+    if (args.length !== 1 || typeof args[0] !== 'boolean') return Promise.resolve({ ok: false, error: 'invalid' })
+    return launchCall('agent-inbox:launch-set-enabled', args[0])
+  },
+  start(...args) {
+    if (args.length !== 1 || !isPlainObject(args[0])) return Promise.resolve({ ok: false, error: 'invalid' })
+    return launchCall('agent-inbox:launch-start', args[0])
+  },
+  stop(...args) {
+    if (args.length !== 1 || !isLaunchId(args[0])) return Promise.resolve({ ok: false, error: 'invalid' })
+    return launchCall('agent-inbox:launch-stop', args[0])
+  },
+  close(...args) {
+    if (args.length !== 1 || !isLaunchId(args[0])) return Promise.resolve({ ok: false, error: 'invalid' })
+    return launchCall('agent-inbox:launch-close', args[0])
+  },
+  resume(...args) {
+    if (args.length !== 1 || !isLaunchId(args[0])) return Promise.resolve({ ok: false, error: 'invalid' })
+    return launchCall('agent-inbox:launch-resume', args[0])
+  },
+  approve(...args) {
+    if (args.length !== 1 || !isPlainObject(args[0])) return Promise.resolve({ ok: false, error: 'invalid' })
+    return launchCall('agent-inbox:launch-approve', args[0])
+  },
+})
+
 function isByteCount(value) {
   return Number.isSafeInteger(value) && value >= 0
 }

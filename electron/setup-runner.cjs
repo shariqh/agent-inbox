@@ -20,6 +20,9 @@ const TARGETS = new Set(['all', 'claude', 'copilot', 'hooks', 'prune-runtimes'])
 const TARGET_NAMES = Object.freeze([...TARGETS])
 const HOOKS_REQUIRED_FILES = Object.freeze([...REQUIRED_FILES, 'scripts/install-hooks.sh'])
 const PRUNE_REQUIRED_FILES = Object.freeze([...REQUIRED_FILES, 'scripts/prune-runtimes.sh'])
+// A driven session (#412 step 3) runs this release's installed runtime's driver,
+// which must understand launch spec v1: launch-spec.js ships with it.
+const DRIVER_REQUIRED_FILES = Object.freeze([...REQUIRED_FILES, 'dist/driver-cli.js', 'dist/launch-spec.js'])
 
 // Setup is available only for the five targets handled by the fixed-purpose
 // POSIX shell adapter. Selection is STRICT `${process.platform}-${process.arch}`
@@ -284,6 +287,44 @@ function installedRuntime({ runtimeRoot, operation, host }) {
   return { dir }
 }
 
+/**
+ * The driver of a driven session (#412 step 3, design §8): the installed copy
+ * of THIS release's runtime, <runtimeRoot>/<runtimeId>, re-verified against the
+ * signed manifest digest (as `hooks` is, #206) and required to carry the driver
+ * and launch spec v1. Its own bin/node and dist/driver-cli.js are the argv;
+ * nothing else is ever run. A runtime not installed yet asks for Update agents.
+ */
+function installedDriverRuntime({ runtimeRoot, selection, platform = process.platform, arch = process.arch, verify = verifyRuntimePayload }) {
+  if (!selection || selection.ok !== true || !selection.manifest || typeof selection.manifest.runtimeId !== 'string') {
+    return { error: 'This build of Agent Inbox has no verified runtime to run sessions with.' }
+  }
+  if (runtimeRoot === null) return { error: 'AGENT_INBOX_RUNTIME_ROOT must be an absolute path.' }
+  const runtimeId = selection.manifest.runtimeId
+  const dir = join(runtimeRoot, runtimeId)
+  try {
+    const { manifest } = verify({
+      root: dir,
+      expectedManifestDigest: selection.digest,
+      expectedPlatform: platform,
+      expectedArch: arch,
+      expectedProduct: EXPECTED_PRODUCT,
+      expectedPackageVersion: selection.packageVersion,
+      expectedNodeMajor: EXPECTED_NODE_MAJOR,
+      expectedNodeModulesAbi: EXPECTED_NODE_MODULES_ABI,
+      requiredEntrypoints: REQUIRED_ENTRYPOINTS,
+      requiredFiles: DRIVER_REQUIRED_FILES,
+    })
+    if (manifest.runtimeId !== runtimeId) throw new Error('runtime id mismatch')
+  } catch (err) {
+    return {
+      error: err?.code === 'not-found'
+        ? `This app's v${selection.packageVersion} runtime is not installed yet: use Update agents in Settings → Setup first.`
+        : `The installed v${selection.packageVersion} runtime failed integrity verification: use Update agents in Settings → Setup.`,
+    }
+  }
+  return { node: join(dir, 'bin', 'node'), entry: join(dir, 'dist', 'driver-cli.js') }
+}
+
 function createReleaseSetupAdapter({
   repoRoot,
   runtimeRoot,
@@ -425,19 +466,31 @@ function createInstallGate() {
  * `settled()` waits out a proof still running, so a question about the grants
  * asked during a reload gets the settled answer.
  */
-function createInstallBinding({ viewerUrl, setupAllowed, updateAllowed, filesAllowed = () => false, isQuitting, proveOwnership, apply }) {
+function createInstallBinding({
+  viewerUrl, setupAllowed, updateAllowed, filesAllowed = () => false, launchAllowed = () => false, isQuitting, proveOwnership, apply,
+}) {
   let loaded = false
   let closed = false
   let navigation = 0
   let awaitingCommit = null
   let inFlight = null
-  const grants = () => ({ setup: setupAllowed() === true, update: updateAllowed() === true, files: filesAllowed() === true })
+  // whether the window's current document holds its grants (bound, not revoked)
+  let bound = false
+  const grants = () => ({
+    setup: setupAllowed() === true,
+    update: updateAllowed() === true,
+    files: filesAllowed() === true,
+    // driven sessions (#412 step 3): the owned viewer with the switch on
+    launch: launchAllowed() === true && !isQuitting(),
+  })
+  const none = () => ({ setup: false, update: false, files: false, launch: false })
   const mayBind = (url) => !closed && !isQuitting() && isTrustedSetupSender(url, viewerUrl)
 
   function revoke() {
     navigation += 1
     awaitingCommit = null
-    apply({ setup: false, update: false, files: false })
+    bound = false
+    apply(none())
   }
 
   async function rebind(url, proving) {
@@ -448,6 +501,7 @@ function createInstallBinding({ viewerUrl, setupAllowed, updateAllowed, filesAll
       proven = false
     }
     if (!proven || proving !== navigation || !mayBind(url)) return false
+    bound = true
     apply(grants())
     return true
   }
@@ -457,7 +511,10 @@ function createInstallBinding({ viewerUrl, setupAllowed, updateAllowed, filesAll
     navigationStarted(url) {
       if (!loaded) {
         loaded = true
-        if (mayBind(url)) apply(grants())
+        if (mayBind(url)) {
+          bound = true
+          apply(grants())
+        }
         return
       }
       revoke()
@@ -472,7 +529,9 @@ function createInstallBinding({ viewerUrl, setupAllowed, updateAllowed, filesAll
       if (awaitingCommit === null || awaitingCommit !== navigation) return Promise.resolve(false)
       awaitingCommit = null
       const wanted = grants()
-      if ((!wanted.setup && !wanted.update && !wanted.files) || !mayBind(url)) return Promise.resolve(false)
+      // the launch grant needs the owned viewer, as files do, so a window that
+      // could hold it later (refresh) is re-proved whenever files are wanted
+      if ((!wanted.setup && !wanted.update && !wanted.files && !wanted.launch) || !mayBind(url)) return Promise.resolve(false)
       const proof = rebind(url, navigation)
       inFlight = proof
       const done = () => {
@@ -484,6 +543,14 @@ function createInstallBinding({ viewerUrl, setupAllowed, updateAllowed, filesAll
     /** Resolves once no proof is in flight, its grants (if any) applied. Never rejects. */
     settled() {
       return inFlight === null ? Promise.resolve() : inFlight.then(() => undefined, () => undefined)
+    },
+    /**
+     * A grant's condition changed (the driven-sessions switch, #412 step 3):
+     * re-applies the grants to a window still bound to its proven document,
+     * and never binds one that is not.
+     */
+    refresh() {
+      if (bound && !closed && !isQuitting()) apply(grants())
     },
     /** The renderer crashed (`render-process-gone`); the window's next load may bind again. */
     rendererGone: revoke,
@@ -569,10 +636,12 @@ module.exports = {
   canRunSetup,
   createInstallBinding,
   createInstallGate,
+  installedDriverRuntime,
   installerRepoRoot,
   isTrustedSetupSender,
   readSetupInfo,
   runAgentInstall,
   runtimeKey,
   selectRuntimePayload,
+  setupRuntimeRoot,
 }

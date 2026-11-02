@@ -10,7 +10,13 @@ paths:
   - "src/driver-launch.ts"
   - "src/launch-spec.ts"
   - "src/launch-sign.ts"
-applyTo: "src/driver.ts,src/driver-cli.ts,src/driver-link.ts,src/driver-policy.ts,src/driver-tty.ts,src/driver-pin.ts,src/acp-client.ts,src/driver-launch.ts,src/launch-spec.ts,src/launch-sign.ts"
+  - "electron/session-launch.cjs"
+  - "electron/launch-key.cjs"
+  - "electron/shell-env.cjs"
+  - "electron/driver-process.cjs"
+  - "electron/launch-controller.cjs"
+  - "electron/launch-ipc.cjs"
+applyTo: "src/driver.ts,src/driver-cli.ts,src/driver-link.ts,src/driver-policy.ts,src/driver-tty.ts,src/driver-pin.ts,src/acp-client.ts,src/driver-launch.ts,src/launch-spec.ts,src/launch-sign.ts,electron/session-launch.cjs,electron/launch-key.cjs,electron/shell-env.cjs,electron/driver-process.cjs,electron/launch-controller.cjs,electron/launch-ipc.cjs"
 ---
 
 # Driven sessions (#412)
@@ -123,7 +129,11 @@ Claude Code and Copilot CLI load this file automatically when they read or edit 
   command, kind and input, agent text and error messages are agent-controlled: ESC sequences could
   erase the real ask and print a fake one, OSC 52 could write the clipboard, and bidi or zero-width
   characters could reorder or hide text. C0 controls but `\n` (a tab becomes a space), DEL and C1
-  become `\xNN`, and U+200B–U+200F, U+202A–U+202E, U+2066–U+2069 and U+FEFF become `<U+XXXX>`.
+  become `\xNN`, and every Unicode format character (`\p{Cf}`: bidi marks, embeddings, overrides and
+  isolates, zero-width characters, U+2060–U+2064, the Arabic letter mark U+061C, the BOM, tags) and
+  the line and paragraph separators (U+2028, U+2029, which some renderers draw as line breaks) become
+  `<U+XXXX>`. Main's `displaySafe` (`electron/launch-controller.cjs`) escapes exactly the same set, and
+  a test compares the two over every code point.
   Every terminal write goes through `createTerminal` (`driver-tty.ts`), whose only raw bytes are the
   SGR reset (`ESC[0m`) before each ask; the `@sessions` alert's title and context are sanitized the
   same way. `test/driver-tty.test.ts` runs the terminal against a fake TTY that fails on any unsafe
@@ -250,3 +260,72 @@ Claude Code and Copilot CLI load this file automatically when they read or edit 
   resume), `test/driver-run.test.ts` (`run` end to end against a fake `copilot`: status line, row,
   Stop, park, resume by load, a signed approval, refusals), `test/mixed-version.test.ts` (a v2.2.0
   viewer's reply never approves).
+
+## Step 3, part 2: Electron main
+
+Everything main does for a driven session is injected and tested without Electron
+(`test/launch-electron.test.ts`); `main.cjs` only wires it.
+
+- **The switch** (`session-launch.cjs`, §9): Settings → Agent sessions → "Start sessions from Agent
+  Inbox", main-owned in userData `session-launch.json` (schema 1, `createLockedFile`, tolerant: a missing
+  or corrupt file is off, a newer schema is off and never overwritten, unknown fields survive). Only the
+  owned viewer (the `files` grant's window) may read or change it; main refuses to turn it off while any
+  session it started runs, so Stop and Close stay reachable. While it is off, main captures no env,
+  resolves no runtime, spawns nothing and does not touch safeStorage; the preload's `available()` says off.
+- **The `launch` grant** (`createInstallBinding`, #216/#300): the fourth grant, the owned viewer with the
+  switch on, on macOS, and no quit begun. Revoked by every main-frame navigation and re-granted only after
+  the re-proof, like `files`; `refresh()` re-applies the grants to a still-bound window when the switch
+  changes and never binds one that is not.
+- **The IPC** (`launch-ipc.cjs`, `setup-preload.cjs` `agentInboxLaunch`): `available()`,
+  `setEnabled(on)`, `start(request)`, `stop(id)`, `close(id)`, `resume(id)`, `approve({ item, revision,
+  optionId })`, each with exact arity, answering only the viewer window's top frame, after any re-proof in
+  flight. `takeOver` is step 5. The preload checks argument shapes and hands back checked answers.
+- **What the renderer may send** (`launchRequest`, `approvalRequest` in `launch-controller.cjs`): exactly
+  `{ root, mode, model?, reasoningEffort?, budgets, prompt }`, where `root` is one of the repository folders
+  the hub recorded (`GET /api/launch-folders`) or `null` for main's own folder dialog; never a path of its
+  own, an executable, argv or env. Bounds match the spec's.
+- **The native confirmation** (`confirmation`): built by main from the checked facts (project, folder, mode
+  and its plain copy, model and effort, budgets, the "once any shell command is allowed…" warning, and the
+  task's first 300 characters, made visible by `displaySafe`). The project (which any agent can set
+  through MCP `register`) and the folder go through `displayLine`: newlines too made visible, one line,
+  at most 120 characters with an ellipsis, so they cannot add a fake folder or mode line; the bold
+  message line is fixed text plus that project alone. Start spawns
+  exactly what it showed. The login shell runs only after Start, so no rc file runs for a launch the human
+  did not confirm. Resume and send needs no second confirmation (the click is the gesture, §7); main
+  re-checks that the launch is parked, the grant and the switch.
+- **The env capture** (`shell-env.cjs`, §8): `$SHELL -i -l -c` in the launch folder, stdin closed,
+  detached, a 10 s bound (the group is killed on timeout), random markers around `/usr/bin/env -0`, only
+  what lies between them read, names that are not variables dropped, kept in memory and sent only on fd 3.
+  Main applies the driver's denylist too (`launchEnv`), and the driver applies it again. A timeout or a
+  failure is reported once ("Try again"), never retried in a loop.
+- **The key** (`launch-key.cjs`, §4.3, §14.3): a 32-byte master key in userData `launch-master-key`,
+  only ever as safeStorage's ciphertext (0600, created once with a hard link so two processes agree), never
+  in the renderer, SQLite, argv or a log. Each launch key is `HMAC-SHA256(master, frame('agent-inbox/
+  launch-key/v1', launchId))`; an approval's MAC is the one `src/launch-sign.ts` verifies. No safeStorage
+  encryption (or Linux's `basic_text`) means no launches; a key file that cannot be decrypted is never
+  replaced, since running drivers hold keys derived from it.
+- **The driver's start** (`driver-process.cjs`, §8, §10): exactly `[<runtime>/bin/node,
+  <runtime>/dist/driver-cli.js, 'run', <launch id>, <hub db>]`, detached, no shell, `cwd: '/'`, stdin
+  closed, stderr to `<hub dir>/launches/<id>/driver.log` (0600 in 0700), and the spec with the launch key
+  written to a pipe (a socket pair) on fd 3, never a file. The runtime is the installed copy of this
+  release's runtime, re-verified against the signed digest with `dist/driver-cli.js` and
+  `dist/launch-spec.js` required (`installedDriverRuntime`, #206); a checkout uses its own build. Main reads
+  the driver's one status line and lets it run on. Any platform but macOS fails closed before spawning.
+- **The hub, over the viewer's own routes.** Main cannot load the store in a development build, so in every
+  build it reaches the hub as notification answers do, with the trusted Origin: `GET /api/launch-folders`,
+  `GET /api/launches(/:id)`, `POST /api/launches/:id/stop`, `POST /api/launches/:id/close`
+  (`closeLostLaunch` re-checks inside its `.immediate()` transaction that the driver lease is stale, then
+  returns the child's process group and start only to its caller; main kills the group only while that
+  process still has the recorded start), `GET /api/launch-asks/:id` and `POST /api/launch-asks/:id/answer`
+  (exactly `{ revision, optionId, signature }`, the signature 64 lowercase hex characters, stored by
+  `answerLaunchAsk`). None of them takes a path, argv or env, or starts anything. **A same-origin page could
+  stop a session through them (low risk: the human's own capability), but it cannot forge an approval:**
+  only main's signature counts, and the driver verifies it.
+- **Quit** (§7): `beginAppQuit()` closes the launch gate (nothing starts once a quit has begun, even a
+  start whose dialog was open: the gate is checked again after every await, before the login shell
+  runs and immediately before the spawn) and drops the `launch` grant. With the switch on, the first
+  quit asks once (`runningAtQuit`): it gives a start already past the gate up to 1.5 s to write its
+  row (`settled()`), then always reads the running launches under their own 3 s bound, so a start
+  still in progress (a dialog left open, a slow shell) never hides them; it lists the sessions whose
+  driver runs: **Keep running** (the default) or **Stop all**. There is no Cancel,
+  because the quit has already begun. An update restart does not ask; sessions survive it.

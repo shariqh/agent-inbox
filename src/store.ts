@@ -4134,8 +4134,10 @@ export function recordLaunchProgress(db: Database.Database, id: string, progress
 export function parkLaunch(
   db: Database.Database,
   id: string,
-  park: { acpSession: string | null; activeMs: number; toolCalls: number; reason?: string },
+  park: { acpSession: string | null; activeMs: number; toolCalls: number; reason?: string; forgetSession?: boolean },
 ): LaunchStatus | null {
+  // a null session never erases the stored one (a park before a resume knew its
+  // session must keep it); only a session Copilot said does not exist is forgotten
   const now = new Date().toISOString()
   const row = db.prepare(`UPDATE launches
                              SET status = CASE WHEN stop_requested_at IS NULL THEN 'parked' ELSE 'ended' END,
@@ -4143,13 +4145,13 @@ export function parkLaunch(
                                  parked_at = CASE WHEN stop_requested_at IS NULL THEN @now ELSE NULL END,
                                  park_reason = CASE WHEN stop_requested_at IS NULL THEN @reason ELSE NULL END,
                                  ended_at = CASE WHEN stop_requested_at IS NULL THEN NULL ELSE @now END,
-                                 acp_session = @acp, active_ms = MAX(active_ms, @activeMs), tool_calls = MAX(tool_calls, @toolCalls),
+                                 acp_session = CASE WHEN @forget = 1 THEN @acp ELSE COALESCE(@acp, acp_session) END, active_ms = MAX(active_ms, @activeMs), tool_calls = MAX(tool_calls, @toolCalls),
                                  driver_pid = NULL, child_pgid = NULL, child_started_at = NULL, host_pid = NULL,
                                  updated_at = @now, revision = revision + 1
                            WHERE id = @id AND status = 'running'
                        RETURNING status`).get({
     now, id, acp: park.acpSession, activeMs: Math.max(0, Math.round(park.activeMs)), toolCalls: Math.max(0, Math.round(park.toolCalls)),
-    reason: park.reason ?? null,
+    reason: park.reason ?? null, forget: park.forgetSession === true ? 1 : 0,
   }) as { status: LaunchStatus } | undefined
   return row?.status ?? null
 }

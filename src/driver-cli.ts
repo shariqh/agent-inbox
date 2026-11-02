@@ -583,7 +583,9 @@ async function runLaunch(argv: string[]): Promise<void> {
   const closeRow = (reason: EndReason) => {
     const usage = driver.usage()
     try {
-      if (reason === 'idle' || reason === 'park') parkLaunch(db, launchId, { acpSession: driver.resumableSession(), ...usage })
+      if (reason === 'idle' || reason === 'park') {
+        parkLaunch(db, launchId, { acpSession: driver.resumableSession(), ...usage, forgetSession: driver.sessionGone() })
+      }
       // a load that failed for another reason than "never prompted" parks it again, to retry (§7)
       else if (reason === 'error:load') {
         parkLaunch(db, launchId, { acpSession: loading, ...usage, reason: `Copilot could not load the session: ${driver.loadFailure() ?? 'unknown error'}` })

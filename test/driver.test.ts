@@ -465,6 +465,24 @@ describe('pushed delivery (§5.3)', () => {
     expect(row()?.driven_turn).toBeUndefined()
   })
 
+  it('Park now during a resume’s setup waits until it is ready, and keeps the session to load (review of #433)', async () => {
+    let release!: () => void
+    const holdLoad = new Promise<void>((resolve) => { release = resolve })
+    const h = start({ app: true, loadSessionId: 'acp-1', script: { holdLoad } })
+    // before the load has answered, the session the resume holds is still the one to keep
+    expect(h.driver.resumableSession()).toBe('acp-1')
+    await until(() => h.fake.received.find((m) => m.method === 'session/load'), 'the load')
+    expect(requestLaunchPark(h.human, LAUNCH)).toBe(true)
+    await until(() => h.log.find((e) => e.event === 'park_requested'), 'the request taken')
+    await new Promise((resolve) => setTimeout(resolve, 80))
+    expect(h.log.find((e) => e.event === 'ending')).toBeUndefined()
+    release()
+    expect(await h.done).toBe('park')
+    expect(h.log.find((e) => e.event === 'ready')).toBeDefined()
+    expect(h.driver.resumableSession()).toBe('acp-1')
+    expect(h.driver.sessionGone()).toBe(false)
+  })
+
   it('Park now waits for the running turn to end, then ends as the idle park does (#412 step 3, PR 4)', async () => {
     const turns: unknown[] = []
     const h = start({ app: true, script: { onPrompt: (_fake, id) => { turns.push(id) } } })

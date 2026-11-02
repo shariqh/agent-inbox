@@ -85,6 +85,17 @@ describe('the launch row (§6)', () => {
     expect(getLaunch(db, ID(1))).toMatchObject({ status: 'ended', active_ms: 6000, tool_calls: 9 })
   })
 
+  it('a park with no session keeps the stored one; only a session Copilot said is gone is forgotten (review of #433)', () => {
+    createLaunch(db, launch(1))
+    parkLaunch(db, ID(1), { acpSession: 'acp-1', activeMs: 0, toolCalls: 0 })
+    expect(resumeLaunch(db, ID(1), 4243)).not.toBeNull()
+    parkLaunch(db, ID(1), { acpSession: null, activeMs: 0, toolCalls: 0 })
+    expect(getLaunch(db, ID(1))).toMatchObject({ status: 'parked', acp_session: 'acp-1' })
+    expect(resumeLaunch(db, ID(1), 4244)).not.toBeNull()
+    parkLaunch(db, ID(1), { acpSession: null, activeMs: 0, toolCalls: 0, forgetSession: true })
+    expect(getLaunch(db, ID(1))).toMatchObject({ status: 'parked', acp_session: null })
+  })
+
   it('a resume takes a parked row back exactly once, clearing why it was parked', () => {
     createLaunch(db, launch(1))
     expect(resumeLaunch(db, ID(1), 5000)).toBeNull()

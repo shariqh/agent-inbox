@@ -159,6 +159,8 @@ header { flex-wrap: wrap; }
 .live-launches p { margin: 0; }
 .live-launch { display: grid; gap: 4px; padding: 8px 0; border-top: 1px solid var(--app-border); }
 .live-launch[data-state="lost"] .live-launch-status { color: var(--app-warning); }
+.live-started-here { padding: 0 6px; border: 1px solid var(--app-border); border-radius: 999px; font-size: 11px; color: var(--app-text-soft); }
+.live-launch-composer .msg-composer { margin: 4px 0 0; }
 .live-launch-actions, .live-launch-resume { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 6px; }
 .live-launch-resume-input { flex: 1 1 220px; min-height: 40px; resize: vertical; padding: 6px 8px; border: 1px solid var(--app-border); border-radius: 8px; background: var(--app-surface); color: var(--app-text); font: inherit; font-size: 13px; }
 .launch-action, .msg-interrupt, .dash-lane-stop, .launch-dialog button, .launch-transcript button {

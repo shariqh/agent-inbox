@@ -26,7 +26,11 @@ afterEach(() => {
 // A Copilot stand-in: new and load sessions in #agent with allow_all off, a
 // prompt either ends at once or (FAKE_ASK) raises one permission request, and
 // every message it reads is appended to FAKE_LOG.
-const FAKE_COPILOT = `#!/usr/bin/env node
+// Its interpreter is `fakenode`, a script the test writes and owns that execs
+// this Node: the driver resolves and trust-checks the interpreter (§8), and the
+// machine's own Node may not pass that check (CI's tool cache is owned by
+// another user), which is no business of these tests.
+const FAKE_COPILOT = `#!/usr/bin/env fakenode
 const fs = require('fs')
 const agent = 'https://agentclientprotocol.com/protocol/session-modes#agent'
 const config = (mode) => [{ id: 'mode', currentValue: mode }, { id: 'allow_all', currentValue: 'off' }]
@@ -90,6 +94,8 @@ function rig(): Rig {
   mkdirSync(bin)
   writeFileSync(join(bin, 'copilot'), FAKE_COPILOT)
   chmodSync(join(bin, 'copilot'), 0o755)
+  writeFileSync(join(bin, 'fakenode'), `#!/bin/sh\nexec '${process.execPath.replaceAll("'", `'\\''`)}' "$@"\n`)
+  chmodSync(join(bin, 'fakenode'), 0o755)
   const copilotHome = join(dir, 'copilot-home')
   mkdirSync(copilotHome)
   writeFileSync(join(copilotHome, 'mcp-config.json'), JSON.stringify({ mcpServers: { 'agent-inbox': { command: 'node', args: [] } } }))
@@ -102,7 +108,7 @@ function rig(): Rig {
   writeFileSync(fakeLog, '')
   return {
     dir, db, fakeLog, hub,
-    env: { PATH: `${bin}:${dirname(process.execPath)}:/usr/bin:/bin`, HOME: dir, COPILOT_HOME: copilotHome, FAKE_LOG: fakeLog },
+    env: { PATH: `${bin}:/usr/bin:/bin`, HOME: dir, COPILOT_HOME: copilotHome, FAKE_LOG: fakeLog },
   }
 }
 
@@ -260,9 +266,11 @@ describe('agent-inbox-driver run (#412 step 3)', () => {
 
   it.each([
     ['a shebang that passes the interpreter flags', (bin: string) => {
-      writeFileSync(join(bin, 'copilot'), FAKE_COPILOT.replace('#!/usr/bin/env node', '#!/usr/bin/env node --require=/elsewhere/hook.js'))
+      writeFileSync(join(bin, 'copilot'), FAKE_COPILOT.replace('#!/usr/bin/env fakenode', '#!/usr/bin/env fakenode --require=/elsewhere/hook.js'))
     }, /names an interpreter this driver does not resolve/],
-    ['a host others can write', (bin: string) => chmodSync(join(bin, 'copilot'), 0o775), /writable by others; refusing to run it/],
+    ['a host others can write', (bin: string) => chmodSync(join(bin, 'copilot'), 0o775), /copilot is not owned by you or root, or is writable by others; refusing to run it/],
+    // the interpreter is checked like the host (§8), on every OS
+    ['an interpreter others can write', (bin: string) => chmodSync(join(bin, 'fakenode'), 0o775), /fakenode is not owned by you or root, or is writable by others; refusing to run it/],
   ] as Array<[string, (bin: string) => void, RegExp]>)('refuses %s, ending the launch it wrote without starting anything', async (_, spoil, error) => {
     const r = rig()
     spoil(join(r.dir, 'bin'))

@@ -13,7 +13,7 @@ import {
   markRowHandled, clearRowHandled, listActivity, listActivitySpans, listSourceLinks, defaultDbPath,
   closeProject, reopenProject, closedProjects, readSnapshotState, listIssueEntities, listIssueSnapshots,
   listSessionMessages, sendSessionMessage, withdrawSessionMessage, validMessageId, validMessageText, MESSAGE_MAX_TEXT,
-  listLaunches, getLaunch, launchView, launchDriverAlive,
+  listLaunches, getLaunch, launchView, launchDriverAlive, isLaunchAsk,
 } from './store.js'
 import type { ExpectedAnswer, ResponseKind, SnapshotDomain, SnapshotReadState } from './store.js'
 import { groupItems } from './group.js'
@@ -1031,6 +1031,7 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
   app.post('/api/items/:id/annotate', async (c) => {
     const body = await c.req.json<{ text?: unknown }>().catch(() => null)
     if (typeof body?.text !== 'string') return c.json({ ok: false, error: 'text must be a string' }, 400)
+    if (isLaunchAsk(db, c.req.param('id'))) return c.json({ ok: false, reason: 'launch_ask' })
     const ok = annotateItem(db, c.req.param('id'), body.text)
     return c.json({ ok })
   })
@@ -1082,6 +1083,11 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
     )) {
       return c.json({ ok: false, error: 'invalid reply intent metadata' }, 400)
     }
+    // Issue #412 step 3: an app launch's ask is answered only by Electron main's
+    // signed answer (the driver ignores any other), so this route refuses it, a
+    // store-level refusal like any other (200), rather than record an answer
+    // that nothing will act on.
+    if (isLaunchAsk(db, c.req.param('id'))) return c.json({ ok: false, reason: 'launch_ask' })
     // A refusal is ok:false (an already-picked-up reply cannot be silently
     // blanked out, src/store.ts). Issue #322 adds, additively, whether this
     // request wrote anything (an exact replay is answered from its record) and

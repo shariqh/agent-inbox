@@ -952,6 +952,8 @@ function showWriteError(id, msg) {
 }
 
 const WRITE_FAILED = 'Not sent — nothing was lost; press Send to retry.'
+// #412 step 3: an app launch's approval counts only from the app's own window
+const LAUNCH_ASK_REFUSED = 'Not sent — approve this from Agent Inbox’s own window.'
 
 function allItems(g) {
   return [...g.needsYou.flatMap((x) => x.items), ...g.notes.flatMap((x) => x.items), ...g.done]
@@ -9225,6 +9227,15 @@ async function submitItemReply(
   if (sameItemIntent(itemDraftRetryIntents[id]?.intent, intent)) {
     delete itemDraftRetryIntents[id]
   }
+  // #412 step 3: the reply route refuses an app launch's approval, which only
+  // the app's own window can answer. Nothing was written; any typed text stays
+  // where it is, and the card says where to answer instead.
+  if (res.ok === false && res.reason === 'launch_ask') {
+    retireItemDraftSubmission(id, submittedGeneration, intent)
+    showWriteError(id, LAUNCH_ASK_REFUSED)
+    resumeRender()
+    return
+  }
   // #321: refused only because the answer that stands is exactly this response
   // (a double click's first send, or another send of the same text): it went
   // through, so it retires below as a success would, with no notice.
@@ -9543,7 +9554,7 @@ function editItemNote(it) {
       delete itemNoteDrafts[it.id]
     } else {
       draft.pending = false
-      draft.error = result?.ok === false ? NOTE_REFUSED : NOTE_UNCONFIRMED
+      draft.error = result?.ok === false ? (result.reason === 'launch_ask' ? LAUNCH_ASK_REFUSED : NOTE_REFUSED) : NOTE_UNCONFIRMED
       requestDraftRecovery(null)
     }
     await reloadAndPaint()

@@ -4197,6 +4197,96 @@ export function listLaunchAskReplies(db: Database.Database, launchId: string): L
                       WHERE a.launch_id = ? ORDER BY a.created_at ASC, a.item_id ASC`).all(launchId) as LaunchAskReply[]
 }
 
+// Close on a lost launch (§6, §7): only while the launch still says running and
+// no driver holds its fresh lease, re-checked inside this .immediate()
+// transaction, it ends the launch (`lost`), resolves its open asks and returns
+// the child's process group and start identity, which Electron main kills only
+// when that process still started then.
+export type CloseLostResult =
+  | { ok: true; childPgid: number | null; childStartedAt: string | null }
+  | { ok: false; reason: 'unknown' | 'not_running' | 'driver_alive' }
+
+export function closeLostLaunch(db: Database.Database, id: string): CloseLostResult {
+  if (!LAUNCH_ID.test(id)) return { ok: false, reason: 'unknown' }
+  return db.transaction((): CloseLostResult => {
+    const row = db.prepare(`SELECT status, child_pgid, child_started_at FROM launches WHERE id = ?`).get(id) as
+      { status: LaunchStatus; child_pgid: number | null; child_started_at: string | null } | undefined
+    if (!row) return { ok: false, reason: 'unknown' }
+    if (row.status !== 'running') return { ok: false, reason: 'not_running' }
+    if (launchDriverAlive(db, id)) return { ok: false, reason: 'driver_alive' }
+    const now = new Date().toISOString()
+    db.prepare(`UPDATE launches SET status = 'ended', end_reason = 'lost', ended_at = ?, updated_at = ?, revision = revision + 1
+                 WHERE id = ? AND status = 'running'`).run(now, now, id)
+    const asks = db.prepare(`SELECT item_id FROM launch_asks WHERE launch_id = ?`).pluck().all(id) as string[]
+    for (const item of asks) resolveItem(db, item, 'Session lost: its driver stopped.')
+    db.prepare(`DELETE FROM launch_asks WHERE launch_id = ?`).run(id)
+    return { ok: true, childPgid: row.child_pgid, childStartedAt: row.child_started_at }
+  }).immediate()
+}
+
+// What Electron main signs an approval over (§4.3): the ask's launch, the
+// response revision at filing and the options it offers, with the item's
+// current state. Null when the ask is not a launch's, or is settled.
+export interface LaunchAsk {
+  item_id: string
+  launch_id: string
+  filed_revision: number
+  options: LaunchAskOption[]
+  response_revision: number
+}
+
+export function getLaunchAsk(db: Database.Database, itemId: string): LaunchAsk | null {
+  const row = db.prepare(`SELECT a.item_id, a.launch_id, a.revision AS filed_revision, a.options, i.response_revision
+                            FROM launch_asks a JOIN items i ON i.id = a.item_id
+                           WHERE a.item_id = ? AND i.status = 'open' AND i.kind = 'question'`)
+    .get(itemId) as (Omit<LaunchAsk, 'options'> & { options: string }) | undefined
+  if (!row) return null
+  let options: LaunchAskOption[] = []
+  try {
+    const parsed: unknown = JSON.parse(row.options)
+    if (Array.isArray(parsed)) {
+      options = parsed.filter((o): o is LaunchAskOption => typeof o === 'object' && o !== null
+        && typeof (o as LaunchAskOption).optionId === 'string' && typeof (o as LaunchAskOption).label === 'string')
+    }
+  } catch { /* unreadable: no option can be answered */ }
+  return { ...row, options }
+}
+
+// Main's signed answer (§4.3): `reply = <option id>`, `reply_context = <signature>`,
+// written only while the ask is open at the revision the page showed and offers
+// that option. The signature is the authority, and the driver checks it; this
+// write proves nothing by itself.
+export type LaunchAskAnswerResult = { ok: true } | { ok: false; reason: 'unknown' | 'revision' | 'option' | 'signature' }
+
+export function answerLaunchAsk(
+  db: Database.Database,
+  itemId: string,
+  answer: { revision: number; optionId: string; signature: string },
+): LaunchAskAnswerResult {
+  if (!/^[0-9a-f]{64}$/.test(answer.signature)) return { ok: false, reason: 'signature' }
+  return db.transaction((): LaunchAskAnswerResult => {
+    const ask = getLaunchAsk(db, itemId)
+    if (!ask) return { ok: false, reason: 'unknown' }
+    if (ask.response_revision !== answer.revision) return { ok: false, reason: 'revision' }
+    if (!ask.options.some((o) => o.optionId === answer.optionId)) return { ok: false, reason: 'option' }
+    const written = replyItem(db, itemId, answer.optionId, answer.signature)
+    return written.ok ? { ok: true } : { ok: false, reason: 'unknown' }
+  }).immediate()
+}
+
+// The folders a launch may start in from a project the hub knows (§8): every
+// repository folder an item or plan recorded (#324), with the newest project
+// name seen there, at most 200.
+export function listLaunchFolders(db: Database.Database): Array<{ root: string; project: string }> {
+  return db.prepare(`SELECT root, project FROM (
+      SELECT repo_root AS root, project, MAX(created_at) AS at FROM (
+        SELECT repo_root, project, created_at FROM items WHERE repo_root IS NOT NULL AND repo_root <> ''
+        UNION ALL
+        SELECT repo_root, project, created_at FROM boards WHERE repo_root IS NOT NULL AND repo_root <> ''
+      ) GROUP BY repo_root
+    ) WHERE project NOT IN ('@sessions', '@mesh') ORDER BY at DESC, root ASC LIMIT 200`).all() as Array<{ root: string; project: string }>
+}
+
 // ── issue #411: the human's messages to one MCP session ─────────────────────
 //
 // A message addresses one MCP server's `session` (one CLI process, subagents

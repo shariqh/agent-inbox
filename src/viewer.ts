@@ -13,7 +13,8 @@ import {
   markRowHandled, clearRowHandled, listActivity, listActivitySpans, listSourceLinks, defaultDbPath,
   closeProject, reopenProject, closedProjects, readSnapshotState, listIssueEntities, listIssueSnapshots,
   listSessionMessages, sendSessionMessage, withdrawSessionMessage, validMessageId, validMessageText, MESSAGE_MAX_TEXT,
-  listLaunches, getLaunch, launchView, launchDriverAlive, isLaunchAsk,
+  listLaunches, getLaunch, launchView, launchDriverAlive, isLaunchAsk, requestLaunchStop, closeLostLaunch, getLaunchAsk,
+  answerLaunchAsk, listLaunchFolders,
 } from './store.js'
 import type { ExpectedAnswer, ResponseKind, SnapshotDomain, SnapshotReadState } from './store.js'
 import { groupItems } from './group.js'
@@ -684,6 +685,7 @@ function etagMatches(requested: string | undefined, etag: string): boolean {
 // Issue #373: how many lingering plans one read of /api/boards/archived/plans
 // may name; public/app.js reads the complete list for more.
 const MAX_LINGERING_PLANS = 50
+const LAUNCH_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const PLAN_ID = /^[A-Za-z0-9_-]{1,64}$/
 
 // The ids /api/boards/archived/plans names: 1 to MAX_LINGERING_PLANS plan ids,
@@ -1016,6 +1018,37 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
     const launch = getLaunch(db, c.req.param('id'))
     if (!launch) return c.json({ ok: false, error: 'no such launch' }, 404)
     return c.json({ prompt: launch.prompt })
+  })
+
+  // Issue #412 step 3: what Electron main reads and writes for a launch, as it
+  // answers native notifications (it cannot load the store itself in a dev
+  // build). None of these starts anything or approves anything: a launch starts
+  // only from main after its native confirmation, and an approval counts only
+  // with main's signature, which the driver checks.
+  app.get('/api/launch-folders', (c) => {
+    c.header('Cache-Control', 'no-store')
+    return c.json(listLaunchFolders(db))
+  })
+  app.post('/api/launches/:id/stop', (c) => {
+    const id = c.req.param('id')
+    const status = LAUNCH_ID.test(id) ? requestLaunchStop(db, id) : null
+    return c.json(status ? { ok: true, status } : { ok: false })
+  })
+  app.post('/api/launches/:id/close', (c) => c.json(closeLostLaunch(db, c.req.param('id'))))
+  app.get('/api/launch-asks/:id', (c) => {
+    c.header('Cache-Control', 'no-store')
+    const ask = getLaunchAsk(db, c.req.param('id'))
+    return ask ? c.json(ask) : c.json({ ok: false, error: 'no such ask' }, 404)
+  })
+  app.post('/api/launch-asks/:id/answer', async (c) => {
+    const body = await c.req.json().catch(() => null) as Record<string, unknown> | null
+    const revision = body?.revision
+    const optionId = body?.optionId
+    const signature = body?.signature
+    if (!Number.isSafeInteger(revision) || (revision as number) < 0 || typeof optionId !== 'string' || typeof signature !== 'string') {
+      return c.json({ ok: false, error: 'revision, optionId and signature are required' }, 400)
+    }
+    return c.json(answerLaunchAsk(db, c.req.param('id'), { revision: revision as number, optionId, signature }))
   })
 
   // Issue #412 step 3: closing an app launch's ask here would leave its driver

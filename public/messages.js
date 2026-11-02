@@ -22,15 +22,30 @@ export const MESSAGE_UNCONFIRMED = 'Your send was not confirmed. Send again: it 
  * absent one is false; an absent `push_wake` means unknown, never "won't wake".
  * `driven` marks a session an Agent Inbox driver runs (#412): it gets each
  * message as a new turn, pushed by the driver.
+ *
+ * #412 step 3 (design §5.3): a driven session mid-turn (`driven_turn`) holds a
+ * message until the turn ends, so it reads Queued, with how long the turn has
+ * run or that it waits on an approval; `interrupt` says the session is an app
+ * launch, whose turn the page can ask to cancel (Interrupt and send).
  * @param {any} row the session's /api/activity row, or null when it is no longer listed
- * @returns {{state: 'now'|'next-check'|'cannot'|'gone', text: string, canSend: boolean}}
+ * @param {(iso: string) => string} [ago] the page's relative age, for the Queued text
+ * @returns {{state: 'now'|'queued'|'next-check'|'cannot'|'gone', text: string, canSend: boolean, interrupt?: boolean}}
  */
-export function deliveryState(row) {
+export function deliveryState(row, ago = null) {
   if (!row) return { state: 'gone', text: 'This session is no longer running.', canSend: false }
   if (row.receives_messages !== true) {
     return { state: 'cannot', text: `Can’t receive: restart this session to load ${RECEIVING_VERSION} or later.`, canSend: false }
   }
-  if (row.driven === true) return { state: 'now', text: 'Arrives now: Agent Inbox runs this session.', canSend: true }
+  if (row.driven === true) {
+    const turn = row.driven_turn
+    if (ago && turn && typeof turn.since === 'string') {
+      const interrupt = typeof row.driven_launch === 'string'
+      return turn.state === 'approval'
+        ? { state: 'queued', text: 'Queued: it’s waiting on your approval. It arrives when the turn ends.', canSend: true, interrupt }
+        : { state: 'queued', text: `Queued: it’s mid-task (${ago(turn.since)}). It arrives when the turn ends.`, canSend: true, interrupt }
+    }
+    return { state: 'now', text: 'Arrives now: Agent Inbox runs this session.', canSend: true }
+  }
   if (row.push_wake === true) return { state: 'now', text: 'Arrives now: Agent Inbox pushes it into this session.', canSend: true }
   if (row.wakes === true) return { state: 'now', text: 'Arrives now: this session wakes for it.', canSend: true }
   return { state: 'next-check', text: 'It sees this when it next checks Agent Inbox.', canSend: true }

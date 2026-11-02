@@ -179,7 +179,8 @@ describe('setup and the escalation guard (§4.1)', () => {
   it('a resume whose load hangs past the deadline ends with error:load, keeping its session to park again', async () => {
     const h = start({ app: true, loadSessionId: 'acp-1', script: { hang: 'session/load' }, timing: { setupDeadlineMs: 100 } })
     expect(await h.done).toBe('error:load')
-    expect(h.driver.loadFailure()).toBe('Copilot did not finish loading the session within 0 s.')
+    expect(h.driver.loadFailure()).toBe('it did not answer within 0 s.')
+    expect(h.notices).toContain('Copilot did not finish loading the session within 0 s.')
     expect(h.driver.resumableSession()).toBe('acp-1')
     expect(h.driver.sessionGone()).toBe(false)
   })

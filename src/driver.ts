@@ -458,8 +458,9 @@ export class Driver {
     this.o.log({ event: 'setup_failed', reason: 'deadline', step: this.setup })
     // a resume keeps its session: it is parked again, with the reason, to retry
     if (this.o.loadSessionId && !this.loadNotFound) {
-      this.loadError = `Copilot did not finish loading the session within ${seconds} s.`
-      this.o.ui.notice(this.loadError)
+      // the CLI prefixes park_reason with "Copilot could not load the session: "
+      this.loadError = `it did not answer within ${seconds} s.`
+      this.o.ui.notice(`Copilot did not finish loading the session within ${seconds} s.`)
       return this.end('error:load')
     }
     this.o.ui.notice(`Copilot did not finish starting the session within ${seconds} s.`)

@@ -99,8 +99,8 @@ function createLaunchKeys({ safeStorage, filePath, platform = process.platform, 
       // a link, never a rename: a key another process just created wins
       await fsImpl.link(temp, filePath)
     } catch (error) {
-      if (error?.code !== 'EEXIST') throw error
       await fsImpl.unlink(temp).catch(() => {})
+      if (error?.code !== 'EEXIST') throw error
       return load()
     }
     await fsImpl.unlink(temp).catch(() => {})

@@ -14,7 +14,7 @@ import {
   parkLaunch, recordActivityCall, recordLaunchProgress, resolveItem, upsertActivity,
 } from '../../src/store.js'
 import type { ViewerBridge } from './harness.js'
-import { bootApp, buttonLabelled, changedPollTick, click, freshDb, row, settle, type, useDomTest } from './harness.js'
+import { bootApp, buttonLabelled, changedPollTick, click, freshDb, pollTick, row, settle, type, useDomTest } from './harness.js'
 
 useDomTest()
 
@@ -147,6 +147,26 @@ describe('the Live drawer’s sessions (§3.6, §7)', () => {
     click(action(LAUNCH, 'stop'))
     await settle()
     expect(api.stop).toHaveBeenCalledWith(LAUNCH)
+  })
+
+  it('Park now asks the driver to park, says so, and the launch then offers Resume and send (PR 4)', async () => {
+    launchBridge()
+    db = freshDb()
+    newLaunch(db)
+    drivenSession(db)
+    const bridge = await bootApp(db)
+    await changedPollTick(db)
+    openDrawer()
+    click(action(LAUNCH, 'park'))
+    await settle()
+    expect(bridge.posts.map((p) => p.url)).toContain(`/api/launches/${LAUNCH}/park`)
+    expect(launchRow(LAUNCH)!.querySelector('.live-launch-note')?.textContent).toMatch(/^Parking: Copilot stops once its turn ends/)
+    // the driver parks as the idle timeout would
+    parkLaunch(db, LAUNCH, { acpSession: 'acp-1', activeMs: 10, toolCalls: 1 })
+    await changedPollTick(db)
+    expect(launchRow(LAUNCH)!.querySelector('.live-launch-status')!.textContent).toMatch(/^Parked/)
+    expect(launchRow(LAUNCH)!.querySelector('.live-launch-note')).toBeNull()
+    expect(action(LAUNCH, 'resume')).not.toBeNull()
   })
 
   it('reads a running launch with no session for two minutes as not responding, and offers Close', async () => {
@@ -413,5 +433,34 @@ describe('the Dashboard lanes (#304)', () => {
     await changedPollTick(db)
     expect(document.querySelector('.dash-lane[data-lane="mcp-1"]')).not.toBeNull()
     expect(document.querySelector('.dash-lane-launch')).toBeNull()
+  })
+})
+
+describe('the Agents view (#397, #412 step 3)', () => {
+  function working(d: Database.Database, session: string, lease: { launchId: string; pid: number; nonce: string }) {
+    upsertActivity(d, { session, project: 'alpha', stream: 'main', agent: 'copilot', doing: 'Fixing the test', idle: false, claim: true, receives_messages: true })
+    recordActivityCall(d, session)
+    claimDriverSlot(d, lease, 3)
+    holdDriverLeases(d, lease, [session])
+  }
+
+  it('tags a driven session “driven”, and one of this app’s launches “started here”', async () => {
+    launchBridge()
+    db = freshDb()
+    newLaunch(db)
+    working(db, 'mcp-1', LEASE)
+    recordLaunchProgress(db, LAUNCH, { sessions: ['mcp-1'] })
+    // a terminal driver's session: driven, but no launch of this app
+    working(db, 'mcp-2', { launchId: PARKED, pid: 4244, nonce: 't' })
+    await bootApp(db, { viewer: { meshAgentsView: () => true } })
+    await vi.waitFor(() => expect(document.getElementById('mesh-settings')).not.toBeNull())
+    await pollTick()
+    await changedPollTick(db)
+    click(document.querySelector('.mesh-lens [data-mesh-lens="agents"]'))
+    await settle()
+    const tag = (session: string) => [...document.querySelectorAll<HTMLElement>('.mesh-session')]
+      .find((el) => el.dataset.meshSession === session)?.querySelector('.mesh-driven')?.textContent
+    expect(tag('mcp-1')).toBe('started here')
+    expect(tag('mcp-2')).toBe('driven')
   })
 })

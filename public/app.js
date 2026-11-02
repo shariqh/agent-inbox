@@ -2041,6 +2041,8 @@ function renderDashboardAmbient(model, { forced = false } = {}) {
     model.recentOutcomesWait, model.recentOutcomesHidden)
   meshView?.paint(host, {
     activity: liveInLens(), attention: model.waitingEntries, closed: dashboardClosedProjects(), nowMs: Date.now(),
+    // #412 step 3: the sessions of launches this app started, only with its switch on
+    startedHere: launchesOn() ? (lastData?.launches ?? []).filter((l) => l.status !== 'ended').flatMap((l) => l.sessions ?? []) : [],
   })
 }
 
@@ -6518,6 +6520,7 @@ function openMessage(session) {
 function initLaunches() {
   launchUi = createLaunchUi({
     fetchJson: (url) => fetch(url).then((r) => (r.ok ? r.json() : null)),
+    postJSON,
     activity: () => lastData?.activity ?? [],
     launches: () => lastData?.launches ?? null,
     rel,

@@ -52,6 +52,7 @@ const { syncSpellcheckLanguages } = require('./spellcheck-languages.cjs')
 const { quitWhenRestartManagerAsks, setWindowsAppIdentity } = require('./windows-app.cjs')
 const {
   attentionNotification,
+  answerableByNotification,
   cannedResponseActions,
   createNotificationRetainer,
   createResponseWatch,
@@ -882,7 +883,8 @@ function startAttentionWatch(win) {
       // Per-item notifications stay (owner's call) — informational only.
       if (fresh.length && Notification.isSupported()) {
         console.log(`[agent-inbox] notifying: ${fresh.length} new (${fresh[0].text})`)
-        const actionable = fresh.length === 1 ? fresh[0] : null
+        // #412 step 3: an app launch's approval gets no buttons; a click opens its card
+        const actionable = fresh.length === 1 && answerableByNotification(fresh[0]) ? fresh[0] : null
         const canned = cannedResponseActions(actionable ? optionOrder(actionable.item.options) : [])
         const note = new Notification({
           title: fresh.length === 1 ? 'Agent Inbox — needs you' : `Agent Inbox — ${fresh.length} new need you`,

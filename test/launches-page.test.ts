@@ -39,7 +39,7 @@ describe('a launch’s state', () => {
   const session = { driven: true, driven_launch: 'L', session: 'mcp-1' }
 
   it('reads running, starting, not responding, stopping, parked and ended, each with its actions', () => {
-    expect(launchStatus(launch(), [session], NOW)).toMatchObject({ state: 'running', actions: ['stop', 'transcript'] })
+    expect(launchStatus(launch(), [session], NOW)).toMatchObject({ state: 'running', actions: ['stop', 'park', 'transcript'] })
     expect(launchStatus(launch(), [], NOW)).toMatchObject({ state: 'starting' })
     expect(launchStatus(launch({ updated_at: '2026-11-02T11:57:00.000Z' }), [], NOW)).toMatchObject({ state: 'lost', actions: ['close', 'stop', 'transcript'] })
     expect(launchStatus(launch({ stop_requested_at: '2026-11-02T11:59:50.000Z' }), [session], NOW)).toMatchObject({ state: 'stopping', actions: ['transcript'] })
@@ -64,6 +64,8 @@ describe('the transcript', () => {
       { event: 'permission_request', id: 4, tool: 'rm', allow: 'proceed_once' },
       { event: 'permission_answer', id: 4, answer: 'cancel', why: 'ask closed' },
       { event: 'turn_end', stopReason: 'end_turn' },
+      { event: 'park_requested', turn: null },
+      { event: 'ended', reason: 'park' },
       null,
     ])).toEqual([
       { kind: 'note', text: 'The task was sent.' },
@@ -74,6 +76,8 @@ describe('the transcript', () => {
       { kind: 'ask', text: 'Asked to allow rm' },
       { kind: 'answer', text: 'Declined: the approval was closed' },
       { kind: 'note', text: 'Turn ended (end_turn).' },
+      { kind: 'note', text: 'You asked it to park: it parks once its turn ends.' },
+      { kind: 'note', text: 'Parked: Copilot stopped, its session kept to resume.' },
     ])
   })
 })

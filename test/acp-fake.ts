@@ -101,6 +101,8 @@ export interface FakeScript {
   refuseSessionNew?: string
   /** Copilot refusing session/load: -32002 for a session never prompted (spike), anything else a failure. */
   refuseLoad?: { code: number; message: string }
+  /** Answers session/load only once this settles (a slow load, still in setup). */
+  holdLoad?: Promise<void>
 }
 
 export function fakeAgent(script: FakeScript = {}): FakeAgent {
@@ -177,6 +179,12 @@ export function fakeAgent(script: FakeScript = {}): FakeAgent {
       }
       case 'session/load': {
         if (script.refuseLoad) return fake.send({ id: m.id, error: script.refuseLoad })
+        if (script.holdLoad) {
+          const held = script.holdLoad
+          script = { ...script, holdLoad: undefined }
+          void held.then(() => handle(m))
+          return
+        }
         fake.session = params.sessionId as string
         const replay = fixture('load-restores-autopilot')
         const frames: Json[] = []

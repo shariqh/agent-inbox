@@ -3842,9 +3842,10 @@ export function holdDriverLeases(
 // leases are never dropped.
 export function releaseDriverLeases(db: Database.Database, lease: DriverLease): void {
   const token = driverToken(lease)
-  db.prepare(`DELETE FROM hook_watch_claims WHERE token = ? OR claim_key IN (?, ?)
+  db.prepare(`DELETE FROM hook_watch_claims WHERE token = ? OR claim_key IN (?, ?, ?)
                  OR (claim_key = ? AND substr(token, 1, length(?)) = ?)`)
-    .run(token, `driver-stop:${lease.launchId}`, `driver-interrupt:${lease.launchId}`, `driver-turn:${lease.launchId}`, `${token}|`, `${token}|`)
+    .run(token, `driver-stop:${lease.launchId}`, `driver-interrupt:${lease.launchId}`, `driver-park:${lease.launchId}`,
+      `driver-turn:${lease.launchId}`, `${token}|`, `${token}|`)
 }
 
 // Issue #412 step 3 (§5.3): whether the driver's turn runs, and whether it
@@ -3878,6 +3879,22 @@ export function requestLaunchInterrupt(db: Database.Database, id: string): boole
 
 export function takeLaunchInterrupt(db: Database.Database, launchId: string): boolean {
   return db.prepare(`DELETE FROM hook_watch_claims WHERE claim_key = ?`).run(`driver-interrupt:${launchId}`).changes > 0
+}
+
+// Park now (§7): the human asks a running launch to park as the idle timeout
+// would, keeping its session to resume. The driver takes the request once and
+// parks at its next idle point: no turn running and no ask open.
+export function requestLaunchPark(db: Database.Database, id: string): boolean {
+  if (!LAUNCH_ID.test(id)) return false
+  return db.transaction(() => {
+    const running = db.prepare(`SELECT 1 FROM launches WHERE id = ? AND status = 'running' AND stop_requested_at IS NULL`).get(id) !== undefined
+    if (running) claimHookWatch(db, `driver-park:${id}`, 'park')
+    return running
+  }).immediate()
+}
+
+export function takeLaunchPark(db: Database.Database, launchId: string): boolean {
+  return db.prepare(`DELETE FROM hook_watch_claims WHERE claim_key = ?`).run(`driver-park:${launchId}`).changes > 0
 }
 
 // Step 2's Stop, written by the runtime CLI (`driver-cli.js stop <launch id>`).
@@ -4117,8 +4134,10 @@ export function recordLaunchProgress(db: Database.Database, id: string, progress
 export function parkLaunch(
   db: Database.Database,
   id: string,
-  park: { acpSession: string | null; activeMs: number; toolCalls: number; reason?: string },
+  park: { acpSession: string | null; activeMs: number; toolCalls: number; reason?: string; forgetSession?: boolean },
 ): LaunchStatus | null {
+  // a null session never erases the stored one (a park before a resume knew its
+  // session must keep it); only a session Copilot said does not exist is forgotten
   const now = new Date().toISOString()
   const row = db.prepare(`UPDATE launches
                              SET status = CASE WHEN stop_requested_at IS NULL THEN 'parked' ELSE 'ended' END,
@@ -4126,13 +4145,13 @@ export function parkLaunch(
                                  parked_at = CASE WHEN stop_requested_at IS NULL THEN @now ELSE NULL END,
                                  park_reason = CASE WHEN stop_requested_at IS NULL THEN @reason ELSE NULL END,
                                  ended_at = CASE WHEN stop_requested_at IS NULL THEN NULL ELSE @now END,
-                                 acp_session = @acp, active_ms = MAX(active_ms, @activeMs), tool_calls = MAX(tool_calls, @toolCalls),
+                                 acp_session = CASE WHEN @forget = 1 THEN @acp ELSE COALESCE(@acp, acp_session) END, active_ms = MAX(active_ms, @activeMs), tool_calls = MAX(tool_calls, @toolCalls),
                                  driver_pid = NULL, child_pgid = NULL, child_started_at = NULL, host_pid = NULL,
                                  updated_at = @now, revision = revision + 1
                            WHERE id = @id AND status = 'running'
                        RETURNING status`).get({
     now, id, acp: park.acpSession, activeMs: Math.max(0, Math.round(park.activeMs)), toolCalls: Math.max(0, Math.round(park.toolCalls)),
-    reason: park.reason ?? null,
+    reason: park.reason ?? null, forget: park.forgetSession === true ? 1 : 0,
   }) as { status: LaunchStatus } | undefined
   return row?.status ?? null
 }

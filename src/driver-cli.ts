@@ -36,7 +36,7 @@ import { createTerminal, installStopHandlers, reapProcessGroup } from './driver-
 import { locateRuntime, pinRuntime, removePin, runtimeRootFor } from './driver-pin.js'
 import { processIdentity } from '../scripts/runtime-pins.mjs'
 import { findNativeHost, linkSessions, readProcesses } from './driver-link.js'
-import { childEnv, copilotAgentInboxServer, copilotArgs, isReasoningEffort, REASONING_EFFORTS, terminalSafe } from './driver-policy.js'
+import { childEnv, copilotAgentInboxServer, copilotArgs, editsFolder, isReasoningEffort, REASONING_EFFORTS, terminalSafe } from './driver-policy.js'
 import type { LaunchMode, ReasoningEffort } from './driver-policy.js'
 import { inferProject, inferStream } from './infer.js'
 import {
@@ -49,7 +49,7 @@ const USAGE = `usage: agent-inbox-driver copilot --cwd <dir> --mode ask|read-onl
        agent-inbox-driver stop <launch id>
 `
 const LAUNCH_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
-const MODES: readonly LaunchMode[] = ['ask', 'read-only', 'plan']
+const MODES: readonly LaunchMode[] = ['ask', 'read-only', 'plan', 'edits']
 // npm-installed Copilot's loader (§8) needs a current Node
 const MIN_NODE_MAJOR = 22
 const MAX_DRIVERS = 2
@@ -391,7 +391,7 @@ async function runCopilot(argv: string[]): Promise<void> {
   db.close()
   stderrLog.end()
   out(`\n[agent-inbox] Session ended: ${reason}.\n`)
-  process.exit(reason === 'stopped' || reason === 'idle' || reason === 'child_exit' ? 0 : 1)
+  process.exit(reason === 'stopped' || reason === 'idle' || reason === 'park' || reason === 'child_exit' ? 0 : 1)
 }
 
 // ── step 3: `run <launch id> <hub db>`, started by Electron main (§8) ───────
@@ -530,10 +530,25 @@ async function runLaunch(argv: string[]): Promise<void> {
   if ('error' in host) return refuse(host.error)
   const home = spec.env.HOME && isAbsolute(spec.env.HOME) ? spec.env.HOME : null
   const isDefault = home !== null && dbPath === join(home, '.agent-inbox', 'inbox.db')
+  // Edits in the worktree writes unasked only under the folder as it resolves
+  // now: a resumed launch whose folder resolves elsewhere does not start
+  let edits: ReturnType<typeof editsFolder> = null
+  if (facts.mode === 'edits') {
+    let real: string | null = null
+    try { real = realpathSync(facts.cwd) } catch { /* gone */ }
+    // the home folder as it resolves too, or a symlinked home would compare unequal
+    let realHome = home
+    try { if (home) realHome = realpathSync(home) } catch { /* compared as written */ }
+    edits = real === facts.cwd && editsFolder(facts.cwd, home) ? editsFolder(facts.cwd, realHome) : null
+    if (!edits) return refuse(`Edits in the worktree cannot use ${facts.cwd}: choose a project folder (not your home folder) whose path has no ( ) * ? [ ] { } , or \\`)
+  }
 
   const { child, exited, log, stderrLog, scan, kill } = spawnSession({
     db, launchDir: join(hubDir, 'launches', launchId), command: host.command,
-    args: [...host.args, ...copilotArgs({ mode: facts.mode, agentInboxServer: (server as { name: string }).name, model: facts.model, reasoningEffort: facts.reasoningEffort })],
+    args: [...host.args, ...copilotArgs({
+      mode: facts.mode, agentInboxServer: (server as { name: string }).name, model: facts.model, reasoningEffort: facts.reasoningEffort,
+      ...(edits ? { editsFolder: edits } : {}),
+    })],
     cwd: facts.cwd, env: childEnv(spec.env, { path: dbPath, isDefault }),
     spawnLog: { launch: launchId, mode: facts.mode, cwd: facts.cwd, kind: spec.kind, host: host.script, interpreter: host.command === host.script ? null : host.command },
   })
@@ -568,7 +583,9 @@ async function runLaunch(argv: string[]): Promise<void> {
   const closeRow = (reason: EndReason) => {
     const usage = driver.usage()
     try {
-      if (reason === 'idle') parkLaunch(db, launchId, { acpSession: driver.resumableSession(), ...usage })
+      if (reason === 'idle' || reason === 'park') {
+        parkLaunch(db, launchId, { acpSession: driver.resumableSession(), ...usage, forgetSession: driver.sessionGone() })
+      }
       // a load that failed for another reason than "never prompted" parks it again, to retry (§7)
       else if (reason === 'error:load') {
         parkLaunch(db, launchId, { acpSession: loading, ...usage, reason: `Copilot could not load the session: ${driver.loadFailure() ?? 'unknown error'}` })
@@ -598,7 +615,7 @@ async function runLaunch(argv: string[]): Promise<void> {
   try { releaseDriverLeases(db, lease) } catch { /* the hub is gone */ }
   db.close()
   stderrLog.end()
-  process.exit(reason === 'stopped' || reason === 'idle' || reason === 'child_exit' ? 0 : 1)
+  process.exit(reason === 'stopped' || reason === 'idle' || reason === 'park' || reason === 'child_exit' ? 0 : 1)
 }
 
 const [command, ...rest] = process.argv.slice(2)

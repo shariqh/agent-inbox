@@ -11,7 +11,7 @@ import {
   claimDriverSlot, createLaunch, driverStopRequested, endLaunch, fileLaunchAsk, getItem, getLaunch, launchDriverAlive,
   listLaunchAskReplies, listLaunches, openDb, parkLaunch, readSnapshotState, recordLaunchProgress, replyItem,
   requestLaunchStop, resumeLaunch, settleLaunchAsk, listActivity, markDriverTurn, requestLaunchInterrupt, takeLaunchInterrupt,
-  upsertActivity, holdDriverLeases, releaseDriverLeases,
+  upsertActivity, holdDriverLeases, releaseDriverLeases, requestLaunchPark, takeLaunchPark,
 } from '../src/store.js'
 import type { NewLaunch } from '../src/store.js'
 import { createViewer } from '../src/viewer.js'
@@ -83,6 +83,17 @@ describe('the launch row (§6)', () => {
     recordLaunchProgress(db, ID(1), { activeMs: 6000, toolCalls: 9 })
     endLaunch(db, ID(1), { reason: 'stopped', activeMs: 0, toolCalls: 0 })
     expect(getLaunch(db, ID(1))).toMatchObject({ status: 'ended', active_ms: 6000, tool_calls: 9 })
+  })
+
+  it('a park with no session keeps the stored one; only a session Copilot said is gone is forgotten (review of #433)', () => {
+    createLaunch(db, launch(1))
+    parkLaunch(db, ID(1), { acpSession: 'acp-1', activeMs: 0, toolCalls: 0 })
+    expect(resumeLaunch(db, ID(1), 4243)).not.toBeNull()
+    parkLaunch(db, ID(1), { acpSession: null, activeMs: 0, toolCalls: 0 })
+    expect(getLaunch(db, ID(1))).toMatchObject({ status: 'parked', acp_session: 'acp-1' })
+    expect(resumeLaunch(db, ID(1), 4244)).not.toBeNull()
+    parkLaunch(db, ID(1), { acpSession: null, activeMs: 0, toolCalls: 0, forgetSession: true })
+    expect(getLaunch(db, ID(1))).toMatchObject({ status: 'parked', acp_session: null })
   })
 
   it('a resume takes a parked row back exactly once, clearing why it was parked', () => {
@@ -274,6 +285,21 @@ describe('the composer’s turn state and Interrupt and send (§5.3)', () => {
     parkLaunch(db, ID(2), { acpSession: 'acp', activeMs: 0, toolCalls: 0 })
     expect(requestLaunchInterrupt(db, ID(2))).toBe(false)
     expect(requestLaunchInterrupt(db, '../x')).toBe(false)
+  })
+
+  it('Park now is requested only for a running launch not stopping, taken once, and gone with its driver (PR 4)', async () => {
+    expect(requestLaunchPark(db, ID(1))).toBe(false)
+    createLaunch(db, launch(1))
+    const app = createViewer(db)
+    expect(await (await app.request(`/api/launches/${ID(1)}/park`, { method: 'POST' })).json()).toEqual({ ok: true })
+    expect(takeLaunchPark(db, ID(1))).toBe(true)
+    expect(takeLaunchPark(db, ID(1))).toBe(false)
+    expect(requestLaunchPark(db, ID(1))).toBe(true)
+    releaseDriverLeases(db, { launchId: ID(1), pid: 4242, nonce: 'n' })
+    expect(takeLaunchPark(db, ID(1))).toBe(false)
+    requestLaunchStop(db, ID(1))
+    expect(await (await app.request(`/api/launches/${ID(1)}/park`, { method: 'POST' })).json()).toEqual({ ok: false })
+    expect(requestLaunchPark(db, 'x')).toBe(false)
   })
 
   it('the interrupt route answers whether the request was recorded', async () => {

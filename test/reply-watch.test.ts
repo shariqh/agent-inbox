@@ -107,6 +107,18 @@ describe('canned notification responses', () => {
     })
   })
 
+  it('offers no buttons on an app launch’s approval, whose answer only main signs, and keeps them on a plain question (#412 step 3)', () => {
+    const options = [{ label: 'Allow once' }, { label: 'Deny' }]
+    const launchAsk = replyWatch.attentionNotification({ kind: 'item', item: { id: 'a', title: 'Allow?', project: '@sessions', action_owner: 'approval', options } as never })
+    const plain = replyWatch.attentionNotification({ kind: 'item', item: { id: 'b', title: 'Which?', project: 'alpha', action_owner: 'decision', options } as never })
+    const otherSessions = replyWatch.attentionNotification({ kind: 'item', item: { id: 'c', title: 'Note', project: '@sessions', action_owner: 'task' } as never })
+    const row = replyWatch.attentionNotification({ kind: 'row', row: { id: 'r', label: 'Ship?', revision: 1 }, board: { id: 'p', title: 'Plan', revision: 1 } })
+    expect(replyWatch.answerableByNotification(launchAsk)).toBe(false)
+    expect(replyWatch.answerableByNotification(plain)).toBe(true)
+    expect(replyWatch.answerableByNotification(otherSessions)).toBe(true)
+    expect(replyWatch.answerableByNotification(row)).toBe(true)
+  })
+
   it('maps both current and legacy Electron action events without guessing invalid indexes', () => {
     const responses = ['Recommended', 'Alternative']
     expect(replyWatch.responseForNotificationAction(responses, { actionIndex: 1 })).toBe('Alternative')
@@ -200,6 +212,9 @@ describe('canned notification responses', () => {
   it('is wired into the Electron notification action event', () => {
     const main = readFileSync(new URL('../electron/main.cjs', import.meta.url), 'utf8')
     expect(main).toContain('cannedResponseActions(actionable ? optionOrder(actionable.item.options) : [])')
+    // an app launch's approval is never answered from a notification (#412 step 3)
+    expect(main).toContain('const actionable = fresh.length === 1 && answerableByNotification(fresh[0]) ? fresh[0] : null')
+    expect(main).toContain('const hash = fresh.length === 1 ? focusHashFor(fresh[0].itemId) : null')
     expect(main).toContain('const entries = attn.map(attentionNotification)')
     expect(main).toContain('const fresh = freshAttentionNotifications(known, entries)')
     expect(main).toContain('known = knownNotificationIds(everything, laterEntries(items, boards, Date.now()))')

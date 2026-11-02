@@ -327,6 +327,47 @@ same. Once any shell command is allowed, the session can run anything: answer ea
 ask with that in mind. Design:
 [`docs/superpowers/specs/2026-10-31-driven-sessions-design.md`](docs/superpowers/specs/2026-10-31-driven-sessions-design.md).
 
+## Starting sessions from Agent Inbox (macOS, preview)
+
+The Agent Inbox app can start a Copilot CLI session in one of your projects and run
+it for you, so its approvals come to the inbox and your messages arrive as new turns.
+It is off until you turn it on, and it works only in the macOS app, not in a browser.
+
+**Try it:**
+
+1. Open **Settings → Agent sessions** and turn on **Start sessions from Agent Inbox**.
+   The key that signs your approvals is protected by the macOS Keychain, so macOS
+   may ask once to allow Agent Inbox to use it.
+2. Open **Live sessions** (the strip at the foot of the window) and choose
+   **New session…**. Pick a project Agent Inbox has seen (or **Choose folder…**), a
+   mode, optionally a model and reasoning effort, the budgets, and the task. Don't
+   paste secrets into the task: it is stored with the session.
+3. Agent Inbox shows its own confirmation of exactly what will start. **Start** runs
+   Copilot in that folder, with your login shell's environment.
+4. Each tool call that needs your approval arrives in the inbox under **@sessions**:
+   choose **Allow once** or **Deny** there. Only the app's own window can answer
+   them; a browser tab says so.
+5. Message the session from Live sessions. While it works, a message is **Queued**
+   until the turn ends; **Interrupt and send** stops the turn and sends it now.
+6. **Park now** stops Copilot and keeps the session; it also parks by itself after
+   two idle hours. **Resume and send** starts it again with your message.
+   **Stop** ends it. **Transcript** shows what it did.
+
+| Mode | What runs without asking |
+|---|---|
+| **Ask for everything** | Nothing, except what your own Copilot settings already allow |
+| **Read-only** | Nothing; file-edit tools are denied, and shell commands still ask |
+| **Plan first** | Nothing: it writes a plan, and once you approve it, each tool call asks |
+| **Edits in the worktree** | File edits inside the project folder (never a `.git` folder or file, at the top or nested); shell commands, network and anything outside the folder still ask |
+
+Once any shell command is allowed, the session can run anything, in its folder and
+beyond, and an edited file can change what an allowed command then runs. Answer each
+approval with that in mind. Each session has budgets for active time (default 2
+hours) and tool calls (default 500), across parks and resumes. When you quit the app
+with sessions running, it asks whether to keep them running or stop them all.
+Design: [`docs/superpowers/specs/2026-10-31-driven-sessions-design.md`](docs/superpowers/specs/2026-10-31-driven-sessions-design.md);
+how it is built: [`docs/architecture/driven-sessions.md`](docs/architecture/driven-sessions.md).
+
 ## Setting requests aside
 
 A request's **More responses** menu can set it aside. **Pin for later** keeps it

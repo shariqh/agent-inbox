@@ -2243,6 +2243,7 @@ body.settings-open #liveBar { opacity: .32; }
 .mesh-project, .mesh-branch { max-width: 100%; }
 .mesh-project, .mesh-branch { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mesh-branch { color: var(--app-text-soft); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; }
+.mesh-driven { margin-top: 2px; }
 .mesh-doing { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mesh-recency { color: var(--app-text-soft); font-size: 11.5px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .mesh-agent-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; margin-top: 8px; color: var(--app-muted); font-size: 12px; }

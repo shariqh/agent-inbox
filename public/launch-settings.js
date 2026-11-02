@@ -34,11 +34,12 @@ export function renderLaunchSettings(host, {
   input.setAttribute('role', 'switch')
   input.id = 'launch-switch'
   label.append(input, make('span', '', 'Start sessions from Agent Inbox'))
-  const hint = make('p', 'setup-hint', 'Start a Copilot session in a project from the Inbox and send it messages as new turns. Each session asks for approval here before its tool calls, and only this app can approve them. Once any shell command is allowed, a session can run anything.')
+  const hint = make('p', 'setup-hint', 'Start a Copilot session in one of your projects from Live sessions → New session…, and send it messages as new turns. Its approvals arrive in the inbox under @sessions, and only this app can answer them. Park now keeps a session to resume later; Stop ends it. Once any shell command is allowed, a session can run anything.')
+  const keychain = make('p', 'setup-hint', 'The key that signs your approvals is protected by the macOS Keychain, so macOS may ask once to allow it.')
   const message = make('p', 'launch-settings-message')
   message.setAttribute('role', 'status')
   message.setAttribute('aria-live', 'polite')
-  section.append(make('h3', '', 'Agent sessions'), label, hint, message)
+  section.append(make('h3', '', 'Agent sessions'), label, hint, keychain, message)
   host.appendChild(section)
 
   const show = (state) => {

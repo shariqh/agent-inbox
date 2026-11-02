@@ -298,6 +298,13 @@ describe('the launch controller', () => {
     expect(confirmation.detail).toContain('Budgets: up to 2 h of active turn time and 500 tool calls.')
     expect(confirmation.detail).toContain('Once any shell command is allowed, the session can run anything')
     expect(confirmation.detail).toContain('Task: Fix the failing test.')
+    // Edits in the worktree says what runs unasked, and the page offers the same words (#412 step 3, PR 4)
+    const edits = controllerModule.confirmation({ project: 'alpha', folder: '/w', mode: 'edits', budgets: { activeMs: 90_000, toolCalls: 3 }, prompt: 'x' })
+    expect(edits.detail).toContain('Mode: Edits in the worktree. File edits inside the project folder run without asking, never a .git folder or file;')
+    expect(controllerModule.launchRequest({ ...REQUEST, mode: 'edits' })).toMatchObject({ mode: 'edits' })
+    const page = await import('../public/launches.js')
+    for (const mode of page.LAUNCH_MODES) expect(controllerModule.MODES[mode.id], mode.id).toEqual({ label: mode.label, copy: mode.copy })
+    expect(Object.keys(controllerModule.MODES).sort()).toEqual(page.LAUNCH_MODES.map((m) => m.id).sort())
     const args = r.spawned[1]!
     expect(args).toMatchObject({ platform: 'darwin', node: '/rt/bin/node', entry: '/rt/dist/driver-cli.js', launchId: ID, hubPath: '/hub/inbox.db', logPath: `/hub/launches/${ID}/driver.log`, env: { PATH: '/usr/bin:/bin' } })
     // the spec the driver will parse: exactly the confirmed facts, the env through the denylist, the derived key

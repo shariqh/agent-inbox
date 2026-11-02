@@ -5,7 +5,7 @@
 // and §8; spike amendments §14.4.
 import { existsSync, readFileSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { isAbsolute, join, relative } from 'node:path'
 
 // Copilot's ACP mode ids are URLs (spike §4). `session/set_mode` refuses any other.
 const MODE_BASE = 'https://agentclientprotocol.com/protocol/session-modes'
@@ -13,10 +13,10 @@ export const MODE_AGENT = `${MODE_BASE}#agent`
 export const MODE_PLAN = `${MODE_BASE}#plan`
 
 /**
- * The launch modes. Step 2's CLI offers `ask` and `read-only`; `plan` is the
- * Plan first machinery step 3 exposes (§4.1).
+ * The launch modes. Step 2's CLI offers `ask` and `read-only`; `plan` (Plan
+ * first) and `edits` (Edits in the worktree) are the app's (§4.1).
  */
-export type LaunchMode = 'ask' | 'read-only' | 'plan'
+export type LaunchMode = 'ask' | 'read-only' | 'plan' | 'edits'
 
 /**
  * A launch's phase decides which mode is valid (§4.1). Plan first starts in
@@ -51,12 +51,54 @@ export function stateValid(phase: Phase, state: { mode: string; allowAll: string
  * agent-inbox registration is pre-allowed by name (§3.2), and Read-only denies
  * the write tool. Never `--yolo`, `--allow-all-tools` or `--allow-all`.
  */
-export function copilotArgs(opts: { mode: LaunchMode; agentInboxServer: string; model?: string; reasoningEffort?: ReasoningEffort }): string[] {
+export function copilotArgs(opts: {
+  mode: LaunchMode; agentInboxServer: string; model?: string; reasoningEffort?: ReasoningEffort; editsFolder?: EditsFolder
+}): string[] {
   const args = ['--acp', '--stdio', '--allow-tool', opts.agentInboxServer]
   if (opts.mode === 'read-only') args.push('--deny-tool', 'write')
+  if (opts.mode === 'edits') {
+    if (!opts.editsFolder) throw new Error('Edits in the worktree needs its checked folder')
+    args.push('--allow-tool', opts.editsFolder.allow)
+    for (const deny of opts.editsFolder.deny) args.push('--deny-tool', deny)
+  }
   if (opts.model) args.push('--model', opts.model)
   if (opts.reasoningEffort) args.push('--reasoning-effort', opts.reasoningEffort)
   return args
+}
+
+// Characters Copilot's tool patterns give a meaning (a call's argument list,
+// globs, lists), a backslash, and controls: a folder holding any of them is refused.
+const PATTERN_UNSAFE = /[()*?[\]{},\\\u0000-\u001f\u007f]/
+
+/** The checked tool patterns of Edits in the worktree. */
+export interface EditsFolder { allow: string; deny: readonly string[] }
+
+/**
+ * Edits in the worktree (§4.1): Copilot writes files under the launch folder
+ * with no ask (`write(<folder>/**)`), never a `.git` folder or file, at the top
+ * or nested, nor anything under one (deny beats allow, so hooks, config and a
+ * worktree's or submodule's `gitdir:` pointer cannot be edited unasked), and
+ * asks for everything else.
+ * The folder must be the real path the driver resolved, absolute, and neither
+ * the filesystem root nor the home folder or one above it; a folder whose
+ * name holds a pattern character is refused rather than escaped. Null means
+ * the launch does not start.
+ */
+export function editsFolder(folder: string, home: string | null): EditsFolder | null {
+  if (!isAbsolute(folder) || folder === '/' || PATTERN_UNSAFE.test(folder)) return null
+  const dir = folder.replace(/\/+$/, '')
+  if (!dir) return null
+  if (home && isAbsolute(home)) {
+    const up = relative(dir, home)
+    // the home folder itself, or a folder that contains it
+    if (up === '' || (!up.startsWith('..') && !isAbsolute(up))) return null
+  }
+  // a `.git` folder or file (a linked worktree's or a submodule's pointer),
+  // at the top or nested, and everything under one
+  return {
+    allow: `write(${dir}/**)`,
+    deny: [`write(${dir}/.git)`, `write(${dir}/.git/**)`, `write(${dir}/**/.git)`, `write(${dir}/**/.git/**)`],
+  }
 }
 
 /** Copilot 1.0.105's `--reasoning-effort` values, passed through only from this list. */

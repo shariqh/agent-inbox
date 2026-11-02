@@ -9,7 +9,7 @@ import type { AcpFrame } from '../src/acp-client.js'
 import { findNativeHost, linkSessions, parsePs } from '../src/driver-link.js'
 import {
   MODE_AGENT, MODE_PLAN, PLAN_APPROVED_PROMPT, answerPingPrompt, askTitle, cappedInput, childEnv, copilotAgentInboxServer,
-  copilotArgs, filterOptions, firstPrompt, initialPhase, interruptPrompt, messagesPrompt, promptSafe, setupRefusalHint, stateValid, terminalSafe,
+  copilotArgs, editsFolder, filterOptions, firstPrompt, initialPhase, interruptPrompt, messagesPrompt, promptSafe, setupRefusalHint, stateValid, terminalSafe,
 } from '../src/driver-policy.js'
 import { removeScratchDirs, scratchDir } from './scratch.js'
 
@@ -53,6 +53,23 @@ describe('modes, phases and the option allow-list (§4.1)', () => {
       .toEqual(['--acp', '--stdio', '--allow-tool', 'agent-inbox', '--deny-tool', 'write', '--model', 'claude-haiku-4.5'])
     expect(copilotArgs({ mode: 'ask', agentInboxServer: 'agent-inbox', model: 'claude-haiku-4.5', reasoningEffort: 'none' }))
       .toEqual(['--acp', '--stdio', '--allow-tool', 'agent-inbox', '--model', 'claude-haiku-4.5', '--reasoning-effort', 'none'])
+  })
+
+  it('Edits in the worktree allows writes under its folder and denies its .git, refusing a folder it cannot pattern safely (#412 step 3)', () => {
+    const folder = editsFolder('/work/alpha', '/Users/me')!
+    const deny = ['write(/work/alpha/.git)', 'write(/work/alpha/.git/**)', 'write(/work/alpha/**/.git)', 'write(/work/alpha/**/.git/**)']
+    expect(folder).toEqual({ allow: 'write(/work/alpha/**)', deny })
+    // a .git file or folder, at the top or nested, and all under one: each its own --deny-tool
+    expect(copilotArgs({ mode: 'edits', agentInboxServer: 'agent-inbox', editsFolder: folder })).toEqual([
+      '--acp', '--stdio', '--allow-tool', 'agent-inbox', '--allow-tool', 'write(/work/alpha/**)',
+      ...deny.flatMap((pattern) => ['--deny-tool', pattern]),
+    ])
+    expect(() => copilotArgs({ mode: 'edits', agentInboxServer: 'agent-inbox' })).toThrow(/checked folder/)
+    expect(editsFolder('/Users/me/dev/alpha/', '/Users/me')).toMatchObject({ allow: 'write(/Users/me/dev/alpha/**)' })
+    for (const bad of ['/', 'work/alpha', '/Users/me', '/Users', '/work/a)b', '/work/a*', '/work/a?b', '/work/[a]', '/work/{a}', '/work/a,b', '/work/a\\b', '/work/a\nb']) {
+      expect(editsFolder(bad, '/Users/me'), JSON.stringify(bad)).toBeNull()
+    }
+    expect(editsFolder('/Users/meander', '/Users/me')).not.toBeNull()
   })
 
   it('explains a session/new refused because the user’s settings set a reasoning effort the model does not take', () => {

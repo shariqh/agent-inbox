@@ -33,8 +33,9 @@ const sessionState = (row, nowMs) => isWorking(row, nowMs) ? 'working' : isDorma
  *   `activity` is what the lanes read (the lens-filtered /api/activity rows);
  *   `attention` is the frame's attention entries for the same lens.
  */
-export function agentGroups({ activity, attention, closed = [], nowMs }) {
+export function agentGroups({ activity, attention, closed = [], startedHere = [], nowMs }) {
   const shut = new Set(closed)
+  const here = new Set(startedHere)
   const byAgent = new Map()
   for (const row of activity ?? []) {
     if (!row?.project || shut.has(row.project)) continue
@@ -55,6 +56,9 @@ export function agentGroups({ activity, attention, closed = [], nowMs }) {
       historical: synopsis.historical || state !== 'working',
       called: Number.isFinite(callAt),
       sinceMs: Number.isFinite(since) ? Math.max(0, nowMs - since) : null,
+      // #412: a session an Agent Inbox driver runs, and one this app started
+      driven: row.driven === true,
+      startedHere: row.driven === true && here.has(String(row.session ?? '')),
     })
     if (state === 'working') group.working += 1
     callTrace(row, nowMs).forEach((count, index) => { group.trace[index] += count })
@@ -160,6 +164,12 @@ export function installMeshView({ doc = globalThis.document, jumpToAsk, openMess
       const doing = make('span', 'mesh-doing', session.historical && session.text !== 'No task reported yet' ? `was: ${session.text}` : session.text)
       doing.title = doing.textContent
       line.append(dot, where, doing, make('span', 'mesh-recency', sessionRecency(session)), make('span', 'mesh-chip mesh-state', session.state))
+      if (session.driven) {
+        const tag = make('span', 'mesh-chip mesh-driven', session.startedHere ? 'started here' : 'driven')
+        tag.title = session.startedHere ? 'Agent Inbox started this session and runs it' : 'An Agent Inbox driver runs this session'
+        // inside the project-and-branch column, so the row's grid is unchanged
+        where.append(tag)
+      }
       if (openMessage) {
         const message = make('button', 'mesh-message', 'Message')
         message.type = 'button'
@@ -234,7 +244,7 @@ export function installMeshView({ doc = globalThis.document, jumpToAsk, openMess
     // Rebuilt only when what it shows changed, so an unchanged paint keeps its
     // nodes (and any selection or focus in them).
     const key = JSON.stringify(groups.map((group) => [group.agent, group.working, group.asks.length, group.trace,
-      group.sessions.map((session) => [session.session, session.project, session.branch, session.state, session.text, session.historical, sessionRecency(session)])]))
+      group.sessions.map((session) => [session.session, session.project, session.branch, session.state, session.text, session.historical, sessionRecency(session), session.driven, session.startedHere])]))
     const empty = section.querySelector('.mesh-agents-empty')
     if (empty.hidden !== groups.length > 0) empty.hidden = groups.length > 0
     if (key === drawnKey) return

@@ -14,7 +14,7 @@ import {
   closeProject, reopenProject, closedProjects, readSnapshotState, listIssueEntities, listIssueSnapshots,
   listSessionMessages, sendSessionMessage, withdrawSessionMessage, validMessageId, validMessageText, MESSAGE_MAX_TEXT,
   listLaunches, getLaunch, launchView, launchDriverAlive, isLaunchAsk, requestLaunchStop, closeLostLaunch, getLaunchAsk,
-  answerLaunchAsk, listLaunchFolders, requestLaunchInterrupt,
+  answerLaunchAsk, listLaunchFolders, requestLaunchInterrupt, requestLaunchPark,
 } from './store.js'
 import type { ExpectedAnswer, ResponseKind, SnapshotDomain, SnapshotReadState } from './store.js'
 import { groupItems } from './group.js'
@@ -1083,6 +1083,9 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
   // Interrupt and send (§5.3): the page has sent the message; the driver
   // cancels its running turn and sends it with the interrupt notice.
   app.post('/api/launches/:id/interrupt', (c) => c.json({ ok: requestLaunchInterrupt(db, c.req.param('id')) }))
+  // Park now (§7): the driver parks at its next idle point, keeping the session
+  // to resume. Like Stop, the human's own capability over a running launch.
+  app.post('/api/launches/:id/park', (c) => c.json({ ok: requestLaunchPark(db, c.req.param('id')) }))
   // The transcript panel (§3.6): the driver's event log from a byte offset, at
   // most 256 KiB of whole lines a read, read only while the panel is open. An
   // offset past the end means the log rotated: it starts again from 0.

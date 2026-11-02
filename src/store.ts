@@ -3842,9 +3842,10 @@ export function holdDriverLeases(
 // leases are never dropped.
 export function releaseDriverLeases(db: Database.Database, lease: DriverLease): void {
   const token = driverToken(lease)
-  db.prepare(`DELETE FROM hook_watch_claims WHERE token = ? OR claim_key IN (?, ?)
+  db.prepare(`DELETE FROM hook_watch_claims WHERE token = ? OR claim_key IN (?, ?, ?)
                  OR (claim_key = ? AND substr(token, 1, length(?)) = ?)`)
-    .run(token, `driver-stop:${lease.launchId}`, `driver-interrupt:${lease.launchId}`, `driver-turn:${lease.launchId}`, `${token}|`, `${token}|`)
+    .run(token, `driver-stop:${lease.launchId}`, `driver-interrupt:${lease.launchId}`, `driver-park:${lease.launchId}`,
+      `driver-turn:${lease.launchId}`, `${token}|`, `${token}|`)
 }
 
 // Issue #412 step 3 (§5.3): whether the driver's turn runs, and whether it
@@ -3878,6 +3879,22 @@ export function requestLaunchInterrupt(db: Database.Database, id: string): boole
 
 export function takeLaunchInterrupt(db: Database.Database, launchId: string): boolean {
   return db.prepare(`DELETE FROM hook_watch_claims WHERE claim_key = ?`).run(`driver-interrupt:${launchId}`).changes > 0
+}
+
+// Park now (§7): the human asks a running launch to park as the idle timeout
+// would, keeping its session to resume. The driver takes the request once and
+// parks at its next idle point: no turn running and no ask open.
+export function requestLaunchPark(db: Database.Database, id: string): boolean {
+  if (!LAUNCH_ID.test(id)) return false
+  return db.transaction(() => {
+    const running = db.prepare(`SELECT 1 FROM launches WHERE id = ? AND status = 'running' AND stop_requested_at IS NULL`).get(id) !== undefined
+    if (running) claimHookWatch(db, `driver-park:${id}`, 'park')
+    return running
+  }).immediate()
+}
+
+export function takeLaunchPark(db: Database.Database, launchId: string): boolean {
+  return db.prepare(`DELETE FROM hook_watch_claims WHERE claim_key = ?`).run(`driver-park:${launchId}`).changes > 0
 }
 
 // Step 2's Stop, written by the runtime CLI (`driver-cli.js stop <launch id>`).

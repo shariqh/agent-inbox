@@ -26,12 +26,14 @@ import {
 import type { LaunchMode, Phase, PushedMessage } from './driver-policy.js'
 import {
   driverStopRequested, holdDriverLeases, hubDataVersion, insertItem, listAnsweredSessionAsks, listOpenMessagesWithText,
-  markDriverTurn, markMessageDelivered, readdressMessages, releaseDriverLeases, resolveItem, takeLaunchInterrupt,
+  markDriverTurn, markMessageDelivered, readdressMessages, releaseDriverLeases, resolveItem, takeLaunchInterrupt, takeLaunchPark,
 } from './store.js'
 import type { DriverLease } from './store.js'
 
 export type EndReason =
   | 'stopped' | 'idle' | 'child_exit'
+  /** Park now (§7): parked like 'idle', at the human's request. */
+  | 'park'
   | 'budget:active_time' | 'budget:tool_calls'
   | 'error:mode_escalation' | 'error:setup' | 'error:hub_unreachable' | 'error:lease_lost' | 'error:protocol'
   /** A resume whose session/load failed for a reason other than "never prompted": the launch can be retried. */
@@ -265,6 +267,8 @@ export class Driver {
   private loadError: string | null = null
   // the turn state last written for the composer (§5.3): 'turn', 'approval' or none
   private turnShown: string | null = null
+  // Park now was asked for: park at the next idle point
+  private parkRequested = false
   private finished = false
   private childGone = false
   // set as the child exits, even after the queue has stopped (forceStop reads it)
@@ -836,6 +840,11 @@ export class Driver {
       if (driverStopRequested(this.o.db, this.o.lease.launchId)) return this.end('stopped')
       // Interrupt and send from the page (§5.3): queued behind every frame already read
       if (takeLaunchInterrupt(this.o.db, this.o.lease.launchId)) this.enqueue({ type: 'interrupt' })
+      // Park now: parked at the next idle point, exactly as the idle timeout parks
+      if (!this.parkRequested && takeLaunchPark(this.o.db, this.o.lease.launchId)) {
+        this.parkRequested = true
+        this.o.log({ event: 'park_requested', turn: this.turn?.rpcId ?? null })
+      }
       this.lastHubOk = Date.now()
     } catch (error) {
       this.o.log({ event: 'hub_read_failed', message: error instanceof Error ? error.message : String(error) })
@@ -843,6 +852,7 @@ export class Driver {
       return
     }
     if (this.turn && this.activeMs + (Date.now() - this.turn.startedAt) >= this.t.activeMs) return this.end('budget:active_time')
+    if (!this.turn && this.asks.size === 0 && this.parkRequested) return this.end('park')
     if (!this.turn && this.asks.size === 0 && Date.now() - this.lastActivity >= this.t.idleMs) return this.end('idle')
     if (version !== this.dataVersion || !this.taskSent) {
       this.dataVersion = version

@@ -151,6 +151,8 @@ export function createLaunchUi(deps) {
 
   function paintRow(el, launch, nowMs) {
     const status = launchStatus(launch, deps.activity(), nowMs)
+    // a note about the state it was in goes once that state changes
+    if (el.dataset.state && el.dataset.state !== status.state) notes.delete(launch.id)
     const key = JSON.stringify([launch.revision, launch.status, status.state, status.text, granted(), busy.has(launch.id), notes.get(launch.id) ?? '', launch.resumable])
     if (el.dataset.key === key) return
     // a focused control keeps its node: rewritten only when the human is elsewhere
@@ -167,6 +169,7 @@ export function createLaunchUi(deps) {
       if (action === 'transcript') actions.append(button('Transcript', 'transcript'))
       else if (granted() && action === 'stop') actions.append(button(launch.status === 'parked' ? 'End' : 'Stop', 'stop'))
       else if (granted() && action === 'close') actions.append(button('Close', 'close'))
+      else if (granted() && action === 'park') actions.append(button('Park now', 'park'))
     }
     parts.push(actions)
     if (status.actions.includes('resume') && granted()) {
@@ -225,6 +228,7 @@ export function createLaunchUi(deps) {
     else if (action === 'transcript' && id) openTranscript(id)
     else if (action === 'stop' && id) stop(id)
     else if (action === 'close' && id) close(id)
+    else if (action === 'park' && id) park(id)
     else if (action === 'resume' && id) resumeAndSend(id)
   }
 
@@ -244,6 +248,14 @@ export function createLaunchUi(deps) {
   async function stop(id) {
     const result = await act(id, () => bridge().stop(id))
     if (result && !result.ok) notes.set(id, result.error ?? 'Not stopped.')
+    await deps.settled()
+  }
+
+  // Park now (§7): the driver parks at its next idle point, as the idle
+  // timeout would, and the launch can be resumed with Resume and send.
+  async function park(id) {
+    const result = await act(id, () => deps.postJSON(`/api/launches/${encodeURIComponent(id)}/park`))
+    if (result) notes.set(id, result.ok ? 'Parking: Copilot stops once its turn ends, and the session is kept to resume.' : 'Not parked: it is not running.')
     await deps.settled()
   }
 

@@ -18,7 +18,7 @@ import type { LaunchMode } from '../src/driver-policy.js'
 import {
   annotateBoardRow, claimDriverSlot, getBoard, getItem, insertItem, isDrivenSession, listItems, listPending,
   listSessionMessages, openDb, replyItem, requestDriverStop, sendSessionMessage, upsertActivity, upsertBoard,
-  withdrawSessionMessage, endActivity, createLaunch, getLaunch, dismissItem, resolveItem, listActivity, requestLaunchInterrupt,
+  withdrawSessionMessage, endActivity, createLaunch, getLaunch, dismissItem, resolveItem, listActivity, requestLaunchInterrupt, requestLaunchPark,
 } from '../src/store.js'
 import { LAUNCH_KEY, sign } from './launch-fixtures.js'
 import { MODE, configUpdate, fakeAgent, permissionRequest, toolCall } from './acp-fake.js'
@@ -463,6 +463,19 @@ describe('pushed delivery (§5.3)', () => {
     await h.done
     // its leases go with it: no turn state, no interrupt left behind
     expect(row()?.driven_turn).toBeUndefined()
+  })
+
+  it('Park now waits for the running turn to end, then ends as the idle park does (#412 step 3, PR 4)', async () => {
+    const turns: unknown[] = []
+    const h = start({ app: true, script: { onPrompt: (_fake, id) => { turns.push(id) } } })
+    await h.ready()
+    await until(() => turns.length === 1, 'the first turn')
+    expect(requestLaunchPark(h.human, LAUNCH)).toBe(true)
+    await until(() => h.log.find((e) => e.event === 'park_requested'), 'the request taken')
+    await new Promise((resolve) => setTimeout(resolve, 60))
+    expect(h.log.find((e) => e.event === 'ending')).toBeUndefined()
+    h.fake.respond(turns[0], { stopReason: 'end_turn' })
+    expect(await h.done).toBe('park')
   })
 
   it('pings once when the human answers the session’s own question or a row of a plan it wrote, never another session’s', async () => {

@@ -26,7 +26,7 @@ import {
 import type { LaunchMode, Phase, PushedMessage } from './driver-policy.js'
 import {
   driverStopRequested, holdDriverLeases, hubDataVersion, insertItem, listAnsweredSessionAsks, listOpenMessagesWithText,
-  markMessageDelivered, readdressMessages, releaseDriverLeases, resolveItem,
+  markDriverTurn, markMessageDelivered, readdressMessages, releaseDriverLeases, resolveItem, takeLaunchInterrupt,
 } from './store.js'
 import type { DriverLease } from './store.js'
 
@@ -263,6 +263,8 @@ export class Driver {
   private readonly askChannel: AskChannel
   private ending: EndReason | null = null
   private loadError: string | null = null
+  // the turn state last written for the composer (§5.3): 'turn', 'approval' or none
+  private turnShown: string | null = null
   private finished = false
   private childGone = false
   // set as the child exits, even after the queue has stopped (forceStop reads it)
@@ -630,6 +632,7 @@ export class Driver {
       { id: options.reject ?? 'decline', label: 'Deny', detail: 'Declining stops the agent’s current turn.', approve: false },
     ])
     this.asks.set(id, { id, kind: 'permission', itemId, rpcId: frame.id, allow: options.allow, reject: options.reject, generation: this.state.generation })
+    this.syncTurn()
     this.o.ui.ask({ id, kind: 'permission', title, detail: `${kind ? `${kind}: ` : ''}${input}` })
   }
 
@@ -639,6 +642,7 @@ export class Driver {
 
   private settle(ask: PendingAsk, outcome: string): void {
     this.asks.delete(ask.id)
+    this.syncTurn()
     try {
       this.askChannel.settle(ask.itemId, outcome)
     } catch (error) {
@@ -722,6 +726,7 @@ export class Driver {
     this.turn = { rpcId, startedAt: Date.now(), kind }
     this.lastActivity = Date.now()
     this.o.log({ event: 'prompt', id: rpcId, kind, chars: text.length })
+    this.syncTurn()
     return true
   }
 
@@ -785,6 +790,7 @@ export class Driver {
   private onTurnEnd(frame: Extract<AcpFrame, { kind: 'response' }>): void {
     const turn = this.turn!
     this.turn = null
+    this.syncTurn()
     this.activeMs += Date.now() - turn.startedAt
     this.lastActivity = Date.now()
     const result = isRecord(frame.result) ? frame.result : {}
@@ -828,6 +834,8 @@ export class Driver {
     try {
       version = hubDataVersion(this.o.db)
       if (driverStopRequested(this.o.db, this.o.lease.launchId)) return this.end('stopped')
+      // Interrupt and send from the page (§5.3): queued behind every frame already read
+      if (takeLaunchInterrupt(this.o.db, this.o.lease.launchId)) this.enqueue({ type: 'interrupt' })
       this.lastHubOk = Date.now()
     } catch (error) {
       this.o.log({ event: 'hub_read_failed', message: error instanceof Error ? error.message : String(error) })
@@ -857,6 +865,17 @@ export class Driver {
       const ask = [...this.asks.values()].find((a) => a.itemId === answer.itemId)
       if (ask) this.enqueue({ type: 'answer', askId: ask.id, approve: answer.approve, ...(answer.closed ? { closed: true } : {}) })
     }
+  }
+
+  // What the composer shows for this launch's sessions (§5.3): a running turn,
+  // and whether it waits on the human's approval. Written only on a change.
+  private syncTurn(): void {
+    if (this.finished) return
+    const state = !this.turn ? null : [...this.asks.values()].some((a) => a.kind === 'permission') ? 'approval' : 'turn'
+    if (state === this.turnShown) return
+    this.turnShown = state
+    const since = this.turn ? new Date(this.turn.startedAt).toISOString() : undefined
+    this.report(() => markDriverTurn(this.o.db, this.o.lease, state, since))
   }
 
   // A hook's failure never stops the session: the row is a report, not the state.

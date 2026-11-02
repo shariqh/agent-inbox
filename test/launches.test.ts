@@ -5,11 +5,13 @@
 // launches from keeps an empty table and every other snapshot unchanged.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { join } from 'node:path'
+import { mkdirSync, writeFileSync, appendFileSync } from 'node:fs'
 import type Database from 'better-sqlite3'
 import {
   claimDriverSlot, createLaunch, driverStopRequested, endLaunch, fileLaunchAsk, getItem, getLaunch, launchDriverAlive,
   listLaunchAskReplies, listLaunches, openDb, parkLaunch, readSnapshotState, recordLaunchProgress, replyItem,
-  requestLaunchStop, resumeLaunch, settleLaunchAsk,
+  requestLaunchStop, resumeLaunch, settleLaunchAsk, listActivity, markDriverTurn, requestLaunchInterrupt, takeLaunchInterrupt,
+  upsertActivity, holdDriverLeases, releaseDriverLeases,
 } from '../src/store.js'
 import type { NewLaunch } from '../src/store.js'
 import { createViewer } from '../src/viewer.js'
@@ -227,6 +229,113 @@ describe('the ordinary reply and note routes refuse a launch’s ask (#412 step 
     // once settled, the mapping is gone and the item is closed as any other
     settleLaunchAsk(db, itemId, 'Session stopped.')
     expect((await post(`/api/items/${itemId}/reply`, { text: 'Allow once' })).body.reason).toBeUndefined()
+  })
+})
+
+describe('the composer’s turn state and Interrupt and send (§5.3)', () => {
+  const lease = { launchId: ID(1), pid: 4242, nonce: 'n' }
+  function driven(session = 'mcp-1') {
+    upsertActivity(db, { session, project: 'agent-inbox', stream: 'main', agent: 'copilot', doing: 'open', idle: true, claim: false })
+    claimDriverSlot(db, lease, 2)
+    holdDriverLeases(db, lease, [session])
+  }
+
+  it('serves a driven session’s launch and turn, and nothing new on any other row', () => {
+    upsertActivity(db, { session: 'plain', project: 'agent-inbox', stream: 'main', agent: 'claude-code', doing: 'open', idle: true, claim: false })
+    const plain = JSON.stringify(listActivity(db).find((a) => a.session === 'plain'))
+    driven()
+    expect(listActivity(db).find((a) => a.session === 'mcp-1')).toMatchObject({ driven: true, driven_launch: ID(1) })
+    expect(listActivity(db).find((a) => a.session === 'mcp-1')).not.toHaveProperty('driven_turn')
+    markDriverTurn(db, lease, 'turn', '2026-11-02T12:00:00.000Z')
+    expect(listActivity(db).find((a) => a.session === 'mcp-1')!.driven_turn).toEqual({ state: 'turn', since: '2026-11-02T12:00:00.000Z' })
+    markDriverTurn(db, lease, 'approval', '2026-11-02T12:00:00.000Z')
+    expect(listActivity(db).find((a) => a.session === 'mcp-1')!.driven_turn).toEqual({ state: 'approval', since: '2026-11-02T12:00:00.000Z' })
+    // another driver of the same launch cannot clear it
+    markDriverTurn(db, { ...lease, nonce: 'other' }, null)
+    expect(listActivity(db).find((a) => a.session === 'mcp-1')!.driven_turn).toBeDefined()
+    markDriverTurn(db, lease, null)
+    expect(listActivity(db).find((a) => a.session === 'mcp-1')).not.toHaveProperty('driven_turn')
+    expect(JSON.stringify(listActivity(db).find((a) => a.session === 'plain'))).toBe(plain)
+    markDriverTurn(db, lease, 'turn')
+    releaseDriverLeases(db, lease)
+    expect(listActivity(db).find((a) => a.session === 'mcp-1')).not.toHaveProperty('driven_turn')
+  })
+
+  it('an interrupt is requested only for a running launch not stopping, and taken once', () => {
+    expect(requestLaunchInterrupt(db, ID(1))).toBe(false)
+    createLaunch(db, launch(1))
+    expect(requestLaunchInterrupt(db, ID(1))).toBe(true)
+    expect(requestLaunchInterrupt(db, ID(1))).toBe(true)
+    expect(takeLaunchInterrupt(db, ID(1))).toBe(true)
+    expect(takeLaunchInterrupt(db, ID(1))).toBe(false)
+    requestLaunchStop(db, ID(1))
+    expect(requestLaunchInterrupt(db, ID(1))).toBe(false)
+    createLaunch(db, launch(2))
+    parkLaunch(db, ID(2), { acpSession: 'acp', activeMs: 0, toolCalls: 0 })
+    expect(requestLaunchInterrupt(db, ID(2))).toBe(false)
+    expect(requestLaunchInterrupt(db, '../x')).toBe(false)
+  })
+
+  it('the interrupt route answers whether the request was recorded', async () => {
+    createLaunch(db, launch(1))
+    const app = createViewer(db)
+    expect(await (await app.request(`/api/launches/${ID(1)}/interrupt`, { method: 'POST' })).json()).toEqual({ ok: true })
+    expect(await (await app.request(`/api/launches/${ID(9)}/interrupt`, { method: 'POST' })).json()).toEqual({ ok: false })
+  })
+})
+
+describe('the transcript’s events route (§3.6)', () => {
+  function log(id: string) {
+    const dir = join(db.name, '..', 'launches', id)
+    mkdirSync(dir, { recursive: true })
+    return join(dir, 'events.ndjson')
+  }
+  const read = async (app: ReturnType<typeof createViewer>, path: string) => {
+    const response = await app.request(path)
+    return { status: response.status, cache: response.headers.get('cache-control'), body: await response.json() as Record<string, unknown> }
+  }
+
+  it('reads whole lines from a byte offset, skips unreadable ones, and starts again when the log rotated', async () => {
+    createLaunch(db, launch(1))
+    const app = createViewer(db)
+    expect(await read(app, `/api/launches/${ID(1)}/events`)).toEqual({ status: 200, cache: 'no-store', body: { events: [], next: 0, more: false, rotated: false } })
+    const file = log(ID(1))
+    writeFileSync(file, '{"event":"prompt","kind":"task"}\nnot json\n{"event":"agent_text","text":"hal')
+    const first = await read(app, `/api/launches/${ID(1)}/events?after=0`)
+    // an unfinished last line is waited on at the page's pace: no "more" to re-read at once
+    expect(first.body).toMatchObject({ events: [{ event: 'prompt', kind: 'task' }], more: false, rotated: false })
+    const next = first.body.next as number
+    expect((await read(app, `/api/launches/${ID(1)}/events?after=${next}`)).body).toEqual({ events: [], next, more: false, rotated: false })
+    appendFileSync(file, 'f"}\n')
+    expect((await read(app, `/api/launches/${ID(1)}/events?after=${next}`)).body).toMatchObject({ events: [{ event: 'agent_text', text: 'half' }], more: false })
+    writeFileSync(file, '{"event":"ended","reason":"stopped"}\n')
+    expect((await read(app, `/api/launches/${ID(1)}/events?after=${next + 100}`)).body).toMatchObject({ events: [{ event: 'ended' }], rotated: true, next: 37 })
+  })
+
+  it('reads at most 256 KiB at a time, and skips a line longer than that', async () => {
+    createLaunch(db, launch(1))
+    const app = createViewer(db)
+    const file = log(ID(1))
+    const line = (n: number) => `${JSON.stringify({ event: 'agent_text', text: 'x'.repeat(1000), n })}\n`
+    writeFileSync(file, Array.from({ length: 400 }, (_, n) => line(n)).join(''))
+    const first = await read(app, `/api/launches/${ID(1)}/events`)
+    expect(first.body.more).toBe(true)
+    expect((first.body.events as unknown[]).length).toBeLessThan(400)
+    expect(first.body.next as number).toBeLessThanOrEqual(256 * 1024)
+    const rest = await read(app, `/api/launches/${ID(1)}/events?after=${first.body.next}`)
+    expect((first.body.events as unknown[]).length + (rest.body.events as unknown[]).length).toBe(400)
+    writeFileSync(file, `${JSON.stringify({ text: 'y'.repeat(300 * 1024) })}\n{"event":"ended"}\n`)
+    const huge = await read(app, `/api/launches/${ID(1)}/events?after=0`)
+    expect(huge.body).toMatchObject({ events: [], next: 256 * 1024, more: true })
+    expect((await read(app, `/api/launches/${ID(1)}/events?after=${huge.body.next}`)).body).toMatchObject({ events: [{ event: 'ended' }] })
+  })
+
+  it('answers 404 for an unknown launch and 400 for a bad offset', async () => {
+    createLaunch(db, launch(1))
+    const app = createViewer(db)
+    expect((await read(app, `/api/launches/${ID(9)}/events`)).status).toBe(404)
+    expect((await read(app, `/api/launches/..%2Fx/events`)).status).toBe(404)
+    for (const bad of ['-1', 'abc', '1e3', '9'.repeat(16)]) expect((await read(app, `/api/launches/${ID(1)}/events?after=${bad}`)).status, bad).toBe(400)
   })
 })
 

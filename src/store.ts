@@ -3357,6 +3357,13 @@ export interface Activity {
    * pushed into it as a new turn.
    */
   driven?: true
+  /**
+   * Issue #412 step 3 — with `driven`: the launch the driver runs, and, while
+   * a turn runs, since when and whether it waits on an approval (the
+   * composer's Queued states, §5.3). Served only while present.
+   */
+  driven_launch?: string
+  driven_turn?: { state: 'turn' | 'approval'; since: string }
 }
 
 export interface ActivityUpdate {
@@ -3610,24 +3617,27 @@ export function listActivity(db: Database.Database, opts: { staleMinutes?: numbe
   const rows = db
     .prepare(`SELECT a.session, a.project, a.stream, a.agent, a.doing, a.last_doing, a.detail, a.children, a.idle, a.started_at, a.updated_at,
                      a.last_call_at, a.server_version, a.server_source, a.call_minute, a.call_counts, a.receives_messages, a.push_wake,
-                     (w.claim_key IS NOT NULL) AS wakes, (d.claim_key IS NOT NULL) AS driven
+                     (w.claim_key IS NOT NULL) AS wakes, (d.claim_key IS NOT NULL) AS driven,
+                     substr(d.token, 1, 36) AS driven_launch, t.token AS turn_token, t.claimed_at AS turn_since
               FROM activity a
               LEFT JOIN hook_watch_claims w
                 ON a.host_pid IS NOT NULL AND w.claim_key = 'host:' || a.host_pid
                AND substr(w.token, 1, 3) = 'm1:' AND w.claimed_at >= ?
               LEFT JOIN hook_watch_claims d
                 ON d.claim_key = 'driven:' || a.session AND d.claimed_at >= ?
+              LEFT JOIN hook_watch_claims t
+                ON d.claim_key IS NOT NULL AND t.claim_key = 'driver-turn:' || substr(d.token, 1, 36)
               WHERE a.ended_at IS NULL AND a.updated_at >= ?`)
-    .all(new Date(now - WAKE_LEASE_MS).toISOString(), freshLeaseCutoff(now), cutoff) as Array<Omit<Activity, 'children' | 'idle' | 'receives_messages' | 'push_wake' | 'wakes' | 'driven'> & {
+    .all(new Date(now - WAKE_LEASE_MS).toISOString(), freshLeaseCutoff(now), cutoff) as Array<Omit<Activity, 'children' | 'idle' | 'receives_messages' | 'push_wake' | 'wakes' | 'driven' | 'driven_launch' | 'driven_turn'> & {
       children: string | null; idle: number; call_minute: number | null; call_counts: string | null; receives_messages: number | null; push_wake: number | null
-      wakes: number; driven: number
+      wakes: number; driven: number; driven_launch: string | null; turn_token: string | null; turn_since: string | null
     }>
   const nowMinute = Math.floor(now / 60000)
   // The row is kept whatever happens here — the session really is present, and
   // public/attention.js classifies an item as "waiting" iff its session id is in
   // this list, so dropping the row would silently downgrade a live blocker. Only
   // the CLAIM decays.
-  const out = rows.map(({ call_minute, call_counts, receives_messages, push_wake, wakes, driven, ...r }): Activity => {
+  const out = rows.map(({ call_minute, call_counts, receives_messages, push_wake, wakes, driven, driven_launch, turn_token, turn_since, ...r }): Activity => {
     const live = (r.last_call_at ?? r.started_at) >= cold
     // #306: the trace is served only while its newest minute is in the window
     const calls = call_minute !== null && nowMinute - call_minute < CALL_TRACE_MINUTES ? parseCallCounts(call_counts) : null
@@ -3642,6 +3652,10 @@ export function listActivity(db: Database.Database, opts: { staleMinutes?: numbe
       ...(push_wake === 1 ? { push_wake: true as const } : {}),
       ...(wakes === 1 ? { wakes: true as const } : {}),
       ...(driven === 1 ? { driven: true as const } : {}),
+      ...(driven === 1 && driven_launch && LAUNCH_ID.test(driven_launch) ? { driven_launch } : {}),
+      ...(driven === 1 && turn_token && turn_since && turn_token.startsWith(`${driven_launch}:`)
+        ? { driven_turn: { state: turn_token.endsWith('|approval') ? 'approval' as const : 'turn' as const, since: turn_since } }
+        : {}),
     }
   })
   // Working sessions first (longest-running first, as before). Everything else
@@ -3823,11 +3837,47 @@ export function holdDriverLeases(
   }).immediate()
 }
 
-// Every lease this driver process holds, and its launch's Stop request.
-// Compare-and-delete by token, so a newer driver's leases are never dropped.
+// Every lease this driver process holds, its turn state, and its launch's Stop
+// and Interrupt requests. Compare-and-delete by token, so a newer driver's
+// leases are never dropped.
 export function releaseDriverLeases(db: Database.Database, lease: DriverLease): void {
   const token = driverToken(lease)
-  db.prepare(`DELETE FROM hook_watch_claims WHERE token = ? OR claim_key = ?`).run(token, `driver-stop:${lease.launchId}`)
+  db.prepare(`DELETE FROM hook_watch_claims WHERE token = ? OR claim_key IN (?, ?)
+                 OR (claim_key = ? AND substr(token, 1, length(?)) = ?)`)
+    .run(token, `driver-stop:${lease.launchId}`, `driver-interrupt:${lease.launchId}`, `driver-turn:${lease.launchId}`, `${token}|`, `${token}|`)
+}
+
+// Issue #412 step 3 (§5.3): whether the driver's turn runs, and whether it
+// waits on an approval, for the composer's Queued states. One claim per launch,
+// `driver-turn:<launch id>`, its time the turn's start; null ends it. Written
+// only when the state changes; no snapshot reads hook_watch_claims.
+export function markDriverTurn(db: Database.Database, lease: DriverLease, state: 'turn' | 'approval' | null, since?: string): void {
+  const token = driverToken(lease)
+  const key = `driver-turn:${lease.launchId}`
+  if (state === null) {
+    db.prepare(`DELETE FROM hook_watch_claims WHERE claim_key = ? AND substr(token, 1, length(?)) = ?`).run(key, `${token}|`, `${token}|`)
+    return
+  }
+  db.prepare(`INSERT INTO hook_watch_claims (claim_key, token, claimed_at) VALUES (?, ?, ?)
+              ON CONFLICT(claim_key) DO UPDATE SET token = excluded.token, claimed_at = excluded.claimed_at`)
+    .run(key, `${token}|${state}`, since ?? new Date().toISOString())
+}
+
+// Interrupt and send (§5.3): the page sends the message, then asks the
+// running launch's driver to interrupt its turn; the driver takes the request
+// once (takeLaunchInterrupt), cancels the turn and sends the message framed
+// with the interrupt notice. The human's own capability, like Stop.
+export function requestLaunchInterrupt(db: Database.Database, id: string): boolean {
+  if (!LAUNCH_ID.test(id)) return false
+  return db.transaction(() => {
+    const running = db.prepare(`SELECT 1 FROM launches WHERE id = ? AND status = 'running' AND stop_requested_at IS NULL`).get(id) !== undefined
+    if (running) claimHookWatch(db, `driver-interrupt:${id}`, 'interrupt')
+    return running
+  }).immediate()
+}
+
+export function takeLaunchInterrupt(db: Database.Database, launchId: string): boolean {
+  return db.prepare(`DELETE FROM hook_watch_claims WHERE claim_key = ?`).run(`driver-interrupt:${launchId}`).changes > 0
 }
 
 // Step 2's Stop, written by the runtime CLI (`driver-cli.js stop <launch id>`).

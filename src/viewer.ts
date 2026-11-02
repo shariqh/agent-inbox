@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import type { Handler } from 'hono'
 import { createHash } from 'node:crypto'
-import { readFileSync, existsSync, readdirSync, lstatSync, realpathSync, statSync } from 'node:fs'
+import { closeSync, readFileSync, existsSync, fstatSync, openSync, readSync, readdirSync, lstatSync, realpathSync, statSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
 import { basename, dirname, isAbsolute, resolve, sep } from 'node:path'
@@ -14,7 +14,7 @@ import {
   closeProject, reopenProject, closedProjects, readSnapshotState, listIssueEntities, listIssueSnapshots,
   listSessionMessages, sendSessionMessage, withdrawSessionMessage, validMessageId, validMessageText, MESSAGE_MAX_TEXT,
   listLaunches, getLaunch, launchView, launchDriverAlive, isLaunchAsk, requestLaunchStop, closeLostLaunch, getLaunchAsk,
-  answerLaunchAsk, listLaunchFolders,
+  answerLaunchAsk, listLaunchFolders, requestLaunchInterrupt,
 } from './store.js'
 import type { ExpectedAnswer, ResponseKind, SnapshotDomain, SnapshotReadState } from './store.js'
 import { groupItems } from './group.js'
@@ -696,6 +696,51 @@ function lingeringPlanIds(value: string | undefined): string[] | null {
   return ids
 }
 
+const LAUNCH_EVENTS_MAX = 256 * 1024
+
+function launchEventsPath(db: Database.Database, id: string): string | null {
+  const name = db.name
+  return name && isAbsolute(name) ? resolve(dirname(name), 'launches', id, 'events.ndjson') : null
+}
+
+// Whole lines from `after`, at most 256 KiB, each parsed (an unreadable one is
+// skipped). `next` is where the next read starts. `more` only when this read
+// stopped at the cap: an unfinished last line (a driver that died mid-write)
+// is waited on at the page's own pace, never re-read at once in a loop.
+function readLaunchEvents(file: string | null, after: number): { events: unknown[]; next: number; more: boolean; rotated: boolean } {
+  const empty = { events: [], next: 0, more: false, rotated: false }
+  if (!file) return empty
+  let fd: number
+  try {
+    fd = openSync(file, 'r')
+  } catch {
+    return empty
+  }
+  try {
+    const size = fstatSync(fd).size
+    const rotated = after > size
+    const start = rotated ? 0 : after
+    const length = Math.min(LAUNCH_EVENTS_MAX, size - start)
+    const buffer = Buffer.alloc(Math.max(0, length))
+    const read = length > 0 ? readSync(fd, buffer, 0, length, start) : 0
+    const end = buffer.subarray(0, read).lastIndexOf(0x0a)
+    // no whole line yet; a line longer than one read is skipped, never waited on
+    const capped = read === LAUNCH_EVENTS_MAX
+    if (end < 0) return { events: [], next: capped ? start + read : start, more: capped, rotated }
+    const events: unknown[] = []
+    for (const line of buffer.subarray(0, end).toString('utf8').split('\n')) {
+      if (!line) continue
+      try {
+        events.push(JSON.parse(line))
+      } catch { /* a line this cannot read is skipped */ }
+    }
+    const next = start + end + 1
+    return { events, next, more: capped && next < size, rotated }
+  } finally {
+    closeSync(fd)
+  }
+}
+
 function conditionalSnapshot(
   db: Database.Database,
   name: SnapshotName,
@@ -1035,6 +1080,21 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
     return c.json(status ? { ok: true, status } : { ok: false })
   })
   app.post('/api/launches/:id/close', (c) => c.json(closeLostLaunch(db, c.req.param('id'))))
+  // Interrupt and send (§5.3): the page has sent the message; the driver
+  // cancels its running turn and sends it with the interrupt notice.
+  app.post('/api/launches/:id/interrupt', (c) => c.json({ ok: requestLaunchInterrupt(db, c.req.param('id')) }))
+  // The transcript panel (§3.6): the driver's event log from a byte offset, at
+  // most 256 KiB of whole lines a read, read only while the panel is open. An
+  // offset past the end means the log rotated: it starts again from 0.
+  app.get('/api/launches/:id/events', (c) => {
+    c.header('Cache-Control', 'no-store')
+    const launch = getLaunch(db, c.req.param('id'))
+    if (!launch) return c.json({ ok: false, error: 'no such launch' }, 404)
+    const raw = c.req.query('after') ?? '0'
+    const after = /^\d{1,15}$/.test(raw) ? Number(raw) : null
+    if (after === null) return c.json({ ok: false, error: 'after must be a byte offset' }, 400)
+    return c.json(readLaunchEvents(launchEventsPath(db, launch.id), after))
+  })
   app.get('/api/launch-asks/:id', (c) => {
     c.header('Cache-Control', 'no-store')
     const ask = getLaunchAsk(db, c.req.param('id'))

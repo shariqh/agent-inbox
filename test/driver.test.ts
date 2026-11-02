@@ -18,7 +18,7 @@ import type { LaunchMode } from '../src/driver-policy.js'
 import {
   annotateBoardRow, claimDriverSlot, getBoard, getItem, insertItem, isDrivenSession, listItems, listPending,
   listSessionMessages, openDb, replyItem, requestDriverStop, sendSessionMessage, upsertActivity, upsertBoard,
-  withdrawSessionMessage, endActivity, createLaunch, getLaunch, dismissItem, resolveItem,
+  withdrawSessionMessage, endActivity, createLaunch, getLaunch, dismissItem, resolveItem, listActivity, requestLaunchInterrupt,
 } from '../src/store.js'
 import { LAUNCH_KEY, sign } from './launch-fixtures.js'
 import { MODE, configUpdate, fakeAgent, permissionRequest, toolCall } from './acp-fake.js'
@@ -439,6 +439,30 @@ describe('pushed delivery (§5.3)', () => {
     expect(h.fake.prompts()[1]).toBe(`Agent Inbox: The human interrupted your previous turn.\n\nThe human sent you 1 message via Agent Inbox. Each is also in pending(); act on each once, then ack_message({ id, outcome }).\n\n[${id}] Stop and run lint instead.`)
     h.driver.stop()
     await h.done
+  })
+
+  it('shows its turn to the composer, and takes Interrupt and send from the page (#412 step 3, §5.3)', async () => {
+    const turns: unknown[] = []
+    const h = start({ app: true, script: { onPrompt: (_fake, id) => { turns.push(id) } } })
+    await h.ready()
+    await until(() => turns.length === 1, 'the first turn')
+    const row = () => listActivity(h.human).find((a) => a.session === 'mcp-1')!
+    await until(() => row().driven_turn, 'the turn state')
+    expect(row()).toMatchObject({ driven: true, driven_launch: LAUNCH, driven_turn: { state: 'turn' } })
+    const id = '00000000-0000-4000-8000-000000000011'
+    sendSessionMessage(h.human, { id, session: 'mcp-1', text: 'Stop and run lint instead.' })
+    expect(requestLaunchInterrupt(h.human, LAUNCH)).toBe(true)
+    await until(() => h.fake.prompts().length === 2, 'the interrupt turn')
+    expect(h.fake.prompts()[1]).toContain('The human interrupted your previous turn.')
+    expect(h.fake.prompts()[1]).toContain(`[${id}] Stop and run lint instead.`)
+    // the request is taken once
+    expect(requestLaunchInterrupt(h.human, 'not-a-launch')).toBe(false)
+    h.fake.respond(turns[1], { stopReason: 'end_turn' })
+    await until(() => !row().driven_turn, 'the turn state cleared')
+    h.driver.stop()
+    await h.done
+    // its leases go with it: no turn state, no interrupt left behind
+    expect(row()?.driven_turn).toBeUndefined()
   })
 
   it('pings once when the human answers the session’s own question or a row of a plan it wrote, never another session’s', async () => {

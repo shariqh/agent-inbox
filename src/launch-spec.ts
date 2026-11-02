@@ -23,7 +23,7 @@ const MAX_SPEC_BYTES = 1024 * 1024
 const MAX_PROMPT = 64 * 1024
 const MAX_ENV_ENTRIES = 1000
 const LAUNCH_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
-const MODES: readonly LaunchMode[] = ['ask', 'read-only', 'plan']
+const MODES: readonly LaunchMode[] = ['ask', 'read-only', 'plan', 'edits']
 
 interface SpecCommon {
   v: 1

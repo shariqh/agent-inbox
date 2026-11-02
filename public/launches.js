@@ -23,6 +23,11 @@ export const LAUNCH_MODES = Object.freeze([
     label: 'Plan first',
     copy: 'The agent writes a plan first; once you approve it, each tool call asks.',
   },
+  {
+    id: 'edits',
+    label: 'Edits in the worktree',
+    copy: 'File edits inside the project folder run without asking, never inside its .git folder; shell commands, network and anything outside the folder still ask. An edited file can change what a command you allow then runs.',
+  },
 ])
 
 export const REASONING_EFFORTS = Object.freeze(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
@@ -100,7 +105,7 @@ export function launchStatus(launch, activity, nowMs) {
     }
   }
   if (launch.stop_requested_at) return { state: 'stopping', text: 'Stopping…', actions: ['transcript'] }
-  if (launchSessions(launch, activity).length) return { state: 'running', text: 'Running', actions: ['stop', 'transcript'] }
+  if (launchSessions(launch, activity).length) return { state: 'running', text: 'Running', actions: ['stop', 'park', 'transcript'] }
   const since = Date.parse(launch.updated_at ?? launch.created_at)
   if (Number.isFinite(since) && nowMs - since > LOST_AFTER_MS) {
     return { state: 'lost', text: 'Not responding: its driver may have stopped.', actions: ['close', 'stop', 'transcript'] }
@@ -171,9 +176,13 @@ export function transcriptLines(events) {
         flush()
         lines.push({ kind: 'note', text: `Turn ended (${event.stopReason ?? 'unknown'}).` })
         break
+      case 'park_requested':
+        flush()
+        lines.push({ kind: 'note', text: 'You asked it to park: it parks once its turn ends.' })
+        break
       case 'ended':
         flush()
-        lines.push({ kind: 'note', text: `Session ended (${event.reason ?? 'unknown'}).` })
+        lines.push({ kind: 'note', text: event.reason === 'idle' || event.reason === 'park' ? 'Parked: Copilot stopped, its session kept to resume.' : `Session ended (${event.reason ?? 'unknown'}).` })
         break
       default:
         break

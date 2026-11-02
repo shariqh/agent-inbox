@@ -27,6 +27,8 @@ describe('the launch spec (§8)', () => {
         budgets: { activeMs: 3_600_000, toolCalls: 200 }, prompt: 'Fix it.', env: { PATH: '/usr/bin:/bin', HOME: '/home/someone' }, launchKey: LAUNCH_KEY,
       },
     })
+    // Edits in the worktree (#412 step 3, PR 4) is a launch mode like the others
+    expect(parseLaunchSpec(spec({ mode: 'edits' }), ID)).toMatchObject({ ok: true, spec: { mode: 'edits' } })
     expect(parseLaunchSpec(JSON.stringify({ v: 1, kind: 'resume', launchId: ID, env: {}, launchKey: KEY }), ID))
       .toEqual({ ok: true, spec: { v: 1, kind: 'resume', launchId: ID, env: {}, launchKey: LAUNCH_KEY } })
   })

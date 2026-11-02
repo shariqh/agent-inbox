@@ -10,7 +10,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFile
 import { dirname, join } from 'node:path'
 import type { Duplex } from 'node:stream'
 import type Database from 'better-sqlite3'
-import { claimDriverSlot, getLaunch, listItems, openDb, recordLaunchProgress, replyItem, requestLaunchStop } from '../src/store.js'
+import { claimDriverSlot, getLaunch, listItems, openDb, recordLaunchProgress, replyItem, requestLaunchPark, requestLaunchStop } from '../src/store.js'
 import { LAUNCH_KEY, sign } from './launch-fixtures.js'
 import { removeScratchDirs, scratchDir } from './scratch.js'
 
@@ -214,6 +214,40 @@ describe('agent-inbox-driver run (#412 step 3)', () => {
     expect(await resumed.exited).toBe(0)
     expect(received(r).filter((m) => m.method === 'session/prompt')).toHaveLength(before)
     expect(getLaunch(r.hub, LAUNCH)).toMatchObject({ status: 'ended', end_reason: 'stopped' })
+  }, 40_000)
+
+  it('Park now parks at its next idle point, exactly as the idle timeout parks, keeping the session to resume', async () => {
+    const r = rig()
+    const run = runDriver(r, newSpec(r))
+    expect(await run.status()).toEqual({ ok: true, launch: LAUNCH })
+    await until(() => received(r).find((m) => m.method === 'session/prompt'), 'the task')
+    expect(requestLaunchPark(r.hub, LAUNCH)).toBe(true)
+    expect(await run.exited).toBe(0)
+    expect(getLaunch(r.hub, LAUNCH)).toMatchObject({ status: 'parked', acp_session: 's-1', end_reason: null, child_pgid: null, driver_pid: null })
+    // the request went with the driver, and a parked launch takes no other
+    expect(requestLaunchPark(r.hub, LAUNCH)).toBe(false)
+    expect(readFileSync(join(r.dir, 'hub', 'launches', LAUNCH, 'events.ndjson'), 'utf8')).toContain('"event":"ended","reason":"park"')
+  }, 40_000)
+
+  it('Edits in the worktree pre-allows writes under the folder it resolved and denies its .git, and refuses the home folder', async () => {
+    const r = rig()
+    const run = runDriver(r, newSpec(r, { mode: 'edits' }))
+    expect(await run.status()).toEqual({ ok: true, launch: LAUNCH })
+    await until(() => received(r).find((m) => m.method === 'session/prompt'), 'the task')
+    const work = realpathSync(join(r.dir, 'work'))
+    expect(received(r)[0]!.argv).toEqual([
+      '--acp', '--stdio', '--allow-tool', 'agent-inbox', '--allow-tool', `write(${work}/**)`, '--deny-tool', `write(${work}/.git/**)`,
+      '--model', 'claude-haiku-4.5', '--reasoning-effort', 'none',
+    ])
+    expect(requestLaunchStop(r.hub, LAUNCH)).toBe('stopping')
+    expect(await run.exited).toBe(0)
+
+    const home = rig()
+    const refused = runDriver(home, newSpec(home, { mode: 'edits', cwd: home.dir }))
+    expect(await refused.status()).toMatchObject({ ok: false, error: expect.stringMatching(/^Edits in the worktree cannot use .*not your home folder/) })
+    expect(await refused.exited).toBe(1)
+    expect(getLaunch(home.hub, LAUNCH)).toMatchObject({ status: 'ended', end_reason: 'error:start' })
+    expect(readFileSync(home.fakeLog, 'utf8')).toBe('')
   }, 40_000)
 
   it('allows a tool call only on a reply signed under the launch key from its spec', async () => {

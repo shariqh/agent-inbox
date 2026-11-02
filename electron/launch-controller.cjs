@@ -37,6 +37,10 @@ const MODES = Object.freeze({
     label: 'Plan first',
     copy: 'The agent writes a plan first; once you approve it, each tool call asks.',
   },
+  edits: {
+    label: 'Edits in the worktree',
+    copy: 'File edits inside the project folder run without asking, never inside its .git folder; shell commands, network and anything outside the folder still ask. An edited file can change what a command you allow then runs.',
+  },
 })
 
 const isRecord = (value) => value !== null && typeof value === 'object' && !Array.isArray(value)

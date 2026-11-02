@@ -1,4 +1,4 @@
-export interface LaunchMode { id: 'ask' | 'read-only' | 'plan'; label: string; copy: string }
+export interface LaunchMode { id: 'ask' | 'read-only' | 'plan' | 'edits'; label: string; copy: string }
 export const LAUNCH_MODES: readonly LaunchMode[]
 export const REASONING_EFFORTS: readonly string[]
 export const SHELL_WARNING: string

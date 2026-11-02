@@ -37,7 +37,7 @@ const { createSessionLaunchSettings } = require('./session-launch.cjs')
 const { createLaunchKeys } = require('./launch-key.cjs')
 const { captureShellEnv } = require('./shell-env.cjs')
 const { startDriver } = require('./driver-process.cjs')
-const { createLaunchController, quitChoice } = require('./launch-controller.cjs')
+const { createLaunchController, quitChoice, runningAtQuit } = require('./launch-controller.cjs')
 const { registerLaunchIpc } = require('./launch-ipc.cjs')
 const { MANUAL_RELEASES_URL, createUpdateController, reviewReleaseOffered } = require('./update-controller.cjs')
 const { createUpdateDownloader } = require('./update-download.cjs')
@@ -600,12 +600,7 @@ registerLaunchIpc({
 
 // The quit prompt (§7): sessions keep running unless the human stops them all.
 async function askAboutRunningSessions() {
-  // a start that got past the gate before the quit began has spawned: wait for
-  // its row, so the prompt lists it (bounded like the read itself)
-  const running = await Promise.race([
-    launchControllerFor().settled().then(() => launchControllerFor().running()),
-    new Promise((resolve) => setTimeout(() => resolve([]), 3000)),
-  ])
+  const running = await runningAtQuit(launchControllerFor())
   if (!running.length) return
   const choice = await quitChoice({ running, showMessageBox: (options) => dialog.showMessageBox(options) })
   if (choice === 'stop') await launchControllerFor().stopAll(running)

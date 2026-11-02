@@ -29,6 +29,7 @@ export function confirmation(facts: {
   budgets: { activeMs: number; toolCalls: number }
   prompt: string
 }): { message: string; detail: string; buttons: string[] }
+export function runningAtQuit(controller: LaunchController, options?: { settleMs?: number; readMs?: number }): Promise<Array<{ id: string; project: string; mode: string }>>
 export function quitChoice(options: {
   running: Array<{ id: string; project: string; mode: string }>
   showMessageBox: (options: Record<string, unknown>) => Promise<{ response: number }>

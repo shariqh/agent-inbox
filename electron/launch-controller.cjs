@@ -92,12 +92,16 @@ function displaySafe(text) {
     })
 }
 
-// One line of at most DISPLAY_MAX characters: a project or folder name, which
-// an agent can set (MCP register) and a folder name can carry newlines.
+// One line from at most DISPLAY_MAX code points: a project or folder name, which
+// an agent can set (MCP register) and a folder name can carry newlines. Cut on
+// the raw text first, then escaped, so the cut never splits an escape; the
+// result stays bounded (each code point escapes to at most 10 characters).
 const DISPLAY_MAX = 120
 function displayLine(text) {
-  const flat = Array.from(displaySafe(text).replace(/\n/g, '\\x0a'))
-  return flat.length > DISPLAY_MAX ? `${flat.slice(0, DISPLAY_MAX - 1).join('')}…` : flat.join('')
+  const chars = Array.from(String(text))
+  const long = chars.length > DISPLAY_MAX
+  const kept = long ? chars.slice(0, DISPLAY_MAX - 1).join('') : chars.join('')
+  return `${displaySafe(kept).replace(/\n/g, '\\x0a')}${long ? '…' : ''}`
 }
 
 function duration(ms) {
@@ -124,6 +128,21 @@ function confirmation({ project, folder, mode, model, reasoningEffort, budgets, 
     ].join('\n'),
     buttons: ['Start', 'Cancel'],
   }
+}
+
+const sleep = (ms, value) => new Promise((resolve) => setTimeout(() => resolve(value), ms))
+
+/**
+ * The launches to name in the quit prompt (§7). A start already past the gate
+ * gets a short, separate wait to write its row; whatever it does, the running
+ * launches are always read, under their own bound, so a start still in
+ * progress (a dialog left open, a slow shell) never hides them. The gate is
+ * already closed (beginAppQuit), so such a start spawns nothing later.
+ */
+async function runningAtQuit(controller, { settleMs = 1500, readMs = 3000 } = {}) {
+  await Promise.race([controller.settled(), sleep(settleMs)])
+  const running = await Promise.race([controller.running().catch(() => []), sleep(readMs, [])])
+  return Array.isArray(running) ? running : []
 }
 
 /**
@@ -274,6 +293,9 @@ function createLaunchController(deps) {
           budgets: request.budgets, prompt: request.prompt,
         }
         if (!(await confirm(confirmation(facts)))) return refused('Not started.', { cancelled: true })
+        // a quit begun, or the switch turned off, while the dialog was open runs no login shell
+        const late = blocked()
+        if (late) return late
         const ready = await environment(real)
         if (!ready.env) return ready
         const launchId = randomUUID()
@@ -299,6 +321,9 @@ function createLaunchController(deps) {
         if (!real) return refused('The session’s folder does not exist any more.')
         const found = runtimeOrRefusal()
         if (!found.runtime) return found
+        // the launch read was an await: a quit or the switch may have changed since
+        const late = blocked()
+        if (late) return late
         const ready = await environment(real)
         if (!ready.env) return ready
         return spawnDriver(id, found.runtime, { v: 1, kind: 'resume', launchId: id, env: ready.env })
@@ -377,4 +402,6 @@ function createLaunchController(deps) {
   })
 }
 
-module.exports = { MODES, approvalRequest, confirmation, createLaunchController, displayLine, displaySafe, launchEnv, launchRequest, quitChoice }
+module.exports = {
+  MODES, approvalRequest, confirmation, createLaunchController, displayLine, displaySafe, launchEnv, launchRequest, quitChoice, runningAtQuit,
+}

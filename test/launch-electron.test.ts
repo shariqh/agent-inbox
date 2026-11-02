@@ -336,6 +336,9 @@ describe('the launch controller', () => {
     expect(long.detail.split('\n')[0]).toBe(`Folder: /${'f'.repeat(118)}…`)
     const quit = controllerModule.displayLine('😀'.repeat(200))
     expect(Array.from(quit)).toHaveLength(120)
+    // cut on the raw text, then escaped: never through an escape
+    expect(controllerModule.displayLine(`${'a'.repeat(118)}\u2028${'b'.repeat(10)}`)).toBe(`${'a'.repeat(118)}<U+2028>…`)
+    expect(controllerModule.displayLine('\u2028'.repeat(500))).toBe(`${'<U+2028>'.repeat(119)}…`)
   })
 
   it('escapes exactly the characters the driver’s terminalSafe escapes', () => {
@@ -474,6 +477,25 @@ describe('the launch controller', () => {
     const reused = rig({ processStart: async () => 'darwin:Tue Nov  3 09:00:00 2026' })
     expect(await reused.controller.close(ID)).toEqual({ ok: true, killed: false })
     expect(reused.deps.kill).not.toHaveBeenCalled()
+  })
+
+  it('a start still waiting on its confirmation never hides running sessions from the quit prompt, and never spawns (#430 review)', async () => {
+    let answer!: (ok: boolean) => void
+    const r = rig({ confirm: () => new Promise<boolean>((resolve) => { answer = resolve }) })
+    r.state.launches = { [ID]: { id: ID, status: 'running', project: 'alpha', mode: 'ask', driver: 'running' } }
+    const pending = r.controller.start(REQUEST)
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    r.controller.beginQuit()
+    const started = Date.now()
+    expect(await controllerModule.runningAtQuit(r.controller, { settleMs: 50, readMs: 1000 })).toEqual([{ id: ID, project: 'alpha', mode: 'ask' }])
+    expect(Date.now() - started).toBeLessThan(900)
+    // the human answers Start after the prompt: the gate is closed, nothing spawns
+    answer(true)
+    expect(await pending).toMatchObject({ ok: false, error: expect.stringMatching(/quitting/) })
+    expect(r.calls).not.toContain('startDriver')
+    expect(r.calls).not.toContain('captureEnv /work/alpha')
+    // a read that never answers is bounded too
+    expect(await controllerModule.runningAtQuit({ settled: async () => {}, running: () => new Promise(() => {}) } as never, { settleMs: 10, readMs: 30 })).toEqual([])
   })
 
   it('lists for the quit prompt only launches whose driver is running, and the prompt has no Cancel', async () => {
@@ -668,7 +690,7 @@ describe('main’s wiring (source)', () => {
     expect(begin).toContain('launchController?.beginQuit()')
     // the quit prompt waits for a start already past the gate, so it lists that launch too
     const ask = main.slice(main.indexOf('async function askAboutRunningSessions()'))
-    expect(ask.slice(0, ask.indexOf('quitChoice('))).toMatch(/settled\(\)\.then\(\(\) => launchControllerFor\(\)\.running\(\)\)/)
+    expect(ask.slice(0, ask.indexOf('quitChoice('))).toContain('await runningAtQuit(launchControllerFor())')
   })
 
   it('registers the launch IPC once, behind the viewer-window sender check, and opens no launch channel of its own', () => {

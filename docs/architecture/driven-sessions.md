@@ -322,8 +322,10 @@ Everything main does for a driven session is injected and tested without Electro
   stop a session through them (low risk: the human's own capability), but it cannot forge an approval:**
   only main's signature counts, and the driver verifies it.
 - **Quit** (§7): `beginAppQuit()` closes the launch gate (nothing starts once a quit has begun, even a
-  start whose dialog was open: the gate is checked again after the key read, immediately before the
-  spawn) and drops the `launch` grant. With the switch on, the first quit asks once, after any start
-  already past the gate has written its row (`settled()`, within the same 3 s bound), listing the
-  sessions whose driver runs: **Keep running** (the default) or **Stop all**. There is no Cancel,
+  start whose dialog was open: the gate is checked again after every await, before the login shell
+  runs and immediately before the spawn) and drops the `launch` grant. With the switch on, the first
+  quit asks once (`runningAtQuit`): it gives a start already past the gate up to 1.5 s to write its
+  row (`settled()`), then always reads the running launches under their own 3 s bound, so a start
+  still in progress (a dialog left open, a slow shell) never hides them; it lists the sessions whose
+  driver runs: **Keep running** (the default) or **Stop all**. There is no Cancel,
   because the quit has already begun. An update restart does not ask; sessions survive it.

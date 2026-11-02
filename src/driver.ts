@@ -145,6 +145,11 @@ export interface DriverOptions {
    * (§5.2, proof by the launch row, §14.3); `dead` when the server is gone.
    */
   priorSessions?: ReadonlyArray<{ session: string; dead: boolean }>
+  /**
+   * Step 3's resume: the launch's usage so far (its row), so the budgets stay
+   * per-launch totals across park and resume rather than starting over.
+   */
+  usage?: { activeMs: number; toolCalls: number }
   /** Default: the terminal's alerts (step 2). */
   asks?: AskChannel
   hooks?: DriverHooks
@@ -267,6 +272,8 @@ export class Driver {
     this.t = { ...DEFAULT_TIMING, ...options.timing }
     this.phase = initialPhase(options.mode)
     this.askChannel = options.asks ?? terminalAsks(options.db, options.project, options.stream)
+    this.activeMs = Math.max(0, options.usage?.activeMs ?? 0)
+    this.toolCalls = Math.max(0, options.usage?.toolCalls ?? 0)
     // a loaded session was prompted with its task before it was parked (§7)
     this.taskSent = options.loadSessionId !== undefined
     for (const prior of options.priorSessions ?? []) {
@@ -513,6 +520,9 @@ export class Driver {
     this.setup = 5
     this.readyAt = Date.now()
     this.o.log({ event: 'ready', phase: this.phase, mode: this.state.mode, allow_all: this.state.allowAll, generation: this.state.generation })
+    // a resumed launch that already used a budget ends before any prompt
+    if (this.toolCalls >= this.t.maxToolCalls) return this.end('budget:tool_calls')
+    if (this.activeMs >= this.t.activeMs) return this.end('budget:active_time')
     this.o.ui.notice(`Session ready (${this.phase === 'executing' ? 'agent mode' : 'plan mode'}).`)
     this.maybePrompt()
   }

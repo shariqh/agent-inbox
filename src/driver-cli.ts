@@ -416,6 +416,9 @@ async function runLaunch(argv: string[]): Promise<void> {
   }
   if (process.platform !== 'darwin' && process.platform !== 'linux') refuseStart(`${process.platform} is not supported`, 2)
   const text = readSpec(3)
+  // fd 3 carried the launch key: close it before anything starts, so copilot
+  // and every shell it runs never inherit it
+  try { closeSync(3) } catch { /* already closed */ }
   if (typeof text !== 'string') refuseStart(text.error, 65)
   const parsed = parseLaunchSpec(text as string, launchId)
   if (!parsed.ok) return refuseStart(parsed.error, 65)
@@ -439,6 +442,8 @@ async function runLaunch(argv: string[]): Promise<void> {
 
   // the launch's facts: from the spec, or, resuming, from the row the first driver wrote
   let facts: { cwd: string; mode: LaunchMode; model?: string; reasoningEffort?: ReasoningEffort; activeMs: number; toolCalls: number; prompt: string; project: string; stream: string }
+  // the launch's usage so far: the budgets are per-launch totals across park and resume
+  let used = { activeMs: 0, toolCalls: 0 }
   let resume: Pick<DriverOptions, 'loadSessionId' | 'priorSessions'> = {}
   // the session a resume tries to load, kept on the row if the load fails
   let loading: string | null = null
@@ -481,6 +486,13 @@ async function runLaunch(argv: string[]): Promise<void> {
     facts = {
       cwd: row.cwd, mode, ...(row.model ? { model: row.model } : {}), ...(effort ? { reasoningEffort: effort } : {}),
       activeMs: row.budget_active_ms, toolCalls: row.budget_tool_calls, prompt: row.prompt, project: row.project, stream: row.stream,
+    }
+    used = { activeMs: row.active_ms, toolCalls: row.tool_calls }
+    // a launch that already used a budget ends here, before anything starts
+    const spent = row.tool_calls >= row.budget_tool_calls ? 'budget:tool_calls' : row.active_ms >= row.budget_active_ms ? 'budget:active_time' : null
+    if (spent) {
+      undoRow = () => { endLaunch(db, launchId, { reason: spent }) }
+      return refuse(`launch ${launchId} has used its ${spent === 'budget:tool_calls' ? 'tool-call' : 'active-time'} budget`)
     }
     // the earlier driver's sessions, proved by the row (§14.3): their open
     // messages move to the new server once it links; a server still alive is
@@ -531,6 +543,7 @@ async function runLaunch(argv: string[]): Promise<void> {
     log, stateDir: join(hubDir, 'drivers', launchId), scan,
     asks: appAsks({ db, launchId, launchKey: spec.launchKey, project: facts.project, stream: facts.stream, log }),
     hooks: launchHooks(db, launchId),
+    usage: used,
     ...resume,
     timing: {
       activeMs: facts.activeMs, maxToolCalls: facts.toolCalls,

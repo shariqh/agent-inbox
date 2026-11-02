@@ -79,6 +79,7 @@ function start(opts: {
   app?: boolean
   refuseLoad?: FakeScript['refuseLoad']
   priorSessions?: DriverOptions['priorSessions']
+  usage?: DriverOptions['usage']
 } = {}): Harness {
   const dir = scratchDir('driver-')
   const dbPath = join(dir, 'inbox.db')
@@ -116,6 +117,7 @@ function start(opts: {
     timing: { pollMs: 10, scanMs: 10, leaseMs: 40, setupWaitMs: 400, stopGraceMs: 50, ...opts.timing },
     ...(opts.loadSessionId ? { loadSessionId: opts.loadSessionId } : {}),
     ...(opts.priorSessions ? { priorSessions: opts.priorSessions } : {}),
+    ...(opts.usage ? { usage: opts.usage } : {}),
     ...(app ?? {}),
   })
   const done = driver.start()
@@ -700,6 +702,26 @@ describe('app launches: signed approvals (§4.3)', () => {
 })
 
 describe('app launches: the row, park and resume (§6, §7)', () => {
+  it('counts its budgets from the launch’s usage so far: a resumed launch ends at the original total', async () => {
+    const h = start({
+      app: true, loadSessionId: 'acp-1', linked: [], usage: { activeMs: 0, toolCalls: 4 }, timing: { maxToolCalls: 5 },
+      script: { onPrompt(fake) { fake.update(toolCall()) } },
+    })
+    await until(() => h.log.find((e) => e.event === 'ready'), 'ready')
+    h.fake.update(toolCall())
+    expect(await h.done).toBe('budget:tool_calls')
+    expect(h.driver.usage().toolCalls).toBe(5)
+    expect(getLaunch(h.human, LAUNCH)!.tool_calls).toBe(0)
+  })
+
+  it('a resumed launch already at a budget ends at once, before any prompt', async () => {
+    for (const [usage, reason] of [[{ activeMs: 0, toolCalls: 5 }, 'budget:tool_calls'], [{ activeMs: 60_000, toolCalls: 0 }, 'budget:active_time']] as const) {
+      const h = start({ app: true, loadSessionId: 'acp-1', script: ended, usage, timing: { maxToolCalls: 5, activeMs: 60_000 } })
+      expect(await h.done).toBe(reason)
+      expect(h.fake.prompts()).toEqual([])
+    }
+  })
+
   it('a load refused as never prompted (-32002) starts a fresh session and sends the stored task', async () => {
     const h = start({ app: true, script: ended, loadSessionId: 'never-prompted', refuseLoad: { code: -32002, message: 'Resource not found' } })
     await h.ready()

@@ -70,6 +70,19 @@ describe('the launch row (§6)', () => {
     expect(recordLaunchProgress(db, ID(1), { toolCalls: 9 })).toBe(false)
   })
 
+  it('never moves usage backwards: progress, park and end keep the larger totals', () => {
+    createLaunch(db, launch(1))
+    recordLaunchProgress(db, ID(1), { activeMs: 5000, toolCalls: 7 })
+    expect(recordLaunchProgress(db, ID(1), { activeMs: 10, toolCalls: 1 })).toBe(true)
+    expect(getLaunch(db, ID(1))).toMatchObject({ active_ms: 5000, tool_calls: 7 })
+    parkLaunch(db, ID(1), { acpSession: 'acp-1', activeMs: 20, toolCalls: 2 })
+    expect(getLaunch(db, ID(1))).toMatchObject({ active_ms: 5000, tool_calls: 7 })
+    resumeLaunch(db, ID(1), 5000)
+    recordLaunchProgress(db, ID(1), { activeMs: 6000, toolCalls: 9 })
+    endLaunch(db, ID(1), { reason: 'stopped', activeMs: 0, toolCalls: 0 })
+    expect(getLaunch(db, ID(1))).toMatchObject({ status: 'ended', active_ms: 6000, tool_calls: 9 })
+  })
+
   it('a resume takes a parked row back exactly once, clearing why it was parked', () => {
     createLaunch(db, launch(1))
     expect(resumeLaunch(db, ID(1), 5000)).toBeNull()
@@ -182,6 +195,34 @@ describe('the routes (§6)', () => {
     expect(await read(`/api/launches/${ID(1)}/prompt`)).toEqual({ status: 200, cache: 'no-store', body: { prompt: 'Fix the failing test.' } })
     expect((await read(`/api/launches/${ID(9)}`)).status).toBe(404)
     expect((await read('/api/launches/..%2F..%2Fetc/prompt')).status).toBe(404)
+  })
+})
+
+describe('the ordinary reply and note routes refuse a launch’s ask (#412 step 3)', () => {
+  it('answers 200 {ok:false, reason:launch_ask} and writes nothing, while other @sessions items keep their routes', async () => {
+    const app = createViewer(db)
+    createLaunch(db, launch(1))
+    const { itemId } = fileLaunchAsk(db, ID(1), {
+      project: '@sessions', stream: '', agent: 'copilot', kind: 'question', title: 'Allow?', action_owner: 'approval',
+      options: [{ label: 'Allow once' }, { label: 'Deny' }],
+    }, [{ optionId: 'allow_once', label: 'Allow once' }, { optionId: 'reject_once', label: 'Deny' }])
+    const post = async (path: string, body: unknown) => {
+      const response = await app.request(path, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+      })
+      return { status: response.status, body: await response.json() }
+    }
+    expect(await post(`/api/items/${itemId}/reply`, { text: 'Allow once' })).toEqual({ status: 200, body: { ok: false, reason: 'launch_ask' } })
+    expect(await post(`/api/items/${itemId}/reply`, {
+      text: 'allow_once', context: 'f'.repeat(64), intent_client_id: 'c', intent_sequence: 1, intent_action_id: 'a',
+    })).toEqual({ status: 200, body: { ok: false, reason: 'launch_ask' } })
+    expect(await post(`/api/items/${itemId}/annotate`, { text: 'Looks fine.' })).toEqual({ status: 200, body: { ok: false, reason: 'launch_ask' } })
+    expect(getItem(db, itemId)).toMatchObject({ reply: null, reply_context: null, annotation: null, response_revision: 0 })
+    // invalid input is still a 400 first
+    expect((await post(`/api/items/${itemId}/reply`, { text: 1 })).status).toBe(400)
+    // once settled, the mapping is gone and the item is closed as any other
+    settleLaunchAsk(db, itemId, 'Session stopped.')
+    expect((await post(`/api/items/${itemId}/reply`, { text: 'Allow once' })).body.reason).toBeUndefined()
   })
 })
 

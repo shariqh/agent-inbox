@@ -7,8 +7,9 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { spawn } from 'node:child_process'
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
+import type { Duplex } from 'node:stream'
 import type Database from 'better-sqlite3'
-import { claimDriverSlot, getLaunch, listItems, openDb, replyItem, requestLaunchStop } from '../src/store.js'
+import { claimDriverSlot, getLaunch, listItems, openDb, recordLaunchProgress, replyItem, requestLaunchStop } from '../src/store.js'
 import { LAUNCH_KEY, sign } from './launch-fixtures.js'
 import { removeScratchDirs, scratchDir } from './scratch.js'
 
@@ -28,7 +29,10 @@ const FAKE_COPILOT = `#!/usr/bin/env node
 const fs = require('fs')
 const agent = 'https://agentclientprotocol.com/protocol/session-modes#agent'
 const config = (mode) => [{ id: 'mode', currentValue: mode }, { id: 'allow_all', currentValue: 'off' }]
-fs.appendFileSync(process.env.FAKE_LOG, JSON.stringify({ argv: process.argv.slice(2), env: { hooks: process.env.AGENT_INBOX_HOOKS, db: process.env.AGENT_INBOX_DB } }) + '\\n')
+// Node uses low fds of its own, so ask a shell it starts, as a tool call would:
+// a descriptor copilot inherited is inherited again there
+const fd3 = require('child_process').execFileSync('/bin/sh', ['-c', 'if [ -e /dev/fd/3 ]; then echo open; else echo closed; fi']).toString().trim()
+fs.appendFileSync(process.env.FAKE_LOG, JSON.stringify({ argv: process.argv.slice(2), env: { hooks: process.env.AGENT_INBOX_HOOKS, db: process.env.AGENT_INBOX_DB }, fd3 }) + '\\n')
 let buffer = ''
 let prompt = null
 const send = (m) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...m }) + '\\n')
@@ -42,12 +46,16 @@ process.stdin.on('data', (chunk) => {
     fs.appendFileSync(process.env.FAKE_LOG, JSON.stringify(m) + '\\n')
     if (m.method === 'initialize') send({ id: m.id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true } } })
     else if (m.method === 'session/load' && process.env.FAKE_LOAD_ERROR) send({ id: m.id, error: JSON.parse(process.env.FAKE_LOAD_ERROR) })
-    else if (m.method === 'session/new' || m.method === 'session/load') send({ id: m.id, result: { ...(m.method === 'session/new' ? { sessionId: 's-1' } : {}), modes: { currentModeId: agent }, configOptions: config(agent) } })
+    else if (m.method === 'session/new' || m.method === 'session/load') {
+      send({ id: m.id, result: { ...(m.method === 'session/new' ? { sessionId: 's-1' } : {}), modes: { currentModeId: agent }, configOptions: config(agent) } })
+      if (m.method === 'session/load') for (let i = 0; i < Number(process.env.FAKE_TOOLS_AFTER_LOAD || 0); i++) update({ sessionUpdate: 'tool_call', toolCallId: 'l-' + i, title: 'Read', kind: 'read', rawInput: {} })
+    }
     else if (m.method === 'session/set_mode') {
       update({ sessionUpdate: 'current_mode_update', currentModeId: m.params.modeId })
       update({ sessionUpdate: 'config_option_update', configOptions: config(m.params.modeId) })
       send({ id: m.id, result: {} })
     } else if (m.method === 'session/prompt') {
+      for (let i = 0; i < Number(process.env.FAKE_TOOLS || 0); i++) update({ sessionUpdate: 'tool_call', toolCallId: 'c-' + i, title: 'Read', kind: 'read', rawInput: {} })
       if (!process.env.FAKE_ASK) { send({ id: m.id, result: { stopReason: 'end_turn' } }); continue }
       prompt = m.id
       update({ sessionUpdate: 'tool_call', toolCallId: 't-1', title: 'Run tests', kind: 'execute', rawInput: { command: 'npm test' } })
@@ -115,7 +123,11 @@ function runDriver(r: Rig, spec: unknown, env: Record<string, string> = {}) {
   let stderr = ''
   child.stdout!.on('data', (chunk) => { stdout += chunk })
   child.stderr!.on('data', (chunk) => { stderr += chunk })
-  const fd3 = child.stdio[3] as NodeJS.WritableStream
+  // fd 3 is a socket pair: once the driver closes its end, ours reads its end and closes
+  const fd3 = child.stdio[3] as Duplex
+  let fd3Closed = false
+  fd3.once('close', () => { fd3Closed = true })
+  fd3.resume()
   fd3.end(typeof spec === 'string' ? spec : JSON.stringify(spec))
   const exited = new Promise<number | null>((resolve) => child.once('exit', (code) => resolve(code)))
   return {
@@ -125,6 +137,7 @@ function runDriver(r: Rig, spec: unknown, env: Record<string, string> = {}) {
       return JSON.parse(stdout.split('\n')[0]!) as Record<string, unknown>
     },
     output: () => ({ stdout, stderr }),
+    fd3Closed: () => fd3Closed,
   }
 }
 
@@ -145,6 +158,9 @@ describe('agent-inbox-driver run (#412 step 3)', () => {
     const r = rig()
     const run = runDriver(r, newSpec(r))
     expect(await run.status()).toEqual({ ok: true, launch: LAUNCH })
+    // the driver closed fd 3 (it carried the launch key) long before it exits
+    await until(() => run.fd3Closed(), 'fd 3 closed by the driver', 5000)
+    expect(run.child.exitCode).toBeNull()
     const row = await until(() => { const l = getLaunch(r.hub, LAUNCH); return l?.child_pgid ? l : null }, 'the child recorded')
     expect(row).toMatchObject({
       status: 'running', host: 'copilot', mode: 'ask', model: 'claude-haiku-4.5', reasoning_effort: 'none', prompt: 'Fix the failing test.',
@@ -157,6 +173,8 @@ describe('agent-inbox-driver run (#412 step 3)', () => {
     expect(received(r)[0]).toEqual({
       argv: ['--acp', '--stdio', '--allow-tool', 'agent-inbox', '--model', 'claude-haiku-4.5', '--reasoning-effort', 'none'],
       env: { hooks: '0', db: r.db },
+      // fd 3 carried the launch key: copilot and its shells never inherit it
+      fd3: 'closed',
     })
     expect(requestLaunchStop(r.hub, LAUNCH)).toBe('stopping')
     expect(await run.exited).toBe(0)
@@ -277,5 +295,36 @@ describe('agent-inbox-driver run (#412 step 3)', () => {
     expect(getLaunch(r.hub, LAUNCH)).toMatchObject({ status: 'running', park_reason: null })
     requestLaunchStop(r.hub, LAUNCH)
     expect(await fresh.exited).toBe(0)
+  }, 40_000)
+
+  it('keeps its budgets per launch across park and resume: a resumed launch ends at the original total, and usage never goes back', async () => {
+    const r = rig()
+    const first = runDriver(r, newSpec(r, { budgets: { activeMs: 7_200_000, toolCalls: 3 }, env: { ...r.env, FAKE_TOOLS: '2' } }), { AGENT_INBOX_DRIVER_IDLE_MS: '400' })
+    expect(await first.status()).toEqual({ ok: true, launch: LAUNCH })
+    expect(await first.exited).toBe(0)
+    expect(getLaunch(r.hub, LAUNCH)).toMatchObject({ status: 'parked', tool_calls: 2 })
+    // the loaded session makes one more tool call: 3 of 3 for the launch, not 1 of 3
+    const resumed = runDriver(r, { v: 1, kind: 'resume', launchId: LAUNCH, env: { ...r.env, FAKE_TOOLS_AFTER_LOAD: '1' }, launchKey: LAUNCH_KEY.toString('base64') })
+    expect(await resumed.status()).toEqual({ ok: true, launch: LAUNCH })
+    expect(await resumed.exited).toBe(1)
+    expect(getLaunch(r.hub, LAUNCH)).toMatchObject({ status: 'ended', end_reason: 'budget:tool_calls', tool_calls: 3 })
+  }, 40_000)
+
+  it('a resume of a launch that already used its tool-call budget ends it at once without starting copilot', async () => {
+    const r = rig()
+    const first = runDriver(r, newSpec(r, { budgets: { activeMs: 7_200_000, toolCalls: 3 }, env: { ...r.env, FAKE_TOOLS: '2' } }), { AGENT_INBOX_DRIVER_IDLE_MS: '400' })
+    expect(await first.status()).toEqual({ ok: true, launch: LAUNCH })
+    expect(await first.exited).toBe(0)
+    expect(getLaunch(r.hub, LAUNCH)).toMatchObject({ status: 'parked', tool_calls: 2 })
+    // the row says 3 of 3 were used (a later turn's report), as a park can record
+    recordLaunchProgress(r.hub, LAUNCH, { toolCalls: 1 })
+    expect(getLaunch(r.hub, LAUNCH)!.tool_calls).toBe(2)
+    r.hub.prepare(`UPDATE launches SET tool_calls = 3 WHERE id = ?`).run(LAUNCH)
+    const starts = readFileSync(r.fakeLog, 'utf8').split('\n').filter((line) => line.includes('"argv"')).length
+    const resumed = runDriver(r, { v: 1, kind: 'resume', launchId: LAUNCH, env: r.env, launchKey: LAUNCH_KEY.toString('base64') })
+    expect(await resumed.status()).toEqual({ ok: false, error: `launch ${LAUNCH} has used its tool-call budget` })
+    expect(await resumed.exited).toBe(1)
+    expect(getLaunch(r.hub, LAUNCH)).toMatchObject({ status: 'ended', end_reason: 'budget:tool_calls', tool_calls: 3 })
+    expect(readFileSync(r.fakeLog, 'utf8').split('\n').filter((line) => line.includes('"argv"'))).toHaveLength(starts)
   }, 40_000)
 })

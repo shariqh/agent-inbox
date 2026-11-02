@@ -195,6 +195,8 @@ Claude Code and Copilot CLI load this file automatically when they read or edit 
   `read-only` and `plan`, Copilot's own effort levels, bounded budgets (active time 1 min to 8 h,
   tool calls 1 to 2000), a 1 to 65536-character prompt, an env of name → string, and a 32-byte
   base64 launch key. A `resume` spec carries only the id, env and key: the facts come from the row.
+  The driver closes fd 3 as soon as it has read it, before anything starts, so copilot and its tool
+  shells never inherit the launch-key channel; main passes the spec over a pipe, never a file.
 - **`run <launch id> <hub db>`** (`driver-cli.ts`): no TTY. It writes exactly one stdout line,
   `{"ok":true,"launch":<id>}` once the session is starting or `{"ok":false,"error":…}` (exit 65 for
   a bad spec, 75 at the driver cap, 1 otherwise), and everything else to the launch's logs and row.
@@ -215,7 +217,11 @@ Claude Code and Copilot CLI load this file automatically when they read or edit 
   as an approval intent, behind every frame already read and re-validated like a TTY answer. Any
   other reply (the ordinary reply route, an older viewer, another key, another revision, item or
   option) is logged as `approval_refused` and ignored: the ask stays open and nothing is allowed or
-  declined on its strength. `settleLaunchAsk` resolves the item and removes its mapping.
+  declined on its strength. `settleLaunchAsk` resolves the item and removes its mapping. So that a
+  human never sees an answer recorded that nothing acts on, the viewer's ordinary reply and note
+  routes refuse an item mapped in `launch_asks` (`isLaunchAsk`) with `200 {ok:false,
+  reason:'launch_ask'}`, and the page says "Not sent — approve this from Agent Inbox's own window."
+  and keeps any typed text.
 - **Park and minimal resume** (§7). In `run` mode, 2 h idle parks the launch (`parkLaunch`): the
   child is closed, the row keeps `acp_session` only when the task was sent (a never-prompted
   session cannot be loaded) and forgets the processes; a Stop that arrived meanwhile ends it
@@ -226,7 +232,9 @@ Claude Code and Copilot CLI load this file automatically when they read or edit 
   driver with `error:load`, and the launch is parked again with its ACP session and a `park_reason`
   ("Copilot could not load the session: …", sanitized, at most 300 characters of Copilot's message)
   that the UI shows, so the human can retry; a later resume clears it.
-  The row's earlier `sessions` prove "from" (§14.3): the new driver re-takes their `driven:` leases
+  Budgets are per-launch totals: a resumed driver starts its counters from the row's `active_ms` and
+  `tool_calls`, a launch that already used a budget ends (`budget:<which>`) before anything starts, and
+  the store never moves usage backwards (`MAX` of stored and new). The row's earlier `sessions` prove "from" (§14.3): the new driver re-takes their `driven:` leases
   under the same launch id, so `readdressMessages` moves their open messages to the new server once
   it links, and `pushed.json` starts empty, so they are pushed again (§5.3).
 - **Tests**: `test/launches.test.ts` (rows, Stop, liveness, pruning, asks, routes, §9 d),

@@ -4052,9 +4052,11 @@ export function recordLaunchProgress(db: Database.Database, id: string, progress
   if (progress.hostPid !== undefined) fields.push(['host_pid', progress.hostPid])
   if (progress.sessions !== undefined) fields.push(['sessions', JSON.stringify([...progress.sessions])])
   if (progress.activeMs !== undefined) fields.push(['active_ms', Math.max(0, Math.round(progress.activeMs))])
-  if (progress.toolCalls !== undefined) fields.push(['tool_calls', progress.toolCalls])
+  if (progress.toolCalls !== undefined) fields.push(['tool_calls', Math.max(0, Math.round(progress.toolCalls))])
   if (fields.length === 0) return false
-  const set = fields.map(([column]) => `${column} = ?`).join(', ')
+  // usage only ever grows: a driver's counters start from the row, and a write
+  // that knows less never takes the totals back
+  const set = fields.map(([column]) => (column === 'active_ms' || column === 'tool_calls' ? `${column} = MAX(${column}, ?)` : `${column} = ?`)).join(', ')
   return db.prepare(`UPDATE launches SET ${set}, updated_at = ?, revision = revision + 1 WHERE id = ? AND status = 'running'`)
     .run(...fields.map(([, value]) => value), new Date().toISOString(), id).changes === 1
 }
@@ -4074,12 +4076,12 @@ export function parkLaunch(
                                  parked_at = CASE WHEN stop_requested_at IS NULL THEN @now ELSE NULL END,
                                  park_reason = CASE WHEN stop_requested_at IS NULL THEN @reason ELSE NULL END,
                                  ended_at = CASE WHEN stop_requested_at IS NULL THEN NULL ELSE @now END,
-                                 acp_session = @acp, active_ms = @activeMs, tool_calls = @toolCalls,
+                                 acp_session = @acp, active_ms = MAX(active_ms, @activeMs), tool_calls = MAX(tool_calls, @toolCalls),
                                  driver_pid = NULL, child_pgid = NULL, child_started_at = NULL, host_pid = NULL,
                                  updated_at = @now, revision = revision + 1
                            WHERE id = @id AND status = 'running'
                        RETURNING status`).get({
-    now, id, acp: park.acpSession, activeMs: Math.max(0, Math.round(park.activeMs)), toolCalls: park.toolCalls,
+    now, id, acp: park.acpSession, activeMs: Math.max(0, Math.round(park.activeMs)), toolCalls: Math.max(0, Math.round(park.toolCalls)),
     reason: park.reason ?? null,
   }) as { status: LaunchStatus } | undefined
   return row?.status ?? null
@@ -4093,7 +4095,7 @@ export function endLaunch(
   const now = new Date().toISOString()
   return db.prepare(`UPDATE launches
                         SET status = 'ended', end_reason = @reason, ended_at = @now, parked_at = NULL, park_reason = NULL,
-                            active_ms = COALESCE(@activeMs, active_ms), tool_calls = COALESCE(@toolCalls, tool_calls),
+                            active_ms = MAX(active_ms, COALESCE(@activeMs, 0)), tool_calls = MAX(tool_calls, COALESCE(@toolCalls, 0)),
                             updated_at = @now, revision = revision + 1
                       WHERE id = @id AND status <> 'ended'`).run({
     now, id, reason: end.reason,
@@ -4170,6 +4172,14 @@ export function settleLaunchAsk(db: Database.Database, itemId: string, outcome: 
     resolveItem(db, itemId, outcome)
     db.prepare(`DELETE FROM launch_asks WHERE item_id = ?`).run(itemId)
   }).immediate()
+}
+
+// Whether this item is an app launch's approval ask (still mapped in
+// launch_asks): only Electron main's signed answer counts for it, so the
+// viewer's ordinary reply and note routes refuse it rather than record an
+// answer nothing will act on.
+export function isLaunchAsk(db: Database.Database, itemId: string): boolean {
+  return db.prepare(`SELECT 1 FROM launch_asks WHERE item_id = ?`).get(itemId) !== undefined
 }
 
 export interface LaunchAskReply {

@@ -411,3 +411,7 @@ Approve), `public/launches.js` (pure rules) and `public/launch-settings.js` (Set
 - **The Agents view (#397).** A session line whose `/api/activity` row is `driven` gets a `driven` chip,
   and `started here` when it is a session of one of this app's launches (only with the switch on), drawn
   inside the project and branch column so the row's grid is unchanged.
+- **Native notifications.** A new app launch's approval notifies like any ask but offers no buttons
+  (`answerableByNotification` in `electron/reply-watch.cjs`): the hub refuses an ordinary reply to it, and
+  only main's signed answer from the app's own window counts. A click opens its card, whose options main
+  signs. A signing path from the notification itself would be a new approval surface and is not built.

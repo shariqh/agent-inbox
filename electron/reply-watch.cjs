@@ -133,6 +133,15 @@ function attentionNotification(entry) {
   }
 }
 
+// Issue #412 step 3: an app launch's approval (an `approval` question in
+// `@sessions`) is answered only by main's signed answer from the app's own
+// window, and the hub refuses an ordinary reply to it. Its notification
+// therefore offers no buttons; a click opens the card, whose options main signs.
+function answerableByNotification(notification) {
+  const item = notification?.target?.source === 'item' ? notification.item : null
+  return !(item && item.project === '@sessions' && item.action_owner === 'approval')
+}
+
 // `known` is null before the first poll: nothing is announced at launch.
 function freshAttentionNotifications(known, notifications) {
   return known === null ? [] : notifications.filter((notification) => !known.has(notification.id))
@@ -324,6 +333,7 @@ function wakeAdapterPayload(targets) {
 }
 
 module.exports = {
+  answerableByNotification,
   attentionNotification,
   cannedResponseActions,
   createNotificationRetainer,

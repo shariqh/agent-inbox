@@ -567,6 +567,16 @@ function launchControllerFor() {
       const result = owner() ? await dialog.showOpenDialog(owner(), options) : await dialog.showOpenDialog(options)
       return result.canceled ? null : result.filePaths[0] ?? null
     },
+    // #432: where session worktrees go, read only with the switch on
+    worktreeSettings: {
+      read: () => launchSettings().readWorktreeRoot(),
+      write: (root) => launchSettings().setWorktreeRoot(root),
+    },
+    chooseWorktreeFolder: async () => {
+      const options = { title: 'Choose the folder for session worktrees', buttonLabel: 'Choose', properties: ['openDirectory', 'createDirectory'] }
+      const result = owner() ? await dialog.showOpenDialog(owner(), options) : await dialog.showOpenDialog(options)
+      return result.canceled ? null : result.filePaths[0] ?? null
+    },
     driverRuntime: launchDriverRuntime,
     startDriver: (args) => startDriver({ ...args, spawnImpl: spawn }),
     hubPath: launchHubPath(),
@@ -574,7 +584,8 @@ function launchControllerFor() {
     randomUUID,
     realDirectory: (folder) => {
       try {
-        const real = realpathSync(folder)
+        // the on-disk letter case: Node's realpathSync keeps the case it was given (#432 review)
+        const real = realpathSync.native(folder)
         return statSync(real).isDirectory() ? real : null
       } catch {
         return null

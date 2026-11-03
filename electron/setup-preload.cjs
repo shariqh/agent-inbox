@@ -168,6 +168,12 @@ function launchResult(value) {
   if (typeof value.enabled === 'boolean') out.enabled = value.enabled
   if (typeof value.killed === 'boolean') out.killed = value.killed
   if (value.reason === 'environment') out.reason = 'environment'
+  const root = worktreeRootOf(value.worktreeRoot)
+  if (root) out.worktreeRoot = root
+  // #432: the folder main's own dialog chose, and whether it is a repository's top
+  if (typeof value.folder === 'string' && value.folder.startsWith('/') && value.folder.length <= 4096) out.folder = value.folder
+  if (typeof value.project === 'string') out.project = value.project.slice(0, 256)
+  if (typeof value.repository === 'boolean') out.repository = value.repository
   return out
 }
 
@@ -181,7 +187,15 @@ function launchAvailability(value) {
     canEnable: value.canEnable === true,
   }
   if (typeof value.error === 'string') out.error = value.error.slice(0, 500)
+  const root = worktreeRootOf(value.worktreeRoot)
+  if (out.available && root) out.worktreeRoot = root
   return out
+}
+
+// #432: the folder session worktrees go under, as main reports it
+function worktreeRootOf(value) {
+  if (!value || typeof value !== 'object' || typeof value.path !== 'string' || !value.path.startsWith('/') || value.path.length > 4096) return null
+  return { path: value.path, isDefault: value.isDefault === true }
 }
 
 const failedLaunch = () => ({ ok: false, error: 'Agent Inbox did not answer.' })
@@ -217,6 +231,19 @@ contextBridge.exposeInMainWorld('agentInboxLaunch', {
   approve(...args) {
     if (args.length !== 1 || !isPlainObject(args[0])) return Promise.resolve({ ok: false, error: 'invalid' })
     return launchCall('agent-inbox:launch-approve', args[0])
+  },
+  // #432: main's own folder dialogs choose these; the page names no folder
+  chooseFolder(...args) {
+    if (args.length !== 0) return Promise.resolve({ ok: false, error: 'invalid' })
+    return launchCall('agent-inbox:launch-choose-folder')
+  },
+  chooseWorktreeRoot(...args) {
+    if (args.length !== 0) return Promise.resolve({ ok: false, error: 'invalid' })
+    return launchCall('agent-inbox:launch-choose-worktree-root')
+  },
+  resetWorktreeRoot(...args) {
+    if (args.length !== 0) return Promise.resolve({ ok: false, error: 'invalid' })
+    return launchCall('agent-inbox:launch-reset-worktree-root')
   },
 })
 

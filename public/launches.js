@@ -26,13 +26,16 @@ export const LAUNCH_MODES = Object.freeze([
   {
     id: 'edits',
     label: 'Edits in the worktree',
-    copy: 'File edits inside the project folder run without asking, never a .git folder or file; shell commands, network and anything outside the folder still ask. An edited file can change what a command you allow then runs.',
+    copy: 'File edits inside the session’s folder (its worktree, when it has one) run without asking, never a .git folder or file; shell commands, network and anything outside the folder still ask. An edited file can change what a command you allow then runs.',
   },
 ])
 
 export const REASONING_EFFORTS = Object.freeze(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
 export const SHELL_WARNING = 'Once any shell command is allowed, the session can run anything, in its folder and beyond. Answer each approval with that in mind.'
 export const PROMPT_WARNING = 'Don’t paste secrets here: the task is stored with the session.'
+// #432: what New worktree means; main's confirmation shows the worktree's path and branch
+export const WORKTREE_COPY = 'The session works in a new git worktree on its own branch, made from your checkout’s last commit. Uncommitted changes stay in your checkout.'
+export const NOT_REPOSITORY = 'Not a git repository: the session runs in this folder.'
 
 const MODEL = /^[A-Za-z0-9._-]{1,64}$/
 const MAX_PROMPT = 64 * 1024
@@ -44,7 +47,7 @@ const LOST_AFTER_MS = 2 * 60_000
  * (launch-controller.cjs launchRequest), or why it cannot be sent.
  * @returns {{request: object} | {error: string}}
  */
-export function newSessionRequest({ root, mode, model, reasoningEffort, activeHours, toolCalls, prompt }) {
+export function newSessionRequest({ root, worktree, mode, model, reasoningEffort, activeHours, toolCalls, prompt }) {
   if (root !== null && (typeof root !== 'string' || !root.startsWith('/'))) return { error: 'Choose a project or a folder.' }
   if (!LAUNCH_MODES.some((m) => m.id === mode)) return { error: 'Choose a mode.' }
   const trimmedModel = typeof model === 'string' ? model.trim() : ''
@@ -64,8 +67,19 @@ export function newSessionRequest({ root, mode, model, reasoningEffort, activeHo
       ...(reasoningEffort ? { reasoningEffort } : {}),
       budgets: { activeMs: Math.round(hours * 60) * 60_000, toolCalls: calls },
       prompt,
+      // only the wish: main plans the worktree's path and branch itself (#432)
+      ...(worktree === true ? { worktree: true } : {}),
     },
   }
+}
+
+/** A launch's own worktree, for its drawer row (#432), or null when it runs in its folder. */
+export function launchWorktreeLine(launch) {
+  if (typeof launch?.worktree_path !== 'string' || !launch.worktree_path) return null
+  const branch = typeof launch.branch === 'string' ? launch.branch : ''
+  return launch.worktree_removed_at
+    ? `Worktree removed; its branch ${branch} is kept.`
+    : `Worktree: ${branch} · ${launch.worktree_path}`
 }
 
 const END_REASONS = {

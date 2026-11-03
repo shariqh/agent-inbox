@@ -4,6 +4,9 @@
 // app started and owns gets an answer. Anywhere else (a browser, a viewer the
 // app found already running, another platform) nothing is drawn: off means the
 // page adds no control. Every string reaches the DOM as textContent.
+//
+// #432: with the switch on, it also shows where session worktrees go, with
+// Choose… (main's own folder dialog) and Use default; the page names no folder.
 let refreshShown = null
 
 /** Asks main again, as Settings does each time it opens. */
@@ -41,6 +44,31 @@ export function renderLaunchSettings(host, {
   message.setAttribute('aria-live', 'polite')
   section.append(make('h3', '', 'Agent sessions'), label, hint, keychain, message)
   host.appendChild(section)
+  // made the first time main reports a worktree folder: with the switch off, nothing is drawn
+  let worktree = null
+  const worktreeRow = () => {
+    if (worktree) return worktree
+    const row = make('div', 'launch-settings-worktree')
+    row.id = 'launch-worktree-root'
+    const path = make('span', 'launch-settings-worktree-path')
+    const choose = make('button', 'launch-action', 'Choose…')
+    choose.type = 'button'
+    const reset = make('button', 'launch-action', 'Use default')
+    reset.type = 'button'
+    row.append(make('span', 'launch-field-label', 'Worktree folder'), path, choose, reset)
+    const act = async (call) => {
+      choose.disabled = true
+      reset.disabled = true
+      const result = await call().catch(() => ({ ok: false, error: 'Agent Inbox did not answer.' }))
+      await read()
+      if (!result?.ok && !result?.cancelled) message.textContent = result?.error ?? 'That setting could not be changed.'
+    }
+    choose.addEventListener('click', () => act(() => api.chooseWorktreeRoot()))
+    reset.addEventListener('click', () => act(() => api.resetWorktreeRoot()))
+    section.insertBefore(row, message)
+    worktree = { row, path, choose, reset }
+    return worktree
+  }
 
   const show = (state) => {
     // only the viewer this app owns: anywhere else the section stays out of sight
@@ -48,6 +76,14 @@ export function renderLaunchSettings(host, {
     input.checked = state?.enabled === true
     input.disabled = !state?.owned || (!state.enabled && !state.canEnable)
     message.textContent = state?.owned && !state.enabled && !state.canEnable ? 'Starting sessions from Agent Inbox is available on macOS.' : ''
+    const root = state?.owned && state.enabled ? state.worktreeRoot : null
+    if (root || worktree) {
+      const w = worktreeRow()
+      w.row.hidden = !root
+      w.path.textContent = root ? `${root.path}${root.isDefault ? ' (default)' : ''}` : ''
+      w.choose.disabled = !root || typeof api.chooseWorktreeRoot !== 'function'
+      w.reset.disabled = !root || root.isDefault || typeof api.resetWorktreeRoot !== 'function'
+    }
     return state
   }
   const read = () => api.available().then(show, () => show(null))

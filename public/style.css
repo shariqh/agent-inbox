@@ -159,6 +159,9 @@ header { flex-wrap: wrap; }
 .live-launches p { margin: 0; }
 .live-launch { display: grid; gap: 4px; padding: 8px 0; border-top: 1px solid var(--app-border); }
 .live-launch[data-state="lost"] .live-launch-status { color: var(--app-warning); }
+.live-launch-worktree { color: var(--app-muted); overflow-wrap: anywhere; }
+.launch-settings-worktree { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 6px 0; font-size: 12.5px; }
+.launch-settings-worktree-path { overflow-wrap: anywhere; }
 .live-started-here { padding: 0 6px; border: 1px solid var(--app-border); border-radius: 999px; font-size: 11px; color: var(--app-text-soft); }
 .live-launch-composer .msg-composer { margin: 4px 0 0; }
 .live-launch-actions, .live-launch-resume { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 6px; }

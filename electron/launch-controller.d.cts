@@ -1,5 +1,9 @@
 // Type declarations for electron/launch-controller.cjs (issue #412 step 3).
-export type LaunchResult = { ok: boolean; error?: string; launch?: string; cancelled?: boolean; status?: string; killed?: boolean; reason?: string }
+export type WorktreeRoot = { path: string; isDefault: boolean }
+export type LaunchResult = {
+  ok: boolean; error?: string; launch?: string; cancelled?: boolean; status?: string; killed?: boolean; reason?: string; worktreeRoot?: WorktreeRoot
+  folder?: string; project?: string; repository?: boolean
+}
 export interface LaunchController {
   canEnable(options?: { withKeys?: boolean }): LaunchResult | null
   available(): { enabled: boolean; available: boolean; error?: string }
@@ -8,6 +12,11 @@ export interface LaunchController {
   stop(id: unknown): Promise<LaunchResult>
   close(id: unknown): Promise<LaunchResult>
   approve(request: unknown): Promise<LaunchResult>
+  /** #432: null with the switch off */
+  chooseFolder(): Promise<LaunchResult>
+  worktreeRoot(): Promise<WorktreeRoot | null>
+  chooseWorktreeRoot(): Promise<LaunchResult>
+  resetWorktreeRoot(): Promise<LaunchResult>
   running(): Promise<Array<{ id: string; project: string; mode: string }>>
   stopAll(launches: Array<{ id: string }>): Promise<void>
   beginQuit(): void
@@ -19,10 +28,11 @@ export function launchRequest(value: unknown): Record<string, unknown> | null
 export function approvalRequest(value: unknown): { item: string; revision: number; optionId: string } | null
 export function launchEnv(env: Record<string, unknown>): Record<string, string>
 export function displaySafe(text: string): string
-export function displayLine(text: string): string
+export function displayLine(text: string, options?: { tail?: boolean }): string
 export function confirmation(facts: {
   project: string
   folder: string
+  worktree?: { path: string; branch: string; shared: boolean } | null
   mode: string
   model?: string
   reasoningEffort?: string

@@ -28,6 +28,7 @@ npm run build       # tsc -p tsconfig.build.json → dist/ (entry: dist/mcp-serv
 npm run mcp         # run the MCP stdio server via tsx (local iteration)
 npm run view        # run the viewer on http://127.0.0.1:4319 via tsx
 npm run electron    # Electron wrapper in development (run the build first)
+npm run electron:side # …beside a running Agent Inbox: its own viewer on 4392, same inbox
 npm run package:app # build the self-contained macOS app
 npm run install:agents [-- --apply]    # DRY RUN of MCP + host-instructions setup
 npm run install:hooks           # DRY RUN of the opt-in backstop hooks installer (docs/hooks.md)

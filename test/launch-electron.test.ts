@@ -638,9 +638,14 @@ describe('the driver runtime (§8, #206)', () => {
     expect(options.requiredFiles).toEqual(expect.arrayContaining(['dist/driver-cli.js', 'dist/launch-spec.js']))
   })
 
-  it('asks for Update agents when it is not installed or does not verify, and refuses without a verified selection', () => {
+  it('explains a missing runtime (Setup installs it only with an agent registration, never over a checkout), asks to reinstall a changed one, and refuses without a verified selection', () => {
     const missing = () => { throw Object.assign(new Error('x'), { code: 'not-found' }) }
-    expect(setupRunner.installedDriverRuntime({ runtimeRoot: '/root', selection, verify: missing }).error).toMatch(/not installed yet/)
+    const notInstalled = setupRunner.installedDriverRuntime({ runtimeRoot: '/root', selection, verify: missing }).error
+    expect(notInstalled).toMatch(/not installed yet/)
+    expect(notInstalled).toMatch(/never over a source checkout/)
+    expect(notInstalled).toMatch(/npm run build, then npm run electron/)
+    // Setup offers no Update agents for a checkout's hosts, so the copy never sends the human there
+    expect(notInstalled).not.toMatch(/Update agents/)
     const changed = () => { throw new Error('hash') }
     expect(setupRunner.installedDriverRuntime({ runtimeRoot: '/root', selection, verify: changed }).error).toMatch(/failed integrity/)
     expect(setupRunner.installedDriverRuntime({ runtimeRoot: '/root', selection: { ok: false } }).error).toMatch(/no verified runtime/)

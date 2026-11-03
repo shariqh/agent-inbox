@@ -318,8 +318,11 @@ function installedDriverRuntime({ runtimeRoot, selection, platform = process.pla
   } catch (err) {
     return {
       error: err?.code === 'not-found'
-        ? `This app's v${selection.packageVersion} runtime is not installed yet: use Update agents in Settings → Setup first.`
-        : `The installed v${selection.packageVersion} runtime failed integrity verification: use Update agents in Settings → Setup.`,
+        ? `This app's v${selection.packageVersion} runtime is not installed yet. Setup installs it only while it `
+          + 'registers Claude Code or Copilot CLI to this app (Settings → Setup), never over a source checkout or a '
+          + "custom registration. If your agents run from a checkout, start sessions from that checkout's own build: "
+          + 'npm run build, then npm run electron.'
+        : `The installed v${selection.packageVersion} runtime failed integrity verification: reinstall it from Settings → Setup.`,
     }
   }
   return { node: join(dir, 'bin', 'node'), entry: join(dir, 'dist', 'driver-cli.js') }

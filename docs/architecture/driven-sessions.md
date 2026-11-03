@@ -558,22 +558,29 @@ Main does not send the field yet (part 2), so nothing changes for anyone today.
   worktree is kept, a checkout that is still its own real path, and `git worktree list --porcelain -z`
   showing that path on that branch; a worktree switched to another branch is left to the human. `git`
   is found on the PATH main passes (its capture in the checkout) and trust-checked like `copilot`; one
-  JSON line on stdout. `inspect` answers `{ path, branch, missing, dirty, ahead, upstream, status }`:
-  uncommitted entries (`status --porcelain=v1 -z`, `GIT_OPTIONAL_LOCKS=0`), commits ahead of
-  `base_ref` (else `base_sha`), whether the branch has an upstream, and the sha256 of that status.
-  `remove` unlocks, then runs `git worktree remove`, never `prune`, and never touches the branch; git
-  refuses a worktree with changes, and `--force` is added only with `--discard <hash>` while the status
-  still hashes to it ("The worktree changed since you looked at it…" otherwise). A folder deleted by
-  hand has only git's entry removed; one git no longer lists and whose folder is gone counts as
-  removed. Success sets `worktree_removed_at`.
+  JSON line on stdout. `inspect` answers `{ path, branch, missing, dirty, examples, noDiscard, ahead,
+  upstream, status }`. `dirty` counts every changed file (`status --porcelain=v1 -z
+  --untracked-files=all`, `GIT_OPTIONAL_LOCKS=0`), `examples` names up to 5, `ahead` counts commits
+  ahead of `base_ref` (else `base_sha`), and `status` is the worktree's **fingerprint** (review of
+  #446): the sha256 of that status, of `git diff HEAD --binary --no-ext-diff --no-textconv` (staged and
+  unstaged contents), and of each untracked file's path, size, mtime in nanoseconds and contents (whole
+  up to 8 MiB a file and 512 MiB in all; past that, size and mtime). A further edit to a changed file, or
+  a new file under an untracked folder, therefore moves it. Discard is refused, with `noDiscard` saying
+  why and no fingerprint, for an untracked nested repository ("move it out first"), a folder git does
+  not list file by file, more than 20,000 changed files, or a diff over 256 MiB. `remove` unlocks, then
+  runs `git worktree remove`, never `prune`, and never touches the branch; git refuses a worktree with
+  changes, and `--force` is added only with `--discard <fingerprint>` while a fresh fingerprint still
+  equals it ("The worktree changed since you looked at it…" otherwise). A folder deleted by hand has
+  only git's entry removed; one git no longer lists and whose folder is gone counts as removed. Success sets `worktree_removed_at`.
 - **Main** (`removeWorktree(id)`, `openWorktree(id)` in the controller; IPC `launch-remove-worktree` and
   `launch-open-worktree`, exactly a launch id, the `launch` grant). Remove re-reads the launch, captures
   the env in the checkout as Resume does (the click is the gesture), runs `inspect` through
   `runWorktreeCommand` (`driver-process.cjs`: `[node, driver-cli.js, 'worktree', verb, id, hub,
   --discard?]`, no shell, `cwd: '/'`, 150 s), and shows its own dialog (`removalConfirmation`): the
   worktree, "The branch … and its N commits stay in your repository" (and, without an upstream, that
-  they are only there), that ignored files such as node_modules are deleted, and, with changes, a
-  separate **Discard N changes and remove** button bound to the inspected status. Cancel is the
+  they are only there), that ignored files such as node_modules are deleted, and, with changes, up to 5 of
+  them (each through `displayLine`) and how many more, and a separate **Discard N changes and remove**
+  button bound to the inspected fingerprint, or, when the driver refused Discard, its reason instead. Cancel is the
   default. Open in Terminal runs `/usr/bin/open -a Terminal -- <path>`, argv only, on the path a fresh
   row read names, only while it is its own real folder and not removed.
 - **The page.** A launch row with a kept worktree offers **Open in Terminal**, and **Remove worktree…**

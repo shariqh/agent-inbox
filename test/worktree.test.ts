@@ -208,7 +208,9 @@ describe('Remove worktree (#432 §5)', () => {
     const r = made()
     mkdirSync(join(r.plan.path, 'node_modules'))
     writeFileSync(join(r.plan.path, 'node_modules', 'x.js'), 'x')
-    expect(inspectWorktree(r.target)).toEqual({ ok: true, state: { missing: false, dirty: 0, ahead: 1, upstream: false, status: expect.stringMatching(/^[0-9a-f]{64}$/) } })
+    expect(inspectWorktree(r.target)).toEqual({
+      ok: true, state: { missing: false, dirty: 0, examples: [], noDiscard: null, ahead: 1, upstream: false, status: expect.stringMatching(/^[0-9a-f]{64}$/) },
+    })
     expect(removeLaunchWorktree(r.target)).toEqual({ ok: true })
     expect(existsSync(r.plan.path)).toBe(false)
     expect(r.branches()).toEqual([r.plan.branch, 'main'].sort())
@@ -239,6 +241,71 @@ describe('Remove worktree (#432 §5)', () => {
     expect(existsSync(r.plan.path)).toBe(false)
     expect(r.branches()).toContain(r.plan.branch)
   })
+
+  // review of #446: the fingerprint a discard is bound to covers contents, not just names
+  const state = (r: ReturnType<typeof made>) => {
+    const seen = inspectWorktree(r.target)
+    if (!seen.ok) throw new Error(seen.error)
+    return seen.state
+  }
+
+  it('a further edit to a file already changed moves the fingerprint, so the older discard is refused', () => {
+    const r = made()
+    writeFileSync(join(r.plan.path, 'README.md'), 'changed once\n')
+    const seen = state(r)
+    expect(seen).toMatchObject({ dirty: 1, examples: ['README.md'], noDiscard: null })
+    writeFileSync(join(r.plan.path, 'README.md'), 'changed twice\n')
+    const now = state(r)
+    expect(now.dirty).toBe(1)
+    expect(now.status).not.toBe(seen.status)
+    expect(removeLaunchWorktree({ ...r.target, discard: seen.status })).toEqual({ ok: false, error: expect.stringMatching(/changed since you looked/) })
+    expect(readFileSync(join(r.plan.path, 'README.md'), 'utf8')).toBe('changed twice\n')
+    // an untracked file's own content counts too, not only its name
+    writeFileSync(join(r.plan.path, 'new.txt'), 'a\n')
+    const before = state(r).status
+    writeFileSync(join(r.plan.path, 'new.txt'), 'b\n')
+    expect(state(r).status).not.toBe(before)
+  })
+
+  it('counts every file, and a new file under a folder already untracked moves the count and the fingerprint', () => {
+    const r = made()
+    mkdirSync(join(r.plan.path, 'out', 'deep'), { recursive: true })
+    for (const name of ['a.txt', 'b.txt', 'deep/c.txt']) writeFileSync(join(r.plan.path, 'out', name), name)
+    const seen = state(r)
+    expect(seen).toMatchObject({ dirty: 3, examples: ['out/a.txt', 'out/b.txt', 'out/deep/c.txt'] })
+    writeFileSync(join(r.plan.path, 'out', 'deep', 'd.txt'), 'd')
+    const now = state(r)
+    expect(now.dirty).toBe(4)
+    expect(now.status).not.toBe(seen.status)
+    expect(removeLaunchWorktree({ ...r.target, discard: seen.status })).toMatchObject({ ok: false })
+    expect(existsSync(join(r.plan.path, 'out', 'deep', 'd.txt'))).toBe(true)
+    expect(removeLaunchWorktree({ ...r.target, discard: now.status })).toEqual({ ok: true })
+  })
+
+  it('refuses Discard for a nested repository, naming it, and keeps its commits', () => {
+    const r = made()
+    const nested = join(r.plan.path, 'vendor', 'lib')
+    mkdirSync(nested, { recursive: true })
+    r.git(nested, '-c', 'init.defaultBranch=main', 'init', '-q')
+    writeFileSync(join(nested, 'x.txt'), 'x')
+    r.git(nested, 'add', 'x.txt')
+    r.git(nested, '-c', 'user.name=shariqh', '-c', 'user.email=shariqh@users.noreply.github.com', 'commit', '-q', '-m', 'nested')
+    const seen = state(r)
+    expect(seen).toMatchObject({ dirty: 1, status: '', noDiscard: 'It contains a nested git repository at vendor/lib/; move it out first.' })
+    expect(removeLaunchWorktree({ ...r.target, discard: 'a'.repeat(64) })).toEqual({ ok: false, error: expect.stringMatching(/nested git repository at vendor\/lib\//) })
+    expect(removeLaunchWorktree(r.target)).toMatchObject({ ok: false })
+    expect(r.git(nested, 'log', '--oneline')).toContain('nested')
+  })
+
+  it('refuses Discard for a worktree with too many changed files to fingerprint', () => {
+    const r = made()
+    mkdirSync(join(r.plan.path, 'many'))
+    for (let i = 0; i <= 20_000; i++) writeFileSync(join(r.plan.path, 'many', `${i}`), '')
+    const seen = state(r)
+    expect(seen).toMatchObject({ dirty: 20_001, status: '', noDiscard: expect.stringMatching(/more than 20,000 changed files/) })
+    expect(removeLaunchWorktree({ ...r.target, discard: 'a'.repeat(64) })).toEqual({ ok: false, error: expect.stringMatching(/more than 20,000 changed files/) })
+    expect(existsSync(join(r.plan.path, 'many', '20000'))).toBe(true)
+  }, 60_000)
 
   it('removes git’s entry for a worktree whose folder was deleted by hand', () => {
     const r = made()

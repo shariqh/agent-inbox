@@ -356,7 +356,10 @@ describe('agent-inbox-driver run (#412 step 3)', () => {
       expect(requestLaunchStop(r.hub, LAUNCH)).toBe('ended')
       writeFileSync(join(plan.path, 'notes.txt'), 'notes\n')
       const seen = worktreeCli(r, ['inspect', LAUNCH, r.db])
-      expect(seen).toEqual({ ok: true, path: plan.path, branch: plan.branch, missing: false, dirty: 1, ahead: 0, upstream: false, status: expect.stringMatching(/^[0-9a-f]{64}$/) })
+      expect(seen).toEqual({
+        ok: true, path: plan.path, branch: plan.branch, missing: false, dirty: 1, examples: ['notes.txt'], noDiscard: null, ahead: 0, upstream: false,
+        status: expect.stringMatching(/^[0-9a-f]{64}$/),
+      })
       expect(worktreeCliFails(r, ['remove', LAUNCH, r.db])).toMatchObject({ code: 1, ok: false })
       expect(worktreeCliFails(r, ['remove', LAUNCH, r.db, '--discard', 'f'.repeat(64)])).toMatchObject({ code: 1, error: expect.stringMatching(/changed since you looked/) })
       expect(getLaunch(r.hub, LAUNCH)!.worktree_removed_at).toBeNull()

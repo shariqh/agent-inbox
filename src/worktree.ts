@@ -10,7 +10,7 @@
 // made; nothing else is ever removed here, and a branch that moved is kept.
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { lstatSync, mkdirSync, realpathSync, statSync } from 'node:fs'
+import { closeSync, lstatSync, mkdirSync, openSync, readlinkSync, readSync, realpathSync, statSync } from 'node:fs'
 
 // The path as it is on disk. Node's realpathSync keeps the case it was given, so
 // on a case-insensitive volume `/W/App/x` "resolves" to itself even when the
@@ -235,12 +235,21 @@ export function unlockWorktree(git: string, env: NodeJS.ProcessEnv, checkout: st
 export interface WorktreeState {
   /** Its folder was deleted by hand; git still lists it, and remove cleans only that entry. */
   missing: boolean
-  /** Uncommitted and untracked entries in the worktree. */
+  /** Uncommitted changes in the worktree: every changed tracked file and every untracked file. */
   dirty: number
+  /** Up to 5 of them, for the confirmation. */
+  examples: string[]
+  /** Why Discard cannot be offered (a nested repository, a worktree too large to fingerprint), or null. */
+  noDiscard: string | null
   /** Commits on the branch that its base (the checkout's branch then, else the base commit) lacks. */
   ahead: number
   upstream: boolean
-  /** sha256 of `status --porcelain=v1 -z`: Discard and remove forces only while it still matches. */
+  /**
+   * The worktree's fingerprint, which Discard and remove is bound to: the status
+   * of every file, the full diff of tracked files against HEAD, and each
+   * untracked file's path, size, mtime and content hash. '' when it cannot be
+   * taken (see noDiscard).
+   */
   status: string
 }
 
@@ -259,10 +268,83 @@ function listedEntry(o: LaunchWorktree): string | 'gone' | null {
   return null
 }
 
-function statusOf(o: LaunchWorktree): { dirty: number; status: string } | { error: string } {
-  const status = runGit(o.git, { ...o.env, GIT_OPTIONAL_LOCKS: '0' }, o.path, ['status', '--porcelain=v1', '-z', '--no-renames'], READ_TIMEOUT_MS)
+const MAX_FINGERPRINT_FILES = 20_000
+// untracked files up to this size are hashed whole; above it, size and mtime stand in
+const HASHED_FILE_BYTES = 8 * 1024 * 1024
+// the content hashed in all, beyond which every further file is size and mtime only
+const HASHED_TOTAL_BYTES = 512 * 1024 * 1024
+const MAX_DIFF_BYTES = 256 * 1024 * 1024
+const EXAMPLE_LENGTH = 200
+
+type Fingerprint = { dirty: number; examples: string[]; status: string; noDiscard: string | null }
+
+function hashFile(path: string, hash: ReturnType<typeof createHash>): void {
+  const fd = openSync(path, 'r')
+  try {
+    const buffer = Buffer.alloc(1024 * 1024)
+    for (let n; (n = readSync(fd, buffer, 0, buffer.length, null)) > 0;) hash.update(buffer.subarray(0, n))
+  } finally {
+    closeSync(fd)
+  }
+}
+
+/**
+ * What Discard would delete, and its fingerprint (review of #446). Every file
+ * counts (`--untracked-files=all`); edits to an already-changed file and files
+ * under an already-untracked folder change the fingerprint, so a discard never
+ * forces away work the human was not shown. A nested repository, or a worktree
+ * too large to fingerprint, refuses Discard instead of guessing.
+ */
+function fingerprintOf(o: LaunchWorktree): Fingerprint | { error: string } {
+  const env = { ...o.env, GIT_OPTIONAL_LOCKS: '0' }
+  const status = runGit(o.git, env, o.path, ['status', '--porcelain=v1', '-z', '--no-renames', '--untracked-files=all'], READ_TIMEOUT_MS)
   if (!status.ok) return { error: status.message }
-  return { dirty: status.stdout.split('\0').filter(Boolean).length, status: createHash('sha256').update(status.stdout).digest('hex') }
+  const entries = status.stdout.split('\0').filter(Boolean)
+  const short = (name: string) => (name.length > EXAMPLE_LENGTH ? `${name.slice(0, EXAMPLE_LENGTH - 1)}…` : name)
+  const examples = entries.slice(0, 5).map((entry) => short(entry.slice(3)))
+  const refuse = (noDiscard: string): Fingerprint => ({ dirty: entries.length, examples, status: '', noDiscard })
+  if (entries.length > MAX_FINGERPRINT_FILES) {
+    return refuse(`It has more than ${MAX_FINGERPRINT_FILES.toLocaleString('en-US')} changed files, too many for Agent Inbox to check before deleting them; remove it yourself.`)
+  }
+  const hash = createHash('sha256')
+  hash.update(status.stdout).update('\0diff\0')
+  // staged and unstaged changes to tracked files, contents included; no external diff or textconv runs
+  const diff = spawnSync(o.git, ['-C', o.path, 'diff', 'HEAD', '--binary', '--no-ext-diff', '--no-textconv', '--no-color'], {
+    env, cwd: '/', timeout: ADD_TIMEOUT_MS, killSignal: 'SIGKILL', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: MAX_DIFF_BYTES,
+  })
+  if (diff.error && (diff.error as NodeJS.ErrnoException).code === 'ENOBUFS') {
+    return refuse('Its changes are too large for Agent Inbox to check before deleting them; remove it yourself.')
+  }
+  if (diff.error || diff.status !== 0) return { error: 'git diff failed' }
+  hash.update(diff.stdout).update('\0untracked\0')
+  let budget = HASHED_TOTAL_BYTES
+  for (const entry of entries) {
+    if (!entry.startsWith('?? ')) continue
+    const name = entry.slice(3)
+    const full = `${o.path}/${name.replace(/\/$/, '')}`
+    let info
+    try {
+      info = lstatSync(full, { bigint: true })
+    } catch {
+      return { error: `${name} changed while Agent Inbox read it` }
+    }
+    // git lists a folder as one untracked entry only when it holds another repository
+    if (info.isDirectory()) {
+      const folder = short(name.replace(/\/?$/, '/'))
+      return refuse(missing(`${full}/.git`)
+        ? `It contains a folder git does not list file by file, ${folder}; remove it yourself.`
+        : `It contains a nested git repository at ${folder}; move it out first.`)
+    }
+    hash.update(`${name}\0${info.size}\0${info.mtimeNs}\0`)
+    if (info.isSymbolicLink()) {
+      try { hash.update(`link:${readlinkSync(full)}`) } catch { return { error: `${name} changed while Agent Inbox read it` } }
+    } else if (info.isFile() && info.size <= BigInt(HASHED_FILE_BYTES) && info.size <= BigInt(budget)) {
+      try { hashFile(full, hash) } catch { return { error: `${name} changed while Agent Inbox read it` } }
+      budget -= Number(info.size)
+    }
+    hash.update('\0')
+  }
+  return { dirty: entries.length, examples, status: hash.digest('hex'), noDiscard: null }
 }
 
 function missing(path: string): boolean {
@@ -279,7 +361,7 @@ export function inspectWorktree(o: LaunchWorktree): { ok: true; state: WorktreeS
   const unlisted = listedEntry(o)
   if (unlisted && unlisted !== 'gone') return { ok: false, error: unlisted }
   const gone = missing(o.path)
-  const status = gone ? { dirty: 0, status: createHash('sha256').update('').digest('hex') } : statusOf(o)
+  const status: Fingerprint | { error: string } = gone ? { dirty: 0, examples: [], status: '', noDiscard: null } : fingerprintOf(o)
   if ('error' in status) return { ok: false, error: status.error }
   const ref = `refs/heads/${o.branch}`
   const base = o.baseRef && runGit(o.git, o.env, o.checkout, ['rev-parse', '--verify', '-q', `${o.baseRef}^{commit}`], READ_TIMEOUT_MS).ok ? o.baseRef : o.baseSha
@@ -301,8 +383,9 @@ export function removeLaunchWorktree(o: LaunchWorktree & { discard?: string }): 
   if (unlisted === 'gone') return { ok: true }
   if (unlisted) return { ok: false, error: unlisted }
   if (o.discard !== undefined) {
-    const now = missing(o.path) ? null : statusOf(o)
-    if (!now || 'error' in now || now.status !== o.discard) return { ok: false, error: 'The worktree changed since you looked at it, so nothing was removed. Look at it again.' }
+    const now = missing(o.path) ? null : fingerprintOf(o)
+    if (now && !('error' in now) && now.noDiscard) return { ok: false, error: `Nothing was removed. ${now.noDiscard}` }
+    if (!now || 'error' in now || !now.status || now.status !== o.discard) return { ok: false, error: 'The worktree changed since you looked at it, so nothing was removed. Look at it again.' }
   }
   runGit(o.git, o.env, o.checkout, ['worktree', 'unlock', o.path], UNLOCK_TIMEOUT_MS)
   const removed = runGit(o.git, o.env, o.checkout, ['worktree', 'remove', ...(o.discard !== undefined ? ['--force'] : []), o.path], ADD_TIMEOUT_MS)

@@ -48,4 +48,5 @@ export function quitChoice(options: {
 }): Promise<'keep' | 'stop'>
 export function removalConfirmation(facts: {
   project: string; path: string; branch: string; missing: boolean; dirty: number; ahead: number; upstream: boolean
+  examples?: string[]; noDiscard?: string | null
 }): { message: string; detail: string; buttons: string[] }

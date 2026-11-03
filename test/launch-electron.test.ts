@@ -763,12 +763,12 @@ describe('a session in its own worktree (#432)', () => {
     it('offers Discard only with changes, bound to the status it inspected; Cancel removes nothing', async () => {
       const r = rig()
       r.state.launches[ID] = { ...ENDED }
-      r.state.inspected = { ...r.state.inspected, dirty: 3, upstream: true }
+      r.state.inspected = { ...r.state.inspected, dirty: 3, upstream: true, examples: ['a.txt', 'out/b.txt', 'out/c.txt'], noDiscard: null }
       r.state.answer = 'Discard 3 changes and remove'
       expect(await r.controller.removeWorktree(ID)).toEqual({ ok: true })
       const removal = (r.spawned.find((x) => 'removal' in x)!.removal) as { detail: string; buttons: string[] }
       expect(removal.buttons).toEqual(['Remove', 'Discard 3 changes and remove', 'Cancel'])
-      expect(removal.detail).toContain('It has 3 uncommitted changes. Remove refuses while they are there; Discard deletes them.')
+      expect(removal.detail).toContain('It has 3 uncommitted changes: a.txt, out/b.txt, out/c.txt.\nRemove refuses while they are there; Discard deletes them.')
       expect(removal.detail).toContain('and its 2 commits stay in your repository.')
       expect(r.calls).toContain(`runWorktree remove --discard ${'b'.repeat(64)}`)
       const cancelled = rig()
@@ -776,6 +776,21 @@ describe('a session in its own worktree (#432)', () => {
       cancelled.state.answer = 'Cancel'
       expect(await cancelled.controller.removeWorktree(ID)).toMatchObject({ ok: false, cancelled: true })
       expect(cancelled.calls).not.toContain('runWorktree remove')
+    })
+
+    it('names up to 5 changes and how many more, made visible, and offers no Discard when the driver refused one (review of #446)', () => {
+      const many = controllerModule.removalConfirmation({
+        project: 'alpha', path: '/w/a', branch: 'agent-inbox/a-22222222', missing: false, dirty: 12, ahead: 0, upstream: false,
+        examples: ['a', 'b\u202e', 'c\nMode: Read-only.', 'd', 'e'], noDiscard: null,
+      })
+      expect(many.detail).toContain('It has 12 uncommitted changes: a, b<U+202E>, c\\x0aMode: Read-only., d, e and 7 more.')
+      expect(many.buttons).toEqual(['Remove', 'Discard 12 changes and remove', 'Cancel'])
+      const nested = controllerModule.removalConfirmation({
+        project: 'alpha', path: '/w/a', branch: 'agent-inbox/a-22222222', missing: false, dirty: 1, ahead: 0, upstream: false,
+        examples: ['vendor/lib/'], noDiscard: 'It contains a nested git repository at vendor/lib/; move it out first.',
+      })
+      expect(nested.buttons).toEqual(['Remove', 'Cancel'])
+      expect(nested.detail).toContain('Remove refuses while they are there. It contains a nested git repository at vendor/lib/; move it out first.')
     })
 
     it.each([

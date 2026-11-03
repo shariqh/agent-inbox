@@ -161,9 +161,13 @@ const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`
  * found. Discard is a separate button, offered only when there are changes,
  * and bound to the status that was inspected.
  */
-function removalConfirmation({ project, path: folder, branch, missing, dirty, ahead, upstream }) {
+function removalConfirmation({ project, path: folder, branch, missing, dirty, ahead, upstream, examples = [], noDiscard = null }) {
   const changes = plural(dirty, 'change', 'changes')
-  const buttons = dirty > 0 ? ['Remove', `Discard ${changes} and remove`, 'Cancel'] : ['Remove', 'Cancel']
+  const discard = dirty > 0 && !noDiscard
+  const buttons = discard ? ['Remove', `Discard ${changes} and remove`, 'Cancel'] : ['Remove', 'Cancel']
+  // what Discard would delete, named: agent-controlled names, each made visible on one line (review of #446)
+  const shown = (Array.isArray(examples) ? examples : []).filter((name) => typeof name === 'string').slice(0, 5)
+  const more = dirty - shown.length
   return {
     message: `Remove the worktree of ${displayLine(project)}?`,
     detail: [
@@ -172,7 +176,10 @@ function removalConfirmation({ project, path: folder, branch, missing, dirty, ah
       missing
         ? 'Its folder is already gone: this removes only git’s record of it.'
         : 'Ignored files such as node_modules are deleted.',
-      ...(dirty > 0 ? [`It has ${plural(dirty, 'uncommitted change', 'uncommitted changes')}. Remove refuses while they are there; Discard deletes them.`] : []),
+      ...(dirty > 0 ? [
+        `It has ${plural(dirty, 'uncommitted change', 'uncommitted changes')}: ${shown.map((name) => displayLine(name)).join(', ')}${more > 0 ? ` and ${more} more` : ''}.`,
+        noDiscard ? `Remove refuses while they are there. ${displaySafe(noDiscard).replace(/\n/g, ' ')}` : 'Remove refuses while they are there; Discard deletes them.',
+      ] : []),
     ].join('\n'),
     buttons,
   }

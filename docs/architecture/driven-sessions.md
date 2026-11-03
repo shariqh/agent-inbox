@@ -184,7 +184,7 @@ Claude Code and Copilot CLI load this file automatically when they read or edit 
   there: a prune that moved the runtime aside first means the pin is removed and the driver
   refuses. If it cannot pin, it refuses to start. A `process.on('exit')` handler removes the pin
   on every exit path, forced or not; a SIGKILL leaves a stale pin, which never counts and which
-  the next prune sweeps. A checkout pins nothing. The rules that read pins are in
+  the next prune sweeps. A checkout, or an app bundle's payload (#435), pins nothing. The rules that read pins are in
   `setup-and-installers.md` ("Runtime pins").
 
 ## Step 3, part 1: storage and the detached `run` mode
@@ -311,13 +311,30 @@ Everything main does for a driven session is injected and tested without Electro
 - **The driver's start** (`driver-process.cjs`, §8, §10): exactly `[<runtime>/bin/node,
   <runtime>/dist/driver-cli.js, 'run', <launch id>, <hub db>]`, detached, no shell, `cwd: '/'`, stdin
   closed, stderr to `<hub dir>/launches/<id>/driver.log` (0600 in 0700), and the spec with the launch key
-  written to a pipe (a socket pair) on fd 3, never a file. The runtime is the installed copy of this
-  release's runtime, re-verified against the signed digest with `dist/driver-cli.js` and
-  `dist/launch-spec.js` required (`installedDriverRuntime`, #206); a checkout uses its own build. Setup
-  installs that runtime only while it registers a host to this app, never over a checkout or custom
-  registration, so a release app whose agents run from a checkout has none: its refusal says so and
-  names the checkout's own build (`npm run build`, then `npm run electron`) instead of Update agents,
-  which Setup does not offer for checkout hosts (#435). Main reads
+  written to a pipe (a socket pair) on fd 3, never a file. The runtime (`driverRuntime`,
+  `setup-runner.cjs`) is the installed copy of this release's runtime first, re-verified against the
+  signed digest with `dist/driver-cli.js` and `dist/launch-spec.js` required (`installedDriverRuntime`,
+  #206); a checkout uses its own build. Setup installs that runtime only while it registers a host to
+  this app, never over a checkout or custom registration, so a release app whose agents run from a
+  checkout has none. **Then, on macOS only, this app's own payload (#435):** when the installed copy is
+  not there at all (`not-found`: `ENOENT` only; a folder that cannot be read, such as EACCES, ENOTDIR or
+  ELOOP, is `unreadable` and refuses), never when it is there and fails verification, main runs the payload
+  inside the bundle (`bundledDriverRuntime`, the folder Setup runs its installers from:
+  `runtimeSelection.path`), re-verified against the same signed digest with the same required files. It
+  refuses a bundle under `/AppTranslocation/` (that mount goes when the app quits, and the driver with
+  it), one whose real path is no longer the one startup resolved (moved, or a link), and one that
+  fails verification; each refusal follows the not-installed copy, which names the checkout's own build
+  (`npm run build`, then `npm run electron`) instead of Update agents, which Setup does not offer for
+  checkout hosts. Never on Linux, where an AppImage's payload is a FUSE mount torn down at quit and a
+  deb update replaces files in place. A driver run from the bundle pins nothing (`locateRuntime` calls
+  it `checkout`: its manifest names a runtime id, not its `runtime/<platform>-<arch>` folder) and needs
+  no pin, since no prune touches the bundle. It survives a macOS update, which renames the old app aside
+  and deletes it an hour later, because the driver opens the hub at start, so its whole graph and its
+  SQLite addon are loaded before any turn, and no driver module loads anything later (no `import(` or
+  `require(`, pinned in `test/driver-cli.test.ts`); a late load would fail in a renamed bundle, or read
+  another version's file from one replaced in place. `test/driver-run.test.ts` renames and deletes a
+  payload copy mid-session. The controller resolves the runtime once before the confirmation, to refuse
+  early, and again immediately before the spawn, which uses what that second check found. Main reads
   the driver's one status line and lets it run on. Any platform but macOS fails closed before spawning.
 - **The hub, over the viewer's own routes.** Main cannot load the store in a development build, so in every
   build it reaches the hub as notification answers do, with the trusted Origin: `GET /api/launch-folders`,

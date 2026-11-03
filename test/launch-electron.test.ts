@@ -6,8 +6,8 @@
 // the window binding's `launch` grant, the preload bridge and main's wiring.
 import { spawn } from 'node:child_process'
 import { createRequire } from 'node:module'
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import vm from 'node:vm'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import sessionLaunch from '../electron/session-launch.cjs'
@@ -20,6 +20,7 @@ import { terminalSafe } from '../src/driver-policy.js'
 import { verifyApproval } from '../src/launch-sign.js'
 import { parseLaunchSpec } from '../src/launch-spec.js'
 import { launchKey as fixtureLaunchKey, sign as fixtureSign } from './launch-fixtures.js'
+import { stageRuntime } from './hooks-runtime.js'
 import { removeScratchDirs, scratchDir } from './scratch.js'
 
 const REPO = join(import.meta.dirname, '..')
@@ -27,6 +28,7 @@ type Binding = { navigationStarted(url: string): void; navigationCommitted(url: 
 const setupRunner = createRequire(import.meta.url)('../electron/setup-runner.cjs') as {
   createInstallBinding(options: Json): Binding
   installedDriverRuntime(options: Json): { node?: string; entry?: string; error?: string }
+  driverRuntime(options: Json): { node?: string; entry?: string; error?: string }
 }
 const read = (rel: string) => readFileSync(join(REPO, rel), 'utf8')
 const ID = '22222222-3333-4444-8555-666666666666'
@@ -287,7 +289,7 @@ describe('the launch controller', () => {
     expect(result).toEqual({ ok: true, launch: ID })
     // the order: no shell runs before the human confirmed
     expect(r.calls.filter((c) => !c.startsWith('keys.available'))).toEqual([
-      'GET /api/launch-folders', 'driverRuntime', 'confirm', 'captureEnv /work/alpha', 'keys.launchKey', 'startDriver',
+      'GET /api/launch-folders', 'driverRuntime', 'confirm', 'captureEnv /work/alpha', 'keys.launchKey', 'driverRuntime', 'startDriver',
     ])
     const confirmation = r.spawned[0]!.confirmation as { message: string; detail: string; buttons: string[] }
     expect(confirmation.message).toBe('Start a Copilot session in alpha?')
@@ -430,6 +432,21 @@ describe('the launch controller', () => {
     release()
     await waiting
     expect(await started).toEqual({ ok: true, launch: ID })
+  })
+
+  it('verifies the runtime again immediately before the spawn, and spawns what that check found (#435)', async () => {
+    const answers: Array<Json> = [
+      { node: '/rt/bin/node', entry: '/rt/dist/driver-cli.js' },
+      { error: 'The installed v2.3.0 runtime failed integrity verification: reinstall it from Settings → Setup.' },
+    ]
+    const changed = rig({ driverRuntime: () => answers.shift() })
+    expect(await changed.controller.start(REQUEST)).toEqual({ ok: false, error: expect.stringMatching(/failed integrity verification/) })
+    expect(changed.calls).toContain('keys.launchKey')
+    expect(changed.calls).not.toContain('startDriver')
+    const bundle = [{ node: '/rt/bin/node', entry: '/rt/dist/driver-cli.js' }, { node: '/app/rt/bin/node', entry: '/app/rt/dist/driver-cli.js' }]
+    const r = rig({ driverRuntime: () => bundle.shift() })
+    expect(await r.controller.start(REQUEST)).toEqual({ ok: true, launch: ID })
+    expect(r.spawned.at(-1)).toMatchObject({ node: '/app/rt/bin/node', entry: '/app/rt/dist/driver-cli.js' })
   })
 
   it('off means off (§9 e): no env, no runtime, no spawn, no folder read, no key, and available() says off', async () => {
@@ -650,6 +667,154 @@ describe('the driver runtime (§8, #206)', () => {
     expect(setupRunner.installedDriverRuntime({ runtimeRoot: '/root', selection, verify: changed }).error).toMatch(/failed integrity/)
     expect(setupRunner.installedDriverRuntime({ runtimeRoot: '/root', selection: { ok: false } }).error).toMatch(/no verified runtime/)
     expect(setupRunner.installedDriverRuntime({ runtimeRoot: null, selection }).error).toMatch(/absolute/)
+  })
+
+  // #435: a release app whose agents run from a checkout has no installed runtime
+  describe('the bundle fallback (#435)', () => {
+    const RT = { manifest: { runtimeId: 'rt-1' } }
+    function world(...segments: string[]) {
+      const base = realpathSync(scratchDir('driver-runtime-'))
+      const bundle = join(base, ...segments, 'Agent Inbox.app', 'Contents', 'Resources', 'app', 'runtime', 'darwin-arm64')
+      mkdirSync(bundle, { recursive: true })
+      const root = join(base, 'runtime')
+      return { root, bundle, installed: join(root, 'rt-1'), selection: { ...selection, path: bundle } }
+    }
+    // verify, answering per folder: verified, not installed, or changed
+    const verifyBy = (answers: Record<string, 'ok' | 'not-found' | 'changed'>) => vi.fn((options: Json) => {
+      const answer = answers[options.root as string] ?? 'not-found'
+      if (answer === 'ok') return RT
+      throw answer === 'changed' ? new Error('hash') : Object.assign(new Error('x'), { code: 'not-found' })
+    })
+    const roots = (verify: ReturnType<typeof verifyBy>) => verify.mock.calls.map((call) => (call[0] as Json).root)
+
+    it('uses the installed runtime first, and never looks at the bundle then', () => {
+      const w = world()
+      const verify = verifyBy({ [w.installed]: 'ok', [w.bundle]: 'ok' })
+      expect(setupRunner.driverRuntime({ runtimeRoot: w.root, selection: w.selection, platform: 'darwin', arch: 'arm64', verify }))
+        .toEqual({ node: join(w.installed, 'bin', 'node'), entry: join(w.installed, 'dist', 'driver-cli.js') })
+      expect(roots(verify)).toEqual([w.installed])
+    })
+
+    it('runs this app’s own payload when none is installed, verified against the same signed digest with the driver required', () => {
+      const w = world()
+      const verify = verifyBy({ [w.bundle]: 'ok' })
+      expect(setupRunner.driverRuntime({ runtimeRoot: w.root, selection: w.selection, platform: 'darwin', arch: 'arm64', verify }))
+        .toEqual({ node: join(w.bundle, 'bin', 'node'), entry: join(w.bundle, 'dist', 'driver-cli.js') })
+      expect(roots(verify)).toEqual([w.installed, w.bundle])
+      const options = verify.mock.calls[1]![0] as Json
+      expect(options).toMatchObject({ expectedManifestDigest: 'sha256:abc', expectedPackageVersion: '2.3.0', expectedPlatform: 'darwin', expectedArch: 'arm64' })
+      expect(options.requiredFiles).toEqual(expect.arrayContaining(['dist/driver-cli.js', 'dist/launch-spec.js']))
+    })
+
+    it('never falls back from an installed runtime that fails verification', () => {
+      const w = world()
+      const verify = verifyBy({ [w.installed]: 'changed', [w.bundle]: 'ok' })
+      expect(setupRunner.driverRuntime({ runtimeRoot: w.root, selection: w.selection, platform: 'darwin', arch: 'arm64', verify }).error)
+        .toBe('The installed v2.3.0 runtime failed integrity verification: reinstall it from Settings → Setup.')
+      expect(roots(verify)).toEqual([w.installed])
+    })
+
+    it('refuses a translocated bundle, a bundle that fails verification, and one that moved since it started, with the not-installed copy first', () => {
+      const translocated = world('AppTranslocation', 'ABC', 'd')
+      const tVerify = verifyBy({ [translocated.bundle]: 'ok' })
+      const tError = setupRunner.driverRuntime({ runtimeRoot: translocated.root, selection: translocated.selection, platform: 'darwin', arch: 'arm64', verify: tVerify }).error
+      expect(tError).toMatch(/^This app's v2\.3\.0 runtime is not installed yet\./)
+      expect(tError).toMatch(/App Translocation.*move Agent Inbox to the Applications folder/)
+      expect(roots(tVerify)).toEqual([translocated.installed])
+
+      const w = world()
+      const changed = verifyBy({ [w.bundle]: 'changed' })
+      const cError = setupRunner.driverRuntime({ runtimeRoot: w.root, selection: w.selection, platform: 'darwin', arch: 'arm64', verify: changed }).error
+      expect(cError).toMatch(/^This app's v2\.3\.0 runtime is not installed yet\..*This app's own runtime failed integrity verification too: reinstall Agent Inbox\.$/)
+
+      // the bundle was renamed, or its folder became a link, after startup resolved it
+      const link = join(dirname(w.bundle), 'linked')
+      symlinkSync(w.bundle, link)
+      for (const path of [join(dirname(w.bundle), 'gone'), link]) {
+        const verify = verifyBy({ [path]: 'ok' })
+        expect(setupRunner.driverRuntime({ runtimeRoot: w.root, selection: { ...w.selection, path }, platform: 'darwin', arch: 'arm64', verify }).error)
+          .toMatch(/moved since it started/)
+        expect(roots(verify)).toEqual([w.installed])
+      }
+    })
+
+    it('never falls back off macOS, without a verified selection, or with a relative runtime root', () => {
+      const w = world()
+      const verify = verifyBy({ [w.bundle]: 'ok' })
+      const linux = setupRunner.driverRuntime({ runtimeRoot: w.root, selection: w.selection, platform: 'linux', arch: 'x64', verify })
+      expect(linux).toEqual({ error: expect.stringMatching(/^This app's v2\.3\.0 runtime is not installed yet\. .*npm run electron\.$/) })
+      expect(roots(verify)).toEqual([w.installed])
+      expect(setupRunner.driverRuntime({ runtimeRoot: w.root, selection: { ...w.selection, ok: false }, platform: 'darwin', verify }).error).toMatch(/no verified runtime/)
+      expect(setupRunner.driverRuntime({ runtimeRoot: null, selection: w.selection, platform: 'darwin', verify }).error).toMatch(/absolute/)
+      expect(roots(verify)).toEqual([w.installed])
+    })
+
+    it('falls back only when the installed runtime is truly absent (ENOENT); one that cannot be read refuses (#440 review)', () => {
+      const realVerify = (createRequire(import.meta.url)('../electron/runtime-verify.cjs') as { verifyRuntimePayload(o: Json): unknown }).verifyRuntimePayload
+      const attempt = (root: string, w: ReturnType<typeof world>) => {
+        const seen: string[] = []
+        const codes: unknown[] = []
+        const verify = (options: Json) => {
+          seen.push(options.root as string)
+          if (options.root === w.bundle) return RT
+          try {
+            return realVerify(options)
+          } catch (err) {
+            codes.push((err as { code?: unknown }).code)
+            throw err
+          }
+        }
+        return { result: setupRunner.driverRuntime({ runtimeRoot: root, selection: w.selection, platform: 'darwin', arch: 'arm64', verify }), seen, codes }
+      }
+      const NOT_INSTALLED = /^This app's v2\.3\.0 runtime is not installed yet\. .*npm run electron\.$/
+
+      const absent = world()
+      mkdirSync(absent.root)
+      const a = attempt(absent.root, absent)
+      expect(a.result).toEqual({ node: join(absent.bundle, 'bin', 'node'), entry: join(absent.bundle, 'dist', 'driver-cli.js') })
+      expect(a.codes).toEqual(['not-found'])
+
+      const refusals: Array<[string, (w: ReturnType<typeof world>) => string, string, RegExp]> = [
+        // the runtime root is a file: ENOTDIR
+        ['a file for the root', (w) => { writeFileSync(w.root, ''); return w.root }, 'unreadable', NOT_INSTALLED],
+        // a symlink loop above the runtime folder: ELOOP
+        ['a symlink loop', (w) => { symlinkSync(`${w.root}-b`, w.root); symlinkSync(w.root, `${w.root}-b`); return w.root }, 'unreadable', NOT_INSTALLED],
+        // a file in place of the runtime folder
+        ['a file for the runtime', (w) => { mkdirSync(w.root); writeFileSync(w.installed, ''); return w.root }, 'not-a-directory', /failed integrity verification: reinstall it from Settings → Setup\.$/],
+      ]
+      if (process.getuid?.() !== 0) {
+        refusals.push(['an unreadable root (EACCES)', (w) => { mkdirSync(w.root, { mode: 0o000 }); return w.root }, 'unreadable', NOT_INSTALLED])
+      }
+      for (const [label, make, code, error] of refusals) {
+        const w = world()
+        const root = make(w)
+        try {
+          const r = attempt(root, w)
+          expect(r.codes, label).toEqual([code])
+          expect(r.result, label).toEqual({ error: expect.stringMatching(error) })
+          expect(r.seen, label).toEqual([w.installed])
+        } finally {
+          if (label.includes('EACCES')) chmodSync(w.root, 0o700)
+        }
+      }
+    })
+
+    it.runIf(process.platform === 'darwin')('verifies a real bundled payload, and refuses one changed or without the driver', () => {
+      const base = realpathSync(scratchDir('driver-bundle-'))
+      const bundle = join(base, 'app', 'runtime', `darwin-${process.arch}`)
+      const staged = stageRuntime(bundle, '2.3.0', { driver: true })
+      const real = { ok: true, path: bundle, digest: staged.digest, packageVersion: '2.3.0', manifest: { runtimeId: staged.runtimeId } }
+      const runtimeRoot = join(base, 'runtime')
+      expect(setupRunner.driverRuntime({ runtimeRoot, selection: real, platform: 'darwin', arch: process.arch }))
+        .toEqual({ node: join(bundle, 'bin', 'node'), entry: join(bundle, 'dist', 'driver-cli.js') })
+      appendFileSync(join(bundle, 'dist', 'driver-cli.js'), '// changed\n')
+      expect(setupRunner.driverRuntime({ runtimeRoot, selection: real, platform: 'darwin', arch: process.arch }).error).toMatch(/failed integrity verification too/)
+      const older = join(base, 'older', 'runtime', `darwin-${process.arch}`)
+      const noDriver = stageRuntime(older, '2.3.0')
+      expect(setupRunner.driverRuntime({
+        runtimeRoot, selection: { ...real, path: older, digest: noDriver.digest, manifest: { runtimeId: noDriver.runtimeId } }, platform: 'darwin', arch: process.arch,
+      }).error).toMatch(/failed integrity verification too/)
+    })
   })
 })
 

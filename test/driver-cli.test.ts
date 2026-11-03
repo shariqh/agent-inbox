@@ -139,4 +139,15 @@ describe('the driver stays out of the MCP server’s and the viewer’s graphs (
       expect(code, file).not.toMatch(/from 'node:(net|http|https|dgram|tls)'|\bfetch\(|\.prepare\(/)
     }
   })
+
+  // #435: a driver run from the app bundle keeps running after an update renames the bundle aside and
+  // deletes it, because its whole graph is loaded at start. A late load would fail there, or read
+  // another version's file from a bundle replaced in place, so no driver module loads one.
+  it('loads its whole graph at start: no driver module uses a dynamic import() or require()', () => {
+    const graph = [...closure('src/driver-cli.ts')]
+    expect(graph).toEqual(expect.arrayContaining(['src/driver-pin.ts', 'scripts/runtime-pins.mjs', 'public/reserved-projects.js']))
+    for (const file of graph) {
+      expect(readFileSync(join(REPO, file), 'utf8'), file).not.toMatch(/\bimport\s*\(|\brequire\s*\(|\bcreateRequire\b/)
+    }
+  })
 })

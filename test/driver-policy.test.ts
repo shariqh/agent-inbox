@@ -77,6 +77,10 @@ describe('modes, phases and the option allow-list (§4.1)', () => {
     const refused = "Request sessions.open failed with message: session construction failed: Model 'claude-haiku-4.5' does not support reasoning effort configuration. Use models.list to check which models support reasoning effort."
     expect(setupRefusalHint(refused)).toContain('--reasoning-effort none')
     expect(setupRefusalHint('Request sessions.open failed: not authenticated')).toBeNull()
+    // #432 PR 5: an app launch names the New session control, never a CLI flag
+    expect(setupRefusalHint(refused, 'terminal')).toBe(setupRefusalHint(refused))
+    expect(setupRefusalHint(refused, 'app')).toBe('This model takes no reasoning effort: choose Reasoning effort: none in New session, or another model.')
+    expect(setupRefusalHint('Request sessions.open failed: not authenticated', 'app')).toBeNull()
   })
 
   it('makes each phase valid for exactly its own mode, and never with allow_all on', () => {

@@ -17,10 +17,11 @@
 //
 // `run` is step 3's detached driver (§8): Electron main starts it, after a
 // native confirmation, with the launch spec on fd 3 (launch-spec.ts). It needs
-// no terminal: approvals are signed by the app (driver-launch.ts). It writes
-// exactly one JSON line to stdout, `{"ok":true,"launch":<id>}` once the session
-// is starting or `{"ok":false,"error":…}`, and everything else to the launch's
-// logs and row.
+// no terminal: approvals are signed by the app (driver-launch.ts). On stdout
+// it writes at most two phase lines, `{"phase":"worktree"|"copilot"}`, then
+// exactly one status line: `{"ok":true,"launch":<id>}` once Copilot's session
+// is set up and verified (#432 PR 5), or `{"ok":false,"error":…}` with why it
+// did not start. Everything else goes to the launch's logs and row.
 import { execFileSync, spawn } from 'node:child_process'
 import { randomBytes, randomUUID } from 'node:crypto'
 import {
@@ -42,7 +43,8 @@ import { childEnv, copilotAgentInboxServer, copilotArgs, editsFolder, isReasonin
 import type { LaunchMode, ReasoningEffort } from './driver-policy.js'
 import { inferProject, inferStream } from './infer.js'
 import {
-  claimDriverSlot, createLaunch, defaultDbPath, endLaunch, getLaunch, holdDriverLeases, listHostSessions, recordWorktreeSummary, liveSessionServers, markWorktreeRemoved, openDb, parkLaunch,
+  claimDriverSlot, createLaunch, defaultDbPath, driverStopRequested, endLaunch, getLaunch, holdDriverLeases, listHostSessions, recordLaunchEffort,
+  recordWorktreeSummary, liveSessionServers, markWorktreeRemoved, openDb, parkLaunch,
   recordLaunchProgress, releaseDriverLeases, requestDriverStop, requestLaunchStop, resumeLaunch,
 } from './store.js'
 import { createWorktree, gitEnv, inspectWorktree, removeLaunchWorktree, undoWorktree, unlockWorktree, worktreeSummarizer } from './worktree.js'
@@ -60,6 +62,7 @@ const MIN_NODE_MAJOR = 22
 const MAX_DRIVERS = 2
 const MAX_PROMPT = 64 * 1024
 const LOG_ROTATE_BYTES = 20 * 1024 * 1024
+const EFFORT_FALLBACK_NOTICE = 'This model takes no reasoning effort, so Agent Inbox started it with none.'
 
 function fail(message: string, code = 2): never {
   process.stderr.write(`agent-inbox-driver: ${terminalSafe(message)}\n`)
@@ -239,16 +242,20 @@ function pinOwnRuntime(launchId: string): string | null {
 function spawnSession(o: {
   db: Database.Database
   launchDir: string
+  /** An app launch's own logs, kept across the effort fallback's second Copilot (#432 PR 5). */
+  log?: (event: Record<string, unknown>) => void
+  stderrLog?: ReturnType<typeof createWriteStream>
   command: string
   args: string[]
   cwd: string
   env: NodeJS.ProcessEnv
   spawnLog: Record<string, unknown>
 }) {
-  const log = eventLog(o.launchDir)
-  const stderrLog = createWriteStream(join(o.launchDir, 'copilot.stderr.log'), { flags: 'a', mode: 0o600 })
+  const log = o.log ?? eventLog(o.launchDir)
+  const stderrLog = o.stderrLog ?? createWriteStream(join(o.launchDir, 'copilot.stderr.log'), { flags: 'a', mode: 0o600 })
   const child = spawn(o.command, o.args, { cwd: o.cwd, env: o.env, stdio: ['pipe', 'pipe', 'pipe'], detached: true })
-  child.stderr.pipe(stderrLog)
+  // the CLI ends the log itself: a second Copilot may write to it after the first exits
+  child.stderr.pipe(stderrLog, { end: false })
   const exited = new Promise<unknown>((resolveExit) => {
     child.once('exit', (code, signal) => {
       log({ event: 'child_exit', code, signal })
@@ -413,6 +420,14 @@ async function runLaunch(argv: string[]): Promise<void> {
     report({ ok: false, error })
     return fail(error, code)
   }
+  // #432 PR 5: what main's New session dialog says while it waits, one line each before the status line
+  const phase = (name: 'worktree' | 'copilot') => {
+    if (reported) return
+    try { process.stdout.write(`${JSON.stringify({ phase: name })}\n`) } catch { /* main stopped reading */ }
+  }
+  // how long each step of the start took, logged once the session is ready
+  const marks: Array<[string, number]> = [['start', Math.round(performance.now())]]
+  const mark = (name: string) => { marks.push([name, Math.round(performance.now())]) }
   for (const stream of [process.stdout, process.stderr]) stream.on('error', () => undefined)
   const [launchId, dbPath] = argv
   if (argv.length !== 2 || !launchId || !LAUNCH_ID.test(launchId) || !dbPath || !isAbsolute(dbPath)) {
@@ -440,6 +455,7 @@ async function runLaunch(argv: string[]): Promise<void> {
   if (!parsed.ok) return refuseStart(parsed.error, 65)
   const spec = parsed.spec
 
+  mark('spec')
   const db = openDb(dbPath)
   const hubDir = dirname(dbPath)
   const lease = { launchId, pid: process.pid, nonce: randomBytes(8).toString('hex') }
@@ -449,11 +465,11 @@ async function runLaunch(argv: string[]): Promise<void> {
   }
   // a refusal after the row is ours ends a new launch, and parks a resumed one
   // again as it was, so a failed Resume loses nothing
-  let undoRow: (() => void) | null = null
+  let undoRow: ((why: string) => void) | null = null
   // #432: a worktree this start created is undone too, the worktree before its branch (§2)
   let undoCreated: (() => void) | null = null
   const refuse = (why: string): never => {
-    try { undoRow?.() } catch { /* the hub is gone */ }
+    try { undoRow?.(why) } catch { /* the hub is gone */ }
     // undoWorktree unlocks first; if git cannot remove it, the worktree stays on disk and the row keeps listing it
     try { undoCreated?.() } catch { /* the hub is gone */ }
     try { releaseDriverLeases(db, lease) } catch { /* the hub is gone */ }
@@ -503,6 +519,8 @@ async function runLaunch(argv: string[]): Promise<void> {
     // the checkout in its on-disk case, so no root in another case can pass for outside it
     let checkout = cwd
     if (spec.worktree) {
+      mark('slot')
+      phase('worktree')
       try {
         checkout = realpathSync.native(cwd)
       } catch {
@@ -517,6 +535,7 @@ async function runLaunch(argv: string[]): Promise<void> {
       undoCreated = () => { if (undoWorktree(gitPath, gitEnv(sessionEnv), undo)) markWorktreeRemoved(db, launchId) }
       cwd = created.path
       worktreeOf = { checkout, path: cwd, baseRef: created.baseRef, baseSha: created.baseSha }
+      mark('worktree')
     }
     facts = {
       cwd, mode: spec.mode, ...(spec.model ? { model: spec.model } : {}), ...(spec.reasoningEffort ? { reasoningEffort: spec.reasoningEffort } : {}),
@@ -535,7 +554,7 @@ async function runLaunch(argv: string[]): Promise<void> {
     } catch {
       return refuse(`launch ${launchId} already exists`)
     }
-    undoRow = () => { endLaunch(db, launchId, { reason: 'error:start' }) }
+    undoRow = (why) => { endLaunch(db, launchId, { reason: 'error:start', detail: why }) }
     // logs are pruned with their launch (§8)
     for (const old of pruned) {
       if (!LAUNCH_ID.test(old)) continue
@@ -559,7 +578,7 @@ async function runLaunch(argv: string[]): Promise<void> {
     // a launch that already used a budget ends here, before anything starts
     const spent = row.tool_calls >= row.budget_tool_calls ? 'budget:tool_calls' : row.active_ms >= row.budget_active_ms ? 'budget:active_time' : null
     if (spent) {
-      undoRow = () => { endLaunch(db, launchId, { reason: spent }); unlockAtEnd() }
+      undoRow = (why) => { endLaunch(db, launchId, { reason: spent, detail: why }); unlockAtEnd() }
       return refuse(`launch ${launchId} has used its ${spent === 'budget:tool_calls' ? 'tool-call' : 'active-time'} budget`)
     }
     // the earlier driver's sessions, proved by the row (§14.3): their open
@@ -598,25 +617,37 @@ async function runLaunch(argv: string[]): Promise<void> {
     if (!edits) return refuse(`Edits in the worktree cannot use ${facts.cwd}: choose a project folder (not your home folder) whose path has no ( ) * ? [ ] { } , or \\`)
   }
 
-  const { child, exited, log, stderrLog, scan, kill } = spawnSession({
-    db, launchDir: join(hubDir, 'launches', launchId), command: host.command,
-    args: [...host.args, ...copilotArgs({
-      mode: facts.mode, agentInboxServer: (server as { name: string }).name, model: facts.model, reasoningEffort: facts.reasoningEffort,
-      ...(edits ? { editsFolder: edits } : {}),
-    })],
-    cwd: facts.cwd, env: sessionEnv,
-    spawnLog: { launch: launchId, mode: facts.mode, cwd: facts.cwd, kind: spec.kind, host: host.script, interpreter: host.command === host.script ? null : host.command },
-  })
+  // Copilot, and at most once more with --reasoning-effort none: when the human
+  // left the effort to Copilot's own setting and Copilot refused the model's
+  // effort before any prompt (#432 PR 5). One event log and stderr log for both.
+  const launchDir = join(hubDir, 'launches', launchId)
+  const log = eventLog(launchDir)
+  const stderrLog = createWriteStream(join(launchDir, 'copilot.stderr.log'), { flags: 'a', mode: 0o600 })
+  const spawnCopilot = (reasoningEffort: ReasoningEffort | undefined) => {
+    const spawned = spawnSession({
+      db, launchDir, log, stderrLog, command: host.command,
+      args: [...host.args, ...copilotArgs({
+        mode: facts.mode, agentInboxServer: (server as { name: string }).name, model: facts.model, reasoningEffort,
+        ...(edits ? { editsFolder: edits } : {}),
+      })],
+      cwd: facts.cwd, env: sessionEnv,
+      spawnLog: { launch: launchId, mode: facts.mode, cwd: facts.cwd, kind: spec.kind, host: host.script, interpreter: host.command === host.script ? null : host.command },
+    })
+    if (spawned.child.pid !== undefined) {
+      const startedAt = processIdentity(spawned.child.pid)
+      try {
+        recordLaunchProgress(db, launchId, { childPgid: spawned.child.pid, ...(startedAt ? { childStartedAt: startedAt } : {}) })
+      } catch { /* a report, not the state */ }
+    }
+    return spawned
+  }
+  phase('copilot')
+  mark('checks')
+  let session = spawnCopilot(facts.reasoningEffort)
   if (created) {
     log({ event: 'worktree', path: created.path, branch: created.branch, checkout: created.checkout, base: created.baseSha })
     // uncommitted and untracked changes stayed in the checkout (§2)
     if (created.dirty) log({ event: 'checkout_dirty', count: created.dirty })
-  }
-  if (child.pid !== undefined) {
-    const startedAt = processIdentity(child.pid)
-    try {
-      recordLaunchProgress(db, launchId, { childPgid: child.pid, ...(startedAt ? { childStartedAt: startedAt } : {}) })
-    } catch { /* a report, not the state */ }
   }
 
   // test seams from the driver's own environment, bounded
@@ -635,26 +666,37 @@ async function runLaunch(argv: string[]): Promise<void> {
       ...(finalSummaryMs === undefined ? {} : { finalMs: finalSummaryMs }),
     })
     : null
-  const driver = new Driver({
+  // the one status line main reads, once the session is set up and verified (#432 PR 5), with how long each step took
+  const started = () => {
+    mark('ready')
+    log({ event: 'startup', ms: Object.fromEntries(marks.slice(1).map(([name, at], i) => [name, at - marks[i]![1]])) })
+    report({ ok: true, launch: launchId })
+  }
+  const makeDriver = (spawned: typeof session, effortFallback: boolean) => new Driver({
     db, lease, mode: facts.mode, cwd: facts.cwd, project: facts.project, stream: facts.stream, task: facts.prompt,
-    input: child.stdout, output: child.stdin, child: { kill, exited },
+    input: spawned.child.stdout, output: spawned.child.stdin, child: { kill: spawned.kill, exited: spawned.exited },
     ui: { ask: () => undefined, settled: () => undefined, text: () => undefined, notice: (text) => log({ event: 'notice', text }) },
-    log, stateDir: join(hubDir, 'drivers', launchId), scan,
+    log, stateDir: join(hubDir, 'drivers', launchId), scan: spawned.scan,
     asks: appAsks({ db, launchId, launchKey: spec.launchKey, project: facts.project, stream: facts.stream, log }),
-    hooks: { ...progress, ...(summarizer ? { turnEnd: () => summarizer.request() } : {}) },
+    hooks: { ...progress, ready: started, ...(summarizer ? { turnEnd: () => summarizer.request() } : {}) },
     // released below, once the final summary is written and the row closed
     releaseLeases: false,
     usage: used,
     ...resume,
+    context: 'app',
+    effortFallback,
     timing: {
       activeMs: facts.activeMs, maxToolCalls: facts.toolCalls,
       ...(linkWaitMs === undefined ? {} : { linkWaitMs }),
       ...(idleMs === undefined ? {} : { idleMs }),
     },
   })
+  // only a launch that left the effort to Copilot's setting falls back, and only on its first start
+  let driver = makeDriver(session, facts.reasoningEffort === undefined)
 
   // SIGTERM or SIGHUP stops in order; a second signal, or a Stop that has not
-  // finished in 15 s, forces. Either way the row records how it ended.
+  // finished in 15 s, forces. Either way the row records how it ended, and why
+  // in plain words when it ended before its session was ready.
   const closeRow = (reason: EndReason) => {
     const usage = driver.usage()
     let ended = true
@@ -665,19 +707,27 @@ async function runLaunch(argv: string[]): Promise<void> {
       // a load that failed for another reason than "never prompted" parks it again, to retry (§7)
       else if (reason === 'error:load') {
         ended = parkLaunch(db, launchId, { acpSession: loading, ...usage, reason: `Copilot could not load the session: ${driver.loadFailure() ?? 'unknown error'}` }) !== 'parked'
-      } else endLaunch(db, launchId, { reason, ...usage })
+      } else endLaunch(db, launchId, { reason, ...usage, detail: failureOverride ?? driver.startFailure() })
     } catch { /* the hub is gone: the launch reads as lost */ }
     if (ended) unlockAtEnd(log)
   }
   const sleep = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+  let stopping = false
+  let failureOverride: string | null = null
   installStopHandlers({
     signals: process,
     input: { on: () => undefined },
-    driver,
+    // always the current driver: the effort fallback replaces it
+    driver: {
+      stop: () => { stopping = true; driver.stop() },
+      forceStop: () => { stopping = true; driver.forceStop() },
+      isFinished: () => driver.isFinished(),
+    },
     exit: (code) => {
       closeRow('stopped')
       // the driver leaves its leases to this CLI (releaseLeases: false)
       try { releaseDriverLeases(db, lease) } catch { /* the hub is gone */ }
+      const child = session.child
       if (child.pid && child.exitCode === null && child.signalCode === null) reapProcessGroup(child.pid, { kill: (pid, signal) => { process.kill(pid, signal) }, sleep })
       process.exit(code)
     },
@@ -685,11 +735,39 @@ async function runLaunch(argv: string[]): Promise<void> {
     silence: () => undefined,
   })
 
-  report({ ok: true, launch: launchId })
-  const reason: EndReason = await driver.start()
-  // the child exits about 1 s after its stdin closes (spike §1); after 10 s its group gets SIGTERM
-  const settled = await Promise.race([exited.then(() => true), new Promise<boolean>((r) => setTimeout(() => r(false), 10_000).unref())])
-  if (!settled) kill('SIGTERM')
+  // the child exits about 1 s after its stdin closes (spike §1); then its group gets SIGTERM
+  const retire = async (spawned: typeof session, graceMs: number) => {
+    const gone = (ms: number) => Promise.race([spawned.exited.then(() => true), new Promise<boolean>((r) => setTimeout(() => r(false), ms).unref())])
+    if (await gone(graceMs)) return
+    spawned.kill('SIGTERM')
+    if (!(await gone(2000))) spawned.kill('SIGKILL')
+  }
+  let reason: EndReason = await driver.start()
+  if (reason === 'error:setup' && driver.retryWithoutEffort()) {
+    let stopAsked = stopping
+    try { stopAsked ||= driverStopRequested(db, launchId) } catch { stopAsked = true }
+    // it never had a session, so nothing is lost by not waiting for it to close on its own
+    await retire(session, 250)
+    if (stopAsked) {
+      failureOverride = 'It was stopped before the session started.'
+      reason = 'stopped'
+    } else {
+      log({ event: 'effort_fallback', model: facts.model ?? null })
+      log({ event: 'notice', text: EFFORT_FALLBACK_NOTICE })
+      facts.reasoningEffort = 'none'
+      try { recordLaunchEffort(db, launchId, 'none') } catch { /* a report, not the state */ }
+      session = spawnCopilot('none')
+      driver = makeDriver(session, false)
+      reason = await driver.start()
+    }
+  }
+  await retire(session, 10_000)
+  // a launch that ended before its session was ready tells main why, in plain words
+  report({
+    ok: false,
+    error: failureOverride ?? driver.startFailure()
+      ?? (reason === 'budget:tool_calls' ? 'It has used its tool-call budget.' : reason === 'budget:active_time' ? 'It has used its active-time budget.' : 'Copilot did not start the session.'),
+  })
   // the worktree as the session left it, at park and at end (§6), at most 15 s, while
   // this driver still holds its lease, so the launch never reads as lost meanwhile
   if (summarizer) {

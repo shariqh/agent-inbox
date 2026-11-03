@@ -76,6 +76,8 @@ describe('the driver’s terminal (#412 review)', () => {
       "'usage: agent-inbox-driver run <launch id> <absolute hub db path>\\n'",
       "'usage: agent-inbox-driver worktree inspect|remove <launch id> <absolute hub db path> [--discard <status hash>]\\n'",
       '`${JSON.stringify(status', '`${JSON.stringify(status',
+      // #432 PR 5: the phase lines main's New session dialog shows before the status line
+      '`${JSON.stringify({ phase: name }',
       '`Asked the driver of launch ${id} to stop.\\n`',
       '`agent-inbox-driver: ${terminalSafe(message',
       'text',

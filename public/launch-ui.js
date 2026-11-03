@@ -10,7 +10,7 @@
 // Agent text reaches the DOM only as textContent. Nothing here reaches
 // public/attention.js, a badge, a count, the rail or the dock.
 import {
-  LAUNCH_MODES, NOT_REPOSITORY, PROMPT_WARNING, REASONING_EFFORTS, SHELL_WARNING, WORKTREE_COPY,
+  LAUNCH_MODES, NOT_REPOSITORY, PROMPT_WARNING, REASONING_EFFORTS, SHELL_WARNING, START_PHASES, WORKTREE_COPY,
   launchOfSession, launchSessions, launchStatus, launchSummary, launchWorktreeLine, newSessionRequest, transcriptLines,
 } from '/launches.js'
 
@@ -574,7 +574,12 @@ export function createLaunchUi(deps) {
       }
       start.disabled = true
       message.textContent = 'Agent Inbox is asking you to confirm…'
-      const result = await deps.pending(() => bridge().start(made.request)).catch(() => null)
+      // #432 PR 5: the dialog stays open, saying what the start is doing, until Copilot is set up or refused
+      const api = bridge()
+      const listening = typeof api?.onStartProgress === 'function'
+      if (listening) api.onStartProgress((phase) => { if (dialog === own && START_PHASES[phase]) message.textContent = START_PHASES[phase] })
+      const result = await deps.pending(() => api.start(made.request)).catch(() => null)
+      if (listening) api.onStartProgress(null)
       start.disabled = false
       if (result?.ok) {
         drafts.delete('new')

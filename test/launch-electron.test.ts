@@ -237,6 +237,25 @@ ${answer}`)
     expect((await import('node:fs')).statSync(join(dir, 'hub', 'launches', ID, 'driver.log')).mode & 0o777).toBe(0o600)
   })
 
+  it('hands each phase line to onPhase and resolves on the status line after them (#432 PR 5)', async () => {
+    const dir = scratchDir('driver-process-')
+    const seen: string[] = []
+    const result = await driverProcess.startDriver({
+      platform: 'darwin', node: process.execPath, launchId: ID, hubPath: join(dir, 'inbox.db'), spec: {}, logPath: join(dir, 'driver.log'), env: {},
+      spawnImpl: spawn, onPhase: (phase) => { seen.push(phase) },
+      entry: fakeDriver(dir, `process.stdout.write(JSON.stringify({ phase: 'worktree' }) + '\\n' + JSON.stringify({ phase: 'copilot' }) + '\\n'); setTimeout(() => process.stdout.write(JSON.stringify({ ok: true, launch: process.argv[3] }) + '\\n'), 50); setTimeout(() => {}, 200)`),
+    })
+    expect(result).toMatchObject({ ok: true, launch: ID })
+    expect(seen).toEqual(['worktree', 'copilot'])
+    // an unknown phase, or a phase line with more in it, is not a phase
+    for (const line of [{ phase: 'shell' }, { phase: 'copilot', extra: 1 }]) {
+      expect(await driverProcess.startDriver({
+        platform: 'darwin', node: process.execPath, launchId: ID, hubPath: join(dir, 'inbox.db'), spec: {}, logPath: join(dir, 'driver.log'), env: {},
+        spawnImpl: spawn, entry: fakeDriver(dir, `process.stdout.write(${JSON.stringify(JSON.stringify(line))} + '\\n')`),
+      })).toEqual({ ok: false, error: 'The driver reported something unexpected.' })
+    }
+  })
+
   it('reports the driver’s own refusal, an exit before any status, and a status for another launch', async () => {
     const dir = scratchDir('driver-process-')
     const run = (answer: string) => driverProcess.startDriver({
@@ -667,7 +686,8 @@ describe('a session in its own worktree (#432)', () => {
       'Creating it runs your repository’s checkout hooks.',
     ])
     const args = r.spawned[1]!
-    expect(args.timeoutMs).toBe(150_000)
+    // the status comes once Copilot is set up (#432 PR 5), after up to 2 minutes of worktree
+    expect(args.timeoutMs).toBe(420_000)
     const parsed = parseLaunchSpec(JSON.stringify(args.spec), ID)
     expect(parsed).toMatchObject({ ok: true, spec: { cwd: r.work, worktree: { path: r.planned, branch: 'agent-inbox/fix-the-failing-test-22222222' } } })
     // the env is still captured in the checkout; main created nothing
@@ -865,6 +885,32 @@ describe('a session in its own worktree (#432)', () => {
     r.state.launches[ID] = { id: ID, status: 'parked', cwd: '/work/alpha' }
     expect(await r.controller.resume(ID)).toEqual({ ok: true, launch: ID })
     expect(parseLaunchSpec(JSON.stringify(r.spawned.at(-1)!.spec), ID)).toMatchObject({ ok: true, spec: { kind: 'resume', maxDrivers: 6 } })
+  })
+
+  it('reports each start phase to the page and logs how long each took, and none while off or cancelled (#432 PR 5)', async () => {
+    const phases: string[] = []
+    const lines: string[] = []
+    const r = rig({
+      progress: (phase: string) => { phases.push(phase) },
+      log: (line: string) => { lines.push(line) },
+      startDriver: async (args: { launchId: string; onPhase: (phase: string) => void }) => {
+        args.onPhase('worktree')
+        args.onPhase('copilot')
+        return { ok: true, launch: args.launchId }
+      },
+    })
+    expect(await r.controller.start(REQUEST)).toEqual({ ok: true, launch: ID })
+    expect(phases).toEqual(['environment', 'runtime', 'worktree', 'copilot'])
+    expect(lines).toHaveLength(1)
+    expect(lines[0]).toMatch(/^launch 22222222 started: environment \d+ ms, runtime \d+ ms, driver \d+ ms, worktree \d+ ms, copilot \d+ ms$/)
+    const quiet: string[] = []
+    const cancelled = rig({ progress: (phase: string) => { quiet.push(phase) } })
+    cancelled.state.confirm = false
+    expect(await cancelled.controller.start(REQUEST)).toMatchObject({ ok: false, cancelled: true })
+    const off = rig({ progress: (phase: string) => { quiet.push(phase) } })
+    off.state.enabled = false
+    expect(await off.controller.start(REQUEST)).toMatchObject({ ok: false })
+    expect(quiet).toEqual([])
   })
 
   it('names the branch when a parked session’s worktree is gone', async () => {
@@ -1245,11 +1291,11 @@ describe('the preload bridge (§8)', () => {
     return { launch: exposed.agentInboxLaunch as Record<string, (...args: unknown[]) => Promise<Json>>, invoke }
   }
 
-  it('has exactly its thirteen methods, each with exact arity, and passes nothing it was not given', async () => {
+  it('has exactly its fourteen methods, each with exact arity, and passes nothing it was not given', async () => {
     const { launch, invoke } = loadPreload(() => ({ ok: true, launch: ID, path: '/secret', enabled: true }))
     expect(Object.keys(launch).sort()).toEqual([
-      'approve', 'available', 'chooseFolder', 'chooseWorktreeRoot', 'close', 'openWorktree', 'removeWorktree', 'resetWorktreeRoot', 'resume', 'setEnabled',
-      'setMaxSessions', 'start', 'stop',
+      'approve', 'available', 'chooseFolder', 'chooseWorktreeRoot', 'close', 'onStartProgress', 'openWorktree', 'removeWorktree', 'resetWorktreeRoot', 'resume',
+      'setEnabled', 'setMaxSessions', 'start', 'stop',
     ])
     // #432 §5: a cap of 1 to 8 only
     for (const bad of [0, 9, 2.5, '4']) expect(await launch.setMaxSessions!(bad)).toEqual({ ok: false, error: 'invalid' })
@@ -1271,6 +1317,31 @@ describe('the preload bridge (§8)', () => {
     // a checked answer: nothing beyond the known fields comes back
     expect(await launch.start!(REQUEST)).toEqual({ ok: true, launch: ID, enabled: true })
     expect(invoke).toHaveBeenCalledWith('agent-inbox:launch-start', REQUEST)
+  })
+
+  it('onStartProgress keeps one listener, passes only known phases, and null removes it (#432 PR 5)', async () => {
+    const listeners = new Map<string, (...args: unknown[]) => void>()
+    const exposed: Record<string, unknown> = {}
+    const electron = {
+      contextBridge: { exposeInMainWorld: (name: string, api: unknown) => { exposed[name] = api } },
+      ipcRenderer: {
+        invoke: vi.fn(),
+        on: (channel: string, fn: (...args: unknown[]) => void) => { listeners.set(channel, fn) },
+        removeListener: (channel: string, fn: unknown) => { if (listeners.get(channel) === fn) listeners.delete(channel) },
+      },
+    }
+    const factory = vm.runInThisContext(`(function (require, process) {\n${read('electron/setup-preload.cjs')}\n})`, { filename: 'setup-preload.cjs' }) as
+      (require: (id: string) => unknown, process: { argv: string[] }) => void
+    factory(() => electron, { argv: [] })
+    const launch = exposed.agentInboxLaunch as { onStartProgress: (...args: unknown[]) => boolean }
+    const seen: string[] = []
+    expect(launch.onStartProgress('nope')).toBe(false)
+    expect(launch.onStartProgress((phase: string) => seen.push(phase))).toBe(true)
+    const send = listeners.get('agent-inbox:launch-progress')!
+    for (const phase of ['environment', 'shell', 'copilot', { phase: 'runtime' }]) send({}, phase)
+    expect(seen).toEqual(['environment', 'copilot'])
+    expect(launch.onStartProgress(null)).toBe(true)
+    expect(listeners.has('agent-inbox:launch-progress')).toBe(false)
   })
 
   it('says off unless main says the owned viewer has the switch on and the grant', async () => {
@@ -1300,6 +1371,12 @@ describe('main’s wiring (source)', () => {
     // the quit prompt waits for a start already past the gate, so it lists that launch too
     const ask = main.slice(main.indexOf('async function askAboutRunningSessions()'))
     expect(ask.slice(0, ask.indexOf('quitChoice('))).toContain('await runningAtQuit(launchControllerFor())')
+  })
+
+  it('sends a start’s phases only to the window holding the launch grant (#432 PR 5)', () => {
+    expect(main).toContain('const target = launchWebContentsId === null ? null : BrowserWindow.getAllWindows().map((win) => win.webContents).find((wc) => wc.id === launchWebContentsId)')
+    expect(main).toContain("if (target && !target.isDestroyed()) target.send('agent-inbox:launch-progress', phase)")
+    expect(main.match(/'agent-inbox:launch-progress'/g)).toHaveLength(1)
   })
 
   it('opens Terminal at a worktree with a fixed argv and no shell, and runs worktree commands from the verified runtime (#432)', () => {

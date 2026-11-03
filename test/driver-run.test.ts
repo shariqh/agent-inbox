@@ -51,6 +51,10 @@ process.stdin.on('data', (chunk) => {
     fs.appendFileSync(process.env.FAKE_LOG, JSON.stringify(m) + '\\n')
     if (m.method === 'initialize') send({ id: m.id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true } } })
     else if (m.method === 'session/load' && process.env.FAKE_LOAD_ERROR) send({ id: m.id, error: JSON.parse(process.env.FAKE_LOAD_ERROR) })
+    // Copilot 1.0.106 with a settings effortLevel and a model that takes none (#432 PR 5)
+    else if (m.method === 'session/new' && process.env.FAKE_EFFORT_REFUSE && (process.env.FAKE_EFFORT_REFUSE === 'always' || !process.argv.slice(2).join(' ').includes('--reasoning-effort none'))) {
+      send({ id: m.id, error: { code: -32603, message: "Model 'claude-haiku-4.5' does not support reasoning effort configuration" } })
+    }
     else if (m.method === 'session/new' || m.method === 'session/load') {
       send({ id: m.id, result: { ...(m.method === 'session/new' ? { sessionId: 's-1' } : {}), modes: { currentModeId: agent }, configOptions: config(agent) } })
       if (m.method === 'session/load') for (let i = 0; i < Number(process.env.FAKE_TOOLS_AFTER_LOAD || 0); i++) update({ sessionUpdate: 'tool_call', toolCallId: 'l-' + i, title: 'Read', kind: 'read', rawInput: {} })
@@ -141,10 +145,13 @@ function runDriver(r: Rig, spec: unknown, env: Record<string, string> = {}, entr
   const exited = new Promise<number | null>((resolve) => child.once('exit', (code) => resolve(code)))
   return {
     child, exited,
+    // the status line: the first that is not a phase line (#432 PR 5: main's dialog shows the phases)
     status: async () => {
-      await until(() => stdout.includes('\n'), 'the status line', 20_000)
-      return JSON.parse(stdout.split('\n')[0]!) as Record<string, unknown>
+      const line = () => stdout.split('\n').slice(0, -1).find((l) => !('phase' in JSON.parse(l)))
+      await until(line, 'the status line', 20_000)
+      return JSON.parse(line()!) as Record<string, unknown>
     },
+    phases: () => stdout.split('\n').filter(Boolean).map((l) => JSON.parse(l) as Record<string, unknown>).filter((l) => 'phase' in l).map((l) => l.phase),
     output: () => ({ stdout, stderr }),
     fd3Closed: () => fd3Closed,
   }
@@ -189,7 +196,8 @@ describe('agent-inbox-driver run (#412 step 3)', () => {
     expect(requestLaunchStop(r.hub, LAUNCH)).toBe('stopping')
     expect(await run.exited).toBe(0)
     expect(getLaunch(r.hub, LAUNCH)).toMatchObject({ status: 'ended', end_reason: 'stopped' })
-    expect(run.output().stdout.trim().split('\n')).toHaveLength(1)
+    // #432 PR 5: one phase line for main's dialog, then exactly one status line, once the session was ready
+    expect(run.output().stdout.trim().split('\n').map((l) => JSON.parse(l))).toEqual([{ phase: 'copilot' }, { ok: true, launch: LAUNCH }])
     expect(existsSync(join(r.dir, 'hub', 'launches', LAUNCH, 'events.ndjson'))).toBe(true)
   }, 40_000)
 
@@ -466,6 +474,79 @@ describe('agent-inbox-driver run (#412 step 3)', () => {
     }, 40_000)
   })
 
+  // #432 PR 5: Copilot's settings set an effort the model does not take, and the human left it to Copilot
+  describe('the reasoning-effort fallback', () => {
+    const REFUSED = "Model 'claude-haiku-4.5' does not support reasoning effort configuration"
+    const APP_HINT = 'This model takes no reasoning effort: choose Reasoning effort: none in New session, or another model.'
+    const starts = (r: Rig) => received(r).filter((m) => 'argv' in m).map((m) => m.argv as string[])
+    const events = (r: Rig) => readFileSync(join(r.dir, 'hub', 'launches', LAUNCH, 'events.ndjson'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l) as Record<string, unknown>)
+
+    it('starts Copilot once more with none, on the same launch, slot and logs, and records the effort it runs with', async () => {
+      const r = rig()
+      const run = runDriver(r, newSpec(r, { reasoningEffort: undefined, env: { ...r.env, FAKE_EFFORT_REFUSE: '1' } }))
+      expect(await run.status()).toEqual({ ok: true, launch: LAUNCH })
+      expect(starts(r)).toEqual([
+        ['--acp', '--stdio', '--allow-tool', 'agent-inbox', '--model', 'claude-haiku-4.5'],
+        ['--acp', '--stdio', '--allow-tool', 'agent-inbox', '--model', 'claude-haiku-4.5', '--reasoning-effort', 'none'],
+      ])
+      await until(() => received(r).find((m) => m.method === 'session/prompt'), 'the task')
+      expect(getLaunch(r.hub, LAUNCH)).toMatchObject({ status: 'running', reasoning_effort: 'none', end_detail: null })
+      // the driver kept its slot across the restart: its lease never left
+      expect(claimDriverSlot(r.hub, { launchId: '44444444-4444-4444-8444-000000000001', pid: 1, nonce: 'x' }, 1)).toMatchObject({ ok: false })
+      const log = events(r)
+      expect(log.filter((e) => e.event === 'effort_fallback')).toHaveLength(1)
+      expect(log).toContainEqual(expect.objectContaining({ event: 'notice', text: 'This model takes no reasoning effort, so Agent Inbox started it with none.' }))
+      expect(log).toContainEqual(expect.objectContaining({ event: 'ended', reason: 'error:setup', retry: 'effort' }))
+      expect(log).toContainEqual(expect.objectContaining({ event: 'startup' }))
+      expect(requestLaunchStop(r.hub, LAUNCH)).toBe('stopping')
+      expect(await run.exited).toBe(0)
+      expect(getLaunch(r.hub, LAUNCH)).toMatchObject({ status: 'ended', end_reason: 'stopped' })
+    }, 40_000)
+
+    it('falls back only once: a second refusal ends it as not started, in the app’s words', async () => {
+      const r = rig()
+      const run = runDriver(r, newSpec(r, { reasoningEffort: undefined, env: { ...r.env, FAKE_EFFORT_REFUSE: 'always' } }))
+      expect(await run.status()).toEqual({ ok: false, error: `Copilot refused to start the session: ${REFUSED} ${APP_HINT}` })
+      expect(await run.exited).toBe(1)
+      expect(starts(r)).toHaveLength(2)
+      expect(getLaunch(r.hub, LAUNCH)).toMatchObject({ status: 'ended', end_reason: 'error:setup', end_detail: `Copilot refused to start the session: ${REFUSED} ${APP_HINT}` })
+    }, 40_000)
+
+    it('never falls back from an effort the human chose', async () => {
+      const r = rig()
+      const run = runDriver(r, newSpec(r, { reasoningEffort: 'high', env: { ...r.env, FAKE_EFFORT_REFUSE: '1' } }))
+      expect(await run.status()).toEqual({ ok: false, error: `Copilot refused to start the session: ${REFUSED} ${APP_HINT}` })
+      expect(await run.exited).toBe(1)
+      expect(starts(r)).toHaveLength(1)
+      expect(events(r).some((e) => e.event === 'effort_fallback')).toBe(false)
+      expect(getLaunch(r.hub, LAUNCH)).toMatchObject({ reasoning_effort: 'high', end_reason: 'error:setup' })
+    }, 40_000)
+
+    it('never falls back after a prompt: a resumed session’s refused load parks it again', async () => {
+      const r = rig()
+      const first = runDriver(r, newSpec(r, { reasoningEffort: undefined }), { AGENT_INBOX_DRIVER_IDLE_MS: '400' })
+      expect(await first.status()).toEqual({ ok: true, launch: LAUNCH })
+      expect(await first.exited).toBe(0)
+      const resumed = runDriver(r, {
+        v: 1, kind: 'resume', launchId: LAUNCH, launchKey: LAUNCH_KEY.toString('base64'),
+        env: { ...r.env, FAKE_EFFORT_REFUSE: 'always', FAKE_LOAD_ERROR: JSON.stringify({ code: -32603, message: REFUSED }) },
+      })
+      expect(await resumed.status()).toEqual({ ok: false, error: `Copilot could not load the session: ${REFUSED}` })
+      expect(await resumed.exited).toBe(1)
+      expect(starts(r)).toHaveLength(2)
+      expect(getLaunch(r.hub, LAUNCH)).toMatchObject({ status: 'parked', reasoning_effort: null })
+    }, 40_000)
+
+    it('a launch that never got ready says why on its row, and the status line says it to main', async () => {
+      const r = rig()
+      rmSync(join(r.dir, 'bin', 'copilot'))
+      const refused = runDriver(r, newSpec(r))
+      expect(await refused.status()).toEqual({ ok: false, error: 'no copilot executable on PATH (install GitHub Copilot CLI first)' })
+      expect(await refused.exited).toBe(1)
+      expect(getLaunch(r.hub, LAUNCH)).toMatchObject({ end_reason: 'error:start', end_detail: 'no copilot executable on PATH (install GitHub Copilot CLI first)' })
+    }, 40_000)
+  })
+
   it('allows a tool call only on a reply signed under the launch key from its spec', async () => {
     const r = rig()
     const run = runDriver(r, newSpec(r, { env: { ...r.env, FAKE_ASK: '1' } }))
@@ -559,7 +640,8 @@ describe('agent-inbox-driver run (#412 step 3)', () => {
     const resumeSpec = (env: Record<string, string>) => ({ v: 1, kind: 'resume', launchId: LAUNCH, env: { ...r.env, ...env }, launchKey: LAUNCH_KEY.toString('base64') })
 
     const failed = runDriver(r, resumeSpec({ FAKE_LOAD_ERROR: JSON.stringify({ code: -32603, message: 'Internal error' }) }))
-    expect(await failed.status()).toEqual({ ok: true, launch: LAUNCH })
+    // the status line tells main why, so Resume shows it (#432 PR 5)
+    expect(await failed.status()).toEqual({ ok: false, error: 'Copilot could not load the session: Internal error' })
     expect(await failed.exited).toBe(1)
     expect(getLaunch(r.hub, LAUNCH)).toMatchObject({
       status: 'parked', acp_session: 's-1', park_reason: 'Copilot could not load the session: Internal error', end_reason: null,
@@ -582,7 +664,7 @@ describe('agent-inbox-driver run (#412 step 3)', () => {
     expect(getLaunch(r.hub, LAUNCH)).toMatchObject({ status: 'parked', tool_calls: 2 })
     // the loaded session makes one more tool call: 3 of 3 for the launch, not 1 of 3
     const resumed = runDriver(r, { v: 1, kind: 'resume', launchId: LAUNCH, env: { ...r.env, FAKE_TOOLS_AFTER_LOAD: '1' }, launchKey: LAUNCH_KEY.toString('base64') })
-    expect(await resumed.status()).toEqual({ ok: true, launch: LAUNCH })
+    expect(await resumed.status()).toEqual({ ok: false, error: 'It has used its tool-call budget.' })
     expect(await resumed.exited).toBe(1)
     expect(getLaunch(r.hub, LAUNCH)).toMatchObject({ status: 'ended', end_reason: 'budget:tool_calls', tool_calls: 3 })
   }, 40_000)

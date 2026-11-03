@@ -216,9 +216,11 @@ Claude Code and Copilot CLI load this file automatically when they read or edit 
   bits) refuses with exit 65 and the status line, without touching the descriptor. It closes fd 3 as
   soon as it has read it, before anything starts, so copilot and its tool shells never inherit the
   launch-key channel; main passes the spec over a pipe, never a file.
-- **`run <launch id> <hub db>`** (`driver-cli.ts`): no TTY. It writes exactly one stdout line,
-  `{"ok":true,"launch":<id>}` once the session is starting or `{"ok":false,"error":…}` (exit 65 for
-  a bad spec, 75 at the driver cap, 1 otherwise), and everything else to the launch's logs and row.
+- **`run <launch id> <hub db>`** (`driver-cli.ts`): no TTY. On stdout it writes at most two phase
+  lines (`{"phase":"worktree"}`, `{"phase":"copilot"}`), then exactly one status line:
+  `{"ok":true,"launch":<id>}` once Copilot's session is set up and verified (#432 PR 5), or
+  `{"ok":false,"error":…}` with why it did not start (exit 65 for a bad spec, 75 at the driver cap, 1
+  otherwise), and everything else to the launch's logs and row.
   It pins its runtime like step 2, resolves `copilot` on the spec's PATH and, when that is a script,
   its `#!` interpreter on the same PATH with the same ownership checks (§8), requiring Node 22 or
   later for a `node` interpreter, and spawns `[interpreter, script, …copilotArgs]`. The child's env is
@@ -522,7 +524,8 @@ Main does not send the field yet (part 2), so nothing changes for anyone today.
   Uncommitted changes stay in your checkout.`, `Creating it runs your repository’s checkout hooks.`, and,
   when another running launch works in the folder itself (`/api/launches`' `cwd`, no `worktree_path`), a
   warning line. The spec sends `worktree: { path, branch }` with `cwd` the checkout; the env is still
-  captured in the checkout. Main waits 150 s for a worktree launch's status line (others 30 s).
+  captured in the checkout. Main waits 420 s for a worktree launch's status line (others 300 s; see
+  part 5).
 - **Resume** of a launch whose folder is gone names its branch, which is still in the repository.
 - **The worktree folder setting**: `worktreeRoot`, one optional field of `session-launch.json` (absent
   means the default; older builds keep it as an unknown field). `launch-available` reports it
@@ -626,3 +629,48 @@ Main does not send the field yet (part 2), so nothing changes for anyone today.
   higher than the drivers running), `test/launch-spec.test.ts`, `test/launch-electron.test.ts` (the
   setting's file, IPC, preload, the cap in every spec, off reads nothing),
   `test/dom/driven-sessions.test.ts` (the Settings select, the drawer's summary).
+
+## Session worktrees (#432), part 5: start-up feedback
+
+The owner's first launches ended `error:setup` 1.5 s after spawn, while their rows looked started:
+Copilot refused `session/new` ("Model 'claude-haiku-4.5' does not support reasoning effort
+configuration") because `~/.copilot/settings.json` set `effortLevel`, and the dialog had left the
+effort to Copilot's setting.
+
+- **The status line comes at ready.** `run` writes its one status line from the driver's `ready` hook
+  (set up, mode and `allow_all` verified), or, when the launch ends before that, `{ ok: false, error }`
+  with the reason in plain words (`Driver.startFailure()`: Copilot's refusal and the app's hint, the
+  setup deadline, an escalation during setup, Copilot exiting, a failed load). Before it, at most two
+  phase lines. `driver-process.cjs` hands each phase to `onPhase` and waits 300 s for the status (the
+  2-minute setup deadline, once more for the effort retry, and a margin); the controller passes 420 s
+  for a worktree launch.
+- **The effort fallback.** When the spec (or a resumed row) has no `reasoningEffort` and Copilot
+  refuses `session/new` with the reasoning-effort error before any prompt, the driver (`effortFallback`,
+  first start only) ends with `retry: 'effort'` **keeping its `driver:` lease**, and `run` stops that
+  Copilot (SIGTERM after 250 ms: it never had a session) and starts one more with `--reasoning-effort
+  none`, on the same launch row, slot, pins, worktree and logs; the new Driver's scan follows the new
+  child, so linking and the native host do too. It logs `effort_fallback` and the notice "This model
+  takes no reasoning effort, so Agent Inbox started it with none.", and records `reasoning_effort =
+  'none'` on the row (`recordLaunchEffort`, only while it is null), so a resume starts with none. A
+  Stop that arrived meanwhile ends it instead. An explicit effort never retries, a second refusal
+  ends it, and a refused `session/load` (a prompted session) parks it as before. The hint names the
+  context: `setupRefusalHint(message, 'app')` says "choose Reasoning effort: none in New session"; the
+  terminal driver keeps its flags.
+- **"Didn't start".** `end_detail` (nullable, at most 300 characters; a new trigger name, as the
+  whole-table `launches` domain requires) holds why a launch ended before ready, written by
+  `endLaunch({ detail })`: the driver's `startFailure()`, or a refusal before spawn (`error:start`). The
+  row reads "Didn’t start: <why>" in the error tone, with Transcript (`launchStatus` state `failed`).
+  The transcript names the fallback once and hides the first Copilot's end.
+- **The dialog's progress.** After Start, New session stays open and shows main's phases: "Reading
+  your shell environment…", "Checking the runtime…", then the driver's "Creating the worktree…" and
+  "Starting Copilot…"; it closes once the status line says started, or shows the refusal. Main sends
+  `agent-inbox:launch-progress` with the phase name only, to the window holding the `launch` grant;
+  the preload's `onStartProgress(listener | null)` keeps one listener and passes only the four known
+  phases. No new privilege.
+- **Timings.** The driver logs `startup` (`ms` per step: spec, slot, worktree, checks, spawn to ready);
+  main logs `launch <id> started: environment …, runtime …, driver …, worktree …, copilot …`. Measured
+  2026-11-03 on Copilot 1.0.106 with that settings effort, a worktree launch: worktree 151 ms, checks
+  43 ms, spawn to ready 4.2 s (the refusal 1.8 s, the first Copilot's exit 1.2 s, now 0.25 s, the second
+  start 1.3 s); main's login-shell capture 0.8 s (async) and the runtime verification 460 ms cold, 175 ms
+  warm, synchronous and run twice per start, the one known blocking step. The session linked 0.8 s
+  after ready and showed in `/api/activity` as driven, so the Agents view lists it.

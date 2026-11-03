@@ -28,8 +28,9 @@ const EFFORTS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'm
 const BUDGETS = { activeMs: { min: 60_000, max: 8 * 60 * 60_000 }, toolCalls: { min: 1, max: 2000 } }
 const MAX_PROMPT = 64 * 1024
 const PROMPT_PREVIEW = 300
-// creating a worktree of a large checkout takes time (§2); other starts keep the driver's 30 s
-const WORKTREE_STATUS_MS = 150_000
+// the driver's status line comes once Copilot is set up (#432 PR 5: up to 5 minutes with one
+// restart); creating a worktree of a large checkout takes up to 2 minutes more (§2)
+const WORKTREE_STATUS_MS = 420_000
 // #432 §5: the cap on sessions at once, a setting of 1 to 8; the terminal driver keeps its own 2
 const DEFAULT_MAX_SESSIONS = 4
 // folders main's own dialog chose, which a later start may name (#432)
@@ -246,7 +247,11 @@ function createLaunchController(deps) {
     platform, isEnabled, keys, viewer, captureEnv, confirm, chooseFolder, driverRuntime, startDriver, hubPath, driverEnv,
     randomUUID, realDirectory, processStart, kill, worktreeSettings, chooseWorktreeFolder,
     runWorktree, ask, openTerminal, sessionCap,
+    // #432 PR 5: what a start is doing now, for the New session dialog, and how long each step took
+    progress = () => {}, log = () => {},
   } = deps
+  const now = () => Date.now()
+  const report = (phase) => { try { progress(phase) } catch { /* a report, not the start */ } }
   // #432 §1: session worktrees go under <hub dir>/worktrees unless Settings names another folder
   const defaultWorktreeRoot = path.join(path.dirname(hubPath), 'worktrees')
   // #432: the real folders main's own dialog chose (chooseFolder), newest last. A start may
@@ -281,10 +286,12 @@ function createLaunchController(deps) {
     return { env: launchEnv(env.env) }
   }
 
-  async function spawnDriver(launchId, spec) {
+  async function spawnDriver(launchId, spec, times = []) {
     // a quit or a switch turned off while the dialog was open starts nothing
     const late = blocked()
     if (late) return late
+    report('runtime')
+    let at = now()
     // the human's cap, read for this start: the driver counts every running driver against it (#432 §5)
     const maxDrivers = await maxSessions()
     const launchKey = await keys.launchKey(launchId)
@@ -294,12 +301,27 @@ function createLaunchController(deps) {
     // the runtime is verified again here, not only before a dialog that may have stayed open for minutes (#435)
     const found = runtimeOrRefusal()
     if (!found.runtime) return found
-    return startDriver({
+    let current = 'runtime'
+    const step = (next) => {
+      times.push([current, now() - at])
+      current = next
+      at = now()
+    }
+    step('driver')
+    const result = await startDriver({
       platform, node: found.runtime.node, entry: found.runtime.entry, launchId, hubPath,
       logPath: path.join(path.dirname(hubPath), 'launches', launchId, 'driver.log'),
       env: driverEnv, spec: { ...spec, maxDrivers, launchKey: launchKey.toString('base64') },
       ...(spec.worktree ? { timeoutMs: WORKTREE_STATUS_MS } : {}),
+      onPhase: (phase) => {
+        step(phase)
+        report(phase)
+      },
     })
+    step('')
+    // runtime: the key, the cap and the runtime's verification; driver: its start to its first phase
+    try { log(`launch ${launchId.slice(0, 8)} ${result.ok ? 'started' : 'did not start'}: ${times.map(([name, ms]) => `${name} ${ms} ms`).join(', ')}`) } catch { /* a report */ }
+    return result
   }
 
   async function maxSessions() {
@@ -389,6 +411,8 @@ function createLaunchController(deps) {
         const late = blocked()
         if (late) return late
         // the checkout's env: the worktree does not exist yet, and holds the same committed files
+        report('environment')
+        const envAt = now()
         const ready = await environment(real)
         if (!ready.env) return ready
         return spawnDriver(launchId, {
@@ -397,7 +421,7 @@ function createLaunchController(deps) {
           ...(request.reasoningEffort ? { reasoningEffort: request.reasoningEffort } : {}),
           budgets: request.budgets, prompt: request.prompt, env: ready.env,
           ...(worktree ? { worktree: { path: worktree.path, branch: worktree.branch } } : {}),
-        })
+        }, [['environment', now() - envAt]])
       })
     },
 

@@ -36,6 +36,13 @@ export const PROMPT_WARNING = 'Don’t paste secrets here: the task is stored wi
 // #432: what New worktree means; main's confirmation shows the worktree's path and branch
 export const WORKTREE_COPY = 'The session works in a new git worktree on its own branch, made from your checkout’s last commit. Uncommitted changes stay in your checkout.'
 export const NOT_REPOSITORY = 'Not a git repository: the session runs in this folder.'
+// #432 PR 5: what a start is doing after the human confirmed, as main reports it
+export const START_PHASES = Object.freeze({
+  environment: 'Reading your shell environment…',
+  runtime: 'Checking the runtime…',
+  worktree: 'Creating the worktree…',
+  copilot: 'Starting Copilot…',
+})
 
 const MODEL = /^[A-Za-z0-9._-]{1,64}$/
 const MAX_PROMPT = 64 * 1024
@@ -109,7 +116,7 @@ const END_REASONS = {
   'error:setup': 'Ended: Copilot could not start the session',
   'error:hub_unreachable': 'Ended: it could not read Agent Inbox',
   'error:lease_lost': 'Ended: another driver took over',
-  'error:start': 'Did not start',
+  'error:start': 'Didn’t start',
   'error:protocol': 'Ended: Copilot answered something unexpected',
 }
 
@@ -119,10 +126,14 @@ export function launchSessions(launch, activity) {
 }
 
 /**
- * What a launch is now, and what the human can do with it.
- * @returns {{state: 'starting'|'running'|'stopping'|'lost'|'parked'|'ended', text: string, actions: string[]}}
+ * What a launch is now, and what the human can do with it. One that ended
+ * before its session was ready is `failed`: "Didn't start", with why (#432 PR 5).
+ * @returns {{state: 'starting'|'running'|'stopping'|'lost'|'parked'|'ended'|'failed', text: string, actions: string[]}}
  */
 export function launchStatus(launch, activity, nowMs) {
+  if (launch.status === 'ended' && (launch.end_detail || launch.end_reason === 'error:start')) {
+    return { state: 'failed', text: `Didn’t start${launch.end_detail ? `: ${launch.end_detail}` : '.'}`, actions: ['transcript'] }
+  }
   if (launch.status === 'ended') {
     return { state: 'ended', text: END_REASONS[launch.end_reason] ?? `Ended (${launch.end_reason ?? 'unknown'})`, actions: ['transcript'] }
   }
@@ -210,8 +221,14 @@ export function transcriptLines(events) {
         flush()
         lines.push({ kind: 'note', text: 'You asked it to park: it parks once its turn ends.' })
         break
+      case 'effort_fallback':
+        flush()
+        lines.push({ kind: 'note', text: 'This model takes no reasoning effort, so Agent Inbox started it with none.' })
+        break
       case 'ended':
         flush()
+        // the first Copilot of an effort fallback: the session goes on with the second
+        if (event.retry === 'effort') break
         lines.push({ kind: 'note', text: event.reason === 'idle' || event.reason === 'park' ? 'Parked: Copilot stopped, its session kept to resume.' : `Session ended (${event.reason ?? 'unknown'}).` })
         break
       default:

@@ -81,6 +81,8 @@ export interface DriverHooks {
   host?(pid: number): void
   linked?(sessions: readonly string[]): void
   usage?(usage: { activeMs: number; toolCalls: number }): void
+  /** The session is set up and verified: the launch has started (#432 PR 5). */
+  ready?(): void
   /** #432 §6: a turn ended (the launch's worktree is summarized off the event queue). */
   turnEnd?(): void
 }
@@ -170,6 +172,15 @@ export interface DriverOptions {
    * row closed, so the launch never reads as lost while it parks or ends (#432 §6).
    */
   releaseLeases?: boolean
+  /** Whose words a setup refusal's hint uses: the terminal's flags, or the app's New session. Default: terminal. */
+  context?: 'terminal' | 'app'
+  /**
+   * An app launch that left the reasoning effort to Copilot's own setting, on
+   * its first start (#432 PR 5): when Copilot refuses session/new because the
+   * model takes no reasoning effort, the driver ends keeping its driver slot,
+   * so the CLI can start Copilot once more with `--reasoning-effort none`.
+   */
+  effortFallback?: boolean
 }
 
 // Step 2's asks: an alert in @sessions, answered on the driver's own terminal.
@@ -260,6 +271,10 @@ export class Driver {
   private pendingControl: string[] = []
   private taskSent = false
   private readyAt = 0
+  // why the launch ended before it was ready, in plain words (#432 PR 5)
+  private failure: string | null = null
+  // Copilot refused this model's reasoning effort: the CLI starts it once more with none
+  private retryEffort = false
   private readonly asks = new Map<string, PendingAsk>()
   private askSeq = 0
   private readonly toolTitles = new Map<string, { title: string; rawInput: unknown; kind: string }>()
@@ -396,6 +411,16 @@ export class Driver {
     return this.loadNotFound
   }
 
+  /** Why the launch ended before its session was ready, in plain words; null once it was ready. */
+  startFailure(): string | null {
+    return this.setup === 5 ? null : this.failure
+  }
+
+  /** Whether Copilot refused only the model's reasoning effort, so the CLI starts it again with none. */
+  retryWithoutEffort(): boolean {
+    return this.retryEffort
+  }
+
   /** Why a resume's session/load failed, when it ended the launch with `error:load`. */
   loadFailure(): string | null {
     return this.loadError
@@ -472,6 +497,7 @@ export class Driver {
       return this.end('error:load')
     }
     this.o.ui.notice(`Copilot did not finish starting the session within ${seconds} s.`)
+    this.failure = `Copilot did not finish starting the session within ${seconds} s.`
     return this.end('error:setup')
   }
 
@@ -514,9 +540,16 @@ export class Driver {
       return this.end('error:load')
     }
     if (frame.error) {
+      const hint = setupRefusalHint(frame.error.message, this.o.context)
+      // only a fresh session, never after a prompt, and only once (the CLI passes this on the first start)
+      if (hint && this.o.effortFallback && frame.method === 'session/new' && !this.taskSent) {
+        this.retryEffort = true
+        this.o.log({ event: 'effort_refused', message: terminalSafe(frame.error.message).slice(0, 300) })
+        return this.end('error:setup')
+      }
       this.o.ui.notice(`Copilot refused ${frame.method}: ${frame.error.message}`)
-      const hint = setupRefusalHint(frame.error.message)
       if (hint) this.o.ui.notice(hint)
+      this.failure = `Copilot refused to start the session: ${terminalSafe(frame.error.message).slice(0, 200)}${hint ? ` ${hint}` : ''}`
       return this.end('error:setup')
     }
     const result = isRecord(frame.result) ? frame.result : {}
@@ -580,6 +613,7 @@ export class Driver {
     if (this.toolCalls >= this.t.maxToolCalls) return this.end('budget:tool_calls')
     if (this.activeMs >= this.t.activeMs) return this.end('budget:active_time')
     this.o.ui.notice(`Session ready (${this.phase === 'executing' ? 'agent mode' : 'plan mode'}).`)
+    this.report(() => this.o.hooks?.ready?.())
     this.maybePrompt()
   }
 
@@ -1043,6 +1077,7 @@ export class Driver {
   private end(reason: EndReason): void {
     if (this.ending) return
     this.ending = reason
+    if (this.setup !== 5 && !this.failure) this.failure = this.loadError !== null ? `Copilot could not load the session: ${this.loadError}` : beforeReady(reason)
     this.o.log({ event: 'ending', reason })
     const outcome = reason === 'stopped' ? 'Session stopped.' : `Session ended (${reason}).`
     for (const ask of [...this.asks.values()]) {
@@ -1067,12 +1102,27 @@ export class Driver {
       kill.unref()
       this.o.child.exited.finally(() => clearTimeout(kill)).catch(() => undefined)
     }
-    if (this.o.releaseLeases !== false) {
+    // a start Copilot refused only for its reasoning effort keeps its driver slot for the retry
+    if (this.o.releaseLeases !== false && !this.retryEffort) {
       try {
         releaseDriverLeases(this.o.db, this.o.lease)
       } catch { /* the hub is gone: the leases go stale in 90 s */ }
     }
-    this.o.log({ event: 'ended', reason: this.ending })
+    this.o.log({ event: 'ended', reason: this.ending, ...(this.retryEffort ? { retry: 'effort' } : {}) })
     this.resolveEnd(this.ending ?? 'stopped')
+  }
+}
+
+// Why a launch ended before its session was ready, in plain words (#432 PR 5)
+function beforeReady(reason: EndReason): string {
+  switch (reason) {
+    case 'child_exit': return 'Copilot exited before the session started.'
+    case 'stopped': return 'It was stopped before the session started.'
+    case 'error:mode_escalation': return 'Copilot did not start in the mode you chose, so Agent Inbox stopped it.'
+    case 'error:hub_unreachable': return 'It could not read Agent Inbox while starting.'
+    case 'error:lease_lost': return 'Another driver took over before it started.'
+    case 'error:protocol': return 'Copilot answered something unexpected while starting.'
+    case 'error:setup': return 'Copilot could not start the session.'
+    default: return `It ended (${reason}) before the session started.`
   }
 }

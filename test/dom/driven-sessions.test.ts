@@ -33,6 +33,9 @@ const LAUNCH = '11111111-2222-4333-8444-555555555555'
 const PARKED = '11111111-2222-4333-8444-666666666666'
 const LEASE = { launchId: LAUNCH, pid: 4242, nonce: 'n' }
 
+// the page's start-progress listener, as main would call it (#432 PR 5)
+let progress: ((phase: string) => void) | null = null
+
 type State = { owned: boolean; enabled: boolean; available: boolean; canEnable: boolean; worktreeRoot?: { path: string; isDefault: boolean }; maxSessions?: number }
 function launchBridge(state: Partial<State> = {}) {
   const current: State = { owned: true, enabled: true, available: true, canEnable: true, ...state }
@@ -49,6 +52,7 @@ function launchBridge(state: Partial<State> = {}) {
       return { ok: true, worktreeRoot: current.worktreeRoot }
     }),
     resetWorktreeRoot: vi.fn(async () => ({ ok: true })),
+    onStartProgress: vi.fn((listener: ((phase: string) => void) | null) => { progress = listener; return true }),
     setMaxSessions: vi.fn(async (n: number) => { current.maxSessions = n; return { ok: true, maxSessions: n } }),
     removeWorktree: vi.fn(async (_id: string) => ({ ok: true }) as Record<string, unknown>),
     openWorktree: vi.fn(async (_id: string) => ({ ok: true }) as Record<string, unknown>),
@@ -257,6 +261,24 @@ describe('off means off on the page (§9 b)', () => {
 })
 
 describe('the Live drawer’s sessions (§3.6, §7)', () => {
+  it('shows a launch that ended before its session was ready as “Didn’t start”, with why, in the error tone (#432 PR 5)', async () => {
+    launchBridge()
+    db = freshDb()
+    newLaunch(db)
+    endLaunch(db, LAUNCH, { reason: 'error:setup', detail: 'Copilot refused to start the session: Model \'x\' does not support reasoning effort configuration' })
+    newLaunch(db, PARKED)
+    endLaunch(db, PARKED, { reason: 'stopped' })
+    await bootApp(db)
+    await changedPollTick(db)
+    openDrawer()
+    expect(launchRow(LAUNCH)!.dataset.state).toBe('failed')
+    expect(launchRow(LAUNCH)!.querySelector('.live-launch-status')!.textContent)
+      .toBe('Didn’t start: Copilot refused to start the session: Model \'x\' does not support reasoning effort configuration')
+    expect(action(LAUNCH, 'transcript')).not.toBeNull()
+    expect(launchRow(PARKED)!.dataset.state).toBe('ended')
+    expect(launchRow(PARKED)!.querySelector('.live-launch-status')!.textContent).toBe('Stopped')
+  })
+
   it('offers Open in Terminal on a worktree, Remove worktree… once its launch ended, and keeps a kept worktree listed (#432)', async () => {
     const api = launchBridge()
     db = freshDb()
@@ -457,6 +479,41 @@ describe('New session (§8)', () => {
       root: '/work/alpha', mode: 'plan', model: 'claude-haiku-4.5', reasoningEffort: 'none',
       budgets: { activeMs: 7_200_000, toolCalls: 500 }, prompt: 'Fix the failing test.', worktree: true,
     })
+    expect(document.querySelector('.launch-dialog')).toBeNull()
+  })
+
+  it('stays open after Start, saying each phase main reports, and closes once Copilot is set up (#432 PR 5)', async () => {
+    const api = launchBridge()
+    let finish!: (result: { ok: boolean; launch?: string; error?: string }) => void
+    api.start.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve as never }))
+    db = freshDb()
+    insertItem(db, { project: 'alpha', stream: 'main', agent: 'copilot', kind: 'note', title: 'seen', repo_root: '/work/alpha' })
+    await bootApp(db)
+    await changedPollTick(db)
+    openDrawer()
+    click(section()!.querySelector('.launch-new'))
+    await settle()
+    const dialog = document.querySelector<HTMLDialogElement>('.launch-dialog')!
+    type(dialog.querySelector<HTMLTextAreaElement>('textarea[name="prompt"]'), 'Fix it.')
+    dialog.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await settle()
+    const message = () => dialog.querySelector('.launch-dialog-message')!.textContent
+    expect(message()).toBe('Agent Inbox is asking you to confirm…')
+    for (const [phase, text] of [
+      ['environment', 'Reading your shell environment…'], ['runtime', 'Checking the runtime…'],
+      ['worktree', 'Creating the worktree…'], ['copilot', 'Starting Copilot…'],
+    ]) {
+      progress!(phase!)
+      expect(message()).toBe(text)
+    }
+    expect(document.querySelector('.launch-dialog')).not.toBeNull()
+    finish({ ok: false, error: 'Copilot refused to start the session: no such model.' })
+    await settle()
+    expect(message()).toBe('Copilot refused to start the session: no such model.')
+    expect(api.onStartProgress).toHaveBeenLastCalledWith(null)
+    // started: the dialog closes
+    dialog.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await settle()
     expect(document.querySelector('.launch-dialog')).toBeNull()
   })
 

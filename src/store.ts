@@ -772,6 +772,10 @@ function runMigrations(db: Database.Database): void {
   ensureColumn(db, 'launches', 'base_ref', 'TEXT')
   ensureColumn(db, 'launches', 'worktree_removed_at', 'TEXT')
   ensureColumn(db, 'launches', 'worktree_summary', 'TEXT')
+  // #432 PR 5 — why a launch ended before its session was ready, in plain
+  // words (at most 300 characters), for its row's "Didn't start". NULL on every
+  // other end and on every row an older driver ends: its UPDATE never names it.
+  ensureColumn(db, 'launches', 'end_detail', 'TEXT')
   // issue #297 — keep this last: its triggers name the columns added above
   migrateSnapshotDomains(db)
 }
@@ -4028,6 +4032,8 @@ export interface LaunchRecord {
   base_ref: string | null
   worktree_removed_at: string | null
   worktree_summary: string | null
+  /** #432 PR 5: why it ended before its session was ready, in plain words; null otherwise. */
+  end_detail: string | null
 }
 
 /** What /api/launches serves of a launch: no prompt, process ids or ACP session id. */
@@ -4198,15 +4204,15 @@ export function parkLaunch(
 export function endLaunch(
   db: Database.Database,
   id: string,
-  end: { reason: string; activeMs?: number; toolCalls?: number },
+  end: { reason: string; activeMs?: number; toolCalls?: number; detail?: string | null },
 ): boolean {
   const now = new Date().toISOString()
   return db.prepare(`UPDATE launches
-                        SET status = 'ended', end_reason = @reason, ended_at = @now, parked_at = NULL, park_reason = NULL,
+                        SET status = 'ended', end_reason = @reason, end_detail = @detail, ended_at = @now, parked_at = NULL, park_reason = NULL,
                             active_ms = MAX(active_ms, COALESCE(@activeMs, 0)), tool_calls = MAX(tool_calls, COALESCE(@toolCalls, 0)),
                             updated_at = @now, revision = revision + 1
                       WHERE id = @id AND status <> 'ended'`).run({
-    now, id, reason: end.reason,
+    now, id, reason: end.reason, detail: end.detail ? Array.from(end.detail).slice(0, 300).join('') : null,
     activeMs: end.activeMs === undefined ? null : Math.max(0, Math.round(end.activeMs)),
     toolCalls: end.toolCalls ?? null,
   }).changes === 1
@@ -4234,6 +4240,14 @@ export function requestLaunchStop(db: Database.Database, id: string): 'stopping'
     }
     return null
   }).immediate()
+}
+
+// #432 PR 5: the reasoning effort a launch actually runs with, once the driver
+// fell back to none because Copilot refused the model's effort; only a launch
+// that left it to Copilot's setting.
+export function recordLaunchEffort(db: Database.Database, id: string, effort: string): boolean {
+  return db.prepare(`UPDATE launches SET reasoning_effort = ?, updated_at = ?, revision = revision + 1
+                      WHERE id = ? AND reasoning_effort IS NULL`).run(effort, new Date().toISOString(), id).changes === 1
 }
 
 // #432 §6: the driver's summary of its launch's worktree, written only when

@@ -205,6 +205,10 @@ function worktreeRootOf(value) {
   return { path: value.path, isDefault: value.isDefault === true }
 }
 
+// #432 PR 5: the start phases main reports, and the one listener the page has for them
+const START_PHASES = new Set(['environment', 'runtime', 'worktree', 'copilot'])
+let startProgress = null
+
 const failedLaunch = () => ({ ok: false, error: 'Agent Inbox did not answer.' })
 const launchCall = (channel, arg) => ipcRenderer.invoke(channel, arg).then(launchResult, failedLaunch)
 const isLaunchId = (value) => typeof value === 'string' && LAUNCH_ID.test(value)
@@ -242,6 +246,18 @@ contextBridge.exposeInMainWorld('agentInboxLaunch', {
   setMaxSessions(...args) {
     if (args.length !== 1 || !isSessionCap(args[0])) return Promise.resolve({ ok: false, error: 'invalid' })
     return launchCall('agent-inbox:launch-set-max-sessions', args[0])
+  },
+  // #432 PR 5: what a start is doing now, for the New session dialog; one listener at a time, null removes it
+  onStartProgress(...args) {
+    if (args.length !== 1 || (args[0] !== null && typeof args[0] !== 'function')) return false
+    if (startProgress) ipcRenderer.removeListener('agent-inbox:launch-progress', startProgress)
+    startProgress = null
+    const listener = args[0]
+    if (listener) {
+      startProgress = (_event, phase) => { if (START_PHASES.has(phase)) listener(phase) }
+      ipcRenderer.on('agent-inbox:launch-progress', startProgress)
+    }
+    return true
   },
   // #432: a launch id only; main reads the worktree's path from the hub
   removeWorktree(...args) {

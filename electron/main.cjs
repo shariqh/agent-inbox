@@ -572,6 +572,12 @@ function launchControllerFor() {
       read: () => launchSettings().readWorktreeRoot(),
       write: (root) => launchSettings().setWorktreeRoot(root),
     },
+    // #432 PR 5: a start's phase, to the window holding the launch grant only, and how long each took
+    progress: (phase) => {
+      const target = launchWebContentsId === null ? null : BrowserWindow.getAllWindows().map((win) => win.webContents).find((wc) => wc.id === launchWebContentsId)
+      if (target && !target.isDestroyed()) target.send('agent-inbox:launch-progress', phase)
+    },
+    log: (line) => console.log(`[agent-inbox] ${line}`),
     // #432 §5: the cap on sessions at once, read only with the switch on
     sessionCap: {
       read: () => launchSettings().readMaxDrivers(),

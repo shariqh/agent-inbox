@@ -10,7 +10,7 @@
 // Agent text reaches the DOM only as textContent. Nothing here reaches
 // public/attention.js, a badge, a count, the rail or the dock.
 import {
-  LAUNCH_MODES, PROMPT_WARNING, REASONING_EFFORTS, SHELL_WARNING, WORKTREE_COPY,
+  LAUNCH_MODES, NOT_REPOSITORY, PROMPT_WARNING, REASONING_EFFORTS, SHELL_WARNING, WORKTREE_COPY,
   launchOfSession, launchSessions, launchStatus, launchSummary, launchWorktreeLine, newSessionRequest, transcriptLines,
 } from '/launches.js'
 
@@ -409,7 +409,44 @@ export function createLaunchUi(deps) {
     worktree.name = 'worktree'
     worktree.checked = true
     const worktreeField = make('label', 'launch-mode launch-worktree')
-    worktreeField.append(worktree, make('strong', '', 'New worktree'), make('span', 'launch-mode-copy', WORKTREE_COPY))
+    const worktreeCopy = make('span', 'launch-mode-copy', WORKTREE_COPY)
+    worktreeField.append(worktree, make('strong', '', 'New worktree'), worktreeCopy)
+    // the human's own choice, restored when they pick a repository again
+    let wantWorktree = true
+    worktree.addEventListener('change', () => { wantWorktree = worktree.checked })
+    // a folder main's dialog chose that is not a repository runs in place: unticked and disabled
+    const showFolder = () => {
+      const notRepository = project.selectedOptions[0]?.dataset.repository === 'false'
+      worktree.disabled = notRepository
+      worktree.checked = !notRepository && wantWorktree
+      worktreeCopy.textContent = notRepository ? NOT_REPOSITORY : WORKTREE_COPY
+    }
+    // Choose folder…: main's own dialog, before Start; it names the folder and whether it is a repository
+    const chooseFolder = async () => {
+      const api = bridge()
+      if (typeof api?.chooseFolder !== 'function') return null
+      const result = await api.chooseFolder().catch(() => null)
+      if (dialog !== own) return null
+      if (!result?.ok || typeof result.folder !== 'string') {
+        message.textContent = result?.cancelled ? '' : result?.error ?? 'No folder was chosen.'
+        return null
+      }
+      let option = [...project.options].find((o) => o.value === result.folder)
+      if (!option) {
+        option = new Option(`${result.project ?? result.folder} — ${result.folder}`, result.folder)
+        project.insertBefore(option, project.querySelector('option[value=""]'))
+      }
+      option.dataset.repository = String(result.repository === true)
+      project.value = result.folder
+      showFolder()
+      return result
+    }
+    let previous = ''
+    project.addEventListener('change', async () => {
+      if (project.value === '' && !(await chooseFolder())) project.value = previous
+      showFolder()
+      previous = project.value
+    })
     const host = make('span', 'launch-host', 'Copilot')
     const modes = make('fieldset', 'launch-modes')
     modes.append(make('legend', '', 'Mode'))
@@ -483,7 +520,7 @@ export function createLaunchUi(deps) {
     form.addEventListener('submit', async (event) => {
       event.preventDefault()
       const checked = form.querySelector('input[name="mode"]:checked')
-      const made = newSessionRequest({
+      const values = () => newSessionRequest({
         root: project.value === '' ? null : project.value,
         worktree: worktree.checked,
         mode: checked?.value,
@@ -493,9 +530,23 @@ export function createLaunchUi(deps) {
         toolCalls: calls.value,
         prompt: prompt.value,
       })
+      let made = values()
       if (made.error) {
         message.textContent = made.error
         return
+      }
+      // no folder chosen yet: main's dialog first; one that unticks New worktree waits for a second Start
+      if (made.request.root === null && typeof bridge()?.chooseFolder === 'function') {
+        const wanted = worktree.checked
+        const chosen = await chooseFolder()
+        if (!chosen) return
+        previous = project.value
+        if (wanted && !worktree.checked) return
+        made = values()
+        if (made.error) {
+          message.textContent = made.error
+          return
+        }
       }
       start.disabled = true
       message.textContent = 'Agent Inbox is asking you to confirm…'
@@ -521,6 +572,7 @@ export function createLaunchUi(deps) {
       if (folder && typeof folder.root === 'string') project.append(new Option(`${folder.project ?? folder.root} — ${folder.root}`, folder.root))
     }
     project.append(new Option('Choose folder…', ''))
+    previous = project.value
   }
 
   function closeDialog() {

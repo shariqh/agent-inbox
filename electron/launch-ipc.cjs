@@ -7,8 +7,8 @@
 //     a reused or failed-over viewer can neither read nor turn it on;
 //   - every launch action needs the `launch` grant: that same owned viewer,
 //     with the switch on and no quit begun (createInstallBinding), and so do
-//     choosing and resetting the worktree folder (#432), which main reads only
-//     with the switch on.
+//     choosing and resetting the worktree folder and New session's Choose
+//     folder… (#432), which main reads only with the switch on.
 // What the renderer sends is checked again by the controller; it can never
 // send a path, an executable, argv or an env.
 const NOT_HERE = 'Agent sessions work only in Agent Inbox’s own window, with Settings → Agent sessions on.'
@@ -57,8 +57,8 @@ function registerLaunchIpc({ ipcMain, controller, settings, settled, isOwned, is
     return { ok: true, enabled: result.enabled }
   })
 
-  for (const action of ['chooseWorktreeRoot', 'resetWorktreeRoot']) {
-    const channel = action === 'chooseWorktreeRoot' ? 'choose-worktree-root' : 'reset-worktree-root'
+  const noArgument = { chooseFolder: 'choose-folder', chooseWorktreeRoot: 'choose-worktree-root', resetWorktreeRoot: 'reset-worktree-root' }
+  for (const [action, channel] of Object.entries(noArgument)) {
     ipcMain.handle(`agent-inbox:launch-${channel}`, async (event, ...args) => {
       if (args.length !== 0) return { ok: false, error: 'invalid' }
       await settled()

@@ -170,6 +170,10 @@ function launchResult(value) {
   if (value.reason === 'environment') out.reason = 'environment'
   const root = worktreeRootOf(value.worktreeRoot)
   if (root) out.worktreeRoot = root
+  // #432: the folder main's own dialog chose, and whether it is a repository's top
+  if (typeof value.folder === 'string' && value.folder.startsWith('/') && value.folder.length <= 4096) out.folder = value.folder
+  if (typeof value.project === 'string') out.project = value.project.slice(0, 256)
+  if (typeof value.repository === 'boolean') out.repository = value.repository
   return out
 }
 
@@ -228,7 +232,11 @@ contextBridge.exposeInMainWorld('agentInboxLaunch', {
     if (args.length !== 1 || !isPlainObject(args[0])) return Promise.resolve({ ok: false, error: 'invalid' })
     return launchCall('agent-inbox:launch-approve', args[0])
   },
-  // #432: main's own folder dialog chooses it; the page names no folder
+  // #432: main's own folder dialogs choose these; the page names no folder
+  chooseFolder(...args) {
+    if (args.length !== 0) return Promise.resolve({ ok: false, error: 'invalid' })
+    return launchCall('agent-inbox:launch-choose-folder')
+  },
   chooseWorktreeRoot(...args) {
     if (args.length !== 0) return Promise.resolve({ ok: false, error: 'invalid' })
     return launchCall('agent-inbox:launch-choose-worktree-root')

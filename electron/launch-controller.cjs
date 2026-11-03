@@ -18,7 +18,7 @@
 // the worktree's path and branch itself (session-worktree.cjs), shows both in
 // the confirmation, and sends them in the spec; the driver creates it.
 const path = require('node:path')
-const { planWorktree, worktreeProblem, worktreeRootProblem } = require('./session-worktree.cjs')
+const { isRepositoryTop, planWorktree, worktreeProblem, worktreeRootProblem } = require('./session-worktree.cjs')
 
 const LAUNCH_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const ITEM_ID = /^[A-Za-z0-9-]{1,128}$/
@@ -30,6 +30,8 @@ const MAX_PROMPT = 64 * 1024
 const PROMPT_PREVIEW = 300
 // creating a worktree of a large checkout takes time (§2); other starts keep the driver's 30 s
 const WORKTREE_STATUS_MS = 150_000
+// folders main's own dialog chose, which a later start may name (#432)
+const CHOSEN_KEPT = 20
 
 const MODES = Object.freeze({
   ask: {
@@ -213,6 +215,9 @@ function createLaunchController(deps) {
   } = deps
   // #432 §1: session worktrees go under <hub dir>/worktrees unless Settings names another folder
   const defaultWorktreeRoot = path.join(path.dirname(hubPath), 'worktrees')
+  // #432: the real folders main's own dialog chose (chooseFolder), newest last. A start may
+  // name one as its root, like a folder the hub knows: still never a path the page made up.
+  const chosenFolders = []
   let quitting = false
   // the starts in flight, so the quit prompt can wait for the launch rows they write
   const starting = new Set()
@@ -309,9 +314,9 @@ function createLaunchController(deps) {
         if (request.root !== null) {
           const known = (await viewer.getJson('/api/launch-folders')) ?? []
           const entry = Array.isArray(known) ? known.find((f) => f && f.root === request.root) : undefined
-          if (!entry) return refused('That folder is not one Agent Inbox knows. Choose it with Choose folder… instead.')
+          if (!entry && !chosenFolders.includes(request.root)) return refused('That folder is not one Agent Inbox knows. Choose it with Choose folder… instead.')
           folder = request.root
-          project = typeof entry.project === 'string' ? entry.project : path.basename(folder)
+          project = typeof entry?.project === 'string' ? entry.project : path.basename(folder)
         } else {
           folder = await chooseFolder()
           if (!folder) return refused('No folder was chosen.', { cancelled: true })
@@ -379,6 +384,25 @@ function createLaunchController(deps) {
         if (!ready.env) return ready
         return spawnDriver(id, { v: 1, kind: 'resume', launchId: id, env: ready.env })
       })
+    },
+
+    /**
+     * #432: New session's Choose folder…, before Start: main's own dialog picks
+     * the folder and says whether it is a repository's top (lstat, no git), so
+     * the page can untick New worktree for one that is not.
+     */
+    async chooseFolder() {
+      const why = blocked()
+      if (why) return why
+      const folder = await chooseFolder()
+      if (!folder) return refused('No folder was chosen.', { cancelled: true })
+      const real = realDirectory(folder)
+      if (!real) return refused('That folder does not exist any more.')
+      const at = chosenFolders.indexOf(real)
+      if (at !== -1) chosenFolders.splice(at, 1)
+      chosenFolders.push(real)
+      if (chosenFolders.length > CHOSEN_KEPT) chosenFolders.shift()
+      return { ok: true, folder: real, project: path.basename(real), repository: isRepositoryTop(real) }
     },
 
     /** #432: the folder session worktrees go under, read only with the switch on. */

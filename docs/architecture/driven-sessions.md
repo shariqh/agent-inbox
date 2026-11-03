@@ -287,7 +287,8 @@ Everything main does for a driven session is injected and tested without Electro
   optionId })`, and #432's `chooseWorktreeRoot()` and `resetWorktreeRoot()`, each with exact arity, answering only the viewer window's top frame, after any re-proof in
   flight. `takeOver` is step 5. The preload checks argument shapes and hands back checked answers.
 - **What the renderer may send** (`launchRequest`, `approvalRequest` in `launch-controller.cjs`): exactly
-  `{ root, mode, model?, reasoningEffort?, budgets, prompt, worktree? }` (`worktree` only ever `true`, #432), where `root` is one of the repository folders
+  `{ root, mode, model?, reasoningEffort?, budgets, prompt, worktree? }` (`worktree` only ever `true`, and
+  `root` may also be a folder main's own Choose folder… dialog chose, #432), where `root` is one of the repository folders
   the hub recorded (`GET /api/launch-folders`) or `null` for main's own folder dialog; never a path of its
   own, an executable, argv or env. Bounds match the spec's.
 - **The native confirmation** (`confirmation`): built by main from the checked facts (project, folder, mode
@@ -527,9 +528,18 @@ Main does not send the field yet (part 2), so nothing changes for anyone today.
   (main's own folder dialog; the folder must be a real, private folder of the user's with no pattern
   character) and `launch-reset-worktree-root` take no argument and need the `launch` grant. With the
   switch off, main reads no worktree setting, opens no dialog and creates nothing (§8 e).
+- **Choose folder… before Start.** `launch-choose-folder` (no argument, the `launch` grant) runs main's
+  own folder dialog and answers `{ folder, project, repository }`, `repository` being the `.git` check.
+  Main remembers the last 20 real folders its dialog chose, and `start` accepts one of them as `root`
+  like a folder the hub knows; any other path is still refused, so the page never names a folder of
+  its own. `root: null` still opens the dialog inside `start`.
 - **The page.** New session has **New worktree**, ticked by default (every known folder is a
-  repository's top; a chosen folder that is not refuses with "Untick New worktree to start in it").
-  Unticked, the request is exactly what it was before. A launch's drawer row adds `Worktree: <branch> ·
+  repository's top). Choosing a folder asks main at once; one that is not a repository unticks and
+  disables the box with "Not a git repository: the session runs in this folder.", and picking a
+  repository again restores the human's own choice. Start with no folder chosen yet asks main's
+  dialog first, and waits for a second Start when the answer unticked the box. Main still refuses
+  `worktree: true` for a folder that is not a repository's top ("Untick New worktree to start in
+  it"), as defence in depth. Unticked, the request is exactly what it was before. A launch's drawer row adds `Worktree: <branch> ·
   <path>`, or that it was removed and its branch kept. Settings → Agent sessions shows **Worktree folder**
   with Choose… and Use default only with the switch on; off, nothing is drawn and nothing read. The
   Edits mode copy now reads "the session’s folder (its worktree, when it has one)", in both copies a

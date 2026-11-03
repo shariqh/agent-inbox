@@ -1,6 +1,9 @@
 // Type declarations for electron/launch-controller.cjs (issue #412 step 3).
 export type WorktreeRoot = { path: string; isDefault: boolean }
-export type LaunchResult = { ok: boolean; error?: string; launch?: string; cancelled?: boolean; status?: string; killed?: boolean; reason?: string; worktreeRoot?: WorktreeRoot }
+export type LaunchResult = {
+  ok: boolean; error?: string; launch?: string; cancelled?: boolean; status?: string; killed?: boolean; reason?: string; worktreeRoot?: WorktreeRoot
+  folder?: string; project?: string; repository?: boolean
+}
 export interface LaunchController {
   canEnable(options?: { withKeys?: boolean }): LaunchResult | null
   available(): { enabled: boolean; available: boolean; error?: string }
@@ -10,6 +13,7 @@ export interface LaunchController {
   close(id: unknown): Promise<LaunchResult>
   approve(request: unknown): Promise<LaunchResult>
   /** #432: null with the switch off */
+  chooseFolder(): Promise<LaunchResult>
   worktreeRoot(): Promise<WorktreeRoot | null>
   chooseWorktreeRoot(): Promise<LaunchResult>
   resetWorktreeRoot(): Promise<LaunchResult>

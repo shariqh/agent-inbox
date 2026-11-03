@@ -49,6 +49,7 @@ function launchBridge(state: Partial<State> = {}) {
       return { ok: true, worktreeRoot: current.worktreeRoot }
     }),
     resetWorktreeRoot: vi.fn(async () => ({ ok: true })),
+    chooseFolder: vi.fn(async () => ({ ok: true, folder: '/Users/shariqh/notes', project: 'notes', repository: false }) as Record<string, unknown>),
   }
   Object.defineProperty(window, 'agentInboxLaunch', { configurable: true, value: api })
   return api
@@ -129,6 +130,78 @@ describe('off means off on the page (§9 b)', () => {
     await changedPollTick(db)
     expect(urls.some((u) => u.startsWith('/api/launches'))).toBe(true)
     expect(launchRow(LAUNCH)?.textContent).toContain('alpha')
+  })
+
+  it('unticks and disables New worktree for a chosen folder that is not a repository, and restores it for one that is (#432)', async () => {
+    const api = launchBridge()
+    db = freshDb()
+    insertItem(db, { project: 'alpha', stream: 'main', agent: 'copilot', kind: 'note', title: 'seen', repo_root: '/work/alpha' })
+    await bootApp(db)
+    await changedPollTick(db)
+    openDrawer()
+    click(section()!.querySelector('.launch-new'))
+    await settle()
+    const dialog = document.querySelector<HTMLDialogElement>('.launch-dialog')!
+    const project = dialog.querySelector<HTMLSelectElement>('select[name="root"]')!
+    const box = dialog.querySelector<HTMLInputElement>('input[name="worktree"]')!
+    project.value = ''
+    project.dispatchEvent(new Event('change', { bubbles: true }))
+    await settle()
+    expect(api.chooseFolder).toHaveBeenCalledWith()
+    expect([...project.options].map((o) => o.value)).toEqual(['/work/alpha', '/Users/shariqh/notes', ''])
+    expect(project.value).toBe('/Users/shariqh/notes')
+    expect({ checked: box.checked, disabled: box.disabled }).toEqual({ checked: false, disabled: true })
+    expect(box.closest('label')!.textContent).toContain('Not a git repository: the session runs in this folder.')
+    project.value = '/work/alpha'
+    project.dispatchEvent(new Event('change', { bubbles: true }))
+    expect({ checked: box.checked, disabled: box.disabled }).toEqual({ checked: true, disabled: false })
+    expect(box.closest('label')!.textContent).not.toContain('Not a git repository')
+    // a cancelled dialog keeps the folder that was selected
+    api.chooseFolder.mockResolvedValueOnce({ ok: false, cancelled: true })
+    project.value = ''
+    project.dispatchEvent(new Event('change', { bubbles: true }))
+    await settle()
+    expect(project.value).toBe('/work/alpha')
+    project.value = '/Users/shariqh/notes'
+    project.dispatchEvent(new Event('change', { bubbles: true }))
+    type(dialog.querySelector<HTMLTextAreaElement>('textarea[name="prompt"]'), 'Tidy the notes.')
+    dialog.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await settle()
+    expect(api.start).toHaveBeenCalledWith(expect.objectContaining({ root: '/Users/shariqh/notes', prompt: 'Tidy the notes.' }))
+    expect(api.start.mock.calls[0]![0]).not.toHaveProperty('worktree')
+  })
+
+  it('with no folder chosen yet, Start asks main’s dialog first, and waits for a second Start when that unticks New worktree (#432)', async () => {
+    const api = launchBridge()
+    db = freshDb()
+    await bootApp(db)
+    await changedPollTick(db)
+    openDrawer()
+    click(section()!.querySelector('.launch-new'))
+    await settle()
+    const dialog = document.querySelector<HTMLDialogElement>('.launch-dialog')!
+    type(dialog.querySelector<HTMLTextAreaElement>('textarea[name="prompt"]'), 'Tidy the notes.')
+    const submit = () => dialog.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    submit()
+    await settle()
+    expect(api.chooseFolder).toHaveBeenCalledTimes(1)
+    expect(api.start).not.toHaveBeenCalled()
+    expect(dialog.querySelector<HTMLInputElement>('input[name="worktree"]')!.disabled).toBe(true)
+    submit()
+    await settle()
+    expect(api.chooseFolder).toHaveBeenCalledTimes(1)
+    expect(api.start).toHaveBeenCalledWith(expect.objectContaining({ root: '/Users/shariqh/notes' }))
+    expect(api.start.mock.calls[0]![0]).not.toHaveProperty('worktree')
+    // a repository chosen at Start goes straight on, with its worktree
+    const again = launchBridge()
+    again.chooseFolder.mockResolvedValueOnce({ ok: true, folder: '/work/beta', project: 'beta', repository: true })
+    click(section()!.querySelector('.launch-new'))
+    await settle()
+    const next = document.querySelector<HTMLDialogElement>('.launch-dialog')!
+    type(next.querySelector<HTMLTextAreaElement>('textarea[name="prompt"]'), 'Fix it.')
+    next.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await settle()
+    expect(again.start).toHaveBeenCalledWith(expect.objectContaining({ root: '/work/beta', worktree: true }))
   })
 
   it('shows the worktree folder only with the switch on, and chooses it through main with no argument (#432)', async () => {
@@ -341,6 +414,7 @@ describe('New session (§8)', () => {
   it('keeps the task and says why when the request is not valid or main refuses it', async () => {
     const api = launchBridge()
     api.start.mockResolvedValueOnce({ ok: false, error: 'Not started.', cancelled: true } as never)
+    api.chooseFolder.mockResolvedValue({ ok: true, folder: '/work/alpha', project: 'alpha', repository: true })
     db = freshDb()
     await bootApp(db)
     await changedPollTick(db)
@@ -356,7 +430,7 @@ describe('New session (§8)', () => {
     expect(document.getElementById('pauseHint')?.textContent ?? '').toMatch(/paused/)
     dialog.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
     await settle()
-    expect(api.start).toHaveBeenCalledWith(expect.objectContaining({ root: null, mode: 'ask', prompt: 'Do it.' }))
+    expect(api.start).toHaveBeenCalledWith(expect.objectContaining({ root: '/work/alpha', mode: 'ask', prompt: 'Do it.' }))
     expect(dialog.querySelector('.launch-dialog-message')!.textContent).toBe('Not started.')
     expect(dialog.querySelector<HTMLTextAreaElement>('textarea[name="prompt"]')!.value).toBe('Do it.')
     // Cancel keeps the task for the next dialog, and it no longer pauses the list

@@ -70,6 +70,16 @@ const exists = (dir, fsImpl) => {
   }
 }
 
+/** Whether `folder` holds a `.git` folder, or a linked worktree's `.git` file: lstat only, no git. */
+function isRepositoryTop(folder, { fsImpl = fs } = {}) {
+  try {
+    const git = fsImpl.lstatSync(path.join(folder, '.git'))
+    return git.isDirectory() || git.isFile()
+  } catch {
+    return false
+  }
+}
+
 /**
  * Why a worktree root chosen in Settings cannot be used, or null: an absolute,
  * existing real directory, owned by this user, not writable by others, with no
@@ -91,11 +101,7 @@ function worktreeRootProblem(root, { fsImpl = fs } = {}) {
  * does not exist yet.
  */
 function worktreeProblem({ folder, root, defaultRoot, plan, fsImpl = fs }) {
-  let git
-  try {
-    git = fsImpl.lstatSync(path.join(folder, '.git'))
-  } catch { /* checked below */ }
-  if (!git || !(git.isDirectory() || git.isFile())) {
+  if (!isRepositoryTop(folder, { fsImpl })) {
     return `${folder} is not the top folder of a git repository. Untick New worktree to start in it.`
   }
   if (PATTERN_UNSAFE.test(plan.path)) {
@@ -121,4 +127,4 @@ function worktreeProblem({ folder, root, defaultRoot, plan, fsImpl = fs }) {
   return null
 }
 
-module.exports = { planWorktree, worktreeProblem, worktreeRepoName, worktreeRootProblem, worktreeSlug }
+module.exports = { isRepositoryTop, planWorktree, worktreeProblem, worktreeRepoName, worktreeRootProblem, worktreeSlug }

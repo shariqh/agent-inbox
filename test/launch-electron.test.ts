@@ -491,6 +491,7 @@ describe('the launch controller', () => {
     for (const result of [
       await r.controller.start(REQUEST), await r.controller.resume(ID), await r.controller.approve({ item: 'item-1', revision: 2, optionId: 'allow_once' }),
       await r.controller.start({ ...REQUEST, worktree: true }), await r.controller.chooseWorktreeRoot(), await r.controller.resetWorktreeRoot(),
+      await r.controller.chooseFolder(),
     ]) expect(result.ok).toBe(false)
     // #432 §8 (e): no worktree setting read, no folder dialog, no folder made
     expect(await r.controller.worktreeRoot()).toBeNull()
@@ -668,6 +669,30 @@ describe('a session in its own worktree (#432)', () => {
     expect(existsSync(join(r.hub, 'worktrees'))).toBe(made)
   })
 
+  it('Choose folder… asks main’s own dialog before Start, says whether it is a repository, and only that folder may then be named', async () => {
+    const r = worktreeRig()
+    const plain = join(r.dir, 'notes')
+    mkdirSync(plain)
+    let picked = r.work
+    r.deps.chooseFolder = async () => { r.calls.push('chooseFolder'); return picked }
+    const controller = controllerModule.createLaunchController(r.deps)
+    expect(await controller.chooseFolder()).toEqual({ ok: true, folder: r.work, project: 'alpha', repository: true })
+    picked = plain
+    expect(await controller.chooseFolder()).toEqual({ ok: true, folder: plain, project: 'notes', repository: false })
+    // a folder main's dialog chose is accepted like a known one; it runs in place without a worktree
+    expect(await controller.start({ ...REQUEST, root: plain })).toEqual({ ok: true, launch: ID })
+    expect((r.spawned.at(-1)!.spec as Json).cwd).toBe(plain)
+    expect((r.spawned.at(-2)!.confirmation as Json).message).toBe('Start a Copilot session in notes?')
+    // defence in depth: main still refuses a worktree there, before the confirmation
+    const confirms = r.calls.filter((c) => c === 'confirm').length
+    expect(await controller.start({ ...REQUEST, root: plain, worktree: true })).toEqual({ ok: false, error: expect.stringMatching(/not the top folder of a git repository/) })
+    expect(r.calls.filter((c) => c === 'confirm')).toHaveLength(confirms)
+    // a folder neither the hub knows nor main chose is still refused
+    expect(await controller.start({ ...REQUEST, root: join(r.dir, 'hub') })).toMatchObject({ ok: false, error: expect.stringMatching(/not one Agent Inbox knows/) })
+    r.deps.chooseFolder = async () => null as unknown as string
+    expect(await controllerModule.createLaunchController(r.deps).chooseFolder()).toMatchObject({ ok: false, cancelled: true })
+  })
+
   it('names the branch when a parked session’s worktree is gone', async () => {
     const r = rig()
     r.state.launches[ID] = { id: ID, status: 'parked', cwd: '/missing/alpha/fix-22222222', branch: 'agent-inbox/fix-22222222' }
@@ -728,10 +753,10 @@ describe('the launch IPC and its grants (§8)', () => {
     return { call, r, settings, onEnabled, handlers, made: () => made }
   }
 
-  it('registers the nine channels, and makes no controller until one is used', () => {
+  it('registers the ten channels, and makes no controller until one is used', () => {
     const w = world()
     expect([...w.handlers.keys()].sort()).toEqual([
-      'available', 'approve', 'choose-worktree-root', 'close', 'reset-worktree-root', 'resume', 'set-enabled', 'start', 'stop',
+      'available', 'approve', 'choose-folder', 'choose-worktree-root', 'close', 'reset-worktree-root', 'resume', 'set-enabled', 'start', 'stop',
     ].map((name) => `agent-inbox:launch-${name}`).sort())
     expect(w.made()).toBe(0)
   })
@@ -764,6 +789,9 @@ describe('the launch IPC and its grants (§8)', () => {
     expect(await w.call('launch-choose-worktree-root', '/elsewhere')).toEqual({ ok: false, error: 'invalid' })
     expect(await w.call('launch-reset-worktree-root', null)).toEqual({ ok: false, error: 'invalid' })
     expect(await w.call('launch-choose-worktree-root')).toMatchObject({ ok: false, cancelled: true })
+    expect(await w.call('launch-choose-folder', '/elsewhere')).toEqual({ ok: false, error: 'invalid' })
+    expect(await owned.call('launch-choose-folder')).toMatchObject({ ok: false })
+    expect(owned.r.calls).not.toContain('chooseFolder')
     expect(w.r.calls).toContain('chooseWorktreeFolder')
   })
 
@@ -1024,9 +1052,10 @@ describe('the preload bridge (§8)', () => {
     return { launch: exposed.agentInboxLaunch as Record<string, (...args: unknown[]) => Promise<Json>>, invoke }
   }
 
-  it('has exactly its nine methods, each with exact arity, and passes nothing it was not given', async () => {
+  it('has exactly its ten methods, each with exact arity, and passes nothing it was not given', async () => {
     const { launch, invoke } = loadPreload(() => ({ ok: true, launch: ID, path: '/secret', enabled: true }))
-    expect(Object.keys(launch).sort()).toEqual(['approve', 'available', 'chooseWorktreeRoot', 'close', 'resetWorktreeRoot', 'resume', 'setEnabled', 'start', 'stop'])
+    expect(Object.keys(launch).sort()).toEqual(['approve', 'available', 'chooseFolder', 'chooseWorktreeRoot', 'close', 'resetWorktreeRoot', 'resume', 'setEnabled', 'start', 'stop'])
+    expect(await launch.chooseFolder!('/elsewhere')).toEqual({ ok: false, error: 'invalid' })
     // #432: main's own dialog chooses the worktree folder; the page passes nothing
     expect(await launch.chooseWorktreeRoot!('/elsewhere')).toEqual({ ok: false, error: 'invalid' })
     expect(await launch.resetWorktreeRoot!(true)).toEqual({ ok: false, error: 'invalid' })

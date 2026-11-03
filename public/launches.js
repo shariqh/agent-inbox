@@ -35,6 +35,7 @@ export const SHELL_WARNING = 'Once any shell command is allowed, the session can
 export const PROMPT_WARNING = 'Don’t paste secrets here: the task is stored with the session.'
 // #432: what New worktree means; main's confirmation shows the worktree's path and branch
 export const WORKTREE_COPY = 'The session works in a new git worktree on its own branch, made from your checkout’s last commit. Uncommitted changes stay in your checkout.'
+export const NOT_REPOSITORY = 'Not a git repository: the session runs in this folder.'
 
 const MODEL = /^[A-Za-z0-9._-]{1,64}$/
 const MAX_PROMPT = 64 * 1024

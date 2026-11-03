@@ -10,13 +10,14 @@ paths:
   - "src/driver-launch.ts"
   - "src/launch-spec.ts"
   - "src/launch-sign.ts"
+  - "src/worktree.ts"
   - "electron/session-launch.cjs"
   - "electron/launch-key.cjs"
   - "electron/shell-env.cjs"
   - "electron/driver-process.cjs"
   - "electron/launch-controller.cjs"
   - "electron/launch-ipc.cjs"
-applyTo: "src/driver.ts,src/driver-cli.ts,src/driver-link.ts,src/driver-policy.ts,src/driver-tty.ts,src/driver-pin.ts,src/acp-client.ts,src/driver-launch.ts,src/launch-spec.ts,src/launch-sign.ts,electron/session-launch.cjs,electron/launch-key.cjs,electron/shell-env.cjs,electron/driver-process.cjs,electron/launch-controller.cjs,electron/launch-ipc.cjs"
+applyTo: "src/driver.ts,src/driver-cli.ts,src/driver-link.ts,src/driver-policy.ts,src/driver-tty.ts,src/driver-pin.ts,src/acp-client.ts,src/driver-launch.ts,src/launch-spec.ts,src/launch-sign.ts,src/worktree.ts,electron/session-launch.cjs,electron/launch-key.cjs,electron/shell-env.cjs,electron/driver-process.cjs,electron/launch-controller.cjs,electron/launch-ipc.cjs"
 ---
 
 # Driven sessions (#412)
@@ -422,8 +423,8 @@ Approve), `public/launches.js` (pure rules) and `public/launch-settings.js` (Set
   offers **Park now** on a running launch in the granted window; the launch then offers Resume and send.
   `releaseDriverLeases` drops an untaken request with the driver.
 - **Edits in the worktree (§4.1).** The fourth mode, `edits`, in the spec, the controller (its copy is the
-  page's, a test holds the two equal) and the dialog. "The worktree" is the launch folder itself: no new
-  git worktree is created (#432 tracks that). Copilot's argv gains `--allow-tool 'write(<folder>/**)'`
+  page's, a test holds the two equal) and the dialog. "The worktree" is the launch folder itself: the chosen
+  folder, or the launch's own git worktree when it has one (#432, below). Copilot's argv gains `--allow-tool 'write(<folder>/**)'`
   and four `--deny-tool` patterns, `write(<folder>/.git)`, `write(<folder>/.git/**)`,
   `write(<folder>/**/.git)` and `write(<folder>/**/.git/**)`: a `.git` folder or file at the top or
   nested, and everything under one. Deny beats allow, so hooks, git config and a linked worktree's or
@@ -449,3 +450,52 @@ Approve), `public/launches.js` (pure rules) and `public/launch-settings.js` (Set
   (`answerableByNotification` in `electron/reply-watch.cjs`): the hub refuses an ordinary reply to it, and
   only main's signed answer from the app's own window counts. A click opens its card, whose options main
   signs. A signing path from the notification itself would be a new approval surface and is not built.
+
+## Session worktrees (#432), part 1: the driver and the store
+
+Design: [`2026-11-03-session-worktrees-design.md`](../superpowers/specs/2026-11-03-session-worktrees-design.md).
+Main does not send the field yet (part 2), so nothing changes for anyone today.
+
+- **The spec** (`launch-spec.ts`) stays at `v: 1`. A `new` spec may carry `worktree: { path, branch }`,
+  and `cwd` stays the checkout. `worktreePlanError` (`src/worktree.ts`) checks it against the launch
+  id: exactly those two fields, `path` a normalized absolute `<root>/<repo>/<slug>-<short>` with none
+  of `( ) * ? [ ] { } , \` or a control character, `branch` exactly `agent-inbox/<slug>-<short>`
+  (`^agent-inbox/[a-z0-9]+(-[a-z0-9]+)*-[0-9a-f]{8}$`), `<short>` the launch id's first 8 digits. An
+  older driver refuses the unknown field with exit 65.
+- **Creating it** (`createWorktree`, in `run` after `claimDriverSlot` and before `createLaunch`). The
+  `git` is found on the spec's PATH and trust-checked like `copilot` (`findExecutable`), and runs argv
+  only with `childEnv(spec.env)` plus `GIT_TERMINAL_PROMPT=0`, minus the variables that point git at
+  another repository (`GIT_DIR`, `GIT_WORK_TREE`, …). `rev-parse --show-toplevel` must equal the
+  spec's real `cwd` (a subfolder, a bare repository or a plain folder refuses); `HEAD^{commit}` must
+  exist ("This repository has no commits yet"); `symbolic-ref -q HEAD` is the `base_ref` (null when
+  detached). Neither the root nor the worktree may be inside the checkout (a root that holds the
+  checkout, with `<repo>` its name, would put it there), and the root and `<root>/<repo>` (each
+  created 0700 when missing) must be real directories, no symlink anywhere on the path, owned by the
+  user and not group- or world-writable. Every real path is `realpathSync.native`, which returns the
+  on-disk letter case (Node's `realpathSync` keeps the case it is given, so on a case-insensitive
+  volume a root in another case would pass for outside the checkout); the checkout is compared in
+  that case too. An existing path or branch refuses before git runs. Then
+  `worktree add --lock --reason "agent-inbox launch <short>" -b <branch> <path> <base sha>`, bounded at
+  120 s; `realpath(path)` must equal `path`. The checkout's uncommitted and untracked entries stay there
+  and are logged as `checkout_dirty` with their count. The launch's `cwd` becomes the worktree, its
+  project is inferred from the checkout and its stream is the branch.
+- **Undo.** A refusal after creation (a pin, the host, the registration, the edits folder) ends the row
+  with `error:start`, then runs `worktree unlock`, `worktree remove --force` (only git and the checkout
+  hook have touched it), and, once the folder is gone, `update-ref -d refs/heads/<branch> <base sha>`, a
+  compare-and-delete that spares a branch that moved; the row gets `worktree_removed_at`.
+- **Locked while held.** End (including a forced Stop and a resume that ends at once on a spent
+  budget) runs `worktree unlock` in the driver's own exit path; park keeps the lock. A failed unlock is
+  logged (`worktree_unlock_failed`), never retried. Nothing is ever removed at end, and no branch is
+  deleted once a session has run.
+- **Storage.** Seven nullable `launches` columns: `checkout_root`, `worktree_path` (equal to `cwd`),
+  `branch`, `base_sha`, `base_ref`, `worktree_removed_at`, `worktree_summary` (written from part 4). The
+  whole-table `launches` domain's update trigger gets a new name (fresh hubs have only it; existing
+  hubs keep the old one beside it). `launchView` passes them through. An ended launch whose worktree is
+  kept is never pruned, and `listLaunches` carries up to 50 of them besides the 50 newest ended;
+  `listLaunchFolders` leaves out every launch's `worktree_path`, which its sessions record as
+  `repo_root`. An older driver's INSERT names none of them; an older driver's prune can drop a kept
+  worktree's ended row, and the worktree stays on disk, locked with a reason naming Agent Inbox.
+- **Tests**: `test/worktree.test.ts` (real git in scratch repositories: creation, every refusal creates
+  nothing, undo, a moved branch survives), `test/driver-run.test.ts` (a worktree launch end to end:
+  the row, copilot's cwd, the lock while running and parked, unlock at end, undo after a refusal),
+  `test/launches.test.ts` (the columns, prune, list and folder rules), `test/launch-spec.test.ts`.

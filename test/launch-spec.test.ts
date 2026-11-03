@@ -29,6 +29,9 @@ describe('the launch spec (§8)', () => {
     })
     // Edits in the worktree (#412 step 3, PR 4) is a launch mode like the others
     expect(parseLaunchSpec(spec({ mode: 'edits' }), ID)).toMatchObject({ ok: true, spec: { mode: 'edits' } })
+    // #432: a new worktree of cwd, at the path and on the branch main planned for this launch id
+    const worktree = { path: '/home/shariqh/.agent-inbox/worktrees/app/fix-it-22222222', branch: 'agent-inbox/fix-it-22222222' }
+    expect(parseLaunchSpec(spec({ worktree }), ID)).toMatchObject({ ok: true, spec: { cwd: '/work/app', worktree } })
     expect(parseLaunchSpec(JSON.stringify({ v: 1, kind: 'resume', launchId: ID, env: {}, launchKey: KEY }), ID))
       .toEqual({ ok: true, spec: { v: 1, kind: 'resume', launchId: ID, env: {}, launchKey: LAUNCH_KEY } })
   })
@@ -49,6 +52,11 @@ describe('the launch spec (§8)', () => {
     ['an env value that is not text', spec({ env: { PATH: 1 } }), /env must map/],
     ['an env name that is not a name', spec({ env: { 'A=B': 'c' } }), /env must map/],
     ['a short key', spec({ launchKey: Buffer.alloc(16).toString('base64') }), /32 bytes/],
+    ['a worktree with a root of its own', spec({ worktree: { path: '/w/app/fix-it-22222222', branch: 'agent-inbox/fix-it-22222222', root: '/w' } }), /unknown worktree field root/],
+    ['a worktree for another launch', spec({ worktree: { path: '/w/app/fix-it-33333333', branch: 'agent-inbox/fix-it-33333333' } }), /first 8 digits/],
+    ['a worktree branch that is not agent-inbox’s', spec({ worktree: { path: '/w/app/main', branch: 'main' } }), /worktree branch must be/],
+    ['a worktree path a tool pattern would read', spec({ worktree: { path: '/w/a[1]/fix-it-22222222', branch: 'agent-inbox/fix-it-22222222' } }), /none of/],
+    ['a relative worktree path', spec({ worktree: { path: 'w/app/fix-it-22222222', branch: 'agent-inbox/fix-it-22222222' } }), /normalized absolute path/],
     ['a resume that names facts', JSON.stringify({ v: 1, kind: 'resume', launchId: ID, env: {}, launchKey: KEY, mode: 'ask' }), /unknown field mode/],
   ] as Array<[string, string, RegExp, string?]>)('refuses %s', (_, text, error, launchId = ID) => {
     const parsed = parseLaunchSpec(text, launchId)

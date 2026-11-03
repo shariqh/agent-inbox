@@ -11,7 +11,8 @@ import {
   claimDriverSlot, createLaunch, driverStopRequested, endLaunch, fileLaunchAsk, getItem, getLaunch, launchDriverAlive,
   listLaunchAskReplies, listLaunches, openDb, parkLaunch, readSnapshotState, recordLaunchProgress, replyItem,
   requestLaunchStop, resumeLaunch, settleLaunchAsk, listActivity, markDriverTurn, requestLaunchInterrupt, takeLaunchInterrupt,
-  upsertActivity, holdDriverLeases, releaseDriverLeases, requestLaunchPark, takeLaunchPark,
+  upsertActivity, holdDriverLeases, releaseDriverLeases, requestLaunchPark, takeLaunchPark, insertItem, listLaunchFolders,
+  markWorktreeRemoved,
 } from '../src/store.js'
 import type { NewLaunch } from '../src/store.js'
 import { createViewer } from '../src/viewer.js'
@@ -151,6 +152,54 @@ describe('the launch row (§6)', () => {
     expect(getLaunch(db, ID(1))).toBeNull()
     expect(getLaunch(db, ID(2))).not.toBeNull()
     expect(listLaunchAskReplies(db, ID(1))).toEqual([])
+  })
+})
+
+describe('a launch in its own worktree (#432 §4)', () => {
+  const worktree = (n: number): Partial<NewLaunch> => ({
+    cwd: `/w/agent-inbox/fix-${n}-1111111${n}`, stream: `agent-inbox/fix-${n}-1111111${n}`,
+    worktree: { checkoutRoot: '/work/agent-inbox', branch: `agent-inbox/fix-${n}-1111111${n}`, baseSha: 'a'.repeat(40), baseRef: 'refs/heads/main' },
+  })
+
+  it('records the checkout, worktree, branch and base, served by /api/launches; a launch in its folder records none', async () => {
+    createLaunch(db, launch(1, worktree(1)))
+    createLaunch(db, launch(2))
+    expect(getLaunch(db, ID(1))).toMatchObject({
+      cwd: '/w/agent-inbox/fix-1-11111111', checkout_root: '/work/agent-inbox', worktree_path: '/w/agent-inbox/fix-1-11111111',
+      branch: 'agent-inbox/fix-1-11111111', base_sha: 'a'.repeat(40), base_ref: 'refs/heads/main', worktree_removed_at: null, worktree_summary: null,
+    })
+    expect(getLaunch(db, ID(2))).toMatchObject({ checkout_root: null, worktree_path: null, branch: null, base_sha: null, base_ref: null })
+    const body = await (await createViewer(db).request('/api/launches')).json() as Array<Record<string, unknown>>
+    expect(body.find((l) => l.id === ID(1))).toMatchObject({ checkout_root: '/work/agent-inbox', worktree_path: '/w/agent-inbox/fix-1-11111111', branch: 'agent-inbox/fix-1-11111111' })
+    tick()
+    expect(markWorktreeRemoved(db, ID(1))).toBe(true)
+    expect(markWorktreeRemoved(db, ID(1))).toBe(false)
+    expect(markWorktreeRemoved(db, ID(2))).toBe(false)
+    expect(getLaunch(db, ID(1))!.worktree_removed_at).toBe(new Date(clock).toISOString())
+  })
+
+  it('never prunes or drops from the list an ended launch whose worktree is kept, until it is removed', () => {
+    createLaunch(db, launch(1, worktree(1)))
+    endLaunch(db, ID(1), { reason: 'stopped' })
+    for (let n = 2; n <= 52; n++) {
+      tick()
+      createLaunch(db, launch(n))
+      endLaunch(db, ID(n), { reason: 'stopped' })
+    }
+    expect(listLaunches(db).map((l) => l.id)).toContain(ID(1))
+    expect(listLaunches(db)).toHaveLength(51)
+    tick(30 * 24 * 60 * 60_000 + 1000)
+    expect(createLaunch(db, launch(60)).pruned).not.toContain(ID(1))
+    expect(getLaunch(db, ID(1))).not.toBeNull()
+    markWorktreeRemoved(db, ID(1))
+    expect(createLaunch(db, launch(61)).pruned).toContain(ID(1))
+  })
+
+  it('leaves a launch’s worktree out of New session’s folders, though its sessions record it', () => {
+    createLaunch(db, launch(1, worktree(1)))
+    insertItem(db, { project: 'agent-inbox', stream: '', agent: 'a', kind: 'note', title: 'x', repo_root: '/work/agent-inbox' })
+    insertItem(db, { project: 'agent-inbox', stream: '', agent: 'a', kind: 'note', title: 'y', repo_root: '/w/agent-inbox/fix-1-11111111' })
+    expect(listLaunchFolders(db).map((f) => f.root)).toEqual(['/work/agent-inbox'])
   })
 })
 

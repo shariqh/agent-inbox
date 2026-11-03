@@ -79,7 +79,7 @@ describe('the driver’s terminal (#412 review)', () => {
       '`agent-inbox-driver: ${terminalSafe(message',
       'text',
     ].sort())
-    for (const file of ['driver.ts', 'driver-tty.ts', 'driver-link.ts', 'driver-policy.ts', 'acp-client.ts', 'driver-launch.ts', 'launch-spec.ts', 'launch-sign.ts']) {
+    for (const file of ['driver.ts', 'driver-tty.ts', 'driver-link.ts', 'driver-policy.ts', 'acp-client.ts', 'driver-launch.ts', 'launch-spec.ts', 'launch-sign.ts', 'worktree.ts']) {
       expect(readFileSync(join(REPO, 'src', file), 'utf8'), file).not.toMatch(/process\.(stdout|stderr)\.write|console\./)
     }
   })

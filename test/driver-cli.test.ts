@@ -120,7 +120,7 @@ describe('the driver stays out of the MCP server’s and the viewer’s graphs (
   }
   const DRIVER = [
     'src/driver.ts', 'src/driver-cli.ts', 'src/driver-link.ts', 'src/driver-policy.ts', 'src/driver-tty.ts', 'src/acp-client.ts',
-    'src/driver-launch.ts', 'src/launch-spec.ts', 'src/launch-sign.ts',
+    'src/driver-launch.ts', 'src/launch-spec.ts', 'src/launch-sign.ts', 'src/worktree.ts',
   ]
 
   it('no driver module is reachable from the stdio MCP server, the hook, the watcher or the viewer', () => {

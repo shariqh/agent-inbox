@@ -37,7 +37,7 @@ const config = (mode) => [{ id: 'mode', currentValue: mode }, { id: 'allow_all',
 // Node uses low fds of its own, so ask a shell it starts, as a tool call would:
 // a descriptor copilot inherited is inherited again there
 const fd3 = require('child_process').execFileSync('/bin/sh', ['-c', 'if [ -e /dev/fd/3 ]; then echo open; else echo closed; fi']).toString().trim()
-fs.appendFileSync(process.env.FAKE_LOG, JSON.stringify({ argv: process.argv.slice(2), env: { hooks: process.env.AGENT_INBOX_HOOKS, db: process.env.AGENT_INBOX_DB }, fd3 }) + '\\n')
+fs.appendFileSync(process.env.FAKE_LOG, JSON.stringify({ argv: process.argv.slice(2), env: { hooks: process.env.AGENT_INBOX_HOOKS, db: process.env.AGENT_INBOX_DB }, fd3, cwd: process.cwd() }) + '\\n')
 let buffer = ''
 let prompt = null
 const send = (m) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...m }) + '\\n')
@@ -184,6 +184,7 @@ describe('agent-inbox-driver run (#412 step 3)', () => {
       env: { hooks: '0', db: r.db },
       // fd 3 carried the launch key: copilot and its shells never inherit it
       fd3: 'closed',
+      cwd: realpathSync(join(r.dir, 'work')),
     })
     expect(requestLaunchStop(r.hub, LAUNCH)).toBe('stopping')
     expect(await run.exited).toBe(0)
@@ -253,6 +254,92 @@ describe('agent-inbox-driver run (#412 step 3)', () => {
     expect(getLaunch(home.hub, LAUNCH)).toMatchObject({ status: 'ended', end_reason: 'error:start' })
     expect(readFileSync(home.fakeLog, 'utf8')).toBe('')
   }, 40_000)
+
+  // #432: a launch in its own worktree, made by the driver from the checkout's HEAD before its status line
+  describe('in its own worktree (#432)', () => {
+    const SHORT = LAUNCH.slice(0, 8)
+    // the scratch folder's work/ as a repository with one commit; git's config is the scratch HOME's
+    function checkout(r: Rig): { git: (cwd: string, ...args: string[]) => string; work: string; plan: { path: string; branch: string } } {
+      const env = { ...r.env, GIT_CONFIG_NOSYSTEM: '1' }
+      const git = (cwd: string, ...args: string[]) => execFileSync('git', ['-C', cwd, ...args], { env, encoding: 'utf8' }).trim()
+      const work = realpathSync(join(r.dir, 'work'))
+      git(work, '-c', 'init.defaultBranch=main', 'init', '-q')
+      writeFileSync(join(work, 'README.md'), 'hello\n')
+      git(work, 'add', 'README.md')
+      git(work, '-c', 'user.name=shariqh', '-c', 'user.email=shariqh@users.noreply.github.com', 'commit', '-q', '-m', 'first')
+      const leaf = `fix-the-failing-test-${SHORT}`
+      return { git, work, plan: { path: join(realpathSync(r.dir), 'worktrees', 'work', leaf), branch: `agent-inbox/${leaf}` } }
+    }
+    const locked = (list: string, path: string) => list.split('\n\n').find((entry) => entry.startsWith(`worktree ${path}\n`))?.includes('\nlocked')
+
+    it('runs copilot in a new locked worktree it records, allows a dirty checkout, and unlocks it at the end, keeping it and its branch', async () => {
+      const r = rig()
+      const { git, work, plan } = checkout(r)
+      writeFileSync(join(work, 'README.md'), 'uncommitted\n')
+      const run = runDriver(r, newSpec(r, { worktree: plan }))
+      expect(await run.status()).toEqual({ ok: true, launch: LAUNCH })
+      await until(() => received(r).find((m) => m.method === 'session/prompt'), 'the task')
+      expect(received(r)[0]!.cwd).toBe(plan.path)
+      expect(getLaunch(r.hub, LAUNCH)).toMatchObject({
+        status: 'running', cwd: plan.path, worktree_path: plan.path, checkout_root: work, branch: plan.branch, stream: plan.branch,
+        project: 'work', base_sha: git(work, 'rev-parse', 'HEAD'), base_ref: 'refs/heads/main', worktree_removed_at: null,
+      })
+      expect(locked(git(work, 'worktree', 'list', '--porcelain'), plan.path)).toBe(true)
+      expect(readFileSync(join(plan.path, 'README.md'), 'utf8')).toBe('hello\n')
+      const events = readFileSync(join(r.dir, 'hub', 'launches', LAUNCH, 'events.ndjson'), 'utf8')
+      expect(events).toContain('"event":"checkout_dirty","count":1')
+      expect(requestLaunchStop(r.hub, LAUNCH)).toBe('stopping')
+      expect(await run.exited).toBe(0)
+      expect(getLaunch(r.hub, LAUNCH)).toMatchObject({ status: 'ended', worktree_removed_at: null })
+      expect(locked(git(work, 'worktree', 'list', '--porcelain'), plan.path)).toBe(false)
+      expect(existsSync(plan.path)).toBe(true)
+      expect(git(work, 'branch', '--list', plan.branch)).toContain(plan.branch)
+    }, 40_000)
+
+    it('keeps the lock while parked, and a resumed driver runs there and unlocks it when the launch ends', async () => {
+      const r = rig()
+      const { git, work, plan } = checkout(r)
+      const run = runDriver(r, newSpec(r, { worktree: plan }), { AGENT_INBOX_DRIVER_IDLE_MS: '400' })
+      expect(await run.status()).toEqual({ ok: true, launch: LAUNCH })
+      expect(await run.exited).toBe(0)
+      expect(getLaunch(r.hub, LAUNCH)).toMatchObject({ status: 'parked', worktree_path: plan.path })
+      expect(locked(git(work, 'worktree', 'list', '--porcelain'), plan.path)).toBe(true)
+      const resumed = runDriver(r, { v: 1, kind: 'resume', launchId: LAUNCH, env: r.env, launchKey: LAUNCH_KEY.toString('base64') })
+      expect(await resumed.status()).toEqual({ ok: true, launch: LAUNCH })
+      await until(() => received(r).find((m) => m.method === 'session/load'), 'the load')
+      expect(received(r).filter((m) => 'argv' in m).map((m) => m.cwd)).toEqual([plan.path, plan.path])
+      expect(locked(git(work, 'worktree', 'list', '--porcelain'), plan.path)).toBe(true)
+      expect(requestLaunchStop(r.hub, LAUNCH)).toBe('stopping')
+      expect(await resumed.exited).toBe(0)
+      expect(locked(git(work, 'worktree', 'list', '--porcelain'), plan.path)).toBe(false)
+    }, 40_000)
+
+    it('a refusal after it made the worktree leaves no worktree, branch or lock, and the row says it is gone', async () => {
+      const r = rig()
+      const { git, work, plan } = checkout(r)
+      rmSync(join(r.dir, 'bin', 'copilot'))
+      const run = runDriver(r, newSpec(r, { worktree: plan }))
+      expect(await run.status()).toEqual({ ok: false, error: 'no copilot executable on PATH (install GitHub Copilot CLI first)' })
+      expect(await run.exited).toBe(1)
+      expect(getLaunch(r.hub, LAUNCH)).toMatchObject({ status: 'ended', end_reason: 'error:start', worktree_path: plan.path })
+      expect(getLaunch(r.hub, LAUNCH)!.worktree_removed_at).not.toBeNull()
+      expect(existsSync(plan.path)).toBe(false)
+      expect(git(work, 'branch', '--format=%(refname:short)')).toBe('main')
+      expect(git(work, 'worktree', 'list', '--porcelain')).not.toContain(plan.path)
+    }, 40_000)
+
+    it('refuses a folder that is not a repository’s top before writing any row', async () => {
+      const r = rig()
+      const { plan } = checkout(r)
+      mkdirSync(join(r.dir, 'work', 'sub'))
+      const run = runDriver(r, newSpec(r, { cwd: join(r.dir, 'work', 'sub'), worktree: plan }))
+      expect(String((await run.status()).error)).toMatch(/is not the top folder of a git repository/)
+      expect(await run.exited).toBe(1)
+      expect(getLaunch(r.hub, LAUNCH)).toBeNull()
+      expect(existsSync(plan.path)).toBe(false)
+      expect(readFileSync(r.fakeLog, 'utf8')).toBe('')
+    }, 40_000)
+  })
 
   it('allows a tool call only on a reply signed under the launch key from its spec', async () => {
     const r = rig()

@@ -760,6 +760,18 @@ function runMigrations(db: Database.Database): void {
   // naming this server as a channel, so a message pushes a turn at once. Written
   // by this build's presence writes only, kept on omission like the flag above.
   ensureColumn(db, 'activity', 'push_wake', 'INTEGER')
+  // issue #432 — a launch run in its own git worktree: the checkout it was made
+  // from, the worktree (equal to cwd), its branch, the base commit and the
+  // checkout's branch then, when it was removed, and the driver's turn-end
+  // summary. NULL on every other launch and on every row an older driver
+  // writes: its INSERT never names them.
+  ensureColumn(db, 'launches', 'checkout_root', 'TEXT')
+  ensureColumn(db, 'launches', 'worktree_path', 'TEXT')
+  ensureColumn(db, 'launches', 'branch', 'TEXT')
+  ensureColumn(db, 'launches', 'base_sha', 'TEXT')
+  ensureColumn(db, 'launches', 'base_ref', 'TEXT')
+  ensureColumn(db, 'launches', 'worktree_removed_at', 'TEXT')
+  ensureColumn(db, 'launches', 'worktree_summary', 'TEXT')
   // issue #297 — keep this last: its triggers name the columns added above
   migrateSnapshotDomains(db)
 }
@@ -4006,6 +4018,16 @@ export interface LaunchRecord {
   active_ms: number
   tool_calls: number
   revision: number
+  /** #432: the checkout a launch's worktree was made from; null for a launch run in its folder. */
+  checkout_root: string | null
+  /** #432: the launch's worktree, equal to `cwd`; null for a launch run in its folder. */
+  worktree_path: string | null
+  branch: string | null
+  base_sha: string | null
+  /** The checkout's branch when the worktree was made, as a full ref; null on a detached HEAD. */
+  base_ref: string | null
+  worktree_removed_at: string | null
+  worktree_summary: string | null
 }
 
 /** What /api/launches serves of a launch: no prompt, process ids or ACP session id. */
@@ -4014,7 +4036,8 @@ export type Launch = Omit<LaunchRecord, 'prompt' | 'driver_pid' | 'child_pgid' |
   resumable: boolean
 }
 
-// ended launches /api/launches carries, newest first; every running and parked one is carried
+// ended launches /api/launches carries, newest first; every running and parked one is carried,
+// and so are up to as many ended ones whose worktree is kept (#432)
 const RECENT_ENDED_LAUNCHES = 50
 const LAUNCH_RETENTION_MS = 30 * 24 * 60 * 60000
 
@@ -4046,7 +4069,12 @@ export interface NewLaunch {
   prompt: string
   specVersion: number
   driverPid: number
+  /** #432: the worktree the driver made for it; `cwd` is its path. */
+  worktree?: { checkoutRoot: string; branch: string; baseSha: string; baseRef: string | null }
 }
+
+// an ended launch whose worktree is still on disk (#432): never pruned, always listed
+const WORKTREE_KEPT = `worktree_path IS NOT NULL AND worktree_removed_at IS NULL`
 
 // The driver's start, after it claimed its slot: one row, status running. In
 // the same transaction, ended launches older than 30 days are removed with
@@ -4057,19 +4085,24 @@ export function createLaunch(db: Database.Database, launch: NewLaunch): { pruned
   const nowMs = Date.now()
   const now = new Date(nowMs).toISOString()
   return db.transaction(() => {
-    const pruned = db.prepare(`DELETE FROM launches WHERE status = 'ended' AND ended_at < ? RETURNING id`)
+    const pruned = db.prepare(`DELETE FROM launches WHERE status = 'ended' AND ended_at < ? AND NOT (${WORKTREE_KEPT}) RETURNING id`)
       .pluck().all(new Date(nowMs - LAUNCH_RETENTION_MS).toISOString()) as string[]
     const forget = db.prepare(`DELETE FROM launch_asks WHERE launch_id = ?`)
     for (const id of pruned) forget.run(id)
+    const worktree = launch.worktree
     db.prepare(`INSERT INTO launches (
         id, host, project, stream, cwd, mode, model, reasoning_effort, budget_active_ms, budget_tool_calls,
-        prompt, spec_version, status, created_at, updated_at, driver_pid)
+        prompt, spec_version, status, created_at, updated_at, driver_pid,
+        checkout_root, worktree_path, branch, base_sha, base_ref)
       VALUES (@id, @host, @project, @stream, @cwd, @mode, @model, @effort, @activeMs, @toolCalls,
-        @prompt, @specVersion, 'running', @now, @now, @driverPid)`).run({
+        @prompt, @specVersion, 'running', @now, @now, @driverPid,
+        @checkoutRoot, @worktreePath, @branch, @baseSha, @baseRef)`).run({
       id: launch.id, host: launch.host, project: launch.project, stream: launch.stream, cwd: launch.cwd,
       mode: launch.mode, model: launch.model ?? null, effort: launch.reasoningEffort ?? null,
       activeMs: launch.budgetActiveMs, toolCalls: launch.budgetToolCalls, prompt: launch.prompt,
       specVersion: launch.specVersion, now, driverPid: launch.driverPid,
+      checkoutRoot: worktree?.checkoutRoot ?? null, worktreePath: worktree ? launch.cwd : null,
+      branch: worktree?.branch ?? null, baseSha: worktree?.baseSha ?? null, baseRef: worktree?.baseRef ?? null,
     })
     return { pruned: pruned.sort() }
   }).immediate()
@@ -4082,11 +4115,10 @@ export function getLaunch(db: Database.Database, id: string): LaunchRecord | nul
 }
 
 export function listLaunches(db: Database.Database): Launch[] {
-  const rows = db.prepare(`SELECT * FROM (
-      SELECT * FROM launches WHERE status <> 'ended'
-      UNION ALL
-      SELECT * FROM (SELECT * FROM launches WHERE status = 'ended' ORDER BY ended_at DESC, id DESC LIMIT ?)
-    ) ORDER BY created_at DESC, id DESC`).all(RECENT_ENDED_LAUNCHES) as Array<Omit<LaunchRecord, 'sessions'> & { sessions: string | null }>
+  const rows = db.prepare(`SELECT * FROM launches WHERE status <> 'ended'
+      OR id IN (SELECT id FROM launches WHERE status = 'ended' ORDER BY ended_at DESC, id DESC LIMIT @limit)
+      OR id IN (SELECT id FROM launches WHERE status = 'ended' AND ${WORKTREE_KEPT} ORDER BY ended_at DESC, id DESC LIMIT @limit)
+    ORDER BY created_at DESC, id DESC`).all({ limit: RECENT_ENDED_LAUNCHES }) as Array<Omit<LaunchRecord, 'sessions'> & { sessions: string | null }>
   return rows.map((row) => launchView(parseLaunch(row)))
 }
 
@@ -4195,6 +4227,14 @@ export function requestLaunchStop(db: Database.Database, id: string): 'stopping'
     }
     return null
   }).immediate()
+}
+
+// #432: the launch's worktree is gone from disk (an undo after a refused start,
+// or Remove worktree). Once only; the branch is never touched here.
+export function markWorktreeRemoved(db: Database.Database, id: string): boolean {
+  const now = new Date().toISOString()
+  return db.prepare(`UPDATE launches SET worktree_removed_at = ?, updated_at = ?, revision = revision + 1
+                      WHERE id = ? AND worktree_path IS NOT NULL AND worktree_removed_at IS NULL`).run(now, now, id).changes === 1
 }
 
 // Whether a launch's driver holds a fresh `driver:` lease: a running launch
@@ -4345,7 +4385,8 @@ export function answerLaunchAsk(
 
 // The folders a launch may start in from a project the hub knows (§8): every
 // repository folder an item or plan recorded (#324), with the newest project
-// name seen there, at most 200.
+// name seen there, at most 200. A launch's own worktree is not one (#432): its
+// sessions record it as their repo_root.
 export function listLaunchFolders(db: Database.Database): Array<{ root: string; project: string }> {
   return db.prepare(`SELECT root, project FROM (
       SELECT repo_root AS root, project, MAX(created_at) AS at FROM (
@@ -4353,7 +4394,9 @@ export function listLaunchFolders(db: Database.Database): Array<{ root: string; 
         UNION ALL
         SELECT repo_root, project, created_at FROM boards WHERE repo_root IS NOT NULL AND repo_root <> ''
       ) GROUP BY repo_root
-    ) WHERE project NOT IN ('@sessions', '@mesh') ORDER BY at DESC, root ASC LIMIT 200`).all() as Array<{ root: string; project: string }>
+    ) WHERE project NOT IN ('@sessions', '@mesh')
+        AND root NOT IN (SELECT worktree_path FROM launches WHERE worktree_path IS NOT NULL)
+      ORDER BY at DESC, root ASC LIMIT 200`).all() as Array<{ root: string; project: string }>
 }
 
 // ── issue #411: the human's messages to one MCP session ─────────────────────

@@ -10,6 +10,8 @@ import { isAbsolute } from 'node:path'
 import { LAUNCH_KEY_BYTES } from './launch-sign.js'
 import { isReasoningEffort } from './driver-policy.js'
 import type { LaunchMode, ReasoningEffort } from './driver-policy.js'
+import { worktreePlanError } from './worktree.js'
+import type { WorktreePlan } from './worktree.js'
 
 /** The spec version this driver understands. Main checks the runtime's version before it sends one. */
 export const LAUNCH_SPEC_VERSION = 1
@@ -42,6 +44,8 @@ export interface NewLaunchSpec extends SpecCommon {
   reasoningEffort?: ReasoningEffort
   budgets: { activeMs: number; toolCalls: number }
   prompt: string
+  /** #432: run in a new worktree of `cwd` (the checkout), at the path and on the branch the confirmation showed. */
+  worktree?: WorktreePlan
 }
 
 export interface ResumeLaunchSpec extends SpecCommon {
@@ -78,7 +82,7 @@ export function parseLaunchSpec(text: string, launchId: string): SpecResult {
   if (raw.v !== LAUNCH_SPEC_VERSION) return fail(`version ${String(raw.v)} is not ${LAUNCH_SPEC_VERSION}`)
   if (raw.kind !== 'new' && raw.kind !== 'resume') return fail('kind must be new or resume')
   const shape = raw.kind === 'new'
-    ? exactKeys(raw, ['v', 'kind', 'launchId', 'host', 'cwd', 'mode', 'budgets', 'prompt', 'env', 'launchKey'], ['model', 'reasoningEffort'])
+    ? exactKeys(raw, ['v', 'kind', 'launchId', 'host', 'cwd', 'mode', 'budgets', 'prompt', 'env', 'launchKey'], ['model', 'reasoningEffort', 'worktree'])
     : exactKeys(raw, ['v', 'kind', 'launchId', 'env', 'launchKey'])
   if (shape) return fail(shape)
   if (typeof raw.launchId !== 'string' || !LAUNCH_ID.test(raw.launchId) || raw.launchId !== launchId) {
@@ -110,6 +114,8 @@ export function parseLaunchSpec(text: string, launchId: string): SpecResult {
   const toolCalls = budget(raw.budgets.toolCalls, LAUNCH_BUDGETS.toolCalls)
   if (activeMs === null || toolCalls === null) return fail('a budget is out of bounds')
   if (typeof raw.prompt !== 'string' || !raw.prompt.trim() || raw.prompt.length > MAX_PROMPT) return fail('prompt must hold 1 to 65536 characters')
+  const worktreeError = raw.worktree === undefined ? null : worktreePlanError(raw.worktree, raw.launchId)
+  if (worktreeError) return fail(worktreeError)
   return {
     ok: true,
     spec: {
@@ -122,6 +128,7 @@ export function parseLaunchSpec(text: string, launchId: string): SpecResult {
       ...(raw.reasoningEffort === undefined ? {} : { reasoningEffort: raw.reasoningEffort as ReasoningEffort }),
       budgets: { activeMs, toolCalls },
       prompt: raw.prompt,
+      ...(raw.worktree === undefined ? {} : { worktree: { path: (raw.worktree as WorktreePlan).path, branch: (raw.worktree as WorktreePlan).branch } }),
     },
   }
 }

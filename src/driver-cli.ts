@@ -40,9 +40,11 @@ import { childEnv, copilotAgentInboxServer, copilotArgs, editsFolder, isReasonin
 import type { LaunchMode, ReasoningEffort } from './driver-policy.js'
 import { inferProject, inferStream } from './infer.js'
 import {
-  claimDriverSlot, createLaunch, defaultDbPath, endLaunch, listHostSessions, liveSessionServers, openDb, parkLaunch,
+  claimDriverSlot, createLaunch, defaultDbPath, endLaunch, listHostSessions, liveSessionServers, markWorktreeRemoved, openDb, parkLaunch,
   recordLaunchProgress, releaseDriverLeases, requestDriverStop, requestLaunchStop, resumeLaunch,
 } from './store.js'
+import { createWorktree, gitEnv, undoWorktree, unlockWorktree } from './worktree.js'
+import type { CreatedWorktree } from './worktree.js'
 import type Database from 'better-sqlite3'
 
 const USAGE = `usage: agent-inbox-driver copilot --cwd <dir> --mode ask|read-only --prompt-file <file> [--model <id>] [--reasoning-effort <level>]
@@ -445,10 +447,37 @@ async function runLaunch(argv: string[]): Promise<void> {
   // a refusal after the row is ours ends a new launch, and parks a resumed one
   // again as it was, so a failed Resume loses nothing
   let undoRow: (() => void) | null = null
+  // #432: a worktree this start created is undone too, the worktree before its branch (§2)
+  let undoCreated: (() => void) | null = null
   const refuse = (why: string): never => {
     try { undoRow?.() } catch { /* the hub is gone */ }
+    try { undoCreated?.() } catch { /* git is gone: the worktree stays, locked, and the row says so */ }
     try { releaseDriverLeases(db, lease) } catch { /* the hub is gone */ }
     return refuseStart(why, 1)
+  }
+  const home = spec.env.HOME && isAbsolute(spec.env.HOME) ? spec.env.HOME : null
+  const isDefault = home !== null && dbPath === join(home, '.agent-inbox', 'inbox.db')
+  const sessionEnv = childEnv(spec.env, { path: dbPath, isDefault })
+  // #432: the git that makes and unlocks a launch's worktree, trusted like copilot (§2)
+  let git: string | null = null
+  const findGit = (): string | { error: string } => {
+    if (git) return git
+    const found = findExecutable('git', spec.env.PATH)
+    if ('error' in found) return found
+    git = found.path
+    return git
+  }
+  // the worktree's checkout and path: from the spec, or, resuming, from the row
+  let worktreeOf: { checkout: string; path: string } | null = null
+  let created: CreatedWorktree | null = null
+  // an ended launch's worktree is unlocked; a parked one keeps its lock (§5)
+  let unlocked = false
+  const unlockAtEnd = (log?: (event: Record<string, unknown>) => void): void => {
+    if (!worktreeOf || unlocked) return
+    unlocked = true
+    const gitPath = findGit()
+    const why = typeof gitPath === 'string' ? unlockWorktree(gitPath, gitEnv(sessionEnv), worktreeOf.checkout, worktreeOf.path) : gitPath.error
+    if (why) log?.({ event: 'worktree_unlock_failed', message: why })
   }
 
   // the launch's facts: from the spec, or, resuming, from the row the first driver wrote
@@ -466,10 +495,24 @@ async function runLaunch(argv: string[]): Promise<void> {
     } catch {
       return refuse(`${spec.cwd} is not a folder`)
     }
+    // #432: a new worktree of the checkout, made before the row so the row records it (§2 steps 2–5)
+    const checkout = cwd
+    if (spec.worktree) {
+      const gitPath = findGit()
+      if (typeof gitPath !== 'string') return refuse(gitPath.error)
+      const made = createWorktree({ git: gitPath, env: gitEnv(sessionEnv), checkout, plan: spec.worktree, launchId })
+      if (!made.ok) return refuse(made.error)
+      created = made.worktree
+      const undo = made.worktree
+      undoCreated = () => { if (undoWorktree(gitPath, gitEnv(sessionEnv), undo)) markWorktreeRemoved(db, launchId) }
+      cwd = created.path
+      worktreeOf = { checkout, path: cwd }
+    }
     facts = {
       cwd, mode: spec.mode, ...(spec.model ? { model: spec.model } : {}), ...(spec.reasoningEffort ? { reasoningEffort: spec.reasoningEffort } : {}),
       activeMs: spec.budgets.activeMs, toolCalls: spec.budgets.toolCalls, prompt: spec.prompt,
-      project: inferProject(cwd), stream: inferStream(cwd),
+      // a worktree has the checkout's origin; its stream is its own branch (§4)
+      project: inferProject(checkout), stream: created ? created.branch : inferStream(cwd),
     }
     let pruned: string[]
     try {
@@ -477,6 +520,7 @@ async function runLaunch(argv: string[]): Promise<void> {
         id: launchId, host: 'copilot', project: facts.project, stream: facts.stream, cwd, mode: facts.mode,
         model: facts.model ?? null, reasoningEffort: facts.reasoningEffort ?? null, budgetActiveMs: facts.activeMs,
         budgetToolCalls: facts.toolCalls, prompt: facts.prompt, specVersion: LAUNCH_SPEC_VERSION, driverPid: process.pid,
+        ...(created ? { worktree: { checkoutRoot: checkout, branch: created.branch, baseSha: created.baseSha, baseRef: created.baseRef } } : {}),
       }).pruned
     } catch {
       return refuse(`launch ${launchId} already exists`)
@@ -491,6 +535,7 @@ async function runLaunch(argv: string[]): Promise<void> {
     const row = resumeLaunch(db, launchId, process.pid)
     if (!row) return refuse(`launch ${launchId} is not parked`)
     undoRow = () => { parkLaunch(db, launchId, { acpSession: row.acp_session, activeMs: row.active_ms, toolCalls: row.tool_calls }) }
+    if (row.worktree_path && row.checkout_root && row.worktree_removed_at === null) worktreeOf = { checkout: row.checkout_root, path: row.worktree_path }
     const mode = MODES.find((m) => m === row.mode)
     const effort = row.reasoning_effort !== null && isReasoningEffort(row.reasoning_effort) ? row.reasoning_effort : undefined
     if (!mode) return refuse(`launch ${launchId} has an unknown mode`)
@@ -502,7 +547,7 @@ async function runLaunch(argv: string[]): Promise<void> {
     // a launch that already used a budget ends here, before anything starts
     const spent = row.tool_calls >= row.budget_tool_calls ? 'budget:tool_calls' : row.active_ms >= row.budget_active_ms ? 'budget:active_time' : null
     if (spent) {
-      undoRow = () => { endLaunch(db, launchId, { reason: spent }) }
+      undoRow = () => { endLaunch(db, launchId, { reason: spent }); unlockAtEnd() }
       return refuse(`launch ${launchId} has used its ${spent === 'budget:tool_calls' ? 'tool-call' : 'active-time'} budget`)
     }
     // the earlier driver's sessions, proved by the row (§14.3): their open
@@ -528,8 +573,6 @@ async function runLaunch(argv: string[]): Promise<void> {
   if ('error' in server) refuse(server.error)
   const host = resolveHost(spec.env.PATH)
   if ('error' in host) return refuse(host.error)
-  const home = spec.env.HOME && isAbsolute(spec.env.HOME) ? spec.env.HOME : null
-  const isDefault = home !== null && dbPath === join(home, '.agent-inbox', 'inbox.db')
   // Edits in the worktree writes unasked only under the folder as it resolves
   // now: a resumed launch whose folder resolves elsewhere does not start
   let edits: ReturnType<typeof editsFolder> = null
@@ -549,9 +592,14 @@ async function runLaunch(argv: string[]): Promise<void> {
       mode: facts.mode, agentInboxServer: (server as { name: string }).name, model: facts.model, reasoningEffort: facts.reasoningEffort,
       ...(edits ? { editsFolder: edits } : {}),
     })],
-    cwd: facts.cwd, env: childEnv(spec.env, { path: dbPath, isDefault }),
+    cwd: facts.cwd, env: sessionEnv,
     spawnLog: { launch: launchId, mode: facts.mode, cwd: facts.cwd, kind: spec.kind, host: host.script, interpreter: host.command === host.script ? null : host.command },
   })
+  if (created) {
+    log({ event: 'worktree', path: created.path, branch: created.branch, checkout: created.checkout, base: created.baseSha })
+    // uncommitted and untracked changes stayed in the checkout (§2)
+    if (created.dirty) log({ event: 'checkout_dirty', count: created.dirty })
+  }
   if (child.pid !== undefined) {
     const startedAt = processIdentity(child.pid)
     try {
@@ -582,15 +630,17 @@ async function runLaunch(argv: string[]): Promise<void> {
   // finished in 15 s, forces. Either way the row records how it ended.
   const closeRow = (reason: EndReason) => {
     const usage = driver.usage()
+    let ended = true
     try {
       if (reason === 'idle' || reason === 'park') {
-        parkLaunch(db, launchId, { acpSession: driver.resumableSession(), ...usage, forgetSession: driver.sessionGone() })
+        ended = parkLaunch(db, launchId, { acpSession: driver.resumableSession(), ...usage, forgetSession: driver.sessionGone() }) !== 'parked'
       }
       // a load that failed for another reason than "never prompted" parks it again, to retry (§7)
       else if (reason === 'error:load') {
-        parkLaunch(db, launchId, { acpSession: loading, ...usage, reason: `Copilot could not load the session: ${driver.loadFailure() ?? 'unknown error'}` })
+        ended = parkLaunch(db, launchId, { acpSession: loading, ...usage, reason: `Copilot could not load the session: ${driver.loadFailure() ?? 'unknown error'}` }) !== 'parked'
       } else endLaunch(db, launchId, { reason, ...usage })
     } catch { /* the hub is gone: the launch reads as lost */ }
+    if (ended) unlockAtEnd(log)
   }
   const sleep = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
   installStopHandlers({

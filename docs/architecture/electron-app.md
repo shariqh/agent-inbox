@@ -12,6 +12,12 @@ How Setup, update installs and local file links are granted to the app's own vie
 
 Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly verbatim. Claude Code and Copilot CLI load this file automatically when they read or edit a file matching the `paths`/`applyTo` globs above (through the symlinks in `.claude/rules/` and `.github/instructions/`); anyone else should read it before changing those files.
 
+**A checkout build beside the installed app.** `npm run electron` reuses a viewer already listening on
+4319, so it never owns one and gets no grants (no Setup, no session launches). `npm run electron:side`
+sets `AGENT_INBOX_PORT` (4392 unless set): the checkout build then starts and owns its own viewer on the
+same inbox, so an in-progress feature can be tried without quitting the installed app. Both apps may
+notify for the same new items while both run.
+
 ## History (shipped since v1)
 
 These landed after v1 and still hold invariants; the release history itself is in `CHANGELOG.md`.

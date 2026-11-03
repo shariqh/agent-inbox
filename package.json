@@ -38,6 +38,7 @@
     "install:agents": "bash scripts/install-agents.sh",
     "install:hooks": "bash scripts/install-hooks.sh",
     "electron": "electron .",
+    "electron:side": "AGENT_INBOX_PORT=${AGENT_INBOX_PORT:-4392} electron .",
     "release:inputs": "node scripts/release-inputs.mjs",
     "release:linux-inputs": "node scripts/linux-release-inputs.mjs",
     "release:windows-inputs": "node scripts/windows-release-inputs.mjs",

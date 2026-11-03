@@ -10,6 +10,12 @@
 // made; nothing else is ever removed here, and a branch that moved is kept.
 import { spawnSync } from 'node:child_process'
 import { lstatSync, mkdirSync, realpathSync, statSync } from 'node:fs'
+
+// The path as it is on disk. Node's realpathSync keeps the case it was given, so
+// on a case-insensitive volume `/W/App/x` "resolves" to itself even when the
+// folder is `/w/app/x`, and a root in another case would pass every string
+// comparison with the checkout. The native call returns the on-disk case.
+const realPath = (path: string): string => realpathSync.native(path)
 import { basename, dirname, isAbsolute, normalize } from 'node:path'
 
 /** What main planned and the confirmation showed: `<root>/<repo>/<slug>-<short>` on `agent-inbox/<slug>-<short>`. */
@@ -112,7 +118,7 @@ function checkFolder(dir: string, create: boolean, what: string): string | null 
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT' || !create) return `${what} ${dir} does not exist`
     try {
       // never create anything through a symlink
-      if (realpathSync(dirname(dir)) !== dirname(dir)) return `${what} ${dir} lies under a symlink`
+      if (realPath(dirname(dir)) !== dirname(dir)) return `${what} ${dir} lies under a symlink, or is not written in its on-disk letter case`
       mkdirSync(dir, { mode: 0o700 })
     } catch (made) {
       return `cannot create ${what} ${dir} (${(made as NodeJS.ErrnoException).code ?? 'error'})`
@@ -120,7 +126,9 @@ function checkFolder(dir: string, create: boolean, what: string): string | null 
   }
   try {
     const info = lstatSync(dir)
-    if (info.isSymbolicLink() || !info.isDirectory() || realpathSync(dir) !== dir) return `${what} ${dir} is a symlink or lies under one`
+    if (info.isSymbolicLink() || !info.isDirectory() || realPath(dir) !== dir) {
+      return `${what} ${dir} is a symlink or lies under one, or is not written in its on-disk letter case`
+    }
     if (!ownedPrivate(dir)) return `${what} ${dir} is not owned by you, or is writable by others`
   } catch {
     return `${what} ${dir} cannot be read`
@@ -133,7 +141,7 @@ const inside = (child: string, parent: string): boolean => child === parent || c
 /**
  * Creates the launch's worktree from the checkout's current HEAD commit, locked
  * for as long as the session holds it (§2 steps 2–5). `checkout` is the
- * spec's folder as it resolves now. Refuses, creating nothing, on a folder that
+ * spec's folder as it resolves now, in its on-disk case (realpathSync.native). Refuses, creating nothing, on a folder that
  * is not a repository's top, an unborn HEAD, a root that is a symlink, not
  * yours, writable by others or inside the checkout, an existing path or branch.
  */
@@ -149,7 +157,7 @@ export function createWorktree(o: {
   if (planError) return { ok: false, error: planError }
   const top = runGit(git, env, checkout, ['rev-parse', '--show-toplevel'], READ_TIMEOUT_MS)
   let topReal: string | null = null
-  try { topReal = top.ok ? realpathSync(top.stdout.trim()) : null } catch { /* gone */ }
+  try { topReal = top.ok ? realPath(top.stdout.trim()) : null } catch { /* gone */ }
   if (topReal !== checkout) return { ok: false, error: `${checkout} is not the top folder of a git repository with a working tree` }
   const head = runGit(git, env, checkout, ['rev-parse', '--verify', '-q', 'HEAD^{commit}'], READ_TIMEOUT_MS)
   const baseSha = head.stdout.trim()
@@ -190,7 +198,7 @@ export function createWorktree(o: {
     return { ok: false, error: add.message }
   }
   let real: string | null = null
-  try { real = realpathSync(plan.path) } catch { /* checked below */ }
+  try { real = realPath(plan.path) } catch { /* checked below */ }
   if (real !== plan.path) {
     undoWorktree(git, env, worktree)
     return { ok: false, error: `${plan.path} did not resolve to itself after git created it` }

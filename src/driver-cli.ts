@@ -451,7 +451,8 @@ async function runLaunch(argv: string[]): Promise<void> {
   let undoCreated: (() => void) | null = null
   const refuse = (why: string): never => {
     try { undoRow?.() } catch { /* the hub is gone */ }
-    try { undoCreated?.() } catch { /* git is gone: the worktree stays, locked, and the row says so */ }
+    // undoWorktree unlocks first; if git cannot remove it, the worktree stays on disk and the row keeps listing it
+    try { undoCreated?.() } catch { /* the hub is gone */ }
     try { releaseDriverLeases(db, lease) } catch { /* the hub is gone */ }
     return refuseStart(why, 1)
   }
@@ -496,8 +497,14 @@ async function runLaunch(argv: string[]): Promise<void> {
       return refuse(`${spec.cwd} is not a folder`)
     }
     // #432: a new worktree of the checkout, made before the row so the row records it (§2 steps 2–5)
-    const checkout = cwd
+    // the checkout in its on-disk case, so no root in another case can pass for outside it
+    let checkout = cwd
     if (spec.worktree) {
+      try {
+        checkout = realpathSync.native(cwd)
+      } catch {
+        return refuse(`${spec.cwd} is not a folder`)
+      }
       const gitPath = findGit()
       if (typeof gitPath !== 'string') return refuse(gitPath.error)
       const made = createWorktree({ git: gitPath, env: gitEnv(sessionEnv), checkout, plan: spec.worktree, launchId })

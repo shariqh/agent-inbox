@@ -5,12 +5,15 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createWorktree, gitEnv, undoWorktree, unlockWorktree, worktreePlanError } from '../src/worktree.js'
 import { removeScratchDirs, scratchDir } from './scratch.js'
 
 const LAUNCH = '1a2b3c4d-3333-4444-8555-666666666666'
 const GIT = execFileSync('/bin/sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim()
+// macOS's default APFS volume: the temp folder is found under its uppercased path too
+const CASE_INSENSITIVE = tmpdir().toUpperCase() !== tmpdir() && existsSync(tmpdir().toUpperCase())
 
 afterEach(() => removeScratchDirs())
 
@@ -136,6 +139,22 @@ describe('a launch’s worktree (#432)', () => {
     expect(existsSync(join(r.checkout, 'wt'))).toBe(false)
     expect(existsSync(join(r.dir, 'real', 'worktrees'))).toBe(false)
     expect(existsSync(join(r.checkout, 'fix-tests-1a2b3c4d'))).toBe(false)
+  })
+
+  // review of #444: Node's realpathSync keeps the case it is given, so a root in another case passed
+  // "not inside the checkout" and "its own real path", and git made the worktree inside the checkout
+  it.skipIf(!CASE_INSENSITIVE).each([
+    ['a missing root', (_r: ReturnType<typeof rig>) => undefined],
+    ['an existing root', (r: ReturnType<typeof rig>) => { mkdirSync(join(r.checkout, 'trees'), { mode: 0o700 }) }],
+  ] as Array<[string, (r: ReturnType<typeof rig>) => void]>)('refuses %s inside the checkout written in another letter case', (_, arrange) => {
+    const r = rig()
+    arrange(r)
+    const before = existsSync(join(r.checkout, 'trees'))
+    const made = r.create({ path: join(r.dir, 'APP', 'trees', 'app', 'fix-tests-1a2b3c4d') })
+    expect(made).toMatchObject({ ok: false, error: expect.stringMatching(/on-disk letter case/) })
+    expect(existsSync(join(r.checkout, 'trees'))).toBe(before)
+    expect(existsSync(join(r.checkout, 'trees', 'app'))).toBe(false)
+    expect(r.branches()).toEqual(['main'])
   })
 
   it('an undo removes the worktree, its lock and its branch; a branch that moved survives', () => {

@@ -471,7 +471,10 @@ Main does not send the field yet (part 2), so nothing changes for anyone today.
   detached). Neither the root nor the worktree may be inside the checkout (a root that holds the
   checkout, with `<repo>` its name, would put it there), and the root and `<root>/<repo>` (each
   created 0700 when missing) must be real directories, no symlink anywhere on the path, owned by the
-  user and not group- or world-writable. An existing path or branch refuses before git runs. Then
+  user and not group- or world-writable. Every real path is `realpathSync.native`, which returns the
+  on-disk letter case (Node's `realpathSync` keeps the case it is given, so on a case-insensitive
+  volume a root in another case would pass for outside the checkout); the checkout is compared in
+  that case too. An existing path or branch refuses before git runs. Then
   `worktree add --lock --reason "agent-inbox launch <short>" -b <branch> <path> <base sha>`, bounded at
   120 s; `realpath(path)` must equal `path`. The checkout's uncommitted and untracked entries stay there
   and are logged as `checkout_dirty` with their count. The launch's `cwd` becomes the worktree, its

@@ -73,6 +73,10 @@ Claude Code and Copilot CLI load this file automatically when they read or edit 
   no `--mode` in the argv, ACP ignores it) → the result must show that mode. If `allow_all` is still
   on, the driver re-asserts it off ONCE with `session/set_config_option` and continues only when a
   `config_option_update` verifies off within `setupWaitMs`; otherwise the launch ends.
+- **Setup deadline:** if setup has not reached ready within `setupDeadlineMs` (2 min), the driver
+  gives up so a hung Copilot cannot hold a driver slot: a new launch ends with `error:setup`, and a
+  resume ends with `error:load` and is parked again with its session and a `park_reason`, like any
+  other failed load. A launch that reached ready is never ended by it.
 - **Phases** (`driver-policy.ts`): `executing` allows only `#agent`; Plan first starts in
   `awaiting_plan_approval` (only `#plan`), files "Approve the plan and continue?" when a turn ends in
   `#plan`, and on approval enters `switching`, sends exactly one `set_mode #agent`, accepts that one

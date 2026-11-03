@@ -122,8 +122,11 @@ function verifyRuntimePayload({
   let rootStat
   try {
     rootStat = lstatSync(root)
-  } catch {
-    fail('not-found', `runtime payload does not exist: ${root}`)
+  } catch (err) {
+    // only a payload that is truly absent is `not-found` (#435: the one case a driver may run
+    // from the app bundle instead); EACCES, ENOTDIR, ELOOP and the rest are `unreadable`
+    if (err?.code === 'ENOENT') fail('not-found', `runtime payload does not exist: ${root}`)
+    fail('unreadable', `runtime payload cannot be read: ${root} (${err?.code ?? 'unknown error'})`)
   }
   if (rootStat.isSymbolicLink()) fail('symlinked-payload', `runtime payload is a symlink: ${root}`)
   if (!rootStat.isDirectory()) fail('not-a-directory', `runtime payload is not a directory: ${root}`)

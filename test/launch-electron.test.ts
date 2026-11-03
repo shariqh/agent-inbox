@@ -749,6 +749,56 @@ describe('the driver runtime (§8, #206)', () => {
       expect(roots(verify)).toEqual([w.installed])
     })
 
+    it('falls back only when the installed runtime is truly absent (ENOENT); one that cannot be read refuses (#440 review)', () => {
+      const realVerify = (createRequire(import.meta.url)('../electron/runtime-verify.cjs') as { verifyRuntimePayload(o: Json): unknown }).verifyRuntimePayload
+      const attempt = (root: string, w: ReturnType<typeof world>) => {
+        const seen: string[] = []
+        const codes: unknown[] = []
+        const verify = (options: Json) => {
+          seen.push(options.root as string)
+          if (options.root === w.bundle) return RT
+          try {
+            return realVerify(options)
+          } catch (err) {
+            codes.push((err as { code?: unknown }).code)
+            throw err
+          }
+        }
+        return { result: setupRunner.driverRuntime({ runtimeRoot: root, selection: w.selection, platform: 'darwin', arch: 'arm64', verify }), seen, codes }
+      }
+      const NOT_INSTALLED = /^This app's v2\.3\.0 runtime is not installed yet\. .*npm run electron\.$/
+
+      const absent = world()
+      mkdirSync(absent.root)
+      const a = attempt(absent.root, absent)
+      expect(a.result).toEqual({ node: join(absent.bundle, 'bin', 'node'), entry: join(absent.bundle, 'dist', 'driver-cli.js') })
+      expect(a.codes).toEqual(['not-found'])
+
+      const refusals: Array<[string, (w: ReturnType<typeof world>) => string, string, RegExp]> = [
+        // the runtime root is a file: ENOTDIR
+        ['a file for the root', (w) => { writeFileSync(w.root, ''); return w.root }, 'unreadable', NOT_INSTALLED],
+        // a symlink loop above the runtime folder: ELOOP
+        ['a symlink loop', (w) => { symlinkSync(`${w.root}-b`, w.root); symlinkSync(w.root, `${w.root}-b`); return w.root }, 'unreadable', NOT_INSTALLED],
+        // a file in place of the runtime folder
+        ['a file for the runtime', (w) => { mkdirSync(w.root); writeFileSync(w.installed, ''); return w.root }, 'not-a-directory', /failed integrity verification: reinstall it from Settings → Setup\.$/],
+      ]
+      if (process.getuid?.() !== 0) {
+        refusals.push(['an unreadable root (EACCES)', (w) => { mkdirSync(w.root, { mode: 0o000 }); return w.root }, 'unreadable', NOT_INSTALLED])
+      }
+      for (const [label, make, code, error] of refusals) {
+        const w = world()
+        const root = make(w)
+        try {
+          const r = attempt(root, w)
+          expect(r.codes, label).toEqual([code])
+          expect(r.result, label).toEqual({ error: expect.stringMatching(error) })
+          expect(r.seen, label).toEqual([w.installed])
+        } finally {
+          if (label.includes('EACCES')) chmodSync(w.root, 0o700)
+        }
+      }
+    })
+
     it.runIf(process.platform === 'darwin')('verifies a real bundled payload, and refuses one changed or without the driver', () => {
       const base = realpathSync(scratchDir('driver-bundle-'))
       const bundle = join(base, 'app', 'runtime', `darwin-${process.arch}`)

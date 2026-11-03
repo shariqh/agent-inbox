@@ -317,7 +317,8 @@ Everything main does for a driven session is injected and tested without Electro
   #206); a checkout uses its own build. Setup installs that runtime only while it registers a host to
   this app, never over a checkout or custom registration, so a release app whose agents run from a
   checkout has none. **Then, on macOS only, this app's own payload (#435):** when the installed copy is
-  not there at all (`not-found`), never when it is there and fails verification, main runs the payload
+  not there at all (`not-found`: `ENOENT` only; a folder that cannot be read, such as EACCES, ENOTDIR or
+  ELOOP, is `unreadable` and refuses), never when it is there and fails verification, main runs the payload
   inside the bundle (`bundledDriverRuntime`, the folder Setup runs its installers from:
   `runtimeSelection.path`), re-verified against the same signed digest with the same required files. It
   refuses a bundle under `/AppTranslocation/` (that mount goes when the app quits, and the driver with

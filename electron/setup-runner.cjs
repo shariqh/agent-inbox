@@ -73,6 +73,8 @@ function nodeMajor(version) {
  *     `..` traversal segment.
  *   - 'invalid-digest' — the payload's `digest` is not a well-formed SHA-256.
  *   - 'not-found' — nothing exists at the resolved path.
+ *   - 'unreadable' — the payload directory entry cannot be read (EACCES,
+ *     ENOTDIR, ELOOP): never treated as absent.
  *   - 'not-contained' — the resolved (or its REAL, symlink-followed) path
  *     escapes `appRoot` — including a symlinked payload directory used to
  *     point outside the app bundle.
@@ -281,12 +283,19 @@ function installedRuntime({ runtimeRoot, operation, host }) {
     if (manifest.runtimeId !== operation.runtimeId) throw new Error('runtime id mismatch')
   } catch (err) {
     return {
-      error: setupFailure(target, err?.code === 'not-found'
+      error: setupFailure(target, absentOrUnreadable(err)
         ? `Claude hooks were not moved: this app's v${operation.packageVersion} runtime is not installed yet.`
         : `Claude hooks were not moved: the installed v${operation.packageVersion} runtime failed integrity verification.`),
     }
   }
   return { dir }
+}
+
+// A runtime folder that is not there, or whose entry cannot be read (EACCES,
+// ENOTDIR, ELOOP): reported with the same "not installed yet" copy, but only
+// `not-found` lets a driver fall back to the bundle (#435).
+function absentOrUnreadable(err) {
+  return err?.code === 'not-found' || err?.code === 'unreadable'
 }
 
 function hasDriverSelection(selection) {
@@ -328,9 +337,9 @@ function installedDriverRuntime({ runtimeRoot, selection, platform = process.pla
   try {
     return verifyDriverRuntime(join(runtimeRoot, selection.manifest.runtimeId), { selection, platform, arch, verify })
   } catch (err) {
-    return err?.code === 'not-found'
+    return absentOrUnreadable(err)
       ? {
-          notInstalled: true,
+          ...(err.code === 'not-found' ? { notInstalled: true } : {}),
           error: `This app's v${selection.packageVersion} runtime is not installed yet. Setup installs it only while it `
             + 'registers Claude Code or Copilot CLI to this app (Settings → Setup), never over a source checkout or a '
             + "custom registration. If your agents run from a checkout, start sessions from that checkout's own build: "

@@ -98,6 +98,7 @@ describe('off means off on the page (§9 b)', () => {
     expect(section()).toBeNull()
     expect(document.getElementById('launch-settings')).toBeNull()
     expect(composer('mcp-1')?.querySelector('.msg-interrupt')).toBeNull()
+    expect(drawer().querySelector('.live-started-here, [data-launch-action="message"]')).toBeNull()
     expect(document.querySelector('.dash-lane-launch, .launch-dialog, .launch-transcript')).toBeNull()
   })
 
@@ -462,5 +463,100 @@ describe('the Agents view (#397, #412 step 3)', () => {
       .find((el) => el.dataset.meshSession === session)?.querySelector('.mesh-driven')?.textContent
     expect(tag('mcp-1')).toBe('started here')
     expect(tag('mcp-2')).toBe('driven')
+  })
+})
+
+describe('Message on a launch’s row (#412)', () => {
+  const launchComposer = (id: string) => launchRow(id)?.querySelector<HTMLElement>('.msg-composer') ?? null
+
+  it('appears only on a running, linked launch, in the granted window', async () => {
+    launchBridge()
+    db = freshDb()
+    newLaunch(db)
+    await bootApp(db)
+    openDrawer()
+    await changedPollTick(db)
+    // starting: no session linked yet
+    expect(action(LAUNCH, 'message')).toBeNull()
+    drivenSession(db)
+    await changedPollTick(db)
+    expect(action(LAUNCH, 'message')?.textContent).toBe('Message')
+    parkLaunch(db, LAUNCH, { acpSession: 'acp-1', activeMs: 10, toolCalls: 1 })
+    await changedPollTick(db)
+    expect(launchRow(LAUNCH)!.querySelector('.live-launch-status')!.textContent).toMatch(/^Parked/)
+    expect(action(LAUNCH, 'message')).toBeNull()
+  })
+
+  it('opens the session’s composer under the row, shares its draft, and sends through the message route', async () => {
+    launchBridge()
+    db = freshDb()
+    newLaunch(db)
+    drivenSession(db)
+    const bridge = await bootApp(db)
+    await changedPollTick(db)
+    openDrawer()
+    click(action(LAUNCH, 'message'))
+    await settle()
+    const el = launchComposer(LAUNCH)!
+    expect(el.dataset.msgSession).toBe('mcp-1')
+    expect(el.querySelector('.msg-delivery')!.textContent).toBe('Arrives now: Agent Inbox runs this session.')
+    const box = el.querySelector<HTMLTextAreaElement>('textarea')!
+    expect(document.activeElement).toBe(box)
+    type(box, 'Also run the linter.')
+    box.setSelectionRange(5, 9)
+    await changedPollTick(db)
+    expect(document.activeElement).toBe(box)
+    expect([box.selectionStart, box.selectionEnd]).toEqual([5, 9])
+    // the session's own row shows the same draft
+    click(messageButton('mcp-1'))
+    await settle()
+    expect(composer('mcp-1')!.querySelector<HTMLTextAreaElement>('textarea')!.value).toBe('Also run the linter.')
+    click(el.querySelector('.msg-send'))
+    await settle()
+    await settle()
+    expect(bridge.posts.some((p) => p.url === '/api/sessions/mcp-1/messages')).toBe(true)
+    expect(listSessionMessages(db).open.map((m) => m.text)).toEqual(['Also run the linter.'])
+    expect(box.value).toBe('')
+    expect(composer('mcp-1')!.querySelector<HTMLTextAreaElement>('textarea')!.value).toBe('')
+  })
+
+  it('reads Queued mid-task with Interrupt and send, and Cancel closes it', async () => {
+    launchBridge()
+    db = freshDb()
+    newLaunch(db)
+    drivenSession(db)
+    markDriverTurn(db, LEASE, 'turn', new Date(Date.now() - 3 * 60_000).toISOString())
+    await bootApp(db)
+    await changedPollTick(db)
+    openDrawer()
+    click(action(LAUNCH, 'message'))
+    await settle()
+    const el = launchComposer(LAUNCH)!
+    expect(el.querySelector('.msg-delivery')!.textContent).toMatch(/^Queued: it’s mid-task/)
+    expect(el.querySelector('.msg-interrupt')).not.toBeNull()
+    click(el.querySelector('.msg-cancel'))
+    await settle()
+    expect(launchComposer(LAUNCH)).toBeNull()
+  })
+
+  it('adds nothing with the switch off or in a browser, and tags the session’s own row “Started here” only with it on', async () => {
+    launchBridge()
+    db = freshDb()
+    newLaunch(db)
+    drivenSession(db)
+    await bootApp(db)
+    await changedPollTick(db)
+    openDrawer()
+    const started = () => [...drawer().querySelectorAll('.live-started-here')].map((e) => e.textContent)
+    expect(started()).toEqual(['Started here'])
+    const settings = document.getElementById('launch-settings')!
+    const box = settings.querySelector<HTMLInputElement>('#launch-switch')!
+    box.checked = false
+    box.dispatchEvent(new Event('change', { bubbles: true }))
+    await settle()
+    await changedPollTick(db)
+    expect(section()).toBeNull()
+    expect(started()).toEqual([])
+    expect(drawer().querySelector('[data-launch-action="message"]')).toBeNull()
   })
 })

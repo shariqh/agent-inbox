@@ -97,6 +97,8 @@ export interface FakeScript {
   ignoreAllowAllOff?: boolean
   /** A stuck child: it does not exit when its stdin closes. */
   ignoreStdinClose?: boolean
+  /** A Copilot that never answers this setup request (a hung start or load). */
+  hang?: 'initialize' | 'session/load'
   /** Copilot refusing session/new with this message (a model the user's settings do not fit). */
   refuseSessionNew?: string
   /** Copilot refusing session/load: -32002 for a session never prompted (spike), anything else a failure. */
@@ -165,7 +167,7 @@ export function fakeAgent(script: FakeScript = {}): FakeAgent {
   const handle = (m: Json) => {
     const params = (m.params ?? {}) as Json
     switch (m.method) {
-      case 'initialize': return fake.respond(m.id, INITIALIZE)
+      case 'initialize': return script.hang === 'initialize' ? undefined : fake.respond(m.id, INITIALIZE)
       case 'session/new': {
         if (script.refuseSessionNew) return fake.send({ id: m.id, error: { code: -32603, message: script.refuseSessionNew } })
         const result = clone(SESSION_NEW)
@@ -178,6 +180,7 @@ export function fakeAgent(script: FakeScript = {}): FakeAgent {
         return fake.respond(m.id, result)
       }
       case 'session/load': {
+        if (script.hang === 'session/load') return
         if (script.refuseLoad) return fake.send({ id: m.id, error: script.refuseLoad })
         if (script.holdLoad) {
           const held = script.holdLoad

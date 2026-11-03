@@ -168,6 +168,32 @@ describe('setup and the escalation guard (§4.1)', () => {
     expect(h.fake.prompts()).toEqual([])
   })
 
+  it('gives up on a Copilot that never finishes starting, so it cannot hold a driver slot', async () => {
+    const h = start({ script: { hang: 'initialize' }, timing: { setupDeadlineMs: 100 } })
+    expect(await h.done).toBe('error:setup')
+    expect(h.notices).toContain('Copilot did not finish starting the session within 0 s.')
+    expect(h.log.some((e) => e.event === 'setup_failed' && e.reason === 'deadline')).toBe(true)
+    expect(h.fake.prompts()).toEqual([])
+  })
+
+  it('a resume whose load hangs past the deadline ends with error:load, keeping its session to park again', async () => {
+    const h = start({ app: true, loadSessionId: 'acp-1', script: { hang: 'session/load' }, timing: { setupDeadlineMs: 100 } })
+    expect(await h.done).toBe('error:load')
+    expect(h.driver.loadFailure()).toBe('it did not answer within 0 s.')
+    expect(h.notices).toContain('Copilot did not finish loading the session within 0 s.')
+    expect(h.driver.resumableSession()).toBe('acp-1')
+    expect(h.driver.sessionGone()).toBe(false)
+  })
+
+  it('a session that finished starting is never ended by the setup deadline', async () => {
+    const h = start({ timing: { setupDeadlineMs: 300 } })
+    await h.ready()
+    await new Promise((resolve) => setTimeout(resolve, 400))
+    expect(h.log.some((e) => e.event === 'setup_failed')).toBe(false)
+    h.driver.stop()
+    expect(await h.done).toBe('stopped')
+  })
+
   it('ends the launch when the mode leaves the allowed set mid-turn, cancelling the turn and its open request', async () => {
     const h = start({ script: asking() })
     await h.ready()

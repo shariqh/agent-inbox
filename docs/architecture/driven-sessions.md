@@ -73,6 +73,10 @@ Claude Code and Copilot CLI load this file automatically when they read or edit 
   no `--mode` in the argv, ACP ignores it) → the result must show that mode. If `allow_all` is still
   on, the driver re-asserts it off ONCE with `session/set_config_option` and continues only when a
   `config_option_update` verifies off within `setupWaitMs`; otherwise the launch ends.
+- **Setup deadline:** if setup has not reached ready within `setupDeadlineMs` (2 min), the driver
+  gives up so a hung Copilot cannot hold a driver slot: a new launch ends with `error:setup`, and a
+  resume ends with `error:load` and is parked again with its session and a `park_reason`, like any
+  other failed load. A launch that reached ready is never ended by it.
 - **Phases** (`driver-policy.ts`): `executing` allows only `#agent`; Plan first starts in
   `awaiting_plan_approval` (only `#plan`), files "Approve the plan and continue?" when a turn ends in
   `#plan`, and on approval enters `switching`, sends exactly one `set_mode #agent`, accepts that one
@@ -309,7 +313,11 @@ Everything main does for a driven session is injected and tested without Electro
   closed, stderr to `<hub dir>/launches/<id>/driver.log` (0600 in 0700), and the spec with the launch key
   written to a pipe (a socket pair) on fd 3, never a file. The runtime is the installed copy of this
   release's runtime, re-verified against the signed digest with `dist/driver-cli.js` and
-  `dist/launch-spec.js` required (`installedDriverRuntime`, #206); a checkout uses its own build. Main reads
+  `dist/launch-spec.js` required (`installedDriverRuntime`, #206); a checkout uses its own build. Setup
+  installs that runtime only while it registers a host to this app, never over a checkout or custom
+  registration, so a release app whose agents run from a checkout has none: its refusal says so and
+  names the checkout's own build (`npm run build`, then `npm run electron`) instead of Update agents,
+  which Setup does not offer for checkout hosts (#435). Main reads
   the driver's one status line and lets it run on. Any platform but macOS fails closed before spawning.
 - **The hub, over the viewer's own routes.** Main cannot load the store in a development build, so in every
   build it reaches the hub as notification answers do, with the trusted Origin: `GET /api/launch-folders`,

@@ -1031,7 +1031,7 @@ Accepted by the coordinator while building step 2's driver (PR 2 of 3):
 
 ### 14.6 The bundle fallback (#435, 2026-11-02)
 
-Approved with the #435 design (PR #438, `2026-11-02-sessions-runtime-design.md`, Option 2):
+Approved with [`2026-11-02-sessions-runtime-design.md`](2026-11-02-sessions-runtime-design.md) (#438, Option 2):
 - **Installed runtime first; this app's verified payload when none is installed; never on Linux.**
   A release app's agents may run from a checkout, and Setup installs the runtime only while it
   registers a host to the app, so such an app had no runtime to start drivers with. On macOS, when the

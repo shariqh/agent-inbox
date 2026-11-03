@@ -98,4 +98,66 @@ function startDriver({
   })
 }
 
-module.exports = { driverArgv, startDriver }
+const WORKTREE_TIMEOUT_MS = 150_000
+const MAX_ANSWER = 16 * 1024
+
+/**
+ * #432 §5: runs `driver-cli.js worktree inspect|remove <launch id> <hub db>
+ * [--discard <hash>]` from the same verified runtime, argv only, no shell,
+ * with the env main captured in the checkout (git is found on its PATH), and
+ * resolves its one JSON line. Never rejects.
+ */
+function runWorktreeCommand({
+  platform = process.platform, node, entry, verb, launchId, hubPath, discard, env, spawnImpl, timeoutMs = WORKTREE_TIMEOUT_MS,
+}) {
+  if (platform !== 'darwin') return Promise.resolve(failure('Removing worktrees from Agent Inbox is available on macOS only.'))
+  for (const value of [node, entry, hubPath]) {
+    if (typeof value !== 'string' || !path.isAbsolute(value)) return Promise.resolve(failure('The driver could not be found.'))
+  }
+  if ((verb !== 'inspect' && verb !== 'remove') || typeof launchId !== 'string' || !LAUNCH_ID.test(launchId)
+    || (discard !== undefined && (verb !== 'remove' || !/^[0-9a-f]{64}$/.test(discard)))) {
+    return Promise.resolve(failure('The launch is not valid.'))
+  }
+  let child
+  try {
+    child = spawnImpl(node, [entry, 'worktree', verb, launchId, hubPath, ...(discard === undefined ? [] : ['--discard', discard])], {
+      cwd: '/', env, shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'],
+    })
+  } catch {
+    return Promise.resolve(failure('The driver could not be started.'))
+  }
+  return new Promise((resolve) => {
+    let done = false
+    let output = ''
+    const finish = (result) => {
+      if (done) return
+      done = true
+      clearTimeout(timer)
+      resolve(result)
+    }
+    const timer = setTimeout(() => {
+      try { child.kill('SIGKILL') } catch { /* gone */ }
+      finish(failure('git did not finish in time.'))
+    }, timeoutMs)
+    child.on('error', () => finish(failure('The driver could not be started.')))
+    child.stdout.on('error', () => {})
+    child.stdout.on('data', (chunk) => {
+      output += chunk.toString('utf8')
+      if (output.length > MAX_ANSWER) {
+        try { child.kill('SIGKILL') } catch { /* gone */ }
+        finish(failure('The driver reported something unexpected.'))
+      }
+    })
+    child.on('close', () => {
+      let answer = null
+      try {
+        answer = JSON.parse(output.split('\n')[0])
+      } catch { /* checked below */ }
+      if (answer && typeof answer === 'object' && typeof answer.ok === 'boolean') {
+        finish(answer.ok ? answer : failure(typeof answer.error === 'string' ? answer.error.slice(0, 500) : 'git refused.'))
+      } else finish(failure('The driver reported something unexpected.'))
+    })
+  })
+}
+
+module.exports = { driverArgv, runWorktreeCommand, startDriver }

@@ -70,11 +70,12 @@ describe('the driver’s terminal (#412 review)', () => {
     const writes = [...cli.matchAll(/process\.(stdout|stderr)\.write\(([^)]*)\)/g)].map((m) => m[2]!.trim())
     // the terminal's own writer, USAGE, the sanitized fail() and stop's confirmation of a validated launch id;
     // step 3's `run` adds its fixed usage line and its one JSON status line (JSON.stringify escapes every
-    // control character), read by Electron main, never a terminal
+    // control character), read by Electron main, never a terminal; #432's `worktree` likewise
     expect(writes.sort()).toEqual([
       'USAGE', 'USAGE', 'USAGE', 'USAGE',
       "'usage: agent-inbox-driver run <launch id> <absolute hub db path>\\n'",
-      '`${JSON.stringify(status',
+      "'usage: agent-inbox-driver worktree inspect|remove <launch id> <absolute hub db path> [--discard <status hash>]\\n'",
+      '`${JSON.stringify(status', '`${JSON.stringify(status',
       '`Asked the driver of launch ${id} to stop.\\n`',
       '`agent-inbox-driver: ${terminalSafe(message',
       'text',

@@ -247,6 +247,29 @@ ${answer}`)
   })
 })
 
+describe('running the driver’s worktree command (#432 §5)', () => {
+  it('runs exactly [node, driver-cli.js, worktree, verb, id, hub, --discard?] with no shell and reads its JSON answer', async () => {
+    const dir = scratchDir('worktree-command-')
+    const entry = join(dir, 'driver-cli.js')
+    writeFileSync(entry, `process.stdout.write(JSON.stringify(process.argv[3] === 'inspect' ? { ok: true, dirty: 2, argv: process.argv.slice(2), env: process.env.ONLY, cwd: process.cwd() } : { ok: false, error: 'git said no' }) + '\\n')`)
+    const calls: unknown[][] = []
+    const spawnImpl = (...args: unknown[]) => { calls.push(args); return (spawn as (...a: unknown[]) => ReturnType<typeof spawn>)(...args) }
+    const common = { platform: 'darwin', node: process.execPath, entry, launchId: ID, hubPath: join(dir, 'inbox.db'), env: { ONLY: 'this' }, spawnImpl }
+    expect(await driverProcess.runWorktreeCommand({ ...common, verb: 'inspect' })).toEqual({
+      ok: true, dirty: 2, argv: ['worktree', 'inspect', ID, join(dir, 'inbox.db')], env: 'this', cwd: '/',
+    })
+    expect(calls[0]![2]).toMatchObject({ cwd: '/', shell: false, env: { ONLY: 'this' } })
+    expect(await driverProcess.runWorktreeCommand({ ...common, verb: 'remove', discard: 'a'.repeat(64) })).toEqual({ ok: false, error: 'git said no' })
+    expect(calls[1]![1]).toEqual([entry, 'worktree', 'remove', ID, join(dir, 'inbox.db'), '--discard', 'a'.repeat(64)])
+    const never = vi.fn()
+    for (const bad of [{ verb: 'prune' }, { verb: 'inspect', discard: 'a'.repeat(64) }, { verb: 'remove', discard: '--force' }, { verb: 'inspect', launchId: '../x' }]) {
+      expect(await driverProcess.runWorktreeCommand({ ...common, spawnImpl: never, ...bad } as never)).toEqual({ ok: false, error: 'The launch is not valid.' })
+    }
+    expect(await driverProcess.runWorktreeCommand({ ...common, spawnImpl: never, platform: 'linux', verb: 'inspect' })).toMatchObject({ ok: false })
+    expect(never).not.toHaveBeenCalled()
+  })
+})
+
 // The controller with every effect recorded
 function rig(over: Json = {}) {
   const calls: string[] = []
@@ -254,6 +277,8 @@ function rig(over: Json = {}) {
   const state = {
     enabled: true, folders: [{ root: '/work/alpha', project: 'alpha' }] as unknown, launches: {} as Record<string, Json>, confirm: true,
     worktreeRoot: null as string | null, chosenRoot: null as string | null,
+    inspected: { path: '/w/alpha/fix-22222222', branch: 'agent-inbox/fix-22222222', missing: false, dirty: 0, ahead: 2, upstream: false, status: 'b'.repeat(64) } as Json,
+    answer: 'Remove',
   }
   const keyStore = launchKeys.createLaunchKeys({ safeStorage: fakeSafeStorage(), filePath: join(scratchDir('controller-'), 'k') })
   const posted: Array<[string, unknown]> = []
@@ -302,6 +327,13 @@ function rig(over: Json = {}) {
       write: async (root: string | null) => { calls.push(`worktreeSettings.write ${root}`); state.worktreeRoot = root; return { root } },
     },
     chooseWorktreeFolder: async () => { calls.push('chooseWorktreeFolder'); return state.chosenRoot },
+    runWorktree: async (args: Json) => {
+      calls.push(`runWorktree ${args.verb}${args.discard ? ` --discard ${args.discard}` : ''}`)
+      spawned.push(args)
+      return args.verb === 'inspect' ? { ok: true, ...state.inspected } : { ok: true }
+    },
+    ask: async (text: { buttons: string[] }) => { calls.push('ask'); spawned.push({ removal: text }); return text.buttons.indexOf(state.answer) },
+    openTerminal: async (folder: string) => { calls.push(`openTerminal ${folder}`); return true },
     ...over,
   }
   return { controller: controllerModule.createLaunchController(deps), calls, spawned, state, posted, deps }
@@ -705,6 +737,99 @@ describe('a session in its own worktree (#432)', () => {
       expect(existsSync(join(r.work, 'trees', 'alpha'))).toBe(false)
     })
 
+  describe('Remove worktree and Open in Terminal (§5, §6)', () => {
+    const ENDED = { id: ID, status: 'ended', project: 'alpha', cwd: '/w/alpha/fix-22222222', worktree_path: '/w/alpha/fix-22222222', checkout_root: '/work/alpha', branch: 'agent-inbox/fix-22222222', worktree_removed_at: null }
+
+    it('inspects, asks in main’s own dialog, then removes; the env is captured in the checkout and the branch is never named for deletion', async () => {
+      const r = rig()
+      r.state.launches[ID] = { ...ENDED }
+      expect(await r.controller.removeWorktree(ID)).toEqual({ ok: true })
+      expect(r.calls.filter((c) => !c.startsWith('keys.available'))).toEqual([
+        `GET /api/launches/${ID}`, 'driverRuntime', 'captureEnv /work/alpha', 'runWorktree inspect', 'ask', 'runWorktree remove',
+      ])
+      const removal = (r.spawned.find((x) => 'removal' in x)!.removal) as { message: string; detail: string; buttons: string[] }
+      expect(removal).toEqual({
+        message: 'Remove the worktree of alpha?',
+        detail: [
+          'Worktree: /w/alpha/fix-22222222',
+          'The branch agent-inbox/fix-22222222 and its 2 commits stay in your repository; it has no upstream, so they are only there.',
+          'Ignored files such as node_modules are deleted.',
+        ].join('\n'),
+        buttons: ['Remove', 'Cancel'],
+      })
+      expect(r.spawned.find((x) => x.verb === 'inspect')).toMatchObject({ launchId: ID, hubPath: '/hub/inbox.db', node: '/rt/bin/node', env: { PATH: '/opt/bin:/usr/bin' } })
+    })
+
+    it('offers Discard only with changes, bound to the status it inspected; Cancel removes nothing', async () => {
+      const r = rig()
+      r.state.launches[ID] = { ...ENDED }
+      r.state.inspected = { ...r.state.inspected, dirty: 3, upstream: true, examples: ['a.txt', 'out/b.txt', 'out/c.txt'], noDiscard: null }
+      r.state.answer = 'Discard 3 changes and remove'
+      expect(await r.controller.removeWorktree(ID)).toEqual({ ok: true })
+      const removal = (r.spawned.find((x) => 'removal' in x)!.removal) as { detail: string; buttons: string[] }
+      expect(removal.buttons).toEqual(['Remove', 'Discard 3 changes and remove', 'Cancel'])
+      expect(removal.detail).toContain('It has 3 uncommitted changes: a.txt, out/b.txt, out/c.txt.\nRemove refuses while they are there; Discard deletes them.')
+      expect(removal.detail).toContain('and its 2 commits stay in your repository.')
+      expect(r.calls).toContain(`runWorktree remove --discard ${'b'.repeat(64)}`)
+      const cancelled = rig()
+      cancelled.state.launches[ID] = { ...ENDED }
+      cancelled.state.answer = 'Cancel'
+      expect(await cancelled.controller.removeWorktree(ID)).toMatchObject({ ok: false, cancelled: true })
+      expect(cancelled.calls).not.toContain('runWorktree remove')
+    })
+
+    it('names up to 5 changes and how many more, made visible, and offers no Discard when the driver refused one (review of #446)', () => {
+      const many = controllerModule.removalConfirmation({
+        project: 'alpha', path: '/w/a', branch: 'agent-inbox/a-22222222', missing: false, dirty: 12, ahead: 0, upstream: false,
+        examples: ['a', 'b\u202e', 'c\nMode: Read-only.', 'd', 'e'], noDiscard: null,
+      })
+      expect(many.detail).toContain('It has 12 uncommitted changes: a, b<U+202E>, c\\x0aMode: Read-only., d, e and 7 more.')
+      expect(many.buttons).toEqual(['Remove', 'Discard 12 changes and remove', 'Cancel'])
+      const nested = controllerModule.removalConfirmation({
+        project: 'alpha', path: '/w/a', branch: 'agent-inbox/a-22222222', missing: false, dirty: 1, ahead: 0, upstream: false,
+        examples: ['vendor/lib/'], noDiscard: 'It contains a nested git repository at vendor/lib/; move it out first.',
+      })
+      expect(nested.buttons).toEqual(['Remove', 'Cancel'])
+      expect(nested.detail).toContain('Remove refuses while they are there. It contains a nested git repository at vendor/lib/; move it out first.')
+    })
+
+    it.each([
+      ['a running launch', { status: 'running' }, /End the session/],
+      ['a parked launch', { status: 'parked' }, /End the session/],
+      ['a removed worktree', { worktree_removed_at: '2026-11-03T12:00:00.000Z' }, /no worktree/],
+      ['a launch with none', { worktree_path: null }, /no worktree/],
+      ['a repository that is gone', { checkout_root: '/missing/alpha' }, /not there any more/],
+    ] as Array<[string, Json, RegExp]>)('refuses %s before running anything', async (_, over, error) => {
+      const r = rig()
+      r.state.launches[ID] = { ...ENDED, ...over }
+      expect(await r.controller.removeWorktree(ID)).toEqual({ ok: false, error: expect.stringMatching(error) })
+      expect(r.calls.filter((c) => c.startsWith('runWorktree') || c.startsWith('captureEnv') || c === 'ask')).toEqual([])
+    })
+
+    it('opens Terminal only at the worktree a fresh read names, while it is its own real folder', async () => {
+      const r = rig()
+      r.state.launches[ID] = { ...ENDED, status: 'running' }
+      expect(await r.controller.openWorktree(ID)).toEqual({ ok: true })
+      expect(r.calls).toContain('openTerminal /w/alpha/fix-22222222')
+      for (const over of [{ worktree_removed_at: '2026-11-03T12:00:00.000Z' }, { worktree_path: '/missing/x' }, { worktree_path: null }]) {
+        const refusedRig = rig()
+        refusedRig.state.launches[ID] = { ...ENDED, ...over }
+        expect(await refusedRig.controller.openWorktree(ID)).toMatchObject({ ok: false })
+        expect(refusedRig.calls.filter((c) => c.startsWith('openTerminal'))).toEqual([])
+      }
+      expect(await r.controller.openWorktree('../x')).toMatchObject({ ok: false })
+    })
+
+    it('does nothing with the switch off', async () => {
+      const r = rig()
+      r.state.enabled = false
+      r.state.launches[ID] = { ...ENDED }
+      expect(await r.controller.removeWorktree(ID)).toMatchObject({ ok: false })
+      expect(await r.controller.openWorktree(ID)).toMatchObject({ ok: false })
+      expect(r.calls).toEqual([])
+    })
+  })
+
   it('names the branch when a parked session’s worktree is gone', async () => {
     const r = rig()
     r.state.launches[ID] = { id: ID, status: 'parked', cwd: '/missing/alpha/fix-22222222', branch: 'agent-inbox/fix-22222222' }
@@ -765,10 +890,11 @@ describe('the launch IPC and its grants (§8)', () => {
     return { call, r, settings, onEnabled, handlers, made: () => made }
   }
 
-  it('registers the ten channels, and makes no controller until one is used', () => {
+  it('registers the twelve channels, and makes no controller until one is used', () => {
     const w = world()
     expect([...w.handlers.keys()].sort()).toEqual([
-      'available', 'approve', 'choose-folder', 'choose-worktree-root', 'close', 'reset-worktree-root', 'resume', 'set-enabled', 'start', 'stop',
+      'available', 'approve', 'choose-folder', 'choose-worktree-root', 'close', 'open-worktree', 'remove-worktree', 'reset-worktree-root', 'resume',
+      'set-enabled', 'start', 'stop',
     ].map((name) => `agent-inbox:launch-${name}`).sort())
     expect(w.made()).toBe(0)
   })
@@ -805,6 +931,19 @@ describe('the launch IPC and its grants (§8)', () => {
     expect(await owned.call('launch-choose-folder')).toMatchObject({ ok: false })
     expect(owned.r.calls).not.toContain('chooseFolder')
     expect(w.r.calls).toContain('chooseWorktreeFolder')
+  })
+
+  it('removes or opens a worktree only for the granted window, with exactly a launch id (#432)', async () => {
+    const owned = world({ owned: true, granted: false })
+    owned.r.state.launches[ID] = { id: ID, status: 'ended', project: 'alpha', worktree_path: '/w/alpha/fix-22222222', checkout_root: '/work/alpha', worktree_removed_at: null }
+    for (const channel of ['launch-remove-worktree', 'launch-open-worktree']) expect(await owned.call(channel, ID)).toMatchObject({ ok: false })
+    expect(owned.r.calls).toEqual([])
+    const w = world()
+    w.r.state.launches[ID] = owned.r.state.launches[ID]!
+    expect(await w.call('launch-remove-worktree')).toEqual({ ok: false, error: 'invalid' })
+    expect(await w.call('launch-open-worktree', ID, '/w')).toEqual({ ok: false, error: 'invalid' })
+    expect(await w.call('launch-open-worktree', ID)).toEqual({ ok: true })
+    expect(await w.call('launch-remove-worktree', ID)).toEqual({ ok: true })
   })
 
   it('takes exactly its arguments, and refuses turning the switch off while sessions run', async () => {
@@ -1064,9 +1203,16 @@ describe('the preload bridge (§8)', () => {
     return { launch: exposed.agentInboxLaunch as Record<string, (...args: unknown[]) => Promise<Json>>, invoke }
   }
 
-  it('has exactly its ten methods, each with exact arity, and passes nothing it was not given', async () => {
+  it('has exactly its twelve methods, each with exact arity, and passes nothing it was not given', async () => {
     const { launch, invoke } = loadPreload(() => ({ ok: true, launch: ID, path: '/secret', enabled: true }))
-    expect(Object.keys(launch).sort()).toEqual(['approve', 'available', 'chooseFolder', 'chooseWorktreeRoot', 'close', 'resetWorktreeRoot', 'resume', 'setEnabled', 'start', 'stop'])
+    expect(Object.keys(launch).sort()).toEqual([
+      'approve', 'available', 'chooseFolder', 'chooseWorktreeRoot', 'close', 'openWorktree', 'removeWorktree', 'resetWorktreeRoot', 'resume', 'setEnabled', 'start', 'stop',
+    ])
+    // #432: a launch id only, never a path
+    for (const method of ['removeWorktree', 'openWorktree']) {
+      expect(await launch[method]!('/w/alpha')).toEqual({ ok: false, error: 'invalid' })
+      expect(await launch[method]!(ID, '/w/alpha')).toEqual({ ok: false, error: 'invalid' })
+    }
     expect(await launch.chooseFolder!('/elsewhere')).toEqual({ ok: false, error: 'invalid' })
     // #432: main's own dialog chooses the worktree folder; the page passes nothing
     expect(await launch.chooseWorktreeRoot!('/elsewhere')).toEqual({ ok: false, error: 'invalid' })
@@ -1108,6 +1254,12 @@ describe('main’s wiring (source)', () => {
     // the quit prompt waits for a start already past the gate, so it lists that launch too
     const ask = main.slice(main.indexOf('async function askAboutRunningSessions()'))
     expect(ask.slice(0, ask.indexOf('quitChoice('))).toContain('await runningAtQuit(launchControllerFor())')
+  })
+
+  it('opens Terminal at a worktree with a fixed argv and no shell, and runs worktree commands from the verified runtime (#432)', () => {
+    expect(main).toContain("execFile('/usr/bin/open', ['-a', 'Terminal', '--', folder], { env: { PATH: '/usr/bin:/bin' }, timeout: 10_000 }, (error) => resolve(!error))")
+    expect(main.match(/'\/usr\/bin\/open'/g)).toHaveLength(1)
+    expect(main).toContain('runWorktree: (args) => runWorktreeCommand({ ...args, spawnImpl: spawn }),')
   })
 
   it('registers the launch IPC once, behind the viewer-window sender check, and opens no launch channel of its own', () => {

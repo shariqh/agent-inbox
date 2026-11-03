@@ -36,7 +36,7 @@ const {
 const { createSessionLaunchSettings } = require('./session-launch.cjs')
 const { createLaunchKeys } = require('./launch-key.cjs')
 const { captureShellEnv } = require('./shell-env.cjs')
-const { startDriver } = require('./driver-process.cjs')
+const { runWorktreeCommand, startDriver } = require('./driver-process.cjs')
 const { createLaunchController, quitChoice, runningAtQuit } = require('./launch-controller.cjs')
 const { registerLaunchIpc } = require('./launch-ipc.cjs')
 const { MANUAL_RELEASES_URL, createUpdateController, reviewReleaseOffered } = require('./update-controller.cjs')
@@ -572,6 +572,19 @@ function launchControllerFor() {
       read: () => launchSettings().readWorktreeRoot(),
       write: (root) => launchSettings().setWorktreeRoot(root),
     },
+    // #432 §5: `driver-cli.js worktree inspect|remove`, from the same verified runtime
+    runWorktree: (args) => runWorktreeCommand({ ...args, spawnImpl: spawn }),
+    // Remove worktree's three-way choice: the index of the button, Cancel by default
+    ask: async (text) => {
+      const cancel = text.buttons.length - 1
+      const options = { type: 'warning', message: text.message, detail: text.detail, buttons: text.buttons, defaultId: cancel, cancelId: cancel, noLink: true }
+      const { response } = owner() ? await dialog.showMessageBox(owner(), options) : await dialog.showMessageBox(options)
+      return response
+    },
+    // #432 §6: Terminal at the worktree, argv only
+    openTerminal: (folder) => new Promise((resolve) => {
+      execFile('/usr/bin/open', ['-a', 'Terminal', '--', folder], { env: { PATH: '/usr/bin:/bin' }, timeout: 10_000 }, (error) => resolve(!error))
+    }),
     chooseWorktreeFolder: async () => {
       const options = { title: 'Choose the folder for session worktrees', buttonLabel: 'Choose', properties: ['openDirectory', 'createDirectory'] }
       const result = owner() ? await dialog.showOpenDialog(owner(), options) : await dialog.showOpenDialog(options)

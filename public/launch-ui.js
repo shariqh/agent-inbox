@@ -131,7 +131,10 @@ export function createLaunchUi(deps) {
     const list = section.querySelector('.live-launches-list')
     const all = deps.launches() ?? []
     const live = all.filter((launch) => launch.status !== 'ended')
-    const shown = [...live, ...all.filter((launch) => launch.status === 'ended').slice(0, ENDED_SHOWN)]
+    // the newest ended launches, and every one whose worktree is still on disk (#432), so Remove stays reachable
+    const ended = all.filter((launch) => launch.status === 'ended')
+    const recent = new Set(ended.slice(0, ENDED_SHOWN))
+    const shown = [...live, ...ended.filter((launch) => recent.has(launch) || (launch.worktree_path && !launch.worktree_removed_at))]
     const keep = new Set(shown.map((launch) => launch.id))
     for (const [id, el] of rows) {
       if (!keep.has(id)) {
@@ -193,6 +196,11 @@ export function createLaunchUi(deps) {
       else if (granted() && action === 'stop') actions.append(button(launch.status === 'parked' ? 'End' : 'Stop', 'stop'))
       else if (granted() && action === 'close') actions.append(button('Close', 'close'))
       else if (granted() && action === 'park') actions.append(button('Park now', 'park'))
+    }
+    // #432: the session's own worktree, while it is on disk; Remove only once the launch ended
+    if (granted() && launch.worktree_path && !launch.worktree_removed_at) {
+      actions.append(button('Open in Terminal', 'open-worktree'))
+      if (launch.status === 'ended') actions.append(button('Remove worktree…', 'remove-worktree'))
     }
     if (session) {
       const draft = !open && deps.hasDraft(session)
@@ -303,6 +311,8 @@ export function createLaunchUi(deps) {
     else if (action === 'park' && id) park(id)
     else if (action === 'message' && id) toggleMessage(id)
     else if (action === 'resume' && id) resumeAndSend(id)
+    else if (action === 'open-worktree' && id) openWorktree(id)
+    else if (action === 'remove-worktree' && id) removeWorktree(id)
   }
 
   async function act(id, run) {
@@ -329,6 +339,20 @@ export function createLaunchUi(deps) {
   async function park(id) {
     const result = await act(id, () => deps.postJSON(`/api/launches/${encodeURIComponent(id)}/park`))
     if (result) notes.set(id, result.ok ? 'Parking: Copilot stops once its turn ends, and the session is kept to resume.' : 'Not parked: it is not running.')
+    await deps.settled()
+  }
+
+  // #432: main reads the path from the hub, checks it and opens Terminal there
+  async function openWorktree(id) {
+    const result = await act(id, () => bridge().openWorktree(id))
+    if (result && !result.ok) notes.set(id, result.error ?? 'Terminal could not be opened.')
+  }
+
+  // #432: main inspects the worktree, asks in its own dialog (Discard is a separate
+  // choice there), then removes it; the branch always stays
+  async function removeWorktree(id) {
+    const result = await act(id, () => bridge().removeWorktree(id))
+    if (result && !result.ok && !result.cancelled) notes.set(id, result.error ?? 'The worktree was not removed.')
     await deps.settled()
   }
 

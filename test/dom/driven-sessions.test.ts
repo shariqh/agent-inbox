@@ -10,7 +10,7 @@ import { appendFileSync, mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type Database from 'better-sqlite3'
 import {
-  claimDriverSlot, createLaunch, fileLaunchAsk, getItem, holdDriverLeases, insertItem, listSessionMessages, markDriverTurn, markWorktreeRemoved,
+  claimDriverSlot, createLaunch, endLaunch, fileLaunchAsk, getItem, holdDriverLeases, insertItem, listSessionMessages, markDriverTurn, markWorktreeRemoved,
   parkLaunch, recordActivityCall, recordLaunchProgress, resolveItem, upsertActivity,
 } from '../../src/store.js'
 import type { ViewerBridge } from './harness.js'
@@ -49,6 +49,8 @@ function launchBridge(state: Partial<State> = {}) {
       return { ok: true, worktreeRoot: current.worktreeRoot }
     }),
     resetWorktreeRoot: vi.fn(async () => ({ ok: true })),
+    removeWorktree: vi.fn(async (_id: string) => ({ ok: true }) as Record<string, unknown>),
+    openWorktree: vi.fn(async (_id: string) => ({ ok: true }) as Record<string, unknown>),
     chooseFolder: vi.fn(async () => ({ ok: true, folder: '/Users/shariqh/notes', project: 'notes', repository: false }) as Record<string, unknown>),
   }
   Object.defineProperty(window, 'agentInboxLaunch', { configurable: true, value: api })
@@ -238,6 +240,51 @@ describe('off means off on the page (§9 b)', () => {
 })
 
 describe('the Live drawer’s sessions (§3.6, §7)', () => {
+  it('offers Open in Terminal on a worktree, Remove worktree… once its launch ended, and keeps a kept worktree listed (#432)', async () => {
+    const api = launchBridge()
+    db = freshDb()
+    const tree = (id: string, n: number) => createLaunch(db!, {
+      id, host: 'copilot', project: 'alpha', stream: `agent-inbox/fix-${n}`, cwd: `/w/alpha/fix-${n}`, mode: 'ask',
+      budgetActiveMs: 7_200_000, budgetToolCalls: 500, prompt: 'Fix it.', specVersion: 1, driverPid: 4242,
+      worktree: { checkoutRoot: '/work/alpha', branch: `agent-inbox/fix-${n}`, baseSha: 'a'.repeat(40), baseRef: 'refs/heads/main' },
+    })
+    tree(LAUNCH, 1)
+    const OLD = '11111111-2222-4333-8444-000000000001'
+    tree(OLD, 0)
+    endLaunch(db, OLD, { reason: 'stopped' })
+    // six newer ended launches without a worktree push it past the five ended shown
+    for (let n = 2; n <= 7; n++) {
+      const id = `11111111-2222-4333-8444-00000000000${n}`
+      newLaunch(db, id)
+      endLaunch(db, id, { reason: 'stopped' })
+    }
+    await bootApp(db)
+    await changedPollTick(db)
+    openDrawer()
+    expect(action(LAUNCH, 'open-worktree')?.textContent).toBe('Open in Terminal')
+    expect(action(LAUNCH, 'remove-worktree')).toBeNull()
+    expect(launchRow(OLD)).not.toBeNull()
+    expect(action('11111111-2222-4333-8444-000000000002', 'open-worktree')).toBeNull()
+    click(action(LAUNCH, 'open-worktree'))
+    await settle()
+    expect(api.openWorktree).toHaveBeenCalledWith(LAUNCH)
+    click(action(OLD, 'remove-worktree'))
+    await settle()
+    expect(api.removeWorktree).toHaveBeenCalledWith(OLD)
+    api.removeWorktree.mockResolvedValueOnce({ ok: false, error: 'git said the worktree has changes.' })
+    click(action(OLD, 'remove-worktree'))
+    await settle()
+    expect(launchRow(OLD)!.textContent).toContain('git said the worktree has changes.')
+    api.removeWorktree.mockResolvedValueOnce({ ok: false, cancelled: true, error: 'Not removed.' })
+    click(action(OLD, 'remove-worktree'))
+    await settle()
+    expect(launchRow(OLD)!.textContent).not.toContain('Not removed.')
+    // removed: the row says so and offers neither; past the newest five ended, it then leaves the list
+    markWorktreeRemoved(db, OLD)
+    await changedPollTick(db)
+    expect(launchRow(OLD)).toBeNull()
+  })
+
   it('names a launch’s worktree and branch on its row, and says when the worktree was removed (#432)', async () => {
     launchBridge()
     db = freshDb()

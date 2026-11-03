@@ -14,6 +14,8 @@ export interface LaunchController {
   approve(request: unknown): Promise<LaunchResult>
   /** #432: null with the switch off */
   chooseFolder(): Promise<LaunchResult>
+  removeWorktree(id: unknown): Promise<LaunchResult>
+  openWorktree(id: unknown): Promise<LaunchResult>
   worktreeRoot(): Promise<WorktreeRoot | null>
   chooseWorktreeRoot(): Promise<LaunchResult>
   resetWorktreeRoot(): Promise<LaunchResult>
@@ -44,3 +46,7 @@ export function quitChoice(options: {
   running: Array<{ id: string; project: string; mode: string }>
   showMessageBox: (options: Record<string, unknown>) => Promise<{ response: number }>
 }): Promise<'keep' | 'stop'>
+export function removalConfirmation(facts: {
+  project: string; path: string; branch: string; missing: boolean; dirty: number; ahead: number; upstream: boolean
+  examples?: string[]; noDiscard?: string | null
+}): { message: string; detail: string; buttons: string[] }

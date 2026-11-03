@@ -14,3 +14,16 @@ export function startDriver(options: {
   fsImpl?: unknown
   timeoutMs?: number
 }): Promise<DriverStart>
+/** #432: `driver-cli.js worktree inspect|remove`'s one JSON answer */
+export function runWorktreeCommand(options: {
+  platform?: string
+  node: string
+  entry: string
+  verb: 'inspect' | 'remove'
+  launchId: string
+  hubPath: string
+  discard?: string
+  env: Record<string, string>
+  spawnImpl: (...args: never[]) => unknown
+  timeoutMs?: number
+}): Promise<{ ok: boolean; error?: string; [key: string]: unknown }>

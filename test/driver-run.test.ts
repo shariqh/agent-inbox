@@ -328,6 +328,49 @@ describe('agent-inbox-driver run (#412 step 3)', () => {
       expect(git(work, 'worktree', 'list', '--porcelain')).not.toContain(plan.path)
     }, 40_000)
 
+    // `driver-cli.js worktree inspect|remove <id> <hub>`, as main runs it with the env it captured in the checkout
+    const worktreeCli = (r: Rig, args: string[]) => {
+      const out = execFileSync(process.execPath, ['--import', 'tsx', join(REPO, 'src', 'driver-cli.ts'), 'worktree', ...args], {
+        cwd: REPO, env: { ...r.env, GIT_CONFIG_NOSYSTEM: '1' }, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+      }) as string
+      return JSON.parse(out.trim().split('\n')[0]!) as Record<string, unknown>
+    }
+    const worktreeCliFails = (r: Rig, args: string[]) => {
+      try {
+        worktreeCli(r, args)
+      } catch (error) {
+        const failed = error as { status: number; stdout: string }
+        return { code: failed.status, ...(failed.stdout ? JSON.parse(failed.stdout.trim()) as Record<string, unknown> : {}) }
+      }
+      throw new Error('the command succeeded')
+    }
+
+    it('worktree inspect and remove act only on an ended launch’s kept worktree, never its branch', async () => {
+      const r = rig()
+      const { git, work, plan } = checkout(r)
+      const run = runDriver(r, newSpec(r, { worktree: plan }), { AGENT_INBOX_DRIVER_IDLE_MS: '400' })
+      expect(await run.status()).toEqual({ ok: true, launch: LAUNCH })
+      expect(await run.exited).toBe(0)
+      // parked: refused, and so is a running one
+      expect(worktreeCliFails(r, ['inspect', LAUNCH, r.db])).toEqual({ code: 1, ok: false, error: 'End the session before removing its worktree.' })
+      expect(requestLaunchStop(r.hub, LAUNCH)).toBe('ended')
+      writeFileSync(join(plan.path, 'notes.txt'), 'notes\n')
+      const seen = worktreeCli(r, ['inspect', LAUNCH, r.db])
+      expect(seen).toEqual({
+        ok: true, path: plan.path, branch: plan.branch, missing: false, dirty: 1, examples: ['notes.txt'], noDiscard: null, ahead: 0, upstream: false,
+        status: expect.stringMatching(/^[0-9a-f]{64}$/),
+      })
+      expect(worktreeCliFails(r, ['remove', LAUNCH, r.db])).toMatchObject({ code: 1, ok: false })
+      expect(worktreeCliFails(r, ['remove', LAUNCH, r.db, '--discard', 'f'.repeat(64)])).toMatchObject({ code: 1, error: expect.stringMatching(/changed since you looked/) })
+      expect(getLaunch(r.hub, LAUNCH)!.worktree_removed_at).toBeNull()
+      expect(worktreeCli(r, ['remove', LAUNCH, r.db, '--discard', String(seen.status)])).toEqual({ ok: true })
+      expect(existsSync(plan.path)).toBe(false)
+      expect(getLaunch(r.hub, LAUNCH)!.worktree_removed_at).not.toBeNull()
+      expect(git(work, 'branch', '--list', plan.branch)).toContain(plan.branch)
+      expect(worktreeCliFails(r, ['inspect', LAUNCH, r.db])).toMatchObject({ code: 1, error: 'This session’s worktree was already removed.' })
+      expect(worktreeCliFails(r, ['remove', LAUNCH, r.db, '--discard', 'nothex'])).toEqual({ code: 64 })
+    }, 40_000)
+
     it('refuses a folder that is not a repository’s top before writing any row', async () => {
       const r = rig()
       const { plan } = checkout(r)

@@ -232,6 +232,15 @@ contextBridge.exposeInMainWorld('agentInboxLaunch', {
     if (args.length !== 1 || !isPlainObject(args[0])) return Promise.resolve({ ok: false, error: 'invalid' })
     return launchCall('agent-inbox:launch-approve', args[0])
   },
+  // #432: a launch id only; main reads the worktree's path from the hub
+  removeWorktree(...args) {
+    if (args.length !== 1 || !isLaunchId(args[0])) return Promise.resolve({ ok: false, error: 'invalid' })
+    return launchCall('agent-inbox:launch-remove-worktree', args[0])
+  },
+  openWorktree(...args) {
+    if (args.length !== 1 || !isLaunchId(args[0])) return Promise.resolve({ ok: false, error: 'invalid' })
+    return launchCall('agent-inbox:launch-open-worktree', args[0])
+  },
   // #432: main's own folder dialogs choose these; the page names no folder
   chooseFolder(...args) {
     if (args.length !== 0) return Promise.resolve({ ok: false, error: 'invalid' })

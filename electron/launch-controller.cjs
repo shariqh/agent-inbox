@@ -154,6 +154,37 @@ function confirmation({ project, folder, worktree, mode, model, reasoningEffort,
   }
 }
 
+const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`
+
+/**
+ * #432 §5: Remove worktree's own confirmation, from what `worktree inspect`
+ * found. Discard is a separate button, offered only when there are changes,
+ * and bound to the status that was inspected.
+ */
+function removalConfirmation({ project, path: folder, branch, missing, dirty, ahead, upstream, examples = [], noDiscard = null }) {
+  const changes = plural(dirty, 'change', 'changes')
+  const discard = dirty > 0 && !noDiscard
+  const buttons = discard ? ['Remove', `Discard ${changes} and remove`, 'Cancel'] : ['Remove', 'Cancel']
+  // what Discard would delete, named: agent-controlled names, each made visible on one line (review of #446)
+  const shown = (Array.isArray(examples) ? examples : []).filter((name) => typeof name === 'string').slice(0, 5)
+  const more = dirty - shown.length
+  return {
+    message: `Remove the worktree of ${displayLine(project)}?`,
+    detail: [
+      `Worktree: ${displayLine(folder, { tail: true })}`,
+      `The branch ${displayLine(branch)} and its ${plural(ahead, 'commit', 'commits')} stay in your repository${upstream ? '.' : '; it has no upstream, so they are only there.'}`,
+      missing
+        ? 'Its folder is already gone: this removes only git’s record of it.'
+        : 'Ignored files such as node_modules are deleted.',
+      ...(dirty > 0 ? [
+        `It has ${plural(dirty, 'uncommitted change', 'uncommitted changes')}: ${shown.map((name) => displayLine(name)).join(', ')}${more > 0 ? ` and ${more} more` : ''}.`,
+        noDiscard ? `Remove refuses while they are there. ${displaySafe(noDiscard).replace(/\n/g, ' ')}` : 'Remove refuses while they are there; Discard deletes them.',
+      ] : []),
+    ].join('\n'),
+    buttons,
+  }
+}
+
 const sleep = (ms, value) => new Promise((resolve) => setTimeout(() => resolve(value), ms))
 
 /**
@@ -212,6 +243,7 @@ function createLaunchController(deps) {
   const {
     platform, isEnabled, keys, viewer, captureEnv, confirm, chooseFolder, driverRuntime, startDriver, hubPath, driverEnv,
     randomUUID, realDirectory, processStart, kill, worktreeSettings, chooseWorktreeFolder,
+    runWorktree, ask, openTerminal,
   } = deps
   // #432 §1: session worktrees go under <hub dir>/worktrees unless Settings names another folder
   const defaultWorktreeRoot = path.join(path.dirname(hubPath), 'worktrees')
@@ -432,6 +464,54 @@ function createLaunchController(deps) {
       return saved.refused ? refused('A newer Agent Inbox owns this setting.') : { ok: true, worktreeRoot: { path: defaultWorktreeRoot, isDefault: true } }
     },
 
+    // #432 §5: Remove worktree on an ended launch: inspect, the human's own
+    // choice in main's dialog, then remove; the branch always stays
+    async removeWorktree(id) {
+      const why = blocked()
+      if (why) return why
+      if (typeof id !== 'string' || !LAUNCH_ID.test(id)) return refused('The launch is not valid.')
+      try {
+        const launch = await viewer.getJson(`/api/launches/${id}`)
+        if (!launch || typeof launch.worktree_path !== 'string' || typeof launch.checkout_root !== 'string' || launch.worktree_removed_at) {
+          return refused('This session has no worktree to remove.')
+        }
+        if (launch.status !== 'ended') return refused('End the session before removing its worktree.')
+        const checkout = realDirectory(launch.checkout_root)
+        if (checkout !== launch.checkout_root) return refused('Its repository is not there any more.')
+        const found = runtimeOrRefusal()
+        if (!found.runtime) return found
+        // as Resume does: the shell runs for this click only, in the checkout
+        const ready = await environment(checkout)
+        if (!ready.env) return ready
+        const command = (verb, discard) => runWorktree({
+          platform, node: found.runtime.node, entry: found.runtime.entry, verb, launchId: id, hubPath, env: ready.env,
+          ...(discard ? { discard } : {}),
+        })
+        const seen = await command('inspect')
+        if (!seen?.ok) return refused(seen?.error ?? 'The worktree could not be read.')
+        const text = removalConfirmation({ project: launch.project, ...seen })
+        const choice = text.buttons[await ask(text)]
+        if (choice === undefined || choice === 'Cancel') return refused('Not removed.', { cancelled: true })
+        const late = blocked()
+        if (late) return late
+        const removed = await command('remove', choice === 'Remove' ? undefined : seen.status)
+        return removed?.ok ? { ok: true } : refused(removed?.error ?? 'The worktree was not removed.')
+      } catch {
+        return refused('The worktree was not removed.')
+      }
+    },
+
+    // #432 §6: Open in Terminal, on the path a fresh row read names, only while it is its own real folder
+    async openWorktree(id) {
+      const why = blocked()
+      if (why) return why
+      if (typeof id !== 'string' || !LAUNCH_ID.test(id)) return refused('The launch is not valid.')
+      const launch = await viewer.getJson(`/api/launches/${id}`)
+      if (!launch || typeof launch.worktree_path !== 'string' || launch.worktree_removed_at) return refused('This session has no worktree to open.')
+      if (realDirectory(launch.worktree_path) !== launch.worktree_path) return refused('Its worktree is not there any more.')
+      return (await openTerminal(launch.worktree_path)) ? { ok: true } : refused('Terminal could not be opened.')
+    },
+
     async stop(id) {
       if (typeof id !== 'string' || !LAUNCH_ID.test(id)) return refused('The launch is not valid.')
       const result = await viewer.postJson(`/api/launches/${id}/stop`)
@@ -505,5 +585,5 @@ function createLaunchController(deps) {
 }
 
 module.exports = {
-  MODES, approvalRequest, confirmation, createLaunchController, displayLine, displaySafe, launchEnv, launchRequest, quitChoice, runningAtQuit,
+  MODES, approvalRequest, confirmation, createLaunchController, displayLine, removalConfirmation, displaySafe, launchEnv, launchRequest, quitChoice, runningAtQuit,
 }

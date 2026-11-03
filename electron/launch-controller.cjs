@@ -222,7 +222,7 @@ function createLaunchController(deps) {
     return { env: launchEnv(env.env) }
   }
 
-  async function spawnDriver(launchId, runtime, spec) {
+  async function spawnDriver(launchId, spec) {
     // a quit or a switch turned off while the dialog was open starts nothing
     const late = blocked()
     if (late) return late
@@ -230,8 +230,11 @@ function createLaunchController(deps) {
     // ...and again after the key read, immediately before anything spawns
     const later = blocked()
     if (later) return later
+    // the runtime is verified again here, not only before a dialog that may have stayed open for minutes (#435)
+    const found = runtimeOrRefusal()
+    if (!found.runtime) return found
     return startDriver({
-      platform, node: runtime.node, entry: runtime.entry, launchId, hubPath,
+      platform, node: found.runtime.node, entry: found.runtime.entry, launchId, hubPath,
       logPath: path.join(path.dirname(hubPath), 'launches', launchId, 'driver.log'),
       env: driverEnv, spec: { ...spec, launchKey: launchKey.toString('base64') },
     })
@@ -303,7 +306,7 @@ function createLaunchController(deps) {
         const ready = await environment(real)
         if (!ready.env) return ready
         const launchId = randomUUID()
-        return spawnDriver(launchId, found.runtime, {
+        return spawnDriver(launchId, {
           v: 1, kind: 'new', launchId, host: 'copilot', cwd: real, mode: request.mode,
           ...(request.model ? { model: request.model } : {}),
           ...(request.reasoningEffort ? { reasoningEffort: request.reasoningEffort } : {}),
@@ -330,7 +333,7 @@ function createLaunchController(deps) {
         if (late) return late
         const ready = await environment(real)
         if (!ready.env) return ready
-        return spawnDriver(id, found.runtime, { v: 1, kind: 'resume', launchId: id, env: ready.env })
+        return spawnDriver(id, { v: 1, kind: 'resume', launchId: id, env: ready.env })
       })
     },
 

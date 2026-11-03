@@ -4,9 +4,9 @@
 // launch row it writes, Stop, park when idle, resume by session/load, a signed
 // approval, and its refusals before anything starts.
 import { afterEach, describe, expect, it } from 'vitest'
-import { spawn } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import { once } from 'node:events'
-import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
+import { chmodSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type { Duplex } from 'node:stream'
 import type Database from 'better-sqlite3'
@@ -120,9 +120,11 @@ function newSpec(r: Rig, over: Record<string, unknown> = {}): Record<string, unk
   }
 }
 
-function runDriver(r: Rig, spec: unknown, env: Record<string, string> = {}) {
-  const child = spawn(process.execPath, ['--import', 'tsx', join(REPO, 'src', 'driver-cli.ts'), 'run', LAUNCH, r.db], {
-    cwd: REPO,
+// `entry` runs a built driver-cli.js, as main does: no tsx, from '/'
+function runDriver(r: Rig, spec: unknown, env: Record<string, string> = {}, entry?: string) {
+  const argv = entry ? [entry] : ['--import', 'tsx', join(REPO, 'src', 'driver-cli.ts')]
+  const child = spawn(process.execPath, [...argv, 'run', LAUNCH, r.db], {
+    cwd: entry ? '/' : REPO,
     stdio: ['ignore', 'pipe', 'pipe', 'pipe'],
     env: { ...process.env, AGENT_INBOX_DB: join(r.dir, 'elsewhere.db'), AGENT_INBOX_DRIVER_LINK_WAIT_MS: '0', ...env },
   })
@@ -372,6 +374,43 @@ describe('agent-inbox-driver run (#412 step 3)', () => {
     expect(getLaunch(r.hub, LAUNCH)).toMatchObject({ status: 'ended', end_reason: 'budget:tool_calls', tool_calls: 3 })
     expect(readFileSync(r.fakeLog, 'utf8').split('\n').filter((line) => line.includes('"argv"'))).toHaveLength(starts)
   }, 40_000)
+
+  // #435 (design §5): on macOS a release app with no installed runtime starts the driver from the
+  // payload inside its own bundle. An update renames that bundle aside and deletes it later; the
+  // driver has loaded its whole graph and its SQLite addon by then, so it runs on to a clean end.
+  it('a driver started from a payload copy finishes cleanly after the copy is renamed aside and deleted, and pins nothing', async () => {
+    const r = rig()
+    const payload = join(scratchDir('driver-payload-'), 'runtime', 'darwin-arm64')
+    execFileSync(process.execPath, [join(REPO, 'node_modules', 'typescript', 'bin', 'tsc'), '-p', 'tsconfig.build.json', '--outDir', join(payload, 'dist')], { cwd: REPO })
+    cpSync(join(REPO, 'scripts'), join(payload, 'scripts'), { recursive: true })
+    cpSync(join(REPO, 'public'), join(payload, 'public'), { recursive: true })
+    cpSync(join(REPO, 'package.json'), join(payload, 'package.json'))
+    // the driver's only packages: better-sqlite3 and what loads its addon
+    for (const name of ['better-sqlite3', 'bindings', 'file-uri-to-path']) {
+      cpSync(join(REPO, 'node_modules', name), join(payload, 'node_modules', name), { recursive: true })
+    }
+    const runtimeRoot = join(r.dir, 'runtime')
+    mkdirSync(runtimeRoot)
+    const run = runDriver(r, newSpec(r, { env: { ...r.env, FAKE_ASK: '1' } }), { AGENT_INBOX_RUNTIME_ROOT: runtimeRoot }, join(payload, 'dist', 'driver-cli.js'))
+    expect(await run.status()).toEqual({ ok: true, launch: LAUNCH })
+    // what the macOS update does: rename the old app aside, and delete it later
+    const aside = `${dirname(dirname(payload))}.aside`
+    renameSync(dirname(dirname(payload)), aside)
+    rmSync(aside, { recursive: true, force: true })
+    expect(existsSync(aside) || existsSync(payload)).toBe(false)
+    // one turn and one signed approval, filed and settled through the hub after the swap
+    const ask = await until(() => listItems(r.hub).find((i) => i.project === '@sessions' && i.status === 'open'), 'the ask')
+    replyItem(r.hub, ask.id, 'allow_once', sign(LAUNCH_KEY, ask.id, 0, 'allow_once'))
+    await until(() => received(r).find((m) => m.id === 900), 'the answer')
+    expect(received(r).find((m) => m.id === 900)!.result).toEqual({ outcome: { outcome: 'selected', optionId: 'allow_once' } })
+    await until(() => listItems(r.hub).find((i) => i.id === ask.id && i.status !== 'open'), 'the ask settled')
+    expect(requestLaunchStop(r.hub, LAUNCH)).toBe('stopping')
+    expect(await run.exited).toBe(0)
+    expect(getLaunch(r.hub, LAUNCH)).toMatchObject({ status: 'ended', end_reason: 'stopped' })
+    expect(run.output().stderr).not.toMatch(/ERR_MODULE_NOT_FOUND|Cannot find module|ENOENT/)
+    // a bundle's payload is no installed runtime: nothing was pinned
+    expect(readdirSync(runtimeRoot)).toEqual([])
+  }, 60_000)
 
   it('refuses without touching fd 3 when main passed no spec pipe there: exit 65 and the status line, never an abort', async () => {
     const r = rig()

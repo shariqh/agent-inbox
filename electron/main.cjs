@@ -30,7 +30,7 @@ const { loadViewer, reloadViewer } = require('./viewer-navigation.cjs')
 const { isTrustedLinkSender, isViewerUrl, openLinkRequest, openWebLink } = require('./link-open.cjs')
 const { createLinkPreferences, createLinkSettings } = require('./link-preferences.cjs')
 const {
-  canRunSetup, createInstallBinding, createInstallGate, installedDriverRuntime, installerRepoRoot, runAgentInstall, runtimeKey,
+  canRunSetup, createInstallBinding, createInstallGate, driverRuntime, installerRepoRoot, runAgentInstall, runtimeKey,
   selectRuntimePayload, setupRuntimeRoot,
 } = require('./setup-runner.cjs')
 const { createSessionLaunchSettings } = require('./session-launch.cjs')
@@ -502,7 +502,8 @@ function launchDriverRuntime() {
       ? { node, entry }
       : { error: 'A checkout runs sessions from its own build: npm run build, then npm run electron.' }
   }
-  return installedDriverRuntime({ runtimeRoot: setupRuntimeRoot(process.env), selection: runtimeSelection })
+  // the installed runtime first; on macOS, this app's own verified payload when none is installed (#435)
+  return driverRuntime({ runtimeRoot: setupRuntimeRoot(process.env), selection: runtimeSelection })
 }
 
 const launchViewer = {

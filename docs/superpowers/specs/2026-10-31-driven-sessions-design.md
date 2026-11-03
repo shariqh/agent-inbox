@@ -82,7 +82,7 @@ session, with no watcher and no time window.
 
 | | (a) Electron main | (b) `agent-inbox-driver`, one per launch (**recommended**) | (c) the mesh's `agent-inbox-wrap` |
 |---|---|---|---|
-| Survives app quit and update | No | Yes: runs from the installed runtime, pinned against prune (§7) | Yes |
+| Survives app quit and update | No | Yes: runs from the installed runtime, pinned against prune (§7); on macOS, from this app's verified payload when none is installed (§14.6) | Yes |
 | New dependencies | ACP and Claude SDKs in the app lockfile; the Claude SDK's darwin-arm64 binary is ~310 MB | None: a Node-core ACP client in `src/`; the user installs `claude-agent-acp` | `packages/mesh`, never built by the release pipeline |
 | Hub writes (asks, delivery, leases) | Through `store.ts` | Through `store.ts`, like `hook-cli.ts` | Never (mesh §4.3) |
 | UI-thread load | JSON-RPC streams on Electron main | None | None |
@@ -619,6 +619,10 @@ removes it on exit.
 - Uninstall refuses while a pinned driver runs, naming it and its stop command.
 - This ships in step 2.
 
+**Which runtime an app-started driver uses** (#435, §14.6): the installed runtime first; this app's
+verified payload when none is installed; never on Linux. A driver run from the bundle pins nothing,
+since no prune touches the bundle.
+
 **App quit** (step 3). Detached drivers keep running. Quit shows a native prompt listing them,
 with Stop all or Keep running. `beginAppQuit()` refuses new launches through a `launchGate`.
 After quit, approvals stall until the app is open again, since only the app signs (§4.3), and
@@ -1024,6 +1028,24 @@ Accepted by the coordinator while building step 2's driver (PR 2 of 3):
   a stale one. The viewer's mirror checks the pid alone (it starts no process), so it errs toward
   keeping. The installed command is `<runtime>/bin/node <runtime>/dist/driver-cli.js copilot …`,
   which the installer prints; nothing is put on PATH. (§7, §11)
+
+### 14.6 The bundle fallback (#435, 2026-11-02)
+
+Approved with the #435 design (PR #438, `2026-11-02-sessions-runtime-design.md`, Option 2):
+- **Installed runtime first; this app's verified payload when none is installed; never on Linux.**
+  A release app's agents may run from a checkout, and Setup installs the runtime only while it
+  registers a host to the app, so such an app had no runtime to start drivers with. On macOS, when the
+  installed copy is not there at all, main runs the payload inside the app bundle, re-verified against
+  the signed digest with the driver and launch spec v1 required. An installed copy that fails
+  verification still refuses and never falls back. A translocated bundle, a bundle that moved since
+  startup and a bundle that fails verification refuse. On Linux an AppImage's payload is a mount torn
+  down at quit, so there is no fallback. (§2, §7, §8)
+- **No pin, and none needed.** The payload's folder is `runtime/<platform>-<arch>` and its manifest names
+  a runtime id, so `locateRuntime` treats it as a checkout. No prune touches the bundle. A macOS update
+  renames the old app aside and deletes it later; the driver has loaded its whole graph and its SQLite
+  addon at start, and a test keeps every driver module free of `import(` and `require(`. (§7)
+- **Verified again at the spawn.** Main resolves the runtime before the confirmation, to refuse early,
+  and again immediately before it spawns, using what the second check found. (§8)
 
 ## Appendix A — Verification log
 

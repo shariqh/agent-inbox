@@ -30,6 +30,8 @@ const DRIVER_REQUIRED_FILES = Object.freeze([...REQUIRED_FILES, 'dist/driver-cli
 const RUNTIME_KEYS = new Set(POSIX_SETUP_RUNTIME_KEYS)
 const RELEASE_KEYS = POSIX_SETUP_RUNTIME_KEYS
 const DIGEST_RE = /^(sha256:)?[0-9a-f]{64}$/i
+// the path segment macOS runs a quarantined app from (as update-install-macos.cjs checks)
+const TRANSLOCATION = '/AppTranslocation/'
 
 function runtimeKey(platform, arch) {
   return `${platform}-${arch}`
@@ -287,45 +289,101 @@ function installedRuntime({ runtimeRoot, operation, host }) {
   return { dir }
 }
 
+function hasDriverSelection(selection) {
+  return Boolean(selection && selection.ok === true && selection.manifest && typeof selection.manifest.runtimeId === 'string')
+}
+
+// `dir` is exactly this release's runtime, re-verified against the signed
+// manifest digest with the driver and launch spec v1 required; throws otherwise.
+function verifyDriverRuntime(dir, { selection, platform, arch, verify }) {
+  const { manifest } = verify({
+    root: dir,
+    expectedManifestDigest: selection.digest,
+    expectedPlatform: platform,
+    expectedArch: arch,
+    expectedProduct: EXPECTED_PRODUCT,
+    expectedPackageVersion: selection.packageVersion,
+    expectedNodeMajor: EXPECTED_NODE_MAJOR,
+    expectedNodeModulesAbi: EXPECTED_NODE_MODULES_ABI,
+    requiredEntrypoints: REQUIRED_ENTRYPOINTS,
+    requiredFiles: DRIVER_REQUIRED_FILES,
+  })
+  if (manifest.runtimeId !== selection.manifest.runtimeId) throw new Error('runtime id mismatch')
+  return { node: join(dir, 'bin', 'node'), entry: join(dir, 'dist', 'driver-cli.js') }
+}
+
 /**
  * The driver of a driven session (#412 step 3, design §8): the installed copy
  * of THIS release's runtime, <runtimeRoot>/<runtimeId>, re-verified against the
  * signed manifest digest (as `hooks` is, #206) and required to carry the driver
  * and launch spec v1. Its own bin/node and dist/driver-cli.js are the argv;
- * nothing else is ever run. A runtime not installed yet asks for Update agents.
+ * nothing else is ever run. A runtime not installed yet is marked
+ * `notInstalled`, the one refusal driverRuntime() may answer from the bundle.
  */
 function installedDriverRuntime({ runtimeRoot, selection, platform = process.platform, arch = process.arch, verify = verifyRuntimePayload }) {
-  if (!selection || selection.ok !== true || !selection.manifest || typeof selection.manifest.runtimeId !== 'string') {
+  if (!hasDriverSelection(selection)) {
     return { error: 'This build of Agent Inbox has no verified runtime to run sessions with.' }
   }
   if (runtimeRoot === null) return { error: 'AGENT_INBOX_RUNTIME_ROOT must be an absolute path.' }
-  const runtimeId = selection.manifest.runtimeId
-  const dir = join(runtimeRoot, runtimeId)
   try {
-    const { manifest } = verify({
-      root: dir,
-      expectedManifestDigest: selection.digest,
-      expectedPlatform: platform,
-      expectedArch: arch,
-      expectedProduct: EXPECTED_PRODUCT,
-      expectedPackageVersion: selection.packageVersion,
-      expectedNodeMajor: EXPECTED_NODE_MAJOR,
-      expectedNodeModulesAbi: EXPECTED_NODE_MODULES_ABI,
-      requiredEntrypoints: REQUIRED_ENTRYPOINTS,
-      requiredFiles: DRIVER_REQUIRED_FILES,
-    })
-    if (manifest.runtimeId !== runtimeId) throw new Error('runtime id mismatch')
+    return verifyDriverRuntime(join(runtimeRoot, selection.manifest.runtimeId), { selection, platform, arch, verify })
   } catch (err) {
+    return err?.code === 'not-found'
+      ? {
+          notInstalled: true,
+          error: `This app's v${selection.packageVersion} runtime is not installed yet. Setup installs it only while it `
+            + 'registers Claude Code or Copilot CLI to this app (Settings → Setup), never over a source checkout or a '
+            + "custom registration. If your agents run from a checkout, start sessions from that checkout's own build: "
+            + 'npm run build, then npm run electron.',
+        }
+      : { error: `The installed v${selection.packageVersion} runtime failed integrity verification: reinstall it from Settings → Setup.` }
+  }
+}
+
+/**
+ * The payload inside this app's own bundle (#435), the one Setup runs its
+ * installers from: `selection.path`, still the real path it resolved to at
+ * startup and not under App Translocation, whose mount goes when the app
+ * quits and would take a detached driver with it. Re-verified against the
+ * signed digest with the driver and launch spec v1 required. Fails closed.
+ */
+function bundledDriverRuntime({ selection, platform = process.platform, arch = process.arch, verify = verifyRuntimePayload }) {
+  const dir = hasDriverSelection(selection) ? selection.path : null
+  if (typeof dir !== 'string' || !isAbsolute(dir)) return { error: 'This app has no runtime of its own to run sessions from.' }
+  let real = null
+  try {
+    real = realpathSync(dir)
+  } catch { /* moved or gone: refused below */ }
+  if (dir.includes(TRANSLOCATION) || (real !== null && real.includes(TRANSLOCATION))) {
     return {
-      error: err?.code === 'not-found'
-        ? `This app's v${selection.packageVersion} runtime is not installed yet. Setup installs it only while it `
-          + 'registers Claude Code or Copilot CLI to this app (Settings → Setup), never over a source checkout or a '
-          + "custom registration. If your agents run from a checkout, start sessions from that checkout's own build: "
-          + 'npm run build, then npm run electron.'
-        : `The installed v${selection.packageVersion} runtime failed integrity verification: reinstall it from Settings → Setup.`,
+      error: 'macOS is running this copy of Agent Inbox from a temporary location (App Translocation), so it cannot run '
+        + 'sessions from its own runtime either: move Agent Inbox to the Applications folder and open it again.',
     }
   }
-  return { node: join(dir, 'bin', 'node'), entry: join(dir, 'dist', 'driver-cli.js') }
+  if (real !== dir) {
+    return { error: 'Agent Inbox moved since it started, so it cannot run sessions from its own runtime either: quit it and open it again.' }
+  }
+  try {
+    return verifyDriverRuntime(dir, { selection, platform, arch, verify })
+  } catch {
+    return { error: "This app's own runtime failed integrity verification too: reinstall Agent Inbox." }
+  }
+}
+
+/**
+ * The driver runtime of a release app (#435): the installed runtime first;
+ * on macOS only, when it is not installed at all (never when it is there but
+ * fails verification), this app's own verified payload. A driver run from the
+ * bundle pins nothing (locateRuntime() calls it `checkout`), and no prune
+ * touches the bundle. Never on Linux, where an AppImage's payload is a mount
+ * that goes away when the app quits.
+ */
+function driverRuntime({ runtimeRoot, selection, platform = process.platform, arch = process.arch, verify = verifyRuntimePayload }) {
+  const installed = installedDriverRuntime({ runtimeRoot, selection, platform, arch, verify })
+  if (!installed.notInstalled) return installed
+  if (platform !== 'darwin') return { error: installed.error }
+  const bundled = bundledDriverRuntime({ selection, platform, arch, verify })
+  return bundled.error ? { error: `${installed.error} ${bundled.error}` } : bundled
 }
 
 function createReleaseSetupAdapter({
@@ -639,6 +697,7 @@ module.exports = {
   canRunSetup,
   createInstallBinding,
   createInstallGate,
+  driverRuntime,
   installedDriverRuntime,
   installerRepoRoot,
   isTrustedSetupSender,

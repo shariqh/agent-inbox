@@ -257,6 +257,18 @@ describe('where the driver runs from, and pinning it (#412)', () => {
       .toMatchObject({ kind: 'refuse', reason: expect.stringContaining('does not name runtime darwin-arm64') })
   })
 
+  // #435: a release app with no installed runtime runs its driver from its own bundle
+  it('a driver run from an app bundle’s real payload neither pins nor refuses, beside an installed runtime or none', () => {
+    const h = hooksHome()
+    const payload = join(scratchDir('pin-bundle-'), 'Agent Inbox.app', 'Contents', 'Resources', 'app', 'runtime', `${process.platform}-${process.arch}`)
+    const staged = stageRuntime(payload, APP, { driver: true })
+    expect(staged.runtimeId).not.toBe(`${process.platform}-${process.arch}`)
+    const entry = join(payload, 'dist', 'driver-cli.js')
+    expect(locateRuntime(entry, h.runtimeRoot)).toEqual({ kind: 'checkout' })
+    installRuntime(h, OLD)
+    expect(locateRuntime(entry, h.runtimeRoot)).toEqual({ kind: 'checkout' })
+  })
+
   it('removes its pin and refuses when the runtime was moved aside after it pinned', () => {
     const h = hooksHome()
     const runtime = installRuntime(h, OLD)

@@ -524,13 +524,29 @@ export function worktreeSummarizer(o: {
     async final() {
       // the read in flight finishes (or is killed); a repeat it queued is dropped: final() reads once more itself
       again = false
-      const timer = setTimeout(() => {
-        abandoned = true
-        for (const child of inflight) child.kill('SIGKILL')
-      }, o.finalMs ?? FINAL_SUMMARY_MS)
+      let timer: NodeJS.Timeout | undefined
+      // at the deadline: kill git, and close its pipes too, since a helper it started (a clean
+      // filter, fsmonitor) can hold them open, and Node reports git's end only once they close.
+      // final() does not wait for the killed read either (review of #448).
+      const deadline = new Promise<void>((resolve) => {
+        timer = setTimeout(() => {
+          abandoned = true
+          for (const child of inflight) {
+            child.kill('SIGKILL')
+            child.stdout?.destroy()
+            child.stderr?.destroy()
+          }
+          resolve()
+        }, o.finalMs ?? FINAL_SUMMARY_MS)
+      })
       try {
-        if (running) await running
-        await once()
+        await Promise.race([
+          (async () => {
+            if (running) await running
+            await once()
+          })(),
+          deadline,
+        ])
       } finally {
         clearTimeout(timer)
         abandoned = true

@@ -603,8 +603,10 @@ Main does not send the field yet (part 2), so nothing changes for anyone today.
   end the driver asks for one; git runs off the event queue (async `execFile`, 10 s a command,
   `GIT_OPTIONAL_LOCKS=0`, one read at a time, a request during a read runs once after it), so no
   `await` enters event handling. At park and at end, `run` awaits a final one before the row closes
-  (a forced exit skips it), within 15 s in all: `final()` drops a queued repeat and kills any git still
-  running at the deadline, writing nothing then. The driver keeps its leases through it
+  (a forced exit skips it), within 15 s in all: `final()` drops a queued repeat and, at the deadline, kills any git still
+  running and closes its pipes (a helper git started, such as a clean filter or fsmonitor, can hold them
+  open, and Node reports git's end only once they close), returning without waiting for it and writing
+  nothing then. The driver keeps its leases through it
   (`releaseLeases: false`; `run` refreshes its `driver:` lease first and releases it after the row
   closes), so a parking or ending launch never reads as lost or can be Closed. `{ v: 1, at, head,
   branch, ahead, behind, files, dirty }`: `branch` is the one checked out now (`''` detached);

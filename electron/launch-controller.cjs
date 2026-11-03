@@ -30,6 +30,8 @@ const MAX_PROMPT = 64 * 1024
 const PROMPT_PREVIEW = 300
 // creating a worktree of a large checkout takes time (§2); other starts keep the driver's 30 s
 const WORKTREE_STATUS_MS = 150_000
+// #432 §5: the cap on sessions at once, a setting of 1 to 8; the terminal driver keeps its own 2
+const DEFAULT_MAX_SESSIONS = 4
 // folders main's own dialog chose, which a later start may name (#432)
 const CHOSEN_KEPT = 20
 
@@ -243,7 +245,7 @@ function createLaunchController(deps) {
   const {
     platform, isEnabled, keys, viewer, captureEnv, confirm, chooseFolder, driverRuntime, startDriver, hubPath, driverEnv,
     randomUUID, realDirectory, processStart, kill, worktreeSettings, chooseWorktreeFolder,
-    runWorktree, ask, openTerminal,
+    runWorktree, ask, openTerminal, sessionCap,
   } = deps
   // #432 §1: session worktrees go under <hub dir>/worktrees unless Settings names another folder
   const defaultWorktreeRoot = path.join(path.dirname(hubPath), 'worktrees')
@@ -283,8 +285,10 @@ function createLaunchController(deps) {
     // a quit or a switch turned off while the dialog was open starts nothing
     const late = blocked()
     if (late) return late
+    // the human's cap, read for this start: the driver counts every running driver against it (#432 §5)
+    const maxDrivers = await maxSessions()
     const launchKey = await keys.launchKey(launchId)
-    // ...and again after the key read, immediately before anything spawns
+    // ...and again after those reads, immediately before anything spawns
     const later = blocked()
     if (later) return later
     // the runtime is verified again here, not only before a dialog that may have stayed open for minutes (#435)
@@ -293,9 +297,14 @@ function createLaunchController(deps) {
     return startDriver({
       platform, node: found.runtime.node, entry: found.runtime.entry, launchId, hubPath,
       logPath: path.join(path.dirname(hubPath), 'launches', launchId, 'driver.log'),
-      env: driverEnv, spec: { ...spec, launchKey: launchKey.toString('base64') },
+      env: driverEnv, spec: { ...spec, maxDrivers, launchKey: launchKey.toString('base64') },
       ...(spec.worktree ? { timeoutMs: WORKTREE_STATUS_MS } : {}),
     })
+  }
+
+  async function maxSessions() {
+    const chosen = await sessionCap.read().catch(() => null)
+    return Number.isSafeInteger(chosen) && chosen >= 1 && chosen <= 8 ? chosen : DEFAULT_MAX_SESSIONS
   }
 
   async function worktreeRoot() {
@@ -435,6 +444,20 @@ function createLaunchController(deps) {
       chosenFolders.push(real)
       if (chosenFolders.length > CHOSEN_KEPT) chosenFolders.shift()
       return { ok: true, folder: real, project: path.basename(real), repository: isRepositoryTop(real) }
+    },
+
+    /** #432 §5: the cap on sessions at once, read only with the switch on. */
+    async maxSessions() {
+      return blocked() ? null : maxSessions()
+    },
+
+    async setMaxSessions(value) {
+      const why = blocked()
+      if (why) return why
+      if (!Number.isSafeInteger(value) || value < 1 || value > 8) return refused('Choose 1 to 8 sessions.')
+      const saved = await sessionCap.write(value).catch(() => null)
+      if (!saved) return refused('The setting could not be saved.')
+      return saved.refused ? refused('A newer Agent Inbox owns this setting.') : { ok: true, maxSessions: value }
     },
 
     /** #432: the folder session worktrees go under, read only with the switch on. */

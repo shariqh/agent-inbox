@@ -12,7 +12,7 @@ import {
   listLaunchAskReplies, listLaunches, openDb, parkLaunch, readSnapshotState, recordLaunchProgress, replyItem,
   requestLaunchStop, resumeLaunch, settleLaunchAsk, listActivity, markDriverTurn, requestLaunchInterrupt, takeLaunchInterrupt,
   upsertActivity, holdDriverLeases, releaseDriverLeases, requestLaunchPark, takeLaunchPark, insertItem, listLaunchFolders,
-  markWorktreeRemoved,
+  markWorktreeRemoved, recordWorktreeSummary,
 } from '../src/store.js'
 import type { NewLaunch } from '../src/store.js'
 import { createViewer } from '../src/viewer.js'
@@ -193,6 +193,28 @@ describe('a launch in its own worktree (#432 §4)', () => {
     expect(getLaunch(db, ID(1))).not.toBeNull()
     markWorktreeRemoved(db, ID(1))
     expect(createLaunch(db, launch(61)).pruned).toContain(ID(1))
+  })
+
+  it('writes the turn-end summary only when something but its time changed, and serves it parsed (§6)', async () => {
+    createLaunch(db, launch(1, worktree(1)))
+    const summary = { v: 1 as const, at: '2026-11-02T12:00:00.000Z', head: 'b'.repeat(40), branch: 'agent-inbox/fix-1-11111111', ahead: 1, behind: 0, files: 2, dirty: 0 }
+    expect(recordWorktreeSummary(db, ID(1), summary)).toBe(true)
+    const before = { revision: getLaunch(db, ID(1))!.revision, version: readSnapshotState(db).domains.launches }
+    expect(recordWorktreeSummary(db, ID(1), { ...summary, at: '2026-11-02T12:05:00.000Z' })).toBe(false)
+    expect({ revision: getLaunch(db, ID(1))!.revision, version: readSnapshotState(db).domains.launches }).toEqual(before)
+    expect(recordWorktreeSummary(db, ID(1), { ...summary, at: '2026-11-02T12:06:00.000Z', dirty: 1 })).toBe(true)
+    const body = await (await createViewer(db).request('/api/launches')).json() as Array<Record<string, unknown>>
+    expect(body[0]!.worktree_summary).toEqual({ ...summary, at: '2026-11-02T12:06:00.000Z', dirty: 1 })
+    // a launch without a worktree, or whose worktree was removed, takes none
+    createLaunch(db, launch(2))
+    expect(recordWorktreeSummary(db, ID(2), summary)).toBe(false)
+    markWorktreeRemoved(db, ID(1))
+    expect(recordWorktreeSummary(db, ID(1), { ...summary, dirty: 5 })).toBe(false)
+    // an unreadable stored summary is served as none, and replaced by the next one
+    createLaunch(db, launch(3, worktree(3)))
+    db.prepare(`UPDATE launches SET worktree_summary = '{nope' WHERE id = ?`).run(ID(3))
+    expect(listLaunches(db).find((l) => l.id === ID(3))!.worktree_summary).toBeNull()
+    expect(recordWorktreeSummary(db, ID(3), summary)).toBe(true)
   })
 
   it('leaves a launch’s worktree out of New session’s folders, though its sessions record it', () => {

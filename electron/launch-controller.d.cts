@@ -2,7 +2,7 @@
 export type WorktreeRoot = { path: string; isDefault: boolean }
 export type LaunchResult = {
   ok: boolean; error?: string; launch?: string; cancelled?: boolean; status?: string; killed?: boolean; reason?: string; worktreeRoot?: WorktreeRoot
-  folder?: string; project?: string; repository?: boolean
+  folder?: string; project?: string; repository?: boolean; maxSessions?: number
 }
 export interface LaunchController {
   canEnable(options?: { withKeys?: boolean }): LaunchResult | null
@@ -15,6 +15,8 @@ export interface LaunchController {
   /** #432: null with the switch off */
   chooseFolder(): Promise<LaunchResult>
   removeWorktree(id: unknown): Promise<LaunchResult>
+  maxSessions(): Promise<number | null>
+  setMaxSessions(value: unknown): Promise<LaunchResult>
   openWorktree(id: unknown): Promise<LaunchResult>
   worktreeRoot(): Promise<WorktreeRoot | null>
   chooseWorktreeRoot(): Promise<LaunchResult>

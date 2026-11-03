@@ -170,6 +170,7 @@ function launchResult(value) {
   if (value.reason === 'environment') out.reason = 'environment'
   const root = worktreeRootOf(value.worktreeRoot)
   if (root) out.worktreeRoot = root
+  if (isSessionCap(value.maxSessions)) out.maxSessions = value.maxSessions
   // #432: the folder main's own dialog chose, and whether it is a repository's top
   if (typeof value.folder === 'string' && value.folder.startsWith('/') && value.folder.length <= 4096) out.folder = value.folder
   if (typeof value.project === 'string') out.project = value.project.slice(0, 256)
@@ -189,7 +190,13 @@ function launchAvailability(value) {
   if (typeof value.error === 'string') out.error = value.error.slice(0, 500)
   const root = worktreeRootOf(value.worktreeRoot)
   if (out.available && root) out.worktreeRoot = root
+  if (out.available && isSessionCap(value.maxSessions)) out.maxSessions = value.maxSessions
   return out
+}
+
+// #432 §5: the cap on sessions at once
+function isSessionCap(value) {
+  return Number.isSafeInteger(value) && value >= 1 && value <= 8
 }
 
 // #432: the folder session worktrees go under, as main reports it
@@ -231,6 +238,10 @@ contextBridge.exposeInMainWorld('agentInboxLaunch', {
   approve(...args) {
     if (args.length !== 1 || !isPlainObject(args[0])) return Promise.resolve({ ok: false, error: 'invalid' })
     return launchCall('agent-inbox:launch-approve', args[0])
+  },
+  setMaxSessions(...args) {
+    if (args.length !== 1 || !isSessionCap(args[0])) return Promise.resolve({ ok: false, error: 'invalid' })
+    return launchCall('agent-inbox:launch-set-max-sessions', args[0])
   },
   // #432: a launch id only; main reads the worktree's path from the hub
   removeWorktree(...args) {

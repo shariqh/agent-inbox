@@ -109,8 +109,8 @@ Claude Code and Copilot CLI load this file automatically when they read or edit 
   parent is the host and which started at or after the child. A dead server counts as ended. The
   first prompt waits up to `linkWaitMs` (10 s) for a link, so alerts carry the session and pushes
   can start (design §14.5).
-- **Leases** (`store.ts`): `claimDriverSlot` (at most 2 drivers, counted from fresh `driver:` leases
-  in one `.immediate()`; per-host caps come with #421), `holdDriverLeases` every 30 s and on every link
+- **Leases** (`store.ts`): `claimDriverSlot` (at most the caller's cap of drivers: 2 for the terminal driver, the spec's
+  `maxDrivers` for an app launch (#432), counted from fresh `driver:` leases in one `.immediate()`; per-host caps come with #421), `holdDriverLeases` every 30 s and on every link
   change (exactly the linked sessions plus ended ones not yet re-addressed), `releaseDriverLeases` at
   the end. A lost `driver:` lease stops the driver.
 - **Push once per launch** (§5.3). On a `PRAGMA data_version` change while idle, the driver re-reads
@@ -593,3 +593,36 @@ Main does not send the field yet (part 2), so nothing changes for anyone today.
   switched and unlisted worktrees; a stale discard hash), `test/driver-run.test.ts` (the CLI on a parked,
   then ended launch), `test/launch-electron.test.ts` (the command's argv, the dialog and its choices,
   refusals, the IPC and preload, the `open` argv pin), `test/dom/driven-sessions.test.ts` (the buttons).
+
+## Session worktrees (#432), part 4: the turn-end summary and the session cap
+
+- **The summary** (`worktreeSummarizer`, `src/worktree.ts`; the driver's `turnEnd` hook). At each turn
+  end the driver asks for one; git runs off the event queue (async `execFile`, 10 s a command,
+  `GIT_OPTIONAL_LOCKS=0`, one read at a time, a request during a read runs once after it), so no
+  `await` enters event handling. At park and at end, `run` awaits a final one before the row closes
+  (a forced exit skips it), within 15 s in all: `final()` drops a queued repeat and kills any git still
+  running at the deadline, writing nothing then. The driver keeps its leases through it
+  (`releaseLeases: false`; `run` refreshes its `driver:` lease first and releases it after the row
+  closes), so a parking or ending launch never reads as lost or can be Closed. `{ v: 1, at, head,
+  branch, ahead, behind, files, dirty }`: `branch` is the one checked out now (`''` detached);
+  `behind`/`ahead` from `rev-list --left-right --count <base>...HEAD` and `files` from `diff --name-only
+  -z <base>...HEAD`, one base for both (`base_ref` while it resolves, else `base_sha`); `dirty` counts
+  every file of `status --porcelain=v1 -z --untracked-files=all`, as Remove worktree's dialog does,
+  whatever `status.showUntrackedFiles` says. A failed read writes nothing, so the last summary stays.
+  `recordWorktreeSummary` writes it in one conditioned statement only when something but `at` changed
+  (and only while the worktree is kept), so `/api/launches` is rebuilt only then; `launchView` serves
+  it parsed (an unreadable one as null). The drawer's worktree line adds "N commits ahead, M behind,
+  K files changed, J uncommitted", and the branch the agent is on now when it switched.
+- **The cap** (§5): Settings → Agent sessions → **At most N sessions at once**, 1 to 8, default 4,
+  stored as `maxDrivers` in `session-launch.json`, read only with the switch on (`launch-available`
+  reports `maxSessions` to the granted window; `launch-set-max-sessions` takes exactly 1–8 with the
+  `launch` grant). Main reads it for each start and resume and sends it as the spec's optional
+  `maxDrivers` (1–8, on `new` and `resume`); `claimDriverSlot` counts every fresh driver lease against
+  the caller's own cap, so drivers with different caps share a hub. A spec without it keeps 2, and so
+  does the terminal driver.
+- **Tests**: `test/worktree.test.ts` (the summary after a commit, an edit, the checkout moving on, a
+  branch switch, a failed read), `test/launches.test.ts` (no write and no rebuild without a change),
+  `test/driver-run.test.ts` (the summary at the turn end and at the end; the spec's cap, lower and
+  higher than the drivers running), `test/launch-spec.test.ts`, `test/launch-electron.test.ts` (the
+  setting's file, IPC, preload, the cap in every spec, off reads nothing),
+  `test/dom/driven-sessions.test.ts` (the Settings select, the drawer's summary).

@@ -7,6 +7,7 @@
 //
 // #432: with the switch on, it also shows where session worktrees go, with
 // Choose… (main's own folder dialog) and Use default; the page names no folder.
+// And "At most N sessions at once" (1–8), the cap main sends each driver.
 let refreshShown = null
 
 /** Asks main again, as Settings does each time it opens. */
@@ -44,6 +45,26 @@ export function renderLaunchSettings(host, {
   message.setAttribute('aria-live', 'polite')
   section.append(make('h3', '', 'Agent sessions'), label, hint, keychain, message)
   host.appendChild(section)
+  // made the first time main reports a cap: with the switch off, nothing is drawn
+  let cap = null
+  const capRow = () => {
+    if (cap) return cap
+    const row = make('label', 'launch-settings-worktree')
+    row.id = 'launch-max-sessions'
+    const select = make('select')
+    select.name = 'maxSessions'
+    for (let n = 1; n <= 8; n++) select.append(new Option(String(n), String(n)))
+    row.append(make('span', 'launch-field-label', 'At most'), select, make('span', '', 'sessions at once'))
+    select.addEventListener('change', async () => {
+      select.disabled = true
+      const result = await api.setMaxSessions(Number(select.value)).catch(() => ({ ok: false, error: 'Agent Inbox did not answer.' }))
+      await read()
+      if (!result?.ok) message.textContent = result?.error ?? 'That setting could not be changed.'
+    })
+    section.insertBefore(row, message)
+    cap = { row, select }
+    return cap
+  }
   // made the first time main reports a worktree folder: with the switch off, nothing is drawn
   let worktree = null
   const worktreeRow = () => {
@@ -76,6 +97,13 @@ export function renderLaunchSettings(host, {
     input.checked = state?.enabled === true
     input.disabled = !state?.owned || (!state.enabled && !state.canEnable)
     message.textContent = state?.owned && !state.enabled && !state.canEnable ? 'Starting sessions from Agent Inbox is available on macOS.' : ''
+    const most = state?.owned && state.enabled && Number.isSafeInteger(state.maxSessions) ? state.maxSessions : null
+    if (most || cap) {
+      const c = capRow()
+      c.row.hidden = !most
+      if (most) c.select.value = String(most)
+      c.select.disabled = !most || typeof api.setMaxSessions !== 'function'
+    }
     const root = state?.owned && state.enabled ? state.worktreeRoot : null
     if (root || worktree) {
       const w = worktreeRow()

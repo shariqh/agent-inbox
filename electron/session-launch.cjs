@@ -12,7 +12,8 @@
 // #432 adds one optional field, `worktreeRoot`: the absolute folder session
 // worktrees go under, chosen in Settings through main's own folder dialog.
 // Absent (or not an absolute path) means the default, `<hub dir>/worktrees`.
-// Older builds keep it, as an unknown field.
+// Older builds keep it, as an unknown field. `maxDrivers` (1–8) is the human's
+// cap on sessions at once (#432 §5); absent means the default, 4.
 const fs = require('node:fs/promises')
 const path = require('node:path')
 const { createLockedFile, resolveFilePath } = require('./update-preferences.cjs')
@@ -61,6 +62,26 @@ function createSessionLaunchSettings(options = {}) {
         const { worktreeRoot: _old, ...rest } = current.record ?? {}
         await file.atomicWrite({ ...rest, schema: SCHEMA, enabled: current.enabled, ...(root === null ? {} : { worktreeRoot: root }) })
         return { root }
+      })
+    },
+    /** The cap on sessions at once chosen in Settings, or null for the default; any read failure is the default. */
+    async readMaxDrivers() {
+      await file.settled()
+      try {
+        const cap = (await readLive()).record?.maxDrivers
+        return Number.isSafeInteger(cap) && cap >= 1 && cap <= 8 ? cap : null
+      } catch {
+        return null
+      }
+    },
+    /** Saves the cap (1–8); { maxDrivers } after the write, or { refused: 'newer' }. */
+    setMaxDrivers(cap) {
+      if (!Number.isSafeInteger(cap) || cap < 1 || cap > 8) return Promise.reject(new TypeError('the cap must be 1 to 8'))
+      return file.mutate(async () => {
+        const current = await readLive()
+        if (!current.writable) return { maxDrivers: null, refused: 'newer' }
+        await file.atomicWrite({ ...(current.record ?? {}), schema: SCHEMA, enabled: current.enabled, maxDrivers: cap })
+        return { maxDrivers: cap }
       })
     },
     /** Whether the switch is on; any read failure is off. */

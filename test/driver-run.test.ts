@@ -10,7 +10,7 @@ import { chmodSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, re
 import { dirname, join } from 'node:path'
 import type { Duplex } from 'node:stream'
 import type Database from 'better-sqlite3'
-import { claimDriverSlot, getLaunch, listItems, openDb, recordLaunchProgress, replyItem, requestLaunchPark, requestLaunchStop } from '../src/store.js'
+import { claimDriverSlot, closeLostLaunch, getLaunch, launchDriverAlive, listItems, openDb, recordLaunchProgress, replyItem, requestLaunchPark, requestLaunchStop } from '../src/store.js'
 import { LAUNCH_KEY, sign } from './launch-fixtures.js'
 import { removeScratchDirs, scratchDir } from './scratch.js'
 
@@ -296,6 +296,88 @@ describe('agent-inbox-driver run (#412 step 3)', () => {
       expect(git(work, 'branch', '--list', plan.branch)).toContain(plan.branch)
     }, 40_000)
 
+    it('writes the worktree’s summary at the turn end and at the end (§6)', async () => {
+      const r = rig()
+      const { git, plan } = checkout(r)
+      const run = runDriver(r, newSpec(r, { worktree: plan }))
+      expect(await run.status()).toEqual({ ok: true, launch: LAUNCH })
+      // the task's turn ends at once: its summary arrives off the event queue
+      const first = await until(() => getLaunch(r.hub, LAUNCH)?.worktree_summary, 'the turn-end summary')
+      expect(JSON.parse(first)).toEqual({ v: 1, at: expect.any(String), head: git(plan.path, 'rev-parse', 'HEAD'), branch: plan.branch, ahead: 0, behind: 0, files: 0, dirty: 0 })
+      writeFileSync(join(plan.path, 'notes.txt'), 'notes\n')
+      expect(requestLaunchStop(r.hub, LAUNCH)).toBe('stopping')
+      expect(await run.exited).toBe(0)
+      expect(JSON.parse(getLaunch(r.hub, LAUNCH)!.worktree_summary!)).toMatchObject({ dirty: 1 })
+    }, 40_000)
+
+    // review of #448: the git the driver finds first on the spec's PATH, recording each call and, while
+    // HANG exists, hanging on `branch --show-current` (only the summary runs it)
+    function hangingGit(r: Rig) {
+      const real = execFileSync('/bin/sh', ['-c', 'command -v git'], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin' } }).trim()
+      const calls = join(r.dir, 'git-calls.log')
+      writeFileSync(join(r.dir, 'bin', 'git'), `#!/bin/sh\necho "$$ $*" >> '${calls}'\nif [ "$3" = branch ] && [ -e '${join(r.dir, 'HANG')}' ]; then exec sleep 600; fi\nexec '${real}' "$@"\n`)
+      chmodSync(join(r.dir, 'bin', 'git'), 0o755)
+      writeFileSync(join(r.dir, 'HANG'), '')
+      return () => (existsSync(calls) ? readFileSync(calls, 'utf8') : '').split('\n').filter((l) => l.includes(' branch --show-current')).map((l) => Number(l.split(' ')[0]))
+    }
+
+    it.each([
+      ['a Stop', 'stopped', {}],
+      ['a park', 'parked', { AGENT_INBOX_DRIVER_IDLE_MS: '1500' }],
+    ] as Array<[string, string, Record<string, string>]>)('%s with a summary git that hangs ends within the final budget, holding its lease until then, never lost', async (_, status, env) => {
+      const r = rig()
+      const { plan } = checkout(r)
+      const hung = hangingGit(r)
+      const run = runDriver(r, newSpec(r, { worktree: plan }), { AGENT_INBOX_DRIVER_SUMMARY_FINAL_MS: '1500', ...env })
+      expect(await run.status()).toEqual({ ok: true, launch: LAUNCH })
+      await until(() => hung().length > 0, 'the turn-end summary hanging')
+      if (status === 'stopped') expect(requestLaunchStop(r.hub, LAUNCH)).toBe('stopping')
+      const seen: string[] = []
+      const started = Date.now()
+      while (run.child.exitCode === null) {
+        const row = getLaunch(r.hub, LAUNCH)!
+        seen.push(row.status)
+        // while the row is not closed, its driver's lease stands, so nobody can Close it as lost
+        if (row.status === 'running') {
+          const alive = launchDriverAlive(r.hub, LAUNCH)
+          const close = closeLostLaunch(r.hub, LAUNCH)
+          // the row may close between the reads; either way, a lease stands until it does
+          if (getLaunch(r.hub, LAUNCH)!.status === 'running') expect(alive).toBe(true)
+          expect(close).toMatchObject({ ok: false, reason: expect.stringMatching(/^(driver_alive|not_running)$/) })
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50))
+      }
+      expect(await run.exited).toBe(0)
+      // the child's 10 s grace is not spent: it exits about 1 s after its stdin closes
+      expect(Date.now() - started).toBeLessThan(8000)
+      expect(getLaunch(r.hub, LAUNCH)).toMatchObject({ status: status === 'stopped' ? 'ended' : 'parked' })
+      expect(seen).not.toContain('lost')
+      expect(getLaunch(r.hub, LAUNCH)!.end_reason).not.toBe('lost')
+      expect(launchDriverAlive(r.hub, LAUNCH)).toBe(false)
+      for (const pid of hung()) expect(() => process.kill(pid, 0)).toThrow()
+    }, 40_000)
+
+    it('a summary git that hangs does not hold up the event queue: a plan approval is acted on at once', async () => {
+      const r = rig()
+      const { plan } = checkout(r)
+      const hung = hangingGit(r)
+      const run = runDriver(r, newSpec(r, { worktree: plan, mode: 'plan' }), { AGENT_INBOX_DRIVER_SUMMARY_FINAL_MS: '1500' })
+      expect(await run.status()).toEqual({ ok: true, launch: LAUNCH })
+      const ask = await until(() => listItems(r.hub).find((i) => i.project === '@sessions' && i.status === 'open'), 'the plan approval')
+      expect(ask.title).toBe('Approve the plan and continue?')
+      await until(() => hung().length > 0, 'the turn-end summary hanging')
+      const pids = hung()
+      const before = received(r).filter((m) => m.method === 'session/set_mode').length
+      const answered = Date.now()
+      replyItem(r.hub, ask.id, 'approve', sign(LAUNCH_KEY, ask.id, 0, 'approve'))
+      await until(() => received(r).filter((m) => m.method === 'session/set_mode').length > before, 'the switch to agent mode', 5000)
+      expect(Date.now() - answered).toBeLessThan(2500)
+      // the summary's git was still hanging all along
+      for (const pid of pids) expect(() => process.kill(pid, 0)).not.toThrow()
+      expect(requestLaunchStop(r.hub, LAUNCH)).toBe('stopping')
+      expect(await run.exited).toBe(0)
+    }, 40_000)
+
     it('keeps the lock while parked, and a resumed driver runs there and unlocks it when the launch ends', async () => {
       const r = rig()
       const { git, work, plan } = checkout(r)
@@ -430,7 +512,25 @@ describe('agent-inbox-driver run (#412 step 3)', () => {
     expect(String(status.error)).toMatch(/2 driven sessions are already running/)
     expect(await capped.exited).toBe(75)
     expect(getLaunch(r.hub, LAUNCH)).toBeNull()
-  })
+    // #432 §5: the spec's own cap, counting every driver: 3 starts beside the 2 running
+    const higher = runDriver(r, newSpec(r, { maxDrivers: 3 }))
+    expect(await higher.status()).toEqual({ ok: true, launch: LAUNCH })
+    expect(requestLaunchStop(r.hub, LAUNCH)).toBe('stopping')
+    expect(await higher.exited).toBe(0)
+  }, 40_000)
+
+  it('a spec cap of 1 refuses beside 1 running driver, where the default 2 starts (#432 §5)', async () => {
+    const r = rig()
+    expect(claimDriverSlot(r.hub, { launchId: '44444444-4444-4444-8444-000000000001', pid: 101, nonce: 'other' }, 2)).toEqual({ ok: true })
+    const lower = runDriver(r, newSpec(r, { maxDrivers: 1 }))
+    expect(String((await lower.status()).error)).toMatch(/1 driven sessions are already running/)
+    expect(await lower.exited).toBe(75)
+    expect(getLaunch(r.hub, LAUNCH)).toBeNull()
+    const byDefault = runDriver(r, newSpec(r))
+    expect(await byDefault.status()).toEqual({ ok: true, launch: LAUNCH })
+    expect(requestLaunchStop(r.hub, LAUNCH)).toBe('stopping')
+    expect(await byDefault.exited).toBe(0)
+  }, 40_000)
 
   it.each([
     ['a shebang that passes the interpreter flags', (bin: string) => {

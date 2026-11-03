@@ -7,7 +7,8 @@ import { execFileSync } from 'node:child_process'
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createWorktree, gitEnv, inspectWorktree, removeLaunchWorktree, undoWorktree, unlockWorktree, worktreePlanError } from '../src/worktree.js'
+import { createWorktree, gitEnv, inspectWorktree, removeLaunchWorktree, undoWorktree, unlockWorktree, worktreePlanError, worktreeSummarizer } from '../src/worktree.js'
+import type { WorktreeSummary } from '../src/worktree.js'
 import { removeScratchDirs, scratchDir } from './scratch.js'
 
 const LAUNCH = '1a2b3c4d-3333-4444-8555-666666666666'
@@ -351,5 +352,95 @@ describe('Remove worktree (#432 §5)', () => {
     expect(inspectWorktree({ ...r.target, path: other })).toEqual({ ok: false, error: expect.stringMatching(/does not list/) })
     expect(removeLaunchWorktree({ ...r.target, path: other })).toMatchObject({ ok: false })
     expect(existsSync(other)).toBe(true)
+  })
+})
+
+describe('the turn-end summary (#432 §6)', () => {
+  // a git that records each call and, while HANG exists, hangs on `branch --show-current` (a summary-only command)
+  function wrapped(r: ReturnType<typeof rig>) {
+    const bin = join(r.dir, 'bin')
+    mkdirSync(bin)
+    const calls = join(r.dir, 'git-calls.log')
+    writeFileSync(calls, '')
+    writeFileSync(join(bin, 'git'), `#!/bin/sh\necho "$$ $*" >> '${calls}'\nif [ "$3" = branch ] && [ -e '${join(r.dir, 'HANG')}' ]; then exec sleep 600; fi\nexec '${GIT}' "$@"\n`)
+    chmodSync(join(bin, 'git'), 0o755)
+    const lines = () => readFileSync(calls, 'utf8').split('\n').filter(Boolean)
+    return { git: join(bin, 'git'), lines, reads: () => lines().filter((l) => l.includes('rev-parse --verify -q HEAD^{commit}')).length, hang: () => writeFileSync(join(r.dir, 'HANG'), '') }
+  }
+  function setup() {
+    const r = rig()
+    const made = r.create()
+    if (!made.ok) throw new Error(made.error)
+    const written: WorktreeSummary[] = []
+    const summarizer = (git = GIT, finalMs?: number) => worktreeSummarizer({
+      git, env: r.env, path: r.plan.path, baseRef: 'refs/heads/main', baseSha: made.worktree.baseSha, write: (s) => { written.push(s) },
+      ...(finalMs ? { finalMs } : {}),
+    })
+    return { ...r, made, written, summarizer }
+  }
+
+  it('reads the branch, commits ahead and behind and files changed against one base, and every uncommitted file', async () => {
+    const r = setup()
+    await r.summarizer().final()
+    expect(r.written.at(-1)).toEqual({ v: 1, at: expect.any(String), head: r.made.worktree.baseSha, branch: r.plan.branch, ahead: 0, behind: 0, files: 0, dirty: 0 })
+    // a commit in the worktree, an edit left uncommitted, and the checkout's branch moving on
+    writeFileSync(join(r.plan.path, 'a.txt'), 'a\n')
+    r.git(r.plan.path, 'add', 'a.txt')
+    r.git(r.plan.path, 'commit', '-q', '-m', 'a')
+    writeFileSync(join(r.plan.path, 'README.md'), 'edited\n')
+    r.commit('later.md')
+    await r.summarizer().final()
+    expect(r.written.at(-1)).toMatchObject({ branch: r.plan.branch, ahead: 1, behind: 1, files: 1, dirty: 1, head: r.git(r.plan.path, 'rev-parse', 'HEAD') })
+    // every untracked file counts, whatever status.showUntrackedFiles says: Remove worktree's dialog counts the same
+    r.git(r.plan.path, 'config', 'status.showUntrackedFiles', 'no')
+    mkdirSync(join(r.plan.path, 'out'))
+    for (const name of ['x', 'y', 'z']) writeFileSync(join(r.plan.path, 'out', name), name)
+    await r.summarizer().final()
+    expect(r.written.at(-1)).toMatchObject({ dirty: 4 })
+    // the agent switched branch: the summary names the branch it is on now
+    r.git(r.plan.path, 'switch', '-q', '-c', 'side')
+    await r.summarizer().final()
+    expect(r.written.at(-1)).toMatchObject({ branch: 'side', ahead: 1 })
+    // a read that fails writes nothing, so the last summary stays
+    const count = r.written.length
+    rmSync(r.plan.path, { recursive: true, force: true })
+    await r.summarizer().final()
+    expect(r.written).toHaveLength(count)
+  })
+
+  it('a request during a read runs exactly once after it, and its result is written', async () => {
+    const r = setup()
+    const git = wrapped(r)
+    const summarizer = r.summarizer(git.git)
+    summarizer.request()
+    summarizer.request()
+    summarizer.request()
+    for (let i = 0; i < 200 && r.written.length < 2; i++) await new Promise((resolve) => setTimeout(resolve, 20))
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    expect(git.reads()).toBe(2)
+    expect(r.written).toHaveLength(2)
+    expect(r.written[1]).toMatchObject({ branch: r.plan.branch, dirty: 0 })
+  })
+
+  it('final() drops a queued repeat and gives up within its budget, killing git that hangs, writing nothing', async () => {
+    const r = setup()
+    const git = wrapped(r)
+    git.hang()
+    const summarizer = r.summarizer(git.git, 400)
+    summarizer.request()
+    summarizer.request()
+    await new Promise((resolve) => setTimeout(resolve, 200))
+    const started = Date.now()
+    await summarizer.final()
+    expect(Date.now() - started).toBeLessThan(2000)
+    expect(r.written).toEqual([])
+    // the hanging git was killed, and nothing reads after final()
+    const hung = git.lines().filter((l) => l.includes(' branch --show-current')).map((l) => Number(l.split(' ')[0]))
+    expect(hung.length).toBeGreaterThan(0)
+    for (const pid of hung) expect(() => process.kill(pid, 0)).toThrow()
+    const reads = git.reads()
+    summarizer.request()
+    await new Promise((resolve) => setTimeout(resolve, 200))
+    expect(git.reads()).toBe(reads)
   })
 })

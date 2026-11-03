@@ -39,6 +39,11 @@ function planWorktree({ root, project, folder, task, launchId }) {
   return { path: path.join(root, worktreeRepoName(project, folder), leaf), branch: `agent-inbox/${leaf}` }
 }
 
+// The path in its on-disk letter case. Node's realpathSync keeps the case it is
+// given, so on a case-insensitive volume a root in another case would pass for
+// its own real path, and for outside the folder (review of #444).
+const realPath = (fsImpl, dir) => (fsImpl.realpathSync.native ?? fsImpl.realpathSync)(dir)
+
 function ownedPrivate(info) {
   const uid = process.getuid?.() ?? -1
   return info.uid === uid && (info.mode & 0o022) === 0
@@ -54,7 +59,9 @@ function folderProblem(dir, what, fsImpl) {
     return error && error.code === 'ENOENT' ? null : `${what} ${dir} cannot be read.`
   }
   try {
-    if (info.isSymbolicLink() || !info.isDirectory() || fsImpl.realpathSync(dir) !== dir) return `${what} ${dir} is a symlink or lies under one.`
+    if (info.isSymbolicLink() || !info.isDirectory() || realPath(fsImpl, dir) !== dir) {
+      return `${what} ${dir} is a symlink or lies under one, or is not written in its on-disk letter case.`
+    }
   } catch {
     return `${what} ${dir} cannot be read.`
   }

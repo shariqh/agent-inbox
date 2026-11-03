@@ -513,7 +513,9 @@ Main does not send the field yet (part 2), so nothing changes for anyone today.
   first 8 digits. Main now makes the launch id before the confirmation, for every start. It refuses,
   before the confirmation and creating nothing, a root or worktree inside the folder, a chosen root that does not
   exist, a root (or `<root>/<repo>`) that is a symlink, under one, not the user's or writable by others, a
-  path with a Copilot pattern character, and an existing path. The default root may be missing (the
+  path with a Copilot pattern character, and an existing path. Main's real paths are
+  `realpathSync.native` (the on-disk letter case), so a root in another case cannot pass for outside the
+  folder. The default root may be missing (the
   driver creates it 0700); its parent, the hub's folder, is checked instead.
 - **The confirmation** adds `Worktree: <path>` (through `displayLine`, keeping the end of a long path,
   which names the branch and the launch), `Branch: <branch>, from your checkout’s last commit.

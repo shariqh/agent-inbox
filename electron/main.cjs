@@ -584,7 +584,8 @@ function launchControllerFor() {
     randomUUID,
     realDirectory: (folder) => {
       try {
-        const real = realpathSync(folder)
+        // the on-disk letter case: Node's realpathSync keeps the case it was given (#432 review)
+        const real = realpathSync.native(folder)
         return statSync(real).isDirectory() ? real : null
       } catch {
         return null

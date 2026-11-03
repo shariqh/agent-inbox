@@ -7,6 +7,7 @@
 import { spawn } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import vm from 'node:vm'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -692,6 +693,17 @@ describe('a session in its own worktree (#432)', () => {
     r.deps.chooseFolder = async () => null as unknown as string
     expect(await controllerModule.createLaunchController(r.deps).chooseFolder()).toMatchObject({ ok: false, cancelled: true })
   })
+
+  // review of #444: a root in another letter case than the folder, on a case-insensitive volume
+  it.skipIf(!(tmpdir().toUpperCase() !== tmpdir() && existsSync(tmpdir().toUpperCase())))(
+    'refuses a root inside the folder written in another letter case, before the confirmation', async () => {
+      const r = worktreeRig()
+      mkdirSync(join(r.work, 'trees'), { mode: 0o700 })
+      r.state.worktreeRoot = join(r.dir, 'ALPHA', 'trees')
+      expect(await r.controller.start(r.wanted)).toEqual({ ok: false, error: expect.stringMatching(/on-disk letter case/) })
+      expect(r.calls).not.toContain('confirm')
+      expect(existsSync(join(r.work, 'trees', 'alpha'))).toBe(false)
+    })
 
   it('names the branch when a parked session’s worktree is gone', async () => {
     const r = rig()

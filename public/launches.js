@@ -77,9 +77,25 @@ export function newSessionRequest({ root, worktree, mode, model, reasoningEffort
 export function launchWorktreeLine(launch) {
   if (typeof launch?.worktree_path !== 'string' || !launch.worktree_path) return null
   const branch = typeof launch.branch === 'string' ? launch.branch : ''
-  return launch.worktree_removed_at
-    ? `Worktree removed; its branch ${branch} is kept.`
-    : `Worktree: ${branch} · ${launch.worktree_path}`
+  if (launch.worktree_removed_at) return `Worktree removed; its branch ${branch} is kept.`
+  return [`Worktree: ${branch} · ${launch.worktree_path}`, worktreeSummaryText(launch.worktree_summary, branch)].filter(Boolean).join(' · ')
+}
+
+const count = (n, one, many) => `${n} ${n === 1 ? one : many}`
+const isCount = (n) => Number.isSafeInteger(n) && n >= 0
+
+// #432 §6: the driver's last summary of the worktree, in words; '' when there is none to read
+function worktreeSummaryText(summary, branch) {
+  if (!summary || typeof summary !== 'object' || ![summary.ahead, summary.behind, summary.files, summary.dirty].every(isCount)) return ''
+  const now = typeof summary.branch === 'string' ? summary.branch : branch
+  return [
+    `${count(summary.ahead, 'commit', 'commits')} ahead`,
+    ...(summary.behind ? [`${summary.behind} behind`] : []),
+    count(summary.files, 'file changed', 'files changed'),
+    `${summary.dirty} uncommitted`,
+    // the agent can switch branch, or detach HEAD
+    ...(now === '' ? ['HEAD detached'] : now !== branch ? [`now on ${now}`] : []),
+  ].join(', ')
 }
 
 const END_REASONS = {

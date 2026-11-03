@@ -81,6 +81,8 @@ export interface DriverHooks {
   host?(pid: number): void
   linked?(sessions: readonly string[]): void
   usage?(usage: { activeMs: number; toolCalls: number }): void
+  /** #432 §6: a turn ended (the launch's worktree is summarized off the event queue). */
+  turnEnd?(): void
 }
 
 export interface DriverUi {
@@ -839,6 +841,7 @@ export class Driver {
     const stopReason = typeof result.stopReason === 'string' ? result.stopReason : frame.error ? 'error' : 'unknown'
     this.o.log({ event: 'turn_end', id: turn.rpcId, kind: turn.kind, stopReason, usage: result.usage ?? null })
     this.report(() => this.o.hooks?.usage?.(this.usage()))
+    this.report(() => this.o.hooks?.turnEnd?.())
     this.o.ui.notice(`Turn ended (${stopReason}).`)
     if (this.ending) return this.finish()
     if (this.activeMs >= this.t.activeMs) return this.end('budget:active_time')

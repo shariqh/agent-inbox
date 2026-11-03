@@ -42,10 +42,10 @@ import { childEnv, copilotAgentInboxServer, copilotArgs, editsFolder, isReasonin
 import type { LaunchMode, ReasoningEffort } from './driver-policy.js'
 import { inferProject, inferStream } from './infer.js'
 import {
-  claimDriverSlot, createLaunch, defaultDbPath, endLaunch, getLaunch, listHostSessions, liveSessionServers, markWorktreeRemoved, openDb, parkLaunch,
+  claimDriverSlot, createLaunch, defaultDbPath, endLaunch, getLaunch, listHostSessions, recordWorktreeSummary, liveSessionServers, markWorktreeRemoved, openDb, parkLaunch,
   recordLaunchProgress, releaseDriverLeases, requestDriverStop, requestLaunchStop, resumeLaunch,
 } from './store.js'
-import { createWorktree, gitEnv, inspectWorktree, removeLaunchWorktree, undoWorktree, unlockWorktree } from './worktree.js'
+import { createWorktree, gitEnv, inspectWorktree, removeLaunchWorktree, undoWorktree, unlockWorktree, worktreeSummarizer } from './worktree.js'
 import type { CreatedWorktree } from './worktree.js'
 import type Database from 'better-sqlite3'
 
@@ -56,6 +56,7 @@ const LAUNCH_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}
 const MODES: readonly LaunchMode[] = ['ask', 'read-only', 'plan', 'edits']
 // npm-installed Copilot's loader (§8) needs a current Node
 const MIN_NODE_MAJOR = 22
+// the terminal driver's cap; an app launch's spec names its own (#432 §5: Settings, 1–8)
 const MAX_DRIVERS = 2
 const MAX_PROMPT = 64 * 1024
 const LOG_ROTATE_BYTES = 20 * 1024 * 1024
@@ -442,7 +443,7 @@ async function runLaunch(argv: string[]): Promise<void> {
   const db = openDb(dbPath)
   const hubDir = dirname(dbPath)
   const lease = { launchId, pid: process.pid, nonce: randomBytes(8).toString('hex') }
-  const slot = claimDriverSlot(db, lease, MAX_DRIVERS)
+  const slot = claimDriverSlot(db, lease, spec.maxDrivers ?? MAX_DRIVERS)
   if (!slot.ok) {
     refuseStart(`${slot.running.length} driven sessions are already running (launches ${slot.running.map((r) => r.launch).join(', ')}); stop one first`, 75)
   }
@@ -471,7 +472,7 @@ async function runLaunch(argv: string[]): Promise<void> {
     return git
   }
   // the worktree's checkout and path: from the spec, or, resuming, from the row
-  let worktreeOf: { checkout: string; path: string } | null = null
+  let worktreeOf: { checkout: string; path: string; baseRef: string | null; baseSha: string } | null = null
   let created: CreatedWorktree | null = null
   // an ended launch's worktree is unlocked; a parked one keeps its lock (§5)
   let unlocked = false
@@ -515,7 +516,7 @@ async function runLaunch(argv: string[]): Promise<void> {
       const undo = made.worktree
       undoCreated = () => { if (undoWorktree(gitPath, gitEnv(sessionEnv), undo)) markWorktreeRemoved(db, launchId) }
       cwd = created.path
-      worktreeOf = { checkout, path: cwd }
+      worktreeOf = { checkout, path: cwd, baseRef: created.baseRef, baseSha: created.baseSha }
     }
     facts = {
       cwd, mode: spec.mode, ...(spec.model ? { model: spec.model } : {}), ...(spec.reasoningEffort ? { reasoningEffort: spec.reasoningEffort } : {}),
@@ -544,7 +545,9 @@ async function runLaunch(argv: string[]): Promise<void> {
     const row = resumeLaunch(db, launchId, process.pid)
     if (!row) return refuse(`launch ${launchId} is not parked`)
     undoRow = () => { parkLaunch(db, launchId, { acpSession: row.acp_session, activeMs: row.active_ms, toolCalls: row.tool_calls }) }
-    if (row.worktree_path && row.checkout_root && row.worktree_removed_at === null) worktreeOf = { checkout: row.checkout_root, path: row.worktree_path }
+    if (row.worktree_path && row.checkout_root && row.base_sha && row.worktree_removed_at === null) {
+      worktreeOf = { checkout: row.checkout_root, path: row.worktree_path, baseRef: row.base_ref, baseSha: row.base_sha }
+    }
     const mode = MODES.find((m) => m === row.mode)
     const effort = row.reasoning_effort !== null && isReasoningEffort(row.reasoning_effort) ? row.reasoning_effort : undefined
     if (!mode) return refuse(`launch ${launchId} has an unknown mode`)
@@ -619,13 +622,23 @@ async function runLaunch(argv: string[]): Promise<void> {
   // test seams from the driver's own environment, bounded
   const linkWaitMs = boundedMs(process.env.AGENT_INBOX_DRIVER_LINK_WAIT_MS, 0, 10_000)
   const idleMs = boundedMs(process.env.AGENT_INBOX_DRIVER_IDLE_MS, 50, 2 * 60 * 60_000)
+  const progress = launchHooks(db, launchId)
+  // #432 §6: the worktree's summary at each turn end, at park and at end
+  const held = worktreeOf
+  const summaryGit = held ? findGit() : null
+  const summarizer = held && typeof summaryGit === 'string'
+    ? worktreeSummarizer({
+      git: summaryGit, env: gitEnv(sessionEnv), path: held.path, baseRef: held.baseRef, baseSha: held.baseSha,
+      write: (summary) => { try { recordWorktreeSummary(db, launchId, summary) } catch { /* the hub is gone */ } },
+    })
+    : null
   const driver = new Driver({
     db, lease, mode: facts.mode, cwd: facts.cwd, project: facts.project, stream: facts.stream, task: facts.prompt,
     input: child.stdout, output: child.stdin, child: { kill, exited },
     ui: { ask: () => undefined, settled: () => undefined, text: () => undefined, notice: (text) => log({ event: 'notice', text }) },
     log, stateDir: join(hubDir, 'drivers', launchId), scan,
     asks: appAsks({ db, launchId, launchKey: spec.launchKey, project: facts.project, stream: facts.stream, log }),
-    hooks: launchHooks(db, launchId),
+    hooks: { ...progress, ...(summarizer ? { turnEnd: () => summarizer.request() } : {}) },
     usage: used,
     ...resume,
     timing: {
@@ -670,6 +683,8 @@ async function runLaunch(argv: string[]): Promise<void> {
   // the child exits about 1 s after its stdin closes (spike §1); after 10 s its group gets SIGTERM
   const settled = await Promise.race([exited.then(() => true), new Promise<boolean>((r) => setTimeout(() => r(false), 10_000).unref())])
   if (!settled) kill('SIGTERM')
+  // the worktree as the session left it, at park and at end (§6)
+  await summarizer?.final()
   closeRow(reason)
   try { releaseDriverLeases(db, lease) } catch { /* the hub is gone */ }
   db.close()

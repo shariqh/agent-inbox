@@ -23,6 +23,7 @@ function registerLaunchIpc({ ipcMain, controller, settings, settled, isOwned, is
     const view = controller().available()
     const granted = isGranted(event)
     const worktreeRoot = view.available && granted ? await controller().worktreeRoot() : null
+    const maxSessions = view.available && granted ? await controller().maxSessions() : null
     return {
       owned: true,
       enabled: view.enabled,
@@ -30,6 +31,7 @@ function registerLaunchIpc({ ipcMain, controller, settings, settled, isOwned, is
       ...(view.error ? { error: view.error } : !granted && view.enabled ? { error: NOT_HERE } : {}),
       canEnable: controller().canEnable() === null,
       ...(worktreeRoot ? { worktreeRoot } : {}),
+      ...(maxSessions ? { maxSessions } : {}),
     }
   })
 
@@ -71,6 +73,8 @@ function registerLaunchIpc({ ipcMain, controller, settings, settled, isOwned, is
     start: 'start', stop: 'stop', close: 'close', resume: 'resume', approve: 'approve',
     // #432 §5, §6: a launch id only; main reads the worktree's path from the hub itself
     removeWorktree: 'remove-worktree', openWorktree: 'open-worktree',
+    // #432 §5: the cap on sessions at once, 1 to 8, checked again by the controller
+    setMaxSessions: 'set-max-sessions',
   }
   for (const [action, channel] of Object.entries(oneArgument)) {
     ipcMain.handle(`agent-inbox:launch-${channel}`, async (event, ...args) => {

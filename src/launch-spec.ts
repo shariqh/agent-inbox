@@ -22,6 +22,7 @@ export const LAUNCH_BUDGETS = {
 } as const
 
 const MAX_SPEC_BYTES = 1024 * 1024
+const MAX_DRIVERS = { min: 1, max: 8 }
 const MAX_PROMPT = 64 * 1024
 const MAX_ENV_ENTRIES = 1000
 const LAUNCH_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
@@ -30,6 +31,8 @@ const MODES: readonly LaunchMode[] = ['ask', 'read-only', 'plan', 'edits']
 interface SpecCommon {
   v: 1
   launchId: string
+  /** #432 §5: the human's cap on sessions at once (Settings, 1–8); absent, the driver's own 2. */
+  maxDrivers?: number
   /** The login-shell environment main captured in the launch folder (§8). */
   env: Record<string, string>
   launchKey: Buffer
@@ -82,8 +85,8 @@ export function parseLaunchSpec(text: string, launchId: string): SpecResult {
   if (raw.v !== LAUNCH_SPEC_VERSION) return fail(`version ${String(raw.v)} is not ${LAUNCH_SPEC_VERSION}`)
   if (raw.kind !== 'new' && raw.kind !== 'resume') return fail('kind must be new or resume')
   const shape = raw.kind === 'new'
-    ? exactKeys(raw, ['v', 'kind', 'launchId', 'host', 'cwd', 'mode', 'budgets', 'prompt', 'env', 'launchKey'], ['model', 'reasoningEffort', 'worktree'])
-    : exactKeys(raw, ['v', 'kind', 'launchId', 'env', 'launchKey'])
+    ? exactKeys(raw, ['v', 'kind', 'launchId', 'host', 'cwd', 'mode', 'budgets', 'prompt', 'env', 'launchKey'], ['model', 'reasoningEffort', 'worktree', 'maxDrivers'])
+    : exactKeys(raw, ['v', 'kind', 'launchId', 'env', 'launchKey'], ['maxDrivers'])
   if (shape) return fail(shape)
   if (typeof raw.launchId !== 'string' || !LAUNCH_ID.test(raw.launchId) || raw.launchId !== launchId) {
     return fail('launchId must be the lowercase UUID on the command line')
@@ -99,7 +102,8 @@ export function parseLaunchSpec(text: string, launchId: string): SpecResult {
   if (typeof raw.launchKey !== 'string' || !/^[A-Za-z0-9+/]{43}=$/.test(raw.launchKey)) return fail('launchKey must be 32 bytes of base64')
   const launchKey = Buffer.from(raw.launchKey, 'base64')
   if (launchKey.length !== LAUNCH_KEY_BYTES) return fail('launchKey must be 32 bytes of base64')
-  const common = { v: 1 as const, launchId: raw.launchId, env, launchKey }
+  if (raw.maxDrivers !== undefined && budget(raw.maxDrivers, MAX_DRIVERS) === null) return fail('maxDrivers must be 1 to 8')
+  const common = { v: 1 as const, launchId: raw.launchId, env, launchKey, ...(raw.maxDrivers === undefined ? {} : { maxDrivers: raw.maxDrivers as number }) }
   if (raw.kind === 'resume') return { ok: true, spec: { ...common, kind: 'resume' } }
 
   if (raw.host !== 'copilot') return fail('host must be copilot')

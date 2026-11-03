@@ -10,7 +10,7 @@ import { appendFileSync, mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type Database from 'better-sqlite3'
 import {
-  claimDriverSlot, createLaunch, endLaunch, fileLaunchAsk, getItem, holdDriverLeases, insertItem, listSessionMessages, markDriverTurn, markWorktreeRemoved,
+  claimDriverSlot, createLaunch, endLaunch, fileLaunchAsk, getItem, holdDriverLeases, insertItem, listSessionMessages, markDriverTurn, markWorktreeRemoved, recordWorktreeSummary,
   parkLaunch, recordActivityCall, recordLaunchProgress, resolveItem, upsertActivity,
 } from '../../src/store.js'
 import type { ViewerBridge } from './harness.js'
@@ -33,7 +33,7 @@ const LAUNCH = '11111111-2222-4333-8444-555555555555'
 const PARKED = '11111111-2222-4333-8444-666666666666'
 const LEASE = { launchId: LAUNCH, pid: 4242, nonce: 'n' }
 
-type State = { owned: boolean; enabled: boolean; available: boolean; canEnable: boolean; worktreeRoot?: { path: string; isDefault: boolean } }
+type State = { owned: boolean; enabled: boolean; available: boolean; canEnable: boolean; worktreeRoot?: { path: string; isDefault: boolean }; maxSessions?: number }
 function launchBridge(state: Partial<State> = {}) {
   const current: State = { owned: true, enabled: true, available: true, canEnable: true, ...state }
   const api = {
@@ -49,6 +49,7 @@ function launchBridge(state: Partial<State> = {}) {
       return { ok: true, worktreeRoot: current.worktreeRoot }
     }),
     resetWorktreeRoot: vi.fn(async () => ({ ok: true })),
+    setMaxSessions: vi.fn(async (n: number) => { current.maxSessions = n; return { ok: true, maxSessions: n } }),
     removeWorktree: vi.fn(async (_id: string) => ({ ok: true }) as Record<string, unknown>),
     openWorktree: vi.fn(async (_id: string) => ({ ok: true }) as Record<string, unknown>),
     chooseFolder: vi.fn(async () => ({ ok: true, folder: '/Users/shariqh/notes', project: 'notes', repository: false }) as Record<string, unknown>),
@@ -212,7 +213,23 @@ describe('off means off on the page (§9 b)', () => {
     await bootApp(db)
     expect(document.getElementById('launch-settings')!.hidden).toBe(false)
     expect(document.getElementById('launch-worktree-root')).toBeNull()
+    expect(document.getElementById('launch-max-sessions')).toBeNull()
     expect(off.chooseWorktreeRoot).not.toHaveBeenCalled()
+  })
+
+  it('with the switch on, Settings shows the cap on sessions at once, 1 to 8, and changes it through main (#432)', async () => {
+    const api = launchBridge({ maxSessions: 4 })
+    db = freshDb()
+    await bootApp(db)
+    await settle()
+    const select = document.querySelector<HTMLSelectElement>('#launch-max-sessions select')!
+    expect([...select.options].map((o) => o.value)).toEqual(['1', '2', '3', '4', '5', '6', '7', '8'])
+    expect(select.value).toBe('4')
+    select.value = '6'
+    select.dispatchEvent(new Event('change', { bubbles: true }))
+    await settle()
+    expect(api.setMaxSessions).toHaveBeenCalledWith(6)
+    expect(select.value).toBe('6')
   })
 
   it('with the switch on, Settings shows where worktrees go, and Choose… asks main’s own dialog', async () => {
@@ -299,6 +316,11 @@ describe('the Live drawer’s sessions (§3.6, §7)', () => {
     openDrawer()
     expect(launchRow(LAUNCH)!.querySelector('.live-launch-worktree')!.textContent).toBe('Worktree: agent-inbox/fix-it-11111111 · /w/alpha/fix-it-11111111')
     expect(launchRow(PARKED)!.querySelector('.live-launch-worktree')).toBeNull()
+    // the driver's turn-end summary, in words (#432 §6)
+    recordWorktreeSummary(db, LAUNCH, { v: 1, at: new Date().toISOString(), head: 'b'.repeat(40), branch: 'agent-inbox/fix-it-11111111', ahead: 2, behind: 0, files: 3, dirty: 1 })
+    await changedPollTick(db)
+    expect(launchRow(LAUNCH)!.querySelector('.live-launch-worktree')!.textContent)
+      .toBe('Worktree: agent-inbox/fix-it-11111111 · /w/alpha/fix-it-11111111 · 2 commits ahead, 3 files changed, 1 uncommitted')
     markWorktreeRemoved(db, LAUNCH)
     await changedPollTick(db)
     expect(launchRow(LAUNCH)!.querySelector('.live-launch-worktree')!.textContent).toBe('Worktree removed; its branch agent-inbox/fix-it-11111111 is kept.')

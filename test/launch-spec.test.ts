@@ -32,6 +32,9 @@ describe('the launch spec (§8)', () => {
     // #432: a new worktree of cwd, at the path and on the branch main planned for this launch id
     const worktree = { path: '/home/shariqh/.agent-inbox/worktrees/app/fix-it-22222222', branch: 'agent-inbox/fix-it-22222222' }
     expect(parseLaunchSpec(spec({ worktree }), ID)).toMatchObject({ ok: true, spec: { cwd: '/work/app', worktree } })
+    // #432 §5: the human's cap, on a new spec and a resume spec alike
+    expect(parseLaunchSpec(spec({ maxDrivers: 4 }), ID)).toMatchObject({ ok: true, spec: { maxDrivers: 4 } })
+    expect(parseLaunchSpec(JSON.stringify({ v: 1, kind: 'resume', launchId: ID, env: {}, launchKey: KEY, maxDrivers: 8 }), ID)).toMatchObject({ ok: true, spec: { maxDrivers: 8 } })
     expect(parseLaunchSpec(JSON.stringify({ v: 1, kind: 'resume', launchId: ID, env: {}, launchKey: KEY }), ID))
       .toEqual({ ok: true, spec: { v: 1, kind: 'resume', launchId: ID, env: {}, launchKey: LAUNCH_KEY } })
   })
@@ -57,6 +60,9 @@ describe('the launch spec (§8)', () => {
     ['a worktree branch that is not agent-inbox’s', spec({ worktree: { path: '/w/app/main', branch: 'main' } }), /worktree branch must be/],
     ['a worktree path a tool pattern would read', spec({ worktree: { path: '/w/a[1]/fix-it-22222222', branch: 'agent-inbox/fix-it-22222222' } }), /none of/],
     ['a relative worktree path', spec({ worktree: { path: 'w/app/fix-it-22222222', branch: 'agent-inbox/fix-it-22222222' } }), /normalized absolute path/],
+    ['a cap of none', spec({ maxDrivers: 0 }), /maxDrivers must be 1 to 8/],
+    ['a cap above 8', spec({ maxDrivers: 9 }), /maxDrivers must be 1 to 8/],
+    ['a cap that is not a whole number', spec({ maxDrivers: 2.5 }), /maxDrivers must be 1 to 8/],
     ['a resume that names facts', JSON.stringify({ v: 1, kind: 'resume', launchId: ID, env: {}, launchKey: KEY, mode: 'ask' }), /unknown field mode/],
   ] as Array<[string, string, RegExp, string?]>)('refuses %s', (_, text, error, launchId = ID) => {
     const parsed = parseLaunchSpec(text, launchId)

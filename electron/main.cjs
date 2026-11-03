@@ -572,6 +572,11 @@ function launchControllerFor() {
       read: () => launchSettings().readWorktreeRoot(),
       write: (root) => launchSettings().setWorktreeRoot(root),
     },
+    // #432 §5: the cap on sessions at once, read only with the switch on
+    sessionCap: {
+      read: () => launchSettings().readMaxDrivers(),
+      write: (cap) => launchSettings().setMaxDrivers(cap),
+    },
     // #432 §5: `driver-cli.js worktree inspect|remove`, from the same verified runtime
     runWorktree: (args) => runWorktreeCommand({ ...args, spawnImpl: spawn }),
     // Remove worktree's three-way choice: the index of the button, Cancel by default

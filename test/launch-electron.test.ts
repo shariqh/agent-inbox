@@ -73,6 +73,20 @@ describe('the switch’s file (§9)', () => {
     await expect(settings.setEnabled('yes' as unknown as boolean)).rejects.toThrow(TypeError)
   })
 
+  it('keeps the cap on sessions at once as one optional field of 1 to 8 (#432 §5)', async () => {
+    const dir = scratchDir('session-launch-')
+    const filePath = join(dir, 'session-launch.json')
+    const settings = sessionLaunch.createSessionLaunchSettings({ filePath })
+    expect(await settings.readMaxDrivers()).toBeNull()
+    writeFileSync(filePath, JSON.stringify({ schema: 1, enabled: true, worktreeRoot: '/w', later: 'kept' }))
+    expect(await settings.setMaxDrivers(3)).toEqual({ maxDrivers: 3 })
+    expect(JSON.parse(readFileSync(filePath, 'utf8'))).toEqual({ schema: 1, enabled: true, worktreeRoot: '/w', later: 'kept', maxDrivers: 3 })
+    expect(await settings.readMaxDrivers()).toBe(3)
+    await expect(settings.setMaxDrivers(9)).rejects.toThrow(TypeError)
+    writeFileSync(filePath, JSON.stringify({ schema: 1, enabled: true, maxDrivers: 40 }))
+    expect(await settings.readMaxDrivers()).toBeNull()
+  })
+
   it('keeps the worktree folder as one optional field, beside the switch and unknown fields (#432)', async () => {
     const dir = scratchDir('session-launch-')
     const filePath = join(dir, 'session-launch.json')
@@ -279,6 +293,8 @@ function rig(over: Json = {}) {
     worktreeRoot: null as string | null, chosenRoot: null as string | null,
     inspected: { path: '/w/alpha/fix-22222222', branch: 'agent-inbox/fix-22222222', missing: false, dirty: 0, ahead: 2, upstream: false, status: 'b'.repeat(64) } as Json,
     answer: 'Remove',
+    cap: null as number | null,
+    capReads: 0,
   }
   const keyStore = launchKeys.createLaunchKeys({ safeStorage: fakeSafeStorage(), filePath: join(scratchDir('controller-'), 'k') })
   const posted: Array<[string, unknown]> = []
@@ -334,6 +350,11 @@ function rig(over: Json = {}) {
     },
     ask: async (text: { buttons: string[] }) => { calls.push('ask'); spawned.push({ removal: text }); return text.buttons.indexOf(state.answer) },
     openTerminal: async (folder: string) => { calls.push(`openTerminal ${folder}`); return true },
+    // #432 §5: counted apart from `calls`, whose exact order the start tests pin
+    sessionCap: {
+      read: async () => { state.capReads += 1; return state.cap },
+      write: async (cap: number) => { state.cap = cap; return { maxDrivers: cap } },
+    },
     ...over,
   }
   return { controller: controllerModule.createLaunchController(deps), calls, spawned, state, posted, deps }
@@ -526,8 +547,11 @@ describe('the launch controller', () => {
       await r.controller.start({ ...REQUEST, worktree: true }), await r.controller.chooseWorktreeRoot(), await r.controller.resetWorktreeRoot(),
       await r.controller.chooseFolder(),
     ]) expect(result.ok).toBe(false)
-    // #432 §8 (e): no worktree setting read, no folder dialog, no folder made
+    // #432 §8 (e): no worktree setting read, no folder dialog, no folder made, and no cap read or written
     expect(await r.controller.worktreeRoot()).toBeNull()
+    expect(await r.controller.maxSessions()).toBeNull()
+    expect(await r.controller.setMaxSessions(3)).toMatchObject({ ok: false })
+    expect(r.state).toMatchObject({ cap: null, capReads: 0 })
     expect(r.calls).toEqual([])
     // reading whether it may be turned on never touches safeStorage
     expect(r.controller.canEnable()).toBeNull()
@@ -830,6 +854,19 @@ describe('a session in its own worktree (#432)', () => {
     })
   })
 
+  it('sends the human’s cap on sessions at once in every spec, 4 by default, and keeps it to 1 to 8 (§5)', async () => {
+    const r = rig()
+    expect(await r.controller.start(REQUEST)).toEqual({ ok: true, launch: ID })
+    expect(parseLaunchSpec(JSON.stringify(r.spawned.at(-1)!.spec), ID)).toMatchObject({ ok: true, spec: { maxDrivers: 4 } })
+    expect(await r.controller.maxSessions()).toBe(4)
+    expect(await r.controller.setMaxSessions(6)).toEqual({ ok: true, maxSessions: 6 })
+    for (const bad of [0, 9, 1.5, '6']) expect(await r.controller.setMaxSessions(bad)).toMatchObject({ ok: false })
+    expect(await r.controller.maxSessions()).toBe(6)
+    r.state.launches[ID] = { id: ID, status: 'parked', cwd: '/work/alpha' }
+    expect(await r.controller.resume(ID)).toEqual({ ok: true, launch: ID })
+    expect(parseLaunchSpec(JSON.stringify(r.spawned.at(-1)!.spec), ID)).toMatchObject({ ok: true, spec: { kind: 'resume', maxDrivers: 6 } })
+  })
+
   it('names the branch when a parked session’s worktree is gone', async () => {
     const r = rig()
     r.state.launches[ID] = { id: ID, status: 'parked', cwd: '/missing/alpha/fix-22222222', branch: 'agent-inbox/fix-22222222' }
@@ -890,11 +927,11 @@ describe('the launch IPC and its grants (§8)', () => {
     return { call, r, settings, onEnabled, handlers, made: () => made }
   }
 
-  it('registers the twelve channels, and makes no controller until one is used', () => {
+  it('registers the thirteen channels, and makes no controller until one is used', () => {
     const w = world()
     expect([...w.handlers.keys()].sort()).toEqual([
       'available', 'approve', 'choose-folder', 'choose-worktree-root', 'close', 'open-worktree', 'remove-worktree', 'reset-worktree-root', 'resume',
-      'set-enabled', 'start', 'stop',
+      'set-enabled', 'set-max-sessions', 'start', 'stop',
     ].map((name) => `agent-inbox:launch-${name}`).sort())
     expect(w.made()).toBe(0)
   })
@@ -922,8 +959,13 @@ describe('the launch IPC and its grants (§8)', () => {
     expect(await owned.call('launch-choose-worktree-root')).toMatchObject({ ok: false })
     expect(await owned.call('launch-reset-worktree-root')).toMatchObject({ ok: false })
     expect(owned.r.calls.filter((c) => c.startsWith('worktree') || c === 'chooseWorktreeFolder')).toEqual([])
+    expect(await owned.call('launch-available')).not.toHaveProperty('maxSessions')
+    expect(await owned.call('launch-set-max-sessions', 3)).toMatchObject({ ok: false })
+    expect(owned.r.state.cap).toBeNull()
     const w = world()
-    expect(await w.call('launch-available')).toMatchObject({ worktreeRoot: { path: '/hub/worktrees', isDefault: true } })
+    expect(await w.call('launch-available')).toMatchObject({ worktreeRoot: { path: '/hub/worktrees', isDefault: true }, maxSessions: 4 })
+    expect(await w.call('launch-set-max-sessions', 3)).toEqual({ ok: true, maxSessions: 3 })
+    expect(await w.call('launch-set-max-sessions')).toEqual({ ok: false, error: 'invalid' })
     expect(await w.call('launch-choose-worktree-root', '/elsewhere')).toEqual({ ok: false, error: 'invalid' })
     expect(await w.call('launch-reset-worktree-root', null)).toEqual({ ok: false, error: 'invalid' })
     expect(await w.call('launch-choose-worktree-root')).toMatchObject({ ok: false, cancelled: true })
@@ -1203,11 +1245,15 @@ describe('the preload bridge (§8)', () => {
     return { launch: exposed.agentInboxLaunch as Record<string, (...args: unknown[]) => Promise<Json>>, invoke }
   }
 
-  it('has exactly its twelve methods, each with exact arity, and passes nothing it was not given', async () => {
+  it('has exactly its thirteen methods, each with exact arity, and passes nothing it was not given', async () => {
     const { launch, invoke } = loadPreload(() => ({ ok: true, launch: ID, path: '/secret', enabled: true }))
     expect(Object.keys(launch).sort()).toEqual([
-      'approve', 'available', 'chooseFolder', 'chooseWorktreeRoot', 'close', 'openWorktree', 'removeWorktree', 'resetWorktreeRoot', 'resume', 'setEnabled', 'start', 'stop',
+      'approve', 'available', 'chooseFolder', 'chooseWorktreeRoot', 'close', 'openWorktree', 'removeWorktree', 'resetWorktreeRoot', 'resume', 'setEnabled',
+      'setMaxSessions', 'start', 'stop',
     ])
+    // #432 §5: a cap of 1 to 8 only
+    for (const bad of [0, 9, 2.5, '4']) expect(await launch.setMaxSessions!(bad)).toEqual({ ok: false, error: 'invalid' })
+    expect(await launch.setMaxSessions!(4, 5)).toEqual({ ok: false, error: 'invalid' })
     // #432: a launch id only, never a path
     for (const method of ['removeWorktree', 'openWorktree']) {
       expect(await launch[method]!('/w/alpha')).toEqual({ ok: false, error: 'invalid' })

@@ -7,7 +7,8 @@ import { execFileSync } from 'node:child_process'
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createWorktree, gitEnv, inspectWorktree, removeLaunchWorktree, undoWorktree, unlockWorktree, worktreePlanError } from '../src/worktree.js'
+import { createWorktree, gitEnv, inspectWorktree, removeLaunchWorktree, undoWorktree, unlockWorktree, worktreePlanError, worktreeSummarizer } from '../src/worktree.js'
+import type { WorktreeSummary } from '../src/worktree.js'
 import { removeScratchDirs, scratchDir } from './scratch.js'
 
 const LAUNCH = '1a2b3c4d-3333-4444-8555-666666666666'
@@ -351,5 +352,41 @@ describe('Remove worktree (#432 §5)', () => {
     expect(inspectWorktree({ ...r.target, path: other })).toEqual({ ok: false, error: expect.stringMatching(/does not list/) })
     expect(removeLaunchWorktree({ ...r.target, path: other })).toMatchObject({ ok: false })
     expect(existsSync(other)).toBe(true)
+  })
+})
+
+describe('the turn-end summary (#432 §6)', () => {
+  it('reads the branch, commits ahead and behind, files changed and uncommitted entries; a request during a read runs once after it', async () => {
+    const r = rig()
+    const made = r.create()
+    if (!made.ok) throw new Error(made.error)
+    const written: WorktreeSummary[] = []
+    const summarizer = worktreeSummarizer({
+      git: GIT, env: r.env, path: r.plan.path, baseRef: 'refs/heads/main', baseSha: made.worktree.baseSha, write: (s) => { written.push(s) },
+    })
+    await summarizer.final()
+    expect(written.at(-1)).toEqual({ v: 1, at: expect.any(String), head: made.worktree.baseSha, branch: r.plan.branch, ahead: 0, behind: 0, files: 0, dirty: 0 })
+    // a commit in the worktree, an edit left uncommitted, and the checkout moving on
+    writeFileSync(join(r.plan.path, 'a.txt'), 'a\n')
+    r.git(r.plan.path, 'add', 'a.txt')
+    r.git(r.plan.path, 'commit', '-q', '-m', 'a')
+    writeFileSync(join(r.plan.path, 'README.md'), 'edited\n')
+    r.commit('later.md')
+    summarizer.request()
+    summarizer.request()
+    summarizer.request()
+    await summarizer.final()
+    expect(written.at(-1)).toMatchObject({ branch: r.plan.branch, ahead: 1, behind: 1, files: 1, dirty: 1, head: r.git(r.plan.path, 'rev-parse', 'HEAD') })
+    // at most the request in flight, one queued after it, and final()'s own read
+    expect(written.length).toBeLessThanOrEqual(4)
+    // the agent switched branch: the summary names the branch it is on now
+    r.git(r.plan.path, 'switch', '-q', '-c', 'side')
+    await summarizer.final()
+    expect(written.at(-1)).toMatchObject({ branch: 'side', ahead: 1 })
+    // a read that fails writes nothing, so the last summary stays
+    const count = written.length
+    rmSync(r.plan.path, { recursive: true, force: true })
+    await summarizer.final()
+    expect(written).toHaveLength(count)
   })
 })

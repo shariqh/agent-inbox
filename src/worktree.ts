@@ -8,7 +8,7 @@
 // line with `git worktree add --lock`, argv only, using the trusted `git` on
 // the captured PATH. A refusal after creation undoes only what this launch
 // made; nothing else is ever removed here, and a branch that moved is kept.
-import { spawnSync } from 'node:child_process'
+import { execFile, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { closeSync, lstatSync, mkdirSync, openSync, readlinkSync, readSync, realpathSync, statSync } from 'node:fs'
 
@@ -253,6 +253,11 @@ export interface WorktreeState {
   status: string
 }
 
+// The base as the row recorded it, before it reaches git's argv: a branch ref and a commit id only
+// (the driver wrote both; a hand-edited row cannot turn them into an option)
+const baseRefOf = (ref: string | null): string | null => (ref && /^refs\/heads\/[A-Za-z0-9._/-]+$/.test(ref) && !ref.includes('..') ? ref : null)
+const isSha = (sha: string): boolean => /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(sha)
+
 type LaunchWorktree = { git: string; env: NodeJS.ProcessEnv; checkout: string; path: string; branch: string; baseRef: string | null; baseSha: string }
 
 // git's own entry for exactly this path on exactly this branch, or why not. A
@@ -388,8 +393,9 @@ export function inspectWorktree(o: LaunchWorktree): { ok: true; state: WorktreeS
   const status: Fingerprint | { error: string } = gone ? { dirty: 0, examples: [], status: '', noDiscard: null } : fingerprintOf(o)
   if ('error' in status) return { ok: false, error: status.error }
   const ref = `refs/heads/${o.branch}`
-  const base = o.baseRef && runGit(o.git, o.env, o.checkout, ['rev-parse', '--verify', '-q', `${o.baseRef}^{commit}`], READ_TIMEOUT_MS).ok ? o.baseRef : o.baseSha
-  const ahead = runGit(o.git, o.env, o.checkout, ['rev-list', '--count', `${base}..${ref}`], READ_TIMEOUT_MS)
+  const baseRef = baseRefOf(o.baseRef)
+  const base = baseRef && runGit(o.git, o.env, o.checkout, ['rev-parse', '--verify', '-q', `${baseRef}^{commit}`], READ_TIMEOUT_MS).ok ? baseRef : o.baseSha
+  const ahead = !isSha(o.baseSha) && base === o.baseSha ? { ok: false, stdout: '' } : runGit(o.git, o.env, o.checkout, ['rev-list', '--count', `${base}..${ref}`], READ_TIMEOUT_MS)
   const upstream = runGit(o.git, o.env, o.checkout, ['for-each-ref', '--format=%(upstream)', ref], READ_TIMEOUT_MS)
   return {
     ok: true,
@@ -414,4 +420,96 @@ export function removeLaunchWorktree(o: LaunchWorktree & { discard?: string }): 
   runGit(o.git, o.env, o.checkout, ['worktree', 'unlock', o.path], UNLOCK_TIMEOUT_MS)
   const removed = runGit(o.git, o.env, o.checkout, ['worktree', 'remove', ...(o.discard !== undefined ? ['--force'] : []), o.path], ADD_TIMEOUT_MS)
   return removed.ok ? { ok: true } : { ok: false, error: removed.message }
+}
+
+// ── the turn-end summary (#432 §6) ─────────────────────────────────────────────
+
+/** What the worktree holds now, written to the launch row at each turn end, at park and at end. */
+export interface WorktreeSummary {
+  v: 1
+  at: string
+  head: string
+  /** The branch checked out now (the agent can switch); '' when HEAD is detached. */
+  branch: string
+  /** Commits on HEAD that the base lacks, and commits on the base that HEAD lacks. */
+  ahead: number
+  behind: number
+  /** Files changed between the base commit and HEAD. */
+  files: number
+  /** Uncommitted and untracked entries. */
+  dirty: number
+}
+
+const SUMMARY_TIMEOUT_MS = 10_000
+
+type GitRun = (args: string[]) => Promise<GitResult>
+
+async function summarize(run: GitRun, base: { ref: string | null; sha: string }): Promise<WorktreeSummary | null> {
+  if (!isSha(base.sha)) return null
+  const head = await run(['rev-parse', '--verify', '-q', 'HEAD^{commit}'])
+  if (!head.ok) return null
+  const branch = await run(['branch', '--show-current'])
+  const baseRef = baseRefOf(base.ref)
+  const ref = baseRef && (await run(['rev-parse', '--verify', '-q', `${baseRef}^{commit}`])).ok ? baseRef : base.sha
+  const counts = await run(['rev-list', '--left-right', '--count', `${ref}...HEAD`])
+  const files = await run(['diff', '--name-only', '-z', `${base.sha}...HEAD`])
+  const status = await run(['status', '--porcelain=v1', '-z', '--no-renames'])
+  if (!branch.ok || !counts.ok || !files.ok || !status.ok) return null
+  const [behind, ahead] = counts.stdout.trim().split(/\s+/).map(Number)
+  if (!Number.isInteger(behind) || !Number.isInteger(ahead)) return null
+  const entries = (text: string) => text.split('\0').filter(Boolean).length
+  return {
+    v: 1, at: new Date().toISOString(), head: head.stdout.trim(), branch: branch.stdout.trim(),
+    ahead: ahead!, behind: behind!, files: entries(files.stdout), dirty: entries(status.stdout),
+  }
+}
+
+/**
+ * The driver's summaries of a launch's worktree (§6). `request()` runs git off
+ * the driver's event queue (async, one read at a time, a request during a read
+ * runs once after it) and hands each summary to `write`; `final()` is awaited
+ * at park and at end. A failed read writes nothing, so the last one stays.
+ */
+export function worktreeSummarizer(o: {
+  git: string
+  env: NodeJS.ProcessEnv
+  path: string
+  baseRef: string | null
+  baseSha: string
+  write: (summary: WorktreeSummary) => void
+}): { request(): void; final(): Promise<void> } {
+  const env = { ...o.env, GIT_OPTIONAL_LOCKS: '0' }
+  const run: GitRun = (args) => new Promise((resolve) => {
+    execFile(o.git, ['-C', o.path, ...args], { env, cwd: '/', encoding: 'utf8', timeout: SUMMARY_TIMEOUT_MS, killSignal: 'SIGKILL', maxBuffer: 64 * 1024 * 1024 }, (error, stdout) => {
+      resolve({ ok: !error, code: error ? null : 0, stdout: String(stdout ?? ''), message: error ? 'git failed' : '' })
+    })
+  })
+  let running: Promise<void> | null = null
+  let again = false
+  const once = async (): Promise<void> => {
+    try {
+      const summary = await summarize(run, { ref: o.baseRef, sha: o.baseSha })
+      if (summary) o.write(summary)
+    } catch { /* a summary never stops the session */ }
+  }
+  const request = (): void => {
+    if (running) {
+      again = true
+      return
+    }
+    running = once().finally(() => {
+      running = null
+      if (again) {
+        again = false
+        request()
+      }
+    })
+  }
+  return {
+    request,
+    async final() {
+      while (running) await running
+      await once()
+    },
+  }
 }

@@ -4031,9 +4031,11 @@ export interface LaunchRecord {
 }
 
 /** What /api/launches serves of a launch: no prompt, process ids or ACP session id. */
-export type Launch = Omit<LaunchRecord, 'prompt' | 'driver_pid' | 'child_pgid' | 'child_started_at' | 'host_pid' | 'acp_session'> & {
+export type Launch = Omit<LaunchRecord, 'prompt' | 'driver_pid' | 'child_pgid' | 'child_started_at' | 'host_pid' | 'acp_session' | 'worktree_summary'> & {
   /** Whether a parked launch can load its ACP session again (it was prompted). */
   resumable: boolean
+  /** #432 §6: the driver's last summary of its worktree, or null (none yet, or unreadable). */
+  worktree_summary: Record<string, unknown> | null
 }
 
 // ended launches /api/launches carries, newest first; every running and parked one is carried,
@@ -4051,8 +4053,13 @@ function parseLaunch(row: Omit<LaunchRecord, 'sessions'> & { sessions: string | 
 }
 
 export function launchView(record: LaunchRecord): Launch {
-  const { prompt: _prompt, driver_pid: _driver, child_pgid: _pgid, child_started_at: _start, host_pid: _host, acp_session, ...rest } = record
-  return { ...rest, resumable: acp_session !== null }
+  const { prompt: _prompt, driver_pid: _driver, child_pgid: _pgid, child_started_at: _start, host_pid: _host, acp_session, worktree_summary, ...rest } = record
+  let summary: Record<string, unknown> | null = null
+  try {
+    const parsed: unknown = worktree_summary === null ? null : JSON.parse(worktree_summary)
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) summary = parsed as Record<string, unknown>
+  } catch { /* unreadable: none */ }
+  return { ...rest, resumable: acp_session !== null, worktree_summary: summary }
 }
 
 export interface NewLaunch {
@@ -4227,6 +4234,22 @@ export function requestLaunchStop(db: Database.Database, id: string): 'stopping'
     }
     return null
   }).immediate()
+}
+
+// #432 §6: the driver's summary of its launch's worktree, written only when
+// something but its time changed, so /api/launches is rebuilt only then. One
+// conditioned statement; a malformed stored summary is replaced.
+export function recordWorktreeSummary(
+  db: Database.Database,
+  id: string,
+  summary: { v: 1; at: string; head: string; branch: string; ahead: number; behind: number; files: number; dirty: number },
+): boolean {
+  const json = JSON.stringify(summary)
+  return db.prepare(`UPDATE launches SET worktree_summary = @json, updated_at = @now, revision = revision + 1
+                      WHERE id = @id AND worktree_path IS NOT NULL AND worktree_removed_at IS NULL
+                        AND (worktree_summary IS NULL OR NOT json_valid(worktree_summary)
+                             OR json_remove(worktree_summary, '$.at') IS NOT json_remove(@json, '$.at'))`)
+    .run({ json, now: new Date().toISOString(), id }).changes === 1
 }
 
 // #432: the launch's worktree is gone from disk (an undo after a refused start,

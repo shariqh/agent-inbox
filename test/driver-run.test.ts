@@ -296,6 +296,20 @@ describe('agent-inbox-driver run (#412 step 3)', () => {
       expect(git(work, 'branch', '--list', plan.branch)).toContain(plan.branch)
     }, 40_000)
 
+    it('writes the worktree’s summary at the turn end and at the end (§6)', async () => {
+      const r = rig()
+      const { git, plan } = checkout(r)
+      const run = runDriver(r, newSpec(r, { worktree: plan }))
+      expect(await run.status()).toEqual({ ok: true, launch: LAUNCH })
+      // the task's turn ends at once: its summary arrives off the event queue
+      const first = await until(() => getLaunch(r.hub, LAUNCH)?.worktree_summary, 'the turn-end summary')
+      expect(JSON.parse(first)).toEqual({ v: 1, at: expect.any(String), head: git(plan.path, 'rev-parse', 'HEAD'), branch: plan.branch, ahead: 0, behind: 0, files: 0, dirty: 0 })
+      writeFileSync(join(plan.path, 'notes.txt'), 'notes\n')
+      expect(requestLaunchStop(r.hub, LAUNCH)).toBe('stopping')
+      expect(await run.exited).toBe(0)
+      expect(JSON.parse(getLaunch(r.hub, LAUNCH)!.worktree_summary!)).toMatchObject({ dirty: 1 })
+    }, 40_000)
+
     it('keeps the lock while parked, and a resumed driver runs there and unlocks it when the launch ends', async () => {
       const r = rig()
       const { git, work, plan } = checkout(r)
@@ -430,7 +444,15 @@ describe('agent-inbox-driver run (#412 step 3)', () => {
     expect(String(status.error)).toMatch(/2 driven sessions are already running/)
     expect(await capped.exited).toBe(75)
     expect(getLaunch(r.hub, LAUNCH)).toBeNull()
-  })
+    // #432 §5: the spec's own cap; a driver with a lower cap shares the hub with others, counting every driver
+    const lower = runDriver(r, newSpec(r, { maxDrivers: 1 }))
+    expect(String((await lower.status()).error)).toMatch(/2 driven sessions are already running/)
+    expect(await lower.exited).toBe(75)
+    const higher = runDriver(r, newSpec(r, { maxDrivers: 3 }))
+    expect(await higher.status()).toEqual({ ok: true, launch: LAUNCH })
+    expect(requestLaunchStop(r.hub, LAUNCH)).toBe('stopping')
+    expect(await higher.exited).toBe(0)
+  }, 40_000)
 
   it.each([
     ['a shebang that passes the interpreter flags', (bin: string) => {

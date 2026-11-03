@@ -6,7 +6,7 @@
 // the window binding's `launch` grant, the preload bridge and main's wiring.
 import { spawn } from 'node:child_process'
 import { createRequire } from 'node:module'
-import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import vm from 'node:vm'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -16,6 +16,7 @@ import shellEnv from '../electron/shell-env.cjs'
 import driverProcess from '../electron/driver-process.cjs'
 import controllerModule from '../electron/launch-controller.cjs'
 import launchIpc from '../electron/launch-ipc.cjs'
+import sessionWorktree from '../electron/session-worktree.cjs'
 import { terminalSafe } from '../src/driver-policy.js'
 import { verifyApproval } from '../src/launch-sign.js'
 import { parseLaunchSpec } from '../src/launch-spec.js'
@@ -69,6 +70,26 @@ describe('the switch’s file (§9)', () => {
     expect(await settings.setEnabled(true)).toEqual({ enabled: false, refused: 'newer' })
     expect(JSON.parse(readFileSync(filePath, 'utf8'))).toEqual({ schema: 2, enabled: true })
     await expect(settings.setEnabled('yes' as unknown as boolean)).rejects.toThrow(TypeError)
+  })
+
+  it('keeps the worktree folder as one optional field, beside the switch and unknown fields (#432)', async () => {
+    const dir = scratchDir('session-launch-')
+    const filePath = join(dir, 'session-launch.json')
+    const settings = sessionLaunch.createSessionLaunchSettings({ filePath })
+    expect(await settings.readWorktreeRoot()).toBeNull()
+    writeFileSync(filePath, JSON.stringify({ schema: 1, enabled: true, later: 'kept' }))
+    expect(await settings.setWorktreeRoot('/w/trees')).toEqual({ root: '/w/trees' })
+    expect(JSON.parse(readFileSync(filePath, 'utf8'))).toEqual({ schema: 1, enabled: true, later: 'kept', worktreeRoot: '/w/trees' })
+    expect(await settings.readWorktreeRoot()).toBe('/w/trees')
+    expect(await settings.setEnabled(false)).toEqual({ enabled: false })
+    expect(await settings.readWorktreeRoot()).toBe('/w/trees')
+    expect(await settings.setWorktreeRoot(null)).toEqual({ root: null })
+    expect(JSON.parse(readFileSync(filePath, 'utf8'))).toEqual({ schema: 1, enabled: false, later: 'kept' })
+    writeFileSync(filePath, JSON.stringify({ schema: 1, enabled: true, worktreeRoot: 'relative' }))
+    expect(await settings.readWorktreeRoot()).toBeNull()
+    await expect(settings.setWorktreeRoot('relative')).rejects.toThrow(TypeError)
+    writeFileSync(filePath, JSON.stringify({ schema: 2, enabled: true }))
+    expect(await settings.setWorktreeRoot('/w')).toEqual({ root: null, refused: 'newer' })
   })
 })
 
@@ -229,7 +250,10 @@ ${answer}`)
 function rig(over: Json = {}) {
   const calls: string[] = []
   const spawned: Json[] = []
-  const state = { enabled: true, folders: [{ root: '/work/alpha', project: 'alpha' }] as unknown, launches: {} as Record<string, Json>, confirm: true }
+  const state = {
+    enabled: true, folders: [{ root: '/work/alpha', project: 'alpha' }] as unknown, launches: {} as Record<string, Json>, confirm: true,
+    worktreeRoot: null as string | null, chosenRoot: null as string | null,
+  }
   const keyStore = launchKeys.createLaunchKeys({ safeStorage: fakeSafeStorage(), filePath: join(scratchDir('controller-'), 'k') })
   const posted: Array<[string, unknown]> = []
   const deps = {
@@ -272,6 +296,11 @@ function rig(over: Json = {}) {
     realDirectory: (folder: string) => (folder.startsWith('/missing') ? null : folder),
     processStart: async () => 'darwin:Mon Nov  2 12:00:00 2026',
     kill: vi.fn(),
+    worktreeSettings: {
+      read: async () => { calls.push('worktreeSettings.read'); return state.worktreeRoot },
+      write: async (root: string | null) => { calls.push(`worktreeSettings.write ${root}`); state.worktreeRoot = root; return { root } },
+    },
+    chooseWorktreeFolder: async () => { calls.push('chooseWorktreeFolder'); return state.chosenRoot },
     ...over,
   }
   return { controller: controllerModule.createLaunchController(deps), calls, spawned, state, posted, deps }
@@ -302,7 +331,7 @@ describe('the launch controller', () => {
     expect(confirmation.detail).toContain('Task: Fix the failing test.')
     // Edits in the worktree says what runs unasked, and the page offers the same words (#412 step 3, PR 4)
     const edits = controllerModule.confirmation({ project: 'alpha', folder: '/w', mode: 'edits', budgets: { activeMs: 90_000, toolCalls: 3 }, prompt: 'x' })
-    expect(edits.detail).toContain('Mode: Edits in the worktree. File edits inside the project folder run without asking, never a .git folder or file;')
+    expect(edits.detail).toContain('Mode: Edits in the worktree. File edits inside the session’s folder (its worktree, when it has one) run without asking, never a .git folder or file;')
     expect(controllerModule.launchRequest({ ...REQUEST, mode: 'edits' })).toMatchObject({ mode: 'edits' })
     const page = await import('../public/launches.js')
     for (const mode of page.LAUNCH_MODES) expect(controllerModule.MODES[mode.id], mode.id).toEqual({ label: mode.label, copy: mode.copy })
@@ -383,6 +412,12 @@ describe('the launch controller', () => {
     ['a budget out of bounds', { ...REQUEST, budgets: { activeMs: 1, toolCalls: 500 } }],
     ['an empty task', { ...REQUEST, prompt: ' ' }],
     ['not an object', 'start'],
+    // #432: the renderer asks for a worktree, and names nothing of it
+    ['a worktree path', { ...REQUEST, worktree: '/w/alpha/fix' }],
+    ['a worktree plan', { ...REQUEST, worktree: { path: '/w/alpha/fix-22222222', branch: 'agent-inbox/fix-22222222' } }],
+    ['a branch', { ...REQUEST, worktree: true, branch: 'main' }],
+    ['a worktree root', { ...REQUEST, worktree: true, worktreeRoot: '/w' }],
+    ['a worktree flag that is not true', { ...REQUEST, worktree: 1 }],
   ])('refuses a request carrying %s before anything runs', async (_, request) => {
     const r = rig()
     expect(await r.controller.start(request)).toEqual({ ok: false, error: 'The new session request is not valid.' })
@@ -455,7 +490,10 @@ describe('the launch controller', () => {
     expect(r.controller.available()).toEqual({ enabled: false, available: false, error: expect.stringMatching(/is off/) })
     for (const result of [
       await r.controller.start(REQUEST), await r.controller.resume(ID), await r.controller.approve({ item: 'item-1', revision: 2, optionId: 'allow_once' }),
+      await r.controller.start({ ...REQUEST, worktree: true }), await r.controller.chooseWorktreeRoot(), await r.controller.resetWorktreeRoot(),
     ]) expect(result.ok).toBe(false)
+    // #432 §8 (e): no worktree setting read, no folder dialog, no folder made
+    expect(await r.controller.worktreeRoot()).toBeNull()
     expect(r.calls).toEqual([])
     // reading whether it may be turned on never touches safeStorage
     expect(r.controller.canEnable()).toBeNull()
@@ -537,6 +575,143 @@ describe('the launch controller', () => {
   })
 })
 
+describe('a session in its own worktree (#432)', () => {
+  // real scratch folders: main checks them with lstat and realpath, and runs no git
+  function worktreeRig(over: Json = {}) {
+    const dir = realpathSync(scratchDir('wt-controller-'))
+    const work = join(dir, 'alpha')
+    mkdirSync(join(work, '.git'), { recursive: true })
+    const hub = join(dir, 'hub')
+    mkdirSync(hub, { mode: 0o700 })
+    const r = rig({
+      hubPath: join(hub, 'inbox.db'),
+      realDirectory: (folder: string) => { try { return realpathSync(folder) } catch { return null } },
+      ...over,
+    })
+    r.state.folders = [{ root: work, project: 'alpha' }]
+    const wanted = { ...REQUEST, root: work, worktree: true }
+    return { ...r, dir, work, hub, wanted, planned: join(hub, 'worktrees', 'alpha', 'fix-the-failing-test-22222222') }
+  }
+
+  it('plans the path and branch before the confirmation, shows them, and sends them in the spec the driver accepts', async () => {
+    const r = worktreeRig({ randomUUID: () => { r.calls.push('randomUUID'); return ID } })
+    expect(await r.controller.start(r.wanted)).toEqual({ ok: true, launch: ID })
+    const order = r.calls.filter((c) => !c.startsWith('keys.available'))
+    expect(order.indexOf('randomUUID')).toBeLessThan(order.indexOf('confirm'))
+    expect(order.slice(0, order.indexOf('confirm'))).toEqual(['GET /api/launch-folders', 'driverRuntime', 'randomUUID', 'worktreeSettings.read', 'GET /api/launches'])
+    const detail = (r.spawned[0]!.confirmation as { detail: string }).detail.split('\n')
+    // a long path keeps its end, which names the branch and the launch
+    const shown = Array.from(r.planned).length > 120 ? `…${Array.from(r.planned).slice(-119).join('')}` : r.planned
+    expect(detail.slice(0, 4)).toEqual([
+      `Folder: ${controllerModule.displayLine(r.work)}`,
+      `Worktree: ${shown}`,
+      'Branch: agent-inbox/fix-the-failing-test-22222222, from your checkout’s last commit. Uncommitted changes stay in your checkout.',
+      'Creating it runs your repository’s checkout hooks.',
+    ])
+    const args = r.spawned[1]!
+    expect(args.timeoutMs).toBe(150_000)
+    const parsed = parseLaunchSpec(JSON.stringify(args.spec), ID)
+    expect(parsed).toMatchObject({ ok: true, spec: { cwd: r.work, worktree: { path: r.planned, branch: 'agent-inbox/fix-the-failing-test-22222222' } } })
+    // the env is still captured in the checkout; main created nothing
+    expect(r.calls).toContain(`captureEnv ${r.work}`)
+    expect(existsSync(join(r.hub, 'worktrees'))).toBe(false)
+    // a start without a worktree keeps the driver's own status timeout and reads no worktree setting
+    const plain = worktreeRig()
+    expect(await plain.controller.start({ ...plain.wanted, worktree: undefined })).toEqual({ ok: true, launch: ID })
+    expect(plain.spawned[1]).not.toHaveProperty('timeoutMs')
+    expect((plain.spawned[1]!.spec as Json).worktree).toBeUndefined()
+    expect(plain.calls).not.toContain('worktreeSettings.read')
+  })
+
+  it('warns when another running session of this app works in the folder itself, and uses the folder chosen in Settings', async () => {
+    const r = worktreeRig()
+    const root = join(r.dir, 'trees')
+    mkdirSync(root, { mode: 0o700 })
+    r.state.worktreeRoot = root
+    r.state.launches = {
+      a: { id: 'a', status: 'running', cwd: r.work, worktree_path: null },
+      b: { id: 'b', status: 'running', cwd: join(r.hub, 'x'), worktree_path: join(r.hub, 'x') },
+    }
+    expect(await r.controller.start(r.wanted)).toEqual({ ok: true, launch: ID })
+    const detail = (r.spawned[0]!.confirmation as { detail: string }).detail
+    expect(detail).toContain(`Worktree: ${join(root, 'alpha', 'fix-the-failing-test-22222222')}`)
+    expect(detail).toContain('Another session Agent Inbox started is running in this folder itself, not in a worktree.')
+  })
+
+  it.each([
+    ['a folder that is not a repository’s top', (r: ReturnType<typeof worktreeRig>) => { rmSync(join(r.work, '.git'), { recursive: true }) }, /is not the top folder of a git repository/],
+    ['a root inside the repository', (r: ReturnType<typeof worktreeRig>) => { r.state.worktreeRoot = join(r.work, 'trees') }, /inside this repository/],
+    ['a root whose <repo> folder is the repository itself', (r: ReturnType<typeof worktreeRig>) => { r.state.worktreeRoot = r.dir }, /inside this repository/],
+    ['a chosen root that no longer exists', (r: ReturnType<typeof worktreeRig>) => { r.state.worktreeRoot = join(r.dir, 'gone') }, /does not exist/],
+    ['a symlinked root', (r: ReturnType<typeof worktreeRig>) => {
+      mkdirSync(join(r.dir, 'real'), { mode: 0o700 })
+      symlinkSync(join(r.dir, 'real'), join(r.dir, 'link'))
+      r.state.worktreeRoot = join(r.dir, 'link')
+    }, /is a symlink or lies under one/],
+    ['a root others can write', (r: ReturnType<typeof worktreeRig>) => {
+      mkdirSync(join(r.dir, 'open'))
+      chmodSync(join(r.dir, 'open'), 0o777)
+      r.state.worktreeRoot = join(r.dir, 'open')
+    }, /others can write/],
+    ['a root a tool pattern would read', (r: ReturnType<typeof worktreeRig>) => {
+      mkdirSync(join(r.dir, 'w (1)'), { mode: 0o700 })
+      r.state.worktreeRoot = join(r.dir, 'w (1)')
+    }, /has one of/],
+    ['an existing path', (r: ReturnType<typeof worktreeRig>) => { mkdirSync(r.planned, { recursive: true, mode: 0o700 }) }, /already exists/],
+  ] as Array<[string, (r: ReturnType<typeof worktreeRig>) => void, RegExp]>)('refuses %s before the confirmation, creating nothing', async (_, arrange, error) => {
+    const r = worktreeRig()
+    arrange(r)
+    const made = existsSync(join(r.hub, 'worktrees'))
+    expect(await r.controller.start(r.wanted)).toEqual({ ok: false, error: expect.stringMatching(error) })
+    expect(r.calls).not.toContain('confirm')
+    expect(r.calls).not.toContain('startDriver')
+    expect(existsSync(join(r.hub, 'worktrees'))).toBe(made)
+  })
+
+  it('names the branch when a parked session’s worktree is gone', async () => {
+    const r = rig()
+    r.state.launches[ID] = { id: ID, status: 'parked', cwd: '/missing/alpha/fix-22222222', branch: 'agent-inbox/fix-22222222' }
+    expect(await r.controller.resume(ID)).toEqual({
+      ok: false, error: 'The session’s folder does not exist any more. Its branch agent-inbox/fix-22222222 is still in your repository.',
+    })
+  })
+
+  it('chooses the worktree folder through main’s own dialog, keeps only a private real folder, and resets to the default', async () => {
+    const r = worktreeRig()
+    expect(await r.controller.worktreeRoot()).toEqual({ path: join(r.hub, 'worktrees'), isDefault: true })
+    r.state.chosenRoot = join(r.dir, 'trees')
+    mkdirSync(r.state.chosenRoot, { mode: 0o700 })
+    expect(await r.controller.chooseWorktreeRoot()).toEqual({ ok: true, worktreeRoot: { path: join(r.dir, 'trees'), isDefault: false } })
+    expect(await r.controller.worktreeRoot()).toEqual({ path: join(r.dir, 'trees'), isDefault: false })
+    mkdirSync(join(r.dir, 'open'))
+    chmodSync(join(r.dir, 'open'), 0o777)
+    r.state.chosenRoot = join(r.dir, 'open')
+    expect(await r.controller.chooseWorktreeRoot()).toMatchObject({ ok: false, error: expect.stringMatching(/others can write/) })
+    expect(r.state.worktreeRoot).toBe(join(r.dir, 'trees'))
+    expect(await r.controller.resetWorktreeRoot()).toEqual({ ok: true, worktreeRoot: { path: join(r.hub, 'worktrees'), isDefault: true } })
+    expect(r.state.worktreeRoot).toBeNull()
+  })
+
+  it('derives the slug and repository folder from the task and project, never from a path the renderer sent', () => {
+    const { planWorktree, worktreeSlug, worktreeRepoName } = sessionWorktree
+    expect(worktreeSlug('Fix the failing test.\nThen more.')).toBe('fix-the-failing-test')
+    expect(worktreeSlug('\n\n  Café – naïve résumé  ')).toBe('caf-na-ve-r-sum')
+    expect(worktreeSlug('日本語のタスク')).toBe('session')
+    expect(worktreeSlug('')).toBe('session')
+    expect(worktreeSlug('one two three four five six seven eight nine')).toBe('one-two-three-four-five-six')
+    expect(worktreeSlug('x'.repeat(40))).toBe('x'.repeat(32))
+    expect(worktreeRepoName('agent-inbox', '/w/x')).toBe('agent-inbox')
+    expect(worktreeRepoName('@sessions', '/w/my-app')).toBe('my-app')
+    expect(worktreeRepoName('a b', '/w/..')).toBe('repo')
+    const plan = planWorktree({ root: '/r', project: 'alpha', folder: '/w/alpha', task: 'Fix it', launchId: ID })
+    expect(plan).toEqual({ path: '/r/alpha/fix-it-22222222', branch: 'agent-inbox/fix-it-22222222' })
+    expect(parseLaunchSpec(JSON.stringify({
+      v: 1, kind: 'new', launchId: ID, host: 'copilot', cwd: '/w/alpha', mode: 'ask', budgets: { activeMs: 60_000, toolCalls: 1 }, prompt: 'x', env: {},
+      launchKey: Buffer.alloc(32).toString('base64'), worktree: planWorktree({ root: '/r', project: '日本', folder: '/w/日本', task: '日本語', launchId: ID }),
+    }), ID)).toMatchObject({ ok: true, spec: { worktree: { path: '/r/repo/session-22222222', branch: 'agent-inbox/session-22222222' } } })
+  })
+})
+
 describe('the launch IPC and its grants (§8)', () => {
   function world({ owned = true, granted = true } = {}) {
     const handlers = new Map<string, (event: unknown, ...args: unknown[]) => unknown>()
@@ -553,10 +728,10 @@ describe('the launch IPC and its grants (§8)', () => {
     return { call, r, settings, onEnabled, handlers, made: () => made }
   }
 
-  it('registers the seven channels, and makes no controller until one is used', () => {
+  it('registers the nine channels, and makes no controller until one is used', () => {
     const w = world()
     expect([...w.handlers.keys()].sort()).toEqual([
-      'available', 'approve', 'close', 'resume', 'set-enabled', 'start', 'stop',
+      'available', 'approve', 'choose-worktree-root', 'close', 'reset-worktree-root', 'resume', 'set-enabled', 'start', 'stop',
     ].map((name) => `agent-inbox:launch-${name}`).sort())
     expect(w.made()).toBe(0)
   })
@@ -576,6 +751,20 @@ describe('the launch IPC and its grants (§8)', () => {
     expect(owned.onEnabled).toHaveBeenCalledWith(true)
     expect(await owned.call('launch-start', REQUEST)).toMatchObject({ ok: false })
     expect(owned.r.calls).not.toContain('startDriver')
+  })
+
+  it('reports the worktree folder only to the granted window, and chooses or resets it only there, with no argument (#432)', async () => {
+    const owned = world({ owned: true, granted: false })
+    expect(await owned.call('launch-available')).not.toHaveProperty('worktreeRoot')
+    expect(await owned.call('launch-choose-worktree-root')).toMatchObject({ ok: false })
+    expect(await owned.call('launch-reset-worktree-root')).toMatchObject({ ok: false })
+    expect(owned.r.calls.filter((c) => c.startsWith('worktree') || c === 'chooseWorktreeFolder')).toEqual([])
+    const w = world()
+    expect(await w.call('launch-available')).toMatchObject({ worktreeRoot: { path: '/hub/worktrees', isDefault: true } })
+    expect(await w.call('launch-choose-worktree-root', '/elsewhere')).toEqual({ ok: false, error: 'invalid' })
+    expect(await w.call('launch-reset-worktree-root', null)).toEqual({ ok: false, error: 'invalid' })
+    expect(await w.call('launch-choose-worktree-root')).toMatchObject({ ok: false, cancelled: true })
+    expect(w.r.calls).toContain('chooseWorktreeFolder')
   })
 
   it('takes exactly its arguments, and refuses turning the switch off while sessions run', async () => {
@@ -835,9 +1024,12 @@ describe('the preload bridge (§8)', () => {
     return { launch: exposed.agentInboxLaunch as Record<string, (...args: unknown[]) => Promise<Json>>, invoke }
   }
 
-  it('has exactly its seven methods, each with exact arity, and passes nothing it was not given', async () => {
+  it('has exactly its nine methods, each with exact arity, and passes nothing it was not given', async () => {
     const { launch, invoke } = loadPreload(() => ({ ok: true, launch: ID, path: '/secret', enabled: true }))
-    expect(Object.keys(launch).sort()).toEqual(['approve', 'available', 'close', 'resume', 'setEnabled', 'start', 'stop'])
+    expect(Object.keys(launch).sort()).toEqual(['approve', 'available', 'chooseWorktreeRoot', 'close', 'resetWorktreeRoot', 'resume', 'setEnabled', 'start', 'stop'])
+    // #432: main's own dialog chooses the worktree folder; the page passes nothing
+    expect(await launch.chooseWorktreeRoot!('/elsewhere')).toEqual({ ok: false, error: 'invalid' })
+    expect(await launch.resetWorktreeRoot!(true)).toEqual({ ok: false, error: 'invalid' })
     expect(await launch.stop!(ID, 'x')).toEqual({ ok: false, error: 'invalid' })
     expect(await launch.stop!('../x')).toEqual({ ok: false, error: 'invalid' })
     expect(await launch.setEnabled!('yes')).toEqual({ ok: false, error: 'invalid' })
@@ -853,6 +1045,13 @@ describe('the preload bridge (§8)', () => {
     expect(await off.launch.available!()).toEqual({ owned: true, enabled: false, available: false, canEnable: true })
     const broken = loadPreload(() => { throw new Error('gone') })
     expect(await broken.launch.available!()).toEqual({ owned: false, enabled: false, available: false, canEnable: false })
+    // #432: the worktree folder only with the switch on and the grant, and only as a checked absolute path
+    const on = loadPreload(() => ({ owned: true, enabled: true, available: true, canEnable: true, worktreeRoot: { path: '/w', isDefault: true, extra: 1 } }))
+    expect(await on.launch.available!()).toEqual({ owned: true, enabled: true, available: true, canEnable: true, worktreeRoot: { path: '/w', isDefault: true } })
+    const offRoot = loadPreload(() => ({ owned: true, enabled: false, available: false, canEnable: true, worktreeRoot: { path: '/w', isDefault: true } }))
+    expect(await offRoot.launch.available!()).not.toHaveProperty('worktreeRoot')
+    const relative = loadPreload(() => ({ owned: true, enabled: true, available: true, worktreeRoot: { path: 'w', isDefault: false } }))
+    expect(await relative.launch.available!()).not.toHaveProperty('worktreeRoot')
   })
 })
 

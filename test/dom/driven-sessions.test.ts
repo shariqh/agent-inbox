@@ -10,7 +10,7 @@ import { appendFileSync, mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type Database from 'better-sqlite3'
 import {
-  claimDriverSlot, createLaunch, fileLaunchAsk, getItem, holdDriverLeases, insertItem, listSessionMessages, markDriverTurn,
+  claimDriverSlot, createLaunch, fileLaunchAsk, getItem, holdDriverLeases, insertItem, listSessionMessages, markDriverTurn, markWorktreeRemoved,
   parkLaunch, recordActivityCall, recordLaunchProgress, resolveItem, upsertActivity,
 } from '../../src/store.js'
 import type { ViewerBridge } from './harness.js'
@@ -33,7 +33,7 @@ const LAUNCH = '11111111-2222-4333-8444-555555555555'
 const PARKED = '11111111-2222-4333-8444-666666666666'
 const LEASE = { launchId: LAUNCH, pid: 4242, nonce: 'n' }
 
-type State = { owned: boolean; enabled: boolean; available: boolean; canEnable: boolean }
+type State = { owned: boolean; enabled: boolean; available: boolean; canEnable: boolean; worktreeRoot?: { path: string; isDefault: boolean } }
 function launchBridge(state: Partial<State> = {}) {
   const current: State = { owned: true, enabled: true, available: true, canEnable: true, ...state }
   const api = {
@@ -44,6 +44,11 @@ function launchBridge(state: Partial<State> = {}) {
     close: vi.fn(async (_id: string) => ({ ok: true, killed: false })),
     resume: vi.fn(async (_id: string) => ({ ok: true, launch: PARKED })),
     approve: vi.fn(async (_value: unknown) => ({ ok: true })),
+    chooseWorktreeRoot: vi.fn(async () => {
+      current.worktreeRoot = { path: '/Users/shariqh/Development/copilot-worktrees', isDefault: false }
+      return { ok: true, worktreeRoot: current.worktreeRoot }
+    }),
+    resetWorktreeRoot: vi.fn(async () => ({ ok: true })),
   }
   Object.defineProperty(window, 'agentInboxLaunch', { configurable: true, value: api })
   return api
@@ -126,6 +131,31 @@ describe('off means off on the page (§9 b)', () => {
     expect(launchRow(LAUNCH)?.textContent).toContain('alpha')
   })
 
+  it('shows the worktree folder only with the switch on, and chooses it through main with no argument (#432)', async () => {
+    const off = launchBridge({ enabled: false, available: false })
+    db = freshDb()
+    await bootApp(db)
+    expect(document.getElementById('launch-settings')!.hidden).toBe(false)
+    expect(document.getElementById('launch-worktree-root')).toBeNull()
+    expect(off.chooseWorktreeRoot).not.toHaveBeenCalled()
+  })
+
+  it('with the switch on, Settings shows where worktrees go, and Choose… asks main’s own dialog', async () => {
+    const api = launchBridge({ worktreeRoot: { path: '/Users/shariqh/.agent-inbox/worktrees', isDefault: true } })
+    db = freshDb()
+    await bootApp(db)
+    await settle()
+    const row = document.getElementById('launch-worktree-root')!
+    expect(row.hidden).toBe(false)
+    expect(row.textContent).toContain('/Users/shariqh/.agent-inbox/worktrees (default)')
+    expect(buttonLabelled('Use default', row)!.disabled).toBe(true)
+    click(buttonLabelled('Choose…', row))
+    await settle()
+    expect(api.chooseWorktreeRoot).toHaveBeenCalledWith()
+    expect(row.textContent).toContain('/Users/shariqh/Development/copilot-worktrees')
+    expect(buttonLabelled('Use default', row)!.disabled).toBe(false)
+  })
+
   it('a viewer the app does not own draws no Settings section', async () => {
     launchBridge({ owned: false, enabled: false, available: false, canEnable: false })
     db = freshDb()
@@ -135,6 +165,25 @@ describe('off means off on the page (§9 b)', () => {
 })
 
 describe('the Live drawer’s sessions (§3.6, §7)', () => {
+  it('names a launch’s worktree and branch on its row, and says when the worktree was removed (#432)', async () => {
+    launchBridge()
+    db = freshDb()
+    createLaunch(db, {
+      id: LAUNCH, host: 'copilot', project: 'alpha', stream: 'agent-inbox/fix-it-11111111', cwd: '/w/alpha/fix-it-11111111', mode: 'ask',
+      budgetActiveMs: 7_200_000, budgetToolCalls: 500, prompt: 'Fix it.', specVersion: 1, driverPid: 4242,
+      worktree: { checkoutRoot: '/work/alpha', branch: 'agent-inbox/fix-it-11111111', baseSha: 'a'.repeat(40), baseRef: 'refs/heads/main' },
+    })
+    newLaunch(db, PARKED)
+    await bootApp(db)
+    await changedPollTick(db)
+    openDrawer()
+    expect(launchRow(LAUNCH)!.querySelector('.live-launch-worktree')!.textContent).toBe('Worktree: agent-inbox/fix-it-11111111 · /w/alpha/fix-it-11111111')
+    expect(launchRow(PARKED)!.querySelector('.live-launch-worktree')).toBeNull()
+    markWorktreeRemoved(db, LAUNCH)
+    await changedPollTick(db)
+    expect(launchRow(LAUNCH)!.querySelector('.live-launch-worktree')!.textContent).toBe('Worktree removed; its branch agent-inbox/fix-it-11111111 is kept.')
+  })
+
   it('lists a running launch with Stop and its transcript, and Stop goes through main', async () => {
     const api = launchBridge()
     db = freshDb()
@@ -261,11 +310,32 @@ describe('New session (§8)', () => {
     type(dialog.querySelector<HTMLTextAreaElement>('textarea[name="prompt"]'), 'Fix the failing test.')
     dialog.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
     await settle()
+    // #432: New worktree is on by default, and the page asks for it, naming no path or branch
     expect(api.start).toHaveBeenCalledWith({
       root: '/work/alpha', mode: 'plan', model: 'claude-haiku-4.5', reasoningEffort: 'none',
-      budgets: { activeMs: 7_200_000, toolCalls: 500 }, prompt: 'Fix the failing test.',
+      budgets: { activeMs: 7_200_000, toolCalls: 500 }, prompt: 'Fix the failing test.', worktree: true,
     })
     expect(document.querySelector('.launch-dialog')).toBeNull()
+  })
+
+  it('offers New worktree, ticked; unticked, the request runs in the folder as before (#432)', async () => {
+    const api = launchBridge()
+    db = freshDb()
+    await bootApp(db)
+    await changedPollTick(db)
+    openDrawer()
+    click(section()!.querySelector('.launch-new'))
+    await settle()
+    const dialog = document.querySelector<HTMLDialogElement>('.launch-dialog')!
+    const box = dialog.querySelector<HTMLInputElement>('input[name="worktree"]')!
+    expect(box.checked).toBe(true)
+    expect(box.closest('label')!.textContent).toContain('New worktree')
+    expect(box.closest('label')!.textContent).toContain('Uncommitted changes stay in your checkout.')
+    box.checked = false
+    type(dialog.querySelector<HTMLTextAreaElement>('textarea[name="prompt"]'), 'Do it.')
+    dialog.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await settle()
+    expect(api.start.mock.calls[0]![0]).not.toHaveProperty('worktree')
   })
 
   it('keeps the task and says why when the request is not valid or main refuses it', async () => {

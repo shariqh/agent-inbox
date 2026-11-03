@@ -10,8 +10,8 @@
 // Agent text reaches the DOM only as textContent. Nothing here reaches
 // public/attention.js, a badge, a count, the rail or the dock.
 import {
-  LAUNCH_MODES, PROMPT_WARNING, REASONING_EFFORTS, SHELL_WARNING,
-  launchOfSession, launchSessions, launchStatus, launchSummary, newSessionRequest, transcriptLines,
+  LAUNCH_MODES, PROMPT_WARNING, REASONING_EFFORTS, SHELL_WARNING, WORKTREE_COPY,
+  launchOfSession, launchSessions, launchStatus, launchSummary, launchWorktreeLine, newSessionRequest, transcriptLines,
 } from '/launches.js'
 
 const DEFAULT_ACTIVE_HOURS = 2
@@ -183,7 +183,10 @@ export function createLaunchUi(deps) {
     const parts = []
     const title = make('div', 'live-launch-title')
     title.append(make('strong', '', launch.project), make('span', 'live-launch-summary', ` · ${launchSummary(launch)}`))
-    parts.push(title, make('p', 'live-launch-status', status.text))
+    parts.push(title)
+    const worktree = launchWorktreeLine(launch)
+    if (worktree) parts.push(make('p', 'live-launch-worktree', worktree))
+    parts.push(make('p', 'live-launch-status', status.text))
     const actions = make('div', 'live-launch-actions')
     for (const action of status.actions) {
       if (action === 'transcript') actions.append(button('Transcript', 'transcript'))
@@ -400,6 +403,13 @@ export function createLaunchUi(deps) {
     const project = make('select')
     project.name = 'root'
     project.append(new Option('Loading projects…', ''))
+    // #432: on by default; main checks the folder is a repository and shows where the worktree goes
+    const worktree = make('input')
+    worktree.type = 'checkbox'
+    worktree.name = 'worktree'
+    worktree.checked = true
+    const worktreeField = make('label', 'launch-mode launch-worktree')
+    worktreeField.append(worktree, make('strong', '', 'New worktree'), make('span', 'launch-mode-copy', WORKTREE_COPY))
     const host = make('span', 'launch-host', 'Copilot')
     const modes = make('fieldset', 'launch-modes')
     modes.append(make('legend', '', 'Mode'))
@@ -451,6 +461,7 @@ export function createLaunchUi(deps) {
     form.append(
       heading,
       field('Project', project, 'A project Agent Inbox has seen, or a folder you choose.'),
+      worktreeField,
       field('Agent', host),
       modes,
       make('p', 'launch-warning', SHELL_WARNING),
@@ -474,6 +485,7 @@ export function createLaunchUi(deps) {
       const checked = form.querySelector('input[name="mode"]:checked')
       const made = newSessionRequest({
         root: project.value === '' ? null : project.value,
+        worktree: worktree.checked,
         mode: checked?.value,
         model: model.value,
         reasoningEffort: effort.value,

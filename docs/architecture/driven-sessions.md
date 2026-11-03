@@ -17,7 +17,8 @@ paths:
   - "electron/driver-process.cjs"
   - "electron/launch-controller.cjs"
   - "electron/launch-ipc.cjs"
-applyTo: "src/driver.ts,src/driver-cli.ts,src/driver-link.ts,src/driver-policy.ts,src/driver-tty.ts,src/driver-pin.ts,src/acp-client.ts,src/driver-launch.ts,src/launch-spec.ts,src/launch-sign.ts,src/worktree.ts,electron/session-launch.cjs,electron/launch-key.cjs,electron/shell-env.cjs,electron/driver-process.cjs,electron/launch-controller.cjs,electron/launch-ipc.cjs"
+  - "electron/session-worktree.cjs"
+applyTo: "src/driver.ts,src/driver-cli.ts,src/driver-link.ts,src/driver-policy.ts,src/driver-tty.ts,src/driver-pin.ts,src/acp-client.ts,src/driver-launch.ts,src/launch-spec.ts,src/launch-sign.ts,src/worktree.ts,electron/session-launch.cjs,electron/launch-key.cjs,electron/shell-env.cjs,electron/driver-process.cjs,electron/launch-controller.cjs,electron/launch-ipc.cjs,electron/session-worktree.cjs"
 ---
 
 # Driven sessions (#412)
@@ -283,10 +284,10 @@ Everything main does for a driven session is injected and tested without Electro
   changes and never binds one that is not.
 - **The IPC** (`launch-ipc.cjs`, `setup-preload.cjs` `agentInboxLaunch`): `available()`,
   `setEnabled(on)`, `start(request)`, `stop(id)`, `close(id)`, `resume(id)`, `approve({ item, revision,
-  optionId })`, each with exact arity, answering only the viewer window's top frame, after any re-proof in
+  optionId })`, and #432's `chooseWorktreeRoot()` and `resetWorktreeRoot()`, each with exact arity, answering only the viewer window's top frame, after any re-proof in
   flight. `takeOver` is step 5. The preload checks argument shapes and hands back checked answers.
 - **What the renderer may send** (`launchRequest`, `approvalRequest` in `launch-controller.cjs`): exactly
-  `{ root, mode, model?, reasoningEffort?, budgets, prompt }`, where `root` is one of the repository folders
+  `{ root, mode, model?, reasoningEffort?, budgets, prompt, worktree? }` (`worktree` only ever `true`, #432), where `root` is one of the repository folders
   the hub recorded (`GET /api/launch-folders`) or `null` for main's own folder dialog; never a path of its
   own, an executable, argv or env. Bounds match the spec's.
 - **The native confirmation** (`confirmation`): built by main from the checked facts (project, folder, mode
@@ -499,3 +500,41 @@ Main does not send the field yet (part 2), so nothing changes for anyone today.
   nothing, undo, a moved branch survives), `test/driver-run.test.ts` (a worktree launch end to end:
   the row, copilot's cwd, the lock while running and parked, unlock at end, undo after a refusal),
   `test/launches.test.ts` (the columns, prune, list and folder rules), `test/launch-spec.test.ts`.
+
+## Session worktrees (#432), part 2: starting in a worktree
+
+- **The request** gains only `worktree: true`. Main plans the rest (`electron/session-worktree.cjs`), from
+  what it already checked, and runs no git: `<folder>/.git` must be a folder or a regular file (`lstat`);
+  the root is Settings' choice or `<hub dir>/worktrees`; the path is `<root>/<repo>/<slug>-<short>` and
+  the branch `agent-inbox/<slug>-<short>`. `<repo>` is the folder's project name when it is a plain
+  name, else its basename, else `repo`; `<slug>` is the task's first line as lowercase ASCII letters and
+  digits joined by `-`, at most 32 characters cut at a `-`, or `session`; `<short>` is the launch id's
+  first 8 digits. Main now makes the launch id before the confirmation, for every start. It refuses,
+  before the confirmation and creating nothing, a root or worktree inside the folder, a chosen root that does not
+  exist, a root (or `<root>/<repo>`) that is a symlink, under one, not the user's or writable by others, a
+  path with a Copilot pattern character, and an existing path. The default root may be missing (the
+  driver creates it 0700); its parent, the hub's folder, is checked instead.
+- **The confirmation** adds `Worktree: <path>` (through `displayLine`, keeping the end of a long path,
+  which names the branch and the launch), `Branch: <branch>, from your checkout’s last commit.
+  Uncommitted changes stay in your checkout.`, `Creating it runs your repository’s checkout hooks.`, and,
+  when another running launch works in the folder itself (`/api/launches`' `cwd`, no `worktree_path`), a
+  warning line. The spec sends `worktree: { path, branch }` with `cwd` the checkout; the env is still
+  captured in the checkout. Main waits 150 s for a worktree launch's status line (others 30 s).
+- **Resume** of a launch whose folder is gone names its branch, which is still in the repository.
+- **The worktree folder setting**: `worktreeRoot`, one optional field of `session-launch.json` (absent
+  means the default; older builds keep it as an unknown field). `launch-available` reports it
+  (`{ path, isDefault }`) only to the granted window with the switch on; `launch-choose-worktree-root`
+  (main's own folder dialog; the folder must be a real, private folder of the user's with no pattern
+  character) and `launch-reset-worktree-root` take no argument and need the `launch` grant. With the
+  switch off, main reads no worktree setting, opens no dialog and creates nothing (§8 e).
+- **The page.** New session has **New worktree**, ticked by default (every known folder is a
+  repository's top; a chosen folder that is not refuses with "Untick New worktree to start in it").
+  Unticked, the request is exactly what it was before. A launch's drawer row adds `Worktree: <branch> ·
+  <path>`, or that it was removed and its branch kept. Settings → Agent sessions shows **Worktree folder**
+  with Choose… and Use default only with the switch on; off, nothing is drawn and nothing read. The
+  Edits mode copy now reads "the session’s folder (its worktree, when it has one)", in both copies a
+  test holds equal.
+- **Tests**: `test/launch-electron.test.ts` (the request refuses any path, branch or root; the plan,
+  slugs from Unicode and empty tasks; the confirmation lines; every refusal before the confirmation
+  creates nothing; the 150 s status; the setting's file, IPC and preload; off reads nothing) and
+  `test/dom/driven-sessions.test.ts` (the checkbox, the drawer line, Settings' row, off draws nothing).

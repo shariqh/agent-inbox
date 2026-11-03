@@ -13,7 +13,12 @@
 // itself from those checked facts, and the spec it sends is exactly what that
 // dialog showed. While the switch is off nothing here captures an env, resolves
 // a runtime or spawns anything (§9 e). Once a quit has begun, nothing starts.
+//
+// #432: the request may ask for `worktree: true` and nothing more. Main plans
+// the worktree's path and branch itself (session-worktree.cjs), shows both in
+// the confirmation, and sends them in the spec; the driver creates it.
 const path = require('node:path')
+const { planWorktree, worktreeProblem, worktreeRootProblem } = require('./session-worktree.cjs')
 
 const LAUNCH_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const ITEM_ID = /^[A-Za-z0-9-]{1,128}$/
@@ -23,6 +28,8 @@ const EFFORTS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'm
 const BUDGETS = { activeMs: { min: 60_000, max: 8 * 60 * 60_000 }, toolCalls: { min: 1, max: 2000 } }
 const MAX_PROMPT = 64 * 1024
 const PROMPT_PREVIEW = 300
+// creating a worktree of a large checkout takes time (§2); other starts keep the driver's 30 s
+const WORKTREE_STATUS_MS = 150_000
 
 const MODES = Object.freeze({
   ask: {
@@ -39,7 +46,7 @@ const MODES = Object.freeze({
   },
   edits: {
     label: 'Edits in the worktree',
-    copy: 'File edits inside the project folder run without asking, never a .git folder or file; shell commands, network and anything outside the folder still ask. An edited file can change what a command you allow then runs.',
+    copy: 'File edits inside the session’s folder (its worktree, when it has one) run without asking, never a .git folder or file; shell commands, network and anything outside the folder still ask. An edited file can change what a command you allow then runs.',
   },
 })
 
@@ -50,7 +57,9 @@ const inBounds = (value, { min, max }) => Number.isSafeInteger(value) && value >
 
 /** The renderer's New session request, checked exactly, or null. */
 function launchRequest(value) {
-  if (!isRecord(value) || !exactKeys(value, ['root', 'mode', 'budgets', 'prompt'], ['model', 'reasoningEffort'])) return null
+  if (!isRecord(value) || !exactKeys(value, ['root', 'mode', 'budgets', 'prompt'], ['model', 'reasoningEffort', 'worktree'])) return null
+  // #432: only the wish; never a path, branch or root of the renderer's
+  if (value.worktree !== undefined && value.worktree !== true) return null
   if (value.root !== null && (typeof value.root !== 'string' || !path.isAbsolute(value.root) || value.root.length > 4096 || value.root.includes('\0'))) return null
   if (!Object.prototype.hasOwnProperty.call(MODES, value.mode)) return null
   if (value.model !== undefined && (typeof value.model !== 'string' || !MODEL.test(value.model))) return null
@@ -65,6 +74,7 @@ function launchRequest(value) {
     ...(value.reasoningEffort === undefined ? {} : { reasoningEffort: value.reasoningEffort }),
     budgets: { activeMs: value.budgets.activeMs, toolCalls: value.budgets.toolCalls },
     prompt: value.prompt,
+    ...(value.worktree === true ? { worktree: true } : {}),
   }
 }
 
@@ -100,12 +110,14 @@ function displaySafe(text) {
 // an agent can set (MCP register) and a folder name can carry newlines. Cut on
 // the raw text first, then escaped, so the cut never splits an escape; the
 // result stays bounded (each code point escapes to at most 10 characters).
+// `tail` keeps the end instead, for a worktree path whose last folder names its branch (#432).
 const DISPLAY_MAX = 120
-function displayLine(text) {
+function displayLine(text, { tail = false } = {}) {
   const chars = Array.from(String(text))
   const long = chars.length > DISPLAY_MAX
-  const kept = long ? chars.slice(0, DISPLAY_MAX - 1).join('') : chars.join('')
-  return `${displaySafe(kept).replace(/\n/g, '\\x0a')}${long ? '…' : ''}`
+  const kept = !long ? chars.join('') : tail ? chars.slice(chars.length - DISPLAY_MAX + 1).join('') : chars.slice(0, DISPLAY_MAX - 1).join('')
+  const line = displaySafe(kept).replace(/\n/g, '\\x0a')
+  return long ? (tail ? `…${line}` : `${line}…`) : line
 }
 
 function duration(ms) {
@@ -117,12 +129,18 @@ function duration(ms) {
 }
 
 /** The native confirmation main builds itself (§8): what it shows is what it sends. */
-function confirmation({ project, folder, mode, model, reasoningEffort, budgets, prompt }) {
+function confirmation({ project, folder, worktree, mode, model, reasoningEffort, budgets, prompt }) {
   const preview = prompt.length > PROMPT_PREVIEW ? `${prompt.slice(0, PROMPT_PREVIEW)}…` : prompt
   return {
     message: `Start a Copilot session in ${displayLine(project)}?`,
     detail: [
       `Folder: ${displayLine(folder)}`,
+      ...(worktree ? [
+        `Worktree: ${displayLine(worktree.path, { tail: true })}`,
+        `Branch: ${displayLine(worktree.branch)}, from your checkout’s last commit. Uncommitted changes stay in your checkout.`,
+        'Creating it runs your repository’s checkout hooks.',
+        ...(worktree.shared ? ['Another session Agent Inbox started is running in this folder itself, not in a worktree.'] : []),
+      ] : []),
       `Mode: ${MODES[mode].label}. ${MODES[mode].copy}`,
       `Model: ${model ?? 'your Copilot default'}${reasoningEffort ? `, reasoning effort ${reasoningEffort}` : ''}`,
       `Budgets: up to ${duration(budgets.activeMs)} of active turn time and ${budgets.toolCalls} tool calls.`,
@@ -191,8 +209,10 @@ function launchEnv(env) {
 function createLaunchController(deps) {
   const {
     platform, isEnabled, keys, viewer, captureEnv, confirm, chooseFolder, driverRuntime, startDriver, hubPath, driverEnv,
-    randomUUID, realDirectory, processStart, kill,
+    randomUUID, realDirectory, processStart, kill, worktreeSettings, chooseWorktreeFolder,
   } = deps
+  // #432 §1: session worktrees go under <hub dir>/worktrees unless Settings names another folder
+  const defaultWorktreeRoot = path.join(path.dirname(hubPath), 'worktrees')
   let quitting = false
   // the starts in flight, so the quit prompt can wait for the launch rows they write
   const starting = new Set()
@@ -237,7 +257,13 @@ function createLaunchController(deps) {
       platform, node: found.runtime.node, entry: found.runtime.entry, launchId, hubPath,
       logPath: path.join(path.dirname(hubPath), 'launches', launchId, 'driver.log'),
       env: driverEnv, spec: { ...spec, launchKey: launchKey.toString('base64') },
+      ...(spec.worktree ? { timeoutMs: WORKTREE_STATUS_MS } : {}),
     })
+  }
+
+  async function worktreeRoot() {
+    const chosen = await worktreeSettings.read().catch(() => null)
+    return { path: chosen ?? defaultWorktreeRoot, isDefault: chosen === null }
   }
 
   function guarded(work) {
@@ -295,22 +321,36 @@ function createLaunchController(deps) {
         if (!real) return refused('That folder does not exist any more.')
         const found = runtimeOrRefusal()
         if (!found.runtime) return found
+        // made before the confirmation, so it shows the worktree's final names (#432 §1)
+        const launchId = randomUUID()
+        let worktree = null
+        if (request.worktree) {
+          const root = (await worktreeRoot()).path
+          const plan = planWorktree({ root, project, folder: real, task: request.prompt, launchId })
+          const problem = worktreeProblem({ folder: real, root, defaultRoot: defaultWorktreeRoot, plan })
+          if (problem) return refused(problem)
+          // another session of this app editing the checkout itself (§3)
+          const launches = await viewer.getJson('/api/launches')
+          const shared = Array.isArray(launches) && launches.some((l) => l && l.status === 'running' && l.cwd === real && !l.worktree_path)
+          worktree = { ...plan, shared }
+        }
         const facts = {
-          project, folder: real, mode: request.mode, model: request.model, reasoningEffort: request.reasoningEffort,
+          project, folder: real, worktree, mode: request.mode, model: request.model, reasoningEffort: request.reasoningEffort,
           budgets: request.budgets, prompt: request.prompt,
         }
         if (!(await confirm(confirmation(facts)))) return refused('Not started.', { cancelled: true })
         // a quit begun, or the switch turned off, while the dialog was open runs no login shell
         const late = blocked()
         if (late) return late
+        // the checkout's env: the worktree does not exist yet, and holds the same committed files
         const ready = await environment(real)
         if (!ready.env) return ready
-        const launchId = randomUUID()
         return spawnDriver(launchId, {
           v: 1, kind: 'new', launchId, host: 'copilot', cwd: real, mode: request.mode,
           ...(request.model ? { model: request.model } : {}),
           ...(request.reasoningEffort ? { reasoningEffort: request.reasoningEffort } : {}),
           budgets: request.budgets, prompt: request.prompt, env: ready.env,
+          ...(worktree ? { worktree: { path: worktree.path, branch: worktree.branch } } : {}),
         })
       })
     },
@@ -325,7 +365,11 @@ function createLaunchController(deps) {
         const launch = await viewer.getJson(`/api/launches/${id}`)
         if (!launch || launch.status !== 'parked') return refused('This session is not parked.')
         const real = realDirectory(launch.cwd)
-        if (!real) return refused('The session’s folder does not exist any more.')
+        if (!real) {
+          return refused(typeof launch.branch === 'string' && launch.branch
+            ? `The session’s folder does not exist any more. Its branch ${launch.branch} is still in your repository.`
+            : 'The session’s folder does not exist any more.')
+        }
         const found = runtimeOrRefusal()
         if (!found.runtime) return found
         // the launch read was an await: a quit or the switch may have changed since
@@ -335,6 +379,33 @@ function createLaunchController(deps) {
         if (!ready.env) return ready
         return spawnDriver(id, { v: 1, kind: 'resume', launchId: id, env: ready.env })
       })
+    },
+
+    /** #432: the folder session worktrees go under, read only with the switch on. */
+    async worktreeRoot() {
+      return blocked() ? null : worktreeRoot()
+    },
+
+    /** #432: choose the worktree folder through main's own dialog; the renderer names none. */
+    async chooseWorktreeRoot() {
+      const why = blocked()
+      if (why) return why
+      const folder = await chooseWorktreeFolder()
+      if (!folder) return refused('No folder was chosen.', { cancelled: true })
+      const real = realDirectory(folder)
+      const problem = real ? worktreeRootProblem(real) : 'That folder does not exist any more.'
+      if (problem) return refused(problem)
+      const saved = await worktreeSettings.write(real).catch(() => null)
+      if (!saved) return refused('The setting could not be saved.')
+      return saved.refused ? refused('A newer Agent Inbox owns this setting.') : { ok: true, worktreeRoot: { path: real, isDefault: false } }
+    },
+
+    async resetWorktreeRoot() {
+      const why = blocked()
+      if (why) return why
+      const saved = await worktreeSettings.write(null).catch(() => null)
+      if (!saved) return refused('The setting could not be saved.')
+      return saved.refused ? refused('A newer Agent Inbox owns this setting.') : { ok: true, worktreeRoot: { path: defaultWorktreeRoot, isDefault: true } }
     },
 
     async stop(id) {

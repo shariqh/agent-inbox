@@ -6,7 +6,9 @@
 //     this app started and owns (the `files` grant's window, #300): a browser,
 //     a reused or failed-over viewer can neither read nor turn it on;
 //   - every launch action needs the `launch` grant: that same owned viewer,
-//     with the switch on and no quit begun (createInstallBinding).
+//     with the switch on and no quit begun (createInstallBinding), and so do
+//     choosing and resetting the worktree folder (#432), which main reads only
+//     with the switch on.
 // What the renderer sends is checked again by the controller; it can never
 // send a path, an executable, argv or an env.
 const NOT_HERE = 'Agent sessions work only in Agent Inbox’s own window, with Settings → Agent sessions on.'
@@ -20,12 +22,14 @@ function registerLaunchIpc({ ipcMain, controller, settings, settled, isOwned, is
     if (!isOwned(event)) return off
     const view = controller().available()
     const granted = isGranted(event)
+    const worktreeRoot = view.available && granted ? await controller().worktreeRoot() : null
     return {
       owned: true,
       enabled: view.enabled,
       available: view.available && granted,
       ...(view.error ? { error: view.error } : !granted && view.enabled ? { error: NOT_HERE } : {}),
       canEnable: controller().canEnable() === null,
+      ...(worktreeRoot ? { worktreeRoot } : {}),
     }
   })
 
@@ -52,6 +56,16 @@ function registerLaunchIpc({ ipcMain, controller, settings, settled, isOwned, is
     onEnabled(result.enabled)
     return { ok: true, enabled: result.enabled }
   })
+
+  for (const action of ['chooseWorktreeRoot', 'resetWorktreeRoot']) {
+    const channel = action === 'chooseWorktreeRoot' ? 'choose-worktree-root' : 'reset-worktree-root'
+    ipcMain.handle(`agent-inbox:launch-${channel}`, async (event, ...args) => {
+      if (args.length !== 0) return { ok: false, error: 'invalid' }
+      await settled()
+      if (!isGranted(event)) return { ok: false, error: NOT_HERE }
+      return controller()[action]()
+    })
+  }
 
   for (const action of ['start', 'stop', 'close', 'resume', 'approve']) {
     ipcMain.handle(`agent-inbox:launch-${action}`, async (event, ...args) => {

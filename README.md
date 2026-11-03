@@ -333,6 +333,8 @@ ask with that in mind. Design:
 The Agent Inbox app can start a Copilot CLI session in one of your projects and run
 it for you, so its approvals come to the inbox and your messages arrive as new turns.
 It is off until you turn it on, and it works only in the macOS app, not in a browser.
+Sessions run from the app's installed runtime; if none is installed, the app uses its own
+verified runtime copy, so agents registered elsewhere don't block the launcher.
 
 **Try it:**
 

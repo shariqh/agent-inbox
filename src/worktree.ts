@@ -159,8 +159,10 @@ export function createWorktree(o: {
 
   const repoDir = dirname(plan.path)
   const root = dirname(repoDir)
-  // before anything is created; checkFolder then proves the root is its own real path
+  // before anything is created; checkFolder then proves the root and <root>/<repo> are their own real
+  // paths. A root that holds the checkout is fine, unless <root>/<repo> is the checkout itself.
   if (inside(root, checkout)) return { ok: false, error: `the worktree folder ${root} is inside the repository ${checkout}` }
+  if (inside(plan.path, checkout)) return { ok: false, error: `the worktree ${plan.path} would be inside the repository ${checkout}` }
   const rootError = checkFolder(root, true, 'the worktree folder')
   if (rootError) return { ok: false, error: rootError }
   const repoError = checkFolder(repoDir, true, 'the worktree folder')

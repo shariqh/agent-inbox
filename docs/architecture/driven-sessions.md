@@ -468,7 +468,8 @@ Main does not send the field yet (part 2), so nothing changes for anyone today.
   another repository (`GIT_DIR`, `GIT_WORK_TREE`, …). `rev-parse --show-toplevel` must equal the
   spec's real `cwd` (a subfolder, a bare repository or a plain folder refuses); `HEAD^{commit}` must
   exist ("This repository has no commits yet"); `symbolic-ref -q HEAD` is the `base_ref` (null when
-  detached). The root must not be inside the checkout, and the root and `<root>/<repo>` (each
+  detached). Neither the root nor the worktree may be inside the checkout (a root that holds the
+  checkout, with `<repo>` its name, would put it there), and the root and `<root>/<repo>` (each
   created 0700 when missing) must be real directories, no symlink anywhere on the path, owned by the
   user and not group- or world-writable. An existing path or branch refuses before git runs. Then
   `worktree add --lock --reason "agent-inbox launch <short>" -b <branch> <path> <base sha>`, bounded at

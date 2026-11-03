@@ -118,6 +118,9 @@ describe('a launch’s worktree (#432)', () => {
     ['a root inside the checkout', (r: ReturnType<typeof rig>) => ({
       plan: { path: join(r.checkout, 'wt', 'app', 'fix-tests-1a2b3c4d') },
     }), /is inside the repository/],
+    ['a root whose <repo> folder is the checkout itself', (r: ReturnType<typeof rig>) => ({
+      plan: { path: join(r.dir, 'app', 'fix-tests-1a2b3c4d') },
+    }), /would be inside the repository/],
     ['a pattern character in the path', (r: ReturnType<typeof rig>) => ({
       plan: { path: join(r.dir, 'work (1)', 'app', 'fix-tests-1a2b3c4d') },
     }), /none of \( \) \*/],
@@ -132,6 +135,7 @@ describe('a launch’s worktree (#432)', () => {
     expect(r.list().split('\n').filter((line) => line.startsWith('worktree '))).toEqual([`worktree ${r.checkout}`])
     expect(existsSync(join(r.checkout, 'wt'))).toBe(false)
     expect(existsSync(join(r.dir, 'real', 'worktrees'))).toBe(false)
+    expect(existsSync(join(r.checkout, 'fix-tests-1a2b3c4d'))).toBe(false)
   })
 
   it('an undo removes the worktree, its lock and its branch; a branch that moved survives', () => {

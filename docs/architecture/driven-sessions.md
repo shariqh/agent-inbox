@@ -313,7 +313,11 @@ Everything main does for a driven session is injected and tested without Electro
   closed, stderr to `<hub dir>/launches/<id>/driver.log` (0600 in 0700), and the spec with the launch key
   written to a pipe (a socket pair) on fd 3, never a file. The runtime is the installed copy of this
   release's runtime, re-verified against the signed digest with `dist/driver-cli.js` and
-  `dist/launch-spec.js` required (`installedDriverRuntime`, #206); a checkout uses its own build. Main reads
+  `dist/launch-spec.js` required (`installedDriverRuntime`, #206); a checkout uses its own build. Setup
+  installs that runtime only while it registers a host to this app, never over a checkout or custom
+  registration, so a release app whose agents run from a checkout has none: its refusal says so and
+  names the checkout's own build (`npm run build`, then `npm run electron`) instead of Update agents,
+  which Setup does not offer for checkout hosts (#435). Main reads
   the driver's one status line and lets it run on. Any platform but macOS fails closed before spawning.
 - **The hub, over the viewer's own routes.** Main cannot load the store in a development build, so in every
   build it reaches the hub as notification answers do, with the trusted Origin: `GET /api/launch-folders`,

@@ -600,10 +600,15 @@ Main does not send the field yet (part 2), so nothing changes for anyone today.
   end the driver asks for one; git runs off the event queue (async `execFile`, 10 s a command,
   `GIT_OPTIONAL_LOCKS=0`, one read at a time, a request during a read runs once after it), so no
   `await` enters event handling. At park and at end, `run` awaits a final one before the row closes
-  (a forced exit skips it). `{ v: 1, at, head, branch, ahead, behind, files, dirty }`: `branch` is the
-  one checked out now (`''` detached); `behind`/`ahead` from `rev-list --left-right --count
-  <base_ref|base_sha>...HEAD`; `files` counts `diff --name-only -z <base_sha>...HEAD`; `dirty` counts
-  `status --porcelain=v1 -z` entries. A failed read writes nothing, so the last summary stays.
+  (a forced exit skips it), within 15 s in all: `final()` drops a queued repeat and kills any git still
+  running at the deadline, writing nothing then. The driver keeps its leases through it
+  (`releaseLeases: false`; `run` refreshes its `driver:` lease first and releases it after the row
+  closes), so a parking or ending launch never reads as lost or can be Closed. `{ v: 1, at, head,
+  branch, ahead, behind, files, dirty }`: `branch` is the one checked out now (`''` detached);
+  `behind`/`ahead` from `rev-list --left-right --count <base>...HEAD` and `files` from `diff --name-only
+  -z <base>...HEAD`, one base for both (`base_ref` while it resolves, else `base_sha`); `dirty` counts
+  every file of `status --porcelain=v1 -z --untracked-files=all`, as Remove worktree's dialog does,
+  whatever `status.showUntrackedFiles` says. A failed read writes nothing, so the last summary stays.
   `recordWorktreeSummary` writes it in one conditioned statement only when something but `at` changed
   (and only while the worktree is kept), so `/api/launches` is rebuilt only then; `launchView` serves
   it parsed (an unreadable one as null). The drawer's worktree line adds "N commits ahead, M behind,

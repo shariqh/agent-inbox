@@ -164,6 +164,12 @@ export interface DriverOptions {
   /** Default: the terminal's alerts (step 2). */
   asks?: AskChannel
   hooks?: DriverHooks
+  /**
+   * Whether finish() releases the driver's leases (default true). An app launch's
+   * CLI releases them itself once the final worktree summary is written and the
+   * row closed, so the launch never reads as lost while it parks or ends (#432 §6).
+   */
+  releaseLeases?: boolean
 }
 
 // Step 2's asks: an alert in @sessions, answered on the driver's own terminal.
@@ -1061,9 +1067,11 @@ export class Driver {
       kill.unref()
       this.o.child.exited.finally(() => clearTimeout(kill)).catch(() => undefined)
     }
-    try {
-      releaseDriverLeases(this.o.db, this.o.lease)
-    } catch { /* the hub is gone: the leases go stale in 90 s */ }
+    if (this.o.releaseLeases !== false) {
+      try {
+        releaseDriverLeases(this.o.db, this.o.lease)
+      } catch { /* the hub is gone: the leases go stale in 90 s */ }
+    }
     this.o.log({ event: 'ended', reason: this.ending })
     this.resolveEnd(this.ending ?? 'stopped')
   }

@@ -42,7 +42,7 @@ import { childEnv, copilotAgentInboxServer, copilotArgs, editsFolder, isReasonin
 import type { LaunchMode, ReasoningEffort } from './driver-policy.js'
 import { inferProject, inferStream } from './infer.js'
 import {
-  claimDriverSlot, createLaunch, defaultDbPath, endLaunch, getLaunch, listHostSessions, recordWorktreeSummary, liveSessionServers, markWorktreeRemoved, openDb, parkLaunch,
+  claimDriverSlot, createLaunch, defaultDbPath, endLaunch, getLaunch, holdDriverLeases, listHostSessions, recordWorktreeSummary, liveSessionServers, markWorktreeRemoved, openDb, parkLaunch,
   recordLaunchProgress, releaseDriverLeases, requestDriverStop, requestLaunchStop, resumeLaunch,
 } from './store.js'
 import { createWorktree, gitEnv, inspectWorktree, removeLaunchWorktree, undoWorktree, unlockWorktree, worktreeSummarizer } from './worktree.js'
@@ -623,6 +623,8 @@ async function runLaunch(argv: string[]): Promise<void> {
   const linkWaitMs = boundedMs(process.env.AGENT_INBOX_DRIVER_LINK_WAIT_MS, 0, 10_000)
   const idleMs = boundedMs(process.env.AGENT_INBOX_DRIVER_IDLE_MS, 50, 2 * 60 * 60_000)
   const progress = launchHooks(db, launchId)
+  // test seam, bounded: the final summary's budget (default 15 s)
+  const finalSummaryMs = boundedMs(process.env.AGENT_INBOX_DRIVER_SUMMARY_FINAL_MS, 100, 15_000)
   // #432 §6: the worktree's summary at each turn end, at park and at end
   const held = worktreeOf
   const summaryGit = held ? findGit() : null
@@ -630,6 +632,7 @@ async function runLaunch(argv: string[]): Promise<void> {
     ? worktreeSummarizer({
       git: summaryGit, env: gitEnv(sessionEnv), path: held.path, baseRef: held.baseRef, baseSha: held.baseSha,
       write: (summary) => { try { recordWorktreeSummary(db, launchId, summary) } catch { /* the hub is gone */ } },
+      ...(finalSummaryMs === undefined ? {} : { finalMs: finalSummaryMs }),
     })
     : null
   const driver = new Driver({
@@ -639,6 +642,8 @@ async function runLaunch(argv: string[]): Promise<void> {
     log, stateDir: join(hubDir, 'drivers', launchId), scan,
     asks: appAsks({ db, launchId, launchKey: spec.launchKey, project: facts.project, stream: facts.stream, log }),
     hooks: { ...progress, ...(summarizer ? { turnEnd: () => summarizer.request() } : {}) },
+    // released below, once the final summary is written and the row closed
+    releaseLeases: false,
     usage: used,
     ...resume,
     timing: {
@@ -671,6 +676,8 @@ async function runLaunch(argv: string[]): Promise<void> {
     driver,
     exit: (code) => {
       closeRow('stopped')
+      // the driver leaves its leases to this CLI (releaseLeases: false)
+      try { releaseDriverLeases(db, lease) } catch { /* the hub is gone */ }
       if (child.pid && child.exitCode === null && child.signalCode === null) reapProcessGroup(child.pid, { kill: (pid, signal) => { process.kill(pid, signal) }, sleep })
       process.exit(code)
     },
@@ -683,8 +690,12 @@ async function runLaunch(argv: string[]): Promise<void> {
   // the child exits about 1 s after its stdin closes (spike §1); after 10 s its group gets SIGTERM
   const settled = await Promise.race([exited.then(() => true), new Promise<boolean>((r) => setTimeout(() => r(false), 10_000).unref())])
   if (!settled) kill('SIGTERM')
-  // the worktree as the session left it, at park and at end (§6)
-  await summarizer?.final()
+  // the worktree as the session left it, at park and at end (§6), at most 15 s, while
+  // this driver still holds its lease, so the launch never reads as lost meanwhile
+  if (summarizer) {
+    try { holdDriverLeases(db, lease, []) } catch { /* the hub is gone */ }
+    await summarizer.final()
+  }
   closeRow(reason)
   try { releaseDriverLeases(db, lease) } catch { /* the hub is gone */ }
   db.close()

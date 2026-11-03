@@ -179,9 +179,11 @@ PR 4). Adding them together changes the trigger text once.
   the driver writes `worktree_summary`, `{ v: 1, at, head, branch, ahead, behind, files, dirty }`,
   allowing 10 s per command. `branch` is the current one (the agent can switch); `ahead` and
   `behind` come from `rev-list --left-right --count <base_ref|base_sha>...HEAD` (A13); `files`
-  counts `diff --name-only <base_sha>...HEAD`; `dirty` counts `status --porcelain=v1 -z` entries.
-  The store writes the summary only on a change, so `/api/launches` is rebuilt only then. A failed
-  read keeps the last one.
+  counts `diff --name-only <base_ref|base_sha>...HEAD`, against the same base (built: review of #448;
+  this said `<base_sha>` before); `dirty` counts `status --porcelain=v1 -z --untracked-files=all`
+  entries, as Remove worktree counts them. The store writes the summary only on a change, so
+  `/api/launches` is rebuilt only then. A failed read keeps the last one. The final summary at park
+  and at end has 15 s in all, and is taken while the driver still holds its lease.
 - **Open in Terminal.** Main runs `/usr/bin/open -a Terminal -- <path>`, argv only. The path comes
   from a fresh row read and must equal `realDirectory(path)`, with the worktree not removed.
 - **Open PR.** The `gh` poller already links a PR by head branch for items whose stream is that

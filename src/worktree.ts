@@ -449,11 +449,13 @@ async function summarize(run: GitRun, base: { ref: string | null; sha: string })
   const head = await run(['rev-parse', '--verify', '-q', 'HEAD^{commit}'])
   if (!head.ok) return null
   const branch = await run(['branch', '--show-current'])
+  // one base for every count: the checkout's branch while it still resolves, else the base commit
   const baseRef = baseRefOf(base.ref)
   const ref = baseRef && (await run(['rev-parse', '--verify', '-q', `${baseRef}^{commit}`])).ok ? baseRef : base.sha
   const counts = await run(['rev-list', '--left-right', '--count', `${ref}...HEAD`])
-  const files = await run(['diff', '--name-only', '-z', `${base.sha}...HEAD`])
-  const status = await run(['status', '--porcelain=v1', '-z', '--no-renames'])
+  const files = await run(['diff', '--name-only', '-z', `${ref}...HEAD`])
+  // every file, whatever status.showUntrackedFiles says: the count Remove worktree's dialog shows
+  const status = await run(['status', '--porcelain=v1', '-z', '--no-renames', '--untracked-files=all'])
   if (!branch.ok || !counts.ok || !files.ok || !status.ok) return null
   const [behind, ahead] = counts.stdout.trim().split(/\s+/).map(Number)
   if (!Number.isInteger(behind) || !Number.isInteger(ahead)) return null
@@ -464,11 +466,16 @@ async function summarize(run: GitRun, base: { ref: string | null; sha: string })
   }
 }
 
+// the final summary's whole budget: park and end wait at most this, its git killed past it
+const FINAL_SUMMARY_MS = 15_000
+
 /**
  * The driver's summaries of a launch's worktree (§6). `request()` runs git off
  * the driver's event queue (async, one read at a time, a request during a read
  * runs once after it) and hands each summary to `write`; `final()` is awaited
- * at park and at end. A failed read writes nothing, so the last one stays.
+ * at park and at end, while the driver still holds its lease: it drops a queued
+ * repeat and gives up within `finalMs` (15 s), killing any git still running.
+ * A failed or abandoned read writes nothing, so the last summary stays.
  */
 export function worktreeSummarizer(o: {
   git: string
@@ -477,22 +484,29 @@ export function worktreeSummarizer(o: {
   baseRef: string | null
   baseSha: string
   write: (summary: WorktreeSummary) => void
+  finalMs?: number
 }): { request(): void; final(): Promise<void> } {
   const env = { ...o.env, GIT_OPTIONAL_LOCKS: '0' }
+  const inflight = new Set<ReturnType<typeof execFile>>()
+  let abandoned = false
   const run: GitRun = (args) => new Promise((resolve) => {
-    execFile(o.git, ['-C', o.path, ...args], { env, cwd: '/', encoding: 'utf8', timeout: SUMMARY_TIMEOUT_MS, killSignal: 'SIGKILL', maxBuffer: 64 * 1024 * 1024 }, (error, stdout) => {
+    if (abandoned) return resolve({ ok: false, code: null, stdout: '', message: 'abandoned' })
+    const child = execFile(o.git, ['-C', o.path, ...args], { env, cwd: '/', encoding: 'utf8', timeout: SUMMARY_TIMEOUT_MS, killSignal: 'SIGKILL', maxBuffer: 64 * 1024 * 1024 }, (error, stdout) => {
+      inflight.delete(child)
       resolve({ ok: !error, code: error ? null : 0, stdout: String(stdout ?? ''), message: error ? 'git failed' : '' })
     })
+    inflight.add(child)
   })
   let running: Promise<void> | null = null
   let again = false
   const once = async (): Promise<void> => {
     try {
       const summary = await summarize(run, { ref: o.baseRef, sha: o.baseSha })
-      if (summary) o.write(summary)
+      if (summary && !abandoned) o.write(summary)
     } catch { /* a summary never stops the session */ }
   }
   const request = (): void => {
+    if (abandoned) return
     if (running) {
       again = true
       return
@@ -508,8 +522,19 @@ export function worktreeSummarizer(o: {
   return {
     request,
     async final() {
-      while (running) await running
-      await once()
+      // the read in flight finishes (or is killed); a repeat it queued is dropped: final() reads once more itself
+      again = false
+      const timer = setTimeout(() => {
+        abandoned = true
+        for (const child of inflight) child.kill('SIGKILL')
+      }, o.finalMs ?? FINAL_SUMMARY_MS)
+      try {
+        if (running) await running
+        await once()
+      } finally {
+        clearTimeout(timer)
+        abandoned = true
+      }
     },
   }
 }

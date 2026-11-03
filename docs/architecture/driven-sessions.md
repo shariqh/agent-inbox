@@ -550,3 +550,37 @@ Main does not send the field yet (part 2), so nothing changes for anyone today.
   slugs from Unicode and empty tasks; the confirmation lines; every refusal before the confirmation
   creates nothing; the 150 s status; the setting's file, IPC and preload; off reads nothing) and
   `test/dom/driven-sessions.test.ts` (the checkbox, the drawer line, Settings' row, off draws nothing).
+
+## Session worktrees (#432), part 3: Remove worktree and Open in Terminal
+
+- **`driver-cli.js worktree inspect|remove <launch id> <hub db> [--discard <hash>]`** (`worktreeCommand`,
+  `inspectWorktree`/`removeLaunchWorktree` in `src/worktree.ts`). It needs an ended launch whose
+  worktree is kept, a checkout that is still its own real path, and `git worktree list --porcelain -z`
+  showing that path on that branch; a worktree switched to another branch is left to the human. `git`
+  is found on the PATH main passes (its capture in the checkout) and trust-checked like `copilot`; one
+  JSON line on stdout. `inspect` answers `{ path, branch, missing, dirty, ahead, upstream, status }`:
+  uncommitted entries (`status --porcelain=v1 -z`, `GIT_OPTIONAL_LOCKS=0`), commits ahead of
+  `base_ref` (else `base_sha`), whether the branch has an upstream, and the sha256 of that status.
+  `remove` unlocks, then runs `git worktree remove`, never `prune`, and never touches the branch; git
+  refuses a worktree with changes, and `--force` is added only with `--discard <hash>` while the status
+  still hashes to it ("The worktree changed since you looked at it…" otherwise). A folder deleted by
+  hand has only git's entry removed; one git no longer lists and whose folder is gone counts as
+  removed. Success sets `worktree_removed_at`.
+- **Main** (`removeWorktree(id)`, `openWorktree(id)` in the controller; IPC `launch-remove-worktree` and
+  `launch-open-worktree`, exactly a launch id, the `launch` grant). Remove re-reads the launch, captures
+  the env in the checkout as Resume does (the click is the gesture), runs `inspect` through
+  `runWorktreeCommand` (`driver-process.cjs`: `[node, driver-cli.js, 'worktree', verb, id, hub,
+  --discard?]`, no shell, `cwd: '/'`, 150 s), and shows its own dialog (`removalConfirmation`): the
+  worktree, "The branch … and its N commits stay in your repository" (and, without an upstream, that
+  they are only there), that ignored files such as node_modules are deleted, and, with changes, a
+  separate **Discard N changes and remove** button bound to the inspected status. Cancel is the
+  default. Open in Terminal runs `/usr/bin/open -a Terminal -- <path>`, argv only, on the path a fresh
+  row read names, only while it is its own real folder and not removed.
+- **The page.** A launch row with a kept worktree offers **Open in Terminal**, and **Remove worktree…**
+  once the launch ended (in the granted window). The drawer lists every ended launch whose worktree is
+  kept besides the newest five, so Remove stays reachable. A refusal shows on the row; Cancel shows
+  nothing.
+- **Tests**: `test/worktree.test.ts` (clean, untracked, modified, ignored-only, hand-deleted, locked,
+  switched and unlisted worktrees; a stale discard hash), `test/driver-run.test.ts` (the CLI on a parked,
+  then ended launch), `test/launch-electron.test.ts` (the command's argv, the dialog and its choices,
+  refusals, the IPC and preload, the `open` argv pin), `test/dom/driven-sessions.test.ts` (the buttons).

@@ -67,8 +67,13 @@ function registerLaunchIpc({ ipcMain, controller, settings, settled, isOwned, is
     })
   }
 
-  for (const action of ['start', 'stop', 'close', 'resume', 'approve']) {
-    ipcMain.handle(`agent-inbox:launch-${action}`, async (event, ...args) => {
+  const oneArgument = {
+    start: 'start', stop: 'stop', close: 'close', resume: 'resume', approve: 'approve',
+    // #432 §5, §6: a launch id only; main reads the worktree's path from the hub itself
+    removeWorktree: 'remove-worktree', openWorktree: 'open-worktree',
+  }
+  for (const [action, channel] of Object.entries(oneArgument)) {
+    ipcMain.handle(`agent-inbox:launch-${channel}`, async (event, ...args) => {
       if (args.length !== 1) return { ok: false, error: 'invalid' }
       await settled()
       if (!isGranted(event)) return { ok: false, error: NOT_HERE }

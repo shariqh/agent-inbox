@@ -9,6 +9,7 @@
 // the captured PATH. A refusal after creation undoes only what this launch
 // made; nothing else is ever removed here, and a branch that moved is kept.
 import { spawnSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { lstatSync, mkdirSync, realpathSync, statSync } from 'node:fs'
 
 // The path as it is on disk. Node's realpathSync keeps the case it was given, so
@@ -226,4 +227,84 @@ export function undoWorktree(git: string, env: NodeJS.ProcessEnv, worktree: Pick
 export function unlockWorktree(git: string, env: NodeJS.ProcessEnv, checkout: string, path: string): string | null {
   const result = runGit(git, env, checkout, ['worktree', 'unlock', path], UNLOCK_TIMEOUT_MS)
   return result.ok ? null : result.message
+}
+
+// ── Remove worktree (#432 §5): `driver-cli.js worktree inspect|remove` ─────────
+
+/** What Remove worktree's confirmation shows, and the status a discard is bound to. */
+export interface WorktreeState {
+  /** Its folder was deleted by hand; git still lists it, and remove cleans only that entry. */
+  missing: boolean
+  /** Uncommitted and untracked entries in the worktree. */
+  dirty: number
+  /** Commits on the branch that its base (the checkout's branch then, else the base commit) lacks. */
+  ahead: number
+  upstream: boolean
+  /** sha256 of `status --porcelain=v1 -z`: Discard and remove forces only while it still matches. */
+  status: string
+}
+
+type LaunchWorktree = { git: string; env: NodeJS.ProcessEnv; checkout: string; path: string; branch: string; baseRef: string | null; baseSha: string }
+
+// git's own entry for exactly this path on exactly this branch, or why not. A
+// worktree whose folder is gone and that git no longer lists is already removed.
+function listedEntry(o: LaunchWorktree): string | 'gone' | null {
+  const list = runGit(o.git, o.env, o.checkout, ['worktree', 'list', '--porcelain', '-z'], READ_TIMEOUT_MS)
+  if (!list.ok) return list.message
+  // with -z, each attribute ends in NUL and each entry in an extra NUL
+  const entries = list.stdout.split('\0\0').map((entry) => entry.split('\0'))
+  const entry = entries.find((lines) => lines[0] === `worktree ${o.path}`)
+  if (!entry) return missing(o.path) ? 'gone' : `git does not list ${o.path} as a worktree of ${o.checkout}`
+  if (!entry.includes(`branch refs/heads/${o.branch}`)) return `${o.path} is no longer on ${o.branch}, so Agent Inbox leaves it to you`
+  return null
+}
+
+function statusOf(o: LaunchWorktree): { dirty: number; status: string } | { error: string } {
+  const status = runGit(o.git, { ...o.env, GIT_OPTIONAL_LOCKS: '0' }, o.path, ['status', '--porcelain=v1', '-z', '--no-renames'], READ_TIMEOUT_MS)
+  if (!status.ok) return { error: status.message }
+  return { dirty: status.stdout.split('\0').filter(Boolean).length, status: createHash('sha256').update(status.stdout).digest('hex') }
+}
+
+function missing(path: string): boolean {
+  try {
+    lstatSync(path)
+    return false
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'ENOENT'
+  }
+}
+
+/** Reads what Remove worktree's confirmation shows (§5 step 2). */
+export function inspectWorktree(o: LaunchWorktree): { ok: true; state: WorktreeState } | { ok: false; error: string } {
+  const unlisted = listedEntry(o)
+  if (unlisted && unlisted !== 'gone') return { ok: false, error: unlisted }
+  const gone = missing(o.path)
+  const status = gone ? { dirty: 0, status: createHash('sha256').update('').digest('hex') } : statusOf(o)
+  if ('error' in status) return { ok: false, error: status.error }
+  const ref = `refs/heads/${o.branch}`
+  const base = o.baseRef && runGit(o.git, o.env, o.checkout, ['rev-parse', '--verify', '-q', `${o.baseRef}^{commit}`], READ_TIMEOUT_MS).ok ? o.baseRef : o.baseSha
+  const ahead = runGit(o.git, o.env, o.checkout, ['rev-list', '--count', `${base}..${ref}`], READ_TIMEOUT_MS)
+  const upstream = runGit(o.git, o.env, o.checkout, ['for-each-ref', '--format=%(upstream)', ref], READ_TIMEOUT_MS)
+  return {
+    ok: true,
+    state: { missing: gone, ...status, ahead: ahead.ok ? Number(ahead.stdout.trim()) || 0 : 0, upstream: upstream.ok && upstream.stdout.trim() !== '' },
+  }
+}
+
+/**
+ * Removes the worktree, never its branch (§5 step 4). Without `discard`, git
+ * refuses a worktree with changes; with it, `--force` is added only while the
+ * status still hashes to what the human was shown. Ignored files go either way.
+ */
+export function removeLaunchWorktree(o: LaunchWorktree & { discard?: string }): { ok: true } | { ok: false; error: string } {
+  const unlisted = listedEntry(o)
+  if (unlisted === 'gone') return { ok: true }
+  if (unlisted) return { ok: false, error: unlisted }
+  if (o.discard !== undefined) {
+    const now = missing(o.path) ? null : statusOf(o)
+    if (!now || 'error' in now || now.status !== o.discard) return { ok: false, error: 'The worktree changed since you looked at it, so nothing was removed. Look at it again.' }
+  }
+  runGit(o.git, o.env, o.checkout, ['worktree', 'unlock', o.path], UNLOCK_TIMEOUT_MS)
+  const removed = runGit(o.git, o.env, o.checkout, ['worktree', 'remove', ...(o.discard !== undefined ? ['--force'] : []), o.path], ADD_TIMEOUT_MS)
+  return removed.ok ? { ok: true } : { ok: false, error: removed.message }
 }

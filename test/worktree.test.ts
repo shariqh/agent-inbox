@@ -4,10 +4,10 @@
 // worktree before its branch, and spares a branch that moved.
 import { afterEach, describe, expect, it } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createWorktree, gitEnv, undoWorktree, unlockWorktree, worktreePlanError } from '../src/worktree.js'
+import { createWorktree, gitEnv, inspectWorktree, removeLaunchWorktree, undoWorktree, unlockWorktree, worktreePlanError } from '../src/worktree.js'
 import { removeScratchDirs, scratchDir } from './scratch.js'
 
 const LAUNCH = '1a2b3c4d-3333-4444-8555-666666666666'
@@ -185,5 +185,80 @@ describe('a launch’s worktree (#432)', () => {
     expect(worktreePlanError({ ...plan, path: '/home/shariqh/.x/fix-tests-1a2b3c4d' }, LAUNCH)).toMatch(/<root>\/<repo>/)
     expect(worktreePlanError({ ...plan, path: '/app/fix-tests-1a2b3c4d' }, LAUNCH)).toMatch(/<root>\/<repo>/)
     expect(worktreePlanError({ ...plan, base: 'main' }, LAUNCH)).toMatch(/unknown worktree field base/)
+  })
+})
+
+describe('Remove worktree (#432 §5)', () => {
+  // a launch's worktree as the driver made it (locked), with one commit of the session's on its branch
+  function made() {
+    const r = rig()
+    writeFileSync(join(r.checkout, '.gitignore'), 'node_modules/\n')
+    r.git(r.checkout, 'add', '.gitignore')
+    r.git(r.checkout, 'commit', '-q', '-m', 'ignore')
+    const created = r.create()
+    if (!created.ok) throw new Error(created.error)
+    writeFileSync(join(r.plan.path, 'work.txt'), 'work\n')
+    r.git(r.plan.path, 'add', 'work.txt')
+    r.git(r.plan.path, 'commit', '-q', '-m', 'work')
+    const target = { git: GIT, env: r.env, checkout: r.checkout, path: r.plan.path, branch: r.plan.branch, baseRef: 'refs/heads/main', baseSha: created.worktree.baseSha }
+    return { ...r, target }
+  }
+
+  it('inspects and removes a clean worktree, even locked and with ignored files, and keeps its branch', () => {
+    const r = made()
+    mkdirSync(join(r.plan.path, 'node_modules'))
+    writeFileSync(join(r.plan.path, 'node_modules', 'x.js'), 'x')
+    expect(inspectWorktree(r.target)).toEqual({ ok: true, state: { missing: false, dirty: 0, ahead: 1, upstream: false, status: expect.stringMatching(/^[0-9a-f]{64}$/) } })
+    expect(removeLaunchWorktree(r.target)).toEqual({ ok: true })
+    expect(existsSync(r.plan.path)).toBe(false)
+    expect(r.branches()).toEqual([r.plan.branch, 'main'].sort())
+    expect(r.list()).not.toContain(r.plan.path)
+    // already gone: nothing to do, and nothing else is touched
+    expect(removeLaunchWorktree(r.target)).toEqual({ ok: true })
+    expect(inspectWorktree(r.target)).toMatchObject({ ok: true, state: { missing: true, dirty: 0 } })
+  })
+
+  it.each([
+    ['an untracked file', (dir: string) => writeFileSync(join(dir, 'new.txt'), 'new\n')],
+    ['a modified file', (dir: string) => writeFileSync(join(dir, 'README.md'), 'changed\n')],
+  ])('refuses to remove a worktree with %s unless the human discards exactly what they were shown', (_, change) => {
+    const r = made()
+    change(r.plan.path)
+    const seen = inspectWorktree(r.target)
+    if (!seen.ok) throw new Error(seen.error)
+    expect(seen.state.dirty).toBe(1)
+    expect(removeLaunchWorktree(r.target)).toMatchObject({ ok: false })
+    expect(existsSync(r.plan.path)).toBe(true)
+    // a change after the human looked: the hash no longer matches, and nothing is forced
+    writeFileSync(join(r.plan.path, 'later.txt'), 'later\n')
+    expect(removeLaunchWorktree({ ...r.target, discard: seen.state.status })).toEqual({ ok: false, error: expect.stringMatching(/changed since you looked/) })
+    expect(existsSync(join(r.plan.path, 'later.txt'))).toBe(true)
+    const again = inspectWorktree(r.target)
+    if (!again.ok) throw new Error(again.error)
+    expect(removeLaunchWorktree({ ...r.target, discard: again.state.status })).toEqual({ ok: true })
+    expect(existsSync(r.plan.path)).toBe(false)
+    expect(r.branches()).toContain(r.plan.branch)
+  })
+
+  it('removes git’s entry for a worktree whose folder was deleted by hand', () => {
+    const r = made()
+    rmSync(r.plan.path, { recursive: true, force: true })
+    expect(inspectWorktree(r.target)).toMatchObject({ ok: true, state: { missing: true, dirty: 0, ahead: 1 } })
+    expect(removeLaunchWorktree(r.target)).toEqual({ ok: true })
+    expect(r.list()).not.toContain(r.plan.path)
+    expect(r.branches()).toContain(r.plan.branch)
+  })
+
+  it('leaves a worktree alone that is no longer on its branch, or that git does not list', () => {
+    const r = made()
+    r.git(r.plan.path, 'switch', '-q', '-c', 'elsewhere')
+    expect(inspectWorktree(r.target)).toEqual({ ok: false, error: expect.stringMatching(/no longer on agent-inbox\/fix-tests-1a2b3c4d/) })
+    expect(removeLaunchWorktree(r.target)).toMatchObject({ ok: false })
+    expect(existsSync(r.plan.path)).toBe(true)
+    const other = join(r.dir, 'other')
+    mkdirSync(other)
+    expect(inspectWorktree({ ...r.target, path: other })).toEqual({ ok: false, error: expect.stringMatching(/does not list/) })
+    expect(removeLaunchWorktree({ ...r.target, path: other })).toMatchObject({ ok: false })
+    expect(existsSync(other)).toBe(true)
   })
 })

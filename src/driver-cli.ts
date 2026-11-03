@@ -7,6 +7,8 @@
 //   agent-inbox-driver copilot --cwd <dir> --mode ask|read-only --prompt-file <file> [--model <id>] [--reasoning-effort <level>]
 //   agent-inbox-driver stop <launch id>
 //   agent-inbox-driver run <launch id> <hub db>     (step 3: Electron main only)
+//   agent-inbox-driver worktree inspect|remove <launch id> <hub db> [--discard <status hash>]
+//                                                    (#432: Electron main only)
 //
 // Approvals happen on this terminal, so it refuses to run without a TTY on
 // stdin. The copilot child gets its own pipes: its stdout carries ACP only, its
@@ -40,10 +42,10 @@ import { childEnv, copilotAgentInboxServer, copilotArgs, editsFolder, isReasonin
 import type { LaunchMode, ReasoningEffort } from './driver-policy.js'
 import { inferProject, inferStream } from './infer.js'
 import {
-  claimDriverSlot, createLaunch, defaultDbPath, endLaunch, listHostSessions, liveSessionServers, markWorktreeRemoved, openDb, parkLaunch,
+  claimDriverSlot, createLaunch, defaultDbPath, endLaunch, getLaunch, listHostSessions, liveSessionServers, markWorktreeRemoved, openDb, parkLaunch,
   recordLaunchProgress, releaseDriverLeases, requestDriverStop, requestLaunchStop, resumeLaunch,
 } from './store.js'
-import { createWorktree, gitEnv, undoWorktree, unlockWorktree } from './worktree.js'
+import { createWorktree, gitEnv, inspectWorktree, removeLaunchWorktree, undoWorktree, unlockWorktree } from './worktree.js'
 import type { CreatedWorktree } from './worktree.js'
 import type Database from 'better-sqlite3'
 
@@ -675,10 +677,57 @@ async function runLaunch(argv: string[]): Promise<void> {
   process.exit(reason === 'stopped' || reason === 'idle' || reason === 'park' || reason === 'child_exit' ? 0 : 1)
 }
 
+// ── #432: Remove worktree, started by Electron main (§5) ────────────────────
+//
+// `inspect` reads what the confirmation shows; `remove` removes the worktree,
+// never its branch, adding --force only with `--discard <hash>` while the
+// status still hashes to it. Both need an ended launch whose worktree is kept
+// and listed by git on its branch. The env is main's capture in the checkout;
+// git is found on its PATH and trust-checked like copilot. One JSON line on
+// stdout: `{"ok":true,…}` or `{"ok":false,"error":…}`.
+function worktreeCommand(argv: string[]): void {
+  const [verb, launchId, dbPath, flag, hash] = argv
+  const discard = flag === '--discard' ? hash : undefined
+  if ((verb !== 'inspect' && verb !== 'remove') || !launchId || !LAUNCH_ID.test(launchId) || !dbPath || !isAbsolute(dbPath)
+    || !(argv.length === 3 || (verb === 'remove' && argv.length === 5 && discard !== undefined && /^[0-9a-f]{64}$/.test(discard)))) {
+    process.stderr.write('usage: agent-inbox-driver worktree inspect|remove <launch id> <absolute hub db path> [--discard <status hash>]\n')
+    process.exit(64)
+  }
+  for (const stream of [process.stdout, process.stderr]) stream.on('error', () => undefined)
+  const answer = (status: Record<string, unknown>): never => {
+    try { process.stdout.write(`${JSON.stringify(status)}\n`) } catch { /* main stopped reading */ }
+    return process.exit(status.ok === true ? 0 : 1)
+  }
+  if (process.platform !== 'darwin' && process.platform !== 'linux') answer({ ok: false, error: `${process.platform} is not supported` })
+  const db = openDb(dbPath)
+  const row = getLaunch(db, launchId)
+  if (!row?.worktree_path || !row.checkout_root || !row.branch || !row.base_sha) return answer({ ok: false, error: 'This session has no worktree of its own.' })
+  if (row.worktree_removed_at) return answer({ ok: false, error: 'This session’s worktree was already removed.' })
+  if (row.status !== 'ended') return answer({ ok: false, error: 'End the session before removing its worktree.' })
+  let checkout: string | null = null
+  try { checkout = realpathSync.native(row.checkout_root) } catch { /* gone */ }
+  if (checkout !== row.checkout_root) return answer({ ok: false, error: `The repository ${row.checkout_root} is not there any more.` })
+  const git = findExecutable('git', process.env.PATH)
+  if ('error' in git) return answer({ ok: false, error: git.error })
+  const target = {
+    git: git.path, env: gitEnv(childEnv(process.env, { path: dbPath, isDefault: true })), checkout,
+    path: row.worktree_path, branch: row.branch, baseRef: row.base_ref, baseSha: row.base_sha,
+  }
+  if (verb === 'inspect') {
+    const inspected = inspectWorktree(target)
+    return answer(inspected.ok ? { ok: true, path: row.worktree_path, branch: row.branch, ...inspected.state } : inspected)
+  }
+  const removed = removeLaunchWorktree({ ...target, ...(discard ? { discard } : {}) })
+  if (!removed.ok) return answer(removed)
+  try { markWorktreeRemoved(db, launchId) } catch { /* removed on disk; the row catches up on the next Remove */ }
+  return answer({ ok: true })
+}
+
 const [command, ...rest] = process.argv.slice(2)
 if (command === 'copilot') await runCopilot(rest)
 else if (command === 'stop') stopCommand(rest)
 else if (command === 'run') await runLaunch(rest)
+else if (command === 'worktree') worktreeCommand(rest)
 else {
   process.stderr.write(USAGE)
   process.exit(command === '--help' || command === '-h' ? 0 : 64)

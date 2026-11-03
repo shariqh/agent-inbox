@@ -566,8 +566,10 @@ Main does not send the field yet (part 2), so nothing changes for anyone today.
   unstaged contents), and of each untracked file's path, size, mtime in nanoseconds and contents (whole
   up to 8 MiB a file and 512 MiB in all; past that, size and mtime). A further edit to a changed file, or
   a new file under an untracked folder, therefore moves it. Discard is refused, with `noDiscard` saying
-  why and no fingerprint, for an untracked nested repository ("move it out first"), a folder git does
-  not list file by file, more than 20,000 changed files, or a diff over 256 MiB. `remove` unlocks, then
+  why and no fingerprint, for an untracked nested repository ("move it out first"), any checked-out
+  submodule (a tracked gitlink whose folder holds a `.git`, or the worktree's own `modules` git folder:
+  its status and diff lines do not change with its files or commits, and `--force` would delete them),
+  a folder git does not list file by file, more than 20,000 changed files, or a diff over 256 MiB. `remove` unlocks, then
   runs `git worktree remove`, never `prune`, and never touches the branch; git refuses a worktree with
   changes, and `--force` is added only with `--discard <fingerprint>` while a fresh fingerprint still
   equals it ("The worktree changed since you looked at it…" otherwise). A folder deleted by hand has

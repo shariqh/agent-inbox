@@ -288,6 +288,22 @@ function hashFile(path: string, hash: ReturnType<typeof createHash>): void {
   }
 }
 
+// Any initialized submodule: a tracked gitlink (mode 160000) whose folder holds a
+// `.git`, or this worktree's own `modules` folder in its git dir. `at` is the
+// first such path ('' when only the modules folder shows one), or null for none.
+function checkedOutSubmodule(o: LaunchWorktree, env: NodeJS.ProcessEnv): { at: string | null } | { error: string } {
+  const staged = runGit(o.git, env, o.path, ['ls-files', '--stage', '-z'], READ_TIMEOUT_MS)
+  if (!staged.ok) return { error: staged.message }
+  for (const entry of staged.stdout.split('\0')) {
+    if (!entry.startsWith('160000 ')) continue
+    const name = entry.slice(entry.indexOf('\t') + 1)
+    if (name && !missing(`${o.path}/${name}/.git`)) return { at: name }
+  }
+  const gitDir = runGit(o.git, env, o.path, ['rev-parse', '--absolute-git-dir'], READ_TIMEOUT_MS)
+  if (!gitDir.ok) return { error: gitDir.message }
+  return { at: missing(`${gitDir.stdout.trim()}/modules`) ? null : '' }
+}
+
 /**
  * What Discard would delete, and its fingerprint (review of #446). Every file
  * counts (`--untracked-files=all`); edits to an already-changed file and files
@@ -305,6 +321,14 @@ function fingerprintOf(o: LaunchWorktree): Fingerprint | { error: string } {
   const refuse = (noDiscard: string): Fingerprint => ({ dirty: entries.length, examples, status: '', noDiscard })
   if (entries.length > MAX_FINGERPRINT_FILES) {
     return refuse(`It has more than ${MAX_FINGERPRINT_FILES.toLocaleString('en-US')} changed files, too many for Agent Inbox to check before deleting them; remove it yourself.`)
+  }
+  // a checked-out submodule shows as one ` M sub` line and a `-dirty` diff line however its files or
+  // commits change, and --force would delete its files and its git data (review of #446)
+  const submodule = checkedOutSubmodule(o, env)
+  if ('error' in submodule) return submodule
+  if (submodule.at !== null) {
+    const where = submodule.at ? ` at ${short(submodule.at.replace(/\/?$/, '/'))}` : ''
+    return refuse(`It contains a checked-out submodule${where}; Remove won’t delete it. Remove the submodule checkout first, or remove the worktree by hand.`)
   }
   const hash = createHash('sha256')
   hash.update(status.stdout).update('\0diff\0')

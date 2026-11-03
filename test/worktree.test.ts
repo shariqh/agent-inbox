@@ -297,6 +297,30 @@ describe('Remove worktree (#432 §5)', () => {
     expect(r.git(nested, 'log', '--oneline')).toContain('nested')
   })
 
+  it('refuses Discard for a checked-out submodule, naming it, and keeps its unpushed commit (review of #446)', () => {
+    const r = made()
+    const source = join(r.dir, 'lib-src')
+    mkdirSync(source)
+    r.git(source, '-c', 'init.defaultBranch=main', 'init', '-q')
+    writeFileSync(join(source, 'lib.txt'), 'lib')
+    r.git(source, 'add', 'lib.txt')
+    r.git(source, '-c', 'user.name=shariqh', '-c', 'user.email=shariqh@users.noreply.github.com', 'commit', '-q', '-m', 'lib')
+    r.git(r.plan.path, '-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', source, 'sub')
+    const sub = join(r.plan.path, 'sub')
+    writeFileSync(join(sub, 'local.txt'), 'unpushed')
+    r.git(sub, 'add', 'local.txt')
+    r.git(sub, '-c', 'user.name=shariqh', '-c', 'user.email=shariqh@users.noreply.github.com', 'commit', '-q', '-m', 'unpushed work')
+    const seen = state(r)
+    expect(seen).toMatchObject({ status: '', noDiscard: expect.stringMatching(/^It contains a checked-out submodule at sub\/; Remove won’t delete it\./) })
+    expect(removeLaunchWorktree({ ...r.target, discard: 'a'.repeat(64) })).toEqual({ ok: false, error: expect.stringMatching(/checked-out submodule at sub\//) })
+    expect(removeLaunchWorktree(r.target)).toMatchObject({ ok: false })
+    expect(r.git(sub, 'log', '--oneline')).toContain('unpushed work')
+    // committed in the worktree too: the gitlink is tracked, and still refused
+    r.git(r.plan.path, 'commit', '-q', '-m', 'add sub')
+    writeFileSync(join(sub, 'more.txt'), 'more')
+    expect(state(r).noDiscard).toMatch(/checked-out submodule at sub\//)
+  })
+
   it('refuses Discard for a worktree with too many changed files to fingerprint', () => {
     const r = made()
     mkdirSync(join(r.plan.path, 'many'))

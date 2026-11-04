@@ -1132,10 +1132,13 @@ describe('session cards for launches (#454, #412)', () => {
     await settle()
     const option = (item: string, label: string) => [...panel().querySelectorAll<HTMLButtonElement>('.sp-appr')]
       .find((el) => el.dataset.focusApproval === item)?.querySelector<HTMLButtonElement>(`.sp-option:nth-of-type(${label === 'Allow once' ? 1 : 2})`) ?? null
+    const hasFocus = vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    option(first.itemId, 'Allow once')!.focus()
     click(option(first.itemId, 'Allow once'))
     await settle()
-    // in flight: the other approval's options are held
-    expect(option(second.itemId, 'Allow once')?.disabled).toBe(true)
+    // in flight: the other approval's options are held, and focus stays in the panel
+    expect(option(second.itemId, 'Allow once')?.getAttribute('aria-disabled')).toBe('true')
+    expect(panel().contains(document.activeElement)).toBe(true)
     click(option(second.itemId, 'Allow once'))
     // the driver settles the first; the page repaints with the second one in its place
     settleLaunchAsk(db, first.itemId, 'Allowed once')
@@ -1143,15 +1146,50 @@ describe('session cards for launches (#454, #412)', () => {
     await settle()
     await settle()
     expect(option(first.itemId, 'Allow once')).toBeNull()
+    // the answered block is gone: focus falls to the Approval heading, never out of the panel
+    expect(document.activeElement).toBe(panel().querySelector('.sp-approval h3'))
     // a click landing on where the first one's option was, just after the repaint, answers nothing
-    expect(option(second.itemId, 'Allow once')?.disabled).toBe(true)
+    expect(option(second.itemId, 'Allow once')?.getAttribute('aria-disabled')).toBe('true')
     click(option(second.itemId, 'Allow once'))
     await settle()
     expect(api.approve).toHaveBeenCalledTimes(1)
     expect(api.approve).toHaveBeenCalledWith({ item: first.itemId, revision: first.revision, optionId: 'allow_once' })
     // after the calm, it answers as any option does
     await vi.advanceTimersByTimeAsync(800)
-    expect(option(second.itemId, 'Allow once')?.disabled).toBe(false)
+    expect(option(second.itemId, 'Allow once')?.hasAttribute('aria-disabled')).toBe(false)
+    // Esc still closes the panel from where focus landed
+    document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
+    expect(panel().hidden).toBe(true)
+    hasFocus.mockRestore()
+  })
+
+  it('keeps focus in the panel when an answer fails and the approval stays (#459 review)', async () => {
+    const api = launchBridge()
+    db = freshDb()
+    newLaunch(db)
+    drivenSession(db)
+    recordLaunchProgress(db, LAUNCH, { sessions: ['mcp-1'] })
+    const ask = fileLaunchAsk(db, LAUNCH, {
+      project: '@sessions', stream: 'alpha · main', agent: 'copilot', kind: 'question', session: 'mcp-1', title: 'Allow shell: npm test',
+      action_owner: 'approval', options: [{ label: 'Allow once' }, { label: 'Deny' }],
+    }, [{ optionId: 'allow_once', label: 'Allow once' }, { optionId: 'reject_once', label: 'Deny' }])
+    api.approve.mockResolvedValueOnce({ ok: false, error: 'Not sent.' } as never)
+    await bootApp(db)
+    await changedPollTick(db)
+    await settle()
+    click(cardAction(`launch:${LAUNCH}`, 'review'))
+    await settle()
+    const hasFocus = vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    const allow = panel().querySelector<HTMLButtonElement>(`[data-focus-approval="${ask.itemId}"] .sp-option`)!
+    allow.focus()
+    click(allow)
+    await settle()
+    await settle()
+    expect(panel().querySelector(`[data-focus-approval="${ask.itemId}"] .write-error`)?.textContent).toBe('Not sent.')
+    expect(panel().contains(document.activeElement)).toBe(true)
+    document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
+    expect(panel().hidden).toBe(true)
+    hasFocus.mockRestore()
   })
 
   it('opens a launch outside the project lens scoped to its project, as Jump to session does', async () => {

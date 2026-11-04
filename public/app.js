@@ -2471,7 +2471,7 @@ function dashFocusEl() {
     </section>`
   aside.addEventListener('click', (event) => {
     const control = event.target.closest?.('[data-focus-target], .dash-focus-close')
-    if (!control || control.disabled) return
+    if (!control || control.disabled || control.getAttribute('aria-disabled') === 'true') return
     if (control.matches('.dash-focus-close')) closeSessionFocus()
     else focusTargets.get(control.dataset.focusTarget)?.()
   })
@@ -2495,8 +2495,15 @@ function setFocusPart(aside, el, html) {
   el.innerHTML = html
   bindContextDisclosures(el)
   if (!focusKey || !document.hasFocus()) return
-  const next = el.querySelector(`[data-dashboard-focus-key="${CSS.escape(focusKey)}"]`) ?? aside.querySelector('#dashFocusTitle')
-  next.focus({ preventScroll: true })
+  const next = el.querySelector(`[data-dashboard-focus-key="${CSS.escape(focusKey)}"]`)
+  if (next && !next.disabled) next.focus({ preventScroll: true })
+  if (next && document.activeElement === next) return
+  // the control is gone or cannot take focus: the part's heading, else the panel's
+  // title, so focus never falls out of the panel (and Esc still closes it)
+  const heading = el.closest('section')?.querySelector('h3')
+  if (heading && !heading.hasAttribute('tabindex')) heading.setAttribute('tabindex', '-1')
+  ;(heading ?? aside.querySelector('#dashFocusTitle'))?.focus({ preventScroll: true })
+  if (!aside.contains(document.activeElement)) aside.querySelector('#dashFocusTitle')?.focus({ preventScroll: true })
 }
 
 function focusButton(target, label, open, { className = '', attrs = '' } = {}) {
@@ -2533,7 +2540,9 @@ function approvalHtml(entry, granted, onRail) {
   const it = entry.item
   const id = it.id
   const options = (Array.isArray(it.options) ? it.options : []).map((o) => String(o?.label ?? '')).filter(Boolean)
-  const held = approvalHeld() ? ' disabled' : ''
+  // aria-disabled, not disabled: the held option keeps focus (#459 review), and
+  // answerInPanel ignores it while approvalHeld()
+  const held = approvalHeld() ? ' aria-disabled="true"' : ''
   const buttons = granted
     ? options.map((label, index) => focusButton(`approve:${id}:${index}`, label, () => answerInPanel(id, label),
       { className: index === 0 ? 'sp-option rec' : 'sp-option', attrs: held })).join('')

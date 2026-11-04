@@ -2119,6 +2119,7 @@ body.settings-open #liveBar { opacity: .32; }
 .sp-appr-options { display: flex; flex-wrap: wrap; gap: 6px; }
 .sp-option { padding: 3px 10px; border-radius: 999px; font-weight: 600; }
 .sp-option.rec { border-color: var(--app-accent); background: var(--app-accent-soft); color: var(--app-accent); }
+.sp-option[aria-disabled="true"] { cursor: default; opacity: .55; }
 .sp-appr-warn { color: var(--app-muted); font-size: 11.5px; }
 .sp-worktree-box { display: grid; grid-template-columns: 82px minmax(0, 1fr); gap: 3px 10px; margin: 0; font-size: 12px; }
 .sp-worktree-box dt { color: var(--app-text-soft); }

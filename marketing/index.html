@@ -670,7 +670,7 @@
 
   <main id="main" class="wrap page-frame">
     <div class="release-line">
-      <a href="https://github.com/shariqh/agent-inbox/releases"><span class="version">v2.3.0</span><span>Available for macOS and Linux</span><svg aria-hidden="true"><use href="#arrow"/></svg></a>
+      <a href="https://github.com/shariqh/agent-inbox/releases"><span class="version">v2.4.0</span><span>Available for macOS and Linux</span><svg aria-hidden="true"><use href="#arrow"/></svg></a>
     </div>
     <section class="hero" aria-labelledby="hero-title">
       <div class="hero-heading">
@@ -876,11 +876,12 @@
           </article>
           <article class="feature-aside">
             <h3>Start sessions from Agent Inbox.</h3>
-            <p>In the macOS app, choose New session to start a Copilot CLI session in one of your projects. Agent Inbox shows what will start before it does. Each tool call that needs approval arrives in the inbox as Allow once or Deny, and you can message, park, or stop the session from Live. Edits in the worktree lets a session write inside its folder without asking; everything else still asks. On a source checkout, a terminal driver does the same with approvals answered in that terminal. The launcher is off until you turn it on in Settings.</p>
+            <p>In the macOS app, choose New session to start a Copilot CLI session in one of your projects. Each session can run in its own git worktree and branch, so several run in parallel without touching your checkout. Agent Inbox shows what will start before it does. Each tool call that needs approval arrives in the inbox as Allow once or Deny, and you can message, park, or stop the session from Live. Each session row shows its branch, commits ahead, and changed files, and you can open the worktree in Terminal. Take over in Terminal hands a running session, with its history, to a terminal Copilot. Edits in the worktree lets a session write inside its folder without asking; everything else still asks. The launcher is off until you turn it on in Settings.</p>
             <div class="dispatch-example" aria-label="Illustrative session launch steps">
-              <div class="dispatch-line"><span class="dispatch-dot"></span><span>Start</span><small>Confirm the folder and mode</small></div>
+              <div class="dispatch-line"><span class="dispatch-dot"></span><span>Start</span><small>Its own worktree and branch</small></div>
               <div class="dispatch-line"><span class="dispatch-dot later"></span><span>Allow once or Deny</span><small>From the inbox card</small></div>
               <div class="dispatch-line"><span class="dispatch-dot idle"></span><span>Park or Stop</span><small>From Live sessions</small></div>
+              <div class="dispatch-line"><span class="dispatch-dot"></span><span>Take over in Terminal</span><small>With its history</small></div>
             </div>
           </article>
         </div>

@@ -202,7 +202,7 @@ describe('local marketing page', () => {
   it('has a complete, self-contained light-first page with no live inbox connection', () => {
     const { html } = boot({ dark: true })
     expect(document.title).toContain('Agent Inbox')
-    expect(document.querySelector('.release-line .version')?.textContent).toBe('v2.3.0')
+    expect(document.querySelector('.release-line .version')?.textContent).toBe('v2.4.0')
     expect(document.documentElement.dataset.theme).toBe('light')
     expect(document.querySelectorAll('h1')).toHaveLength(1)
     expect(document.querySelector('h1')?.textContent).toContain('every terminal.')
@@ -628,7 +628,8 @@ describe('local marketing page', () => {
     const launcher = aside('Start sessions from Agent Inbox.')
     expect(launcher).toContain('In the macOS app, choose New session')
     expect(launcher).toContain('Allow once or Deny')
-    expect(launcher).toContain('terminal driver')
+    expect(launcher).toContain('its own git worktree and branch')
+    expect(launcher).toContain('Take over in Terminal')
     expect(launcher).toContain('The launcher is off until you turn it on in Settings.')
 
     const desktop = document.querySelector('.desktop-install')?.textContent ?? ''

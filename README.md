@@ -333,6 +333,7 @@ ask with that in mind. Design:
 The Agent Inbox app can start a Copilot CLI session in one of your projects and run
 it for you, so its approvals come to the inbox and your messages arrive as new turns.
 It is off until you turn it on, and it works only in the macOS app, not in a browser.
+Where agents run from a checkout, the app runs sessions from its own verified runtime.
 
 **Try it:**
 
@@ -344,7 +345,12 @@ It is off until you turn it on, and it works only in the macOS app, not in a bro
    mode, optionally a model and reasoning effort, the budgets, and the task. Don't
    paste secrets into the task: it is stored with the session.
 3. Agent Inbox shows its own confirmation of exactly what will start. **Start** runs
-   Copilot in that folder, with your login shell's environment.
+   Copilot with your login shell's environment, by default in a new git worktree on
+   its own branch (made from your checkout's last commit; uncommitted changes stay
+   behind), so several sessions run in parallel without touching your checkout.
+   **New session** shows start-up progress; **Stop starting** cancels, and **Didn't
+   start** gives the reason. If a model refuses your reasoning effort, it retries
+   with a supported one.
 4. Each tool call that needs your approval arrives in the inbox under **@sessions**:
    choose **Allow once** or **Deny** there. Only the app's own window can answer
    them; a browser tab says so.
@@ -358,6 +364,13 @@ It is off until you turn it on, and it works only in the macOS app, not in a bro
    after your confirmation, Agent Inbox stops driving it (cancelling its current turn
    and approvals) and runs `copilot --resume` there with its history. From then on you
    answer it in Terminal; **Resume in Terminal** opens it again.
+8. Each session row summarizes its worktree: branch, commits ahead, files changed and
+   uncommitted changes. **Open in Terminal** opens the folder. **Remove worktree…**
+   asks first, keeps the branch, and refuses when it would discard work.
+
+Worktrees live under `~/.agent-inbox/worktrees` unless you choose another folder in
+**Settings → Agent sessions**, where **At most N sessions at once** (1–8, default 4)
+caps how many run together.
 
 | Mode | What runs without asking |
 |---|---|

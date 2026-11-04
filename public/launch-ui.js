@@ -59,6 +59,10 @@ export function createLaunchUi(deps) {
   const slots = new Map()
   let dialog = null
   let transcript = null
+  // #432 PR 5 review: the one start in flight, owned by the dialog that started it; the launch id
+  // once main reports it (with the 'copilot' phase, when the row exists), and whether the human asked to stop
+  let starting = null
+  let progressToken = null
 
   const bump = () => {
     version += 1
@@ -124,7 +128,9 @@ export function createLaunchUi(deps) {
       drawer.querySelector('.live-list')?.before(section) ?? drawer.append(section)
     }
     const newButton = section.querySelector('.launch-new')
-    if (newButton.disabled !== !granted()) newButton.disabled = !granted()
+    // one start at a time: New session waits for the one in flight
+    const noNew = !granted() || starting !== null
+    if (newButton.disabled !== noNew) newButton.disabled = noNew
     const note = section.querySelector('.live-launches-note')
     const noteText = granted() ? '' : 'Starting and approving sessions works only in Agent Inbox’s own window.'
     if (note.textContent !== noteText) note.textContent = noteText
@@ -410,7 +416,7 @@ export function createLaunchUi(deps) {
 
   // ── New session dialog ───────────────────────────────────────────────────
   async function openNewSession() {
-    if (!granted() || dialog?.open) return
+    if (!granted() || dialog?.open || starting) return
     dialog?.remove()
     dialog = make('dialog', 'launch-dialog')
     dialog.setAttribute('aria-labelledby', 'launchDialogTitle')
@@ -517,7 +523,18 @@ export function createLaunchUi(deps) {
     start.type = 'submit'
     const cancel = make('button', '', 'Cancel')
     cancel.type = 'button'
-    cancel.addEventListener('click', () => closeDialog())
+    // while its start is in flight, Cancel is "Stop starting": the dialog stays until main answers
+    cancel.addEventListener('click', () => {
+      if (starting?.own === own) stopStarting()
+      else closeDialog()
+    })
+    const stopStarting = () => {
+      if (!starting || starting.stopAsked) return
+      starting.stopAsked = true
+      cancel.disabled = true
+      message.textContent = 'Stopping the start…'
+      if (starting.launch) bridge().stop(starting.launch).catch(() => null)
+    }
     actions.append(cancel, start)
     form.append(
       heading,
@@ -536,6 +553,8 @@ export function createLaunchUi(deps) {
     )
     dialog.append(form)
     const own = dialog
+    // Escape does nothing while its start is in flight
+    own.addEventListener('cancel', (event) => { if (starting?.own === own) event.preventDefault() })
     own.addEventListener('close', () => {
       own.remove()
       if (dialog === own) dialog = null
@@ -572,15 +591,40 @@ export function createLaunchUi(deps) {
           return
         }
       }
+      if (starting) return
       start.disabled = true
       message.textContent = 'Agent Inbox is asking you to confirm…'
+      const mine = { own, launch: null, stopAsked: false }
+      starting = mine
+      cancel.textContent = 'Stop starting'
+      bump()
       // #432 PR 5: the dialog stays open, saying what the start is doing, until Copilot is set up or refused
       const api = bridge()
-      const listening = typeof api?.onStartProgress === 'function'
-      if (listening) api.onStartProgress((phase) => { if (dialog === own && START_PHASES[phase]) message.textContent = START_PHASES[phase] })
+      const token = {}
+      if (typeof api?.onStartProgress === 'function') {
+        progressToken = token
+        api.onStartProgress((phase, launch) => {
+          if (starting !== mine) return
+          if (phase === 'copilot' && typeof launch === 'string') {
+            mine.launch = launch
+            // a Stop asked for before the launch had a row goes now
+            if (mine.stopAsked) api.stop(launch).catch(() => null)
+          }
+          if (dialog === own && !mine.stopAsked && START_PHASES[phase]) message.textContent = START_PHASES[phase]
+        })
+      }
       const result = await deps.pending(() => api.start(made.request)).catch(() => null)
-      if (listening) api.onStartProgress(null)
+      // only this start's listener, and only this start's dialog
+      if (progressToken === token) {
+        api.onStartProgress(null)
+        progressToken = null
+      }
+      starting = null
+      cancel.textContent = 'Cancel'
+      cancel.disabled = false
       start.disabled = false
+      bump()
+      if (dialog !== own) return
       if (result?.ok) {
         drafts.delete('new')
         closeDialog()

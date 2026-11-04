@@ -40,6 +40,7 @@ const fd3 = require('child_process').execFileSync('/bin/sh', ['-c', 'if [ -e /de
 fs.appendFileSync(process.env.FAKE_LOG, JSON.stringify({ argv: process.argv.slice(2), env: { hooks: process.env.AGENT_INBOX_HOOKS, db: process.env.AGENT_INBOX_DB }, fd3, cwd: process.cwd() }) + '\\n')
 let buffer = ''
 let prompt = null
+let slow = false
 const send = (m) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...m }) + '\\n')
 const update = (u) => send({ method: 'session/update', params: { sessionId: 's-1', update: u } })
 process.stdin.setEncoding('utf8')
@@ -54,6 +55,8 @@ process.stdin.on('data', (chunk) => {
     // Copilot 1.0.106 with a settings effortLevel and a model that takes none (#432 PR 5)
     else if (m.method === 'session/new' && process.env.FAKE_EFFORT_REFUSE && (process.env.FAKE_EFFORT_REFUSE === 'always' || !process.argv.slice(2).join(' ').includes('--reasoning-effort none'))) {
       send({ id: m.id, error: { code: -32603, message: "Model 'claude-haiku-4.5' does not support reasoning effort configuration" } })
+      // slow to go: ignores its closed stdin and SIGTERM, so the driver's restart window stays open until SIGKILL
+      if (process.env.FAKE_EFFORT_SLOW_EXIT) { slow = true; process.on('SIGTERM', () => {}); setInterval(() => {}, 1000) }
     }
     else if (m.method === 'session/new' || m.method === 'session/load') {
       send({ id: m.id, result: { ...(m.method === 'session/new' ? { sessionId: 's-1' } : {}), modes: { currentModeId: agent }, configOptions: config(agent) } })
@@ -81,7 +84,7 @@ process.stdin.on('data', (chunk) => {
     }
   }
 })
-process.stdin.on('end', () => process.exit(0))
+process.stdin.on('end', () => { if (!slow) process.exit(0) })
 `
 
 interface Rig {
@@ -522,7 +525,9 @@ describe('agent-inbox-driver run (#412 step 3)', () => {
       expect(getLaunch(r.hub, LAUNCH)).toMatchObject({ reasoning_effort: 'high', end_reason: 'error:setup' })
     }, 40_000)
 
-    it('never falls back after a prompt: a resumed session’s refused load parks it again', async () => {
+    // session/new is sent only before any prompt, so the effort match on it is the whole guard: a resumed
+    // (prompted) session's load is never retried without an effort, however Copilot refuses it
+    it('never retries a refused session/load: a resumed session parks again', async () => {
       const r = rig()
       const first = runDriver(r, newSpec(r, { reasoningEffort: undefined }), { AGENT_INBOX_DRIVER_IDLE_MS: '400' })
       expect(await first.status()).toEqual({ ok: true, launch: LAUNCH })
@@ -535,6 +540,23 @@ describe('agent-inbox-driver run (#412 step 3)', () => {
       expect(await resumed.exited).toBe(1)
       expect(starts(r)).toHaveLength(2)
       expect(getLaunch(r.hub, LAUNCH)).toMatchObject({ status: 'parked', reasoning_effort: null })
+    }, 40_000)
+
+    it.each([
+      ['a SIGTERM', (run: ReturnType<typeof runDriver>) => { run.child.kill('SIGTERM') }],
+      ['the row’s Stop', (_run: ReturnType<typeof runDriver>, r: Rig) => { expect(requestLaunchStop(r.hub, LAUNCH)).toBe('stopping') }],
+    ] as Array<[string, (run: ReturnType<typeof runDriver>, r: Rig) => void]>)('%s while it restarts Copilot starts no second one, and ends the launch as stopped', async (_, stop) => {
+      const r = rig()
+      const run = runDriver(r, newSpec(r, { reasoningEffort: undefined, env: { ...r.env, FAKE_EFFORT_REFUSE: '1', FAKE_EFFORT_SLOW_EXIT: '1' } }))
+      // the first Copilot refused and the driver ended for the retry; that Copilot is still going (SIGKILL in about 2 s)
+      await until(() => existsSync(join(r.dir, 'hub', 'launches', LAUNCH, 'events.ndjson')) && events(r).some((e) => e.event === 'ended' && e.retry === 'effort'), 'the retry')
+      stop(run, r)
+      expect(await run.status()).toEqual({ ok: false, error: 'It was stopped before the session started.' })
+      expect(await run.exited).toBe(0)
+      expect(starts(r)).toHaveLength(1)
+      expect(events(r).some((e) => e.event === 'effort_fallback')).toBe(false)
+      expect(getLaunch(r.hub, LAUNCH)).toMatchObject({ status: 'ended', end_reason: 'stopped', end_detail: 'It was stopped before the session started.', reasoning_effort: null })
+      expect(launchDriverAlive(r.hub, LAUNCH)).toBe(false)
     }, 40_000)
 
     it('a launch that never got ready says why on its row, and the status line says it to main', async () => {

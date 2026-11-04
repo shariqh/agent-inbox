@@ -254,7 +254,8 @@ contextBridge.exposeInMainWorld('agentInboxLaunch', {
     startProgress = null
     const listener = args[0]
     if (listener) {
-      startProgress = (_event, phase) => { if (START_PHASES.has(phase)) listener(phase) }
+      // the phase, and the launch id main made for this start (its row exists from 'copilot' on)
+      startProgress = (_event, phase, launch) => { if (START_PHASES.has(phase)) listener(phase, isLaunchId(launch) ? launch : undefined) }
       ipcRenderer.on('agent-inbox:launch-progress', startProgress)
     }
     return true

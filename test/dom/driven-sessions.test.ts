@@ -34,7 +34,7 @@ const PARKED = '11111111-2222-4333-8444-666666666666'
 const LEASE = { launchId: LAUNCH, pid: 4242, nonce: 'n' }
 
 // the page's start-progress listener, as main would call it (#432 PR 5)
-let progress: ((phase: string) => void) | null = null
+let progress: ((phase: string, launch?: string) => void) | null = null
 
 type State = { owned: boolean; enabled: boolean; available: boolean; canEnable: boolean; worktreeRoot?: { path: string; isDefault: boolean }; maxSessions?: number }
 function launchBridge(state: Partial<State> = {}) {
@@ -52,7 +52,7 @@ function launchBridge(state: Partial<State> = {}) {
       return { ok: true, worktreeRoot: current.worktreeRoot }
     }),
     resetWorktreeRoot: vi.fn(async () => ({ ok: true })),
-    onStartProgress: vi.fn((listener: ((phase: string) => void) | null) => { progress = listener; return true }),
+    onStartProgress: vi.fn((listener: ((phase: string, launch?: string) => void) | null) => { progress = listener; return true }),
     setMaxSessions: vi.fn(async (n: number) => { current.maxSessions = n; return { ok: true, maxSessions: n } }),
     removeWorktree: vi.fn(async (_id: string) => ({ ok: true }) as Record<string, unknown>),
     openWorktree: vi.fn(async (_id: string) => ({ ok: true }) as Record<string, unknown>),
@@ -515,6 +515,97 @@ describe('New session (§8)', () => {
     dialog.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
     await settle()
     expect(document.querySelector('.launch-dialog')).toBeNull()
+  })
+
+  // review of #449: a start in flight belongs to its dialog until main answers
+  async function startPending(api: ReturnType<typeof launchBridge>) {
+    let finish!: (result: { ok: boolean; launch?: string; error?: string }) => void
+    api.start.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve as never }))
+    db = freshDb()
+    insertItem(db, { project: 'alpha', stream: 'main', agent: 'copilot', kind: 'note', title: 'seen', repo_root: '/work/alpha' })
+    await bootApp(db)
+    await changedPollTick(db)
+    openDrawer()
+    click(section()!.querySelector('.launch-new'))
+    await settle()
+    const dialog = document.querySelector<HTMLDialogElement>('.launch-dialog')!
+    type(dialog.querySelector<HTMLTextAreaElement>('textarea[name="prompt"]'), 'Fix it.')
+    dialog.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await settle()
+    return { dialog, finish: async (result: { ok: boolean; launch?: string; error?: string }) => { finish(result); await settle() } }
+  }
+
+  it('Cancel during a start is Stop starting: it stops the launch once main names it, and Escape does nothing', async () => {
+    const api = launchBridge()
+    const { dialog, finish } = await startPending(api)
+    const cancel = buttonLabelled('Stop starting', dialog)!
+    const escape = new Event('cancel', { cancelable: true })
+    dialog.dispatchEvent(escape)
+    expect(escape.defaultPrevented).toBe(true)
+    progress!('environment', LAUNCH)
+    click(cancel)
+    expect(dialog.querySelector('.launch-dialog-message')!.textContent).toBe('Stopping the start…')
+    expect(cancel.disabled).toBe(true)
+    // no row yet: the Stop goes once the launch is named with its row, at 'copilot'
+    expect(api.stop).not.toHaveBeenCalled()
+    progress!('runtime', LAUNCH)
+    progress!('copilot', LAUNCH)
+    expect(api.stop).toHaveBeenCalledWith(LAUNCH)
+    expect(dialog.querySelector('.launch-dialog-message')!.textContent).toBe('Stopping the start…')
+    expect(document.querySelector('.launch-dialog')).toBe(dialog)
+    await finish({ ok: false, error: 'It was stopped before the session started.' })
+    expect(dialog.querySelector('.launch-dialog-message')!.textContent).toBe('It was stopped before the session started.')
+    expect(buttonLabelled('Cancel', dialog)!.disabled).toBe(false)
+    // and once the launch is named, Stop starting stops it at once
+    let again!: (result: { ok: boolean; error?: string }) => void
+    api.start.mockImplementationOnce(() => new Promise((resolve) => { again = resolve as never }))
+    dialog.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await settle()
+    progress!('copilot', PARKED)
+    click(buttonLabelled('Stop starting', dialog))
+    expect(api.stop).toHaveBeenLastCalledWith(PARKED)
+    again({ ok: false, error: 'It was stopped before the session started.' })
+    await settle()
+  })
+
+  it('a second New session cannot open while a start is in flight', async () => {
+    const api = launchBridge()
+    const { dialog, finish } = await startPending(api)
+    const button = section()!.querySelector<HTMLButtonElement>('.launch-new')!
+    expect(button.disabled).toBe(true)
+    click(button)
+    await settle()
+    expect(document.querySelectorAll('.launch-dialog')).toHaveLength(1)
+    await finish({ ok: true, launch: LAUNCH })
+    expect(document.querySelector('.launch-dialog')).toBeNull()
+    expect(dialog.isConnected).toBe(false)
+    expect(button.disabled).toBe(false)
+  })
+
+  it('a start that finishes after its dialog was closed touches no other dialog, draft or listener', async () => {
+    const api = launchBridge()
+    const { dialog, finish } = await startPending(api)
+    // the switch goes off mid-start: the dialog closes; the start goes on in main
+    const toggle = document.querySelector<HTMLInputElement>('#launch-switch')!
+    toggle.checked = false
+    toggle.dispatchEvent(new Event('change', { bubbles: true }))
+    await settle()
+    expect(dialog.isConnected).toBe(false)
+    // a listener someone else registered meanwhile stays
+    const other = vi.fn()
+    progress = other
+    const before = api.onStartProgress.mock.calls.length
+    await finish({ ok: true, launch: LAUNCH })
+    expect(api.onStartProgress.mock.calls.length - before).toBe(1)
+    expect(api.onStartProgress).toHaveBeenLastCalledWith(null)
+    // the typed task was not the started dialog's to drop: the next New session has it
+    toggle.checked = true
+    toggle.dispatchEvent(new Event('change', { bubbles: true }))
+    await settle()
+    await changedPollTick(db!)
+    click(section()!.querySelector('.launch-new'))
+    await settle()
+    expect(document.querySelector<HTMLTextAreaElement>('.launch-dialog textarea[name="prompt"]')!.value).toBe('Fix it.')
   })
 
   it('offers New worktree, ticked; unticked, the request runs in the folder as before (#432)', async () => {

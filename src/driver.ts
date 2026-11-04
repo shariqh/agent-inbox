@@ -541,8 +541,9 @@ export class Driver {
     }
     if (frame.error) {
       const hint = setupRefusalHint(frame.error.message, this.o.context)
-      // only a fresh session, never after a prompt, and only once (the CLI passes this on the first start)
-      if (hint && this.o.effortFallback && frame.method === 'session/new' && !this.taskSent) {
+      // only session/new, which is sent only before any prompt (at setup, or after a load of a session
+      // that was never prompted), and only once: the CLI passes effortFallback on the first start alone
+      if (hint && this.o.effortFallback && frame.method === 'session/new') {
         this.retryEffort = true
         this.o.log({ event: 'effort_refused', message: terminalSafe(frame.error.message).slice(0, 300) })
         return this.end('error:setup')

@@ -251,7 +251,8 @@ function createLaunchController(deps) {
     progress = () => {}, log = () => {},
   } = deps
   const now = () => Date.now()
-  const report = (phase) => { try { progress(phase) } catch { /* a report, not the start */ } }
+  // the launch id goes with each phase: from 'copilot' on its row exists, so the page can Stop it
+  const report = (phase, launchId) => { try { progress(phase, launchId) } catch { /* a report, not the start */ } }
   // #432 §1: session worktrees go under <hub dir>/worktrees unless Settings names another folder
   const defaultWorktreeRoot = path.join(path.dirname(hubPath), 'worktrees')
   // #432: the real folders main's own dialog chose (chooseFolder), newest last. A start may
@@ -290,7 +291,7 @@ function createLaunchController(deps) {
     // a quit or a switch turned off while the dialog was open starts nothing
     const late = blocked()
     if (late) return late
-    report('runtime')
+    report('runtime', launchId)
     let at = now()
     // the human's cap, read for this start: the driver counts every running driver against it (#432 §5)
     const maxDrivers = await maxSessions()
@@ -315,7 +316,7 @@ function createLaunchController(deps) {
       ...(spec.worktree ? { timeoutMs: WORKTREE_STATUS_MS } : {}),
       onPhase: (phase) => {
         step(phase)
-        report(phase)
+        report(phase, launchId)
       },
     })
     step('')
@@ -411,7 +412,7 @@ function createLaunchController(deps) {
         const late = blocked()
         if (late) return late
         // the checkout's env: the worktree does not exist yet, and holds the same committed files
-        report('environment')
+        report('environment', launchId)
         const envAt = now()
         const ready = await environment(real)
         if (!ready.env) return ready

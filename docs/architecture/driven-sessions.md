@@ -648,13 +648,17 @@ effort to Copilot's setting.
   for a worktree launch.
 - **The effort fallback.** When the spec (or a resumed row) has no `reasoningEffort` and Copilot
   refuses `session/new` with the reasoning-effort error before any prompt, the driver (`effortFallback`,
-  first start only) ends with `retry: 'effort'` **keeping its `driver:` lease**, and `run` stops that
+  first start only) ends with `retry: 'effort'` **keeping its `driver:` lease** (and reading as not finished to the stop
+  handlers until `run` decides, so a SIGTERM then is recorded, not dropped), and `run` stops that
   Copilot (SIGTERM after 250 ms: it never had a session) and starts one more with `--reasoning-effort
   none`, on the same launch row, slot, pins, worktree and logs; the new Driver's scan follows the new
   child, so linking and the native host do too. It logs `effort_fallback` and the notice "This model
   takes no reasoning effort, so Agent Inbox started it with none.", and records `reasoning_effort =
   'none'` on the row (`recordLaunchEffort`, only while it is null), so a resume starts with none. A
-  Stop that arrived meanwhile ends it instead. An explicit effort never retries, a second refusal
+  Stop (a signal, or the row's) that arrived before the first Copilot is gone ends it instead, as
+  stopped, and starts nothing more. `session/new` is sent only before any prompt (at setup, or after a
+  load of a session that was never prompted), so matching the refusal on it is the whole
+  never-after-a-prompt guard. An explicit effort never retries, a second refusal
   ends it, and a refused `session/load` (a prompted session) parks it as before. The hint names the
   context: `setupRefusalHint(message, 'app')` says "choose Reasoning effort: none in New session"; the
   terminal driver keeps its flags.
@@ -666,9 +670,13 @@ effort to Copilot's setting.
 - **The dialog's progress.** After Start, New session stays open and shows main's phases: "Reading
   your shell environment…", "Checking the runtime…", then the driver's "Creating the worktree…" and
   "Starting Copilot…"; it closes once the status line says started, or shows the refusal. Main sends
-  `agent-inbox:launch-progress` with the phase name only, to the window holding the `launch` grant;
-  the preload's `onStartProgress(listener | null)` keeps one listener and passes only the four known
-  phases. No new privilege.
+  `agent-inbox:launch-progress` with the phase name and the launch id it made, to the window holding
+  the `launch` grant; the preload's `onStartProgress(listener | null)` keeps one listener and passes
+  only the four known phases and a well-formed id. No new privilege. A start in flight belongs to its
+  dialog: New session… is disabled, Escape does nothing, and Cancel becomes **Stop starting**, which
+  asks main to Stop the launch through the ordinary Stop once its row exists (the `copilot` phase names
+  it; a Stop asked earlier goes then); the driver, set up or not, ends it "stopped before the session
+  started". Clean-up after the start (the draft, the dialog, the listener) touches only its own.
 - **Timings.** The driver logs `startup` (`ms` per step: spec, slot, worktree, checks, spawn to ready);
   main logs `launch <id> started: environment …, runtime …, driver …, worktree …, copilot …`. Measured
   2026-11-03 on Copilot 1.0.106 with that settings effort, a worktree launch: worktree 151 ms, checks

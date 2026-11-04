@@ -714,6 +714,9 @@ async function runLaunch(argv: string[]): Promise<void> {
   const sleep = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
   let stopping = false
   let failureOverride: string | null = null
+  // until run decides whether to start Copilot again, a driver that ended for the effort retry is
+  // not finished: a SIGTERM then is recorded and stops the launch instead of being dropped
+  let restartDecided = false
   installStopHandlers({
     signals: process,
     input: { on: () => undefined },
@@ -721,7 +724,7 @@ async function runLaunch(argv: string[]): Promise<void> {
     driver: {
       stop: () => { stopping = true; driver.stop() },
       forceStop: () => { stopping = true; driver.forceStop() },
-      isFinished: () => driver.isFinished(),
+      isFinished: () => driver.isFinished() && (restartDecided || !driver.retryWithoutEffort()),
     },
     exit: (code) => {
       closeRow('stopped')
@@ -744,10 +747,12 @@ async function runLaunch(argv: string[]): Promise<void> {
   }
   let reason: EndReason = await driver.start()
   if (reason === 'error:setup' && driver.retryWithoutEffort()) {
-    let stopAsked = stopping
-    try { stopAsked ||= driverStopRequested(db, launchId) } catch { stopAsked = true }
     // it never had a session, so nothing is lost by not waiting for it to close on its own
     await retire(session, 250)
+    // a Stop (a signal, or the row's) that came before or while it went starts nothing more
+    let stopAsked = stopping
+    try { stopAsked ||= driverStopRequested(db, launchId) } catch { stopAsked = true }
+    restartDecided = true
     if (stopAsked) {
       failureOverride = 'It was stopped before the session started.'
       reason = 'stopped'

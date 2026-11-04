@@ -223,6 +223,15 @@ export function undoWorktree(git: string, env: NodeJS.ProcessEnv, worktree: Pick
   return gone
 }
 
+/**
+ * Locks a stopped launch's worktree again when it is resumed (step 5, full resume), with the reason
+ * its add gave; one still locked stays so. Returns git's refusal, or null.
+ */
+export function lockWorktree(git: string, env: NodeJS.ProcessEnv, checkout: string, path: string, launchId: string): string | null {
+  const result = runGit(git, env, checkout, ['worktree', 'lock', '--reason', `agent-inbox launch ${launchId.slice(0, 8)}`, path], UNLOCK_TIMEOUT_MS)
+  return result.ok || /already locked/i.test(result.message) ? null : result.message
+}
+
 /** Unlocks the launch's worktree when it ends (§5); a parked launch keeps its lock. Returns git's refusal, or null. */
 export function unlockWorktree(git: string, env: NodeJS.ProcessEnv, checkout: string, path: string): string | null {
   const result = runGit(git, env, checkout, ['worktree', 'unlock', path], UNLOCK_TIMEOUT_MS)

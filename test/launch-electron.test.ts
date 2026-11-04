@@ -590,10 +590,21 @@ describe('the launch controller', () => {
     expect(fresh.canEnable({ withKeys: true })).toMatchObject({ ok: false })
   })
 
-  it('resumes only a parked launch, with no second confirmation, in its own folder', async () => {
+  it('resumes only a parked launch, or one stopped with its session (step 5), with no second confirmation, in its own folder', async () => {
     const r = rig()
-    r.state.launches[ID] = { id: ID, status: 'running', cwd: '/work/alpha' }
-    expect(await r.controller.resume(ID)).toEqual({ ok: false, error: 'This session is not parked.' })
+    const refusal = { ok: false, error: 'This session cannot be resumed: only a parked session, or one you stopped after its task was sent, can be.' }
+    for (const over of [
+      { status: 'running' }, { status: 'ended', end_reason: 'stopped', resumable: false }, { status: 'ended', end_reason: 'handed_off', resumable: true },
+      { status: 'ended', end_reason: 'budget:active_time', resumable: true },
+      { status: 'ended', end_reason: 'stopped', resumable: true, worktree_path: '/w/a', worktree_removed_at: '2026-11-03T12:00:00.000Z' },
+    ]) {
+      r.state.launches[ID] = { id: ID, cwd: '/work/alpha', ...over }
+      expect(await r.controller.resume(ID), JSON.stringify(over)).toEqual(refusal)
+    }
+    expect(r.calls.filter((c) => c === 'startDriver')).toEqual([])
+    r.state.launches[ID] = { id: ID, status: 'ended', end_reason: 'stopped', resumable: true, cwd: '/work/alpha' }
+    expect(await r.controller.resume(ID)).toEqual({ ok: true, launch: ID })
+    expect(parseLaunchSpec(JSON.stringify(r.spawned.at(-1)!.spec), ID)).toMatchObject({ ok: true, spec: { kind: 'resume' } })
     r.state.launches[ID] = { id: ID, status: 'parked', cwd: '/work/alpha' }
     expect(await r.controller.resume(ID)).toEqual({ ok: true, launch: ID })
     expect(r.calls).not.toContain('confirm')
@@ -1034,6 +1045,16 @@ describe('Take over in Terminal (step 5, §3.5)', () => {
       'exec "${SHELL:-/bin/sh}" -l',
       '',
     ].join('\n'))
+  })
+
+  it('hands a stopped launch with its session off like a parked one (step 5, full resume)', async () => {
+    const t = takeOverRig({ ...RUNNING, status: 'ended', end_reason: 'stopped', driver: null, resumable: true }, [HANDED])
+    expect(await t.controller.takeOver(ID)).toEqual({ ok: true })
+    const text = t.spawned[0]!.confirmation as { message: string; detail: string }
+    expect(text.message).toBe('Take over the session of alpha in Terminal?')
+    expect(text.detail).not.toContain('current turn')
+    const none = takeOverRig({ ...RUNNING, status: 'ended', end_reason: 'stopped', driver: null, resumable: false }, [HANDED])
+    expect(await none.controller.takeOver(ID)).toEqual({ ok: false, error: 'This session has ended.' })
   })
 
   it('hands a parked launch off at once, and opens Terminal again on one already handed off', async () => {

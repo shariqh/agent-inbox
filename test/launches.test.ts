@@ -424,7 +424,8 @@ describe('Take over in Terminal (step 5, §3.5)', () => {
     expect(handOffForTerminal(db, ID(1))).toEqual({ ok: false, reason: 'stopping' })
     expect(handOffLaunch(db, ID(1), { acpSession: 'acp-1', activeMs: 0, toolCalls: 0 })).toBe(true)
     expect(getLaunch(db, ID(1))).toMatchObject({ status: 'ended', end_reason: 'stopped' })
-    expect(handOffForTerminal(db, ID(1))).toEqual({ ok: false, reason: 'ended' })
+    // stopped with its session, it can still go to a terminal later (full resume)
+    expect(handOffForTerminal(db, ID(1))).toMatchObject({ ok: true, state: 'handed_off' })
   })
 
   it('hands a parked launch off at once, only with a session Copilot persisted', () => {
@@ -438,9 +439,12 @@ describe('Take over in Terminal (step 5, §3.5)', () => {
     expect(handOffForTerminal(db, ID(2))).toMatchObject({ ok: true, state: 'handed_off', session: 'acp-2' })
     expect(getLaunch(db, ID(2))).toMatchObject({ status: 'ended', end_reason: 'handed_off', parked_at: null, revision: before + 1 })
     expect(resumeLaunch(db, ID(2), 5)).toBeNull()
-    // any other end is not handed off
+    // a stopped one with no session cannot go to a terminal, and nor can any other end
     endLaunch(db, ID(1), { reason: 'stopped' })
-    expect(handOffForTerminal(db, ID(1))).toEqual({ ok: false, reason: 'ended' })
+    expect(handOffForTerminal(db, ID(1))).toEqual({ ok: false, reason: 'no_session' })
+    createLaunch(db, launch(3))
+    endLaunch(db, ID(3), { reason: 'budget:tool_calls', acpSession: 'acp-3' })
+    expect(handOffForTerminal(db, ID(3))).toEqual({ ok: false, reason: 'ended' })
   })
 
   it('an untaken request goes with its driver, by withdrawal, or at a later resume', async () => {
@@ -460,6 +464,53 @@ describe('Take over in Terminal (step 5, §3.5)', () => {
     parkLaunch(db, ID(1), { acpSession: 'acp-1', activeMs: 0, toolCalls: 0 })
     expect(resumeLaunch(db, ID(1), 5)).not.toBeNull()
     expect(takeLaunchHandOff(db, ID(1))).toBe(false)
+  })
+})
+
+describe('full resume (step 5)', () => {
+  it('a stopped launch keeps its session and resumes once; nothing else that ended does', () => {
+    const stopped = (n: number, acpSession: string | null, over: Partial<NewLaunch> = {}) => {
+      createLaunch(db, launch(n, over))
+      requestLaunchStop(db, ID(n))
+      endLaunch(db, ID(n), { reason: 'stopped', acpSession })
+    }
+    stopped(1, 'acp-1')
+    expect(getLaunch(db, ID(1))).toMatchObject({ status: 'ended', end_reason: 'stopped', acp_session: 'acp-1' })
+    // a later end that knows no session keeps the stored one
+    const resumed = resumeLaunch(db, ID(1), 77)
+    expect(resumed).toMatchObject({ status: 'running', resumedFrom: 'ended', end_reason: null, ended_at: null, stop_requested_at: null, driver_pid: 77 })
+    expect(driverStopRequested(db, ID(1))).toBe(false)
+    expect(resumeLaunch(db, ID(1), 78)).toBeNull()
+    endLaunch(db, ID(1), { reason: 'stopped', acpSession: null })
+    expect(getLaunch(db, ID(1))!.acp_session).toBe('acp-1')
+    // never prompted, so never persisted
+    stopped(2, null)
+    expect(resumeLaunch(db, ID(2), 77)).toBeNull()
+    // other ends
+    for (const [n, reason] of [[3, 'budget:tool_calls'], [4, 'error:mode_escalation'], [5, 'lost'], [6, 'child_exit']] as const) {
+      createLaunch(db, launch(n))
+      endLaunch(db, ID(n), { reason, acpSession: 'acp' })
+      expect(resumeLaunch(db, ID(n), 77), reason).toBeNull()
+    }
+    // a worktree that was removed
+    stopped(7, 'acp-7', { cwd: '/w/a', worktree: { checkoutRoot: '/work/a', branch: 'agent-inbox/a-11111111', baseSha: 'a'.repeat(40), baseRef: null } })
+    markWorktreeRemoved(db, ID(7))
+    expect(resumeLaunch(db, ID(7), 77)).toBeNull()
+    // parked still says so
+    createLaunch(db, launch(8))
+    parkLaunch(db, ID(8), { acpSession: 'acp-8', activeMs: 0, toolCalls: 0 })
+    expect(resumeLaunch(db, ID(8), 77)).toMatchObject({ resumedFrom: 'parked' })
+  })
+
+  it('a stopped launch with its session can be taken over in Terminal instead, and is then never resumed', () => {
+    createLaunch(db, launch(1))
+    endLaunch(db, ID(1), { reason: 'stopped', acpSession: 'acp-1' })
+    expect(handOffForTerminal(db, ID(1))).toMatchObject({ ok: true, state: 'handed_off', session: 'acp-1' })
+    expect(getLaunch(db, ID(1))).toMatchObject({ status: 'ended', end_reason: 'handed_off' })
+    expect(resumeLaunch(db, ID(1), 77)).toBeNull()
+    createLaunch(db, launch(2))
+    endLaunch(db, ID(2), { reason: 'stopped' })
+    expect(handOffForTerminal(db, ID(2))).toEqual({ ok: false, reason: 'no_session' })
   })
 })
 

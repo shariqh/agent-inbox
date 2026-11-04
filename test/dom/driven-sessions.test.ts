@@ -468,6 +468,57 @@ describe('the Live drawer’s sessions (§3.6, §7)', () => {
     expect(listSessionMessages(db).open.map((m) => [m.session, m.text])).toEqual([['mcp-9', 'Now run the linter too.']])
   })
 
+  it('a launch stopped with its session offers Resume and send and Take over in Terminal (step 5, full resume)', async () => {
+    const lease = { launchId: PARKED, pid: 4243, nonce: 'r' }
+    const api = launchBridge()
+    db = freshDb()
+    newLaunch(db, PARKED)
+    endLaunch(db, PARKED, { reason: 'stopped', acpSession: 'acp-1' })
+    api.resume.mockImplementation(async () => {
+      drivenSession(db!, 'mcp-9', lease)
+      return { ok: true, launch: PARKED }
+    })
+    await bootApp(db)
+    await changedPollTick(db)
+    openDrawer()
+    expect(launchRow(PARKED)!.querySelector('.live-launch-status')!.textContent).toBe('Stopped: its session is kept, so it can be resumed.')
+    expect(action(PARKED, 'take-over')?.textContent).toBe('Take over in Terminal')
+    type(launchRow(PARKED)!.querySelector<HTMLTextAreaElement>('.live-launch-resume-input')!, 'Carry on.')
+    click(action(PARKED, 'resume'))
+    await settle()
+    await settle()
+    expect(api.resume).toHaveBeenCalledWith(PARKED)
+    expect(listSessionMessages(db).open.map((m) => [m.session, m.text])).toEqual([['mcp-9', 'Carry on.']])
+  })
+
+  it('lists ended launches past the newest five on request, so their transcripts stay reachable (step 5)', async () => {
+    launchBridge()
+    db = freshDb()
+    const ids = Array.from({ length: 7 }, (_, n) => `11111111-2222-4333-8444-00000000000${n + 1}`)
+    for (const id of ids) {
+      newLaunch(db, id)
+      endLaunch(db, id, { reason: 'stopped' })
+      await vi.advanceTimersByTimeAsync(1000)
+    }
+    await bootApp(db)
+    await changedPollTick(db)
+    openDrawer()
+    const more = section()!.querySelector<HTMLButtonElement>('[data-launch-action="earlier"]')!
+    expect(section()!.querySelectorAll('.live-launch')).toHaveLength(5)
+    expect(more.hidden).toBe(false)
+    expect(more.textContent).toBe('Earlier sessions (2)')
+    expect(more.getAttribute('aria-expanded')).toBe('false')
+    click(more)
+    await settle()
+    expect(section()!.querySelectorAll('.live-launch')).toHaveLength(7)
+    expect(more.textContent).toBe('Fewer sessions')
+    expect(more.getAttribute('aria-expanded')).toBe('true')
+    expect(action(ids[0]!, 'transcript')).not.toBeNull()
+    click(more)
+    await settle()
+    expect(section()!.querySelectorAll('.live-launch')).toHaveLength(5)
+  })
+
   it('the transcript reads the driver’s event log while open, as plain text', async () => {
     launchBridge()
     db = freshDb()

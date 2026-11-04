@@ -157,6 +157,8 @@ header { flex-wrap: wrap; }
 .live-launches-note:empty { display: none; }
 .live-launches-note, .live-launch-summary, .live-launch-status { color: var(--app-muted); }
 .live-launches p { margin: 0; }
+.launch-earlier { margin-top: 6px; }
+.launch-earlier[hidden] { display: none; }
 .live-launch { display: grid; gap: 4px; padding: 8px 0; border-top: 1px solid var(--app-border); }
 .live-launch[data-state="lost"] .live-launch-status { color: var(--app-warning); }
 .live-launch[data-state="failed"] .live-launch-status { color: var(--app-danger); }

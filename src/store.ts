@@ -3946,6 +3946,12 @@ export function handOffForTerminal(db: Database.Database, id: string): LaunchHan
                                          updated_at = ?, revision = revision + 1
                                    WHERE id = ? AND status = 'parked' AND acp_session IS NOT NULL`).run(now, now, id).changes === 1
       if (!changed) return { ok: false, reason: 'no_session' }
+    } else if (row.end_reason === 'stopped') {
+      // a stopped launch that could be resumed (full resume) can go to a terminal instead
+      const now = new Date().toISOString()
+      const changed = db.prepare(`UPDATE launches SET end_reason = 'handed_off', updated_at = ?, revision = revision + 1
+                                   WHERE id = ? AND ${RESUMABLE_END}`).run(now, id).changes === 1
+      if (!changed) return { ok: false, reason: row.acp_session ? 'ended' : 'no_session' }
     } else if (row.end_reason !== 'handed_off') {
       return { ok: false, reason: 'ended' }
     }
@@ -4189,18 +4195,29 @@ export function listLaunches(db: Database.Database): Launch[] {
   return rows.map((row) => launchView(parseLaunch(row)))
 }
 
-// A resumed launch's driver takes its parked row back: parked → running, in one
-// statement, so two Resume clicks cannot both start a driver on it.
-export function resumeLaunch(db: Database.Database, id: string, driverPid: number): LaunchRecord | null {
+// Step 5 (full resume): an ended launch that can be resumed. Only the human's
+// Stop, with the session Copilot persisted, in a worktree still on disk: never
+// one handed off to a terminal, lost, failed, ended by a budget (its budgets are
+// per-launch totals, §7) or ended for its permissions.
+const RESUMABLE_END = `status = 'ended' AND end_reason = 'stopped' AND acp_session IS NOT NULL
+                       AND (worktree_path IS NULL OR worktree_removed_at IS NULL)`
+
+// A resumed launch's driver takes its row back, parked or resumably ended →
+// running, in one statement, so two Resume clicks cannot both start a driver on
+// it. `resumedFrom` says which, so a refused start puts it back as it was.
+export function resumeLaunch(db: Database.Database, id: string, driverPid: number): (LaunchRecord & { resumedFrom: 'parked' | 'ended' }) | null {
   if (!LAUNCH_ID.test(id)) return null
   return db.transaction(() => {
+    const before = db.prepare(`SELECT status FROM launches WHERE id = ? AND (status = 'parked' OR (${RESUMABLE_END}))`).pluck().get(id) as LaunchStatus | undefined
+    if (before !== 'parked' && before !== 'ended') return null
     const row = db.prepare(`UPDATE launches
-                               SET status = 'running', parked_at = NULL, park_reason = NULL, driver_pid = ?, updated_at = ?, revision = revision + 1
-                             WHERE id = ? AND status = 'parked'
+                               SET status = 'running', parked_at = NULL, park_reason = NULL, ended_at = NULL, end_reason = NULL, end_detail = NULL,
+                                   stop_requested_at = NULL, driver_pid = ?, updated_at = ?, revision = revision + 1
+                             WHERE id = ? AND (status = 'parked' OR (${RESUMABLE_END}))
                          RETURNING *`).get(driverPid, new Date().toISOString(), id) as (Omit<LaunchRecord, 'sessions'> & { sessions: string | null }) | undefined
     // a Take over asked of an earlier driver that never took it is stale: this resume was asked after it
     if (row) db.prepare(`DELETE FROM hook_watch_claims WHERE claim_key = ?`).run(`driver-handoff:${id}`)
-    return row ? parseLaunch(row) : null
+    return row ? { ...parseLaunch(row), resumedFrom: before } : null
   }).immediate()
 }
 
@@ -4279,20 +4296,23 @@ export function handOffLaunch(
   }).changes === 1
 }
 
+// step 5 (full resume): `acpSession`, the session Copilot persisted, is kept so a
+// stopped launch can be resumed; a null one never erases a stored one
 export function endLaunch(
   db: Database.Database,
   id: string,
-  end: { reason: string; activeMs?: number; toolCalls?: number; detail?: string | null },
+  end: { reason: string; activeMs?: number; toolCalls?: number; detail?: string | null; acpSession?: string | null },
 ): boolean {
   const now = new Date().toISOString()
   return db.prepare(`UPDATE launches
                         SET status = 'ended', end_reason = @reason, end_detail = @detail, ended_at = @now, parked_at = NULL, park_reason = NULL,
+                            acp_session = COALESCE(@acp, acp_session),
                             active_ms = MAX(active_ms, COALESCE(@activeMs, 0)), tool_calls = MAX(tool_calls, COALESCE(@toolCalls, 0)),
                             updated_at = @now, revision = revision + 1
                       WHERE id = @id AND status <> 'ended'`).run({
     now, id, reason: end.reason, detail: end.detail ? Array.from(end.detail).slice(0, 300).join('') : null,
     activeMs: end.activeMs === undefined ? null : Math.max(0, Math.round(end.activeMs)),
-    toolCalls: end.toolCalls ?? null,
+    toolCalls: end.toolCalls ?? null, acp: end.acpSession ?? null,
   }).changes === 1
 }
 

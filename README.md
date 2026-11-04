@@ -351,8 +351,9 @@ It is off until you turn it on, and it works only in the macOS app, not in a bro
 5. Message the session from Live sessions. While it works, a message is **Queued**
    until the turn ends; **Interrupt and send** stops the turn and sends it now.
 6. **Park now** stops Copilot and keeps the session; it also parks by itself after
-   two idle hours. **Resume and send** starts it again with your message.
-   **Stop** ends it. **Transcript** shows what it did.
+   two idle hours. **Resume and send** starts it again with your message, and so it
+   does for a session you stopped. **Stop** ends it. **Transcript** shows what it did;
+   **Earlier sessions** lists older ones.
 7. **Take over in Terminal** moves a running or parked session to a Terminal window:
    after your confirmation, Agent Inbox stops driving it (cancelling its current turn
    and approvals) and runs `copilot --resume` there with its history. From then on you

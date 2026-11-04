@@ -826,7 +826,8 @@ foreground from the installed runtime.
 - the personal switch, in checkout builds only;
 - the adapter version check.
 
-**5. Resume and Take over** (`Closes #412`). PR 1: Take over in Terminal (§3.5, §14.7).
+**5. Resume and Take over** (`Closes #412`). PR 1: Take over in Terminal (§3.5, §14.7). PR 2: full
+resume (§14.8).
 
 ## §12 — Risks
 
@@ -1082,6 +1083,28 @@ Built in step 5's first PR:
   it first when the human asks.
 - **Messages** the old session had not read stay with it; new ones go to the terminal Copilot's own
   session, which receives them at its next check like any non-driven session.
+
+### 14.8 Step 5, full resume (2026-11-03)
+
+The design named "full resume" (§11) without saying what it adds to step 3's minimal resume. Step 5
+adds the small, design-consistent part:
+- **A stopped launch resumes like a parked one.** The driver now records the ACP session at every
+  end once its task was sent (`endLaunch`, never erasing a stored one), so a launch the human
+  stopped (Stop, or End on a parked one) keeps it. `resumeLaunch` takes a parked launch or one ended
+  `stopped` with a session and its worktree (if any) still on disk, in one conditioned statement that
+  clears the end and its Stop. The resume is the same `session/load` (§7), with the mode and
+  `allow_all` verified and every open message pushed again. A refused start puts it back as it was:
+  parked, or stopped. Its worktree, unlocked at the end, is locked again while it runs.
+- **Not resumable:** a launch handed off to a terminal, lost, failed (`error:*`), whose Copilot exited,
+  and one ended by a budget. Budgets are per-launch totals (§7), so resuming a budget-ended launch
+  needs a new allowance and its own confirmation: left for a follow-up.
+- **Take over in Terminal** is offered for such a stopped launch too.
+- **Earlier sessions.** The drawer lists the five newest ended launches (and every kept worktree); an
+  **Earlier sessions (N)** button lists the rest `/api/launches` already carries (at most 50), so their
+  transcripts and Resume stay reachable. Transcripts of ended and handed-off launches stay readable
+  wherever the section shows.
+- **Mixed versions.** An older driver refuses to resume a stopped launch ("not parked"), and records no
+  session at its ends, so its stopped launches never read as resumable.
 
 ## Appendix A — Verification log
 

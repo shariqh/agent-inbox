@@ -60,7 +60,10 @@ async function tickUntil(done: () => boolean, limitMs: number): Promise<number> 
   throw new Error(`not within ${limitMs} ms`)
 }
 
-const strip = (): string => document.getElementById('liveStripLabel')?.textContent ?? ''
+// #454: the sidebar Sessions line, where the Live strip was
+const strip = (): string => [
+  document.querySelector('#sessionsIndicator .si-v')?.textContent, document.querySelector('#sessionsIndicator .si-s')?.textContent,
+].filter(Boolean).join(' · ')
 
 describe('an idle tick (#298)', () => {
   it('keeps the frame when every read reused its representation', async () => {
@@ -122,7 +125,7 @@ describe('an idle tick (#298)', () => {
     expect(badgeCount()).toBe(2)
   })
 
-  it('repaints when what Live shows changed, and not for the liveness heartbeat', async () => {
+  it('repaints when what a session card shows changed, and not for the liveness heartbeat', async () => {
     const d = open()
     const id = insertItem(d, { ...AGENT, kind: 'question', title: 'Live changes' })
     upsertActivity(d, { ...AGENT, session: 'worker', doing: 'Building the idle frame' })
@@ -140,7 +143,9 @@ describe('an idle tick (#298)', () => {
     upsertActivity(d, { ...AGENT, session: 'worker', doing: 'Reviewing the idle frame' })
     await pollTick()
     expect(row(id)).not.toBe(before)
-    expect(document.getElementById('liveDrawer')?.textContent).toContain('Reviewing the idle frame')
+    click(document.querySelector('.tab[data-tab="dashboard"]'))
+    await settle()
+    expect(document.querySelector('[data-session-card="session:worker"] .sc-doing')?.textContent).toBe('Reviewing the idle frame')
   })
 
   it('paints a press-deferred frame on the next tick, which reads only 304s', async () => {
@@ -256,11 +261,11 @@ describe('changes outside the poll still reach an idle window (#298)', () => {
         return Response.json({ current: '2.0.0', mode: 'dev', runtimeInstalled: null, updatable: false, hosts: {} })
       },
     })
-    const chip = () => [...document.querySelectorAll<HTMLElement>('#liveStripSessions .live-session')]
-      .find((el) => el.textContent?.startsWith('beta/'))
+    const card = () => document.querySelector<HTMLElement>('[data-session-card="session:stale"]')
+    const chip = () => card()?.querySelector<HTMLElement>('.sc-chip.tone-warn')
     await pollTick()
-    expect(chip()).toBeDefined()
-    expect(chip()!.title).not.toMatch(/older build/)
+    expect(card()).not.toBeNull()
+    expect(chip()).toBeFalsy()
     answer()
     await settle()
     await pollTick()
@@ -430,20 +435,20 @@ describe('clock-derived content still moves on an idle window (#298)', () => {
     expect(asked()).toContain('1m')
   })
 
-  it('lets a Live claim go cold within the slow clock', async () => {
+  it('lets a claim go cold within the slow clock', async () => {
     const d = open()
     upsertActivity(d, { ...AGENT, session: 'worker', doing: 'Long build' })
     recordActivityCall(d, 'worker')
     const calledAt = Date.now()
     await bootApp(d)
-    expect(strip()).toBe('1 reporting work')
+    expect(strip()).toBe('1 working · 1 connected')
     // /api/activity derives the decay on every read (#45), so this one reaches
     // the frame as a changed read rather than through the slow clock.
     advanceClock(30 * 60_000 - 20_000)
     touchActivity(d, 'worker') // the liveness heartbeat: not work
     await pollTick()
-    expect(strip()).toBe('1 reporting work')
-    const coldAt = await tickUntil(() => strip() !== '1 reporting work', 20_000 + CLOCK_LAG_MS)
+    expect(strip()).toBe('1 working · 1 connected')
+    const coldAt = await tickUntil(() => strip() !== '1 working · 1 connected', 20_000 + CLOCK_LAG_MS)
     expect(coldAt - (calledAt + 30 * 60_000)).toBeLessThanOrEqual(CLOCK_LAG_MS)
     expect(strip()).toContain('no task reported')
   })

@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import {
   secondaryLine, streamCounts, agentCounts, rowModel, urgencyChip, relMs,
-  FRESH_MS, AGING_MS, freshnessTone, ageChip, needsYouEntries, staleFoldLabel,
+  FRESH_MS, AGING_MS, freshnessTone, needsYouEntries, staleFoldLabel,
   SECONDARY_BUDGET, rowStarOption, stagedLabel, undoRefusal, handledUndoRefusal, repliedEntries,
   ASK_SORT_OPTIONS, currentAskAt, askTimeModel, sortNeedsYouByAsk, sortLaterEntries, laterBreakdown,
 } from '../public/rowview.js'
@@ -480,21 +480,14 @@ describe('current ask timestamps and list-only sorting (#64)', () => {
   })
 })
 
-// §6: ONE freshness/age system — the row chip and the Live dot must never
-// disagree about what "3h" or "aging" means.
-describe('freshnessTone / ageChip', () => {
+// §6: ONE freshness/age system — the row chip and the session indicator's dot
+// must never disagree about what "3h" or "aging" means.
+describe('freshnessTone', () => {
   it('classifies on the shared thresholds', () => {
     expect(freshnessTone(FRESH_MS - 1)).toBe('fresh')
     expect(freshnessTone(FRESH_MS)).toBe('aging')
     expect(freshnessTone(AGING_MS - 1)).toBe('aging')
     expect(freshnessTone(AGING_MS)).toBe('quiet')
-  })
-  it('gives a row chip and a Live entry the same text for the same age', () => {
-    const ageMs = 3 * 3600_000
-    const live = ageChip(ageMs)
-    expect(live).toEqual({ tone: 'quiet', text: relMs(ageMs) })
-    const row = urgencyChip(rowModel({ kind: 'item', item: item(), liveness: 'waiting' }), T0 + ageMs)
-    expect(row.text).toBe(`Waiting ${live.text}`)
   })
 })
 

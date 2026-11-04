@@ -159,7 +159,8 @@ describe('the editorial desk shell', () => {
     expect(css).toMatch(/body\.sidebar-collapsed \.sidebar-shell\s*\{[^}]*padding:/s)
     expect(css).toMatch(/body\.sidebar-collapsed \.tab-name[\s\S]*display:\s*none/s)
     expect(css).toMatch(/body\.sidebar-collapsed #rail \.rail-name[\s\S]*display:\s*none/s)
-    expect(css).toMatch(/body\.sidebar-collapsed #liveBar,[\s\S]*left:\s*72px/s)
+    // #454: the Sessions line shrinks to its dot, where the Live strip once moved over
+    expect(css).toMatch(/body\.sidebar-collapsed \.sessions-indicator\s*\{[^}]*grid-template-columns:\s*10px/s)
     expect(css).toMatch(/body\.sidebar-collapsed #agentSelect option\s*\{[^}]*color:\s*var\(--app-text\)[^}]*font-size:\s*12px/s)
     const compact = css.slice(css.indexOf('@media (max-width: 1279px)'))
     expect(compact).toMatch(/\.sidebar-collapse\s*\{[^}]*display:\s*none/s)
@@ -192,7 +193,7 @@ describe('the editorial desk shell', () => {
   })
 
   it('contains nested scroll surfaces including the compact project menu', () => {
-    expect(css).toMatch(/\.nrow-card,\s*\.closed-projects-popover,\s*\.lb-card,\s*\.live-drawer,\s*\.relay-body,\s*\.mission-paths,\s*\.mission-detail-body,\s*\.setup-body pre\s*\{[^}]*overscroll-behavior:\s*contain/s)
+    expect(css).toMatch(/\.nrow-card,\s*\.closed-projects-popover,\s*\.lb-card,\s*\.relay-body,\s*\.mission-paths,\s*\.mission-detail-body,\s*\.setup-body pre\s*\{[^}]*overscroll-behavior:\s*contain/s)
     const desktop = css.slice(0, css.indexOf('@media (max-width: 1279px)'))
     expect(desktop).toMatch(/#rail\s*\{[^}]*overscroll-behavior-y:\s*contain/s)
     const compact = css.slice(css.indexOf('@media (max-width: 1279px)'))

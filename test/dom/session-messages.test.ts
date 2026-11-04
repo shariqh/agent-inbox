@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 // Issue #411, PR 2: the human's messages to a running session — the composer in
-// the Live drawer and the Dashboard session focus panel, its delivery states,
-// status across polls, Withdraw, the "Not delivered" fold, durable drafts, the
-// 404 fallback, and attention parity on every surface.
+// the Dashboard's session panel (#454: the Live drawer that also held one is
+// retired), its delivery states, status across polls, Withdraw, the Agents
+// home's "Not delivered" fold, durable drafts, the 404 fallback, and attention
+// parity on every surface.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type Database from 'better-sqlite3'
 import {
@@ -36,10 +37,6 @@ function closePage(): void {
 
 let db: Database.Database | null = null
 afterEach(async () => {
-  // jsdom keeps every boot's document listeners, and an earlier page's drawer
-  // handlers read their own (now detached) drawer: leave it closed so they stay idle
-  const drawerEl = document.getElementById('liveDrawer')
-  if (drawerEl) drawerEl.hidden = true
   await vi.advanceTimersByTimeAsync(300)
   closePage()
   db?.close()
@@ -64,11 +61,13 @@ function present(d: Database.Database, s: Session): void {
   if (working) recordActivityCall(d, s.session)
 }
 
-const drawer = (): HTMLElement => document.getElementById('liveDrawer') as HTMLElement
-const openDrawer = (): void => { if (drawer().hidden) click(document.getElementById('liveStrip')) }
-const messageButton = (session: string): HTMLButtonElement | undefined =>
-  [...drawer().querySelectorAll<HTMLButtonElement>('[data-msg-open]')].find((b) => b.dataset.msgOpen === session)
-const composer = (session: string, scope: ParentNode = drawer()): HTMLElement | undefined =>
+// #454: the session panel holds the one composer; a session card's Message opens it
+const panel = (): HTMLElement => document.querySelector('#dashboard .dash-focus') as HTMLElement
+const card = (session: string): HTMLElement | undefined =>
+  [...document.querySelectorAll<HTMLElement>('#dashboard [data-session-card]')].find((el) => el.dataset.sessionCard === `session:${session}`)
+const messageButton = (session: string): HTMLButtonElement | null =>
+  card(session)?.querySelector<HTMLButtonElement>('[data-ah-action="message"]') ?? null
+const composer = (session: string, scope: ParentNode = panel()): HTMLElement | undefined =>
   [...scope.querySelectorAll<HTMLElement>('.msg-composer')].find((el) => el.dataset.msgSession === session)
 const input = (session: string, scope?: ParentNode) => composer(session, scope)?.querySelector('textarea') ?? null
 const historyLines = (session: string, scope?: ParentNode) =>
@@ -93,20 +92,19 @@ async function reopen(d: Database.Database, opts?: BootOptions): Promise<ViewerB
 }
 
 async function openComposer(session: string): Promise<HTMLTextAreaElement> {
-  openDrawer()
   click(messageButton(session))
   await settle()
   return input(session)!
 }
 
-describe('the drawer composer (#411)', () => {
+describe('the session panel’s composer (#411, #454)', () => {
   it('opens under its session, sends with Mod+Enter and walks sent, picked up and acknowledged across polls', async () => {
     db = freshDb()
     present(db, { session: 'mcp-a', stream: 'feat-x' })
     const bridge = await bootApp(db)
     const box = await openComposer('mcp-a')
     expect(document.activeElement).toBe(box)
-    expect(messageButton('mcp-a')?.getAttribute('aria-expanded')).toBe('true')
+    expect(panel().dataset.session).toBe('mcp-a')
     const el = composer('mcp-a')!
     expect(el.querySelector('label')?.textContent).toBe('Message to copilot · alpha · feat-x')
     expect(el.querySelector('label')?.htmlFor).toBe(box.id)
@@ -178,14 +176,14 @@ describe('the drawer composer (#411)', () => {
     present(db, { session: 'older', receives: false })
     claimHookWatch(db, 'host:4100', 'm1:9001-abc')
     await bootApp(db)
-    openDrawer()
-    for (const session of ['pushed', 'hooked', 'checks', 'older']) click(messageButton(session))
-    await settle()
-    const state = (session: string) => [
-      composer(session)?.querySelector('.msg-delivery')?.textContent,
-      composer(session)?.querySelector('.msg-delivery')?.getAttribute('data-state'),
-      input(session)?.disabled,
-    ]
+    const state = (session: string) => {
+      click(messageButton(session))
+      return [
+        composer(session)?.querySelector('.msg-delivery')?.textContent,
+        composer(session)?.querySelector('.msg-delivery')?.getAttribute('data-state'),
+        input(session)?.disabled,
+      ]
+    }
     expect(state('pushed')).toEqual(['Arrives now: Agent Inbox pushes it into this session.', 'now', false])
     expect(state('hooked')).toEqual(['Arrives now: this session wakes for it.', 'now', false])
     expect(state('checks')).toEqual(['It sees this when it next checks Agent Inbox.', 'next-check', false])
@@ -193,7 +191,7 @@ describe('the drawer composer (#411)', () => {
     expect(composer('older')?.querySelector<HTMLButtonElement>('.msg-send')?.disabled).toBe(true)
   })
 
-  it('keeps a refused send’s text with its reason, and Esc closes the composer keeping the draft', async () => {
+  it('keeps a refused send’s text with its reason, and Esc closes the panel keeping the draft', async () => {
     db = freshDb()
     present(db, { session: 'mcp-a' })
     for (let n = 1; n <= 20; n++) sendSessionMessage(db, { id: `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`, session: 'mcp-a', text: `m${n}` })
@@ -207,13 +205,16 @@ describe('the drawer composer (#411)', () => {
     expect(composer('mcp-a')!.querySelectorAll('.msg-history > .msg-item')).toHaveLength(5)
     expect(composer('mcp-a')!.querySelector('.msg-earlier > summary')?.textContent).toBe('+15 earlier')
 
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
     input('mcp-a')!.focus()
     input('mcp-a')!.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
     await settle()
-    expect(drawer().hidden).toBe(false)
-    expect(composer('mcp-a')).toBeUndefined()
+    expect(panel().hidden).toBe(true)
+    // focus goes back to the card it came from
     expect(document.activeElement).toBe(messageButton('mcp-a'))
-    // a closed composer that holds text says so on its button
+    vi.mocked(document.hasFocus).mockRestore()
+    // a closed composer that holds text says so on its button, from the next frame on
+    await pollTick()
     expect(messageButton('mcp-a')?.textContent).toBe('Message · draft')
     await vi.advanceTimersByTimeAsync(300)
     expect(stored()['message:mcp-a']?.draft).toMatchObject({ type: 'message', session: 'mcp-a', text: 'One more.', intent: null })
@@ -242,7 +243,7 @@ describe('the drawer composer (#411)', () => {
   })
 })
 
-describe('the drawer under an unrelated draft (#420 review)', () => {
+describe('the panel under an unrelated draft (#420 review)', () => {
   const ask = (d: Database.Database) => insertItem(d, { project: 'alpha', stream: 'main', agent: 'copilot', kind: 'question', title: 'Hold a draft' })
   async function withReplyDraft(asked: string): Promise<void> {
     await showInbox()
@@ -251,15 +252,15 @@ describe('the drawer under an unrelated draft (#420 review)', () => {
     type(document.querySelector<HTMLTextAreaElement>('.nrow-card .reply-input:not(.reply-context-input)'), 'Half an answer')
   }
 
-  it('rebuilds nothing in the drawer on ticks that change nothing it draws', async () => {
+  it('rebuilds nothing in the panel on ticks that change nothing it draws', async () => {
     db = freshDb()
     present(db, { session: 'mcp-a' })
     const asked = ask(db)
     await bootApp(db)
+    await openComposer('mcp-a')
     await withReplyDraft(asked)
-    openDrawer()
     await pollTick()
-    const list = drawer().querySelector('.live-list')!
+    const list = panel()
     const mutations: MutationRecord[] = []
     const observer = new MutationObserver((records) => mutations.push(...records))
     observer.observe(list, { subtree: true, childList: true, characterData: true, attributes: true })
@@ -273,30 +274,33 @@ describe('the drawer under an unrelated draft (#420 review)', () => {
     expect(mutations).toEqual([])
   })
 
-  it('keeps keyboard focus on a Message button when a changed tick rebuilds the drawer', async () => {
+  it('keeps keyboard focus on a card’s Message button when a changed tick paints the cards', async () => {
     db = freshDb()
     present(db, { session: 'mcp-a' })
     const asked = ask(db)
     await bootApp(db)
     await withReplyDraft(asked)
-    openDrawer()
-    messageButton('mcp-a')!.focus()
-    await changedPollTick(db) // a new idle session: the drawer is rebuilt
-    expect(drawer().querySelectorAll('.idle-row').length).toBeGreaterThan(0)
-    expect(document.activeElement).toBe(messageButton('mcp-a'))
+    click(document.querySelector('.tab[data-tab="dashboard"]'))
+    await settle()
+    const button = messageButton('mcp-a')!
+    button.focus()
+    const cards = document.querySelectorAll('#dashboard [data-session-card]').length
+    await changedPollTick(db) // a new idle session: a new card is drawn
+    expect(document.querySelectorAll('#dashboard [data-session-card]').length).toBe(cards + 1)
+    expect(document.activeElement).toBe(button)
     expect(document.activeElement?.isConnected).toBe(true)
   })
 })
 
-describe('the session focus panel’s composer (#411)', () => {
-  it('shows the session’s composer and history, keeps its node across polls, and shares the drawer’s draft', async () => {
+describe('the session panel’s composer across polls (#411)', () => {
+  it('shows the session’s composer and history, keeps its node across polls, and sends from it', async () => {
     db = freshDb()
     present(db, { session: 'mcp-a' })
     sendSessionMessage(db, { id: '00000000-0000-4000-8000-000000000001', session: 'mcp-a', text: 'Earlier note' })
     const bridge = await bootApp(db)
-    click(document.querySelector('#dashboard .dash-lane[data-lane="mcp-a"] .dash-lane-open'))
+    click(card('mcp-a')!.querySelector('.sc-doing'))
     await settle()
-    const aside = document.querySelector<HTMLElement>('#dashboard .dash-focus')!
+    const aside = panel()
     const box = input('mcp-a', aside)!
     expect(aside.querySelector('.dash-focus-message')?.hasAttribute('hidden')).toBe(false)
     expect(historyLines('mcp-a', aside)).toEqual([['Earlier note', 'Sent moments ago · not picked up yet']])
@@ -305,23 +309,17 @@ describe('the session focus panel’s composer (#411)', () => {
     await changedPollTick(db)
     expect(input('mcp-a', aside)).toBe(box)
     expect(document.activeElement).toBe(box)
-    // the same draft opens in the drawer
-    openDrawer()
-    click(messageButton('mcp-a'))
-    await settle()
-    expect(input('mcp-a')?.value).toBe('From the panel')
-    // sent from the panel with its textarea focused: the text leaves both
+    // sent from the panel with its textarea focused: the text leaves it
     input('mcp-a', aside)!.focus()
     click(composer('mcp-a', aside)!.querySelector('.msg-send'))
     await settle()
     expect(messagePosts(bridge).map((p) => p.body['text'])).toEqual(['From the panel'])
     expect(document.activeElement).toBe(input('mcp-a', aside))
     expect(input('mcp-a', aside)?.value).toBe('')
-    expect(input('mcp-a')?.value).toBe('')
   })
 })
 
-describe('the Not delivered fold (#411)', () => {
+describe('the Not delivered fold, in the Agents home (#411, #454)', () => {
   it('lists open messages whose session ended, ten at a time, with Copy text and Withdraw, until withdrawn', async () => {
     db = freshDb()
     present(db, { session: 'gone', project: 'beta' })
@@ -335,8 +333,7 @@ describe('the Not delivered fold (#411)', () => {
     const writes: string[] = []
     Object.defineProperty(navigator, 'clipboard', { value: { writeText: async (text: string) => { writes.push(text) } }, configurable: true })
     const bridge = await bootApp(db)
-    openDrawer()
-    const fold = () => drawer().querySelector<HTMLDetailsElement>('.msg-undelivered')
+    const fold = () => document.querySelector<HTMLDetailsElement>('.agents-home .ah-undelivered .msg-undelivered')
     expect(fold()?.querySelector('summary')?.textContent).toBe('Not delivered (12)')
     expect(fold()?.parentElement?.lastElementChild).toBe(fold())
     const lines = [...fold()!.querySelectorAll(':scope > .msg-item')]
@@ -346,8 +343,8 @@ describe('the Not delivered fold (#411)', () => {
     expect(lines[1]?.querySelector('.msg-state')?.textContent).toMatch(/^Not delivered: this session is no longer running/)
     expect(lines[0]?.querySelector('.msg-lost-who')?.textContent).toBe('Message to copilot · beta · main')
     expect(fold()?.querySelector('.msg-earlier > summary')?.textContent).toBe('+2 more')
-    // nothing in the Live strip names it
-    expect(document.getElementById('liveStrip')?.textContent ?? '').not.toContain('Not delivered')
+    // nothing in the sidebar's Sessions line names it
+    expect(document.getElementById('sessionsIndicator')?.textContent ?? '').not.toContain('Not delivered')
 
     click(lines[1]!.querySelector('[data-msg-copy]'))
     await settle()
@@ -369,11 +366,10 @@ describe('the Not delivered fold (#411)', () => {
     await bootApp(db)
     click(document.querySelector('#rail button.rail-tab[data-project="alpha"]'))
     await settle()
-    openDrawer()
-    expect(drawer().querySelector('.msg-undelivered')).toBeNull()
+    expect(document.querySelector('.agents-home .msg-undelivered')).toBeNull()
     endActivity(db, 'mcp-b')
     await pollTick()
-    expect(drawer().querySelector('.msg-undelivered summary')?.textContent).toBe('Not delivered (1)')
+    expect(document.querySelector('.agents-home .msg-undelivered summary')?.textContent).toBe('Not delivered (1)')
   })
 })
 
@@ -425,9 +421,9 @@ describe('durable message drafts (#411, #279)', () => {
       present(db, { session: 'mcp-a' })
       seedBoth()
       const bridge = await bootApp(db)
-      click(document.querySelector('#dashboard .dash-lane[data-lane="mcp-a"] .dash-lane-open'))
+      click(card('mcp-a')!.querySelector('.sc-doing'))
       await settle()
-      const box = input('mcp-a', document.querySelector('#dashboard .dash-focus')!)!
+      const box = input('mcp-a')!
       expect(box.value).toBe('Second words')
       box.focus()
       box.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Enter', metaKey: true, bubbles: true, cancelable: true }))
@@ -442,7 +438,7 @@ describe('durable message drafts (#411, #279)', () => {
       expect(waiting()?.textContent).toContain('First words')
     })
 
-    it('in a drawer composer on a passive tick', async () => {
+    it('in the composer on a passive tick', async () => {
       db = freshDb()
       present(db, { session: 'mcp-a' })
       seedBoth()
@@ -469,7 +465,6 @@ describe('durable message drafts (#411, #279)', () => {
       'message:mcp-a': entry('The newer one', ''),
     } }))
     await bootApp(db)
-    openDrawer()
     click(messageButton('mcp-a'))
     await settle()
     expect(input('mcp-a')?.value).toBe('The newer one')
@@ -490,9 +485,8 @@ describe('durable message drafts (#411, #279)', () => {
     await vi.advanceTimersByTimeAsync(300)
     expect(stored()['message:mcp-a']?.draft).toMatchObject({ text: 'Remember me', project: 'alpha', agent: 'copilot' })
     await reopen(db)
-    expect(drawer().hidden).toBe(true)
+    expect(panel().hidden).toBe(true)
     expect(document.querySelector('.msg-composer')).toBeNull()
-    openDrawer()
     click(messageButton('mcp-a'))
     await settle()
     expect(input('mcp-a')?.value).toBe('Remember me')
@@ -538,7 +532,6 @@ describe('durable message drafts (#411, #279)', () => {
     expect(composer('mcp-a')!.querySelector('[role="status"]')?.textContent).toBe('Your send was not confirmed. Send again: it will not send twice.')
     const [lost] = messagePosts(first)
     await reopen(db)
-    openDrawer()
     click(messageButton('mcp-a'))
     await settle()
     expect(input('mcp-a')?.value).toBe('Exactly once')
@@ -625,7 +618,8 @@ describe('an older viewer and attention parity (#411)', () => {
       const dashboard = {
         rail: [...document.querySelectorAll('#dashRail [data-rail-card]')].map((el) => el.textContent),
         now: document.querySelector('#dashboard .dash-now')?.textContent,
-        lanes: [...document.querySelectorAll('#dashboard .dash-lane')].map((el) => el.textContent),
+        // the cards are presence: their doing lines say nothing of messages
+        cards: [...document.querySelectorAll('#dashboard [data-session-card] .sc-doing')].map((el) => el.textContent),
       }
       const view = {
         title: document.title, badge: badgeCount(), tabs: ['needsYou', 'notes', 'boards', 'done'].map(tabCount), ...dashboard,
@@ -641,15 +635,14 @@ describe('an older viewer and attention parity (#411)', () => {
     expect(before.badge).toBe(2)
     messages = true
     await pollTick()
-    openDrawer()
-    click(messageButton('mcp-a'))
+    // mcp-a's card asks (the plan's blocked row), so its panel opens from the card itself
+    click(card('mcp-a')!.querySelector('.sc-doing'))
     await settle()
-    expect(drawer().querySelector('.msg-undelivered summary')?.textContent).toBe('Not delivered (1)')
+    expect(document.querySelector('.agents-home .msg-undelivered summary')?.textContent).toBe('Not delivered (1)')
     expect(historyLines('mcp-a')).toHaveLength(3)
     type(input('mcp-a'), 'A draft')
     expect(await surfaces()).toEqual(before)
     // sending, delivery and an acknowledgement announce nothing either
-    openDrawer()
     click(composer('mcp-a')!.querySelector('.msg-send'))
     await settle()
     const sent = String(messagePosts(bridge)[0]!.body['id'])
@@ -692,7 +685,7 @@ describe('a viewer restart with message drafts (#420 review)', () => {
     expect(document.getElementById('pauseHint')?.textContent).toBe('Viewer updated — finish or clear unsent responses to refresh.')
     box.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
     await settle()
-    expect(messageButton('mcp-a')?.textContent).toBe('Message · draft')
+    expect(panel().hidden).toBe(true)
     await pollTick()
     expect(reload).toHaveBeenCalledTimes(1)
     // the reload loses nothing: the draft was stored

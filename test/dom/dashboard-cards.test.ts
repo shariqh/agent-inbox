@@ -1,13 +1,15 @@
 // @vitest-environment jsdom
-// Dashboard 2.0 phase 2 (#304): live lanes and the Now strip. Lanes are updated
-// in place by the ambient painter, keyed by session; a rail draft, a held
-// pointer and a background window never stop them or pull focus; the Now strip
-// reads the lanes' own model; and nothing here reaches attention.
+// The Agents home's session cards (#454), carrying what the Dashboard's live
+// lanes did (#304, #306): they are updated in place by the ambient painter, keyed
+// by card; a rail draft, a held pointer and a background window never stop them
+// or pull focus; a working card pulses once on a new call and carries the
+// 30-minute call trace and its plan; the Now strip reads the lanes' model; and
+// nothing here reaches attention.
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type Database from 'better-sqlite3'
-import { getBoard, getItem, insertItem, recordActivityCall, snoozeItem, touchActivity, upsertActivity, upsertBoard } from '../../src/store.js'
+import { endActivity, getBoard, getItem, insertItem, recordActivityCall, snoozeItem, touchActivity, upsertActivity, upsertBoard } from '../../src/store.js'
 import { attentionEntries, sortRail } from '../../public/attention.js'
 import {
   advanceClock, badgeCount, bootApp, click, freshDb, pollTick, row, settle, tabCount, type, useDomTest,
@@ -26,11 +28,11 @@ function open(): Database.Database {
   return db
 }
 
-const lane = (session: string): HTMLElement | null =>
-  document.querySelector<HTMLElement>(`#dashboard .dash-lane[data-lane="${session}"]`)
-const laneIds = (): string[] =>
-  [...document.querySelectorAll<HTMLElement>('#dashboard .dash-lane')].map((el) => el.dataset.lane!)
-const doing = (session: string): string => lane(session)?.querySelector('.dash-lane-doing')?.textContent ?? ''
+const card = (session: string): HTMLElement | null =>
+  [...document.querySelectorAll<HTMLElement>('#dashboard [data-session-card]')].find((el) => el.dataset.sessionCard === `session:${session}`) ?? null
+const cardIds = (): string[] =>
+  [...document.querySelectorAll<HTMLElement>('#dashboard .ah-groups [data-session-card]')].map((el) => el.dataset.sessionCard!.replace(/^session:/, ''))
+const doing = (session: string): string => card(session)?.querySelector('.sc-doing')?.textContent ?? ''
 const signal = (name: string): string =>
   document.querySelector(`[data-dashboard-signal="${name}"] .dashboard-value`)?.textContent ?? ''
 const railIds = (): string[] =>
@@ -43,63 +45,60 @@ function work(d: Database.Database, session: string, what: string, extra: Record
   upsertActivity(d, { ...A, session, doing: what, idle: false, ...extra })
 }
 
-describe('live lanes (#304)', () => {
-  it('updates each lane in place across polls, pins order and appends new sessions', async () => {
+describe('session cards carry the lanes (#304, #454)', () => {
+  it('updates each card in place across polls, pins order and appends new sessions', async () => {
     const d = open()
     work(d, 'first', 'Writing the store')
     advanceClock()
     work(d, 'second', 'Reviewing the diff')
     await bootApp(d)
     // A forced paint orders by the newest call.
-    expect(laneIds()).toEqual(['second', 'first'])
-    const nodes = laneIds().map(lane)
+    expect(cardIds()).toEqual(['second', 'first'])
+    const nodes = cardIds().map(card)
 
     advanceClock()
-    work(d, 'first', 'Running the tests', { detail: 'vitest, 2 workers' })
+    work(d, 'first', 'Running the tests')
     advanceClock()
     work(d, 'third', 'Drafting the PR')
     await pollTick()
 
     // The newest call no longer re-sorts: the order is pinned, the new one appends.
-    expect(laneIds()).toEqual(['second', 'first', 'third'])
-    expect([lane('second'), lane('first')]).toEqual(nodes)
+    expect(cardIds()).toEqual(['second', 'first', 'third'])
+    expect([card('second'), card('first')]).toEqual(nodes)
     expect(doing('first')).toBe('Running the tests')
-    expect(lane('first')!.querySelector('.dash-lane-detail')?.textContent).toBe('vitest, 2 workers')
-    // A lane that only just appeared does not pulse; the one whose call moved does.
-    expect([...document.querySelectorAll<HTMLElement>('.dash-lane.pulse')].map((el) => el.dataset.lane)).toEqual(['first'])
-    expect([...document.querySelectorAll<HTMLElement>('.dash-lane.sweep')].map((el) => el.dataset.lane)).toEqual(['first'])
+    // A card that only just appeared does not pulse; the one whose call moved does.
+    expect([...document.querySelectorAll<HTMLElement>('.sc.pulse')].map((el) => el.dataset.sessionCard)).toEqual(['session:first'])
 
     // A frame the human asked for re-sorts.
     click(document.querySelector('.tab[data-tab="dashboard"]'))
     await settle()
-    expect(laneIds()).toEqual(['third', 'first', 'second'])
-    expect(lane('second')).toBe(nodes[0])
+    expect(cardIds()).toEqual(['third', 'first', 'second'])
+    expect(card('second')).toBe(nodes[0])
   })
 
-  it('says quiet after five minutes without a call, then folds the lane once its claim decays', async () => {
+  it('reads a heads-down session as working until its claim decays, then as idle, never dropping it', async () => {
     const d = open()
     work(d, 'heads-down', 'Long build')
     await bootApp(d)
-    expect(lane('heads-down')!.querySelector('.dash-lane-recency')?.textContent).toBe('just now')
+    expect(card('heads-down')!.querySelector('.sc-when')?.textContent).toBe('last call just now')
 
     // The liveness heartbeat keeps the row present; it never keeps the claim.
     advanceClock(12 * MIN)
     touchActivity(d, 'heads-down')
     await pollTick()
-    expect(lane('heads-down')!.classList.contains('quiet')).toBe(true)
-    expect(lane('heads-down')!.querySelector('.dash-lane-recency')?.textContent).toBe('quiet 12m')
+    expect(card('heads-down')!.querySelector('.sc-when')?.textContent).toBe('last call 12m ago')
 
     advanceClock(19 * MIN)
     touchActivity(d, 'heads-down')
     await pollTick()
-    expect(lane('heads-down')).toBeNull()
-    expect(document.querySelector('.dash-lanes-idle')?.textContent).toBe('+1 idle connection')
+    expect(card('heads-down')!.querySelector('.sc-state')?.textContent).toBe('Idle')
+    expect(signal('agents')).toBe('0')
   })
 
-  it('joins the plan by project, branch and agent and adds its bar to the Now strip', async () => {
+  it('shows the joined plan on a working card and adds its bar to the Now strip', async () => {
     const d = open()
     upsertBoard(d, {
-      ...A, title: 'Lanes plan',
+      ...A, title: 'Cards plan',
       rows: [
         { label: 'Model', status: 'done' }, { label: 'Paint', status: 'partial' }, { label: 'Docs', status: 'missing' },
         {
@@ -109,97 +108,59 @@ describe('live lanes (#304)', () => {
       ],
     })
     upsertBoard(d, { ...A, agent: 'claude-code', title: 'Someone else', rows: [{ label: 'X', status: 'done' }] })
-    work(d, 'mine', 'Painting lanes')
+    work(d, 'mine', 'Painting cards')
     work(d, 'theirs', 'Elsewhere', { stream: 'feature' })
     await bootApp(d)
 
-    const bar = lane('mine')!.querySelector('.dash-lane-plan')!
-    expect(bar.querySelector('.dash-lane-plan-count')?.textContent).toBe('1/4')
-    expect(bar.querySelector('.dash-lane-bar')?.getAttribute('aria-label'))
-      .toBe('Lanes plan: 1 done, 1 in progress, 1 waiting on you, 1 to do')
-    expect(lane('theirs')!.querySelector<HTMLElement>('.dash-lane-plan')?.hidden).toBe(true)
+    // the plan's blocked row is mine's ask, so its card shows the ask; its plan is the Now strip's
+    expect(card('mine')!.querySelector('.sc-state')?.textContent).toBe('Needs you')
+    expect(card('mine')!.querySelector('.sc-ask-title')?.textContent).toBe('Approve')
+    expect(card('theirs')!.querySelector('.sc-plan')).toBeNull()
     // The Now strip's numbers are the lanes' own: working sessions, their plans' bars, the attention set.
-    expect(signal('agents')).toBe(String(laneIds().length))
+    expect(signal('agents')).toBe('2')
     expect(signal('plans')).toBe('1')
     expect(document.querySelector('[data-dashboard-signal="plans"] .dashboard-value-total')?.textContent).toBe('/4')
+    expect(document.querySelector('[data-dashboard-signal="plans"] .dash-now-sub')?.textContent).toBe('in sessions')
     expect(signal('waiting')).toBe(String(badgeCount()))
     // The headings carry none of the strip's numbers.
     for (const heading of document.querySelectorAll('#dashboard .dashboard-card-head h2')) {
       expect(heading.textContent).not.toMatch(/\d/)
     }
-  })
-
-  it('jumps from "Asking you" to the rail card, and past the rail to the Inbox', async () => {
-    const d = open()
-    work(d, 'asker', 'Waiting on a decision')
-    const ids: string[] = []
-    for (let index = 0; index < 4; index += 1) {
-      ids.push(insertItem(d, { ...A, kind: 'question', title: `Decision ${index}`, session: 'asker' }))
-      advanceClock(30 * MIN)
-    }
-    work(d, 'asker', 'Waiting on a decision')
-    await bootApp(d)
-
-    const strip = lane('asker')!.querySelector<HTMLElement>('.dash-lane-ask')!
-    expect(strip.hidden).toBe(false)
-    expect(strip.querySelector('.dash-lane-ask-title')?.textContent).toBe('Decision 0')
-    expect(strip.querySelector('.dash-lane-ask-more')?.textContent).toBe(' +3 more')
-    expect(strip.querySelector('.dash-lane-waiting')?.textContent).toBe('waiting on you 2h')
-    expect(railIds()).toEqual(ids.slice(0, 3))
-
-    click(strip.querySelector('.dash-lane-asking'))
-    expect(document.activeElement).toBe(document.querySelector(`#dashRail [data-rail-card="${ids[0]}"]`))
-
-  })
-
-  it('opens an ask past the rail in the Inbox', async () => {
-    const d = open()
-    work(d, 'other', 'Asking first')
-    for (let index = 0; index < 3; index += 1) {
-      insertItem(d, { ...A, kind: 'question', title: `Older ${index}`, session: 'other' })
-      advanceClock()
-    }
-    work(d, 'asker', 'Asking later')
-    const late = insertItem(d, { ...A, kind: 'question', title: 'Late decision', session: 'asker' })
-    await bootApp(d)
-    expect(railIds()).not.toContain(late)
-
-    click(lane('asker')!.querySelector('.dash-lane-waiting'))
-    await settle()
-    expect(document.getElementById('needsYou')?.hidden).toBe(false)
-    expect(row(late)).not.toBeNull()
+    // the Working tile opens the Agents home, as G L and the sidebar's Sessions line do
+    click(document.querySelector('[data-dashboard-signal="agents"]'))
+    expect(document.activeElement).toBe(document.getElementById('agentsHomeTitle'))
   })
 })
 
-describe('lanes keep moving while the rest of the Dashboard holds (#304)', () => {
-  it('updates lanes while a rail draft holds the rail', async () => {
+describe('cards keep moving while the rest of the Dashboard holds (#304)', () => {
+  it('updates cards while a rail draft holds the rail', async () => {
     const d = open()
     const id = insertItem(d, { ...A, kind: 'question', title: 'Pick a window' })
     work(d, 'busy', 'Step one')
     await bootApp(d)
     click(document.querySelector(`[data-rail-card="${id}"] [data-rail-action="expand"]`))
     type(document.querySelector<HTMLTextAreaElement>(`[data-rail-card="${id}"] .reply-input`), 'Thursday')
-    const node = lane('busy')
+    const node = card('busy')
 
     advanceClock()
     work(d, 'busy', 'Step two', { children: [{ name: 'tester', doing: 'Testing' }] })
     await pollTick()
 
     expect(document.getElementById('pauseHint')?.textContent).toContain('paused')
-    expect(lane('busy')).toBe(node)
+    expect(card('busy')).toBe(node)
     expect(doing('busy')).toBe('Step two')
-    expect(lane('busy')!.querySelector('.dash-lane-child')?.textContent).toBe('tester')
+    expect(card('busy')!.querySelector('.sc-kids')?.textContent).toBe('▸ 1 subagent')
     expect(document.querySelector<HTMLTextAreaElement>(`[data-rail-card="${id}"] .reply-input`)?.value).toBe('Thursday')
   })
 
-  it('writes nothing to an unchanged lane, whether the tick is idle or changed elsewhere', async () => {
+  it('writes nothing to an unchanged card, whether the tick is idle or changed elsewhere', async () => {
     const d = open()
     work(d, 'busy', 'Step one', { children: [{ name: 'tester', doing: 'Testing' }] })
     upsertBoard(d, { ...A, title: 'Plan', rows: [{ label: 'Build', status: 'done' }, { label: 'Ship', status: 'missing' }] })
     await bootApp(d)
     const mutations: MutationRecord[] = []
     const observer = new MutationObserver((records) => mutations.push(...records))
-    observer.observe(document.querySelector('.dash-lane-list')!, { subtree: true, childList: true, characterData: true, attributes: true })
+    observer.observe(document.querySelector('.agents-home .ah-groups')!, { subtree: true, childList: true, characterData: true, attributes: true })
 
     await pollTick()
     insertItem(d, { project: 'beta', stream: 'main', agent: 'claude', kind: 'note', title: 'Unrelated' })
@@ -210,55 +171,50 @@ describe('lanes keep moving while the rest of the Dashboard holds (#304)', () =>
     expect(mutations).toEqual([])
   })
 
-  it('holds lanes through a pointer press, then updates the same nodes', async () => {
+  it('holds cards through a pointer press, then updates the same nodes', async () => {
     const d = open()
     work(d, 'busy', 'Step one')
     await bootApp(d)
-    const node = lane('busy')!
+    const node = card('busy')!
     await vi.advanceTimersByTimeAsync(2800)
     node.dispatchEvent(new Event('pointerdown', { bubbles: true }))
     work(d, 'busy', 'Step two')
     await vi.advanceTimersByTimeAsync(200)
     expect(doing('busy')).toBe('Step one')
-    expect(document.getElementById('pauseHint')?.textContent).toBe('')
 
     node.dispatchEvent(new Event('pointerup', { bubbles: true }))
     await pollTick()
-    expect(lane('busy')).toBe(node)
+    expect(card('busy')).toBe(node)
     expect(doing('busy')).toBe('Step two')
   })
 
-  it('never pulls focus into a background window while its lanes update', async () => {
+  it('never pulls focus into a background window while its cards update', async () => {
     const d = open()
-    work(d, 'asker', 'Step one')
-    insertItem(d, { ...A, kind: 'question', title: 'Ship it?', session: 'asker' })
+    work(d, 'talker', 'Step one', { receives_messages: true })
     await bootApp(d)
-    const button = lane('asker')!.querySelector<HTMLButtonElement>('.dash-lane-asking')!
+    const button = card('talker')!.querySelector<HTMLButtonElement>('[data-ah-action="message"]')!
     button.focus()
     vi.spyOn(document, 'hasFocus').mockReturnValue(false)
     const focus = vi.spyOn(HTMLElement.prototype, 'focus')
 
-    work(d, 'asker', 'Step two')
+    work(d, 'talker', 'Step two', { receives_messages: true })
     await pollTick()
 
-    expect(doing('asker')).toBe('Step two')
-    expect(lane('asker')!.querySelector('.dash-lane-asking')).toBe(button)
+    expect(doing('talker')).toBe('Step two')
     expect(document.activeElement).toBe(button)
     expect(focus).not.toHaveBeenCalled()
   })
 })
 
 describe('one-shot activity motion (#304: no infinite animation)', () => {
-  // Every class a paint starts a one-shot with, as [session, name].
-  function shots(): Array<[string, string]> {
-    const started: Array<[string, string]> = []
+  // Every pulse a paint starts, by session.
+  function shots(): string[] {
+    const started: string[] = []
     const add = DOMTokenList.prototype.add
     vi.spyOn(DOMTokenList.prototype, 'add').mockImplementation(function (this: DOMTokenList, ...names: string[]) {
-      const lane = document.querySelector<HTMLElement>('.dash-lane-list')
-      for (const name of names) {
-        if (name !== 'pulse' && name !== 'sweep') continue
-        const owner = [...(lane?.children ?? [])].find((el) => el.classList === this) as HTMLElement | undefined
-        if (owner) started.push([owner.dataset.lane!, name])
+      if (names.includes('pulse')) {
+        const owner = [...document.querySelectorAll<HTMLElement>('[data-session-card]')].find((el) => el.classList === this)
+        if (owner) started.push(owner.dataset.sessionCard!.replace(/^session:/, ''))
       }
       return add.apply(this, names)
     })
@@ -282,23 +238,24 @@ describe('one-shot activity motion (#304: no infinite animation)', () => {
     advanceClock()
     recordActivityCall(d, 'b')
     await pollTick()
-    expect(started).toEqual([['b', 'pulse'], ['b', 'sweep']])
-    expect(lane('b')!.classList.contains('pulse')).toBe(true)
+    expect(started).toEqual(['b'])
+    expect(card('b')!.classList.contains('pulse')).toBe(true)
 
+    // a paint while it runs keeps it running
+    insertItem(d, { project: 'beta', stream: 'main', agent: 'claude', kind: 'note', title: 'Another' })
     await pollTick()
+    expect(card('b')!.classList.contains('pulse')).toBe(true)
     click(document.querySelector('.tab[data-tab="dashboard"]'))
     await settle()
-    expect(started).toHaveLength(2)
+    expect(started).toHaveLength(1)
 
     // The one-shot cleans itself up when its animation ends.
     const end = new Event('animationend', { bubbles: true })
     Object.defineProperty(end, 'animationName', { value: 'dash-lane-pulse' })
-    lane('b')!.dispatchEvent(end)
-    expect(lane('b')!.classList.contains('pulse')).toBe(false)
+    card('b')!.dispatchEvent(end)
+    expect(card('b')!.classList.contains('pulse')).toBe(false)
   })
 
-  // #305 (from #304's review): a cancelled one-shot (Calm switched on, the
-  // Dashboard left mid-pulse) drops its class too, so it never replays later.
   it('removes a one-shot class when its animation is cancelled', async () => {
     const d = open()
     work(d, 'a', 'Working')
@@ -306,17 +263,17 @@ describe('one-shot activity motion (#304: no infinite animation)', () => {
     advanceClock()
     recordActivityCall(d, 'a')
     await pollTick()
-    expect(lane('a')!.classList.contains('pulse')).toBe(true)
+    expect(card('a')!.classList.contains('pulse')).toBe(true)
     const other = new Event('animationcancel')
-    Object.defineProperty(other, 'animationName', { value: 'dash-lane-sweep' })
-    lane('a')!.dispatchEvent(other)
-    expect(lane('a')!.classList.contains('pulse')).toBe(true)
+    Object.defineProperty(other, 'animationName', { value: 'dash-focus-in' })
+    card('a')!.dispatchEvent(other)
+    expect(card('a')!.classList.contains('pulse')).toBe(true)
     const cancel = new Event('animationcancel')
     Object.defineProperty(cancel, 'animationName', { value: 'dash-lane-pulse' })
-    lane('a')!.dispatchEvent(cancel)
-    expect(lane('a')!.classList.contains('pulse')).toBe(false)
+    card('a')!.dispatchEvent(cancel)
+    expect(card('a')!.classList.contains('pulse')).toBe(false)
     await pollTick()
-    expect(lane('a')!.classList.contains('pulse')).toBe(false)
+    expect(card('a')!.classList.contains('pulse')).toBe(false)
   })
 
   it.each([
@@ -353,125 +310,96 @@ describe('one-shot activity motion (#304: no infinite animation)', () => {
   })
 })
 
-describe('focus when a lane control leaves (#304 review)', () => {
-  const finish = (d: Database.Database, session: string) =>
-    upsertActivity(d, { ...A, session, doing: 'open', idle: true })
-
-  it('hands focus to the adjacent lane control, then to the heading', async () => {
+describe('focus when a card leaves (#304 review, #454)', () => {
+  it('hands focus to the Agents heading when the card holding it leaves', async () => {
     const d = open()
-    work(d, 'first', 'Asking first')
-    insertItem(d, { ...A, kind: 'question', title: 'First ask', session: 'first' })
-    advanceClock()
-    work(d, 'second', 'Asking second')
-    insertItem(d, { ...A, kind: 'question', title: 'Second ask', session: 'second' })
+    work(d, 'first', 'Working', { receives_messages: true })
     await bootApp(d)
-    // the lanes show under the Sessions lens; the Dashboard opens on Agents (#454)
-    click(document.querySelector('.mesh-lens [data-mesh-lens="sessions"]'))
-    expect(laneIds()).toEqual(['second', 'first'])
-    lane('second')!.querySelector<HTMLButtonElement>('.dash-lane-asking')!.focus()
-
-    finish(d, 'second')
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    card('first')!.querySelector<HTMLButtonElement>('[data-ah-action="message"]')!.focus()
+    endActivity(d, 'first')
     await pollTick()
-    expect(lane('second')).toBeNull()
-    expect(document.activeElement).toBe(lane('first')!.querySelector('.dash-lane-asking'))
-
-    finish(d, 'first')
-    await pollTick()
-    expect(document.activeElement).toBe(document.getElementById('dashLanesTitle'))
+    expect(card('first')).toBeNull()
+    expect(document.activeElement).toBe(document.getElementById('agentsHomeTitle'))
   })
 
-  it('never pulls focus in a background window when a focused lane leaves', async () => {
+  it('never pulls focus in a background window when a focused card leaves', async () => {
     const d = open()
-    work(d, 'first', 'Asking first')
-    insertItem(d, { ...A, kind: 'question', title: 'First ask', session: 'first' })
-    work(d, 'second', 'Working')
+    work(d, 'first', 'Working', { receives_messages: true })
     await bootApp(d)
-    const button = lane('first')!.querySelector<HTMLButtonElement>('.dash-lane-asking')!
+    const button = card('first')!.querySelector<HTMLButtonElement>('[data-ah-action="message"]')!
     button.focus()
     vi.spyOn(document, 'hasFocus').mockReturnValue(false)
-    button.dispatchEvent(new FocusEvent('blur'))
-    button.dispatchEvent(new FocusEvent('focusout', { bubbles: true }))
     const focus = vi.spyOn(HTMLElement.prototype, 'focus')
-
-    finish(d, 'first')
+    endActivity(d, 'first')
     await pollTick()
-
-    expect(lane('first')).toBeNull()
+    expect(card('first')).toBeNull()
     expect(focus).not.toHaveBeenCalled()
   })
 })
 
 describe('the Dashboard element budget (#304, proposal §10)', () => {
-  it('stays within 1,500 elements with twelve busy lanes, more working and a full rail', async () => {
+  it('stays within 1,500 elements with fourteen busy sessions, their plans and asks, and a full rail', async () => {
     const d = open()
     for (let index = 0; index < 14; index += 1) {
       const scope = { ...A, stream: `branch-${index}` }
       upsertBoard(d, { ...scope, title: `Plan ${index}`, rows: Array.from({ length: 8 }, (_, row) => ({ label: `Step ${row}`, status: row < 3 ? 'done' : 'missing' })) })
-      work(d, `s${index}`, `Lane ${index}`, { stream: scope.stream, detail: 'Detail', children: [{ name: 'a', doing: 'x' }, { name: 'b', doing: 'y' }, { name: 'c', doing: 'z' }] })
+      work(d, `s${index}`, `Session ${index}`, { stream: scope.stream, detail: 'Detail', children: [{ name: 'a', doing: 'x' }, { name: 'b', doing: 'y' }, { name: 'c', doing: 'z' }] })
       insertItem(d, { ...scope, kind: 'question', title: `Ask ${index}`, session: `s${index}` })
       advanceClock()
     }
     await bootApp(d)
-    expect(document.querySelectorAll('#dashboard .dash-lane')).toHaveLength(12)
-    expect(document.querySelector('.dash-lanes-more')?.textContent).toBe('+2 more working')
+    expect(document.querySelectorAll('#dashboard [data-session-card]')).toHaveLength(14)
     const count = document.querySelectorAll('#dashboard *').length
     expect(count).toBeLessThanOrEqual(1500)
   })
 })
 
-describe('heartbeat trace and the session-to-plan link (#306)', () => {
-  const spark = (session: string) => lane(session)!.querySelector<SVGPathElement>('.dash-lane-spark path')!
-  const traceCount = (session: string) => lane(session)!.querySelector('.dash-lane-trace-count')?.textContent
+describe('the call trace and the session-to-plan link on cards (#306)', () => {
+  const spark = (session: string) => card(session)!.querySelector<SVGPathElement>('.sc-spark path')!
 
-  it('draws the 30-minute trace as a static path, redrawn in place by a call and by the clock alone', async () => {
+  it('draws the 30-minute trace as a static path, redrawn by a call and by the clock alone', async () => {
     const d = open()
     work(d, 'busy', 'Step one')
     recordActivityCall(d, 'busy')
     recordActivityCall(d, 'busy')
     await bootApp(d)
-    const path = spark('busy')
-    const first = path.getAttribute('d')
-    expect(first).toMatch(/^M58 12v-12h1\.5v12z$/)
-    expect(traceCount('busy')).toBe('3 in 30m')
-    expect(lane('busy')!.querySelector('.dash-lane-spark')?.getAttribute('aria-label')).toBe('3 MCP calls in the last 30 minutes')
-    expect(lane('busy')!.querySelector<HTMLElement>('.dash-lane-trace')!.hidden).toBe(false)
+    expect(spark('busy').getAttribute('d')).toMatch(/^M58 12v-12h1\.5v12z$/)
+    expect(card('busy')!.querySelector('.sc-spark')?.getAttribute('aria-label')).toBe('3 MCP calls in the last 30 minutes')
 
-    // a call two minutes on adds a bar to the same path; the old one moves back
+    // a call two minutes on adds a bar; the old one moves back
     advanceClock(2 * MIN)
     recordActivityCall(d, 'busy')
     await pollTick()
-    expect(spark('busy')).toBe(path)
-    expect(path.getAttribute('d')).toBe('M54 12v-12h1.5v12zM58 12v-4h1.5v4z')
-    expect(traceCount('busy')).toBe('4 in 30m')
+    expect(spark('busy').getAttribute('d')).toBe('M54 12v-12h1.5v12zM58 12v-4h1.5v4z')
 
     // with no call, the clock alone rolls the bars back once the frame is repainted
     advanceClock(2 * MIN)
     await pollTick()
-    expect(spark('busy')).toBe(path)
-    expect(path.getAttribute('d')).toBe('M50 12v-12h1.5v12zM54 12v-4h1.5v4z')
+    expect(spark('busy').getAttribute('d')).toBe('M50 12v-12h1.5v12zM54 12v-4h1.5v4z')
 
-    // nothing about it is animated: no SMIL, no animation class, no CSS animation on it
-    expect(lane('busy')!.querySelector('animate, animateTransform, animateMotion')).toBeNull()
+    // nothing about it is animated: no SMIL, no CSS animation on it
+    expect(card('busy')!.querySelector('animate, animateTransform, animateMotion')).toBeNull()
     const css = readFileSync(join(process.cwd(), 'public', 'style.css'), 'utf8')
-    const rules = css.match(/[^}]*\.dash-lane-(?:spark|trace)[^{]*\{[^}]*\}/g) ?? []
+    const rules = css.match(/[^}]*\.sc-spark[^{]*\{[^}]*\}/g) ?? []
     expect(rules.length).toBeGreaterThan(0)
     for (const rule of rules) expect(rule).not.toMatch(/animation|transition/)
   })
 
-  it('puts the plan a session stamped on its lane, ahead of the project, branch and agent join', async () => {
+  it('puts the plan a session stamped on its card, ahead of the project, branch and agent join', async () => {
     const d = open()
-    work(d, 'one', 'First lane')
-    work(d, 'two', 'Second lane')
+    work(d, 'one', 'First')
+    work(d, 'two', 'Second')
     upsertBoard(d, { ...A, title: 'Two plan', session: 'two', rows: [{ label: 'Build', status: 'done' }, { label: 'Ship', status: 'missing' }] })
     advanceClock()
     upsertBoard(d, { ...A, title: 'Shared plan', rows: [{ label: 'Build', status: 'missing' }] })
     await bootApp(d)
-    const title = (session: string) => lane(session)!.querySelector('.dash-lane-plan-title')?.textContent
+    const title = (session: string) => card(session)!.querySelector('.sc-plan-text')?.textContent
     // `two` stamped its plan; `one` joins the newest plan nobody present stamped
-    expect(title('two')).toBe('Two plan')
-    expect(title('one')).toBe('Shared plan')
+    expect(title('two')).toBe('1/2 Two plan')
+    expect(title('one')).toBe('0/1 Shared plan')
 
-    // `one` writes `two`'s plan: it moves to `one`'s lane, and `two` joins what is left
+    // `one` writes `two`'s plan: it moves to `one`'s card, and `two` joins what is left
     advanceClock()
     const plan = getBoard(d, 'alpha', 'Two plan')!
     upsertBoard(d, {
@@ -479,12 +407,12 @@ describe('heartbeat trace and the session-to-plan link (#306)', () => {
       rows: plan.rows.map((row) => ({ label: row.label, status: row.status, revision: row.revision })),
     })
     await pollTick()
-    expect(title('one')).toBe('Two plan')
-    expect(title('two')).toBe('Shared plan')
+    expect(title('one')).toBe('1/2 Two plan')
+    expect(title('two')).toBe('0/1 Shared plan')
   })
 })
 
-describe('attention parity with lanes present (#304)', () => {
+describe('attention parity with the cards present (#304, #454)', () => {
   const surfaces = async () => {
     const dock = await fetch('/api/items?scope=attention')
     const plans = await fetch('/api/boards?scope=attention')
@@ -498,7 +426,7 @@ describe('attention parity with lanes present (#304)', () => {
     }
   }
 
-  it('changes no badge, tab, rail card or dock read when only the lanes change', async () => {
+  it('changes no badge, tab, rail card or dock read when only the cards change', async () => {
     const d = open()
     work(d, 'asker', 'Step one')
     const asked = insertItem(d, { ...A, kind: 'question', title: 'Ship it?', session: 'asker' })
@@ -509,8 +437,6 @@ describe('attention parity with lanes present (#304)', () => {
     await bootApp(d, { interceptFetch: async (input, _init, next) => { reads.add(String(input).split('?')[0]!); return next() } })
     const before = await surfaces()
 
-    // Only what lanes draw moves: the claim, its detail, subagents, the plan's
-    // progress, quiet time, the call trace and (#306) the plan's session stamp.
     advanceClock(6 * MIN)
     work(d, 'asker', 'Step two', { detail: 'more', children: [{ name: 'helper', doing: 'Helping' }] })
     const plan = getBoard(d, 'alpha', 'Plan')!
@@ -521,19 +447,17 @@ describe('attention parity with lanes present (#304)', () => {
         { label: 'Test', status: 'missing', revision: plan.rows[1]!.revision },
       ],
     })
-    work(d, 'second', 'Another lane')
+    work(d, 'second', 'Another session')
     reads.clear()
     await pollTick()
 
-    expect(laneIds()).toEqual(['asker', 'second'])
-    expect(lane('asker')!.querySelector('.dash-lane-plan-count')?.textContent).toBe('1/2')
-    expect(lane('asker')!.querySelector('.dash-lane-trace-count')?.textContent).toBe('2 in 30m')
+    expect(cardIds()).toEqual(['asker', 'second'])
     expect(await surfaces()).toEqual(before)
-    // The lane's ask is the attention set's own, and a snoozed one is not drawn.
+    // The card's ask is the attention set's own, and a snoozed one is not drawn.
     const asks = sortRail(attentionEntries([getItem(d, asked)!, getItem(d, snoozed)!], [], Date.now(), ['asker', 'second']), Date.now())
     expect(asks.map((entry) => entry.kind === 'item' && entry.item.id)).toEqual([asked])
-    expect(lane('asker')!.querySelector('.dash-lane-ask-title')?.textContent).toBe('Ship it?')
-    expect(lane('asker')!.querySelector('.dash-lane-ask-more')?.textContent).toBe('')
+    expect(card('asker')!.querySelector('.sc-ask-title')?.textContent).toBe('Ship it?')
+    expect(card('asker')!.querySelector('.sc-ask-more')).toBeNull()
     // No new poll reads.
     expect([...reads].sort()).toEqual([
       '/api/activity', '/api/activity/history', '/api/boards', '/api/boards/archived/summary', '/api/issues',

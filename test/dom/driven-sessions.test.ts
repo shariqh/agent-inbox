@@ -90,15 +90,32 @@ function recordingBoot(d: Database.Database) {
   return { urls, boot }
 }
 
-const drawer = (): HTMLElement => document.getElementById('liveDrawer') as HTMLElement
-const openDrawer = (): void => { if (drawer().hidden) click(document.getElementById('liveStrip')) }
-const section = () => drawer().querySelector<HTMLElement>('.live-launches')
-const launchRow = (id: string) => section()?.querySelector<HTMLElement>(`[data-launch="${id}"]`) ?? null
-const action = (id: string, name: string) => launchRow(id)?.querySelector<HTMLButtonElement>(`[data-launch-action="${name}"]`) ?? null
-const composer = (session: string) => [...drawer().querySelectorAll<HTMLElement>('.msg-composer')].find((el) => el.dataset.msgSession === session)
-const messageButton = (session: string) => [...drawer().querySelectorAll<HTMLButtonElement>('[data-msg-open]')].find((b) => b.dataset.msgOpen === session)
-// #454: the Dashboard's session panel
+// #454: a launch is a card in the Agents home, and its actions live in the session panel
 const panel = (): HTMLElement => document.querySelector<HTMLElement>('#dashboard .dash-focus')!
+const newSessionButton = () => document.querySelector<HTMLButtonElement>('.agents-home .ah-new')
+const anyCard = (id: string) => [...document.querySelectorAll<HTMLElement>('[data-session-card]')].find((el) => el.dataset.sessionCard === id) ?? null
+function openFolds(): void {
+  for (const key of ['ended', 'earlier']) {
+    const fold = document.querySelector<HTMLDetailsElement>(`.agents-home [data-ah-fold="${key}"]`)
+    if (!fold || fold.hidden || fold.open) continue
+    fold.open = true
+    fold.dispatchEvent(new Event('toggle'))
+  }
+}
+// the launch's card, wherever it is listed (the Ended and Earlier folds opened for it)
+function launchRow(id: string): HTMLElement | null {
+  if (!anyCard(`launch:${id}`)) openFolds()
+  return anyCard(`launch:${id}`)
+}
+// the launch's panel, opened from its card
+function openLaunch(id: string): HTMLElement {
+  if (panel().hidden || panel().dataset.card !== `launch:${id}`) click(launchRow(id)?.querySelector('.sc-doing'))
+  return panel()
+}
+const action = (id: string, name: string) => openLaunch(id).querySelector<HTMLButtonElement>(`[data-launch-action="${name}"]`)
+const stateOf = (id: string) => launchRow(id)?.querySelector('.sc-state')?.textContent
+const doingOf = (id: string) => launchRow(id)?.querySelector('.sc-doing')?.textContent
+const composer = (session: string) => [...panel().querySelectorAll<HTMLElement>('.msg-composer')].find((el) => el.dataset.msgSession === session)
 const panelAction = (name: string) => panel().querySelector<HTMLButtonElement>(`[data-launch-action="${name}"]`)
 const panelLines = () => [...panel().querySelectorAll('.sp-transcript .launch-line')].map((li) => li.querySelector('.tx-b')?.textContent)
 
@@ -111,19 +128,14 @@ describe('off means off on the page (§9 b)', () => {
     const { urls, boot } = recordingBoot(db)
     await boot
     await changedPollTick(db)
-    openDrawer()
-    click(messageButton('mcp-1'))
-    await settle()
     expect(urls.filter((u) => u.includes('/api/launch'))).toEqual([])
-    expect(section()).toBeNull()
     expect(document.getElementById('launch-settings')).toBeNull()
-    expect(composer('mcp-1')?.querySelector('.msg-interrupt')).toBeNull()
-    expect(drawer().querySelector('.live-started-here, [data-launch-action="message"]')).toBeNull()
-    expect(document.querySelector('.dash-lane-launch, .launch-dialog, .launch-transcript')).toBeNull()
     // the Agents home (#454): no launch card and no New session; the driven session is a card of its own,
-    // and its panel has no action bar, transcript, worktree or Resume and send
+    // and its panel has no action bar, transcript, worktree or Resume and send, and its composer no Interrupt
     click(document.querySelector('[data-session-card="session:mcp-1"] .sc-doing'))
     await settle()
+    expect(composer('mcp-1')?.querySelector('.msg-interrupt')).toBeNull()
+    expect(document.querySelector('.launch-dialog, .sp-actions [data-launch-action]')).toBeNull()
     for (const part of ['.sp-actions', '.sp-transcript', '.sp-worktree', '.sp-resume']) {
       expect(panel().querySelector<HTMLElement>(part)?.hidden, part).toBe(true)
     }
@@ -144,9 +156,8 @@ describe('off means off on the page (§9 b)', () => {
     expect(settings.hidden).toBe(false)
     expect(settings.querySelector<HTMLInputElement>('#launch-switch')!.checked).toBe(false)
     expect(urls.filter((u) => u.includes('/api/launch'))).toEqual([])
-    openDrawer()
-    expect(section()).toBeNull()
-    // the switch on: the next tick reads the launches and the section appears
+    expect(document.querySelector('[data-session-card^="launch:"]')).toBeNull()
+    // the switch on: the next tick reads the launches and the launch's card appears
     const toggle = settings.querySelector<HTMLInputElement>('#launch-switch')!
     toggle.checked = true
     toggle.dispatchEvent(new Event('change', { bubbles: true }))
@@ -154,7 +165,7 @@ describe('off means off on the page (§9 b)', () => {
     expect(api.setEnabled).toHaveBeenCalledWith(true)
     await changedPollTick(db)
     expect(urls.some((u) => u.startsWith('/api/launches'))).toBe(true)
-    expect(launchRow(LAUNCH)?.textContent).toContain('alpha')
+    expect(launchRow(LAUNCH)?.closest('.ah-group')?.querySelector('.ah-group-name')?.textContent).toBe('alpha')
   })
 
   it('unticks and disables New worktree for a chosen folder that is not a repository, and restores it for one that is (#432)', async () => {
@@ -163,8 +174,7 @@ describe('off means off on the page (§9 b)', () => {
     insertItem(db, { project: 'alpha', stream: 'main', agent: 'copilot', kind: 'note', title: 'seen', repo_root: '/work/alpha' })
     await bootApp(db)
     await changedPollTick(db)
-    openDrawer()
-    click(section()!.querySelector('.launch-new'))
+    click(newSessionButton())
     await settle()
     const dialog = document.querySelector<HTMLDialogElement>('.launch-dialog')!
     const project = dialog.querySelector<HTMLSelectElement>('select[name="root"]')!
@@ -201,8 +211,7 @@ describe('off means off on the page (§9 b)', () => {
     db = freshDb()
     await bootApp(db)
     await changedPollTick(db)
-    openDrawer()
-    click(section()!.querySelector('.launch-new'))
+    click(newSessionButton())
     await settle()
     const dialog = document.querySelector<HTMLDialogElement>('.launch-dialog')!
     type(dialog.querySelector<HTMLTextAreaElement>('textarea[name="prompt"]'), 'Tidy the notes.')
@@ -220,7 +229,7 @@ describe('off means off on the page (§9 b)', () => {
     // a repository chosen at Start goes straight on, with its worktree
     const again = launchBridge()
     again.chooseFolder.mockResolvedValueOnce({ ok: true, folder: '/work/beta', project: 'beta', repository: true })
-    click(section()!.querySelector('.launch-new'))
+    click(newSessionButton())
     await settle()
     const next = document.querySelector<HTMLDialogElement>('.launch-dialog')!
     type(next.querySelector<HTMLTextAreaElement>('textarea[name="prompt"]'), 'Fix it.')
@@ -278,7 +287,7 @@ describe('off means off on the page (§9 b)', () => {
   })
 })
 
-describe('the Live drawer’s sessions (§3.6, §7)', () => {
+describe('a launch’s card and session panel (§3.6, §7, #454)', () => {
   it('shows a launch that ended before its session was ready as “Didn’t start”, with why, in the error tone (#432 PR 5)', async () => {
     launchBridge()
     db = freshDb()
@@ -288,13 +297,12 @@ describe('the Live drawer’s sessions (§3.6, §7)', () => {
     endLaunch(db, PARKED, { reason: 'stopped' })
     await bootApp(db)
     await changedPollTick(db)
-    openDrawer()
-    expect(launchRow(LAUNCH)!.dataset.state).toBe('failed')
-    expect(launchRow(LAUNCH)!.querySelector('.live-launch-status')!.textContent)
-      .toBe('Didn’t start: Copilot refused to start the session: Model \'x\' does not support reasoning effort configuration')
-    expect(action(LAUNCH, 'transcript')).not.toBeNull()
-    expect(launchRow(PARKED)!.dataset.state).toBe('ended')
-    expect(launchRow(PARKED)!.querySelector('.live-launch-status')!.textContent).toBe('Stopped')
+    expect(launchRow(LAUNCH)!.classList.contains('tone-failed')).toBe(true)
+    expect(stateOf(LAUNCH)).toBe('Didn’t start')
+    expect(doingOf(LAUNCH)).toBe('Didn’t start: Copilot refused to start the session: Model \'x\' does not support reasoning effort configuration')
+    expect(launchRow(LAUNCH)!.querySelector('[data-ah-action="transcript"]')?.textContent).toBe('Details')
+    expect(stateOf(PARKED)).toBe('Ended')
+    expect(doingOf(PARKED)).toBe('Stopped')
   })
 
   it('offers Open in Terminal on a worktree, Remove worktree… once its launch ended, and keeps a kept worktree listed (#432)', async () => {
@@ -317,9 +325,9 @@ describe('the Live drawer’s sessions (§3.6, §7)', () => {
     }
     await bootApp(db)
     await changedPollTick(db)
-    openDrawer()
     expect(action(LAUNCH, 'open-worktree')?.textContent).toBe('Open in Terminal')
-    expect(action(LAUNCH, 'remove-worktree')).toBeNull()
+    // Remove only once ended: drawn, disabled with its reason
+    expect(action(LAUNCH, 'remove-worktree')?.disabled).toBe(true)
     expect(launchRow(OLD)).not.toBeNull()
     expect(action('11111111-2222-4333-8444-000000000002', 'open-worktree')).toBeNull()
     click(action(LAUNCH, 'open-worktree'))
@@ -331,18 +339,131 @@ describe('the Live drawer’s sessions (§3.6, §7)', () => {
     api.removeWorktree.mockResolvedValueOnce({ ok: false, error: 'git said the worktree has changes.' })
     click(action(OLD, 'remove-worktree'))
     await settle()
-    expect(launchRow(OLD)!.textContent).toContain('git said the worktree has changes.')
+    expect(openLaunch(OLD).querySelector('.sp-note')?.textContent).toBe('git said the worktree has changes.')
     api.removeWorktree.mockResolvedValueOnce({ ok: false, cancelled: true, error: 'Not removed.' })
     click(action(OLD, 'remove-worktree'))
     await settle()
-    expect(launchRow(OLD)!.textContent).not.toContain('Not removed.')
-    // removed: the row says so and offers neither; past the newest five ended, it then leaves the list
+    expect(openLaunch(OLD).textContent).not.toContain('Not removed.')
+    // removed: past the newest five ended, its card moves to Earlier sessions
     markWorktreeRemoved(db, OLD)
     await changedPollTick(db)
-    expect(launchRow(OLD)).toBeNull()
+    expect(anyCard(`launch:${OLD}`)?.closest('[data-ah-fold]')?.getAttribute('data-ah-fold')).toBe('earlier')
   })
 
-  it('names a launch’s worktree and branch on its row, and says when the worktree was removed (#432)', async () => {
+  it('an ended launch’s kept worktree is removed from its card, and the Ended fold counts the worktrees kept (#454)', async () => {
+    const api = launchBridge()
+    db = freshDb()
+    const tree = (id: string, n: number) => createLaunch(db!, {
+      id, host: 'copilot', project: 'alpha', stream: `agent-inbox/fix-${n}`, cwd: `/w/alpha/fix-${n}`, mode: 'ask',
+      budgetActiveMs: 7_200_000, budgetToolCalls: 500, prompt: 'Fix it.', specVersion: 1, driverPid: 4242,
+      worktree: { checkoutRoot: '/work/alpha', branch: `agent-inbox/fix-${n}`, baseSha: 'a'.repeat(40), baseRef: 'refs/heads/main' },
+    })
+    const STOPPED = '11111111-2222-4333-8444-000000000001'
+    const FAILED = '11111111-2222-4333-8444-000000000002'
+    tree(LAUNCH, 1)
+    tree(STOPPED, 2)
+    endLaunch(db, STOPPED, { reason: 'stopped' })
+    tree(FAILED, 3)
+    endLaunch(db, FAILED, { reason: 'error:setup' })
+    newLaunch(db, PARKED)
+    endLaunch(db, PARKED, { reason: 'stopped' })
+    await bootApp(db)
+    await changedPollTick(db)
+    const fold = () => document.querySelector<HTMLDetailsElement>('.agents-home [data-ah-fold="ended"]')!
+    const summary = () => fold().querySelector(':scope > summary')!.textContent
+    // counted while the fold is closed
+    expect(fold().open).toBe(false)
+    expect(summary()).toBe('Ended (3) · 2 worktrees kept')
+    const remove = (id: string) => launchRow(id)!.querySelector<HTMLButtonElement>('[data-ah-action="remove-worktree"]')
+    // ended with a kept worktree, a stop or a failed start alike; never a running one, nor one with no worktree
+    expect(remove(STOPPED)?.textContent).toBe('Remove worktree…')
+    expect(remove(FAILED)?.textContent).toBe('Remove worktree…')
+    expect(remove(PARKED)).toBeNull()
+    expect(remove(LAUNCH)).toBeNull()
+    // main checks and asks (its own dialog); a refusal says why in the launch's panel
+    click(remove(STOPPED))
+    await settle()
+    expect(api.removeWorktree).toHaveBeenCalledWith(STOPPED)
+    expect(panel().hidden).toBe(true)
+    api.removeWorktree.mockResolvedValueOnce({ ok: false, error: 'git said the worktree has changes.' })
+    click(remove(STOPPED))
+    await settle()
+    await settle()
+    expect(panel().hidden).toBe(false)
+    expect(panel().dataset.card).toBe(`launch:${STOPPED}`)
+    expect(panel().querySelector('.sp-note')?.textContent).toBe('git said the worktree has changes.')
+    // removed: the card offers it no longer, and the count drops
+    markWorktreeRemoved(db, STOPPED)
+    await changedPollTick(db)
+    expect(remove(STOPPED)).toBeNull()
+    expect(summary()).toBe('Ended (3) · 1 worktree kept')
+    markWorktreeRemoved(db, FAILED)
+    await changedPollTick(db)
+    expect(summary()).toBe('Ended (3)')
+  })
+
+  it('a card’s refused Remove worktree… opens the panel with its reason, after the panel last showed it running (#460 review)', async () => {
+    const api = launchBridge()
+    db = freshDb()
+    createLaunch(db, {
+      id: LAUNCH, host: 'copilot', project: 'alpha', stream: 'agent-inbox/fix-1', cwd: '/w/alpha/fix-1', mode: 'ask',
+      budgetActiveMs: 7_200_000, budgetToolCalls: 500, prompt: 'Fix it.', specVersion: 1, driverPid: 4242,
+      worktree: { checkoutRoot: '/work/alpha', branch: 'agent-inbox/fix-1', baseSha: 'a'.repeat(40), baseRef: 'refs/heads/main' },
+    })
+    await bootApp(db)
+    await changedPollTick(db)
+    // its panel painted while it ran, then closed
+    openLaunch(LAUNCH)
+    expect(panel().querySelector('.sp-actions-hint')).not.toBeNull()
+    click(panel().querySelector('.dash-focus-close'))
+    expect(panel().hidden).toBe(true)
+    endLaunch(db, LAUNCH, { reason: 'stopped' })
+    await changedPollTick(db)
+    api.removeWorktree.mockResolvedValueOnce({ ok: false, error: 'git said the worktree has changes.' })
+    click(launchRow(LAUNCH)!.querySelector('[data-ah-action="remove-worktree"]'))
+    await settle()
+    await settle()
+    expect(panel().hidden).toBe(false)
+    expect(panel().dataset.card).toBe(`launch:${LAUNCH}`)
+    expect(panel().querySelector<HTMLElement>('.sp-note')?.hidden).toBe(false)
+    expect(panel().querySelector('.sp-note')?.textContent).toBe('git said the worktree has changes.')
+  })
+
+  it('a running launch’s panel says Stop comes before Remove worktree…', async () => {
+    launchBridge()
+    db = freshDb()
+    createLaunch(db, {
+      id: LAUNCH, host: 'copilot', project: 'alpha', stream: 'agent-inbox/fix-1', cwd: '/w/alpha/fix-1', mode: 'ask',
+      budgetActiveMs: 7_200_000, budgetToolCalls: 500, prompt: 'Fix it.', specVersion: 1, driverPid: 4242,
+      worktree: { checkoutRoot: '/work/alpha', branch: 'agent-inbox/fix-1', baseSha: 'a'.repeat(40), baseRef: 'refs/heads/main' },
+    })
+    await bootApp(db)
+    await changedPollTick(db)
+    const bar = openLaunch(LAUNCH).querySelector('.sp-actions')!
+    expect([...bar.children].map((el) => el.textContent))
+      .toEqual(['Stop', 'Stop it to remove its worktree', 'Open in Terminal', 'Remove worktree…'])
+    expect(action(LAUNCH, 'remove-worktree')!.title).toBe('Only once the session has ended')
+    endLaunch(db, LAUNCH, { reason: 'stopped' })
+    await changedPollTick(db)
+    expect(panel().querySelector('.sp-actions-hint')).toBeNull()
+    expect(action(LAUNCH, 'remove-worktree')!.disabled).toBe(false)
+  })
+
+  it('a plain browser shows no Remove worktree… on a card', async () => {
+    db = freshDb()
+    createLaunch(db, {
+      id: LAUNCH, host: 'copilot', project: 'alpha', stream: 'agent-inbox/fix-1', cwd: '/w/alpha/fix-1', mode: 'ask',
+      budgetActiveMs: 7_200_000, budgetToolCalls: 500, prompt: 'Fix it.', specVersion: 1, driverPid: 4242,
+      worktree: { checkoutRoot: '/work/alpha', branch: 'agent-inbox/fix-1', baseSha: 'a'.repeat(40), baseRef: 'refs/heads/main' },
+    })
+    endLaunch(db, LAUNCH, { reason: 'stopped' })
+    await bootApp(db)
+    await changedPollTick(db)
+    openFolds()
+    expect(document.querySelector('[data-ah-action="remove-worktree"], [data-launch-action="remove-worktree"]')).toBeNull()
+  })
+
+  it('names a launch’s worktree and branch in its panel, and says when the worktree was removed (#432)', async () => {
     launchBridge()
     db = freshDb()
     createLaunch(db, {
@@ -353,17 +474,19 @@ describe('the Live drawer’s sessions (§3.6, §7)', () => {
     newLaunch(db, PARKED)
     await bootApp(db)
     await changedPollTick(db)
-    openDrawer()
-    expect(launchRow(LAUNCH)!.querySelector('.live-launch-worktree')!.textContent).toBe('Worktree: agent-inbox/fix-it-11111111 · /w/alpha/fix-it-11111111')
-    expect(launchRow(PARKED)!.querySelector('.live-launch-worktree')).toBeNull()
+    const box = () => [...panel().querySelectorAll('.sp-worktree-box dd')].map((el) => el.textContent)
+    expect(openLaunch(PARKED).querySelector<HTMLElement>('.sp-worktree')?.hidden).toBe(true)
+    openLaunch(LAUNCH)
+    expect(box()).toEqual(['agent-inbox/fix-it-11111111', '/w/alpha/fix-it-11111111', 'Not read yet'])
+    expect(launchRow(LAUNCH)!.querySelector('.sc-worktree')?.textContent).toBe(' · worktree')
     // the driver's turn-end summary, in words (#432 §6)
     recordWorktreeSummary(db, LAUNCH, { v: 1, at: new Date().toISOString(), head: 'b'.repeat(40), branch: 'agent-inbox/fix-it-11111111', ahead: 2, behind: 0, files: 3, dirty: 1 })
     await changedPollTick(db)
-    expect(launchRow(LAUNCH)!.querySelector('.live-launch-worktree')!.textContent)
-      .toBe('Worktree: agent-inbox/fix-it-11111111 · /w/alpha/fix-it-11111111 · 2 commits ahead, 3 files changed, 1 uncommitted')
+    expect(box()).toEqual(['agent-inbox/fix-it-11111111', '/w/alpha/fix-it-11111111', '2 commits ahead, 3 files changed, 1 uncommitted'])
+    expect(launchRow(LAUNCH)!.querySelector('.sc-worktree')?.textContent).toBe(' · worktree · 2 ahead · 3 files · 1 uncommitted')
     markWorktreeRemoved(db, LAUNCH)
     await changedPollTick(db)
-    expect(launchRow(LAUNCH)!.querySelector('.live-launch-worktree')!.textContent).toBe('Worktree removed; its branch agent-inbox/fix-it-11111111 is kept.')
+    expect(box()).toEqual(['Removed; its branch agent-inbox/fix-it-11111111 is kept.'])
   })
 
   it('lists a running launch with Stop and its transcript, and Stop goes through main', async () => {
@@ -373,9 +496,11 @@ describe('the Live drawer’s sessions (§3.6, §7)', () => {
     drivenSession(db)
     await bootApp(db)
     await changedPollTick(db)
-    openDrawer()
-    expect(launchRow(LAUNCH)!.querySelector('.live-launch-status')!.textContent).toBe('Running')
-    expect(launchRow(LAUNCH)!.textContent).toContain('Copilot · Ask for everything · claude-haiku-4.5 · 0 of 500 tool calls')
+    // running, its session between turns
+    expect(stateOf(LAUNCH)).toBe('Idle')
+    expect(openLaunch(LAUNCH).querySelector('.dash-focus-meta')?.textContent)
+      .toBe('Copilot · started here · Ask for everything · claude-haiku-4.5 · 0 of 500 tool calls · 0m of 2h active')
+    expect(panel().querySelector<HTMLElement>('.sp-transcript')?.hidden).toBe(false)
     click(action(LAUNCH, 'stop'))
     await settle()
     expect(api.stop).toHaveBeenCalledWith(LAUNCH)
@@ -388,21 +513,21 @@ describe('the Live drawer’s sessions (§3.6, §7)', () => {
     drivenSession(db)
     const bridge = await bootApp(db)
     await changedPollTick(db)
-    openDrawer()
     click(action(LAUNCH, 'park'))
     await settle()
     expect(bridge.posts.map((p) => p.url)).toContain(`/api/launches/${LAUNCH}/park`)
-    expect(launchRow(LAUNCH)!.querySelector('.live-launch-note')?.textContent).toMatch(/^Parking: Copilot stops once its turn ends/)
+    expect(panel().querySelector('.sp-note')?.textContent).toMatch(/^Parking: Copilot stops once its turn ends/)
     // the driver parks as the idle timeout would
     parkLaunch(db, LAUNCH, { acpSession: 'acp-1', activeMs: 10, toolCalls: 1 })
     await changedPollTick(db)
-    expect(launchRow(LAUNCH)!.querySelector('.live-launch-status')!.textContent).toMatch(/^Parked/)
-    expect(launchRow(LAUNCH)!.querySelector('.live-launch-note')).toBeNull()
-    // #454: Resume and send is in the session panel; the row opens it there
-    expect(action(LAUNCH, 'resume-panel')?.textContent).toBe('Resume…')
+    expect(stateOf(LAUNCH)).toBe('Parked')
+    expect(panel().querySelector<HTMLElement>('.sp-note')?.hidden).toBe(true)
+    // Resume and send stands in for the composer
+    expect(panel().querySelector<HTMLElement>('.sp-resume')?.hidden).toBe(false)
+    expect(launchRow(LAUNCH)!.querySelector('[data-ah-action="resume"]')?.textContent).toBe('Resume…')
   })
 
-  it('Take over in Terminal goes through main, then the row says it was handed off and offers Resume in Terminal (step 5)', async () => {
+  it('Take over in Terminal goes through main, then the card says it is in Terminal and offers Resume in Terminal (step 5)', async () => {
     const api = launchBridge()
     db = freshDb()
     newLaunch(db)
@@ -411,7 +536,6 @@ describe('the Live drawer’s sessions (§3.6, §7)', () => {
     parkLaunch(db, PARKED, { acpSession: null, activeMs: 0, toolCalls: 0 })
     await bootApp(db)
     await changedPollTick(db)
-    openDrawer()
     expect(action(LAUNCH, 'take-over')?.textContent).toBe('Take over in Terminal')
     // a parked launch never prompted has no session for a terminal to resume
     expect(action(PARKED, 'take-over')).toBeNull()
@@ -423,20 +547,21 @@ describe('the Live drawer’s sessions (§3.6, §7)', () => {
     expect(action(LAUNCH, 'take-over')?.textContent).toBe('Handing off…')
     finish({ ok: false, error: 'The session did not hand off within a minute, so it goes on here. Try again, or Stop it.' })
     await settle()
-    expect(launchRow(LAUNCH)!.querySelector('.live-launch-note')?.textContent).toMatch(/did not hand off within a minute/)
+    expect(panel().querySelector('.sp-note')?.textContent).toMatch(/did not hand off within a minute/)
     api.takeOver.mockResolvedValueOnce({ ok: false, cancelled: true, error: 'Not taken over.' })
     click(action(LAUNCH, 'take-over'))
     await settle()
-    expect(launchRow(LAUNCH)!.textContent).not.toContain('Not taken over.')
+    expect(panel().textContent).not.toContain('Not taken over.')
     // the driver handed it off
     handOffLaunch(db, LAUNCH, { acpSession: 'acp-1', activeMs: 10, toolCalls: 1 })
     await changedPollTick(db)
-    expect(launchRow(LAUNCH)!.dataset.state).toBe('handed_off')
-    expect(launchRow(LAUNCH)!.querySelector('.live-launch-status')!.textContent).toBe('Handed off to a terminal: it goes on in Copilot there.')
+    expect(stateOf(LAUNCH)).toBe('In Terminal')
+    expect(doingOf(LAUNCH)).toBe('was: Handed off to a terminal: it goes on in Copilot there. · 1 of 500 tool calls')
+    expect(panel().querySelector<HTMLElement>('.sp-note')?.hidden).toBe(true)
     expect(action(LAUNCH, 'take-over')?.textContent).toBe('Resume in Terminal')
     expect(action(LAUNCH, 'stop')).toBeNull()
-    expect(action(LAUNCH, 'resume')).toBeNull()
-    expect(action(LAUNCH, 'transcript')).not.toBeNull()
+    expect(panel().querySelector<HTMLElement>('.sp-resume')?.hidden).toBe(true)
+    expect(panel().querySelector<HTMLElement>('.sp-transcript')?.hidden).toBe(false)
     click(action(LAUNCH, 'take-over'))
     await settle()
     expect(api.takeOver).toHaveBeenLastCalledWith(LAUNCH)
@@ -447,12 +572,12 @@ describe('the Live drawer’s sessions (§3.6, §7)', () => {
     db = freshDb()
     newLaunch(db)
     await bootApp(db)
-    openDrawer()
     await changedPollTick(db)
-    expect(launchRow(LAUNCH)!.querySelector('.live-launch-status')!.textContent).toBe('Starting…')
+    expect(stateOf(LAUNCH)).toBe('Starting…')
     await vi.advanceTimersByTimeAsync(150_000)
     await changedPollTick(db)
-    expect(launchRow(LAUNCH)!.querySelector('.live-launch-status')!.textContent).toMatch(/Not responding/)
+    expect(stateOf(LAUNCH)).toBe('Not responding')
+    expect(launchRow(LAUNCH)!.querySelector('[data-ah-action="close"]')?.textContent).toBe('Close')
     click(action(LAUNCH, 'close'))
     await settle()
     expect(api.close).toHaveBeenCalledWith(LAUNCH)
@@ -470,10 +595,9 @@ describe('the Live drawer’s sessions (§3.6, §7)', () => {
     })
     const bridge: ViewerBridge = await bootApp(db)
     await changedPollTick(db)
-    openDrawer()
-    expect(launchRow(PARKED)!.querySelector('.live-launch-status')!.textContent).toMatch(/^Parked/)
-    // the row's Resume… opens the session panel at its Resume and send (#454)
-    click(action(PARKED, 'resume-panel'))
+    expect(stateOf(PARKED)).toBe('Parked')
+    // the card's Resume… opens the session panel at its Resume and send (#454)
+    click(launchRow(PARKED)!.querySelector('[data-ah-action="resume"]'))
     await settle()
     expect(panel().hidden).toBe(false)
     const box = panel().querySelector<HTMLTextAreaElement>('.sp-resume-input')!
@@ -503,10 +627,9 @@ describe('the Live drawer’s sessions (§3.6, §7)', () => {
     })
     await bootApp(db)
     await changedPollTick(db)
-    openDrawer()
-    expect(launchRow(PARKED)!.querySelector('.live-launch-status')!.textContent).toBe('Stopped: its session is kept, so it can be resumed.')
-    expect(action(PARKED, 'take-over')?.textContent).toBe('Take over in Terminal')
-    click(action(PARKED, 'resume-panel'))
+    expect(stateOf(PARKED)).toBe('Parked')
+    expect(doingOf(PARKED)).toBe('Stopped: its session is kept, so it can be resumed.')
+    click(launchRow(PARKED)!.querySelector('[data-ah-action="resume"]'))
     await settle()
     expect(panelAction('take-over')?.textContent).toBe('Take over in Terminal')
     type(panel().querySelector<HTMLTextAreaElement>('.sp-resume-input')!, 'Carry on.')
@@ -515,34 +638,6 @@ describe('the Live drawer’s sessions (§3.6, §7)', () => {
     await settle()
     expect(api.resume).toHaveBeenCalledWith(PARKED)
     expect(listSessionMessages(db).open.map((m) => [m.session, m.text])).toEqual([['mcp-9', 'Carry on.']])
-  })
-
-  it('lists ended launches past the newest five on request, so their transcripts stay reachable (step 5)', async () => {
-    launchBridge()
-    db = freshDb()
-    const ids = Array.from({ length: 7 }, (_, n) => `11111111-2222-4333-8444-00000000000${n + 1}`)
-    for (const id of ids) {
-      newLaunch(db, id)
-      endLaunch(db, id, { reason: 'stopped' })
-      await vi.advanceTimersByTimeAsync(1000)
-    }
-    await bootApp(db)
-    await changedPollTick(db)
-    openDrawer()
-    const more = section()!.querySelector<HTMLButtonElement>('[data-launch-action="earlier"]')!
-    expect(section()!.querySelectorAll('.live-launch')).toHaveLength(5)
-    expect(more.hidden).toBe(false)
-    expect(more.textContent).toBe('Earlier sessions (2)')
-    expect(more.getAttribute('aria-expanded')).toBe('false')
-    click(more)
-    await settle()
-    expect(section()!.querySelectorAll('.live-launch')).toHaveLength(7)
-    expect(more.textContent).toBe('Fewer sessions')
-    expect(more.getAttribute('aria-expanded')).toBe('true')
-    expect(action(ids[0]!, 'transcript')).not.toBeNull()
-    click(more)
-    await settle()
-    expect(section()!.querySelectorAll('.live-launch')).toHaveLength(5)
   })
 
   it('the transcript is a section of the session panel, read while the panel shows it, as plain text (#454)', async () => {
@@ -560,9 +655,8 @@ describe('the Live drawer’s sessions (§3.6, §7)', () => {
     ].map((e) => `${JSON.stringify(e)}\n`).join(''))
     await bootApp(db)
     await changedPollTick(db)
-    openDrawer()
-    // the drawer's Transcript opens the panel there; no modal dialog any more
-    click(action(LAUNCH, 'transcript'))
+    // the card's Transcript opens the panel there; no modal dialog any more
+    click(launchRow(LAUNCH)!.querySelector('[data-ah-action="transcript"]'))
     await settle()
     expect(document.querySelector('dialog.launch-transcript')).toBeNull()
     expect(panel().hidden).toBe(false)
@@ -584,14 +678,62 @@ describe('the Live drawer’s sessions (§3.6, §7)', () => {
 })
 
 describe('New session (§8)', () => {
+  it('a session started outside the project lens scopes the lens to it, so its card shows (#460 review)', async () => {
+    const api = launchBridge()
+    db = freshDb()
+    insertItem(db, { project: 'alpha', stream: 'main', agent: 'copilot', kind: 'note', title: 'seen', repo_root: '/work/alpha' })
+    insertItem(db, { project: 'beta', stream: 'main', agent: 'copilot', kind: 'note', title: 'seen too', repo_root: '/work/beta' })
+    api.start.mockImplementationOnce(async () => {
+      newLaunch(db!)
+      return { ok: true, launch: LAUNCH }
+    })
+    await bootApp(db)
+    click(document.querySelector('#rail .rail-tab[data-project="beta"]'))
+    await settle()
+    await changedPollTick(db)
+    click(newSessionButton())
+    await settle()
+    const dialog = document.querySelector<HTMLDialogElement>('.launch-dialog')!
+    dialog.querySelector<HTMLSelectElement>('select[name="root"]')!.value = '/work/alpha'
+    type(dialog.querySelector<HTMLTextAreaElement>('textarea[name="prompt"]'), 'Fix it.')
+    dialog.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await settle()
+    await settle()
+    expect(api.start).toHaveBeenCalled()
+    expect(launchRow(LAUNCH)).not.toBeNull()
+    expect(document.querySelector('#rail .rail-tab[data-project="alpha"]')?.getAttribute('aria-selected')).toBe('true')
+  })
+
+  it('says how many sessions the lens hides, and Show all clears it (#460 review)', async () => {
+    launchBridge()
+    db = freshDb()
+    insertItem(db, { project: 'beta', stream: 'main', agent: 'copilot', kind: 'note', title: 'seen', repo_root: '/work/beta' })
+    newLaunch(db)
+    newLaunch(db, PARKED)
+    endLaunch(db, PARKED, { reason: 'stopped' })
+    await bootApp(db)
+    await changedPollTick(db)
+    const line = () => document.querySelector<HTMLElement>('.agents-home .ah-outside')!
+    expect(line().hidden).toBe(true)
+    click(document.querySelector('#rail .rail-tab[data-project="beta"]'))
+    await settle()
+    // the running one is hidden; an ended one never counts
+    expect(line().hidden).toBe(false)
+    expect(line().textContent).toBe('1 session outside this filter · Show all')
+    expect(anyCard(`launch:${LAUNCH}`)).toBeNull()
+    click(line().querySelector('.ah-outside-all'))
+    await settle()
+    expect(line().hidden).toBe(true)
+    expect(anyCard(`launch:${LAUNCH}`)).not.toBeNull()
+  })
+
   it('sends main the request it checks again, with a known project, and never a path of its own', async () => {
     const api = launchBridge()
     db = freshDb()
     insertItem(db, { project: 'alpha', stream: 'main', agent: 'copilot', kind: 'note', title: 'seen', repo_root: '/work/alpha' })
     await bootApp(db)
     await changedPollTick(db)
-    openDrawer()
-    click(section()!.querySelector('.launch-new'))
+    click(newSessionButton())
     await settle()
     const dialog = document.querySelector<HTMLDialogElement>('.launch-dialog')!
     const project = dialog.querySelector<HTMLSelectElement>('select[name="root"]')!
@@ -622,8 +764,7 @@ describe('New session (§8)', () => {
     insertItem(db, { project: 'alpha', stream: 'main', agent: 'copilot', kind: 'note', title: 'seen', repo_root: '/work/alpha' })
     await bootApp(db)
     await changedPollTick(db)
-    openDrawer()
-    click(section()!.querySelector('.launch-new'))
+    click(newSessionButton())
     await settle()
     const dialog = document.querySelector<HTMLDialogElement>('.launch-dialog')!
     type(dialog.querySelector<HTMLTextAreaElement>('textarea[name="prompt"]'), 'Fix it.')
@@ -657,8 +798,7 @@ describe('New session (§8)', () => {
     insertItem(db, { project: 'alpha', stream: 'main', agent: 'copilot', kind: 'note', title: 'seen', repo_root: '/work/alpha' })
     await bootApp(db)
     await changedPollTick(db)
-    openDrawer()
-    click(section()!.querySelector('.launch-new'))
+    click(newSessionButton())
     await settle()
     const dialog = document.querySelector<HTMLDialogElement>('.launch-dialog')!
     type(dialog.querySelector<HTMLTextAreaElement>('textarea[name="prompt"]'), 'Fix it.')
@@ -721,7 +861,7 @@ describe('New session (§8)', () => {
   it('a second New session cannot open while a start is in flight', async () => {
     const api = launchBridge()
     const { dialog, finish } = await startPending(api)
-    const button = section()!.querySelector<HTMLButtonElement>('.launch-new')!
+    const button = newSessionButton()!
     expect(button.disabled).toBe(true)
     click(button)
     await settle()
@@ -753,7 +893,7 @@ describe('New session (§8)', () => {
     toggle.dispatchEvent(new Event('change', { bubbles: true }))
     await settle()
     await changedPollTick(db!)
-    click(section()!.querySelector('.launch-new'))
+    click(newSessionButton())
     await settle()
     expect(document.querySelector<HTMLTextAreaElement>('.launch-dialog textarea[name="prompt"]')!.value).toBe('Fix it.')
   })
@@ -763,8 +903,7 @@ describe('New session (§8)', () => {
     db = freshDb()
     await bootApp(db)
     await changedPollTick(db)
-    openDrawer()
-    click(section()!.querySelector('.launch-new'))
+    click(newSessionButton())
     await settle()
     const dialog = document.querySelector<HTMLDialogElement>('.launch-dialog')!
     const box = dialog.querySelector<HTMLInputElement>('input[name="worktree"]')!
@@ -785,8 +924,7 @@ describe('New session (§8)', () => {
     db = freshDb()
     await bootApp(db)
     await changedPollTick(db)
-    openDrawer()
-    click(section()!.querySelector('.launch-new'))
+    click(newSessionButton())
     await settle()
     const dialog = document.querySelector<HTMLDialogElement>('.launch-dialog')!
     dialog.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
@@ -806,7 +944,7 @@ describe('New session (§8)', () => {
     expect(document.querySelector('.launch-dialog')).toBeNull()
     await changedPollTick(db)
     expect(document.getElementById('pauseHint')?.textContent ?? '').not.toMatch(/paused/)
-    click(section()!.querySelector('.launch-new'))
+    click(newSessionButton())
     await settle()
     expect(document.querySelector<HTMLTextAreaElement>('.launch-dialog textarea[name="prompt"]')!.value).toBe('Do it.')
   })
@@ -891,8 +1029,7 @@ describe('the composer’s Queued states and Interrupt and send (§5.3)', () => 
     markDriverTurn(db, LEASE, 'turn', new Date(Date.now() - 12 * 60_000).toISOString())
     const bridge = await bootApp(db)
     await changedPollTick(db)
-    openDrawer()
-    click(messageButton('mcp-1'))
+    click(launchRow(LAUNCH)!.querySelector('[data-ah-action="message"]'))
     await settle()
     const el = composer('mcp-1')!
     expect(el.querySelector('.msg-delivery')!.textContent).toBe('Queued: it’s mid-task (12m). It arrives when the turn ends.')
@@ -913,38 +1050,6 @@ describe('the composer’s Queued states and Interrupt and send (§5.3)', () => 
     await changedPollTick(db)
     expect(el.querySelector('.msg-delivery')!.textContent).toBe('Arrives now: Agent Inbox runs this session.')
     expect(el.querySelector('.msg-interrupt')).toBeNull()
-  })
-})
-
-describe('the Dashboard lanes (#304)', () => {
-  it('tag a launch’s working session “Started here”, with Stop, only with the switch on', async () => {
-    const api = launchBridge()
-    db = freshDb()
-    newLaunch(db)
-    upsertActivity(db, { session: 'mcp-1', project: 'alpha', stream: 'main', agent: 'copilot', doing: 'Fixing the test', idle: false, claim: true, receives_messages: true })
-    recordActivityCall(db, 'mcp-1')
-    claimDriverSlot(db, LEASE, 2)
-    holdDriverLeases(db, LEASE, ['mcp-1'])
-    recordLaunchProgress(db, LAUNCH, { sessions: ['mcp-1'] })
-    await bootApp(db)
-    await changedPollTick(db)
-    const lane = document.querySelector<HTMLElement>('.dash-lane[data-lane="mcp-1"]')!
-    expect(lane.querySelector('.dash-lane-launch-tag')?.textContent).toBe('Started here')
-    click(lane.querySelector('.dash-lane-stop'))
-    await settle()
-    expect(api.stop).toHaveBeenCalledWith(LAUNCH)
-  })
-
-  it('draw nothing new in a browser', async () => {
-    db = freshDb()
-    newLaunch(db)
-    upsertActivity(db, { session: 'mcp-1', project: 'alpha', stream: 'main', agent: 'copilot', doing: 'Fixing the test', idle: false, claim: true })
-    recordActivityCall(db, 'mcp-1')
-    recordLaunchProgress(db, LAUNCH, { sessions: ['mcp-1'] })
-    await bootApp(db)
-    await changedPollTick(db)
-    expect(document.querySelector('.dash-lane[data-lane="mcp-1"]')).not.toBeNull()
-    expect(document.querySelector('.dash-lane-launch')).toBeNull()
   })
 })
 
@@ -1192,30 +1297,6 @@ describe('session cards for launches (#454, #412)', () => {
     hasFocus.mockRestore()
   })
 
-  it('opens a launch outside the project lens scoped to its project, as Jump to session does', async () => {
-    launchBridge()
-    db = freshDb()
-    insertItem(db, { project: 'alpha', stream: 'main', agent: 'copilot', kind: 'note', title: 'seen' })
-    createLaunch(db, {
-      id: PARKED, host: 'copilot', project: 'beta', stream: 'main', cwd: '/work/beta', mode: 'ask', model: 'claude-haiku-4.5',
-      budgetActiveMs: 7_200_000, budgetToolCalls: 500, prompt: 'Fix it.', specVersion: 1, driverPid: 4243,
-    })
-    parkLaunch(db, PARKED, { acpSession: 'acp-1', activeMs: 10, toolCalls: 2 })
-    await bootApp(db)
-    await changedPollTick(db)
-    click(document.querySelector('#rail .rail-tab[data-project="alpha"]'))
-    await settle()
-    expect(document.querySelector(`[data-session-card="launch:${PARKED}"]`)).toBeNull()
-    openDrawer()
-    click(action(PARKED, 'resume-panel'))
-    await settle()
-    expect(panel().hidden).toBe(false)
-    expect(panel().dataset.card).toBe(`launch:${PARKED}`)
-    expect(panel().querySelector<HTMLElement>('.dash-focus-gone')?.hidden).toBe(true)
-    expect(panel().querySelector('#dashFocusTitle')?.textContent).toBe('beta · main')
-    expect(document.activeElement).toBe(panel().querySelector('.sp-resume-input'))
-  })
-
   it('an empty transcript read leaves the lines alone, so a selection in the last one stays', async () => {
     launchBridge()
     db = freshDb()
@@ -1274,100 +1355,5 @@ describe('session cards for launches (#454, #412)', () => {
     await settle()
     expect(document.querySelector<HTMLButtonElement>('.agents-home .ah-new')?.disabled).toBe(true)
     expect(document.querySelector('.agents-home .ah-note')?.textContent).toBe('Starting and approving sessions works only in Agent Inbox’s own window.')
-  })
-})
-
-describe('Message on a launch’s row (#412)', () => {
-  const launchComposer = (id: string) => launchRow(id)?.querySelector<HTMLElement>('.msg-composer') ?? null
-
-  it('appears only on a running, linked launch, in the granted window', async () => {
-    launchBridge()
-    db = freshDb()
-    newLaunch(db)
-    await bootApp(db)
-    openDrawer()
-    await changedPollTick(db)
-    // starting: no session linked yet
-    expect(action(LAUNCH, 'message')).toBeNull()
-    drivenSession(db)
-    await changedPollTick(db)
-    expect(action(LAUNCH, 'message')?.textContent).toBe('Message')
-    parkLaunch(db, LAUNCH, { acpSession: 'acp-1', activeMs: 10, toolCalls: 1 })
-    await changedPollTick(db)
-    expect(launchRow(LAUNCH)!.querySelector('.live-launch-status')!.textContent).toMatch(/^Parked/)
-    expect(action(LAUNCH, 'message')).toBeNull()
-  })
-
-  it('opens the session’s composer under the row, shares its draft, and sends through the message route', async () => {
-    launchBridge()
-    db = freshDb()
-    newLaunch(db)
-    drivenSession(db)
-    const bridge = await bootApp(db)
-    await changedPollTick(db)
-    openDrawer()
-    click(action(LAUNCH, 'message'))
-    await settle()
-    const el = launchComposer(LAUNCH)!
-    expect(el.dataset.msgSession).toBe('mcp-1')
-    expect(el.querySelector('.msg-delivery')!.textContent).toBe('Arrives now: Agent Inbox runs this session.')
-    const box = el.querySelector<HTMLTextAreaElement>('textarea')!
-    expect(document.activeElement).toBe(box)
-    type(box, 'Also run the linter.')
-    box.setSelectionRange(5, 9)
-    await changedPollTick(db)
-    expect(document.activeElement).toBe(box)
-    expect([box.selectionStart, box.selectionEnd]).toEqual([5, 9])
-    // the session's own row shows the same draft
-    click(messageButton('mcp-1'))
-    await settle()
-    expect(composer('mcp-1')!.querySelector<HTMLTextAreaElement>('textarea')!.value).toBe('Also run the linter.')
-    click(el.querySelector('.msg-send'))
-    await settle()
-    await settle()
-    expect(bridge.posts.some((p) => p.url === '/api/sessions/mcp-1/messages')).toBe(true)
-    expect(listSessionMessages(db).open.map((m) => m.text)).toEqual(['Also run the linter.'])
-    expect(box.value).toBe('')
-    expect(composer('mcp-1')!.querySelector<HTMLTextAreaElement>('textarea')!.value).toBe('')
-  })
-
-  it('reads Queued mid-task with Interrupt and send, and Cancel closes it', async () => {
-    launchBridge()
-    db = freshDb()
-    newLaunch(db)
-    drivenSession(db)
-    markDriverTurn(db, LEASE, 'turn', new Date(Date.now() - 3 * 60_000).toISOString())
-    await bootApp(db)
-    await changedPollTick(db)
-    openDrawer()
-    click(action(LAUNCH, 'message'))
-    await settle()
-    const el = launchComposer(LAUNCH)!
-    expect(el.querySelector('.msg-delivery')!.textContent).toMatch(/^Queued: it’s mid-task/)
-    expect(el.querySelector('.msg-interrupt')).not.toBeNull()
-    click(el.querySelector('.msg-cancel'))
-    await settle()
-    expect(launchComposer(LAUNCH)).toBeNull()
-  })
-
-  it('adds nothing with the switch off or in a browser, and tags the session’s own row “Started here” only with it on', async () => {
-    launchBridge()
-    db = freshDb()
-    newLaunch(db)
-    drivenSession(db)
-    await bootApp(db)
-    await changedPollTick(db)
-    openDrawer()
-    const started = () => [...drawer().querySelectorAll('.live-started-here')].map((e) => e.textContent)
-    expect(started()).toEqual(['Started here'])
-    const settings = document.getElementById('launch-settings')!
-    const box = settings.querySelector<HTMLInputElement>('#launch-switch')!
-    box.checked = false
-    box.dispatchEvent(new Event('change', { bubbles: true }))
-    await settle()
-    await changedPollTick(db)
-    expect(section()).toBeNull()
-    expect(started()).toEqual([])
-    expect(drawer().querySelector('[data-launch-action="message"]')).toBeNull()
   })
 })

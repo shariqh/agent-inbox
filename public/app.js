@@ -17,7 +17,7 @@ import {
 } from '/poll.js'
 import { createStagedSend } from '/star.js'
 import {
-  ageChip, agentCounts, handledUndoRefusal, laterBreakdown, needsYouEntries, relMs, repliedEntries, rowModel,
+  agentCounts, handledUndoRefusal, laterBreakdown, needsYouEntries, relMs, repliedEntries, rowModel,
   rowPickup, rowStarOption, stagedLabel, staleFoldLabel, streamCounts, undoRefusal, urgencyChip,
   ASK_SORT_OPTIONS, askTimeModel, sortLaterEntries, sortNeedsYouByAsk,
 } from '/rowview.js'
@@ -25,7 +25,7 @@ import { cardSections, optionOrder, actionPresentation } from '/card.js'
 import { keyAction, rovingIndex, ariaAnswerLabel, livenessGlyph, deckEntryAt } from '/keys.js'
 import { createKeyboardUI, revealControl } from '/keyboard-ui.js'
 import { partitionNotes, unreadNoteCount, ambientChips, seenWatermark, markSeenIds } from '/notes.js'
-import { liveSummary, lastActivityAt, isDormant, activitySynopsis, sessionBuild, activityFrameKey } from '/livebar.js'
+import { sessionBuild, sessionsSummary, activityFrameKey } from '/livebar.js'
 import { agentsAction, hooksGuidance, hooksNextStep, hostLabel, hostLine, restartGuidance } from '/agents.js'
 import { PROJECT_SCOPE_NOTE, RUNTIMES_LEAD, runtimeLines, runtimesAction, runtimesNote } from '/runtimes.js'
 import { esc } from '/esc.js'
@@ -58,9 +58,7 @@ import { buildRelay, stamp } from '/relay.js'
 import { buildMission } from '/mission.js'
 import { buildDashboard } from '/dashboard.js'
 import { buildRibbon, ribbonWait, sinceKeepsOn, sinceLastLooked, trustedInput } from '/ribbon.js'
-import {
-  MAX_LANES, calledLanes, isWorking, laneFilterChoices, laneMatches, pinLaneOrder, sessionFocus, tracePath,
-} from '/lanes.js'
+import { isWorking, sessionFocus } from '/lanes.js'
 import { PANE_DEFAULTS, paneKeyValue, paneValueFromPointer, resolvePaneLayout } from '/panes.js'
 import { createThemeController } from '/theme.js'
 import { createMotionController } from '/motion.js'
@@ -410,7 +408,7 @@ function renderIfIdle() {
   const frame = paintAmbient()
   frame.textSelection = textSelection
   // Drafts and active inspector/page scrolling protect only editable lists. Counts,
-  // the badge, rail and Live strip above keep reporting fresh data. Before the
+  // the badge, rail and Sessions line above keep reporting fresh data. Before the
   // first editable frame no editor exists to protect, so a draft restored at
   // boot (#279) cannot leave the lists blank.
   if (editablePanesPainted && (dashboardInteractionActive()
@@ -2002,8 +2000,8 @@ function dashboardEntryProject(entry) {
 }
 
 function dashboardTarget(target) {
-  if (target === 'live') {
-    document.getElementById('liveStrip')?.click()
+  if (target === 'sessions') {
+    showAgentsHome()
     return
   }
   if (target === 'outcomes') {
@@ -2035,13 +2033,13 @@ function renderDashboardAmbient(model, { forced = false } = {}) {
   lastDashModel = model
   renderDashNow(host.querySelector('.dash-now'), model)
   renderDashSince(host.querySelector('.dash-since'), model)
-  renderDashLanes(host.querySelector('.dash-lanes'), model, { forced })
   renderDashRail(host.querySelector('.dash-rail'), model.rail, { forced })
   // the cards first: the session panel shows one of them (#454)
   agentsHome.paint(host, {
     activity: liveInLens(), boards: model.boards, attention: model.waitingEntries, closed: dashboardClosedProjects(),
     // #412 step 3: this app's launches, only with its switch on (§9: otherwise none is read or drawn)
     launches: launchesOn() ? launchesInLens() : null,
+    outside: launchesOn() ? launchesOutsideLens() : 0,
     nowMs: Date.now(), forced, lensProject: projectFilter, selected: focusSession,
   })
   renderDashFocus(host.querySelector('.dash-focus'), model)
@@ -2073,7 +2071,7 @@ const ageText = (ms) => relMs(ms) === 'moments' ? '<1m' : relMs(ms)
 // the lanes' bars added up, each plan once. The headings around it carry no
 // numbers of their own.
 const DASH_NOW = [
-  ['agents', 'Working', 'live'],
+  ['agents', 'Working', 'sessions'],
   ['waiting', 'Waiting on you', 'needsYou'],
   ['plans', 'Plan steps', 'boards'],
   ['outcomes', 'Recorded outcomes', 'outcomes'],
@@ -2106,7 +2104,7 @@ function renderDashNow(strip, model) {
     agents: [now.working, now.subagents ? `+${plural(now.subagents, 'subagent')}` : '',
       `Agents working: ${now.working}${now.subagents ? `, plus ${plural(now.subagents, 'subagent')}` : ''}`],
     waiting: [now.waiting, oldest, `Waiting on you: ${plural(now.waiting, 'open action')}${oldest ? `, ${oldest}` : ''}`],
-    plans: [now.plans.done, 'in lanes',
+    plans: [now.plans.done, 'in sessions',
       `Plan steps done in the plans agents are working on: ${now.plans.done} of ${now.plans.countable}`],
     outcomes: [model.signals.outcomes, '', `Recorded outcomes: ${model.signals.outcomes} across items and plan rows`],
   }
@@ -2119,108 +2117,34 @@ function renderDashNow(strip, model) {
   setText(strip.querySelector('[data-dashboard-signal="plans"] .dashboard-value-total'), `/${now.plans.countable}`)
 }
 
-// ── live lanes (#304, proposal §4) ───────────────────────────────────────────
-// One lane per working session. The ambient painter updates each lane in place,
-// keyed by session, so a draft in the rail never stops them and a poll changes
-// text and attributes only. Order is pinned (§10 rule 5): a session keeps its
-// place, new ones append, and only a forced paint re-sorts. An ask is answered
-// in the rail alone (D2): a lane's "Asking you" strip jumps to its rail card.
-let laneOrder = []
-const laneCalls = new Map() // session → the last call a paint has seen, for the one-shot pulse
-const laneAsks = new Map() // session → { first, oldest } attention entries, read by the lane's buttons
-// #307: window-local view state, never persisted, read by no attention surface.
-const laneFilters = { project: null, agent: null }
+// ── the Agents home (#454, design §3) ───────────────────────────────────────
 // The session panel's key, if open (#307, #454): a session id, or `launch:<id>` for a
 // launch's card, which outlives its sessions. agentsHome.cardFor() resolves it.
 let focusSession = null
 let lastDashModel = null // the model the last paint drew, for a handler's own repaint
-// The Agents home (#454): its filters, grouping, folds and lens are window-local.
+// Its filters, grouping and folds are window-local.
 const agentsHome = installAgentsHome({
   // a card's click toggles its panel; Review, Message, Transcript and Resume… open it at that part
   openSession: (key, part) => (part ? openSessionFocus(key, part) : toggleSessionFocus(key)),
-  launchAction: (id, action) => launchUi?.run(id, action),
+  // a card's action that failed says why in the launch's panel
+  launchAction: (id, action) => launchUi?.run(id, action).then((noted) => {
+    if (noted && focusSession !== `launch:${id}`) openSessionFocus(`launch:${id}`)
+  }),
   launches: () => (launchesOn() ? launchUi : null),
   hasDraft: (session) => messageDrafts.has(session),
   build: (row) => sessionBuild(row, liveVersion),
   projectColor: (project) => pcolor(project).dot,
   pulse: (el) => { if (dashboardMotion()) playOnce(el, 'pulse', 'dash-lane-pulse') },
   paintUndelivered,
+  // "N sessions outside this filter · Show all": the lens cleared, as the rail's All does
+  showAll: () => {
+    projectFilter = null
+    agentFilter = null
+    resetPaging()
+    forceRender()
+    requestHistoryPaint()
+  },
 })
-
-function dashLanesEl() {
-  const section = document.createElement('section')
-  section.className = 'dashboard-card dash-lanes'
-  section.setAttribute('aria-labelledby', 'dashLanesTitle')
-  section.innerHTML = `
-    <div class="dashboard-card-head"><h2 id="dashLanesTitle" tabindex="-1">What's being worked on</h2>
-      <div class="dash-lane-filters" role="group" aria-label="Filter lanes">
-        <select class="dash-lane-filter" data-lane-filter="project" aria-label="Lanes by project" data-dashboard-focus-key="lanes:filter:project"><option value="">All projects</option></select>
-        <select class="dash-lane-filter" data-lane-filter="agent" aria-label="Lanes by agent" data-dashboard-focus-key="lanes:filter:agent"><option value="">All agents</option></select>
-      </div>
-    </div>
-    <div class="dash-lane-list" role="list" aria-labelledby="dashLanesTitle"></div>
-    <p class="dash-lanes-none" hidden>No working session matches these filters.</p>
-    <div class="dashboard-empty dash-lanes-empty" role="img" aria-label="No agent connections" title="No agent connections"><svg class="dashboard-empty-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v4M12 18v4M2 12h4M18 12h4"></path></svg></div>
-    <div class="dash-lanes-foot">
-      <button type="button" class="dash-lanes-more" data-dashboard-focus-key="lanes:more" hidden></button>
-      <button type="button" class="dash-lanes-idle" data-dashboard-focus-key="lanes:idle" hidden></button>
-    </div>`
-  for (const select of section.querySelectorAll('[data-lane-filter]')) {
-    select.addEventListener('change', () => {
-      laneFilters[select.dataset.laneFilter] = select.value || null
-      if (lastDashModel) renderDashLanes(section, lastDashModel)
-    })
-  }
-  section.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape' && focusSession && !event.defaultPrevented && event.target.closest?.('.dash-lane')) {
-      event.preventDefault()
-      closeSessionFocus()
-    }
-  })
-  for (const button of section.querySelectorAll('.dash-lanes-foot button')) {
-    button.title = 'Open Live sessions'
-    button.addEventListener('click', () => dashboardTarget('live'))
-  }
-  return section
-}
-
-function dashLaneEl(session) {
-  const lane = document.createElement('article')
-  lane.className = 'dash-lane'
-  lane.dataset.lane = session
-  lane.setAttribute('role', 'listitem')
-  lane.innerHTML = `
-    <div class="dash-lane-head">
-      <span class="dash-lane-pulse" aria-hidden="true"></span><span class="dash-lane-live">live</span>
-      <button type="button" class="dash-lane-open" aria-expanded="false" aria-controls="dashFocus" title="Open this session's focus panel" data-dashboard-focus-key="lane:${esc(session)}:open"><strong class="dash-lane-doing"></strong></button>
-      <time class="dash-lane-recency"></time>
-    </div>
-    <div class="dash-lane-detail"></div>
-    <div class="dash-lane-meta"></div>
-    <div class="dash-lane-trace" hidden>
-      <svg class="dash-lane-spark" viewBox="0 0 60 12" preserveAspectRatio="none" role="img"><path></path></svg>
-      <span class="dash-lane-trace-count"></span>
-    </div>
-    <div class="dash-lane-plan" hidden>
-      <span class="dash-lane-bar" role="img"><span data-seg="done"></span><span data-seg="partial"></span><span data-seg="waiting"></span><span data-seg="todo"></span></span>
-      <span class="dash-lane-plan-count"></span><span class="dash-lane-plan-title"></span>
-    </div>
-    <div class="dash-lane-children"></div>
-    <div class="dash-lane-ask" hidden>
-      <button type="button" class="dash-lane-asking" data-dashboard-focus-key="lane:${esc(session)}:ask"><span class="dash-lane-ask-label">Asking you</span> <span class="dash-lane-ask-title"></span><span class="dash-lane-ask-more"></span></button>
-      <button type="button" class="dash-lane-waiting" data-dashboard-focus-key="lane:${esc(session)}:waiting"></button>
-    </div>`
-  lane.querySelector('.dash-lane-asking').addEventListener('click', () => jumpToAsk(laneAsks.get(session)?.first))
-  lane.querySelector('.dash-lane-waiting').addEventListener('click', () => jumpToAsk(laneAsks.get(session)?.oldest))
-  lane.querySelector('.dash-lane-open').addEventListener('click', () => toggleSessionFocus(session))
-  // A click anywhere else on the lane opens it too, but never one that ends a
-  // text selection or lands on a control.
-  lane.addEventListener('click', (event) => {
-    if (event.target.closest('button, a, select, [data-link-kind]') || String(getSelection?.() ?? '')) return
-    toggleSessionFocus(session)
-  })
-  return lane
-}
 
 // One iteration of a CSS one-shot, restarted when it is still running and
 // removed when it ends or is cancelled (Calm switched on, the Dashboard left
@@ -2256,146 +2180,9 @@ function playOnce(el, name, animation = `dash-lane-${name}`) {
 // Activity motion runs only where the human allows it and can see it.
 const dashboardMotion = () => motion.activityMotion() && !document.getElementById('dashboard')?.hidden
 
-function updateDashLane(el, lane) {
-  const color = pcolor(lane.project).dot
-  if (el.style.getPropertyValue('--lane-color') !== color) el.style.setProperty('--lane-color', color)
-  el.classList.toggle('quiet', lane.quiet)
-  setText(el.querySelector('.dash-lane-doing'), lane.doing)
-  const recency = el.querySelector('.dash-lane-recency')
-  const since = relMs(lane.sinceMs)
-  setText(recency, lane.quiet ? `quiet ${since}` : since === 'moments' ? 'just now' : `${since} ago`)
-  setAttr(recency, 'datetime', lane.lastCallAt)
-  setAttr(recency, 'title', lane.quiet ? `Claims work, but no call for ${since}` : 'Last MCP call')
-  const detail = el.querySelector('.dash-lane-detail')
-  setText(detail, lane.detail)
-  setHidden(detail, !lane.detail)
-  setText(el.querySelector('.dash-lane-meta'), [lane.agent, lane.project, lane.branch].filter(Boolean).join(' · '))
-  setAttr(el, 'aria-label', `${lane.agent} in ${lane.project}: ${lane.doing}`)
-  setAttr(el.querySelector('.dash-lane-open'), 'aria-expanded', String(focusSession === lane.session))
-  // #306: the heartbeat trace, static and redrawn only when its bars change
-  const trace = el.querySelector('.dash-lane-trace')
-  const calls = lane.trace.reduce((sum, count) => sum + count, 0)
-  setHidden(trace, !calls)
-  setAttr(trace.querySelector('path'), 'd', tracePath(lane.trace))
-  setAttr(trace.querySelector('svg'), 'aria-label', `${plural(calls, 'MCP call')} in the last 30 minutes`)
-  setText(trace.querySelector('.dash-lane-trace-count'), `${calls} in 30m`)
-  const plan = el.querySelector('.dash-lane-plan')
-  setHidden(plan, !lane.plan)
-  if (lane.plan) {
-    const { segments, done, countable, title } = lane.plan
-    for (const [name, value] of Object.entries(segments)) {
-      const segment = plan.querySelector(`[data-seg="${name}"]`)
-      setAttr(segment, 'style', `flex-grow: ${value}`)
-      setHidden(segment, value === 0)
-    }
-    setText(plan.querySelector('.dash-lane-plan-count'), `${done}/${countable}`)
-    setText(plan.querySelector('.dash-lane-plan-title'), title)
-    setAttr(plan.querySelector('.dash-lane-bar'), 'aria-label',
-      `${title}: ${done} done, ${segments.partial} in progress, ${segments.waiting} waiting on you, ${segments.todo} to do`)
-  }
-  const children = el.querySelector('.dash-lane-children')
-  const childKey = JSON.stringify(lane.children.map((child) => [child.name, child.doing]))
-  if (children.dataset.key !== childKey) {
-    children.dataset.key = childKey
-    children.replaceChildren(...lane.children.map((child) => {
-      const chip = document.createElement('span')
-      chip.className = 'dash-lane-child'
-      chip.textContent = child.name
-      if (child.doing) chip.title = child.doing
-      return chip
-    }))
-  }
-  const ask = el.querySelector('.dash-lane-ask')
-  setHidden(ask, !lane.asks.length)
-  if (lane.asks.length) {
-    laneAsks.set(lane.session, { first: lane.asks[0], oldest: lane.waiting.entry })
-    setText(ask.querySelector('.dash-lane-ask-title'), dashboardEntryTitle(lane.asks[0]) ?? '')
-    setText(ask.querySelector('.dash-lane-ask-more'), lane.asks.length > 1 ? ` +${lane.asks.length - 1} more` : '')
-    setText(ask.querySelector('.dash-lane-waiting'), `waiting on you ${ageText(lane.waiting.ms)}`)
-  } else {
-    laneAsks.delete(lane.session)
-  }
-  // #412 step 3: "Started here" and Stop on a launch's lane, only with the switch on
-  launchUi?.paintLane(el, lane.session)
-}
-
-function renderDashLanes(section, model, { forced = false } = {}) {
-  if (!section) return
-  const list = section.querySelector('.dash-lane-list')
-  // The outcomes list's rule: a focused lane control that leaves (its lane gone,
-  // its ask strip hidden, or moved by a re-sort) hands focus to the adjacent
-  // control, or the heading, and only in a window that owns focus.
-  const focused = activeFocusElement()
-  const focusIndex = focused && list.contains(focused) ? laneControls(list).indexOf(focused) : -1
-  laneOrder = pinLaneOrder(forced ? [] : laneOrder, model.lanes)
-  const bySession = new Map(model.lanes.map((lane) => [lane.session, lane]))
-  // #307: the quick filters narrow what is drawn after the order is pinned, so
-  // clearing them puts every lane back where it was.
-  paintLaneFilters(section, model.lanes)
-  const matching = laneOrder.map((session) => bySession.get(session)).filter((lane) => laneMatches(lane, laneFilters))
-  const drawn = matching.slice(0, MAX_LANES)
-  // A real call since the last paint pulses its lane once; only drawn lanes on a
-  // visible Dashboard, and only when the human's motion setting allows it.
-  const called = calledLanes(laneCalls, drawn)
-  laneCalls.clear()
-  for (const lane of model.lanes) laneCalls.set(lane.session, lane.lastCallAt)
-  const animate = dashboardMotion()
-  const existing = new Map([...list.children].map((el) => [el.dataset.lane, el]))
-  const nodes = drawn.map((lane) => {
-    const el = existing.get(lane.session) ?? dashLaneEl(lane.session)
-    existing.delete(lane.session)
-    updateDashLane(el, lane)
-    if (animate && called.pulse.has(lane.session)) playOnce(el, 'pulse')
-    if (animate && called.sweep === lane.session) playOnce(el, 'sweep')
-    return el
-  })
-  for (const [session, el] of existing) {
-    laneAsks.delete(session)
-    el.remove()
-  }
-  // Move only a lane that is out of place: a pinned order moves nothing.
-  nodes.forEach((el, index) => {
-    if (list.children[index] !== el) list.insertBefore(el, list.children[index] ?? null)
-  })
-  setHidden(section.querySelector('.dash-lanes-empty'), model.lanes.length > 0 || model.idleConnections > 0)
-  const more = section.querySelector('.dash-lanes-more')
-  const extra = matching.length - drawn.length
-  setHidden(section.querySelector('.dash-lanes-none'), !model.lanes.length || matching.length > 0)
-  setText(more, extra > 0 ? `+${extra} more working` : '')
-  setHidden(more, extra <= 0)
-  const idle = section.querySelector('.dash-lanes-idle')
-  setText(idle, model.idleConnections ? `+${plural(model.idleConnections, 'idle connection')}` : '')
-  setHidden(idle, !model.idleConnections)
-  // focusIndex is set only while the document had focus (activeFocusElement):
-  // removing the focused node can itself make hasFocus() false.
-  if (focusIndex < 0 || document.activeElement === focused) return
-  const controls = laneControls(list)
-  const next = controls.includes(focused) ? focused
-    : controls[Math.min(focusIndex, controls.length - 1)] ?? section.querySelector('#dashLanesTitle')
-  next.focus({ preventScroll: true })
-}
-
-function paintLaneFilters(section, lanes) {
-  const choices = laneFilterChoices(lanes, laneFilters)
-  for (const select of section.querySelectorAll('[data-lane-filter]')) {
-    const name = select.dataset.laneFilter
-    const values = choices[name]
-    const shape = JSON.stringify(values)
-    if (select.dataset.choices !== shape) {
-      select.dataset.choices = shape
-      select.replaceChildren(select.options[0], ...values.map((value) => new Option(value, value)))
-    }
-    const value = laneFilters[name] ?? ''
-    if (select.value !== value) select.value = value
-  }
-}
-
-function laneControls(list) {
-  return [...list.querySelectorAll('.dash-lane button')].filter((button) => !button.closest('[hidden]'))
-}
-
-// D2: the rail is the one answer surface, so a lane's ask jumps to its rail
-// card; an ask past the rail's top three opens in the Inbox instead.
+// D2: the rail is the Dashboard's answer surface (the session panel answers only
+// an app session's approval, #454 Q3), so a panel's ask jumps to its rail card;
+// an ask past the rail's top three opens in the Inbox instead.
 function jumpToAsk(entry) {
   if (!entry) return
   const id = needsEntryId(entry)
@@ -2407,7 +2194,7 @@ function jumpToAsk(entry) {
   for (const other of document.querySelectorAll('#dashRail [data-rail-card]')) other.tabIndex = other === card ? 0 : -1
   railSelectedId = id
   // #307: the jump goes to the rail, so the session panel steps aside first;
-  // focus goes to the card, never back to the lane.
+  // focus goes to the rail card.
   if (focusSession) {
     focusSession = null
     paintSessionFocus()
@@ -2571,9 +2358,10 @@ function renderDashFocus(aside, model) {
   // #411: a listed session can be messaged whether or not it is working now
   paintFocusComposer(aside, resuming ? null : card?.session ?? (activityRow(focusSession) ? focusSession : null))
   setHidden(aside.querySelector('.dash-focus-gone'), Boolean(card))
-  for (const el of aside.querySelectorAll('.dash-focus-meta, .dash-focus-doing, .dash-focus-detail, .sp-state')) setHidden(el, !card)
+  for (const el of aside.querySelectorAll('.dash-focus-meta, .dash-focus-doing, .sp-state')) setHidden(el, !card)
   focusTargets.clear()
   if (!card) {
+    setHidden(aside.querySelector('.dash-focus-detail'), true)
     setText(aside.querySelector('#dashFocusTitle'), 'Session')
     setHidden(aside.querySelector('.sp-hint'), true)
     for (const el of aside.querySelectorAll('.dash-focus-part > div')) setFocusPart(aside, el, '')
@@ -2610,7 +2398,8 @@ function renderDashFocus(aside, model) {
         { attrs: ` data-focus-ask="${esc(`${entry.kind}:${id}`)}"` }) + '</div>'
   }).join('') || (approvals.length ? '' : '<p class="dash-focus-none">Nothing waiting on you.</p>'))
   setFocusPart(aside, aside.querySelector('.dash-focus-children'), card.base === 'working' && card.children.length
-    ? `<ul class="sp-children">${card.children.map((child) => `<li><strong>${esc(child.name)}</strong>${child.doing ? ` <span>${esc(child.doing)}</span>` : ''}</li>`).join('')}</ul>`
+    ? `<ul class="sp-children">${card.children.map((child) => `<li><strong>${esc(child.name)}</strong>${child.doing ? ` <span>${esc(child.doing)}</span>` : ''}` +
+      `${child.state ? ` <small class="sp-child-state">${esc(child.state)}</small>` : ''}</li>`).join('')}</ul>`
     : '')
   // #307's context, read from the card's session and plan
   const focus = sessionFocus({ session: card.session ?? '', plan: card.plan }, {
@@ -2660,14 +2449,11 @@ function paintFocusComposer(aside, session) {
 function paintSessionFocus() {
   if (!lastDashModel) return
   renderDashFocus(document.querySelector('#dashboard .dash-focus'), lastDashModel)
-  for (const button of document.querySelectorAll('#dashboard .dash-lane-open')) {
-    setAttr(button, 'aria-expanded', String(button.closest('.dash-lane')?.dataset.lane === focusSession))
-  }
   const open = agentsHome.cardFor(focusSession)?.id ?? null
   for (const el of document.querySelectorAll('#dashboard [data-session-card]')) el.classList.toggle('sel', el.dataset.sessionCard === open)
 }
 
-// An element the human can see: no ancestor (the list the lens hides) is hidden.
+// An element the human can see: no ancestor is hidden.
 const isShown = (el) => Boolean(el) && !el.closest('[hidden]')
 
 // Where an explicit open lands (#454): the part the human asked for.
@@ -2697,18 +2483,11 @@ function focusPanelPart(part) {
 
 function openSessionFocus(session, part = null) {
   focusSession = session
-  // from the drawer (a launch's Transcript or Resume…), the panel is on the Dashboard;
-  // a launch outside the project and agent lens scopes it to its project, as jumpToSession does
-  const id = session.startsWith('launch:') ? session.slice('launch:'.length) : null
-  const launch = id ? (lastData?.launches ?? []).find((l) => l.id === id) : null
-  const outside = Boolean(launch) && !launchesInLens().includes(launch)
-  if (outside) {
-    projectFilter = launch.project
-    agentFilter = null
-    laneFilters.project = null
-    laneFilters.agent = null
-  }
-  if (activeTab !== 'dashboard' || outside) {
+  // #197: the build hint follows an install made since
+  refreshLiveVersion()
+  // a launch outside the project and agent lens is scoped to its project, as jumpToSession does
+  const scoped = session.startsWith('launch:') && scopeToLaunch(session.slice('launch:'.length))
+  if (activeTab !== 'dashboard' || scoped) {
     selectTab('dashboard', { paint: false })
     forceRender()
   }
@@ -2725,13 +2504,12 @@ function closeSessionFocus() {
   focusSession = null
   paintSessionFocus()
   if (!owned || !document.hasFocus()) return
-  const lane = document.querySelector(`#dashboard .dash-lane[data-lane="${CSS.escape(session)}"] .dash-lane-open`)
   const own = [...document.querySelectorAll('#dashboard [data-session-card]')].find((el) => el.dataset.sessionCard === card)
-  ;[lane, own?.querySelector('[data-ah-action]'), document.getElementById('agentsHomeTitle'), document.getElementById('dashLanesTitle')]
+  ;[own?.querySelector('[data-ah-action]'), document.getElementById('agentsHomeTitle')]
     .find(isShown)?.focus({ preventScroll: true })
 }
 
-// A trusted click outside the panel that is not on a lane (a lane toggles it
+// A trusted click outside the panel that is not on a card (a card toggles it
 // itself) closes it, moving no focus. A click, never a pointerdown: it fires
 // once the press has completed on one element, so nothing moves under the
 // pointer mid-press. In the compact layout the panel is in flow (static) and
@@ -2739,7 +2517,7 @@ function closeSessionFocus() {
 // closes it there: the rail below it would jump up under the press.
 function closeSessionFocusOnClick(event) {
   if (!focusSession || !trustedInput(event) || !(event.target instanceof Element)) return
-  if (event.target.closest('#dashboard .dash-focus, #dashboard .dash-lane, #dashboard .sc')) return
+  if (event.target.closest('#dashboard .dash-focus, #dashboard .sc')) return
   const aside = document.querySelector('#dashboard .dash-focus')
   if (!aside || getComputedStyle(aside).position === 'static') return
   focusSession = null
@@ -2759,8 +2537,6 @@ function jumpToSession(session) {
   if (!row) return
   projectFilter = row.project
   agentFilter = null
-  laneFilters.project = null
-  laneFilters.agent = null
   focusSession = session
   resetSearch()
   selectTab('dashboard', { paint: false })
@@ -3313,11 +3089,11 @@ function renderDashboard(model) {
 
   const grid = document.createElement('div')
   grid.className = 'dashboard-grid'
-  const lanes = dashLanesEl()
-  grid.appendChild(lanes)
-  // #454: the session panel is the grid's own, never inside a list a lens can
-  // hide: a sheet over the grid's right side (the rail) on a desktop, in flow
-  // after the list on a narrow screen (the Agents home goes in before it).
+  // #454: the Agents home takes the lanes' place; the session panel is the
+  // grid's own, never inside a card that could hide it: a sheet over the
+  // grid's right side (the rail) on a desktop, in flow after the list on a
+  // narrow screen.
+  grid.appendChild(agentsHome.element())
   grid.appendChild(dashFocusEl())
   grid.appendChild(dashRailEl())
   grid.appendChild(dashRibbonEl())
@@ -3373,16 +3149,12 @@ function paintAmbient() {
   liveCardIds = new Set([...allItems(lastData.g).map((i) => i.id), ...lastData.boards.map((b) => b.id), ...lastData.archived.map((b) => b.id)])
   const filtered = filterData(visibleData)
   const { g, boards, archived } = filtered
-  const pillLive = (lastData.activity ?? []).filter((a) =>
-    (!projectFilter || a.project === projectFilter) && (!agentFilter || a.agent === agentFilter))
-  const live = pillLive
+  const live = liveInLens()
   const dashboard = dashboardModel(filtered, lastData.older, live)
-  renderLiveBar(lastData.activity ?? [])    // collapsed strip — GLOBAL, never scoped (§7 filter-blindness, generalized)
+  renderSessionsIndicator(lastData.activity) // the sidebar's Sessions line — GLOBAL, never scoped (§7 filter-blindness, generalized)
   // #411: a message the snapshot now holds was sent; one whose session left
-  // goes to the unsent responses. Then the drawer, which holds a composer.
+  // goes to the unsent responses. Then the Dashboard, whose panel holds a composer.
   reconcileMessageDrafts()
-  renderLive(live, { forced: forcedAmbient }) // drawer's expanded list — stays FILTERED (rail-scoped, like every other tab)
-  launchUi?.paintDrawer(Date.now()) // #412 step 3: "Started from Agent Inbox", only with the switch on
   renderDashboardAmbient(dashboard, { forced: forcedAmbient })
   paintTabCounts(g, boards)
   paintLaterSectionHint()
@@ -3392,17 +3164,33 @@ function paintAmbient() {
   return { agents, g, boards, archived, live, dashboard }
 }
 
-// The Agents home's input (#397, #454): exactly paintAmbient's pillLive, the Live
-// sessions the rail's project and agent lens shows, which the lanes read too.
+// The Agents home's and the Now strip's input (#397, #454): the sessions the
+// rail's project and agent lens shows, never narrowed by closure (closed
+// projects' sessions have a fold of their own).
 function liveInLens() {
   return (lastData.activity ?? []).filter((a) =>
     (!projectFilter || a.project === projectFilter) && (!agentFilter || a.agent === agentFilter))
 }
 
 // This app's launches under the same lens: every one runs Copilot.
+const launchInLens = (launch) => (!projectFilter || launch.project === projectFilter) && (!agentFilter || agentFilter === 'copilot')
 function launchesInLens() {
-  return (lastData?.launches ?? []).filter((launch) =>
-    (!projectFilter || launch.project === projectFilter) && (!agentFilter || agentFilter === 'copilot'))
+  return (lastData?.launches ?? []).filter(launchInLens)
+}
+
+// The launches the lens hides that still run or can resume: the Agents home says so (#454).
+function launchesOutsideLens() {
+  return (lastData?.launches ?? []).filter((launch) => launch.status !== 'ended' && !launchInLens(launch)).length
+}
+
+// A launch outside the lens has no card to show it: scope the lens to its project,
+// as jumpToSession does. Returns whether it changed the lens; the caller paints.
+function scopeToLaunch(id) {
+  const launch = (lastData?.launches ?? []).find((l) => l.id === id)
+  if (!launch || launchInLens(launch)) return false
+  projectFilter = launch.project
+  agentFilter = null
+  return true
 }
 
 // `summary` is what `view` omits from closed history (issue #184), and archived
@@ -3478,7 +3266,7 @@ function paintEditableSurfaces({ agents, g, boards, archived, dashboard, paintAl
 function frameInputs() {
   return [
     ...lastData.reads, JSON.stringify(lastData.closed), navigationKey(), openRowId,
-    focusSession, laneFilters.project, laneFilters.agent, outsideChanges, liveVersion, fileLinksCopy(), Boolean(linkFileActions()),
+    focusSession, outsideChanges, liveVersion, fileLinksCopy(), Boolean(linkFileActions()),
     triageHeld,
     agentsHome.state(),
     launchUi?.version() ?? null,
@@ -5463,7 +5251,6 @@ function projectNavigationMode() {
 }
 
 function higherPriorityEscapeSurfaceOpen() {
-  const liveDrawer = document.getElementById('liveDrawer')
   const visibleModal = keyboardScope() !== document
   return !!(
     triageDeck
@@ -5471,7 +5258,6 @@ function higherPriorityEscapeSurfaceOpen() {
     || missionBoardId
     || relayOpen
     || document.body.classList.contains('settings-open')
-    || (liveDrawer && !liveDrawer.hidden)
     || visibleModal
   )
 }
@@ -6238,13 +6024,10 @@ function initGear() {
   window.agentInboxUpdates?.onOpenUpdates?.(openUpdates)
 }
 
-// live entries the user has expanded, by session id — survives the poll rebuild
-const openLive = new Set()
-
 // Issue #197 — the /api/version body: the build a restarted session would load,
 // the runtime state and what each host is registered to run, which together
-// decide which advice the hint may give. Read at boot, whenever the drawer opens
-// and after a Setup install, so the advice follows an install made since. It
+// decide which advice the hint may give. Read at boot, whenever the session panel
+// opens and after a Setup install, so the advice follows an install made since. It
 // stays null when the viewer cannot say, and then no hint renders.
 let liveVersion = null
 
@@ -6255,190 +6038,9 @@ function refreshLiveVersion() {
     .catch(() => {})
 }
 
-// A session's build label for the drawer, and its hint when it runs an older
-// build — or, once its host was matched back to this app, a newer one. Both
-// empty when its version is unknown: never a guess.
-function liveBuildHtml(a) {
-  const build = sessionBuild(a, liveVersion)
-  if (!build) return { label: '', hint: '', older: false, newer: false }
-  const marked = build.older || build.newer
-  const title = marked ? build.hint : `This session runs Agent Inbox ${build.label}`
-  const tone = build.older ? ' older' : build.newer ? ' newer' : ''
-  return {
-    label: `<span class="live-build${tone}" title="${esc(title)}">${esc(build.label)}</span>`,
-    hint: marked ? `<span class="live-build-hint">${esc(build.hint)}</span>` : '',
-    older: build.older,
-    newer: build.newer,
-  }
-}
-
-function paintLiveProjectDot(dot, project, state) {
-  const color = pcolor(project)
-  dot.className = `live-dot project ${state}`
-  dot.style.setProperty('--project-dot', color.dot)
-  dot.style.setProperty('--project-wash', color.wash)
-}
-
-// The drawer's expanded list, painted by the ambient painter (#411) so a
-// composer's status keeps moving under an unrelated draft. A composer the human
-// is in (its node holds focus, remembered in a background window too) keeps the
-// list as it is: only the composers update in place, and a forced paint, the
-// human's own, rebuilds it around the same composer nodes.
-//
-// A poll whose drawer would look the same (`liveDrawKey`, plus the identity of
-// the messages snapshot) rebuilds nothing either, so focus, hover and scroll in
-// it are never disturbed by an unrelated draft's ticks. When it does rebuild,
-// the drawer keeps its scroll, and a keyboard user keeps the same control by
-// identity (`data-live-focus`) when the window has focus.
-let liveDrawnKey = null
-let liveDrawnMessages
-function liveDrawKey(entries) {
-  // the clock enters at minute granularity: every age it draws is in minutes
-  return JSON.stringify([
-    activityFrameKey(entries), [...openLive], [...openComposers], messageVersion, Math.floor(Date.now() / 60000), launchesOn(),
-    liveVersion, renderedTheme,
-    // "Not delivered" reads every listed session, not the lens's
-    (lastData?.activity ?? []).map((row) => row?.session).sort(),
-  ])
-}
-
-function renderLive(entries, { forced = false } = {}) {
-  const host = document.querySelector('#liveDrawer .live-list')
-  if (!host) return
-  const key = liveDrawKey(entries)
-  const messages = lastData?.messages ?? null
-  const active = document.activeElement
-  const inComposer = active instanceof Element && host.contains(active) && active.closest('.msg-composer') ? active : null
-  if (!forced && ((key === liveDrawnKey && messages === liveDrawnMessages) || inComposer)) {
-    for (const el of host.querySelectorAll('.msg-composer')) updateComposer(el)
-    return
-  }
-  const caret = inComposer?.matches('textarea') ? [inComposer.selectionStart, inComposer.selectionEnd] : null
-  const focusKey = !inComposer && active instanceof Element && host.contains(active)
-    ? active.closest('[data-live-focus]')?.dataset.liveFocus ?? null
-    : null
-  // read before the rebuild detaches it: a removed node takes the focus with it
-  const ownsFocus = Boolean(inComposer || focusKey) && document.hasFocus()
-  const drawer = host.closest('#liveDrawer')
-  const scrollTop = drawer?.scrollTop ?? 0
-  liveDrawnKey = key
-  liveDrawnMessages = messages
-  const activeRows = entries.filter((a) => !a.idle)
-  const idle = entries.filter((a) => a.idle)
-  host.title = 'Connections can be shared by multiple agents. Task reports are not proof an agent is running.'
-  host.innerHTML = entries.length ? '' : '<p class="empty">No agent connections.</p>'
-  for (const a of activeRows) {
-    const el = document.createElement('details')
-    el.className = 'live-entry'
-    if (openLive.has(a.session)) el.open = true
-    el.addEventListener('toggle', () => { el.open ? openLive.add(a.session) : openLive.delete(a.session) })
-    const seen = lastActivityAt(a)
-    const age = a.last_call_at ? `Inbox call ${rel(seen)} ago` : `connected ${rel(seen)} ago`
-    const { tone: fresh } = ageChip(Date.now() - Date.parse(seen))
-    const stream = a.stream ? ` · ${esc(a.stream)}` : ''
-    const kids = a.children.length ? `<span class="live-kids">▸ ${a.children.length} reported agent${a.children.length > 1 ? 's' : ''}</span>` : ''
-    const build = liveBuildHtml(a)
-    el.innerHTML = `
-      <summary class="card-summary live-summary" data-live-focus="${esc(`entry:${a.session}`)}">
-        <span class="live-dot"></span>
-        <span class="live-session-copy">
-          <span class="live-session-heading">
-            <span class="live-state-label working">Reported work</span>
-            <span class="live-who">${esc(a.agent)} · ${esc(a.project)}${stream}</span>
-            ${startedHereHtml(a)}
-            ${build.label}
-          </span>
-          <span class="live-doing">${esc(a.doing)}</span>
-          ${build.hint}
-        </span>
-        ${kids}
-        <span class="live-age ${fresh}" title="connected ${esc(rel(a.started_at))} ago">${esc(age)}</span>
-        ${messageButtonHtml(a)}
-      </summary>
-      ${a.detail ? `<div class="detail live-detail">${renderStructuredText(a.detail)}</div>` : ''}`
-    const dot = el.querySelector('.live-dot')
-    paintLiveProjectDot(dot, a.project, 'working')
-    dot.title = `${a.project} · reported work · ${age}`
-    if (a.children.length) {
-      const table = document.createElement('table')
-      table.className = 'board-table live-children'
-      for (const c of a.children) {
-        const tr = document.createElement('tr')
-        tr.innerHTML = `
-          <td class="row-label">${esc(c.name)}</td>
-          <td class="row-note">${esc(c.doing)}</td>
-          <td class="live-state">${c.state ? esc(c.state) : ''}</td>`
-        table.appendChild(tr)
-      }
-      el.appendChild(table)
-    }
-    host.appendChild(el)
-    mountDrawerComposer(host, a.session)
-  }
-  if (idle.length) {
-    // idle sessions are the parents of everything — present but quiet,
-    // collapsed until you want them (they expand into full entries the
-    // moment they report real work)
-    const fold = document.createElement('details')
-    fold.className = 'idle-fold'
-    if (openLive.has('__idle__')) fold.open = true
-    fold.addEventListener('toggle', () => { fold.open ? openLive.add('__idle__') : openLive.delete('__idle__') })
-    // #197: the fold is collapsed by default, so it says when a session inside
-    // runs an older build — the idle ones are exactly the long-lived sessions.
-    const builds = new Map(idle.map((a) => [a, liveBuildHtml(a)]))
-    const older = [...builds.values()].filter((b) => b.older).length
-    const newer = [...builds.values()].filter((b) => b.newer).length
-    fold.innerHTML = `<summary data-live-focus="idle">${idle.length} connection${idle.length > 1 ? 's' : ''} · no task reported${older ? ` · ${older} on an older build` : ''}${newer ? ` · ${newer} on a newer build` : ''}</summary>`
-    for (const a of idle) {
-      const row = document.createElement('div')
-      // #45: hours-quiet sessions keep their row (they ARE present, and their
-      // questions still count as waiting) but read as background. listActivity
-      // has already sorted them to the bottom of this fold.
-      const dormant = isDormant(a, Date.now())
-      row.className = dormant ? 'idle-row dormant' : 'idle-row'
-      const stream = a.stream ? ` · ${esc(a.stream)}` : ''
-      const seen = lastActivityAt(a)
-      const { tone: fresh } = ageChip(Date.now() - Date.parse(seen))
-      const synopsis = activitySynopsis(a)
-      const age = a.last_call_at ? `Inbox call ${rel(seen)} ago` : `connected ${rel(seen)} ago`
-      const build = builds.get(a)
-      row.innerHTML = `
-        <span class="live-dot"></span>
-        <span class="live-session-copy">
-          <span class="live-session-heading">
-            <span class="live-state-label idle">Connected</span>
-            <span class="live-who">${esc(a.agent)} · ${esc(a.project)}${stream}</span>
-            ${startedHereHtml(a)}
-            ${build.label}
-          </span>
-          <span class="live-doing ${synopsis.historical ? 'historical' : 'empty-summary'}">${synopsis.historical ? 'Last report: ' : ''}${esc(synopsis.text)}</span>
-          ${build.hint}
-        </span>
-        <span class="live-age ${fresh}" title="${esc(age)}">${esc(age)}</span>
-        ${messageButtonHtml(a)}`
-      const dot = row.querySelector('.live-dot')
-      paintLiveProjectDot(dot, a.project, 'idle-session')
-      dot.title = `${a.project} · connected · ${age}`
-      fold.appendChild(row)
-      mountDrawerComposer(fold, a.session)
-    }
-    host.appendChild(fold)
-  }
-  renderUndelivered(host)
-  if (drawer && drawer.scrollTop !== scrollTop) drawer.scrollTop = scrollTop
-  if (!ownsFocus) return
-  if (inComposer?.isConnected) {
-    inComposer.focus({ preventScroll: true })
-    if (caret) inComposer.setSelectionRange(caret[0], caret[1])
-  } else if (focusKey) {
-    // matched by value, never through a selector built from a session id
-    ;[...host.querySelectorAll('[data-live-focus]')].find((el) => el.dataset.liveFocus === focusKey)?.focus({ preventScroll: true })
-  }
-}
-
 // ── messages to a running session (#411, design §5) ─────────────────────────
-// One composer per session, in the Live drawer (opened by its Message button)
-// and in the Dashboard session focus panel, sharing one draft. Each composer is
+// One composer per session, in the Dashboard's session panel (#454: the Live
+// drawer that also held one is retired). The composer is
 // one node kept for the page's life and updated in place, so a rebuild around
 // it never loses its text, caret or focus. Presence, not attention: nothing here
 // reaches public/attention.js, a badge, a count, the rail or the dock.
@@ -6446,48 +6048,17 @@ const messageDrafts = new Map() // session → { text, project, agent, stream, i
 const messageRecoveries = new Map() // session → { ...draft, reason }: in the unsent responses
 const messageNotes = new Map() // session → what its composer's status slot says
 const messageWriteNotes = new Map() // message id → why its Withdraw was refused
-const openComposers = new Set() // sessions whose drawer composer is open
 const composerEls = new Map() // `${where}:${session}` → its composer node
 const sendingMessages = new Set() // sessions with a send in flight
 const openMessageFolds = new Set() // "+N earlier" and "+M more" folds the human opened
-// Every change above, for the drawer's own key (liveDrawKey). It is not in
-// frameInputs(): each change comes from human input or a settled write (both
-// already count, #298), from a restore in the first load (which always paints)
-// or from reconcileMessageDrafts inside a paint, so it never waits on a tick.
-let messageVersion = 0
 let composerSeq = 0
 
 function bumpMessages() {
-  messageVersion += 1
   showPauseHint() // queues the draft save (#279)
 }
 
 function activityRow(session) {
   return (lastData?.activity ?? []).find((row) => row?.session === session) ?? null
-}
-
-// #412 step 3: a driven session's own row says it was started here, so it is
-// found among the connections; nothing at all with the switch off.
-function startedHereHtml(a) {
-  return launchesOn() && a.driven === true && typeof a.driven_launch === 'string'
-    ? '<span class="live-started-here">Started here</span>'
-    : ''
-}
-
-// A closed composer holding text says so on its button: the draft is kept.
-function messageButtonHtml(a) {
-  const open = openComposers.has(a.session)
-  const draft = !open && messageDrafts.has(a.session)
-  return `<button type="button" class="live-msg-btn${draft ? ' has-draft' : ''}" data-msg-open="${esc(a.session)}" ` +
-    `data-live-focus="${esc(`msg:${a.session}`)}" aria-expanded="${open}" ` +
-    `title="${draft ? 'Message this session: your unsent draft is kept' : 'Message this session'}">${draft ? 'Message · draft' : 'Message'}</button>`
-}
-
-function mountDrawerComposer(parent, session) {
-  if (!openComposers.has(session)) return
-  const el = composerEl('drawer', session)
-  parent.appendChild(el)
-  updateComposer(el)
 }
 
 function composerEl(where, session) {
@@ -6507,7 +6078,6 @@ function composerEl(where, session) {
     <div class="msg-actions">
       <span class="msg-count"></span>
       <button type="button" class="msg-send" title="Send (${navigator.platform?.startsWith('Mac') ? '⌘' : 'Ctrl'}+Enter)">Send</button>
-      ${where === 'drawer' || where === 'launch' ? '<button type="button" class="msg-cancel" title="Close; your text is kept (Esc)">Cancel</button>' : ''}
     </div>
     <p class="msg-status" role="status"></p>
     <div class="msg-history"></div>`
@@ -6520,18 +6090,11 @@ function composerEl(where, session) {
       sendMessage(session)
     }
   })
-  el.addEventListener('keydown', (event) => {
-    if (event.key !== 'Escape' || (where !== 'drawer' && where !== 'launch') || event.defaultPrevented) return
-    event.preventDefault()
-    event.stopPropagation()
-    closeComposerIn(where, session)
-  })
   el.addEventListener('click', (event) => {
     const control = event.target instanceof Element ? event.target.closest('button') : null
     if (!control || !el.contains(control)) return
     if (control.matches('.msg-send')) sendMessage(session)
     else if (control.matches('.msg-interrupt')) interruptAndSend(session)
-    else if (control.matches('.msg-cancel')) closeComposerIn(where, session)
     else if (control.dataset.msgWithdraw) withdrawMessage(control.dataset.msgWithdraw, Number(control.dataset.msgRevision))
   })
   el.addEventListener('toggle', (event) => {
@@ -6647,37 +6210,6 @@ function updateSessionComposers(session) {
   for (const el of composerEls.values()) if (el.dataset.msgSession === session) updateComposer(el)
 }
 
-function openComposer(session, { focus = true } = {}) {
-  const row = activityRow(session)
-  if (!row) return
-  openComposers.add(session)
-  if (row.idle) openLive.add('__idle__')
-  bumpMessages()
-  renderLive(liveInLens(), { forced: true })
-  if (!focus) return
-  const input = composerEl('drawer', session).querySelector('textarea')
-  // an explicit click: the composer takes focus, and the drawer scrolls to it
-  if (input.isConnected && !input.disabled) input.focus()
-}
-
-function closeComposerIn(where, session) {
-  if (where === 'launch') launchUi?.closeMessage(session)
-  else closeComposer(session)
-}
-
-function closeComposer(session) {
-  const el = composerEls.get(`drawer:${session}`)
-  const owned = Boolean(el?.contains(document.activeElement)) && document.hasFocus()
-  openComposers.delete(session)
-  bumpMessages()
-  // focus leaves the composer first, so the rebuild below is not held
-  if (owned) document.activeElement.blur()
-  renderLive(liveInLens(), { forced: true })
-  if (!owned) return
-  const button = [...document.querySelectorAll('#liveDrawer [data-msg-open]')].find((b) => b.dataset.msgOpen === session)
-  button?.focus({ preventScroll: true })
-}
-
 // Issue #412 step 3: driven sessions on the page. Made at boot; it asks main
 // once (window.agentInboxLaunch), and only the viewer the app owns, with its
 // switch on, gets anything: in a browser, a reused viewer or with the switch
@@ -6689,13 +6221,6 @@ function initLaunches() {
     activity: () => lastData?.activity ?? [],
     launches: () => lastData?.launches ?? null,
     rel,
-    // the launch row's own composer for the session: the same draft and state as the drawer's
-    composer: (session) => {
-      const el = composerEl('launch', session)
-      updateComposer(el)
-      return el
-    },
-    hasDraft: (session) => messageDrafts.has(session),
     sendTo: async (session, text) => {
       // the resumed session is new to this page: read it before sending
       await reloadAndPaint()
@@ -6705,28 +6230,17 @@ function initLaunches() {
     changed: () => {
       noteOutsideChange()
       showPauseHint()
-      if (lastData) launchUi?.paintDrawer(Date.now())
+      // the session panel holds the launch's parts: its own region repaints
+      paintSessionFocus()
+      agentsHome.paintNewSession()
     },
     settled: () => reloadAndPaint(),
+    // a session started outside the lens would have no card: scope the lens to it
+    started: (id) => { if (scopeToLaunch(id)) forceRender() },
     pending: (action) => withPendingResponse(action),
-    // #454: the launch's transcript and Resume and send live in the Dashboard's session panel
-    openPanel: (id, part) => openSessionFocus(`launch:${id}`, part),
   })
   // a changed answer is drawn by the next tick, which reads the launches once on
   launchUi.refresh()
-}
-
-function initMessages() {
-  const list = document.querySelector('#liveDrawer .live-list')
-  list?.addEventListener('click', (event) => {
-    const button = event.target instanceof Element ? event.target.closest('[data-msg-open]') : null
-    if (!button) return
-    // a button in a <summary> must not also fold its entry
-    event.preventDefault()
-    const session = button.dataset.msgOpen
-    if (openComposers.has(session)) closeComposer(session)
-    else openComposer(session)
-  })
 }
 
 function postMessage(session, intent) {
@@ -6906,16 +6420,11 @@ async function retryMessageRecovery(session) {
   await reloadAndPaint()
 }
 
-// The end of the Live drawer: every open message whose session /api/activity
-// no longer lists, until the human withdraws it or a later send's 30-day prune
-// deletes it. Global, like the strip: a lens never hides an undelivered message.
-function renderUndelivered(host) {
-  const fold = undeliveredFold((value) => `data-live-focus="${esc(value)}"`)
-  if (fold) host.appendChild(fold)
-}
-
-// The Agents home's "Not delivered" fold (#454): the drawer's own, still global,
-// rebuilt only when what it shows changes, keeping a keyboard user's control.
+// The Agents home's "Not delivered" fold (#411, #454): every open message whose
+// session /api/activity no longer lists, until the human withdraws it or a later
+// send's 30-day prune deletes it. Global, like the Sessions line: a lens never
+// hides an undelivered message. Rebuilt only when what it shows changes, keeping
+// a keyboard user's control.
 function paintUndelivered(slot) {
   const lost = undeliveredMessages(lastData?.messages, lastData?.activity)
   const key = JSON.stringify([[...lost.shown, ...lost.more].map((m) => [m.id, m.revision, messageWriteNotes.get(m.id) ?? '']),
@@ -6970,107 +6479,41 @@ function undeliveredFold(focusAttr) {
   return fold
 }
 
-// The always-visible footer strip (spec §16). Ambient only: never steals focus,
-// never auto-expands, and its number never reads as a to-do.
-function renderLiveBar(entries) {
-  const s = liveSummary(entries, Date.now())
-  const dot = document.getElementById('liveStripDot')
-  const label = document.getElementById('liveStripLabel')
-  const list = document.getElementById('liveStripSessions')
-  if (!dot || !label || !list) return
-  const projects = [...new Set(s.sessions.map((x) => x.project))]
-  if (projects.length === 1) {
-    paintLiveProjectDot(dot, projects[0], 'working')
-  } else {
-    dot.className = s.count ? 'live-dot aggregate-working' : 'live-dot idle'
-    dot.style.removeProperty('--project-dot')
-    dot.style.removeProperty('--project-wash')
-  }
-  dot.title = s.count
-    ? `${s.count} of ${entries.length} connections reporting work across ${projects.length} project${projects.length === 1 ? '' : 's'}`
-    : s.label
-  label.textContent = s.label
-  list.replaceChildren()
-  const rowsBySession = new Map(entries.filter(Boolean).map((a) => [a.session, a]))
-  for (const x of s.sessions) {
-    const el = document.createElement('span')
-    el.className = `live-session ${x.tone}`
-    const projectDot = document.createElement('span')
-    paintLiveProjectDot(projectDot, x.project, 'working')
-    projectDot.setAttribute('aria-hidden', 'true')
-    const text = document.createElement('span')
-    text.textContent = x.label
-    el.append(projectDot, text)
-    // #197: the strip stays compact — nothing extra on the current build, and
-    // only a marker on an older one (or a newer one its host was matched back
-    // from); its title carries the drawer's full hint
-    const build = sessionBuild(rowsBySession.get(x.session), liveVersion)
-    if (build?.older || build?.newer) {
-      const marker = document.createElement('span')
-      marker.className = 'live-build-marker'
-      marker.textContent = build.older ? 'older build' : 'newer build'
-      el.appendChild(marker)
-      el.title = build.hint
-    }
-    list.appendChild(el)
-  }
+// ── the Sessions indicator (#454, design §3.5) ──────────────────────────────
+// The sidebar's one session signal on every tab, where the Live strip was: a
+// dot with the freshest working session's tone, "2 working · 5 connected" and
+// "1 on an older build". Global (never lens- or closed-filtered), presence only:
+// no attention tone, badge or "needs you" number. A click opens the Dashboard
+// with the Agents home focused. Ambient: it never steals focus.
+function renderSessionsIndicator(activity) {
+  const el = document.getElementById('sessionsIndicator')
+  if (!el) return
+  const s = sessionsSummary(activity, Date.now(), (row) => sessionBuild(row, liveVersion))
+  setAttr(el, 'data-tone', s.tone)
+  setText(el.querySelector('.si-v'), s.label)
+  setText(el.querySelector('.si-s'), s.sub)
+  const older = el.querySelector('.si-older')
+  setText(older, s.older ? `${s.older} on an older build` : '')
+  setHidden(older, !s.older)
+  const title = ['Sessions', s.label, s.sub, older.textContent].filter(Boolean).join(' · ')
+  setAttr(el, 'title', title)
+  setAttr(el, 'aria-label', `${title}. Open the Agents home`)
 }
 
-let livePinned = false
-
-function setLivePinned(pinned) {
-  livePinned = pinned
-  const drawer = document.getElementById('liveDrawer')
-  const pin = document.getElementById('livePin')
-  if (!drawer || !pin) return
-  drawer.classList.toggle('pinned', pinned)
-  pin.setAttribute('aria-pressed', String(pinned))
-  const label = pinned ? 'Unpin Live sessions' : 'Pin Live sessions open'
-  pin.setAttribute('aria-label', label)
-  pin.title = label
+// The indicator, G L and the Now strip's Working tile: the Dashboard, its Agents home focused.
+// Each re-reads the build state (#197), as opening the Live drawer did; the next tick paints it.
+function showAgentsHome() {
+  refreshLiveVersion()
+  if (activeTab !== 'dashboard') selectTab('dashboard')
+  const title = document.getElementById('agentsHomeTitle')
+  title?.scrollIntoView?.({ block: 'nearest' })
+  title?.focus({ preventScroll: true })
 }
 
-function toggleLiveDrawer(open, { restoreFocus = false } = {}) {
-  const strip = document.getElementById('liveStrip')
-  const drawer = document.getElementById('liveDrawer')
-  if (!strip || !drawer) return
-  const next = open ?? drawer.hidden
-  drawer.hidden = !next
-  strip.setAttribute('aria-expanded', String(next))
-  // #197: re-read the build state, so advice shown after a Setup install is
-  // current by the next paint
-  if (next) refreshLiveVersion()
-  if (!next) {
-    setLivePinned(false)
-    if (restoreFocus) strip.focus()
-  }
-}
-
-function initLiveBar() {
-  const strip = document.getElementById('liveStrip')
-  const drawer = document.getElementById('liveDrawer')
-  const pin = document.getElementById('livePin')
-  if (!strip || !drawer || !pin) return
-  strip.addEventListener('click', () => toggleLiveDrawer())
-  pin.addEventListener('click', () => setLivePinned(!livePinned))
-  const outsideDrawer = (target) => target instanceof Node
-    && !drawer.contains(target)
-    && !strip.contains(target)
-  document.addEventListener('pointerdown', (e) => {
-    if (!drawer.hidden && !livePinned && outsideDrawer(e.target)) toggleLiveDrawer(false)
-  }, true)
-  document.addEventListener('focusin', (e) => {
-    if (!drawer.hidden && !livePinned && outsideDrawer(e.target)) toggleLiveDrawer(false)
-  })
-  document.addEventListener('keydown', (e) => {
-    if (nativeKeyOwner(e)) return
-    if (e.key === 'Escape' && !drawer.hidden) {
-      e.preventDefault()
-      toggleLiveDrawer(false, { restoreFocus: true })
-    }
-  })
-  // #197: read outside the poll; the next paint shows the hints. A failed or
-  // older viewer leaves the build state unknown, which hides every hint.
+function initSessionsIndicator() {
+  document.getElementById('sessionsIndicator')?.addEventListener('click', showAgentsHome)
+  // #197: read outside the poll; the next paint shows the build hints. A failed
+  // or older viewer leaves the build state unknown, which hides every hint.
   refreshLiveVersion()
 }
 
@@ -7587,7 +7030,7 @@ function renderOrphanedDrafts(host) {
 }
 
 // the stale fold's open/closed state, outside the DOM the 3s poll rebuilds —
-// same precedent as openLive/openContexts: without this the fold silently
+// same precedent as openContexts: without this the fold silently
 // re-collapses under the user mid-read
 let staleFoldOpen = false
 // The deferred folds under Needs you (#247), in render order, keyed by the
@@ -9272,7 +8715,6 @@ function placeRestoredDraft(key, draft) {
       // under its own key, as reconcileMessageDrafts keeps it
       else if (!messageDrafts.has(session)) messageDrafts.set(session, restored)
       else messageRecoveries.set(session, recovery)
-      messageVersion += 1
       return null
     }
     case 'note': {
@@ -10239,8 +9681,8 @@ function navigateKeyboard(destination) {
   } else if (destination === 'projects') {
     if (layout === 'narrow') setProjectDisclosure(true)
     focusProjectFallback(projectFilter)
-  } else if (destination === 'live') {
-    document.getElementById('liveStrip').click()
+  } else if (destination === 'sessions') {
+    showAgentsHome()
   } else if (TAB_IDS.includes(destination)) {
     selectTab(destination)
     focusKeyboardPanel(destination)
@@ -10304,13 +9746,8 @@ function initKeys() {
     if (e.defaultPrevented) return
     // Esc precedence, explicit (topmost/innermost first): the triage deck (an
     // actual lightbox) wins via keyAction's own ladder below (deckOpen is
-    // checked first, ahead of 'expanded'/clearSelection). The Live drawer is
-    // its OWN Esc consumer (initLiveBar, Task 16) that already closes it and
-    // returns focus to the strip — when the deck is closed but the drawer is
-    // open, step aside instead of ALSO clearing the list selection underneath
-    // it; the drawer's own listener (registered after this one) still runs.
-    const liveDrawer = document.getElementById('liveDrawer')
-    if (e.key === 'Escape' && !triageDeck && liveDrawer && !liveDrawer.hidden) return
+    // checked first, ahead of 'expanded'/clearSelection). The session panel is
+    // its own Esc consumer (its keydown stops propagation).
     if (e.key === 'Escape' && !triageDeck && closeSettings({ restoreFocus: true })) {
       e.preventDefault()
       e.stopImmediatePropagation()
@@ -11739,7 +11176,7 @@ async function renderSetup() {
 //   initResponsive → initSidebarCollapse → initPaneResizers → initProjectDisclosure →
 //   initKeys (Task 17) → initFocusHash (Task 17) → initStagedFlush →
 //   initDraftPersistence (#279) → initPressGuard (#38) → initScrollGuard → initIdleFrame (#298) → initAgentSelect →
-//   initStructuredTextCopy → initLinkOpening → initCopyOnSelect → initGear → initLiveBar → initMessages →
+//   initStructuredTextCopy → initLinkOpening → initCopyOnSelect → initGear → initSessionsIndicator →
 //   initLaunches (#412 step 3) → renderSetup → load →
 //   setInterval(load, 3000)
 initTabs()
@@ -11763,8 +11200,7 @@ initStructuredTextCopy()
 initLinkOpening()
 initCopyOnSelect()
 initGear()
-initLiveBar()
-initMessages()
+initSessionsIndicator()
 initLaunches()
 renderSetup()
 // The LAST two lines that may ever call the gated load() directly: the boot paint

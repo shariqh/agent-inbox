@@ -170,7 +170,8 @@ describe('conditional snapshot polling', () => {
     expect(reads.slice(-3).every((entry) => entry.status === 304)).toBe(true)
     expect(badgeCount()).toBe(1)
     expect(row(id)?.closest('details')).toBeNull()
-    expect(document.getElementById('liveStripLabel')?.textContent).toContain('1 connected · no task reported')
+    expect(document.querySelector('#sessionsIndicator .si-v')?.textContent).toBe('1 connected')
+    expect(document.querySelector('#sessionsIndicator .si-s')?.textContent).toBe('no task reported')
     expect(freshHeaders.every((header) => header === null)).toBe(true)
   })
 

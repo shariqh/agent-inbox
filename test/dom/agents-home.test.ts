@@ -79,9 +79,8 @@ describe('the Agents home (#454)', () => {
     expect(requests).toEqual(BOOT_REQUESTS)
     expect(document.getElementById('mesh-settings')).toBeNull()
 
-    const lens = [...document.querySelectorAll<HTMLButtonElement>('.mesh-lens [data-mesh-lens]')]
-    expect(lens.map((b) => [b.textContent, b.getAttribute('aria-pressed')])).toEqual([['Sessions', 'false'], ['Agents', 'true']])
-    expect(document.querySelector<HTMLElement>('.dash-lanes')?.hidden).toBe(true)
+    // the lanes and their lens are gone (#454): the Agents home is the Dashboard's one list of sessions
+    expect(document.querySelector('.dash-lanes, .mesh-lens')).toBeNull()
     expect(document.querySelector<HTMLElement>('.agents-home')?.hidden).toBe(false)
     // grouped by project; Needs you first, then the newest call. k1's ask is a row of its linked plan.
     expect(groups()).toEqual([
@@ -110,13 +109,6 @@ describe('the Agents home (#454)', () => {
     expect(card('session:c1')).toBe(before)
     expect([...before!.querySelectorAll('.sc-chips > *, .sc-foot > *, .sc-where > *')]).toEqual(parts)
     expect(document.querySelectorAll('.agents-home script, .agents-home img')).toHaveLength(0)
-
-    // the Sessions lens brings the lanes back, window-local
-    click(lens[0])
-    expect(document.querySelector<HTMLElement>('.dash-lanes')?.hidden).toBe(false)
-    expect(document.querySelector<HTMLElement>('.agents-home')?.hidden).toBe(true)
-    click(lens[1])
-    expect(document.querySelector<HTMLElement>('.dash-lanes')?.hidden).toBe(true)
 
     // with the Agents home drawn, the human's attention reads as it always did
     expect(await surfaces()).toEqual(SURFACES)
@@ -233,7 +225,7 @@ describe('the Agents home (#454)', () => {
     expect(composer?.dataset.msgSession).toBe('k2')
     expect(document.activeElement).toBe(composer?.querySelector('textarea'))
     expect(composer?.querySelector('label')?.textContent).toBe('Message to claude-code · demo · main')
-    expect(document.getElementById('liveDrawer')?.hidden).toBe(true)
+    expect(document.getElementById('liveDrawer')).toBeNull()
   })
 
 })

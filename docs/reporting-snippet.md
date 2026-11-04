@@ -227,23 +227,23 @@ source of truth before anything is sent.
 - Before sending, call `pending()` and re-read the titled board for full draft context.
   Do not rely on a separate chat thread or scattered notes as the approval record.
 
-## Live status (ephemeral presence)
+## Session status (ephemeral presence)
 
-Your session appears in the human's Live view automatically (an idle presence row —
-no action needed from you). For **long-running work** — especially multi-agent fan-outs
+Your session appears as a card in the human's Agents view automatically (an idle
+presence card — no action needed from you). For **long-running work** — especially multi-agent fan-outs
 the human loses the mental model of — call `status({ doing, detail?, children?, done? })`
 at meaningful **phase changes only** (never on a timer, never per step): starting a long effort, entering a new
 phase, spawning or finishing subagents, wrapping up. `children` is a **full-replace**
 list of your currently-running subagents (`{ name, doing, state? }`) — resend the current
-set when it changes; the human sees them nested under your entry. Only the top-level
+set when it changes; the human sees them on your card. Only the top-level
 manager reports — subagents stay silent. Call `status({ done: true })` when the effort
-ends; if your process dies instead, its entry drops out on its own within ~15 minutes, so
+ends; if your process dies instead, its card drops out on its own within ~15 minutes, so
 a crash never leaves a ghost. This is ambient glass for the human, not tracking — boards
 remain the durable record.
 
-**A claim goes quiet after ~30 minutes with no MCP call of any kind**, and your row reverts
+**A claim goes quiet after ~30 minutes with no MCP call of any kind**, and your card reverts
 to idle — otherwise a session that finished hours ago sits there advertising work it is no
-longer doing. Your row does NOT disappear; only the claim does. This is still not a reason
+longer doing. Your card does NOT disappear; only the claim does. This is still not a reason
 to call `status` on a timer: any tool call keeps it fresh, so ordinary work holds it
 automatically. It only bites on a genuinely silent stretch — a long build, a deep fan-out
 where the children do the work — and the fix is a phase-change `status({ doing })` when you

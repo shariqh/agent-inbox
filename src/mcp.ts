@@ -95,7 +95,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
   // fan-out shares this id. Presence therefore tracks the CLI, not the agent.
   const sessionId = randomUUID()
 
-  // ── session presence (issue #28): the session itself is a Live row ──
+  // ── session presence (issue #28): the session itself is a presence row (a card in the Agents home, #454) ──
   // Registered after the initialize handshake (clientInfo is only populated
   // then), heartbeated by the server so an idle session never goes stale,
   // upgraded/reverted by the status tool, ended when this process exits.
@@ -110,7 +110,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
   //
   // Issue #197: it also records which build this server runs — the version the
   // handshake reports, and whether it runs from an installed agent runtime or a
-  // checkout (detected once, here) — so Live can say which sessions need a
+  // checkout (detected once, here) — so the viewer can say which sessions need a
   // restart and what would update each one. That rides on this existing write
   // and never counts as activity.
   // Issue #411 — and that it delivers session messages, which a send requires.
@@ -174,7 +174,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
   })
   // Every handled signal exits through the one 'exit' handler above. SIGHUP is how
   // a closed terminal tab or window ends this process (#162): left at Node's default
-  // disposition it kills the process without emitting 'exit', leaving a ghost Live
+  // disposition it kills the process without emitting 'exit', leaving a ghost presence
   // row and an open span. SIGKILL cannot be handled; the read-time caps cover it.
   for (const sig of ['SIGHUP', 'SIGINT', 'SIGTERM'] as const) process.on(sig, () => process.exit(0))
 
@@ -461,7 +461,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     'status',
     {
       description:
-        'Ephemeral "what am I doing right now" for the human\'s live view — NOT for tasks (use boards) or attention (use flag). Call at meaningful PHASE changes only, not every step: starting a long effort, entering a new phase, fanning out subagents, wrapping up. children is a full-replace list of the subagents you are running ({name, doing, state?}) — resend the current set whenever it changes; the human can expand them under your entry. Times are stamped server-side; never call this just because time passed. Call with done:true when the effort ends — your entry reverts to an idle presence row. Your session stays listed for as long as it is running, but the CLAIM decays: after ~30 minutes with no MCP calls from you at all, "doing" reverts to open on its own, so a claim can never outlive the work. You do not need to keep it alive — just say what you are doing at your next real phase change, and it re-asserts instantly.',
+        'Ephemeral "what am I doing right now" for the human\'s Agents view — NOT for tasks (use boards) or attention (use flag). Call at meaningful PHASE changes only, not every step: starting a long effort, entering a new phase, fanning out subagents, wrapping up. children is a full-replace list of the subagents you are running ({name, doing, state?}) — resend the current set whenever it changes; the human sees them listed on your card. Times are stamped server-side; never call this just because time passed. Call with done:true when the effort ends — your card reverts to idle presence. Your session stays listed for as long as it is running, but the CLAIM decays: after ~30 minutes with no MCP calls from you at all, "doing" reverts to open on its own, so a claim can never outlive the work. You do not need to keep it alive — just say what you are doing at your next real phase change, and it re-asserts instantly.',
       inputSchema: {
         doing: z.string().min(1).optional().describe('A short, recognizable task name in plain language, such as "Fixing missed Inbox replies". Report actual work, not a PR hash or a review transcript.'),
         detail: z.string().optional().describe('One sentence about the current step or what remains. This is a self-reported update, not automatic tracking of every agent.'),

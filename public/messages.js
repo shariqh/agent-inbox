@@ -1,7 +1,7 @@
 // The human's messages to one running agent session (#411, design
 // docs/superpowers/specs/2026-10-30-session-messages-design.md §4–§5). Pure:
 // no DOM, no clock, no fetch. app.js mounts the composer, the per-session
-// history and the Live drawer's "Not delivered" fold from what these return.
+// history and the Agents home's "Not delivered" fold from what these return.
 //
 // Presence, not attention: nothing here is read by public/attention.js, a
 // badge, a count, the rail, the dock or a notification.

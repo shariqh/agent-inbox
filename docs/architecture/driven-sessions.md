@@ -362,8 +362,8 @@ Everything main does for a driven session is injected and tested without Electro
 
 ## Step 3, part 3: the page
 
-Everything on the page lives in `public/launch-ui.js` (the drawer section, the dialogs, the lane tag and
-Approve), `public/launches.js` (pure rules) and `public/launch-settings.js` (Settings → Agent sessions);
+Everything on the page lives in `public/launch-ui.js` (the session panel's launch parts, the dialogs and
+Approve), `public/agents-home.js` and `public/sessions.js` (the launch cards, #454), `public/launches.js` (pure rules) and `public/launch-settings.js` (Settings → Agent sessions);
 `app.js` only wires them. DOM coverage is `test/dom/driven-sessions.test.ts`.
 
 - **Off is off (§9 b).** The page asks main once per load (`agentInboxLaunch.available()`) and again when
@@ -372,13 +372,14 @@ Approve), `public/launches.js` (pure rules) and `public/launch-settings.js` (Set
   listener is bound; the owned viewer draws only the Settings switch. `/api/launches` joins the tick only
   while the switch is on, as a conditional snapshot with its own validator and the messages fallback; its
   representation and `launchUi.version()` are in `frameInputs()` (#298).
-- **The Live drawer's "Started from Agent Inbox" section** sits above the session list in its own
-  container, painted by the ambient painter and updated in place (a row is rewritten only when its key
-  changes, a focused control keeps its place). Each launch reads Starting…, Running (one of its sessions
-  is in `/api/activity`), Not responding (running, no session, no update for 2 minutes: Close is offered),
-  Stopping…, Parked (with the reason a resume failed, if any) or Ended (its reason in words). Stop, Close,
-  New session… and Resume and send go to main through the bridge and appear only in the granted window;
-  the transcript works wherever the section shows. The newest five ended launches stay listed.
+- **Each launch is a card in the Agents home (#454; once the Live drawer's "Started from Agent Inbox"
+  section),** painted by the ambient painter and updated in place. It reads Starting…, Working or Idle
+  (one of its sessions is in `/api/activity`), Not responding (running, no session, no update for 2
+  minutes: Close is offered), Stopping…, Parked (parked, or stopped with its session kept; with the reason
+  a resume failed, if any), In Terminal, Didn't start or Ended (its reason in words). Stop, Close, New
+  session…, Remove worktree… and Resume and send go to main through the bridge and appear only in the
+  granted window; the transcript works wherever the card shows. The newest five ended launches and every
+  one with a kept worktree are in the Ended fold, the rest in Earlier sessions inside it.
 - **New session** is a modal `<dialog>` outside the render tree: a project from
   `GET /api/launch-folders` or "Choose folder…" (`root: null`, main's own dialog), the agent fixed to
   Copilot, the three modes with their plain copy and the shell warning, an optional model and reasoning
@@ -387,7 +388,7 @@ Approve), `public/launches.js` (pure rules) and `public/launch-settings.js` (Set
   the one the human answers.
 - **Drafts.** The dialog's task is a draft in `suspendState()` while the dialog is open (the dialog is
   modal, so the paused list is under it); a cancelled task is kept to fill the next dialog and holds
-  nothing. A Resume and send text sits in the ambient drawer, which no draft pauses, so like a message
+  nothing. A Resume and send text sits in the ambient session panel, which no draft pauses, so like a message
   composer's it only holds a viewer restart's reload (`launchUi.held()` in `shouldDeferBootReload`).
   Neither is written to browser storage.
 - **Approve and Decline (§4.3).** In the granted window, an option chosen on an `@sessions` approval
@@ -409,20 +410,21 @@ Approve), `public/launches.js` (pure rules) and `public/launch-settings.js` (Set
   up to 60 s for a driven session of that launch that receives messages, reads it in, and sends the text
   through the ordinary message path; otherwise the text stays with "The session didn't come back".
   Since #454 the text box is in the session panel, in place of the composer, for any parked or resumable
-  launch the panel shows (the drawer row offers Resume…, which opens it there), so Resume… always lands on it.
+  launch the panel shows (the card offers Resume…, which opens it there), so Resume… always lands on it.
 - **The session panel (#454).** A launch's card opens the Dashboard's panel keyed by the launch
   (`launch:<id>`): an action bar from `launchStatus(...).actions` and the grant (Park now, Stop/End, Close,
-  Take over / Resume in Terminal, Open in Terminal, Remove worktree… only once ended), the worktree box,
+  Take over / Resume in Terminal, Open in Terminal, Remove worktree… only once ended, with "Stop it to
+  remove its worktree" beside Stop until then), the worktree box,
   the transcript, Resume and send, and the launch's `@sessions` approvals answered in place with their own
   options (main signs, as from the rail). A terminal or other driver's session gets none of these.
 - **The transcript** (a section of the Dashboard's session panel since #454; the `<dialog>` is retired, and
-  a drawer row's Transcript opens the panel) reads `GET /api/launches/:id/events?after=N` on its own 2 s
+  a card's Transcript or Details opens the panel) reads `GET /api/launches/:id/events?after=N` on its own 2 s
   timer only while the panel shows it (connected, no hidden ancestor; closing the panel stops it) (whole lines, 256 KiB a read, `rotated` restarts it, at most 5000 events kept; `more`
   asks for the next read at once only when a read stopped at the cap, so an unfinished last line from a
   driver that died mid-write is re-read every 2 s, never in a loop). Agent
   text, tool calls, asks and answers are drawn as `textContent` lines only.
-- **Lanes (#304).** A running launch's working session gets a "Started here" tag and, in the granted
-  window, Stop. Nothing here reaches `public/attention.js`, a badge, a count, the rail or the dock.
+- **Presence, not attention.** A launch's card carries the "Copilot · started here" chip. Nothing here
+  reaches `public/attention.js`, a badge, a count, the rail or the dock.
 
 ## Step 3, part 4: Park now, Edits in the worktree, the Agents view
 
@@ -457,8 +459,8 @@ Approve), `public/launches.js` (pure rules) and `public/launch-settings.js` (Set
   `**` matched the dot-folder `.git`. Reads are not limited by this mode.
 - **The Agents view (#397), the Agents home since #454.** With the switch on, each launch is one card
   (chip "Copilot · started here") joined with its live driven sessions, in every state: its main action
-  comes from `launchStatus(...).actions` and the grant, and runs the drawer row's own handler
-  (`launchUi.run`; Resume… focuses the drawer row's Resume and send until the session panel holds it).
+  comes from `launchStatus(...).actions` and the grant, and runs the panel's own handler
+  (`launchUi.run`; Resume… opens the session panel at its Resume and send).
   New session… sits in the card's header, disabled with its note when not granted. Off, or in a
   browser, no launch card or New session is drawn and a driven row is a card of its own ("driven").
 - **Native notifications.** A new app launch's approval notifies like any ask but offers no buttons
@@ -555,15 +557,15 @@ Main does not send the field yet (part 2), so nothing changes for anyone today.
   repository again restores the human's own choice. Start with no folder chosen yet asks main's
   dialog first, and waits for a second Start when the answer unticked the box. Main still refuses
   `worktree: true` for a folder that is not a repository's top ("Untick New worktree to start in
-  it"), as defence in depth. Unticked, the request is exactly what it was before. A launch's drawer row adds `Worktree: <branch> ·
-  <path>`, or that it was removed and its branch kept. Settings → Agent sessions shows **Worktree folder**
+  it"), as defence in depth. Unticked, the request is exactly what it was before. A launch's session panel shows its worktree
+  (branch, folder, changes), or that it was removed and its branch kept; its card adds "· worktree". Settings → Agent sessions shows **Worktree folder**
   with Choose… and Use default only with the switch on; off, nothing is drawn and nothing read. The
   Edits mode copy now reads "the session’s folder (its worktree, when it has one)", in both copies a
   test holds equal.
 - **Tests**: `test/launch-electron.test.ts` (the request refuses any path, branch or root; the plan,
   slugs from Unicode and empty tasks; the confirmation lines; every refusal before the confirmation
   creates nothing; the 150 s status; the setting's file, IPC and preload; off reads nothing) and
-  `test/dom/driven-sessions.test.ts` (the checkbox, the drawer line, Settings' row, off draws nothing).
+  `test/dom/driven-sessions.test.ts` (the checkbox, the panel's worktree box, Settings' row, off draws nothing).
 
 ## Session worktrees (#432), part 3: Remove worktree and Open in Terminal
 
@@ -599,10 +601,12 @@ Main does not send the field yet (part 2), so nothing changes for anyone today.
   button bound to the inspected fingerprint, or, when the driver refused Discard, its reason instead. Cancel is the
   default. Open in Terminal runs `/usr/bin/open -a Terminal -- <path>`, argv only, on the path a fresh
   row read names, only while it is its own real folder and not removed.
-- **The page.** A launch row with a kept worktree offers **Open in Terminal**, and **Remove worktree…**
-  once the launch ended (in the granted window). The drawer lists every ended launch whose worktree is
-  kept besides the newest five, so Remove stays reachable. A refusal shows on the row; Cancel shows
-  nothing.
+- **The page.** A launch's session panel with a kept worktree offers **Open in Terminal**, and
+  **Remove worktree…** once the launch ended (in the granted window; before that it is drawn disabled,
+  with "Stop it to remove its worktree" beside Stop). Since #454 an ended launch's card offers Remove
+  worktree… too, and the Ended fold lists every ended launch whose worktree is kept besides the newest
+  five, its summary counting them ("Ended (5) · 4 worktrees kept") while it is closed. A refusal shows in
+  the panel (a card's opens it); Cancel shows nothing.
 - **Tests**: `test/worktree.test.ts` (clean, untracked, modified, ignored-only, hand-deleted, locked,
   switched and unlisted worktrees; a stale discard hash), `test/driver-run.test.ts` (the CLI on a parked,
   then ended launch), `test/launch-electron.test.ts` (the command's argv, the dialog and its choices,
@@ -627,8 +631,8 @@ Main does not send the field yet (part 2), so nothing changes for anyone today.
   whatever `status.showUntrackedFiles` says. A failed read writes nothing, so the last summary stays.
   `recordWorktreeSummary` writes it in one conditioned statement only when something but `at` changed
   (and only while the worktree is kept), so `/api/launches` is rebuilt only then; `launchView` serves
-  it parsed (an unreadable one as null). The drawer's worktree line adds "N commits ahead, M behind,
-  K files changed, J uncommitted", and the branch the agent is on now when it switched.
+  it parsed (an unreadable one as null). The panel's worktree box says "N commits ahead, M behind,
+  K files changed, J uncommitted" (the card the short form), and the branch the agent is on now when it switched.
 - **The cap** (§5): Settings → Agent sessions → **At most N sessions at once**, 1 to 8, default 4,
   stored as `maxDrivers` in `session-launch.json`, read only with the switch on (`launch-available`
   reports `maxSessions` to the granted window; `launch-set-max-sessions` takes exactly 1–8 with the
@@ -641,7 +645,7 @@ Main does not send the field yet (part 2), so nothing changes for anyone today.
   `test/driver-run.test.ts` (the summary at the turn end and at the end; the spec's cap, lower and
   higher than the drivers running), `test/launch-spec.test.ts`, `test/launch-electron.test.ts` (the
   setting's file, IPC, preload, the cap in every spec, off reads nothing),
-  `test/dom/driven-sessions.test.ts` (the Settings select, the drawer's summary).
+  `test/dom/driven-sessions.test.ts` (the Settings select, the panel's summary).
 
 ## Session worktrees (#432), part 5: start-up feedback
 
@@ -785,9 +789,9 @@ Design §14.8. Step 3's minimal resume loaded only a parked launch's session.
   `takeOver` hands such a stopped launch off too (`handOffForTerminal`: `stopped` → `handed_off`,
   conditioned on the same rule).
 - **The page.** Such a launch reads "Stopped: its session is kept, so it can be resumed." and offers
-  Resume and send and Take over in Terminal. The drawer's **Earlier sessions (N)** / **Fewer sessions**
-  button (in the section, `aria-expanded`, drawn only when there are more) lists every ended launch the
-  snapshot carries; it is window state, bumped through `launchUi.version()`, so no new render entry.
+  Resume and send and Take over in Terminal, as a Parked card. The Ended fold's **Earlier sessions (N)**
+  (#454; once the drawer's button) lists every ended launch the snapshot carries; it is window state in
+  `agentsHome.state()`, so no new render entry.
 - **Tests**: `test/launches.test.ts` (which ends resume, the kept session, the stopped hand-off),
   `test/driver-run.test.ts` (stop, a refused resume left stopped, a resume by load; a worktree relocked and
   unlocked again), `test/launch-electron.test.ts`, `test/launches-page.test.ts`,

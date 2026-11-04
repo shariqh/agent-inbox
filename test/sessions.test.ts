@@ -52,7 +52,7 @@ describe('sessionCards: one card per session', () => {
       nowMs: NOW,
     })
     expect(work!.plan).toMatchObject({ id: 'b1', done: 4, countable: 7, segments: { done: 4, partial: 1, waiting: 0, todo: 2 } })
-    expect(work!.children).toEqual([{ name: 'tests', doing: 'Running' }])
+    expect(work!.children).toEqual([{ name: 'tests', doing: 'Running', state: '' }])
     expect(work!.trace!.slice(-2)).toEqual([2, 3])
     expect(idle).toMatchObject({ plan: null, children: [], trace: null })
   })

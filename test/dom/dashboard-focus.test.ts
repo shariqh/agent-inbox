@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-// Dashboard 2.0 phase 5 (#307): command-center polish. The lanes' quick
-// filters, the Dashboard keys in the keyboard help, the session focus panel
+// Dashboard 2.0 phase 5 (#307): command-center polish. The session cards'
+// filters (#454), the Dashboard keys in the keyboard help, the session focus panel
 // (read-only, updated in place, never pulling focus in a background window)
 // and the ⌘K actions, which route through focusItem and the deep-link path.
 // None of it reaches attention: PR and CI chips in the panel included.
@@ -39,22 +39,19 @@ function work(d: Database.Database, session: string, what: string, extra: Record
   upsertActivity(d, { ...A, session, doing: what, idle: false, ...extra })
 }
 
-const lane = (session: string): HTMLElement | null =>
-  document.querySelector<HTMLElement>(`#dashboard .dash-lane[data-lane="${session}"]`)
-const laneIds = (): string[] =>
-  [...document.querySelectorAll<HTMLElement>('#dashboard .dash-lane')].map((el) => el.dataset.lane!)
-const openButton = (session: string) => lane(session)?.querySelector<HTMLButtonElement>('.dash-lane-open') ?? null
+const card = (session: string): HTMLElement | null =>
+  document.querySelector<HTMLElement>(`#dashboard [data-session-card="session:${session}"]`)
+const cardIds = (): string[] =>
+  [...document.querySelectorAll<HTMLElement>('#dashboard .ah-groups [data-session-card]')].map((el) => el.dataset.sessionCard!.slice('session:'.length))
+// a card opens its panel from anywhere that is not a control
+const openCard = (session: string): void => click(card(session)?.querySelector('.sc-doing'))
 const panel = () => document.querySelector<HTMLElement>('#dashboard .dash-focus')
 const railIds = (): string[] =>
   [...document.querySelectorAll<HTMLElement>('#dashRail [data-rail-card]')].map((card) => card.dataset.railCard!)
 const signal = (name: string): string =>
   document.querySelector(`[data-dashboard-signal="${name}"] .dashboard-value`)?.textContent ?? ''
 
-function pick(name: 'project' | 'agent', value: string): void {
-  const select = document.querySelector<HTMLSelectElement>(`#dashboard [data-lane-filter="${name}"]`)!
-  select.value = value
-  select.dispatchEvent(new Event('change', { bubbles: true }))
-}
+const pick = (filter: string): void => click(document.querySelector(`#dashboard [data-ah-filter="${filter}"]`))
 
 function keydown(target: Element, key: string): void {
   target.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }))
@@ -74,8 +71,8 @@ async function attentionSurfaces() {
   }
 }
 
-describe('quick filters on lanes (#307)', () => {
-  it('narrow only the lanes, never the Now strip, the rail or attention', async () => {
+describe('quick filters on session cards (#307, #454)', () => {
+  it('narrow only the cards, never the Now strip, the rail or attention', async () => {
     const d = open()
     work(d, 'a', 'Alpha work')
     work(d, 'b', 'Beta work', { project: 'beta', agent: 'claude-code' })
@@ -85,26 +82,23 @@ describe('quick filters on lanes (#307)', () => {
     await bootApp(d)
     const before = await attentionSurfaces()
     const working = signal('agents')
-    expect(laneIds().sort()).toEqual(['a', 'b', 'c'])
+    expect(cardIds().sort()).toEqual(['a', 'b', 'c'])
 
-    pick('project', 'alpha')
-    expect(laneIds().sort()).toEqual(['a', 'c'])
-    pick('agent', 'claude-code')
-    expect(laneIds()).toEqual(['c'])
+    pick('ask')
+    expect(cardIds().sort()).toEqual(['a', 'b'])
+    pick('working')
+    expect(cardIds()).toEqual(['c'])
     await pollTick()
-    expect(laneIds()).toEqual(['c'])
+    expect(cardIds()).toEqual(['c'])
     expect(signal('agents')).toBe(working)
     expect(await attentionSurfaces()).toEqual(before)
 
-    pick('agent', 'copilot')
-    expect(laneIds()).toEqual(['a'])
-    pick('project', 'beta')
-    expect(laneIds()).toEqual([])
-    expect(document.querySelector<HTMLElement>('.dash-lanes-none')?.hidden).toBe(false)
-    pick('project', '')
-    pick('agent', '')
-    expect(laneIds().sort()).toEqual(['a', 'b', 'c'])
-    expect(document.querySelector<HTMLElement>('.dash-lanes-none')?.hidden).toBe(true)
+    pick('parked')
+    expect(cardIds()).toEqual([])
+    expect(document.querySelector<HTMLElement>('.agents-home .ah-none')?.hidden).toBe(false)
+    pick('all')
+    expect(cardIds().sort()).toEqual(['a', 'b', 'c'])
+    expect(document.querySelector<HTMLElement>('.agents-home .ah-none')?.hidden).toBe(true)
   })
 })
 
@@ -140,7 +134,7 @@ describe('the session focus panel (#307)', () => {
     return { ask, board }
   }
 
-  it("opens with the session's asks, plan, outcomes and links, and Escape returns to the lane", async () => {
+  it("opens with the session's asks, plan, outcomes and links, and Escape returns to the card", async () => {
     const d = open()
     const { ask } = seed(d)
     upsertSourceLink(d, {
@@ -149,15 +143,12 @@ describe('the session focus panel (#307)', () => {
     })
     await bootApp(d)
     expect(panel()?.hidden).toBe(true)
-    // the lanes show under the Sessions lens; the Dashboard opens on Agents (#454)
-    click(document.querySelector('.mesh-lens [data-mesh-lens="sessions"]'))
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
 
-    const button = openButton('mine')!
-    button.focus()
-    click(button)
+    openCard('mine')
     const aside = panel()!
     expect(aside.hidden).toBe(false)
-    expect(button.getAttribute('aria-expanded')).toBe('true')
+    expect(card('mine')!.classList.contains('sel')).toBe(true)
     expect(document.activeElement).toBe(aside.querySelector('#dashFocusTitle'))
     expect(aside.querySelector('.dash-focus-doing')?.textContent).toBe('Painting the panel')
     expect([...aside.querySelectorAll('.dash-focus-ask-title')].map((el) => el.textContent)).toEqual(['Which panel width?'])
@@ -175,50 +166,81 @@ describe('the session focus panel (#307)', () => {
 
     keydown(aside.querySelector('#dashFocusTitle')!, 'Escape')
     expect(aside.hidden).toBe(true)
-    expect(button.getAttribute('aria-expanded')).toBe('false')
-    expect(document.activeElement).toBe(openButton('mine'))
+    expect(card('mine')!.classList.contains('sel')).toBe(false)
+    // back to the card's first action: here its Review
+    expect(document.activeElement).toBe(card('mine')!.querySelector('[data-ah-action="review"]'))
+  })
+
+  it('opens an ask past the rail in its Inbox card (#460 review: jumpToAsk’s fallback)', async () => {
+    const d = open()
+    work(d, 'mine', 'Asking a lot')
+    const ids: string[] = []
+    for (let index = 0; index < 4; index += 1) {
+      ids.push(insertItem(d, { ...A, kind: 'question', title: `Decision ${index}`, session: 'mine' }))
+      advanceClock()
+    }
+    await bootApp(d)
+    expect(railIds()).toHaveLength(3)
+    const past = ids.find((id) => !railIds().includes(id))!
+    openCard('mine')
+    const button = panel()!.querySelector<HTMLButtonElement>(`[data-focus-ask="item:${past}"]`)!
+    expect(button.textContent).toBe('Answer in Inbox')
+    click(button)
+    await settle()
+    expect(document.getElementById('needsYou')?.hidden).toBe(false)
+    expect(location.hash).toBe(`#item/${past}`)
+    expect(row(past)).not.toBeNull()
+  })
+
+  it('shows each subagent’s reported state, as text, in the panel and on the card (#460 review)', async () => {
+    const d = open()
+    work(d, 'mine', 'Coordinating', { children: [{ name: 'tester', doing: 'Running tests', state: '<b>blocked</b>' }, { name: 'docs', doing: 'Writing' }] })
+    await bootApp(d)
+    expect(card('mine')!.querySelector<HTMLElement>('.sc-kids')?.title).toBe('tester: Running tests (<b>blocked</b>)\ndocs: Writing')
+    openCard('mine')
+    const states = [...panel()!.querySelectorAll('.sp-children .sp-child-state')]
+    expect(states.map((el) => el.textContent)).toEqual(['<b>blocked</b>'])
+    expect(panel()!.querySelector('.sp-children b')).toBeNull()
   })
 
   it('jumps from an ask to its rail card, and from the plan through the deep link', async () => {
     const d = open()
     const { ask, board } = seed(d)
     await bootApp(d)
-    click(openButton('mine'))
+    openCard('mine')
     click(panel()!.querySelector(`[data-focus-ask="item:${ask}"]`))
     expect(document.activeElement).toBe(document.querySelector(`#dashRail [data-rail-card="${ask}"]`))
     // the panel sits over the rail: it closed before the jump
     expect(panel()!.hidden).toBe(true)
 
-    click(openButton('mine'))
+    openCard('mine')
     click(panel()!.querySelector('.dash-focus-plan-open'))
     await settle()
     expect(location.hash).toBe(`#item/${board}`)
     expect(document.getElementById('boards')?.hidden).toBe(false)
   })
 
-  it("closes when a lane's own ask jumps to the rail card", async () => {
+  it("a card's Review opens its panel at the asks, and never the rail", async () => {
     const d = open()
     const { ask } = seed(d)
     await bootApp(d)
-    click(openButton('mine'))
+    click(card('mine')!.querySelector('[data-ah-action="review"]'))
     expect(panel()!.hidden).toBe(false)
-    click(lane('mine')!.querySelector('.dash-lane-asking'))
-    expect(panel()!.hidden).toBe(true)
-    expect(openButton('mine')!.getAttribute('aria-expanded')).toBe('false')
-    expect(document.activeElement).toBe(document.querySelector(`#dashRail [data-rail-card="${ask}"]`))
+    expect(panel()!.dataset.session).toBe('mine')
+    expect(panel()!.querySelector(`[data-focus-ask="item:${ask}"]`)).not.toBeNull()
   })
 
   const press = (el: Element) => el.dispatchEvent(new Event('pointerdown', { bubbles: true }))
 
-  it('closes on a trusted click outside it that is not a lane, never on a press alone, moving no focus', async () => {
+  it('closes on a trusted click outside it that is not a card, never on a press alone, moving no focus', async () => {
     const d = open()
     seed(d)
     await bootApp(d)
     attachStylesheet()
-    click(openButton('mine'))
+    openCard('mine')
     expect(getComputedStyle(panel()!).position).toBe('absolute')
     click(panel()!.querySelector('.dash-focus-doing'))
-    click(lane('theirs')!.querySelector('.dash-lane-meta'))
+    openCard('theirs')
     expect(panel()!.dataset.session).toBe('theirs')
     expect(panel()!.hidden).toBe(false)
     const rail = document.querySelector('#dashRail')!
@@ -237,7 +259,7 @@ describe('the session focus panel (#307)', () => {
     seed(d)
     await bootApp(d)
     attachStylesheet()
-    click(openButton('mine'))
+    openCard('mine')
     trust.on = false
     click(document.querySelector('#dashRail'))
     expect(panel()!.hidden).toBe(false)
@@ -247,7 +269,7 @@ describe('the session focus panel (#307)', () => {
     const d = open()
     seed(d)
     await bootApp(d)
-    click(openButton('mine'))
+    openCard('mine')
     const real = window.getComputedStyle
     vi.spyOn(window, 'getComputedStyle').mockImplementation((el: Element, pseudo?: string | null) => {
       const style = real(el, pseudo)
@@ -259,19 +281,13 @@ describe('the session focus panel (#307)', () => {
     expect(panel()!.hidden).toBe(false)
   })
 
-  it('is the Dashboard grid’s own, so neither lens can hide it (#454)', async () => {
+  it('is the Dashboard grid’s own, so no card or fold can hide it (#454)', async () => {
     const d = open()
     seed(d)
     await bootApp(d)
     expect(panel()!.parentElement?.classList.contains('dashboard-grid')).toBe(true)
-    expect(panel()!.closest('.dash-lanes, .agents-home, .dash-rail')).toBeNull()
-    // opened from a lane under the Sessions lens, it shows under the Agents lens too
-    click(document.querySelector('.mesh-lens [data-mesh-lens="sessions"]'))
-    click(openButton('mine'))
-    expect(panel()?.closest('[hidden]')).toBeNull()
-    keydown(panel()!.querySelector('#dashFocusTitle')!, 'Escape')
-    click(document.querySelector('.mesh-lens [data-mesh-lens="agents"]'))
-    click(document.querySelector('[data-session-card="session:mine"] .sc-doing'))
+    expect(panel()!.closest('.agents-home, .dash-rail')).toBeNull()
+    openCard('mine')
     expect(panel()?.hidden).toBe(false)
     expect(panel()?.closest('[hidden]')).toBeNull()
     expect(document.querySelector('[data-session-card="session:mine"]')?.classList.contains('sel')).toBe(true)
@@ -281,14 +297,14 @@ describe('the session focus panel (#307)', () => {
     const d = open()
     seed(d)
     await bootApp(d)
-    const button = openButton('mine')!
+    const button = card('mine')!.querySelector<HTMLButtonElement>('[data-ah-action]')!
     button.focus()
     vi.spyOn(document, 'hasFocus').mockReturnValue(false)
     button.dispatchEvent(new FocusEvent('blur'))
     button.dispatchEvent(new FocusEvent('focusout', { bubbles: true }))
     const focus = vi.spyOn(HTMLElement.prototype, 'focus')
 
-    click(button)
+    openCard('mine')
     expect(panel()!.hidden).toBe(false)
     work(d, 'mine', 'Still painting')
     await pollTick()
@@ -302,7 +318,7 @@ describe('the session focus panel (#307)', () => {
     const d = open()
     seed(d)
     await bootApp(d)
-    click(openButton('mine'))
+    openCard('mine')
     const aside = panel()!
     const asks = aside.querySelector('.dash-focus-asks')!
     const askNode = asks.firstElementChild
@@ -347,7 +363,7 @@ describe('PR and CI chips stay ambient (#307)', () => {
       interceptFetch: async (input, _init, next) =>
         (!links && route(input) === '/api/links' ? new Response('<!doctype html>', { status: 404 }) : next()),
     })
-    click(openButton('mine'))
+    openCard('mine')
     expect(panel()!.querySelector('.dash-focus-source .src-chip')).toBeNull()
     const without = await attentionSurfaces()
 

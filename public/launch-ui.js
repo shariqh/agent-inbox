@@ -11,7 +11,7 @@
 // public/attention.js, a badge, a count, the rail or the dock.
 import {
   LAUNCH_MODES, NOT_REPOSITORY, PROMPT_WARNING, REASONING_EFFORTS, SHELL_WARNING, START_PHASES, WORKTREE_COPY,
-  launchOfSession, launchSessions, launchStatus, launchSummary, launchWorktreeLine, newSessionRequest, transcriptLines, worktreeSummaryText,
+  launchSessions, launchStatus, newSessionRequest, transcriptLines, worktreeSummaryText,
 } from '/launches.js'
 
 const DEFAULT_ACTIVE_HOURS = 2
@@ -19,7 +19,6 @@ const DEFAULT_TOOL_CALLS = 500
 const RESUME_WAIT_MS = 60_000
 const TRANSCRIPT_POLL_MS = 2000
 const TRANSCRIPT_MAX_EVENTS = 5000
-const ENDED_SHOWN = 5
 
 /**
  * @param {{
@@ -31,12 +30,10 @@ const ENDED_SHOWN = 5
  *   launches: () => any[] | null,
  *   rel: (iso: string) => string,
  *   sendTo: (session: string, text: string) => Promise<boolean>,
- *   composer: (session: string) => HTMLElement | null,
- *   hasDraft: (session: string) => boolean,
  *   changed: () => void,
  *   settled: () => Promise<unknown>,
+ *   started?: (launch: string) => void,
  *   pending: <T>(action: () => Promise<T>) => Promise<T>,
- *   openPanel: (id: string, part: 'transcript' | 'resume') => void,
  * }} deps
  */
 export function createLaunchUi(deps) {
@@ -52,17 +49,13 @@ export function createLaunchUi(deps) {
   // dialog was cancelled is kept to fill the next one, and holds nothing.
   const drafts = new Map()
   const notes = new Map()
+  // the launch state each note was written in (setNote)
+  const noteStates = new Map()
   const busy = new Set()
-  const rows = new Map()
   const resumeInputs = new Map()
-  // launches whose row shows the session's #411 composer, and the node holding it
-  const openMessages = new Set()
-  const slots = new Map()
   let dialog = null
   // #454: the session panel's transcript, read only while the panel shows it
   let transcript = null
-  // step 5: whether the drawer lists the ended launches past the newest five (all /api/launches carries)
-  let showEarlier = false
   // #432 PR 5 review: the one start in flight, owned by the dialog that started it; the launch id
   // once main reports it (with the 'copilot' phase, when the row exists), and whether the human asked to stop
   let starting = null
@@ -109,195 +102,6 @@ export function createLaunchUi(deps) {
     return el
   }
 
-  // ── the Live drawer's "Started from Agent Inbox" section ─────────────────
-  function paintDrawer(nowMs) {
-    const drawer = doc.getElementById('liveDrawer')
-    let section = drawer?.querySelector('.live-launches') ?? null
-    if (!drawer || !on()) {
-      section?.remove()
-      rows.clear()
-      slots.clear()
-      openMessages.clear()
-      return
-    }
-    if (!section) {
-      section = make('section', 'live-launches')
-      section.setAttribute('aria-label', 'Sessions started from Agent Inbox')
-      const head = make('div', 'live-launches-head')
-      head.append(make('span', 'live-launches-title', 'Started from Agent Inbox'))
-      const start = button('New session…', 'new', 'launch-new')
-      head.append(start)
-      const earlier = button('', 'earlier', 'launch-earlier')
-      earlier.hidden = true
-      section.append(head, make('p', 'live-launches-note'), make('div', 'live-launches-list'), earlier)
-      section.addEventListener('click', onSectionClick)
-      drawer.querySelector('.live-list')?.before(section) ?? drawer.append(section)
-    }
-    const newButton = section.querySelector('.launch-new')
-    // one start at a time: New session waits for the one in flight
-    const noNew = !granted() || starting !== null
-    if (newButton.disabled !== noNew) newButton.disabled = noNew
-    const note = section.querySelector('.live-launches-note')
-    const noteText = granted() ? '' : 'Starting and approving sessions works only in Agent Inbox’s own window.'
-    if (note.textContent !== noteText) note.textContent = noteText
-    const list = section.querySelector('.live-launches-list')
-    const all = deps.launches() ?? []
-    const live = all.filter((launch) => launch.status !== 'ended')
-    // the newest ended launches, and every one whose worktree is still on disk (#432), so Remove stays reachable
-    const ended = all.filter((launch) => launch.status === 'ended')
-    const recent = new Set(ended.slice(0, ENDED_SHOWN))
-    const kept = (launch) => recent.has(launch) || (launch.worktree_path && !launch.worktree_removed_at)
-    // step 5: the earlier ones on request, so their transcripts and Resume stay reachable
-    const earlier = ended.filter((launch) => !kept(launch))
-    const shown = [...live, ...ended.filter((launch) => kept(launch) || showEarlier)]
-    const more = section.querySelector('.launch-earlier')
-    if (more) {
-      const moreText = showEarlier ? 'Fewer sessions' : `Earlier sessions (${earlier.length})`
-      if (more.textContent !== moreText) more.textContent = moreText
-      if (more.hidden !== (earlier.length === 0)) more.hidden = earlier.length === 0
-      if (more.getAttribute('aria-expanded') !== String(showEarlier)) more.setAttribute('aria-expanded', String(showEarlier))
-    }
-    const keep = new Set(shown.map((launch) => launch.id))
-    for (const [id, el] of rows) {
-      if (!keep.has(id)) {
-        el.remove()
-        rows.delete(id)
-        slots.delete(id)
-        openMessages.delete(id)
-      }
-    }
-    if (!shown.length && !list.querySelector('.empty')) list.replaceChildren(make('p', 'empty', 'No sessions started here yet.'))
-    if (shown.length) list.querySelector(':scope > .empty')?.remove()
-    let previous = null
-    for (const launch of shown) {
-      let el = rows.get(launch.id)
-      if (!el) {
-        el = make('article', 'live-launch')
-        el.dataset.launch = launch.id
-        rows.set(launch.id, el)
-      }
-      paintRow(el, launch, nowMs)
-      // order follows the snapshot; a node already in place is never moved
-      const after = previous ? previous.nextSibling : list.firstChild
-      if (after !== el) list.insertBefore(el, after)
-      previous = el
-    }
-  }
-
-  function paintRow(el, launch, nowMs) {
-    const status = launchStatus(launch, deps.activity(), nowMs)
-    // a note about the state it was in goes once that state changes
-    if (el.dataset.state && el.dataset.state !== status.state) notes.delete(launch.id)
-    const session = granted() && status.state === 'running' ? messageSession(launch) : null
-    if (!session) openMessages.delete(launch.id)
-    const open = session !== null && openMessages.has(launch.id)
-    const composer = open ? deps.composer(session) : null
-    const key = JSON.stringify([
-      launch.revision, launch.status, status.state, status.text, granted(), busy.has(launch.id), notes.get(launch.id) ?? '', launch.resumable,
-      session, open, session !== null && !open && deps.hasDraft(session),
-    ])
-    // the composer keeps its own node, so it is only kept in step, never rebuilt
-    if (composer && el.dataset.key === key && slots.get(launch.id)?.contains(composer)) return
-    if (el.dataset.key === key && !open) return
-    // a focused control keeps its node: rewritten only when the human is elsewhere
-    const focused = doc.activeElement
-    let slot = slots.get(launch.id) ?? null
-    const holdsFocus = focused instanceof doc.defaultView.Element && el.contains(focused) && !slot?.contains(focused)
-    el.dataset.key = key
-    el.dataset.state = status.state
-    const parts = []
-    const title = make('div', 'live-launch-title')
-    title.append(make('strong', '', launch.project), make('span', 'live-launch-summary', ` · ${launchSummary(launch)}`))
-    parts.push(title)
-    const worktree = launchWorktreeLine(launch)
-    if (worktree) parts.push(make('p', 'live-launch-worktree', worktree))
-    parts.push(make('p', 'live-launch-status', status.text))
-    const actions = make('div', 'live-launch-actions')
-    for (const action of status.actions) {
-      if (action === 'transcript') actions.append(button('Transcript', 'transcript'))
-      else if (granted() && action === 'stop') actions.append(button(launch.status === 'parked' ? 'End' : 'Stop', 'stop'))
-      else if (granted() && action === 'close') actions.append(button('Close', 'close'))
-      else if (granted() && action === 'park') actions.append(button('Park now', 'park'))
-      // step 5: the session leaves for Terminal (`copilot --resume`); once there, Terminal can be opened on it again
-      else if (granted() && (action === 'takeover' || action === 'terminal')) {
-        actions.append(button(busy.has(launch.id) ? 'Handing off…' : action === 'takeover' ? 'Take over in Terminal' : 'Resume in Terminal', 'take-over'))
-      }
-    }
-    // #432: the session's own worktree, while it is on disk; Remove only once the launch ended
-    if (granted() && launch.worktree_path && !launch.worktree_removed_at) {
-      actions.append(button('Open in Terminal', 'open-worktree'))
-      if (launch.status === 'ended') actions.append(button('Remove worktree…', 'remove-worktree'))
-    }
-    if (session) {
-      const draft = !open && deps.hasDraft(session)
-      const message = button(draft ? 'Message · draft' : 'Message', 'message')
-      message.setAttribute('aria-expanded', String(open))
-      message.title = draft ? 'Message this session: your unsent draft is kept' : 'Message this session'
-      actions.prepend(message)
-    }
-    parts.push(actions)
-    // #454: Resume and send lives in the session panel; the row opens it there
-    if (status.actions.includes('resume') && granted()) actions.append(button('Resume…', 'resume-panel', 'primary'))
-    const note = notes.get(launch.id)
-    if (note) {
-      const line = make('p', 'live-launch-note', note)
-      line.setAttribute('role', 'status')
-      parts.push(line)
-    }
-    if (composer) {
-      if (!slot) {
-        slot = make('div', 'live-launch-composer')
-        slots.set(launch.id, slot)
-      }
-      if (!slot.contains(composer)) slot.replaceChildren(composer)
-      parts.push(slot)
-    } else {
-      slots.delete(launch.id)
-      slot = null
-    }
-    if (holdsFocus) {
-      const action = focused.dataset?.launchAction
-      el.replaceChildren(...parts)
-      // the same control, or (when this state has none) the row's first one
-      const again = (action ? el.querySelector(`[data-launch-action="${action}"]`) : null)
-        ?? el.querySelector('[data-launch-action]')
-      if (again && doc.activeElement !== again && doc.hasFocus()) again.focus({ preventScroll: true })
-    } else {
-      // the composer's node, with focus and caret in it, stays where it is
-      for (const child of [...el.children]) if (child !== slot) child.remove()
-      el.prepend(...parts.filter((part) => part !== slot))
-      if (slot && !slot.isConnected) el.append(slot)
-    }
-  }
-
-  // The session a launch's Message goes to: its newest live one in Live.
-  function messageSession(launch) {
-    const live = launchSessions(launch, deps.activity())
-    let newest = null
-    for (const row of live) {
-      if (!newest || String(row.started_at ?? '') >= String(newest.started_at ?? '')) newest = row
-    }
-    return newest?.session ?? null
-  }
-
-  function toggleMessage(id) {
-    if (openMessages.has(id)) openMessages.delete(id)
-    else openMessages.add(id)
-    bump()
-    if (openMessages.has(id)) slots.get(id)?.querySelector('textarea')?.focus()
-  }
-
-  // Cancel or Esc in a launch row's composer: the row's Message button gets focus back.
-  function closeMessage(session) {
-    const launch = (deps.launches() ?? []).find((l) => rows.has(l.id) && openMessages.has(l.id) && messageSession(l) === session)
-    if (!launch) return
-    const owned = Boolean(slots.get(launch.id)?.contains(doc.activeElement))
-    openMessages.delete(launch.id)
-    if (owned) doc.activeElement.blur()
-    bump()
-    if (owned) rows.get(launch.id)?.querySelector('[data-launch-action="message"]')?.focus({ preventScroll: true })
-  }
-
   function setDraft(key, text) {
     if (text.trim()) drafts.set(key, text)
     else drafts.delete(key)
@@ -309,21 +113,23 @@ export function createLaunchUi(deps) {
     if (!control || control.disabled) return
     const id = control.closest('[data-launch]')?.dataset.launch
     const action = control.dataset.launchAction
-    if (action === 'new') openNewSession()
-    else if (action === 'earlier') {
-      showEarlier = !showEarlier
-      bump()
-    }
-    else if (action === 'transcript' && id) deps.openPanel(id, 'transcript')
-    else if (action === 'resume-panel' && id) deps.openPanel(id, 'resume')
-    else if (action === 'stop' && id) stop(id)
-    else if (action === 'close' && id) close(id)
-    else if (action === 'park' && id) park(id)
-    else if (action === 'message' && id) toggleMessage(id)
-    else if (action === 'resume' && id) resumeAndSend(id)
-    else if (action === 'take-over' && id) takeOver(id)
-    else if (action === 'open-worktree' && id) openWorktree(id)
-    else if (action === 'remove-worktree' && id) removeWorktree(id)
+    if (!id) return
+    if (action === 'stop') stop(id)
+    else if (action === 'close') close(id)
+    else if (action === 'park') park(id)
+    else if (action === 'resume') resumeAndSend(id)
+    else if (action === 'take-over') takeOver(id)
+    else if (action === 'open-worktree') openWorktree(id)
+    else if (action === 'remove-worktree') removeWorktree(id)
+  }
+
+  // A note is about the state its launch was in when it was written: paintPanel drops it
+  // once that state changes. Stamped here, never by a paint, so it cannot go stale while
+  // the panel shows another launch or none.
+  function setNote(id, text) {
+    notes.set(id, text)
+    const launch = (deps.launches() ?? []).find((l) => l.id === id)
+    noteStates.set(id, launch ? launchStatus(launch, deps.activity(), Date.now()).state : null)
   }
 
   async function act(id, run) {
@@ -341,7 +147,7 @@ export function createLaunchUi(deps) {
 
   async function stop(id) {
     const result = await act(id, () => bridge().stop(id))
-    if (result && !result.ok) notes.set(id, result.error ?? 'Not stopped.')
+    if (result && !result.ok) setNote(id, result.error ?? 'Not stopped.')
     await deps.settled()
   }
 
@@ -349,7 +155,7 @@ export function createLaunchUi(deps) {
   // timeout would, and the launch can be resumed with Resume and send.
   async function park(id) {
     const result = await act(id, () => deps.postJSON(`/api/launches/${encodeURIComponent(id)}/park`))
-    if (result) notes.set(id, result.ok ? 'Parking: Copilot stops once its turn ends, and the session is kept to resume.' : 'Not parked: it is not running.')
+    if (result) setNote(id, result.ok ? 'Parking: Copilot stops once its turn ends, and the session is kept to resume.' : 'Not parked: it is not running.')
     await deps.settled()
   }
 
@@ -357,27 +163,27 @@ export function createLaunchUi(deps) {
   // cancels its turn and closes Copilot first) and opens Terminal on `copilot --resume` in its folder
   async function takeOver(id) {
     const result = await act(id, () => bridge().takeOver(id))
-    if (result && !result.ok && !result.cancelled) notes.set(id, result.error ?? 'The session was not handed off.')
+    if (result && !result.ok && !result.cancelled) setNote(id, result.error ?? 'The session was not handed off.')
     await deps.settled()
   }
 
   // #432: main reads the path from the hub, checks it and opens Terminal there
   async function openWorktree(id) {
     const result = await act(id, () => bridge().openWorktree(id))
-    if (result && !result.ok) notes.set(id, result.error ?? 'Terminal could not be opened.')
+    if (result && !result.ok) setNote(id, result.error ?? 'Terminal could not be opened.')
   }
 
   // #432: main inspects the worktree, asks in its own dialog (Discard is a separate
   // choice there), then removes it; the branch always stays
   async function removeWorktree(id) {
     const result = await act(id, () => bridge().removeWorktree(id))
-    if (result && !result.ok && !result.cancelled) notes.set(id, result.error ?? 'The worktree was not removed.')
+    if (result && !result.ok && !result.cancelled) setNote(id, result.error ?? 'The worktree was not removed.')
     await deps.settled()
   }
 
   async function close(id) {
     const result = await act(id, () => bridge().close(id))
-    if (result && !result.ok) notes.set(id, result.error ?? 'Not closed.')
+    if (result && !result.ok) setNote(id, result.error ?? 'Not closed.')
     await deps.settled()
   }
 
@@ -399,7 +205,7 @@ export function createLaunchUi(deps) {
       drafts.delete(`resume:${id}`)
       resumeInputs.delete(id)
     } else if (result) {
-      notes.set(id, result.error ?? 'Not resumed.')
+      setNote(id, result.error ?? 'Not resumed.')
     }
     await deps.settled()
   }
@@ -645,6 +451,7 @@ export function createLaunchUi(deps) {
         drafts.delete('new')
         closeDialog()
         await deps.settled()
+        if (typeof result.launch === 'string') deps.started?.(result.launch)
         return
       }
       message.textContent = result?.error ?? 'Not started.'
@@ -725,13 +532,28 @@ export function createLaunchUi(deps) {
       resumeEl.addEventListener('click', onSectionClick)
     }
     const status = launchStatus(launch, deps.activity(), nowMs)
+    // a note is about the state it was written in: a new state drops it
+    if (notes.has(id)) {
+      const written = noteStates.get(id)
+      if (written == null) noteStates.set(id, status.state)
+      else if (written !== status.state) {
+        notes.delete(id)
+        noteStates.delete(id)
+      }
+    }
     const allowed = granted()
-    // the action bar (§3.3): what the drawer row offered, from the launch's state and the grant
+    // the action bar (§3.3), from the launch's state and the grant
     const actions = []
     if (allowed) {
       for (const action of status.actions) {
         if (action === 'park') actions.push(['park', 'Park now'])
-        else if (action === 'stop') actions.push(['stop', launch.status === 'parked' ? 'End' : 'Stop', 'danger'])
+        else if (action === 'stop') {
+          actions.push(['stop', launch.status === 'parked' ? 'End' : 'Stop', 'danger'])
+          // Remove worktree… waits for the end: say so beside the control that ends it
+          if (launch.worktree_path && !launch.worktree_removed_at) {
+            actions.push(['hint', `${launch.status === 'parked' ? 'End' : 'Stop'} it to remove its worktree`, 'hint'])
+          }
+        }
         else if (action === 'close') actions.push(['close', 'Close'])
         else if (action === 'takeover' || action === 'terminal') {
           actions.push(['take-over', busy.has(id) ? 'Handing off…' : action === 'takeover' ? 'Take over in Terminal' : 'Resume in Terminal'])
@@ -743,6 +565,7 @@ export function createLaunchUi(deps) {
       }
     }
     keyed(actionsEl, JSON.stringify([actions, busy.has(id)]), () => actions.map(([action, label, tone, off]) => {
+      if (tone === 'hint') return make('span', 'sp-actions-hint', label)
       const el = button(label, action, tone === 'danger' ? 'danger' : tone === 'end' ? 'sp-end' : '')
       if (off) {
         el.disabled = true
@@ -883,31 +706,6 @@ export function createLaunchUi(deps) {
     transcript = null
   }
 
-  // ── lanes (#304): a "Started here" tag and Stop on a launch's lane ───────
-  function paintLane(el, session) {
-    let tag = el.querySelector('.dash-lane-launch')
-    const launch = on() ? launchOfSession(deps.launches(), session) : null
-    if (!launch || launch.status !== 'running') {
-      tag?.remove()
-      return
-    }
-    if (!tag) {
-      tag = make('div', 'dash-lane-launch')
-      tag.append(make('span', 'dash-lane-launch-tag', 'Started here'))
-      const stopButton = button('Stop', 'stop', 'dash-lane-stop')
-      stopButton.addEventListener('click', () => {
-        const id = tag.dataset.launch
-        if (id) stop(id)
-      })
-      tag.append(stopButton)
-      el.querySelector('.dash-lane-meta')?.after(tag)
-    }
-    if (tag.dataset.launch !== launch.id) tag.dataset.launch = launch.id
-    const stopButton = tag.querySelector('.dash-lane-stop')
-    const hidden = !granted() || Boolean(launch.stop_requested_at)
-    if (stopButton.hidden !== hidden) stopButton.hidden = hidden
-  }
-
   return {
     refresh,
     setState,
@@ -918,21 +716,23 @@ export function createLaunchUi(deps) {
     drafts: () => (dialog && drafts.has('new') ? [['new', drafts.get('new')]] : []),
     /** Whether typed text would be lost to a viewer restart's reload. */
     held: () => [...drafts.keys()].some((key) => key !== 'new' || dialog !== null) || busy.size > 0,
-    paintDrawer,
-    paintLane,
     approve,
-    closeMessage,
     /** The Agents home's New session… (#454): null with the switch off. */
     newSession: () => (on()
       ? { disabled: !granted() || starting !== null, note: granted() ? '' : 'Starting and approving sessions works only in Agent Inbox’s own window.' }
       : null),
     openNewSession,
-    /** A session card's action on its launch (#454): the drawer row's own handlers. */
-    run(id, action) {
-      if (!on() || !granted()) return
-      if (action === 'close') close(id)
-      else if (action === 'take-over') takeOver(id)
-      else if (action === 'open-worktree') openWorktree(id)
+    /** A session card's action on its launch (#454): the panel's own handlers. */
+    /** Resolves true when the action left a note, which only the launch's panel shows. */
+    async run(id, action) {
+      if (!on() || !granted()) return false
+      if (action === 'close') await close(id)
+      else if (action === 'take-over') await takeOver(id)
+      else if (action === 'open-worktree') await openWorktree(id)
+      // only an ended launch's: main checks it again and asks before anything is removed
+      else if (action === 'remove-worktree' && (deps.launches() ?? []).find((l) => l.id === id)?.status === 'ended') await removeWorktree(id)
+      else return false
+      return notes.has(id)
     },
     paintPanel,
     panelSummary,

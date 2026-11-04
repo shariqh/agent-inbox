@@ -1091,6 +1091,14 @@ describe('Take over in Terminal (step 5, §3.5)', () => {
     vi.spyOn(Date, 'now').mockImplementation(() => clock)
     expect(await blind.controller.takeOver(ID)).toMatchObject({ ok: false, error: expect.stringMatching(/within a minute/) })
     expect(posts(blind)).toEqual(['/hand-off', '/hand-off/withdraw'])
+    // a hand-off POST with no answer (a timeout) may have stored its request: it is withdrawn on the way out
+    const silent = takeOverRig(RUNNING, [null])
+    expect(await silent.controller.takeOver(ID)).toEqual({ ok: false, error: 'The session could not be handed off.' })
+    expect(posts(silent)).toEqual(['/hand-off', '/hand-off/withdraw'])
+    // a definite refusal leaves nothing to withdraw
+    const refusedRig = takeOverRig(RUNNING, [{ ok: false, reason: 'stopping' }])
+    expect(await refusedRig.controller.takeOver(ID)).toMatchObject({ ok: false })
+    expect(posts(refusedRig)).toEqual(['/hand-off'])
     // a withdrawal the hub does not answer is tried once more on the way out
     const deaf = takeOverRig(RUNNING, [{ ok: true, state: 'requested' }], { wait: async () => { clock += 30_000 }, handOffWaitMs: 60_000 })
     deaf.withdrawals.push(null)

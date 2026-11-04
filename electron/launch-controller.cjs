@@ -670,7 +670,8 @@ function createLaunchController(deps) {
         const handOff = async () => {
           pending = true
           const answer = await viewer.postJson(`${route}/hand-off`)
-          if (!(answer?.ok && answer.state === 'requested')) pending = false
+          // only a definite answer clears it: null (a timeout or network error) may follow a stored request
+          if (answer?.ok === false || (answer?.ok === true && answer.state === 'handed_off')) pending = false
           return answer
         }
         // whether the launch left `running` before the deadline; an unreadable row is not proof it did

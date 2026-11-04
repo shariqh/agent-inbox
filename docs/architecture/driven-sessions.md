@@ -730,7 +730,8 @@ session folder.
   is withdrawn; a withdrawal that answers `ok: false` means a driver took it first, so main waits (up to
   60 s more) for that hand-off and completes it instead. An unreadable row is not taken as the launch
   having stopped. A `finally` withdraws any request still pending on every other way out, a hub error or
-  a throw included; one a driver has already taken is under way, and its launch then offers Resume in
+  a throw included; only a definite answer to a `hand-off` POST clears it, since one with no answer (a
+  timeout) may still have stored its request; one a driver has already taken is under way, and its launch then offers Resume in
   Terminal. The answer's `cwd` must equal the
   confirmed folder, still its own real folder. `takeOverScript` writes `<hub dir>/launches/<id>/take-over.command` (`0700` in the
   `0700` log folder, temp file and rename): `cd -- '<folder>'`, `copilot --resume=<id>` with the launch's

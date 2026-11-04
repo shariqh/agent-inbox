@@ -447,9 +447,12 @@ Approve), `public/launches.js` (pure rules) and `public/launch-settings.js` (Set
   unchanged), `sub/.git/x.txt` was refused (`write(<folder>/**/.git/**)` matched; nothing was created),
   and a file outside the folder raised a permission request. Repeated `--deny-tool` flags each count, and
   `**` matched the dot-folder `.git`. Reads are not limited by this mode.
-- **The Agents view (#397).** A session line whose `/api/activity` row is `driven` gets a `driven` chip,
-  and `started here` when it is a session of one of this app's launches (only with the switch on), drawn
-  inside the project and branch column so the row's grid is unchanged.
+- **The Agents view (#397), the Agents home since #454.** With the switch on, each launch is one card
+  (chip "Copilot · started here") joined with its live driven sessions, in every state: its main action
+  comes from `launchStatus(...).actions` and the grant, and runs the drawer row's own handler
+  (`launchUi.run`; Resume… focuses the drawer row's Resume and send until the session panel holds it).
+  New session… sits in the card's header, disabled with its note when not granted. Off, or in a
+  browser, no launch card or New session is drawn and a driven row is a card of its own ("driven").
 - **Native notifications.** A new app launch's approval notifies like any ask but offers no buttons
   (`answerableByNotification` in `electron/reply-watch.cjs`): the hub refuses an ordinary reply to it, and
   only main's signed answer from the app's own window counts. A click opens its card, whose options main

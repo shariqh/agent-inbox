@@ -804,5 +804,24 @@ export function createLaunchUi(deps) {
     paintLane,
     approve,
     closeMessage,
+    /** The Agents home's New session… (#454): null with the switch off. */
+    newSession: () => (on()
+      ? { disabled: !granted() || starting !== null, note: granted() ? '' : 'Starting and approving sessions works only in Agent Inbox’s own window.' }
+      : null),
+    openNewSession,
+    /** A session card's action on its launch (#454): the drawer row's own handlers. */
+    run(id, action) {
+      if (!on()) return
+      if (action === 'transcript') openTranscript(id)
+      else if (!granted()) return
+      else if (action === 'close') close(id)
+      else if (action === 'take-over') takeOver(id)
+      else if (action === 'open-worktree') openWorktree(id)
+    },
+    /** Resume…, an explicit click: the drawer row's Resume and send text takes focus (until the session panel holds it). */
+    focusResume(id) {
+      const input = resumeInputs.get(id)
+      if (input?.isConnected) input.focus()
+    },
   }
 }

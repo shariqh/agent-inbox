@@ -230,15 +230,10 @@ describe('the session focus panel placement (#307)', () => {
   })
 })
 
-// The Agents view (#397, #454): jsdom cannot lay out the Agents view's grid, so its two
-// layout promises are pinned in the source.
-describe('the Agents view layout (#397)', () => {
+// The Agents home (#454): jsdom cannot lay out its card grid, so its layout
+// promise is pinned in the source.
+describe('the Agents home layout (#454)', () => {
   it('never needs a card wider than the screen', () => {
-    expect(css).toMatch(/\.mesh-agent-list \{[^}]*grid-template-columns: repeat\(auto-fit, minmax\(min\(320px, 100%\), 1fr\)\)/)
-  })
-
-  it('stacks the branch under the project rather than squeezing it beside it', () => {
-    expect(css).toMatch(/\.mesh-where \{[^}]*flex-direction: column;[^}]*\}/)
-    expect(css).toMatch(/\.mesh-project, \.mesh-branch \{ max-width: 100%; \}/)
+    expect(css).toMatch(/\.ah-cards \{[^}]*grid-template-columns: repeat\(auto-fill, minmax\(min\(300px, 100%\), 1fr\)\)/)
   })
 })

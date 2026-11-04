@@ -2041,9 +2041,10 @@ function renderDashboardAmbient(model, { forced = false } = {}) {
   renderDashboardOutcomes(host.querySelector('.dashboard-outcome-list'), model.recentOutcomes, model.recentOutcomesComplete,
     model.recentOutcomesWait, model.recentOutcomesHidden)
   agentsHome.paint(host, {
-    activity: liveInLens(), attention: model.waitingEntries, closed: dashboardClosedProjects(), nowMs: Date.now(),
-    // #412 step 3: the sessions of launches this app started, only with its switch on
-    startedHere: launchesOn() ? (lastData?.launches ?? []).filter((l) => l.status !== 'ended').flatMap((l) => l.sessions ?? []) : [],
+    activity: liveInLens(), boards: model.boards, attention: model.waitingEntries, closed: dashboardClosedProjects(),
+    // #412 step 3: this app's launches, only with its switch on (§9: otherwise none is read or drawn)
+    launches: launchesOn() ? launchesInLens() : null,
+    nowMs: Date.now(), forced, lensProject: projectFilter,
   })
 }
 
@@ -2129,16 +2130,28 @@ const laneAsks = new Map() // session → { first, oldest } attention entries, r
 const laneFilters = { project: null, agent: null }
 let focusSession = null // the session the focus panel shows, if open
 let lastDashModel = null // the model the last paint drew, for a handler's own repaint
-// The Agents view (#397, always on since #454): its lens is window-local state.
+// The Agents home (#454): its filters, grouping, folds and lens are window-local.
 const agentsHome = installAgentsHome({
   jumpToAsk,
   openMessage,
-  // the session panel lives in the lanes card: leaving its lens closes it, so it never sits hidden
-  onLeaveSessions: () => {
-    if (!focusSession) return
-    focusSession = null
-    paintSessionFocus()
+  // until the session panel (#454 PR 3), a card opens the session focus panel
+  openSession: (card) => { if (card.session) toggleSessionFocus(card.session) },
+  launchAction: (id, action) => {
+    if (action !== 'resume') {
+      launchUi?.run(id, action)
+      return
+    }
+    // Resume and send lives in the Live drawer's launch row until the session panel holds it
+    toggleLiveDrawer(true)
+    launchUi?.paintDrawer(Date.now())
+    launchUi?.focusResume(id)
   },
+  launches: () => (launchesOn() ? launchUi : null),
+  hasDraft: (session) => messageDrafts.has(session),
+  build: (row) => sessionBuild(row, liveVersion),
+  projectColor: (project) => pcolor(project).dot,
+  pulse: (el) => { if (dashboardMotion()) playOnce(el, 'pulse', 'dash-lane-pulse') },
+  paintUndelivered,
 })
 
 function dashLanesEl() {
@@ -2555,13 +2568,12 @@ function paintSessionFocus() {
   }
 }
 
-// An element the human can see: no ancestor (the lanes card under the Agents lens) is hidden.
+// An element the human can see: no ancestor (the list the lens hides) is hidden. The
+// panel itself moves to whichever list the lens shows (agents-home.js), so it never is.
 const isShown = (el) => Boolean(el) && !el.closest('[hidden]')
 
 function openSessionFocus(session) {
   focusSession = session
-  // the panel is in the lanes card, which only the Sessions lens shows (#454)
-  agentsHome.showSessions()
   paintSessionFocus()
   if (document.hasFocus()) document.getElementById('dashFocusTitle')?.focus({ preventScroll: true })
 }
@@ -2574,7 +2586,7 @@ function closeSessionFocus() {
   paintSessionFocus()
   if (!owned || !document.hasFocus()) return
   const lane = document.querySelector(`#dashboard .dash-lane[data-lane="${CSS.escape(session)}"] .dash-lane-open`)
-  ;[lane, document.getElementById('dashLanesTitle'), document.querySelector('#dashboard .mesh-lens [data-mesh-lens="sessions"]')]
+  ;[lane, document.getElementById('agentsHomeTitle'), document.getElementById('dashLanesTitle')]
     .find(isShown)?.focus({ preventScroll: true })
 }
 
@@ -2586,7 +2598,7 @@ function closeSessionFocus() {
 // closes it there: the rail below it would jump up under the press.
 function closeSessionFocusOnClick(event) {
   if (!focusSession || !trustedInput(event) || !(event.target instanceof Element)) return
-  if (event.target.closest('#dashboard .dash-focus, #dashboard .dash-lane')) return
+  if (event.target.closest('#dashboard .dash-focus, #dashboard .dash-lane, #dashboard .sc')) return
   const aside = document.querySelector('#dashboard .dash-focus')
   if (!aside || getComputedStyle(aside).position === 'static') return
   focusSession = null
@@ -2609,7 +2621,6 @@ function jumpToSession(session) {
   laneFilters.project = null
   laneFilters.agent = null
   focusSession = session
-  agentsHome.showSessions()
   resetSearch()
   selectTab('dashboard', { paint: false })
   forceRender()
@@ -3239,11 +3250,17 @@ function paintAmbient() {
   return { agents, g, boards, archived, live, dashboard }
 }
 
-// The Agents view's input (#397): exactly paintAmbient's pillLive, the Live
+// The Agents home's input (#397, #454): exactly paintAmbient's pillLive, the Live
 // sessions the rail's project and agent lens shows, which the lanes read too.
 function liveInLens() {
   return (lastData.activity ?? []).filter((a) =>
     (!projectFilter || a.project === projectFilter) && (!agentFilter || a.agent === agentFilter))
+}
+
+// This app's launches under the same lens: every one runs Copilot.
+function launchesInLens() {
+  return (lastData?.launches ?? []).filter((launch) =>
+    (!projectFilter || launch.project === projectFilter) && (!agentFilter || agentFilter === 'copilot'))
 }
 
 // `summary` is what `view` omits from closed history (issue #184), and archived
@@ -3321,7 +3338,7 @@ function frameInputs() {
     ...lastData.reads, JSON.stringify(lastData.closed), navigationKey(), openRowId,
     focusSession, laneFilters.project, laneFilters.agent, outsideChanges, liveVersion, fileLinksCopy(), Boolean(linkFileActions()),
     triageHeld,
-    agentsHome.lens(),
+    agentsHome.state(),
     launchUi?.version() ?? null,
   ]
 }
@@ -6756,8 +6773,29 @@ async function retryMessageRecovery(session) {
 // no longer lists, until the human withdraws it or a later send's 30-day prune
 // deletes it. Global, like the strip: a lens never hides an undelivered message.
 function renderUndelivered(host) {
+  const fold = undeliveredFold((value) => `data-live-focus="${esc(value)}"`)
+  if (fold) host.appendChild(fold)
+}
+
+// The Agents home's "Not delivered" fold (#454): the drawer's own, still global,
+// rebuilt only when what it shows changes, keeping a keyboard user's control.
+function paintUndelivered(slot) {
   const lost = undeliveredMessages(lastData?.messages, lastData?.activity)
-  if (!lost.total) return
+  const key = JSON.stringify([[...lost.shown, ...lost.more].map((m) => [m.id, m.revision, messageWriteNotes.get(m.id) ?? '']),
+    Math.floor(Date.now() / 60000)])
+  if (slot.dataset.key === key) return
+  slot.dataset.key = key
+  const focused = activeFocusElement()
+  const focusKey = focused && slot.contains(focused) ? focused.closest('[data-dashboard-focus-key]')?.dataset.dashboardFocusKey ?? null : null
+  const fold = undeliveredFold((value) => `data-dashboard-focus-key="${esc(`ah:${value}`)}"`)
+  slot.replaceChildren(...(fold ? [fold] : []))
+  if (!focusKey || !document.hasFocus()) return
+  ;[...slot.querySelectorAll('[data-dashboard-focus-key]')].find((el) => el.dataset.dashboardFocusKey === focusKey)?.focus({ preventScroll: true })
+}
+
+function undeliveredFold(focusAttr) {
+  const lost = undeliveredMessages(lastData?.messages, lastData?.activity)
+  if (!lost.total) return null
   const fold = document.createElement('details')
   fold.className = 'msg-undelivered'
   fold.dataset.msgFold = 'undelivered'
@@ -6769,13 +6807,13 @@ function renderUndelivered(host) {
       `<p class="msg-text">${esc(message.text)}</p>` +
       `<p class="msg-state">${esc(undeliveredReason(message))} · sent ${esc(rel(message.created_at))} ago</p>` +
       (note ? `<p class="msg-refused">${esc(note)}</p>` : '') +
-      `<span class="msg-lost-actions"><button type="button" data-msg-copy="${esc(message.id)}" data-live-focus="${esc(`copy:${message.id}`)}">Copy text</button>` +
-      `<button type="button" class="msg-withdraw" data-msg-withdraw="${esc(message.id)}" data-msg-revision="${message.revision}" data-live-focus="${esc(`withdraw:${message.id}`)}">Withdraw</button></span>` +
+      `<span class="msg-lost-actions"><button type="button" data-msg-copy="${esc(message.id)}" ${focusAttr(`copy:${message.id}`)}>Copy text</button>` +
+      `<button type="button" class="msg-withdraw" data-msg-withdraw="${esc(message.id)}" data-msg-revision="${message.revision}" ${focusAttr(`withdraw:${message.id}`)}>Withdraw</button></span>` +
       '</div>'
   }
-  fold.innerHTML = `<summary data-live-focus="undelivered">Not delivered (${lost.total})</summary>` + lost.shown.map(line).join('') + (lost.more.length
+  fold.innerHTML = `<summary ${focusAttr('undelivered')}>Not delivered (${lost.total})</summary>` + lost.shown.map(line).join('') + (lost.more.length
     ? `<details class="msg-earlier" data-msg-fold="undelivered-more"${openMessageFolds.has('undelivered-more') ? ' open' : ''}>` +
-      `<summary data-live-focus="undelivered-more">+${lost.more.length} more</summary>${lost.more.map(line).join('')}</details>`
+      `<summary ${focusAttr('undelivered-more')}>+${lost.more.length} more</summary>${lost.more.map(line).join('')}</details>`
     : '')
   fold.addEventListener('toggle', (event) => {
     const target = event.target
@@ -6792,7 +6830,7 @@ function renderUndelivered(host) {
       if (message) writeClipboard(document, message.text)
     }
   })
-  host.appendChild(fold)
+  return fold
 }
 
 // The always-visible footer strip (spec §16). Ambient only: never steals focus,

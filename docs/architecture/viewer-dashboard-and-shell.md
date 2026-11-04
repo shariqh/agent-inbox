@@ -59,6 +59,24 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   poll or a forced repaint, and only when `motion.activityMotion()` allows it (Full, no OS
   reduced motion, page visible). Nothing reaches attention. A cancelled one-shot
   (`animationcancel`) drops its class like a finished one (#305).
+- The Agents home (#454, design `docs/superpowers/specs/2026-11-04-agents-home-design.md`)
+  is the Dashboard's default lens, in the lanes' grid place (Sessions brings the lanes
+  back until they retire). `public/sessions.js` (pure) builds one card per session from
+  the frame's reads: each launch (switch on only, §9) joined with its live driven rows
+  (`launchSessions`), and every other `/api/activity` row. States: Needs you (an item
+  naming one of the card's sessions, or a row of its `linkedPlan`, read from
+  `waitingEntries`), Didn't start / Not responding, Starting… / Stopping…, Working
+  (`isWorking`), Idle, Parked (parked, or stopped with its session kept), In Terminal,
+  Ended, Dormant (`isDormant`). Grouped by project (or agent kind), sorted by state then
+  newest call, order pinned between forced paints like the lanes'. Working cards carry
+  the lanes' plan bar, subagents and call trace; folds hold Ended (the drawer's newest
+  five plus kept worktrees, with Earlier sessions inside), Dormant, In closed projects
+  and the global Not delivered. Cards update in place keyed by id, each part rebuilt
+  only when its own key changes; a closed fold paints no cards. Filter, grouping, folds
+  and lens are window-local and in `frameInputs()` (`agentsHome.state()`). A working card
+  pulses once on a new call (`.sc.pulse`, in the Calm and reduced-motion lists). Card
+  actions reuse the launch UI's own handlers (`launchUi.run`); Review jumps to the rail.
+  Nothing it draws reaches attention.
 - The Today ribbon, Just landed and "Since you last looked" (#305) replaced the
   activity bar chart and Recent outcomes with no new read. `buildRibbon`
   (`public/ribbon.js`, pure): one lane per project (12 most recently active, drawn by

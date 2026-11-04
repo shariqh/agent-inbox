@@ -129,7 +129,7 @@ header { flex-wrap: wrap; }
 .live-children { margin-top: 8px; }
 .live-state { font-size: 12px; opacity: .6; white-space: nowrap; }
 /* #411: the human's messages to a running session. No animation of any kind. */
-.live-msg-btn, .mesh-message, .msg-actions button, .msg-withdraw, .msg-lost-actions button {
+.live-msg-btn, .msg-actions button, .msg-withdraw, .msg-lost-actions button {
   padding: 2px 8px; border: 1px solid var(--app-border); border-radius: 6px; background: var(--app-soft); color: var(--app-text); font: inherit; font-size: 12px; cursor: pointer;
 }
 .live-msg-btn[aria-expanded="true"] { border-color: var(--app-focus); }
@@ -2207,64 +2207,99 @@ body.settings-open #liveBar { opacity: .32; }
 .history-row[open] .history-arrow { transform: rotate(90deg); }
 .history-row > .card { padding: 2px 14px 16px 34px; }
 
-/* The Agents view (#397, always on since #454), drawn by public/agents-home.js.
-   Static: no animation of any kind. */
+/* The Dashboard's Sessions | Agents lens (#397, #454), drawn by public/agents-home.js. */
 .mesh-lens { display: flex; justify-content: flex-end; gap: 0; margin-top: 14px; }
 .mesh-lens-option { padding: 5px 12px; border: 1px solid var(--app-border); background: var(--app-surface); color: var(--app-muted); font: inherit; font-size: 12.5px; cursor: pointer; }
 .mesh-lens-option:first-child { border-radius: 7px 0 0 7px; }
 .mesh-lens-option:last-child { margin-left: -1px; border-radius: 0 7px 7px 0; }
 .mesh-lens-option[aria-pressed="true"] { background: color-mix(in srgb, var(--app-accent) 10%, var(--app-surface)); color: var(--app-text); font-weight: 650; }
-.mesh-agents { grid-column: span 8; }
-.mesh-agents[hidden], .mesh-agents-empty[hidden] { display: none; }
-.mesh-agents-note { color: var(--app-text-soft); font-size: 11.5px; }
-.mesh-agents-empty { margin: 0; color: var(--app-muted); font-size: 12.5px; }
-/* min(): a card narrower than 320px (a phone) takes the full width rather than overflowing */
-.mesh-agent-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr)); gap: 12px; }
-.mesh-agent { min-width: 0; padding: 12px 14px; border: 1px solid var(--app-border); border-radius: 8px; background: var(--app-soft); }
-.mesh-agent-top { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 6px; }
-.mesh-agent-name { margin: 0; font-size: 15px; font-weight: 680; }
-.mesh-chip { padding: 0 7px; border-radius: 999px; background: color-mix(in srgb, var(--app-text-soft) 14%, transparent); color: var(--app-muted); font-size: 10.5px; font-weight: 650; }
-.mesh-chip.tone-agent, .mesh-session.working .mesh-state { background: color-mix(in srgb, var(--app-agent) 14%, transparent); color: var(--app-agent); }
-.mesh-session {
-  display: grid;
-  grid-template-areas: "dot where recency state message" ". doing doing doing doing";
-  grid-template-columns: 10px minmax(0, 1fr) auto auto auto;
-  align-items: center;
-  gap: 2px 10px;
-  padding: 7px 0;
-  border-top: 1px solid var(--app-border);
-  font-size: 12.5px;
-}
-.mesh-dot { grid-area: dot; }
-.mesh-where { grid-area: where; }
-.mesh-recency { grid-area: recency; }
-.mesh-state { grid-area: state; }
-.mesh-doing { grid-area: doing; }
-.mesh-message { grid-area: message; }
-.mesh-session:first-child { border-top: 0; }
-.mesh-session.idle, .mesh-session.dormant { color: var(--app-muted); }
-.mesh-dot { width: 8px; height: 8px; border: 1.5px solid var(--app-border-strong); border-radius: 50%; }
-.mesh-session.working .mesh-dot { border-color: var(--app-agent); background: var(--app-agent); }
-/* project over branch, as mockup a1 draws them, so a short branch is never cut */
-.mesh-where { display: flex; min-width: 0; flex-direction: column; align-items: flex-start; gap: 0; overflow: hidden; }
-.mesh-project, .mesh-branch { max-width: 100%; }
-.mesh-project, .mesh-branch { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.mesh-branch { color: var(--app-text-soft); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; }
-.mesh-driven { margin-top: 2px; }
-.mesh-doing { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.mesh-recency { color: var(--app-text-soft); font-size: 11.5px; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.mesh-agent-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; margin-top: 8px; color: var(--app-muted); font-size: 12px; }
-.mesh-asking { padding: 0; border: 0; background: transparent; color: inherit; font: inherit; cursor: pointer; }
-.mesh-ask-count { color: var(--app-attention); }
-.mesh-trace { display: inline-flex; align-items: center; gap: 8px; }
-.mesh-spark { width: 140px; height: 14px; flex: none; border-bottom: 1px solid var(--app-border-strong); }
-.mesh-spark path { fill: var(--app-agent); }
-.mesh-trace-count { font-variant-numeric: tabular-nums; }
+/* #454: the Agents home, drawn by public/agents-home.js: one card per session
+   (design docs/superpowers/specs/2026-11-04-agents-home-design.md §3). Static
+   but for the one-shot pulse a new call starts on a working card (#304). */
+.agents-home { position: relative; grid-column: span 8; }
+.agents-home[hidden], .ah-empty[hidden], .ah-none[hidden], .ah-note[hidden], .ah-fold[hidden], .ah-new[hidden], .sc-ask[hidden], .sc-where[hidden], .sc-foot[hidden] { display: none; }
+.agents-home.reading .ah-filters, .agents-home.reading .ah-group-by, .agents-home.reading .ah-groups, .agents-home.reading .ah-folds { display: none; }
+.agents-home.ah-is-empty .ah-filters, .agents-home.ah-is-empty .ah-group-by, .agents-home.ah-is-empty .ah-count { display: none; }
+.ah-head { flex-wrap: wrap; gap: 10px; }
+.ah-head h2 { margin: 0; }
+.ah-count { color: var(--app-text-soft); font-size: 11.5px; }
+.ah-spacer { flex: 1; }
+.ah-filters { display: inline-flex; overflow: hidden; border: 1px solid var(--app-border); border-radius: 9px; }
+.ah-filter { padding: 4px 9px; border: 0; border-left: 1px solid var(--app-border); background: transparent; color: var(--app-muted); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }
+.ah-filter:first-child { border-left: 0; }
+.ah-filter b { margin-left: 4px; color: var(--app-text-soft); font-weight: 700; font-variant-numeric: tabular-nums; }
+.ah-filter[aria-pressed="true"] { background: var(--app-accent-soft); color: var(--app-text); }
+.ah-filter.att b { color: var(--app-attention); }
+.ah-group-by { display: inline-flex; align-items: center; gap: 4px; padding: 0 4px 0 9px; border: 1px solid var(--app-border); border-radius: 8px; background: var(--app-surface); font-size: 11.5px; font-weight: 600; }
+.ah-group-by select { padding: 3px 2px; border: 0; background: transparent; color: var(--app-text); font: inherit; }
+.ah-new { margin-left: auto; padding: 4px 10px; border: 1px solid var(--app-accent); border-radius: 7px; background: var(--app-accent); color: var(--app-on-accent); font: inherit; font-size: 11.5px; font-weight: 650; cursor: pointer; }
+.ah-new:disabled { opacity: .45; cursor: default; }
+.ah-note { margin: -4px 0 10px; color: var(--app-muted); font-size: 12px; }
+.ah-group + .ah-group { margin-top: 14px; }
+.ah-group-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 12.5px; font-weight: 700; }
+.ah-group-head i { width: 8px; height: 8px; border-radius: 50%; background: var(--ah-group, var(--app-text-soft)); }
+.ah-group-count { color: var(--app-text-soft); font-weight: 500; }
+/* min(): a card narrower than 300px (a phone) takes the full width rather than overflowing */
+.ah-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr)); gap: 10px; }
+.ah-empty { display: grid; justify-items: center; gap: 8px; padding: 28px 12px; color: var(--app-muted); text-align: center; font-size: 13px; }
+.ah-empty p { max-width: 520px; margin: 0; }
+.ah-none { display: grid; justify-items: center; gap: 10px; padding: 22px 12px; color: var(--app-muted); font-size: 13px; }
+.ah-none p { margin: 0; }
+.ah-show-all { padding: 3px 9px; border: 1px solid var(--app-border); border-radius: 7px; background: var(--app-surface); color: var(--app-text); font: inherit; font-size: 11.5px; font-weight: 650; cursor: pointer; }
+.ah-folds { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+.ah-folds:empty { display: none; }
+.ah-fold > summary, .ah-undelivered .msg-undelivered > summary { padding: 5px 10px; border: 1px dashed var(--app-border-strong); border-radius: 8px; color: var(--app-muted); font-size: 12px; cursor: pointer; }
+.ah-fold > summary b { color: var(--app-text); }
+.ah-fold.open, .ah-undelivered:has(.msg-undelivered[open]) { flex-basis: 100%; }
+.ah-fold > .ah-cards { margin-top: 10px; }
+.ah-fold-earlier { margin-top: 10px; }
+.ah-undelivered:empty { display: none; }
+/* the session card */
+.sc { position: relative; display: flex; min-width: 0; flex-direction: column; gap: 6px; overflow: hidden; padding: 11px 13px 11px 15px; border: 1px solid var(--app-border); border-radius: 11px; background: var(--app-elevated); font-size: 12.5px; cursor: default; }
+.sc::before { position: absolute; top: 0; bottom: 0; left: 0; width: 3px; background: var(--sc-rule, transparent); content: ""; }
+.sc.tone-ask { --sc-rule: var(--app-attention); --sc-tone: var(--app-attention); border-color: color-mix(in srgb, var(--app-attention) 45%, var(--app-border)); }
+.sc.tone-working { --sc-rule: var(--app-success); --sc-tone: var(--app-success); }
+.sc.tone-parked, .sc.tone-terminal { --sc-rule: var(--app-warning); --sc-tone: var(--app-warning); }
+.sc.tone-failed, .sc.tone-lost { --sc-rule: var(--app-danger); --sc-tone: var(--app-danger); }
+.sc.tone-starting, .sc.tone-stopping { --sc-tone: var(--app-agent); }
+.sc.tone-idle, .sc.tone-dormant, .sc.tone-ended { --sc-tone: var(--app-text-soft); }
+.sc-top { display: flex; min-width: 0; align-items: center; gap: 7px; }
+.sc-dot { position: relative; width: 8px; height: 8px; flex: none; border-radius: 50%; background: var(--sc-tone, var(--app-text-soft)); }
+.sc.tone-idle .sc-dot, .sc.tone-dormant .sc-dot, .sc.tone-ended .sc-dot { border: 1.5px solid var(--app-text-soft); background: transparent; }
+.sc.pulse .sc-dot::after { position: absolute; inset: 0; border-radius: 50%; background: var(--sc-tone); content: ""; opacity: 0; animation: dash-lane-pulse var(--motion-slow) var(--motion-ease-out) 1; }
+.sc-state { flex: none; color: var(--sc-tone, var(--app-text-soft)); font-size: 12px; font-weight: 700; }
+.sc-chips { display: flex; min-width: 0; flex: 0 1 auto; gap: 5px; overflow: hidden; }
+.sc-chip { min-width: 0; overflow: hidden; text-overflow: ellipsis; padding: 1px 8px; border-radius: 999px; background: color-mix(in srgb, var(--app-text-soft) 16%, transparent); color: var(--app-text-soft); font-size: 10.5px; font-weight: 700; white-space: nowrap; }
+.sc-chip.tone-agent { background: color-mix(in srgb, var(--app-agent) 16%, transparent); color: var(--app-agent); }
+.sc-chip.tone-warn { background: color-mix(in srgb, var(--app-warning) 16%, transparent); color: var(--app-warning); }
+.sc-when { flex: none; margin-left: auto; color: var(--app-text-soft); font-size: 11.5px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.sc-doing { display: -webkit-box; overflow: hidden; color: var(--app-text); font-size: 13.5px; font-weight: 650; line-height: 1.3; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.sc-doing.was { color: var(--app-muted); font-weight: 500; }
+.sc-where { overflow: hidden; color: var(--app-muted); font-size: 11.5px; text-overflow: ellipsis; white-space: nowrap; }
+.sc-branch-glyph { margin-right: 6px; }
+.sc-branch { color: var(--app-text); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.sc-ask { display: flex; min-width: 0; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 8px; background: color-mix(in srgb, var(--app-attention) 11%, transparent); font-size: 12px; }
+.sc-ask-label { flex: none; color: var(--app-attention); font-weight: 700; }
+.sc-ask-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sc-ask-title.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.sc-ask-more { flex: none; color: var(--app-attention); font-weight: 700; }
+.sc-foot { display: flex; min-width: 0; align-items: center; gap: 8px; margin-top: 2px; }
+.sc-meta { display: inline-flex; flex: 0 1 auto; min-width: 0; align-items: center; gap: 8px; overflow: hidden; color: var(--app-text-soft); font-size: 11.5px; white-space: nowrap; }
+.sc-plan-text { overflow: hidden; text-overflow: ellipsis; }
+.sc-bar { display: inline-flex; width: 74px; height: 6px; flex: none; overflow: hidden; border-radius: 3px; background: color-mix(in srgb, var(--app-text) 10%, transparent); }
+.sc-bar [data-seg="done"] { background: var(--app-outcome); }
+.sc-bar [data-seg="partial"] { background: var(--app-plan); }
+.sc-bar [data-seg="waiting"] { background: var(--app-attention); }
+.sc-spark { width: 60px; height: 14px; flex: none; }
+.sc-spark path { fill: var(--app-agent); }
+.sc-action { flex: none; padding: 3px 9px; border: 1px solid var(--app-border); border-radius: 7px; background: var(--app-surface); color: var(--app-text); font: inherit; font-size: 11.5px; font-weight: 650; white-space: nowrap; cursor: pointer; }
+.sc-action.primary { border-color: var(--app-accent); background: var(--app-accent); color: var(--app-on-accent); }
+.sc-action:disabled { opacity: .45; cursor: default; }
 
 @container operations-desk (max-width: 900px) {
   .dash-now { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .dash-now-item:nth-child(3) { border-left: 0; }
-  .dash-lanes, .dash-rail, .dashboard-activity, .dashboard-outcomes, .mesh-agents { grid-column: span 12; }
+  .dash-lanes, .dash-rail, .dashboard-activity, .dashboard-outcomes, .agents-home { grid-column: span 12; }
 }
 
 @container operations-desk (max-width: 620px) {
@@ -2460,12 +2495,14 @@ body.sidebar-collapsed .gear[data-shortcut]::after { display: none; }
    them; this is the backstop). Other one-shots stay under Calm. */
 :root[data-motion="calm"] .dash-lane.sweep::before,
 :root[data-motion="calm"] .dash-lane.pulse .dash-lane-pulse::after,
+:root[data-motion="calm"] .sc.pulse .sc-dot::after,
 :root[data-motion="calm"] .dashboard-outcome.arrived::before,
 :root[data-motion="calm"] .dash-focus { animation: none !important; }
 
 @media (prefers-reduced-motion: reduce) {
   .dash-lane.sweep::before,
   .dash-lane.pulse .dash-lane-pulse::after,
+  .sc.pulse .sc-dot::after,
   .dashboard-outcome.arrived::before { animation: none !important; }
   *,
   *::before,

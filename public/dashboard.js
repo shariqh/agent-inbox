@@ -142,6 +142,8 @@ export function buildDashboard({
       archivedAfter: archivedOlder.outcomes > 0 ? archivedOlder.latest : null,
     },
     lanes: lanes.lanes,
+    // #454: the plans the lanes link, which the Agents home's cards link too
+    boards: visibleBoards,
     idleConnections: lanes.idle,
     now: lanes.now,
   }

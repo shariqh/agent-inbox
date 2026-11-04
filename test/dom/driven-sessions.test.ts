@@ -14,7 +14,7 @@ import {
   parkLaunch, recordActivityCall, recordLaunchProgress, resolveItem, upsertActivity,
 } from '../../src/store.js'
 import type { ViewerBridge } from './harness.js'
-import { bootApp, buttonLabelled, changedPollTick, click, freshDb, pollTick, row, settle, type, useDomTest } from './harness.js'
+import { advanceClock, bootApp, buttonLabelled, changedPollTick, click, freshDb, pollTick, row, settle, type, useDomTest } from './harness.js'
 
 useDomTest()
 
@@ -116,6 +116,10 @@ describe('off means off on the page (§9 b)', () => {
     expect(composer('mcp-1')?.querySelector('.msg-interrupt')).toBeNull()
     expect(drawer().querySelector('.live-started-here, [data-launch-action="message"]')).toBeNull()
     expect(document.querySelector('.dash-lane-launch, .launch-dialog, .launch-transcript')).toBeNull()
+    // the Agents home (#454): no launch card and no New session; the driven session is a card of its own
+    expect(document.querySelector('[data-session-card^="launch:"]')).toBeNull()
+    expect(document.querySelector<HTMLElement>('.agents-home .ah-new')?.hidden).toBe(true)
+    expect(document.querySelector('[data-session-card="session:mcp-1"] .sc-chips')?.textContent).toBe('Copilot · driven')
   })
 
   it('in the app with the switch off, only the Settings switch is drawn, and nothing is read', async () => {
@@ -912,15 +916,18 @@ describe('the Dashboard lanes (#304)', () => {
   })
 })
 
-describe('the Agents view (#397, #412 step 3)', () => {
+describe('session cards for launches (#454, #412)', () => {
   function working(d: Database.Database, session: string, lease: { launchId: string; pid: number; nonce: string }) {
     upsertActivity(d, { session, project: 'alpha', stream: 'main', agent: 'copilot', doing: 'Fixing the test', idle: false, claim: true, receives_messages: true })
     recordActivityCall(d, session)
     claimDriverSlot(d, lease, 3)
     holdDriverLeases(d, lease, [session])
   }
+  const card = (id: string) => [...document.querySelectorAll<HTMLElement>('[data-session-card]')].find((el) => el.dataset.sessionCard === id) ?? null
+  const actions = (id: string) => [...card(id)?.querySelectorAll<HTMLButtonElement>('[data-ah-action]') ?? []].map((b) => b.textContent)
+  const cardAction = (id: string, name: string) => card(id)?.querySelector<HTMLButtonElement>(`[data-ah-action="${name}"]`) ?? null
 
-  it('tags a driven session “driven”, and one of this app’s launches “started here”', async () => {
+  it('joins a launch and its driven session into one “started here” card; another driver’s session is “driven”', async () => {
     launchBridge()
     db = freshDb()
     newLaunch(db)
@@ -932,10 +939,123 @@ describe('the Agents view (#397, #412 step 3)', () => {
     await pollTick()
     await changedPollTick(db)
     await settle()
-    const tag = (session: string) => [...document.querySelectorAll<HTMLElement>('.mesh-session')]
-      .find((el) => el.dataset.meshSession === session)?.querySelector('.mesh-driven')?.textContent
-    expect(tag('mcp-1')).toBe('started here')
-    expect(tag('mcp-2')).toBe('driven')
+    expect(card(`launch:${LAUNCH}`)?.querySelector('.sc-chips')?.textContent).toBe('Copilot · started here')
+    expect(card(`launch:${LAUNCH}`)?.querySelector('.sc-state')?.textContent).toBe('Working')
+    expect(actions(`launch:${LAUNCH}`)).toEqual(['Message'])
+    expect(card('session:mcp-1')).toBeNull()
+    expect(card('session:mcp-2')?.querySelector('.sc-chips')?.textContent).toBe('Copilot · driven')
+  })
+
+  it('a parked launch offers Take over and Resume…, which opens its Resume and send, focused', async () => {
+    const api = launchBridge()
+    db = freshDb()
+    newLaunch(db)
+    parkLaunch(db, LAUNCH, { acpSession: 'acp-1', activeMs: 10, toolCalls: 3 })
+    await bootApp(db)
+    await changedPollTick(db)
+    await settle()
+    const id = `launch:${LAUNCH}`
+    expect(card(id)?.querySelector('.sc-state')?.textContent).toBe('Parked')
+    expect(actions(id)).toEqual(['Take over in Terminal', 'Resume…'])
+    click(cardAction(id, 'resume'))
+    await settle()
+    expect(drawer().hidden).toBe(false)
+    expect(document.activeElement).toBe(launchRow(LAUNCH)?.querySelector('.live-launch-resume-input'))
+    drawer().hidden = true
+    click(cardAction(id, 'take-over'))
+    await settle()
+    expect(api.takeOver).toHaveBeenCalledWith(LAUNCH)
+  })
+
+  it('Resume… on a resumable launch past the newest five still lands on its Resume and send (#458 review)', async () => {
+    launchBridge()
+    db = freshDb()
+    newLaunch(db)
+    parkLaunch(db, LAUNCH, { acpSession: 'acp-1', activeMs: 10, toolCalls: 3 })
+    endLaunch(db, LAUNCH, { reason: 'stopped' })
+    for (let n = 0; n < 5; n++) {
+      advanceClock()
+      const id = `11111111-2222-4333-8444-${String(800 + n).padStart(12, '0')}`
+      newLaunch(db, id)
+      endLaunch(db, id, { reason: 'stopped' })
+    }
+    await bootApp(db)
+    await changedPollTick(db)
+    await settle()
+    const id = `launch:${LAUNCH}`
+    expect(card(id)?.querySelector('.sc-state')?.textContent).toBe('Parked')
+    // the drawer lists the newest five ended launches only, until Earlier sessions is open
+    expect(launchRow(LAUNCH)).toBeNull()
+    click(cardAction(id, 'resume'))
+    await settle()
+    expect(drawer().hidden).toBe(false)
+    expect(document.activeElement).toBe(launchRow(LAUNCH)?.querySelector('.live-launch-resume-input'))
+  })
+
+  it('folds an ended launch under Ended, whose card opens its transcript', async () => {
+    launchBridge()
+    db = freshDb()
+    newLaunch(db)
+    endLaunch(db, LAUNCH, { reason: 'stopped' })
+    await bootApp(db)
+    await changedPollTick(db)
+    await settle()
+    const fold = document.querySelector<HTMLDetailsElement>('.agents-home [data-ah-fold="ended"]')!
+    expect([fold.hidden, fold.querySelector('summary')?.textContent]).toEqual([false, 'Ended (1)'])
+    fold.open = true
+    fold.dispatchEvent(new Event('toggle'))
+    expect(actions(`launch:${LAUNCH}`)).toEqual(['Transcript'])
+    click(cardAction(`launch:${LAUNCH}`, 'transcript'))
+    await settle()
+    expect(document.querySelector('.launch-transcript')).not.toBeNull()
+  })
+
+  it('keeps the launches past the newest five under Earlier sessions, inside Ended', async () => {
+    launchBridge()
+    db = freshDb()
+    const ids = Array.from({ length: 6 }, (_, i) => `11111111-2222-4333-8444-${String(900 + i).padStart(12, '0')}`)
+    for (const id of ids) {
+      newLaunch(db, id)
+      endLaunch(db, id, { reason: 'stopped' })
+      advanceClock()
+    }
+    await bootApp(db)
+    await changedPollTick(db)
+    await settle()
+    const ended = document.querySelector<HTMLDetailsElement>('.agents-home [data-ah-fold="ended"]')!
+    const earlier = document.querySelector<HTMLDetailsElement>('.agents-home [data-ah-fold="earlier"]')!
+    expect(ended.querySelector('summary')?.textContent).toBe('Ended (5) · Earlier sessions (1)')
+    ended.open = true
+    ended.dispatchEvent(new Event('toggle'))
+    expect(ended.querySelectorAll(':scope > .ah-cards > [data-session-card]')).toHaveLength(5)
+    expect(earlier.querySelectorAll('[data-session-card]')).toHaveLength(0)
+    earlier.open = true
+    earlier.dispatchEvent(new Event('toggle'))
+    expect([...earlier.querySelectorAll<HTMLElement>('[data-session-card]')].map((el) => el.dataset.sessionCard)).toEqual([`launch:${ids[0]}`])
+  })
+
+  it('New session… sits in the header, and says why it is off outside a granted window', async () => {
+    launchBridge()
+    db = freshDb()
+    await bootApp(db)
+    await changedPollTick(db)
+    await settle()
+    const start = document.querySelector<HTMLButtonElement>('.agents-home .ah-new')!
+    expect([start.hidden, start.disabled]).toEqual([false, false])
+    expect(document.querySelector<HTMLElement>('.agents-home .ah-note')?.hidden).toBe(true)
+    click(start)
+    await settle()
+    expect(document.querySelector<HTMLDialogElement>('.launch-dialog')?.open).toBe(true)
+  })
+
+  it('New session… is disabled, with its note, when the window is not granted', async () => {
+    launchBridge({ available: false })
+    db = freshDb()
+    await bootApp(db)
+    await changedPollTick(db)
+    await settle()
+    expect(document.querySelector<HTMLButtonElement>('.agents-home .ah-new')?.disabled).toBe(true)
+    expect(document.querySelector('.agents-home .ah-note')?.textContent).toBe('Starting and approving sessions works only in Agent Inbox’s own window.')
   })
 })
 

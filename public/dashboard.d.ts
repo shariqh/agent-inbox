@@ -1,5 +1,5 @@
 import type { RelayBoard, RelayEntry, RelayItem } from './relay.js'
-import type { Lane, NowStrip } from './lanes.js'
+import type { Lane, LaneBoard, NowStrip } from './lanes.js'
 
 export interface DashboardActivity {
   session: string
@@ -75,6 +75,8 @@ export interface DashboardModel {
   }
   /** #304: one lane per working session, in model order (newest call first) */
   lanes: Lane[]
+  /** #454: the plans the lanes link (closed projects left out), which the Agents home's cards link too */
+  boards: LaneBoard[]
   /** connected sessions with no live claim, folded into "+N idle connections" */
   idleConnections: number
   /** #304: the Now strip, from the same model as the lanes */

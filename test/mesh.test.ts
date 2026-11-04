@@ -1,4 +1,4 @@
-// Mesh M1 (#397): mesh.json, meshctl and the Agents lens model. Design:
+// Mesh M1 (#397): mesh.json and meshctl. Design:
 // docs/superpowers/specs/2026-10-29-agent-mesh-design.md §2, amended by #454
 // (2026-11-04-agents-home-design.md §4): the Agents view is always on, the
 // viewer no longer watches mesh.json and /api/version never carries `mesh`.
@@ -9,7 +9,6 @@ import { MESH_FILE_MAX, meshDir, meshFile, parseMesh } from '../src/mesh-config.
 import { runMeshctl } from '../src/meshctl.js'
 import { createViewer } from '../src/viewer.js'
 import { openDb } from '../src/store.js'
-import { agentGroups, sessionRecency } from '../public/agents-home.js'
 import { removeScratchDirs, scratchDir } from './scratch.js'
 
 afterEach(() => removeScratchDirs())
@@ -179,61 +178,5 @@ describe('/api/version never carries mesh (#454 §4)', () => {
     const res = await createViewer(db, { agentHome: home, setupInfoPath: join(dbDir, 'none.json') }).request('/api/version')
     expect(Object.keys(await res.json())).toEqual(['current', 'mode', 'runtimeInstalled', 'updatable', 'hosts'])
     db.close()
-  })
-})
-
-describe('the Agents lens model', () => {
-  const NOW = Date.parse('2026-10-29T12:00:00.000Z')
-  const at = (msAgo: number) => new Date(NOW - msAgo).toISOString()
-  const minute = Math.floor(NOW / 60_000)
-  const row = (o: Record<string, unknown>) => ({ started_at: at(3_600_000), updated_at: at(1000), ...o }) as never
-
-  it('groups by agent, uses the lanes’ working rule and Live’s dormancy, and reads asks', () => {
-    const activity = [
-      row({ session: 's1', agent: 'copilot', project: 'agent-inbox', stream: 'feat/412', doing: 'Writing tests', last_call_at: at(8000), calls: [2, 3], calls_at: minute }),
-      row({ session: 's2', agent: 'copilot', project: 'demo', stream: 'main', doing: 'open', idle: true, last_doing: 'Proofreading', last_call_at: at(47 * 60_000) }),
-      row({ session: 's3', agent: 'claude-code', project: 'agent-inbox', stream: 'x', doing: 'Drafting', last_call_at: at(3000), calls: [1], calls_at: minute }),
-      row({ session: 's4', agent: 'claude-code', project: 'demo', stream: 'main', doing: 'open', idle: true, last_call_at: at(9 * 3_600_000) }),
-      // heartbeat only: updated_at is fresh, but no call for 40 minutes is not working
-      row({ session: 's5', agent: 'claude-code', project: 'demo', stream: 'b', doing: 'Claims work', last_call_at: at(40 * 60_000), updated_at: at(10) }),
-      row({ session: 's6', agent: 'copilot', project: 'closed-one', doing: 'x', last_call_at: at(1000) }),
-    ]
-    const attention = [
-      { kind: 'item', item: { id: 'i1', agent: 'claude-code', created_at: at(5000) } },
-      { kind: 'row', row: { id: 'r1', action_agent: 'claude-code', action_started_at: at(4000) }, board: { agent: 'copilot' } },
-      { kind: 'row', row: { id: 'r2', action_started_at: at(4000) }, board: { agent: 'copilot' } },
-      { kind: 'item', item: { id: 'i2', agent: 'nobody-present', created_at: at(5000) } },
-    ]
-    const groups = agentGroups({ activity, attention: attention as never, closed: ['closed-one'], nowMs: NOW })
-    expect(groups.map((g) => [g.agent, g.sessions.length, g.working, g.asks.length])).toEqual([
-      ['claude-code', 3, 1, 2],
-      ['copilot', 2, 1, 1],
-    ])
-    const claude = groups[0]!
-    expect(claude.sessions.map((s) => [s.session, s.state])).toEqual([['s3', 'working'], ['s5', 'idle'], ['s4', 'dormant']])
-    expect(sessionRecency(claude.sessions[1]!)).toBe('idle 40m')
-    const copilot = groups[1]!
-    expect(copilot.sessions[0]).toMatchObject({ session: 's1', text: 'Writing tests', historical: false })
-    expect(sessionRecency(copilot.sessions[0]!)).toBe('last call just now')
-    expect(copilot.sessions[1]).toMatchObject({ session: 's2', text: 'Proofreading', historical: true, state: 'idle' })
-    expect(copilot.trace.slice(-2)).toEqual([2, 3])
-    expect(claude.trace.reduce((a, b) => a + b, 0)).toBe(1)
-  })
-
-  it('marks a driven session, and one this app started (#412 step 3)', () => {
-    const activity = [
-      row({ session: 'd1', agent: 'copilot', project: 'p', doing: 'Working', last_call_at: at(1000), driven: true } as never),
-      row({ session: 'd2', agent: 'copilot', project: 'p', doing: 'Working', last_call_at: at(1000), driven: true } as never),
-      row({ session: 'plain', agent: 'copilot', project: 'p', doing: 'Working', last_call_at: at(1000) }),
-    ]
-    const [group] = agentGroups({ activity, attention: [], startedHere: ['d2', 'plain'], nowMs: NOW })
-    expect(group!.sessions.map((s) => [s.session, s.driven, s.startedHere])).toEqual([
-      ['d1', true, false], ['d2', true, true], ['plain', false, false],
-    ])
-  })
-
-  it('a working session with no call yet says so', () => {
-    const [group] = agentGroups({ activity: [row({ session: 'n', agent: 'copilot', project: 'p', doing: 'Starting', started_at: at(60_000), last_call_at: null })], attention: [], nowMs: NOW })
-    expect(sessionRecency(group!.sessions[0]!)).toBe('no call yet')
   })
 })

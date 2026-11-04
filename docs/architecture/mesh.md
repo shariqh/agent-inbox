@@ -27,11 +27,12 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   `src/mesh-config.ts` is the Node-core reader. Today no piece is read from it:
   `enable --agents-view` writes nothing and says the view is always on, `status` says
   the same, and an `agentsView` key in an existing file is kept like any other.
-- **The Agents view** (`public/agents-home.js`) adds a window-local Sessions | Agents
-  lens above the Dashboard lanes, opening on Agents. It reads `liveInLens()`, the
-  lanes' `isWorking`, Live's `isDormant`, `last_call_at` and the frame's attention
-  entries; it never feeds attention, a badge, count, tab, rail or the dock, fetches
-  nothing, and animates nothing. No mesh module enters the stdio MCP graph, the hub
+- **The Agents view** (`public/agents-home.js`, now the Agents home, #454; see
+  `viewer-dashboard-and-shell.md`) adds a window-local Sessions | Agents lens above the
+  Dashboard lanes, opening on Agents: one card per session from `public/sessions.js`.
+  It reads `liveInLens()`, this app's launches (switch on only), the plans the lanes
+  link and the frame's attention entries; it never feeds attention, a badge, count,
+  tab, rail or the dock, and fetches nothing. No mesh module enters the stdio MCP graph, the hub
   schema is untouched, and `test/fixtures/app-dependencies.txt` pins the dependency
   set. Nothing puts the meshctl bin on PATH: document `npm run meshctl -- …`.
 
@@ -60,16 +61,15 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   statically and calls `installAgentsHome({ jumpToAsk, openMessage })` at load, so
   `dead-exports` reaches it like any module. It adds a Sessions | Agents lens above the
   Dashboard lanes; the lens is window-local like the lane filters, and a fresh window
-  opens on Agents. The Agents lens hides `.dash-lanes` and shows `.mesh-agents` in its grid
-  place, drawn from `renderDashboardAmbient` (so both render entries, no third) with
-  `liveInLens()`, the lanes' own input. It groups presence by `agent`, then project and
-  branch, with the lanes' `isWorking` and Live's `isDormant` (working / idle / dormant),
-  "last call" from `last_call_at` (never `updated_at`), the summed `callTrace`, and an
-  "Asking you: N" READ from the frame's `waitingEntries` (the attention set), keyed by an
-  item's `agent` or a row's `action_agent` (else its plan's agent). Nothing it draws
-  reaches `public/attention.js`, a badge, count, tab, the rail or the dock; it fetches
-  nothing, runs no timer and no animation, and rebuilds its cards only when what they
-  show changed. Its lens is in `frameInputs()`, so a lens change is never reused across
+  opens on Agents. The Agents lens hides `.dash-lanes` and shows `.agents-home` in its
+  grid place, drawn from `renderDashboardAmbient` (so both render entries, no third) with
+  `liveInLens()`, the lanes' own input. Since #454 PR 2 it draws one card per session
+  (`public/sessions.js`), grouped by project, with "last call" from `last_call_at` (never
+  `updated_at`) and asks READ from the frame's `waitingEntries` by session or linked
+  plan; `viewer-dashboard-and-shell.md` has the detail. Nothing it draws reaches
+  `public/attention.js`, a badge, count, tab, the rail or the dock; it fetches nothing,
+  runs no timer, and rebuilds a card's part only when what it shows changed. Its state
+  is in `frameInputs()`, so a lens, filter or fold change is never reused across
   frames. `test/mesh.test.ts` and `test/dom/agents-home.test.ts` hold it, including the
   boot's unchanged requests and identical attention surfaces with the Agents lens drawn.
   `package-lock.json` records meshctl's root `bin` entry (npm lockfile v3); the dependency

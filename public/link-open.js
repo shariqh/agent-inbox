@@ -88,7 +88,7 @@ export function linkOpenMessage(result, request, { finder = 'Finder' } = {}) {
       : `Shown in ${finder}.`
   }
   const reason = result && typeof result.reason === 'string' ? result.reason : 'failed'
-  if (reason === 'missing') return request && request.root ? `Not found in ${folderName(request.root)}: ${name}` : `Not found: ${name}`
+  if (reason === 'missing') return request && request.root ? `Not found in ${folderName(request.root)}: ${name}` : `${folderName(name)} isn’t there.`
   if (reason === 'outside') return `Not opened: ${name} points outside its repository.`
   if (reason === 'app-missing') return 'The app chosen in Settings → Links is gone. Choose another there.'
   if (reason === 'app-refused') return 'Agent Inbox won’t open links with the app chosen in Settings → Links. Choose another there.'

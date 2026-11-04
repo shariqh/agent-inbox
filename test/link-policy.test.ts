@@ -183,6 +183,26 @@ describe('fileOpenPlan judges the final target (issue #300)', () => {
     expect(await fileOpenPlan(join(root, 'app-link', 'Contents', 'x.plist'), { homeDir: root })).toEqual(nearest(join(real, 'Tool.app')))
     expect(await fileOpenPlan('relative.md', { homeDir: root })).toEqual({ ok: false, reason: 'invalid' })
   })
+
+  it('never shows a folder above the home folder for a missing absolute path', async () => {
+    const { root } = tree()
+    const real = realpathSync(root)
+    const home = join(root, 'folder')
+    const missing = { ok: false, reason: 'missing' }
+    // home itself is as high as it goes
+    expect(await fileOpenPlan(join(home, 'gone', 'x.md'), { homeDir: home })).toEqual({ ok: true, action: 'reveal', path: join(real, 'folder'), reason: 'missing' })
+    // a path that is not under home shows nothing, however near its folder is
+    expect(await fileOpenPlan(join(root, 'nope.md'), { homeDir: home })).toEqual(missing)
+    expect(await fileOpenPlan('/etc/agent-inbox-not-here/x.md', { homeDir: home })).toEqual(missing)
+    // nor does one whose home has gone, or a home that is not a plain absolute path
+    expect(await fileOpenPlan(join(root, 'no-home', 'x.md'), { homeDir: join(root, 'no-home') })).toEqual(missing)
+    for (const homeDir of [undefined, 'relative/home', '']) {
+      expect(await fileOpenPlan(join(root, 'nope.md'), { homeDir } as never), String(homeDir)).toEqual(missing)
+    }
+    // nor a folder under home whose symlinks lead out of it
+    symlinkSync(root, join(home, 'up'))
+    expect(await fileOpenPlan(join(home, 'up', 'gone.md'), { homeDir: home })).toEqual(missing)
+  })
 })
 
 describe('fileOpenPlan opens only common document types itself (issue #300)', () => {

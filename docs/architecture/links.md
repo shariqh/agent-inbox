@@ -39,9 +39,10 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   any execute bit are only revealed. Opening is an allow-list of common
   document types; anything else is revealed, and on macOS so is an alias or a
   file with its own Open With (checked through `/usr/bin/xattr`, argv only,
-  failing closed). A missing file reveals its nearest existing folder, so in
-  the owned viewer a click on a file link always shows something in Finder and
-  never copies; Copy path is only the chip's own action. `setWindowOpenHandler`
+  failing closed). A missing file reveals its nearest existing folder under
+  home (or, repo-relative, under its repository), so in the owned viewer a
+  click on a file link shows something in Finder whenever it can and never
+  copies; Copy path is only the chip's own action. `setWindowOpenHandler`
   and `will-navigate` share the same http(s) check, and a navigation
   `will-navigate` cancels gives the page back the grants its start revoked. A
   browser or a reused viewer copies a file's path instead, saying "Files open
@@ -154,11 +155,13 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   then does `shell.openPath` get the resolved path. The check is point-in-time. **A missing
   file still shows something:** `nearestFolder` walks up the already-validated path (never
   a renderer string) to the nearest ancestor that exists and is a folder by its `realpath`,
-  and main reveals that with `shell.showItemInFolder` (never `openPath`, so a bundle on the
+  **never above the home folder** (main's `homeDir`; a system folder is not worth showing):
+  a path not under home, a home that has gone, or an ancestor whose real path leaves home's
+  reveals nothing and answers `missing`. Main reveals the folder it finds with `shell.showItemInFolder` (never `openPath`, so a bundle on the
   way never runs), answering `{ ok: true, action: 'revealed', reason: 'missing', folder }`,
   where `folder` is only that folder's name (the preload keeps a string of at most 255
   characters, else `''`); the renderer says "<name> isn’t there; showing <folder> in Finder."
-  Only a path with no existing ancestor answers `missing` ("Not found: …"). Nothing is
+  Otherwise the answer is `missing` and the renderer says "<name> isn’t there." Nothing is
   copied.
   `setWindowOpenHandler` and `will-navigate` share `openWebLink`, so no path in main hands a
   non-http(s) URL to the OS.

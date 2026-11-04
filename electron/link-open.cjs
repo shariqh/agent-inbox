@@ -16,9 +16,10 @@
 //   the absolute repository folder its card recorded. Symlinks are resolved
 //   and the FINAL target is judged:
 //     missing                                        → its nearest existing
-//       ancestor folder is revealed (for a repo-relative path, never above the
-//       repository folder, and refused as 'outside' when that ancestor's real
-//       path leaves it); reported as missing only when there is none
+//       ancestor folder is revealed, never above the home folder (for a
+//       repo-relative path, never above the repository folder, and refused as
+//       'outside' when that ancestor's real path leaves it); reported as
+//       missing when there is none, or the path is not under home
 //     a repo-relative path no longer inside its folder's real path
 //                                                    → refused ('outside')
 //     a folder or app bundle                         → revealed, never opened
@@ -368,31 +369,39 @@ async function opensElsewhere(file, { fsp, platform, execFileImpl }) {
 
 // So that a click on a missing file still shows something: the nearest
 // ancestor of the validated path that exists and is a folder, by its real
-// path, for main to reveal (never open), or a failure: 'missing' when none exists (for a
-// repo-relative path, `repo`, none inside its folder: the walk never goes above
-// it), 'outside' when the one found resolves out of the folder, or why it could
-// not be read.
-async function nearestFolder(normalized, repo, fsp) {
-  let folder = null
-  if (repo) {
-    try {
-      folder = await fsp.realpath(repo.root)
-    } catch (err) {
-      return { ok: false, reason: failureReason(err) }
-    }
+// path, for main to reveal (never open), or a failure. The walk never goes
+// above `bound.root`: a repo-relative path's folder, or the home folder for an
+// absolute one, since a system folder is not worth showing. A path that is not
+// under it, or whose nearest folder resolves out of it, gets `bound.outside`
+// ('outside' for a repository, 'missing' for home); none at all is 'missing',
+// and one that cannot be read says why.
+async function nearestFolder(normalized, bound, fsp) {
+  let top
+  try {
+    top = await fsp.realpath(bound.root)
+  } catch (err) {
+    return { ok: false, reason: failureReason(err) }
   }
-  for (let current = path.dirname(normalized); ; current = path.dirname(current)) {
-    if (repo && !isWithin(repo.root, current)) return { ok: false, reason: 'missing' }
+  if (!isWithin(bound.root, normalized)) return { ok: false, reason: bound.outside }
+  for (let current = path.dirname(normalized); isWithin(bound.root, current); current = path.dirname(current)) {
     try {
       const real = await fsp.realpath(current)
-      if (folder !== null && !isWithin(folder, real)) return { ok: false, reason: 'outside' }
+      if (!isWithin(top, real)) return { ok: false, reason: bound.outside }
       if ((await fsp.lstat(real)).isDirectory()) return { ok: true, path: real }
     } catch (err) {
       const reason = failureReason(err)
       if (reason !== 'missing') return { ok: false, reason }
     }
-    if (path.dirname(current) === current) return { ok: false, reason: 'missing' }
+    if (path.dirname(current) === current) break
   }
+  return { ok: false, reason: 'missing' }
+}
+
+// The folder a missing file's nearest folder is looked for in, or null.
+function missingBound(repo, homeDir) {
+  if (repo) return { root: repo.root, outside: 'outside' }
+  if (typeof homeDir !== 'string' || !path.isAbsolute(homeDir)) return null
+  return { root: path.resolve(homeDir), outside: 'missing' }
 }
 
 function failureReason(err) {
@@ -423,7 +432,9 @@ async function fileOpenPlan(value, { homeDir, root = null, fsp = fs.promises, pl
   } catch (err) {
     const reason = failureReason(err)
     if (reason !== 'missing') return { ok: false, reason }
-    const nearest = await nearestFolder(normalized, repo, fsp)
+    const bound = missingBound(repo, homeDir)
+    if (!bound) return { ok: false, reason: 'missing' }
+    const nearest = await nearestFolder(normalized, bound, fsp)
     return nearest.ok ? { ok: true, action: 'reveal', path: nearest.path, reason: 'missing' } : nearest
   }
   const reveal = (reason) => ({ ok: true, action: 'reveal', path: resolved, reason })

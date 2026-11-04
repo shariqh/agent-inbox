@@ -252,7 +252,7 @@ describe('opening a link (issue #300)', () => {
     expect(open).not.toHaveBeenCalled()
   })
 
-  it('opens an inline path from the keyboard, and reports a missing file', async () => {
+  it('opens an inline path from the keyboard, and says a missing file with no folder to show isn’t there', async () => {
     const open = bridge(async () => ({ ok: false, reason: 'missing' }))
     db = freshDb()
     const id = seed(db)
@@ -262,7 +262,7 @@ describe('opening a link (issue #300)', () => {
     path.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
     await settle()
     expect(open).toHaveBeenCalledWith({ kind: 'file', path: '/Users/s/docs/spec.md', reveal: false })
-    expect(status()).toBe('Not found: /Users/s/docs/spec.md')
+    expect(status()).toBe('spec.md isn’t there.')
     expect(row(id)?.getAttribute('aria-expanded')).toBe('true')
   })
 

@@ -584,9 +584,9 @@ In the desktop app a web link opens in your browser, and a common document (Mark
 text, logs, JSON, YAML, TOML, CSV, PDF, images, SVG, HTML, diffs, MOV and MP4)
 opens in its default app. Anything else is only shown in Finder: folders, apps,
 scripts and other code, installers, disk images, aliases, files set to open with a
-particular app, and anything with an execute bit. A file that isn't there shows its
-nearest existing folder. So a click on a file link always shows something, and
-copying its path is the chip's own **Copy path** button. Files open only in the
+particular app, and anything with an execute bit. A file in your home folder that
+isn't there shows its nearest existing folder; one elsewhere only says it isn't
+there. Copying a path is the chip's own **Copy path** button, never a click. Files open only in the
 viewer the app started itself: if it is showing a viewer it found already running,
 and in a browser tab, clicking a file link copies its path instead and says why.
 

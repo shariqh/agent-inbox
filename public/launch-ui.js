@@ -202,6 +202,10 @@ export function createLaunchUi(deps) {
       else if (granted() && action === 'stop') actions.append(button(launch.status === 'parked' ? 'End' : 'Stop', 'stop'))
       else if (granted() && action === 'close') actions.append(button('Close', 'close'))
       else if (granted() && action === 'park') actions.append(button('Park now', 'park'))
+      // step 5: the session leaves for Terminal (`copilot --resume`); once there, Terminal can be opened on it again
+      else if (granted() && (action === 'takeover' || action === 'terminal')) {
+        actions.append(button(busy.has(launch.id) ? 'Handing off…' : action === 'takeover' ? 'Take over in Terminal' : 'Resume in Terminal', 'take-over'))
+      }
     }
     // #432: the session's own worktree, while it is on disk; Remove only once the launch ended
     if (granted() && launch.worktree_path && !launch.worktree_removed_at) {
@@ -317,6 +321,7 @@ export function createLaunchUi(deps) {
     else if (action === 'park' && id) park(id)
     else if (action === 'message' && id) toggleMessage(id)
     else if (action === 'resume' && id) resumeAndSend(id)
+    else if (action === 'take-over' && id) takeOver(id)
     else if (action === 'open-worktree' && id) openWorktree(id)
     else if (action === 'remove-worktree' && id) removeWorktree(id)
   }
@@ -345,6 +350,14 @@ export function createLaunchUi(deps) {
   async function park(id) {
     const result = await act(id, () => deps.postJSON(`/api/launches/${encodeURIComponent(id)}/park`))
     if (result) notes.set(id, result.ok ? 'Parking: Copilot stops once its turn ends, and the session is kept to resume.' : 'Not parked: it is not running.')
+    await deps.settled()
+  }
+
+  // Take over in Terminal (step 5, §3.5): main confirms, hands the launch off (a running one's driver
+  // cancels its turn and closes Copilot first) and opens Terminal on `copilot --resume` in its folder
+  async function takeOver(id) {
+    const result = await act(id, () => bridge().takeOver(id))
+    if (result && !result.ok && !result.cancelled) notes.set(id, result.error ?? 'The session was not handed off.')
     await deps.settled()
   }
 

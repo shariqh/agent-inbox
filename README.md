@@ -353,6 +353,10 @@ It is off until you turn it on, and it works only in the macOS app, not in a bro
 6. **Park now** stops Copilot and keeps the session; it also parks by itself after
    two idle hours. **Resume and send** starts it again with your message.
    **Stop** ends it. **Transcript** shows what it did.
+7. **Take over in Terminal** moves a running or parked session to a Terminal window:
+   after your confirmation, Agent Inbox stops driving it (cancelling its current turn
+   and approvals) and runs `copilot --resume` there with its history. From then on you
+   answer it in Terminal; **Resume in Terminal** opens it again.
 
 | Mode | What runs without asking |
 |---|---|

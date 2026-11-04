@@ -10,7 +10,7 @@ import { chmodSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, re
 import { dirname, join } from 'node:path'
 import type { Duplex } from 'node:stream'
 import type Database from 'better-sqlite3'
-import { claimDriverSlot, closeLostLaunch, getLaunch, launchDriverAlive, listItems, openDb, recordLaunchProgress, replyItem, requestLaunchPark, requestLaunchStop } from '../src/store.js'
+import { claimDriverSlot, closeLostLaunch, getLaunch, handOffForTerminal, launchDriverAlive, listItems, openDb, recordLaunchProgress, replyItem, requestLaunchPark, requestLaunchStop } from '../src/store.js'
 import { LAUNCH_KEY, sign } from './launch-fixtures.js'
 import { removeScratchDirs, scratchDir } from './scratch.js'
 
@@ -41,6 +41,8 @@ fs.appendFileSync(process.env.FAKE_LOG, JSON.stringify({ argv: process.argv.slic
 let buffer = ''
 let prompt = null
 let slow = false
+// a tool's process left in copilot's group, which outlives copilot itself (step 5's handoff ends it)
+if (process.env.FAKE_GROUP_SLEEPER) require('child_process').spawn('/bin/sleep', ['60'], { stdio: 'ignore' }).unref()
 const send = (m) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...m }) + '\\n')
 const update = (u) => send({ method: 'session/update', params: { sessionId: 's-1', update: u } })
 process.stdin.setEncoding('utf8')
@@ -241,6 +243,28 @@ describe('agent-inbox-driver run (#412 step 3)', () => {
     // the request went with the driver, and a parked launch takes no other
     expect(requestLaunchPark(r.hub, LAUNCH)).toBe(false)
     expect(readFileSync(join(r.dir, 'hub', 'launches', LAUNCH, 'events.ndjson'), 'utf8')).toContain('"event":"ended","reason":"park"')
+  }, 40_000)
+
+  it('Take over (step 5): mid-approval, the driver cancels the turn, settles the ask, ends Copilot’s whole group and hands the session off', async () => {
+    const r = rig()
+    const run = runDriver(r, newSpec(r, { env: { ...r.env, FAKE_ASK: '1', FAKE_GROUP_SLEEPER: '1' } }))
+    expect(await run.status()).toEqual({ ok: true, launch: LAUNCH })
+    const ask = await until(() => listItems(r.hub).find((i) => i.project === '@sessions' && i.status === 'open'), 'the ask')
+    const pgid = (await until(() => getLaunch(r.hub, LAUNCH)?.child_pgid, 'the child recorded'))!
+    expect(handOffForTerminal(r.hub, LAUNCH)).toEqual({ ok: true, state: 'requested' })
+    expect(await run.exited).toBe(0)
+    expect(getLaunch(r.hub, LAUNCH)).toMatchObject({ status: 'ended', end_reason: 'handed_off', acp_session: 's-1', child_pgid: null })
+    expect(listItems(r.hub).find((i) => i.id === ask.id)).toMatchObject({ status: 'resolved', outcome: 'Handed off to a terminal.' })
+    // the open request was answered cancelled, then the turn cancelled
+    const sent = received(r)
+    expect(sent.find((m) => m.id === 900)).toMatchObject({ result: { outcome: { outcome: 'cancelled' } } })
+    expect(sent.some((m) => m.method === 'session/cancel')).toBe(true)
+    // nothing of that Copilot is left to write to the session the terminal resumes
+    expect(() => process.kill(-pgid, 0)).toThrow()
+    expect(handOffForTerminal(r.hub, LAUNCH)).toMatchObject({ ok: true, state: 'handed_off', session: 's-1', cwd: realpathSync(join(r.dir, 'work')) })
+    const events = readFileSync(join(r.dir, 'hub', 'launches', LAUNCH, 'events.ndjson'), 'utf8')
+    expect(events).toContain('"event":"handoff_requested"')
+    expect(events).toContain('"event":"ended","reason":"handed_off"')
   }, 40_000)
 
   it('Edits in the worktree pre-allows writes under the folder it resolved and denies its .git, and refuses the home folder', async () => {

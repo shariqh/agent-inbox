@@ -10,7 +10,7 @@ import { appendFileSync, mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type Database from 'better-sqlite3'
 import {
-  claimDriverSlot, createLaunch, endLaunch, fileLaunchAsk, getItem, holdDriverLeases, insertItem, listSessionMessages, markDriverTurn, markWorktreeRemoved, recordWorktreeSummary,
+  claimDriverSlot, createLaunch, endLaunch, fileLaunchAsk, getItem, handOffLaunch, holdDriverLeases, insertItem, listSessionMessages, markDriverTurn, markWorktreeRemoved, recordWorktreeSummary,
   parkLaunch, recordActivityCall, recordLaunchProgress, resolveItem, upsertActivity,
 } from '../../src/store.js'
 import type { ViewerBridge } from './harness.js'
@@ -58,6 +58,7 @@ function launchBridge(state: Partial<State> = {}) {
     setMaxSessions: vi.fn(async (n: number) => { current.maxSessions = n; return { ok: true, maxSessions: n } }),
     removeWorktree: vi.fn(async (_id: string) => ({ ok: true }) as Record<string, unknown>),
     openWorktree: vi.fn(async (_id: string) => ({ ok: true }) as Record<string, unknown>),
+    takeOver: vi.fn(async (_id: string) => ({ ok: true }) as Record<string, unknown>),
     chooseFolder: vi.fn(async () => ({ ok: true, folder: '/Users/shariqh/notes', project: 'notes', repository: false }) as Record<string, unknown>),
   }
   Object.defineProperty(window, 'agentInboxLaunch', { configurable: true, value: api })
@@ -383,6 +384,46 @@ describe('the Live drawer’s sessions (§3.6, §7)', () => {
     expect(launchRow(LAUNCH)!.querySelector('.live-launch-status')!.textContent).toMatch(/^Parked/)
     expect(launchRow(LAUNCH)!.querySelector('.live-launch-note')).toBeNull()
     expect(action(LAUNCH, 'resume')).not.toBeNull()
+  })
+
+  it('Take over in Terminal goes through main, then the row says it was handed off and offers Resume in Terminal (step 5)', async () => {
+    const api = launchBridge()
+    db = freshDb()
+    newLaunch(db)
+    drivenSession(db)
+    newLaunch(db, PARKED)
+    parkLaunch(db, PARKED, { acpSession: null, activeMs: 0, toolCalls: 0 })
+    await bootApp(db)
+    await changedPollTick(db)
+    openDrawer()
+    expect(action(LAUNCH, 'take-over')?.textContent).toBe('Take over in Terminal')
+    // a parked launch never prompted has no session for a terminal to resume
+    expect(action(PARKED, 'take-over')).toBeNull()
+    let finish!: (value: Record<string, unknown>) => void
+    api.takeOver.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve }))
+    click(action(LAUNCH, 'take-over'))
+    await settle()
+    expect(api.takeOver).toHaveBeenCalledWith(LAUNCH)
+    expect(action(LAUNCH, 'take-over')?.textContent).toBe('Handing off…')
+    finish({ ok: false, error: 'The session did not hand off within a minute, so it goes on here. Try again, or Stop it.' })
+    await settle()
+    expect(launchRow(LAUNCH)!.querySelector('.live-launch-note')?.textContent).toMatch(/did not hand off within a minute/)
+    api.takeOver.mockResolvedValueOnce({ ok: false, cancelled: true, error: 'Not taken over.' })
+    click(action(LAUNCH, 'take-over'))
+    await settle()
+    expect(launchRow(LAUNCH)!.textContent).not.toContain('Not taken over.')
+    // the driver handed it off
+    handOffLaunch(db, LAUNCH, { acpSession: 'acp-1', activeMs: 10, toolCalls: 1 })
+    await changedPollTick(db)
+    expect(launchRow(LAUNCH)!.dataset.state).toBe('handed_off')
+    expect(launchRow(LAUNCH)!.querySelector('.live-launch-status')!.textContent).toBe('Handed off to a terminal: it goes on in Copilot there.')
+    expect(action(LAUNCH, 'take-over')?.textContent).toBe('Resume in Terminal')
+    expect(action(LAUNCH, 'stop')).toBeNull()
+    expect(action(LAUNCH, 'resume')).toBeNull()
+    expect(action(LAUNCH, 'transcript')).not.toBeNull()
+    click(action(LAUNCH, 'take-over'))
+    await settle()
+    expect(api.takeOver).toHaveBeenLastCalledWith(LAUNCH)
   })
 
   it('reads a running launch with no session for two minutes as not responding, and offers Close', async () => {

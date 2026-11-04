@@ -21,6 +21,14 @@ const path = require('node:path')
 const { isRepositoryTop, planWorktree, worktreeProblem, worktreeRootProblem } = require('./session-worktree.cjs')
 
 const LAUNCH_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+// step 5: the ACP session a terminal resumes, as Copilot names it
+const ACP_SESSION = LAUNCH_ID
+// eslint-disable-next-line no-control-regex
+const CONTROL = /[\u0000-\u001f\u007f]/
+// how long Take over waits for a running launch's driver to hand it off (a turn's cancel, Copilot's
+// exit and the worktree's final summary come to about 40 s at most)
+const HAND_OFF_WAIT_MS = 60_000
+const HAND_OFF_POLL_MS = 500
 const ITEM_ID = /^[A-Za-z0-9-]{1,128}$/
 const OPTION_ID = /^[A-Za-z0-9_-]{1,64}$/
 const MODEL = /^[A-Za-z0-9._-]{1,64}$/
@@ -168,7 +176,7 @@ const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`
  * found. Discard is a separate button, offered only when there are changes,
  * and bound to the status that was inspected.
  */
-function removalConfirmation({ project, path: folder, branch, missing, dirty, ahead, upstream, examples = [], noDiscard = null }) {
+function removalConfirmation({ project, path: folder, branch, missing, dirty, ahead, upstream, examples = [], noDiscard = null, handedOff = false }) {
   const changes = plural(dirty, 'change', 'changes')
   const discard = dirty > 0 && !noDiscard
   const buttons = discard ? ['Remove', `Discard ${changes} and remove`, 'Cancel'] : ['Remove', 'Cancel']
@@ -179,6 +187,8 @@ function removalConfirmation({ project, path: folder, branch, missing, dirty, ah
     message: `Remove the worktree of ${displayLine(project)}?`,
     detail: [
       `Worktree: ${displayLine(folder, { tail: true })}`,
+      // step 5: a session taken over in Terminal may still be working there
+      ...(handedOff ? ['Its session was taken over in Terminal: quit that Copilot first.'] : []),
       `The branch ${displayLine(branch)} and its ${plural(ahead, 'commit', 'commits')} stay in your repository${upstream ? '.' : '; it has no upstream, so they are only there.'}`,
       missing
         ? 'Its folder is already gone: this removes only git’s record of it.'
@@ -190,6 +200,59 @@ function removalConfirmation({ project, path: folder, branch, missing, dirty, ah
     ].join('\n'),
     buttons,
   }
+}
+
+// Take over in Terminal (step 5, §3.5): what main shows before the launch leaves Agent Inbox for
+// good. `state` is what the launch is now: running (its turn is cancelled), parked, or already handed
+// off (Terminal is opened on it again).
+function takeOverConfirmation({ project, folder, state }) {
+  if (state === 'handed_off') {
+    return {
+      message: `Open Terminal on the session of ${displayLine(project)} again?`,
+      detail: [
+        `Folder: ${displayLine(folder)}`,
+        'Terminal runs copilot --resume there, with the session’s history.',
+        'If it is still open in another Terminal window, use that one instead: two Copilots must never work in one session.',
+      ].join('\n'),
+      buttons: ['Open Terminal', 'Cancel'],
+    }
+  }
+  return {
+    message: `Take over the session of ${displayLine(project)} in Terminal?`,
+    detail: [
+      `Folder: ${displayLine(folder)}`,
+      ...(state === 'running' ? ['Agent Inbox stops driving it first: its current turn and any approval it waits on are cancelled.'] : []),
+      'Terminal then runs copilot --resume there, with the session’s history, and you answer it in Terminal.',
+      'Agent Inbox does not resume it, push messages to it or approve for it again. Messages it has not read yet stay with the old session.',
+    ].join('\n'),
+    buttons: ['Take over', 'Cancel'],
+  }
+}
+
+// A POSIX shell word: single-quoted, so nothing in it is expanded
+const shellWord = (text) => `'${String(text).replace(/'/g, `'\\''`)}'`
+
+/**
+ * The script Terminal runs to take a session over (§3.5): every value checked by the caller (an ACP
+ * session id that is a lowercase UUID, the launch's own real folder, a model and effort from their
+ * own patterns) and single-quoted, so the shell expands nothing in them. Then the human's own login
+ * shell stays open in the folder.
+ */
+function takeOverScript({ launchId, folder, session, model, reasoningEffort }) {
+  if (!LAUNCH_ID.test(launchId) || !ACP_SESSION.test(session) || !path.isAbsolute(folder) || CONTROL.test(folder)) return null
+  if (model !== null && model !== undefined && !MODEL.test(model)) return null
+  if (reasoningEffort !== null && reasoningEffort !== undefined && !EFFORTS.has(reasoningEffort)) return null
+  const argv = ['copilot', `--resume=${session}`]
+  if (model) argv.push('--model', model)
+  if (reasoningEffort) argv.push('--reasoning-effort', reasoningEffort)
+  return [
+    '#!/bin/sh',
+    `# Agent Inbox: Take over in Terminal (launch ${launchId.slice(0, 8)})`,
+    `cd -- ${shellWord(folder)} || exit 1`,
+    argv.map(shellWord).join(' '),
+    'exec "${SHELL:-/bin/sh}" -l',
+    '',
+  ].join('\n')
 }
 
 const sleep = (ms, value) => new Promise((resolve) => setTimeout(() => resolve(value), ms))
@@ -250,7 +313,9 @@ function createLaunchController(deps) {
   const {
     platform, isEnabled, keys, viewer, captureEnv, confirm, chooseFolder, driverRuntime, startDriver, hubPath, driverEnv,
     randomUUID, realDirectory, processStart, kill, worktreeSettings, chooseWorktreeFolder,
-    runWorktree, ask, openTerminal, sessionCap,
+    runWorktree, ask, openTerminal, sessionCap, writeScript,
+    // step 5: how Take over waits for a running launch's driver, injected for tests
+    wait = sleep, handOffWaitMs = HAND_OFF_WAIT_MS,
     // #432 PR 5: what a start is doing now, for the New session dialog, and how long each step took
     progress = () => {}, log = () => {},
   } = deps
@@ -542,7 +607,7 @@ function createLaunchController(deps) {
         })
         const seen = await command('inspect')
         if (!seen?.ok) return refused(seen?.error ?? 'The worktree could not be read.')
-        const text = removalConfirmation({ project: launch.project, ...seen })
+        const text = removalConfirmation({ project: launch.project, ...seen, handedOff: launch.end_reason === 'handed_off' })
         const choice = text.buttons[await ask(text)]
         if (choice === undefined || choice === 'Cancel') return refused('Not removed.', { cancelled: true })
         const late = blocked()
@@ -563,6 +628,77 @@ function createLaunchController(deps) {
       if (!launch || typeof launch.worktree_path !== 'string' || launch.worktree_removed_at) return refused('This session has no worktree to open.')
       if (realDirectory(launch.worktree_path) !== launch.worktree_path) return refused('Its worktree is not there any more.')
       return (await openTerminal(launch.worktree_path)) ? { ok: true } : refused('Terminal could not be opened.')
+    },
+
+    // Take over in Terminal (step 5, §3.5): after main's own confirmation, the launch is handed off
+    // (a running one by its driver, which cancels the turn and closes Copilot first, so two writers
+    // never share the session), then Terminal runs `copilot --resume=<session>` in its folder.
+    async takeOver(id) {
+      const why = blocked()
+      if (why) return why
+      if (typeof id !== 'string' || !LAUNCH_ID.test(id)) return refused('The launch is not valid.')
+      try {
+        const launch = await viewer.getJson(`/api/launches/${id}`)
+        if (!launch || typeof launch.cwd !== 'string') return refused('This session is not there any more.')
+        let state
+        if (launch.status === 'running') {
+          if (launch.stop_requested_at) return refused('This session is stopping.')
+          if (launch.driver !== 'running') return refused('Its driver is not responding: Close it instead.')
+          state = 'running'
+        } else if (launch.status === 'parked') {
+          if (launch.resumable !== true) return refused('This session never started its task, so there is nothing to take over. End it instead.')
+          state = 'parked'
+        } else if (launch.status === 'ended' && launch.end_reason === 'handed_off') {
+          state = 'handed_off'
+        } else {
+          return refused('This session has ended.')
+        }
+        const folder = launch.cwd
+        if (CONTROL.test(folder) || realDirectory(folder) !== folder) {
+          return refused(typeof launch.branch === 'string' && launch.branch
+            ? `The session’s folder does not exist any more. Its branch ${launch.branch} is still in your repository.`
+            : 'The session’s folder does not exist any more.')
+        }
+        if (!(await confirm(takeOverConfirmation({ project: launch.project, folder, state })))) return refused('Not taken over.', { cancelled: true })
+        const late = blocked()
+        if (late) return late
+        let result = await viewer.postJson(`/api/launches/${id}/hand-off`)
+        if (result?.ok && result.state === 'requested') {
+          // the driver takes the request on its next tick, then ends the launch handed off
+          const until = now() + handOffWaitMs
+          let current = launch
+          while (current?.status === 'running' && now() < until) {
+            await wait(HAND_OFF_POLL_MS)
+            current = await viewer.getJson(`/api/launches/${id}`)
+          }
+          if (current?.status === 'running') {
+            await viewer.postJson(`/api/launches/${id}/hand-off/withdraw`).catch(() => null)
+            return refused('The session did not hand off within a minute, so it goes on here. Try again, or Stop it.')
+          }
+          result = await viewer.postJson(`/api/launches/${id}/hand-off`)
+        }
+        if (!result?.ok || result.state !== 'handed_off') {
+          return refused(result?.reason === 'ended' ? 'The session ended before it could be handed off.'
+            : result?.reason === 'stopping' ? 'This session is stopping.'
+              : result?.reason === 'no_session' ? 'This session never started its task, so there is nothing to take over.'
+                : 'The session could not be handed off.')
+        }
+        // what the terminal runs: the folder the human confirmed, and a session id Copilot named
+        if (result.cwd !== folder || realDirectory(folder) !== folder) {
+          return refused('The session is handed off, but its folder is not there any more, so Terminal was not opened.')
+        }
+        const script = takeOverScript({
+          launchId: id, folder, session: result.session,
+          model: MODEL.test(result.model ?? '') ? result.model : null,
+          reasoningEffort: EFFORTS.has(result.effort) ? result.effort : null,
+        })
+        if (!script) return refused('The session could not be handed off.')
+        const file = path.join(path.dirname(hubPath), 'launches', id, 'take-over.command')
+        if (!(await writeScript(file, script))) return refused('Agent Inbox could not write the Terminal script.')
+        return (await openTerminal(file)) ? { ok: true } : refused('The session is handed off, but Terminal could not be opened. Try Resume in Terminal.')
+      } catch {
+        return refused('The session could not be handed off.')
+      }
     },
 
     async stop(id) {
@@ -639,4 +775,5 @@ function createLaunchController(deps) {
 
 module.exports = {
   MODES, approvalRequest, confirmation, createLaunchController, displayLine, removalConfirmation, displaySafe, launchEnv, launchRequest, quitChoice, runningAtQuit,
+  takeOverConfirmation, takeOverScript,
 }

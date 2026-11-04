@@ -26,7 +26,8 @@ import {
 import type { LaunchMode, Phase, PushedMessage } from './driver-policy.js'
 import {
   driverStopRequested, holdDriverLeases, hubDataVersion, insertItem, listAnsweredSessionAsks, listOpenMessagesWithText,
-  markDriverTurn, markMessageDelivered, readdressMessages, releaseDriverLeases, resolveItem, takeLaunchInterrupt, takeLaunchPark,
+  markDriverTurn, markMessageDelivered, readdressMessages, releaseDriverLeases, resolveItem, takeLaunchHandOff, takeLaunchInterrupt,
+  takeLaunchPark,
 } from './store.js'
 import type { DriverLease } from './store.js'
 
@@ -38,6 +39,8 @@ export type EndReason =
   | 'error:mode_escalation' | 'error:setup' | 'error:hub_unreachable' | 'error:lease_lost' | 'error:protocol'
   /** A resume whose session/load failed for a reason other than "never prompted": the launch can be retried. */
   | 'error:load'
+  /** Take over in Terminal (step 5, §3.5): the session goes on in a terminal `copilot --resume`. */
+  | 'handed_off'
 
 export interface AskView {
   id: string
@@ -927,6 +930,12 @@ export class Driver {
         this.parkRequested = true
         this.o.log({ event: 'park_requested', turn: this.turn?.rpcId ?? null })
       }
+      // Take over in Terminal (§3.5): taken only once the session is set up and its task sent, so
+      // Copilot has persisted it for `copilot --resume`; until then the request waits
+      if (this.setup === 5 && this.taskSent && takeLaunchHandOff(this.o.db, this.o.lease.launchId)) {
+        this.o.log({ event: 'handoff_requested', turn: this.turn?.rpcId ?? null })
+        return this.end('handed_off')
+      }
       this.lastHubOk = Date.now()
     } catch (error) {
       this.o.log({ event: 'hub_read_failed', message: error instanceof Error ? error.message : String(error) })
@@ -1080,7 +1089,7 @@ export class Driver {
     this.ending = reason
     if (this.setup !== 5 && !this.failure) this.failure = this.loadError !== null ? `Copilot could not load the session: ${this.loadError}` : beforeReady(reason)
     this.o.log({ event: 'ending', reason })
-    const outcome = reason === 'stopped' ? 'Session stopped.' : `Session ended (${reason}).`
+    const outcome = reason === 'stopped' ? 'Session stopped.' : reason === 'handed_off' ? 'Handed off to a terminal.' : `Session ended (${reason}).`
     for (const ask of [...this.asks.values()]) {
       if (ask.rpcId !== undefined) this.conn.respond(ask.rpcId, { outcome: { outcome: 'cancelled' } })
       this.settle(ask, outcome)

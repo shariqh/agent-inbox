@@ -43,7 +43,7 @@ import { childEnv, copilotAgentInboxServer, copilotArgs, editsFolder, isReasonin
 import type { LaunchMode, ReasoningEffort } from './driver-policy.js'
 import { inferProject, inferStream } from './infer.js'
 import {
-  claimDriverSlot, createLaunch, defaultDbPath, driverStopRequested, endLaunch, getLaunch, holdDriverLeases, listHostSessions, recordLaunchEffort,
+  claimDriverSlot, createLaunch, defaultDbPath, driverStopRequested, endLaunch, getLaunch, handOffLaunch, holdDriverLeases, listHostSessions, recordLaunchEffort,
   recordWorktreeSummary, liveSessionServers, markWorktreeRemoved, openDb, parkLaunch,
   recordLaunchProgress, releaseDriverLeases, requestDriverStop, requestLaunchStop, resumeLaunch,
 } from './store.js'
@@ -707,6 +707,14 @@ async function runLaunch(argv: string[]): Promise<void> {
       // a load that failed for another reason than "never prompted" parks it again, to retry (§7)
       else if (reason === 'error:load') {
         ended = parkLaunch(db, launchId, { acpSession: loading, ...usage, reason: `Copilot could not load the session: ${driver.loadFailure() ?? 'unknown error'}` }) !== 'parked'
+      }
+      // Take over in Terminal (§3.5): the session is the terminal's now; its worktree stays locked, in use there
+      else if (reason === 'handed_off') {
+        const acpSession = driver.resumableSession()
+        if (acpSession) {
+          handOffLaunch(db, launchId, { acpSession, ...usage })
+          ended = false
+        } else endLaunch(db, launchId, { reason: 'stopped', ...usage })
       } else endLaunch(db, launchId, { reason, ...usage, detail: failureOverride ?? driver.startFailure() })
     } catch { /* the hub is gone: the launch reads as lost */ }
     if (ended) unlockAtEnd(log)
@@ -767,6 +775,15 @@ async function runLaunch(argv: string[]): Promise<void> {
     }
   }
   await retire(session, 10_000)
+  // two writers never share a session: nothing of this Copilot may outlive a handoff to the terminal
+  if (reason === 'handed_off' && session.child.pid) {
+    const pgid = session.child.pid
+    try {
+      process.kill(-pgid, 0)
+      session.kill('SIGTERM')
+      reapProcessGroup(pgid, { kill: (pid, signal) => { process.kill(pid, signal) }, sleep })
+    } catch { /* the group is gone */ }
+  }
   // a launch that ended before its session was ready tells main why, in plain words
   report({
     ok: false,
@@ -783,7 +800,7 @@ async function runLaunch(argv: string[]): Promise<void> {
   try { releaseDriverLeases(db, lease) } catch { /* the hub is gone */ }
   db.close()
   stderrLog.end()
-  process.exit(reason === 'stopped' || reason === 'idle' || reason === 'park' || reason === 'child_exit' ? 0 : 1)
+  process.exit(reason === 'stopped' || reason === 'idle' || reason === 'park' || reason === 'child_exit' || reason === 'handed_off' ? 0 : 1)
 }
 
 // ── #432: Remove worktree, started by Electron main (§5) ────────────────────

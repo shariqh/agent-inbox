@@ -13,7 +13,7 @@ import {
   markRowHandled, clearRowHandled, listActivity, listActivitySpans, listSourceLinks, defaultDbPath,
   closeProject, reopenProject, closedProjects, readSnapshotState, listIssueEntities, listIssueSnapshots,
   listSessionMessages, sendSessionMessage, withdrawSessionMessage, validMessageId, validMessageText, MESSAGE_MAX_TEXT,
-  listLaunches, getLaunch, launchView, launchDriverAlive, isLaunchAsk, requestLaunchStop, closeLostLaunch, getLaunchAsk,
+  listLaunches, getLaunch, launchView, launchDriverAlive, isLaunchAsk, requestLaunchStop, closeLostLaunch, getLaunchAsk, handOffForTerminal, withdrawLaunchHandOff,
   answerLaunchAsk, listLaunchFolders, requestLaunchInterrupt, requestLaunchPark,
 } from './store.js'
 import type { ExpectedAnswer, ResponseKind, SnapshotDomain, SnapshotReadState } from './store.js'
@@ -1086,6 +1086,15 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
   // Park now (§7): the driver parks at its next idle point, keeping the session
   // to resume. Like Stop, the human's own capability over a running launch.
   app.post('/api/launches/:id/park', (c) => c.json({ ok: requestLaunchPark(db, c.req.param('id')) }))
+  // Take over in Terminal (step 5, §3.5): Electron main hands the launch off (a
+  // parked one at once, a running one through its driver) and polls this until
+  // it is handed off, then opens Terminal on `copilot --resume=<session>` itself.
+  // Like Stop, the human's own capability; it starts nothing.
+  app.post('/api/launches/:id/hand-off', (c) => {
+    c.header('Cache-Control', 'no-store')
+    return c.json(handOffForTerminal(db, c.req.param('id')))
+  })
+  app.post('/api/launches/:id/hand-off/withdraw', (c) => c.json({ ok: withdrawLaunchHandOff(db, c.req.param('id')) }))
   // The transcript panel (§3.6): the driver's event log from a byte offset, at
   // most 256 KiB of whole lines a read, read only while the panel is open. An
   // offset past the end means the log rotated: it starts again from 0.

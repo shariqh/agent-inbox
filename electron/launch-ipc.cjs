@@ -73,6 +73,8 @@ function registerLaunchIpc({ ipcMain, controller, settings, settled, isOwned, is
     start: 'start', stop: 'stop', close: 'close', resume: 'resume', approve: 'approve',
     // #432 §5, §6: a launch id only; main reads the worktree's path from the hub itself
     removeWorktree: 'remove-worktree', openWorktree: 'open-worktree',
+    // step 5: Take over in Terminal; a launch id only, main reads the session and folder from the hub
+    takeOver: 'take-over',
     // #432 §5: the cap on sessions at once, 1 to 8, checked again by the controller
     setMaxSessions: 'set-max-sessions',
   }

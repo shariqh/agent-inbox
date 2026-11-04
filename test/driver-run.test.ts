@@ -464,6 +464,21 @@ describe('agent-inbox-driver run (#412 step 3)', () => {
       expect(requestLaunchStop(r.hub, LAUNCH)).toBe('stopping')
       expect(await run.exited).toBe(0)
       expect(locked(git(work, 'worktree', 'list', '--porcelain'), plan.path)).toBe(false)
+      // a refused resume (no copilot on PATH, after the lock was taken again) leaves the row exactly as it
+      // was, but for its revision and update time, and gives the lock back (review of #452)
+      r.hub.prepare(`UPDATE launches SET end_detail = 'earlier detail' WHERE id = ?`).run(LAUNCH)
+      const before = getLaunch(r.hub, LAUNCH)!
+      cpSync(join(r.dir, 'bin', 'copilot'), join(r.dir, 'copilot.kept'))
+      rmSync(join(r.dir, 'bin', 'copilot'))
+      const refused = runDriver(r, { v: 1, kind: 'resume', launchId: LAUNCH, env: r.env, launchKey: LAUNCH_KEY.toString('base64') })
+      expect(await refused.status()).toEqual({ ok: false, error: 'no copilot executable on PATH (install GitHub Copilot CLI first)' })
+      expect(await refused.exited).toBe(1)
+      const { revision: _r1, updated_at: _u1, ...was } = before
+      const { revision, updated_at: _u2, ...now } = getLaunch(r.hub, LAUNCH)!
+      expect(now).toEqual(was)
+      expect(revision).toBeGreaterThan(before.revision)
+      expect(locked(git(work, 'worktree', 'list', '--porcelain'), plan.path)).toBe(false)
+      cpSync(join(r.dir, 'copilot.kept'), join(r.dir, 'bin', 'copilot'))
       const resumed = runDriver(r, { v: 1, kind: 'resume', launchId: LAUNCH, env: r.env, launchKey: LAUNCH_KEY.toString('base64') })
       expect(await resumed.status()).toEqual({ ok: true, launch: LAUNCH })
       expect(locked(git(work, 'worktree', 'list', '--porcelain'), plan.path)).toBe(true)

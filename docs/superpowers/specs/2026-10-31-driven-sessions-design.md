@@ -1094,7 +1094,8 @@ adds the small, design-consistent part:
   `stopped` with a session and its worktree (if any) still on disk, in one conditioned statement that
   clears the end and its Stop. The resume is the same `session/load` (§7), with the mode and
   `allow_all` verified and every open message pushed again. A refused start puts it back as it was:
-  parked, or stopped. Its worktree, unlocked at the end, is locked again while it runs.
+  parked, or stopped with its original end, and gives back the worktree lock it took. Its worktree,
+  unlocked at the end, is locked again while it runs.
 - **Not resumable:** a launch handed off to a terminal, lost, failed (`error:*`), whose Copilot exited,
   and one ended by a budget. Budgets are per-launch totals (§7), so resuming a budget-ended launch
   needs a new allowance and its own confirmation: left for a follow-up.

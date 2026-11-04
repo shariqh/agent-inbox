@@ -44,7 +44,7 @@ import type { LaunchMode, ReasoningEffort } from './driver-policy.js'
 import { inferProject, inferStream } from './infer.js'
 import {
   claimDriverSlot, createLaunch, defaultDbPath, driverStopRequested, endLaunch, getLaunch, handOffLaunch, holdDriverLeases, listHostSessions, recordLaunchEffort,
-  recordWorktreeSummary, liveSessionServers, markWorktreeRemoved, openDb, parkLaunch,
+  recordWorktreeSummary, liveSessionServers, markWorktreeRemoved, openDb, parkLaunch, restoreStoppedLaunch,
   recordLaunchProgress, releaseDriverLeases, requestDriverStop, requestLaunchStop, resumeLaunch,
 } from './store.js'
 import { createWorktree, gitEnv, inspectWorktree, lockWorktree, removeLaunchWorktree, undoWorktree, unlockWorktree, worktreeSummarizer } from './worktree.js'
@@ -565,17 +565,26 @@ async function runLaunch(argv: string[]): Promise<void> {
   } else {
     const row = resumeLaunch(db, launchId, process.pid)
     if (!row) return refuse(`launch ${launchId} is not parked or stopped with its session`)
-    // a refused start puts it back as it was: parked, or stopped (step 5, full resume)
-    undoRow = row.resumedFrom === 'parked'
+    // the lock this resume took on a stopped launch's worktree, given back if the start is refused
+    let relocked: { git: string; checkout: string; path: string } | null = null
+    // a refused start puts it back as it was: parked, or stopped exactly as before (step 5, full resume)
+    const previous = row.previous
+    undoRow = previous === null
       ? () => { parkLaunch(db, launchId, { acpSession: row.acp_session, activeMs: row.active_ms, toolCalls: row.tool_calls }) }
-      : () => { endLaunch(db, launchId, { reason: 'stopped' }) }
+      : () => {
+        restoreStoppedLaunch(db, launchId, process.pid, previous)
+        if (relocked) unlockWorktree(relocked.git, gitEnv(sessionEnv), relocked.checkout, relocked.path)
+      }
     if (row.worktree_path && row.checkout_root && row.base_sha && row.worktree_removed_at === null) {
       worktreeOf = { checkout: row.checkout_root, path: row.worktree_path, baseRef: row.base_ref, baseSha: row.base_sha }
       // its end unlocked it: locked again while the session holds it (§5)
       if (row.resumedFrom === 'ended') {
         const gitPath = findGit()
-        const why = typeof gitPath === 'string' ? lockWorktree(gitPath, gitEnv(sessionEnv), row.checkout_root, row.worktree_path, launchId) : gitPath.error
-        if (why) relockFailed = why
+        if (typeof gitPath === 'string') {
+          const lock = lockWorktree(gitPath, gitEnv(sessionEnv), row.checkout_root, row.worktree_path, launchId)
+          if (lock.locked) relocked = { git: gitPath, checkout: row.checkout_root, path: row.worktree_path }
+          relockFailed = lock.error
+        } else relockFailed = gitPath.error
       }
     }
     const mode = MODES.find((m) => m === row.mode)

@@ -12,7 +12,7 @@ import {
   listLaunchAskReplies, listLaunches, openDb, parkLaunch, readSnapshotState, recordLaunchProgress, replyItem,
   requestLaunchStop, resumeLaunch, settleLaunchAsk, listActivity, markDriverTurn, requestLaunchInterrupt, takeLaunchInterrupt,
   upsertActivity, holdDriverLeases, releaseDriverLeases, requestLaunchPark, takeLaunchPark, insertItem, listLaunchFolders,
-  markWorktreeRemoved, recordWorktreeSummary, handOffForTerminal, handOffLaunch, takeLaunchHandOff, withdrawLaunchHandOff,
+  markWorktreeRemoved, recordWorktreeSummary, handOffForTerminal, handOffLaunch, takeLaunchHandOff, withdrawLaunchHandOff, restoreStoppedLaunch,
 } from '../src/store.js'
 import type { NewLaunch } from '../src/store.js'
 import { createViewer } from '../src/viewer.js'
@@ -500,6 +500,27 @@ describe('full resume (step 5)', () => {
     createLaunch(db, launch(8))
     parkLaunch(db, ID(8), { acpSession: 'acp-8', activeMs: 0, toolCalls: 0 })
     expect(resumeLaunch(db, ID(8), 77)).toMatchObject({ resumedFrom: 'parked' })
+  })
+
+  it('a refused resume restores a stopped launch’s end exactly, only while its own driver holds the row (review of #452)', () => {
+    createLaunch(db, launch(1))
+    requestLaunchStop(db, ID(1))
+    endLaunch(db, ID(1), { reason: 'stopped', acpSession: 'acp-1', detail: 'earlier detail' })
+    const { revision: _r, updated_at: _u, ...was } = getLaunch(db, ID(1))!
+    tick()
+    const resumed = resumeLaunch(db, ID(1), 77)!
+    expect(resumed.previous).toEqual({ ended_at: was.ended_at, end_reason: 'stopped', end_detail: 'earlier detail', stop_requested_at: was.stop_requested_at, driver_pid: 4242 })
+    // another driver's pid cannot put it back
+    expect(restoreStoppedLaunch(db, ID(1), 78, resumed.previous!)).toBe(false)
+    tick()
+    expect(restoreStoppedLaunch(db, ID(1), 77, resumed.previous!)).toBe(true)
+    const { revision: _r2, updated_at: _u2, ...now } = getLaunch(db, ID(1))!
+    expect(now).toEqual(was)
+    expect(restoreStoppedLaunch(db, ID(1), 77, resumed.previous!)).toBe(false)
+    // a parked launch has nothing to restore
+    createLaunch(db, launch(2))
+    parkLaunch(db, ID(2), { acpSession: 'acp-2', activeMs: 0, toolCalls: 0 })
+    expect(resumeLaunch(db, ID(2), 77)!.previous).toBeNull()
   })
 
   it('a stopped launch with its session can be taken over in Terminal instead, and is then never resumed', () => {

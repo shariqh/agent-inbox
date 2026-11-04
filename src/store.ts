@@ -4202,14 +4202,30 @@ export function listLaunches(db: Database.Database): Launch[] {
 const RESUMABLE_END = `status = 'ended' AND end_reason = 'stopped' AND acp_session IS NOT NULL
                        AND (worktree_path IS NULL OR worktree_removed_at IS NULL)`
 
+/** What a resumed stopped launch was, so a refused start restores it exactly (restoreStoppedLaunch). */
+export interface StoppedEnd {
+  ended_at: string | null
+  end_reason: string | null
+  end_detail: string | null
+  stop_requested_at: string | null
+  driver_pid: number | null
+}
+
 // A resumed launch's driver takes its row back, parked or resumably ended →
 // running, in one statement, so two Resume clicks cannot both start a driver on
-// it. `resumedFrom` says which, so a refused start puts it back as it was.
-export function resumeLaunch(db: Database.Database, id: string, driverPid: number): (LaunchRecord & { resumedFrom: 'parked' | 'ended' }) | null {
+// it. `resumedFrom` says which, so a refused start puts it back as it was, and
+// `previous` holds a stopped launch's end for that.
+export function resumeLaunch(
+  db: Database.Database,
+  id: string,
+  driverPid: number,
+): (LaunchRecord & { resumedFrom: 'parked' | 'ended'; previous: StoppedEnd | null }) | null {
   if (!LAUNCH_ID.test(id)) return null
   return db.transaction(() => {
-    const before = db.prepare(`SELECT status FROM launches WHERE id = ? AND (status = 'parked' OR (${RESUMABLE_END}))`).pluck().get(id) as LaunchStatus | undefined
-    if (before !== 'parked' && before !== 'ended') return null
+    const prior = db.prepare(`SELECT status, ended_at, end_reason, end_detail, stop_requested_at, driver_pid FROM launches
+                               WHERE id = ? AND (status = 'parked' OR (${RESUMABLE_END}))`).get(id) as (StoppedEnd & { status: LaunchStatus }) | undefined
+    const before = prior?.status
+    if (!prior || (before !== 'parked' && before !== 'ended')) return null
     const row = db.prepare(`UPDATE launches
                                SET status = 'running', parked_at = NULL, park_reason = NULL, ended_at = NULL, end_reason = NULL, end_detail = NULL,
                                    stop_requested_at = NULL, driver_pid = ?, updated_at = ?, revision = revision + 1
@@ -4217,8 +4233,21 @@ export function resumeLaunch(db: Database.Database, id: string, driverPid: numbe
                          RETURNING *`).get(driverPid, new Date().toISOString(), id) as (Omit<LaunchRecord, 'sessions'> & { sessions: string | null }) | undefined
     // a Take over asked of an earlier driver that never took it is stale: this resume was asked after it
     if (row) db.prepare(`DELETE FROM hook_watch_claims WHERE claim_key = ?`).run(`driver-handoff:${id}`)
-    return row ? { ...parseLaunch(row), resumedFrom: before } : null
+    if (!row) return null
+    const { status: _status, ...end } = prior
+    return { ...parseLaunch(row), resumedFrom: before, previous: before === 'ended' ? end : null }
   }).immediate()
+}
+
+// A refused resume of a stopped launch puts its end back exactly as it was,
+// only while this driver still holds the row it took (running, its pid).
+export function restoreStoppedLaunch(db: Database.Database, id: string, driverPid: number, previous: StoppedEnd): boolean {
+  return db.prepare(`UPDATE launches
+                        SET status = 'ended', ended_at = @ended_at, end_reason = @end_reason, end_detail = @end_detail,
+                            stop_requested_at = @stop_requested_at, driver_pid = @previous_pid, updated_at = @now, revision = revision + 1
+                      WHERE id = @id AND status = 'running' AND driver_pid = @driver_pid`).run({
+    ...previous, previous_pid: previous.driver_pid, id, driver_pid: driverPid, now: new Date().toISOString(),
+  }).changes === 1
 }
 
 export interface LaunchProgress {

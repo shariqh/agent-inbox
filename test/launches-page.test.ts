@@ -48,6 +48,14 @@ describe('a launch’s state', () => {
     })
     // step 5: only a parked session Copilot persisted can be taken over in a terminal
     expect(launchStatus(launch({ status: 'parked', resumable: true }), [], NOW).actions).toEqual(['resume', 'takeover', 'stop', 'transcript'])
+    // full resume: only a launch the human stopped, with its session, and its worktree still there
+    expect(launchStatus(launch({ status: 'ended', end_reason: 'stopped', resumable: true }), [], NOW)).toEqual({
+      state: 'ended', text: 'Stopped: its session is kept, so it can be resumed.', actions: ['resume', 'takeover', 'transcript'],
+    })
+    for (const over of [
+      { end_reason: 'stopped', resumable: false }, { end_reason: 'budget:tool_calls', resumable: true }, { end_reason: 'lost', resumable: true },
+      { end_reason: 'stopped', resumable: true, worktree_path: '/w/a', worktree_removed_at: '2026-11-03T12:00:00.000Z' },
+    ]) expect(launchStatus(launch({ status: 'ended', ...over }), [], NOW).actions, JSON.stringify(over)).toEqual(['transcript'])
     expect(launchStatus(launch({ status: 'ended', end_reason: 'handed_off', resumable: true }), [], NOW)).toEqual({
       state: 'handed_off', text: 'Handed off to a terminal: it goes on in Copilot there.', actions: ['terminal', 'transcript'],
     })

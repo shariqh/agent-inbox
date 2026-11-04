@@ -59,6 +59,8 @@ export function createLaunchUi(deps) {
   const slots = new Map()
   let dialog = null
   let transcript = null
+  // step 5: whether the drawer lists the ended launches past the newest five (all /api/launches carries)
+  let showEarlier = false
   // #432 PR 5 review: the one start in flight, owned by the dialog that started it; the launch id
   // once main reports it (with the 'copilot' phase, when the row exists), and whether the human asked to stop
   let starting = null
@@ -123,7 +125,9 @@ export function createLaunchUi(deps) {
       head.append(make('span', 'live-launches-title', 'Started from Agent Inbox'))
       const start = button('New session…', 'new', 'launch-new')
       head.append(start)
-      section.append(head, make('p', 'live-launches-note'), make('div', 'live-launches-list'))
+      const earlier = button('', 'earlier', 'launch-earlier')
+      earlier.hidden = true
+      section.append(head, make('p', 'live-launches-note'), make('div', 'live-launches-list'), earlier)
       section.addEventListener('click', onSectionClick)
       drawer.querySelector('.live-list')?.before(section) ?? drawer.append(section)
     }
@@ -140,7 +144,17 @@ export function createLaunchUi(deps) {
     // the newest ended launches, and every one whose worktree is still on disk (#432), so Remove stays reachable
     const ended = all.filter((launch) => launch.status === 'ended')
     const recent = new Set(ended.slice(0, ENDED_SHOWN))
-    const shown = [...live, ...ended.filter((launch) => recent.has(launch) || (launch.worktree_path && !launch.worktree_removed_at))]
+    const kept = (launch) => recent.has(launch) || (launch.worktree_path && !launch.worktree_removed_at)
+    // step 5: the earlier ones on request, so their transcripts and Resume stay reachable
+    const earlier = ended.filter((launch) => !kept(launch))
+    const shown = [...live, ...ended.filter((launch) => kept(launch) || showEarlier)]
+    const more = section.querySelector('.launch-earlier')
+    if (more) {
+      const moreText = showEarlier ? 'Fewer sessions' : `Earlier sessions (${earlier.length})`
+      if (more.textContent !== moreText) more.textContent = moreText
+      if (more.hidden !== (earlier.length === 0)) more.hidden = earlier.length === 0
+      if (more.getAttribute('aria-expanded') !== String(showEarlier)) more.setAttribute('aria-expanded', String(showEarlier))
+    }
     const keep = new Set(shown.map((launch) => launch.id))
     for (const [id, el] of rows) {
       if (!keep.has(id)) {
@@ -315,6 +329,10 @@ export function createLaunchUi(deps) {
     const id = control.closest('[data-launch]')?.dataset.launch
     const action = control.dataset.launchAction
     if (action === 'new') openNewSession()
+    else if (action === 'earlier') {
+      showEarlier = !showEarlier
+      bump()
+    }
     else if (action === 'transcript' && id) openTranscript(id)
     else if (action === 'stop' && id) stop(id)
     else if (action === 'close' && id) close(id)

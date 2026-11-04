@@ -750,3 +750,34 @@ session folder.
   settled, the request cancelled, a process left in Copilot's group ended, the row), `test/launch-electron.test.ts`
   (confirmation, polling, the script's text, a real `/bin/sh` run with a hostile folder name, refusals,
   IPC, preload, main's wiring), `test/launches-page.test.ts`, `test/dom/driven-sessions.test.ts`.
+
+## Step 5, part 2: full resume
+
+Design §14.8. Step 3's minimal resume loaded only a parked launch's session.
+
+- **The session is kept at every end.** `run` passes `driver.resumableSession()` (the session, once the
+  task was sent or a load holds it) to `endLaunch`, which keeps a stored one when it is given none, so
+  a stopped launch keeps its `acp_session`. `/api/launches` still serves only `resumable`.
+- **`resumeLaunch`** takes a parked launch, or one ended `stopped` with a session whose worktree (if any)
+  is not removed (`RESUMABLE_END`), in one `.immediate()` transaction: one conditioned UPDATE to running
+  that clears `ended_at`, `end_reason`, `end_detail` and `stop_requested_at` (else the new driver would
+  see the old Stop), and returns `resumedFrom`. A refused start puts it back: parked again, or, for a stopped
+  launch, its end exactly as it was (`resumeLaunch` returns `previous`: `ended_at`, `end_reason`,
+  `end_detail`, `stop_requested_at` and `driver_pid`; `restoreStoppedLaunch` writes them back only while
+  the row is running under this driver's pid). A resumed stopped launch's worktree, unlocked at its end, is
+  locked again with the add's reason (`lockWorktree`, which says whether this call took the lock; a failure
+  is logged as `worktree_lock_failed`, never fatal), unlocked at its next end, and unlocked at once when
+  the resume is refused if this resume took the lock (review of #452).
+  Handed off, lost, `error:*`, `child_exit` and `budget:*` launches are never resumed: budgets are
+  per-launch totals, so a budget-ended launch needs a new allowance (a follow-up).
+- **Main** (`resume`) accepts the same (parked, or `stopped` and `resumable` with its worktree there) and
+  `takeOver` hands such a stopped launch off too (`handOffForTerminal`: `stopped` → `handed_off`,
+  conditioned on the same rule).
+- **The page.** Such a launch reads "Stopped: its session is kept, so it can be resumed." and offers
+  Resume and send and Take over in Terminal. The drawer's **Earlier sessions (N)** / **Fewer sessions**
+  button (in the section, `aria-expanded`, drawn only when there are more) lists every ended launch the
+  snapshot carries; it is window state, bumped through `launchUi.version()`, so no new render entry.
+- **Tests**: `test/launches.test.ts` (which ends resume, the kept session, the stopped hand-off),
+  `test/driver-run.test.ts` (stop, a refused resume left stopped, a resume by load; a worktree relocked and
+  unlocked again), `test/launch-electron.test.ts`, `test/launches-page.test.ts`,
+  `test/dom/driven-sessions.test.ts` (the stopped row, Earlier sessions).

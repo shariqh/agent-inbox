@@ -55,7 +55,7 @@ export function removalConfirmation(facts: {
   examples?: string[]; noDiscard?: string | null; handedOff?: boolean
 }): { message: string; detail: string; buttons: string[] }
 export function takeOverConfirmation(facts: {
-  project: string; folder: string; state: 'running' | 'parked' | 'handed_off'
+  project: string; folder: string; state: 'running' | 'parked' | 'stopped' | 'handed_off'
 }): { message: string; detail: string; buttons: string[] }
 export function takeOverScript(facts: {
   launchId: string; folder: string; session: string; model?: string | null; reasoningEffort?: string | null

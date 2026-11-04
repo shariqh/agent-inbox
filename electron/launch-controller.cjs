@@ -257,6 +257,11 @@ function takeOverScript({ launchId, folder, session, model, reasoningEffort }) {
 
 const sleep = (ms, value) => new Promise((resolve) => setTimeout(() => resolve(value), ms))
 
+// Step 5 (full resume): a launch the human stopped, with the session Copilot persisted and its
+// worktree (if any) still on disk, resumes as a parked one does. The store checks the same again.
+const stoppedWithSession = (launch) => launch.status === 'ended' && launch.end_reason === 'stopped' && launch.resumable === true
+  && !(typeof launch.worktree_path === 'string' && launch.worktree_removed_at)
+
 /**
  * The launches to name in the quit prompt (§7). A start already past the gate
  * gets a short, separate wait to write its row; whatever it does, the running
@@ -497,14 +502,17 @@ function createLaunchController(deps) {
     },
 
     // Resume and send's first half (§5.3, §7): the click is the gesture, so no
-    // second confirmation; the launch must still be parked, and the switch on.
+    // second confirmation; the launch must still be parked (or, step 5, stopped
+    // with its session), and the switch on.
     resume(id) {
       const why = blocked()
       if (why) return Promise.resolve(why)
       if (typeof id !== 'string' || !LAUNCH_ID.test(id)) return Promise.resolve(refused('The launch is not valid.'))
       return guarded(async () => {
         const launch = await viewer.getJson(`/api/launches/${id}`)
-        if (!launch || launch.status !== 'parked') return refused('This session is not parked.')
+        if (!launch || (launch.status !== 'parked' && !stoppedWithSession(launch))) {
+          return refused('This session cannot be resumed: only a parked session, or one you stopped after its task was sent, can be.')
+        }
         const real = realDirectory(launch.cwd)
         if (!real) {
           return refused(typeof launch.branch === 'string' && launch.branch
@@ -651,6 +659,8 @@ function createLaunchController(deps) {
           state = 'parked'
         } else if (launch.status === 'ended' && launch.end_reason === 'handed_off') {
           state = 'handed_off'
+        } else if (stoppedWithSession(launch)) {
+          state = 'stopped'
         } else {
           return refused('This session has ended.')
         }

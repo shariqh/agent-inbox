@@ -44,10 +44,10 @@ import type { LaunchMode, ReasoningEffort } from './driver-policy.js'
 import { inferProject, inferStream } from './infer.js'
 import {
   claimDriverSlot, createLaunch, defaultDbPath, driverStopRequested, endLaunch, getLaunch, handOffLaunch, holdDriverLeases, listHostSessions, recordLaunchEffort,
-  recordWorktreeSummary, liveSessionServers, markWorktreeRemoved, openDb, parkLaunch,
+  recordWorktreeSummary, liveSessionServers, markWorktreeRemoved, openDb, parkLaunch, restoreStoppedLaunch,
   recordLaunchProgress, releaseDriverLeases, requestDriverStop, requestLaunchStop, resumeLaunch,
 } from './store.js'
-import { createWorktree, gitEnv, inspectWorktree, removeLaunchWorktree, undoWorktree, unlockWorktree, worktreeSummarizer } from './worktree.js'
+import { createWorktree, gitEnv, inspectWorktree, lockWorktree, removeLaunchWorktree, undoWorktree, unlockWorktree, worktreeSummarizer } from './worktree.js'
 import type { CreatedWorktree } from './worktree.js'
 import type Database from 'better-sqlite3'
 
@@ -507,6 +507,8 @@ async function runLaunch(argv: string[]): Promise<void> {
   let resume: Pick<DriverOptions, 'loadSessionId' | 'priorSessions'> = {}
   // the session a resume tries to load, kept on the row if the load fails
   let loading: string | null = null
+  // step 5: git's refusal to lock a resumed stopped launch's worktree again, logged once the event log is open
+  let relockFailed: string | null = null
   if (spec.kind === 'new') {
     let cwd: string
     try {
@@ -562,10 +564,28 @@ async function runLaunch(argv: string[]): Promise<void> {
     }
   } else {
     const row = resumeLaunch(db, launchId, process.pid)
-    if (!row) return refuse(`launch ${launchId} is not parked`)
-    undoRow = () => { parkLaunch(db, launchId, { acpSession: row.acp_session, activeMs: row.active_ms, toolCalls: row.tool_calls }) }
+    if (!row) return refuse(`launch ${launchId} is not parked or stopped with its session`)
+    // the lock this resume took on a stopped launch's worktree, given back if the start is refused
+    let relocked: { git: string; checkout: string; path: string } | null = null
+    // a refused start puts it back as it was: parked, or stopped exactly as before (step 5, full resume)
+    const previous = row.previous
+    undoRow = previous === null
+      ? () => { parkLaunch(db, launchId, { acpSession: row.acp_session, activeMs: row.active_ms, toolCalls: row.tool_calls }) }
+      : () => {
+        restoreStoppedLaunch(db, launchId, process.pid, previous)
+        if (relocked) unlockWorktree(relocked.git, gitEnv(sessionEnv), relocked.checkout, relocked.path)
+      }
     if (row.worktree_path && row.checkout_root && row.base_sha && row.worktree_removed_at === null) {
       worktreeOf = { checkout: row.checkout_root, path: row.worktree_path, baseRef: row.base_ref, baseSha: row.base_sha }
+      // its end unlocked it: locked again while the session holds it (§5)
+      if (row.resumedFrom === 'ended') {
+        const gitPath = findGit()
+        if (typeof gitPath === 'string') {
+          const lock = lockWorktree(gitPath, gitEnv(sessionEnv), row.checkout_root, row.worktree_path, launchId)
+          if (lock.locked) relocked = { git: gitPath, checkout: row.checkout_root, path: row.worktree_path }
+          relockFailed = lock.error
+        } else relockFailed = gitPath.error
+      }
     }
     const mode = MODES.find((m) => m === row.mode)
     const effort = row.reasoning_effort !== null && isReasoningEffort(row.reasoning_effort) ? row.reasoning_effort : undefined
@@ -644,6 +664,7 @@ async function runLaunch(argv: string[]): Promise<void> {
   phase('copilot')
   mark('checks')
   let session = spawnCopilot(facts.reasoningEffort)
+  if (relockFailed) log({ event: 'worktree_lock_failed', message: relockFailed })
   if (created) {
     log({ event: 'worktree', path: created.path, branch: created.branch, checkout: created.checkout, base: created.baseSha })
     // uncommitted and untracked changes stayed in the checkout (§2)
@@ -715,7 +736,7 @@ async function runLaunch(argv: string[]): Promise<void> {
           handOffLaunch(db, launchId, { acpSession, ...usage })
           ended = false
         } else endLaunch(db, launchId, { reason: 'stopped', ...usage })
-      } else endLaunch(db, launchId, { reason, ...usage, detail: failureOverride ?? driver.startFailure() })
+      } else endLaunch(db, launchId, { reason, ...usage, detail: failureOverride ?? driver.startFailure(), acpSession: driver.resumableSession() })
     } catch { /* the hub is gone: the launch reads as lost */ }
     if (ended) unlockAtEnd(log)
   }

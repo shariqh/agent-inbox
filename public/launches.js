@@ -121,6 +121,16 @@ const END_REASONS = {
   handed_off: 'Handed off to a terminal: it goes on in Copilot there.',
 }
 
+/**
+ * Step 5 (full resume): a launch the human stopped, with the session Copilot persisted and its
+ * worktree (if any) still on disk, can be resumed or taken over as a parked one can. Main and the
+ * store check the same again.
+ */
+function stoppedWithSession(launch) {
+  return launch?.status === 'ended' && launch.end_reason === 'stopped' && launch.resumable === true
+    && !(typeof launch.worktree_path === 'string' && launch.worktree_path && launch.worktree_removed_at)
+}
+
 /** A launch's driven sessions in /api/activity, live ones only. */
 export function launchSessions(launch, activity) {
   return (activity ?? []).filter((row) => row?.driven === true && row.driven_launch === launch.id)
@@ -138,6 +148,9 @@ export function launchStatus(launch, activity, nowMs) {
   }
   if (launch.status === 'ended' && launch.end_reason === 'handed_off') {
     return { state: 'handed_off', text: END_REASONS.handed_off, actions: ['terminal', 'transcript'] }
+  }
+  if (stoppedWithSession(launch)) {
+    return { state: 'ended', text: 'Stopped: its session is kept, so it can be resumed.', actions: ['resume', 'takeover', 'transcript'] }
   }
   if (launch.status === 'ended') {
     return { state: 'ended', text: END_REASONS[launch.end_reason] ?? `Ended (${launch.end_reason ?? 'unknown'})`, actions: ['transcript'] }

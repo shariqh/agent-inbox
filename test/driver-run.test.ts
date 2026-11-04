@@ -245,6 +245,30 @@ describe('agent-inbox-driver run (#412 step 3)', () => {
     expect(readFileSync(join(r.dir, 'hub', 'launches', LAUNCH, 'events.ndjson'), 'utf8')).toContain('"event":"ended","reason":"park"')
   }, 40_000)
 
+  it('full resume (step 5): a stopped launch keeps its session, resumes by loading it, and a refused resume leaves it stopped', async () => {
+    const r = rig()
+    const run = runDriver(r, newSpec(r))
+    expect(await run.status()).toEqual({ ok: true, launch: LAUNCH })
+    await until(() => received(r).find((m) => m.method === 'session/prompt'), 'the task')
+    expect(requestLaunchStop(r.hub, LAUNCH)).toBe('stopping')
+    expect(await run.exited).toBe(0)
+    expect(getLaunch(r.hub, LAUNCH)).toMatchObject({ status: 'ended', end_reason: 'stopped', acp_session: 's-1' })
+    const broken = runDriver(r, { v: 1, kind: 'resume', launchId: LAUNCH, env: { ...r.env, PATH: '/usr/bin:/bin' }, launchKey: LAUNCH_KEY.toString('base64') })
+    expect(await broken.status()).toMatchObject({ ok: false })
+    expect(await broken.exited).toBe(1)
+    expect(getLaunch(r.hub, LAUNCH)).toMatchObject({ status: 'ended', end_reason: 'stopped', acp_session: 's-1' })
+    const resumed = runDriver(r, { v: 1, kind: 'resume', launchId: LAUNCH, env: r.env, launchKey: LAUNCH_KEY.toString('base64') })
+    expect(await resumed.status()).toEqual({ ok: true, launch: LAUNCH })
+    await until(() => received(r).find((m) => m.method === 'session/load'), 'the load')
+    expect(received(r).find((m) => m.method === 'session/load')!.params).toMatchObject({ sessionId: 's-1' })
+    expect(getLaunch(r.hub, LAUNCH)).toMatchObject({ status: 'running', end_reason: null, ended_at: null, stop_requested_at: null })
+    // the task is not sent again
+    expect(received(r).filter((m) => m.method === 'session/prompt')).toHaveLength(1)
+    expect(requestLaunchStop(r.hub, LAUNCH)).toBe('stopping')
+    expect(await resumed.exited).toBe(0)
+    expect(getLaunch(r.hub, LAUNCH)).toMatchObject({ status: 'ended', end_reason: 'stopped', acp_session: 's-1' })
+  }, 40_000)
+
   it('Take over (step 5): mid-approval, the driver cancels the turn, settles the ask, ends Copilot’s whole group and hands the session off', async () => {
     const r = rig()
     const run = runDriver(r, newSpec(r, { env: { ...r.env, FAKE_ASK: '1', FAKE_GROUP_SLEEPER: '1' } }))
@@ -425,6 +449,38 @@ describe('agent-inbox-driver run (#412 step 3)', () => {
       expect(await resumed.status()).toEqual({ ok: true, launch: LAUNCH })
       await until(() => received(r).find((m) => m.method === 'session/load'), 'the load')
       expect(received(r).filter((m) => 'argv' in m).map((m) => m.cwd)).toEqual([plan.path, plan.path])
+      expect(locked(git(work, 'worktree', 'list', '--porcelain'), plan.path)).toBe(true)
+      expect(requestLaunchStop(r.hub, LAUNCH)).toBe('stopping')
+      expect(await resumed.exited).toBe(0)
+      expect(locked(git(work, 'worktree', 'list', '--porcelain'), plan.path)).toBe(false)
+    }, 40_000)
+
+    it('a stopped launch resumed runs in its worktree locked again, and unlocks it when it ends again (step 5)', async () => {
+      const r = rig()
+      const { git, work, plan } = checkout(r)
+      const run = runDriver(r, newSpec(r, { worktree: plan }))
+      expect(await run.status()).toEqual({ ok: true, launch: LAUNCH })
+      await until(() => received(r).find((m) => m.method === 'session/prompt'), 'the task')
+      expect(requestLaunchStop(r.hub, LAUNCH)).toBe('stopping')
+      expect(await run.exited).toBe(0)
+      expect(locked(git(work, 'worktree', 'list', '--porcelain'), plan.path)).toBe(false)
+      // a refused resume (no copilot on PATH, after the lock was taken again) leaves the row exactly as it
+      // was, but for its revision and update time, and gives the lock back (review of #452)
+      r.hub.prepare(`UPDATE launches SET end_detail = 'earlier detail' WHERE id = ?`).run(LAUNCH)
+      const before = getLaunch(r.hub, LAUNCH)!
+      cpSync(join(r.dir, 'bin', 'copilot'), join(r.dir, 'copilot.kept'))
+      rmSync(join(r.dir, 'bin', 'copilot'))
+      const refused = runDriver(r, { v: 1, kind: 'resume', launchId: LAUNCH, env: r.env, launchKey: LAUNCH_KEY.toString('base64') })
+      expect(await refused.status()).toEqual({ ok: false, error: 'no copilot executable on PATH (install GitHub Copilot CLI first)' })
+      expect(await refused.exited).toBe(1)
+      const { revision: _r1, updated_at: _u1, ...was } = before
+      const { revision, updated_at: _u2, ...now } = getLaunch(r.hub, LAUNCH)!
+      expect(now).toEqual(was)
+      expect(revision).toBeGreaterThan(before.revision)
+      expect(locked(git(work, 'worktree', 'list', '--porcelain'), plan.path)).toBe(false)
+      cpSync(join(r.dir, 'copilot.kept'), join(r.dir, 'bin', 'copilot'))
+      const resumed = runDriver(r, { v: 1, kind: 'resume', launchId: LAUNCH, env: r.env, launchKey: LAUNCH_KEY.toString('base64') })
+      expect(await resumed.status()).toEqual({ ok: true, launch: LAUNCH })
       expect(locked(git(work, 'worktree', 'list', '--porcelain'), plan.path)).toBe(true)
       expect(requestLaunchStop(r.hub, LAUNCH)).toBe('stopping')
       expect(await resumed.exited).toBe(0)
@@ -628,7 +684,7 @@ describe('agent-inbox-driver run (#412 step 3)', () => {
   it('refuses to resume a launch that is not parked, and to start past the driver cap, naming what runs', async () => {
     const r = rig()
     const resume = runDriver(r, { v: 1, kind: 'resume', launchId: LAUNCH, env: r.env, launchKey: LAUNCH_KEY.toString('base64') })
-    expect(await resume.status()).toEqual({ ok: false, error: `launch ${LAUNCH} is not parked` })
+    expect(await resume.status()).toEqual({ ok: false, error: `launch ${LAUNCH} is not parked or stopped with its session` })
     expect(await resume.exited).toBe(1)
     for (const [n, pid] of [[1, 101], [2, 102]] as const) {
       expect(claimDriverSlot(r.hub, { launchId: `44444444-4444-4444-8444-00000000000${n}`, pid, nonce: 'other' }, 2)).toEqual({ ok: true })

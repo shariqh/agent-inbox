@@ -51,7 +51,7 @@ describe('frontend source under script-src \'self\'', () => {
     for (const [name, sample] of samples) expect(violations(sample)).toContain(name)
     // What the frontend legitimately does stays clean.
     expect(violations([
-      "import('/mesh-view.js')",
+      "import('/agents-home.js')",
       'el.onclick = () => go()',
       "if (a < b && typeof f === 'function') isFunction(f)",
       'setTimeout(() => tick(), 10)',

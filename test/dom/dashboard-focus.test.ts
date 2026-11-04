@@ -265,6 +265,20 @@ describe('the session focus panel (#307)', () => {
     expect(panel()!.closest('.dash-rail')).toBeNull()
   })
 
+  it('opening it shows the Sessions lens, and leaving that lens closes it, so it is never inside a hidden card (#454)', async () => {
+    const d = open()
+    seed(d)
+    await bootApp(d)
+    // the Dashboard opens on the Agents lens, which hides the lanes card that holds the panel
+    expect(document.querySelector<HTMLElement>('.dash-lanes')?.hidden).toBe(true)
+    click(openButton('mine'))
+    expect(panel()?.hidden).toBe(false)
+    expect(panel()?.closest('[hidden]')).toBeNull()
+    click(document.querySelector('.mesh-lens [data-mesh-lens="agents"]'))
+    expect(panel()?.hidden).toBe(true)
+    expect(document.querySelector<HTMLElement>('.dash-lanes')?.hidden).toBe(true)
+  })
+
   it('opens and closes without pulling focus in a background window', async () => {
     const d = open()
     seed(d)
@@ -438,6 +452,9 @@ describe('⌘K actions (#307)', () => {
     await choose('jump to session review', 'Reviewing')
     expect(document.getElementById('dashboard')?.hidden).toBe(false)
     expect(panel()?.hidden).toBe(false)
+    // shown, not merely unhidden: no ancestor hides it (#454, the Dashboard opens on Agents)
+    expect(panel()?.closest('[hidden]')).toBeNull()
+    expect(document.querySelector('.mesh-lens [data-mesh-lens="sessions"]')?.getAttribute('aria-pressed')).toBe('true')
     expect(panel()?.dataset.session).toBe('theirs')
     expect(document.activeElement).toBe(panel()?.querySelector('#dashFocusTitle'))
   })

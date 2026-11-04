@@ -365,6 +365,8 @@ describe('focus when a lane control leaves (#304 review)', () => {
     work(d, 'second', 'Asking second')
     insertItem(d, { ...A, kind: 'question', title: 'Second ask', session: 'second' })
     await bootApp(d)
+    // the lanes show under the Sessions lens; the Dashboard opens on Agents (#454)
+    click(document.querySelector('.mesh-lens [data-mesh-lens="sessions"]'))
     expect(laneIds()).toEqual(['second', 'first'])
     lane('second')!.querySelector<HTMLButtonElement>('.dash-lane-asking')!.focus()
 

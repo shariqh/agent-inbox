@@ -981,13 +981,25 @@ describe('Take over in Terminal (step 5, §3.5)', () => {
   function takeOverRig(launch: Json, answers: unknown[], over: Json = {}) {
     const scripts: Array<[string, string]> = []
     const queue = [...answers]
-    const reads: Json[] = []
+    // a read that is an Error throws, as a hub restart mid-poll would
+    const reads: Array<Json | Error> = []
+    // what each withdrawal answers, { ok: true } once these run out
+    const withdrawals: unknown[] = []
     const held: { r?: ReturnType<typeof rig> } = {}
     const log = (line: string) => held.r!.calls.push(line)
     const r = rig({
       viewer: {
-        getJson: async (route: string) => { log(`GET ${route}`); return reads.shift() ?? launch },
-        postJson: async (route: string) => { log(`POST ${route}`); return route.endsWith('/withdraw') ? { ok: true } : queue.shift() ?? null },
+        getJson: async (route: string) => {
+          log(`GET ${route}`)
+          const next = reads.shift() ?? launch
+          if (next instanceof Error) throw next
+          return next
+        },
+        postJson: async (route: string) => {
+          log(`POST ${route}`)
+          if (route.endsWith('/withdraw')) return withdrawals.length ? withdrawals.shift() : { ok: true }
+          return queue.shift() ?? null
+        },
       },
       writeScript: async (file: string, text: string) => { log(`writeScript ${file}`); scripts.push([file, text]); return true },
       openTerminal: async (target: string) => { log(`openTerminal ${target}`); return true },
@@ -996,7 +1008,7 @@ describe('Take over in Terminal (step 5, §3.5)', () => {
       ...over,
     })
     held.r = r
-    return { ...r, scripts, reads }
+    return { ...r, scripts, reads, withdrawals }
   }
 
   it('asks a running launch’s driver to hand off, waits for it, then opens Terminal on copilot --resume in its folder', async () => {
@@ -1060,6 +1072,64 @@ describe('Take over in Terminal (step 5, §3.5)', () => {
     expect(await off.controller.takeOver(ID)).toMatchObject({ ok: false })
     expect(await off.controller.takeOver('../x')).toMatchObject({ ok: false })
     expect(off.calls).toEqual([])
+  })
+
+  // review of #450: the flow ends in exactly one of Terminal opened, or no request of its own left behind
+  const posts = (t: { calls: string[] }) => t.calls.filter((c) => c.startsWith('POST')).map((c) => c.slice(`POST /api/launches/${ID}`.length))
+  const ENDED_HANDED = { ...RUNNING, status: 'ended', end_reason: 'handed_off', driver: null }
+
+  it('withdraws its request when the hub fails mid-poll, so no driver hands off later without a Terminal', async () => {
+    const t = takeOverRig(RUNNING, [{ ok: true, state: 'requested' }])
+    t.reads.push(RUNNING, RUNNING, new Error('ECONNREFUSED'))
+    expect(await t.controller.takeOver(ID)).toEqual({ ok: false, error: 'The session could not be handed off.' })
+    expect(posts(t)).toEqual(['/hand-off', '/hand-off/withdraw'])
+    expect(t.calls.filter((c) => c.startsWith('openTerminal'))).toEqual([])
+    // an unreadable row is not proof it stopped running: it waits out the deadline, then withdraws
+    let clock = 0
+    const blind = takeOverRig(RUNNING, [{ ok: true, state: 'requested' }], { wait: async () => { clock += 30_000 }, handOffWaitMs: 60_000 })
+    blind.reads.push(RUNNING, null as unknown as Json, null as unknown as Json)
+    vi.spyOn(Date, 'now').mockImplementation(() => clock)
+    expect(await blind.controller.takeOver(ID)).toMatchObject({ ok: false, error: expect.stringMatching(/within a minute/) })
+    expect(posts(blind)).toEqual(['/hand-off', '/hand-off/withdraw'])
+    // a withdrawal the hub does not answer is tried once more on the way out
+    const deaf = takeOverRig(RUNNING, [{ ok: true, state: 'requested' }], { wait: async () => { clock += 30_000 }, handOffWaitMs: 60_000 })
+    deaf.withdrawals.push(null)
+    expect(await deaf.controller.takeOver(ID)).toMatchObject({ ok: false })
+    expect(posts(deaf)).toEqual(['/hand-off', '/hand-off/withdraw', '/hand-off/withdraw'])
+  })
+
+  it('a withdrawal that loses to the driver completes the hand-off and opens Terminal', async () => {
+    let clock = 0
+    const t = takeOverRig(RUNNING, [{ ok: true, state: 'requested' }, HANDED], { wait: async () => { clock += 30_000 }, handOffWaitMs: 60_000 })
+    vi.spyOn(Date, 'now').mockImplementation(() => clock)
+    // still running at the deadline; the driver took the request just before the withdrawal, then ended handed off
+    t.reads.push(RUNNING, RUNNING, RUNNING, RUNNING, ENDED_HANDED)
+    t.withdrawals.push({ ok: false })
+    expect(await t.controller.takeOver(ID)).toEqual({ ok: true })
+    expect(posts(t)).toEqual(['/hand-off', '/hand-off/withdraw', '/hand-off'])
+    expect(t.calls.at(-1)).toBe(`openTerminal /hub/launches/${ID}/take-over.command`)
+    // if it is still running after a second minute, it says to use Resume in Terminal once it has
+    const slow = takeOverRig(RUNNING, [{ ok: true, state: 'requested' }], { wait: async () => { clock += 30_000 }, handOffWaitMs: 60_000 })
+    slow.withdrawals.push({ ok: false })
+    expect(await slow.controller.takeOver(ID)).toEqual({ ok: false, error: expect.stringMatching(/still handing off.*Resume in Terminal/) })
+    // the driver holds the request: there is nothing of ours to withdraw again
+    expect(posts(slow)).toEqual(['/hand-off', '/hand-off/withdraw'])
+  })
+
+  it('a Resume during the re-post never leaves a request behind: withdrawn, or completed when a driver took it', async () => {
+    // the launch left running (parked), then a Resume ran it again before the second post
+    const t = takeOverRig(RUNNING, [{ ok: true, state: 'requested' }, { ok: true, state: 'requested' }])
+    t.reads.push(RUNNING, { ...RUNNING, status: 'parked', driver: null, resumable: true })
+    expect(await t.controller.takeOver(ID)).toEqual({ ok: false, error: expect.stringMatching(/resumed meanwhile/) })
+    expect(posts(t)).toEqual(['/hand-off', '/hand-off', '/hand-off/withdraw'])
+    expect(t.calls.filter((c) => c.startsWith('openTerminal'))).toEqual([])
+    // the resumed launch's driver took that second request first: it hands off, and Terminal opens
+    const raced = takeOverRig(RUNNING, [{ ok: true, state: 'requested' }, { ok: true, state: 'requested' }, HANDED])
+    raced.reads.push(RUNNING, { ...RUNNING, status: 'parked', driver: null, resumable: true }, RUNNING, ENDED_HANDED)
+    raced.withdrawals.push({ ok: false })
+    expect(await raced.controller.takeOver(ID)).toEqual({ ok: true })
+    expect(posts(raced)).toEqual(['/hand-off', '/hand-off', '/hand-off/withdraw', '/hand-off'])
+    expect(raced.calls.at(-1)).toBe(`openTerminal /hub/launches/${ID}/take-over.command`)
   })
 
   it('withdraws a request the driver did not take in time, and opens nothing for an answer it cannot trust', async () => {

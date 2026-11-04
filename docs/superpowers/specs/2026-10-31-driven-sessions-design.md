@@ -1068,7 +1068,9 @@ Built in step 5's first PR:
   left of its process group (SIGTERM, then SIGKILL after 2 s), writes the final worktree summary, and
   only then marks the launch `handed_off`. **A parked launch** with a session is handed off by one
   conditioned statement (still parked, with a session). A request no driver took is withdrawn by main
-  after 60 s, dropped with the driver's leases, and cleared by a later resume.
+  after 60 s, dropped with the driver's leases, and cleared by a later resume. Main's flow ends either
+  with Terminal opened or with no request of its own left (review of #450): a withdrawal a driver beat is
+  completed instead, a Resume between the polls gets its request taken back, and any error withdraws.
 - **Main** confirms first, natively (the turn and its approvals are cancelled, and the launch never comes
   back to the app), waits for the hand-off, then writes `<hub dir>/launches/<id>/take-over.command`
   (`0700`): `cd` to the launch's own real folder, `copilot --resume=<id>` with the launch's model and

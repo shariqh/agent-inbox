@@ -637,6 +637,7 @@ function createLaunchController(deps) {
       const why = blocked()
       if (why) return why
       if (typeof id !== 'string' || !LAUNCH_ID.test(id)) return refused('The launch is not valid.')
+      let pending = false
       try {
         const launch = await viewer.getJson(`/api/launches/${id}`)
         if (!launch || typeof launch.cwd !== 'string') return refused('This session is not there any more.')
@@ -662,20 +663,51 @@ function createLaunchController(deps) {
         if (!(await confirm(takeOverConfirmation({ project: launch.project, folder, state })))) return refused('Not taken over.', { cancelled: true })
         const late = blocked()
         if (late) return late
-        let result = await viewer.postJson(`/api/launches/${id}/hand-off`)
-        if (result?.ok && result.state === 'requested') {
-          // the driver takes the request on its next tick, then ends the launch handed off
-          const until = now() + handOffWaitMs
-          let current = launch
-          while (current?.status === 'running' && now() < until) {
+        // One loop, ending in exactly one of: the launch handed off (Terminal is opened below), or no
+        // request of ours left for a driver to take (review of #450). `pending` is a request this flow
+        // may have left in the hub; the `finally` withdraws it on any other way out, a throw included.
+        const route = `/api/launches/${id}`
+        const handOff = async () => {
+          pending = true
+          const answer = await viewer.postJson(`${route}/hand-off`)
+          if (!(answer?.ok && answer.state === 'requested')) pending = false
+          return answer
+        }
+        // whether the launch left `running` before the deadline; an unreadable row is not proof it did
+        const leftRunning = async (until) => {
+          for (;;) {
             await wait(HAND_OFF_POLL_MS)
-            current = await viewer.getJson(`/api/launches/${id}`)
+            const current = await viewer.getJson(route)
+            if (current && current.status !== 'running') return true
+            if (now() >= until) return false
           }
-          if (current?.status === 'running') {
-            await viewer.postJson(`/api/launches/${id}/hand-off/withdraw`).catch(() => null)
-            return refused('The session did not hand off within a minute, so it goes on here. Try again, or Stop it.')
+        }
+        let result = await handOff()
+        for (let round = 0; result?.ok && result.state === 'requested'; round++) {
+          // the first request: the driver takes it on its next tick, then ends the launch handed off.
+          // A later one means the launch runs again (a Resume came in between): take it back at once.
+          if (round === 0 && (await leftRunning(now() + handOffWaitMs))) {
+            // taken, or dropped with the driver's leases: nothing of ours is left
+            pending = false
+          } else {
+            const withdrawn = await viewer.postJson(`${route}/hand-off/withdraw`)
+            if (withdrawn?.ok === true) {
+              pending = false
+              return refused(round === 0
+                ? 'The session did not hand off within a minute, so it goes on here. Try again, or Stop it.'
+                : 'The session was resumed meanwhile, so it goes on here. Try again, or Stop it.')
+            }
+            if (withdrawn?.ok !== false) throw new Error('withdraw unanswered')
+            // a driver took it first: its hand-off is under way, so it is completed rather than lost
+            pending = false
+            if (!(await leftRunning(now() + handOffWaitMs))) {
+              return refused('The session is still handing off. Once it reads as handed off, use Resume in Terminal.')
+            }
           }
-          result = await viewer.postJson(`/api/launches/${id}/hand-off`)
+          // every round after a race ends the launch (handed off never runs again), so this only guards a hub
+          // that answers nonsense; the `finally` then takes back what it can
+          if (round >= 8) throw new Error('hand-off did not settle')
+          result = await handOff()
         }
         if (!result?.ok || result.state !== 'handed_off') {
           return refused(result?.reason === 'ended' ? 'The session ended before it could be handed off.'
@@ -698,6 +730,10 @@ function createLaunchController(deps) {
         return (await openTerminal(file)) ? { ok: true } : refused('The session is handed off, but Terminal could not be opened. Try Resume in Terminal.')
       } catch {
         return refused('The session could not be handed off.')
+      } finally {
+        // a request no driver has taken never outlives this flow; one a driver took already is
+        // under way, and its launch then offers Resume in Terminal
+        if (pending) await Promise.resolve(viewer.postJson(`/api/launches/${id}/hand-off/withdraw`)).catch(() => null)
       }
     },
 

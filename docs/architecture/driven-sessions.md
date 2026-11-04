@@ -724,7 +724,14 @@ session folder.
   Resume does). Main's native confirmation (`takeOverConfirmation`: the turn and its approvals are
   cancelled, the launch never comes back to the app, unread messages stay with the old session; for a
   handed-off launch, a warning against two Copilots in one session), then the route, polling the row up
-  to 60 s for a running launch and withdrawing the request on timeout. The answer's `cwd` must equal the
+  to 60 s for a running launch. The flow is one loop that ends in exactly one of two ways (review of
+  #450): the launch handed off and Terminal opened, or no request of its own left for a driver to take.
+  A request still waiting at the deadline, or a second `requested` (the launch runs again after a Resume),
+  is withdrawn; a withdrawal that answers `ok: false` means a driver took it first, so main waits (up to
+  60 s more) for that hand-off and completes it instead. An unreadable row is not taken as the launch
+  having stopped. A `finally` withdraws any request still pending on every other way out, a hub error or
+  a throw included; one a driver has already taken is under way, and its launch then offers Resume in
+  Terminal. The answer's `cwd` must equal the
   confirmed folder, still its own real folder. `takeOverScript` writes `<hub dir>/launches/<id>/take-over.command` (`0700` in the
   `0700` log folder, temp file and rename): `cd -- '<folder>'`, `copilot --resume=<id>` with the launch's
   model and reasoning effort (each left out unless it matches its own pattern; the session must be a

@@ -130,7 +130,12 @@ export function sessionCards({ activity, launches = null, boards = [], attention
   const finish = (card, row) => {
     if (card.base === 'working') {
       card.children = (Array.isArray(row?.children) ? row.children : [])
-        .map((child) => ({ name: String(child?.name ?? ''), doing: typeof child?.doing === 'string' ? child.doing : '' }))
+        .map((child) => ({
+          name: String(child?.name ?? ''),
+          doing: typeof child?.doing === 'string' ? child.doing : '',
+          // status()'s optional per-subagent state (#454: once shown only in the Live drawer)
+          state: typeof child?.state === 'string' ? child.state : '',
+        }))
       card.trace = callTrace(row, nowMs)
     }
     card.activeAt = Math.max(time(row?.last_call_at) ?? 0, time(row?.started_at) ?? 0, time(card.launch?.updated_at) ?? 0)

@@ -402,6 +402,33 @@ describe('a launch’s card and session panel (§3.6, §7, #454)', () => {
     expect(summary()).toBe('Ended (3)')
   })
 
+  it('a card’s refused Remove worktree… opens the panel with its reason, after the panel last showed it running (#460 review)', async () => {
+    const api = launchBridge()
+    db = freshDb()
+    createLaunch(db, {
+      id: LAUNCH, host: 'copilot', project: 'alpha', stream: 'agent-inbox/fix-1', cwd: '/w/alpha/fix-1', mode: 'ask',
+      budgetActiveMs: 7_200_000, budgetToolCalls: 500, prompt: 'Fix it.', specVersion: 1, driverPid: 4242,
+      worktree: { checkoutRoot: '/work/alpha', branch: 'agent-inbox/fix-1', baseSha: 'a'.repeat(40), baseRef: 'refs/heads/main' },
+    })
+    await bootApp(db)
+    await changedPollTick(db)
+    // its panel painted while it ran, then closed
+    openLaunch(LAUNCH)
+    expect(panel().querySelector('.sp-actions-hint')).not.toBeNull()
+    click(panel().querySelector('.dash-focus-close'))
+    expect(panel().hidden).toBe(true)
+    endLaunch(db, LAUNCH, { reason: 'stopped' })
+    await changedPollTick(db)
+    api.removeWorktree.mockResolvedValueOnce({ ok: false, error: 'git said the worktree has changes.' })
+    click(launchRow(LAUNCH)!.querySelector('[data-ah-action="remove-worktree"]'))
+    await settle()
+    await settle()
+    expect(panel().hidden).toBe(false)
+    expect(panel().dataset.card).toBe(`launch:${LAUNCH}`)
+    expect(panel().querySelector<HTMLElement>('.sp-note')?.hidden).toBe(false)
+    expect(panel().querySelector('.sp-note')?.textContent).toBe('git said the worktree has changes.')
+  })
+
   it('a running launch’s panel says Stop comes before Remove worktree…', async () => {
     launchBridge()
     db = freshDb()
@@ -651,6 +678,55 @@ describe('a launch’s card and session panel (§3.6, §7, #454)', () => {
 })
 
 describe('New session (§8)', () => {
+  it('a session started outside the project lens scopes the lens to it, so its card shows (#460 review)', async () => {
+    const api = launchBridge()
+    db = freshDb()
+    insertItem(db, { project: 'alpha', stream: 'main', agent: 'copilot', kind: 'note', title: 'seen', repo_root: '/work/alpha' })
+    insertItem(db, { project: 'beta', stream: 'main', agent: 'copilot', kind: 'note', title: 'seen too', repo_root: '/work/beta' })
+    api.start.mockImplementationOnce(async () => {
+      newLaunch(db!)
+      return { ok: true, launch: LAUNCH }
+    })
+    await bootApp(db)
+    click(document.querySelector('#rail .rail-tab[data-project="beta"]'))
+    await settle()
+    await changedPollTick(db)
+    click(newSessionButton())
+    await settle()
+    const dialog = document.querySelector<HTMLDialogElement>('.launch-dialog')!
+    dialog.querySelector<HTMLSelectElement>('select[name="root"]')!.value = '/work/alpha'
+    type(dialog.querySelector<HTMLTextAreaElement>('textarea[name="prompt"]'), 'Fix it.')
+    dialog.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await settle()
+    await settle()
+    expect(api.start).toHaveBeenCalled()
+    expect(launchRow(LAUNCH)).not.toBeNull()
+    expect(document.querySelector('#rail .rail-tab[data-project="alpha"]')?.getAttribute('aria-selected')).toBe('true')
+  })
+
+  it('says how many sessions the lens hides, and Show all clears it (#460 review)', async () => {
+    launchBridge()
+    db = freshDb()
+    insertItem(db, { project: 'beta', stream: 'main', agent: 'copilot', kind: 'note', title: 'seen', repo_root: '/work/beta' })
+    newLaunch(db)
+    newLaunch(db, PARKED)
+    endLaunch(db, PARKED, { reason: 'stopped' })
+    await bootApp(db)
+    await changedPollTick(db)
+    const line = () => document.querySelector<HTMLElement>('.agents-home .ah-outside')!
+    expect(line().hidden).toBe(true)
+    click(document.querySelector('#rail .rail-tab[data-project="beta"]'))
+    await settle()
+    // the running one is hidden; an ended one never counts
+    expect(line().hidden).toBe(false)
+    expect(line().textContent).toBe('1 session outside this filter · Show all')
+    expect(anyCard(`launch:${LAUNCH}`)).toBeNull()
+    click(line().querySelector('.ah-outside-all'))
+    await settle()
+    expect(line().hidden).toBe(true)
+    expect(anyCard(`launch:${LAUNCH}`)).not.toBeNull()
+  })
+
   it('sends main the request it checks again, with a known project, and never a path of its own', async () => {
     const api = launchBridge()
     db = freshDb()

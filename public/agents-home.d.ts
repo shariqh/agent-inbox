@@ -16,6 +16,8 @@ export interface AgentsHomeInput {
   lensProject?: string | null
   /** the session panel's key, so its card is marked */
   selected?: string | null
+  /** launches the project and agent lens hides that are not ended (#454) */
+  outside?: number
 }
 
 export interface AgentsHomeLaunches {
@@ -42,6 +44,8 @@ export function installAgentsHome(deps: {
   pulse?: (el: Element) => void
   /** the global "Not delivered" fold (#411) */
   paintUndelivered?: (slot: Element) => void
+  /** clears the project and agent lens ("N sessions outside this filter · Show all") */
+  showAll?: () => void
 }): {
   /** the Agents home card, made once; renderDashboard mounts it in the Dashboard grid */
   element(): HTMLElement

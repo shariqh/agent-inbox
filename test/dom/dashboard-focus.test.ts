@@ -171,6 +171,38 @@ describe('the session focus panel (#307)', () => {
     expect(document.activeElement).toBe(card('mine')!.querySelector('[data-ah-action="review"]'))
   })
 
+  it('opens an ask past the rail in its Inbox card (#460 review: jumpToAsk’s fallback)', async () => {
+    const d = open()
+    work(d, 'mine', 'Asking a lot')
+    const ids: string[] = []
+    for (let index = 0; index < 4; index += 1) {
+      ids.push(insertItem(d, { ...A, kind: 'question', title: `Decision ${index}`, session: 'mine' }))
+      advanceClock()
+    }
+    await bootApp(d)
+    expect(railIds()).toHaveLength(3)
+    const past = ids.find((id) => !railIds().includes(id))!
+    openCard('mine')
+    const button = panel()!.querySelector<HTMLButtonElement>(`[data-focus-ask="item:${past}"]`)!
+    expect(button.textContent).toBe('Answer in Inbox')
+    click(button)
+    await settle()
+    expect(document.getElementById('needsYou')?.hidden).toBe(false)
+    expect(location.hash).toBe(`#item/${past}`)
+    expect(row(past)).not.toBeNull()
+  })
+
+  it('shows each subagent’s reported state, as text, in the panel and on the card (#460 review)', async () => {
+    const d = open()
+    work(d, 'mine', 'Coordinating', { children: [{ name: 'tester', doing: 'Running tests', state: '<b>blocked</b>' }, { name: 'docs', doing: 'Writing' }] })
+    await bootApp(d)
+    expect(card('mine')!.querySelector<HTMLElement>('.sc-kids')?.title).toBe('tester: Running tests (<b>blocked</b>)\ndocs: Writing')
+    openCard('mine')
+    const states = [...panel()!.querySelectorAll('.sp-children .sp-child-state')]
+    expect(states.map((el) => el.textContent)).toEqual(['<b>blocked</b>'])
+    expect(panel()!.querySelector('.sp-children b')).toBeNull()
+  })
+
   it('jumps from an ask to its rail card, and from the plan through the deep link', async () => {
     const d = open()
     const { ask, board } = seed(d)

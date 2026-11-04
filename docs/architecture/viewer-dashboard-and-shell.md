@@ -81,7 +81,12 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   lists). Card actions reuse the launch UI's own handlers (`launchUi.run`), Remove
   worktree… included on an ended launch whose worktree is kept (main checks and asks, as
   in the panel; only with the launch grant); one that fails opens the launch's panel,
-  where its note shows. Review opens the panel at the card's asks. Nothing it draws
+  where its note shows. Review opens the panel at the card's asks. Launches the project
+  and agent lens hides that are not ended are named in one quiet line ("N sessions
+  outside this filter · Show all", which clears the lens), and a session started, or a
+  `launch:` panel opened, outside the lens scopes the lens to its project first, as Jump
+  to session does, so no launch is ever unreachable. Subagents carry `status()`'s
+  optional `state` into the panel's list and the card's tooltip. Nothing it draws
   reaches attention.
 - The sidebar's Sessions line (`#sessionsIndicator`, #454, where the Live footer strip
   was) is the one session signal on every tab: `sessionsSummary` (`public/livebar.js`)

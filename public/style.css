@@ -1961,6 +1961,7 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
 .launch-line.note .tx-b, .launch-line.answer .tx-b { color: var(--app-muted); }
 .sp-children { display: grid; gap: 3px; margin: 0; padding: 0; list-style: none; font-size: 12.5px; }
 .sp-children span { color: var(--app-muted); }
+.sp-child-state { margin-left: 4px; padding: 0 5px; border-radius: 4px; background: var(--app-soft); color: var(--app-text-soft); font-size: 11px; }
 .dash-focus > .dash-focus-message, .sp-resume { display: grid; gap: 6px; padding: 10px 16px 14px; border-top: 1px solid var(--app-border); background: var(--app-elevated); }
 .sp-resume h3 { margin: 0; color: var(--app-muted); font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
 .sp-resume-input { width: 100%; min-height: 52px; box-sizing: border-box; resize: vertical; padding: 8px 10px; border: 1px solid var(--app-border-strong); border-radius: 8px; background: var(--app-surface); color: var(--app-text); font: inherit; font-size: 12.5px; }
@@ -2073,7 +2074,7 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
    (design docs/superpowers/specs/2026-11-04-agents-home-design.md §3). Static
    but for the one-shot pulse a new call starts on a working card (#304). */
 .agents-home { position: relative; grid-column: span 8; }
-.agents-home[hidden], .ah-empty[hidden], .ah-none[hidden], .ah-note[hidden], .ah-fold[hidden], .ah-new[hidden], .sc-ask[hidden], .sc-where[hidden], .sc-foot[hidden] { display: none; }
+.agents-home[hidden], .ah-empty[hidden], .ah-none[hidden], .ah-note[hidden], .ah-outside[hidden], .ah-fold[hidden], .ah-new[hidden], .sc-ask[hidden], .sc-where[hidden], .sc-foot[hidden] { display: none; }
 .agents-home.reading .ah-filters, .agents-home.reading .ah-group-by, .agents-home.reading .ah-groups, .agents-home.reading .ah-folds { display: none; }
 .agents-home.ah-is-empty .ah-filters, .agents-home.ah-is-empty .ah-group-by, .agents-home.ah-is-empty .ah-count { display: none; }
 .ah-head { flex-wrap: wrap; gap: 10px; }
@@ -2091,6 +2092,9 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
 .ah-new { margin-left: auto; padding: 4px 10px; border: 1px solid var(--app-accent); border-radius: 7px; background: var(--app-accent); color: var(--app-on-accent); font: inherit; font-size: 11.5px; font-weight: 650; cursor: pointer; }
 .ah-new:disabled { opacity: .45; cursor: default; }
 .ah-note { margin: -4px 0 10px; color: var(--app-muted); font-size: 12px; }
+.ah-outside { margin: -4px 0 10px; color: var(--app-muted); font-size: 12px; }
+.ah-outside-all { padding: 0; border: 0; background: none; color: var(--app-link); font: inherit; font-weight: 600; cursor: pointer; }
+.ah-outside-all:hover { text-decoration: underline; }
 .ah-group + .ah-group { margin-top: 14px; }
 .ah-group-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 12.5px; font-weight: 700; }
 .ah-group-head i { width: 8px; height: 8px; border-radius: 50%; background: var(--ah-group, var(--app-text-soft)); }

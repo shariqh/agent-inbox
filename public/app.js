@@ -2039,6 +2039,7 @@ function renderDashboardAmbient(model, { forced = false } = {}) {
     activity: liveInLens(), boards: model.boards, attention: model.waitingEntries, closed: dashboardClosedProjects(),
     // #412 step 3: this app's launches, only with its switch on (§9: otherwise none is read or drawn)
     launches: launchesOn() ? launchesInLens() : null,
+    outside: launchesOn() ? launchesOutsideLens() : 0,
     nowMs: Date.now(), forced, lensProject: projectFilter, selected: focusSession,
   })
   renderDashFocus(host.querySelector('.dash-focus'), model)
@@ -2135,6 +2136,14 @@ const agentsHome = installAgentsHome({
   projectColor: (project) => pcolor(project).dot,
   pulse: (el) => { if (dashboardMotion()) playOnce(el, 'pulse', 'dash-lane-pulse') },
   paintUndelivered,
+  // "N sessions outside this filter · Show all": the lens cleared, as the rail's All does
+  showAll: () => {
+    projectFilter = null
+    agentFilter = null
+    resetPaging()
+    forceRender()
+    requestHistoryPaint()
+  },
 })
 
 // One iteration of a CSS one-shot, restarted when it is still running and
@@ -2389,7 +2398,8 @@ function renderDashFocus(aside, model) {
         { attrs: ` data-focus-ask="${esc(`${entry.kind}:${id}`)}"` }) + '</div>'
   }).join('') || (approvals.length ? '' : '<p class="dash-focus-none">Nothing waiting on you.</p>'))
   setFocusPart(aside, aside.querySelector('.dash-focus-children'), card.base === 'working' && card.children.length
-    ? `<ul class="sp-children">${card.children.map((child) => `<li><strong>${esc(child.name)}</strong>${child.doing ? ` <span>${esc(child.doing)}</span>` : ''}</li>`).join('')}</ul>`
+    ? `<ul class="sp-children">${card.children.map((child) => `<li><strong>${esc(child.name)}</strong>${child.doing ? ` <span>${esc(child.doing)}</span>` : ''}` +
+      `${child.state ? ` <small class="sp-child-state">${esc(child.state)}</small>` : ''}</li>`).join('')}</ul>`
     : '')
   // #307's context, read from the card's session and plan
   const focus = sessionFocus({ session: card.session ?? '', plan: card.plan }, {
@@ -2475,7 +2485,9 @@ function openSessionFocus(session, part = null) {
   focusSession = session
   // #197: the build hint follows an install made since
   refreshLiveVersion()
-  if (activeTab !== 'dashboard') {
+  // a launch outside the project and agent lens is scoped to its project, as jumpToSession does
+  const scoped = session.startsWith('launch:') && scopeToLaunch(session.slice('launch:'.length))
+  if (activeTab !== 'dashboard' || scoped) {
     selectTab('dashboard', { paint: false })
     forceRender()
   }
@@ -3161,9 +3173,24 @@ function liveInLens() {
 }
 
 // This app's launches under the same lens: every one runs Copilot.
+const launchInLens = (launch) => (!projectFilter || launch.project === projectFilter) && (!agentFilter || agentFilter === 'copilot')
 function launchesInLens() {
-  return (lastData?.launches ?? []).filter((launch) =>
-    (!projectFilter || launch.project === projectFilter) && (!agentFilter || agentFilter === 'copilot'))
+  return (lastData?.launches ?? []).filter(launchInLens)
+}
+
+// The launches the lens hides that still run or can resume: the Agents home says so (#454).
+function launchesOutsideLens() {
+  return (lastData?.launches ?? []).filter((launch) => launch.status !== 'ended' && !launchInLens(launch)).length
+}
+
+// A launch outside the lens has no card to show it: scope the lens to its project,
+// as jumpToSession does. Returns whether it changed the lens; the caller paints.
+function scopeToLaunch(id) {
+  const launch = (lastData?.launches ?? []).find((l) => l.id === id)
+  if (!launch || launchInLens(launch)) return false
+  projectFilter = launch.project
+  agentFilter = null
+  return true
 }
 
 // `summary` is what `view` omits from closed history (issue #184), and archived
@@ -6208,6 +6235,8 @@ function initLaunches() {
       agentsHome.paintNewSession()
     },
     settled: () => reloadAndPaint(),
+    // a session started outside the lens would have no card: scope the lens to it
+    started: (id) => { if (scopeToLaunch(id)) forceRender() },
     pending: (action) => withPendingResponse(action),
   })
   // a changed answer is drawn by the next tick, which reads the launches once on

@@ -32,6 +32,7 @@ const TRANSCRIPT_MAX_EVENTS = 5000
  *   sendTo: (session: string, text: string) => Promise<boolean>,
  *   changed: () => void,
  *   settled: () => Promise<unknown>,
+ *   started?: (launch: string) => void,
  *   pending: <T>(action: () => Promise<T>) => Promise<T>,
  * }} deps
  */
@@ -48,7 +49,7 @@ export function createLaunchUi(deps) {
   // dialog was cancelled is kept to fill the next one, and holds nothing.
   const drafts = new Map()
   const notes = new Map()
-  // the state each note was written in, by launch
+  // the launch state each note was written in (setNote)
   const noteStates = new Map()
   const busy = new Set()
   const resumeInputs = new Map()
@@ -122,6 +123,15 @@ export function createLaunchUi(deps) {
     else if (action === 'remove-worktree') removeWorktree(id)
   }
 
+  // A note is about the state its launch was in when it was written: paintPanel drops it
+  // once that state changes. Stamped here, never by a paint, so it cannot go stale while
+  // the panel shows another launch or none.
+  function setNote(id, text) {
+    notes.set(id, text)
+    const launch = (deps.launches() ?? []).find((l) => l.id === id)
+    noteStates.set(id, launch ? launchStatus(launch, deps.activity(), Date.now()).state : null)
+  }
+
   async function act(id, run) {
     if (busy.has(id)) return null
     busy.add(id)
@@ -137,7 +147,7 @@ export function createLaunchUi(deps) {
 
   async function stop(id) {
     const result = await act(id, () => bridge().stop(id))
-    if (result && !result.ok) notes.set(id, result.error ?? 'Not stopped.')
+    if (result && !result.ok) setNote(id, result.error ?? 'Not stopped.')
     await deps.settled()
   }
 
@@ -145,7 +155,7 @@ export function createLaunchUi(deps) {
   // timeout would, and the launch can be resumed with Resume and send.
   async function park(id) {
     const result = await act(id, () => deps.postJSON(`/api/launches/${encodeURIComponent(id)}/park`))
-    if (result) notes.set(id, result.ok ? 'Parking: Copilot stops once its turn ends, and the session is kept to resume.' : 'Not parked: it is not running.')
+    if (result) setNote(id, result.ok ? 'Parking: Copilot stops once its turn ends, and the session is kept to resume.' : 'Not parked: it is not running.')
     await deps.settled()
   }
 
@@ -153,27 +163,27 @@ export function createLaunchUi(deps) {
   // cancels its turn and closes Copilot first) and opens Terminal on `copilot --resume` in its folder
   async function takeOver(id) {
     const result = await act(id, () => bridge().takeOver(id))
-    if (result && !result.ok && !result.cancelled) notes.set(id, result.error ?? 'The session was not handed off.')
+    if (result && !result.ok && !result.cancelled) setNote(id, result.error ?? 'The session was not handed off.')
     await deps.settled()
   }
 
   // #432: main reads the path from the hub, checks it and opens Terminal there
   async function openWorktree(id) {
     const result = await act(id, () => bridge().openWorktree(id))
-    if (result && !result.ok) notes.set(id, result.error ?? 'Terminal could not be opened.')
+    if (result && !result.ok) setNote(id, result.error ?? 'Terminal could not be opened.')
   }
 
   // #432: main inspects the worktree, asks in its own dialog (Discard is a separate
   // choice there), then removes it; the branch always stays
   async function removeWorktree(id) {
     const result = await act(id, () => bridge().removeWorktree(id))
-    if (result && !result.ok && !result.cancelled) notes.set(id, result.error ?? 'The worktree was not removed.')
+    if (result && !result.ok && !result.cancelled) setNote(id, result.error ?? 'The worktree was not removed.')
     await deps.settled()
   }
 
   async function close(id) {
     const result = await act(id, () => bridge().close(id))
-    if (result && !result.ok) notes.set(id, result.error ?? 'Not closed.')
+    if (result && !result.ok) setNote(id, result.error ?? 'Not closed.')
     await deps.settled()
   }
 
@@ -195,7 +205,7 @@ export function createLaunchUi(deps) {
       drafts.delete(`resume:${id}`)
       resumeInputs.delete(id)
     } else if (result) {
-      notes.set(id, result.error ?? 'Not resumed.')
+      setNote(id, result.error ?? 'Not resumed.')
     }
     await deps.settled()
   }
@@ -441,6 +451,7 @@ export function createLaunchUi(deps) {
         drafts.delete('new')
         closeDialog()
         await deps.settled()
+        if (typeof result.launch === 'string') deps.started?.(result.launch)
         return
       }
       message.textContent = result?.error ?? 'Not started.'
@@ -522,9 +533,14 @@ export function createLaunchUi(deps) {
     }
     const status = launchStatus(launch, deps.activity(), nowMs)
     // a note is about the state it was written in: a new state drops it
-    const seen = noteStates.get(id)
-    if (seen !== undefined && seen !== status.state) notes.delete(id)
-    noteStates.set(id, status.state)
+    if (notes.has(id)) {
+      const written = noteStates.get(id)
+      if (written == null) noteStates.set(id, status.state)
+      else if (written !== status.state) {
+        notes.delete(id)
+        noteStates.delete(id)
+      }
+    }
     const allowed = granted()
     // the action bar (§3.3), from the launch's state and the grant
     const actions = []

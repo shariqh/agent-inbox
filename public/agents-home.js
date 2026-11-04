@@ -108,6 +108,12 @@ export function installAgentsHome(deps) {
     head.append(title, make('small', 'ah-count'), make('span', 'ah-spacer'), filters, group, start)
     const note = make('p', 'ah-note')
     note.hidden = true
+    // the launches the project and agent lens hides, so a session started elsewhere is never lost
+    const outside = make('p', 'ah-outside')
+    outside.hidden = true
+    const showAll = button('Show all', 'ah-outside-all', 'ah:outside-all')
+    showAll.addEventListener('click', () => deps.showAll?.())
+    outside.append(make('span', 'ah-outside-text'), doc.createTextNode(' · '), showAll)
     const list = make('div', 'ah-groups')
     const empty = make('div', 'ah-empty')
     const icon = doc.createElementNS(SVG, 'svg')
@@ -154,7 +160,7 @@ export function installAgentsHome(deps) {
       else folds.delete(fold.dataset.ahFold)
       repaint()
     }, true)
-    section.append(head, note, list, empty, none, foldRow)
+    section.append(head, note, outside, list, empty, none, foldRow)
     section.addEventListener('click', onClick)
     return section
   }
@@ -328,7 +334,8 @@ export function installAgentsHome(deps) {
       }
       if (busy && card.children.length) {
         const kids = make('span', 'sc-meta sc-kids', `▸ ${plural(card.children.length, 'subagent')}`)
-        kids.title = card.children.map((child) => (child.doing ? `${child.name}: ${child.doing}` : child.name)).join('\n')
+        kids.title = card.children
+          .map((child) => `${child.doing ? `${child.name}: ${child.doing}` : child.name}${child.state ? ` (${child.state})` : ''}`).join('\n')
         parts.push(kids)
       }
       if (callCount) {
@@ -427,6 +434,9 @@ export function installAgentsHome(deps) {
     if (select.value !== groupBy) select.value = groupBy
     setText(section.querySelector('.ah-count'), `${plural(main.length, 'session')}${input.lensProject ? ` in ${input.lensProject}` : ''}`)
     paintNewSession(section, launchUi)
+    const hidden = Number(input.outside) || 0
+    setText(section.querySelector('.ah-outside-text'), hidden ? `${plural(hidden, 'session')} outside this filter` : '')
+    setHidden(section.querySelector('.ah-outside'), !hidden)
 
     // the one-shot pulse: a real call since the last paint, on a drawn working card
     const pulse = new Set()

@@ -670,9 +670,13 @@ effort to Copilot's setting.
 - **The dialog's progress.** After Start, New session stays open and shows main's phases: "Reading
   your shell environment…", "Checking the runtime…", then the driver's "Creating the worktree…" and
   "Starting Copilot…"; it closes once the status line says started, or shows the refusal. Main sends
-  `agent-inbox:launch-progress` with the phase name and the launch id it made, to the window holding
-  the `launch` grant; the preload's `onStartProgress(listener | null)` keeps one listener and passes
-  only the four known phases and a well-formed id. No new privilege. A start in flight belongs to its
+  `agent-inbox:launch-progress` with the phase name, the launch id it made and the start's tag, to the
+  window holding the `launch` grant; the preload's `onStartProgress(listener | null)` keeps one
+  listener and passes only the four known phases, a well-formed id and a well-formed tag. The tag
+  (`startId`, 16–64 of `[A-Za-z0-9_-]`, random per start) is the one field the page adds to its
+  request; `launchRequest` checks it, main echoes it with each phase and never puts it in the spec,
+  and the page binds a phase only when it carries its own tag, so after a reload mid-start the new
+  dialog never takes the earlier start's phases. No new privilege. A start in flight belongs to its
   dialog: New session… is disabled, Escape does nothing, and Cancel becomes **Stop starting**, which
   asks main to Stop the launch through the ordinary Stop once its row exists (the `copilot` phase names
   it; a Stop asked earlier goes then); the driver, set up or not, ends it "stopped before the session

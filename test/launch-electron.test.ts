@@ -491,6 +491,10 @@ describe('the launch controller', () => {
     ['a branch', { ...REQUEST, worktree: true, branch: 'main' }],
     ['a worktree root', { ...REQUEST, worktree: true, worktreeRoot: '/w' }],
     ['a worktree flag that is not true', { ...REQUEST, worktree: 1 }],
+    // #432 PR 5 review: the start's tag is a bounded token only
+    ['a start tag that is too short', { ...REQUEST, startId: 'abc' }],
+    ['a start tag with a path in it', { ...REQUEST, startId: '/Users/shariqh/x/../y' }],
+    ['a start tag that is not text', { ...REQUEST, startId: 12345678901234567 }],
   ])('refuses a request carrying %s before anything runs', async (_, request) => {
     const r = rig()
     expect(await r.controller.start(request)).toEqual({ ok: false, error: 'The new session request is not valid.' })
@@ -891,16 +895,18 @@ describe('a session in its own worktree (#432)', () => {
     const phases: string[] = []
     const lines: string[] = []
     const r = rig({
-      progress: (phase: string, launch: string) => { phases.push(`${phase} ${launch}`) },
+      progress: (phase: string, launch: string, startId?: string) => { phases.push(`${phase} ${launch} ${startId}`) },
       log: (line: string) => { lines.push(line) },
-      startDriver: async (args: { launchId: string; onPhase: (phase: string) => void }) => {
+      startDriver: async (args: { launchId: string; spec: Json; onPhase: (phase: string) => void }) => {
+        expect(args.spec).not.toHaveProperty('startId')
         args.onPhase('worktree')
         args.onPhase('copilot')
         return { ok: true, launch: args.launchId }
       },
     })
-    expect(await r.controller.start(REQUEST)).toEqual({ ok: true, launch: ID })
-    expect(phases).toEqual(['environment', 'runtime', 'worktree', 'copilot'].map((phase) => `${phase} ${ID}`))
+    // the page's tag for the start comes back with each phase, and never reaches the spec
+    expect(await r.controller.start({ ...REQUEST, startId: 'tag-0123456789abcdef' })).toEqual({ ok: true, launch: ID })
+    expect(phases).toEqual(['environment', 'runtime', 'worktree', 'copilot'].map((phase) => `${phase} ${ID} tag-0123456789abcdef`))
     expect(lines).toHaveLength(1)
     expect(lines[0]).toMatch(/^launch 22222222 started: environment \d+ ms, runtime \d+ ms, driver \d+ ms, worktree \d+ ms, copilot \d+ ms$/)
     const quiet: string[] = []
@@ -1336,12 +1342,12 @@ describe('the preload bridge (§8)', () => {
     const launch = exposed.agentInboxLaunch as { onStartProgress: (...args: unknown[]) => boolean }
     const seen: unknown[] = []
     expect(launch.onStartProgress('nope')).toBe(false)
-    expect(launch.onStartProgress((phase: string, id?: string) => seen.push([phase, id]))).toBe(true)
+    expect(launch.onStartProgress((phase: string, id?: string, tag?: string) => seen.push([phase, id, tag]))).toBe(true)
     const send = listeners.get('agent-inbox:launch-progress')!
-    for (const phase of ['environment', 'shell', 'copilot', { phase: 'runtime' }]) send({}, phase, ID)
-    send({}, 'copilot', '../x')
-    // only known phases, and only a launch id that is one
-    expect(seen).toEqual([['environment', ID], ['copilot', ID], ['copilot', undefined]])
+    for (const phase of ['environment', 'shell', 'copilot', { phase: 'runtime' }]) send({}, phase, ID, 'tag-0123456789abcdef')
+    send({}, 'copilot', '../x', 'no')
+    // only known phases, and only a launch id and a start tag that are one
+    expect(seen).toEqual([['environment', ID, 'tag-0123456789abcdef'], ['copilot', ID, 'tag-0123456789abcdef'], ['copilot', undefined, undefined]])
     expect(launch.onStartProgress(null)).toBe(true)
     expect(listeners.has('agent-inbox:launch-progress')).toBe(false)
   })
@@ -1377,7 +1383,7 @@ describe('main’s wiring (source)', () => {
 
   it('sends a start’s phases only to the window holding the launch grant (#432 PR 5)', () => {
     expect(main).toContain('const target = launchWebContentsId === null ? null : BrowserWindow.getAllWindows().map((win) => win.webContents).find((wc) => wc.id === launchWebContentsId)')
-    expect(main).toContain("if (target && !target.isDestroyed()) target.send('agent-inbox:launch-progress', phase, launch)")
+    expect(main).toContain("if (target && !target.isDestroyed()) target.send('agent-inbox:launch-progress', phase, launch, startId)")
     expect(main.match(/'agent-inbox:launch-progress'/g)).toHaveLength(1)
   })
 

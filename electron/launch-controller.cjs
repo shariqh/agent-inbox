@@ -24,6 +24,8 @@ const LAUNCH_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}
 const ITEM_ID = /^[A-Za-z0-9-]{1,128}$/
 const OPTION_ID = /^[A-Za-z0-9_-]{1,64}$/
 const MODEL = /^[A-Za-z0-9._-]{1,64}$/
+// #432 PR 5 review: the page's tag for one start, echoed with its phases; never part of the spec
+const START_ID = /^[A-Za-z0-9_-]{16,64}$/
 const EFFORTS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
 const BUDGETS = { activeMs: { min: 60_000, max: 8 * 60 * 60_000 }, toolCalls: { min: 1, max: 2000 } }
 const MAX_PROMPT = 64 * 1024
@@ -62,7 +64,8 @@ const inBounds = (value, { min, max }) => Number.isSafeInteger(value) && value >
 
 /** The renderer's New session request, checked exactly, or null. */
 function launchRequest(value) {
-  if (!isRecord(value) || !exactKeys(value, ['root', 'mode', 'budgets', 'prompt'], ['model', 'reasoningEffort', 'worktree'])) return null
+  if (!isRecord(value) || !exactKeys(value, ['root', 'mode', 'budgets', 'prompt'], ['model', 'reasoningEffort', 'worktree', 'startId'])) return null
+  if (value.startId !== undefined && (typeof value.startId !== 'string' || !START_ID.test(value.startId))) return null
   // #432: only the wish; never a path, branch or root of the renderer's
   if (value.worktree !== undefined && value.worktree !== true) return null
   if (value.root !== null && (typeof value.root !== 'string' || !path.isAbsolute(value.root) || value.root.length > 4096 || value.root.includes('\0'))) return null
@@ -80,6 +83,7 @@ function launchRequest(value) {
     budgets: { activeMs: value.budgets.activeMs, toolCalls: value.budgets.toolCalls },
     prompt: value.prompt,
     ...(value.worktree === true ? { worktree: true } : {}),
+    ...(value.startId === undefined ? {} : { startId: value.startId }),
   }
 }
 
@@ -252,7 +256,8 @@ function createLaunchController(deps) {
   } = deps
   const now = () => Date.now()
   // the launch id goes with each phase: from 'copilot' on its row exists, so the page can Stop it
-  const report = (phase, launchId) => { try { progress(phase, launchId) } catch { /* a report, not the start */ } }
+  // and the page's tag for the start, so a page reloaded mid-start never takes another start's phases
+  const report = (phase, launchId, startId) => { try { progress(phase, launchId, startId) } catch { /* a report, not the start */ } }
   // #432 §1: session worktrees go under <hub dir>/worktrees unless Settings names another folder
   const defaultWorktreeRoot = path.join(path.dirname(hubPath), 'worktrees')
   // #432: the real folders main's own dialog chose (chooseFolder), newest last. A start may
@@ -287,11 +292,11 @@ function createLaunchController(deps) {
     return { env: launchEnv(env.env) }
   }
 
-  async function spawnDriver(launchId, spec, times = []) {
+  async function spawnDriver(launchId, spec, times = [], startId = undefined) {
     // a quit or a switch turned off while the dialog was open starts nothing
     const late = blocked()
     if (late) return late
-    report('runtime', launchId)
+    report('runtime', launchId, startId)
     let at = now()
     // the human's cap, read for this start: the driver counts every running driver against it (#432 §5)
     const maxDrivers = await maxSessions()
@@ -316,7 +321,7 @@ function createLaunchController(deps) {
       ...(spec.worktree ? { timeoutMs: WORKTREE_STATUS_MS } : {}),
       onPhase: (phase) => {
         step(phase)
-        report(phase, launchId)
+        report(phase, launchId, startId)
       },
     })
     step('')
@@ -412,7 +417,7 @@ function createLaunchController(deps) {
         const late = blocked()
         if (late) return late
         // the checkout's env: the worktree does not exist yet, and holds the same committed files
-        report('environment', launchId)
+        report('environment', launchId, request.startId)
         const envAt = now()
         const ready = await environment(real)
         if (!ready.env) return ready
@@ -422,7 +427,7 @@ function createLaunchController(deps) {
           ...(request.reasoningEffort ? { reasoningEffort: request.reasoningEffort } : {}),
           budgets: request.budgets, prompt: request.prompt, env: ready.env,
           ...(worktree ? { worktree: { path: worktree.path, branch: worktree.branch } } : {}),
-        }, [['environment', now() - envAt]])
+        }, [['environment', now() - envAt]], request.startId)
       })
     },
 

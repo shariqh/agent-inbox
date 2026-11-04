@@ -34,7 +34,9 @@ const PARKED = '11111111-2222-4333-8444-666666666666'
 const LEASE = { launchId: LAUNCH, pid: 4242, nonce: 'n' }
 
 // the page's start-progress listener, as main would call it (#432 PR 5)
-let progress: ((phase: string, launch?: string) => void) | null = null
+let progress: ((phase: string, launch?: string, startId?: string) => void) | null = null
+// the tag of the newest start the page asked main for
+const startTag = (api: { start: { mock: { calls: unknown[][] } } }) => (api.start.mock.calls.at(-1)![0] as { startId: string }).startId
 
 type State = { owned: boolean; enabled: boolean; available: boolean; canEnable: boolean; worktreeRoot?: { path: string; isDefault: boolean }; maxSessions?: number }
 function launchBridge(state: Partial<State> = {}) {
@@ -52,7 +54,7 @@ function launchBridge(state: Partial<State> = {}) {
       return { ok: true, worktreeRoot: current.worktreeRoot }
     }),
     resetWorktreeRoot: vi.fn(async () => ({ ok: true })),
-    onStartProgress: vi.fn((listener: ((phase: string, launch?: string) => void) | null) => { progress = listener; return true }),
+    onStartProgress: vi.fn((listener: ((phase: string, launch?: string, startId?: string) => void) | null) => { progress = listener; return true }),
     setMaxSessions: vi.fn(async (n: number) => { current.maxSessions = n; return { ok: true, maxSessions: n } }),
     removeWorktree: vi.fn(async (_id: string) => ({ ok: true }) as Record<string, unknown>),
     openWorktree: vi.fn(async (_id: string) => ({ ok: true }) as Record<string, unknown>),
@@ -478,6 +480,8 @@ describe('New session (§8)', () => {
     expect(api.start).toHaveBeenCalledWith({
       root: '/work/alpha', mode: 'plan', model: 'claude-haiku-4.5', reasoningEffort: 'none',
       budgets: { activeMs: 7_200_000, toolCalls: 500 }, prompt: 'Fix the failing test.', worktree: true,
+      // this start's tag, which main echoes with its phases (#432 PR 5 review)
+      startId: expect.stringMatching(/^[0-9a-f]{32}$/),
     })
     expect(document.querySelector('.launch-dialog')).toBeNull()
   })
@@ -503,7 +507,7 @@ describe('New session (§8)', () => {
       ['environment', 'Reading your shell environment…'], ['runtime', 'Checking the runtime…'],
       ['worktree', 'Creating the worktree…'], ['copilot', 'Starting Copilot…'],
     ]) {
-      progress!(phase!)
+      progress!(phase!, LAUNCH, startTag(api))
       expect(message()).toBe(text)
     }
     expect(document.querySelector('.launch-dialog')).not.toBeNull()
@@ -542,14 +546,14 @@ describe('New session (§8)', () => {
     const escape = new Event('cancel', { cancelable: true })
     dialog.dispatchEvent(escape)
     expect(escape.defaultPrevented).toBe(true)
-    progress!('environment', LAUNCH)
+    progress!('environment', LAUNCH, startTag(api))
     click(cancel)
     expect(dialog.querySelector('.launch-dialog-message')!.textContent).toBe('Stopping the start…')
     expect(cancel.disabled).toBe(true)
     // no row yet: the Stop goes once the launch is named with its row, at 'copilot'
     expect(api.stop).not.toHaveBeenCalled()
-    progress!('runtime', LAUNCH)
-    progress!('copilot', LAUNCH)
+    progress!('runtime', LAUNCH, startTag(api))
+    progress!('copilot', LAUNCH, startTag(api))
     expect(api.stop).toHaveBeenCalledWith(LAUNCH)
     expect(dialog.querySelector('.launch-dialog-message')!.textContent).toBe('Stopping the start…')
     expect(document.querySelector('.launch-dialog')).toBe(dialog)
@@ -561,11 +565,29 @@ describe('New session (§8)', () => {
     api.start.mockImplementationOnce(() => new Promise((resolve) => { again = resolve as never }))
     dialog.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
     await settle()
-    progress!('copilot', PARKED)
+    progress!('copilot', PARKED, startTag(api))
     click(buttonLabelled('Stop starting', dialog))
     expect(api.stop).toHaveBeenLastCalledWith(PARKED)
     again({ ok: false, error: 'It was stopped before the session started.' })
     await settle()
+  })
+
+  it('phases of another start (one an earlier load of the page made) never bind this dialog’s Stop starting', async () => {
+    const api = launchBridge()
+    const { dialog, finish } = await startPending(api)
+    const mine = startTag(api)
+    const OTHER = '11111111-2222-4333-8444-999999999999'
+    // start A, from before a reload, reaches its 'copilot' phase while this dialog's start B runs
+    progress!('copilot', OTHER, 'a'.repeat(32))
+    progress!('copilot', OTHER)
+    expect(dialog.querySelector('.launch-dialog-message')!.textContent).toBe('Agent Inbox is asking you to confirm…')
+    click(buttonLabelled('Stop starting', dialog))
+    expect(api.stop).not.toHaveBeenCalled()
+    // B's own phase names B, and only B is stopped
+    progress!('copilot', LAUNCH, mine)
+    expect(api.stop).toHaveBeenCalledTimes(1)
+    expect(api.stop).toHaveBeenCalledWith(LAUNCH)
+    await finish({ ok: false, error: 'It was stopped before the session started.' })
   })
 
   it('a second New session cannot open while a start is in flight', async () => {

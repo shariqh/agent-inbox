@@ -207,6 +207,7 @@ function worktreeRootOf(value) {
 
 // #432 PR 5: the start phases main reports, and the one listener the page has for them
 const START_PHASES = new Set(['environment', 'runtime', 'worktree', 'copilot'])
+const isStartId = (value) => typeof value === 'string' && /^[A-Za-z0-9_-]{16,64}$/.test(value)
 let startProgress = null
 
 const failedLaunch = () => ({ ok: false, error: 'Agent Inbox did not answer.' })
@@ -255,7 +256,10 @@ contextBridge.exposeInMainWorld('agentInboxLaunch', {
     const listener = args[0]
     if (listener) {
       // the phase, and the launch id main made for this start (its row exists from 'copilot' on)
-      startProgress = (_event, phase, launch) => { if (START_PHASES.has(phase)) listener(phase, isLaunchId(launch) ? launch : undefined) }
+      // and the tag the page gave that start, so a page reloaded mid-start can tell its own phases
+      startProgress = (_event, phase, launch, startId) => {
+        if (START_PHASES.has(phase)) listener(phase, isLaunchId(launch) ? launch : undefined, isStartId(startId) ? startId : undefined)
+      }
       ipcRenderer.on('agent-inbox:launch-progress', startProgress)
     }
     return true

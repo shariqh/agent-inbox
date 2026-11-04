@@ -594,6 +594,9 @@ export function createLaunchUi(deps) {
       if (starting) return
       start.disabled = true
       message.textContent = 'Agent Inbox is asking you to confirm…'
+      // this start's tag: main echoes it with each phase, so phases of a start an earlier load of
+      // this page made (a reload mid-start) never bind this dialog
+      const startId = Array.from(globalThis.crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('')
       const mine = { own, launch: null, stopAsked: false }
       starting = mine
       cancel.textContent = 'Stop starting'
@@ -603,8 +606,8 @@ export function createLaunchUi(deps) {
       const token = {}
       if (typeof api?.onStartProgress === 'function') {
         progressToken = token
-        api.onStartProgress((phase, launch) => {
-          if (starting !== mine) return
+        api.onStartProgress((phase, launch, tag) => {
+          if (starting !== mine || tag !== startId) return
           if (phase === 'copilot' && typeof launch === 'string') {
             mine.launch = launch
             // a Stop asked for before the launch had a row goes now
@@ -613,7 +616,7 @@ export function createLaunchUi(deps) {
           if (dialog === own && !mine.stopAsked && START_PHASES[phase]) message.textContent = START_PHASES[phase]
         })
       }
-      const result = await deps.pending(() => api.start(made.request)).catch(() => null)
+      const result = await deps.pending(() => api.start({ ...made.request, startId })).catch(() => null)
       // only this start's listener, and only this start's dialog
       if (progressToken === token) {
         api.onStartProgress(null)

@@ -169,12 +169,39 @@ describe('fileOpenPlan judges the final target (issue #300)', () => {
     expect(await fileOpenPlan(join(root, name), { homeDir: root })).toMatchObject({ ok: true, action: 'reveal', reason })
   })
 
-  it('reports a missing file, a dangling link and a bad path without touching anything', async () => {
+  it('reveals the nearest existing folder of a missing file, a dangling link or a file used as a folder', async () => {
     const { root } = tree()
-    expect(await fileOpenPlan(join(root, 'nope.md'), { homeDir: root })).toEqual({ ok: false, reason: 'missing' })
-    expect(await fileOpenPlan(join(root, 'dangling.md'), { homeDir: root })).toEqual({ ok: false, reason: 'missing' })
-    expect(await fileOpenPlan(join(root, 'doc.md', 'below'), { homeDir: root })).toEqual({ ok: false, reason: 'missing' })
+    const real = realpathSync(root)
+    const nearest = (path: string) => ({ ok: true, action: 'reveal', path, reason: 'missing' })
+    expect(await fileOpenPlan(join(root, 'nope.md'), { homeDir: root })).toEqual(nearest(real))
+    expect(await fileOpenPlan(join(root, 'dangling.md'), { homeDir: root })).toEqual(nearest(real))
+    // doc.md is a file, so the nearest folder is the one holding it
+    expect(await fileOpenPlan(join(root, 'doc.md', 'below'), { homeDir: root })).toEqual(nearest(real))
+    expect(await fileOpenPlan(join(root, 'folder', 'gone', 'deeper', 'x.weird'), { homeDir: root })).toEqual(nearest(join(real, 'folder')))
+    expect(await fileOpenPlan('~/gone/x.md', { homeDir: root })).toEqual(nearest(real))
+    // a folder reached through a symlink is revealed by its real path, and an app bundle's never runs
+    expect(await fileOpenPlan(join(root, 'app-link', 'Contents', 'x.plist'), { homeDir: root })).toEqual(nearest(join(real, 'Tool.app')))
     expect(await fileOpenPlan('relative.md', { homeDir: root })).toEqual({ ok: false, reason: 'invalid' })
+  })
+
+  it('never shows a folder above the home folder for a missing absolute path', async () => {
+    const { root } = tree()
+    const real = realpathSync(root)
+    const home = join(root, 'folder')
+    const missing = { ok: false, reason: 'missing' }
+    // home itself is as high as it goes
+    expect(await fileOpenPlan(join(home, 'gone', 'x.md'), { homeDir: home })).toEqual({ ok: true, action: 'reveal', path: join(real, 'folder'), reason: 'missing' })
+    // a path that is not under home shows nothing, however near its folder is
+    expect(await fileOpenPlan(join(root, 'nope.md'), { homeDir: home })).toEqual(missing)
+    expect(await fileOpenPlan('/etc/agent-inbox-not-here/x.md', { homeDir: home })).toEqual(missing)
+    // nor does one whose home has gone, or a home that is not a plain absolute path
+    expect(await fileOpenPlan(join(root, 'no-home', 'x.md'), { homeDir: join(root, 'no-home') })).toEqual(missing)
+    for (const homeDir of [undefined, 'relative/home', '']) {
+      expect(await fileOpenPlan(join(root, 'nope.md'), { homeDir } as never), String(homeDir)).toEqual(missing)
+    }
+    // nor a folder under home whose symlinks lead out of it
+    symlinkSync(root, join(home, 'up'))
+    expect(await fileOpenPlan(join(home, 'up', 'gone.md'), { homeDir: home })).toEqual(missing)
   })
 })
 
@@ -424,8 +451,9 @@ describe('openLinkRequest (issue #300)', () => {
     expect(await openLinkRequest({ kind: 'file', path: join(root, 'a.command'), reveal: false }, deps)).toEqual({ ok: true, action: 'revealed', reason: 'blocked' })
     expect(await openLinkRequest({ kind: 'file', path: join(root, 'a.py'), reveal: false }, deps)).toEqual({ ok: true, action: 'revealed', reason: 'type' })
     expect(await openLinkRequest({ kind: 'file', path: join(root, 'a.md'), reveal: true }, deps)).toEqual({ ok: true, action: 'revealed', reason: 'requested' })
-    expect(await openLinkRequest({ kind: 'file', path: join(root, 'missing.md'), reveal: true }, deps)).toEqual({ ok: false, reason: 'missing' })
-    expect(calls.map(([call]) => call)).toEqual(['openPath', 'showItemInFolder', 'showItemInFolder', 'showItemInFolder'])
+    expect(await openLinkRequest({ kind: 'file', path: join(root, 'missing.md'), reveal: true }, deps)).toEqual({ ok: true, action: 'revealed', reason: 'missing', folder: realpathSync(root).split('/').pop() })
+    expect(calls.map(([call]) => call)).toEqual(['openPath', 'showItemInFolder', 'showItemInFolder', 'showItemInFolder', 'showItemInFolder'])
+    expect(calls.at(-1)).toEqual(['showItemInFolder', realpathSync(root)])
     expect(calls.every(([, path]) => !path.includes('~'))).toBe(true)
   })
 
@@ -895,10 +923,22 @@ describe('repo-relative paths: joined to their folder, and kept inside it (issue
     },
   )
 
-  it('reports a file the folder does not have, and a folder that has gone, as missing', async () => {
+  it('reveals the nearest folder inside the repository for a file it does not have, and never one above it', async () => {
     const { base, root } = repository()
-    expect(await fileOpenPlan('docs/specs/not-here.md', { root, ...deps() })).toEqual({ ok: false, reason: 'missing' })
+    const real = realpathSync(root)
+    const nearest = (path: string) => ({ ok: true, action: 'reveal', path, reason: 'missing' })
+    expect(await fileOpenPlan('docs/specs/not-here.md', { root, ...deps() })).toEqual(nearest(join(real, 'docs', 'specs')))
+    expect(await fileOpenPlan('docs/plans/2026/plan.md', { root, ...deps() })).toEqual(nearest(join(real, 'docs')))
+    // the repository's own folder is as high as it goes
+    expect(await fileOpenPlan('gone/x.md', { root, ...deps() })).toEqual(nearest(real))
+    expect(await fileOpenPlan('docs/specs/spec.md', { root: join(base, 'repo-link'), ...deps() })).toMatchObject({ ok: true, action: 'open' })
+    expect(await fileOpenPlan('docs/specs/gone.md', { root: join(base, 'repo-link'), ...deps() })).toEqual(nearest(join(real, 'docs', 'specs')))
+    // with the repository's folder gone there is nothing inside it to show, and its parent is never shown
     expect(await fileOpenPlan('docs/specs/spec.md', { root: join(base, 'gone'), ...deps() })).toEqual({ ok: false, reason: 'missing' })
+    // nor is a folder its symlinks lead out to
+    const { calls, execFileImpl } = fakeXattr()
+    expect(await fileOpenPlan('vendor/gone/x.md', { root, platform: 'darwin', execFileImpl })).toEqual({ ok: false, reason: 'outside' })
+    expect(calls).toEqual([])
   })
 
   it('joins only a plain relative path to a plain absolute folder', async () => {
@@ -926,8 +966,10 @@ describe('repo-relative paths: joined to their folder, and kept inside it (issue
     expect(await openLinkRequest({ kind: 'file', path: 'docs/specs/spec.md', root, reveal: true }, owned)).toEqual({ ok: true, action: 'revealed', reason: 'requested' })
     expect(await openLinkRequest({ kind: 'file', path: 'docs/escape.md', root, reveal: false }, owned)).toEqual({ ok: false, reason: 'outside' })
     expect(await openLinkRequest({ kind: 'file', path: 'docs/escape.md', root, reveal: true }, owned)).toEqual({ ok: false, reason: 'outside' })
-    expect(await openLinkRequest({ kind: 'file', path: 'docs/specs/gone.md', root, reveal: false }, owned)).toEqual({ ok: false, reason: 'missing' })
-    expect(calls).toEqual([['openPath', spec], ['showItemInFolder', spec]])
+    expect(await openLinkRequest({ kind: 'file', path: 'docs/specs/gone.md', root, reveal: false }, owned)).toEqual({ ok: true, action: 'revealed', reason: 'missing', folder: 'specs' })
+    expect(await openLinkRequest({ kind: 'file', path: 'vendor/gone.md', root, reveal: false }, owned)).toEqual({ ok: false, reason: 'outside' })
+    const specs = realpathSync(join(root, 'docs', 'specs'))
+    expect(calls).toEqual([['openPath', spec], ['showItemInFolder', spec], ['showItemInFolder', specs]])
 
     const touched: string[] = []
     const untouched = new Proxy({}, { get(_target, name) { touched.push(String(name)); throw new Error('the filesystem was read') } })
@@ -935,9 +977,10 @@ describe('repo-relative paths: joined to their folder, and kept inside it (issue
       const other = { shell, homeDir: '/Users/nobody', fsp: untouched, filesPermitted, platform: 'darwin', execFileImpl: () => { touched.push('xattr') } } as never
       expect(await openLinkRequest({ kind: 'file', path: 'docs/specs/spec.md', root, reveal: false }, other)).toEqual({ ok: false, reason: 'unowned' })
       expect(await openLinkRequest({ kind: 'file', path: 'docs/escape.md', root, reveal: true }, other)).toEqual({ ok: false, reason: 'unowned' })
+      expect(await openLinkRequest({ kind: 'file', path: 'docs/specs/gone.md', root, reveal: false }, other)).toEqual({ ok: false, reason: 'unowned' })
     }
     expect(touched).toEqual([])
-    expect(calls).toHaveLength(2)
+    expect(calls).toHaveLength(3)
   })
 
   it('applies a Settings → Links rule to the resolved file, and never to an escape', async () => {

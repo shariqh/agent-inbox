@@ -1043,10 +1043,13 @@ function createWindow() {
     return { action: 'deny' }
   })
   // In-window navigation away from the local viewer goes to the system browser
-  // the same way; anything else is dropped.
+  // the same way; anything else is dropped. Electron has already reported this
+  // navigation's start, which revoked the window's grants, so the page that is
+  // still shown gets them back (a dropped file or URL lands here too).
   win.webContents.on('will-navigate', (e, url) => {
     if (isViewerUrl(url, URL_BASE)) return
     e.preventDefault()
+    installBinding?.navigationPrevented(url)
     openWebLink(url, shell, { readRules: linkRules, ...linkOpening })
   })
   win.webContents.on('did-finish-load', async () => {

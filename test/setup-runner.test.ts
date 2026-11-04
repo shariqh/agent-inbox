@@ -15,6 +15,7 @@ type InstallBindingGrant = { setup: boolean; update: boolean; files: boolean; la
 type InstallBinding = {
   navigationStarted(url: string): void
   navigationCommitted(url: string): Promise<boolean>
+  navigationPrevented(url: string): boolean
   rendererGone(): void
   closed(): void
   settled(): Promise<void>
@@ -603,6 +604,82 @@ describe('createInstallBinding (#216)', () => {
     h.proof().resolve(true)
     await expect(rebound).resolves.toBe(true)
     expect(h.granted).toEqual({ ...allowed, launch: false })
+  })
+
+  // Electron emits did-start-navigation before will-navigate, so a navigation
+  // main cancels itself (an external link, a dropped file or URL) started a
+  // revoke that no commit follows: before this, the page kept copying file
+  // paths instead of opening them until it was reloaded.
+  it('gives a bound page its grants back when main cancels the navigation that would have left it', async () => {
+    const h = loaded()
+    h.binding.navigationStarted('https://example.com/x')
+    expect(h.granted).toEqual(NONE)
+    expect(h.binding.navigationPrevented('https://example.com/x')).toBe(true)
+    expect(h.granted).toEqual(BOTH)
+    expect(h.proveOwnership).not.toHaveBeenCalled()
+    // once is enough, and a later reload still needs its own proof
+    expect(h.binding.navigationPrevented('https://example.com/x')).toBe(false)
+    await expect(h.binding.navigationCommitted('https://example.com/x')).resolves.toBe(false)
+    h.binding.navigationStarted(VIEWER)
+    expect(h.granted).toEqual(NONE)
+    const rebound = h.binding.navigationCommitted(VIEWER)
+    h.proof().resolve(true)
+    await expect(rebound).resolves.toBe(true)
+    expect(h.granted).toEqual(BOTH)
+  })
+
+  it('never restores grants for another navigation, a page that held none, a crash, a close or a quit', async () => {
+    const other = loaded()
+    other.binding.navigationStarted('https://example.com/a')
+    expect(other.binding.navigationPrevented('https://example.com/b')).toBe(false)
+    expect(other.granted).toEqual(NONE)
+
+    const newer = loaded()
+    newer.binding.navigationStarted('https://example.com/a')
+    newer.binding.navigationStarted('https://example.com/b')
+    expect(newer.binding.navigationPrevented('https://example.com/a')).toBe(false)
+    // the page the second navigation would leave was already revoked by the first
+    expect(newer.binding.navigationPrevented('https://example.com/b')).toBe(false)
+    expect(newer.granted).toEqual(NONE)
+
+    const committed = loaded()
+    committed.binding.navigationStarted(VIEWER)
+    const rebound = committed.binding.navigationCommitted(VIEWER)
+    expect(committed.binding.navigationPrevented(VIEWER)).toBe(false)
+    committed.proof().resolve(true)
+    await expect(rebound).resolves.toBe(true)
+
+    const reproving = loaded()
+    reproving.binding.navigationStarted(VIEWER)
+    void reproving.binding.navigationCommitted(VIEWER)
+    reproving.binding.navigationStarted('https://example.com/')
+    expect(reproving.binding.navigationPrevented('https://example.com/')).toBe(false)
+    reproving.proof().resolve(true)
+    await reproving.binding.settled()
+    expect(reproving.granted).toEqual(NONE)
+
+    const crashed = loaded()
+    crashed.binding.navigationStarted('https://example.com/')
+    crashed.binding.rendererGone()
+    expect(crashed.binding.navigationPrevented('https://example.com/')).toBe(false)
+    expect(crashed.granted).toEqual(NONE)
+
+    const closing = loaded()
+    closing.binding.navigationStarted('https://example.com/')
+    closing.binding.closed()
+    expect(closing.binding.navigationPrevented('https://example.com/')).toBe(false)
+    expect(closing.granted).toEqual(NONE)
+
+    const quitting = loaded()
+    quitting.binding.navigationStarted('https://example.com/')
+    quitting.quit()
+    expect(quitting.binding.navigationPrevented('https://example.com/')).toBe(false)
+    expect(quitting.granted).toEqual(NONE)
+
+    const unowned = loaded({ setup: false, update: false, files: false })
+    unowned.binding.navigationStarted('https://example.com/')
+    unowned.binding.navigationPrevented('https://example.com/')
+    expect(unowned.granted).toEqual(NONE)
   })
 
   it('grants no local file links unless the caller allows them (#300)', async () => {

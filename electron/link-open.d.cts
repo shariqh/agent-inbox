@@ -8,6 +8,8 @@ export type RevealReason = 'folder' | 'app' | 'blocked' | 'executable' | 'specia
 export type LinkResult =
   | { ok: true; action: 'opened' }
   | { ok: true; action: 'revealed'; reason: RevealReason | 'requested' }
+  // a missing file: its nearest existing folder was revealed, named here without its path
+  | { ok: true; action: 'revealed'; reason: 'missing'; folder: string }
   | { ok: false; reason: LinkFailure }
 
 /** Settings → Links (part 2), as electron/link-preferences.cjs reads them. */
@@ -20,7 +22,7 @@ export interface LinkRules {
 
 export type FilePlan =
   | { ok: true; action: 'open'; path: string; rule?: Extract<LinkRule, { handler: 'quicklook' | 'app' }> }
-  | { ok: true; action: 'reveal'; path: string; reason: RevealReason }
+  | { ok: true; action: 'reveal'; path: string; reason: RevealReason | 'missing' }
   | { ok: false; reason: Exclude<LinkFailure, 'unavailable' | 'unowned' | 'app-missing' | 'app-refused'> }
 
 export interface LinkShell {

@@ -13,7 +13,7 @@ applyTo: "public/links.js,public/source.js,public/link-open.js,public/link-strip
 
 # Links in agent text
 
-Link detection, rendering and opening (#300), Settings → Links (#300 part 2) and repo-relative paths (#324).
+Link detection, rendering and opening (#300), Settings → Links (#300 part 2), repo-relative paths (#324) and file links that always show something in Finder.
 
 Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly verbatim. Claude Code and Copilot CLI load this file automatically when they read or edit a file matching the `paths`/`applyTo` globs above (through the symlinks in `.claude/rules/` and `.github/instructions/`); anyone else should read it before changing those files.
 
@@ -39,8 +39,14 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   any execute bit are only revealed. Opening is an allow-list of common
   document types; anything else is revealed, and on macOS so is an alias or a
   file with its own Open With (checked through `/usr/bin/xattr`, argv only,
-  failing closed). `setWindowOpenHandler` and `will-navigate` share the same
-  http(s) check. A browser copies a file's path instead.
+  failing closed). A missing file reveals its nearest existing folder under
+  home (or, repo-relative, under its repository), so in the owned viewer a
+  click on a file link shows something in Finder whenever it can and never
+  copies; Copy path is only the chip's own action. `setWindowOpenHandler`
+  and `will-navigate` share the same http(s) check, and a navigation
+  `will-navigate` cancels gives the page back the grants its start revoked. A
+  browser or a reused viewer copies a file's path instead, saying "Files open
+  only in Agent Inbox’s own window".
 - Settings → Links (#300 part 2, macOS only) lives in main:
   `electron/link-preferences.cjs` keeps per-type rules in userData
   `link-preferences.json` (schema 1, `createLockedFile`, tolerant reader that
@@ -73,7 +79,8 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   the folder in an escaped `data-link-root`, never an href. Main joins a plain
   relative path to the folder (`joinRepoPath`), refuses it as `outside` when
   its real path leaves the folder's real path, and then applies the same
-  policy and grant as any file. A missing one copies its path instead.
+  policy and grant as any file. A missing one reveals its nearest folder inside
+  the repository, never one above it.
 
 ## Invariants in detail
 
@@ -115,12 +122,24 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   grant (`agent-inbox:link-files-available` awaits `installBinding.settled()`), asked once per
   page load, again when Settings opens, and again before a file link copies instead of
   opening; where it is false (and in a browser) `fileLinksCopy()` makes file links say "Copy
-  path" in their title and a click copies the path with "File links open only in Agent
-  Inbox’s own viewer". The UI is only a hint: main's refusal is the boundary, and a refused
-  click falls back to copying. The request has exactly its keys; a web link is http(s) by
+  path" in their title and a click copies the path with "Files open only in Agent Inbox’s own
+  window." (one note for both: the grant is the boundary, not the page). The UI is only a
+  hint: main's refusal is the boundary, and a refused click falls back to copying. **Where
+  the grant holds, a click never copies:** it opens, or main reveals; Copy path is only the
+  strip chip's explicit action. **The grant must not be lost to a navigation that never
+  happened (the owner's "file links only copy" report).** Electron reports a main-frame
+  navigation's start (`did-start-navigation`, which revokes every grant, #216) BEFORE main's
+  `will-navigate` handler can cancel it, so before this fix a navigation main cancelled
+  itself (a link without `target="_blank"`, `location.href` to another origin, and above all
+  a file or URL dropped on the window, which Chromium navigates to) left the page that was
+  still shown revoked until a reload: every file click then copied. `will-navigate` now calls
+  `installBinding.navigationPrevented(url)` after `preventDefault()`, which gives the grants
+  back only when that URL is the navigation that just started, no newer navigation, crash,
+  close or quit has happened since, and the page held them when it started (one whose own
+  re-proof was still running stays revoked); `test/setup-runner.test.ts` pins each case. The request has exactly its keys; a web link is http(s) by
   `URL` and only its normalized href reaches `shell.openExternal`; a file path is absolute
   after `~/`, normalized, control-free, and judged by its FINAL target after `realpath`:
-  missing is reported, a folder or `.app` is only revealed, a denied extension on the link or
+  missing reveals its nearest existing ancestor folder (`reason: 'missing'`, below), a folder or `.app` is only revealed, a denied extension on the link or
   its target (apps, launchers, location and VPN files, installers, disk images, executables,
   compiled and Windows scripts, documents that can carry macros, certificates) or any execute
   bit is only revealed. **Opening is an ALLOW-list** (`OPENABLE_EXTENSIONS`: Markdown, text,
@@ -133,7 +152,17 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   `com.apple.FinderInfo`, a non-empty `..namedfork/rsrc`), and for a per-file
   `com.apple.LaunchServices.OpenWith`; xattrs are read with `/usr/bin/xattr` through
   `execFile`, argv only, and a check that cannot finish reveals (`blocked`, fail closed). Only
-  then does `shell.openPath` get the resolved path. The check is point-in-time.
+  then does `shell.openPath` get the resolved path. The check is point-in-time. **A missing
+  file still shows something:** `nearestFolder` walks up the already-validated path (never
+  a renderer string) to the nearest ancestor that exists and is a folder by its `realpath`,
+  **never above the home folder** (main's `homeDir`; a system folder is not worth showing):
+  a path not under home, a home that has gone, or an ancestor whose real path leaves home's
+  reveals nothing and answers `missing`. Main reveals the folder it finds with `shell.showItemInFolder` (never `openPath`, so a bundle on the
+  way never runs), answering `{ ok: true, action: 'revealed', reason: 'missing', folder }`,
+  where `folder` is only that folder's name (the preload keeps a string of at most 255
+  characters, else `''`); the renderer says "<name> isn’t there; showing <folder> in Finder."
+  Otherwise the answer is `missing` and the renderer says "<name> isn’t there." Nothing is
+  copied.
   `setWindowOpenHandler` and `will-navigate` share `openWebLink`, so no path in main hands a
   non-http(s) URL to the OS.
 - **Settings → Links (#300 part 2) is macOS-only, main-owned, and never outranks the safety
@@ -219,6 +248,9 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   absolute folder, then resolves both with `realpath` and refuses a file whose real path is not
   inside the folder's (`outside`, said as "points outside its repository") before `lstat`, the
   xattr checks or any rule; everything after that is today's policy, ownership grant included.
-  A `missing` answer for a relative request copies the path as written and says it may be on
-  another branch or worktree; Copy path, a browser and a reused viewer copy the full path.
+  A relative file the folder does not have (a doc only on a PR branch or in another
+  worktree) reveals its nearest folder **inside** the repository: the walk stops at the
+  recorded folder and never shows one above it, an ancestor whose real path leaves the
+  folder's is `outside`, and with the folder itself gone the answer is `missing` ("Not found
+  in <folder>: …"). Copy path, a browser and a reused viewer copy the full path.
   Nothing about it reaches attention, a badge or a count.

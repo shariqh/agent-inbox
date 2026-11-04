@@ -529,6 +529,11 @@ function createInstallGate() {
  * covers the page the window has just loaded. A newer navigation, a renderer
  * crash or the window closing discards a proof still running; nothing binds
  * once the app has begun to quit (#205), and a closed window never binds again.
+ * Electron starts a navigation (`did-start-navigation`) before main's
+ * `will-navigate` handler may cancel it, so a navigation main cancels itself
+ * (an external link or a dropped file or URL) would otherwise leave the page
+ * still shown revoked until its next load: `navigationPrevented(url)` gives a
+ * window that was bound when that navigation started its grants back.
  *
  * `setupAllowed()`, `updateAllowed()` and `filesAllowed()` (none by default)
  * say what this app may grant at all; when none holds, nothing is probed.
@@ -543,6 +548,9 @@ function createInstallBinding({
   let closed = false
   let navigation = 0
   let awaitingCommit = null
+  // the navigation awaiting its commit: its url and whether the page it would
+  // leave held the grants
+  let started = null
   let inFlight = null
   // whether the window's current document holds its grants (bound, not revoked)
   let bound = false
@@ -587,8 +595,28 @@ function createInstallBinding({
         }
         return
       }
+      const wasBound = bound
       revoke()
       awaitingCommit = navigation
+      started = { navigation, url, wasBound }
+    },
+    /**
+     * Main cancelled the navigation that just started at `url` (`will-navigate`'s
+     * preventDefault), so the window still shows the page it showed before.
+     * Gives that page back the grants it held, and only those: never after a
+     * newer navigation, a crash, a close or once a quit has begun, and never to
+     * a page that was not bound (one whose own re-proof was still running stays
+     * revoked until its next load). Returns whether it bound the window again.
+     */
+    navigationPrevented(url) {
+      if (!started || started.navigation !== navigation || awaitingCommit !== navigation || started.url !== url) return false
+      const { wasBound } = started
+      started = null
+      if (!wasBound || closed || isQuitting()) return false
+      awaitingCommit = null
+      bound = true
+      apply(grants())
+      return true
     },
     /**
      * The main frame committed a new document at `url` (`did-navigate`).

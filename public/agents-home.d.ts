@@ -44,8 +44,12 @@ export function installAgentsHome(options: {
   jumpToAsk: (entry: AttentionEntry) => void
   /** #411: open the Live drawer with this session's message composer, focused */
   openMessage?: (session: string) => void
+  /** the human left the Sessions lens, whose lanes card holds the session panel (#307) */
+  onLeaveSessions?: () => void
 }): {
   paint(host: Element, input: { activity: LaneActivity[]; attention: AttentionEntry[]; closed?: Iterable<string>; startedHere?: Iterable<string>; nowMs: number }): void
+  /** switch to the Sessions lens, so the session panel in the lanes card shows */
+  showSessions(): void
   /** the window-local lens, for frameInputs() */
   lens(): 'sessions' | 'agents'
 }

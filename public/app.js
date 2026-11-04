@@ -2130,7 +2130,16 @@ const laneFilters = { project: null, agent: null }
 let focusSession = null // the session the focus panel shows, if open
 let lastDashModel = null // the model the last paint drew, for a handler's own repaint
 // The Agents view (#397, always on since #454): its lens is window-local state.
-const agentsHome = installAgentsHome({ jumpToAsk, openMessage })
+const agentsHome = installAgentsHome({
+  jumpToAsk,
+  openMessage,
+  // the session panel lives in the lanes card: leaving its lens closes it, so it never sits hidden
+  onLeaveSessions: () => {
+    if (!focusSession) return
+    focusSession = null
+    paintSessionFocus()
+  },
+})
 
 function dashLanesEl() {
   const section = document.createElement('section')
@@ -2546,8 +2555,13 @@ function paintSessionFocus() {
   }
 }
 
+// An element the human can see: no ancestor (the lanes card under the Agents lens) is hidden.
+const isShown = (el) => Boolean(el) && !el.closest('[hidden]')
+
 function openSessionFocus(session) {
   focusSession = session
+  // the panel is in the lanes card, which only the Sessions lens shows (#454)
+  agentsHome.showSessions()
   paintSessionFocus()
   if (document.hasFocus()) document.getElementById('dashFocusTitle')?.focus({ preventScroll: true })
 }
@@ -2560,7 +2574,8 @@ function closeSessionFocus() {
   paintSessionFocus()
   if (!owned || !document.hasFocus()) return
   const lane = document.querySelector(`#dashboard .dash-lane[data-lane="${CSS.escape(session)}"] .dash-lane-open`)
-  ;(lane ?? document.getElementById('dashLanesTitle'))?.focus({ preventScroll: true })
+  ;[lane, document.getElementById('dashLanesTitle'), document.querySelector('#dashboard .mesh-lens [data-mesh-lens="sessions"]')]
+    .find(isShown)?.focus({ preventScroll: true })
 }
 
 // A trusted click outside the panel that is not on a lane (a lane toggles it
@@ -2594,6 +2609,7 @@ function jumpToSession(session) {
   laneFilters.project = null
   laneFilters.agent = null
   focusSession = session
+  agentsHome.showSessions()
   resetSearch()
   selectTab('dashboard', { paint: false })
   forceRender()

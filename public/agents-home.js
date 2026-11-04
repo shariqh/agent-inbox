@@ -89,11 +89,12 @@ export function sessionRecency(session) {
 const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`
 
 /**
- * @param {{ doc?: Document, jumpToAsk: (entry: any) => void, openMessage?: (session: string) => void }} options
+ * @param {{ doc?: Document, jumpToAsk: (entry: any) => void, openMessage?: (session: string) => void, onLeaveSessions?: () => void }} options
  *   `jumpToAsk` is the lanes' own: it opens an ask on the rail or in the Inbox.
  *   `openMessage` (#411) opens the Live drawer with a session's composer.
+ *   `onLeaveSessions` runs when the human leaves the Sessions lens, whose lanes card holds the session panel.
  */
-export function installAgentsHome({ doc = globalThis.document, jumpToAsk, openMessage }) {
+export function installAgentsHome({ doc = globalThis.document, jumpToAsk, openMessage, onLeaveSessions }) {
   // Window-local, like the lanes' quick filters: a fresh window opens on Agents.
   let lens = 'agents'
   let last = null
@@ -119,6 +120,7 @@ export function installAgentsHome({ doc = globalThis.document, jumpToAsk, openMe
       button.addEventListener('click', () => {
         if (lens === value) return
         lens = value
+        if (value !== 'sessions') onLeaveSessions?.()
         if (last) paint(last.host, last.input)
       })
       bar.appendChild(button)
@@ -258,5 +260,12 @@ export function installAgentsHome({ doc = globalThis.document, jumpToAsk, openMe
     }
   }
 
-  return { paint, lens: () => lens }
+  /** The Sessions lens, for the session panel (#307), which lives in the lanes card. */
+  function showSessions() {
+    if (lens === 'sessions') return
+    lens = 'sessions'
+    if (last) paint(last.host, last.input)
+  }
+
+  return { paint, showSessions, lens: () => lens }
 }

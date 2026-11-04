@@ -818,8 +818,15 @@ export function createLaunchUi(deps) {
       else if (action === 'take-over') takeOver(id)
       else if (action === 'open-worktree') openWorktree(id)
     },
-    /** Resume…, an explicit click: the drawer row's Resume and send text takes focus (until the session panel holds it). */
+    /**
+     * Resume…, an explicit click: the drawer row's Resume and send text takes focus (until the session
+     * panel holds it). A launch past the newest five is drawn first, by showing the earlier sessions.
+     */
     focusResume(id) {
+      if (!resumeInputs.get(id)?.isConnected && !showEarlier) {
+        showEarlier = true
+        bump()
+      }
       const input = resumeInputs.get(id)
       if (input?.isConnected) input.focus()
     },

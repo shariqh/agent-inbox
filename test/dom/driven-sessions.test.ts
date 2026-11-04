@@ -967,6 +967,31 @@ describe('session cards for launches (#454, #412)', () => {
     expect(api.takeOver).toHaveBeenCalledWith(LAUNCH)
   })
 
+  it('Resume… on a resumable launch past the newest five still lands on its Resume and send (#458 review)', async () => {
+    launchBridge()
+    db = freshDb()
+    newLaunch(db)
+    parkLaunch(db, LAUNCH, { acpSession: 'acp-1', activeMs: 10, toolCalls: 3 })
+    endLaunch(db, LAUNCH, { reason: 'stopped' })
+    for (let n = 0; n < 5; n++) {
+      advanceClock()
+      const id = `11111111-2222-4333-8444-${String(800 + n).padStart(12, '0')}`
+      newLaunch(db, id)
+      endLaunch(db, id, { reason: 'stopped' })
+    }
+    await bootApp(db)
+    await changedPollTick(db)
+    await settle()
+    const id = `launch:${LAUNCH}`
+    expect(card(id)?.querySelector('.sc-state')?.textContent).toBe('Parked')
+    // the drawer lists the newest five ended launches only, until Earlier sessions is open
+    expect(launchRow(LAUNCH)).toBeNull()
+    click(cardAction(id, 'resume'))
+    await settle()
+    expect(drawer().hidden).toBe(false)
+    expect(document.activeElement).toBe(launchRow(LAUNCH)?.querySelector('.live-launch-resume-input'))
+  })
+
   it('folds an ended launch under Ended, whose card opens its transcript', async () => {
     launchBridge()
     db = freshDb()

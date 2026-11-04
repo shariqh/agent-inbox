@@ -181,7 +181,8 @@ describe('the Agents home (#454)', () => {
     expect([fold('closed').hidden, fold('closed').querySelector('summary')?.textContent]).toEqual([false, 'In closed projects (2)'])
     expect(fold('ended').hidden).toBe(true)
     expect(fold('dormant').querySelectorAll('[data-session-card]')).toHaveLength(0)
-    expect(groups().flatMap(([, ids]) => ids)).toEqual(['session:k1', 'session:c1'])
+    // 9 h on, their claims have gone cold: idle, and an idle session links no plan it did not stamp
+    expect(groups().flatMap(([, ids]) => ids)).toEqual(['session:c1', 'session:k1'])
     // opening the fold paints its cards at once, not at the next poll
     fold('closed').open = true
     fold('closed').dispatchEvent(new Event('toggle'))

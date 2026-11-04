@@ -125,8 +125,8 @@ describe('sessionCards: one card per session', () => {
 describe('sessionCards: asks', () => {
   const item = (id: string, o: Record<string, unknown>) => ({ kind: 'item', item: { id, created_at: at(5000), kind: 'question', ...o } })
 
-  it('attributes an item by its session and a row by the card’s linked plan, and Needs you wins over every state', () => {
-    const board = { id: 'b1', project: 'alpha', stream: 'main', agent: 'claude-code', title: 'Plan', updated_at: at(1000), rows: [] }
+  it('attributes an item by its session and a row by the plan its session stamped, and Needs you wins over every state', () => {
+    const board = { id: 'b1', project: 'alpha', stream: 'main', agent: 'claude-code', title: 'Plan', updated_at: at(1000), rows: [], session: 'k' }
     const cards = by(sessionCards({
       activity: [
         row({ session: 'k', agent: 'claude-code', project: 'alpha', doing: 'open', idle: true, last_call_at: at(9 * HOUR) }),
@@ -148,6 +148,35 @@ describe('sessionCards: asks', () => {
     expect(cards[`launch:${ID(1)}`]).toMatchObject({ state: 'ask', base: 'parked', approval: true })
     // an item naming no session is the rail's alone
     expect(cards['session:c']).toMatchObject({ state: 'working', asks: [] })
+  })
+
+  it('gives a plan row’s ask to one card only, so Needs you counts what the rail does (#458 review)', () => {
+    const board = { id: 'b1', project: 'p', stream: 'main', agent: 'claude-code', title: 'Plan', updated_at: at(1000), rows: [], session: 'A' }
+    const ask = { kind: 'row', row: { id: 'r1', label: 'Rotate the token', action_started_at: at(4000) }, board }
+    const quiet = (session: string, ms: number) => row({ session, project: 'p', agent: 'claude-code', doing: 'open', idle: true, last_call_at: at(ms) })
+    const activity = [quiet('A', 5 * MIN), quiet('B', 40 * MIN), quiet('C', 9 * HOUR), quiet('D', 30 * HOUR)]
+    const cards = by(sessionCards({ activity, boards: [board as never], attention: [ask] as never, nowMs: NOW }))
+    // the stamping session's card has it; the others keep their own state and place
+    expect(['A', 'B', 'C', 'D'].map((s) => [cards[`session:${s}`]!.state, cards[`session:${s}`]!.place, cards[`session:${s}`]!.asks.length]))
+      .toEqual([['ask', 'main', 1], ['idle', 'main', 0], ['dormant', 'dormant', 0], ['dormant', 'dormant', 0]])
+    expect(filterCounts(Object.values(cards).filter((card) => card.place === 'main')).ask).toBe(1)
+
+    // unstamped, a quiet session links no plan: the ask is the rail's alone
+    const loose = sessionCards({ activity, boards: [{ ...board, session: null } as never], attention: [{ ...ask, board: { ...board, session: null } }] as never, nowMs: NOW })
+    expect(loose.filter((card) => card.asks.length)).toEqual([])
+    // and a working session joins it as its lane does, the newest one only
+    const two = sessionCards({
+      activity: [...activity, row({ session: 'W1', project: 'p', agent: 'claude-code', doing: 'Working', last_call_at: at(2 * MIN) }),
+        row({ session: 'W2', project: 'p', agent: 'claude-code', doing: 'Working', last_call_at: at(MIN) })],
+      boards: [{ ...board, session: null } as never], attention: [{ ...ask, board: { ...board, session: null } }] as never, nowMs: NOW,
+    })
+    expect(two.filter((card) => card.asks.length).map((card) => card.id)).toEqual(['session:W2'])
+  })
+
+  it('counts each ask once under Needs you, however many one card holds', () => {
+    const items = ['i1', 'i2'].map((id) => item(id, { project: 'alpha', session: 's' }))
+    const cards = sessionCards({ activity: [row({ session: 's', project: 'alpha', doing: 'Working', last_call_at: at(1000) })], attention: items as never, nowMs: NOW })
+    expect(filterCounts(cards)).toMatchObject({ all: 1, ask: 2 })
   })
 })
 

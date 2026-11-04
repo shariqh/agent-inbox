@@ -63,9 +63,11 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   is the Dashboard's default lens, in the lanes' grid place (Sessions brings the lanes
   back until they retire). `public/sessions.js` (pure) builds one card per session from
   the frame's reads: each launch (switch on only, §9) joined with its live driven rows
-  (`launchSessions`), and every other `/api/activity` row. States: Needs you (an item
-  naming one of the card's sessions, or a row of its `linkedPlan`, read from
-  `waitingEntries`), Didn't start / Not responding, Starting… / Stopping…, Working
+  (`launchSessions`), and every other `/api/activity` row. States: Needs you (read from
+  `waitingEntries`; each ask goes to at most one card: an item to the card of the session
+  it names, a plan row to the card of the session that stamped the plan, else to the
+  newest working card the lanes' `linkedPlan` join links, never to an idle or dormant
+  one that did not stamp it; the filter counts asks, as the rail does), Didn't start / Not responding, Starting… / Stopping…, Working
   (`isWorking`), Idle, Parked (parked, or stopped with its session kept), In Terminal,
   Ended, Dormant (`isDormant`). Grouped by project (or agent kind), sorted by state then
   newest call, order pinned between forced paints like the lanes'. Working cards carry

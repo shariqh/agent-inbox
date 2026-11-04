@@ -39,12 +39,17 @@ describe('a launch’s state', () => {
   const session = { driven: true, driven_launch: 'L', session: 'mcp-1' }
 
   it('reads running, starting, not responding, stopping, parked and ended, each with its actions', () => {
-    expect(launchStatus(launch(), [session], NOW)).toMatchObject({ state: 'running', actions: ['stop', 'park', 'transcript'] })
+    expect(launchStatus(launch(), [session], NOW)).toMatchObject({ state: 'running', actions: ['stop', 'park', 'takeover', 'transcript'] })
     expect(launchStatus(launch(), [], NOW)).toMatchObject({ state: 'starting' })
     expect(launchStatus(launch({ updated_at: '2026-11-02T11:57:00.000Z' }), [], NOW)).toMatchObject({ state: 'lost', actions: ['close', 'stop', 'transcript'] })
     expect(launchStatus(launch({ stop_requested_at: '2026-11-02T11:59:50.000Z' }), [session], NOW)).toMatchObject({ state: 'stopping', actions: ['transcript'] })
     expect(launchStatus(launch({ status: 'parked', park_reason: 'Its session could not be loaded.' }), [], NOW)).toMatchObject({
       state: 'parked', text: 'Parked: idle, its session kept. Its session could not be loaded.', actions: ['resume', 'stop', 'transcript'],
+    })
+    // step 5: only a parked session Copilot persisted can be taken over in a terminal
+    expect(launchStatus(launch({ status: 'parked', resumable: true }), [], NOW).actions).toEqual(['resume', 'takeover', 'stop', 'transcript'])
+    expect(launchStatus(launch({ status: 'ended', end_reason: 'handed_off', resumable: true }), [], NOW)).toEqual({
+      state: 'handed_off', text: 'Handed off to a terminal: it goes on in Copilot there.', actions: ['terminal', 'transcript'],
     })
     expect(launchStatus(launch({ status: 'ended', end_reason: 'budget:tool_calls' }), [], NOW)).toMatchObject({ state: 'ended', text: 'Ended: tool-call budget used' })
     expect(launchStatus(launch({ status: 'ended', end_reason: 'something_new' }), [], NOW).text).toBe('Ended (something_new)')
@@ -64,6 +69,18 @@ describe('the transcript', () => {
     ])).toEqual([
       { kind: 'note', text: 'This model takes no reasoning effort, so Agent Inbox started it with none.' },
       { kind: 'note', text: 'The task was sent.' },
+    ])
+  })
+
+  it('names a Take over and its end (step 5)', () => {
+    expect(transcriptLines([
+      { event: 'agent_text', text: 'Working.' },
+      { event: 'handoff_requested', turn: 4 },
+      { event: 'ended', reason: 'handed_off' },
+    ])).toEqual([
+      { kind: 'text', text: 'Working.' },
+      { kind: 'note', text: 'You took it over: Agent Inbox stopped driving it.' },
+      { kind: 'note', text: 'Handed off to a terminal: copilot --resume goes on with it there.' },
     ])
   })
 

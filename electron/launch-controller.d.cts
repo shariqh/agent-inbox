@@ -18,6 +18,8 @@ export interface LaunchController {
   maxSessions(): Promise<number | null>
   setMaxSessions(value: unknown): Promise<LaunchResult>
   openWorktree(id: unknown): Promise<LaunchResult>
+  /** step 5: Take over in Terminal (or open Terminal again on a launch already handed off) */
+  takeOver(id: unknown): Promise<LaunchResult>
   worktreeRoot(): Promise<WorktreeRoot | null>
   chooseWorktreeRoot(): Promise<LaunchResult>
   resetWorktreeRoot(): Promise<LaunchResult>
@@ -50,5 +52,11 @@ export function quitChoice(options: {
 }): Promise<'keep' | 'stop'>
 export function removalConfirmation(facts: {
   project: string; path: string; branch: string; missing: boolean; dirty: number; ahead: number; upstream: boolean
-  examples?: string[]; noDiscard?: string | null
+  examples?: string[]; noDiscard?: string | null; handedOff?: boolean
 }): { message: string; detail: string; buttons: string[] }
+export function takeOverConfirmation(facts: {
+  project: string; folder: string; state: 'running' | 'parked' | 'handed_off'
+}): { message: string; detail: string; buttons: string[] }
+export function takeOverScript(facts: {
+  launchId: string; folder: string; session: string; model?: string | null; reasoningEffort?: string | null
+}): string | null

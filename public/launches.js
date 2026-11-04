@@ -118,6 +118,7 @@ const END_REASONS = {
   'error:lease_lost': 'Ended: another driver took over',
   'error:start': 'Didn’t start',
   'error:protocol': 'Ended: Copilot answered something unexpected',
+  handed_off: 'Handed off to a terminal: it goes on in Copilot there.',
 }
 
 /** A launch's driven sessions in /api/activity, live ones only. */
@@ -128,11 +129,15 @@ export function launchSessions(launch, activity) {
 /**
  * What a launch is now, and what the human can do with it. One that ended
  * before its session was ready is `failed`: "Didn't start", with why (#432 PR 5).
- * @returns {{state: 'starting'|'running'|'stopping'|'lost'|'parked'|'ended'|'failed', text: string, actions: string[]}}
+ * One taken over in Terminal (step 5) is `handed_off`: Terminal can be opened on it again.
+ * @returns {{state: 'starting'|'running'|'stopping'|'lost'|'parked'|'ended'|'failed'|'handed_off', text: string, actions: string[]}}
  */
 export function launchStatus(launch, activity, nowMs) {
   if (launch.status === 'ended' && (launch.end_detail || launch.end_reason === 'error:start')) {
     return { state: 'failed', text: `Didn’t start${launch.end_detail ? `: ${launch.end_detail}` : '.'}`, actions: ['transcript'] }
+  }
+  if (launch.status === 'ended' && launch.end_reason === 'handed_off') {
+    return { state: 'handed_off', text: END_REASONS.handed_off, actions: ['terminal', 'transcript'] }
   }
   if (launch.status === 'ended') {
     return { state: 'ended', text: END_REASONS[launch.end_reason] ?? `Ended (${launch.end_reason ?? 'unknown'})`, actions: ['transcript'] }
@@ -142,11 +147,11 @@ export function launchStatus(launch, activity, nowMs) {
     return {
       state: 'parked',
       text: `Parked: idle, its session kept.${why}`,
-      actions: ['resume', 'stop', 'transcript'],
+      actions: ['resume', ...(launch.resumable ? ['takeover'] : []), 'stop', 'transcript'],
     }
   }
   if (launch.stop_requested_at) return { state: 'stopping', text: 'Stopping…', actions: ['transcript'] }
-  if (launchSessions(launch, activity).length) return { state: 'running', text: 'Running', actions: ['stop', 'park', 'transcript'] }
+  if (launchSessions(launch, activity).length) return { state: 'running', text: 'Running', actions: ['stop', 'park', 'takeover', 'transcript'] }
   const since = Date.parse(launch.updated_at ?? launch.created_at)
   if (Number.isFinite(since) && nowMs - since > LOST_AFTER_MS) {
     return { state: 'lost', text: 'Not responding: its driver may have stopped.', actions: ['close', 'stop', 'transcript'] }
@@ -221,6 +226,10 @@ export function transcriptLines(events) {
         flush()
         lines.push({ kind: 'note', text: 'You asked it to park: it parks once its turn ends.' })
         break
+      case 'handoff_requested':
+        flush()
+        lines.push({ kind: 'note', text: 'You took it over: Agent Inbox stopped driving it.' })
+        break
       case 'effort_fallback':
         flush()
         lines.push({ kind: 'note', text: 'This model takes no reasoning effort, so Agent Inbox started it with none.' })
@@ -229,7 +238,12 @@ export function transcriptLines(events) {
         flush()
         // the first Copilot of an effort fallback: the session goes on with the second
         if (event.retry === 'effort') break
-        lines.push({ kind: 'note', text: event.reason === 'idle' || event.reason === 'park' ? 'Parked: Copilot stopped, its session kept to resume.' : `Session ended (${event.reason ?? 'unknown'}).` })
+        lines.push({
+          kind: 'note',
+          text: event.reason === 'idle' || event.reason === 'park' ? 'Parked: Copilot stopped, its session kept to resume.'
+            : event.reason === 'handed_off' ? 'Handed off to a terminal: copilot --resume goes on with it there.'
+              : `Session ended (${event.reason ?? 'unknown'}).`,
+        })
         break
       default:
         break

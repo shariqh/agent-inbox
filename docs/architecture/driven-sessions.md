@@ -287,7 +287,7 @@ Everything main does for a driven session is injected and tested without Electro
 - **The IPC** (`launch-ipc.cjs`, `setup-preload.cjs` `agentInboxLaunch`): `available()`,
   `setEnabled(on)`, `start(request)`, `stop(id)`, `close(id)`, `resume(id)`, `approve({ item, revision,
   optionId })`, and #432's `chooseWorktreeRoot()` and `resetWorktreeRoot()`, each with exact arity, answering only the viewer window's top frame, after any re-proof in
-  flight. `takeOver` is step 5. The preload checks argument shapes and hands back checked answers.
+  flight; step 5 adds `takeOver(id)` (below). The preload checks argument shapes and hands back checked answers.
 - **What the renderer may send** (`launchRequest`, `approvalRequest` in `launch-controller.cjs`): exactly
   `{ root, mode, model?, reasoningEffort?, budgets, prompt, worktree? }` (`worktree` only ever `true`, and
   `root` may also be a folder main's own Choose folder… dialog chose, #432), where `root` is one of the repository folders
@@ -688,3 +688,65 @@ effort to Copilot's setting.
   start 1.3 s); main's login-shell capture 0.8 s (async) and the runtime verification 460 ms cold, 175 ms
   warm, synchronous and run twice per start, the one known blocking step. The session linked 0.8 s
   after ready and showed in `/api/activity` as driven, so the Agents view lists it.
+
+## Step 5, part 1: Take over in Terminal
+
+Design §3.5 and §14.7. Checked with one real run against Copilot CLI 1.0.106: `copilot
+--resume=<ACP session id>` resumes a session the driver created over ACP, with its history, in the same
+session folder.
+
+- **The state.** A handed-off launch is `status = 'ended'`, `end_reason = 'handed_off'`, with
+  `acp_session` kept. No column, status or trigger is added: `/api/launches` still serves no ACP session,
+  an older viewer reads an ended launch, `resumeLaunch` (parked only), Park now, Interrupt and Stop refuse
+  it, and its asks are settled, so nothing pushes to, approves for or resumes it from the app again.
+- **`handOffForTerminal(id)`** (`store.ts`, one `.immediate()` transaction, `POST
+  /api/launches/:id/hand-off`): a running launch not stopping, whose driver holds a fresh lease, gets a
+  `driver-handoff:<id>` request (`requested`); a parked launch with a session is ended `handed_off` at
+  once, by a statement conditioned on still being parked with a session; a handed-off one answers
+  `{ state: 'handed_off', session, cwd, model, effort }` for main. Anything else refuses (`stopping`,
+  `lost`, `no_session`, `ended`, `unknown`). `withdrawLaunchHandOff` (`POST …/hand-off/withdraw`),
+  `releaseDriverLeases` and `resumeLaunch` drop an untaken request, so a later driver never hands off
+  unasked. Like Stop, the human's own capability: a same-origin page could hand a session off, but only
+  main opens a terminal.
+- **The driver** takes the request on a tick (`takeLaunchHandOff`, logged `handoff_requested`) only once
+  set up with its task sent, so Copilot has persisted the session; until then it waits. It then ends as
+  Stop does, mid-turn or mid-approval: open requests answered `cancelled`, asks resolved "Handed off to a
+  terminal.", `session/cancel`, the child's stdin closed (`EndReason` `handed_off`). `run` waits for
+  Copilot to exit, ends whatever is left in its process group (SIGTERM, `reapProcessGroup`'s SIGKILL after
+  2 s), so no process of the ACP Copilot outlives the handoff, writes the final worktree summary, then
+  `handOffLaunch` (running only; a Stop that came meanwhile ends it `stopped`), exit 0. The worktree is
+  **not** unlocked: the terminal session works there now. Remove worktree… stays offered once the launch
+  ended, and its dialog says for a handed-off launch "Its session was taken over in Terminal: quit that
+  Copilot first.".
+- **Main** (`takeOver(id)`, IPC `launch-take-over`, exactly a launch id, the `launch` grant). A fresh row
+  read: running (driver `running`, not stopping), parked and `resumable`, or ended `handed_off` (Terminal
+  again); its folder must be its own real folder with no control character (else the branch is named, as
+  Resume does). Main's native confirmation (`takeOverConfirmation`: the turn and its approvals are
+  cancelled, the launch never comes back to the app, unread messages stay with the old session; for a
+  handed-off launch, a warning against two Copilots in one session), then the route, polling the row up
+  to 60 s for a running launch. The flow is one loop that ends in exactly one of two ways (review of
+  #450): the launch handed off and Terminal opened, or no request of its own left for a driver to take.
+  A request still waiting at the deadline, or a second `requested` (the launch runs again after a Resume),
+  is withdrawn; a withdrawal that answers `ok: false` means a driver took it first, so main waits (up to
+  60 s more) for that hand-off and completes it instead. An unreadable row is not taken as the launch
+  having stopped. A `finally` withdraws any request still pending on every other way out, a hub error or
+  a throw included; only a definite answer to a `hand-off` POST clears it, since one with no answer (a
+  timeout) may still have stored its request; one a driver has already taken is under way, and its launch then offers Resume in
+  Terminal. The answer's `cwd` must equal the
+  confirmed folder, still its own real folder. `takeOverScript` writes `<hub dir>/launches/<id>/take-over.command` (`0700` in the
+  `0700` log folder, temp file and rename): `cd -- '<folder>'`, `copilot --resume=<id>` with the launch's
+  model and reasoning effort (each left out unless it matches its own pattern; the session must be a
+  lowercase UUID), then `exec "${SHELL:-/bin/sh}" -l`, every word single-quoted. It is opened with the
+  same `/usr/bin/open -a Terminal -- <path>` argv as Open in Terminal.
+- **The page.** A running launch and a parked one with a session offer **Take over in Terminal**
+  ("Handing off…" while main works); a handed-off launch reads "Handed off to a terminal: it goes on in
+  Copilot there." and offers **Resume in Terminal** and the transcript, which names the take over and its
+  end. A refusal shows on the row; Cancel shows nothing. Off, nothing is drawn or read (§9).
+- **Messages.** New messages go to the terminal Copilot's own MCP session, an ordinary non-driven
+  session, at its next check; those the driven session had not read stay with it.
+- **Mixed versions.** An older driver never takes the request: main withdraws it after 60 s and says so.
+- **Tests**: `test/launches.test.ts` (the request, the parked write, refusals, withdrawal),
+  `test/driver.test.ts` (waits for setup), `test/driver-run.test.ts` (mid-approval end to end: the ask
+  settled, the request cancelled, a process left in Copilot's group ended, the row), `test/launch-electron.test.ts`
+  (confirmation, polling, the script's text, a real `/bin/sh` run with a hostile folder name, refusals,
+  IPC, preload, main's wiring), `test/launches-page.test.ts`, `test/dom/driven-sessions.test.ts`.

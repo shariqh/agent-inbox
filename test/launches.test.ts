@@ -12,7 +12,7 @@ import {
   listLaunchAskReplies, listLaunches, openDb, parkLaunch, readSnapshotState, recordLaunchProgress, replyItem,
   requestLaunchStop, resumeLaunch, settleLaunchAsk, listActivity, markDriverTurn, requestLaunchInterrupt, takeLaunchInterrupt,
   upsertActivity, holdDriverLeases, releaseDriverLeases, requestLaunchPark, takeLaunchPark, insertItem, listLaunchFolders,
-  markWorktreeRemoved, recordWorktreeSummary,
+  markWorktreeRemoved, recordWorktreeSummary, handOffForTerminal, handOffLaunch, takeLaunchHandOff, withdrawLaunchHandOff,
 } from '../src/store.js'
 import type { NewLaunch } from '../src/store.js'
 import { createViewer } from '../src/viewer.js'
@@ -378,6 +378,88 @@ describe('the composer’s turn state and Interrupt and send (§5.3)', () => {
     const app = createViewer(db)
     expect(await (await app.request(`/api/launches/${ID(1)}/interrupt`, { method: 'POST' })).json()).toEqual({ ok: true })
     expect(await (await app.request(`/api/launches/${ID(9)}/interrupt`, { method: 'POST' })).json()).toEqual({ ok: false })
+  })
+})
+
+describe('Take over in Terminal (step 5, §3.5)', () => {
+  const lease = { launchId: ID(1), pid: 4242, nonce: 'n' }
+  const post = async (app: ReturnType<typeof createViewer>, path: string) => {
+    const response = await app.request(path, { method: 'POST' })
+    return { cache: response.headers.get('cache-control'), body: await response.json() as Record<string, unknown> }
+  }
+
+  it('asks a running launch’s live driver, which takes it once and ends the launch handed off with its session', async () => {
+    const app = createViewer(db)
+    expect((await post(app, `/api/launches/${ID(1)}/hand-off`)).body).toEqual({ ok: false, reason: 'unknown' })
+    createLaunch(db, launch(1))
+    // no driver lease: lost, nothing to ask
+    expect(handOffForTerminal(db, ID(1))).toEqual({ ok: false, reason: 'lost' })
+    expect(takeLaunchHandOff(db, ID(1))).toBe(false)
+    claimDriverSlot(db, lease, 2)
+    expect(await post(app, `/api/launches/${ID(1)}/hand-off`)).toEqual({ cache: 'no-store', body: { ok: true, state: 'requested' } })
+    expect(takeLaunchHandOff(db, ID(1))).toBe(true)
+    expect(takeLaunchHandOff(db, ID(1))).toBe(false)
+    // the driver, once Copilot exited
+    expect(handOffLaunch(db, ID(1), { acpSession: 'acp-1', activeMs: 20, toolCalls: 3 })).toBe(true)
+    expect(getLaunch(db, ID(1))).toMatchObject({ status: 'ended', end_reason: 'handed_off', acp_session: 'acp-1', active_ms: 20, tool_calls: 3, child_pgid: null })
+    expect(handOffLaunch(db, ID(1), { acpSession: 'acp-2', activeMs: 0, toolCalls: 0 })).toBe(false)
+    // asked again, it answers what Terminal needs, and never resumes or parks
+    expect((await post(app, `/api/launches/${ID(1)}/hand-off`)).body).toEqual({
+      ok: true, state: 'handed_off', session: 'acp-1', cwd: '/work/agent-inbox', model: 'claude-haiku-4.5', effort: 'none',
+    })
+    expect(resumeLaunch(db, ID(1), 5)).toBeNull()
+    expect(requestLaunchPark(db, ID(1))).toBe(false)
+    expect(requestLaunchInterrupt(db, ID(1))).toBe(false)
+    expect(requestLaunchStop(db, ID(1))).toBeNull()
+    // the snapshot still serves no ACP session
+    const listed = (await (await app.request('/api/launches')).json() as Array<Record<string, unknown>>)[0]!
+    expect(listed).toMatchObject({ end_reason: 'handed_off', resumable: true })
+    expect(listed).not.toHaveProperty('acp_session')
+  })
+
+  it('refuses a stopping launch, and a Stop during the handoff still ends it stopped', () => {
+    createLaunch(db, launch(1))
+    claimDriverSlot(db, lease, 2)
+    requestLaunchStop(db, ID(1))
+    expect(handOffForTerminal(db, ID(1))).toEqual({ ok: false, reason: 'stopping' })
+    expect(handOffLaunch(db, ID(1), { acpSession: 'acp-1', activeMs: 0, toolCalls: 0 })).toBe(true)
+    expect(getLaunch(db, ID(1))).toMatchObject({ status: 'ended', end_reason: 'stopped' })
+    expect(handOffForTerminal(db, ID(1))).toEqual({ ok: false, reason: 'ended' })
+  })
+
+  it('hands a parked launch off at once, only with a session Copilot persisted', () => {
+    createLaunch(db, launch(1))
+    parkLaunch(db, ID(1), { acpSession: null, activeMs: 0, toolCalls: 0 })
+    expect(handOffForTerminal(db, ID(1))).toEqual({ ok: false, reason: 'no_session' })
+    expect(getLaunch(db, ID(1))!.status).toBe('parked')
+    createLaunch(db, launch(2))
+    parkLaunch(db, ID(2), { acpSession: 'acp-2', activeMs: 0, toolCalls: 0 })
+    const before = getLaunch(db, ID(2))!.revision
+    expect(handOffForTerminal(db, ID(2))).toMatchObject({ ok: true, state: 'handed_off', session: 'acp-2' })
+    expect(getLaunch(db, ID(2))).toMatchObject({ status: 'ended', end_reason: 'handed_off', parked_at: null, revision: before + 1 })
+    expect(resumeLaunch(db, ID(2), 5)).toBeNull()
+    // any other end is not handed off
+    endLaunch(db, ID(1), { reason: 'stopped' })
+    expect(handOffForTerminal(db, ID(1))).toEqual({ ok: false, reason: 'ended' })
+  })
+
+  it('an untaken request goes with its driver, by withdrawal, or at a later resume', async () => {
+    const app = createViewer(db)
+    createLaunch(db, launch(1))
+    claimDriverSlot(db, lease, 2)
+    handOffForTerminal(db, ID(1))
+    releaseDriverLeases(db, lease)
+    expect(takeLaunchHandOff(db, ID(1))).toBe(false)
+    claimDriverSlot(db, lease, 2)
+    handOffForTerminal(db, ID(1))
+    expect((await post(app, `/api/launches/${ID(1)}/hand-off/withdraw`)).body).toEqual({ ok: true })
+    expect(takeLaunchHandOff(db, ID(1))).toBe(false)
+    expect(withdrawLaunchHandOff(db, '../x')).toBe(false)
+    // an older driver never takes it and parks; the resume the human asked for later clears it
+    handOffForTerminal(db, ID(1))
+    parkLaunch(db, ID(1), { acpSession: 'acp-1', activeMs: 0, toolCalls: 0 })
+    expect(resumeLaunch(db, ID(1), 5)).not.toBeNull()
+    expect(takeLaunchHandOff(db, ID(1))).toBe(false)
   })
 })
 

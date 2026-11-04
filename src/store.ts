@@ -3858,10 +3858,10 @@ export function holdDriverLeases(
 // leases are never dropped.
 export function releaseDriverLeases(db: Database.Database, lease: DriverLease): void {
   const token = driverToken(lease)
-  db.prepare(`DELETE FROM hook_watch_claims WHERE token = ? OR claim_key IN (?, ?, ?)
+  db.prepare(`DELETE FROM hook_watch_claims WHERE token = ? OR claim_key IN (?, ?, ?, ?)
                  OR (claim_key = ? AND substr(token, 1, length(?)) = ?)`)
     .run(token, `driver-stop:${lease.launchId}`, `driver-interrupt:${lease.launchId}`, `driver-park:${lease.launchId}`,
-      `driver-turn:${lease.launchId}`, `${token}|`, `${token}|`)
+      `driver-handoff:${lease.launchId}`, `driver-turn:${lease.launchId}`, `${token}|`, `${token}|`)
 }
 
 // Issue #412 step 3 (§5.3): whether the driver's turn runs, and whether it
@@ -3911,6 +3911,60 @@ export function requestLaunchPark(db: Database.Database, id: string): boolean {
 
 export function takeLaunchPark(db: Database.Database, launchId: string): boolean {
   return db.prepare(`DELETE FROM hook_watch_claims WHERE claim_key = ?`).run(`driver-park:${launchId}`).changes > 0
+}
+
+// Take over in Terminal (step 5, §3.5): the launch leaves Agent Inbox for a
+// terminal `copilot --resume=<ACP session>`, so two writers never share the
+// session. A running launch's driver is asked (a `driver-handoff:` request it
+// takes once, set up and with its task sent): it cancels the turn, answers open
+// approvals cancelled, closes Copilot and ends the launch `handed_off` with the
+// session kept (handOffLaunch). A parked launch has no driver, so it is handed
+// off here at once. A handed-off launch is ended: nothing resumes, pushes to or
+// approves for it again. Polled by main, so the answer for one already handed
+// off carries what its terminal needs.
+export type LaunchHandOff =
+  | { ok: true; state: 'requested' }
+  | { ok: true; state: 'handed_off'; session: string; cwd: string; model: string | null; effort: string | null }
+  | { ok: false; reason: 'unknown' | 'ended' | 'stopping' | 'lost' | 'no_session' }
+
+export function handOffForTerminal(db: Database.Database, id: string): LaunchHandOff {
+  if (!LAUNCH_ID.test(id)) return { ok: false, reason: 'unknown' }
+  return db.transaction((): LaunchHandOff => {
+    const row = db.prepare(`SELECT status, end_reason, stop_requested_at, acp_session FROM launches WHERE id = ?`).get(id) as
+      { status: LaunchStatus; end_reason: string | null; stop_requested_at: string | null; acp_session: string | null } | undefined
+    if (!row) return { ok: false, reason: 'unknown' }
+    if (row.status === 'running') {
+      if (row.stop_requested_at !== null) return { ok: false, reason: 'stopping' }
+      if (!launchDriverAlive(db, id)) return { ok: false, reason: 'lost' }
+      claimHookWatch(db, `driver-handoff:${id}`, 'handoff')
+      return { ok: true, state: 'requested' }
+    }
+    if (row.status === 'parked') {
+      const now = new Date().toISOString()
+      // conditioned: still parked, with a session Copilot persisted, so a resume racing this cannot also take it
+      const changed = db.prepare(`UPDATE launches SET status = 'ended', end_reason = 'handed_off', ended_at = ?, parked_at = NULL, park_reason = NULL,
+                                         updated_at = ?, revision = revision + 1
+                                   WHERE id = ? AND status = 'parked' AND acp_session IS NOT NULL`).run(now, now, id).changes === 1
+      if (!changed) return { ok: false, reason: 'no_session' }
+    } else if (row.end_reason !== 'handed_off') {
+      return { ok: false, reason: 'ended' }
+    }
+    const done = db.prepare(`SELECT acp_session, cwd, model, reasoning_effort FROM launches WHERE id = ? AND end_reason = 'handed_off'`).get(id) as
+      { acp_session: string | null; cwd: string; model: string | null; reasoning_effort: string | null } | undefined
+    if (!done?.acp_session) return { ok: false, reason: 'no_session' }
+    return { ok: true, state: 'handed_off', session: done.acp_session, cwd: done.cwd, model: done.model, effort: done.reasoning_effort }
+  }).immediate()
+}
+
+export function takeLaunchHandOff(db: Database.Database, launchId: string): boolean {
+  return db.prepare(`DELETE FROM hook_watch_claims WHERE claim_key = ?`).run(`driver-handoff:${launchId}`).changes > 0
+}
+
+// Main gave up waiting (a driver too old to know the request, or one still
+// starting): the request goes, so a later driver of this launch never hands off unasked.
+export function withdrawLaunchHandOff(db: Database.Database, id: string): boolean {
+  if (!LAUNCH_ID.test(id)) return false
+  return takeLaunchHandOff(db, id)
 }
 
 // Step 2's Stop, written by the runtime CLI (`driver-cli.js stop <launch id>`).
@@ -4139,11 +4193,15 @@ export function listLaunches(db: Database.Database): Launch[] {
 // statement, so two Resume clicks cannot both start a driver on it.
 export function resumeLaunch(db: Database.Database, id: string, driverPid: number): LaunchRecord | null {
   if (!LAUNCH_ID.test(id)) return null
-  const row = db.prepare(`UPDATE launches
-                             SET status = 'running', parked_at = NULL, park_reason = NULL, driver_pid = ?, updated_at = ?, revision = revision + 1
-                           WHERE id = ? AND status = 'parked'
-                       RETURNING *`).get(driverPid, new Date().toISOString(), id) as (Omit<LaunchRecord, 'sessions'> & { sessions: string | null }) | undefined
-  return row ? parseLaunch(row) : null
+  return db.transaction(() => {
+    const row = db.prepare(`UPDATE launches
+                               SET status = 'running', parked_at = NULL, park_reason = NULL, driver_pid = ?, updated_at = ?, revision = revision + 1
+                             WHERE id = ? AND status = 'parked'
+                         RETURNING *`).get(driverPid, new Date().toISOString(), id) as (Omit<LaunchRecord, 'sessions'> & { sessions: string | null }) | undefined
+    // a Take over asked of an earlier driver that never took it is stale: this resume was asked after it
+    if (row) db.prepare(`DELETE FROM hook_watch_claims WHERE claim_key = ?`).run(`driver-handoff:${id}`)
+    return row ? parseLaunch(row) : null
+  }).immediate()
 }
 
 export interface LaunchProgress {
@@ -4199,6 +4257,26 @@ export function parkLaunch(
     reason: park.reason ?? null, forget: park.forgetSession === true ? 1 : 0,
   }) as { status: LaunchStatus } | undefined
   return row?.status ?? null
+}
+
+// Take over in Terminal (§3.5), the driver's end: Copilot has exited, so the
+// session is the terminal's now. Only a running launch with the session
+// Copilot persisted; a Stop that arrived meanwhile still ends it as stopped.
+export function handOffLaunch(
+  db: Database.Database,
+  id: string,
+  end: { acpSession: string; activeMs: number; toolCalls: number },
+): boolean {
+  const now = new Date().toISOString()
+  return db.prepare(`UPDATE launches
+                        SET status = 'ended', end_reason = CASE WHEN stop_requested_at IS NULL THEN 'handed_off' ELSE 'stopped' END,
+                            acp_session = @acp, ended_at = @now, parked_at = NULL, park_reason = NULL,
+                            active_ms = MAX(active_ms, @activeMs), tool_calls = MAX(tool_calls, @toolCalls),
+                            driver_pid = NULL, child_pgid = NULL, child_started_at = NULL, host_pid = NULL,
+                            updated_at = @now, revision = revision + 1
+                      WHERE id = @id AND status = 'running'`).run({
+    now, id, acp: end.acpSession, activeMs: Math.max(0, Math.round(end.activeMs)), toolCalls: Math.max(0, Math.round(end.toolCalls)),
+  }).changes === 1
 }
 
 export function endLaunch(

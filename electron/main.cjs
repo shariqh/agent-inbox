@@ -20,7 +20,7 @@
 const { app, BrowserWindow, dialog, ipcMain, Menu, Notification, nativeTheme, safeStorage, session, shell } = require('electron')
 const { execFile, spawn } = require('node:child_process')
 const { randomBytes, randomUUID } = require('node:crypto')
-const { existsSync, realpathSync, statSync } = require('node:fs')
+const { chmodSync, existsSync, mkdirSync, realpathSync, renameSync, statSync, writeFileSync } = require('node:fs')
 const os = require('node:os')
 const http = require('node:http')
 const path = require('node:path')
@@ -592,10 +592,23 @@ function launchControllerFor() {
       const { response } = owner() ? await dialog.showMessageBox(owner(), options) : await dialog.showMessageBox(options)
       return response
     },
-    // #432 §6: Terminal at the worktree, argv only
+    // #432 §6: Terminal at the worktree, argv only; step 5: Terminal running a Take over script
     openTerminal: (folder) => new Promise((resolve) => {
       execFile('/usr/bin/open', ['-a', 'Terminal', '--', folder], { env: { PATH: '/usr/bin:/bin' }, timeout: 10_000 }, (error) => resolve(!error))
     }),
+    // step 5: the Take over script, 0700 in the launch's 0700 log folder, by temp file and rename
+    writeScript: (file, text) => {
+      try {
+        mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
+        const temp = `${file}.${process.pid}.tmp`
+        writeFileSync(temp, text, { mode: 0o700 })
+        chmodSync(temp, 0o700)
+        renameSync(temp, file)
+        return true
+      } catch {
+        return false
+      }
+    },
     chooseWorktreeFolder: async () => {
       const options = { title: 'Choose the folder for session worktrees', buttonLabel: 'Choose', properties: ['openDirectory', 'createDirectory'] }
       const result = owner() ? await dialog.showOpenDialog(owner(), options) : await dialog.showOpenDialog(options)

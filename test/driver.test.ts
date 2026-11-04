@@ -18,7 +18,7 @@ import type { LaunchMode } from '../src/driver-policy.js'
 import {
   annotateBoardRow, claimDriverSlot, getBoard, getItem, insertItem, isDrivenSession, listItems, listPending,
   listSessionMessages, openDb, replyItem, requestDriverStop, sendSessionMessage, upsertActivity, upsertBoard,
-  withdrawSessionMessage, endActivity, createLaunch, getLaunch, dismissItem, resolveItem, listActivity, requestLaunchInterrupt, requestLaunchPark,
+  withdrawSessionMessage, endActivity, createLaunch, getLaunch, dismissItem, resolveItem, listActivity, requestLaunchInterrupt, requestLaunchPark, handOffForTerminal,
 } from '../src/store.js'
 import { LAUNCH_KEY, sign } from './launch-fixtures.js'
 import { MODE, configUpdate, fakeAgent, permissionRequest, toolCall } from './acp-fake.js'
@@ -507,6 +507,21 @@ describe('pushed delivery (§5.3)', () => {
     expect(h.log.find((e) => e.event === 'ready')).toBeDefined()
     expect(h.driver.resumableSession()).toBe('acp-1')
     expect(h.driver.sessionGone()).toBe(false)
+  })
+
+  it('Take over waits until a resume’s session is loaded and set up, then hands it off (step 5)', async () => {
+    let release!: () => void
+    const holdLoad = new Promise<void>((resolve) => { release = resolve })
+    const h = start({ app: true, loadSessionId: 'acp-1', script: { holdLoad } })
+    await until(() => h.fake.received.find((m) => m.method === 'session/load'), 'the load')
+    expect(handOffForTerminal(h.human, LAUNCH)).toEqual({ ok: true, state: 'requested' })
+    await new Promise((resolve) => setTimeout(resolve, 80))
+    // not taken before Copilot answered the load: there is nothing to resume in a terminal yet
+    expect(h.log.find((e) => e.event === 'handoff_requested')).toBeUndefined()
+    release()
+    expect(await h.done).toBe('handed_off')
+    expect(h.log.find((e) => e.event === 'ready')).toBeDefined()
+    expect(h.driver.resumableSession()).toBe('acp-1')
   })
 
   it('Park now waits for the running turn to end, then ends as the idle park does (#412 step 3, PR 4)', async () => {

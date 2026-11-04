@@ -204,7 +204,9 @@ Messages to it use #411's hooks or watcher.
 
 **Take over in a terminal** (step 5). The driver cancels the turn, closes the child and marks
 the launch `handed_off`. Main then opens a terminal on `claude --resume <id>` or
-`copilot --resume <id>`. Two writers never share a session.
+`copilot --resume <id>`. Two writers never share a session. As built (§14.7): `handed_off` is an end
+reason, Terminal runs a `0700` `.command` script main writes as terminal mode would, and the command
+is `copilot --resume=<ACP session id>`, checked against a real Copilot 1.0.106.
 
 ### 3.6 What the human sees
 
@@ -824,7 +826,7 @@ foreground from the installed runtime.
 - the personal switch, in checkout builds only;
 - the adapter version check.
 
-**5. Resume and Take over** (`Closes #412`).
+**5. Resume and Take over** (`Closes #412`). PR 1: Take over in Terminal (§3.5, §14.7).
 
 ## §12 — Risks
 
@@ -1047,6 +1049,40 @@ Approved with [`2026-11-02-sessions-runtime-design.md`](2026-11-02-sessions-runt
 - **Verified again at the spawn.** Main resolves the runtime before the confirmation, to refuse early,
   and again immediately before it spawns, using what the second check found. (§8)
 
+### 14.7 Step 5, Take over in Terminal (2026-11-03)
+
+Built in step 5's first PR:
+- **`copilot --resume` takes an ACP session.** One real run (Copilot CLI 1.0.106, `claude-haiku-4.5`,
+  effort none, a scratch `COPILOT_HOME`, hub and repository): an app launch was told a codeword and
+  parked; `copilot --resume=<its ACP session id> -p "What codeword…?"` named it, appending to the same
+  session (a `session.resume` event; no new session). The `=` form is used, because `--resume` takes an
+  optional value and also matches session names; `--session-id` is not, because it starts a new
+  session under an id it does not know.
+- **`handed_off` is an end reason**, not a status: `status = 'ended'`, `end_reason = 'handed_off'`,
+  `acp_session` kept. No column or trigger changes, an older viewer reads an ended launch, and nothing
+  resumes, parks, interrupts, stops, pushes to or approves for it again.
+- **A running launch** is asked through a `driver-handoff:<launch>` request (like Park now). The driver
+  takes it on a tick only once set up with its task sent (so Copilot has persisted the session), then
+  ends as Stop does but with its asks resolved "Handed off to a terminal.": open requests answered
+  `cancelled`, `session/cancel`, the child's stdin closed. `run` waits for Copilot to exit, ends what is
+  left of its process group (SIGTERM, then SIGKILL after 2 s), writes the final worktree summary, and
+  only then marks the launch `handed_off`. **A parked launch** with a session is handed off by one
+  conditioned statement (still parked, with a session). A request no driver took is withdrawn by main
+  after 60 s, dropped with the driver's leases, and cleared by a later resume. Main's flow ends either
+  with Terminal opened or with no request of its own left (review of #450): a withdrawal a driver beat is
+  completed instead, a Resume between the polls gets its request taken back, and any error withdraws.
+- **Main** confirms first, natively (the turn and its approvals are cancelled, and the launch never comes
+  back to the app), waits for the hand-off, then writes `<hub dir>/launches/<id>/take-over.command`
+  (`0700`): `cd` to the launch's own real folder, `copilot --resume=<id>` with the launch's model and
+  reasoning effort, then the login shell, every value checked (a lowercase UUID, a folder with no
+  control character, the model and effort from their own patterns) and single-quoted. It opens it with
+  `/usr/bin/open -a Terminal -- <script>`, argv only. A handed-off launch offers **Resume in Terminal**,
+  the same flow with a confirmation that warns against a second Copilot in one session.
+- **The worktree stays locked**: the terminal session works there now. Remove worktree still unlocks
+  it first when the human asks.
+- **Messages** the old session had not read stay with it; new ones go to the terminal Copilot's own
+  session, which receives them at its next check like any non-driven session.
+
 ## Appendix A — Verification log
 
 | # | Fact | Source | Checked |
@@ -1064,3 +1100,4 @@ Approved with [`2026-11-02-sessions-runtime-design.md`](2026-11-02-sessions-runt
 | 11 | `listPending` reads by project; `prune_old_runtimes` has no process check | `git show origin/main:src/store.ts`, `scripts/install-agents.sh` | 2026-10-31 |
 | 12 | Channels: research preview, interactive-only; #418 spike open | research brief; `gh pr view 418` | 2026-10-31 |
 | 13 | Copilot 1.0.105 over ACP: URL mode ids; `--mode` ignored by `session/new`; `allow_all` config option; slash commands in prompt text; a second prompt cancels the running turn; `loadSession` only, load restores autopilot; client stdio MCP servers rejected; option ids `allow_once`/`allow_always`/`reject_once`; loader and native host pids | the spike's recorded runs ([`2026-10-31-copilot-acp-spike.md`](2026-10-31-copilot-acp-spike.md)) | 2026-10-31 |
+| 14 | `copilot --resume=<ACP session id>` resumes an ACP-created session with its history | one real run, Copilot CLI 1.0.106 (§14.7) | 2026-11-03 |

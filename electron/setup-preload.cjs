@@ -273,6 +273,11 @@ contextBridge.exposeInMainWorld('agentInboxLaunch', {
     if (args.length !== 1 || !isLaunchId(args[0])) return Promise.resolve({ ok: false, error: 'invalid' })
     return launchCall('agent-inbox:launch-open-worktree', args[0])
   },
+  // step 5: Take over in Terminal; a launch id only
+  takeOver(...args) {
+    if (args.length !== 1 || !isLaunchId(args[0])) return Promise.resolve({ ok: false, error: 'invalid' })
+    return launchCall('agent-inbox:launch-take-over', args[0])
+  },
   // #432: main's own folder dialogs choose these; the page names no folder
   chooseFolder(...args) {
     if (args.length !== 0) return Promise.resolve({ ok: false, error: 'invalid' })

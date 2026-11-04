@@ -4,7 +4,7 @@
 // driver's exact start, the controller (what the renderer may send, the native
 // confirmation, the §9 off contract, the launch gate), the IPC and its grants,
 // the window binding's `launch` grant, the preload bridge and main's wiring.
-import { spawn } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -839,6 +839,15 @@ describe('a session in its own worktree (#432)', () => {
       })
       expect(nested.buttons).toEqual(['Remove', 'Cancel'])
       expect(nested.detail).toContain('Remove refuses while they are there. It contains a nested git repository at vendor/lib/; move it out first.')
+      expect(nested.detail).not.toContain('Terminal')
+    })
+
+    it('reminds the human that a session taken over in Terminal may still work in the worktree (step 5)', async () => {
+      const r = rig()
+      r.state.launches[ID] = { ...ENDED, end_reason: 'handed_off' }
+      expect(await r.controller.removeWorktree(ID)).toEqual({ ok: true })
+      expect(((r.spawned.find((x) => x.removal)!.removal) as { detail: string }).detail)
+        .toContain('Its session was taken over in Terminal: quit that Copilot first.')
     })
 
     it.each([
@@ -963,6 +972,220 @@ describe('a session in its own worktree (#432)', () => {
   })
 })
 
+describe('Take over in Terminal (step 5, §3.5)', () => {
+  const SESSION = 'ab72df37-a3ee-4716-bcb8-f0f1955c8fd8'
+  const RUNNING = { id: ID, status: 'running', project: 'alpha', cwd: '/work/alpha', driver: 'running', stop_requested_at: null, resumable: false }
+  const HANDED = { ok: true, state: 'handed_off', session: SESSION, cwd: '/work/alpha', model: 'claude-haiku-4.5', effort: 'none' }
+
+  // the hub as main reaches it: the launch row, and the hand-off route answering in turn
+  function takeOverRig(launch: Json, answers: unknown[], over: Json = {}) {
+    const scripts: Array<[string, string]> = []
+    const queue = [...answers]
+    // a read that is an Error throws, as a hub restart mid-poll would
+    const reads: Array<Json | Error> = []
+    // what each withdrawal answers, { ok: true } once these run out
+    const withdrawals: unknown[] = []
+    const held: { r?: ReturnType<typeof rig> } = {}
+    const log = (line: string) => held.r!.calls.push(line)
+    const r = rig({
+      viewer: {
+        getJson: async (route: string) => {
+          log(`GET ${route}`)
+          const next = reads.shift() ?? launch
+          if (next instanceof Error) throw next
+          return next
+        },
+        postJson: async (route: string) => {
+          log(`POST ${route}`)
+          if (route.endsWith('/withdraw')) return withdrawals.length ? withdrawals.shift() : { ok: true }
+          return queue.shift() ?? null
+        },
+      },
+      writeScript: async (file: string, text: string) => { log(`writeScript ${file}`); scripts.push([file, text]); return true },
+      openTerminal: async (target: string) => { log(`openTerminal ${target}`); return true },
+      confirm: async (text: Json) => { log('confirm'); held.r!.spawned.push({ confirmation: text }); return held.r!.state.confirm },
+      wait: async () => {},
+      ...over,
+    })
+    held.r = r
+    return { ...r, scripts, reads, withdrawals }
+  }
+
+  it('asks a running launch’s driver to hand off, waits for it, then opens Terminal on copilot --resume in its folder', async () => {
+    const t = takeOverRig(RUNNING, [{ ok: true, state: 'requested' }, HANDED])
+    t.reads.push(RUNNING, RUNNING, { ...RUNNING, driver: 'running' }, { ...RUNNING, status: 'ended', end_reason: 'handed_off' })
+    expect(await t.controller.takeOver(ID)).toEqual({ ok: true })
+    const script = `/hub/launches/${ID}/take-over.command`
+    expect(t.calls.filter((c) => !c.startsWith('keys.available'))).toEqual([
+      `GET /api/launches/${ID}`, 'confirm', `POST /api/launches/${ID}/hand-off`,
+      `GET /api/launches/${ID}`, `GET /api/launches/${ID}`, `GET /api/launches/${ID}`,
+      `POST /api/launches/${ID}/hand-off`, `writeScript ${script}`, `openTerminal ${script}`,
+    ])
+    const confirmation = t.spawned[0]!.confirmation as { message: string; detail: string; buttons: string[] }
+    expect(confirmation.message).toBe('Take over the session of alpha in Terminal?')
+    expect(confirmation.buttons).toEqual(['Take over', 'Cancel'])
+    expect(confirmation.detail).toContain('its current turn and any approval it waits on are cancelled')
+    expect(confirmation.detail).toContain('does not resume it, push messages to it or approve for it again')
+    expect(t.scripts[0]![1]).toBe([
+      '#!/bin/sh',
+      '# Agent Inbox: Take over in Terminal (launch 22222222)',
+      "cd -- '/work/alpha' || exit 1",
+      `'copilot' '--resume=${SESSION}' '--model' 'claude-haiku-4.5' '--reasoning-effort' 'none'`,
+      'exec "${SHELL:-/bin/sh}" -l',
+      '',
+    ].join('\n'))
+  })
+
+  it('hands a parked launch off at once, and opens Terminal again on one already handed off', async () => {
+    const parked = takeOverRig({ ...RUNNING, status: 'parked', driver: null, resumable: true }, [HANDED])
+    expect(await parked.controller.takeOver(ID)).toEqual({ ok: true })
+    expect(parked.calls.filter((c) => c.startsWith('POST'))).toEqual([`POST /api/launches/${ID}/hand-off`])
+    expect((parked.spawned[0]!.confirmation as Json).detail).not.toContain('current turn')
+    const again = takeOverRig({ ...RUNNING, status: 'ended', end_reason: 'handed_off', driver: null }, [HANDED])
+    expect(await again.controller.takeOver(ID)).toEqual({ ok: true })
+    const text = again.spawned[0]!.confirmation as { message: string; detail: string; buttons: string[] }
+    expect(text.message).toBe('Open Terminal on the session of alpha again?')
+    expect(text.buttons).toEqual(['Open Terminal', 'Cancel'])
+    expect(text.detail).toContain('two Copilots must never work in one session')
+  })
+
+  it.each([
+    ['a stopping launch', { stop_requested_at: '2026-11-03T12:00:00.000Z' }, /stopping/],
+    ['a launch whose driver is not responding', { driver: 'lost' }, /Close it instead/],
+    ['a parked launch never prompted', { status: 'parked', driver: null, resumable: false }, /never started its task/],
+    ['an ended launch', { status: 'ended', end_reason: 'stopped', driver: null }, /has ended/],
+    ['a folder that is gone', { cwd: '/missing/alpha', branch: 'agent-inbox/fix-22222222' }, /Its branch agent-inbox\/fix-22222222 is still/],
+    ['a folder with a control character', { cwd: '/work/al\npha' }, /does not exist any more/],
+  ] as Array<[string, Json, RegExp]>)('refuses %s before asking or handing anything off', async (_, over, error) => {
+    const t = takeOverRig({ ...RUNNING, ...over }, [HANDED])
+    expect(await t.controller.takeOver(ID)).toEqual({ ok: false, error: expect.stringMatching(error) })
+    expect(t.calls.filter((c) => c === 'confirm' || c.startsWith('POST') || c.startsWith('openTerminal'))).toEqual([])
+  })
+
+  it('hands nothing off when the human cancels, or with the switch off, or for a bad id', async () => {
+    const t = takeOverRig(RUNNING, [HANDED])
+    t.state.confirm = false
+    expect(await t.controller.takeOver(ID)).toEqual({ ok: false, error: 'Not taken over.', cancelled: true })
+    expect(t.calls.filter((c) => c.startsWith('POST'))).toEqual([])
+    const off = takeOverRig(RUNNING, [HANDED])
+    off.state.enabled = false
+    expect(await off.controller.takeOver(ID)).toMatchObject({ ok: false })
+    expect(await off.controller.takeOver('../x')).toMatchObject({ ok: false })
+    expect(off.calls).toEqual([])
+  })
+
+  // review of #450: the flow ends in exactly one of Terminal opened, or no request of its own left behind
+  const posts = (t: { calls: string[] }) => t.calls.filter((c) => c.startsWith('POST')).map((c) => c.slice(`POST /api/launches/${ID}`.length))
+  const ENDED_HANDED = { ...RUNNING, status: 'ended', end_reason: 'handed_off', driver: null }
+
+  it('withdraws its request when the hub fails mid-poll, so no driver hands off later without a Terminal', async () => {
+    const t = takeOverRig(RUNNING, [{ ok: true, state: 'requested' }])
+    t.reads.push(RUNNING, RUNNING, new Error('ECONNREFUSED'))
+    expect(await t.controller.takeOver(ID)).toEqual({ ok: false, error: 'The session could not be handed off.' })
+    expect(posts(t)).toEqual(['/hand-off', '/hand-off/withdraw'])
+    expect(t.calls.filter((c) => c.startsWith('openTerminal'))).toEqual([])
+    // an unreadable row is not proof it stopped running: it waits out the deadline, then withdraws
+    let clock = 0
+    const blind = takeOverRig(RUNNING, [{ ok: true, state: 'requested' }], { wait: async () => { clock += 30_000 }, handOffWaitMs: 60_000 })
+    blind.reads.push(RUNNING, null as unknown as Json, null as unknown as Json)
+    vi.spyOn(Date, 'now').mockImplementation(() => clock)
+    expect(await blind.controller.takeOver(ID)).toMatchObject({ ok: false, error: expect.stringMatching(/within a minute/) })
+    expect(posts(blind)).toEqual(['/hand-off', '/hand-off/withdraw'])
+    // a hand-off POST with no answer (a timeout) may have stored its request: it is withdrawn on the way out
+    const silent = takeOverRig(RUNNING, [null])
+    expect(await silent.controller.takeOver(ID)).toEqual({ ok: false, error: 'The session could not be handed off.' })
+    expect(posts(silent)).toEqual(['/hand-off', '/hand-off/withdraw'])
+    // a definite refusal leaves nothing to withdraw
+    const refusedRig = takeOverRig(RUNNING, [{ ok: false, reason: 'stopping' }])
+    expect(await refusedRig.controller.takeOver(ID)).toMatchObject({ ok: false })
+    expect(posts(refusedRig)).toEqual(['/hand-off'])
+    // a withdrawal the hub does not answer is tried once more on the way out
+    const deaf = takeOverRig(RUNNING, [{ ok: true, state: 'requested' }], { wait: async () => { clock += 30_000 }, handOffWaitMs: 60_000 })
+    deaf.withdrawals.push(null)
+    expect(await deaf.controller.takeOver(ID)).toMatchObject({ ok: false })
+    expect(posts(deaf)).toEqual(['/hand-off', '/hand-off/withdraw', '/hand-off/withdraw'])
+  })
+
+  it('a withdrawal that loses to the driver completes the hand-off and opens Terminal', async () => {
+    let clock = 0
+    const t = takeOverRig(RUNNING, [{ ok: true, state: 'requested' }, HANDED], { wait: async () => { clock += 30_000 }, handOffWaitMs: 60_000 })
+    vi.spyOn(Date, 'now').mockImplementation(() => clock)
+    // still running at the deadline; the driver took the request just before the withdrawal, then ended handed off
+    t.reads.push(RUNNING, RUNNING, RUNNING, RUNNING, ENDED_HANDED)
+    t.withdrawals.push({ ok: false })
+    expect(await t.controller.takeOver(ID)).toEqual({ ok: true })
+    expect(posts(t)).toEqual(['/hand-off', '/hand-off/withdraw', '/hand-off'])
+    expect(t.calls.at(-1)).toBe(`openTerminal /hub/launches/${ID}/take-over.command`)
+    // if it is still running after a second minute, it says to use Resume in Terminal once it has
+    const slow = takeOverRig(RUNNING, [{ ok: true, state: 'requested' }], { wait: async () => { clock += 30_000 }, handOffWaitMs: 60_000 })
+    slow.withdrawals.push({ ok: false })
+    expect(await slow.controller.takeOver(ID)).toEqual({ ok: false, error: expect.stringMatching(/still handing off.*Resume in Terminal/) })
+    // the driver holds the request: there is nothing of ours to withdraw again
+    expect(posts(slow)).toEqual(['/hand-off', '/hand-off/withdraw'])
+  })
+
+  it('a Resume during the re-post never leaves a request behind: withdrawn, or completed when a driver took it', async () => {
+    // the launch left running (parked), then a Resume ran it again before the second post
+    const t = takeOverRig(RUNNING, [{ ok: true, state: 'requested' }, { ok: true, state: 'requested' }])
+    t.reads.push(RUNNING, { ...RUNNING, status: 'parked', driver: null, resumable: true })
+    expect(await t.controller.takeOver(ID)).toEqual({ ok: false, error: expect.stringMatching(/resumed meanwhile/) })
+    expect(posts(t)).toEqual(['/hand-off', '/hand-off', '/hand-off/withdraw'])
+    expect(t.calls.filter((c) => c.startsWith('openTerminal'))).toEqual([])
+    // the resumed launch's driver took that second request first: it hands off, and Terminal opens
+    const raced = takeOverRig(RUNNING, [{ ok: true, state: 'requested' }, { ok: true, state: 'requested' }, HANDED])
+    raced.reads.push(RUNNING, { ...RUNNING, status: 'parked', driver: null, resumable: true }, RUNNING, ENDED_HANDED)
+    raced.withdrawals.push({ ok: false })
+    expect(await raced.controller.takeOver(ID)).toEqual({ ok: true })
+    expect(posts(raced)).toEqual(['/hand-off', '/hand-off', '/hand-off/withdraw', '/hand-off'])
+    expect(raced.calls.at(-1)).toBe(`openTerminal /hub/launches/${ID}/take-over.command`)
+  })
+
+  it('withdraws a request the driver did not take in time, and opens nothing for an answer it cannot trust', async () => {
+    let clock = 0
+    const slow = takeOverRig(RUNNING, [{ ok: true, state: 'requested' }], { wait: async () => { clock += 30_000 }, handOffWaitMs: 60_000 })
+    vi.spyOn(Date, 'now').mockImplementation(() => clock)
+    expect(await slow.controller.takeOver(ID)).toEqual({ ok: false, error: expect.stringMatching(/did not hand off within a minute/) })
+    expect(slow.calls.filter((c) => c.startsWith('POST'))).toEqual([`POST /api/launches/${ID}/hand-off`, `POST /api/launches/${ID}/hand-off/withdraw`])
+    vi.restoreAllMocks()
+    for (const answer of [
+      { ...HANDED, session: 'not-a-session; rm -rf ~' }, { ...HANDED, session: SESSION.toUpperCase() }, { ...HANDED, cwd: '/elsewhere' },
+      { ...HANDED, cwd: '/missing/alpha' },
+      { ok: false, reason: 'ended' }, null,
+    ]) {
+      const t = takeOverRig({ ...RUNNING, status: 'parked', driver: null, resumable: true }, [answer])
+      expect(await t.controller.takeOver(ID)).toMatchObject({ ok: false })
+      expect(t.calls.filter((c) => c.startsWith('writeScript') || c.startsWith('openTerminal'))).toEqual([])
+    }
+    // a model or effort that is not one of their own is left out, never quoted in
+    const odd = takeOverRig({ ...RUNNING, status: 'parked', driver: null, resumable: true }, [{ ...HANDED, model: "x' && y", effort: 'turbo' }])
+    expect(await odd.controller.takeOver(ID)).toEqual({ ok: true })
+    expect(odd.scripts[0]![1]).toContain(`'copilot' '--resume=${SESSION}'\n`)
+  })
+
+  it('the script runs copilot --resume in the folder, with nothing in the folder’s name expanded', () => {
+    const dir = scratchDir('take-over-')
+    const folder = join(dir, "it's $(touch pwned) `x` here")
+    mkdirSync(folder)
+    const bin = join(dir, 'bin')
+    mkdirSync(bin)
+    writeFileSync(join(bin, 'copilot'), '#!/bin/sh\nprintf "%s\\n" "$PWD" "$@" > "$OUT"\n')
+    chmodSync(join(bin, 'copilot'), 0o755)
+    const script = controllerModule.takeOverScript({ launchId: ID, folder, session: SESSION, model: null, reasoningEffort: null })!
+    const file = join(dir, 'take-over.command')
+    writeFileSync(file, script, { mode: 0o700 })
+    const out = join(dir, 'out.txt')
+    execFileSync('/bin/sh', [file], { env: { PATH: `${bin}:/usr/bin:/bin`, OUT: out, SHELL: '/usr/bin/true' }, cwd: dir })
+    expect(readFileSync(out, 'utf8').split('\n').slice(0, 2)).toEqual([folder, `--resume=${SESSION}`])
+    expect(existsSync(join(dir, 'pwned'))).toBe(false)
+    expect(existsSync(join(folder, 'pwned'))).toBe(false)
+    // anything unchecked refuses instead
+    expect(controllerModule.takeOverScript({ launchId: ID, folder: 'relative', session: SESSION })).toBeNull()
+    expect(controllerModule.takeOverScript({ launchId: ID, folder: '/a\nb', session: SESSION })).toBeNull()
+    expect(controllerModule.takeOverScript({ launchId: ID, folder: '/a', session: '--help' })).toBeNull()
+    expect(controllerModule.takeOverScript({ launchId: ID, folder: '/a', session: SESSION, model: 'a b' })).toBeNull()
+  })
+})
+
 describe('the launch IPC and its grants (§8)', () => {
   function world({ owned = true, granted = true } = {}) {
     const handlers = new Map<string, (event: unknown, ...args: unknown[]) => unknown>()
@@ -979,11 +1202,11 @@ describe('the launch IPC and its grants (§8)', () => {
     return { call, r, settings, onEnabled, handlers, made: () => made }
   }
 
-  it('registers the thirteen channels, and makes no controller until one is used', () => {
+  it('registers the fourteen channels, and makes no controller until one is used', () => {
     const w = world()
     expect([...w.handlers.keys()].sort()).toEqual([
       'available', 'approve', 'choose-folder', 'choose-worktree-root', 'close', 'open-worktree', 'remove-worktree', 'reset-worktree-root', 'resume',
-      'set-enabled', 'set-max-sessions', 'start', 'stop',
+      'set-enabled', 'set-max-sessions', 'start', 'stop', 'take-over',
     ].map((name) => `agent-inbox:launch-${name}`).sort())
     expect(w.made()).toBe(0)
   })
@@ -1030,12 +1253,14 @@ describe('the launch IPC and its grants (§8)', () => {
   it('removes or opens a worktree only for the granted window, with exactly a launch id (#432)', async () => {
     const owned = world({ owned: true, granted: false })
     owned.r.state.launches[ID] = { id: ID, status: 'ended', project: 'alpha', worktree_path: '/w/alpha/fix-22222222', checkout_root: '/work/alpha', worktree_removed_at: null }
-    for (const channel of ['launch-remove-worktree', 'launch-open-worktree']) expect(await owned.call(channel, ID)).toMatchObject({ ok: false })
+    for (const channel of ['launch-remove-worktree', 'launch-open-worktree', 'launch-take-over']) expect(await owned.call(channel, ID)).toMatchObject({ ok: false })
     expect(owned.r.calls).toEqual([])
     const w = world()
     w.r.state.launches[ID] = owned.r.state.launches[ID]!
     expect(await w.call('launch-remove-worktree')).toEqual({ ok: false, error: 'invalid' })
     expect(await w.call('launch-open-worktree', ID, '/w')).toEqual({ ok: false, error: 'invalid' })
+    expect(await w.call('launch-take-over', ID, 'copilot --yolo')).toEqual({ ok: false, error: 'invalid' })
+    expect(await w.call('launch-take-over')).toEqual({ ok: false, error: 'invalid' })
     expect(await w.call('launch-open-worktree', ID)).toEqual({ ok: true })
     expect(await w.call('launch-remove-worktree', ID)).toEqual({ ok: true })
   })
@@ -1297,17 +1522,17 @@ describe('the preload bridge (§8)', () => {
     return { launch: exposed.agentInboxLaunch as Record<string, (...args: unknown[]) => Promise<Json>>, invoke }
   }
 
-  it('has exactly its fourteen methods, each with exact arity, and passes nothing it was not given', async () => {
+  it('has exactly its fifteen methods, each with exact arity, and passes nothing it was not given', async () => {
     const { launch, invoke } = loadPreload(() => ({ ok: true, launch: ID, path: '/secret', enabled: true }))
     expect(Object.keys(launch).sort()).toEqual([
       'approve', 'available', 'chooseFolder', 'chooseWorktreeRoot', 'close', 'onStartProgress', 'openWorktree', 'removeWorktree', 'resetWorktreeRoot', 'resume',
-      'setEnabled', 'setMaxSessions', 'start', 'stop',
+      'setEnabled', 'setMaxSessions', 'start', 'stop', 'takeOver',
     ])
     // #432 §5: a cap of 1 to 8 only
     for (const bad of [0, 9, 2.5, '4']) expect(await launch.setMaxSessions!(bad)).toEqual({ ok: false, error: 'invalid' })
     expect(await launch.setMaxSessions!(4, 5)).toEqual({ ok: false, error: 'invalid' })
     // #432: a launch id only, never a path
-    for (const method of ['removeWorktree', 'openWorktree']) {
+    for (const method of ['removeWorktree', 'openWorktree', 'takeOver']) {
       expect(await launch[method]!('/w/alpha')).toEqual({ ok: false, error: 'invalid' })
       expect(await launch[method]!(ID, '/w/alpha')).toEqual({ ok: false, error: 'invalid' })
     }
@@ -1390,6 +1615,9 @@ describe('main’s wiring (source)', () => {
   it('opens Terminal at a worktree with a fixed argv and no shell, and runs worktree commands from the verified runtime (#432)', () => {
     expect(main).toContain("execFile('/usr/bin/open', ['-a', 'Terminal', '--', folder], { env: { PATH: '/usr/bin:/bin' }, timeout: 10_000 }, (error) => resolve(!error))")
     expect(main.match(/'\/usr\/bin\/open'/g)).toHaveLength(1)
+    // step 5: the Take over script, written 0700 by temp file and rename, opened by that same argv
+    expect(main).toContain('writeFileSync(temp, text, { mode: 0o700 })')
+    expect(main).toContain('renameSync(temp, file)')
     expect(main).toContain('runWorktree: (args) => runWorktreeCommand({ ...args, spawnImpl: spawn }),')
   })
 

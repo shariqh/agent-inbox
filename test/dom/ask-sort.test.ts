@@ -370,7 +370,7 @@ describe('current ask time and queue sorting (#64)', () => {
     expect(tabbable[0]?.classList.contains('selected')).toBe(true)
   })
 
-  it('gives a focused sort select ownership of settings and pinned Live Escape shortcuts', async () => {
+  it('gives a focused sort select ownership of the settings and Escape shortcuts', async () => {
     const d = open()
     seedMixedQueue(d)
     upsertActivity(d, {
@@ -382,12 +382,6 @@ describe('current ask time and queue sorting (#64)', () => {
     })
     recordActivityCall(d, 'active')
     await bootApp(d)
-
-    const strip = document.getElementById('liveStrip') as HTMLButtonElement
-    click(strip)
-    click(document.getElementById('livePin'))
-    const drawer = document.getElementById('liveDrawer') as HTMLElement
-    expect(drawer.hidden).toBe(false)
 
     const select = sortSelect()
     select.focus()
@@ -404,7 +398,6 @@ describe('current ask time and queue sorting (#64)', () => {
     const escape = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
     select.dispatchEvent(escape)
     expect(escape.defaultPrevented).toBe(false)
-    expect(drawer.hidden).toBe(false)
     expect(document.activeElement).toBe(select)
   })
 })

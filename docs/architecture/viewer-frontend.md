@@ -78,15 +78,14 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   window deletes only the copy it loaded or last wrote, and its leaving save
   writes back a draft another window deleted; the viewer-restart hold stays.
 - Messages to a running session (#411 PR 2) are written in one composer per
-  session, in the Live drawer and the Dashboard session focus panel, and read
-  from `/api/messages`, the poll's ninth read (a 404, error or refused body is no
-  messages). Each composer is one node kept for the page's life and updated in
-  place; the drawer, now painted by the ambient painter, is left as it is while a
-  composer in it holds focus. A send claims an id once and reuses it while its
-  text is unchanged, so a retry never sends twice. Message drafts are durable
+  session, in the Dashboard's session panel (#454: the Live drawer that also held
+  one is retired), and read from `/api/messages`, the poll's ninth read (a 404,
+  error or refused body is no messages). Each composer is one node kept for the
+  page's life and updated in place. A send claims an id once and reuses it while
+  its text is unchanged, so a retry never sends twice. Message drafts are durable
   (`type: 'message'`) and never pause the list; only a send in flight or a composer
-  in use holds a viewer restart's reload. The drawer rebuilds on a poll only when
-  what it draws changed (`liveDrawKey`).
+  in use holds a viewer restart's reload. The Agents home's "Not delivered" fold
+  rebuilds only when what it shows changes.
   Nothing about messages reaches attention, a badge, a count or the dock.
 
 ## Invariants in detail
@@ -98,36 +97,17 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   message's status line (sent, picked up, acknowledged with its outcome, withdrawn, or
   "Withdrawn after pickup: it may have started"), one session's history (newest
   first, five shown, "+N earlier") and the "Not delivered" list. `app.js` mounts
-  `composerEl(where, session)`: a labelled textarea, a counter, Send (and, in the
-  drawer, Cancel, which closes and keeps the text, like Esc), the delivery line, the
-  sharing line ("Any agent of this session, a subagent included, may pick it up
-  first."), a `role="status"` slot and the history. Each is ONE node per
-  (`drawer`|`focus`, session) kept in `composerEls` and updated in place
-  (`updateComposer`, written only on a change, so an unchanged paint writes nothing);
-  the two hosts share one draft per session. The Live drawer moved from the editable
-  surfaces to `paintAmbient()` (so a status moves under an unrelated draft); its
-  rebuild re-attaches the same composer nodes. A poll rebuilds it only when what it
-  draws changed: `liveDrawKey` (the rows as `activityFrameKey` compares them, the open
-  entries and composers, `messageVersion`, the minute, `liveVersion`, the theme and
-  every listed session's id, since "Not delivered" ignores the lens)
-  or the identity of the messages snapshot; otherwise, and whenever focus is in a
-  drawer composer (remembered focus in a background window counts), it only updates
-  the composers, so an unrelated draft's ticks never disturb focus, hover or scroll
-  in it. A rebuild, forced or not, keeps the drawer's `scrollTop`, and gives focus
-  back, the composer's caret included, only when the window had focus before it (a
-  detached node takes the focus with it): a composer node is refocused as itself,
-  any other control by its `data-live-focus` identity, matched by value.
-  `messageVersion` is deliberately not in `frameInputs()`: every message change comes
-  from human input or a settled write (both already count), the first load's restore
-  or `reconcileMessageDrafts` inside a paint. The focus panel's composer is its own section
-  (`.dash-focus-message`), never rewritten by `setFocusPart`. A drawer entry's
-  Message button (`data-msg-open`, read back through `dataset`, never a selector)
-  opens its composer, opening the idle fold for an idle session; an explicit open
-  focuses the textarea, nothing passive does. ⌘/Ctrl+Enter sends; Esc in the drawer
-  closes the composer, keeps the draft and returns focus to its button when the
-  window has focus; Esc in the focus panel closes the panel. The Agents view's
-  Message button calls the injected `openMessage(session)`: the drawer, that
-  composer open and focused. A send claims `{ id, text }` (`claimMessageIntent`),
+  `composerEl('focus', session)`: a labelled textarea, a counter, Send, the delivery
+  line, the sharing line ("Any agent of this session, a subagent included, may pick it
+  up first."), a `role="status"` slot and the history. Each is ONE node per session
+  kept in `composerEls` and updated in place (`updateComposer`, written only on a
+  change, so an unchanged paint writes nothing); it is the session panel's own section
+  (`.dash-focus-message`), never rewritten by `setFocusPart`, and the Dashboard is
+  painted by `paintAmbient()`, so a status moves under an unrelated draft. A card's
+  Message button opens the panel with its composer focused; an explicit open focuses
+  the textarea, nothing passive does. ⌘/Ctrl+Enter sends; Esc in the panel closes the
+  panel and keeps the draft (#454 retired the Live drawer's composer, its Cancel and
+  `liveDrawKey`). A send claims `{ id, text }` (`claimMessageIntent`),
   stored before the POST, and reuses the id while the text is unchanged, so a retry
   after an unconfirmed send replays exactly; a refusal (`session_gone`,
   `session_cannot_receive`, `too_many_open`, `too_much_open`, `id_conflict`) drops
@@ -137,11 +117,13 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   holds with the same text (it did land) and moves one whose session is no longer
   listed, or cannot receive, to the unsent responses (`messageRecoveries`), whose
   Retry reuses the id the same way. Withdraw posts the revision the history showed.
-  Every write ends in `reloadAndPaint()`, and `messageVersion` is in `frameInputs()`.
-  The "Not delivered (N)" fold ends the drawer: every open message whose session is
-  no longer listed (global, not lens-filtered), newest first, ten shown and "+M
-  more", each with Copy text and Withdraw, until withdrawn or a later send's 30-day
-  prune deletes it; the clock never changes it and the Live strip names nothing.
+  Every write ends in `reloadAndPaint()`.
+  The Agents home's "Not delivered (N)" fold (`paintUndelivered`): every open message
+  whose session is no longer listed (global, not lens-filtered), newest first, ten
+  shown and "+M more", each with Copy text and Withdraw, until withdrawn or a later
+  send's 30-day prune deletes it. It is rebuilt only when its messages, their write
+  notes or the minute change, and gives a keyboard user back the same control by its
+  focus key; the Sessions line names nothing.
   Drafts (#279): `type: 'message'`, key `message:<session>`, with `intent`; one in the
   unsent responses carries a `reason` and is stored as `message-recovery:<session>`,
   so a new draft to the same session never overwrites it. They share
@@ -176,8 +158,8 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   app, but NOT a merely expanded card. Expanded cards, the open inspector's scroll offset, and
   its focused control survive rebuilds; order pinning appends new work at the foot; the press
   guard protects clicks. A draft gates only the editable surfaces:
-  `paintAmbient()` still refreshes the document-title badge, project rail, tab counts and global
-  Live strip before `shouldDeferRender()` returns. A held press is different: `pressHeld()` runs
+  `paintAmbient()` still refreshes the document-title badge, project rail, tab counts and the global
+  Sessions line before `shouldDeferRender()` returns. A held press is different: `pressHeld()` runs
   before `paintAmbient()` because the rail itself can rebuild, so the press guard still defers
   every surface. A handler that ends a successful POST with a bare `load()` still asks the gate
   for permission to show the human the editable result of their own click, and one unrelated
@@ -429,7 +411,7 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   The card and window scroll guards update `lastInteractionScrollAt`, while the card also updates
   `openRowScrollTop`; `shouldDeferRender()` holds the editable frame for the bounded
   `SCROLL_IDLE_MS` window, while `paintAmbient()` still refreshes badges, counts, the rail, and
-  Live. A resettable timer calls `resumeRender()` as soon as movement settles, so a deferred frame
+  the Sessions line. A resettable timer calls `resumeRender()` as soon as movement settles, so a deferred frame
   does not wait for another poll. Keep scroll activity out of `suspendState()`/`suspendHint()`:
   it is a brief interaction guard, not a user-visible pause, and it must reset when the open item
   changes. A settled rebuild anchors the open row's in-flow `.nrow` viewport position before and

@@ -43,8 +43,12 @@ export function installAgentsHome(deps: {
   /** the global "Not delivered" fold (#411) */
   paintUndelivered?: (slot: Element) => void
 }): {
+  /** the Agents home card, made once; renderDashboard mounts it in the Dashboard grid */
+  element(): HTMLElement
   paint(host: Element, input: AgentsHomeInput): void
-  /** the window-local view state (lens, filter, grouping, folds), for frameInputs() */
+  /** repaints New session… alone, as a start begins or settles */
+  paintNewSession(): void
+  /** the window-local view state (filter, grouping, folds), for frameInputs() */
   state(): string
   /** the card a session panel key names: a card id, a live session, or a session a launch remembers */
   cardFor(key: string | null | undefined): SessionCard | null

@@ -66,7 +66,6 @@ export interface NowStrip {
 }
 
 export const QUIET_MS: number
-export const MAX_LANES: number
 export function isWorking(row: LaneActivity, nowMs: number): boolean
 export function linkedPlan<B extends LaneBoard>(row: LaneActivity, boards: B[], working?: Set<string>): B | null
 export const TRACE_MINUTES: number
@@ -80,10 +79,6 @@ export function buildLanes(input: {
   nowMs: number
 }): { lanes: Lane[]; idle: number; now: NowStrip }
 export function pinLaneOrder(previous: string[], lanes: Array<{ session: string }>): string[]
-export function calledLanes(previous: Map<string, string>, drawn: Lane[]): { pulse: Set<string>; sweep: string | null }
-export interface LaneFilters { project: string | null; agent: string | null }
-export function laneMatches(lane: { project: string; agent: string }, filters: LaneFilters): boolean
-export function laneFilterChoices(lanes: Array<{ project: string; agent: string }>, filters: LaneFilters): { project: string[]; agent: string[] }
 export function sessionFocus(lane: Lane, input: { items?: any[]; boards?: any[]; outcomes?: any[] }): {
   board: any | null
   source: any | null

@@ -1,7 +1,9 @@
-// The Live footer strip's summary line (spec §16). Pure: no DOM, no clock —
-// the caller passes nowMs. Live is ambient presence, so this never produces a
-// number that reads as a to-do.
+// Session presence helpers (spec §16, #45, #197) and the sidebar's Sessions
+// indicator (#454, which retired the Live footer strip). Pure: no DOM, no
+// clock — the caller passes nowMs. Presence is ambient, so nothing here
+// produces a number that reads as a to-do.
 import { freshnessTone } from './rowview.js'
+import { isWorking } from './lanes.js'
 
 /**
  * @param {Array<any>} activity rows from /api/activity
@@ -32,6 +34,31 @@ export function liveSummary(activity, nowMs) {
       ? `${active.length} reporting work`
       : rows.length ? `${rows.length} connected · no task reported` : 'no agent connections',
     sessions,
+  }
+}
+
+/**
+ * The sidebar's Sessions indicator (#454, design §3.5): "2 working" over "5 connected",
+ * the dot in the freshest working session's tone (liveSummary's rule), and how many
+ * run an older build. Working is the lanes' `isWorking`, so it agrees with the Now
+ * strip and the cards. Before the first /api/activity read, "Checking sessions…".
+ * @param {Array<any> | null | undefined} activity every /api/activity row (global, never lens-filtered)
+ * @param {number} nowMs
+ * @param {(row: any) => ({ older: boolean } | null)} [buildOf] a row's build, from sessionBuild
+ */
+export function sessionsSummary(activity, nowMs, buildOf = () => null) {
+  if (!Array.isArray(activity)) return { tone: 'idle', label: 'Checking sessions…', sub: '', working: 0, connected: 0, older: 0 }
+  const rows = activity.filter(Boolean)
+  const working = rows.filter((row) => isWorking(row, nowMs)).length
+  const older = rows.filter((row) => buildOf(row)?.older === true).length
+  const tone = working ? liveSummary(rows, nowMs).tone : rows.length ? 'connected' : 'idle'
+  return {
+    tone: tone === 'idle' && working ? 'quiet' : tone,
+    label: working ? `${working} working` : rows.length ? `${rows.length} connected` : 'No sessions',
+    sub: working ? `${rows.length} connected` : rows.length ? 'no task reported' : '',
+    working,
+    connected: rows.length,
+    older,
   }
 }
 

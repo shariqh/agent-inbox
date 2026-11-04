@@ -19,7 +19,7 @@ export const KEYBOARD_COMMANDS = [
   { id: 'setup', key: 's', prefix: 'g', display: 'G S', label: 'Settings', group: 'Go to', selector: '#gear' },
   { id: 'agents', key: 'a', prefix: 'g', display: 'G A', label: 'Agent filter', group: 'Go to', selector: '.agent-pick .tab-label' },
   { id: 'projects', key: 'o', prefix: 'g', display: 'G O', label: 'Project picker', group: 'Go to', selector: '#projectDisclosureToggle, .sidebar-section-label' },
-  { id: 'live', key: 'l', prefix: 'g', display: 'G L', label: 'Toggle Live sessions', group: 'Go to', selector: '#liveStrip .live-label' },
+  { id: 'sessions', key: 'l', prefix: 'g', display: 'G L', label: 'Sessions', group: 'Go to', selector: '#sessionsIndicator .si-k' },
   { id: 'next', key: 'j', display: 'J / K', label: 'Move between items (arrow keys also work)', group: 'Work through items', legacy: true },
   { id: 'open', key: 'Enter', display: 'Enter', label: 'Open the selected item or focused control', group: 'Work through items', legacy: true },
   { id: 'reply', key: 'r', display: 'R', label: 'Focus the open reply box', group: 'Work through items' },
@@ -34,11 +34,11 @@ export const KEYBOARD_COMMANDS = [
   { id: 'railOption', key: '1-4', display: '1-4', label: "Choose a rail card's option", group: 'Dashboard', legacy: true },
   { id: 'railSnooze', key: 's', display: 'S', label: 'Snooze the rail card', group: 'Dashboard', legacy: true },
   { id: 'railPin', key: 'p', display: 'P', label: 'Pin the rail card for later', group: 'Dashboard', legacy: true },
-  { id: 'railOpen', key: 'Enter', display: 'Enter', label: "Write an answer on a rail card, or open a lane's session focus panel", group: 'Dashboard', legacy: true },
-  { id: 'focusClose', key: 'Escape', display: 'Esc', label: 'Close the session focus panel and return to its lane', group: 'Dashboard', legacy: true },
+  { id: 'railOpen', key: 'Enter', display: 'Enter', label: "Write an answer on a rail card, or open a session card's session focus panel", group: 'Dashboard', legacy: true },
+  { id: 'focusClose', key: 'Escape', display: 'Esc', label: 'Close the session focus panel and return to its card', group: 'Dashboard', legacy: true },
   // #411: the message composer's keys, handled by the composer itself
   { id: 'messageSend', key: 'mod+Enter', display: 'Mod Enter', label: 'Send a message from its composer', group: 'Messages', legacy: true },
-  { id: 'messageClose', key: 'Escape', display: 'Esc', label: 'Close the Live drawer’s message composer and keep its text', group: 'Messages', legacy: true },
+  { id: 'messageClose', key: 'Escape', display: 'Esc', label: 'Close the session panel from its composer: the text is kept', group: 'Messages', legacy: true },
   { id: 'focus', key: 'Tab', display: 'Tab / Shift Tab', label: 'Move through controls; use arrows for pickers and pane dividers', group: 'Every control', legacy: true },
   { id: 'escape', key: 'Escape', display: 'Esc', label: 'Leave hints, cancel a shortcut, or close the current surface', group: 'Every control', legacy: true, selector: '.keyboard-close, .lb-close, .relay-close, .mission-close, .mission-detail-close, .dash-focus-close' },
 ]

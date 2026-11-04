@@ -962,8 +962,8 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
 
   app.get('/api/activity', (c) => c.json(listActivity(db)))
 
-  // Read by the Live bar at page load, whenever its drawer opens and after a
-  // Setup install — never on the poll. Local reads only, no git, no network.
+  // Read by the viewer at page load, whenever the Agents home or a session panel
+  // opens and after a Setup install — never on the poll. Local reads only, no git, no network.
   app.get('/api/version', (c) => {
     const baked = readBakedInfo(bakedPath)
     const registered = agentHosts(baked)

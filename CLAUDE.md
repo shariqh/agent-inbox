@@ -134,11 +134,11 @@ read or edit a matching file. Read it yourself before changing these areas:
 | `src/store.ts`, `src/viewer.ts` snapshots, `/api/*` caching, history paging | `store-and-snapshots.md` |
 | items, boards, `pending`, `answer`, `resolve`, revisions, reporting snippet | `delivery-and-responses.md` |
 | `public/attention.js`, badges, snooze, pin, watch stop, closed projects | `attention-and-later.md` |
-| activity, presence, call trace, Live, session builds | `activity-and-live.md` |
+| activity, presence, call trace, session builds | `activity-and-live.md` |
 | `src/mcp.ts`, `scope.ts`, `infer.ts`, `shape.ts` | `mcp-server.md` |
 | `src/viewer-network.ts` | `viewer-network.md` |
 | `public/app.js`, poll, render, drafts, focus, scroll, selection | `viewer-frontend.md` |
-| Dashboard, lanes, ribbon, motion, layout, search, `style.css` | `viewer-dashboard-and-shell.md` |
+| Dashboard, Agents home, ribbon, motion, layout, search, `style.css` | `viewer-dashboard-and-shell.md` |
 | links in agent text, Settings → Links, repo-relative paths | `links.md` |
 | `gh` pollers, issue snapshots, pins, `waits_on`, PR links | `github-and-issues.md` |
 | breadcrumbs, dependency chips, Plan flow, grouping | `plans-issue-ui.md` |

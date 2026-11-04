@@ -277,7 +277,7 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   only, no process): it mirrors the rule above, and `test/runtime-inventory.test.ts` runs
   the script's own `unused` over every shared case in `test/runtime-uses.ts` and holds the
   two to one answer. It cannot see running processes; the panel only adds an advisory "N
-  running sessions report vX" from Live's rows. Each folder's size is its manifest's
+  running sessions report vX" from the session presence rows. Each folder's size is its manifest's
   recorded total, and the bounded walk (an lstat per file, about 40 ms for a 4,000-file
   runtime, on Electron main in the packaged app) runs only for an unused runtime, because
   only that one is offered for removal and the prune keeps a folder that no longer
@@ -447,7 +447,7 @@ These landed after v1 and still hold invariants; the release history itself is i
   with the same 10-minute backstop, hashes each registered runtime once per directory/manifest stamp, and
   reuses the release lookup's stricter verification for the current runtime. `/api/version` adds
   `hosts:{claude,copilot}` as `{kind, version?}` only — no path, id or config — and `updatable`, the one
-  rule (`canUpdateAgents`) Setup's action and Live's "update agents" advice share: a release whose own
+  rule (`canUpdateAgents`) Setup's action and the session cards' "update agents" advice share: a release whose own
   runtime payload verifies here, installed or not. `/api/setup` adds `agents`:
   each host and Claude's hooks (a checkout's path included; the owner already sees paths there),
   `current`, `updatable` (a release whose runtime Setup can install here) and `hooksCommand`. The Setup
@@ -505,8 +505,8 @@ These landed after v1 and still hold invariants; the release history itself is i
   stops at "'copilot' CLI is not installed"; `claude` refuses a registration it does not own);
   docs/hooks.md points to the checkout or terminal path instead. Otherwise the panel says Setup
   cannot move them and points at docs/hooks.md. No IPC
-  channel, preload method or HTTP route was added for this, and nothing runs at startup. Live's
-  `remedy()` maps a runtime session to its host by its inferred agent (`claude-code` → claude, `copilot`
+  channel, preload method or HTTP route was added for this, and nothing runs at startup. The
+  session build's `remedy()` maps a runtime session to its host by its inferred agent (`claude-code` → claude, `copilot`
   → copilot) and, for a session OLDER than the app, says "restart this session to load vX" only when that
   host is registered to Setup's runtime at vX or later, "update agents from Setup, then restart this
   session" only when it is an older Setup runtime and `updatable` (so never toward an action Setup does

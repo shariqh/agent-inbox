@@ -36,8 +36,7 @@ const EMPTY = 'No sessions yet. A Claude Code or Copilot session appears here on
 export function installAgentsHome(deps) {
   const doc = deps.doc ?? globalThis.document
   // Window-local view state, never persisted and read by no attention surface:
-  // a fresh window opens on Agents, all states, grouped by project.
-  let lens = 'agents'
+  // a fresh window opens on all states, grouped by project.
   let filter = 'all'
   let groupBy = 'project'
   const folds = new Set()
@@ -77,23 +76,6 @@ export function installAgentsHome(deps) {
     const focusKey = focusKeyIn(el)
     el.replaceChildren(...build())
     refocus(el, focusKey)
-  }
-
-  function lensEl() {
-    const bar = make('div', 'mesh-lens')
-    bar.setAttribute('role', 'group')
-    bar.setAttribute('aria-label', 'Dashboard lens')
-    for (const [value, label] of [['sessions', 'Sessions'], ['agents', 'Agents']]) {
-      const lensButton = button(label, 'mesh-lens-option', `mesh:lens:${value}`)
-      lensButton.dataset.meshLens = value
-      lensButton.addEventListener('click', () => {
-        if (lens === value) return
-        lens = value
-        repaint()
-      })
-      bar.appendChild(lensButton)
-    }
-    return bar
   }
 
   function homeEl() {
@@ -209,8 +191,16 @@ export function installAgentsHome(deps) {
     top.append(dot, make('span', 'sc-state'), make('span', 'sc-chips'), make('span', 'sc-when'))
     const ask = make('div', 'sc-ask')
     ask.hidden = true
-    el.append(top, make('div', 'sc-doing'), make('div', 'sc-where'), ask, make('div', 'sc-foot'))
+    // the foot's facts and its buttons are rebuilt apart, so a new call never replaces a focused button
+    const foot = make('div', 'sc-foot')
+    foot.append(make('div', 'sc-facts'), make('div', 'sc-actions'))
+    el.append(top, make('div', 'sc-doing'), make('div', 'sc-where'), ask, foot)
     return el
+  }
+
+  function worktreeKept(card) {
+    const launch = card.launch
+    return launch?.status === 'ended' && typeof launch.worktree_path === 'string' && launch.worktree_path !== '' && !launch.worktree_removed_at
   }
 
   function chipsOf(card) {
@@ -251,13 +241,20 @@ export function installAgentsHome(deps) {
         out.push(granted && card.launch.worktree_path && !card.launch.worktree_removed_at
           ? ['open-worktree', 'Open in Terminal', 'Open Terminal in this session’s worktree'] : ['transcript', 'Transcript', ''])
     }
+    // an ended launch's kept worktree is removed from its card too: main checks it and asks first (#432)
+    if (granted && worktreeKept(card)) out.push(['remove-worktree', 'Remove worktree…', 'Remove this session’s worktree: its branch is kept'])
     return out
   }
 
   function updateCard(el, card, granted) {
-    el.className = `sc tone-${card.state}${last?.input.selected && cardFor(last.input.selected) === card ? ' sel' : ''}`
-    el.setAttribute('aria-label', `${card.label}: ${card.host} in ${card.project}${card.branch ? ` on ${card.branch}` : ''}`)
-    if (deps.projectColor) el.style.setProperty('--sc-project', deps.projectColor(card.project))
+    // classList, never className: a running one-shot (.pulse) survives the paint
+    for (const name of [...el.classList]) if (name.startsWith('tone-') && name !== `tone-${card.state}`) el.classList.remove(name)
+    if (!el.classList.contains(`tone-${card.state}`)) el.classList.add(`tone-${card.state}`)
+    const selected = Boolean(last?.input.selected) && cardFor(last.input.selected) === card
+    if (el.classList.contains('sel') !== selected) el.classList.toggle('sel', selected)
+    // written only on a change, so an unchanged paint writes nothing at all
+    const label = `${card.label}: ${card.host} in ${card.project}${card.branch ? ` on ${card.branch}` : ''}`
+    if (el.getAttribute('aria-label') !== label) el.setAttribute('aria-label', label)
     setText(el.querySelector('.sc-state'), card.label)
     setText(el.querySelector('.sc-when'), card.recency)
     const chips = chipsOf(card)
@@ -307,7 +304,9 @@ export function installAgentsHome(deps) {
     const trace = busy ? card.trace ?? [] : []
     const callCount = trace.reduce((sum, count) => sum + count, 0)
     const meta = busy || card.state === 'ask' || card.launch ? null : messageHint(card.row)
-    rebuild(foot, JSON.stringify([busy && card.plan, busy && card.children, trace, meta, actions]), () => {
+    const facts = foot.querySelector('.sc-facts')
+    const buttons = foot.querySelector('.sc-actions')
+    rebuild(facts, JSON.stringify([busy && card.plan, busy && card.children, trace, meta]), () => {
       const parts = []
       if (busy && card.plan) {
         const { segments, done, countable, title } = card.plan
@@ -349,16 +348,15 @@ export function installAgentsHome(deps) {
         hint.title = meta
         parts.push(hint)
       }
-      parts.push(make('span', 'ah-spacer'))
-      for (const [action, label, title, tone] of actions) {
-        const control = button(label, `sc-action${tone ? ` ${tone}` : ''}`, `sc:${card.id}:${action}`)
-        control.dataset.ahAction = action
-        if (title) control.title = title
-        parts.push(control)
-      }
       return parts
     })
-    setHidden(foot, foot.childElementCount <= 1)
+    rebuild(buttons, JSON.stringify(actions), () => actions.map(([action, label, title, tone]) => {
+      const control = button(label, `sc-action${tone ? ` ${tone}` : ''}`, `sc:${card.id}:${action}`)
+      control.dataset.ahAction = action
+      if (title) control.title = title
+      return control
+    }))
+    setHidden(foot, !facts.childElementCount && !buttons.childElementCount)
   }
 
   function paintCards(container, cards, granted, { pulse = new Set() } = {}) {
@@ -396,32 +394,15 @@ export function installAgentsHome(deps) {
    */
   function paint(host, input) {
     last = { host, input }
-    const grid = host?.querySelector('.dashboard-grid')
-    const lanes = grid?.querySelector('.dash-lanes')
-    if (!grid || !lanes) return
-    let bar = host.querySelector('.mesh-lens')
-    if (!bar) {
-      bar = lensEl()
-      host.insertBefore(bar, grid)
-    }
-    for (const lensButton of bar.querySelectorAll('[data-mesh-lens]')) {
-      const pressed = String(lensButton.dataset.meshLens === lens)
-      if (lensButton.getAttribute('aria-pressed') !== pressed) lensButton.setAttribute('aria-pressed', pressed)
-    }
-    let section = grid.querySelector('.agents-home')
-    if (!section) {
-      section = homeEl()
-      lanes.after(section)
-    }
-    const agents = lens === 'agents'
-    setHidden(lanes, agents)
-    setHidden(section, !agents)
+    const section = host?.querySelector('.dashboard-grid .agents-home')
+    if (!section) return
+    // a keyboard user whose card leaves lands on the heading, only in a window that has focus
+    const hadFocus = section.contains(doc.activeElement) && doc.hasFocus?.() === true
     const reading = !Array.isArray(input.activity)
-    // the cards are built under either lens: the session panel reads them (cardFor)
+    // the session panel reads these too (cardFor)
     const cards = reading ? [] : sessionCards(input)
     byId.clear()
     for (const card of cards) byId.set(card.id, card)
-    if (!agents) return
     section.classList.toggle('reading', reading)
     if (reading) {
       // before the first /api/activity read (§3.6)
@@ -445,13 +426,7 @@ export function installAgentsHome(deps) {
     const select = section.querySelector('[data-dashboard-focus-key="ah:group"]')
     if (select.value !== groupBy) select.value = groupBy
     setText(section.querySelector('.ah-count'), `${plural(main.length, 'session')}${input.lensProject ? ` in ${input.lensProject}` : ''}`)
-    const start = section.querySelector('.ah-new')
-    const newSession = launchUi?.newSession() ?? null
-    setHidden(start, !newSession)
-    if (newSession && start.disabled !== newSession.disabled) start.disabled = newSession.disabled
-    const note = section.querySelector('.ah-note')
-    setText(note, newSession?.note ?? '')
-    setHidden(note, !newSession?.note)
+    paintNewSession(section, launchUi)
 
     // the one-shot pulse: a real call since the last paint, on a drawn working card
     const pulse = new Set()
@@ -488,8 +463,11 @@ export function installAgentsHome(deps) {
       }
       setText(el.querySelector('.ah-group-name'), group.label)
       setText(el.querySelector('.ah-group-count'), plural(group.cards.length, 'session'))
-      if (groupBy === 'project' && deps.projectColor) el.style.setProperty('--ah-group', deps.projectColor(group.key))
-      else el.style.removeProperty('--ah-group')
+      const color = groupBy === 'project' && deps.projectColor ? deps.projectColor(group.key) : ''
+      if (el.style.getPropertyValue('--ah-group') !== color) {
+        if (color) el.style.setProperty('--ah-group', color)
+        else el.style.removeProperty('--ah-group')
+      }
       paintCards(el.querySelector('.ah-cards'), group.cards, granted, { pulse })
       return el
     })
@@ -505,15 +483,32 @@ export function installAgentsHome(deps) {
     const earlier = cards.filter((card) => card.place === 'earlier')
     const dormant = cards.filter((card) => card.place === 'dormant')
     const closed = cards.filter((card) => card.place === 'closed')
-    const endedFold = paintFold(section, 'ended', ended,
-      [[`Ended (${ended.length})`, true], ...(earlier.length ? [[` · Earlier sessions (${earlier.length})`, false]] : [])], granted)
+    // the worktrees ended launches still keep, counted while the fold is closed
+    const kept = [...ended, ...earlier].filter(worktreeKept).length
+    const endedFold = paintFold(section, 'ended', ended, [
+      [`Ended (${ended.length})`, true],
+      ...(kept ? [[` · ${plural(kept, 'worktree')} kept`, false]] : []),
+      ...(earlier.length ? [[` · Earlier sessions (${earlier.length})`, false]] : []),
+    ], granted)
     setHidden(endedFold, !ended.length && !earlier.length)
     const earlierFold = paintFold(section, 'earlier', earlier, [[`Earlier sessions (${earlier.length})`, true]], granted)
     setHidden(earlierFold, !earlier.length)
     setHidden(paintFold(section, 'dormant', dormant, [[`Dormant (${dormant.length})`, true], [' · quiet 8 h or more', false]], granted), !dormant.length)
     setHidden(paintFold(section, 'closed', closed, [[`In closed projects (${closed.length})`, true]], granted), !closed.length)
     deps.paintUndelivered?.(section.querySelector('.ah-undelivered'))
+    if (hadFocus && !section.contains(doc.activeElement)) section.querySelector('#agentsHomeTitle')?.focus({ preventScroll: true })
     for (const [id, el] of cardEls) if (!byId.has(id) || !el.isConnected) cardEls.delete(id)
+  }
+
+  /** New session…: hidden with the switch off, disabled while a start is in flight. */
+  function paintNewSession(section, launchUi) {
+    const start = section.querySelector('.ah-new')
+    const newSession = launchUi?.newSession() ?? null
+    setHidden(start, !newSession)
+    if (newSession && start.disabled !== newSession.disabled) start.disabled = newSession.disabled
+    const note = section.querySelector('.ah-note')
+    setText(note, newSession?.note ?? '')
+    setHidden(note, !newSession?.note)
   }
 
   /** The card a session panel key names: a card id, a live session, or a session a launch remembers. */
@@ -523,10 +518,16 @@ export function installAgentsHome(deps) {
     return byId.get(key) ?? cards.find((card) => card.session === key) ?? cards.find((card) => card.sessions.includes(key)) ?? null
   }
 
+  let mounted = null
+
   return {
+    /** The card, made once: renderDashboard mounts it in the Dashboard grid. */
+    element: () => (mounted ??= homeEl()),
     paint,
+    /** Repaints New session… alone, as a start begins or settles. */
+    paintNewSession: () => { if (mounted) paintNewSession(mounted, deps.launches?.() ?? null) },
     cardFor,
     /** The window-local view state, for frameInputs(). */
-    state: () => [lens, filter, groupBy, [...folds].sort().join(',')].join('|'),
+    state: () => [filter, groupBy, [...folds].sort().join(',')].join('|'),
   }
 }

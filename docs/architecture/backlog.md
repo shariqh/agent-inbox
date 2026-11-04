@@ -24,7 +24,7 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   the agent-written `waits_on` row field, D draws dependencies in Plans, E in Plan flow, and F
   adds opt-in grouping by parent issue (see the invariants in `github-and-issues.md` and
   `plans-issue-ui.md`). Sibling context stays later: #403.
-- **Agent mesh** *(M1 #397 shipped: the opt-in Agents view and `meshctl`; see the invariant
+- **Agent mesh** *(M1 #397 shipped: the Agents view, always on since #454, and `meshctl`; see the invariant
   in `mesh.md`)* — M2–M9 per [`2026-10-29-agent-mesh-design.md`](../../docs/superpowers/specs/2026-10-29-agent-mesh-design.md)
   §11 (tracked in #404), each behind its own `mesh.json` key and each with its own "off" tests (§2.4).
 Keep all of these additive and behind the existing seams — don't break v1's local,

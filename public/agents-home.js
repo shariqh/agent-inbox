@@ -1,10 +1,9 @@
-// The Agents view (Mesh M1, #397; design docs/superpowers/specs/
-// 2026-10-29-agent-mesh-design.md §10.1–10.2). Loaded ONLY by app.js's
-// `import('/mesh-view.js')`, and only after /api/version says
-// `mesh.agentsView`, so with the mesh off the page never requests this file.
+// The Agents view (Mesh M1, #397), always on since #454 (design
+// docs/superpowers/specs/2026-11-04-agents-home-design.md §4): app.js imports it
+// statically and nothing in mesh.json gates it.
 //
-// It adds a Sessions | Agents lens above the Dashboard lanes and a Settings →
-// Mesh section. The Agents lens groups the same /api/activity presence Live and
+// It adds a Sessions | Agents lens above the Dashboard lanes, opening on Agents.
+// The Agents lens groups the same /api/activity presence Live and
 // the lanes read by inferred agent kind, then project and branch. Nothing here
 // is new data: liveness is the lanes' `isWorking` and Live's `isDormant`, "last
 // call" is `last_call_at` (never the `updated_at` heartbeat), the call trace is
@@ -94,9 +93,9 @@ const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`
  *   `jumpToAsk` is the lanes' own: it opens an ask on the rail or in the Inbox.
  *   `openMessage` (#411) opens the Live drawer with a session's composer.
  */
-export function installMeshView({ doc = globalThis.document, jumpToAsk, openMessage }) {
-  // Window-local, like the lanes' quick filters: a fresh window opens on Sessions.
-  let lens = 'sessions'
+export function installAgentsHome({ doc = globalThis.document, jumpToAsk, openMessage }) {
+  // Window-local, like the lanes' quick filters: a fresh window opens on Agents.
+  let lens = 'agents'
   let last = null
   let drawnKey = null
   let firstAsks = new Map()
@@ -259,30 +258,5 @@ export function installMeshView({ doc = globalThis.document, jumpToAsk, openMess
     }
   }
 
-  /**
-   * Settings → Mesh: what is on, and the commands that really turn it off. The
-   * package is private and nothing installs its bin on PATH, so the bare
-   * `agent-inbox-meshctl` is offered only for a checkout that ran `npm link`.
-   */
-  function renderSettings(host) {
-    if (!host || host.querySelector('.mesh-settings')) return
-    const section = make('section', 'setup-block mesh-settings')
-    section.id = 'mesh-settings'
-    const runtime = '~/.agent-inbox/runtime/<runtime-id>'
-    section.append(
-      make('h3', '', 'Mesh'),
-      make('p', 'setup-hint', 'Agents view: on. The Dashboard offers a Sessions | Agents lens that groups Live sessions by agent. It reads nothing new and sends nothing anywhere.'),
-      make('p', 'setup-hint', 'mesh.json turns it on, and this page reads it when it loads. To turn it off, run one of these, then reload the window. From a source checkout:'),
-      make('pre', 'mesh-off-command', 'npm run meshctl -- disable --apply'),
-      make('p', 'setup-hint', 'With the agent runtime Setup installed (the runtime folder is listed under Runtimes):'),
-      make('pre', 'mesh-off-command', `${runtime}/bin/node ${runtime}/dist/meshctl.js disable --apply`),
-      make('p', 'setup-hint', 'agent-inbox-meshctl disable --apply works on its own only after npm link in a checkout.'),
-      make('p', 'setup-hint', 'Or delete mesh.json from its folder: ~/.agent-inbox, or AGENT_INBOX_MESH_DIR, or the folder of AGENT_INBOX_DB when one of those is set for the viewer. In this phase that turns the mesh off completely.'),
-    )
-    const after = host.querySelector('#link-settings')
-    if (after) after.after(section)
-    else host.appendChild(section)
-  }
-
-  return { paint, renderSettings, lens: () => lens }
+  return { paint, lens: () => lens }
 }

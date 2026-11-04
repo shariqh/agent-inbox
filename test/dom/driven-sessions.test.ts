@@ -928,11 +928,9 @@ describe('the Agents view (#397, #412 step 3)', () => {
     recordLaunchProgress(db, LAUNCH, { sessions: ['mcp-1'] })
     // a terminal driver's session: driven, but no launch of this app
     working(db, 'mcp-2', { launchId: PARKED, pid: 4244, nonce: 't' })
-    await bootApp(db, { viewer: { meshAgentsView: () => true } })
-    await vi.waitFor(() => expect(document.getElementById('mesh-settings')).not.toBeNull())
+    await bootApp(db)
     await pollTick()
     await changedPollTick(db)
-    click(document.querySelector('.mesh-lens [data-mesh-lens="agents"]'))
     await settle()
     const tag = (session: string) => [...document.querySelectorAll<HTMLElement>('.mesh-session')]
       .find((el) => el.dataset.meshSession === session)?.querySelector('.mesh-driven')?.textContent

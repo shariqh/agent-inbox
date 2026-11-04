@@ -191,7 +191,9 @@ describe('Live Operations Desk dashboard', () => {
     expect(document.querySelector('[data-dashboard-signal="agents"]')?.getAttribute('aria-label')).toBe('Agents working: 0')
     expect(lanes()).toHaveLength(0)
     expect(document.querySelector('.dash-lanes-idle')?.textContent).toBe('+1 idle connection')
-    expect(document.querySelector('#dashboard')?.textContent).not.toContain('Checking the build')
+    expect(document.querySelector('.dash-lanes')?.textContent).not.toContain('Checking the build')
+    // the Agents view (#454) draws it only as what the session was doing
+    expect(document.querySelector('.mesh-doing')?.textContent).toBe('was: Checking the build')
   })
 
   it('drills from the waiting signal into the existing Inbox queue', async () => {

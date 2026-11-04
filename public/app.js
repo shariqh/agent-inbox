@@ -41,6 +41,7 @@ import { cardLinks } from '/link-strip.js'
 import { fileLinksCopy, initLinkOpening, linkFileActions, refreshLinkPermission } from '/link-open.js'
 import { refreshLinkSettings, renderLinkSettings } from '/link-settings.js'
 import { createLaunchUi } from '/launch-ui.js'
+import { installAgentsHome } from '/agents-home.js'
 import { refreshLaunchSettings, renderLaunchSettings } from '/launch-settings.js'
 import { boardRowsView, boardRowLine, progressLabel, hiddenDoneCount, lingeringBoards, omittedOutcomes } from '/boards.js'
 import { titleWithBadge, focusHashFor, parseFocusHash } from '/badge.js'
@@ -2039,7 +2040,7 @@ function renderDashboardAmbient(model, { forced = false } = {}) {
   renderDashRibbon(host.querySelector('.dashboard-activity'), model)
   renderDashboardOutcomes(host.querySelector('.dashboard-outcome-list'), model.recentOutcomes, model.recentOutcomesComplete,
     model.recentOutcomesWait, model.recentOutcomesHidden)
-  meshView?.paint(host, {
+  agentsHome.paint(host, {
     activity: liveInLens(), attention: model.waitingEntries, closed: dashboardClosedProjects(), nowMs: Date.now(),
     // #412 step 3: the sessions of launches this app started, only with its switch on
     startedHere: launchesOn() ? (lastData?.launches ?? []).filter((l) => l.status !== 'ended').flatMap((l) => l.sessions ?? []) : [],
@@ -2128,7 +2129,8 @@ const laneAsks = new Map() // session → { first, oldest } attention entries, r
 const laneFilters = { project: null, agent: null }
 let focusSession = null // the session the focus panel shows, if open
 let lastDashModel = null // the model the last paint drew, for a handler's own repaint
-let meshView = null // Mesh M1 (#397): the opt-in Agents view, loaded by loadMeshView() only
+// The Agents view (#397, always on since #454): its lens is window-local state.
+const agentsHome = installAgentsHome({ jumpToAsk, openMessage })
 
 function dashLanesEl() {
   const section = document.createElement('section')
@@ -3303,7 +3305,7 @@ function frameInputs() {
     ...lastData.reads, JSON.stringify(lastData.closed), navigationKey(), openRowId,
     focusSession, laneFilters.project, laneFilters.agent, outsideChanges, liveVersion, fileLinksCopy(), Boolean(linkFileActions()),
     triageHeld,
-    meshView, meshView?.lens(),
+    agentsHome.lens(),
     launchUi?.version() ?? null,
   ]
 }
@@ -6078,26 +6080,6 @@ function refreshLiveVersion() {
     .catch(() => {})
 }
 
-// Mesh M1 (#397, design §2.4b and §10.2): the Agents view exists only when the
-// page's FIRST /api/version read carries `mesh.agentsView`, which the viewer
-// adds only while mesh.json turns it on. Only then is /mesh-view.js requested.
-// Off, nothing here reads, fetches, paints or listens. On or off takes a window
-// reload. Its paint joins renderDashboardAmbient, so both render entries draw
-// it; `meshView` (declared beside the lanes' state) is in frameInputs(), so the
-// tick after it lands paints.
-let meshRequested = false
-
-function loadMeshView() {
-  if (meshRequested || liveVersion?.mesh?.agentsView !== true) return
-  meshRequested = true
-  import('/mesh-view.js')
-    .then((mod) => {
-      meshView = mod.installMeshView({ jumpToAsk, openMessage })
-      meshView.renderSettings(document.querySelector('#setup .setup-body'))
-    })
-    .catch((err) => console.error('Agents view could not load', err))
-}
-
 // A session's build label for the drawer, and its hint when it runs an older
 // build — or, once its host was matched back to this app, a newer one. Both
 // empty when its version is unknown: never a guess.
@@ -6898,7 +6880,7 @@ function initLiveBar() {
   })
   // #197: read outside the poll; the next paint shows the hints. A failed or
   // older viewer leaves the build state unknown, which hides every hint.
-  refreshLiveVersion().then(loadMeshView)
+  refreshLiveVersion()
 }
 
 // dismissing noise must not cost an expansion: staged 5s, undoable, flushed on blur

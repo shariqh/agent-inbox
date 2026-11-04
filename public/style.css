@@ -2207,9 +2207,8 @@ body.settings-open #liveBar { opacity: .32; }
 .history-row[open] .history-arrow { transform: rotate(90deg); }
 .history-row > .card { padding: 2px 14px 16px 34px; }
 
-/* Mesh M1 (#397): the opt-in Agents view, drawn by public/mesh-view.js only
-   while mesh.json turns it on; with the mesh off nothing here matches. Static:
-   no animation of any kind. */
+/* The Agents view (#397, always on since #454), drawn by public/agents-home.js.
+   Static: no animation of any kind. */
 .mesh-lens { display: flex; justify-content: flex-end; gap: 0; margin-top: 14px; }
 .mesh-lens-option { padding: 5px 12px; border: 1px solid var(--app-border); background: var(--app-surface); color: var(--app-muted); font: inherit; font-size: 12.5px; cursor: pointer; }
 .mesh-lens-option:first-child { border-radius: 7px 0 0 7px; }

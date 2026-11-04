@@ -32,8 +32,8 @@ npm run package:app # build the self-contained macOS app
 npm run install:agents [-- --apply]    # DRY RUN of MCP + host-instructions setup
 npm run install:hooks           # DRY RUN of the opt-in backstop hooks installer (docs/hooks.md)
 npm run install:hooks -- --apply    # …and actually write ~/.claude/settings.json
-npm run meshctl -- status                         # Mesh M1 (#397): what mesh.json turns on
-npm run meshctl -- enable --agents-view [--apply] # DRY RUN unless --apply; disable likewise
+npm run meshctl -- status                         # Mesh (#397): what mesh.json turns on
+npm run meshctl -- disable [--apply]              # DRY RUN unless --apply
 npx vitest run test/mcp.integration.test.ts   # single file
 npx vitest run test/store.test.ts -t "test name"  # one named test
 npx vitest run test/dom/                      # the jsdom viewer tests only
@@ -106,7 +106,7 @@ One line each; the detail, the reasons and the regressions behind them are in th
 - Never edit `test/fixtures/shipped-updaters/`; never add a key to `update-preferences.json`. → updates
 - Every shipped `node_modules` is pruned before it is tested, hashed or signed (#291); Electron
   locales are English-only (#292). → packaging-and-release
-- Mesh is opt-in: off means off (#397). → mesh
+- Mesh is opt-in: off means off from M2 on; the Agents view is always on (#454). → mesh
 - The driver approves only at the generation the human saw, and an app launch only on main's signed reply; no prompt starts with `/` (#412). → driven-sessions
 
 ## Conventions

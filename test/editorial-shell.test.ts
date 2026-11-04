@@ -230,7 +230,7 @@ describe('the session focus panel placement (#307)', () => {
   })
 })
 
-// Mesh M1 (#397): jsdom cannot lay out the Agents view's grid, so its two
+// The Agents view (#397, #454): jsdom cannot lay out the Agents view's grid, so its two
 // layout promises are pinned in the source.
 describe('the Agents view layout (#397)', () => {
   it('never needs a card wider than the screen', () => {

@@ -1,29 +1,31 @@
 #!/usr/bin/env node
 // agent-inbox-meshctl (Mesh M1, #397; design §2.1 and §2.5): the only writer of
 // `mesh.json`, the mesh's root switch. It follows install-agents.sh's habits:
-// a dry run by default, `--apply` to write, a timestamped backup and an atomic
-// rename, and nothing touched that it does not own (keys it does not know stay
-// as they are). Node core only: it never opens the hub, so it imports nothing
-// from store.ts.
+// a dry run by default, `--apply` to change anything, a timestamped backup, and
+// nothing touched that it does not own (keys it does not know stay as they are).
+// Node core only: it never opens the hub, so it imports nothing from store.ts.
 //
-//   meshctl enable --agents-view [--apply]   turn the Agents view on
+// Since #454 the Agents view is always on and no mesh piece is read from the
+// file until a later phase (M3) adds one, so `enable --agents-view` writes
+// nothing and an `agentsView` key in an existing file is kept like any other.
+//
+//   meshctl enable --agents-view [--apply]   says the Agents view is always on
 //   meshctl disable [--apply]                turn every mesh piece off
 //   meshctl status                           say what mesh.json turns on
 //
 // Exit codes: 0 done (or nothing to do), 1 refused or failed, 2 usage.
-import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, unlinkSync, writeSync } from 'node:fs'
-import { randomBytes } from 'node:crypto'
+import { closeSync, constants, fstatSync, fsyncSync, lstatSync, openSync, readFileSync, realpathSync, unlinkSync, writeSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { MESH_FILE_MAX, MESH_REASONS, MESH_SCHEMA, meshDir, meshFile, parseMesh } from './mesh-config.js'
+import { MESH_FILE_MAX, MESH_REASONS, meshDir, meshFile, parseMesh } from './mesh-config.js'
 import type { MeshDocument } from './mesh-config.js'
 
-const USAGE = `usage: agent-inbox-meshctl enable --agents-view [--apply]
+const USAGE = `usage: agent-inbox-meshctl status
        agent-inbox-meshctl disable [--apply]
-       agent-inbox-meshctl status
+       agent-inbox-meshctl enable --agents-view [--apply]
 
-Without --apply, enable and disable are dry runs: they print what they would do.
+Without --apply, disable is a dry run: it prints what it would do. The Agents view
+is always on, so enable --agents-view writes nothing.
 mesh.json lives in AGENT_INBOX_MESH_DIR, else beside AGENT_INBOX_DB, else ~/.agent-inbox.
 `
 
@@ -102,36 +104,7 @@ function writeBackup(file: string, now: Date): string {
   throw new Error('no free backup name')
 }
 
-/** Temp file beside the target, fsynced, then one rename over it. */
-function writeAtomic(file: string, text: string): void {
-  const temp = join(dirname(file), `.${basename(file)}.tmp-${process.pid}-${randomBytes(6).toString('hex')}`)
-  const fd = openSync(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600)
-  try {
-    writeSync(fd, text)
-    fsyncSync(fd)
-  } finally {
-    closeSync(fd)
-  }
-  try {
-    renameSync(temp, file)
-  } catch (error) {
-    try { unlinkSync(temp) } catch { /* already gone */ }
-    throw error
-  }
-}
-
-// schema first, then every key this build does not own exactly as it was
-function enabledDoc(doc: MeshDocument | null): MeshDocument {
-  const { schema: _schema, agentsView: _agentsView, ...rest } = doc ?? { schema: MESH_SCHEMA }
-  return { schema: MESH_SCHEMA, agentsView: true, ...rest }
-}
-
-const render = (doc: MeshDocument): string => `${JSON.stringify(doc, null, 2)}\n`
-
-const PIECES = ['agentsView'] as const
-function onPieces(doc: MeshDocument): string[] {
-  return PIECES.filter((key) => doc[key] === true)
-}
+const ALWAYS_ON = 'The Agents view is always on; mesh.json no longer controls it.'
 
 export function runMeshctl(argv: string[], io: MeshctlIo = {}): number {
   const env = io.env ?? process.env
@@ -153,48 +126,24 @@ export function runMeshctl(argv: string[], io: MeshctlIo = {}): number {
 
   if (command === 'status') {
     if (flags.size || apply) return usage()
+    out(`${ALWAYS_ON}\n`)
     const existing = readExisting(file)
     if (existing.kind === 'missing') {
       out(`Mesh: off. No ${name}.\n`)
       return 0
     }
     if (existing.kind === 'refused') {
-      out(`Mesh: off. ${name} ${existing.reason}, so the viewer reads it as off.\n`)
+      out(`Mesh: off. ${name} ${existing.reason}, so it is read as off.\n`)
       return 1
     }
-    const on = onPieces(existing.doc)
-    out(`Mesh: ${on.length ? 'on' : 'off'}. ${name}\n`)
-    out(`Pieces       agentsView ${existing.doc['agentsView'] === true ? 'on' : 'off'}\n`)
+    out(`Mesh: off. ${name} turns on no piece this build reads.\n`)
     return 0
   }
 
   if (command === 'enable') {
     if (!flags.delete('--agents-view') || flags.size) return usage()
-    const existing = readExisting(file)
-    if (existing.kind === 'refused') {
-      err(`Refused: ${name} ${existing.reason}. Nothing written. Fix or remove it by hand, then run this again.\n`)
-      return 1
-    }
-    const before = existing.kind === 'present' ? existing.doc : null
-    if (before?.['agentsView'] === true && before.schema === MESH_SCHEMA) {
-      out(`The Agents view is already on in ${name}. Nothing to do.\n`)
-      return 0
-    }
-    const text = render(enabledDoc(before))
-    if (!apply) {
-      out(`Dry run. Would ${before ? 'update' : 'create'} ${name}:\n${text}Nothing written. Re-run with --apply.\n`)
-      return 0
-    }
-    try {
-      mkdirSync(dir, { recursive: true, mode: 0o700 })
-      const backup = before ? writeBackup(file, now()) : null
-      writeAtomic(file, text)
-      out(`Wrote ${name}${backup ? ` (backup: ${shown(backup, home)})` : ' (new file)'}. Reload the Agent Inbox window to show the Agents view.\n`)
-      return 0
-    } catch {
-      err(`Failed: could not write ${name}. Nothing else was changed.\n`)
-      return 1
-    }
+    out(`${ALWAYS_ON} Nothing written.\n`)
+    return 0
   }
 
   if (command === 'disable') {
@@ -232,7 +181,6 @@ export function runMeshctl(argv: string[], io: MeshctlIo = {}): number {
         return 1
       }
     }
-    out('The viewer stops its mesh work at its next check, within a minute. Reload the Agent Inbox window to hide the Agents view.\n')
     return 0
   }
 

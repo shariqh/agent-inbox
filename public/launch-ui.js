@@ -839,7 +839,8 @@ export function createLaunchUi(deps) {
         current.list.replaceChildren()
       }
       current.after = Number.isSafeInteger(body.next) ? body.next : current.after
-      drawTranscript(current)
+      // an empty read changes nothing on screen: a selection in the last line stays put
+      if (body.events.length || body.rotated) drawTranscript(current)
       current.status.textContent = current.events.length ? '' : 'Nothing yet.'
       if (body.more) {
         current.timer = setTimeout(() => pollTranscript(current), 0)
@@ -854,14 +855,24 @@ export function createLaunchUi(deps) {
     const box = current.list.parentElement
     // newest at the bottom: a reader at the bottom stays there, one scrolled up stays put
     const atBottom = !box || box.scrollHeight - box.scrollTop - box.clientHeight < 8
-    // the last line can still grow (agent text arrives in pieces), so it is redrawn
-    const from = Math.max(0, Math.min(current.drawn, lines.length) - 1)
-    while (current.list.children.length > from) current.list.lastChild.remove()
-    for (const line of lines.slice(from)) {
-      const item = make('li', `launch-line ${line.kind}`)
-      item.append(make('span', 'tx-k', TRANSCRIPT_LABELS[line.kind] ?? ''), make('span', 'tx-b', line.text))
-      current.list.append(item)
+    // the last line can still grow (agent text arrives in pieces): its text is updated in place,
+    // only when it changed, and new lines are appended, so a selection and aria-live stay calm
+    const items = current.list.children
+    for (let i = Math.max(0, Math.min(current.drawn, lines.length) - 1); i < lines.length; i++) {
+      const line = lines[i]
+      const item = items[i]
+      if (item?.dataset.kind === line.kind) {
+        const text = item.querySelector('.tx-b')
+        if (text.textContent !== line.text) text.textContent = line.text
+        continue
+      }
+      const next = make('li', `launch-line ${line.kind}`)
+      next.dataset.kind = line.kind
+      next.append(make('span', 'tx-k', TRANSCRIPT_LABELS[line.kind] ?? ''), make('span', 'tx-b', line.text))
+      if (item) item.replaceWith(next)
+      else current.list.append(next)
     }
+    while (items.length > lines.length) current.list.lastElementChild.remove()
     current.drawn = lines.length
     if (box && atBottom) box.scrollTop = box.scrollHeight
   }

@@ -11,7 +11,7 @@ import { dirname, join } from 'node:path'
 import type Database from 'better-sqlite3'
 import {
   claimDriverSlot, createLaunch, endLaunch, fileLaunchAsk, getItem, handOffLaunch, holdDriverLeases, insertItem, listSessionMessages, markDriverTurn, markWorktreeRemoved, recordWorktreeSummary,
-  parkLaunch, recordActivityCall, recordLaunchProgress, resolveItem, upsertActivity,
+  parkLaunch, recordActivityCall, recordLaunchProgress, resolveItem, settleLaunchAsk, upsertActivity,
 } from '../../src/store.js'
 import type { ViewerBridge } from './harness.js'
 import { advanceClock, bootApp, buttonLabelled, changedPollTick, click, freshDb, pollTick, row, settle, type, useDomTest } from './harness.js'
@@ -1097,7 +1097,9 @@ describe('session cards for launches (#454, #412)', () => {
     expect(appr.querySelector('.sp-appr-title')?.textContent).toBe('Allow shell: npm test')
     expect(appr.querySelector('.sp-approval-count')?.textContent).toMatch(/^1 open/)
     expect(appr.querySelector('textarea, input')).toBeNull()
-    expect(document.activeElement?.textContent).toBe('Allow once')
+    // Review lands on the heading, never on an option a stray Space or held Enter would press
+    expect(document.activeElement).toBe(appr.querySelector('h3'))
+    expect(document.activeElement?.closest('.sp-option')).toBeNull()
     click([...appr.querySelectorAll<HTMLButtonElement>('button')].find((b) => b.textContent === 'Deny'))
     await settle()
     await settle()
@@ -1106,6 +1108,110 @@ describe('session cards for launches (#454, #412)', () => {
     click(panelAction('stop'))
     await settle()
     expect(api.stop).toHaveBeenCalledWith(LAUNCH)
+  })
+
+  it('holds every option while an answer is in flight and just after, so the next approval never answers unseen', async () => {
+    const api = launchBridge()
+    db = freshDb()
+    newLaunch(db)
+    drivenSession(db)
+    recordLaunchProgress(db, LAUNCH, { sessions: ['mcp-1'] })
+    const file = (title: string) => fileLaunchAsk(db!, LAUNCH, {
+      project: '@sessions', stream: 'alpha · main', agent: 'copilot', kind: 'question', session: 'mcp-1', title,
+      action_owner: 'approval', options: [{ label: 'Allow once' }, { label: 'Deny' }],
+    }, [{ optionId: 'allow_once', label: 'Allow once' }, { optionId: 'reject_once', label: 'Deny' }])
+    const first = file('Allow shell: npm test')
+    advanceClock()
+    const second = file('Allow shell: rm -rf build')
+    let finish!: (value: { ok: boolean }) => void
+    api.approve.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve }))
+    await bootApp(db)
+    await changedPollTick(db)
+    await settle()
+    click(cardAction(`launch:${LAUNCH}`, 'review'))
+    await settle()
+    const option = (item: string, label: string) => [...panel().querySelectorAll<HTMLButtonElement>('.sp-appr')]
+      .find((el) => el.dataset.focusApproval === item)?.querySelector<HTMLButtonElement>(`.sp-option:nth-of-type(${label === 'Allow once' ? 1 : 2})`) ?? null
+    click(option(first.itemId, 'Allow once'))
+    await settle()
+    // in flight: the other approval's options are held
+    expect(option(second.itemId, 'Allow once')?.disabled).toBe(true)
+    click(option(second.itemId, 'Allow once'))
+    // the driver settles the first; the page repaints with the second one in its place
+    settleLaunchAsk(db, first.itemId, 'Allowed once')
+    finish({ ok: true })
+    await settle()
+    await settle()
+    expect(option(first.itemId, 'Allow once')).toBeNull()
+    // a click landing on where the first one's option was, just after the repaint, answers nothing
+    expect(option(second.itemId, 'Allow once')?.disabled).toBe(true)
+    click(option(second.itemId, 'Allow once'))
+    await settle()
+    expect(api.approve).toHaveBeenCalledTimes(1)
+    expect(api.approve).toHaveBeenCalledWith({ item: first.itemId, revision: first.revision, optionId: 'allow_once' })
+    // after the calm, it answers as any option does
+    await vi.advanceTimersByTimeAsync(800)
+    expect(option(second.itemId, 'Allow once')?.disabled).toBe(false)
+  })
+
+  it('opens a launch outside the project lens scoped to its project, as Jump to session does', async () => {
+    launchBridge()
+    db = freshDb()
+    insertItem(db, { project: 'alpha', stream: 'main', agent: 'copilot', kind: 'note', title: 'seen' })
+    createLaunch(db, {
+      id: PARKED, host: 'copilot', project: 'beta', stream: 'main', cwd: '/work/beta', mode: 'ask', model: 'claude-haiku-4.5',
+      budgetActiveMs: 7_200_000, budgetToolCalls: 500, prompt: 'Fix it.', specVersion: 1, driverPid: 4243,
+    })
+    parkLaunch(db, PARKED, { acpSession: 'acp-1', activeMs: 10, toolCalls: 2 })
+    await bootApp(db)
+    await changedPollTick(db)
+    click(document.querySelector('#rail .rail-tab[data-project="alpha"]'))
+    await settle()
+    expect(document.querySelector(`[data-session-card="launch:${PARKED}"]`)).toBeNull()
+    openDrawer()
+    click(action(PARKED, 'resume-panel'))
+    await settle()
+    expect(panel().hidden).toBe(false)
+    expect(panel().dataset.card).toBe(`launch:${PARKED}`)
+    expect(panel().querySelector<HTMLElement>('.dash-focus-gone')?.hidden).toBe(true)
+    expect(panel().querySelector('#dashFocusTitle')?.textContent).toBe('beta · main')
+    expect(document.activeElement).toBe(panel().querySelector('.sp-resume-input'))
+  })
+
+  it('an empty transcript read leaves the lines alone, so a selection in the last one stays', async () => {
+    launchBridge()
+    db = freshDb()
+    newLaunch(db)
+    const dir = join(dirname(db.name), 'launches', LAUNCH)
+    mkdirSync(dir, { recursive: true })
+    appendFileSync(join(dir, 'events.ndjson'), [
+      { event: 'prompt', kind: 'task' },
+      { event: 'agent_text', text: 'Reading the tests.' },
+    ].map((e) => `${JSON.stringify(e)}\n`).join(''))
+    await bootApp(db)
+    await changedPollTick(db)
+    click(document.querySelector(`[data-session-card="launch:${LAUNCH}"] .sc-doing`))
+    await settle()
+    const last = panel().querySelector('.sp-transcript .launch-line:last-child')!
+    const text = last.querySelector('.tx-b')!.firstChild!
+    const range = document.createRange()
+    range.setStart(text, 0)
+    range.setEnd(text, 7)
+    getSelection()!.removeAllRanges()
+    getSelection()!.addRange(range)
+    await vi.advanceTimersByTimeAsync(2100)
+    await settle()
+    expect(panel().querySelector('.sp-transcript .launch-line:last-child')).toBe(last)
+    expect(last.querySelector('.tx-b')!.firstChild).toBe(text)
+    expect(String(getSelection())).toBe('Reading')
+    // a line that grows keeps its node; a new one is appended
+    appendFileSync(join(dir, 'events.ndjson'), `${JSON.stringify({ event: 'agent_text', text: ' Done.' })}\n${JSON.stringify({ event: 'tool_call', title: 'Run npm test' })}\n`)
+    await vi.advanceTimersByTimeAsync(2100)
+    await settle()
+    const lines = [...panel().querySelectorAll('.sp-transcript .launch-line')]
+    expect(lines.map((li) => li.querySelector('.tx-b')?.textContent)).toEqual(['The task was sent.', 'Reading the tests. Done.', 'Run npm test'])
+    expect(lines[1]).toBe(last)
+    getSelection()!.removeAllRanges()
   })
 
   it('New session… sits in the header, and says why it is off outside a granted window', async () => {

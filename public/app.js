@@ -2508,13 +2508,35 @@ function focusButton(target, label, open, { className = '', attrs = '' } = {}) {
 // Q3 (#454): an app session's approval, answered here with its own options
 // only, through sendReply's signed path; no editor, so no draft. Outside the
 // app's granted window it says where to answer and jumps to the rail.
+//
+// Answering one approval removes its block, and the next one's options slide up
+// under the pointer: so while an answer is in flight, and for a short calm after
+// the repaint that follows it, every option is disabled and its click ignored.
+const APPROVAL_CALM_MS = 700
+let approvalSending = false
+let approvalCalmUntil = 0
+const approvalHeld = () => approvalSending || Date.now() < approvalCalmUntil
+
+function answerInPanel(id, label) {
+  if (approvalHeld()) return
+  approvalSending = true
+  paintSessionFocus()
+  Promise.resolve(sendReply(id, label, null, 'answer')).finally(() => {
+    approvalSending = false
+    approvalCalmUntil = Date.now() + APPROVAL_CALM_MS
+    paintSessionFocus()
+    window.setTimeout(paintSessionFocus, APPROVAL_CALM_MS)
+  })
+}
+
 function approvalHtml(entry, granted, onRail) {
   const it = entry.item
   const id = it.id
   const options = (Array.isArray(it.options) ? it.options : []).map((o) => String(o?.label ?? '')).filter(Boolean)
+  const held = approvalHeld() ? ' disabled' : ''
   const buttons = granted
-    ? options.map((label, index) => focusButton(`approve:${id}:${index}`, label, () => sendReply(id, label, null, 'answer'),
-      { className: index === 0 ? 'sp-option rec' : 'sp-option' })).join('')
+    ? options.map((label, index) => focusButton(`approve:${id}:${index}`, label, () => answerInPanel(id, label),
+      { className: index === 0 ? 'sp-option rec' : 'sp-option', attrs: held })).join('')
     : `<p class="dash-focus-none">Answer it from Agent Inbox’s own window.</p>` +
       focusButton(`item:${id}`, onRail ? 'Answer in rail' : 'Answer in Inbox', () => jumpToAsk(entry))
   const error = writeErrors[id] ?? ''
@@ -2649,8 +2671,13 @@ function focusPanelPart(part) {
   } else if (part === 'resume') {
     const id = aside.querySelector('.sp-resume')?.dataset.launch
     if (id) launchUi?.focusResume(id)
-  } else if (part === 'approval' || part === 'asks') {
-    aside.querySelector(part === 'approval' ? '.sp-approval:not([hidden]) button' : '.dash-focus-asks button')?.focus()
+  } else if (part === 'approval') {
+    // a landing spot, never an option: a stray Space or a held Enter must not answer it
+    const heading = aside.querySelector('.sp-approval:not([hidden]) h3')
+    heading?.setAttribute('tabindex', '-1')
+    heading?.focus({ preventScroll: true })
+  } else if (part === 'asks') {
+    aside.querySelector('.dash-focus-asks button')?.focus()
   } else if (part === 'transcript') {
     const section = aside.querySelector('.sp-transcript:not([hidden])')
     section?.scrollIntoView?.({ block: 'nearest' })
@@ -2661,8 +2688,18 @@ function focusPanelPart(part) {
 
 function openSessionFocus(session, part = null) {
   focusSession = session
-  // from the drawer (a launch's Transcript or Resume…), the panel is on the Dashboard
-  if (activeTab !== 'dashboard') {
+  // from the drawer (a launch's Transcript or Resume…), the panel is on the Dashboard;
+  // a launch outside the project and agent lens scopes it to its project, as jumpToSession does
+  const id = session.startsWith('launch:') ? session.slice('launch:'.length) : null
+  const launch = id ? (lastData?.launches ?? []).find((l) => l.id === id) : null
+  const outside = Boolean(launch) && !launchesInLens().includes(launch)
+  if (outside) {
+    projectFilter = launch.project
+    agentFilter = null
+    laneFilters.project = null
+    laneFilters.agent = null
+  }
+  if (activeTab !== 'dashboard' || outside) {
     selectTab('dashboard', { paint: false })
     forceRender()
   }

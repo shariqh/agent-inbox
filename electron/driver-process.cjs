@@ -16,8 +16,13 @@ const fs = require('node:fs')
 const path = require('node:path')
 
 const LAUNCH_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
-const STATUS_TIMEOUT_MS = 30_000
+// The driver writes its status line once Copilot's session is set up (#432 PR 5):
+// its own setup deadline is 2 minutes, and one restart without a reasoning
+// effort gets another; a worktree launch's caller adds the worktree's time.
+const STATUS_TIMEOUT_MS = 300_000
 const MAX_STATUS = 4096
+// what the driver says it is doing before its status line, for the New session dialog
+const PHASES = new Set(['worktree', 'copilot'])
 
 function driverArgv({ entry, launchId, hubPath }) {
   return [entry, 'run', launchId, hubPath]
@@ -33,6 +38,7 @@ function failure(error) {
  */
 function startDriver({
   platform = process.platform, node, entry, launchId, hubPath, spec, logPath, env, spawnImpl, fsImpl = fs, timeoutMs = STATUS_TIMEOUT_MS,
+  onPhase = () => {},
 }) {
   if (platform !== 'darwin') return Promise.resolve(failure('Starting sessions from Agent Inbox is available on macOS only.'))
   for (const value of [node, entry, hubPath, logPath]) {
@@ -82,18 +88,22 @@ function startDriver({
     child.stdout.on('error', () => {})
     child.stdout.on('data', (chunk) => {
       output += chunk.toString('utf8')
-      const line = output.indexOf('\n')
-      if (line === -1) {
-        if (output.length > MAX_STATUS) finish(failure('The driver reported something unexpected.'))
-        return
+      for (let line = output.indexOf('\n'); line !== -1 && !done; line = output.indexOf('\n')) {
+        let status = null
+        try {
+          status = JSON.parse(output.slice(0, line))
+        } catch { /* checked below */ }
+        output = output.slice(line + 1)
+        // a phase line: what the driver is doing now, before its one status line
+        if (status && Object.keys(status).length === 1 && PHASES.has(status.phase)) {
+          try { onPhase(status.phase) } catch { /* a report, not the start */ }
+          continue
+        }
+        if (status && status.ok === true && status.launch === launchId) finish({ ok: true, launch: launchId, pid: child.pid })
+        else if (status && status.ok === false && typeof status.error === 'string') finish(failure(status.error.slice(0, 500)))
+        else finish(failure('The driver reported something unexpected.'))
       }
-      let status = null
-      try {
-        status = JSON.parse(output.slice(0, line))
-      } catch { /* checked below */ }
-      if (status && status.ok === true && status.launch === launchId) finish({ ok: true, launch: launchId, pid: child.pid })
-      else if (status && status.ok === false && typeof status.error === 'string') finish(failure(status.error.slice(0, 500)))
-      else finish(failure('The driver reported something unexpected.'))
+      if (!done && output.length > MAX_STATUS) finish(failure('The driver reported something unexpected.'))
     })
   })
 }

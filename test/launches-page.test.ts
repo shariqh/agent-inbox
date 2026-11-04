@@ -48,10 +48,25 @@ describe('a launch’s state', () => {
     })
     expect(launchStatus(launch({ status: 'ended', end_reason: 'budget:tool_calls' }), [], NOW)).toMatchObject({ state: 'ended', text: 'Ended: tool-call budget used' })
     expect(launchStatus(launch({ status: 'ended', end_reason: 'something_new' }), [], NOW).text).toBe('Ended (something_new)')
+    // #432 PR 5: ended before its session was ready
+    expect(launchStatus(launch({ status: 'ended', end_reason: 'error:setup', end_detail: 'Copilot exited before the session started.' }), [], NOW))
+      .toEqual({ state: 'failed', text: 'Didn’t start: Copilot exited before the session started.', actions: ['transcript'] })
+    expect(launchStatus(launch({ status: 'ended', end_reason: 'error:start' }), [], NOW)).toMatchObject({ state: 'failed', text: 'Didn’t start.' })
   })
 })
 
 describe('the transcript', () => {
+  it('names the effort fallback once, and not the first Copilot’s end (#432 PR 5)', () => {
+    expect(transcriptLines([
+      { event: 'ended', reason: 'error:setup', retry: 'effort' },
+      { event: 'effort_fallback', model: 'claude-haiku-4.5' },
+      { event: 'prompt', kind: 'task' },
+    ])).toEqual([
+      { kind: 'note', text: 'This model takes no reasoning effort, so Agent Inbox started it with none.' },
+      { kind: 'note', text: 'The task was sent.' },
+    ])
+  })
+
   it('joins agent text per turn and names tool calls, asks and answers, skipping what it does not show', () => {
     expect(transcriptLines([
       { event: 'prompt', kind: 'task' },

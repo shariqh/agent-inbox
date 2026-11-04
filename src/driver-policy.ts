@@ -114,9 +114,11 @@ export function isReasoningEffort(value: string): value is ReasoningEffort {
  * (an `effortLevel` in ~/.copilot/settings.json), and a model that takes no
  * reasoning effort then refuses to start.
  */
-export function setupRefusalHint(message: string): string | null {
+export function setupRefusalHint(message: string, context: 'terminal' | 'app' = 'terminal'): string | null {
   if (!/does not support reasoning effort/i.test(message)) return null
-  return 'Your Copilot settings set a reasoning effort this model does not take. Add --reasoning-effort none, or choose another --model.'
+  return context === 'app'
+    ? 'This model takes no reasoning effort: choose Reasoning effort: none in New session, or another model.'
+    : 'Your Copilot settings set a reasoning effort this model does not take. Add --reasoning-effort none, or choose another --model.'
 }
 
 // ── the option allow-list (§4.1) ────────────────────────────────────────────

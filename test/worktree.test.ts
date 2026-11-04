@@ -362,10 +362,16 @@ describe('the turn-end summary (#432 §6)', () => {
     mkdirSync(bin)
     const calls = join(r.dir, 'git-calls.log')
     writeFileSync(calls, '')
-    writeFileSync(join(bin, 'git'), `#!/bin/sh\necho "$$ $*" >> '${calls}'\nif [ "$3" = branch ] && [ -e '${join(r.dir, 'HANG')}' ]; then exec sleep 600; fi\nexec '${GIT}' "$@"\n`)
+    // with HELPER, it first starts a background helper that keeps git's stdout and stderr open, as a clean filter can
+    writeFileSync(join(bin, 'git'), `#!/bin/sh\necho "$$ $*" >> '${calls}'\nif [ "$3" = branch ] && [ -e '${join(r.dir, 'HANG')}' ]; then\n  if [ -e '${join(r.dir, 'HELPER')}' ]; then (exec sleep 600) & echo $! >> '${join(r.dir, 'helpers')}'; fi\n  exec sleep 600\nfi\nexec '${GIT}' "$@"\n`)
     chmodSync(join(bin, 'git'), 0o755)
     const lines = () => readFileSync(calls, 'utf8').split('\n').filter(Boolean)
-    return { git: join(bin, 'git'), lines, reads: () => lines().filter((l) => l.includes('rev-parse --verify -q HEAD^{commit}')).length, hang: () => writeFileSync(join(r.dir, 'HANG'), '') }
+    return {
+      git: join(bin, 'git'), lines, reads: () => lines().filter((l) => l.includes('rev-parse --verify -q HEAD^{commit}')).length,
+      hang: () => writeFileSync(join(r.dir, 'HANG'), ''),
+      helper: () => writeFileSync(join(r.dir, 'HELPER'), ''),
+      helpers: () => (existsSync(join(r.dir, 'helpers')) ? readFileSync(join(r.dir, 'helpers'), 'utf8') : '').split('\n').filter(Boolean).map(Number),
+    }
   }
   function setup() {
     const r = rig()
@@ -408,6 +414,26 @@ describe('the turn-end summary (#432 §6)', () => {
     expect(r.written).toHaveLength(count)
   })
 
+  it('final() keeps its deadline when git started a helper that holds its pipes open (review of #448)', async () => {
+    const r = setup()
+    const git = wrapped(r)
+    git.hang()
+    git.helper()
+    const summarizer = r.summarizer(git.git, 400)
+    summarizer.request()
+    for (let i = 0; i < 100 && git.helpers().length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(git.helpers()).toHaveLength(1)
+    try {
+      const started = Date.now()
+      await summarizer.final()
+      // without closing the pipes, git's end shows only at the 10 s per-command timeout
+      expect(Date.now() - started).toBeLessThan(2000)
+      expect(r.written).toEqual([])
+    } finally {
+      for (const pid of git.helpers()) try { process.kill(pid, 'SIGKILL') } catch { /* gone */ }
+    }
+  })
+
   it('a request during a read runs exactly once after it, and its result is written', async () => {
     const r = setup()
     const git = wrapped(r)
@@ -437,7 +463,10 @@ describe('the turn-end summary (#432 §6)', () => {
     // the hanging git was killed, and nothing reads after final()
     const hung = git.lines().filter((l) => l.includes(' branch --show-current')).map((l) => Number(l.split(' ')[0]))
     expect(hung.length).toBeGreaterThan(0)
-    for (const pid of hung) expect(() => process.kill(pid, 0)).toThrow()
+    // killed at the deadline; final() does not wait for it to be reaped
+    const gone = (pid: number) => { try { process.kill(pid, 0); return false } catch { return true } }
+    for (let i = 0; i < 100 && !hung.every(gone); i++) await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(hung.every(gone)).toBe(true)
     const reads = git.reads()
     summarizer.request()
     await new Promise((resolve) => setTimeout(resolve, 200))

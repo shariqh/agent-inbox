@@ -13,6 +13,8 @@ export function startDriver(options: {
   spawnImpl: (...args: never[]) => unknown
   fsImpl?: unknown
   timeoutMs?: number
+  /** #432 PR 5: each phase line the driver writes before its status line */
+  onPhase?: (phase: 'worktree' | 'copilot') => void
 }): Promise<DriverStart>
 /** #432: `driver-cli.js worktree inspect|remove`'s one JSON answer */
 export function runWorktreeCommand(options: {

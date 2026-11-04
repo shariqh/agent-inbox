@@ -169,14 +169,14 @@ header { flex-wrap: wrap; }
 .live-launch-composer .msg-composer { margin: 4px 0 0; }
 .live-launch-actions, .live-launch-resume { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 6px; }
 .live-launch-resume-input { flex: 1 1 220px; min-height: 40px; resize: vertical; padding: 6px 8px; border: 1px solid var(--app-border); border-radius: 8px; background: var(--app-surface); color: var(--app-text); font: inherit; font-size: 13px; }
-.launch-action, .msg-interrupt, .dash-lane-stop, .launch-dialog button, .launch-transcript button {
+.launch-action, .msg-interrupt, .dash-lane-stop, .launch-dialog button {
   padding: 2px 8px; border: 1px solid var(--app-border); border-radius: 6px; background: var(--app-soft); color: var(--app-text); font: inherit; font-size: 12px; cursor: pointer;
 }
 .launch-action.primary, .launch-dialog button.primary { border-color: var(--app-accent); background: var(--app-accent); color: #fff; }
 .launch-action:disabled, .msg-interrupt:disabled, .launch-dialog button:disabled { cursor: default; opacity: .55; }
 .live-launch-note { color: var(--app-warning); }
-.launch-dialog, .launch-transcript { width: min(640px, calc(100vw - 32px)); max-height: calc(100vh - 64px); overflow: auto; overscroll-behavior: contain; padding: 16px 18px; border: 1px solid var(--app-border); border-radius: 10px; background: var(--app-surface); color: var(--app-text); }
-.launch-dialog h2, .launch-transcript h2 { margin: 0 0 10px; font-size: 16px; }
+.launch-dialog { width: min(640px, calc(100vw - 32px)); max-height: calc(100vh - 64px); overflow: auto; overscroll-behavior: contain; padding: 16px 18px; border: 1px solid var(--app-border); border-radius: 10px; background: var(--app-surface); color: var(--app-text); }
+.launch-dialog h2 { margin: 0 0 10px; font-size: 16px; }
 .launch-form { display: grid; gap: 10px; font-size: 13px; }
 .launch-field { display: grid; gap: 3px; }
 .launch-field-label { font-weight: 600; }
@@ -190,12 +190,6 @@ header { flex-wrap: wrap; }
 .launch-dialog-message:empty { display: none; }
 .launch-dialog-message { margin: 0; color: var(--app-warning); }
 .launch-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
-.launch-transcript-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
-.launch-transcript-status:empty { display: none; }
-.launch-transcript-lines { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; font-size: 12.5px; }
-.launch-line { white-space: pre-wrap; overflow-wrap: anywhere; }
-.launch-line.tool, .launch-line.ask { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
-.launch-line.note, .launch-line.answer { color: var(--app-muted); }
 .dash-lane-launch { display: flex; align-items: center; gap: 8px; font-size: 11px; }
 .dash-lane-launch-tag { padding: 0 6px; border: 1px solid var(--app-border); border-radius: 999px; color: var(--app-text-soft); }
 .msg-history { display: grid; gap: 6px; }
@@ -2076,36 +2070,85 @@ body.settings-open #liveBar { opacity: .32; }
 .dash-lane { cursor: pointer; }
 .dash-lane-open { display: flex; min-width: 0; flex: 1; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
 .dash-lane-open[aria-expanded="true"] .dash-lane-doing { color: var(--app-accent); }
-/* #307: the session focus panel, a read-only side panel inside the lanes card,
-   over the right part of the lanes column, so the rail (the Dashboard's answer
-   surface) and the Now strip stay visible. Below 1280px it is in flow under
-   the lanes (the compact block at the end). Its one-shot entrance uses the
-   motion tokens; reduced motion makes it instant and Calm drops it. */
+/* #307 grown by #454 (design §3.3): the session panel, a sheet over the right
+   side of the Dashboard grid (covering the rail while open), mounted in the grid
+   itself so no lens can hide it. Below 1280px it is in flow after the list (the
+   compact block at the end). Its one-shot entrance uses the motion tokens;
+   reduced motion makes it instant and Calm drops it. */
+.dashboard-grid { position: relative; }
 .dash-lanes { position: relative; }
 .dash-focus {
   position: absolute;
-  top: 52px;
-  right: 12px;
+  top: 0;
+  right: 0;
   z-index: 5;
-  max-height: max(320px, calc(100% - 64px));
-  display: grid;
-  width: min(380px, calc(100% - 24px));
-  align-content: start;
-  gap: 8px;
-  padding: 16px;
-  overflow: auto;
-  overscroll-behavior: contain;
-  border: 1px solid var(--app-border);
-  border-radius: 10px;
+  display: flex;
+  width: min(620px, calc(100% - 24px));
+  max-height: max(420px, calc(100vh - 200px));
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--app-border-strong);
+  border-radius: 14px;
   background: var(--app-surface);
-  box-shadow: 0 12px 32px color-mix(in srgb, var(--app-text) 14%, transparent);
+  box-shadow: 0 12px 40px color-mix(in srgb, var(--app-text) 18%, transparent);
   animation: dash-focus-in var(--motion-moderate) var(--motion-ease-out) 1;
 }
 .dash-focus[hidden], .dash-focus [hidden] { display: none; }
+.sp-head { display: grid; gap: 6px; padding: 14px 16px 10px; border-bottom: 1px solid var(--app-border); }
+.sp-state { flex: none; padding: 1px 8px; border-radius: 999px; background: color-mix(in srgb, var(--sp-tone, var(--app-text-soft)) 16%, transparent); color: var(--sp-tone, var(--app-text-soft)); font-size: 10.5px; font-weight: 700; }
+.sp-state.tone-ask { --sp-tone: var(--app-attention); }
+.sp-state.tone-working { --sp-tone: var(--app-success); }
+.sp-state.tone-parked, .sp-state.tone-terminal { --sp-tone: var(--app-warning); }
+.sp-state.tone-failed, .sp-state.tone-lost { --sp-tone: var(--app-danger); }
+.sp-state.tone-starting, .sp-state.tone-stopping { --sp-tone: var(--app-agent); }
+/* room for the close button's key hint (Esc) under it */
+.sp-head .dash-focus-meta { padding-right: 40px; }
+.sp-hint { color: color-mix(in srgb, var(--app-warning) 80%, var(--app-text)); font-size: 12px; }
+.sp-actions { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 16px; border-bottom: 1px solid var(--app-border); background: var(--app-elevated); }
+.sp-actions .launch-action { padding: 3px 9px; border-radius: 7px; background: var(--app-surface); font-size: 11.5px; font-weight: 600; }
+.sp-actions .launch-action.danger { border-color: color-mix(in srgb, var(--app-danger) 55%, transparent); color: var(--app-danger); }
+.sp-actions .launch-action.sp-end { margin-left: auto; }
+.sp-note { padding: 6px 16px; color: var(--app-warning); font-size: 12px; }
+.sp-body { display: grid; min-height: 0; flex: 1; align-content: start; gap: 10px; overflow: auto; overscroll-behavior: contain; padding: 12px 16px; }
+.sp-approval { border-top: 0; padding-top: 0; }
+.sp-approval-count { padding: 0 7px; border-radius: 999px; background: color-mix(in srgb, var(--app-attention) 16%, transparent); color: var(--app-attention); letter-spacing: .04em; }
+.sp-approval-count:empty { display: none; }
+.sp-appr { display: grid; gap: 7px; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--app-attention) 55%, var(--app-border)); border-radius: 10px; background: color-mix(in srgb, var(--app-attention) 8%, var(--app-surface)); font-size: 12.5px; }
+.sp-appr + .sp-appr { margin-top: 6px; }
+.sp-appr-title { overflow-wrap: anywhere; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
+.sp-appr-options { display: flex; flex-wrap: wrap; gap: 6px; }
+.sp-option { padding: 3px 10px; border-radius: 999px; font-weight: 600; }
+.sp-option.rec { border-color: var(--app-accent); background: var(--app-accent-soft); color: var(--app-accent); }
+.sp-option[aria-disabled="true"] { cursor: default; opacity: .55; }
+.sp-appr-warn { color: var(--app-muted); font-size: 11.5px; }
+.sp-worktree-box { display: grid; grid-template-columns: 82px minmax(0, 1fr); gap: 3px 10px; margin: 0; font-size: 12px; }
+.sp-worktree-box dt { color: var(--app-text-soft); }
+.sp-worktree-box dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.sp-worktree-box .mono, .sp-appr-title.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.sp-transcript h3 small { color: var(--app-text-soft); font-weight: 500; letter-spacing: 0; text-transform: none; }
+.sp-transcript h3:focus { outline: none; }
+.sp-transcript-box { max-height: 240px; overflow: auto; overscroll-behavior: contain; padding: 8px 10px; border: 1px solid var(--app-border); border-radius: 10px; background: var(--app-elevated); }
+.sp-transcript-status { color: var(--app-muted); font-size: 12px; }
+.sp-transcript-status:empty { display: none; }
+.sp-transcript-lines { display: grid; gap: 5px; margin: 0; padding: 0; list-style: none; font-size: 12px; }
+.launch-line { display: grid; grid-template-columns: 54px minmax(0, 1fr); gap: 8px; line-height: 1.4; }
+.launch-line .tx-k { padding-top: 1px; color: var(--app-text-soft); font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+.launch-line .tx-b { white-space: pre-wrap; overflow-wrap: anywhere; }
+.launch-line.tool .tx-k { color: var(--app-agent); }
+.launch-line.ask .tx-k { color: var(--app-attention); }
+.launch-line.note .tx-k { color: var(--app-plan); }
+.launch-line.tool .tx-b, .launch-line.ask .tx-b { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; }
+.launch-line.note .tx-b, .launch-line.answer .tx-b { color: var(--app-muted); }
+.sp-children { display: grid; gap: 3px; margin: 0; padding: 0; list-style: none; font-size: 12.5px; }
+.sp-children span { color: var(--app-muted); }
+.dash-focus > .dash-focus-message, .sp-resume { display: grid; gap: 6px; padding: 10px 16px 14px; border-top: 1px solid var(--app-border); background: var(--app-elevated); }
+.sp-resume h3 { margin: 0; color: var(--app-muted); font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+.sp-resume-input { width: 100%; min-height: 52px; box-sizing: border-box; resize: vertical; padding: 8px 10px; border: 1px solid var(--app-border-strong); border-radius: 8px; background: var(--app-surface); color: var(--app-text); font: inherit; font-size: 12.5px; }
+.sp-resume-actions { display: flex; justify-content: flex-end; }
 .dash-focus-head { display: flex; align-items: center; gap: 8px; }
-.dash-focus-head h2 { min-width: 0; flex: 1; margin: 0; font-size: 14px; font-weight: 680; }
+.dash-focus-head h2 { min-width: 0; flex: 1; margin: 0; overflow: hidden; font-size: 16px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
 #dashFocusTitle:focus { outline: none; } /* a landing heading, not a control */
-.dash-focus-close { padding: 0 6px; border: 0; background: transparent; color: var(--app-muted); font-size: 18px; line-height: 1; }
+.dash-focus-close { display: grid; width: 26px; height: 26px; place-items: center; padding: 0; border: 1px solid var(--app-border); border-radius: 7px; background: transparent; color: var(--app-muted); font-size: 16px; line-height: 1; }
 .dash-focus p { margin: 0; }
 .dash-focus-meta, .dash-focus-none, .dash-focus-gone { color: var(--app-muted); font-size: 12px; }
 .dash-focus-doing { font-size: 14.5px; font-weight: 650; }
@@ -2257,6 +2300,7 @@ body.settings-open #liveBar { opacity: .32; }
 /* the session card */
 .sc { position: relative; display: flex; min-width: 0; flex-direction: column; gap: 6px; overflow: hidden; padding: 11px 13px 11px 15px; border: 1px solid var(--app-border); border-radius: 11px; background: var(--app-elevated); font-size: 12.5px; cursor: default; }
 .sc::before { position: absolute; top: 0; bottom: 0; left: 0; width: 3px; background: var(--sc-rule, transparent); content: ""; }
+.sc.sel { outline: 2px solid var(--app-focus); outline-offset: -1px; }
 .sc.tone-ask { --sc-rule: var(--app-attention); --sc-tone: var(--app-attention); border-color: color-mix(in srgb, var(--app-attention) 45%, var(--app-border)); }
 .sc.tone-working { --sc-rule: var(--app-success); --sc-tone: var(--app-success); }
 .sc.tone-parked, .sc.tone-terminal { --sc-rule: var(--app-warning); --sc-tone: var(--app-warning); }
@@ -2529,9 +2573,10 @@ body.sidebar-collapsed .gear[data-shortcut]::after { display: none; }
    .rail-filter stays inside the menu whenever >12 projects means it is
    rendered (RAIL_FILTER_THRESHOLD, rail.js). */
 @media (max-width: 1279px) {
-  /* #307: the session panel joins the flow below the lanes, never fixed over
-     the masthead's selectors, tabs or project menu. */
-  .dash-focus { position: static; z-index: auto; width: auto; max-height: none; margin-top: 12px; box-shadow: none; }
+  /* #307, #454: the session panel joins the flow after the list, never fixed
+     over the masthead's selectors, tabs or project menu. */
+  .dash-focus { position: static; z-index: auto; grid-column: 1 / -1; width: auto; max-height: none; box-shadow: none; }
+  .sp-body { overflow: visible; }
   body { padding: 0 10px 48px; }
   .layout { gap: 10px; }
 

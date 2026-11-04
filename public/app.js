@@ -42,6 +42,7 @@ import { fileLinksCopy, initLinkOpening, linkFileActions, refreshLinkPermission 
 import { refreshLinkSettings, renderLinkSettings } from '/link-settings.js'
 import { createLaunchUi } from '/launch-ui.js'
 import { installAgentsHome } from '/agents-home.js'
+import { SHELL_WARNING } from '/launches.js'
 import { refreshLaunchSettings, renderLaunchSettings } from '/launch-settings.js'
 import { boardRowsView, boardRowLine, progressLabel, hiddenDoneCount, lingeringBoards, omittedOutcomes } from '/boards.js'
 import { titleWithBadge, focusHashFor, parseFocusHash } from '/badge.js'
@@ -2036,16 +2037,17 @@ function renderDashboardAmbient(model, { forced = false } = {}) {
   renderDashSince(host.querySelector('.dash-since'), model)
   renderDashLanes(host.querySelector('.dash-lanes'), model, { forced })
   renderDashRail(host.querySelector('.dash-rail'), model.rail, { forced })
-  renderDashFocus(host.querySelector('.dash-focus'), model)
-  renderDashRibbon(host.querySelector('.dashboard-activity'), model)
-  renderDashboardOutcomes(host.querySelector('.dashboard-outcome-list'), model.recentOutcomes, model.recentOutcomesComplete,
-    model.recentOutcomesWait, model.recentOutcomesHidden)
+  // the cards first: the session panel shows one of them (#454)
   agentsHome.paint(host, {
     activity: liveInLens(), boards: model.boards, attention: model.waitingEntries, closed: dashboardClosedProjects(),
     // #412 step 3: this app's launches, only with its switch on (§9: otherwise none is read or drawn)
     launches: launchesOn() ? launchesInLens() : null,
-    nowMs: Date.now(), forced, lensProject: projectFilter,
+    nowMs: Date.now(), forced, lensProject: projectFilter, selected: focusSession,
   })
+  renderDashFocus(host.querySelector('.dash-focus'), model)
+  renderDashRibbon(host.querySelector('.dashboard-activity'), model)
+  renderDashboardOutcomes(host.querySelector('.dashboard-outcome-list'), model.recentOutcomes, model.recentOutcomesComplete,
+    model.recentOutcomesWait, model.recentOutcomesHidden)
 }
 
 // Only a changed value is written, so an unchanged lane keeps its text nodes
@@ -2128,24 +2130,15 @@ const laneCalls = new Map() // session → the last call a paint has seen, for t
 const laneAsks = new Map() // session → { first, oldest } attention entries, read by the lane's buttons
 // #307: window-local view state, never persisted, read by no attention surface.
 const laneFilters = { project: null, agent: null }
-let focusSession = null // the session the focus panel shows, if open
+// The session panel's key, if open (#307, #454): a session id, or `launch:<id>` for a
+// launch's card, which outlives its sessions. agentsHome.cardFor() resolves it.
+let focusSession = null
 let lastDashModel = null // the model the last paint drew, for a handler's own repaint
 // The Agents home (#454): its filters, grouping, folds and lens are window-local.
 const agentsHome = installAgentsHome({
-  jumpToAsk,
-  openMessage,
-  // until the session panel (#454 PR 3), a card opens the session focus panel
-  openSession: (card) => { if (card.session) toggleSessionFocus(card.session) },
-  launchAction: (id, action) => {
-    if (action !== 'resume') {
-      launchUi?.run(id, action)
-      return
-    }
-    // Resume and send lives in the Live drawer's launch row until the session panel holds it
-    toggleLiveDrawer(true)
-    launchUi?.paintDrawer(Date.now())
-    launchUi?.focusResume(id)
-  },
+  // a card's click toggles its panel; Review, Message, Transcript and Resume… open it at that part
+  openSession: (key, part) => (part ? openSessionFocus(key, part) : toggleSessionFocus(key)),
+  launchAction: (id, action) => launchUi?.run(id, action),
   launches: () => (launchesOn() ? launchUi : null),
   hasDraft: (session) => messageDrafts.has(session),
   build: (row) => sessionBuild(row, liveVersion),
@@ -2422,15 +2415,19 @@ function jumpToAsk(entry) {
   card.focus()
 }
 
-// ── the session focus panel (#307, proposal §14) ────────────────────────────
-// A lane opens a read-only side panel: the session's asks (the lane's own, from
-// the attention set), its plan, recent outcomes, ambient PR/CI chips and the
-// links its text shows (#300). D2 keeps the rail the one answer surface, so
-// every ask here jumps there (or to its Inbox card); its one editor is the
-// session's message composer (#411), not an answer. The ambient painter
-// updates it in place: each part is rewritten only when its markup changes,
-// and the composer is one node kept across paints. Opening or closing it moves
-// focus only in a window that has it.
+// ── the session panel (#307 grown by #454, design §3.3) ─────────────────────
+// One session, from its card (agentsHome.cardFor): its state and summary, the
+// launch's action bar, an app session's approval answered in place (Q3, through
+// sendReply's signed path; the rail still lists it), its other asks (each jumps
+// to the rail or its Inbox card), the worktree, the transcript, the session's
+// one composer (#411), or Resume and send for a parked launch, and the context
+// #307 showed: detail, subagents, plan, recent outcomes, PR/CI chips and links.
+// A terminal session's panel has no action bar or transcript. The ambient
+// painter updates it in place: each part is rewritten only when its markup
+// changes, the composer and the Resume text are each one node kept across
+// paints, and the launch's parts are launch-ui.js's. It answers nothing else
+// and feeds no attention surface. Opening or closing it moves focus only in a
+// window that has it, or to the part an explicit click asked for.
 const focusTargets = new Map() // data-focus-* value → what its button opens
 const focusPartHtml = new WeakMap()
 
@@ -2441,23 +2438,40 @@ function dashFocusEl() {
   aside.hidden = true
   aside.setAttribute('aria-labelledby', 'dashFocusTitle')
   aside.innerHTML = `
-    <div class="dash-focus-head">
-      <h2 id="dashFocusTitle" tabindex="-1"></h2>
-      <button type="button" class="dash-focus-close" aria-label="Close the session panel" title="Close (Esc)" data-dashboard-focus-key="focus:close">×</button>
+    <div class="sp-head">
+      <div class="dash-focus-head">
+        <span class="sp-state"></span>
+        <h2 id="dashFocusTitle" tabindex="-1"></h2>
+        <button type="button" class="dash-focus-close" aria-label="Close the session panel" title="Close (Esc)" data-dashboard-focus-key="focus:close">×</button>
+      </div>
+      <p class="dash-focus-meta"></p>
+      <p class="sp-hint" hidden></p>
     </div>
-    <p class="dash-focus-meta"></p>
-    <p class="dash-focus-doing"></p>
-    <p class="dash-focus-detail"></p>
-    <p class="dash-focus-gone" hidden>This session has stopped working, or is outside the current filters.</p>
-    <section class="dash-focus-part" aria-label="Asking you"><h3>Asking you</h3><div class="dash-focus-asks"></div></section>
-    <section class="dash-focus-part" aria-label="Plan"><h3>Plan</h3><div class="dash-focus-planbox"></div></section>
-    <section class="dash-focus-part" aria-label="Recent outcomes"><h3>Recent outcomes</h3><div class="dash-focus-outcomes"></div></section>
-    <section class="dash-focus-part" aria-label="Pull request"><h3>Pull request</h3><div class="dash-focus-source"></div></section>
-    <section class="dash-focus-part" aria-label="Links"><div class="dash-focus-links"></div></section>
-    <section class="dash-focus-message" aria-label="Message" hidden><h3>Message</h3><div class="dash-focus-composer"></div></section>`
+    <div class="sp-actions" role="group" aria-label="Session actions" hidden></div>
+    <p class="sp-note" role="status" hidden></p>
+    <div class="sp-body">
+      <p class="dash-focus-doing"></p>
+      <p class="dash-focus-detail"></p>
+      <p class="dash-focus-gone" hidden>This session is no longer listed, or is outside the current filters.</p>
+      <section class="dash-focus-part sp-approval" aria-label="Approval"><h3>Approval <span class="sp-approval-count"></span></h3><div class="dash-focus-approval"></div></section>
+      <section class="dash-focus-part" aria-label="Asking you"><h3>Asking you</h3><div class="dash-focus-asks"></div></section>
+      <section class="dash-focus-part sp-worktree" aria-label="Worktree" hidden><h3>Worktree</h3><dl class="sp-worktree-box"></dl></section>
+      <section class="dash-focus-part sp-transcript" aria-label="Transcript" hidden><h3>Transcript <small>newest at the bottom</small></h3>
+        <div class="sp-transcript-box"><p class="sp-transcript-status"></p><ol class="sp-transcript-lines" aria-live="polite"></ol></div></section>
+      <section class="dash-focus-part" aria-label="Subagents"><h3>Subagents</h3><div class="dash-focus-children"></div></section>
+      <section class="dash-focus-part" aria-label="Plan"><h3>Plan</h3><div class="dash-focus-planbox"></div></section>
+      <section class="dash-focus-part" aria-label="Recent outcomes"><h3>Recent outcomes</h3><div class="dash-focus-outcomes"></div></section>
+      <section class="dash-focus-part" aria-label="Pull request"><h3>Pull request</h3><div class="dash-focus-source"></div></section>
+      <section class="dash-focus-part" aria-label="Links"><div class="dash-focus-links"></div></section>
+    </div>
+    <section class="dash-focus-message" aria-label="Message" hidden><div class="dash-focus-composer"></div></section>
+    <section class="sp-resume" aria-label="Resume and send" hidden>
+      <h3>Resume and send</h3><div class="sp-resume-slot"></div>
+      <div class="sp-resume-actions"><button type="button" class="launch-action primary" data-launch-action="resume">Resume and send</button></div>
+    </section>`
   aside.addEventListener('click', (event) => {
     const control = event.target.closest?.('[data-focus-target], .dash-focus-close')
-    if (!control) return
+    if (!control || control.disabled || control.getAttribute('aria-disabled') === 'true') return
     if (control.matches('.dash-focus-close')) closeSessionFocus()
     else focusTargets.get(control.dataset.focusTarget)?.()
   })
@@ -2481,8 +2495,15 @@ function setFocusPart(aside, el, html) {
   el.innerHTML = html
   bindContextDisclosures(el)
   if (!focusKey || !document.hasFocus()) return
-  const next = el.querySelector(`[data-dashboard-focus-key="${CSS.escape(focusKey)}"]`) ?? aside.querySelector('#dashFocusTitle')
-  next.focus({ preventScroll: true })
+  const next = el.querySelector(`[data-dashboard-focus-key="${CSS.escape(focusKey)}"]`)
+  if (next && !next.disabled) next.focus({ preventScroll: true })
+  if (next && document.activeElement === next) return
+  // the control is gone or cannot take focus: the part's heading, else the panel's
+  // title, so focus never falls out of the panel (and Esc still closes it)
+  const heading = el.closest('section')?.querySelector('h3')
+  if (heading && !heading.hasAttribute('tabindex')) heading.setAttribute('tabindex', '-1')
+  ;(heading ?? aside.querySelector('#dashFocusTitle'))?.focus({ preventScroll: true })
+  if (!aside.contains(document.activeElement)) aside.querySelector('#dashFocusTitle')?.focus({ preventScroll: true })
 }
 
 function focusButton(target, label, open, { className = '', attrs = '' } = {}) {
@@ -2491,56 +2512,132 @@ function focusButton(target, label, open, { className = '', attrs = '' } = {}) {
     `data-dashboard-focus-key="focus:${esc(target)}"${attrs}>${esc(label)}</button>`
 }
 
+// Q3 (#454): an app session's approval, answered here with its own options
+// only, through sendReply's signed path; no editor, so no draft. Outside the
+// app's granted window it says where to answer and jumps to the rail.
+//
+// Answering one approval removes its block, and the next one's options slide up
+// under the pointer: so while an answer is in flight, and for a short calm after
+// the repaint that follows it, every option is disabled and its click ignored.
+const APPROVAL_CALM_MS = 700
+let approvalSending = false
+let approvalCalmUntil = 0
+const approvalHeld = () => approvalSending || Date.now() < approvalCalmUntil
+
+function answerInPanel(id, label) {
+  if (approvalHeld()) return
+  approvalSending = true
+  paintSessionFocus()
+  Promise.resolve(sendReply(id, label, null, 'answer')).finally(() => {
+    approvalSending = false
+    approvalCalmUntil = Date.now() + APPROVAL_CALM_MS
+    paintSessionFocus()
+    window.setTimeout(paintSessionFocus, APPROVAL_CALM_MS)
+  })
+}
+
+function approvalHtml(entry, granted, onRail) {
+  const it = entry.item
+  const id = it.id
+  const options = (Array.isArray(it.options) ? it.options : []).map((o) => String(o?.label ?? '')).filter(Boolean)
+  // aria-disabled, not disabled: the held option keeps focus (#459 review), and
+  // answerInPanel ignores it while approvalHeld()
+  const held = approvalHeld() ? ' aria-disabled="true"' : ''
+  const buttons = granted
+    ? options.map((label, index) => focusButton(`approve:${id}:${index}`, label, () => answerInPanel(id, label),
+      { className: index === 0 ? 'sp-option rec' : 'sp-option', attrs: held })).join('')
+    : `<p class="dash-focus-none">Answer it from Agent Inbox’s own window.</p>` +
+      focusButton(`item:${id}`, onRail ? 'Answer in rail' : 'Answer in Inbox', () => jumpToAsk(entry))
+  const error = writeErrors[id] ?? ''
+  return `<div class="sp-appr" data-focus-approval="${esc(id)}"><strong class="sp-appr-title">${esc(it.title ?? '')}</strong>` +
+    `<div class="sp-appr-options">${buttons}</div>` +
+    `<span class="write-error" data-error-for="${esc(id)}" role="status"${error ? '' : ' hidden'}>${esc(error)}</span>` +
+    `<p class="sp-appr-warn">${esc(SHELL_WARNING)}</p></div>`
+}
+
 function renderDashFocus(aside, model) {
   if (!aside) return
   setHidden(aside, !focusSession)
-  if (!focusSession) return
+  if (!focusSession) {
+    launchUi?.paintPanel(aside, null, Date.now())
+    return
+  }
   setAttr(aside, 'data-session', focusSession)
+  const card = agentsHome.cardFor(focusSession)
+  setAttr(aside, 'data-card', card?.id ?? '')
+  // the launch's parts: action bar, worktree, transcript and Resume and send (none off, §9)
+  launchUi?.paintPanel(aside, launchesOn() ? card?.launch?.id ?? null : null, Date.now())
+  const resuming = !aside.querySelector('.sp-resume').hidden
   // #411: a listed session can be messaged whether or not it is working now
-  paintFocusComposer(aside)
-  const lane = model.lanes.find((candidate) => candidate.session === focusSession)
-  setHidden(aside.querySelector('.dash-focus-gone'), Boolean(lane))
-  for (const el of aside.querySelectorAll('.dash-focus-meta, .dash-focus-doing, .dash-focus-detail')) setHidden(el, !lane)
+  paintFocusComposer(aside, resuming ? null : card?.session ?? (activityRow(focusSession) ? focusSession : null))
+  setHidden(aside.querySelector('.dash-focus-gone'), Boolean(card))
+  for (const el of aside.querySelectorAll('.dash-focus-meta, .dash-focus-doing, .dash-focus-detail, .sp-state')) setHidden(el, !card)
   focusTargets.clear()
-  if (!lane) {
+  if (!card) {
+    setText(aside.querySelector('#dashFocusTitle'), 'Session')
+    setHidden(aside.querySelector('.sp-hint'), true)
     for (const el of aside.querySelectorAll('.dash-focus-part > div')) setFocusPart(aside, el, '')
     return
   }
-  setText(aside.querySelector('#dashFocusTitle'), `${lane.agent} in ${lane.project}`)
-  setText(aside.querySelector('.dash-focus-meta'), [lane.branch, `last call ${ageText(lane.sinceMs)} ago`].filter(Boolean).join(' · '))
-  setText(aside.querySelector('.dash-focus-doing'), lane.doing)
-  setText(aside.querySelector('.dash-focus-detail'), lane.detail)
-  setHidden(aside.querySelector('.dash-focus-detail'), !lane.detail)
-  const focus = sessionFocus(lane, { items: allItems(visibleData.g), boards: visibleData.boards, outcomes: model.outcomeEntries })
+  const state = aside.querySelector('.sp-state')
+  setAttr(state, 'class', `sp-state tone-${card.state}`)
+  setText(state, card.label)
+  setText(aside.querySelector('#dashFocusTitle'), [card.project, card.branch].filter(Boolean).join(' · '))
+  const build = card.row ? sessionBuild(card.row, liveVersion) : null
+  setText(aside.querySelector('.dash-focus-meta'), [`${card.host} · ${card.origin}`,
+    card.launch && launchesOn() ? launchUi.panelSummary(card.launch) : card.recency, build?.label ?? ''].filter(Boolean).join(' · '))
+  const hint = aside.querySelector('.sp-hint')
+  setText(hint, build?.older || build?.newer ? build.hint : '')
+  setHidden(hint, !(build?.older || build?.newer))
+  const doing = card.historical && card.base !== 'working' && card.row && card.text !== 'No task reported yet' ? `was: ${card.text}` : card.text
+  setText(aside.querySelector('.dash-focus-doing'), doing)
+  const detail = typeof card.row?.detail === 'string' ? card.row.detail : ''
+  setText(aside.querySelector('.dash-focus-detail'), detail)
+  setHidden(aside.querySelector('.dash-focus-detail'), !detail)
   const onRail = new Set(model.rail.cards.map(needsEntryId))
-  setFocusPart(aside, aside.querySelector('.dash-focus-asks'), lane.asks.map((entry) => {
+  // the card's asks, each once (sessions.js gives each ask one card), so the panel and the card agree
+  const approvals = card.asks.filter((entry) => entry.kind === 'item' && isLaunchAskItem(entry.item))
+  const others = card.asks.filter((entry) => !approvals.includes(entry))
+  const oldest = approvals.reduce((min, entry) => Math.min(min, Date.parse(entry.item.created_at ?? '') || Infinity), Infinity)
+  setText(aside.querySelector('.sp-approval-count'), approvals.length
+    ? `${approvals.length} open${Number.isFinite(oldest) ? ` · ${ageText(Date.now() - oldest)}` : ''}` : '')
+  setFocusPart(aside, aside.querySelector('.dash-focus-approval'),
+    approvals.map((entry) => approvalHtml(entry, launchUi?.granted() === true, onRail.has(needsEntryId(entry)))).join(''))
+  setFocusPart(aside, aside.querySelector('.dash-focus-asks'), others.map((entry) => {
     const id = needsEntryId(entry)
     return `<div class="dash-focus-ask"><span class="dash-focus-ask-title">${esc(dashboardEntryTitle(entry) ?? '')}</span>` +
       focusButton(`${entry.kind}:${id}`, onRail.has(id) ? 'Answer in rail' : 'Answer in Inbox', () => jumpToAsk(entry),
         { attrs: ` data-focus-ask="${esc(`${entry.kind}:${id}`)}"` }) + '</div>'
-  }).join('') || '<p class="dash-focus-none">Nothing waiting on you.</p>')
-  const plan = lane.plan
+  }).join('') || (approvals.length ? '' : '<p class="dash-focus-none">Nothing waiting on you.</p>'))
+  setFocusPart(aside, aside.querySelector('.dash-focus-children'), card.base === 'working' && card.children.length
+    ? `<ul class="sp-children">${card.children.map((child) => `<li><strong>${esc(child.name)}</strong>${child.doing ? ` <span>${esc(child.doing)}</span>` : ''}</li>`).join('')}</ul>`
+    : '')
+  // #307's context, read from the card's session and plan
+  const focus = sessionFocus({ session: card.session ?? '', plan: card.plan }, {
+    items: allItems(visibleData.g), boards: visibleData.boards, outcomes: model.outcomeEntries,
+  })
+  const plan = card.plan
   setFocusPart(aside, aside.querySelector('.dash-focus-planbox'), plan
     ? `<div class="dash-focus-plan"><span class="dash-focus-plan-title">${esc(plan.title)}</span> <span class="dash-focus-plan-count">${plan.done}/${plan.countable} done</span></div>` +
       focusButton(`plan:${plan.id}`, 'Open plan', () => focusItem(plan.id), { className: 'dash-focus-plan-open' })
-    : '<p class="dash-focus-none">No plan linked to this session.</p>')
+    : card.launch ? '' : '<p class="dash-focus-none">No plan linked to this session.</p>')
   setFocusPart(aside, aside.querySelector('.dash-focus-outcomes'), focus.outcomes.map((entry) => {
     const id = needsEntryId(entry)
     focusTargets.set(`outcome:${id}`, () => (entry.kind === 'item' ? focusItem(entry.item.id) : focusItem(entry.board.id, { rowId: entry.row.id })))
     return `<button type="button" class="dash-focus-outcome" data-focus-target="${esc(`outcome:${id}`)}" data-dashboard-focus-key="focus:outcome:${esc(id)}">` +
       `<strong>${esc(dashboardEntryTitle(entry) ?? 'Recorded outcome')}</strong><span>${esc(dashboardEntryEntity(entry)?.outcome ?? '')}</span></button>`
-  }).join('') || '<p class="dash-focus-none">No recorded outcomes yet.</p>')
+  }).join('') || (card.launch ? '' : '<p class="dash-focus-none">No recorded outcomes yet.</p>'))
   // PR and CI state is ambient (#30): drawn here, read by no attention surface.
   const source = focus.source
   setFocusPart(aside, aside.querySelector('.dash-focus-source'), source
     ? sourceChipsHtml(linkIndex, source, Date.now(), { ...sourceOptions(source, source), tabbable: true }) : '')
   const links = new Map()
-  const linked = [...lane.asks.map((entry) => [dashboardEntryEntity(entry), entry.kind === 'row' ? entry.board : entry.item]),
+  const linked = [...card.asks.map((entry) => [dashboardEntryEntity(entry), entry.kind === 'row' ? entry.board : entry.item]),
     ...(focus.board ? [[focus.board, focus.board]] : [])]
   for (const [entity, identity] of linked) {
     for (const link of cardLinks(entity, identity, linkIndex)) if (!links.has(link.key)) links.set(link.key, link)
   }
-  const linksKey = `links:session:${lane.session}`
+  const linksKey = `links:session:${card.id}`
   setFocusPart(aside, aside.querySelector('.dash-focus-links'), linkStripHtml([...links.values()], {
     key: linksKey, open: openContexts.has(linksKey), actions: linkFileActions(), copyFiles: fileLinksCopy(),
   }))
@@ -2548,14 +2645,14 @@ function renderDashFocus(aside, model) {
 
 // The panel's message part: the session's composer and history, one node per
 // session kept across paints, so a poll never replaces the text being typed.
-function paintFocusComposer(aside) {
+function paintFocusComposer(aside, session) {
   const part = aside.querySelector('.dash-focus-message')
   const slot = part?.querySelector('.dash-focus-composer')
   if (!slot) return
-  const listed = Boolean(activityRow(focusSession))
+  const listed = Boolean(session && activityRow(session))
   setHidden(part, !listed)
   if (!listed) return
-  const el = composerEl('focus', focusSession)
+  const el = composerEl('focus', session)
   if (slot.firstElementChild !== el) slot.replaceChildren(el)
   updateComposer(el)
 }
@@ -2566,27 +2663,71 @@ function paintSessionFocus() {
   for (const button of document.querySelectorAll('#dashboard .dash-lane-open')) {
     setAttr(button, 'aria-expanded', String(button.closest('.dash-lane')?.dataset.lane === focusSession))
   }
+  const open = agentsHome.cardFor(focusSession)?.id ?? null
+  for (const el of document.querySelectorAll('#dashboard [data-session-card]')) el.classList.toggle('sel', el.dataset.sessionCard === open)
 }
 
-// An element the human can see: no ancestor (the list the lens hides) is hidden. The
-// panel itself moves to whichever list the lens shows (agents-home.js), so it never is.
+// An element the human can see: no ancestor (the list the lens hides) is hidden.
 const isShown = (el) => Boolean(el) && !el.closest('[hidden]')
 
-function openSessionFocus(session) {
+// Where an explicit open lands (#454): the part the human asked for.
+function focusPanelPart(part) {
+  const aside = document.querySelector('#dashboard .dash-focus')
+  if (!aside || aside.hidden) return
+  if (part === 'message') {
+    const input = aside.querySelector('.dash-focus-message:not([hidden]) textarea')
+    if (input && !input.disabled) input.focus()
+  } else if (part === 'resume') {
+    const id = aside.querySelector('.sp-resume')?.dataset.launch
+    if (id) launchUi?.focusResume(id)
+  } else if (part === 'approval') {
+    // a landing spot, never an option: a stray Space or a held Enter must not answer it
+    const heading = aside.querySelector('.sp-approval:not([hidden]) h3')
+    heading?.setAttribute('tabindex', '-1')
+    heading?.focus({ preventScroll: true })
+  } else if (part === 'asks') {
+    aside.querySelector('.dash-focus-asks button')?.focus()
+  } else if (part === 'transcript') {
+    const section = aside.querySelector('.sp-transcript:not([hidden])')
+    section?.scrollIntoView?.({ block: 'nearest' })
+    section?.querySelector('h3')?.setAttribute('tabindex', '-1')
+    section?.querySelector('h3')?.focus({ preventScroll: true })
+  }
+}
+
+function openSessionFocus(session, part = null) {
   focusSession = session
+  // from the drawer (a launch's Transcript or Resume…), the panel is on the Dashboard;
+  // a launch outside the project and agent lens scopes it to its project, as jumpToSession does
+  const id = session.startsWith('launch:') ? session.slice('launch:'.length) : null
+  const launch = id ? (lastData?.launches ?? []).find((l) => l.id === id) : null
+  const outside = Boolean(launch) && !launchesInLens().includes(launch)
+  if (outside) {
+    projectFilter = launch.project
+    agentFilter = null
+    laneFilters.project = null
+    laneFilters.agent = null
+  }
+  if (activeTab !== 'dashboard' || outside) {
+    selectTab('dashboard', { paint: false })
+    forceRender()
+  }
   paintSessionFocus()
-  if (document.hasFocus()) document.getElementById('dashFocusTitle')?.focus({ preventScroll: true })
+  if (part) focusPanelPart(part)
+  else if (document.hasFocus()) document.getElementById('dashFocusTitle')?.focus({ preventScroll: true })
 }
 
 function closeSessionFocus() {
   const session = focusSession
+  const card = agentsHome.cardFor(session)?.id
   const aside = document.querySelector('#dashboard .dash-focus')
   const owned = Boolean(aside?.contains(activeFocusElement()))
   focusSession = null
   paintSessionFocus()
   if (!owned || !document.hasFocus()) return
   const lane = document.querySelector(`#dashboard .dash-lane[data-lane="${CSS.escape(session)}"] .dash-lane-open`)
-  ;[lane, document.getElementById('agentsHomeTitle'), document.getElementById('dashLanesTitle')]
+  const own = [...document.querySelectorAll('#dashboard [data-session-card]')].find((el) => el.dataset.sessionCard === card)
+  ;[lane, own?.querySelector('[data-ah-action]'), document.getElementById('agentsHomeTitle'), document.getElementById('dashLanesTitle')]
     .find(isShown)?.focus({ preventScroll: true })
 }
 
@@ -3173,10 +3314,11 @@ function renderDashboard(model) {
   const grid = document.createElement('div')
   grid.className = 'dashboard-grid'
   const lanes = dashLanesEl()
-  // #307: the session panel belongs to the lanes column: over its right part
-  // on a desktop, below the lanes in flow on a narrow screen.
-  lanes.appendChild(dashFocusEl())
   grid.appendChild(lanes)
+  // #454: the session panel is the grid's own, never inside a list a lens can
+  // hide: a sheet over the grid's right side (the rail) on a desktop, in flow
+  // after the list on a narrow screen (the Agents home goes in before it).
+  grid.appendChild(dashFocusEl())
   grid.appendChild(dashRailEl())
   grid.appendChild(dashRibbonEl())
 
@@ -6536,13 +6678,6 @@ function closeComposer(session) {
   button?.focus({ preventScroll: true })
 }
 
-// The Agents view's Message button (#411): the drawer, with this session's
-// composer open and focused.
-function openMessage(session) {
-  toggleLiveDrawer(true)
-  openComposer(session)
-}
-
 // Issue #412 step 3: driven sessions on the page. Made at boot; it asks main
 // once (window.agentInboxLaunch), and only the viewer the app owns, with its
 // switch on, gets anything: in a browser, a reused viewer or with the switch
@@ -6574,6 +6709,8 @@ function initLaunches() {
     },
     settled: () => reloadAndPaint(),
     pending: (action) => withPendingResponse(action),
+    // #454: the launch's transcript and Resume and send live in the Dashboard's session panel
+    openPanel: (id, part) => openSessionFocus(`launch:${id}`, part),
   })
   // a changed answer is drawn by the next tick, which reads the launches once on
   launchUi.refresh()

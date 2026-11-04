@@ -102,12 +102,18 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   filters (project, agent) are window-local and narrow only the drawn lanes, after
   the order is pinned over every lane. The keyboard help's "Dashboard" group is
   help-only (`legacy`) entries in `public/keys.js`; keep them legacy. The session
-  focus panel (`.dash-focus`, from a lane's title button, mounted inside the lanes
-  card: over the lanes column on a desktop, static below the lanes under 1280px,
-  closed by a trusted outside `click` that is not a lane, never a `pointerdown`, and
-  never while it is in flow) answers nothing (D2): its one editor is the session's
-  message composer (#411, `viewer-frontend.md`), and its
-  asks come from the attention set and jump to the rail or Inbox card, its plan and
+  panel (`.dash-focus`, from a card, a lane's title button or ⌘K; since #454 mounted in
+  the Dashboard grid itself, so no lens can hide it: a sheet over the grid's right side
+  (the rail) on a desktop, static after the list under 1280px, closed by a trusted
+  outside `click` that is not a card or lane, never a `pointerdown`, and never while it
+  is in flow) shows one card (`agentsHome.cardFor`, keyed by a session or a launch's
+  card id): its state and summary, the launch's action bar, worktree, transcript and
+  Resume and send (launch-ui.js's `paintPanel`, §9: none off), an app session's
+  approval answered in place with its own options through `sendReply`'s signed path
+  (#454 Q3, amending D2 for `@sessions` approvals only; the rail still lists them), and
+  otherwise answers nothing: its one editor is the session's
+  message composer (#411, `viewer-frontend.md`), and its other
+  asks (exactly the card's, so the panel and the card's count agree) jump to the rail or Inbox card, its plan and
   outcomes open through `focusItem`, its PR/CI chips are ambient `sourceChipsHtml`
   and its links are #300's `cardLinks`/`linkStripHtml`. Parts are rewritten only when
   their markup changes; opening and closing move focus only in a focused window. Its

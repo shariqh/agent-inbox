@@ -408,8 +408,16 @@ Approve), `public/launches.js` (pure rules) and `public/launch-settings.js` (Set
 - **Resume and send.** `resume(id)` (no second confirmation, §7), then the page polls `/api/activity` for
   up to 60 s for a driven session of that launch that receives messages, reads it in, and sends the text
   through the ordinary message path; otherwise the text stays with "The session didn't come back".
-- **The transcript** is a `<dialog>` reading `GET /api/launches/:id/events?after=N` on its own 2 s timer
-  only while open (whole lines, 256 KiB a read, `rotated` restarts it, at most 5000 events kept; `more`
+  Since #454 the text box is in the session panel, in place of the composer, for any parked or resumable
+  launch the panel shows (the drawer row offers Resume…, which opens it there), so Resume… always lands on it.
+- **The session panel (#454).** A launch's card opens the Dashboard's panel keyed by the launch
+  (`launch:<id>`): an action bar from `launchStatus(...).actions` and the grant (Park now, Stop/End, Close,
+  Take over / Resume in Terminal, Open in Terminal, Remove worktree… only once ended), the worktree box,
+  the transcript, Resume and send, and the launch's `@sessions` approvals answered in place with their own
+  options (main signs, as from the rail). A terminal or other driver's session gets none of these.
+- **The transcript** (a section of the Dashboard's session panel since #454; the `<dialog>` is retired, and
+  a drawer row's Transcript opens the panel) reads `GET /api/launches/:id/events?after=N` on its own 2 s
+  timer only while the panel shows it (connected, no hidden ancestor; closing the panel stops it) (whole lines, 256 KiB a read, `rotated` restarts it, at most 5000 events kept; `more`
   asks for the next read at once only when a read stopped at the cap, so an unfinished last line from a
   driver that died mid-write is re-read every 2 s, never in a loop). Agent
   text, tool calls, asks and answers are drawn as `textContent` lines only.

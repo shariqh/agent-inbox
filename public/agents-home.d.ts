@@ -14,6 +14,8 @@ export interface AgentsHomeInput {
   forced?: boolean
   /** the sidebar's project lens, named in the card count */
   lensProject?: string | null
+  /** the session panel's key, so its card is marked */
+  selected?: string | null
 }
 
 export interface AgentsHomeLaunches {
@@ -24,13 +26,12 @@ export interface AgentsHomeLaunches {
 
 export function installAgentsHome(deps: {
   doc?: Document
-  /** the lanes' own: opens an ask on the rail or in the Inbox */
-  jumpToAsk: (entry: AttentionEntry) => void
-  /** #411: open this session's message composer, focused */
-  openMessage: (session: string) => void
-  /** a click on a card that is not on a control */
-  openSession?: (card: SessionCard) => void
-  /** a card's action on its launch: transcript, close, take-over, open-worktree, resume */
+  /**
+   * The session panel (#454): a card's click toggles it (no part); Review, Message, Transcript and
+   * Resume… open it at that part. `key` is a launch card's id, else the card's session.
+   */
+  openSession: (key: string, part?: 'approval' | 'asks' | 'message' | 'transcript' | 'resume' | null) => void
+  /** a card's action on its launch: close, take-over, open-worktree */
   launchAction?: (id: string, action: string) => void
   /** the launch UI while the app's switch is on, else null */
   launches?: () => AgentsHomeLaunches | null
@@ -45,4 +46,6 @@ export function installAgentsHome(deps: {
   paint(host: Element, input: AgentsHomeInput): void
   /** the window-local view state (lens, filter, grouping, folds), for frameInputs() */
   state(): string
+  /** the card a session panel key names: a card id, a live session, or a session a launch remembers */
+  cardFor(key: string | null | undefined): SessionCard | null
 }

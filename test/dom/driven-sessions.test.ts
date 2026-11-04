@@ -11,7 +11,7 @@ import { dirname, join } from 'node:path'
 import type Database from 'better-sqlite3'
 import {
   claimDriverSlot, createLaunch, endLaunch, fileLaunchAsk, getItem, handOffLaunch, holdDriverLeases, insertItem, listSessionMessages, markDriverTurn, markWorktreeRemoved, recordWorktreeSummary,
-  parkLaunch, recordActivityCall, recordLaunchProgress, resolveItem, upsertActivity,
+  parkLaunch, recordActivityCall, recordLaunchProgress, resolveItem, settleLaunchAsk, upsertActivity,
 } from '../../src/store.js'
 import type { ViewerBridge } from './harness.js'
 import { advanceClock, bootApp, buttonLabelled, changedPollTick, click, freshDb, pollTick, row, settle, type, useDomTest } from './harness.js'
@@ -97,6 +97,10 @@ const launchRow = (id: string) => section()?.querySelector<HTMLElement>(`[data-l
 const action = (id: string, name: string) => launchRow(id)?.querySelector<HTMLButtonElement>(`[data-launch-action="${name}"]`) ?? null
 const composer = (session: string) => [...drawer().querySelectorAll<HTMLElement>('.msg-composer')].find((el) => el.dataset.msgSession === session)
 const messageButton = (session: string) => [...drawer().querySelectorAll<HTMLButtonElement>('[data-msg-open]')].find((b) => b.dataset.msgOpen === session)
+// #454: the Dashboard's session panel
+const panel = (): HTMLElement => document.querySelector<HTMLElement>('#dashboard .dash-focus')!
+const panelAction = (name: string) => panel().querySelector<HTMLButtonElement>(`[data-launch-action="${name}"]`)
+const panelLines = () => [...panel().querySelectorAll('.sp-transcript .launch-line')].map((li) => li.querySelector('.tx-b')?.textContent)
 
 describe('off means off on the page (§9 b)', () => {
   it('in a browser, the page reads no launch route and adds no control, even beside a driven session mid-turn', async () => {
@@ -116,7 +120,14 @@ describe('off means off on the page (§9 b)', () => {
     expect(composer('mcp-1')?.querySelector('.msg-interrupt')).toBeNull()
     expect(drawer().querySelector('.live-started-here, [data-launch-action="message"]')).toBeNull()
     expect(document.querySelector('.dash-lane-launch, .launch-dialog, .launch-transcript')).toBeNull()
-    // the Agents home (#454): no launch card and no New session; the driven session is a card of its own
+    // the Agents home (#454): no launch card and no New session; the driven session is a card of its own,
+    // and its panel has no action bar, transcript, worktree or Resume and send
+    click(document.querySelector('[data-session-card="session:mcp-1"] .sc-doing'))
+    await settle()
+    for (const part of ['.sp-actions', '.sp-transcript', '.sp-worktree', '.sp-resume']) {
+      expect(panel().querySelector<HTMLElement>(part)?.hidden, part).toBe(true)
+    }
+    expect(urls.filter((u) => u.includes('/api/launch'))).toEqual([])
     expect(document.querySelector('[data-session-card^="launch:"]')).toBeNull()
     expect(document.querySelector<HTMLElement>('.agents-home .ah-new')?.hidden).toBe(true)
     expect(document.querySelector('[data-session-card="session:mcp-1"] .sc-chips')?.textContent).toBe('Copilot · driven')
@@ -387,7 +398,8 @@ describe('the Live drawer’s sessions (§3.6, §7)', () => {
     await changedPollTick(db)
     expect(launchRow(LAUNCH)!.querySelector('.live-launch-status')!.textContent).toMatch(/^Parked/)
     expect(launchRow(LAUNCH)!.querySelector('.live-launch-note')).toBeNull()
-    expect(action(LAUNCH, 'resume')).not.toBeNull()
+    // #454: Resume and send is in the session panel; the row opens it there
+    expect(action(LAUNCH, 'resume-panel')?.textContent).toBe('Resume…')
   })
 
   it('Take over in Terminal goes through main, then the row says it was handed off and offers Resume in Terminal (step 5)', async () => {
@@ -460,11 +472,18 @@ describe('the Live drawer’s sessions (§3.6, §7)', () => {
     await changedPollTick(db)
     openDrawer()
     expect(launchRow(PARKED)!.querySelector('.live-launch-status')!.textContent).toMatch(/^Parked/)
-    const box = launchRow(PARKED)!.querySelector<HTMLTextAreaElement>('.live-launch-resume-input')!
-    expect(action(PARKED, 'resume')!.disabled).toBe(true)
+    // the row's Resume… opens the session panel at its Resume and send (#454)
+    click(action(PARKED, 'resume-panel'))
+    await settle()
+    expect(panel().hidden).toBe(false)
+    const box = panel().querySelector<HTMLTextAreaElement>('.sp-resume-input')!
+    expect(document.activeElement).toBe(box)
+    // Resume and send stands in for the composer
+    expect(panel().querySelector<HTMLElement>('.dash-focus-message')?.hidden).toBe(true)
+    expect(panelAction('resume')!.disabled).toBe(true)
     type(box, 'Now run the linter too.')
-    expect(action(PARKED, 'resume')!.disabled).toBe(false)
-    click(action(PARKED, 'resume'))
+    expect(panelAction('resume')!.disabled).toBe(false)
+    click(panelAction('resume'))
     await settle()
     await settle()
     expect(api.resume).toHaveBeenCalledWith(PARKED)
@@ -487,8 +506,11 @@ describe('the Live drawer’s sessions (§3.6, §7)', () => {
     openDrawer()
     expect(launchRow(PARKED)!.querySelector('.live-launch-status')!.textContent).toBe('Stopped: its session is kept, so it can be resumed.')
     expect(action(PARKED, 'take-over')?.textContent).toBe('Take over in Terminal')
-    type(launchRow(PARKED)!.querySelector<HTMLTextAreaElement>('.live-launch-resume-input')!, 'Carry on.')
-    click(action(PARKED, 'resume'))
+    click(action(PARKED, 'resume-panel'))
+    await settle()
+    expect(panelAction('take-over')?.textContent).toBe('Take over in Terminal')
+    type(panel().querySelector<HTMLTextAreaElement>('.sp-resume-input')!, 'Carry on.')
+    click(panelAction('resume'))
     await settle()
     await settle()
     expect(api.resume).toHaveBeenCalledWith(PARKED)
@@ -523,7 +545,7 @@ describe('the Live drawer’s sessions (§3.6, §7)', () => {
     expect(section()!.querySelectorAll('.live-launch')).toHaveLength(5)
   })
 
-  it('the transcript reads the driver’s event log while open, as plain text', async () => {
+  it('the transcript is a section of the session panel, read while the panel shows it, as plain text (#454)', async () => {
     launchBridge()
     db = freshDb()
     newLaunch(db)
@@ -539,15 +561,25 @@ describe('the Live drawer’s sessions (§3.6, §7)', () => {
     await bootApp(db)
     await changedPollTick(db)
     openDrawer()
+    // the drawer's Transcript opens the panel there; no modal dialog any more
     click(action(LAUNCH, 'transcript'))
     await settle()
-    const lines = [...document.querySelectorAll('.launch-transcript .launch-line')].map((li) => li.textContent)
-    expect(lines).toEqual(['The task was sent.', 'Looking at <b>the</b> tests.', 'Asked to allow npm test', 'Allowed once'])
-    expect(document.querySelector('.launch-transcript b')).toBeNull()
+    expect(document.querySelector('dialog.launch-transcript')).toBeNull()
+    expect(panel().hidden).toBe(false)
+    expect(panelLines()).toEqual(['The task was sent.', 'Looking at <b>the</b> tests.', 'Asked to allow npm test', 'Allowed once'])
+    expect([...panel().querySelectorAll('.sp-transcript .tx-k')].map((el) => el.textContent)).toEqual(['Note', 'Agent', 'Ask', 'Answer'])
+    expect(panel().querySelector('.sp-transcript b')).toBeNull()
     appendFileSync(join(dir, 'events.ndjson'), `${JSON.stringify({ event: 'ended', reason: 'stopped' })}\n`)
     await vi.advanceTimersByTimeAsync(2100)
     await settle()
-    expect([...document.querySelectorAll('.launch-transcript .launch-line')].at(-1)?.textContent).toBe('Session ended (stopped).')
+    expect(panelLines().at(-1)).toBe('Session ended (stopped).')
+    // closed, the panel reads nothing more
+    click(panel().querySelector('.dash-focus-close'))
+    const spy = vi.spyOn(window, 'fetch')
+    await vi.advanceTimersByTimeAsync(6000)
+    const reads = spy.mock.calls.map(([input]) => String(input))
+    spy.mockRestore()
+    expect(reads.filter((url) => url.includes('/events'))).toEqual([])
   })
 })
 
@@ -959,9 +991,8 @@ describe('session cards for launches (#454, #412)', () => {
     expect(actions(id)).toEqual(['Take over in Terminal', 'Resume…'])
     click(cardAction(id, 'resume'))
     await settle()
-    expect(drawer().hidden).toBe(false)
-    expect(document.activeElement).toBe(launchRow(LAUNCH)?.querySelector('.live-launch-resume-input'))
-    drawer().hidden = true
+    expect(panel().hidden).toBe(false)
+    expect(document.activeElement).toBe(panel().querySelector('.sp-resume-input'))
     click(cardAction(id, 'take-over'))
     await settle()
     expect(api.takeOver).toHaveBeenCalledWith(LAUNCH)
@@ -984,12 +1015,11 @@ describe('session cards for launches (#454, #412)', () => {
     await settle()
     const id = `launch:${LAUNCH}`
     expect(card(id)?.querySelector('.sc-state')?.textContent).toBe('Parked')
-    // the drawer lists the newest five ended launches only, until Earlier sessions is open
-    expect(launchRow(LAUNCH)).toBeNull()
+    // the drawer lists the newest five ended launches only; the session panel draws any launch (#454)
     click(cardAction(id, 'resume'))
     await settle()
-    expect(drawer().hidden).toBe(false)
-    expect(document.activeElement).toBe(launchRow(LAUNCH)?.querySelector('.live-launch-resume-input'))
+    expect(panel().hidden).toBe(false)
+    expect(document.activeElement).toBe(panel().querySelector('.sp-resume-input'))
   })
 
   it('folds an ended launch under Ended, whose card opens its transcript', async () => {
@@ -1007,7 +1037,8 @@ describe('session cards for launches (#454, #412)', () => {
     expect(actions(`launch:${LAUNCH}`)).toEqual(['Transcript'])
     click(cardAction(`launch:${LAUNCH}`, 'transcript'))
     await settle()
-    expect(document.querySelector('.launch-transcript')).not.toBeNull()
+    expect(panel().hidden).toBe(false)
+    expect(panel().querySelector<HTMLElement>('.sp-transcript')?.hidden).toBe(false)
   })
 
   it('keeps the launches past the newest five under Earlier sessions, inside Ended', async () => {
@@ -1032,6 +1063,193 @@ describe('session cards for launches (#454, #412)', () => {
     earlier.open = true
     earlier.dispatchEvent(new Event('toggle'))
     expect([...earlier.querySelectorAll<HTMLElement>('[data-session-card]')].map((el) => el.dataset.sessionCard)).toEqual([`launch:${ids[0]}`])
+  })
+
+  it('the panel carries the launch’s action bar, its worktree and its approval, answered in place (#454 Q3)', async () => {
+    const api = launchBridge()
+    db = freshDb()
+    createLaunch(db, {
+      id: LAUNCH, host: 'copilot', project: 'alpha', stream: 'main', cwd: '/work/wt/fix-it', mode: 'ask', model: 'claude-haiku-4.5',
+      budgetActiveMs: 7_200_000, budgetToolCalls: 500, prompt: 'Fix it.', specVersion: 1, driverPid: 4242,
+      worktree: { checkoutRoot: '/work/alpha', branch: 'agent-inbox/fix-it', baseSha: 'a'.repeat(40), baseRef: 'refs/heads/main' },
+    })
+    recordWorktreeSummary(db, LAUNCH, { v: 1, at: new Date().toISOString(), head: 'b'.repeat(40), branch: 'agent-inbox/fix-it', ahead: 2, behind: 0, files: 3, dirty: 1 })
+    drivenSession(db)
+    recordLaunchProgress(db, LAUNCH, { sessions: ['mcp-1'] })
+    const ask = fileLaunchAsk(db, LAUNCH, {
+      project: '@sessions', stream: 'alpha · main', agent: 'copilot', kind: 'question', session: 'mcp-1', title: 'Allow shell: npm test',
+      action_owner: 'approval', options: [{ label: 'Allow once' }, { label: 'Deny' }],
+    }, [{ optionId: 'allow_once', label: 'Allow once' }, { optionId: 'reject_once', label: 'Deny' }])
+    await bootApp(db)
+    await changedPollTick(db)
+    await settle()
+    const id = `launch:${LAUNCH}`
+    expect(card(id)?.querySelector('.sc-state')?.textContent).toBe('Needs you')
+    click(cardAction(id, 'review'))
+    await settle()
+    expect(panel().querySelector('.sp-state')?.textContent).toBe('Needs you')
+    expect([...panel().querySelectorAll('.sp-actions [data-launch-action]')].map((b) => [b.textContent, (b as HTMLButtonElement).disabled]))
+      .toEqual([['Stop', false], ['Park now', false], ['Take over in Terminal', false], ['Open in Terminal', false], ['Remove worktree…', true]])
+    expect([...panel().querySelectorAll('.sp-worktree-box dd')].map((el) => el.textContent))
+      .toEqual(['agent-inbox/fix-it', '/work/wt/fix-it', '2 commits ahead, 3 files changed, 1 uncommitted'])
+    // the approval: its own options only, no editor, and the shell warning; the card's one ask, as its count says
+    const appr = panel().querySelector<HTMLElement>('.sp-approval')!
+    expect(appr.querySelector('.sp-appr-title')?.textContent).toBe('Allow shell: npm test')
+    expect(appr.querySelector('.sp-approval-count')?.textContent).toMatch(/^1 open/)
+    expect(appr.querySelector('textarea, input')).toBeNull()
+    // Review lands on the heading, never on an option a stray Space or held Enter would press
+    expect(document.activeElement).toBe(appr.querySelector('h3'))
+    expect(document.activeElement?.closest('.sp-option')).toBeNull()
+    click([...appr.querySelectorAll<HTMLButtonElement>('button')].find((b) => b.textContent === 'Deny'))
+    await settle()
+    await settle()
+    expect(api.approve).toHaveBeenCalledWith({ item: ask.itemId, revision: ask.revision, optionId: 'reject_once' })
+    // Stop in the bar is the drawer's own handler
+    click(panelAction('stop'))
+    await settle()
+    expect(api.stop).toHaveBeenCalledWith(LAUNCH)
+  })
+
+  it('holds every option while an answer is in flight and just after, so the next approval never answers unseen', async () => {
+    const api = launchBridge()
+    db = freshDb()
+    newLaunch(db)
+    drivenSession(db)
+    recordLaunchProgress(db, LAUNCH, { sessions: ['mcp-1'] })
+    const file = (title: string) => fileLaunchAsk(db!, LAUNCH, {
+      project: '@sessions', stream: 'alpha · main', agent: 'copilot', kind: 'question', session: 'mcp-1', title,
+      action_owner: 'approval', options: [{ label: 'Allow once' }, { label: 'Deny' }],
+    }, [{ optionId: 'allow_once', label: 'Allow once' }, { optionId: 'reject_once', label: 'Deny' }])
+    const first = file('Allow shell: npm test')
+    advanceClock()
+    const second = file('Allow shell: rm -rf build')
+    let finish!: (value: { ok: boolean }) => void
+    api.approve.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve }))
+    await bootApp(db)
+    await changedPollTick(db)
+    await settle()
+    click(cardAction(`launch:${LAUNCH}`, 'review'))
+    await settle()
+    const option = (item: string, label: string) => [...panel().querySelectorAll<HTMLButtonElement>('.sp-appr')]
+      .find((el) => el.dataset.focusApproval === item)?.querySelector<HTMLButtonElement>(`.sp-option:nth-of-type(${label === 'Allow once' ? 1 : 2})`) ?? null
+    const hasFocus = vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    option(first.itemId, 'Allow once')!.focus()
+    click(option(first.itemId, 'Allow once'))
+    await settle()
+    // in flight: the other approval's options are held, and focus stays in the panel
+    expect(option(second.itemId, 'Allow once')?.getAttribute('aria-disabled')).toBe('true')
+    expect(panel().contains(document.activeElement)).toBe(true)
+    click(option(second.itemId, 'Allow once'))
+    // the driver settles the first; the page repaints with the second one in its place
+    settleLaunchAsk(db, first.itemId, 'Allowed once')
+    finish({ ok: true })
+    await settle()
+    await settle()
+    expect(option(first.itemId, 'Allow once')).toBeNull()
+    // the answered block is gone: focus falls to the Approval heading, never out of the panel
+    expect(document.activeElement).toBe(panel().querySelector('.sp-approval h3'))
+    // a click landing on where the first one's option was, just after the repaint, answers nothing
+    expect(option(second.itemId, 'Allow once')?.getAttribute('aria-disabled')).toBe('true')
+    click(option(second.itemId, 'Allow once'))
+    await settle()
+    expect(api.approve).toHaveBeenCalledTimes(1)
+    expect(api.approve).toHaveBeenCalledWith({ item: first.itemId, revision: first.revision, optionId: 'allow_once' })
+    // after the calm, it answers as any option does
+    await vi.advanceTimersByTimeAsync(800)
+    expect(option(second.itemId, 'Allow once')?.hasAttribute('aria-disabled')).toBe(false)
+    // Esc still closes the panel from where focus landed
+    document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
+    expect(panel().hidden).toBe(true)
+    hasFocus.mockRestore()
+  })
+
+  it('keeps focus in the panel when an answer fails and the approval stays (#459 review)', async () => {
+    const api = launchBridge()
+    db = freshDb()
+    newLaunch(db)
+    drivenSession(db)
+    recordLaunchProgress(db, LAUNCH, { sessions: ['mcp-1'] })
+    const ask = fileLaunchAsk(db, LAUNCH, {
+      project: '@sessions', stream: 'alpha · main', agent: 'copilot', kind: 'question', session: 'mcp-1', title: 'Allow shell: npm test',
+      action_owner: 'approval', options: [{ label: 'Allow once' }, { label: 'Deny' }],
+    }, [{ optionId: 'allow_once', label: 'Allow once' }, { optionId: 'reject_once', label: 'Deny' }])
+    api.approve.mockResolvedValueOnce({ ok: false, error: 'Not sent.' } as never)
+    await bootApp(db)
+    await changedPollTick(db)
+    await settle()
+    click(cardAction(`launch:${LAUNCH}`, 'review'))
+    await settle()
+    const hasFocus = vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    const allow = panel().querySelector<HTMLButtonElement>(`[data-focus-approval="${ask.itemId}"] .sp-option`)!
+    allow.focus()
+    click(allow)
+    await settle()
+    await settle()
+    expect(panel().querySelector(`[data-focus-approval="${ask.itemId}"] .write-error`)?.textContent).toBe('Not sent.')
+    expect(panel().contains(document.activeElement)).toBe(true)
+    document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
+    expect(panel().hidden).toBe(true)
+    hasFocus.mockRestore()
+  })
+
+  it('opens a launch outside the project lens scoped to its project, as Jump to session does', async () => {
+    launchBridge()
+    db = freshDb()
+    insertItem(db, { project: 'alpha', stream: 'main', agent: 'copilot', kind: 'note', title: 'seen' })
+    createLaunch(db, {
+      id: PARKED, host: 'copilot', project: 'beta', stream: 'main', cwd: '/work/beta', mode: 'ask', model: 'claude-haiku-4.5',
+      budgetActiveMs: 7_200_000, budgetToolCalls: 500, prompt: 'Fix it.', specVersion: 1, driverPid: 4243,
+    })
+    parkLaunch(db, PARKED, { acpSession: 'acp-1', activeMs: 10, toolCalls: 2 })
+    await bootApp(db)
+    await changedPollTick(db)
+    click(document.querySelector('#rail .rail-tab[data-project="alpha"]'))
+    await settle()
+    expect(document.querySelector(`[data-session-card="launch:${PARKED}"]`)).toBeNull()
+    openDrawer()
+    click(action(PARKED, 'resume-panel'))
+    await settle()
+    expect(panel().hidden).toBe(false)
+    expect(panel().dataset.card).toBe(`launch:${PARKED}`)
+    expect(panel().querySelector<HTMLElement>('.dash-focus-gone')?.hidden).toBe(true)
+    expect(panel().querySelector('#dashFocusTitle')?.textContent).toBe('beta · main')
+    expect(document.activeElement).toBe(panel().querySelector('.sp-resume-input'))
+  })
+
+  it('an empty transcript read leaves the lines alone, so a selection in the last one stays', async () => {
+    launchBridge()
+    db = freshDb()
+    newLaunch(db)
+    const dir = join(dirname(db.name), 'launches', LAUNCH)
+    mkdirSync(dir, { recursive: true })
+    appendFileSync(join(dir, 'events.ndjson'), [
+      { event: 'prompt', kind: 'task' },
+      { event: 'agent_text', text: 'Reading the tests.' },
+    ].map((e) => `${JSON.stringify(e)}\n`).join(''))
+    await bootApp(db)
+    await changedPollTick(db)
+    click(document.querySelector(`[data-session-card="launch:${LAUNCH}"] .sc-doing`))
+    await settle()
+    const last = panel().querySelector('.sp-transcript .launch-line:last-child')!
+    const text = last.querySelector('.tx-b')!.firstChild!
+    const range = document.createRange()
+    range.setStart(text, 0)
+    range.setEnd(text, 7)
+    getSelection()!.removeAllRanges()
+    getSelection()!.addRange(range)
+    await vi.advanceTimersByTimeAsync(2100)
+    await settle()
+    expect(panel().querySelector('.sp-transcript .launch-line:last-child')).toBe(last)
+    expect(last.querySelector('.tx-b')!.firstChild).toBe(text)
+    expect(String(getSelection())).toBe('Reading')
+    // a line that grows keeps its node; a new one is appended
+    appendFileSync(join(dir, 'events.ndjson'), `${JSON.stringify({ event: 'agent_text', text: ' Done.' })}\n${JSON.stringify({ event: 'tool_call', title: 'Run npm test' })}\n`)
+    await vi.advanceTimersByTimeAsync(2100)
+    await settle()
+    const lines = [...panel().querySelectorAll('.sp-transcript .launch-line')]
+    expect(lines.map((li) => li.querySelector('.tx-b')?.textContent)).toEqual(['The task was sent.', 'Reading the tests. Done.', 'Run npm test'])
+    expect(lines[1]).toBe(last)
+    getSelection()!.removeAllRanges()
   })
 
   it('New session… sits in the header, and says why it is off outside a granted window', async () => {

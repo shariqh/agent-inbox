@@ -92,7 +92,7 @@ const count = (n, one, many) => `${n} ${n === 1 ? one : many}`
 const isCount = (n) => Number.isSafeInteger(n) && n >= 0
 
 // #432 §6: the driver's last summary of the worktree, in words; '' when there is none to read
-function worktreeSummaryText(summary, branch) {
+export function worktreeSummaryText(summary, branch) {
   if (!summary || typeof summary !== 'object' || ![summary.ahead, summary.behind, summary.files, summary.dirty].every(isCount)) return ''
   const now = typeof summary.branch === 'string' ? summary.branch : branch
   return [

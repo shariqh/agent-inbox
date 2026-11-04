@@ -97,6 +97,10 @@ const launchRow = (id: string) => section()?.querySelector<HTMLElement>(`[data-l
 const action = (id: string, name: string) => launchRow(id)?.querySelector<HTMLButtonElement>(`[data-launch-action="${name}"]`) ?? null
 const composer = (session: string) => [...drawer().querySelectorAll<HTMLElement>('.msg-composer')].find((el) => el.dataset.msgSession === session)
 const messageButton = (session: string) => [...drawer().querySelectorAll<HTMLButtonElement>('[data-msg-open]')].find((b) => b.dataset.msgOpen === session)
+// #454: the Dashboard's session panel
+const panel = (): HTMLElement => document.querySelector<HTMLElement>('#dashboard .dash-focus')!
+const panelAction = (name: string) => panel().querySelector<HTMLButtonElement>(`[data-launch-action="${name}"]`)
+const panelLines = () => [...panel().querySelectorAll('.sp-transcript .launch-line')].map((li) => li.querySelector('.tx-b')?.textContent)
 
 describe('off means off on the page (§9 b)', () => {
   it('in a browser, the page reads no launch route and adds no control, even beside a driven session mid-turn', async () => {
@@ -116,7 +120,14 @@ describe('off means off on the page (§9 b)', () => {
     expect(composer('mcp-1')?.querySelector('.msg-interrupt')).toBeNull()
     expect(drawer().querySelector('.live-started-here, [data-launch-action="message"]')).toBeNull()
     expect(document.querySelector('.dash-lane-launch, .launch-dialog, .launch-transcript')).toBeNull()
-    // the Agents home (#454): no launch card and no New session; the driven session is a card of its own
+    // the Agents home (#454): no launch card and no New session; the driven session is a card of its own,
+    // and its panel has no action bar, transcript, worktree or Resume and send
+    click(document.querySelector('[data-session-card="session:mcp-1"] .sc-doing'))
+    await settle()
+    for (const part of ['.sp-actions', '.sp-transcript', '.sp-worktree', '.sp-resume']) {
+      expect(panel().querySelector<HTMLElement>(part)?.hidden, part).toBe(true)
+    }
+    expect(urls.filter((u) => u.includes('/api/launch'))).toEqual([])
     expect(document.querySelector('[data-session-card^="launch:"]')).toBeNull()
     expect(document.querySelector<HTMLElement>('.agents-home .ah-new')?.hidden).toBe(true)
     expect(document.querySelector('[data-session-card="session:mcp-1"] .sc-chips')?.textContent).toBe('Copilot · driven')
@@ -387,7 +398,8 @@ describe('the Live drawer’s sessions (§3.6, §7)', () => {
     await changedPollTick(db)
     expect(launchRow(LAUNCH)!.querySelector('.live-launch-status')!.textContent).toMatch(/^Parked/)
     expect(launchRow(LAUNCH)!.querySelector('.live-launch-note')).toBeNull()
-    expect(action(LAUNCH, 'resume')).not.toBeNull()
+    // #454: Resume and send is in the session panel; the row opens it there
+    expect(action(LAUNCH, 'resume-panel')?.textContent).toBe('Resume…')
   })
 
   it('Take over in Terminal goes through main, then the row says it was handed off and offers Resume in Terminal (step 5)', async () => {
@@ -460,11 +472,18 @@ describe('the Live drawer’s sessions (§3.6, §7)', () => {
     await changedPollTick(db)
     openDrawer()
     expect(launchRow(PARKED)!.querySelector('.live-launch-status')!.textContent).toMatch(/^Parked/)
-    const box = launchRow(PARKED)!.querySelector<HTMLTextAreaElement>('.live-launch-resume-input')!
-    expect(action(PARKED, 'resume')!.disabled).toBe(true)
+    // the row's Resume… opens the session panel at its Resume and send (#454)
+    click(action(PARKED, 'resume-panel'))
+    await settle()
+    expect(panel().hidden).toBe(false)
+    const box = panel().querySelector<HTMLTextAreaElement>('.sp-resume-input')!
+    expect(document.activeElement).toBe(box)
+    // Resume and send stands in for the composer
+    expect(panel().querySelector<HTMLElement>('.dash-focus-message')?.hidden).toBe(true)
+    expect(panelAction('resume')!.disabled).toBe(true)
     type(box, 'Now run the linter too.')
-    expect(action(PARKED, 'resume')!.disabled).toBe(false)
-    click(action(PARKED, 'resume'))
+    expect(panelAction('resume')!.disabled).toBe(false)
+    click(panelAction('resume'))
     await settle()
     await settle()
     expect(api.resume).toHaveBeenCalledWith(PARKED)
@@ -487,8 +506,11 @@ describe('the Live drawer’s sessions (§3.6, §7)', () => {
     openDrawer()
     expect(launchRow(PARKED)!.querySelector('.live-launch-status')!.textContent).toBe('Stopped: its session is kept, so it can be resumed.')
     expect(action(PARKED, 'take-over')?.textContent).toBe('Take over in Terminal')
-    type(launchRow(PARKED)!.querySelector<HTMLTextAreaElement>('.live-launch-resume-input')!, 'Carry on.')
-    click(action(PARKED, 'resume'))
+    click(action(PARKED, 'resume-panel'))
+    await settle()
+    expect(panelAction('take-over')?.textContent).toBe('Take over in Terminal')
+    type(panel().querySelector<HTMLTextAreaElement>('.sp-resume-input')!, 'Carry on.')
+    click(panelAction('resume'))
     await settle()
     await settle()
     expect(api.resume).toHaveBeenCalledWith(PARKED)
@@ -523,7 +545,7 @@ describe('the Live drawer’s sessions (§3.6, §7)', () => {
     expect(section()!.querySelectorAll('.live-launch')).toHaveLength(5)
   })
 
-  it('the transcript reads the driver’s event log while open, as plain text', async () => {
+  it('the transcript is a section of the session panel, read while the panel shows it, as plain text (#454)', async () => {
     launchBridge()
     db = freshDb()
     newLaunch(db)
@@ -539,15 +561,25 @@ describe('the Live drawer’s sessions (§3.6, §7)', () => {
     await bootApp(db)
     await changedPollTick(db)
     openDrawer()
+    // the drawer's Transcript opens the panel there; no modal dialog any more
     click(action(LAUNCH, 'transcript'))
     await settle()
-    const lines = [...document.querySelectorAll('.launch-transcript .launch-line')].map((li) => li.textContent)
-    expect(lines).toEqual(['The task was sent.', 'Looking at <b>the</b> tests.', 'Asked to allow npm test', 'Allowed once'])
-    expect(document.querySelector('.launch-transcript b')).toBeNull()
+    expect(document.querySelector('dialog.launch-transcript')).toBeNull()
+    expect(panel().hidden).toBe(false)
+    expect(panelLines()).toEqual(['The task was sent.', 'Looking at <b>the</b> tests.', 'Asked to allow npm test', 'Allowed once'])
+    expect([...panel().querySelectorAll('.sp-transcript .tx-k')].map((el) => el.textContent)).toEqual(['Note', 'Agent', 'Ask', 'Answer'])
+    expect(panel().querySelector('.sp-transcript b')).toBeNull()
     appendFileSync(join(dir, 'events.ndjson'), `${JSON.stringify({ event: 'ended', reason: 'stopped' })}\n`)
     await vi.advanceTimersByTimeAsync(2100)
     await settle()
-    expect([...document.querySelectorAll('.launch-transcript .launch-line')].at(-1)?.textContent).toBe('Session ended (stopped).')
+    expect(panelLines().at(-1)).toBe('Session ended (stopped).')
+    // closed, the panel reads nothing more
+    click(panel().querySelector('.dash-focus-close'))
+    const spy = vi.spyOn(window, 'fetch')
+    await vi.advanceTimersByTimeAsync(6000)
+    const reads = spy.mock.calls.map(([input]) => String(input))
+    spy.mockRestore()
+    expect(reads.filter((url) => url.includes('/events'))).toEqual([])
   })
 })
 
@@ -959,9 +991,8 @@ describe('session cards for launches (#454, #412)', () => {
     expect(actions(id)).toEqual(['Take over in Terminal', 'Resume…'])
     click(cardAction(id, 'resume'))
     await settle()
-    expect(drawer().hidden).toBe(false)
-    expect(document.activeElement).toBe(launchRow(LAUNCH)?.querySelector('.live-launch-resume-input'))
-    drawer().hidden = true
+    expect(panel().hidden).toBe(false)
+    expect(document.activeElement).toBe(panel().querySelector('.sp-resume-input'))
     click(cardAction(id, 'take-over'))
     await settle()
     expect(api.takeOver).toHaveBeenCalledWith(LAUNCH)
@@ -984,12 +1015,11 @@ describe('session cards for launches (#454, #412)', () => {
     await settle()
     const id = `launch:${LAUNCH}`
     expect(card(id)?.querySelector('.sc-state')?.textContent).toBe('Parked')
-    // the drawer lists the newest five ended launches only, until Earlier sessions is open
-    expect(launchRow(LAUNCH)).toBeNull()
+    // the drawer lists the newest five ended launches only; the session panel draws any launch (#454)
     click(cardAction(id, 'resume'))
     await settle()
-    expect(drawer().hidden).toBe(false)
-    expect(document.activeElement).toBe(launchRow(LAUNCH)?.querySelector('.live-launch-resume-input'))
+    expect(panel().hidden).toBe(false)
+    expect(document.activeElement).toBe(panel().querySelector('.sp-resume-input'))
   })
 
   it('folds an ended launch under Ended, whose card opens its transcript', async () => {
@@ -1007,7 +1037,8 @@ describe('session cards for launches (#454, #412)', () => {
     expect(actions(`launch:${LAUNCH}`)).toEqual(['Transcript'])
     click(cardAction(`launch:${LAUNCH}`, 'transcript'))
     await settle()
-    expect(document.querySelector('.launch-transcript')).not.toBeNull()
+    expect(panel().hidden).toBe(false)
+    expect(panel().querySelector<HTMLElement>('.sp-transcript')?.hidden).toBe(false)
   })
 
   it('keeps the launches past the newest five under Earlier sessions, inside Ended', async () => {
@@ -1032,6 +1063,49 @@ describe('session cards for launches (#454, #412)', () => {
     earlier.open = true
     earlier.dispatchEvent(new Event('toggle'))
     expect([...earlier.querySelectorAll<HTMLElement>('[data-session-card]')].map((el) => el.dataset.sessionCard)).toEqual([`launch:${ids[0]}`])
+  })
+
+  it('the panel carries the launch’s action bar, its worktree and its approval, answered in place (#454 Q3)', async () => {
+    const api = launchBridge()
+    db = freshDb()
+    createLaunch(db, {
+      id: LAUNCH, host: 'copilot', project: 'alpha', stream: 'main', cwd: '/work/wt/fix-it', mode: 'ask', model: 'claude-haiku-4.5',
+      budgetActiveMs: 7_200_000, budgetToolCalls: 500, prompt: 'Fix it.', specVersion: 1, driverPid: 4242,
+      worktree: { checkoutRoot: '/work/alpha', branch: 'agent-inbox/fix-it', baseSha: 'a'.repeat(40), baseRef: 'refs/heads/main' },
+    })
+    recordWorktreeSummary(db, LAUNCH, { v: 1, at: new Date().toISOString(), head: 'b'.repeat(40), branch: 'agent-inbox/fix-it', ahead: 2, behind: 0, files: 3, dirty: 1 })
+    drivenSession(db)
+    recordLaunchProgress(db, LAUNCH, { sessions: ['mcp-1'] })
+    const ask = fileLaunchAsk(db, LAUNCH, {
+      project: '@sessions', stream: 'alpha · main', agent: 'copilot', kind: 'question', session: 'mcp-1', title: 'Allow shell: npm test',
+      action_owner: 'approval', options: [{ label: 'Allow once' }, { label: 'Deny' }],
+    }, [{ optionId: 'allow_once', label: 'Allow once' }, { optionId: 'reject_once', label: 'Deny' }])
+    await bootApp(db)
+    await changedPollTick(db)
+    await settle()
+    const id = `launch:${LAUNCH}`
+    expect(card(id)?.querySelector('.sc-state')?.textContent).toBe('Needs you')
+    click(cardAction(id, 'review'))
+    await settle()
+    expect(panel().querySelector('.sp-state')?.textContent).toBe('Needs you')
+    expect([...panel().querySelectorAll('.sp-actions [data-launch-action]')].map((b) => [b.textContent, (b as HTMLButtonElement).disabled]))
+      .toEqual([['Stop', false], ['Park now', false], ['Take over in Terminal', false], ['Open in Terminal', false], ['Remove worktree…', true]])
+    expect([...panel().querySelectorAll('.sp-worktree-box dd')].map((el) => el.textContent))
+      .toEqual(['agent-inbox/fix-it', '/work/wt/fix-it', '2 commits ahead, 3 files changed, 1 uncommitted'])
+    // the approval: its own options only, no editor, and the shell warning; the card's one ask, as its count says
+    const appr = panel().querySelector<HTMLElement>('.sp-approval')!
+    expect(appr.querySelector('.sp-appr-title')?.textContent).toBe('Allow shell: npm test')
+    expect(appr.querySelector('.sp-approval-count')?.textContent).toMatch(/^1 open/)
+    expect(appr.querySelector('textarea, input')).toBeNull()
+    expect(document.activeElement?.textContent).toBe('Allow once')
+    click([...appr.querySelectorAll<HTMLButtonElement>('button')].find((b) => b.textContent === 'Deny'))
+    await settle()
+    await settle()
+    expect(api.approve).toHaveBeenCalledWith({ item: ask.itemId, revision: ask.revision, optionId: 'reject_once' })
+    // Stop in the bar is the drawer's own handler
+    click(panelAction('stop'))
+    await settle()
+    expect(api.stop).toHaveBeenCalledWith(LAUNCH)
   })
 
   it('New session… sits in the header, and says why it is off outside a granted window', async () => {

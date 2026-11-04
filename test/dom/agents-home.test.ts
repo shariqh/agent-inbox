@@ -144,23 +144,38 @@ describe('the Agents home (#454)', () => {
     expect(groups()).toEqual([['Claude Code', ['session:k1', 'session:k2']], ['Copilot', ['session:c2', 'session:c1']]])
   })
 
-  it('an ask’s Review opens it on the rail; a card’s click opens the session panel', async () => {
+  it('Review opens the session panel at the card’s asks, which agree with its count; a click toggles the panel', async () => {
     db = freshDb()
     seed(db)
     await bootApp(db)
     await pollTick()
     await settle()
+    const aside = document.querySelector<HTMLElement>('#dashboard .dash-focus')!
     click(card('session:k1')?.querySelector('[data-ah-action="review"]'))
+    expect(aside.hidden).toBe(false)
+    expect(aside.dataset.session).toBe('k1')
+    // the panel lists exactly the card's asks: one here, as the Needs you count says
+    const asks = [...aside.querySelectorAll('.dash-focus-asks .dash-focus-ask-title')].map((el) => el.textContent)
+    expect(asks).toEqual(['Approve the metric set'])
+    expect(filterButton('ask')?.querySelector('.ah-filter-count')?.textContent).toBe(String(asks.length))
+    expect(document.activeElement).toBe(aside.querySelector('.dash-focus-asks button'))
+    expect(card('session:k1')?.classList.contains('sel')).toBe(true)
+    // its ask still answers on the rail
+    click(aside.querySelector('.dash-focus-asks button'))
     expect(document.activeElement?.closest('[data-rail-card]')?.querySelector('.dash-rail-title')?.textContent).toBe('Approve it.')
     click(card('session:c1')?.querySelector('.sc-doing'))
-    expect(document.querySelector<HTMLElement>('#dashboard .dash-focus')?.hidden).toBe(false)
-    // over the Agents list, not inside the hidden lanes
-    expect(document.querySelector('.agents-home .dash-focus')).not.toBeNull()
-    expect(document.querySelector('#dashboard .dash-focus')?.getAttribute('data-session')).toBe('c1')
+    expect(aside.hidden).toBe(false)
+    expect(aside.dataset.session).toBe('c1')
+    expect(aside.querySelector('.sp-state')?.textContent).toBe('Working')
+    expect(aside.querySelector('#dashFocusTitle')?.textContent).toBe('agent-inbox · feat/412')
+    // a terminal session's panel has no action bar or transcript (§3.3)
+    expect(aside.querySelector<HTMLElement>('.sp-actions')?.hidden).toBe(true)
+    expect(aside.querySelector<HTMLElement>('.sp-transcript')?.hidden).toBe(true)
     // a second click on the same card closes it, as a lane's does
     click(card('session:c1')?.querySelector('.sc-doing'))
-    expect(document.querySelector<HTMLElement>('#dashboard .dash-focus')?.hidden).toBe(true)
+    expect(aside.hidden).toBe(true)
   })
+
 
   it('folds the dormant and the closed projects’ sessions, painting their cards only while open', async () => {
     db = freshDb()
@@ -202,7 +217,7 @@ describe('the Agents home (#454)', () => {
     expect(home.querySelector<HTMLElement>('.ah-new')?.hidden).toBe(true)
   })
 
-  it('a card’s Message opens the Live drawer with that session’s composer, focused (#411)', async () => {
+  it('a card’s Message opens the session panel with that session’s composer, focused (#411)', async () => {
     db = freshDb()
     seed(db)
     upsertActivity(db, { session: 'k2', agent: 'claude-code', project: 'demo', stream: 'main', doing: 'open', idle: true, claim: false, receives_messages: true })
@@ -212,14 +227,13 @@ describe('the Agents home (#454)', () => {
     expect(card('session:k2')?.querySelector('.sc-meta')?.textContent).toBe('It sees a message when it next checks')
     click(card('session:k2')?.querySelector('[data-ah-action="message"]'))
     await settle()
-    const drawer = document.getElementById('liveDrawer')!
-    expect(drawer.hidden).toBe(false)
-    // an idle session's composer sits in the idle fold, which opens for it
-    expect(drawer.querySelector<HTMLDetailsElement>('.idle-fold')?.open).toBe(true)
-    const composer = drawer.querySelector<HTMLElement>('.msg-composer')
+    const aside = document.querySelector<HTMLElement>('#dashboard .dash-focus')!
+    expect(aside.hidden).toBe(false)
+    const composer = aside.querySelector<HTMLElement>('.dash-focus-message .msg-composer')
     expect(composer?.dataset.msgSession).toBe('k2')
     expect(document.activeElement).toBe(composer?.querySelector('textarea'))
     expect(composer?.querySelector('label')?.textContent).toBe('Message to claude-code · demo · main')
-    drawer.hidden = true // leaves later boots' drawer listeners idle
+    expect(document.getElementById('liveDrawer')?.hidden).toBe(true)
   })
+
 })

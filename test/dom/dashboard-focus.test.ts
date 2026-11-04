@@ -259,32 +259,22 @@ describe('the session focus panel (#307)', () => {
     expect(panel()!.hidden).toBe(false)
   })
 
-  it('sits in the list the lens shows, never over the rail', async () => {
+  it('is the Dashboard grid’s own, so neither lens can hide it (#454)', async () => {
     const d = open()
     seed(d)
     await bootApp(d)
-    // the Dashboard opens on the Agents home (#454); the Sessions lens moves it to the lanes
-    expect(panel()!.closest('.agents-home')).not.toBeNull()
+    expect(panel()!.parentElement?.classList.contains('dashboard-grid')).toBe(true)
+    expect(panel()!.closest('.dash-lanes, .agents-home, .dash-rail')).toBeNull()
+    // opened from a lane under the Sessions lens, it shows under the Agents lens too
     click(document.querySelector('.mesh-lens [data-mesh-lens="sessions"]'))
-    expect(panel()!.closest('.dash-lanes')).not.toBeNull()
-    expect(panel()!.closest('.dash-rail')).toBeNull()
-  })
-
-  it('follows the lens, so an open panel is never inside a hidden card (#454)', async () => {
-    const d = open()
-    seed(d)
-    await bootApp(d)
-    // the Dashboard opens on the Agents lens, which hides the lanes card
-    expect(document.querySelector<HTMLElement>('.dash-lanes')?.hidden).toBe(true)
     click(openButton('mine'))
+    expect(panel()?.closest('[hidden]')).toBeNull()
+    keydown(panel()!.querySelector('#dashFocusTitle')!, 'Escape')
+    click(document.querySelector('.mesh-lens [data-mesh-lens="agents"]'))
+    click(document.querySelector('[data-session-card="session:mine"] .sc-doing'))
     expect(panel()?.hidden).toBe(false)
     expect(panel()?.closest('[hidden]')).toBeNull()
-    // the lens is outside the panel, so its click closes it (#307); opened again, it sits over the lanes
-    click(document.querySelector('.mesh-lens [data-mesh-lens="sessions"]'))
-    expect(panel()?.hidden).toBe(true)
-    click(openButton('mine'))
-    expect(panel()?.closest('.dash-lanes')).not.toBeNull()
-    expect(panel()?.closest('[hidden]')).toBeNull()
+    expect(document.querySelector('[data-session-card="session:mine"]')?.classList.contains('sel')).toBe(true)
   })
 
   it('opens and closes without pulling focus in a background window', async () => {
@@ -333,11 +323,13 @@ describe('the session focus panel (#307)', () => {
     expect(asks.firstElementChild).toBe(askNode)
     expect(aside.querySelector('.dash-focus-doing')?.textContent).toBe('Polishing the panel')
 
-    // the session stops working: the panel says so and keeps its close button
+    // the session stops working: the panel stays on it (#454: every session has a card), its ask still open
     upsertActivity(d, { ...A, session: 'mine', doing: 'open', idle: true })
     await pollTick()
     expect(aside.hidden).toBe(false)
-    expect(aside.querySelector<HTMLElement>('.dash-focus-gone')?.hidden).toBe(false)
+    expect(aside.querySelector('.sp-state')?.textContent).toBe('Needs you')
+    expect(aside.querySelector('.dash-focus-doing')?.textContent).toBe('was: Polishing the panel')
+    expect(aside.querySelector<HTMLElement>('.dash-focus-gone')?.hidden).toBe(true)
   })
 })
 

@@ -11,7 +11,7 @@
 // public/attention.js, a badge, a count, the rail or the dock.
 import {
   LAUNCH_MODES, NOT_REPOSITORY, PROMPT_WARNING, REASONING_EFFORTS, SHELL_WARNING, START_PHASES, WORKTREE_COPY,
-  launchOfSession, launchSessions, launchStatus, launchSummary, launchWorktreeLine, newSessionRequest, transcriptLines,
+  launchOfSession, launchSessions, launchStatus, launchSummary, launchWorktreeLine, newSessionRequest, transcriptLines, worktreeSummaryText,
 } from '/launches.js'
 
 const DEFAULT_ACTIVE_HOURS = 2
@@ -36,6 +36,7 @@ const ENDED_SHOWN = 5
  *   changed: () => void,
  *   settled: () => Promise<unknown>,
  *   pending: <T>(action: () => Promise<T>) => Promise<T>,
+ *   openPanel: (id: string, part: 'transcript' | 'resume') => void,
  * }} deps
  */
 export function createLaunchUi(deps) {
@@ -46,8 +47,8 @@ export function createLaunchUi(deps) {
   // Typed text: the New session task and each parked launch's Resume and send
   // text, in window memory only. While its dialog is open, the task is a draft
   // in suspendState() (the dialog is modal, so the paused list is under it);
-  // a Resume text sits in the ambient drawer, which no draft pauses, so like a
-  // message composer's it only holds a viewer restart (held()). A task whose
+  // a Resume text sits in the ambient session panel, which no draft pauses, so
+  // like a message composer's it only holds a viewer restart (held()). A task whose
   // dialog was cancelled is kept to fill the next one, and holds nothing.
   const drafts = new Map()
   const notes = new Map()
@@ -58,6 +59,7 @@ export function createLaunchUi(deps) {
   const openMessages = new Set()
   const slots = new Map()
   let dialog = null
+  // #454: the session panel's transcript, read only while the panel shows it
   let transcript = null
   // step 5: whether the drawer lists the ended launches past the newest five (all /api/launches carries)
   let showEarlier = false
@@ -88,7 +90,7 @@ export function createLaunchUi(deps) {
     state = value
     if (!on()) {
       closeDialog()
-      closeTranscript()
+      stopTranscript()
     }
     bump()
     return true
@@ -234,29 +236,8 @@ export function createLaunchUi(deps) {
       actions.prepend(message)
     }
     parts.push(actions)
-    if (status.actions.includes('resume') && granted()) {
-      let input = resumeInputs.get(launch.id)
-      if (!input) {
-        input = make('textarea', 'live-launch-resume-input')
-        input.rows = 2
-        input.maxLength = 4000
-        input.setAttribute('aria-label', 'Message to send when the session resumes')
-        input.value = drafts.get(`resume:${launch.id}`) ?? ''
-        input.addEventListener('input', () => {
-          setDraft(`resume:${launch.id}`, input.value)
-          const send = el.querySelector('[data-launch-action="resume"]')
-          if (send) send.disabled = busy.has(launch.id) || !input.value.trim()
-        })
-        resumeInputs.set(launch.id, input)
-      }
-      const resume = make('div', 'live-launch-resume')
-      const send = button(busy.has(launch.id) ? 'Resuming…' : 'Resume and send', 'resume', 'primary')
-      send.disabled = busy.has(launch.id) || !input.value.trim()
-      resume.append(input, send)
-      parts.push(resume)
-    } else {
-      resumeInputs.delete(launch.id)
-    }
+    // #454: Resume and send lives in the session panel; the row opens it there
+    if (status.actions.includes('resume') && granted()) actions.append(button('Resume…', 'resume-panel', 'primary'))
     const note = notes.get(launch.id)
     if (note) {
       const line = make('p', 'live-launch-note', note)
@@ -278,7 +259,7 @@ export function createLaunchUi(deps) {
       const action = focused.dataset?.launchAction
       el.replaceChildren(...parts)
       // the same control, or (when this state has none) the row's first one
-      const again = (action ? el.querySelector(`[data-launch-action="${action}"]`) : resumeInputs.get(launch.id))
+      const again = (action ? el.querySelector(`[data-launch-action="${action}"]`) : null)
         ?? el.querySelector('[data-launch-action]')
       if (again && doc.activeElement !== again && doc.hasFocus()) again.focus({ preventScroll: true })
     } else {
@@ -333,7 +314,8 @@ export function createLaunchUi(deps) {
       showEarlier = !showEarlier
       bump()
     }
-    else if (action === 'transcript' && id) openTranscript(id)
+    else if (action === 'transcript' && id) deps.openPanel(id, 'transcript')
+    else if (action === 'resume-panel' && id) deps.openPanel(id, 'resume')
     else if (action === 'stop' && id) stop(id)
     else if (action === 'close' && id) close(id)
     else if (action === 'park' && id) park(id)
@@ -689,35 +671,158 @@ export function createLaunchUi(deps) {
     dialog = null
   }
 
-  // ── Transcript panel (§3.6) ──────────────────────────────────────────────
-  // Read from the driver's event log only while the panel is open, on its own
-  // timer, never through the poll. Agent text is textContent only.
-  function openTranscript(id) {
-    closeTranscript()
-    const launch = (deps.launches() ?? []).find((l) => l.id === id)
-    const panel = make('dialog', 'launch-transcript')
-    panel.setAttribute('aria-label', 'Session transcript')
-    const head = make('div', 'launch-transcript-head')
-    head.append(make('h2', '', launch ? `${launch.project} · ${launchSummary(launch)}` : 'Session transcript'))
-    const closeButton = make('button', '', 'Close')
-    closeButton.type = 'button'
-    closeButton.addEventListener('click', () => closeTranscript())
-    head.append(closeButton)
-    const list = make('ol', 'launch-transcript-lines')
-    list.setAttribute('aria-live', 'polite')
-    const status = make('p', 'launch-transcript-status', 'Loading…')
-    panel.append(head, status, list)
-    panel.addEventListener('close', () => { if (transcript?.panel === panel) closeTranscript() })
-    doc.body.append(panel)
-    if (typeof panel.showModal === 'function') panel.showModal()
-    else panel.setAttribute('open', '')
-    transcript = { id, panel, list, status, events: [], after: 0, timer: null, drawn: 0 }
-    pollTranscript(transcript)
+  // ── the session panel (#454, design §3.3) ──────────────────────────────
+  // The launch's parts of the Dashboard's session panel: its action bar, worktree
+  // box, transcript and Resume and send. app.js owns the panel and calls this from
+  // its painter (both render entries); each part is rebuilt only when what it
+  // shows changes, and a focused control keeps its node. Agent text is
+  // textContent only. Off (§9), nothing here is drawn and the parts stay hidden.
+  const TRANSCRIPT_LABELS = { text: 'Agent', tool: 'Tool', ask: 'Ask', answer: 'Answer', note: 'Note' }
+  const hours = (ms) => {
+    const minutes = Math.round((Number.isFinite(ms) ? ms : 0) / 60000)
+    return minutes < 60 ? `${minutes}m` : minutes % 60 ? `${Math.floor(minutes / 60)}h ${minutes % 60}m` : `${minutes / 60}h`
+  }
+
+  /** "Ask for everything · claude-haiku-4.5 · effort high · 41 of 500 tool calls · 38m of 2h active" */
+  function panelSummary(launch) {
+    return [
+      LAUNCH_MODES.find((m) => m.id === launch.mode)?.label ?? launch.mode,
+      launch.model,
+      launch.reasoning_effort ? `effort ${launch.reasoning_effort}` : '',
+      `${launch.tool_calls ?? 0} of ${launch.budget_tool_calls} tool calls`,
+      `${hours(launch.active_ms)} of ${hours(launch.budget_active_ms)} active`,
+    ].filter(Boolean).join(' · ')
+  }
+
+  const keyed = (el, key, build) => {
+    if (el.dataset.key === key) return
+    el.dataset.key = key
+    const focused = doc.activeElement
+    const action = focused instanceof doc.defaultView.Element && el.contains(focused) ? focused.dataset?.launchAction : null
+    el.replaceChildren(...build())
+    if (!action) return
+    const again = el.querySelector(`[data-launch-action="${action}"]`) ?? el.querySelector('[data-launch-action]')
+    if (again && doc.activeElement !== again && doc.hasFocus()) again.focus({ preventScroll: true })
+  }
+
+  /**
+   * @param {Element} aside the panel, holding `.sp-actions`, `.sp-note`, `.sp-worktree`, `.sp-transcript` and `.sp-resume`
+   * @param {string|null} id the launch the panel shows, or null for a session that is not one of this app's launches
+   */
+  function paintPanel(aside, id, nowMs) {
+    const launch = id && on() ? (deps.launches() ?? []).find((l) => l.id === id) ?? null : null
+    const parts = ['.sp-actions', '.sp-note', '.sp-worktree', '.sp-transcript', '.sp-resume'].map((sel) => aside.querySelector(sel))
+    const [actionsEl, noteEl, worktreeEl, transcriptEl, resumeEl] = parts
+    if (!launch) {
+      for (const el of parts) if (el && !el.hidden) el.hidden = true
+      stopTranscript()
+      return
+    }
+    for (const el of parts) if (el && el.dataset.launch !== id) el.dataset.launch = id
+    if (!actionsEl.dataset.bound) {
+      actionsEl.dataset.bound = '1'
+      actionsEl.addEventListener('click', onSectionClick)
+      resumeEl.addEventListener('click', onSectionClick)
+    }
+    const status = launchStatus(launch, deps.activity(), nowMs)
+    const allowed = granted()
+    // the action bar (§3.3): what the drawer row offered, from the launch's state and the grant
+    const actions = []
+    if (allowed) {
+      for (const action of status.actions) {
+        if (action === 'park') actions.push(['park', 'Park now'])
+        else if (action === 'stop') actions.push(['stop', launch.status === 'parked' ? 'End' : 'Stop', 'danger'])
+        else if (action === 'close') actions.push(['close', 'Close'])
+        else if (action === 'takeover' || action === 'terminal') {
+          actions.push(['take-over', busy.has(id) ? 'Handing off…' : action === 'takeover' ? 'Take over in Terminal' : 'Resume in Terminal'])
+        }
+      }
+      if (launch.worktree_path && !launch.worktree_removed_at) {
+        actions.push(['open-worktree', 'Open in Terminal'])
+        actions.push(['remove-worktree', 'Remove worktree…', 'end', launch.status !== 'ended'])
+      }
+    }
+    keyed(actionsEl, JSON.stringify([actions, busy.has(id)]), () => actions.map(([action, label, tone, off]) => {
+      const el = button(label, action, tone === 'danger' ? 'danger' : tone === 'end' ? 'sp-end' : '')
+      if (off) {
+        el.disabled = true
+        el.title = 'Only once the session has ended'
+      }
+      if (busy.has(id)) el.disabled = true
+      return el
+    }))
+    if (actionsEl.hidden !== !actions.length) actionsEl.hidden = !actions.length
+    const note = notes.get(id) ?? ''
+    if (noteEl.textContent !== note) noteEl.textContent = note
+    if (noteEl.hidden !== !note) noteEl.hidden = !note
+    // the worktree box (#432)
+    const box = worktreeEl.querySelector('.sp-worktree-box')
+    const hasTree = typeof launch.worktree_path === 'string' && launch.worktree_path !== ''
+    const branch = typeof launch.branch === 'string' ? launch.branch : ''
+    const rows = !hasTree ? [] : launch.worktree_removed_at
+      ? [['Worktree', `Removed; its branch ${branch} is kept.`]]
+      : [['Branch', branch], ['Folder', launch.worktree_path], ['Changes', worktreeSummaryText(launch.worktree_summary, branch) || 'Not read yet']]
+    keyed(box, JSON.stringify(rows), () => rows.flatMap(([term, value]) => [make('dt', '', term), make('dd', term === 'Changes' || term === 'Worktree' ? '' : 'mono', value)]))
+    if (worktreeEl.hidden !== !hasTree) worktreeEl.hidden = !hasTree
+    // the transcript: a section of the panel, read every 2 s only while the panel shows it
+    if (transcriptEl.hidden) transcriptEl.hidden = false
+    showTranscript(transcriptEl, id)
+    // Resume and send (§5.3, §7) for a parked or resumable launch, in place of the composer
+    const resumable = allowed && status.actions.includes('resume')
+    if (resumeEl.hidden !== !resumable) resumeEl.hidden = !resumable
+    if (!resumable) return
+    let input = resumeInputs.get(id)
+    if (!input) {
+      input = make('textarea', 'sp-resume-input')
+      input.rows = 2
+      input.maxLength = 4000
+      input.setAttribute('aria-label', 'Message to send when the session resumes')
+      input.value = drafts.get(`resume:${id}`) ?? ''
+      input.addEventListener('input', () => {
+        setDraft(`resume:${id}`, input.value)
+        const send = resumeEl.querySelector('[data-launch-action="resume"]')
+        if (send) send.disabled = busy.has(id) || !input.value.trim()
+      })
+      resumeInputs.set(id, input)
+    }
+    const slot = resumeEl.querySelector('.sp-resume-slot')
+    if (slot.firstElementChild !== input) slot.replaceChildren(input)
+    const send = resumeEl.querySelector('[data-launch-action="resume"]')
+    const label = busy.has(id) ? 'Resuming…' : 'Resume and send'
+    if (send.textContent !== label) send.textContent = label
+    const blocked = busy.has(id) || !input.value.trim()
+    if (send.disabled !== blocked) send.disabled = blocked
+  }
+
+  /** The panel's Resume and send text, focused: an explicit click (Resume…) always lands on it. */
+  function focusResume(id) {
+    const input = resumeInputs.get(id)
+    if (input?.isConnected) input.focus()
+  }
+
+  // Shown means connected with no hidden ancestor: a hidden panel, or the Dashboard
+  // behind another tab, reads nothing until it shows again.
+  const shown = (el) => el.isConnected && !el.closest('[hidden]')
+
+  function showTranscript(section, id) {
+    const list = section.querySelector('.sp-transcript-lines')
+    const status = section.querySelector('.sp-transcript-status')
+    if (transcript && (transcript.id !== id || transcript.list !== list)) stopTranscript()
+    if (!transcript) {
+      list.replaceChildren()
+      status.textContent = 'Loading…'
+      transcript = { id, list, status, events: [], after: 0, timer: null, drawn: 0, reading: false }
+    }
+    if (!transcript.timer && !transcript.reading && shown(list)) pollTranscript(transcript)
   }
 
   async function pollTranscript(current) {
     if (transcript !== current) return
+    current.timer = null
+    if (!shown(current.list)) return // resumed by the next paint that shows it
+    current.reading = true
     const body = await deps.fetchJson(`/api/launches/${encodeURIComponent(current.id)}/events?after=${current.after}`).catch(() => null)
+    current.reading = false
     if (transcript !== current) return
     if (!body || !Array.isArray(body.events)) {
       current.status.textContent = 'The transcript could not be read.'
@@ -746,23 +851,25 @@ export function createLaunchUi(deps) {
 
   function drawTranscript(current) {
     const lines = transcriptLines(current.events)
+    const box = current.list.parentElement
+    // newest at the bottom: a reader at the bottom stays there, one scrolled up stays put
+    const atBottom = !box || box.scrollHeight - box.scrollTop - box.clientHeight < 8
     // the last line can still grow (agent text arrives in pieces), so it is redrawn
     const from = Math.max(0, Math.min(current.drawn, lines.length) - 1)
     while (current.list.children.length > from) current.list.lastChild.remove()
     for (const line of lines.slice(from)) {
-      const item = make('li', `launch-line ${line.kind}`, line.text)
+      const item = make('li', `launch-line ${line.kind}`)
+      item.append(make('span', 'tx-k', TRANSCRIPT_LABELS[line.kind] ?? ''), make('span', 'tx-b', line.text))
       current.list.append(item)
     }
     current.drawn = lines.length
+    if (box && atBottom) box.scrollTop = box.scrollHeight
   }
 
-  function closeTranscript() {
+  function stopTranscript() {
     if (!transcript) return
-    const current = transcript
+    clearTimeout(transcript.timer)
     transcript = null
-    clearTimeout(current.timer)
-    if (typeof current.panel.close === 'function' && current.panel.open) current.panel.close()
-    current.panel.remove()
   }
 
   // ── lanes (#304): a "Started here" tag and Stop on a launch's lane ───────
@@ -811,24 +918,13 @@ export function createLaunchUi(deps) {
     openNewSession,
     /** A session card's action on its launch (#454): the drawer row's own handlers. */
     run(id, action) {
-      if (!on()) return
-      if (action === 'transcript') openTranscript(id)
-      else if (!granted()) return
-      else if (action === 'close') close(id)
+      if (!on() || !granted()) return
+      if (action === 'close') close(id)
       else if (action === 'take-over') takeOver(id)
       else if (action === 'open-worktree') openWorktree(id)
     },
-    /**
-     * Resume…, an explicit click: the drawer row's Resume and send text takes focus (until the session
-     * panel holds it). A launch past the newest five is drawn first, by showing the earlier sessions.
-     */
-    focusResume(id) {
-      if (!resumeInputs.get(id)?.isConnected && !showEarlier) {
-        showEarlier = true
-        bump()
-      }
-      const input = resumeInputs.get(id)
-      if (input?.isConnected) input.focus()
-    },
+    paintPanel,
+    panelSummary,
+    focusResume,
   }
 }

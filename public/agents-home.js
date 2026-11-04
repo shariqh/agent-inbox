@@ -16,14 +16,14 @@ import { pinLaneOrder, tracePath } from './lanes.js'
 
 const SVG = 'http://www.w3.org/2000/svg'
 const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`
+// A launch's panel is keyed by the launch, which outlives its sessions; any other card by its session.
+const panelKey = (card) => (card.launch ? card.id : card.session)
 const EMPTY = 'No sessions yet. A Claude Code or Copilot session appears here once Agent Inbox’s MCP server starts in it.'
 
 /**
  * @param {{
  *   doc?: Document,
- *   jumpToAsk: (entry: any) => void,
- *   openMessage: (session: string) => void,
- *   openSession?: (card: any) => void,
+ *   openSession: (key: string, part?: 'approval' | 'asks' | 'message' | 'transcript' | 'resume' | null) => void,
  *   launchAction?: (id: string, action: string) => void,
  *   launches?: () => ({ granted: () => boolean, newSession: () => ({ disabled: boolean, note: string } | null), openNewSession: () => void } | null),
  *   hasDraft?: (session: string) => boolean,
@@ -186,15 +186,16 @@ export function installAgentsHome(deps) {
     if (control) {
       if (control.disabled) return
       const action = control.dataset.ahAction
-      if (action === 'review') deps.jumpToAsk(card.asks[0])
-      else if (action === 'message') deps.openMessage(card.session)
+      // the session panel holds the ask, the composer, the transcript and Resume and send (§3.3)
+      if (action === 'review') deps.openSession(panelKey(card), card.approval ? 'approval' : 'asks')
+      else if (action === 'message' || action === 'transcript' || action === 'resume') deps.openSession(panelKey(card), action)
       else if (card.launch) deps.launchAction?.(card.launch.id, action)
       return
     }
     // A click anywhere else on the card opens it, but never one that ends a
     // text selection or lands on a control.
     if (target.closest('button, a, select, summary, [data-link-kind]') || String(doc.getSelection?.() ?? '')) return
-    deps.openSession?.(card)
+    deps.openSession(panelKey(card))
   }
 
   // ── a card ────────────────────────────────────────────────────────────────
@@ -254,7 +255,7 @@ export function installAgentsHome(deps) {
   }
 
   function updateCard(el, card, granted) {
-    el.className = `sc tone-${card.state}`
+    el.className = `sc tone-${card.state}${last?.input.selected && cardFor(last.input.selected) === card ? ' sel' : ''}`
     el.setAttribute('aria-label', `${card.label}: ${card.host} in ${card.project}${card.branch ? ` on ${card.branch}` : ''}`)
     if (deps.projectColor) el.style.setProperty('--sc-project', deps.projectColor(card.project))
     setText(el.querySelector('.sc-state'), card.label)
@@ -415,12 +416,12 @@ export function installAgentsHome(deps) {
     const agents = lens === 'agents'
     setHidden(lanes, agents)
     setHidden(section, !agents)
-    // the session panel (#307) sits over whichever list the lens shows
-    const panel = grid.querySelector('.dash-focus')
-    const owner = agents ? section : lanes
-    if (panel && panel.parentElement !== owner) owner.append(panel)
-    if (!agents) return
     const reading = !Array.isArray(input.activity)
+    // the cards are built under either lens: the session panel reads them (cardFor)
+    const cards = reading ? [] : sessionCards(input)
+    byId.clear()
+    for (const card of cards) byId.set(card.id, card)
+    if (!agents) return
     section.classList.toggle('reading', reading)
     if (reading) {
       // before the first /api/activity read (§3.6)
@@ -429,9 +430,6 @@ export function installAgentsHome(deps) {
     }
     const launchUi = deps.launches?.() ?? null
     const granted = launchUi?.granted() === true
-    const cards = sessionCards(input)
-    byId.clear()
-    for (const card of cards) byId.set(card.id, card)
     const main = cards.filter((card) => card.place === 'main')
     // §10 rule 5, as the lanes: a card keeps its place between forced paints
     order = pinLaneOrder(input.forced ? [] : order, main.map((card) => ({ session: card.id })))
@@ -518,8 +516,16 @@ export function installAgentsHome(deps) {
     for (const [id, el] of cardEls) if (!byId.has(id) || !el.isConnected) cardEls.delete(id)
   }
 
+  /** The card a session panel key names: a card id, a live session, or a session a launch remembers. */
+  function cardFor(key) {
+    if (!key) return null
+    const cards = [...byId.values()]
+    return byId.get(key) ?? cards.find((card) => card.session === key) ?? cards.find((card) => card.sessions.includes(key)) ?? null
+  }
+
   return {
     paint,
+    cardFor,
     /** The window-local view state, for frameInputs(). */
     state: () => [lens, filter, groupBy, [...folds].sort().join(',')].join('|'),
   }

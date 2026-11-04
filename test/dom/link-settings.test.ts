@@ -232,7 +232,7 @@ describe('file chip actions (issue #300 part 2)', () => {
       click(chip)
       await settle()
       expect(writeText).toHaveBeenCalledWith('/Users/s/docs/spec.md')
-      expect(document.getElementById('linkOpenStatus')?.textContent).toBe('Copied the path. File links open only in Agent Inbox’s own viewer.')
+      expect(document.getElementById('linkOpenStatus')?.textContent).toBe('Copied the path. Files open only in Agent Inbox’s own window.')
       expect(open).not.toHaveBeenCalled()
     } finally {
       Reflect.deleteProperty(navigator, 'platform')

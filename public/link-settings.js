@@ -35,7 +35,7 @@ function option(documentRef, value, text) {
 // Main answers a page that is not the viewer this app started and owns with
 // an empty view saying so ('unowned'), as it refuses that page's file links.
 const HINTS = {
-  rules: 'Links you open from the Inbox use these instead of your Mac’s defaults. To open a type Agent Inbox only shows in Finder, such as .py, add it and choose an app. Apps, installers, aliases and anything executable are never opened.',
+  rules: 'Links you open from the Inbox use these instead of your Mac’s defaults. A file type with no app or rule here, and anything Agent Inbox doesn’t open by default, such as .py, is shown in Finder; a missing file shows its nearest folder. To open such a type, add it and choose an app. Apps, installers, aliases and anything executable are never opened.',
   unowned: 'Choosing how links open works only in Agent Inbox’s own viewer, not in one it found already running.',
   elsewhere: 'Links open with your system’s default apps. Choosing an app for each type of file is available on macOS.',
 }

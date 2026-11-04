@@ -57,6 +57,8 @@ const LINK_REASONS = new Set([
   'invalid', 'missing', 'outside', 'inaccessible', 'failed', 'unavailable', 'unowned', 'app-missing', 'app-refused',
 ])
 
+const MAX_FOLDER_NAME = 255
+
 function linkRequest(request) {
   if (!request || typeof request !== 'object' || Array.isArray(request)) return null
   if (request.kind === 'web' && typeof request.url === 'string') return { kind: 'web', url: request.url }
@@ -70,6 +72,11 @@ function linkRequest(request) {
 function linkResult(value) {
   if (value && typeof value === 'object') {
     if (value.ok === true && value.action === 'opened') return { ok: true, action: 'opened' }
+    // a missing file's nearest folder was shown instead: its name, never a path
+    if (value.ok === true && value.action === 'revealed' && value.reason === 'missing') {
+      const folder = typeof value.folder === 'string' && value.folder.length <= MAX_FOLDER_NAME ? value.folder : ''
+      return { ok: true, action: 'revealed', reason: 'missing', folder }
+    }
     if (value.ok === true && value.action === 'revealed' && LINK_REASONS.has(value.reason)) {
       return { ok: true, action: 'revealed', reason: value.reason }
     }

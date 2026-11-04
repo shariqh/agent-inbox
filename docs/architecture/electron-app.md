@@ -73,5 +73,11 @@ These landed after v1 and still hold invariants; the release history itself is i
   applied), and Settings re-asks on open, adding the one-click install and Update agents
   when main now allows them (a window only loses Setup to a new page or a quit, so this
   never takes away a menu that may be running). A main-frame navigation that never commits
-  leaves the window revoked until its next load, with the same honest copy. None of it
+  leaves the window revoked until its next load, with the same honest copy, except one main
+  cancels itself: Electron emits `did-start-navigation` before `will-navigate`, so the
+  `will-navigate` handler calls `installBinding.navigationPrevented(url)` after
+  `preventDefault()`, which re-applies the grants the still-shown page held when that same
+  navigation started (never after a newer navigation, a crash, a close or a quit, and never to
+  a page whose re-proof was still running). Without it, a dropped file or URL left file links
+  copying their path until a reload (see `links.md`). None of it
   enters `public/attention.js`, badges or Needs-you.

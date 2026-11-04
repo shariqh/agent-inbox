@@ -570,7 +570,8 @@ Paths relative to a repository (`docs/superpowers/specs/spec.md`,
 session was working in, which Agent Inbox records with each item and plan. They need
 a folder and a file name with an extension or a `:line`. A file that folder doesn't
 have, such as a doc that only exists on a pull request's branch or in another
-worktree, is not opened: clicking it copies its path and says so. A path whose
+worktree, is not opened: clicking it shows its nearest folder inside the repository
+in Finder and says so. A path whose
 symlinks lead outside the repository is never opened. Items and plans written before
 this, or by an older Agent Inbox, recorded no folder, so their relative paths stay
 text.
@@ -583,9 +584,11 @@ In the desktop app a web link opens in your browser, and a common document (Mark
 text, logs, JSON, YAML, TOML, CSV, PDF, images, SVG, HTML, diffs, MOV and MP4)
 opens in its default app. Anything else is only shown in Finder: folders, apps,
 scripts and other code, installers, disk images, aliases, files set to open with a
-particular app, and anything with an execute bit. Files open only in the viewer the
-app started itself: if it is showing a viewer it found already running, and in a
-browser tab, clicking a file link copies its path instead.
+particular app, and anything with an execute bit. A file that isn't there shows its
+nearest existing folder. So a click on a file link always shows something, and
+copying its path is the chip's own **Copy path** button. Files open only in the
+viewer the app started itself: if it is showing a viewer it found already running,
+and in a browser tab, clicking a file link copies its path instead and says why.
 
 On macOS, **Settings → Links** chooses how links open from the Inbox instead of the
 Mac's defaults: web links in a browser you pick, and Markdown (`.md`, `.markdown`) or

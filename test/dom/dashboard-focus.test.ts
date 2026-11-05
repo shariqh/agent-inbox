@@ -151,12 +151,12 @@ describe('the session focus panel (#307)', () => {
     expect(card('mine')!.classList.contains('sel')).toBe(true)
     expect(document.activeElement).toBe(aside.querySelector('#dashFocusTitle'))
     expect(aside.querySelector('.dash-focus-doing')?.textContent).toBe('Painting the panel')
-    expect([...aside.querySelectorAll('.dash-focus-ask-title')].map((el) => el.textContent)).toEqual(['Which panel width?'])
-    // it answers nothing: asks jump to the rail, and its one editor is the
-    // session's message composer (#411)
-    expect(aside.querySelector('.reply-input, .opt-pill')).toBeNull()
-    expect([...aside.querySelectorAll('textarea')].map((el) => el.closest('.dash-focus-message') !== null)).toEqual([true])
-    expect(aside.querySelector(`[data-focus-ask="item:${ask}"]`)?.textContent).toBe('Answer in rail')
+    expect([...aside.querySelectorAll('.sp-ask-title')].map((el) => el.textContent)).toEqual(['Which panel width?'])
+    // it answers its asks in place with the Inbox's own editor (#454 A.2), beside the session's composer (#411)
+    const block = aside.querySelector(`[data-panel-ask="${ask}"]`)!
+    expect(block.querySelector('.reply-input:not(.reply-context-input)')?.getAttribute('data-draft-focus-key')).toBe(`${ask}:answer`)
+    expect([...aside.querySelectorAll('.dash-focus-message textarea')]).toHaveLength(1)
+    expect([...block.querySelectorAll('[data-ask-action]')].map((el) => el.textContent)).toEqual(['Snooze 4h', 'Pin', 'Open in Inbox'])
     expect(aside.querySelector('.dash-focus-plan-title')?.textContent).toBe('Polish plan')
     expect([...aside.querySelectorAll('.dash-focus-outcome strong')].map((el) => el.textContent))
       .toEqual(['Earlier step', 'Filters'])
@@ -167,11 +167,11 @@ describe('the session focus panel (#307)', () => {
     keydown(aside.querySelector('#dashFocusTitle')!, 'Escape')
     expect(aside.hidden).toBe(true)
     expect(card('mine')!.classList.contains('sel')).toBe(false)
-    // back to the card's first action: here its Review
+    // back to the card's first action: here its Answer
     expect(document.activeElement).toBe(card('mine')!.querySelector('[data-ah-action="review"]'))
   })
 
-  it('opens an ask past the rail in its Inbox card (#460 review: jumpToAsk’s fallback)', async () => {
+  it('lists every ask of the session, past the rail’s three too, and opens one in its Inbox card', async () => {
     const d = open()
     work(d, 'mine', 'Asking a lot')
     const ids: string[] = []
@@ -183,9 +183,9 @@ describe('the session focus panel (#307)', () => {
     expect(railIds()).toHaveLength(3)
     const past = ids.find((id) => !railIds().includes(id))!
     openCard('mine')
-    const button = panel()!.querySelector<HTMLButtonElement>(`[data-focus-ask="item:${past}"]`)!
-    expect(button.textContent).toBe('Answer in Inbox')
-    click(button)
+    expect([...panel()!.querySelectorAll<HTMLElement>('[data-panel-ask]')].map((el) => el.dataset.panelAsk).sort()).toEqual([...ids].sort())
+    expect(panel()!.querySelector('.sp-asks-count')?.textContent).toBe('4')
+    click(panel()!.querySelector(`[data-panel-ask="${past}"] [data-ask-action="open"]`))
     await settle()
     expect(document.getElementById('needsYou')?.hidden).toBe(false)
     expect(location.hash).toBe(`#item/${past}`)
@@ -203,16 +203,10 @@ describe('the session focus panel (#307)', () => {
     expect(panel()!.querySelector('.sp-children b')).toBeNull()
   })
 
-  it('jumps from an ask to its rail card, and from the plan through the deep link', async () => {
+  it('opens the plan through the deep link', async () => {
     const d = open()
-    const { ask, board } = seed(d)
+    const { board } = seed(d)
     await bootApp(d)
-    openCard('mine')
-    click(panel()!.querySelector(`[data-focus-ask="item:${ask}"]`))
-    expect(document.activeElement).toBe(document.querySelector(`#dashRail [data-rail-card="${ask}"]`))
-    // the panel sits over the rail: it closed before the jump
-    expect(panel()!.hidden).toBe(true)
-
     openCard('mine')
     click(panel()!.querySelector('.dash-focus-plan-open'))
     await settle()
@@ -220,14 +214,35 @@ describe('the session focus panel (#307)', () => {
     expect(document.getElementById('boards')?.hidden).toBe(false)
   })
 
-  it("a card's Review opens its panel at the asks, and never the rail", async () => {
+  it("a card's Answer and its ask strip open its panel at the ask, and never the rail", async () => {
     const d = open()
     const { ask } = seed(d)
     await bootApp(d)
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    expect(card('mine')!.querySelector('[data-ah-action="review"]')?.textContent).toBe('Answer')
     click(card('mine')!.querySelector('[data-ah-action="review"]'))
     expect(panel()!.hidden).toBe(false)
     expect(panel()!.dataset.session).toBe('mine')
-    expect(panel()!.querySelector(`[data-focus-ask="item:${ask}"]`)).not.toBeNull()
+    expect(document.activeElement).toBe(panel()!.querySelector(`[data-panel-ask="${ask}"]`))
+    click(panel()!.querySelector('.dash-focus-close'))
+    // the strip opens the panel at the ask too; it answers nothing on the card
+    click(card('mine')!.querySelector('.sc-ask-title'))
+    expect(panel()!.hidden).toBe(false)
+    expect(document.activeElement).toBe(panel()!.querySelector(`[data-panel-ask="${ask}"]`))
+    expect(card('mine')!.querySelector('.opt-pill, textarea')).toBeNull()
+  })
+
+  it('closing leaves no card selected, after a poll too (#462 review)', async () => {
+    const d = open()
+    seed(d)
+    await bootApp(d)
+    openCard('mine')
+    work(d, 'mine', 'Still painting')
+    await pollTick()
+    expect(card('mine')!.classList.contains('sel')).toBe(true)
+    click(panel()!.querySelector('.dash-focus-close'))
+    expect(panel()!.hidden).toBe(true)
+    expect(card('mine')!.classList.contains('sel')).toBe(false)
   })
 
   const press = (el: Element) => el.dispatchEvent(new Event('pointerdown', { bubbles: true }))
@@ -322,6 +337,10 @@ describe('the session focus panel (#307)', () => {
     const aside = panel()!
     const asks = aside.querySelector('.dash-focus-asks')!
     const askNode = asks.firstElementChild
+    // the ask's editor settles once after the open (its size, the keyboard hints), then holds still
+    await pollTick()
+    insertItem(d, { project: 'gamma', stream: 'main', agent: 'claude', kind: 'note', title: 'Settling' })
+    await pollTick()
     const mutations: MutationRecord[] = []
     const observer = new MutationObserver((records) => mutations.push(...records))
     observer.observe(aside, { subtree: true, childList: true, characterData: true, attributes: true })
@@ -422,29 +441,47 @@ describe('⌘K actions (#307)', () => {
     expect(document.getElementById('search')!.getAttribute('aria-activedescendant')).toBe(firstOption()?.id)
   })
 
-  it('"answer…" opens an ask past the rail in its Inbox card through the deep link', async () => {
+  it('"answer…" lands on the ask in its session panel from any tab, an ask-only card’s included (#454 A.2)', async () => {
     const d = open()
+    work(d, 'mine', 'Asking')
     const ids: string[] = []
     for (let index = 0; index < 4; index += 1) {
       ids.push(insertItem(d, { ...A, kind: 'question', title: `Decision ${index}` }))
       advanceClock()
     }
+    const own = insertItem(d, { ...A, kind: 'question', title: 'Ship it?', session: 'mine' })
     await bootApp(d)
-    expect(railIds()).not.toContain(ids[3])
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    click(document.querySelector('.tab[data-tab="needsYou"]'))
+    await settle()
     await choose('answer decision 3', 'Decision 3')
-    expect(location.hash).toBe(`#item/${ids[3]}`)
-    expect(document.getElementById('needsYou')?.hidden).toBe(false)
-    expect(row(ids[3]!)?.querySelector('.nrow-card')).not.toBeNull()
+    expect(document.getElementById('dashboard')?.hidden).toBe(false)
+    expect(panel()?.dataset.session).toBe(`ask:item:${ids[3]}`)
+    expect(document.activeElement).toBe(panel()!.querySelector(`[data-panel-ask="${ids[3]}"]`))
+
+    await choose('answer ', 'Ship it?')
+    expect(panel()?.dataset.session).toBe('mine')
+    // a landing spot, never an option or an editor
+    expect(document.activeElement).toBe(panel()!.querySelector(`[data-panel-ask="${own}"]`))
   })
 
-  it('"answer…" jumps to the rail card on the Dashboard without opening an editor', async () => {
+  it('"answer…" lands an @sessions approval on its live session’s card, clearing a lens that hides it (#462 review)', async () => {
     const d = open()
-    const id = insertItem(d, { ...A, kind: 'question', title: 'Ship it?' })
+    work(d, 'mcp-1', 'Running the tests')
+    insertItem(d, {
+      project: '@sessions', stream: 'alpha · 307-polish', agent: 'copilot', kind: 'question', session: 'mcp-1', title: 'Allow shell: npm test',
+      action_owner: 'approval', options: [{ label: 'Allow once' }, { label: 'Deny' }],
+    })
     await bootApp(d)
-    await choose('answer ', 'Ship it?')
-    const card = document.querySelector(`#dashRail [data-rail-card="${id}"]`)
-    expect(document.activeElement).toBe(card)
-    expect(card?.classList.contains('expanded')).toBe(false)
+    click(document.querySelector('#rail button.rail-tab[data-project="alpha"]'))
+    await settle()
+    await choose('answer allow', 'Allow shell: npm test')
+    expect(panel()?.hidden).toBe(false)
+    expect(panel()?.dataset.session).toBe('mcp-1')
+    expect(panel()?.dataset.card).toBe('session:mcp-1')
+    expect(panel()?.querySelector('.sp-state')?.textContent).toBe('Needs you')
+    expect(document.querySelector('[data-session-card="ask:session:mcp-1"]')).toBeNull()
+    expect(document.querySelector('#rail [data-project="__all__"]')?.getAttribute('aria-selected')).toBe('true')
   })
 
   it('"open plan…" lands on the plan through the deep link, and a prefix fills in the command', async () => {

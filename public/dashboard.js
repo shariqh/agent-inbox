@@ -144,6 +144,8 @@ export function buildDashboard({
     lanes: lanes.lanes,
     // #454: the plans the lanes link, which the Agents home's cards link too
     boards: visibleBoards,
+    // #454 A.1: an ask-only card's "last heard" reads the items its session wrote
+    items: visibleItems,
     idleConnections: lanes.idle,
     now: lanes.now,
   }

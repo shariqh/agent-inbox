@@ -34,8 +34,9 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   `public/motion.js` sets `data-motion` (Settings → Motion: Full or Calm) and
   `data-page-hidden` (CSS pauses animations), and gives `scrollIntoView` its
   behaviour. The setting is layout only and never reaches attention.
-- The Dashboard's Needs you rail (#303) replaced Ownership flow and is the only
-  answer surface on the Dashboard. Its cards are `sortRail(attentionEntries)` (waiting
+- The session panel's Asking you section (#454 A.2) is the Dashboard's answer surface;
+  the Needs you rail (#303) still draws the same entries through the same functions until
+  #454's PR 6 retires it. The rail replaced Ownership flow. Its cards are `sortRail(attentionEntries)` (waiting
   asks first, ordering only) cut to three, with "+N more · N in Later"; the Now
   strip's "Waiting on you" owns the count. Cards reuse `answerEl`/`rowAnswerEl` (`surface: 'rail'`)
   and the shared `snoozeAsk`/`pinAsk`, so drafts join `suspendState()`, recovery,
@@ -43,7 +44,8 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   the ambient painter: a poll leaves it alone while one of its asks holds a draft or a
   background window remembers focus in it, and `render()`'s `forcedAmbient` makes a
   human's `reloadAndPaint()` rebuild it anyway. It restores its own focus only while
-  the document has focus.
+  the document has focus. The panel's Asking you section (`paintPanelAsks`) mounts the
+  same `answerEl`/`rowAnswerEl` (`surface: 'compact'`) under the same three rules.
 - The Now strip (#304) reads one model, `buildLanes` in `public/lanes.js`, over reads
   the poll already makes: a session is working when its claim is not idle and its
   `last_call_at ?? started_at` is within 30 minutes (`isWorking`; `updated_at` is never
@@ -62,10 +64,11 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   the frame's reads: each launch (switch on only, §9) joined with its live driven rows
   (`launchSessions`), and every other `/api/activity` row under the rail's project and
   agent lens (`liveInLens()`, never narrowed by closure). States: Needs you (read from
-  `waitingEntries`; each ask goes to at most one card: an item to the card of the session
+  `waitingEntries`; each ask goes to exactly one card: an item to the card of the session
   it names, a plan row to the card of the session that stamped the plan, else to the
-  newest working card `linkedPlan`'s project + branch + agent join links, never to an idle
-  or dormant one that did not stamp it; the filter counts asks, as the rail does), Didn't
+  newest working card `linkedPlan`'s project + branch + agent join links, else to the
+  newest idle or dormant card the same join matches; anything left gets an ask-only card,
+  #454 A.1; the filter counts asks, so it equals `attentionEntries` under the lens), Didn't
   start / Not responding, Starting… / Stopping…, Working (`isWorking`), Idle, Parked
   (parked, or stopped with its session kept), In Terminal, Ended, Dormant (`isDormant`).
   Grouped by project (or agent kind), sorted by state then newest call, order pinned
@@ -122,10 +125,9 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   card id): its state and summary, the launch's action bar, worktree, transcript and
   Resume and send (launch-ui.js's `paintPanel`, §9: none off), an app session's
   approval answered in place with its own options through `sendReply`'s signed path
-  (#454 Q3, amending D2 for `@sessions` approvals only; the rail still lists them), and
-  otherwise answers nothing: its one editor is the session's
-  message composer (#411, `viewer-frontend.md`), and its other
-  asks (exactly the card's, so the panel and the card's count agree) jump to the rail or Inbox card, its plan and
+  (#454 Q3; the rail still lists them), every other ask of the card answered in place in
+  Asking you (#454 A.2, the Inbox's own `answerEl`/`rowAnswerEl`), the session's
+  message composer (#411, `viewer-frontend.md`), its plan and
   outcomes open through `focusItem`, its PR/CI chips are ambient `sourceChipsHtml`
   and its links are #300's `cardLinks`/`linkStripHtml`. Parts are rewritten only when
   their markup changes; opening and closing move focus only in a focused window. Its
@@ -134,8 +136,8 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   (`public/palette.js`): only the full names "answer ", "open plan ", "jump to
   session " (with the space) are commands and list targets first; a prefix of a
   name or hint only suggests the command and never
-  outranks the top Open-item match. Answer lands on the rail card or the Inbox card,
-  never a new editor.
+  outranks the top Open-item match. Answer opens the ask's session panel at that ask
+  (`jumpToAsk`), or its Inbox card when no card holds it.
 
 ## Invariants in detail
 
@@ -147,8 +149,47 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   adjacent control only when that result actually leaves and the viewer owns focus.
   This must not bypass the global held-pointer guard, create a third render entry,
   or pull keyboard ownership back from a background viewer.
-- **The Dashboard's Needs you rail is the one answer surface there, and it reads only the
-  one predicate (#303, Dashboard 2.0 phase 1, decisions D2, D3, D8).** It replaced Ownership
+- **Every ask is on exactly one session card, and the session panel's Asking you section
+  is the Dashboard's answer surface (#454 amendment A.1–A.2, PR 5).** `attributeAsks`
+  (`public/sessions.js`) gives each `waitingEntries` entry one card: the item's live
+  session's (or a launch that remembers it), the plan's stamping session's, the newest
+  working card the project + branch + agent join links, then (step 2) the newest idle or
+  dormant card the same join matches; anything left (step 3) gets an **ask-only card**:
+  one per session id (`item.session`, `boards.session`, "Session ended"), one per plan
+  with no session and one per item with none ("No session"), state `ask`, in the main
+  list and the ask's project, its agent kind from the ask, "last heard" from the newest
+  item or stamped plan of that session. A card holding an ask is never folded. So the
+  Needs you count equals `attentionEntries` under the Dashboard's project and agent lens
+  (the badge with All projects); the Agents view never filters attention again
+  (snoozed, pinned, stale and closed asks stay out because `attentionEntries` leaves them
+  out). `test/sessions.test.ts` pins the parity over mixed fixtures. An ask-only card has
+  no composer, actions or transcript; it is no launch feature, so it draws with the §9
+  switch off. A card never answers in one click (A.6): its ask strip and Answer open the
+  panel at that ask (focus on the ask's block, never an option), an ask-only card's Open
+  in Inbox opens its Inbox card. The panel's Asking you section (`paintPanelAsks`) mounts,
+  per ask, the Inbox's own `answerEl`/`rowAnswerEl` with `surface: 'compact'` (the rail's
+  compact surface: ★, More… with Clarify, Decline and "I'll take a while", disclosure keys
+  of its own) plus Snooze 4h, Pin and Open in Inbox (`snoozeAsk`, `pinAsk`,
+  `openAskInInbox`), the "the agent is waiting" meta, and this session's answers not yet
+  picked up (`agentEntries`), dimmed and never counted; an `@sessions` approval keeps the
+  Approval block (#459). The rail's three draft rules hold for the section: a poll leaves
+  it alone while one of its asks holds a draft or a background window remembers focus in
+  it (and skips an unchanged one, moving only its ages); the hold is the panel's
+  (`focusSession`), never its card's, because a card's id moves under an open panel (its
+  session ends; an ask-only card's session comes back, when `followHeldAsk` moves the panel
+  to the card now holding the drafted ask without rebuilding it, but only once the panel's
+  own card has gone and focus is not elsewhere in the panel: while that card exists the
+  panel never moves, though two working sessions trade a joined plan's row on every call);
+  a forced paint rebuilds it; it
+  restores focus (`captureCardFocus`, and `restoreDraftFocus` scoped to `#dashFocus`) only
+  with the document's. Closing the panel drops its editors and keeps the drafts in
+  `draftReplies`/`rowDrafts`; the card then says "Answer · draft". `jumpToAsk` and ⌘K
+  "answer" open the panel at the ask (when the lens hides it, scoping to its project
+  only where its session lives too, else clearing the lens: an `@sessions` approval's
+  session is in the real project), the Inbox card when no card holds it; a notification still lands on the Inbox
+  card. `test/dom/agents-asks.test.ts` pins the DOM half.
+- **The Dashboard's Needs you rail reads only the one predicate (#303, Dashboard 2.0
+  phase 1, decisions D2, D3, D8; retired by #454's PR 6).** It replaced Ownership
   flow. `buildDashboard`'s `rail` is `sortRail(relay.human)` (`public/attention.js`) cut to
   three cards, plus how many more and how many wait in Later (`laterEntries`): relay.human
   IS `attentionEntries` under the Dashboard's lens, so the rail, the badge, the tabs and the
@@ -268,8 +309,7 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   and the poll gains no read (`test/dom/dashboard-ribbon.test.ts`, which also counts the
   worst case: 30 days of 40 projects with 14 session cards and a full rail is ~730 Dashboard
   elements against the 1,500 budget).
-- **Command-center polish reads nothing new and answers nowhere new (#307, Dashboard 2.0
-  phase 5, D2).** Three parts (#307's lane quick filters retired with the lanes, #454). (2) **Keyboard help** lists the
+- **Command-center polish reads nothing new (#307, Dashboard 2.0 phase 5, D2).** Three parts (#307's lane quick filters retired with the lanes, #454). (2) **Keyboard help** lists the
   Dashboard's keys as help-only (`legacy`) commands in `public/keys.js`, group "Dashboard":
   the rail's J/K, 1–4, S, P and Enter, which `onDashRailKey` handles only on a rail card,
   and Esc for the panel. Never make them non-legacy: the global handler would then take
@@ -278,12 +318,9 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   after the Agents home, never fixed over the masthead; `test/editorial-shell.test.ts`
   pins both, since jsdom cannot evaluate `@media`): a click on a session card that is not
   a control or a text selection opens it, and a second click on the same card closes it.
-  Beyond an app session's approval (#454 Q3) it ANSWERS NOTHING (D2: the rail is the
-  Dashboard's one answer surface; its one editor, since #411, is the session's message
-  composer, shown while the session is listed in `/api/activity`, working or not): the
-  card's asks (from the attention set) each jump to the rail card or, past the top three,
-  the Inbox card (`jumpToAsk`, which closes the panel without moving focus back to the card
-  whenever it lands on a rail card, from the panel or ⌘K); the plan and each recent outcome open through `focusItem`. `sessionFocus`
+  It answers an app session's approval (#454 Q3) and, since #454 A.2, every other ask of
+  its card in Asking you (the bullet above); its message composer (#411) shows while the
+  session is listed in `/api/activity`, working or not; the plan and each recent outcome open through `focusItem`. `sessionFocus`
   (`public/lanes.js`, pure) picks the plan, the session's newest item (the source of its
   PR/CI chips when it has no plan) and its last three outcomes from `outcomeEntries`. PR and
   CI chips are `sourceChipsHtml`'s, ambient: nothing there reaches attention
@@ -291,7 +328,7 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   dock projections with and without `/api/links`). Links are #300's `cardLinks` of the asks
   and the plan, drawn by `linkStripHtml`, so `link-open.js` and main's checks own every
   click. The ambient painter updates it in place: each part is rewritten only when its
-  markup changes (`setFocusPart`), so an unchanged poll writes nothing and a keyboard user
+  markup changes (`setFocusPart`; Asking you by `paintPanelAsks`), so an unchanged poll writes nothing and a keyboard user
   keeps the same control by its focus key. Opening focuses the panel heading and closing
   (×, Esc in the panel) returns focus to the card's first action (else the Agents heading)
   only when the window has focus and focus was in the panel. A trusted `click`
@@ -312,8 +349,8 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   hint ("plan", "session") only suggests the command (it fills the box), placed after the results when the first is an
   Open item, so the strongest Open-item match keeps first place. Among trim-equivalent
   edits only the one that turns a name into its command re-runs search (`commandShape`).
-  Answer jumps to the rail card when the Dashboard shows it and otherwise opens the Inbox
-  card (`openAskInInbox`, so `focusItem` and its hash for an item); open plan is
+  Answer opens the ask's session panel at that ask (`jumpToAsk`, from any tab), and the
+  Inbox card (`openAskInInbox`) only when no card holds it; open plan is
   `focusItem`; jump to session is the Dashboard, scoped to the session's project as a deep
   link scopes to its item's, with that panel open. No action opens a new editor.
 - **Motion is CSS-only, compositor-only and always switchable off (#302, Dashboard 2.0

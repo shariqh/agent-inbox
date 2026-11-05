@@ -8,6 +8,8 @@ export interface AgentsHomeInput {
   launches?: Array<Record<string, any>> | null
   boards?: LaneBoard[]
   attention?: AttentionEntry[]
+  answered?: Array<Record<string, any>>
+  items?: Array<Record<string, any>>
   closed?: Iterable<string>
   nowMs: number
   /** a forced paint re-sorts the cards (§10 rule 5) */
@@ -30,9 +32,14 @@ export function installAgentsHome(deps: {
   doc?: Document
   /**
    * The session panel (#454): a card's click toggles it (no part); Review, Message, Transcript and
-   * Resume… open it at that part. `key` is a launch card's id, else the card's session.
+   * Resume… open it at that part, and Answer or the ask strip at that ask (`ask`, its id). `key` is a launch or
+   * ask-only card's id, else the card's session.
    */
-  openSession: (key: string, part?: 'approval' | 'asks' | 'message' | 'transcript' | 'resume' | null) => void
+  openSession: (key: string, part?: 'approval' | 'asks' | 'message' | 'transcript' | 'resume' | null, ask?: string | null) => void
+  /** an ask-only card's Open in Inbox (#454 A.1) */
+  openInInbox?: (entry: AttentionEntry | undefined) => void
+  /** whether an ask holds an unsent answer: its card says "Answer · draft" */
+  hasAskDraft?: (id: string | null) => boolean
   /** a card's action on its launch: close, take-over, open-worktree */
   launchAction?: (id: string, action: string) => void
   /** the launch UI while the app's switch is on, else null */
@@ -50,10 +57,14 @@ export function installAgentsHome(deps: {
   /** the Agents home card, made once; renderDashboard mounts it in the Dashboard grid */
   element(): HTMLElement
   paint(host: Element, input: AgentsHomeInput): void
+  /** repaints the cards from the last paint's input (a closed panel's draft shows on its card at once) */
+  repaint(overrides?: Partial<AgentsHomeInput>): void
   /** repaints New session… alone, as a start begins or settles */
   paintNewSession(): void
   /** the window-local view state (filter, grouping, folds), for frameInputs() */
   state(): string
   /** the card a session panel key names: a card id, a live session, or a session a launch remembers */
   cardFor(key: string | null | undefined): SessionCard | null
+  /** the panel key of the card holding an ask (every attention entry is on exactly one card), or null */
+  askKey(id: string): string | null
 }

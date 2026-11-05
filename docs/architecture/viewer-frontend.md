@@ -174,6 +174,12 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   hint claiming "paused" over data already on screen. Pinned in `test/shell.test.ts` +
   `test/issue-31-followups.test.ts`; the behavioural half (including both the protected draft and
   live ambient signals) is `test/dom/silent-send.test.ts`.
+  Answer editors have three hosts on the Dashboard side and one rule: the Inbox card, the
+  rail card (`#dashRail`, until #454's PR 6) and the session panel's Asking you section
+  (`#dashFocus`, #454 A.2). Each mounts the same `answerEl`/`rowAnswerEl`, so a draft is
+  one entry in `draftReplies`/`rowDrafts` whichever host holds it; a draft pauses only its
+  own Dashboard host, a forced paint rebuilds it, and `restoreDraftFocus` scopes the
+  bookmark to the host's id, so the same ask drawn twice never takes the other's focus.
   Nested Background disclosures are keyed by item/row id in `openContexts`; a poll or forced
   rebuild must restore their `open` state instead of collapsing text under the reader.
   Passive polls retain inactive Notes, History and Plans DOM, but not their data:

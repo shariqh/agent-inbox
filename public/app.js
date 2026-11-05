@@ -1592,14 +1592,9 @@ function runPaletteAction(action) {
     renderSearchResults()
     return
   }
-  // D2: on the Dashboard the rail is the answer surface; elsewhere, or past
-  // its top three, the ask's own Inbox card.
-  if (activeTab === 'dashboard' && document.querySelector(`#dashRail [data-rail-card="${CSS.escape(action.id)}"]`)) {
-    resetSearch()
-    jumpToAsk(entry)
-  } else {
-    openAskInInbox(entry)
-  }
+  // #454 A.2: the ask's session panel, at that ask (jumpToAsk falls back to its Inbox card)
+  resetSearch()
+  jumpToAsk(entry)
 }
 
 function renderSearchResults() {
@@ -2037,12 +2032,14 @@ function renderDashboardAmbient(model, { forced = false } = {}) {
   // the cards first: the session panel shows one of them (#454)
   agentsHome.paint(host, {
     activity: liveInLens(), boards: model.boards, attention: model.waitingEntries, closed: dashboardClosedProjects(),
+    // #454 A.1: answers not picked up yet (shown in the panel, never counted) and the items "last heard" reads
+    answered: model.agentEntries, items: model.items,
     // #412 step 3: this app's launches, only with its switch on (§9: otherwise none is read or drawn)
     launches: launchesOn() ? launchesInLens() : null,
     outside: launchesOn() ? launchesOutsideLens() : 0,
     nowMs: Date.now(), forced, lensProject: projectFilter, selected: focusSession,
   })
-  renderDashFocus(host.querySelector('.dash-focus'), model)
+  renderDashFocus(host.querySelector('.dash-focus'), model, { forced })
   renderDashRibbon(host.querySelector('.dashboard-activity'), model)
   renderDashboardOutcomes(host.querySelector('.dashboard-outcome-list'), model.recentOutcomes, model.recentOutcomesComplete,
     model.recentOutcomesWait, model.recentOutcomesHidden)
@@ -2125,7 +2122,10 @@ let lastDashModel = null // the model the last paint drew, for a handler's own r
 // Its filters, grouping and folds are window-local.
 const agentsHome = installAgentsHome({
   // a card's click toggles its panel; Review, Message, Transcript and Resume… open it at that part
-  openSession: (key, part) => (part ? openSessionFocus(key, part) : toggleSessionFocus(key)),
+  openSession: (key, part, ask) => (part ? openSessionFocus(key, part, ask) : toggleSessionFocus(key)),
+  // an ask-only card's Open in Inbox (#454 A.1)
+  openInInbox: (entry) => { if (entry) openAskInInbox(entry) },
+  hasAskDraft: (id) => Boolean(id) && holdsDraft(id),
   // a card's action that failed says why in the launch's panel
   launchAction: (id, action) => launchUi?.run(id, action).then((noted) => {
     if (noted && focusSession !== `launch:${id}`) openSessionFocus(`launch:${id}`)
@@ -2180,40 +2180,51 @@ function playOnce(el, name, animation = `dash-lane-${name}`) {
 // Activity motion runs only where the human allows it and can see it.
 const dashboardMotion = () => motion.activityMotion() && !document.getElementById('dashboard')?.hidden
 
-// D2: the rail is the Dashboard's answer surface (the session panel answers only
-// an app session's approval, #454 Q3), so a panel's ask jumps to its rail card;
-// an ask past the rail's top three opens in the Inbox instead.
+// #454 A.2: an ask opens in its session's panel, at that ask (an ask-only
+// card's panel included); the lens widens to the ask's project when it hides
+// it. An ask no card holds (deferred, stale) opens in the Inbox instead.
 function jumpToAsk(entry) {
   if (!entry) return
   const id = needsEntryId(entry)
-  const card = document.querySelector(`#dashRail [data-rail-card="${CSS.escape(id)}"]`)
-  if (!card) {
+  let key = agentsHome.askKey(id)
+  const owner = entry.kind === 'row' ? entry.board : entry.item
+  if (!key && ((projectFilter && projectFilter !== owner.project) || (agentFilter && agentFilter !== owner.agent))) {
+    // Scope to the ask's project only where its session lives too: an
+    // @sessions approval (or an ask filed away from its session's project)
+    // needs both in the lens, so the lens clears instead.
+    const session = owner.session
+    const home = session
+      ? (lastData.activity ?? []).find((row) => row.session === session)?.project
+        ?? (lastData.launches ?? []).find((launch) => Array.isArray(launch.sessions) && launch.sessions.includes(session))?.project
+      : null
+    if (projectFilter && projectFilter !== owner.project) {
+      projectFilter = !isReservedProject(owner.project) && (!home || home === owner.project) ? owner.project : null
+    }
+    if (agentFilter && agentFilter !== owner.agent) agentFilter = null
+    resetPaging()
+    selectTab('dashboard', { paint: false })
+    forceRender()
+    key = agentsHome.askKey(id)
+  }
+  if (!key) {
     openAskInInbox(entry)
     return
   }
-  for (const other of document.querySelectorAll('#dashRail [data-rail-card]')) other.tabIndex = other === card ? 0 : -1
-  railSelectedId = id
-  // #307: the jump goes to the rail, so the session panel steps aside first;
-  // focus goes to the rail card.
-  if (focusSession) {
-    focusSession = null
-    paintSessionFocus()
-  }
-  card.focus()
+  openSessionFocus(key, entry.kind === 'item' && isLaunchAskItem(entry.item) ? 'approval' : 'asks', id)
 }
 
 // ── the session panel (#307 grown by #454, design §3.3) ─────────────────────
 // One session, from its card (agentsHome.cardFor): its state and summary, the
 // launch's action bar, an app session's approval answered in place (Q3, through
-// sendReply's signed path; the rail still lists it), its other asks (each jumps
-// to the rail or its Inbox card), the worktree, the transcript, the session's
+// sendReply's signed path; the rail still lists it), its other asks answered in
+// place with the Inbox's own controls (#454 A.2, paintPanelAsks), the worktree, the transcript, the session's
 // one composer (#411), or Resume and send for a parked launch, and the context
 // #307 showed: detail, subagents, plan, recent outcomes, PR/CI chips and links.
 // A terminal session's panel has no action bar or transcript. The ambient
 // painter updates it in place: each part is rewritten only when its markup
 // changes, the composer and the Resume text are each one node kept across
-// paints, and the launch's parts are launch-ui.js's. It answers nothing else
-// and feeds no attention surface. Opening or closing it moves focus only in a
+// paints, and the launch's parts are launch-ui.js's. It feeds no attention
+// surface. Opening or closing it moves focus only in a
 // window that has it, or to the part an explicit click asked for.
 const focusTargets = new Map() // data-focus-* value → what its button opens
 const focusPartHtml = new WeakMap()
@@ -2241,7 +2252,7 @@ function dashFocusEl() {
       <p class="dash-focus-detail"></p>
       <p class="dash-focus-gone" hidden>This session is no longer listed, or is outside the current filters.</p>
       <section class="dash-focus-part sp-approval" aria-label="Approval"><h3>Approval <span class="sp-approval-count"></span></h3><div class="dash-focus-approval"></div></section>
-      <section class="dash-focus-part" aria-label="Asking you"><h3>Asking you</h3><div class="dash-focus-asks"></div></section>
+      <section class="dash-focus-part sp-asks" aria-label="Asking you"><h3>Asking you <span class="sp-asks-count"></span></h3><div class="dash-focus-asks"></div></section>
       <section class="dash-focus-part sp-worktree" aria-label="Worktree" hidden><h3>Worktree</h3><dl class="sp-worktree-box"></dl></section>
       <section class="dash-focus-part sp-transcript" aria-label="Transcript" hidden><h3>Transcript <small>newest at the bottom</small></h3>
         <div class="sp-transcript-box"><p class="sp-transcript-status"></p><ol class="sp-transcript-lines" aria-live="polite"></ol></div></section>
@@ -2301,7 +2312,7 @@ function focusButton(target, label, open, { className = '', attrs = '' } = {}) {
 
 // Q3 (#454): an app session's approval, answered here with its own options
 // only, through sendReply's signed path; no editor, so no draft. Outside the
-// app's granted window it says where to answer and jumps to the rail.
+// app's granted window it says where to answer and opens its Inbox card.
 //
 // Answering one approval removes its block, and the next one's options slide up
 // under the pointer: so while an answer is in flight, and for a short calm after
@@ -2323,7 +2334,7 @@ function answerInPanel(id, label) {
   })
 }
 
-function approvalHtml(entry, granted, onRail) {
+function approvalHtml(entry, granted) {
   const it = entry.item
   const id = it.id
   const options = (Array.isArray(it.options) ? it.options : []).map((o) => String(o?.label ?? '')).filter(Boolean)
@@ -2334,7 +2345,7 @@ function approvalHtml(entry, granted, onRail) {
     ? options.map((label, index) => focusButton(`approve:${id}:${index}`, label, () => answerInPanel(id, label),
       { className: index === 0 ? 'sp-option rec' : 'sp-option', attrs: held })).join('')
     : `<p class="dash-focus-none">Answer it from Agent Inbox’s own window.</p>` +
-      focusButton(`item:${id}`, onRail ? 'Answer in rail' : 'Answer in Inbox', () => jumpToAsk(entry))
+      focusButton(`item:${id}`, 'Open in Inbox', () => openAskInInbox(entry))
   const error = writeErrors[id] ?? ''
   return `<div class="sp-appr" data-focus-approval="${esc(id)}"><strong class="sp-appr-title">${esc(it.title ?? '')}</strong>` +
     `<div class="sp-appr-options">${buttons}</div>` +
@@ -2342,13 +2353,171 @@ function approvalHtml(entry, granted, onRail) {
     `<p class="sp-appr-warn">${esc(SHELL_WARNING)}</p></div>`
 }
 
-function renderDashFocus(aside, model) {
+// #454 A.2: the panel's Asking you section, the Dashboard's answer surface for
+// every ask but an approval. Each ask is one block mounting the Inbox's own
+// answerEl/rowAnswerEl (surface 'compact', the rail's), with Snooze 4h, Pin and
+// Open in Inbox (snoozeAsk, pinAsk, openAskInInbox): one answering
+// implementation, so drafts stay in draftReplies/rowDrafts and join
+// suspendState(), recovery, durable drafts and the restart hold. The rail's
+// three draft rules hold here: a poll leaves the section alone while one of its
+// asks holds a draft (or a background window remembers focus in it), a frame
+// the human asked for rebuilds it, and focus comes back only with the
+// document's. Below, this session's answers not yet picked up, dimmed and
+// never counted.
+const panelAsksKey = new WeakMap() // the section → what it was built from
+
+// Held per PANEL (focusSession), never per card: a card's id moves under an
+// open panel (its session ends, an ask-only card's session comes back), and that
+// must not rebuild an editor being typed in. Only an explicit open, which moves
+// focusSession, or a forced paint rebuilds it.
+function panelAsksHeld(list, asks) {
+  if (list.dataset.panel !== (focusSession ?? '')) return false
+  const remembered = document.activeElement
+  if (!document.hasFocus() && remembered && list.contains(remembered)) return true
+  // an incoming ask holding a draft holds it too: building its editor from a
+  // poll could run draft recovery, which switches tabs and moves focus
+  return [...list.querySelectorAll('[data-panel-ask]')].some((el) => holdsDraft(el.dataset.panelAsk))
+    || asks.some((entry) => holdsDraft(needsEntryId(entry)))
+}
+
+function paintPanelAsks(aside, card, { forced = false, asks = [], none = false } = {}) {
+  const list = aside.querySelector('.dash-focus-asks')
+  if (!list) return
+  const cardId = card?.id ?? ''
+  const panel = focusSession ?? ''
+  const answered = card?.answered ?? []
+  const nowMs = Date.now()
+  if (!forced && panelAsksHeld(list, asks)) return
+  const key = JSON.stringify([panel, cardId, laterSection, none,
+    asks.map((entry) => [entry.liveness ?? '', entryEntity(entry), entry.board?.revision ?? null]), answered.map(entryEntity)])
+  if (!forced && list.dataset.panel === panel && panelAsksKey.get(list) === key) {
+    // nothing it shows changed but the clock: only the ages move, in place
+    for (const el of list.querySelectorAll('time[data-asked]')) setText(el, askTimeModel(el.dataset.asked, nowMs)?.text ?? '')
+    return
+  }
+  panelAsksKey.set(list, key)
+  const focused = activeFocusElement()?.closest?.('[data-panel-ask]')
+  const bookmark = focused && list.contains(focused) ? captureCardFocus(focused, focused.dataset.panelAsk) : null
+  const index = bookmark ? [...list.querySelectorAll('[data-panel-ask]')].indexOf(focused) : -1
+  list.dataset.panel = panel
+  const blocks = asks.map((entry) => panelAskEl(entry, nowMs))
+  const lines = answered.map((entry) => panelAnsweredEl(entry, nowMs))
+  list.replaceChildren(...blocks, ...lines)
+  if (card && !blocks.length && !lines.length && none) {
+    const empty = document.createElement('p')
+    empty.className = 'dash-focus-none'
+    empty.textContent = 'Nothing waiting on you.'
+    list.appendChild(empty)
+  }
+  const section = list.closest('section')
+  setHidden(section, !list.childElementCount)
+  setText(section.querySelector('.sp-asks-count'), blocks.length ? String(blocks.length) : '')
+  if (!bookmark || !document.hasFocus()) return
+  const all = [...list.querySelectorAll('[data-panel-ask]')]
+  const block = all.find((el) => el.dataset.panelAsk === bookmark.id)
+  if (!block) {
+    // its ask is answered or gone: the next one, else the panel's title
+    ;(all[Math.min(index, all.length - 1)] ?? aside.querySelector('#dashFocusTitle'))?.focus({ preventScroll: true })
+    return
+  }
+  const matches = bookmark.key ? cardFocusTargets(block).filter((target) => cardFocusKey(target) === bookmark.key) : []
+  const target = matches[bookmark.ordinal] ?? block
+  target.focus({ preventScroll: true })
+  if (target instanceof HTMLTextAreaElement) target.setSelectionRange(target.value.length, target.value.length)
+}
+
+function panelAskEl(entry, nowMs) {
+  const id = needsEntryId(entry)
+  const ask = entryEntity(entry)
+  const owner = entry.kind === 'row' ? entry.board : entry.item
+  const m = rowModel(entry, { lastVisitAt })
+  const block = document.createElement('article')
+  block.className = 'sp-ask'
+  block.dataset.panelAsk = id
+  block.tabIndex = -1
+  block.setAttribute('aria-label', `${m.title}. ${m.ownerLabel}.`)
+  const asked = askTimeModel(m.askedAt, nowMs)
+  block.innerHTML = `
+    <div class="sp-ask-meta">
+      <span class="nrow-owner owner-${esc(m.actionCategory)}">${esc(m.ownerLabel)}</span>
+      <span>${entry.kind === 'row' ? 'Plan step' : 'Question'}</span>
+      ${asked ? `<time data-asked="${esc(m.askedAt)}" datetime="${esc(asked.datetime)}" title="${esc(asked.exact)}">${esc(asked.text)}</time>` : ''}
+      ${entry.liveness === 'waiting' ? '<span class="sp-ask-waiting" title="The agent that asked is live and waiting on your answer">the agent is waiting</span>' : ''}
+    </div>
+    <div class="sp-ask-title" title="${esc(m.originalTitle)}">${esc(m.title)}</div>
+    ${m.secondary ? `<div class="sp-ask-tldr">${esc(m.secondary)}</div>` : ''}
+    ${cardLinksHtml(ask, owner)}`
+  bindContextDisclosures(block)
+  block.appendChild(entry.kind === 'row'
+    ? rowAnswerEl(entry.board, entry.row, null, { surface: 'compact' })
+    : answerEl(entry.item, { surface: 'compact' }))
+  const actions = document.createElement('div')
+  actions.className = 'sp-ask-actions'
+  actions.appendChild(railIconButton('snooze', 'Snooze 4h', 'Snooze for 4 hours',
+    () => snoozeAsk(entry, new Date(Date.now() + RAIL_SNOOZE_MS).toISOString()), 'askAction'))
+  if (pinOffered(ask, entry.kind)) {
+    actions.appendChild(railIconButton('pin', 'Pin', 'Pin for later: it waits in Later until you bring it back', () => pinAsk(entry), 'askAction'))
+  }
+  actions.appendChild(railIconButton('open', 'Open in Inbox', 'Open in Inbox', () => openAskInInbox(entry), 'askAction'))
+  block.appendChild(actions)
+  return block
+}
+
+// An answer this session has not picked up yet: one dimmed line, never counted.
+function panelAnsweredEl(entry, nowMs) {
+  const ask = entryEntity(entry)
+  const words = entry.kind === 'item'
+    ? ask.reply || (ask.reply_kind === 'decline' ? 'Declined' : ask.reply_kind === 'clarify' ? 'Asked to clarify' : '')
+    : ask.annotation || (ask.handled_at ? 'I’ve done my part' : '')
+  const at = Date.parse((entry.kind === 'item' ? ask.replied_at : ask.annotated_at ?? ask.handled_at) ?? '')
+  const line = document.createElement('p')
+  line.className = 'sp-answered'
+  line.dataset.panelAnswered = needsEntryId(entry)
+  const tag = document.createElement('span')
+  tag.className = 'sp-answered-tag'
+  tag.textContent = 'Answered'
+  const title = document.createElement('span')
+  title.className = 'sp-answered-title'
+  title.textContent = dashboardEntryTitle(entry) ?? ''
+  const rest = document.createElement('span')
+  rest.textContent = [words ? `“${words}”` : '', Number.isFinite(at) ? `${ageText(nowMs - at)} ago` : '', 'not picked up yet']
+    .filter(Boolean).join(' · ')
+  line.append(tag, title, rest)
+  return line
+}
+
+// The panel follows a drafted ask only when its own card has VANISHED (an
+// ask-only card whose session came back live, or whose only ask moved): the
+// held section stays, rebuilding nothing, now under the key of the card that
+// holds that ask. While the panel's card exists it never moves, whatever its
+// asks do (two working sessions trade a joined plan's row on every call), and
+// focus elsewhere in the panel (the composer) keeps it where it is.
+function followHeldAsk(aside) {
+  const list = aside.querySelector('.dash-focus-asks')
+  if (!list || !focusSession || list.dataset.panel !== focusSession) return
+  if (agentsHome.cardFor(focusSession)) return
+  const blocks = [...list.querySelectorAll('[data-panel-ask]')].filter((el) => holdsDraft(el.dataset.panelAsk))
+  if (!blocks.length) return
+  const active = document.activeElement
+  if (active && aside.contains(active) && !blocks.some((el) => el.contains(active))) return
+  const key = blocks.map((el) => agentsHome.askKey(el.dataset.panelAsk)).find(Boolean)
+  if (!key || key === focusSession) return
+  focusSession = key
+  list.dataset.panel = key
+  const open = agentsHome.cardFor(key)?.id ?? null
+  for (const el of document.querySelectorAll('#dashboard [data-session-card]')) el.classList.toggle('sel', el.dataset.sessionCard === open)
+}
+
+function renderDashFocus(aside, model, { forced = false } = {}) {
   if (!aside) return
   setHidden(aside, !focusSession)
   if (!focusSession) {
     launchUi?.paintPanel(aside, null, Date.now())
+    // a closed panel keeps no editor; its drafts stay in draftReplies/rowDrafts
+    paintPanelAsks(aside, null, { forced })
     return
   }
+  if (!forced) followHeldAsk(aside)
   setAttr(aside, 'data-session', focusSession)
   const card = agentsHome.cardFor(focusSession)
   setAttr(aside, 'data-card', card?.id ?? '')
@@ -2364,7 +2533,8 @@ function renderDashFocus(aside, model) {
     setHidden(aside.querySelector('.dash-focus-detail'), true)
     setText(aside.querySelector('#dashFocusTitle'), 'Session')
     setHidden(aside.querySelector('.sp-hint'), true)
-    for (const el of aside.querySelectorAll('.dash-focus-part > div')) setFocusPart(aside, el, '')
+    for (const el of aside.querySelectorAll('.dash-focus-part > div:not(.dash-focus-asks)')) setFocusPart(aside, el, '')
+    paintPanelAsks(aside, null, { forced })
     return
   }
   const state = aside.querySelector('.sp-state')
@@ -2382,7 +2552,6 @@ function renderDashFocus(aside, model) {
   const detail = typeof card.row?.detail === 'string' ? card.row.detail : ''
   setText(aside.querySelector('.dash-focus-detail'), detail)
   setHidden(aside.querySelector('.dash-focus-detail'), !detail)
-  const onRail = new Set(model.rail.cards.map(needsEntryId))
   // the card's asks, each once (sessions.js gives each ask one card), so the panel and the card agree
   const approvals = card.asks.filter((entry) => entry.kind === 'item' && isLaunchAskItem(entry.item))
   const others = card.asks.filter((entry) => !approvals.includes(entry))
@@ -2390,19 +2559,14 @@ function renderDashFocus(aside, model) {
   setText(aside.querySelector('.sp-approval-count'), approvals.length
     ? `${approvals.length} open${Number.isFinite(oldest) ? ` · ${ageText(Date.now() - oldest)}` : ''}` : '')
   setFocusPart(aside, aside.querySelector('.dash-focus-approval'),
-    approvals.map((entry) => approvalHtml(entry, launchUi?.granted() === true, onRail.has(needsEntryId(entry)))).join(''))
-  setFocusPart(aside, aside.querySelector('.dash-focus-asks'), others.map((entry) => {
-    const id = needsEntryId(entry)
-    return `<div class="dash-focus-ask"><span class="dash-focus-ask-title">${esc(dashboardEntryTitle(entry) ?? '')}</span>` +
-      focusButton(`${entry.kind}:${id}`, onRail.has(id) ? 'Answer in rail' : 'Answer in Inbox', () => jumpToAsk(entry),
-        { attrs: ` data-focus-ask="${esc(`${entry.kind}:${id}`)}"` }) + '</div>'
-  }).join('') || (approvals.length ? '' : '<p class="dash-focus-none">Nothing waiting on you.</p>'))
+    approvals.map((entry) => approvalHtml(entry, launchUi?.granted() === true)).join(''))
+  paintPanelAsks(aside, card, { forced, asks: others, none: !approvals.length })
   setFocusPart(aside, aside.querySelector('.dash-focus-children'), card.base === 'working' && card.children.length
     ? `<ul class="sp-children">${card.children.map((child) => `<li><strong>${esc(child.name)}</strong>${child.doing ? ` <span>${esc(child.doing)}</span>` : ''}` +
       `${child.state ? ` <small class="sp-child-state">${esc(child.state)}</small>` : ''}</li>`).join('')}</ul>`
     : '')
   // #307's context, read from the card's session and plan
-  const focus = sessionFocus({ session: card.session ?? '', plan: card.plan }, {
+  const focus = sessionFocus({ session: card.session ?? card.sessions[0] ?? '', plan: card.plan }, {
     items: allItems(visibleData.g), boards: visibleData.boards, outcomes: model.outcomeEntries,
   })
   const plan = card.plan
@@ -2457,7 +2621,7 @@ function paintSessionFocus() {
 const isShown = (el) => Boolean(el) && !el.closest('[hidden]')
 
 // Where an explicit open lands (#454): the part the human asked for.
-function focusPanelPart(part) {
+function focusPanelPart(part, ask = null) {
   const aside = document.querySelector('#dashboard .dash-focus')
   if (!aside || aside.hidden) return
   if (part === 'message') {
@@ -2472,7 +2636,11 @@ function focusPanelPart(part) {
     heading?.setAttribute('tabindex', '-1')
     heading?.focus({ preventScroll: true })
   } else if (part === 'asks') {
-    aside.querySelector('.dash-focus-asks button')?.focus()
+    // the ask's block, a landing spot: never an option a stray Enter would press
+    const blocks = [...aside.querySelectorAll('.dash-focus-asks [data-panel-ask]')]
+    const block = blocks.find((el) => el.dataset.panelAsk === ask) ?? blocks[0]
+    block?.scrollIntoView?.({ block: 'nearest' })
+    block?.focus({ preventScroll: true })
   } else if (part === 'transcript') {
     const section = aside.querySelector('.sp-transcript:not([hidden])')
     section?.scrollIntoView?.({ block: 'nearest' })
@@ -2481,7 +2649,7 @@ function focusPanelPart(part) {
   }
 }
 
-function openSessionFocus(session, part = null) {
+function openSessionFocus(session, part = null, ask = null) {
   focusSession = session
   // #197: the build hint follows an install made since
   refreshLiveVersion()
@@ -2492,7 +2660,7 @@ function openSessionFocus(session, part = null) {
     forceRender()
   }
   paintSessionFocus()
-  if (part) focusPanelPart(part)
+  if (part) focusPanelPart(part, ask)
   else if (document.hasFocus()) document.getElementById('dashFocusTitle')?.focus({ preventScroll: true })
 }
 
@@ -2503,6 +2671,8 @@ function closeSessionFocus() {
   const owned = Boolean(aside?.contains(activeFocusElement()))
   focusSession = null
   paintSessionFocus()
+  // "Answer · draft" or "Message · draft" on the card the panel leaves
+  agentsHome.repaint({ selected: null, forced: false, nowMs: Date.now() })
   if (!owned || !document.hasFocus()) return
   const own = [...document.querySelectorAll('#dashboard [data-session-card]')].find((el) => el.dataset.sessionCard === card)
   ;[own?.querySelector('[data-ah-action]'), document.getElementById('agentsHomeTitle')]
@@ -2951,11 +3121,11 @@ function restoreDashRailFocus(section, bookmark, index) {
   if (target instanceof HTMLTextAreaElement) target.setSelectionRange(target.value.length, target.value.length)
 }
 
-function railIconButton(action, label, title, onClick) {
+function railIconButton(action, label, title, onClick, data = 'railAction') {
   const button = btn('', onClick)
   button.type = 'button'
   button.className = `dash-rail-icon dash-rail-${action}`
-  button.dataset.railAction = action
+  button.dataset[data] = action
   button.title = title
   button.setAttribute('aria-label', title)
   button.innerHTML = `<svg viewBox="0 0 16 16" aria-hidden="true">${RAIL_ICONS[action]}</svg><span>${esc(label)}</span>`
@@ -4046,9 +4216,11 @@ function bindReplyEditor(editor, submit) {
 // the two answers to one question ("what do you want to tell the agent?"), and
 // because the single `.write-error` slot below is then where a refusal on EITHER
 // of them appears.
-// `surface: 'rail'` is the Dashboard rail's compact card (#303): the same
-// controls and writes, with ★ on the recommended option, its own disclosure
-// state, and "I'll take a while" under More… (Snooze and Pin are on the card).
+// `surface` names a compact host: 'rail', the Dashboard rail's card (#303), or
+// 'compact', an ask in the session panel (#454 A.2). The same controls and
+// writes, with ★ on the recommended option, its own disclosure state (keyed by
+// the surface), and "I'll take a while" under More… (Snooze and Pin are on the
+// host).
 function rowAnswerEl(b, r, onSaved, { surface = null } = {}) {
   recoverMismatchedRenderedRowDraft(b, r)
   const wrap = document.createElement('div')
@@ -9160,18 +9332,19 @@ async function submitItemReply(
   await reloadAndPaint()
 }
 
-// One option's pill. The rail (#303) marks the recommendation with ★ and keeps
-// the word for assistive technology.
+// One option's pill. A compact surface (the rail, #303; the session panel's
+// asks, #454) marks the recommendation with ★ and keeps the word for assistive
+// technology.
 function optionPillHtml(option, surface = null) {
   if (!option.recommended) return esc(option.label)
-  return surface === 'rail'
+  return surface
     ? `<span class="rec-star" aria-hidden="true">★</span>${esc(option.label)}<span class="rec-tag visually-hidden">recommended</span>`
     : `${esc(option.label)}<span class="rec-tag">recommended</span>`
 }
 
 // the answer surface on an unanswered question: option pills (recommended
 // first), a Compare toggle for the tradeoffs, and a free-text answer
-// `surface: 'rail'`: the Dashboard rail's compact card (#303); see rowAnswerEl.
+// `surface`: a compact host, 'rail' (#303) or 'compact' (the session panel, #454); see rowAnswerEl.
 function answerEl(it, { surface = null } = {}) {
   const wrap = document.createElement('div')
   wrap.className = `options${closedCompares.has(it.id) ? '' : ' comparing'}`

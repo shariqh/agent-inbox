@@ -13,7 +13,7 @@ import { callTrace, isWorking, linkedPlan, planBar } from './lanes.js'
 import { activitySynopsis, isDormant } from './livebar.js'
 import { launchSessions, launchStatus } from './launches.js'
 import { isReservedProject } from './reserved-projects.js'
-import { relMs } from './rowview.js'
+import { relMs, rowPickup } from './rowview.js'
 import { sortRail } from './attention.js'
 import { deliveryState } from './messages.js'
 
@@ -114,7 +114,7 @@ function launchState(status, launch, row, nowMs) {
  *   app's switch is off (§9: then no launch card exists); `boards` are the plans the lanes read;
  *   `attention` is the frame's attention entries.
  */
-export function sessionCards({ activity, launches = null, boards = [], attention = [], closed = [], nowMs }) {
+export function sessionCards({ activity, launches = null, boards = [], attention = [], answered = [], items = [], closed = [], nowMs }) {
   const shut = new Set(closed)
   const rows = (activity ?? []).filter((row) => row?.project)
   const working = new Set(rows.filter((row) => isWorking(row, nowMs)).map((row) => row.session))
@@ -199,13 +199,38 @@ export function sessionCards({ activity, launches = null, boards = [], attention
       plan: null, children: [], trace: null,
     }, row)
   }
-  attributeAsks(cards, { asks, boards, working, nowMs })
+  const owners = attributeAsks(cards, { asks, boards, working, nowMs })
+  // Step 3 (#454 amendment A.1): what no card owns gets an ask-only card, so
+  // every attention entry is on exactly one card.
+  for (const entry of owners.unowned) {
+    const owner = entry.kind === 'item' ? entry.item : entry.board
+    const session = typeof owner?.session === 'string' && owner.session ? owner.session : null
+    const id = session ? `ask:session:${session}` : entry.kind === 'row' ? `ask:plan:${entry.board.id}` : `ask:item:${entry.item.id}`
+    let card = owners.orphans.get(id)
+    if (!card) {
+      card = askOnlyCard(id, entry, session, { items, boards, nowMs })
+      owners.orphans.set(id, card)
+      cards.push(card)
+    }
+    card.asks.push(entry)
+  }
+  // this session's answers the agent has not picked up yet: shown in its panel, never counted
+  for (const entry of answered ?? []) {
+    if (entry.kind === 'item' ? entry.item?.reply_seen_at : rowPickup(entry.row ?? {}).pickedUp) continue
+    const session = entry.kind === 'item' ? entry.item?.session : null
+    const owner = entry.kind === 'item'
+      ? owners.bySession.get(session) ?? owners.orphans.get(`ask:session:${session}`)
+      : owners.planOwner.get(entry.board?.id) ?? owners.orphans.get(`ask:plan:${entry.board?.id}`)
+        ?? owners.orphans.get(`ask:session:${entry.board?.session}`)
+    owner?.answered.push(entry)
+  }
   for (const card of cards) {
     card.approval = card.asks.length > 0 && isApproval(card.asks[0])
     card.state = card.asks.length ? 'ask' : card.base
-    card.label = STATES[card.state].label
-    if (shut.has(card.project)) card.place = 'closed'
-    else if (card.state === 'ask') card.place = 'main'
+    card.label = card.askOnly ? (card.askOnly === 'ended' ? 'Session ended' : 'No session') : STATES[card.state].label
+    // an ask is never folded away: Needs you counts every one (A.1)
+    if (card.state === 'ask') card.place = 'main'
+    else if (shut.has(card.project)) card.place = 'closed'
     else if (card.state === 'dormant') card.place = 'dormant'
     else if (card.base === 'ended' || card.base === 'terminal' || card.base === 'failed') card.place = kept(card.launch) ? 'ended' : 'earlier'
     else card.place = 'main'
@@ -213,12 +238,53 @@ export function sessionCards({ activity, launches = null, boards = [], attention
   return cards.sort((a, b) => STATES[a.state].rank - STATES[b.state].rank || b.activeAt - a.activeAt || (a.id < b.id ? -1 : 1))
 }
 
+// An ask whose session no card shows (#454 amendment A.1): "Session ended" when
+// it names a session, else "No session". No composer, actions or transcript: the
+// ask, its context and Open in Inbox. It is no launch feature, so it draws with
+// the app's switch off too.
+function askOnlyCard(id, entry, session, { items, boards, nowMs }) {
+  const owner = entry.kind === 'item' ? entry.item : entry.board
+  const newestBoard = (list) => list.reduce((best, board) => (!best || String(board.updated_at ?? '') > String(best.updated_at ?? '') ? board : best), null)
+  const board = entry.kind === 'row' && !session ? entry.board : newestBoard(session ? boards.filter((b) => b.session === session) : [])
+  // last heard: the newest item or stamped plan that session wrote, else the ask itself
+  const heard = session
+    ? Math.max(0, ...(items ?? []).filter((item) => item?.session === session).map((item) => time(item.created_at) ?? 0),
+      ...boards.filter((b) => b.session === session).map((b) => time(b.updated_at) ?? 0),
+      time(owner?.created_at) ?? 0, time(owner?.updated_at) ?? 0)
+    : time(entry.kind === 'row' ? owner?.updated_at : owner?.created_at) ?? 0
+  const heardMs = heard ? ago(nowMs, heard) : null
+  const agent = typeof owner?.agent === 'string' && owner.agent ? owner.agent : 'unknown'
+  return {
+    id,
+    askOnly: session ? 'ended' : 'none',
+    session: null,
+    sessions: session ? [session] : [],
+    row: null, launch: null, status: null,
+    project: String(owner?.project ?? ''),
+    branch: typeof owner?.stream === 'string' ? owner.stream : '',
+    agent,
+    host: hostLabel(agent),
+    origin: session ? 'session ended' : 'no session',
+    base: 'ended',
+    text: board ? `Plan: ${board.title ?? ''}` : session ? 'Its session has ended' : 'Filed without a session',
+    historical: true,
+    recency: heardMs === null ? '' : relMs(heardMs) === 'moments' ? 'last heard just now' : `last heard ${relMs(heardMs)} ago`,
+    lastCallAt: null,
+    worktree: null,
+    plan: board ? planBar(board, nowMs) : null,
+    children: [], trace: null,
+    asks: [], answered: [],
+    activeAt: heard,
+  }
+}
+
 // Every ask belongs to at most ONE card, so the cards never count an ask twice
 // (#458 review). An item goes to the card whose live session it names, else to
 // the card that remembers that session (a launch whose session has gone). A plan
 // row goes to the card of the session that stamped its plan (`boards.session`),
-// else to the newest WORKING card the lanes' join links it to (`linkedPlan`): an
-// idle or dormant session links only a plan it stamped, as no lane joins one.
+// else to the newest WORKING card the lanes' join links it to (`linkedPlan`),
+// else (step 2, #454 A.1) to the newest idle or dormant card the same join
+// matches, so an idle session never looks ended. What is left is `unowned`.
 function attributeAsks(cards, { asks, boards, working, nowMs }) {
   const bySession = new Map()
   for (const card of cards) if (card.session && !bySession.has(card.session)) bySession.set(card.session, card)
@@ -227,6 +293,7 @@ function attributeAsks(cards, { asks, boards, working, nowMs }) {
   const byActivity = [...cards].sort((a, b) => b.activeAt - a.activeAt || (a.id < b.id ? -1 : 1))
   for (const card of byActivity) {
     card.asks = []
+    card.answered = []
     const stamped = boards.filter((board) => board.session && card.sessions.includes(board.session))
     for (const board of stamped) if (!planOwner.has(board.id)) planOwner.set(board.id, card)
   }
@@ -234,6 +301,13 @@ function attributeAsks(cards, { asks, boards, working, nowMs }) {
     if (card.base !== 'working' || !card.row) continue
     const board = linkedPlan(card.row, boards, working)
     if (board && !planOwner.has(board.id)) planOwner.set(board.id, card)
+  }
+  const joins = (row, board) => board.project === row.project && board.stream === row.stream && board.agent === row.agent
+    && !(board.session && working.has(board.session))
+  for (const entry of asks) {
+    if (entry.kind !== 'row' || !entry.board || planOwner.has(entry.board.id)) continue
+    const quiet = byActivity.find((card) => (card.base === 'idle' || card.base === 'dormant') && card.row && joins(card.row, entry.board))
+    if (quiet) planOwner.set(entry.board.id, quiet)
   }
   for (const card of byActivity) {
     const own = [...planOwner].filter(([, owner]) => owner === card).map(([id]) => boards.find((board) => board.id === id))
@@ -243,10 +317,13 @@ function attributeAsks(cards, { asks, boards, working, nowMs }) {
       : own.reduce((best, board) => (!best || String(board.updated_at ?? '') > String(best.updated_at ?? '') ? board : best), null)
     card.plan = plan ? planBar(plan, nowMs) : null
   }
+  const unowned = []
   for (const entry of asks) {
     const owner = entry.kind === 'item' ? bySession.get(entry.item?.session) : planOwner.get(entry.board?.id)
-    owner?.asks.push(entry)
+    if (owner) owner.asks.push(entry)
+    else unowned.push(entry)
   }
+  return { bySession, planOwner, unowned, orphans: new Map() }
 }
 
 /** Whether a main-list card shows under a state filter. */

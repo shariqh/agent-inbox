@@ -49,6 +49,25 @@ function detachVolumes(name: string) {
   }
 }
 
+// Every disk image attached from a file inside `dir`, as `hdiutil info` lists it:
+// its file and its whole-disk device. An image can be attached without a volume
+// (`hdiutil create -srcfolder` has left its write-once image that way), so the
+// mount table alone misses it, and Finder cannot show it to eject.
+function imagesUnder(dir: string) {
+  const prefix = `${dir}/`
+  return hdiutil(['info']).split(/^=+$/m).flatMap((block) => {
+    const path = /^image-path\s*:\s*(.+)$/m.exec(block)?.[1]?.trim()
+    const device = /^(\/dev\/disk\d+)\s/m.exec(block)?.[1]
+    return path !== undefined && device !== undefined && path.startsWith(prefix) ? [{ path, device }] : []
+  })
+}
+
+function detachImagesUnder(dir: string) {
+  for (const { device } of imagesUnder(dir)) {
+    spawnSync('/usr/bin/hdiutil', ['detach', '-force', device], { stdio: 'ignore', timeout: 60_000 })
+  }
+}
+
 // GitHub's hosted macOS runners fail hdiutil now and then for reasons no test can
 // fix: `create failed - Resource busy` (actions/runner-images#7522), or appdmg's
 // `detach … No such file or directory` (this repo's run 39352722375). So each image
@@ -126,6 +145,8 @@ describe.skipIf(process.platform !== 'darwin')('a release DMG built on macOS', (
     for (const mount of mounts) {
       if (mountEntry(mount)) execFileSync('/usr/bin/hdiutil', ['detach', '-force', mount], { stdio: 'ignore' })
     }
+    // Nor an image attached from it, mounted or not.
+    detachImagesUnder(temp)
   })
 
   it('is an lzma-compressed ULMO image', () => {
@@ -138,8 +159,12 @@ describe.skipIf(process.platform !== 'darwin')('a release DMG built on macOS', (
     writeApp(join(source, 'Agent Inbox.app'))
     const zlib = join(temp, 'zlib.dmg')
     const volume = `Agent Inbox zlib test ${process.pid}`
-    await buildImage(zlib, volume, () => hdiutil(['create', '-srcfolder', source, '-volname', volume, '-format', 'UDZO', zlib]))
-    expect(() => requireReleaseDmgFormat(zlib)).toThrow(/is UDZO, not ULMO/)
+    try {
+      await buildImage(zlib, volume, () => hdiutil(['create', '-srcfolder', source, '-volname', volume, '-format', 'UDZO', zlib]))
+      expect(() => requireReleaseDmgFormat(zlib)).toThrow(/is UDZO, not ULMO/)
+    } finally {
+      detachImagesUnder(temp)
+    }
   }, 300_000)
 
   it('installs through the in-app updater: attached read-only with its checksums verified, then detached', async () => {
@@ -228,4 +253,10 @@ describe.skipIf(process.platform !== 'darwin')('a release DMG built on macOS', (
     expect(seen.visible).toEqual(['Agent Inbox.app', 'Applications'])
     expect(mountEntry(mount)).toBeNull()
   }, 300_000)
+
+  // Last in this block: every run used to leave a write-once zlib.dmg attached
+  // without a volume, one more each time, which Finder cannot eject.
+  it('leaves no disk image of its scratch tree attached', () => {
+    expect(imagesUnder(temp)).toEqual([])
+  })
 })

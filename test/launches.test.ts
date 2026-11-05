@@ -509,7 +509,10 @@ describe('full resume (step 5)', () => {
     const { revision: _r, updated_at: _u, ...was } = getLaunch(db, ID(1))!
     tick()
     const resumed = resumeLaunch(db, ID(1), 77)!
-    expect(resumed.previous).toEqual({ ended_at: was.ended_at, end_reason: 'stopped', end_detail: 'earlier detail', stop_requested_at: was.stop_requested_at, driver_pid: 4242 })
+    expect(resumed.previous).toEqual({
+      ended_at: was.ended_at, end_reason: 'stopped', end_detail: 'earlier detail', stop_requested_at: was.stop_requested_at, driver_pid: 4242,
+      budget_active_ms: 7_200_000, budget_tool_calls: 500,
+    })
     // another driver's pid cannot put it back
     expect(restoreStoppedLaunch(db, ID(1), 78, resumed.previous!)).toBe(false)
     tick()
@@ -521,6 +524,40 @@ describe('full resume (step 5)', () => {
     createLaunch(db, launch(2))
     parkLaunch(db, ID(2), { acpSession: 'acp-2', activeMs: 0, toolCalls: 0 })
     expect(resumeLaunch(db, ID(2), 77)!.previous).toBeNull()
+  })
+
+  it('#451: a budget-ended launch resumes only with a raise at the revision confirmed, its totals up by exactly the allowance', () => {
+    createLaunch(db, launch(1, { budgetToolCalls: 3 }))
+    recordLaunchProgress(db, ID(1), { toolCalls: 3, activeMs: 600_000 })
+    endLaunch(db, ID(1), { reason: 'budget:tool_calls', acpSession: 'acp-1' })
+    const ended = getLaunch(db, ID(1))!
+    // never without a raise, and never at a revision the human did not see
+    expect(resumeLaunch(db, ID(1), 77)).toBeNull()
+    expect(resumeLaunch(db, ID(1), 77, { revision: ended.revision - 1, activeMs: 0, toolCalls: 10 })).toBeNull()
+    // the raise must leave room for what it used: 3 + 0 tool calls is still spent
+    expect(resumeLaunch(db, ID(1), 77, { revision: ended.revision, activeMs: 3_600_000, toolCalls: 0 })).toBeNull()
+    expect(getLaunch(db, ID(1))).toMatchObject({ status: 'ended', budget_active_ms: 7_200_000, budget_tool_calls: 3, revision: ended.revision })
+    const resumed = resumeLaunch(db, ID(1), 77, { revision: ended.revision, activeMs: 3_600_000, toolCalls: 10 })!
+    expect(resumed).toMatchObject({ status: 'running', resumedFrom: 'ended', end_reason: null, budget_active_ms: 10_800_000, budget_tool_calls: 13, tool_calls: 3 })
+    expect(resumed.previous).toMatchObject({ end_reason: 'budget:tool_calls', budget_active_ms: 7_200_000, budget_tool_calls: 3 })
+    // the same confirmation cannot be applied twice
+    expect(resumeLaunch(db, ID(1), 78, { revision: ended.revision, activeMs: 3_600_000, toolCalls: 10 })).toBeNull()
+    // a refused start takes the allowance back with the end
+    expect(restoreStoppedLaunch(db, ID(1), 77, resumed.previous!)).toBe(true)
+    expect(getLaunch(db, ID(1))).toMatchObject({ status: 'ended', end_reason: 'budget:tool_calls', budget_active_ms: 7_200_000, budget_tool_calls: 3 })
+    // a raise never takes a parked, stopped, other-ended or worktree-removed launch
+    createLaunch(db, launch(2))
+    parkLaunch(db, ID(2), { acpSession: 'acp-2', activeMs: 0, toolCalls: 0 })
+    createLaunch(db, launch(3))
+    endLaunch(db, ID(3), { reason: 'stopped', acpSession: 'acp-3' })
+    createLaunch(db, launch(4))
+    endLaunch(db, ID(4), { reason: 'budget:active_time', acpSession: null })
+    createLaunch(db, launch(5, { cwd: '/w/a', worktree: { checkoutRoot: '/work/a', branch: 'agent-inbox/a-11111111', baseSha: 'a'.repeat(40), baseRef: null } }))
+    endLaunch(db, ID(5), { reason: 'budget:active_time', acpSession: 'acp-5' })
+    markWorktreeRemoved(db, ID(5))
+    for (const n of [2, 3, 4, 5]) {
+      expect(resumeLaunch(db, ID(n), 77, { revision: getLaunch(db, ID(n))!.revision, activeMs: 60_000, toolCalls: 1 }), String(n)).toBeNull()
+    }
   })
 
   it('a stopped launch with its session can be taken over in Terminal instead, and is then never resumed', () => {

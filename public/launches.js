@@ -80,6 +80,10 @@ export function newSessionRequest({ root, worktree, mode, model, reasoningEffort
   }
 }
 
+const minutes = (ms) => {
+  const m = Math.round((Number.isFinite(ms) ? ms : 0) / 60_000)
+  return m < 60 ? `${m} min` : m % 60 ? `${Math.floor(m / 60)} h ${m % 60} min` : `${m / 60} h`
+}
 const count = (n, one, many) => `${n} ${n === 1 ? one : many}`
 const isCount = (n) => Number.isSafeInteger(n) && n >= 0
 
@@ -123,6 +127,31 @@ function stoppedWithSession(launch) {
     && !(typeof launch.worktree_path === 'string' && launch.worktree_path && launch.worktree_removed_at)
 }
 
+/**
+ * #451: a launch a budget ended, with its session and worktree (if any) kept, resumes only with
+ * more budget, which main confirms in its own dialog. Main and the store check the same again.
+ */
+function budgetEnded(launch) {
+  return launch?.status === 'ended' && (launch.end_reason === 'budget:active_time' || launch.end_reason === 'budget:tool_calls')
+    && launch.resumable === true && !(typeof launch.worktree_path === 'string' && launch.worktree_path && launch.worktree_removed_at)
+}
+
+/**
+ * #451: the allowance Resume with more budget… asks main to add, or why it cannot be sent: whole
+ * minutes and calls, each up to what a new launch may have, and enough that it is not spent at once.
+ * @returns {{add: {activeMs: number, toolCalls: number}} | {error: string}}
+ */
+export function budgetAllowance(launch, { activeHours, toolCalls }) {
+  const hours = Number(activeHours)
+  const calls = Number(toolCalls)
+  if (!Number.isFinite(hours) || hours < 0 || hours > 8) return { error: 'Add between 0 and 8 hours of active time.' }
+  if (!Number.isInteger(calls) || calls < 0 || calls > 2000) return { error: 'Add between 0 and 2000 tool calls.' }
+  const add = { activeMs: Math.round(hours * 60) * 60_000, toolCalls: calls }
+  if (launch.budget_active_ms + add.activeMs <= launch.active_ms) return { error: 'Add active time: it has used all of it.' }
+  if (launch.budget_tool_calls + add.toolCalls <= launch.tool_calls) return { error: 'Add tool calls: it has used all of them.' }
+  return { add }
+}
+
 /** A launch's driven sessions in /api/activity, live ones only. */
 export function launchSessions(launch, activity) {
   return (activity ?? []).filter((row) => row?.driven === true && row.driven_launch === launch.id)
@@ -132,7 +161,8 @@ export function launchSessions(launch, activity) {
  * What a launch is now, and what the human can do with it. One that ended
  * before its session was ready is `failed`: "Didn't start", with why (#432 PR 5).
  * One taken over in Terminal (step 5) is `handed_off`: Terminal can be opened on it again.
- * @returns {{state: 'starting'|'running'|'stopping'|'lost'|'parked'|'ended'|'failed'|'handed_off', text: string, actions: string[]}}
+ * One a budget ended (#451) offers `resume` with `budget: true`: Resume with more budget….
+ * @returns {{state: 'starting'|'running'|'stopping'|'lost'|'parked'|'ended'|'failed'|'handed_off', text: string, actions: string[], budget?: true}}
  */
 export function launchStatus(launch, activity, nowMs) {
   if (launch.status === 'ended' && (launch.end_detail || launch.end_reason === 'error:start')) {
@@ -143,6 +173,9 @@ export function launchStatus(launch, activity, nowMs) {
   }
   if (stoppedWithSession(launch)) {
     return { state: 'ended', text: 'Stopped: its session is kept, so it can be resumed.', actions: ['resume', 'takeover', 'transcript'] }
+  }
+  if (budgetEnded(launch)) {
+    return { state: 'ended', text: `${END_REASONS[launch.end_reason]}. Its session is kept: add budget to resume it.`, actions: ['resume', 'transcript'], budget: true }
   }
   if (launch.status === 'ended') {
     return { state: 'ended', text: END_REASONS[launch.end_reason] ?? `Ended (${launch.end_reason ?? 'unknown'})`, actions: ['transcript'] }
@@ -214,6 +247,10 @@ export function transcriptLines(events) {
       case 'park_requested':
         flush()
         lines.push({ kind: 'note', text: 'You asked it to park: it parks once its turn ends.' })
+        break
+      case 'budget_raised':
+        flush()
+        lines.push({ kind: 'note', text: `You added budget: ${minutes(event.to?.activeMs)} of active time and ${event.to?.toolCalls ?? '?'} tool calls in all.` })
         break
       case 'handoff_requested':
         flush()

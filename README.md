@@ -115,7 +115,9 @@ npm run electron
 ```
 
 The Electron app starts or safely reuses the local viewer and opens the desktop
-workspace. Its **Setup** panel can also run the same audited host installer.
+workspace. Its **Setup** panel can also run the same audited host installer. A source
+build uses port 4392 unless `AGENT_INBOX_PORT` is set, so it runs beside the installed
+app (port 4319) instead of taking its port.
 
 To package a standalone local development app on an Apple silicon Mac:
 

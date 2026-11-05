@@ -10961,19 +10961,29 @@ function restartToInstallCopy(state) {
     : 'Quit and reopen Agent Inbox to install this update.'
 }
 
+// Main registers no installer for a window that opened on a viewer this app did
+// not start (#216), and says so with a fixed code (#465).
+function installWithheldCopy(state) {
+  return state.available?.installWithheld === 'unowned-viewer'
+    ? 'Agent Inbox opened on a viewer that another copy started, so it can’t install updates from here. To install this update, quit Agent Inbox and any other copy of it, then reopen Agent Inbox.'
+    : ''
+}
+
 function updateDetailCopy(state) {
   const download = state.download
   switch (state.status) {
     case 'available':
       // Main's plain reason this installation cannot download or install the offer.
-      return typeof state.available?.reason === 'string' ? state.available.reason : ''
+      return typeof state.available?.reason === 'string' ? state.available.reason : installWithheldCopy(state)
     case 'downloading':
       return download ? `${formatMegabytes(download.receivedBytes)} of ${formatMegabytes(download.totalBytes)}` : ''
     case 'verified':
       if (needsRestartToInstall(state)) return restartToInstallCopy(state)
-      return state.available?.installable === true
-        ? 'Its size and SHA-256 match the signed release. Agent Inbox will install it and restart.'
-        : 'Its size and SHA-256 match the signed release. Installing from the app arrives in a later update; until then, use Review release to install it yourself.'
+      if (state.available?.installable === true) {
+        return 'Its size and SHA-256 match the signed release. Agent Inbox will install it and restart.'
+      }
+      return `Its size and SHA-256 match the signed release. ${installWithheldCopy(state)
+        || 'Agent Inbox can’t install it from the app here, so use Review release to install it yourself.'}`
     case 'download-failed':
       // Main says why (for example, a verified file that changed on disk).
       return typeof state.message === 'string' && state.message !== ''

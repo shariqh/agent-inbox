@@ -783,8 +783,8 @@ Design §14.8. Step 3's minimal resume loaded only a parked launch's session.
   locked again with the add's reason (`lockWorktree`, which says whether this call took the lock; a failure
   is logged as `worktree_lock_failed`, never fatal), unlocked at its next end, and unlocked at once when
   the resume is refused if this resume took the lock (review of #452).
-  Handed off, lost, `error:*`, `child_exit` and `budget:*` launches are never resumed: budgets are
-  per-launch totals, so a budget-ended launch needs a new allowance (a follow-up).
+  Handed off, lost, `error:*` and `child_exit` launches are never resumed; a `budget:*` launch only with
+  more budget (below).
 - **Main** (`resume`) accepts the same (parked, or `stopped` and `resumable` with its worktree there) and
   `takeOver` hands such a stopped launch off too (`handOffForTerminal`: `stopped` → `handed_off`,
   conditioned on the same rule).
@@ -796,3 +796,41 @@ Design §14.8. Step 3's minimal resume loaded only a parked launch's session.
   `test/driver-run.test.ts` (stop, a refused resume left stopped, a resume by load; a worktree relocked and
   unlocked again), `test/launch-electron.test.ts`, `test/launches-page.test.ts`,
   `test/dom/driven-sessions.test.ts` (the stopped row, Earlier sessions).
+
+## Step 5, part 3: resume with more budget (#451)
+
+Budgets are per-launch totals, so a launch a budget ended (`budget:active_time` or `budget:tool_calls`)
+keeps its session but resumes only with a new allowance, each one an explicit human choice.
+
+- **The page.** Such a launch, with its session kept and its worktree (if any) there, reads "Ended:
+  … budget used. Its session is kept: add budget to resume it." (`launchStatus` adds `budget: true`
+  to `resume`). Its session panel's Resume and send gains two fields, **Add active hours** (0 to 8, in
+  quarter hours) and **Add tool calls** (0 to 2000), defaulting to 1 h and 250, and its button reads
+  **Resume with more budget…**. `budgetAllowance` checks the bounds and that both new totals exceed what
+  was used, then sends `agentInboxLaunch.resumeWithBudget({ id, add: { activeMs, toolCalls } })`.
+  Cancel in main's dialog leaves no note; the text is sent as Resume and send does.
+- **Main** (`resumeWithBudget`, IPC `launch-resume-with-budget`, the `launch` grant). `budgetRequest`
+  takes exactly `{ id, add }`, whole minutes up to 8 h and 0 to 2000 calls, not both zero. A fresh row
+  read must be budget-ended and resumable with its worktree there, the totals plus the allowance must
+  exceed the usage, and the folder must exist. Then main's own confirmation (`budgetConfirmation`): the
+  budgets, what was used, the allowance, the new totals, the mode and the shell warning (the project
+  and folder through `displayLine`). Only after Resume does the login shell run. The spec is a `resume`
+  with `raise: { revision, activeMs, toolCalls }`: the row `revision` that confirmation read.
+- **The driver and the store.** `resumeLaunch(db, id, pid, raise)` takes, in one conditioned UPDATE in an
+  `.immediate()` transaction, only a budget-ended launch with its session, its worktree kept, still at
+  that revision, whose raised totals exceed its usage. The same write adds exactly the allowance to
+  `budget_active_ms` and `budget_tool_calls`, so no new column is needed, and the driver's counters start from the
+  row as any resume's do. A stale allowance (the row moved: another resume, a removal) and a second use
+  of one confirmation refuse with "The session changed since you confirmed its budget, so nothing was
+  added." A refused start restores the end and the budgets (`restoreStoppedLaunch`). The event log
+  records `budget_raised { from, to }` and the transcript says so. A spec without `raise` never
+  resumes a budget-ended launch.
+- **Mixed versions.** An older driver refuses the `raise` field (exit 65) and its `resumeLaunch` takes
+  only parked and `stopped` rows. An older viewer and main read a budget-ended launch as ended
+  (`end_reason` is unchanged), so they offer and send no resume. The raised totals live in the original
+  columns, so an older driver that later resumes the launch (parked or stopped) counts against them.
+- **Tests**: `test/launches.test.ts`, `test/launch-spec.test.ts`, `test/driver-run.test.ts` (end to end:
+  refused without a raise and at a stale revision, then loaded with the totals raised),
+  `test/launch-electron.test.ts` (the request, the confirmation's lines, the order, refusals, IPC,
+  preload), `test/launches-page.test.ts`, `test/dom/driven-sessions.test.ts`, `test/mixed-version.test.ts`
+  (the frozen v2.4.0 resume and spent check).

@@ -108,7 +108,10 @@ function recency(state, { row, launch, nowMs, quiet = false }) {
   if (!launch) return ''
   const at = (iso) => ago(nowMs, time(iso))
   const say = (word, ms) => (ms === null ? word : `${word} ${since(ms)}`)
-  if (state === 'parked') return launch.status === 'parked' ? say('parked', at(launch.parked_at)) : say('stopped', at(launch.ended_at))
+  if (state === 'parked') {
+    if (launch.status === 'parked') return say('parked', at(launch.parked_at))
+    return say(String(launch.end_reason).startsWith('budget:') ? 'out of budget' : 'stopped', at(launch.ended_at))
+  }
   if (state === 'starting') return say('started', at(launch.created_at))
   if (state === 'stopping') return say('stopping', at(launch.stop_requested_at))
   if (state === 'lost') return say('no word for', at(launch.updated_at))

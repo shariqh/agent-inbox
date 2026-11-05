@@ -234,6 +234,46 @@ async function blockedStates() {
   return emitted.filter((state) => state.status === 'available')
 }
 
+// What a real controller publishes when main withheld every installer (#465): a window that
+// opened on a viewer this app did not start. Returns its available and verified states.
+async function withheldStates() {
+  const emitted: UpdateControllerState[] = []
+  const tag = 'v2.0.0'
+  const filename = `Agent-Inbox-${tag}-universal.dmg`
+  const artifact: UpdateArtifact = {
+    version: '2.0.0', tag, platform: 'darwin', architecture: 'universal', packageType: 'dmg', installStrategy: 'macos-dmg',
+    filename, url: `https://github.com/shariqh/agent-inbox/releases/download/${tag}/${filename}`,
+    byteLength: 200, sha256: 'd'.repeat(64), minimumSystemVersion: '13.5',
+  }
+  const preferences = { schema: 1 as const, automaticChecks: false, lastNotifiedVersion: null }
+  const controller = updateController.createUpdateController({
+    currentVersion: '1.0.0',
+    preferences: { read: async () => preferences, setAutomatic: async () => preferences, setLastNotifiedVersion: async () => preferences },
+    checker: async () => ({
+      status: 'available',
+      currentVersion: '1.0.0',
+      automaticChecks: false,
+      checkedAt: '2026-02-01T00:00:00.000Z',
+      message: 'A verified update is available.',
+      manifest: 'v2' as const,
+      available: { version: '2.0.0', tag, releaseUrl: `https://github.com/shariqh/agent-inbox/releases/tag/${tag}`, target: { packageType: 'dmg', installStrategy: 'macos-dmg' } },
+      artifact,
+    }),
+    notifier: () => {},
+    downloader: {
+      normalize: (value) => value as UpdateArtifact,
+      download: async () => ({ path: '/private/x.dmg', version: '2.0.0', tag, filename, sha256: 'd'.repeat(64), byteLength: 200, architecture: 'universal', packageType: 'dmg', installStrategy: 'macos-dmg', minimumSystemVersion: '13.5' }),
+      cancel: async () => {},
+      prune: async () => {},
+    },
+    installWithheld: 'unowned-viewer',
+    emit: (state) => emitted.push(state),
+  })
+  await controller.checkNow()
+  await controller.downloadNow()
+  return emitted.filter((state) => state.status === 'available' || state.status === 'verified')
+}
+
 describe('Electron updater integration', () => {
   it('exposes only the narrow validated preload bridge', () => {
     const preload = read('electron/setup-preload.cjs')
@@ -364,6 +404,42 @@ describe('Electron updater integration', () => {
     expect(received).toEqual([])
     await expect(updates.check()).rejects.toThrow(TypeError)
     expect(invoke).toHaveBeenCalledWith('agent-inbox:update-check')
+  })
+
+  it('passes a download main withheld the installer for through the real preload validator', async () => {
+    const states = await withheldStates()
+    expect(states.map((state) => [state.status, state.available?.installWithheld])).toEqual([
+      ['available', 'unowned-viewer'],
+      ['verified', 'unowned-viewer'],
+    ])
+    const { updates, deliver } = loadPreload(() => null)
+    const received: unknown[] = []
+    updates.onState((state) => received.push(state))
+    for (const state of states) deliver(JSON.parse(JSON.stringify(state)))
+    expect(received).toEqual(JSON.parse(JSON.stringify(states)))
+  })
+
+  it.each([
+    ['another withheld code', { installWithheld: 'later-update' }],
+    ['a withheld installer on an installable offer', { installable: true }],
+    ['a withheld installer on an offer that cannot download', { downloadable: false }],
+  ] as const)('rejects %s from main', async (_label, patch) => {
+    const [, verified] = await withheldStates()
+    const malformed = JSON.parse(JSON.stringify({ ...verified, available: { ...verified!.available, ...patch } }))
+    const { updates, invoke, deliver } = loadPreload(() => malformed)
+    const received: unknown[] = []
+    updates.onState((state) => received.push(state))
+    deliver(malformed)
+    expect(received).toEqual([])
+    await expect(updates.check()).rejects.toThrow(TypeError)
+    expect(invoke).toHaveBeenCalledWith('agent-inbox:update-check')
+  })
+
+  it('withholds installers, and says so, exactly when the window did not open on a viewer this app owns', () => {
+    const main = read('electron/main.cjs')
+    const initializer = main.slice(main.indexOf('function initializeUpdateController()'), main.indexOf('async function startOwnServer()'))
+    expect(initializer).toContain("installers: updateInstallers(),\n")
+    expect(initializer).toContain("...(viewerOwned ? {} : { installWithheld: 'unowned-viewer' }),")
   })
 
   it('tells the checker about Rosetta, the installer about this process, and never opens a release an Intel Mac cannot run', () => {

@@ -21,6 +21,7 @@ import {
   getBoard, getItem, insertItem, listActivity, listBoards, listHostSessions, listIssueEntities, listIssueSnapshots, listItems, listSourceLinks,
   markReplySeen, openDb, pinBoardRow, pinItem, recordActivityCall, recordIssueFailure, replyItem, stopBoardRowWatch, stopItemWatch, updateBoardRow, upsertActivity,
   upsertBoard, upsertIssueSnapshot, upsertSourceLink, sendSessionMessage, listSessionMessages, readSnapshotState,
+  createLaunch, endLaunch, getLaunch, recordLaunchProgress, resumeLaunch,
 } from '../src/store.js'
 import type { IssueDependencies } from '../src/store.js'
 import { issueQueue } from '../src/issue-poller.js'
@@ -1800,5 +1801,49 @@ describe('a v2.2.0 process sharing a hub with driven sessions (#412)', () => {
     expect(readSnapshotState(db).domains.launches).toBe(version)
     replyItem(db, item, 'allow_once', sign(key, item, 0, 'allow_once'))
     expect(asks.answers()).toEqual([{ itemId: item, approve: true }])
+  })
+})
+
+// The statements of a v2.4.0 driver, copied verbatim from tag v2.4.0: resumeLaunch's
+// write (src/store.ts, RESUMABLE_END inlined) and run's spent check (src/driver-cli.ts).
+const V240 = {
+  resumeLaunch: `UPDATE launches
+                               SET status = 'running', parked_at = NULL, park_reason = NULL, ended_at = NULL, end_reason = NULL, end_detail = NULL,
+                                   stop_requested_at = NULL, driver_pid = ?, updated_at = ?, revision = revision + 1
+                             WHERE id = ? AND (status = 'parked' OR (status = 'ended' AND end_reason = 'stopped' AND acp_session IS NOT NULL
+                       AND (worktree_path IS NULL OR worktree_removed_at IS NULL)))
+                         RETURNING *`,
+  spent: (row: { tool_calls: number; budget_tool_calls: number; active_ms: number; budget_active_ms: number }) =>
+    row.tool_calls >= row.budget_tool_calls ? 'budget:tool_calls' : row.active_ms >= row.budget_active_ms ? 'budget:active_time' : null,
+}
+
+describe('a v2.4.0 driver sharing a hub with launches resumed with more budget (#451)', () => {
+  let dir: string
+  const LAUNCH = '11111111-2222-4333-8444-555555555555'
+
+  beforeEach(() => { dir = scratchDir('mixed-version-budget-') })
+  afterEach(() => { rmSync(dir, { recursive: true, force: true }) })
+
+  it('never resumes a budget-ended launch, and counts a raised one against its raised totals', () => {
+    const path = join(dir, 'inbox.db')
+    const db = openDb(path)
+    const old = new Database(path)
+    old.pragma('busy_timeout = 5000')
+    createLaunch(db, {
+      id: LAUNCH, host: 'copilot', project: 'agent-inbox', stream: 'main', cwd: '/work/a', mode: 'ask',
+      budgetActiveMs: 7_200_000, budgetToolCalls: 3, prompt: 'x', specVersion: 1, driverPid: 1,
+    })
+    recordLaunchProgress(db, LAUNCH, { toolCalls: 3 })
+    endLaunch(db, LAUNCH, { reason: 'budget:tool_calls', acpSession: 'acp-1' })
+    const resumeOld = () => old.prepare(V240.resumeLaunch).get(2, new Date().toISOString(), LAUNCH) as Record<string, number> | undefined
+    expect(resumeOld()).toBeUndefined()
+    // this build's raise, then the human's Stop: the raised totals are the launch's own columns
+    expect(resumeLaunch(db, LAUNCH, 3, { revision: getLaunch(db, LAUNCH)!.revision, activeMs: 0, toolCalls: 5 })).not.toBeNull()
+    endLaunch(db, LAUNCH, { reason: 'stopped' })
+    const row = resumeOld()!
+    expect(row).toMatchObject({ status: 'running', budget_tool_calls: 8, tool_calls: 3 })
+    expect(V240.spent(row as never)).toBeNull()
+    old.close()
+    db.close()
   })
 })

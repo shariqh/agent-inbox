@@ -2,7 +2,7 @@
 // the New session request main checks again, what a launch's state reads as,
 // and the transcript's lines.
 import { describe, expect, it } from 'vitest'
-import { launchStatus, newSessionRequest, transcriptLines } from '../public/launches.js'
+import { budgetAllowance, launchStatus, newSessionRequest, transcriptLines } from '../public/launches.js'
 
 const BASE = { root: '/work/alpha', mode: 'ask', model: '', reasoningEffort: '', activeHours: '2', toolCalls: '500', prompt: 'Fix it.' }
 
@@ -52,9 +52,14 @@ describe('a launch’s state', () => {
     expect(launchStatus(launch({ status: 'ended', end_reason: 'stopped', resumable: true }), [], NOW)).toEqual({
       state: 'ended', text: 'Stopped: its session is kept, so it can be resumed.', actions: ['resume', 'takeover', 'transcript'],
     })
+    // #451: a budget-ended launch with its session resumes only with more budget
+    expect(launchStatus(launch({ status: 'ended', end_reason: 'budget:active_time', resumable: true }), [], NOW)).toEqual({
+      state: 'ended', text: 'Ended: active-time budget used. Its session is kept: add budget to resume it.', actions: ['resume', 'transcript'], budget: true,
+    })
     for (const over of [
-      { end_reason: 'stopped', resumable: false }, { end_reason: 'budget:tool_calls', resumable: true }, { end_reason: 'lost', resumable: true },
+      { end_reason: 'stopped', resumable: false }, { end_reason: 'budget:tool_calls', resumable: false }, { end_reason: 'lost', resumable: true },
       { end_reason: 'stopped', resumable: true, worktree_path: '/w/a', worktree_removed_at: '2026-11-03T12:00:00.000Z' },
+      { end_reason: 'budget:tool_calls', resumable: true, worktree_path: '/w/a', worktree_removed_at: '2026-11-03T12:00:00.000Z' },
     ]) expect(launchStatus(launch({ status: 'ended', ...over }), [], NOW).actions, JSON.stringify(over)).toEqual(['transcript'])
     expect(launchStatus(launch({ status: 'ended', end_reason: 'handed_off', resumable: true }), [], NOW)).toEqual({
       state: 'handed_off', text: 'Handed off to a terminal: it goes on in Copilot there.', actions: ['terminal', 'transcript'],
@@ -65,6 +70,19 @@ describe('a launch’s state', () => {
     expect(launchStatus(launch({ status: 'ended', end_reason: 'error:setup', end_detail: 'Copilot exited before the session started.' }), [], NOW))
       .toEqual({ state: 'failed', text: 'Didn’t start: Copilot exited before the session started.', actions: ['transcript'] })
     expect(launchStatus(launch({ status: 'ended', end_reason: 'error:start' }), [], NOW)).toMatchObject({ state: 'failed', text: 'Didn’t start.' })
+  })
+})
+
+describe('Resume with more budget… (#451)', () => {
+  it('asks for whole minutes and calls within a new launch’s bounds, enough that the launch is not spent at once', () => {
+    const spent = { budget_active_ms: 7_200_000, budget_tool_calls: 500, active_ms: 2_000_000, tool_calls: 500 }
+    expect(budgetAllowance(spent, { activeHours: '0.5', toolCalls: '250' })).toEqual({ add: { activeMs: 1_800_000, toolCalls: 250 } })
+    expect(budgetAllowance(spent, { activeHours: '1', toolCalls: '0' })).toEqual({ error: 'Add tool calls: it has used all of them.' })
+    expect(budgetAllowance({ ...spent, active_ms: 7_300_000, tool_calls: 1 }, { activeHours: '0', toolCalls: '9' })).toEqual({ error: 'Add active time: it has used all of it.' })
+    expect(budgetAllowance(spent, { activeHours: '8.5', toolCalls: '1' })).toMatchObject({ error: expect.stringMatching(/0 and 8 hours/) })
+    expect(budgetAllowance(spent, { activeHours: '1', toolCalls: '2.5' })).toMatchObject({ error: expect.stringMatching(/0 and 2000/) })
+    expect(transcriptLines([{ event: 'budget_raised', from: { activeMs: 7_200_000, toolCalls: 500 }, to: { activeMs: 9_000_000, toolCalls: 750 } }]))
+      .toEqual([{ kind: 'note', text: 'You added budget: 2 h 30 min of active time and 750 tool calls in all.' }])
   })
 })
 

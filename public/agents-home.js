@@ -16,8 +16,10 @@ import { pinLaneOrder, tracePath } from './lanes.js'
 
 const SVG = 'http://www.w3.org/2000/svg'
 const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`
-// A launch's panel is keyed by the launch, which outlives its sessions; any other card by its session.
-const panelKey = (card) => (card.launch ? card.id : card.session)
+// A launch's panel is keyed by the launch, which outlives its sessions, and an
+// ask-only card's by its id; any other card by its session.
+const panelKey = (card) => (card.launch || card.askOnly ? card.id : card.session)
+const askId = (entry) => (entry?.kind === 'row' ? entry.row?.id : entry?.item?.id) ?? null
 const EMPTY = 'No sessions yet. A Claude Code or Copilot session appears here once Agent Inbox’s MCP server starts in it.'
 
 /**
@@ -175,7 +177,8 @@ export function installAgentsHome(deps) {
       if (control.disabled) return
       const action = control.dataset.ahAction
       // the session panel holds the ask, the composer, the transcript and Resume and send (§3.3)
-      if (action === 'review') deps.openSession(panelKey(card), card.approval ? 'approval' : 'asks')
+      if (action === 'review') openAsk(card)
+      else if (action === 'inbox') deps.openInInbox?.(card.asks[0])
       else if (action === 'message' || action === 'transcript' || action === 'resume') deps.openSession(panelKey(card), action)
       else if (card.launch) deps.launchAction?.(card.launch.id, action)
       return
@@ -183,7 +186,15 @@ export function installAgentsHome(deps) {
     // A click anywhere else on the card opens it, but never one that ends a
     // text selection or lands on a control.
     if (target.closest('button, a, select, summary, [data-link-kind]') || String(doc.getSelection?.() ?? '')) return
-    deps.openSession(panelKey(card))
+    // the ask strip opens the panel at that ask; it never answers (A.6)
+    if (target.closest('.sc-ask') && card.asks.length) openAsk(card)
+    else deps.openSession(panelKey(card))
+  }
+
+  // An approval lands on its heading (#459); any other ask on its own block.
+  function openAsk(card) {
+    const first = card.asks[0]
+    deps.openSession(panelKey(card), card.approval ? 'approval' : 'asks', card.approval ? null : askId(first))
   }
 
   // ── a card ────────────────────────────────────────────────────────────────
@@ -210,6 +221,7 @@ export function installAgentsHome(deps) {
   }
 
   function chipsOf(card) {
+    if (card.askOnly) return [[card.host, 'sc-chip', card.host]]
     const who = `${card.host} · ${card.origin}`
     const chips = [[who, card.origin === 'started here' ? 'sc-chip tone-agent' : 'sc-chip', who]]
     const build = card.row ? deps.build?.(card.row) : null
@@ -227,7 +239,13 @@ export function installAgentsHome(deps) {
       const draft = deps.hasDraft?.(session) === true
       out.push(['message', draft ? 'Message · draft' : 'Message', draft ? 'Message this session: your unsent draft is kept' : 'Message this session'])
     }
-    if (card.state === 'ask') return out
+    if (card.state === 'ask') {
+      if (card.askOnly) out.push(['inbox', 'Open in Inbox', 'Open this ask’s card in the Inbox'])
+      const draft = card.asks.some((entry) => deps.hasAskDraft?.(askId(entry)) === true)
+      out.push(['review', draft ? 'Answer · draft' : 'Answer',
+        draft ? 'Answer in the session panel: your unsent draft is kept' : card.approval ? 'Review this approval in the session panel' : 'Answer in the session panel', 'primary'])
+      return out
+    }
     if (!card.launch) {
       message()
       return out
@@ -258,6 +276,7 @@ export function installAgentsHome(deps) {
     if (!el.classList.contains(`tone-${card.state}`)) el.classList.add(`tone-${card.state}`)
     const selected = Boolean(last?.input.selected) && cardFor(last.input.selected) === card
     if (el.classList.contains('sel') !== selected) el.classList.toggle('sel', selected)
+    if (el.classList.contains('sc-ask-only') !== Boolean(card.askOnly)) el.classList.toggle('sc-ask-only', Boolean(card.askOnly))
     // written only on a change, so an unchanged paint writes nothing at all
     const label = `${card.label}: ${card.host} in ${card.project}${card.branch ? ` on ${card.branch}` : ''}`
     if (el.getAttribute('aria-label') !== label) el.setAttribute('aria-label', label)
@@ -290,6 +309,7 @@ export function installAgentsHome(deps) {
     setHidden(ask, !card.asks.length)
     const first = card.asks[0]
     const askTitle = first ? (first.kind === 'item' ? first.item?.title : first.row?.label) ?? '' : ''
+    if (ask.title !== (first ? 'Open this ask in the session panel' : '')) ask.title = first ? 'Open this ask in the session panel' : ''
     rebuild(ask, JSON.stringify([card.asks.length, card.approval, askTitle]), () => {
       if (!first) return []
       const label = make('span', 'sc-ask-label', card.approval ? 'Approval' : 'Asking you')
@@ -297,10 +317,6 @@ export function installAgentsHome(deps) {
       title.title = askTitle
       const parts = [label, title]
       if (card.asks.length > 1) parts.push(make('span', 'sc-ask-more', `+${card.asks.length - 1}`))
-      const review = button('Review', 'sc-action primary', `sc:${card.id}:review`)
-      review.dataset.ahAction = 'review'
-      review.title = card.approval ? 'Review this approval on the rail' : 'Open this ask'
-      parts.push(make('span', 'ah-spacer'), review)
       return parts
     })
     const actions = actionsOf(card, granted)
@@ -521,6 +537,12 @@ export function installAgentsHome(deps) {
     setHidden(note, !newSession?.note)
   }
 
+  /** The card holding an ask, by its id (every attention entry is on exactly one card). */
+  function cardForAsk(id) {
+    for (const card of byId.values()) if (card.asks.some((entry) => askId(entry) === id)) return card
+    return null
+  }
+
   /** The card a session panel key names: a card id, a live session, or a session a launch remembers. */
   function cardFor(key) {
     if (!key) return null
@@ -534,9 +556,16 @@ export function installAgentsHome(deps) {
     /** The card, made once: renderDashboard mounts it in the Dashboard grid. */
     element: () => (mounted ??= homeEl()),
     paint,
+    /** Repaints the cards from the last paint's input: a closed panel's draft shows on its card at once. */
+    repaint,
     /** Repaints New session… alone, as a start begins or settles. */
     paintNewSession: () => { if (mounted) paintNewSession(mounted, deps.launches?.() ?? null) },
     cardFor,
+    /** The panel key of the card holding an ask, or null. */
+    askKey: (id) => {
+      const card = cardForAsk(id)
+      return card ? panelKey(card) : null
+    },
     /** The window-local view state, for frameInputs(). */
     state: () => [filter, groupBy, [...folds].sort().join(',')].join('|'),
   }

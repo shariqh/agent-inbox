@@ -15,10 +15,12 @@ afterEach(() => { db?.close(); db = null })
 
 const route = (input: RequestInfo | URL): string => String(input)
 
+// The two questions name no session: each is an ask-only card, "No session" (#454 A.1).
+const ids = { ship: '', retry: '' }
 function seed(d: Database.Database): void {
-  insertItem(d, { project: 'agent-inbox', stream: 'feat/412', agent: 'copilot', kind: 'question', title: 'Ship the search ranking?' })
+  ids.ship = insertItem(d, { project: 'agent-inbox', stream: 'feat/412', agent: 'copilot', kind: 'question', title: 'Ship the search ranking?' })
   advanceClock()
-  insertItem(d, { project: 'demo', stream: 'main', agent: 'claude-code', kind: 'question', title: 'Retry 4xx?' })
+  ids.retry = insertItem(d, { project: 'demo', stream: 'main', agent: 'claude-code', kind: 'question', title: 'Retry 4xx?' })
   advanceClock()
   insertItem(d, { project: 'demo', stream: 'main', agent: 'claude-code', kind: 'note', title: 'Flaky test noted' })
   advanceClock()
@@ -82,15 +84,22 @@ describe('the Agents home (#454)', () => {
     // the lanes and their lens are gone (#454): the Agents home is the Dashboard's one list of sessions
     expect(document.querySelector('.dash-lanes, .mesh-lens')).toBeNull()
     expect(document.querySelector<HTMLElement>('.agents-home')?.hidden).toBe(false)
-    // grouped by project; Needs you first, then the newest call. k1's ask is a row of its linked plan.
+    // grouped by project; Needs you first, then the newest call. k1's ask is a row of its linked plan;
+    // each question naming no session has an ask-only card, so every ask is on one card (#454 A.1)
     expect(groups()).toEqual([
-      ['agent-inbox', ['session:k1', 'session:c1']],
-      ['demo', ['session:c2', 'session:k2']],
+      ['agent-inbox', ['session:k1', `ask:item:${ids.ship}`, 'session:c1']],
+      ['demo', [`ask:item:${ids.retry}`, 'session:c2', 'session:k2']],
     ])
-    expect(document.querySelector('.agents-home .ah-count')?.textContent).toBe('4 sessions')
+    expect(document.querySelector('.agents-home .ah-count')?.textContent).toBe('6 sessions')
+    // Needs you counts what the badge does
     expect([...document.querySelectorAll('.agents-home [data-ah-filter]')].map((b) => [b.textContent, b.getAttribute('aria-pressed')])).toEqual([
-      ['All4', 'true'], ['Needs you1', 'false'], ['Working2', 'false'], ['Idle1', 'false'], ['Parked0', 'false'],
+      ['All6', 'true'], ['Needs you3', 'false'], ['Working2', 'false'], ['Idle1', 'false'], ['Parked0', 'false'],
     ])
+    const orphan = card(`ask:item:${ids.retry}`)!
+    expect(orphan.classList.contains('sc-ask-only')).toBe(true)
+    expect([orphan.querySelector('.sc-state')?.textContent, orphan.querySelector('.sc-chips')?.textContent, orphan.querySelector('.sc-ask-title')?.textContent])
+      .toEqual(['No session', 'Claude Code', 'Retry 4xx?'])
+    expect([...orphan.querySelectorAll('[data-ah-action]')].map((el) => el.textContent)).toEqual(['Open in Inbox', 'Answer'])
     const ask = card('session:k1')!
     expect(ask.querySelector('.sc-state')?.textContent).toBe('Needs you')
     expect(ask.querySelector('.sc-chips')?.textContent).toBe('Claude Code · terminal')
@@ -133,7 +142,7 @@ describe('the Agents home (#454)', () => {
     const select = document.querySelector<HTMLSelectElement>('.agents-home .ah-group-by select')!
     select.value = 'agent'
     select.dispatchEvent(new Event('change', { bubbles: true }))
-    expect(groups()).toEqual([['Claude Code', ['session:k1', 'session:k2']], ['Copilot', ['session:c2', 'session:c1']]])
+    expect(groups()).toEqual([['Claude Code', ['session:k1', `ask:item:${ids.retry}`, 'session:k2']], ['Copilot', [`ask:item:${ids.ship}`, 'session:c2', 'session:c1']]])
   })
 
   it('Review opens the session panel at the card’s asks, which agree with its count; a click toggles the panel', async () => {
@@ -146,15 +155,12 @@ describe('the Agents home (#454)', () => {
     click(card('session:k1')?.querySelector('[data-ah-action="review"]'))
     expect(aside.hidden).toBe(false)
     expect(aside.dataset.session).toBe('k1')
-    // the panel lists exactly the card's asks: one here, as the Needs you count says
-    const asks = [...aside.querySelectorAll('.dash-focus-asks .dash-focus-ask-title')].map((el) => el.textContent)
-    expect(asks).toEqual(['Approve the metric set'])
-    expect(filterButton('ask')?.querySelector('.ah-filter-count')?.textContent).toBe(String(asks.length))
-    expect(document.activeElement).toBe(aside.querySelector('.dash-focus-asks button'))
+    // the panel lists exactly the card's asks, each answered in place (#454 A.2), and lands on the ask, never an option
+    const asks = [...aside.querySelectorAll('.dash-focus-asks .sp-ask-title')].map((el) => el.textContent)
+    expect(asks).toEqual(['Approve it.'])
+    expect(document.activeElement).toBe(aside.querySelector('.dash-focus-asks [data-panel-ask]'))
     expect(card('session:k1')?.classList.contains('sel')).toBe(true)
-    // its ask still answers on the rail
-    click(aside.querySelector('.dash-focus-asks button'))
-    expect(document.activeElement?.closest('[data-rail-card]')?.querySelector('.dash-rail-title')?.textContent).toBe('Approve it.')
+    expect([...aside.querySelectorAll('.dash-focus-asks .opt-pill')].map((el) => el.textContent)).toEqual(['★Approverecommended', 'Hold'])
     click(card('session:c1')?.querySelector('.sc-doing'))
     expect(aside.hidden).toBe(false)
     expect(aside.dataset.session).toBe('c1')
@@ -188,8 +194,9 @@ describe('the Agents home (#454)', () => {
     expect([fold('closed').hidden, fold('closed').querySelector('summary')?.textContent]).toEqual([false, 'In closed projects (2)'])
     expect(fold('ended').hidden).toBe(true)
     expect(fold('dormant').querySelectorAll('[data-session-card]')).toHaveLength(0)
-    // 9 h on, their claims have gone cold: idle, and an idle session links no plan it did not stamp
-    expect(groups().flatMap(([, ids]) => ids)).toEqual(['session:c1', 'session:k1'])
+    // 9 h on, their claims have gone cold: idle; k1 still takes its plan's ask by the join (#454 A.1 step 2)
+    expect(groups().flatMap(([, list]) => list)).toEqual(['session:k1', `ask:item:${ids.ship}`, 'session:c1'])
+    expect(card('session:k1')?.querySelector('.sc-state')?.textContent).toBe('Needs you')
     // opening the fold paints its cards at once, not at the next poll
     fold('closed').open = true
     fold('closed').dispatchEvent(new Event('toggle'))

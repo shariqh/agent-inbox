@@ -1976,8 +1976,33 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
 .dash-focus-detail { color: var(--app-text-soft); font-size: 12.5px; }
 .dash-focus-part { display: grid; gap: 6px; padding-top: 8px; border-top: 1px solid var(--app-border); }
 .dash-focus-part h3 { margin: 0; color: var(--app-muted); font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
-.dash-focus-ask, .dash-focus-plan { display: flex; min-width: 0; align-items: baseline; gap: 8px; font-size: 12.5px; }
-.dash-focus-ask-title, .dash-focus-plan-title { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dash-focus-plan { display: flex; min-width: 0; align-items: baseline; gap: 8px; font-size: 12.5px; }
+.dash-focus-plan-title { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* #454 A.2: the panel's Asking you section, one block per ask with the Inbox's own controls (the rail's compact surface) */
+.dash-focus-asks { display: grid; gap: 8px; }
+.sp-asks-count { padding: 0 7px; border-radius: 999px; background: color-mix(in srgb, var(--app-attention) 16%, transparent); color: var(--app-attention); letter-spacing: .04em; }
+.sp-asks-count:empty { display: none; }
+.sp-ask { display: grid; min-width: 0; gap: 7px; padding: 10px 12px; border: 1px solid var(--app-border); border-radius: 10px; background: var(--app-surface); font-size: 12.5px; }
+.sp-ask:has(.sp-ask-waiting) { border-color: color-mix(in srgb, var(--app-attention) 55%, var(--app-border)); }
+.sp-ask:focus { outline: none; }
+.sp-ask:focus-visible { outline: 2px solid var(--app-focus); outline-offset: 1px; }
+.sp-ask-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; color: var(--app-muted); font-size: 11px; }
+.sp-ask-waiting { color: var(--app-attention); font-weight: 650; }
+.sp-ask-title { overflow-wrap: anywhere; font-size: 13.5px; font-weight: 650; line-height: 1.35; }
+.sp-ask-tldr { color: var(--app-muted); font-size: 12.5px; line-height: 1.4; }
+.sp-ask .options, .sp-ask .options.comparing, .sp-ask .row-answer { display: flex; flex-direction: row; flex-wrap: wrap; align-items: flex-start; gap: 6px; margin: 0; }
+.sp-ask .row-options { display: flex; flex-wrap: wrap; gap: 6px; }
+.sp-ask .option { display: contents; }
+.sp-ask .options.comparing .opt-pill, .sp-ask .opt-pill { width: auto; padding: 5px 10px; font-size: 12px; }
+.sp-ask .rec-star { margin-right: 4px; }
+/* the compact surface shows the options alone, as the rail means to; their tradeoffs are on the Inbox card */
+.sp-ask .options.comparing .opt-detail, .sp-ask .opt-detail, .sp-ask .compare-toggle { display: none; }
+.sp-ask .reply-row, .sp-ask .reply-context-row, .sp-ask .disposition-menu { flex: 1 1 100%; }
+.sp-ask .disposition-menu { font-size: 12px; }
+.sp-ask-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px; }
+.sp-answered { display: flex; min-width: 0; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; color: var(--app-text-soft); font-size: 12px; opacity: .8; }
+.sp-answered-tag { padding: 0 6px; border-radius: 4px; background: var(--app-soft); font-size: 10.5px; font-weight: 700; }
+.sp-answered-title { color: var(--app-muted); font-weight: 600; }
 .dash-focus-plan-count { color: var(--app-muted); font-size: 12px; }
 .dash-focus-go { flex: none; justify-self: start; padding: 2px 8px; border: 1px solid var(--app-border); border-radius: 6px; background: var(--app-soft); color: var(--app-text); font-size: 12px; }
 .dash-focus-outcome { display: grid; min-width: 0; gap: 1px; padding: 4px 0; border: 0; background: transparent; color: var(--app-text); font: inherit; font-size: 12.5px; text-align: left; }
@@ -2144,6 +2169,12 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
 .sc-ask-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sc-ask-title.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .sc-ask-more { flex: none; color: var(--app-attention); font-weight: 700; }
+.sc-ask { cursor: pointer; } /* it opens the panel at that ask (#454 A.6), never answers */
+/* #454 A.1: an ask whose session no card shows: dashed, its state word quiet; pink stays on the ask strip */
+.sc.sc-ask-only { --sc-rule: transparent; --sc-tone: var(--app-text-soft); border-style: dashed; border-color: var(--app-border-strong); }
+.sc.sc-ask-only .sc-dot { border: 1.5px solid var(--app-text-soft); background: transparent; }
+.sc.sc-ask-only .sc-facts { display: none; }
+.sc.sc-ask-only .sc-actions { flex: 1 1 auto; justify-content: space-between; }
 .sc-foot { display: flex; min-width: 0; align-items: center; gap: 8px; margin-top: 2px; }
 .sc-facts { display: flex; min-width: 0; flex: 1 1 auto; align-items: center; gap: 8px; overflow: hidden; }
 .sc-actions { display: flex; flex: none; gap: 6px; }

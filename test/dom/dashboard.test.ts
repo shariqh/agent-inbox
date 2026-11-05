@@ -25,7 +25,8 @@ const railIds = (): string[] =>
   [...document.querySelectorAll<HTMLElement>('#dashRail [data-rail-card]')].map((card) => card.dataset.railCard!)
 
 // #454: the Agents home's cards, past its folds
-const cards = (): HTMLElement[] => [...document.querySelectorAll<HTMLElement>('#dashboard .agents-home .ah-groups [data-session-card]')]
+// the sessions' own cards: an ask naming no live session has an ask-only card too (#454 A.1, test/dom/agents-asks.test.ts)
+const cards = (): HTMLElement[] => [...document.querySelectorAll<HTMLElement>('#dashboard .agents-home .ah-groups [data-session-card]:not(.sc-ask-only)')]
 const working = (): HTMLElement[] => cards().filter((card) => card.classList.contains('tone-working'))
 const nowSub = (name: string): string =>
   document.querySelector(`[data-dashboard-signal="${name}"] .dash-now-sub`)?.textContent ?? ''

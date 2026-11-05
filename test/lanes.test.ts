@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  QUIET_MS, TRACE_MINUTES, buildLanes, calledLanes, callTrace, laneFilterChoices, laneMatches, pinLaneOrder, sessionFocus, tracePath,
+  QUIET_MS, TRACE_MINUTES, buildLanes, callTrace, pinLaneOrder, sessionFocus, tracePath,
 } from '../public/lanes.js'
 import { attentionEntries, sortRail } from '../public/attention.js'
 import type { Lane } from '../public/lanes.js'
@@ -120,19 +120,6 @@ describe('lane order and motion (#304, proposal §10)', () => {
     expect(pinLaneOrder(['a', 'b', 'c'], lanes('c', 'a'))).toEqual(['a', 'c'])
   })
 
-  it('pulses a lane only when its last call moves forward, and sweeps the newest of those', () => {
-    const lane = (id: string, sinceMs: number): Lane => ({
-      session: id, project: 'alpha', branch: 'main', agent: 'copilot', doing: 'x', detail: '', lastCallAt: ago(sinceMs),
-      sinceMs, quiet: false, children: [], plan: null, trace: [], asks: [], waiting: null,
-    })
-    const drawn = [lane('moved', 2000), lane('newest', 1000), lane('same', 60_000), lane('new-lane', 500)]
-    const seen = new Map([['moved', ago(30_000)], ['newest', ago(30_000)], ['same', ago(60_000)]])
-    expect(calledLanes(seen, drawn)).toEqual({ pulse: new Set(['moved', 'newest']), sweep: 'newest' })
-    // First paint: nothing seen yet, nothing pulses.
-    expect(calledLanes(new Map(), drawn)).toEqual({ pulse: new Set(), sweep: null })
-    // A clock moved back never reads as a new call.
-    expect(calledLanes(new Map([['same', ago(0)]]), [lane('same', 60_000)])).toEqual({ pulse: new Set(), sweep: null })
-  })
 })
 
 describe('heartbeat trace and the session-to-plan link (#306)', () => {
@@ -194,14 +181,6 @@ describe('quick filters and the session focus panel (#307)', () => {
   const two = () => lanesOf([
     session('a1'), session('b1', { project: 'beta', agent: 'claude-code' }), session('a2', { agent: 'claude-code' }),
   ]).lanes
-
-  it('narrows lanes by project and agent and keeps a chosen value as a choice', () => {
-    const lanes = two()
-    expect(lanes.filter((lane) => laneMatches(lane, { project: 'alpha', agent: null })).map((l) => l.session).sort()).toEqual(['a1', 'a2'])
-    expect(lanes.filter((lane) => laneMatches(lane, { project: 'alpha', agent: 'claude-code' })).map((l) => l.session)).toEqual(['a2'])
-    expect(laneFilterChoices(lanes, { project: null, agent: null })).toEqual({ project: ['alpha', 'beta'], agent: ['claude-code', 'copilot'] })
-    expect(laneFilterChoices([], { project: 'gone', agent: null })).toEqual({ project: ['gone'], agent: [] })
-  })
 
   it("collects a session's plan, its newest item and its recent outcomes", () => {
     const board = plan('p', ago(MIN), [{ status: 'done', outcome: 'Merged' }])

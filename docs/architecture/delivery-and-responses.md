@@ -124,7 +124,7 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   a valid request stays `200 { ok:false }`. An explicit `''` is still a clear.
 - **`updated_at` means content changed.** Item/row human or agent content writes bump it;
   delivery stamps (`markReplySeen`, `markAnnotationDelivered`, `markHandledDelivered`) never
-  do. The viewer's New/changed filter depends on this distinction just as Live depends on
+  do. The viewer's New/changed filter depends on this distinction just as the session cards depend on
   `last_call_at` rather than liveness heartbeats.
 - **Delivery is not acknowledgement (issue #37).** `board_rows.annotation_seen_at` records
   ONE fact — this text was handed to some agent — and it silences nothing: not the human's

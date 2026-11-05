@@ -9,7 +9,7 @@
 Agent Inbox gives GitHub Copilot CLI and Claude Code one shared place to surface
 decisions, handoffs, notes, milestones, and multi-step plans. You respond in the
 Electron app; agents pick the response up through MCP and continue working.
-The app opens on the Dashboard: a lane for each working session, a Needs you rail
+The app opens on the Dashboard: a card for each session, a Needs you rail
 you can answer from, a Today ribbon of each project's activity, and what just
 landed. You can also send a message to a running session.
 
@@ -23,13 +23,13 @@ share one SQLite database on your machine.
 
 | Capability | What you get |
 |---|---|
-| **Dashboard** | A Needs you rail you answer from, a lane per working session with its plan's progress and recent activity, and a Today ribbon of asks and outcomes |
+| **Dashboard** | A Needs you rail you answer from, a card per session with its plan's progress and recent activity, and a Today ribbon of asks and outcomes |
 | **Cross-project inbox** | Questions and handoffs from every active coding session in one prioritized queue |
 | **Action-aware responses** | Recommended options, free-text answers, snooze, pin for later, clarify, and decline controls |
 | **Durable plans** | Tracking boards with stable rows, progress, next steps, outcomes, and human-owned actions |
-| **Live sessions** | Ambient status for active agents and their current work without turning activity into alerts |
+| **Agents view** | Ambient status for every connected session and its current work without turning activity into alerts |
 | **Session messages** | Write to a running session, and see before you send whether it arrives now or at the session's next check |
-| **Session launcher** | On macOS, start a Copilot CLI session from the app, approve its tool calls from the inbox, and message it from Live. Off until you turn it on |
+| **Session launcher** | On macOS, start a Copilot CLI session from the app, approve its tool calls from the inbox, and message it from its session card. Off until you turn it on |
 | **Dual-host setup** | Audited installers and instructions for GitHub Copilot CLI and Claude Code |
 | **Local security boundary** | A loopback-only viewer with strict Host, Origin, Fetch Metadata, and anti-framing checks |
 
@@ -224,12 +224,12 @@ agent resumed. Hooks still select requests by project, but each host session kee
 its own watcher so one session cannot take away another's wake source. An
 unavailable host connection cannot be repaired by a database watcher.
 
-Live shows connected MCP processes and the work they report, not an authoritative
-inventory of every agent or subagent. A connection with no task report is unknown
+The Agents view shows connected MCP processes and the work they report, not an
+authoritative inventory of every agent or subagent. A connection with no task report is unknown
 activity, not proof of inactivity. `register` updates its displayed project and
 branch immediately; child-agent descriptions still come from the manager.
-Each connection also shows the Agent Inbox build its MCP server runs. A session on
-an older build gets a quiet hint whose advice fits where that session runs from: a
+Each session's panel also shows the Agent Inbox build its MCP server runs. A session
+on an older build gets a quiet "older build" chip on its card whose advice fits where that session runs from: a
 session on Setup's agent runtime is told to restart once its own host (Claude Code
 or Copilot CLI) is registered to the new runtime, or to update agents from Setup
 first, and a session running from a source checkout is told to update and rebuild
@@ -250,14 +250,15 @@ The app opens on the Dashboard (`G D`), for all projects and agents.
 - **The Now strip** counts working sessions and their subagents, the requests
   waiting on you and how long the oldest has waited, and the plan steps of the
   working sessions' plans.
-- **Live lanes** give each working session a lane: what it reports, its plan's
-  progress (done, in progress, waiting on you, to do), the requests it is asking
-  you, and a small trace of its MCP calls over the last 30 minutes. A lane whose
-  session has made no MCP call for 5 minutes says how long it has been quiet. A
-  session that reports no current work, or has made no call for 30 minutes, gets no
-  lane and is counted among the idle connections. Filter the lanes by project or
-  agent. Click a lane's title to open its session panel: its requests, its plan,
-  its recent outcomes, PR and CI state, links, and a place to message it.
+- **Agents** has a card for every session, grouped by project (or by agent): what
+  it reports, whether it is working, idle, parked or needs you, and for a working
+  session its plan's progress (done, in progress, waiting on you, to do), its
+  subagents and a small trace of its MCP calls over the last 30 minutes. A session
+  that reports no current work, or has made no call for 30 minutes, is idle; one
+  quiet for 8 hours folds under **Dormant**, and ended sessions under **Ended**.
+  Filter by state with **All**, **Needs you**, **Working**, **Idle** and **Parked**.
+  Click a card to open its session panel: its requests, its plan, its recent
+  outcomes, PR and CI state, links, and a place to message it.
 - **The Today ribbon** draws one line per project over the last 24 hours, 7 days or
   30 days: when its agents worked, ◆ where one asked you something and ● where an
   outcome landed.
@@ -269,14 +270,14 @@ In search (`Cmd/Ctrl K`), type `answer `, `open plan ` or `jump to session ` to 
 those targets first.
 
 **Settings → Motion** chooses Full or Calm. Calm turns off looping animation and the
-brief pulse a lane gives when its session makes a call. Your system's Reduce motion
+brief pulse a card gives when its session makes a call. Your system's Reduce motion
 setting turns motion off whichever you choose.
 
 ## Messaging a running session
 
-You can write to a connected session without finding its terminal. Each session in
-**Live sessions** (the strip at the foot of the window) has a **Message** button, and
-a session's Dashboard panel has a **Message** section. Messages go to the whole CLI
+You can write to a connected session without finding its terminal. Each session's
+card in the Dashboard's Agents view has a **Message** button, which opens its session
+panel at the **Message** section. Messages go to the whole CLI
 session: any of its agents, a subagent included, may pick one up first. A message
 can be up to 4,000 characters, and it never changes a badge or a count.
 
@@ -291,7 +292,7 @@ Before you send, the composer says how the message will arrive:
 Each message then shows **Sent · not picked up yet**, **Picked up · working on it**
 or **Acknowledged**, with the outcome the agent recorded through `ack_message`.
 **Withdraw** takes back a message the session has not acknowledged; after pickup the
-agent may already have started. **Not delivered** at the foot of Live sessions lists
+agent may already have started. **Not delivered**, at the foot of the Agents view, lists
 messages to sessions that ended, with **Copy text** and **Withdraw**. An unsent
 message is kept like any other draft, and a send that was not confirmed never sends
 twice.
@@ -339,8 +340,7 @@ It is off until you turn it on, and it works only in the macOS app, not in a bro
 1. Open **Settings → Agent sessions** and turn on **Start sessions from Agent Inbox**.
    The key that signs your approvals is protected by the macOS Keychain, so macOS
    may ask once to allow Agent Inbox to use it.
-2. Open **Live sessions** (the strip at the foot of the window) and choose
-   **New session…**. Pick a project Agent Inbox has seen (or **Choose folder…**), a
+2. On the Dashboard, choose **New session…** at the top of the Agents view. Pick a project Agent Inbox has seen (or **Choose folder…**), a
    mode, optionally a model and reasoning effort, the budgets, and the task. Don't
    paste secrets into the task: it is stored with the session.
 3. Agent Inbox shows its own confirmation of exactly what will start. **Start** runs
@@ -348,12 +348,14 @@ It is off until you turn it on, and it works only in the macOS app, not in a bro
 4. Each tool call that needs your approval arrives in the inbox under **@sessions**:
    choose **Allow once** or **Deny** there. Only the app's own window can answer
    them; a browser tab says so.
-5. Message the session from Live sessions. While it works, a message is **Queued**
+5. Message the session from its card. While it works, a message is **Queued**
    until the turn ends; **Interrupt and send** stops the turn and sends it now.
 6. **Park now** stops Copilot and keeps the session; it also parks by itself after
    two idle hours. **Resume and send** starts it again with your message, and so it
-   does for a session you stopped. **Stop** ends it. **Transcript** shows what it did;
-   **Earlier sessions** lists older ones.
+   does for a session you stopped. **Stop** ends it. **Transcript** (in its session
+   panel) shows what it did; the **Ended** fold lists ended sessions, and **Earlier
+   sessions** inside it older ones. An ended session whose worktree is kept offers
+   **Remove worktree…** on its card, and the fold says how many worktrees are kept.
 7. **Take over in Terminal** moves a running or parked session to a Terminal window:
    after your confirmation, Agent Inbox stops driving it (cancelling its current turn
    and approvals) and runs `copilot --resume` there with its history. From then on you
@@ -439,7 +441,7 @@ Letters do not run shortcuts while you are typing or using a select.
 | Keys | Action |
 |---|---|
 | `G D` / `G I` / `G P` / `G N` / `G H` | Dashboard / Inbox / Plans / Notes / History |
-| `G S` / `G O` / `G A` / `G L` | Settings / project picker / agent filter / Live |
+| `G S` / `G O` / `G A` / `G L` | Settings / project picker / agent filter / Sessions (the Agents view) |
 | `Cmd/Ctrl K` or `/` | Focus search |
 | `J` / `K`, then `Enter` | Move through the queue and expand an item |
 | `R` / `1`-`4` | Focus the current reply / choose an answer |
@@ -603,10 +605,11 @@ Links itself, work only in the viewer the app started itself.
 
 ## Agents view
 
-The Dashboard groups your sessions by agent (Copilot, Claude Code, …), and its
-**Sessions | Agents** switch brings back the session lanes. Each session line has a
-**Message** button. The view adds no poll read, no network traffic beyond this
-machine and nothing to your badges.
+The Dashboard's Agents view is the one home for your sessions: a card for each,
+grouped by project with its agent kind as a chip (or grouped by agent). The sidebar's
+**Sessions** line, on every tab, says how many are working and connected and opens it.
+The view adds no poll read, no network traffic beyond this machine and nothing to
+your badges.
 
 It began as the first phase of the
 [agent mesh design](docs/superpowers/specs/2026-10-29-agent-mesh-design.md) and was

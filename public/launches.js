@@ -1,7 +1,7 @@
 // Issue #412 step 3 — driven sessions on the page (design §3.6, §5.3, §7, §8).
 // Pure: no DOM, no fetch, no clock (callers pass `nowMs`). app.js draws the
-// Live drawer's "Started from Agent Inbox" section, the New session dialog and
-// the transcript panel from what these return.
+// launch cards and session panel (#454), the New session dialog and the
+// transcript from what these return.
 //
 // Presence, not attention: nothing here is read by public/attention.js, a
 // badge, a count, the rail, the dock or a notification. Main decides every
@@ -78,14 +78,6 @@ export function newSessionRequest({ root, worktree, mode, model, reasoningEffort
       ...(worktree === true ? { worktree: true } : {}),
     },
   }
-}
-
-/** A launch's own worktree, for its drawer row (#432), or null when it runs in its folder. */
-export function launchWorktreeLine(launch) {
-  if (typeof launch?.worktree_path !== 'string' || !launch.worktree_path) return null
-  const branch = typeof launch.branch === 'string' ? launch.branch : ''
-  if (launch.worktree_removed_at) return `Worktree removed; its branch ${branch} is kept.`
-  return [`Worktree: ${branch} · ${launch.worktree_path}`, worktreeSummaryText(launch.worktree_summary, branch)].filter(Boolean).join(' · ')
 }
 
 const count = (n, one, many) => `${n} ${n === 1 ? one : many}`
@@ -170,22 +162,6 @@ export function launchStatus(launch, activity, nowMs) {
     return { state: 'lost', text: 'Not responding: its driver may have stopped.', actions: ['close', 'stop', 'transcript'] }
   }
   return { state: 'starting', text: 'Starting…', actions: ['stop', 'transcript'] }
-}
-
-/** "Copilot · Plan first · 12 of 500 tool calls" */
-export function launchSummary(launch) {
-  const mode = LAUNCH_MODES.find((m) => m.id === launch.mode)?.label ?? launch.mode
-  return [
-    'Copilot',
-    mode,
-    launch.model,
-    `${launch.tool_calls ?? 0} of ${launch.budget_tool_calls} tool calls`,
-  ].filter(Boolean).join(' · ')
-}
-
-/** The launch a session belongs to, from /api/launches, or null. */
-export function launchOfSession(launches, session) {
-  return (launches ?? []).find((launch) => Array.isArray(launch.sessions) && launch.sessions.includes(session)) ?? null
 }
 
 /**

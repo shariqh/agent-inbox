@@ -437,7 +437,7 @@ cannot stop nagging is exactly what the viewer rebuild was designed against
 
 - **No `activity` row is written by the hook.** The `activity` table is
   one-row-per-MCP-session; a hook row keyed by the harness session id would show
-  **two** Live entries for one Claude Code session, and would let backstops
+  **two** session cards for one Claude Code session, and would let backstops
   escalate to red after an hour. Blocked terminals stay non-escalating
   (`parked`, then `stale` past 72h).
 - **No SessionEnd "you ended with nothing flagged" note.** The two session-id

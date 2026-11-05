@@ -33,7 +33,7 @@ export interface SessionCard {
   lastCallAt: string | null
   worktree: string | null
   plan: PlanBar | null
-  children: Array<{ name: string; doing: string }>
+  children: Array<{ name: string; doing: string; state: string }>
   trace: number[] | null
   asks: AttentionEntry[]
   /** the first ask is an app session's approval (#412) */

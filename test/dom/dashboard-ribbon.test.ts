@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 // Dashboard 2.0 phase 3 (#305): the Today ribbon, Just landed and "Since you
 // last looked". The ribbon updates in place and never animates; Just landed's
-// arrival highlight is a one-shot per new outcome under the lanes' motion gate;
+// arrival highlight is a one-shot per new outcome under the Dashboard's motion gate;
 // nothing here reaches attention and the poll reads nothing new.
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type Database from 'better-sqlite3'
@@ -604,7 +604,7 @@ describe('attention parity and the budget with the ribbon (#305)', () => {
     ])
   })
 
-  it('stays within 1,500 Dashboard elements over 30 days of many projects, with lanes and a full rail', async () => {
+  it('stays within 1,500 Dashboard elements over 30 days of many projects, with session cards and a full rail', async () => {
     const d = open()
     // Forty projects with a span every eight hours for thirty days.
     for (let p = 0; p < 40; p += 1) {
@@ -627,7 +627,7 @@ describe('attention parity and the budget with the ribbon (#305)', () => {
     range().dispatchEvent(new Event('change', { bubbles: true }))
     await settle()
     expect(ribbonLanes()).toHaveLength(12)
-    expect(document.querySelectorAll('#dashboard .dash-lane')).toHaveLength(12)
+    expect(document.querySelectorAll('#dashboard .agents-home [data-session-card]')).toHaveLength(14)
     expect(document.querySelectorAll('.dash-ribbon-bar').length).toBeLessThanOrEqual(200)
     expect(document.querySelector('.dash-ribbon-more')?.textContent).toBe('+28 more projects')
     const count = document.querySelectorAll('#dashboard *').length

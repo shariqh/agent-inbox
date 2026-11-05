@@ -1,6 +1,9 @@
 export interface LiveSessionSummary { session: string; project: string; agent: string; label: string; tone: string }
 export interface LiveSummary { count: number; idleCount: number; tone: string; label: string; sessions: LiveSessionSummary[] }
 export function liveSummary(activity: unknown[], nowMs: number): LiveSummary
+export interface SessionsSummary { tone: 'fresh' | 'aging' | 'quiet' | 'connected' | 'idle'; label: string; sub: string; working: number; connected: number; older: number }
+/** #454 — the sidebar's Sessions indicator: working by the lanes' isWorking, global, presence only. */
+export function sessionsSummary(activity: unknown[] | null | undefined, nowMs: number, buildOf?: (row: unknown) => { older: boolean } | null): SessionsSummary
 /** issue #45 — the last REAL MCP call (never the liveness heartbeat), falling back to session start. */
 export function lastActivityAt(a: unknown): string
 export const DORMANT_MS: number

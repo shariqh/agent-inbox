@@ -663,7 +663,7 @@ function runMigrations(db: Database.Database): void {
   // issue #197 — the Agent Inbox build the session's MCP server runs, and
   // whether it runs from an installed agent runtime or a checkout, written by
   // that server's own presence and status writes. NULL on legacy rows and on
-  // rows written by older servers: Live then shows nothing rather than a guess.
+  // rows written by older servers: the viewer then shows nothing rather than a guess.
   // Display only, never a liveness or work signal.
   ensureColumn(db, 'activity', 'server_version', 'TEXT')
   ensureColumn(db, 'activity', 'server_source', 'TEXT')

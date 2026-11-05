@@ -131,18 +131,20 @@ describe('closing a project from the rail (issue #32)', () => {
     expect(document.querySelector('.lb-clear')?.textContent).toContain('All clear')
   })
 
-  it('leaves the Live footer strip alone — presence is not attention (§16)', async () => {
+  it('leaves the sidebar Sessions line alone — presence is not attention (§16, #454)', async () => {
     const d = open()
     q(d, 'beta', 'b-question')
     upsertActivity(d, { session: 's1', project: 'beta', stream: 'main', agent: 'claude', doing: 'still working' })
     await bootApp(d)
-    expect(document.getElementById('liveStripLabel')?.textContent).toBe('1 reporting work')
+    expect(document.querySelector('#sessionsIndicator .si-v')?.textContent).toBe('1 working')
 
     click(rowAction('beta', 'rail-close'))
     await settle()
 
-    expect(document.getElementById('liveStripLabel')?.textContent, 'the strip is global, never closure-scoped').toBe('1 reporting work')
-    expect(document.querySelectorAll('#liveStripSessions .live-session')).toHaveLength(1)
+    expect(document.querySelector('#sessionsIndicator .si-v')?.textContent, 'the line is global, never closure-scoped').toBe('1 working')
+    // the Agents home keeps its card, folded under the closed projects
+    expect(document.querySelector('.agents-home [data-ah-fold="closed"]')?.hasAttribute('hidden')).toBe(false)
+    expect(document.querySelector('.agents-home [data-ah-fold="closed"] > summary')?.textContent).toBe('In closed projects (1)')
   })
 })
 

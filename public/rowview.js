@@ -293,7 +293,7 @@ export function relMs(ms) {
 }
 
 // The Live surface used to keep its own thresholds and its own "3h 20m"
-// formatter. §6 wants one system: these are it, and renderLive consumes them.
+// formatter. §6 wants one system: these are it.
 export const FRESH_MS = 60 * 1000
 export const AGING_MS = 5 * 60 * 1000
 
@@ -301,10 +301,6 @@ export function freshnessTone(ageMs) {
   if (ageMs < FRESH_MS) return 'fresh'
   if (ageMs < AGING_MS) return 'aging'
   return 'quiet'
-}
-
-export function ageChip(ageMs) {
-  return { tone: freshnessTone(ageMs), text: relMs(ageMs) }
 }
 
 // The rendered Needs-you list: the attention set over the boards the user is

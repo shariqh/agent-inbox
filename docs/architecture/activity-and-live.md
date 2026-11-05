@@ -8,9 +8,9 @@ paths:
 applyTo: "src/mcp.ts,src/version.ts,src/server-source.ts,public/livebar.js,test/live-tick.test.ts"
 ---
 
-# Activity, presence and Live
+# Activity, presence and the Agents home
 
-Liveness versus work (#45), the call trace and plan lanes (#306), session presence and the session build shown in Live (#197).
+Liveness versus work (#45), the call trace and plan bars (#306), session presence and the session build shown on its card (#197). #454 retired the Live footer strip, its drawer and the Dashboard lanes: every session is a card in the Dashboard's Agents home (`public/agents-home.js` over `public/sessions.js`), and the sidebar's Sessions line is the one global signal.
 
 Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly verbatim. Claude Code and Copilot CLI load this file automatically when they read or edit a file matching the `paths`/`applyTo` globs above (through the symlinks in `.claude/rules/` and `.github/instructions/`); anyone else should read it before changing those files.
 
@@ -28,7 +28,7 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   It rolls to now on each call (a clock moved back counts the stored minute as
   now), is served as `calls`/`calls_at` only while inside the window, stays
   within 150 bytes a session, and the browser rolls it to its own clock. The
-  lane sparkline is one static SVG path updated by attribute; never animate it.
+  card's sparkline is one static SVG path updated by attribute; never animate it.
 - `boards.session` (#306) is the writing MCP session's id, stamped by
   `board_upsert`/`board_row` (null/omitted keeps, `''` clears). A writer change
   alone moves neither `updated_at` nor the board revision; `board_advance`, human
@@ -36,9 +36,10 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   it (an older server's titled `board_get` on a migrated hub passes it through,
   as with `repo_root`). Existing hubs keep the old `boards` update trigger
   beside the new one, so a boards UPDATE moves that version twice, harmlessly.
-  The Dashboard puts a plan on its stamped session's lane first, then falls
+  The Dashboard puts a plan on its stamped session's card first, then falls
   back to project + branch + agent, skipping plans another WORKING session
-  stamped (an idle or gone session's stamp joins).
+  stamped (an idle or gone session's stamp joins); an ask on that plan goes to
+  one card only (`attributeAsks` in `public/sessions.js`).
 - `receives_messages` and `push_wake` (#411) are capability flags carried by the
   same presence writes, kept on omission and served only as `true`.
   `push_wake` says a message is pushed into the session at once: its Claude
@@ -116,12 +117,12 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   otherwise; at most 150 bytes a session (`test/viewer.test.ts` measures the saturated case).
   The browser rolls them to its own clock (`callTrace` in `public/lanes.js`), so
   `/api/activity`'s bytes move only with a call (which moves `last_call_at` anyway) and once
-  at expiry; `activityFrameKey` needs nothing new. The lane's sparkline is one static SVG
+  at expiry; `activityFrameKey` needs nothing new. The card's sparkline is one static SVG
   path (`tracePath`), written by attribute only when its bars change and never animated (the
   #304 rule); the 30-second clock repaint (#298) rolls it with no new read. `activity` is in
   no snapshot, so none of this rebuilds anything; older servers' statements never name the
   columns (their calls record no trace, and they never clear one).
-- **`boards.session` puts a plan on its lane (issue #306, D4).** Additive, nullable: the
+- **`boards.session` puts a plan on its card (issue #306, D4; lanes until #454).** Additive, nullable: the
   writing MCP server's `sessionId` (the same id its presence row carries), stamped by
   `board_upsert` and `board_row` through `ensureBoard`. The plan follows its latest writer,
   like `stream` and `agent`: null or omitted keeps it, `''` clears it. A change of writer
@@ -133,10 +134,10 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   never carry it (`shapeBoard` strips it; `pending()` and the title-less summary never select
   it); an older server sharing a migrated hub (v1.8.0's `shapeBoard` spreads the row) passes
   it through on a titled `board_get`, as with #324's `repo_root`. The
-  Dashboard's join (`linkedPlan` in `public/lanes.js`): a plan stamped with the lane's
+  Dashboard's join (`linkedPlan` in `public/lanes.js`): a plan stamped with the card's
   session wins (the newest such); otherwise D4's project + branch + agent join, leaving out
   plans stamped with another session that is WORKING (`isWorking`); a stamp naming a session
-  that is idle or gone joins as before, so an idle CLI's plan never drops off every lane.
+  that is idle or gone joins as before, so an idle CLI's plan never drops off every card.
   Existing hubs keep v1.8.0's `boards` update trigger beside the new one that also watches
   `session`, so one boards UPDATE moves that domain's version twice: harmless, as #297 allows.
 
@@ -144,12 +145,12 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
 
 These landed after v1 and still hold invariants; the release history itself is in `CHANGELOG.md`.
 
-- **Session presence** *(#28, corrected by #45)* — every MCP session is a Live row; `status()`
+- **Session presence** *(#28, corrected by #45)* — every MCP session is a presence row, drawn as a card in the Agents home (#454); `status()`
   upgrades it, process exit ends it, and a row that stops being heartbeated expires after ~15 min.
   That expiry only ever fires for a **crashed** process: a live one heartbeats itself, so what
   decays for an idle-but-running session is its `doing` CLAIM, not its row (see the two-stamps
   invariant above). `status({doing})` re-asserts instantly; agents never need to keep one alive.
-- **Session build in Live** *(#197, part 1)* — `src/version.ts` is the one place the release version
+- **Session build** *(#197, part 1; on the session cards since #454)* — `src/version.ts` is the one place the release version
   lives in code: `AGENT_INBOX_VERSION` is what the MCP handshake reports AND what presence records.
   A release bumps it beside package.json (`test/release-pipeline.test.ts` pins the pair). At startup
   the server also detects where it runs from (`src/server-source.ts`): `'runtime'` when
@@ -169,12 +170,12 @@ These landed after v1 and still hold invariants; the release history itself is i
   key stamps (identity, size, mtime, ctime) the runtime root, each installed runtime directory and its
   manifest, and the source payload and its manifest, so an install, removal, atomic rename-over or
   manifest edit re-verifies on the next read; a 10-minute backstop covers edits deep inside a
-  runtime. Live reads it at page load, when the drawer opens and after a Setup install — never on
-  the poll. `sessionBuild()` in `public/livebar.js` compares strict semver only and **gives only the
+  runtime. The viewer reads it at page load, when the Agents home (the Sessions line, G L, the Working
+  tile) or a session panel opens, and after a Setup install — never on the poll. `sessionBuild()` in `public/livebar.js` compares strict semver only and **gives only the
   advice that backs THAT session**: a checkout session is told to update and rebuild its checkout; a
   runtime session's advice follows its host's registration (part 2, in `setup-and-installers.md`) in a release viewer; anything
   else, including a legacy row with no source, says only "older build (vY)". Unknown versions on either
-  side render no hint. The drawer shows every label and the full hint (the collapsed idle fold counts older builds);
-  the strip adds only an "older build" marker. Presence, not attention: no badge, Needs-you, count or
+  side render no hint. The session panel shows every label and the full hint; a card adds only an
+  "older build" (or "newer build") chip carrying the hint, and the Sessions line counts older builds. Presence, not attention: no badge, Needs-you, count or
   notification. Part 1's "installed" was per machine, so a host Setup had not moved still restarted into
   its old runtime; part 2 (in `setup-and-installers.md`) narrows the runtime advice per host.

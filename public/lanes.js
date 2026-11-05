@@ -1,6 +1,8 @@
-// Live lanes and the Now strip (#304, Dashboard 2.0 phase 2). Pure: no DOM, the
-// clock injected as `nowMs`. One lane per WORKING session, from /api/activity,
-// /api/boards and the attention set the caller already built; no new reads.
+// The Now strip's model (#304, Dashboard 2.0 phase 2) and the session helpers
+// the Agents home reads (#454, which retired the lanes the model is named for).
+// Pure: no DOM, the clock injected as `nowMs`. One lane per WORKING session,
+// from /api/activity, /api/boards and the attention set the caller already
+// built; no new reads.
 //
 // Working is the claim and `last_call_at` alone (#45): a row whose claim is not
 // idle and whose last real call (or, before its first, its start) is within the
@@ -14,8 +16,6 @@ const CLAIM_COLD_MS = 30 * 60_000 // src/store.ts CLAIM_COLD_MS
 // decays. The proposal leaves N open; 5 minutes is where freshnessTone
 // (rowview.js AGING_MS) already calls a session quiet.
 export const QUIET_MS = 5 * 60_000
-// The Dashboard draws at most 12 lanes (§10 DOM budget).
-export const MAX_LANES = 12
 
 const callAt = (row) => Date.parse(row?.last_call_at ?? row?.started_at ?? '')
 
@@ -166,38 +166,6 @@ export function pinLaneOrder(previous, lanes) {
   const kept = (previous ?? []).filter((session) => present.has(session))
   const known = new Set(kept)
   return [...kept, ...lanes.map((lane) => lane.session).filter((session) => !known.has(session))]
-}
-
-// Lanes run no infinite animation (#304: a loop cost ~5.6 pp of renderer and
-// ~34 pp of GPU CPU). Motion is one-shot per real event: a lane pulses once when
-// its `last_call_at` moves forward, and the sweep runs once on the lane whose
-// call is the newest of those. `previous` maps session → the last call already
-// seen; a session it has not seen (first paint, a lane that just appeared) never
-// pulses, and an unchanged call never does either.
-export function calledLanes(previous, drawn) {
-  const pulse = new Set()
-  let sweep = null
-  for (const lane of drawn) {
-    const seen = previous.get(lane.session)
-    if (seen === undefined || !(Date.parse(lane.lastCallAt) > Date.parse(seen))) continue
-    pulse.add(lane.session)
-    if (!sweep || lane.sinceMs < sweep.sinceMs) sweep = lane
-  }
-  return { pulse, sweep: sweep?.session ?? null }
-}
-
-// #307: the lanes' quick filters, window-local view state like the lens. They
-// narrow the drawn lanes only: the Now strip, the rail, attention, the badge
-// and the dock never read them.
-export function laneMatches(lane, filters) {
-  return (!filters?.project || lane.project === filters.project) && (!filters?.agent || lane.agent === filters.agent)
-}
-
-// The choices each filter offers: what the lanes hold, plus a chosen value no
-// lane holds any more, so the select still says what it filters by.
-export function laneFilterChoices(lanes, filters) {
-  const pick = (key) => [...new Set([...lanes.map((lane) => lane[key]), filters?.[key]].filter(Boolean))].sort()
-  return { project: pick('project'), agent: pick('agent') }
 }
 
 // #307: the session focus panel reads a lane and the data the Dashboard

@@ -197,8 +197,9 @@ These landed after v1 and still hold invariants; the release history itself is i
   that raises the question. A closed project leaves the §7 attention set **entirely** — badge, title,
   Needs-you count, triage deck — via a 5th `closedProjects` argument to `attentionEntries`, so there
   is still exactly ONE predicate; `countsByProject` deliberately stays unsuppressed because the
-  rail's closed fold is where the number is RELOCATED, not destroyed. Live presence (footer strip and
-  drawer) is untouched: presence is not attention. Clicking a closed project PEEKS (a banner above
+  rail's closed fold is where the number is RELOCATED, not destroyed. Session presence (the sidebar's
+  Sessions line, and the Agents home, whose closed projects' sessions fold under "In closed
+  projects") is untouched: presence is not attention. Clicking a closed project PEEKS (a banner above
   the panel says the badge excludes what you are looking at); only × / ↩ / a new flag mutate.
   Closing also retires the project from #30's PR poller (`listLinkTargets` filters through
   `closedProjects`, never the raw table, so a derived reopen resumes polling by itself) — a retired

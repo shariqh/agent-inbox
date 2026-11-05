@@ -10,7 +10,7 @@
 // Electron bridge, one host's fixed target after another — no new command, and
 // one host's missing CLI never blocks the other — and never switches a
 // checkout or custom registration. Afterwards it re-reads every host, refreshes
-// Live, and says which running sessions still need a restart and how; it never
+// the session cards (#454), and says which running sessions still need a restart and how; it never
 // claims a running session reloaded.
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { mkdirSync, realpathSync, writeFileSync } from 'node:fs'
@@ -340,7 +340,7 @@ describe('Setup shows what each host\'s agents run (#197)', () => {
     expect(updateButton()).toBeNull()
   })
 
-  it('after an update, re-reads each host, refreshes Live, and says which running sessions still need a restart', async () => {
+  it('after an update, re-reads each host, refreshes the session cards, and says which running sessions still need a restart', async () => {
     const release = releaseRuntime('2.0.0')
     release.register('claude', release.installVersion('1.2.8'))
     registerHost(release.home, 'copilot', process.execPath, join(checkoutIn(release), 'dist', 'mcp-server.js'))
@@ -360,11 +360,10 @@ describe('Setup shows what each host\'s agents run (#197)', () => {
     await bootApp(db, { viewer: { ...release.viewer, stamp: async () => null as never } })
     await settle()
     await pollTick()
-    const liveHint = (project: string): string | null =>
-      [...document.querySelectorAll('#liveDrawer .live-entry')]
-        .find((el) => el.querySelector('.live-who')?.textContent?.includes(project))
-        ?.querySelector('.live-build-hint')?.textContent ?? null
-    expect(liveHint('alpha')).toBe('older build (v1.2.8) — update agents from Setup, then restart this session')
+    // #454: a session card's build chip carries the advice
+    const liveHint = (session: string): string | null =>
+      document.querySelector<HTMLElement>(`[data-session-card="session:${session}"] .sc-chip.tone-warn`)?.title ?? null
+    expect(liveHint('c1')).toBe('older build (v1.2.8) — update agents from Setup, then restart this session')
 
     click(updateButton())
     await settle()
@@ -385,10 +384,10 @@ describe('Setup shows what each host\'s agents run (#197)', () => {
       + 'Claude Code: 2 running sessions still run an older build. Restart each one to load v2.0.0: exit it, then run claude --resume to pick the conversation back up.',
     )
     expect(restart.textContent).not.toMatch(/reloaded|reconnect/i)
-    // and Live's advice follows the new registration, without reopening anything
+    // and the cards' advice follows the new registration, without reopening anything
     await pollTick()
-    expect(liveHint('alpha')).toBe('older build (v1.2.8) — restart this session to load v2.0.0')
-    expect(liveHint('gamma')).toBe('older build (v1.2.8) — update and rebuild its checkout, then restart this session')
+    expect(liveHint('c1')).toBe('older build (v1.2.8) — restart this session to load v2.0.0')
+    expect(liveHint('p1')).toBe('older build (v1.2.8) — update and rebuild its checkout, then restart this session')
   })
 
   it('re-reads what each host runs whenever Settings opens, so a terminal install shows up', async () => {
@@ -436,11 +435,11 @@ describe('Setup shows what each host\'s agents run (#197)', () => {
       + 'Claude Code: 1 running session still runs a newer build. Restart it to load v2.0.0: exit it, then run claude --resume to pick the conversation back up.',
     )
     expect(restart.textContent).not.toMatch(/reloaded|reconnect/i)
-    // and Live marks the session still on the newer build, without reopening anything
+    // and its card marks the session still on the newer build, without reopening anything
     await pollTick()
-    const ahead = [...document.querySelectorAll('#liveDrawer .idle-row')]
-      .find((el) => el.querySelector('.live-who')?.textContent?.includes('alpha'))
-    expect(ahead?.querySelector('.live-build-hint')?.textContent).toBe('newer build (v2.1.0) — restart this session to load v2.0.0')
+    const chip = document.querySelector<HTMLElement>('[data-session-card="session:ahead"] .sc-chip.tone-warn')
+    expect(chip?.textContent).toBe('newer build')
+    expect(chip?.title).toBe('newer build (v2.1.0) — restart this session to load v2.0.0')
   })
 
   it('a failed update says so, re-reads the hosts, and gives no restart advice', async () => {

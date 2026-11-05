@@ -15,5 +15,6 @@ export interface NewSessionFields {
 export function newSessionRequest(fields: NewSessionFields): { request: Record<string, unknown> } | { error: string }
 export type LaunchState = 'starting' | 'running' | 'stopping' | 'lost' | 'parked' | 'ended' | 'failed' | 'handed_off'
 export function launchSessions(launch: { id: string }, activity: unknown[] | null | undefined): unknown[]
-export function launchStatus(launch: Record<string, unknown>, activity: unknown[] | null | undefined, nowMs: number): { state: LaunchState; text: string; actions: string[] }
+export function launchStatus(launch: Record<string, unknown>, activity: unknown[] | null | undefined, nowMs: number): { state: LaunchState; text: string; actions: string[]; budget?: true }
+export function budgetAllowance(launch: Record<string, any>, fields: { activeHours: unknown; toolCalls: unknown }): { add: { activeMs: number; toolCalls: number } } | { error: string }
 export function transcriptLines(events: unknown[] | null | undefined): Array<{ kind: 'text' | 'tool' | 'ask' | 'answer' | 'note'; text: string }>

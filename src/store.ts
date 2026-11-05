@@ -4201,6 +4201,19 @@ export function listLaunches(db: Database.Database): Launch[] {
 // per-launch totals, §7) or ended for its permissions.
 const RESUMABLE_END = `status = 'ended' AND end_reason = 'stopped' AND acp_session IS NOT NULL
                        AND (worktree_path IS NULL OR worktree_removed_at IS NULL)`
+// #451: one a budget ended, likewise kept, resumes only with a new allowance the human confirmed
+const BUDGET_END = `status = 'ended' AND end_reason IN ('budget:active_time', 'budget:tool_calls') AND acp_session IS NOT NULL
+                    AND (worktree_path IS NULL OR worktree_removed_at IS NULL)`
+
+/**
+ * #451: what main's confirmation added to a budget-ended launch's totals, bound to the row
+ * `revision` it showed, so an allowance never lands on a launch that changed since.
+ */
+export interface BudgetRaise {
+  revision: number
+  activeMs: number
+  toolCalls: number
+}
 
 /** What a resumed stopped launch was, so a refused start restores it exactly (restoreStoppedLaunch). */
 export interface StoppedEnd {
@@ -4209,28 +4222,39 @@ export interface StoppedEnd {
   end_detail: string | null
   stop_requested_at: string | null
   driver_pid: number | null
+  budget_active_ms: number
+  budget_tool_calls: number
 }
 
 // A resumed launch's driver takes its row back, parked or resumably ended →
 // running, in one statement, so two Resume clicks cannot both start a driver on
 // it. `resumedFrom` says which, so a refused start puts it back as it was, and
-// `previous` holds a stopped launch's end for that.
+// `previous` holds an ended launch's end for that. #451: with a `raise`, only a
+// budget-ended launch still at the confirmed revision is taken, its totals rise by
+// exactly the allowance, and both must then exceed what it used.
 export function resumeLaunch(
   db: Database.Database,
   id: string,
   driverPid: number,
+  raise?: BudgetRaise,
 ): (LaunchRecord & { resumedFrom: 'parked' | 'ended'; previous: StoppedEnd | null }) | null {
   if (!LAUNCH_ID.test(id)) return null
+  const where = raise
+    ? `id = @id AND revision = @revision AND ${BUDGET_END}
+       AND budget_active_ms + @addActive > active_ms AND budget_tool_calls + @addCalls > tool_calls`
+    : `id = @id AND (status = 'parked' OR (${RESUMABLE_END}))`
+  const params = { id, revision: raise?.revision ?? 0, addActive: raise?.activeMs ?? 0, addCalls: raise?.toolCalls ?? 0 }
   return db.transaction(() => {
-    const prior = db.prepare(`SELECT status, ended_at, end_reason, end_detail, stop_requested_at, driver_pid FROM launches
-                               WHERE id = ? AND (status = 'parked' OR (${RESUMABLE_END}))`).get(id) as (StoppedEnd & { status: LaunchStatus }) | undefined
+    const prior = db.prepare(`SELECT status, ended_at, end_reason, end_detail, stop_requested_at, driver_pid, budget_active_ms, budget_tool_calls
+                                FROM launches WHERE ${where}`).get(params) as (StoppedEnd & { status: LaunchStatus }) | undefined
     const before = prior?.status
     if (!prior || (before !== 'parked' && before !== 'ended')) return null
     const row = db.prepare(`UPDATE launches
                                SET status = 'running', parked_at = NULL, park_reason = NULL, ended_at = NULL, end_reason = NULL, end_detail = NULL,
-                                   stop_requested_at = NULL, driver_pid = ?, updated_at = ?, revision = revision + 1
-                             WHERE id = ? AND (status = 'parked' OR (${RESUMABLE_END}))
-                         RETURNING *`).get(driverPid, new Date().toISOString(), id) as (Omit<LaunchRecord, 'sessions'> & { sessions: string | null }) | undefined
+                                   stop_requested_at = NULL, driver_pid = @pid, updated_at = @now, revision = revision + 1,
+                                   budget_active_ms = budget_active_ms + @addActive, budget_tool_calls = budget_tool_calls + @addCalls
+                             WHERE ${where}
+                         RETURNING *`).get({ ...params, pid: driverPid, now: new Date().toISOString() }) as (Omit<LaunchRecord, 'sessions'> & { sessions: string | null }) | undefined
     // a Take over asked of an earlier driver that never took it is stale: this resume was asked after it
     if (row) db.prepare(`DELETE FROM hook_watch_claims WHERE claim_key = ?`).run(`driver-handoff:${id}`)
     if (!row) return null
@@ -4239,12 +4263,13 @@ export function resumeLaunch(
   }).immediate()
 }
 
-// A refused resume of a stopped launch puts its end back exactly as it was,
-// only while this driver still holds the row it took (running, its pid).
+// A refused resume of an ended launch puts its end (and #451 its budgets) back
+// exactly as they were, only while this driver still holds the row it took (running, its pid).
 export function restoreStoppedLaunch(db: Database.Database, id: string, driverPid: number, previous: StoppedEnd): boolean {
   return db.prepare(`UPDATE launches
                         SET status = 'ended', ended_at = @ended_at, end_reason = @end_reason, end_detail = @end_detail,
-                            stop_requested_at = @stop_requested_at, driver_pid = @previous_pid, updated_at = @now, revision = revision + 1
+                            stop_requested_at = @stop_requested_at, driver_pid = @previous_pid,
+                            budget_active_ms = @budget_active_ms, budget_tool_calls = @budget_tool_calls, updated_at = @now, revision = revision + 1
                       WHERE id = @id AND status = 'running' AND driver_pid = @driver_pid`).run({
     ...previous, previous_pid: previous.driver_pid, id, driver_pid: driverPid, now: new Date().toISOString(),
   }).changes === 1

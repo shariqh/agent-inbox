@@ -358,17 +358,15 @@ the grid, instead of after the whole list. Below 900 px that is inline under the
 | 5. Every ask on a card | Attribution steps 2–3, ask-only cards, the parity test; the ask strip opens the panel; the panel mounts `answerEl`/`rowAnswerEl` with the icons and answered lines, under the draft rules; `jumpToAsk` → panel. The rail stays one more PR, drawing the same entries through the same functions | M: ~300 / ~350 |
 | 6. Retire the rail; cleaner cards | Remove `#dashRail`, `renderDashRail`, `dashRailCardEl`, the dashboard model's `rail`; full-width grid; header Later and Review queue; the Now tile, keys and ⌘K; V1–V5 CSS; the narrow panel position; the Inbox's session token and Show on Agents; docs; port and delete `dashboard-rail.test.ts` | M: ~250 added, ~450 removed / ~300 |
 
-### A.6 Questions for the owner
+### A.6 Decisions (owner, 2026-11-04)
 
-1. **Can the card answer in one click?** Recommended: no. The ask strip opens the panel, which
-   keeps one editor host and avoids a mis-click. The alternative is a ★-recommended pill on the
-   card, through the same `sendReply`.
-2. **Where does a notification click land?** Recommended: the Inbox card, as today. It is the
-   by-ask list and holds every ask's context. The alternative is the ask's session panel on the
-   Dashboard.
-3. **Narrow windows:** recommended, the panel opens inline under its card. The alternative is a
-   full-screen sheet with Back.
-4. **Inbox consistency:** recommended, add the "live · branch / session ended" token and Show on
-   Agents ›. The alternative is to leave the Inbox exactly as it is.
+The owner approved the mockups and all four recommendations:
+
+1. **The card does not answer in one click.** The ask strip opens the panel at that ask, which
+   keeps one editor host and avoids a mis-click.
+2. **A notification click lands on the Inbox card**, as today.
+3. **Narrow windows:** the panel opens inline under its card.
+4. **Inbox consistency:** each ask row carries the "live · branch" or "session ended" token, and
+   the open ask offers **Show on Agents ›**.
 
 Mockups (e)–(h), with numbered callouts, are shared with the owner separately and not committed.

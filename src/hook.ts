@@ -755,7 +755,8 @@ function cmdSessionStep(ctx: Ctx): HookResult {
 // failure is logged and the subcommand goes on exactly as before.
 function stampHost(ctx: Ctx, db: Database.Database, servers: Iterable<string>, kind: 'turn' | 'idle' | 'tool'): void {
   try {
-    recordHostEvent(db, [...servers], kind, ctx.nowMs)
+    // the clock now, not the hook's start: a watch stamps up to 29 minutes later
+    recordHostEvent(db, [...servers], kind, Date.now())
   } catch (err) {
     logLine(ctx.dbPath, `stamp ${kind}: ${err instanceof Error ? err.message : String(err)}`)
   }
@@ -853,6 +854,11 @@ async function cmdWatch(ctx: Ctx): Promise<HookResult> {
   }
   try {
     const scope = sessionScope(db, ctx, project)
+    // #466: a wake starts a turn that fires no UserPromptSubmit, so it stamps one itself
+    const woke = (result: HookResult): HookResult => {
+      stampHost(ctx, db, scope.host === null ? [] : liveServers(db, scope.host), 'turn')
+      return result
+    }
     lease.key = scope.host !== null
       ? `host:${scope.host}`
       : ctx.ev.session_id ? `session:${ctx.ev.session_id}:${project}` : `project:${project}`
@@ -866,7 +872,7 @@ async function cmdWatch(ctx: Ctx): Promise<HookResult> {
     // a message that arrives later wakes this watcher
     const seenMessages = new Set(scope.host === null ? [] : listOpenMessages(db, [...scope.servers]).map((message) => message.id))
     const ready = unpickedResponses(db, scope.projects)
-    if (ready.length && ctx.ev.stop_hook_active !== true) return wake(ready)
+    if (ready.length && ctx.ev.stop_hook_active !== true) return woke(wake(ready))
     // a linked watcher stays for the session's later questions, even with nothing waiting yet
     if (scope.host === null && !awaited.size && !watchedRows.length) return EMPTY
     claim()
@@ -899,7 +905,7 @@ async function cmdWatch(ctx: Ctx): Promise<HookResult> {
           const at = scope.projects.indexOf(p)
           return at === -1 ? scope.projects.length : at
         }
-        return wake([...responses].sort(([a], [b]) => rank(a) - rank(b)), messages)
+        return woke(wake([...responses].sort(([a], [b]) => rank(a) - rank(b)), messages))
       }
       if (superseded || (scope.host === null && !waiting)) return EMPTY
       await delay(ctx.opts.watchPollMs)

@@ -74,10 +74,15 @@ const hostAt = (row) => Math.max(time(row?.host_turn_at) ?? 0, time(row?.host_id
 const agoText = (ms) => (relMs(ms) === 'moments' ? 'just now' : `${relMs(ms)} ago`)
 
 // A busy card with no claim: how long its turn has run, and its last tool.
+// A turn a hook started (no UserPromptSubmit) has no start of its own: only its last tool.
 function turnRecency(row, nowMs) {
-  const turn = time(row.host_turn_at) ?? nowMs
+  const turn = time(row.host_turn_at)
+  const idle = time(row.host_idle_at)
   const tool = time(row.host_tool_at)
-  return [`turn running ${since(ago(nowMs, turn))}`, ...(tool !== null && tool >= turn ? [`last tool ${agoText(ago(nowMs, tool))}`] : [])].join(' · ')
+  const parts = []
+  if (turn !== null && (idle === null || turn > idle)) parts.push(`turn running ${since(ago(nowMs, turn))}`)
+  if (tool !== null && (turn === null || tool >= turn)) parts.push(`last tool ${agoText(ago(nowMs, tool))}`)
+  return parts.join(' · ')
 }
 
 // The kind of an ask: an app session's approval (#412), filed in `@sessions`

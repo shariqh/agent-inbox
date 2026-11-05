@@ -28,7 +28,13 @@ export function isWorking(row, nowMs) {
 // #466: what the host's hooks say. A turn stamp newer than its idle stamp is a
 // running turn while the newest host stamp is inside the hour (an interrupted
 // turn fires no Stop); an idle stamp at or after the turn is a turn that ended.
+// A tool stamp well after the idle stamp also means a turn runs: one a hook
+// started (a third-party Stop hook that blocked, an asyncRewake) fires no
+// UserPromptSubmit. The margin keeps the last tool's async PostToolUse, which
+// can land just after its Stop, from reopening a turn that ended; the next tool
+// stamp, at most 30 s later, still does.
 const HOST_TURN_MS = 60 * 60_000
+const HOST_TOOL_MARGIN_MS = 5_000
 const stampAt = (iso) => {
   const at = Date.parse(iso ?? '')
   return Number.isFinite(at) ? at : null
@@ -36,11 +42,14 @@ const stampAt = (iso) => {
 
 /** 'busy', 'waiting' or 'unknown' (no hook stamps, or a turn gone stale). */
 export function hostState(row, nowMs) {
-  const turn = stampAt(row?.host_turn_at)
   const idle = stampAt(row?.host_idle_at)
-  if (turn === null) return idle === null ? 'unknown' : 'waiting'
+  const tool = stampAt(row?.host_tool_at)
+  // a tool counts as a turn's start only past the margin after an idle stamp
+  const toolTurn = tool !== null && (idle === null || tool - idle > HOST_TOOL_MARGIN_MS) ? tool : null
+  const turn = Math.max(stampAt(row?.host_turn_at) ?? -Infinity, toolTurn ?? -Infinity)
+  if (turn === -Infinity) return idle === null ? 'unknown' : 'waiting'
   if (idle !== null && idle >= turn) return 'waiting'
-  return nowMs - Math.max(turn, stampAt(row?.host_tool_at) ?? 0) < HOST_TURN_MS ? 'busy' : 'unknown'
+  return nowMs - Math.max(turn, tool ?? 0) < HOST_TURN_MS ? 'busy' : 'unknown'
 }
 
 /** Working by its claim, or by a running host turn with no claim (#466). Plan joins keep `isWorking`. */

@@ -113,7 +113,9 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   claim or a span, and `listActivity`'s claim decay is unchanged, so host work never
   revives a cold claim. Served only while set. `hostState` (`public/lanes.js`) reads
   `busy` (a turn newer than its idle, the newest stamp under an hour old), `waiting` or
-  `unknown`; `isBusy` = `isWorking` or `busy`. A busy card with no claim is Working,
+  `unknown`. A turn a hook starts fires no UserPromptSubmit: `watch` stamps one before
+  its exit-2 wake, and a tool stamp more than 5 s after the idle stamp counts as a turn
+  (the margin absorbs the last tool's async PostToolUse landing after its Stop); `isBusy` = `isWorking` or `busy`. A busy card with no claim is Working,
   "Task not reported", "turn running 35m · last tool 20s ago"; `waiting` is Idle, "turn
   ended 12m ago"; the Sessions line and the Now strip's Working count use `isBusy`.
   Plan joins, lanes and `linkedPlan` keep `isWorking`; dormancy and card order also

@@ -232,7 +232,7 @@ runtime; `src/hook-cli.ts` is the thin entry that owns stdin and the exit code.
 | `UserPromptSubmit` | `prompt-submit` | 10s | clears this session's backstop; stamps a turn started (#466); nudges if an answer is unpicked or a message to this session is open | one JSON object |
 | `Stop` | `stop` | 10s | clears this session's backstop; bounces the agent back to work if an answer is unpicked, or once per new message to this session; a Stop that does not bounce stamps the turn ended (#466) | one JSON object |
 | `PreToolUse`, `PostToolUse` (async) | `activity` | 5s | stamps "a tool ran" on this session's presence row, at most once per 30 s (#466) | *(empty)* |
-| `Stop` (asyncRewake) | `watch` | 1800s | polls until the human answers one of this session's requests or messages it, then exits **2** to wake the model | *(empty; stderr carries the payload)* |
+| `Stop` (asyncRewake) | `watch` | 1800s | polls until the human answers one of this session's requests or messages it, then stamps a turn started (#466) and exits **2** to wake the model | *(empty; stderr carries the payload)* |
 | *(manual/cron)* | `sweep` | — | runs the 24h janitor over orphaned backstop items | *(empty)* |
 | *(installer only)* | `selftest` | — | proves the resolved Node can load `better-sqlite3`. The ONE subcommand allowed to exit non-zero on failure | one line |
 
@@ -269,7 +269,14 @@ servers, found the #253 way (the hook's parent process is the server's recorded
 `host_pid`, and the server still runs): `host_turn_at` on `prompt-submit`,
 `host_idle_at` on a `stop` that does not bounce the agent and on an `idle_prompt`
 notification (an interrupted turn fires no Stop), and `host_tool_at` from
-`activity`. Nothing else is stored: no tool name, argument, prompt or Claude
+`activity`. A turn that `watch` wakes (exit 2) fires no UserPromptSubmit, so `watch`
+stamps `host_turn_at` itself just before it wakes the model. A turn some other hook
+starts (a third-party Stop hook that blocks after ours stamped the turn ended) stamps
+no turn at all; the viewer counts a tool stamp more than 5 seconds after the idle
+stamp as a running turn instead. The margin is for a race it accepts: the last
+tool's async `PostToolUse` can land just after its Stop. Inside 5 s it reopens
+nothing; a slower one reads Working until the next `idle_prompt` (about a minute
+later) or prompt stamps the turn again. Nothing else is stored: no tool name, argument, prompt or Claude
 session id. No link (an older server, a wrapper process such as `npx`) means no
 stamp, and a failed stamp is logged and changes nothing a hook prints.
 

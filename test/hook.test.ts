@@ -2412,6 +2412,23 @@ describe('hook: host stamps (#466)', () => {
     db.close()
   })
 
+  it('a watch wake starts a turn: the woken turn fires no UserPromptSubmit (#473 review)', async () => {
+    const { env, dbPath } = freshEnv({ AGENT_INBOX_WATCH_SECS: '4', AGENT_INBOX_WATCH_POLL_MS: '20' })
+    const db = openDb(dbPath)
+    linkServer(db, 'mcp-1', PROJECT)
+    const id = question(db, PROJECT, 'Which pool?', 'mcp-1')
+    expect(await runHook(['stop'], ev(), env)).toEqual({ stdout: '' })
+    const idle = stamps(db).idle!
+    const running = runHook(['watch'], ev(), env)
+    await armed(dbPath)
+    expect(stamps(db).turn).toBeUndefined()
+    await sleep(5)
+    replyItem(db, id, 'tank')
+    expect(await running).toMatchObject({ stdout: '', exitCode: 2 })
+    expect(stamps(db).turn! > idle).toBe(true)
+    db.close()
+  })
+
   it('activity prints nothing, stamps a tool and opens nothing again until a stamp is due', async () => {
     const { env, dbPath } = freshEnv()
     const db = openDb(dbPath)

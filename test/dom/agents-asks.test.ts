@@ -5,7 +5,7 @@
 // the Inbox's own controls and writes, under the rail's draft rules.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type Database from 'better-sqlite3'
-import { closeProject, endActivity, getItem, insertItem, listBoards, resolveItem, upsertActivity, upsertBoard } from '../../src/store.js'
+import { closeProject, endActivity, getItem, insertItem, listBoards, recordActivityCall, resolveItem, upsertActivity, upsertBoard } from '../../src/store.js'
 import type { ViewerBridge } from './harness.js'
 import {
   advanceClock, answerInput, badgeCount, bootApp, buttonLabelled, click, freshDb, navigateToHash, pollTick, row,
@@ -282,6 +282,57 @@ describe('the panel’s draft rules (#454 A.2)', () => {
     expect(panel().dataset.session).toBe('gone')
     expect(panel().querySelector<HTMLElement>('.dash-focus-gone')?.hidden).toBe(true)
     expect(card('session:gone')?.classList.contains('sel')).toBe(true)
+  })
+
+  // #462 re-check: two working sessions on one branch trade an unstamped plan's row on every call
+  async function tradedRow(d: Database.Database) {
+    const id = blockedRow(d, 'Run the soak')
+    for (const session of ['w1', 'w2']) {
+      advanceClock()
+      live(d, session, { receives_messages: true })
+      recordActivityCall(d, session)
+    }
+    await bootApp(d)
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    // the newest call links the plan: w2
+    expect(card('session:w2')?.querySelector<HTMLElement>('.sc-ask')?.hidden).toBe(false)
+    await answerOn('session:w2')
+    type(editor(id), 'Started it')
+    return id
+  }
+  const call = async (d: Database.Database, session: string) => {
+    advanceClock()
+    recordActivityCall(d, session)
+    await pollTick()
+  }
+
+  it('stays on its own card while the row it drafts on moves between working sessions', async () => {
+    db = freshDb()
+    const id = await tradedRow(db)
+    const input = editor(id)!
+    input.focus()
+    for (const session of ['w1', 'w2', 'w1']) {
+      await call(db, session)
+      expect(panel().dataset.session, session).toBe('w2')
+      expect(editor(id)).toBe(input)
+    }
+    expect(card('session:w1')?.querySelector<HTMLElement>('.sc-ask')?.hidden).toBe(false)
+    expect(card('session:w2')?.classList.contains('sel')).toBe(true)
+    expect(card('session:w1')?.classList.contains('sel')).toBe(false)
+  })
+
+  it('never moves a message being written to another session when a drafted row leaves the card', async () => {
+    db = freshDb()
+    await tradedRow(db)
+    const composer = panel().querySelector<HTMLTextAreaElement>('.dash-focus-message textarea')!
+    composer.focus()
+    type(composer, 'For w2 only')
+    expect(document.activeElement).toBe(composer)
+    await call(db, 'w1')
+    expect(panel().dataset.session).toBe('w2')
+    expect(composer.isConnected).toBe(true)
+    expect(document.activeElement).toBe(composer)
+    expect(composer.closest<HTMLElement>('.msg-composer')?.dataset.msgSession).toBe('w2')
   })
 
   it('restores focus after a rebuild only while the document has it', async () => {

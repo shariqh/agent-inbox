@@ -177,7 +177,10 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   it (and skips an unchanged one, moving only its ages); the hold is the panel's
   (`focusSession`), never its card's, because a card's id moves under an open panel (its
   session ends; an ask-only card's session comes back, when `followHeldAsk` moves the panel
-  to the card now holding the drafted ask without rebuilding it); a forced paint rebuilds it; it
+  to the card now holding the drafted ask without rebuilding it, but only once the panel's
+  own card has gone and focus is not elsewhere in the panel: while that card exists the
+  panel never moves, though two working sessions trade a joined plan's row on every call);
+  a forced paint rebuilds it; it
   restores focus (`captureCardFocus`, and `restoreDraftFocus` scoped to `#dashFocus`) only
   with the document's. Closing the panel drops its editors and keeps the drafts in
   `draftReplies`/`rowDrafts`; the card then says "Answer · draft". `jumpToAsk` and ⌘K

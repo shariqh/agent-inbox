@@ -2486,26 +2486,21 @@ function panelAnsweredEl(entry, nowMs) {
   return line
 }
 
-// The asks the panel's section is holding for the human: drafted, or holding
-// focus (a background window's remembered focus included).
-function heldPanelAsks(list) {
-  const active = document.activeElement
-  return [...list.querySelectorAll('[data-panel-ask]')]
-    .filter((el) => holdsDraft(el.dataset.panelAsk) || (active && el.contains(active)))
-    .map((el) => el.dataset.panelAsk)
-}
-
-// A poll whose cards moved a held ask off the panel's card (the session came
-// back live, a new working session joined its plan) moves the panel with it,
-// rebuilding nothing: the held section stays, now under its new card's key.
+// The panel follows a drafted ask only when its own card has VANISHED (an
+// ask-only card whose session came back live, or whose only ask moved): the
+// held section stays, rebuilding nothing, now under the key of the card that
+// holds that ask. While the panel's card exists it never moves, whatever its
+// asks do (two working sessions trade a joined plan's row on every call), and
+// focus elsewhere in the panel (the composer) keeps it where it is.
 function followHeldAsk(aside) {
   const list = aside.querySelector('.dash-focus-asks')
   if (!list || !focusSession || list.dataset.panel !== focusSession) return
-  const held = heldPanelAsks(list)
-  if (!held.length) return
-  const card = agentsHome.cardFor(focusSession)
-  if (card && card.asks.some((entry) => held.includes(needsEntryId(entry)))) return
-  const key = held.map((id) => agentsHome.askKey(id)).find(Boolean)
+  if (agentsHome.cardFor(focusSession)) return
+  const blocks = [...list.querySelectorAll('[data-panel-ask]')].filter((el) => holdsDraft(el.dataset.panelAsk))
+  if (!blocks.length) return
+  const active = document.activeElement
+  if (active && aside.contains(active) && !blocks.some((el) => el.contains(active))) return
+  const key = blocks.map((el) => agentsHome.askKey(el.dataset.panelAsk)).find(Boolean)
   if (!key || key === focusSession) return
   focusSession = key
   list.dataset.panel = key

@@ -616,7 +616,6 @@ describe('an older viewer and attention parity (#411)', () => {
       const items = await fetch('/api/items?scope=attention')
       const boards = await fetch('/api/boards?scope=attention')
       const dashboard = {
-        rail: [...document.querySelectorAll('#dashRail [data-rail-card]')].map((el) => el.textContent),
         now: document.querySelector('#dashboard .dash-now')?.textContent,
         // the cards are presence: their doing lines say nothing of messages
         cards: [...document.querySelectorAll('#dashboard [data-session-card] .sc-doing')].map((el) => el.textContent),

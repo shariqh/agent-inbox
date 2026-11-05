@@ -9,8 +9,8 @@
 Agent Inbox gives GitHub Copilot CLI and Claude Code one shared place to surface
 decisions, handoffs, notes, milestones, and multi-step plans. You respond in the
 Electron app; agents pick the response up through MCP and continue working.
-The app opens on the Dashboard: a card for each session, a Needs you rail
-you can answer from, a Today ribbon of each project's activity, and what just
+The app opens on the Dashboard: a card for each session, with its asks answered
+in its session panel, a Today ribbon of each project's activity, and what just
 landed. You can also send a message to a running session.
 
 ![Agent Inbox showing a synthetic decision queue, plan row, response options, and live agents](docs/assets/agent-inbox-overview.png)
@@ -23,7 +23,7 @@ share one SQLite database on your machine.
 
 | Capability | What you get |
 |---|---|
-| **Dashboard** | A Needs you rail you answer from, a card per session with its plan's progress and recent activity, and a Today ribbon of asks and outcomes |
+| **Dashboard** | A card per session with its asks, its plan's progress and recent activity, a session panel you answer from, and a Today ribbon of asks and outcomes |
 | **Cross-project inbox** | Questions and handoffs from every active coding session in one prioritized queue |
 | **Action-aware responses** | Recommended options, free-text answers, snooze, pin for later, clarify, and decline controls |
 | **Durable plans** | Tracking boards with stable rows, progress, next steps, outcomes, and human-owned actions |

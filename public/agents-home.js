@@ -13,6 +13,7 @@
 // renderDashboardAmbient, so from both render entries.
 import { FILTERS, cardMatches, filterCounts, groupCards, messageHint, sessionCards } from './sessions.js'
 import { pinLaneOrder, tracePath } from './lanes.js'
+import { relMs } from './rowview.js'
 
 const SVG = 'http://www.w3.org/2000/svg'
 const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`
@@ -22,19 +23,7 @@ const panelKey = (card) => (card.launch || card.askOnly ? card.id : card.session
 const askId = (entry) => (entry?.kind === 'row' ? entry.row?.id : entry?.item?.id) ?? null
 const EMPTY = 'No sessions yet. A Claude Code or Copilot session appears here once Agent Inbox’s MCP server starts in it.'
 
-/**
- * @param {{
- *   doc?: Document,
- *   openSession: (key: string, part?: 'approval' | 'asks' | 'message' | 'transcript' | 'resume' | null) => void,
- *   launchAction?: (id: string, action: string) => void,
- *   launches?: () => ({ granted: () => boolean, newSession: () => ({ disabled: boolean, note: string } | null), openNewSession: () => void } | null),
- *   hasDraft?: (session: string) => boolean,
- *   build?: (row: any) => ({ older: boolean, newer: boolean, hint: string } | null),
- *   projectColor?: (project: string) => string,
- *   pulse?: (el: Element) => void,
- *   paintUndelivered?: (slot: Element) => void,
- * }} deps
- */
+/** @param {import('./agents-home.js').AgentsHomeDeps} deps (agents-home.d.ts) */
 export function installAgentsHome(deps) {
   const doc = deps.doc ?? globalThis.document
   // Window-local view state, never persisted and read by no attention surface:
@@ -44,6 +33,7 @@ export function installAgentsHome(deps) {
   const folds = new Set()
   let order = []
   let last = null
+  let roving = null // the card Tab lands on
   const cardEls = new Map()
   const groupEls = new Map()
   const calls = new Map() // card id → the last call a paint has seen, for the one-shot pulse
@@ -107,7 +97,15 @@ export function installAgentsHome(deps) {
     const start = button('＋ New session…', 'ah-new', 'ah:new')
     start.hidden = true
     start.addEventListener('click', () => deps.launches?.()?.openNewSession())
-    head.append(title, make('small', 'ah-count'), make('span', 'ah-spacer'), filters, group, start)
+    // #454 A.2: where the rail's "N in Later" and Open Review queue went
+    const later = button('', 'ah-later', 'ah:later')
+    later.hidden = true
+    later.title = 'Open the Inbox’s Later section'
+    later.addEventListener('click', () => deps.openLater?.())
+    const review = button('Review queue', 'ah-review', 'ah:review')
+    review.dataset.shortcutId = 'review'
+    review.addEventListener('click', () => deps.openReview?.())
+    head.append(title, make('small', 'ah-count'), filters, make('span', 'ah-spacer'), later, review, group, start)
     const note = make('p', 'ah-note')
     note.hidden = true
     // the launches the project and agent lens hides, so a session started elsewhere is never lost
@@ -164,6 +162,7 @@ export function installAgentsHome(deps) {
     }, true)
     section.append(head, note, outside, list, empty, none, foldRow)
     section.addEventListener('click', onClick)
+    section.addEventListener('keydown', onKey)
     return section
   }
 
@@ -189,6 +188,31 @@ export function installAgentsHome(deps) {
     // the ask strip opens the panel at that ask; it never answers (A.6)
     if (target.closest('.sc-ask') && card.asks.length) openAsk(card)
     else deps.openSession(panelKey(card))
+  }
+
+  // #454 A.2: on a card itself (never its controls), J/K and the arrows move
+  // between cards, one tabbable at a time, and Enter opens its panel.
+  const MOVES = { j: 1, k: -1, ArrowDown: 1, ArrowRight: 1, ArrowUp: -1, ArrowLeft: -1 }
+  function onKey(event) {
+    if (event.defaultPrevented || event.isComposing || event.metaKey || event.ctrlKey || event.altKey) return
+    const el = event.target instanceof doc.defaultView.Element ? event.target : null
+    if (!el?.matches('[data-session-card]')) return
+    const move = MOVES[event.key.length === 1 ? event.key.toLowerCase() : event.key]
+    const card = byId.get(el.dataset.sessionCard)
+    if (!move && (event.key !== 'Enter' || !card)) return
+    event.preventDefault()
+    event.stopPropagation()
+    if (!move) {
+      if (card.asks.length) openAsk(card)
+      else deps.openSession(panelKey(card), 'head')
+      return
+    }
+    const cards = [...el.closest('.agents-home').querySelectorAll('[data-session-card]')]
+    const next = cards[cards.indexOf(el) + move]
+    if (!next) return
+    roving = next.dataset.sessionCard
+    for (const other of cards) other.tabIndex = other === next ? 0 : -1
+    next.focus()
   }
 
   // An approval lands on its heading (#459); any other ask on its own block.
@@ -220,14 +244,28 @@ export function installAgentsHome(deps) {
     return launch?.status === 'ended' && typeof launch.worktree_path === 'string' && launch.worktree_path !== '' && !launch.worktree_removed_at
   }
 
-  function chipsOf(card) {
-    if (card.askOnly) return [[card.host, 'sc-chip', card.host]]
-    const who = `${card.host} · ${card.origin}`
-    const chips = [[who, card.origin === 'started here' ? 'sc-chip tone-agent' : 'sc-chip', who]]
-    const build = card.row ? deps.build?.(card.row) : null
-    if (build?.older) chips.push(['older build', 'sc-chip tone-warn', build.hint])
-    else if (build?.newer) chips.push(['newer build', 'sc-chip tone-warn', build.hint])
-    return chips
+  // V1 (#454 A.3): the agent kind as plain text, an outlined "A" for a session
+  // started here, the branch; build hints are the panel's and the Sessions line's.
+  function metaOf(card) {
+    const parts = [['sc-agent', card.host, `${card.host} · ${card.origin}`]]
+    if (card.origin === 'started here') parts.push(['sc-here', 'A', 'Started here, in Agent Inbox'])
+    else if (card.origin === 'driven') parts.push(['sc-origin', 'driven', 'Driven by another app'])
+    if (card.branch) parts.push(['sc-branch', card.branch, card.branch])
+    return parts
+  }
+
+  // The ask strip's second line: each ask's kind and age, the first two.
+  const askAge = (entry, nowMs) => {
+    const at = Date.parse((entry.kind === 'row' ? entry.row?.action_started_at ?? entry.board?.updated_at : entry.item?.created_at) ?? '')
+    if (!Number.isFinite(at)) return ''
+    const ms = Math.max(0, nowMs - at)
+    return relMs(ms) === 'moments' ? 'now' : relMs(ms)
+  }
+  const askKind = (entry) => (entry.kind === 'row' ? 'plan step' : entry.item?.project?.startsWith('@') ? 'approval' : 'question')
+  function askLine(card, nowMs) {
+    const [first] = card.asks
+    if (card.asks.length === 1) return [askKind(first).replace(/^./, (c) => c.toUpperCase()), askAge(first, nowMs)].filter(Boolean).join(' · ')
+    return [plural(card.asks.length, 'ask'), ...card.asks.slice(0, 2).map((entry) => `${askKind(entry)} ${askAge(entry, nowMs)}`.trim())].join(' · ')
   }
 
   // The state's main action (§2), and Message on a session that can take one.
@@ -282,54 +320,25 @@ export function installAgentsHome(deps) {
     if (el.getAttribute('aria-label') !== label) el.setAttribute('aria-label', label)
     setText(el.querySelector('.sc-state'), card.label)
     setText(el.querySelector('.sc-when'), card.recency)
-    const chips = chipsOf(card)
-    rebuild(el.querySelector('.sc-chips'), JSON.stringify(chips), () => chips.map(([text, cls, title]) => {
-      const chip = make('span', cls, text)
-      if (title) chip.title = title
-      return chip
+    const meta = metaOf(card)
+    rebuild(el.querySelector('.sc-chips'), JSON.stringify(meta), () => meta.map(([cls, text, title]) => {
+      const part = make('span', cls, text)
+      if (title) part.title = title
+      return part
     }))
     const doing = el.querySelector('.sc-doing')
     const text = card.historical && card.base !== 'working' && card.row && card.text !== 'No task reported yet' ? `was: ${card.text}` : card.text
     setText(doing, text)
     doing.classList.toggle('was', card.historical)
     if (doing.title !== text) doing.title = text
-    const where = el.querySelector('.sc-where')
-    rebuild(where, JSON.stringify([card.branch, card.worktree]), () => {
-      const parts = []
-      if (card.branch) {
-        const glyph = make('span', 'sc-branch-glyph', '⑂')
-        glyph.setAttribute('aria-hidden', 'true')
-        parts.push(glyph, make('span', 'sc-branch', card.branch))
-      }
-      if (card.worktree) parts.push(make('span', 'sc-worktree', `${card.branch ? ' · ' : ''}${card.worktree}`))
-      return parts
-    })
-    setHidden(where, !card.branch && !card.worktree)
-    const ask = el.querySelector('.sc-ask')
-    setHidden(ask, !card.asks.length)
-    const first = card.asks[0]
-    const askTitle = first ? (first.kind === 'item' ? first.item?.title : first.row?.label) ?? '' : ''
-    if (ask.title !== (first ? 'Open this ask in the session panel' : '')) ask.title = first ? 'Open this ask in the session panel' : ''
-    rebuild(ask, JSON.stringify([card.asks.length, card.approval, askTitle]), () => {
-      if (!first) return []
-      const label = make('span', 'sc-ask-label', card.approval ? 'Approval' : 'Asking you')
-      const title = make('span', `sc-ask-title${card.approval ? ' mono' : ''}`, askTitle)
-      title.title = askTitle
-      const parts = [label, title]
-      if (card.asks.length > 1) parts.push(make('span', 'sc-ask-more', `+${card.asks.length - 1}`))
-      return parts
-    })
-    const actions = actionsOf(card, granted)
-    const foot = el.querySelector('.sc-foot')
-    // what a working session is doing shows on a working card; an ask's card shows its ask
+    // V2: a secondary line under what it is doing: the worktree and a working
+    // session's plan bar, else when a message reaches it
     const busy = card.state === 'working'
-    const trace = busy ? card.trace ?? [] : []
-    const callCount = trace.reduce((sum, count) => sum + count, 0)
-    const meta = busy || card.state === 'ask' || card.launch ? null : messageHint(card.row)
-    const facts = foot.querySelector('.sc-facts')
-    const buttons = foot.querySelector('.sc-actions')
-    rebuild(facts, JSON.stringify([busy && card.plan, busy && card.children, trace, meta]), () => {
+    const hint = busy || card.state === 'ask' || card.launch ? null : messageHint(card.row)
+    const where = el.querySelector('.sc-where')
+    rebuild(where, JSON.stringify([card.worktree, busy && card.plan, hint]), () => {
       const parts = []
+      if (card.worktree) parts.push(make('span', 'sc-worktree', card.worktree))
       if (busy && card.plan) {
         const { segments, done, countable, title } = card.plan
         const plan = make('span', 'sc-meta sc-plan')
@@ -348,6 +357,34 @@ export function installAgentsHome(deps) {
         plan.append(bar, planText)
         parts.push(plan)
       }
+      if (hint) {
+        const words = make('span', 'sc-meta', hint)
+        words.title = hint
+        parts.push(words)
+      }
+      return parts
+    })
+    setHidden(where, !where.childElementCount)
+    const ask = el.querySelector('.sc-ask')
+    setHidden(ask, !card.asks.length)
+    const first = card.asks[0]
+    const askTitle = first ? (first.kind === 'item' ? first.item?.title : first.row?.label) ?? '' : ''
+    if (ask.title !== (first ? 'Open this ask in the session panel' : '')) ask.title = first ? 'Open this ask in the session panel' : ''
+    const line = first ? askLine(card, last?.input.nowMs ?? Date.now()) : ''
+    rebuild(ask, JSON.stringify([card.approval, askTitle, line]), () => {
+      if (!first) return []
+      const title = make('span', `sc-ask-title${card.approval ? ' mono' : ''}`, askTitle)
+      title.title = askTitle
+      return [title, make('span', 'sc-ask-line', line)]
+    })
+    const actions = actionsOf(card, granted)
+    const foot = el.querySelector('.sc-foot')
+    const trace = busy ? card.trace ?? [] : []
+    const callCount = trace.reduce((sum, count) => sum + count, 0)
+    const facts = foot.querySelector('.sc-facts')
+    const buttons = foot.querySelector('.sc-actions')
+    rebuild(facts, JSON.stringify([busy && card.children, trace]), () => {
+      const parts = []
       if (busy && card.children.length) {
         const kids = make('span', 'sc-meta sc-kids', `▸ ${plural(card.children.length, 'subagent')}`)
         kids.title = card.children
@@ -365,11 +402,6 @@ export function installAgentsHome(deps) {
         path.setAttribute('d', tracePath(trace))
         svg.append(path)
         parts.push(svg)
-      }
-      if (meta) {
-        const hint = make('span', 'sc-meta', meta)
-        hint.title = meta
-        parts.push(hint)
       }
       return parts
     })
@@ -393,10 +425,17 @@ export function installAgentsHome(deps) {
       if (pulse.has(card.id)) deps.pulse?.(el)
       return el
     })
-    nodes.forEach((el, index) => {
-      if (container.children[index] !== el) container.insertBefore(el, container.children[index] ?? null)
-    })
-    while (container.children.length > nodes.length) container.lastElementChild.remove()
+    // the cards are ordered among themselves: another child (the session panel
+    // placed under its card's row in a narrow window) keeps its place
+    const keep = new Set(nodes)
+    for (const child of [...container.children]) if (child.dataset.sessionCard && !keep.has(child)) child.remove()
+    let previous = null
+    for (const el of nodes) {
+      let next = previous ? previous.nextElementSibling : container.firstElementChild
+      while (next && !next.dataset.sessionCard) next = next.nextElementSibling
+      if (next !== el) container.insertBefore(el, next)
+      previous = el
+    }
   }
 
   function paintFold(section, key, cards, summary, granted) {
@@ -453,6 +492,9 @@ export function installAgentsHome(deps) {
     const hidden = Number(input.outside) || 0
     setText(section.querySelector('.ah-outside-text'), hidden ? `${plural(hidden, 'session')} outside this filter` : '')
     setHidden(section.querySelector('.ah-outside'), !hidden)
+    const later = Number(input.later) || 0
+    setText(section.querySelector('.ah-later'), later ? `Later ${later} ›` : '')
+    setHidden(section.querySelector('.ah-later'), !later)
 
     // the one-shot pulse: a real call since the last paint, on a drawn working card
     const pulse = new Set()
@@ -488,7 +530,8 @@ export function installAgentsHome(deps) {
         groupEls.set(key, el)
       }
       setText(el.querySelector('.ah-group-name'), group.label)
-      setText(el.querySelector('.ah-group-count'), plural(group.cards.length, 'session'))
+      const asks = group.cards.reduce((sum, card) => sum + card.asks.length, 0)
+      setText(el.querySelector('.ah-group-count'), `${plural(group.cards.length, 'session')}${asks ? ` · ${plural(asks, 'ask')}` : ''}`)
       const color = groupBy === 'project' && deps.projectColor ? deps.projectColor(group.key) : ''
       if (el.style.getPropertyValue('--ah-group') !== color) {
         if (color) el.style.setProperty('--ah-group', color)
@@ -522,6 +565,13 @@ export function installAgentsHome(deps) {
     setHidden(paintFold(section, 'dormant', dormant, [[`Dormant (${dormant.length})`, true], [' · quiet 8 h or more', false]], granted), !dormant.length)
     setHidden(paintFold(section, 'closed', closed, [[`In closed projects (${closed.length})`, true]], granted), !closed.length)
     deps.paintUndelivered?.(section.querySelector('.ah-undelivered'))
+    // roving tabindex: one card is tabbable, the last one a key moved to, else the first
+    const shownCards = [...section.querySelectorAll('[data-session-card]')]
+    if (!shownCards.some((el) => el.dataset.sessionCard === roving)) roving = shownCards[0]?.dataset.sessionCard ?? null
+    for (const el of shownCards) {
+      const tab = el.dataset.sessionCard === roving ? 0 : -1
+      if (el.tabIndex !== tab) el.tabIndex = tab
+    }
     if (hadFocus && !section.contains(doc.activeElement)) section.querySelector('#agentsHomeTitle')?.focus({ preventScroll: true })
     for (const [id, el] of cardEls) if (!byId.has(id) || !el.isConnected) cardEls.delete(id)
   }
@@ -561,6 +611,12 @@ export function installAgentsHome(deps) {
     /** Repaints New session… alone, as a start begins or settles. */
     paintNewSession: () => { if (mounted) paintNewSession(mounted, deps.launches?.() ?? null) },
     cardFor,
+    /** Shows one state filter and lands on the Agents heading (the Now strip's Waiting on you, #454 A.2). */
+    showFilter: (key) => {
+      filter = FILTERS.some(([name]) => name === key) ? key : 'all'
+      repaint()
+      if (doc.hasFocus?.()) mounted?.querySelector('#agentsHomeTitle')?.focus({ preventScroll: true })
+    },
     /** The panel key of the card holding an ask, or null. */
     askKey: (id) => {
       const card = cardForAsk(id)

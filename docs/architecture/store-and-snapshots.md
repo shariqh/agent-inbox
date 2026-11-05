@@ -83,7 +83,7 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   the rows that link an issue (identity and content times) or hold one of their
   project's 4 newest outcomes plus ties (with the outcome, its stamps and what a
   Handoffs outcome card shows: note, next step, owner, options), and per plan the
-  outcomes it omits with their newest stamp, so counts, the rail, issue activity
+  outcomes it omits with their newest stamp, so counts, the session cards, issue activity
   labels, the Dashboard's default lens and Handoffs' cards read as the complete
   list draws them; a surface that draws a row field from the brief needs it in the
   brief's select. Only `load()` reads the complete `/api/boards/archived`, while

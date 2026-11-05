@@ -16,8 +16,6 @@ const NO_OMITTED_OUTCOMES = { outcomes: 0, latest: null }
 // complete archived plans. Just landed shows those of them not on a PR still
 // waiting on you, so its filter never changes what is read.
 const RECENT_OUTCOMES = 4
-// Issue #303 (D3): the rail holds the top three asks; Inbox and Review queue hold the rest.
-const RAIL_CARDS = 3
 
 const entryKey = (entry) => entry.kind === 'item' ? `item:${entry.item.id}` : `row:${entry.row.id}`
 const entryEntity = (entry) => entry.kind === 'item' ? entry.item : entry.row
@@ -113,9 +111,9 @@ export function buildDashboard({
       outcomes,
       projects: projects.size,
     },
-    // Issue #303: the Needs you rail, from the one attention set (relay.human is
-    // attentionEntries) in the rail's order; deferred asks count, never show.
-    rail: railModel(railOrder, later.length),
+    // #454 A.2: the Agents header's "Later N ›"; deferred asks count, never show
+    later: later.length,
+    // the one attention set (relay.human is attentionEntries) the session cards read
     waitingEntries: relay.human,
     agentEntries: relay.agent,
     // #307: every loaded outcome, newest first, for the session focus panel
@@ -149,9 +147,4 @@ export function buildDashboard({
     idleConnections: lanes.idle,
     now: lanes.now,
   }
-}
-
-function railModel(ordered, later) {
-  const cards = ordered.slice(0, RAIL_CARDS)
-  return { cards, more: ordered.length - cards.length, later }
 }

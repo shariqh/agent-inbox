@@ -35,8 +35,6 @@ const cardIds = (): string[] =>
 const doing = (session: string): string => card(session)?.querySelector('.sc-doing')?.textContent ?? ''
 const signal = (name: string): string =>
   document.querySelector(`[data-dashboard-signal="${name}"] .dashboard-value`)?.textContent ?? ''
-const railIds = (): string[] =>
-  [...document.querySelectorAll<HTMLElement>('#dashRail [data-rail-card]')].map((card) => card.dataset.railCard!)
 
 // A real MCP call stamps last_call_at, then status() claims the work.
 function work(d: Database.Database, session: string, what: string, extra: Record<string, unknown> = {}): void {
@@ -133,13 +131,13 @@ describe('session cards carry the lanes (#304, #454)', () => {
 })
 
 describe('cards keep moving while the rest of the Dashboard holds (#304)', () => {
-  it('updates cards while a rail draft holds the rail', async () => {
+  it('updates cards while a draft in the session panel holds its asks', async () => {
     const d = open()
     const id = insertItem(d, { ...A, kind: 'question', title: 'Pick a window' })
     work(d, 'busy', 'Step one')
     await bootApp(d)
-    click(document.querySelector(`[data-rail-card="${id}"] [data-rail-action="expand"]`))
-    type(document.querySelector<HTMLTextAreaElement>(`[data-rail-card="${id}"] .reply-input`), 'Thursday')
+    click(document.querySelector(`[data-session-card="ask:item:${id}"] [data-ah-action="review"]`))
+    type(document.querySelector<HTMLTextAreaElement>(`[data-panel-ask="${id}"] .reply-input`), 'Thursday')
     const node = card('busy')
 
     advanceClock()
@@ -150,7 +148,7 @@ describe('cards keep moving while the rest of the Dashboard holds (#304)', () =>
     expect(card('busy')).toBe(node)
     expect(doing('busy')).toBe('Step two')
     expect(card('busy')!.querySelector('.sc-kids')?.textContent).toBe('▸ 1 subagent')
-    expect(document.querySelector<HTMLTextAreaElement>(`[data-rail-card="${id}"] .reply-input`)?.value).toBe('Thursday')
+    expect(document.querySelector<HTMLTextAreaElement>(`[data-panel-ask="${id}"] .reply-input`)?.value).toBe('Thursday')
   })
 
   it('writes nothing to an unchanged card, whether the tick is idle or changed elsewhere', async () => {
@@ -420,13 +418,12 @@ describe('attention parity with the cards present (#304, #454)', () => {
       title: document.title,
       badge: badgeCount(),
       tabs: ['needsYou', 'notes', 'boards', 'done'].map(tabCount),
-      rail: railIds(),
       waiting: signal('waiting'),
       dock: [await dock.text(), await plans.text()],
     }
   }
 
-  it('changes no badge, tab, rail card or dock read when only the cards change', async () => {
+  it('changes no badge, tab or dock read when only the cards change', async () => {
     const d = open()
     work(d, 'asker', 'Step one')
     const asked = insertItem(d, { ...A, kind: 'question', title: 'Ship it?', session: 'asker' })

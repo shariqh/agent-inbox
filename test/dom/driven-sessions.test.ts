@@ -142,7 +142,7 @@ describe('off means off on the page (§9 b)', () => {
     expect(urls.filter((u) => u.includes('/api/launch'))).toEqual([])
     expect(document.querySelector('[data-session-card^="launch:"]')).toBeNull()
     expect(document.querySelector<HTMLElement>('.agents-home .ah-new')?.hidden).toBe(true)
-    expect(document.querySelector('[data-session-card="session:mcp-1"] .sc-chips')?.textContent).toBe('Copilot · driven')
+    expect(document.querySelector<HTMLElement>('[data-session-card="session:mcp-1"] .sc-agent')?.title).toBe('Copilot · driven')
   })
 
   it('in the app with the switch off, only the Settings switch is drawn, and nothing is read', async () => {
@@ -478,12 +478,12 @@ describe('a launch’s card and session panel (§3.6, §7, #454)', () => {
     expect(openLaunch(PARKED).querySelector<HTMLElement>('.sp-worktree')?.hidden).toBe(true)
     openLaunch(LAUNCH)
     expect(box()).toEqual(['agent-inbox/fix-it-11111111', '/w/alpha/fix-it-11111111', 'Not read yet'])
-    expect(launchRow(LAUNCH)!.querySelector('.sc-worktree')?.textContent).toBe(' · worktree')
+    expect(launchRow(LAUNCH)!.querySelector('.sc-worktree')?.textContent).toBe('worktree')
     // the driver's turn-end summary, in words (#432 §6)
     recordWorktreeSummary(db, LAUNCH, { v: 1, at: new Date().toISOString(), head: 'b'.repeat(40), branch: 'agent-inbox/fix-it-11111111', ahead: 2, behind: 0, files: 3, dirty: 1 })
     await changedPollTick(db)
     expect(box()).toEqual(['agent-inbox/fix-it-11111111', '/w/alpha/fix-it-11111111', '2 commits ahead, 3 files changed, 1 uncommitted'])
-    expect(launchRow(LAUNCH)!.querySelector('.sc-worktree')?.textContent).toBe(' · worktree · 2 ahead · 3 files · 1 uncommitted')
+    expect(launchRow(LAUNCH)!.querySelector('.sc-worktree')?.textContent).toBe('worktree · 2 ahead · 3 files · 1 uncommitted')
     markWorktreeRemoved(db, LAUNCH)
     await changedPollTick(db)
     expect(box()).toEqual(['Removed; its branch agent-inbox/fix-it-11111111 is kept.'])
@@ -1076,11 +1076,12 @@ describe('session cards for launches (#454, #412)', () => {
     await pollTick()
     await changedPollTick(db)
     await settle()
-    expect(card(`launch:${LAUNCH}`)?.querySelector('.sc-chips')?.textContent).toBe('Copilot · started here')
+    expect(card(`launch:${LAUNCH}`)?.querySelector<HTMLElement>('.sc-agent')?.title).toBe('Copilot · started here')
+    expect(card(`launch:${LAUNCH}`)?.querySelector('.sc-here')?.textContent).toBe('A')
     expect(card(`launch:${LAUNCH}`)?.querySelector('.sc-state')?.textContent).toBe('Working')
     expect(actions(`launch:${LAUNCH}`)).toEqual(['Message'])
     expect(card('session:mcp-1')).toBeNull()
-    expect(card('session:mcp-2')?.querySelector('.sc-chips')?.textContent).toBe('Copilot · driven')
+    expect(card('session:mcp-2')?.querySelector('.sc-origin')?.textContent).toBe('driven')
   })
 
   it('a parked launch offers Take over and Resume…, which opens its Resume and send, focused', async () => {

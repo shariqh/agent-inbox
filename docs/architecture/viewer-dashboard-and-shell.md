@@ -35,17 +35,17 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   `data-page-hidden` (CSS pauses animations), and gives `scrollIntoView` its
   behaviour. The setting is layout only and never reaches attention.
 - The session panel's Asking you section (#454 A.2) is the Dashboard's answer surface;
-  the Needs you rail (#303) still draws the same entries through the same functions until
-  #454's PR 6 retires it. The rail replaced Ownership flow. Its cards are `sortRail(attentionEntries)` (waiting
-  asks first, ordering only) cut to three, with "+N more · N in Later"; the Now
-  strip's "Waiting on you" owns the count. Cards reuse `answerEl`/`rowAnswerEl` (`surface: 'rail'`)
-  and the shared `snoozeAsk`/`pinAsk`, so drafts join `suspendState()`, recovery,
-  durable drafts and the restart hold, and `expect_answer` is unchanged. It paints in
-  the ambient painter: a poll leaves it alone while one of its asks holds a draft or a
-  background window remembers focus in it, and `render()`'s `forcedAmbient` makes a
-  human's `reloadAndPaint()` rebuild it anyway. It restores its own focus only while
-  the document has focus. The panel's Asking you section (`paintPanelAsks`) mounts the
-  same `answerEl`/`rowAnswerEl` (`surface: 'compact'`) under the same three rules.
+  #454's PR 6 retired the Needs you rail (#303) that was before it, and the Agents
+  home spans the grid. Every ask is on one session card (`sessions.js`); the Now strip's
+  "Waiting on you" owns the count and turns on the Needs you filter, and the Agents
+  header holds "Later N ›" (the Inbox's Later section) and Review queue. The panel
+  mounts `answerEl`/`rowAnswerEl` (`surface: 'compact'`) and the shared
+  `snoozeAsk`/`pinAsk`, so drafts join `suspendState()`, recovery, durable drafts and
+  the restart hold, and `expect_answer` is unchanged. It paints in the ambient painter:
+  a poll leaves the section alone while one of its asks holds a draft or a background
+  window remembers focus in it, and `render()`'s `forcedAmbient` makes a human's
+  `reloadAndPaint()` rebuild it anyway. It restores its own focus only while the
+  document has focus.
 - The Now strip (#304) reads one model, `buildLanes` in `public/lanes.js`, over reads
   the poll already makes: a session is working when its claim is not idle and its
   `last_call_at ?? started_at` is within 30 minutes (`isWorking`; `updated_at` is never
@@ -62,7 +62,7 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   is the Dashboard's one home for sessions, mounted once in the grid's main column
   (`agentsHome.element()`). `public/sessions.js` (pure) builds one card per session from
   the frame's reads: each launch (switch on only, §9) joined with its live driven rows
-  (`launchSessions`), and every other `/api/activity` row under the rail's project and
+  (`launchSessions`), and every other `/api/activity` row under the sidebar's project and
   agent lens (`liveInLens()`, never narrowed by closure). States: Needs you (read from
   `waitingEntries`; each ask goes to exactly one card: an item to the card of the session
   it names, a plan row to the card of the session that stamped the plan, else to the
@@ -119,13 +119,13 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   help-only (`legacy`) entries in `public/keys.js`; keep them legacy. The session
   panel (`.dash-focus`, from a card or ⌘K; since #454 mounted in the Dashboard grid
   itself, never inside a card or fold that can be hidden: a sheet over the grid's right
-  side (the rail) on a desktop, static after the list under 1280px, closed by a trusted
+  side on a desktop; under 1280px static after its card's row (`placeFocusPanel`), closed by a trusted
   outside `click` that is not on a card, never a `pointerdown`, and never while it is in
   flow; closing returns focus to the card's first action, else the Agents heading) shows one card (`agentsHome.cardFor`, keyed by a session or a launch's
   card id): its state and summary, the launch's action bar, worktree, transcript and
   Resume and send (launch-ui.js's `paintPanel`, §9: none off), an app session's
   approval answered in place with its own options through `sendReply`'s signed path
-  (#454 Q3; the rail still lists them), every other ask of the card answered in place in
+  (#454 Q3), every other ask of the card answered in place in
   Asking you (#454 A.2, the Inbox's own `answerEl`/`rowAnswerEl`), the session's
   message composer (#411, `viewer-frontend.md`), its plan and
   outcomes open through `focusItem`, its PR/CI chips are ambient `sourceChipsHtml`
@@ -167,12 +167,12 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   switch off. A card never answers in one click (A.6): its ask strip and Answer open the
   panel at that ask (focus on the ask's block, never an option), an ask-only card's Open
   in Inbox opens its Inbox card. The panel's Asking you section (`paintPanelAsks`) mounts,
-  per ask, the Inbox's own `answerEl`/`rowAnswerEl` with `surface: 'compact'` (the rail's
-  compact surface: ★, More… with Clarify, Decline and "I'll take a while", disclosure keys
-  of its own) plus Snooze 4h, Pin and Open in Inbox (`snoozeAsk`, `pinAsk`,
+  per ask, the Inbox's own `answerEl`/`rowAnswerEl` with `surface: 'compact'` (★, More…
+  with Clarify, Decline and "I'll take a while", disclosure keys of its own, and Compare
+  closed by default: it stacks each option over its tradeoff, `compactCompares`) plus Snooze 4h, Pin and Open in Inbox (`snoozeAsk`, `pinAsk`,
   `openAskInInbox`), the "the agent is waiting" meta, and this session's answers not yet
   picked up (`agentEntries`), dimmed and never counted; an `@sessions` approval keeps the
-  Approval block (#459). The rail's three draft rules hold for the section: a poll leaves
+  Approval block (#459). Three draft rules hold for the section: a poll leaves
   it alone while one of its asks holds a draft or a background window remembers focus in
   it (and skips an unchanged one, moving only its ages); the hold is the panel's
   (`focusSession`), never its card's, because a card's id moves under an open panel (its
@@ -187,37 +187,32 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   "answer" open the panel at the ask (when the lens hides it, scoping to its project
   only where its session lives too, else clearing the lens: an `@sessions` approval's
   session is in the real project), the Inbox card when no card holds it; a notification still lands on the Inbox
-  card. `test/dom/agents-asks.test.ts` pins the DOM half.
-- **The Dashboard's Needs you rail reads only the one predicate (#303, Dashboard 2.0
-  phase 1, decisions D2, D3, D8; retired by #454's PR 6).** It replaced Ownership
-  flow. `buildDashboard`'s `rail` is `sortRail(relay.human)` (`public/attention.js`) cut to
-  three cards, plus how many more and how many wait in Later (`laterEntries`): relay.human
-  IS `attentionEntries` under the Dashboard's lens, so the rail, the badge, the tabs and the
-  dock cannot disagree. `sortRail` only reorders: an item whose session is live
-  (`classifyLiveness` → `waiting`) comes first with an "agent waiting" chip, the rest keep
-  `sortNeedsYou` order; never filter or add an entry there. The Now strip's "Waiting on you"
-  owns the count (#304); the rail head and its Open Review queue button carry no number. Each card
-  mounts the Inbox's own `answerEl`/`rowAnswerEl` with `surface: 'rail'` (★ on the
-  recommended option, More… holding Clarify, Decline and "I'll take a while", its own
-  disclosure keys) plus Snooze (4 h), Pin and Open icons whose writes are the shared
-  `snoozeAsk`/`pinAsk` (through `deferAsk`), so a rail draft lives in `draftReplies` /
-  `rowDrafts` and joins `suspendState()`, durable drafts (#279), recovery and the
-  viewer-restart hold like any editor; `expect_answer` (#321) is the Inbox editor's own.
-  The editor shows only on an expanded card (CSS; a card holding a draft is always
-  expanded), and the rail lives in `#dashRail` so `restoreDraftFocus` scopes to it. The
-  rail paints in the ambient painter (`renderDashRail`), so it moves while the rest of the
-  Dashboard holds focus, with three rules. (1) A poll leaves it untouched while one of its
-  asks holds a draft (a rail draft pauses only the rail; the rest of the Dashboard keeps
-  refreshing) or while a background window remembers focus inside it. (2) A frame the human
-  asked for rebuilds it anyway: `render()` sets `forcedAmbient` around its own
-  `paintAmbient()`, so every write still ends in `reloadAndPaint()` and shows its result;
-  there is no third render entry. (3) It restores its own focused control
-  (`captureCardFocus`) only while the document has focus, and never puts
-  `data-dashboard-focus-key` on a card, or `restoreDashboardFocus` would move focus off the
-  control onto it. A deferral from the Dashboard of an ask holding a draft switches to the
-  Inbox (`keepDraftInView`), since the rail never shows a deferred ask. Keys on a card (never
-  while typing): J/K move, 1–4 choose, S snooze, P pin, Enter expands.
-  `test/dom/dashboard-rail.test.ts` pins all of it, including attention parity.
+  card. Keys (help-only `legacy` entries in `public/keys.js`): on a card itself, J/K and the
+  arrows move between cards (one tabbable, `roving`) and Enter opens the panel at its ask;
+  on an ask's block in the panel, 1–4 and R are the global keys scoped to the block
+  (`keyboardActionScope`), S snoozes and P pins (`onPanelAskKey`); Esc closes the panel.
+  The Inbox names each ask's session ("live · branch" while its session is listed,
+  "session ended" when it names one that is not; `askSessionToken`) and its open card
+  offers **Show on Agents ›** (`jumpToAsk`). Cards (A.3, V1–V5): one quiet meta line (state
+  word, agent kind as text, an outlined "A" for started here, branch, time), what the
+  session is doing leading, a secondary line (worktree, a working session's plan bar, or
+  when a message reaches it), the ask strip (its kinds and ages), and the state's one
+  action as a text button; build hints are the panel's and the Sessions line's; pink only
+  for asks and green only for the working dot; group heads are small caps with session
+  and ask counts; Ended, Dormant and Not delivered share one footer line. Under 1280px
+  two columns, in a desk under 900px one, and the panel sits after its card's row
+  spanning the cards' grid, so inline under its card at one column; it never moves while
+  it is open and holds focus. `test/dom/agents-asks.test.ts` pins the DOM half.
+- **`sortRail` only reorders, and the Dashboard reads only the one predicate (#303, D2,
+  D3, D8; the rail it fed retired by #454's PR 6).** `buildDashboard`'s `waitingEntries`
+  IS `attentionEntries` under the Dashboard's lens (`relay.human`), so the session cards,
+  the badge, the tabs and the dock cannot disagree, and `later` counts `laterEntries` for
+  the header's "Later N ›". `sortRail` (`public/attention.js`) orders a card's asks: an
+  item whose session is live (`classifyLiveness` → `waiting`) comes first, the rest keep
+  `sortNeedsYou` order; never filter or add an entry there. A deferral from the Dashboard
+  of an ask holding a draft switches to the Inbox (`keepDraftInView`), since no card shows
+  a deferred ask. Never put `data-dashboard-focus-key` on an ask's block, or
+  `restoreDashboardFocus` would move focus off its control onto it.
 - **The Now strip and the session cards read one model, updated in place (#304, Dashboard
   2.0 phase 2, decisions D2, D4; the lanes it drew retired by #454).** `buildLanes`
   (`public/lanes.js`, pure, called by `buildDashboard`) reads only the reads the poll
@@ -311,11 +306,11 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   elements against the 1,500 budget).
 - **Command-center polish reads nothing new (#307, Dashboard 2.0 phase 5, D2).** Three parts (#307's lane quick filters retired with the lanes, #454). (2) **Keyboard help** lists the
   Dashboard's keys as help-only (`legacy`) commands in `public/keys.js`, group "Dashboard":
-  the rail's J/K, 1–4, S, P and Enter, which `onDashRailKey` handles only on a rail card,
-  and Esc for the panel. Never make them non-legacy: the global handler would then take
+  the session cards' J/K and Enter (`onKey` in `agents-home.js`, only on a card), the
+  panel's 1–4, S, P and R, and Esc for the panel. Never make them non-legacy: the global handler would then take
   S and P everywhere. (3) **The session focus panel** (`.dash-focus`, mounted once in the
-  Dashboard grid (#454): on a desktop a sheet over the rail; below 1280px static, in flow
-  after the Agents home, never fixed over the masthead; `test/editorial-shell.test.ts`
+  Dashboard grid (#454): on a desktop a sheet over the grid's right side; below 1280px static, in flow
+  after its card's row, never fixed over the masthead; `test/editorial-shell.test.ts`
   pins both, since jsdom cannot evaluate `@media`): a click on a session card that is not
   a control or a text selection opens it, and a second click on the same card closes it.
   It answers an app session's approval (#454 Q3) and, since #454 A.2, every other ask of
@@ -335,7 +330,7 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   (`trustedInput`) outside the panel that is not on a card closes it and moves no focus,
   and only while it is a sheet: never a `pointerdown` (closing mid-press moved what was under the
   pointer), and never in the compact layout, where the panel is in flow (`position:
-  static`) above the rail and closing it would lift the rail under the press. A session that stops working keeps
+  static`) above the cards below it and closing it would lift them under the press. A session that stops working keeps
   the panel open on its card; one whose card leaves keeps it open with one line saying so. Its one-shot entrance
   (`dash-focus-in`) takes the motion tokens, is instant under reduced motion and listed
   under Calm. `focusSession` is in `frameInputs()`; its handlers repaint only their own

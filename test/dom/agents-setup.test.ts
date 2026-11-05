@@ -360,9 +360,13 @@ describe('Setup shows what each host\'s agents run (#197)', () => {
     await bootApp(db, { viewer: { ...release.viewer, stamp: async () => null as never } })
     await settle()
     await pollTick()
-    // #454: a session card's build chip carries the advice
-    const liveHint = (session: string): string | null =>
-      document.querySelector<HTMLElement>(`[data-session-card="session:${session}"] .sc-chip.tone-warn`)?.title ?? null
+    // #454: a session's panel carries the build advice (A.3 V1: the card names no build)
+    const liveHint = (session: string): string | null => {
+      const aside = document.querySelector<HTMLElement>('#dashboard .dash-focus')!
+      if (aside.hidden || aside.dataset.session !== session) click(document.querySelector(`[data-session-card="session:${session}"] .sc-doing`))
+      const el = aside.querySelector<HTMLElement>('.sp-hint')
+      return el && !el.hidden ? el.textContent : null
+    }
     expect(liveHint('c1')).toBe('older build (v1.2.8) — update agents from Setup, then restart this session')
 
     click(updateButton())
@@ -435,11 +439,12 @@ describe('Setup shows what each host\'s agents run (#197)', () => {
       + 'Claude Code: 1 running session still runs a newer build. Restart it to load v2.0.0: exit it, then run claude --resume to pick the conversation back up.',
     )
     expect(restart.textContent).not.toMatch(/reloaded|reconnect/i)
-    // and its card marks the session still on the newer build, without reopening anything
+    // and its panel marks the session still on the newer build
     await pollTick()
-    const chip = document.querySelector<HTMLElement>('[data-session-card="session:ahead"] .sc-chip.tone-warn')
-    expect(chip?.textContent).toBe('newer build')
-    expect(chip?.title).toBe('newer build (v2.1.0) — restart this session to load v2.0.0')
+    click(document.querySelector('[data-session-card="session:ahead"] .sc-doing'))
+    const hint = document.querySelector<HTMLElement>('#dashboard .dash-focus .sp-hint')
+    expect(hint?.hidden).toBe(false)
+    expect(hint?.textContent).toBe('newer build (v2.1.0) — restart this session to load v2.0.0')
   })
 
   it('a failed update says so, re-reads the hosts, and gives no restart advice', async () => {

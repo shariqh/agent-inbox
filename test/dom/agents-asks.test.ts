@@ -5,11 +5,13 @@
 // the Inbox's own controls and writes, under the rail's draft rules.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type Database from 'better-sqlite3'
-import { closeProject, endActivity, getItem, insertItem, listBoards, recordActivityCall, resolveItem, upsertActivity, upsertBoard } from '../../src/store.js'
+import {
+  annotateItem, closeProject, endActivity, getItem, insertItem, listBoards, recordActivityCall, resolveItem, upsertActivity, upsertBoard,
+} from '../../src/store.js'
 import type { ViewerBridge } from './harness.js'
 import {
   advanceClock, answerInput, badgeCount, bootApp, buttonLabelled, click, freshDb, navigateToHash, pollTick, row,
-  sendButton, settle, showInbox, type, useDomTest,
+  sendButton, settle, setViewport, showInbox, type, useDomTest,
 } from './harness.js'
 
 useDomTest()
@@ -83,7 +85,7 @@ describe('every ask on a card (#454 A.1)', () => {
     expect(badgeCount()).toBe(4)
     expect(needsYou()).toBe(4)
     const ended = card('ask:session:gone')!
-    expect([ended.querySelector('.sc-state')?.textContent, ended.querySelector('.sc-chips')?.textContent, ended.querySelector('.sc-when')?.textContent])
+    expect([ended.querySelector('.sc-state')?.textContent, ended.querySelector('.sc-agent')?.textContent, ended.querySelector('.sc-when')?.textContent])
       .toEqual(['Session ended', 'Claude Code', 'last heard just now'])
 
     click(document.querySelector('#rail button.rail-tab[data-project="alpha"]'))
@@ -422,3 +424,209 @@ describe('the panel’s draft rules (#454 A.2)', () => {
     expect(panel().hidden).toBe(true)
   })
 })
+
+// #454 PR 6: the rail retired; the session cards and their panel carry its abilities (A.2, A.3)
+const key = (target: Element, name: string) =>
+  target.dispatchEvent(new KeyboardEvent('keydown', { key: name, bubbles: true, cancelable: true }))
+const cardEls = () => [...document.querySelectorAll<HTMLElement>('#dashboard .ah-groups [data-session-card]')]
+
+describe('the Dashboard without the rail (#454 PR 6)', () => {
+  it('has no rail: the Agents home spans the grid, and its header holds Later and Review queue', async () => {
+    db = freshDb()
+    question(db, 'Asked here')
+    const later = question(db, 'Pinned for later')
+    await bootApp(db)
+    await showInbox()
+    click(row(later)!)
+    await settle()
+    click(row(later)!.querySelector('.disposition-menu > summary'))
+    click(buttonLabelled('Pin for later', row(later)!))
+    await settle()
+    click(document.querySelector('.tab[data-tab="dashboard"]'))
+    await settle()
+    expect(document.querySelector('#dashRail, .dash-rail, [data-rail-card]')).toBeNull()
+    const laterButton = document.querySelector<HTMLButtonElement>('.agents-home .ah-later')!
+    expect([laterButton.hidden, laterButton.textContent]).toEqual([false, 'Later 1 ›'])
+    click(laterButton)
+    await settle()
+    expect(document.getElementById('needsYou')?.hidden).toBe(false)
+    expect(document.querySelector<HTMLDetailsElement>('[data-deferred-fold="later"]')?.open).toBe(true)
+
+    click(document.querySelector('.tab[data-tab="dashboard"]'))
+    await settle()
+    click(document.querySelector('.agents-home .ah-review'))
+    await settle()
+    expect(document.querySelector<HTMLElement>('#lightbox')?.hidden).toBe(false)
+  })
+
+  it('moves between cards with J/K and the arrows, one tabbable, and Enter opens the panel at the ask', async () => {
+    db = freshDb()
+    live(db, 'one', { doing: 'First' })
+    const ask = question(db, 'Pick one', { session: 'one' })
+    live(db, 'two', { doing: 'Second' })
+    await bootApp(db)
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    const [first, second] = cardEls()
+    expect(cardEls().map((el) => el.tabIndex)).toEqual([0, -1])
+    first!.focus()
+    key(first!, 'j')
+    expect(document.activeElement).toBe(second)
+    expect(cardEls().map((el) => el.tabIndex)).toEqual([-1, 0])
+    key(second!, 'ArrowUp')
+    expect(document.activeElement).toBe(first)
+    key(first!, 'Enter')
+    expect(panel().hidden).toBe(false)
+    expect(document.activeElement).toBe(block(ask))
+    // never on the card's own controls
+    key(card('session:one')!.querySelector('[data-ah-action]')!, 'j')
+    expect(document.activeElement).toBe(block(ask))
+  })
+
+  it('answers from the keyboard in the panel: 1–4 choose, S snoozes, P pins, R goes to the answer; typing keeps its keys', async () => {
+    db = freshDb()
+    live(db, 'here')
+    const choose = question(db, 'Choose', { session: 'here', options: [{ label: 'Alpha' }, { label: 'Beta' }] })
+    const snooze = question(db, 'Snooze me', { session: 'here' })
+    const pin = question(db, 'Pin me', { session: 'here' })
+    await bootApp(db)
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    await answerOn('session:here')
+    key(block(choose)!, 'r')
+    expect(document.activeElement).toBe(editor(choose))
+    expect(key(editor(choose)!, '2')).toBe(true)
+    expect(getItem(db, choose)?.reply).toBeNull()
+    key(block(choose)!, '2')
+    await settle()
+    expect(getItem(db, choose)?.reply).toBe('Beta')
+    key(block(snooze)!, 's')
+    await settle()
+    expect(getItem(db, snooze)?.snoozed_until).toBeTruthy()
+    key(block(pin)!, 'p')
+    await settle()
+    expect(getItem(db, pin)?.pinned_at).toBeTruthy()
+  })
+
+  it('offers Compare in the panel: options alone first, then each over its tradeoff', async () => {
+    db = freshDb()
+    live(db, 'here')
+    const id = question(db, 'Which way?', { session: 'here', options: [{ label: 'Wait', recommended: true, detail: 'Safer.' }, { label: 'Merge', detail: 'Faster.' }] })
+    await bootApp(db)
+    await answerOn('session:here')
+    const options = () => block(id)!.querySelector<HTMLElement>('.options')!
+    expect(options().classList.contains('comparing')).toBe(false)
+    click(buttonLabelled('Compare options', block(id)!))
+    await settle()
+    expect(options().classList.contains('comparing')).toBe(true)
+    expect([...block(id)!.querySelectorAll('.opt-detail')].map((el) => el.textContent)).toEqual(['Safer.', 'Faster.'])
+    expect(buttonLabelled('Hide option details', block(id)!)).not.toBeNull()
+    // the Inbox keeps its own default: details shown
+    await showInbox()
+    click(row(id))
+    await settle()
+    expect(row(id)!.querySelector('.options')?.classList.contains('comparing')).toBe(true)
+  })
+
+  it('opens the panel under its card’s row in a narrow window, and as the grid’s sheet in a wide one', async () => {
+    setViewport(760)
+    db = freshDb()
+    live(db, 'one', { doing: 'First' })
+    const ask = question(db, 'Pick one', { session: 'one' })
+    await bootApp(db)
+    await answerOn('session:one')
+    const host = card('session:one')!.parentElement!
+    expect(panel().parentElement).toBe(host)
+    expect(panel().previousElementSibling?.matches('[data-session-card]')).toBe(true)
+    expect(block(ask)).not.toBeNull()
+    // a poll keeps it there, and the cards keep their order around it
+    question(db, 'Another', { session: 'one' })
+    await pollTick()
+    expect(panel().parentElement).toBe(host)
+    click(panel().querySelector('.dash-focus-close'))
+    expect(panel().parentElement?.classList.contains('dashboard-grid')).toBe(true)
+    setViewport('wide')
+  })
+
+  it('names the ask’s session on the Inbox row, and Show on Agents opens its panel', async () => {
+    db = freshDb()
+    live(db, 'here', { stream: 'feat/x' })
+    const own = question(db, 'Live one', { session: 'here' })
+    const gone = question(db, 'Ended one', { session: 'gone' })
+    const none = question(db, 'No session')
+    await bootApp(db)
+    await showInbox()
+    expect(row(own)?.querySelector('.nrow-session')?.textContent).toBe('live · feat/x')
+    expect(row(gone)?.querySelector('.nrow-session')?.textContent).toBe('session ended')
+    expect(row(none)?.querySelector('.nrow-session')).toBeNull()
+    click(row(gone))
+    await settle()
+    click(buttonLabelled('Show on Agents ›', row(gone)!))
+    await settle()
+    expect(document.getElementById('dashboard')?.hidden).toBe(false)
+    expect(panel().dataset.session).toBe('ask:session:gone')
+    expect(block(gone)).not.toBeNull()
+  })
+
+  // ported from the rail (#303, review of #389)
+  it('holds the panel through a pointer press, then refreshes it', async () => {
+    db = freshDb()
+    live(db, 'here')
+    const id = question(db, 'Press me', { session: 'here', options: [{ label: 'Yes' }, { label: 'No' }] })
+    await bootApp(db)
+    await answerOn('session:here')
+    const pressed = [...block(id)!.querySelectorAll('.opt-pill')][0]!
+    await vi.advanceTimersByTimeAsync(2800)
+    pressed.dispatchEvent(new Event('pointerdown', { bubbles: true }))
+    insertItem(db, { ...AGENT, kind: 'question', title: 'Arrives during the press', session: 'here' })
+    await vi.advanceTimersByTimeAsync(200)
+    expect(pressed.isConnected).toBe(true)
+    expect(panel().querySelectorAll('[data-panel-ask]')).toHaveLength(1)
+    pressed.dispatchEvent(new Event('pointerup', { bubbles: true }))
+    await pollTick()
+    expect(panel().querySelectorAll('[data-panel-ask]')).toHaveLength(2)
+  })
+
+  it('holds the panel when a row drafted in the Inbox moves into it, so a poll never switches tabs or moves focus', async () => {
+    db = freshDb()
+    live(db, 'here')
+    question(db, 'Already here', { session: 'here' })
+    const task = blockedRow(db, 'Paddle account')
+    await bootApp(db)
+    await showInbox()
+    click(row(task))
+    await settle()
+    type(answerInput(task), 'Done, see the receipt')
+    click(document.querySelector('.tab[data-tab="dashboard"]'))
+    await settle()
+    await answerOn('session:here')
+    const before = document.activeElement
+    advanceClock()
+    const board = listBoards(db).find((b) => b.title === 'Plan for Paddle account')!
+    upsertBoard(db, {
+      ...AGENT, title: board.title, expectedVersion: board.revision, session: 'here',
+      rows: [{ label: 'Paddle account', revision: board.rows[0]!.revision, status: 'blocked', note: 'The agent rewrote this.' }],
+    })
+    await pollTick()
+    await settle()
+    expect(document.getElementById('dashboard')?.hidden).toBe(false)
+    expect(document.getElementById('needsYou')?.hidden).toBe(true)
+    expect(document.activeElement).toBe(before)
+  })
+
+  it('offers Pin on a question that carries a Note, and shows a draft edited in the Review queue once it closes', async () => {
+    db = freshDb()
+    live(db, 'here')
+    const id = question(db, 'Annotated question', { session: 'here' })
+    annotateItem(db, id, 'Feedback, not an answer')
+    await bootApp(db)
+    await answerOn('session:here')
+    expect(askAction(id, 'pin')).not.toBeNull()
+    type(editor(id), 'foo')
+    click(document.querySelector('.agents-home .ah-review'))
+    await settle()
+    type(document.querySelector<HTMLTextAreaElement>('#lightbox .reply-input:not(.reply-context-input)'), 'foobar')
+    click(document.querySelector('#lightbox .lb-close'))
+    await settle()
+    expect(editor(id)?.value).toBe('foobar')
+  })
+})
+

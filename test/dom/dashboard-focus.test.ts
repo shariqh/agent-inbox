@@ -46,8 +46,6 @@ const cardIds = (): string[] =>
 // a card opens its panel from anywhere that is not a control
 const openCard = (session: string): void => click(card(session)?.querySelector('.sc-doing'))
 const panel = () => document.querySelector<HTMLElement>('#dashboard .dash-focus')
-const railIds = (): string[] =>
-  [...document.querySelectorAll<HTMLElement>('#dashRail [data-rail-card]')].map((card) => card.dataset.railCard!)
 const signal = (name: string): string =>
   document.querySelector(`[data-dashboard-signal="${name}"] .dashboard-value`)?.textContent ?? ''
 
@@ -65,7 +63,6 @@ async function attentionSurfaces() {
     title: document.title,
     badge: badgeCount(),
     tabs: ['needsYou', 'notes', 'boards', 'done'].map(tabCount),
-    rail: railIds(),
     waiting: signal('waiting'),
     dock: [await dock.text(), await plans.text()],
   }
@@ -111,8 +108,8 @@ describe('keyboard help (#307)', () => {
       .find((el) => el.querySelector('h3')?.textContent === 'Dashboard')
     expect(section).toBeTruthy()
     const keys = [...section!.querySelectorAll('kbd')].map((kbd) => kbd.textContent)
-    expect(keys).toEqual(['J / K', '1-4', 'S', 'P', 'Enter', 'Esc'])
-    expect(section!.textContent).toContain('session focus panel')
+    expect(keys).toEqual(['J / K', 'Enter', '1-4', 'S', 'P', 'R', 'Esc'])
+    expect(section!.textContent).toContain('session panel')
   })
 })
 
@@ -171,7 +168,7 @@ describe('the session focus panel (#307)', () => {
     expect(document.activeElement).toBe(card('mine')!.querySelector('[data-ah-action="review"]'))
   })
 
-  it('lists every ask of the session, past the rail’s three too, and opens one in its Inbox card', async () => {
+  it('lists every ask of the session and opens one in its Inbox card', async () => {
     const d = open()
     work(d, 'mine', 'Asking a lot')
     const ids: string[] = []
@@ -180,8 +177,7 @@ describe('the session focus panel (#307)', () => {
       advanceClock()
     }
     await bootApp(d)
-    expect(railIds()).toHaveLength(3)
-    const past = ids.find((id) => !railIds().includes(id))!
+    const past = ids[3]!
     openCard('mine')
     expect([...panel()!.querySelectorAll<HTMLElement>('[data-panel-ask]')].map((el) => el.dataset.panelAsk).sort()).toEqual([...ids].sort())
     expect(panel()!.querySelector('.sp-asks-count')?.textContent).toBe('4')
@@ -258,7 +254,7 @@ describe('the session focus panel (#307)', () => {
     openCard('theirs')
     expect(panel()!.dataset.session).toBe('theirs')
     expect(panel()!.hidden).toBe(false)
-    const rail = document.querySelector('#dashRail')!
+    const rail = document.querySelector('#dashboard .dashboard-activity')!
     press(rail)
     expect(panel()!.hidden).toBe(false)
     const focused = document.activeElement
@@ -276,7 +272,7 @@ describe('the session focus panel (#307)', () => {
     attachStylesheet()
     openCard('mine')
     trust.on = false
-    click(document.querySelector('#dashRail'))
+    click(document.querySelector('#dashboard .dashboard-activity'))
     expect(panel()!.hidden).toBe(false)
   })
 
@@ -290,7 +286,7 @@ describe('the session focus panel (#307)', () => {
       const style = real(el, pseudo)
       return el.classList?.contains('dash-focus') ? ({ ...style, position: 'static' } as CSSStyleDeclaration) : style
     })
-    const rail = document.querySelector('#dashRail')!
+    const rail = document.querySelector('#dashboard .dashboard-activity')!
     press(rail)
     click(rail)
     expect(panel()!.hidden).toBe(false)
@@ -301,7 +297,7 @@ describe('the session focus panel (#307)', () => {
     seed(d)
     await bootApp(d)
     expect(panel()!.parentElement?.classList.contains('dashboard-grid')).toBe(true)
-    expect(panel()!.closest('.agents-home, .dash-rail')).toBeNull()
+    expect(panel()!.closest('.agents-home')).toBeNull()
     openCard('mine')
     expect(panel()?.hidden).toBe(false)
     expect(panel()?.closest('[hidden]')).toBeNull()

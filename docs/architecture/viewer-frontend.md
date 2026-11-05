@@ -142,7 +142,7 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   pauses the list. Agent and human text go through `esc()`/`textContent`; an outcome is
   agent text and goes through `renderStructuredText`. No animation. Nothing here
   reaches `public/attention.js`, `relay.js`, `reply-watch.cjs`, a badge, a count,
-  the rail or the dock: `test/dom/session-messages.test.ts` compares every attention
+  or the dock: `test/dom/session-messages.test.ts` compares every attention
   surface with and without messages, a draft, a send, a delivery and an ack.
 
 - **Viewer escapes all agent-authored text.** `public/app.js` runs every interpolated field
@@ -160,7 +160,7 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   guard protects clicks. A draft gates only the editable surfaces:
   `paintAmbient()` still refreshes the document-title badge, project rail, tab counts and the global
   Sessions line before `shouldDeferRender()` returns. A held press is different: `pressHeld()` runs
-  before `paintAmbient()` because the rail itself can rebuild, so the press guard still defers
+  before `paintAmbient()` because the panel's asks can rebuild, so the press guard still defers
   every surface. A handler that ends a successful POST with a bare `load()` still asks the gate
   for permission to show the human the editable result of their own click, and one unrelated
   draft can refuse it indefinitely.
@@ -174,12 +174,13 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   hint claiming "paused" over data already on screen. Pinned in `test/shell.test.ts` +
   `test/issue-31-followups.test.ts`; the behavioural half (including both the protected draft and
   live ambient signals) is `test/dom/silent-send.test.ts`.
-  Answer editors have three hosts on the Dashboard side and one rule: the Inbox card, the
-  rail card (`#dashRail`, until #454's PR 6) and the session panel's Asking you section
-  (`#dashFocus`, #454 A.2). Each mounts the same `answerEl`/`rowAnswerEl`, so a draft is
-  one entry in `draftReplies`/`rowDrafts` whichever host holds it; a draft pauses only its
-  own Dashboard host, a forced paint rebuilds it, and `restoreDraftFocus` scopes the
-  bookmark to the host's id, so the same ask drawn twice never takes the other's focus.
+  Answer editors have two hosts and one rule: the Inbox card (and the Review queue's
+  deck) and the session panel's Asking you section (`#dashFocus`, #454 A.2; #303's rail,
+  `#dashRail`, retired by #454's PR 6). Each mounts the same `answerEl`/`rowAnswerEl`, so
+  a draft is one entry in `draftReplies`/`rowDrafts` whichever host holds it; a draft
+  pauses only the panel's ask section on the Dashboard, a forced paint rebuilds it, and
+  `restoreDraftFocus` scopes the bookmark to the host's id, so the same ask drawn twice
+  never takes the other's focus.
   Nested Background disclosures are keyed by item/row id in `openContexts`; a poll or forced
   rebuild must restore their `open` state instead of collapsing text under the reader.
   Passive polls retain inactive Notes, History and Plans DOM, but not their data:
@@ -416,7 +417,7 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   wheel/trackpad momentum, which presents as an intermittent freeze at the 3-second poll boundary.
   The card and window scroll guards update `lastInteractionScrollAt`, while the card also updates
   `openRowScrollTop`; `shouldDeferRender()` holds the editable frame for the bounded
-  `SCROLL_IDLE_MS` window, while `paintAmbient()` still refreshes badges, counts, the rail, and
+  `SCROLL_IDLE_MS` window, while `paintAmbient()` still refreshes badges, counts, the session cards, and
   the Sessions line. A resettable timer calls `resumeRender()` as soon as movement settles, so a deferred frame
   does not wait for another poll. Keep scroll activity out of `suspendState()`/`suspendHint()`:
   it is a brief interaction guard, not a user-visible pause, and it must reset when the open item

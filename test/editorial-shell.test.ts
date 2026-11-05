@@ -236,6 +236,8 @@ describe('the session panel placement (#307, #454)', () => {
 // promise is pinned in the source.
 describe('the Agents home layout (#454)', () => {
   it('never needs a card wider than the screen', () => {
-    expect(css).toMatch(/\.ah-cards \{[^}]*grid-template-columns: repeat\(auto-fill, minmax\(min\(300px, 100%\), 1fr\)\)/)
+    expect(css).toMatch(/\.ah-cards \{[^}]*grid-template-columns: repeat\(auto-fill, minmax\(min\(340px, 100%\), 1fr\)\)/)
+    // #454 A.3: two columns under 1280px and one in a narrow desk, where the panel opens inline under its card
+    expect(css.slice(css.indexOf('@media (max-width: 1279px)'))).toMatch(/\.ah-cards \{ grid-template-columns: repeat\(2, minmax\(0, 1fr\)\); \}\s*@container operations-desk \(max-width: 900px\) \{\s*\.ah-cards \{ grid-template-columns: minmax\(0, 1fr\); \}/)
   })
 })

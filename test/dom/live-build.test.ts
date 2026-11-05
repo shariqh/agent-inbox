@@ -52,10 +52,23 @@ function seed(d: Database.Database, s: Seed): void {
 
 // a session's card, by the project it runs in
 const cardOf = (project: string): HTMLElement | undefined =>
-  [...document.querySelectorAll<HTMLElement>('#dashboard [data-session-card]')]
+  [...document.querySelectorAll<HTMLElement>('#dashboard [data-session-card]:not(.sc-ask-only)')]
     .find((el) => el.getAttribute('aria-label')?.includes(` in ${project}`))
-const chip = (project: string): HTMLElement | null => cardOf(project)?.querySelector<HTMLElement>('.sc-chip.tone-warn') ?? null
-const hint = (project: string): string | null => chip(project)?.title ?? null
+// #454 A.3 (V1): a card names no build; its panel's hint does, for an older or newer one
+function hint(project: string): string | null {
+  const card = cardOf(project)
+  if (!card) return null
+  const aside = document.querySelector<HTMLElement>('#dashboard .dash-focus')!
+  const opened = aside.hidden || aside.dataset.card !== card.dataset.sessionCard
+  if (opened) click(card.querySelector('.sc-doing'))
+  const text = panelHint()
+  if (opened) click(aside.querySelector('.dash-focus-close'))
+  return text
+}
+const chip = (project: string): { textContent: string } | null => {
+  const text = hint(project)
+  return text ? { textContent: text.split(' (')[0]! } : null
+}
 // the session panel's meta line, which names the build
 function meta(project: string): string {
   click(cardOf(project)?.querySelector('.sc-doing'))
@@ -225,7 +238,7 @@ describe('the Agents home shows the build each session runs (#197, #454)', () =>
     expect(meta('beta')).toMatch(/ · v1\.2\.6$/)
     expect(panelHint()).toBeNull()
     expect(meta('gamma')).toMatch(/ · v1\.9\.0$/)
-    expect(document.querySelector('#dashboard .sc-chip.tone-warn')).toBeNull()
+    expect(['alpha', 'beta', 'gamma'].map(chip).filter(Boolean)).toEqual([])
     expect(older()).toBeNull()
   })
 
@@ -319,7 +332,8 @@ describe('the Agents home shows the build each session runs (#197, #454)', () =>
 
     await bootApp(d, { viewer: releaseRuntime('2.0.0').viewer })
     await pollTick()
-    expect(document.querySelectorAll('#dashboard .sc-chip.tone-warn')).toHaveLength(2)
+    expect(['alpha', 'beta', 'gamma'].map(chip).filter(Boolean)).toHaveLength(2)
+    expect(document.querySelector('#dashboard [data-session-card] .tone-warn')).toBeNull()
     expect(older()).toBe('2 on an older build')
     await showInbox()
 

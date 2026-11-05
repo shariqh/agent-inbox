@@ -57,6 +57,8 @@ export interface AgentsHomeDeps {
   paintUndelivered?: (slot: Element) => void
   /** clears the project and agent lens ("N sessions outside this filter · Show all") */
   showAll?: () => void
+  /** after the home's own repaints (filters, grouping, folds): the session panel finds its place again */
+  afterRepaint?: () => void
 }
 
 export function installAgentsHome(deps: AgentsHomeDeps): {

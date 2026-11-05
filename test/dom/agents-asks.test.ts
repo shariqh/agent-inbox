@@ -6,7 +6,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type Database from 'better-sqlite3'
 import {
-  annotateItem, closeProject, endActivity, getItem, insertItem, listBoards, recordActivityCall, resolveItem, upsertActivity, upsertBoard,
+  annotateItem, closeProject, endActivity, getItem, insertItem, listBoards, recordActivityCall, resolveItem, touchActivity, upsertActivity, upsertBoard,
 } from '../../src/store.js'
 import type { ViewerBridge } from './harness.js'
 import {
@@ -544,6 +544,89 @@ describe('the Dashboard without the rail (#454 PR 6)', () => {
     click(panel().querySelector('.dash-focus-close'))
     expect(panel().parentElement?.classList.contains('dashboard-grid')).toBe(true)
     setViewport('wide')
+  })
+
+  // #463 review: under 1280px the panel sits in a group's or fold's card grid; whatever
+  // takes that grid away must leave the panel connected, in sight, and able to open again
+  describe('a narrow window’s panel is never cut off with its card’s group (#463 review)', () => {
+    const inSight = () => {
+      expect(panel().isConnected).toBe(true)
+      expect(panel().parentElement?.closest('[hidden], details:not([open])')).toBeNull()
+    }
+    const opensAgain = async (key: string) => {
+      click(card(key)?.querySelector('.sc-doing'))
+      await settle()
+      expect(panel().hidden).toBe(false)
+      expect(panel().dataset.card).toBe(key)
+      inSight()
+    }
+    async function twoGroups(d: Database.Database) {
+      live(d, 'one', { project: 'beta', doing: 'Alone in beta' })
+      recordActivityCall(d, 'one')
+      live(d, 'two', { doing: 'Asking in alpha' })
+      question(d, 'Pick one', { session: 'two' })
+      setViewport(760)
+      await bootApp(d)
+      click(card('session:one')?.querySelector('.sc-doing'))
+      await settle()
+      expect(panel().parentElement).toBe(card('session:one')!.parentElement)
+    }
+    afterEach(() => setViewport('wide'))
+
+    it('when a filter hides its card (the Waiting on you tile)', async () => {
+      db = freshDb()
+      await twoGroups(db)
+      click(document.querySelector('[data-dashboard-signal="waiting"]'))
+      await settle()
+      expect(card('session:one')).toBeNull()
+      inSight()
+      await opensAgain('session:two')
+    })
+
+    it('when the cards are grouped by agent', async () => {
+      db = freshDb()
+      await twoGroups(db)
+      const select = document.querySelector<HTMLSelectElement>('.agents-home .ah-group-by select')!
+      select.value = 'agent'
+      select.dispatchEvent(new Event('change', { bubbles: true }))
+      inSight()
+      await opensAgain('session:two')
+    })
+
+    it('when a poll takes its card’s group away', async () => {
+      db = freshDb()
+      await twoGroups(db)
+      endActivity(db, 'one')
+      await pollTick()
+      expect(card('session:one')).toBeNull()
+      inSight()
+      expect(panel().querySelector<HTMLElement>('.dash-focus-gone')?.hidden).toBe(false)
+      await opensAgain('session:two')
+    })
+
+    it('when the fold it opened in closes', async () => {
+      db = freshDb()
+      live(db, 'old', { doing: 'Long gone' })
+      recordActivityCall(db, 'old')
+      live(db, 'old', { doing: 'open', idle: true })
+      advanceClock(9 * 60 * 60 * 1000)
+      live(db, 'two', { doing: 'Asking' })
+      recordActivityCall(db, 'two')
+      touchActivity(db, 'old')
+      setViewport(760)
+      await bootApp(db)
+      const fold = document.querySelector<HTMLDetailsElement>('.agents-home [data-ah-fold="dormant"]')!
+      fold.open = true
+      fold.dispatchEvent(new Event('toggle'))
+      click(card('session:old')?.querySelector('.sc-doing'))
+      await settle()
+      expect(fold.contains(panel())).toBe(true)
+      fold.open = false
+      fold.dispatchEvent(new Event('toggle'))
+      expect(fold.contains(panel())).toBe(false)
+      inSight()
+      await opensAgain('session:two')
+    })
   })
 
   it('names the ask’s session on the Inbox row, and Show on Agents opens its panel', async () => {

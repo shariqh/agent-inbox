@@ -53,7 +53,17 @@ export function installAgentsHome(deps) {
     if (focusKey) el.dataset.dashboardFocusKey = focusKey
     return el
   }
-  const repaint = (overrides = {}) => { if (last) paint(last.host, { ...last.input, ...overrides }) }
+  const repaint = (overrides = {}) => {
+    if (!last) return
+    paint(last.host, { ...last.input, ...overrides })
+    deps.afterRepaint?.()
+  }
+  // A narrow window's session panel sits in a group's or fold's card grid
+  // (app.js placeFocusPanel): before that grid is removed or folded away, the
+  // panel steps out after the section, so it is never cut off with it.
+  const release = (el) => {
+    for (const child of el.querySelectorAll('.ah-cards > :not([data-session-card])')) mounted?.after(child)
+  }
   const focusKeyIn = (el) => (el.contains(doc.activeElement) ? doc.activeElement?.closest?.('[data-dashboard-focus-key]')?.dataset.dashboardFocusKey ?? null : null)
   const refocus = (root, key) => {
     if (!key || !doc.hasFocus?.() || root.contains(doc.activeElement)) return
@@ -443,6 +453,7 @@ export function installAgentsHome(deps) {
     const summaryEl = fold.querySelector(':scope > summary')
     rebuild(summaryEl, JSON.stringify(summary), () => summary.map(([text, strong]) => (strong ? make('b', '', text) : doc.createTextNode(text))))
     const open = folds.has(key)
+    if (!open) release(fold)
     if (fold.open !== open) fold.open = open
     fold.classList.toggle('open', open)
     // a closed fold keeps no cards: nothing it hides is painted
@@ -511,6 +522,7 @@ export function installAgentsHome(deps) {
     const keep = new Set(groups.map((group) => `${groupBy}:${group.key}`))
     for (const [key, el] of groupEls) {
       if (!keep.has(key)) {
+        release(el)
         el.remove()
         groupEls.delete(key)
       }

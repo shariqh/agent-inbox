@@ -96,6 +96,10 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   over the GLOBAL `lastData.activity`, never the lens or closure ("N working · M
   connected", "N on an older build"). It, G L and the Now strip's Working tile open the
   Dashboard with the Agents home's heading focused, and each re-reads `/api/version`.
+  Under 1280px the compact masthead keeps the tabs alone on its first row (scrolling in
+  their own cell when they do not fit) and puts the line on the selectors' row as a chip
+  ("● 2 working", its G L tile kept) beside Settings; under 620px the chip and Settings
+  share the brand's row, and under 440px the chip is its dot. It never covers a tab.
 - The Today ribbon, Just landed and "Since you last looked" (#305) replaced the
   activity bar chart and Recent outcomes with no new read. `buildRibbon`
   (`public/ribbon.js`, pure): one lane per project (12 most recently active, drawn by
@@ -202,7 +206,11 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   and ask counts; Ended, Dormant and Not delivered share one footer line. Under 1280px
   two columns, in a desk under 900px one, and the panel sits after its card's row
   spanning the cards' grid, so inline under its card at one column; it never moves while
-  it is open and holds focus. `test/dom/agents-asks.test.ts` pins the DOM half.
+  it is open and holds focus, unless it was cut off: the panel is the one `focusPanelEl`,
+  never found by a selector; agents-home moves it out (`release`) before it removes a
+  group or closes a fold, its own repaints call back into `placeFocusPanel`
+  (`afterRepaint`), and a panel left disconnected or inside a hidden or closed ancestor
+  always goes home (#463 review). `test/dom/agents-asks.test.ts` pins the DOM half.
 - **`sortRail` only reorders, and the Dashboard reads only the one predicate (#303, D2,
   D3, D8; the rail it fed retired by #454's PR 6).** `buildDashboard`'s `waitingEntries`
   IS `attentionEntries` under the Dashboard's lens (`relay.human`), so the session cards,

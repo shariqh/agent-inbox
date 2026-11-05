@@ -2044,8 +2044,8 @@ function renderDashboardAmbient(model, { forced = false } = {}) {
     outside: launchesOn() ? launchesOutsideLens() : 0,
     nowMs: Date.now(), forced, lensProject: projectFilter, selected: focusSession, later: model.later,
   })
-  renderDashFocus(host.querySelector('.dash-focus'), model, { forced })
-  placeFocusPanel(host.querySelector('.dash-focus'))
+  renderDashFocus(focusPanelEl, model, { forced })
+  placeFocusPanel()
   renderDashRibbon(host.querySelector('.dashboard-activity'), model)
   renderDashboardOutcomes(host.querySelector('.dashboard-outcome-list'), model.recentOutcomes, model.recentOutcomesComplete,
     model.recentOutcomesWait, model.recentOutcomesHidden)
@@ -2144,6 +2144,8 @@ const agentsHome = installAgentsHome({
   projectColor: (project) => pcolor(project).dot,
   pulse: (el) => { if (dashboardMotion()) playOnce(el, 'pulse', 'dash-lane-pulse') },
   paintUndelivered,
+  // its own repaints (filters, grouping, folds) can remove the group the panel sits in (#463 review)
+  afterRepaint: () => placeFocusPanel(),
   // "N sessions outside this filter · Show all": the lens cleared, as the rail's All does
   showAll: () => {
     projectFilter = null
@@ -2237,8 +2239,13 @@ function jumpToAsk(entry) {
 const focusTargets = new Map() // data-focus-* value → what its button opens
 const focusPartHtml = new WeakMap()
 
+// The one panel element, made once: under 1280px it moves into the cards' grid
+// (placeFocusPanel), so it is always reached through this, never a selector.
+let focusPanelEl = null
+
 function dashFocusEl() {
   const aside = document.createElement('aside')
+  focusPanelEl = aside
   aside.id = 'dashFocus'
   aside.className = 'dash-focus'
   aside.hidden = true
@@ -2641,36 +2648,40 @@ function paintFocusComposer(aside, session) {
 
 function paintSessionFocus() {
   if (!lastDashModel) return
-  renderDashFocus(document.querySelector('#dashboard .dash-focus'), lastDashModel)
+  renderDashFocus(focusPanelEl, lastDashModel)
   const open = agentsHome.cardFor(focusSession)?.id ?? null
   for (const el of document.querySelectorAll('#dashboard [data-session-card]')) el.classList.toggle('sel', el.dataset.sessionCard === open)
-  placeFocusPanel(document.querySelector('#dashboard .dash-focus'))
+  placeFocusPanel()
 }
 
 // #454 A.3: under 1280px the panel opens after its card's row, spanning the
 // cards' grid (one card a row below 900px, so inline under it); on a desktop,
 // and with no card drawn, it is the Dashboard grid's own sheet after the
 // Agents home. An open panel never moves while it holds focus: moving a
-// focused node drops the focus (the next paint after it leaves places it).
+// focused node drops the focus (the next paint after it leaves places it),
+// unless the panel has been cut off (#463 review: a removed group took it
+// along, or a fold or filter hid it), when it goes home whatever held it.
 const narrowPanel = window.matchMedia('(max-width: 1279px)')
-function placeFocusPanel(aside) {
+const outOfSight = (el) => !el.isConnected || Boolean(el.parentElement?.closest('[hidden], details:not([open])'))
+function placeFocusPanel(aside = focusPanelEl) {
   const home = document.querySelector('#dashboard .dashboard-grid > .agents-home')
   if (!aside || !home) return
   const id = focusSession && narrowPanel.matches ? agentsHome.cardFor(focusSession)?.id ?? null : null
-  const card = id ? [...document.querySelectorAll('#dashboard [data-session-card]')].find((el) => el.dataset.sessionCard === id && isShown(el)) : null
+  const card = id ? [...home.querySelectorAll('[data-session-card]')].find((el) => el.dataset.sessionCard === id && !outOfSight(el)) : null
   const row = card ? [...card.parentElement.children].filter((el) => el.dataset.sessionCard && el.offsetTop === card.offsetTop) : []
   const anchor = row.at(-1) ?? home
-  if (aside.previousElementSibling === anchor || (!aside.hidden && aside.contains(document.activeElement))) return
+  if (aside.previousElementSibling === anchor) return
+  if (!outOfSight(aside) && !aside.hidden && aside.contains(document.activeElement)) return
   anchor.after(aside)
 }
-narrowPanel.addEventListener?.('change', () => placeFocusPanel(document.querySelector('#dashboard .dash-focus')))
+narrowPanel.addEventListener?.('change', () => placeFocusPanel())
 
 // An element the human can see: no ancestor is hidden.
 const isShown = (el) => Boolean(el) && !el.closest('[hidden]')
 
 // Where an explicit open lands (#454): the part the human asked for.
 function focusPanelPart(part, ask = null) {
-  const aside = document.querySelector('#dashboard .dash-focus')
+  const aside = focusPanelEl
   if (!aside || aside.hidden) return
   if (part === 'message') {
     const input = aside.querySelector('.dash-focus-message:not([hidden]) textarea')
@@ -2717,7 +2728,7 @@ function openSessionFocus(session, part = null, ask = null) {
 function closeSessionFocus() {
   const session = focusSession
   const card = agentsHome.cardFor(session)?.id
-  const aside = document.querySelector('#dashboard .dash-focus')
+  const aside = focusPanelEl
   const owned = Boolean(aside?.contains(activeFocusElement()))
   focusSession = null
   paintSessionFocus()
@@ -2738,7 +2749,7 @@ function closeSessionFocus() {
 function closeSessionFocusOnClick(event) {
   if (!focusSession || !trustedInput(event) || !(event.target instanceof Element)) return
   if (event.target.closest('#dashboard .dash-focus, #dashboard .sc')) return
-  const aside = document.querySelector('#dashboard .dash-focus')
+  const aside = focusPanelEl
   if (!aside || getComputedStyle(aside).position === 'static') return
   focusSession = null
   paintSessionFocus()

@@ -229,8 +229,8 @@ built for Node 24), and packages with @electron/packager (`--no-asar`: the serve
 into the app dir and serves `./public` from the real filesystem). Packaging stops if the
 stage is missing its manifest or lockfile, or if the staged or packaged dependency graph
 differs from `package-lock.json` in any package version or integrity. Same launch rules as
-dev: reuse a running 4319 viewer, else serve in-process; quitting frees the port only if
-the app started the server.
+dev, on 4319 rather than the dev default 4392: reuse a running viewer, else serve
+in-process; quitting frees the port only if the app started the server.
 
 ### Portable agent runtime staging
 

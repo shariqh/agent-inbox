@@ -2453,6 +2453,26 @@ describe('hook: host stamps (#466)', () => {
     db.close()
   })
 
+  it('reads Copilot CLI\'s payloads: activity turn, idle, tool and end, printing nothing (#466 PR 3)', async () => {
+    const { env, dbPath } = freshEnv()
+    const db = openDb(dbPath)
+    linkServer(db, 'mcp-1', PROJECT)
+    // camelCase, as Copilot CLI sends them (no session_id, a numeric timestamp)
+    const copilot = (extra: Record<string, unknown>) => JSON.stringify({ sessionId: 'c-1', timestamp: Date.now(), cwd: PROJECT_DIR, ...extra })
+    expect(await runHook(['activity', 'turn'], copilot({ prompt: 'run the tests' }), env)).toEqual({ stdout: '' })
+    expect(stamps(db)).toMatchObject({ turn: expect.any(String), idle: undefined, tool: undefined })
+    expect(await runHook(['activity', 'tool'], copilot({ toolName: 'bash', toolArgs: {} }), env)).toEqual({ stdout: '' })
+    expect(stamps(db).tool).toEqual(expect.any(String))
+    const marker = join(dirname(dbPath), 'hook-state', `host-${process.ppid}.tool`)
+    expect(existsSync(marker)).toBe(true)
+    expect(await runHook(['activity', 'idle'], copilot({ stopReason: 'end_turn', stop_hook_active: false }), env)).toEqual({ stdout: '' })
+    expect(stamps(db).idle).toEqual(expect.any(String))
+    expect(await runHook(['activity', 'end'], copilot({ reason: 'complete' }), env)).toEqual({ stdout: '' })
+    expect(existsSync(marker)).toBe(false)
+    expect(await runHook(['activity', 'nonsense'], copilot({}), env)).toEqual({ stdout: '' })
+    db.close()
+  })
+
   it('stamps nothing with no link, in a reserved folder, or with AGENT_INBOX_HOOKS=0, and survives any stdin', async () => {
     const { env, dbPath } = freshEnv()
     const db = openDb(dbPath)

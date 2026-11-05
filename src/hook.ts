@@ -496,7 +496,7 @@ export async function runHook(argv: string[], stdinText: string, env: Env = proc
       case 'notification': return cmdNotification(ctx)
       case 'notification-commit': return await cmdNotificationCommit(ctx)
       case 'watch': return await cmdWatch(ctx)
-      case 'activity': return cmdActivity(ctx)
+      case 'activity': return cmdActivity(ctx, argv[1] ?? 'tool')
       case 'sweep': return cmdSweep(ctx)
       default: return cmdSessionStep(ctx)
     }
@@ -764,23 +764,40 @@ function stampHost(ctx: Ctx, db: Database.Database, servers: Iterable<string>, k
 
 const toolMarker = (dbPath: string, host: number): string => join(stateDir(dbPath), `host-${host}.tool`)
 
-// PreToolUse / PostToolUse, async: runs on every tool call, so it costs one
-// stat until a stamp is due. The marker, keyed by the Claude Code process,
-// throttles before the hub is even opened; recordHostEvent's own condition is
-// the real bound. No link (an older server, a wrapper process) stamps nothing.
-function cmdActivity(ctx: Ctx): HookResult {
+// Claude's PreToolUse / PostToolUse (async) run `activity`, a tool. Copilot
+// CLI's hooks file (docs/hooks.md, "Copilot CLI") names the kind: `turn`
+// (userPromptSubmitted), `idle` (agentStop, errorOccurred), `tool`
+// (postToolUse) or `end` (sessionEnd, which only removes the marker). Copilot
+// runs every hook directly, a child of the `copilot` process its MCP server
+// records as host_pid, so the #253 link holds for it unchanged.
+// A tool costs one stat until a stamp is due. The marker, keyed by the host
+// process, throttles before the hub is even opened; recordHostEvent's own
+// condition is the real bound. No link (an older server, a wrapper process)
+// stamps nothing.
+function cmdActivity(ctx: Ctx, kind: string): HookResult {
   const host = process.ppid
   if (!Number.isInteger(host) || host <= 1) return EMPTY
   const marker = toolMarker(ctx.dbPath, host)
+  if (kind === 'end') {
+    rmSync(marker, { force: true })
+    return EMPTY
+  }
+  if (kind === 'turn' || kind === 'idle') return stampLinked(ctx, host, kind)
+  if (kind !== 'tool') return EMPTY
   try {
     if (ctx.nowMs - statSync(marker).mtimeMs < HOST_TOOL_STAMP_MS) return EMPTY
   } catch { /* no marker yet */ }
   if (isReservedProject(scopeOf(ctx.ev).project)) return EMPTY
   mkdirSync(stateDir(ctx.dbPath), { recursive: true })
   writeFileSync(marker, '')
+  return stampLinked(ctx, host, 'tool')
+}
+
+function stampLinked(ctx: Ctx, host: number, kind: 'turn' | 'idle' | 'tool'): HookResult {
+  if (kind !== 'tool' && isReservedProject(scopeOf(ctx.ev).project)) return EMPTY
   const db = openDb(ctx.dbPath)
   try {
-    stampHost(ctx, db, liveServers(db, host), 'tool')
+    stampHost(ctx, db, liveServers(db, host), kind)
     return EMPTY
   } finally {
     db.close()

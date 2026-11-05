@@ -145,6 +145,14 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   `test/host-config-secrets.test.ts` runs every reader, the dry-run installers and
   `/api/setup` over configs that put a fake token where the parser quotes it: a new reader
   is one more row there. Unchanged on purpose: what each reader does with such a config.
+- **The Copilot CLI hooks installer owns one whole file** *(#466 PR 3)*.
+  `scripts/install-copilot-hooks.sh` writes only `${COPILOT_HOME:-~/.copilot}/hooks/agent-inbox.json`,
+  built by `scripts/copilot-hooks.mjs` (which also decides ownership: exactly the shape it
+  builds). Dry run by default; `--apply` proves Node with `hook-cli selftest`, takes the
+  setup lock (fd 9), refuses a symlink, a non-file or any file that is not ours in every
+  mode, backs up a copy it replaces or removes (`.bak.<time>`, never `*.json`), and stages
+  beside the target before a rename. `--no-tool-stamps` drops `postToolUse`. Checkout only
+  for now: not in the runtime payload, and Setup does not report it yet.
 - **Agent setup is explicit, dry-run-first, and owns only marked text.**
   `scripts/install-agents.sh` is the supported bridge between two configuration systems:
   MCP registration can store a server command but cannot inject a global prompt, so the

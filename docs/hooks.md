@@ -293,6 +293,50 @@ An older Agent Inbox installer does not know `activity`, so it treats these two
 entries as another tool's: its `--uninstall` leaves them in place. Remove them
 with this installer's `--uninstall`, or re-install from this version.
 
+## Copilot CLI: the opt-in hooks file (#466 PR 3)
+
+Copilot CLI runs hooks too ([hooks reference](https://docs.github.com/en/copilot/reference/hooks-reference)),
+and loads every `*.json` file in `~/.copilot/hooks/` (or `$COPILOT_HOME/hooks/`) into
+every session. Agent Inbox owns exactly one of them, `agent-inbox.json`, and writes
+nothing else:
+
+```sh
+npm run install:copilot-hooks                              # dry run: prints the file it would write
+npm run install:copilot-hooks -- --apply                   # write it (an older copy is backed up)
+npm run install:copilot-hooks -- --apply --no-tool-stamps  # the off switch for tool stamps
+npm run install:copilot-hooks -- --apply --uninstall       # remove it (backed up first)
+```
+
+| Copilot CLI event | runs | stamps |
+|---|---|---|
+| `userPromptSubmitted` | `hook-cli activity turn` | `host_turn_at` |
+| `agentStop`, `errorOccurred` | `hook-cli activity idle` | `host_idle_at` |
+| `postToolUse` | `hook-cli activity tool` | `host_tool_at`, at most once per 30 s |
+| `sessionEnd` | `hook-cli activity end` | nothing; removes the throttle marker |
+
+Every entry is exec form (`exec` + `args`, no shell) with a 5 s timeout, and prints
+nothing. Copilot CLI parses a hook's stdout as its decision and treats an empty one
+as "no decision", and a timeout fails open on these events. There is no `preToolUse`
+entry: a command hook that fails there denies the tool call. Copilot CLI runs
+`postToolUse` hooks synchronously, so each tool call waits for one Node start (about
+50 ms) while the marker says no stamp is due; `--no-tool-stamps` drops that hook and
+keeps the turn stamps, which still mark a running turn busy.
+
+The join is the Claude one. Checked on Copilot CLI 1.0.106: every hook, exec or
+`bash` form, is a direct child of the `copilot` process, which is the `host_pid`
+its Agent Inbox MCP server records, so no process walk is needed. One `copilot`
+process can host several sessions sharing one server, so a stamp describes the
+process, as the card does.
+
+The installer refuses anything at that path it did not write (another tool's file,
+a symlink, a directory), in every mode; runs under the setup lock (fd 9); proves its
+Node with `hook-cli selftest` first; and backs up a copy it replaces or removes as
+`agent-inbox.json.bak.<time>`, a name Copilot never loads. With the session
+sandbox on, a user-level hook runs inside it and cannot reach `~/.agent-inbox`
+unless that path is granted (`sandbox.userPolicy`); it then stamps nothing.
+Setup does not report this file yet, and a Setup runtime does not ship the
+installer yet: run it from a checkout.
+
 ## The stdin payloads
 
 Verified against `code.claude.com/docs/en/hooks` and
@@ -488,7 +532,7 @@ cannot stop nagging is exactly what the viewer rebuild was designed against
 
 | var | default | meaning |
 |---|---|---|
-| `AGENT_INBOX_HOOKS` | *(unset)* | set to `0` to make every subcommand a silent no-op |
+| `AGENT_INBOX_HOOKS` | *(unset)* | set to `0` to make every subcommand a silent no-op (the Copilot CLI hooks file's too) |
 | `AGENT_INBOX_DB` | `~/.agent-inbox/inbox.db` | the hub. The watcher's lease lives in it, and marker state and `hook.log` live beside it, which is what makes the runtime hermetic under test |
 | `AGENT_INBOX_HOOK_NOTIFY_TYPES` | `permission_prompt` | comma-separated `notification_type` gate |
 | `AGENT_INBOX_HOOK_GRACE_MS` | `90000` | how long a permission prompt may sit before it earns an item |

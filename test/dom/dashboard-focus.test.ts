@@ -359,7 +359,7 @@ describe('the session focus panel (#307)', () => {
     await pollTick()
     expect(aside.hidden).toBe(false)
     expect(aside.querySelector('.sp-state')?.textContent).toBe('Needs you')
-    expect(aside.querySelector('.dash-focus-doing')?.textContent).toBe('was: Polishing the panel')
+    expect(aside.querySelector('.dash-focus-doing')?.textContent).toBe('Last reported: Polishing the panel · just now')
     expect(aside.querySelector<HTMLElement>('.dash-focus-gone')?.hidden).toBe(true)
   })
 })

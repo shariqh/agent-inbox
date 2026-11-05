@@ -29,6 +29,11 @@ const STATES = Object.freeze({
   stopping: { label: 'Stopping…', rank: 2 },
   working: { label: 'Working', rank: 3 },
   idle: { label: 'Idle', rank: 4 },
+  // #466: an idle card with no evidence either way. A terminal session reports
+  // only through Agent Inbox calls, so no call says nothing about whether it is
+  // busy with other tools; only a driver that reports no running turn (no
+  // `driven_turn`) knows its session idles.
+  quiet: { label: 'Quiet', rank: 4 },
   parked: { label: 'Parked', rank: 5 },
   terminal: { label: 'In Terminal', rank: 6 },
   ended: { label: 'Ended', rank: 7 },
@@ -37,7 +42,8 @@ const STATES = Object.freeze({
 
 // The state filters in the card's header, over the cards in its main list.
 export const FILTERS = Object.freeze([
-  ['all', 'All'], ['ask', 'Needs you'], ['working', 'Working'], ['idle', 'Idle'], ['parked', 'Parked'],
+  // `idle` holds Quiet and Idle cards alike (#466): a known-idle card is quiet too
+  ['all', 'All'], ['ask', 'Needs you'], ['working', 'Working'], ['idle', 'Quiet'], ['parked', 'Parked'],
 ])
 
 const HOSTS = { copilot: 'Copilot', 'claude-code': 'Claude Code' }
@@ -49,6 +55,19 @@ const time = (iso) => {
 }
 const ago = (nowMs, at) => (at === null ? null : Math.max(0, nowMs - at))
 const since = (ms) => (relMs(ms) === 'moments' ? '<1m' : relMs(ms))
+const NO_TASK = 'No task reported yet'
+
+// #466: what a quiet card can truthfully say about time: when it last called
+// Agent Inbox, never that it has been idle that long.
+function quietRecency(row, nowMs) {
+  const call = time(row.last_call_at)
+  if (call !== null) {
+    const ms = ago(nowMs, call)
+    return relMs(ms) === 'moments' ? 'last Agent Inbox call just now' : `no Agent Inbox call for ${relMs(ms)}`
+  }
+  const start = ago(nowMs, time(row.started_at))
+  return start === null ? 'no Agent Inbox call yet' : `connected ${since(start)} · no Agent Inbox call yet`
+}
 
 // The kind of an ask: an app session's approval (#412), filed in `@sessions`
 // with the tool line as its title, or anything else asking the human.
@@ -74,7 +93,8 @@ function newest(rows) {
 }
 
 // What the card says about time, from its own state.
-function recency(state, { row, launch, nowMs }) {
+function recency(state, { row, launch, nowMs, quiet = false }) {
+  if (row && quiet) return quietRecency(row, nowMs)
   if (state === 'working') {
     const call = time(row?.last_call_at)
     if (call === null) return 'no call yet'
@@ -152,6 +172,8 @@ export function sessionCards({ activity, launches = null, boards = [], attention
     const status = launchStatus(launch, rows, nowMs)
     const base = launchState(status, launch, row, nowMs)
     const synopsis = row ? activitySynopsis(row) : null
+    // #466: running with no live claim is Idle only while its driver reports no turn
+    const quiet = base === 'idle' && Boolean(row?.driven_turn)
     const calls = Number.isSafeInteger(launch.tool_calls) && launch.tool_calls > 0 && launch.budget_tool_calls
       ? ` · ${launch.tool_calls} of ${launch.budget_tool_calls} tool calls` : ''
     finish({
@@ -168,8 +190,10 @@ export function sessionCards({ activity, launches = null, boards = [], attention
       origin: 'started here',
       base,
       text: synopsis && (base === 'working' || base === 'idle') ? synopsis.text : `${status.text}${base === 'starting' || base === 'stopping' ? '' : calls}`,
+      claim: Boolean(synopsis && (base === 'working' || base === 'idle')),
+      quiet,
       historical: synopsis && (base === 'working' || base === 'idle') ? synopsis.historical || base !== 'working' : base !== 'starting' && base !== 'stopping',
-      recency: recency(base, { row, launch, nowMs }),
+      recency: recency(base, { row, launch, nowMs, quiet }),
       lastCallAt: row?.last_call_at ?? null,
       worktree: worktreeShort(launch),
       plan: null, children: [], trace: null,
@@ -179,6 +203,8 @@ export function sessionCards({ activity, launches = null, boards = [], attention
   for (const row of rows) {
     if (claimed.has(row.session)) continue
     const base = isWorking(row, nowMs) ? 'working' : isDormant(row, nowMs) ? 'dormant' : 'idle'
+    // a terminal row has only its calls; a driven row is known idle only while its driver reports no turn
+    const quiet = base !== 'working' && !(row.driven === true && !row.driven_turn)
     const synopsis = activitySynopsis(row)
     const agent = typeof row.agent === 'string' && row.agent ? row.agent : 'unknown'
     finish({
@@ -195,8 +221,10 @@ export function sessionCards({ activity, launches = null, boards = [], attention
       origin: row.driven === true ? 'driven' : 'terminal',
       base,
       text: synopsis.text,
+      claim: true,
+      quiet,
       historical: synopsis.historical || base !== 'working',
-      recency: recency(base, { row, launch: null, nowMs }),
+      recency: recency(base, { row, launch: null, nowMs, quiet }),
       lastCallAt: row.last_call_at ?? null,
       worktree: null,
       plan: null, children: [], trace: null,
@@ -230,7 +258,9 @@ export function sessionCards({ activity, launches = null, boards = [], attention
   for (const card of cards) {
     card.approval = card.asks.length > 0 && isApproval(card.asks[0])
     card.state = card.asks.length ? 'ask' : card.base
-    card.label = card.askOnly ? (card.askOnly === 'ended' ? 'Session ended' : 'No session') : STATES[card.state].label
+    card.label = card.askOnly ? (card.askOnly === 'ended' ? 'Session ended' : 'No session')
+      : STATES[card.state === 'idle' && card.quiet ? 'quiet' : card.state].label
+    card.line = doingLine(card, nowMs)
     // an ask is never folded away: Needs you counts every one (A.1)
     if (card.state === 'ask') card.place = 'main'
     else if (shut.has(card.project)) card.place = 'closed'
@@ -239,6 +269,17 @@ export function sessionCards({ activity, launches = null, boards = [], attention
     else card.place = 'main'
   }
   return cards.sort((a, b) => STATES[a.state].rank - STATES[b.state].rank || b.activeAt - a.activeAt || (a.id < b.id ? -1 : 1))
+}
+
+// The card's and the panel's "doing" line. A claim that is no longer live is
+// what the session last reported (#466), dated by its last Agent Inbox call:
+// the claim was live then, and nothing since says what it is doing now.
+function doingLine(card, nowMs) {
+  if (!(card.historical && card.base !== 'working' && card.row && card.text !== NO_TASK)) return card.text
+  if (!card.claim) return `was: ${card.text}`
+  const ms = ago(nowMs, time(card.row.last_call_at) ?? time(card.row.started_at))
+  if (ms === null) return `Last reported: ${card.text}`
+  return `Last reported: ${card.text} · ${relMs(ms) === 'moments' ? 'just now' : `${relMs(ms)} ago`}`
 }
 
 // An ask whose session no card shows (#454 amendment A.1): "Session ended" when
@@ -270,6 +311,7 @@ function askOnlyCard(id, entry, session, { items, boards, nowMs }) {
     origin: session ? 'session ended' : 'no session',
     base: 'ended',
     text: board ? `Plan: ${board.title ?? ''}` : session ? 'Its session has ended' : 'Filed without a session',
+    claim: false, quiet: false,
     historical: true,
     recency: heardMs === null ? '' : relMs(heardMs) === 'moments' ? 'last heard just now' : `last heard ${relMs(heardMs)} ago`,
     lastCallAt: null,

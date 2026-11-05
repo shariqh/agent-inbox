@@ -453,6 +453,6 @@ describe('clock-derived content still moves on an idle window (#298)', () => {
     expect(strip()).toBe('1 working · 1 connected')
     const coldAt = await tickUntil(() => strip() !== '1 working · 1 connected', 20_000 + CLOCK_LAG_MS)
     expect(coldAt - (calledAt + 30 * 60_000)).toBeLessThanOrEqual(CLOCK_LAG_MS)
-    expect(strip()).toContain('no task reported')
+    expect(strip()).toContain('all quiet')
   })
 })

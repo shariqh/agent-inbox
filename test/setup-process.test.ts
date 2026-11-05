@@ -381,7 +381,7 @@ describe('the Claude hooks target (#206)', () => {
       const h = hooksHome()
       const older = installRuntime(h, '1.0.0')
       mkdirSync(dirname(h.settings), { recursive: true })
-      writeFileSync(h.settings, JSON.stringify({ model: 'x', hooks: { PostToolUse: [{ hooks: [{ type: 'command', command: 'echo hi' }] }] } }))
+      writeFileSync(h.settings, JSON.stringify({ model: 'x', hooks: { PreCompact: [{ hooks: [{ type: 'command', command: 'echo hi' }] }] } }))
       const first = spawnSync('/bin/bash', [join(older.dir, 'scripts', 'install-hooks.sh'), '--apply'], { encoding: 'utf8', env: h.env })
       expect(first.status, first.stderr).toBe(0)
       expect(new Set(hookLaunchers(h).map((hook) => hook.entry))).toEqual(new Set([join(older.dir, 'dist', 'hook-cli.js')]))
@@ -406,7 +406,7 @@ describe('the Claude hooks target (#206)', () => {
       }
       const settings = JSON.parse(readFileSync(h.settings, 'utf8')) as { model: string; hooks: Record<string, unknown> }
       expect(settings.model).toBe('x')
-      expect(settings.hooks['PostToolUse']).toEqual([{ hooks: [{ type: 'command', command: 'echo hi' }] }])
+      expect(settings.hooks['PreCompact']).toEqual([{ hooks: [{ type: 'command', command: 'echo hi' }] }])
       expect(readdirSync(dirname(h.settings)).filter((name) => name.includes('.bak.')).length).toBe(before + 1)
       // it ran under the shared setup lock, in the scratch HOME
       expect(existsSync(lock)).toBe(true)

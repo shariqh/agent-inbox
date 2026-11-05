@@ -74,7 +74,9 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   Quiet (#466) is the idle state's label when nothing can tell: a terminal session reports
   only through Agent Inbox calls, so one busy with `gh`, a shell or another server reads
   exactly like one waiting at its prompt. Only a driven row or a running launch whose
-  driver reports no running turn (no `driven_turn`) says Idle. A quiet card's time says "no Agent Inbox call for
+  driver reports no running turn (no `driven_turn`), or a session whose Claude Code hooks
+  stamped its turn ended (#466 PR 2, "turn ended 12m ago"), says Idle; a hook-stamped
+  running turn with no claim is Working, "Task not reported" (`isBusy`, `hostState`). A quiet card's time says "no Agent Inbox call for
   40m" ("last Agent Inbox call just now", or "connected 3m · no Agent Inbox call yet"),
   never "idle 40m", on a line of its own under the head (`.sc.quiet`); the Idle filter is labelled Quiet and keeps its `idle` key. A claim
   that is no longer live reads "Last reported: <claim> · 52m ago", dated by the last call

@@ -66,7 +66,7 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   (`public/sessions.js`), grouped by project, with "last call" from `last_call_at` (never
   `updated_at`) and asks READ from the frame's `waitingEntries` by session or linked
   plan; `viewer-dashboard-and-shell.md` has the detail. Nothing it draws reaches
-  `public/attention.js`, a badge, count, tab, the rail or the dock; it fetches nothing,
+  `public/attention.js`, a badge, count, tab or the dock; it fetches nothing,
   runs no timer, and rebuilds a card's part only when what it shows changed. Its state
   is in `frameInputs()`, so a filter, grouping or fold change is never reused across
   frames. `test/mesh.test.ts` and `test/dom/agents-home.test.ts` hold it, including the

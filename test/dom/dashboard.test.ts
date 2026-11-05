@@ -21,8 +21,8 @@ function open(): Database.Database {
 const signal = (name: string): string =>
   document.querySelector(`[data-dashboard-signal="${name}"] .dashboard-value`)?.textContent ?? ''
 
-const railIds = (): string[] =>
-  [...document.querySelectorAll<HTMLElement>('#dashRail [data-rail-card]')].map((card) => card.dataset.railCard!)
+// the Agents home's Needs you count: every ask on a card (#454 A.1)
+const askCount = (): number => Number(document.querySelector('.agents-home [data-ah-filter="ask"] .ah-filter-count')?.textContent)
 
 // #454: the Agents home's cards, past its folds
 // the sessions' own cards: an ask naming no live session has an ask-only card too (#454 A.1, test/dom/agents-asks.test.ts)
@@ -202,7 +202,7 @@ describe('Live Operations Desk dashboard', () => {
     expect(document.querySelector('.sc-doing')?.textContent).toBe('was: Checking the build')
   })
 
-  it('drills from the waiting signal into the existing Inbox queue', async () => {
+  it('turns on the Needs you filter from the waiting signal and lands on the Agents card (#454 A.2)', async () => {
     const d = open()
     const id = insertItem(d, {
       project: 'alpha',
@@ -213,12 +213,14 @@ describe('Live Operations Desk dashboard', () => {
     })
 
     await bootApp(d)
-    click(document.querySelector('[data-dashboard-target="needsYou"]'))
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    click(document.querySelector('[data-dashboard-signal="waiting"]'))
     await settle()
 
-    expect(document.getElementById('needsYou')?.hidden).toBe(false)
-    expect(document.querySelector('.tab[data-tab="needsYou"]')?.getAttribute('aria-selected')).toBe('true')
-    expect(row(id)).not.toBeNull()
+    expect(document.getElementById('dashboard')?.hidden).toBe(false)
+    expect(document.querySelector('.agents-home [data-ah-filter="ask"]')?.getAttribute('aria-pressed')).toBe('true')
+    expect(document.activeElement).toBe(document.getElementById('agentsHomeTitle'))
+    expect(document.querySelector(`[data-session-card="ask:item:${id}"]`)).not.toBeNull()
   })
 
   it('opens the complete outcomes projection and reaches an archived plan outcome', async () => {
@@ -317,9 +319,7 @@ describe('Live Operations Desk dashboard', () => {
     expect(document.activeElement).toBe(range)
     expect(document.querySelector('.dashboard-range')).toBe(range)
     expect(document.getElementById('pauseHint')?.textContent).toContain('paused')
-    // #303: the rail holds the drafted ask's card, editor and all, while the rest refreshes.
-    expect(railIds()).toEqual([first])
-    expect(document.querySelector<HTMLTextAreaElement>(`[data-rail-card="${first}"] .reply-input`)?.value).toBe('unfinished answer')
+    expect(askCount()).toBe(2)
     expect(answerInput(first)?.value).toBe('unfinished answer')
   })
 
@@ -382,8 +382,7 @@ describe('Live Operations Desk dashboard', () => {
 
     expect(signal('waiting')).toBe('6')
     expect(signal('agents')).toBe('0')
-    expect(railIds()).toHaveLength(3)
-    expect(document.querySelector('.dash-rail-more')?.textContent).toBe('+3 more')
+    expect(askCount()).toBe(6)
     expect(signal('outcomes')).toBe('1')
     expect(working()).toHaveLength(0)
     expect(cards().map((card) => card.querySelector('.sc-state')?.textContent)).toEqual(['Idle'])
@@ -507,7 +506,7 @@ describe('Live Operations Desk dashboard', () => {
     await pollTick()
     expect(document.title).toBe('(4) Agent Inbox')
     expect(signal('waiting')).toBe('2')
-    expect(railIds()).toHaveLength(2)
+    expect(askCount()).toBe(2)
     expect(cards().map((card) => card.dataset.sessionCard)).toEqual(['session:alpha'])
     expect(document.activeElement).toBe(range)
   })
@@ -523,12 +522,12 @@ describe('Live Operations Desk dashboard', () => {
     insertItem(d, { project: 'alpha', stream: 'main', agent: 'copilot', kind: 'question', title: 'Next decision' })
     await vi.advanceTimersByTimeAsync(200)
     expect(signal('waiting')).toBe('1')
-    expect(railIds()).toHaveLength(1)
+    expect(askCount()).toBe(1)
     expect(document.getElementById('pauseHint')?.textContent).toBe('')
     range.dispatchEvent(new Event('pointerup', { bubbles: true }))
     await pollTick()
     expect(signal('waiting')).toBe('2')
-    expect(railIds()).toHaveLength(2)
+    expect(askCount()).toBe(2)
     expect(document.querySelector('.dashboard-range')).toBe(range)
   })
 

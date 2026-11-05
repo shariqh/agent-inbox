@@ -262,14 +262,17 @@ describe('changes outside the poll still reach an idle window (#298)', () => {
       },
     })
     const card = () => document.querySelector<HTMLElement>('[data-session-card="session:stale"]')
-    const chip = () => card()?.querySelector<HTMLElement>('.sc-chip.tone-warn')
+    // #454 A.3: the build advice is the session panel's
+    const hint = () => document.querySelector<HTMLElement>('#dashboard .dash-focus .sp-hint')
     await pollTick()
     expect(card()).not.toBeNull()
-    expect(chip()).toBeFalsy()
+    click(card()!.querySelector('.sc-doing'))
+    expect(hint()?.hidden).toBe(true)
     answer()
     await settle()
     await pollTick()
-    expect(chip()?.title).toMatch(/^older build \(v1\.2\.6\)/)
+    expect(hint()?.hidden).toBe(false)
+    expect(hint()?.textContent).toMatch(/^older build \(v1\.2\.6\)/)
   })
 
   // main's answer to whether this page may open local files lands when it lands

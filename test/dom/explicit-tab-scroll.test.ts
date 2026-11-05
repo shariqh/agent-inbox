@@ -56,6 +56,8 @@ it('reveals explicit Tab targets only in their scrolling owner and leaves passiv
   const dismiss = buttonLabelled('Dismiss', card)!
   const note = buttonLabelled('Note', card)!
   const close = card.querySelector<HTMLButtonElement>('.nrow-card-close')!
+  // #454 A.2: the head's Show on Agents ›, before its close
+  const show = card.querySelector<HTMLButtonElement>('.nrow-show-agents')!
   for (const [target, top, height] of [
     [send, 642.5, 44], [context, 696.5, 49], [more, 761.5, 44], [wait, 813.5, 44],
     [resolve, 865.5, 44], [dismiss, 865.5, 44], [note, 865.5, 44],
@@ -64,6 +66,7 @@ it('reveals explicit Tab targets only in their scrolling owner and leaves passiv
       .mockImplementation(() => new DOMRect(14, top - footer.scrollTop, 100, height))
   }
   vi.spyOn(close, 'getBoundingClientRect').mockReturnValue(new DOMRect(317, 12, 44, 44))
+  vi.spyOn(show, 'getBoundingClientRect').mockReturnValue(new DOMRect(14, 40, 120, 30))
   const tabTo = (target: HTMLElement, shiftKey = false) => {
     const focus = vi.spyOn(target, 'focus')
     expect(press('Tab', { shiftKey }).defaultPrevented).toBe(true)
@@ -77,8 +80,8 @@ it('reveals explicit Tab targets only in their scrolling owner and leaves passiv
     focus.mockRestore()
   }
   send.focus({ preventScroll: true })
-  for (const target of [context, more, wait, resolve, dismiss, note, close]) tabTo(target)
-  for (const target of [note, dismiss, resolve, wait, more, context, send]) tabTo(target, true)
+  for (const target of [context, more, wait, resolve, dismiss, note, show, close]) tabTo(target)
+  for (const target of [show, note, dismiss, resolve, wait, more, context, send]) tabTo(target, true)
 
   expect(footer.scrollTop).toBeGreaterThan(0)
   footer.scrollTop = 100

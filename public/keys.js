@@ -28,14 +28,16 @@ export const KEYBOARD_COMMANDS = [
   { id: 'resolve', key: 'e', display: 'E', label: 'Resolve the current item', group: 'Work through items', legacy: true },
   { id: 'dismiss', key: 'x', display: 'X', label: 'Dismiss the current item with its undo window', group: 'Work through items', legacy: true },
   { id: 'review', key: 't', display: 'T', label: 'Open the review queue', group: 'Work through items', legacy: true },
-  // #307: the Dashboard's own keys, listed here only (legacy: the rail and the
-  // lanes handle them where focus is, so they never collide with the Inbox's).
-  { id: 'railMove', key: 'j', display: 'J / K', label: 'Move between the Needs you rail cards', group: 'Dashboard', legacy: true },
-  { id: 'railOption', key: '1-4', display: '1-4', label: "Choose a rail card's option", group: 'Dashboard', legacy: true },
-  { id: 'railSnooze', key: 's', display: 'S', label: 'Snooze the rail card', group: 'Dashboard', legacy: true },
-  { id: 'railPin', key: 'p', display: 'P', label: 'Pin the rail card for later', group: 'Dashboard', legacy: true },
-  { id: 'railOpen', key: 'Enter', display: 'Enter', label: "Write an answer on a rail card, or open a session card's session focus panel", group: 'Dashboard', legacy: true },
-  { id: 'focusClose', key: 'Escape', display: 'Esc', label: 'Close the session focus panel and return to its card', group: 'Dashboard', legacy: true },
+  // #307, #454 A.2: the Dashboard's own keys, listed here only (legacy: the
+  // session cards and the session panel handle them where focus is, so they
+  // never collide with the Inbox's).
+  { id: 'cardMove', key: 'j', display: 'J / K', label: 'Move between the session cards (the arrows too)', group: 'Dashboard', legacy: true },
+  { id: 'cardOpen', key: 'Enter', display: 'Enter', label: "Open a session card's panel, at its ask when it has one", group: 'Dashboard', legacy: true },
+  { id: 'askOption', key: '1-4', display: '1-4', label: "Choose an option of the panel's ask", group: 'Dashboard', legacy: true },
+  { id: 'askSnooze', key: 's', display: 'S', label: "Snooze the panel's ask for 4 hours", group: 'Dashboard', legacy: true },
+  { id: 'askPin', key: 'p', display: 'P', label: "Pin the panel's ask for later", group: 'Dashboard', legacy: true },
+  { id: 'askReply', key: 'r', display: 'R', label: "Write an answer to the panel's ask", group: 'Dashboard', legacy: true },
+  { id: 'focusClose', key: 'Escape', display: 'Esc', label: 'Close the session panel and return to its card', group: 'Dashboard', legacy: true },
   // #411: the message composer's keys, handled by the composer itself
   { id: 'messageSend', key: 'mod+Enter', display: 'Mod Enter', label: 'Send a message from its composer', group: 'Messages', legacy: true },
   { id: 'messageClose', key: 'Escape', display: 'Esc', label: 'Close the session panel from its composer: the text is kept', group: 'Messages', legacy: true },

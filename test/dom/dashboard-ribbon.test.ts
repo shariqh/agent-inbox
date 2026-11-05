@@ -577,7 +577,6 @@ describe('attention parity and the budget with the ribbon (#305)', () => {
     badge: badgeCount(),
     // History's count follows the outcome that landed; the attention tabs never move.
     tabs: ['needsYou', 'notes', 'boards'].map(tabCount),
-    rail: [...document.querySelectorAll<HTMLElement>('#dashRail [data-rail-card]')].map((card) => card.dataset.railCard),
     dock: [await (await fetch('/api/items?scope=attention')).text(), await (await fetch('/api/boards?scope=attention')).text()],
   })
 

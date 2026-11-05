@@ -20,6 +20,8 @@ export interface AgentsHomeInput {
   selected?: string | null
   /** launches the project and agent lens hides that are not ended (#454) */
   outside?: number
+  /** how many asks wait in Later: the header's "Later N ›" (#454 A.2) */
+  later?: number
 }
 
 export interface AgentsHomeLaunches {
@@ -28,14 +30,14 @@ export interface AgentsHomeLaunches {
   openNewSession(): void
 }
 
-export function installAgentsHome(deps: {
+export interface AgentsHomeDeps {
   doc?: Document
   /**
    * The session panel (#454): a card's click toggles it (no part); Review, Message, Transcript and
    * Resume… open it at that part, and Answer or the ask strip at that ask (`ask`, its id). `key` is a launch or
    * ask-only card's id, else the card's session.
    */
-  openSession: (key: string, part?: 'approval' | 'asks' | 'message' | 'transcript' | 'resume' | null, ask?: string | null) => void
+  openSession: (key: string, part?: 'approval' | 'asks' | 'message' | 'transcript' | 'resume' | 'head' | null, ask?: string | null) => void
   /** an ask-only card's Open in Inbox (#454 A.1) */
   openInInbox?: (entry: AttentionEntry | undefined) => void
   /** whether an ask holds an unsent answer: its card says "Answer · draft" */
@@ -45,7 +47,9 @@ export function installAgentsHome(deps: {
   /** the launch UI while the app's switch is on, else null */
   launches?: () => AgentsHomeLaunches | null
   hasDraft?: (session: string) => boolean
-  build?: (row: LaneActivity) => { older: boolean; newer: boolean; hint: string } | null
+  /** the header's "Later N ›" and Review queue (#454 A.2) */
+  openLater?: () => void
+  openReview?: () => void
   projectColor?: (project: string) => string
   /** the one-shot pulse on a new call (#304), where motion is allowed */
   pulse?: (el: Element) => void
@@ -53,7 +57,14 @@ export function installAgentsHome(deps: {
   paintUndelivered?: (slot: Element) => void
   /** clears the project and agent lens ("N sessions outside this filter · Show all") */
   showAll?: () => void
-}): {
+  /** after the home's own repaints (filters, grouping, folds): the session panel finds its place again */
+  afterRepaint?: () => void
+}
+
+/** moves `node` with `move()`, giving back the focus (and a text control's selection) it held, in a focused window */
+export function moveKeepingFocus(node: Element, move: () => void): void
+
+export function installAgentsHome(deps: AgentsHomeDeps): {
   /** the Agents home card, made once; renderDashboard mounts it in the Dashboard grid */
   element(): HTMLElement
   paint(host: Element, input: AgentsHomeInput): void
@@ -65,6 +76,8 @@ export function installAgentsHome(deps: {
   state(): string
   /** the card a session panel key names: a card id, a live session, or a session a launch remembers */
   cardFor(key: string | null | undefined): SessionCard | null
+  /** shows one state filter and lands on the Agents heading (the Now strip's Waiting on you) */
+  showFilter(key: string): void
   /** the panel key of the card holding an ask (every attention entry is on exactly one card), or null */
   askKey(id: string): string | null
 }

@@ -416,7 +416,7 @@ Approve), `public/agents-home.js` and `public/sessions.js` (the launch cards, #4
   Take over / Resume in Terminal, Open in Terminal, Remove worktree… only once ended, with "Stop it to
   remove its worktree" beside Stop until then), the worktree box,
   the transcript, Resume and send, and the launch's `@sessions` approvals answered in place with their own
-  options (main signs, as from the rail). A terminal or other driver's session gets none of these.
+  options (main signs). A terminal or other driver's session gets none of these.
 - **The transcript** (a section of the Dashboard's session panel since #454; the `<dialog>` is retired, and
   a card's Transcript or Details opens the panel) reads `GET /api/launches/:id/events?after=N` on its own 2 s
   timer only while the panel shows it (connected, no hidden ancestor; closing the panel stops it) (whole lines, 256 KiB a read, `rotated` restarts it, at most 5000 events kept; `more`
@@ -424,7 +424,7 @@ Approve), `public/agents-home.js` and `public/sessions.js` (the launch cards, #4
   driver that died mid-write is re-read every 2 s, never in a loop). Agent
   text, tool calls, asks and answers are drawn as `textContent` lines only.
 - **Presence, not attention.** A launch's card carries the "Copilot · started here" chip. Nothing here
-  reaches `public/attention.js`, a badge, a count, the rail or the dock.
+  reaches `public/attention.js`, a badge, a count or the dock.
 
 ## Step 3, part 4: Park now, Edits in the worktree, the Agents view
 

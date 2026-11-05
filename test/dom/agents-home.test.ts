@@ -46,7 +46,6 @@ async function surfaces() {
     title: document.title,
     badge: badgeCount(),
     tabs: ['needsYou', 'notes', 'boards', 'done'].map(tabCount),
-    rail: [...document.querySelectorAll('#dashRail [data-rail-card] .dash-rail-title')].map((el) => el.textContent),
     needsYou: await (async () => { await showInbox(); return rows().map((el) => el.querySelector('.nrow-title')?.textContent) })(),
   }
 }
@@ -61,7 +60,6 @@ const SURFACES = {
   title: '(3) Agent Inbox',
   badge: 3,
   tabs: ['3', '1', '1', ''],
-  rail: ['Approve it.', 'Ship the search ranking?', 'Retry 4xx?'],
   needsYou: ['Approve it.', 'Ship the search ranking?', 'Retry 4xx?'],
 }
 
@@ -97,12 +95,13 @@ describe('the Agents home (#454)', () => {
     ])
     const orphan = card(`ask:item:${ids.retry}`)!
     expect(orphan.classList.contains('sc-ask-only')).toBe(true)
-    expect([orphan.querySelector('.sc-state')?.textContent, orphan.querySelector('.sc-chips')?.textContent, orphan.querySelector('.sc-ask-title')?.textContent])
+    expect([orphan.querySelector('.sc-state')?.textContent, orphan.querySelector('.sc-agent')?.textContent, orphan.querySelector('.sc-ask-title')?.textContent])
       .toEqual(['No session', 'Claude Code', 'Retry 4xx?'])
     expect([...orphan.querySelectorAll('[data-ah-action]')].map((el) => el.textContent)).toEqual(['Open in Inbox', 'Answer'])
     const ask = card('session:k1')!
     expect(ask.querySelector('.sc-state')?.textContent).toBe('Needs you')
-    expect(ask.querySelector('.sc-chips')?.textContent).toBe('Claude Code · terminal')
+    // V1 (#454 A.3): the agent kind is plain text in the meta line, its origin in the title
+    expect([ask.querySelector('.sc-agent')?.textContent, ask.querySelector<HTMLElement>('.sc-agent')?.title]).toEqual(['Claude Code', 'Claude Code · terminal'])
     expect(ask.querySelector('.sc-ask-title')?.textContent).toBe('Approve the metric set')
     const working = card('session:c2')!
     expect([working.querySelector('.sc-state')?.textContent, working.querySelector('.sc-doing')?.textContent, working.querySelector('.sc-branch')?.textContent])

@@ -10,10 +10,12 @@ const ask = (id: string, created: string, extra: Record<string, unknown> = {}) =
   id, project: 'alpha', agent: 'copilot', kind: 'question', status: 'open', title: id,
   created_at: created, reply: null, ...extra,
 })
-const railIds = (model: DashboardModel): string[] =>
-  model.rail.cards.map((entry) => entry.kind === 'item' ? entry.item.id : entry.row.id)
+const ids = (entries: DashboardModel['waitingEntries']): string[] =>
+  entries.map((entry) => entry.kind === 'item' ? entry.item.id : entry.row.id)
 
-describe('the Needs you rail (#303)', () => {
+// #454 A.2: the rail is retired; the model carries the attention set the session
+// cards read and how many asks wait in Later (the Agents header's "Later N ›").
+describe('the attention set and Later count (#303, #454)', () => {
   const items = [
     ask('parked-old', '2026-08-24T12:00:00.000Z'),
     ask('waiting-new', '2026-08-24T19:00:00.000Z', { session: 'live' }),
@@ -32,29 +34,19 @@ describe('the Needs you rail (#303)', () => {
     items, boards, archived: [], activity: [], nowMs: NOW, liveSessionIds: ['live'], closedProjects: ['retired'],
   }
 
-  it('holds exactly the attention set: three cards, the rest counted, deferred asks only counted', () => {
+  it('holds exactly the attention set, deferred asks only counted', () => {
     const model = buildDashboard(input)
-    const all = sortRail(attentionEntries(items, boards, NOW, ['live'], ['retired']), NOW)
-      .map((entry) => entry.kind === 'item' ? entry.item.id : entry.row.id)
-    expect(all).toHaveLength(4)
-    expect(railIds(model)).toEqual(all.slice(0, 3))
-    expect(model.rail.more).toBe(1)
-    expect(model.rail.cards.length + model.rail.more).toBe(model.signals.waiting)
-    expect(model.rail.later).toBe(2)
+    expect(ids(model.waitingEntries).sort()).toEqual(ids(attentionEntries(items, boards, NOW, ['live'], ['retired'])).sort())
+    expect(model.waitingEntries).toHaveLength(model.signals.waiting)
+    expect(model.later).toBe(2)
+    expect('rail' in model).toBe(false)
   })
 
-  it('ranks asks an agent is waiting on first without changing membership', () => {
-    expect(railIds(buildDashboard(input))).toEqual(['waiting-old', 'waiting-new', 'blocked'])
-    const parked = buildDashboard({ ...input, liveSessionIds: [] })
-    // Nobody is live: Needs-you order, blocked rows first, and the same four asks.
-    expect(railIds(parked)).toEqual(['blocked', 'parked-old', 'waiting-old'])
-    expect(parked.rail.more).toBe(1)
+  it('sortRail ranks asks an agent is waiting on first without changing membership (the session cards’ ask order)', () => {
     const entries = attentionEntries(items, boards, NOW, ['live'], ['retired'])
     expect(new Set(sortRail(entries, NOW))).toEqual(new Set(entries))
-    expect(sortRail(entries, NOW).map((entry) => entry.kind === 'item' ? entry.item.id : entry.row.id))
-      .toEqual(['waiting-old', 'waiting-new', ...sortNeedsYou(entries, NOW)
-        .filter((entry) => !(entry.kind === 'item' && entry.liveness === 'waiting'))
-        .map((entry) => entry.kind === 'item' ? entry.item.id : entry.row.id)])
+    expect(ids(sortRail(entries, NOW))).toEqual(['waiting-old', 'waiting-new', ...ids(sortNeedsYou(entries, NOW)
+      .filter((entry) => !(entry.kind === 'item' && entry.liveness === 'waiting')))])
   })
 })
 
@@ -154,7 +146,8 @@ describe('buildDashboard', () => {
       outcomes: 2,
       projects: 1,
     })
-    expect(model.rail).toEqual({ cards: [expect.objectContaining({ kind: 'item' })], more: 0, later: 0 })
+    expect(model.waitingEntries).toEqual([expect.objectContaining({ kind: 'item' })])
+    expect(model.later).toBe(0)
     expect(model.lanes.map((lane) => lane.session)).toEqual(['working'])
     expect(model.idleConnections).toBe(1)
     expect(model.recentOutcomes.map((entry) => entry.kind === 'item' ? entry.item.id : entry.row.id))

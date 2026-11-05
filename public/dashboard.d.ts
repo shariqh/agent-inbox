@@ -51,8 +51,8 @@ export interface DashboardModel {
     outcomes: number
     projects: number
   }
-  /** #303: the top three attention entries in rail order, how many more, and how many wait in Later */
-  rail: { cards: RelayEntry[]; more: number; later: number }
+  /** #454 A.2: how many asks wait in Later, for the Agents header's "Later N ›" */
+  later: number
   waitingEntries: RelayEntry[]
   agentEntries: RelayEntry[]
   /** every loaded outcome, newest first (#307) */

@@ -48,6 +48,7 @@ function launchBridge(state: Partial<State> = {}) {
     stop: vi.fn(async (_id: string) => ({ ok: true, status: 'stopping' })),
     close: vi.fn(async (_id: string) => ({ ok: true, killed: false })),
     resume: vi.fn(async (_id: string) => ({ ok: true, launch: PARKED })),
+    resumeWithBudget: vi.fn(async (_request: unknown) => ({ ok: true, launch: PARKED }) as Record<string, unknown>),
     approve: vi.fn(async (_value: unknown) => ({ ok: true })),
     chooseWorktreeRoot: vi.fn(async () => {
       current.worktreeRoot = { path: '/Users/shariqh/Development/copilot-worktrees', isDefault: false }
@@ -638,6 +639,50 @@ describe('a launch’s card and session panel (§3.6, §7, #454)', () => {
     await settle()
     expect(api.resume).toHaveBeenCalledWith(PARKED)
     expect(listSessionMessages(db).open.map((m) => [m.session, m.text])).toEqual([['mcp-9', 'Carry on.']])
+  })
+
+  it('a budget-ended launch offers Resume with more budget…: main confirms the allowance, then the message is sent (#451)', async () => {
+    const lease = { launchId: PARKED, pid: 4243, nonce: 'r' }
+    const api = launchBridge()
+    db = freshDb()
+    newLaunch(db, PARKED)
+    recordLaunchProgress(db, PARKED, { toolCalls: 500, activeMs: 600_000 })
+    endLaunch(db, PARKED, { reason: 'budget:tool_calls', acpSession: 'acp-1' })
+    await bootApp(db)
+    await changedPollTick(db)
+    expect(doingOf(PARKED)).toBe('Ended: tool-call budget used. Its session is kept: add budget to resume it. · 500 of 500 tool calls')
+    click(launchRow(PARKED)!.querySelector('[data-ah-action="resume"]'))
+    await settle()
+    // no Take over, and the plain Resume is never asked for
+    expect(panelAction('take-over')).toBeNull()
+    const [hours, calls] = [...panel().querySelectorAll<HTMLInputElement>('.sp-resume-budget input')]
+    expect([hours!.value, calls!.value]).toEqual(['1', '250'])
+    expect(panelAction('resume')!.textContent).toBe('Resume with more budget…')
+    type(panel().querySelector<HTMLTextAreaElement>('.sp-resume-input')!, 'Finish the tests.')
+    // an allowance that leaves it spent is refused on the page, and main is not asked
+    calls!.value = '0'
+    click(panelAction('resume'))
+    await settle()
+    expect(panel().querySelector('.sp-note')!.textContent).toBe('Add tool calls: it has used all of them.')
+    expect(api.resumeWithBudget).not.toHaveBeenCalled()
+    // Cancel in main's dialog leaves everything as it was, with no note
+    calls!.value = '100'
+    hours!.value = '0.5'
+    api.resumeWithBudget.mockResolvedValueOnce({ ok: false, error: 'Not resumed.', cancelled: true })
+    click(panelAction('resume'))
+    await settle()
+    expect(api.resumeWithBudget).toHaveBeenLastCalledWith({ id: PARKED, add: { activeMs: 1_800_000, toolCalls: 100 } })
+    expect(panel().querySelector<HTMLElement>('.sp-note')!.hidden).toBe(true)
+    expect(panel().querySelector<HTMLTextAreaElement>('.sp-resume-input')!.value).toBe('Finish the tests.')
+    api.resumeWithBudget.mockImplementationOnce(async () => {
+      drivenSession(db!, 'mcp-9', lease)
+      return { ok: true, launch: PARKED }
+    })
+    click(panelAction('resume'))
+    await settle()
+    await settle()
+    expect(api.resume).not.toHaveBeenCalled()
+    expect(listSessionMessages(db).open.map((m) => [m.session, m.text])).toEqual([['mcp-9', 'Finish the tests.']])
   })
 
   it('the transcript is a section of the session panel, read while the panel shows it, as plain text (#454)', async () => {

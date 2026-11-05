@@ -9,6 +9,8 @@ export interface LaunchController {
   available(): { enabled: boolean; available: boolean; error?: string }
   start(request: unknown): Promise<LaunchResult>
   resume(id: unknown): Promise<LaunchResult>
+  /** #451: resume a budget-ended launch after main's own confirmation of the allowance */
+  resumeWithBudget(request: unknown): Promise<LaunchResult>
   stop(id: unknown): Promise<LaunchResult>
   close(id: unknown): Promise<LaunchResult>
   approve(request: unknown): Promise<LaunchResult>
@@ -31,6 +33,8 @@ export interface LaunchController {
 export const MODES: Readonly<Record<string, { label: string; copy: string }>>
 export function createLaunchController(deps: Record<string, unknown>): LaunchController
 export function launchRequest(value: unknown): Record<string, unknown> | null
+export function budgetRequest(value: unknown): { id: string; add: { activeMs: number; toolCalls: number } } | null
+export function budgetConfirmation(facts: { launch: Record<string, any>; folder: string; add: { activeMs: number; toolCalls: number } }): { message: string; detail: string; buttons: string[] }
 export function approvalRequest(value: unknown): { item: string; revision: number; optionId: string } | null
 export function launchEnv(env: Record<string, unknown>): Record<string, string>
 export function displaySafe(text: string): string

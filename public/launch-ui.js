@@ -11,11 +11,14 @@
 // public/attention.js, a badge, a count, the rail or the dock.
 import {
   LAUNCH_MODES, NOT_REPOSITORY, PROMPT_WARNING, REASONING_EFFORTS, SHELL_WARNING, START_PHASES, WORKTREE_COPY,
-  launchSessions, launchStatus, newSessionRequest, transcriptLines, worktreeSummaryText,
+  budgetAllowance, launchSessions, launchStatus, newSessionRequest, transcriptLines, worktreeSummaryText,
 } from '/launches.js'
 
 const DEFAULT_ACTIVE_HOURS = 2
 const DEFAULT_TOOL_CALLS = 500
+// #451: what Resume with more budget… offers to add, before the human changes it
+const DEFAULT_ADD_HOURS = 1
+const DEFAULT_ADD_CALLS = 250
 const RESUME_WAIT_MS = 60_000
 const TRANSCRIPT_POLL_MS = 2000
 const TRANSCRIPT_MAX_EVENTS = 5000
@@ -53,6 +56,8 @@ export function createLaunchUi(deps) {
   const noteStates = new Map()
   const busy = new Set()
   const resumeInputs = new Map()
+  // #451: each budget-ended launch's allowance fields, kept across paints
+  const budgetInputs = new Map()
   let dialog = null
   // #454: the session panel's transcript, read only while the panel shows it
   let transcript = null
@@ -190,11 +195,24 @@ export function createLaunchUi(deps) {
   // Resume and send (§5.3, §7): main starts the driver again on the parked
   // launch; once its new session shows up in Live, the message goes to it.
   // The text stays until it is sent.
+  // #451: a launch a budget ended asks main for more budget instead; main confirms it in its own dialog.
   async function resumeAndSend(id) {
     const text = drafts.get(`resume:${id}`)
     if (!text?.trim()) return
+    const launch = (deps.launches() ?? []).find((l) => l.id === id)
+    let add = null
+    if (launch && launchStatus(launch, deps.activity(), Date.now()).budget) {
+      const fields = budgetInputs.get(id)
+      const checked = fields ? budgetAllowance(launch, { activeHours: fields.hours.value, toolCalls: fields.calls.value }) : { error: 'Choose the budget to add.' }
+      if (checked.error) {
+        setNote(id, checked.error)
+        bump()
+        return
+      }
+      add = checked.add
+    }
     const result = await act(id, async () => {
-      const started = await bridge().resume(id)
+      const started = add ? await bridge().resumeWithBudget({ id, add }) : await bridge().resume(id)
       if (!started?.ok) return started
       const session = await waitForSession(id)
       if (!session) return { ok: false, error: 'The session didn’t come back. Try again, or start a new one.' }
@@ -204,7 +222,8 @@ export function createLaunchUi(deps) {
     if (result?.ok) {
       drafts.delete(`resume:${id}`)
       resumeInputs.delete(id)
-    } else if (result) {
+      budgetInputs.delete(id)
+    } else if (result && !result.cancelled) {
       setNote(id, result.error ?? 'Not resumed.')
     }
     await deps.settled()
@@ -608,13 +627,38 @@ export function createLaunchUi(deps) {
       })
       resumeInputs.set(id, input)
     }
+    let fields = status.budget ? budgetInputs.get(id) : null
+    if (status.budget && !fields) {
+      fields = budgetFields()
+      budgetInputs.set(id, fields)
+    }
     const slot = resumeEl.querySelector('.sp-resume-slot')
-    if (slot.firstElementChild !== input) slot.replaceChildren(input)
+    const want = fields ? [fields.row, input] : [input]
+    if (slot.children.length !== want.length || want.some((el, i) => slot.children[i] !== el)) slot.replaceChildren(...want)
     const send = resumeEl.querySelector('[data-launch-action="resume"]')
-    const label = busy.has(id) ? 'Resuming…' : 'Resume and send'
+    const label = busy.has(id) ? 'Resuming…' : fields ? 'Resume with more budget…' : 'Resume and send'
     if (send.textContent !== label) send.textContent = label
     const blocked = busy.has(id) || !input.value.trim()
     if (send.disabled !== blocked) send.disabled = blocked
+  }
+
+  // #451: the allowance to add, in whole minutes and calls; main shows it with the budgets and what was used
+  function budgetFields() {
+    const row = make('div', 'sp-resume-budget')
+    row.append(make('p', 'sp-resume-budget-note', 'It used its budget. Choose what to add: Agent Inbox shows the new totals and asks you to confirm.'))
+    const field = (text, value, max, step) => {
+      const label = make('label', 'sp-resume-budget-field', text)
+      const input = make('input')
+      input.type = 'number'
+      input.min = '0'
+      input.max = max
+      input.step = step
+      input.value = String(value)
+      label.append(input)
+      row.append(label)
+      return input
+    }
+    return { row, hours: field('Add active hours', DEFAULT_ADD_HOURS, '8', '0.25'), calls: field('Add tool calls', DEFAULT_ADD_CALLS, '2000', '1') }
   }
 
   /** The panel's Resume and send text, focused: an explicit click (Resume…) always lands on it. */

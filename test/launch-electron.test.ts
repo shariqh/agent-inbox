@@ -613,6 +613,79 @@ describe('the launch controller', () => {
     expect(parseLaunchSpec(JSON.stringify(spec), ID)).toMatchObject({ ok: true, spec: { kind: 'resume', launchId: ID } })
   })
 
+  describe('Resume with more budget… (#451)', () => {
+    const BUDGET_ENDED = {
+      id: ID, project: 'alpha', cwd: '/work/alpha', mode: 'ask', status: 'ended', end_reason: 'budget:tool_calls', resumable: true, revision: 9,
+      budget_active_ms: 7_200_000, budget_tool_calls: 500, active_ms: 2_280_000, tool_calls: 500,
+    }
+    const ADD = { activeMs: 3_600_000, toolCalls: 250 }
+
+    it('resumes a budget-ended launch only after main’s own confirmation, bound to the revision it read, with exactly the allowance', async () => {
+      const r = rig()
+      r.state.launches[ID] = { ...BUDGET_ENDED }
+      expect(await r.controller.resumeWithBudget({ id: ID, add: ADD })).toEqual({ ok: true, launch: ID })
+      expect(r.calls.filter((c) => !c.startsWith('keys.available'))).toEqual([
+        `GET /api/launches/${ID}`, 'driverRuntime', 'confirm', 'captureEnv /work/alpha', 'keys.launchKey', 'driverRuntime', 'startDriver',
+      ])
+      const shown = r.spawned[0]!.confirmation as { message: string; detail: string; buttons: string[] }
+      expect(shown.message).toBe('Resume the session of alpha with more budget?')
+      expect(shown.buttons).toEqual(['Resume', 'Cancel'])
+      expect(shown.detail.split('\n').slice(0, 6)).toEqual([
+        'Folder: /work/alpha',
+        'It ended when it used its tool-call budget. Its session is kept.',
+        'Budgets: 2 h of active turn time and 500 tool calls.',
+        'Used: 38 min of active turn time and 500 tool calls.',
+        'Add: 1 h and 250 tool calls.',
+        'New budgets: 3 h of active turn time and 750 tool calls.',
+      ])
+      const parsed = parseLaunchSpec(JSON.stringify(r.spawned[1]!.spec), ID)
+      expect(parsed.ok && parsed.spec).toMatchObject({ kind: 'resume', raise: { revision: 9, activeMs: 3_600_000, toolCalls: 250 } })
+      // Cancel starts nothing
+      r.state.confirm = false
+      expect(await r.controller.resumeWithBudget({ id: ID, add: ADD })).toEqual({ ok: false, error: 'Not resumed.', cancelled: true })
+      expect(r.calls.filter((c) => c === 'startDriver')).toHaveLength(1)
+      // the plain resume never takes it
+      r.state.confirm = true
+      expect(await r.controller.resume(ID)).toMatchObject({ ok: false })
+      expect(r.calls.filter((c) => c === 'startDriver')).toHaveLength(1)
+    })
+
+    it('refuses before any dialog a request out of bounds, a launch a budget did not end, and an allowance that leaves it spent', async () => {
+      const r = rig()
+      r.state.launches[ID] = { ...BUDGET_ENDED }
+      for (const bad of [
+        { id: ID, add: { activeMs: 0, toolCalls: 0 } }, { id: ID, add: { activeMs: 90_000, toolCalls: 1 } }, { id: ID, add: { activeMs: 8 * 3_600_000 + 60_000, toolCalls: 0 } },
+        { id: ID, add: { activeMs: 0, toolCalls: 2001 } }, { id: ID, add: { ...ADD, revision: 9 } }, { id: ID, add: ADD, revision: 9 }, { id: '../x', add: ADD }, ID,
+      ]) expect(await r.controller.resumeWithBudget(bad), JSON.stringify(bad)).toEqual({ ok: false, error: 'The budget to add is not valid.' })
+      for (const over of [
+        { status: 'parked' }, { end_reason: 'stopped' }, { end_reason: 'error:setup' }, { resumable: false }, { revision: undefined },
+        { worktree_path: '/w/a', worktree_removed_at: '2026-11-03T12:00:00.000Z' },
+      ]) {
+        r.state.launches[ID] = { ...BUDGET_ENDED, ...over }
+        expect(await r.controller.resumeWithBudget({ id: ID, add: ADD }), JSON.stringify(over)).toMatchObject({ ok: false, error: expect.stringMatching(/cannot be resumed with more budget/) })
+      }
+      r.state.launches[ID] = { ...BUDGET_ENDED }
+      expect(await r.controller.resumeWithBudget({ id: ID, add: { activeMs: 3_600_000, toolCalls: 0 } })).toEqual({ ok: false, error: 'Add tool calls: it has used 500 tool calls.' })
+      r.state.launches[ID] = { ...BUDGET_ENDED, end_reason: 'budget:active_time', active_ms: 7_200_000, tool_calls: 12 }
+      expect(await r.controller.resumeWithBudget({ id: ID, add: { activeMs: 0, toolCalls: 10 } })).toEqual({ ok: false, error: 'Add active time: it has used 2 h of it.' })
+      expect(r.calls).not.toContain('confirm')
+      expect(r.calls).not.toContain('startDriver')
+      // off means off
+      r.state.enabled = false
+      r.state.launches[ID] = { ...BUDGET_ENDED }
+      const before = r.calls.length
+      expect(await r.controller.resumeWithBudget({ id: ID, add: ADD })).toMatchObject({ ok: false, error: expect.stringMatching(/is off/) })
+      expect(r.calls.slice(before)).toEqual([])
+    })
+
+    it('shows an agent-set project and mode visibly on one line', () => {
+      const text = controllerModule.budgetConfirmation({ launch: { ...BUDGET_ENDED, project: 'a\u2028Add: 8 h', mode: 'x\ny' }, folder: '/w\nUsed: 0', add: ADD })
+      expect(text.message).toBe('Resume the session of a<U+2028>Add: 8 h with more budget?')
+      expect(text.detail.split('\n')[0]).toBe('Folder: /w\\x0aUsed: 0')
+      expect(text.detail).toContain('Mode: x\\x0ay.')
+    })
+  })
+
   it('signs an approval over the ask’s filing revision under its launch key, and writes it at the revision shown', async () => {
     const r = rig()
     expect(await r.controller.approve({ item: 'item-1', revision: 2, optionId: 'allow_once' })).toEqual({ ok: true })
@@ -1223,11 +1296,11 @@ describe('the launch IPC and its grants (§8)', () => {
     return { call, r, settings, onEnabled, handlers, made: () => made }
   }
 
-  it('registers the fourteen channels, and makes no controller until one is used', () => {
+  it('registers the fifteen channels, and makes no controller until one is used', () => {
     const w = world()
     expect([...w.handlers.keys()].sort()).toEqual([
       'available', 'approve', 'choose-folder', 'choose-worktree-root', 'close', 'open-worktree', 'remove-worktree', 'reset-worktree-root', 'resume',
-      'set-enabled', 'set-max-sessions', 'start', 'stop', 'take-over',
+      'resume-with-budget', 'set-enabled', 'set-max-sessions', 'start', 'stop', 'take-over',
     ].map((name) => `agent-inbox:launch-${name}`).sort())
     expect(w.made()).toBe(0)
   })
@@ -1543,11 +1616,11 @@ describe('the preload bridge (§8)', () => {
     return { launch: exposed.agentInboxLaunch as Record<string, (...args: unknown[]) => Promise<Json>>, invoke }
   }
 
-  it('has exactly its fifteen methods, each with exact arity, and passes nothing it was not given', async () => {
+  it('has exactly its sixteen methods, each with exact arity, and passes nothing it was not given', async () => {
     const { launch, invoke } = loadPreload(() => ({ ok: true, launch: ID, path: '/secret', enabled: true }))
     expect(Object.keys(launch).sort()).toEqual([
       'approve', 'available', 'chooseFolder', 'chooseWorktreeRoot', 'close', 'onStartProgress', 'openWorktree', 'removeWorktree', 'resetWorktreeRoot', 'resume',
-      'setEnabled', 'setMaxSessions', 'start', 'stop', 'takeOver',
+      'resumeWithBudget', 'setEnabled', 'setMaxSessions', 'start', 'stop', 'takeOver',
     ])
     // #432 §5: a cap of 1 to 8 only
     for (const bad of [0, 9, 2.5, '4']) expect(await launch.setMaxSessions!(bad)).toEqual({ ok: false, error: 'invalid' })
@@ -1565,6 +1638,9 @@ describe('the preload bridge (§8)', () => {
     expect(await launch.stop!('../x')).toEqual({ ok: false, error: 'invalid' })
     expect(await launch.setEnabled!('yes')).toEqual({ ok: false, error: 'invalid' })
     expect(await launch.start!(['/bin/sh'])).toEqual({ ok: false, error: 'invalid' })
+    // #451: one request object, which main checks again
+    expect(await launch.resumeWithBudget!(ID)).toEqual({ ok: false, error: 'invalid' })
+    expect(await launch.resumeWithBudget!({ id: ID }, 1)).toEqual({ ok: false, error: 'invalid' })
     expect(invoke).not.toHaveBeenCalled()
     // a checked answer: nothing beyond the known fields comes back
     expect(await launch.start!(REQUEST)).toEqual({ ok: true, launch: ID, enabled: true })

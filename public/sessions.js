@@ -31,7 +31,8 @@ const STATES = Object.freeze({
   idle: { label: 'Idle', rank: 4 },
   // #466: an idle card with no evidence either way. A terminal session reports
   // only through Agent Inbox calls, so no call says nothing about whether it is
-  // busy with other tools; only a driver (a launch, a driven row) knows it idles.
+  // busy with other tools; only a driver that reports no running turn (no
+  // `driven_turn`) knows its session idles.
   quiet: { label: 'Quiet', rank: 4 },
   parked: { label: 'Parked', rank: 5 },
   terminal: { label: 'In Terminal', rank: 6 },
@@ -168,6 +169,8 @@ export function sessionCards({ activity, launches = null, boards = [], attention
     const status = launchStatus(launch, rows, nowMs)
     const base = launchState(status, launch, row, nowMs)
     const synopsis = row ? activitySynopsis(row) : null
+    // #466: running with no live claim is Idle only while its driver reports no turn
+    const quiet = base === 'idle' && Boolean(row?.driven_turn)
     const calls = Number.isSafeInteger(launch.tool_calls) && launch.tool_calls > 0 && launch.budget_tool_calls
       ? ` · ${launch.tool_calls} of ${launch.budget_tool_calls} tool calls` : ''
     finish({
@@ -185,9 +188,9 @@ export function sessionCards({ activity, launches = null, boards = [], attention
       base,
       text: synopsis && (base === 'working' || base === 'idle') ? synopsis.text : `${status.text}${base === 'starting' || base === 'stopping' ? '' : calls}`,
       claim: Boolean(synopsis && (base === 'working' || base === 'idle')),
-      quiet: false,
+      quiet,
       historical: synopsis && (base === 'working' || base === 'idle') ? synopsis.historical || base !== 'working' : base !== 'starting' && base !== 'stopping',
-      recency: recency(base, { row, launch, nowMs }),
+      recency: recency(base, { row, launch, nowMs, quiet }),
       lastCallAt: row?.last_call_at ?? null,
       worktree: worktreeShort(launch),
       plan: null, children: [], trace: null,
@@ -197,8 +200,8 @@ export function sessionCards({ activity, launches = null, boards = [], attention
   for (const row of rows) {
     if (claimed.has(row.session)) continue
     const base = isWorking(row, nowMs) ? 'working' : isDormant(row, nowMs) ? 'dormant' : 'idle'
-    // a driven row's driver knows when its turn ends; a terminal row has only its calls
-    const quiet = base !== 'working' && row.driven !== true
+    // a terminal row has only its calls; a driven row is known idle only while its driver reports no turn
+    const quiet = base !== 'working' && !(row.driven === true && !row.driven_turn)
     const synopsis = activitySynopsis(row)
     const agent = typeof row.agent === 'string' && row.agent ? row.agent : 'unknown'
     finish({

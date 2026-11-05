@@ -102,8 +102,9 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   the bottom of the fold and render `dormant` instead — sorted, dimmed, never removed.
   No call is not evidence of no work (#466): a terminal session busy with other tools makes
   none, so the Agents home calls a non-working terminal card **Quiet** ("no Agent Inbox call
-  for 40m"), never Idle, and keeps Idle for a driven row or a launch, whose driver sees the
-  turn end. The state key stays `idle`; only the label and the time line differ.
+  for 40m"), never Idle. Idle is kept for a driven row or a running launch whose driver
+  reports no running turn (no `driven_turn`); mid-turn or at an approval it is Quiet too.
+  The state key stays `idle`; only the label and the time line differ.
   `activity.last_doing` is a separate, historical caption for that idle UI. Only an explicit
   non-idle claim updates it; registration and both claim-decay paths preserve it; and it never
   participates in working/idle state, freshness, attention, or sorting. Its additive migration

@@ -48,16 +48,34 @@ describe('sessionCards: one card per session', () => {
     const cards = by(sessionCards({
       activity: [
         driven('dr', 1, { doing: 'open', idle: true, last_doing: 'Fixing the build', last_call_at: at(12 * MIN) }),
+        // its driver says a turn is running: no claim is no evidence of idling (#470 review)
+        driven('busy', 2, { doing: 'open', idle: true, last_call_at: at(40 * MIN), driven_turn: { state: 'turn', since: at(35 * MIN) } }),
         row({ session: 'new', project: 'alpha', doing: 'open', idle: true, started_at: at(3 * MIN) }),
         row({ session: 'now', project: 'alpha', doing: 'open', idle: true, last_call_at: at(5000) }),
       ],
       nowMs: NOW,
     }))
     expect(cards['session:dr']).toMatchObject({ state: 'idle', label: 'Idle', recency: 'idle 12m', line: 'Last reported: Fixing the build · 12m ago' })
+    expect(cards['session:busy']).toMatchObject({ state: 'idle', label: 'Quiet', recency: 'no Agent Inbox call for 40m' })
     expect(cards['session:new']).toMatchObject({ label: 'Quiet', recency: 'connected 3m · no Agent Inbox call yet', line: 'No task reported yet' })
     expect(cards['session:now']).toMatchObject({ label: 'Quiet', recency: 'last Agent Inbox call just now' })
     // a quiet card still counts and filters as idle: the state key is unchanged
-    expect(filterCounts(Object.values(cards))).toMatchObject({ idle: 3, working: 0 })
+    expect(filterCounts(Object.values(cards))).toMatchObject({ idle: 4, working: 0 })
+  })
+
+  it('reads a running launch as Idle only while its driver reports no turn (#466)', () => {
+    const cards = by(sessionCards({
+      activity: [
+        driven('t1', 1, { doing: 'open', idle: true, last_doing: 'Migrating fixtures', last_call_at: at(40 * MIN),
+          driven_turn: { state: 'approval', since: at(2 * MIN) } }),
+        driven('t2', 2, { doing: 'open', idle: true, last_call_at: at(12 * MIN) }),
+      ],
+      launches: [launch(1), launch(2)],
+      nowMs: NOW,
+    }))
+    expect(cards[`launch:${ID(1)}`]).toMatchObject({ state: 'idle', label: 'Quiet', quiet: true, recency: 'no Agent Inbox call for 40m',
+      line: 'Last reported: Migrating fixtures · 40m ago' })
+    expect(cards[`launch:${ID(2)}`]).toMatchObject({ state: 'idle', label: 'Idle', quiet: false, recency: 'idle 12m' })
   })
 
   it('carries what the lanes showed on a working card only: plan bar, subagents and the call trace', () => {

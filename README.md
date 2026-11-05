@@ -251,12 +251,15 @@ The app opens on the Dashboard (`G D`), for all projects and agents.
   waiting on you and how long the oldest has waited, and the plan steps of the
   working sessions' plans.
 - **Agents** has a card for every session, grouped by project (or by agent): what
-  it reports, whether it is working, idle, parked or needs you, and for a working
+  it reports, whether it is working, quiet, idle, parked or needs you, and for a working
   session its plan's progress (done, in progress, waiting on you, to do), its
-  subagents and a small trace of its MCP calls over the last 30 minutes. A session
-  that reports no current work, or has made no call for 30 minutes, is idle; one
-  quiet for 8 hours folds under **Dormant**, and ended sessions under **Ended**.
-  Filter by state with **All**, **Needs you**, **Working**, **Idle** and **Parked**.
+  subagents and a small trace of its MCP calls over the last 30 minutes. A terminal
+  session with no live claim reads **Quiet** ("no Agent Inbox call for 40m"), because
+  one busy with other tools makes no Agent Inbox call either; **Idle** is kept for an
+  app-driven session whose driver reports no running turn. A claim that is no longer
+  live shows as "Last reported: … · 52m ago". A session with no call for 8 hours
+  folds under **Dormant**, and ended sessions under **Ended**. Filter by state with
+  **All**, **Needs you**, **Working**, **Quiet** and **Parked**.
   Click a card to open its session panel: its requests, its plan, its recent
   outcomes, PR and CI state, links, and a place to message it.
 - **The Today ribbon** draws one line per project over the last 24 hours, 7 days or

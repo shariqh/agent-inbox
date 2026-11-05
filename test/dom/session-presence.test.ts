@@ -32,8 +32,11 @@ describe('session presence and project identity', () => {
     await bootApp(d)
 
     expect(card('active')?.querySelector('.sc-state')?.textContent).toBe('Working')
-    expect(card('idle')?.querySelector('.sc-state')?.textContent).toBe('Idle')
-    expect(card('idle')?.querySelector('.sc-doing')?.textContent).toBe('was: Preparing the release')
+    expect(card('idle')?.querySelector('.sc-state')?.textContent).toBe('Quiet')
+    // #466: its time is a sentence on its own line, and a working card keeps the one-line head
+    expect(card('idle')?.classList.contains('quiet')).toBe(true)
+    expect(card('active')?.classList.contains('quiet')).toBe(false)
+    expect(card('idle')?.querySelector('.sc-doing')?.textContent).toMatch(/^Last reported: Preparing the release · /)
     const group = (session: string) => card(session)?.closest<HTMLElement>('.ah-group')
     expect(group('active')?.style.getPropertyValue('--ah-group')).toBe(projectColor('alpha', 'dark').dot)
     expect(group('idle')?.style.getPropertyValue('--ah-group')).toBe(projectColor('beta', 'dark').dot)
@@ -52,11 +55,11 @@ describe('session presence and project identity', () => {
     await bootApp(d)
 
     for (const session of ['called', 'uncalled']) {
-      expect(card(session)?.querySelector('.sc-state')?.textContent, session).toBe('Idle')
+      expect(card(session)?.querySelector('.sc-state')?.textContent, session).toBe('Quiet')
       expect(card(session)?.querySelector('.sc-doing')?.textContent, session).toBe('No task reported yet')
     }
     expect(indicator('si-v')).toBe('2 connected')
-    expect(indicator('si-s')).toBe('no task reported')
+    expect(indicator('si-s')).toBe('all quiet')
     expect(document.querySelector('.agents-home .ah-groups')?.textContent).not.toMatch(/\bWorking\b|no agents running/)
   })
 

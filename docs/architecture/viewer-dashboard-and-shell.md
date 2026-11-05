@@ -69,8 +69,17 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   newest working card `linkedPlan`'s project + branch + agent join links, else to the
   newest idle or dormant card the same join matches; anything left gets an ask-only card,
   #454 A.1; the filter counts asks, so it equals `attentionEntries` under the lens), Didn't
-  start / Not responding, Starting… / Stopping…, Working (`isWorking`), Idle, Parked
+  start / Not responding, Starting… / Stopping…, Working (`isWorking`), Idle or Quiet, Parked
   (parked, or stopped with its session kept), In Terminal, Ended, Dormant (`isDormant`).
+  Quiet (#466) is the idle state's label when nothing can tell: a terminal session reports
+  only through Agent Inbox calls, so one busy with `gh`, a shell or another server reads
+  exactly like one waiting at its prompt. Only a driven row or a running launch, whose
+  driver sees the turn end, says Idle. A quiet card's time says "no Agent Inbox call for
+  40m" ("last Agent Inbox call just now", or "connected 3m · no Agent Inbox call yet"),
+  never "idle 40m", on a line of its own under the head (`.sc.quiet`); the Idle filter is labelled Quiet and keeps its `idle` key. A claim
+  that is no longer live reads "Last reported: <claim> · 52m ago", dated by the last call
+  (`card.line`, shared by the card and the panel); a launch's own status text keeps
+  "was:". The ages follow the existing 30-second clock, like the card's recency.
   Grouped by project (or agent kind), sorted by state then newest call, order pinned
   between forced paints (`pinLaneOrder`). Working cards carry the plan bar, subagents and
   call trace; folds hold Ended (the newest five plus kept worktrees, with Earlier sessions
@@ -94,7 +103,8 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
 - The sidebar's Sessions line (`#sessionsIndicator`, #454, where the Live footer strip
   was) is the one session signal on every tab: `sessionsSummary` (`public/livebar.js`)
   over the GLOBAL `lastData.activity`, never the lens or closure ("N working · M
-  connected", "N on an older build"). It, G L and the Now strip's Working tile open the
+  connected", "N on an older build"; with none working, "M connected" over "all quiet",
+  never "no task reported", #466). It, G L and the Now strip's Working tile open the
   Dashboard with the Agents home's heading focused, and each re-reads `/api/version`.
   Under 1280px the compact masthead keeps the tabs alone on its first row (scrolling in
   their own cell when they do not fit) and puts the line on the selectors' row as a chip

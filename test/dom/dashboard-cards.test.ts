@@ -89,7 +89,7 @@ describe('session cards carry the lanes (#304, #454)', () => {
     advanceClock(19 * MIN)
     touchActivity(d, 'heads-down')
     await pollTick()
-    expect(card('heads-down')!.querySelector('.sc-state')?.textContent).toBe('Idle')
+    expect(card('heads-down')!.querySelector('.sc-state')?.textContent).toBe('Quiet')
     expect(signal('agents')).toBe('0')
   })
 

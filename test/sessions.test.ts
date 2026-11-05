@@ -35,9 +35,29 @@ describe('sessionCards: one card per session', () => {
     }))
     expect(cards['session:w']).toMatchObject({ state: 'working', label: 'Working', place: 'main', text: 'Writing tests', historical: false,
       recency: 'last call just now', host: 'Copilot', origin: 'terminal' })
-    expect(cards['session:i']).toMatchObject({ state: 'idle', text: 'Proofreading', historical: true, recency: 'idle 47m' })
-    expect(cards['session:h']).toMatchObject({ state: 'idle', recency: 'idle 40m' })
-    expect(cards['session:d']).toMatchObject({ state: 'dormant', place: 'dormant', host: 'Claude Code', recency: 'idle 9h' })
+    // #466: no Agent Inbox call is no evidence of no work, so a terminal session is Quiet, never Idle
+    expect(cards['session:i']).toMatchObject({ state: 'idle', label: 'Quiet', text: 'Proofreading', historical: true,
+      line: 'Last reported: Proofreading · 47m ago', recency: 'no Agent Inbox call for 47m' })
+    expect(cards['session:h']).toMatchObject({ state: 'idle', label: 'Quiet', recency: 'no Agent Inbox call for 40m',
+      line: 'Last reported: Claims work · 40m ago' })
+    expect(cards['session:d']).toMatchObject({ state: 'dormant', place: 'dormant', host: 'Claude Code', recency: 'no Agent Inbox call for 9h',
+      line: 'No task reported yet' })
+  })
+
+  it('says Quiet only when it cannot know: a driven row idles as Idle, and a session with no call says so (#466)', () => {
+    const cards = by(sessionCards({
+      activity: [
+        driven('dr', 1, { doing: 'open', idle: true, last_doing: 'Fixing the build', last_call_at: at(12 * MIN) }),
+        row({ session: 'new', project: 'alpha', doing: 'open', idle: true, started_at: at(3 * MIN) }),
+        row({ session: 'now', project: 'alpha', doing: 'open', idle: true, last_call_at: at(5000) }),
+      ],
+      nowMs: NOW,
+    }))
+    expect(cards['session:dr']).toMatchObject({ state: 'idle', label: 'Idle', recency: 'idle 12m', line: 'Last reported: Fixing the build · 12m ago' })
+    expect(cards['session:new']).toMatchObject({ label: 'Quiet', recency: 'connected 3m · no Agent Inbox call yet', line: 'No task reported yet' })
+    expect(cards['session:now']).toMatchObject({ label: 'Quiet', recency: 'last Agent Inbox call just now' })
+    // a quiet card still counts and filters as idle: the state key is unchanged
+    expect(filterCounts(Object.values(cards))).toMatchObject({ idle: 3, working: 0 })
   })
 
   it('carries what the lanes showed on a working card only: plan bar, subagents and the call trace', () => {

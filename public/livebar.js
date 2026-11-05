@@ -55,7 +55,8 @@ export function sessionsSummary(activity, nowMs, buildOf = () => null) {
   return {
     tone: tone === 'idle' && working ? 'quiet' : tone,
     label: working ? `${working} working` : rows.length ? `${rows.length} connected` : 'No sessions',
-    sub: working ? `${rows.length} connected` : rows.length ? 'no task reported' : '',
+    // #466: no claim is not no work; a session busy with other tools reads the same
+    sub: working ? `${rows.length} connected` : rows.length ? 'all quiet' : '',
     working,
     connected: rows.length,
     older,

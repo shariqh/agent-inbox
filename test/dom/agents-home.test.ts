@@ -91,7 +91,7 @@ describe('the Agents home (#454)', () => {
     expect(document.querySelector('.agents-home .ah-count')?.textContent).toBe('6 sessions')
     // Needs you counts what the badge does
     expect([...document.querySelectorAll('.agents-home [data-ah-filter]')].map((b) => [b.textContent, b.getAttribute('aria-pressed')])).toEqual([
-      ['All6', 'true'], ['Needs you3', 'false'], ['Working2', 'false'], ['Idle1', 'false'], ['Parked0', 'false'],
+      ['All6', 'true'], ['Needs you3', 'false'], ['Working2', 'false'], ['Quiet1', 'false'], ['Parked0', 'false'],
     ])
     const orphan = card(`ask:item:${ids.retry}`)!
     expect(orphan.classList.contains('sc-ask-only')).toBe(true)
@@ -107,7 +107,7 @@ describe('the Agents home (#454)', () => {
     expect([working.querySelector('.sc-state')?.textContent, working.querySelector('.sc-doing')?.textContent, working.querySelector('.sc-branch')?.textContent])
       .toEqual(['Working', 'Reviewing PR #57', 'main'])
     expect(working.querySelector('.sc-spark')?.getAttribute('aria-label')).toBe('1 MCP call in the last 30 minutes')
-    expect(card('session:k2')?.querySelector('.sc-state')?.textContent).toBe('Idle')
+    expect(card('session:k2')?.querySelector('.sc-state')?.textContent).toBe('Quiet')
 
     // an unchanged poll keeps the nodes; agent text is text, never markup
     const before = card('session:c1')

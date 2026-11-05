@@ -38,9 +38,9 @@ describe('a session card after a claim goes cold (#45)', () => {
     // its card asks, never works: the claim is drawn as what it was doing
     expect(card('s1')?.classList.contains('tone-working')).toBe(false)
     expect(card('s1')?.classList.contains('tone-ask')).toBe(true)
-    expect(card('s1')?.querySelector('.sc-doing')?.textContent).toBe('was: Executing Track B — 18-task viewer redesign')
+    expect(card('s1')?.querySelector('.sc-doing')?.textContent).toBe('Last reported: Executing Track B — 18-task viewer redesign · 31m ago')
     expect(document.querySelector('#sessionsIndicator .si-v')?.textContent).toBe('1 connected')
-    expect(document.querySelector('#sessionsIndicator .si-s')?.textContent).toBe('no task reported')
+    expect(document.querySelector('#sessionsIndicator .si-s')?.textContent).toBe('all quiet')
 
     // the row did NOT expire, so the item is still an agent blocked on you
     click(document.querySelector('.tab[data-tab="needsYou"]'))
@@ -65,7 +65,7 @@ describe('a session card after a claim goes cold (#45)', () => {
     await bootApp(d)
 
     expect(card('recent')?.closest('[data-ah-fold]')).toBeNull()
-    expect(card('recent')?.querySelector('.sc-when')?.textContent).toMatch(/^idle /)
+    expect(card('recent')?.querySelector('.sc-when')?.textContent).toBe('last Agent Inbox call just now')
     const fold = document.querySelector<HTMLDetailsElement>('.agents-home [data-ah-fold="dormant"]')!
     expect(fold.hidden).toBe(false)
     expect(fold.querySelector(':scope > summary')?.textContent).toBe('Dormant (1) · quiet 8 h or more')
@@ -74,7 +74,7 @@ describe('a session card after a claim goes cold (#45)', () => {
     fold.open = true
     fold.dispatchEvent(new Event('toggle'))
     // dated by its last real Inbox call, never by the heartbeat two minutes ago
-    expect(card('forgotten')?.querySelector('.sc-when')?.textContent).toBe('idle 9h')
+    expect(card('forgotten')?.querySelector('.sc-when')?.textContent).toBe('no Agent Inbox call for 9h')
     expect(card('forgotten')?.querySelector('.sc-doing')?.textContent).toBe('No task reported yet')
   })
 })

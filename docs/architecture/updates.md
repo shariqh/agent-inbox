@@ -231,8 +231,8 @@ These landed after v1 and still hold invariants; the release history itself is i
   after a later load re-proves it — `electron-app.md`) — not Setup's runtime
   payload; a reused or failed-over viewer never gets installs. *(#465)* Main then
   registers no installer and passes `installWithheld: 'unowned-viewer'`, which the
-  controller copies onto every downloadable offer (the controller refuses it beside an
-  installer; the preload refuses it on an offer that installs or cannot download), so Settings and the notification say to quit
+  controller copies onto every downloadable offer no installer is registered for (the
+  preload refuses it on an offer that installs or cannot download), so Settings and the notification say to quit
   any other copy and reopen Agent Inbox to install, never "arrives in a later update".
   A downloadable offer with no installer and no such code (the installer could not be
   built) says the app can't install here; `deb-notify` stays notify-only. Setup and an update

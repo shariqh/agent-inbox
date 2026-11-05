@@ -221,7 +221,7 @@ function createUpdateController(options) {
   const requestRestart = options.requestRestart
   const installers = registerInstallers(options.installers, downloader, requestRestart)
   const installWithheld = options.installWithheld
-  if (installWithheld !== undefined && (!INSTALL_WITHHELD_REASONS.has(installWithheld) || installers.size > 0)) {
+  if (installWithheld !== undefined && !INSTALL_WITHHELD_REASONS.has(installWithheld)) {
     throw new TypeError('installWithheld names why no installer is registered')
   }
   const isSetupRunning = typeof options.isSetupRunning === 'function' ? options.isSetupRunning : () => false

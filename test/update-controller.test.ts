@@ -1431,7 +1431,6 @@ describe('installing a verified update', () => {
     const { openVerified: _openVerified, ...withoutOpen } = fakeDownloader().downloader
     expect(() => createUpdateController({ ...base, downloader: withoutOpen, installers: { 'macos-dmg': installer } })).toThrow(TypeError)
     expect(() => createUpdateController({ ...base, installers: { 'deb-notify': installer } as never })).toThrow(TypeError)
-    expect(() => createUpdateController({ ...base, installWithheld: 'unowned-viewer', installers: { 'macos-dmg': installer } })).toThrow(TypeError)
     expect(() => createUpdateController({ ...base, installWithheld: 'later' as never })).toThrow(TypeError)
   })
 })

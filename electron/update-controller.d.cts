@@ -178,8 +178,8 @@ export function createUpdateController(options: {
    */
   installers?: Partial<Record<DownloadableInstallStrategy, PlatformInstaller>>
   /**
-   * Why main registered no installer on a host that has one (#465). Published on every
-   * downloadable offer as `available.installWithheld`; refused alongside any installer.
+   * Why main registered no installer on a host that has one (#465). Published as
+   * `available.installWithheld` on every downloadable offer no installer is registered for.
    */
   installWithheld?: UpdateInstallWithheldReason
   /**

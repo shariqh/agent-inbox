@@ -4,11 +4,12 @@ import { join } from 'node:path'
 import { spawn, execFileSync } from 'node:child_process'
 import type { ChildProcessByStdio } from 'node:child_process'
 import type { Readable, Writable } from 'node:stream'
+import { z } from 'zod'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { ReadBuffer, serializeMessage } from '@modelcontextprotocol/sdk/shared/stdio.js'
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
-import { openDb, listItems, listBoards, getBoard, updateBoardRow, annotateBoardRow, markRowHandled, listPendingRows, pinBoardRow, pinItem, replyItem, listActivity, listActivitySpans, upsertIssueSnapshot } from '../src/store.js'
+import { openDb, listItems, listBoards, getBoard, updateBoardRow, annotateBoardRow, markRowHandled, listPendingRows, pinBoardRow, pinItem, replyItem, listActivity, listActivitySpans, upsertIssueSnapshot, insertItem, getItem, upsertBoard, claimHookWatch, releaseHookWatch, isDrivenSession } from '../src/store.js'
 import { createViewer } from '../src/viewer.js'
 import { scratchDir } from './scratch.js'
 
@@ -2061,3 +2062,344 @@ describe('step dependencies: waits_on (#103 slice 2 PR C)', () => {
     await c.close()
   }, 20000)
 })
+
+// Issue #411 (acceptance): a message reaches only the session it addresses,
+// comes back on every poll until that session acks it, and the ack is recorded.
+describe('session messages (#411)', () => {
+  it('delivers a message only to its session, re-delivers it until ack_message, and records the outcome', async () => {
+    const dbPath = join(scratchDir('mcp-messages-'), 'inbox.db')
+    const connect = async (name: string) => {
+      const client = new Client({ name, version: '1.0.0' })
+      await client.connect(new StdioClientTransport({ command: 'npx', args: ['tsx', 'src/mcp-server.ts'], env: { ...process.env, AGENT_INBOX_DB: dbPath } }))
+      return client
+    }
+    const call = async (client: Client, name: string, args: Record<string, unknown>) =>
+      JSON.parse((((await client.callTool({ name, arguments: args })).content) as Array<{ text: string }>)[0]!.text)
+    const a = await connect('claude-code')
+    const b = await connect('copilot')
+    try {
+      // both register presence in the same project, each with its own session
+      await call(a, 'pending', {})
+      await call(b, 'pending', {})
+      const db = openDb(dbPath)
+      const sessions = listActivity(db)
+      const sessionOf = (agent: string) => sessions.find((row) => row.agent === agent)!
+      expect(sessionOf('claude-code').project).toBe(sessionOf('copilot').project)
+      expect(sessionOf('claude-code').receives_messages).toBe(true)
+      const viewer = createViewer(db)
+      const id = '11111111-2222-4333-8444-555555555555'
+      const sent = await viewer.request(`/api/sessions/${sessionOf('claude-code').session}/messages`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id, text: 'Also run the DOM tests.' }),
+      })
+      expect(await sent.json()).toMatchObject({ ok: true })
+
+      // the sibling in the same project never sees it, on any read
+      expect((await call(b, 'pending', {})).messages).toEqual([])
+      expect((await call(b, 'pending', { full: true })).messages).toEqual([])
+      expect(await call(b, 'ack_message', { id, outcome: 'Taken.' })).toEqual({ ok: false, reason: 'not_found' })
+
+      const first = (await call(a, 'pending', {})).messages
+      expect(first).toEqual([{ id, text: 'Also run the DOM tests.', sent_at: expect.any(String), delivered_at: expect.any(String), project: sessionOf('claude-code').project }])
+      // delivery is not acknowledgement: it comes back, with the first stamp, until acked
+      expect((await call(a, 'pending', { project: 'somewhere-else' })).messages).toEqual(first)
+      expect((await call(a, 'pending', {})).messages).toEqual(first)
+      expect((await call(a, 'pending', { item_id: 'nothing' })).messages).toEqual([])
+
+      expect(await call(a, 'ack_message', { id, outcome: 'Ran them: 412 passed.' })).toEqual({ ok: true })
+      expect((await call(a, 'pending', {})).messages).toEqual([])
+      expect(await call(a, 'ack_message', { id, outcome: 'Again.' }))
+        .toEqual({ ok: false, reason: 'not_open', status: 'acknowledged', outcome: 'Ran them: 412 passed.' })
+      const closed = (await (await viewer.request('/api/messages')).json() as { closed: Array<Record<string, unknown>> }).closed
+      expect(closed).toEqual([expect.objectContaining({ id, status: 'acknowledged', outcome: 'Ran them: 412 passed.', delivered_by: 'claude-code' })])
+
+      // a withdrawn message is never handed over, and its ack says so
+      const withdrawn = '11111111-2222-4333-8444-666666666666'
+      await viewer.request(`/api/sessions/${sessionOf('claude-code').session}/messages`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: withdrawn, text: 'Never mind' }),
+      })
+      await viewer.request(`/api/messages/${withdrawn}/withdraw`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ revision: 1 }),
+      })
+      expect((await call(a, 'pending', {})).messages).toEqual([])
+      expect(await call(a, 'ack_message', { id: withdrawn, outcome: 'Done.' })).toEqual({ ok: false, reason: 'not_open', status: 'withdrawn', outcome: '' })
+
+      // the contract is on the tool definitions an agent reads
+      const tools = new Map((await a.listTools()).tools.map((tool) => [tool.name, tool]))
+      expect(tools.get('pending')!.description).toContain('ack_message({id, outcome})')
+      expect(tools.get('pending')!.description).toContain('A subagent returns messages verbatim to its parent')
+      expect(tools.get('ack_message')!.description).toContain('If you are a subagent, do not ack or act on messages')
+      db.close()
+    } finally {
+      await a.close()
+      await b.close()
+    }
+  }, 30000)
+})
+
+// Issue #411 (channels, research preview): a Claude Code client is told the
+// server is a channel and gets one `notifications/claude/channel` per message to
+// its own session, carrying the id only. Copilot's handshake, context and tools
+// are unchanged, and it is pushed nothing.
+describe('channel push into Claude Code (#411)', () => {
+  it('pushes exactly one id-only notice to the addressed Claude Code session, and nothing to Copilot', async () => {
+    const dbPath = join(scratchDir('mcp-channel-'), 'inbox.db')
+    const ChannelNotification = z.object({
+      method: z.literal('notifications/claude/channel'),
+      params: z.object({ content: z.string(), meta: z.record(z.string(), z.string()) }),
+    })
+    type Notice = z.infer<typeof ChannelNotification>['params']
+    const connect = async (name: string) => {
+      const client = new Client({ name, version: '1.0.0' })
+      const notices: Notice[] = []
+      client.setNotificationHandler(ChannelNotification, async ({ params }) => { notices.push(params) })
+      await client.connect(new StdioClientTransport({
+        command: 'npx', args: ['tsx', 'src/mcp-server.ts'],
+        env: { ...process.env, AGENT_INBOX_DB: dbPath, AGENT_INBOX_CHANNEL_POLL_MS: '100' },
+      }))
+      return { client, notices }
+    }
+    const call = async (client: Client, name: string, args: Record<string, unknown>) =>
+      JSON.parse((((await client.callTool({ name, arguments: args })).content) as Array<{ text: string }>)[0]!.text)
+    const claude = await connect('claude-code')
+    const copilot = await connect('copilot')
+    try {
+      // only Claude Code is told this server is a channel, and what an event means
+      expect(claude.client.getServerCapabilities()?.experimental).toEqual({ 'claude/channel': {} })
+      expect(claude.client.getInstructions()).toContain('<channel source="agent-inbox"')
+      expect(copilot.client.getServerCapabilities()?.experimental).toBeUndefined()
+      expect(copilot.client.getInstructions()).toBeUndefined()
+      const tools = async (client: Client) => (await client.listTools()).tools
+      expect(await tools(copilot.client)).toEqual(await tools(claude.client))
+
+      await call(claude.client, 'pending', {})
+      await call(copilot.client, 'pending', {})
+      const db = openDb(dbPath)
+      const sessionOf = (agent: string) => listActivity(db).find((row) => row.agent === agent)!
+      // the test runner's process was not launched with a channel flag
+      expect(sessionOf('claude-code').push_wake).toBeUndefined()
+      const viewer = createViewer(db)
+      const send = async (agent: string, id: string, text: string) => {
+        const res = await viewer.request(`/api/sessions/${sessionOf(agent).session}/messages`, {
+          method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id, text }),
+        })
+        expect(await res.json()).toMatchObject({ ok: true })
+      }
+      const mine = '11111111-2222-4333-8444-777777777777'
+      await send('copilot', '11111111-2222-4333-8444-888888888888', 'Copilot only.')
+      await send('claude-code', mine, 'Also run the DOM tests.')
+      const end = Date.now() + 5000
+      while (claude.notices.length === 0 && Date.now() < end) await new Promise((resolve) => setTimeout(resolve, 50))
+      await new Promise((resolve) => setTimeout(resolve, 600)) // several more ticks
+      expect(claude.notices).toEqual([{
+        content: 'The human sent this session a message in Agent Inbox. Call pending() to read it, act on it, then ack_message({id, outcome}).',
+        meta: { message_id: mine },
+      }])
+      expect(copilot.notices).toEqual([])
+
+      // the push is only a wake: delivery and ack still go through pending()
+      expect((await call(claude.client, 'pending', {})).messages).toEqual([expect.objectContaining({ id: mine, text: 'Also run the DOM tests.' })])
+      expect(await call(claude.client, 'ack_message', { id: mine, outcome: 'Ran them.' })).toEqual({ ok: true })
+      await new Promise((resolve) => setTimeout(resolve, 300))
+      expect(claude.notices).toHaveLength(1)
+      db.close()
+    } finally {
+      await claude.client.close()
+      await copilot.client.close()
+    }
+  }, 30000)
+})
+
+// Issue #412 (driven sessions §4.2, §5.3): a driver files its approval alerts in
+// the reserved project `@sessions`, under the driven agent's own MCP session. No
+// session in any scope reads one, and every item or plan tool refuses one. A
+// session a driver holds a `driven:` lease for is told its answers are pushed,
+// and is handed no watch contract.
+describe('reserved projects and driven sessions (#412)', () => {
+  const text = (r: unknown) => ((r as { content: Array<{ text: string }> }).content)[0]!.text
+  const serve = async (env: Record<string, string>, name: string, cwd = scratchDir('mcp-driven-cwd-')) => {
+    const t = new StdioClientTransport({
+      command: join(REPO_ROOT, 'node_modules', '.bin', 'tsx'),
+      args: [join(REPO_ROOT, 'src', 'mcp-server.ts')],
+      cwd,
+      env: { ...process.env, ...env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' },
+    })
+    const c = new Client({ name, version: '1.0.0' })
+    await c.connect(t)
+    return c
+  }
+  const call = async (c: Client, name: string, args: Record<string, unknown> = {}) => {
+    const res = await c.callTool({ name, arguments: args })
+    if (res.isError) throw new Error(text(res))
+    return JSON.parse(text(res))
+  }
+  const refused = async (c: Client, name: string, args: Record<string, unknown> = {}) => {
+    const res = await c.callTool({ name, arguments: args })
+    expect(res.isError, `${name} ${JSON.stringify(args)} → ${text(res)}`).toBe(true)
+    return text(res)
+  }
+  const LAUNCH = '11111111-2222-4333-8444-555555555555'
+
+  it('no session in any scope sees an @sessions ask or plan, and every tool refuses to read or write one', async () => {
+    const dbPath = join(scratchDir('mcp-reserved-'), 'inbox.db')
+    const env = { AGENT_INBOX_DB: dbPath }
+    const shared = scratchDir('mcp-reserved-project-')
+    const copilot = await serve(env, 'copilot', shared)
+    const claude = await serve(env, 'claude-code', shared)
+    const elsewhere = await serve(env, 'claude-code')
+    try {
+      const project = (await call(copilot, 'whoami')).project as string
+      await call(claude, 'pending')
+      await call(elsewhere, 'register', { project: 'elsewhere' })
+      const db = openDb(dbPath)
+      const driven = listActivity(db).find((row) => row.agent === 'copilot')!.session
+      const ask = insertItem(db, {
+        project: '@sessions', stream: `${project} · main`, agent: 'copilot', session: driven, kind: 'question',
+        title: 'Allow copilot to run `git push origin ai/x`?', action_owner: 'task', next_step: 'Answer in the terminal running the driver.',
+      })
+      replyItem(db, ask, 'allow_once')
+      upsertBoard(db, {
+        project: '@sessions', stream: '', agent: 'copilot', title: 'Approvals',
+        rows: [{ label: 'Push', status: 'blocked', action_owner: 'task', note: 'Waiting on the human.', next_step: 'Answer in the terminal.' }],
+      })
+      const row = getBoard(db, '@sessions', 'Approvals')!.rows[0]!
+      annotateBoardRow(db, row.id, 'allow_once', 'answer', row.revision, getBoard(db, '@sessions', 'Approvals')!.revision)
+      const own = insertItem(db, { project, stream: 'main', agent: 'claude-code', kind: 'question', title: 'Ship it?' })
+      replyItem(db, own, 'yes')
+
+      for (const client of [copilot, claude, elsewhere]) {
+        for (const args of [{}, { full: true }, { project }, { project: 'elsewhere' }, { item_id: ask }]) {
+          const out = await call(client, 'pending', args)
+          expect(JSON.stringify(out)).not.toContain(ask)
+          expect(JSON.stringify(out)).not.toContain('Approvals')
+        }
+        for (const reserved of ['@sessions', '@mesh']) {
+          expect(await refused(client, 'pending', { project: reserved })).toContain(`project "${reserved}" is reserved`)
+          await refused(client, 'register', { project: reserved })
+        }
+        await refused(client, 'answer', { id: ask, text: 'allow_once' })
+        await refused(client, 'resolve', { id: ask, outcome: 'Approved.' })
+        expect(JSON.stringify(await call(client, 'board_get'))).not.toContain('Approvals')
+      }
+      // the refusals changed nothing, and a session's own question still arrives
+      expect(getItem(db, ask)).toMatchObject({ status: 'open', reply: 'allow_once', reply_seen_at: null })
+      expect((await call(claude, 'pending')).items.map((it: { id: string }) => it.id)).toEqual([own])
+      expect((await call(copilot, 'whoami')).project).toBe(project)
+      db.close()
+    } finally {
+      await copilot.close()
+      await claude.close()
+      await elsewhere.close()
+    }
+  }, 30000)
+
+  it('refuses every item and plan tool for a session whose inferred scope is a reserved project', async () => {
+    const dbPath = join(scratchDir('mcp-reserved-cwd-'), 'inbox.db')
+    const folder = join(scratchDir('mcp-reserved-folder-'), '@sessions')
+    mkdirSync(folder)
+    const client = await serve({ AGENT_INBOX_DB: dbPath }, 'copilot', folder)
+    try {
+      expect((await call(client, 'whoami')).project).toBe('@sessions')
+      await refused(client, 'flag', { kind: 'question', title: 'Which storage?', ...QUESTION_SHAPE })
+      await refused(client, 'pending')
+      await refused(client, 'board_upsert', { title: 'Plan', rows: [{ label: 'One', status: 'tracked' }] })
+      await refused(client, 'board_row', { title: 'Plan', label: 'One', status: 'tracked' })
+      await refused(client, 'board_advance', { title: 'Plan', label: 'One', board_version: 1, expected_revision: 1, note: 'Next.', next_step: 'Do it.', action_owner: 'task', impact: 'Unblocks the plan.' })
+      await refused(client, 'board_archive', { title: 'Plan', board_version: 1 })
+      await refused(client, 'board_get')
+      // a project argument never reaches around a reserved scope
+      await refused(client, 'pending', { project: 'agent-inbox' })
+      // registering an ordinary project lets it work again
+      await call(client, 'register', { project: 'scratch' })
+      expect((await call(client, 'flag', { kind: 'note', title: 'Back to work.', ...INFO_SHAPE })).id).toBeTruthy()
+      const db = openDb(dbPath)
+      expect(listItems(db).map((item) => item.project)).toEqual(['scratch'])
+      db.close()
+    } finally {
+      await client.close()
+    }
+  }, 30000)
+
+  it('tells a driven session its answers are pushed and hands it no watch contract, until the lease is released', async () => {
+    const dbPath = join(scratchDir('mcp-driven-'), 'inbox.db')
+    const client = await serve({ AGENT_INBOX_DB: dbPath }, 'copilot')
+    try {
+      await call(client, 'pending')
+      const db = openDb(dbPath)
+      const session = listActivity(db)[0]!.session
+      // the lease a driver holds for a session it linked (§5.1)
+      const token = `${LAUNCH}:${process.pid}:test`
+      claimHookWatch(db, `driven:${session}`, token)
+      expect(listActivity(db)[0]).toMatchObject({ session, driven: true })
+
+      const flagged = await call(client, 'flag', { kind: 'question', title: 'Which storage?', ...QUESTION_SHAPE })
+      expect(flagged).toEqual({ id: expect.any(String), woken: 'pushed' })
+      expect(await call(client, 'flag', { kind: 'note', title: 'An aside.', ...INFO_SHAPE })).toEqual({ id: expect.any(String) })
+      expect(await call(client, 'pending')).toMatchObject({ woken: 'pushed' })
+      const upserted = await call(client, 'board_upsert', { title: 'Plan', rows: [blockedRow('Upload')] })
+      expect(upserted).toMatchObject({ woken: 'pushed' })
+      expect(upserted.watches).toBeUndefined()
+      const plan = await call(client, 'board_get', { title: 'Plan', watch: true })
+      expect(plan).toMatchObject({ woken: 'pushed' })
+      expect(plan.watches).toBeUndefined()
+      const rowed = await call(client, 'board_row', { title: 'Plan', board_version: plan.revision, ...blockedRow('Sign') })
+      expect(rowed).toMatchObject({ woken: 'pushed' })
+      expect(rowed.watch).toBeUndefined()
+
+      // board_advance on its own plan: the plan's session is still this one
+      const own = await call(client, 'board_get', { title: 'Plan' })
+      const upload = own.rows.find((r: { label: string }) => r.label === 'Upload')
+      const advanced = await call(client, 'board_advance', {
+        title: 'Plan', label: 'Upload', board_version: own.revision, expected_revision: upload.revision,
+        note: 'Next step.', next_step: 'Upload the second build.', action_owner: 'task', impact: 'Unblocks the release.',
+      })
+      expect(advanced).toMatchObject({ ok: true, woken: 'pushed' })
+      expect(advanced.watch).toBeUndefined()
+
+      releaseHookWatch(db, `driven:${session}`, token)
+      expect(listActivity(db)[0]!.driven).toBeUndefined()
+      const after = await call(client, 'flag', { kind: 'question', title: 'Which pool?', ...QUESTION_SHAPE })
+      expect(after.woken).toBeUndefined()
+      expect(after.watch).toMatchObject({ shell_command: expect.any(String) })
+      expect((await call(client, 'pending')).woken).toBeUndefined()
+      db.close()
+    } finally {
+      await client.close()
+    }
+  }, 30000)
+
+  it('hands a driven session the normal watches for a plan another session wrote, since only its own plans are pinged', async () => {
+    const dbPath = join(scratchDir('mcp-driven-other-'), 'inbox.db')
+    const cwd = scratchDir('mcp-driven-shared-')
+    const driven = await serve({ AGENT_INBOX_DB: dbPath }, 'copilot', cwd)
+    await call(driven, 'pending')
+    const db = openDb(dbPath)
+    const session = listActivity(db)[0]!.session
+    const other = await serve({ AGENT_INBOX_DB: dbPath }, 'copilot', cwd)
+    try {
+      await call(other, 'board_upsert', { title: 'Other', rows: [blockedRow('Sign')] })
+      const project = (await call(other, 'whoami')).project as string
+      const writer = getBoard(db, project, 'Other')!.session
+      expect(writer).not.toBe(session)
+      claimHookWatch(db, `driven:${session}`, `${LAUNCH}:${process.pid}:test`)
+      expect(isDrivenSession(db, session)).toBe(true)
+
+      const read = await call(driven, 'board_get', { title: 'Other', watch: true })
+      expect(read.woken).toBeUndefined()
+      expect(read.watches).toEqual([expect.objectContaining({ label: 'Sign', shell_command: expect.any(String) })])
+      const sign = read.rows.find((r: { label: string }) => r.label === 'Sign')
+      const advanced = await call(driven, 'board_advance', {
+        title: 'Other', label: 'Sign', board_version: read.revision, expected_revision: sign.revision,
+        note: 'Next step.', next_step: 'Sign the second build.', action_owner: 'task', impact: 'Unblocks the release.',
+      })
+      expect(advanced.woken).toBeUndefined()
+      expect(advanced.watch).toMatchObject({ label: 'Sign', shell_command: expect.any(String) })
+      // board_advance restamps no plan field (#306): the plan is still the other session's
+      expect(getBoard(db, project, 'Other')!.session).toBe(writer)
+    } finally {
+      db.close()
+      await driven.close()
+      await other.close()
+    }
+  }, 30000)
+})
+

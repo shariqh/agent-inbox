@@ -225,19 +225,20 @@ runtime; `src/hook-cli.ts` is the thin entry that owns stdin and the exit code.
 
 | Claude Code event | subcommand | timeout | what it does | stdout |
 |---|---|---|---|---|
-| `Notification` (no matcher) | `notification` | 5s | arms the #10 backstop for this session — writes **nothing** yet | *(empty)* |
+| `Notification` (no matcher) | `notification` | 5s | arms the #10 backstop for this session — writes **nothing** yet; an `idle_prompt` stamps the session's turn as ended (#466) | *(empty)* |
 | *(internal, not an event)* | `notification-commit` | — | the deferred half: after the grace window, inserts the backstop item if the session is still stuck | *(empty)* |
-| `SessionStart` (`startup\|resume`) | `session-start` | 5s | clears this session's backstop; nudges if an answer is unpicked | plain text |
+| `SessionStart` (`startup\|resume`) | `session-start` | 5s | clears this session's backstop; nudges if an answer is unpicked or a message to this session is open | plain text |
 | `SessionEnd` | `session-end` | 5s | clears this session's backstop | *(empty)* |
-| `UserPromptSubmit` | `prompt-submit` | 10s | clears this session's backstop; nudges if an answer is unpicked | one JSON object |
-| `Stop` | `stop` | 10s | clears this session's backstop; bounces the agent back to work if an answer is unpicked | one JSON object |
-| `Stop` (asyncRewake) | `watch` | 1800s | polls until the human answers one of this session's requests, then exits **2** to wake the model | *(empty; stderr carries the payload)* |
+| `UserPromptSubmit` | `prompt-submit` | 10s | clears this session's backstop; stamps a turn started (#466); nudges if an answer is unpicked or a message to this session is open | one JSON object |
+| `Stop` | `stop` | 10s | clears this session's backstop; bounces the agent back to work if an answer is unpicked, or once per new message to this session; a Stop that does not bounce stamps the turn ended (#466) | one JSON object |
+| `PreToolUse`, `PostToolUse` (async) | `activity` | 5s | stamps "a tool ran" on this session's presence row, at most once per 30 s (#466) | *(empty)* |
+| `Stop` (asyncRewake) | `watch` | 1800s | polls until the human answers one of this session's requests or messages it, then stamps a turn started (#466) and exits **2** to wake the model | *(empty; stderr carries the payload)* |
 | *(manual/cron)* | `sweep` | — | runs the 24h janitor over orphaned backstop items | *(empty)* |
 | *(installer only)* | `selftest` | — | proves the resolved Node can load `better-sqlite3`. The ONE subcommand allowed to exit non-zero on failure | one line |
 
 ### The stdout contract is exact
 
-`notification`, `notification-commit`, `session-end`, `sweep` and `watch` emit
+`notification`, `notification-commit`, `session-end`, `activity`, `sweep` and `watch` emit
 **zero bytes** on stdout. `prompt-submit` emits exactly:
 
 ```json
@@ -258,6 +259,92 @@ cannot exit.
 `asyncRewake` turns into a model wake-up. Any wrapper around the CLI must
 therefore leave *both* streams alone — `hooks/agent-inbox-hook.sh` redirects
 neither. It does **not** forward the status blindly, though; see below.
+
+## Host stamps: what the Agents view learns from the hooks (#466)
+
+A session busy with `gh`, a shell or another MCP server makes no Agent Inbox call,
+so without hooks its card cannot tell it from one waiting at its prompt. The hooks
+stamp three timestamps on the presence rows of their own session's Agent Inbox
+servers, found the #253 way (the hook's parent process is the server's recorded
+`host_pid`, and the server still runs): `host_turn_at` on `prompt-submit`,
+`host_idle_at` on a `stop` that does not bounce the agent and on an `idle_prompt`
+notification (an interrupted turn fires no Stop), and `host_tool_at` from
+`activity`. A turn that `watch` wakes (exit 2) fires no UserPromptSubmit, so `watch`
+stamps `host_turn_at` itself just before it wakes the model. A turn some other hook
+starts (a third-party Stop hook that blocks after ours stamped the turn ended) stamps
+no turn at all; the viewer counts a tool stamp more than 5 seconds after the idle
+stamp as a running turn instead. The margin is for a race it accepts: the last
+tool's async `PostToolUse` can land just after its Stop. Inside 5 s it reopens
+nothing; a slower one reads Working until the next `idle_prompt` (about a minute
+later) or prompt stamps the turn again. Nothing else is stored: no tool name, argument, prompt or Claude
+session id. No link (an older server, a wrapper process such as `npx`) means no
+stamp, and a failed stamp is logged and changes nothing a hook prints.
+
+`activity` runs on every tool call, so it is async (Claude Code never waits on
+it) and cheap: a marker file per Claude Code process (`hook-state/host-<pid>.tool`)
+answers with one `stat` until a stamp is due (`session-end` removes it), and the store's own condition
+writes a row's `host_tool_at` at most once per 30 seconds. The stamps never move
+`updated_at`, `last_call_at`, the call trace or a claim, and a turn never revives
+a claim that went cold (#45). The Agents view reads them: a turn started and not
+ended, with a stamp in the last hour, is **Working**, "Task not reported" when
+there is no claim; an ended turn is **Idle**; no stamps leaves the card Quiet.
+
+An older Agent Inbox installer does not know `activity`, so it treats these two
+entries as another tool's: its `--uninstall` leaves them in place. Remove them
+with this installer's `--uninstall`, or re-install from this version.
+
+## Copilot CLI: the opt-in hooks file (#466 PR 3)
+
+Copilot CLI runs hooks too ([hooks reference](https://docs.github.com/en/copilot/reference/hooks-reference)),
+and loads every `*.json` file in `~/.copilot/hooks/` (or `$COPILOT_HOME/hooks/`) into
+every session. Agent Inbox owns exactly one of them, `agent-inbox.json`, and writes
+nothing else:
+
+```sh
+npm run install:copilot-hooks                              # dry run: prints the file it would write
+npm run install:copilot-hooks -- --apply                   # write it (an older copy is backed up)
+npm run install:copilot-hooks -- --apply --no-tool-stamps  # the off switch for tool stamps
+npm run install:copilot-hooks -- --apply --uninstall       # remove it (backed up first)
+```
+
+| Copilot CLI event | runs | stamps |
+|---|---|---|
+| `userPromptSubmitted` | `hook-cli` `host-turn` | `host_turn_at` |
+| `agentStop` | `hook-cli` `host-idle` | `host_idle_at` |
+| `errorOccurred` | `hook-cli` `host-error` | `host_idle_at`, only for `recoverable: false` outside a subagent (a retried model call is mid-turn) |
+| `postToolUse` | `hook-cli` `host-tool` | `host_tool_at`, at most once per 30 s |
+| `sessionEnd` | `hook-cli` `host-end` | nothing; removes the throttle marker |
+
+Each event has a subcommand of its own, so a hook-cli older than this file (a
+checkout switched back to an older branch and rebuilt) refuses them as a silent
+no-op, never misreading every event as a tool. A file the first build of this
+change wrote (`activity <kind>`) still works and is replaced by the next install.
+
+Every entry is exec form (`exec` + `args`, no shell) with a 5 s timeout, and prints
+nothing. Copilot CLI parses a hook's stdout as its decision and treats an empty one
+as "no decision", and a timeout fails open on these events. There is no `preToolUse`
+entry: a command hook that fails there denies the tool call. Copilot CLI runs
+`postToolUse` hooks synchronously, so each tool call waits for one Node start (about
+50 ms) while the marker says no stamp is due; `--no-tool-stamps` drops that hook and
+keeps the turn stamps, which still mark a running turn busy.
+
+The join is the Claude one. Checked on Copilot CLI 1.0.106: every hook, exec or
+`bash` form, is a direct child of the `copilot` process, which is the `host_pid`
+its Agent Inbox MCP server records, so no process walk is needed. One `copilot`
+process can host several sessions sharing one server, so a stamp describes the
+process, as the card does.
+
+`scripts/copilot-hooks.mjs` builds the file and decides what is ours; the
+installer trusts its `check` only when it prints `ours`, and checks the file it
+built before staging it, so a helper that ran nothing refuses rather than passes.
+The installer refuses anything at that path it did not write (another tool's file,
+a symlink, a directory), in every mode; runs under the setup lock (fd 9); proves its
+Node with `hook-cli selftest` first; and backs up a copy it replaces or removes as
+`agent-inbox.json.bak.<time>`, a name Copilot never loads. With the session
+sandbox on, a user-level hook runs inside it and cannot reach `~/.agent-inbox`
+unless that path is granted (`sandbox.userPolicy`); it then stamps nothing.
+Setup does not report this file yet, and a Setup runtime does not ship the
+installer yet: run it from a checkout.
 
 ## The stdin payloads
 
@@ -354,6 +441,30 @@ process that started it is gone, since nothing is left to wake.
 The nudge names every project that has responses and the `pending({project:"…"})`
 call that reads each one without changing the session's scope.
 
+## #411: messages the human sends this session
+
+The human can message one Agent Inbox session from the viewer. Only a hook linked to
+its servers (above) can tell which messages are this session's, so an unlinked hook
+ignores them; that session sees them at its next `pending()`.
+
+- `session-start` and `prompt-submit` remind about every open message to the linked
+  servers, on every event, inside their existing output.
+- `stop` bounces the agent back once per message: it records the ids it blocked for
+  in `host-<pid>.nudged.json` beside the session markers, keyed by the Claude Code
+  process, so neither a notification hook nor a `/clear` makes it block again. It
+  never blocks on `stop_hook_active`.
+- `watch` wakes (exit 2, payload on stderr) for a message that arrives after it armed,
+  including one sent to a server that restarted under the same Claude Code process.
+  Messages already open when it armed are `stop`'s.
+- A message counts while it is open (not yet acknowledged with `ack_message`), even
+  after another reader of the same server, such as a subagent, picked it up.
+- The hooks read message ids only; they never print the text.
+
+A message that arrives during a `stop_hook_active` continuation, or after the watch
+window (`AGENT_INBOX_WATCH_SECS`) ends, waits for the next prompt or ordinary Stop. So
+does one sent in the milliseconds between `stop` reading the open messages and `watch`
+reading its baseline: they are separate processes on the same Stop.
+
 ## #10: how a backstop item behaves
 
 It is an ordinary `items` row — `kind: "question"`, `agent: "hook"`,
@@ -413,7 +524,7 @@ cannot stop nagging is exactly what the viewer rebuild was designed against
 
 - **No `activity` row is written by the hook.** The `activity` table is
   one-row-per-MCP-session; a hook row keyed by the harness session id would show
-  **two** Live entries for one Claude Code session, and would let backstops
+  **two** session cards for one Claude Code session, and would let backstops
   escalate to red after an hour. Blocked terminals stay non-escalating
   (`parked`, then `stale` past 72h).
 - **No SessionEnd "you ended with nothing flagged" note.** The two session-id
@@ -430,7 +541,7 @@ cannot stop nagging is exactly what the viewer rebuild was designed against
 
 | var | default | meaning |
 |---|---|---|
-| `AGENT_INBOX_HOOKS` | *(unset)* | set to `0` to make every subcommand a silent no-op |
+| `AGENT_INBOX_HOOKS` | *(unset)* | set to `0` to make every subcommand a silent no-op (the Copilot CLI hooks file's too) |
 | `AGENT_INBOX_DB` | `~/.agent-inbox/inbox.db` | the hub. The watcher's lease lives in it, and marker state and `hook.log` live beside it, which is what makes the runtime hermetic under test |
 | `AGENT_INBOX_HOOK_NOTIFY_TYPES` | `permission_prompt` | comma-separated `notification_type` gate |
 | `AGENT_INBOX_HOOK_GRACE_MS` | `90000` | how long a permission prompt may sit before it earns an item |

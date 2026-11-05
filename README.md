@@ -9,8 +9,9 @@
 Agent Inbox gives GitHub Copilot CLI and Claude Code one shared place to surface
 decisions, handoffs, notes, milestones, and multi-step plans. You respond in the
 Electron app; agents pick the response up through MCP and continue working.
-Its default Live Operations Desk shows active claims, trustworthy attention,
-ownership flow, plan movement, and recorded outcomes across every project.
+The app opens on the Dashboard: a card for each session, with its asks answered
+in its session panel, a Today ribbon of each project's activity, and what just
+landed. You can also send a message to a running session.
 
 ![Agent Inbox showing a synthetic decision queue, plan row, response options, and live agents](docs/assets/agent-inbox-overview.png)
 
@@ -22,11 +23,13 @@ share one SQLite database on your machine.
 
 | Capability | What you get |
 |---|---|
-| **Live operations dashboard** | Real current state plus locally persisted agent-claim history, with every signal drilling into a working view |
+| **Dashboard** | A card per session with its asks, its plan's progress and recent activity, a session panel you answer from, and a Today ribbon of asks and outcomes |
 | **Cross-project inbox** | Questions and handoffs from every active coding session in one prioritized queue |
 | **Action-aware responses** | Recommended options, free-text answers, snooze, pin for later, clarify, and decline controls |
 | **Durable plans** | Tracking boards with stable rows, progress, next steps, outcomes, and human-owned actions |
-| **Live sessions** | Ambient status for active agents and their current work without turning activity into alerts |
+| **Agents view** | Ambient status for every connected session and its current work without turning activity into alerts |
+| **Session messages** | Write to a running session, and see before you send whether it arrives now or at the session's next check |
+| **Session launcher** | On macOS, start Copilot CLI sessions from the app, each in its own git worktree, approve their tool calls from the inbox, and message, park, resume or take them over from their session cards. Off until you turn it on |
 | **Dual-host setup** | Audited installers and instructions for GitHub Copilot CLI and Claude Code |
 | **Local security boundary** | A loopback-only viewer with strict Host, Origin, Fetch Metadata, and anti-framing checks |
 
@@ -112,7 +115,9 @@ npm run electron
 ```
 
 The Electron app starts or safely reuses the local viewer and opens the desktop
-workspace. Its **Setup** panel can also run the same audited host installer.
+workspace. Its **Setup** panel can also run the same audited host installer. A source
+build uses port 4392 unless `AGENT_INBOX_PORT` is set, so it runs beside the installed
+app (port 4319) instead of taking its port.
 
 To package a standalone local development app on an Apple silicon Mac:
 
@@ -205,8 +210,8 @@ without changing the current session scope. Each re-arm of the same unanswered
 request waits longer (30 minutes, then 1, 2 and 4 hours), so a long wait costs the
 agent a few wakes instead of dozens. On a Copilot request you can also choose
 **I'll take a while**: stop the agent waiting (it will not wake on its own, so
-message it after you answer) or ask it to wait quietly for a few hours or until
-tomorrow. With the Later section on (the default), the same choice also sets the
+prompt it in its terminal after you answer) or ask it to wait quietly for a few
+hours or until tomorrow. With the Later section on (the default), the same choice also sets the
 request aside: **Stop waiting** pins it in Later, and a quiet wait snoozes it there
 until the same time. With the section off, the request stays in Needs you. A
 snooze also keeps its watcher quiet, checking in at most once a day. The choice
@@ -221,18 +226,160 @@ agent resumed. Hooks still select requests by project, but each host session kee
 its own watcher so one session cannot take away another's wake source. An
 unavailable host connection cannot be repaired by a database watcher.
 
-Live shows connected MCP processes and the work they report, not an authoritative
-inventory of every agent or subagent. A connection with no task report is unknown
+The Agents view shows connected MCP processes and the work they report, not an
+authoritative inventory of every agent or subagent. A connection with no task report is unknown
 activity, not proof of inactivity. `register` updates its displayed project and
 branch immediately; child-agent descriptions still come from the manager.
-Each connection also shows the Agent Inbox build its MCP server runs. A session on
-an older build gets a quiet hint whose advice fits where that session runs from: a
+Each session's panel also shows the Agent Inbox build its MCP server runs. A session
+on an older build gets a quiet "older build" chip on its card whose advice fits where that session runs from: a
 session on Setup's agent runtime is told to restart once its own host (Claude Code
 or Copilot CLI) is registered to the new runtime, or to update agents from Setup
 first, and a session running from a source checkout is told to update and rebuild
 it. After Setup matches agents back to an older app, sessions still on the newer
 build are marked too. A server too old to report its build shows nothing rather than
 a guess.
+
+## The Dashboard
+
+The app opens on the Dashboard (`G D`), for all projects and agents.
+
+- **Needs you** lists the requests waiting on you, the same set the badge counts,
+  with requests whose agent is still waiting on the answer first. The top three are
+  cards you can answer right there, with the Inbox's own options and editor, or set
+  aside with **Snooze** (4 hours) or **Pin**. On a card, `J`/`K` move, `1`-`4`
+  choose, `S` snoozes, `P` pins and `Enter` expands. The rail also says how many
+  more requests wait in the Inbox and how many are in Later.
+- **The Now strip** counts working sessions and their subagents, the requests
+  waiting on you and how long the oldest has waited, and the plan steps of the
+  working sessions' plans.
+- **Agents** has a card for every session, grouped by project (or by agent): what
+  it reports, whether it is working, quiet, idle, parked or needs you, and for a working
+  session its plan's progress (done, in progress, waiting on you, to do), its
+  subagents and a small trace of its MCP calls over the last 30 minutes. A terminal
+  session with no live claim reads **Quiet** ("no Agent Inbox call for 40m"), because
+  one busy with other tools makes no Agent Inbox call either; **Idle** is kept for an
+  app-driven session whose driver reports no running turn. A claim that is no longer
+  live shows as "Last reported: … · 52m ago". A session with no call for 8 hours
+  folds under **Dormant**, and ended sessions under **Ended**. Filter by state with
+  **All**, **Needs you**, **Working**, **Quiet** and **Parked**.
+  Click a card to open its session panel: its requests, its plan, its recent
+  outcomes, PR and CI state, links, and a place to message it.
+- **The Today ribbon** draws one line per project over the last 24 hours, 7 days or
+  30 days: when its agents worked, ◆ where one asked you something and ● where an
+  outcome landed.
+- **Just landed** shows the four newest outcomes. An outcome on a pull request that
+  is still waiting on you is counted there instead of shown.
+- After at least 30 minutes away, one line says what happened since you last looked.
+
+In search (`Cmd/Ctrl K`), type `answer `, `open plan ` or `jump to session ` to list
+those targets first.
+
+**Settings → Motion** chooses Full or Calm. Calm turns off looping animation and the
+brief pulse a card gives when its session makes a call. Your system's Reduce motion
+setting turns motion off whichever you choose.
+
+## Messaging a running session
+
+You can write to a connected session without finding its terminal. Each session's
+card in the Dashboard's Agents view has a **Message** button, which opens its session
+panel at the **Message** section. Messages go to the whole CLI
+session: any of its agents, a subagent included, may pick one up first. A message
+can be up to 4,000 characters, and it never changes a badge or a count.
+
+Before you send, the composer says how the message will arrive:
+
+| Delivery | When |
+|---|---|
+| **Arrives now** | A Claude Code session started with the channels flag (below), or one whose wake-up hooks ([`docs/hooks.md`](docs/hooks.md)) are waiting |
+| **It sees this when it next checks Agent Inbox** | Any other session on v2.2.0 or later, including every Copilot CLI session: it reads the message the next time it calls `pending` |
+| **Can't receive** | A session still running an older build; restart it to load v2.2.0 or later |
+
+Each message then shows **Sent · not picked up yet**, **Picked up · working on it**
+or **Acknowledged**, with the outcome the agent recorded through `ack_message`.
+**Withdraw** takes back a message the session has not acknowledged; after pickup the
+agent may already have started. **Not delivered**, at the foot of the Agents view, lists
+messages to sessions that ended, with **Copy text** and **Withdraw**. An unsent
+message is kept like any other draft, and a send that was not confirmed never sends
+twice.
+
+**Claude Code channels (research preview).** Claude Code can push a message straight
+into a running session, even an idle one, through its channels feature. It is a
+Claude Code research preview: it needs a claude.ai or Console login, works only in
+interactive sessions, and Team and Enterprise organizations must allow channels. The
+MCP registration must be named `agent-inbox`, which the installer does. Start Claude
+Code with
+
+```sh
+claude --dangerously-load-development-channels server:agent-inbox
+```
+
+and accept its warning. The push carries only a notice to call `pending`, never the
+message text.
+
+**Driven Copilot sessions (preview).** Agent Inbox can start a Copilot CLI session
+and drive it from a terminal, so your messages and answers arrive in it as new turns
+(**Arrives now**). Run it from the runtime the installer set up; the installer prints
+the exact command at the end of an install:
+
+```sh
+~/.agent-inbox/runtime/<runtime-id>/bin/node ~/.agent-inbox/runtime/<runtime-id>/dist/driver-cli.js \
+  copilot --cwd <folder> --mode ask --prompt-file <task file>
+```
+
+`--mode` is `ask` (every tool call asks) or `read-only` (file edits are denied). `--reasoning-effort <level>` sets the effort for models that refuse the one in your Copilot settings. Each
+approval is answered y/n in that terminal and also shows as an alert in the **@sessions** project. Stop it with
+Ctrl-C, by typing `stop`, or with `… dist/driver-cli.js stop <launch id>`, which it
+prints when it starts. From a source checkout, `npm run driver -- copilot …` does the
+same. Once any shell command is allowed, the session can run anything: answer each
+ask with that in mind. Design:
+[`docs/superpowers/specs/2026-10-31-driven-sessions-design.md`](docs/superpowers/specs/2026-10-31-driven-sessions-design.md).
+
+## Starting sessions from Agent Inbox (macOS, preview)
+
+The Agent Inbox app can start a Copilot CLI session in one of your projects and run
+it for you, so its approvals come to the inbox and your messages arrive as new turns.
+It is off until you turn it on, and it works only in the macOS app, not in a browser.
+
+**Try it:**
+
+1. Open **Settings → Agent sessions** and turn on **Start sessions from Agent Inbox**.
+   The key that signs your approvals is protected by the macOS Keychain, so macOS
+   may ask once to allow Agent Inbox to use it.
+2. On the Dashboard, choose **New session…** at the top of the Agents view. Pick a project Agent Inbox has seen (or **Choose folder…**), a
+   mode, optionally a model and reasoning effort, the budgets, and the task. Don't
+   paste secrets into the task: it is stored with the session.
+3. Agent Inbox shows its own confirmation of exactly what will start. **Start** runs
+   Copilot in that folder, with your login shell's environment.
+4. Each tool call that needs your approval arrives in the inbox under **@sessions**:
+   choose **Allow once** or **Deny** there. Only the app's own window can answer
+   them; a browser tab says so.
+5. Message the session from its card. While it works, a message is **Queued**
+   until the turn ends; **Interrupt and send** stops the turn and sends it now.
+6. **Park now** stops Copilot and keeps the session; it also parks by itself after
+   two idle hours. **Resume and send** starts it again with your message, and so it
+   does for a session you stopped. **Stop** ends it. **Transcript** (in its session
+   panel) shows what it did; the **Ended** fold lists ended sessions, and **Earlier
+   sessions** inside it older ones. An ended session whose worktree is kept offers
+   **Remove worktree…** on its card, and the fold says how many worktrees are kept.
+7. **Take over in Terminal** moves a running or parked session to a Terminal window:
+   after your confirmation, Agent Inbox stops driving it (cancelling its current turn
+   and approvals) and runs `copilot --resume` there with its history. From then on you
+   answer it in Terminal; **Resume in Terminal** opens it again.
+
+| Mode | What runs without asking |
+|---|---|
+| **Ask for everything** | Nothing, except what your own Copilot settings already allow |
+| **Read-only** | Nothing; file-edit tools are denied, and shell commands still ask |
+| **Plan first** | Nothing: it writes a plan, and once you approve it, each tool call asks |
+| **Edits in the worktree** | File edits inside the project folder (never a `.git` folder or file, at the top or nested); shell commands, network and anything outside the folder still ask |
+
+Once any shell command is allowed, the session can run anything, in its folder and
+beyond, and an edited file can change what an allowed command then runs. Answer each
+approval with that in mind. Each session has budgets for active time (default 2
+hours) and tool calls (default 500), across parks and resumes. When you quit the app
+with sessions running, it asks whether to keep them running or stop them all.
+Design: [`docs/superpowers/specs/2026-10-31-driven-sessions-design.md`](docs/superpowers/specs/2026-10-31-driven-sessions-design.md);
+how it is built: [`docs/architecture/driven-sessions.md`](docs/architecture/driven-sessions.md).
 
 ## Setting requests aside
 
@@ -299,7 +446,7 @@ Letters do not run shortcuts while you are typing or using a select.
 | Keys | Action |
 |---|---|
 | `G D` / `G I` / `G P` / `G N` / `G H` | Dashboard / Inbox / Plans / Notes / History |
-| `G S` / `G O` / `G A` / `G L` | Settings / project picker / agent filter / Live |
+| `G S` / `G O` / `G A` / `G L` | Settings / project picker / agent filter / Sessions (the Agents view) |
 | `Cmd/Ctrl K` or `/` | Focus search |
 | `J` / `K`, then `Enter` | Move through the queue and expand an item |
 | `R` / `1`-`4` | Focus the current reply / choose an answer |
@@ -323,9 +470,10 @@ text you select in a reply box or other field.
 | Tool | Purpose |
 |---|---|
 | `flag` | Raise a question, non-blocking note, or completed milestone |
-| `pending` | Read open questions, informational feedback, and plan responses; optionally re-read one open item |
+| `pending` | Read open questions, informational feedback, plan responses and the human’s messages to this session; optionally re-read one open item |
 | `answer` | Record an answer the human gave in chat while preserving inbox precedence |
 | `resolve` | Close an item after the agent acts on it |
+| `ack_message` | Acknowledge, with an outcome, a message the human sent this session |
 | `status` | Publish ephemeral live work and child-agent presence |
 | `board_upsert` | Create or refresh an entire tracking board |
 | `board_row` | Update one stable board row |
@@ -429,7 +577,8 @@ Paths relative to a repository (`docs/superpowers/specs/spec.md`,
 session was working in, which Agent Inbox records with each item and plan. They need
 a folder and a file name with an extension or a `:line`. A file that folder doesn't
 have, such as a doc that only exists on a pull request's branch or in another
-worktree, is not opened: clicking it copies its path and says so. A path whose
+worktree, is not opened: clicking it shows its nearest folder inside the repository
+in Finder and says so. A path whose
 symlinks lead outside the repository is never opened. Items and plans written before
 this, or by an older Agent Inbox, recorded no folder, so their relative paths stay
 text.
@@ -442,9 +591,11 @@ In the desktop app a web link opens in your browser, and a common document (Mark
 text, logs, JSON, YAML, TOML, CSV, PDF, images, SVG, HTML, diffs, MOV and MP4)
 opens in its default app. Anything else is only shown in Finder: folders, apps,
 scripts and other code, installers, disk images, aliases, files set to open with a
-particular app, and anything with an execute bit. Files open only in the viewer the
-app started itself: if it is showing a viewer it found already running, and in a
-browser tab, clicking a file link copies its path instead.
+particular app, and anything with an execute bit. A file in your home folder that
+isn't there shows its nearest existing folder; one elsewhere only says it isn't
+there. Copying a path is the chip's own **Copy path** button, never a click. Files open only in the
+viewer the app started itself: if it is showing a viewer it found already running,
+and in a browser tab, clicking a file link copies its path instead and says why.
 
 On macOS, **Settings → Links** chooses how links open from the Inbox instead of the
 Mac's defaults: web links in a browser you pick, and Markdown (`.md`, `.markdown`) or
@@ -457,31 +608,19 @@ as `.command`, `.pkg` or `.dmg`) can't have a rule at all. In the desktop app ev
 file chip also has **Reveal in Finder** and **Copy path**. Both, and Settings →
 Links itself, work only in the viewer the app started itself.
 
-## Agents view (opt-in)
+## Agents view
 
-The Dashboard can group your Live sessions by agent (Copilot, Claude Code, …) as
-well as by session. It is off unless you turn it on. It adds no poll read, no
-network traffic beyond this machine and nothing to your badges; when it is on,
-the page loads one more script, `/mesh-view.js`.
+The Dashboard's Agents view is the one home for your sessions: a card for each,
+grouped by project with its agent kind as a chip (or grouped by agent). The sidebar's
+**Sessions** line, on every tab, says how many are working and connected and opens it.
+The view adds no poll read, no network traffic beyond this machine and nothing to
+your badges.
 
-From a source checkout:
-
-```sh
-npm run meshctl -- enable --agents-view           # dry run: shows the file it would write
-npm run meshctl -- enable --agents-view --apply   # writes ~/.agent-inbox/mesh.json
-npm run meshctl -- status
-npm run meshctl -- disable --apply                # turns it off again (keeps a backup)
-```
-
-With the agent runtime Setup installed, run the same commands as
-`~/.agent-inbox/runtime/<runtime-id>/bin/node ~/.agent-inbox/runtime/<runtime-id>/dist/meshctl.js …`.
-Nothing puts `agent-inbox-meshctl` on your `PATH`; it works by that name only after
-`npm link` in a checkout. Deleting `mesh.json` by hand also turns the mesh off.
-
-Reload the Agent Inbox window after turning it on or off; a **Sessions | Agents**
-switch then appears above the Dashboard's lanes, and Settings → Mesh shows how to
-turn it off. This is the first phase of the
-[agent mesh design](docs/superpowers/specs/2026-10-29-agent-mesh-design.md).
+It began as the first phase of the
+[agent mesh design](docs/superpowers/specs/2026-10-29-agent-mesh-design.md) and was
+switched on by `mesh.json`; since #454 it is always on, and `mesh.json` turns on
+nothing until a later mesh phase. `npm run meshctl -- status` says what the file holds,
+and `npm run meshctl -- disable --apply` removes it (keeping a backup).
 
 ## Architecture
 
@@ -502,7 +641,8 @@ different file and `AGENT_INBOX_PORT` to change the viewer port.
 
 The viewer binds one IPv4 listener to `127.0.0.1`, accepts only exact loopback
 authorities, requires a trusted Origin for mutations, rejects cross-site Fetch
-Metadata, and denies framing. Electron reuses only viewers carrying the expected
+Metadata, denies framing, and lets the page run only script files from its own
+origin (CSP `script-src 'self'`). Electron reuses only viewers carrying the expected
 local-boundary marker.
 
 This is an intentionally unauthenticated **single-user workstation** boundary.

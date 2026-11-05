@@ -435,9 +435,15 @@ function createSetupFilesystem({
   // happens next; an interrupted or failed deletion leaves trash that a later
   // removeLeftoverTrash() deletes. Recursive deletion removes links, never
   // what they point at.
-  function removeDirectory({ target, validate }) {
+  // `keep` (optional, #412) runs once the tree is moved aside, before anything
+  // is deleted: a reason (any truthy string) renames it back, identity-checked,
+  // and the result carries `kept`. A `keep` that throws keeps it too.
+  function removeDirectory({ target, validate, keep }) {
     if (typeof validate !== 'function') {
       throw filesystemError('invalid-callback', 'directory validation callback is required')
+    }
+    if (keep !== undefined && typeof keep !== 'function') {
+      throw filesystemError('invalid-callback', 'the keep callback must be a function')
     }
     const normalized = normalizeAbsolute(pathApi, platform, target)
     const requestedParent = pathApi.dirname(normalized)
@@ -488,6 +494,43 @@ function createSetupFilesystem({
         `directory was moved aside for deletion but its identity changed; untrusted path retained at ${trash}`,
         { committed: true, recoveryPath: trash, cause: identityError },
       )
+    }
+
+    if (keep !== undefined) {
+      let reason
+      try {
+        reason = keep(moved)
+      } catch {
+        reason = 'whether it is still in use could not be checked'
+      }
+      if (reason) {
+        try {
+          assertParentIdentity(requestedParent, parent)
+          assertIdentity(trashIdentity)
+          assertIdentity(identity, moved)
+          assertMissing(operationTarget)
+          io.rename(moved, operationTarget)
+          assertIdentity(identity, operationTarget)
+        } catch (restoreError) {
+          try {
+            io.mkdir(pathApi.join(trash, RETAINED_MARKER), { recursive: false })
+          } catch {
+            // Retained either way; the marker keeps a later cleanup off it.
+          }
+          throw filesystemError(
+            'restore-failed',
+            `directory was moved aside, is still in use (${reason}), and could not be put back; it is retained at ${trash}`,
+            { committed: true, recoveryPath: trash, cause: restoreError },
+          )
+        }
+        try {
+          assertIdentity(trashIdentity)
+          if (io.readdir(trash).length === 0) io.remove(trash, { recursive: true, force: false })
+        } catch {
+          // An empty trash folder is removed by a later cleanup.
+        }
+        return Object.freeze({ path: normalized, identity, kept: String(reason) })
+      }
     }
 
     try {

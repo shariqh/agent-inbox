@@ -17,9 +17,11 @@ import { readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import Database from 'better-sqlite3'
 import {
+  claimHookWatch, closedProjects, endActivity, isDrivenSession, readdressMessages,
   getBoard, getItem, insertItem, listActivity, listBoards, listHostSessions, listIssueEntities, listIssueSnapshots, listItems, listSourceLinks,
   markReplySeen, openDb, pinBoardRow, pinItem, recordActivityCall, recordIssueFailure, replyItem, stopBoardRowWatch, stopItemWatch, updateBoardRow, upsertActivity,
-  upsertBoard, upsertIssueSnapshot, upsertSourceLink,
+  upsertBoard, upsertIssueSnapshot, upsertSourceLink, sendSessionMessage, listSessionMessages, readSnapshotState,
+  createLaunch, endLaunch, getLaunch, recordLaunchProgress, resumeLaunch,
 } from '../src/store.js'
 import type { IssueDependencies } from '../src/store.js'
 import { issueQueue } from '../src/issue-poller.js'
@@ -27,6 +29,8 @@ import { buildIssueGraph } from '../src/issue-graph.js'
 import { runHook } from '../src/hook.js'
 import { issueKeyFor } from '../public/issue-key.js'
 import { createViewer } from '../src/viewer.js'
+import { appAsks } from '../src/driver-launch.js'
+import { sign } from './launch-fixtures.js'
 import type { FoundLink } from '../public/links.js'
 import { renderStructuredText } from '../public/structured-text.js'
 import { at, facts, keySets, snapshot } from './issue-fixtures.js'
@@ -1590,5 +1594,256 @@ describe('a v1.8.0 process sharing a hub with call traces and plan sessions (#30
       expectedVersion: getBoard(db, 'agent-inbox', 'Old plan')!.revision,
     })
     expect(getBoard(db, 'agent-inbox', 'Old plan')!.session).toBe('new-mcp')
+  })
+})
+
+// Issue #411: v2.1.0 knows nothing of session messages. Its presence statement
+// is v1.7.0's, verbatim (checked against the v2.1.0 tag when this was written),
+// so it never sets receives_messages: a send to a session it serves is refused,
+// and none of its statements can change a message or move the messages domain.
+describe('a v2.1.0 process sharing a hub with session messages (#411)', () => {
+  let dir: string
+  let path: string
+  const open: Database.Database[] = []
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(Date.parse(at(60)))
+    dir = scratchDir('mixed-version-messages-')
+    path = join(dir, 'inbox.db')
+  })
+
+  afterEach(() => {
+    for (const connection of open.splice(0)) if (connection.open) connection.close()
+    rmSync(dir, { recursive: true, force: true })
+    vi.useRealTimers()
+  })
+
+  function connect(older: boolean): Database.Database {
+    const db = older ? new Database(path) : openDb(path)
+    if (older) {
+      db.pragma('busy_timeout = 5000')
+      db.pragma('journal_mode = WAL')
+    }
+    open.push(db)
+    return db
+  }
+
+  const presence = (session: string, doing: string, claim: number) => ({
+    session, project: 'agent-inbox', stream: 'main', agent: 'claude-code', doing, detail: '', children: null,
+    idle: claim ? 0 : 1, claim, server_version: '2.1.0', server_source: 'runtime', host_pid: 1, server_pid: 2, now: new Date().toISOString(),
+  })
+  const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`
+
+  it('a session its presence statement wrote is refused, while this build’s flag survives its writes to the same row', () => {
+    const db = connect(false)
+    const old = connect(true)
+    old.prepare(V170.upsertActivity).run(presence('old-mcp', 'open', 0))
+    expect(sendSessionMessage(db, { id: id(1), session: 'old-mcp', text: 'Hello?' })).toEqual({ ok: false, reason: 'session_cannot_receive' })
+    upsertActivity(db, { session: 'new-mcp', project: 'agent-inbox', stream: 'main', agent: 'copilot', doing: 'open', idle: true, claim: false, receives_messages: true })
+    old.prepare(V170.upsertActivity).run(presence('new-mcp', 'Reviewing', 1))
+    old.prepare(V170.touchActivity).run(new Date().toISOString(), 'new-mcp')
+    expect(sendSessionMessage(db, { id: id(2), session: 'new-mcp', text: 'Hello.' }).ok).toBe(true)
+  })
+
+  it('its hook’s watch lease, which wakes for answers only, never counts as wakes', () => {
+    const db = connect(false)
+    const old = connect(true)
+    old.prepare(V170.upsertActivity).run(presence('old-hosted', 'open', 0))
+    upsertActivity(db, { session: 'new-hosted', project: 'agent-inbox', stream: 'main', agent: 'claude-code', doing: 'open', idle: true, claim: false, receives_messages: true, host_pid: 1 })
+    old.prepare(V170.claimHookWatch).run('host:1', `${process.pid}-older-token`, new Date().toISOString())
+    expect(listActivity(db).filter((row) => row.wakes)).toEqual([])
+  })
+
+  it('none of its presence, call, item or answer statements changes a message or moves the messages domain', () => {
+    const db = connect(false)
+    const old = connect(true)
+    upsertActivity(db, { session: 'new-mcp', project: 'agent-inbox', stream: 'main', agent: 'copilot', doing: 'open', idle: true, claim: false, receives_messages: true })
+    sendSessionMessage(db, { id: id(1), session: 'new-mcp', text: 'Run the tests.' })
+    const asked = insertItem(db, { project: 'agent-inbox', stream: '', agent: 'new', kind: 'question', title: 'Ship it?' })
+    const before = { messages: listSessionMessages(db), version: readSnapshotState(db).domains.session_messages }
+    old.prepare(V170.upsertActivity).run(presence('new-mcp', 'Reviewing', 1))
+    old.prepare(V170.recordActivityCall).run({ session: 'new-mcp', now: new Date().toISOString(), cold: at(0) })
+    old.prepare(V170.touchActivity).run(new Date().toISOString(), 'new-mcp')
+    old.prepare(V140.replyItem).run({ id: asked, reply: 'Ship it', replyContext: null, kind: 'answer', now: new Date().toISOString() })
+    // its day-old housekeeping removes presence rows, never messages
+    old.prepare(`DELETE FROM activity WHERE (ended_at IS NOT NULL AND ended_at < ?) OR updated_at < ?`).run(at(9999), at(9999))
+    expect({ messages: listSessionMessages(db), version: readSnapshotState(db).domains.session_messages }).toEqual(before)
+  })
+})
+
+// Issue #412 (step 2): a driver's leases live in hook_watch_claims beside the
+// Claude hook's, and its approval alerts in the reserved project `@sessions`.
+// The statements of a v2.2.0 process, copied verbatim from src/store.ts at
+// tag v2.2.0 (claimHookWatch, releaseHookWatch, closeProject).
+const V220 = {
+  pruneClaims: `DELETE FROM hook_watch_claims WHERE claimed_at < ?`,
+  claimHookWatch: `INSERT INTO hook_watch_claims (claim_key, token, claimed_at) VALUES (?, ?, ?)
+                ON CONFLICT(claim_key) DO UPDATE SET token = excluded.token, claimed_at = excluded.claimed_at`,
+  releaseHookWatch: `DELETE FROM hook_watch_claims WHERE claim_key = ? AND token = ?`,
+  closeProject: `INSERT INTO projects (project, closed_at) VALUES (?, ?)
+     ON CONFLICT(project) DO UPDATE SET closed_at = excluded.closed_at`,
+  // ackMessage and markMessageDelivered, both conditioned on the addressed session
+  ackMessage: `UPDATE session_messages
+                                   SET status = 'acknowledged', outcome = ?, closed_at = ?, revision = revision + 1
+                                 WHERE id = ? AND session = ? AND status = 'open'`,
+  markMessageDelivered: `UPDATE session_messages
+                        SET delivered_at = COALESCE(delivered_at, ?), delivered_by = COALESCE(delivered_by, ?)
+                      WHERE id = ? AND session = ? AND status = 'open'`,
+  // replyItem's write (its viewer's reply route), with v2.2.0's EXPECTED_ANSWER_SQL inlined
+  replyItem: `UPDATE items
+                   SET reply = @reply, reply_context = @replyContext, replied_at = @now, reply_seen_at = NULL,
+                       reply_source = 'inbox', reply_kind = @kind,
+                       snoozed_until = NULL, pinned_at = NULL, updated_at = @now
+                 WHERE id = @id AND kind = 'question' AND status = 'open'
+                   AND (@expect = 0
+  OR (replied_at IS @expectedAt AND reply_source IS @expectedSource
+      AND reply_kind IS @expectedKind AND reply IS @expectedReply)
+  OR (COALESCE(reply, '') = '' AND reply_kind IS NULL))`,
+}
+
+describe('a v2.2.0 process sharing a hub with driven sessions (#412)', () => {
+  let dir: string
+  let path: string
+  const open: Database.Database[] = []
+  const LAUNCH = '11111111-2222-4333-8444-555555555555'
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(Date.parse(at(60)))
+    dir = scratchDir('mixed-version-driven-')
+    path = join(dir, 'inbox.db')
+  })
+
+  afterEach(() => {
+    for (const connection of open.splice(0)) if (connection.open) connection.close()
+    rmSync(dir, { recursive: true, force: true })
+    vi.useRealTimers()
+  })
+
+  function connect(older: boolean): Database.Database {
+    const db = older ? new Database(path) : openDb(path)
+    if (older) {
+      db.pragma('busy_timeout = 5000')
+      db.pragma('journal_mode = WAL')
+    }
+    open.push(db)
+    return db
+  }
+
+  it('its hook’s lease housekeeping keeps a fresh driver’s lease, and its watch lease never reads as driven', () => {
+    const db = connect(false)
+    const old = connect(true)
+    upsertActivity(db, { session: 'driven', project: 'agent-inbox', stream: 'main', agent: 'copilot', doing: 'open', idle: true, claim: false, receives_messages: true, host_pid: 76681 })
+    upsertActivity(db, { session: 'hosted', project: 'agent-inbox', stream: 'main', agent: 'claude-code', doing: 'open', idle: true, claim: false, receives_messages: true, host_pid: 1 })
+    claimHookWatch(db, 'driven:driven', `${LAUNCH}:4242:n1`)
+    const now = Date.now()
+    old.transaction(() => {
+      old.prepare(V220.pruneClaims).run(new Date(now - 24 * 60 * 60000).toISOString())
+      old.prepare(V220.claimHookWatch).run('host:1', `m1:${process.pid}-older`, new Date(now).toISOString())
+    }).immediate()
+    old.prepare(V220.releaseHookWatch).run('host:1', `m1:${process.pid}-other`)
+    expect(isDrivenSession(db, 'driven')).toBe(true)
+    expect(listActivity(db).map((row) => [row.session, row.driven ?? false, row.wakes ?? false]).sort())
+      .toEqual([['driven', true, false], ['hosted', false, true]])
+  })
+
+  it('after a re-address, its old session can neither pick up nor ack the moved message; the new one can', () => {
+    const db = connect(false)
+    const old = connect(true)
+    for (const [session, server] of [['ended', 76734], ['restarted', 76900]] as const) {
+      upsertActivity(db, { session, project: 'agent-inbox', stream: 'main', agent: 'copilot', doing: 'open', idle: true, claim: false, receives_messages: true, host_pid: 76681, server_pid: server })
+      claimHookWatch(db, `driven:${session}`, `${LAUNCH}:4242:n1`)
+    }
+    const id = '00000000-0000-4000-8000-000000000001'
+    expect(sendSessionMessage(db, { id, session: 'ended', text: 'Run the tests.' }).ok).toBe(true)
+    endActivity(db, 'ended')
+    expect(readdressMessages(db, { from: 'ended', to: 'restarted', launchId: LAUNCH, hostPid: 76681 })).toEqual({ ok: true, moved: [id] })
+    const now = new Date().toISOString()
+    expect(old.prepare(V220.markMessageDelivered).run(now, 'copilot', id, 'ended').changes).toBe(0)
+    expect(old.prepare(V220.ackMessage).run('Done.', now, id, 'ended').changes).toBe(0)
+    expect(old.prepare(V220.ackMessage).run('Done.', now, id, 'restarted').changes).toBe(1)
+    expect(listSessionMessages(db).closed).toEqual([expect.objectContaining({ id, session: 'restarted', outcome: 'Done.' })])
+  })
+
+  it('its viewer closing @sessions never mutes a driver’s approvals', () => {
+    const db = connect(false)
+    const old = connect(true)
+    insertItem(db, { project: '@sessions', stream: 'agent-inbox · main', agent: 'copilot', session: 'driven', kind: 'question', title: 'Allow copilot to run `npm test`?' })
+    vi.setSystemTime(Date.parse(at(61)))
+    old.prepare(V220.closeProject).run('@sessions', new Date().toISOString())
+    old.prepare(V220.closeProject).run('agent-inbox', new Date().toISOString())
+    expect(closedProjects(db)).toEqual(['agent-inbox'])
+  })
+
+  // step 3: an app launch's approval is main's signed reply, and nothing else
+  it('its viewer’s reply to an app launch’s approval never approves it, and leaves the launches domain alone', () => {
+    const db = connect(false)
+    const old = connect(true)
+    const key = Buffer.alloc(32, 3)
+    const asks = appAsks({ db, launchId: LAUNCH, launchKey: key, project: 'agent-inbox', stream: 'main', log: () => undefined })
+    const item = asks.file({
+      kind: 'permission', title: 'Allow copilot to run `npm test`?', context: 'Tool kind: execute', session: 'driven',
+      choices: [
+        { id: 'allow_once', label: 'Allow once', detail: '', approve: true },
+        { id: 'reject_once', label: 'Deny', detail: '', approve: false },
+      ],
+    })
+    const version = readSnapshotState(db).domains.launches
+    const write = (reply: string, replyContext: string | null) => old.prepare(V220.replyItem).run({
+      id: item, reply, replyContext, kind: 'answer', now: new Date().toISOString(),
+      expect: 0, expectedAt: null, expectedSource: null, expectedKind: null, expectedReply: null,
+    }).changes
+    expect(write('Allow once', null)).toBe(1)
+    expect(asks.answers()).toEqual([])
+    expect(write('allow_once', 'not a signature')).toBe(1)
+    expect(asks.answers()).toEqual([])
+    expect(readSnapshotState(db).domains.launches).toBe(version)
+    replyItem(db, item, 'allow_once', sign(key, item, 0, 'allow_once'))
+    expect(asks.answers()).toEqual([{ itemId: item, approve: true }])
+  })
+})
+
+// The statements of a v2.4.0 driver, copied verbatim from tag v2.4.0: resumeLaunch's
+// write (src/store.ts, RESUMABLE_END inlined) and run's spent check (src/driver-cli.ts).
+const V240 = {
+  resumeLaunch: `UPDATE launches
+                               SET status = 'running', parked_at = NULL, park_reason = NULL, ended_at = NULL, end_reason = NULL, end_detail = NULL,
+                                   stop_requested_at = NULL, driver_pid = ?, updated_at = ?, revision = revision + 1
+                             WHERE id = ? AND (status = 'parked' OR (status = 'ended' AND end_reason = 'stopped' AND acp_session IS NOT NULL
+                       AND (worktree_path IS NULL OR worktree_removed_at IS NULL)))
+                         RETURNING *`,
+  spent: (row: { tool_calls: number; budget_tool_calls: number; active_ms: number; budget_active_ms: number }) =>
+    row.tool_calls >= row.budget_tool_calls ? 'budget:tool_calls' : row.active_ms >= row.budget_active_ms ? 'budget:active_time' : null,
+}
+
+describe('a v2.4.0 driver sharing a hub with launches resumed with more budget (#451)', () => {
+  let dir: string
+  const LAUNCH = '11111111-2222-4333-8444-555555555555'
+
+  beforeEach(() => { dir = scratchDir('mixed-version-budget-') })
+  afterEach(() => { rmSync(dir, { recursive: true, force: true }) })
+
+  it('never resumes a budget-ended launch, and counts a raised one against its raised totals', () => {
+    const path = join(dir, 'inbox.db')
+    const db = openDb(path)
+    const old = new Database(path)
+    old.pragma('busy_timeout = 5000')
+    createLaunch(db, {
+      id: LAUNCH, host: 'copilot', project: 'agent-inbox', stream: 'main', cwd: '/work/a', mode: 'ask',
+      budgetActiveMs: 7_200_000, budgetToolCalls: 3, prompt: 'x', specVersion: 1, driverPid: 1,
+    })
+    recordLaunchProgress(db, LAUNCH, { toolCalls: 3 })
+    endLaunch(db, LAUNCH, { reason: 'budget:tool_calls', acpSession: 'acp-1' })
+    const resumeOld = () => old.prepare(V240.resumeLaunch).get(2, new Date().toISOString(), LAUNCH) as Record<string, number> | undefined
+    expect(resumeOld()).toBeUndefined()
+    // this build's raise, then the human's Stop: the raised totals are the launch's own columns
+    expect(resumeLaunch(db, LAUNCH, 3, { revision: getLaunch(db, LAUNCH)!.revision, activeMs: 0, toolCalls: 5 })).not.toBeNull()
+    endLaunch(db, LAUNCH, { reason: 'stopped' })
+    const row = resumeOld()!
+    expect(row).toMatchObject({ status: 'running', budget_tool_calls: 8, tool_calls: 3 })
+    expect(V240.spent(row as never)).toBeNull()
+    old.close()
+    db.close()
   })
 })

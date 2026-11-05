@@ -5,7 +5,7 @@
 //
 // Behavior:
 //   1. If a hardened viewer is already listening on
-//      http://127.0.0.1:<AGENT_INBOX_PORT|4319>, reuse it (never start a second
+//      http://127.0.0.1:<AGENT_INBOX_PORT|4319, or 4392 unpackaged>, reuse it (never start a second
 //      one, never kill it on quit). We re-probe before committing (a dying viewer
 //      can answer one probe then vanish), and once reusing we watch it and start
 //      our own server if it disappears (#23).
@@ -17,18 +17,28 @@
 //      before and kill that child on quit — only because we own it.
 //   4. Open a BrowserWindow on the viewer URL once the server responds.
 
-const { app, BrowserWindow, dialog, ipcMain, Menu, Notification, nativeTheme, session, shell } = require('electron')
-const { spawn } = require('node:child_process')
-const { randomBytes } = require('node:crypto')
-const { existsSync } = require('node:fs')
+const { app, BrowserWindow, dialog, ipcMain, Menu, Notification, nativeTheme, safeStorage, session, shell } = require('electron')
+const { execFile, spawn } = require('node:child_process')
+const { randomBytes, randomUUID } = require('node:crypto')
+const { chmodSync, existsSync, mkdirSync, realpathSync, renameSync, statSync, writeFileSync } = require('node:fs')
+const os = require('node:os')
 const http = require('node:http')
 const path = require('node:path')
 const { pathToFileURL } = require('node:url')
-const { classifyReuse, watchUpstream } = require('./reuse.cjs')
+const { classifyReuse, viewerPort, watchUpstream } = require('./reuse.cjs')
 const { loadViewer, reloadViewer } = require('./viewer-navigation.cjs')
 const { isTrustedLinkSender, isViewerUrl, openLinkRequest, openWebLink } = require('./link-open.cjs')
 const { createLinkPreferences, createLinkSettings } = require('./link-preferences.cjs')
-const { canRunSetup, createInstallBinding, createInstallGate, installerRepoRoot, runAgentInstall, runtimeKey, selectRuntimePayload } = require('./setup-runner.cjs')
+const {
+  canRunSetup, createInstallBinding, createInstallGate, driverRuntime, installerRepoRoot, runAgentInstall, runtimeKey,
+  selectRuntimePayload, setupRuntimeRoot,
+} = require('./setup-runner.cjs')
+const { createSessionLaunchSettings } = require('./session-launch.cjs')
+const { createLaunchKeys } = require('./launch-key.cjs')
+const { captureShellEnv } = require('./shell-env.cjs')
+const { runWorktreeCommand, startDriver } = require('./driver-process.cjs')
+const { createLaunchController, quitChoice, runningAtQuit } = require('./launch-controller.cjs')
+const { registerLaunchIpc } = require('./launch-ipc.cjs')
 const { MANUAL_RELEASES_URL, createUpdateController, reviewReleaseOffered } = require('./update-controller.cjs')
 const { createUpdateDownloader } = require('./update-download.cjs')
 const { createInstallAttemptStore } = require('./update-install.cjs')
@@ -42,6 +52,7 @@ const { syncSpellcheckLanguages } = require('./spellcheck-languages.cjs')
 const { quitWhenRestartManagerAsks, setWindowsAppIdentity } = require('./windows-app.cjs')
 const {
   attentionNotification,
+  answerableByNotification,
   cannedResponseActions,
   createNotificationRetainer,
   createResponseWatch,
@@ -65,7 +76,9 @@ try {
   console.error(`[agent-inbox] could not set the Windows app identity: ${err.message}`)
 }
 
-const PORT = Number(process.env.AGENT_INBOX_PORT ?? 4319)
+const PORT = viewerPort({ isPackaged: app.isPackaged, env: process.env })
+// The viewer reads the same variable, in process or spawned, so a checkout build's lands on 4392 too.
+if (!app.isPackaged) process.env.AGENT_INBOX_PORT ??= String(PORT)
 const VIEWER_HOST = '127.0.0.1'
 const URL_BASE = `http://${VIEWER_HOST}:${PORT}/`
 const BOUNDARY_HEADER = 'x-agent-inbox-local-boundary'
@@ -117,6 +130,12 @@ let updateController = null
 // started; a reused or failed-over viewer never gets in-app update installs.
 let viewerOwned = false
 let updateInstallWebContentsId = null
+// Driven sessions (#412 step 3): the switch's value as main last read or wrote
+// it, and the window holding the `launch` grant (the owned viewer with the
+// switch on, re-proved after every load like `files`).
+let launchEnabled = false
+let launchWebContentsId = null
+let launchQuitAsked = false
 let updateRestartRequested = false
 let quitAfterUpdateInstall = false
 
@@ -300,6 +319,9 @@ ipcMain.handle('agent-inbox:update-open-release', async (event, ...args) => {
 function beginAppQuit() {
   setupInstallWebContentsId = null
   updateInstallWebContentsId = null
+  // the launch gate (#412 step 3): nothing starts once a quit has begun
+  launchWebContentsId = null
+  launchController?.beginQuit()
   return installGate.beginQuit()
 }
 
@@ -449,6 +471,193 @@ ipcMain.handle('agent-inbox:set-theme-preference', (event, preference) => {
   return true
 })
 
+// ── driven sessions (#412 step 3) ───────────────────────────────────────────
+// Main alone starts a driven session, after a native confirmation it builds
+// itself, and signs approvals with a key safeStorage keeps. It reaches the hub
+// through the viewer's own routes, as notification answers do. Off by default:
+// with the switch off nothing here captures an env, resolves a runtime or
+// spawns anything (design §9 e).
+// made on first use, as the link preferences are
+let launchSettingsStore = null
+const launchSettings = () => (launchSettingsStore ??= createSessionLaunchSettings({ app }))
+let launchController = null
+
+function launchHubPath() {
+  const configured = process.env.AGENT_INBOX_DB
+  return configured && path.isAbsolute(configured) ? configured : path.join(app.getPath('home'), '.agent-inbox', 'inbox.db')
+}
+
+// the driver's own environment: just enough to run; the session's comes from the capture
+function launchDriverEnv() {
+  const env = { PATH: '/usr/bin:/bin:/usr/sbin:/sbin' }
+  for (const name of ['HOME', 'USER', 'LOGNAME', 'TMPDIR', 'LANG']) if (process.env[name]) env[name] = process.env[name]
+  const root = process.env.AGENT_INBOX_RUNTIME_ROOT
+  if (root && path.isAbsolute(root)) env.AGENT_INBOX_RUNTIME_ROOT = root
+  return env
+}
+
+function launchDriverRuntime() {
+  if (runtimeSelection.reason === 'no-release-payloads') {
+    const node = process.env.npm_node_execpath
+    const entry = path.join(REPO_ROOT, 'dist', 'driver-cli.js')
+    return node && path.isAbsolute(node) && existsSync(entry)
+      ? { node, entry }
+      : { error: 'A checkout runs sessions from its own build: npm run build, then npm run electron.' }
+  }
+  // the installed runtime first; on macOS, this app's own verified payload when none is installed (#435)
+  return driverRuntime({ runtimeRoot: setupRuntimeRoot(process.env), selection: runtimeSelection })
+}
+
+const launchViewer = {
+  async getJson(route) {
+    try {
+      const response = await fetch(`${URL_BASE}${route.slice(1)}`, { signal: AbortSignal.timeout(5000) })
+      return response.ok ? await response.json() : null
+    } catch {
+      return null
+    }
+  },
+  async postJson(route, body) {
+    try {
+      const response = await fetch(`${URL_BASE}${route.slice(1)}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin: new URL(URL_BASE).origin },
+        body: JSON.stringify(body ?? {}),
+        signal: AbortSignal.timeout(5000),
+      })
+      return response.ok ? await response.json() : null
+    } catch {
+      return null
+    }
+  },
+}
+
+// A process's start as the driver recorded it (scripts/runtime-pins.mjs on macOS)
+function launchProcessStart(pid) {
+  return new Promise((resolve) => {
+    execFile('/bin/ps', ['-o', 'pid=,lstart=', '-p', String(pid)], {
+      env: { PATH: '/usr/bin:/bin', TZ: 'UTC', LC_ALL: 'C' }, timeout: 5000,
+    }, (error, stdout) => {
+      const match = error ? null : /^\s*(\d+)\s+(\S.*\S)\s*$/m.exec(String(stdout))
+      resolve(match && Number(match[1]) === pid ? `darwin:${match[2].replace(/\s+/g, ' ')}` : null)
+    })
+  })
+}
+
+function launchControllerFor() {
+  if (launchController) return launchController
+  const owner = () => (linkWindow && !linkWindow.isDestroyed() ? linkWindow : undefined)
+  launchController = createLaunchController({
+    platform: process.platform,
+    isEnabled: () => launchEnabled,
+    keys: createLaunchKeys({ safeStorage, filePath: path.join(app.getPath('userData'), 'launch-master-key') }),
+    viewer: launchViewer,
+    captureEnv: (cwd) => {
+      const shellPath = os.userInfo().shell || process.env.SHELL
+      return captureShellEnv({
+        shell: shellPath, cwd, spawnImpl: spawn,
+        baseEnv: { ...launchDriverEnv(), SHELL: shellPath ?? '', TERM: 'dumb' },
+      })
+    },
+    confirm: async (text) => {
+      const options = { type: 'warning', message: text.message, detail: text.detail, buttons: text.buttons, defaultId: 1, cancelId: 1, noLink: true }
+      const { response } = owner() ? await dialog.showMessageBox(owner(), options) : await dialog.showMessageBox(options)
+      return response === 0
+    },
+    chooseFolder: async () => {
+      const options = { title: 'Choose the folder for the session', buttonLabel: 'Choose', properties: ['openDirectory'] }
+      const result = owner() ? await dialog.showOpenDialog(owner(), options) : await dialog.showOpenDialog(options)
+      return result.canceled ? null : result.filePaths[0] ?? null
+    },
+    // #432: where session worktrees go, read only with the switch on
+    worktreeSettings: {
+      read: () => launchSettings().readWorktreeRoot(),
+      write: (root) => launchSettings().setWorktreeRoot(root),
+    },
+    // #432 PR 5: a start's phase, to the window holding the launch grant only, and how long each took
+    progress: (phase, launch, startId) => {
+      const target = launchWebContentsId === null ? null : BrowserWindow.getAllWindows().map((win) => win.webContents).find((wc) => wc.id === launchWebContentsId)
+      if (target && !target.isDestroyed()) target.send('agent-inbox:launch-progress', phase, launch, startId)
+    },
+    log: (line) => console.log(`[agent-inbox] ${line}`),
+    // #432 §5: the cap on sessions at once, read only with the switch on
+    sessionCap: {
+      read: () => launchSettings().readMaxDrivers(),
+      write: (cap) => launchSettings().setMaxDrivers(cap),
+    },
+    // #432 §5: `driver-cli.js worktree inspect|remove`, from the same verified runtime
+    runWorktree: (args) => runWorktreeCommand({ ...args, spawnImpl: spawn }),
+    // Remove worktree's three-way choice: the index of the button, Cancel by default
+    ask: async (text) => {
+      const cancel = text.buttons.length - 1
+      const options = { type: 'warning', message: text.message, detail: text.detail, buttons: text.buttons, defaultId: cancel, cancelId: cancel, noLink: true }
+      const { response } = owner() ? await dialog.showMessageBox(owner(), options) : await dialog.showMessageBox(options)
+      return response
+    },
+    // #432 §6: Terminal at the worktree, argv only; step 5: Terminal running a Take over script
+    openTerminal: (folder) => new Promise((resolve) => {
+      execFile('/usr/bin/open', ['-a', 'Terminal', '--', folder], { env: { PATH: '/usr/bin:/bin' }, timeout: 10_000 }, (error) => resolve(!error))
+    }),
+    // step 5: the Take over script, 0700 in the launch's 0700 log folder, by temp file and rename
+    writeScript: (file, text) => {
+      try {
+        mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
+        const temp = `${file}.${process.pid}.tmp`
+        writeFileSync(temp, text, { mode: 0o700 })
+        chmodSync(temp, 0o700)
+        renameSync(temp, file)
+        return true
+      } catch {
+        return false
+      }
+    },
+    chooseWorktreeFolder: async () => {
+      const options = { title: 'Choose the folder for session worktrees', buttonLabel: 'Choose', properties: ['openDirectory', 'createDirectory'] }
+      const result = owner() ? await dialog.showOpenDialog(owner(), options) : await dialog.showOpenDialog(options)
+      return result.canceled ? null : result.filePaths[0] ?? null
+    },
+    driverRuntime: launchDriverRuntime,
+    startDriver: (args) => startDriver({ ...args, spawnImpl: spawn }),
+    hubPath: launchHubPath(),
+    driverEnv: launchDriverEnv(),
+    randomUUID,
+    realDirectory: (folder) => {
+      try {
+        // the on-disk letter case: Node's realpathSync keeps the case it was given (#432 review)
+        const real = realpathSync.native(folder)
+        return statSync(real).isDirectory() ? real : null
+      } catch {
+        return null
+      }
+    },
+    processStart: launchProcessStart,
+    kill: (pid, signal) => process.kill(pid, signal),
+  })
+  if (installGate.quitting()) launchController.beginQuit()
+  return launchController
+}
+
+registerLaunchIpc({
+  ipcMain,
+  controller: launchControllerFor,
+  settings: { setEnabled: (enabled) => launchSettings().setEnabled(enabled) },
+  settled: () => installBinding?.settled() ?? Promise.resolve(),
+  isOwned: (event) => linkSender(event) && linkFilesPermitted(event),
+  isGranted: (event) => linkSender(event) && launchWebContentsId !== null && event.sender.id === launchWebContentsId,
+  onEnabled: (enabled) => {
+    launchEnabled = enabled
+    installBinding?.refresh()
+  },
+})
+
+// The quit prompt (§7): sessions keep running unless the human stops them all.
+async function askAboutRunningSessions() {
+  const running = await runningAtQuit(launchControllerFor())
+  if (!running.length) return
+  const choice = await quitChoice({ running, showMessageBox: (options) => dialog.showMessageBox(options) })
+  if (choice === 'stop') await launchControllerFor().stopAll(running)
+}
+
 // One attention predicate for the whole product (spec §7 / tenet 3): the dock
 // badge imports the very module the viewer renders from. ESM from CJS →
 // dynamic import, started once and awaited per poll.
@@ -510,6 +719,8 @@ function requestUpdateRestart() {
 // Setup stops first (#205) and an uncommitted install would be cancelled, then
 // the fresh app binds its new window and reuses the verified download.
 function restartToInstallUpdate() {
+  // sessions keep running across the update; nothing to ask
+  launchQuitAsked = true
   beginAppQuit()
   app.relaunch()
   app.quit()
@@ -723,7 +934,8 @@ function startAttentionWatch(win) {
       // Per-item notifications stay (owner's call) — informational only.
       if (fresh.length && Notification.isSupported()) {
         console.log(`[agent-inbox] notifying: ${fresh.length} new (${fresh[0].text})`)
-        const actionable = fresh.length === 1 ? fresh[0] : null
+        // #412 step 3: an app launch's approval gets no buttons; a click opens its card
+        const actionable = fresh.length === 1 && answerableByNotification(fresh[0]) ? fresh[0] : null
         const canned = cannedResponseActions(actionable ? optionOrder(actionable.item.options) : [])
         const note = new Notification({
           title: fresh.length === 1 ? 'Agent Inbox — needs you' : `Agent Inbox — ${fresh.length} new need you`,
@@ -833,10 +1045,13 @@ function createWindow() {
     return { action: 'deny' }
   })
   // In-window navigation away from the local viewer goes to the system browser
-  // the same way; anything else is dropped.
+  // the same way; anything else is dropped. Electron has already reported this
+  // navigation's start, which revoked the window's grants, so the page that is
+  // still shown gets them back (a dropped file or URL lands here too).
   win.webContents.on('will-navigate', (e, url) => {
     if (isViewerUrl(url, URL_BASE)) return
     e.preventDefault()
+    installBinding?.navigationPrevented(url)
     openWebLink(url, shell, { readRules: linkRules, ...linkOpening })
   })
   win.webContents.on('did-finish-load', async () => {
@@ -936,6 +1151,9 @@ function initializeUpdateController() {
       fetchImpl: fetch,
     }),
     installers: updateInstallers(),
+    // A window that opened on a viewer this app did not start never installs (#216), so
+    // Settings says why and how to get an install back (#465).
+    ...(viewerOwned ? {} : { installWithheld: 'unowned-viewer' }),
     // Read once at startup, so an install that did not take effect is reported.
     attemptStore: createInstallAttemptStore({ directory: path.join(app.getPath('userData'), 'update-install') }),
     isSetupRunning: () => installGate.running(),
@@ -962,7 +1180,9 @@ function initializeUpdateController() {
           : installable
             ? `Version ${version} is available. Download and install it from Settings → Updates.`
             : downloadable
-              ? `Version ${version} is available. Download and verify it from Settings → Updates.`
+              ? viewerOwned
+                ? `Version ${version} is available. Download and verify it from Settings → Updates.`
+                : `Version ${version} is available. To install it, quit Agent Inbox and any other copy of it, then reopen Agent Inbox.`
               : `Version ${version} is ready to review on GitHub Releases.`,
       })
       note.on('click', () => {
@@ -1079,6 +1299,8 @@ app.whenReady().then(async () => {
     runtimeSelection = selectRuntimePayload({ appRoot: REPO_ROOT })
     const isReleaseBuild = runtimeSelection.reason !== 'no-release-payloads'
     setupInstallEnabled = isReleaseBuild ? runtimeSelection.ok : true
+    // driven sessions (#412 step 3): the switch, read before the window binds
+    launchEnabled = process.platform === 'darwin' && (await launchSettings().read()).enabled
   } else {
     console.error('[agent-inbox] started viewer did not prove ownership; refusing to load it')
     app.exit(1)
@@ -1118,12 +1340,15 @@ app.whenReady().then(async () => {
     updateAllowed: () => viewerOwned,
     // So do local file links (#300); web links need no grant.
     filesAllowed: () => viewerOwned,
+    // driven sessions (#412 step 3): the owned viewer, with the switch on, on macOS
+    launchAllowed: () => viewerOwned && launchEnabled && process.platform === 'darwin',
     isQuitting: () => installGate.quitting(),
     proveOwnership: reproveOwnership,
-    apply({ setup, update, files }) {
+    apply({ setup, update, files, launch }) {
       setupInstallWebContentsId = setup ? setupWindowWebContentsId : null
       updateInstallWebContentsId = update ? setupWindowWebContentsId : null
       fileLinkWebContentsId = files ? setupWindowWebContentsId : null
+      launchWebContentsId = launch ? setupWindowWebContentsId : null
       updateController?.refreshInstallPermission()
     },
   })
@@ -1184,6 +1409,14 @@ app.on('before-quit', (event) => {
       quitAfterUpdateInstall = true
       app.quit()
     })
+    return
+  }
+  // Driven sessions (#412 step 3) outlive the app: ask once whether to stop
+  // them. Only with the switch on (turning it off is refused while any run).
+  if (launchEnabled && viewerOwned && !launchQuitAsked) {
+    launchQuitAsked = true
+    event.preventDefault()
+    askAboutRunningSessions().catch(() => {}).finally(() => app.quit())
   }
 })
 

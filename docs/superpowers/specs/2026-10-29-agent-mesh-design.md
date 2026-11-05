@@ -15,6 +15,11 @@ design depends on was checked against a primary source on 2026-10-29 (Appendix A
 **Round 3 added** §15 (adopt Netflix Eureka?), §16 (mockups) and §17 (how we'll know it's worth
 it), with detail in Appendices B–D. They are numbered after the decision log so earlier section
 references stay stable.
+**Amended 2026-11-04 by #454**
+([`2026-11-04-agents-home-design.md`](2026-11-04-agents-home-design.md) §4): the Agents view (M1)
+is always on. `mesh.json` no longer gates it, the viewer no longer watches the file and
+`/api/version` never carries `mesh`, and Settings → Mesh is gone, until M3 needs them. This
+changes §2.2's M1 row, §2.4 (b) and §10.2; "off means off" still holds for M2 and later.
 
 ---
 

@@ -20,6 +20,9 @@ const TARGETS = new Set(['all', 'claude', 'copilot', 'hooks', 'prune-runtimes'])
 const TARGET_NAMES = Object.freeze([...TARGETS])
 const HOOKS_REQUIRED_FILES = Object.freeze([...REQUIRED_FILES, 'scripts/install-hooks.sh'])
 const PRUNE_REQUIRED_FILES = Object.freeze([...REQUIRED_FILES, 'scripts/prune-runtimes.sh'])
+// A driven session (#412 step 3) runs this release's installed runtime's driver,
+// which must understand launch spec v1: launch-spec.js ships with it.
+const DRIVER_REQUIRED_FILES = Object.freeze([...REQUIRED_FILES, 'dist/driver-cli.js', 'dist/launch-spec.js'])
 
 // Setup is available only for the five targets handled by the fixed-purpose
 // POSIX shell adapter. Selection is STRICT `${process.platform}-${process.arch}`
@@ -27,6 +30,8 @@ const PRUNE_REQUIRED_FILES = Object.freeze([...REQUIRED_FILES, 'scripts/prune-ru
 const RUNTIME_KEYS = new Set(POSIX_SETUP_RUNTIME_KEYS)
 const RELEASE_KEYS = POSIX_SETUP_RUNTIME_KEYS
 const DIGEST_RE = /^(sha256:)?[0-9a-f]{64}$/i
+// the path segment macOS runs a quarantined app from (as update-install-macos.cjs checks)
+const TRANSLOCATION = '/AppTranslocation/'
 
 function runtimeKey(platform, arch) {
   return `${platform}-${arch}`
@@ -68,6 +73,8 @@ function nodeMajor(version) {
  *     `..` traversal segment.
  *   - 'invalid-digest' — the payload's `digest` is not a well-formed SHA-256.
  *   - 'not-found' — nothing exists at the resolved path.
+ *   - 'unreadable' — the payload directory entry cannot be read (EACCES,
+ *     ENOTDIR, ELOOP): never treated as absent.
  *   - 'not-contained' — the resolved (or its REAL, symlink-followed) path
  *     escapes `appRoot` — including a symlinked payload directory used to
  *     point outside the app bundle.
@@ -276,12 +283,116 @@ function installedRuntime({ runtimeRoot, operation, host }) {
     if (manifest.runtimeId !== operation.runtimeId) throw new Error('runtime id mismatch')
   } catch (err) {
     return {
-      error: setupFailure(target, err?.code === 'not-found'
+      error: setupFailure(target, absentOrUnreadable(err)
         ? `Claude hooks were not moved: this app's v${operation.packageVersion} runtime is not installed yet.`
         : `Claude hooks were not moved: the installed v${operation.packageVersion} runtime failed integrity verification.`),
     }
   }
   return { dir }
+}
+
+// A runtime folder that is not there, or whose entry cannot be read (EACCES,
+// ENOTDIR, ELOOP): reported with the same "not installed yet" copy, but only
+// `not-found` lets a driver fall back to the bundle (#435).
+function absentOrUnreadable(err) {
+  return err?.code === 'not-found' || err?.code === 'unreadable'
+}
+
+function hasDriverSelection(selection) {
+  return Boolean(selection && selection.ok === true && selection.manifest && typeof selection.manifest.runtimeId === 'string')
+}
+
+// `dir` is exactly this release's runtime, re-verified against the signed
+// manifest digest with the driver and launch spec v1 required; throws otherwise.
+function verifyDriverRuntime(dir, { selection, platform, arch, verify }) {
+  const { manifest } = verify({
+    root: dir,
+    expectedManifestDigest: selection.digest,
+    expectedPlatform: platform,
+    expectedArch: arch,
+    expectedProduct: EXPECTED_PRODUCT,
+    expectedPackageVersion: selection.packageVersion,
+    expectedNodeMajor: EXPECTED_NODE_MAJOR,
+    expectedNodeModulesAbi: EXPECTED_NODE_MODULES_ABI,
+    requiredEntrypoints: REQUIRED_ENTRYPOINTS,
+    requiredFiles: DRIVER_REQUIRED_FILES,
+  })
+  if (manifest.runtimeId !== selection.manifest.runtimeId) throw new Error('runtime id mismatch')
+  return { node: join(dir, 'bin', 'node'), entry: join(dir, 'dist', 'driver-cli.js') }
+}
+
+/**
+ * The driver of a driven session (#412 step 3, design §8): the installed copy
+ * of THIS release's runtime, <runtimeRoot>/<runtimeId>, re-verified against the
+ * signed manifest digest (as `hooks` is, #206) and required to carry the driver
+ * and launch spec v1. Its own bin/node and dist/driver-cli.js are the argv;
+ * nothing else is ever run. A runtime not installed yet is marked
+ * `notInstalled`, the one refusal driverRuntime() may answer from the bundle.
+ */
+function installedDriverRuntime({ runtimeRoot, selection, platform = process.platform, arch = process.arch, verify = verifyRuntimePayload }) {
+  if (!hasDriverSelection(selection)) {
+    return { error: 'This build of Agent Inbox has no verified runtime to run sessions with.' }
+  }
+  if (runtimeRoot === null) return { error: 'AGENT_INBOX_RUNTIME_ROOT must be an absolute path.' }
+  try {
+    return verifyDriverRuntime(join(runtimeRoot, selection.manifest.runtimeId), { selection, platform, arch, verify })
+  } catch (err) {
+    return absentOrUnreadable(err)
+      ? {
+          ...(err.code === 'not-found' ? { notInstalled: true } : {}),
+          error: `This app's v${selection.packageVersion} runtime is not installed yet. Setup installs it only while it `
+            + 'registers Claude Code or Copilot CLI to this app (Settings → Setup), never over a source checkout or a '
+            + "custom registration. If your agents run from a checkout, start sessions from that checkout's own build: "
+            + 'npm run build, then npm run electron.',
+        }
+      : { error: `The installed v${selection.packageVersion} runtime failed integrity verification: reinstall it from Settings → Setup.` }
+  }
+}
+
+/**
+ * The payload inside this app's own bundle (#435), the one Setup runs its
+ * installers from: `selection.path`, still the real path it resolved to at
+ * startup and not under App Translocation, whose mount goes when the app
+ * quits and would take a detached driver with it. Re-verified against the
+ * signed digest with the driver and launch spec v1 required. Fails closed.
+ */
+function bundledDriverRuntime({ selection, platform = process.platform, arch = process.arch, verify = verifyRuntimePayload }) {
+  const dir = hasDriverSelection(selection) ? selection.path : null
+  if (typeof dir !== 'string' || !isAbsolute(dir)) return { error: 'This app has no runtime of its own to run sessions from.' }
+  let real = null
+  try {
+    real = realpathSync(dir)
+  } catch { /* moved or gone: refused below */ }
+  if (dir.includes(TRANSLOCATION) || (real !== null && real.includes(TRANSLOCATION))) {
+    return {
+      error: 'macOS is running this copy of Agent Inbox from a temporary location (App Translocation), so it cannot run '
+        + 'sessions from its own runtime either: move Agent Inbox to the Applications folder and open it again.',
+    }
+  }
+  if (real !== dir) {
+    return { error: 'Agent Inbox moved since it started, so it cannot run sessions from its own runtime either: quit it and open it again.' }
+  }
+  try {
+    return verifyDriverRuntime(dir, { selection, platform, arch, verify })
+  } catch {
+    return { error: "This app's own runtime failed integrity verification too: reinstall Agent Inbox." }
+  }
+}
+
+/**
+ * The driver runtime of a release app (#435): the installed runtime first;
+ * on macOS only, when it is not installed at all (never when it is there but
+ * fails verification), this app's own verified payload. A driver run from the
+ * bundle pins nothing (locateRuntime() calls it `checkout`), and no prune
+ * touches the bundle. Never on Linux, where an AppImage's payload is a mount
+ * that goes away when the app quits.
+ */
+function driverRuntime({ runtimeRoot, selection, platform = process.platform, arch = process.arch, verify = verifyRuntimePayload }) {
+  const installed = installedDriverRuntime({ runtimeRoot, selection, platform, arch, verify })
+  if (!installed.notInstalled) return installed
+  if (platform !== 'darwin') return { error: installed.error }
+  const bundled = bundledDriverRuntime({ selection, platform, arch, verify })
+  return bundled.error ? { error: `${installed.error} ${bundled.error}` } : bundled
 }
 
 function createReleaseSetupAdapter({
@@ -418,6 +529,11 @@ function createInstallGate() {
  * covers the page the window has just loaded. A newer navigation, a renderer
  * crash or the window closing discards a proof still running; nothing binds
  * once the app has begun to quit (#205), and a closed window never binds again.
+ * Electron starts a navigation (`did-start-navigation`) before main's
+ * `will-navigate` handler may cancel it, so a navigation main cancels itself
+ * (an external link or a dropped file or URL) would otherwise leave the page
+ * still shown revoked until its next load: `navigationPrevented(url)` gives a
+ * window that was bound when that navigation started its grants back.
  *
  * `setupAllowed()`, `updateAllowed()` and `filesAllowed()` (none by default)
  * say what this app may grant at all; when none holds, nothing is probed.
@@ -425,19 +541,34 @@ function createInstallGate() {
  * `settled()` waits out a proof still running, so a question about the grants
  * asked during a reload gets the settled answer.
  */
-function createInstallBinding({ viewerUrl, setupAllowed, updateAllowed, filesAllowed = () => false, isQuitting, proveOwnership, apply }) {
+function createInstallBinding({
+  viewerUrl, setupAllowed, updateAllowed, filesAllowed = () => false, launchAllowed = () => false, isQuitting, proveOwnership, apply,
+}) {
   let loaded = false
   let closed = false
   let navigation = 0
   let awaitingCommit = null
+  // the navigation awaiting its commit: its url and whether the page it would
+  // leave held the grants
+  let started = null
   let inFlight = null
-  const grants = () => ({ setup: setupAllowed() === true, update: updateAllowed() === true, files: filesAllowed() === true })
+  // whether the window's current document holds its grants (bound, not revoked)
+  let bound = false
+  const grants = () => ({
+    setup: setupAllowed() === true,
+    update: updateAllowed() === true,
+    files: filesAllowed() === true,
+    // driven sessions (#412 step 3): the owned viewer with the switch on
+    launch: launchAllowed() === true && !isQuitting(),
+  })
+  const none = () => ({ setup: false, update: false, files: false, launch: false })
   const mayBind = (url) => !closed && !isQuitting() && isTrustedSetupSender(url, viewerUrl)
 
   function revoke() {
     navigation += 1
     awaitingCommit = null
-    apply({ setup: false, update: false, files: false })
+    bound = false
+    apply(none())
   }
 
   async function rebind(url, proving) {
@@ -448,6 +579,7 @@ function createInstallBinding({ viewerUrl, setupAllowed, updateAllowed, filesAll
       proven = false
     }
     if (!proven || proving !== navigation || !mayBind(url)) return false
+    bound = true
     apply(grants())
     return true
   }
@@ -457,11 +589,34 @@ function createInstallBinding({ viewerUrl, setupAllowed, updateAllowed, filesAll
     navigationStarted(url) {
       if (!loaded) {
         loaded = true
-        if (mayBind(url)) apply(grants())
+        if (mayBind(url)) {
+          bound = true
+          apply(grants())
+        }
         return
       }
+      const wasBound = bound
       revoke()
       awaitingCommit = navigation
+      started = { navigation, url, wasBound }
+    },
+    /**
+     * Main cancelled the navigation that just started at `url` (`will-navigate`'s
+     * preventDefault), so the window still shows the page it showed before.
+     * Gives that page back the grants it held, and only those: never after a
+     * newer navigation, a crash, a close or once a quit has begun, and never to
+     * a page that was not bound (one whose own re-proof was still running stays
+     * revoked until its next load). Returns whether it bound the window again.
+     */
+    navigationPrevented(url) {
+      if (!started || started.navigation !== navigation || awaitingCommit !== navigation || started.url !== url) return false
+      const { wasBound } = started
+      started = null
+      if (!wasBound || closed || isQuitting()) return false
+      awaitingCommit = null
+      bound = true
+      apply(grants())
+      return true
     },
     /**
      * The main frame committed a new document at `url` (`did-navigate`).
@@ -472,7 +627,9 @@ function createInstallBinding({ viewerUrl, setupAllowed, updateAllowed, filesAll
       if (awaitingCommit === null || awaitingCommit !== navigation) return Promise.resolve(false)
       awaitingCommit = null
       const wanted = grants()
-      if ((!wanted.setup && !wanted.update && !wanted.files) || !mayBind(url)) return Promise.resolve(false)
+      // the launch grant needs the owned viewer, as files do, so a window that
+      // could hold it later (refresh) is re-proved whenever files are wanted
+      if ((!wanted.setup && !wanted.update && !wanted.files && !wanted.launch) || !mayBind(url)) return Promise.resolve(false)
       const proof = rebind(url, navigation)
       inFlight = proof
       const done = () => {
@@ -484,6 +641,14 @@ function createInstallBinding({ viewerUrl, setupAllowed, updateAllowed, filesAll
     /** Resolves once no proof is in flight, its grants (if any) applied. Never rejects. */
     settled() {
       return inFlight === null ? Promise.resolve() : inFlight.then(() => undefined, () => undefined)
+    },
+    /**
+     * A grant's condition changed (the driven-sessions switch, #412 step 3):
+     * re-applies the grants to a window still bound to its proven document,
+     * and never binds one that is not.
+     */
+    refresh() {
+      if (bound && !closed && !isQuitting()) apply(grants())
     },
     /** The renderer crashed (`render-process-gone`); the window's next load may bind again. */
     rendererGone: revoke,
@@ -569,10 +734,13 @@ module.exports = {
   canRunSetup,
   createInstallBinding,
   createInstallGate,
+  driverRuntime,
+  installedDriverRuntime,
   installerRepoRoot,
   isTrustedSetupSender,
   readSetupInfo,
   runAgentInstall,
   runtimeKey,
   selectRuntimePayload,
+  setupRuntimeRoot,
 }

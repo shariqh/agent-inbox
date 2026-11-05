@@ -79,6 +79,19 @@ export type Draft =
       error: string
       pending: boolean
     }
+  | {
+      /** #411: the human's unsent message to one MCP session */
+      type: 'message'
+      session: string
+      project: string
+      agent: string
+      stream: string
+      text: string
+      /** the id a send claimed and the text it sent: a retry of that text replays it exactly */
+      intent: { id: string; text: string } | null
+      /** non-empty while it waits in the unsent responses */
+      reason: string
+    }
 
 export interface StoredDraft {
   savedAt: number

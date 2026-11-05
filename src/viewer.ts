@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import type { Handler } from 'hono'
 import { createHash } from 'node:crypto'
-import { readFileSync, existsSync, readdirSync, lstatSync, realpathSync, statSync } from 'node:fs'
+import { closeSync, readFileSync, existsSync, fstatSync, openSync, readSync, readdirSync, lstatSync, realpathSync, statSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
 import { basename, dirname, isAbsolute, resolve, sep } from 'node:path'
@@ -12,6 +12,9 @@ import {
   listBoards, listBoardsWithBlockedRows, archiveBoard, unarchiveBoard, annotateBoardRow, snoozeBoardRow,
   markRowHandled, clearRowHandled, listActivity, listActivitySpans, listSourceLinks, defaultDbPath,
   closeProject, reopenProject, closedProjects, readSnapshotState, listIssueEntities, listIssueSnapshots,
+  listSessionMessages, sendSessionMessage, withdrawSessionMessage, validMessageId, validMessageText, MESSAGE_MAX_TEXT,
+  listLaunches, getLaunch, launchView, launchDriverAlive, isLaunchAsk, requestLaunchStop, closeLostLaunch, getLaunchAsk, handOffForTerminal, withdrawLaunchHandOff,
+  answerLaunchAsk, listLaunchFolders, requestLaunchInterrupt, requestLaunchPark,
 } from './store.js'
 import type { ExpectedAnswer, ResponseKind, SnapshotDomain, SnapshotReadState } from './store.js'
 import { groupItems } from './group.js'
@@ -77,11 +80,6 @@ export interface ViewerOpts {
   /** issue #294: how one runtime folder is measured, injected so a test can
    *  count the manifest reads and walks its cache exists to avoid. */
   runtimeMeasurer?: RuntimeMeasurer
-  /** Mesh M1 (#397): whether `mesh.json` turns the Agents view on, as the
-   *  viewer process's stat watch last read it (src/mesh-config.ts, started by
-   *  viewer-server.ts). Absent or false, /api/version is byte-identical to a
-   *  build without the mesh. */
-  meshAgentsView?: () => boolean
 }
 
 /** Split a fixed `darwin-arm64`/`darwin-x64` runtime key into platform/arch —
@@ -445,6 +443,21 @@ function runtimeRootStamp(runtimeRoot: string): [string | null, Array<[string, s
   return [entryStamp(runtimeRoot), installed]
 }
 
+// Issue #412: the driver pins under `<runtime root>/.pins/<id>/`. A pin added
+// or removed moves its folder's stamp, so Setup's list follows a driver
+// starting or stopping; a driver that crashed leaves its pin until a prune
+// sweeps it, and reads as used until then.
+function pinsStamp(runtimeRoot: string): [string | null, Array<[string, string | null]> | null] {
+  const pins = resolve(runtimeRoot, '.pins')
+  let ids: Array<[string, string | null]> | null
+  try {
+    ids = readdirSync(pins).sort().map((name) => [name, entryStamp(resolve(pins, name))])
+  } catch {
+    ids = null
+  }
+  return [entryStamp(pins), ids]
+}
+
 function releaseRuntimeKey(baked: BakedInfo, hostKey: string, runtimeRoot: string, appRoot: string): string {
   const payload = baked.runtimePayloads?.[hostKey]
   const source = payload && isContainedRelativePath(payload.path) ? resolve(appRoot, payload.path) : null
@@ -478,8 +491,6 @@ interface AgentVersion {
   runtimeInstalled: boolean | null
   updatable: boolean
   hosts: { claude: HostVersion; copilot: HostVersion }
-  /** Mesh M1 (#397): present only while mesh.json turns the Agents view on. */
-  mesh?: { agentsView: true }
 }
 
 type HostVersion = Pick<HostRegistration, 'kind' | 'version'>
@@ -639,6 +650,10 @@ export const SNAPSHOT_SOURCES = {
   links: ['source_links_by_head', 'items_links', 'boards_links', 'projects'],
   // buildIssueGraph over listIssueSnapshots, listIssueEntities and the links
   issues: ['issue_snapshots', 'source_links_by_head_issues', 'items_issues', 'boards_issues', 'board_rows_issues', 'projects'],
+  // listSessionMessages (#411)
+  messages: ['session_messages'],
+  // listLaunches (#412 step 3): launch facts only, no clock-derived state
+  launches: ['launches'],
 } as const satisfies Record<string, readonly SnapshotDomain[]>
 
 type SnapshotName = keyof typeof SNAPSHOT_SOURCES
@@ -663,6 +678,7 @@ function etagMatches(requested: string | undefined, etag: string): boolean {
 // Issue #373: how many lingering plans one read of /api/boards/archived/plans
 // may name; public/app.js reads the complete list for more.
 const MAX_LINGERING_PLANS = 50
+const LAUNCH_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const PLAN_ID = /^[A-Za-z0-9_-]{1,64}$/
 
 // The ids /api/boards/archived/plans names: 1 to MAX_LINGERING_PLANS plan ids,
@@ -671,6 +687,51 @@ function lingeringPlanIds(value: string | undefined): string[] | null {
   const ids = value?.split(',') ?? []
   if (!ids.length || ids.length > MAX_LINGERING_PLANS || !ids.every((id) => PLAN_ID.test(id))) return null
   return ids
+}
+
+const LAUNCH_EVENTS_MAX = 256 * 1024
+
+function launchEventsPath(db: Database.Database, id: string): string | null {
+  const name = db.name
+  return name && isAbsolute(name) ? resolve(dirname(name), 'launches', id, 'events.ndjson') : null
+}
+
+// Whole lines from `after`, at most 256 KiB, each parsed (an unreadable one is
+// skipped). `next` is where the next read starts. `more` only when this read
+// stopped at the cap: an unfinished last line (a driver that died mid-write)
+// is waited on at the page's own pace, never re-read at once in a loop.
+function readLaunchEvents(file: string | null, after: number): { events: unknown[]; next: number; more: boolean; rotated: boolean } {
+  const empty = { events: [], next: 0, more: false, rotated: false }
+  if (!file) return empty
+  let fd: number
+  try {
+    fd = openSync(file, 'r')
+  } catch {
+    return empty
+  }
+  try {
+    const size = fstatSync(fd).size
+    const rotated = after > size
+    const start = rotated ? 0 : after
+    const length = Math.min(LAUNCH_EVENTS_MAX, size - start)
+    const buffer = Buffer.alloc(Math.max(0, length))
+    const read = length > 0 ? readSync(fd, buffer, 0, length, start) : 0
+    const end = buffer.subarray(0, read).lastIndexOf(0x0a)
+    // no whole line yet; a line longer than one read is skipped, never waited on
+    const capped = read === LAUNCH_EVENTS_MAX
+    if (end < 0) return { events: [], next: capped ? start + read : start, more: capped, rotated }
+    const events: unknown[] = []
+    for (const line of buffer.subarray(0, end).toString('utf8').split('\n')) {
+      if (!line) continue
+      try {
+        events.push(JSON.parse(line))
+      } catch { /* a line this cannot read is skipped */ }
+    }
+    const next = start + end + 1
+    return { events, next, more: capped && next < size, rotated }
+  } finally {
+    closeSync(fd)
+  }
 }
 
 function conditionalSnapshot(
@@ -813,6 +874,7 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
     const key = JSON.stringify([
       referenceFiles(agentHome).map((file) => [entryStamp(file), targetStamp(file)]),
       runtimeRootStamp(runtimeRoot),
+      pinsStamp(runtimeRoot),
       current,
     ])
     const now = Date.now()
@@ -900,17 +962,14 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
 
   app.get('/api/activity', (c) => c.json(listActivity(db)))
 
-  // Read by the Live bar at page load, whenever its drawer opens and after a
-  // Setup install — never on the poll. Local reads only, no git, no network.
+  // Read by the viewer at page load, whenever the Agents home or a session panel
+  // opens and after a Setup install — never on the poll. Local reads only, no git, no network.
   app.get('/api/version', (c) => {
     const baked = readBakedInfo(bakedPath)
     const registered = agentHosts(baked)
     const hosts = { claude: hostVersion(registered.claude), copilot: hostVersion(registered.copilot) }
-    // Mesh M1 (#397, design §2.4b): the one key that tells the page the mesh
-    // is on, appended last and only while it is, so "off" keeps today's bytes.
-    const mesh = opts.meshAgentsView?.() === true ? { mesh: { agentsView: true as const } } : {}
     if (baked?.schema !== 2) {
-      return c.json({ current: AGENT_INBOX_VERSION, mode: 'dev', runtimeInstalled: null, updatable: false, hosts, ...mesh } satisfies AgentVersion)
+      return c.json({ current: AGENT_INBOX_VERSION, mode: 'dev', runtimeInstalled: null, updatable: false, hosts } satisfies AgentVersion)
     }
     const lookup = releaseRuntime(baked)
     return c.json({
@@ -919,7 +978,6 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
       runtimeInstalled: lookup?.runtime ? true : lookup?.source ? false : null,
       updatable: canUpdateAgents(baked, lookup),
       hosts,
-      ...mesh,
     } satisfies AgentVersion)
   })
 
@@ -971,12 +1029,105 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
   app.get('/api/issues', conditionalSnapshot(db, 'issues', () =>
     buildIssueGraph(listIssueSnapshots(db), issueKeySets(listIssueEntities(db), listSourceLinks(db)))))
 
+  // Issue #411: the human's messages to MCP sessions, open ones and the newest
+  // closed ones. Built from the database alone, so it is a retained
+  // representation with its own validator.
+  app.get('/api/messages', conditionalSnapshot(db, 'messages', () => listSessionMessages(db)))
+
+  // Issue #412 step 3: driven-session launches. The list is launch facts only
+  // (no prompt, no process ids), so it is a retained representation; whether a
+  // running launch's driver is alive is read fresh, per launch, from its lease.
+  // The page reads none of these unless the app's "Start sessions from Agent
+  // Inbox" switch is on (design §9).
+  app.get('/api/launches', conditionalSnapshot(db, 'launches', () => listLaunches(db)))
+  app.get('/api/launches/:id', (c) => {
+    c.header('Cache-Control', 'no-store')
+    const launch = getLaunch(db, c.req.param('id'))
+    if (!launch) return c.json({ ok: false, error: 'no such launch' }, 404)
+    const driver = launch.status !== 'running' ? null : launchDriverAlive(db, launch.id) ? 'running' : 'lost'
+    return c.json({ ...launchView(launch), driver })
+  })
+  app.get('/api/launches/:id/prompt', (c) => {
+    c.header('Cache-Control', 'no-store')
+    const launch = getLaunch(db, c.req.param('id'))
+    if (!launch) return c.json({ ok: false, error: 'no such launch' }, 404)
+    return c.json({ prompt: launch.prompt })
+  })
+
+  // Issue #412 step 3: what Electron main reads and writes for a launch, as it
+  // answers native notifications (it cannot load the store itself in a dev
+  // build). None of these starts anything or approves anything: a launch starts
+  // only from main after its native confirmation, and an approval counts only
+  // with main's signature, which the driver checks.
+  app.get('/api/launch-folders', (c) => {
+    c.header('Cache-Control', 'no-store')
+    return c.json(listLaunchFolders(db))
+  })
+  app.post('/api/launches/:id/stop', (c) => {
+    const id = c.req.param('id')
+    const status = LAUNCH_ID.test(id) ? requestLaunchStop(db, id) : null
+    return c.json(status ? { ok: true, status } : { ok: false })
+  })
+  app.post('/api/launches/:id/close', (c) => c.json(closeLostLaunch(db, c.req.param('id'))))
+  // Interrupt and send (§5.3): the page has sent the message; the driver
+  // cancels its running turn and sends it with the interrupt notice.
+  app.post('/api/launches/:id/interrupt', (c) => c.json({ ok: requestLaunchInterrupt(db, c.req.param('id')) }))
+  // Park now (§7): the driver parks at its next idle point, keeping the session
+  // to resume. Like Stop, the human's own capability over a running launch.
+  app.post('/api/launches/:id/park', (c) => c.json({ ok: requestLaunchPark(db, c.req.param('id')) }))
+  // Take over in Terminal (step 5, §3.5): Electron main hands the launch off (a
+  // parked one at once, a running one through its driver) and polls this until
+  // it is handed off, then opens Terminal on `copilot --resume=<session>` itself.
+  // Like Stop, the human's own capability; it starts nothing.
+  app.post('/api/launches/:id/hand-off', (c) => {
+    c.header('Cache-Control', 'no-store')
+    return c.json(handOffForTerminal(db, c.req.param('id')))
+  })
+  app.post('/api/launches/:id/hand-off/withdraw', (c) => c.json({ ok: withdrawLaunchHandOff(db, c.req.param('id')) }))
+  // The transcript panel (§3.6): the driver's event log from a byte offset, at
+  // most 256 KiB of whole lines a read, read only while the panel is open. An
+  // offset past the end means the log rotated: it starts again from 0.
+  app.get('/api/launches/:id/events', (c) => {
+    c.header('Cache-Control', 'no-store')
+    const launch = getLaunch(db, c.req.param('id'))
+    if (!launch) return c.json({ ok: false, error: 'no such launch' }, 404)
+    const raw = c.req.query('after') ?? '0'
+    const after = /^\d{1,15}$/.test(raw) ? Number(raw) : null
+    if (after === null) return c.json({ ok: false, error: 'after must be a byte offset' }, 400)
+    return c.json(readLaunchEvents(launchEventsPath(db, launch.id), after))
+  })
+  app.get('/api/launch-asks/:id', (c) => {
+    c.header('Cache-Control', 'no-store')
+    const ask = getLaunchAsk(db, c.req.param('id'))
+    return ask ? c.json(ask) : c.json({ ok: false, error: 'no such ask' }, 404)
+  })
+  // Exactly { revision, optionId, signature }: a non-negative integer, an option
+  // id and 64 lowercase hex characters. Anything else is a 400 before any store
+  // call; the driver still verifies the signature itself.
+  app.post('/api/launch-asks/:id/answer', async (c) => {
+    const body = await c.req.json().catch(() => null) as unknown
+    const fields = body !== null && typeof body === 'object' && !Array.isArray(body) ? body as Record<string, unknown> : null
+    const { revision, optionId, signature } = fields ?? {}
+    if (!fields || Object.keys(fields).sort().join() !== 'optionId,revision,signature'
+      || !Number.isSafeInteger(revision) || (revision as number) < 0
+      || typeof optionId !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(optionId)
+      || typeof signature !== 'string' || !/^[0-9a-f]{64}$/.test(signature)) {
+      return c.json({ ok: false, error: 'the body must be exactly { revision, optionId, signature }' }, 400)
+    }
+    return c.json(answerLaunchAsk(db, c.req.param('id'), { revision: revision as number, optionId, signature }))
+  })
+
+  // Issue #412 step 3: closing an app launch's ask here would leave its driver
+  // waiting on a request nobody can answer, so these refuse it like the reply
+  // route (a store-level refusal, 200); the driver settles its own asks.
   app.post('/api/items/:id/resolve', (c) => {
+    if (isLaunchAsk(db, c.req.param('id'))) return c.json({ ok: false, reason: 'launch_ask' })
     resolveItem(db, c.req.param('id'))
     return c.json({ ok: true })
   })
 
   app.post('/api/items/:id/dismiss', (c) => {
+    if (isLaunchAsk(db, c.req.param('id'))) return c.json({ ok: false, reason: 'launch_ask' })
     dismissItem(db, c.req.param('id'))
     return c.json({ ok: true })
   })
@@ -984,6 +1135,7 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
   app.post('/api/items/:id/annotate', async (c) => {
     const body = await c.req.json<{ text?: unknown }>().catch(() => null)
     if (typeof body?.text !== 'string') return c.json({ ok: false, error: 'text must be a string' }, 400)
+    if (isLaunchAsk(db, c.req.param('id'))) return c.json({ ok: false, reason: 'launch_ask' })
     const ok = annotateItem(db, c.req.param('id'), body.text)
     return c.json({ ok })
   })
@@ -1035,6 +1187,11 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
     )) {
       return c.json({ ok: false, error: 'invalid reply intent metadata' }, 400)
     }
+    // Issue #412 step 3: an app launch's ask is answered only by Electron main's
+    // signed answer (the driver ignores any other), so this route refuses it, a
+    // store-level refusal like any other (200), rather than record an answer
+    // that nothing will act on.
+    if (isLaunchAsk(db, c.req.param('id'))) return c.json({ ok: false, reason: 'launch_ask' })
     // A refusal is ok:false (an already-picked-up reply cannot be silently
     // blanked out, src/store.ts). Issue #322 adds, additively, whether this
     // request wrote anything (an exact replay is answered from its record) and
@@ -1344,7 +1501,8 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
   app.post('/api/projects/close', async (c) => {
     const project = validProject(await c.req.json().catch(() => null))
     if (project === null) return c.json({ ok: false, error: 'project required' }, 400)
-    closeProject(db, project)
+    // #412: a reserved project (`@sessions`, `@mesh`) holds approvals; closing it is refused
+    if (!closeProject(db, project)) return c.json({ ok: false, reason: 'reserved_project' })
     return c.json({ ok: true })
   })
 
@@ -1353,6 +1511,30 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
     if (project === null) return c.json({ ok: false, error: 'project required' }, 400)
     reopenProject(db, project)
     return c.json({ ok: true })
+  })
+
+  // Issue #411: send a message to one listed MCP session. The id is generated
+  // by the page, so a retry of an unconfirmed send replays exactly and never
+  // adds a second message. Like every unsafe request, it needs a trusted
+  // Origin (src/viewer-network.ts).
+  app.post('/api/sessions/:session/messages', async (c) => {
+    const session = c.req.param('session')
+    const body = await c.req.json<{ id?: unknown; text?: unknown }>().catch(() => null)
+    if (!session || session.length > 200) return c.json({ ok: false, error: 'session required' }, 400)
+    if (!validMessageId(body?.id)) return c.json({ ok: false, error: 'id must be a lowercase UUID' }, 400)
+    if (!validMessageText(body?.text)) {
+      return c.json({ ok: false, error: `text must be a non-blank string of at most ${MESSAGE_MAX_TEXT} characters` }, 400)
+    }
+    return c.json(sendSessionMessage(db, { id: body.id, session, text: body.text }))
+  })
+
+  app.post('/api/messages/:id/withdraw', async (c) => {
+    const body = await c.req.json<{ revision?: unknown }>().catch(() => null)
+    const revision = body?.revision
+    if (!Number.isSafeInteger(revision) || (revision as number) < 1) {
+      return c.json({ ok: false, error: 'revision must be a positive integer' }, 400)
+    }
+    return c.json(withdrawSessionMessage(db, c.req.param('id'), revision as number))
   })
 
   return app

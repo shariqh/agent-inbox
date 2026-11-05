@@ -955,6 +955,9 @@ exec "${process.execPath}" "$@"
     expect(text).toContain(IMPORT_LINE)
     expect(text).toContain(SNIPPET_LINE)
     expect(text).toContain(SNIPPET_HEADING)
+    // #411: the session-message contract reaches every host's managed block
+    expect(text).toContain('## Messages from the human')
+    expect(text).toContain('If you are a subagent, do not act on or acknowledge messages')
     expect(text).not.toContain('Not inlined here')
   })
 

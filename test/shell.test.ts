@@ -65,16 +65,12 @@ describe('shell markup', () => {
     ]) expect(html, host).toContain(host)
   })
 
-  it('has the always-visible Live footer strip and its collapsed drawer (spec §16)', () => {
-    expect(html).toContain('id="liveBar"')
-    expect(html).toMatch(/id="liveStrip"[^>]*aria-expanded="false"/)
-    expect(html).toMatch(/id="liveStrip"[^>]*aria-controls="liveDrawer"/)
-    expect(html).toMatch(/id="liveDrawer"[^>]*hidden/)
-    expect(html).toMatch(/id="livePin"[^>]*aria-pressed="false"/)
-    expect(html).toContain('Pin Live sessions open')
-    expect(html).toContain('class="live-list"')
-    expect(html).toContain('Checking connections...')
-    expect(html).not.toContain('no agents running')
+  it('has the sidebar Sessions line where the Live footer strip was (spec §16, #454)', () => {
+    expect(html).not.toMatch(/id="live(Bar|Strip|Drawer|Pin)"/)
+    expect(html).toMatch(/<button id="sessionsIndicator"[^>]*type="button"/)
+    expect(html).toContain('<span class="si-k">Sessions</span><span class="si-v">Checking sessions…</span>')
+    // above the gear, in the sidebar
+    expect(html.indexOf('id="sessionsIndicator"')).toBeLessThan(html.indexOf('id="gear"'))
   })
 
   it('leaves the pieces later tasks build in JS out of the static markup', () => {
@@ -152,32 +148,24 @@ describe('shell script', () => {
   })
 })
 
-// The always-visible footer strip is a single-glance ambient summary — the
-// same kind of object as a dock badge — not a triage surface, so rail/agent
-// filtering and search must never scope it (§7's filter-blindness invariant,
-// generalized). renderLive(live) — the DRAWER's expanded list — stays
-// filtered on purpose: it's a list you deliberately open, so scoping it is
-// consistent with every other tab. Only the collapsed strip must read global
-// activity, or "no agents running" becomes a lie the moment the human filters
-// to a project nothing is currently running in. This pins the SOURCE TEXT —
-// which ARGUMENT the call site passes — because that is the actual invariant
-// and no runtime assertion can see it. The behavioural half now runs for real
-// in test/dom/boot.test.ts ("a rail filter narrows the LIST, never the GLOBAL
-// signal"); keep both. (There IS a jsdom harness since test/dom/harness.ts —
-// the older "no jsdom in this repo" note here was correct at the time and is
-// no longer true.)
-describe('Live footer strip is global, never rail-scoped (spec §16 / §7 generalized)', () => {
-  it('calls renderLiveBar with lastData.activity, not the filtered `live` local', () => {
-    const line = js.split('\n').find((l) => l.includes('renderLiveBar('))
-    expect(line, 'no renderLiveBar( call found in app.js').toBeTruthy()
-    expect(line, line).toMatch(/renderLiveBar\(\s*lastData\.activity\b/)
-    expect(line, line).not.toMatch(/renderLiveBar\(\s*live\s*\)/)
+// The sidebar's Sessions line (#454, once the Live footer strip) is a
+// single-glance ambient summary — the same kind of object as a dock badge —
+// not a triage surface, so rail/agent filtering and search must never scope it
+// (§7's filter-blindness invariant, generalized), or "No sessions" becomes a lie
+// the moment the human filters to a project nothing is running in. The Agents
+// home, a list you deliberately read, follows the lens like every other tab.
+// This pins the SOURCE TEXT — which ARGUMENT the call site passes — because
+// that is the actual invariant; the behavioural half runs in test/dom.
+describe('the Sessions line is global, never rail-scoped (spec §16 / §7 generalized)', () => {
+  it('calls renderSessionsIndicator with lastData.activity, never the lens', () => {
+    const calls = js.match(/renderSessionsIndicator\([^)]*\)/g) ?? []
+    expect(calls.filter((call) => !call.startsWith('renderSessionsIndicator(activity')), 'one call site').toEqual(['renderSessionsIndicator(lastData.activity)'])
   })
 
-  it('keeps renderLive on the filtered `live` local — the drawer stays rail-scoped', () => {
-    const line = js.split('\n').find((l) => l.includes('renderLive('))
-    expect(line, 'no renderLive( call found in app.js').toBeTruthy()
-    expect(line, line).toMatch(/renderLive\(\s*live\s*\)/)
+  it('reads the Agents home under the rail lens', () => {
+    const line = js.split('\n').find((l) => l.includes('agentsHome.paint(host'))
+    expect(line, 'no agentsHome.paint( call found in app.js').toBeTruthy()
+    expect(js).toMatch(/activity: liveInLens\(\)/)
   })
 })
 
@@ -252,12 +240,12 @@ describe('closed projects (issue #32)', () => {
     expect(body.indexOf('renderRail()')).toBeLessThan(body.indexOf('withoutClosed(lastData)'))
   })
 
-  it('the Live footer strip and the drawer stay global — presence is not attention (§16)', () => {
+  it('the Sessions line stays global — presence is not attention (§16, #454)', () => {
     const body = fn('function paintAmbient()', '\nfunction paintEditableSurfaces(')
-    expect(body).toMatch(/renderLiveBar\(\s*lastData\.activity\b/)
-    // pillLive (the drawer's source) is filtered by project/agent only, never by closure
-    expect(body).toMatch(/const pillLive = \(lastData\.activity/)
-    expect(body, 'the Live drawer must not be closure-scoped').not.toMatch(/pillLive[\s\S]{0,120}closedSet\(/)
+    expect(body).toMatch(/renderSessionsIndicator\(\s*lastData\.activity\b/)
+    // the sessions the lens shows are filtered by project/agent only, never by closure
+    const lens = fn('function liveInLens()', '\n}')
+    expect(lens, 'the Agents home must not be closure-scoped').not.toMatch(/closed/i)
   })
 
   it('renderRail splits open from closed and builds the fold from the pure rail helpers', () => {
@@ -492,12 +480,15 @@ describe('#38 · the poll keeps its gate, the human bypasses it', () => {
     expect(body).toMatch(/if \(pressHeld\([^)]*\)\)[\s\S]*const frame = paintAmbient\(\)[\s\S]*dashboardInteractionActive\(\)[\s\S]*shouldDeferRender\(/)
 
     const ambient = sourceFn('function paintAmbient()', '\nfunction paintEditableSurfaces(')
-    for (const call of ['applyBadge()', 'renderRail()', 'renderLiveBar(', 'setCount(']) {
+    // #411, #454: the Dashboard (its session panel holds the composer) is ambient
+    // too, so a composer's status moves under an unrelated draft
+    for (const call of ['applyBadge()', 'renderRail()', 'renderSessionsIndicator(', 'renderDashboardAmbient(', 'setCount(']) {
       expect(ambient, `${call} must stay outside the draft gate`).toContain(call)
     }
 
     const editable = sourceFn('function paintEditableSurfaces(', '\nfunction render(')
-    for (const call of ['renderLive(', 'renderNeedsYou(', 'renderGroups(', 'renderDone(', 'renderBoards(']) {
+    expect(editable).not.toContain('renderDashboardAmbient(')
+    for (const call of ['renderNeedsYou(', 'renderGroups(', 'renderDone(', 'renderBoards(']) {
       expect(editable, `${call} must stay protected by the draft gate`).toContain(call)
     }
   })

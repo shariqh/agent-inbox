@@ -82,6 +82,10 @@ describe('the link bridge (issue #300)', () => {
       [{ ok: true, action: 'revealed', reason: 'type' }, { ok: true, action: 'revealed', reason: 'type' }],
       [{ ok: true, action: 'revealed', reason: 'requested' }, { ok: true, action: 'revealed', reason: 'requested' }],
       [{ ok: false, reason: 'missing' }, { ok: false, reason: 'missing' }],
+      // a missing file's nearest folder: its name only, never a path or anything long
+      [{ ok: true, action: 'revealed', reason: 'missing', folder: 'docs', path: '/private/x' }, { ok: true, action: 'revealed', reason: 'missing', folder: 'docs' }],
+      [{ ok: true, action: 'revealed', reason: 'missing', folder: 'x'.repeat(256) }, { ok: true, action: 'revealed', reason: 'missing', folder: '' }],
+      [{ ok: true, action: 'revealed', reason: 'missing', folder: 7 }, { ok: true, action: 'revealed', reason: 'missing', folder: '' }],
       [{ ok: false, reason: 'app-refused' }, { ok: false, reason: 'app-refused' }],
       [{ ok: false, reason: 'unowned' }, { ok: false, reason: 'unowned' }],
       [{ ok: true, action: 'revealed', reason: '<script>' }, { ok: false, reason: 'failed' }],
@@ -261,7 +265,7 @@ describe('main opens links only through electron/link-open.cjs (issue #300)', ()
     expect(main).not.toContain('shell.openExternal(url)')
     expect([...main.matchAll(/shell\.openExternal\(([^)]*)\)/g)].map((m) => m[1])).toEqual(['releaseUrl'])
     expect(main).toMatch(/setWindowOpenHandler\(\(\{ url \}\) => \{\s*openWebLink\(url, shell, \{ readRules: linkRules, \.\.\.linkOpening \}\)\s*return \{ action: 'deny' \}/)
-    expect(main).toMatch(/'will-navigate', \(e, url\) => \{\s*if \(isViewerUrl\(url, URL_BASE\)\) return\s*e\.preventDefault\(\)\s*openWebLink\(url, shell, \{ readRules: linkRules, \.\.\.linkOpening \}\)/)
+    expect(main).toMatch(/'will-navigate', \(e, url\) => \{\s*if \(isViewerUrl\(url, URL_BASE\)\) return\s*e\.preventDefault\(\)\s*installBinding\?\.navigationPrevented\(url\)\s*openWebLink\(url, shell, \{ readRules: linkRules, \.\.\.linkOpening \}\)/)
   })
 
   it('takes an app only from its own native picker, limited to .app bundles, behind the same sender check and grant', () => {
@@ -280,7 +284,13 @@ describe('main opens links only through electron/link-open.cjs (issue #300)', ()
     ])
     // the only call that can store an app is chooseApp, which asks the picker itself
     expect(settings).toContain("(settings, ruleId) => settings.chooseApp(ruleId))")
-    expect(main.match(/dialog\.showOpenDialog\(/g)).toHaveLength(2)
+    // and the only other pickers are driven sessions' folder choosers (#412 step 3, #432), which pick folders, never apps
+    expect(main.match(/dialog\.showOpenDialog\(/g)).toHaveLength(6)
+    const folders = main.slice(main.indexOf('chooseFolder: async () => {'), main.indexOf('driverRuntime: launchDriverRuntime,'))
+    expect(folders).toContain("properties: ['openDirectory'] }")
+    expect(folders).toContain("properties: ['openDirectory', 'createDirectory'] }")
+    expect(folders).not.toMatch(/openFile|\.app\b/)
+    expect(folders.match(/dialog\.showOpenDialog\(/g)).toHaveLength(4)
   })
 
   it('never opens a file any other way', () => {

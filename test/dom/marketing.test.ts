@@ -202,7 +202,7 @@ describe('local marketing page', () => {
   it('has a complete, self-contained light-first page with no live inbox connection', () => {
     const { html } = boot({ dark: true })
     expect(document.title).toContain('Agent Inbox')
-    expect(document.querySelector('.release-line .version')?.textContent).toBe('v2.1.0')
+    expect(document.querySelector('.release-line .version')?.textContent).toBe('v2.4.0')
     expect(document.documentElement.dataset.theme).toBe('light')
     expect(document.querySelectorAll('h1')).toHaveLength(1)
     expect(document.querySelector('h1')?.textContent).toContain('every terminal.')
@@ -613,6 +613,32 @@ describe('local marketing page', () => {
     expect(plans).toContain('through your signed-in GitHub CLI')
     expect(plans).not.toContain('Boards')
 
+    const aside = (title: string) => [...document.querySelectorAll('.feature-aside')].find(
+      item => item.querySelector('h3')?.textContent === title,
+    )?.textContent ?? ''
+    const agents = aside('See what each agent reports.')
+    expect(agents).toContain('The Agents view gives each session a card')
+    expect(agents).toContain('answer, snooze, or pin a request in its panel')
+    expect(agents).toContain('a request from a session that has ended gets its own card')
+    expect(agents).not.toContain('lane')
+    expect(agents).not.toContain('rail')
+    const messages = aside('Message a running session.')
+    expect(messages).toContain('Before you send, Agent Inbox says how the message will arrive.')
+    expect(messages).toContain('channels are a Claude Code research preview that needs a claude.ai or Console login.')
+    expect(messages).toContain('Other sessions see it when they next check Agent Inbox.')
+    expect(messages).toContain('Not delivered')
+
+    const launcher = aside('Start sessions from Agent Inbox.')
+    expect(launcher).toContain('In the macOS app, choose New session')
+    expect(launcher).toContain('Allow once or Deny')
+    expect(launcher).toContain('terminal driver')
+    expect(launcher).toContain('The launcher is off until you turn it on in Settings.')
+    expect(launcher).toContain('from its card in the Agents view')
+    expect(launcher).toContain('its own git worktree')
+    expect(launcher).not.toContain('Live')
+    expect(messages).toContain('from its panel in the Agents view')
+    expect(messages).not.toContain('Live sessions')
+
     const desktop = document.querySelector('.desktop-install')?.textContent ?? ''
     expect(desktop).toContain('In the macOS app and the Linux AppImage, Settings → Updates can download a new release')
     expect(desktop).toContain('check it against the signed release manifest')
@@ -625,7 +651,11 @@ describe('local marketing page', () => {
     const pickup = faq('How does an agent receive my answer?')
     expect(pickup).toContain(`On a Copilot CLI request, choose "I'll take a while"`)
     expect(pickup).toContain('stop waiting, or to wait quietly for a few hours or until tomorrow')
-    expect(pickup).toContain('If it stops, message it after you answer.')
+    expect(pickup).toContain('If it stops, prompt it in its terminal after you answer.')
+    expect(pickup).not.toContain('If it stops, message it after you answer.')
+    // Session messages (#411): Copilot reads at its next check; the Claude channels push is labelled a preview.
+    expect(pickup).toContain('A Copilot CLI session sees it when it next checks Agent Inbox')
+    expect(pickup).toContain('a research preview that needs a claude.ai or Console login')
     expect(pickup).toContain('The request stays in your inbox.')
     const privacy = faq('Does my inbox leave my machine?')
     expect(privacy).toContain('Optional update checks and downloads contact GitHub')

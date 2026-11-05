@@ -19,7 +19,7 @@ afterEach(() => { db?.close(); db = null; vi.unstubAllGlobals() })
 const AGENT = { project: 'alpha', stream: 'main', agent: 'copilot' } as const
 const POLL_READS = [
   '/api/activity', '/api/activity/history', '/api/boards', '/api/boards/archived/summary',
-  '/api/issues', '/api/items', '/api/links', '/api/projects/closed',
+  '/api/issues', '/api/items', '/api/links', '/api/messages', '/api/projects/closed',
 ]
 const route = (input: RequestInfo | URL): string => String(input).split('?')[0]!
 const isGet = (init: RequestInit | undefined): boolean => (init?.method ?? 'GET') === 'GET'

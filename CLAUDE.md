@@ -14,8 +14,8 @@ server). See [`README.md`](README.md) for the full picture and
 tracking boards).
 
 MCP tools: `flag`, `pending`, `answer`, `resolve`, `register`, `whoami` (items/scope),
-`board_upsert`, `board_row`, `board_advance`, `board_get`, `board_archive` (boards) and `status` (live
-presence) — all defined in `src/mcp.ts`.
+`board_upsert`, `board_row`, `board_advance`, `board_get`, `board_archive` (boards), `ack_message`
+(session messages, #411) and `status` (live presence) — all defined in `src/mcp.ts`.
 
 ## Commands
 
@@ -27,13 +27,13 @@ npm run typecheck   # tsc --noEmit (strict; noUncheckedIndexedAccess)
 npm run build       # tsc -p tsconfig.build.json → dist/ (entry: dist/mcp-server.js)
 npm run mcp         # run the MCP stdio server via tsx (local iteration)
 npm run view        # run the viewer on http://127.0.0.1:4319 via tsx
-npm run electron    # Electron wrapper in development (run the build first)
+npm run electron    # dev Electron app on port 4392 (build first)
 npm run package:app # build the self-contained macOS app
 npm run install:agents [-- --apply]    # DRY RUN of MCP + host-instructions setup
 npm run install:hooks           # DRY RUN of the opt-in backstop hooks installer (docs/hooks.md)
 npm run install:hooks -- --apply    # …and actually write ~/.claude/settings.json
-npm run meshctl -- status                         # Mesh M1 (#397): what mesh.json turns on
-npm run meshctl -- enable --agents-view [--apply] # DRY RUN unless --apply; disable likewise
+npm run meshctl -- status                         # Mesh (#397): what mesh.json turns on
+npm run meshctl -- disable [--apply]              # DRY RUN unless --apply
 npx vitest run test/mcp.integration.test.ts   # single file
 npx vitest run test/store.test.ts -t "test name"  # one named test
 npx vitest run test/dom/                      # the jsdom viewer tests only
@@ -80,6 +80,11 @@ One line each; the detail, the reasons and the regressions behind them are in th
 - Human annotations, handled marks and delivery stamps are sacred: upserts never reset them. → delivery-and-responses
 - Delivery is not acknowledgement: a blocked row is re-delivered until an agent flips its status (#37). → delivery-and-responses
 - Every row action and mark-seen write is version-pinned; resolve needs `expected_response_revision`. → delivery-and-responses
+- Session messages reach only their own session (no tool takes a session id) and come back until `ack_message` (#411). → delivery-and-responses
+- The message composer is presence: kept nodes, a reused id per text, never attention (#411). → viewer-frontend
+- The Claude Code channel push (#411, research preview) is declared to Claude Code clients only and carries a message id, never text. → mcp-server
+- `@sessions` and `@mesh` are reserved: no agent, hook or project-scoped read reaches them, and they
+  never close (#412). → mcp-server, hooks-and-watcher, store-and-snapshots
 - The inbox answer always wins over a chat-recorded one; never last-write-wins. → delivery-and-responses
 - `updated_at` means content changed; delivery stamps, moves, pins and watch stops never bump it. → delivery-and-responses
 - Omitting a row field keeps it, `''` clears it; a ROW omitted from `board_upsert` is deleted. → delivery-and-responses
@@ -101,7 +106,8 @@ One line each; the detail, the reasons and the regressions behind them are in th
 - Never edit `test/fixtures/shipped-updaters/`; never add a key to `update-preferences.json`. → updates
 - Every shipped `node_modules` is pruned before it is tested, hashed or signed (#291); Electron
   locales are English-only (#292). → packaging-and-release
-- Mesh is opt-in: off means off (#397). → mesh
+- Mesh is opt-in: off means off from M2 on; the Agents view is always on (#454). → mesh
+- The driver approves only at the generation the human saw, and an app launch only on main's signed reply; no prompt starts with `/` (#412). → driven-sessions
 
 ## Conventions
 
@@ -128,11 +134,11 @@ read or edit a matching file. Read it yourself before changing these areas:
 | `src/store.ts`, `src/viewer.ts` snapshots, `/api/*` caching, history paging | `store-and-snapshots.md` |
 | items, boards, `pending`, `answer`, `resolve`, revisions, reporting snippet | `delivery-and-responses.md` |
 | `public/attention.js`, badges, snooze, pin, watch stop, closed projects | `attention-and-later.md` |
-| activity, presence, call trace, Live, session builds | `activity-and-live.md` |
+| activity, presence, call trace, session builds | `activity-and-live.md` |
 | `src/mcp.ts`, `scope.ts`, `infer.ts`, `shape.ts` | `mcp-server.md` |
 | `src/viewer-network.ts` | `viewer-network.md` |
 | `public/app.js`, poll, render, drafts, focus, scroll, selection | `viewer-frontend.md` |
-| Dashboard, lanes, ribbon, motion, layout, search, `style.css` | `viewer-dashboard-and-shell.md` |
+| Dashboard, Agents home, ribbon, motion, layout, search, `style.css` | `viewer-dashboard-and-shell.md` |
 | links in agent text, Settings → Links, repo-relative paths | `links.md` |
 | `gh` pollers, issue snapshots, pins, `waits_on`, PR links | `github-and-issues.md` |
 | breadcrumbs, dependency chips, Plan flow, grouping | `plans-issue-ui.md` |
@@ -142,6 +148,7 @@ read or edit a matching file. Read it yourself before changing these areas:
 | update manifests, keys, download, install | `updates.md` |
 | packaging, runtime staging, pruning, locales, MSI, workflows | `packaging-and-release.md` |
 | mesh | `mesh.md` |
+| `agent-inbox-driver`, ACP | `driven-sessions.md` |
 | tests and the DOM harness | `testing.md` |
 | TS, build, dead exports, hygiene | `conventions.md` |
 

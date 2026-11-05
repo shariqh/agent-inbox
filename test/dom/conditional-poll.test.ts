@@ -153,10 +153,10 @@ describe('conditional snapshot polling', () => {
       interceptFetch: async (input, init, next) => {
         // History revalidates its own content-hashed representation (#185); the
         // time-driven half of that is pinned in conditional-history.test.ts. The
-        // sub-issue graph (#103) and the cached PR state (#288) are store-token
-        // snapshots of their own.
+        // sub-issue graph (#103), the cached PR state (#288) and the session
+        // messages (#411) are store-token snapshots of their own.
         const path = String(input).split('?')[0]!
-        if (!SNAPSHOTS.has(path) && !['/api/activity/history', '/api/issues', '/api/links'].includes(path)) {
+        if (!SNAPSHOTS.has(path) && !['/api/activity/history', '/api/issues', '/api/links', '/api/messages'].includes(path)) {
           freshHeaders.push(new Headers(init?.headers).get('if-none-match'))
         }
         return proxy(input, init, next)
@@ -170,7 +170,8 @@ describe('conditional snapshot polling', () => {
     expect(reads.slice(-3).every((entry) => entry.status === 304)).toBe(true)
     expect(badgeCount()).toBe(1)
     expect(row(id)?.closest('details')).toBeNull()
-    expect(document.getElementById('liveStripLabel')?.textContent).toContain('1 connected · no task reported')
+    expect(document.querySelector('#sessionsIndicator .si-v')?.textContent).toBe('1 connected')
+    expect(document.querySelector('#sessionsIndicator .si-s')?.textContent).toBe('all quiet')
     expect(freshHeaders.every((header) => header === null)).toBe(true)
   })
 

@@ -34,6 +34,7 @@ const CONFIG_CLI = join(REPO, 'scripts', 'runtime-config.mjs')
 const STAGE_CLI = join(REPO, 'scripts', 'stage-runtime.mjs')
 const SQLITE_CHECK_CLI = join(REPO, 'scripts', 'runtime-sqlite-check.mjs')
 const SETUP_FILESYSTEM = join(REPO, 'scripts', 'setup-filesystem.cjs')
+const RUNTIME_PINS = join(REPO, 'scripts', 'runtime-pins.mjs')
 const FAKE_NODE_FIXTURE = join(REPO, 'test', 'fixtures', 'runtime', 'fake-node.sh')
 const FAKE_XATTR_FAIL_FIXTURE = join(REPO, 'test', 'fixtures', 'runtime', 'fake-xattr-fail.sh')
 const FAKE_XATTR_RECORD_FIXTURE = join(REPO, 'test', 'fixtures', 'runtime', 'fake-xattr-record.sh')
@@ -75,6 +76,7 @@ function committedFailureCli(): string {
   const root = tmp('committed-runtime-cli-')
   const cli = join(root, 'runtime-payload.mjs')
   copyFileSync(PAYLOAD_CLI, cli)
+  copyFileSync(RUNTIME_PINS, join(root, 'runtime-pins.mjs'))
   writeFileSync(join(root, 'setup-filesystem.cjs'), `
 const original = require(${JSON.stringify(SETUP_FILESYSTEM)})
 module.exports = {
@@ -1469,7 +1471,7 @@ describe('runtime-config hooks: packaged Claude Code hook-settings transformatio
   interface HookGroup { matcher?: string; hooks: HookEntry[] }
   interface HooksSettings { hooks?: Record<string, HookGroup[]>; [key: string]: unknown }
 
-  it('installs the full six-subcommand block into an empty/missing settings file', () => {
+  it('installs the full seven-subcommand block into an empty/missing settings file', () => {
     const { runtimeRoot, nodeBin, entry } = installedHookRuntime()
     const settings = join(tmp('hooks-fresh-'), 'settings.json')
 
@@ -1479,7 +1481,7 @@ describe('runtime-config hooks: packaged Claude Code hook-settings transformatio
 
     expect(existsSync(settings)).toBe(false) // the command never writes --settings itself
     const events = result.hooks!
-    expect(Object.keys(events).sort()).toEqual(['Notification', 'SessionEnd', 'SessionStart', 'Stop', 'UserPromptSubmit'])
+    expect(Object.keys(events).sort()).toEqual(['Notification', 'PostToolUse', 'PreToolUse', 'SessionEnd', 'SessionStart', 'Stop', 'UserPromptSubmit'])
     expect(events.SessionStart![0]!.matcher).toBe('startup|resume')
     expect(events.Notification![0]!.hooks[0]!.args).toEqual([entry, 'notification'])
     expect(events.Notification![0]!.hooks[0]!.command).toBe(nodeBin)
@@ -1577,7 +1579,7 @@ describe('runtime-config hooks: packaged Claude Code hook-settings transformatio
 
   it('--uninstall on a settings file with no agent-inbox entries at all is a harmless no-op', () => {
     const settings = join(tmp('hooks-uninstall-noop-'), 'settings.json')
-    const untouched: HooksSettings = { hooks: { PostToolUse: [{ hooks: [{ type: 'command', command: 'echo', args: ['hi'], timeout: 5 } as unknown as HookEntry] }] } }
+    const untouched: HooksSettings = { hooks: { PreCompact: [{ hooks: [{ type: 'command', command: 'echo', args: ['hi'], timeout: 5 } as unknown as HookEntry] }] } }
     writeFileSync(settings, JSON.stringify(untouched))
 
     const result = runOk(CONFIG_CLI, ['hooks', '--settings', settings, '--entry', '/wherever/hook-cli.js', '--uninstall']) as HooksSettings
@@ -1661,7 +1663,7 @@ describe('runtime-config hooks: packaged Claude Code hook-settings transformatio
     const { runtimeRoot, nodeBin, entry } = installedHookRuntime()
     const checkout = checkoutHookEntry()
     const settings = join(tmp('hooks-checkout-set-'), 'settings.json')
-    writeFileSync(settings, JSON.stringify({ hooks: { ...threeHooks(process.execPath, checkout.entry), PostToolUse: [{ hooks: [unrelated] }] } }))
+    writeFileSync(settings, JSON.stringify({ hooks: { ...threeHooks(process.execPath, checkout.entry), PreCompact: [{ hooks: [unrelated] }] } }))
     const args = ['hooks', '--settings', settings, '--node', nodeBin, '--entry', entry, '--runtime-root', runtimeRoot, '--installer', INSTALLER]
 
     const refused = runFail(CONFIG_CLI, args)
@@ -1678,7 +1680,7 @@ describe('runtime-config hooks: packaged Claude Code hook-settings transformatio
     expect(replaced.stderr).toContain(`replacing 3 hooks of the source checkout at ${checkout.root}`)
     const result = JSON.parse(replaced.stdout) as HooksSettings
     expect(JSON.stringify(result)).not.toContain(checkout.entry)
-    expect(result.hooks!.PostToolUse).toEqual([{ hooks: [unrelated] }])
+    expect(result.hooks!.PreCompact).toEqual([{ hooks: [unrelated] }])
     expect(result.hooks!.Stop).toHaveLength(1)
     expect(result.hooks!.Stop![0]!.hooks.map((h) => [h.command, ...h.args])).toEqual([[nodeBin, entry, 'stop'], [nodeBin, entry, 'watch']])
   })
@@ -1708,7 +1710,7 @@ describe('runtime-config hooks: packaged Claude Code hook-settings transformatio
     const { runtimeRoot, nodeBin, entry } = installedHookRuntime()
     const gone = join(tmp('hooks-dead-'), 'moved-checkout')
     const settings = join(tmp('hooks-dead-set-'), 'settings.json')
-    writeFileSync(settings, JSON.stringify({ hooks: { ...threeHooks(process.execPath, join(gone, 'dist', 'hook-cli.js')), PostToolUse: [{ hooks: [unrelated] }] } }))
+    writeFileSync(settings, JSON.stringify({ hooks: { ...threeHooks(process.execPath, join(gone, 'dist', 'hook-cli.js')), PreCompact: [{ hooks: [unrelated] }] } }))
     const args = ['hooks', '--settings', settings, '--node', nodeBin, '--entry', entry, '--runtime-root', runtimeRoot, '--installer', INSTALLER]
 
     const refused = runFail(CONFIG_CLI, args)
@@ -1720,7 +1722,7 @@ describe('runtime-config hooks: packaged Claude Code hook-settings transformatio
     expect(replaced.status, replaced.stderr).toBe(0)
     const result = JSON.parse(replaced.stdout) as HooksSettings
     expect(JSON.stringify(result)).not.toContain(gone)
-    expect(result.hooks!.PostToolUse).toEqual([{ hooks: [unrelated] }])
+    expect(result.hooks!.PreCompact).toEqual([{ hooks: [unrelated] }])
     expect(result.hooks!.Stop![0]!.hooks.map((h) => [h.command, ...h.args])).toEqual([[nodeBin, entry, 'stop'], [nodeBin, entry, 'watch']])
   })
 
@@ -1739,7 +1741,7 @@ describe('runtime-config hooks: packaged Claude Code hook-settings transformatio
     expect(result.hooks!.Notification![0]).toEqual(theirs.Notification![0])
     expect(result.hooks!.Stop![0]).toEqual(theirs.Stop![0])
     const ours = Object.values(result.hooks!).flatMap((groups) => groups.flatMap((g) => g.hooks)).filter((h) => h.args[0] === entry)
-    expect(ours.map((h) => h.args[1]).sort()).toEqual(['notification', 'prompt-submit', 'session-end', 'session-start', 'stop', 'watch'])
+    expect(ours.map((h) => h.args[1]).sort()).toEqual(['activity', 'activity', 'notification', 'prompt-submit', 'session-end', 'session-start', 'stop', 'watch'])
   })
 
   // #232: a verified runtime outside the runtime root (copied or extracted
@@ -1751,7 +1753,7 @@ describe('runtime-config hooks: packaged Claude Code hook-settings transformatio
     const other = installedHookRuntime({ packageVersion: '1.2.4' })
     const otherDir = dirname(dirname(other.entry))
     const settings = join(tmp('hooks-elsewhere-set-'), 'settings.json')
-    writeFileSync(settings, JSON.stringify({ hooks: { ...threeHooks(other.nodeBin, other.entry), PostToolUse: [{ hooks: [unrelated] }] } }))
+    writeFileSync(settings, JSON.stringify({ hooks: { ...threeHooks(other.nodeBin, other.entry), PreCompact: [{ hooks: [unrelated] }] } }))
     const args = ['hooks', '--settings', settings, '--node', nodeBin, '--entry', entry, '--runtime-root', runtimeRoot, '--installer', INSTALLER]
 
     const refused = runFail(CONFIG_CLI, args)
@@ -1765,7 +1767,7 @@ describe('runtime-config hooks: packaged Claude Code hook-settings transformatio
     expect(replaced.stderr).toContain(`replacing 3 hooks of the v1.2.4 runtime at ${otherDir}, outside Setup's runtime folder`)
     const result = JSON.parse(replaced.stdout) as HooksSettings
     expect(JSON.stringify(result)).not.toContain(other.entry)
-    expect(result.hooks!.PostToolUse).toEqual([{ hooks: [unrelated] }])
+    expect(result.hooks!.PreCompact).toEqual([{ hooks: [unrelated] }])
     expect(result.hooks!.Stop![0]!.hooks.map((h) => [h.command, ...h.args])).toEqual([[nodeBin, entry, 'stop'], [nodeBin, entry, 'watch']])
   })
 
@@ -1774,15 +1776,15 @@ describe('runtime-config hooks: packaged Claude Code hook-settings transformatio
     // the root this installer is given is not the one it was installed under
     const runtimeRoot = tmp('hooks-another-root-')
     const settings = join(tmp('hooks-elsewhere-own-'), 'settings.json')
-    writeFileSync(settings, JSON.stringify({ hooks: { ...threeHooks(self.nodeBin, self.entry), PostToolUse: [{ hooks: [unrelated] }] } }))
+    writeFileSync(settings, JSON.stringify({ hooks: { ...threeHooks(self.nodeBin, self.entry), PreCompact: [{ hooks: [unrelated] }] } }))
     const args = ['hooks', '--settings', settings, '--entry', self.entry, '--runtime-root', runtimeRoot]
 
     const reinstalled = runOk(CONFIG_CLI, [...args, '--node', self.nodeBin]) as HooksSettings
     const ours = Object.values(reinstalled.hooks!).flatMap((groups) => groups.flatMap((g) => g.hooks)).filter((h) => h.args[0] === self.entry)
-    expect(ours.map((h) => h.args[1]).sort()).toEqual(['notification', 'prompt-submit', 'session-end', 'session-start', 'stop', 'watch'])
-    expect(reinstalled.hooks!.PostToolUse).toEqual([{ hooks: [unrelated] }])
+    expect(ours.map((h) => h.args[1]).sort()).toEqual(['activity', 'activity', 'notification', 'prompt-submit', 'session-end', 'session-start', 'stop', 'watch'])
+    expect(reinstalled.hooks!.PreCompact).toEqual([{ hooks: [unrelated] }])
 
-    expect(runOk(CONFIG_CLI, [...args, '--uninstall'])).toEqual({ hooks: { PostToolUse: [{ hooks: [unrelated] }] } })
+    expect(runOk(CONFIG_CLI, [...args, '--uninstall'])).toEqual({ hooks: { PreCompact: [{ hooks: [unrelated] }] } })
   })
 })
 
@@ -2037,6 +2039,7 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     'prune-runtimes.sh',
     'runtime-payload.mjs',
     'runtime-config.mjs',
+    'runtime-pins.mjs',
     'setup-filesystem.cjs',
     'setup-lock.sh',
     'run-isolated.mjs',
@@ -2246,7 +2249,7 @@ describe('runtime SQLite cleanup gate', () => {
 // ═══════════════════════════════════════════════════════════════════════
 describe('main-entrypoint detection: symlinked ancestor / alias paths', () => {
   it('runtime-payload.mjs runs its CLI (not a silent no-op) when invoked through a symlinked parent directory', () => {
-    const [aliasedPayloadCli] = createSymlinkedAlias([PAYLOAD_CLI, SETUP_FILESYSTEM])
+    const [aliasedPayloadCli] = createSymlinkedAlias([PAYLOAD_CLI, SETUP_FILESYSTEM, RUNTIME_PINS])
     const payloadRoot = tmp('sym-payload-')
     buildFixturePayload(payloadRoot)
 
@@ -2257,10 +2260,10 @@ describe('main-entrypoint detection: symlinked ancestor / alias paths', () => {
   })
 
   it('runtime-config.mjs runs its CLI (not a silent no-op) when invoked through a symlinked parent directory', () => {
-    // runtime-config.mjs imports from './runtime-payload.mjs' — both must be
-    // copied into the same aliased directory for the relative import to
-    // resolve once reached through the alias.
-    const [aliasedConfigCli] = createSymlinkedAlias([CONFIG_CLI, PAYLOAD_CLI, SETUP_FILESYSTEM])
+    // runtime-config.mjs imports from './runtime-payload.mjs' and
+    // './runtime-pins.mjs' — all must be copied into the same aliased
+    // directory for the relative imports to resolve once reached through it.
+    const [aliasedConfigCli] = createSymlinkedAlias([CONFIG_CLI, PAYLOAD_CLI, SETUP_FILESYSTEM, RUNTIME_PINS])
     const dir = tmp('sym-config-')
     const configFile = join(dir, 'config.json')
     writeFileSync(configFile, JSON.stringify({}))

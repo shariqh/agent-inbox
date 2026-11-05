@@ -4,6 +4,7 @@ import { homedir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { mkdirSync } from 'node:fs'
 import type { ServerSource } from './server-source.js'
+import { isReservedProject } from '../public/reserved-projects.js'
 
 export type Kind = 'question' | 'note' | 'done'
 export type Status = 'open' | 'resolved' | 'dismissed'
@@ -126,6 +127,10 @@ export function defaultDbPath(): string {
   return process.env.AGENT_INBOX_DB ?? join(homedir(), '.agent-inbox', 'inbox.db')
 }
 
+// Issue #412: `@sessions` and `@mesh` are reserved (isReservedProject, from the
+// one list the page shares). The viewer shows them like any project, so
+// attention is unchanged; every project-scoped reader below returns nothing.
+
 export function openDb(path: string = defaultDbPath()): Database.Database {
   mkdirSync(dirname(path), { recursive: true })
   const db = new Database(path)
@@ -223,6 +228,10 @@ export const SNAPSHOT_DOMAINS = {
     table: 'source_links_by_head',
     columns: ['branch', 'closing_refs', 'fetched_at', 'head_repo', 'issue_number', 'repo'],
   },
+  // issue #411 — pending() re-applies the first-delivery stamp on every poll
+  session_messages: { table: 'session_messages', restamped: ['delivered_at', 'delivered_by'] },
+  // issue #412 step 3 — driven-session launches (/api/launches)
+  launches: { table: 'launches' },
 } as const satisfies Record<string, SnapshotDomainSpec>
 
 export type SnapshotDomain = keyof typeof SNAPSHOT_DOMAINS
@@ -578,6 +587,68 @@ function runMigrations(db: Database.Database): void {
       token TEXT NOT NULL,
       claimed_at TEXT NOT NULL
     );
+    -- issue #411 — the human's messages to one MCP session (see sendSessionMessage)
+    CREATE TABLE IF NOT EXISTS session_messages (
+      id TEXT PRIMARY KEY,
+      session TEXT NOT NULL,
+      project TEXT NOT NULL,
+      stream TEXT NOT NULL DEFAULT '',
+      agent TEXT NOT NULL DEFAULT 'unknown',
+      text TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      revision INTEGER NOT NULL DEFAULT 1,
+      status TEXT NOT NULL DEFAULT 'open',
+      delivered_at TEXT,
+      delivered_by TEXT,
+      outcome TEXT NOT NULL DEFAULT '',
+      closed_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_session_messages_session ON session_messages(session, status, created_at);
+    CREATE INDEX IF NOT EXISTS idx_session_messages_closed ON session_messages(status, closed_at);
+    -- issue #412 step 3 — a session Agent Inbox started and drives (see createLaunch).
+    -- Older processes never name these tables.
+    CREATE TABLE IF NOT EXISTS launches (
+      id TEXT PRIMARY KEY,
+      host TEXT NOT NULL,
+      project TEXT NOT NULL,
+      stream TEXT NOT NULL DEFAULT '',
+      cwd TEXT NOT NULL,
+      mode TEXT NOT NULL,
+      model TEXT,
+      reasoning_effort TEXT,
+      budget_active_ms INTEGER NOT NULL,
+      budget_tool_calls INTEGER NOT NULL,
+      prompt TEXT NOT NULL,
+      spec_version INTEGER NOT NULL,
+      status TEXT NOT NULL,
+      end_reason TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      parked_at TEXT,
+      park_reason TEXT,
+      ended_at TEXT,
+      stop_requested_at TEXT,
+      acp_session TEXT,
+      sessions TEXT,
+      driver_pid INTEGER,
+      child_pgid INTEGER,
+      child_started_at TEXT,
+      host_pid INTEGER,
+      active_ms INTEGER NOT NULL DEFAULT 0,
+      tool_calls INTEGER NOT NULL DEFAULT 0,
+      revision INTEGER NOT NULL DEFAULT 1
+    );
+    CREATE INDEX IF NOT EXISTS idx_launches_status ON launches(status, updated_at);
+    -- the approval asks a launch's driver filed in @sessions, by item, with the
+    -- revision and options its signature covers (see fileLaunchAsk)
+    CREATE TABLE IF NOT EXISTS launch_asks (
+      item_id TEXT PRIMARY KEY,
+      launch_id TEXT NOT NULL,
+      revision INTEGER NOT NULL,
+      options TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_launch_asks_launch ON launch_asks(launch_id);
   `)
   ensureColumn(db, 'board_rows', 'context', `TEXT NOT NULL DEFAULT ''`)
   ensureColumn(db, 'board_rows', 'annotated_at', 'TEXT')
@@ -592,7 +663,7 @@ function runMigrations(db: Database.Database): void {
   // issue #197 — the Agent Inbox build the session's MCP server runs, and
   // whether it runs from an installed agent runtime or a checkout, written by
   // that server's own presence and status writes. NULL on legacy rows and on
-  // rows written by older servers: Live then shows nothing rather than a guess.
+  // rows written by older servers: the viewer then shows nothing rather than a guess.
   // Display only, never a liveness or work signal.
   ensureColumn(db, 'activity', 'server_version', 'TEXT')
   ensureColumn(db, 'activity', 'server_source', 'TEXT')
@@ -681,6 +752,38 @@ function runMigrations(db: Database.Database): void {
   ensureColumn(db, 'activity', 'call_minute', 'INTEGER')
   ensureColumn(db, 'activity', 'call_counts', 'TEXT')
   ensureColumn(db, 'boards', 'session', 'TEXT')
+  // issue #411 — 1 when this session's MCP server delivers session messages,
+  // written by its own presence and status writes. NULL on legacy rows and on
+  // every row an older server writes: a send to such a session is refused.
+  ensureColumn(db, 'activity', 'receives_messages', 'INTEGER')
+  // issue #411 (channels spike) — 1 when this session's Claude Code was launched
+  // naming this server as a channel, so a message pushes a turn at once. Written
+  // by this build's presence writes only, kept on omission like the flag above.
+  ensureColumn(db, 'activity', 'push_wake', 'INTEGER')
+  // issue #466 — what the session's HOST reported through its hooks: when its
+  // last turn started and ended, and when it last ran a tool. Written by
+  // recordHostEvent alone; NULL on legacy rows, on rows no hook links to, and
+  // on every row an older process writes (its statements never name them).
+  // Evidence of work beside the claim, never liveness, a call or a claim.
+  ensureColumn(db, 'activity', 'host_turn_at', 'TEXT')
+  ensureColumn(db, 'activity', 'host_idle_at', 'TEXT')
+  ensureColumn(db, 'activity', 'host_tool_at', 'TEXT')
+  // issue #432 — a launch run in its own git worktree: the checkout it was made
+  // from, the worktree (equal to cwd), its branch, the base commit and the
+  // checkout's branch then, when it was removed, and the driver's turn-end
+  // summary. NULL on every other launch and on every row an older driver
+  // writes: its INSERT never names them.
+  ensureColumn(db, 'launches', 'checkout_root', 'TEXT')
+  ensureColumn(db, 'launches', 'worktree_path', 'TEXT')
+  ensureColumn(db, 'launches', 'branch', 'TEXT')
+  ensureColumn(db, 'launches', 'base_sha', 'TEXT')
+  ensureColumn(db, 'launches', 'base_ref', 'TEXT')
+  ensureColumn(db, 'launches', 'worktree_removed_at', 'TEXT')
+  ensureColumn(db, 'launches', 'worktree_summary', 'TEXT')
+  // #432 PR 5 — why a launch ended before its session was ready, in plain
+  // words (at most 300 characters), for its row's "Didn't start". NULL on every
+  // other end and on every row an older driver ends: its UPDATE never names it.
+  ensureColumn(db, 'launches', 'end_detail', 'TEXT')
   // issue #297 — keep this last: its triggers name the columns added above
   migrateSnapshotDomains(db)
 }
@@ -1272,6 +1375,7 @@ export function listPending(
 ): Item[] {
   // Hooks/backstops retain their question-only default. MCP explicitly opts in
   // to informational feedback, with a targeted recovery path after pickup.
+  if (isReservedProject(project)) return []
   const rows = db
     .prepare(`SELECT * FROM items
       WHERE status = 'open' AND project = @project
@@ -2977,6 +3081,7 @@ export function listUnansweredBoardRows(
   db: Database.Database,
   project: string,
 ): Array<Pick<BoardRow, 'id' | 'action_version'>> {
+  if (isReservedProject(project)) return []
   return db.prepare(`SELECT r.id, r.action_version
     FROM board_rows r JOIN boards b ON b.id = r.board_id
     WHERE b.project = ? AND b.status = 'active' AND r.status = 'blocked'
@@ -2985,6 +3090,7 @@ export function listUnansweredBoardRows(
 }
 
 export function listPendingRows(db: Database.Database, project: string): PendingRow[] {
+  if (isReservedProject(project)) return []
   const now = new Date().toISOString()
   const rows = db
     .prepare(
@@ -3254,6 +3360,38 @@ export interface Activity {
    */
   calls?: number[]
   calls_at?: number
+  /** Issue #411 — present, and true, only when this session's server delivers session messages. */
+  receives_messages?: true
+  /**
+   * Issue #411 (channels) — present, and true, only when this session's Claude
+   * Code was launched with a channel flag naming this server, so a message is
+   * pushed into it at once. Evidence, not proof: Claude Code acknowledges nothing.
+   */
+  push_wake?: true
+  /**
+   * Issue #411 (PR 2) — present, and true, only while a Claude hook watch that
+   * also wakes for session messages is armed for this session's Claude Code
+   * process: an `m1:` lease on `host:<host_pid>` claimed within the last 30
+   * minutes (the watch window is 29). Evidence, like `push_wake`.
+   */
+  wakes?: true
+  /**
+   * Issue #412 — present, and true, only while an Agent Inbox driver holds this
+   * session's `driven:` lease, refreshed within the last 90 s: a message is
+   * pushed into it as a new turn.
+   */
+  driven?: true
+  /**
+   * Issue #412 step 3 — with `driven`: the launch the driver runs, and, while
+   * a turn runs, since when and whether it waits on an approval (the
+   * composer's Queued states, §5.3). Served only while present.
+   */
+  driven_launch?: string
+  driven_turn?: { state: 'turn' | 'approval'; since: string }
+  /** Issue #466 — the host's hook stamps (turn started, turn ended, tool ran). Served only while set. */
+  host_turn_at?: string
+  host_idle_at?: string
+  host_tool_at?: string
 }
 
 export interface ActivityUpdate {
@@ -3296,6 +3434,10 @@ export interface ActivityUpdate {
    */
   host_pid?: number
   server_pid?: number
+  /** Issue #411 — this server delivers session messages. Kept on omission. */
+  receives_messages?: boolean
+  /** Issue #411 (channels) — a message is pushed into this session. Kept on omission. */
+  push_wake?: boolean
 }
 
 // One statement for the `activity` presence row, plus (when this write is a
@@ -3308,11 +3450,11 @@ const upsertActivityTxn = (db: Database.Database, a: ActivityUpdate): void => {
   // One statement, two modes. Registration can create idle presence but can
   // neither replace a live claim nor write its historical caption.
   db.prepare(
-    `INSERT INTO activity (session, project, stream, agent, doing, last_doing, detail, children, idle, started_at, updated_at, server_version, server_source, host_pid, server_pid)
+    `INSERT INTO activity (session, project, stream, agent, doing, last_doing, detail, children, idle, started_at, updated_at, server_version, server_source, host_pid, server_pid, receives_messages, push_wake)
      VALUES (
        @session, @project, @stream, @agent, @doing,
        CASE WHEN @claim = 1 AND @idle = 0 AND @doing <> '' AND @doing <> 'open' THEN @doing ELSE '' END,
-       @detail, @children, @idle, @now, @now, @server_version, @server_source, @host_pid, @server_pid
+       @detail, @children, @idle, @now, @now, @server_version, @server_source, @host_pid, @server_pid, @receives_messages, @push_wake
      )
      ON CONFLICT(session) DO UPDATE SET
        project = @project, stream = @stream, agent = @agent,
@@ -3328,6 +3470,8 @@ const upsertActivityTxn = (db: Database.Database, a: ActivityUpdate): void => {
        server_source  = COALESCE(@server_source, server_source),
        host_pid   = COALESCE(@host_pid, host_pid),
        server_pid = COALESCE(@server_pid, server_pid),
+       receives_messages = COALESCE(@receives_messages, receives_messages),
+       push_wake = COALESCE(@push_wake, push_wake),
        updated_at = @now, ended_at = NULL`,
   ).run({
     session: a.session,
@@ -3343,6 +3487,8 @@ const upsertActivityTxn = (db: Database.Database, a: ActivityUpdate): void => {
     server_source: a.server_source ?? null,
     host_pid: a.host_pid ?? null,
     server_pid: a.server_pid ?? null,
+    receives_messages: a.receives_messages === undefined ? null : a.receives_messages ? 1 : 0,
+    push_wake: a.push_wake === undefined ? null : a.push_wake ? 1 : 0,
     now,
   })
   // Registration (`claim: false`) never touches spans — it is not speaking for
@@ -3485,23 +3631,43 @@ function countCall(minute: number | null, text: string | null, now: number): { m
   return { minute: now, counts: counts.slice(counts.findIndex((count) => count > 0)).join(',') }
 }
 
+// #411: how long after its claim a message-capable hook watch counts as armed.
+// The watch itself gives up after 29 minutes (AGENT_INBOX_WATCH_SECS).
+const WAKE_LEASE_MS = 30 * 60000
+
 export function listActivity(db: Database.Database, opts: { staleMinutes?: number } = {}): Activity[] {
   const now = Date.now()
   const cutoff = new Date(now - (opts.staleMinutes ?? PRESENCE_STALE_MINUTES) * 60000).toISOString()
   const cold = claimCutoff(now)
+  // #411: the lease a message-capable Claude hook watch holds for this
+  // session's Claude Code process (`m1:` marks it; older hooks claim the same
+  // key without it). The key is unique, so the join adds no row.
   const rows = db
-    .prepare(`SELECT session, project, stream, agent, doing, last_doing, detail, children, idle, started_at, updated_at, last_call_at, server_version, server_source,
-                     call_minute, call_counts
-              FROM activity WHERE ended_at IS NULL AND updated_at >= ?`)
-    .all(cutoff) as Array<Omit<Activity, 'children' | 'idle'> & {
-      children: string | null; idle: number; call_minute: number | null; call_counts: string | null
+    .prepare(`SELECT a.session, a.project, a.stream, a.agent, a.doing, a.last_doing, a.detail, a.children, a.idle, a.started_at, a.updated_at,
+                     a.last_call_at, a.server_version, a.server_source, a.call_minute, a.call_counts, a.receives_messages, a.push_wake,
+                     a.host_turn_at, a.host_idle_at, a.host_tool_at,
+                     (w.claim_key IS NOT NULL) AS wakes, (d.claim_key IS NOT NULL) AS driven,
+                     substr(d.token, 1, 36) AS driven_launch, t.token AS turn_token, t.claimed_at AS turn_since
+              FROM activity a
+              LEFT JOIN hook_watch_claims w
+                ON a.host_pid IS NOT NULL AND w.claim_key = 'host:' || a.host_pid
+               AND substr(w.token, 1, 3) = 'm1:' AND w.claimed_at >= ?
+              LEFT JOIN hook_watch_claims d
+                ON d.claim_key = 'driven:' || a.session AND d.claimed_at >= ?
+              LEFT JOIN hook_watch_claims t
+                ON d.claim_key IS NOT NULL AND t.claim_key = 'driver-turn:' || substr(d.token, 1, 36)
+              WHERE a.ended_at IS NULL AND a.updated_at >= ?`)
+    .all(new Date(now - WAKE_LEASE_MS).toISOString(), freshLeaseCutoff(now), cutoff) as Array<Omit<Activity, 'children' | 'idle' | 'receives_messages' | 'push_wake' | 'wakes' | 'driven' | 'driven_launch' | 'driven_turn' | 'host_turn_at' | 'host_idle_at' | 'host_tool_at'> & {
+      children: string | null; idle: number; call_minute: number | null; call_counts: string | null; receives_messages: number | null; push_wake: number | null
+      host_turn_at: string | null; host_idle_at: string | null; host_tool_at: string | null
+      wakes: number; driven: number; driven_launch: string | null; turn_token: string | null; turn_since: string | null
     }>
   const nowMinute = Math.floor(now / 60000)
   // The row is kept whatever happens here — the session really is present, and
   // public/attention.js classifies an item as "waiting" iff its session id is in
   // this list, so dropping the row would silently downgrade a live blocker. Only
   // the CLAIM decays.
-  const out = rows.map(({ call_minute, call_counts, ...r }): Activity => {
+  const out = rows.map(({ call_minute, call_counts, receives_messages, push_wake, wakes, driven, driven_launch, turn_token, turn_since, host_turn_at, host_idle_at, host_tool_at, ...r }): Activity => {
     const live = (r.last_call_at ?? r.started_at) >= cold
     // #306: the trace is served only while its newest minute is in the window
     const calls = call_minute !== null && nowMinute - call_minute < CALL_TRACE_MINUTES ? parseCallCounts(call_counts) : null
@@ -3512,6 +3678,17 @@ export function listActivity(db: Database.Database, opts: { staleMinutes?: numbe
       detail: live ? r.detail : '',
       children: live && r.children ? (JSON.parse(r.children) as ActivityChild[]) : [],
       ...(calls ? { calls, calls_at: call_minute! } : {}),
+      ...(receives_messages === 1 ? { receives_messages: true as const } : {}),
+      ...(host_turn_at ? { host_turn_at } : {}),
+      ...(host_idle_at ? { host_idle_at } : {}),
+      ...(host_tool_at ? { host_tool_at } : {}),
+      ...(push_wake === 1 ? { push_wake: true as const } : {}),
+      ...(wakes === 1 ? { wakes: true as const } : {}),
+      ...(driven === 1 ? { driven: true as const } : {}),
+      ...(driven === 1 && driven_launch && LAUNCH_ID.test(driven_launch) ? { driven_launch } : {}),
+      ...(driven === 1 && turn_token && turn_since && turn_token.startsWith(`${driven_launch}:`)
+        ? { driven_turn: { state: turn_token.endsWith('|approval') ? 'approval' as const : 'turn' as const, since: turn_since } }
+        : {}),
     }
   })
   // Working sessions first (longest-running first, as before). Everything else
@@ -3547,8 +3724,44 @@ export function listHostSessions(db: Database.Database, hostPid: number): HostSe
     .all(hostPid, cutoff) as HostSession[]
 }
 
+// ── issue #466: what a session's host reports through its hooks ─────────────
+//
+// A hook linked to its session's servers (#253) stamps their presence rows:
+// a turn started (`turn`), a turn ended (`idle`) or a tool ran (`tool`). One
+// conditioned UPDATE, live rows only. It names no other column: never
+// `updated_at` (liveness), `last_call_at`, the call trace or a claim, so host
+// work can never revive a claim that went cold (#45). A tool stamp lands at
+// most once per HOST_TOOL_STAMP_MS a row, which bounds the writes (and the
+// viewer repaints) a busy session costs.
+export const HOST_TOOL_STAMP_MS = 30_000
+const HOST_COLUMN = { turn: 'host_turn_at', idle: 'host_idle_at', tool: 'host_tool_at' } as const
+
+export function recordHostEvent(db: Database.Database, sessions: readonly string[], kind: keyof typeof HOST_COLUMN, nowMs = Date.now()): number {
+  if (sessions.length === 0) return 0
+  const column = HOST_COLUMN[kind]
+  return db.prepare(`UPDATE activity SET ${column} = @now
+                      WHERE session IN (SELECT value FROM json_each(@sessions)) AND ended_at IS NULL
+                        AND (@tool = 0 OR host_tool_at IS NULL OR host_tool_at <= @throttle)`).run({
+    now: new Date(nowMs).toISOString(),
+    sessions: JSON.stringify(sessions),
+    tool: kind === 'tool' ? 1 : 0,
+    throttle: new Date(nowMs - HOST_TOOL_STAMP_MS).toISOString(),
+  }).changes
+}
+
+// Issue #412 step 3 — the server pids of these sessions' presence rows that
+// have not ended, for a resumed driver to tell which of its launch's earlier
+// sessions are gone.
+export function liveSessionServers(db: Database.Database, sessions: readonly string[]): Array<{ session: string; server_pid: number | null }> {
+  if (sessions.length === 0) return []
+  return db.prepare(`SELECT session, server_pid FROM activity
+                      WHERE ended_at IS NULL AND session IN (SELECT value FROM json_each(?))
+                      ORDER BY session ASC`).all(JSON.stringify(sessions)) as Array<{ session: string; server_pid: number | null }>
+}
+
 // The open questions these MCP sessions raised, whatever project each was
-// filed under.
+// filed under, except a reserved one (#412): a driver files its approval
+// alerts under the driven session's id, and no hook may wake on them.
 export function listSessionQuestions(db: Database.Database, sessions: readonly string[]): Item[] {
   if (sessions.length === 0) return []
   const rows = db
@@ -3557,7 +3770,7 @@ export function listSessionQuestions(db: Database.Database, sessions: readonly s
                  AND session IN (SELECT value FROM json_each(?))
                ORDER BY created_at ASC`)
     .all(JSON.stringify(sessions)) as StoredItem[]
-  return rows.map(parseItem)
+  return rows.filter((row) => !isReservedProject(row.project)).map(parseItem)
 }
 
 // The Claude hook's answer-watcher lease: one row per watched host (or harness
@@ -3581,6 +3794,1056 @@ export function holdsHookWatch(db: Database.Database, key: string, token: string
 
 export function releaseHookWatch(db: Database.Database, key: string, token: string): void {
   db.prepare(`DELETE FROM hook_watch_claims WHERE claim_key = ? AND token = ?`).run(key, token)
+}
+
+// ── issue #412: the leases of a driver and the sessions it drives ───────────
+//
+// A driver (`agent-inbox-driver`) runs one agent child over ACP and holds, in
+// hook_watch_claims (no snapshot reads it, so refreshes rebuild nothing):
+// `driver:<pid>` for itself, `driven:<session>` for each MCP session it linked
+// by ancestry, and reads `driver-stop:<launch id>`, the Stop the runtime CLI
+// writes. Every token is `<launch id>:<driver pid>:<nonce>`, so a lease's
+// identity is the launch. A lease is fresh for 90 s; the driver refreshes every
+// 30 s. Design: docs/superpowers/specs/2026-10-31-driven-sessions-design.md
+// §5.1, §6 and §7.
+const DRIVER_LEASE_FRESH_MS = 90_000
+const LAUNCH_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+const LEASE_NONCE = /^[A-Za-z0-9_-]{1,64}$/
+
+export interface DriverLease {
+  launchId: string
+  pid: number
+  nonce: string
+}
+
+export type DriverSlotResult =
+  | { ok: true }
+  | { ok: false; running: Array<{ launch: string; pid: number }> }
+
+function driverToken(lease: DriverLease): string {
+  if (!LAUNCH_ID.test(lease.launchId)) throw new Error('launch id must be a lowercase UUID')
+  if (!Number.isInteger(lease.pid) || lease.pid <= 0) throw new Error('driver pid must be a positive integer')
+  if (!LEASE_NONCE.test(lease.nonce)) throw new Error('lease nonce must be 1-64 letters, digits, - or _')
+  return `${lease.launchId}:${lease.pid}:${lease.nonce}`
+}
+
+function freshLeaseCutoff(nowMs: number): string {
+  return new Date(nowMs - DRIVER_LEASE_FRESH_MS).toISOString()
+}
+
+// A driver's start: at most `max` drivers per host, counted from the fresh
+// `driver:` leases inside this one .immediate() transaction, so two starts
+// cannot both see a free slot. A refusal names the launches already running.
+// Only Copilot is driven in #412, so every driver lease counts; per-host caps come with Claude (#421).
+export function claimDriverSlot(db: Database.Database, lease: DriverLease, max: number): DriverSlotResult {
+  const token = driverToken(lease)
+  const nowMs = Date.now()
+  return db.transaction((): DriverSlotResult => {
+    db.prepare(`DELETE FROM hook_watch_claims WHERE claimed_at < ?`).run(new Date(nowMs - 24 * 60 * 60000).toISOString())
+    const others = db.prepare(`SELECT token FROM hook_watch_claims
+                                WHERE claim_key LIKE 'driver:%' AND claimed_at >= ? AND token <> ?
+                                ORDER BY claimed_at ASC`)
+      .pluck().all(freshLeaseCutoff(nowMs), token) as string[]
+    if (others.length >= max) {
+      return {
+        ok: false,
+        running: others.map((t) => {
+          const [launch = '', pid = ''] = t.split(':')
+          return { launch, pid: Number(pid) }
+        }),
+      }
+    }
+    db.prepare(`INSERT INTO hook_watch_claims (claim_key, token, claimed_at) VALUES (?, ?, ?)
+                ON CONFLICT(claim_key) DO UPDATE SET token = excluded.token, claimed_at = excluded.claimed_at`)
+      .run(`driver:${lease.pid}`, token, new Date(nowMs).toISOString())
+    return { ok: true }
+  }).immediate()
+}
+
+// The driver's 30-second refresh: its own `driver:` lease, plus exactly the
+// given `driven:` sessions. A session another launch holds freshly is not
+// taken; a session this driver held but no longer names is released. Returns
+// whether the driver still holds its own lease (false: another process took the
+// key, so it must stop) and the sessions it now holds.
+export function holdDriverLeases(
+  db: Database.Database,
+  lease: DriverLease,
+  sessions: readonly string[],
+): { driver: boolean; held: string[] } {
+  const token = driverToken(lease)
+  const nowMs = Date.now()
+  const now = new Date(nowMs).toISOString()
+  return db.transaction(() => {
+    const driver = db.prepare(`UPDATE hook_watch_claims SET claimed_at = ? WHERE claim_key = ? AND token = ?`)
+      .run(now, `driver:${lease.pid}`, token).changes === 1
+    const wanted = new Set(sessions)
+    const mine = db.prepare(`SELECT claim_key FROM hook_watch_claims WHERE token = ? AND claim_key LIKE 'driven:%'`)
+      .pluck().all(token) as string[]
+    for (const key of mine) {
+      if (!wanted.has(key.slice('driven:'.length))) {
+        db.prepare(`DELETE FROM hook_watch_claims WHERE claim_key = ? AND token = ?`).run(key, token)
+      }
+    }
+    const held: string[] = []
+    const take = db.prepare(`INSERT INTO hook_watch_claims (claim_key, token, claimed_at) VALUES (?, ?, ?)
+                              ON CONFLICT(claim_key) DO UPDATE SET token = excluded.token, claimed_at = excluded.claimed_at
+                              WHERE hook_watch_claims.token = excluded.token OR hook_watch_claims.claimed_at < ?`)
+    for (const session of wanted) {
+      if (take.run(`driven:${session}`, token, now, freshLeaseCutoff(nowMs)).changes === 1) held.push(session)
+    }
+    return { driver, held }
+  }).immediate()
+}
+
+// Every lease this driver process holds, its turn state, and its launch's Stop
+// and Interrupt requests. Compare-and-delete by token, so a newer driver's
+// leases are never dropped.
+export function releaseDriverLeases(db: Database.Database, lease: DriverLease): void {
+  const token = driverToken(lease)
+  db.prepare(`DELETE FROM hook_watch_claims WHERE token = ? OR claim_key IN (?, ?, ?, ?)
+                 OR (claim_key = ? AND substr(token, 1, length(?)) = ?)`)
+    .run(token, `driver-stop:${lease.launchId}`, `driver-interrupt:${lease.launchId}`, `driver-park:${lease.launchId}`,
+      `driver-handoff:${lease.launchId}`, `driver-turn:${lease.launchId}`, `${token}|`, `${token}|`)
+}
+
+// Issue #412 step 3 (§5.3): whether the driver's turn runs, and whether it
+// waits on an approval, for the composer's Queued states. One claim per launch,
+// `driver-turn:<launch id>`, its time the turn's start; null ends it. Written
+// only when the state changes; no snapshot reads hook_watch_claims.
+export function markDriverTurn(db: Database.Database, lease: DriverLease, state: 'turn' | 'approval' | null, since?: string): void {
+  const token = driverToken(lease)
+  const key = `driver-turn:${lease.launchId}`
+  if (state === null) {
+    db.prepare(`DELETE FROM hook_watch_claims WHERE claim_key = ? AND substr(token, 1, length(?)) = ?`).run(key, `${token}|`, `${token}|`)
+    return
+  }
+  db.prepare(`INSERT INTO hook_watch_claims (claim_key, token, claimed_at) VALUES (?, ?, ?)
+              ON CONFLICT(claim_key) DO UPDATE SET token = excluded.token, claimed_at = excluded.claimed_at`)
+    .run(key, `${token}|${state}`, since ?? new Date().toISOString())
+}
+
+// Interrupt and send (§5.3): the page sends the message, then asks the
+// running launch's driver to interrupt its turn; the driver takes the request
+// once (takeLaunchInterrupt), cancels the turn and sends the message framed
+// with the interrupt notice. The human's own capability, like Stop.
+export function requestLaunchInterrupt(db: Database.Database, id: string): boolean {
+  if (!LAUNCH_ID.test(id)) return false
+  return db.transaction(() => {
+    const running = db.prepare(`SELECT 1 FROM launches WHERE id = ? AND status = 'running' AND stop_requested_at IS NULL`).get(id) !== undefined
+    if (running) claimHookWatch(db, `driver-interrupt:${id}`, 'interrupt')
+    return running
+  }).immediate()
+}
+
+export function takeLaunchInterrupt(db: Database.Database, launchId: string): boolean {
+  return db.prepare(`DELETE FROM hook_watch_claims WHERE claim_key = ?`).run(`driver-interrupt:${launchId}`).changes > 0
+}
+
+// Park now (§7): the human asks a running launch to park as the idle timeout
+// would, keeping its session to resume. The driver takes the request once and
+// parks at its next idle point: no turn running and no ask open.
+export function requestLaunchPark(db: Database.Database, id: string): boolean {
+  if (!LAUNCH_ID.test(id)) return false
+  return db.transaction(() => {
+    const running = db.prepare(`SELECT 1 FROM launches WHERE id = ? AND status = 'running' AND stop_requested_at IS NULL`).get(id) !== undefined
+    if (running) claimHookWatch(db, `driver-park:${id}`, 'park')
+    return running
+  }).immediate()
+}
+
+export function takeLaunchPark(db: Database.Database, launchId: string): boolean {
+  return db.prepare(`DELETE FROM hook_watch_claims WHERE claim_key = ?`).run(`driver-park:${launchId}`).changes > 0
+}
+
+// Take over in Terminal (step 5, §3.5): the launch leaves Agent Inbox for a
+// terminal `copilot --resume=<ACP session>`, so two writers never share the
+// session. A running launch's driver is asked (a `driver-handoff:` request it
+// takes once, set up and with its task sent): it cancels the turn, answers open
+// approvals cancelled, closes Copilot and ends the launch `handed_off` with the
+// session kept (handOffLaunch). A parked launch has no driver, so it is handed
+// off here at once. A handed-off launch is ended: nothing resumes, pushes to or
+// approves for it again. Polled by main, so the answer for one already handed
+// off carries what its terminal needs.
+export type LaunchHandOff =
+  | { ok: true; state: 'requested' }
+  | { ok: true; state: 'handed_off'; session: string; cwd: string; model: string | null; effort: string | null }
+  | { ok: false; reason: 'unknown' | 'ended' | 'stopping' | 'lost' | 'no_session' }
+
+export function handOffForTerminal(db: Database.Database, id: string): LaunchHandOff {
+  if (!LAUNCH_ID.test(id)) return { ok: false, reason: 'unknown' }
+  return db.transaction((): LaunchHandOff => {
+    const row = db.prepare(`SELECT status, end_reason, stop_requested_at, acp_session FROM launches WHERE id = ?`).get(id) as
+      { status: LaunchStatus; end_reason: string | null; stop_requested_at: string | null; acp_session: string | null } | undefined
+    if (!row) return { ok: false, reason: 'unknown' }
+    if (row.status === 'running') {
+      if (row.stop_requested_at !== null) return { ok: false, reason: 'stopping' }
+      if (!launchDriverAlive(db, id)) return { ok: false, reason: 'lost' }
+      claimHookWatch(db, `driver-handoff:${id}`, 'handoff')
+      return { ok: true, state: 'requested' }
+    }
+    if (row.status === 'parked') {
+      const now = new Date().toISOString()
+      // conditioned: still parked, with a session Copilot persisted, so a resume racing this cannot also take it
+      const changed = db.prepare(`UPDATE launches SET status = 'ended', end_reason = 'handed_off', ended_at = ?, parked_at = NULL, park_reason = NULL,
+                                         updated_at = ?, revision = revision + 1
+                                   WHERE id = ? AND status = 'parked' AND acp_session IS NOT NULL`).run(now, now, id).changes === 1
+      if (!changed) return { ok: false, reason: 'no_session' }
+    } else if (row.end_reason === 'stopped') {
+      // a stopped launch that could be resumed (full resume) can go to a terminal instead
+      const now = new Date().toISOString()
+      const changed = db.prepare(`UPDATE launches SET end_reason = 'handed_off', updated_at = ?, revision = revision + 1
+                                   WHERE id = ? AND ${RESUMABLE_END}`).run(now, id).changes === 1
+      if (!changed) return { ok: false, reason: row.acp_session ? 'ended' : 'no_session' }
+    } else if (row.end_reason !== 'handed_off') {
+      return { ok: false, reason: 'ended' }
+    }
+    const done = db.prepare(`SELECT acp_session, cwd, model, reasoning_effort FROM launches WHERE id = ? AND end_reason = 'handed_off'`).get(id) as
+      { acp_session: string | null; cwd: string; model: string | null; reasoning_effort: string | null } | undefined
+    if (!done?.acp_session) return { ok: false, reason: 'no_session' }
+    return { ok: true, state: 'handed_off', session: done.acp_session, cwd: done.cwd, model: done.model, effort: done.reasoning_effort }
+  }).immediate()
+}
+
+export function takeLaunchHandOff(db: Database.Database, launchId: string): boolean {
+  return db.prepare(`DELETE FROM hook_watch_claims WHERE claim_key = ?`).run(`driver-handoff:${launchId}`).changes > 0
+}
+
+// Main gave up waiting (a driver too old to know the request, or one still
+// starting): the request goes, so a later driver of this launch never hands off unasked.
+export function withdrawLaunchHandOff(db: Database.Database, id: string): boolean {
+  if (!LAUNCH_ID.test(id)) return false
+  return takeLaunchHandOff(db, id)
+}
+
+// Step 2's Stop, written by the runtime CLI (`driver-cli.js stop <launch id>`).
+export function requestDriverStop(db: Database.Database, launchId: string): void {
+  if (!LAUNCH_ID.test(launchId)) throw new Error('launch id must be a lowercase UUID')
+  claimHookWatch(db, `driver-stop:${launchId}`, 'stop')
+}
+
+// Either Stop: step 2's lease, or step 3's `stop_requested_at` on the launch (requestLaunchStop).
+export function driverStopRequested(db: Database.Database, launchId: string): boolean {
+  return db.prepare(`SELECT 1 FROM hook_watch_claims WHERE claim_key = ?
+                     UNION ALL SELECT 1 FROM launches WHERE id = ? AND stop_requested_at IS NOT NULL`)
+    .get(`driver-stop:${launchId}`, launchId) !== undefined
+}
+
+// The hub's commit counter as this connection sees it: it moves when another
+// connection commits, so a driver polls it once a second to learn the human sent
+// a message, answered an ask, or asked it to stop (§2). A failing read is how the
+// driver learns it cannot see the hub (fail closed, §7).
+export function hubDataVersion(db: Database.Database): number {
+  return db.pragma('data_version', { simple: true }) as number
+}
+
+// The human's answers a driver pings its sessions about (§5.3): open questions
+// these sessions raised and blocked rows of plans they wrote, answered and not
+// yet picked up. A reserved project is never included: approvals are answered on
+// the driver's own terminal. The key moves with each new response, so one answer
+// is pinged once.
+export interface SessionAnswer {
+  key: string
+  title: string
+}
+
+export function listAnsweredSessionAsks(db: Database.Database, sessions: readonly string[]): SessionAnswer[] {
+  if (sessions.length === 0) return []
+  const list = JSON.stringify(sessions)
+  const items = db.prepare(`SELECT id, response_revision, title, project FROM items
+                             WHERE status = 'open' AND kind = 'question'
+                               AND session IN (SELECT value FROM json_each(?))
+                               AND (COALESCE(reply, '') <> '' OR reply_kind IS NOT NULL)
+                               AND reply_seen_at IS NULL
+                             ORDER BY replied_at ASC, id ASC`)
+    .all(list) as Array<{ id: string; response_revision: number; title: string; project: string }>
+  const rows = db.prepare(`SELECT r.id, r.revision, r.label, b.project FROM board_rows r JOIN boards b ON b.id = r.board_id
+                            WHERE b.status = 'active' AND r.status = 'blocked'
+                              AND b.session IN (SELECT value FROM json_each(?))
+                              AND (((COALESCE(r.annotation, '') <> '' OR r.annotation_kind IS NOT NULL) AND r.annotation_seen_at IS NULL)
+                                   OR (r.handled_at IS NOT NULL AND r.handled_seen_at IS NULL))
+                            ORDER BY r.updated_at ASC, r.id ASC`)
+    .all(list) as Array<{ id: string; revision: number; label: string; project: string }>
+  return [
+    ...items.filter((it) => !isReservedProject(it.project)).map((it) => ({ key: `item:${it.id}:${it.response_revision}`, title: it.title })),
+    ...rows.filter((r) => !isReservedProject(r.project)).map((r) => ({ key: `row:${r.id}:${r.revision}`, title: r.label })),
+  ]
+}
+
+// Whether a driver holds this MCP session's fresh `driven:` lease: its server
+// is told "woken automatically" and hands out no watch contract (§5.3).
+export function isDrivenSession(db: Database.Database, session: string): boolean {
+  return db.prepare(`SELECT 1 FROM hook_watch_claims WHERE claim_key = ? AND claimed_at >= ?`)
+    .get(`driven:${session}`, freshLeaseCutoff(Date.now())) !== undefined
+}
+
+// ── issue #412 step 3: launches ─────────────────────────────────────────────
+//
+// A launch is one session Agent Inbox started and drives: Electron main starts a
+// detached driver (`driver-cli.js run <launch id> <hub db>`) with a spec on fd 3,
+// and the DRIVER writes the row once it holds its slot, so a refused start
+// leaves none. The row holds launch facts only: what the spec said, the status
+// (running, parked or ended), why it ended, and the progress the driver reports
+// (its child's process group and start, the native host, the MCP sessions it
+// linked, the active time and tool calls it counted). No clock-derived state:
+// whether a running launch's driver is alive comes from its `driver:` lease,
+// read fresh (launchDriverAlive). /api/launches carries every column but the
+// prompt, the process ids and the ACP session id; the prompt is served per
+// launch. Design: docs/superpowers/specs/2026-10-31-driven-sessions-design.md §6
+// and §7.
+export type LaunchStatus = 'running' | 'parked' | 'ended'
+
+export interface LaunchRecord {
+  id: string
+  host: string
+  project: string
+  stream: string
+  cwd: string
+  mode: string
+  model: string | null
+  reasoning_effort: string | null
+  budget_active_ms: number
+  budget_tool_calls: number
+  prompt: string
+  spec_version: number
+  status: LaunchStatus
+  end_reason: string | null
+  created_at: string
+  updated_at: string
+  parked_at: string | null
+  /** Why the launch was parked, when it was not for idling: a resume that could not load its session. */
+  park_reason: string | null
+  ended_at: string | null
+  stop_requested_at: string | null
+  acp_session: string | null
+  /** The MCP sessions the launch's drivers linked by ancestry, in link order. */
+  sessions: string[]
+  driver_pid: number | null
+  child_pgid: number | null
+  child_started_at: string | null
+  host_pid: number | null
+  active_ms: number
+  tool_calls: number
+  revision: number
+  /** #432: the checkout a launch's worktree was made from; null for a launch run in its folder. */
+  checkout_root: string | null
+  /** #432: the launch's worktree, equal to `cwd`; null for a launch run in its folder. */
+  worktree_path: string | null
+  branch: string | null
+  base_sha: string | null
+  /** The checkout's branch when the worktree was made, as a full ref; null on a detached HEAD. */
+  base_ref: string | null
+  worktree_removed_at: string | null
+  worktree_summary: string | null
+  /** #432 PR 5: why it ended before its session was ready, in plain words; null otherwise. */
+  end_detail: string | null
+}
+
+/** What /api/launches serves of a launch: no prompt, process ids or ACP session id. */
+export type Launch = Omit<LaunchRecord, 'prompt' | 'driver_pid' | 'child_pgid' | 'child_started_at' | 'host_pid' | 'acp_session' | 'worktree_summary'> & {
+  /** Whether a parked launch can load its ACP session again (it was prompted). */
+  resumable: boolean
+  /** #432 §6: the driver's last summary of its worktree, or null (none yet, or unreadable). */
+  worktree_summary: Record<string, unknown> | null
+}
+
+// ended launches /api/launches carries, newest first; every running and parked one is carried,
+// and so are up to as many ended ones whose worktree is kept (#432)
+const RECENT_ENDED_LAUNCHES = 50
+const LAUNCH_RETENTION_MS = 30 * 24 * 60 * 60000
+
+function parseLaunch(row: Omit<LaunchRecord, 'sessions'> & { sessions: string | null }): LaunchRecord {
+  let sessions: string[] = []
+  try {
+    const parsed: unknown = row.sessions === null ? [] : JSON.parse(row.sessions)
+    if (Array.isArray(parsed)) sessions = parsed.filter((s): s is string => typeof s === 'string')
+  } catch { /* unreadable: none */ }
+  return { ...row, sessions }
+}
+
+export function launchView(record: LaunchRecord): Launch {
+  const { prompt: _prompt, driver_pid: _driver, child_pgid: _pgid, child_started_at: _start, host_pid: _host, acp_session, worktree_summary, ...rest } = record
+  let summary: Record<string, unknown> | null = null
+  try {
+    const parsed: unknown = worktree_summary === null ? null : JSON.parse(worktree_summary)
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) summary = parsed as Record<string, unknown>
+  } catch { /* unreadable: none */ }
+  return { ...rest, resumable: acp_session !== null, worktree_summary: summary }
+}
+
+export interface NewLaunch {
+  id: string
+  host: 'copilot'
+  project: string
+  stream: string
+  cwd: string
+  mode: string
+  model?: string | null
+  reasoningEffort?: string | null
+  budgetActiveMs: number
+  budgetToolCalls: number
+  prompt: string
+  specVersion: number
+  driverPid: number
+  /** #432: the worktree the driver made for it; `cwd` is its path. */
+  worktree?: { checkoutRoot: string; branch: string; baseSha: string; baseRef: string | null }
+}
+
+// an ended launch whose worktree is still on disk (#432): never pruned, always listed
+const WORKTREE_KEPT = `worktree_path IS NOT NULL AND worktree_removed_at IS NULL`
+
+// The driver's start, after it claimed its slot: one row, status running. In
+// the same transaction, ended launches older than 30 days are removed with
+// their asks' mapping; their ids are returned so the driver removes their log
+// folders too (§8: logs are pruned with the launch). Throws on a reused id.
+export function createLaunch(db: Database.Database, launch: NewLaunch): { pruned: string[] } {
+  if (!LAUNCH_ID.test(launch.id)) throw new Error('launch id must be a lowercase UUID')
+  const nowMs = Date.now()
+  const now = new Date(nowMs).toISOString()
+  return db.transaction(() => {
+    const pruned = db.prepare(`DELETE FROM launches WHERE status = 'ended' AND ended_at < ? AND NOT (${WORKTREE_KEPT}) RETURNING id`)
+      .pluck().all(new Date(nowMs - LAUNCH_RETENTION_MS).toISOString()) as string[]
+    const forget = db.prepare(`DELETE FROM launch_asks WHERE launch_id = ?`)
+    for (const id of pruned) forget.run(id)
+    const worktree = launch.worktree
+    db.prepare(`INSERT INTO launches (
+        id, host, project, stream, cwd, mode, model, reasoning_effort, budget_active_ms, budget_tool_calls,
+        prompt, spec_version, status, created_at, updated_at, driver_pid,
+        checkout_root, worktree_path, branch, base_sha, base_ref)
+      VALUES (@id, @host, @project, @stream, @cwd, @mode, @model, @effort, @activeMs, @toolCalls,
+        @prompt, @specVersion, 'running', @now, @now, @driverPid,
+        @checkoutRoot, @worktreePath, @branch, @baseSha, @baseRef)`).run({
+      id: launch.id, host: launch.host, project: launch.project, stream: launch.stream, cwd: launch.cwd,
+      mode: launch.mode, model: launch.model ?? null, effort: launch.reasoningEffort ?? null,
+      activeMs: launch.budgetActiveMs, toolCalls: launch.budgetToolCalls, prompt: launch.prompt,
+      specVersion: launch.specVersion, now, driverPid: launch.driverPid,
+      checkoutRoot: worktree?.checkoutRoot ?? null, worktreePath: worktree ? launch.cwd : null,
+      branch: worktree?.branch ?? null, baseSha: worktree?.baseSha ?? null, baseRef: worktree?.baseRef ?? null,
+    })
+    return { pruned: pruned.sort() }
+  }).immediate()
+}
+
+export function getLaunch(db: Database.Database, id: string): LaunchRecord | null {
+  if (!LAUNCH_ID.test(id)) return null
+  const row = db.prepare(`SELECT * FROM launches WHERE id = ?`).get(id) as (Omit<LaunchRecord, 'sessions'> & { sessions: string | null }) | undefined
+  return row ? parseLaunch(row) : null
+}
+
+export function listLaunches(db: Database.Database): Launch[] {
+  const rows = db.prepare(`SELECT * FROM launches WHERE status <> 'ended'
+      OR id IN (SELECT id FROM launches WHERE status = 'ended' ORDER BY ended_at DESC, id DESC LIMIT @limit)
+      OR id IN (SELECT id FROM launches WHERE status = 'ended' AND ${WORKTREE_KEPT} ORDER BY ended_at DESC, id DESC LIMIT @limit)
+    ORDER BY created_at DESC, id DESC`).all({ limit: RECENT_ENDED_LAUNCHES }) as Array<Omit<LaunchRecord, 'sessions'> & { sessions: string | null }>
+  return rows.map((row) => launchView(parseLaunch(row)))
+}
+
+// Step 5 (full resume): an ended launch that can be resumed. Only the human's
+// Stop, with the session Copilot persisted, in a worktree still on disk: never
+// one handed off to a terminal, lost, failed, ended by a budget (its budgets are
+// per-launch totals, §7) or ended for its permissions.
+const RESUMABLE_END = `status = 'ended' AND end_reason = 'stopped' AND acp_session IS NOT NULL
+                       AND (worktree_path IS NULL OR worktree_removed_at IS NULL)`
+// #451: one a budget ended, likewise kept, resumes only with a new allowance the human confirmed
+const BUDGET_END = `status = 'ended' AND end_reason IN ('budget:active_time', 'budget:tool_calls') AND acp_session IS NOT NULL
+                    AND (worktree_path IS NULL OR worktree_removed_at IS NULL)`
+
+/**
+ * #451: what main's confirmation added to a budget-ended launch's totals, bound to the row
+ * `revision` it showed, so an allowance never lands on a launch that changed since.
+ */
+export interface BudgetRaise {
+  revision: number
+  activeMs: number
+  toolCalls: number
+}
+
+/** What a resumed stopped launch was, so a refused start restores it exactly (restoreStoppedLaunch). */
+export interface StoppedEnd {
+  ended_at: string | null
+  end_reason: string | null
+  end_detail: string | null
+  stop_requested_at: string | null
+  driver_pid: number | null
+  budget_active_ms: number
+  budget_tool_calls: number
+}
+
+// A resumed launch's driver takes its row back, parked or resumably ended →
+// running, in one statement, so two Resume clicks cannot both start a driver on
+// it. `resumedFrom` says which, so a refused start puts it back as it was, and
+// `previous` holds an ended launch's end for that. #451: with a `raise`, only a
+// budget-ended launch still at the confirmed revision is taken, its totals rise by
+// exactly the allowance, and both must then exceed what it used.
+export function resumeLaunch(
+  db: Database.Database,
+  id: string,
+  driverPid: number,
+  raise?: BudgetRaise,
+): (LaunchRecord & { resumedFrom: 'parked' | 'ended'; previous: StoppedEnd | null }) | null {
+  if (!LAUNCH_ID.test(id)) return null
+  const where = raise
+    ? `id = @id AND revision = @revision AND ${BUDGET_END}
+       AND budget_active_ms + @addActive > active_ms AND budget_tool_calls + @addCalls > tool_calls`
+    : `id = @id AND (status = 'parked' OR (${RESUMABLE_END}))`
+  const params = { id, revision: raise?.revision ?? 0, addActive: raise?.activeMs ?? 0, addCalls: raise?.toolCalls ?? 0 }
+  return db.transaction(() => {
+    const prior = db.prepare(`SELECT status, ended_at, end_reason, end_detail, stop_requested_at, driver_pid, budget_active_ms, budget_tool_calls
+                                FROM launches WHERE ${where}`).get(params) as (StoppedEnd & { status: LaunchStatus }) | undefined
+    const before = prior?.status
+    if (!prior || (before !== 'parked' && before !== 'ended')) return null
+    const row = db.prepare(`UPDATE launches
+                               SET status = 'running', parked_at = NULL, park_reason = NULL, ended_at = NULL, end_reason = NULL, end_detail = NULL,
+                                   stop_requested_at = NULL, driver_pid = @pid, updated_at = @now, revision = revision + 1,
+                                   budget_active_ms = budget_active_ms + @addActive, budget_tool_calls = budget_tool_calls + @addCalls
+                             WHERE ${where}
+                         RETURNING *`).get({ ...params, pid: driverPid, now: new Date().toISOString() }) as (Omit<LaunchRecord, 'sessions'> & { sessions: string | null }) | undefined
+    // a Take over asked of an earlier driver that never took it is stale: this resume was asked after it
+    if (row) db.prepare(`DELETE FROM hook_watch_claims WHERE claim_key = ?`).run(`driver-handoff:${id}`)
+    if (!row) return null
+    const { status: _status, ...end } = prior
+    return { ...parseLaunch(row), resumedFrom: before, previous: before === 'ended' ? end : null }
+  }).immediate()
+}
+
+// A refused resume of an ended launch puts its end (and #451 its budgets) back
+// exactly as they were, only while this driver still holds the row it took (running, its pid).
+export function restoreStoppedLaunch(db: Database.Database, id: string, driverPid: number, previous: StoppedEnd): boolean {
+  return db.prepare(`UPDATE launches
+                        SET status = 'ended', ended_at = @ended_at, end_reason = @end_reason, end_detail = @end_detail,
+                            stop_requested_at = @stop_requested_at, driver_pid = @previous_pid,
+                            budget_active_ms = @budget_active_ms, budget_tool_calls = @budget_tool_calls, updated_at = @now, revision = revision + 1
+                      WHERE id = @id AND status = 'running' AND driver_pid = @driver_pid`).run({
+    ...previous, previous_pid: previous.driver_pid, id, driver_pid: driverPid, now: new Date().toISOString(),
+  }).changes === 1
+}
+
+export interface LaunchProgress {
+  childPgid?: number
+  childStartedAt?: string
+  hostPid?: number
+  sessions?: readonly string[]
+  activeMs?: number
+  toolCalls?: number
+}
+
+// What a running launch's driver reports as it learns it. Only the fields given
+// are written, and only while the launch runs.
+export function recordLaunchProgress(db: Database.Database, id: string, progress: LaunchProgress): boolean {
+  const fields: Array<[string, unknown]> = []
+  if (progress.childPgid !== undefined) fields.push(['child_pgid', progress.childPgid])
+  if (progress.childStartedAt !== undefined) fields.push(['child_started_at', progress.childStartedAt])
+  if (progress.hostPid !== undefined) fields.push(['host_pid', progress.hostPid])
+  if (progress.sessions !== undefined) fields.push(['sessions', JSON.stringify([...progress.sessions])])
+  if (progress.activeMs !== undefined) fields.push(['active_ms', Math.max(0, Math.round(progress.activeMs))])
+  if (progress.toolCalls !== undefined) fields.push(['tool_calls', Math.max(0, Math.round(progress.toolCalls))])
+  if (fields.length === 0) return false
+  // usage only ever grows: a driver's counters start from the row, and a write
+  // that knows less never takes the totals back
+  const set = fields.map(([column]) => (column === 'active_ms' || column === 'tool_calls' ? `${column} = MAX(${column}, ?)` : `${column} = ?`)).join(', ')
+  return db.prepare(`UPDATE launches SET ${set}, updated_at = ?, revision = revision + 1 WHERE id = ? AND status = 'running'`)
+    .run(...fields.map(([, value]) => value), new Date().toISOString(), id).changes === 1
+}
+
+// Park, not end (§7): the driver closed its idle child and exits; the row keeps
+// the ACP session (null when the session was never prompted, so it cannot be
+// loaded) and forgets the processes. A Stop that arrived meanwhile ends it.
+export function parkLaunch(
+  db: Database.Database,
+  id: string,
+  park: { acpSession: string | null; activeMs: number; toolCalls: number; reason?: string; forgetSession?: boolean },
+): LaunchStatus | null {
+  // a null session never erases the stored one (a park before a resume knew its
+  // session must keep it); only a session Copilot said does not exist is forgotten
+  const now = new Date().toISOString()
+  const row = db.prepare(`UPDATE launches
+                             SET status = CASE WHEN stop_requested_at IS NULL THEN 'parked' ELSE 'ended' END,
+                                 end_reason = CASE WHEN stop_requested_at IS NULL THEN NULL ELSE 'stopped' END,
+                                 parked_at = CASE WHEN stop_requested_at IS NULL THEN @now ELSE NULL END,
+                                 park_reason = CASE WHEN stop_requested_at IS NULL THEN @reason ELSE NULL END,
+                                 ended_at = CASE WHEN stop_requested_at IS NULL THEN NULL ELSE @now END,
+                                 acp_session = CASE WHEN @forget = 1 THEN @acp ELSE COALESCE(@acp, acp_session) END, active_ms = MAX(active_ms, @activeMs), tool_calls = MAX(tool_calls, @toolCalls),
+                                 driver_pid = NULL, child_pgid = NULL, child_started_at = NULL, host_pid = NULL,
+                                 updated_at = @now, revision = revision + 1
+                           WHERE id = @id AND status = 'running'
+                       RETURNING status`).get({
+    now, id, acp: park.acpSession, activeMs: Math.max(0, Math.round(park.activeMs)), toolCalls: Math.max(0, Math.round(park.toolCalls)),
+    reason: park.reason ?? null, forget: park.forgetSession === true ? 1 : 0,
+  }) as { status: LaunchStatus } | undefined
+  return row?.status ?? null
+}
+
+// Take over in Terminal (§3.5), the driver's end: Copilot has exited, so the
+// session is the terminal's now. Only a running launch with the session
+// Copilot persisted; a Stop that arrived meanwhile still ends it as stopped.
+export function handOffLaunch(
+  db: Database.Database,
+  id: string,
+  end: { acpSession: string; activeMs: number; toolCalls: number },
+): boolean {
+  const now = new Date().toISOString()
+  return db.prepare(`UPDATE launches
+                        SET status = 'ended', end_reason = CASE WHEN stop_requested_at IS NULL THEN 'handed_off' ELSE 'stopped' END,
+                            acp_session = @acp, ended_at = @now, parked_at = NULL, park_reason = NULL,
+                            active_ms = MAX(active_ms, @activeMs), tool_calls = MAX(tool_calls, @toolCalls),
+                            driver_pid = NULL, child_pgid = NULL, child_started_at = NULL, host_pid = NULL,
+                            updated_at = @now, revision = revision + 1
+                      WHERE id = @id AND status = 'running'`).run({
+    now, id, acp: end.acpSession, activeMs: Math.max(0, Math.round(end.activeMs)), toolCalls: Math.max(0, Math.round(end.toolCalls)),
+  }).changes === 1
+}
+
+// step 5 (full resume): `acpSession`, the session Copilot persisted, is kept so a
+// stopped launch can be resumed; a null one never erases a stored one
+export function endLaunch(
+  db: Database.Database,
+  id: string,
+  end: { reason: string; activeMs?: number; toolCalls?: number; detail?: string | null; acpSession?: string | null },
+): boolean {
+  const now = new Date().toISOString()
+  return db.prepare(`UPDATE launches
+                        SET status = 'ended', end_reason = @reason, end_detail = @detail, ended_at = @now, parked_at = NULL, park_reason = NULL,
+                            acp_session = COALESCE(@acp, acp_session),
+                            active_ms = MAX(active_ms, COALESCE(@activeMs, 0)), tool_calls = MAX(tool_calls, COALESCE(@toolCalls, 0)),
+                            updated_at = @now, revision = revision + 1
+                      WHERE id = @id AND status <> 'ended'`).run({
+    now, id, reason: end.reason, detail: end.detail ? Array.from(end.detail).slice(0, 300).join('') : null,
+    activeMs: end.activeMs === undefined ? null : Math.max(0, Math.round(end.activeMs)),
+    toolCalls: end.toolCalls ?? null, acp: end.acpSession ?? null,
+  }).changes === 1
+}
+
+// Stop (§6): idempotent and not pinned, because per-turn usage writes move the
+// revision. A running launch gets `stop_requested_at` once (its driver polls it
+// and stops in order); a parked one has no driver, so it ends here. Returns what
+// the launch is now: 'stopping', 'ended', or null for an unknown or ended one.
+export function requestLaunchStop(db: Database.Database, id: string): 'stopping' | 'ended' | null {
+  if (!LAUNCH_ID.test(id)) throw new Error('launch id must be a lowercase UUID')
+  const now = new Date().toISOString()
+  return db.transaction((): 'stopping' | 'ended' | null => {
+    const status = db.prepare(`SELECT status FROM launches WHERE id = ?`).pluck().get(id) as LaunchStatus | undefined
+    if (status === 'running') {
+      db.prepare(`UPDATE launches SET stop_requested_at = ?, updated_at = ?, revision = revision + 1
+                   WHERE id = ? AND status = 'running' AND stop_requested_at IS NULL`).run(now, now, id)
+      return 'stopping'
+    }
+    if (status === 'parked') {
+      db.prepare(`UPDATE launches SET status = 'ended', end_reason = 'stopped', stop_requested_at = ?, ended_at = ?,
+                         parked_at = NULL, park_reason = NULL, updated_at = ?, revision = revision + 1
+                   WHERE id = ? AND status = 'parked'`).run(now, now, now, id)
+      return 'ended'
+    }
+    return null
+  }).immediate()
+}
+
+// #432 PR 5: the reasoning effort a launch actually runs with, once the driver
+// fell back to none because Copilot refused the model's effort; only a launch
+// that left it to Copilot's setting.
+export function recordLaunchEffort(db: Database.Database, id: string, effort: string): boolean {
+  return db.prepare(`UPDATE launches SET reasoning_effort = ?, updated_at = ?, revision = revision + 1
+                      WHERE id = ? AND reasoning_effort IS NULL`).run(effort, new Date().toISOString(), id).changes === 1
+}
+
+// #432 §6: the driver's summary of its launch's worktree, written only when
+// something but its time changed, so /api/launches is rebuilt only then. One
+// conditioned statement; a malformed stored summary is replaced.
+export function recordWorktreeSummary(
+  db: Database.Database,
+  id: string,
+  summary: { v: 1; at: string; head: string; branch: string; ahead: number; behind: number; files: number; dirty: number },
+): boolean {
+  const json = JSON.stringify(summary)
+  return db.prepare(`UPDATE launches SET worktree_summary = @json, updated_at = @now, revision = revision + 1
+                      WHERE id = @id AND worktree_path IS NOT NULL AND worktree_removed_at IS NULL
+                        AND (worktree_summary IS NULL OR NOT json_valid(worktree_summary)
+                             OR json_remove(worktree_summary, '$.at') IS NOT json_remove(@json, '$.at'))`)
+    .run({ json, now: new Date().toISOString(), id }).changes === 1
+}
+
+// #432: the launch's worktree is gone from disk (an undo after a refused start,
+// or Remove worktree). Once only; the branch is never touched here.
+export function markWorktreeRemoved(db: Database.Database, id: string): boolean {
+  const now = new Date().toISOString()
+  return db.prepare(`UPDATE launches SET worktree_removed_at = ?, updated_at = ?, revision = revision + 1
+                      WHERE id = ? AND worktree_path IS NOT NULL AND worktree_removed_at IS NULL`).run(now, now, id).changes === 1
+}
+
+// Whether a launch's driver holds a fresh `driver:` lease: a running launch
+// whose driver does not is lost (crashed or killed).
+export function launchDriverAlive(db: Database.Database, id: string): boolean {
+  if (!LAUNCH_ID.test(id)) return false
+  return db.prepare(`SELECT 1 FROM hook_watch_claims WHERE claim_key LIKE 'driver:%' AND substr(token, 1, 37) = ? AND claimed_at >= ?`)
+    .get(`${id}:`, freshLeaseCutoff(Date.now())) !== undefined
+}
+
+// ── a launch's approval asks (§4.2–4.3) ─────────────────────────────────────
+//
+// An app launch files each ask as an `approval` question in `@sessions` and
+// records, in launch_asks (which no snapshot reads), the launch it belongs to,
+// the response revision at filing and the options it offers by id. Electron
+// main signs an approval over exactly that revision and option (launch-sign.ts),
+// and the driver accepts nothing else.
+export interface LaunchAskOption {
+  optionId: string
+  label: string
+}
+
+export function fileLaunchAsk(
+  db: Database.Database,
+  launchId: string,
+  item: NewItem,
+  options: readonly LaunchAskOption[],
+): { itemId: string; revision: number } {
+  if (!LAUNCH_ID.test(launchId)) throw new Error('launch id must be a lowercase UUID')
+  if (!isReservedProject(item.project)) throw new Error('a launch ask lives in a reserved project')
+  return db.transaction(() => {
+    const itemId = insertItemRow(db, item)
+    const revision = db.prepare(`SELECT response_revision FROM items WHERE id = ?`).pluck().get(itemId) as number
+    db.prepare(`INSERT INTO launch_asks (item_id, launch_id, revision, options, created_at) VALUES (?, ?, ?, ?, ?)`)
+      .run(itemId, launchId, revision, JSON.stringify(options), new Date().toISOString())
+    return { itemId, revision }
+  }).immediate()
+}
+
+// The ask's end, whatever settled it: the item resolved with the outcome and its
+// mapping removed, so nothing can be signed for it any more.
+export function settleLaunchAsk(db: Database.Database, itemId: string, outcome: string): void {
+  db.transaction(() => {
+    resolveItem(db, itemId, outcome)
+    db.prepare(`DELETE FROM launch_asks WHERE item_id = ?`).run(itemId)
+  }).immediate()
+}
+
+// Whether this item is an app launch's approval ask (still mapped in
+// launch_asks): only Electron main's signed answer counts for it, so the
+// viewer's ordinary reply and note routes refuse it rather than record an
+// answer nothing will act on.
+export function isLaunchAsk(db: Database.Database, itemId: string): boolean {
+  return db.prepare(`SELECT 1 FROM launch_asks WHERE item_id = ?`).get(itemId) !== undefined
+}
+
+export interface LaunchAskReply {
+  item_id: string
+  status: Status
+  reply: string | null
+  reply_context: string | null
+  response_revision: number
+}
+
+// The current answer on each of a launch's asks, for its driver to verify.
+export function listLaunchAskReplies(db: Database.Database, launchId: string): LaunchAskReply[] {
+  return db.prepare(`SELECT a.item_id, i.status, i.reply, i.reply_context, i.response_revision
+                       FROM launch_asks a JOIN items i ON i.id = a.item_id
+                      WHERE a.launch_id = ? ORDER BY a.created_at ASC, a.item_id ASC`).all(launchId) as LaunchAskReply[]
+}
+
+// Close on a lost launch (§6, §7): only while the launch still says running and
+// no driver holds its fresh lease, re-checked inside this .immediate()
+// transaction, it ends the launch (`lost`), resolves its open asks and returns
+// the child's process group and start identity, which Electron main kills only
+// when that process still started then.
+export type CloseLostResult =
+  | { ok: true; childPgid: number | null; childStartedAt: string | null }
+  | { ok: false; reason: 'unknown' | 'not_running' | 'driver_alive' }
+
+export function closeLostLaunch(db: Database.Database, id: string): CloseLostResult {
+  if (!LAUNCH_ID.test(id)) return { ok: false, reason: 'unknown' }
+  return db.transaction((): CloseLostResult => {
+    const row = db.prepare(`SELECT status, child_pgid, child_started_at FROM launches WHERE id = ?`).get(id) as
+      { status: LaunchStatus; child_pgid: number | null; child_started_at: string | null } | undefined
+    if (!row) return { ok: false, reason: 'unknown' }
+    if (row.status !== 'running') return { ok: false, reason: 'not_running' }
+    if (launchDriverAlive(db, id)) return { ok: false, reason: 'driver_alive' }
+    const now = new Date().toISOString()
+    db.prepare(`UPDATE launches SET status = 'ended', end_reason = 'lost', ended_at = ?, updated_at = ?, revision = revision + 1
+                 WHERE id = ? AND status = 'running'`).run(now, now, id)
+    const asks = db.prepare(`SELECT item_id FROM launch_asks WHERE launch_id = ?`).pluck().all(id) as string[]
+    for (const item of asks) resolveItem(db, item, 'Session lost: its driver stopped.')
+    db.prepare(`DELETE FROM launch_asks WHERE launch_id = ?`).run(id)
+    return { ok: true, childPgid: row.child_pgid, childStartedAt: row.child_started_at }
+  }).immediate()
+}
+
+// What Electron main signs an approval over (§4.3): the ask's launch, the
+// response revision at filing and the options it offers, with the item's
+// current state. Null when the ask is not a launch's, or is settled.
+export interface LaunchAsk {
+  item_id: string
+  launch_id: string
+  filed_revision: number
+  options: LaunchAskOption[]
+  response_revision: number
+}
+
+export function getLaunchAsk(db: Database.Database, itemId: string): LaunchAsk | null {
+  const row = db.prepare(`SELECT a.item_id, a.launch_id, a.revision AS filed_revision, a.options, i.response_revision
+                            FROM launch_asks a JOIN items i ON i.id = a.item_id
+                           WHERE a.item_id = ? AND i.status = 'open' AND i.kind = 'question'`)
+    .get(itemId) as (Omit<LaunchAsk, 'options'> & { options: string }) | undefined
+  if (!row) return null
+  let options: LaunchAskOption[] = []
+  try {
+    const parsed: unknown = JSON.parse(row.options)
+    if (Array.isArray(parsed)) {
+      options = parsed.filter((o): o is LaunchAskOption => typeof o === 'object' && o !== null
+        && typeof (o as LaunchAskOption).optionId === 'string' && typeof (o as LaunchAskOption).label === 'string')
+    }
+  } catch { /* unreadable: no option can be answered */ }
+  return { ...row, options }
+}
+
+// Main's signed answer (§4.3): `reply = <option id>`, `reply_context = <signature>`,
+// written only while the ask is open at the revision the page showed and offers
+// that option. The signature is the authority, and the driver checks it; this
+// write proves nothing by itself.
+export type LaunchAskAnswerResult = { ok: true } | { ok: false; reason: 'unknown' | 'revision' | 'option' | 'signature' }
+
+export function answerLaunchAsk(
+  db: Database.Database,
+  itemId: string,
+  answer: { revision: number; optionId: string; signature: string },
+): LaunchAskAnswerResult {
+  if (!/^[0-9a-f]{64}$/.test(answer.signature)) return { ok: false, reason: 'signature' }
+  return db.transaction((): LaunchAskAnswerResult => {
+    const ask = getLaunchAsk(db, itemId)
+    if (!ask) return { ok: false, reason: 'unknown' }
+    if (ask.response_revision !== answer.revision) return { ok: false, reason: 'revision' }
+    if (!ask.options.some((o) => o.optionId === answer.optionId)) return { ok: false, reason: 'option' }
+    const written = replyItem(db, itemId, answer.optionId, answer.signature)
+    return written.ok ? { ok: true } : { ok: false, reason: 'unknown' }
+  }).immediate()
+}
+
+// The folders a launch may start in from a project the hub knows (§8): every
+// repository folder an item or plan recorded (#324), with the newest project
+// name seen there, at most 200. A launch's own worktree is not one (#432): its
+// sessions record it as their repo_root.
+export function listLaunchFolders(db: Database.Database): Array<{ root: string; project: string }> {
+  return db.prepare(`SELECT root, project FROM (
+      SELECT repo_root AS root, project, MAX(created_at) AS at FROM (
+        SELECT repo_root, project, created_at FROM items WHERE repo_root IS NOT NULL AND repo_root <> ''
+        UNION ALL
+        SELECT repo_root, project, created_at FROM boards WHERE repo_root IS NOT NULL AND repo_root <> ''
+      ) GROUP BY repo_root
+    ) WHERE project NOT IN ('@sessions', '@mesh')
+        AND root NOT IN (SELECT worktree_path FROM launches WHERE worktree_path IS NOT NULL)
+      ORDER BY at DESC, root ASC LIMIT 200`).all() as Array<{ root: string; project: string }>
+}
+
+// ── issue #411: the human's messages to one MCP session ─────────────────────
+//
+// A message addresses one MCP server's `session` (one CLI process, subagents
+// included) and is delivered only to it: every read and write the MCP side
+// makes is conditioned on the caller's own session id, which no tool accepts as
+// an argument. Its text never changes once sent, so the status is the only pin
+// delivery needs. The first-delivery stamp never moves and is not an
+// acknowledgement: an open message comes back on every pending() until the
+// addressed session acks it. Design:
+// docs/superpowers/specs/2026-10-30-session-messages-design.md.
+export const MESSAGE_MAX_TEXT = 4000
+const MESSAGE_MAX_OPEN = 20
+const MESSAGE_MAX_OPEN_TEXT = 8000
+export const MESSAGE_MAX_OUTCOME = 240
+// closed messages /api/messages carries, newest first
+const RECENT_CLOSED_MESSAGES = 100
+const MESSAGE_RETENTION_MS = 30 * 24 * 60 * 60000
+
+export type SessionMessageStatus = 'open' | 'acknowledged' | 'withdrawn'
+
+export interface SessionMessage {
+  id: string
+  session: string
+  project: string
+  stream: string
+  agent: string
+  text: string
+  created_at: string
+  revision: number
+  status: SessionMessageStatus
+  delivered_at: string | null
+  delivered_by: string | null
+  outcome: string
+  closed_at: string | null
+}
+
+export type SendMessageRefusal =
+  | 'id_conflict' | 'session_gone' | 'session_cannot_receive' | 'too_many_open' | 'too_much_open'
+
+export type SendMessageResult =
+  | { ok: true; message: SessionMessage; replayed: boolean }
+  | { ok: false; reason: SendMessageRefusal }
+
+export type MessageChangeResult =
+  | { ok: true; message: SessionMessage }
+  | { ok: false; reason: 'not_found' | 'revision_changed' }
+  | { ok: false; reason: 'not_open'; status: SessionMessageStatus; outcome: string }
+
+const MESSAGE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+
+export function validMessageId(id: unknown): id is string {
+  return typeof id === 'string' && MESSAGE_ID.test(id)
+}
+
+export function validMessageText(text: unknown): text is string {
+  return typeof text === 'string' && text.trim() !== '' && text.length <= MESSAGE_MAX_TEXT
+}
+
+function getSessionMessage(db: Database.Database, id: string): SessionMessage | undefined {
+  return db.prepare(`SELECT * FROM session_messages WHERE id = ?`).get(id) as SessionMessage | undefined
+}
+
+// The human's send, from the viewer. One .immediate() transaction: it reads
+// before it writes. An exact replay (same id, session and text) is answered
+// before any other check, so a retry of an unconfirmed send succeeds even when
+// the message filled the caps or the session has since ended.
+export function sendSessionMessage(
+  db: Database.Database,
+  input: { id: string; session: string; text: string },
+): SendMessageResult {
+  if (!validMessageId(input.id)) throw new Error('message id must be a lowercase UUID')
+  if (!validMessageText(input.text)) throw new Error(`message text must be 1-${MESSAGE_MAX_TEXT} characters`)
+  return db.transaction((): SendMessageResult => {
+    const existing = getSessionMessage(db, input.id)
+    if (existing) {
+      return existing.session === input.session && existing.text === input.text
+        ? { ok: true, message: existing, replayed: true }
+        : { ok: false, reason: 'id_conflict' }
+    }
+    const nowMs = Date.now()
+    const now = new Date(nowMs).toISOString()
+    // every send but a replay prunes the hub's month-old messages first, so old
+    // open ones never count toward this session's caps
+    const old = new Date(nowMs - MESSAGE_RETENTION_MS).toISOString()
+    db.prepare(`DELETE FROM session_messages
+                 WHERE (status <> 'open' AND closed_at < ?) OR (status = 'open' AND created_at < ?)`).run(old, old)
+    const cutoff = new Date(nowMs - PRESENCE_STALE_MINUTES * 60000).toISOString()
+    const presence = db.prepare(`SELECT project, stream, agent, receives_messages FROM activity
+                                  WHERE session = ? AND ended_at IS NULL AND updated_at >= ?`)
+      .get(input.session, cutoff) as { project: string; stream: string; agent: string; receives_messages: number | null } | undefined
+    if (!presence) return { ok: false, reason: 'session_gone' }
+    if (presence.receives_messages !== 1) return { ok: false, reason: 'session_cannot_receive' }
+    const open = db.prepare(`SELECT text FROM session_messages WHERE session = ? AND status = 'open'`)
+      .pluck().all(input.session) as string[]
+    if (open.length >= MESSAGE_MAX_OPEN) return { ok: false, reason: 'too_many_open' }
+    if (open.reduce((sum, text) => sum + text.length, 0) + input.text.length > MESSAGE_MAX_OPEN_TEXT) {
+      return { ok: false, reason: 'too_much_open' }
+    }
+    db.prepare(`INSERT INTO session_messages (id, session, project, stream, agent, text, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)`)
+      .run(input.id, input.session, presence.project, presence.stream, presence.agent, input.text, now)
+    return { ok: true, message: getSessionMessage(db, input.id)!, replayed: false }
+  }).immediate()
+}
+
+// The open messages addressed to this session, oldest first.
+export function listPendingMessages(db: Database.Database, session: string): SessionMessage[] {
+  return db.prepare(`SELECT * FROM session_messages WHERE session = ? AND status = 'open'
+                      ORDER BY created_at ASC, id ASC`).all(session) as SessionMessage[]
+}
+
+// The first delivery to the addressed session. COALESCE keeps the first stamp,
+// whose age is the human's evidence; true means the message is still open, so
+// it is safe to hand over (a withdrawn one is dropped). Not an acknowledgement.
+export function markMessageDelivered(db: Database.Database, id: string, session: string, reader: string): boolean {
+  return db.prepare(`UPDATE session_messages
+                        SET delivered_at = COALESCE(delivered_at, ?), delivered_by = COALESCE(delivered_by, ?)
+                      WHERE id = ? AND session = ? AND status = 'open'`)
+    .run(new Date().toISOString(), reader, id, session).changes === 1
+}
+
+function messageRefusal(db: Database.Database, id: string, session?: string): MessageChangeResult {
+  const message = getSessionMessage(db, id)
+  // another session's message reads as not found: its existence is not this caller's to learn
+  if (!message || (session !== undefined && message.session !== session)) return { ok: false, reason: 'not_found' }
+  if (message.status !== 'open') return { ok: false, reason: 'not_open', status: message.status, outcome: message.outcome }
+  return { ok: false, reason: 'revision_changed' }
+}
+
+// The addressed session's acknowledgement, with its one-line outcome.
+export function ackMessage(db: Database.Database, input: { id: string; session: string; outcome: string }): MessageChangeResult {
+  const outcome = input.outcome.trim()
+  if (!outcome || outcome.length > MESSAGE_MAX_OUTCOME) throw new Error(`outcome must be 1-${MESSAGE_MAX_OUTCOME} characters`)
+  return db.transaction((): MessageChangeResult => {
+    const changed = db.prepare(`UPDATE session_messages
+                                   SET status = 'acknowledged', outcome = ?, closed_at = ?, revision = revision + 1
+                                 WHERE id = ? AND session = ? AND status = 'open'`)
+      .run(outcome, new Date().toISOString(), input.id, input.session).changes
+    return changed === 1 ? { ok: true, message: getSessionMessage(db, input.id)! } : messageRefusal(db, input.id, input.session)
+  }).immediate()
+}
+
+// The human takes an open message back, pinned to the revision they saw.
+export function withdrawSessionMessage(db: Database.Database, id: string, revision: number): MessageChangeResult {
+  return db.transaction((): MessageChangeResult => {
+    const changed = db.prepare(`UPDATE session_messages
+                                   SET status = 'withdrawn', closed_at = ?, revision = revision + 1
+                                 WHERE id = ? AND status = 'open' AND revision = ?`)
+      .run(new Date().toISOString(), id, revision).changes
+    return changed === 1 ? { ok: true, message: getSessionMessage(db, id)! } : messageRefusal(db, id)
+  }).immediate()
+}
+
+// GET /api/messages: every open message, oldest first, and the newest closed
+// ones. Built from the database alone, so a store token validates it.
+export function listSessionMessages(db: Database.Database): { open: SessionMessage[]; closed: SessionMessage[] } {
+  return {
+    open: db.prepare(`SELECT * FROM session_messages WHERE status = 'open' ORDER BY created_at ASC, id ASC`)
+      .all() as SessionMessage[],
+    closed: db.prepare(`SELECT * FROM session_messages WHERE status <> 'open' ORDER BY closed_at DESC, id DESC LIMIT ?`)
+      .all(RECENT_CLOSED_MESSAGES) as SessionMessage[],
+  }
+}
+
+// Issue #412 — a driver pushes the text itself, so it needs the open messages
+// of the sessions it drives with their text (listOpenMessages carries ids only).
+export function listOpenMessagesWithText(db: Database.Database, sessions: readonly string[]): SessionMessage[] {
+  if (sessions.length === 0) return []
+  return db.prepare(`SELECT * FROM session_messages
+                      WHERE status = 'open' AND session IN (SELECT value FROM json_each(?))
+                      ORDER BY created_at ASC, id ASC`).all(JSON.stringify(sessions)) as SessionMessage[]
+}
+
+export type ReaddressResult =
+  | { ok: true; moved: string[] }
+  | { ok: false; reason: 'same_session' | 'from_live' | 'not_one_launch' | 'target_not_launch_host' }
+
+// Issue #412 (§5.2) — the one exception to #411's "a message to an ended session
+// is not re-addressed": proof by launch. A driver that proved by ancestry that
+// `from` (ended) and `to` (live) are one launch's sessions moves `from`'s open
+// messages to `to`. One .immediate() transaction, conditioned on `from` being
+// ended (its presence ended or gone, or its server process dead as the driver
+// reports), on both `driven:` leases carrying `launchId` (whichever driver
+// process wrote them), and on `to` being live with `host_pid` = the launch's
+// own native host, never a nested CLI. No other path re-addresses.
+export function readdressMessages(
+  db: Database.Database,
+  input: { from: string; to: string; launchId: string; hostPid: number; fromServerDead?: boolean },
+): ReaddressResult {
+  if (!LAUNCH_ID.test(input.launchId)) throw new Error('launch id must be a lowercase UUID')
+  if (input.from === input.to) return { ok: false, reason: 'same_session' }
+  return db.transaction((): ReaddressResult => {
+    const from = db.prepare(`SELECT ended_at FROM activity WHERE session = ?`).get(input.from) as { ended_at: string | null } | undefined
+    if (from && from.ended_at === null && input.fromServerDead !== true) return { ok: false, reason: 'from_live' }
+    const launchOf = (session: string): string | undefined => {
+      const token = db.prepare(`SELECT token FROM hook_watch_claims WHERE claim_key = ?`).pluck().get(`driven:${session}`) as string | undefined
+      return token?.split(':')[0]
+    }
+    if (launchOf(input.from) !== input.launchId || launchOf(input.to) !== input.launchId) return { ok: false, reason: 'not_one_launch' }
+    const to = db.prepare(`SELECT host_pid FROM activity WHERE session = ? AND ended_at IS NULL`).get(input.to) as { host_pid: number | null } | undefined
+    if (!to || to.host_pid !== input.hostPid) return { ok: false, reason: 'target_not_launch_host' }
+    const moved = db.prepare(`UPDATE session_messages SET session = ? WHERE session = ? AND status = 'open' RETURNING id`)
+      .pluck().all(input.to, input.from) as string[]
+    return { ok: true, moved: moved.sort() }
+  }).immediate()
+}
+
+// What a Claude Code hook may know: which messages to its linked servers are
+// still open. Ids only; a hook never reads or prints the text.
+export function listOpenMessages(db: Database.Database, sessions: readonly string[]): Array<{ id: string; session: string }> {
+  if (sessions.length === 0) return []
+  return db.prepare(`SELECT id, session FROM session_messages
+                      WHERE status = 'open' AND session IN (SELECT value FROM json_each(?))
+                      ORDER BY created_at ASC, id ASC`).all(JSON.stringify(sessions)) as Array<{ id: string; session: string }>
 }
 
 // ── activity spans: truthful claim intervals, read-only for the dashboard ────
@@ -4541,11 +5804,15 @@ export interface ClosedProject {
 }
 
 // Idempotent: re-closing after an implicit reopen simply re-stamps closed_at.
-export function closeProject(db: Database.Database, project: string): void {
+// A reserved project is refused (false): closing `@sessions` would mute every
+// driven session's approvals (#412).
+export function closeProject(db: Database.Database, project: string): boolean {
+  if (isReservedProject(project)) return false
   db.prepare(
     `INSERT INTO projects (project, closed_at) VALUES (?, ?)
      ON CONFLICT(project) DO UPDATE SET closed_at = excluded.closed_at`,
   ).run(project, new Date().toISOString())
+  return true
 }
 
 export function reopenProject(db: Database.Database, project: string): void {
@@ -4593,6 +5860,9 @@ export function listClosedProjects(db: Database.Database): ClosedProject[] {
 // content arrives. Closing is the human's explicit act, and one new flag undoes
 // it — but "nothing can be permanently muted" is not true of that one case, and
 // saying otherwise would be an overclaim.
+//
+// A reserved project (#412) is never closed, even when an older viewer sharing
+// the hub wrote the row: closing `@sessions` would mute every driver's approvals.
 export function closedProjects(db: Database.Database): string[] {
   const rows = db
     .prepare(
@@ -4602,5 +5872,5 @@ export function closedProjects(db: Database.Database): string[] {
         ORDER BY p.project`,
     )
     .all() as { project: string }[]
-  return rows.map((r) => r.project)
+  return rows.map((r) => r.project).filter((project) => !isReservedProject(project))
 }

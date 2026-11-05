@@ -83,7 +83,7 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   the rows that link an issue (identity and content times) or hold one of their
   project's 4 newest outcomes plus ties (with the outcome, its stamps and what a
   Handoffs outcome card shows: note, next step, owner, options), and per plan the
-  outcomes it omits with their newest stamp, so counts, the rail, issue activity
+  outcomes it omits with their newest stamp, so counts, the session cards, issue activity
   labels, the Dashboard's default lens and Handoffs' cards read as the complete
   list draws them; a surface that draws a row field from the brief needs it in the
   brief's select. Only `load()` reads the complete `/api/boards/archived`, while
@@ -134,7 +134,16 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   database alone because the PR poller writes them through `store.ts` and the
   previews it keeps follow open items and active plans, and
   `/api/boards/archived/summary` (issue #299, below), the ninth: archived plans
-  in brief, a path of its own beside the complete archived list. Any other query string
+  in brief, a path of its own beside the complete archived list, and `/api/messages`
+  (issue #411, `delivery-and-responses.md`), the tenth: every open session message and
+  the 100 newest closed ones, over the whole-table `session_messages` domain, whose
+  `delivered_at`/`delivered_by` are restamped columns, so `pending()` re-delivering a
+  message on every poll rebuilds nothing, and `/api/launches` (issue #412 step 3,
+  `driven-sessions.md`), the eleventh: every running and parked launch and the 50 newest
+  ended ones, launch facts only (no prompt, process ids or ACP session id, and no
+  clock-derived state), over the whole-table `launches` domain. Its per-launch reads
+  (`/api/launches/:id`, which adds whether the driver's lease is fresh, and
+  `/api/launches/:id/prompt`) are fresh. `launch_asks` is read by no snapshot. Any other query string
   keeps the default items or boards response. The dock watcher reads its two
   projections through `electron/conditional-read.cjs`: each read sends the
   validator its last 200 carried and reuses what it parsed on a 304, an untagged
@@ -176,13 +185,14 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   full-fetch behavior, malformed replies fail explicitly, and no snapshot content
   is persisted to browser storage (the human's unsent drafts, #279, are not snapshot
   content). Derive mutable view state rather than changing
-  authoritative cached records. A poll tick starts its eight reads together (#161)
+  authoritative cached records. A poll tick starts its nine reads together (#161)
   and applies nothing until all settle: history, closed projects, links (read as a
   snapshot since #288, its body through `linksBody`, so a 404, a network error or
-  a refused body is no links) and the sub-issue graph (#103) keep their
+  a refused body is no links), the sub-issue graph (#103) and the session messages
+  (#411, `messagesBody`: the same three mean no messages) keep their
   fallbacks, any other failure still fails the whole tick (reported in the old
   serial order) without blanking the frame, and `loadGeneration` still discards
-  an older tick that finishes late. Since #299 the archived read among the eight
+  an older tick that finishes late. Since #299 the archived read among the nine
   is the brief; the complete archived list, like older closed history, is an
   extra read only while a surface needs it.
 - **A write rebuilds only the snapshots it can change (issue #297).**
@@ -402,8 +412,18 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   `stopItemWatch`/`stopBoardRowWatch`; pins for later (#247): `pinItem`/`pinBoardRow`;
   projects: `closeProject`/`reopenProject`/`listClosedProjects`/`closedProjects`;
   issue snapshots (#103): `upsertIssueSnapshot`/`recordIssueFailure`/`listIssueSnapshots`/
-  `listIssueEntities`/`pruneIssueSnapshots`/`claimIssueRefresh`/`completeIssueRefresh` — plus `openDb`. No raw SQL anywhere else. To change
+  `listIssueEntities`/`pruneIssueSnapshots`/`claimIssueRefresh`/`completeIssueRefresh`;
+  driven sessions (#412): `isReservedProject`/`isDrivenSession` — plus `openDb`. No raw SQL anywhere else. To change
   storage, reimplement this module; nothing else touches SQLite.
+- **Reserved projects are filtered in the store (issue #412).** `@sessions` and `@mesh`
+  (exactly those, `isReservedProject`) hold a driver's approval alerts and the mesh's asks.
+  `listPending`, `listPendingRows` and `listUnansweredBoardRows` return nothing for one,
+  `listSessionQuestions` skips items filed in one, `closeProject` refuses one and
+  `closedProjects()` never reports one. The viewer's reads (`listItems`, `listItemsPage`,
+  `listBoards`, the snapshots) are unchanged, so the human sees them and attention counts
+  them. No column, table or trigger was added: a driver's leases (`driven:<session>`,
+  token `<launch id>:<driver pid>:<nonce>`, fresh for 90 s) live in `hook_watch_claims`,
+  which no snapshot reads.
 - **`store.ts`/`mcp.ts`/`viewer.ts` inverse round-trip:** the store's `Item` and
   `BoardWithRows` shapes are the contract shared by MCP writes/reads and viewer reads.
   Change them in `store.ts` and update both consumers (+ `group.ts` for items;

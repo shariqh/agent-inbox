@@ -26,6 +26,7 @@ const SCRIPTS = [
   'prune-runtimes.sh',
   'runtime-payload.mjs',
   'runtime-config.mjs',
+  'runtime-pins.mjs',
   'setup-filesystem.cjs',
   'setup-lock.sh',
   'run-isolated.mjs',
@@ -68,8 +69,8 @@ export function hooksHome(): HooksHome {
   }
 }
 
-/** Write a runtime of `version` for this host at `dir` and manifest it; `docs` lets install-agents.sh run from it too. */
-export function stageRuntime(dir: string, version: string, { docs = false } = {}): StagedRuntime {
+/** Write a runtime of `version` for this host at `dir` and manifest it; `docs` lets install-agents.sh run from it too, `driver` adds the driver's stubs. */
+export function stageRuntime(dir: string, version: string, { docs = false, driver = false } = {}): StagedRuntime {
   mkdirSync(join(dir, 'bin'), { recursive: true })
   writeFileSync(join(dir, 'bin', 'node'), `#!/bin/sh\nexec '${process.execPath}' "$@"\n`)
   chmodSync(join(dir, 'bin', 'node'), 0o755)
@@ -77,6 +78,10 @@ export function stageRuntime(dir: string, version: string, { docs = false } = {}
   writeFileSync(join(dir, 'dist', 'hook-cli.js'), "if (process.argv[2] === 'selftest') process.stdout.write('ok\\n')\n")
   writeFileSync(join(dir, 'dist', 'mcp-server.js'), 'process.exit(0)\n')
   writeFileSync(join(dir, 'dist', 'watch-cli.js'), 'process.exit(0)\n')
+  if (driver) {
+    writeFileSync(join(dir, 'dist', 'driver-cli.js'), 'process.exit(0)\n')
+    writeFileSync(join(dir, 'dist', 'launch-spec.js'), 'export {}\n')
+  }
   writeFileSync(join(dir, 'package.json'), JSON.stringify({ type: 'module' }))
   mkdirSync(join(dir, 'scripts'), { recursive: true })
   for (const script of SCRIPTS) copyFileSync(join(REPO, 'scripts', script), join(dir, 'scripts', script))

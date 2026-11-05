@@ -25,6 +25,10 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   Its wait backs off statelessly from the ask's age through one function
   (`watchTimeoutMs`) that both the contract and the watcher evaluate (#217).
 
+- Hooks never read a reserved project (#412): a driver's `@sessions` approval
+  alerts carry the driven agent's MCP session, yet no hook reports, wakes on or
+  watches one, and a folder named `@sessions` or `@mesh` gets no hook behaviour.
+
 ## Invariants in detail
 
 - **The hooks runtime is a SECOND OS process on the same db — and it still goes through
@@ -33,7 +37,7 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   else: **no CLI shell-out, no raw SQL** (the untracked shell hooks it replaces did exactly
   that; `test/hook.test.ts` now pins the absence). Its stdout rule is the inverse of the MCP
   server's: not "write nothing" but **"write EXACTLY the documented payload"** —
-  `notification`/`session-end`/`sweep`/`watch` emit zero bytes, `prompt-submit` and `stop`
+  `notification`/`session-end`/`activity`/`sweep`/`watch` emit zero bytes, `prompt-submit` and `stop`
   exactly one JSON object, `session-start` one line of text. Two things are non-negotiable:
   `stop` must never block when `stop_hook_active` is true (a double block traps the human in
   an un-exitable session), and `watch`'s **exit code 2** must reach the harness — it is the
@@ -93,6 +97,46 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   for good (exit 3, one stdout line telling the agent not to re-arm), then the deadline
   (exit 124, unchanged). `board_get({watch:true})` returns no watch for a row stopped for
   good: re-arming it would only cost another wake.
+
+- **Hooks ignore the reserved projects (issue #412, driven sessions §4.2).** A driver files
+  its approval alerts in `@sessions` with the driven agent's own MCP `session`, so a hook
+  linked to that server would otherwise find them through `listSessionQuestions`. The
+  store keeps them out of every hook read: `listPending`, `listPendingRows` and
+  `listUnansweredBoardRows` return nothing for a reserved project, and
+  `listSessionQuestions` skips items filed in one. `sessionScope` drops reserved projects
+  from the linked servers' set, and every subcommand but `selftest` returns at once,
+  writing nothing, when the cwd project itself is reserved (a folder with no remote named
+  `@sessions` or `@mesh`), so no backstop is filed where no reader could clear it. Pinned
+  in `test/hook.test.ts` ("hook: reserved projects (#412)").
+- **The hooks wake a linked session for the human's messages (issue #411).** Only a
+  linked hook (#253) knows its servers, so only it counts messages; an unlinked one
+  ignores them. It counts OPEN messages to those servers (`listOpenMessages`, ids
+  only, never the text), never undelivered ones: a subagent's `pending()` stamps
+  delivery for a message the top-level agent never saw. `prompt-submit` and
+  `session-start` remind about every open message on each event. `stop` blocks for
+  the open messages it has not yet blocked for, never on `stop_hook_active`, and
+  records them in its OWN file, `<state>/host-<pid>.nudged.json`, keyed by the Claude
+  Code process the link proved and written only by `stop` (temp file and rename),
+  holding only ids still open. Not in the session marker: `readMarker` rebuilds a fixed
+  shape, the notification hooks rewrite it whole (the commit after its grace window),
+  and it is keyed by the harness session id, which `/clear` changes. So `stop` blocks
+  once per message, and one the agent ignores or cannot ack never loops a Stop. `watch`
+  baselines the messages open when it arms (`stop`, on the same event, owns those, as
+  `answered` excludes answers), re-reads the live servers of its host on every poll (a
+  server restarted under the same Claude Code process stays covered), and wakes with
+  exit 2 for any other open message, unless superseded. Its lease keeps the key
+  `host:<pid>`, so supersession is unchanged, and its token starts `m1:`: every hook
+  since #253 claims the same key without waking for messages, so only a marked token may
+  ever tell the human a message will wake the session. The nudge adds one clause per
+  kind; with no messages it is byte-identical to before. A message that arrives during a
+  `stop_hook_active` continuation, or after the watch window ends, waits for the next
+  prompt or ordinary Stop, as does one sent in the milliseconds between `stop` reading the
+  open messages and `watch` reading its baseline (separate processes on the same Stop).
+  A Claude Code session launched with the channel flag needs none of that window: the MCP
+  server pushes it a notice per message (`mcp-server.md`). The hooks still run beside it,
+  so a message can wake such a session twice; the agent's second `pending()` finds it
+  acked or already in hand. Copilot has no standing watcher: a hand-started Copilot
+  session sees a message at its next `pending()`.
 
 ## History (shipped since v1)
 

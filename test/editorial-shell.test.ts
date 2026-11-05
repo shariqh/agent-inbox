@@ -137,21 +137,28 @@ describe('the editorial desk shell', () => {
     expect(html).toContain('id="projectDisclosureToggle"')
     expect(masthead).toMatch(/\.app-shell\s*\{[^}]*container:\s*compact-masthead\s*\/\s*inline-size/s)
     expect(masthead).not.toMatch(/\.sidebar-shell\s*\{[^}]*container:\s*compact-masthead/s)
-    expect(compact).toMatch(/\.sidebar-shell\s*\{[^}]*grid-template-columns:\s*auto minmax\(0,\s*1fr\) minmax\(180px,\s*240px\) minmax\(130px,\s*180px\) auto[^}]*grid-template-rows:\s*auto/s)
-    expect(compact).toMatch(/#tabs\s*\{[^}]*grid-column:\s*2[^}]*width:\s*max-content/s)
+    // #454: two rows: the tabs alone on the first (scrolling in their own cell), and the
+    // selectors, the Sessions chip and Settings on the second, so nothing lands over a tab
+    expect(compact).toMatch(/\.sidebar-shell\s*\{[^}]*grid-template-columns:\s*auto minmax\(0,\s*1fr\) minmax\(130px,\s*180px\) auto auto[^}]*grid-template-rows:\s*auto auto/s)
+    expect(compact).toMatch(/#tabs\s*\{[^}]*grid-column:\s*2 \/ -1[^}]*grid-row:\s*1[^}]*width:\s*max-content[^}]*overflow-x:\s*auto/s)
+    expect(compact).toMatch(/\.sessions-indicator\s*\{[^}]*grid-column:\s*4[^}]*grid-row:\s*2[^}]*border-radius:\s*999px/s)
+    expect(compact).toMatch(/\.gear\s*\{[^}]*grid-column:\s*5[^}]*grid-row:\s*2/s)
+    // the chip keeps its G L tile after the count; the word goes
+    expect(compact).toMatch(/\.sessions-indicator \.si-k\[data-shortcut\]\s*\{[^}]*font-size:\s*0/s)
     expect(masthead).toMatch(/\.sidebar-section-label\s*\{[^}]*display:\s*none/s)
-    expect(masthead).toMatch(/\.sidebar-shell \.project-disclosure\s*\{[^}]*position:\s*relative[^}]*display:\s*block[^}]*grid-column:\s*3[^}]*grid-row:\s*1/s)
-    expect(masthead).toMatch(/\.sidebar-shell \.agent-pick\s*\{[^}]*grid-column:\s*4[^}]*grid-row:\s*1/s)
+    expect(masthead).toMatch(/\.sidebar-shell \.project-disclosure\s*\{[^}]*position:\s*relative[^}]*display:\s*block[^}]*grid-column:\s*1 \/ 3[^}]*grid-row:\s*2/s)
+    expect(masthead).toMatch(/\.sidebar-shell \.agent-pick\s*\{[^}]*grid-column:\s*3[^}]*grid-row:\s*2/s)
     expect(masthead).toMatch(/\.sidebar-shell \.project-disclosure-toggle\s*\{[^}]*display:\s*flex/s)
     expect(masthead).toMatch(/#projectDisclosure #rail\s*\{[^}]*position:\s*absolute[^}]*display:\s*none[^}]*flex-direction:\s*column[^}]*overflow-y:\s*auto[^}]*overscroll-behavior-y:\s*contain/s)
     expect(masthead).toMatch(/#projectDisclosure\[data-open="true"\] #rail\s*\{[^}]*display:\s*flex/s)
     expect(masthead).not.toMatch(/#rail\s*\{[^}]*overflow-x:\s*auto/s)
     expect(compact).toMatch(/#projectDisclosure #rail \.rail-name\s*\{[^}]*text-overflow:\s*ellipsis/s)
-    expect(compact).toMatch(/@container compact-masthead \(max-width:\s*900px\)[\s\S]*\.sidebar-shell \.project-disclosure\s*\{[^}]*grid-column:\s*1\s*\/\s*3[^}]*grid-row:\s*2[\s\S]*\.sidebar-shell \.agent-pick\s*\{[^}]*grid-column:\s*3\s*\/\s*5[^}]*grid-row:\s*2/s)
+    // under 620px the chip and Settings share the brand's row
+    expect(compact).toMatch(/@container compact-masthead \(max-width:\s*620px\)[\s\S]*\.sessions-indicator\s*\{[^}]*grid-column:\s*2;[^}]*grid-row:\s*1/s)
     expect(compact).toMatch(/@container compact-masthead \(max-width:\s*620px\)[\s\S]*#tabs\s*\{[^}]*display:\s*flex[^}]*grid-column:\s*1\s*\/\s*-1[^}]*grid-row:\s*2[^}]*overflow-x:\s*auto/s)
     expect(compact).toMatch(/@container compact-masthead \(max-width:\s*620px\)[\s\S]*#tabs \.tab-count\s*\{[^}]*display:\s*inline-block/s)
     expect(compact).toMatch(/@container compact-masthead \(max-width:\s*620px\)[\s\S]*\.sidebar-shell \.project-disclosure\s*\{[^}]*grid-column:\s*1[^}]*grid-row:\s*3[\s\S]*\.sidebar-shell \.agent-pick\s*\{[^}]*grid-column:\s*2[^}]*grid-row:\s*3/s)
-    expect(compact).toMatch(/@container compact-masthead \(max-width:\s*440px\)[\s\S]*\.sidebar-shell\s*\{[^}]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)[^}]*grid-template-rows:\s*auto auto auto[\s\S]*\.sidebar-shell \.project-disclosure\s*\{[^}]*grid-column:\s*1[^}]*grid-row:\s*3[\s\S]*\.sidebar-shell \.agent-pick\s*\{[^}]*grid-column:\s*2[^}]*grid-row:\s*3/s)
+    expect(compact).toMatch(/@container compact-masthead \(max-width:\s*440px\)[\s\S]*\.sidebar-shell\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\) auto auto[^}]*grid-template-rows:\s*auto auto auto[\s\S]*\.sidebar-shell \.project-disclosure\s*\{[^}]*grid-column:\s*1[^}]*grid-row:\s*3[\s\S]*\.sidebar-shell \.agent-pick\s*\{[^}]*grid-column:\s*2[^}]*grid-row:\s*3/s)
   })
 
   it('collapses the wide sidebar into an icon rail without changing compact mastheads', () => {
@@ -159,7 +166,8 @@ describe('the editorial desk shell', () => {
     expect(css).toMatch(/body\.sidebar-collapsed \.sidebar-shell\s*\{[^}]*padding:/s)
     expect(css).toMatch(/body\.sidebar-collapsed \.tab-name[\s\S]*display:\s*none/s)
     expect(css).toMatch(/body\.sidebar-collapsed #rail \.rail-name[\s\S]*display:\s*none/s)
-    expect(css).toMatch(/body\.sidebar-collapsed #liveBar,[\s\S]*left:\s*72px/s)
+    // #454: the Sessions line shrinks to its dot, where the Live strip once moved over
+    expect(css).toMatch(/body\.sidebar-collapsed \.sessions-indicator\s*\{[^}]*grid-template-columns:\s*10px/s)
     expect(css).toMatch(/body\.sidebar-collapsed #agentSelect option\s*\{[^}]*color:\s*var\(--app-text\)[^}]*font-size:\s*12px/s)
     const compact = css.slice(css.indexOf('@media (max-width: 1279px)'))
     expect(compact).toMatch(/\.sidebar-collapse\s*\{[^}]*display:\s*none/s)
@@ -192,7 +200,7 @@ describe('the editorial desk shell', () => {
   })
 
   it('contains nested scroll surfaces including the compact project menu', () => {
-    expect(css).toMatch(/\.nrow-card,\s*\.closed-projects-popover,\s*\.lb-card,\s*\.live-drawer,\s*\.relay-body,\s*\.mission-paths,\s*\.mission-detail-body,\s*\.setup-body pre\s*\{[^}]*overscroll-behavior:\s*contain/s)
+    expect(css).toMatch(/\.nrow-card,\s*\.closed-projects-popover,\s*\.lb-card,\s*\.relay-body,\s*\.mission-paths,\s*\.mission-detail-body,\s*\.setup-body pre\s*\{[^}]*overscroll-behavior:\s*contain/s)
     const desktop = css.slice(0, css.indexOf('@media (max-width: 1279px)'))
     expect(desktop).toMatch(/#rail\s*\{[^}]*overscroll-behavior-y:\s*contain/s)
     const compact = css.slice(css.indexOf('@media (max-width: 1279px)'))
@@ -210,19 +218,20 @@ describe('the editorial desk shell', () => {
 
 // #307: jsdom never matches the compact @media block, so the session panel's
 // placement is pinned on the source.
-describe('the session focus panel placement (#307)', () => {
+describe('the session panel placement (#307, #454)', () => {
   const compact = css.slice(css.indexOf('@media (max-width: 1279px)'))
   const desktop = css.slice(0, css.indexOf('@media (max-width: 1279px)'))
   const rule = (sheet: string) => sheet.match(/(?:^|\n)\s*\.dash-focus\s*\{([^}]*)\}/)?.[1] ?? ''
 
-  it('sits inside the lanes card on a desktop, never fixed over the page', () => {
-    expect(desktop).toMatch(/\.dash-lanes\s*\{\s*position:\s*relative;\s*\}/)
+  it('is a sheet over the Dashboard grid on a desktop, mounted in the grid where no lens can hide it', () => {
+    expect(desktop).toMatch(/\.dashboard-grid\s*\{\s*position:\s*relative;\s*\}/)
     expect(rule(desktop)).toMatch(/position:\s*absolute;/)
+    expect(rule(desktop)).toMatch(/width:\s*min\(620px, calc\(100% - 24px\)\);/)
     expect(rule(desktop)).not.toMatch(/position:\s*fixed/)
-    expect(app).toMatch(/lanes\.appendChild\(dashFocusEl\(\)\)/)
+    expect(app).toMatch(/grid\.appendChild\(dashFocusEl\(\)\)/)
   })
 
-  it('joins the flow below the lanes under 1280px, never over the masthead', () => {
+  it('joins the flow after the list under 1280px, never over the masthead', () => {
     const narrow = rule(compact)
     expect(narrow).toMatch(/position:\s*static;/)
     expect(narrow).toMatch(/max-height:\s*none;/)
@@ -230,15 +239,12 @@ describe('the session focus panel placement (#307)', () => {
   })
 })
 
-// Mesh M1 (#397): jsdom cannot lay out the Agents view's grid, so its two
-// layout promises are pinned in the source.
-describe('the Agents view layout (#397)', () => {
+// The Agents home (#454): jsdom cannot lay out its card grid, so its layout
+// promise is pinned in the source.
+describe('the Agents home layout (#454)', () => {
   it('never needs a card wider than the screen', () => {
-    expect(css).toMatch(/\.mesh-agent-list \{[^}]*grid-template-columns: repeat\(auto-fit, minmax\(min\(320px, 100%\), 1fr\)\)/)
-  })
-
-  it('stacks the branch under the project rather than squeezing it beside it', () => {
-    expect(css).toMatch(/\.mesh-where \{[^}]*flex-direction: column;[^}]*\}/)
-    expect(css).toMatch(/\.mesh-project, \.mesh-branch \{ max-width: 100%; \}/)
+    expect(css).toMatch(/\.ah-cards \{[^}]*grid-template-columns: repeat\(auto-fill, minmax\(min\(340px, 100%\), 1fr\)\)/)
+    // #454 A.3: two columns under 1280px and one in a narrow desk, where the panel opens inline under its card
+    expect(css.slice(css.indexOf('@media (max-width: 1279px)'))).toMatch(/\.ah-cards \{ grid-template-columns: repeat\(2, minmax\(0, 1fr\)\); \}\s*@container operations-desk \(max-width: 900px\) \{\s*\.ah-cards \{ grid-template-columns: minmax\(0, 1fr\); \}/)
   })
 })

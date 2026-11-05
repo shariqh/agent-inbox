@@ -10,14 +10,16 @@
 // The stdout contract is per-subcommand and exact — see docs/hooks.md.
 import { spawn } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, statSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, statSync, rmSync, renameSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type Database from 'better-sqlite3'
 import {
-  claimHookWatch, defaultDbPath, holdsHookWatch, insertItem, listHostSessions, listItems, listPending, listPendingRows,
-  listSessionQuestions, listUnansweredBoardRows, openDb, releaseHookWatch, resolveItem,
+  claimHookWatch, defaultDbPath, holdsHookWatch, insertItem, listHostSessions, listItems, listOpenMessages, listPending,
+  listPendingRows, listSessionQuestions, listUnansweredBoardRows, openDb, recordHostEvent, releaseHookWatch, resolveItem,
+  HOST_TOOL_STAMP_MS,
 } from './store.js'
 import type { Item } from './store.js'
+import { isReservedProject } from '../public/reserved-projects.js'
 import { inferProject, inferStream } from './infer.js'
 import { boardResponseState } from './watch.js'
 
@@ -31,6 +33,14 @@ export const SUBCOMMANDS = [
   'prompt-submit',
   'stop',
   'watch',
+  'activity',
+  // #466 PR 3: Copilot CLI's hooks file, one subcommand per event, so an older
+  // hook-cli turns each into a silent no-op rather than a tool stamp
+  'host-turn',
+  'host-idle',
+  'host-error',
+  'host-tool',
+  'host-end',
   'sweep',
   'selftest',
 ] as const
@@ -55,6 +65,9 @@ export interface HookEvent {
   reason?: string
   source?: string
   stop_hook_active?: boolean
+  // Copilot CLI's errorOccurred (#466 PR 3): a retry inside a turn is recoverable
+  recoverable?: boolean
+  agentId?: string
 }
 
 // Per-session state, kept next to the db (not in homedir) so AGENT_INBOX_DB
@@ -120,6 +133,7 @@ interface HookEntry {
   args: string[]
   timeout: number
   statusMessage?: string
+  async?: boolean
   asyncRewake?: boolean
   rewakeSummary?: string
 }
@@ -143,6 +157,9 @@ export function hooksSettingsBlock(nodeBin: string, entry: string): { hooks: Rec
       SessionStart: [{ matcher: 'startup|resume', hooks: [h('session-start', 5)] }],
       SessionEnd: [{ hooks: [h('session-end', 5)] }],
       UserPromptSubmit: [{ hooks: [h('prompt-submit', 10)] }],
+      // #466: async, so a tool call never waits on it
+      PreToolUse: [{ hooks: [h('activity', 5, { async: true })] }],
+      PostToolUse: [{ hooks: [h('activity', 5, { async: true })] }],
       Stop: [{ hooks: [
         h('stop', 10, { statusMessage: 'Checking agent-inbox for answered questions…' }),
         h('watch', 1800, {
@@ -200,7 +217,22 @@ export function shouldBackstop({ pending, sessionId, nowMs, marker, opts }: Back
 // One nudge for every response waiting in the session's projects (#253): how
 // many, where, and the pending() call that reads each project whatever this
 // session is currently scoped to.
-export function nudgeText(responses: ReadonlyArray<readonly [project: string, count: number]>): string {
+//
+// Issue #411: and the human's messages to this session's own servers, which
+// pending() returns whatever project the session is scoped to.
+export function nudgeText(responses: ReadonlyArray<readonly [project: string, count: number]>, messages = 0): string {
+  const parts = responses.length ? [responsesText(responses)] : []
+  if (messages > 0) {
+    parts.push(
+      `agent-inbox: the human sent this session ${messages} message(s) — call the agent-inbox \`pending\` tool now ` +
+      `and act on each message in \`messages\` as an instruction typed in this terminal, ` +
+      `then \`ack_message\` it with a one-line outcome.`,
+    )
+  }
+  return parts.join(' ')
+}
+
+function responsesText(responses: ReadonlyArray<readonly [project: string, count: number]>): string {
   const total = responses.reduce((sum, [, n]) => sum + n, 0)
   const where = responses.length === 1
     ? `in project ${responses[0]![0]}`
@@ -236,7 +268,8 @@ export function parseEvent(text: string): HookEvent | null {
     if (v !== undefined) (ev as Record<string, unknown>)[k] = v
   }
   s('session_id'); s('transcript_path'); s('cwd'); s('hook_event_name')
-  s('notification_type'); s('message'); s('reason'); s('source')
+  s('notification_type'); s('message'); s('reason'); s('source'); s('agentId')
+  if (typeof o.recoverable === 'boolean') ev.recoverable = o.recoverable
   if (typeof o.stop_hook_active === 'boolean') ev.stop_hook_active = o.stop_hook_active
   return ev
 }
@@ -288,6 +321,40 @@ function writeMarker(dbPath: string, sessionId: string, marker: SessionMarker): 
     writeFileSync(markerPath(dbPath, sessionId), JSON.stringify(marker))
   } catch {
     /* fail open: a marker we cannot persist only costs rate limiting */
+  }
+}
+
+// Issue #411: the message ids `stop` has already blocked for, so it blocks at
+// most once per message. Their own file, written by `stop` alone: the session
+// marker is rebuilt to a fixed shape by readMarker and rewritten whole by the
+// notification hooks (the commit after its grace window), and it is keyed by
+// the harness session id, which /clear changes while the MCP server's does not.
+// This file is keyed by the Claude Code process the link proved, as the watch
+// lease is, and holds only ids still open.
+function nudgedPath(dbPath: string, host: number): string {
+  return join(stateDir(dbPath), `host-${host}.nudged.json`)
+}
+
+function readNudged(dbPath: string, host: number): Set<string> {
+  try {
+    const raw = JSON.parse(readFileSync(nudgedPath(dbPath, host), 'utf8')) as unknown
+    const ids = raw !== null && typeof raw === 'object' && Array.isArray((raw as { ids?: unknown }).ids) ? (raw as { ids: unknown[] }).ids : []
+    return new Set(ids.filter((id): id is string => typeof id === 'string'))
+  } catch {
+    return new Set()
+  }
+}
+
+function writeNudged(dbPath: string, host: number, ids: readonly string[]): void {
+  const file = nudgedPath(dbPath, host)
+  const temp = `${file}.${process.pid}.tmp`
+  try {
+    mkdirSync(stateDir(dbPath), { recursive: true })
+    writeFileSync(temp, JSON.stringify({ ids }))
+    renameSync(temp, file)
+  } catch {
+    /* fail open: an unrecorded nudge only costs one more block */
+    try { rmSync(temp, { force: true }) } catch { /* nothing to remove */ }
   }
 }
 
@@ -394,7 +461,9 @@ function sessionScope(db: Database.Database, ctx: Ctx, cwdProject: string): Sess
     const servers = new Set(live.map((server) => server.session))
     // a project registered earlier stays in scope while one of its questions is open
     const asked = listSessionQuestions(db, [...servers])
-    const projects = new Set([cwdProject, ...live.map((server) => server.project), ...asked.map((q) => q.project)])
+    // #412: a reserved project (`@sessions`, `@mesh`) is never a hook's to watch
+    const projects = new Set([cwdProject, ...live.map((server) => server.project), ...asked.map((q) => q.project)]
+      .filter((p) => !isReservedProject(p)))
     return { projects: [...projects], servers, host }
   } catch (err) {
     logLine(ctx.dbPath, `scope: ${err instanceof Error ? err.message : String(err)} — using ${cwdProject} alone`)
@@ -438,6 +507,13 @@ export async function runHook(argv: string[], stdinText: string, env: Env = proc
       case 'notification': return cmdNotification(ctx)
       case 'notification-commit': return await cmdNotificationCommit(ctx)
       case 'watch': return await cmdWatch(ctx)
+      case 'activity': return cmdActivity(ctx, argv[1] ?? 'tool')
+      case 'host-turn': return cmdActivity(ctx, 'turn')
+      case 'host-idle': return cmdActivity(ctx, 'idle')
+      case 'host-tool': return cmdActivity(ctx, 'tool')
+      case 'host-end': return cmdActivity(ctx, 'end')
+      // only an unrecoverable error in the main agent ends the turn
+      case 'host-error': return ctx.ev.recoverable === false && !ctx.ev.agentId ? cmdActivity(ctx, 'idle') : EMPTY
       case 'sweep': return cmdSweep(ctx)
       default: return cmdSessionStep(ctx)
     }
@@ -497,6 +573,11 @@ function cmdNotification(ctx: Ctx): HookResult {
     // sweepStale only. Sweeping THIS session here would make suppression rule
     // (A) unreachable and would silently destroy a still-relevant flag.
     sweepStale(db, ctx.nowMs, ctx.opts.maxAgeMs)
+    // #466: Claude Code says the turn ended about a minute ago; this also
+    // closes a turn an interrupt ended, which fires no Stop
+    if (ctx.ev.notification_type === 'idle_prompt' && !isReservedProject(scopeOf(ctx.ev).project)) {
+      stampHost(ctx, db, liveServers(db, process.ppid), 'idle')
+    }
     if (!notifyGate(ctx)) return EMPTY
     const sessionId = ctx.ev.session_id
     if (!sessionId) {
@@ -507,6 +588,7 @@ function cmdNotification(ctx: Ctx): HookResult {
     // a committer is already in flight for this session
     if (marker?.pendingPromptAt && ctx.nowMs - marker.pendingPromptAt < ctx.opts.graceMs) return EMPTY
     const { project } = scopeOf(ctx.ev)
+    if (isReservedProject(project)) return EMPTY
     if (!shouldBackstop({ pending: listPending(db, project), sessionId, nowMs: ctx.nowMs, marker, opts: ctx.opts })) return EMPTY
     writeMarker(ctx.dbPath, sessionId, {
       insertCount: marker?.insertCount ?? 0,
@@ -580,6 +662,10 @@ async function cmdNotificationCommit(ctx: Ctx): Promise<HookResult> {
     sweepStale(db, Date.now(), ctx.opts.maxAgeMs)
     const { project, stream, cwd } = scopeOf(ctx.ev)
     const nowMs = Date.now()
+    if (isReservedProject(project)) {
+      disarm(ctx.dbPath, sessionId)
+      return EMPTY
+    }
     if (!shouldBackstop({ pending: listPending(db, project), sessionId, nowMs, marker, opts: ctx.opts })) {
       disarm(ctx.dbPath, sessionId)
       return EMPTY
@@ -631,27 +717,107 @@ function cmdSessionStep(ctx: Ctx): HookResult {
   try {
     const { project } = scopeOf(ctx.ev)
     sweepStale(db, ctx.nowMs, ctx.opts.maxAgeMs)
+    if (isReservedProject(project)) return EMPTY
     if (ctx.ev.session_id) {
       sweepSession(db, project, ctx.ev.session_id)
       disarm(ctx.dbPath, ctx.ev.session_id)
     }
-    if (ctx.sub === 'session-end') return EMPTY
-    const responses = unpickedResponses(db, sessionScope(db, ctx, project).projects)
-    if (responses.length === 0) return EMPTY
-    const text = nudgeText(responses)
+    if (ctx.sub === 'session-end') {
+      // the activity throttle's marker for this Claude Code process (#466)
+      rmSync(toolMarker(ctx.dbPath, process.ppid), { force: true })
+      return EMPTY
+    }
+    const scope = sessionScope(db, ctx, project)
+    if (ctx.sub === 'prompt-submit') stampHost(ctx, db, scope.servers, 'turn')
+    const responses = unpickedResponses(db, scope.projects)
+    // #411: messages are counted while open, never by delivery, since a
+    // subagent's poll can pick one up that the session itself never saw
+    const open = scope.host === null ? [] : listOpenMessages(db, [...scope.servers]).map((message) => message.id)
+    if (ctx.sub === 'stop') {
+      // The loop guard is non-negotiable: blocking twice in a row traps the
+      // human in a session they cannot exit.
+      // #466: a Stop that does not block ends the turn; one that blocks continues it
+      if (ctx.ev.stop_hook_active === true) {
+        stampHost(ctx, db, scope.servers, 'idle')
+        return EMPTY
+      }
+      // and it blocks once per message: one the agent ignores, or cannot ack,
+      // must not bounce every Stop
+      const nudged = scope.host === null ? new Set<string>() : readNudged(ctx.dbPath, scope.host)
+      const fresh = open.filter((id) => !nudged.has(id))
+      if (responses.length === 0 && fresh.length === 0) {
+        stampHost(ctx, db, scope.servers, 'idle')
+        return EMPTY
+      }
+      if (fresh.length && scope.host !== null) writeNudged(ctx.dbPath, scope.host, open)
+      return { stdout: JSON.stringify({ decision: 'block', reason: nudgeText(responses, fresh.length) }) }
+    }
+    if (responses.length === 0 && open.length === 0) return EMPTY
+    const text = nudgeText(responses, open.length)
     if (ctx.sub === 'prompt-submit') {
       // VERIFIED: additionalContext must be nested inside hookSpecificOutput —
       // a top-level copy is not ignored, it earns a user-visible
       // "unrecognized keys" warning on every nudge.
       return { stdout: JSON.stringify({ hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: text }, suppressOutput: true }) }
     }
-    if (ctx.sub === 'stop') {
-      // The loop guard is non-negotiable: blocking twice in a row traps the
-      // human in a session they cannot exit.
-      if (ctx.ev.stop_hook_active === true) return EMPTY
-      return { stdout: JSON.stringify({ decision: 'block', reason: text }) }
-    }
     return { stdout: `${text}\n` } // session-start: plain stdout is added to context
+  } finally {
+    db.close()
+  }
+}
+
+// ── #466: the host's turns and tools, stamped on its session's presence rows ─
+
+// A stamp is evidence for the session card, never part of a hook's answer: a
+// failure is logged and the subcommand goes on exactly as before.
+function stampHost(ctx: Ctx, db: Database.Database, servers: Iterable<string>, kind: 'turn' | 'idle' | 'tool'): void {
+  try {
+    // the clock now, not the hook's start: a watch stamps up to 29 minutes later
+    recordHostEvent(db, [...servers], kind, Date.now())
+  } catch (err) {
+    logLine(ctx.dbPath, `stamp ${kind}: ${err instanceof Error ? err.message : String(err)}`)
+  }
+}
+
+const toolMarker = (dbPath: string, host: number): string => join(stateDir(dbPath), `host-${host}.tool`)
+
+// Claude's PreToolUse / PostToolUse (async) run `activity`, a tool. Copilot
+// CLI's hooks file (docs/hooks.md, "Copilot CLI") runs `host-turn`
+// (userPromptSubmitted), `host-idle` (agentStop), `host-error` (errorOccurred,
+// idle only when unrecoverable), `host-tool` (postToolUse) or `host-end`
+// (sessionEnd, which only removes the marker); `activity <kind>` is the shape
+// PR 3's first build wrote. Copilot
+// runs every hook directly, a child of the `copilot` process its MCP server
+// records as host_pid, so the #253 link holds for it unchanged.
+// A tool costs one stat until a stamp is due. The marker, keyed by the host
+// process, throttles before the hub is even opened; recordHostEvent's own
+// condition is the real bound. No link (an older server, a wrapper process)
+// stamps nothing.
+function cmdActivity(ctx: Ctx, kind: string): HookResult {
+  const host = process.ppid
+  if (!Number.isInteger(host) || host <= 1) return EMPTY
+  const marker = toolMarker(ctx.dbPath, host)
+  if (kind === 'end') {
+    rmSync(marker, { force: true })
+    return EMPTY
+  }
+  if (kind === 'turn' || kind === 'idle') return stampLinked(ctx, host, kind)
+  if (kind !== 'tool') return EMPTY
+  try {
+    if (ctx.nowMs - statSync(marker).mtimeMs < HOST_TOOL_STAMP_MS) return EMPTY
+  } catch { /* no marker yet */ }
+  if (isReservedProject(scopeOf(ctx.ev).project)) return EMPTY
+  mkdirSync(stateDir(ctx.dbPath), { recursive: true })
+  writeFileSync(marker, '')
+  return stampLinked(ctx, host, 'tool')
+}
+
+function stampLinked(ctx: Ctx, host: number, kind: 'turn' | 'idle' | 'tool'): HookResult {
+  if (kind !== 'tool' && isReservedProject(scopeOf(ctx.ev).project)) return EMPTY
+  const db = openDb(ctx.dbPath)
+  try {
+    stampHost(ctx, db, liveServers(db, host), kind)
+    return EMPTY
   } finally {
     db.close()
   }
@@ -673,9 +839,21 @@ function respond(responses: Map<string, number>, project: string): void {
   responses.set(project, (responses.get(project) ?? 0) + 1)
 }
 
-function wake(responses: ReadonlyArray<readonly [string, number]>): HookResult {
-  return { stdout: '', stderr: `${nudgeText(responses)}\n`, exitCode: 2 }
+function wake(responses: ReadonlyArray<readonly [string, number]>, messages = 0): HookResult {
+  return { stdout: '', stderr: `${nudgeText(responses, messages)}\n`, exitCode: 2 }
 }
+
+// Issue #411: the servers of this Claude Code process that still run, read
+// again on every poll, so a server restarted under the same process stays covered.
+function liveServers(db: Database.Database, host: number): string[] {
+  return listHostSessions(db, host).filter((server) => running(server.server_pid)).map((server) => server.session)
+}
+
+// The watch lease's token says what its watcher wakes for. `m1:` marks one
+// that also wakes for session messages (#411); every hook since #253 claims the
+// same `host:<pid>` key, so supersession is unchanged, and only a marked
+// token may tell the human a message will wake this session.
+const MESSAGE_WATCH_TOKEN = 'm1:'
 
 // The open questions a watcher can see: every one in the session's projects,
 // plus any its linked servers raised under another project.
@@ -702,15 +880,21 @@ function visibleQuestions(db: Database.Database, scope: SessionScope): Item[] {
 // requests was answered since its last poll.
 async function cmdWatch(ctx: Ctx): Promise<HookResult> {
   const { project } = scopeOf(ctx.ev)
+  if (isReservedProject(project)) return EMPTY
   const db = openDb(ctx.dbPath) // opened ONCE for the whole loop
   const parent = process.ppid
-  const lease = { key: '', token: `${process.pid}-${randomUUID()}`, held: false }
+  const lease = { key: '', token: `${MESSAGE_WATCH_TOKEN}${process.pid}-${randomUUID()}`, held: false }
   const claim = (): void => {
     claimHookWatch(db, lease.key, lease.token)
     lease.held = true
   }
   try {
     const scope = sessionScope(db, ctx, project)
+    // #466: a wake starts a turn that fires no UserPromptSubmit, so it stamps one itself
+    const woke = (result: HookResult): HookResult => {
+      stampHost(ctx, db, scope.host === null ? [] : liveServers(db, scope.host), 'turn')
+      return result
+    }
     lease.key = scope.host !== null
       ? `host:${scope.host}`
       : ctx.ev.session_id ? `session:${ctx.ev.session_id}:${project}` : `project:${project}`
@@ -720,8 +904,11 @@ async function cmdWatch(ctx: Ctx): Promise<HookResult> {
     const answered = new Set(asked.filter((item) => item.reply).map((item) => item.id))
     const awaited = new Set(asked.filter((item) => !item.reply).map((item) => item.id))
     const watchedRows = scope.projects.flatMap((p) => listUnansweredBoardRows(db, p).map((row) => ({ ...row, project: p })))
+    // #411: messages open now are `stop`'s (it runs on this same Stop), so only
+    // a message that arrives later wakes this watcher
+    const seenMessages = new Set(scope.host === null ? [] : listOpenMessages(db, [...scope.servers]).map((message) => message.id))
     const ready = unpickedResponses(db, scope.projects)
-    if (ready.length && ctx.ev.stop_hook_active !== true) return wake(ready)
+    if (ready.length && ctx.ev.stop_hook_active !== true) return woke(wake(ready))
     // a linked watcher stays for the session's later questions, even with nothing waiting yet
     if (scope.host === null && !awaited.size && !watchedRows.length) return EMPTY
     claim()
@@ -744,14 +931,17 @@ async function cmdWatch(ctx: Ctx): Promise<HookResult> {
         if (state === 'reply') respond(responses, row.project)
         if (state === undefined) waiting = true
       }
+      // A newer watcher covers the session's messages; an unlinked one cannot see them.
+      const messages = superseded || scope.host === null ? 0
+        : listOpenMessages(db, liveServers(db, scope.host)).filter((message) => !seenMessages.has(message.id)).length
       // Only these requests can wake this host; delivery is not acknowledgement.
-      if (responses.size) {
+      if (responses.size || messages) {
         // the cwd project first, then the session's others; a project it registered after arming last
         const rank = (p: string): number => {
           const at = scope.projects.indexOf(p)
           return at === -1 ? scope.projects.length : at
         }
-        return wake([...responses].sort(([a], [b]) => rank(a) - rank(b)))
+        return woke(wake([...responses].sort(([a], [b]) => rank(a) - rank(b)), messages))
       }
       if (superseded || (scope.host === null && !waiting)) return EMPTY
       await delay(ctx.opts.watchPollMs)

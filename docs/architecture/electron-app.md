@@ -12,6 +12,18 @@ How Setup, update installs and local file links are granted to the app's own vie
 
 Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly verbatim. Claude Code and Copilot CLI load this file automatically when they read or edit a file matching the `paths`/`applyTo` globs above (through the symlinks in `.claude/rules/` and `.github/instructions/`); anyone else should read it before changing those files.
 
+**A checkout build beside the installed app.** An unpackaged app defaults to port 4392
+(`viewerPort()` in `electron/reuse.cjs`, #465); only the packaged app defaults to 4319, and
+`AGENT_INBOX_PORT` overrides either. So `npm run electron` (or its old name `npm run electron:side`)
+starts and owns its own viewer on the same inbox, and an in-progress feature can be tried without
+quitting the installed app. Both apps may notify for the same new items while both run, and they share
+one userData folder. Before #465 a checkout defaulted to 4319: an installed app opened while it ran
+reused its viewer, so it had no update installers and no grants for the rest of its run, even after
+failing over to its own server. A window that opened on a viewer it did not start still gets no
+installers: the update controller publishes `available.installWithheld: 'unowned-viewer'` and Settings
+says to quit and reopen Agent Inbox (see `updates.md`). Granting installs after failover would move
+the binding below, so it needs a design pass first.
+
 ## History (shipped since v1)
 
 These landed after v1 and still hold invariants; the release history itself is in `CHANGELOG.md`.
@@ -35,7 +47,8 @@ These landed after v1 and still hold invariants; the release history itself is i
   (3) A newer navigation, a renderer crash or the window closing discards a proof still
   running; a crash revokes and the window's next load may re-bind under the same proof; a
   closed window never binds again; nothing binds once a quit has begun (#205). (4) Setup
-  is granted only while `setupInstallEnabled`, update installs and (#300) local file links
+  is granted only while `setupInstallEnabled`, driven sessions (#412 step 3, the `launch` grant) only
+  while `viewerOwned` with their switch on, on macOS (see `driven-sessions.md`), update installs and (#300) local file links
   only while `viewerOwned`; with none of them (a reused or failed-over viewer) nothing is
   probed. The UI is honest as well:
   the controller publishes `available.installPermitted` from main's
@@ -66,5 +79,11 @@ These landed after v1 and still hold invariants; the release history itself is i
   applied), and Settings re-asks on open, adding the one-click install and Update agents
   when main now allows them (a window only loses Setup to a new page or a quit, so this
   never takes away a menu that may be running). A main-frame navigation that never commits
-  leaves the window revoked until its next load, with the same honest copy. None of it
+  leaves the window revoked until its next load, with the same honest copy, except one main
+  cancels itself: Electron emits `did-start-navigation` before `will-navigate`, so the
+  `will-navigate` handler calls `installBinding.navigationPrevented(url)` after
+  `preventDefault()`, which re-applies the grants the still-shown page held when that same
+  navigation started (never after a newer navigation, a crash, a close or a quit, and never to
+  a page whose re-proof was still running). Without it, a dropped file or URL left file links
+  copying their path until a reload (see `links.md`). None of it
   enters `public/attention.js`, badges or Needs-you.

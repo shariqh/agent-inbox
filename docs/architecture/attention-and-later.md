@@ -160,7 +160,9 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   state survives rebuilds and `revealDetailsAncestors` opens it for a deep link or draft
   recovery), headed `Later · N` with `laterBreakdown` (`2 pinned · 1 snoozed, next back in
   2h`). N follows the lens and the action filters, like every list surface, and never
-  reaches the badge, a tab or the rail. Its order is `sortLaterEntries` (snoozed soonest back
+  reaches the badge, a tab or a session card; the Dashboard's entry to it is the Agents
+  header's "Later N ›" (#454 A.2, `openLater`, the rail's "N in Later" before it), which
+  opens the Inbox with the section open. Its order is `sortLaterEntries` (snoozed soonest back
   first, then pinned oldest first, ties by a stable key), never the Sort menu. Rows are
   ordinary `.nrow`s whose way back is always "Back to inbox"; only their lines are dimmed,
   never the section (nor the snoozed, pinned or stale fold, which dim their summary and row
@@ -197,8 +199,9 @@ These landed after v1 and still hold invariants; the release history itself is i
   that raises the question. A closed project leaves the §7 attention set **entirely** — badge, title,
   Needs-you count, triage deck — via a 5th `closedProjects` argument to `attentionEntries`, so there
   is still exactly ONE predicate; `countsByProject` deliberately stays unsuppressed because the
-  rail's closed fold is where the number is RELOCATED, not destroyed. Live presence (footer strip and
-  drawer) is untouched: presence is not attention. Clicking a closed project PEEKS (a banner above
+  rail's closed fold is where the number is RELOCATED, not destroyed. Session presence (the sidebar's
+  Sessions line, and the Agents home, whose closed projects' sessions fold under "In closed
+  projects") is untouched: presence is not attention. Clicking a closed project PEEKS (a banner above
   the panel says the badge excludes what you are looking at); only × / ↩ / a new flag mutate.
   Closing also retires the project from #30's PR poller (`listLinkTargets` filters through
   `closedProjects`, never the raw table, so a derived reopen resumes polling by itself) — a retired
@@ -211,3 +214,11 @@ These landed after v1 and still hold invariants; the release history itself is i
   nothing new while it polls `pending()`, so closing that project mutes a genuinely-live blocker
   until fresh content arrives. "Nothing can be permanently muted" is true of everything except that
   case — do not restate it unqualified.
+  *(#412)* The reserved projects `@sessions` and `@mesh` can never be closed: `closeProject`
+  refuses one (the route answers 200 `{ ok: false, reason: 'reserved_project' }`) and
+  `closedProjects()` leaves one out even when an older viewer wrote the row, because closing
+  `@sessions` would mute every driven session's approvals. The rail and the compact project
+  menu draw no Archive control for one and its tab ignores Delete; `closeProjectAction` treats
+  any 200 `{ ok: false }` as a refusal and unwinds like a failed write, with a status line.
+  The two names live in one pure module, `public/reserved-projects.js`, which the store, the
+  MCP server, the hooks and the page all import.

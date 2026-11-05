@@ -180,6 +180,7 @@ describe('release mode (issue #74) — truthful Setup API + conditional renderin
     if (opts.omitFile !== 'scripts/install-agents.sh') writeFileSync(join(payloadDir, 'scripts', 'install-agents.sh'), '#!/bin/bash\necho noop\n')
     if (opts.omitFile !== 'scripts/runtime-payload.mjs') writeFileSync(join(payloadDir, 'scripts', 'runtime-payload.mjs'), '// helper\n')
     if (opts.omitFile !== 'scripts/runtime-config.mjs') writeFileSync(join(payloadDir, 'scripts', 'runtime-config.mjs'), '// config helper\n')
+    if (opts.omitFile !== 'scripts/runtime-pins.mjs') writeFileSync(join(payloadDir, 'scripts', 'runtime-pins.mjs'), '// pins helper\n')
     if (opts.omitFile !== 'scripts/setup-filesystem.cjs') writeFileSync(join(payloadDir, 'scripts', 'setup-filesystem.cjs'), '// filesystem adapter\n')
     if (opts.omitFile !== 'scripts/setup-lock.sh') writeFileSync(join(payloadDir, 'scripts', 'setup-lock.sh'), '# shared setup lock\n')
     if (opts.omitFile !== 'scripts/run-isolated.mjs') writeFileSync(join(payloadDir, 'scripts', 'run-isolated.mjs'), '// rollback step isolation\n')

@@ -1,8 +1,11 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
+import { InitializeRequestSchema } from '@modelcontextprotocol/sdk/types.js'
+import type { InitializeRequest, InitializeResult } from '@modelcontextprotocol/sdk/types.js'
 import { z } from 'zod'
 import type Database from 'better-sqlite3'
 import { randomUUID } from 'node:crypto'
-import { insertItem, resolveItem, listPending, markReplySeen, markItemAnnotationDelivered, answerItem, upsertBoard, updateBoardRow, advanceBoardRow, findBoard, archiveBoard, getBoard, getBoardByTitle, listBoards, markBoardRead, markAnnotationDelivered, markHandledDelivered, listPendingRows, upsertActivity, endActivity, touchActivity, recordActivityCall, listIssueSnapshots, listSourceLinks } from './store.js'
+import { insertItem, resolveItem, listPending, markReplySeen, markItemAnnotationDelivered, answerItem, upsertBoard, updateBoardRow, advanceBoardRow, findBoard, archiveBoard, getBoard, getBoardByTitle, listBoards, markBoardRead, markAnnotationDelivered, markHandledDelivered, listPendingRows, upsertActivity, endActivity, touchActivity, recordActivityCall, listIssueSnapshots, listSourceLinks, listPendingMessages, markMessageDelivered, ackMessage, MESSAGE_MAX_OUTCOME, getItem, isDrivenSession } from './store.js'
+import { isReservedProject } from '../public/reserved-projects.js'
 import type { ActionOwner, BoardRow, BoardWithRows, IssueLink, QuestionOption } from './store.js'
 import { makeContextLedger, deliverContext, shapeBoard, summariseBoard, rowKey, itemKey, agentItem } from './shape.js'
 import type { BoardIssueRelations } from './shape.js'
@@ -14,6 +17,8 @@ import { copilotWatchLaunch, rowWatchedAsk, watchStoppedForGood } from './watch.
 import type { WatchedAsk } from './watch.js'
 import { AGENT_INBOX_VERSION } from './version.js'
 import { detectServerSource } from './server-source.js'
+import { inferAgent, inferProcessArgs } from './infer.js'
+import { CHANNEL_CAPABILITY, CHANNEL_INSTRUCTIONS, CHANNEL_METHOD, namesChannel, startChannelPush } from './channel.js'
 
 // The 5-minute liveness tick, hoisted OUT of its setInterval callback on purpose
 // (#45). This is the line the two-stamp distinction rests on — it moves
@@ -49,7 +54,32 @@ function normalizeIssue(value: string, sessionRepo: string | null): IssueLink | 
 }
 
 export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
-  const server = new McpServer({ name: 'agent-inbox', version: AGENT_INBOX_VERSION })
+  // Issue #411 (channels, research preview): declare Claude Code's
+  // `claude/channel` capability, with instructions saying what an event means.
+  // Only Claude Code clients are told (see the initialize handler below).
+  const server = new McpServer(
+    { name: 'agent-inbox', version: AGENT_INBOX_VERSION },
+    { capabilities: { experimental: { [CHANNEL_CAPABILITY]: {} } }, instructions: CHANNEL_INSTRUCTIONS },
+  )
+  const isClaude = (name: string | undefined): boolean => inferAgent(name) === 'claude-code'
+  // The SDK declares capabilities and instructions for every client alike, and
+  // refuses to change them once connected. So the initialize answer is taken from
+  // its own handler and, for any client but Claude Code, returned without the
+  // channel capability and instructions: Copilot's context and handshake stay as
+  // they were. If an SDK upgrade removes `_oninitialize`, this falls back to
+  // declaring both to everyone, which a client that does not know them ignores;
+  // test/mcp.integration.test.ts fails on that, so it cannot happen silently.
+  const sdkInitialize = (server.server as unknown as { _oninitialize?: (r: InitializeRequest) => Promise<InitializeResult> })._oninitialize
+  if (typeof sdkInitialize === 'function') {
+    server.server.setRequestHandler(InitializeRequestSchema, async (request) => {
+      const result = await sdkInitialize.call(server.server, request)
+      if (isClaude(request.params.clientInfo.name)) return result
+      const { instructions: _instructions, capabilities, ...rest } = result
+      const { [CHANNEL_CAPABILITY]: _channel, ...experimental } = capabilities.experimental ?? {}
+      const { experimental: _experimental, ...others } = capabilities
+      return { ...rest, capabilities: Object.keys(experimental).length ? { ...others, experimental } : others }
+    })
+  }
   const scope = makeScope(cwd)
   // issue #42 — what THIS SERVER PROCESS has already handed over. Per-process,
   // NOT per session or per agent: this server is long-lived and a subagent's
@@ -65,7 +95,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
   // fan-out shares this id. Presence therefore tracks the CLI, not the agent.
   const sessionId = randomUUID()
 
-  // ── session presence (issue #28): the session itself is a Live row ──
+  // ── session presence (issue #28): the session itself is a presence row (a card in the Agents home, #454) ──
   // Registered after the initialize handshake (clientInfo is only populated
   // then), heartbeated by the server so an idle session never goes stale,
   // upgraded/reverted by the status tool, ended when this process exits.
@@ -80,14 +110,44 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
   //
   // Issue #197: it also records which build this server runs — the version the
   // handshake reports, and whether it runs from an installed agent runtime or a
-  // checkout (detected once, here) — so Live can say which sessions need a
+  // checkout (detected once, here) — so the viewer can say which sessions need a
   // restart and what would update each one. That rides on this existing write
   // and never counts as activity.
-  const build = { server_version: AGENT_INBOX_VERSION, server_source: detectServerSource(import.meta.url) }
+  // Issue #411 — and that it delivers session messages, which a send requires.
+  const build = { server_version: AGENT_INBOX_VERSION, server_source: detectServerSource(import.meta.url), receives_messages: true }
   // Issue #253 — and which process started this server. Claude Code starts a
   // stdio server and its hooks directly, so a hook finds the servers of its own
   // session by its parent pid; the server's own pid lets it check they still run.
-  const host = () => ({ host_pid: process.ppid, server_pid: process.pid })
+  const host = () => ({ host_pid: process.ppid, server_pid: process.pid, ...channel() })
+  // Issue #411 (channels) — for a Claude Code client only: push a notice for
+  // each new message to this session, and say in presence whether Claude Code
+  // was launched listening for it. Claude Code gives no signal either way, so the
+  // loop runs for every Claude Code client (a notice it does not listen for is
+  // dropped silently) and presence reads the launch flags of the Claude Code
+  // process that started this server. Started once, after the handshake, because
+  // the client's name is known only then. Stopped when the connection closes, and
+  // never started after it has.
+  let pushWake: boolean | undefined
+  let stopPush: (() => void) | undefined
+  let closed = false
+  const channel = (): { push_wake?: boolean } => {
+    if (pushWake === undefined && !closed && isClaude(clientName())) {
+      pushWake = namesChannel(inferProcessArgs(process.ppid) ?? [])
+      stopPush = startChannelPush({
+        db,
+        session: sessionId,
+        send: (notice) => server.server.notification({ method: CHANNEL_METHOD, params: { ...notice } }),
+      })
+    }
+    return pushWake === undefined ? {} : { push_wake: pushWake }
+  }
+  const priorOnClose = server.server.onclose
+  server.server.onclose = () => {
+    closed = true
+    stopPush?.()
+    stopPush = undefined
+    priorOnClose?.()
+  }
   const registerPresence = (): void => {
     try {
       const s = scope.get(clientName())
@@ -114,7 +174,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
   })
   // Every handled signal exits through the one 'exit' handler above. SIGHUP is how
   // a closed terminal tab or window ends this process (#162): left at Node's default
-  // disposition it kills the process without emitting 'exit', leaving a ghost Live
+  // disposition it kills the process without emitting 'exit', leaving a ghost presence
   // row and an open span. SIGKILL cannot be handled; the read-time caps cover it.
   for (const sig of ['SIGHUP', 'SIGINT', 'SIGTERM'] as const) process.on(sig, () => process.exit(0))
 
@@ -138,6 +198,37 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     ...copilotWatchLaunch(row.id, { rowActionVersion: row.action_version, project, ask }),
   })
   const boardWatchDescription = ' Copilot: a new blocked action returns a host-owned watch (or watches for a full board). Immediately launch each returned shell_command as the specified detached background task; the MCP server never launches it. On completion follow on_completion, then acknowledge the response with a status change and outcome. Routine edits do not start another watch; use board_get({title, watch:true}) to re-arm after a timeout or session restart, and each re-arm of an unchanged ask waits longer. If the watcher says the human asked you to stop waiting, do not re-arm it.'
+
+  // Issue #412 (driven sessions §4.2, mesh §10.3): `@sessions` and `@mesh` hold
+  // a driver's approval alerts and the mesh's asks. No agent reads or writes
+  // them, whatever its scope: register refuses one, and every item or plan tool
+  // refuses a scope, a project argument or an item id in one.
+  const refuseReserved = (project: string): void => {
+    if (isReservedProject(project)) {
+      throw new Error(`project "${project}" is reserved for Agent Inbox; agents cannot read or write it`)
+    }
+  }
+  const agentScope = () => {
+    const s = scope.get(clientName())
+    refuseReserved(s.project)
+    return s
+  }
+  const refuseReservedItem = (id: string): void => {
+    const item = getItem(db, id)
+    if (item) refuseReserved(item.project)
+  }
+  // Issue #412 (§5.3) — a session an Agent Inbox driver runs gets each answer
+  // and message pushed as a new turn, so it is told so in the response and is
+  // handed no watch contract. Read fresh on every call: the lease is the driver's.
+  // A board answer is pinged only for plans whose `session` is this server's,
+  // so board_advance and board_get({watch}) say "pushed" only for those.
+  const pushedWake = (): boolean => {
+    try {
+      return isDrivenSession(db, sessionId)
+    } catch {
+      return false
+    }
+  }
 
   const requireActionShape = (
     label: string,
@@ -181,7 +272,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     async ({ kind, title, detail, next_step, action_owner, impact, next_after, context, stream, options }) => {
       heartbeat()
       if (kind === 'question') requireActionShape(title, action_owner, impact ?? '', options)
-      const s = scope.get(clientName())
+      const s = agentScope()
       // issue #30 — a per-call `stream` override changes which BRANCH this item
       // was raised on, so the issue has to follow it. scope.issueFor owns the
       // override-then-infer precedence; branch-parsing policy never leaks in here.
@@ -211,9 +302,12 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
         context,
         options,
       })
-      const result = kind === 'question' && s.agent === 'copilot'
-        ? { id, watch: copilotWatchLaunch(id, { project: s.project }) }
-        : { id }
+      const pushed = kind === 'question' && pushedWake()
+      const result = pushed
+        ? { id, woken: 'pushed' }
+        : kind === 'question' && s.agent === 'copilot'
+          ? { id, watch: copilotWatchLaunch(id, { project: s.project }) }
+          : { id }
       return { content: [{ type: 'text', text: JSON.stringify(result) }] }
     },
   )
@@ -231,8 +325,29 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     },
     async ({ id, outcome, expected_response_revision }) => {
       heartbeat()
+      refuseReservedItem(id)
       const result = resolveItem(db, id, outcome, { expectedRevision: expected_response_revision })
       return { content: [{ type: 'text', text: JSON.stringify(result) }] }
+    },
+  )
+
+  // issue #411 — the addressed session's acknowledgement of a human message.
+  // Not resolve or answer: those are version-pinned item paths with their own
+  // contracts. Only this server's own session can ack its messages.
+  server.registerTool(
+    'ack_message',
+    {
+      description: 'Acknowledge a message the human sent THIS session (from pending().messages) once you have acted on it: done, declined, or taken on as tracked work. outcome is the one line the human sees: what you did, what you declined and why, or where you are tracking it. Until acked, a message comes back on every pending(). If you are a subagent, do not ack or act on messages: return them verbatim to your parent. Returns {ok:true}, or {ok:false, reason}: not_open with status "withdrawn" means the human took it back (stop if you have not finished); not_found means it is not a message to this session.',
+      inputSchema: {
+        id: z.string().min(1),
+        outcome: z.string().min(1).max(MESSAGE_MAX_OUTCOME).refine((value) => value.trim() !== '', 'outcome must not be blank'),
+      },
+    },
+    async ({ id, outcome }) => {
+      heartbeat()
+      const result = ackMessage(db, { id, session: sessionId, outcome })
+      const reply = result.ok ? { ok: true } : result
+      return { content: [{ type: 'text', text: JSON.stringify(reply) }] }
     },
   )
 
@@ -240,7 +355,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     'pending',
     {
       description:
-        'Poll for human responses in this project — the ONE polling call. Returns {items, rows}. Items include open questions plus unpicked annotations on open notes/milestones. Informational feedback (including a clear: empty annotation with annotated_at) normally leaves this queue after pickup; it does not create human attention or auto-resolve the item. Use pending({item_id:id}) to re-read one current open item even after pickup, including its response_revision; this targeted read returns no board rows. Pickup means handed to a reader, not acted on by the intended session, and informational feedback has no new automatic host-wake guarantee. Questions reappear until resolve; blocked rows until status changes. Read reply_kind/annotation_kind: answer = act normally; clarify = rewrite the ask; decline = cancel and record an outcome. handled_at means the human completed their task; snoozed_until means they deferred it; pinned_at means they set it aside with no time: keep the ask open and do not re-ask; an answer still arrives through pending(). When the item itself is complete, resolve with outcome and expected_response_revision from the exact response handled; move a board row out of blocked with outcome, or use board_advance for its next human step. Changed snapshots are withheld rather than handing over superseded words. Human text is never trimmed. Agent context is handed over once per SERVER PROCESS, recoverable with pending({full:true}), pending({item_id:id,full:true}), or board_get({title, full:true}); context_chars counts UTF-16 code units.',
+        'Poll for human responses in this project — the ONE polling call. Returns {items, rows, messages}. Items include open questions plus unpicked annotations on open notes/milestones. Informational feedback (including a clear: empty annotation with annotated_at) normally leaves this queue after pickup; it does not create human attention or auto-resolve the item. Use pending({item_id:id}) to re-read one current open item even after pickup, including its response_revision; this targeted read returns no board rows or messages. Pickup means handed to a reader, not acted on by the intended session, and informational feedback has no new automatic host-wake guarantee. Questions reappear until resolve; blocked rows until status changes. Read reply_kind/annotation_kind: answer = act normally; clarify = rewrite the ask; decline = cancel and record an outcome. handled_at means the human completed their task; snoozed_until means they deferred it; pinned_at means they set it aside with no time: keep the ask open and do not re-ask; an answer still arrives through pending(). When the item itself is complete, resolve with outcome and expected_response_revision from the exact response handled; move a board row out of blocked with outcome, or use board_advance for its next human step. Changed snapshots are withheld rather than handing over superseded words. messages are the human’s instructions to THIS session (never another’s), oldest first, re-delivered on every poll until you call ack_message({id, outcome}): act on each as if typed in your terminal, then ack it. A subagent returns messages verbatim to its parent and never acts on or acks them. Human text is never trimmed. Agent context is handed over once per SERVER PROCESS, recoverable with pending({full:true}), pending({item_id:id,full:true}), or board_get({title, full:true}); context_chars counts UTF-16 code units.',
       inputSchema: {
         full: z.boolean().optional(),
         project: z.string().min(1).optional().describe('Read responses for this project without changing the session scope. Use the project in a watcher launch contract after a restart or scope change.'),
@@ -249,8 +364,9 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     },
     async ({ full, project, item_id }) => {
       heartbeat()
-      const s = scope.get(clientName())
+      const s = agentScope()
       const responseProject = project ?? s.project
+      refuseReserved(responseProject)
       const items = listPending(db, responseProject, { includeInformational: true, itemId: item_id })
         .filter((it) => it.kind === 'question'
           ? markReplySeen(db, it.id, it.replied_at, it.response_revision, s.agent)
@@ -291,10 +407,24 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
       // `context_chars` for text a sibling consumed. Asking is always allowed and
       // always answered — that is what keeps the ledger an optimisation rather
       // than a delivery guarantee it cannot make.
+      // issue #411 — the human's messages to THIS server's session, and only
+      // its own: the session is never an argument. Stamped before they are
+      // read back, so delivered_at is the first delivery, and a message
+      // withdrawn in between is dropped. A targeted read carries none, as it
+      // carries no rows. Re-delivered until ack_message; never trimmed.
+      let messages: Array<{ id: string; text: string; sent_at: string; delivered_at: string | null; project: string }> = []
+      if (item_id === undefined) {
+        const handed = new Set(listPendingMessages(db, sessionId)
+          .filter((m) => markMessageDelivered(db, m.id, sessionId, s.agent)).map((m) => m.id))
+        messages = listPendingMessages(db, sessionId).filter((m) => handed.has(m.id))
+          .map((m) => ({ id: m.id, text: m.text, sent_at: m.created_at, delivered_at: m.delivered_at, project: m.project }))
+      }
       return {
         content: [{ type: 'text', text: JSON.stringify({
           items: items.map((it) => deliverContext(agentItem(it), itemKey(it.id), ledger, { full })),
           rows: rows.map((r) => deliverContext(r, rowKey(r.row_id), ledger, { full })),
+          messages,
+          ...(pushedWake() ? { woken: 'pushed' } : {}),
         }) }],
       }
     },
@@ -321,6 +451,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
       // can legitimately differ from the asking one (different cwd, subagent,
       // worktree), and losing the human's answer is worse than a cross-project
       // write only an id typo can cause. kind/status/precedence guard the rest.
+      refuseReservedItem(id)
       const out = answerItem(db, id, text, context, kind)
       return { content: [{ type: 'text', text: JSON.stringify(out) }] }
     },
@@ -330,7 +461,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     'status',
     {
       description:
-        'Ephemeral "what am I doing right now" for the human\'s live view — NOT for tasks (use boards) or attention (use flag). Call at meaningful PHASE changes only, not every step: starting a long effort, entering a new phase, fanning out subagents, wrapping up. children is a full-replace list of the subagents you are running ({name, doing, state?}) — resend the current set whenever it changes; the human can expand them under your entry. Times are stamped server-side; never call this just because time passed. Call with done:true when the effort ends — your entry reverts to an idle presence row. Your session stays listed for as long as it is running, but the CLAIM decays: after ~30 minutes with no MCP calls from you at all, "doing" reverts to open on its own, so a claim can never outlive the work. You do not need to keep it alive — just say what you are doing at your next real phase change, and it re-asserts instantly.',
+        'Ephemeral "what am I doing right now" for the human\'s Agents view — NOT for tasks (use boards) or attention (use flag). Call at meaningful PHASE changes only, not every step: starting a long effort, entering a new phase, fanning out subagents, wrapping up. children is a full-replace list of the subagents you are running ({name, doing, state?}) — resend the current set whenever it changes; the human sees them listed on your card. Times are stamped server-side; never call this just because time passed. Call with done:true when the effort ends — your card reverts to idle presence. Your session stays listed for as long as it is running, but the CLAIM decays: after ~30 minutes with no MCP calls from you at all, "doing" reverts to open on its own, so a claim can never outlive the work. You do not need to keep it alive — just say what you are doing at your next real phase change, and it re-asserts instantly.',
       inputSchema: {
         doing: z.string().min(1).optional().describe('A short, recognizable task name in plain language, such as "Fixing missed Inbox replies". Report actual work, not a PR hash or a review transcript.'),
         detail: z.string().optional().describe('One sentence about the current step or what remains. This is a self-reported update, not automatic tracking of every agent.'),
@@ -368,6 +499,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     },
     async ({ project, stream, repo, issue }) => {
       heartbeat()
+      if (project !== undefined) refuseReserved(project)
       scope.override({ project, stream, repo, issue })
       registerPresence()
       return { content: [{ type: 'text', text: JSON.stringify(scope.get(clientName())) }] }
@@ -460,7 +592,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     },
     async ({ title, board_version, issue, rows }) => {
       heartbeat()
-      const s = scope.get(clientName())
+      const s = agentScope()
       const issuePin = issue === undefined ? undefined : normalizeIssue(issue, s.repo)
       const linked = rows.map((row) => ({ ...row, issue: row.issue === undefined ? undefined : normalizeIssue(row.issue, s.repo) }))
       const existing = getBoardByTitle(db, s.project, title)
@@ -501,13 +633,14 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
         // issue #306 — this server's presence id, so the Dashboard puts the plan on its lane
         session: sessionId,
       })
-      const watches = s.agent === 'copilot' && newActions.size
+      const pushed = newActions.size > 0 && pushedWake()
+      const watches = s.agent === 'copilot' && newActions.size && !pushed
         ? getBoard(db, s.project, title)?.rows
           .filter((row) => row.status === 'blocked' && newActions.get(row.label) === row.action_version)
           .map((row) => rowWatch(row, s.project)) ?? []
         : []
       return { content: [{ type: 'text', text: JSON.stringify({
-        ...out, ...(watches.length ? { watches } : {}),
+        ...out, ...(watches.length ? { watches } : {}), ...(pushed ? { woken: 'pushed' } : {}),
       }) }] }
     },
   )
@@ -537,7 +670,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     },
     async ({ title, board_version, label, expected_revision, status, note, next_step, action_owner, impact, next_after, options, outcome, context, issue, waits_on }) => {
       heartbeat()
-      const s = scope.get(clientName())
+      const s = agentScope()
       const issueLink = issue === undefined ? undefined : normalizeIssue(issue, s.repo)
       const existingBoard = getBoardByTitle(db, s.project, title)
       const existing = existingBoard?.rows.find((row) => row.label === label)
@@ -583,10 +716,11 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
         repoRoot: scope.rootFor(),
         session: sessionId,
       })
-      const watch = s.agent === 'copilot' && newAsk
+      const pushed = newAsk && pushedWake()
+      const watch = s.agent === 'copilot' && newAsk && !pushed
         ? rowWatch({ id: out.rowId, label, action_version: (existing?.action_version ?? 0) + 1 }, s.project)
         : undefined
-      return { content: [{ type: 'text', text: JSON.stringify({ ...out, watch }) }] }
+      return { content: [{ type: 'text', text: JSON.stringify({ ...out, watch, ...(pushed ? { woken: 'pushed' } : {}) }) }] }
     },
   )
 
@@ -612,8 +746,9 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     async ({ title, label, board_version, expected_revision, note, next_step, action_owner, impact, next_after, options, context }) => {
       heartbeat()
       requireBlockedShape(label, 'blocked', note, next_step, action_owner, impact, options)
-      const s = scope.get(clientName())
-      const previous = getBoard(db, s.project, title)?.rows.find((row) => row.label === label)
+      const s = agentScope()
+      const plan = getBoard(db, s.project, title)
+      const previous = plan?.rows.find((row) => row.label === label)
       const out = advanceBoardRow(db, {
         project: s.project,
         title,
@@ -629,10 +764,13 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
         options,
         context,
       })
-      const watch = s.agent === 'copilot' && previous && out.ok
+      // board_advance never restamps the plan's session (#306), so the driver
+      // pings this answer only when this session already wrote the plan
+      const pushed = out.ok && plan?.session === sessionId && pushedWake()
+      const watch = s.agent === 'copilot' && previous && out.ok && !pushed
         ? rowWatch({ ...previous, action_version: out.action_version }, s.project)
         : undefined
-      return { content: [{ type: 'text', text: JSON.stringify({ ...out, watch }) }] }
+      return { content: [{ type: 'text', text: JSON.stringify({ ...out, watch, ...(pushed ? { woken: 'pushed' } : {}) }) }] }
     },
   )
 
@@ -644,7 +782,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     },
     async ({ title, board_version }) => {
       heartbeat()
-      const s = scope.get(clientName())
+      const s = agentScope()
       const board = findBoard(db, s.project, title)
       const ok = board ? archiveBoard(db, board.id, board_version) : false
       return { content: [{ type: 'text', text: JSON.stringify({ ok }) }] }
@@ -687,7 +825,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     },
     async ({ title, full, watch }) => {
       heartbeat()
-      const s = scope.get(clientName())
+      const s = agentScope()
       if (watch && (title === undefined || s.agent !== 'copilot')) {
         throw new Error('watch requires a board title and a Copilot client; other hosts use their hook adapter')
       }
@@ -720,7 +858,9 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
         }
         const board = getBoardByTitle(db, s.project, title)
         if (board && !deliver(board)) continue
-        const watches = watch && board?.status === 'active'
+        // a driver pings only rows of plans this session wrote (boards.session)
+        const pushed = watch === true && board?.session === sessionId && pushedWake()
+        const watches = watch && !pushed && board?.status === 'active'
           ? board.rows.filter((row) => row.status === 'blocked')
             .map((row) => ({ row, ask: rowWatchedAsk(row) }))
             .filter(({ ask }) => !watchStoppedForGood(ask))
@@ -728,7 +868,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
           : undefined
         const payload = board ? shapeBoard(board, { full, ledger, issues: boardIssueRelations(board) }) : { found: false }
         return {
-          content: [{ type: 'text', text: JSON.stringify({ ...payload, ...(watches ? { watches } : {}) }) }],
+          content: [{ type: 'text', text: JSON.stringify({ ...payload, ...(watches ? { watches } : {}), ...(pushed ? { woken: 'pushed' } : {}) }) }],
         }
       }
       throw new Error('Board responses changed during the read; retry board_get before acting or updating.')

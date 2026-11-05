@@ -103,7 +103,7 @@ describe('answered card layering', () => {
 })
 
 describe('workspace search layering', () => {
-  it('raises only an open-results topbar above inspector handles but below Live and dialogs', async () => {
+  it('raises only an open-results topbar above inspector handles but below dialogs', async () => {
     await boardWithBlockedRow()
     const topbar = document.getElementById('topbar')!
     const results = document.getElementById('searchResults')!
@@ -113,7 +113,6 @@ describe('workspace search layering', () => {
     results.hidden = false
     expect(getComputedStyle(topbar).zIndex).toBe('45')
     expect(layer('#topbar')).toBeGreaterThan(layer('.pane-resizer'))
-    expect(layer('#topbar')).toBeLessThan(layer('#liveBar'))
     expect(layer('#topbar')).toBeLessThan(layer('#relaybox'))
     expect(layer('#topbar')).toBeLessThan(layer('#missionbox'))
     expect(layer('#topbar')).toBeLessThan(layer('#lightbox'))

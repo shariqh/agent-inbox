@@ -1,22 +1,19 @@
 // The mesh's root switch, `mesh.json` (Mesh M1, #397; design
 // docs/superpowers/specs/2026-10-29-agent-mesh-design.md §2). Node core only:
-// it is shared by `meshctl`, which must never open the hub, and by the viewer
-// process, which stats the file at start and once a minute. Nothing in the
-// stdio MCP server's import graph may reach this module.
+// `meshctl` reads it and must never open the hub. Since #454 the viewer reads
+// nothing here: the Agents view is always on, and the viewer's watch returns
+// with the first mesh phase that needs it (M3). Nothing in the stdio MCP
+// server's import graph may reach this module.
 //
-// One rule decides what the file means, for both readers: a regular file (never
+// One rule decides what the file means, for every reader: a regular file (never
 // a symlink), at most MESH_FILE_MAX bytes, a JSON object whose `schema` is 1.
 // A missing key or file means off. A newer schema is never read as on: this
 // build cannot know what it would turn on.
-import { lstatSync, readFileSync } from 'node:fs'
-import type { BigIntStats } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 
 export const MESH_SCHEMA = 1
 export const MESH_FILE_MAX = 64 * 1024
-// The viewer's one stated exception to "nothing changes when off" (§2.1).
-export const MESH_STAT_INTERVAL_MS = 60_000
 
 /**
  * Where `mesh.json` lives: an absolute AGENT_INBOX_MESH_DIR, else the folder of
@@ -63,64 +60,4 @@ export const MESH_REASONS: Record<Exclude<MeshParse, { ok: true }>['reason'] | '
   'too-large': `is larger than ${MESH_FILE_MAX} bytes`,
   'not-regular': 'is not a regular file (a symlink, folder or device)',
   unreadable: 'cannot be read',
-}
-
-/** What the viewer acts on. Only the M1 piece exists today. */
-export interface MeshState { agentsView: boolean }
-
-export const meshState = (doc: MeshDocument): MeshState => ({ agentsView: doc['agentsView'] === true })
-
-type Stat = (path: string) => BigIntStats
-type Read = (path: string) => string
-
-const stampOf = (s: BigIntStats): string =>
-  [s.dev, s.ino, s.size, s.mtimeNs, s.ctimeNs, s.mode].map(String).join(':')
-
-/**
- * The viewer's watch: one `lstat` now and one per interval, and a read only
- * when the stat says the file changed. A missing file costs that one failed
- * stat. The timer is unref'd, so it never keeps a process alive.
- */
-export function watchMeshConfig(file: string, {
-  intervalMs = MESH_STAT_INTERVAL_MS,
-  stat = (path: string) => lstatSync(path, { bigint: true }),
-  read = (path: string) => readFileSync(path, 'utf8'),
-  timers = { setInterval, clearInterval },
-}: { intervalMs?: number; stat?: Stat; read?: Read; timers?: { setInterval: typeof setInterval; clearInterval: typeof clearInterval } } = {}): {
-  current(): MeshState | null
-  check(): void
-  stop(): void
-} {
-  let stamp: string | null = null
-  let state: MeshState | null = null
-  const check = (): void => {
-    let s: BigIntStats
-    try {
-      s = stat(file)
-    } catch {
-      stamp = null
-      state = null
-      return
-    }
-    const next = stampOf(s)
-    if (next === stamp) return
-    stamp = next
-    state = null
-    if (!s.isFile() || s.size > BigInt(MESH_FILE_MAX)) return
-    try {
-      const parsed = parseMesh(read(file))
-      state = parsed.ok ? meshState(parsed.doc) : null
-    } catch {
-      // read again at the next stat, whatever it says
-      stamp = null
-    }
-  }
-  check()
-  const timer = timers.setInterval(check, intervalMs)
-  timer.unref?.()
-  return {
-    current: () => state,
-    check,
-    stop: () => timers.clearInterval(timer),
-  }
 }

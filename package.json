@@ -1,6 +1,6 @@
 {
   "name": "agent-inbox",
-  "version": "2.1.0",
+  "version": "2.4.0",
   "description": "Local, cross-project attention inbox for coding agents",
   "private": true,
   "license": "MIT",
@@ -22,7 +22,8 @@
     "agent-inbox-mcp": "./dist/mcp-server.js",
     "agent-inbox-hook": "./dist/hook-cli.js",
     "agent-inbox-watch": "./dist/watch-cli.js",
-    "agent-inbox-meshctl": "./dist/meshctl.js"
+    "agent-inbox-meshctl": "./dist/meshctl.js",
+    "agent-inbox-driver": "./dist/driver-cli.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
@@ -31,11 +32,14 @@
     "marketing": "node scripts/serve-marketing.mjs",
     "hook": "tsx src/hook-cli.ts",
     "watch": "tsx src/watch-cli.ts",
+    "driver": "tsx src/driver-cli.ts",
     "meshctl": "tsx src/meshctl.ts",
     "generate:icons": "bash scripts/generate-icons.sh",
     "install:agents": "bash scripts/install-agents.sh",
     "install:hooks": "bash scripts/install-hooks.sh",
+    "install:copilot-hooks": "bash scripts/install-copilot-hooks.sh",
     "electron": "electron .",
+    "electron:side": "electron .",
     "release:inputs": "node scripts/release-inputs.mjs",
     "release:linux-inputs": "node scripts/linux-release-inputs.mjs",
     "release:windows-inputs": "node scripts/windows-release-inputs.mjs",

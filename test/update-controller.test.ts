@@ -474,6 +474,7 @@ describe('user-initiated verified downloads', () => {
     preferences?: ReturnType<typeof prefs>
     notifier?: (notification: UpdateNotification) => unknown
     withDownloader?: boolean
+    installWithheld?: 'unowned-viewer'
   } = {}) {
     const fake = fakeDownloader()
     const emitted: UpdateControllerState[] = []
@@ -486,6 +487,7 @@ describe('user-initiated verified downloads', () => {
       clock: () => new Date('2026-02-01T00:00:00Z'),
       emit: (value) => emitted.push(value),
       ...(overrides.withDownloader === false ? {} : { downloader: fake.downloader }),
+      ...(overrides.installWithheld !== undefined ? { installWithheld: overrides.installWithheld } : {}),
     })
     return { controller, emitted, fake, checker: checkerMock }
   }
@@ -515,6 +517,32 @@ describe('user-initiated verified downloads', () => {
     expect(checked).toMatchObject({ status: 'available', available: { downloadable: false } })
     await expect(controller.downloadNow()).resolves.toBe(checked)
     expect(fake.downloader.download).not.toHaveBeenCalled()
+  })
+
+  // #465: a window that opened on a viewer this app did not start gets no installer, and
+  // Settings must say why rather than promise an install in a later release.
+  it.each(['dmg', 'appimage'] as const)('says why a %s download has no installer when main withheld it', async (kind) => {
+    const { controller, fake } = setup(async () => availableWith(artifactFor('2.0.0', kind)), { installWithheld: 'unowned-viewer' })
+
+    await expect(controller.checkNow()).resolves.toMatchObject({
+      status: 'available',
+      available: { downloadable: true, installable: false, installPermitted: false, installWithheld: 'unowned-viewer' },
+    })
+    const done = controller.downloadNow()
+    fake.succeed()
+    const verified = await done
+    expect(verified).toMatchObject({ status: 'verified', available: { installable: false, installWithheld: 'unowned-viewer' } })
+    expect(verified.available).not.toHaveProperty('reason')
+  })
+
+  it('names no withheld installer on an offer that never downloads, or when main withheld none', async () => {
+    const deb = setup(async () => availableWith(artifactFor('2.0.0', 'deb')), { installWithheld: 'unowned-viewer' })
+    const debOffer = await deb.controller.checkNow()
+    expect(debOffer.available).toMatchObject({ downloadable: false })
+    expect(debOffer.available).not.toHaveProperty('installWithheld')
+
+    const owned = setup(async () => availableWith(artifactFor()))
+    expect((await owned.controller.checkNow()).available).not.toHaveProperty('installWithheld')
   })
 
   it('refuses an artifact that does not belong to the verified release', async () => {
@@ -1403,6 +1431,7 @@ describe('installing a verified update', () => {
     const { openVerified: _openVerified, ...withoutOpen } = fakeDownloader().downloader
     expect(() => createUpdateController({ ...base, downloader: withoutOpen, installers: { 'macos-dmg': installer } })).toThrow(TypeError)
     expect(() => createUpdateController({ ...base, installers: { 'deb-notify': installer } as never })).toThrow(TypeError)
+    expect(() => createUpdateController({ ...base, installWithheld: 'later' as never })).toThrow(TypeError)
   })
 })
 

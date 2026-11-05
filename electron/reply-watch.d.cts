@@ -119,6 +119,9 @@ export function attentionNotification(
       },
 ): AttentionNotification
 
+/** False for an app launch's approval: its notification offers no buttons (#412 step 3). */
+export function answerableByNotification(notification: AttentionNotification | null | undefined): boolean
+
 export function freshAttentionNotifications(
   known: ReadonlySet<string> | null,
   notifications: AttentionNotification[],

@@ -8,7 +8,8 @@ paths:
   - "public/keyboard-ui.js"
   - "public/esc.js"
   - "public/structured-copy.js"
-applyTo: "public/app.js,public/poll.js,public/drafts.js,public/selection.js,public/copy-on-select.js,public/keyboard-ui.js,public/esc.js,public/structured-copy.js"
+  - "public/messages.js"
+applyTo: "public/app.js,public/poll.js,public/drafts.js,public/selection.js,public/copy-on-select.js,public/keyboard-ui.js,public/esc.js,public/structured-copy.js,public/messages.js"
 ---
 
 # Viewer frontend: poll, render, drafts, focus and selection
@@ -76,8 +77,73 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   sent. Never send to get past a notice. A
   window deletes only the copy it loaded or last wrote, and its leaving save
   writes back a draft another window deleted; the viewer-restart hold stays.
+- Messages to a running session (#411 PR 2) are written in one composer per
+  session, in the Dashboard's session panel (#454: the Live drawer that also held
+  one is retired), and read from `/api/messages`, the poll's ninth read (a 404,
+  error or refused body is no messages). Each composer is one node kept for the
+  page's life and updated in place. A send claims an id once and reuses it while
+  its text is unchanged, so a retry never sends twice. Message drafts are durable
+  (`type: 'message'`) and never pause the list; only a send in flight or a composer
+  in use holds a viewer restart's reload. The Agents home's "Not delivered" fold
+  rebuilds only when what it shows changes.
+  Nothing about messages reaches attention, a badge, a count or the dock.
 
 ## Invariants in detail
+
+- **Messages to a running session are presence, written in one kept node (issue #411,
+  PR 2).** Design: [`docs/superpowers/specs/2026-10-30-session-messages-design.md`](../superpowers/specs/2026-10-30-session-messages-design.md)
+  §5 and §12. `public/messages.js` is pure: the delivery state (`deliveryState`, three
+  states from the session's `/api/activity` flags, `activity-and-live.md`), each
+  message's status line (sent, picked up, acknowledged with its outcome, withdrawn, or
+  "Withdrawn after pickup: it may have started"), one session's history (newest
+  first, five shown, "+N earlier") and the "Not delivered" list. `app.js` mounts
+  `composerEl('focus', session)`: a labelled textarea, a counter, Send, the delivery
+  line, the sharing line ("Any agent of this session, a subagent included, may pick it
+  up first."), a `role="status"` slot and the history. Each is ONE node per session
+  kept in `composerEls` and updated in place (`updateComposer`, written only on a
+  change, so an unchanged paint writes nothing); it is the session panel's own section
+  (`.dash-focus-message`), never rewritten by `setFocusPart`, and the Dashboard is
+  painted by `paintAmbient()`, so a status moves under an unrelated draft. A card's
+  Message button opens the panel with its composer focused; an explicit open focuses
+  the textarea, nothing passive does. ⌘/Ctrl+Enter sends; Esc in the panel closes the
+  panel and keeps the draft (#454 retired the Live drawer's composer, its Cancel and
+  `liveDrawKey`). A send claims `{ id, text }` (`claimMessageIntent`),
+  stored before the POST, and reuses the id while the text is unchanged, so a retry
+  after an unconfirmed send replays exactly; a refusal (`session_gone`,
+  `session_cannot_receive`, `too_many_open`, `too_much_open`, `id_conflict`) drops
+  the intent and keeps the text with its reason; an unconfirmed send keeps both and
+  says "Your send was not confirmed. Send again: it will not send twice." Every
+  applied frame `reconcileMessageDrafts()` retires a draft whose intent the snapshot
+  holds with the same text (it did land) and moves one whose session is no longer
+  listed, or cannot receive, to the unsent responses (`messageRecoveries`), whose
+  Retry reuses the id the same way. Withdraw posts the revision the history showed.
+  Every write ends in `reloadAndPaint()`.
+  The Agents home's "Not delivered (N)" fold (`paintUndelivered`): every open message
+  whose session is no longer listed (global, not lens-filtered), newest first, ten
+  shown and "+M more", each with Copy text and Withdraw, until withdrawn or a later
+  send's 30-day prune deletes it. It is rebuilt only when its messages, their write
+  notes or the minute change, and gives a keyboard user back the same control by its
+  focus key; the Sessions line names nothing.
+  Drafts (#279): `type: 'message'`, key `message:<session>`, with `intent`; one in the
+  unsent responses carries a `reason` and is stored as `message-recovery:<session>`,
+  so a new draft to the same session never overwrites it. They share
+  `agent-inbox-drafts-v1`, so a build older than #411 sharing the profile drops only
+  the `message` entries on its next write (the exception `drafts.js` names). A
+  restored draft for a listed session that can receive goes back to its composer,
+  opening and focusing nothing (an unconfirmed intent says so); one the snapshot holds
+  retires; any other goes to the unsent responses. A waiting one whose session is
+  listed and can receive again goes back to its composer unless that holds a draft
+  or one of the session's composer textareas has focus (`updateComposer` leaves a
+  focused textarea alone, so the next keystroke would replace the text unseen);
+  then both stay, each under its key. A closed composer holding text marks its button
+  "Message · draft". Only a send in flight or a composer in use (focus inside it)
+  holds a viewer restart's reload (`hasUnsentResponses`); a stored draft does not, as
+  it comes back after the reload. None of it is in `suspendState()`, so it never
+  pauses the list. Agent and human text go through `esc()`/`textContent`; an outcome is
+  agent text and goes through `renderStructuredText`. No animation. Nothing here
+  reaches `public/attention.js`, `relay.js`, `reply-watch.cjs`, a badge, a count,
+  or the dock: `test/dom/session-messages.test.ts` compares every attention
+  surface with and without messages, a draft, a send, a delivery and an ack.
 
 - **Viewer escapes all agent-authored text.** `public/app.js` runs every interpolated field
   (item title/detail/annotation/project/stream/agent, board title/meta, row label/note/
@@ -92,9 +158,9 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   app, but NOT a merely expanded card. Expanded cards, the open inspector's scroll offset, and
   its focused control survive rebuilds; order pinning appends new work at the foot; the press
   guard protects clicks. A draft gates only the editable surfaces:
-  `paintAmbient()` still refreshes the document-title badge, project rail, tab counts and global
-  Live strip before `shouldDeferRender()` returns. A held press is different: `pressHeld()` runs
-  before `paintAmbient()` because the rail itself can rebuild, so the press guard still defers
+  `paintAmbient()` still refreshes the document-title badge, project rail, tab counts and the global
+  Sessions line before `shouldDeferRender()` returns. A held press is different: `pressHeld()` runs
+  before `paintAmbient()` because the panel's asks can rebuild, so the press guard still defers
   every surface. A handler that ends a successful POST with a bare `load()` still asks the gate
   for permission to show the human the editable result of their own click, and one unrelated
   draft can refuse it indefinitely.
@@ -108,6 +174,13 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   hint claiming "paused" over data already on screen. Pinned in `test/shell.test.ts` +
   `test/issue-31-followups.test.ts`; the behavioural half (including both the protected draft and
   live ambient signals) is `test/dom/silent-send.test.ts`.
+  Answer editors have two hosts and one rule: the Inbox card (and the Review queue's
+  deck) and the session panel's Asking you section (`#dashFocus`, #454 A.2; #303's rail,
+  `#dashRail`, retired by #454's PR 6). Each mounts the same `answerEl`/`rowAnswerEl`, so
+  a draft is one entry in `draftReplies`/`rowDrafts` whichever host holds it; a draft
+  pauses only the panel's ask section on the Dashboard, a forced paint rebuilds it, and
+  `restoreDraftFocus` scopes the bookmark to the host's id, so the same ask drawn twice
+  never takes the other's focus.
   Nested Background disclosures are keyed by item/row id in `openContexts`; a poll or forced
   rebuild must restore their `open` state instead of collapsing text under the reader.
   Passive polls retain inactive Notes, History and Plans DOM, but not their data:
@@ -344,8 +417,8 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   wheel/trackpad momentum, which presents as an intermittent freeze at the 3-second poll boundary.
   The card and window scroll guards update `lastInteractionScrollAt`, while the card also updates
   `openRowScrollTop`; `shouldDeferRender()` holds the editable frame for the bounded
-  `SCROLL_IDLE_MS` window, while `paintAmbient()` still refreshes badges, counts, the rail, and
-  Live. A resettable timer calls `resumeRender()` as soon as movement settles, so a deferred frame
+  `SCROLL_IDLE_MS` window, while `paintAmbient()` still refreshes badges, counts, the session cards, and
+  the Sessions line. A resettable timer calls `resumeRender()` as soon as movement settles, so a deferred frame
   does not wait for another poll. Keep scroll activity out of `suspendState()`/`suspendHint()`:
   it is a brief interaction guard, not a user-visible pause, and it must reset when the open item
   changes. A settled rebuild anchors the open row's in-flow `.nrow` viewport position before and

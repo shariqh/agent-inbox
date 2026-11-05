@@ -213,6 +213,9 @@ function stagePublicModules(repoRoot, stageDir) {
     const code = readFileSync(join(stageDir, ...rel.split('/')), 'utf8')
     for (const [, , spec] of code.matchAll(RELATIVE_IMPORT)) {
       const target = posix.normalize(posix.join(posix.dirname(rel), spec))
+      if (target.startsWith('scripts/') && !REQUIRED_SCRIPTS.includes(target.slice('scripts/'.length))) {
+        throw new StageRuntimeError(`${rel} imports ${target}, which the runtime does not ship (REQUIRED_SCRIPTS)`)
+      }
       if (!target.startsWith('public/') || staged.has(target)) continue
       const src = join(repoRoot, ...target.split('/'))
       if (!existsSync(src)) throw new StageRuntimeError(`${rel} imports ${target}, which is missing from the repo`)
@@ -309,6 +312,9 @@ const REQUIRED_SCRIPTS = [
   'prune-runtimes.sh',
   'runtime-payload.mjs',
   'runtime-config.mjs',
+  // #412: the pins rule, which runtime-config.mjs, runtime-payload.mjs's prune
+  // and dist/driver-cli.js all import
+  'runtime-pins.mjs',
   'setup-filesystem.cjs',
   'setup-lock.sh',
   'run-isolated.mjs',

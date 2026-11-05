@@ -81,7 +81,7 @@ describe('viewer api', () => {
     expect(typeof body.hooksSettings).toBe('string')
     const parsed = JSON.parse(body.hooksSettings)
     expect(Object.keys(parsed.hooks).sort()).toEqual(
-      ['Notification', 'SessionEnd', 'SessionStart', 'Stop', 'UserPromptSubmit'],
+      ['Notification', 'PostToolUse', 'PreToolUse', 'SessionEnd', 'SessionStart', 'Stop', 'UserPromptSubmit'],
     )
     // exec form: no shell tokenisation, so a repo path with a quote or a $ is safe
     expect(parsed.hooks.Notification[0].hooks[0].args[0]).toMatch(/dist\/hook-cli\.js$/)

@@ -229,8 +229,8 @@ built for Node 24), and packages with @electron/packager (`--no-asar`: the serve
 into the app dir and serves `./public` from the real filesystem). Packaging stops if the
 stage is missing its manifest or lockfile, or if the staged or packaged dependency graph
 differs from `package-lock.json` in any package version or integrity. Same launch rules as
-dev: reuse a running 4319 viewer, else serve in-process; quitting frees the port only if
-the app started the server.
+dev, on 4319 rather than the dev default 4392: reuse a running viewer, else serve
+in-process; quitting frees the port only if the app started the server.
 
 ### Portable agent runtime staging
 
@@ -362,9 +362,13 @@ fnm exec --using=24 npm run electron
 
 ## Port / server reuse
 
-- The shell probes `http://127.0.0.1:4319` (or `AGENT_INBOX_PORT` if set). The
-  viewer binds only to IPv4 loopback; `localhost` remains a browser alias.
-- If a viewer is **already running** there (e.g. `npm run view`), it is reused and is
+- The shell probes `http://127.0.0.1:4392` in a dev run and `http://127.0.0.1:4319` in
+  the packaged app (or `AGENT_INBOX_PORT` if set). The dev default keeps a checkout off
+  the installed app's port: an installed app that opens on a viewer it did not start can
+  never install updates until it is reopened (#465). Set `AGENT_INBOX_PORT=4319` to reuse
+  a `npm run view` viewer. The viewer binds only to IPv4 loopback; `localhost` remains a
+  browser alias.
+- If a viewer is **already running** there (e.g. `npm run view` on the same port), it is reused and is
   **not** killed when the app quits, but only if it attests the hardened local boundary.
   A persistent pre-hardening viewer is refused with restart guidance rather than silently
   preserving LAN exposure. Reuse is confirmed with a **second probe** after a short delay

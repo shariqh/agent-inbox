@@ -252,7 +252,7 @@ describe('opening a link (issue #300)', () => {
     expect(open).not.toHaveBeenCalled()
   })
 
-  it('opens an inline path from the keyboard, and reports a missing file', async () => {
+  it('opens an inline path from the keyboard, and says a missing file with no folder to show isn’t there', async () => {
     const open = bridge(async () => ({ ok: false, reason: 'missing' }))
     db = freshDb()
     const id = seed(db)
@@ -262,7 +262,7 @@ describe('opening a link (issue #300)', () => {
     path.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
     await settle()
     expect(open).toHaveBeenCalledWith({ kind: 'file', path: '/Users/s/docs/spec.md', reveal: false })
-    expect(status()).toBe('Not found: /Users/s/docs/spec.md')
+    expect(status()).toBe('spec.md isn’t there.')
     expect(row(id)?.getAttribute('aria-expanded')).toBe('true')
   })
 
@@ -274,6 +274,42 @@ describe('opening a link (issue #300)', () => {
     click(stripOf(card)!.querySelector('button[data-link-kind="file"]'))
     await settle()
     expect(status()).toMatch(/^Shown in .+: this type isn’t opened automatically\.$/)
+  })
+
+  // The owner's report: a click on a file link only copied its path. In the
+  // viewer the app owns, a click on any file (here a type no rule names) asks
+  // main, which shows it in Finder; copying is only ever the chip's own action.
+  it('in its own viewer, a click on a file of a type nothing opens asks main and never copies', async () => {
+    const open = bridge(async () => ({ ok: true, action: 'revealed', reason: 'type' }))
+    const writeText = clipboard()
+    db = freshDb()
+    const id = seed(db, { detail: 'Output at /Users/s/build/out.weird and /Users/s/build/NOTES' })
+    const card = await openInspector(db, id)
+    const inline = [...card.querySelectorAll<HTMLElement>('.card-tldr-body .file-link')]
+    expect(inline.map((el) => el.dataset.linkPath)).toEqual(['/Users/s/build/out.weird', '/Users/s/build/NOTES'])
+    for (const el of inline) {
+      expect(el.title).not.toMatch(/^Copy path/)
+      click(el)
+      await settle()
+    }
+    expect(fileCalls(open)).toEqual([
+      [{ kind: 'file', path: '/Users/s/build/out.weird', reveal: false }],
+      [{ kind: 'file', path: '/Users/s/build/NOTES', reveal: false }],
+    ])
+    expect(writeText).not.toHaveBeenCalled()
+    expect(status()).toMatch(/^Shown in .+: this type isn’t opened automatically\.$/)
+  })
+
+  it('shows a missing file’s nearest folder, and copies nothing', async () => {
+    const open = bridge(async () => ({ ok: true, action: 'revealed', reason: 'missing', folder: 'docs' }))
+    const writeText = clipboard()
+    db = freshDb()
+    const card = await openInspector(db, seed(db))
+    click(stripOf(card)!.querySelector('button[data-link-kind="file"]'))
+    await settle()
+    expect(fileCalls(open)).toEqual([[{ kind: 'file', path: '/Users/s/docs/spec.md', reveal: false }]])
+    expect(status()).toMatch(/^spec\.md isn’t there; showing docs in .+\.$/)
+    expect(writeText).not.toHaveBeenCalled()
   })
 
   it('in a viewer the app does not own, a file link copies its path and says why; web links still open', async () => {
@@ -291,7 +327,7 @@ describe('opening a link (issue #300)', () => {
     click(chip)
     await settle()
     expect(writeText).toHaveBeenCalledWith('/Users/s/docs/spec.md')
-    expect(status()).toBe('Copied the path. File links open only in Agent Inbox’s own viewer.')
+    expect(status()).toBe('Copied the path. Files open only in Agent Inbox’s own window.')
     expect(fileCalls(open)).toEqual([])
 
     expect(clickPrevented(stripOf(cardOf(id))!.querySelector('a[data-link-kind="web"]')!)).toBe(true)
@@ -321,7 +357,7 @@ describe('opening a link (issue #300)', () => {
     await settle()
     expect(fileCalls(open)).toHaveLength(2)
     expect(writeText).toHaveBeenCalledWith('/Users/s/docs/spec.md')
-    expect(status()).toBe('Copied the path. File links open only in Agent Inbox’s own viewer.')
+    expect(status()).toBe('Copied the path. Files open only in Agent Inbox’s own window.')
     await pollTick()
     expect(chip().title).toBe('Copy path: /Users/s/docs/spec.md')
   })
@@ -367,7 +403,7 @@ describe('opening a link (issue #300)', () => {
     click(strip.querySelector('button[data-link-kind="file"]'))
     await settle()
     expect(writeText).toHaveBeenCalledWith('/Users/s/docs/spec.md')
-    expect(status()).toBe('Copied the path. A browser can’t open local files.')
+    expect(status()).toBe('Copied the path. Files open only in Agent Inbox’s own window.')
     expect(clickPrevented(strip.querySelector('a[data-link-kind="web"]')!)).toBe(false)
   })
 })
@@ -402,7 +438,7 @@ describe('links are never attention (issue #300)', () => {
 
 // Issue #324: repo-relative paths link only in a card whose item (or plan)
 // recorded its repository's folder; main opens them with that folder, and
-// where the folder does not have the file the click copies its path instead.
+// where the folder does not have the file the click shows its nearest folder.
 describe('repo-relative paths (issue #324)', () => {
   const ROOT = '/Users/s/Development/agent-inbox'
   const SPEC = 'docs/superpowers/specs/spec.md'
@@ -451,8 +487,8 @@ describe('repo-relative paths (issue #324)', () => {
     expect(writeText).not.toHaveBeenCalled()
   })
 
-  it('copy the path as written, and say why, when the folder does not have the file', async () => {
-    const open = bridge(async () => ({ ok: false, reason: 'missing' }))
+  it('show the nearest folder inside the repository when it does not have the file, and copy nothing', async () => {
+    const open = bridge(async () => ({ ok: true, action: 'revealed', reason: 'missing', folder: 'superpowers' }))
     const writeText = clipboard()
     db = freshDb()
     const id = seedRel(db)
@@ -462,14 +498,19 @@ describe('repo-relative paths (issue #324)', () => {
     inline.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
     await settle()
     expect(fileCalls(open)).toEqual([[{ kind: 'file', path: SPEC, root: ROOT, reveal: false }]])
-    expect(writeText).toHaveBeenCalledWith(SPEC)
-    expect(status()).toBe(`Copied ${SPEC}: it isn’t in agent-inbox, so it may be on another branch or in another worktree.`)
+    expect(status()).toMatch(/^spec\.md isn’t there; showing superpowers in .+\.$/)
 
-    // the chip's Reveal is the same request, revealing, and falls back the same way
+    // the chip's Reveal is the same request, revealing, and answers the same way
     click(stripOf(cardOf(id))!.querySelector('[data-link-action="reveal"]'))
     await settle()
     expect(fileCalls(open).at(-1)).toEqual([{ kind: 'file', path: SPEC, root: ROOT, reveal: true }])
-    expect(writeText).toHaveBeenCalledTimes(2)
+
+    // with not even the repository's folder left, it says so
+    open.mockImplementation(async () => ({ ok: false, reason: 'missing' }))
+    click(stripSpec(cardOf(id)!))
+    await settle()
+    expect(status()).toBe(`Not found in agent-inbox: ${SPEC}`)
+    expect(writeText).not.toHaveBeenCalled()
   })
 
   it('Copy path, a browser and a viewer the app does not own copy the full path', async () => {
@@ -496,7 +537,7 @@ describe('repo-relative paths (issue #324)', () => {
     click(stripSpec(cardOf(id)!))
     await settle()
     expect(writeText).toHaveBeenLastCalledWith(`${ROOT}/${SPEC}`)
-    expect(status()).toBe('Copied the path. File links open only in Agent Inbox’s own viewer.')
+    expect(status()).toBe('Copied the path. Files open only in Agent Inbox’s own window.')
     expect(fileCalls(unowned)).toEqual([])
   })
 
@@ -508,7 +549,7 @@ describe('repo-relative paths (issue #324)', () => {
     click(inlineSpec(card))
     await settle()
     expect(writeText).toHaveBeenCalledWith(`${ROOT}/${SPEC}`)
-    expect(status()).toBe('Copied the path. A browser can’t open local files.')
+    expect(status()).toBe('Copied the path. Files open only in Agent Inbox’s own window.')
   })
 
   // Review of #330: one open card whose text held such a shape kept the main

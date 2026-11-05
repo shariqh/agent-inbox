@@ -15,7 +15,11 @@
 //   control characters, or (issue #324) a plain repo-relative path joined to
 //   the absolute repository folder its card recorded. Symlinks are resolved
 //   and the FINAL target is judged:
-//     missing                                        → reported as missing
+//     missing                                        → its nearest existing
+//       ancestor folder is revealed, never above the home folder (for a
+//       repo-relative path, never above the repository folder, and refused as
+//       'outside' when that ancestor's real path leaves it); reported as
+//       missing when there is none, or the path is not under home
 //     a repo-relative path no longer inside its folder's real path
 //                                                    → refused ('outside')
 //     a folder or app bundle                         → revealed, never opened
@@ -363,6 +367,43 @@ async function opensElsewhere(file, { fsp, platform, execFileImpl }) {
   return finderInfo === null || finderAliasFlag(finderInfo) !== false
 }
 
+// So that a click on a missing file still shows something: the nearest
+// ancestor of the validated path that exists and is a folder, by its real
+// path, for main to reveal (never open), or a failure. The walk never goes
+// above `bound.root`: a repo-relative path's folder, or the home folder for an
+// absolute one, since a system folder is not worth showing. A path that is not
+// under it, or whose nearest folder resolves out of it, gets `bound.outside`
+// ('outside' for a repository, 'missing' for home); none at all is 'missing',
+// and one that cannot be read says why.
+async function nearestFolder(normalized, bound, fsp) {
+  let top
+  try {
+    top = await fsp.realpath(bound.root)
+  } catch (err) {
+    return { ok: false, reason: failureReason(err) }
+  }
+  if (!isWithin(bound.root, normalized)) return { ok: false, reason: bound.outside }
+  for (let current = path.dirname(normalized); isWithin(bound.root, current); current = path.dirname(current)) {
+    try {
+      const real = await fsp.realpath(current)
+      if (!isWithin(top, real)) return { ok: false, reason: bound.outside }
+      if ((await fsp.lstat(real)).isDirectory()) return { ok: true, path: real }
+    } catch (err) {
+      const reason = failureReason(err)
+      if (reason !== 'missing') return { ok: false, reason }
+    }
+    if (path.dirname(current) === current) break
+  }
+  return { ok: false, reason: 'missing' }
+}
+
+// The folder a missing file's nearest folder is looked for in, or null.
+function missingBound(repo, homeDir) {
+  if (repo) return { root: repo.root, outside: 'outside' }
+  if (typeof homeDir !== 'string' || !path.isAbsolute(homeDir)) return null
+  return { root: path.resolve(homeDir), outside: 'missing' }
+}
+
 function failureReason(err) {
   const code = err && err.code
   if (code === 'ENOENT' || code === 'ENOTDIR') return 'missing'
@@ -375,7 +416,8 @@ function failureReason(err) {
 // applies, if any), only reveal it (and why), or nothing. `rules` are the ones
 // that apply here, or null. With `root` (issue #324) the path is repo-relative:
 // it is joined to that folder, and refused as `outside` when, once every
-// symlink is resolved, it is no longer inside the folder's own real path.
+// symlink is resolved, it is no longer inside the folder's own real path. A
+// missing file reveals its nearest existing folder instead (`missing`).
 async function fileOpenPlan(value, { homeDir, root = null, fsp = fs.promises, platform = process.platform, execFileImpl = execFile, rules = null } = {}) {
   const repo = root === null || root === undefined ? null : joinRepoPath(value, root)
   const normalized = root === null || root === undefined ? normalizeLocalPath(value, homeDir) : repo && repo.path
@@ -388,7 +430,12 @@ async function fileOpenPlan(value, { homeDir, root = null, fsp = fs.promises, pl
     if (folder !== null && !isWithin(folder, resolved)) return { ok: false, reason: 'outside' }
     stats = await fsp.lstat(resolved)
   } catch (err) {
-    return { ok: false, reason: failureReason(err) }
+    const reason = failureReason(err)
+    if (reason !== 'missing') return { ok: false, reason }
+    const bound = missingBound(repo, homeDir)
+    if (!bound) return { ok: false, reason: 'missing' }
+    const nearest = await nearestFolder(normalized, bound, fsp)
+    return nearest.ok ? { ok: true, action: 'reveal', path: nearest.path, reason: 'missing' } : nearest
   }
   const reveal = (reason) => ({ ok: true, action: 'reveal', path: resolved, reason })
   // realpath leaves no link behind; one here means the path changed under us
@@ -445,6 +492,10 @@ async function openLinkRequest(raw, { shell, homeDir, fsp, execFileImpl, filesPe
     const applying = customOpening({ platform, spawnImpl }) && !request.reveal ? rules : null
     const plan = await fileOpenPlan(request.path, { homeDir, root: request.root ?? null, fsp, platform, execFileImpl, rules: applying })
     if (!plan.ok) return { ok: false, reason: plan.reason }
+    if (plan.action === 'reveal' && plan.reason === 'missing') {
+      shell.showItemInFolder(plan.path)
+      return { ok: true, action: 'revealed', reason: 'missing', folder: path.basename(plan.path) || plan.path }
+    }
     if (request.reveal || plan.action === 'reveal') {
       shell.showItemInFolder(plan.path)
       return { ok: true, action: 'revealed', reason: request.reveal ? 'requested' : plan.reason }

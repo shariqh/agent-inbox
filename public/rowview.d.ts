@@ -155,7 +155,6 @@ export function relMs(ms: number): string
 export const FRESH_MS: number
 export const AGING_MS: number
 export function freshnessTone(ageMs: number): 'fresh' | 'aging' | 'quiet'
-export function ageChip(ageMs: number): { tone: 'fresh' | 'aging' | 'quiet'; text: string }
 export function needsYouEntries(
   items: AttentionItem[],
   boards: AttentionBoard[],

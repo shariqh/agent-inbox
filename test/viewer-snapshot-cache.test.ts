@@ -444,7 +444,8 @@ describe('viewer conditional snapshots', () => {
       'cache-control': 'no-store',
       'x-inbox-boot': first.headers['x-inbox-boot'],
       'x-agent-inbox-local-boundary': 'loopback-v1',
-      'content-security-policy': "frame-ancestors 'none'",
+      'content-security-policy':
+        "script-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
       'x-frame-options': 'DENY',
     })
     expect((await send({ 'if-none-match': etag }, 'HEAD')).status).toBe(304)

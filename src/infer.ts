@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 import { basename, isAbsolute } from 'node:path'
 
 function git(cwd: string, args: string[]): string | null {
@@ -220,4 +221,29 @@ export function inferIssueRef(branch: string | null | undefined): number | null 
     if (Number.isInteger(n) && n > 0) return n
   }
   return null
+}
+
+// ── issue #411: how the process that started this server was launched ────────
+//
+// The argument list of `pid` (the MCP server's parent, the host CLI), or null on
+// any failure. Read once per server process to see whether Claude Code was
+// launched with a channel flag naming this server (src/channel.ts). Local only:
+// Linux reads /proc exactly; macOS asks `ps`, whose one line is split on spaces
+// (a flag and its `server:` entries never contain one). Output is captured, never
+// inherited: the MCP server's stdout is the protocol channel.
+export function inferProcessArgs(pid: number): string[] | null {
+  if (!Number.isInteger(pid) || pid <= 1) return null
+  try {
+    if (process.platform === 'linux') {
+      const raw = readFileSync(`/proc/${pid}/cmdline`, 'utf8')
+      return raw ? raw.split('\0').filter((arg) => arg !== '') : null
+    }
+    if (process.platform !== 'darwin') return null
+    const line = execFileSync('/bin/ps', ['-ww', '-o', 'args=', '-p', String(pid)], {
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 2000,
+    }).trim()
+    return line ? line.split(/\s+/) : null
+  } catch {
+    return null
+  }
 }

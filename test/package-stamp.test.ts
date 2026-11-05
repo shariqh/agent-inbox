@@ -116,6 +116,7 @@ function stagePayloadDir(
     'scripts/install-agents.sh': '#!/bin/bash\n',
     'scripts/runtime-payload.mjs': '// verifier\n',
     'scripts/runtime-config.mjs': '// config\n',
+    'scripts/runtime-pins.mjs': '// pins\n',
     'scripts/setup-filesystem.cjs': '// filesystem adapter\n',
     'scripts/setup-lock.sh': '# shared setup lock\n',
     'scripts/run-isolated.mjs': '// rollback step isolation\n',

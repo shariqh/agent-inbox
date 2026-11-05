@@ -213,6 +213,7 @@ function setupMetadataFixture() {
     'scripts/install-agents.sh',
     'scripts/runtime-payload.mjs',
     'scripts/runtime-config.mjs',
+    'scripts/runtime-pins.mjs',
     'scripts/setup-filesystem.cjs',
     'scripts/setup-lock.sh',
     'scripts/run-isolated.mjs',

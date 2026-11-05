@@ -57,6 +57,8 @@ const LINK_REASONS = new Set([
   'invalid', 'missing', 'outside', 'inaccessible', 'failed', 'unavailable', 'unowned', 'app-missing', 'app-refused',
 ])
 
+const MAX_FOLDER_NAME = 255
+
 function linkRequest(request) {
   if (!request || typeof request !== 'object' || Array.isArray(request)) return null
   if (request.kind === 'web' && typeof request.url === 'string') return { kind: 'web', url: request.url }
@@ -70,6 +72,11 @@ function linkRequest(request) {
 function linkResult(value) {
   if (value && typeof value === 'object') {
     if (value.ok === true && value.action === 'opened') return { ok: true, action: 'opened' }
+    // a missing file's nearest folder was shown instead: its name, never a path
+    if (value.ok === true && value.action === 'revealed' && value.reason === 'missing') {
+      const folder = typeof value.folder === 'string' && value.folder.length <= MAX_FOLDER_NAME ? value.folder : ''
+      return { ok: true, action: 'revealed', reason: 'missing', folder }
+    }
     if (value.ok === true && value.action === 'revealed' && LINK_REASONS.has(value.reason)) {
       return { ok: true, action: 'revealed', reason: value.reason }
     }
@@ -151,15 +158,164 @@ contextBridge.exposeInMainWorld('agentInboxLinkSettings', {
   },
 })
 
+// Issue #412 step 3: driven sessions. Each method takes exactly its arguments,
+// passes them on as plain data, and hands back a checked answer. Main decides
+// everything: the switch, the grant, the folder, the native confirmation. The
+// renderer names a known repository folder (or none, for main's own dialog),
+// never a path of its own, an executable, argv or env.
+const LAUNCH_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+
+function launchResult(value) {
+  if (!value || typeof value !== 'object' || typeof value.ok !== 'boolean') return { ok: false, error: 'Agent Inbox did not answer.' }
+  const out = { ok: value.ok }
+  if (typeof value.error === 'string') out.error = value.error.slice(0, 500)
+  if (typeof value.launch === 'string' && LAUNCH_ID.test(value.launch)) out.launch = value.launch
+  if (value.cancelled === true) out.cancelled = true
+  if (typeof value.status === 'string') out.status = value.status
+  if (typeof value.enabled === 'boolean') out.enabled = value.enabled
+  if (typeof value.killed === 'boolean') out.killed = value.killed
+  if (value.reason === 'environment') out.reason = 'environment'
+  const root = worktreeRootOf(value.worktreeRoot)
+  if (root) out.worktreeRoot = root
+  if (isSessionCap(value.maxSessions)) out.maxSessions = value.maxSessions
+  // #432: the folder main's own dialog chose, and whether it is a repository's top
+  if (typeof value.folder === 'string' && value.folder.startsWith('/') && value.folder.length <= 4096) out.folder = value.folder
+  if (typeof value.project === 'string') out.project = value.project.slice(0, 256)
+  if (typeof value.repository === 'boolean') out.repository = value.repository
+  return out
+}
+
+function launchAvailability(value) {
+  const off = { owned: false, enabled: false, available: false, canEnable: false }
+  if (!value || typeof value !== 'object') return off
+  const out = {
+    owned: value.owned === true,
+    enabled: value.enabled === true,
+    available: value.available === true && value.enabled === true && value.owned === true,
+    canEnable: value.canEnable === true,
+  }
+  if (typeof value.error === 'string') out.error = value.error.slice(0, 500)
+  const root = worktreeRootOf(value.worktreeRoot)
+  if (out.available && root) out.worktreeRoot = root
+  if (out.available && isSessionCap(value.maxSessions)) out.maxSessions = value.maxSessions
+  return out
+}
+
+// #432 §5: the cap on sessions at once
+function isSessionCap(value) {
+  return Number.isSafeInteger(value) && value >= 1 && value <= 8
+}
+
+// #432: the folder session worktrees go under, as main reports it
+function worktreeRootOf(value) {
+  if (!value || typeof value !== 'object' || typeof value.path !== 'string' || !value.path.startsWith('/') || value.path.length > 4096) return null
+  return { path: value.path, isDefault: value.isDefault === true }
+}
+
+// #432 PR 5: the start phases main reports, and the one listener the page has for them
+const START_PHASES = new Set(['environment', 'runtime', 'worktree', 'copilot'])
+const isStartId = (value) => typeof value === 'string' && /^[A-Za-z0-9_-]{16,64}$/.test(value)
+let startProgress = null
+
+const failedLaunch = () => ({ ok: false, error: 'Agent Inbox did not answer.' })
+const launchCall = (channel, arg) => ipcRenderer.invoke(channel, arg).then(launchResult, failedLaunch)
+const isLaunchId = (value) => typeof value === 'string' && LAUNCH_ID.test(value)
+const isPlainObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value)
+
+contextBridge.exposeInMainWorld('agentInboxLaunch', {
+  available(...args) {
+    if (args.length !== 0) return Promise.resolve(launchAvailability(null))
+    return ipcRenderer.invoke('agent-inbox:launch-available').then(launchAvailability, () => launchAvailability(null))
+  },
+  setEnabled(...args) {
+    if (args.length !== 1 || typeof args[0] !== 'boolean') return Promise.resolve({ ok: false, error: 'invalid' })
+    return launchCall('agent-inbox:launch-set-enabled', args[0])
+  },
+  start(...args) {
+    if (args.length !== 1 || !isPlainObject(args[0])) return Promise.resolve({ ok: false, error: 'invalid' })
+    return launchCall('agent-inbox:launch-start', args[0])
+  },
+  stop(...args) {
+    if (args.length !== 1 || !isLaunchId(args[0])) return Promise.resolve({ ok: false, error: 'invalid' })
+    return launchCall('agent-inbox:launch-stop', args[0])
+  },
+  close(...args) {
+    if (args.length !== 1 || !isLaunchId(args[0])) return Promise.resolve({ ok: false, error: 'invalid' })
+    return launchCall('agent-inbox:launch-close', args[0])
+  },
+  resume(...args) {
+    if (args.length !== 1 || !isLaunchId(args[0])) return Promise.resolve({ ok: false, error: 'invalid' })
+    return launchCall('agent-inbox:launch-resume', args[0])
+  },
+  // #451: Resume with more budget…; main confirms the allowance in its own dialog
+  resumeWithBudget(...args) {
+    if (args.length !== 1 || !isPlainObject(args[0])) return Promise.resolve({ ok: false, error: 'invalid' })
+    return launchCall('agent-inbox:launch-resume-with-budget', args[0])
+  },
+  approve(...args) {
+    if (args.length !== 1 || !isPlainObject(args[0])) return Promise.resolve({ ok: false, error: 'invalid' })
+    return launchCall('agent-inbox:launch-approve', args[0])
+  },
+  setMaxSessions(...args) {
+    if (args.length !== 1 || !isSessionCap(args[0])) return Promise.resolve({ ok: false, error: 'invalid' })
+    return launchCall('agent-inbox:launch-set-max-sessions', args[0])
+  },
+  // #432 PR 5: what a start is doing now, for the New session dialog; one listener at a time, null removes it
+  onStartProgress(...args) {
+    if (args.length !== 1 || (args[0] !== null && typeof args[0] !== 'function')) return false
+    if (startProgress) ipcRenderer.removeListener('agent-inbox:launch-progress', startProgress)
+    startProgress = null
+    const listener = args[0]
+    if (listener) {
+      // the phase, and the launch id main made for this start (its row exists from 'copilot' on)
+      // and the tag the page gave that start, so a page reloaded mid-start can tell its own phases
+      startProgress = (_event, phase, launch, startId) => {
+        if (START_PHASES.has(phase)) listener(phase, isLaunchId(launch) ? launch : undefined, isStartId(startId) ? startId : undefined)
+      }
+      ipcRenderer.on('agent-inbox:launch-progress', startProgress)
+    }
+    return true
+  },
+  // #432: a launch id only; main reads the worktree's path from the hub
+  removeWorktree(...args) {
+    if (args.length !== 1 || !isLaunchId(args[0])) return Promise.resolve({ ok: false, error: 'invalid' })
+    return launchCall('agent-inbox:launch-remove-worktree', args[0])
+  },
+  openWorktree(...args) {
+    if (args.length !== 1 || !isLaunchId(args[0])) return Promise.resolve({ ok: false, error: 'invalid' })
+    return launchCall('agent-inbox:launch-open-worktree', args[0])
+  },
+  // step 5: Take over in Terminal; a launch id only
+  takeOver(...args) {
+    if (args.length !== 1 || !isLaunchId(args[0])) return Promise.resolve({ ok: false, error: 'invalid' })
+    return launchCall('agent-inbox:launch-take-over', args[0])
+  },
+  // #432: main's own folder dialogs choose these; the page names no folder
+  chooseFolder(...args) {
+    if (args.length !== 0) return Promise.resolve({ ok: false, error: 'invalid' })
+    return launchCall('agent-inbox:launch-choose-folder')
+  },
+  chooseWorktreeRoot(...args) {
+    if (args.length !== 0) return Promise.resolve({ ok: false, error: 'invalid' })
+    return launchCall('agent-inbox:launch-choose-worktree-root')
+  },
+  resetWorktreeRoot(...args) {
+    if (args.length !== 0) return Promise.resolve({ ok: false, error: 'invalid' })
+    return launchCall('agent-inbox:launch-reset-worktree-root')
+  },
+})
+
 function isByteCount(value) {
   return Number.isSafeInteger(value) && value >= 0
 }
 
 // installable implies downloadable, and installPermitted (#216) implies installable;
 // a reason explains only a notify-only offer. A release this Mac can't run (#343) is
-// only ever such an offer, still on `available`, with its reason.
+// only ever such an offer, still on `available`, with its reason. installWithheld
+// (#465) explains only a download no installer was registered for.
 const MAX_INSTALL_NOTICE_LENGTH = 400
 const BLOCKED_REASONS = new Set(['apple-silicon', 'rosetta'])
+const INSTALL_WITHHELD_REASONS = new Set(['unowned-viewer'])
 
 function isOffer(available, status) {
   return (
@@ -182,6 +338,11 @@ function isOffer(available, status) {
       BLOCKED_REASONS.has(available.blocked) &&
       status === 'available' &&
       typeof available.reason === 'string'
+    )) &&
+    (available.installWithheld === undefined || (
+      INSTALL_WITHHELD_REASONS.has(available.installWithheld) &&
+      available.downloadable &&
+      !available.installable
     )) &&
     (!INSTALL_STATES.has(status) || available.installable) &&
     typeof available.target === 'object' &&

@@ -162,3 +162,17 @@ describe('watchUpstream — self-heal if a reused viewer disappears', () => {
     expect(sched.active).toBe(false)
   })
 })
+
+// #465: a checkout build on the installed app's port leaves that app on a viewer it did
+// not start, which can never install updates. Only the packaged app defaults to 4319.
+describe('viewerPort — a checkout build stays off the installed app’s port', () => {
+  it('defaults the packaged app to 4319 and a checkout build to 4392', () => {
+    expect(reuse.viewerPort({ isPackaged: true, env: {} })).toBe(4319)
+    expect(reuse.viewerPort({ isPackaged: false, env: {} })).toBe(4392)
+  })
+
+  it('lets AGENT_INBOX_PORT choose either way', () => {
+    expect(reuse.viewerPort({ isPackaged: false, env: { AGENT_INBOX_PORT: '4319' } })).toBe(4319)
+    expect(reuse.viewerPort({ isPackaged: true, env: { AGENT_INBOX_PORT: '4400' } })).toBe(4400)
+  })
+})

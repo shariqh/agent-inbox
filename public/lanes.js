@@ -1,6 +1,8 @@
-// Live lanes and the Now strip (#304, Dashboard 2.0 phase 2). Pure: no DOM, the
-// clock injected as `nowMs`. One lane per WORKING session, from /api/activity,
-// /api/boards and the attention set the caller already built; no new reads.
+// The Now strip's model (#304, Dashboard 2.0 phase 2) and the session helpers
+// the Agents home reads (#454, which retired the lanes the model is named for).
+// Pure: no DOM, the clock injected as `nowMs`. One lane per WORKING session,
+// from /api/activity, /api/boards and the attention set the caller already
+// built; no new reads.
 //
 // Working is the claim and `last_call_at` alone (#45): a row whose claim is not
 // idle and whose last real call (or, before its first, its start) is within the
@@ -14,8 +16,6 @@ const CLAIM_COLD_MS = 30 * 60_000 // src/store.ts CLAIM_COLD_MS
 // decays. The proposal leaves N open; 5 minutes is where freshnessTone
 // (rowview.js AGING_MS) already calls a session quiet.
 export const QUIET_MS = 5 * 60_000
-// The Dashboard draws at most 12 lanes (§10 DOM budget).
-export const MAX_LANES = 12
 
 const callAt = (row) => Date.parse(row?.last_call_at ?? row?.started_at ?? '')
 
@@ -23,6 +23,38 @@ export function isWorking(row, nowMs) {
   if (!row || row.idle) return false
   const at = callAt(row)
   return Number.isFinite(at) && nowMs - at < CLAIM_COLD_MS
+}
+
+// #466: what the host's hooks say. A turn stamp newer than its idle stamp is a
+// running turn while the newest host stamp is inside the hour (an interrupted
+// turn fires no Stop); an idle stamp at or after the turn is a turn that ended.
+// A tool stamp well after the idle stamp also means a turn runs: one a hook
+// started (a third-party Stop hook that blocked, an asyncRewake) fires no
+// UserPromptSubmit. The margin keeps the last tool's async PostToolUse, which
+// can land just after its Stop, from reopening a turn that ended; the next tool
+// stamp, at most 30 s later, still does.
+const HOST_TURN_MS = 60 * 60_000
+const HOST_TOOL_MARGIN_MS = 5_000
+const stampAt = (iso) => {
+  const at = Date.parse(iso ?? '')
+  return Number.isFinite(at) ? at : null
+}
+
+/** 'busy', 'waiting' or 'unknown' (no hook stamps, or a turn gone stale). */
+export function hostState(row, nowMs) {
+  const idle = stampAt(row?.host_idle_at)
+  const tool = stampAt(row?.host_tool_at)
+  // a tool counts as a turn's start only past the margin after an idle stamp
+  const toolTurn = tool !== null && (idle === null || tool - idle > HOST_TOOL_MARGIN_MS) ? tool : null
+  const turn = Math.max(stampAt(row?.host_turn_at) ?? -Infinity, toolTurn ?? -Infinity)
+  if (turn === -Infinity) return idle === null ? 'unknown' : 'waiting'
+  if (idle !== null && idle >= turn) return 'waiting'
+  return nowMs - Math.max(turn, tool ?? 0) < HOST_TURN_MS ? 'busy' : 'unknown'
+}
+
+/** Working by its claim, or by a running host turn with no claim (#466). Plan joins keep `isWorking`. */
+export function isBusy(row, nowMs) {
+  return isWorking(row, nowMs) || hostState(row, nowMs) === 'busy'
 }
 
 const doingText = (value) => typeof value === 'string' && value.trim() && value.trim() !== 'open' ? value.trim() : ''
@@ -110,9 +142,15 @@ const askMs = (entry) => {
 export function buildLanes({ activity, boards, asks, nowMs }) {
   const lanes = []
   let idle = 0
+  // #466: a running host turn with no claim counts as working, with no lane of its own
+  let unreported = 0
   const working = new Set((activity ?? []).filter((row) => isWorking(row, nowMs)).map((row) => row.session))
   for (const row of activity ?? []) {
-    if (!isWorking(row, nowMs)) { idle += 1; continue }
+    if (!isWorking(row, nowMs)) {
+      if (isBusy(row, nowMs)) unreported += 1
+      else idle += 1
+      continue
+    }
     const at = callAt(row)
     const sinceMs = Math.max(0, nowMs - at)
     const board = linkedPlan(row, boards, working)
@@ -148,7 +186,7 @@ export function buildLanes({ activity, boards, asks, nowMs }) {
     lanes,
     idle,
     now: {
-      working: lanes.length,
+      working: lanes.length + unreported,
       subagents: lanes.reduce((count, lane) => count + lane.children.length, 0),
       waiting: (asks ?? []).length,
       oldestWaitingMs: Number.isFinite(oldestAsk) ? Math.max(0, nowMs - oldestAsk) : null,
@@ -166,38 +204,6 @@ export function pinLaneOrder(previous, lanes) {
   const kept = (previous ?? []).filter((session) => present.has(session))
   const known = new Set(kept)
   return [...kept, ...lanes.map((lane) => lane.session).filter((session) => !known.has(session))]
-}
-
-// Lanes run no infinite animation (#304: a loop cost ~5.6 pp of renderer and
-// ~34 pp of GPU CPU). Motion is one-shot per real event: a lane pulses once when
-// its `last_call_at` moves forward, and the sweep runs once on the lane whose
-// call is the newest of those. `previous` maps session → the last call already
-// seen; a session it has not seen (first paint, a lane that just appeared) never
-// pulses, and an unchanged call never does either.
-export function calledLanes(previous, drawn) {
-  const pulse = new Set()
-  let sweep = null
-  for (const lane of drawn) {
-    const seen = previous.get(lane.session)
-    if (seen === undefined || !(Date.parse(lane.lastCallAt) > Date.parse(seen))) continue
-    pulse.add(lane.session)
-    if (!sweep || lane.sinceMs < sweep.sinceMs) sweep = lane
-  }
-  return { pulse, sweep: sweep?.session ?? null }
-}
-
-// #307: the lanes' quick filters, window-local view state like the lens. They
-// narrow the drawn lanes only: the Now strip, the rail, attention, the badge
-// and the dock never read them.
-export function laneMatches(lane, filters) {
-  return (!filters?.project || lane.project === filters.project) && (!filters?.agent || lane.agent === filters.agent)
-}
-
-// The choices each filter offers: what the lanes hold, plus a chosen value no
-// lane holds any more, so the select still says what it filters by.
-export function laneFilterChoices(lanes, filters) {
-  const pick = (key) => [...new Set([...lanes.map((lane) => lane[key]), filters?.[key]].filter(Boolean))].sort()
-  return { project: pick('project'), agent: pick('agent') }
 }
 
 // #307: the session focus panel reads a lane and the data the Dashboard

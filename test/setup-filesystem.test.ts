@@ -621,6 +621,60 @@ describe('Setup filesystem removal through trash', () => {
     expect(readFileSync(join(parent, trash[0]!, 'runtime-1', 'unrelated.txt'), 'utf8')).toBe('do not delete\n')
   })
 
+  // #412: a runtime a driver pinned after the caller's check is put back
+  it('puts the tree back, identity-checked, when keep gives a reason once it is moved aside', () => {
+    const parent = realpathSync(temp('setup-fs-keep-'))
+    const target = runtimeTree(parent)
+    const filesystem = createSetupFilesystem()
+    const seen: string[] = []
+    const result = filesystem.removeDirectory({
+      target,
+      validate() {},
+      keep(moved) {
+        seen.push(relative(parent, moved))
+        expect(existsSync(target)).toBe(false)
+        return 'a running agent-inbox-driver (pid 1) is pinned to it'
+      },
+    })
+    expect(seen).toEqual([expect.stringMatching(/^\.trash-runtime-1-[^/]+\/runtime-1$/)])
+    expect(result).toMatchObject({ path: target, kept: 'a running agent-inbox-driver (pid 1) is pinned to it' })
+    expect(readFileSync(join(target, 'bin', 'node'), 'utf8')).toBe('node\n')
+    expect(trashEntries(parent)).toEqual([])
+
+    // a keep that throws keeps it too; one that says nothing lets it go
+    expect(filesystem.removeDirectory({ target, validate() {}, keep() { throw new Error('boom') } })).toMatchObject({ kept: expect.any(String) })
+    expect(existsSync(target)).toBe(true)
+    expect(filesystem.removeDirectory({ target, validate() {}, keep: () => null }).kept).toBeUndefined()
+    expect(existsSync(target)).toBe(false)
+  })
+
+  it('retains the tree for recovery when something took its name before it could be put back', () => {
+    const parent = realpathSync(temp('setup-fs-keep-taken-'))
+    const target = runtimeTree(parent)
+    let failure: unknown
+    try {
+      createSetupFilesystem().removeDirectory({
+        target,
+        validate() {},
+        keep() {
+          mkdirSync(target)
+          writeFileSync(join(target, 'other.txt'), 'not ours\n')
+          return 'pinned'
+        },
+      })
+    } catch (error) {
+      failure = error
+    }
+    expect(failure).toMatchObject({ code: 'restore-failed', committed: true })
+    expect(readFileSync(join(target, 'other.txt'), 'utf8')).toBe('not ours\n')
+    const trash = trashEntries(parent)
+    expect(trash).toHaveLength(1)
+    expect(readFileSync(join(parent, trash[0]!, 'runtime-1', 'bin', 'node'), 'utf8')).toBe('node\n')
+    // a later cleanup leaves it alone
+    createSetupFilesystem().removeLeftoverTrash(parent)
+    expect(existsSync(join(parent, trash[0]!, 'runtime-1', 'bin', 'node'))).toBe(true)
+  })
+
   it('refuses to remove an entry that already carries a trash name', () => {
     const parent = temp('setup-fs-trash-name-')
     const target = runtimeTree(parent, '.trash-runtime-1-abc')

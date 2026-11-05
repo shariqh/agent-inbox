@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 // Dashboard 2.0 phase 3 (#305): the Today ribbon, Just landed and "Since you
 // last looked". The ribbon updates in place and never animates; Just landed's
-// arrival highlight is a one-shot per new outcome under the lanes' motion gate;
+// arrival highlight is a one-shot per new outcome under the Dashboard's motion gate;
 // nothing here reaches attention and the poll reads nothing new.
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type Database from 'better-sqlite3'
@@ -358,7 +358,7 @@ describe('older history for a longer ribbon range (#392)', () => {
     expect(statuses.filter((read) => read.path === HISTORY).map((read) => read.status)).toEqual([304, 304, 304])
   })
 
-  it('changes no attention surface and keeps the eight poll reads at 24 hours', async () => {
+  it('changes no attention surface and keeps the nine poll reads at 24 hours', async () => {
     const d = open()
     seedOldAsk(d)
     insertItem(d, { ...A, kind: 'question', title: 'Ship it?' })
@@ -372,9 +372,9 @@ describe('older history for a longer ribbon range (#392)', () => {
     await pollTick()
     expect(new Set(reads)).toEqual(new Set([
       '/api/activity', '/api/activity/history', '/api/boards', '/api/boards/archived/summary', '/api/issues',
-      '/api/items', '/api/links', '/api/projects/closed',
+      '/api/items', '/api/links', '/api/messages', '/api/projects/closed',
     ]))
-    expect(reads).toHaveLength(8)
+    expect(reads).toHaveLength(9)
   })
 })
 
@@ -577,7 +577,6 @@ describe('attention parity and the budget with the ribbon (#305)', () => {
     badge: badgeCount(),
     // History's count follows the outcome that landed; the attention tabs never move.
     tabs: ['needsYou', 'notes', 'boards'].map(tabCount),
-    rail: [...document.querySelectorAll<HTMLElement>('#dashRail [data-rail-card]')].map((card) => card.dataset.railCard),
     dock: [await (await fetch('/api/items?scope=attention')).text(), await (await fetch('/api/boards?scope=attention')).text()],
   })
 
@@ -600,11 +599,11 @@ describe('attention parity and the budget with the ribbon (#305)', () => {
     expect(await surfaces()).toEqual(before)
     expect([...reads].sort()).toEqual([
       '/api/activity', '/api/activity/history', '/api/boards', '/api/boards/archived/summary', '/api/issues',
-      '/api/items', '/api/links', '/api/projects/closed',
+      '/api/items', '/api/links', '/api/messages', '/api/projects/closed',
     ])
   })
 
-  it('stays within 1,500 Dashboard elements over 30 days of many projects, with lanes and a full rail', async () => {
+  it('stays within 1,500 Dashboard elements over 30 days of many projects, with session cards and a full rail', async () => {
     const d = open()
     // Forty projects with a span every eight hours for thirty days.
     for (let p = 0; p < 40; p += 1) {
@@ -627,7 +626,7 @@ describe('attention parity and the budget with the ribbon (#305)', () => {
     range().dispatchEvent(new Event('change', { bubbles: true }))
     await settle()
     expect(ribbonLanes()).toHaveLength(12)
-    expect(document.querySelectorAll('#dashboard .dash-lane')).toHaveLength(12)
+    expect(document.querySelectorAll('#dashboard .agents-home [data-session-card]')).toHaveLength(14)
     expect(document.querySelectorAll('.dash-ribbon-bar').length).toBeLessThanOrEqual(200)
     expect(document.querySelector('.dash-ribbon-more')?.textContent).toBe('+28 more projects')
     const count = document.querySelectorAll('#dashboard *').length

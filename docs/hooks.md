@@ -225,19 +225,20 @@ runtime; `src/hook-cli.ts` is the thin entry that owns stdin and the exit code.
 
 | Claude Code event | subcommand | timeout | what it does | stdout |
 |---|---|---|---|---|
-| `Notification` (no matcher) | `notification` | 5s | arms the #10 backstop for this session — writes **nothing** yet | *(empty)* |
+| `Notification` (no matcher) | `notification` | 5s | arms the #10 backstop for this session — writes **nothing** yet; an `idle_prompt` stamps the session's turn as ended (#466) | *(empty)* |
 | *(internal, not an event)* | `notification-commit` | — | the deferred half: after the grace window, inserts the backstop item if the session is still stuck | *(empty)* |
 | `SessionStart` (`startup\|resume`) | `session-start` | 5s | clears this session's backstop; nudges if an answer is unpicked or a message to this session is open | plain text |
 | `SessionEnd` | `session-end` | 5s | clears this session's backstop | *(empty)* |
-| `UserPromptSubmit` | `prompt-submit` | 10s | clears this session's backstop; nudges if an answer is unpicked or a message to this session is open | one JSON object |
-| `Stop` | `stop` | 10s | clears this session's backstop; bounces the agent back to work if an answer is unpicked, or once per new message to this session | one JSON object |
-| `Stop` (asyncRewake) | `watch` | 1800s | polls until the human answers one of this session's requests or messages it, then exits **2** to wake the model | *(empty; stderr carries the payload)* |
+| `UserPromptSubmit` | `prompt-submit` | 10s | clears this session's backstop; stamps a turn started (#466); nudges if an answer is unpicked or a message to this session is open | one JSON object |
+| `Stop` | `stop` | 10s | clears this session's backstop; bounces the agent back to work if an answer is unpicked, or once per new message to this session; a Stop that does not bounce stamps the turn ended (#466) | one JSON object |
+| `PreToolUse`, `PostToolUse` (async) | `activity` | 5s | stamps "a tool ran" on this session's presence row, at most once per 30 s (#466) | *(empty)* |
+| `Stop` (asyncRewake) | `watch` | 1800s | polls until the human answers one of this session's requests or messages it, then stamps a turn started (#466) and exits **2** to wake the model | *(empty; stderr carries the payload)* |
 | *(manual/cron)* | `sweep` | — | runs the 24h janitor over orphaned backstop items | *(empty)* |
 | *(installer only)* | `selftest` | — | proves the resolved Node can load `better-sqlite3`. The ONE subcommand allowed to exit non-zero on failure | one line |
 
 ### The stdout contract is exact
 
-`notification`, `notification-commit`, `session-end`, `sweep` and `watch` emit
+`notification`, `notification-commit`, `session-end`, `activity`, `sweep` and `watch` emit
 **zero bytes** on stdout. `prompt-submit` emits exactly:
 
 ```json
@@ -258,6 +259,39 @@ cannot exit.
 `asyncRewake` turns into a model wake-up. Any wrapper around the CLI must
 therefore leave *both* streams alone — `hooks/agent-inbox-hook.sh` redirects
 neither. It does **not** forward the status blindly, though; see below.
+
+## Host stamps: what the Agents view learns from the hooks (#466)
+
+A session busy with `gh`, a shell or another MCP server makes no Agent Inbox call,
+so without hooks its card cannot tell it from one waiting at its prompt. The hooks
+stamp three timestamps on the presence rows of their own session's Agent Inbox
+servers, found the #253 way (the hook's parent process is the server's recorded
+`host_pid`, and the server still runs): `host_turn_at` on `prompt-submit`,
+`host_idle_at` on a `stop` that does not bounce the agent and on an `idle_prompt`
+notification (an interrupted turn fires no Stop), and `host_tool_at` from
+`activity`. A turn that `watch` wakes (exit 2) fires no UserPromptSubmit, so `watch`
+stamps `host_turn_at` itself just before it wakes the model. A turn some other hook
+starts (a third-party Stop hook that blocks after ours stamped the turn ended) stamps
+no turn at all; the viewer counts a tool stamp more than 5 seconds after the idle
+stamp as a running turn instead. The margin is for a race it accepts: the last
+tool's async `PostToolUse` can land just after its Stop. Inside 5 s it reopens
+nothing; a slower one reads Working until the next `idle_prompt` (about a minute
+later) or prompt stamps the turn again. Nothing else is stored: no tool name, argument, prompt or Claude
+session id. No link (an older server, a wrapper process such as `npx`) means no
+stamp, and a failed stamp is logged and changes nothing a hook prints.
+
+`activity` runs on every tool call, so it is async (Claude Code never waits on
+it) and cheap: a marker file per Claude Code process (`hook-state/host-<pid>.tool`)
+answers with one `stat` until a stamp is due (`session-end` removes it), and the store's own condition
+writes a row's `host_tool_at` at most once per 30 seconds. The stamps never move
+`updated_at`, `last_call_at`, the call trace or a claim, and a turn never revives
+a claim that went cold (#45). The Agents view reads them: a turn started and not
+ended, with a stamp in the last hour, is **Working**, "Task not reported" when
+there is no claim; an ended turn is **Idle**; no stamps leaves the card Quiet.
+
+An older Agent Inbox installer does not know `activity`, so it treats these two
+entries as another tool's: its `--uninstall` leaves them in place. Remove them
+with this installer's `--uninstall`, or re-install from this version.
 
 ## The stdin payloads
 

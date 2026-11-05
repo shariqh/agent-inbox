@@ -698,7 +698,7 @@ describe('portable release installer', () => {
     const settings = join(f.home, '.claude', 'settings.json')
     mkdirSync(dirname(settings), { recursive: true })
     const otherTool = [{ hooks: [{ type: 'command', command: 'echo hi' }] }]
-    writeFileSync(settings, JSON.stringify({ model: 'x', hooks: { PostToolUse: otherTool } }))
+    writeFileSync(settings, JSON.stringify({ model: 'x', hooks: { PreCompact: otherTool } }))
 
     // a checkout install takes jq and a Node 24 from the user's own PATH
     const checkoutEnv = { ...f.env, PATH: `${f.fakebin}:${process.env.PATH}`, AGENT_INBOX_NODE: process.execPath }
@@ -715,10 +715,10 @@ describe('portable release installer', () => {
         hooks: Record<string, Array<{ hooks: Array<{ args?: string[] }> }>>
       }
       expect(s.model, step).toBe('x')
-      expect(s.hooks.PostToolUse, step).toEqual(otherTool)
+      expect(s.hooks.PreCompact, step).toEqual(otherTool)
       const entries = Object.values(s.hooks).flatMap((groups) => groups.flatMap((g) => g.hooks.map((h) => h.args?.[0])))
         .filter((arg) => arg === runtimeEntry || arg === checkoutEntry)
-      expect(entries, step).toEqual(Array(6).fill(entry))
+      expect(entries, step).toEqual(Array(8).fill(entry))
     }
 
     const first = fromRuntime('--apply')
@@ -736,7 +736,7 @@ describe('portable release installer', () => {
     // runtime → checkout, in two steps through the alternative
     let refused = fromCheckout('--apply')
     expect(refused.status).toBe(1)
-    expect(refused.stderr).toContain(`the v1.2.4 Setup runtime at ${runtime} (6 hooks)`)
+    expect(refused.stderr).toContain(`the v1.2.4 Setup runtime at ${runtime} (8 hooks)`)
     expect(printed(refused.stderr)).toEqual([replaceFromCheckout, removeRuntime])
     expectOnly(runtimeEntry, 'checkout refused')
     let step = shell(removeRuntime, f.env)
@@ -748,7 +748,7 @@ describe('portable release installer', () => {
     // checkout → runtime, the same from the runtime's side
     refused = fromRuntime('--apply')
     expect(refused.status).toBe(1)
-    expect(refused.stderr).toContain(`the source checkout at ${checkout} (6 hooks)`)
+    expect(refused.stderr).toContain(`the source checkout at ${checkout} (8 hooks)`)
     expect(printed(refused.stderr)).toEqual([replaceFromRuntime, removeCheckout])
     expectOnly(checkoutEntry, 'runtime refused')
     step = shell(removeCheckout, checkoutEnv)
@@ -769,7 +769,7 @@ describe('portable release installer', () => {
     const doubled = () => {
       const s = JSON.parse(readFileSync(settings, 'utf8')) as { hooks: Record<string, Array<{ hooks: Array<{ command: string; args: string[] }> }>> }
       for (const [event, groups] of Object.entries(s.hooks)) {
-        if (event === 'PostToolUse') continue
+        if (event === 'PreCompact') continue
         s.hooks[event] = [...groups, ...groups.map((g) => ({ ...g, hooks: g.hooks.map((h) => ({ ...h, command: process.execPath, args: [checkoutEntry, h.args[1]!] })) }))]
       }
       writeFileSync(settings, JSON.stringify(s))
@@ -784,7 +784,7 @@ describe('portable release installer', () => {
     doubled()
     refused = fromRuntime('--apply', '--uninstall')
     expect(refused.status).toBe(1)
-    expect(refused.stderr).toContain(`the source checkout at ${checkout} (6 hooks)`)
+    expect(refused.stderr).toContain(`the source checkout at ${checkout} (8 hooks)`)
     expect(printed(refused.stderr)).toEqual([replaceFromRuntime, removeCheckout])
     refused = fromRuntime('--apply')
     step = shell(printed(refused.stderr)[0]!, f.env)
@@ -792,7 +792,7 @@ describe('portable release installer', () => {
     expectOnly(runtimeEntry, 'doubled, fixed from the runtime')
   }, MULTI_INSTALL_TEST_TIMEOUT_MS)
 
-  // #232, as reported: a verified runtime copied to ~/Downloads, with its six
+  // #232, as reported: a verified runtime copied to ~/Downloads, with its eight
   // hooks in settings.json, was taken for another tool's, so a checkout install
   // exited 0 with twelve Agent Inbox hooks. The same happened to a Setup
   // runtime once AGENT_INBOX_RUNTIME_ROOT named another folder.
@@ -805,7 +805,7 @@ describe('portable release installer', () => {
     const settings = join(f.home, '.claude', 'settings.json')
     mkdirSync(dirname(settings), { recursive: true })
     const otherTool = [{ hooks: [{ type: 'command', command: 'echo hi' }] }]
-    writeFileSync(settings, JSON.stringify({ model: 'x', hooks: { PostToolUse: otherTool } }))
+    writeFileSync(settings, JSON.stringify({ model: 'x', hooks: { PreCompact: otherTool } }))
 
     const checkoutEnv = { ...f.env, PATH: `${f.fakebin}:${process.env.PATH}`, AGENT_INBOX_NODE: process.execPath }
     const run = (installer: string, env: NodeJS.ProcessEnv, ...flags: string[]) =>
@@ -820,17 +820,17 @@ describe('portable release installer', () => {
         hooks?: Record<string, Array<{ hooks: Array<{ args?: string[] }> }>>
       }
       expect(s.model, step).toBe('x')
-      expect(s.hooks?.PostToolUse, step).toEqual(otherTool)
+      expect(s.hooks?.PreCompact, step).toEqual(otherTool)
       return Object.values(s.hooks ?? {}).flatMap((groups) => groups.flatMap((g) => g.hooks.map((h) => h.args?.[0])))
         .filter((arg) => arg !== undefined)
     }
-    const outside = (dir: string) => `the v1.2.4 runtime at ${dir}, outside Setup's runtime folder (6 hooks)`
+    const outside = (dir: string) => `the v1.2.4 runtime at ${dir}, outside Setup's runtime folder (8 hooks)`
 
-    // the copy's own installer adds its six hooks, and re-installs over them
+    // the copy's own installer adds its eight hooks, and re-installs over them
     for (const step of ['copy installed', 'copy re-installed']) {
       const own = run(copiedInstaller, f.env, '--apply')
       expect(own.status, own.stderr).toBe(0)
-      expect(entries(step), step).toEqual(Array(6).fill(copiedEntry))
+      expect(entries(step), step).toEqual(Array(8).fill(copiedEntry))
     }
 
     // Finder's .DS_Store stops the copy verifying: even its own installer says
@@ -841,7 +841,7 @@ describe('portable release installer', () => {
       expect(stray.status, flags.join(' ')).toBe(1)
       expect(stray.stderr).toContain(`\n    ${copied} does not verify as a runtime: unmanifested file present in payload: .DS_Store\n`)
       expect(stray.stderr).toContain('or reinstall that runtime')
-      expect(entries('stray file'), 'stray file').toEqual(Array(6).fill(copiedEntry))
+      expect(entries('stray file'), 'stray file').toEqual(Array(8).fill(copiedEntry))
     }
     rmSync(join(copied, '.DS_Store'))
     const own = run(copiedInstaller, f.env, '--apply')
@@ -851,10 +851,10 @@ describe('portable release installer', () => {
     let refused = run(checkoutInstaller, checkoutEnv, '--apply')
     expect(refused.status, refused.stderr).toBe(1)
     expect(refused.stderr).toContain(outside(copied))
-    expect(entries('checkout refused'), 'checkout refused').toEqual(Array(6).fill(copiedEntry))
+    expect(entries('checkout refused'), 'checkout refused').toEqual(Array(8).fill(copiedEntry))
     let step = run(checkoutInstaller, checkoutEnv, '--apply', '--replace-existing')
     expect(step.status, step.stderr).toBe(0)
-    expect(entries('replaced by the checkout'), 'replaced by the checkout').toEqual(Array(6).fill(checkoutEntry))
+    expect(entries('replaced by the checkout'), 'replaced by the checkout').toEqual(Array(8).fill(checkoutEntry))
 
     // from a Setup runtime under the root
     expect(install(f, payload).status).toBe(0)
@@ -866,10 +866,10 @@ describe('portable release installer', () => {
     refused = run(runtimeInstaller, f.env, '--apply')
     expect(refused.status, refused.stderr).toBe(1)
     expect(refused.stderr).toContain(outside(copied))
-    expect(entries('runtime refused'), 'runtime refused').toEqual(Array(6).fill(copiedEntry))
+    expect(entries('runtime refused'), 'runtime refused').toEqual(Array(8).fill(copiedEntry))
     step = run(runtimeInstaller, f.env, '--apply', '--replace-existing')
     expect(step.status, step.stderr).toBe(0)
-    expect(entries('replaced by the runtime'), 'replaced by the runtime').toEqual(Array(6).fill(runtimeEntry))
+    expect(entries('replaced by the runtime'), 'replaced by the runtime').toEqual(Array(8).fill(runtimeEntry))
 
     // that runtime's own hooks, once the runtime root is another folder
     const elsewhereEnv = { ...checkoutEnv, AGENT_INBOX_RUNTIME_ROOT: join(f.home, 'another-root') }
@@ -878,7 +878,7 @@ describe('portable release installer', () => {
     expect(refused.stderr).toContain(outside(runtime))
     step = run(checkoutInstaller, elsewhereEnv, '--apply', '--replace-existing')
     expect(step.status, step.stderr).toBe(0)
-    expect(entries('replaced from another root'), 'replaced from another root').toEqual(Array(6).fill(checkoutEntry))
+    expect(entries('replaced from another root'), 'replaced from another root').toEqual(Array(8).fill(checkoutEntry))
 
     // the copy's own uninstall removes exactly its own set
     step = run(copiedInstaller, f.env, '--apply', '--replace-existing')

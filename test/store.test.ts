@@ -51,6 +51,8 @@ import {
   listLinkTargets,
   pruneSourceLinks,
   listActivitySpans,
+  recordHostEvent,
+  HOST_TOOL_STAMP_MS,
 } from '../src/store.js'
 import type { BoardRow, BoardWithRows, RowStatus } from '../src/store.js'
 import { scratchDir } from './scratch.js'
@@ -4102,5 +4104,65 @@ describe('step dependencies: waits_on (#103 slice 2 PR C)', () => {
     expect(() => updateBoardRow(db, { ...base, label: 'Publish', waits_on: ['Step 0'] })).toThrow(/names "Step 0"/)
     updateBoardRow(db, { ...base, label: 'Publish', waits_on: ['Sign'] })
     expect(row('Publish').waits_on).toEqual(['Sign'])
+  })
+})
+
+// #466: a hook's host stamps are a third kind of evidence. They never move
+// liveness, a call, the call trace, a claim or a span, and never revive a claim.
+describe('host stamps (#466)', () => {
+  let db: Database.Database
+  const START = Date.parse('2026-11-05T09:00:00.000Z')
+  beforeEach(() => {
+    db = freshDb()
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(START)
+  })
+  afterEach(() => { vi.useRealTimers() })
+
+  const raw = (session: string) => db.prepare(`SELECT * FROM activity WHERE session = ?`).get(session) as Record<string, unknown>
+
+  it('stamps only the live rows it names, and touches nothing else on them', () => {
+    upsertActivity(db, { session: 's1', project: 'p', stream: '', agent: 'claude-code', doing: 'Fixing it' })
+    recordActivityCall(db, 's1')
+    upsertActivity(db, { session: 'other', project: 'p', stream: '', agent: 'claude-code', doing: 'open', idle: true })
+    upsertActivity(db, { session: 'gone', project: 'p', stream: '', agent: 'claude-code', doing: 'open', idle: true })
+    endActivity(db, 'gone')
+    const before = raw('s1')
+    const spans = listActivitySpans(db, {})
+    vi.setSystemTime(START + 60_000)
+    expect(recordHostEvent(db, ['s1', 'gone'], 'turn')).toBe(1)
+    const after = raw('s1')
+    expect(after.host_turn_at).toBe(new Date(START + 60_000).toISOString())
+    expect({ ...after, host_turn_at: null }).toEqual(before)
+    expect(raw('other').host_turn_at).toBeNull()
+    expect(raw('gone').host_turn_at).toBeNull()
+    expect(listActivitySpans(db, {})).toEqual(spans)
+    expect(recordHostEvent(db, [], 'idle')).toBe(0)
+  })
+
+  it('writes a tool stamp at most once per HOST_TOOL_STAMP_MS a row', () => {
+    upsertActivity(db, { session: 's1', project: 'p', stream: '', agent: 'claude-code', doing: 'open', idle: true })
+    expect(recordHostEvent(db, ['s1'], 'tool')).toBe(1)
+    vi.setSystemTime(START + HOST_TOOL_STAMP_MS - 1)
+    expect(recordHostEvent(db, ['s1'], 'tool')).toBe(0)
+    vi.setSystemTime(START + HOST_TOOL_STAMP_MS)
+    expect(recordHostEvent(db, ['s1'], 'tool')).toBe(1)
+    // turns and idles are never throttled
+    expect(recordHostEvent(db, ['s1'], 'turn')).toBe(1)
+    expect(recordHostEvent(db, ['s1'], 'turn')).toBe(1)
+  })
+
+  it('serves the stamps only once set, and never revives a cold claim', () => {
+    upsertActivity(db, { session: 's1', project: 'p', stream: '', agent: 'claude-code', doing: 'Old work' })
+    recordActivityCall(db, 's1')
+    expect(listActivity(db)[0]).not.toHaveProperty('host_turn_at')
+    vi.setSystemTime(START + CLAIM_COLD_MS + 60_000)
+    touchActivity(db, 's1')
+    recordHostEvent(db, ['s1'], 'turn')
+    recordHostEvent(db, ['s1'], 'tool')
+    const row = listActivity(db)[0]!
+    expect(row).toMatchObject({ doing: 'open', idle: true, host_turn_at: new Date(Date.now()).toISOString(), host_tool_at: new Date(Date.now()).toISOString() })
+    expect(row).not.toHaveProperty('host_idle_at')
+    expect(row.last_call_at).toBe(new Date(START).toISOString())
   })
 })

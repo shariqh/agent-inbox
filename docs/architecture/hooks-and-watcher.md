@@ -37,7 +37,7 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   else: **no CLI shell-out, no raw SQL** (the untracked shell hooks it replaces did exactly
   that; `test/hook.test.ts` now pins the absence). Its stdout rule is the inverse of the MCP
   server's: not "write nothing" but **"write EXACTLY the documented payload"** —
-  `notification`/`session-end`/`sweep`/`watch` emit zero bytes, `prompt-submit` and `stop`
+  `notification`/`session-end`/`activity`/`sweep`/`watch` emit zero bytes, `prompt-submit` and `stop`
   exactly one JSON object, `session-start` one line of text. Two things are non-negotiable:
   `stop` must never block when `stop_hook_active` is true (a double block traps the human in
   an un-exitable session), and `watch`'s **exit code 2** must reach the harness — it is the

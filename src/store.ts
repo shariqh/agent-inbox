@@ -760,6 +760,14 @@ function runMigrations(db: Database.Database): void {
   // naming this server as a channel, so a message pushes a turn at once. Written
   // by this build's presence writes only, kept on omission like the flag above.
   ensureColumn(db, 'activity', 'push_wake', 'INTEGER')
+  // issue #466 — what the session's HOST reported through its hooks: when its
+  // last turn started and ended, and when it last ran a tool. Written by
+  // recordHostEvent alone; NULL on legacy rows, on rows no hook links to, and
+  // on every row an older process writes (its statements never name them).
+  // Evidence of work beside the claim, never liveness, a call or a claim.
+  ensureColumn(db, 'activity', 'host_turn_at', 'TEXT')
+  ensureColumn(db, 'activity', 'host_idle_at', 'TEXT')
+  ensureColumn(db, 'activity', 'host_tool_at', 'TEXT')
   // issue #432 — a launch run in its own git worktree: the checkout it was made
   // from, the worktree (equal to cwd), its branch, the base commit and the
   // checkout's branch then, when it was removed, and the driver's turn-end
@@ -3380,6 +3388,10 @@ export interface Activity {
    */
   driven_launch?: string
   driven_turn?: { state: 'turn' | 'approval'; since: string }
+  /** Issue #466 — the host's hook stamps (turn started, turn ended, tool ran). Served only while set. */
+  host_turn_at?: string
+  host_idle_at?: string
+  host_tool_at?: string
 }
 
 export interface ActivityUpdate {
@@ -3633,6 +3645,7 @@ export function listActivity(db: Database.Database, opts: { staleMinutes?: numbe
   const rows = db
     .prepare(`SELECT a.session, a.project, a.stream, a.agent, a.doing, a.last_doing, a.detail, a.children, a.idle, a.started_at, a.updated_at,
                      a.last_call_at, a.server_version, a.server_source, a.call_minute, a.call_counts, a.receives_messages, a.push_wake,
+                     a.host_turn_at, a.host_idle_at, a.host_tool_at,
                      (w.claim_key IS NOT NULL) AS wakes, (d.claim_key IS NOT NULL) AS driven,
                      substr(d.token, 1, 36) AS driven_launch, t.token AS turn_token, t.claimed_at AS turn_since
               FROM activity a
@@ -3644,8 +3657,9 @@ export function listActivity(db: Database.Database, opts: { staleMinutes?: numbe
               LEFT JOIN hook_watch_claims t
                 ON d.claim_key IS NOT NULL AND t.claim_key = 'driver-turn:' || substr(d.token, 1, 36)
               WHERE a.ended_at IS NULL AND a.updated_at >= ?`)
-    .all(new Date(now - WAKE_LEASE_MS).toISOString(), freshLeaseCutoff(now), cutoff) as Array<Omit<Activity, 'children' | 'idle' | 'receives_messages' | 'push_wake' | 'wakes' | 'driven' | 'driven_launch' | 'driven_turn'> & {
+    .all(new Date(now - WAKE_LEASE_MS).toISOString(), freshLeaseCutoff(now), cutoff) as Array<Omit<Activity, 'children' | 'idle' | 'receives_messages' | 'push_wake' | 'wakes' | 'driven' | 'driven_launch' | 'driven_turn' | 'host_turn_at' | 'host_idle_at' | 'host_tool_at'> & {
       children: string | null; idle: number; call_minute: number | null; call_counts: string | null; receives_messages: number | null; push_wake: number | null
+      host_turn_at: string | null; host_idle_at: string | null; host_tool_at: string | null
       wakes: number; driven: number; driven_launch: string | null; turn_token: string | null; turn_since: string | null
     }>
   const nowMinute = Math.floor(now / 60000)
@@ -3653,7 +3667,7 @@ export function listActivity(db: Database.Database, opts: { staleMinutes?: numbe
   // public/attention.js classifies an item as "waiting" iff its session id is in
   // this list, so dropping the row would silently downgrade a live blocker. Only
   // the CLAIM decays.
-  const out = rows.map(({ call_minute, call_counts, receives_messages, push_wake, wakes, driven, driven_launch, turn_token, turn_since, ...r }): Activity => {
+  const out = rows.map(({ call_minute, call_counts, receives_messages, push_wake, wakes, driven, driven_launch, turn_token, turn_since, host_turn_at, host_idle_at, host_tool_at, ...r }): Activity => {
     const live = (r.last_call_at ?? r.started_at) >= cold
     // #306: the trace is served only while its newest minute is in the window
     const calls = call_minute !== null && nowMinute - call_minute < CALL_TRACE_MINUTES ? parseCallCounts(call_counts) : null
@@ -3665,6 +3679,9 @@ export function listActivity(db: Database.Database, opts: { staleMinutes?: numbe
       children: live && r.children ? (JSON.parse(r.children) as ActivityChild[]) : [],
       ...(calls ? { calls, calls_at: call_minute! } : {}),
       ...(receives_messages === 1 ? { receives_messages: true as const } : {}),
+      ...(host_turn_at ? { host_turn_at } : {}),
+      ...(host_idle_at ? { host_idle_at } : {}),
+      ...(host_tool_at ? { host_tool_at } : {}),
       ...(push_wake === 1 ? { push_wake: true as const } : {}),
       ...(wakes === 1 ? { wakes: true as const } : {}),
       ...(driven === 1 ? { driven: true as const } : {}),
@@ -3705,6 +3722,31 @@ export function listHostSessions(db: Database.Database, hostPid: number): HostSe
                WHERE host_pid = ? AND ended_at IS NULL AND updated_at >= ?
                ORDER BY started_at ASC, session ASC`)
     .all(hostPid, cutoff) as HostSession[]
+}
+
+// ── issue #466: what a session's host reports through its hooks ─────────────
+//
+// A hook linked to its session's servers (#253) stamps their presence rows:
+// a turn started (`turn`), a turn ended (`idle`) or a tool ran (`tool`). One
+// conditioned UPDATE, live rows only. It names no other column: never
+// `updated_at` (liveness), `last_call_at`, the call trace or a claim, so host
+// work can never revive a claim that went cold (#45). A tool stamp lands at
+// most once per HOST_TOOL_STAMP_MS a row, which bounds the writes (and the
+// viewer repaints) a busy session costs.
+export const HOST_TOOL_STAMP_MS = 30_000
+const HOST_COLUMN = { turn: 'host_turn_at', idle: 'host_idle_at', tool: 'host_tool_at' } as const
+
+export function recordHostEvent(db: Database.Database, sessions: readonly string[], kind: keyof typeof HOST_COLUMN, nowMs = Date.now()): number {
+  if (sessions.length === 0) return 0
+  const column = HOST_COLUMN[kind]
+  return db.prepare(`UPDATE activity SET ${column} = @now
+                      WHERE session IN (SELECT value FROM json_each(@sessions)) AND ended_at IS NULL
+                        AND (@tool = 0 OR host_tool_at IS NULL OR host_tool_at <= @throttle)`).run({
+    now: new Date(nowMs).toISOString(),
+    sessions: JSON.stringify(sessions),
+    tool: kind === 'tool' ? 1 : 0,
+    throttle: new Date(nowMs - HOST_TOOL_STAMP_MS).toISOString(),
+  }).changes
 }
 
 // Issue #412 step 3 — the server pids of these sessions' presence rows that

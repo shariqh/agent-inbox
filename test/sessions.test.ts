@@ -44,6 +44,44 @@ describe('sessionCards: one card per session', () => {
       line: 'No task reported yet' })
   })
 
+  it('reads the host\'s hook stamps: a running turn is Working with its task not reported, an ended one Idle (#466 PR 2)', () => {
+    const board = { id: 'b1', project: 'alpha', stream: 'main', agent: 'copilot', title: 'Plan', updated_at: at(1000),
+      progress: { done: 1, partial: 0, countable: 2 }, rows: [] }
+    const cards = by(sessionCards({
+      activity: [
+        // said done, then went on with gh and a shell for 35 minutes
+        row({ session: 'busy', project: 'alpha', doing: 'open', idle: true, last_doing: 'Filing issues', last_call_at: at(40 * MIN),
+          host_turn_at: at(35 * MIN), host_tool_at: at(5000) }),
+        row({ session: 'fresh', project: 'beta', doing: 'open', idle: true, host_turn_at: at(2 * MIN) }),
+        row({ session: 'ended', project: 'alpha', doing: 'open', idle: true, last_call_at: at(20 * MIN), host_turn_at: at(15 * MIN), host_idle_at: at(12 * MIN) }),
+        // a turn with no stamp for over an hour: an interrupt that fired no Stop
+        row({ session: 'stale', project: 'alpha', doing: 'open', idle: true, last_call_at: at(3 * HOUR), host_turn_at: at(2 * HOUR), host_tool_at: at(61 * MIN) }),
+        // the #473 review's repro: woken by the answer watcher (no UserPromptSubmit), working on
+        row({ session: 'woken', project: 'gamma', doing: 'open', idle: true, last_call_at: at(20 * MIN),
+          host_turn_at: at(40 * MIN), host_idle_at: at(29 * MIN), host_tool_at: at(12_000) }),
+        // the last tool's async PostToolUse landing just after its Stop reopens nothing
+        row({ session: 'late', project: 'gamma', doing: 'open', idle: true, last_call_at: at(10 * MIN),
+          host_turn_at: at(9 * MIN), host_idle_at: at(5 * MIN), host_tool_at: at(5 * MIN - 2000) }),
+        row({ session: 'late2', project: 'gamma', doing: 'open', idle: true, last_call_at: at(10 * MIN),
+          host_turn_at: at(9 * MIN), host_idle_at: at(5 * MIN + 2000), host_tool_at: at(5 * MIN) }),
+        // no call for 9 hours, but its host ran a tool 5 minutes ago: not dormant
+        row({ session: 'old', project: 'alpha', doing: 'open', idle: true, last_call_at: at(9 * HOUR), host_turn_at: at(6 * MIN), host_idle_at: at(5 * MIN) }),
+      ],
+      boards: [board as never],
+      nowMs: NOW,
+    }))
+    expect(cards['session:busy']).toMatchObject({ state: 'working', label: 'Working', unreported: true, quiet: false,
+      line: 'Task not reported · last reported: Filing issues · 40m ago', recency: 'turn running 35m · last tool just now', plan: null })
+    expect(cards['session:fresh']).toMatchObject({ state: 'working', line: 'Task not reported', recency: 'turn running 2m' })
+    expect(cards['session:ended']).toMatchObject({ state: 'idle', label: 'Idle', recency: 'turn ended 12m ago' })
+    expect(cards['session:stale']).toMatchObject({ state: 'idle', label: 'Quiet', recency: 'no Agent Inbox call for 3h' })
+    expect(cards['session:old']).toMatchObject({ state: 'idle', label: 'Idle', place: 'main' })
+    expect(cards['session:woken']).toMatchObject({ state: 'working', label: 'Working', line: 'Task not reported', recency: 'last tool just now' })
+    expect(cards['session:late']).toMatchObject({ state: 'idle', label: 'Idle' })
+    expect(cards['session:late2']).toMatchObject({ state: 'idle', label: 'Idle' })
+    expect(filterCounts(Object.values(cards))).toMatchObject({ working: 3, idle: 5 })
+  })
+
   it('says Quiet only when it cannot know: a driven row idles as Idle, and a session with no call says so (#466)', () => {
     const cards = by(sessionCards({
       activity: [

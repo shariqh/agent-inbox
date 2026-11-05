@@ -105,6 +105,22 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   for 40m"), never Idle. Idle is kept for a driven row or a running launch whose driver
   reports no running turn (no `driven_turn`); mid-turn or at an approval it is Quiet too.
   The state key stays `idle`; only the label and the time line differ.
+- **Host stamps are a third kind of evidence (#466 PR 2).** `activity.host_turn_at`,
+  `host_idle_at` and `host_tool_at` are written by `recordHostEvent` ALONE, from the
+  Claude Code hooks (`docs/hooks.md`), on the rows of the hook's own linked servers
+  (#253). One conditioned UPDATE naming only that column (a tool stamp at most once
+  per `HOST_TOOL_STAMP_MS`); it never moves `updated_at`, `last_call_at`, the trace, a
+  claim or a span, and `listActivity`'s claim decay is unchanged, so host work never
+  revives a cold claim. Served only while set. `hostState` (`public/lanes.js`) reads
+  `busy` (a turn newer than its idle, the newest stamp under an hour old), `waiting` or
+  `unknown`. A turn a hook starts fires no UserPromptSubmit: `watch` stamps one before
+  its exit-2 wake, and a tool stamp more than 5 s after the idle stamp counts as a turn
+  (the margin absorbs the last tool's async PostToolUse landing after its Stop); `isBusy` = `isWorking` or `busy`. A busy card with no claim is Working,
+  "Task not reported", "turn running 35m · last tool 20s ago"; `waiting` is Idle, "turn
+  ended 12m ago"; the Sessions line and the Now strip's Working count use `isBusy`.
+  Plan joins, lanes and `linkedPlan` keep `isWorking`; dormancy and card order also
+  read the newest host stamp. Presence, not attention: no badge, Needs you or count.
+  Older servers never name the columns; a row no hook links to reads as before.
   `activity.last_doing` is a separate, historical caption for that idle UI. Only an explicit
   non-idle claim updates it; registration and both claim-decay paths preserve it; and it never
   participates in working/idle state, freshness, attention, or sorting. Its additive migration

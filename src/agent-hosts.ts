@@ -72,7 +72,7 @@ const MANIFEST_FILE = 'runtime-manifest.json'
 const PRODUCT = 'agent-inbox-runtime'
 // docs/hooks.md's subcommands — the same set scripts/runtime-config.mjs uses
 // to recognize one of our hook entries by shape.
-const HOOK_SUBCOMMANDS = new Set(['notification', 'session-start', 'session-end', 'prompt-submit', 'stop', 'watch'])
+const HOOK_SUBCOMMANDS = new Set(['notification', 'session-start', 'session-end', 'prompt-submit', 'stop', 'watch', 'activity'])
 // ~/.claude.json carries per-project history and can grow large; anything past
 // this is reported unknown rather than parsed on the viewer thread.
 const MAX_CONFIG_BYTES = 64 * 1024 * 1024

@@ -9,8 +9,8 @@
 // its state, so a parked or ended launch keeps its card. Every other presence
 // row (a terminal Claude Code or Copilot session, another driver's session) is
 // a card of its own.
-import { callTrace, isWorking, linkedPlan, planBar } from './lanes.js'
-import { activitySynopsis, isDormant } from './livebar.js'
+import { callTrace, hostState, isWorking, linkedPlan, planBar } from './lanes.js'
+import { DORMANT_MS, activitySynopsis, isDormant } from './livebar.js'
 import { launchSessions, launchStatus } from './launches.js'
 import { isReservedProject } from './reserved-projects.js'
 import { relMs, rowPickup } from './rowview.js'
@@ -67,6 +67,22 @@ function quietRecency(row, nowMs) {
   }
   const start = ago(nowMs, time(row.started_at))
   return start === null ? 'no Agent Inbox call yet' : `connected ${since(start)} · no Agent Inbox call yet`
+}
+
+// #466: the newest host hook stamp, or 0
+const hostAt = (row) => Math.max(time(row?.host_turn_at) ?? 0, time(row?.host_idle_at) ?? 0, time(row?.host_tool_at) ?? 0)
+const agoText = (ms) => (relMs(ms) === 'moments' ? 'just now' : `${relMs(ms)} ago`)
+
+// A busy card with no claim: how long its turn has run, and its last tool.
+// A turn a hook started (no UserPromptSubmit) has no start of its own: only its last tool.
+function turnRecency(row, nowMs) {
+  const turn = time(row.host_turn_at)
+  const idle = time(row.host_idle_at)
+  const tool = time(row.host_tool_at)
+  const parts = []
+  if (turn !== null && (idle === null || turn > idle)) parts.push(`turn running ${since(ago(nowMs, turn))}`)
+  if (tool !== null && (turn === null || tool >= turn)) parts.push(`last tool ${agoText(ago(nowMs, tool))}`)
+  return parts.join(' · ')
 }
 
 // The kind of an ask: an app session's approval (#412), filed in `@sessions`
@@ -161,7 +177,7 @@ export function sessionCards({ activity, launches = null, boards = [], attention
         }))
       card.trace = callTrace(row, nowMs)
     }
-    card.activeAt = Math.max(time(row?.last_call_at) ?? 0, time(row?.started_at) ?? 0, time(card.launch?.updated_at) ?? 0)
+    card.activeAt = Math.max(time(row?.last_call_at) ?? 0, time(row?.started_at) ?? 0, time(card.launch?.updated_at) ?? 0, hostAt(row))
     cards.push(card)
   }
 
@@ -202,9 +218,13 @@ export function sessionCards({ activity, launches = null, boards = [], attention
 
   for (const row of rows) {
     if (claimed.has(row.session)) continue
-    const base = isWorking(row, nowMs) ? 'working' : isDormant(row, nowMs) ? 'dormant' : 'idle'
+    // #466: the host's hooks can say a turn runs (Working, its task not reported) or ended (Idle)
+    const host = hostState(row, nowMs)
+    const unreported = !isWorking(row, nowMs) && host === 'busy'
+    const base = isWorking(row, nowMs) || unreported ? 'working'
+      : isDormant(row, nowMs) && nowMs - hostAt(row) >= DORMANT_MS ? 'dormant' : 'idle'
     // a terminal row has only its calls; a driven row is known idle only while its driver reports no turn
-    const quiet = base !== 'working' && !(row.driven === true && !row.driven_turn)
+    const quiet = base !== 'working' && host !== 'waiting' && !(row.driven === true && !row.driven_turn)
     const synopsis = activitySynopsis(row)
     const agent = typeof row.agent === 'string' && row.agent ? row.agent : 'unknown'
     finish({
@@ -223,8 +243,11 @@ export function sessionCards({ activity, launches = null, boards = [], attention
       text: synopsis.text,
       claim: true,
       quiet,
-      historical: synopsis.historical || base !== 'working',
-      recency: recency(base, { row, launch: null, nowMs, quiet }),
+      unreported,
+      historical: synopsis.historical || base !== 'working' || unreported,
+      recency: unreported ? turnRecency(row, nowMs)
+        : base === 'idle' && host === 'waiting' && time(row.host_idle_at) !== null ? `turn ended ${agoText(ago(nowMs, time(row.host_idle_at)))}`
+          : recency(base, { row, launch: null, nowMs, quiet }),
       lastCallAt: row.last_call_at ?? null,
       worktree: null,
       plan: null, children: [], trace: null,
@@ -275,11 +298,16 @@ export function sessionCards({ activity, launches = null, boards = [], attention
 // what the session last reported (#466), dated by its last Agent Inbox call:
 // the claim was live then, and nothing since says what it is doing now.
 function doingLine(card, nowMs) {
+  if (card.unreported) {
+    if (card.text === NO_TASK) return 'Task not reported'
+    const ms = ago(nowMs, time(card.row.last_call_at) ?? time(card.row.started_at))
+    return `Task not reported · last reported: ${card.text}${ms === null ? '' : ` · ${agoText(ms)}`}`
+  }
   if (!(card.historical && card.base !== 'working' && card.row && card.text !== NO_TASK)) return card.text
   if (!card.claim) return `was: ${card.text}`
   const ms = ago(nowMs, time(card.row.last_call_at) ?? time(card.row.started_at))
   if (ms === null) return `Last reported: ${card.text}`
-  return `Last reported: ${card.text} · ${relMs(ms) === 'moments' ? 'just now' : `${relMs(ms)} ago`}`
+  return `Last reported: ${card.text} · ${agoText(ms)}`
 }
 
 // An ask whose session no card shows (#454 amendment A.1): "Session ended" when
@@ -343,7 +371,7 @@ function attributeAsks(cards, { asks, boards, working, nowMs }) {
     for (const board of stamped) if (!planOwner.has(board.id)) planOwner.set(board.id, card)
   }
   for (const card of byActivity) {
-    if (card.base !== 'working' || !card.row) continue
+    if (card.base !== 'working' || !card.row || card.unreported) continue
     const board = linkedPlan(card.row, boards, working)
     if (board && !planOwner.has(board.id)) planOwner.set(board.id, card)
   }
@@ -351,13 +379,13 @@ function attributeAsks(cards, { asks, boards, working, nowMs }) {
     && !(board.session && working.has(board.session))
   for (const entry of asks) {
     if (entry.kind !== 'row' || !entry.board || planOwner.has(entry.board.id)) continue
-    const quiet = byActivity.find((card) => (card.base === 'idle' || card.base === 'dormant') && card.row && joins(card.row, entry.board))
+    const quiet = byActivity.find((card) => (card.base === 'idle' || card.base === 'dormant' || card.unreported) && card.row && joins(card.row, entry.board))
     if (quiet) planOwner.set(entry.board.id, quiet)
   }
   for (const card of byActivity) {
     const own = [...planOwner].filter(([, owner]) => owner === card).map(([id]) => boards.find((board) => board.id === id))
     // the plan its card shows: a working card's lane plan, else the newest plan it owns
-    const shown = card.base === 'working' && card.row ? linkedPlan(card.row, boards, working) : null
+    const shown = card.base === 'working' && card.row && !card.unreported ? linkedPlan(card.row, boards, working) : null
     const plan = shown && planOwner.get(shown.id) === card ? shown
       : own.reduce((best, board) => (!best || String(board.updated_at ?? '') > String(best.updated_at ?? '') ? board : best), null)
     card.plan = plan ? planBar(plan, nowMs) : null

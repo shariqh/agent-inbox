@@ -1,5 +1,5 @@
 import { afterAll, afterEach, describe, it, expect, vi } from 'vitest'
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { spawn, spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -14,7 +14,7 @@ import {
   openDb, insertItem, listItems, replyItem, markReplySeen, resolveItem,
   upsertBoard, getBoard, annotateBoardRow, markRowHandled, markAnnotationDelivered,
   updateBoardRow, archiveBoard, advanceBoardRow, upsertActivity, endActivity,
-  sendSessionMessage, markMessageDelivered, ackMessage,
+  sendSessionMessage, markMessageDelivered, ackMessage, listActivity,
 } from '../src/store.js'
 import type { Item } from '../src/store.js'
 import { installRuntimeVersion } from './release-runtime.js'
@@ -1524,32 +1524,45 @@ describe('hook: installer', () => {
     }
   }
 
-  const withPostToolUse = { model: 'x', hooks: { PostToolUse: [{ hooks: [{ type: 'command', command: 'echo hi' }] }] } }
+  const withOtherHook = { model: 'x', hooks: { PreCompact: [{ hooks: [{ type: 'command', command: 'echo hi' }] }] } }
 
   it('dry-run is the default: it prints a parseable settings block and writes nothing', () => {
-    const { dir, entry, file } = home(withPostToolUse)
+    const { dir, entry, file } = home(withOtherHook)
     const before = readFileSync(file, 'utf8')
     const r = installer([], dir, entry)
     expect(r.code).toBe(0)
     expect(readFileSync(file, 'utf8')).toBe(before)
     expect(r.err).toMatch(/dry run/i)
     expect(Object.keys(JSON.parse(r.out).hooks).sort()).toEqual(
-      ['Notification', 'PostToolUse', 'SessionEnd', 'SessionStart', 'Stop', 'UserPromptSubmit'],
+      ['Notification', 'PostToolUse', 'PreCompact', 'PreToolUse', 'SessionEnd', 'SessionStart', 'Stop', 'UserPromptSubmit'],
     )
   })
 
   it('--apply merges alongside a pre-existing hook without dropping it, and backs the file up', () => {
-    const { dir, entry, file } = home(withPostToolUse)
+    const { dir, entry, file } = home(withOtherHook)
     expect(installer(['--apply'], dir, entry).code).toBe(0)
     const s = JSON.parse(readFileSync(file, 'utf8'))
     expect(s.model).toBe('x')
-    expect(s.hooks.PostToolUse).toHaveLength(1)
+    expect(s.hooks.PreCompact).toHaveLength(1)
     expect(s.hooks.Notification[0].hooks[0].args).toEqual([entry, 'notification'])
     expect(s.hooks.Notification[0].matcher).toBeUndefined() // no matcher: the env var is the single gate
     expect(s.hooks.SessionStart[0].matcher).toBe('startup|resume')
     expect(s.hooks.Stop[0].hooks.map((h: { args: string[] }) => h.args[1])).toEqual(['stop', 'watch'])
     expect(s.hooks.Stop[0].hooks[1].asyncRewake).toBe(true)
     expect(readdirSync(join(dir, '.claude')).some((f) => f.startsWith('settings.json.bak.'))).toBe(true)
+  })
+
+  it('adds the async tool-activity hooks beside another tool\'s PostToolUse, never replacing it (#466)', () => {
+    const theirs = { hooks: [{ type: 'command', command: 'echo hi' }] }
+    const { dir, entry, file } = home({ hooks: { PostToolUse: [theirs] } })
+    expect(installer(['--apply'], dir, entry).code).toBe(0)
+    const s = JSON.parse(readFileSync(file, 'utf8'))
+    expect(s.hooks.PostToolUse[0]).toEqual(theirs)
+    for (const event of ['PreToolUse', 'PostToolUse']) {
+      expect(s.hooks[event].at(-1).hooks).toEqual([{ type: 'command', command: expect.any(String), args: [entry, 'activity'], timeout: 5, async: true }])
+    }
+    expect(installer(['--apply', '--uninstall'], dir, entry).code).toBe(0)
+    expect(JSON.parse(readFileSync(file, 'utf8')).hooks).toEqual({ PostToolUse: [theirs] })
   })
 
   it('the baked command is an absolute path, never bare node (the Node-26 hazard)', () => {
@@ -1624,11 +1637,11 @@ describe('hook: installer', () => {
   })
 
   it('--uninstall removes only the agent-inbox entries', () => {
-    const { dir, entry, file } = home(withPostToolUse)
+    const { dir, entry, file } = home(withOtherHook)
     installer(['--apply'], dir, entry)
     expect(installer(['--apply', '--uninstall'], dir, entry).code).toBe(0)
     const s = JSON.parse(readFileSync(file, 'utf8'))
-    expect(s.hooks).toEqual(withPostToolUse.hooks)
+    expect(s.hooks).toEqual(withOtherHook.hooks)
     expect(s.model).toBe('x')
   })
 
@@ -1782,7 +1795,7 @@ describe('hook: installer', () => {
   }
 
   it('--apply writes through a symlinked settings.json: the link survives, its target is backed up and updated', () => {
-    const before = JSON.stringify(withPostToolUse)
+    const before = JSON.stringify(withOtherHook)
     const { dir, entry, file, target } = linkedHome(before)
 
     const r = installer(['--apply'], dir, entry)
@@ -1792,7 +1805,7 @@ describe('hook: installer', () => {
     expect(readlinkSync(file)).toBe(LINK)
     const s = JSON.parse(readFileSync(target, 'utf8'))
     expect(s.model).toBe('x')
-    expect(s.hooks.PostToolUse).toHaveLength(1)
+    expect(s.hooks.PreCompact).toHaveLength(1)
     expect(s.hooks.Notification[0].hooks[0].args).toEqual([entry, 'notification'])
     const backups = backupsOf(target)
     expect(backups).toHaveLength(1)
@@ -1802,7 +1815,7 @@ describe('hook: installer', () => {
 
   it('--uninstall writes through a symlinked settings.json and leaves the link in place', () => {
     const { dir, entry, file, target } = linkedHome('{}')
-    const installed = { ...withPostToolUse, hooks: { ...withPostToolUse.hooks, ...hooksSettingsBlock(process.execPath, entry).hooks } }
+    const installed = { ...withOtherHook, hooks: { ...withOtherHook.hooks, ...hooksSettingsBlock(process.execPath, entry).hooks } }
     writeFileSync(target, JSON.stringify(installed))
 
     const r = installer(['--apply', '--uninstall'], dir, entry)
@@ -1810,7 +1823,7 @@ describe('hook: installer', () => {
     expect(r.code, r.err).toBe(0)
     expect(lstatSync(file).isSymbolicLink()).toBe(true)
     expect(readlinkSync(file)).toBe(LINK)
-    expect(JSON.parse(readFileSync(target, 'utf8'))).toEqual(withPostToolUse)
+    expect(JSON.parse(readFileSync(target, 'utf8'))).toEqual(withOtherHook)
     expect(backupsOf(target)).toHaveLength(1)
   })
 
@@ -1849,7 +1862,7 @@ describe('hook: installer', () => {
   })
 
   it('a rename that fails exits non-zero, claims nothing and removes its staged copy', () => {
-    const { dir, entry, file } = home(withPostToolUse)
+    const { dir, entry, file } = home(withOtherHook)
     const before = readFileSync(file, 'utf8')
     const fakebin = join(dir, 'fakebin')
     mkdirSync(fakebin)
@@ -1895,7 +1908,7 @@ describe('hook: installer', () => {
 
   // root ignores file modes, so a read-only settings file cannot be modelled there
   it.skipIf(process.getuid?.() === 0)('refuses a read-only settings.json up front, says so, and leaves nothing behind', () => {
-    const { dir, entry, file } = home(withPostToolUse)
+    const { dir, entry, file } = home(withOtherHook)
     const before = readFileSync(file, 'utf8')
     chmodSync(file, 0o444)
     try {
@@ -1912,7 +1925,7 @@ describe('hook: installer', () => {
   })
 
   it('the dry run proves Node against a throwaway database and never creates the hub', () => {
-    const { dir, file } = home(withPostToolUse)
+    const { dir, file } = home(withOtherHook)
     const before = readFileSync(file, 'utf8')
     // The REAL hook CLI, run from source: CI runs the suite before it builds dist/.
     // tsx keeps a transform cache in TMPDIR, so it gets its own; the installer's
@@ -1940,7 +1953,7 @@ describe('hook: installer', () => {
     expect(readdirSync(scratch)).toEqual([]) // the throwaway database is gone too
     expect(readFileSync(file, 'utf8')).toBe(before)
     expect(Object.keys(JSON.parse(r.out).hooks).sort()).toEqual(
-      ['Notification', 'PostToolUse', 'SessionEnd', 'SessionStart', 'Stop', 'UserPromptSubmit'],
+      ['Notification', 'PostToolUse', 'PreCompact', 'PreToolUse', 'SessionEnd', 'SessionStart', 'Stop', 'UserPromptSubmit'],
     )
   })
 
@@ -1982,8 +1995,8 @@ describe('hook: installer', () => {
   function expectOneSet(settings: Settings, entry: string, known: string[]): void {
     const ours = Object.values(settings.hooks ?? {}).flatMap((groups) => groups.flatMap((g) => g.hooks))
       .filter((h) => known.includes(h.args?.[0] ?? ''))
-    expect(ours.map((h) => h.args?.[0])).toEqual(Array(6).fill(entry))
-    expect(ours.map((h) => h.args?.[1]).sort()).toEqual(['notification', 'prompt-submit', 'session-end', 'session-start', 'stop', 'watch'])
+    expect(ours.map((h) => h.args?.[0])).toEqual(Array(8).fill(entry))
+    expect(ours.map((h) => h.args?.[1]).sort()).toEqual(['activity', 'activity', 'notification', 'prompt-submit', 'session-end', 'session-start', 'stop', 'watch'])
   }
 
   /** The commands a refusal prints, in order: the recommended one first. */
@@ -1998,11 +2011,11 @@ describe('hook: installer', () => {
     const runtime = installRuntimeVersion(runtimeRootOf(dir), '1.2.4')
     const runtimeSet = setOf(join(runtime, 'bin', 'node'), join(runtime, 'dist', 'hook-cli.js'))
     const cases: Array<[string, Settings, string[], string[]]> = [
-      ['the runtime\'s set alone (dry run)', withSets(withPostToolUse, runtimeSet), [], [replaceCommand, uninstallCommand(runtime)]],
-      ['the runtime\'s set alone', withSets(withPostToolUse, runtimeSet), ['--apply'], [replaceCommand, uninstallCommand(runtime)]],
+      ['the runtime\'s set alone (dry run)', withSets(withOtherHook, runtimeSet), [], [replaceCommand, uninstallCommand(runtime)]],
+      ['the runtime\'s set alone', withSets(withOtherHook, runtimeSet), ['--apply'], [replaceCommand, uninstallCommand(runtime)]],
       // --force replaces this checkout's own set; it must not hide another install's. The
       // runtime's own uninstall would refuse beside this checkout's set, so it is not offered.
-      ['the runtime\'s set beside this checkout\'s own', withSets(withPostToolUse, runtimeSet, setOf(process.execPath, entry)), ['--apply', '--force'], [replaceCommand]],
+      ['the runtime\'s set beside this checkout\'s own', withSets(withOtherHook, runtimeSet, setOf(process.execPath, entry)), ['--apply', '--force'], [replaceCommand]],
     ]
     for (const [label, settings, flags, commands] of cases) {
       writeFileSync(file, JSON.stringify(settings))
@@ -2013,7 +2026,7 @@ describe('hook: installer', () => {
       expect(r.code, label).toBe(1)
       expect(r.out, label).toBe('')
       expect(r.err, label).toContain('already has Claude hooks from another Agent Inbox install')
-      expect(r.err, label).toContain(`the v1.2.4 Setup runtime at ${runtime} (6 hooks)`)
+      expect(r.err, label).toContain(`the v1.2.4 Setup runtime at ${runtime} (8 hooks)`)
       expect(printed(r.err), label).toEqual(commands)
       expect(r.err, label).not.toMatch(/hooks installed|already installed|--force/)
       expect(readFileSync(file, 'utf8'), label).toBe(before)
@@ -2025,7 +2038,7 @@ describe('hook: installer', () => {
     const { dir, entry, file } = home()
     const runtime = installRuntimeVersion(runtimeRootOf(dir), '1.2.4')
     const runtimeEntry = join(runtime, 'dist', 'hook-cli.js')
-    writeFileSync(file, JSON.stringify(withSets(withPostToolUse, setOf(join(runtime, 'bin', 'node'), runtimeEntry), setOf(process.execPath, entry))))
+    writeFileSync(file, JSON.stringify(withSets(withOtherHook, setOf(join(runtime, 'bin', 'node'), runtimeEntry), setOf(process.execPath, entry))))
 
     const refused = installer(['--apply'], dir, entry)
     expect(refused.code).toBe(1)
@@ -2038,7 +2051,7 @@ describe('hook: installer', () => {
     expect(fixed.status, fixed.stderr).toBe(0)
     const s = JSON.parse(readFileSync(file, 'utf8')) as Settings
     expectOneSet(s, entry, [entry, runtimeEntry])
-    expect(s.hooks!.PostToolUse).toEqual(withPostToolUse.hooks.PostToolUse)
+    expect(s.hooks!.PreCompact).toEqual(withOtherHook.hooks.PreCompact)
   })
 
   it('refuses beside another checkout\'s hooks, and the command it prints removes exactly that set', () => {
@@ -2049,13 +2062,13 @@ describe('hook: installer', () => {
     const other = join(dir, 'linked-checkout')
     symlinkSync(otherCheckout(dir), other)
     const otherEntry = join(other, 'dist', 'hook-cli.js')
-    writeFileSync(file, JSON.stringify(withSets(withPostToolUse, setOf(process.execPath, otherEntry))))
+    writeFileSync(file, JSON.stringify(withSets(withOtherHook, setOf(process.execPath, otherEntry))))
     const before = readFileSync(file, 'utf8')
 
     const refused = installer(['--apply'], dir, entry)
 
     expect(refused.code).toBe(1)
-    expect(refused.err).toContain(`the source checkout at ${other} (6 hooks)`)
+    expect(refused.err).toContain(`the source checkout at ${other} (8 hooks)`)
     expect(printed(refused.err)).toEqual([replaceCommand, uninstallCommand(other)])
     expect(readFileSync(file, 'utf8')).toBe(before)
 
@@ -2063,7 +2076,7 @@ describe('hook: installer', () => {
     delete env.AGENT_INBOX_HOOK_ENTRY
     const removed = spawnSync('/bin/bash', ['-c', uninstallCommand(other)], { encoding: 'utf8', env })
     expect(removed.status, removed.stderr).toBe(0)
-    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual(withPostToolUse)
+    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual(withOtherHook)
 
     const installed = installer(['--apply'], dir, entry)
     expect(installed.code, installed.err).toBe(0)
@@ -2078,7 +2091,7 @@ describe('hook: installer', () => {
     const other = otherCheckout(dir)
     const otherEntry = join(other, 'dist', 'hook-cli.js')
     const lookAlike = { hooks: [{ type: 'command', command: process.execPath, args: [join(dir, 'tool', 'notify.js'), 'stop'] }] }
-    writeFileSync(file, JSON.stringify(withSets(withPostToolUse,
+    writeFileSync(file, JSON.stringify(withSets(withOtherHook,
       setOf(process.execPath, movedEntry),
       setOf(join(dir, 'fnm', 'node-versions', 'v24.0.0', 'bin', 'node'), otherEntry),
       { Stop: [lookAlike] })))
@@ -2087,8 +2100,8 @@ describe('hook: installer', () => {
     const refused = installer(['--apply'], dir, entry)
 
     expect(refused.code).toBe(1)
-    expect(refused.err).toContain(`the install at ${moved}, which can no longer run (6 hooks)`)
-    expect(refused.err).toContain(`the install at ${other}, which can no longer run (6 hooks)`)
+    expect(refused.err).toContain(`the install at ${moved}, which can no longer run (8 hooks)`)
+    expect(refused.err).toContain(`the install at ${other}, which can no longer run (8 hooks)`)
     expect(printed(refused.err)).toEqual([replaceCommand])
     expect(readFileSync(file, 'utf8')).toBe(before)
 
@@ -2097,7 +2110,7 @@ describe('hook: installer', () => {
     expect(r.code, r.err).toBe(0)
     const s = JSON.parse(readFileSync(file, 'utf8')) as Settings
     expectOneSet(s, entry, [entry, movedEntry, otherEntry])
-    expect(s.hooks!.PostToolUse).toEqual(withPostToolUse.hooks.PostToolUse)
+    expect(s.hooks!.PreCompact).toEqual(withOtherHook.hooks.PreCompact)
     expect(s.hooks!.Stop).toContainEqual(lookAlike)
   })
 
@@ -2126,7 +2139,7 @@ describe('hook: installer', () => {
     const otherEntry = join(other, 'dist', 'hook-cli.js')
     // another tool's hook with one of our subcommand names: never ours
     const lookAlike = { hooks: [{ type: 'command', command: 'node', args: ['tools/notify.js', 'stop'] }] }
-    const before = JSON.stringify(withSets(withPostToolUse,
+    const before = JSON.stringify(withSets(withOtherHook,
       setOf(join(runtime, 'bin', 'node'), runtimeEntry),
       setOf(process.execPath, otherEntry),
       setOf(process.execPath, entry),
@@ -2138,8 +2151,8 @@ describe('hook: installer', () => {
 
     expect(preview.code, preview.err).toBe(0)
     expect(readFileSync(file, 'utf8')).toBe(before)
-    expect(preview.err).toContain(`replacing 6 hooks of the v1.2.4 Setup runtime at ${runtime}`)
-    expect(preview.err).toContain(`replacing 6 hooks of the source checkout at ${other}`)
+    expect(preview.err).toContain(`replacing 8 hooks of the v1.2.4 Setup runtime at ${runtime}`)
+    expect(preview.err).toContain(`replacing 8 hooks of the source checkout at ${other}`)
     const planned = JSON.parse(preview.out) as Settings
     expectOneSet(planned, entry, known)
 
@@ -2150,7 +2163,7 @@ describe('hook: installer', () => {
     expect(s).toEqual(planned)
     expectOneSet(s, entry, known)
     expect(s.model).toBe('x')
-    expect(s.hooks!.PostToolUse).toEqual(withPostToolUse.hooks.PostToolUse)
+    expect(s.hooks!.PreCompact).toEqual(withOtherHook.hooks.PreCompact)
     expect(s.hooks!.Stop).toContainEqual(lookAlike)
     const backups = backupsOf(file)
     expect(backups).toHaveLength(1)
@@ -2185,14 +2198,14 @@ describe('hook: installer', () => {
     const runtime = installRuntimeVersion(runtimeRootOf(dir), '1.2.4')
     // no longer the runtime its manifest describes, but it still runs
     writeFileSync(join(runtime, 'dist', 'hook-cli.js'), '// tampered\n')
-    writeFileSync(file, JSON.stringify(withSets(withPostToolUse, setOf(join(runtime, 'bin', 'node'), join(runtime, 'dist', 'hook-cli.js')))))
+    writeFileSync(file, JSON.stringify(withSets(withOtherHook, setOf(join(runtime, 'bin', 'node'), join(runtime, 'dist', 'hook-cli.js')))))
     const before = readFileSync(file, 'utf8')
 
     for (const flags of [['--apply'], ['--apply', '--replace-existing']]) {
       const r = installer(flags, dir, entry)
       expect(r.code, flags.join(' ')).toBe(1)
       expect(r.err).toMatch(/cannot attribute/)
-      expect(r.err).toContain(`  - ${join(runtime, 'bin', 'node')} ${join(runtime, 'dist', 'hook-cli.js')} (notification, prompt-submit, session-end, session-start, stop, watch)`)
+      expect(r.err).toContain(`  - ${join(runtime, 'bin', 'node')} ${join(runtime, 'dist', 'hook-cli.js')} (activity, notification, prompt-submit, session-end, session-start, stop, watch)`)
       // the verifier's own reason, so the folder can be fixed without editing settings.json
       expect(r.err).toContain(`\n    ${runtime} does not verify as a runtime: size mismatch for dist/hook-cli.js`)
       expect(r.err).toContain(strayFileHint)
@@ -2207,7 +2220,7 @@ describe('hook: installer', () => {
     const { dir, entry, file } = home()
     const copied = installRuntimeVersion(join(dir, 'Downloads'), '1.2.4')
     const copiedEntry = join(copied, 'dist', 'hook-cli.js')
-    writeFileSync(file, JSON.stringify(withSets(withPostToolUse, setOf(join(copied, 'bin', 'node'), copiedEntry))))
+    writeFileSync(file, JSON.stringify(withSets(withOtherHook, setOf(join(copied, 'bin', 'node'), copiedEntry))))
     const before = readFileSync(file, 'utf8')
 
     for (const flags of [[], ['--apply']]) {
@@ -2215,7 +2228,7 @@ describe('hook: installer', () => {
       expect(refused.code, flags.join(' ')).toBe(1)
       expect(refused.out).toBe('')
       expect(refused.err).toContain('already has Claude hooks from another Agent Inbox install')
-      expect(refused.err).toContain(`the v1.2.4 runtime at ${copied}, outside Setup's runtime folder (6 hooks)`)
+      expect(refused.err).toContain(`the v1.2.4 runtime at ${copied}, outside Setup's runtime folder (8 hooks)`)
       // 1.3.2 and older runtimes' own uninstall refuses their hooks outside the root
       expect(printed(refused.err)).toEqual([replaceCommand])
       expect(readFileSync(file, 'utf8')).toBe(before)
@@ -2225,10 +2238,10 @@ describe('hook: installer', () => {
     const r = installer(['--apply', '--replace-existing'], dir, entry)
 
     expect(r.code, r.err).toBe(0)
-    expect(r.err).toContain(`replacing 6 hooks of the v1.2.4 runtime at ${copied}, outside Setup's runtime folder`)
+    expect(r.err).toContain(`replacing 8 hooks of the v1.2.4 runtime at ${copied}, outside Setup's runtime folder`)
     const s = JSON.parse(readFileSync(file, 'utf8')) as Settings
     expectOneSet(s, entry, [entry, copiedEntry])
-    expect(s.hooks!.PostToolUse).toEqual(withPostToolUse.hooks.PostToolUse)
+    expect(s.hooks!.PreCompact).toEqual(withOtherHook.hooks.PreCompact)
   })
 
   it('refuses, even with --replace-existing, beside a runtime outside the root that it cannot verify', () => {
@@ -2242,13 +2255,13 @@ describe('hook: installer', () => {
       ['a runtime\'s entry under another Node', process.execPath, join(borrowed, 'dist', 'hook-cli.js'), null],
     ]
     for (const [label, command, listed, reason] of cases) {
-      writeFileSync(file, JSON.stringify(withSets(withPostToolUse, setOf(command, listed))))
+      writeFileSync(file, JSON.stringify(withSets(withOtherHook, setOf(command, listed))))
       const before = readFileSync(file, 'utf8')
       for (const flags of [['--apply'], ['--apply', '--replace-existing']]) {
         const r = installer(flags, dir, entry)
         expect(r.code, `${label}, ${flags.join(' ')}`).toBe(1)
         expect(r.err, label).toMatch(/cannot attribute/)
-        expect(r.err, label).toContain(`  - ${command} ${listed} (notification, prompt-submit, session-end, session-start, stop, watch)`)
+        expect(r.err, label).toContain(`  - ${command} ${listed} (activity, notification, prompt-submit, session-end, session-start, stop, watch)`)
         if (reason) {
           expect(r.err, label).toContain(`\n    ${reason}`)
           expect(r.err, label).toContain(strayFileHint)
@@ -2269,7 +2282,7 @@ describe('hook: installer', () => {
     const { dir, entry, file } = home()
     const copied = installRuntimeVersion(join(dir, 'Downloads'), '1.2.4')
     const copiedEntry = join(copied, 'dist', 'hook-cli.js')
-    writeFileSync(file, JSON.stringify(withSets(withPostToolUse, setOf(join(copied, 'bin', 'node'), copiedEntry))))
+    writeFileSync(file, JSON.stringify(withSets(withOtherHook, setOf(join(copied, 'bin', 'node'), copiedEntry))))
     writeFileSync(join(copied, '.DS_Store'), '')
     const before = readFileSync(file, 'utf8')
 
@@ -2337,16 +2350,16 @@ describe('hook: installer', () => {
     const { dir, entry, file } = home()
     const runtime = installRuntimeVersion(runtimeRootOf(dir), '1.2.4')
     const runtimeSet = setOf(join(runtime, 'bin', 'node'), join(runtime, 'dist', 'hook-cli.js'))
-    writeFileSync(file, JSON.stringify(withSets(withPostToolUse, runtimeSet, setOf(process.execPath, entry))))
+    writeFileSync(file, JSON.stringify(withSets(withOtherHook, runtimeSet, setOf(process.execPath, entry))))
 
     const r = installer(['--apply', '--uninstall'], dir, entry)
 
     expect(r.code, r.err).toBe(0)
-    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual(withSets(withPostToolUse, runtimeSet))
+    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual(withSets(withOtherHook, runtimeSet))
   })
 
   it('refuses --replace-existing with --uninstall as a usage error, before touching anything', () => {
-    const { dir, entry, file } = home(withPostToolUse)
+    const { dir, entry, file } = home(withOtherHook)
     const before = readFileSync(file, 'utf8')
 
     const r = installer(['--apply', '--uninstall', '--replace-existing'], dir, entry)
@@ -2354,6 +2367,106 @@ describe('hook: installer', () => {
     expect(r.code).toBe(2)
     expect(r.err).toMatch(/--replace-existing.*--uninstall/)
     expect(readFileSync(file, 'utf8')).toBe(before)
+  })
+})
+
+// #466: the host's turns and tools, stamped on the linked session's presence
+// row. A stamp never changes what a hook prints or returns.
+describe('hook: host stamps (#466)', () => {
+  const stamps = (db: ReturnType<typeof openDb>, session = 'mcp-1') => {
+    const row = listActivity(db).find((r) => r.session === session)
+    return { turn: row?.host_turn_at, idle: row?.host_idle_at, tool: row?.host_tool_at }
+  }
+
+  it('a prompt starts a turn and a Stop that does not block ends it, printing exactly what it did before', async () => {
+    const { env, dbPath } = freshEnv()
+    const db = openDb(dbPath)
+    linkServer(db, 'mcp-1', PROJECT)
+    expect(await runHook(['prompt-submit'], ev(), env)).toEqual({ stdout: '' })
+    expect(stamps(db)).toMatchObject({ turn: expect.any(String), idle: undefined })
+    expect(await runHook(['stop'], ev(), env)).toEqual({ stdout: '' })
+    expect(stamps(db).idle).toEqual(expect.any(String))
+    db.close()
+  })
+
+  it('a Stop that blocks keeps the turn open; the continuation\'s Stop ends it', async () => {
+    const { env, dbPath } = freshEnv()
+    const db = openDb(dbPath)
+    linkServer(db, 'mcp-1', PROJECT)
+    replyItem(db, question(db, PROJECT, 'Which pool?', 'mcp-1'), 'tank')
+    expect(JSON.parse((await runHook(['stop'], ev(), env)).stdout).decision).toBe('block')
+    expect(stamps(db).idle).toBeUndefined()
+    expect(await runHook(['stop'], ev({ stop_hook_active: true }), env)).toEqual({ stdout: '' })
+    expect(stamps(db).idle).toEqual(expect.any(String))
+    db.close()
+  })
+
+  it('idle_prompt ends a turn (an interrupt fires no Stop); a permission prompt does not', async () => {
+    const { env, dbPath } = freshEnv()
+    const db = openDb(dbPath)
+    linkServer(db, 'mcp-1', PROJECT)
+    await runHook(['notification'], ev(), env)
+    expect(stamps(db).idle).toBeUndefined()
+    expect(await runHook(['notification'], ev({ notification_type: 'idle_prompt', message: 'Claude is waiting for your input' }), env)).toEqual({ stdout: '' })
+    expect(stamps(db).idle).toEqual(expect.any(String))
+    db.close()
+  })
+
+  it('a watch wake starts a turn: the woken turn fires no UserPromptSubmit (#473 review)', async () => {
+    const { env, dbPath } = freshEnv({ AGENT_INBOX_WATCH_SECS: '4', AGENT_INBOX_WATCH_POLL_MS: '20' })
+    const db = openDb(dbPath)
+    linkServer(db, 'mcp-1', PROJECT)
+    const id = question(db, PROJECT, 'Which pool?', 'mcp-1')
+    expect(await runHook(['stop'], ev(), env)).toEqual({ stdout: '' })
+    const idle = stamps(db).idle!
+    const running = runHook(['watch'], ev(), env)
+    await armed(dbPath)
+    expect(stamps(db).turn).toBeUndefined()
+    await sleep(5)
+    replyItem(db, id, 'tank')
+    expect(await running).toMatchObject({ stdout: '', exitCode: 2 })
+    expect(stamps(db).turn! > idle).toBe(true)
+    db.close()
+  })
+
+  it('activity prints nothing, stamps a tool and opens nothing again until a stamp is due', async () => {
+    const { env, dbPath } = freshEnv()
+    const db = openDb(dbPath)
+    linkServer(db, 'mcp-1', PROJECT)
+    const tool = ev({ hook_event_name: 'PostToolUse', tool_name: 'Bash' })
+    expect(await runHook(['activity'], tool, env)).toEqual({ stdout: '' })
+    const first = stamps(db).tool
+    expect(first).toEqual(expect.any(String))
+    const marker = join(dirname(dbPath), 'hook-state', `host-${process.ppid}.tool`)
+    expect(existsSync(marker)).toBe(true)
+    // inside the window the marker answers; the row is not written again
+    db.prepare(`UPDATE activity SET host_tool_at = NULL WHERE session = 'mcp-1'`).run()
+    expect(await runHook(['activity'], tool, env)).toEqual({ stdout: '' })
+    expect(stamps(db).tool).toBeUndefined()
+    // a stale marker lets the next one through
+    utimesSync(marker, new Date(Date.now() - 60_000), new Date(Date.now() - 60_000))
+    await runHook(['activity'], tool, env)
+    expect(stamps(db).tool).toEqual(expect.any(String))
+    // the session's end removes its marker, so none outlives its Claude Code
+    expect(await runHook(['session-end'], ev(), env)).toEqual({ stdout: '' })
+    expect(existsSync(marker)).toBe(false)
+    db.close()
+  })
+
+  it('stamps nothing with no link, in a reserved folder, or with AGENT_INBOX_HOOKS=0, and survives any stdin', async () => {
+    const { env, dbPath } = freshEnv()
+    const db = openDb(dbPath)
+    linkServer(db, 'mcp-1', PROJECT, { host_pid: 999_999 })
+    for (const sub of ['activity', 'prompt-submit'] as const) expect(await runHook([sub], ev(), env)).toEqual({ stdout: '' })
+    expect(stamps(db)).toEqual({ turn: undefined, idle: undefined, tool: undefined })
+    linkServer(db, 'mcp-2', PROJECT)
+    const cwd = join(scratchDir('hook-reserved-'), '@sessions')
+    mkdirSync(cwd)
+    expect(await runHook(['activity'], ev({ cwd }), env)).toEqual({ stdout: '' })
+    expect(await runHook(['activity'], ev(), { ...env, AGENT_INBOX_HOOKS: '0' })).toEqual({ stdout: '' })
+    expect(stamps(db, 'mcp-2').tool).toBeUndefined()
+    for (const stdin of ['', 'not json', '[]']) expect(await runHook(['activity'], stdin, env)).toEqual({ stdout: '' })
+    db.close()
   })
 })
 

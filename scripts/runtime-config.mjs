@@ -770,13 +770,13 @@ export function mergeJsonAtomic({ filePath, patch, createIfMissing = true }) {
 // get the merged settings.json body without jq. This function never touches
 // disk itself — see runHooksCmd below for why that split is deliberate.
 //
-// The five hook events / six subcommands this project registers into
+// The seven hook events / seven subcommands this project registers into
 // ~/.claude/settings.json (docs/hooks.md's "Events → subcommands" table).
 // Recognizing "one of ours" by this exact {args:[entry, subcommand]} shape —
 // rather than by string-matching a specific entry path — is what lets a
 // runtime upgrade (a NEW entry path, inside a new runtimeId directory) still
 // find and replace an OLDER install's entries.
-const HOOK_SUBCOMMANDS = new Set(['notification', 'session-start', 'session-end', 'prompt-submit', 'stop', 'watch'])
+const HOOK_SUBCOMMANDS = new Set(['notification', 'session-start', 'session-end', 'prompt-submit', 'stop', 'watch', 'activity'])
 const LEGACY_HOOK_COMMAND_RE = /agent-inbox-(pending|watch)\.sh/
 
 /** The exact hook-entry block this project installs, keyed by Claude Code event name. */
@@ -787,6 +787,8 @@ export function buildHooksSettingsBlock(nodeBinPath, entryPath) {
     SessionStart: [{ matcher: 'startup|resume', hooks: [h('session-start', 5)] }],
     SessionEnd: [{ hooks: [h('session-end', 5)] }],
     UserPromptSubmit: [{ hooks: [h('prompt-submit', 10)] }],
+    PreToolUse: [{ hooks: [h('activity', 5, { async: true })] }],
+    PostToolUse: [{ hooks: [h('activity', 5, { async: true })] }],
     Stop: [
       {
         hooks: [

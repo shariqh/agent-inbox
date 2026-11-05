@@ -188,7 +188,8 @@ describe('the liveness tick moves liveness and nothing else (#45)', () => {
     for (const timer of timers) {
       const line = ast.getLineAndCharacterOfPosition(timer.getStart(ast)).line + 1
       const reached = reachableFrom(identifiersIn(timer.arguments[0]!))
-      expect([...reached].filter((n) => n === 'heartbeat' || n === 'recordActivityCall'),
+      // #466: nor a host stamp, which is evidence of work as a call is
+      expect([...reached].filter((n) => n === 'heartbeat' || n === 'recordActivityCall' || n === 'recordHostEvent'),
         `the timer at src/mcp.ts:${line} must move liveness only`).toEqual([])
     }
   })

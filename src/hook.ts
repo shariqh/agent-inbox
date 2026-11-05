@@ -15,7 +15,8 @@ import { dirname, join } from 'node:path'
 import type Database from 'better-sqlite3'
 import {
   claimHookWatch, defaultDbPath, holdsHookWatch, insertItem, listHostSessions, listItems, listOpenMessages, listPending,
-  listPendingRows, listSessionQuestions, listUnansweredBoardRows, openDb, releaseHookWatch, resolveItem,
+  listPendingRows, listSessionQuestions, listUnansweredBoardRows, openDb, recordHostEvent, releaseHookWatch, resolveItem,
+  HOST_TOOL_STAMP_MS,
 } from './store.js'
 import type { Item } from './store.js'
 import { isReservedProject } from '../public/reserved-projects.js'
@@ -32,6 +33,7 @@ export const SUBCOMMANDS = [
   'prompt-submit',
   'stop',
   'watch',
+  'activity',
   'sweep',
   'selftest',
 ] as const
@@ -121,6 +123,7 @@ interface HookEntry {
   args: string[]
   timeout: number
   statusMessage?: string
+  async?: boolean
   asyncRewake?: boolean
   rewakeSummary?: string
 }
@@ -144,6 +147,9 @@ export function hooksSettingsBlock(nodeBin: string, entry: string): { hooks: Rec
       SessionStart: [{ matcher: 'startup|resume', hooks: [h('session-start', 5)] }],
       SessionEnd: [{ hooks: [h('session-end', 5)] }],
       UserPromptSubmit: [{ hooks: [h('prompt-submit', 10)] }],
+      // #466: async, so a tool call never waits on it
+      PreToolUse: [{ hooks: [h('activity', 5, { async: true })] }],
+      PostToolUse: [{ hooks: [h('activity', 5, { async: true })] }],
       Stop: [{ hooks: [
         h('stop', 10, { statusMessage: 'Checking agent-inbox for answered questions…' }),
         h('watch', 1800, {
@@ -490,6 +496,7 @@ export async function runHook(argv: string[], stdinText: string, env: Env = proc
       case 'notification': return cmdNotification(ctx)
       case 'notification-commit': return await cmdNotificationCommit(ctx)
       case 'watch': return await cmdWatch(ctx)
+      case 'activity': return cmdActivity(ctx)
       case 'sweep': return cmdSweep(ctx)
       default: return cmdSessionStep(ctx)
     }
@@ -549,6 +556,11 @@ function cmdNotification(ctx: Ctx): HookResult {
     // sweepStale only. Sweeping THIS session here would make suppression rule
     // (A) unreachable and would silently destroy a still-relevant flag.
     sweepStale(db, ctx.nowMs, ctx.opts.maxAgeMs)
+    // #466: Claude Code says the turn ended about a minute ago; this also
+    // closes a turn an interrupt ended, which fires no Stop
+    if (ctx.ev.notification_type === 'idle_prompt' && !isReservedProject(scopeOf(ctx.ev).project)) {
+      stampHost(ctx, db, liveServers(db, process.ppid), 'idle')
+    }
     if (!notifyGate(ctx)) return EMPTY
     const sessionId = ctx.ev.session_id
     if (!sessionId) {
@@ -693,8 +705,13 @@ function cmdSessionStep(ctx: Ctx): HookResult {
       sweepSession(db, project, ctx.ev.session_id)
       disarm(ctx.dbPath, ctx.ev.session_id)
     }
-    if (ctx.sub === 'session-end') return EMPTY
+    if (ctx.sub === 'session-end') {
+      // the activity throttle's marker for this Claude Code process (#466)
+      rmSync(toolMarker(ctx.dbPath, process.ppid), { force: true })
+      return EMPTY
+    }
     const scope = sessionScope(db, ctx, project)
+    if (ctx.sub === 'prompt-submit') stampHost(ctx, db, scope.servers, 'turn')
     const responses = unpickedResponses(db, scope.projects)
     // #411: messages are counted while open, never by delivery, since a
     // subagent's poll can pick one up that the session itself never saw
@@ -702,12 +719,19 @@ function cmdSessionStep(ctx: Ctx): HookResult {
     if (ctx.sub === 'stop') {
       // The loop guard is non-negotiable: blocking twice in a row traps the
       // human in a session they cannot exit.
-      if (ctx.ev.stop_hook_active === true) return EMPTY
+      // #466: a Stop that does not block ends the turn; one that blocks continues it
+      if (ctx.ev.stop_hook_active === true) {
+        stampHost(ctx, db, scope.servers, 'idle')
+        return EMPTY
+      }
       // and it blocks once per message: one the agent ignores, or cannot ack,
       // must not bounce every Stop
       const nudged = scope.host === null ? new Set<string>() : readNudged(ctx.dbPath, scope.host)
       const fresh = open.filter((id) => !nudged.has(id))
-      if (responses.length === 0 && fresh.length === 0) return EMPTY
+      if (responses.length === 0 && fresh.length === 0) {
+        stampHost(ctx, db, scope.servers, 'idle')
+        return EMPTY
+      }
       if (fresh.length && scope.host !== null) writeNudged(ctx.dbPath, scope.host, open)
       return { stdout: JSON.stringify({ decision: 'block', reason: nudgeText(responses, fresh.length) }) }
     }
@@ -720,6 +744,44 @@ function cmdSessionStep(ctx: Ctx): HookResult {
       return { stdout: JSON.stringify({ hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: text }, suppressOutput: true }) }
     }
     return { stdout: `${text}\n` } // session-start: plain stdout is added to context
+  } finally {
+    db.close()
+  }
+}
+
+// ── #466: the host's turns and tools, stamped on its session's presence rows ─
+
+// A stamp is evidence for the session card, never part of a hook's answer: a
+// failure is logged and the subcommand goes on exactly as before.
+function stampHost(ctx: Ctx, db: Database.Database, servers: Iterable<string>, kind: 'turn' | 'idle' | 'tool'): void {
+  try {
+    // the clock now, not the hook's start: a watch stamps up to 29 minutes later
+    recordHostEvent(db, [...servers], kind, Date.now())
+  } catch (err) {
+    logLine(ctx.dbPath, `stamp ${kind}: ${err instanceof Error ? err.message : String(err)}`)
+  }
+}
+
+const toolMarker = (dbPath: string, host: number): string => join(stateDir(dbPath), `host-${host}.tool`)
+
+// PreToolUse / PostToolUse, async: runs on every tool call, so it costs one
+// stat until a stamp is due. The marker, keyed by the Claude Code process,
+// throttles before the hub is even opened; recordHostEvent's own condition is
+// the real bound. No link (an older server, a wrapper process) stamps nothing.
+function cmdActivity(ctx: Ctx): HookResult {
+  const host = process.ppid
+  if (!Number.isInteger(host) || host <= 1) return EMPTY
+  const marker = toolMarker(ctx.dbPath, host)
+  try {
+    if (ctx.nowMs - statSync(marker).mtimeMs < HOST_TOOL_STAMP_MS) return EMPTY
+  } catch { /* no marker yet */ }
+  if (isReservedProject(scopeOf(ctx.ev).project)) return EMPTY
+  mkdirSync(stateDir(ctx.dbPath), { recursive: true })
+  writeFileSync(marker, '')
+  const db = openDb(ctx.dbPath)
+  try {
+    stampHost(ctx, db, liveServers(db, host), 'tool')
+    return EMPTY
   } finally {
     db.close()
   }
@@ -792,6 +854,11 @@ async function cmdWatch(ctx: Ctx): Promise<HookResult> {
   }
   try {
     const scope = sessionScope(db, ctx, project)
+    // #466: a wake starts a turn that fires no UserPromptSubmit, so it stamps one itself
+    const woke = (result: HookResult): HookResult => {
+      stampHost(ctx, db, scope.host === null ? [] : liveServers(db, scope.host), 'turn')
+      return result
+    }
     lease.key = scope.host !== null
       ? `host:${scope.host}`
       : ctx.ev.session_id ? `session:${ctx.ev.session_id}:${project}` : `project:${project}`
@@ -805,7 +872,7 @@ async function cmdWatch(ctx: Ctx): Promise<HookResult> {
     // a message that arrives later wakes this watcher
     const seenMessages = new Set(scope.host === null ? [] : listOpenMessages(db, [...scope.servers]).map((message) => message.id))
     const ready = unpickedResponses(db, scope.projects)
-    if (ready.length && ctx.ev.stop_hook_active !== true) return wake(ready)
+    if (ready.length && ctx.ev.stop_hook_active !== true) return woke(wake(ready))
     // a linked watcher stays for the session's later questions, even with nothing waiting yet
     if (scope.host === null && !awaited.size && !watchedRows.length) return EMPTY
     claim()
@@ -838,7 +905,7 @@ async function cmdWatch(ctx: Ctx): Promise<HookResult> {
           const at = scope.projects.indexOf(p)
           return at === -1 ? scope.projects.length : at
         }
-        return wake([...responses].sort(([a], [b]) => rank(a) - rank(b)), messages)
+        return woke(wake([...responses].sort(([a], [b]) => rank(a) - rank(b)), messages))
       }
       if (superseded || (scope.host === null && !waiting)) return EMPTY
       await delay(ctx.opts.watchPollMs)

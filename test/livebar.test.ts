@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { liveSummary, lastActivityAt, isDormant, activitySynopsis, sessionBuild, activityFrameKey } from '../public/livebar.js'
+import { liveSummary, lastActivityAt, isDormant, activitySynopsis, sessionBuild, activityFrameKey, sessionsSummary } from '../public/livebar.js'
 
 const NOW = Date.parse('2026-07-24T12:00:00.000Z')
 const at = (msAgo: number) => new Date(NOW - msAgo).toISOString()
@@ -300,5 +300,17 @@ describe('activityFrameKey', () => {
     const b = sess({ session: 'b' })
     expect(activityFrameKey([a, b])).not.toBe(activityFrameKey([b, a]))
     expect(activityFrameKey([a])).not.toBe(activityFrameKey([a, b]))
+  })
+})
+
+describe('sessionsSummary (#466)', () => {
+  it('counts a running host turn as working, as the cards do', () => {
+    const now = Date.parse('2026-11-05T12:00:00.000Z')
+    const ago = (ms: number) => new Date(now - ms).toISOString()
+    const rows = [
+      { session: 'a', project: 'p', doing: 'open', idle: true, started_at: ago(3_600_000), last_call_at: ago(2_400_000), host_turn_at: ago(60_000) },
+      { session: 'b', project: 'p', doing: 'open', idle: true, started_at: ago(3_600_000), last_call_at: ago(2_400_000) },
+    ]
+    expect(sessionsSummary(rows, now)).toMatchObject({ label: '1 working', sub: '2 connected', working: 1 })
   })
 })

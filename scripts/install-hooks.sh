@@ -228,6 +228,8 @@ else
       SessionStart:     [ { matcher: "startup|resume", hooks: [ h("session-start"; 5) ] } ],
       SessionEnd:       [ { hooks: [ h("session-end"; 5) ] } ],
       UserPromptSubmit: [ { hooks: [ h("prompt-submit"; 10) ] } ],
+      PreToolUse:       [ { hooks: [ h("activity"; 5) + { async: true } ] } ],
+      PostToolUse:      [ { hooks: [ h("activity"; 5) + { async: true } ] } ],
       Stop: [ { hooks: [
         h("stop"; 10)    + { statusMessage: "Checking agent-inbox for answered questions…" },
         h("watch"; 1800) + { statusMessage: "Arming agent-inbox answer watcher…", asyncRewake: true, rewakeSummary: "Agent Inbox: your answer arrived" }

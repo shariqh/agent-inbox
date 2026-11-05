@@ -29,3 +29,6 @@ export function watchUpstream(
   onDrop: () => void,
   opts?: WatchUpstreamOpts,
 ): () => void
+
+/** AGENT_INBOX_PORT when set; else 4319 packaged, 4392 for a checkout build (#465). */
+export function viewerPort(options: { isPackaged: boolean; env: Record<string, string | undefined> }): number

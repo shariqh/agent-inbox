@@ -65,7 +65,16 @@ export interface OfferedUpdate extends VerifiedAvailableUpdate {
    * for `apple-silicon`, and main refuses to open it.
    */
   blocked?: UpdateBlockedReason
+  /**
+   * Set on a downloadable offer that no installer can install because main registered
+   * none: `unowned-viewer` when this window opened on a viewer this app did not start
+   * (reused, then perhaps failed over), so main never grants it installs (#216, #465).
+   * Settings says to quit and reopen Agent Inbox. Never set with `installable` or `reason`.
+   */
+  installWithheld?: UpdateInstallWithheldReason
 }
+
+export type UpdateInstallWithheldReason = 'unowned-viewer'
 
 export interface UpdateDownloadProgress {
   receivedBytes: number
@@ -168,6 +177,11 @@ export function createUpdateController(options: {
    * installer requires `downloader.openVerified` and `requestRestart`.
    */
   installers?: Partial<Record<DownloadableInstallStrategy, PlatformInstaller>>
+  /**
+   * Why main registered no installer on a host that has one (#465). Published as
+   * `available.installWithheld` on every downloadable offer no installer is registered for.
+   */
+  installWithheld?: UpdateInstallWithheldReason
   /**
    * Records each attempt just before commit() (an attempt that cannot be
    * recorded is not handed off) and is read once by the first rendererReady(),

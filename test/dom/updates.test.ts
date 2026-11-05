@@ -28,6 +28,7 @@ type UpdateState = {
     installPermitted?: boolean
     reason?: string
     blocked?: 'apple-silicon' | 'rosetta'
+    installWithheld?: 'unowned-viewer'
   }
   download?: { receivedBytes: number; totalBytes: number }
 }
@@ -232,6 +233,7 @@ function offered(
     reason?: string
     message?: string
     strategy?: 'appimage-self-replace'
+    installWithheld?: 'unowned-viewer'
   } = {},
 ): UpdateState {
   return state(status, {
@@ -251,6 +253,7 @@ function offered(
       // Main permits the window it bound, as on every launch that was not reloaded.
       installPermitted: extra.installPermitted ?? extra.installable ?? false,
       ...(extra.reason !== undefined ? { reason: extra.reason } : {}),
+      ...(extra.installWithheld !== undefined ? { installWithheld: extra.installWithheld } : {}),
     },
     ...(download ? { download } : {}),
   })
@@ -297,17 +300,45 @@ describe('verified update downloads', () => {
     expect(bridge.cancelDownload).toHaveBeenCalledOnce()
   })
 
-  it('says a verified download is ready without offering an install that does not exist yet', async () => {
+  it('says a verified download is ready without offering an install that does not exist here', async () => {
     const bridge = await boot()
     bridge.emit(offered('verified', true, { receivedBytes: 338 * MB, totalBytes: 338 * MB }))
 
     expect(document.querySelector('.updates-state')?.textContent).toBe('Agent Inbox 1.3.0 is downloaded and verified.')
-    expect(document.querySelector('.updates-detail')?.textContent).toContain('SHA-256 match the signed release')
-    expect(document.querySelector('.updates-detail')?.textContent).toContain('later update')
+    expect(document.querySelector('.updates-detail')?.textContent).toBe(
+      'Its size and SHA-256 match the signed release. Agent Inbox can’t install it from the app here, so use Review release to install it yourself.',
+    )
     expect((document.querySelector('.updates-progress') as HTMLProgressElement).hidden).toBe(true)
     expect(visibleActions()).toEqual(['Check now', 'Review release'])
     expect(visibleActions().some((label) => /install/i.test(label ?? ''))).toBe(false)
     expect(document.querySelector('.updates-review')?.classList.contains('updates-secondary')).toBe(false)
+  })
+
+  // #465: main withheld the installer because this window opened on a viewer another copy
+  // started. Settings says how to get an install back, never "a later update".
+  it.each([
+    ['a DMG', undefined],
+    ['an AppImage', 'appimage-self-replace'],
+  ] as const)('tells %s on a viewer this app did not start to quit and reopen to install', async (_label, strategy) => {
+    const WITHHELD = 'Agent Inbox opened on a viewer that another copy started, so it can’t install updates from here. To install this update, quit Agent Inbox and any other copy of it, then reopen Agent Inbox.'
+    const bridge = await boot()
+    const extra = { installWithheld: 'unowned-viewer' as const, ...(strategy ? { strategy } : {}) }
+    bridge.emit(offered('available', true, undefined, extra))
+    expect(document.querySelector('.updates-detail')?.textContent).toBe(WITHHELD)
+    expect(visibleActions()).toEqual(['Check now', 'Download update', 'Review release'])
+
+    bridge.emit(offered('verified', true, { receivedBytes: 338 * MB, totalBytes: 338 * MB }, extra))
+    expect(document.querySelector('.updates-detail')?.textContent).toBe(`Its size and SHA-256 match the signed release. ${WITHHELD}`)
+    expect(visibleActions()).toEqual(['Check now', 'Review release'])
+    expect(document.body.textContent).not.toContain('later update')
+  })
+
+  it('keeps a .deb offer notify-only, with Review release and no install copy', async () => {
+    const bridge = await boot()
+    bridge.emit(offered('available', false))
+    expect(document.querySelector('.updates-state')?.textContent).toBe('Agent Inbox 1.3.0 is available.')
+    expect((document.querySelector('.updates-detail') as HTMLElement).hidden).toBe(true)
+    expect(visibleActions()).toEqual(['Check now', 'Review release'])
   })
 
   it('offers a retry after a failed download', async () => {
@@ -577,7 +608,7 @@ describe('when this window may not install', () => {
 
     bridge.emit(offered('verified', true, bytes))
     expect(visibleActions()).toEqual(['Check now', 'Review release'])
-    expect(detail().textContent).toContain('later update')
+    expect(detail().textContent).toContain('can’t install it from the app here')
 
     bridge.emit(offered('available', true, undefined, { installable: true, installPermitted: false }))
     expect(visibleActions()).toEqual(['Check now', 'Download update', 'Review release'])

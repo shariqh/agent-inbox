@@ -29,7 +29,7 @@ share one SQLite database on your machine.
 | **Durable plans** | Tracking boards with stable rows, progress, next steps, outcomes, and human-owned actions |
 | **Agents view** | Ambient status for every connected session and its current work without turning activity into alerts |
 | **Session messages** | Write to a running session, and see before you send whether it arrives now or at the session's next check |
-| **Session launcher** | On macOS, start a Copilot CLI session from the app, approve its tool calls from the inbox, and message it from its session card. Off until you turn it on |
+| **Session launcher** | On macOS, start Copilot CLI sessions from the app, each in its own git worktree, approve their tool calls from the inbox, and message, park, resume or take them over from their session cards. Off until you turn it on |
 | **Dual-host setup** | Audited installers and instructions for GitHub Copilot CLI and Claude Code |
 | **Local security boundary** | A loopback-only viewer with strict Host, Origin, Fetch Metadata, and anti-framing checks |
 

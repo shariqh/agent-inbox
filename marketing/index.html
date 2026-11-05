@@ -670,7 +670,7 @@
 
   <main id="main" class="wrap page-frame">
     <div class="release-line">
-      <a href="https://github.com/shariqh/agent-inbox/releases"><span class="version">v2.3.0</span><span>Available for macOS and Linux</span><svg aria-hidden="true"><use href="#arrow"/></svg></a>
+      <a href="https://github.com/shariqh/agent-inbox/releases"><span class="version">v2.4.0</span><span>Available for macOS and Linux</span><svg aria-hidden="true"><use href="#arrow"/></svg></a>
     </div>
     <section class="hero" aria-labelledby="hero-title">
       <div class="hero-heading">
@@ -693,7 +693,7 @@
         <div class="demo-tabs" role="tablist" aria-label="Explore Agent Inbox">
           <button id="tab-inbox" type="button" role="tab" aria-selected="true" aria-controls="panel-inbox" tabindex="0" data-tab="inbox"><svg aria-hidden="true"><use href="#inbox"/></svg>Inbox</button>
           <button id="tab-plans" type="button" role="tab" aria-selected="false" aria-controls="panel-plans" tabindex="-1" data-tab="plans"><svg aria-hidden="true"><use href="#plan"/></svg>Plans</button>
-          <button id="tab-live" type="button" role="tab" aria-selected="false" aria-controls="panel-live" tabindex="-1" data-tab="live"><svg aria-hidden="true"><use href="#activity"/></svg>Live</button>
+          <button id="tab-live" type="button" role="tab" aria-selected="false" aria-controls="panel-live" tabindex="-1" data-tab="live"><svg aria-hidden="true"><use href="#activity"/></svg>Agents</button>
         </div>
       </div>
       <div class="app-window">
@@ -708,7 +708,7 @@
             <div class="app-nav">
               <button class="is-active" type="button" data-select-tab="inbox" aria-label="Show demo inbox"><svg aria-hidden="true"><use href="#inbox"/></svg>Inbox<span class="nav-count" id="attention-count">3</span></button>
               <button type="button" data-select-tab="plans" aria-label="Show demo plans"><svg aria-hidden="true"><use href="#plan"/></svg>Plans<span class="nav-count">1</span></button>
-              <button type="button" data-select-tab="live" aria-label="Show demo live sessions"><svg aria-hidden="true"><use href="#activity"/></svg>Live<span class="nav-count">4</span></button>
+              <button type="button" data-select-tab="live" aria-label="Show demo agent sessions"><svg aria-hidden="true"><use href="#activity"/></svg>Agents<span class="nav-count">4</span></button>
             </div>
             <div class="project-caption">Projects</div>
             <div class="project-name"><span class="project-dot"></span>customer-portal</div>
@@ -851,7 +851,7 @@
           </div>
           <article class="feature-aside">
             <h3>Message a running session.</h3>
-            <p>Write to a connected session from Live sessions or its Dashboard panel. Before you send, Agent Inbox says how the message will arrive. Claude Code sessions with the wake-up hooks can wake for it, and one started with the channels flag gets it pushed straight in; channels are a Claude Code research preview that needs a claude.ai or Console login. Other sessions see it when they next check Agent Inbox. The agent acknowledges with an outcome, and messages to sessions that ended are listed under Not delivered.</p>
+            <p>Write to a connected session from its panel in the Agents view. Before you send, Agent Inbox says how the message will arrive. Claude Code sessions with the wake-up hooks can wake for it, and one started with the channels flag gets it pushed straight in; channels are a Claude Code research preview that needs a claude.ai or Console login. Other sessions see it when they next check Agent Inbox. The agent acknowledges with an outcome, and messages to sessions that ended are listed under Not delivered.</p>
             <div class="dispatch-example" aria-label="Illustrative message delivery states">
               <div class="dispatch-line"><span class="dispatch-dot"></span><span>Arrives now</span><small>Claude Code with channels or hooks</small></div>
               <div class="dispatch-line"><span class="dispatch-dot later"></span><span>When it next checks Agent Inbox</span><small>Copilot CLI</small></div>
@@ -867,7 +867,7 @@
           </article>
           <article class="feature-aside">
             <h3>See what each agent reports.</h3>
-            <p>The Dashboard gives each working session a lane with its latest report, its plan's progress, and its activity over the last 30 minutes. Beside the lanes, the Needs you rail lets you answer, snooze, or pin a request. Background refreshes keep it current without pulling keyboard focus away from chat or another app; in the active viewer, keyboard focus stays where you left it.</p>
+            <p>The Agents view gives each session a card with its latest report, its plan's progress, its activity over the last 30 minutes, and anything it is waiting on you for. Open a card to answer, snooze, or pin a request in its panel; a request from a session that has ended gets its own card, so nothing waits out of sight. Background refreshes keep it current without pulling keyboard focus away from chat or another app; in the active viewer, keyboard focus stays where you left it.</p>
             <div class="dispatch-example" aria-label="Illustrative agent statuses">
               <div class="dispatch-line"><span class="dispatch-dot"></span><span>Copilot CLI</span><small>Running checkout tests</small></div>
               <div class="dispatch-line"><span class="dispatch-dot"></span><span>Claude Code</span><small>Updating the docs</small></div>
@@ -876,11 +876,11 @@
           </article>
           <article class="feature-aside">
             <h3>Start sessions from Agent Inbox.</h3>
-            <p>In the macOS app, choose New session to start a Copilot CLI session in one of your projects. Agent Inbox shows what will start before it does. Each tool call that needs approval arrives in the inbox as Allow once or Deny, and you can message, park, or stop the session from Live. Edits in the worktree lets a session write inside its folder without asking; everything else still asks. On a source checkout, a terminal driver does the same with approvals answered in that terminal. The launcher is off until you turn it on in Settings.</p>
+            <p>In the macOS app, choose New session to start a Copilot CLI session in one of your projects. Agent Inbox shows what will start before it does. Each tool call that needs approval arrives in the inbox as Allow once or Deny, and you can message, park, resume, or stop the session from its card in the Agents view. Each session works in its own git worktree, so several can run in one project at once. Edits in the worktree lets a session write inside its folder without asking; everything else still asks. On a source checkout, a terminal driver does the same with approvals answered in that terminal. The launcher is off until you turn it on in Settings.</p>
             <div class="dispatch-example" aria-label="Illustrative session launch steps">
               <div class="dispatch-line"><span class="dispatch-dot"></span><span>Start</span><small>Confirm the folder and mode</small></div>
               <div class="dispatch-line"><span class="dispatch-dot later"></span><span>Allow once or Deny</span><small>From the inbox card</small></div>
-              <div class="dispatch-line"><span class="dispatch-dot idle"></span><span>Park or Stop</span><small>From Live sessions</small></div>
+              <div class="dispatch-line"><span class="dispatch-dot idle"></span><span>Park, resume or stop</span><small>From its card</small></div>
             </div>
           </article>
         </div>

@@ -75,7 +75,9 @@ if [ "$APPLY" -eq 1 ]; then acquire_setup_lock install-copilot-hooks || exit 1; 
 if [ -L "$TARGET" ] || { [ -e "$TARGET" ] && [ ! -f "$TARGET" ]; }; then
   say "$TARGET is not a regular file — refusing to touch it"; exit 1
 fi
-if [ -f "$TARGET" ] && ! "$NODE" "$HELPER" check "$TARGET"; then
+# `check` must PRINT "ours": a helper that silently ran nothing never passes.
+ours() { [ "$("$NODE" "$HELPER" check "$1" 2>/dev/null)" = ours ]; }
+if [ -f "$TARGET" ] && ! ours "$TARGET"; then
   say "$TARGET is not an Agent Inbox hooks file — refusing to touch it. Move it aside and run this again."
   exit 1
 fi
@@ -91,7 +93,11 @@ if [ "$UNINSTALL" -eq 1 ]; then
   exit 0
 fi
 
-CONTENT="$("$NODE" "$HELPER" build "$NODE" "$ENTRY" $TOOL_FLAG)" || { say "could not build the hooks file — nothing was written"; exit 1; }
+CONTENT="$("$NODE" "$HELPER" build "$NODE" "$ENTRY" $TOOL_FLAG)" || CONTENT=""
+# the built file must itself pass `check`: empty or foreign content is never staged
+if [ -z "$CONTENT" ] || [ "$(printf '%s\n' "$CONTENT" | "$NODE" "$HELPER" check - 2>/dev/null)" != ours ]; then
+  say "could not build a valid hooks file — nothing was written"; exit 1
+fi
 if [ "$APPLY" -eq 0 ]; then
   printf '%s\n' "$CONTENT"
   say "dry run: would write $TARGET (pass --apply)"

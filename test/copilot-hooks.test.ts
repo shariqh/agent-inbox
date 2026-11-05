@@ -2,7 +2,7 @@
 // test here may read or write the real ~/.copilot.
 import { describe, expect, it } from 'vitest'
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { copilotHooksFile, isOurs } from '../scripts/copilot-hooks.mjs'
@@ -27,18 +27,21 @@ function installer(args: string[], dir: string, entry: string) {
 }
 
 const kinds = (file: string) => Object.fromEntries(Object.entries(JSON.parse(readFileSync(file, 'utf8')).hooks)
-  .map(([event, list]) => [event, (list as Array<{ args: string[] }>)[0]!.args[2]]))
+  .map(([event, list]) => [event, (list as Array<{ args: string[] }>)[0]!.args[1]]))
 
 describe('Copilot CLI hooks file (#466 PR 3)', () => {
   it('maps each event to its stamp in exec form, never preToolUse, and drops the tool hook on request', () => {
     const file = copilotHooksFile('/n/node', '/a/dist/hook-cli.js')
     expect(Object.keys(file.hooks)).not.toContain('preToolUse')
-    expect(file.hooks.postToolUse).toEqual([{ type: 'command', exec: '/n/node', args: ['/a/dist/hook-cli.js', 'activity', 'tool'], timeoutSec: 5 }])
+    expect(file.hooks.postToolUse).toEqual([{ type: 'command', exec: '/n/node', args: ['/a/dist/hook-cli.js', 'host-tool'], timeoutSec: 5 }])
     expect(copilotHooksFile('/n/node', '/a/dist/hook-cli.js', { tools: false }).hooks).not.toHaveProperty('postToolUse')
     expect(isOurs(file)).toBe(true)
     expect(isOurs({ version: 1, hooks: { ...file.hooks, preToolUse: file.hooks.postToolUse } })).toBe(false)
     expect(isOurs({ version: 1, hooks: { postToolUse: [{ type: 'command', bash: './lint.sh' }] } })).toBe(false)
     expect(isOurs(null)).toBe(false)
+    // the shape PR 3's first build wrote stays ours, so an upgrade replaces it
+    expect(isOurs({ version: 1, hooks: { agentStop: [{ type: 'command', exec: '/n/node', args: ['/a/dist/hook-cli.js', 'activity', 'idle'] }] } })).toBe(true)
+    expect(isOurs({ version: 1, hooks: { agentStop: [{ type: 'command', exec: '/n/node', args: ['/a/dist/hook-cli.js', 'host-tool'] }] } })).toBe(false)
   })
 
   it('dry run is the default and writes nothing; --apply writes the one file; --uninstall removes it with a backup', () => {
@@ -50,7 +53,7 @@ describe('Copilot CLI hooks file (#466 PR 3)', () => {
     expect(existsSync(join(dir, '.copilot'))).toBe(false)
 
     expect(installer(['--apply'], dir, entry).code).toBe(0)
-    expect(kinds(file)).toEqual({ userPromptSubmitted: 'turn', agentStop: 'idle', errorOccurred: 'idle', postToolUse: 'tool', sessionEnd: 'end' })
+    expect(kinds(file)).toEqual({ userPromptSubmitted: 'host-turn', agentStop: 'host-idle', errorOccurred: 'host-error', postToolUse: 'host-tool', sessionEnd: 'host-end' })
     expect(JSON.parse(readFileSync(file, 'utf8')).hooks.agentStop[0].exec).toBe(process.execPath)
 
     expect(installer(['--apply', '--no-tool-stamps'], dir, entry).code).toBe(0)
@@ -82,6 +85,31 @@ describe('Copilot CLI hooks file (#466 PR 3)', () => {
     mkdirSync(join(linked.dir, '.copilot', 'hooks'), { recursive: true })
     symlinkSync(file, linked.file)
     expect(installer(['--apply'], linked.dir, linked.entry)).toMatchObject({ code: 1, err: expect.stringMatching(/not a regular file/) })
+  })
+
+  // #474 review: Node resolves the main module through symlinks and argv[1] does
+  // not, so a naive main-module guard ran nothing: `check` passed any file and
+  // `build` printed nothing. Run through a symlinked scripts folder.
+  it('works through a symlinked path: refuses a foreign file and writes the real one', () => {
+    const { dir, entry, file } = home()
+    const linked = join(scratchDir('copilot-hooks-link-'), 'scripts')
+    symlinkSync(join(REPO, 'scripts'), linked)
+    const helper = spawnSync(process.execPath, [join(linked, 'copilot-hooks.mjs'), 'build', '/n/node', entry], { encoding: 'utf8' })
+    expect(isOurs(JSON.parse(helper.stdout))).toBe(true)
+    expect(spawnSync(process.execPath, [join(linked, 'copilot-hooks.mjs'), 'nonsense'], { encoding: 'utf8' }).status).toBe(2)
+    mkdirSync(join(dir, '.copilot', 'hooks'), { recursive: true })
+    const theirs = JSON.stringify({ version: 1, hooks: { postToolUse: [{ type: 'command', bash: './my-lint.sh' }] } })
+    writeFileSync(file, theirs)
+    const run = (args: string[]) => {
+      const env: NodeJS.ProcessEnv = { ...process.env, HOME: dir, AGENT_INBOX_HOOK_ENTRY: entry, AGENT_INBOX_NODE: process.execPath }
+      delete env.COPILOT_HOME
+      return spawnSync('bash', [join(linked, 'install-copilot-hooks.sh'), ...args], { encoding: 'utf8', env })
+    }
+    for (const args of [['--apply'], ['--apply', '--uninstall']]) expect(run(args).status, args.join(' ')).toBe(1)
+    expect(readFileSync(file, 'utf8')).toBe(theirs)
+    rmSync(file)
+    expect(run(['--apply']).status).toBe(0)
+    expect(kinds(file)).toHaveProperty('agentStop', 'host-idle')
   })
 
   it('refuses before writing when the entry is not built or its Node cannot open the hub', () => {

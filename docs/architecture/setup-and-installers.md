@@ -148,7 +148,9 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
 - **The Copilot CLI hooks installer owns one whole file** *(#466 PR 3)*.
   `scripts/install-copilot-hooks.sh` writes only `${COPILOT_HOME:-~/.copilot}/hooks/agent-inbox.json`,
   built by `scripts/copilot-hooks.mjs` (which also decides ownership: exactly the shape it
-  builds). Dry run by default; `--apply` proves Node with `hook-cli selftest`, takes the
+  builds or built). Its main-module guard compares realpaths (as `runtime-payload.mjs`
+  does), and the installer trusts `check` only when it PRINTS `ours` and checks the content
+  it built before staging, so a helper that ran nothing refuses (#474 review). Dry run by default; `--apply` proves Node with `hook-cli selftest`, takes the
   setup lock (fd 9), refuses a symlink, a non-file or any file that is not ours in every
   mode, backs up a copy it replaces or removes (`.bak.<time>`, never `*.json`), and stages
   beside the target before a rename. `--no-tool-stamps` drops `postToolUse`. Checkout only

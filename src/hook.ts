@@ -34,6 +34,13 @@ export const SUBCOMMANDS = [
   'stop',
   'watch',
   'activity',
+  // #466 PR 3: Copilot CLI's hooks file, one subcommand per event, so an older
+  // hook-cli turns each into a silent no-op rather than a tool stamp
+  'host-turn',
+  'host-idle',
+  'host-error',
+  'host-tool',
+  'host-end',
   'sweep',
   'selftest',
 ] as const
@@ -58,6 +65,9 @@ export interface HookEvent {
   reason?: string
   source?: string
   stop_hook_active?: boolean
+  // Copilot CLI's errorOccurred (#466 PR 3): a retry inside a turn is recoverable
+  recoverable?: boolean
+  agentId?: string
 }
 
 // Per-session state, kept next to the db (not in homedir) so AGENT_INBOX_DB
@@ -258,7 +268,8 @@ export function parseEvent(text: string): HookEvent | null {
     if (v !== undefined) (ev as Record<string, unknown>)[k] = v
   }
   s('session_id'); s('transcript_path'); s('cwd'); s('hook_event_name')
-  s('notification_type'); s('message'); s('reason'); s('source')
+  s('notification_type'); s('message'); s('reason'); s('source'); s('agentId')
+  if (typeof o.recoverable === 'boolean') ev.recoverable = o.recoverable
   if (typeof o.stop_hook_active === 'boolean') ev.stop_hook_active = o.stop_hook_active
   return ev
 }
@@ -497,6 +508,12 @@ export async function runHook(argv: string[], stdinText: string, env: Env = proc
       case 'notification-commit': return await cmdNotificationCommit(ctx)
       case 'watch': return await cmdWatch(ctx)
       case 'activity': return cmdActivity(ctx, argv[1] ?? 'tool')
+      case 'host-turn': return cmdActivity(ctx, 'turn')
+      case 'host-idle': return cmdActivity(ctx, 'idle')
+      case 'host-tool': return cmdActivity(ctx, 'tool')
+      case 'host-end': return cmdActivity(ctx, 'end')
+      // only an unrecoverable error in the main agent ends the turn
+      case 'host-error': return ctx.ev.recoverable === false && !ctx.ev.agentId ? cmdActivity(ctx, 'idle') : EMPTY
       case 'sweep': return cmdSweep(ctx)
       default: return cmdSessionStep(ctx)
     }
@@ -765,9 +782,11 @@ function stampHost(ctx: Ctx, db: Database.Database, servers: Iterable<string>, k
 const toolMarker = (dbPath: string, host: number): string => join(stateDir(dbPath), `host-${host}.tool`)
 
 // Claude's PreToolUse / PostToolUse (async) run `activity`, a tool. Copilot
-// CLI's hooks file (docs/hooks.md, "Copilot CLI") names the kind: `turn`
-// (userPromptSubmitted), `idle` (agentStop, errorOccurred), `tool`
-// (postToolUse) or `end` (sessionEnd, which only removes the marker). Copilot
+// CLI's hooks file (docs/hooks.md, "Copilot CLI") runs `host-turn`
+// (userPromptSubmitted), `host-idle` (agentStop), `host-error` (errorOccurred,
+// idle only when unrecoverable), `host-tool` (postToolUse) or `host-end`
+// (sessionEnd, which only removes the marker); `activity <kind>` is the shape
+// PR 3's first build wrote. Copilot
 // runs every hook directly, a child of the `copilot` process its MCP server
 // records as host_pid, so the #253 link holds for it unchanged.
 // A tool costs one stat until a stamp is due. The marker, keyed by the host

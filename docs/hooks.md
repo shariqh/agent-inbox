@@ -309,10 +309,16 @@ npm run install:copilot-hooks -- --apply --uninstall       # remove it (backed u
 
 | Copilot CLI event | runs | stamps |
 |---|---|---|
-| `userPromptSubmitted` | `hook-cli activity turn` | `host_turn_at` |
-| `agentStop`, `errorOccurred` | `hook-cli activity idle` | `host_idle_at` |
-| `postToolUse` | `hook-cli activity tool` | `host_tool_at`, at most once per 30 s |
-| `sessionEnd` | `hook-cli activity end` | nothing; removes the throttle marker |
+| `userPromptSubmitted` | `hook-cli` `host-turn` | `host_turn_at` |
+| `agentStop` | `hook-cli` `host-idle` | `host_idle_at` |
+| `errorOccurred` | `hook-cli` `host-error` | `host_idle_at`, only for `recoverable: false` outside a subagent (a retried model call is mid-turn) |
+| `postToolUse` | `hook-cli` `host-tool` | `host_tool_at`, at most once per 30 s |
+| `sessionEnd` | `hook-cli` `host-end` | nothing; removes the throttle marker |
+
+Each event has a subcommand of its own, so a hook-cli older than this file (a
+checkout switched back to an older branch and rebuilt) refuses them as a silent
+no-op, never misreading every event as a tool. A file the first build of this
+change wrote (`activity <kind>`) still works and is replaced by the next install.
 
 Every entry is exec form (`exec` + `args`, no shell) with a 5 s timeout, and prints
 nothing. Copilot CLI parses a hook's stdout as its decision and treats an empty one
@@ -328,6 +334,9 @@ its Agent Inbox MCP server records, so no process walk is needed. One `copilot`
 process can host several sessions sharing one server, so a stamp describes the
 process, as the card does.
 
+`scripts/copilot-hooks.mjs` builds the file and decides what is ours; the
+installer trusts its `check` only when it prints `ours`, and checks the file it
+built before staging it, so a helper that ran nothing refuses rather than passes.
 The installer refuses anything at that path it did not write (another tool's file,
 a symlink, a directory), in every mode; runs under the setup lock (fd 9); proves its
 Node with `hook-cli selftest` first; and backs up a copy it replaces or removes as

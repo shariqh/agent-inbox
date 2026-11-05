@@ -23,6 +23,13 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   directory is made in `beforeAll` or at module level. The one exception,
   `test/hook.test.ts`'s module-level project repository, is removed by that
   file's own `afterAll`.
+- A test that attaches a disk image keeps the image file in a `scratchDir()` and
+  detaches it itself. As a backstop, the file-end hook force-detaches any image
+  still attached from one of the file's scratch directories, mounted or not, and
+  prints a `[scratch] detached …` warning naming it. An image attached without a
+  volume (as `hdiutil create -srcfolder` sometimes leaves one) is invisible to
+  Finder, so before this guard each run of `test/macos-dmg.test.ts` could leave
+  one more behind. Treat that warning as a bug in the test that printed it.
 - Node is the default Vitest environment. DOM tests opt in per file with
   `// @vitest-environment jsdom`; keep `test/dom/harness.ts` outside the
   `*.test.ts` naming pattern.

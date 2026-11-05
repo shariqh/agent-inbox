@@ -16,7 +16,7 @@ import type { MacExecFile } from '../electron/update-install-macos.cjs'
 import type { VerifiedArtifact } from '../electron/update-download.cjs'
 import { createReleaseDmg, requireReleaseDmgFormat } from '../scripts/macos-dmg.mjs'
 import { withMountedDmg } from '../scripts/macos-release-gates.mjs'
-import { scratchDir } from './scratch.js'
+import { attachedImagesUnder, detachImagesUnder, scratchDir } from './scratch.js'
 
 const { createMacInstaller } = macInstall
 const root = resolve(import.meta.dirname, '..')
@@ -126,6 +126,8 @@ describe.skipIf(process.platform !== 'darwin')('a release DMG built on macOS', (
     for (const mount of mounts) {
       if (mountEntry(mount)) execFileSync('/usr/bin/hdiutil', ['detach', '-force', mount], { stdio: 'ignore' })
     }
+    // Nor an image attached from it, mounted or not.
+    detachImagesUnder(temp)
   })
 
   it('is an lzma-compressed ULMO image', () => {
@@ -138,8 +140,12 @@ describe.skipIf(process.platform !== 'darwin')('a release DMG built on macOS', (
     writeApp(join(source, 'Agent Inbox.app'))
     const zlib = join(temp, 'zlib.dmg')
     const volume = `Agent Inbox zlib test ${process.pid}`
-    await buildImage(zlib, volume, () => hdiutil(['create', '-srcfolder', source, '-volname', volume, '-format', 'UDZO', zlib]))
-    expect(() => requireReleaseDmgFormat(zlib)).toThrow(/is UDZO, not ULMO/)
+    try {
+      await buildImage(zlib, volume, () => hdiutil(['create', '-srcfolder', source, '-volname', volume, '-format', 'UDZO', zlib]))
+      expect(() => requireReleaseDmgFormat(zlib)).toThrow(/is UDZO, not ULMO/)
+    } finally {
+      detachImagesUnder(temp)
+    }
   }, 300_000)
 
   it('installs through the in-app updater: attached read-only with its checksums verified, then detached', async () => {
@@ -228,4 +234,10 @@ describe.skipIf(process.platform !== 'darwin')('a release DMG built on macOS', (
     expect(seen.visible).toEqual(['Agent Inbox.app', 'Applications'])
     expect(mountEntry(mount)).toBeNull()
   }, 300_000)
+
+  // Last in this block: every run used to leave a write-once zlib.dmg attached
+  // without a volume, one more each time, which Finder cannot eject.
+  it('leaves no disk image of its scratch tree attached', () => {
+    expect(attachedImagesUnder(temp)).toEqual([])
+  })
 })

@@ -347,6 +347,7 @@ export function installAgentsHome(deps) {
     const selected = Boolean(last?.input.selected) && cardFor(last.input.selected) === card
     if (el.classList.contains('sel') !== selected) el.classList.toggle('sel', selected)
     if (el.classList.contains('sc-ask-only') !== Boolean(card.askOnly)) el.classList.toggle('sc-ask-only', Boolean(card.askOnly))
+    if (el.classList.contains('quiet') !== Boolean(card.quiet)) el.classList.toggle('quiet', Boolean(card.quiet))
     // written only on a change, so an unchanged paint writes nothing at all
     const label = `${card.label}: ${card.host} in ${card.project}${card.branch ? ` on ${card.branch}` : ''}`
     if (el.getAttribute('aria-label') !== label) el.setAttribute('aria-label', label)
@@ -359,7 +360,7 @@ export function installAgentsHome(deps) {
       return part
     }))
     const doing = el.querySelector('.sc-doing')
-    const text = card.historical && card.base !== 'working' && card.row && card.text !== 'No task reported yet' ? `was: ${card.text}` : card.text
+    const text = card.line
     setText(doing, text)
     doing.classList.toggle('was', card.historical)
     if (doing.title !== text) doing.title = text

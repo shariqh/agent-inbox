@@ -2583,7 +2583,7 @@ function renderDashFocus(aside, model, { forced = false } = {}) {
   const hint = aside.querySelector('.sp-hint')
   setText(hint, build?.older || build?.newer ? build.hint : '')
   setHidden(hint, !(build?.older || build?.newer))
-  const doing = card.historical && card.base !== 'working' && card.row && card.text !== 'No task reported yet' ? `was: ${card.text}` : card.text
+  const doing = card.line
   setText(aside.querySelector('.dash-focus-doing'), doing)
   const detail = typeof card.row?.detail === 'string' ? card.row.detail : ''
   setText(aside.querySelector('.dash-focus-detail'), detail)

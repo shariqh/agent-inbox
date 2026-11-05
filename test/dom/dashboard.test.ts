@@ -197,9 +197,9 @@ describe('Live Operations Desk dashboard', () => {
     expect(signal('agents')).toBe('0')
     expect(document.querySelector('[data-dashboard-signal="agents"]')?.getAttribute('aria-label')).toBe('Agents working: 0')
     expect(working()).toHaveLength(0)
-    expect(cards()[0]!.querySelector('.sc-state')?.textContent).toBe('Idle')
+    expect(cards()[0]!.querySelector('.sc-state')?.textContent).toBe('Quiet')
     // the Agents home (#454) draws it only as what the session was doing
-    expect(document.querySelector('.sc-doing')?.textContent).toBe('was: Checking the build')
+    expect(document.querySelector('.sc-doing')?.textContent).toMatch(/^Last reported: Checking the build · /)
   })
 
   it('turns on the Needs you filter from the waiting signal and lands on the Agents card (#454 A.2)', async () => {
@@ -385,7 +385,7 @@ describe('Live Operations Desk dashboard', () => {
     expect(askCount()).toBe(6)
     expect(signal('outcomes')).toBe('1')
     expect(working()).toHaveLength(0)
-    expect(cards().map((card) => card.querySelector('.sc-state')?.textContent)).toEqual(['Idle'])
+    expect(cards().map((card) => card.querySelector('.sc-state')?.textContent)).toEqual(['Quiet'])
     expect(document.querySelector('.dashboard-outcome')?.textContent).toContain('Checks completed.')
     expect(document.querySelector('.dashboard-activity-total strong')?.textContent).toBe('2m')
     expect(document.querySelector('.dash-ribbon-title')?.textContent).toBe('Last 7 days')

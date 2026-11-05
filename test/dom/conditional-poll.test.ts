@@ -171,7 +171,7 @@ describe('conditional snapshot polling', () => {
     expect(badgeCount()).toBe(1)
     expect(row(id)?.closest('details')).toBeNull()
     expect(document.querySelector('#sessionsIndicator .si-v')?.textContent).toBe('1 connected')
-    expect(document.querySelector('#sessionsIndicator .si-s')?.textContent).toBe('no task reported')
+    expect(document.querySelector('#sessionsIndicator .si-s')?.textContent).toBe('all quiet')
     expect(freshHeaders.every((header) => header === null)).toBe(true)
   })
 

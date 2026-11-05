@@ -2134,6 +2134,10 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
 .sc.tone-starting, .sc.tone-stopping { --sc-tone: var(--app-agent); }
 .sc.tone-idle, .sc.tone-dormant, .sc.tone-ended { --sc-tone: var(--app-text-soft); }
 .sc-top { display: flex; min-width: 0; align-items: center; gap: 7px; }
+/* #466: a quiet card's time is a sentence ("no Agent Inbox call for 40m"), so it takes its own line */
+.sc.quiet .sc-top { flex-wrap: wrap; row-gap: 2px; }
+.sc.quiet .sc-when { flex-basis: 100%; }
+.sc.quiet .sc-when::before { content: none; }
 .sc-dot { position: relative; width: 8px; height: 8px; flex: none; border-radius: 50%; background: var(--sc-tone, var(--app-text-soft)); }
 .sc.tone-idle .sc-dot, .sc.tone-dormant .sc-dot, .sc.tone-ended .sc-dot { border: 1.5px solid var(--app-text-soft); background: transparent; }
 .sc.pulse .sc-dot::after { position: absolute; inset: 0; border-radius: 50%; background: var(--sc-tone); content: ""; opacity: 0; animation: dash-lane-pulse var(--motion-slow) var(--motion-ease-out) 1; }

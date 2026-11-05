@@ -217,13 +217,11 @@ them separate.
     "Task not reported", "last tool <1m"; after `Stop`, Idle "waiting for you".
   - Copilot: the same after PR 3, plus a `ps` check that the hook's parent is the `copilot` process.
 
-## 8. Open questions for the owner
+## 8. Decisions (owner, 2026-11-05)
 
-1. **Does unreported work count as Working** (the filter, the Sessions line) with "Task not
-   reported" text? *Recommended: yes.* The alternative is a separate "Busy" state, which would add a
-   sixth filter.
-2. **Should Copilot CLI get an opt-in hooks file** (`~/.copilot/hooks/agent-inbox.json`), installed
-   like Claude's hooks? *Recommended: yes.* Without it, Copilot sessions stay at option A.
-3. **Should Copilot record tool stamps** (`postToolUse`, about 50 ms per tool call, synchronous), or
-   only turn and idle stamps? *Recommended: include them, throttled, with a switch to turn them off.*
-4. **Ship PR 1 (honest labels) now, in 2.4.x, before any hook work?** *Recommended: yes.*
+The owner approved all four recommendations:
+
+1. **Unreported work counts as Working** (in the filter and the Sessions line), with "Task not reported" text. There is no separate Busy state.
+2. **Copilot CLI gets an opt-in hooks file** (`~/.copilot/hooks/agent-inbox.json`), installed like Claude's hooks.
+3. **Copilot records tool stamps** (`postToolUse`), at most one write every 30 s, with a switch to turn them off.
+4. **PR 1 (honest labels) ships first**, in 2.4.x, before any hook work.

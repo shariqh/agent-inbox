@@ -61,6 +61,9 @@ export interface AgentsHomeDeps {
   afterRepaint?: () => void
 }
 
+/** moves `node` with `move()`, giving back the focus (and a text control's selection) it held, in a focused window */
+export function moveKeepingFocus(node: Element, move: () => void): void
+
 export function installAgentsHome(deps: AgentsHomeDeps): {
   /** the Agents home card, made once; renderDashboard mounts it in the Dashboard grid */
   element(): HTMLElement

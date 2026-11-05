@@ -98,7 +98,8 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   Dashboard with the Agents home's heading focused, and each re-reads `/api/version`.
   Under 1280px the compact masthead keeps the tabs alone on its first row (scrolling in
   their own cell when they do not fit) and puts the line on the selectors' row as a chip
-  ("● 2 working", its G L tile kept) beside Settings; under 620px the chip and Settings
+  ("● 2 working", its G L tile kept) beside Settings, with a CSS-only shade at the tab
+  row's end while more tabs wait past it; under 620px the chip and Settings
   share the brand's row, and under 440px the chip is its dot. It never covers a tab.
 - The Today ribbon, Just landed and "Since you last looked" (#305) replaced the
   activity bar chart and Recent outcomes with no new read. `buildRibbon`
@@ -210,7 +211,10 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   never found by a selector; agents-home moves it out (`release`) before it removes a
   group or closes a fold, its own repaints call back into `placeFocusPanel`
   (`afterRepaint`), and a panel left disconnected or inside a hidden or closed ancestor
-  always goes home (#463 review). `test/dom/agents-asks.test.ts` pins the DOM half.
+  always goes home (#463 review). Every such move goes through `moveKeepingFocus`
+  (`agents-home.js`), which gives back the focus and a text control's selection the panel
+  held, in a focused window only, and agents-home sends focus to its heading only when it
+  was really lost. `test/dom/agents-asks.test.ts` pins the DOM half.
 - **`sortRail` only reorders, and the Dashboard reads only the one predicate (#303, D2,
   D3, D8; the rail it fed retired by #454's PR 6).** `buildDashboard`'s `waitingEntries`
   IS `attentionEntries` under the Dashboard's lens (`relay.human`), so the session cards,

@@ -2657,7 +2657,11 @@ body.sidebar-collapsed .gear[data-shortcut]::after { display: none; }
     padding: 0;
     border: 0;
     border-radius: 0;
-    background: transparent;
+    /* a shade at the end while more tabs wait past it, and none once scrolled there (no JS:
+       the cover scrolls with the tabs, the shade stays at the edge) */
+    background:
+      linear-gradient(to left, var(--app-elevated) 45%, transparent) right center / 28px 100% no-repeat local,
+      linear-gradient(to left, color-mix(in srgb, var(--app-text) 16%, transparent), transparent) right center / 14px 100% no-repeat scroll;
   }
   #tabs .tab { flex: 0 0 auto; width: auto; padding: 6px 9px; border: 1px solid transparent; border-radius: 9px; }
   #tabs .tab[aria-selected="true"] { border-color: var(--app-border); background: var(--app-soft); box-shadow: none; }

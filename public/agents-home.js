@@ -24,6 +24,26 @@ const askId = (entry) => (entry?.kind === 'row' ? entry.row?.id : entry?.item?.i
 const EMPTY = 'No sessions yet. A Claude Code or Copilot session appears here once Agent Inbox’s MCP server starts in it.'
 
 /** @param {import('./agents-home.js').AgentsHomeDeps} deps (agents-home.d.ts) */
+/**
+ * Moves a node with `move()`, keeping focus held inside it: moving a focused
+ * node drops its focus, so the focused element (and a text control's caret
+ * and selection) come back after, only in a window that has focus (#463 review).
+ * @param {Element} node @param {() => void} move
+ */
+export function moveKeepingFocus(node, move) {
+  const doc = node.ownerDocument
+  const active = doc.activeElement
+  const held = active && active !== node.ownerDocument.body && node.contains(active) ? active : null
+  let range = null
+  try {
+    if (held && typeof held.selectionStart === 'number') range = [held.selectionStart, held.selectionEnd, held.selectionDirection]
+  } catch { range = null }
+  move()
+  if (!held?.isConnected || doc.activeElement === held || !doc.hasFocus?.()) return
+  held.focus({ preventScroll: true })
+  if (range) held.setSelectionRange(...range)
+}
+
 export function installAgentsHome(deps) {
   const doc = deps.doc ?? globalThis.document
   // Window-local view state, never persisted and read by no attention surface:
@@ -62,7 +82,9 @@ export function installAgentsHome(deps) {
   // (app.js placeFocusPanel): before that grid is removed or folded away, the
   // panel steps out after the section, so it is never cut off with it.
   const release = (el) => {
-    for (const child of el.querySelectorAll('.ah-cards > :not([data-session-card])')) mounted?.after(child)
+    for (const child of el.querySelectorAll('.ah-cards > :not([data-session-card])')) {
+      if (mounted) moveKeepingFocus(child, () => mounted.after(child))
+    }
   }
   const focusKeyIn = (el) => (el.contains(doc.activeElement) ? doc.activeElement?.closest?.('[data-dashboard-focus-key]')?.dataset.dashboardFocusKey ?? null : null)
   const refocus = (root, key) => {
@@ -584,7 +606,9 @@ export function installAgentsHome(deps) {
       const tab = el.dataset.sessionCard === roving ? 0 : -1
       if (el.tabIndex !== tab) el.tabIndex = tab
     }
-    if (hadFocus && !section.contains(doc.activeElement)) section.querySelector('#agentsHomeTitle')?.focus({ preventScroll: true })
+    // only focus that was lost (a removed card's control): focus the panel kept as it stepped out stays put
+    const lost = !doc.activeElement || doc.activeElement === doc.body
+    if (hadFocus && lost) section.querySelector('#agentsHomeTitle')?.focus({ preventScroll: true })
     for (const [id, el] of cardEls) if (!byId.has(id) || !el.isConnected) cardEls.delete(id)
   }
 

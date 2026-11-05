@@ -41,7 +41,7 @@ import { cardLinks } from '/link-strip.js'
 import { fileLinksCopy, initLinkOpening, linkFileActions, refreshLinkPermission } from '/link-open.js'
 import { refreshLinkSettings, renderLinkSettings } from '/link-settings.js'
 import { createLaunchUi } from '/launch-ui.js'
-import { installAgentsHome } from '/agents-home.js'
+import { installAgentsHome, moveKeepingFocus } from '/agents-home.js'
 import { SHELL_WARNING } from '/launches.js'
 import { refreshLaunchSettings, renderLaunchSettings } from '/launch-settings.js'
 import { boardRowsView, boardRowLine, progressLabel, hiddenDoneCount, lingeringBoards, omittedOutcomes } from '/boards.js'
@@ -2672,7 +2672,8 @@ function placeFocusPanel(aside = focusPanelEl) {
   const anchor = row.at(-1) ?? home
   if (aside.previousElementSibling === anchor) return
   if (!outOfSight(aside) && !aside.hidden && aside.contains(document.activeElement)) return
-  anchor.after(aside)
+  // a forced re-home keeps the focus (and caret) it held
+  moveKeepingFocus(aside, () => anchor.after(aside))
 }
 narrowPanel.addEventListener?.('change', () => placeFocusPanel())
 

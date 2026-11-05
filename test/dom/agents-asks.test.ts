@@ -604,11 +604,38 @@ describe('the Dashboard without the rail (#454 PR 6)', () => {
       await opensAgain('session:two')
     })
 
+    // #463 re-check: the move keeps the focus and caret it held, and paint() sends nothing to the heading
+    it('keeps the answer being typed, caret and all, when the Needs you filter drops its card’s group', async () => {
+      db = freshDb()
+      live(db, 'one', { project: 'beta', doing: 'Asking in beta' })
+      const ask = question(db, 'Which day?', { project: 'beta', session: 'one' })
+      live(db, 'two', { doing: 'Asking in alpha' })
+      question(db, 'Pick one', { session: 'two' })
+      setViewport(760)
+      await bootApp(db)
+      vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+      click(document.querySelector('[data-dashboard-signal="waiting"]'))
+      await settle()
+      await answerOn('session:one')
+      const input = editor(ask)!
+      input.focus()
+      type(input, 'Thursday after the backup')
+      input.setSelectionRange(3, 8)
+      // the agent closes the ask: the card leaves the filter, and its group goes
+      resolveItem(db, ask, 'Settled in chat.')
+      await pollTick()
+      expect(card('session:one')).toBeNull()
+      inSight()
+      expect(document.activeElement).toBe(input)
+      expect([input.selectionStart, input.selectionEnd]).toEqual([3, 8])
+      expect(document.activeElement).not.toBe(document.getElementById('agentsHomeTitle'))
+    })
+
     it('when the fold it opened in closes', async () => {
       db = freshDb()
-      live(db, 'old', { doing: 'Long gone' })
+      live(db, 'old', { doing: 'Long gone', receives_messages: true })
       recordActivityCall(db, 'old')
-      live(db, 'old', { doing: 'open', idle: true })
+      live(db, 'old', { doing: 'open', idle: true, receives_messages: true })
       advanceClock(9 * 60 * 60 * 1000)
       live(db, 'two', { doing: 'Asking' })
       recordActivityCall(db, 'two')
@@ -618,13 +645,20 @@ describe('the Dashboard without the rail (#454 PR 6)', () => {
       const fold = document.querySelector<HTMLDetailsElement>('.agents-home [data-ah-fold="dormant"]')!
       fold.open = true
       fold.dispatchEvent(new Event('toggle'))
+      vi.spyOn(document, 'hasFocus').mockReturnValue(true)
       click(card('session:old')?.querySelector('.sc-doing'))
       await settle()
       expect(fold.contains(panel())).toBe(true)
+      const message = panel().querySelector<HTMLTextAreaElement>('.dash-focus-message textarea')!
+      message.focus()
+      type(message, 'hello there')
+      message.setSelectionRange(5, 5)
       fold.open = false
       fold.dispatchEvent(new Event('toggle'))
       expect(fold.contains(panel())).toBe(false)
       inSight()
+      expect(document.activeElement).toBe(message)
+      expect([message.selectionStart, message.selectionEnd]).toEqual([5, 5])
       await opensAgain('session:two')
     })
   })

@@ -37,6 +37,9 @@ describe('the launch spec (§8)', () => {
     expect(parseLaunchSpec(JSON.stringify({ v: 1, kind: 'resume', launchId: ID, env: {}, launchKey: KEY, maxDrivers: 8 }), ID)).toMatchObject({ ok: true, spec: { maxDrivers: 8 } })
     expect(parseLaunchSpec(JSON.stringify({ v: 1, kind: 'resume', launchId: ID, env: {}, launchKey: KEY }), ID))
       .toEqual({ ok: true, spec: { v: 1, kind: 'resume', launchId: ID, env: {}, launchKey: LAUNCH_KEY } })
+    // #451: a resume with more budget, bound to the row revision main's confirmation read
+    const raise = { revision: 7, activeMs: 0, toolCalls: LAUNCH_BUDGETS.toolCalls.max }
+    expect(parseLaunchSpec(JSON.stringify({ v: 1, kind: 'resume', launchId: ID, env: {}, launchKey: KEY, raise }), ID)).toMatchObject({ ok: true, spec: { raise } })
   })
 
   it.each([
@@ -63,6 +66,14 @@ describe('the launch spec (§8)', () => {
     ['a cap of none', spec({ maxDrivers: 0 }), /maxDrivers must be 1 to 8/],
     ['a cap above 8', spec({ maxDrivers: 9 }), /maxDrivers must be 1 to 8/],
     ['a cap that is not a whole number', spec({ maxDrivers: 2.5 }), /maxDrivers must be 1 to 8/],
+    ...([
+      ['nothing', { revision: 1, activeMs: 0, toolCalls: 0 }, /raise is out of bounds/],
+      ['more than a launch may have', { revision: 1, activeMs: LAUNCH_BUDGETS.activeMs.max + 1, toolCalls: 0 }, /raise is out of bounds/],
+      ['less', { revision: 1, activeMs: 60_000, toolCalls: -1 }, /raise is out of bounds/],
+      ['no revision', { activeMs: 60_000, toolCalls: 1 }, /raise must hold/],
+      ['totals of its own', { revision: 1, activeMs: 60_000, toolCalls: 1, total: 9 }, /raise must hold/],
+    ] as const).map(([what, raise, error]) => [`a raise of ${what} (#451)`, JSON.stringify({ v: 1, kind: 'resume', launchId: ID, env: {}, launchKey: KEY, raise }), error]),
+    ['a new spec with a raise', spec({ raise: { revision: 1, activeMs: 60_000, toolCalls: 1 } }), /unknown field raise/],
     ['a resume that names facts', JSON.stringify({ v: 1, kind: 'resume', launchId: ID, env: {}, launchKey: KEY, mode: 'ask' }), /unknown field mode/],
   ] as Array<[string, string, RegExp, string?]>)('refuses %s', (_, text, error, launchId = ID) => {
     const parsed = parseLaunchSpec(text, launchId)

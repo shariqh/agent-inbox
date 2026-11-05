@@ -1096,9 +1096,11 @@ adds the small, design-consistent part:
   `allow_all` verified and every open message pushed again. A refused start puts it back as it was:
   parked, or stopped with its original end, and gives back the worktree lock it took. Its worktree,
   unlocked at the end, is locked again while it runs.
-- **Not resumable:** a launch handed off to a terminal, lost, failed (`error:*`), whose Copilot exited,
-  and one ended by a budget. Budgets are per-launch totals (§7), so resuming a budget-ended launch
-  needs a new allowance and its own confirmation: left for a follow-up.
+- **Not resumable:** a launch handed off to a terminal, lost, failed (`error:*`) or whose Copilot exited.
+  Budgets are per-launch totals (§7), so a budget-ended launch needs a new allowance and its own
+  confirmation: #451 adds **Resume with more budget…**. Main's native dialog shows the budgets, what was
+  used, the allowance and the new totals; the resume spec's `raise` binds that allowance to the row
+  revision the dialog read, and the driver's conditioned resume adds exactly it to the budget columns.
 - **Take over in Terminal** is offered for such a stopped launch too.
 - **Earlier sessions.** The drawer lists the five newest ended launches (and every kept worktree); an
   **Earlier sessions (N)** button lists the rest `/api/launches` already carries (at most 50), so their

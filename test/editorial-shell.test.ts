@@ -137,21 +137,28 @@ describe('the editorial desk shell', () => {
     expect(html).toContain('id="projectDisclosureToggle"')
     expect(masthead).toMatch(/\.app-shell\s*\{[^}]*container:\s*compact-masthead\s*\/\s*inline-size/s)
     expect(masthead).not.toMatch(/\.sidebar-shell\s*\{[^}]*container:\s*compact-masthead/s)
-    expect(compact).toMatch(/\.sidebar-shell\s*\{[^}]*grid-template-columns:\s*auto minmax\(0,\s*1fr\) minmax\(180px,\s*240px\) minmax\(130px,\s*180px\) auto[^}]*grid-template-rows:\s*auto/s)
-    expect(compact).toMatch(/#tabs\s*\{[^}]*grid-column:\s*2[^}]*width:\s*max-content/s)
+    // #454: two rows: the tabs alone on the first (scrolling in their own cell), and the
+    // selectors, the Sessions chip and Settings on the second, so nothing lands over a tab
+    expect(compact).toMatch(/\.sidebar-shell\s*\{[^}]*grid-template-columns:\s*auto minmax\(0,\s*1fr\) minmax\(130px,\s*180px\) auto auto[^}]*grid-template-rows:\s*auto auto/s)
+    expect(compact).toMatch(/#tabs\s*\{[^}]*grid-column:\s*2 \/ -1[^}]*grid-row:\s*1[^}]*width:\s*max-content[^}]*overflow-x:\s*auto/s)
+    expect(compact).toMatch(/\.sessions-indicator\s*\{[^}]*grid-column:\s*4[^}]*grid-row:\s*2[^}]*border-radius:\s*999px/s)
+    expect(compact).toMatch(/\.gear\s*\{[^}]*grid-column:\s*5[^}]*grid-row:\s*2/s)
+    // the chip keeps its G L tile after the count; the word goes
+    expect(compact).toMatch(/\.sessions-indicator \.si-k\[data-shortcut\]\s*\{[^}]*font-size:\s*0/s)
     expect(masthead).toMatch(/\.sidebar-section-label\s*\{[^}]*display:\s*none/s)
-    expect(masthead).toMatch(/\.sidebar-shell \.project-disclosure\s*\{[^}]*position:\s*relative[^}]*display:\s*block[^}]*grid-column:\s*3[^}]*grid-row:\s*1/s)
-    expect(masthead).toMatch(/\.sidebar-shell \.agent-pick\s*\{[^}]*grid-column:\s*4[^}]*grid-row:\s*1/s)
+    expect(masthead).toMatch(/\.sidebar-shell \.project-disclosure\s*\{[^}]*position:\s*relative[^}]*display:\s*block[^}]*grid-column:\s*1 \/ 3[^}]*grid-row:\s*2/s)
+    expect(masthead).toMatch(/\.sidebar-shell \.agent-pick\s*\{[^}]*grid-column:\s*3[^}]*grid-row:\s*2/s)
     expect(masthead).toMatch(/\.sidebar-shell \.project-disclosure-toggle\s*\{[^}]*display:\s*flex/s)
     expect(masthead).toMatch(/#projectDisclosure #rail\s*\{[^}]*position:\s*absolute[^}]*display:\s*none[^}]*flex-direction:\s*column[^}]*overflow-y:\s*auto[^}]*overscroll-behavior-y:\s*contain/s)
     expect(masthead).toMatch(/#projectDisclosure\[data-open="true"\] #rail\s*\{[^}]*display:\s*flex/s)
     expect(masthead).not.toMatch(/#rail\s*\{[^}]*overflow-x:\s*auto/s)
     expect(compact).toMatch(/#projectDisclosure #rail \.rail-name\s*\{[^}]*text-overflow:\s*ellipsis/s)
-    expect(compact).toMatch(/@container compact-masthead \(max-width:\s*900px\)[\s\S]*\.sidebar-shell \.project-disclosure\s*\{[^}]*grid-column:\s*1\s*\/\s*3[^}]*grid-row:\s*2[\s\S]*\.sidebar-shell \.agent-pick\s*\{[^}]*grid-column:\s*3\s*\/\s*5[^}]*grid-row:\s*2/s)
+    // under 620px the chip and Settings share the brand's row
+    expect(compact).toMatch(/@container compact-masthead \(max-width:\s*620px\)[\s\S]*\.sessions-indicator\s*\{[^}]*grid-column:\s*2;[^}]*grid-row:\s*1/s)
     expect(compact).toMatch(/@container compact-masthead \(max-width:\s*620px\)[\s\S]*#tabs\s*\{[^}]*display:\s*flex[^}]*grid-column:\s*1\s*\/\s*-1[^}]*grid-row:\s*2[^}]*overflow-x:\s*auto/s)
     expect(compact).toMatch(/@container compact-masthead \(max-width:\s*620px\)[\s\S]*#tabs \.tab-count\s*\{[^}]*display:\s*inline-block/s)
     expect(compact).toMatch(/@container compact-masthead \(max-width:\s*620px\)[\s\S]*\.sidebar-shell \.project-disclosure\s*\{[^}]*grid-column:\s*1[^}]*grid-row:\s*3[\s\S]*\.sidebar-shell \.agent-pick\s*\{[^}]*grid-column:\s*2[^}]*grid-row:\s*3/s)
-    expect(compact).toMatch(/@container compact-masthead \(max-width:\s*440px\)[\s\S]*\.sidebar-shell\s*\{[^}]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)[^}]*grid-template-rows:\s*auto auto auto[\s\S]*\.sidebar-shell \.project-disclosure\s*\{[^}]*grid-column:\s*1[^}]*grid-row:\s*3[\s\S]*\.sidebar-shell \.agent-pick\s*\{[^}]*grid-column:\s*2[^}]*grid-row:\s*3/s)
+    expect(compact).toMatch(/@container compact-masthead \(max-width:\s*440px\)[\s\S]*\.sidebar-shell\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\) auto auto[^}]*grid-template-rows:\s*auto auto auto[\s\S]*\.sidebar-shell \.project-disclosure\s*\{[^}]*grid-column:\s*1[^}]*grid-row:\s*3[\s\S]*\.sidebar-shell \.agent-pick\s*\{[^}]*grid-column:\s*2[^}]*grid-row:\s*3/s)
   })
 
   it('collapses the wide sidebar into an icon rail without changing compact mastheads', () => {

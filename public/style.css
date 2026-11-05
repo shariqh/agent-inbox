@@ -1935,6 +1935,11 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
 .sp-resume h3 { margin: 0; color: var(--app-muted); font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
 .sp-resume-input { width: 100%; min-height: 52px; box-sizing: border-box; resize: vertical; padding: 8px 10px; border: 1px solid var(--app-border-strong); border-radius: 8px; background: var(--app-surface); color: var(--app-text); font: inherit; font-size: 12.5px; }
 .sp-resume-actions { display: flex; justify-content: flex-end; }
+/* #451: Resume with more budget…: the allowance main confirms in its own dialog */
+.sp-resume-budget { display: flex; flex-wrap: wrap; align-items: end; gap: 6px 14px; margin-bottom: 6px; }
+.sp-resume-budget-note { flex-basis: 100%; margin: 0; color: var(--app-muted); font-size: 12px; }
+.sp-resume-budget-field { display: grid; gap: 3px; color: var(--app-muted); font-size: 11.5px; }
+.sp-resume-budget-field input { width: 96px; box-sizing: border-box; padding: 5px 8px; border: 1px solid var(--app-border-strong); border-radius: 6px; background: var(--app-surface); color: var(--app-text); font: inherit; font-size: 12.5px; }
 .dash-focus-head { display: flex; align-items: center; gap: 8px; }
 .dash-focus-head h2 { min-width: 0; flex: 1; margin: 0; overflow: hidden; font-size: 16px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
 #dashFocusTitle:focus { outline: none; } /* a landing heading, not a control */

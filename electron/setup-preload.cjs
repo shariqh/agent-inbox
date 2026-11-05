@@ -247,6 +247,11 @@ contextBridge.exposeInMainWorld('agentInboxLaunch', {
     if (args.length !== 1 || !isLaunchId(args[0])) return Promise.resolve({ ok: false, error: 'invalid' })
     return launchCall('agent-inbox:launch-resume', args[0])
   },
+  // #451: Resume with more budget…; main confirms the allowance in its own dialog
+  resumeWithBudget(...args) {
+    if (args.length !== 1 || !isPlainObject(args[0])) return Promise.resolve({ ok: false, error: 'invalid' })
+    return launchCall('agent-inbox:launch-resume-with-budget', args[0])
+  },
   approve(...args) {
     if (args.length !== 1 || !isPlainObject(args[0])) return Promise.resolve({ ok: false, error: 'invalid' })
     return launchCall('agent-inbox:launch-approve', args[0])

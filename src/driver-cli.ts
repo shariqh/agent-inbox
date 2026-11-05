@@ -509,6 +509,7 @@ async function runLaunch(argv: string[]): Promise<void> {
   let loading: string | null = null
   // step 5: git's refusal to lock a resumed stopped launch's worktree again, logged once the event log is open
   let relockFailed: string | null = null
+  let raised: { from: { activeMs: number; toolCalls: number }; to: { activeMs: number; toolCalls: number } } | null = null
   if (spec.kind === 'new') {
     let cwd: string
     try {
@@ -563,11 +564,23 @@ async function runLaunch(argv: string[]): Promise<void> {
       for (const dir of ['launches', 'drivers']) rmSync(join(hubDir, dir, old), { recursive: true, force: true })
     }
   } else {
-    const row = resumeLaunch(db, launchId, process.pid)
-    if (!row) return refuse(`launch ${launchId} is not parked or stopped with its session`)
+    const row = resumeLaunch(db, launchId, process.pid, spec.raise)
+    if (!row) {
+      return refuse(spec.raise
+        ? 'The session changed since you confirmed its budget, so nothing was added. Try again.'
+        : `launch ${launchId} is not parked or stopped with its session`)
+    }
+    // #451: the totals main's confirmation raised, logged once the event log is open
+    if (spec.raise && row.previous) {
+      raised = {
+        from: { activeMs: row.previous.budget_active_ms, toolCalls: row.previous.budget_tool_calls },
+        to: { activeMs: row.budget_active_ms, toolCalls: row.budget_tool_calls },
+      }
+    }
     // the lock this resume took on a stopped launch's worktree, given back if the start is refused
     let relocked: { git: string; checkout: string; path: string } | null = null
-    // a refused start puts it back as it was: parked, or stopped exactly as before (step 5, full resume)
+    // a refused start puts it back as it was: parked, or ended exactly as before (step 5, full resume),
+    // with #451's raised budgets taken back
     const previous = row.previous
     undoRow = previous === null
       ? () => { parkLaunch(db, launchId, { acpSession: row.acp_session, activeMs: row.active_ms, toolCalls: row.tool_calls }) }
@@ -665,6 +678,7 @@ async function runLaunch(argv: string[]): Promise<void> {
   mark('checks')
   let session = spawnCopilot(facts.reasoningEffort)
   if (relockFailed) log({ event: 'worktree_lock_failed', message: relockFailed })
+  if (raised) log({ event: 'budget_raised', ...raised })
   if (created) {
     log({ event: 'worktree', path: created.path, branch: created.branch, checkout: created.checkout, base: created.baseSha })
     // uncommitted and untracked changes stayed in the checkout (§2)

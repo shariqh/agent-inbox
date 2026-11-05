@@ -771,6 +771,35 @@ describe('agent-inbox-driver run (#412 step 3)', () => {
     expect(getLaunch(r.hub, LAUNCH)).toMatchObject({ status: 'ended', end_reason: 'budget:tool_calls', tool_calls: 3 })
   }, 40_000)
 
+  it('#451: resumes a budget-ended launch only with a raise at the confirmed revision, its totals up by exactly that, and loads its session', async () => {
+    const r = rig()
+    const first = runDriver(r, newSpec(r, { budgets: { activeMs: 7_200_000, toolCalls: 2 }, env: { ...r.env, FAKE_TOOLS: '2' } }))
+    expect(await first.status()).toEqual({ ok: true, launch: LAUNCH })
+    expect(await first.exited).toBe(1)
+    const ended = getLaunch(r.hub, LAUNCH)!
+    expect(ended).toMatchObject({ status: 'ended', end_reason: 'budget:tool_calls', tool_calls: 2, budget_tool_calls: 2 })
+    expect(ended.acp_session).not.toBeNull()
+    const resume = (raise?: Record<string, number>) => runDriver(r, {
+      v: 1, kind: 'resume', launchId: LAUNCH, env: r.env, launchKey: LAUNCH_KEY.toString('base64'), ...(raise ? { raise } : {}),
+    })
+    // without a raise, or at a revision the human did not see, nothing starts and nothing is added
+    const plain = resume()
+    expect(await plain.status()).toEqual({ ok: false, error: `launch ${LAUNCH} is not parked or stopped with its session` })
+    const stale = resume({ revision: ended.revision - 1, activeMs: 0, toolCalls: 5 })
+    expect(await stale.status()).toEqual({ ok: false, error: 'The session changed since you confirmed its budget, so nothing was added. Try again.' })
+    expect(getLaunch(r.hub, LAUNCH)).toMatchObject({ status: 'ended', budget_tool_calls: 2, budget_active_ms: 7_200_000, revision: ended.revision })
+    const loads = received(r).filter((m) => m.method === 'session/load').length
+    const raised = resume({ revision: ended.revision, activeMs: 60_000, toolCalls: 5 })
+    expect(await raised.status()).toEqual({ ok: true, launch: LAUNCH })
+    expect(getLaunch(r.hub, LAUNCH)).toMatchObject({ status: 'running', end_reason: null, budget_tool_calls: 7, budget_active_ms: 7_260_000, tool_calls: 2 })
+    expect(received(r).filter((m) => m.method === 'session/load')).toHaveLength(loads + 1)
+    expect(readFileSync(join(r.dir, 'hub', 'launches', LAUNCH, 'events.ndjson'), 'utf8'))
+      .toContain('"event":"budget_raised","from":{"activeMs":7200000,"toolCalls":2},"to":{"activeMs":7260000,"toolCalls":7}')
+    requestLaunchStop(r.hub, LAUNCH)
+    expect(await raised.exited).toBe(0)
+    expect(getLaunch(r.hub, LAUNCH)).toMatchObject({ status: 'ended', end_reason: 'stopped', budget_tool_calls: 7 })
+  }, 40_000)
+
   it('a resume of a launch that already used its tool-call budget ends it at once without starting copilot', async () => {
     const r = rig()
     const first = runDriver(r, newSpec(r, { budgets: { activeMs: 7_200_000, toolCalls: 3 }, env: { ...r.env, FAKE_TOOLS: '2' } }), { AGENT_INBOX_DRIVER_IDLE_MS: '400' })

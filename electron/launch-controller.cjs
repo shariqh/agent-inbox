@@ -95,6 +95,16 @@ function launchRequest(value) {
   }
 }
 
+/** #451: the renderer's Resume with more budget… request, checked exactly, or null: the allowance in whole minutes. */
+function budgetRequest(value) {
+  if (!isRecord(value) || !exactKeys(value, ['id', 'add']) || typeof value.id !== 'string' || !LAUNCH_ID.test(value.id)) return null
+  if (!isRecord(value.add) || !exactKeys(value.add, ['activeMs', 'toolCalls'])) return null
+  const { activeMs, toolCalls } = value.add
+  if (!inBounds(activeMs, { min: 0, max: BUDGETS.activeMs.max }) || activeMs % 60_000 !== 0) return null
+  if (!inBounds(toolCalls, { min: 0, max: BUDGETS.toolCalls.max }) || activeMs + toolCalls === 0) return null
+  return { id: value.id, add: { activeMs, toolCalls } }
+}
+
 /** The renderer's approval, checked exactly, or null. */
 function approvalRequest(value) {
   if (!isRecord(value) || !exactKeys(value, ['item', 'revision', 'optionId'])) return null
@@ -202,6 +212,31 @@ function removalConfirmation({ project, path: folder, branch, missing, dirty, ah
   }
 }
 
+const calls = (n) => plural(n, 'tool call', 'tool calls')
+
+/**
+ * #451: Resume with more budget…'s own confirmation: the launch's budgets, what it used, the
+ * allowance and the totals it makes, from the row main read (`launch`), never the page's numbers.
+ */
+function budgetConfirmation({ launch, folder, add }) {
+  const which = launch.end_reason === 'budget:tool_calls' ? 'tool-call' : 'active-time'
+  const line = (label, ms, n) => `${label}: ${duration(ms)} of active turn time and ${calls(n)}.`
+  return {
+    message: `Resume the session of ${displayLine(launch.project)} with more budget?`,
+    detail: [
+      `Folder: ${displayLine(folder)}`,
+      `It ended when it used its ${which} budget. Its session is kept.`,
+      line('Budgets', launch.budget_active_ms, launch.budget_tool_calls),
+      line('Used', launch.active_ms, launch.tool_calls),
+      `Add: ${duration(add.activeMs)} and ${calls(add.toolCalls)}.`,
+      line('New budgets', launch.budget_active_ms + add.activeMs, launch.budget_tool_calls + add.toolCalls),
+      `Mode: ${MODES[launch.mode]?.label ?? displayLine(launch.mode)}.`,
+      'Once any shell command is allowed, the session can run anything, in its folder and beyond. Answer each approval with that in mind.',
+    ].join('\n'),
+    buttons: ['Resume', 'Cancel'],
+  }
+}
+
 // Take over in Terminal (step 5, §3.5): what main shows before the launch leaves Agent Inbox for
 // good. `state` is what the launch is now: running (its turn is cancelled), parked, or already handed
 // off (Terminal is opened on it again).
@@ -261,6 +296,13 @@ const sleep = (ms, value) => new Promise((resolve) => setTimeout(() => resolve(v
 // worktree (if any) still on disk, resumes as a parked one does. The store checks the same again.
 const stoppedWithSession = (launch) => launch.status === 'ended' && launch.end_reason === 'stopped' && launch.resumable === true
   && !(typeof launch.worktree_path === 'string' && launch.worktree_removed_at)
+// #451: one a budget ended, likewise kept, with the numbers its confirmation shows
+const budgetEnded = (launch) => launch.status === 'ended' && /^budget:(active_time|tool_calls)$/.test(launch.end_reason) && launch.resumable === true
+  && !(typeof launch.worktree_path === 'string' && launch.worktree_removed_at)
+  && ['revision', 'budget_active_ms', 'budget_tool_calls', 'active_ms', 'tool_calls'].every((key) => Number.isSafeInteger(launch[key]) && launch[key] >= 0)
+const folderGone = (launch) => refused(typeof launch.branch === 'string' && launch.branch
+  ? `The session’s folder does not exist any more. Its branch ${launch.branch} is still in your repository.`
+  : 'The session’s folder does not exist any more.')
 
 /**
  * The launches to name in the quit prompt (§7). A start already past the gate
@@ -514,11 +556,7 @@ function createLaunchController(deps) {
           return refused('This session cannot be resumed: only a parked session, or one you stopped after its task was sent, can be.')
         }
         const real = realDirectory(launch.cwd)
-        if (!real) {
-          return refused(typeof launch.branch === 'string' && launch.branch
-            ? `The session’s folder does not exist any more. Its branch ${launch.branch} is still in your repository.`
-            : 'The session’s folder does not exist any more.')
-        }
+        if (!real) return folderGone(launch)
         const found = runtimeOrRefusal()
         if (!found.runtime) return found
         // the launch read was an await: a quit or the switch may have changed since
@@ -527,6 +565,35 @@ function createLaunchController(deps) {
         const ready = await environment(real)
         if (!ready.env) return ready
         return spawnDriver(id, { v: 1, kind: 'resume', launchId: id, env: ready.env })
+      })
+    },
+
+    // #451: a launch a budget ended resumes only after main's own confirmation of the allowance, never
+    // automatically. The spec binds it to the row revision that confirmation read, so the driver adds
+    // exactly that allowance, once, and refuses a launch that changed since.
+    resumeWithBudget(value) {
+      const why = blocked()
+      if (why) return Promise.resolve(why)
+      const request = budgetRequest(value)
+      if (!request) return Promise.resolve(refused('The budget to add is not valid.'))
+      return guarded(async () => {
+        const { id, add } = request
+        const launch = await viewer.getJson(`/api/launches/${id}`)
+        if (!launch || !budgetEnded(launch)) {
+          return refused('This session cannot be resumed with more budget: only one that used its budget, with its session kept, can be.')
+        }
+        if (launch.budget_active_ms + add.activeMs <= launch.active_ms) return refused(`Add active time: it has used ${duration(launch.active_ms)} of it.`)
+        if (launch.budget_tool_calls + add.toolCalls <= launch.tool_calls) return refused(`Add tool calls: it has used ${calls(launch.tool_calls)}.`)
+        const real = realDirectory(launch.cwd)
+        if (!real) return folderGone(launch)
+        const found = runtimeOrRefusal()
+        if (!found.runtime) return found
+        if (!(await confirm(budgetConfirmation({ launch, folder: real, add })))) return refused('Not resumed.', { cancelled: true })
+        const late = blocked()
+        if (late) return late
+        const ready = await environment(real)
+        if (!ready.env) return ready
+        return spawnDriver(id, { v: 1, kind: 'resume', launchId: id, env: ready.env, raise: { revision: launch.revision, ...add } })
       })
     },
 
@@ -821,6 +888,6 @@ function createLaunchController(deps) {
 }
 
 module.exports = {
-  MODES, approvalRequest, confirmation, createLaunchController, displayLine, removalConfirmation, displaySafe, launchEnv, launchRequest, quitChoice, runningAtQuit,
+  MODES, approvalRequest, budgetConfirmation, budgetRequest, confirmation, createLaunchController, displayLine, removalConfirmation, displaySafe, launchEnv, launchRequest, quitChoice, runningAtQuit,
   takeOverConfirmation, takeOverScript,
 }

@@ -53,6 +53,11 @@ export interface NewLaunchSpec extends SpecCommon {
 
 export interface ResumeLaunchSpec extends SpecCommon {
   kind: 'resume'
+  /**
+   * #451: resume a budget-ended launch, its totals raised by exactly what main's confirmation
+   * showed, bound to the row revision it read. An older driver refuses the field (exit 65).
+   */
+  raise?: { revision: number; activeMs: number; toolCalls: number }
 }
 
 export type LaunchSpec = NewLaunchSpec | ResumeLaunchSpec
@@ -86,7 +91,7 @@ export function parseLaunchSpec(text: string, launchId: string): SpecResult {
   if (raw.kind !== 'new' && raw.kind !== 'resume') return fail('kind must be new or resume')
   const shape = raw.kind === 'new'
     ? exactKeys(raw, ['v', 'kind', 'launchId', 'host', 'cwd', 'mode', 'budgets', 'prompt', 'env', 'launchKey'], ['model', 'reasoningEffort', 'worktree', 'maxDrivers'])
-    : exactKeys(raw, ['v', 'kind', 'launchId', 'env', 'launchKey'], ['maxDrivers'])
+    : exactKeys(raw, ['v', 'kind', 'launchId', 'env', 'launchKey'], ['maxDrivers', 'raise'])
   if (shape) return fail(shape)
   if (typeof raw.launchId !== 'string' || !LAUNCH_ID.test(raw.launchId) || raw.launchId !== launchId) {
     return fail('launchId must be the lowercase UUID on the command line')
@@ -104,7 +109,17 @@ export function parseLaunchSpec(text: string, launchId: string): SpecResult {
   if (launchKey.length !== LAUNCH_KEY_BYTES) return fail('launchKey must be 32 bytes of base64')
   if (raw.maxDrivers !== undefined && budget(raw.maxDrivers, MAX_DRIVERS) === null) return fail('maxDrivers must be 1 to 8')
   const common = { v: 1 as const, launchId: raw.launchId, env, launchKey, ...(raw.maxDrivers === undefined ? {} : { maxDrivers: raw.maxDrivers as number }) }
-  if (raw.kind === 'resume') return { ok: true, spec: { ...common, kind: 'resume' } }
+  if (raw.kind === 'resume') {
+    if (raw.raise === undefined) return { ok: true, spec: { ...common, kind: 'resume' } }
+    const raise = raw.raise
+    if (!isRecord(raise) || exactKeys(raise, ['revision', 'activeMs', 'toolCalls'])) return fail('raise must hold revision, activeMs and toolCalls')
+    const activeMs = budget(raise.activeMs, { min: 0, max: LAUNCH_BUDGETS.activeMs.max })
+    const toolCalls = budget(raise.toolCalls, { min: 0, max: LAUNCH_BUDGETS.toolCalls.max })
+    if (!Number.isSafeInteger(raise.revision) || (raise.revision as number) < 0 || activeMs === null || toolCalls === null || activeMs + toolCalls === 0) {
+      return fail('raise is out of bounds')
+    }
+    return { ok: true, spec: { ...common, kind: 'resume', raise: { revision: raise.revision as number, activeMs, toolCalls } } }
+  }
 
   if (raw.host !== 'copilot') return fail('host must be copilot')
   if (typeof raw.cwd !== 'string' || !isAbsolute(raw.cwd) || raw.cwd.length > 4096 || raw.cwd.includes('\0')) return fail('cwd must be an absolute path')

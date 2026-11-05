@@ -202,7 +202,7 @@ describe('local marketing page', () => {
   it('has a complete, self-contained light-first page with no live inbox connection', () => {
     const { html } = boot({ dark: true })
     expect(document.title).toContain('Agent Inbox')
-    expect(document.querySelector('.release-line .version')?.textContent).toBe('v2.3.0')
+    expect(document.querySelector('.release-line .version')?.textContent).toBe('v2.4.0')
     expect(document.documentElement.dataset.theme).toBe('light')
     expect(document.querySelectorAll('h1')).toHaveLength(1)
     expect(document.querySelector('h1')?.textContent).toContain('every terminal.')
@@ -616,9 +616,12 @@ describe('local marketing page', () => {
     const aside = (title: string) => [...document.querySelectorAll('.feature-aside')].find(
       item => item.querySelector('h3')?.textContent === title,
     )?.textContent ?? ''
-    const lanes = aside('See what each agent reports.')
-    expect(lanes).toContain('each working session a lane')
-    expect(lanes).toContain('the Needs you rail lets you answer, snooze, or pin a request.')
+    const agents = aside('See what each agent reports.')
+    expect(agents).toContain('The Agents view gives each session a card')
+    expect(agents).toContain('answer, snooze, or pin a request in its panel')
+    expect(agents).toContain('a request from a session that has ended gets its own card')
+    expect(agents).not.toContain('lane')
+    expect(agents).not.toContain('rail')
     const messages = aside('Message a running session.')
     expect(messages).toContain('Before you send, Agent Inbox says how the message will arrive.')
     expect(messages).toContain('channels are a Claude Code research preview that needs a claude.ai or Console login.')
@@ -630,6 +633,11 @@ describe('local marketing page', () => {
     expect(launcher).toContain('Allow once or Deny')
     expect(launcher).toContain('terminal driver')
     expect(launcher).toContain('The launcher is off until you turn it on in Settings.')
+    expect(launcher).toContain('from its card in the Agents view')
+    expect(launcher).toContain('its own git worktree')
+    expect(launcher).not.toContain('Live')
+    expect(messages).toContain('from its panel in the Agents view')
+    expect(messages).not.toContain('Live sessions')
 
     const desktop = document.querySelector('.desktop-install')?.textContent ?? ''
     expect(desktop).toContain('In the macOS app and the Linux AppImage, Settings → Updates can download a new release')

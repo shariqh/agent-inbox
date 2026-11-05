@@ -12,11 +12,17 @@ How Setup, update installs and local file links are granted to the app's own vie
 
 Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly verbatim. Claude Code and Copilot CLI load this file automatically when they read or edit a file matching the `paths`/`applyTo` globs above (through the symlinks in `.claude/rules/` and `.github/instructions/`); anyone else should read it before changing those files.
 
-**A checkout build beside the installed app.** `npm run electron` reuses a viewer already listening on
-4319, so it never owns one and gets no grants (no Setup, no session launches). `npm run electron:side`
-sets `AGENT_INBOX_PORT` (4392 unless set): the checkout build then starts and owns its own viewer on the
-same inbox, so an in-progress feature can be tried without quitting the installed app. Both apps may
-notify for the same new items while both run.
+**A checkout build beside the installed app.** An unpackaged app defaults to port 4392
+(`viewerPort()` in `electron/reuse.cjs`, #465); only the packaged app defaults to 4319, and
+`AGENT_INBOX_PORT` overrides either. So `npm run electron` (or its old name `npm run electron:side`)
+starts and owns its own viewer on the same inbox, and an in-progress feature can be tried without
+quitting the installed app. Both apps may notify for the same new items while both run, and they share
+one userData folder. Before #465 a checkout defaulted to 4319: an installed app opened while it ran
+reused its viewer, so it had no update installers and no grants for the rest of its run, even after
+failing over to its own server. A window that opened on a viewer it did not start still gets no
+installers: the update controller publishes `available.installWithheld: 'unowned-viewer'` and Settings
+says to quit and reopen Agent Inbox (see `updates.md`). Granting installs after failover would move
+the binding below, so it needs a design pass first.
 
 ## History (shipped since v1)
 

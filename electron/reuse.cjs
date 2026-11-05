@@ -80,4 +80,17 @@ function watchUpstream(probe, onDrop, opts) {
   return () => clearIntervalFn(timer)
 }
 
-module.exports = { classifyReuse, confirmReuse, watchUpstream }
+/**
+ * The viewer port: AGENT_INBOX_PORT when set; otherwise 4319 for the packaged app and
+ * 4392 for a checkout build (`npm run electron`), so a checkout never takes the
+ * installed app's port. An app that opens on a viewer another process started never
+ * installs updates (#216, #465), and the two share one userData folder.
+ *
+ * @param {{ isPackaged: boolean, env: Record<string, string | undefined> }} options
+ * @returns {number}
+ */
+function viewerPort({ isPackaged, env }) {
+  return Number(env.AGENT_INBOX_PORT ?? (isPackaged ? 4319 : 4392))
+}
+
+module.exports = { classifyReuse, confirmReuse, viewerPort, watchUpstream }

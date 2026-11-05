@@ -229,7 +229,13 @@ These landed after v1 and still hold invariants; the release history itself is i
   window bound to a viewer this app started and proved it owns (`viewerOwned`, set only
   in the `waitForOwnership()` branch; bound at the first navigation and, since #216, again
   after a later load re-proves it — `electron-app.md`) — not Setup's runtime
-  payload; a reused or failed-over viewer never gets installs. Setup and an update
+  payload; a reused or failed-over viewer never gets installs. *(#465)* Main then
+  registers no installer and passes `installWithheld: 'unowned-viewer'`, which the
+  controller copies onto every downloadable offer (the controller refuses it beside an
+  installer; the preload refuses it on an offer that installs or cannot download), so Settings and the notification say to quit
+  any other copy and reopen Agent Inbox to install, never "arrives in a later update".
+  A downloadable offer with no installer and no such code (the installer could not be
+  built) says the app can't install here; `deb-notify` stays notify-only. Setup and an update
   install exclude each other in both directions: the controller's `isSetupRunning` is
   `installGate.running()` (#205's gate; a source pin evaluates that exact expression
   against a real gate), and the Setup handler checks `isInstalling()` synchronously right

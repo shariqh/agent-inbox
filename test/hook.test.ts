@@ -1240,6 +1240,13 @@ describe('hook: real spawn round-trip', () => {
     })
   }
 
+  it('an unknown subcommand, and every Copilot host-* one, prints nothing and exits 0 (#466 PR 3)', async () => {
+    const { env } = freshEnv()
+    for (const sub of ['host-later', 'host-turn', 'host-error']) {
+      expect(await run([sub], JSON.stringify({ sessionId: 'c', cwd: PROJECT_DIR, recoverable: false }), env)).toEqual({ code: 0, out: '', err: '' })
+    }
+  })
+
   it('the notification hook prints nothing, exits 0, and its detached committer lands the row', async () => {
     const { env, dbPath } = freshEnv({ AGENT_INBOX_HOOK_GRACE_MS: '150' })
     const res = await run(['notification'], ev(), env)
@@ -2450,6 +2457,45 @@ describe('hook: host stamps (#466)', () => {
     // the session's end removes its marker, so none outlives its Claude Code
     expect(await runHook(['session-end'], ev(), env)).toEqual({ stdout: '' })
     expect(existsSync(marker)).toBe(false)
+    db.close()
+  })
+
+  it('reads Copilot CLI\'s payloads: host-turn, host-tool, host-idle and host-end, printing nothing (#466 PR 3)', async () => {
+    const { env, dbPath } = freshEnv()
+    const db = openDb(dbPath)
+    linkServer(db, 'mcp-1', PROJECT)
+    // camelCase, as Copilot CLI sends them (no session_id, a numeric timestamp)
+    const copilot = (extra: Record<string, unknown>) => JSON.stringify({ sessionId: 'c-1', timestamp: Date.now(), cwd: PROJECT_DIR, ...extra })
+    expect(await runHook(['host-turn'], copilot({ prompt: 'run the tests' }), env)).toEqual({ stdout: '' })
+    expect(stamps(db)).toMatchObject({ turn: expect.any(String), idle: undefined, tool: undefined })
+    expect(await runHook(['host-tool'], copilot({ toolName: 'bash', toolArgs: {} }), env)).toEqual({ stdout: '' })
+    expect(stamps(db).tool).toEqual(expect.any(String))
+    const marker = join(dirname(dbPath), 'hook-state', `host-${process.ppid}.tool`)
+    expect(existsSync(marker)).toBe(true)
+    // a retried model call, or a subagent's error, is not the end of the turn
+    for (const error of [{ recoverable: true, errorContext: 'model_call' }, { recoverable: false, agentId: 'sub-1' }, {}]) {
+      expect(await runHook(['host-error'], copilot(error), env)).toEqual({ stdout: '' })
+    }
+    expect(stamps(db).idle).toBeUndefined()
+    expect(await runHook(['host-error'], copilot({ recoverable: false, errorContext: 'system' }), env)).toEqual({ stdout: '' })
+    const fatal = stamps(db).idle
+    expect(fatal).toEqual(expect.any(String))
+    await sleep(5)
+    expect(await runHook(['host-idle'], copilot({ stopReason: 'end_turn', stop_hook_active: false }), env)).toEqual({ stdout: '' })
+    expect(stamps(db).idle! > fatal!).toBe(true)
+    expect(await runHook(['host-end'], copilot({ reason: 'complete' }), env)).toEqual({ stdout: '' })
+    expect(existsSync(marker)).toBe(false)
+    db.close()
+  })
+
+  it('an unknown subcommand is a silent no-op: what an older hook-cli does with host-*', async () => {
+    const { env, dbPath } = freshEnv()
+    const db = openDb(dbPath)
+    linkServer(db, 'mcp-1', PROJECT)
+    for (const argv of [['host-later'], ['activity', 'nonsense']]) {
+      expect(await runHook(argv, ev(), env)).toEqual({ stdout: '' })
+    }
+    expect(stamps(db)).toEqual({ turn: undefined, idle: undefined, tool: undefined })
     db.close()
   })
 

@@ -121,6 +121,9 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   Plan joins, lanes and `linkedPlan` keep `isWorking`; dormancy and card order also
   read the newest host stamp. Presence, not attention: no badge, Needs you or count.
   Older servers never name the columns; a row no hook links to reads as before.
+  Copilot CLI sessions get the same stamps from an opt-in hooks file (#466 PR 3,
+  `scripts/install-copilot-hooks.sh`): every Copilot hook is a direct child of the
+  `copilot` process its MCP server records as `host_pid`, so the join is unchanged.
   `activity.last_doing` is a separate, historical caption for that idle UI. Only an explicit
   non-idle claim updates it; registration and both claim-decay paths preserve it; and it never
   participates in working/idle state, freshness, attention, or sorting. Its additive migration

@@ -239,3 +239,134 @@ reaches every installed host's instructions), `README.md`, `CHANGELOG.md`.
 Static HTML mockups (synthetic data, built on `public/style.css` tokens) of the Agents home, the
 session panel and the Dashboard header without Live are shared with the owner separately; they are
 not committed.
+
+## § Amendment: every ask in the Agents view, no Dashboard rail (2026-11-04)
+
+After trying PRs 1–3 (#457, #458, #459), the owner asked why the Inbox showed different asks
+than the Agents view. Every surface starts from `attentionEntries`, but `sessionCards` puts an ask
+on a card only when its session still has one. An ask from a Claude Code session that has ended
+therefore showed in the Inbox and the Dashboard rail, but not in the Agents view. His decision:
+**the same asks in two layouts.** The Agents view shows every ask, grouped by session. The Inbox
+stays the triage list, by ask. The Dashboard's Needs-you rail goes. The driver, approvals and the
+attention predicate do not change.
+
+### A.1 Every ask has a card
+
+`attributeAsks` (`public/sessions.js`) keeps its order and gains two last steps:
+
+1. An item goes to the card of its live session, then to a launch that remembers the session. A
+   plan row goes to the card of the session that stamped its plan, then to the newest working card
+   by the project + branch + agent join (`linkedPlan`).
+2. **New:** an unowned plan row joins an idle or dormant card by the same join, so an idle
+   session never looks ended.
+3. **New:** anything still unowned gets an **ask-only card**. There is one per session id (an
+   item's `session` or the plan's `boards.session`) and one per plan when the plan has no session.
+   - It is labelled **Session ended** when the session id is known, else **No session**.
+   - Its state is always `ask`, its place is the main list, and it sits in the ask's project.
+   - It shows the agent kind (`item.agent` or `board.agent`), and "last heard 2h ago" from the
+     newest item or stamped plan that session wrote. No activity row is needed.
+
+The invariant this adds: **every attention entry is on exactly one card**, so the Needs you filter
+equals `attentionEntries(...)` under the Dashboard's project and agent filter. With All projects,
+it equals the Inbox badge. Snoozed, pinned, stale and closed-project asks stay out because
+`attentionEntries` leaves them out; the Agents view never filters again. An ask-only card has no
+composer, actions or transcript: it is the ask, its context and "Open in Inbox". It is not a
+launch feature, so it draws with the §9 switch off. An `@sessions` approval keeps its rule: its
+options show only in the app's own window.
+
+### A.2 Where the rail's abilities go
+
+The rail (#303) mounted the Inbox's own `answerEl`/`rowAnswerEl` with `surface: 'rail'`. The
+session panel's **Asking you** section now mounts the same two functions, one block per ask, with
+`surface: 'compact'` (the rail's surface, renamed). There is still one answering implementation.
+The card's ask strip only opens the panel at that ask.
+
+| Rail today | After |
+|---|---|
+| Option pills with ★, Compare, free text, More… (Clarify, Decline, I'll take a while) | Panel ask block, same `answerEl` |
+| Blocked row: options, I've done my part, words | Panel ask block, same `rowAnswerEl` |
+| Snooze 4 h, Pin, Open in Inbox | The same icons on each panel ask (`snoozeAsk`, `pinAsk`, `openAskInInbox`) |
+| Top three, "+N more" | Gone: every ask is on a card, and the Needs you filter lists them |
+| "N in Later" | "Later N ›" in the Agents header, opening the Inbox's Later section |
+| Open Review queue | "Review queue" in the Agents header |
+| "agent waiting" chip | Panel ask meta "the agent is waiting" (`liveness: 'waiting'`) |
+| Draft rules: a draft pauses only the rail; a forced paint rebuilds it; focus restored only with document focus | The same three rules on the panel's ask section. Drafts stay in `draftReplies`/`rowDrafts` (`suspendState()`, durable drafts, restart hold); `restoreDraftFocus` is scoped to `#dashFocus` |
+| A card with a draft stays expanded | A panel ask with a draft stays open. Closing the panel keeps the draft, and the card says "Answer · draft" |
+| Deferring an ask that holds a draft switches to the Inbox (`keepDraftInView`) | Unchanged |
+| Keys on a card: J/K, 1–4, S, P, Enter | J/K and the arrows move between cards (roving tabindex), and Enter opens the panel. In the panel: 1–4, S, P, R (reply), Esc |
+| Stale fold, answered-awaiting-pickup foot | Never on the rail; they stay in the Inbox. The panel shows this session's answered-but-not-picked-up asks dimmed (`awaitingAgentRows`, `repliedEntries`), never counted |
+| Now strip "Waiting on you" → the Inbox | Turns on the Needs you filter and focuses the Agents card; G I still opens the Inbox |
+| `jumpToAsk` → rail card | Opens the ask's session panel at that ask |
+| ⌘K "answer …" → rail or Inbox card | The session panel's ask |
+| Notification click | Unchanged: it lands on the **Inbox** card (`location.hash` → `focusItem`), not the rail |
+
+The Inbox gains one thing for consistency: each ask row says "live · branch" or "session
+ended", and the open ask offers **Show on Agents ›** (the Dashboard, filtered to its project,
+with that card's panel open). The card's "Open in Inbox" goes back.
+
+### A.3 Visual cleanups
+
+The owner called the PR 1–3 cards "pretty bad". These are the cheap fixes, shown in mockup (e):
+
+- **V1 Fewer chips.** No "Copilot · started here" pill. The agent kind is plain text in the meta
+  line, with a small outlined "A" for a session started here. Build hints move to the panel and
+  the Sessions line.
+- **V2 Hierarchy.** What the session is doing leads (13.5 px, up to two lines). One quiet meta line
+  above it holds the state dot and word, the agent, the branch and the time. A secondary line holds
+  the worktree summary or the delivery hint.
+- **V3 Calmer colour.** Pink only for asks (the ask strip and the Needs you count). Green only for
+  the working dot. State words, chips and folds are neutral. No tinted backgrounds except the ask
+  strip.
+- **V4 Density.** With the rail's column freed, the card spans the grid: three columns at 1440 px,
+  two at 1280 px, one below 900 px. Group heads become small-caps labels with counts and a
+  hairline. Ended, Dormant and Not delivered share one footer line.
+- **V5 One visible action.** Each card shows its state's main action as a text button, plus
+  "Open in Inbox" on ask-only cards. Everything else is in the panel.
+
+Narrow windows: under 1280 px the panel opens directly after the selected card's row, spanning
+the grid, instead of after the whole list. Below 900 px that is inline under the card (mockup (h)).
+
+### A.4 Tests
+
+- **Unit, `test/sessions.test.ts`.** Parity over mixed fixtures: live, ended and unknown
+  sessions; stamped, joined and unstamped plans; closed projects; snoozed, pinned and stale asks;
+  an `@sessions` approval with the switch off. Each fixture checks Σ `card.asks` =
+  `attentionEntries(...)`, each entry exactly once. Also: one ask-only card per session id, the
+  "Session ended" and "No session" labels, the idle-join fallback, and "last heard".
+- **DOM, `test/dom/agents-asks.test.ts`** (ported from `dashboard-rail.test.ts`, then deleted):
+  - the Needs you count equals attention under each lens;
+  - answering a question or a row from the panel sends the Inbox's exact request;
+  - More… (Clarify, Decline, I'll take a while), Snooze and Pin;
+  - drafts join `suspendState()`, durable drafts and the restart hold;
+  - a poll leaves a drafting ask alone, and a forced paint rebuilds it;
+  - focus is restored only with document focus;
+  - the keys work;
+  - the Waiting on you tile sets the filter;
+  - ⌘K "answer" lands in the panel;
+  - a notification hash still lands on the Inbox card;
+  - with the §9 switch off, the reads are byte-identical and ask-only cards still draw.
+- **Touched:** `keyboard-first` (rail keys), `editorial-shell`, `css-cascade`, `dashboard`,
+  `dead-exports` (the dashboard model's `rail`, `RAIL_CARDS`, the rail's CSS).
+- **Docs:** the rail invariant in `viewer-dashboard-and-shell.md` becomes "the session panel's
+  Asking you section is the Dashboard's answer surface". Also `viewer-frontend.md` (draft hosts),
+  `attention-and-later.md` (Later's entry point) and `CHANGELOG.md`.
+
+### A.5 PR split (after PR 4 merges)
+
+| PR | Content | Size (prod / tests) |
+|---|---|---|
+| 5. Every ask on a card | Attribution steps 2–3, ask-only cards, the parity test; the ask strip opens the panel; the panel mounts `answerEl`/`rowAnswerEl` with the icons and answered lines, under the draft rules; `jumpToAsk` → panel. The rail stays one more PR, drawing the same entries through the same functions | M: ~300 / ~350 |
+| 6. Retire the rail; cleaner cards | Remove `#dashRail`, `renderDashRail`, `dashRailCardEl`, the dashboard model's `rail`; full-width grid; header Later and Review queue; the Now tile, keys and ⌘K; V1–V5 CSS; the narrow panel position; the Inbox's session token and Show on Agents; docs; port and delete `dashboard-rail.test.ts` | M: ~250 added, ~450 removed / ~300 |
+
+### A.6 Decisions (owner, 2026-11-04)
+
+The owner approved the mockups and all four recommendations:
+
+1. **The card does not answer in one click.** The ask strip opens the panel at that ask, which
+   keeps one editor host and avoids a mis-click.
+2. **A notification click lands on the Inbox card**, as today.
+3. **Narrow windows:** the panel opens inline under its card.
+4. **Inbox consistency:** each ask row carries the "live · branch" or "session ended" token, and
+   the open ask offers **Show on Agents ›**.
+
+Mockups (e)–(h), with numbered callouts, are shared with the owner separately and not committed.

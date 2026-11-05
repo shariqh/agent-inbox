@@ -63,7 +63,7 @@ export function installAgentsHome(deps) {
     if (focusKey) el.dataset.dashboardFocusKey = focusKey
     return el
   }
-  const repaint = () => { if (last) paint(last.host, last.input) }
+  const repaint = (overrides = {}) => { if (last) paint(last.host, { ...last.input, ...overrides }) }
   const focusKeyIn = (el) => (el.contains(doc.activeElement) ? doc.activeElement?.closest?.('[data-dashboard-focus-key]')?.dataset.dashboardFocusKey ?? null : null)
   const refocus = (root, key) => {
     if (!key || !doc.hasFocus?.() || root.contains(doc.activeElement)) return
@@ -556,7 +556,7 @@ export function installAgentsHome(deps) {
     /** The card, made once: renderDashboard mounts it in the Dashboard grid. */
     element: () => (mounted ??= homeEl()),
     paint,
-    /** Repaints the cards from the last paint's input: a closed panel's draft shows on its card at once. */
+    /** Repaints the cards from the last paint's input with `overrides`: a closed panel's draft shows on its card at once. */
     repaint,
     /** Repaints New session… alone, as a start begins or settles. */
     paintNewSession: () => { if (mounted) paintNewSession(mounted, deps.launches?.() ?? null) },

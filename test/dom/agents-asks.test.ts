@@ -5,7 +5,7 @@
 // the Inbox's own controls and writes, under the rail's draft rules.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type Database from 'better-sqlite3'
-import { closeProject, getItem, insertItem, listBoards, resolveItem, upsertActivity, upsertBoard } from '../../src/store.js'
+import { closeProject, endActivity, getItem, insertItem, listBoards, resolveItem, upsertActivity, upsertBoard } from '../../src/store.js'
 import type { ViewerBridge } from './harness.js'
 import {
   advanceClock, answerInput, badgeCount, bootApp, buttonLabelled, click, freshDb, navigateToHash, pollTick, row,
@@ -242,6 +242,46 @@ describe('the panel’s draft rules (#454 A.2)', () => {
     expect(editor(id)).not.toBe(input)
     expect(editor(id)?.value).toBe('Thursday, after the backup')
     expect(document.activeElement).toBe(editor(id))
+  })
+
+  // #462 review: the hold is the panel's, not its card's: a card's id moves under an open panel
+  it('keeps the editor being typed in when its session ends and the card becomes ask-only', async () => {
+    db = freshDb()
+    live(db, 'here')
+    const id = question(db, 'Which day?', { session: 'here' })
+    await bootApp(db)
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    await answerOn('session:here')
+    const input = editor(id)!
+    input.focus()
+    type(input, 'Thursday')
+    endActivity(db, 'here')
+    await pollTick()
+    expect(card('ask:session:here')).not.toBeNull()
+    expect(editor(id)).toBe(input)
+    expect(document.activeElement).toBe(input)
+    expect(panel().querySelector<HTMLElement>('.dash-focus-gone')?.hidden).toBe(true)
+  })
+
+  it('follows a drafted ask to its live card when an ask-only card’s session comes back, rebuilding nothing', async () => {
+    db = freshDb()
+    const id = question(db, 'Keep the Sessions line?', { session: 'gone' })
+    await bootApp(db)
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    await answerOn('ask:session:gone')
+    const input = editor(id)!
+    input.focus()
+    type(input, 'Keep it')
+    upsertActivity(db, { ...AGENT, session: 'gone', doing: 'Back at it', idle: false })
+    await pollTick()
+    expect(card('session:gone')).not.toBeNull()
+    expect(card('ask:session:gone')).toBeNull()
+    expect(editor(id)).toBe(input)
+    expect(document.activeElement).toBe(input)
+    expect(panel().hidden).toBe(false)
+    expect(panel().dataset.session).toBe('gone')
+    expect(panel().querySelector<HTMLElement>('.dash-focus-gone')?.hidden).toBe(true)
+    expect(card('session:gone')?.classList.contains('sel')).toBe(true)
   })
 
   it('restores focus after a rebuild only while the document has it', async () => {

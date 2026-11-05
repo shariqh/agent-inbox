@@ -232,6 +232,19 @@ describe('the session focus panel (#307)', () => {
     expect(card('mine')!.querySelector('.opt-pill, textarea')).toBeNull()
   })
 
+  it('closing leaves no card selected, after a poll too (#462 review)', async () => {
+    const d = open()
+    seed(d)
+    await bootApp(d)
+    openCard('mine')
+    work(d, 'mine', 'Still painting')
+    await pollTick()
+    expect(card('mine')!.classList.contains('sel')).toBe(true)
+    click(panel()!.querySelector('.dash-focus-close'))
+    expect(panel()!.hidden).toBe(true)
+    expect(card('mine')!.classList.contains('sel')).toBe(false)
+  })
+
   const press = (el: Element) => el.dispatchEvent(new Event('pointerdown', { bubbles: true }))
 
   it('closes on a trusted click outside it that is not a card, never on a press alone, moving no focus', async () => {
@@ -450,6 +463,25 @@ describe('⌘K actions (#307)', () => {
     expect(panel()?.dataset.session).toBe('mine')
     // a landing spot, never an option or an editor
     expect(document.activeElement).toBe(panel()!.querySelector(`[data-panel-ask="${own}"]`))
+  })
+
+  it('"answer…" lands an @sessions approval on its live session’s card, clearing a lens that hides it (#462 review)', async () => {
+    const d = open()
+    work(d, 'mcp-1', 'Running the tests')
+    insertItem(d, {
+      project: '@sessions', stream: 'alpha · 307-polish', agent: 'copilot', kind: 'question', session: 'mcp-1', title: 'Allow shell: npm test',
+      action_owner: 'approval', options: [{ label: 'Allow once' }, { label: 'Deny' }],
+    })
+    await bootApp(d)
+    click(document.querySelector('#rail button.rail-tab[data-project="alpha"]'))
+    await settle()
+    await choose('answer allow', 'Allow shell: npm test')
+    expect(panel()?.hidden).toBe(false)
+    expect(panel()?.dataset.session).toBe('mcp-1')
+    expect(panel()?.dataset.card).toBe('session:mcp-1')
+    expect(panel()?.querySelector('.sp-state')?.textContent).toBe('Needs you')
+    expect(document.querySelector('[data-session-card="ask:session:mcp-1"]')).toBeNull()
+    expect(document.querySelector('#rail [data-project="__all__"]')?.getAttribute('aria-selected')).toBe('true')
   })
 
   it('"open plan…" lands on the plan through the deep link, and a prefix fills in the command', async () => {

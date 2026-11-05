@@ -174,12 +174,16 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   picked up (`agentEntries`), dimmed and never counted; an `@sessions` approval keeps the
   Approval block (#459). The rail's three draft rules hold for the section: a poll leaves
   it alone while one of its asks holds a draft or a background window remembers focus in
-  it (and skips an unchanged one, moving only its ages); a forced paint rebuilds it; it
+  it (and skips an unchanged one, moving only its ages); the hold is the panel's
+  (`focusSession`), never its card's, because a card's id moves under an open panel (its
+  session ends; an ask-only card's session comes back, when `followHeldAsk` moves the panel
+  to the card now holding the drafted ask without rebuilding it); a forced paint rebuilds it; it
   restores focus (`captureCardFocus`, and `restoreDraftFocus` scoped to `#dashFocus`) only
   with the document's. Closing the panel drops its editors and keeps the drafts in
   `draftReplies`/`rowDrafts`; the card then says "Answer · draft". `jumpToAsk` and ⌘K
-  "answer" open the panel at the ask (widening the lens to its project when it hides
-  it), the Inbox card when no card holds it; a notification still lands on the Inbox
+  "answer" open the panel at the ask (when the lens hides it, scoping to its project
+  only where its session lives too, else clearing the lens: an `@sessions` approval's
+  session is in the real project), the Inbox card when no card holds it; a notification still lands on the Inbox
   card. `test/dom/agents-asks.test.ts` pins the DOM half.
 - **The Dashboard's Needs you rail reads only the one predicate (#303, Dashboard 2.0
   phase 1, decisions D2, D3, D8; retired by #454's PR 6).** It replaced Ownership

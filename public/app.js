@@ -2189,7 +2189,17 @@ function jumpToAsk(entry) {
   let key = agentsHome.askKey(id)
   const owner = entry.kind === 'row' ? entry.board : entry.item
   if (!key && ((projectFilter && projectFilter !== owner.project) || (agentFilter && agentFilter !== owner.agent))) {
-    if (projectFilter && projectFilter !== owner.project) projectFilter = owner.project
+    // Scope to the ask's project only where its session lives too: an
+    // @sessions approval (or an ask filed away from its session's project)
+    // needs both in the lens, so the lens clears instead.
+    const session = owner.session
+    const home = session
+      ? (lastData.activity ?? []).find((row) => row.session === session)?.project
+        ?? (lastData.launches ?? []).find((launch) => Array.isArray(launch.sessions) && launch.sessions.includes(session))?.project
+      : null
+    if (projectFilter && projectFilter !== owner.project) {
+      projectFilter = !isReservedProject(owner.project) && (!home || home === owner.project) ? owner.project : null
+    }
     if (agentFilter && agentFilter !== owner.agent) agentFilter = null
     resetPaging()
     selectTab('dashboard', { paint: false })
@@ -2356,8 +2366,12 @@ function approvalHtml(entry, granted) {
 // never counted.
 const panelAsksKey = new WeakMap() // the section → what it was built from
 
-function panelAsksHeld(list, cardId, asks) {
-  if (list.dataset.card !== cardId) return false
+// Held per PANEL (focusSession), never per card: a card's id moves under an
+// open panel (its session ends, an ask-only card's session comes back), and that
+// must not rebuild an editor being typed in. Only an explicit open, which moves
+// focusSession, or a forced paint rebuilds it.
+function panelAsksHeld(list, asks) {
+  if (list.dataset.panel !== (focusSession ?? '')) return false
   const remembered = document.activeElement
   if (!document.hasFocus() && remembered && list.contains(remembered)) return true
   // an incoming ask holding a draft holds it too: building its editor from a
@@ -2370,12 +2384,13 @@ function paintPanelAsks(aside, card, { forced = false, asks = [], none = false }
   const list = aside.querySelector('.dash-focus-asks')
   if (!list) return
   const cardId = card?.id ?? ''
+  const panel = focusSession ?? ''
   const answered = card?.answered ?? []
   const nowMs = Date.now()
-  if (!forced && panelAsksHeld(list, cardId, asks)) return
-  const key = JSON.stringify([cardId, laterSection, none,
+  if (!forced && panelAsksHeld(list, asks)) return
+  const key = JSON.stringify([panel, cardId, laterSection, none,
     asks.map((entry) => [entry.liveness ?? '', entryEntity(entry), entry.board?.revision ?? null]), answered.map(entryEntity)])
-  if (!forced && list.dataset.card === cardId && panelAsksKey.get(list) === key) {
+  if (!forced && list.dataset.panel === panel && panelAsksKey.get(list) === key) {
     // nothing it shows changed but the clock: only the ages move, in place
     for (const el of list.querySelectorAll('time[data-asked]')) setText(el, askTimeModel(el.dataset.asked, nowMs)?.text ?? '')
     return
@@ -2384,7 +2399,7 @@ function paintPanelAsks(aside, card, { forced = false, asks = [], none = false }
   const focused = activeFocusElement()?.closest?.('[data-panel-ask]')
   const bookmark = focused && list.contains(focused) ? captureCardFocus(focused, focused.dataset.panelAsk) : null
   const index = bookmark ? [...list.querySelectorAll('[data-panel-ask]')].indexOf(focused) : -1
-  list.dataset.card = cardId
+  list.dataset.panel = panel
   const blocks = asks.map((entry) => panelAskEl(entry, nowMs))
   const lines = answered.map((entry) => panelAnsweredEl(entry, nowMs))
   list.replaceChildren(...blocks, ...lines)
@@ -2471,6 +2486,33 @@ function panelAnsweredEl(entry, nowMs) {
   return line
 }
 
+// The asks the panel's section is holding for the human: drafted, or holding
+// focus (a background window's remembered focus included).
+function heldPanelAsks(list) {
+  const active = document.activeElement
+  return [...list.querySelectorAll('[data-panel-ask]')]
+    .filter((el) => holdsDraft(el.dataset.panelAsk) || (active && el.contains(active)))
+    .map((el) => el.dataset.panelAsk)
+}
+
+// A poll whose cards moved a held ask off the panel's card (the session came
+// back live, a new working session joined its plan) moves the panel with it,
+// rebuilding nothing: the held section stays, now under its new card's key.
+function followHeldAsk(aside) {
+  const list = aside.querySelector('.dash-focus-asks')
+  if (!list || !focusSession || list.dataset.panel !== focusSession) return
+  const held = heldPanelAsks(list)
+  if (!held.length) return
+  const card = agentsHome.cardFor(focusSession)
+  if (card && card.asks.some((entry) => held.includes(needsEntryId(entry)))) return
+  const key = held.map((id) => agentsHome.askKey(id)).find(Boolean)
+  if (!key || key === focusSession) return
+  focusSession = key
+  list.dataset.panel = key
+  const open = agentsHome.cardFor(key)?.id ?? null
+  for (const el of document.querySelectorAll('#dashboard [data-session-card]')) el.classList.toggle('sel', el.dataset.sessionCard === open)
+}
+
 function renderDashFocus(aside, model, { forced = false } = {}) {
   if (!aside) return
   setHidden(aside, !focusSession)
@@ -2480,6 +2522,7 @@ function renderDashFocus(aside, model, { forced = false } = {}) {
     paintPanelAsks(aside, null, { forced })
     return
   }
+  if (!forced) followHeldAsk(aside)
   setAttr(aside, 'data-session', focusSession)
   const card = agentsHome.cardFor(focusSession)
   setAttr(aside, 'data-card', card?.id ?? '')
@@ -2634,7 +2677,7 @@ function closeSessionFocus() {
   focusSession = null
   paintSessionFocus()
   // "Answer · draft" or "Message · draft" on the card the panel leaves
-  agentsHome.repaint()
+  agentsHome.repaint({ selected: null, forced: false, nowMs: Date.now() })
   if (!owned || !document.hasFocus()) return
   const own = [...document.querySelectorAll('#dashboard [data-session-card]')].find((el) => el.dataset.sessionCard === card)
   ;[own?.querySelector('[data-ah-action]'), document.getElementById('agentsHomeTitle')]

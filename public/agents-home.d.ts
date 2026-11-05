@@ -58,7 +58,7 @@ export function installAgentsHome(deps: {
   element(): HTMLElement
   paint(host: Element, input: AgentsHomeInput): void
   /** repaints the cards from the last paint's input (a closed panel's draft shows on its card at once) */
-  repaint(): void
+  repaint(overrides?: Partial<AgentsHomeInput>): void
   /** repaints New session… alone, as a start begins or settles */
   paintNewSession(): void
   /** the window-local view state (filter, grouping, folds), for frameInputs() */

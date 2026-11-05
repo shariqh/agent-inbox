@@ -37,6 +37,9 @@ const MAX_INSTALL_MESSAGE_LENGTH = 240
 // Why an offer is blocked on this Mac (#343, design §6.3): its release ships only an arm64
 // DMG, this process isn't arm64, and update-manifest.json offers nothing newer.
 const BLOCKED_REASONS = new Set(['apple-silicon', 'rosetta'])
+// Why main registered no installer on a host that has one (#465): this window opened on a
+// viewer another process started, so main never grants it installs (#216).
+const INSTALL_WITHHELD_REASONS = new Set(['unowned-viewer'])
 // Copy shown to the renderer must never carry a path: no slashes, no control characters.
 const UNSAFE_MESSAGE_RE = /[\u0000-\u001f\u007f/\\]/
 // Helper exit codes (INSTALL_HELPER_EXIT in update-install.cjs) with a known cause.
@@ -217,6 +220,10 @@ function createUpdateController(options) {
   const emit = options.emit ?? (() => {})
   const requestRestart = options.requestRestart
   const installers = registerInstallers(options.installers, downloader, requestRestart)
+  const installWithheld = options.installWithheld
+  if (installWithheld !== undefined && !INSTALL_WITHHELD_REASONS.has(installWithheld)) {
+    throw new TypeError('installWithheld names why no installer is registered')
+  }
   const isSetupRunning = typeof options.isSetupRunning === 'function' ? options.isSetupRunning : () => false
   const isQuitting = typeof options.isQuitting === 'function' ? options.isQuitting : () => false
   const isInstallPermitted = typeof options.isInstallPermitted === 'function' ? options.isInstallPermitted : () => true
@@ -543,11 +550,15 @@ function createUpdateController(options) {
   }
 
   // With an installer registered, an offer downloads only when that installer
-  // can install it here; otherwise it is notify-only and says why.
+  // can install it here; otherwise it is notify-only and says why. A download
+  // main withheld the installer for says why too (#465).
   async function evaluateOffer(checked) {
     if (checked.state.status !== 'available') return checked
     const installer = checked.artifact === null ? undefined : installers.get(checked.artifact.installStrategy)
-    if (installer === undefined) return checked
+    if (installer === undefined) {
+      if (checked.artifact !== null && installWithheld !== undefined) checked.state.available.installWithheld = installWithheld
+      return checked
+    }
     const feasible = await feasibilityFor(installer, checked.artifact)
     if (feasible.ok) {
       checked.state.available.installable = true

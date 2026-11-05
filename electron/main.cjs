@@ -5,7 +5,7 @@
 //
 // Behavior:
 //   1. If a hardened viewer is already listening on
-//      http://127.0.0.1:<AGENT_INBOX_PORT|4319>, reuse it (never start a second
+//      http://127.0.0.1:<AGENT_INBOX_PORT|4319, or 4392 unpackaged>, reuse it (never start a second
 //      one, never kill it on quit). We re-probe before committing (a dying viewer
 //      can answer one probe then vanish), and once reusing we watch it and start
 //      our own server if it disappears (#23).
@@ -25,7 +25,7 @@ const os = require('node:os')
 const http = require('node:http')
 const path = require('node:path')
 const { pathToFileURL } = require('node:url')
-const { classifyReuse, watchUpstream } = require('./reuse.cjs')
+const { classifyReuse, viewerPort, watchUpstream } = require('./reuse.cjs')
 const { loadViewer, reloadViewer } = require('./viewer-navigation.cjs')
 const { isTrustedLinkSender, isViewerUrl, openLinkRequest, openWebLink } = require('./link-open.cjs')
 const { createLinkPreferences, createLinkSettings } = require('./link-preferences.cjs')
@@ -76,7 +76,9 @@ try {
   console.error(`[agent-inbox] could not set the Windows app identity: ${err.message}`)
 }
 
-const PORT = Number(process.env.AGENT_INBOX_PORT ?? 4319)
+const PORT = viewerPort({ isPackaged: app.isPackaged, env: process.env })
+// The viewer reads the same variable, in process or spawned, so a checkout build's lands on 4392 too.
+if (!app.isPackaged) process.env.AGENT_INBOX_PORT ??= String(PORT)
 const VIEWER_HOST = '127.0.0.1'
 const URL_BASE = `http://${VIEWER_HOST}:${PORT}/`
 const BOUNDARY_HEADER = 'x-agent-inbox-local-boundary'
@@ -1149,6 +1151,9 @@ function initializeUpdateController() {
       fetchImpl: fetch,
     }),
     installers: updateInstallers(),
+    // A window that opened on a viewer this app did not start never installs (#216), so
+    // Settings says why and how to get an install back (#465).
+    ...(viewerOwned ? {} : { installWithheld: 'unowned-viewer' }),
     // Read once at startup, so an install that did not take effect is reported.
     attemptStore: createInstallAttemptStore({ directory: path.join(app.getPath('userData'), 'update-install') }),
     isSetupRunning: () => installGate.running(),
@@ -1175,7 +1180,9 @@ function initializeUpdateController() {
           : installable
             ? `Version ${version} is available. Download and install it from Settings → Updates.`
             : downloadable
-              ? `Version ${version} is available. Download and verify it from Settings → Updates.`
+              ? viewerOwned
+                ? `Version ${version} is available. Download and verify it from Settings → Updates.`
+                : `Version ${version} is available. To install it, quit Agent Inbox and any other copy of it, then reopen Agent Inbox.`
               : `Version ${version} is ready to review on GitHub Releases.`,
       })
       note.on('click', () => {

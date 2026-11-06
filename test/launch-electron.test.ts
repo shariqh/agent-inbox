@@ -971,6 +971,92 @@ describe('a session in its own worktree (#432)', () => {
     })
   })
 
+  describe('Forget (#478)', () => {
+    const ENDED = {
+      id: ID, status: 'ended', end_reason: 'stopped', project: 'alpha', stream: 'agent-inbox/fix-22222222', cwd: '/w/alpha/fix-22222222',
+      worktree_path: '/w/alpha/fix-22222222', checkout_root: '/work/alpha', branch: 'agent-inbox/fix-22222222',
+      worktree_removed_at: '2026-11-03T12:00:00.000Z', resumable: false, revision: 7,
+    }
+    const forgetRig = (launch: Json | null, answer: unknown = { ok: true }) => {
+      const r = rig({
+        viewer: {
+          getJson: async (route: string) => {
+            r.calls.push(`GET ${route}`)
+            return route.endsWith('/prompt') ? { prompt: 'Fix the flaky test\nthen open a PR.' } : route === `/api/launches/${ID}` ? launch : null
+          },
+          postJson: async (route: string, body?: unknown) => { r.calls.push(`POST ${route}`); r.posted.push([route, body]); return answer },
+        },
+      })
+      return r
+    }
+
+    it('names the session and what goes and stays in main’s own dialog, then forgets it at the revision it showed', async () => {
+      const r = forgetRig(ENDED)
+      expect(await r.controller.forget(ID)).toEqual({ ok: true })
+      expect(r.calls.filter((c) => !c.startsWith('keys.available'))).toEqual([
+        `GET /api/launches/${ID}`, `GET /api/launches/${ID}/prompt`, 'confirm', `POST /api/launches/${ID}/forget`,
+      ])
+      expect(r.posted).toEqual([[`/api/launches/${ID}/forget`, { revision: 7 }]])
+      expect(r.spawned[0]!.confirmation).toEqual({
+        message: 'Forget the session of alpha?',
+        detail: [
+          'Session: alpha · agent-inbox/fix-22222222',
+          'Task: Fix the flaky test',
+          'Agent Inbox removes its card, its transcript and its logs. This cannot be undone.',
+          'The branch agent-inbox/fix-22222222 and its commits stay in your repository.',
+          'Copilot’s own session files, and what the session flagged in the inbox, are left as they are.',
+        ].join('\n'),
+        buttons: ['Forget', 'Cancel'],
+      })
+      // the owner's case: stopped with its session kept, never a worktree, so it resumes until forgotten
+      const kept = forgetRig({ ...ENDED, stream: 'main', worktree_path: null, branch: null, worktree_removed_at: null, resumable: true })
+      expect(await kept.controller.forget(ID)).toEqual({ ok: true })
+      expect((kept.spawned[0]!.confirmation as { detail: string }).detail.split('\n')).toEqual([
+        'Session: alpha · main',
+        'Task: Fix the flaky test',
+        'Agent Inbox removes its card, its transcript and its logs. This cannot be undone.',
+        'It can no longer be resumed from Agent Inbox, but copilot --resume can still open it if you know its session id.',
+        'Copilot’s own session files, and what the session flagged in the inbox, are left as they are.',
+      ])
+      // a session in its folder, resumable or handed off, with hostile text made visible on one line
+      const text = controllerModule.forgetConfirmation({
+        project: 'alpha\nMode: Read-only.', branch: null, stream: 'main', task: 'Do it\u202e', endReason: 'handed_off', resumable: true,
+      })
+      expect(text.detail.split('\n').slice(0, 2)).toEqual(['Session: alpha\\x0aMode: Read-only. · main', 'Task: Do it<U+202E>'])
+      expect(text.detail).toContain('The Copilot it was handed off to in Terminal is not touched.')
+      expect(text.detail).toContain('It can no longer be resumed from Agent Inbox, but copilot --resume can still open it if you know its session id.')
+      expect(text.detail).not.toContain('branch')
+    })
+
+    it.each([
+      ['a running launch', { status: 'running' }, /Stop the session before/],
+      ['a parked launch', { status: 'parked' }, /End the session before/],
+      ['a kept worktree', { worktree_removed_at: null }, /Remove worktree… first/],
+      ['a launch that is gone', null, /not there any more/],
+    ] as Array<[string, Json | null, RegExp]>)('refuses %s before the dialog', async (_, over, error) => {
+      const r = forgetRig(over === null ? null : { ...ENDED, ...over })
+      expect(await r.controller.forget(ID)).toEqual({ ok: false, error: expect.stringMatching(error) })
+      expect(r.calls).not.toContain('confirm')
+      expect(r.posted).toEqual([])
+    })
+
+    it('forgets nothing on Cancel, off, or a bad id, and says why the hub refused', async () => {
+      const cancelled = forgetRig({ ...ENDED, worktree_path: null, branch: null })
+      cancelled.state.confirm = false
+      expect(await cancelled.controller.forget(ID)).toEqual({ ok: false, error: 'Not forgotten.', cancelled: true })
+      expect(cancelled.posted).toEqual([])
+      const off = forgetRig(ENDED)
+      off.state.enabled = false
+      expect(await off.controller.forget(ID)).toMatchObject({ ok: false })
+      expect(await off.controller.forget('../x')).toMatchObject({ ok: false })
+      expect(off.calls).toEqual([])
+      const stale = forgetRig(ENDED, { ok: false, reason: 'revision' })
+      expect(await stale.controller.forget(ID)).toEqual({ ok: false, error: expect.stringMatching(/changed since you confirmed/) })
+      const unanswered = forgetRig(ENDED, null)
+      expect(await unanswered.controller.forget(ID)).toEqual({ ok: false, error: 'The session was not forgotten.' })
+    })
+  })
+
   it('sends the human’s cap on sessions at once in every spec, 4 by default, and keeps it to 1 to 8 (§5)', async () => {
     const r = rig()
     expect(await r.controller.start(REQUEST)).toEqual({ ok: true, launch: ID })
@@ -1296,10 +1382,10 @@ describe('the launch IPC and its grants (§8)', () => {
     return { call, r, settings, onEnabled, handlers, made: () => made }
   }
 
-  it('registers the fifteen channels, and makes no controller until one is used', () => {
+  it('registers the sixteen channels, and makes no controller until one is used', () => {
     const w = world()
     expect([...w.handlers.keys()].sort()).toEqual([
-      'available', 'approve', 'choose-folder', 'choose-worktree-root', 'close', 'open-worktree', 'remove-worktree', 'reset-worktree-root', 'resume',
+      'available', 'approve', 'choose-folder', 'choose-worktree-root', 'close', 'forget', 'open-worktree', 'remove-worktree', 'reset-worktree-root', 'resume',
       'resume-with-budget', 'set-enabled', 'set-max-sessions', 'start', 'stop', 'take-over',
     ].map((name) => `agent-inbox:launch-${name}`).sort())
     expect(w.made()).toBe(0)
@@ -1347,7 +1433,7 @@ describe('the launch IPC and its grants (§8)', () => {
   it('removes or opens a worktree only for the granted window, with exactly a launch id (#432)', async () => {
     const owned = world({ owned: true, granted: false })
     owned.r.state.launches[ID] = { id: ID, status: 'ended', project: 'alpha', worktree_path: '/w/alpha/fix-22222222', checkout_root: '/work/alpha', worktree_removed_at: null }
-    for (const channel of ['launch-remove-worktree', 'launch-open-worktree', 'launch-take-over']) expect(await owned.call(channel, ID)).toMatchObject({ ok: false })
+    for (const channel of ['launch-remove-worktree', 'launch-open-worktree', 'launch-take-over', 'launch-forget']) expect(await owned.call(channel, ID)).toMatchObject({ ok: false })
     expect(owned.r.calls).toEqual([])
     const w = world()
     w.r.state.launches[ID] = owned.r.state.launches[ID]!
@@ -1355,6 +1441,7 @@ describe('the launch IPC and its grants (§8)', () => {
     expect(await w.call('launch-open-worktree', ID, '/w')).toEqual({ ok: false, error: 'invalid' })
     expect(await w.call('launch-take-over', ID, 'copilot --yolo')).toEqual({ ok: false, error: 'invalid' })
     expect(await w.call('launch-take-over')).toEqual({ ok: false, error: 'invalid' })
+    expect(await w.call('launch-forget', ID, 1)).toEqual({ ok: false, error: 'invalid' })
     expect(await w.call('launch-open-worktree', ID)).toEqual({ ok: true })
     expect(await w.call('launch-remove-worktree', ID)).toEqual({ ok: true })
   })
@@ -1616,17 +1703,17 @@ describe('the preload bridge (§8)', () => {
     return { launch: exposed.agentInboxLaunch as Record<string, (...args: unknown[]) => Promise<Json>>, invoke }
   }
 
-  it('has exactly its sixteen methods, each with exact arity, and passes nothing it was not given', async () => {
+  it('has exactly its seventeen methods, each with exact arity, and passes nothing it was not given', async () => {
     const { launch, invoke } = loadPreload(() => ({ ok: true, launch: ID, path: '/secret', enabled: true }))
     expect(Object.keys(launch).sort()).toEqual([
-      'approve', 'available', 'chooseFolder', 'chooseWorktreeRoot', 'close', 'onStartProgress', 'openWorktree', 'removeWorktree', 'resetWorktreeRoot', 'resume',
+      'approve', 'available', 'chooseFolder', 'chooseWorktreeRoot', 'close', 'forget', 'onStartProgress', 'openWorktree', 'removeWorktree', 'resetWorktreeRoot', 'resume',
       'resumeWithBudget', 'setEnabled', 'setMaxSessions', 'start', 'stop', 'takeOver',
     ])
     // #432 §5: a cap of 1 to 8 only
     for (const bad of [0, 9, 2.5, '4']) expect(await launch.setMaxSessions!(bad)).toEqual({ ok: false, error: 'invalid' })
     expect(await launch.setMaxSessions!(4, 5)).toEqual({ ok: false, error: 'invalid' })
     // #432: a launch id only, never a path
-    for (const method of ['removeWorktree', 'openWorktree', 'takeOver']) {
+    for (const method of ['removeWorktree', 'openWorktree', 'takeOver', 'forget']) {
       expect(await launch[method]!('/w/alpha')).toEqual({ ok: false, error: 'invalid' })
       expect(await launch[method]!(ID, '/w/alpha')).toEqual({ ok: false, error: 'invalid' })
     }

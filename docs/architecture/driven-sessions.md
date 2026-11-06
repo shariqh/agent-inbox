@@ -834,3 +834,50 @@ keeps its session but resumes only with a new allowance, each one an explicit hu
   `test/launch-electron.test.ts` (the request, the confirmation's lines, the order, refusals, IPC,
   preload), `test/launches-page.test.ts`, `test/dom/driven-sessions.test.ts`, `test/mixed-version.test.ts`
   (the frozen v2.4.0 resume and spent check).
+
+## Forget an ended session (#478)
+
+- **What it removes.** `forgetLaunch(db, id, revision)` (`store.ts`, one `.immediate()` transaction)
+  deletes the launch row in one conditioned DELETE: the id, the revision main's confirmation read,
+  `status = 'ended'`, and no kept worktree (`worktree_path` null or `worktree_removed_at` set). With it
+  go the asks' mapping (`launch_asks`) and every `hook_watch_claims` row keyed to the launch (its
+  `driver-stop:`, `driver-interrupt:`, `driver-park:`, `driver-handoff:` and `driver-turn:` requests,
+  and leases whose token starts with `<id>:`). A refusal names why: `not_ended`, `worktree_kept`,
+  `revision` or `unknown`. `POST /api/launches/:id/forget` takes exactly `{ revision }` (a positive
+  integer; anything else is a 400) and, once deleted, removes `<hub dir>/launches/<id>` and
+  `<hub dir>/drivers/<id>`, the transcript and logs, as the 30-day prune does. Like Stop, the human's
+  own capability: a same-origin page could forget an ended session, but nothing is started or approved.
+- **What it keeps.** No worktree (Remove worktree… comes first), branch or commit is touched, nor
+  Copilot's own session files (`copilot --resume <id>` still opens a session that had one), nor the
+  items the session flagged, its resolved `@sessions` approvals or its messages.
+- **Deleted, not marked.** A `forgotten_at` column would need every read to filter it, and an older
+  viewer's `listLaunches` and `getLaunch`, an older main's row read and an older driver's
+  `resumeLaunch` would list, serve or resume the launch again. A deleted row is what they already see
+  after the prune, and the delete trigger moves the whole-table `launches` domain, so `/api/launches`,
+  Earlier sessions, ⌘K and the Sessions line drop it on the next tick (`test/mixed-version.test.ts`
+  pins a v2.5.0 viewer's list and row read and a v2.4.0 driver's resume). No column or trigger is added.
+- **Main** (`forget(id)`, IPC `launch-forget`, exactly a launch id, the `launch` grant). A fresh row read
+  must be ended with no kept worktree ("Stop/End the session before forgetting it", "Its worktree is
+  still there: use Remove worktree… first"). Its own confirmation (`forgetConfirmation`, Cancel the
+  default): the session (project and branch, or stream, and the task's first line, each through
+  `displayLine`), that its card, transcript and logs go for good, that its branch and commits stay, for a
+  handed-off launch that the Terminal Copilot is not touched, for a resumable one that it can no longer
+  be resumed from Agent Inbox but `copilot --resume` can still open it, and that Copilot's session
+  files and the session's flags are left as they are. It then posts the revision it read; a row that
+  moved meanwhile is kept ("The session changed since you confirmed…").
+- **The page.** `forgettable(launch)` (`public/launches.js`): ended, with no kept worktree. Its card (in
+  the Ended fold, Earlier sessions, or the main list for a stopped launch whose session is kept) offers
+  **Forget…** in the granted window; the panel's action bar shows it on every ended launch, disabled
+  with "Remove its worktree first" while the worktree is kept. Success reloads the launches, so the card
+  goes without a page reload, and closes the panel showing it; a refusal shows in the panel; Cancel
+  shows nothing. A launch stopped (or budget-ended) with its session kept is listed and filtered with
+  Parked (the filter reads "Parked or stopped") for its Resume…, but its card says **Stopped**: it has
+  ended, so there is no End.
+- **Not built.** End and forget for a parked launch with no worktree (End, then Forget, works). A
+  forgotten launch's removed worktree path is no longer left out of New session's folders when its
+  sessions recorded it as their `repo_root` (as after the 30-day prune); main refuses it as a folder
+  that does not exist.
+- **Tests**: `test/launches.test.ts` (refusals, the delete and what goes with it, the domain, the
+  route and the log folders), `test/launch-electron.test.ts` (the confirmation, order, refusals, IPC,
+  preload), `test/dom/driven-sessions.test.ts` (Stopped, the card and panel actions, the card and panel
+  gone, a refusal), `test/sessions.test.ts`, `test/mixed-version.test.ts`.

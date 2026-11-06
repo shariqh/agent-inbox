@@ -70,7 +70,7 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   newest idle or dormant card the same join matches; anything left gets an ask-only card,
   #454 A.1; the filter counts asks, so it equals `attentionEntries` under the lens), Didn't
   start / Not responding, Starting… / Stopping…, Working (`isWorking`), Idle or Quiet, Parked
-  (parked, or stopped with its session kept), In Terminal, Ended, Dormant (`isDormant`).
+  (parked, or stopped with its session kept, labelled Stopped, #478; the filter reads "Parked or stopped"), In Terminal, Ended, Dormant (`isDormant`).
   Quiet (#466) is the idle state's label when nothing can tell: a terminal session reports
   only through Agent Inbox calls, so one busy with `gh`, a shell or another server reads
   exactly like one waiting at its prompt. Only a driven row or a running launch whose
@@ -93,8 +93,9 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   grouping and folds are window-local and in `frameInputs()` (`agentsHome.state()`). A
   working card pulses once on a new call (`.sc.pulse`, in the Calm and reduced-motion
   lists). Card actions reuse the launch UI's own handlers (`launchUi.run`), Remove
-  worktree… included on an ended launch whose worktree is kept (main checks and asks, as
-  in the panel; only with the launch grant); one that fails opens the launch's panel,
+  worktree… included on an ended launch whose worktree is kept, and Forget… (#478) on an
+  ended launch with none left (main checks and asks, as in the panel; only with the launch
+  grant; a forgotten card goes on the next read, and its open panel closes); one that fails opens the launch's panel,
   where its note shows. Review opens the panel at the card's asks. Launches the project
   and agent lens hides that are not ended are named in one quiet line ("N sessions
   outside this filter · Show all", which clears the lens), and a session started, or a

@@ -91,7 +91,7 @@ describe('the Agents home (#454)', () => {
     expect(document.querySelector('.agents-home .ah-count')?.textContent).toBe('6 sessions')
     // Needs you counts what the badge does
     expect([...document.querySelectorAll('.agents-home [data-ah-filter]')].map((b) => [b.textContent, b.getAttribute('aria-pressed')])).toEqual([
-      ['All6', 'true'], ['Needs you3', 'false'], ['Working2', 'false'], ['Quiet1', 'false'], ['Parked0', 'false'],
+      ['All6', 'true'], ['Needs you3', 'false'], ['Working2', 'false'], ['Quiet1', 'false'], ['Parked or stopped0', 'false'],
     ])
     const orphan = card(`ask:item:${ids.retry}`)!
     expect(orphan.classList.contains('sc-ask-only')).toBe(true)

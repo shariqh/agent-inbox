@@ -163,8 +163,9 @@ describe('sessionCards: one card per session', () => {
     }))
     expect(cards[`launch:${ID(1)}`]).toMatchObject({ state: 'parked', place: 'main', recency: 'parked 2h', session: null,
       text: 'Parked: idle, its session kept. · 88 of 500 tool calls', historical: true })
-    // stopped with its session kept: Parked, so Resume stays at hand
-    expect(cards[`launch:${ID(2)}`]).toMatchObject({ state: 'parked', place: 'main', recency: 'stopped 1h' })
+    // stopped with its session kept: listed with Parked, so Resume stays at hand, but it says Stopped (#478)
+    expect(cards[`launch:${ID(1)}`]!.label).toBe('Parked')
+    expect(cards[`launch:${ID(2)}`]).toMatchObject({ state: 'parked', label: 'Stopped', place: 'main', recency: 'stopped 1h' })
     expect(cards[`launch:${ID(3)}`]).toMatchObject({ state: 'terminal', label: 'In Terminal', place: 'ended' })
     expect(cards[`launch:${ID(4)}`]).toMatchObject({ state: 'failed', label: 'Didn’t start', place: 'ended', text: 'Didn’t start: No model' })
     expect(cards[`launch:${ID(5)}`]).toMatchObject({ state: 'lost', label: 'Not responding', place: 'main', recency: 'no word for 10m' })

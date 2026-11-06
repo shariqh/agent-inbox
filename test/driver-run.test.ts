@@ -771,6 +771,25 @@ describe('agent-inbox-driver run (#412 step 3)', () => {
     expect(getLaunch(r.hub, LAUNCH)).toMatchObject({ status: 'ended', end_reason: 'budget:tool_calls', tool_calls: 3 })
   }, 40_000)
 
+  it('#479: a launch with no limit records NULL budgets, counts its usage across park and resume, and never ends on it', async () => {
+    const r = rig()
+    const first = runDriver(r, newSpec(r, { budgets: { activeMs: null, toolCalls: null }, env: { ...r.env, FAKE_TOOLS: '2' } }), { AGENT_INBOX_DRIVER_IDLE_MS: '400' })
+    expect(await first.status()).toEqual({ ok: true, launch: LAUNCH })
+    expect(await first.exited).toBe(0)
+    const parked = getLaunch(r.hub, LAUNCH)!
+    expect(parked).toMatchObject({ status: 'parked', budget_active_ms: null, budget_tool_calls: null, tool_calls: 2 })
+    // past what a limit could allow is no end: the resume passes the guard an older driver cannot
+    r.hub.prepare(`UPDATE launches SET tool_calls = 5000, active_ms = 36000000 WHERE id = ?`).run(LAUNCH)
+    const resumed = runDriver(r, { v: 1, kind: 'resume', launchId: LAUNCH, env: { ...r.env, FAKE_TOOLS_AFTER_LOAD: '1' }, launchKey: LAUNCH_KEY.toString('base64') })
+    expect(await resumed.status()).toEqual({ ok: true, launch: LAUNCH })
+    const events = join(r.dir, 'hub', 'launches', LAUNCH, 'events.ndjson')
+    await until(() => readFileSync(events, 'utf8').split('\n').filter((line) => line.includes('"event":"tool_call"')).length === 3, 'the loaded session’s tool call')
+    expect(getLaunch(r.hub, LAUNCH)).toMatchObject({ status: 'running', end_reason: null })
+    requestLaunchStop(r.hub, LAUNCH)
+    expect(await resumed.exited).toBe(0)
+    expect(getLaunch(r.hub, LAUNCH)).toMatchObject({ status: 'ended', end_reason: 'stopped', budget_tool_calls: null, tool_calls: 5001 })
+  }, 40_000)
+
   it('#451: resumes a budget-ended launch only with a raise at the confirmed revision, its totals up by exactly that, and loads its session', async () => {
     const r = rig()
     const first = runDriver(r, newSpec(r, { budgets: { activeMs: 7_200_000, toolCalls: 2 }, env: { ...r.env, FAKE_TOOLS: '2' } }))

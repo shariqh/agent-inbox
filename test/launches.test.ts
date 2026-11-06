@@ -561,6 +561,37 @@ describe('full resume (step 5)', () => {
     }
   })
 
+  it('#479: a launch with no limit stores NULL, resumes parked or stopped moving its revision by 2, and a raise adds only to a budget it has', () => {
+    createLaunch(db, launch(1, { budgetActiveMs: null, budgetToolCalls: null }))
+    expect(getLaunch(db, ID(1))).toMatchObject({ budget_active_ms: null, budget_tool_calls: null })
+    recordLaunchProgress(db, ID(1), { toolCalls: 900, activeMs: 9 * 3_600_000 })
+    parkLaunch(db, ID(1), { acpSession: 'acp-1', activeMs: 9 * 3_600_000, toolCalls: 900 })
+    const parked = getLaunch(db, ID(1))!
+    expect(resumeLaunch(db, ID(1), 77)).toMatchObject({ status: 'running', revision: parked.revision + 2, budget_active_ms: null, budget_tool_calls: null })
+    endLaunch(db, ID(1), { reason: 'stopped' })
+    const stopped = getLaunch(db, ID(1))!
+    expect(resumeLaunch(db, ID(1), 78)).toMatchObject({ status: 'running', revision: stopped.revision + 2, resumedFrom: 'ended' })
+    // a limited launch's resume still moves it by 1
+    createLaunch(db, launch(2))
+    parkLaunch(db, ID(2), { acpSession: 'acp-2', activeMs: 0, toolCalls: 0 })
+    const limited = getLaunch(db, ID(2))!.revision
+    expect(resumeLaunch(db, ID(2), 79)!.revision).toBe(limited + 1)
+    // tool calls limited, active time not: the raise checks and adds to tool calls only
+    createLaunch(db, launch(3, { budgetActiveMs: null, budgetToolCalls: 3 }))
+    recordLaunchProgress(db, ID(3), { toolCalls: 3, activeMs: 9 * 3_600_000 })
+    endLaunch(db, ID(3), { reason: 'budget:tool_calls', acpSession: 'acp-3' })
+    const ended = getLaunch(db, ID(3))!
+    expect(resumeLaunch(db, ID(3), 80, { revision: ended.revision, activeMs: 0, toolCalls: 0 })).toBeNull()
+    const raised = resumeLaunch(db, ID(3), 80, { revision: ended.revision, activeMs: 0, toolCalls: 5 })!
+    expect(raised).toMatchObject({ status: 'running', budget_active_ms: null, budget_tool_calls: 8, revision: ended.revision + 2 })
+    expect(raised.previous).toMatchObject({ budget_active_ms: null, budget_tool_calls: 3 })
+    expect(restoreStoppedLaunch(db, ID(3), 80, raised.previous!)).toBe(true)
+    expect(getLaunch(db, ID(3))).toMatchObject({ status: 'ended', end_reason: 'budget:tool_calls', budget_active_ms: null, budget_tool_calls: 3 })
+    // #478: forgotten like any ended launch
+    expect(forgetLaunch(db, ID(3), getLaunch(db, ID(3))!.revision)).toEqual({ ok: true })
+    expect(getLaunch(db, ID(3))).toBeNull()
+  })
+
   it('a stopped launch with its session can be taken over in Terminal instead, and is then never resumed', () => {
     createLaunch(db, launch(1))
     endLaunch(db, ID(1), { reason: 'stopped', acpSession: 'acp-1' })

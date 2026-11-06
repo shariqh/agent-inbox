@@ -69,6 +69,8 @@ const isRecord = (value) => value !== null && typeof value === 'object' && !Arra
 const exactKeys = (value, required, optional = []) =>
   required.every((key) => key in value) && Object.keys(value).every((key) => required.includes(key) || optional.includes(key))
 const inBounds = (value, { min, max }) => Number.isSafeInteger(value) && value >= min && value <= max
+// #479: a budget is a limit within its bounds, or null: no limit
+const limitOrNone = (value, bounds) => value === null || inBounds(value, bounds)
 
 /** The renderer's New session request, checked exactly, or null. */
 function launchRequest(value) {
@@ -81,7 +83,7 @@ function launchRequest(value) {
   if (value.model !== undefined && (typeof value.model !== 'string' || !MODEL.test(value.model))) return null
   if (value.reasoningEffort !== undefined && !EFFORTS.has(value.reasoningEffort)) return null
   if (!isRecord(value.budgets) || !exactKeys(value.budgets, ['activeMs', 'toolCalls'])) return null
-  if (!inBounds(value.budgets.activeMs, BUDGETS.activeMs) || !inBounds(value.budgets.toolCalls, BUDGETS.toolCalls)) return null
+  if (!limitOrNone(value.budgets.activeMs, BUDGETS.activeMs) || !limitOrNone(value.budgets.toolCalls, BUDGETS.toolCalls)) return null
   if (typeof value.prompt !== 'string' || !value.prompt.trim() || value.prompt.length > MAX_PROMPT) return null
   return {
     root: value.root,
@@ -155,6 +157,14 @@ function duration(ms) {
   return rest ? `${hours} h ${rest} min` : `${hours} h`
 }
 
+// #479: "Budgets: up to 2 h of active turn time and 500 tool calls.", or no limit for either or both
+function budgetLine({ activeMs, toolCalls }) {
+  if (activeMs === null && toolCalls === null) return 'Budgets: no limit on active turn time or tool calls.'
+  const active = activeMs === null ? 'no limit on active turn time' : `up to ${duration(activeMs)} of active turn time`
+  const tools = toolCalls === null ? 'no limit on tool calls' : `${activeMs === null ? 'up to ' : ''}${toolCalls} tool calls`
+  return `Budgets: ${active} and ${tools}.`
+}
+
 /** The native confirmation main builds itself (§8): what it shows is what it sends. */
 function confirmation({ project, folder, worktree, mode, model, reasoningEffort, budgets, prompt }) {
   const preview = prompt.length > PROMPT_PREVIEW ? `${prompt.slice(0, PROMPT_PREVIEW)}…` : prompt
@@ -170,7 +180,7 @@ function confirmation({ project, folder, worktree, mode, model, reasoningEffort,
       ] : []),
       `Mode: ${MODES[mode].label}. ${MODES[mode].copy}`,
       `Model: ${model ?? 'your Copilot default'}${reasoningEffort ? `, reasoning effort ${reasoningEffort}` : ''}`,
-      `Budgets: up to ${duration(budgets.activeMs)} of active turn time and ${budgets.toolCalls} tool calls.`,
+      budgetLine(budgets),
       'Once any shell command is allowed, the session can run anything, in its folder and beyond. Answer each approval with that in mind.',
       '',
       `Task: ${displaySafe(preview)}`,
@@ -241,7 +251,9 @@ const calls = (n) => plural(n, 'tool call', 'tool calls')
  */
 function budgetConfirmation({ launch, folder, add }) {
   const which = launch.end_reason === 'budget:tool_calls' ? 'tool-call' : 'active-time'
-  const line = (label, ms, n) => `${label}: ${duration(ms)} of active turn time and ${calls(n)}.`
+  // #479: a budget with no limit stays so
+  const line = (label, ms, n) => `${label}: ${ms === null ? 'no limit on active turn time' : `${duration(ms)} of active turn time`} and ${n === null ? 'no limit on tool calls' : calls(n)}.`
+  const raised = (budget, more) => (budget === null ? null : budget + more)
   return {
     message: `Resume the session of ${displayLine(launch.project)} with more budget?`,
     detail: [
@@ -250,7 +262,7 @@ function budgetConfirmation({ launch, folder, add }) {
       line('Budgets', launch.budget_active_ms, launch.budget_tool_calls),
       line('Used', launch.active_ms, launch.tool_calls),
       `Add: ${duration(add.activeMs)} and ${calls(add.toolCalls)}.`,
-      line('New budgets', launch.budget_active_ms + add.activeMs, launch.budget_tool_calls + add.toolCalls),
+      line('New budgets', raised(launch.budget_active_ms, add.activeMs), raised(launch.budget_tool_calls, add.toolCalls)),
       `Mode: ${MODES[launch.mode]?.label ?? displayLine(launch.mode)}.`,
       'Once any shell command is allowed, the session can run anything, in its folder and beyond. Answer each approval with that in mind.',
     ].join('\n'),
@@ -320,7 +332,8 @@ const stoppedWithSession = (launch) => launch.status === 'ended' && launch.end_r
 // #451: one a budget ended, likewise kept, with the numbers its confirmation shows
 const budgetEnded = (launch) => launch.status === 'ended' && /^budget:(active_time|tool_calls)$/.test(launch.end_reason) && launch.resumable === true
   && !(typeof launch.worktree_path === 'string' && launch.worktree_removed_at)
-  && ['revision', 'budget_active_ms', 'budget_tool_calls', 'active_ms', 'tool_calls'].every((key) => Number.isSafeInteger(launch[key]) && launch[key] >= 0)
+  && ['revision', 'active_ms', 'tool_calls'].every((key) => Number.isSafeInteger(launch[key]) && launch[key] >= 0)
+  && ['budget_active_ms', 'budget_tool_calls'].every((key) => launch[key] === null || (Number.isSafeInteger(launch[key]) && launch[key] >= 0))
 const folderGone = (launch) => refused(typeof launch.branch === 'string' && launch.branch
   ? `The session’s folder does not exist any more. Its branch ${launch.branch} is still in your repository.`
   : 'The session’s folder does not exist any more.')
@@ -603,8 +616,11 @@ function createLaunchController(deps) {
         if (!launch || !budgetEnded(launch)) {
           return refused('This session cannot be resumed with more budget: only one that used its budget, with its session kept, can be.')
         }
-        if (launch.budget_active_ms + add.activeMs <= launch.active_ms) return refused(`Add active time: it has used ${duration(launch.active_ms)} of it.`)
-        if (launch.budget_tool_calls + add.toolCalls <= launch.tool_calls) return refused(`Add tool calls: it has used ${calls(launch.tool_calls)}.`)
+        // #479: a budget with no limit takes no allowance
+        if (launch.budget_active_ms === null && add.activeMs) return refused('It has no active-time limit to add to.')
+        if (launch.budget_tool_calls === null && add.toolCalls) return refused('It has no tool-call limit to add to.')
+        if (launch.budget_active_ms !== null && launch.budget_active_ms + add.activeMs <= launch.active_ms) return refused(`Add active time: it has used ${duration(launch.active_ms)} of it.`)
+        if (launch.budget_tool_calls !== null && launch.budget_tool_calls + add.toolCalls <= launch.tool_calls) return refused(`Add tool calls: it has used ${calls(launch.tool_calls)}.`)
         const real = realDirectory(launch.cwd)
         if (!real) return folderGone(launch)
         const found = runtimeOrRefusal()

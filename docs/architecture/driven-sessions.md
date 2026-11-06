@@ -126,8 +126,9 @@ Claude Code and Copilot CLI load this file automatically when they read or edit 
   session's open messages move to the launch's newest live server through `readdressMessages`
   (conditioned in the store on both `driven:` leases carrying the launch id and `to` having the
   launch's host), and their pushed ids move in `pushed.json`.
-- **Lifecycle** (§7). Budgets: active turn time (2 h), tool calls (500); 2 h idle ends the session (no
-  park in step 2). Stop (Ctrl-C, `stop <launch id>`, or the end of any budget): open requests
+- **Lifecycle** (§7). Budgets: active turn time and tool calls, each with no limit unless the launch
+  sets one (#479; `Infinity` in `DriverTiming`, the default, so the terminal driver has none); 2 h idle
+  ends the session (no park in step 2). Stop (Ctrl-C, `stop <launch id>`, or the end of any budget): open requests
   answered `cancelled`, asks resolved "Session stopped.", `session/cancel`, wait up to 10 s for the
   turn, close the child's stdin, SIGTERM its process group after 10 s more, release the leases. After
   30 s without a successful hub read the driver fails closed (`error:hub_unreachable`).
@@ -208,8 +209,8 @@ Claude Code and Copilot CLI load this file automatically when they read or edit 
 - **The spec** (`launch-spec.ts`) is versioned (`LAUNCH_SPEC_VERSION = 1`), at most 1 MiB, read
   from fd 3 to its end, and validated strictly: exact fields (any unknown one, such as an
   executable or argv, refuses), the launch id must equal argv's, `cwd` absolute, modes `ask`,
-  `read-only` and `plan`, Copilot's own effort levels, bounded budgets (active time 1 min to 8 h,
-  tool calls 1 to 2000), a 1 to 65536-character prompt, an env of name → string, and a 32-byte
+  `read-only` and `plan`, Copilot's own effort levels, budgets that are each `null` (no limit, #479) or
+  bounded (active time 1 min to 8 h, tool calls 1 to 2000), a 1 to 65536-character prompt, an env of name → string, and a 32-byte
   base64 launch key. A `resume` spec carries only the id, env and key: the facts come from the row.
   The driver reads fd 3 only after `fstat` shows a socket (Node's `'pipe'` stdio) or a real FIFO;
   anything else (no pipe passed, where Node's own kqueue holds fd 3 as a FIFO with no permission
@@ -383,7 +384,8 @@ Approve), `public/agents-home.js` and `public/sessions.js` (the launch cards, #4
 - **New session** is a modal `<dialog>` outside the render tree: a project from
   `GET /api/launch-folders` or "Choose folder…" (`root: null`, main's own dialog), the agent fixed to
   Copilot, the three modes with their plain copy and the shell warning, an optional model and reasoning
-  effort, budgets (default 2 h and 500 tool calls, bounds as main's), and the task with its no-secrets
+  effort, limits on active time and tool calls (empty, the default, is no limit, #479; bounds as
+  main's), and the task with its no-secrets
   warning. `newSessionRequest` builds exactly the request main checks again; main's own confirmation is
   the one the human answers.
 - **Drafts.** The dialog's task is a draft in `suspendState()` while the dialog is open (the dialog is
@@ -796,6 +798,45 @@ Design §14.8. Step 3's minimal resume loaded only a parked launch's session.
   `test/driver-run.test.ts` (stop, a refused resume left stopped, a resume by load; a worktree relocked and
   unlocked again), `test/launch-electron.test.ts`, `test/launches-page.test.ts`,
   `test/dom/driven-sessions.test.ts` (the stopped row, Earlier sessions).
+
+## Budgets optional, no limit by default (#479)
+
+Design §14.9. A launch's budgets, active turn time and tool calls, are each a limit or `null`: no
+limit. None is the default; a caller (the human today, A2A later) may still set either.
+
+- **The store.** `launches.budget_active_ms` and `budget_tool_calls` are nullable. A hub made before
+  held them `NOT NULL`, so `migrateOptionalBudgets` rebuilds the table inside the migration's
+  `.immediate()` transaction: the table's own `CREATE` text without the two `NOT NULL`s (column order
+  kept, so the snapshot trigger hashes stay the same), every row copied, then every index and trigger
+  the table had made again, `snapshot_` ones included. A later open finds them nullable and rebuilds
+  nothing. No `0` sentinel: `null` is no limit, and a limit is never 0.
+- **The driver** passes `Infinity` to `DriverTiming` for a `null` budget, so neither check ever ends
+  the launch; `active_ms` and `tool_calls` are still counted and reported. `run`'s spent check at a
+  resume skips a `null` budget. Idle parking is unchanged.
+- **Main** (`launchRequest`) takes each budget as `null` or within its bounds, never left out or 0;
+  the confirmation's line reads "Budgets: no limit on active turn time or tool calls.", or names the
+  limit set. #451's `resumeWithBudget` accepts a budget-ended launch whose other budget is `null`,
+  refuses an allowance for a `null` budget ("It has no active-time limit to add to."), and its
+  confirmation says "no limit on …" for it; the store's raise checks and adds only a limit it has.
+- **The page.** New session's **Active time limit (hours)** and **Tool call limit** are empty, "No
+  limit", by default; `newSessionRequest` sends `null` for an empty one. The card reads "· 41 tool
+  calls" and the panel "41 tool calls · 38m active" with no limit, "41 of 500 tool calls · 38m of 2h
+  active" with one. Resume with more budget… shows a field only for a budget the launch has.
+- **Mixed versions** (fail closed). The spec version stays 1: an older driver's validator refuses a
+  `null` budget (exit 65, "a budget is out of bounds"), so it never starts such a launch. An older
+  driver reads a `null` budget as 0 (`tool_calls >= null`) and would end a resumed launch as "budget
+  used", so the trigger `launches_no_limit_resume_guard` refuses its resume: a move into `running`
+  of a launch with a `null` budget must move `revision` by 2. This build's `resumeLaunch` does so for
+  such a launch; every older build's resume moves it by 1, so its UPDATE aborts, its transaction rolls
+  back and the row stays as it was (the driver exits without starting Copilot). An older main's
+  `budgetEnded` requires integer budgets, so it never resumes such a launch with more budget. An older
+  viewer's panel reads "41 of null tool calls · 38m of 0m active" and its card leaves the count out;
+  only its Resume with more budget… reads the numbers, and its main refuses that.
+- **Tests**: `test/launches.test.ts`, `test/launch-spec.test.ts`, `test/driver.test.ts` (501 tool
+  calls, no end), `test/driver-run.test.ts` (end to end: parked, resumed past any limit, stopped),
+  `test/launch-electron.test.ts`, `test/launches-page.test.ts`, `test/dom/driven-sessions.test.ts`,
+  `test/mixed-version.test.ts` (the v2.5.0 table migrated with its rows and triggers; the frozen v2.4.0
+  and v2.5.0 resume statements refused; the v2.5.0 spec check).
 
 ## Step 5, part 3: resume with more budget (#451)
 

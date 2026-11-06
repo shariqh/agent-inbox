@@ -501,7 +501,7 @@ async function runLaunch(argv: string[]): Promise<void> {
   }
 
   // the launch's facts: from the spec, or, resuming, from the row the first driver wrote
-  let facts: { cwd: string; mode: LaunchMode; model?: string; reasoningEffort?: ReasoningEffort; activeMs: number; toolCalls: number; prompt: string; project: string; stream: string }
+  let facts: { cwd: string; mode: LaunchMode; model?: string; reasoningEffort?: ReasoningEffort; activeMs: number | null; toolCalls: number | null; prompt: string; project: string; stream: string }
   // the launch's usage so far: the budgets are per-launch totals across park and resume
   let used = { activeMs: 0, toolCalls: 0 }
   let resume: Pick<DriverOptions, 'loadSessionId' | 'priorSessions'> = {}
@@ -509,7 +509,7 @@ async function runLaunch(argv: string[]): Promise<void> {
   let loading: string | null = null
   // step 5: git's refusal to lock a resumed stopped launch's worktree again, logged once the event log is open
   let relockFailed: string | null = null
-  let raised: { from: { activeMs: number; toolCalls: number }; to: { activeMs: number; toolCalls: number } } | null = null
+  let raised: { from: { activeMs: number | null; toolCalls: number | null }; to: { activeMs: number | null; toolCalls: number | null } } | null = null
   if (spec.kind === 'new') {
     let cwd: string
     try {
@@ -608,8 +608,9 @@ async function runLaunch(argv: string[]): Promise<void> {
       activeMs: row.budget_active_ms, toolCalls: row.budget_tool_calls, prompt: row.prompt, project: row.project, stream: row.stream,
     }
     used = { activeMs: row.active_ms, toolCalls: row.tool_calls }
-    // a launch that already used a budget ends here, before anything starts
-    const spent = row.tool_calls >= row.budget_tool_calls ? 'budget:tool_calls' : row.active_ms >= row.budget_active_ms ? 'budget:active_time' : null
+    // a launch that already used a budget ends here, before anything starts; #479: null is no limit
+    const spent = row.budget_tool_calls !== null && row.tool_calls >= row.budget_tool_calls ? 'budget:tool_calls'
+      : row.budget_active_ms !== null && row.active_ms >= row.budget_active_ms ? 'budget:active_time' : null
     if (spent) {
       undoRow = (why) => { endLaunch(db, launchId, { reason: spent, detail: why }); unlockAtEnd() }
       return refuse(`launch ${launchId} has used its ${spent === 'budget:tool_calls' ? 'tool-call' : 'active-time'} budget`)
@@ -721,7 +722,7 @@ async function runLaunch(argv: string[]): Promise<void> {
     context: 'app',
     effortFallback,
     timing: {
-      activeMs: facts.activeMs, maxToolCalls: facts.toolCalls,
+      activeMs: facts.activeMs ?? Infinity, maxToolCalls: facts.toolCalls ?? Infinity,
       ...(linkWaitMs === undefined ? {} : { linkWaitMs }),
       ...(idleMs === undefined ? {} : { idleMs }),
     },

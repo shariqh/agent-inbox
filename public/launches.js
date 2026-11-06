@@ -60,10 +60,12 @@ export function newSessionRequest({ root, worktree, mode, model, reasoningEffort
   const trimmedModel = typeof model === 'string' ? model.trim() : ''
   if (trimmedModel && !MODEL.test(trimmedModel)) return { error: 'A model id is letters, digits, dots, dashes or underscores.' }
   if (reasoningEffort && !REASONING_EFFORTS.includes(reasoningEffort)) return { error: 'Choose a reasoning effort from the list.' }
-  const hours = Number(activeHours)
-  if (!Number.isFinite(hours) || hours * 60 < 1 || hours > 8) return { error: 'Active time is between 1 minute and 8 hours.' }
-  const calls = Number(toolCalls)
-  if (!Number.isInteger(calls) || calls < 1 || calls > 2000) return { error: 'Tool calls are between 1 and 2000.' }
+  // #479: an empty limit is no limit, the default
+  const blank = (value) => value === null || value === undefined || String(value).trim() === ''
+  const hours = blank(activeHours) ? null : Number(activeHours)
+  if (hours !== null && (!Number.isFinite(hours) || hours * 60 < 1 || hours > 8)) return { error: 'Active time is empty for no limit, or between 1 minute and 8 hours.' }
+  const calls = blank(toolCalls) ? null : Number(toolCalls)
+  if (calls !== null && (!Number.isInteger(calls) || calls < 1 || calls > 2000)) return { error: 'Tool calls are empty for no limit, or between 1 and 2000.' }
   if (typeof prompt !== 'string' || !prompt.trim()) return { error: 'Describe the task.' }
   if (prompt.length > MAX_PROMPT) return { error: 'The task is longer than 65,536 characters.' }
   return {
@@ -72,7 +74,7 @@ export function newSessionRequest({ root, worktree, mode, model, reasoningEffort
       mode,
       ...(trimmedModel ? { model: trimmedModel } : {}),
       ...(reasoningEffort ? { reasoningEffort } : {}),
-      budgets: { activeMs: Math.round(hours * 60) * 60_000, toolCalls: calls },
+      budgets: { activeMs: hours === null ? null : Math.round(hours * 60) * 60_000, toolCalls: calls },
       prompt,
       // only the wish: main plans the worktree's path and branch itself (#432)
       ...(worktree === true ? { worktree: true } : {}),
@@ -142,13 +144,16 @@ function budgetEnded(launch) {
  * @returns {{add: {activeMs: number, toolCalls: number}} | {error: string}}
  */
 export function budgetAllowance(launch, { activeHours, toolCalls }) {
-  const hours = Number(activeHours)
-  const calls = Number(toolCalls)
+  // #479: a budget with no limit takes nothing
+  const noTime = launch.budget_active_ms === null
+  const noCalls = launch.budget_tool_calls === null
+  const hours = noTime ? 0 : Number(activeHours)
+  const calls = noCalls ? 0 : Number(toolCalls)
   if (!Number.isFinite(hours) || hours < 0 || hours > 8) return { error: 'Add between 0 and 8 hours of active time.' }
   if (!Number.isInteger(calls) || calls < 0 || calls > 2000) return { error: 'Add between 0 and 2000 tool calls.' }
   const add = { activeMs: Math.round(hours * 60) * 60_000, toolCalls: calls }
-  if (launch.budget_active_ms + add.activeMs <= launch.active_ms) return { error: 'Add active time: it has used all of it.' }
-  if (launch.budget_tool_calls + add.toolCalls <= launch.tool_calls) return { error: 'Add tool calls: it has used all of them.' }
+  if (!noTime && launch.budget_active_ms + add.activeMs <= launch.active_ms) return { error: 'Add active time: it has used all of it.' }
+  if (!noCalls && launch.budget_tool_calls + add.toolCalls <= launch.tool_calls) return { error: 'Add tool calls: it has used all of them.' }
   return { add }
 }
 
@@ -258,7 +263,7 @@ export function transcriptLines(events) {
         break
       case 'budget_raised':
         flush()
-        lines.push({ kind: 'note', text: `You added budget: ${minutes(event.to?.activeMs)} of active time and ${event.to?.toolCalls ?? '?'} tool calls in all.` })
+        lines.push({ kind: 'note', text: `You added budget: ${event.to?.activeMs === null ? 'no limit on active time' : `${minutes(event.to?.activeMs)} of active time`} and ${event.to?.toolCalls === null ? 'no limit on tool calls' : `${event.to?.toolCalls ?? '?'} tool calls`} in all.` })
         break
       case 'handoff_requested':
         flush()

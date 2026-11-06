@@ -119,8 +119,55 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
   the screen refuse before any network; one retry only when the time left covers its
   output limit at the box's reported speed, else 44 tok/s; a §6.3 result with an exit
   class 0/10/11/12/13; a log callback that gets sizes, timings, classes and check
-  results, never text or a matched value; clock, random and transport injectable). The
-  A2A server, queue, token, `mesh.json` gate and daily budget are U2b; the CLI is U3.
+  results, never text or a matched value; clock, random and transport injectable).
+- **U2b (the agent process):** `a2a.ts`, `agent.ts`, `files.ts` and the `wrap.ts` entry.
+  Build with `npm ci && npm run build` (Node 24) in `packages/mesh`, then run
+  `node packages/mesh/dist/wrap.js --agent openai-compatible --profile unslop` (the
+  package's `agent-inbox-wrap` bin). Exit 0 when it stops, 1 when it refuses to start,
+  4 on a usage error; it prints only this package's own fixed messages (`ConfigError`),
+  and anything else as "internal error", so no file content or key reaches its output.
+  Nothing starts it yet: `meshctl enable --unslop` and the on-demand
+  spawn are U3a/U3b.
+  - **The gate (design §4.5 (e)).** It refuses to start unless `<mesh dir>/mesh.json`
+    (the reading rule above) has `agents.unslop.endpoint` equal to
+    `http://127.0.0.1:<port>` (not port 80: clients drop `:80` from `Host`); it binds that port on `127.0.0.1` and nothing else
+    (`startServer` refuses any other host). It re-reads `mesh.json` once a minute and
+    exits when the key goes or the endpoint changes, and after 30 minutes with no task
+    and no authenticated request.
+  - **The files it reads,** all under `<mesh dir>/mesh/`, each a regular file (never a
+    symlink) owned by the user with no group or other bits: `wrappers/unslop.json` (the
+    profile: `skill` folder, `baseUrl`, `apiKey` as `{ "env": NAME }`, `{ "file": absolute path }`
+    or `{ "command": [absolute path, ...args] }` run without a shell, optional `model`,
+    `sampling`, `terms`, `allowEmails`, `customerPaths`; other keys are ignored),
+    `tokens/unslop` (at least 32 printable characters) and `unslop-deny.txt` (optional,
+    re-read for every task). The rules come from the profile's skill folder through
+    `rules.ts`. It writes `unslop-budget.json` (today's task count and model time, 0600)
+    and `logs/unslop-YYYY-MM-DD.log` (0600, one JSON line per task: id, sizes, timings,
+    kind, model, `rulesSha256`, check results and refusal classes; never text, a matched
+    value, the token or the API key).
+  - **A2A (design §7.3, §8.3).** A hand-rolled JSON-RPC subset of A2A 1.0 on `node:http`
+    (no `@a2a-js/sdk`: its server adapters need Express and carry push-notification and
+    database surfaces this agent would have to disable). `GET /.well-known/agent-card.json`
+    needs no token; `POST /` takes `SendMessage`, `SendStreamingMessage`, `GetTask` and
+    `CancelTask` with `A2A-Version: 1.0` and `Authorization: Bearer <token>`
+    (`timingSafeEqual` after a length check). Any `Origin` header, a `Host` other than
+    `127.0.0.1:<port>`, a push-notification config, a message that continues a task, a
+    body over 64 KiB and a request not received within 10 s are refused. The message is
+    one text part; `metadata["urn:agent-inbox:ext:unslop:v1"]` carries `kind` and
+    `timeoutMs` (default 280000). Streaming sends status only (`waiting`, `editing`,
+    `checking`, `retrying`); the text arrives once, in an artifact sent with `COMPLETED`
+    (a text part and a data part with §6.3's report). A task belongs to the token that
+    created it; the last 64 finished tasks stay readable. A stream that disconnects does
+    not cancel its task: the CLI falls back to `GetTask` (§7.3), so the task runs on and
+    only `CancelTask`, the task limit or the agent stopping ends it early. A task always
+    reaches a final state: a budget write that fails refuses the task (`take`) or is
+    reported on stderr (`spend`), and any other failure inside the server ends it
+    `FAILED` "internal". Stopping the agent logs each task that never started.
+  - **Queue and budget (design §7.2).** One task runs and one waits; a third, or one whose
+    estimated wait plus its own estimate (`max_tokens` at 44 tok/s) exceeds its
+    `timeoutMs`, is `REJECTED` as busy (12) with `retryAfterMs`. A task gets at most
+    270 s from its start, and never more than what queueing left of its `timeoutMs`. After 200
+    tasks or 180 model-minutes in a local day, tasks are `REJECTED` "daily-budget" (11).
 - **One `mesh.json` rule, held twice.** The package cannot import `src/mesh-config.ts`,
   so it carries a reader with the same rule and the same `meshDir()` order. The cases in
   `test/fixtures/mesh-json/cases.json` run in both suites: `test/mesh-json-parity.test.ts`

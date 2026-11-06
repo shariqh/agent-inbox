@@ -202,7 +202,7 @@ describe('local marketing page', () => {
   it('has a complete, self-contained light-first page with no live inbox connection', () => {
     const { html } = boot({ dark: true })
     expect(document.title).toContain('Agent Inbox')
-    expect(document.querySelector('.release-line .version')?.textContent).toBe('v2.4.0')
+    expect(document.querySelector('.release-line .version')?.textContent).toBe('v2.5.0')
     expect(document.documentElement.dataset.theme).toBe('light')
     expect(document.querySelectorAll('h1')).toHaveLength(1)
     expect(document.querySelector('h1')?.textContent).toContain('every terminal.')
@@ -620,6 +620,7 @@ describe('local marketing page', () => {
     expect(agents).toContain('The Agents view gives each session a card')
     expect(agents).toContain('answer, snooze, or pin a request in its panel')
     expect(agents).toContain('a request from a session that has ended gets its own card')
+    expect(agents).toContain('a session busy with other tools shows as working even before it reports')
     expect(agents).not.toContain('lane')
     expect(agents).not.toContain('rail')
     const messages = aside('Message a running session.')

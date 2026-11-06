@@ -1,8 +1,7 @@
 # Design: unslop as the first A2A agent (local model)
 
 **Date:** 2026-11-06 (revised the same day after an independent review)
-**Status:** Proposal. Shariq chose the direction (§1); everything else here is a recommendation,
-with open questions in §14.
+**Status:** Accepted by Shariq on 2026-11-06 ("Approve, assistants may call it"). Decisions in §14.
 **Issue:** #483. Tracking: #404 (mesh M2–M9).
 **Scope of this PR:** this document, small amendments to the mesh design
 ([`2026-10-29-agent-mesh-design.md`](2026-10-29-agent-mesh-design.md), §15) and a backlog
@@ -10,12 +9,12 @@ pointer. No source, test or workflow changes.
 
 ## §0 — Summary
 
-1. **A proposed phase, M2a, before M2's Copilot spike,** ships one A2A agent on loopback: the
+1. **A new phase, M2a, before M2's Copilot spike,** ships one A2A agent on loopback: the
    `openai-compatible` model agent of mesh §6.6, with `unslop` as its only skill, calling the
    homelab model box (ubi-llm). No registry, chain ledger, bridge or viewer change.
-2. **Who may send text off the Mac is the first question (Q1).** If Copilot or Claude call the
-   agent on their own, text leaves the Mac with no human seeing it: agent-initiated egress, which
-   D4's first-hop click exists to catch. Recommended for the trial: human-run calls only.
+2. **Assistants may call it on their own (decided).** When Copilot or Claude call the agent, text
+   leaves the Mac with no human seeing it: agent-initiated egress, which D4's first-hop click exists
+   to catch. Shariq accepted that for M2a, guarded by the screen and the self-declared `--kind`.
 3. **One rules file.** The agent reads unslop's rules from the file Shariq already edits. Each
    assistant's skill keeps a short `SKILL.md` and reads the same `rules.md` when it edits
    in-session. Nothing is copied into this public repository.
@@ -48,14 +47,14 @@ listeners. `delegate()`. Viewer changes. Chunking long documents. A model that j
 
 ## §2 — Decision 1: where it sits in the phase plan, and who may call it
 
-**Recommendation: a new phase, M2a, before M2** (proposed; mesh §14.2 P15). M2 and every later
+**Decision: a new phase, M2a, before M2** (mesh §14.1 D9). M2 and every later
 phase keep their scope and order. M2a builds what M2 needs anyway: `packages/mesh`, an A2A server
 on loopback with a local token, and an A2A client in `meshctl`.
 
 | Mesh piece | What M2a uses | Deferred to |
 |---|---|---|
 | Registry (§5) | Nothing. Discovery is one `mesh.json` entry (§4.4) | M3 registers the agent as an `a2a` instance |
-| Admission (§8.1–§8.4) | Loopback, a bearer token, a daily budget, the caller policy (Q1) | M4: chains, grants, the kill switch; Q6 decides unslop's approval there |
+| Admission (§8.1–§8.4) | Loopback, a bearer token, a daily budget | M4: chains, grants, the kill switch; unslop's approval there is decided at the M2a checkpoint (§14) |
 | Bridge (§7) | Nothing. A CLI is the call path | M6 |
 | Wrapper (§6) | The `openai-compatible` agent, one skill | M2, M5: ACP wrappers. M7: other model skills, load, routing |
 | Bench (§17.2) | Scenario S11 and a small runner | M2 absorbs the runner into `agent-inbox-bench` |
@@ -63,32 +62,21 @@ on loopback with a local token, and an A2A client in `meshctl`.
 **Why first.** Unslop has no tools, no workspace and no repository, so §6.3's isolation does not
 apply. It tests the A2A plumbing, the opt-in switch and the local model on a daily task.
 
-**Agent-initiated egress.** In practice an assistant decides by itself to run unslop, and nothing
-shows the human the text before it leaves the Mac. D4's first-hop click (mesh §8.2) is the control
-that would catch a mis-routed draft, such as a customer reply the assistant thought was a PR body.
-M2a has no click, so Q1 asks which callers it accepts before M4:
-
-- **(a) Any caller.** Assistants call it freely; the screen (§5) is the only check. Risk: a
-  header-less private draft with no listed name passes.
-- **(b) Human-run only (recommended for the trial).** The profile sets `callers: "human"`, and the
-  assistants' `SKILL.md` has no agent-call step at all (§3.3), so they edit in-session. The CLI also
-  shows the first 20 lines and the kind and asks `y/N` on `/dev/tty` (stdin carries the text); no
-  terminal, `N`, or no answer within 30 s is exit 15. That prompt is a backstop, not the control: an
-  assistant's shell may have a terminal (a pty, or the user's own), so §3.4 checks each shell, and an
-  agent that types `y` is a determined agent (mesh §3).
-- **(c) A time-boxed allow.** The human runs `unslop allow 2h` at a terminal (`y/N`); assistants may
-  call until it expires. There is no per-session identity before M4, so the allow covers every
-  session.
-
-Under (b) an M2a call is a human using a tool, not delegation. Under (a) or (c) each assistant call
-is delegation without D4's click, an exception Shariq would be accepting. Mesh §8's preamble says
-so. The trial evidence (refusals by class, kinds used) informs a move to (c) or to M4's approval.
+**Agent-initiated egress (decided 2026-11-06).** In practice an assistant decides by itself to run
+unslop, and nothing shows the human the text before it leaves the Mac. D4's first-hop click
+(mesh §8.2) is the control that would catch a mis-routed draft, such as a customer reply the
+assistant thought was a PR body. M2a has no click. Shariq chose to let assistants call it anyway:
+the screen (§5) and the self-declared `--kind` are the only checks, and a header-less private draft
+with no listed name and no letter shape passes them. Each assistant call is delegation without D4's
+click, an exception Shariq accepted explicitly; mesh §8's preamble records it. Human-run and
+time-boxed-allow modes were considered and dropped (§12). The trial's refusals by class and kinds
+used feed the M4 approval decision at the M2a checkpoint.
 
 ## §3 — Decision 2: one source for the skill, and how callers use it
 
 ### 3.1 The files
 
-**Recommendation: split today's skill into two files in its one canonical folder** (today in
+**Decision: split today's skill into two files in its one canonical folder** (today in
 Shariq's private configuration repository, linked into `~/.copilot/skills/unslop/`):
 
 | File | Holds | Read by |
@@ -97,8 +85,7 @@ Shariq's private configuration repository, linked into `~/.copilot/skills/unslop
 | `SKILL.md` | Frontmatter (unchanged, so triggering is unchanged); the routing rules below; the email completion check | Each assistant, when the skill triggers |
 | `LICENSE` | The upstream MIT notice, unchanged | It travels with the folder |
 
-The same folder is linked into `~/.claude/skills/unslop/` (a private-repository change). Q3 offers
-one `SKILL.md` with a marked block instead.
+The same folder is linked into `~/.claude/skills/unslop/` (a private-repository change).
 
 ### 3.2 How the agent loads it
 
@@ -117,19 +104,14 @@ one `SKILL.md` with a marked block instead.
 
 1. **Email, customer text and private material never go to the agent.** Edit them in-session with
    `rules.md`. When unsure, in-session.
-2. Edit everything else in-session with `rules.md` too, unless step 3 is present.
-3. *(Only under Q1's option (a) or (c).)* For a PR description, issue, release notes, public docs
-   or a blog post: write the draft to a file and run
+2. For a PR description, issue, release notes, public documentation or a blog post: write the
+   draft to a file and run
    `<mesh dir>/bin/unslop --kind <kind> --report <file> < draft.md`, with a shell timeout of at least
    300 s. **Exit 0:** use stdout and check the report's warnings. **Any other exit, or none:**
    ignore stdout and edit the original in-session.
+3. Anything else: in-session with `rules.md`.
 4. Read `rules.md` beside this file; if it is not found, `~/.copilot/skills/unslop/rules.md`.
 5. Email: the completion check runs in-session, as today.
-
-**Choosing the variant.** The assistant cannot read the `0600` profile, so the policy must show in
-the text it reads. U3b's user page carries `SKILL.md` in two variants, without step 3 for (b) and
-with it for (a) and (c). Shariq changes the profile's `callers` and the `SKILL.md` variant together,
-in one private-repository commit; `meshctl unslop --status` prints the policy to compare against.
 
 ### 3.4 Rollout check in the private repository
 
@@ -139,17 +121,15 @@ shadow the canonical one. After the split: delete any backup copy of `unslop` un
 session that `unslop` resolves to the canonical folder in both; and ask each assistant to read
 `rules.md` beside its `SKILL.md` to confirm the relative path works.
 
-**Terminal check (before trusting option (b)'s backstop).** Have Copilot run the shim on a public
-draft from its sync shell and from its async shell, and Claude Code from its Bash tool. Each must
-exit 15 within 30 s, with no prompt drawn in the assistant's UI or the user's terminal and no
-keystrokes read. A shell that shows the prompt is recorded; option (b) then rests on `SKILL.md`
-alone, and the 30 s timeout bounds the wait.
+**Shell check.** Have Copilot run the shim on a public draft from its sync and async shells, and
+Claude Code from its Bash tool. Each must finish with exit 0 inside its shell timeout, and the shim
+must never read the terminal.
 
 ## §4 — Decision 3: where the agent runs, its lifecycle and its switch
 
 ### 4.1 Where and how it is built
 
-**Recommendation: on the Mac,** as `agent-inbox-wrap --agent openai-compatible --profile unslop`
+**Decision: on the Mac,** as `agent-inbox-wrap --agent openai-compatible --profile unslop`
 from `packages/mesh` (mesh §2.3: a separate, non-workspace package the release pipeline never
 builds). It binds `127.0.0.1` and calls the model box's OpenAI-compatible API over HTTPS. The rules
 live on the Mac, the screen must run before text leaves it, and the mesh keeps tailnet listeners
@@ -170,7 +150,7 @@ else the folder of `AGENT_INBOX_DB`, else `~/.agent-inbox`), written `<mesh dir>
 | `<mesh dir>/mesh.json` | `"agents": { "unslop": { "endpoint": "http://127.0.0.1:4420", "profile": "unslop" } }` | `meshctl enable --unslop` |
 | `<mesh dir>/mesh/wrappers/unslop.json` (`0600`) | skill folder, backend base URL, API key source (environment variable, `0600` file or a command), model, sampling, limits, caller policy, start command | `enable` writes a template when absent; Shariq fills it in |
 | `<mesh dir>/mesh/tokens/unslop` (`0600`) | the caller token | `enable` |
-| `<mesh dir>/mesh/unslop-deny.txt` (`0600`) | customer names and domains for the screen (Q5) | Shariq |
+| `<mesh dir>/mesh/unslop-deny.txt` (`0600`) | customer names and domains for the screen (local, untracked) | Shariq |
 | `<mesh dir>/bin/unslop` | the shim | `enable` |
 
 No backend URL, key or deny list is ever committed or written to `mesh.json`.
@@ -228,8 +208,7 @@ mistakes; it cannot stop a same-user process that calls the box directly (mesh �
 
 | Layer | Enforced? | What it does |
 |---|---|---|
-| Caller policy (Q1) | yes, a speed bump | Human-run only for the trial: a `y/N` on a terminal after the first 20 lines |
-| `--kind` | **no** | Required, one of `pr`, `issue`, `release-notes`, `docs`, `blog`; anything else is refused. It forces a classification but is self-declared, so it is not enforcement |
+| `--kind` | **no** | Required, one of `pr`, `issue`, `release-notes`, `docs` (public documentation only), `blog`; anything else is refused. It forces a classification but is self-declared, so it is not enforcement |
 | Screen | yes, in the agent, before any network | Refuses on any one class: **letter shape** (a greeting line such as `Hi Jane,` or `Dear …` in the first three lines, or a sign-off such as `Thanks,`, `Best,` or `Regards,` in the last six, or a `-- ` signature separator); email header blocks; reply markers (`On … wrote:`); email addresses outside an allowlist; phone numbers; secrets (key and token formats, private key blocks, JWTs, `token:` assignments); paths into a customer notes folder; any `unslop-deny.txt` entry. The refusal names the class only. No override flag |
 | Logs | yes | Task id, sizes, timings, kind, model, `rulesSha256`, check results, refusal classes. Never text, never a matched value |
 | `SKILL.md` | no, documented | Email, customer text and private material always stay in-session |
@@ -238,7 +217,7 @@ mistakes; it cannot stop a same-user process that calls the box directly (mesh �
 **What cannot be enforced:** a caller can name any public kind for private text; a paraphrased
 customer issue with no listed name and no letter shape passes the screen; a same-user process can
 skip the agent. A classifier model is rejected (§12): it would send the text to decide whether to
-send it. The residual risk is why Q1 recommends human-run calls first.
+send it. Shariq accepted this residual risk for assistant calls (§2).
 
 ## §6 — Decision 5: fidelity
 
@@ -295,7 +274,7 @@ to `--report <file>`. On any other exit stdout is empty, and callers edit the or
 
 ### 7.1 The box as it behaves
 
-- **Model and sampling.** The profile pins `chat-long` (the general model, Q4) with thinking off,
+- **Model and sampling.** The profile pins `chat-long` (the general model) with thinking off,
   temperature 0.2, top_p 0.9 and presence_penalty 0. The box's default instruct sampling
   (temperature 0.7, presence_penalty 1.5) pushes away from repeated tokens, which works against a
   faithful copy-edit. S11 runs both once to confirm.
@@ -331,7 +310,6 @@ to `--report <file>`. On any other exit stdout is empty, and callers edit the or
 | Queue full, expected wait too long, backend 5xx | `REJECTED` with a retry hint | 12 |
 | Backend unreachable, task time exceeded, CLI timeout | `FAILED` | 13 |
 | Key off, no agent, stale shim, card mismatch | no task | 14 |
-| Human-run policy: no terminal, `N`, or no answer in 30 s | no task | 15 |
 | Usage | no task | 4 |
 
 The agent streams status updates only; the text arrives once, after the check, because streamed
@@ -387,8 +365,8 @@ questions per version: did the meaning change (yes or no), then better, worse or
 ### 9.2 Real use
 
 Two weeks, from the agent's log and the CLI's exit codes: calls, exit mix, fallback rate, cold-call
-share, p50 and p95 time, refusals by class, retries. Q7 asks whether to keep the trial's texts for
-a 20-sample meaning review.
+share, p50 and p95 time, refusals by class, retries. The trial's texts are kept in a local `0600`
+folder for a 20-sample meaning review at the checkpoint, then deleted.
 
 ### 9.3 Checkpoint
 
@@ -407,7 +385,7 @@ already in a file or long; for a short email-sized text it probably costs more.
 | Calling-session tokens per call against in-session | ≤ 1× | > 1×: only for drafts already in files | > 2× for every kind |
 | Real-use fallback (non-zero exits) | ≤ 25 % | — | — |
 
-**Continue** keeps the agent and lets Q1 move toward (c) or M4's approval. **Stop** keeps the
+**Continue** keeps the agent; the checkpoint also decides unslop's M4 approval (§14). **Stop** keeps the
 in-session skill; the split into `SKILL.md` and `rules.md` still helps, and `packages/mesh` carries
 into M2.
 
@@ -422,7 +400,7 @@ or two PRs per phase", so each stays near 300 production lines; the amendment no
 | U2a | Backend client, prompt, sampling, retry and the check pipeline as pure functions against a fake OpenAI-compatible server | ~250 / ~300 |
 | U2b | A2A server: card, streaming status, `GetTask`, cancel, queue, token, `Host`, `Origin`, loopback bind, `mesh.json` gate, idle exit, logs without text | ~250 / ~300 |
 | U3a | `meshctl enable --unslop` and `disable --unslop` (key, profile template, token, shim, loopback-only endpoint), off tests (e) and (g) | ~200 / ~250 |
-| U3b | `meshctl unslop`: card and version check, on-demand spawn, streaming with polling fallback, caller policy, `y/N` with timeout, `--status`, exit codes, `--report`; off tests (a)–(d), (f); docs (`docs/architecture/mesh.md`, a user page with the `SKILL.md` text) | ~250 / ~300 |
+| U3b | `meshctl unslop`: card and version check, on-demand spawn, streaming with polling fallback, exit codes, `--report`; off tests (a)–(d), (f); docs (`docs/architecture/mesh.md`, a user page with the `SKILL.md` text) | ~250 / ~300 |
 | U4 | Bench S11: generator with trap assertions, runner (agent and in-session), scorer, blind sheet, `summary.md` | ~250 / ~150 |
 
 **Tests beyond §4.5:**
@@ -437,9 +415,7 @@ or two PRs per phase", so each stays near 300 production lines; the amendment no
 - **U2b:** wrong token, `Host` or any `Origin` refused; a non-loopback bind refused; text never sent
   before `COMPLETED`; the log has no canary string from the input.
 - **U3a/U3b:** a non-loopback endpoint refused by `enable` and the CLI; a stale shim exits 14; stdout
-  empty on every non-zero exit; under the human policy, no terminal exits 15 and a pseudo-terminal
-  that never answers exits 15 after the timeout (a real pty, not a fake; the real assistant shells
-  are §3.4's manual check).
+  empty on every non-zero exit; run under a pseudo-terminal, the CLI never opens `/dev/tty`.
 - **U4:** the scorer flags a planted broken trap in a recorded output.
 
 ## §11 — Try it
@@ -466,6 +442,7 @@ or two PRs per phase", so each stays near 300 production lines; the amendment no
 | The bridge now, with one tool | A new install surface; it would also make agent-initiated calls the default |
 | The agent on the model box | A tailnet listener before admission; the screen must run before text leaves the Mac |
 | A probe of the image-work host | A second host the agent would fetch (§8.2); a 5xx maps to busy instead |
+| Human-run only (`y/N` on the terminal) or a time-boxed allow | Shariq chose assistant calls; a prompt also misbehaves in assistant shells that have a terminal |
 | A constant `public` sensitivity | Callers would always pass it; `--kind` at least forces a classification |
 | A model judges fidelity, or classifies private text | A model cannot verify itself; a classifier would send the text first |
 
@@ -473,33 +450,27 @@ or two PRs per phase", so each stays near 300 production lines; the amendment no
 
 | Risk | Mitigation |
 |---|---|
-| A private draft with no letter shape or listed name reaches the box | Human-run first (Q1); `SKILL.md` routing; the deny list; the known miss is measured, not hidden |
+| A private draft with no letter shape or listed name reaches the box | Accepted (§2); `SKILL.md` routing; the deny list; the known miss is measured, not hidden |
 | The check passes a meaning change it cannot see | Negations and conditions are hard; traps and the blind meaning question measure the rest; a miss stops the slice |
 | The check is too strict | One retry; kept-original rate is a checkpoint reading; table-tested exclusions |
 | It costs the caller more tokens and time than in-session | Measured (§9.3); the change option limits it to long texts already in files |
 
-## §14 — Open questions for Shariq
+## §14 — Decisions (Shariq, 2026-11-06)
 
-1. **Agent-initiated egress:** may an assistant call unslop with no human seeing the text, before
-   M4? (a) Yes, with the risk in §2 stated; (b) human-run only for the trial: the CLI shows the
-   first 20 lines and asks `y/N` on a terminal with a 30 s timeout, and the assistants' `SKILL.md`
-   has no agent-call step (recommended); (c) a time-boxed allow that the human opens at a terminal.
-2. **Kinds:** should `docs` cover only public documentation (recommended), or also your
-   non-customer docs and notes in private repositories?
-3. **Skill layout:** split the canonical folder into a short `SKILL.md` and a `rules.md` that the
-   agent and in-session edits both read (recommended), or keep one `SKILL.md` with a marked block
-   the agent strips?
-4. **Model:** pin `chat-long` with low-temperature sampling (recommended), or use whichever model
-   is loaded to avoid a swap?
-5. **Deny list:** keep a local, untracked list of customer names and domains for the screen
-   (recommended), or generic patterns only?
-6. **M4 approvals:** when the chain ledger arrives, should enabling unslop count as a standing
-   approval for a tool-free, workspace-free local agent, or should every assistant call go through
-   the first-hop click (recommended until the trial shows the screen holds)?
+1. **Agent-initiated egress:** assistants may call the agent on their own for the allowed kinds,
+   guarded by the screen and the self-declared `--kind`, with the risk in §2 accepted. No human-run
+   prompt.
+2. **Kinds:** `docs` means public documentation only.
+3. **Skill layout:** a short `SKILL.md` plus `rules.md`, read by the agent and by in-session edits.
+4. **Model:** pin `chat-long` with low-temperature sampling.
+5. **Deny list:** a local, untracked list of customer names and domains.
+6. **M4 approvals:** decided at the M2a checkpoint from trial data. Until then assistant calls run
+   without a click, per decision 1.
 7. **Real-use review:** keep the trial's texts in a local `0600` folder for a 20-sample meaning
-   review, deleted after (recommended), or judge from the bench only?
+   review, deleted after.
+8. **Placement:** M2a before M2 (mesh §14.1 D9).
 
 ## §15 — What changes in the mesh design
 
-A header note; §2.2, §2.4, §6.6, §8's preamble and §11 (M2a, proposed, with the PR-count
-exception); D8 in §14.1 (Shariq's choice only) and P15 in §14.2; S11 in Appendix D; a backlog link.
+A header note; §2.2, §2.4, §6.6, §8's preamble and §11 (M2a, with the PR-count exception); D8 and
+D9 in §14.1; S11 in Appendix D; a backlog link.

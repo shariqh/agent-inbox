@@ -566,7 +566,7 @@ Older processes never name the table. `snapshot-triggers.txt` only gains names.
 
 ## §7 — Budgets and lifecycle
 
-**Budgets.**
+**Budgets.** (Amended by §14.9: each is optional, and none is the default.)
 - **Active turn time**, summed while a turn runs (default 2 h). Idle time does not count.
 - **Tool calls:** 500, counted from `tool_call` updates.
 - **USD:** required for API-key Claude. It is passed as `maxBudgetUsd`, and the driver also
@@ -1108,6 +1108,23 @@ adds the small, design-consistent part:
   wherever the section shows.
 - **Mixed versions.** An older driver refuses to resume a stopped launch ("not parked"), and records no
   session at its ends, so its stopped launches never read as resumable.
+
+### 14.9 Budgets optional, no limit by default (#479, 2026-11-06)
+
+Shariq's decision: "we should allow and default to unlimited calls/timing. no point for us to be the
+limiter there. we can have limits as they will support the A2A build and letting things run away but it
+shouldn't be the default." This amends §7's budgets.
+
+- Each of a launch's two budgets, active turn time and tool calls, is a limit or `null`: no limit for
+  that dimension. New session leaves both empty, which is no limit; a limit the human sets keeps §7's
+  bounds (1 min to 8 h; 1 to 2000 calls). The launch spec keeps limits as a first-class option, so a
+  later caller (the A2A build) can bound a session that might run away.
+- The driver counts and reports usage either way, and ends a launch only on a budget it has. Idle
+  parking is unchanged. The step 2 terminal driver has no limit either.
+- The spec version stays 1: an older driver refuses a `null` budget, failing closed. The `launches`
+  columns become nullable (a table rebuild), and a schema trigger refuses an older driver's resume of
+  a launch with no limit, which would otherwise read the `null` as 0 and end it as "budget used".
+- "Resume with more budget…" (#451) adds only to a budget the launch has.
 
 ## Appendix A — Verification log
 

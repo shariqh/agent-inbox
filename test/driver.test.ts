@@ -602,6 +602,16 @@ describe('budgets, Stop and failing closed (§7)', () => {
     expect(await h.done).toBe('budget:active_time')
   })
 
+  it('#479: with no limit, the default, neither tool calls nor turn time end it, and both are still counted', async () => {
+    const h = start({ script: { onPrompt(fake) { for (let i = 0; i < 501; i++) fake.update(toolCall()) } } })
+    await until(() => h.driver.usage().toolCalls === 501, '501 tool calls')
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(h.driver.usage().toolCalls).toBe(501)
+    expect(h.log.some((e) => e.event === 'ended')).toBe(false)
+    h.driver.stop()
+    expect(await h.done).toBe('stopped')
+  })
+
   it('ends after the idle limit, with no park in step 2', async () => {
     const h = start({ timing: { idleMs: 60 }, script: ended })
     expect(await h.done).toBe('idle')

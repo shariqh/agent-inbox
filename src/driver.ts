@@ -109,6 +109,7 @@ export interface DriverTiming {
   /** How long the first prompt waits for the session's MCP server to link. */
   linkWaitMs: number
   idleMs: number
+  /** #479: Infinity, the default, is no limit. */
   activeMs: number
   maxToolCalls: number
 }
@@ -123,8 +124,8 @@ const DEFAULT_TIMING: DriverTiming = {
   setupDeadlineMs: 2 * 60_000,
   linkWaitMs: 10_000,
   idleMs: 2 * 60 * 60_000,
-  activeMs: 2 * 60 * 60_000,
-  maxToolCalls: 500,
+  activeMs: Infinity,
+  maxToolCalls: Infinity,
 }
 
 /** What an ancestry scan reports (driver-link.ts). `hostPid` is null until the native host is found. */

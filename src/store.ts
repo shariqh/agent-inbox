@@ -616,8 +616,8 @@ function runMigrations(db: Database.Database): void {
       mode TEXT NOT NULL,
       model TEXT,
       reasoning_effort TEXT,
-      budget_active_ms INTEGER NOT NULL,
-      budget_tool_calls INTEGER NOT NULL,
+      budget_active_ms INTEGER,
+      budget_tool_calls INTEGER,
       prompt TEXT NOT NULL,
       spec_version INTEGER NOT NULL,
       status TEXT NOT NULL,
@@ -784,8 +784,47 @@ function runMigrations(db: Database.Database): void {
   // words (at most 300 characters), for its row's "Didn't start". NULL on every
   // other end and on every row an older driver ends: its UPDATE never names it.
   ensureColumn(db, 'launches', 'end_detail', 'TEXT')
+  migrateOptionalBudgets(db)
   // issue #297 — keep this last: its triggers name the columns added above
   migrateSnapshotDomains(db)
+}
+
+// Issue #479 — a launch's budgets are optional: NULL is no limit for that
+// dimension. Hubs made before held both NOT NULL, which SQLite changes only by
+// rebuilding the table: its own CREATE text (column order kept, so the snapshot
+// trigger hashes stay the same) without the two NOT NULLs, every row copied,
+// then every index and trigger it had, snapshot_ ones included, made again, all
+// inside the migration's .immediate() transaction.
+//
+// An older driver reads a NULL budget as 0 (`tool_calls >= null`), so it would
+// end such a launch as "budget used" on resume. The guard refuses its resume
+// statement instead: every build before #479 moves `revision` by 1 there, and
+// this build's resumeLaunch moves it by 2 for a launch with no limit. The older
+// driver's UPDATE throws, its transaction rolls back and the row stays as it was.
+function migrateOptionalBudgets(db: Database.Database): void {
+  const required = db.prepare(`SELECT 1 FROM pragma_table_info('launches')
+      WHERE name IN ('budget_active_ms', 'budget_tool_calls') AND "notnull" = 1`).get()
+  if (required) {
+    const table = db.prepare(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'launches'`).pluck().get() as string
+    const loose = table.replace(/\b(budget_active_ms|budget_tool_calls) INTEGER NOT NULL\b/g, '$1 INTEGER')
+    const rebuilt = loose.replace(/^CREATE TABLE\s+(?:"launches"|launches)\s*\(/, 'CREATE TABLE launches_rebuild (')
+    if (rebuilt === loose || (loose.match(/\bbudget_(?:active_ms|tool_calls) INTEGER(?! NOT)/g) ?? []).length !== 2) {
+      throw new Error('launches: unexpected table definition, cannot make its budgets optional')
+    }
+    const dependents = db.prepare(`SELECT sql FROM sqlite_master WHERE tbl_name = 'launches' AND type IN ('index', 'trigger') AND sql IS NOT NULL`)
+      .pluck().all() as string[]
+    db.exec(rebuilt)
+    db.exec(`INSERT INTO launches_rebuild SELECT * FROM launches`)
+    db.exec(`DROP TABLE launches`)
+    db.exec(`ALTER TABLE launches_rebuild RENAME TO launches`)
+    for (const sql of dependents) db.exec(sql)
+  }
+  db.exec(`CREATE TRIGGER IF NOT EXISTS launches_no_limit_resume_guard BEFORE UPDATE OF status ON launches
+    WHEN NEW.status = 'running' AND OLD.status <> 'running'
+      AND (NEW.budget_active_ms IS NULL OR NEW.budget_tool_calls IS NULL) AND NEW.revision <> OLD.revision + 2
+    BEGIN
+      SELECT RAISE(ABORT, 'this launch has no budget limit, which this driver cannot keep: resume it from a newer Agent Inbox');
+    END`)
 }
 
 // Issue #247 — the human's "Pin for later". NULL means not pinned, so there is
@@ -4101,8 +4140,9 @@ export interface LaunchRecord {
   mode: string
   model: string | null
   reasoning_effort: string | null
-  budget_active_ms: number
-  budget_tool_calls: number
+  /** #479: null is no limit. */
+  budget_active_ms: number | null
+  budget_tool_calls: number | null
   prompt: string
   spec_version: number
   status: LaunchStatus
@@ -4179,8 +4219,9 @@ export interface NewLaunch {
   mode: string
   model?: string | null
   reasoningEffort?: string | null
-  budgetActiveMs: number
-  budgetToolCalls: number
+  /** #479: null is no limit. */
+  budgetActiveMs: number | null
+  budgetToolCalls: number | null
   prompt: string
   specVersion: number
   driverPid: number
@@ -4264,8 +4305,8 @@ export interface StoppedEnd {
   end_detail: string | null
   stop_requested_at: string | null
   driver_pid: number | null
-  budget_active_ms: number
-  budget_tool_calls: number
+  budget_active_ms: number | null
+  budget_tool_calls: number | null
 }
 
 // A resumed launch's driver takes its row back, parked or resumably ended →
@@ -4273,7 +4314,9 @@ export interface StoppedEnd {
 // it. `resumedFrom` says which, so a refused start puts it back as it was, and
 // `previous` holds an ended launch's end for that. #451: with a `raise`, only a
 // budget-ended launch still at the confirmed revision is taken, its totals rise by
-// exactly the allowance, and both must then exceed what it used.
+// exactly the allowance, and both must then exceed what it used. #479: a budget with
+// no limit stays NULL, and its resume moves `revision` by 2 (the guard in
+// migrateOptionalBudgets refuses an older driver's, which moves it by 1).
 export function resumeLaunch(
   db: Database.Database,
   id: string,
@@ -4283,7 +4326,8 @@ export function resumeLaunch(
   if (!LAUNCH_ID.test(id)) return null
   const where = raise
     ? `id = @id AND revision = @revision AND ${BUDGET_END}
-       AND budget_active_ms + @addActive > active_ms AND budget_tool_calls + @addCalls > tool_calls`
+       AND (budget_active_ms IS NULL OR budget_active_ms + @addActive > active_ms)
+       AND (budget_tool_calls IS NULL OR budget_tool_calls + @addCalls > tool_calls)`
     : `id = @id AND (status = 'parked' OR (${RESUMABLE_END}))`
   const params = { id, revision: raise?.revision ?? 0, addActive: raise?.activeMs ?? 0, addCalls: raise?.toolCalls ?? 0 }
   return db.transaction(() => {
@@ -4293,7 +4337,8 @@ export function resumeLaunch(
     if (!prior || (before !== 'parked' && before !== 'ended')) return null
     const row = db.prepare(`UPDATE launches
                                SET status = 'running', parked_at = NULL, park_reason = NULL, ended_at = NULL, end_reason = NULL, end_detail = NULL,
-                                   stop_requested_at = NULL, driver_pid = @pid, updated_at = @now, revision = revision + 1,
+                                   stop_requested_at = NULL, driver_pid = @pid, updated_at = @now,
+                                   revision = revision + CASE WHEN budget_active_ms IS NULL OR budget_tool_calls IS NULL THEN 2 ELSE 1 END,
                                    budget_active_ms = budget_active_ms + @addActive, budget_tool_calls = budget_tool_calls + @addCalls
                              WHERE ${where}
                          RETURNING *`).get({ ...params, pid: driverPid, now: new Date().toISOString() }) as (Omit<LaunchRecord, 'sessions'> & { sessions: string | null }) | undefined

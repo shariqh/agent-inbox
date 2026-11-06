@@ -48,7 +48,8 @@ export function confirmation(facts: {
   mode: string
   model?: string
   reasoningEffort?: string
-  budgets: { activeMs: number; toolCalls: number }
+  /** #479: null is no limit */
+  budgets: { activeMs: number | null; toolCalls: number | null }
   prompt: string
 }): { message: string; detail: string; buttons: string[] }
 export function runningAtQuit(controller: LaunchController, options?: { settleMs?: number; readMs?: number }): Promise<Array<{ id: string; project: string; mode: string }>>

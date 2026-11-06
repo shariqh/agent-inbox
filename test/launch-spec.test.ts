@@ -37,6 +37,10 @@ describe('the launch spec (§8)', () => {
     expect(parseLaunchSpec(JSON.stringify({ v: 1, kind: 'resume', launchId: ID, env: {}, launchKey: KEY, maxDrivers: 8 }), ID)).toMatchObject({ ok: true, spec: { maxDrivers: 8 } })
     expect(parseLaunchSpec(JSON.stringify({ v: 1, kind: 'resume', launchId: ID, env: {}, launchKey: KEY }), ID))
       .toEqual({ ok: true, spec: { v: 1, kind: 'resume', launchId: ID, env: {}, launchKey: LAUNCH_KEY } })
+    // #479: either budget may be null, no limit
+    for (const budgets of [{ activeMs: null, toolCalls: null }, { activeMs: 60_000, toolCalls: null }, { activeMs: null, toolCalls: 1 }]) {
+      expect(parseLaunchSpec(spec({ budgets }), ID)).toMatchObject({ ok: true, spec: { budgets } })
+    }
     // #451: a resume with more budget, bound to the row revision main's confirmation read
     const raise = { revision: 7, activeMs: 0, toolCalls: LAUNCH_BUDGETS.toolCalls.max }
     expect(parseLaunchSpec(JSON.stringify({ v: 1, kind: 'resume', launchId: ID, env: {}, launchKey: KEY, raise }), ID)).toMatchObject({ ok: true, spec: { raise } })
@@ -53,6 +57,8 @@ describe('the launch spec (§8)', () => {
     ['an unknown effort', spec({ reasoningEffort: 'turbo' }), /effort level/],
     ['a budget below its floor', spec({ budgets: { activeMs: LAUNCH_BUDGETS.activeMs.min - 1, toolCalls: 1 } }), /out of bounds/],
     ['a budget above its ceiling', spec({ budgets: { activeMs: 60_000, toolCalls: LAUNCH_BUDGETS.toolCalls.max + 1 } }), /out of bounds/],
+    ['a budget left out rather than null (#479)', spec({ budgets: { activeMs: 60_000 } }), /budgets must hold/],
+    ['a budget of 0 rather than null (#479)', spec({ budgets: { activeMs: 60_000, toolCalls: 0 } }), /out of bounds/],
     ['a USD budget Copilot does not have', spec({ budgets: { activeMs: 60_000, toolCalls: 1, usd: 5 } }), /budgets must hold/],
     ['an empty prompt', spec({ prompt: '   ' }), /prompt must hold/],
     ['an env value that is not text', spec({ env: { PATH: 1 } }), /env must map/],

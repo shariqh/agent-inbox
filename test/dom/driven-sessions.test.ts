@@ -66,10 +66,10 @@ function launchBridge(state: Partial<State> = {}) {
   return api
 }
 
-function newLaunch(d: Database.Database, id = LAUNCH): void {
+function newLaunch(d: Database.Database, id = LAUNCH, budgets: { budgetActiveMs?: number | null; budgetToolCalls?: number | null } = {}): void {
   createLaunch(d, {
     id, host: 'copilot', project: 'alpha', stream: 'main', cwd: '/work/alpha', mode: 'ask', model: 'claude-haiku-4.5',
-    budgetActiveMs: 7_200_000, budgetToolCalls: 500, prompt: 'Fix it.', specVersion: 1, driverPid: 4242,
+    budgetActiveMs: 7_200_000, budgetToolCalls: 500, prompt: 'Fix it.', specVersion: 1, driverPid: 4242, ...budgets,
   })
 }
 
@@ -507,6 +507,19 @@ describe('a launch’s card and session panel (§3.6, §7, #454)', () => {
     expect(api.stop).toHaveBeenCalledWith(LAUNCH)
   })
 
+  it('#479: a launch with no limit reads its usage alone, on its card and in its panel', async () => {
+    launchBridge()
+    db = freshDb()
+    newLaunch(db, LAUNCH, { budgetActiveMs: null, budgetToolCalls: null })
+    recordLaunchProgress(db, LAUNCH, { toolCalls: 41, activeMs: 38 * 60_000 })
+    endLaunch(db, LAUNCH, { reason: 'stopped', acpSession: 'acp-1' })
+    await bootApp(db)
+    await changedPollTick(db)
+    expect(doingOf(LAUNCH)).toMatch(/ · 41 tool calls$/)
+    expect(openLaunch(LAUNCH).querySelector('.dash-focus-meta')?.textContent)
+      .toBe('Copilot · started here · Ask for everything · claude-haiku-4.5 · 41 tool calls · 38m active')
+  })
+
   it('Park now asks the driver to park, says so, and the launch then offers Resume and send (PR 4)', async () => {
     launchBridge()
     db = freshDb()
@@ -686,6 +699,24 @@ describe('a launch’s card and session panel (§3.6, §7, #454)', () => {
     expect(listSessionMessages(db).open.map((m) => [m.session, m.text])).toEqual([['mcp-9', 'Finish the tests.']])
   })
 
+  it('#479: Resume with more budget… asks only for the budget a launch has, and adds nothing to one with no limit', async () => {
+    const api = launchBridge()
+    db = freshDb()
+    newLaunch(db, PARKED, { budgetActiveMs: null })
+    recordLaunchProgress(db, PARKED, { toolCalls: 500, activeMs: 9 * 3_600_000 })
+    endLaunch(db, PARKED, { reason: 'budget:tool_calls', acpSession: 'acp-1' })
+    await bootApp(db)
+    await changedPollTick(db)
+    click(launchRow(PARKED)!.querySelector('[data-ah-action="resume"]'))
+    await settle()
+    expect([...panel().querySelectorAll('.sp-resume-budget-field')].map((f) => f.firstChild?.textContent)).toEqual(['Add tool calls'])
+    type(panel().querySelector<HTMLTextAreaElement>('.sp-resume-input')!, 'Finish the tests.')
+    api.resumeWithBudget.mockResolvedValueOnce({ ok: false, error: 'Not resumed.', cancelled: true })
+    click(panelAction('resume'))
+    await settle()
+    expect(api.resumeWithBudget).toHaveBeenLastCalledWith({ id: PARKED, add: { activeMs: 0, toolCalls: 250 } })
+  })
+
   it('the transcript is a section of the session panel, read while the panel shows it, as plain text (#454)', async () => {
     launchBridge()
     db = freshDb()
@@ -785,6 +816,9 @@ describe('New session (§8)', () => {
     const project = dialog.querySelector<HTMLSelectElement>('select[name="root"]')!
     expect([...project.options].map((o) => o.value)).toEqual(['/work/alpha', ''])
     expect(dialog.textContent).toContain('Once any shell command is allowed')
+    // #479: no limit by default: both limits empty
+    expect([...dialog.querySelectorAll<HTMLInputElement>('input[name="hours"], input[name="calls"]')].map((i) => [i.value, i.placeholder]))
+      .toEqual([['', 'No limit'], ['', 'No limit']])
     dialog.querySelector<HTMLInputElement>('input[value="plan"]')!.checked = true
     type(dialog.querySelector<HTMLInputElement>('input[name="model"]'), 'claude-haiku-4.5')
     const effort = dialog.querySelector<HTMLSelectElement>('select[name="effort"]')!
@@ -795,7 +829,7 @@ describe('New session (§8)', () => {
     // #432: New worktree is on by default, and the page asks for it, naming no path or branch
     expect(api.start).toHaveBeenCalledWith({
       root: '/work/alpha', mode: 'plan', model: 'claude-haiku-4.5', reasoningEffort: 'none',
-      budgets: { activeMs: 7_200_000, toolCalls: 500 }, prompt: 'Fix the failing test.', worktree: true,
+      budgets: { activeMs: null, toolCalls: null }, prompt: 'Fix the failing test.', worktree: true,
       // this start's tag, which main echoes with its phases (#432 PR 5 review)
       startId: expect.stringMatching(/^[0-9a-f]{32}$/),
     })

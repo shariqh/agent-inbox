@@ -379,8 +379,9 @@ It is off until you turn it on, and it works only in the macOS app, not in a bro
 
 Once any shell command is allowed, the session can run anything, in its folder and
 beyond, and an edited file can change what an allowed command then runs. Answer each
-approval with that in mind. Each session has budgets for active time (default 2
-hours) and tool calls (default 500), across parks and resumes. When you quit the app
+approval with that in mind. A session has no limit on its active time or tool calls
+unless you set one in New session (1 minute to 8 hours; 1 to 2000 calls), counted
+across parks and resumes; its card shows what it has used. When you quit the app
 with sessions running, it asks whether to keep them running or stop them all.
 Design: [`docs/superpowers/specs/2026-10-31-driven-sessions-design.md`](docs/superpowers/specs/2026-10-31-driven-sessions-design.md);
 how it is built: [`docs/architecture/driven-sessions.md`](docs/architecture/driven-sessions.md).

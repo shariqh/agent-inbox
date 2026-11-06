@@ -14,8 +14,6 @@ import {
   budgetAllowance, forgettable, launchSessions, launchStatus, newSessionRequest, transcriptLines, worktreeSummaryText,
 } from '/launches.js'
 
-const DEFAULT_ACTIVE_HOURS = 2
-const DEFAULT_TOOL_CALLS = 500
 // #451: what Resume with more budget… offers to add, before the human changes it
 const DEFAULT_ADD_HOURS = 1
 const DEFAULT_ADD_CALLS = 250
@@ -218,7 +216,7 @@ export function createLaunchUi(deps) {
     let add = null
     if (launch && launchStatus(launch, deps.activity(), Date.now()).budget) {
       const fields = budgetInputs.get(id)
-      const checked = fields ? budgetAllowance(launch, { activeHours: fields.hours.value, toolCalls: fields.calls.value }) : { error: 'Choose the budget to add.' }
+      const checked = fields ? budgetAllowance(launch, { activeHours: fields.hours?.value, toolCalls: fields.calls?.value }) : { error: 'Choose the budget to add.' }
       if (checked.error) {
         setNote(id, checked.error)
         bump()
@@ -357,13 +355,14 @@ export function createLaunchUi(deps) {
     hours.min = '0.0167'
     hours.max = '8'
     hours.step = 'any'
-    hours.value = String(DEFAULT_ACTIVE_HOURS)
+    // #479: empty, the default, is no limit
+    hours.placeholder = 'No limit'
     const calls = make('input')
     calls.name = 'calls'
     calls.type = 'number'
     calls.min = '1'
     calls.max = '2000'
-    calls.value = String(DEFAULT_TOOL_CALLS)
+    calls.placeholder = 'No limit'
     const prompt = make('textarea', 'launch-prompt')
     prompt.name = 'prompt'
     prompt.rows = 6
@@ -398,8 +397,8 @@ export function createLaunchUi(deps) {
       make('p', 'launch-warning', SHELL_WARNING),
       field('Model', model),
       field('Reasoning effort', effort),
-      field('Active time (hours)', hours, 'Between 1 minute and 8 hours of the session working.'),
-      field('Tool calls', calls, 'Between 1 and 2000.'),
+      field('Active time limit (hours)', hours, 'Empty for no limit, or between 1 minute and 8 hours of the session working.'),
+      field('Tool call limit', calls, 'Empty for no limit, or between 1 and 2000.'),
       field('Task', prompt, PROMPT_WARNING),
       message,
       actions,
@@ -524,14 +523,14 @@ export function createLaunchUi(deps) {
     return minutes < 60 ? `${minutes}m` : minutes % 60 ? `${Math.floor(minutes / 60)}h ${minutes % 60}m` : `${minutes / 60}h`
   }
 
-  /** "Ask for everything · claude-haiku-4.5 · effort high · 41 of 500 tool calls · 38m of 2h active" */
+  /** "Ask for everything · claude-haiku-4.5 · effort high · 41 of 500 tool calls · 38m of 2h active"; #479: "41 tool calls · 38m active" with no limit */
   function panelSummary(launch) {
     return [
       LAUNCH_MODES.find((m) => m.id === launch.mode)?.label ?? launch.mode,
       launch.model,
       launch.reasoning_effort ? `effort ${launch.reasoning_effort}` : '',
-      `${launch.tool_calls ?? 0} of ${launch.budget_tool_calls} tool calls`,
-      `${hours(launch.active_ms)} of ${hours(launch.budget_active_ms)} active`,
+      `${launch.tool_calls ?? 0}${launch.budget_tool_calls == null ? '' : ` of ${launch.budget_tool_calls}`} tool calls`,
+      `${hours(launch.active_ms)}${launch.budget_active_ms == null ? '' : ` of ${hours(launch.budget_active_ms)}`} active`,
     ].filter(Boolean).join(' · ')
   }
 
@@ -646,7 +645,7 @@ export function createLaunchUi(deps) {
     }
     let fields = status.budget ? budgetInputs.get(id) : null
     if (status.budget && !fields) {
-      fields = budgetFields()
+      fields = budgetFields(launch)
       budgetInputs.set(id, fields)
     }
     const slot = resumeEl.querySelector('.sp-resume-slot')
@@ -660,7 +659,7 @@ export function createLaunchUi(deps) {
   }
 
   // #451: the allowance to add, in whole minutes and calls; main shows it with the budgets and what was used
-  function budgetFields() {
+  function budgetFields(launch) {
     const row = make('div', 'sp-resume-budget')
     row.append(make('p', 'sp-resume-budget-note', 'It used its budget. Choose what to add: Agent Inbox shows the new totals and asks you to confirm.'))
     const field = (text, value, max, step) => {
@@ -675,7 +674,12 @@ export function createLaunchUi(deps) {
       row.append(label)
       return input
     }
-    return { row, hours: field('Add active hours', DEFAULT_ADD_HOURS, '8', '0.25'), calls: field('Add tool calls', DEFAULT_ADD_CALLS, '2000', '1') }
+    // #479: a budget with no limit has nothing to add to
+    return {
+      row,
+      hours: launch.budget_active_ms === null ? null : field('Add active hours', DEFAULT_ADD_HOURS, '8', '0.25'),
+      calls: launch.budget_tool_calls === null ? null : field('Add tool calls', DEFAULT_ADD_CALLS, '2000', '1'),
+    }
   }
 
   /** The panel's Resume and send text, focused: an explicit click (Resume…) always lands on it. */

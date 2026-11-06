@@ -12,6 +12,10 @@ describe('the New session request', () => {
     expect(newSessionRequest({ ...BASE, root: null, model: ' claude-haiku-4.5 ', reasoningEffort: 'none' })).toEqual({
       request: { root: null, mode: 'ask', model: 'claude-haiku-4.5', reasoningEffort: 'none', budgets: { activeMs: 7_200_000, toolCalls: 500 }, prompt: 'Fix it.' },
     })
+    // #479: an empty limit is no limit, the default
+    expect(newSessionRequest({ ...BASE, activeHours: '', toolCalls: ' ' })).toMatchObject({ request: { budgets: { activeMs: null, toolCalls: null } } })
+    expect(newSessionRequest({ ...BASE, activeHours: '' })).toMatchObject({ request: { budgets: { activeMs: null, toolCalls: 500 } } })
+    expect(newSessionRequest({ ...BASE, toolCalls: '' })).toMatchObject({ request: { budgets: { activeMs: 7_200_000, toolCalls: null } } })
   })
 
   it.each([
@@ -83,6 +87,16 @@ describe('Resume with more budget… (#451)', () => {
     expect(budgetAllowance(spent, { activeHours: '1', toolCalls: '2.5' })).toMatchObject({ error: expect.stringMatching(/0 and 2000/) })
     expect(transcriptLines([{ event: 'budget_raised', from: { activeMs: 7_200_000, toolCalls: 500 }, to: { activeMs: 9_000_000, toolCalls: 750 } }]))
       .toEqual([{ kind: 'note', text: 'You added budget: 2 h 30 min of active time and 750 tool calls in all.' }])
+  })
+
+  it('#479: adds nothing to a budget with no limit, whatever its field says, and checks only the other', () => {
+    const spent = { budget_active_ms: null, budget_tool_calls: 500, active_ms: 9_000_000, tool_calls: 500 }
+    expect(budgetAllowance(spent, { activeHours: undefined, toolCalls: '250' })).toEqual({ add: { activeMs: 0, toolCalls: 250 } })
+    expect(budgetAllowance(spent, { activeHours: '3', toolCalls: '0' })).toEqual({ error: 'Add tool calls: it has used all of them.' })
+    expect(budgetAllowance({ budget_active_ms: 60_000, budget_tool_calls: null, active_ms: 60_000, tool_calls: 900 }, { activeHours: '1', toolCalls: undefined }))
+      .toEqual({ add: { activeMs: 3_600_000, toolCalls: 0 } })
+    expect(transcriptLines([{ event: 'budget_raised', from: { activeMs: null, toolCalls: 500 }, to: { activeMs: null, toolCalls: 750 } }]))
+      .toEqual([{ kind: 'note', text: 'You added budget: no limit on active time and 750 tool calls in all.' }])
   })
 })
 

@@ -93,12 +93,17 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
   staging, pruning or packaging script copies it, and no release workflow builds it. The
   only workflow that does is the `mesh-package` job in `.github/workflows/ci.yml`
   (ubuntu, Node 24: `npm ci`, typecheck, tests).
-- **U1 (pure modules, no network, no writes):** `fidelity.ts` (§6.1-§6.2: protected
-  values must survive in order and beside the same words; negations and conditions are
-  hard on any drop, and an added one warns), `screen.ts` (§5: refusal classes named
-  without the matched value, and the `--kind` list), `rules.ts` (§3.2: `rules.md` and its
-  SHA-256, re-read on a size or mtime change, the last good rules kept and marked stale)
-  and `mesh-config.ts`.
+- **U1 (pure modules, no network, no writes):** `fidelity.ts` (§6.1-§6.2: output
+  sentences are aligned to input sentences by their words; protected values keep their
+  order inside an aligned sentence, and one that crossed sentences must keep its own
+  neighbours better than any other value's, ties failing. Negations and conditions are
+  hard on any drop, on a move to another clause, and on an addition unless the same
+  sentence dropped a negative word such as "fails"), `screen.ts` (§5: text is NFKC
+  normalised, zero-width characters removed and `>` quote markers stripped before any
+  check; refusal classes are named without the matched value; the `--kind` list),
+  `rules.ts` (§3.2: `rules.md` and its SHA-256, re-read on a size or mtime change, the
+  last good rules kept and marked stale) and `mesh-config.ts`. Both checks have timing
+  tests on hostile 12 KiB inputs.
 - **One `mesh.json` rule, held twice.** The package cannot import `src/mesh-config.ts`,
   so it carries a reader with the same rule and the same `meshDir()` order. The cases in
   `test/fixtures/mesh-json/cases.json` run in both suites: `test/mesh-json-parity.test.ts`

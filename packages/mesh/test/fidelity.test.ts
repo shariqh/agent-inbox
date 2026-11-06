@@ -7,8 +7,7 @@ import type { FidelityReport } from '../src/fidelity.js'
 const failed = (r: FidelityReport): string[] => Object.entries(r.hard).filter(([, v]) => v === 'failed').map(([k]) => k).sort()
 const warned = (r: FidelityReport): string[] => r.warnings.map((w) => w.class).sort()
 
-// [class, input, loss, addition, change, swap]; each output fails that class,
-// except an added negation or condition, which warns
+// [class, input, loss, addition, change, swap]; each output fails that class
 const HARD: Array<[string, string, string, string, string, string]> = [
   ['code',
     'Run `npm ci` in the root, then `npm test` in the package.',
@@ -88,15 +87,6 @@ describe('hard classes', () => {
   for (const [cls, input, ...outputs] of HARD) {
     const kinds = ['loss', 'addition', 'change', 'swap']
     outputs.forEach((output, i) => {
-      // §6.1: negations and conditions are hard on any drop; an addition alone warns
-      if (kinds[i] === 'addition' && (cls === 'negations' || cls === 'conditions')) {
-        it(`${cls} warns on addition: ${input.slice(0, 30)}`, () => {
-          const report = checkFidelity(input, output)
-          expect(report.ok).toBe(true)
-          expect(warned(report)).toEqual([cls === 'negations' ? 'negation-added' : 'condition-added'])
-        })
-        return
-      }
       it(`${cls} catches ${kinds[i]}: ${input.slice(0, 30)}`, () => {
         const report = checkFidelity(input, output)
         expect(report.ok).toBe(false)
@@ -125,11 +115,52 @@ describe('hard classes', () => {
   })
 })
 
+describe('review round 1 (#486)', () => {
+  const FAIL: Array<[string, string, string]> = [
+    ['numbers', 'Upgrade from v2.5.0 to v2.6.0.', 'Upgrade from v2.6.0 to v2.5.0.'],
+    ['numbers', 'p50 is 40 ms and p99 is 900 ms.', 'p50 is 900 ms and p99 is 40 ms.'],
+    ['refs', 'Fixes #12; reverts #34.', 'Fixes #34; reverts #12.'],
+    ['numbers', 'Linux: 3 s, macOS: 7 s.', 'Linux: 7 s, macOS: 3 s.'],
+    ['refs', 'The store fix landed in #12. The viewer fix landed in #34.', 'The store fix landed in #34. The viewer fix landed in #12.'],
+    ['negations', 'You must restart the agent after an upgrade.', 'You must not restart the agent after an upgrade.'],
+    ['negations', 'The flag affects users on the beta channel.', 'The flag never affects users on the beta channel.'],
+    ['conditions', 'Merge the PR once CI passes.', 'Merge the PR unless CI passes.'],
+    ['negations', 'macOS is supported, but Windows is not.', 'macOS is not supported, but Windows is.'],
+    ['negations', 'Do not delete the cache. Delete the logs.', 'Delete the cache. Do not delete the logs.'],
+    ['conditions', 'Merge the PR unless CI fails, and deploy the release.', 'Merge the PR, and deploy the release unless CI fails.'],
+  ]
+  for (const [cls, input, output] of FAIL) {
+    it(`fails ${cls}: ${input} → ${output}`, () => {
+      expect(failed(checkFidelity(input, output))).toContain(cls)
+    })
+  }
+
+  it('an added negation passes, with a warning, when its sentence dropped a negative word', () => {
+    const r = checkFidelity('The binding fails to load on Node 26.', 'The binding does not load on Node 26.')
+    expect(failed(r)).toEqual([])
+    expect(warned(r)).toEqual(['negation-added'])
+    // one dropped negative word pays for one addition, even across a sentence split
+    expect(failed(checkFidelity('The server fails on boot.', 'The server does not start on boot. It does not respond.'))).toEqual(['negations'])
+  })
+})
+
 describe('what must not fail', () => {
   const PASS: Array<[string, string, string]> = [
     ['a moved sentence',
       'The build takes 10 minutes. The deploy takes 5 minutes and needs #12.',
       'The deploy takes 5 minutes and needs #12. The build takes 10 minutes.'],
+    ['a moved sentence with a negation, a condition and two values',
+      'Back up the logs first. Do not delete the cache on v2.5.0 unless it is over 2 GB.',
+      'Do not delete the cache on v2.5.0 unless it is over 2 GB. Back up the logs first.'],
+    ['a leading condition or negation phrase moved to the end',
+      'Without a token, every request except the card is refused.',
+      'Every request except the card is refused without a token.'],
+    ['an unless clause moved to the end',
+      'Unless CI passes, do not merge.',
+      'Do not merge unless CI passes.'],
+    ['a one-word clause beside a rewritten negation',
+      'The agent, once stopped, will not restart the service.',
+      'Once stopped, the agent will not restart it.'],
     ['list ordinals',
       '1. Install Node 24.\n2. Run the tests.\n3. Ship v2.5.0.',
       '- Install Node 24.\n- Run the tests.\n- Ship v2.5.0.'],
@@ -190,7 +221,7 @@ This PR rewrites the rules loader the agent depends on. The loader now reads \`r
   it('a realistic issue edit that rephrases into a negation', () => {
     const r = checkFidelity(
       "When I run `npm test` on Node 26, better-sqlite3 fails to load. I think it's because the binding was built for Node 24.\n\nSteps:\n\n1. Install Node 26.\n2. Run `npm test`.\n\nExpected: tests pass. Actual: `ERR_DLOPEN_FAILED`.",
-      'On Node 26, `npm test` fails because better-sqlite3 does not load. The binding was probably built for Node 24.\n\nSteps:\n\n1. Install Node 26.\n2. Run `npm test`.\n\nExpected: the tests pass. Actual: `ERR_DLOPEN_FAILED`.',
+      'Under `npm test` on Node 26, better-sqlite3 does not load. The binding was probably built for Node 24.\n\nSteps:\n\n1. Install Node 26.\n2. Run `npm test`.\n\nExpected: the tests pass. Actual: `ERR_DLOPEN_FAILED`.',
     )
     expect(failed(r)).toEqual([])
     expect(warned(r)).toEqual(['hedge', 'negation-added'])
@@ -229,5 +260,26 @@ describe('warnings', () => {
     expect(warned(checkFidelity(input, '# Plan\n\nOne. Two. Three. Four.'))).toEqual([])
     expect(warned(checkFidelity(input, '# Plan\n\nOne. Two. Three.'))).toEqual(['sentences'])
     expect(warned(checkFidelity(input, '# The plan\n\nOne. Two. Three. Four. Five.'))).toEqual(['headings'])
+  })
+})
+
+describe('fidelity cost', () => {
+  it('stays well under a second per pair on hostile 12 KiB inputs', () => {
+    const lines = 'Ab 1.\n'.repeat(2048)
+    const distinct = Array.from({ length: 1400 }, (_, i) => `w${i} not`).join('\n')
+    const prose = 'The deploy takes 5 minutes on v2.5.0 (see #12, https://x.dev/a and src/a.ts); it does not run unless CI passes. '.repeat(110)
+    const pairs: Array<[string, string]> = [
+      [lines, lines.split('\n').reverse().join('\n')],
+      [distinct, distinct.split('\n').reverse().join('\n')],
+      [prose, prose.split('. ').reverse().join('. ')],
+      ['a.'.repeat(6144), 'a.'.repeat(6144)],
+      ['a-'.repeat(6144), 'a-'.repeat(6144)],
+      ['`a '.repeat(4096), '`a '.repeat(4096)],
+    ]
+    for (const [input, output] of pairs) {
+      const started = Date.now()
+      checkFidelity(input, output)
+      expect(Date.now() - started).toBeLessThan(1500)
+    }
   })
 })

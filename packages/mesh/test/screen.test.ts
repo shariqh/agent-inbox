@@ -25,6 +25,24 @@ const samples: Array<[ScreenClass, string]> = [
   ['secret', `Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0${CANARY}.dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk`],
   ['secret', `token: ${CANARY}9f8e7d6c5b4a`],
   ['secret', `password = "${CANARY}hunter22"`],
+  // review round 1 (#486)
+  ['letter-shape', `> Hi Sarah,\n> The export fails for ${CANARY}.\n\nLooking into it.`],
+  ['email-headers', `Looking into it.\n\n> From: Sarah ${CANARY}\n> Sent: Monday\n> To: Shariq\n> Subject: Export`],
+  ['letter-shape', `The fix ships Friday ${CANARY}.\n\nThanks!\nShariq`],
+  ['letter-shape', `The fix ships Friday ${CANARY}.\n\nThank you!\n\nShariq Hirani`],
+  ['letter-shape', `The fix ships Friday ${CANARY}.\n\nThanks so much,\nShariq`],
+  ['letter-shape', `The fix ships Friday ${CANARY}.\n\nBest regards,\nShariq Hirani\nStaff Engineer\nGitHub\n+1 555 0100\nshariq.dev\nPronouns: he/him\nSan Francisco`],
+  ['letter-shape', `Hi team — the fix ships Friday ${CANARY}.`],
+  ['letter-shape', `The fix ships Friday ${CANARY}.\nCheers — Shariq`],
+  ['letter-shape', `H\u200Bi Jane,\nThe fix ships Friday ${CANARY}.`],
+  ['letter-shape', `Ｈｉ Jane,\nThe fix ships Friday ${CANARY}.`],
+  ['deny-list', `The Acme\u200B Rockets ${CANARY} rollout is blocked.`],
+  ['secret', `-----BEGIN PGP PRIVATE KEY BLOCK-----\nlQOY${CANARY}\n-----END PGP PRIVATE KEY BLOCK-----`],
+  ['secret', `export GITLAB_TOKEN=glpat-${CANARY}abcdefghijkl12`],
+  ['secret', `POST to https://hooks.slack.com/services/T0ABC1234/B0DEF5678/${CANARY}xyzXYZ123`],
+  ['secret', `password: correct-horse-staple ${CANARY}`],
+  ['phone-number', `Call the office on 020 7946 0958 ${CANARY}.`],
+  ['email-address', `Mail ${CANARY}@corp-mail.dev today.`],
   ['customer-path', `Notes are in ~/dev/obsidian-notes/customers/${CANARY}/sso.md`],
   ['customer-path', `Notes are in /Users/me/dev/obsidian-notes/customers/${CANARY}/sso.md`],
   ['deny-list', `The ACME ROCKETS ${CANARY} rollout is blocked on SSO.`],
@@ -48,6 +66,14 @@ describe('screen', () => {
     `# v2.5.0\n\n- Message wake for Copilot sessions (#477).\n- Released 2026-11-02; about 70 s faster on cold start.\n- Contact security@shariq.dev for disclosures.`,
     `The token is created by \`meshctl enable --unslop\` and stored with mode 0600. It never appears in logs.\n\nThe customer list lives in the deny file, not here.`,
     `Hello from the blog. This week I moved the stdio server's poll to a single read, version 1.2.3.4 of the plan.`,
+    // review round 1 (#486): routine package, action and remote references
+    'Bump vitest@4.1.12 and typescript@5.6.0, and pin `@types/node@24.0.0`.',
+    'Pin actions/setup-node@v7.1.0 and actions/checkout@v7.0.1.',
+    'Clone git@github.com:shariqh/agent-inbox.git and run the tests.',
+    'Publish foo@1.0.0-beta.rc to the registry.',
+    'Released 2026-11-06 at 10:02; the viewer listens on 127.0.0.1:4319 and localhost:4420, build 0.12.3.',
+    'Thanks to everyone who tested v2.5.0!\n\nThanks!',
+    'The password: required field is checked, and the token: none case is handled.',
   ]
   for (const text of publicTexts) {
     it(`passes public text: ${text.slice(0, 40).replace(/\n/g, ' ')}`, () => {
@@ -58,6 +84,16 @@ describe('screen', () => {
   it('reports every class found, and has no override', () => {
     const result = screen('Hi Jane,\nCall (415) 555-0134.\nThanks,\nShariq', { ...opts, override: true } as never)
     expect(result).toEqual({ ok: false, classes: ['letter-shape', 'phone-number'] })
+  })
+})
+
+describe('screen cost', () => {
+  it('stays linear on hostile 12 KiB inputs', () => {
+    const inputs = ['a'.repeat(12288), 'a.'.repeat(6144), '1'.repeat(12288), '0 '.repeat(6144), 'a@'.repeat(6144),
+      '> '.repeat(6144), 'Thanks '.repeat(1755), 'Hi '.repeat(4096), '-----BEGIN '.repeat(1117), 'password: '.repeat(1228)]
+    const started = Date.now()
+    for (const text of inputs) screen(text, opts)
+    expect(Date.now() - started).toBeLessThan(1500)
   })
 })
 

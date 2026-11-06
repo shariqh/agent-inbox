@@ -22,6 +22,8 @@ export interface LaunchController {
   openWorktree(id: unknown): Promise<LaunchResult>
   /** step 5: Take over in Terminal (or open Terminal again on a launch already handed off) */
   takeOver(id: unknown): Promise<LaunchResult>
+  /** #478: forget an ended launch with no kept worktree, after main's own confirmation */
+  forget(id: unknown): Promise<LaunchResult>
   worktreeRoot(): Promise<WorktreeRoot | null>
   chooseWorktreeRoot(): Promise<LaunchResult>
   resetWorktreeRoot(): Promise<LaunchResult>
@@ -57,6 +59,9 @@ export function quitChoice(options: {
 export function removalConfirmation(facts: {
   project: string; path: string; branch: string; missing: boolean; dirty: number; ahead: number; upstream: boolean
   examples?: string[]; noDiscard?: string | null; handedOff?: boolean
+}): { message: string; detail: string; buttons: string[] }
+export function forgetConfirmation(facts: {
+  project: string; branch?: string | null; stream?: string; task?: string; endReason?: string | null; resumable?: boolean
 }): { message: string; detail: string; buttons: string[] }
 export function takeOverConfirmation(facts: {
   project: string; folder: string; state: 'running' | 'parked' | 'stopped' | 'handed_off'

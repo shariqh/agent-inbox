@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import type { Handler } from 'hono'
 import { createHash } from 'node:crypto'
-import { closeSync, readFileSync, existsSync, fstatSync, openSync, readSync, readdirSync, lstatSync, realpathSync, statSync } from 'node:fs'
+import { closeSync, readFileSync, existsSync, fstatSync, openSync, readSync, readdirSync, lstatSync, realpathSync, rmSync, statSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
 import { basename, dirname, isAbsolute, resolve, sep } from 'node:path'
@@ -14,6 +14,7 @@ import {
   closeProject, reopenProject, closedProjects, readSnapshotState, listIssueEntities, listIssueSnapshots,
   listSessionMessages, sendSessionMessage, withdrawSessionMessage, validMessageId, validMessageText, MESSAGE_MAX_TEXT,
   listLaunches, getLaunch, launchView, launchDriverAlive, isLaunchAsk, requestLaunchStop, closeLostLaunch, getLaunchAsk, handOffForTerminal, withdrawLaunchHandOff,
+  forgetLaunch,
   answerLaunchAsk, listLaunchFolders, requestLaunchInterrupt, requestLaunchPark,
 } from './store.js'
 import type { ExpectedAnswer, ResponseKind, SnapshotDomain, SnapshotReadState } from './store.js'
@@ -1084,6 +1085,22 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
     return c.json(handOffForTerminal(db, c.req.param('id')))
   })
   app.post('/api/launches/:id/hand-off/withdraw', (c) => c.json({ ok: withdrawLaunchHandOff(db, c.req.param('id')) }))
+  // Forget (#478): Electron main deletes an ended launch at the revision its own confirmation
+  // showed, then its log folders go, as the 30-day prune's do. Exactly { revision }; like Stop,
+  // the human's own capability, and it removes no worktree, branch or Copilot session.
+  app.post('/api/launches/:id/forget', async (c) => {
+    const body = await c.req.json().catch(() => null) as unknown
+    const fields = body !== null && typeof body === 'object' && !Array.isArray(body) ? body as Record<string, unknown> : null
+    if (!fields || Object.keys(fields).join() !== 'revision' || !Number.isSafeInteger(fields.revision) || (fields.revision as number) < 1) {
+      return c.json({ ok: false, error: 'the body must be exactly { revision }' }, 400)
+    }
+    const id = c.req.param('id')
+    const result = forgetLaunch(db, id, fields.revision as number)
+    if (result.ok && isAbsolute(db.name)) {
+      for (const dir of ['launches', 'drivers']) rmSync(resolve(dirname(db.name), dir, id), { recursive: true, force: true })
+    }
+    return c.json(result)
+  })
   // The transcript panel (§3.6): the driver's event log from a byte offset, at
   // most 256 KiB of whole lines a read, read only while the panel is open. An
   // offset past the end means the log rotated: it starts again from 0.

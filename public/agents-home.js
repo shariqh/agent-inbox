@@ -12,6 +12,7 @@
 // reaches the DOM only through textContent. Painted from app.js's
 // renderDashboardAmbient, so from both render entries.
 import { FILTERS, cardMatches, filterCounts, groupCards, messageHint, sessionCards } from './sessions.js'
+import { forgettable } from './launches.js'
 import { pinLaneOrder, tracePath } from './lanes.js'
 import { relMs } from './rowview.js'
 
@@ -337,6 +338,8 @@ export function installAgentsHome(deps) {
     }
     // an ended launch's kept worktree is removed from its card too: main checks it and asks first (#432)
     if (granted && worktreeKept(card)) out.push(['remove-worktree', 'Remove worktree…', 'Remove this session’s worktree: its branch is kept'])
+    // #478: an ended launch with no worktree left, stopped ones that can resume included
+    if (granted && forgettable(card.launch)) out.push(['forget', 'Forget…', 'Forget this session: its card, transcript and logs'])
     return out
   }
 

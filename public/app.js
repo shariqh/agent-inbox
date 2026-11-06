@@ -6297,6 +6297,8 @@ function initLaunches() {
       agentsHome.paintNewSession()
     },
     settled: () => reloadAndPaint(),
+    // #478: a forgotten launch's panel has nothing left to show
+    forgotten: (id) => { if (focusSession === `launch:${id}`) closeSessionFocus() },
     // a session started outside the lens would have no card: scope the lens to it
     started: (id) => { if (scopeToLaunch(id)) forceRender() },
     pending: (action) => withPendingResponse(action),

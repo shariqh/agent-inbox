@@ -43,7 +43,8 @@ const STATES = Object.freeze({
 // The state filters in the card's header, over the cards in its main list.
 export const FILTERS = Object.freeze([
   // `idle` holds Quiet and Idle cards alike (#466): a known-idle card is quiet too
-  ['all', 'All'], ['ask', 'Needs you'], ['working', 'Working'], ['idle', 'Quiet'], ['parked', 'Parked'],
+  // `parked` holds stopped launches whose session is kept too (#478): both resume
+  ['all', 'All'], ['ask', 'Needs you'], ['working', 'Working'], ['idle', 'Quiet'], ['parked', 'Parked or stopped'],
 ])
 
 const HOSTS = { copilot: 'Copilot', 'claude-code': 'Claude Code' }
@@ -281,8 +282,11 @@ export function sessionCards({ activity, launches = null, boards = [], attention
   for (const card of cards) {
     card.approval = card.asks.length > 0 && isApproval(card.asks[0])
     card.state = card.asks.length ? 'ask' : card.base
+    // #478: one stopped (or out of budget) with its session kept is listed and filtered with
+    // Parked, for its Resume…, but says Stopped: it has ended, so there is nothing to End
     card.label = card.askOnly ? (card.askOnly === 'ended' ? 'Session ended' : 'No session')
-      : STATES[card.state === 'idle' && card.quiet ? 'quiet' : card.state].label
+      : card.state === 'parked' && card.launch?.status === 'ended' ? 'Stopped'
+        : STATES[card.state === 'idle' && card.quiet ? 'quiet' : card.state].label
     card.line = doingLine(card, nowMs)
     // an ask is never folded away: Needs you counts every one (A.1)
     if (card.state === 'ask') card.place = 'main'

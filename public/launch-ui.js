@@ -11,7 +11,7 @@
 // public/attention.js, a badge, a count, the rail or the dock.
 import {
   LAUNCH_MODES, NOT_REPOSITORY, PROMPT_WARNING, REASONING_EFFORTS, SHELL_WARNING, START_PHASES, WORKTREE_COPY,
-  budgetAllowance, launchSessions, launchStatus, newSessionRequest, transcriptLines, worktreeSummaryText,
+  budgetAllowance, forgettable, launchSessions, launchStatus, newSessionRequest, transcriptLines, worktreeSummaryText,
 } from '/launches.js'
 
 const DEFAULT_ACTIVE_HOURS = 2
@@ -126,6 +126,7 @@ export function createLaunchUi(deps) {
     else if (action === 'take-over') takeOver(id)
     else if (action === 'open-worktree') openWorktree(id)
     else if (action === 'remove-worktree') removeWorktree(id)
+    else if (action === 'forget') forget(id)
   }
 
   // A note is about the state its launch was in when it was written: paintPanel drops it
@@ -184,6 +185,20 @@ export function createLaunchUi(deps) {
     const result = await act(id, () => bridge().removeWorktree(id))
     if (result && !result.ok && !result.cancelled) setNote(id, result.error ?? 'The worktree was not removed.')
     await deps.settled()
+  }
+
+  // #478: main names the session and what goes in its own dialog, then the hub deletes its
+  // record and logs; once gone, its card leaves with the next read and its panel closes
+  async function forget(id) {
+    const result = await act(id, () => bridge().forget(id))
+    if (result?.ok) {
+      drafts.delete(`resume:${id}`)
+      for (const map of [resumeInputs, budgetInputs, notes, noteStates]) map.delete(id)
+    } else if (result && !result.cancelled) {
+      setNote(id, result.error ?? 'The session was not forgotten.')
+    }
+    await deps.settled()
+    if (result?.ok) deps.forgotten?.(id)
   }
 
   async function close(id) {
@@ -582,13 +597,15 @@ export function createLaunchUi(deps) {
         actions.push(['open-worktree', 'Open in Terminal'])
         actions.push(['remove-worktree', 'Remove worktree…', 'end', launch.status !== 'ended'])
       }
+      // #478: only once ended, and after Remove worktree… when it has one
+      if (launch.status === 'ended') actions.push(['forget', 'Forget…', 'end', forgettable(launch) ? false : 'Remove its worktree first'])
     }
     keyed(actionsEl, JSON.stringify([actions, busy.has(id)]), () => actions.map(([action, label, tone, off]) => {
       if (tone === 'hint') return make('span', 'sp-actions-hint', label)
       const el = button(label, action, tone === 'danger' ? 'danger' : tone === 'end' ? 'sp-end' : '')
       if (off) {
         el.disabled = true
-        el.title = 'Only once the session has ended'
+        el.title = typeof off === 'string' ? off : 'Only once the session has ended'
       }
       if (busy.has(id)) el.disabled = true
       return el
@@ -775,6 +792,7 @@ export function createLaunchUi(deps) {
       else if (action === 'open-worktree') await openWorktree(id)
       // only an ended launch's: main checks it again and asks before anything is removed
       else if (action === 'remove-worktree' && (deps.launches() ?? []).find((l) => l.id === id)?.status === 'ended') await removeWorktree(id)
+      else if (action === 'forget' && forgettable((deps.launches() ?? []).find((l) => l.id === id))) await forget(id)
       else return false
       return notes.has(id)
     },

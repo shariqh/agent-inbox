@@ -264,7 +264,7 @@ The app opens on the Dashboard (`G D`), for all projects and agents.
   app-driven session whose driver reports no running turn. A claim that is no longer
   live shows as "Last reported: … · 52m ago". A session with no call for 8 hours
   folds under **Dormant**, and ended sessions under **Ended**. Filter by state with
-  **All**, **Needs you**, **Working**, **Quiet** and **Parked**.
+  **All**, **Needs you**, **Working**, **Quiet** and **Parked or stopped**.
   Click a card to open its session panel: its requests, its plan, its recent
   outcomes, PR and CI state, links, and a place to message it.
 - **The Today ribbon** draws one line per project over the last 24 hours, 7 days or
@@ -364,6 +364,10 @@ It is off until you turn it on, and it works only in the macOS app, not in a bro
    panel) shows what it did; the **Ended** fold lists ended sessions, and **Earlier
    sessions** inside it older ones. An ended session whose worktree is kept offers
    **Remove worktree…** on its card, and the fold says how many worktrees are kept.
+   Once it has no worktree, **Forget…** removes the session from Agent Inbox for good: its
+   card, transcript and logs. Its branch and commits, and Copilot's own session files, stay.
+   A session you stopped whose Copilot session is kept reads **Stopped**, offers Resume… and
+   Forget…, and is listed under **Parked or stopped**.
 7. **Take over in Terminal** moves a running or parked session to a Terminal window:
    after your confirmation, Agent Inbox stops driving it (cancelling its current turn
    and approvals) and runs `copilot --resume` there with its history. From then on you

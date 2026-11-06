@@ -11,7 +11,7 @@ import { dirname, join } from 'node:path'
 import type Database from 'better-sqlite3'
 import {
   claimDriverSlot, createLaunch, endLaunch, fileLaunchAsk, getItem, handOffLaunch, holdDriverLeases, insertItem, listSessionMessages, markDriverTurn, markWorktreeRemoved, recordWorktreeSummary,
-  parkLaunch, recordActivityCall, recordLaunchProgress, resolveItem, settleLaunchAsk, upsertActivity,
+  parkLaunch, recordActivityCall, recordLaunchProgress, resolveItem, settleLaunchAsk, upsertActivity, forgetLaunch, getLaunch,
 } from '../../src/store.js'
 import type { ViewerBridge } from './harness.js'
 import { advanceClock, bootApp, buttonLabelled, changedPollTick, click, freshDb, pollTick, row, settle, type, useDomTest } from './harness.js'
@@ -628,7 +628,8 @@ describe('a launch’s card and session panel (§3.6, §7, #454)', () => {
     })
     await bootApp(db)
     await changedPollTick(db)
-    expect(stateOf(PARKED)).toBe('Parked')
+    // #478: it has ended, so it says Stopped, not Parked
+    expect(stateOf(PARKED)).toBe('Stopped')
     expect(doingOf(PARKED)).toBe('Stopped: its session is kept, so it can be resumed.')
     click(launchRow(PARKED)!.querySelector('[data-ah-action="resume"]'))
     await settle()
@@ -1165,12 +1166,71 @@ describe('session cards for launches (#454, #412)', () => {
     await changedPollTick(db)
     await settle()
     const id = `launch:${LAUNCH}`
-    expect(card(id)?.querySelector('.sc-state')?.textContent).toBe('Parked')
+    expect(card(id)?.querySelector('.sc-state')?.textContent).toBe('Stopped')
     // the drawer lists the newest five ended launches only; the session panel draws any launch (#454)
     click(cardAction(id, 'resume'))
     await settle()
     expect(panel().hidden).toBe(false)
     expect(document.activeElement).toBe(panel().querySelector('.sp-resume-input'))
+  })
+
+  // #478: the owner's case: stopped with its session kept, never a worktree, read as Parked with no way to discard it
+  it('Forget… on a stopped launch with its session kept: main asks, then its card and open panel go without a reload', async () => {
+    const api = launchBridge()
+    db = freshDb()
+    newLaunch(db)
+    endLaunch(db, LAUNCH, { reason: 'stopped', acpSession: 'acp-1' })
+    const forget = vi.fn(async (id: string) => forgetLaunch(db!, id, getLaunch(db!, id)!.revision))
+    Object.assign(api, { forget })
+    await bootApp(db)
+    await changedPollTick(db)
+    await settle()
+    const id = `launch:${LAUNCH}`
+    expect(card(id)?.querySelector('.sc-state')?.textContent).toBe('Stopped')
+    expect(actions(id)).toEqual(['Take over in Terminal', 'Resume…', 'Forget…'])
+    click(card(id)?.querySelector('.sc-doing'))
+    await settle()
+    expect(panel().hidden).toBe(false)
+    expect(panelAction('forget')?.disabled).toBe(false)
+    click(cardAction(id, 'forget'))
+    await settle()
+    await settle()
+    expect(forget).toHaveBeenCalledWith(LAUNCH)
+    expect(card(id)).toBeNull()
+    expect(panel().hidden).toBe(true)
+  })
+
+  it('Forget… waits for Remove worktree…, never shows on a parked launch, and a refusal shows in the panel', async () => {
+    const api = launchBridge()
+    db = freshDb()
+    createLaunch(db, {
+      id: LAUNCH, host: 'copilot', project: 'alpha', stream: 'agent-inbox/fix-55555555', cwd: '/w/alpha/fix-55555555', mode: 'ask',
+      budgetActiveMs: 7_200_000, budgetToolCalls: 500, prompt: 'Fix it.', specVersion: 1, driverPid: 4242,
+      worktree: { checkoutRoot: '/work/alpha', branch: 'agent-inbox/fix-55555555', baseSha: 'a'.repeat(40), baseRef: null },
+    })
+    endLaunch(db, LAUNCH, { reason: 'stopped' })
+    newLaunch(db, PARKED)
+    parkLaunch(db, PARKED, { acpSession: 'acp-2', activeMs: 0, toolCalls: 0 })
+    Object.assign(api, { forget: vi.fn(async () => ({ ok: false, error: 'The session changed since you confirmed, so it was kept. Look at it again.' })) })
+    await bootApp(db)
+    await changedPollTick(db)
+    await settle()
+    expect(stateOf(PARKED)).toBe('Parked')
+    expect(actions(`launch:${PARKED}`)).not.toContain('Forget…')
+    launchRow(LAUNCH)
+    expect(actions(`launch:${LAUNCH}`)).toEqual(['Open in Terminal', 'Remove worktree…'])
+    openLaunch(LAUNCH)
+    expect([panelAction('remove-worktree')?.disabled, panelAction('forget')?.disabled, panelAction('forget')?.title])
+      .toEqual([false, true, 'Remove its worktree first'])
+    markWorktreeRemoved(db, LAUNCH)
+    await changedPollTick(db)
+    await settle()
+    expect(actions(`launch:${LAUNCH}`)).toEqual(['Transcript', 'Forget…'])
+    expect(panelAction('remove-worktree')).toBeNull()
+    click(panelAction('forget'))
+    await settle()
+    expect(panel().querySelector('.sp-note')?.textContent).toBe('The session changed since you confirmed, so it was kept. Look at it again.')
+    expect(card(`launch:${LAUNCH}`)).not.toBeNull()
   })
 
   it('folds an ended launch under Ended, whose card opens its transcript', async () => {
@@ -1185,7 +1245,7 @@ describe('session cards for launches (#454, #412)', () => {
     expect([fold.hidden, fold.querySelector('summary')?.textContent]).toEqual([false, 'Ended (1)'])
     fold.open = true
     fold.dispatchEvent(new Event('toggle'))
-    expect(actions(`launch:${LAUNCH}`)).toEqual(['Transcript'])
+    expect(actions(`launch:${LAUNCH}`)).toEqual(['Transcript', 'Forget…'])
     click(cardAction(`launch:${LAUNCH}`, 'transcript'))
     await settle()
     expect(panel().hidden).toBe(false)

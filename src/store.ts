@@ -3762,6 +3762,15 @@ export function liveSessionServers(db: Database.Database, sessions: readonly str
                       ORDER BY session ASC`).all(JSON.stringify(sessions)) as Array<{ session: string; server_pid: number | null }>
 }
 
+// Issue #477 — this session's server pid while its presence is live: not ended,
+// and ticked within the staleness window, so a SIGKILLed server whose pid was
+// reused still reads as gone. Undefined once it is not.
+export function liveSessionServer(db: Database.Database, session: string): { server_pid: number | null } | undefined {
+  const cutoff = new Date(Date.now() - PRESENCE_STALE_MINUTES * 60000).toISOString()
+  return db.prepare(`SELECT server_pid FROM activity WHERE session = ? AND ended_at IS NULL AND updated_at >= ?`)
+    .get(session, cutoff) as { server_pid: number | null } | undefined
+}
+
 // The open questions these MCP sessions raised, whatever project each was
 // filed under, except a reserved one (#412): a driver files its approval
 // alerts under the driven session's id, and no hook may wake on them.

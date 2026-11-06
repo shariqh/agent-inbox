@@ -143,15 +143,23 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   such as a background shell completing. So the background shell's completion stays the
   only wake. For a Copilot client only, and never for a driven session, `pending()` with
   no message to hand over and `status({done:true})` return `message_watch`, the contract
-  for `watch-cli --messages <session> <issued-at> <db> [<seen id>...]`, which the agent
+  for `watch-cli --messages <session> <db> [<seen id>...]`, which the agent
   launches detached. The server never spawns it. `seen` is the session's open messages
   already delivered, so one the agent holds but has not acked cannot wake it again. A
   message that arrives after the agent's last `pending()` is undelivered, so it wakes the
   watcher at once. The watcher exits 0 with one fixed line for any other open
-  message to that session (ids only, never the text), 124 at `watchTimeoutMs` of the
-  issued-at time (re-running the same command backs off, as #217's do), and 3, "do not
-  re-run", when another copy holds the session's lease or the session's server has gone
-  (presence ended, or its `server_pid` is dead). The lease is `copilot-messages:<session>`
+  message to that session (ids only, never the text). It has no #217 ladder: nothing
+  closes its wait but the session, so it waits until its server goes and times out
+  (124, re-run the same command) only at `WATCH_MAX_MS`, a day, so an idle session is
+  woken at most once a day to re-arm. Exit 3 means another copy holds the session's
+  lease: do not re-run. Exit 4 (`MESSAGE_WATCH_ENDED_EXIT`) means the session's server
+  has gone: its presence ended, its `server_pid` is dead, or its `updated_at` is past
+  the 15-minute staleness window (the liveness tick runs every 5 minutes, so a
+  SIGKILLed server whose pid was reused still reads as gone). The agent then calls
+  `pending()` once and launches any `message_watch` it returns: a server restarted under
+  a live CLI has a new session id, so this re-arms against it, and a CLI that has gone
+  is never woken. A machine that slept past the window costs one such wake on resume. The
+  lease is `copilot-messages:<session>`
   in `hook_watch_claims`, taken by one conditioned statement (first live copy wins),
   refreshed every 30 s and fresh for 90 s. While it is fresh the server hands out no
   second contract, and `listActivity` reports `wakes`. The `shell_id` is fixed per

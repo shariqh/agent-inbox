@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { openDb } from './store.js'
-import { WATCH_STOPPED_EXIT, waitForBoardResponse, waitForQuestionResponse, waitForSessionMessage } from './watch.js'
+import { MESSAGE_WATCH_ENDED_EXIT, WATCH_STOPPED_EXIT, waitForBoardResponse, waitForQuestionResponse, waitForSessionMessage } from './watch.js'
 
 function boundedEnv(name: string, fallback: number | undefined, min: number, max: number): number | undefined {
   const raw = process.env[name]
@@ -11,7 +11,7 @@ function boundedEnv(name: string, fallback: number | undefined, min: number, max
 
 const USAGE = 'usage: agent-inbox-watch <item-id> <database-path>\n'
   + '       agent-inbox-watch --row <row-id> <action-version> <database-path>\n'
-  + '       agent-inbox-watch --messages <session-id> <issued-at> <database-path> [<seen-message-id>...]\n'
+  + '       agent-inbox-watch --messages <session-id> <database-path> [<seen-message-id>...]\n'
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 const args = process.argv.slice(2)
@@ -23,24 +23,25 @@ const options = {
 
 // Issue #477 — wait for a message to this MCP session. Never prints its text.
 if (args[0] === '--messages') {
-  const [, session, since, dbPath, ...seen] = args
-  if (!session || !UUID.test(session) || !since || !Number.isFinite(Date.parse(since)) || !dbPath || !seen.every((id) => UUID.test(id))) {
+  const [, session, dbPath, ...seen] = args
+  if (!session || !UUID.test(session) || !dbPath || !seen.every((id) => UUID.test(id))) {
     process.stderr.write(USAGE)
     process.exit(64)
   }
   const db = openDb(dbPath)
   try {
-    const result = await waitForSessionMessage(db, session, { ...options, since, seen })
+    const result = await waitForSessionMessage(db, session, { ...options, seen })
     if (result === 'message') {
       process.stdout.write('Agent Inbox message ready. Call pending().\n')
     } else if (result === 'timeout') {
       process.stderr.write('Agent Inbox message watch timed out.\n')
       process.exitCode = 124
-    } else {
-      process.stdout.write(result === 'running'
-        ? 'Agent Inbox: a message watch for this session is already running; do not re-run this one.\n'
-        : 'Agent Inbox: this session\'s server has ended; do not re-run this message watch.\n')
+    } else if (result === 'running') {
+      process.stdout.write('Agent Inbox: a message watch for this session is already running; do not re-run this one.\n')
       process.exitCode = WATCH_STOPPED_EXIT
+    } else {
+      process.stdout.write('Agent Inbox: this session\'s server has ended. Call pending() once and launch any message_watch it returns.\n')
+      process.exitCode = MESSAGE_WATCH_ENDED_EXIT
     }
   } finally {
     db.close()

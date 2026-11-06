@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import {
-  defaultDbPath, getActiveBoardRow, getItem, holdMessageWatch, listOpenMessages, liveSessionServers, releaseMessageWatch,
+  defaultDbPath, getActiveBoardRow, getItem, holdMessageWatch, listOpenMessages, liveSessionServer, releaseMessageWatch,
 } from './store.js'
 import type { BoardRow } from './store.js'
 
@@ -163,11 +163,13 @@ async function waitForResponse(
 // server it watches for has gone, so nothing can deliver to that session.
 export type MessageWatchResult = 'message' | 'ended' | 'running' | 'timeout'
 
+// The message watcher's exit when its session's server has gone: not 3 (another
+// copy runs), because a server restarted under a live CLI needs a new watcher.
+export const MESSAGE_WATCH_ENDED_EXIT = 4
+
 export interface MessageWatchOptions extends WatchOptions {
   // Open messages the session already had in hand when the contract was issued.
   seen?: readonly string[]
-  // When the contract was issued: re-running the same command waits longer (#217).
-  since?: string
 }
 
 const MESSAGE_LEASE_REFRESH_MS = 30_000
@@ -191,11 +193,13 @@ export async function waitForSessionMessage(
   const pollMs = options.pollMs ?? DEFAULT_POLL_MS
   const seen = new Set(options.seen)
   const launchedAt = Date.now()
-  const deadline = launchedAt + (options.timeoutMs ?? watchTimeoutMs(options.since, launchedAt))
+  // No #217 ladder: nothing closes this wait but the session, and it ends within
+  // a poll of the server going, so the day-long ceiling is the only timeout.
+  const deadline = launchedAt + (options.timeoutMs ?? WATCH_MAX_MS)
   let heldAt = launchedAt
   try {
     for (;;) {
-      const server = liveSessionServers(db, [session])[0]
+      const server = liveSessionServer(db, session)
       if (!server || (server.server_pid !== null && !processAlive(server.server_pid))) return 'ended'
       if (listOpenMessages(db, [session]).some((m) => !seen.has(m.id))) return 'message'
       const now = Date.now()
@@ -246,14 +250,13 @@ function watchCommand(args: (dbPath: string) => string[], options: WatchLaunchOp
 // Issue #477 — the message watcher's launch contract. `seen` are the open
 // messages already handed to this session; the watcher wakes for any other.
 export function copilotMessageWatchLaunch(session: string, seen: readonly string[], options: WatchLaunchOptions = {}) {
-  const nowMs = options.nowMs ?? Date.now()
   return {
-    shell_command: watchCommand((dbPath) => ['--messages', session, new Date(nowMs).toISOString(), dbPath, ...seen], options),
+    shell_command: watchCommand((dbPath) => ['--messages', session, dbPath, ...seen], options),
     mode: 'async' as const,
     detach: true,
     shell_id: `agent-inbox-messages-${session}`,
-    timeout_seconds: Math.ceil(watchTimeoutMs(undefined, nowMs) / 1_000),
-    on_completion: 'Exit 0: the human sent this session a message. Call pending() immediately, act on each message, ack_message it, then launch the message_watch your next pending() or status({done:true}) returns. A timeout (exit 124) is not a message: re-run this same command; it waits longer each time. Exit 3: another copy is running or this session\'s Agent Inbox server has ended; do not re-run this command.',
+    timeout_seconds: WATCH_MAX_MS / 1_000,
+    on_completion: `Exit 0: the human sent this session a message. Call pending() immediately, act on each message, ack_message it, then launch the message_watch your next pending() or status({done:true}) returns. A timeout (exit 124, after a day) is not a message: re-run this same command. Exit 3: another copy is already running; do not re-run this command. Exit ${MESSAGE_WATCH_ENDED_EXIT}: this session's Agent Inbox server ended; call pending() once and launch any message_watch it returns.`,
   }
 }
 

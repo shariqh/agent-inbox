@@ -4,6 +4,7 @@ import {
   upsertBoard, getBoard, annotateBoardRow, markRowHandled, markAnnotationDelivered,
   archiveBoard, advanceBoardRow, snoozeBoardRow, snoozeItem, stopBoardRowWatch, stopItemWatch,
   upsertActivity, endActivity, listActivity, sendSessionMessage, withdrawSessionMessage, ackMessage, holdMessageWatch,
+  releaseMessageWatch, touchActivity,
 } from '../src/store.js'
 import {
   boardResponseState, copilotWatchLaunch, waitForQuestionResponse, waitForBoardResponse, watchTimeoutMs, waitForSessionMessage,
@@ -585,24 +586,56 @@ describe('Copilot message watch (#477)', () => {
     db.close()
   })
 
-  it('the CLI exits 0 without the text, 124 on timeout, 3 beside a running copy, and 64 on bad input', async () => {
+  it('waits a day while its server ticks, with no #217 ladder, and ends once the presence goes stale', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    const start = Date.parse('2026-11-06T12:00:00.000Z')
+    vi.setSystemTime(start)
+    const db = fresh()
+    try {
+      present(db, SESSION)
+      let settled: string | undefined
+      const waiting = waitForSessionMessage(db, SESSION, { pollMs: 5 }).then((result) => (settled = result))
+      for (let at = 5 * MINUTE; at < 24 * HOUR; at += 5 * MINUTE) {
+        vi.setSystemTime(start + at)
+        touchActivity(db, SESSION)
+      }
+      await sleep(40)
+      expect(settled).toBeUndefined()
+      vi.setSystemTime(start + 24 * HOUR)
+      await expect(waiting).resolves.toBe('timeout')
+
+      // A SIGKILLed server never ends its row; past the staleness window it has gone.
+      touchActivity(db, SESSION)
+      vi.setSystemTime(start + 24 * HOUR + 16 * MINUTE)
+      await expect(waitForSessionMessage(db, SESSION, { pollMs: 5 })).resolves.toBe('ended')
+    } finally {
+      db.close()
+      vi.useRealTimers()
+    }
+  })
+
+  it('the CLI exits 0 without the text, 124 on timeout, 3 beside a running copy, 4 once its server ended, and 64 on bad input', async () => {
     const dbPath = join(scratchDir('copilot-message-watch-cli-'), 'custom.db')
     const db = openDb(dbPath)
     present(db, SESSION)
     send(db, 1)
-    const since = new Date().toISOString()
-    const woken = await runWatchCli(['--messages', SESSION, since, dbPath, msg(1)], { AGENT_INBOX_WATCH_TIMEOUT_MS: '5000' }, () => {
+    const woken = await runWatchCli(['--messages', SESSION, dbPath, msg(1)], { AGENT_INBOX_WATCH_TIMEOUT_MS: '5000' }, () => {
       setTimeout(() => send(db, 2), 300)
     })
     expect(woken.code, woken.stderr).toBe(0)
     expect(woken.stdout).toBe('Agent Inbox message ready. Call pending().\n')
-    const timedOut = await runWatchCli(['--messages', SESSION, since, dbPath, msg(1), msg(2)], { AGENT_INBOX_WATCH_TIMEOUT_MS: '1000' })
+    const timedOut = await runWatchCli(['--messages', SESSION, dbPath, msg(1), msg(2)], { AGENT_INBOX_WATCH_TIMEOUT_MS: '1000' })
     expect(timedOut.code, timedOut.stderr).toBe(124)
     expect(holdMessageWatch(db, SESSION, 'another-copy')).toBe(true)
-    const second = await runWatchCli(['--messages', SESSION, since, dbPath], { AGENT_INBOX_WATCH_TIMEOUT_MS: '5000' })
+    const second = await runWatchCli(['--messages', SESSION, dbPath], { AGENT_INBOX_WATCH_TIMEOUT_MS: '5000' })
     expect(second.code, second.stderr).toBe(3)
     expect(second.stdout).toContain('already running')
-    for (const bad of [['--messages', 'not-a-session', since, dbPath], ['--messages', SESSION, 'never', dbPath], ['--messages', SESSION, since, dbPath, 'x']]) {
+    releaseMessageWatch(db, SESSION, 'another-copy')
+    endActivity(db, SESSION)
+    const ended = await runWatchCli(['--messages', SESSION, dbPath], { AGENT_INBOX_WATCH_TIMEOUT_MS: '5000' })
+    expect(ended.code, ended.stderr).toBe(4)
+    expect(ended.stdout).toContain('Call pending() once and launch any message_watch it returns')
+    for (const bad of [['--messages', 'not-a-session', dbPath], ['--messages', SESSION], ['--messages', SESSION, dbPath, 'x']]) {
       expect(spawnSync(process.execPath, ['--import', 'tsx', WATCH_CLI, ...bad], { encoding: 'utf8', timeout: 5_000 }).status).toBe(64)
     }
     db.close()
@@ -628,8 +661,9 @@ describe('Copilot message watch (#477)', () => {
     const claude = await connect('claude-code')
     try {
       const first = (await copilot.call('pending')).message_watch
-      expect(first).toMatchObject({ mode: 'async', detach: true, shell_id: `agent-inbox-messages-${copilot.session}`, timeout_seconds: 1800 })
-      expect(first.shell_command).toMatch(new RegExp(`'--messages' '${copilot.session}' '[^']+' '[^']+'$`))
+      expect(first).toMatchObject({ mode: 'async', detach: true, shell_id: `agent-inbox-messages-${copilot.session}`, timeout_seconds: 24 * 3600 })
+      expect(first.shell_command).toMatch(new RegExp(`'--messages' '${copilot.session}' '[^']+'$`))
+      expect(first.on_completion).toContain('Exit 4: this session\'s Agent Inbox server ended; call pending() once')
       expect(first.on_completion).toContain('Call pending()')
       expect((await claude.call('pending')).message_watch).toBeUndefined()
       expect((await claude.call('status', { done: true })).message_watch).toBeUndefined()

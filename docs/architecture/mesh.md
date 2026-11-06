@@ -105,6 +105,22 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
   `rules.ts` (§3.2: `rules.md` and its SHA-256, re-read on a size or mtime change, the
   last good rules kept and marked stale) and `mesh-config.ts`. Both checks have timing
   tests on hostile 12 KiB inputs.
+- **U2a (one task as a function, no listener):** `backend.ts` (§7.1, §8.2: one POST to
+  `<base URL>/v1/chat/completions`, the base URL `https://` or `http://` on a loopback
+  address literal; `node:http`, so no redirects, no proxy and a 10 s connect limit; the
+  profile's model, default `chat-long`, temperature 0.2, top_p 0.9, presence_penalty 0,
+  thinking off with `chat_template_kwargs.enable_thinking: false`, never `tools`;
+  `max_tokens` = min(1.3 × UTF-8 bytes / 3 + 256, 6144). Any 5xx is busy; a truncated,
+  empty, reasoning-only or tool-call answer keeps the original), `prompt.ts` (§8.1: the
+  preamble, `rules.md`, the text between `TEXT <nonce> BEGIN`/`END` lines; a retry's
+  values to keep sit in their own nonce block, since they come from the text; one
+  wrapping code fence removed; an answer with the nonce, or over twice the input plus
+  1 KiB, keeps the original) and `unslop.ts` (`runUnslop`: kind, size, control bytes and
+  the screen refuse before any network; one retry only when the time left covers its
+  output limit at the box's reported speed, else 44 tok/s; a §6.3 result with an exit
+  class 0/10/11/12/13; a log callback that gets sizes, timings, classes and check
+  results, never text or a matched value; clock, random and transport injectable). The
+  A2A server, queue, token, `mesh.json` gate and daily budget are U2b; the CLI is U3.
 - **One `mesh.json` rule, held twice.** The package cannot import `src/mesh-config.ts`,
   so it carries a reader with the same rule and the same `meshDir()` order. The cases in
   `test/fixtures/mesh-json/cases.json` run in both suites: `test/mesh-json-parity.test.ts`

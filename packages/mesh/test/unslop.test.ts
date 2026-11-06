@@ -3,8 +3,8 @@
 import { createServer } from 'node:http'
 import type { IncomingHttpHeaders, Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { checkBaseUrl, maxTokens } from '../src/backend.js'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { checkBaseUrl, maxTokens, post } from '../src/backend.js'
 import { runUnslop } from '../src/unslop.js'
 import type { UnslopEnv, UnslopLog, UnslopTask } from '../src/unslop.js'
 
@@ -108,12 +108,43 @@ describe('backend request', () => {
     expect(checkBaseUrl('https://models.example/llm/').href).toBe('https://models.example/llm/v1/chat/completions')
     expect(checkBaseUrl('http://127.0.0.1:9/').href).toBe('http://127.0.0.1:9/v1/chat/completions')
     expect(checkBaseUrl('http://[::1]:9').href).toBe('http://[::1]:9/v1/chat/completions')
-    for (const bad of ['http://models.example', 'http://localhost:9', 'http://127.0.0.1.evil.example', 'http://10.0.0.2', 'ftp://127.0.0.1', 'https://u:p@models.example', 'https://models.example/?x=1', 'nope']) {
+    for (const bad of ['http://models.example', 'http://localhost:9', 'http://127.0.0.1.evil.example', 'http://10.0.0.2', 'ftp://127.0.0.1', 'https://u:p@models.example', 'https://models.example/?x=1', 'nope',
+      // review round 1 (#487): a path that names another host
+      'http://127.0.0.1//evil.example', 'http://[::1]//evil.example:8080/p', 'http://127.0.0.1/\\evil.example/x', 'https://good.example//evil.example/']) {
       expect(() => checkBaseUrl(bad), bad).toThrow()
     }
     const { env } = setup()
     env.profile = { ...env.profile, baseUrl: 'http://models.example' }
     expect(await runUnslop(task(), env)).toMatchObject({ code: 13, status: 'failed', reason: 'backend-url', attempts: 0 })
+    expect(requests).toHaveLength(0)
+  })
+})
+
+describe('API key', () => {
+  it('trims the key, and refuses a line break or non-Latin-1 without a request or an echo', async () => {
+    queue(reply(GOOD))
+    const { env, logs } = setup()
+    env.profile = { ...env.profile, apiKey: 'test-key\n' }
+    expect(await runUnslop(task(), env)).toMatchObject({ code: 0 })
+    expect(requests[0]!.headers.authorization).toBe('Bearer test-key')
+    for (const apiKey of [`te\nst-${CANARY}`, `test-${CANARY}\u2014`]) {
+      env.profile = { ...env.profile, apiKey }
+      expect(await runUnslop(task(), env)).toMatchObject({ code: 13, reason: 'backend-key', attempts: 0 })
+    }
+    expect(requests).toHaveLength(1)
+    expect(JSON.stringify(logs)).not.toContain(CANARY)
+  })
+
+  it('leaves no timer behind when Node refuses a header', async () => {
+    vi.useFakeTimers()
+    try {
+      await expect(post(new URL(`${base}/v1/chat/completions`), '{}', { authorization: 'Bearer a\nb' }, { timeoutMs: 1000 }))
+        .rejects.toMatchObject({ reason: 'invalid' })
+      expect(vi.getTimerCount()).toBe(0)
+      vi.advanceTimersByTime(300_000)
+    } finally {
+      vi.useRealTimers()
+    }
     expect(requests).toHaveLength(0)
   })
 })

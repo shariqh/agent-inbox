@@ -6,7 +6,7 @@
 // classes and check results only: never text, never a matched value.
 // U2b wraps this in the A2A server (queue, auth, mesh.json gate); U3 the CLI.
 import { randomBytes } from 'node:crypto'
-import { DEFAULT_MODEL, DEFAULT_SAMPLING, checkBaseUrl, classify, maxTokens, post as httpPost, requestBody } from './backend.js'
+import { DEFAULT_MODEL, DEFAULT_SAMPLING, checkApiKey, checkBaseUrl, classify, maxTokens, post as httpPost, requestBody } from './backend.js'
 import type { BackendProfile, Post, Sampling, TransportReason } from './backend.js'
 import { checkFidelity } from './fidelity.js'
 import type { Failure, FidelityReport } from './fidelity.js'
@@ -60,7 +60,7 @@ const DEFAULT_TOKENS_PER_S = 44
 // a gap this long between the request and the box's own prompt+predict time is a model load
 const LOAD_GAP_MS = 1000
 const CONTROL = /[\u0000-\u0008\u000B-\u001F\u007F-\u009F]/
-const TRANSPORT: Record<TransportReason, string> = { unreachable: 'unreachable', deadline: 'deadline', aborted: 'cancelled', 'too-large': 'backend-too-large' }
+const TRANSPORT: Record<TransportReason, string> = { unreachable: 'unreachable', deadline: 'deadline', aborted: 'cancelled', 'too-large': 'backend-too-large', invalid: 'backend-request' }
 
 export async function runUnslop(task: UnslopTask, env: UnslopEnv): Promise<UnslopResult> {
   const now = env.now ?? (() => performance.now())
@@ -98,6 +98,12 @@ export async function runUnslop(task: UnslopTask, env: UnslopEnv): Promise<Unslo
   } catch {
     return end(13, 'failed', { reason: 'backend-url' })
   }
+  let apiKey: string | undefined
+  try {
+    apiKey = checkApiKey(profile.apiKey)
+  } catch {
+    return end(13, 'failed', { reason: 'backend-key' })
+  }
   if (!kind) return end(11, 'rejected', { reason: 'kind' })
   if (!input.trim()) return end(11, 'rejected', { reason: 'empty' })
   if (Buffer.byteLength(input) > INPUT_MAX) return end(11, 'rejected', { reason: 'size' })
@@ -109,7 +115,7 @@ export async function runUnslop(task: UnslopTask, env: UnslopEnv): Promise<Unslo
   const nonce = random(16).toString('hex')
   const limit = maxTokens(input)
   const headers: Record<string, string> = { 'content-type': 'application/json', accept: 'application/json' }
-  if (profile.apiKey) headers.authorization = `Bearer ${profile.apiKey}`
+  if (apiKey) headers.authorization = `Bearer ${apiKey}`
   let retry: Retry | undefined
   let tokensPerS = DEFAULT_TOKENS_PER_S
 

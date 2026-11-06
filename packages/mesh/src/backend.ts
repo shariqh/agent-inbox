@@ -11,7 +11,7 @@ export type Sampling = { temperature: number; top_p: number; presence_penalty: n
 export type BackendProfile = { baseUrl: string; apiKey?: string; model: string; sampling: Sampling }
 export type Message = { role: 'system' | 'user'; content: string }
 export type HttpReply = { status: number; body: string }
-export type TransportReason = 'unreachable' | 'deadline' | 'aborted' | 'too-large'
+export type TransportReason = 'unreachable' | 'deadline' | 'aborted' | 'too-large' | 'invalid'
 export type Post = (url: URL, body: string, headers: Record<string, string>, options: { timeoutMs: number; signal?: AbortSignal }) => Promise<HttpReply>
 export type Reply =
   | { ok: true; content: string; completionTokens?: number; timings?: { promptMs: number; predictedMs: number; predictedN: number } }
@@ -34,7 +34,19 @@ export function checkBaseUrl(raw: string): URL {
     throw new Error('the backend base URL must be https://, or http:// on a loopback address')
   }
   if (url.username || url.password || url.search || url.hash) throw new Error('the backend base URL must not carry credentials, a query or a fragment')
-  return new URL(`${url.pathname.replace(/\/+$/, '')}/v1/chat/completions`, url)
+  // `//` or `\` in the path would make a relative reference that names another host
+  if (/\/\/|\\/.test(url.pathname) || raw.includes('\\')) throw new Error('the backend base URL path must not contain // or a backslash')
+  const out = new URL(url.href)
+  out.pathname = `${url.pathname.replace(/\/+$/, '')}/v1/chat/completions`
+  if (out.origin !== url.origin) throw new Error('the backend base URL changed origin')
+  return out
+}
+
+/** The trimmed API key, or an error that never repeats it: a header value must be printable Latin-1. */
+export function checkApiKey(raw: string | undefined): string | undefined {
+  const key = raw?.trim()
+  if (key && /[^\x20-\x7E\xA0-\xFF]/.test(key)) throw new Error('the backend API key holds a line break, a control character or a character outside Latin-1')
+  return key || undefined
 }
 
 /** About three bytes of UTF-8 per token: deliberately high, as the box's CLI measures it. */
@@ -53,7 +65,17 @@ export const transportError = (reason: TransportReason): Error & { reason: Trans
 
 // node:http, not fetch: a 10 s connect limit of its own, no redirects, no proxy
 // environment, and a fresh socket per request.
+// The request is built before any timer is armed: a header Node refuses throws
+// here, and must leave nothing behind that fires later.
 export const post: Post = (url, body, headers, { timeoutMs, signal }) => new Promise((resolve, reject) => {
+  let req: ReturnType<typeof httpRequest>
+  try {
+    req = (url.protocol === 'https:' ? httpsRequest : httpRequest)(url, {
+      method: 'POST', agent: false, headers: { ...headers, 'content-length': String(Buffer.byteLength(body)) },
+    })
+  } catch {
+    return reject(transportError('invalid'))
+  }
   let settled = false
   let connect: NodeJS.Timeout | undefined
   const finish = (error?: Error, reply?: HttpReply): void => {
@@ -69,9 +91,6 @@ export const post: Post = (url, body, headers, { timeoutMs, signal }) => new Pro
   }
   const onAbort = (): void => finish(transportError('aborted'))
   const deadline = setTimeout(() => finish(transportError('deadline')), Math.max(0, timeoutMs))
-  const req = (url.protocol === 'https:' ? httpsRequest : httpRequest)(url, {
-    method: 'POST', agent: false, headers: { ...headers, 'content-length': String(Buffer.byteLength(body)) },
-  })
   req.on('socket', (socket) => {
     if (!socket.connecting) return
     connect = setTimeout(() => finish(transportError('unreachable')), CONNECT_MS)

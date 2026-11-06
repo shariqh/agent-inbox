@@ -25,9 +25,10 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   else beside `AGENT_INBOX_DB`, else `~/.agent-inbox`) stays the one switch for the
   later phases; only `src/meshctl.ts` writes it (dry run first, `--apply` with backup,
   unknown keys kept; refuses symlinks, non-regular files, bad JSON and newer schemas).
-  `src/mesh-config.ts` is the Node-core reader. Today no piece is read from it:
-  `enable --agents-view` writes nothing and says the view is always on, `status` says
-  the same, and an `agentsView` key in an existing file is kept like any other.
+  `src/mesh-config.ts` is the Node-core reader. The one piece read from it is the unslop
+  agent's `agents.unslop` key (#483, `enable --unslop`, below); `enable --agents-view`
+  writes nothing and says the view is always on, `status` says the same, and an
+  `agentsView` key in an existing file is kept like any other.
 - **The Agents view** (`public/agents-home.js`, now the Agents home, #454; see
   `viewer-dashboard-and-shell.md`) is the Dashboard's one home for sessions (#454 retired
   the Sessions | Agents lens with the lanes): one card per session from `public/sessions.js`.
@@ -48,7 +49,9 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   does not own, and refuses a symlink, a non-regular file, unreadable JSON or a newer
   `schema`, naming the reason in fixed words (never a parser's message). `disable --apply`
   is a list of steps that today only deletes the file (with a backup); M4 puts its pause
-  and `@mesh` archive steps before that one. Since #454, `enable --agents-view` (with or
+  and `@mesh` archive steps before that one. `enable --unslop` and `disable --unslop`
+  (#483) change only the `agents.unslop` key and the unslop agent's own files; see
+  "Turning unslop on and off" below. Since #454, `enable --agents-view` (with or
   without `--apply`) writes nothing and prints "The Agents view is always on; mesh.json no
   longer controls it", and `status` prints the same line before the file's state. A later
   phase that adds a piece brings back an `enable` writer (temp file, atomic rename) with
@@ -126,8 +129,8 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
   package's `agent-inbox-wrap` bin). Exit 0 when it stops, 1 when it refuses to start,
   4 on a usage error; it prints only this package's own fixed messages (`ConfigError`),
   and anything else as "internal error", so no file content or key reaches its output.
-  Nothing starts it yet: `meshctl enable --unslop` and the on-demand
-  spawn are U3a/U3b.
+  `meshctl enable --unslop` (U3a, below) writes its switch and files; nothing starts
+  it yet: the on-demand spawn is U3b.
   - **The gate (design §4.5 (e)).** It refuses to start unless `<mesh dir>/mesh.json`
     (the reading rule above) has `agents.unslop.endpoint` equal to
     `http://127.0.0.1:<port>` (not port 80: clients drop `:80` from `Host`); it binds that port on `127.0.0.1` and nothing else
@@ -168,6 +171,46 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
     `timeoutMs`, is `REJECTED` as busy (12) with `retryAfterMs`. A task gets at most
     270 s from its start, and never more than what queueing left of its `timeoutMs`. After 200
     tasks or 180 model-minutes in a local day, tasks are `REJECTED` "daily-budget" (11).
+- **Turning unslop on and off (U3a, unslop design §4.2-§4.3).** From a checkout, build
+  `packages/mesh` (`npm ci && npm run build` there, Node 24), then run
+  `npm run meshctl -- enable --unslop [--port <n>] [--checkout <path>]`: a dry run that
+  prints every file it would write; add `--apply` to write them. `--checkout` defaults to
+  the checkout this meshctl runs from, and `enable` refuses when its
+  `packages/mesh/dist/wrap.js` is missing. The port defaults to 4420; the endpoint is
+  always `http://127.0.0.1:<port>`, and port 80 or one outside 1-65535 is refused. With
+  `--apply`, in this order (so the switch is the last thing written):
+  1. the caller token `<mesh dir>/mesh/tokens/unslop` (0600, 32 random bytes in
+     base64url), only when absent;
+  2. the profile template `<mesh dir>/mesh/wrappers/unslop.json` (0600), only when
+     absent and never overwritten. Its `skill`, `baseUrl` and `apiKey.env` are
+     `FILL IN: …` placeholders the agent refuses (not absolute, not a URL, no such
+     variable). Fill in the skill folder (the one holding `rules.md`), the backend's
+     base URL and the key source (`{ "env": NAME }`, `{ "file": "/absolute/path" }` (0600)
+     or `{ "command": ["/absolute/path", ...] }`), or remove `apiKey` when the backend
+     needs none. `model` and `sampling` hold the agent's defaults; `terms`,
+     `allowEmails` and `customerPaths` start empty. `start` is the agent's command as
+     absolute paths: the Node binary running meshctl (`process.execPath`) and the
+     checkout's `wrap.js`. When the profile is present, `enable` keeps it and prints the
+     `start` it would have written: if Node or the checkout moved, edit `start` by hand;
+  3. the shim `<mesh dir>/bin/unslop` (0755, rewritten each time), holding the absolute
+     paths of that Node binary and the built `meshctl.js` (`dist/meshctl.js`, so run
+     `npm run build` at the root first). When either is gone it discards piped input
+     (never a terminal), prints "run meshctl enable --unslop again" and exits 14;
+     otherwise it runs `meshctl unslop`, which answers "not built yet" (14) until U3b;
+  4. `agents.unslop` = `{ "endpoint": "http://127.0.0.1:<port>", "profile": "unslop" }` in
+     `mesh.json` (created with `schema` 1 when absent), every other key kept, written
+     through a temporary file and a rename after a timestamped backup.
+  New folders are 0700. The deny list `<mesh dir>/mesh/unslop-deny.txt` is Shariq's to
+  write; no backend URL, key or deny list is written by meshctl or put in `mesh.json`.
+  `disable --unslop [--purge] [--apply]` removes the key (deleting `mesh.json`, with a
+  backup, when nothing else is left in it), the shim and the token, and keeps the
+  profile, logs, budget and deny list unless `--purge`, which also removes those and
+  `logs/unslop-*`. Plain `disable --apply` still deletes the whole file. `status` adds an
+  `Unslop:` line: on and its endpoint, or off, and whether the profile, token and shim
+  exist. `test/mesh.test.ts` holds off test (g) (enable then disable leaves the tree as it
+  was, but backups and the profile), the modes, the refusals, the stale shim, and the
+  template run through the agent itself; off test (e) is the agent's own gate, tested in
+  `packages/mesh/test/a2a.test.ts`.
 - **One `mesh.json` rule, held twice.** The package cannot import `src/mesh-config.ts`,
   so it carries a reader with the same rule and the same `meshDir()` order. The cases in
   `test/fixtures/mesh-json/cases.json` run in both suites: `test/mesh-json-parity.test.ts`

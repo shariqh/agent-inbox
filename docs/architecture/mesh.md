@@ -98,7 +98,8 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
   order inside an aligned sentence, and one that crossed sentences must keep its own
   neighbours better than any other value's, ties failing. Negations and conditions are
   hard on any drop, on a move to another clause, and on an addition unless the same
-  sentence dropped a negative word such as "fails"), `screen.ts` (§5: text is NFKC
+  clause dropped a negative word such as "fails". A text with more than 500 sentences or
+  values is not compared and reports `tooComplex`), `screen.ts` (§5: text is NFKC
   normalised, zero-width characters removed and `>` quote markers stripped before any
   check; refusal classes are named without the matched value; the `--kind` list),
   `rules.ts` (§3.2: `rules.md` and its SHA-256, re-read on a size or mtime change, the

@@ -26,7 +26,8 @@ const samples: Array<[ScreenClass, string]> = [
   ['secret', `token: ${CANARY}9f8e7d6c5b4a`],
   ['secret', `password = "${CANARY}hunter22"`],
   // review round 1 (#486)
-  ['letter-shape', `> Hi Sarah,\n> The export fails for ${CANARY}.\n\nLooking into it.`],
+  ['letter-shape', `> Hi Sarah,\n> The export fails for ${CANARY}.\n> Thanks,\n> Sarah\n\nLooking into it.`],
+  ['letter-shape', `Looking into it.\n\n> Hey Shariq,\n> From: Sarah ${CANARY}\n> The export fails.`],
   ['email-headers', `Looking into it.\n\n> From: Sarah ${CANARY}\n> Sent: Monday\n> To: Shariq\n> Subject: Export`],
   ['letter-shape', `The fix ships Friday ${CANARY}.\n\nThanks!\nShariq`],
   ['letter-shape', `The fix ships Friday ${CANARY}.\n\nThank you!\n\nShariq Hirani`],
@@ -74,6 +75,18 @@ describe('screen', () => {
     'Released 2026-11-06 at 10:02; the viewer listens on 127.0.0.1:4319 and localhost:4420, build 0.12.3.',
     'Thanks to everyone who tested v2.5.0!\n\nThanks!',
     'The password: required field is checked, and the token: none case is handled.',
+    // review round 2: ordinary public text, quoted issues, numbers and placeholders
+    'Hi-DPI screens: icons are no longer blurry.',
+    'Hello world: a minimal A2A agent in 40 lines.',
+    'Hello world — a minimal A2A agent.',
+    'Hello World\n\nA minimal A2A agent.',
+    'The agent reads its rules.\n\nBest Practices\n\nKeep rules short.',
+    'Fixed the export.\n\nThanks!\nRelated Issues\n\n- #12',
+    'Reported upstream:\n\n> Hey, this breaks on Linux when the cache is cold.\n> It works on macOS.\n\nFixed in #12.',
+    'Set modes 0600 0644 0755 on the files; build 0123 4567 8901 and ticket 0123 456 789.',
+    'Set `password: <your-password>` in the config.',
+    'Read it with password = process.env.DB_PASS or password: ${DB_PASS} or password: {{ secret }}, shown as password: ********.',
+    'In Python, password = os.environ["DB_PASS"].',
   ]
   for (const text of publicTexts) {
     it(`passes public text: ${text.slice(0, 40).replace(/\n/g, ' ')}`, () => {
@@ -90,7 +103,8 @@ describe('screen', () => {
 describe('screen cost', () => {
   it('stays linear on hostile 12 KiB inputs', () => {
     const inputs = ['a'.repeat(12288), 'a.'.repeat(6144), '1'.repeat(12288), '0 '.repeat(6144), 'a@'.repeat(6144),
-      '> '.repeat(6144), 'Thanks '.repeat(1755), 'Hi '.repeat(4096), '-----BEGIN '.repeat(1117), 'password: '.repeat(1228)]
+      '> '.repeat(6144), 'Thanks '.repeat(1755), 'Hi '.repeat(4096), '-----BEGIN '.repeat(1117), 'password: '.repeat(1228),
+      '0123 '.repeat(2457), '(020) '.repeat(2048), 'password: <'.repeat(1117), 'Thanks!\n'.repeat(1536)]
     const started = Date.now()
     for (const text of inputs) screen(text, opts)
     expect(Date.now() - started).toBeLessThan(1500)

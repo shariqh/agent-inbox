@@ -4,19 +4,23 @@
 // and offsets stay valid. Ordering is checked per sentence: output sentences
 // are aligned to input sentences by their words, values must keep their order
 // inside an aligned sentence, and a value that crossed sentences must keep its
-// own neighbours better than any other value's. U2a adds retry and timing.
+// own neighbours better than any other value's. A text with more than
+// MAX_UNITS sentences or values is not compared at all (`tooComplex`). U2a adds
+// retry and timing.
 const HARD = ['code', 'urls', 'refs', 'numbers', 'dates', 'quotes', 'paths', 'terms', 'negations', 'conditions'] as const
 export type HardClass = (typeof HARD)[number]
 type WarningClass = 'modal' | 'hedge' | 'short-quote' | 'sentences' | 'headings' | 'negation-added' | 'condition-added'
 export type Failure = { class: HardClass; kind: 'lost' | 'added' | 'changed' | 'moved'; lost: string[]; added: string[]; moved?: string[] }
 export type FidelityReport = {
   ok: boolean
-  hard: Record<HardClass, 'ok' | 'failed'>
+  /** too many sentences or values to compare in bounded time: callers keep the original */
+  tooComplex?: true
+  hard: Record<HardClass, 'ok' | 'failed' | 'unchecked'>
   failures: Failure[]
   warnings: Array<{ class: WarningClass; detail: string }>
 }
 
-type Item = { value: string; start: number; end: number; sent: number; clause: number; ctx: Set<string> }
+type Item = { value: string; start: number; end: number; sent: number; clause: number; ctx: Set<string>; head: Set<string> }
 type Extract = {
   items: Record<HardClass, Item[]>
   soft: Record<'modal' | 'hedge' | 'short-quote', string[]>
@@ -25,6 +29,7 @@ type Extract = {
   sents: Set<string>[]
   clauses: Set<string>[]
   negatives: number[]
+  tooComplex: boolean
 }
 
 const MONTHS = 'Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|June?|July?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?'
@@ -32,7 +37,8 @@ const SEG = String.raw`[\w@~+-](?:[\w.@~+-]*[\w@~+-])?`
 const PATH = new RegExp(String.raw`(?<![\w/.~@-])(?:(?:~|\.{1,2})?\/${SEG}(?:\/${SEG})*\/?|${SEG}(?:\/${SEG}){2,}\/?|${SEG}(?:\/${SEG})+\/|(?:${SEG}\/)?[\w-]{2,}(?:\.[\w-]+)*\.[A-Za-z][A-Za-z0-9]{0,4}(?![\w/])|--?[A-Za-z][\w-]*)`, 'g')
 const NUMBER = /(?:\b(about|around|roughly|approximately|nearly|almost|up to|at least|at most|more than|less than|fewer than)\s+|(~)\s?)?(?<![\w%+$€£.,:/-])([$€£]?(?:[\w%+-]|[.,:/](?=\w))*\d(?:[\w%+-]|[.,:/](?=\w))*)( %)?/gi
 const DROP_ONLY = new Set<HardClass>(['negations', 'conditions'])
-// a dropped one of these pays for one added negation or condition in its sentence
+const MAX_UNITS = 500
+// a dropped one of these pays for one added negation or condition in its clause
 const NEGATIVE = /\b(?:fail(?:s|ed|ing)?|lack(?:s|ed|ing)?|unable|missing|refus(?:e|es|ed|ing)|prevent(?:s|ed|ing)?|without|absent|broken|disabled|nor|none|nothing)\b/gi
 const SENTENCE = /[.!?](?=\s)|\n/g
 const CLAUSE = /[.!?](?=\s)|\n|[,;:()—–]|\s(?:but|and|or|while|whereas|although|though)(?=\s)/gi
@@ -57,7 +63,7 @@ function neighbours(text: string, [s, e]: [number, number], start: number, end: 
     return norm(fromEnd ? raw.slice(-3) : raw.slice(0, 3))
   }
   const near = [...side(text.slice(Math.min(s, start), start), true), ...side(text.slice(end, Math.max(e, end)), false)]
-  return new Set(near.length ? near : [...side(text.slice(0, start), true), ...side(text.slice(end), false)])
+  return new Set(near.length ? near : [...side(text.slice(Math.max(0, start - 200), start), true), ...side(text.slice(end, end + 200), false)])
 }
 
 function spans(w: string, re: RegExp): Array<[number, number]> {
@@ -79,19 +85,23 @@ function extract(input: string, terms: string[]): Extract {
   const items = Object.fromEntries(HARD.map((c) => [c, [] as Item[]])) as Record<HardClass, Item[]>
   const soft: Extract['soft'] = { modal: [], hedge: [], 'short-quote': [] }
   const take = (cls: HardClass | null, re: RegExp, value: (m: RegExpMatchArray) => string, mask = true): void => {
-    for (const m of [...w.matchAll(re)]) {
+    const parts: string[] = []
+    let last = 0
+    for (const m of w.matchAll(re)) {
       const start = m.index!
       const end = start + m[0].length
-      if (cls) items[cls].push({ value: value(m), start, end, sent: 0, clause: 0, ctx: new Set() })
-      if (mask) w = w.slice(0, start) + m[0].replace(/[^\n]/g, ' ') + w.slice(end)
+      if (cls) items[cls].push({ value: value(m), start, end, sent: 0, clause: 0, ctx: new Set(), head: new Set() })
+      parts.push(w.slice(last, start), m[0].replace(/[^\n]/g, ' '))
+      last = end
     }
+    if (mask) w = parts.join('') + w.slice(last)
   }
   const raw = (m: RegExpMatchArray): string => input.slice(m.index!, m.index! + m[0].length)
   take('code', /^[ \t]*(`{3,}|~{3,})[^\n]*\n[\s\S]*?\n[ \t]*\1[ \t]*$/gm, raw)
   take('code', /(`+)(?!`)[\s\S]*?[^`]\1(?!`)/g, raw)
   for (const m of w.matchAll(/"([^"\n]+)"/g)) {
     const q = m[1]!.trim().replace(/\s+/g, ' ')
-    if (q.split(' ').length >= 3) items.quotes.push({ value: q, start: m.index!, end: m.index! + m[0].length, sent: 0, clause: 0, ctx: new Set() })
+    if (q.split(' ').length >= 3) items.quotes.push({ value: q, start: m.index!, end: m.index! + m[0].length, sent: 0, clause: 0, ctx: new Set(), head: new Set() })
     else soft['short-quote'].push(q)
   }
   take('urls', /\]\(\s*<?([^\s)>]+)>?(?:\s+"[^"]*")?\s*\)/g, (m) => m[1]!)
@@ -128,12 +138,19 @@ function extract(input: string, terms: string[]): Extract {
   soft.hedge = [...w.matchAll(HEDGES)].map((m) => m[0].toLowerCase())
   const sentSpans = spans(w, SENTENCE)
   const clauseSpans = spans(w, CLAUSE)
-  for (const cls of HARD) {
+  const tooComplex = sentSpans.filter(([st, e]) => /\S/.test(w.slice(st, e))).length > MAX_UNITS
+    || HARD.reduce((n, cls) => n + items[cls].length, 0) > MAX_UNITS
+  for (const cls of tooComplex ? [] : HARD) {
     items[cls].sort((a, b) => a.start - b.start)
     for (const item of items[cls]) {
       item.sent = spanOf(sentSpans, item.start)
       item.clause = spanOf(clauseSpans, item.start)
       item.ctx = neighbours(orig, sentSpans[item.sent]!, item.start, item.end)
+      // the last content words before a negation or condition in its clause (a partial
+      // word such as "ca" of "can't" dropped), which must stay in its output clause
+      if (DROP_ONLY.has(cls)) {
+        item.head = new Set(tokens(w.slice(clauseSpans[item.clause]![0], item.start).replace(/\S+$/, '')).filter((t) => !LOGIC.test(t)).slice(-3))
+      }
     }
   }
   const lines = w.split('\n')
@@ -144,7 +161,8 @@ function extract(input: string, terms: string[]): Extract {
     items, soft, sentences, headings,
     sents: sentSpans.map(([st, e]) => new Set(tokens(w.slice(st, e)))),
     clauses: clauseSpans.map(([st, e]) => new Set(tokens(w.slice(st, e)).filter((t) => !LOGIC.test(t)))),
-    negatives: sentSpans.map(([st, e]) => w.slice(st, e).match(NEGATIVE)?.length ?? 0),
+    negatives: clauseSpans.map(([st, e]) => w.slice(st, e).match(NEGATIVE)?.length ?? 0),
+    tooComplex,
   }
 }
 
@@ -169,12 +187,12 @@ function jaccard(a: Set<string>, b: Set<string>): number {
   return n ? n / (a.size + b.size - n) : 0
 }
 
-// Each output sentence's best-matching input sentence; ties go to the nearer one.
-function align(a: Extract, b: Extract): number[] {
-  return b.sents.map((t, j) => {
+// Each output sentence (or clause) maps to its best-matching input one; ties go to the nearer.
+function align(a: Set<string>[], b: Set<string>[]): number[] {
+  return b.map((t, j) => {
     let best = 0
     let score = -1
-    a.sents.forEach((u, i) => {
+    a.forEach((u, i) => {
       const sc = jaccard(t, u)
       if (sc > score || (sc === score && Math.abs(i - j) < Math.abs(best - j))) [best, score] = [i, sc]
     })
@@ -182,7 +200,7 @@ function align(a: Extract, b: Extract): number[] {
   })
 }
 
-function compare(cls: HardClass, A: Extract, B: Extract, at: number[]): Failure | undefined {
+function compare(cls: HardClass, A: Extract, B: Extract, at: number[], clauseAt: () => number[]): Failure | undefined {
   const a = A.items[cls]
   const b = B.items[cls]
   const queue = new Map<string, number[]>()
@@ -190,18 +208,24 @@ function compare(cls: HardClass, A: Extract, B: Extract, at: number[]): Failure 
   const pair = b.map((item) => queue.get(item.value)?.shift() ?? -1)
   const lost = [...queue.values()].flat().sort((x, y) => x - y).map((i) => a[i]!.value)
   // §6.1: negations and conditions are hard on any drop; one added fails unless
-  // its sentence dropped a negative word ("fails to load" → "does not load")
-  // (the credit belongs to the input sentence, shared by every output sentence aligned to it)
-  const credit = [...A.negatives]
-  B.negatives.forEach((n, j) => { credit[at[j]!]! -= n })
+  // its clause dropped a negative word ("fails to load" → "does not load"). The
+  // credit belongs to the input clause, shared by every output clause aligned to it.
+  let credit: number[] | undefined
   const added = b.filter((item, j) => {
     if (pair[j] !== -1) return false
     if (!DROP_ONLY.has(cls)) return true
-    return credit[at[item.sent]!]!-- <= 0
+    const ca = clauseAt()
+    if (!credit) {
+      credit = [...A.negatives]
+      B.negatives.forEach((n, k) => { credit![ca[k]!]! -= n })
+    }
+    return credit[ca[item.clause]!]!-- <= 0
   }).map((item) => item.value)
   if (lost.length || added.length) return { class: cls, kind: lost.length && added.length ? 'changed' : lost.length ? 'lost' : 'added', lost, added }
   const moved = new Set<number>()
   const order = pair.filter((i) => i >= 0)
+  // Inside one aligned sentence the order is strict: a reordering that keeps the
+  // meaning is rare, and U2a's retry names these values ("keep them in this order").
   if (order.some((i, k) => k > 0 && i < order[k - 1]!)) {
     const seen = new Map<number, number>()
     b.forEach((out, j) => {
@@ -219,13 +243,15 @@ function compare(cls: HardClass, A: Extract, B: Extract, at: number[]): Failure 
     })
   }
   if (DROP_ONLY.has(cls)) {
-    // A negation or condition fails when another input clause (two or more shared
-    // words) survives around it better than its own clause does.
+    // A negation or condition fails when its output clause lost every word that
+    // led up to it, or when another input clause (two or more shared words)
+    // survives around it better than its own clause does.
     const kept = (c: Set<string>, mine: Set<string>): number => (c.size ? shared(c, mine) / c.size : 0)
     const rivals = new Map<string, Array<[number, number]>>()
     b.forEach((out, j) => {
       const i = pair[j]!
       const mine = B.clauses[out.clause]!
+      if (i >= 0 && a[i]!.head.size && !shared(a[i]!.head, mine)) moved.add(j)
       if (i < 0 || !mine.size) return
       const key = [...mine].join(' ')
       if (!rivals.has(key)) {
@@ -243,8 +269,14 @@ export function checkFidelity(input: string, output: string, options: { terms?: 
   const terms = options.terms ?? []
   const a = extract(input, terms)
   const b = extract(output, terms.filter((t) => a.items.terms.some((i) => i.value === t)))
-  const at = align(a, b)
-  const failures = HARD.map((cls) => compare(cls, a, b, at)).filter((f): f is Failure => Boolean(f))
+  if (a.tooComplex || b.tooComplex) {
+    const hard = Object.fromEntries(HARD.map((cls) => [cls, 'unchecked'])) as FidelityReport['hard']
+    return { ok: false, tooComplex: true, hard, failures: [], warnings: [] }
+  }
+  const at = align(a.sents, b.sents)
+  let clauseAt: number[] | undefined
+  const failures = HARD.map((cls) => compare(cls, a, b, at, () => (clauseAt ??= align(a.clauses, b.clauses))))
+    .filter((f): f is Failure => Boolean(f))
   const hard = Object.fromEntries(HARD.map((cls) => [cls, failures.some((f) => f.class === cls) ? 'failed' : 'ok'])) as FidelityReport['hard']
   const warnings: FidelityReport['warnings'] = []
   for (const cls of ['modal', 'hedge', 'short-quote'] as const) {

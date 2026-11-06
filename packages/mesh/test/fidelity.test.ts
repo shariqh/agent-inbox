@@ -128,6 +128,10 @@ describe('review round 1 (#486)', () => {
     ['negations', 'macOS is supported, but Windows is not.', 'macOS is not supported, but Windows is.'],
     ['negations', 'Do not delete the cache. Delete the logs.', 'Delete the cache. Do not delete the logs.'],
     ['conditions', 'Merge the PR unless CI fails, and deploy the release.', 'Merge the PR, and deploy the release unless CI fails.'],
+    // review round 2: a condition moved to another clause of the same sentence, and
+    // credit for an added negation taken from a different clause
+    ['conditions', 'Retry unless the server is down; then alert.', 'Retry; then alert unless the server is down.'],
+    ['negations', 'The import failed on Linux but worked on macOS.', 'The import broke on Linux and did not work on macOS.'],
   ]
   for (const [cls, input, output] of FAIL) {
     it(`fails ${cls}: ${input} → ${output}`, () => {
@@ -281,5 +285,17 @@ describe('fidelity cost', () => {
       checkFidelity(input, output)
       expect(Date.now() - started).toBeLessThan(1500)
     }
+  })
+
+  it('refuses to compare more than 500 sentences or values, quickly and distinctly', () => {
+    const digits = Array.from({ length: 6144 }, (_, i) => String(i % 10)).join('\n')
+    const started = Date.now()
+    const r = checkFidelity(digits, digits.split('\n').reverse().join('\n'))
+    expect(Date.now() - started).toBeLessThan(1500)
+    expect(r).toMatchObject({ ok: false, tooComplex: true, failures: [], warnings: [] })
+    expect(new Set(Object.values(r.hard))).toEqual(new Set(['unchecked']))
+    const values = 'Ship v1 now. '.repeat(501)
+    expect(checkFidelity(values, values).tooComplex).toBe(true)
+    expect(checkFidelity('Ship v1 now. '.repeat(400), 'Ship v1 now. '.repeat(400)).ok).toBe(true)
   })
 })

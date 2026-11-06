@@ -187,9 +187,12 @@ function profileTemplate(start: string[]): string {
 const shQuote = (text: string): string => `'${text.replaceAll("'", `'\\''`)}'`
 
 // The shim never reads a terminal: on a stale path it discards piped input only.
-function shimText(node: string, script: string): string {
+// It pins the mesh dir it was written for, so the caller's environment (no
+// AGENT_INBOX_MESH_DIR, or an AGENT_INBOX_DB) cannot point it at another one.
+function shimText(node: string, script: string, dir: string): string {
   return `#!/bin/sh
 # agent-inbox unslop shim (#483), written by meshctl enable --unslop. Do not edit.
+AGENT_INBOX_MESH_DIR=${shQuote(dir)}; export AGENT_INBOX_MESH_DIR
 node=${shQuote(node)}
 meshctl=${shQuote(script)}
 if [ ! -x "$node" ] || [ ! -f "$meshctl" ]; then
@@ -253,7 +256,7 @@ export function runMeshctl(argv: string[], io: MeshctlIo = {}): number {
   const unslop = flags.delete('--unslop')
 
 
-  const dir = meshDir(env, home)
+  const dir = resolve(meshDir(env, home))
   const file = meshFile(dir)
   const name = shown(file, home)
   const paths = unslopPaths(dir)
@@ -312,10 +315,10 @@ export function runMeshctl(argv: string[], io: MeshctlIo = {}): number {
     const self = fileURLToPath(import.meta.url)
     const script = io.script ?? (self.endsWith('.js') ? self : join(repo, 'dist', 'meshctl.js'))
     if (!isFile(script)) return refuse(`${show(script)} is missing: run npm run build in ${show(repo)}`)
-    if ([node, wrap, script].some((path) => /[\x00-\x1f\x7f]/.test(path))) return refuse('a path holds a control character')
+    if ([node, wrap, script, dir].some((path) => /[\x00-\x1f\x7f]/.test(path))) return refuse('a path holds a control character')
     const start = [node, wrap, '--agent', 'openai-compatible', '--profile', 'unslop']
     const template = profileTemplate(start)
-    const shim = shimText(node, script)
+    const shim = shimText(node, script, dir)
     const json = `${JSON.stringify(next, null, 2)}\n`
     const dirs = (): void => {
       for (const d of [paths.wrappers, paths.tokens, paths.bin]) mkdirSync(d, { recursive: true, mode: 0o700 })

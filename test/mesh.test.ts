@@ -127,7 +127,7 @@ describe('meshctl enable/disable --unslop (#483, unslop design §4.2-§4.5)', ()
     writeFileSync(join(checkout, 'packages', 'mesh', 'package.json'), '{}')
     writeFileSync(join(checkout, 'packages', 'mesh', 'dist', 'wrap.js'), '')
     const script = join(scratchDir('unslop-bin-'), 'meshctl.js')
-    writeFileSync(script, 'console.log(JSON.stringify(process.argv.slice(2)))\n')
+    writeFileSync(script, 'console.log(JSON.stringify([process.env.AGENT_INBOX_MESH_DIR, ...process.argv.slice(2)]))\n')
     if (meshJson !== undefined) writeFileSync(meshFile(dir), meshJson)
     const io = { node: process.execPath, script }
     const run = (...argv: string[]) => ctl(argv, dir, undefined, io)
@@ -182,7 +182,12 @@ describe('meshctl enable/disable --unslop (#483, unslop design §4.2-§4.5)', ()
       expect(t.run('status').out).toContain('Unslop: on at http://127.0.0.1:4420. Profile')
       // the live shim execs meshctl.js unslop with the caller's arguments
       const shim = spawnSync('/bin/sh', [p('bin/unslop'), '--kind', 'pr'], { input: 'text', encoding: 'utf8' })
-      expect(shim.stdout).toBe('["unslop","--kind","pr"]\n')
+      expect(shim.stdout).toBe(`${JSON.stringify([t.dir, 'unslop', '--kind', 'pr'])}\n`)
+      // the shim pins its mesh dir: an empty environment (env -i), or a caller's other mesh dir or hub, cannot move it
+      for (const env of [[], ['AGENT_INBOX_MESH_DIR=/elsewhere'], ['AGENT_INBOX_DB=/elsewhere/inbox.db']]) {
+        const pinned = spawnSync('/usr/bin/env', ['-i', ...env, '/bin/sh', p('bin/unslop')], { input: '', encoding: 'utf8' })
+        expect(pinned.stdout, env.join(' ')).toBe(`${JSON.stringify([t.dir, 'unslop'])}\n`)
+      }
 
       const off = t.run('disable', '--unslop', '--apply')
       expect(off.code, off.err).toBe(0)
@@ -272,7 +277,7 @@ describe('meshctl enable/disable --unslop (#483, unslop design §4.2-§4.5)', ()
       writeFileSync(node, `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} "$@"\n`, { mode: 0o755 })
       expect(ctl(['enable', '--unslop', '--checkout', t.checkout, '--apply'], t.dir, undefined, { node, script: t.script }).code).toBe(0)
       const shim = join(t.dir, 'bin', 'unslop')
-      expect(spawnSync('/bin/sh', [shim], { input: '', encoding: 'utf8' }).stdout).toBe('["unslop"]\n')
+      expect(spawnSync('/bin/sh', [shim], { input: '', encoding: 'utf8' }).stdout).toBe(`${JSON.stringify([t.dir, 'unslop'])}\n`)
       unlinkSync(gone === 'node' ? node : t.script)
       const r = spawnSync('/bin/sh', [shim, '--kind', 'pr'], { input: 'x'.repeat(1 << 20), encoding: 'utf8' })
       expect(r.error, gone).toBeUndefined()

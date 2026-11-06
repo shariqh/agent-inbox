@@ -192,8 +192,9 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
      absolute paths: the Node binary running meshctl (`process.execPath`) and the
      checkout's `wrap.js`. When the profile is present, `enable` keeps it and prints the
      `start` it would have written: if Node or the checkout moved, edit `start` by hand;
-  3. the shim `<mesh dir>/bin/unslop` (0755, rewritten each time), holding the absolute
-     paths of that Node binary and the built `meshctl.js` (`dist/meshctl.js`, so run
+  3. the shim `<mesh dir>/bin/unslop` (0755, rewritten each time), holding its mesh dir
+     (exported as `AGENT_INBOX_MESH_DIR`, so the caller's environment cannot move it) and
+     the absolute paths of that Node binary and the built `meshctl.js` (`dist/meshctl.js`, so run
      `npm run build` at the root first). When either is gone it discards piped input
      (never a terminal), prints "run meshctl enable --unslop again" and exits 14;
      otherwise it runs `meshctl unslop`, which answers "not built yet" (14) until U3b;

@@ -183,6 +183,14 @@ function processAlive(pid: number): boolean {
   }
 }
 
+// Whether a message watcher for this session would keep waiting: its presence
+// is live and its server process runs. The MCP server issues a contract only
+// when this holds, so a watcher it hands out never ends at once.
+export function sessionServerLive(db: Database.Database, session: string): boolean {
+  const server = liveSessionServer(db, session)
+  return server !== undefined && (server.server_pid === null || processAlive(server.server_pid))
+}
+
 export async function waitForSessionMessage(
   db: Database.Database,
   session: string,
@@ -199,8 +207,7 @@ export async function waitForSessionMessage(
   let heldAt = launchedAt
   try {
     for (;;) {
-      const server = liveSessionServer(db, session)
-      if (!server || (server.server_pid !== null && !processAlive(server.server_pid))) return 'ended'
+      if (!sessionServerLive(db, session)) return 'ended'
       if (listOpenMessages(db, [session]).some((m) => !seen.has(m.id))) return 'message'
       const now = Date.now()
       if (now >= deadline) return 'timeout'

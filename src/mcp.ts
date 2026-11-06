@@ -13,7 +13,7 @@ import { issueRelations } from './issue-graph.js'
 import { issueKey, issueKeyFor } from '../public/issue-key.js'
 import { indexLinks, linkFor } from '../public/source.js'
 import { makeScope } from './scope.js'
-import { copilotMessageWatchLaunch, copilotWatchLaunch, rowWatchedAsk, watchStoppedForGood } from './watch.js'
+import { copilotMessageWatchLaunch, copilotWatchLaunch, rowWatchedAsk, sessionServerLive, watchStoppedForGood } from './watch.js'
 import type { WatchedAsk } from './watch.js'
 import { AGENT_INBOX_VERSION } from './version.js'
 import { detectServerSource } from './server-source.js'
@@ -239,6 +239,11 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     if (agent !== 'copilot' || pushedWake()) return {}
     try {
       if (messageWatchRunning(db, sessionId)) return {}
+      // A presence row the day-old sweep removed would end the watcher at once,
+      // and its exit asks for a new contract: re-register first, and issue one
+      // only when the watcher's own check passes, so that can never loop.
+      if (!sessionServerLive(db, sessionId)) registerPresence()
+      if (!sessionServerLive(db, sessionId)) return {}
       const seen = listPendingMessages(db, sessionId).filter((m) => m.delivered_at !== null).map((m) => m.id)
       return { message_watch: copilotMessageWatchLaunch(sessionId, seen) }
     } catch {

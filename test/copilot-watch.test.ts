@@ -641,6 +641,49 @@ describe('Copilot message watch (#477)', () => {
     db.close()
   })
 
+  it('re-registers presence the day-old sweep removed before issuing a contract, and issues none it cannot back', async () => {
+    const db = fresh()
+    const events: EventEmitter = process
+    const listeners = new Map((['exit', 'SIGHUP', 'SIGINT', 'SIGTERM'] as const).map((signal) => [signal, events.listeners(signal)]))
+    const server = buildMcpServer(db, process.cwd())
+    const client = new Client({ name: 'copilot', version: 'test' })
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+    const call = async (tool: string, args: Record<string, unknown> = {}) =>
+      JSON.parse(((await client.callTool({ name: tool, arguments: args })).content as Array<{ text: string }>)[0]!.text)
+    const sweep = (session: string) => {
+      db.prepare(`UPDATE activity SET updated_at = ? WHERE session = ?`).run(new Date(Date.now() - 25 * HOUR).toISOString(), session)
+      present(db, OTHER)
+      expect(listActivity(db, { staleMinutes: 48 * 60 }).some((row) => row.session === session)).toBe(false)
+    }
+    try {
+      await server.connect(serverTransport)
+      await client.connect(clientTransport)
+      await call('status', { doing: 'Testing' })
+      const session = listActivity(db).find((row) => row.doing === 'Testing')!.session
+      for (let round = 0; round < 3; round++) {
+        sweep(session)
+        expect((await call('pending')).message_watch).toBeDefined()
+        expect(listActivity(db).some((row) => row.session === session)).toBe(true)
+        await expect(waitForSessionMessage(db, session, { pollMs: 10, timeoutMs: 100 })).resolves.toBe('timeout')
+      }
+
+      // Presence that cannot be re-established gets no contract.
+      sweep(session)
+      db.exec(`CREATE TEMP TRIGGER no_presence BEFORE INSERT ON activity BEGIN SELECT RAISE(IGNORE); END`)
+      expect((await call('pending')).message_watch).toBeUndefined()
+      expect((await call('status', { done: true })).message_watch).toBeUndefined()
+    } finally {
+      await client.close()
+      await server.close()
+      for (const [signal, before] of listeners) {
+        for (const listener of events.listeners(signal)) {
+          if (!before.includes(listener)) events.removeListener(signal, listener as (...args: unknown[]) => void)
+        }
+      }
+      db.close()
+    }
+  })
+
   it('the MCP server hands its contract to Copilot clients only, from pending() and status({done:true})', async () => {
     const db = fresh()
     const events: EventEmitter = process

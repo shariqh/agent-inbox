@@ -158,7 +158,10 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   SIGKILLed server whose pid was reused still reads as gone). The agent then calls
   `pending()` once and launches any `message_watch` it returns: a server restarted under
   a live CLI has a new session id, so this re-arms against it, and a CLI that has gone
-  is never woken. A machine that slept past the window costs one such wake on resume. The
+  is never woken. A machine that slept past the window costs one such wake on resume.
+  The server issues a contract only when `sessionServerLive`, the watcher's own check,
+  passes; when the day-old sweep has removed its presence row it re-registers presence
+  first and otherwise issues none, so exit 4 can never loop. The
   lease is `copilot-messages:<session>`
   in `hook_watch_claims`, taken by one conditioned statement (first live copy wins),
   refreshed every 30 s and fresh for 90 s. While it is fresh the server hands out no

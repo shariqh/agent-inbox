@@ -27,7 +27,7 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
 - **Agent mesh** *(M1 #397 shipped: the Agents view, always on since #454, and `meshctl`; see the invariant
   in `mesh.md`)* — M2–M9 per [`2026-10-29-agent-mesh-design.md`](../../docs/superpowers/specs/2026-10-29-agent-mesh-design.md)
   §11 (tracked in #404), each behind its own `mesh.json` key and each with its own "off" tests (§2.4).
-  The first agent slice, M2a, is unslop on the local model (#483):
+  The proposed first agent slice, M2a, is unslop on the local model (#483):
   [`2026-11-06-unslop-a2a-agent-design.md`](../../docs/superpowers/specs/2026-11-06-unslop-a2a-agent-design.md).
 Keep all of these additive and behind the existing seams — don't break v1's local,
 zero-config, no-auth path.

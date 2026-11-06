@@ -21,9 +21,9 @@ is always on. `mesh.json` no longer gates it, the viewer no longer watches the f
 `/api/version` never carries `mesh`, and Settings → Mesh is gone, until M3 needs them. This
 changes §2.2's M1 row, §2.4 (b) and §10.2; "off means off" still holds for M2 and later.
 **Amended 2026-11-06 by #483**
-([`2026-11-06-unslop-a2a-agent-design.md`](2026-11-06-unslop-a2a-agent-design.md), a proposal):
-a new phase, M2a, ships the local model agent first, on loopback, with `unslop` as its only skill
-(§6.6, §11, §14.1, Appendix D's S11).
+([`2026-11-06-unslop-a2a-agent-design.md`](2026-11-06-unslop-a2a-agent-design.md)): Shariq chose
+to design unslop as the first A2A agent (D8). The proposed placement, a phase M2a that ships the
+local model agent first on loopback (P15), touches §2.2, §2.4, §6.6, §8, §11 and Appendix D.
 
 ---
 
@@ -117,6 +117,7 @@ no write, no network, no timer beyond that one. The browser never supplies the r
 | Piece | Runs where | Switched on by | Off means |
 |---|---|---|---|
 | Agents view (M1) | browser, from `/api/activity` | `agentsView: true`, then a window reload | No Mesh section, no view, no extra read |
+| Unslop agent (M2a, proposed, #483) | its own process, loopback only, started on demand | `agents.unslop` in `mesh.json` (`meshctl enable --unslop`) | No process, no listener; `meshctl unslop` sends nothing |
 | Local wrapper spike (M2) | its own process, loopback only | running `agent-inbox-wrap --profile <name>` | Nothing |
 | Scenario bench (M2, §17.2) | its own process, by hand | running `agent-inbox-bench run` | Nothing |
 | Registry (M3) | its own process, any host | running `agent-inbox-registry` or the container | No listener, no `mesh.db` |
@@ -178,6 +179,9 @@ writes the host config atomically with a backup; `uninstall-bridge` removes only
   listener.
 - **(f) Today's zero-config, no-auth path is untouched.** No token or identity check is added to
   `src/viewer.ts`, `src/viewer-network.ts` or `src/mcp-server.ts`.
+- **M2a (proposed, #483).** Its off tests are in the unslop design's §4.5: no MCP graph, viewer,
+  dependency or schema change, no listener or request without its key, and a clean
+  `disable --unslop`.
 
 ### 2.5 Removing it
 
@@ -570,8 +574,8 @@ approval answers one request, by id and revision.
   endpoint such as Ollama's. It owns its queue, so its load is exact. A tool-using local agent can
   instead be built with Strands' `A2AServer` or Pydantic AI's FastA2A, with
   `agent-inbox-meshctl heartbeat --card-url <url>` renewing its lease (membership only, no load).
-  **Amended 2026-11-06 (#483):** this agent ships first, in M2a, on the Mac and on loopback, with
-  `unslop` as its only skill and the model box as its backend
+  **Proposed 2026-11-06 (#483, P15):** this agent ships first, in M2a, on the Mac and on loopback,
+  with `unslop` as its only skill and the model box as its backend
   ([`2026-11-06-unslop-a2a-agent-design.md`](2026-11-06-unslop-a2a-agent-design.md)). Its other
   skills, load samples and routing stay in M7.
 
@@ -616,6 +620,11 @@ when the chain ends (§17).
 ## §8 — Delegation safety
 
 Every rule applies from the first phase with delegation, whatever the budget.
+
+**M2a (proposed, #483).** A human running `meshctl unslop` is using a tool, not delegating. If
+assistants may call the unslop agent before M4 (the unslop design's Q1), each such call is
+agent-initiated egress without D4's first-hop click: an exception Shariq would accept explicitly,
+not a default.
 
 ### 8.1 Grants and callee-side admission
 
@@ -911,7 +920,7 @@ Mesh value export are attached to the checkpoint.
 | Phase | Ships | Size |
 |---|---|---|
 | M1 | Agents view from presence (local, no network) | 3–4 days |
-| M2a | The local model agent with one skill, `unslop` (loopback, no registry); added 2026-11-06 | about 2 weeks |
+| M2a | Proposed (#483): the local model agent with one skill, `unslop` (loopback, no registry) | about 2 weeks |
 | M2 | Local wrapper spike (loopback, read-only Copilot, no registry) and the scenario bench | 1.5 weeks (was 1; +bench, §17.2) |
 | M3 | Registry with the Eureka-compatible surface, and the cross-host view | 1.5–2 weeks (was 1–1.5; +Eureka subset, §15) |
 | M4 | Admission and the human loop (chains, grants, relay, console key, kill switch), metrics route and verdicts | 2.5 weeks (was 2–2.5) |
@@ -931,12 +940,13 @@ the Agents view from `/api/activity`.
 - *Checkpoint.* Continue if it is used and correct. Change: fold the useful parts into #304's lanes.
   A weak M1 says nothing about delegation, so it never stops the mesh by itself.
 
-**M2a — The unslop agent (added 2026-11-06, #483).** The `openai-compatible` agent of §6.6 with
-one skill, `unslop`, on the Mac and on loopback, called through `meshctl unslop`; `packages/mesh`,
-the A2A server and `meshctl`'s A2A client arrive here, and M2 reuses them. No registry, chains,
-bridge or viewer change. Its scope, off tests, validation, numbers (bench S11) and checkpoint are
-in [`2026-11-06-unslop-a2a-agent-design.md`](2026-11-06-unslop-a2a-agent-design.md) §2–§10. A
-stop there ends only M2a; M2 still starts.
+**M2a — The unslop agent (proposed, #483; P15).** The `openai-compatible` agent of §6.6 with one
+skill, `unslop`, on the Mac and on loopback, called through `meshctl unslop`; `packages/mesh`, the
+A2A server, `meshctl`'s A2A client and the `agents.<name>` key arrive here, and M2 reuses them. No
+registry, chains, bridge or viewer change. Its scope, off tests, validation, numbers (bench S11)
+and checkpoint are in [`2026-11-06-unslop-a2a-agent-design.md`](2026-11-06-unslop-a2a-agent-design.md)
+§2–§10. It is six PRs, an exception to "one or two reviewable PRs" above, so each stays near 300
+production lines. A stop there ends only M2a; M2 still starts.
 
 **M2 — Local wrapper spike.** `agent-inbox-wrap` with one read-only Copilot profile on loopback,
 a local token in a `0600` file, and `meshctl send` calling it directly. No registry, no relay,
@@ -1114,7 +1124,7 @@ container, docs without Tailscale; a Go `tsnet` binary only if asked for.
 | 2026-10-29 | **R1.** Opt-in and triggerable: off by default, each piece on or off alone and removable; nothing changes for anyone who does not enable it. | Shariq (hard requirement) |
 | 2026-10-29 | **R2.** Built piece by piece and tested as built: small phases, each useful alone, with validation criteria and a go/pivot checkpoint; the first phase small, cheap and observable, with no delegation. | Shariq (hard requirement) |
 | 2026-10-29 | **Accepted.** The design, its phases and proposals P1–P14 are the plan of record. P13 is confirmed (Q13): the TypeScript registry speaks a Eureka-compatible membership subset; no Eureka fork or backend. Start M1. Open questions are answered as each phase needs them. | Shariq ("Approve with the Eureka API; start M1") |
-| 2026-11-06 | **D8.** Unslop becomes the first A2A agent: the local model agent (§6.6) ships first, as M2a, with `unslop` as its only skill. This step is design only; no interim step that unifies the skill files. Customer email never goes to the model box: it stays with the in-session skill. Design: [`2026-11-06-unslop-a2a-agent-design.md`](2026-11-06-unslop-a2a-agent-design.md) (#483), with its own open questions | Shariq (chose "design the A2A slice only") |
+| 2026-11-06 | **D8.** Design unslop as the first A2A agent, on the local model box; design the A2A slice only, with no interim step that unifies the skill files. Customer email never goes to the model box: it stays with the in-session skill. Design: [`2026-11-06-unslop-a2a-agent-design.md`](2026-11-06-unslop-a2a-agent-design.md) (#483) | Shariq (chose "design the A2A slice only") |
 
 ### 14.2 Proposed in this design, for Shariq to confirm or change
 
@@ -1134,6 +1144,7 @@ container, docs without Tailscale; a Go `tsnet` binary only if asked for.
 | P12 | A local, read-only wrapper spike (M2) before any network piece. | §11 |
 | P13 | Don't fork or run Netflix Eureka. Build the TypeScript registry with a defined Eureka-compatible REST subset for membership, replacing D2's `a2a-lib` shape; no Eureka backend; an optional outbound Eureka mirror in M9 at most. | §15, §5.3, Appendix B |
 | P14 | Measure the mesh with §17's metrics, a human verdict per finished chain, and a replayable scenario bench run delegated and in-session at every phase from M2; each checkpoint reads named numbers. | §17, §11, Appendices C–D |
+| P15 | A phase M2a before M2: the local model agent with `unslop` as its only skill, on loopback, with the `agents.<name>` switch; its own open questions (#483). | §11, the unslop design |
 
 ### 14.3 Changes after review (2026-10-29)
 
@@ -1520,7 +1531,7 @@ minutes per scenario class, which the human times once per class.
 | S8 | Injection in a fixture README asks the delegate to push or delegate | generated TS library | refused; zero escapes; a rail fires | M4 |
 | S9 | Bulk-read summary on the local model | generated logs | facts recalled; a model swap reads busy, not failed | M7 |
 | S10 | Fan-out: three independent reviews at once | three generated diffs | bugs found; wall time against the three run in sequence | M7 |
-| S11 | Unslop public prose on the local model (#483) | 24 generated texts with gold protected tokens, 4 with injections, 6 synthetic private texts | undetected fidelity breaks; slop removed; private texts refused; blind comparison with in-session | M2a |
+| S11 | Unslop public prose on the local model (#483) | 24 generated public texts with trap assertions, 4 injections, 7 private texts (header-less customer replies, a paraphrased customer issue, headers, a token) | traps survive; slop removed; private texts refused (one known miss recorded); blind meaning and preference review against in-session | M2a |
 
 Each scenario declares its prompt, fixture generator, profile, budget, scorer and pass threshold
 in `packages/mesh/bench/scenarios/<id>.json`. Runs repeat three times per mode and report the

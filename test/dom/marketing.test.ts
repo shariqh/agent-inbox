@@ -202,7 +202,7 @@ describe('local marketing page', () => {
   it('has a complete, self-contained light-first page with no live inbox connection', () => {
     const { html } = boot({ dark: true })
     expect(document.title).toContain('Agent Inbox')
-    expect(document.querySelector('.release-line .version')?.textContent).toBe('v2.5.0')
+    expect(document.querySelector('.release-line .version')?.textContent).toBe('v2.6.0')
     expect(document.documentElement.dataset.theme).toBe('light')
     expect(document.querySelectorAll('h1')).toHaveLength(1)
     expect(document.querySelector('h1')?.textContent).toContain('every terminal.')
@@ -626,6 +626,7 @@ describe('local marketing page', () => {
     const messages = aside('Message a running session.')
     expect(messages).toContain('Before you send, Agent Inbox says how the message will arrive.')
     expect(messages).toContain('channels are a Claude Code research preview that needs a claude.ai or Console login.')
+    expect(messages).toContain('so can a Copilot CLI session that left its message watcher running')
     expect(messages).toContain('Other sessions see it when they next check Agent Inbox.')
     expect(messages).toContain('Not delivered')
 

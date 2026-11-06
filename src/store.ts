@@ -4468,6 +4468,33 @@ export function markWorktreeRemoved(db: Database.Database, id: string): boolean 
                       WHERE id = ? AND worktree_path IS NOT NULL AND worktree_removed_at IS NULL`).run(now, now, id).changes === 1
 }
 
+// #478: Forget, after main's own confirmation at this revision. The row is
+// deleted, as the 30-day prune does, so no older viewer or main can list it
+// again and no older driver can resume it; its asks' mapping and the requests
+// and leases keyed to it go with it. Only an ended launch whose worktree is
+// removed, or that never had one. The caller removes its log folders.
+export type ForgetLaunchResult = { ok: true } | { ok: false; reason: 'unknown' | 'not_ended' | 'worktree_kept' | 'revision' }
+
+export function forgetLaunch(db: Database.Database, id: string, revision: number): ForgetLaunchResult {
+  if (!LAUNCH_ID.test(id)) return { ok: false, reason: 'unknown' }
+  return db.transaction((): ForgetLaunchResult => {
+    const gone = db.prepare(`DELETE FROM launches WHERE id = ? AND revision = ? AND status = 'ended' AND NOT (${WORKTREE_KEPT})`)
+      .run(id, revision).changes === 1
+    if (gone) {
+      db.prepare(`DELETE FROM launch_asks WHERE launch_id = ?`).run(id)
+      db.prepare(`DELETE FROM hook_watch_claims WHERE claim_key IN (?, ?, ?, ?, ?) OR substr(token, 1, 37) = ?`)
+        .run(...['stop', 'interrupt', 'park', 'handoff', 'turn'].map((kind) => `driver-${kind}:${id}`), `${id}:`)
+      return { ok: true }
+    }
+    const row = db.prepare(`SELECT status, worktree_path, worktree_removed_at FROM launches WHERE id = ?`).get(id) as
+      { status: LaunchStatus; worktree_path: string | null; worktree_removed_at: string | null } | undefined
+    if (!row) return { ok: false, reason: 'unknown' }
+    if (row.status !== 'ended') return { ok: false, reason: 'not_ended' }
+    if (row.worktree_path !== null && row.worktree_removed_at === null) return { ok: false, reason: 'worktree_kept' }
+    return { ok: false, reason: 'revision' }
+  }).immediate()
+}
+
 // Whether a launch's driver holds a fresh `driver:` lease: a running launch
 // whose driver does not is lost (crashed or killed).
 export function launchDriverAlive(db: Database.Database, id: string): boolean {

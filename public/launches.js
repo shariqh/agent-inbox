@@ -152,6 +152,14 @@ export function budgetAllowance(launch, { activeHours, toolCalls }) {
   return { add }
 }
 
+/**
+ * #478: an ended launch Forget… removes: its worktree removed, or it never had one. A kept worktree
+ * goes first, through Remove worktree…. Main and the store check the same again.
+ */
+export function forgettable(launch) {
+  return launch?.status === 'ended' && !(typeof launch.worktree_path === 'string' && launch.worktree_path && !launch.worktree_removed_at)
+}
+
 /** A launch's driven sessions in /api/activity, live ones only. */
 export function launchSessions(launch, activity) {
   return (activity ?? []).filter((row) => row?.driven === true && row.driven_launch === launch.id)

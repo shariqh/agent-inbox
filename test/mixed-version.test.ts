@@ -21,7 +21,7 @@ import {
   getBoard, getItem, insertItem, listActivity, listBoards, listHostSessions, listIssueEntities, listIssueSnapshots, listItems, listSourceLinks,
   markReplySeen, openDb, pinBoardRow, pinItem, recordActivityCall, recordIssueFailure, replyItem, stopBoardRowWatch, stopItemWatch, updateBoardRow, upsertActivity,
   upsertBoard, upsertIssueSnapshot, upsertSourceLink, sendSessionMessage, listSessionMessages, readSnapshotState,
-  createLaunch, endLaunch, getLaunch, recordLaunchProgress, resumeLaunch,
+  createLaunch, endLaunch, getLaunch, recordLaunchProgress, resumeLaunch, forgetLaunch,
 } from '../src/store.js'
 import type { IssueDependencies } from '../src/store.js'
 import { issueQueue } from '../src/issue-poller.js'
@@ -1843,6 +1843,44 @@ describe('a v2.4.0 driver sharing a hub with launches resumed with more budget (
     const row = resumeOld()!
     expect(row).toMatchObject({ status: 'running', budget_tool_calls: 8, tool_calls: 3 })
     expect(V240.spent(row as never)).toBeNull()
+    old.close()
+    db.close()
+  })
+})
+
+// The statements of a v2.5.0 viewer and main, copied verbatim from tag v2.5.0: listLaunches
+// (WORKTREE_KEPT and the limit inlined) and getLaunch, which /api/launches/:id serves.
+const V250 = {
+  listLaunches: `SELECT * FROM launches WHERE status <> 'ended'
+      OR id IN (SELECT id FROM launches WHERE status = 'ended' ORDER BY ended_at DESC, id DESC LIMIT 50)
+      OR id IN (SELECT id FROM launches WHERE status = 'ended' AND worktree_path IS NOT NULL AND worktree_removed_at IS NULL ORDER BY ended_at DESC, id DESC LIMIT 50)
+    ORDER BY created_at DESC, id DESC`,
+  getLaunch: `SELECT * FROM launches WHERE id = ?`,
+}
+
+describe('older processes sharing a hub with a forgotten launch (#478)', () => {
+  let dir: string
+  const LAUNCH = '11111111-2222-4333-8444-555555555555'
+
+  beforeEach(() => { dir = scratchDir('mixed-version-forget-') })
+  afterEach(() => { rmSync(dir, { recursive: true, force: true }) })
+
+  it('a v2.5.0 viewer never lists or serves it, and a v2.4.0 driver never resumes it', () => {
+    const path = join(dir, 'inbox.db')
+    const db = openDb(path)
+    const old = new Database(path)
+    old.pragma('busy_timeout = 5000')
+    createLaunch(db, {
+      id: LAUNCH, host: 'copilot', project: 'agent-inbox', stream: 'main', cwd: '/work/a', mode: 'ask',
+      budgetActiveMs: 7_200_000, budgetToolCalls: 3, prompt: 'x', specVersion: 1, driverPid: 1,
+    })
+    // stopped with its session: resumable by every build until it is forgotten
+    endLaunch(db, LAUNCH, { reason: 'stopped', acpSession: 'acp-1' })
+    expect(old.prepare(V250.listLaunches).all()).toHaveLength(1)
+    expect(forgetLaunch(db, LAUNCH, getLaunch(db, LAUNCH)!.revision)).toEqual({ ok: true })
+    expect(old.prepare(V250.listLaunches).all()).toEqual([])
+    expect(old.prepare(V250.getLaunch).get(LAUNCH)).toBeUndefined()
+    expect(old.prepare(V240.resumeLaunch).get(2, new Date().toISOString(), LAUNCH)).toBeUndefined()
     old.close()
     db.close()
   })

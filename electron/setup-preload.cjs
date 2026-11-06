@@ -290,6 +290,11 @@ contextBridge.exposeInMainWorld('agentInboxLaunch', {
     if (args.length !== 1 || !isLaunchId(args[0])) return Promise.resolve({ ok: false, error: 'invalid' })
     return launchCall('agent-inbox:launch-take-over', args[0])
   },
+  // #478: Forget an ended session; a launch id only
+  forget(...args) {
+    if (args.length !== 1 || !isLaunchId(args[0])) return Promise.resolve({ ok: false, error: 'invalid' })
+    return launchCall('agent-inbox:launch-forget', args[0])
+  },
   // #432: main's own folder dialogs choose these; the page names no folder
   chooseFolder(...args) {
     if (args.length !== 0) return Promise.resolve({ ok: false, error: 'invalid' })

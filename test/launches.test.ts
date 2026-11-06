@@ -5,7 +5,7 @@
 // launches from keeps an empty table and every other snapshot unchanged.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { join } from 'node:path'
-import { mkdirSync, writeFileSync, appendFileSync } from 'node:fs'
+import { existsSync, mkdirSync, writeFileSync, appendFileSync } from 'node:fs'
 import type Database from 'better-sqlite3'
 import {
   claimDriverSlot, createLaunch, driverStopRequested, endLaunch, fileLaunchAsk, getItem, getLaunch, launchDriverAlive,
@@ -13,6 +13,7 @@ import {
   requestLaunchStop, resumeLaunch, settleLaunchAsk, listActivity, markDriverTurn, requestLaunchInterrupt, takeLaunchInterrupt,
   upsertActivity, holdDriverLeases, releaseDriverLeases, requestLaunchPark, takeLaunchPark, insertItem, listLaunchFolders,
   markWorktreeRemoved, recordWorktreeSummary, handOffForTerminal, handOffLaunch, takeLaunchHandOff, withdrawLaunchHandOff, restoreStoppedLaunch,
+  forgetLaunch, claimHookWatch,
 } from '../src/store.js'
 import type { NewLaunch } from '../src/store.js'
 import { createViewer } from '../src/viewer.js'
@@ -569,6 +570,84 @@ describe('full resume (step 5)', () => {
     createLaunch(db, launch(2))
     endLaunch(db, ID(2), { reason: 'stopped' })
     expect(handOffForTerminal(db, ID(2))).toEqual({ ok: false, reason: 'no_session' })
+  })
+})
+
+describe('Forget (#478)', () => {
+  const inWorktree = (n: number): Partial<NewLaunch> => ({
+    cwd: `/w/a/fix-${n}`, worktree: { checkoutRoot: '/work/a', branch: `agent-inbox/fix-${n}-1111111${n}`, baseSha: 'a'.repeat(40), baseRef: null },
+  })
+  const revision = (n: number) => getLaunch(db, ID(n))!.revision
+
+  it('deletes only an ended launch at its revision whose worktree is gone or never was, with what is keyed to it', () => {
+    createLaunch(db, launch(1))
+    fileLaunchAsk(db, ID(1), { project: '@sessions', stream: '', agent: 'copilot', kind: 'question', title: 'Allow?' }, [{ optionId: 'allow_once', label: 'Allow once' }])
+    claimHookWatch(db, `driver-turn:${ID(1)}`, 'turn')
+    claimHookWatch(db, 'driven:mcp-1', `${ID(1)}:4242:n1`)
+    claimHookWatch(db, 'driven:mcp-2', `${ID(2)}:4243:n1`)
+    // running, parked and stopping are refused
+    expect(forgetLaunch(db, ID(1), revision(1))).toEqual({ ok: false, reason: 'not_ended' })
+    createLaunch(db, launch(2))
+    parkLaunch(db, ID(2), { acpSession: 'acp-2', activeMs: 0, toolCalls: 0 })
+    expect(forgetLaunch(db, ID(2), revision(2))).toEqual({ ok: false, reason: 'not_ended' })
+    // a kept worktree first, then a stale revision
+    createLaunch(db, launch(3, inWorktree(3)))
+    endLaunch(db, ID(3), { reason: 'stopped' })
+    expect(forgetLaunch(db, ID(3), revision(3))).toEqual({ ok: false, reason: 'worktree_kept' })
+    const seen = revision(3)
+    markWorktreeRemoved(db, ID(3))
+    const version = readSnapshotState(db).domains.launches
+    expect(forgetLaunch(db, ID(3), seen)).toEqual({ ok: false, reason: 'revision' })
+    expect(forgetLaunch(db, ID(1), revision(1))).toEqual({ ok: false, reason: 'not_ended' })
+    expect(forgetLaunch(db, ID(9), 1)).toEqual({ ok: false, reason: 'unknown' })
+    expect(forgetLaunch(db, 'not-a-launch', 1)).toEqual({ ok: false, reason: 'unknown' })
+    // each refusal wrote nothing
+    expect(readSnapshotState(db).domains.launches).toBe(version)
+    expect(listLaunches(db)).toHaveLength(3)
+    expect(forgetLaunch(db, ID(3), revision(3))).toEqual({ ok: true })
+    endLaunch(db, ID(1), { reason: 'lost' })
+    expect(forgetLaunch(db, ID(1), revision(1))).toEqual({ ok: true })
+    expect(readSnapshotState(db).domains.launches).not.toBe(version)
+    expect(getLaunch(db, ID(1))).toBeNull()
+    expect(listLaunches(db).map((l) => l.id)).toEqual([ID(2)])
+    expect(listLaunchAskReplies(db, ID(1))).toEqual([])
+    const claims = db.prepare(`SELECT claim_key FROM hook_watch_claims ORDER BY claim_key`).pluck().all()
+    expect(claims).toEqual(['driven:mcp-2'])
+    // once only, and never resumed again
+    expect(forgetLaunch(db, ID(1), 1)).toEqual({ ok: false, reason: 'unknown' })
+    expect(resumeLaunch(db, ID(1), 77)).toBeNull()
+  })
+
+  it('the route takes exactly { revision }, and on success removes the launch’s log folders', async () => {
+    const app = createViewer(db)
+    const post = async (id: string, body: unknown) => {
+      const response = await app.request(`/api/launches/${id}/forget`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+      return { status: response.status, json: await response.json() as Record<string, unknown> }
+    }
+    const logs = (id: string) => ['launches', 'drivers'].map((dir) => join(db.name, '..', dir, id))
+    for (const n of [1, 2]) {
+      createLaunch(db, launch(n))
+      endLaunch(db, ID(n), { reason: 'stopped', acpSession: 'acp' })
+      for (const dir of logs(ID(n))) {
+        mkdirSync(dir, { recursive: true })
+        writeFileSync(join(dir, 'events.ndjson'), '{}\n')
+      }
+    }
+    for (const body of [{}, { revision: '2' }, { revision: 0 }, { revision: 1.5 }, { revision: 2, path: '/' }, [2], null]) {
+      expect((await post(ID(1), body)).status, JSON.stringify(body)).toBe(400)
+    }
+    expect((await post(ID(1), { revision: revision(1) + 1 })).json).toEqual({ ok: false, reason: 'revision' })
+    expect(logs(ID(1)).every((dir) => existsSync(dir))).toBe(true)
+    const before = (await app.request('/api/launches')).headers.get('etag')
+    expect(await post(ID(1), { revision: revision(1) })).toEqual({ status: 200, json: { ok: true } })
+    expect(logs(ID(1)).some((dir) => existsSync(dir))).toBe(false)
+    expect(logs(ID(2)).every((dir) => existsSync(dir))).toBe(true)
+    const after = await app.request('/api/launches')
+    expect(after.headers.get('etag')).not.toBe(before)
+    expect((await after.json() as Array<{ id: string }>).map((l) => l.id)).toEqual([ID(2)])
+    expect((await app.request(`/api/launches/${ID(1)}`)).status).toBe(404)
+    expect((await app.request(`/api/launches/${ID(1)}/events`)).status).toBe(404)
+    expect((await post('..%2Fx', { revision: 1 })).json).toEqual({ ok: false, reason: 'unknown' })
   })
 })
 

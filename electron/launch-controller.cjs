@@ -212,6 +212,27 @@ function removalConfirmation({ project, path: folder, branch, missing, dirty, ah
   }
 }
 
+/**
+ * #478: Forget's own confirmation, from the row main read: the session (its project, branch and
+ * task), what goes (its card, transcript and logs) and what stays (its branch and commits, Copilot's
+ * own session files). The project, branch and task are agent- or human-written: one line each.
+ */
+function forgetConfirmation({ project, branch, stream, task, endReason, resumable }) {
+  return {
+    message: `Forget the session of ${displayLine(project)}?`,
+    detail: [
+      `Session: ${displayLine(project)}${branch || stream ? ` · ${displayLine(branch || stream)}` : ''}`,
+      ...(task ? [`Task: ${displayLine(task)}`] : []),
+      'Agent Inbox removes its card, its transcript and its logs. This cannot be undone.',
+      ...(branch ? [`The branch ${displayLine(branch)} and its commits stay in your repository.`] : []),
+      ...(endReason === 'handed_off' ? ['The Copilot it was handed off to in Terminal is not touched.'] : []),
+      ...(resumable ? ['It can no longer be resumed from Agent Inbox, but copilot --resume can still open it if you know its session id.'] : []),
+      'Copilot’s own session files, and what the session flagged in the inbox, are left as they are.',
+    ].join('\n'),
+    buttons: ['Forget', 'Cancel'],
+  }
+}
+
 const calls = (n) => plural(n, 'tool call', 'tool calls')
 
 /**
@@ -694,6 +715,39 @@ function createLaunchController(deps) {
       }
     },
 
+    // #478: Forget an ended launch whose worktree is gone or never was, after main's own
+    // confirmation, at the revision it showed; the hub deletes the row and its logs
+    async forget(id) {
+      const why = blocked()
+      if (why) return why
+      if (typeof id !== 'string' || !LAUNCH_ID.test(id)) return refused('The launch is not valid.')
+      try {
+        const launch = await viewer.getJson(`/api/launches/${id}`)
+        if (!launch || !Number.isSafeInteger(launch.revision)) return refused('This session is not there any more.')
+        if (launch.status !== 'ended') return refused(`${launch.status === 'parked' ? 'End' : 'Stop'} the session before forgetting it.`)
+        if (typeof launch.worktree_path === 'string' && launch.worktree_path && !launch.worktree_removed_at) {
+          return refused('Its worktree is still there: use Remove worktree… first.')
+        }
+        const prompt = await viewer.getJson(`/api/launches/${id}/prompt`)
+        const task = typeof prompt?.prompt === 'string' ? prompt.prompt.trim().split('\n')[0] : ''
+        const text = forgetConfirmation({
+          project: launch.project, branch: launch.worktree_path ? launch.branch : null, stream: launch.stream, task,
+          endReason: launch.end_reason, resumable: stoppedWithSession(launch) || budgetEnded(launch),
+        })
+        if (!(await confirm(text))) return refused('Not forgotten.', { cancelled: true })
+        const late = blocked()
+        if (late) return late
+        const result = await viewer.postJson(`/api/launches/${id}/forget`, { revision: launch.revision })
+        if (result?.ok) return { ok: true }
+        return refused(result?.reason === 'revision' ? 'The session changed since you confirmed, so it was kept. Look at it again.'
+          : result?.reason === 'worktree_kept' ? 'Its worktree is still there: use Remove worktree… first.'
+            : result?.reason === 'not_ended' ? 'The session is running again, so it was kept.'
+              : result?.reason === 'unknown' ? 'This session is not there any more.' : 'The session was not forgotten.')
+      } catch {
+        return refused('The session was not forgotten.')
+      }
+    },
+
     // #432 §6: Open in Terminal, on the path a fresh row read names, only while it is its own real folder
     async openWorktree(id) {
       const why = blocked()
@@ -888,6 +942,6 @@ function createLaunchController(deps) {
 }
 
 module.exports = {
-  MODES, approvalRequest, budgetConfirmation, budgetRequest, confirmation, createLaunchController, displayLine, removalConfirmation, displaySafe, launchEnv, launchRequest, quitChoice, runningAtQuit,
+  MODES, approvalRequest, budgetConfirmation, budgetRequest, confirmation, createLaunchController, displayLine, forgetConfirmation, removalConfirmation, displaySafe, launchEnv, launchRequest, quitChoice, runningAtQuit,
   takeOverConfirmation, takeOverScript,
 }

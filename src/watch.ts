@@ -1,7 +1,10 @@
 import type Database from 'better-sqlite3'
+import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { defaultDbPath, getActiveBoardRow, getItem } from './store.js'
+import {
+  defaultDbPath, getActiveBoardRow, getItem, holdMessageWatch, listOpenMessages, liveSessionServers, releaseMessageWatch,
+} from './store.js'
 import type { BoardRow } from './store.js'
 
 export type WatchResult = 'reply' | 'closed' | 'stopped' | 'timeout'
@@ -154,6 +157,60 @@ async function waitForResponse(
   }
 }
 
+// Issue #477 — a Copilot CLI session wakes only when a detached shell it
+// launched completes, so a message to an idle session needs a watcher of its
+// own. 'running': another copy holds this session's lease. 'ended': the MCP
+// server it watches for has gone, so nothing can deliver to that session.
+export type MessageWatchResult = 'message' | 'ended' | 'running' | 'timeout'
+
+export interface MessageWatchOptions extends WatchOptions {
+  // Open messages the session already had in hand when the contract was issued.
+  seen?: readonly string[]
+  // When the contract was issued: re-running the same command waits longer (#217).
+  since?: string
+}
+
+const MESSAGE_LEASE_REFRESH_MS = 30_000
+
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM'
+  }
+}
+
+export async function waitForSessionMessage(
+  db: Database.Database,
+  session: string,
+  options: MessageWatchOptions = {},
+): Promise<MessageWatchResult> {
+  const token = `${process.pid}:${randomUUID()}`
+  if (!holdMessageWatch(db, session, token)) return 'running'
+  const pollMs = options.pollMs ?? DEFAULT_POLL_MS
+  const seen = new Set(options.seen)
+  const launchedAt = Date.now()
+  const deadline = launchedAt + (options.timeoutMs ?? watchTimeoutMs(options.since, launchedAt))
+  let heldAt = launchedAt
+  try {
+    for (;;) {
+      const server = liveSessionServers(db, [session])[0]
+      if (!server || (server.server_pid !== null && !processAlive(server.server_pid))) return 'ended'
+      if (listOpenMessages(db, [session]).some((m) => !seen.has(m.id))) return 'message'
+      const now = Date.now()
+      if (now >= deadline) return 'timeout'
+      if (now - heldAt >= MESSAGE_LEASE_REFRESH_MS) {
+        if (!holdMessageWatch(db, session, token)) return 'running'
+        heldAt = now
+      }
+      await new Promise((resolve) => setTimeout(resolve, pollMs))
+    }
+  } finally {
+    releaseMessageWatch(db, session, token)
+  }
+}
+
 export interface WatchLaunchOptions {
   execPath?: string
   execArgv?: string[]
@@ -170,7 +227,9 @@ function shellQuote(value: string): string {
   return `'${value.replaceAll(`'`, `'\\''`)}'`
 }
 
-export function copilotWatchLaunch(id: string, options: WatchLaunchOptions = {}) {
+// The watcher's argv, shell-quoted: the server's own Node and loader flags, the
+// source or built entry beside this module, then the mode's arguments.
+function watchCommand(args: (dbPath: string) => string[], options: WatchLaunchOptions): string {
   const execPath = options.execPath ?? process.execPath
   const execArgv = options.execArgv ?? process.execArgv
   const moduleUrl = options.moduleUrl ?? import.meta.url
@@ -181,17 +240,34 @@ export function copilotWatchLaunch(id: string, options: WatchLaunchOptions = {})
   const entry = modulePath.endsWith('.ts') && !existsSync(fileURLToPath(builtEntry))
     ? fileURLToPath(sourceEntry)
     : fileURLToPath(builtEntry)
+  return [execPath, ...execArgv, entry, ...args(dbPath)].map(shellQuote).join(' ')
+}
+
+// Issue #477 — the message watcher's launch contract. `seen` are the open
+// messages already handed to this session; the watcher wakes for any other.
+export function copilotMessageWatchLaunch(session: string, seen: readonly string[], options: WatchLaunchOptions = {}) {
+  const nowMs = options.nowMs ?? Date.now()
+  return {
+    shell_command: watchCommand((dbPath) => ['--messages', session, new Date(nowMs).toISOString(), dbPath, ...seen], options),
+    mode: 'async' as const,
+    detach: true,
+    shell_id: `agent-inbox-messages-${session}`,
+    timeout_seconds: Math.ceil(watchTimeoutMs(undefined, nowMs) / 1_000),
+    on_completion: 'Exit 0: the human sent this session a message. Call pending() immediately, act on each message, ack_message it, then launch the message_watch your next pending() or status({done:true}) returns. A timeout (exit 124) is not a message: re-run this same command; it waits longer each time. Exit 3: another copy is running or this session\'s Agent Inbox server has ended; do not re-run this command.',
+  }
+}
+
+export function copilotWatchLaunch(id: string, options: WatchLaunchOptions = {}) {
   const version = options.rowActionVersion
   if (version !== undefined && (!Number.isSafeInteger(version) || version < 1)) {
     throw new Error('rowActionVersion must be a positive safe integer')
   }
   const targetArgs = version === undefined ? [id] : ['--row', id, String(version)]
-  const argv = [execPath, ...execArgv, entry, ...targetArgs, dbPath]
   const pending = options.project === undefined ? 'pending()' : `pending({project:${JSON.stringify(options.project)}})`
   const stopped = `Exit ${WATCH_STOPPED_EXIT} means the human asked you to stop waiting: do not re-arm; their answer still arrives through ${pending} or chat.`
 
   return {
-    shell_command: argv.map(shellQuote).join(' '),
+    shell_command: watchCommand((dbPath) => [...targetArgs, dbPath], options),
     mode: 'async' as const,
     detach: true,
     shell_id: version === undefined ? `agent-inbox-${id}` : `agent-inbox-row-${id}-${version}`,

@@ -135,8 +135,29 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   A Claude Code session launched with the channel flag needs none of that window: the MCP
   server pushes it a notice per message (`mcp-server.md`). The hooks still run beside it,
   so a message can wake such a session twice; the agent's second `pending()` finds it
-  acked or already in hand. Copilot has no standing watcher: a hand-started Copilot
-  session sees a message at its next `pending()`.
+  acked or already in hand. A Copilot session has the message watcher below.
+- **The Copilot message watcher (issue #477) is host-owned, per session and
+  read-only.** No documented Copilot CLI hook can re-prompt an idle session: `agentStop`
+  can only `block` the turn that is ending (eight continuations at most), and a
+  `notification` hook's `additionalContext` fires only on the CLI's own notifications,
+  such as a background shell completing. So the background shell's completion stays the
+  only wake. For a Copilot client only, and never for a driven session, `pending()` with
+  no message to hand over and `status({done:true})` return `message_watch`, the contract
+  for `watch-cli --messages <session> <issued-at> <db> [<seen id>...]`, which the agent
+  launches detached. The server never spawns it. `seen` is the session's open messages
+  already delivered, so one the agent holds but has not acked cannot wake it again. A
+  message that arrives after the agent's last `pending()` is undelivered, so it wakes the
+  watcher at once. The watcher exits 0 with one fixed line for any other open
+  message to that session (ids only, never the text), 124 at `watchTimeoutMs` of the
+  issued-at time (re-running the same command backs off, as #217's do), and 3, "do not
+  re-run", when another copy holds the session's lease or the session's server has gone
+  (presence ended, or its `server_pid` is dead). The lease is `copilot-messages:<session>`
+  in `hook_watch_claims`, taken by one conditioned statement (first live copy wins),
+  refreshed every 30 s and fresh for 90 s. While it is fresh the server hands out no
+  second contract, and `listActivity` reports `wakes`. The `shell_id` is fixed per
+  session, so Copilot refuses a second copy too. The contract names the reader's own
+  session id; #306's "agent reads never carry a session" holds for everything else.
+  Pinned in `test/copilot-watch.test.ts`.
 
 ## History (shipped since v1)
 
@@ -158,6 +179,8 @@ These landed after v1 and still hold invariants; the release history itself is i
   `flag` returns a shell-safe detached-background launch contract. The host owns that process
   and therefore receives the completion notification; the resumed agent calls `pending()`.
   Claude gets no duplicate watcher because its hook already owns wakeup.
+- **Copilot message wake** *(#477)* — a Copilot CLI session can wake for the human's
+  messages through a per-session `watch-cli --messages` watcher; see the invariant above.
 - **Watcher backoff and "I'll take a while"** *(#217)* — re-arming an unchanged ask waits
   longer each time (30 min → 1 h → 2 h → 4 h), and the human can stop a Copilot ask's
   watcher for good or ask it to wait quietly until a time. See the watcher invariant above and the watch-stop

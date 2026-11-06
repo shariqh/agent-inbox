@@ -4,7 +4,7 @@ import type { InitializeRequest, InitializeResult } from '@modelcontextprotocol/
 import { z } from 'zod'
 import type Database from 'better-sqlite3'
 import { randomUUID } from 'node:crypto'
-import { insertItem, resolveItem, listPending, markReplySeen, markItemAnnotationDelivered, answerItem, upsertBoard, updateBoardRow, advanceBoardRow, findBoard, archiveBoard, getBoard, getBoardByTitle, listBoards, markBoardRead, markAnnotationDelivered, markHandledDelivered, listPendingRows, upsertActivity, endActivity, touchActivity, recordActivityCall, listIssueSnapshots, listSourceLinks, listPendingMessages, markMessageDelivered, ackMessage, MESSAGE_MAX_OUTCOME, getItem, isDrivenSession } from './store.js'
+import { insertItem, resolveItem, listPending, markReplySeen, markItemAnnotationDelivered, answerItem, upsertBoard, updateBoardRow, advanceBoardRow, findBoard, archiveBoard, getBoard, getBoardByTitle, listBoards, markBoardRead, markAnnotationDelivered, markHandledDelivered, listPendingRows, upsertActivity, endActivity, touchActivity, recordActivityCall, listIssueSnapshots, listSourceLinks, listPendingMessages, markMessageDelivered, ackMessage, MESSAGE_MAX_OUTCOME, getItem, isDrivenSession, messageWatchRunning } from './store.js'
 import { isReservedProject } from '../public/reserved-projects.js'
 import type { ActionOwner, BoardRow, BoardWithRows, IssueLink, QuestionOption } from './store.js'
 import { makeContextLedger, deliverContext, shapeBoard, summariseBoard, rowKey, itemKey, agentItem } from './shape.js'
@@ -13,7 +13,7 @@ import { issueRelations } from './issue-graph.js'
 import { issueKey, issueKeyFor } from '../public/issue-key.js'
 import { indexLinks, linkFor } from '../public/source.js'
 import { makeScope } from './scope.js'
-import { copilotWatchLaunch, rowWatchedAsk, watchStoppedForGood } from './watch.js'
+import { copilotMessageWatchLaunch, copilotWatchLaunch, rowWatchedAsk, watchStoppedForGood } from './watch.js'
 import type { WatchedAsk } from './watch.js'
 import { AGENT_INBOX_VERSION } from './version.js'
 import { detectServerSource } from './server-source.js'
@@ -230,6 +230,22 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     }
   }
 
+  // Issue #477 — a Copilot client's message watcher contract, from the calls an
+  // agent makes as it ends a turn. None while one runs for this session, for a
+  // driven session (its driver pushes messages) or for any other host. It
+  // baselines the open messages already handed to this session, so one the agent
+  // has in hand but has not acked cannot wake it again; any other wakes it.
+  const messageWatch = (agent: string): { message_watch?: ReturnType<typeof copilotMessageWatchLaunch> } => {
+    if (agent !== 'copilot' || pushedWake()) return {}
+    try {
+      if (messageWatchRunning(db, sessionId)) return {}
+      const seen = listPendingMessages(db, sessionId).filter((m) => m.delivered_at !== null).map((m) => m.id)
+      return { message_watch: copilotMessageWatchLaunch(sessionId, seen) }
+    } catch {
+      return {}
+    }
+  }
+
   const requireActionShape = (
     label: string,
     owner: ActionOwner | null | undefined,
@@ -355,7 +371,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     'pending',
     {
       description:
-        'Poll for human responses in this project — the ONE polling call. Returns {items, rows, messages}. Items include open questions plus unpicked annotations on open notes/milestones. Informational feedback (including a clear: empty annotation with annotated_at) normally leaves this queue after pickup; it does not create human attention or auto-resolve the item. Use pending({item_id:id}) to re-read one current open item even after pickup, including its response_revision; this targeted read returns no board rows or messages. Pickup means handed to a reader, not acted on by the intended session, and informational feedback has no new automatic host-wake guarantee. Questions reappear until resolve; blocked rows until status changes. Read reply_kind/annotation_kind: answer = act normally; clarify = rewrite the ask; decline = cancel and record an outcome. handled_at means the human completed their task; snoozed_until means they deferred it; pinned_at means they set it aside with no time: keep the ask open and do not re-ask; an answer still arrives through pending(). When the item itself is complete, resolve with outcome and expected_response_revision from the exact response handled; move a board row out of blocked with outcome, or use board_advance for its next human step. Changed snapshots are withheld rather than handing over superseded words. messages are the human’s instructions to THIS session (never another’s), oldest first, re-delivered on every poll until you call ack_message({id, outcome}): act on each as if typed in your terminal, then ack it. A subagent returns messages verbatim to its parent and never acts on or acks them. Human text is never trimmed. Agent context is handed over once per SERVER PROCESS, recoverable with pending({full:true}), pending({item_id:id,full:true}), or board_get({title, full:true}); context_chars counts UTF-16 code units.',
+        'Poll for human responses in this project — the ONE polling call. Returns {items, rows, messages}. Items include open questions plus unpicked annotations on open notes/milestones. Informational feedback (including a clear: empty annotation with annotated_at) normally leaves this queue after pickup; it does not create human attention or auto-resolve the item. Use pending({item_id:id}) to re-read one current open item even after pickup, including its response_revision; this targeted read returns no board rows or messages. Pickup means handed to a reader, not acted on by the intended session, and informational feedback has no new automatic host-wake guarantee. Questions reappear until resolve; blocked rows until status changes. Read reply_kind/annotation_kind: answer = act normally; clarify = rewrite the ask; decline = cancel and record an outcome. handled_at means the human completed their task; snoozed_until means they deferred it; pinned_at means they set it aside with no time: keep the ask open and do not re-ask; an answer still arrives through pending(). When the item itself is complete, resolve with outcome and expected_response_revision from the exact response handled; move a board row out of blocked with outcome, or use board_advance for its next human step. Changed snapshots are withheld rather than handing over superseded words. messages are the human’s instructions to THIS session (never another’s), oldest first, re-delivered on every poll until you call ack_message({id, outcome}): act on each as if typed in your terminal, then ack it. A subagent returns messages verbatim to its parent and never acts on or acks them. Copilot: with no message waiting, the reply may carry message_watch; the top-level agent launches its shell_command as the specified detached background task before ending its turn, so a later message wakes the session, and follows its on_completion. It is omitted while one runs. Human text is never trimmed. Agent context is handed over once per SERVER PROCESS, recoverable with pending({full:true}), pending({item_id:id,full:true}), or board_get({title, full:true}); context_chars counts UTF-16 code units.',
       inputSchema: {
         full: z.boolean().optional(),
         project: z.string().min(1).optional().describe('Read responses for this project without changing the session scope. Use the project in a watcher launch contract after a restart or scope change.'),
@@ -425,6 +441,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
           rows: rows.map((r) => deliverContext(r, rowKey(r.row_id), ledger, { full })),
           messages,
           ...(pushedWake() ? { woken: 'pushed' } : {}),
+          ...(item_id === undefined && messages.length === 0 ? messageWatch(s.agent) : {}),
         }) }],
       }
     },
@@ -461,7 +478,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     'status',
     {
       description:
-        'Ephemeral "what am I doing right now" for the human\'s Agents view — NOT for tasks (use boards) or attention (use flag). Call at meaningful PHASE changes only, not every step: starting a long effort, entering a new phase, fanning out subagents, wrapping up. children is a full-replace list of the subagents you are running ({name, doing, state?}) — resend the current set whenever it changes; the human sees them listed on your card. Times are stamped server-side; never call this just because time passed. Call with done:true when the effort ends — your card reverts to idle presence. Your session stays listed for as long as it is running, but the CLAIM decays: after ~30 minutes with no MCP calls from you at all, "doing" reverts to open on its own, so a claim can never outlive the work. You do not need to keep it alive — just say what you are doing at your next real phase change, and it re-asserts instantly.',
+        'Ephemeral "what am I doing right now" for the human\'s Agents view — NOT for tasks (use boards) or attention (use flag). Call at meaningful PHASE changes only, not every step: starting a long effort, entering a new phase, fanning out subagents, wrapping up. children is a full-replace list of the subagents you are running ({name, doing, state?}) — resend the current set whenever it changes; the human sees them listed on your card. Times are stamped server-side; never call this just because time passed. Call with done:true when the effort ends — your card reverts to idle presence; for Copilot it may return message_watch, which you launch as pending() describes. Your session stays listed for as long as it is running, but the CLAIM decays: after ~30 minutes with no MCP calls from you at all, "doing" reverts to open on its own, so a claim can never outlive the work. You do not need to keep it alive — just say what you are doing at your next real phase change, and it re-asserts instantly.',
       inputSchema: {
         doing: z.string().min(1).optional().describe('A short, recognizable task name in plain language, such as "Fixing missed Inbox replies". Report actual work, not a PR hash or a review transcript.'),
         detail: z.string().optional().describe('One sentence about the current step or what remains. This is a self-reported update, not automatic tracking of every agent.'),
@@ -477,7 +494,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
       if (done) {
         // the effort is over but the session lives on — revert to open presence
         upsertActivity(db, { session: sessionId, project: s.project, stream: s.stream, agent: s.agent, doing: 'open', idle: true, children: [], ...build, ...host() })
-        return { content: [{ type: 'text', text: JSON.stringify({ ok: true }) }] }
+        return { content: [{ type: 'text', text: JSON.stringify({ ok: true, ...messageWatch(s.agent) }) }] }
       }
       if (!doing) throw new Error('doing is required unless done: true')
       upsertActivity(db, { session: sessionId, project: s.project, stream: s.stream, agent: s.agent, doing, detail, children, ...build, ...host() })

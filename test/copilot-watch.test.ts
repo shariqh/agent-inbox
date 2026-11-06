@@ -3,10 +3,12 @@ import {
   getItem, insertItem, markReplySeen, openDb, replyItem, resolveItem,
   upsertBoard, getBoard, annotateBoardRow, markRowHandled, markAnnotationDelivered,
   archiveBoard, advanceBoardRow, snoozeBoardRow, snoozeItem, stopBoardRowWatch, stopItemWatch,
+  upsertActivity, endActivity, listActivity, sendSessionMessage, withdrawSessionMessage, ackMessage, holdMessageWatch,
 } from '../src/store.js'
 import {
-  boardResponseState, copilotWatchLaunch, waitForQuestionResponse, waitForBoardResponse, watchTimeoutMs,
+  boardResponseState, copilotWatchLaunch, waitForQuestionResponse, waitForBoardResponse, watchTimeoutMs, waitForSessionMessage,
 } from '../src/watch.js'
+import { inferAgent } from '../src/infer.js'
 import Database from 'better-sqlite3'
 import { existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -532,6 +534,128 @@ describe('Copilot watch contracts size their wait (#217)', () => {
       }
       db.close()
       vi.useRealTimers()
+    }
+  })
+})
+
+// Issue #477 — a Copilot CLI session wakes only when a detached shell it
+// launched completes, so the human's messages get a watcher of their own.
+describe('Copilot message watch (#477)', () => {
+  const SESSION = '00000000-0000-4000-8000-0000000000a1'
+  const OTHER = '00000000-0000-4000-8000-0000000000b2'
+  const msg = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`
+  const present = (db: ReturnType<typeof openDb>, session: string, serverPid = process.pid) =>
+    upsertActivity(db, { session, ...AGENT, doing: 'open', idle: true, claim: false, receives_messages: true, server_pid: serverPid })
+  const send = (db: ReturnType<typeof openDb>, n: number, session = SESSION) => {
+    const sent = sendSessionMessage(db, { id: msg(n), session, text: `secret text ${n}` })
+    if (!sent.ok) throw new Error(sent.reason)
+    return sent.message
+  }
+  const wakes = (db: ReturnType<typeof openDb>) => listActivity(db).find((row) => row.session === SESSION)?.wakes === true
+
+  it('wakes only for a new open message to this session, holding one lease while it waits', async () => {
+    const db = fresh()
+    present(db, SESSION)
+    present(db, OTHER)
+    send(db, 1)
+    expect(withdrawSessionMessage(db, msg(2), send(db, 2).revision).ok).toBe(true)
+    const waiting = waitForSessionMessage(db, SESSION, { pollMs: 10, timeoutMs: 2_000, seen: [msg(1)] })
+    await sleep(40)
+    expect(wakes(db)).toBe(true)
+    await expect(waitForSessionMessage(db, SESSION, { pollMs: 10, timeoutMs: 1_000 })).resolves.toBe('running')
+    send(db, 3, OTHER)
+    send(db, 4)
+    expect(ackMessage(db, { id: msg(4), session: SESSION, outcome: 'done' }).ok).toBe(true)
+    await sleep(40)
+    send(db, 5)
+    await expect(waiting).resolves.toBe('message')
+    expect(wakes(db)).toBe(false)
+    db.close()
+  })
+
+  it('times out, and ends when the session or its server process has gone', async () => {
+    const db = fresh()
+    present(db, SESSION)
+    await expect(waitForSessionMessage(db, SESSION, { pollMs: 10, timeoutMs: 50 })).resolves.toBe('timeout')
+    endActivity(db, SESSION)
+    await expect(waitForSessionMessage(db, SESSION, { pollMs: 10, timeoutMs: 1_000 })).resolves.toBe('ended')
+    const gone = spawnSync(process.execPath, ['-e', 'process.stdout.write(String(process.pid))'], { encoding: 'utf8' })
+    present(db, OTHER, Number(gone.stdout))
+    await expect(waitForSessionMessage(db, OTHER, { pollMs: 10, timeoutMs: 1_000 })).resolves.toBe('ended')
+    db.close()
+  })
+
+  it('the CLI exits 0 without the text, 124 on timeout, 3 beside a running copy, and 64 on bad input', async () => {
+    const dbPath = join(scratchDir('copilot-message-watch-cli-'), 'custom.db')
+    const db = openDb(dbPath)
+    present(db, SESSION)
+    send(db, 1)
+    const since = new Date().toISOString()
+    const woken = await runWatchCli(['--messages', SESSION, since, dbPath, msg(1)], { AGENT_INBOX_WATCH_TIMEOUT_MS: '5000' }, () => {
+      setTimeout(() => send(db, 2), 300)
+    })
+    expect(woken.code, woken.stderr).toBe(0)
+    expect(woken.stdout).toBe('Agent Inbox message ready. Call pending().\n')
+    const timedOut = await runWatchCli(['--messages', SESSION, since, dbPath, msg(1), msg(2)], { AGENT_INBOX_WATCH_TIMEOUT_MS: '1000' })
+    expect(timedOut.code, timedOut.stderr).toBe(124)
+    expect(holdMessageWatch(db, SESSION, 'another-copy')).toBe(true)
+    const second = await runWatchCli(['--messages', SESSION, since, dbPath], { AGENT_INBOX_WATCH_TIMEOUT_MS: '5000' })
+    expect(second.code, second.stderr).toBe(3)
+    expect(second.stdout).toContain('already running')
+    for (const bad of [['--messages', 'not-a-session', since, dbPath], ['--messages', SESSION, 'never', dbPath], ['--messages', SESSION, since, dbPath, 'x']]) {
+      expect(spawnSync(process.execPath, ['--import', 'tsx', WATCH_CLI, ...bad], { encoding: 'utf8', timeout: 5_000 }).status).toBe(64)
+    }
+    db.close()
+  })
+
+  it('the MCP server hands its contract to Copilot clients only, from pending() and status({done:true})', async () => {
+    const db = fresh()
+    const events: EventEmitter = process
+    const listeners = new Map((['exit', 'SIGHUP', 'SIGINT', 'SIGTERM'] as const).map((signal) => [signal, events.listeners(signal)]))
+    const connect = async (name: string) => {
+      const server = buildMcpServer(db, process.cwd())
+      const client = new Client({ name, version: 'test' })
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+      await server.connect(serverTransport)
+      await client.connect(clientTransport)
+      await client.callTool({ name: 'status', arguments: { doing: 'Testing' } })
+      const call = async (tool: string, args: Record<string, unknown> = {}) =>
+        JSON.parse(((await client.callTool({ name: tool, arguments: args })).content as Array<{ text: string }>)[0]!.text)
+      const session = listActivity(db).find((row) => row.agent === inferAgent(name) && row.doing === 'Testing')!.session
+      return { server, client, call, session }
+    }
+    const copilot = await connect('copilot')
+    const claude = await connect('claude-code')
+    try {
+      const first = (await copilot.call('pending')).message_watch
+      expect(first).toMatchObject({ mode: 'async', detach: true, shell_id: `agent-inbox-messages-${copilot.session}`, timeout_seconds: 1800 })
+      expect(first.shell_command).toMatch(new RegExp(`'--messages' '${copilot.session}' '[^']+' '[^']+'$`))
+      expect(first.on_completion).toContain('Call pending()')
+      expect((await claude.call('pending')).message_watch).toBeUndefined()
+      expect((await claude.call('status', { done: true })).message_watch).toBeUndefined()
+
+      // An open message is handed over with no contract; status({done:true}) then baselines it.
+      expect(sendSessionMessage(db, { id: msg(7), session: copilot.session, text: 'Run the tests.' }).ok).toBe(true)
+      const delivered = await copilot.call('pending')
+      expect(delivered.messages.map((m: { id: string }) => m.id)).toEqual([msg(7)])
+      expect(delivered.message_watch).toBeUndefined()
+      const done = await copilot.call('status', { done: true })
+      expect(done.message_watch.shell_command).toMatch(new RegExp(`'${msg(7)}'$`))
+
+      // None while a watcher for this session runs.
+      expect(holdMessageWatch(db, copilot.session, 'running-copy')).toBe(true)
+      expect((await copilot.call('status', { done: true })).message_watch).toBeUndefined()
+    } finally {
+      for (const { client, server } of [copilot, claude]) {
+        await client.close()
+        await server.close()
+      }
+      for (const [signal, before] of listeners) {
+        for (const listener of events.listeners(signal)) {
+          if (!before.includes(listener)) events.removeListener(signal, listener as (...args: unknown[]) => void)
+        }
+      }
+      db.close()
     }
   })
 })

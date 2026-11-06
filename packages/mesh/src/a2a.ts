@@ -11,6 +11,7 @@ import { createServer } from 'node:http'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { maxTokens } from './backend.js'
+import { ConfigError } from './files.js'
 import { parseKind } from './screen.js'
 import type { Kind } from './screen.js'
 import { TASK_MS } from './unslop.js'
@@ -53,7 +54,7 @@ const obj = (v: unknown): Json => (v && typeof v === 'object' && !Array.isArray(
 const estimateMs = (text: string): number => (maxTokens(text) / TOKENS_PER_S) * 1000
 
 export async function startServer(o: ServerOptions): Promise<A2AServer> {
-  if (o.host !== '127.0.0.1') throw new Error('the agent binds 127.0.0.1 only')
+  if (o.host !== '127.0.0.1') throw new ConfigError('the agent binds 127.0.0.1 only')
   const now = o.now ?? Date.now
   const keys = o.tokens.map((t) => Buffer.from(t))
   const tasks = new Map<string, Task>()
@@ -107,7 +108,6 @@ export async function startServer(o: ServerOptions): Promise<A2AServer> {
   function finish(t: Task, result: RunResult | undefined): void {
     if (running === t) running = undefined
     lastActivity = now()
-    if (result) o.budget?.spend(result.ms.model + result.ms.load)
     if (!TERMINAL.has(t.status.state)) {
       if (!result) {
         note(t, 13, 'failed', 'internal')
@@ -123,7 +123,23 @@ export async function startServer(o: ServerOptions): Promise<A2AServer> {
         }
       }
     }
+    if (result) {
+      try {
+        o.budget?.spend(result.ms.model + result.ms.load)
+      } catch {
+        process.stderr.write('agent-inbox-wrap: budget write failed\n')
+      }
+    }
     pump()
+  }
+
+  // the last resort: a task always reaches a final state and frees its slot
+  function fail(t: Task): void {
+    try {
+      if (running === t) running = undefined
+      if (!TERMINAL.has(t.status.state)) setState(t, S.failed, 'failed: internal', { code: 13, status: 'failed', reason: 'internal' })
+      pump()
+    } catch {}
   }
 
   function pump(): void {
@@ -133,14 +149,21 @@ export async function startServer(o: ServerOptions): Promise<A2AServer> {
     t.startedAt = now()
     const queuedMs = t.startedAt - t.submittedAt
     const task: UnslopTask = { text: t.text, kind: t.kind, taskId: t.id, queuedMs, budgetMs: Math.min(TASK_MS, t.timeoutMs - queuedMs), signal: t.abort.signal }
-    o.run(task, (state) => { if (!TERMINAL.has(t.status.state)) setState(t, S.working, state) }).then((r) => finish(t, r), () => finish(t, undefined))
+    o.run(task, (state) => { if (!TERMINAL.has(t.status.state)) setState(t, S.working, state) }).then((r) => finish(t, r), () => finish(t, undefined)).catch(() => fail(t))
   }
 
   function admit(t: Task): void {
     if (running && waiting.length) return refuse(t, 12, 'queue-full')
     const wait = running ? Math.max(0, running.estimateMs - (now() - running.startedAt)) : 0
     if (wait + t.estimateMs > t.timeoutMs) return refuse(t, 12, 'wait-too-long')
-    if (o.budget && !o.budget.take()) return refuse(t, 11, 'daily-budget')
+    let allowed = true
+    try {
+      allowed = o.budget?.take() ?? true
+    } catch {
+      process.stderr.write('agent-inbox-wrap: budget write failed\n')
+      return refuse(t, 11, 'budget-unavailable')
+    }
+    if (!allowed) return refuse(t, 11, 'daily-budget')
     waiting.push(t)
     pump()
   }
@@ -259,7 +282,7 @@ export async function startServer(o: ServerOptions): Promise<A2AServer> {
     handle(req, res).catch(() => { if (!res.headersSent) reply(res, 500, { error: 'internal' }); else res.end() })
   })
   await new Promise<void>((resolve, reject) => {
-    server.once('error', reject)
+    server.once('error', (error: NodeJS.ErrnoException) => reject(new ConfigError(`cannot listen on 127.0.0.1:${o.port} (${error.code ?? 'error'})`)))
     server.listen(o.port, o.host, () => resolve())
   })
   const port = (server.address() as AddressInfo).port
@@ -270,6 +293,7 @@ export async function startServer(o: ServerOptions): Promise<A2AServer> {
     port,
     idleMs: () => (running || waiting.length ? 0 : now() - lastActivity),
     close: async () => {
+      for (const t of waiting) note(t, 13, 'failed', 'agent-stopped')
       waiting.length = 0
       for (const t of tasks.values()) {
         if (TERMINAL.has(t.status.state)) continue

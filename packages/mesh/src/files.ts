@@ -7,6 +7,9 @@ import { closeSync, constants, fchmodSync, fstatSync, mkdirSync, openSync, readF
 import { dirname } from 'node:path'
 
 const FILE_MAX = 64 * 1024
+
+/** An error this package raised with a fixed message: safe to print. Anything else prints as "internal error". */
+export class ConfigError extends Error {}
 const { O_RDONLY, O_WRONLY, O_CREAT, O_TRUNC, O_APPEND, O_NOFOLLOW, O_NONBLOCK } = constants
 
 export function readPrivate(path: string, optional: true): string | undefined
@@ -18,14 +21,14 @@ export function readPrivate(path: string, optional = false): string | undefined 
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code
     if (optional && code === 'ENOENT') return undefined
-    throw new Error(`${path} ${code === 'ELOOP' ? 'is a symlink' : code === 'ENOENT' ? 'is missing' : 'cannot be read'}`)
+    throw new ConfigError(`${path} ${code === 'ELOOP' ? 'is a symlink' : code === 'ENOENT' ? 'is missing' : 'cannot be read'}`)
   }
   try {
     const stat = fstatSync(fd)
-    if (!stat.isFile()) throw new Error(`${path} is not a regular file`)
-    if (process.getuid && stat.uid !== process.getuid()) throw new Error(`${path} is not owned by this user`)
-    if (stat.mode & 0o077) throw new Error(`${path} must be mode 0600`)
-    if (stat.size > FILE_MAX) throw new Error(`${path} is larger than ${FILE_MAX} bytes`)
+    if (!stat.isFile()) throw new ConfigError(`${path} is not a regular file`)
+    if (process.getuid && stat.uid !== process.getuid()) throw new ConfigError(`${path} is not owned by this user`)
+    if (stat.mode & 0o077) throw new ConfigError(`${path} must be mode 0600`)
+    if (stat.size > FILE_MAX) throw new ConfigError(`${path} is larger than ${FILE_MAX} bytes`)
     return readFileSync(fd, 'utf8')
   } finally {
     closeSync(fd)
@@ -36,7 +39,7 @@ function writeFd(path: string, flags: number, text: string): void {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
   const fd = openSync(path, flags | O_WRONLY | O_CREAT | O_NOFOLLOW | O_NONBLOCK, 0o600)
   try {
-    if (!fstatSync(fd).isFile()) throw new Error(`${path} is not a regular file`)
+    if (!fstatSync(fd).isFile()) throw new ConfigError(`${path} is not a regular file`)
     fchmodSync(fd, 0o600)
     writeSync(fd, text)
   } finally {

@@ -124,17 +124,19 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
   Build with `npm ci && npm run build` (Node 24) in `packages/mesh`, then run
   `node packages/mesh/dist/wrap.js --agent openai-compatible --profile unslop` (the
   package's `agent-inbox-wrap` bin). Exit 0 when it stops, 1 when it refuses to start,
-  4 on a usage error. Nothing starts it yet: `meshctl enable --unslop` and the on-demand
+  4 on a usage error; it prints only this package's own fixed messages (`ConfigError`),
+  and anything else as "internal error", so no file content or key reaches its output.
+  Nothing starts it yet: `meshctl enable --unslop` and the on-demand
   spawn are U3a/U3b.
   - **The gate (design §4.5 (e)).** It refuses to start unless `<mesh dir>/mesh.json`
     (the reading rule above) has `agents.unslop.endpoint` equal to
-    `http://127.0.0.1:<port>`; it binds that port on `127.0.0.1` and nothing else
+    `http://127.0.0.1:<port>` (not port 80: clients drop `:80` from `Host`); it binds that port on `127.0.0.1` and nothing else
     (`startServer` refuses any other host). It re-reads `mesh.json` once a minute and
     exits when the key goes or the endpoint changes, and after 30 minutes with no task
     and no authenticated request.
   - **The files it reads,** all under `<mesh dir>/mesh/`, each a regular file (never a
     symlink) owned by the user with no group or other bits: `wrappers/unslop.json` (the
-    profile: `skill` folder, `baseUrl`, `apiKey` as `{ "env": NAME }`, `{ "file": path }`
+    profile: `skill` folder, `baseUrl`, `apiKey` as `{ "env": NAME }`, `{ "file": absolute path }`
     or `{ "command": [absolute path, ...args] }` run without a shell, optional `model`,
     `sampling`, `terms`, `allowEmails`, `customerPaths`; other keys are ignored),
     `tokens/unslop` (at least 32 printable characters) and `unslop-deny.txt` (optional,
@@ -155,7 +157,12 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
     `timeoutMs` (default 280000). Streaming sends status only (`waiting`, `editing`,
     `checking`, `retrying`); the text arrives once, in an artifact sent with `COMPLETED`
     (a text part and a data part with §6.3's report). A task belongs to the token that
-    created it; the last 64 finished tasks stay readable.
+    created it; the last 64 finished tasks stay readable. A stream that disconnects does
+    not cancel its task: the CLI falls back to `GetTask` (§7.3), so the task runs on and
+    only `CancelTask`, the task limit or the agent stopping ends it early. A task always
+    reaches a final state: a budget write that fails refuses the task (`take`) or is
+    reported on stderr (`spend`), and any other failure inside the server ends it
+    `FAILED` "internal". Stopping the agent logs each task that never started.
   - **Queue and budget (design §7.2).** One task runs and one waits; a third, or one whose
     estimated wait plus its own estimate (`max_tokens` at 44 tok/s) exceeds its
     `timeoutMs`, is `REJECTED` as busy (12) with `retryAfterMs`. A task gets at most

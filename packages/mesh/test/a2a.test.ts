@@ -10,8 +10,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { EXTENSION, startServer } from '../src/a2a.js'
-import type { A2AServer } from '../src/a2a.js'
-import { GATE_MS, IDLE_MS, startAgent } from '../src/agent.js'
+import type { A2AServer, RunResult, ServerOptions } from '../src/a2a.js'
+import { GATE_MS, IDLE_MS, main, startAgent } from '../src/agent.js'
 import type { Agent, AgentOptions } from '../src/agent.js'
 import { maxTokens } from '../src/backend.js'
 import { localDate } from '../src/files.js'
@@ -150,6 +150,16 @@ const settled = async (p: Promise<unknown>): Promise<boolean> => Promise.race([p
 const logLines = (dir: string): string => {
   const logs = join(dir, 'mesh', 'logs')
   return readdirSync(logs).map((f) => readFileSync(join(logs, f), 'utf8')).join('')
+}
+
+const result = (): RunResult => ({ code: 0, status: 'rewritten', text: 'edited', rulesSha256: '', model: 'm', attempts: 1, hard: {}, warnings: [], ms: { queued: 0, load: 0, model: 5, check: 0 } })
+async function server(extra: Partial<ServerOptions>): Promise<A2AServer> {
+  const s = await startServer({
+    host: '127.0.0.1', port: 0, tokens: [TOKEN], version: '0', rules: () => ({ rulesSha256: '', bytes: 0, loadedAt: '' }),
+    run: (_task, onState) => { onState('editing'); return new Promise(() => {}) }, ...extra,
+  })
+  stops.push(() => s.close())
+  return s
 }
 
 describe('auth, Host, Origin and the card', () => {
@@ -307,12 +317,46 @@ describe('queue and budget', () => {
   })
 })
 
+describe('failures inside the server', () => {
+  it('a budget write that throws never leaves a task unfinished or rejects unhandled', async () => {
+    const takeFails = await server({ budget: { take: () => { throw new Error('ENOSPC') }, spend: () => {} } })
+    expect((await rpc(takeFails.port, 'SendMessage', message())).body.result.task.status.message.parts[1].data).toMatchObject({ code: 11, reason: 'budget-unavailable' })
+
+    let calls = 0
+    const spendFails = await server({ budget: { take: () => true, spend: () => { throw new Error('ENOSPC') } }, run: async () => {
+      calls++
+      const r = result()
+      // the second task's result throws when read: the task still ends FAILED
+      if (calls === 2) Object.defineProperty(r, 'warnings', { enumerable: true, get: () => { throw new Error('boom') } })
+      return r
+    } })
+    const [a, b, c] = await Promise.all([1, 2, 3].map(() => rpc(spendFails.port, 'SendMessage', message())))
+    expect(a!.body.result.task.status.state).toBe('TASK_STATE_COMPLETED')
+    expect(b!.body.result.task.status).toMatchObject({ state: 'TASK_STATE_FAILED', message: { parts: [{ text: 'failed: internal' }, {}] } })
+    expect(c!.body.result.task.status.state).toBe('TASK_STATE_COMPLETED')
+  })
+
+  it('logs a never-started task once when the agent stops', async () => {
+    const { dir, port } = await meshHome()
+    const a = await agent(dir)
+    hold = deferred()
+    await rpc(port, 'SendMessage', message(INPUT, {}, immediate))
+    await until(() => seen.length === 1)
+    const waiting = await rpc(port, 'SendMessage', message(INPUT, {}, immediate))
+    await a.stop('signal')
+    await until(() => logLines(dir).trim().split('\n').length === 2)
+    const lines = logLines(dir).trim().split('\n').map((l) => JSON.parse(l))
+    expect(lines.find((l) => l.taskId === waiting.body.result.task.id)).toMatchObject({ code: 13, status: 'failed', reason: 'agent-stopped' })
+    expect(lines.find((l) => l.taskId !== waiting.body.result.task.id)).toMatchObject({ code: 13, reason: 'cancelled' })
+  })
+})
+
 describe('start, the mesh.json gate and idle exit', () => {
   it('refuses to bind anything but 127.0.0.1, and a non-loopback endpoint', async () => {
     await expect(startServer({ host: '0.0.0.0', port: 0, tokens: [TOKEN], version: '0', rules: () => ({ rulesSha256: '', bytes: 0, loadedAt: '' }), run: () => new Promise(() => {}) }))
       .rejects.toThrow(/127\.0\.0\.1 only/)
     const { dir, port } = await meshHome()
-    for (const endpoint of [`http://0.0.0.0:${port}`, `http://localhost:${port}`, `https://127.0.0.1:${port}`, `http://127.0.0.1:${port}/x`]) {
+    for (const endpoint of ['http://127.0.0.1:80', `http://0.0.0.0:${port}`, `http://localhost:${port}`, `https://127.0.0.1:${port}`, `http://127.0.0.1:${port}/x`]) {
       meshJson(dir, endpoint)
       await expect(agent(dir)).rejects.toThrow(/must be http:\/\/127\.0\.0\.1:<port>/)
     }
@@ -372,6 +416,17 @@ describe('start, the mesh.json gate and idle exit', () => {
     privateFile(token, TOKEN)
     privateFile(join(dir, 'mesh', 'unslop-deny.txt'), 'Acme\n', 0o640)
     await expect(agent(dir)).rejects.toThrow(/unslop-deny\.txt must be mode 0600/)
+  })
+
+  it('never prints an API key from a malformed profile, and wants an absolute key file', async () => {
+    const { dir } = await meshHome({ apiKey: 'sk-live-SECRETKEY123' })
+    let stderr = ''
+    expect(await main(['--agent', 'openai-compatible', '--profile', 'unslop'], { AGENT_INBOX_MESH_DIR: dir }, (t) => { stderr += t })).toBe(1)
+    expect(stderr).toMatch(/apiKey must be/)
+    expect(stderr).not.toContain('SECRETKEY')
+
+    const relative = await meshHome({ apiKey: { file: 'keys/box' } })
+    await expect(agent(relative.dir)).rejects.toThrow(/apiKey must be .*file: absolute path/)
   })
 
   it('runs an API key command with a fixed argv and no shell', async () => {

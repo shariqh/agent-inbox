@@ -2,9 +2,10 @@
 paths:
   - "src/mesh-config.ts"
   - "src/meshctl.ts"
+  - "src/unslop-client.ts"
   - "public/agents-home.js"
   - "packages/mesh/src/*.ts"
-applyTo: "src/mesh-config.ts,src/meshctl.ts,public/agents-home.js,packages/mesh/src/*.ts"
+applyTo: "src/mesh-config.ts,src/meshctl.ts,src/unslop-client.ts,public/agents-home.js,packages/mesh/src/*.ts"
 ---
 
 # Agent mesh (M1)
@@ -56,7 +57,8 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   longer controls it", and `status` prints the same line before the file's state. A later
   phase that adds a piece brings back an `enable` writer (temp file, atomic rename) with
   it. `src/mesh-config.ts` holds the one reading rule (a regular file ≤ 64 KiB, a JSON
-  object, `schema` 1; anything else is off). Both are Node core only and never import
+  object, `schema` 1; anything else is off) and `readMesh()`, which meshctl and its unslop
+  client (`src/unslop-client.ts`) both use. All three are Node core only and never import
   `store.ts`, and no mesh module may enter the stdio MCP graph (`test/prstate.test.ts`).
   The viewer reads nothing of the mesh today: no stat watch, no `createViewer` option, no
   `/api/version` key. The phase that first needs the viewer to know (M3) restores a watch
@@ -129,8 +131,9 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
   package's `agent-inbox-wrap` bin). Exit 0 when it stops, 1 when it refuses to start,
   4 on a usage error; it prints only this package's own fixed messages (`ConfigError`),
   and anything else as "internal error", so no file content or key reaches its output.
-  `meshctl enable --unslop` (U3a, below) writes its switch and files; nothing starts
-  it yet: the on-demand spawn is U3b.
+  `meshctl enable --unslop` (U3a, below) writes its switch and files, and
+  `meshctl unslop` (U3b, below) starts it on demand; nothing else starts it (not
+  install, build, Electron startup or Setup).
   - **The gate (design §4.5 (e)).** It refuses to start unless `<mesh dir>/mesh.json`
     (the reading rule above) has `agents.unslop.endpoint` equal to
     `http://127.0.0.1:<port>` (not port 80: clients drop `:80` from `Host`); it binds that port on `127.0.0.1` and nothing else
@@ -197,7 +200,7 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
      the absolute paths of that Node binary and the built `meshctl.js` (`dist/meshctl.js`, so run
      `npm run build` at the root first). When either is gone it discards piped input
      (never a terminal), prints "run meshctl enable --unslop again" and exits 14;
-     otherwise it runs `meshctl unslop`, which answers "not built yet" (14) until U3b;
+     otherwise it runs `meshctl unslop` (below);
   4. `agents.unslop` = `{ "endpoint": "http://127.0.0.1:<port>", "profile": "unslop" }` in
      `mesh.json` (created with `schema` 1 when absent), every other key kept, written
      through a temporary file and a rename after a timestamped backup.
@@ -212,6 +215,54 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
   was, but backups and the profile), the modes, the refusals, the stale shim, and the
   template run through the agent itself; off test (e) is the agent's own gate, tested in
   `packages/mesh/test/a2a.test.ts`.
+- **Calling unslop: `meshctl unslop` (U3b, unslop design §4.3-§4.5, §6.3, §7.3).** The
+  shim runs `meshctl unslop --kind <kind> [--report <file>] [--timeout <s>] [--in <file>] < draft`;
+  the client is `src/unslop-client.ts`, Node core plus `mesh-config.ts`, imported only by
+  meshctl (its entry awaits it, since `runMeshctl` stays synchronous). User page with the
+  callers' `SKILL.md` text: [`docs/unslop.md`](../unslop.md). In order:
+  1. **Locally, before the switch is read:** arguments (else 4); the kind (`pr`, `issue`,
+     `release-notes`, `docs`, `blog`, else 11); a `--report` path that is a symlink or not a
+     regular file (4); a terminal on stdin (4: it never reads `/dev/tty` and never prompts,
+     because an assistant's shell may have a pseudo-terminal); the draft, at most 12 KiB of
+     valid UTF-8 and not blank (else 11).
+  2. **Off (§4.5 (f)):** no `agents.unslop` by the reading rule, or an endpoint other than
+     `http://127.0.0.1:<port>`, exits 14 before any spawn or connection.
+  3. **Discovery (§4.4):** `GET /.well-known/agent-card.json` with the exact `Host`. When
+     the connection is refused it starts the profile's `start` argv (no shell; only from a
+     user-owned 0600 regular profile; detached, unref'd, cwd and `AGENT_INBOX_MESH_DIR` the
+     mesh dir, stdout and stderr appended to `<mesh dir>/mesh/logs/unslop-agent.log`, 0600)
+     and polls the card for up to 10 s, giving up early once the child has exited and the
+     card still does not answer (a second caller's agent that lost the port race exits, and
+     the first one's card answers). Anything else answering, or a card without the `unslop`
+     skill, a JSON-RPC interface with `protocolVersion` `1.0`, or the
+     `urn:agent-inbox:ext:unslop:v1` extension with `api: 1`, is 14 with "rebuild
+     packages/mesh". A missing or non-private token is 14; so is HTTP 401 or 403.
+  4. **The call (§7.3):** one `SendStreamingMessage` with the kind and `timeoutMs` (the
+     `--timeout`, default 280 s, at most 600) in the extension's metadata. Status texts go
+     to stderr as `unslop: <state>`. If the stream ends before a final state it says so and
+     calls `GetTask` every 5 s (`pollMs` in tests) until a final state, a JSON-RPC error,
+     three failed polls in a row or the deadline. At the deadline it sends `CancelTask`
+     (best effort, 2 s) and exits 13. No push notifications.
+  5. **The result (§6.3):** `COMPLETED` with code 0 prints the artifact's text to stdout
+     and a one-line summary (status, model, attempts, the first 12 hex of `rulesSha256`,
+     each warning) to stderr; code 10 is "kept the original" (10); `REJECTED` is 12 when
+     its data says busy (with "try again in about N s") and 11 otherwise (the refusal and
+     screen classes, never a value); `FAILED`, `CANCELED`, an unknown state or a lost agent
+     is 13. `--report` writes the final data part (the §6.3 JSON: `code`, `status`,
+     `reason`, `screen`, `failures`, `rulesSha256`, `model`, `attempts`, `hard`, `warnings`,
+     `ms`, `skillStale`) through `O_NOFOLLOW`, mode 0600, for every final state that has
+     one; a report it cannot write makes the exit 13. **On every exit but 0 stdout is
+     empty**, and callers edit the original in-session without retrying.
+  `test/unslop-client.test.ts` holds (f) (a counting listener and a spawn spy over a
+  missing file, no key, a newer schema, a symlink and non-loopback endpoints), the card
+  check, the terminal rule (an `isTTY` stdin, and the real CLI under `script`), and end to
+  end runs against the agent's source (through tsx, so the root suite needs no
+  `packages/mesh` build) and a fake backend: the on-demand start and its reuse, 0 with a
+  0600 report, 10, 11, 12, a stream cut by a proxy that falls back to `GetTask`, and a
+  deadline whose `CancelTask` aborts the backend call. Off tests (a)-(d): the import graph
+  test lists the client, `test/mesh.test.ts` pins its imports and checks that no viewer,
+  `public/` or `electron/` file names it, and the dependency and snapshot-trigger fixtures
+  are unchanged.
 - **One `mesh.json` rule, held twice.** The package cannot import `src/mesh-config.ts`,
   so it carries a reader with the same rule and the same `meshDir()` order. The cases in
   `test/fixtures/mesh-json/cases.json` run in both suites: `test/mesh-json-parity.test.ts`

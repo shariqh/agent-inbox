@@ -703,9 +703,10 @@ describe('the poller runs in the viewer process only', () => {
     expect(read('src/viewer.ts')).not.toMatch(/startGithubPoller|startPrPoller|issue-poller/)
   })
 
-  // Mesh M1 (#397, design §2.4a): the stdio server reaches no mesh module.
+  // Mesh M1 (#397, design §2.4a): the stdio server reaches no mesh module,
+  // including meshctl's unslop client (#483, unslop design §4.5 a).
   it('no mesh module enters the stdio MCP import graph', () => {
-    const MESH = ['src/mesh-config.ts', 'src/meshctl.ts', 'public/agents-home.js']
+    const MESH = ['src/mesh-config.ts', 'src/meshctl.ts', 'src/unslop-client.ts', 'public/agents-home.js']
     for (const file of MESH) expect(STDIO_GRAPH, `${file} is in the stdio graph`).not.toContain(file)
     for (const file of STDIO_GRAPH) {
       const reached = specifiers(read(file)).map((spec) => resolveSpec(file, spec))

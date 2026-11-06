@@ -269,7 +269,8 @@ describe('meshctl enable/disable --unslop (#483, unslop design §4.2-§4.5)', ()
     expect(left).toEqual({ mesh: 'dir 700', 'mesh/logs': expect.stringMatching(/^dir /), 'mesh/logs/other.log': expect.stringMatching(/ x$/) })
   })
 
-  it('a stale shim reads and discards its input and exits 14; meshctl unslop is not built yet (14)', () => {
+  // the client itself (U3b) is tested in test/unslop-client.test.ts
+  it('a stale shim reads and discards its input and exits 14', () => {
     // the shim names a Node binary and a meshctl.js that later go away (a new runtime, a moved checkout)
     for (const gone of ['node', 'script'] as const) {
       const t = setup()
@@ -285,9 +286,6 @@ describe('meshctl enable/disable --unslop (#483, unslop design §4.2-§4.5)', ()
       expect(r.stdout).toBe('')
       expect(r.stderr).toContain('run meshctl enable --unslop again')
     }
-    const r = ctl(['unslop', '--kind', 'pr'], scratchDir('unslop-mesh-'))
-    expect([r.code, r.out]).toEqual([14, ''])
-    expect(r.err).toContain('not built yet')
   })
 
   // (e), the agent's own gate, is tested in packages/mesh/test/a2a.test.ts; here the
@@ -307,7 +305,7 @@ describe('meshctl enable/disable --unslop (#483, unslop design §4.2-§4.5)', ()
 })
 
 describe('no new dependency (design §2.3, §2.4c)', () => {
-  const MESH_FILES = ['src/mesh-config.ts', 'src/meshctl.ts', 'public/agents-home.js']
+  const MESH_FILES = ['src/mesh-config.ts', 'src/meshctl.ts', 'src/unslop-client.ts', 'public/agents-home.js']
   const SPECIFIERS = /(?:\bfrom\s*|\bimport\s*\(?\s*|\brequire\s*\(\s*)(['"])([^'"\n]+)\1/g
   // comment lines name modules in prose; only code imports count
   const code = (file: string): string => readFileSync(join(REPO, file), 'utf8').split('\n')
@@ -320,9 +318,23 @@ describe('no new dependency (design §2.3, §2.4c)', () => {
       for (const spec of specs) expect(spec, `${file} imports ${spec}`).toMatch(/^(node:|\.\/)/)
       expect(specs, `${file} must not open the hub`).not.toContain('./store.js')
     }
-    // meshctl and the config module are Node core plus each other only
-    const ctlSpecs = [...code('src/meshctl.ts').matchAll(SPECIFIERS)].map((m) => m[2]!)
-    expect(ctlSpecs.filter((spec) => !spec.startsWith('node:'))).toEqual(['./mesh-config.js', './mesh-config.js'])
+    // meshctl, its unslop client and the config module are Node core plus each other only
+    const local = (file: string) => [...code(file).matchAll(SPECIFIERS)].map((m) => m[2]!).filter((spec) => !spec.startsWith('node:'))
+    expect(local('src/meshctl.ts')).toEqual(['./mesh-config.js', './mesh-config.js', './unslop-client.js'])
+    expect(local('src/unslop-client.ts')).toEqual(['./mesh-config.js'])
+    expect(local('src/mesh-config.ts')).toEqual([])
+  })
+
+  // unslop design §4.5 (b): the client is a meshctl subcommand; nothing the viewer,
+  // the app frontend or Electron loads names it
+  it('no viewer, frontend or Electron file reaches the unslop client', () => {
+    const files = [
+      ...readdirSync(join(REPO, 'src')).filter((f) => f.startsWith('viewer')).map((f) => `src/${f}`),
+      ...readdirSync(join(REPO, 'public')).filter((f) => f.endsWith('.js')).map((f) => `public/${f}`),
+      ...readdirSync(join(REPO, 'electron')).filter((f) => /\.c?js$/.test(f)).map((f) => `electron/${f}`),
+    ]
+    expect(files.length).toBeGreaterThan(10)
+    for (const file of files) expect(readFileSync(join(REPO, file), 'utf8'), file).not.toMatch(/unslop-client|meshctl/)
   })
 
   // The app's whole dependency set, pinned by name: package.json's dependencies and

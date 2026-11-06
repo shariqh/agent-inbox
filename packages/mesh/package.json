@@ -8,7 +8,11 @@
   "engines": {
     "node": ">=24"
   },
+  "bin": {
+    "agent-inbox-wrap": "dist/wrap.js"
+  },
   "scripts": {
+    "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },

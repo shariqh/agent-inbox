@@ -3,12 +3,13 @@ paths:
   - "src/mesh-config.ts"
   - "src/meshctl.ts"
   - "public/agents-home.js"
-applyTo: "src/mesh-config.ts,src/meshctl.ts,public/agents-home.js"
+  - "packages/mesh/src/*.ts"
+applyTo: "src/mesh-config.ts,src/meshctl.ts,public/agents-home.js,packages/mesh/src/*.ts"
 ---
 
 # Agent mesh (M1)
 
-The opt-in mesh: `mesh.json` and `meshctl` (#397); and the Agents view, which began as mesh M1 and is always on since #454.
+The opt-in mesh: `mesh.json` and `meshctl` (#397); the Agents view, which began as mesh M1 and is always on since #454; and `packages/mesh`, where the mesh's agents are built (#483).
 
 Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly verbatim. Claude Code and Copilot CLI load this file automatically when they read or edit a file matching the `paths`/`applyTo` globs above (through the symlinks in `.claude/rules/` and `.github/instructions/`); anyone else should read it before changing those files.
 
@@ -77,3 +78,30 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   fails `test/mesh.test.ts`. A deliberate dependency change outside the mesh refreshes the
   pin with
   `AGENT_INBOX_UPDATE_DEPENDENCY_FIXTURE=1 npx vitest run test/mesh.test.ts -t "dependency set"`.
+
+## packages/mesh (M2a, #483)
+
+`packages/mesh/` holds the mesh pieces that need dependencies the app does not ship:
+first the unslop agent (design:
+[`docs/superpowers/specs/2026-11-06-unslop-a2a-agent-design.md`](../../docs/superpowers/specs/2026-11-06-unslop-a2a-agent-design.md)),
+later the wrappers, the bridge and the bench (mesh design §2.3).
+
+- **It never ships.** It is a separate, non-workspace package with its own
+  `package.json` and `package-lock.json`; the root has no `workspaces` key, so its graph
+  never reaches the root lockfile or `test/fixtures/app-dependencies.txt`. The root
+  `tsconfig.json`, `vitest.config.ts` and `test/dead-exports.test.ts` do not reach it, no
+  staging, pruning or packaging script copies it, and no release workflow builds it. The
+  only workflow that does is the `mesh-package` job in `.github/workflows/ci.yml`
+  (ubuntu, Node 24: `npm ci`, typecheck, tests).
+- **U1 (pure modules, no network, no writes):** `fidelity.ts` (§6.1-§6.2: protected
+  values must survive in order and beside the same words; negations and conditions are
+  hard on any drop, and an added one warns), `screen.ts` (§5: refusal classes named
+  without the matched value, and the `--kind` list), `rules.ts` (§3.2: `rules.md` and its
+  SHA-256, re-read on a size or mtime change, the last good rules kept and marked stale)
+  and `mesh-config.ts`.
+- **One `mesh.json` rule, held twice.** The package cannot import `src/mesh-config.ts`,
+  so it carries a reader with the same rule and the same `meshDir()` order. The cases in
+  `test/fixtures/mesh-json/cases.json` run in both suites: `test/mesh-json-parity.test.ts`
+  (through `meshctl status`) and `packages/mesh/test/mesh-config.test.ts`. Change the rule
+  in both places and add a case there.
+- **Run its tests:** `cd packages/mesh && fnm exec --using=24 npm ci && npm run typecheck && npm test`.

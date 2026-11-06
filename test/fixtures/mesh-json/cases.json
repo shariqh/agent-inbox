@@ -1,0 +1,27 @@
+{
+  "about": "Shared mesh.json verdicts (#483, unslop design §4.2). Run by test/mesh-json-parity.test.ts against src/mesh-config.ts (through meshctl status) and by packages/mesh/test/mesh-config.test.ts against the package's reader. A verdict is present, missing, or a refusal reason from MESH_REASONS. A case names a fixture file, or `pad` (a schema-1 object padded to exactly that many bytes), or a `kind`: symlink (to schema-1.json), directory or missing.",
+  "dirs": [
+    { "env": { "AGENT_INBOX_MESH_DIR": "/m", "AGENT_INBOX_DB": "/d/inbox.db" }, "home": "/h", "dir": "/m" },
+    { "env": { "AGENT_INBOX_MESH_DIR": "relative", "AGENT_INBOX_DB": "/d/inbox.db" }, "home": "/h", "dir": "/d" },
+    { "env": { "AGENT_INBOX_DB": "/d/sub/inbox.db" }, "home": "/h", "dir": "/d/sub" },
+    { "env": {}, "home": "/h", "dir": "/h/.agent-inbox" }
+  ],
+  "files": [
+    { "name": "schema 1", "file": "schema-1.json", "verdict": "present" },
+    { "name": "agents.unslop and unknown keys", "file": "agents-unslop.json", "verdict": "present" },
+    { "name": "a newer schema is off", "file": "newer-schema.json", "verdict": "newer-schema" },
+    { "name": "malformed JSON is off", "file": "malformed.json", "verdict": "not-json" },
+    { "name": "an empty file is off", "file": "empty.json", "verdict": "not-json" },
+    { "name": "an array is off", "file": "array.json", "verdict": "not-object" },
+    { "name": "null is off", "file": "null.json", "verdict": "not-object" },
+    { "name": "no schema is off", "file": "no-schema.json", "verdict": "no-schema" },
+    { "name": "schema 0 is off", "file": "schema-0.json", "verdict": "no-schema" },
+    { "name": "a string schema is off", "file": "schema-string.json", "verdict": "no-schema" },
+    { "name": "a fractional schema is off", "file": "schema-fraction.json", "verdict": "no-schema" },
+    { "name": "exactly 64 KiB is read", "pad": 65536, "verdict": "present" },
+    { "name": "one byte over 64 KiB is off", "pad": 65537, "verdict": "too-large" },
+    { "name": "a symlink is off", "kind": "symlink", "verdict": "not-regular" },
+    { "name": "a folder is off", "kind": "directory", "verdict": "not-regular" },
+    { "name": "no file is off", "kind": "missing", "verdict": "missing" }
+  ]
+}

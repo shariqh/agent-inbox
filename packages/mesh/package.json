@@ -1,0 +1,20 @@
+{
+  "name": "agent-inbox-mesh",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Agent mesh pieces (unslop agent first, #483). A separate, non-workspace package: the app's release pipeline never builds or ships it.",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.6.0",
+    "vitest": "^4.1.12"
+  }
+}

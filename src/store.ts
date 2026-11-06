@@ -3680,23 +3680,26 @@ export function listActivity(db: Database.Database, opts: { staleMinutes?: numbe
   const cold = claimCutoff(now)
   // #411: the lease a message-capable Claude hook watch holds for this
   // session's Claude Code process (`m1:` marks it; older hooks claim the same
-  // key without it). The key is unique, so the join adds no row.
+  // key without it). #477: or a Copilot message watcher's lease for this
+  // session. Each key is unique, so the joins add no row.
   const rows = db
     .prepare(`SELECT a.session, a.project, a.stream, a.agent, a.doing, a.last_doing, a.detail, a.children, a.idle, a.started_at, a.updated_at,
                      a.last_call_at, a.server_version, a.server_source, a.call_minute, a.call_counts, a.receives_messages, a.push_wake,
                      a.host_turn_at, a.host_idle_at, a.host_tool_at,
-                     (w.claim_key IS NOT NULL) AS wakes, (d.claim_key IS NOT NULL) AS driven,
+                     (w.claim_key IS NOT NULL OR c.claim_key IS NOT NULL) AS wakes, (d.claim_key IS NOT NULL) AS driven,
                      substr(d.token, 1, 36) AS driven_launch, t.token AS turn_token, t.claimed_at AS turn_since
               FROM activity a
               LEFT JOIN hook_watch_claims w
                 ON a.host_pid IS NOT NULL AND w.claim_key = 'host:' || a.host_pid
                AND substr(w.token, 1, 3) = 'm1:' AND w.claimed_at >= ?
+              LEFT JOIN hook_watch_claims c
+                ON c.claim_key = 'copilot-messages:' || a.session AND c.claimed_at >= ?
               LEFT JOIN hook_watch_claims d
                 ON d.claim_key = 'driven:' || a.session AND d.claimed_at >= ?
               LEFT JOIN hook_watch_claims t
                 ON d.claim_key IS NOT NULL AND t.claim_key = 'driver-turn:' || substr(d.token, 1, 36)
               WHERE a.ended_at IS NULL AND a.updated_at >= ?`)
-    .all(new Date(now - WAKE_LEASE_MS).toISOString(), freshLeaseCutoff(now), cutoff) as Array<Omit<Activity, 'children' | 'idle' | 'receives_messages' | 'push_wake' | 'wakes' | 'driven' | 'driven_launch' | 'driven_turn' | 'host_turn_at' | 'host_idle_at' | 'host_tool_at'> & {
+    .all(new Date(now - WAKE_LEASE_MS).toISOString(), freshLeaseCutoff(now), freshLeaseCutoff(now), cutoff) as Array<Omit<Activity, 'children' | 'idle' | 'receives_messages' | 'push_wake' | 'wakes' | 'driven' | 'driven_launch' | 'driven_turn' | 'host_turn_at' | 'host_idle_at' | 'host_tool_at'> & {
       children: string | null; idle: number; call_minute: number | null; call_counts: string | null; receives_messages: number | null; push_wake: number | null
       host_turn_at: string | null; host_idle_at: string | null; host_tool_at: string | null
       wakes: number; driven: number; driven_launch: string | null; turn_token: string | null; turn_since: string | null
@@ -3798,6 +3801,15 @@ export function liveSessionServers(db: Database.Database, sessions: readonly str
                       ORDER BY session ASC`).all(JSON.stringify(sessions)) as Array<{ session: string; server_pid: number | null }>
 }
 
+// Issue #477 — this session's server pid while its presence is live: not ended,
+// and ticked within the staleness window, so a SIGKILLed server whose pid was
+// reused still reads as gone. Undefined once it is not.
+export function liveSessionServer(db: Database.Database, session: string): { server_pid: number | null } | undefined {
+  const cutoff = new Date(Date.now() - PRESENCE_STALE_MINUTES * 60000).toISOString()
+  return db.prepare(`SELECT server_pid FROM activity WHERE session = ? AND ended_at IS NULL AND updated_at >= ?`)
+    .get(session, cutoff) as { server_pid: number | null } | undefined
+}
+
 // The open questions these MCP sessions raised, whatever project each was
 // filed under, except a reserved one (#412): a driver files its approval
 // alerts under the driven session's id, and no hook may wake on them.
@@ -3833,6 +3845,30 @@ export function holdsHookWatch(db: Database.Database, key: string, token: string
 
 export function releaseHookWatch(db: Database.Database, key: string, token: string): void {
   db.prepare(`DELETE FROM hook_watch_claims WHERE claim_key = ? AND token = ?`).run(key, token)
+}
+
+// Issue #477 — a Copilot CLI session's message watcher holds
+// `copilot-messages:<session>`, one per MCP session. The first live copy keeps
+// it and refreshes it every 30 s; a second copy is refused, and a killed
+// watcher's lease goes stale after 90 s. One conditioned statement, so two
+// launches cannot both take it.
+const messageWatchKey = (session: string): string => `copilot-messages:${session}`
+
+export function holdMessageWatch(db: Database.Database, session: string, token: string): boolean {
+  const nowMs = Date.now()
+  return db.prepare(`INSERT INTO hook_watch_claims (claim_key, token, claimed_at) VALUES (?, ?, ?)
+                     ON CONFLICT(claim_key) DO UPDATE SET token = excluded.token, claimed_at = excluded.claimed_at
+                     WHERE hook_watch_claims.token = excluded.token OR hook_watch_claims.claimed_at < ?`)
+    .run(messageWatchKey(session), token, new Date(nowMs).toISOString(), freshLeaseCutoff(nowMs)).changes === 1
+}
+
+export function messageWatchRunning(db: Database.Database, session: string): boolean {
+  return db.prepare(`SELECT 1 FROM hook_watch_claims WHERE claim_key = ? AND claimed_at >= ?`)
+    .get(messageWatchKey(session), freshLeaseCutoff(Date.now())) !== undefined
+}
+
+export function releaseMessageWatch(db: Database.Database, session: string, token: string): void {
+  releaseHookWatch(db, messageWatchKey(session), token)
 }
 
 // ── issue #412: the leases of a driver and the sessions it drives ───────────

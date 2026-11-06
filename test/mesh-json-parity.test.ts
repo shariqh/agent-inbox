@@ -31,7 +31,7 @@ function verdict(dir: string): string {
   let out = ''
   runMeshctl(['status'], { env: { AGENT_INBOX_MESH_DIR: dir }, home: '/nonexistent-home', out: (t) => { out += t } })
   if (out.includes('Mesh: off. No ')) return 'missing'
-  if (out.includes('turns on no piece')) return 'present'
+  if (out.includes('turns on no piece') || out.includes('turns on unslop')) return 'present'
   const found = Object.entries(MESH_REASONS).filter(([, words]) => out.includes(words))
   return found.length === 1 ? found[0]![0] : `unrecognised: ${out}`
 }

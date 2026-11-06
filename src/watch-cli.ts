@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { openDb } from './store.js'
-import { WATCH_STOPPED_EXIT, waitForBoardResponse, waitForQuestionResponse } from './watch.js'
+import { MESSAGE_WATCH_ENDED_EXIT, WATCH_STOPPED_EXIT, waitForBoardResponse, waitForQuestionResponse, waitForSessionMessage } from './watch.js'
 
 function boundedEnv(name: string, fallback: number | undefined, min: number, max: number): number | undefined {
   const raw = process.env[name]
@@ -9,7 +9,46 @@ function boundedEnv(name: string, fallback: number | undefined, min: number, max
   return Math.min(max, Math.max(min, parsed))
 }
 
+const USAGE = 'usage: agent-inbox-watch <item-id> <database-path>\n'
+  + '       agent-inbox-watch --row <row-id> <action-version> <database-path>\n'
+  + '       agent-inbox-watch --messages <session-id> <database-path> [<seen-message-id>...]\n'
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+
 const args = process.argv.slice(2)
+const options = {
+  pollMs: boundedEnv('AGENT_INBOX_WATCH_POLL_MS', 1_000, 50, 60_000),
+  // Unset: the wait backs off from the ask's own age (issue #217).
+  timeoutMs: boundedEnv('AGENT_INBOX_WATCH_TIMEOUT_MS', undefined, 1_000, 24 * 60 * 60_000),
+}
+
+// Issue #477 — wait for a message to this MCP session. Never prints its text.
+if (args[0] === '--messages') {
+  const [, session, dbPath, ...seen] = args
+  if (!session || !UUID.test(session) || !dbPath || !seen.every((id) => UUID.test(id))) {
+    process.stderr.write(USAGE)
+    process.exit(64)
+  }
+  const db = openDb(dbPath)
+  try {
+    const result = await waitForSessionMessage(db, session, { ...options, seen })
+    if (result === 'message') {
+      process.stdout.write('Agent Inbox message ready. Call pending().\n')
+    } else if (result === 'timeout') {
+      process.stderr.write('Agent Inbox message watch timed out.\n')
+      process.exitCode = 124
+    } else if (result === 'running') {
+      process.stdout.write('Agent Inbox: a message watch for this session is already running; do not re-run this one.\n')
+      process.exitCode = WATCH_STOPPED_EXIT
+    } else {
+      process.stdout.write('Agent Inbox: this session\'s server has ended. Call pending() once and launch any message_watch it returns.\n')
+      process.exitCode = MESSAGE_WATCH_ENDED_EXIT
+    }
+  } finally {
+    db.close()
+  }
+  process.exit()
+}
+
 const rowMode = args[0] === '--row'
 const id = args[rowMode ? 1 : 0]
 const versionText = args[2]
@@ -19,17 +58,12 @@ if (
   args.length !== (rowMode ? 4 : 2) || !id || !dbPath
   || (rowMode && (!/^[1-9]\d*$/.test(versionText ?? '') || !Number.isSafeInteger(actionVersion)))
 ) {
-  process.stderr.write('usage: agent-inbox-watch <item-id> <database-path>\n       agent-inbox-watch --row <row-id> <action-version> <database-path>\n')
+  process.stderr.write(USAGE)
   process.exit(64)
 }
 
 const db = openDb(dbPath)
 try {
-  const options = {
-    pollMs: boundedEnv('AGENT_INBOX_WATCH_POLL_MS', 1_000, 50, 60_000),
-    // Unset: the wait backs off from the ask's own age (issue #217).
-    timeoutMs: boundedEnv('AGENT_INBOX_WATCH_TIMEOUT_MS', undefined, 1_000, 24 * 60 * 60_000),
-  }
   const result = actionVersion === undefined
     ? await waitForQuestionResponse(db, id, options)
     : await waitForBoardResponse(db, id, actionVersion, options)

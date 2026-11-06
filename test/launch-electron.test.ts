@@ -406,6 +406,15 @@ describe('the launch controller', () => {
     const edits = controllerModule.confirmation({ project: 'alpha', folder: '/w', mode: 'edits', budgets: { activeMs: 90_000, toolCalls: 3 }, prompt: 'x' })
     expect(edits.detail).toContain('Mode: Edits in the worktree. File edits inside the session’s folder (its worktree, when it has one) run without asking, never a .git folder or file;')
     expect(controllerModule.launchRequest({ ...REQUEST, mode: 'edits' })).toMatchObject({ mode: 'edits' })
+    // #479: a budget is null (no limit) or within the spec's bounds; never left out or 0
+    const limits = (budgets: { activeMs: number | null; toolCalls: number | null }) => controllerModule.confirmation({ project: 'alpha', folder: '/w', mode: 'ask', budgets, prompt: 'x' }).detail.split('\n').find((line: string) => line.startsWith('Budgets:'))
+    expect(limits({ activeMs: null, toolCalls: null })).toBe('Budgets: no limit on active turn time or tool calls.')
+    expect(limits({ activeMs: 7_200_000, toolCalls: null })).toBe('Budgets: up to 2 h of active turn time and no limit on tool calls.')
+    expect(limits({ activeMs: null, toolCalls: 500 })).toBe('Budgets: no limit on active turn time and up to 500 tool calls.')
+    expect(controllerModule.launchRequest({ ...REQUEST, budgets: { activeMs: null, toolCalls: null } })).toMatchObject({ budgets: { activeMs: null, toolCalls: null } })
+    for (const budgets of [{ activeMs: 7_200_000 }, { activeMs: 0, toolCalls: null }, { activeMs: null, toolCalls: 2001 }, { activeMs: undefined, toolCalls: null }]) {
+      expect(controllerModule.launchRequest({ ...REQUEST, budgets }), JSON.stringify(budgets)).toBeNull()
+    }
     const page = await import('../public/launches.js')
     for (const mode of page.LAUNCH_MODES) expect(controllerModule.MODES[mode.id], mode.id).toEqual({ label: mode.label, copy: mode.copy })
     expect(Object.keys(controllerModule.MODES).sort()).toEqual(page.LAUNCH_MODES.map((m) => m.id).sort())
@@ -676,6 +685,21 @@ describe('the launch controller', () => {
       const before = r.calls.length
       expect(await r.controller.resumeWithBudget({ id: ID, add: ADD })).toMatchObject({ ok: false, error: expect.stringMatching(/is off/) })
       expect(r.calls.slice(before)).toEqual([])
+    })
+
+    it('#479: takes a launch with no limit on the other budget, adds nothing to it, and says so', async () => {
+      const r = rig()
+      r.state.launches[ID] = { ...BUDGET_ENDED, budget_active_ms: null }
+      expect(await r.controller.resumeWithBudget({ id: ID, add: ADD })).toEqual({ ok: false, error: 'It has no active-time limit to add to.' })
+      expect(await r.controller.resumeWithBudget({ id: ID, add: { activeMs: 0, toolCalls: 250 } })).toEqual({ ok: true, launch: ID })
+      expect((r.spawned[0]!.confirmation as { detail: string }).detail.split('\n').slice(2, 6)).toEqual([
+        'Budgets: no limit on active turn time and 500 tool calls.',
+        'Used: 38 min of active turn time and 500 tool calls.',
+        'Add: 0 min and 250 tool calls.',
+        'New budgets: no limit on active turn time and 750 tool calls.',
+      ])
+      r.state.launches[ID] = { ...BUDGET_ENDED, end_reason: 'budget:active_time', active_ms: 7_200_000, budget_tool_calls: null }
+      expect(await r.controller.resumeWithBudget({ id: ID, add: ADD })).toEqual({ ok: false, error: 'It has no tool-call limit to add to.' })
     })
 
     it('shows an agent-set project and mode visibly on one line', () => {
@@ -1018,6 +1042,13 @@ describe('a session in its own worktree (#432)', () => {
         'It can no longer be resumed from Agent Inbox, but copilot --resume can still open it if you know its session id.',
         'Copilot’s own session files, and what the session flagged in the inbox, are left as they are.',
       ])
+      // #479: a launch a budget ended, its other budget with no limit, is resumable too until forgotten
+      const spent = forgetRig({
+        ...ENDED, end_reason: 'budget:tool_calls', stream: 'main', worktree_path: null, branch: null, worktree_removed_at: null, resumable: true,
+        budget_active_ms: null, budget_tool_calls: 500, active_ms: 600_000, tool_calls: 500,
+      })
+      expect(await spent.controller.forget(ID)).toEqual({ ok: true })
+      expect((spent.spawned[0]!.confirmation as { detail: string }).detail).toContain('It can no longer be resumed from Agent Inbox')
       // a session in its folder, resumable or handed off, with hostile text made visible on one line
       const text = controllerModule.forgetConfirmation({
         project: 'alpha\nMode: Read-only.', branch: null, stream: 'main', task: 'Do it\u202e', endReason: 'handed_off', resumable: true,

@@ -45,7 +45,11 @@ export interface NewLaunchSpec extends SpecCommon {
   mode: LaunchMode
   model?: string
   reasoningEffort?: ReasoningEffort
-  budgets: { activeMs: number; toolCalls: number }
+  /**
+   * #479: each budget is a limit within LAUNCH_BUDGETS or null, no limit (the default). The
+   * version stays 1: an older driver's validator refuses a null budget (exit 65), failing closed.
+   */
+  budgets: { activeMs: number | null; toolCalls: number | null }
   prompt: string
   /** #432: run in a new worktree of `cwd` (the checkout), at the path and on the branch the confirmation showed. */
   worktree?: WorktreePlan
@@ -129,9 +133,9 @@ export function parseLaunchSpec(text: string, launchId: string): SpecResult {
     return fail('reasoningEffort is not a Copilot effort level')
   }
   if (!isRecord(raw.budgets) || exactKeys(raw.budgets, ['activeMs', 'toolCalls'])) return fail('budgets must hold activeMs and toolCalls')
-  const activeMs = budget(raw.budgets.activeMs, LAUNCH_BUDGETS.activeMs)
-  const toolCalls = budget(raw.budgets.toolCalls, LAUNCH_BUDGETS.toolCalls)
-  if (activeMs === null || toolCalls === null) return fail('a budget is out of bounds')
+  const activeMs = raw.budgets.activeMs === null ? null : budget(raw.budgets.activeMs, LAUNCH_BUDGETS.activeMs) ?? undefined
+  const toolCalls = raw.budgets.toolCalls === null ? null : budget(raw.budgets.toolCalls, LAUNCH_BUDGETS.toolCalls) ?? undefined
+  if (activeMs === undefined || toolCalls === undefined) return fail('a budget is out of bounds')
   if (typeof raw.prompt !== 'string' || !raw.prompt.trim() || raw.prompt.length > MAX_PROMPT) return fail('prompt must hold 1 to 65536 characters')
   const worktreeError = raw.worktree === undefined ? null : worktreePlanError(raw.worktree, raw.launchId)
   if (worktreeError) return fail(worktreeError)

@@ -21,7 +21,7 @@ import {
   getBoard, getItem, insertItem, listActivity, listBoards, listHostSessions, listIssueEntities, listIssueSnapshots, listItems, listSourceLinks,
   markReplySeen, openDb, pinBoardRow, pinItem, recordActivityCall, recordIssueFailure, replyItem, stopBoardRowWatch, stopItemWatch, updateBoardRow, upsertActivity,
   upsertBoard, upsertIssueSnapshot, upsertSourceLink, sendSessionMessage, listSessionMessages, readSnapshotState,
-  createLaunch, endLaunch, getLaunch, recordLaunchProgress, resumeLaunch, forgetLaunch,
+  createLaunch, endLaunch, getLaunch, parkLaunch, recordLaunchProgress, resumeLaunch, forgetLaunch,
 } from '../src/store.js'
 import type { IssueDependencies } from '../src/store.js'
 import { issueQueue } from '../src/issue-poller.js'
@@ -1883,5 +1883,139 @@ describe('older processes sharing a hub with a forgotten launch (#478)', () => {
     expect(old.prepare(V240.resumeLaunch).get(2, new Date().toISOString(), LAUNCH)).toBeUndefined()
     old.close()
     db.close()
+  })
+})
+
+// #479: what a v2.5.0 hub, driver and spec validator hold, copied verbatim from tag v2.5.0:
+// the launches table as its migrations leave it (src/store.ts), resumeLaunch's write without a
+// raise (RESUMABLE_END inlined) and parseLaunchSpec's budget check (src/launch-spec.ts).
+const V250_BUDGETS = {
+  launches: `CREATE TABLE IF NOT EXISTS launches (
+      id TEXT PRIMARY KEY,
+      host TEXT NOT NULL,
+      project TEXT NOT NULL,
+      stream TEXT NOT NULL DEFAULT '',
+      cwd TEXT NOT NULL,
+      mode TEXT NOT NULL,
+      model TEXT,
+      reasoning_effort TEXT,
+      budget_active_ms INTEGER NOT NULL,
+      budget_tool_calls INTEGER NOT NULL,
+      prompt TEXT NOT NULL,
+      spec_version INTEGER NOT NULL,
+      status TEXT NOT NULL,
+      end_reason TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      parked_at TEXT,
+      park_reason TEXT,
+      ended_at TEXT,
+      stop_requested_at TEXT,
+      acp_session TEXT,
+      sessions TEXT,
+      driver_pid INTEGER,
+      child_pgid INTEGER,
+      child_started_at TEXT,
+      host_pid INTEGER,
+      active_ms INTEGER NOT NULL DEFAULT 0,
+      tool_calls INTEGER NOT NULL DEFAULT 0,
+      revision INTEGER NOT NULL DEFAULT 1
+    );
+    CREATE INDEX IF NOT EXISTS idx_launches_status ON launches(status, updated_at);
+    ALTER TABLE launches ADD COLUMN checkout_root TEXT;
+    ALTER TABLE launches ADD COLUMN worktree_path TEXT;
+    ALTER TABLE launches ADD COLUMN branch TEXT;
+    ALTER TABLE launches ADD COLUMN base_sha TEXT;
+    ALTER TABLE launches ADD COLUMN base_ref TEXT;
+    ALTER TABLE launches ADD COLUMN worktree_removed_at TEXT;
+    ALTER TABLE launches ADD COLUMN worktree_summary TEXT;
+    ALTER TABLE launches ADD COLUMN end_detail TEXT;`,
+  resumeLaunch: `UPDATE launches
+                               SET status = 'running', parked_at = NULL, park_reason = NULL, ended_at = NULL, end_reason = NULL, end_detail = NULL,
+                                   stop_requested_at = NULL, driver_pid = @pid, updated_at = @now, revision = revision + 1,
+                                   budget_active_ms = budget_active_ms + @addActive, budget_tool_calls = budget_tool_calls + @addCalls
+                             WHERE id = @id AND (status = 'parked' OR (status = 'ended' AND end_reason = 'stopped' AND acp_session IS NOT NULL
+                       AND (worktree_path IS NULL OR worktree_removed_at IS NULL)))
+                         RETURNING *`,
+  budgets: (budgets: { activeMs: unknown; toolCalls: unknown }): string | null => {
+    const budget = (value: unknown, bounds: { min: number; max: number }): number | null =>
+      Number.isInteger(value) && (value as number) >= bounds.min && (value as number) <= bounds.max ? value as number : null
+    const activeMs = budget(budgets.activeMs, { min: 60_000, max: 8 * 60 * 60_000 })
+    const toolCalls = budget(budgets.toolCalls, { min: 1, max: 2000 })
+    return activeMs === null || toolCalls === null ? 'launch spec: a budget is out of bounds' : null
+  },
+}
+
+describe('a v2.5.0 hub, driver and spec sharing launches with no budget limit (#479)', () => {
+  let dir: string
+  const LAUNCH = (n: number) => `11111111-2222-4333-8444-${String(n).padStart(12, '0')}`
+  const fresh = (n: number, budgets: { activeMs: number | null; toolCalls: number | null }) => ({
+    id: LAUNCH(n), host: 'copilot' as const, project: 'agent-inbox', stream: 'main', cwd: '/work/a', mode: 'ask',
+    budgetActiveMs: budgets.activeMs, budgetToolCalls: budgets.toolCalls, prompt: 'x', specVersion: 1, driverPid: 1,
+  })
+
+  beforeEach(() => { dir = scratchDir('mixed-version-no-limit-') })
+  afterEach(() => { rmSync(dir, { recursive: true, force: true }) })
+
+  it('migrates a v2.5.0 launches table to optional budgets, keeping every row, index and trigger, while the old process writes on', () => {
+    const path = join(dir, 'inbox.db')
+    const old = new Database(path)
+    old.pragma('busy_timeout = 5000')
+    old.pragma('journal_mode = WAL')
+    old.exec(V250_BUDGETS.launches)
+    // a trigger an older build made, which this build's generator would not
+    old.exec(`CREATE TRIGGER snapshot_launches_update_000000000000 AFTER UPDATE OF status ON launches BEGIN SELECT 1; END`)
+    const insert = old.prepare(`INSERT INTO launches (id, host, project, cwd, mode, budget_active_ms, budget_tool_calls, prompt, spec_version, status, created_at, updated_at)
+      VALUES (?, 'copilot', 'agent-inbox', '/work/a', 'ask', 7200000, 500, 'x', 1, 'parked', '2026-11-05T00:00:00.000Z', '2026-11-05T00:00:00.000Z')`)
+    insert.run(LAUNCH(1))
+    const db = openDb(path)
+    expect(db.prepare(`SELECT name, "notnull" FROM pragma_table_info('launches') WHERE name LIKE 'budget_%' ORDER BY name`).all())
+      .toEqual([{ name: 'budget_active_ms', notnull: 0 }, { name: 'budget_tool_calls', notnull: 0 }])
+    expect(getLaunch(db, LAUNCH(1))).toMatchObject({ status: 'parked', budget_active_ms: 7_200_000, budget_tool_calls: 500, revision: 1 })
+    const objects = (hub: Database.Database) => hub.prepare(`SELECT type, name FROM sqlite_master WHERE tbl_name = 'launches' AND type IN ('index', 'trigger') ORDER BY name`).all()
+    const reference = openDb(join(dir, 'fresh.db'))
+    expect(objects(db)).toEqual([...objects(reference) as Array<{ name: string }>, { type: 'trigger', name: 'snapshot_launches_update_000000000000' }]
+      .sort((a, b) => (a.name < b.name ? -1 : 1)))
+    expect(objects(db)).toContainEqual({ type: 'trigger', name: 'launches_no_limit_resume_guard' })
+    reference.close()
+    // the old process's statements keep working, and a second open rebuilds nothing
+    insert.run(LAUNCH(2))
+    expect(old.prepare(V250_BUDGETS.resumeLaunch).get({ id: LAUNCH(2), pid: 2, now: new Date().toISOString(), addActive: 0, addCalls: 0 }))
+      .toMatchObject({ status: 'running', revision: 2, budget_tool_calls: 500 })
+    const schema = db.pragma('schema_version', { simple: true })
+    openDb(path).close()
+    expect(db.pragma('schema_version', { simple: true })).toBe(schema)
+    old.close()
+    db.close()
+  })
+
+  it('an older driver’s resume of a launch with no limit is refused and leaves it as it was; this build’s goes through', () => {
+    const path = join(dir, 'inbox.db')
+    const db = openDb(path)
+    const old = new Database(path)
+    old.pragma('busy_timeout = 5000')
+    createLaunch(db, fresh(1, { activeMs: null, toolCalls: null }))
+    parkLaunch(db, LAUNCH(1), { acpSession: 'acp-1', activeMs: 0, toolCalls: 4 })
+    createLaunch(db, fresh(2, { activeMs: 7_200_000, toolCalls: null }))
+    endLaunch(db, LAUNCH(2), { reason: 'stopped', acpSession: 'acp-2' })
+    const now = new Date().toISOString()
+    for (const n of [1, 2]) {
+      const before = getLaunch(db, LAUNCH(n))!
+      // without the guard it would read the NULL as 0 and end the launch "budget used"
+      expect(V240.spent({ ...before, budget_tool_calls: null, budget_active_ms: null } as never)).toBe('budget:tool_calls')
+      expect(() => old.prepare(V250_BUDGETS.resumeLaunch).get({ id: LAUNCH(n), pid: 2, now, addActive: 0, addCalls: 0 })).toThrow(/no budget limit/)
+      expect(() => old.prepare(V240.resumeLaunch).get(2, now, LAUNCH(n))).toThrow(/no budget limit/)
+      expect(getLaunch(db, LAUNCH(n))).toEqual(before)
+      expect(resumeLaunch(db, LAUNCH(n), 3)).toMatchObject({ status: 'running', driver_pid: 3, revision: before.revision + 2 })
+    }
+    old.close()
+    db.close()
+  })
+
+  it('an older driver refuses a new spec with no limit (exit 65), so it never starts one', () => {
+    expect(V250_BUDGETS.budgets({ activeMs: 7_200_000, toolCalls: 500 })).toBeNull()
+    for (const budgets of [{ activeMs: null, toolCalls: null }, { activeMs: 7_200_000, toolCalls: null }, { activeMs: null, toolCalls: 500 }]) {
+      expect(V250_BUDGETS.budgets(budgets)).toBe('launch spec: a budget is out of bounds')
+    }
   })
 })

@@ -29,3 +29,9 @@
   they must not need to send another chat message after answering in the Inbox.
 - Setting or changing a plan's or row's `issue` link, or a row's `waits_on`, is routine row
   content: it starts no watch and needs no re-arm. Only a new blocked action returns a `watch`.
+- Messages: `pending()` with no message waiting, and `status({ done: true })`, may return a
+  `message_watch`. Before ending a turn, launch it the same way (detached) so a message wakes
+  you; it is omitted while one runs. On exit 0 call `pending()`, act on and `ack_message` each
+  message, then launch the next one returned. On 124 re-run it; on 3 (another copy runs)
+  do not; on 4 (its server ended) call `pending()` once and launch any it returns.
+  Subagents never launch it.

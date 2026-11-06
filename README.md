@@ -202,6 +202,9 @@ its turn ended; a newer turn's watcher replaces the older one.
 
 Copilot questions and new blocked plan actions return host-owned watcher commands.
 The agent must launch them in its CLI session; the MCP server never does so.
+`pending` (when no message is waiting) and `status({done:true})` also return a
+per-session message watcher, so a message you send an idle Copilot session wakes it;
+one copy runs per session, and it ends when the session does.
 Each plan watcher follows one row action, not every future use of that row.
 Routine plan edits do not create duplicate watchers. After a timeout or restart,
 `board_get({title, watch:true})` returns watches for the plan's remaining blocked
@@ -290,8 +293,8 @@ Before you send, the composer says how the message will arrive:
 
 | Delivery | When |
 |---|---|
-| **Arrives now** | A Claude Code session started with the channels flag (below), or one whose wake-up hooks ([`docs/hooks.md`](docs/hooks.md)) are waiting |
-| **It sees this when it next checks Agent Inbox** | Any other session on v2.2.0 or later, including every Copilot CLI session: it reads the message the next time it calls `pending` |
+| **Arrives now** | A Claude Code session started with the channels flag (below), one whose wake-up hooks ([`docs/hooks.md`](docs/hooks.md)) are waiting, or a Copilot CLI session whose message watcher is running |
+| **It sees this when it next checks Agent Inbox** | Any other session on v2.2.0 or later: it reads the message the next time it calls `pending` |
 | **Can't receive** | A session still running an older build; restart it to load v2.2.0 or later |
 
 Each message then shows **Sent · not picked up yet**, **Picked up · working on it**
@@ -379,8 +382,9 @@ It is off until you turn it on, and it works only in the macOS app, not in a bro
 
 Once any shell command is allowed, the session can run anything, in its folder and
 beyond, and an edited file can change what an allowed command then runs. Answer each
-approval with that in mind. Each session has budgets for active time (default 2
-hours) and tool calls (default 500), across parks and resumes. When you quit the app
+approval with that in mind. A session has no limit on its active time or tool calls
+unless you set one in New session (1 minute to 8 hours; 1 to 2000 calls), counted
+across parks and resumes; its card shows what it has used. When you quit the app
 with sessions running, it asks whether to keep them running or stop them all.
 Design: [`docs/superpowers/specs/2026-10-31-driven-sessions-design.md`](docs/superpowers/specs/2026-10-31-driven-sessions-design.md);
 how it is built: [`docs/architecture/driven-sessions.md`](docs/architecture/driven-sessions.md).

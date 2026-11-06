@@ -616,8 +616,8 @@ function runMigrations(db: Database.Database): void {
       mode TEXT NOT NULL,
       model TEXT,
       reasoning_effort TEXT,
-      budget_active_ms INTEGER NOT NULL,
-      budget_tool_calls INTEGER NOT NULL,
+      budget_active_ms INTEGER,
+      budget_tool_calls INTEGER,
       prompt TEXT NOT NULL,
       spec_version INTEGER NOT NULL,
       status TEXT NOT NULL,
@@ -784,8 +784,47 @@ function runMigrations(db: Database.Database): void {
   // words (at most 300 characters), for its row's "Didn't start". NULL on every
   // other end and on every row an older driver ends: its UPDATE never names it.
   ensureColumn(db, 'launches', 'end_detail', 'TEXT')
+  migrateOptionalBudgets(db)
   // issue #297 — keep this last: its triggers name the columns added above
   migrateSnapshotDomains(db)
+}
+
+// Issue #479 — a launch's budgets are optional: NULL is no limit for that
+// dimension. Hubs made before held both NOT NULL, which SQLite changes only by
+// rebuilding the table: its own CREATE text (column order kept, so the snapshot
+// trigger hashes stay the same) without the two NOT NULLs, every row copied,
+// then every index and trigger it had, snapshot_ ones included, made again, all
+// inside the migration's .immediate() transaction.
+//
+// An older driver reads a NULL budget as 0 (`tool_calls >= null`), so it would
+// end such a launch as "budget used" on resume. The guard refuses its resume
+// statement instead: every build before #479 moves `revision` by 1 there, and
+// this build's resumeLaunch moves it by 2 for a launch with no limit. The older
+// driver's UPDATE throws, its transaction rolls back and the row stays as it was.
+function migrateOptionalBudgets(db: Database.Database): void {
+  const required = db.prepare(`SELECT 1 FROM pragma_table_info('launches')
+      WHERE name IN ('budget_active_ms', 'budget_tool_calls') AND "notnull" = 1`).get()
+  if (required) {
+    const table = db.prepare(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'launches'`).pluck().get() as string
+    const loose = table.replace(/\b(budget_active_ms|budget_tool_calls) INTEGER NOT NULL\b/g, '$1 INTEGER')
+    const rebuilt = loose.replace(/^CREATE TABLE\s+(?:"launches"|launches)\s*\(/, 'CREATE TABLE launches_rebuild (')
+    if (rebuilt === loose || (loose.match(/\bbudget_(?:active_ms|tool_calls) INTEGER(?! NOT)/g) ?? []).length !== 2) {
+      throw new Error('launches: unexpected table definition, cannot make its budgets optional')
+    }
+    const dependents = db.prepare(`SELECT sql FROM sqlite_master WHERE tbl_name = 'launches' AND type IN ('index', 'trigger') AND sql IS NOT NULL`)
+      .pluck().all() as string[]
+    db.exec(rebuilt)
+    db.exec(`INSERT INTO launches_rebuild SELECT * FROM launches`)
+    db.exec(`DROP TABLE launches`)
+    db.exec(`ALTER TABLE launches_rebuild RENAME TO launches`)
+    for (const sql of dependents) db.exec(sql)
+  }
+  db.exec(`CREATE TRIGGER IF NOT EXISTS launches_no_limit_resume_guard BEFORE UPDATE OF status ON launches
+    WHEN NEW.status = 'running' AND OLD.status <> 'running'
+      AND (NEW.budget_active_ms IS NULL OR NEW.budget_tool_calls IS NULL) AND NEW.revision <> OLD.revision + 2
+    BEGIN
+      SELECT RAISE(ABORT, 'this launch has no budget limit, which this driver cannot keep: resume it from a newer Agent Inbox');
+    END`)
 }
 
 // Issue #247 — the human's "Pin for later". NULL means not pinned, so there is
@@ -3641,23 +3680,26 @@ export function listActivity(db: Database.Database, opts: { staleMinutes?: numbe
   const cold = claimCutoff(now)
   // #411: the lease a message-capable Claude hook watch holds for this
   // session's Claude Code process (`m1:` marks it; older hooks claim the same
-  // key without it). The key is unique, so the join adds no row.
+  // key without it). #477: or a Copilot message watcher's lease for this
+  // session. Each key is unique, so the joins add no row.
   const rows = db
     .prepare(`SELECT a.session, a.project, a.stream, a.agent, a.doing, a.last_doing, a.detail, a.children, a.idle, a.started_at, a.updated_at,
                      a.last_call_at, a.server_version, a.server_source, a.call_minute, a.call_counts, a.receives_messages, a.push_wake,
                      a.host_turn_at, a.host_idle_at, a.host_tool_at,
-                     (w.claim_key IS NOT NULL) AS wakes, (d.claim_key IS NOT NULL) AS driven,
+                     (w.claim_key IS NOT NULL OR c.claim_key IS NOT NULL) AS wakes, (d.claim_key IS NOT NULL) AS driven,
                      substr(d.token, 1, 36) AS driven_launch, t.token AS turn_token, t.claimed_at AS turn_since
               FROM activity a
               LEFT JOIN hook_watch_claims w
                 ON a.host_pid IS NOT NULL AND w.claim_key = 'host:' || a.host_pid
                AND substr(w.token, 1, 3) = 'm1:' AND w.claimed_at >= ?
+              LEFT JOIN hook_watch_claims c
+                ON c.claim_key = 'copilot-messages:' || a.session AND c.claimed_at >= ?
               LEFT JOIN hook_watch_claims d
                 ON d.claim_key = 'driven:' || a.session AND d.claimed_at >= ?
               LEFT JOIN hook_watch_claims t
                 ON d.claim_key IS NOT NULL AND t.claim_key = 'driver-turn:' || substr(d.token, 1, 36)
               WHERE a.ended_at IS NULL AND a.updated_at >= ?`)
-    .all(new Date(now - WAKE_LEASE_MS).toISOString(), freshLeaseCutoff(now), cutoff) as Array<Omit<Activity, 'children' | 'idle' | 'receives_messages' | 'push_wake' | 'wakes' | 'driven' | 'driven_launch' | 'driven_turn' | 'host_turn_at' | 'host_idle_at' | 'host_tool_at'> & {
+    .all(new Date(now - WAKE_LEASE_MS).toISOString(), freshLeaseCutoff(now), freshLeaseCutoff(now), cutoff) as Array<Omit<Activity, 'children' | 'idle' | 'receives_messages' | 'push_wake' | 'wakes' | 'driven' | 'driven_launch' | 'driven_turn' | 'host_turn_at' | 'host_idle_at' | 'host_tool_at'> & {
       children: string | null; idle: number; call_minute: number | null; call_counts: string | null; receives_messages: number | null; push_wake: number | null
       host_turn_at: string | null; host_idle_at: string | null; host_tool_at: string | null
       wakes: number; driven: number; driven_launch: string | null; turn_token: string | null; turn_since: string | null
@@ -3759,6 +3801,15 @@ export function liveSessionServers(db: Database.Database, sessions: readonly str
                       ORDER BY session ASC`).all(JSON.stringify(sessions)) as Array<{ session: string; server_pid: number | null }>
 }
 
+// Issue #477 — this session's server pid while its presence is live: not ended,
+// and ticked within the staleness window, so a SIGKILLed server whose pid was
+// reused still reads as gone. Undefined once it is not.
+export function liveSessionServer(db: Database.Database, session: string): { server_pid: number | null } | undefined {
+  const cutoff = new Date(Date.now() - PRESENCE_STALE_MINUTES * 60000).toISOString()
+  return db.prepare(`SELECT server_pid FROM activity WHERE session = ? AND ended_at IS NULL AND updated_at >= ?`)
+    .get(session, cutoff) as { server_pid: number | null } | undefined
+}
+
 // The open questions these MCP sessions raised, whatever project each was
 // filed under, except a reserved one (#412): a driver files its approval
 // alerts under the driven session's id, and no hook may wake on them.
@@ -3794,6 +3845,30 @@ export function holdsHookWatch(db: Database.Database, key: string, token: string
 
 export function releaseHookWatch(db: Database.Database, key: string, token: string): void {
   db.prepare(`DELETE FROM hook_watch_claims WHERE claim_key = ? AND token = ?`).run(key, token)
+}
+
+// Issue #477 — a Copilot CLI session's message watcher holds
+// `copilot-messages:<session>`, one per MCP session. The first live copy keeps
+// it and refreshes it every 30 s; a second copy is refused, and a killed
+// watcher's lease goes stale after 90 s. One conditioned statement, so two
+// launches cannot both take it.
+const messageWatchKey = (session: string): string => `copilot-messages:${session}`
+
+export function holdMessageWatch(db: Database.Database, session: string, token: string): boolean {
+  const nowMs = Date.now()
+  return db.prepare(`INSERT INTO hook_watch_claims (claim_key, token, claimed_at) VALUES (?, ?, ?)
+                     ON CONFLICT(claim_key) DO UPDATE SET token = excluded.token, claimed_at = excluded.claimed_at
+                     WHERE hook_watch_claims.token = excluded.token OR hook_watch_claims.claimed_at < ?`)
+    .run(messageWatchKey(session), token, new Date(nowMs).toISOString(), freshLeaseCutoff(nowMs)).changes === 1
+}
+
+export function messageWatchRunning(db: Database.Database, session: string): boolean {
+  return db.prepare(`SELECT 1 FROM hook_watch_claims WHERE claim_key = ? AND claimed_at >= ?`)
+    .get(messageWatchKey(session), freshLeaseCutoff(Date.now())) !== undefined
+}
+
+export function releaseMessageWatch(db: Database.Database, session: string, token: string): void {
+  releaseHookWatch(db, messageWatchKey(session), token)
 }
 
 // ── issue #412: the leases of a driver and the sessions it drives ───────────
@@ -4101,8 +4176,9 @@ export interface LaunchRecord {
   mode: string
   model: string | null
   reasoning_effort: string | null
-  budget_active_ms: number
-  budget_tool_calls: number
+  /** #479: null is no limit. */
+  budget_active_ms: number | null
+  budget_tool_calls: number | null
   prompt: string
   spec_version: number
   status: LaunchStatus
@@ -4179,8 +4255,9 @@ export interface NewLaunch {
   mode: string
   model?: string | null
   reasoningEffort?: string | null
-  budgetActiveMs: number
-  budgetToolCalls: number
+  /** #479: null is no limit. */
+  budgetActiveMs: number | null
+  budgetToolCalls: number | null
   prompt: string
   specVersion: number
   driverPid: number
@@ -4264,8 +4341,8 @@ export interface StoppedEnd {
   end_detail: string | null
   stop_requested_at: string | null
   driver_pid: number | null
-  budget_active_ms: number
-  budget_tool_calls: number
+  budget_active_ms: number | null
+  budget_tool_calls: number | null
 }
 
 // A resumed launch's driver takes its row back, parked or resumably ended →
@@ -4273,7 +4350,9 @@ export interface StoppedEnd {
 // it. `resumedFrom` says which, so a refused start puts it back as it was, and
 // `previous` holds an ended launch's end for that. #451: with a `raise`, only a
 // budget-ended launch still at the confirmed revision is taken, its totals rise by
-// exactly the allowance, and both must then exceed what it used.
+// exactly the allowance, and both must then exceed what it used. #479: a budget with
+// no limit stays NULL, and its resume moves `revision` by 2 (the guard in
+// migrateOptionalBudgets refuses an older driver's, which moves it by 1).
 export function resumeLaunch(
   db: Database.Database,
   id: string,
@@ -4283,7 +4362,8 @@ export function resumeLaunch(
   if (!LAUNCH_ID.test(id)) return null
   const where = raise
     ? `id = @id AND revision = @revision AND ${BUDGET_END}
-       AND budget_active_ms + @addActive > active_ms AND budget_tool_calls + @addCalls > tool_calls`
+       AND (budget_active_ms IS NULL OR budget_active_ms + @addActive > active_ms)
+       AND (budget_tool_calls IS NULL OR budget_tool_calls + @addCalls > tool_calls)`
     : `id = @id AND (status = 'parked' OR (${RESUMABLE_END}))`
   const params = { id, revision: raise?.revision ?? 0, addActive: raise?.activeMs ?? 0, addCalls: raise?.toolCalls ?? 0 }
   return db.transaction(() => {
@@ -4293,7 +4373,8 @@ export function resumeLaunch(
     if (!prior || (before !== 'parked' && before !== 'ended')) return null
     const row = db.prepare(`UPDATE launches
                                SET status = 'running', parked_at = NULL, park_reason = NULL, ended_at = NULL, end_reason = NULL, end_detail = NULL,
-                                   stop_requested_at = NULL, driver_pid = @pid, updated_at = @now, revision = revision + 1,
+                                   stop_requested_at = NULL, driver_pid = @pid, updated_at = @now,
+                                   revision = revision + CASE WHEN budget_active_ms IS NULL OR budget_tool_calls IS NULL THEN 2 ELSE 1 END,
                                    budget_active_ms = budget_active_ms + @addActive, budget_tool_calls = budget_tool_calls + @addCalls
                              WHERE ${where}
                          RETURNING *`).get({ ...params, pid: driverPid, now: new Date().toISOString() }) as (Omit<LaunchRecord, 'sessions'> & { sessions: string | null }) | undefined

@@ -191,8 +191,9 @@ export function sessionCards({ activity, launches = null, boards = [], attention
     const synopsis = row ? activitySynopsis(row) : null
     // #466: running with no live claim is Idle only while its driver reports no turn
     const quiet = base === 'idle' && Boolean(row?.driven_turn)
-    const calls = Number.isSafeInteger(launch.tool_calls) && launch.tool_calls > 0 && launch.budget_tool_calls
-      ? ` · ${launch.tool_calls} of ${launch.budget_tool_calls} tool calls` : ''
+    // #479: "41 of 500 tool calls", or "41 tool calls" with no limit
+    const calls = Number.isSafeInteger(launch.tool_calls) && launch.tool_calls > 0
+      ? ` · ${launch.tool_calls}${launch.budget_tool_calls ? ` of ${launch.budget_tool_calls}` : ''} tool calls` : ''
     finish({
       id: `launch:${launch.id}`,
       session: row?.session ?? null,

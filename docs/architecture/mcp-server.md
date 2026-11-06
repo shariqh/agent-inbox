@@ -34,6 +34,9 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   `flag`, `pending`, `answer`, `resolve` and every `board_*` tool refuse a scope, a
   `project` argument or an item id in one. A session a driver holds a fresh
   `driven:` lease for gets `woken: "pushed"` and no watch contract.
+- A Copilot client's `pending()` with no message to hand over, and its
+  `status({done:true})`, return `message_watch` (#477) unless one already runs for this
+  session; no other host gets it. Details in `hooks-and-watcher.md`.
 
 ## Invariants in detail
 

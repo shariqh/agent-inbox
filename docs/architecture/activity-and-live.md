@@ -63,7 +63,8 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   other two. An older hook's lease (no `m1:`), an unlinked watcher's `session:`/
   `project:` key, a released lease or one older than 30 minutes reads as absent. It
   is evidence too: a watcher killed without releasing its lease reads as armed for
-  up to 30 minutes. The composer's delivery state (`deliveryState` in
+  up to 30 minutes. *(#477)* A Copilot message watcher's `copilot-messages:<session>`
+  lease, claimed within 90 s, also reads as `wakes`, through a third `LEFT JOIN`. The composer's delivery state (`deliveryState` in
   `public/messages.js`) reads these three and nothing else: no `receives_messages`
   is "can't receive" (Send disabled); `driven`, `push_wake` or `wakes` is "arrives
   now"; anything else is "when it next checks Agent Inbox". `activityFrameKey`

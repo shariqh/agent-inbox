@@ -283,9 +283,10 @@ describe('mcp round-trip', () => {
         await other.close()
       }
 
-      // agents never read it back
+      // agents never read it back; #477's message_watch names the reader's own session only
       for (const [name, args] of [['board_get', { title: 'plan' }], ['board_get', { title: 'plan', full: true }], ['board_get', {}], ['pending', {}]] as const) {
-        const body = await text(name, args)
+        const { message_watch: _watch, ...read } = JSON.parse(await text(name, args)) as Record<string, unknown>
+        const body = JSON.stringify(read)
         expect(body, name).not.toContain(live!.session)
         expect(body, name).not.toContain('"session"')
       }

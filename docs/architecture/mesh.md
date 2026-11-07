@@ -278,3 +278,19 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
   (through `meshctl status`) and `packages/mesh/test/mesh-config.test.ts`. Change the rule
   in both places and add a case there.
 - **Run its tests:** `cd packages/mesh && fnm exec --using=24 npm ci && npm run typecheck && npm test`.
+- **Bench S11 (U4, unslop design §9.1, §9.3).** `packages/mesh/bench/s11/`, compiled by
+  `tsconfig.bench.json` into `dist/bench/` and run as `npm run bench -- run|score`; Node
+  core plus the package's own `files.ts` and `mesh-config.ts`, never built by the
+  package's `build` or any workflow. `fixtures.ts` generates the texts from a seed
+  (default 1100: the bench changes only between phases): each edit's traps are literal
+  fragments that must share a sentence, checked by `score.ts` independently of
+  `fidelity.ts`. `run.ts` refuses a run folder inside the checkout, writes 0700 folders
+  and 0600 files through `writePrivate`, calls the client per fixture with `--report`,
+  and adds the fictional `Acme Widgets` to `unslop-deny.txt` only while private fixtures
+  run (restoring the file after, also on SIGINT, SIGTERM and SIGHUP). It writes
+  `unslop-deny.txt.s11-added` first, so a run killed before it could restore has its line
+  removed by the next run. The blind sheet holds edits only; `--new-blind` merges into the
+  existing key and answers. The sampling comparison is a
+  second agent in its own mesh dir with the box's default sampling in its profile, not a
+  switch in the agent. How to run it and read `summary.md`: [`docs/unslop.md`](../unslop.md).
+  Tests: `packages/mesh/test/bench-s11.test.ts` (recorded runs, no network).

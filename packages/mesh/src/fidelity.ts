@@ -43,6 +43,7 @@ const MAX_UNITS = 500
 const NEGATIVE = /\b(?:fail(?:s|ed|ing)?|lack(?:s|ed|ing)?|unable|missing|refus(?:e|es|ed|ing)|prevent(?:s|ed|ing)?|absent|broken|disabled)\b/gi
 const SENTENCE = /[.!?](?=\s)|\n/g
 const CLAUSE = /[.!?](?=\s)|\n|[,;:()—–]|\s(?:but|and|or|while|whereas|although|though)(?=\s)/gi
+const NEGATED_CLICHE = /\b(?:not all sunshine and rainbows|not rocket science|(?:no|not a) silver bullet|not the end of the world|no-brainer|nothing short of|not to mention|without further ado|without a doubt|no doubt about it|leave no stone unturned|no small feat)\b/gi
 const LOGIC = /^(?:not|never|no|without|cannot|none|nothing|nobody|nowhere|neither|nor|unless|except|until|only|if)$/
 const HEDGES = /\b(?:likely|probably|perhaps|possibly|maybe|apparently|seemingly|presumably|arguably|roughly|approximately|around|nearly|almost|somewhat|generally|typically|usually)\b/gi
 const STOP = new Set('an the and or but nor of to in on at for with by from as is are was were be been it its this that these those then than so if do does did has have had we you he she they them our your their my me us there here which who what when where how into via per'.split(' '))
@@ -131,6 +132,8 @@ function extract(input: string, terms: string[]): Extract {
   take(null, /^[ \t]*\d+[.)](?=[ \t])/gm, () => '')
   // pattern 9, "not just X but Y" or "not just X — it's Y", is cut by the rules; its "not" is no negation
   take(null, /(?:\bnot|n't)\s+(?:just|only|merely|simply)\b(?=[^.!?\n]*?(?:\bbut\b|(?:[—–;,]|\s-)\s*(?:it's|it is|this is|that's|that is)\b))/gi, () => '')
+  // negated stock phrases the rules cut as clichés; their negation states no fact
+  take(null, NEGATED_CLICHE, () => '')
   take('numbers', NUMBER, (m) => {
     const n = `${m[3]!.replace(/(\d),(?=\d{3}(?!\d))/g, '$1')}${m[4] ? '%' : ''}`
     return m[1] || m[2] ? `${(m[1] ?? m[2])!.toLowerCase().replace(/\s+/g, ' ')} ${n}` : n

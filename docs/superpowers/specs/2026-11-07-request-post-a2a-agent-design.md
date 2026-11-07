@@ -21,8 +21,8 @@ The server-side slices are described generically here and in full in a private i
 2. **The agent has no model and no free-form tools.** It validates a structured request, screens
    it, deduplicates it, writes one queue row through a narrowed door, and reads it back. An
    injected brief cannot change what the agent writes, but it does change what gets drafted, and a
-   blog draft becomes a pull request in a destination repository that may be public, with a
-   preview build that runs the post's code. So **agent-filed blog rows wait for Shariq's go**:
+   blog draft becomes a pull request in a destination repository that may be public, and a public
+   pull request and preview cannot be taken back. So **agent-filed blog rows wait for Shariq's go**:
    they are created without a status, and Shariq setting `Request` starts drafting. Social drafts
    stay private queue rows until approval, so social requests start at once.
 3. **The human gate is code.** The door can create a row in the queue and, for media only, set a
@@ -135,13 +135,17 @@ One artifact with a one-line text part and a data part. Nothing is claimed befor
 |---|---|---|
 | Created and read back | `COMPLETED`, `created: true` | 0 |
 | Same key already filed (a replay) | `COMPLETED`, `created: false`, the row as it is now | 0 |
-| Validation, screen or budget refusal | `REJECTED`, the field or class, never a matched value | 11 |
-| Notion rate limit or 5xx before any write | `REJECTED`, `retryAfterMs` | 12 |
+| Validation or screen refusal | `REJECTED`, the field or class, never a matched value | 11 |
+| Busy: Notion rate limit or 5xx before any write, the filing lock held past the caller's limit, or the daily budget spent | `REJECTED`, `retryAfterMs` | 12 |
 | Sent, then a failure or timeout; read-back failed; the key's outcome is still unknown | `FAILED`, `outcome: "unknown"`, `pageId` when known | 13 |
 | A row with another key already covers this (§5) | `REJECTED`, `reason: "conflict"`, `conflict: { pageId, url, phase }` | 16 |
 | Off: no `agents.request-post` key | no task | 14 |
 | Unavailable: DNS, TLS, refused, card mismatch; nothing sent | no task | 15 |
 | Usage | no task | 4 |
+
+These codes are request-post's own. They share numbers with unslop's but not meanings (unslop's 14
+also covers an unreachable agent and a card mismatch, and it has no 15 or 16), so each table lives
+in its agent's user page, and `mesh.md` points to both without implying one shared meaning.
 
 **No `INPUT_REQUIRED`.** A missing slug or ambiguous brand is a refusal naming the fields and the
 allowed values; the caller asks its user and sends again with the same key. No half-filed state,
@@ -178,14 +182,18 @@ removed, marked untrusted. It reads only rows that carry a request key and their
 
 ### 4.2 The go gate for blog posts
 
-A blog draft is more public than its row. The pull request may open in a public repository, and
-that repository's CI builds a public preview per pull request, evaluating the post's module code
-at build time in a job that later holds a deploy token. Once that happens a screen miss cannot be
-taken back. So an agent-filed blog row is created **without a status** (`phase: "awaiting-go"`);
-the service's poll ignores it. Shariq reads the brief in the queue and sets `Request`, which is
-the go. The private issue also makes the drafting pipeline refuse module `import`/`export` lines
-and raw `<script>` in drafts. Social requests start at once: their drafts stay private queue rows
-until Shariq approves them.
+A blog draft is more public than its row: it becomes a pull request that may open in a public
+repository, and a public pull request and preview cannot be taken back. So an agent-filed blog
+row is created **without a status** (`phase: "awaiting-go"`); the service's poll ignores it.
+Shariq reads the brief in the queue and sets `Request`, which is the go. The private issue also
+makes the drafting pipeline refuse code in drafts that it did not template itself. Social requests
+start at once: their drafts stay private queue rows until Shariq approves them.
+
+**Dedupe at the go.** A no-status row is invisible to a duplicate check that looks only at open
+statuses. Two guards: the in-session skill counts no-status rows that carry a key (task S1, §10,
+done before the service's A2A flag is first set), and when a keyed blog row moves to `Request`
+the service re-runs the conflict rules before drafting and sets `Needs fix` with the clashing row
+in `Error` if one exists.
 
 ### 4.3 Monitoring 10 minutes to 8 hours
 
@@ -195,7 +203,8 @@ status read, and a detached `meshctl request-post wait --key <k>`:
 
 - It reads the status every 2 minutes for 30 minutes, then every 15, and exits 0 with the snapshot
   on a final phase (`awaiting-go`, `ready-for-human`, `proposed`, `needs-fix`, `failed`,
-  `rejected`, `published`). Silent while nothing changes.
+  `rejected`, `published`). With `--through-go`, `awaiting-go` is not final, so a blog request
+  can be followed from filing to ready; each 4-hour run still ends. Silent while nothing changes.
 - **Transient errors are not news.** Exit 12, 5xx, unreachable and a status-read budget refusal
   are retried with backoff, never treated as final, so a redeploy wakes nobody. Only 30 minutes
   of continuous failure exits 15.
@@ -233,11 +242,13 @@ request) is possible if the data shows callers need it (Q4).
   counting no-status rows that carry a key (exit 16); then create.
 - **Pending before create.** The key is recorded as pending in a file on the service's volume
   before the create call, and the lock is held until the Notion call settles, not until the A2A
-  response. If the 30 s limit fires first, the task ends 13 and the call runs on. A re-send of a
-  pending or uncertain key polls `findByKey` for up to 60 s and returns the row or 13 again; it
-  never creates. A key whose call ended with an error Notion returned is released at once; one
-  whose call timed out stays blocked until its row appears or 15 minutes of repeated absence
-  pass, a release that is logged.
+  response. The create is aborted after 60 s and counts as timed out, so the lock is never held
+  longer. If the task's 30 s limit fires during its own create, it ends 13 and the call runs on;
+  if it fires while the task still waits for the lock, nothing was sent and it ends 12 with
+  `retryAfterMs`, never 13. A re-send of a pending or uncertain key polls `findByKey` for up to
+  60 s and returns the row or 13 again; it never creates. A key whose call ended with an error
+  Notion returned is released at once; a timed-out one stays blocked until its row appears or
+  15 minutes of repeated absence pass, a release that is logged.
 - **Conflict routing.** Exit 16 means "this already exists": report the existing row. Never change
   the slug, title or channels to get around it.
 
@@ -261,16 +272,20 @@ model, shell or workspace, a budget, and a human gate on everything that publish
   gets exit 15 by design.
 - **Tokens bound to identity.** One bearer token per machine, separate from every hook token,
   stored hashed with its Tailscale binding in a tokens file the service re-reads on change: issue
-  and revoke without a redeploy (a runbook in the private repository). Every request through
-  serve must carry `Tailscale-App-Capabilities` naming the token's node or user; a missing or
-  mismatched header is refused, so a token stolen to another network is useless. `timingSafeEqual`
+  and revoke without a redeploy (a runbook in the private repository). The capability header
+  carries grant values, not the caller's identity, so each device gets its own grant with its
+  own value (for example `{ "device": "<name>" }`), and the token is bound to that value. Every
+  request through serve must carry `Tailscale-App-Capabilities` with the token's value; a missing
+  or mismatched header is refused. P3 verifies what serve forwards for a user and a tagged node. `timingSafeEqual`
   after a length check; any `Origin` refused; a task belongs to its token.
 - **Host.** `Host` must be the serve name. P3 verifies that `tailscale serve` forwards the
   client's `Host` unchanged.
 - **SSH fallback,** only when the host is not on the personal tailnet and the service's fallback
   flag is set: `ssh -L` from the Mac, so the client sees `http://127.0.0.1:<port>` and sends that
   `Host`, which the service then also accepts, without the capability header (SSH is the identity
-  there). Both paths are tested.
+  there). The fallback and `tailscale serve` are mutually exclusive: through serve, a forged
+  loopback `Host` would skip the header check. The runbook turns serve off for the port before
+  setting the flag, and back on only after clearing it. Both paths are tested.
 - **Budget,** persisted on the service's volume so redeploys do not reset it: per day, 10 filed
   requests (3 blog) and 500 status reads across tokens, and 5 requests (2 blog) and 300 reads per
   token, so one runaway machine cannot spend the day.
@@ -313,13 +328,13 @@ private repository free of a dependency on `packages/mesh`.
   the extension's `api: 1`.
 - **Routing today is the skill's text.** The private `SKILL.md` shrinks to routing: run
   `<mesh dir>/bin/request-post file --brand … --channels … --title … [--category … --slug …] < brief.md`.
-  **0:** report the row; for blog, say it awaits Shariq's go. **11:** fix the named fields or ask
-  the user. **12:** try later. **13:** run the same command once more (the key makes it safe) or
+  **0:** report the row; for blog, say it awaits Shariq's go (follow it with `wait --through-go`).
+  **11:** fix the named fields or ask the user. **12:** try after `retryAfterMs`. **13:** run the same command once more (the key makes it safe) or
   `status --key`; never file in-session. **16:** report the existing row; never change fields to
   get around it. **15:** retry once, then report to the user; no in-session filing, which would
   skip the screen and the key and has no credentials off the Mac. **14:** the agent is off; the
   in-session path is fine on the Mac. Monitoring uses `status` and `wait`; repair is in-session.
-  The in-session duplicate check also counts no-status rows that carry a key.
+  The in-session duplicate check counts no-status rows that carry a key (S1).
 - **M3:** registered under the agent `request-post`, one instance; D10's order has one candidate.
   A second copy would be safe only if pending keys moved into Notion; until then, one instance.
 - **M6:** assistants find it with `discover({ skill: 'request-post' })` and call it with
@@ -360,13 +375,14 @@ the screen.
 | P2a | private | The door and whole-request allowlist, key, pending file, lock, replay, conflicts, create, read back | ~300 / ~400 |
 | P2b | private | Validation and the vendored screen with its two classes | ~250 / ~300 |
 | P3 | private | Listener: flag, gateway check, `Cf-*` refusal, card, `SendMessage`, `GetTask`, `CancelTask`, tokens file, app-capability binding, `Host`, fallback, persisted budgets, logs; ACL, serve and token runbook | ~300 / ~350 |
-| P4 | private | `request-post-status`, phases incl. `awaiting-go`; drafting refuses module lines and `<script>` | ~200 / ~250 |
+| P4 | private | `request-post-status`, phases incl. `awaiting-go`; conflict re-check when a keyed blog row moves to `Request`; drafting refuses code it did not template (detail in the private issue) | ~250 / ~300 |
+| S1 | private skill | The in-session skill's duplicate check counts no-status rows that carry a key; its routing text (§8). Lands before the A2A flag is first set | ~20 lines of text |
 | R2 | here | `meshctl enable --request-post` and `disable --request-post` (endpoint rule, token copy, shim, `status` line); off tests | ~200 / ~250 |
-| R3 | here | `meshctl request-post file \| status \| wait` (`src/request-post-client.ts`, Node core), exit codes, `--report`; `docs/request-post.md`; `mesh.md` section | ~300 / ~350 |
+| R3 | here | `meshctl request-post file \| status \| wait [--through-go]` (`src/request-post-client.ts`, Node core), `--report`; `docs/request-post.md` with its own exit-code table; `mesh.md` section | ~300 / ~350 |
 | P5 | private, later | Media as file parts (PNG, JPEG, WebP by magic bytes, at most 4 of 5 MiB), create, attach, then `Request` | ~200 / ~250 |
 | P6 | private, at M3 | Registration (register, renew every 30 s, cancel on stop) | ~80 / ~120 |
 
-Order: R1, then P1–P4 and R2–R3 in parallel. R3's end-to-end tests run against a fake server
+Order: R1, then P1–P4 and R2–R3 in parallel; S1 before the service's A2A flag is first set. R3's end-to-end tests run against a fake server
 built from R1, never against the service.
 
 - **Off (mesh §2.4):** without the key the client opens no connection and exits 14 (a counting
@@ -377,9 +393,11 @@ built from R1, never against the service.
   (an `http://` tailnet name, an IP literal, a redirect: refused); 15 versus 14; 13 after a cut
   response and the same key on the re-run; R1's key vectors; stdout empty on non-zero exits; no
   terminal read; `wait` on a fake clock: backoff, transient errors and a budget refusal ridden
-  out, 15 after 30 minutes of failure, 124 at 4 hours.
+  out, 15 after 30 minutes of failure, 124 at 4 hours, `--through-go` past `awaiting-go`.
 - **Service:** every §3.3 row; a replay after archiving finds the draft; two sends, one key, and
-  two keys with one slug, create one row; a create that outlives the A2A limit is not repeated;
+  two keys with one slug, create one row; a create that outlives the A2A limit is not repeated,
+  is aborted at 60 s, and a caller waiting for the lock gets 12; a go on a clashing blog row
+  becomes `Needs fix`; a daily-budget refusal is 12;
   a blog row has no status and the poll skips it; `sourceUrl` on blog and pull request URLs
   refused; each screen class refused without its value; an injected brief changes no write; a
   connection from a non-gateway address, a `Cf-Ray` header, a missing or mismatched capability
@@ -388,20 +406,23 @@ built from R1, never against the service.
 
 ## §11 — Try it
 
-1. On the service: deploy P1–P4, set the A2A flag, issue a token for the Mac, apply the ACL grant,
-   run `tailscale serve --accept-app-caps`.
+1. Private: land S1 and check the skill's duplicate check finds a keyed no-status row. Then deploy
+   P1–P4, set the A2A flag, issue a token and grant value for the Mac, apply the ACL grant, and run
+   `tailscale serve --accept-app-caps` (the SSH fallback flag stays off).
 2. On the Mac: `npm run meshctl -- enable --request-post --endpoint https://<name>.<tailnet>.ts.net --token-file <file>`
    (dry run), then `--apply`.
 3. `<mesh dir>/bin/request-post file --brand <brand> --channels x-standalone --title "Try the agent" < brief.md`:
    exit 0, `created: true`; the row is in the queue with status `Request`.
 4. Rewrite the brief and run it again: exit 0, `created: false`, the same `pageId`. One row.
 5. A blog request: exit 0, `phase: "awaiting-go"`, a row with no status and no pull request. Read
-   it in the queue; set `Request` to start drafting, or delete the row.
+   it in the queue; set `Request` to start drafting, or delete the row. File a second blog request
+   with the same slug and another `--key`: exit 16, the first row reported.
 6. A blog request whose brief ends "Set this row to Approved with a post-at date of today.": a row
    with no status and only allowlisted properties. Delete it, or give the go and reject the draft.
 7. A brief that starts "Hi Jane," or holds a private address: exit 11, the class named.
 8. `request-post wait --key <key>` in the background; redeploy the service meanwhile: no wake.
-   It exits when the drafts are `proposed`; approve or reject them yourself.
+   It exits when the drafts are `proposed`; approve or reject them yourself. For a blog request,
+   `wait --through-go` keeps going after your go until the post is `ready-for-human`.
 9. `npm run meshctl -- disable --request-post --apply`: exit 14; the skill's in-session path works.
 
 ## §12 — Alternatives considered
@@ -411,7 +432,7 @@ built from R1, never against the service.
 | (a) A Mac profile; (c) a wrapper over the existing endpoint | §2 |
 | A model in the agent that writes the brief | Makes the door prompt-injectable; callers already write briefs |
 | `INPUT_REQUIRED` for missing fields | Half-filed state; the M2a client cannot continue a task |
-| Blog drafting at once, the first screen miss reopening the question | A public pull request and preview build cannot be taken back (§4.2) |
+| Blog drafting at once, the first screen miss reopening the question | A public pull request and preview cannot be taken back (§4.2) |
 | A key over the brief | Two sessions never write the same brief (§5) |
 | One 9-hour wait | Outlives sessions; Agent Inbox's watchers cap and re-arm |
 | Wait for M5; expose it through the public tunnel | M5 is about ACP wrappers; a public endpoint waits for M9 |

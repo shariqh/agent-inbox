@@ -1,6 +1,7 @@
 // The mesh's root switch, `mesh.json` (Mesh M1, #397; design
 // docs/superpowers/specs/2026-10-29-agent-mesh-design.md §2). Node core only:
-// `meshctl` reads it and must never open the hub. Since #454 the viewer reads
+// `meshctl` and its unslop client (src/unslop-client.ts) read it and must never
+// open the hub. Since #454 the viewer reads
 // nothing here: the Agents view is always on, and the viewer's watch returns
 // with the first mesh phase that needs it (M3). Nothing in the stdio MCP
 // server's import graph may reach this module.
@@ -9,6 +10,7 @@
 // a symlink), at most MESH_FILE_MAX bytes, a JSON object whose `schema` is 1.
 // A missing key or file means off. A newer schema is never read as on: this
 // build cannot know what it would turn on.
+import { lstatSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 
@@ -60,4 +62,36 @@ export const MESH_REASONS: Record<Exclude<MeshParse, { ok: true }>['reason'] | '
   'too-large': `is larger than ${MESH_FILE_MAX} bytes`,
   'not-regular': 'is not a regular file (a symlink, folder or device)',
   unreadable: 'cannot be read',
+}
+
+export type MeshRead =
+  | { kind: 'missing' }
+  | { kind: 'refused'; reason: string }
+  | { kind: 'present'; doc: MeshDocument }
+
+/** Reads `mesh.json` by the one rule: meshctl to change it, `meshctl unslop` to find its agent. */
+export function readMesh(file: string): MeshRead {
+  let stat
+  try {
+    stat = lstatSync(file)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { kind: 'missing' }
+    return { kind: 'refused', reason: MESH_REASONS.unreadable }
+  }
+  if (!stat.isFile()) return { kind: 'refused', reason: MESH_REASONS['not-regular'] }
+  if (stat.size > MESH_FILE_MAX) return { kind: 'refused', reason: MESH_REASONS['too-large'] }
+  let text: string
+  try {
+    text = readFileSync(file, 'utf8')
+  } catch {
+    return { kind: 'refused', reason: MESH_REASONS.unreadable }
+  }
+  const parsed = parseMesh(text)
+  return parsed.ok ? { kind: 'present', doc: parsed.doc } : { kind: 'refused', reason: MESH_REASONS[parsed.reason] }
+}
+
+/** The port of an `agents.unslop.endpoint`: only http://127.0.0.1:<port>, never port 80 (clients drop `:80` from Host). */
+export function loopbackPort(endpoint: unknown): number | undefined {
+  const port = Number(/^http:\/\/127\.0\.0\.1:(\d{1,5})\/?$/.exec(String(endpoint))?.[1])
+  return port >= 1 && port <= 65535 && port !== 80 ? port : undefined
 }

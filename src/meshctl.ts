@@ -15,17 +15,19 @@
 //   meshctl disable [--apply]                turn every mesh piece off
 //   meshctl disable --unslop [--purge] [--apply]
 //   meshctl status                           say what mesh.json turns on
-//   meshctl unslop                           the shim's command (U3b)
+//   meshctl unslop --kind <kind> [--report <file>] [--timeout <s>] < draft
+//                                            the shim's command (src/unslop-client.ts)
 //
-// Exit codes: 0 done (or nothing to do), 1 refused or failed, 2 usage,
-// 14 unslop unavailable.
+// Exit codes: 0 done (or nothing to do), 1 refused or failed, 2 usage;
+// `unslop` has its own (0, 10-14, 4), listed in src/unslop-client.ts.
 import { randomBytes } from 'node:crypto'
 import { closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmdirSync, statSync, unlinkSync, writeSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { MESH_FILE_MAX, MESH_REASONS, MESH_SCHEMA, meshDir, meshFile, parseMesh } from './mesh-config.js'
+import { MESH_SCHEMA, loopbackPort, meshDir, meshFile, readMesh } from './mesh-config.js'
 import type { MeshDocument } from './mesh-config.js'
+import { UNSLOP_USAGE, runUnslop } from './unslop-client.js'
 
 const UNSLOP_PORT = 4420
 
@@ -34,12 +36,14 @@ const USAGE = `usage: agent-inbox-meshctl status
        agent-inbox-meshctl enable --agents-view [--apply]
        agent-inbox-meshctl enable --unslop [--port <n>] [--checkout <path>] [--apply]
        agent-inbox-meshctl disable --unslop [--purge] [--apply]
+       agent-inbox-meshctl unslop --kind <kind> [--report <file>] [--timeout <s>] < draft
 
 Without --apply, enable and disable are dry runs: they print what they would do.
 The Agents view is always on, so enable --agents-view writes nothing.
 enable --unslop needs packages/mesh built in the checkout (npm ci && npm run build there);
 it listens on http://127.0.0.1:<port> only (default ${UNSLOP_PORT}). disable --unslop keeps the
-profile, logs and deny list unless --purge.
+profile, logs and deny list unless --purge. unslop is what <mesh dir>/bin/unslop runs:
+it sends one public draft to the agent (docs/unslop.md).
 mesh.json lives in AGENT_INBOX_MESH_DIR, else beside AGENT_INBOX_DB, else ~/.agent-inbox.
 `
 
@@ -52,31 +56,6 @@ export interface MeshctlIo {
   /** The Node binary and meshctl.js the shim and start command name (tests point them at scratch files). */
   node?: string
   script?: string
-}
-
-type Existing =
-  | { kind: 'missing' }
-  | { kind: 'refused'; reason: string }
-  | { kind: 'present'; doc: MeshDocument }
-
-function readExisting(file: string): Existing {
-  let stat
-  try {
-    stat = lstatSync(file)
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { kind: 'missing' }
-    return { kind: 'refused', reason: MESH_REASONS.unreadable }
-  }
-  if (!stat.isFile()) return { kind: 'refused', reason: MESH_REASONS['not-regular'] }
-  if (stat.size > MESH_FILE_MAX) return { kind: 'refused', reason: MESH_REASONS['too-large'] }
-  let text: string
-  try {
-    text = readFileSync(file, 'utf8')
-  } catch {
-    return { kind: 'refused', reason: MESH_REASONS.unreadable }
-  }
-  const parsed = parseMesh(text)
-  return parsed.ok ? { kind: 'present', doc: parsed.doc } : { kind: 'refused', reason: MESH_REASONS[parsed.reason] }
 }
 
 // `~/…` for the home directory, so the output reads like the docs
@@ -124,12 +103,6 @@ function writeBackup(file: string, now: Date): string {
 const ALWAYS_ON = 'The Agents view is always on; mesh.json no longer controls it.'
 
 // ── unslop (#483, unslop design §4.2-§4.3) ──────────────────────────────────
-
-/** The port of an `agents.unslop.endpoint`: only http://127.0.0.1:<port>, never port 80 (clients drop `:80` from Host). */
-function loopbackPort(endpoint: unknown): number | undefined {
-  const port = Number(/^http:\/\/127\.0\.0\.1:(\d{1,5})\/?$/.exec(String(endpoint))?.[1])
-  return port >= 1 && port <= 65535 && port !== 80 ? port : undefined
-}
 
 function unslopPaths(dir: string) {
   const root = join(dir, 'mesh')
@@ -237,9 +210,9 @@ export function runMeshctl(argv: string[], io: MeshctlIo = {}): number {
   const usage = (): number => { err(USAGE); return 2 }
   if (command === 'help' || command === '--help' || command === '-h') { out(USAGE); return 0 }
   if (command === 'unslop') {
-    // the shim's command: the client arrives in U3b (unslop design §10)
-    err('agent-inbox-meshctl unslop is not built yet (#483 U3b): edit the text in-session.\n')
-    return 14
+    // async: the entry below runs it (runUnslop in src/unslop-client.ts)
+    err(UNSLOP_USAGE)
+    return 4
   }
   const flags = new Set<string>()
   const values = new Map<string, string>()
@@ -271,7 +244,7 @@ export function runMeshctl(argv: string[], io: MeshctlIo = {}): number {
   if (command === 'status') {
     if (flags.size || values.size || apply || unslop) return usage()
     out(`${ALWAYS_ON}\n`)
-    const existing = readExisting(file)
+    const existing = readMesh(file)
     const entry = existing.kind === 'present' ? objectOf(existing.doc['agents'])?.['unslop'] : undefined
     const port = entry === undefined ? undefined : loopbackPort(objectOf(entry)?.['endpoint'])
     if (existing.kind === 'missing') out(`Mesh: off. No ${name}.\n`)
@@ -294,7 +267,7 @@ export function runMeshctl(argv: string[], io: MeshctlIo = {}): number {
     const portText = values.get('--port') ?? String(UNSLOP_PORT)
     const port = /^\d{1,5}$/.test(portText) ? loopbackPort(`http://127.0.0.1:${portText}`) : undefined
     if (!port) return refuse('the port must be a number from 1 to 65535 other than 80; the endpoint is always http://127.0.0.1:<port>')
-    const existing = readExisting(file)
+    const existing = readMesh(file)
     if (existing.kind === 'refused') return refuse(`${name} ${existing.reason}. Remove it by hand if you are sure`)
     const doc: MeshDocument = existing.kind === 'present' ? existing.doc : { schema: MESH_SCHEMA }
     const agents = doc['agents'] === undefined ? {} : objectOf(doc['agents'])
@@ -355,7 +328,7 @@ export function runMeshctl(argv: string[], io: MeshctlIo = {}): number {
   if (command === 'disable' && unslop) {
     const purge = flags.delete('--purge')
     if (flags.size || values.size) return usage()
-    const existing = readExisting(file)
+    const existing = readMesh(file)
     if (existing.kind === 'refused') return refuse(`${name} ${existing.reason}. Remove it by hand if you are sure`)
     const steps: Step[] = []
     const agents = existing.kind === 'present' ? objectOf(existing.doc['agents']) : undefined
@@ -398,7 +371,7 @@ export function runMeshctl(argv: string[], io: MeshctlIo = {}): number {
 
   if (command === 'disable') {
     if (flags.size || values.size) return usage()
-    const existing = readExisting(file)
+    const existing = readMesh(file)
     if (existing.kind === 'missing') {
       out(`The mesh is already off: no ${name}. Nothing to do.\n`)
       return 0
@@ -429,4 +402,11 @@ let isMain = false
 try {
   isMain = Boolean(entry) && realpathSync(entry!) === realpathSync(fileURLToPath(import.meta.url))
 } catch { /* not run directly */ }
-if (isMain) process.exitCode = runMeshctl(process.argv.slice(2))
+if (isMain) {
+  const [command, ...rest] = process.argv.slice(2)
+  const err = (text: string): void => { process.stderr.write(text) }
+  process.exitCode = command === 'unslop'
+    ? await runUnslop(rest, { env: process.env, home: homedir(), stdin: process.stdin, out: (text) => { process.stdout.write(text) }, err })
+      .catch(() => { err('unslop: failed (internal error). Edit it in-session.\n'); return 13 })
+    : runMeshctl(process.argv.slice(2))
+}

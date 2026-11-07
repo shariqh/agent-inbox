@@ -381,6 +381,22 @@ describe('start, the mesh.json gate and idle exit', () => {
     await expect(http(port, { method: 'GET', path: '/.well-known/agent-card.json' })).rejects.toThrow()
   })
 
+  it('exits within one stat interval when the caller token changes or goes', async () => {
+    for (const change of ['rewrite', 'remove'] as const) {
+      const { dir, port } = await meshHome()
+      const a = await agent(dir)
+      const token = join(dir, 'mesh', 'tokens', 'unslop')
+      privateFile(token, `${TOKEN}\n`) // the same token rewritten keeps it running
+      a.ticks.fire()
+      expect(await settled(a.exited)).toBe(false)
+      if (change === 'rewrite') privateFile(token, `${'c3'.repeat(32)}\n`)
+      else rmSync(token)
+      a.ticks.fire()
+      expect(await a.exited, change).toBe('token')
+      await expect(http(port, { method: 'GET', path: '/.well-known/agent-card.json' })).rejects.toThrow()
+    }
+  })
+
   it('exits after 30 idle minutes (fake clock), not while a task runs', async () => {
     const { dir, port } = await meshHome()
     const clock = { t: Date.now() }

@@ -1,7 +1,8 @@
 // The unslop agent process (#483, unslop design §4.2-§4.5, §7.2): reads its
 // private files, refuses to start unless mesh.json's `agents.unslop` names a
 // loopback endpoint, serves A2A there, and exits within one minute of that key
-// going, or after 30 idle minutes. Every path derives from the mesh dir. The
+// going or the caller token changing (a disable and enable writes a new one, which
+// this process would otherwise refuse until it stopped), or after 30 idle minutes. Every path derives from the mesh dir. The
 // log gets one JSON line per task with sizes, timings and classes: never text,
 // never a matched value, never the token or the API key.
 import { execFileSync } from 'node:child_process'
@@ -26,7 +27,7 @@ type Profile = {
   skill: string; baseUrl: string; apiKey?: KeySource; model?: string; sampling?: Partial<Sampling>
   terms?: string[]; allowEmails?: string[]; customerPaths?: string[]
 }
-export type StopReason = 'mesh.json' | 'idle' | 'signal'
+export type StopReason = 'mesh.json' | 'token' | 'idle' | 'signal'
 export type AgentOptions = {
   meshDir: string
   profile: string
@@ -128,7 +129,8 @@ export async function startAgent(o: AgentOptions): Promise<Agent> {
   const port = endpointPort(o.meshDir)
   const root = join(o.meshDir, 'mesh')
   const profile = parseProfile(readPrivate(join(root, 'wrappers', 'unslop.json')))
-  const token = readPrivate(join(root, 'tokens', 'unslop')).trim()
+  const tokenFile = join(root, 'tokens', 'unslop')
+  const token = readPrivate(tokenFile).trim()
   if (!/^[\x21-\x7E]{32,}$/.test(token)) throw new ConfigError('the token must be at least 32 printable characters')
   const denyFile = join(root, 'unslop-deny.txt')
   readPrivate(denyFile, true)
@@ -189,10 +191,15 @@ export async function startAgent(o: AgentOptions): Promise<Agent> {
   }
   const cancelTick = every(GATE_MS, () => {
     let on = false
+    let sameToken = false
     try {
       on = endpointPort(o.meshDir) === port
     } catch {}
+    try {
+      sameToken = readPrivate(tokenFile).trim() === token
+    } catch {}
     if (!on) void stop('mesh.json')
+    else if (!sameToken) void stop('token')
     else if (server.idleMs() >= IDLE_MS) void stop('idle')
   })
   return { port, exited, stop }

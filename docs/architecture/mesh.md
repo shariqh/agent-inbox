@@ -103,8 +103,9 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
   order inside an aligned sentence, and one that crossed sentences must keep its own
   neighbours better than any other value's, ties failing. Negations count per clause
   whatever their form (`not`, `no`, `never`, `n't`, `without`, `none`, …), so "does not
-  add any" → "adds no" passes; pattern 9 ("not just X but Y", "not just X — it's Y") is
-  removed before counting. Negations and conditions are hard on any drop, on a move to
+  add any" → "adds no" passes; pattern 9 ("not just X but Y", "not just X — it's Y") and a
+  short list of negated clichés the rules cut ("not all sunshine and rainbows", "no silver
+  bullet", "not rocket science", …) are removed before counting. Negations and conditions are hard on any drop, on a move to
   another clause (its clause lost the context words on both sides of it, or another
   input clause matches it better; a new subject alone is no move), and on an addition
   unless the same clause dropped a negative word such as "fails". A text with more than 500 sentences or

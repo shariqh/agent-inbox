@@ -161,6 +161,11 @@ describe('negation forms and pattern 9 (first real run)', () => {
     ["It isn't just faster, it's safer.", 'It is safer.'],
     ['This is not only a cache; this is a queue.', 'This is a queue.'],
     ['It is not merely a rename - it is a new API.', 'It is a new API.'],
+    // negated clichés the rules cut (second real run)
+    ["Of course, it's not all sunshine and rainbows. Swapping models takes about a minute.", 'Swapping models takes about a minute.'],
+    ['Setting it up is not rocket science, and it runs on Linux.', 'Setting it up runs on Linux.'],
+    ['It is no silver bullet. It caches the index.', 'It caches the index.'],
+    ['Not to mention, it starts in 2 s.', 'It starts in 2 s.'],
   ]
   for (const [input, output] of PASS) {
     it(`passes: ${input} → ${output}`, () => {
@@ -176,6 +181,9 @@ describe('negation forms and pattern 9 (first real run)', () => {
     ['It is not just slow.', 'It is slow.'],
     ["It's not just a fix. It's not ready either.", "It's a fix. It's ready."],
     ['It is not ready, and it is late.', 'It is ready, and it is late.'],
+    // a cliché exemption never covers a plain negation beside it
+    ["It's not all sunshine and rainbows: the cache is not shared.", 'The cache is shared.'],
+    ['It is not rocket science, but it does not run on Windows.', 'It runs on Windows.'],
   ]
   for (const [input, output] of FAIL) {
     it(`fails negations: ${input} → ${output}`, () => {

@@ -226,6 +226,44 @@ describe('the card check (design §4.4)', () => {
   })
 })
 
+describe('a fake agent (design §7.3)', () => {
+  const card = {
+    skills: [{ id: 'unslop' }], supportedInterfaces: [{ url: 'x', protocolBinding: 'JSONRPC', protocolVersion: '1.0' }],
+    capabilities: { extensions: [{ uri: EXT, params: { api: 1 } }] },
+  }
+  async function fakeAgent(post: (res: import('node:http').ServerResponse) => void): Promise<string> {
+    const fake = createServer((req, res) => {
+      if (req.method === 'GET') return void res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(card))
+      req.resume()
+      req.on('end', () => post(res))
+    })
+    servers.push(fake)
+    return meshHome(`http://127.0.0.1:${await listen(fake)}`)
+  }
+
+  it('strips control bytes from everything the agent says before it reaches stderr', async () => {
+    const ESC = '\x1b]0;owned\x07\x1b[2J'
+    const dir = await fakeAgent((res) => {
+      const event = (result: unknown): string => `data: ${JSON.stringify({ jsonrpc: '2.0', id: 1, result })}\n\n`
+      res.writeHead(200, { 'content-type': 'text/event-stream' })
+      res.write(event({ task: { id: 't1', status: { state: 'TASK_STATE_WORKING', message: { parts: [{ text: `editing${ESC}` }] } } } }))
+      res.end(event({ statusUpdate: { taskId: 't1', status: { state: 'TASK_STATE_REJECTED', message: { parts: [{ text: 'x' }, { data: { code: 11, status: 'rejected', reason: `screen${ESC}\u009b31m`, screen: [`letter${ESC}`] } }] } } } }))
+    })
+    const r = await run(dir, ['--kind', 'pr'])
+    expect(r.code).toBe(11)
+    expect(r.err).toContain('unslop: editing]0;owned[2J\n')
+    expect(r.err).toContain('refused (screen]0;owned[2J31m: letter]0;owned[2J)')
+    expect(r.err).not.toMatch(/[\x00-\x08\x0B-\x1F\x7F-\x9F]/)
+  })
+
+  it('a 401 means an agent with an older token: exit 14, and run again shortly', async () => {
+    const dir = await fakeAgent((res) => void res.writeHead(401, { 'content-type': 'application/json' }).end('{"error":"token"}'))
+    const r = await run(dir, ['--kind', 'pr'])
+    expect(r.code).toBe(14)
+    expect(r.err).toContain('a running agent holds an older token; it stops within a minute, so run the command again shortly')
+  })
+})
+
 describe('end to end against the agent (design §6.3, §7.3)', () => {
   it('starts the agent on demand, prints the edit on exit 0 with a 0600 report, and the next call reuses it', async () => {
     const dir = meshHome(`http://127.0.0.1:${await freePort()}`)

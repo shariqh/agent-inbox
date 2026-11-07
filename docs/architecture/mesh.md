@@ -137,9 +137,10 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
   - **The gate (design §4.5 (e)).** It refuses to start unless `<mesh dir>/mesh.json`
     (the reading rule above) has `agents.unslop.endpoint` equal to
     `http://127.0.0.1:<port>` (not port 80: clients drop `:80` from `Host`); it binds that port on `127.0.0.1` and nothing else
-    (`startServer` refuses any other host). It re-reads `mesh.json` once a minute and
-    exits when the key goes or the endpoint changes, and after 30 minutes with no task
-    and no authenticated request.
+    (`startServer` refuses any other host). It re-reads `mesh.json` and the caller token once a minute and
+    exits when the key goes, the endpoint changes, or the token file changes or goes
+    (a quick `disable`/`enable` writes a new token this process would otherwise refuse
+    until it stopped), and after 30 minutes with no task and no authenticated request.
   - **The files it reads,** all under `<mesh dir>/mesh/`, each a regular file (never a
     symlink) owned by the user with no group or other bits: `wrappers/unslop.json` (the
     profile: `skill` folder, `baseUrl`, `apiKey` as `{ "env": NAME }`, `{ "file": absolute path }`
@@ -236,10 +237,14 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
      the first one's card answers). Anything else answering, or a card without the `unslop`
      skill, a JSON-RPC interface with `protocolVersion` `1.0`, or the
      `urn:agent-inbox:ext:unslop:v1` extension with `api: 1`, is 14 with "rebuild
-     packages/mesh". A missing or non-private token is 14; so is HTTP 401 or 403.
+     packages/mesh". A missing or non-private token is 14; so is HTTP 403, and HTTP 401, which means a
+     running agent still holds an older token (it stops at its next minute tick, so the
+     message says to run the command again shortly).
   4. **The call (§7.3):** one `SendStreamingMessage` with the kind and `timeoutMs` (the
      `--timeout`, default 280 s, at most 600) in the extension's metadata. Status texts go
-     to stderr as `unslop: <state>`. If the stream ends before a final state it says so and
+     to stderr as `unslop: <state>`. Every stderr line has C0 control bytes (but tab and
+     newline), DEL and C1 controls removed: agent-supplied text (status, reason, classes,
+     warnings) lands in an assistant's shell output and must not carry terminal escapes. If the stream ends before a final state it says so and
      calls `GetTask` every 5 s (`pollMs` in tests) until a final state, a JSON-RPC error,
      three failed polls in a row or the deadline. At the deadline it sends `CancelTask`
      (best effort, 2 s) and exits 13. No push notifications.

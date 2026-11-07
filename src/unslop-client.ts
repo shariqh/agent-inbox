@@ -186,7 +186,8 @@ function startAgent(dir: string, io: UnslopIo): { exited: () => boolean; log: st
 type Outcome = { state?: string; data?: Json; text?: string }
 
 export async function runUnslop(args: string[], io: UnslopIo): Promise<number> {
-  const say = (text: string): void => io.err(`unslop: ${text}\n`)
+  // agent-supplied text reaches an assistant's shell output: no control bytes but tab and newline
+  const say = (text: string): void => io.err(`unslop: ${text.replace(/[\x00-\x08\x0B-\x1F\x7F-\x9F]/g, '')}\n`)
   const values = new Map<string, string>()
   for (let i = 0; i < args.length; i += 2) {
     const [name, value] = [args[i]!, args[i + 1]]
@@ -338,8 +339,11 @@ export async function runUnslop(args: string[], io: UnslopIo): Promise<number> {
     },
   })
   try {
-    if (typeof streamed !== 'string' && (streamed.status === 401 || streamed.status === 403)) {
-      return unavailable(`the agent refused this call (HTTP ${streamed.status}): run meshctl enable --unslop again`)
+    if (typeof streamed !== 'string' && streamed.status === 401) {
+      return unavailable('a running agent holds an older token; it stops within a minute, so run the command again shortly')
+    }
+    if (typeof streamed !== 'string' && streamed.status === 403) {
+      return unavailable('the agent refused this call (HTTP 403): run meshctl enable --unslop again')
     }
     if (typeof streamed !== 'string' && !streamed.type.startsWith('text/event-stream')) {
       say(`failed: the agent answered HTTP ${streamed.status} without a task. Edit it in-session.`)

@@ -11,6 +11,6 @@
     "resolveJsonModule": true,
     "noEmit": true
   },
-  "include": ["src/**/*.ts", "test/**/*.ts", "vitest.config.ts"],
+  "include": ["src/**/*.ts", "bench/**/*.ts", "test/**/*.ts", "vitest.config.ts"],
   "exclude": ["node_modules", "dist"]
 }

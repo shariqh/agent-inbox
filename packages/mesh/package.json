@@ -14,7 +14,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "bench": "tsc -p tsconfig.bench.json && node dist/bench/bench/s11/run.js"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

@@ -948,6 +948,10 @@ and checkpoint are in [`2026-11-06-unslop-a2a-agent-design.md`](2026-11-06-unslo
 §2–§10. It is six PRs, an exception to "one or two reviewable PRs" above, so each stays near 300
 production lines. A stop there ends only M2a; M2 still starts.
 
+**M2b — proposed, not accepted (#500, P15).** `request-post` as the second agent, hosted by the
+private publishing service on the tailnet
+([`2026-11-07-request-post-a2a-agent-design.md`](2026-11-07-request-post-a2a-agent-design.md)).
+
 **M2 — Local wrapper spike.** `agent-inbox-wrap` with one read-only Copilot profile on loopback,
 a local token in a `0600` file, and `meshctl send` calling it directly. No registry, no relay,
 no hub writes, no permission prompts (the profile auto-allows its read-only tools and rejects the
@@ -1149,6 +1153,7 @@ container, docs without Tailscale; a Go `tsnet` binary only if asked for.
 | P12 | A local, read-only wrapper spike (M2) before any network piece. | §11 |
 | P13 | Don't fork or run Netflix Eureka. Build the TypeScript registry with a defined Eureka-compatible REST subset for membership, replacing D2's `a2a-lib` shape; no Eureka backend; an optional outbound Eureka mirror in M9 at most. | §15, §5.3, Appendix B |
 | P14 | Measure the mesh with §17's metrics, a human verdict per finished chain, and a replayable scenario bench run delegated and in-session at every phase from M2; each checkpoint reads named numbers. | §17, §11, Appendices C–D |
+| P15 | **Proposed 2026-11-07, not accepted (#500).** `request-post` as the second A2A agent: the private publishing service hosts the card and two skills (file, status) behind a narrowed door with a whole-request allowlist; agent-filed blog rows wait for Shariq's go; Agent Inbox ships `meshctl request-post` and public conformance fixtures; a phase M2b on the personal tailnet before M4 (ACL grant, per-machine tokens bound to Tailscale identity), an exception to §14.3 item 6 with wider reach than M2a's loopback but a narrower capability. Design: [`2026-11-07-request-post-a2a-agent-design.md`](2026-11-07-request-post-a2a-agent-design.md) | §11, §6.6, §8.8 |
 
 ### 14.3 Changes after review (2026-10-29)
 

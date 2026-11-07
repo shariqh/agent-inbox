@@ -287,7 +287,10 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
   `fidelity.ts`. `run.ts` refuses a run folder inside the checkout, writes 0700 folders
   and 0600 files through `writePrivate`, calls the client per fixture with `--report`,
   and adds the fictional `Acme Widgets` to `unslop-deny.txt` only while private fixtures
-  run (restoring the file after, also on SIGINT and SIGTERM). The sampling comparison is a
+  run (restoring the file after, also on SIGINT, SIGTERM and SIGHUP). It writes
+  `unslop-deny.txt.s11-added` first, so a run killed before it could restore has its line
+  removed by the next run. The blind sheet holds edits only; `--new-blind` merges into the
+  existing key and answers. The sampling comparison is a
   second agent in its own mesh dir with the box's default sampling in its profile, not a
   switch in the agent. How to run it and read `summary.md`: [`docs/unslop.md`](../unslop.md).
   Tests: `packages/mesh/test/bench-s11.test.ts` (recorded runs, no network).

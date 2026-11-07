@@ -2,8 +2,8 @@
 // the fixtures to a run folder (0700, files 0600, never inside this checkout),
 // the in-session folder a person or an assistant fills by hand, and runs each
 // fixture through the real client with --report, recording the exit code, the
-// time and the report. For the private set the fictional deny-list customer is
-// added to the deny list for the run and removed after. `score` writes
+// time and the report. The fictional deny-list customer is in the deny list only
+// while the private set runs (a marker lets the next run undo a killed one). `score` writes
 // summary.md and the blind sheet. Node core only; nothing here ships.
 import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
@@ -40,19 +40,42 @@ export function callClient(command: string, kind: string, report: string, text: 
   })
 }
 
+/** Written before the entry is added, so the next run removes a line a killed run left behind. */
+const markerOf = (file: string): string => `${file}.s11-added`
+
+function removeEntry(file: string, created: boolean): void {
+  const lines = readPrivate(file, true)?.split('\n')
+  const at = lines?.lastIndexOf(DENY_ENTRY) ?? -1
+  if (!lines || at < 0) return
+  const rest = [...lines.slice(0, at), ...lines.slice(at + 1)].join('\n')
+  if (created && !rest.trim()) rmSync(file, { force: true })
+  else writePrivate(file, rest)
+}
+
 /** Adds the fictional customer to the deny list; the returned function puts the file back as it was. */
 export function addDenyEntry(file: string): () => void {
+  const marker = markerOf(file)
+  const left = readPrivate(marker, true)
+  if (left !== undefined) {
+    let created = false
+    try { created = (JSON.parse(left) as { created?: unknown }).created === true } catch { /* a torn marker: keep the file */ }
+    removeEntry(file, created)
+    rmSync(marker, { force: true })
+  }
   const before = readPrivate(file, true)
   if (before?.split('\n').some((l) => l.trim().toLowerCase() === DENY_ENTRY.toLowerCase())) return () => {}
   const added = `${before ?? ''}${before && !before.endsWith('\n') ? '\n' : ''}${DENY_ENTRY}\n`
+  writePrivate(marker, JSON.stringify({ created: before === undefined }))
   writePrivate(file, added)
+  let done = false
   return () => {
-    const now = readPrivate(file, true)
-    if (now === undefined || now === added) return before === undefined ? rmSync(file, { force: true }) : writePrivate(file, before)
+    if (done) return
+    done = true
     // edited during the run: drop only the line this run added
-    const lines = now.split('\n')
-    const at = lines.lastIndexOf(DENY_ENTRY)
-    if (at >= 0) writePrivate(file, [...lines.slice(0, at), ...lines.slice(at + 1)].join('\n'))
+    if (readPrivate(file, true) !== added) removeEntry(file, before === undefined)
+    else if (before === undefined) rmSync(file, { force: true })
+    else writePrivate(file, before)
+    rmSync(marker, { force: true })
   }
 }
 
@@ -132,14 +155,20 @@ async function main(argv: string[]): Promise<number> {
   const only = opts.get('--only')?.split(',')
   // the sampling pass re-runs the edits only (design §9.1)
   const chosen = fixtures.filter((f) => (only ? only.includes(f.id) : pass === 'agent' || f.part === 'edit'))
-  const deny = chosen.some((f) => f.part === 'private') && !opts.has('--no-deny')
-  const restore = deny ? addDenyEntry(join(mesh, 'mesh', 'unslop-deny.txt')) : () => {}
-  const stop = (): never => { restore(); process.exit(130) }
-  process.once('SIGINT', stop).once('SIGTERM', stop)
-  try {
-    await runPass(run, chosen, { unslop: opts.get('--unslop') ?? join(mesh, 'bin', 'unslop'), env, pass })
-  } finally {
-    restore()
+  const call = { unslop: opts.get('--unslop') ?? join(mesh, 'bin', 'unslop'), env, pass } as const
+  await runPass(run, chosen.filter((f) => f.part !== 'private'), call)
+  const privates = chosen.filter((f) => f.part === 'private')
+  if (privates.length) {
+    // the deny entry exists only while the private texts run
+    const restore = opts.has('--no-deny') ? () => {} : addDenyEntry(join(mesh, 'mesh', 'unslop-deny.txt'))
+    const stop = (): never => { restore(); process.exit(130) }
+    for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) process.once(signal, stop)
+    try {
+      await runPass(run, privates, call)
+    } finally {
+      restore()
+      for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) process.off(signal, stop)
+    }
   }
   process.stdout.write(scoreRun(run))
   process.stderr.write(`s11: run folder ${run}\n`)

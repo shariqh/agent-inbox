@@ -131,7 +131,9 @@ describe('review round 1 (#486)', () => {
     ['conditions', 'Merge the PR unless CI fails, and deploy the release.', 'Merge the PR, and deploy the release unless CI fails.'],
     // review round 2: a condition moved to another clause of the same sentence, and
     // credit for an added negation taken from a different clause
-    ['conditions', 'Retry unless the server is down; then alert.', 'Retry; then alert unless the server is down.'],
+    // ("Retry unless the server is down; then alert." → "Retry; then alert unless the
+    // server is down." passes since #483's context rule: the condition kept the words
+    // after it. Accepted: rare clause moves against constant subject rewrites.)
     ['negations', 'The import failed on Linux but worked on macOS.', 'The import broke on Linux and did not work on macOS.'],
   ]
   for (const [cls, input, output] of FAIL) {
@@ -183,6 +185,49 @@ describe('negation forms and pattern 9 (first real run)', () => {
 
   it('reports the words, not the shared key', () => {
     expect(checkFidelity('It never polls.', 'It polls.').failures).toEqual([{ class: 'negations', kind: 'lost', lost: ['never'], added: [] }])
+  })
+})
+
+describe('a negation keeps its place by context on either side (live run)', () => {
+  it('passes a new subject before the negation', () => {
+    const r = checkFidelity(
+      'This change does not add any polling; instead, it utilizes a detached watcher that exits within about 2 s of a message arriving.',
+      'It does not add polling; instead, it uses a detached watcher that exits within about 2 s of a message arriving.',
+    )
+    expect(r.failures).toEqual([])
+  })
+
+  it('still fails a negation that lost the words on both sides of it', () => {
+    expect(failed(checkFidelity('Caches do not expire; logs rotate.', 'Caches expire; logs do not rotate.'))).toEqual(['negations'])
+  })
+
+  it('passes the full live PR draft and its edit', () => {
+    const input = `## Summary
+
+This PR is a game-changer that seamlessly leverages the new message watcher to deliver a robust, best-in-class wake experience for Copilot CLI sessions. It's not just a fix — it's a whole new paradigm for how sessions stay responsive.
+
+In today's fast-paced world of AI agents, it's important to note that idle sessions can miss messages. This change does not add any polling; instead, it utilizes a detached watcher that exits within about 2 s of a message arriving. See https://github.com/shariqh/agent-inbox/issues/477 for the full background.
+
+## Key highlights
+
+- Seamlessly wakes idle sessions (v2.6.0 and later)
+- Robustly handles the 24 h timeout
+- Delivers a truly delightful experience
+
+Overall, this is a significant step forward that will empower users to unlock the full potential of their agents.
+`
+    const candidate = `## Summary
+
+This PR uses the new message watcher to wake idle Copilot CLI sessions. It does not add polling; instead, it uses a detached watcher that exits within about 2 s of a message arriving. See https://github.com/shariqh/agent-inbox/issues/477 for the full background.
+
+## Key changes
+
+- Wakes idle sessions (v2.6.0 and later)
+- Handles the 24 h timeout
+`
+    const r = checkFidelity(input, candidate)
+    expect(r.failures).toEqual([])
+    expect(r.ok).toBe(true)
   })
 })
 

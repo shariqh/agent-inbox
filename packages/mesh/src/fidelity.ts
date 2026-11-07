@@ -21,7 +21,7 @@ export type FidelityReport = {
 }
 
 // `key` is what is compared; `value` is what is reported (every negation form shares one key)
-type Item = { value: string; key: string; start: number; end: number; sent: number; clause: number; ctx: Set<string>; head: Set<string> }
+type Item = { value: string; key: string; start: number; end: number; sent: number; clause: number; ctx: Set<string>; head: Set<string>; tail: Set<string> }
 type Extract = {
   items: Record<HardClass, Item[]>
   soft: Record<'modal' | 'hedge' | 'short-quote', string[]>
@@ -92,7 +92,7 @@ function extract(input: string, terms: string[]): Extract {
     for (const m of w.matchAll(re)) {
       const start = m.index!
       const end = start + m[0].length
-      if (cls) items[cls].push({ value: value(m), key: '', start, end, sent: 0, clause: 0, ctx: new Set(), head: new Set() })
+      if (cls) items[cls].push({ value: value(m), key: '', start, end, sent: 0, clause: 0, ctx: new Set(), head: new Set(), tail: new Set() })
       parts.push(w.slice(last, start), m[0].replace(/[^\n]/g, ' '))
       last = end
     }
@@ -103,7 +103,7 @@ function extract(input: string, terms: string[]): Extract {
   take('code', /(`+)(?!`)[\s\S]*?[^`]\1(?!`)/g, raw)
   for (const m of w.matchAll(/"([^"\n]+)"/g)) {
     const q = m[1]!.trim().replace(/\s+/g, ' ')
-    if (q.split(' ').length >= 3) items.quotes.push({ value: q, key: q, start: m.index!, end: m.index! + m[0].length, sent: 0, clause: 0, ctx: new Set(), head: new Set() })
+    if (q.split(' ').length >= 3) items.quotes.push({ value: q, key: q, start: m.index!, end: m.index! + m[0].length, sent: 0, clause: 0, ctx: new Set(), head: new Set(), tail: new Set() })
     else soft['short-quote'].push(q)
   }
   take('urls', /\]\(\s*<?([^\s)>]+)>?(?:\s+"[^"]*")?\s*\)/g, (m) => m[1]!)
@@ -150,10 +150,12 @@ function extract(input: string, terms: string[]): Extract {
       item.sent = spanOf(sentSpans, item.start)
       item.clause = spanOf(clauseSpans, item.start)
       item.ctx = neighbours(orig, sentSpans[item.sent]!, item.start, item.end)
-      // the last content words before a negation or condition in its clause (a partial
-      // word such as "ca" of "can't" dropped), which must stay in its output clause
+      // up to three content words on each side of a negation or condition in its clause
+      // (a partial word such as "ca" of "can't" dropped); its output clause must keep one
       if (DROP_ONLY.has(cls)) {
-        item.head = new Set(tokens(w.slice(clauseSpans[item.clause]![0], item.start).replace(/\S+$/, '')).filter((t) => !LOGIC.test(t)).slice(-3))
+        const [cs, ce] = clauseSpans[item.clause]!
+        item.head = new Set(tokens(w.slice(cs, item.start).replace(/\S+$/, '')).filter((t) => !LOGIC.test(t)).slice(-3))
+        item.tail = new Set(tokens(w.slice(item.end, ce)).filter((t) => !LOGIC.test(t)).slice(0, 3))
       }
     }
   }
@@ -247,15 +249,18 @@ function compare(cls: HardClass, A: Extract, B: Extract, at: number[], clauseAt:
     })
   }
   if (DROP_ONLY.has(cls)) {
-    // A negation or condition fails when its output clause lost every word that
-    // led up to it, or when another input clause (two or more shared words)
-    // survives around it better than its own clause does.
+    // A negation or condition fails when it had context words on both sides and its
+    // output clause lost every one of them (a new subject alone, "This change" →
+    // "It", is no move),
+    // or when another input clause (two or more shared words) survives around it
+    // better than its own clause does.
     const kept = (c: Set<string>, mine: Set<string>): number => (c.size ? shared(c, mine) / c.size : 0)
     const rivals = new Map<string, Array<[number, number]>>()
     b.forEach((out, j) => {
       const i = pair[j]!
       const mine = B.clauses[out.clause]!
-      if (i >= 0 && a[i]!.head.size && !shared(a[i]!.head, mine)) moved.add(j)
+      const inp = a[i]
+      if (inp && inp.head.size && inp.tail.size && !shared(inp.head, mine) && !shared(inp.tail, mine)) moved.add(j)
       if (i < 0 || !mine.size) return
       const key = [...mine].join(' ')
       if (!rivals.has(key)) {

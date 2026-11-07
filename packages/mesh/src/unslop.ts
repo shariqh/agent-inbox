@@ -9,7 +9,7 @@ import { randomBytes } from 'node:crypto'
 import { DEFAULT_MODEL, DEFAULT_SAMPLING, checkApiKey, checkBaseUrl, classify, maxTokens, post as httpPost, requestBody } from './backend.js'
 import type { BackendProfile, Post, Sampling, TransportReason } from './backend.js'
 import { checkFidelity } from './fidelity.js'
-import type { Failure, FidelityReport } from './fidelity.js'
+import type { Failure, FidelityReport, HardClass } from './fidelity.js'
 import { buildMessages, cleanAnswer } from './prompt.js'
 import type { Retry } from './prompt.js'
 import type { Rules } from './rules.js'
@@ -27,7 +27,8 @@ export type UnslopResult = {
   /** a class name, never a value */
   reason?: string
   screen?: ScreenClass[]
-  failures?: Failure[]
+  /** the last check's failed items, at most 10 values of 80 characters per class: the caller's report only, never the log */
+  failures?: ReportedFailure[]
   rulesSha256: string
   model: string
   attempts: number
@@ -35,6 +36,7 @@ export type UnslopResult = {
   warnings: FidelityReport['warnings']
   ms: Ms
 }
+export type ReportedFailure = { class: HardClass; kind: Failure['kind']; lost: string[]; added: string[]; moved?: string[] }
 export type UnslopLog = {
   taskId: string; kind?: Kind; bytesIn: number; bytesOut?: number; code: Outcome; status: Status; reason?: string
   screen?: ScreenClass[]; model: string; rulesSha256: string; attempts: number; hard: Partial<FidelityReport['hard']>
@@ -59,6 +61,10 @@ export const TASK_MS = 270_000
 const DEFAULT_TOKENS_PER_S = 44
 // a gap this long between the request and the box's own prompt+predict time is a model load
 const LOAD_GAP_MS = 1000
+const REPORT_VALUES = 10
+const REPORT_CHARS = 80
+const capped = (values: string[]): string[] =>
+  values.slice(0, REPORT_VALUES).map((v) => (v.length > REPORT_CHARS ? `${v.slice(0, REPORT_CHARS - 1)}…` : v))
 const CONTROL = /[\u0000-\u0008\u000B-\u001F\u007F-\u009F]/
 const TRANSPORT: Record<TransportReason, string> = { unreachable: 'unreachable', deadline: 'deadline', aborted: 'cancelled', 'too-large': 'backend-too-large', invalid: 'backend-request' }
 
@@ -78,9 +84,12 @@ export async function runUnslop(task: UnslopTask, env: UnslopEnv): Promise<Unslo
   let report: FidelityReport | undefined
 
   const end = (code: Outcome, status: Status, extra: Partial<UnslopResult> = {}): UnslopResult => {
+    const failures = report?.failures.map((f): ReportedFailure => ({
+      class: f.class, kind: f.kind, lost: capped(f.lost), added: capped(f.added), ...(f.moved ? { moved: capped(f.moved) } : {}),
+    }))
     const result: UnslopResult = {
       code, status, rulesSha256: env.rules.sha256, model: profile.model, attempts,
-      hard: report?.hard ?? {}, warnings: report?.warnings ?? [], ms, ...extra,
+      hard: report?.hard ?? {}, warnings: report?.warnings ?? [], ...(failures?.length ? { failures } : {}), ms, ...extra,
     }
     env.log?.({
       taskId: task.taskId ?? random(8).toString('hex'), kind, bytesIn: Buffer.byteLength(input),
@@ -90,7 +99,7 @@ export async function runUnslop(task: UnslopTask, env: UnslopEnv): Promise<Unslo
     })
     return result
   }
-  const kept = (reason: string, failures?: Failure[]): UnslopResult => end(10, 'kept-original', { text: input, reason, ...(failures ? { failures } : {}) })
+  const kept = (reason: string): UnslopResult => end(10, 'kept-original', { text: input, reason })
 
   let url: URL
   try {
@@ -121,6 +130,8 @@ export async function runUnslop(task: UnslopTask, env: UnslopEnv): Promise<Unslo
 
   for (;;) {
     attempts++
+    // the result reports the last attempt's check only
+    report = undefined
     env.onState?.(retry ? 'retrying' : 'editing')
     const left = deadline - now()
     if (left <= 0) return end(13, 'failed', { reason: 'deadline' })
@@ -156,7 +167,7 @@ export async function runUnslop(task: UnslopTask, env: UnslopEnv): Promise<Unslo
     if (report.tooComplex) return kept('too-complex')
     if (report.ok) return end(0, 'rewritten', { text: answer.text })
     const needMs = (limit / tokensPerS) * 1000
-    if (retry || deadline - now() < needMs) return kept(retry ? 'fidelity' : 'fidelity-no-time', report.failures)
+    if (retry || deadline - now() < needMs) return kept(retry ? 'fidelity' : 'fidelity-no-time')
     retry = {
       keep: report.failures.flatMap((f) => [...f.lost, ...(f.moved ?? [])]),
       added: report.failures.flatMap((f) => f.added),

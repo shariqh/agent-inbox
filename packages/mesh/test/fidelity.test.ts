@@ -69,12 +69,13 @@ const HARD: Array<[string, string, string, string, string, string]> = [
     'Edit src/mesh-config.ts by hand, then run ./scripts/install.sh with --apply --force.',
     'Edit src/mesh-config.js by hand, then run ./scripts/install.sh with --apply.',
     'Edit ./scripts/install.sh by hand, then run src/mesh-config.ts with --apply.'],
+  // negations compare as a count per clause, so a change or swap is a move to another clause
   ['negations',
+    'It does not build on Linux and runs on Windows.',
+    'It does build on Linux and runs on Windows.',
     'It does not build on Linux and never runs on Windows.',
-    'It does build on Linux and never runs on Windows.',
-    'It does not build on Linux and never runs on Windows without help.',
-    'It does not build on Linux and does not run on Windows.',
-    'It never builds on Linux and does not run on Windows.'],
+    'It builds on Linux and never runs on Windows.',
+    'It builds on Linux and does not run on Windows.'],
   ['conditions',
     'Merge unless CI fails, and wait until the review lands.',
     'Merge when CI passes, and wait until the review lands.',
@@ -145,6 +146,43 @@ describe('review round 1 (#486)', () => {
     expect(warned(r)).toEqual(['negation-added'])
     // one dropped negative word pays for one addition, even across a sentence split
     expect(failed(checkFidelity('The server fails on boot.', 'The server does not start on boot. It does not respond.'))).toEqual(['negations'])
+  })
+})
+
+describe('negation forms and pattern 9 (first real run)', () => {
+  const PASS: Array<[string, string]> = [
+    ['This change does not add any polling.', 'This change adds no polling.'],
+    ['It does not build on Linux and never runs on Windows.', 'It never builds on Linux and does not run on Windows.'],
+    ["We can't ship without a key.", 'We cannot ship with no key.'],
+    ['Nothing is cached.', 'The agent caches nothing.'],
+    ["It's not just a fix — it's a whole new paradigm.", 'It changes how sessions stay responsive.'],
+    ["It isn't just faster, it's safer.", 'It is safer.'],
+    ['This is not only a cache; this is a queue.', 'This is a queue.'],
+    ['It is not merely a rename - it is a new API.', 'It is a new API.'],
+  ]
+  for (const [input, output] of PASS) {
+    it(`passes: ${input} → ${output}`, () => {
+      expect(failed(checkFidelity(input, output))).toEqual([])
+    })
+  }
+
+  const FAIL: Array<[string, string]> = [
+    ['This change does not add any polling.', 'This change adds polling.'],
+    ['It does not poll, and it never retries.', 'It does not poll, and it retries.'],
+    ['It does not poll the server, and it sends the request.', 'It polls the server, and it does not send the request.'],
+    ['This is not only for admins.', 'This is for admins.'],
+    ['It is not just slow.', 'It is slow.'],
+    ["It's not just a fix. It's not ready either.", "It's a fix. It's ready."],
+    ['It is not ready, and it is late.', 'It is ready, and it is late.'],
+  ]
+  for (const [input, output] of FAIL) {
+    it(`fails negations: ${input} → ${output}`, () => {
+      expect(failed(checkFidelity(input, output))).toContain('negations')
+    })
+  }
+
+  it('reports the words, not the shared key', () => {
+    expect(checkFidelity('It never polls.', 'It polls.').failures).toEqual([{ class: 'negations', kind: 'lost', lost: ['never'], added: [] }])
   })
 })
 

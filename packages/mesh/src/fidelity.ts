@@ -20,7 +20,8 @@ export type FidelityReport = {
   warnings: Array<{ class: WarningClass; detail: string }>
 }
 
-type Item = { value: string; start: number; end: number; sent: number; clause: number; ctx: Set<string>; head: Set<string> }
+// `key` is what is compared; `value` is what is reported (every negation form shares one key)
+type Item = { value: string; key: string; start: number; end: number; sent: number; clause: number; ctx: Set<string>; head: Set<string> }
 type Extract = {
   items: Record<HardClass, Item[]>
   soft: Record<'modal' | 'hedge' | 'short-quote', string[]>
@@ -39,10 +40,10 @@ const NUMBER = /(?:\b(about|around|roughly|approximately|nearly|almost|up to|at 
 const DROP_ONLY = new Set<HardClass>(['negations', 'conditions'])
 const MAX_UNITS = 500
 // a dropped one of these pays for one added negation or condition in its clause
-const NEGATIVE = /\b(?:fail(?:s|ed|ing)?|lack(?:s|ed|ing)?|unable|missing|refus(?:e|es|ed|ing)|prevent(?:s|ed|ing)?|without|absent|broken|disabled|nor|none|nothing)\b/gi
+const NEGATIVE = /\b(?:fail(?:s|ed|ing)?|lack(?:s|ed|ing)?|unable|missing|refus(?:e|es|ed|ing)|prevent(?:s|ed|ing)?|absent|broken|disabled)\b/gi
 const SENTENCE = /[.!?](?=\s)|\n/g
 const CLAUSE = /[.!?](?=\s)|\n|[,;:()—–]|\s(?:but|and|or|while|whereas|although|though)(?=\s)/gi
-const LOGIC = /^(?:not|never|no|without|cannot|unless|except|until|only|if)$/
+const LOGIC = /^(?:not|never|no|without|cannot|none|nothing|nobody|nowhere|neither|nor|unless|except|until|only|if)$/
 const HEDGES = /\b(?:likely|probably|perhaps|possibly|maybe|apparently|seemingly|presumably|arguably|roughly|approximately|around|nearly|almost|somewhat|generally|typically|usually)\b/gi
 const STOP = new Set('an the and or but nor of to in on at for with by from as is are was were be been it its this that these those then than so if do does did has have had we you he she they them our your their my me us there here which who what when where how into via per'.split(' '))
 const MONTH_NUM = (m: string): string => String('janfebmaraprmayjunjulaugsepoctnovdec'.indexOf(m.slice(0, 3).toLowerCase()) / 3 + 1).padStart(2, '0')
@@ -50,8 +51,9 @@ const pad = (n: string | number): string => String(n).padStart(2, '0')
 
 function norm(raw: string[]): string[] {
   return raw.map((t) => t.toLowerCase().replace(/^[^\w#@~/.$]+|[^\w%]+$/g, ''))
+    .filter((t) => !STOP.has(t))
     .map((t) => (/^[a-z]+$/.test(t) ? t.replace(/(?<=\w{2}[^s])s$/, '') : t.replace(/'s$/, '')))
-    .filter((t) => t.length > 1 && !STOP.has(t))
+    .filter((t) => t.length > 1)
 }
 const tokens = (s: string): string[] => norm(s.split(/\s+/))
 
@@ -90,7 +92,7 @@ function extract(input: string, terms: string[]): Extract {
     for (const m of w.matchAll(re)) {
       const start = m.index!
       const end = start + m[0].length
-      if (cls) items[cls].push({ value: value(m), start, end, sent: 0, clause: 0, ctx: new Set(), head: new Set() })
+      if (cls) items[cls].push({ value: value(m), key: '', start, end, sent: 0, clause: 0, ctx: new Set(), head: new Set() })
       parts.push(w.slice(last, start), m[0].replace(/[^\n]/g, ' '))
       last = end
     }
@@ -101,7 +103,7 @@ function extract(input: string, terms: string[]): Extract {
   take('code', /(`+)(?!`)[\s\S]*?[^`]\1(?!`)/g, raw)
   for (const m of w.matchAll(/"([^"\n]+)"/g)) {
     const q = m[1]!.trim().replace(/\s+/g, ' ')
-    if (q.split(' ').length >= 3) items.quotes.push({ value: q, start: m.index!, end: m.index! + m[0].length, sent: 0, clause: 0, ctx: new Set(), head: new Set() })
+    if (q.split(' ').length >= 3) items.quotes.push({ value: q, key: q, start: m.index!, end: m.index! + m[0].length, sent: 0, clause: 0, ctx: new Set(), head: new Set() })
     else soft['short-quote'].push(q)
   }
   take('urls', /\]\(\s*<?([^\s)>]+)>?(?:\s+"[^"]*")?\s*\)/g, (m) => m[1]!)
@@ -127,15 +129,17 @@ function extract(input: string, terms: string[]): Extract {
     return `${pad(h)}:${m[2] ?? '00'}`
   })
   take(null, /^[ \t]*\d+[.)](?=[ \t])/gm, () => '')
-  take(null, /(?:\bnot|n't)\s+(?:just|only|merely|simply)\b(?=[^.!?\n]*\bbut\b)/gi, () => '')
+  // pattern 9, "not just X but Y" or "not just X — it's Y", is cut by the rules; its "not" is no negation
+  take(null, /(?:\bnot|n't)\s+(?:just|only|merely|simply)\b(?=[^.!?\n]*?(?:\bbut\b|(?:[—–;,]|\s-)\s*(?:it's|it is|this is|that's|that is)\b))/gi, () => '')
   take('numbers', NUMBER, (m) => {
     const n = `${m[3]!.replace(/(\d),(?=\d{3}(?!\d))/g, '$1')}${m[4] ? '%' : ''}`
     return m[1] || m[2] ? `${(m[1] ?? m[2])!.toLowerCase().replace(/\s+/g, ' ')} ${n}` : n
   })
-  take('negations', /\b(?:not|never|no|without|cannot)\b|n't\b/gi, (m) => (/^(?:cannot|n't)$/i.test(m[0]) ? 'not' : m[0].toLowerCase()), false)
+  take('negations', /\b(?:not|never|no|without|cannot|none|nothing|nobody|nowhere|neither|nor)\b|n't\b/gi, (m) => (/^(?:cannot|n't)$/i.test(m[0]) ? 'not' : m[0].toLowerCase()), false)
   take('conditions', /\b(?:unless|except|until|only if)\b/gi, (m) => m[0].toLowerCase(), false)
   soft.modal = [...w.matchAll(/\b(?:may|might|could|should|must|will|won't)\b|'ll\b/gi)].map((m) => (/^(?:won't|'ll)$/i.test(m[0]) ? 'will' : m[0].toLowerCase()))
   soft.hedge = [...w.matchAll(HEDGES)].map((m) => m[0].toLowerCase())
+  for (const cls of HARD) for (const item of items[cls]) item.key = cls === 'negations' ? 'not' : item.value
   const sentSpans = spans(w, SENTENCE)
   const clauseSpans = spans(w, CLAUSE)
   const tooComplex = sentSpans.filter(([st, e]) => /\S/.test(w.slice(st, e))).length > MAX_UNITS
@@ -204,8 +208,8 @@ function compare(cls: HardClass, A: Extract, B: Extract, at: number[], clauseAt:
   const a = A.items[cls]
   const b = B.items[cls]
   const queue = new Map<string, number[]>()
-  a.forEach((item, i) => { const q = queue.get(item.value); if (q) q.push(i); else queue.set(item.value, [i]) })
-  const pair = b.map((item) => queue.get(item.value)?.shift() ?? -1)
+  a.forEach((item, i) => { const q = queue.get(item.key); if (q) q.push(i); else queue.set(item.key, [i]) })
+  const pair = b.map((item) => queue.get(item.key)?.shift() ?? -1)
   const lost = [...queue.values()].flat().sort((x, y) => x - y).map((i) => a[i]!.value)
   // §6.1: negations and conditions are hard on any drop; one added fails unless
   // its clause dropped a negative word ("fails to load" → "does not load"). The
@@ -239,7 +243,7 @@ function compare(cls: HardClass, A: Extract, B: Extract, at: number[], clauseAt:
         return
       }
       const own = jaccard(inp.ctx, out.ctx)
-      if (a.some((other) => other.value !== inp.value && jaccard(other.ctx, out.ctx) >= own)) moved.add(j)
+      if (a.some((other) => other.key !== inp.key && jaccard(other.ctx, out.ctx) >= own)) moved.add(j)
     })
   }
   if (DROP_ONLY.has(cls)) {
@@ -285,7 +289,8 @@ export function checkFidelity(input: string, output: string, options: { terms?: 
     if (lost.length || added.length) warnings.push({ class: cls, detail: `${lost.join(', ') || 'none'} → ${added.join(', ') || 'none'}` })
   }
   for (const [cls, warn] of [['negations', 'negation-added'], ['conditions', 'condition-added']] as const) {
-    const added = minus(b.items[cls].map((i) => i.value), a.items[cls].map((i) => i.value))
+    const left = a.items[cls].map((i) => i.key)
+    const added = b.items[cls].filter((i) => { const k = left.indexOf(i.key); if (k >= 0) left.splice(k, 1); return k < 0 }).map((i) => i.value)
     if (added.length && hard[cls] === 'ok') warnings.push({ class: warn, detail: added.join(', ') })
   }
   if (b.sentences < a.sentences * 0.8) warnings.push({ class: 'sentences', detail: `${a.sentences} → ${b.sentences}` })

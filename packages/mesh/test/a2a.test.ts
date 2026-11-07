@@ -247,10 +247,15 @@ describe('tasks', () => {
     expect(refused.body.result.task.status.state).toBe('TASK_STATE_REJECTED')
     const file = join(dir, 'mesh', 'logs', `unslop-${localDate(Date.now())}.log`)
     expect(statSync(file).mode & 0o777).toBe(0o600)
+    // a failed check: its values reach the caller's artifact, only its classes the log
+    const kept = await rpc(port, 'SendMessage', message(`The note says "it is really very ${CANARY} good" here.\n`))
+    const data = kept.body.result.task.artifacts[0].parts[1].data
+    expect(data).toMatchObject({ code: 10, reason: 'fidelity', failures: [{ class: 'quotes', kind: 'changed', lost: [`it is really very ${CANARY} good`] }] })
     const lines = logLines(dir).trim().split('\n').map((l) => JSON.parse(l))
-    expect(lines).toHaveLength(2)
+    expect(lines).toHaveLength(3)
     expect(lines[0]).toMatchObject({ taskId: done.body.result.task.id, bytesIn: Buffer.byteLength(INPUT), code: 0, kind: 'pr' })
     expect(lines[1]).toMatchObject({ code: 11, reason: 'screen' })
+    expect(lines[2]).toMatchObject({ code: 10, reason: 'fidelity', failures: [{ class: 'quotes', kind: 'changed' }] })
     for (const secret of [CANARY, 'jane@', 'customer.example', TOKEN, API_KEY, 'example.com/docs']) expect(logLines(dir)).not.toContain(secret)
   })
 

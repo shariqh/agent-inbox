@@ -257,8 +257,29 @@ describe('fidelity and retry', () => {
     queue(reply(BAD), reply(BAD.replace('v2.5.0', 'v2.6.0')))
     const result = await runUnslop(task(), setup().env)
     expect(result).toMatchObject({ code: 10, status: 'kept-original', reason: 'fidelity', text: INPUT, attempts: 2 })
-    expect(result.failures!.map((f) => f.class).sort()).toEqual(['negations', 'numbers'])
+    // the last attempt's items, for the caller's report
+    expect(result.failures).toEqual([
+      { class: 'numbers', kind: 'changed', lost: ['v2.5.0'], added: ['v2.6.0'] },
+      { class: 'negations', kind: 'lost', lost: ['not'], added: [] },
+    ])
     expect(result.hard).toMatchObject({ negations: 'failed', numbers: 'failed', urls: 'ok' })
+  })
+
+  it('caps the reported items at 10 values of 80 characters per class, and reports none after a passing retry', async () => {
+    const quote = `"${'a long quoted phrase '.repeat(6).trim()}"`
+    const input = `Counts ${Array.from({ length: 12 }, (_, i) => 1001 + i).join(', ')}. The spec says ${quote}.\n`
+    const output = 'Counts vary. The spec says something.\n'
+    queue(reply(output), reply(output))
+    const result = await runUnslop(task(input), setup().env)
+    expect(result.code).toBe(10)
+    const numbers = result.failures!.find((f) => f.class === 'numbers')!
+    expect(numbers.lost).toEqual(Array.from({ length: 10 }, (_, i) => String(1001 + i)))
+    const quotes = result.failures!.find((f) => f.class === 'quotes')!
+    expect(quotes.lost[0]).toHaveLength(80)
+    expect(quotes.lost[0]!.endsWith('…')).toBe(true)
+
+    queue(reply(BAD), reply(GOOD))
+    expect((await runUnslop(task(), setup().env)).failures).toBeUndefined()
   })
 
   it('skips the retry when the time left does not cover its output limit', async () => {

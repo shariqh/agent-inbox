@@ -1026,11 +1026,14 @@ contract, `delegation: "first-hop-click"`, the bridge's counters and the Mesh va
   Change: tighten when agents may call `delegate`, or the wake path. Stop if delegation costs more
   attention than it saves (net human time ≤ 0 for the week).
 
-**M7 — Load, distribution, local model.** Load samples and the distribution view; least-loaded
-selection for `delegate({ skill })`; a real-call probe from the console to allowlisted endpoints;
-the `openai-compatible` model agent on ubi-llm.
+**M7 — Load, distribution, local model.** Load samples and the distribution view; healthy, then
+closest, then least-loaded selection for `delegate({ skill })` (D10): only `up` instances; one on
+the caller's own host before any other, so text that can stay on the machine does; then the
+lowest `activeTasks + queued`, a loaded model before one that must swap; a real-call probe from
+the console to allowlisted endpoints; the `openai-compatible` model agent on ubi-llm.
 - *Validation.* Agent: two instances under 20 synthetic tasks each take 40–60 %; nothing routed to
-  a `draining`, `stale` or `expired` instance; a ubi-llm model swap shows `busy`, not failure.
+  a `draining`, `stale` or `expired` instance; a caller with an `up` instance on its own host is
+  routed to it; a ubi-llm model swap shows `busy`, not failure.
   Shariq: does the view inform where work should go?
 - *Numbers.* Bench S9 (local model) and S10 (fan-out): S10's wall time ≤ 0.7× the sequential
   in-session run; ubi-llm failure and timeout ≤ 10 % with swaps reported as busy; routes to a
@@ -1126,6 +1129,7 @@ container, docs without Tailscale; a Go `tsnet` binary only if asked for.
 | 2026-10-29 | **Accepted.** The design, its phases and proposals P1–P14 are the plan of record. P13 is confirmed (Q13): the TypeScript registry speaks a Eureka-compatible membership subset; no Eureka fork or backend. Start M1. Open questions are answered as each phase needs them. | Shariq ("Approve with the Eureka API; start M1") |
 | 2026-11-06 | **D8.** Design unslop as the first A2A agent, on the local model box; design the A2A slice only, with no interim step that unifies the skill files. Customer email never goes to the model box: it stays with the in-session skill. Design: [`2026-11-06-unslop-a2a-agent-design.md`](2026-11-06-unslop-a2a-agent-design.md) (#483) | Shariq (chose "design the A2A slice only") |
 | 2026-11-06 | **D9.** M2a comes before M2: the local model agent (§6.6) with `unslop` as its only skill, on the Mac and on loopback, behind an `agents.<name>` key in `mesh.json`. Assistants may call it without a click, an accepted exception to D4 (§8); its M4 approval is decided at the M2a checkpoint. Decisions: the unslop design §14 | Shariq ("Approve, assistants may call it") |
+| 2026-11-06 | **D10.** The registry's job is to find a healthy copy, the way Eureka does: the card says what an agent is, the registry says which copies are up, where and how loaded, and the bridge routes to an instance's registered endpoint, never to the card's URL alone. Selection order: healthy (`up` only), closest (the caller's own host first, then the tailnet), least loaded. Every copy of an agent serves the same card (`card_sha256`). | Shariq ("eureka would help us find a healthy agent … routing to one that is close, available and healthy") |
 
 ### 14.2 Proposed in this design, for Shariq to confirm or change
 

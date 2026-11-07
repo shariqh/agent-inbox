@@ -101,9 +101,12 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
 - **U1 (pure modules, no network, no writes):** `fidelity.ts` (§6.1-§6.2: output
   sentences are aligned to input sentences by their words; protected values keep their
   order inside an aligned sentence, and one that crossed sentences must keep its own
-  neighbours better than any other value's, ties failing. Negations and conditions are
-  hard on any drop, on a move to another clause, and on an addition unless the same
-  clause dropped a negative word such as "fails". A text with more than 500 sentences or
+  neighbours better than any other value's, ties failing. Negations count per clause
+  whatever their form (`not`, `no`, `never`, `n't`, `without`, `none`, …), so "does not
+  add any" → "adds no" passes; pattern 9 ("not just X but Y", "not just X — it's Y") is
+  removed before counting. Negations and conditions are hard on any drop, on a move to
+  another clause, and on an addition unless the same clause dropped a negative word such
+  as "fails". A text with more than 500 sentences or
   values is not compared and reports `tooComplex`), `screen.ts` (§5: text is NFKC
   normalised, zero-width characters removed and `>` quote markers stripped before any
   check; refusal classes are named without the matched value; the `--kind` list),

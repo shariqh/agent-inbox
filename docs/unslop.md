@@ -90,8 +90,11 @@ terminal and never asks anything. Progress (`waiting`, `editing`, `checking`,
 On anything but 0, edit the original in-session; don't retry. `--report <file>` gets
 the result as JSON (mode 0600, never through a symlink): `status`, `model`,
 `rulesSha256`, `attempts`, the hard check results, `warnings` (such as a changed
-`may`), any refusal classes and timings. After exit 0, read its `warnings` before you
-use the text.
+`may`), any refusal classes and timings. When the last attempt failed the check, it also
+has `failures`: one entry per failed class, `{ class, kind, lost, added }` (and `moved`
+for a value that changed place), with at most 10 values of 80 characters each, so you
+can see what the check objected to. These values appear only in your report, never in
+the agent's log. After exit 0, read its `warnings` before you use the text.
 
 ## The caller's `SKILL.md`
 

@@ -26,7 +26,7 @@ const EXT = 'urn:agent-inbox:ext:unslop:v1'
 const INPUT = 'See https://example.com/docs for v2.5.0. It does not ship today, and it is really very important.\n'
 const EDITED = INPUT.replace(' really very', '')
 
-type Mode = 'edit' | 'same' | 'length' | '503' | 'hold' | 'slow'
+type Mode = 'edit' | 'same' | 'length' | '503' | 'hold' | 'slow' | 'drift'
 let mode: Mode
 let backend: Server
 let backendUrl: string
@@ -55,7 +55,7 @@ beforeEach(async () => {
       const text = /TEXT \w+ BEGIN\n([\s\S]*)\nTEXT \w+ END/.exec(body.messages[1]!.content)![1]!
       if (mode === '503') return void res.writeHead(503).end('{}')
       const reply = (): void => void res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({
-        choices: [{ finish_reason: mode === 'length' ? 'length' : 'stop', message: { role: 'assistant', content: mode === 'same' ? text : text.replace(' really very', '') } }],
+        choices: [{ finish_reason: mode === 'length' ? 'length' : 'stop', message: { role: 'assistant', content: mode === 'same' ? text : mode === 'drift' ? text.replace('v2.5.0', 'v2.6.0') : text.replace(' really very', '') } }],
       }))
       if (mode === 'slow') setTimeout(reply, 600)
       else reply()
@@ -301,6 +301,14 @@ describe('end to end against the agent (design §6.3, §7.3)', () => {
     expect(kept.code, kept.err).toBe(10)
     expect(kept.err).toContain('kept the original (truncated)')
     expect(JSON.parse(readFileSync(report, 'utf8'))).toMatchObject({ code: 10, status: 'kept-original' })
+
+    // a failed check names its items in the caller's report, never on stderr
+    mode = 'drift'
+    const drifted = await run(dir, ['--kind', 'pr', '--report', report])
+    expect(drifted.code, drifted.err).toBe(10)
+    expect(drifted.err).toContain('kept the original (fidelity)')
+    expect(drifted.err).not.toContain('v2.6.0')
+    expect(JSON.parse(readFileSync(report, 'utf8')).failures).toEqual([{ class: 'numbers', kind: 'changed', lost: ['v2.5.0'], added: ['v2.6.0'] }])
 
     const calls = backendCalls.length
     const refused = await run(dir, ['--kind', 'pr'], 'Hi Jane,\n\nThe fix ships today.\n\nThanks,\nSam\n')

@@ -47,7 +47,7 @@ describe('request-post card (#500 §3.1)', () => {
 
 describe('request-post exchanges (#500 §3.3)', () => {
   it('cover every row of the exit table', () => {
-    expect(exchanges.map(([, x]) => x.exit).sort((a, b) => a - b)).toEqual([0, 0, 0, 4, 11, 11, 12, 13, 14, 15, 16])
+    expect(exchanges.map(([, x]) => x.exit).sort((a, b) => a - b)).toEqual([0, 0, 0, 0, 4, 11, 11, 12, 13, 14, 15, 16])
     expect(exchanges.filter(([, x]) => x.clientOnly).map(([, x]) => x.exit).sort()).toEqual([14, 15, 4])
   })
 
@@ -80,7 +80,16 @@ describe('request-post exchanges (#500 §3.3)', () => {
   it('fails a request whose key is not derived from its identity', () => {
     const x = byRow('created-social')
     metaOf(x).title = 'Another title'
-    expect(checkExchange(x, card)).toEqual(['request: idempotencyKey is not the derived key'])
+    expect(checkExchange(x, card)).toEqual(['request: invalid idempotencyKey'])
+  })
+
+  it('accepts another key only with keyOverride: true, and keyOverride only as true', () => {
+    const x = byRow('created-override')
+    expect(checkExchange(x, card)).toEqual([])
+    delete metaOf(x).keyOverride
+    expect(checkExchange(x, card)).toEqual(['request: invalid idempotencyKey'])
+    metaOf(x).keyOverride = false
+    expect(checkExchange(x, card)).toEqual(['request: invalid idempotencyKey', 'request: keyOverride is sent only as true'])
   })
 
   it('fails a blog request carrying a source URL or a pull request link', () => {

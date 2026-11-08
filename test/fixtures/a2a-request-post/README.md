@@ -38,6 +38,12 @@ the endpoint name are not real.
   `["blog"]`, else `url:<sourceUrl>` exactly as sent, else `title:<title>` after NFKC, collapsing
   every run of whitespace to one space, trimming and lower-casing. The key is the first 26
   characters of the pre-image's SHA-256 in RFC 4648 base32, lower-cased. The brief is never in it.
+- **`keyOverride`** (boolean, optional) sits in the metadata next to `idempotencyKey`. A client
+  sends it, as `true` only, when the caller chose the key (`meshctl request-post file --key`) for
+  a deliberate second request, and never otherwise. The service refuses an `idempotencyKey` that
+  is not the derived key unless `keyOverride` is `true` (`reason: "invalid"`, `fields` naming
+  `idempotencyKey`); `invalidFields` gives the same. `file/12-created-override.json` is that
+  exchange.
 
 ## Vendoring them (the private repository)
 

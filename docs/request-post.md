@@ -71,7 +71,11 @@ terminal and never asks anything; the brief comes on stdin or from `--brief-file
   the slug (blog), else the source URL, else the normalised title, and sends it; the brief is
   not part of it. Running the same command again, with the brief rewritten or not, finds the
   same row instead of filing a second one. `--key <k>` replaces the key, only for a deliberate
-  second request about the same thing. The key is in the JSON as `requestKey`.
+  second request about the same thing; the request then carries `keyOverride: true` beside
+  `idempotencyKey` in the extension metadata, which is the only way the service accepts a key
+  that is not the derived one (without it the request is refused, exit 11, naming
+  `idempotencyKey`). Without `--key`, `keyOverride` is never sent. The key is in the JSON as
+  `requestKey`.
 - **The output.** On exit 0 stdout holds the result as JSON: for `file`, `created`, `pageId`,
   `url`, `requestKey`, `brand`, `channels`, `phase` and `readBack`; for `status` and `wait`, the
   snapshot (`phase`, `status`, `drafts`, `prUrl`, `error`, `humanAction`, `final`). stderr gets

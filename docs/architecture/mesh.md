@@ -306,7 +306,8 @@ request-post is the mesh's second agent, hosted by the private publishing servic
 This repository ships its client (R2 and R3 below) and the contract both sides test against: `test/fixtures/a2a-request-post/` ([README](../../test/fixtures/a2a-request-post/README.md)).
 
 - **What is there:** the card, one request and response per §3.3 row (14, 15 and 4 are
-  client-side only, with a note and no task), a `request-post-status` snapshot per phase,
+  client-side only, with a note and no task) plus one filed under an overridden key
+  (`keyOverride: true`, added with R3), a `request-post-status` snapshot per phase,
   `awaiting-go` included, title and request-key vectors with their pre-images, and
   `conformance.ts`, the validator: Node core only and erasable TypeScript, so the private
   repository runs it on Node 24 without a build. The README lists what R1 pins that the
@@ -392,8 +393,8 @@ the two share numbers, not meanings.
 - **The key** is `requestKey()`, R1's pre-image (four lines: `request-post/v1`, brand, sorted
   channels, then `slug:`, `url:` or the NFKC title) in lower-case RFC 4648 base32, 26 characters;
   the test runs every `keys.json` vector through it. `--key` replaces the sent `idempotencyKey`
-  and nothing else: neither the design nor R1 defines an override field, so the service sees an
-  ordinary key that matches no other row.
+  and adds `keyOverride: true` beside it, which R1's README defines: the service (P2a) refuses a
+  key that is not the derived one without it. Without `--key`, `keyOverride` is never sent.
 - **The answer:** the data part from the one artifact on `COMPLETED`, else the status message
   (R1); `COMPLETED` with code 0 is 0, `REJECTED` is 12 with code 12, 16 with `reason: conflict`,
   else 11; anything else is 13. stdout gets the data part as JSON only on 0, with C1 controls and

@@ -116,7 +116,7 @@ function argsOf(x: Json): { args: string[]; brief: string } {
   const opt = (flag: string, v: unknown) => (v === undefined ? [] : [flag, String(v)])
   return {
     args: ['file', '--brand', m.brand, '--channels', m.channels.join(','), '--title', m.title,
-      ...opt('--category', m.category), ...opt('--slug', m.slug), ...opt('--source-url', m.sourceUrl)],
+      ...opt('--category', m.category), ...opt('--slug', m.slug), ...opt('--source-url', m.sourceUrl), ...(m.keyOverride ? ['--key', m.idempotencyKey] : [])],
     brief: x.request.params.message.parts[0].text,
   }
 }
@@ -150,6 +150,7 @@ describe('file (design §3.2, §3.3)', () => {
       expect(body.params.configuration?.returnImmediately).toBeUndefined()
       const { seo: _seo, ...sent } = metaOf(x.request)
       expect(metaOf(body)).toEqual(sent)
+      expect('keyOverride' in metaOf(body), 'keyOverride only with --key').toBe(sent.keyOverride === true)
       expect(checkExchange({ exit: x.exit, request: body, response: { ...x.response, id: body.id } }, CARD)).toEqual([])
       expect(JSON.parse(readFileSync(reportFile, 'utf8'))).toEqual(dataOf(x))
       expect((lstatSync(reportFile).mode & 0o777).toString(8)).toBe('600')
@@ -167,12 +168,14 @@ describe('file (design §3.2, §3.3)', () => {
     expect(await said('conflict')).toMatch(/conflict: https:\/\/www\.notion\.so\/\S+ \(drafting\) already covers this; report that row and never change fields/)
   })
 
-  it('--key overrides the identity key and nothing else', async () => {
-    const r = await run(meshHome(), ['file', '--brand', 'example-brand', '--channels', 'x-standalone', '--title', 'Try the agent', '--key', 'second-try-1'])
-    expect(r.code).toBe(0)
-    expect(metaOf(seen[0]!.body).idempotencyKey).toBe('second-try-1')
-    expect(checkExchange({ exit: 0, request: seen[0]!.body, response: byRow('created-social').response }, CARD).filter((p) => !p.startsWith('response') && !p.startsWith('data')))
-      .toEqual(['request: idempotencyKey is not the derived key'])
+  it('--key sends its key with keyOverride: true; the derived key goes without keyOverride', async () => {
+    const args = ['file', '--brand', 'example-brand', '--channels', 'x-standalone', '--title', 'Try the agent']
+    expect((await run(meshHome(), [...args, '--key', 'second-try-1'])).code).toBe(0)
+    expect((await run(meshHome(), args)).code).toBe(0)
+    const [over, derived] = seen.map((s) => metaOf(s.body))
+    expect([over!.idempotencyKey, over!.keyOverride]).toEqual(['second-try-1', true])
+    expect(derived!.idempotencyKey).toBe(metaOf(byRow('created-social').request).idempotencyKey)
+    expect('keyOverride' in derived!).toBe(false)
   })
 
   it('a cut response is 13, and the re-run sends the same key', async () => {

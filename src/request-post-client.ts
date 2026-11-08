@@ -218,8 +218,9 @@ export async function runRequestPost(args: string[], io: RequestPostIo): Promise
     }
     const channels = v.get('--channels')!.split(',').map((c) => c.trim())
     const fields = { brand: v.get('--brand')!, channels, title: v.get('--title')!, category: v.get('--category'), slug: v.get('--slug'), sourceUrl: v.get('--source-url') }
-    // --key overrides the identity key for a deliberate second request (design §5)
-    meta = { skill: 'request-post', ...fields, idempotencyKey: v.get('--key') ?? requestKey(fields) }
+    // --key overrides the identity key for a deliberate second request (design §5); the
+    // service refuses a key that is not the derived one unless keyOverride is true
+    meta = { skill: 'request-post', ...fields, idempotencyKey: v.get('--key') ?? requestKey(fields), ...(v.has('--key') ? { keyOverride: true } : {}) }
   } else {
     meta = { skill: 'request-post-status', ...(v.has('--key') ? { requestKey: v.get('--key') } : { pageId: v.get('--page-id') }) }
   }

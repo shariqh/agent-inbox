@@ -122,6 +122,7 @@ no write, no network, no timer beyond that one. The browser never supplies the r
 |---|---|---|---|
 | Agents view (M1) | browser, from `/api/activity` | `agentsView: true`, then a window reload | No Mesh section, no view, no extra read |
 | Unslop agent (M2a, #483) | its own process, loopback only, started on demand | `agents.unslop` in `mesh.json` (`meshctl enable --unslop`) | No process, no listener; `meshctl unslop` sends nothing |
+| request-post client (M2b, #500) | `meshctl request-post`, calling the publishing service's agent on the personal tailnet | `agents.request-post` in `mesh.json` (`meshctl enable --request-post`) | No connection; `meshctl request-post` exits 14 |
 | Local wrapper spike (M2) | its own process, loopback only | running `agent-inbox-wrap --profile <name>` | Nothing |
 | Scenario bench (M2, §17.2) | its own process, by hand | running `agent-inbox-bench run` | Nothing |
 | Registry (M3) | its own process, any host | running `agent-inbox-registry` or the container | No listener, no `mesh.db` |
@@ -736,6 +737,10 @@ Agents view flags a chain when one callee receives the same message hash three t
 - The bridge calls only endpoints the registry returned for an `up` instance, and checks the
   card hash it sends to against the hash `discover` returned and the grant names.
 - The viewer calls only the registry URL in `mesh.json`.
+- **request-post (M2b, #500), before any registry:** `agents.request-post.endpoint` must be
+  `https://<name>.<tailnet>.ts.net[:<port>]` or, for the SSH fallback only,
+  `http://127.0.0.1:<port>`; anything else is off. The client follows no redirect, uses no proxy
+  and never calls the card's URL (request-post design §6; `meshctl enable --request-post`).
 
 ---
 

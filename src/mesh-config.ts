@@ -95,3 +95,21 @@ export function loopbackPort(endpoint: unknown): number | undefined {
   const port = Number(/^http:\/\/127\.0\.0\.1:(\d{1,5})\/?$/.exec(String(endpoint))?.[1])
   return port >= 1 && port <= 65535 && port !== 80 ? port : undefined
 }
+
+/**
+ * An `agents.request-post.endpoint` (request-post design §6), written the one way a client
+ * sends as `Host`: `https://<name>.<tailnet>.ts.net[:<port>]` (lower-case labels), or, for
+ * the SSH fallback, `http://127.0.0.1:<port>`. No path, user, query, leading zero or
+ * written-out default port (443, 80); one trailing `/` is dropped. Anything else is off.
+ */
+export function requestPostEndpoint(endpoint: unknown): string | undefined {
+  const label = '[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?'
+  const text = String(endpoint)
+  const tailnet = new RegExp(`^(https://(?:${label}\\.){2}ts\\.net)(?::([1-9]\\d{0,4}))?/?$`).exec(text)
+  const loopback = /^(http:\/\/127\.0\.0\.1):([1-9]\d{0,4})\/?$/.exec(text)
+  const match = tailnet ?? loopback
+  if (!match) return undefined
+  const port = match[2] === undefined ? undefined : Number(match[2])
+  if (port !== undefined && (port > 65535 || port === (tailnet ? 443 : 80))) return undefined
+  return port === undefined ? match[1] : `${match[1]}:${port}`
+}

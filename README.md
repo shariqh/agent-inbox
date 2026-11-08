@@ -629,7 +629,9 @@ It began as the first phase of the
 switched on by `mesh.json`; since #454 it is always on. `mesh.json` now turns on only
 the experimental unslop agent (`npm run meshctl -- enable --unslop`, #483; see
 [`docs/unslop.md`](docs/unslop.md) to set it up and call it, and
-[`docs/architecture/mesh.md`](docs/architecture/mesh.md)). `npm run meshctl -- status`
+[`docs/architecture/mesh.md`](docs/architecture/mesh.md)) and the request-post client
+(`npm run meshctl -- enable --request-post`, #500; see
+[`docs/request-post.md`](docs/request-post.md)). `npm run meshctl -- status`
 says what the file holds, and `npm run meshctl -- disable --apply` removes it (keeping a
 backup).
 

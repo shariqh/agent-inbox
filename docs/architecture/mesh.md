@@ -26,8 +26,9 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   else beside `AGENT_INBOX_DB`, else `~/.agent-inbox`) stays the one switch for the
   later phases; only `src/meshctl.ts` writes it (dry run first, `--apply` with backup,
   unknown keys kept; refuses symlinks, non-regular files, bad JSON and newer schemas).
-  `src/mesh-config.ts` is the Node-core reader. The one piece read from it is the unslop
-  agent's `agents.unslop` key (#483, `enable --unslop`, below); `enable --agents-view`
+  `src/mesh-config.ts` is the Node-core reader. The pieces read from it are the unslop
+  agent's `agents.unslop` key (#483, `enable --unslop`, below) and the remote request-post
+  agent's `agents.request-post` key (#500, `enable --request-post`, below); `enable --agents-view`
   writes nothing and says the view is always on, `status` says the same, and an
   `agentsView` key in an existing file is kept like any other.
 - **The Agents view** (`public/agents-home.js`, now the Agents home, #454; see
@@ -52,7 +53,8 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   is a list of steps that today only deletes the file (with a backup); M4 puts its pause
   and `@mesh` archive steps before that one. `enable --unslop` and `disable --unslop`
   (#483) change only the `agents.unslop` key and the unslop agent's own files; see
-  "Turning unslop on and off" below. Since #454, `enable --agents-view` (with or
+  "Turning unslop on and off" below. `enable --request-post` and `disable --request-post`
+  (#500) do the same for `agents.request-post`; see "Turning request-post on and off" below. Since #454, `enable --agents-view` (with or
   without `--apply`) writes nothing and prints "The Agents view is always on; mesh.json no
   longer controls it", and `status` prints the same line before the file's state. A later
   phase that adds a piece brings back an `enable` writer (temp file, atomic rename) with
@@ -300,8 +302,8 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
 
 request-post is the mesh's second agent, hosted by the private publishing service (design:
 [`docs/superpowers/specs/2026-11-07-request-post-a2a-agent-design.md`](../../docs/superpowers/specs/2026-11-07-request-post-a2a-agent-design.md)).
-This repository ships its client (R2-R3, not yet landed) and the contract both sides test
-against: `test/fixtures/a2a-request-post/` ([README](../../test/fixtures/a2a-request-post/README.md)).
+This repository ships its client (R2 below; the `request-post` subcommand is R3, not yet
+landed) and the contract both sides test against: `test/fixtures/a2a-request-post/` ([README](../../test/fixtures/a2a-request-post/README.md)).
 
 - **What is there:** the card, one request and response per §3.3 row (14, 15 and 4 are
   client-side only, with a note and no task), a `request-post-status` snapshot per phase,
@@ -322,3 +324,39 @@ against: `test/fixtures/a2a-request-post/` ([README](../../test/fixtures/a2a-req
   `node test/fixtures/a2a-request-post/conformance.ts manifest > test/fixtures/a2a-request-post/MANIFEST.json`
   (Node 24). `test/request-post-conformance.test.ts` checks every fixture, the mutations the
   validator must catch, the key vectors and the manifest.
+- **Turning request-post on and off (R2, request-post design §6, §8).** It mirrors U3a for a
+  remote agent: there is nothing to build, spawn or profile. The service's runbook gives each
+  device a bearer token; save it in a file, then run
+  `npm run meshctl -- enable --request-post --endpoint <url> --token-file <path>` (a dry run
+  that prints every file it would write, never the token) and add `--apply`.
+  - **The endpoint rule** is `requestPostEndpoint()` in `src/mesh-config.ts`, separate from
+    unslop's `loopbackPort()`, which is unchanged: `https://<name>.<tailnet>.ts.net` (exactly
+    two lower-case DNS labels before `ts.net`) with an optional port, or, for the SSH fallback
+    only, `http://127.0.0.1:<port>`. No path, user, query, leading zero or written-out default
+    port (`:443` on https, `:80` on the loopback form, since clients drop it from `Host`); one
+    trailing `/` is dropped, and the rest is stored as given. Anything else (a public host, an IP
+    literal other than that loopback, `http` to another host) is refused with one fixed message
+    that never echoes the input, and an `agents.request-post` that breaks the rule reads as off.
+  - **The token file** must be a regular file the user owns (opened `O_NOFOLLOW | O_NONBLOCK`,
+    so a symlink, folder or FIFO is refused without hanging), at most 4 KiB, holding one run of at
+    least 32 visible ASCII characters (one trailing newline allowed). Refusals name the rule,
+    never the content.
+  - With `--apply`, in this order (the switch last): 1. the token copied to
+    `<mesh dir>/mesh/tokens/request-post` (0600, through an `O_EXCL | O_NOFOLLOW` temporary
+    file and a rename; a newer token from the runbook replaces it); 2. the shim
+    `<mesh dir>/bin/request-post` (0755), the unslop shim's text with the agent's name: it pins
+    its mesh dir, and when its Node or `meshctl.js` is gone it discards piped input, prints "run
+    meshctl enable --request-post again" and exits 14; otherwise it runs
+    `meshctl request-post "$@"`, which says "no request-post client yet" and exits 14 until R3;
+    3. `agents.request-post` = `{ "endpoint": <url> }` in `mesh.json`, every other key kept,
+    written atomically after a timestamped backup. New folders are 0700.
+  - `disable --request-post [--apply]` removes the key (deleting `mesh.json`, with a backup,
+    when nothing else is left), the shim and the token, and the `bin`, `mesh/tokens` and
+    `mesh` folders when they are then empty. There is no profile, so no `--purge`. Plain
+    `disable --apply` is unchanged. `status` adds a `Request-post:` line: on and its endpoint,
+    or off, and whether the token and shim exist; it prints an endpoint only when it passed the
+    rule, and never the token.
+  - `test/mesh.test.ts` holds the off test (enable then disable leaves the tree as before but
+    backups), the dry run, every endpoint refusal, the token refusals and its 0600 copy, the
+    stale shim, and that request-post and unslop never touch each other's key or files.
+    User page: [`docs/request-post.md`](../request-post.md).

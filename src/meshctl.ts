@@ -21,10 +21,11 @@
 //   meshctl status                           say what mesh.json turns on
 //   meshctl unslop --kind <kind> [--report <file>] [--timeout <s>] < draft
 //                                            the shim's command (src/unslop-client.ts)
-//   meshctl request-post …                   its shim's command (R3; exits 14 until then)
+//   meshctl request-post file|status|wait …  its shim's command (src/request-post-client.ts)
 //
 // Exit codes: 0 done (or nothing to do), 1 refused or failed, 2 usage;
-// `unslop` has its own (0, 10-14, 4), listed in src/unslop-client.ts.
+// `unslop` has its own (0, 10-14, 4), listed in src/unslop-client.ts, and
+// `request-post` its own (0, 11-16, 124, 4), listed in src/request-post-client.ts.
 import { randomBytes } from 'node:crypto'
 import { closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmdirSync, statSync, unlinkSync, writeSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -32,6 +33,7 @@ import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { MESH_SCHEMA, loopbackPort, meshDir, meshFile, readMesh, requestPostEndpoint } from './mesh-config.js'
 import type { MeshDocument, MeshRead } from './mesh-config.js'
+import { REQUEST_POST_USAGE, runRequestPost } from './request-post-client.js'
 import { UNSLOP_USAGE, runUnslop } from './unslop-client.js'
 
 const UNSLOP_PORT = 4420
@@ -45,6 +47,7 @@ const USAGE = `usage: agent-inbox-meshctl status
        agent-inbox-meshctl enable --request-post --endpoint <url> --token-file <path> [--apply]
        agent-inbox-meshctl disable --request-post [--apply]
        agent-inbox-meshctl unslop --kind <kind> [--report <file>] [--timeout <s>] < draft
+       agent-inbox-meshctl request-post file|status|wait …
 
 Without --apply, enable and disable are dry runs: they print what they would do.
 The Agents view is always on, so enable --agents-view writes nothing.
@@ -54,6 +57,8 @@ profile, logs and deny list unless --purge. unslop is what <mesh dir>/bin/unslop
 it sends one public draft to the agent (docs/unslop.md).
 enable --request-post copies the per-device bearer token from --token-file (never printed);
 the endpoint is ${ENDPOINT_RULE} (docs/request-post.md).
+request-post is what <mesh dir>/bin/request-post runs: it files a content request with the
+service, reads its status or waits for it (docs/request-post.md).
 mesh.json lives in AGENT_INBOX_MESH_DIR, else beside AGENT_INBOX_DB, else ~/.agent-inbox.
 `
 
@@ -254,8 +259,9 @@ export function runMeshctl(argv: string[], io: MeshctlIo = {}): number {
     return 4
   }
   if (command === 'request-post') {
-    err('request-post: this build has no request-post client yet (#500 R3). File the request in-session.\n')
-    return 14
+    // async: the entry below runs it (runRequestPost in src/request-post-client.ts)
+    err(REQUEST_POST_USAGE)
+    return 4
   }
   const flags = new Set<string>()
   const values = new Map<string, string>()
@@ -523,5 +529,8 @@ if (isMain) {
   process.exitCode = command === 'unslop'
     ? await runUnslop(rest, { env: process.env, home: homedir(), stdin: process.stdin, out: (text) => { process.stdout.write(text) }, err })
       .catch(() => { err('unslop: failed (internal error). Edit it in-session.\n'); return 13 })
-    : runMeshctl(process.argv.slice(2))
+    : command === 'request-post'
+      ? await runRequestPost(rest, { env: process.env, home: homedir(), stdin: process.stdin, out: (text) => { process.stdout.write(text) }, err })
+        .catch(() => { err('request-post: outcome unknown (internal error): run the same command again; never file it in-session.\n'); return 13 })
+      : runMeshctl(process.argv.slice(2))
 }

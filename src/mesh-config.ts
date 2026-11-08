@@ -1,6 +1,6 @@
 // The mesh's root switch, `mesh.json` (Mesh M1, #397; design
 // docs/superpowers/specs/2026-10-29-agent-mesh-design.md §2). Node core only:
-// `meshctl` and its unslop client (src/unslop-client.ts) read it and must never
+// `meshctl` and its clients (src/unslop-client.ts, src/request-post-client.ts) read it and must never
 // open the hub. Since #454 the viewer reads
 // nothing here: the Agents view is always on, and the viewer's watch returns
 // with the first mesh phase that needs it (M3). Nothing in the stdio MCP

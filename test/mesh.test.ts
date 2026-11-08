@@ -27,6 +27,22 @@ function ctl(argv: string[], dir: string, now = new Date(2026, 9, 29, 11, 48, 30
   return { code, out: out.join(''), err: err.join('') }
 }
 
+// every path under dir with its mode, and file contents
+function tree(dir: string, base = dir): Record<string, string> {
+  const found: Record<string, string> = {}
+  for (const entry of readdirSync(dir).sort()) {
+    const path = join(dir, entry)
+    const stat = lstatSync(path)
+    const key = path.slice(base.length + 1)
+    const mode = (stat.mode & 0o777).toString(8)
+    if (stat.isDirectory()) Object.assign(found, { [key]: `dir ${mode}` }, tree(path, base))
+    else found[key] = `${mode} ${readFileSync(path, 'utf8')}`
+  }
+  return found
+}
+const mode = (path: string): string => (lstatSync(path).mode & 0o777).toString(8)
+const json = (dir: string) => JSON.parse(readFileSync(meshFile(dir), 'utf8'))
+
 describe('where mesh.json lives', () => {
   it('prefers AGENT_INBOX_MESH_DIR, then the AGENT_INBOX_DB folder, then ~/.agent-inbox', () => {
     expect(meshDir({ AGENT_INBOX_MESH_DIR: '/m', AGENT_INBOX_DB: '/d/inbox.db' }, '/h')).toBe('/m')
@@ -107,7 +123,8 @@ describe('meshctl', () => {
     expect(ctl(['status'], dir).out).toBe([
       'The Agents view is always on; mesh.json no longer controls it.',
       `Mesh: off. No ${meshFile(dir)}.`,
-      `Unslop: off. Profile ${dir}/mesh/wrappers/unslop.json: missing; token: missing; shim ${dir}/bin/unslop: missing.`, '',
+      `Unslop: off. Profile ${dir}/mesh/wrappers/unslop.json: missing; token: missing; shim ${dir}/bin/unslop: missing.`,
+      `Request-post: off. Token: missing; shim ${dir}/bin/request-post: missing.`, '',
     ].join('\n'))
     writeFileSync(meshFile(dir), '{"schema":1,"agentsView":true}\n')
     expect(ctl(['status'], dir).out).toContain('turns on no piece this build reads')
@@ -133,21 +150,6 @@ describe('meshctl enable/disable --unslop (#483, unslop design §4.2-§4.5)', ()
     const run = (...argv: string[]) => ctl(argv, dir, undefined, io)
     return { dir, checkout, script, run, enable: (...more: string[]) => run('enable', '--unslop', '--checkout', checkout, ...more) }
   }
-  // every path under dir with its mode, and file contents
-  function tree(dir: string, base = dir): Record<string, string> {
-    const found: Record<string, string> = {}
-    for (const entry of readdirSync(dir).sort()) {
-      const path = join(dir, entry)
-      const stat = lstatSync(path)
-      const key = path.slice(base.length + 1)
-      const mode = (stat.mode & 0o777).toString(8)
-      if (stat.isDirectory()) Object.assign(found, { [key]: `dir ${mode}` }, tree(path, base))
-      else found[key] = `${mode} ${readFileSync(path, 'utf8')}`
-    }
-    return found
-  }
-  const mode = (path: string): string => (lstatSync(path).mode & 0o777).toString(8)
-  const json = (dir: string) => JSON.parse(readFileSync(meshFile(dir), 'utf8'))
 
   it('enable is a dry run that writes nothing and prints what it would write', () => {
     const fresh = setup()
@@ -302,6 +304,166 @@ describe('meshctl enable/disable --unslop (#483, unslop design §4.2-§4.5)', ()
       expect([r.status, r.stderr]).toEqual([1, `agent-inbox-wrap: the ${words.startsWith('needs') ? 'profile ' : words.startsWith('base') ? 'backend ' : ''}${words}\n`])
     }
   }, 60_000)
+})
+
+describe('meshctl enable/disable --request-post (#500, request-post design §6, §8, §10)', () => {
+  const TOKEN = `rp-${'k'.repeat(40)}`
+  const ENDPOINT = 'https://box.tail1234.ts.net'
+  const unbacked = (t: Record<string, string>) => Object.fromEntries(Object.entries(t).filter(([key]) => !key.startsWith('mesh.json.bak-')))
+  function setup(meshJson?: string) {
+    const dir = scratchDir('rp-mesh-')
+    const tokenFile = join(scratchDir('rp-token-'), 'token')
+    writeFileSync(tokenFile, `${TOKEN}\n`, { mode: 0o644 })
+    const script = join(scratchDir('rp-bin-'), 'meshctl.js')
+    writeFileSync(script, 'console.log(JSON.stringify([process.env.AGENT_INBOX_MESH_DIR, ...process.argv.slice(2)]))\n')
+    if (meshJson !== undefined) writeFileSync(meshFile(dir), meshJson)
+    const run = (...argv: string[]) => ctl(argv, dir, undefined, { node: process.execPath, script })
+    const enable = (endpoint = ENDPOINT, ...more: string[]) => run('enable', '--request-post', '--endpoint', endpoint, '--token-file', tokenFile, ...more)
+    return { dir, tokenFile, script, run, enable }
+  }
+
+  it('enable is a dry run that writes nothing and never prints the token', () => {
+    const t = setup('{"schema":1,"console":{"relay":false}}\n')
+    const r = t.enable()
+    expect(r.code, r.err).toBe(0)
+    expect(r.out).toContain(`"request-post": {\n      "endpoint": "${ENDPOINT}"\n    }`)
+    expect(r.out).toContain(`exec "$node" "$meshctl" request-post "$@"`)
+    expect(r.out).toContain('Nothing changed. Re-run with --apply.')
+    expect(r.out + r.err).not.toContain(TOKEN)
+    expect(readdirSync(t.dir)).toEqual(['mesh.json'])
+    expect(t.run('disable', '--request-post').out).toBe('Request-post is already off. Nothing to do.\n')
+  })
+
+  it('(off) enable --apply then disable --apply leaves the other keys and the tree as before, but backups', () => {
+    for (const before of ['{"schema":1,"agentsView":true,"console":{"relay":false},"agents":{"other":{"endpoint":"x"}}}\n', undefined]) {
+      const t = setup(before)
+      const start = tree(t.dir)
+      const on = t.enable(`${ENDPOINT}/`, '--apply')
+      expect(on.code, on.err).toBe(0)
+      const p = (rel: string) => join(t.dir, rel)
+      expect(json(t.dir)).toEqual({ ...(before ? JSON.parse(before) : { schema: 1 }), agents: { ...(before ? { other: { endpoint: 'x' } } : {}), 'request-post': { endpoint: ENDPOINT } } })
+      for (const d of ['mesh', 'mesh/tokens', 'bin']) expect(mode(p(d)), d).toBe('700')
+      expect(mode(p('mesh/tokens/request-post'))).toBe('600')
+      expect(readFileSync(p('mesh/tokens/request-post'), 'utf8')).toBe(`${TOKEN}\n`)
+      expect(mode(p('bin/request-post'))).toBe('755')
+      const status = t.run('status').out
+      expect(status).toContain(`Mesh: on. ${meshFile(t.dir)} turns on request-post.`)
+      expect(status).toContain(`Request-post: on at ${ENDPOINT}. Token: present; shim ${p('bin/request-post')}: present.`)
+      expect(on.out + on.err + status).not.toContain(TOKEN)
+      // the live shim pins its mesh dir and execs meshctl.js request-post with the caller's arguments
+      const shim = spawnSync('/usr/bin/env', ['-i', 'AGENT_INBOX_MESH_DIR=/elsewhere', '/bin/sh', p('bin/request-post'), 'file', '--brand', 'b'], { input: 'brief', encoding: 'utf8' })
+      expect(shim.stdout).toBe(`${JSON.stringify([t.dir, 'request-post', 'file', '--brand', 'b'])}\n`)
+
+      const off = t.run('disable', '--request-post', '--apply')
+      expect(off.code, off.err).toBe(0)
+      if (before) expect(json(t.dir)).toEqual(JSON.parse(before))
+      expect(unbacked(tree(t.dir))).toEqual(before ? { ...start, 'mesh.json': expect.stringMatching(/^644 /) } : start)
+      expect(t.run('status').out).toContain('Request-post: off. Token: missing;')
+    }
+  })
+
+  it('refuses every endpoint but a tailnet https name or the SSH-fallback loopback port, writing nothing', () => {
+    const t = setup('{"schema":1}\n')
+    for (const endpoint of ['https://example.com', 'https://203.0.113.7', 'https://100.101.102.103:8443', 'https://[::1]:8443', 'http://box.tail1234.ts.net',
+      'http://192.168.1.2:8080', 'https://box.example.net', 'http://127.0.0.1:80', 'http://127.0.0.1', 'http://localhost:8080', 'https://127.0.0.1:8443',
+      'https://box.ts.net', 'https://a.box.tail1234.ts.net', 'https://box.tail1234.ts.net.example.com', 'https://BOX.tail1234.ts.net', 'https://box.tail1234.ts.net:443',
+      'https://box.tail1234.ts.net:65536', 'https://box.tail1234.ts.net/a2a', 'https://user@box.tail1234.ts.net', 'https://box.tail1234.ts.net?x=1', '']) {
+      const r = t.enable(endpoint, '--apply')
+      expect(r.code, endpoint).toBe(1)
+      expect(r.err).toBe('Refused: the endpoint must be https://<name>.<tailnet>.ts.net[:<port>] or, for the SSH fallback only, http://127.0.0.1:<port>: never a public host, another IP address, plain http to another host, or port 80 there. Nothing changed.\n')
+    }
+    expect(readdirSync(t.dir)).toEqual(['mesh.json'])
+    for (const [endpoint, stored] of [['https://box.tail1234.ts.net:8443', 'https://box.tail1234.ts.net:8443'], ['http://127.0.0.1:8443/', 'http://127.0.0.1:8443']]) {
+      expect(t.enable(endpoint, '--apply').code).toBe(0)
+      expect(json(t.dir).agents['request-post']).toEqual({ endpoint: stored })
+    }
+    // an endpoint in mesh.json that breaks the rule is off, and status never echoes it
+    writeFileSync(meshFile(t.dir), '{"schema":1,"agents":{"request-post":{"endpoint":"https://user:secret@example.com"}}}')
+    const status = t.run('status').out
+    expect(status).toContain('Request-post: off (agents.request-post.endpoint is not https://<name>.<tailnet>.ts.net[:<port>]')
+    expect(status).not.toContain('secret')
+  })
+
+  it('refuses a symlinked, short, spaced or non-regular token file, and copies a good one 0600', () => {
+    const t = setup()
+    const folder = scratchDir('rp-token-')
+    const link = join(folder, 'link')
+    symlinkSync(t.tokenFile, link)
+    writeFileSync(join(folder, 'short'), `${'s'.repeat(31)}\n`)
+    writeFileSync(join(folder, 'spaced'), `${'s'.repeat(20)} ${'s'.repeat(20)}\n`)
+    writeFileSync(join(folder, 'two'), `${TOKEN}\n${TOKEN}\n`)
+    mkdirSync(join(folder, 'dir'))
+    expect(spawnSync('mkfifo', [join(folder, 'fifo')]).status).toBe(0)
+    const SHORT = 'must hold one token of at least 32 printable characters, no spaces'
+    for (const [file, words] of [[link, 'is a symlink: pass the file itself'], [join(folder, 'short'), SHORT], [join(folder, 'spaced'), SHORT],
+      [join(folder, 'two'), SHORT], [join(folder, 'dir'), 'is not a regular file you own'], [join(folder, 'fifo'), 'is not a regular file you own'],
+      [join(folder, 'missing'), 'cannot be read']] as const) {
+      const r = t.run('enable', '--request-post', '--endpoint', ENDPOINT, '--token-file', file, '--apply')
+      expect([r.code, r.err], file).toEqual([1, `Refused: the token file ${words}. Nothing changed.\n`])
+      expect(r.err).not.toContain('sss')
+    }
+    expect(readdirSync(t.dir)).toEqual([])
+    writeFileSync(t.tokenFile, 'x'.repeat(32))
+    const dry = t.enable()
+    expect(dry.out).not.toContain('replacing')
+    expect(t.enable(ENDPOINT, '--apply').code).toBe(0)
+    expect([mode(join(t.dir, 'mesh/tokens/request-post')), readFileSync(join(t.dir, 'mesh/tokens/request-post'), 'utf8')]).toEqual(['600', `${'x'.repeat(32)}\n`])
+    // a new token from the runbook replaces the copy
+    writeFileSync(t.tokenFile, TOKEN)
+    expect(t.enable().out).toContain('0600, replacing the one there')
+    expect(t.enable(ENDPOINT, '--apply').out).toContain(`Kept ${meshFile(t.dir)}: request-post is on at ${ENDPOINT}.`)
+    expect(readFileSync(join(t.dir, 'mesh/tokens/request-post'), 'utf8')).toBe(`${TOKEN}\n`)
+  })
+
+  it('a stale shim discards its input and exits 14; meshctl request-post exits 14 until R3 builds it', () => {
+    for (const gone of ['node', 'script'] as const) {
+      const t = setup()
+      const node = join(scratchDir('rp-node-'), 'node')
+      writeFileSync(node, `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} "$@"\n`, { mode: 0o755 })
+      expect(ctl(['enable', '--request-post', '--endpoint', ENDPOINT, '--token-file', t.tokenFile, '--apply'], t.dir, undefined, { node, script: t.script }).code).toBe(0)
+      unlinkSync(gone === 'node' ? node : t.script)
+      const r = spawnSync('/bin/sh', [join(t.dir, 'bin', 'request-post'), 'file'], { input: 'x'.repeat(1 << 20), encoding: 'utf8' })
+      expect(r.error, gone).toBeUndefined()
+      expect([r.status, r.stdout]).toEqual([14, ''])
+      expect(r.stderr).toContain('run meshctl enable --request-post again')
+    }
+    const r = ctl(['request-post', 'file', '--brand', 'b'], scratchDir('rp-mesh-'))
+    expect([r.code, r.out]).toEqual([14, ''])
+    expect(r.err).toContain('no request-post client yet')
+  })
+
+  it('request-post and unslop never touch each other’s key or files', () => {
+    const t = setup('{"schema":1,"console":{"relay":false}}\n')
+    const checkout = scratchDir('rp-checkout-')
+    mkdirSync(join(checkout, 'packages', 'mesh', 'dist'), { recursive: true })
+    writeFileSync(join(checkout, 'packages', 'mesh', 'dist', 'wrap.js'), '')
+    const unslop = (...argv: string[]) => t.run(argv[0]!, '--unslop', ...(argv[0] === 'enable' ? ['--checkout', checkout] : []), '--apply')
+    // request-post on and off around unslop
+    expect(unslop('enable').code).toBe(0)
+    const withUnslop = unbacked(tree(t.dir))
+    expect(t.enable(ENDPOINT, '--apply').code).toBe(0)
+    expect(t.run('status').out).toContain('turns on unslop and request-post.')
+    expect(t.run('disable', '--request-post', '--apply').code).toBe(0)
+    expect(unbacked(tree(t.dir))).toEqual(withUnslop)
+    // unslop on and off around request-post: only its profile stays behind
+    expect(unslop('disable').code).toBe(0)
+    expect(t.enable(ENDPOINT, '--apply').code).toBe(0)
+    const withRequestPost = unbacked(tree(t.dir))
+    expect(unslop('enable').code).toBe(0)
+    expect(unslop('disable').code).toBe(0)
+    expect(unbacked(tree(t.dir))).toEqual(withRequestPost)
+    expect(json(t.dir)).toEqual({ schema: 1, console: { relay: false }, agents: { 'request-post': { endpoint: ENDPOINT } } })
+  })
+
+  it('bad combinations are usage errors', () => {
+    const t = setup()
+    for (const argv of [['enable', '--request-post'], ['enable', '--request-post', '--endpoint', ENDPOINT], ['enable', '--request-post', '--token-file', t.tokenFile],
+      ['enable', '--request-post', '--unslop', '--endpoint', ENDPOINT, '--token-file', t.tokenFile], ['enable', '--request-post', '--endpoint', ENDPOINT, '--token-file', t.tokenFile, '--port', '4420'],
+      ['enable', '--unslop', '--endpoint', ENDPOINT], ['disable', '--request-post', '--purge'], ['disable', '--request-post', '--endpoint', ENDPOINT], ['status', '--request-post']]) {
+      expect(t.run(...argv).code, argv.join(' ')).toBe(2)
+    }
+    expect(readdirSync(t.dir)).toEqual([])
+  })
 })
 
 describe('no new dependency (design §2.3, §2.4c)', () => {

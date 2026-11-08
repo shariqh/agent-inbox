@@ -9,14 +9,19 @@
 // nothing and an `agentsView` key in an existing file is kept like any other.
 // `enable --unslop` (#483, unslop design §4.2-§4.3) turns on the unslop agent:
 // the `agents.unslop` key, its profile template, caller token and shim.
+// `enable --request-post` (#500, request-post design §6, §8) turns on the
+// remote request-post agent: its endpoint, a copy of its bearer token and a shim.
 //
 //   meshctl enable --agents-view [--apply]   says the Agents view is always on
 //   meshctl enable --unslop [--port <n>] [--checkout <path>] [--apply]
+//   meshctl enable --request-post --endpoint <url> --token-file <path> [--apply]
 //   meshctl disable [--apply]                turn every mesh piece off
 //   meshctl disable --unslop [--purge] [--apply]
+//   meshctl disable --request-post [--apply]
 //   meshctl status                           say what mesh.json turns on
 //   meshctl unslop --kind <kind> [--report <file>] [--timeout <s>] < draft
 //                                            the shim's command (src/unslop-client.ts)
+//   meshctl request-post …                   its shim's command (R3; exits 14 until then)
 //
 // Exit codes: 0 done (or nothing to do), 1 refused or failed, 2 usage;
 // `unslop` has its own (0, 10-14, 4), listed in src/unslop-client.ts.
@@ -25,17 +30,20 @@ import { closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdi
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { MESH_SCHEMA, loopbackPort, meshDir, meshFile, readMesh } from './mesh-config.js'
-import type { MeshDocument } from './mesh-config.js'
+import { MESH_SCHEMA, loopbackPort, meshDir, meshFile, readMesh, requestPostEndpoint } from './mesh-config.js'
+import type { MeshDocument, MeshRead } from './mesh-config.js'
 import { UNSLOP_USAGE, runUnslop } from './unslop-client.js'
 
 const UNSLOP_PORT = 4420
+const ENDPOINT_RULE = 'https://<name>.<tailnet>.ts.net[:<port>] or, for the SSH fallback only, http://127.0.0.1:<port>'
 
 const USAGE = `usage: agent-inbox-meshctl status
        agent-inbox-meshctl disable [--apply]
        agent-inbox-meshctl enable --agents-view [--apply]
        agent-inbox-meshctl enable --unslop [--port <n>] [--checkout <path>] [--apply]
        agent-inbox-meshctl disable --unslop [--purge] [--apply]
+       agent-inbox-meshctl enable --request-post --endpoint <url> --token-file <path> [--apply]
+       agent-inbox-meshctl disable --request-post [--apply]
        agent-inbox-meshctl unslop --kind <kind> [--report <file>] [--timeout <s>] < draft
 
 Without --apply, enable and disable are dry runs: they print what they would do.
@@ -44,6 +52,8 @@ enable --unslop needs packages/mesh built in the checkout (npm ci && npm run bui
 it listens on http://127.0.0.1:<port> only (default ${UNSLOP_PORT}). disable --unslop keeps the
 profile, logs and deny list unless --purge. unslop is what <mesh dir>/bin/unslop runs:
 it sends one public draft to the agent (docs/unslop.md).
+enable --request-post copies the per-device bearer token from --token-file (never printed);
+the endpoint is ${ENDPOINT_RULE} (docs/request-post.md).
 mesh.json lives in AGENT_INBOX_MESH_DIR, else beside AGENT_INBOX_DB, else ~/.agent-inbox.
 `
 
@@ -162,19 +172,48 @@ const shQuote = (text: string): string => `'${text.replaceAll("'", `'\\''`)}'`
 // The shim never reads a terminal: on a stale path it discards piped input only.
 // It pins the mesh dir it was written for, so the caller's environment (no
 // AGENT_INBOX_MESH_DIR, or an AGENT_INBOX_DB) cannot point it at another one.
-function shimText(node: string, script: string, dir: string): string {
+function shimText(agent: string, issue: number, node: string, script: string, dir: string): string {
   return `#!/bin/sh
-# agent-inbox unslop shim (#483), written by meshctl enable --unslop. Do not edit.
+# agent-inbox ${agent} shim (#${issue}), written by meshctl enable --${agent}. Do not edit.
 AGENT_INBOX_MESH_DIR=${shQuote(dir)}; export AGENT_INBOX_MESH_DIR
 node=${shQuote(node)}
 meshctl=${shQuote(script)}
 if [ ! -x "$node" ] || [ ! -f "$meshctl" ]; then
   [ -t 0 ] || cat > /dev/null
-  echo 'agent-inbox unslop: this shim is stale: run meshctl enable --unslop again' >&2
+  echo 'agent-inbox ${agent}: this shim is stale: run meshctl enable --${agent} again' >&2
   exit 14
 fi
-exec "$node" "$meshctl" unslop "$@"
+exec "$node" "$meshctl" ${agent} "$@"
 `
+}
+
+// ── request-post (#500, request-post design §6, §8) ────────────────────────
+
+function requestPostPaths(dir: string) {
+  const root = join(dir, 'mesh')
+  return { root, tokens: join(root, 'tokens'), token: join(root, 'tokens', 'request-post'), bin: join(dir, 'bin'), shim: join(dir, 'bin', 'request-post') }
+}
+
+const TOKEN_FILE_MAX = 4096
+
+/** The bearer token in `path`: a regular file the user owns, one run of at least 32 visible ASCII characters. */
+function readToken(path: string): { token: string } | { refused: string } {
+  let fd: number
+  try {
+    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+  } catch (error) {
+    return { refused: (error as NodeJS.ErrnoException).code === 'ELOOP' ? 'the token file is a symlink: pass the file itself' : 'the token file cannot be read' }
+  }
+  try {
+    const stat = fstatSync(fd)
+    const uid = process.getuid?.()
+    if (!stat.isFile() || (uid !== undefined && stat.uid !== uid)) return { refused: 'the token file is not a regular file you own' }
+    if (stat.size > TOKEN_FILE_MAX) return { refused: `the token file is larger than ${TOKEN_FILE_MAX} bytes` }
+    const token = readFileSync(fd, 'utf8').replace(/\r?\n$/, '')
+    return /^[\x21-\x7e]{32,}$/.test(token) ? { token } : { refused: 'the token file must hold one token of at least 32 printable characters, no spaces' }
+  } finally {
+    closeSync(fd)
+  }
 }
 
 type Step = { dry: string; run: () => string }
@@ -214,11 +253,15 @@ export function runMeshctl(argv: string[], io: MeshctlIo = {}): number {
     err(UNSLOP_USAGE)
     return 4
   }
+  if (command === 'request-post') {
+    err('request-post: this build has no request-post client yet (#500 R3). File the request in-session.\n')
+    return 14
+  }
   const flags = new Set<string>()
   const values = new Map<string, string>()
   for (let i = 0; i < rest.length; i++) {
     const arg = rest[i]!
-    if (['--port', '--checkout'].includes(arg)) {
+    if (['--port', '--checkout', '--endpoint', '--token-file'].includes(arg)) {
       const value = rest[++i]
       if (value === undefined || values.has(arg)) return usage()
       values.set(arg, value)
@@ -227,7 +270,9 @@ export function runMeshctl(argv: string[], io: MeshctlIo = {}): number {
   }
   const apply = flags.delete('--apply')
   const unslop = flags.delete('--unslop')
-
+  const requestPost = flags.delete('--request-post')
+  if (unslop && requestPost) return usage()
+  const only = (...names: string[]): boolean => [...values.keys()].every((key) => names.includes(key))
 
   const dir = resolve(meshDir(env, home))
   const file = meshFile(dir)
@@ -240,30 +285,118 @@ export function runMeshctl(argv: string[], io: MeshctlIo = {}): number {
     writeAtomic(file, `${JSON.stringify(doc, null, 2)}\n`, 0o644)
     return backup
   }
+  const repo = fileURLToPath(new URL('..', import.meta.url))
+  const node = io.node ?? process.execPath
+  const self = fileURLToPath(import.meta.url)
+  const script = io.script ?? (self.endsWith('.js') ? self : join(repo, 'dist', 'meshctl.js'))
+  // the step that takes agents.<agent> out of mesh.json, deleting the file when nothing else is left
+  const dropAgent = (existing: MeshRead, agent: string): Step | undefined => {
+    const agents = existing.kind === 'present' ? objectOf(existing.doc['agents']) : undefined
+    if (existing.kind !== 'present' || !agents || !(agent in agents)) return undefined
+    const { [agent]: _gone, ...others } = agents
+    const next: MeshDocument = { ...existing.doc, agents: others }
+    if (!Object.keys(others).length) delete next['agents']
+    return Object.keys(next).length === 1
+      ? {
+          dry: `Would delete ${name}: agents.${agent} was its only setting (keeping a backup beside it).`,
+          run: () => { const backup = writeBackup(file, now()); unlinkSync(file); return `Deleted ${name} (backup: ${show(backup)}).` },
+        }
+      : {
+          dry: `Would remove agents.${agent} from ${name}, keeping every other key (and a backup beside it).`,
+          run: () => `Removed agents.${agent} from ${name}${writeMesh(next, true)}.`,
+        }
+  }
 
   if (command === 'status') {
-    if (flags.size || values.size || apply || unslop) return usage()
+    if (flags.size || values.size || apply || unslop || requestPost) return usage()
     out(`${ALWAYS_ON}\n`)
     const existing = readMesh(file)
-    const entry = existing.kind === 'present' ? objectOf(existing.doc['agents'])?.['unslop'] : undefined
+    const agents = existing.kind === 'present' ? objectOf(existing.doc['agents']) : undefined
+    const entry = agents?.['unslop']
     const port = entry === undefined ? undefined : loopbackPort(objectOf(entry)?.['endpoint'])
+    const rpEntry = agents?.['request-post']
+    const rpEndpoint = rpEntry === undefined ? undefined : requestPostEndpoint(objectOf(rpEntry)?.['endpoint'])
+    const pieces = [...(port ? ['unslop'] : []), ...(rpEndpoint ? ['request-post'] : [])].join(' and ')
     if (existing.kind === 'missing') out(`Mesh: off. No ${name}.\n`)
     else if (existing.kind === 'refused') out(`Mesh: off. ${name} ${existing.reason}, so it is read as off.\n`)
-    else out(port ? `Mesh: on. ${name} turns on unslop.\n` : `Mesh: off. ${name} turns on no piece this build reads.\n`)
+    else out(pieces ? `Mesh: on. ${name} turns on ${pieces}.\n` : `Mesh: off. ${name} turns on no piece this build reads.\n`)
     const has = (path: string): string => (exists(path) ? 'present' : 'missing')
     const state = port ? `on at http://127.0.0.1:${port}` : entry === undefined ? 'off' : 'off (agents.unslop.endpoint is not http://127.0.0.1:<port>)'
     out(`Unslop: ${state}. Profile ${show(paths.profile)}: ${has(paths.profile)}; token: ${has(paths.token)}; shim ${show(paths.shim)}: ${has(paths.shim)}.\n`)
+    // the endpoint is printed only when it passed the rule, so it can hold no token
+    const rp = requestPostPaths(dir)
+    const rpState = rpEndpoint ? `on at ${rpEndpoint}` : rpEntry === undefined ? 'off' : `off (agents.request-post.endpoint is not ${ENDPOINT_RULE})`
+    out(`Request-post: ${rpState}. Token: ${has(rp.token)}; shim ${show(rp.shim)}: ${has(rp.shim)}.\n`)
     return existing.kind === 'refused' ? 1 : 0
   }
 
-  if (command === 'enable' && !unslop) {
+  if (command === 'enable' && !unslop && !requestPost) {
     if (!flags.delete('--agents-view') || flags.size || values.size) return usage()
     out(`${ALWAYS_ON} Nothing written.\n`)
     return 0
   }
 
+  if (command === 'enable' && requestPost) {
+    const endpointText = values.get('--endpoint')
+    const tokenFile = values.get('--token-file')
+    if (flags.size || !only('--endpoint', '--token-file') || endpointText === undefined || tokenFile === undefined) return usage()
+    const endpoint = requestPostEndpoint(endpointText)
+    if (!endpoint) return refuse(`the endpoint must be ${ENDPOINT_RULE}: never a public host, another IP address, plain http to another host, or port 80 there`)
+    const existing = readMesh(file)
+    if (existing.kind === 'refused') return refuse(`${name} ${existing.reason}. Remove it by hand if you are sure`)
+    const doc: MeshDocument = existing.kind === 'present' ? existing.doc : { schema: MESH_SCHEMA }
+    const agents = doc['agents'] === undefined ? {} : objectOf(doc['agents'])
+    if (!agents) return refuse(`${name} has an "agents" value that is not an object`)
+    const source = resolve(tokenFile)
+    const read = readToken(source)
+    if ('refused' in read) return refuse(read.refused)
+    if (!isFile(script)) return refuse(`${show(script)} is missing: run npm run build in ${show(repo)}`)
+    if ([node, script, dir].some((path) => /[\x00-\x1f\x7f]/.test(path))) return refuse('a path holds a control character')
+    const rp = requestPostPaths(dir)
+    const wanted = { endpoint }
+    const next: MeshDocument = { ...doc, agents: { ...agents, 'request-post': wanted } }
+    const current = existing.kind === 'present' && JSON.stringify(agents['request-post']) === JSON.stringify(wanted)
+    const shim = shimText('request-post', 500, node, script, dir)
+    const json = `${JSON.stringify(next, null, 2)}\n`
+    const dirs = (): void => {
+      for (const d of [rp.tokens, rp.bin]) mkdirSync(d, { recursive: true, mode: 0o700 })
+    }
+    const steps: Step[] = [
+      {
+        dry: `Would copy the bearer token in ${show(source)} to ${show(rp.token)} (0600${exists(rp.token) ? ', replacing the one there' : ''}); it is never printed.`,
+        run: () => { dirs(); writeAtomic(rp.token, `${read.token}\n`, 0o600); return `Copied the token to ${show(rp.token)}.` },
+      },
+      {
+        dry: `Would write the shim ${show(rp.shim)} (0755):\n${shim}`,
+        run: () => { dirs(); writeAtomic(rp.shim, shim, 0o755); return `Wrote ${show(rp.shim)}.` },
+      },
+      current ? { dry: `Would keep ${name} (request-post is on at ${endpoint}).`, run: () => `Kept ${name}: request-post is on at ${endpoint}.` } : {
+        dry: `Would ${existing.kind === 'present' ? 'replace' : 'create'} ${name}${existing.kind === 'present' ? ' (keeping a backup beside it)' : ''}:\n${json}`,
+        run: () => `Wrote ${name}${writeMesh(next, existing.kind === 'present')}: request-post is on at ${endpoint}.`,
+      },
+    ]
+    return runSteps(steps, apply, out, err, `Steps before it are done; ${name} was not changed.`)
+  }
+
+  if (command === 'disable' && requestPost) {
+    if (flags.size || values.size) return usage()
+    const existing = readMesh(file)
+    if (existing.kind === 'refused') return refuse(`${name} ${existing.reason}. Remove it by hand if you are sure`)
+    const rp = requestPostPaths(dir)
+    const drop = dropAgent(existing, 'request-post')
+    const steps: Step[] = drop ? [drop] : []
+    for (const [path, parents] of [[rp.shim, [rp.bin]], [rp.token, [rp.tokens, rp.root]]] as const) {
+      if (exists(path)) steps.push({ dry: `Would delete ${show(path)}.`, run: () => { unlinkSync(path); parents.forEach(removeIfEmpty); return `Deleted ${show(path)}.` } })
+    }
+    if (!steps.length) {
+      out('Request-post is already off. Nothing to do.\n')
+      return 0
+    }
+    return runSteps(steps, apply, out, err, 'Steps before it are done; nothing after it ran.')
+  }
+
   if (command === 'enable') {
-    if (flags.size) return usage()
+    if (flags.size || !only('--port', '--checkout')) return usage()
     const portText = values.get('--port') ?? String(UNSLOP_PORT)
     const port = /^\d{1,5}$/.test(portText) ? loopbackPort(`http://127.0.0.1:${portText}`) : undefined
     if (!port) return refuse('the port must be a number from 1 to 65535 other than 80; the endpoint is always http://127.0.0.1:<port>')
@@ -276,7 +409,6 @@ export function runMeshctl(argv: string[], io: MeshctlIo = {}): number {
     const next: MeshDocument = { ...doc, agents: { ...agents, unslop: wanted } }
     const current = existing.kind === 'present' && JSON.stringify(agents['unslop']) === JSON.stringify(wanted)
 
-    const repo = fileURLToPath(new URL('..', import.meta.url))
     const checkout = resolve(values.get('--checkout') ?? repo)
     const wrap = join(checkout, 'packages', 'mesh', 'dist', 'wrap.js')
     if (!isFile(wrap)) {
@@ -284,14 +416,11 @@ export function runMeshctl(argv: string[], io: MeshctlIo = {}): number {
         ? `${show(wrap)} is missing: run npm ci && npm run build in ${show(join(checkout, 'packages', 'mesh'))} (Node 24)`
         : `${show(checkout)} is not an agent-inbox checkout: pass --checkout <path of one>`)
     }
-    const node = io.node ?? process.execPath
-    const self = fileURLToPath(import.meta.url)
-    const script = io.script ?? (self.endsWith('.js') ? self : join(repo, 'dist', 'meshctl.js'))
     if (!isFile(script)) return refuse(`${show(script)} is missing: run npm run build in ${show(repo)}`)
     if ([node, wrap, script, dir].some((path) => /[\x00-\x1f\x7f]/.test(path))) return refuse('a path holds a control character')
     const start = [node, wrap, '--agent', 'openai-compatible', '--profile', 'unslop']
     const template = profileTemplate(start)
-    const shim = shimText(node, script, dir)
+    const shim = shimText('unslop', 483, node, script, dir)
     const json = `${JSON.stringify(next, null, 2)}\n`
     const dirs = (): void => {
       for (const d of [paths.wrappers, paths.tokens, paths.bin]) mkdirSync(d, { recursive: true, mode: 0o700 })
@@ -330,22 +459,8 @@ export function runMeshctl(argv: string[], io: MeshctlIo = {}): number {
     if (flags.size || values.size) return usage()
     const existing = readMesh(file)
     if (existing.kind === 'refused') return refuse(`${name} ${existing.reason}. Remove it by hand if you are sure`)
-    const steps: Step[] = []
-    const agents = existing.kind === 'present' ? objectOf(existing.doc['agents']) : undefined
-    if (existing.kind === 'present' && agents && 'unslop' in agents) {
-      const { unslop: _gone, ...others } = agents
-      const next: MeshDocument = { ...existing.doc, agents: others }
-      if (!Object.keys(others).length) delete next['agents']
-      steps.push(Object.keys(next).length === 1
-        ? {
-            dry: `Would delete ${name}: agents.unslop was its only setting (keeping a backup beside it).`,
-            run: () => { const backup = writeBackup(file, now()); unlinkSync(file); return `Deleted ${name} (backup: ${show(backup)}).` },
-          }
-        : {
-            dry: `Would remove agents.unslop from ${name}, keeping every other key (and a backup beside it).`,
-            run: () => `Removed agents.unslop from ${name}${writeMesh(next, true)}.`,
-          })
-    }
+    const drop = dropAgent(existing, 'unslop')
+    const steps: Step[] = drop ? [drop] : []
     const remove = (path: string, parent?: string): void => {
       if (exists(path)) steps.push({ dry: `Would delete ${show(path)}.`, run: () => { unlinkSync(path); if (parent) removeIfEmpty(parent); return `Deleted ${show(path)}.` } })
     }

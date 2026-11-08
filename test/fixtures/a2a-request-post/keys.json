@@ -1,0 +1,298 @@
+{
+  "algorithm": "base32(sha256(preimage))[0:26], RFC 4648 alphabet, lower-case",
+  "titles": [
+    {
+      "name": "plain",
+      "input": "Try the agent",
+      "normalised": "try the agent"
+    },
+    {
+      "name": "case and odd whitespace",
+      "input": "  TRY\tthe\n\n agent  ",
+      "normalised": "try the agent"
+    },
+    {
+      "name": "full-width letters",
+      "input": "\uff34\uff52\uff59 \uff54\uff48\uff45 \uff41\uff47\uff45\uff4e\uff54",
+      "normalised": "try the agent"
+    },
+    {
+      "name": "no-break and ideographic spaces",
+      "input": "Try\u00a0the\u3000agent",
+      "normalised": "try the agent"
+    },
+    {
+      "name": "line separator",
+      "input": "Try\u2028the agent",
+      "normalised": "try the agent"
+    },
+    {
+      "name": "composed accent",
+      "input": "Caf\u00e9 launch",
+      "normalised": "caf\u00e9 launch"
+    },
+    {
+      "name": "decomposed accent",
+      "input": "Cafe\u0301 launch",
+      "normalised": "caf\u00e9 launch"
+    },
+    {
+      "name": "ligature",
+      "input": "\ufb01nal release",
+      "normalised": "final release"
+    },
+    {
+      "name": "superscript",
+      "input": "Version\u00b2 notes",
+      "normalised": "version2 notes"
+    },
+    {
+      "name": "upper-case accent",
+      "input": "\u00c9COLE notes",
+      "normalised": "\u00e9cole notes"
+    }
+  ],
+  "vectors": [
+    {
+      "name": "social-title",
+      "input": {
+        "brand": "example-brand",
+        "channels": [
+          "x-standalone"
+        ],
+        "title": "Try the agent"
+      },
+      "preimage": "request-post/v1\nexample-brand\nx-standalone\ntitle:try the agent",
+      "key": "orl6k5iwi7vpgauxx4btsaikxb"
+    },
+    {
+      "name": "social-title-case-whitespace",
+      "input": {
+        "brand": "example-brand",
+        "channels": [
+          "x-standalone"
+        ],
+        "title": "  TRY\tthe\u00a0 Agent "
+      },
+      "preimage": "request-post/v1\nexample-brand\nx-standalone\ntitle:try the agent",
+      "key": "orl6k5iwi7vpgauxx4btsaikxb",
+      "sameKeyAs": "social-title"
+    },
+    {
+      "name": "social-title-full-width",
+      "input": {
+        "brand": "example-brand",
+        "channels": [
+          "x-standalone"
+        ],
+        "title": "\uff34\uff52\uff59 \uff54\uff48\uff45 \uff41\uff47\uff45\uff4e\uff54"
+      },
+      "preimage": "request-post/v1\nexample-brand\nx-standalone\ntitle:try the agent",
+      "key": "orl6k5iwi7vpgauxx4btsaikxb",
+      "sameKeyAs": "social-title"
+    },
+    {
+      "name": "social-title-brief-a",
+      "input": {
+        "brand": "example-brand",
+        "channels": [
+          "x-standalone"
+        ],
+        "title": "Try the agent",
+        "brief": "Angle: one inbox for every agent question."
+      },
+      "preimage": "request-post/v1\nexample-brand\nx-standalone\ntitle:try the agent",
+      "key": "orl6k5iwi7vpgauxx4btsaikxb",
+      "sameKeyAs": "social-title"
+    },
+    {
+      "name": "social-title-brief-b",
+      "input": {
+        "brand": "example-brand",
+        "channels": [
+          "x-standalone"
+        ],
+        "title": "Try the agent",
+        "brief": "A rewritten brief that shares no sentence with the first."
+      },
+      "preimage": "request-post/v1\nexample-brand\nx-standalone\ntitle:try the agent",
+      "key": "orl6k5iwi7vpgauxx4btsaikxb",
+      "sameKeyAs": "social-title"
+    },
+    {
+      "name": "social-title-other-words",
+      "input": {
+        "brand": "example-brand",
+        "channels": [
+          "x-standalone"
+        ],
+        "title": "Try the agents"
+      },
+      "preimage": "request-post/v1\nexample-brand\nx-standalone\ntitle:try the agents",
+      "key": "mz3uh57g4m2h55zvjbkm5lufyn",
+      "differsFrom": "social-title"
+    },
+    {
+      "name": "social-accent-composed",
+      "input": {
+        "brand": "example-brand",
+        "channels": [
+          "x-standalone"
+        ],
+        "title": "Caf\u00e9 launch"
+      },
+      "preimage": "request-post/v1\nexample-brand\nx-standalone\ntitle:caf\u00e9 launch",
+      "key": "qas2hdbgmxrrpent55gnhigjre"
+    },
+    {
+      "name": "social-accent-decomposed",
+      "input": {
+        "brand": "example-brand",
+        "channels": [
+          "x-standalone"
+        ],
+        "title": "Cafe\u0301 launch"
+      },
+      "preimage": "request-post/v1\nexample-brand\nx-standalone\ntitle:caf\u00e9 launch",
+      "key": "qas2hdbgmxrrpent55gnhigjre",
+      "sameKeyAs": "social-accent-composed"
+    },
+    {
+      "name": "social-channels-sorted",
+      "input": {
+        "brand": "example-brand",
+        "channels": [
+          "linkedin",
+          "x-thread"
+        ],
+        "title": "Try the agent"
+      },
+      "preimage": "request-post/v1\nexample-brand\nlinkedin,x-thread\ntitle:try the agent",
+      "key": "ubay3qogatbm45uq26kehyjk3h"
+    },
+    {
+      "name": "social-channels-reordered",
+      "input": {
+        "brand": "example-brand",
+        "channels": [
+          "x-thread",
+          "linkedin"
+        ],
+        "title": "Try the agent"
+      },
+      "preimage": "request-post/v1\nexample-brand\nlinkedin,x-thread\ntitle:try the agent",
+      "key": "ubay3qogatbm45uq26kehyjk3h",
+      "sameKeyAs": "social-channels-sorted"
+    },
+    {
+      "name": "social-channels-other",
+      "input": {
+        "brand": "example-brand",
+        "channels": [
+          "x-thread"
+        ],
+        "title": "Try the agent"
+      },
+      "preimage": "request-post/v1\nexample-brand\nx-thread\ntitle:try the agent",
+      "key": "knutj2hwyfxavubc2towrtu7xq",
+      "differsFrom": "social-title"
+    },
+    {
+      "name": "social-brand-other",
+      "input": {
+        "brand": "second-brand",
+        "channels": [
+          "x-standalone"
+        ],
+        "title": "Try the agent"
+      },
+      "preimage": "request-post/v1\nsecond-brand\nx-standalone\ntitle:try the agent",
+      "key": "u2m2t4xzq25nifzmfjzxegc333",
+      "differsFrom": "social-title"
+    },
+    {
+      "name": "social-url",
+      "input": {
+        "brand": "example-brand",
+        "channels": [
+          "x-standalone"
+        ],
+        "title": "Try the agent",
+        "sourceUrl": "https://example.com/release-roundup"
+      },
+      "preimage": "request-post/v1\nexample-brand\nx-standalone\nurl:https://example.com/release-roundup",
+      "key": "dt4tgszxwktueunc62ojury4og",
+      "differsFrom": "social-title"
+    },
+    {
+      "name": "social-url-other-title",
+      "input": {
+        "brand": "example-brand",
+        "channels": [
+          "x-standalone"
+        ],
+        "title": "A different title",
+        "sourceUrl": "https://example.com/release-roundup"
+      },
+      "preimage": "request-post/v1\nexample-brand\nx-standalone\nurl:https://example.com/release-roundup",
+      "key": "dt4tgszxwktueunc62ojury4og",
+      "sameKeyAs": "social-url"
+    },
+    {
+      "name": "social-url-as-sent",
+      "input": {
+        "brand": "example-brand",
+        "channels": [
+          "x-standalone"
+        ],
+        "title": "Try the agent",
+        "sourceUrl": "https://example.com/release-roundup/"
+      },
+      "preimage": "request-post/v1\nexample-brand\nx-standalone\nurl:https://example.com/release-roundup/",
+      "key": "sqs6qidnz2tcay2s7zpnick4pl",
+      "differsFrom": "social-url"
+    },
+    {
+      "name": "blog-slug",
+      "input": {
+        "brand": "example-brand",
+        "channels": [
+          "blog"
+        ],
+        "title": "Try the agent",
+        "slug": "try-the-agent"
+      },
+      "preimage": "request-post/v1\nexample-brand\nblog\nslug:try-the-agent",
+      "key": "u3niopolofwhyhbnz27awnzmpe"
+    },
+    {
+      "name": "blog-slug-other-title",
+      "input": {
+        "brand": "example-brand",
+        "channels": [
+          "blog"
+        ],
+        "title": "Another title entirely",
+        "slug": "try-the-agent",
+        "brief": "Any brief at all."
+      },
+      "preimage": "request-post/v1\nexample-brand\nblog\nslug:try-the-agent",
+      "key": "u3niopolofwhyhbnz27awnzmpe",
+      "sameKeyAs": "blog-slug"
+    },
+    {
+      "name": "blog-slug-other",
+      "input": {
+        "brand": "example-brand",
+        "channels": [
+          "blog"
+        ],
+        "title": "Try the agent",
+        "slug": "try-the-agent-again"
+      },
+      "preimage": "request-post/v1\nexample-brand\nblog\nslug:try-the-agent-again",
+      "key": "3bif5d7z5jlhqvztzt6yguwzej",
+      "differsFrom": "blog-slug"
+    }
+  ]
+}

@@ -295,3 +295,30 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
   second agent in its own mesh dir with the box's default sampling in its profile, not a
   switch in the agent. How to run it and read `summary.md`: [`docs/unslop.md`](../unslop.md).
   Tests: `packages/mesh/test/bench-s11.test.ts` (recorded runs, no network).
+
+## request-post conformance fixtures (M2b R1, #500)
+
+request-post is the mesh's second agent, hosted by the private publishing service (design:
+[`docs/superpowers/specs/2026-11-07-request-post-a2a-agent-design.md`](../../docs/superpowers/specs/2026-11-07-request-post-a2a-agent-design.md)).
+This repository ships its client (R2-R3, not yet landed) and the contract both sides test
+against: `test/fixtures/a2a-request-post/` ([README](../../test/fixtures/a2a-request-post/README.md)).
+
+- **What is there:** the card, one request and response per §3.3 row (14, 15 and 4 are
+  client-side only, with a note and no task), a `request-post-status` snapshot per phase,
+  `awaiting-go` included, title and request-key vectors with their pre-images, and
+  `conformance.ts`, the validator: Node core only and erasable TypeScript, so the private
+  repository runs it on Node 24 without a build. The README lists what R1 pins that the
+  design left open (the `skill` metadata field, where the data part sits, refusal and snapshot
+  shapes, the key's exact pre-image and base32).
+- **It lives under `test/`** because nothing that ships uses it yet, and
+  `test/dead-exports.test.ts` counts no test as a consumer. R3's `src/request-post-client.ts`
+  computes the key itself and runs `keys.json` against it; R3's fake server is built from these
+  fixtures, never the service.
+- **The private repository vendors the folder** at a pinned commit and records the SHA-256 of
+  `MANIFEST.json`, which lists every other file's SHA-256; its tests check that hash and
+  `checkManifest()`, then run the fixtures and its own responses through the validator. Never
+  edit a vendored copy; a contract change here is a new commit to vendor.
+- **Changing a fixture:** edit it, then regenerate the manifest with
+  `node test/fixtures/a2a-request-post/conformance.ts manifest > test/fixtures/a2a-request-post/MANIFEST.json`
+  (Node 24). `test/request-post-conformance.test.ts` checks every fixture, the mutations the
+  validator must catch, the key vectors and the manifest.

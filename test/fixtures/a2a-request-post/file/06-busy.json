@@ -1,0 +1,66 @@
+{
+  "row": "busy",
+  "situation": "Busy: rate limit or 5xx before any write, the filing lock, or the daily budget",
+  "exit": 12,
+  "request": {
+    "jsonrpc": "2.0",
+    "id": "rpc-06",
+    "method": "SendMessage",
+    "params": {
+      "message": {
+        "messageId": "30000000-0000-4000-8000-000000000006",
+        "role": "ROLE_USER",
+        "parts": [
+          {
+            "text": "Audience: developers who run several coding assistants.\nAngle: one inbox for every agent question.\nFacts: the viewer is local; nothing leaves the machine.\nCall to action: try the release."
+          }
+        ],
+        "metadata": {
+          "urn:agent-inbox:ext:request-post:v1": {
+            "skill": "request-post",
+            "brand": "second-brand",
+            "channels": [
+              "x-thread"
+            ],
+            "title": "Busy example",
+            "idempotencyKey": "m7zzptywxrzra56rkyhtf74rrc"
+          }
+        }
+      }
+    }
+  },
+  "response": {
+    "jsonrpc": "2.0",
+    "id": "rpc-06",
+    "result": {
+      "task": {
+        "id": "10000000-0000-4000-8000-000000000006",
+        "contextId": "20000000-0000-4000-8000-000000000006",
+        "status": {
+          "state": "TASK_STATE_REJECTED",
+          "timestamp": "2026-11-08T12:00:00.000Z",
+          "message": {
+            "messageId": "50000000-0000-4000-8000-000000000006",
+            "role": "ROLE_AGENT",
+            "taskId": "10000000-0000-4000-8000-000000000006",
+            "contextId": "20000000-0000-4000-8000-000000000006",
+            "parts": [
+              {
+                "text": "busy: daily-budget; try again in about 3600 s"
+              },
+              {
+                "data": {
+                  "code": 12,
+                  "status": "busy",
+                  "reason": "daily-budget",
+                  "retryAfterMs": 3600000
+                },
+                "mediaType": "application/json"
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}

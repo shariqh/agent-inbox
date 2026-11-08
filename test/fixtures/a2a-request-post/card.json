@@ -1,0 +1,82 @@
+{
+  "name": "request-post",
+  "description": "Files one publishing request in the queue and reads it back; reads the state of agent-filed requests. No model, no free-form tools.",
+  "version": "0.0.0-fixture",
+  "supportedInterfaces": [
+    {
+      "url": "https://request-post.tailnet-name.ts.net/",
+      "protocolBinding": "JSONRPC",
+      "protocolVersion": "1.0"
+    }
+  ],
+  "capabilities": {
+    "streaming": false,
+    "pushNotifications": false,
+    "extensions": [
+      {
+        "uri": "urn:agent-inbox:ext:request-post:v1",
+        "description": "request-post parameters, results and status snapshots",
+        "required": true,
+        "params": {
+          "api": 1,
+          "brands": [
+            "example-brand",
+            "second-brand"
+          ],
+          "channels": [
+            "blog",
+            "x-thread",
+            "x-standalone",
+            "linkedin"
+          ],
+          "categories": [
+            "example-category",
+            "second-category"
+          ],
+          "maxBriefBytes": 8192
+        }
+      }
+    ]
+  },
+  "securitySchemes": {
+    "bearer": {
+      "httpAuthSecurityScheme": {
+        "scheme": "Bearer"
+      }
+    }
+  },
+  "securityRequirements": [
+    {
+      "schemes": {
+        "bearer": {
+          "list": []
+        }
+      }
+    }
+  ],
+  "defaultInputModes": [
+    "text/plain"
+  ],
+  "defaultOutputModes": [
+    "text/plain",
+    "application/json"
+  ],
+  "skills": [
+    {
+      "id": "request-post",
+      "name": "request-post",
+      "description": "File one blog or social request: validate, screen, dedupe, create, read back.",
+      "tags": [
+        "publishing"
+      ]
+    },
+    {
+      "id": "request-post-status",
+      "name": "request-post-status",
+      "description": "Read one agent-filed request and the drafts it produced.",
+      "tags": [
+        "publishing"
+      ]
+    }
+  ]
+}

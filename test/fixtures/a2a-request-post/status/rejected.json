@@ -1,0 +1,69 @@
+{
+  "phase": "rejected",
+  "exit": 0,
+  "request": {
+    "jsonrpc": "2.0",
+    "id": "rpc-17",
+    "method": "SendMessage",
+    "params": {
+      "message": {
+        "messageId": "30000000-0000-4000-8000-000000000017",
+        "role": "ROLE_USER",
+        "parts": [
+          {
+            "text": "status"
+          }
+        ],
+        "metadata": {
+          "urn:agent-inbox:ext:request-post:v1": {
+            "skill": "request-post-status",
+            "pageId": "00000000-0000-4000-8000-000000000002"
+          }
+        }
+      }
+    }
+  },
+  "response": {
+    "jsonrpc": "2.0",
+    "id": "rpc-17",
+    "result": {
+      "task": {
+        "id": "10000000-0000-4000-8000-000000000017",
+        "contextId": "20000000-0000-4000-8000-000000000017",
+        "status": {
+          "state": "TASK_STATE_COMPLETED",
+          "timestamp": "2026-11-08T12:00:00.000Z"
+        },
+        "artifacts": [
+          {
+            "artifactId": "40000000-0000-4000-8000-000000000017",
+            "name": "request-post",
+            "parts": [
+              {
+                "text": "rejected: Try the agent",
+                "mediaType": "text/plain"
+              },
+              {
+                "data": {
+                  "code": 0,
+                  "phase": "rejected",
+                  "status": "Rejected",
+                  "drafts": [
+                    {
+                      "pageId": "00000000-0000-4000-8000-000000000022",
+                      "url": "https://www.notion.so/00000000000040008000000000000022",
+                      "channel": "x-standalone",
+                      "status": "Rejected"
+                    }
+                  ],
+                  "final": true
+                },
+                "mediaType": "application/json"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

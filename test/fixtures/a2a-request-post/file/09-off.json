@@ -1,0 +1,7 @@
+{
+  "row": "off",
+  "situation": "Off: no agents.request-post key",
+  "exit": 14,
+  "clientOnly": true,
+  "note": "Client-side only: without the agents.request-post key in mesh.json the client opens no connection and no task exists."
+}

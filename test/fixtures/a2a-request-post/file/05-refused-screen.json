@@ -1,0 +1,69 @@
+{
+  "row": "refused-screen",
+  "situation": "Screen refusal: the classes, never a matched value",
+  "exit": 11,
+  "request": {
+    "jsonrpc": "2.0",
+    "id": "rpc-05",
+    "method": "SendMessage",
+    "params": {
+      "message": {
+        "messageId": "30000000-0000-4000-8000-000000000005",
+        "role": "ROLE_USER",
+        "parts": [
+          {
+            "text": "Hi Jane,\n\nThe staging box at 10.20.30.40 is ready for the launch post.\n\nThanks"
+          }
+        ],
+        "metadata": {
+          "urn:agent-inbox:ext:request-post:v1": {
+            "skill": "request-post",
+            "brand": "example-brand",
+            "channels": [
+              "linkedin"
+            ],
+            "title": "Staging is ready",
+            "idempotencyKey": "lxpjv5n7qitn426n7olku7clvx"
+          }
+        }
+      }
+    }
+  },
+  "response": {
+    "jsonrpc": "2.0",
+    "id": "rpc-05",
+    "result": {
+      "task": {
+        "id": "10000000-0000-4000-8000-000000000005",
+        "contextId": "20000000-0000-4000-8000-000000000005",
+        "status": {
+          "state": "TASK_STATE_REJECTED",
+          "timestamp": "2026-11-08T12:00:00.000Z",
+          "message": {
+            "messageId": "50000000-0000-4000-8000-000000000005",
+            "role": "ROLE_AGENT",
+            "taskId": "10000000-0000-4000-8000-000000000005",
+            "contextId": "20000000-0000-4000-8000-000000000005",
+            "parts": [
+              {
+                "text": "rejected: screen letter-shape, private-address"
+              },
+              {
+                "data": {
+                  "code": 11,
+                  "status": "rejected",
+                  "reason": "screen",
+                  "classes": [
+                    "letter-shape",
+                    "private-address"
+                  ]
+                },
+                "mediaType": "application/json"
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}

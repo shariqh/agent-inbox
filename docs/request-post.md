@@ -80,7 +80,8 @@ terminal and never asks anything; the brief comes on stdin or from `--brief-file
   `url`, `requestKey`, `brand`, `channels`, `phase` and `readBack`; for `status` and `wait`, the
   snapshot (`phase`, `status`, `drafts`, `prUrl`, `error`, `humanAction`, `final`). stderr gets
   one line saying what happened. `--report <file>` also writes the data part of every answer that
-  has one, exit 0 or not (mode 0600, never through a symlink).
+  has one, exit 0 or not, and `{ "code": <exit> }` on an exit without one (mode 0600, never
+  through a symlink), so an old report never survives a new run.
 - **`wait`** reads the status every 2 minutes for 30 minutes, then every 15, and exits 0 with the
   snapshot when the phase is `awaiting-go`, `ready-for-human`, `proposed`, `needs-fix`, `failed`,
   `rejected` or `published` (with `--through-go`, `awaiting-go` is not final). It prints a line
@@ -95,9 +96,9 @@ terminal and never asks anything; the brief comes on stdin or from `--brief-file
 | 0 | Filed and read back, or already filed (`created: false`); for `status` and `wait`, the snapshot | Report the row. For blog, say it waits for Shariq's go |
 | 11 | Refused: the named fields (with the allowed values) or the screen's classes | Fix the named fields, or ask the user, and send again |
 | 12 | Busy: a rate limit, the filing lock or the daily budget | Try again after the time it gives |
-| 13 | Outcome unknown: sent, then cut off, timed out or failed | Run the same command once more (the key makes it safe) or `status --key`; never file it in-session |
+| 13 | Outcome unknown: sent, then cut off, timed out, failed or answered with a redirect on the call | Run the same command once more (the key makes it safe) or `status --key`; never file it in-session |
 | 14 | Off: no `agents.request-post`, or the device token is missing | The in-session path is fine |
-| 15 | Unavailable: DNS, TLS, refused, a redirect, a refused token or a card that does not match ("update agent-inbox or the service"); nothing was filed | Retry once, then report to the user; no in-session filing |
+| 15 | Unavailable: DNS, TLS, refused, a redirect on the card, a refused token or a card that does not match ("update agent-inbox or the service"); nothing was filed | Retry once, then report to the user; no in-session filing |
 | 16 | Conflict: another row already covers this | Report that row; never change the slug, title or channels to get around it |
 | 124 | `wait` ran 4 hours without a final phase | Run the same `wait` again if it still matters |
 | 4 | Usage, a terminal on stdin, or an unreadable `--brief-file` | Fix the command |
@@ -116,7 +117,7 @@ to action; only material Shariq would publish) and routes with this text:
 
 > Run `<mesh dir>/bin/request-post file --brand … --channels … --title … [--category … --slug …] < brief.md`.
 > **0:** report the row; for blog, say it awaits Shariq's go (follow it with `wait --through-go --key <key>`).
-> **11:** fix the named fields or ask the user. **12:** try after `retryAfterMs`.
+> **11:** fix the named fields or ask the user. **12:** wait the seconds the stderr line gives ("try again in about N s"), then send again.
 > **13:** run the same command once more (the key makes it safe) or `status --key`; never file in-session.
 > **16:** report the existing row; never change fields to get around it.
 > **15:** retry once, then report to the user; no in-session filing.

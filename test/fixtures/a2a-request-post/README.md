@@ -19,7 +19,10 @@ the endpoint name are not real.
 
 - **The skill is named in the metadata.** Both skills take a blocking `SendMessage` with one text
   part; `metadata["urn:agent-inbox:ext:request-post:v1"].skill` says which. A status read sends
-  `{ skill, requestKey }` or `{ skill, pageId }` and any text.
+  `{ skill, requestKey }` or `{ skill, pageId }` and any text. The service ends a task within its
+  30 s limit (design §5: busy, 12, while it still waits for the filing lock; 13 once its create
+  call has started), and the client waits 40 s for the answer, a margin over that limit for DNS,
+  TLS and the network, so the service's 12 reaches the caller as 12 and never times out as 13.
 - **Where the data part is.** On `COMPLETED` it is in the task's one artifact, after a one-line
   text part; on `REJECTED` and `FAILED` it is in the status message, as unslop's agent does. Every
   data part carries `code`, the exit it maps to.

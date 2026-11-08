@@ -204,6 +204,45 @@ describe('file (design §3.2, §3.3)', () => {
     expect(r.err).toContain('a revoked token, or a shared tailnet')
   })
 
+  it("waits past the service's 30 s task limit: a busy answer at 35 s is 12, one at 45 s is 13", async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      for (const [after, exit] of [[35_000, 12], [45_000, 13]] as const) {
+        seen = []
+        onPost = (b, res) => void setTimeout(() => answer(byRow('busy'))(b, res), after)
+        const { args, brief } = argsOf(byRow('busy'))
+        const pending = run(meshHome(), args, brief)
+        while (!seen.length) await new Promise((done) => setImmediate(done))
+        await vi.advanceTimersByTimeAsync(after + 1000)
+        const r = await pending
+        expect(r.code, r.err).toBe(exit)
+      }
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('--report never keeps a stale report: an exit without a data part writes its code', async () => {
+    const reportFile = join(scratchDir('rp-report-'), 'report.json')
+    writeFileSync(reportFile, '{"stale":true}')
+    chmodSync(reportFile, 0o644)
+    const report = () => [JSON.parse(readFileSync(reportFile, 'utf8')), (lstatSync(reportFile).mode & 0o777).toString(8)]
+    const args = ['--key', 'k', '--report', reportFile]
+    expect((await run(meshHome(null), ['status', ...args])).code).toBe(14)
+    expect(report()).toEqual([{ code: 14 }, '600'])
+    const free = await counting()
+    servers.pop()!.close()
+    expect((await run(meshHome(`http://127.0.0.1:${free.port}`), ['status', ...args])).code).toBe(15)
+    expect(report()[0]).toEqual({ code: 15 })
+    let t = 0
+    onPost = answer(byPhase('drafting'))
+    expect((await run(meshHome(), ['wait', ...args], '', { now: () => t, sleep: async (ms) => { t += ms } })).code).toBe(124)
+    expect(report()[0]).toEqual({ code: 124 })
+    const r = await run(meshHome(), ['wait', ...args], '', { now: () => { throw new Error('clock') } })
+    expect([r.code, report()[0]]).toEqual([13, { code: 13 }])
+    expect(r.err).toContain('outcome unknown (internal error)')
+  })
+
   it('refuses locally: usage is 4, a bad brief is 11, and neither connects', async () => {
     const c = await counting()
     const dir = meshHome(`http://127.0.0.1:${c.port}`)

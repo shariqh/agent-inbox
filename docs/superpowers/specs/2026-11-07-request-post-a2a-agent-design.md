@@ -151,7 +151,9 @@ in its agent's user page, and `mesh.md` points to both without implying one shar
 allowed values; the caller asks its user and sends again with the same key. No half-filed state,
 and the M2a client already refuses to continue a task. It can return with M6's `reply`.
 
-Filing uses blocking `SendMessage` with a 30 s limit, no streaming. A lost response is recovered by
+Filing uses blocking `SendMessage` with a 30 s limit, no streaming. The 30 s is the service's task
+limit; the client waits 40 s for the answer (connection setup included), so an answer the service
+gives at its limit, such as §5's lock-wait 12, reaches the caller unchanged instead of a client-side 13. A lost response is recovered by
 `GetTask` or by re-sending the same key. `CancelTask` is honoured only before the create call.
 
 `request-post-status` takes `{ pageId }` or `{ requestKey }` and returns

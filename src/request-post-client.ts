@@ -122,7 +122,8 @@ const unreachable = (base: URL, code: string): string => code === 'ENOTFOUND' ||
 
 /** The card check, then one blocking SendMessage (design §3.1, §3.3). */
 async function send(base: URL, token: string, io: RequestPostIo, meta: Json, text: string): Promise<Result> {
-  const limit = io.sendMs ?? 30_000
+  // above the service's 30 s task limit (design §5), so its lock-wait 12 arrives as 12, not 13
+  const limit = io.sendMs ?? 40_000
   const got = await call(base, io, { method: 'GET', headers: { accept: 'application/json' }, timeoutMs: Math.min(limit, 10_000) })
   if ('failed' in got) return { exit: 15, why: unreachable(base, got.code) }
   if (got.status >= 300 && got.status < 400) return { exit: 15, why: `${base.host} answered with a redirect, which this client never follows` }
@@ -205,111 +206,128 @@ export async function runRequestPost(args: string[], io: RequestPostIo): Promise
     if (bad) { say(`--report ${report} is a symlink or not a regular file`); return 4 }
   }
 
-  let text = 'status'
-  let meta: Json
-  if (sub === 'file') {
-    if (!v.has('--brief-file') && io.stdin.isTTY) { say('pipe the brief on stdin or pass --brief-file <file>: this command never reads a terminal'); return 4 }
-    let bytes: Buffer
-    try { bytes = await readBrief(io, v.get('--brief-file')) } catch { say(`cannot read ${v.get('--brief-file')} as a regular file`); return 4 }
-    try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes).replace(/\r\n/g, '\n') } catch { text = '\0' }
-    if (bytes.length > BRIEF_MAX || !text.trim() || /[\x00-\x08\x0B-\x1F\x7F-\x9F]/.test(text)) {
-      say(`refused: fix brief (at most ${BRIEF_MAX} bytes of UTF-8 text, not blank, no control characters but tab and newline)`)
-      return 11
-    }
-    const channels = v.get('--channels')!.split(',').map((c) => c.trim())
-    const fields = { brand: v.get('--brand')!, channels, title: v.get('--title')!, category: v.get('--category'), slug: v.get('--slug'), sourceUrl: v.get('--source-url') }
-    // --key overrides the identity key for a deliberate second request (design §5); the
-    // service refuses a key that is not the derived one unless keyOverride is true
-    meta = { skill: 'request-post', ...fields, idempotencyKey: v.get('--key') ?? requestKey(fields), ...(v.has('--key') ? { keyOverride: true } : {}) }
-  } else {
-    meta = { skill: 'request-post-status', ...(v.has('--key') ? { requestKey: v.get('--key') } : { pageId: v.get('--page-id') }) }
-  }
-
-  // off (design §6, mesh §2.4): nothing below runs without the key
-  const dir = resolve(meshDir(io.env, io.home))
-  const mesh = readMesh(meshFile(dir))
-  const entry = mesh.kind === 'present' ? obj(obj(mesh.doc['agents'])['request-post']) : {}
-  const endpoint = requestPostEndpoint(entry['endpoint'])
-  if (!endpoint) {
-    say(`off: ${meshFile(dir)} ${mesh.kind === 'refused' ? mesh.reason : 'does not turn on request-post'}. File it in-session (npm run meshctl -- enable --request-post turns it on).`)
-    return 14
-  }
-  let token: string
-  try {
-    token = readPrivate(join(dir, 'mesh', 'tokens', 'request-post')).trim()
-  } catch {
-    say('off: the device token is missing or not private (0600): run meshctl enable --request-post again. File it in-session.')
-    return 14
-  }
-  const base = new URL(endpoint)
-  const key = String(meta['idempotencyKey'] ?? meta['requestKey'] ?? '')
-  const finish = (r: Result): number => {
-    const d = r.data ?? {}
-    if (report !== undefined && r.data) {
+  let wrote = false
+  const writeReport = (d: Json): boolean => {
+    try {
+      const fd = openSync(report!, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_NONBLOCK, 0o600)
       try {
-        const fd = openSync(report, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_NONBLOCK, 0o600)
-        try {
-          if (!fstatSync(fd).isFile()) throw new Error('not a regular file')
-          fchmodSync(fd, 0o600)
-          writeSync(fd, json(d))
-        } finally { closeSync(fd) }
-      } catch {
+        if (!fstatSync(fd).isFile()) throw new Error('not a regular file')
+        fchmodSync(fd, 0o600)
+        writeSync(fd, json(d))
+      } finally { closeSync(fd) }
+      return (wrote = true)
+    } catch {
+      return false
+    }
+  }
+  const go = async (): Promise<number> => {
+    let text = 'status'
+    let meta: Json
+    if (sub === 'file') {
+      if (!v.has('--brief-file') && io.stdin.isTTY) { say('pipe the brief on stdin or pass --brief-file <file>: this command never reads a terminal'); return 4 }
+      let bytes: Buffer
+      try { bytes = await readBrief(io, v.get('--brief-file')) } catch { say(`cannot read ${v.get('--brief-file')} as a regular file`); return 4 }
+      try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes).replace(/\r\n/g, '\n') } catch { text = '\0' }
+      if (bytes.length > BRIEF_MAX || !text.trim() || /[\x00-\x08\x0B-\x1F\x7F-\x9F]/.test(text)) {
+        say(`refused: fix brief (at most ${BRIEF_MAX} bytes of UTF-8 text, not blank, no control characters but tab and newline)`)
+        return 11
+      }
+      const channels = v.get('--channels')!.split(',').map((c) => c.trim())
+      const fields = { brand: v.get('--brand')!, channels, title: v.get('--title')!, category: v.get('--category'), slug: v.get('--slug'), sourceUrl: v.get('--source-url') }
+      // --key overrides the identity key for a deliberate second request (design §5); the
+      // service refuses a key that is not the derived one unless keyOverride is true
+      meta = { skill: 'request-post', ...fields, idempotencyKey: v.get('--key') ?? requestKey(fields), ...(v.has('--key') ? { keyOverride: true } : {}) }
+    } else {
+      meta = { skill: 'request-post-status', ...(v.has('--key') ? { requestKey: v.get('--key') } : { pageId: v.get('--page-id') }) }
+    }
+
+    // off (design §6, mesh §2.4): nothing below runs without the key
+    const dir = resolve(meshDir(io.env, io.home))
+    const mesh = readMesh(meshFile(dir))
+    const entry = mesh.kind === 'present' ? obj(obj(mesh.doc['agents'])['request-post']) : {}
+    const endpoint = requestPostEndpoint(entry['endpoint'])
+    if (!endpoint) {
+      say(`off: ${meshFile(dir)} ${mesh.kind === 'refused' ? mesh.reason : 'does not turn on request-post'}. File it in-session (npm run meshctl -- enable --request-post turns it on).`)
+      return 14
+    }
+    let token: string
+    try {
+      token = readPrivate(join(dir, 'mesh', 'tokens', 'request-post')).trim()
+    } catch {
+      say('off: the device token is missing or not private (0600): run meshctl enable --request-post again. File it in-session.')
+      return 14
+    }
+    const base = new URL(endpoint)
+    const key = String(meta['idempotencyKey'] ?? meta['requestKey'] ?? '')
+    const finish = (r: Result): number => {
+      const d = r.data ?? {}
+      if (report !== undefined && r.data && !writeReport(d)) {
         say(`cannot write the report ${report}${sub === 'file' ? `; the outcome is unknown: run the same command again (key ${key})` : ''}`)
         return 13
       }
+      const action = d['humanAction'] ? `; Shariq: ${clean(d['humanAction'])}` : ''
+      if (r.exit === 0 && sub === 'file') {
+        say(`${d['created'] === false ? 'already filed' : 'filed'}: ${clean(d['url'])} (${clean(d['phase'])}, key ${clean(d['requestKey'])})` +
+          (d['phase'] === 'awaiting-go' ? `; it waits for Shariq's go in the queue (follow it with wait --through-go --key ${clean(d['requestKey'])})` : ''))
+      } else if (r.exit === 0) say(`${clean(d['phase'])}${action}${obj(d['error'])['text'] ? `; error (untrusted): ${clean(obj(d['error'])['text'])}` : ''}`)
+      else if (r.exit === 11) {
+        const allowed = Object.entries(obj(d['allowed'])).map(([f, a]) => `${clean(f, 40)}: ${clean(Array.isArray(a) ? a.join(', ') : a)}`).join('; ')
+        say(d['reason'] === 'screen' ? `refused by the screen (${clean(Array.isArray(d['classes']) ? d['classes'].join(', ') : '')}): rewrite the brief without that material`
+          : Array.isArray(d['fields']) ? `refused: fix ${clean(d['fields'].join(', '))}${allowed ? ` (allowed ${allowed})` : ''}, or ask the user` : `refused: ${r.why ?? 'unknown'}`)
+      } else if (r.exit === 12) say(`busy (${clean(d['reason'] ?? 'unknown', 40)}): try again in about ${Math.ceil(Number(d['retryAfterMs'] ?? MIN) / 1000)} s`)
+      else if (r.exit === 13) say(sub === 'file' ? `outcome unknown (${r.why ?? 'unknown'}): run the same command again (key ${key}; it never files twice) or status --key ${key}; never file it in-session` : `no status (${r.why ?? 'unknown'}): try again`)
+      else if (r.exit === 16) say(`conflict: ${clean(obj(d['conflict'])['url'])} (${clean(obj(d['conflict'])['phase'])}) already covers this; report that row and never change fields to get around it`)
+      else if (r.exit === 15) say(`unavailable: ${r.why ?? 'unknown'}. Retry once, then report it${sub === 'file' ? '; do not file it in-session' : ''}.`)
+      if (r.exit === 0) io.out(json(d))
+      return r.exit
     }
-    const action = d['humanAction'] ? `; Shariq: ${clean(d['humanAction'])}` : ''
-    if (r.exit === 0 && sub === 'file') {
-      say(`${d['created'] === false ? 'already filed' : 'filed'}: ${clean(d['url'])} (${clean(d['phase'])}, key ${clean(d['requestKey'])})` +
-        (d['phase'] === 'awaiting-go' ? `; it waits for Shariq's go in the queue (follow it with wait --through-go --key ${clean(d['requestKey'])})` : ''))
-    } else if (r.exit === 0) say(`${clean(d['phase'])}${action}${obj(d['error'])['text'] ? `; error (untrusted): ${clean(obj(d['error'])['text'])}` : ''}`)
-    else if (r.exit === 11) {
-      const allowed = Object.entries(obj(d['allowed'])).map(([f, a]) => `${clean(f, 40)}: ${clean(Array.isArray(a) ? a.join(', ') : a)}`).join('; ')
-      say(d['reason'] === 'screen' ? `refused by the screen (${clean(Array.isArray(d['classes']) ? d['classes'].join(', ') : '')}): rewrite the brief without that material`
-        : Array.isArray(d['fields']) ? `refused: fix ${clean(d['fields'].join(', '))}${allowed ? ` (allowed ${allowed})` : ''}, or ask the user` : `refused: ${r.why ?? 'unknown'}`)
-    } else if (r.exit === 12) say(`busy (${clean(d['reason'] ?? 'unknown', 40)}): try again in about ${Math.ceil(Number(d['retryAfterMs'] ?? MIN) / 1000)} s`)
-    else if (r.exit === 13) say(sub === 'file' ? `outcome unknown (${r.why ?? 'unknown'}): run the same command again (key ${key}; it never files twice) or status --key ${key}; never file it in-session` : `no status (${r.why ?? 'unknown'}): try again`)
-    else if (r.exit === 16) say(`conflict: ${clean(obj(d['conflict'])['url'])} (${clean(obj(d['conflict'])['phase'])}) already covers this; report that row and never change fields to get around it`)
-    else if (r.exit === 15) say(`unavailable: ${r.why ?? 'unknown'}. Retry once, then report it${sub === 'file' ? '; do not file it in-session' : ''}.`)
-    if (r.exit === 0) io.out(json(d))
-    return r.exit
-  }
-  if (sub !== 'wait') return finish(await send(base, token, io, meta, text))
+    if (sub !== 'wait') return finish(await send(base, token, io, meta, text))
 
-  // wait (design §4.3): every 2 min for 30 min, then every 15; transient failures back off
-  // and only 30 min of them is 15; each run ends after 4 h with 124
-  const now = io.now ?? Date.now
-  const sleep = io.sleep ?? ((ms: number) => new Promise<void>((done) => setTimeout(done, ms)))
-  const start = now()
-  const end = start + 240 * MIN
-  let failingSince: number | undefined
-  let failures = 0
-  let last: unknown
-  for (;;) {
-    const r = await send(base, token, io, meta, text)
-    let delay: number
-    if (r.exit === 0) {
-      failingSince = undefined
-      failures = 0
-      const phase = r.data?.['phase']
-      if (typeof phase === 'string' && FINAL.includes(phase) && !(throughGo && phase === 'awaiting-go')) return finish(r)
-      if (phase !== last && last !== undefined) say(`now ${clean(phase, 40)}`)
-      last = phase
-      delay = now() - start < 30 * MIN ? 2 * MIN : 15 * MIN
-    } else if (r.exit === 12) {
-      failingSince = undefined
-      failures = 0
-      delay = Math.min(Math.max(Number(r.data?.['retryAfterMs']) || 0, 2 * MIN), 15 * MIN)
-    } else if ((r.exit === 13 || r.exit === 15) && !r.fatal) {
-      failingSince ??= now()
-      if (now() - failingSince >= 30 * MIN) return finish({ exit: 15, why: `no status for 30 minutes: ${r.why ?? 'unknown'}` })
-      delay = Math.min(30_000 * 2 ** failures++, 15 * MIN, failingSince + 30 * MIN - now())
-    } else return finish(r)
-    if (now() + delay >= end) {
-      await sleep(Math.max(0, end - now()))
-      say(`no final phase within 4 hours (last: ${clean(last ?? 'none', 40)}): run the same wait again if it still matters`)
-      return 124
+    // wait (design §4.3): every 2 min for 30 min, then every 15; transient failures back off
+    // and only 30 min of them is 15; each run ends after 4 h with 124
+    const now = io.now ?? Date.now
+    const sleep = io.sleep ?? ((ms: number) => new Promise<void>((done) => setTimeout(done, ms)))
+    const start = now()
+    const end = start + 240 * MIN
+    let failingSince: number | undefined
+    let failures = 0
+    let last: unknown
+    for (;;) {
+      const r = await send(base, token, io, meta, text)
+      let delay: number
+      if (r.exit === 0) {
+        failingSince = undefined
+        failures = 0
+        const phase = r.data?.['phase']
+        if (typeof phase === 'string' && FINAL.includes(phase) && !(throughGo && phase === 'awaiting-go')) return finish(r)
+        if (phase !== last && last !== undefined) say(`now ${clean(phase, 40)}`)
+        last = phase
+        delay = now() - start < 30 * MIN ? 2 * MIN : 15 * MIN
+      } else if (r.exit === 12) {
+        failingSince = undefined
+        failures = 0
+        delay = Math.min(Math.max(Number(r.data?.['retryAfterMs']) || 0, 2 * MIN), 15 * MIN)
+      } else if ((r.exit === 13 || r.exit === 15) && !r.fatal) {
+        failingSince ??= now()
+        if (now() - failingSince >= 30 * MIN) return finish({ exit: 15, why: `no status for 30 minutes: ${r.why ?? 'unknown'}` })
+        delay = Math.min(30_000 * 2 ** failures++, 15 * MIN, failingSince + 30 * MIN - now())
+      } else return finish(r)
+      if (now() + delay >= end) {
+        await sleep(Math.max(0, end - now()))
+        say(`no final phase within 4 hours (last: ${clean(last ?? 'none', 40)}): run the same wait again if it still matters`)
+        return 124
+      }
+      await sleep(delay)
     }
-    await sleep(delay)
   }
+  let code: number
+  try {
+    code = await go()
+  } catch {
+    say(`outcome unknown (internal error): run the same command again${sub === 'file' ? ' (the key makes it safe); never file it in-session' : ''}`)
+    code = 13
+  }
+  // an exit without a data part still replaces an earlier report, so none is left stale
+  if (report !== undefined && !wrote && !writeReport({ code })) say(`cannot write the report ${report}`)
+  return code
 }

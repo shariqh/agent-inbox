@@ -2,7 +2,7 @@
   "schema": 1,
   "algorithm": "sha256",
   "files": {
-    "README.md": "d59784a45046738cf7b0a147635876ba3686056ea94614a6f2c6246a208349e2",
+    "README.md": "c2fddde318a11392d4bbc345d01b429a6c59d047972b220b4020e62155f23dc8",
     "card.json": "dc1aa53300bd4f1509dc8e22cfc8a27d0c1825d584cc9fb7621aa32f9a914066",
     "conformance.ts": "618f7a354fd9666133c0742b44960a2fa4bc591704bf2b71eb7bba5e3d792130",
     "file/01-created-blog.json": "03b1f6451b012ed8ab6fd211c650a7f03011d883402e90eb7624b6ac5738944c",

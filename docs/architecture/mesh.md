@@ -382,7 +382,8 @@ the two share numbers, not meanings.
   JSON-RPC interface with `protocolVersion` `1.0`, and `urn:agent-inbox:ext:request-post:v1` with
   `api: 1`; a mismatch is 15 with "update agent-inbox or the service" (design §3.3 lists a card
   mismatch under 15, and the R1 fixture `10-unavailable.json` says the same). Then one blocking
-  `SendMessage` (30 s) with `Authorization: Bearer <token>` and `A2A-Version: 1.0`: one text part
+  `SendMessage` (40 s: a margin over the service's 30 s task limit, so the service's lock-wait 12 is
+  never cut to 13) with `Authorization: Bearer <token>` and `A2A-Version: 1.0`: one text part
   (the brief, or `status`) and the metadata R1 pins (`skill` plus the §3.2 fields and
   `idempotencyKey`, or `requestKey` / `pageId`).
 - **Sent or not.** A failure before the socket connected (TLS: before `secureConnect`), such as a
@@ -400,7 +401,9 @@ the two share numbers, not meanings.
   else 11; anything else is 13. stdout gets the data part as JSON only on 0, with C1 controls and
   U+2028/2029 escaped. stderr gets one line; every agent string in it has C0, DEL and C1 controls
   and line separators replaced by a space. `--report` writes the data part of every answer that
-  has one (`O_NOFOLLOW`, 0600); a report it cannot write makes the exit 13.
+  has one (`O_NOFOLLOW`, 0600); a report it cannot write makes the exit 13. Every other exit after
+  the argument checks (14, 15, 124, a local 11 or 4, an internal error's 13) writes `{ "code": <exit> }`
+  the same way, so a stale report never survives.
 - **`wait`** (design §4.3) reads at once, then every 2 minutes until 30 minutes from its start,
   then every 15. A final phase (with `--through-go`, not `awaiting-go`) exits 0. A busy answer
   (12) waits its `retryAfterMs`, between 2 and 15 minutes, and does not count as failure. 13 and

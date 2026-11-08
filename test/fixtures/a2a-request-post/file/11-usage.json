@@ -1,0 +1,7 @@
+{
+  "row": "usage",
+  "situation": "Usage",
+  "exit": 4,
+  "clientOnly": true,
+  "note": "Client-side only: bad arguments; nothing was read or sent and no task exists."
+}

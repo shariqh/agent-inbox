@@ -1,0 +1,63 @@
+{
+  "phase": "awaiting-go",
+  "exit": 0,
+  "request": {
+    "jsonrpc": "2.0",
+    "id": "rpc-09",
+    "method": "SendMessage",
+    "params": {
+      "message": {
+        "messageId": "30000000-0000-4000-8000-000000000009",
+        "role": "ROLE_USER",
+        "parts": [
+          {
+            "text": "status"
+          }
+        ],
+        "metadata": {
+          "urn:agent-inbox:ext:request-post:v1": {
+            "skill": "request-post-status",
+            "requestKey": "u3niopolofwhyhbnz27awnzmpe"
+          }
+        }
+      }
+    }
+  },
+  "response": {
+    "jsonrpc": "2.0",
+    "id": "rpc-09",
+    "result": {
+      "task": {
+        "id": "10000000-0000-4000-8000-000000000009",
+        "contextId": "20000000-0000-4000-8000-000000000009",
+        "status": {
+          "state": "TASK_STATE_COMPLETED",
+          "timestamp": "2026-11-08T12:00:00.000Z"
+        },
+        "artifacts": [
+          {
+            "artifactId": "40000000-0000-4000-8000-000000000009",
+            "name": "request-post",
+            "parts": [
+              {
+                "text": "awaiting-go: Try the agent",
+                "mediaType": "text/plain"
+              },
+              {
+                "data": {
+                  "code": 0,
+                  "phase": "awaiting-go",
+                  "status": null,
+                  "drafts": [],
+                  "humanAction": "Read the brief in the queue and set Request to start drafting, or delete the row.",
+                  "final": true
+                },
+                "mediaType": "application/json"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

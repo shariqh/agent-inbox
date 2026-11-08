@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "algorithm": "sha256",
+  "files": {
+    "README.md": "fa049bc47bdb0dc41bd6879c6f2b7cac1c0a95e546e844c4c9ce1655a92b73c3",
+    "card.json": "dc1aa53300bd4f1509dc8e22cfc8a27d0c1825d584cc9fb7621aa32f9a914066",
+    "conformance.ts": "98788abda202e1d321db341ddd48064ad73a27dffb8d5af731b61fa767e4e562",
+    "file/01-created-blog.json": "03b1f6451b012ed8ab6fd211c650a7f03011d883402e90eb7624b6ac5738944c",
+    "file/02-created-social.json": "e23cf495be3e672cfd693516d83e6c4f4d3c9c99d254e3751e57522b5739d690",
+    "file/03-replay.json": "4d8316ead4c7e87064c08291d41b8f630e93d43cae208338b0b80f1c6e9ccf76",
+    "file/04-refused-invalid.json": "15a071f4e12762b9f8c6931d4b38c5ab8a4d6f9176c72aa24ab412eff5ff3529",
+    "file/05-refused-screen.json": "684103456c0359852ecefd2e092e34972fbac0b98ac9cabaedfbeab08cb4106f",
+    "file/06-busy.json": "2275b5eb2107d6f129a6c18f468bc4b8050446081bc5f079474406d053deb62e",
+    "file/07-uncertain.json": "f290fbf7be1458d65ed205878b2364a950a56e48fe26bc468169167580142036",
+    "file/08-conflict.json": "f6e80709cafab7f1f85258bf787911ee6990c9f13468110b0bfba3f3b5d22189",
+    "file/09-off.json": "6b853b2330135de17fe0e0b84c971fe003ebd7b145c9acb8f74ee30537f2850c",
+    "file/10-unavailable.json": "eee59fb4126ce96ce7e3bd032f994c19f61d3f2635b6a37a76fdac20ff175624",
+    "file/11-usage.json": "cbc12df92e7e979a24f609ace368907fc149fda3e4bbb006216e133ff0da4cdb",
+    "keys.json": "2b36356af2495d94e5e124fa343441d0ce76b5a938213c59648139001385d220",
+    "status/awaiting-go.json": "811a78688a5d4d45c9d9a047f4632c67588b4a5a0e4183223102312bb60327e3",
+    "status/drafting.json": "c0fd8c9ac01ae1626d90d8bca343d233d003f0b01d523699b12a61d4e3c55148",
+    "status/failed.json": "aa9dc7d6f04545ff03a7135fa3531c151806557d590094b9f9fe4ac3a565aab8",
+    "status/in-review.json": "9cac147f64bf8e62f8ed284519cc416683b33076fe4bfa7c94fa294398c1e9d5",
+    "status/needs-fix.json": "340a55fe1de1df02b39e08ea6adf9ee6b5464c8d967d03056fee11bcd65d0e8b",
+    "status/proposed.json": "645b397dea17afbff25df1dcfeb1c6414b3ff03660487d6f8f5e39fb55e89963",
+    "status/published.json": "82c5723b7ec5490d26d5a2fc7cd5d6f9e32c53e7ad18e73365a7b222cb0d723e",
+    "status/queued.json": "aa0c0e39e07222de921614d34c8038aa5e165f0ca9acc8d043853d83f7545fe0",
+    "status/ready-for-human.json": "4fedf92a6e29b9d19378e8b2c2ee55d757e9a3aee9c98b92640e4fc2c5e84a65",
+    "status/rejected.json": "538c934a9e95c8ff30236ddb9dce0d4b2f20cc9cfdc596a893f49b4b6885555a"
+  }
+}

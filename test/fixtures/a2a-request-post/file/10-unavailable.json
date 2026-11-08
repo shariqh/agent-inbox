@@ -1,0 +1,7 @@
+{
+  "row": "unavailable",
+  "situation": "Unavailable: DNS, TLS, refused, card mismatch; nothing sent",
+  "exit": 15,
+  "clientOnly": true,
+  "note": "Client-side only: the endpoint did not answer, or its card fails checkCard(); nothing was sent and no task exists."
+}

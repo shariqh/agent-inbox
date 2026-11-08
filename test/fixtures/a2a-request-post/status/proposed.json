@@ -1,0 +1,71 @@
+{
+  "phase": "proposed",
+  "exit": 0,
+  "request": {
+    "jsonrpc": "2.0",
+    "id": "rpc-14",
+    "method": "SendMessage",
+    "params": {
+      "message": {
+        "messageId": "30000000-0000-4000-8000-000000000014",
+        "role": "ROLE_USER",
+        "parts": [
+          {
+            "text": "status"
+          }
+        ],
+        "metadata": {
+          "urn:agent-inbox:ext:request-post:v1": {
+            "skill": "request-post-status",
+            "pageId": "00000000-0000-4000-8000-000000000002"
+          }
+        }
+      }
+    }
+  },
+  "response": {
+    "jsonrpc": "2.0",
+    "id": "rpc-14",
+    "result": {
+      "task": {
+        "id": "10000000-0000-4000-8000-000000000014",
+        "contextId": "20000000-0000-4000-8000-000000000014",
+        "status": {
+          "state": "TASK_STATE_COMPLETED",
+          "timestamp": "2026-11-08T12:00:00.000Z"
+        },
+        "artifacts": [
+          {
+            "artifactId": "40000000-0000-4000-8000-000000000014",
+            "name": "request-post",
+            "parts": [
+              {
+                "text": "proposed: Try the agent",
+                "mediaType": "text/plain"
+              },
+              {
+                "data": {
+                  "code": 0,
+                  "phase": "proposed",
+                  "status": "Request",
+                  "agentState": "proposed",
+                  "drafts": [
+                    {
+                      "pageId": "00000000-0000-4000-8000-000000000022",
+                      "url": "https://www.notion.so/00000000000040008000000000000022",
+                      "channel": "x-standalone",
+                      "status": "Proposed"
+                    }
+                  ],
+                  "humanAction": "Approve or reject the draft in the queue.",
+                  "final": true
+                },
+                "mediaType": "application/json"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

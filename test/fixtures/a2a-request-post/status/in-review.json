@@ -1,0 +1,71 @@
+{
+  "phase": "in-review",
+  "exit": 0,
+  "request": {
+    "jsonrpc": "2.0",
+    "id": "rpc-12",
+    "method": "SendMessage",
+    "params": {
+      "message": {
+        "messageId": "30000000-0000-4000-8000-000000000012",
+        "role": "ROLE_USER",
+        "parts": [
+          {
+            "text": "status"
+          }
+        ],
+        "metadata": {
+          "urn:agent-inbox:ext:request-post:v1": {
+            "skill": "request-post-status",
+            "requestKey": "u3niopolofwhyhbnz27awnzmpe"
+          }
+        }
+      }
+    }
+  },
+  "response": {
+    "jsonrpc": "2.0",
+    "id": "rpc-12",
+    "result": {
+      "task": {
+        "id": "10000000-0000-4000-8000-000000000012",
+        "contextId": "20000000-0000-4000-8000-000000000012",
+        "status": {
+          "state": "TASK_STATE_COMPLETED",
+          "timestamp": "2026-11-08T12:00:00.000Z"
+        },
+        "artifacts": [
+          {
+            "artifactId": "40000000-0000-4000-8000-000000000012",
+            "name": "request-post",
+            "parts": [
+              {
+                "text": "in-review: Try the agent",
+                "mediaType": "text/plain"
+              },
+              {
+                "data": {
+                  "code": 0,
+                  "phase": "in-review",
+                  "status": "Request",
+                  "agentState": "in-review",
+                  "prUrl": "https://github.com/example-owner/example-site/pull/1",
+                  "drafts": [
+                    {
+                      "pageId": "00000000-0000-4000-8000-000000000021",
+                      "url": "https://www.notion.so/00000000000040008000000000000021",
+                      "channel": "blog",
+                      "status": "In review"
+                    }
+                  ],
+                  "final": false
+                },
+                "mediaType": "application/json"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

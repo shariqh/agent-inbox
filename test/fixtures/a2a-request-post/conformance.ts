@@ -93,6 +93,11 @@ export function invalidFields(meta: Json, brief: unknown, card: unknown): string
   for (const [field, value] of [...Object.entries(meta), ['brief', brief]] as Array<[string, unknown]>) {
     if (PR_URL.test(JSON.stringify(value ?? ''))) bad.add(field)
   }
+  // §5: a key other than the derived one only with `keyOverride: true` (meshctl --key)
+  const derived = typeof meta.brand === 'string' && strs(ch) && typeof meta.title === 'string'
+    ? requestKey({ brand: meta.brand, channels: ch, title: meta.title, slug: opt(meta.slug), sourceUrl: opt(meta.sourceUrl) })
+    : undefined
+  if (meta.keyOverride !== true && meta.idempotencyKey !== derived) bad.add('idempotencyKey')
   return [...bad].sort()
 }
 
@@ -145,10 +150,7 @@ export function checkExchange(exchange: unknown, card: unknown): string[] {
   const invalid = invalidFields(meta, text, card)
   const refusedInvalid = x.exit === 11 && data.reason === 'invalid'
   if (!refusedInvalid && invalid.length) problems.push(`request: invalid ${invalid.join(', ')}`)
-  const key = typeof meta.brand === 'string' && strs(meta.channels) && typeof meta.title === 'string'
-    ? requestKey({ brand: meta.brand, channels: meta.channels, title: meta.title, slug: opt(meta.slug), sourceUrl: opt(meta.sourceUrl) })
-    : undefined
-  if (meta.idempotencyKey !== key) problems.push('request: idempotencyKey is not the derived key')
+  if (meta.keyOverride !== undefined && meta.keyOverride !== true) problems.push('request: keyOverride is sent only as true')
   if (x.exit === 0) {
     if (typeof data.created !== 'boolean' || typeof data.pageId !== 'string' || !https(data.url) || data.readBack !== 'ok') problems.push('data: created, pageId, url, readBack')
     if (data.requestKey !== meta.idempotencyKey || data.brand !== meta.brand || !same(data.channels, meta.channels)) problems.push('data: requestKey, brand, channels')

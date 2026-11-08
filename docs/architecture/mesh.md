@@ -3,9 +3,10 @@ paths:
   - "src/mesh-config.ts"
   - "src/meshctl.ts"
   - "src/unslop-client.ts"
+  - "src/request-post-client.ts"
   - "public/agents-home.js"
   - "packages/mesh/src/*.ts"
-applyTo: "src/mesh-config.ts,src/meshctl.ts,src/unslop-client.ts,public/agents-home.js,packages/mesh/src/*.ts"
+applyTo: "src/mesh-config.ts,src/meshctl.ts,src/unslop-client.ts,src/request-post-client.ts,public/agents-home.js,packages/mesh/src/*.ts"
 ---
 
 # Agent mesh (M1)
@@ -60,7 +61,7 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   phase that adds a piece brings back an `enable` writer (temp file, atomic rename) with
   it. `src/mesh-config.ts` holds the one reading rule (a regular file ≤ 64 KiB, a JSON
   object, `schema` 1; anything else is off) and `readMesh()`, which meshctl and its unslop
-  client (`src/unslop-client.ts`) both use. All three are Node core only and never import
+  and request-post clients (`src/unslop-client.ts`, `src/request-post-client.ts`) use. All four are Node core only and never import
   `store.ts`, and no mesh module may enter the stdio MCP graph (`test/prstate.test.ts`).
   The viewer reads nothing of the mesh today: no stat watch, no `createViewer` option, no
   `/api/version` key. The phase that first needs the viewer to know (M3) restores a watch
@@ -302,11 +303,11 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
 
 request-post is the mesh's second agent, hosted by the private publishing service (design:
 [`docs/superpowers/specs/2026-11-07-request-post-a2a-agent-design.md`](../../docs/superpowers/specs/2026-11-07-request-post-a2a-agent-design.md)).
-This repository ships its client (R2 below; the `request-post` subcommand is R3, not yet
-landed) and the contract both sides test against: `test/fixtures/a2a-request-post/` ([README](../../test/fixtures/a2a-request-post/README.md)).
+This repository ships its client (R2 and R3 below) and the contract both sides test against: `test/fixtures/a2a-request-post/` ([README](../../test/fixtures/a2a-request-post/README.md)).
 
 - **What is there:** the card, one request and response per §3.3 row (14, 15 and 4 are
-  client-side only, with a note and no task), a `request-post-status` snapshot per phase,
+  client-side only, with a note and no task) plus one filed under an overridden key
+  (`keyOverride: true`, added with R3), a `request-post-status` snapshot per phase,
   `awaiting-go` included, title and request-key vectors with their pre-images, and
   `conformance.ts`, the validator: Node core only and erasable TypeScript, so the private
   repository runs it on Node 24 without a build. The README lists what R1 pins that the
@@ -347,7 +348,7 @@ landed) and the contract both sides test against: `test/fixtures/a2a-request-pos
     `<mesh dir>/bin/request-post` (0755), the unslop shim's text with the agent's name: it pins
     its mesh dir, and when its Node or `meshctl.js` is gone it discards piped input, prints "run
     meshctl enable --request-post again" and exits 14; otherwise it runs
-    `meshctl request-post "$@"`, which says "no request-post client yet" and exits 14 until R3;
+    `meshctl request-post "$@"` (R3, below);
     3. `agents.request-post` = `{ "endpoint": <url> }` in `mesh.json`, every other key kept,
     written atomically after a timestamped backup. New folders are 0700.
   - `disable --request-post [--apply]` removes the key (deleting `mesh.json`, with a backup,
@@ -360,3 +361,64 @@ landed) and the contract both sides test against: `test/fixtures/a2a-request-pos
     backups), the dry run, every endpoint refusal, the token refusals and its 0600 copy, the
     stale shim, and that request-post and unslop never touch each other's key or files.
     User page: [`docs/request-post.md`](../request-post.md).
+
+## Calling request-post (R3)
+
+`meshctl request-post file | status | wait [--through-go]` is `src/request-post-client.ts`: Node
+core plus `mesh-config.ts`, imported only by meshctl's async entry (`runMeshctl` alone answers
+with the usage and 4). User page, exit table and the routing text: [`docs/request-post.md`](../request-post.md).
+Its exit codes are its own (design §3.3: 0, 11-16, 124, 4); `docs/unslop.md` has unslop's, and
+the two share numbers, not meanings.
+
+- **Before any connection:** arguments (4); a `--report` that is a symlink or not a regular file
+  (4); for `file`, a terminal on stdin (4: it never reads `/dev/tty`), then the brief, at most
+  8 KiB of UTF-8, not blank, no control characters but tab and newline, CRLF read as LF (else 11,
+  naming `brief`). Then off: no `agents.request-post` passing `requestPostEndpoint()`, or a device
+  token that is not a 0600 regular file the user owns (opened `O_NOFOLLOW`), is 14.
+- **The wire.** `node:http` or `node:https` with `agent: false` (no keep-alive and no environment
+  proxy), `Host` exactly the endpoint's authority, the TLS name the endpoint's host, no `Origin`,
+  and never the card's URL. Redirects are not followed: a 3xx on the card is 15, on the call 13.
+  Each call first reads `GET /.well-known/agent-card.json` (no token) and checks both skills, a
+  JSON-RPC interface with `protocolVersion` `1.0`, and `urn:agent-inbox:ext:request-post:v1` with
+  `api: 1`; a mismatch is 15 with "update agent-inbox or the service" (design §3.3 lists a card
+  mismatch under 15, and the R1 fixture `10-unavailable.json` says the same). Then one blocking
+  `SendMessage` (40 s: a margin over the service's 30 s task limit, so the service's lock-wait 12 is
+  never cut to 13) with `Authorization: Bearer <token>` and `A2A-Version: 1.0`: one text part
+  (the brief, or `status`) and the metadata R1 pins (`skill` plus the §3.2 fields and
+  `idempotencyKey`, or `requestKey` / `pageId`).
+- **Sent or not.** A failure before the socket connected (TLS: before `secureConnect`), such as a
+  tailnet name that does not resolve (the shared-tailnet case), a refused connection or a failed
+  handshake, is 15: nothing reached the service. Once connected, a timeout, a cut body, an HTTP
+  status other than 200, 401 and 403, a JSON-RPC error or an answer without a task is 13. HTTP 401
+  and 403 are 15 (a revoked token, or a shared tailnet without the app capability).
+- **The key** is `requestKey()`, R1's pre-image (four lines: `request-post/v1`, brand, sorted
+  channels, then `slug:`, `url:` or the NFKC title) in lower-case RFC 4648 base32, 26 characters;
+  the test runs every `keys.json` vector through it. `--key` replaces the sent `idempotencyKey`
+  and adds `keyOverride: true` beside it, which R1's README defines: the service (P2a) refuses a
+  key that is not the derived one without it. Without `--key`, `keyOverride` is never sent.
+- **The answer:** the data part from the one artifact on `COMPLETED`, else the status message
+  (R1); `COMPLETED` with code 0 is 0, `REJECTED` is 12 with code 12, 16 with `reason: conflict`,
+  else 11; anything else is 13. stdout gets the data part as JSON only on 0, with C1 controls and
+  U+2028/2029 escaped. stderr gets one line; every agent string in it has C0, DEL and C1 controls
+  and line separators replaced by a space. `--report` writes the data part of every answer that
+  has one (`O_NOFOLLOW`, 0600); a report it cannot write makes the exit 13. Every other exit after
+  the argument checks (14, 15, 124, a local 11 or 4, an internal error's 13) writes `{ "code": <exit> }`
+  the same way, so a stale report never survives.
+- **`wait`** (design §4.3) reads at once, then every 2 minutes until 30 minutes from its start,
+  then every 15. A final phase (with `--through-go`, not `awaiting-go`) exits 0. A busy answer
+  (12) waits its `retryAfterMs`, between 2 and 15 minutes, and does not count as failure. 13 and
+  15 (but a card mismatch) back off 30 s, 1, 2, 4, 8 and 15 minutes, the last wait shortened to
+  land on the 30th minute of the streak, which exits 15; a good read ends the streak. 11, 14 and
+  a card mismatch end it at once. At 4 hours from its start it exits 124. `now` and `sleep` are
+  injectable, so the tests run it on a fake clock.
+- **Tests:** `test/request-post-client.test.ts` runs the client end to end against a fake A2A
+  server answering with R1's fixtures, checking each request it sends with `checkExchange` and
+  `checkStatus`: every exit code, the key vectors, the override, the card checks, redirects, an
+  unresolvable tailnet name (an injected `lookup`), a failed TLS handshake, a cut answer re-run
+  with the same key, `wait`'s cadence, backoff, the 30-minute 15, 124 and `--through-go`, control
+  bytes, the terminal rule (an `isTTY` stdin and the real CLI under `script`), off (a counting
+  listener over every off case) and a spy on every `node:child_process` entry point around each
+  run. Off tests (a)-(d): `test/prstate.test.ts` lists the client as a mesh module the stdio
+  graph must not reach, `test/mesh.test.ts` pins its imports and checks that no viewer,
+  `public/` or `electron/` file names it, and the dependency and snapshot-trigger fixtures are
+  unchanged.

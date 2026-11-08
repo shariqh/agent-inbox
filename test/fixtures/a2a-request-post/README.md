@@ -19,7 +19,10 @@ the endpoint name are not real.
 
 - **The skill is named in the metadata.** Both skills take a blocking `SendMessage` with one text
   part; `metadata["urn:agent-inbox:ext:request-post:v1"].skill` says which. A status read sends
-  `{ skill, requestKey }` or `{ skill, pageId }` and any text.
+  `{ skill, requestKey }` or `{ skill, pageId }` and any text. The service ends a task within its
+  30 s limit (design §5: busy, 12, while it still waits for the filing lock; 13 once its create
+  call has started), and the client waits 40 s for the answer, a margin over that limit for DNS,
+  TLS and the network, so the service's 12 reaches the caller as 12 and never times out as 13.
 - **Where the data part is.** On `COMPLETED` it is in the task's one artifact, after a one-line
   text part; on `REJECTED` and `FAILED` it is in the status message, as unslop's agent does. Every
   data part carries `code`, the exit it maps to.
@@ -38,6 +41,12 @@ the endpoint name are not real.
   `["blog"]`, else `url:<sourceUrl>` exactly as sent, else `title:<title>` after NFKC, collapsing
   every run of whitespace to one space, trimming and lower-casing. The key is the first 26
   characters of the pre-image's SHA-256 in RFC 4648 base32, lower-cased. The brief is never in it.
+- **`keyOverride`** (boolean, optional) sits in the metadata next to `idempotencyKey`. A client
+  sends it, as `true` only, when the caller chose the key (`meshctl request-post file --key`) for
+  a deliberate second request, and never otherwise. The service refuses an `idempotencyKey` that
+  is not the derived key unless `keyOverride` is `true` (`reason: "invalid"`, `fields` naming
+  `idempotencyKey`); `invalidFields` gives the same. `file/12-created-override.json` is that
+  exchange.
 
 ## Vendoring them (the private repository)
 

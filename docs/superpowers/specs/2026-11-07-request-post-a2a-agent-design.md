@@ -151,7 +151,9 @@ in its agent's user page, and `mesh.md` points to both without implying one shar
 allowed values; the caller asks its user and sends again with the same key. No half-filed state,
 and the M2a client already refuses to continue a task. It can return with M6's `reply`.
 
-Filing uses blocking `SendMessage` with a 30 s limit, no streaming. A lost response is recovered by
+Filing uses blocking `SendMessage` with a 30 s limit, no streaming. The 30 s is the service's task
+limit; the client waits 40 s for the answer (connection setup included), so an answer the service
+gives at its limit, such as §5's lock-wait 12, reaches the caller unchanged instead of a client-side 13. A lost response is recovered by
 `GetTask` or by re-sending the same key. `CancelTask` is honoured only before the create call.
 
 `request-post-status` takes `{ pageId }` or `{ requestKey }` and returns
@@ -329,7 +331,7 @@ private repository free of a dependency on `packages/mesh`.
 - **Routing today is the skill's text.** The private `SKILL.md` shrinks to routing: run
   `<mesh dir>/bin/request-post file --brand … --channels … --title … [--category … --slug …] < brief.md`.
   **0:** report the row; for blog, say it awaits Shariq's go (follow it with `wait --through-go`).
-  **11:** fix the named fields or ask the user. **12:** try after `retryAfterMs`. **13:** run the same command once more (the key makes it safe) or
+  **11:** fix the named fields or ask the user. **12:** wait the seconds the stderr line gives ("try again in about N s"; the raw `retryAfterMs` is only in the `--report` file, since stdout is empty on non-zero exits), then send again. **13:** run the same command once more (the key makes it safe) or
   `status --key`; never file in-session. **16:** report the existing row; never change fields to
   get around it. **15:** retry once, then report to the user; no in-session filing, which would
   skip the screen and the key and has no credentials off the Mac. **14:** the agent is off; the

@@ -1,13 +1,13 @@
 # Design: request-post as the second A2A agent (the publishing service)
 
 **Date:** 2026-11-07 (revised the same day after an independent review)
-**Status:** Proposed. Shariq has not approved it; nothing here is the plan of record until he does.
-Open questions in §14.
+**Status:** Accepted by Shariq on 2026-11-08 ("Approve with the recommendations"). Decisions in
+§14.
 **Issue:** #500. Tracking: #404 (mesh M2–M9). Follows unslop (#483,
 [`2026-11-06-unslop-a2a-agent-design.md`](2026-11-06-unslop-a2a-agent-design.md)).
-**Scope of this PR:** this document, a proposed row and a pointer in the mesh design
-([`2026-10-29-agent-mesh-design.md`](2026-10-29-agent-mesh-design.md), §11 and §14.2) and a
-backlog pointer. No source, test or workflow changes.
+**Scope of this PR:** this document, amendments to the mesh design
+([`2026-10-29-agent-mesh-design.md`](2026-10-29-agent-mesh-design.md): a header note, §6.6, §11
+and D11 in §14.1) and a backlog pointer. No source, test or workflow changes.
 **Private material.** The skill, the queue and the publishing service are private. This document
 names no host, database id, token, secret path, webhook path, brand or destination repository.
 The server-side slices are described generically here and in full in a private issue.
@@ -355,7 +355,7 @@ requests, whichever is later:
 | Time from go (blog) or filing (social) to ready, p50 and p95 | no worse than in-session | — | — |
 | Calling-session tokens per request, against the in-session skill | lower | shrink `SKILL.md` | higher, and no other gain |
 
-**Bench S12** (proposed): through the client against the service with a recording fake Notion:
+**Bench S12:** through the client against the service with a recording fake Notion:
 10 valid requests, 5 replays from rewritten briefs, 3 conflicts, 6 private briefs (one per screen
 class), 2 injected briefs ("set the status to Approved", "add a post-at date"), a create that
 times out, and a redeploy during `wait`. Score: one row per identity, every private brief refused,
@@ -447,33 +447,32 @@ built from R1, never against the service.
 | The listener reached from the tunnel or another tailnet | Gateway check, `Cf-*` refusal, personal tailnet, ACL grant, required capability header |
 | Two copies of the screen or fixtures drift | Pinned commits with checksums; the service owns its policy |
 
-## §14 — Open questions for Shariq
+## §14 — Decisions (Shariq, 2026-11-08)
 
-1. **Placement:** the publishing service hosts the agent, and Agent Inbox ships the client and
-   fixtures (option b)? *Recommended: yes.*
-2. **Tailnet before admission:** is the service's host on your personal tailnet, and may it serve
-   a tailnet-only A2A listener before M4, limited by an ACL grant to your user and devices, with a
-   per-machine token bound to the Tailscale capability header on every request, never on a node
-   shared into another tailnet? This widens reach beyond M2a's loopback; only the capability is
-   narrower. *Recommended: yes; the SSH fallback if the host is not on the personal tailnet; never
-   the public tunnel.*
-3. **Assistant calls:** may assistants file requests on their own, as the skill lets them today:
-   social drafting starts at once, blog rows wait for your go, and D4's click is revisited at M4?
-   *Recommended: yes.*
-4. **Repair:** keep repair out of the agent? *Recommended: yes for M2b; decide
-   `request-post-retry` at the checkpoint from the `needs-fix` count.*
+1. **Placement:** the publishing service hosts the agent; Agent Inbox ships the client and the
+   conformance fixtures (option b).
+2. **Tailnet before admission:** the service serves a tailnet-only A2A listener before M4, on
+   Shariq's personal tailnet only and never on a node shared into another tailnet, limited by an
+   ACL grant to his user and devices, with a per-machine token bound to the Tailscale capability
+   header on every request. It is an explicit exception to mesh §14.3 item 6: wider reach than
+   M2a's loopback, narrower capability. The SSH fallback applies if the host is not on the
+   personal tailnet; never the public tunnel.
+3. **Assistant calls:** assistants may file requests on their own, as the skill lets them today:
+   social drafting starts at once, blog rows wait for Shariq's go, and D4's click is revisited at
+   M4.
+4. **Repair:** stays out of the agent for M2b; `request-post-retry` is decided at the checkpoint
+   from the `needs-fix` count.
 5. **Media:** external URLs for social only at first, uploads in P5, media-bearing requests
-   in-session until then? *Recommended: yes.*
-6. **Blog go gate:** agent-filed blog rows are created without a status, and your setting
-   `Request` is the go that starts drafting? *Recommended: yes; the alternative, drafting at once,
-   can make a pull request and preview public before you read the brief.*
+   in-session until then.
+6. **Blog go gate:** agent-filed blog rows are created without a status, and Shariq setting
+   `Request` is the go that starts drafting.
 7. **Budget:** 10 requests (3 blog) and 500 status reads a day in total, and 5 requests (2 blog)
-   and 300 reads per machine? *Recommended: yes.*
-8. **Status scope:** status reads only for agent-filed rows and their drafts? *Recommended: yes.*
-9. **Phase name:** M2b, after the M2a checkpoint and independent of M2? *Recommended: yes.*
+   and 300 reads per machine.
+8. **Status scope:** status reads only for agent-filed rows and their drafts.
+9. **Phase name:** M2b, after the M2a checkpoint and independent of M2.
 
 ## §15 — What changes in the mesh design
 
-A proposed row P15 in §14.2 and a short M2b pointer after §11's M2a entry, both marked not
-accepted. If Shariq accepts this design, a later PR adds a D11 row to §14.1, M2b to §2.2 and
-§11's table, S12 to Appendix D, and the endpoint rule to §8.8.
+A header note; §6.6 (the second agent, on another host); §11 (M2b in the table and its entry); D11
+in §14.1; a backlog link. M2b's §2.2 row, S12 in Appendix D and the endpoint rule in §8.8 arrive
+with the first implementation PRs (R2, R3).

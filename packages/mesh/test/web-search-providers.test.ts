@@ -122,6 +122,26 @@ describe('the query screen (§7.1) against screen.json', () => {
     expect(screenQuery('<host>.local and *.internal names', o).ok).toBe(true)
   })
 
+  it('refuses an address, host, path or name glued to @, =, :, | or / (review of #517)', () => {
+    const o = { ...CONTEXT, interfaces: ['192.0.2.20/24', '2001:db8:5::20/64'] }
+    for (const q of [
+      'ssh person@192.0.2.23 permission denied', 'DB_HOST=192.0.2.23 connection refused', 'host=192.0.2.23', 'ip:192.0.2.23',
+      'redis://:pw@192.0.2.23:6379', 'a|192.0.2.23|b', 'peer=2001:db8:5::23 down', 'ip:2001:db8:5::23', 'ssh person@[2001:db8:5::23]:22',
+      'via ::ffff:192.0.2.23 mapped', 'person@2001:db8:5::23/64 route', 'curl http://[2001:db8:5::23]/x',
+    ]) expect(screenQuery(q, o), q).toEqual({ ok: false, classes: ['private-name'] })
+    for (const q of ['ssh person@studio-mini.local', 'url=https://metrics.internal/x', 'host:build-box.tailnet-example.ts.net']) {
+      const r = screenQuery(q, { ...o, deny: '' })
+      expect(r.ok ? [] : r.classes, q).toContain('private-name')
+    }
+    for (const q of ['KEY=/Users/example-user/app', 'person@box:/home/example-user/x', 'open /System/Volumes/Data/Users/example-user/x']) {
+      expect(screenQuery(q, o), q).toEqual({ ok: false, classes: ['home-path'] })
+    }
+    for (const q of ['repo=example-private-repo build', 'git@example.com:me/example-private-repo.git']) expect(screenQuery(q, o), q).toEqual({ ok: false, classes: ['deny-list'] })
+    for (const q of ['is 127.0.0.1 the same as ::1', 'what is 192.168.1.1', 'host=192.0.3.23 and ip:2001:db8:6::1', 'node v24.11.0 on 10.1.2.3', 'std::vector a::b::c', 'dead:beef:cafe']) {
+      expect(screenQuery(q, o), q).toEqual({ ok: true })
+    }
+  })
+
   it('reads both deny lists, fresh each time, and the tailnet from the seeded .ts.net names', () => {
     const dir = mkdtempSync(join(tmpdir(), 'mesh-w3-'))
     made.push(dir)

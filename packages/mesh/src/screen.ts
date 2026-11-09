@@ -157,11 +157,22 @@ function localSubnets(cidrs: string[] | undefined): BlockList {
   return list
 }
 
+// Address literals are found wherever they sit, glued to `@`, `=`, `:`, `|` or `/` included:
+// IPv4 by a scan, IPv6 as runs of hex digits and colons, each also tried without a leading
+// `label:` (`ip:fd00::1`) or a trailing `:port` (`[fd00::1]:22` loses its brackets first).
+const IPV4 = /(?<![\d.])\d{1,3}(?:\.\d{1,3}){3}(?!\d|\.\d)/g
+const IPV6 = /[0-9a-f]*(?::[0-9a-f]*){2,8}(?:\.\d{1,3}){0,3}/gi
+function addresses(text: string): string[] {
+  const v6 = [...text.matchAll(IPV6)].flatMap((m) => {
+    const parts = m[0].split(':')
+    return parts.flatMap((_, i) => [parts.slice(i).join(':'), parts.slice(i, -1).join(':')])
+  })
+  return [...[...text.matchAll(IPV4)].map((m) => m[0]), ...v6].filter((a) => isIP(a))
+}
+
 function privateName(text: string, o: QueryScreenOptions): boolean {
   const subnets = localSubnets(o.interfaces)
-  const addresses = text.split(/[\s,;()<>"'`\[\]]+/).map((t) => t.replace(/[.,?!:]+$/, '').replace(/^(?:[a-z]+:\/\/)?/i, '').replace(/[%/].*$/, ''))
-  const candidates = addresses.flatMap((t) => (isIP(t) ? [t] : isIP(t.replace(/:\d+$/, '')) === 4 ? [t.replace(/:\d+$/, '')] : []))
-  if (candidates.some((a) => !KNOWN_ADDRESSES.has(a) && subnets.check(a, isIP(a) === 4 ? 'ipv4' : 'ipv6'))) return true
+  if (addresses(text).some((a) => !KNOWN_ADDRESSES.has(a) && subnets.check(a, isIP(a) === 4 ? 'ipv4' : 'ipv6'))) return true
   if ([...text.matchAll(PRIVATE_HOST)].some((m) => !generic(m[1]!))) return true
   return (o.tailnets ?? []).map((t) => t.toLowerCase().replace(/\.ts\.net\.?$/, '')).filter((t) => t.length > 1)
     .some((name) => new RegExp(`(?<![\\w-])${escape(name)}(?![\\w-])`, 'i').test(text))
@@ -169,7 +180,7 @@ function privateName(text: string, o: QueryScreenOptions): boolean {
 
 function homePath(text: string, o: QueryScreenOptions): boolean {
   const user = o.user ?? userInfo().username
-  return Boolean(user) && new RegExp(`(?<![\\w.~-])/(?:Users|home)/${escape(user)}(?![\\w.-])`, 'i').test(text)
+  return Boolean(user) && new RegExp(`/(?:Users|home)/${escape(user)}(?![\\w.-])`, 'i').test(text)
 }
 
 /** Refuses, never redacts: the classes a one-line query trips, before any network. `deny` holds both deny lists. */

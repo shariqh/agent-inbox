@@ -207,6 +207,6 @@ describe('the folder', () => {
     for (const host of [...text.matchAll(/https?:\/\/([^/\s"'?:)]+)/g)].map((m) => m[1]!)) {
       expect(/(?:^|\.)(?:example\.(?:com|org|net)|example|invalid)$|^127\.0\.0\.1$|^ollama\.com$/.test(host), host).toBe(true)
     }
-    for (const domain of [...text.matchAll(/[\w.+-]+@([\w-]+(?:\.[\w-]+)+)/g)].map((m) => m[1]!)) expect(domain).toMatch(/\.invalid$|example\./)
+    for (const domain of [...text.matchAll(/[\w.+-]+@([\w-]+(?:\.[\w-]+)+)/g)].map((m) => m[1]!)) expect(domain).toMatch(/\.invalid$|example\.|^(?:192\.0\.2|198\.51\.100|203\.0\.113)\.\d+$/)
   })
 })

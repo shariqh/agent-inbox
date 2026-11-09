@@ -681,7 +681,9 @@ The "In brief" bullet "The viewer's watch returns with the first phase that need
 "The viewer reads `mesh.json` lazily for the agent cards view (below)". The Agents view bullet's
 "fetches nothing" becomes "reads `/api/mesh/agents` only for its Mesh agents section, and only when
 `/api/version` carries `mesh`". `paths`/`applyTo` gain `src/mesh-agents.ts`, `src/agent-card.ts`
-and `public/mesh-agents.js`.
+and `public/mesh-agents.js`. (V3 note: the page module ships as `public/mesh-section.js`, because
+`test/dead-exports.test.ts` requires module basenames unique across `public/` and `src/`, and
+`src/mesh-agents.ts` holds the name.)
 
 **`CLAUDE.md`, the mesh invariant line.** From:
 

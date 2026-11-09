@@ -1,6 +1,7 @@
 import type { AttentionEntry } from './attention.js'
 import type { LaneActivity, LaneBoard } from './lanes.js'
 import type { SessionCard } from './sessions.js'
+import type { MeshAgentsInput } from './mesh-section.js'
 
 export interface AgentsHomeInput {
   activity: LaneActivity[] | null | undefined
@@ -22,6 +23,8 @@ export interface AgentsHomeInput {
   outside?: number
   /** how many asks wait in Later: the header's "Later N ›" (#454 A.2) */
   later?: number
+  /** the Mesh agents section's last `/api/mesh/agents` body, or null to draw none (agent cards view V3) */
+  mesh?: MeshAgentsInput | null
 }
 
 export interface AgentsHomeLaunches {
@@ -57,6 +60,8 @@ export interface AgentsHomeDeps {
   paintUndelivered?: (slot: Element) => void
   /** clears the project and agent lens ("N sessions outside this filter · Show all") */
   showAll?: () => void
+  /** the Mesh agents section's Refresh: posts `refresh`, then repaints through reloadAndPaint() */
+  refreshMesh?: () => void
   /** after the home's own repaints (filters, grouping, folds): the session panel finds its place again */
   afterRepaint?: () => void
 }

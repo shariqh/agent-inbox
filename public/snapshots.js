@@ -45,6 +45,10 @@ const messages = (value) => record(value) && Array.isArray(value.open) && value.
 // Issue #412 step 3: driven-session launches, facts only.
 const launches = (value) => Array.isArray(value) && value.every((launch) =>
   strings(launch, ['id', 'status', 'project', 'mode', 'created_at']) && Array.isArray(launch.sessions))
+// The agent cards view (design 2026-11-09-agent-cards-view-design.md §4.7): the
+// configured mesh agents, built fresh per read and tagged by its bytes.
+const meshAgents = (value) => record(value) && typeof value.on === 'boolean' && Array.isArray(value.agents)
+  && value.agents.every((agent) => strings(agent, ['key', 'name', 'state']))
 const validators = new Map([
   ['/api/items', items],
   ['/api/items/history', history],
@@ -58,6 +62,7 @@ const validators = new Map([
   ['/api/links', links],
   ['/api/messages', messages],
   ['/api/launches', launches],
+  ['/api/mesh/agents', meshAgents],
 ])
 // The only routes whose query string selects one of their own representations:
 // the activity history window (#185) and the lingering archived plans (#373).

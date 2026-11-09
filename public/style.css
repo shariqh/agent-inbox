@@ -2120,6 +2120,37 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
 .ah-fold > .ah-cards { margin-top: 10px; }
 .ah-fold-earlier { margin-top: 10px; }
 .ah-undelivered:empty { display: none; }
+/* the Mesh agents section (agent cards view V3): global, never an ask, so amber
+   (--app-warning) for a card it cannot use and never the attention colour; no motion */
+.mesh-agents { margin-top: 16px; padding-top: 10px; border-top: 1px solid var(--app-border); }
+.ma-body[hidden], .ma-stale[hidden], .ma-others[hidden], .ma-fix[hidden], .ma-details[hidden], .ma-json[hidden] { display: none; }
+.ma-head { display: flex; align-items: center; gap: 10px; }
+.ma-toggle { padding: 0; border: 0; background: none; color: var(--app-text); font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; }
+.ma-toggle::after { margin-left: 6px; color: var(--app-text-soft); content: "▸"; }
+.ma-toggle[aria-expanded="true"]::after { content: "▾"; }
+.ma-checked { color: var(--app-text-soft); font-size: 11.5px; }
+.ma-refresh { padding: 3px 9px; border: 1px solid var(--app-border); border-radius: 7px; background: var(--app-surface); color: var(--app-text); font: inherit; font-size: 11.5px; font-weight: 650; cursor: pointer; }
+.ma-stale, .ma-others { margin: 8px 0 0; color: var(--app-muted); font-size: 12px; }
+.ma-rows { display: grid; gap: 10px; margin: 10px 0 0; padding: 0; list-style: none; }
+.ma-row { --ma-tone: var(--app-text-soft); font-size: 12.5px; }
+.ma-row.ma-tone-up { --ma-tone: var(--app-success); }
+.ma-row.ma-tone-amber { --ma-tone: var(--app-warning); }
+.ma-row-toggle { display: flex; align-items: baseline; gap: 8px; padding: 0; border: 0; background: none; color: var(--app-text); font: inherit; text-align: left; cursor: pointer; }
+.ma-dot { width: 8px; height: 8px; flex: none; align-self: center; border-radius: 50%; background: var(--ma-tone); }
+.ma-row.ma-tone-neutral .ma-dot { border: 1.5px solid var(--ma-tone); background: transparent; }
+.ma-name { font-weight: 700; }
+.ma-status { color: var(--app-muted); }
+.ma-row.ma-tone-amber .ma-status, .ma-fix { color: var(--app-warning); }
+.ma-facts, .ma-fix, .ma-details { margin-left: 16px; }
+.ma-facts { color: var(--app-text-soft); font-size: 11.5px; }
+.ma-fix { font-size: 11.5px; }
+.ma-lines { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 8px 0 0; }
+.ma-lines dt { color: var(--app-text-soft); font-weight: 600; }
+.ma-lines dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.ma-tag { display: inline-block; padding: 0 6px; border: 1px solid var(--app-border); border-radius: 6px; color: var(--app-muted); font-size: 11px; }
+.ma-json { margin-top: 8px; }
+.ma-json > summary { color: var(--app-muted); font-size: 12px; cursor: pointer; }
+.ma-json-text { max-height: 360px; margin: 6px 0 0; padding: 8px; overflow: auto; border: 1px solid var(--app-border); border-radius: 7px; background: var(--app-soft); font-size: 11.5px; white-space: pre; user-select: text; }
 /* the session card */
 /* #454 A.3 V1–V5: one quiet meta line, what it is doing leading, pink only for
    asks and green only for the working dot, one visible action as a text button */

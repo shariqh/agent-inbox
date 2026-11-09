@@ -7,8 +7,9 @@ paths:
   - "src/agent-card.ts"
   - "src/mesh-agents.ts"
   - "public/agents-home.js"
+  - "public/mesh-section.js"
   - "packages/mesh/src/**/*.ts"
-applyTo: "src/mesh-config.ts,src/meshctl.ts,src/unslop-client.ts,src/request-post-client.ts,src/agent-card.ts,src/mesh-agents.ts,public/agents-home.js,packages/mesh/src/**/*.ts"
+applyTo: "src/mesh-config.ts,src/meshctl.ts,src/unslop-client.ts,src/request-post-client.ts,src/agent-card.ts,src/mesh-agents.ts,public/agents-home.js,public/mesh-section.js,packages/mesh/src/**/*.ts"
 ---
 
 # Agent mesh (M1)
@@ -38,7 +39,8 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   the Sessions | Agents lens with the lanes): one card per session from `public/sessions.js`.
   It reads `liveInLens()`, this app's launches (switch on only), the plans the working
   sessions link and the frame's attention entries; it never feeds attention, a badge, count,
-  tab, rail or the dock, and fetches nothing. No mesh module enters the stdio MCP graph, the hub
+  tab, rail or the dock, and reads `/api/mesh/agents` only for its Mesh agents section, and only
+  when `/api/version` carries `mesh`. No mesh module enters the stdio MCP graph, the hub
   schema is untouched, and `test/fixtures/app-dependencies.txt` pins the dependency
   set. Nothing puts the meshctl bin on PATH: document `npm run meshctl -- …`.
 
@@ -79,8 +81,9 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   otherwise its bytes are unchanged. It fetches each agent's card from the configured endpoint only
   (never a URL from a card), with no token, no redirect, no proxy, a 64 KiB cap and one total
   deadline (3 s for unslop, 5 s for every request-post check), only on
-  `POST /api/mesh/agents/refresh` with the open trigger (from slice V3: boot on the Dashboard,
-  `showAgentsHome()`, `selectTab('dashboard')` from another tab) or a Refresh press; reading
+  `POST /api/mesh/agents/refresh` with the open trigger (boot on the Dashboard,
+  `showAgentsHome()`, `selectTab('dashboard')` from another tab: `meshOpen()` in `public/app.js`)
+  or a Refresh press; reading
   `/api/mesh/agents` never starts a check, and one check per agent runs at a time. An `open`
   skips an agent checked in the last 60 s, a `refresh` one checked in the last 5 s. Records live
   in memory only (a viewer starts every agent `unchecked`; a changed endpoint starts a fresh
@@ -94,6 +97,9 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   one card rule both clients and the view use, and the view's `summarizeCard` (caps, "+N more",
   control, bidirectional and separator characters replaced) and `cardJson` (the raw card with
   those characters escaped). The view never reaches attention.
+  The page side (slice V3) is `public/mesh-section.js` (named apart from `src/mesh-agents.ts`,
+  since `test/dead-exports.test.ts` needs unique module basenames), mounted by
+  `public/agents-home.js`; `viewer-dashboard-and-shell.md` has its rules.
 - **The Agents view is always on (#454).** `app.js` imports `public/agents-home.js`
   statically and calls `installAgentsHome(...)` at load, so `dead-exports` reaches it like
   any module. Since #454 PR 4 it is the Dashboard's one home for sessions (the lens and
@@ -103,7 +109,8 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   (`public/sessions.js`), grouped by project, with "last call" from `last_call_at` (never
   `updated_at`) and asks READ from the frame's `waitingEntries` by session or linked
   plan; `viewer-dashboard-and-shell.md` has the detail. Nothing it draws reaches
-  `public/attention.js`, a badge, count, tab or the dock; it fetches nothing,
+  `public/attention.js`, a badge, count, tab or the dock; it fetches nothing but the
+  Mesh agents section's `/api/mesh/agents` (only while `/api/version` carries `mesh`),
   runs no timer, and rebuilds a card's part only when what it shows changed. Its state
   is in `frameInputs()`, so a filter, grouping or fold change is never reused across
   frames. `test/mesh.test.ts` and `test/dom/agents-home.test.ts` hold it, including the

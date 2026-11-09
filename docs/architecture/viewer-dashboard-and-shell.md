@@ -103,6 +103,31 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   to session does, so no launch is ever unreachable. Subagents carry `status()`'s
   optional `state` into the panel's list and the card's tooltip. Nothing it draws
   reaches attention.
+- The Agents home's **Mesh agents** section (agent cards view V3, design
+  `docs/superpowers/specs/2026-11-09-agent-cards-view-design.md` §2, §4.5) is
+  `public/mesh-section.js`, mounted by `agents-home.js` after the groups and before the folds,
+  in a slot no filter or lens touches: the state filters and the project and agent lens never
+  narrow it, and it shows under the empty state's text with no session. One row per agent by
+  `mesh.json` name, keyed by the server's `key`: the page's state words (Not checked yet,
+  Checking…, Running for unslop / Reachable for request-post, Not running, Unreachable, Not an
+  agent card, Card does not match this build, Endpoint not accepted) with the server's `reason`
+  and `fix`; quiet green for up, neutral grey for unchecked, checking and not running, amber
+  (`--app-warning`, never the attention colour) for the rest. The collapsed row says Local with
+  the loopback port, or Remote · tailnet / SSH tunnel without the host; the expanded row shows
+  the card's lines and a nested Card JSON whose `<pre>` is rewritten only when `cardJson`
+  changes, so a selection in it survives polls. Card text reaches the DOM only through
+  `textContent`: no `img`, no `href`, no request to a card's URL. `app.js` reads
+  `GET /api/mesh/agents` (a conditional snapshot) only while the last `/api/version` carried
+  `mesh`, the Dashboard is the tab and the document is visible; a skipped read keeps the last
+  body, a failed read keeps it marked stale (never a failed tick), and an `on: false` body hides
+  the section and stops the read until `/api/version` carries `mesh` again. The open trigger
+  (`meshOpen()`) fires only on boot on the Dashboard once the boot's `/api/version` carries
+  `mesh`, `showAgentsHome()` (once, after its version read; its `selectTab` passes
+  `open: false`) and `selectTab('dashboard')` from another tab; its result paints through the
+  next poll tick. Refresh, in the header row beside the disclosure button, posts `refresh` and
+  then repaints through `reloadAndPaint()`. The section's, rows' and Card JSON's open state is
+  window-local and joins `agentsHome.state()`, so `frameInputs()`. With no `mesh` the page's
+  requests are unchanged and no section exists. Nothing it draws reaches attention.
 - The sidebar's Sessions line (`#sessionsIndicator`, #454, where the Live footer strip
   was) is the one session signal on every tab: `sessionsSummary` (`public/livebar.js`)
   over the GLOBAL `lastData.activity`, never the lens or closure ("N working · M

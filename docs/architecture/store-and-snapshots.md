@@ -168,7 +168,9 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   the freshly computed body plus the parsed `since_ms` and project that selected
   it, so a 304 means identical bytes and no two windows share a validator. Never
   derive that tag from store tokens or cache the body server-side; the whole
-  route costs under a millisecond on a #161-sized hub. The poll floors its 30-day
+  route costs under a millisecond on a #161-sized hub. `/api/mesh/agents` (the agent
+  cards view, `mesh.md`) is conditional on its bytes the same way; the page reads it
+  through `readSnapshot` only while its section can show. The poll floors its 30-day
   `since_ms` to the hour (`activityHistoryUrl`), so successive ticks name one
   representation.
   This is bounded snapshot reuse, not a cross-endpoint synchronization protocol.

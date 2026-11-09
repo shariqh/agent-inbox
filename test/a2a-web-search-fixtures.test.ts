@@ -198,6 +198,15 @@ describe('providers and pages', () => {
   })
 })
 
+/** Addresses, hosts and mail domains that are not placeholders, read once invisible characters (pages/zw-*) are gone. */
+function placeholderProblems(raw: string): string[] {
+  const text = raw.replace(/(?![\t\n])[\p{Cc}\p{Cf}\p{Default_Ignorable_Code_Point}\u2028\u2029]/gu, '')
+  const ips = (text.match(/\b\d{1,3}(?:\.\d{1,3}){3}\b/g) ?? []).filter((ip) => !(/^(?:192\.0\.2|198\.51\.100|203\.0\.113|127\.0\.0)\.\d+$/.test(ip) || ['192.168.1.1', '10.0.0.1'].includes(ip)))
+  const hosts = [...text.matchAll(/https?:\/\/([^/\s"'?:)]+)/g)].map((m) => m[1]!).filter((h) => !/(?:^|\.)(?:example\.(?:com|org|net)|example|invalid)$|^127\.0\.0\.1$|^ollama\.com$/.test(h))
+  const domains = [...text.matchAll(/[\w.+-]+@([\w-]+(?:\.[\w-]+)+)/g)].map((m) => m[1]!).filter((d) => !/\.invalid$|example\.|^(?:192\.0\.2|198\.51\.100|203\.0\.113)\.\d+$/.test(d))
+  return [...ips, ...hosts, ...domains]
+}
+
 describe('the folder', () => {
   it('MANIFEST.json matches every file', () => {
     expect(checkManifest(DIR)).toEqual([])
@@ -206,13 +215,10 @@ describe('the folder', () => {
 
   it('holds placeholders only: documentation addresses, loopback, reserved names', () => {
     const text = Object.keys(manifestFiles(DIR)).filter((f) => f.endsWith('.json') || f.endsWith('.sha256')).map((f) => readFileSync(join(DIR, f), 'utf8')).join('\n')
-    for (const ip of text.match(/\b\d{1,3}(?:\.\d{1,3}){3}\b/g) ?? []) {
-      expect(/^(?:192\.0\.2|198\.51\.100|203\.0\.113|127\.0\.0)\.\d+$/.test(ip) || ['192.168.1.1', '10.0.0.1'].includes(ip), ip).toBe(true)
-    }
-    // a zero-width page (pages/zw-*) splits a host; it is the same placeholder once seen
-    for (const host of [...text.matchAll(/https?:\/\/([^/\s"'?:)]+)/g)].map((m) => m[1]!.replace(/\u200B/g, ''))) {
-      expect(/(?:^|\.)(?:example\.(?:com|org|net)|example|invalid)$|^127\.0\.0\.1$|^ollama\.com$/.test(host), host).toBe(true)
-    }
-    for (const domain of [...text.matchAll(/[\w.+-]+@([\w-]+(?:\.[\w-]+)+)/g)].map((m) => m[1]!)) expect(domain).toMatch(/\.invalid$|example\.|^(?:192\.0\.2|198\.51\.100|203\.0\.113)\.\d+$/)
+    expect(placeholderProblems(text)).toEqual([])
+  })
+
+  it('the placeholder guard reads an address split by an invisible character whole', () => {
+    expect(placeholderProblems('see 10.1\u200B.2.3 and https://ev\u3164il.test/ or person@mail.te\u00ADst.net')).toEqual(['10.1.2.3', 'evil.test', 'mail.test.net'])
   })
 })

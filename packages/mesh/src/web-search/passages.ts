@@ -7,17 +7,18 @@
 export const PAGE_CUT = 200_000
 export const KEEP_CHUNKS = 3
 export const KEEP_CHARS = 2400
+import { visible } from './suspect.js'
+
 const MIN = 200
 const MAX = 800
 const MIN_WORD_CHARS = 40
 const FIRST_BONUS = 0.25
-const LINK = /\[([^\]\n]*)\]\([^)\s]*(?:\s+"[^"]*")?\)/g
+const LINK = /\[([^\]\n]{0,500})\]\([^)\s]{0,2048}(?:\s+"[^"\n]{0,500}")?\)/g
 
-const clean = (text: string): string => text.slice(0, PAGE_CUT)
-  .replace(/!\[[^\]\n]*\]\([^)\n]*\)/g, '')
+const clean = (text: string): string => visible(text.slice(0, PAGE_CUT))
+  .replace(/!\[[^\]\n]{0,500}\]\([^)\n]{0,2048}\)/g, '')
   .replace(/<(script|style)\b[\s\S]*?<\/\1\s*>/gi, ' ')
   .replace(/<[^>\n]{0,500}>/g, '')
-  .replace(/[\u0000-\u0009\u000B-\u001F\u007F-\u009F\u200B-\u200F\u202A-\u202E\u2060-\u2069\uFEFF]/g, '')
 
 const sentences = (text: string): string[] => {
   const out: string[] = []

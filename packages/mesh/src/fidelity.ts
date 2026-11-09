@@ -175,15 +175,10 @@ function extract(input: string, terms: string[]): Extract {
   }
 }
 
-/**
- * The numbers (and versions), dates and quotes of three words or more that the check protects, normalised,
- * and `rest`: the text with every number and date blanked (web search's grounding check, #505).
- */
-export function extractValues(text: string): { numbers: string[]; dates: string[]; quotes: string[]; rest: string } {
+/** The numbers (and versions), dates and quotes of three words or more that the check protects, normalised (web search's grounding check, #505). */
+export function extractValues(text: string): { numbers: string[]; dates: string[]; quotes: string[] } {
   const { items } = extract(text, [])
-  let rest = text
-  for (const i of [...items.numbers, ...items.dates]) rest = rest.slice(0, i.start) + ' '.repeat(i.end - i.start) + rest.slice(i.end)
-  return { numbers: items.numbers.map((i) => i.value), dates: items.dates.map((i) => i.value), quotes: items.quotes.map((i) => i.value), rest }
+  return { numbers: items.numbers.map((i) => i.value), dates: items.dates.map((i) => i.value), quotes: items.quotes.map((i) => i.value) }
 }
 
 function minus(a: string[], b: string[]): string[] {

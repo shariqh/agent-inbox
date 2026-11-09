@@ -3,13 +3,12 @@
 // overrides, role or chat-template markers, "system prompt", "do not tell the user",
 // text imitating the prompt's delimiters, Markdown images, bidirectional overrides,
 // CSS-hidden text, an urgent "run this command", a request to paste into the reply and
-// a link to a private address. Each runs on the raw text and again on the text a reader
-// or the model sees (invisible characters gone, line breaks as spaces), so a zero-width
-// character or a line break inside a phrase hides nothing; bidirectional overrides and
-// Unicode tag characters are flagged on the raw text. It is a signal, not a guarantee.
-// `clean()` is what the data part may carry: no controls, bidirectional overrides,
-// zero-width, tag or variation-selector characters, no Markdown images or link
-// references, and a length cap in code points.
+// a link to a private address. Each runs on the raw text (bidirectional overrides, tag
+// characters), on it without invisible characters (an image split by one) and on
+// `clean()`'s text, what the model sees, so an invisible character, a line break or a
+// deleted image inside a phrase hides nothing. It is a signal, not a guarantee. `clean()` is what the data part may
+// carry: no control, format or default-ignorable character, no Markdown image or link
+// reference, and a length cap in code points.
 import { isIP } from 'node:net'
 
 const PATTERNS = [
@@ -18,7 +17,7 @@ const PATTERNS = [
   /\bsystem prompt\b/i,
   /\b(?:do not|don't|never)\s+(?:tell|inform|show|mention (?:this |it )?to|reveal (?:this |it )?to)\s+the\s+user\b/i,
   /\b(?:SOURCE\s+\S{1,64}\s+\[\d+\]|QUESTION\s+\S{1,64}|CHECK\s+\S{1,64})\s+(?:BEGIN|END)\b/,
-  /!\[[^\]\n]*\]\([^)\n]*\)/,
+  /!\[[^\]\n]{0,500}\][([]/,
   /[\u202A-\u202E\u2066-\u2069]/,
   /[\u{E0000}-\u{E007F}]/u,
   /\b(?:display\s*:\s*none|visibility\s*:\s*hidden|font-size\s*:\s*0(?![.\d]))/i,
@@ -38,20 +37,20 @@ function privateHost(raw: string): boolean {
 }
 
 export function suspect(text: string): boolean {
-  return [text, visible(text).replace(/\s+/g, ' ')].some((t) => PATTERNS.some((p) => p.test(t)) || [...t.matchAll(URL_HOST)].some((m) => privateHost(m[1]!)))
+  return [text, visible(text), clean(text, Infinity)].some((t) => PATTERNS.some((p) => p.test(t)) || [...t.matchAll(URL_HOST)].some((m) => privateHost(m[1]!)))
 }
 
-// C0 and C1 controls but tab and newline, the soft hyphen, bidirectional marks and
-// overrides, the Mongolian vowel separator, zero-width characters, the line and paragraph
-// separators, variation selectors, the byte order mark and Unicode tag characters
-const UNSAFE = /[\u0000-\u0008\u000B-\u001F\u007F-\u009F\u00AD\u061C\u180E\u200B-\u200F\u202A-\u202E\u2028\u2029\u2060-\u2069\uFE00-\uFE0F\uFEFF\u{E0000}-\u{E007F}\u{E0100}-\u{E01EF}]/gu
+// every control, format and default-ignorable character (zero-width, bidirectional,
+// soft hyphen, fillers, variation selectors, tags) and the line and paragraph separators,
+// but tab and newline
+const UNSAFE = /(?![\t\n])[\p{Cc}\p{Cf}\p{Default_Ignorable_Code_Point}\u2028\u2029]/gu
 
 /** Without the characters a reader cannot see, so a check sees what a reader would. */
 export const visible = (text: string): string => text.replace(/\r\n?/g, '\n').replace(UNSAFE, '').replace(/\t/g, ' ')
 
 /** Text the data part may carry: one line unless `lines`, at most `max` code points. */
 export function clean(text: string, max: number, lines = false): string {
-  const kept = visible(text).replace(/!\[[^\]\n]*\](?:\([^)\n]*\)|\[[^\]\n]*\])/g, '').replace(/^[ \t]*\[[^\]\n]+\]:[ \t]*\S.*$/gm, '')
+  const kept = visible(text).replace(/!\[[^\]\n]{0,500}\](?:\([^)\n]{0,2048}\)|\[[^\]\n]{0,500}\])/g, '').replace(/^[ \t]*\[[^\]\n]+\]:[ \t]*\S.*$/gm, '')
   const shaped = lines ? kept.replace(/[ ]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim() : kept.replace(/\s+/g, ' ').trim()
   const points = [...shaped]
   return points.length > max ? points.slice(0, max).join('').trimEnd() : shaped

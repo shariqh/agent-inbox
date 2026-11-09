@@ -425,13 +425,15 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
     passage (instruction overrides, chat-template markers, "system prompt", "do not tell the
     user", delimiter imitation, Markdown images, bidirectional overrides, CSS-hidden text, an
     urgent "run this command", "paste … into your reply", a URL to a private address or
-    `localhost`, any Unicode tag character). Each runs on the raw text and on the text a reader
-    sees (invisible characters gone, line breaks as spaces), so a zero-width character, a soft
-    hyphen or a line break inside a phrase hides nothing. A match sets `suspect: true`, adds the
-    warning `suspect` and keeps the whole source out of the prompt. `clean()` strips controls,
-    the soft hyphen, bidirectional, zero-width, tag and variation-selector characters, Markdown
-    images (inline and by reference) and link reference definitions, and caps titles (200),
-    snippets (400), passages (2,400), answers (4,000).
+    `localhost`, any Unicode tag character, any Markdown image). Each runs on the raw text, on it
+    without invisible characters, and on `clean()`'s text (what the model sees), so an invisible
+    character, a line break or a deleted image inside a phrase hides nothing. A match sets
+    `suspect: true`, adds the warning `suspect` and keeps the whole source out of the prompt.
+    Invisible means one Unicode property class everywhere (`\p{Cc}\p{Cf}\p{Default_Ignorable_Code_Point}`
+    and the line and paragraph separators, but tab and newline): `clean()`, `visible()` and the
+    passage cleaner all strip it. `clean()` also drops Markdown images (inline and by reference)
+    and link reference definitions, and caps titles (200), snippets (400), passages (2,400),
+    answers (4,000). Bracket scans are bounded, so a page of unclosed brackets stays linear.
   - The model: unslop's `backend.ts` (`checkBaseUrl`, `checkApiKey`, `post`, `classify`,
     `requestBody`), `max_tokens` 700, thinking off, no `tools`. The prompt is a fixed preamble,
     `Question: …`, and each non-suspect source between `SOURCE <nonce> [n] BEGIN/END` lines
@@ -439,12 +441,13 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
     numbers stay the result's. The check (`grounding.ts`, `grounding.json`'s cases): every `[n]`
     given, no URL, link (a reference definition included), image, HTML or nonce, ≤ 4,000
     characters, not cut off; unless it starts `NOT FOUND` (cut to 400), every claiming paragraph
-    or list item cites a source (a line ending `:` that introduces a list and holds no value of
-    its own is exempt; an uncited paragraph's values are held to every source), and each
+    or list item cites a source, an introductory line included (the prompt asks for none; an
+    uncited paragraph's values are held to every source), and each
     number, version, date and quote (fidelity.ts's extractors, `extractValues`) is contained in
     a source its sentence, else its paragraph, cites: thousands separators and unit spacing
-    dropped, a coarser version or date matching a finer one, values from the question exempt; a
-    bare number may also match digits inside a URL or path, never inside a date or number.
+    dropped, a coarser version or date matching a finer one with the same prefix (`6` is not
+    `IPv6`, `256` not `SHA-256`), values from the question exempt; a bare number may also be a
+    whole component of a URL or path in the source (a port, a path segment).
     One retry lists the failures in a `CHECK <nonce>` block when the time left covers the first
     call's time. Sources only (10): `synthesis-off`, `model-busy` (a 5xx, an error status or an
     unreachable box), `model-loading` (the call ran out of time, or under 5 s was left),

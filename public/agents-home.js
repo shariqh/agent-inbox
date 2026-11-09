@@ -10,11 +10,13 @@
 // rail or the dock. It fetches nothing and runs no timer; a working card
 // pulses once on a new call, through the page's one-shot (#304). Agent text
 // reaches the DOM only through textContent. Painted from app.js's
-// renderDashboardAmbient, so from both render entries.
+// renderDashboardAmbient, so from both render entries. The Mesh agents section
+// (public/mesh-section.js) sits after the groups, outside every filter and lens.
 import { FILTERS, cardMatches, filterCounts, groupCards, messageHint, sessionCards } from './sessions.js'
 import { forgettable } from './launches.js'
 import { pinLaneOrder, tracePath } from './lanes.js'
 import { relMs } from './rowview.js'
+import { installMeshAgents } from './mesh-section.js'
 
 const SVG = 'http://www.w3.org/2000/svg'
 const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`
@@ -59,6 +61,8 @@ export function installAgentsHome(deps) {
   const groupEls = new Map()
   const calls = new Map() // card id → the last call a paint has seen, for the one-shot pulse
   const byId = new Map() // card id → the card its buttons act on
+  // global: no filter or lens narrows it, and it shows under the empty state's text
+  const mesh = installMeshAgents({ doc, onRefresh: () => deps.refreshMesh?.(), onChange: () => repaint() })
 
   const make = (tag, className, text) => {
     const el = doc.createElement(tag)
@@ -193,7 +197,7 @@ export function installAgentsHome(deps) {
       else folds.delete(fold.dataset.ahFold)
       repaint()
     }, true)
-    section.append(head, note, outside, list, empty, none, foldRow)
+    section.append(head, note, outside, list, empty, none, make('div', 'ah-mesh'), foldRow)
     section.addEventListener('click', onClick)
     section.addEventListener('keydown', onKey)
     return section
@@ -503,6 +507,7 @@ export function installAgentsHome(deps) {
     byId.clear()
     for (const card of cards) byId.set(card.id, card)
     section.classList.toggle('reading', reading)
+    mesh.paint(section.querySelector('.ah-mesh'), input.mesh ?? null, input.nowMs)
     if (reading) {
       // before the first /api/activity read (§3.6)
       setText(section.querySelector('.ah-count'), 'Reading sessions…')
@@ -663,6 +668,6 @@ export function installAgentsHome(deps) {
       return card ? panelKey(card) : null
     },
     /** The window-local view state, for frameInputs(). */
-    state: () => [filter, groupBy, [...folds].sort().join(',')].join('|'),
+    state: () => [filter, groupBy, [...folds].sort().join(','), mesh.state()].join('|'),
   }
 }

@@ -395,7 +395,8 @@ not change. The module is pure: no imports and no I/O.
 - **What follows each trigger.** Only a **Refresh press** ends in `reloadAndPaint()`, after its
   POST answers: the human asked, so the human path paints. An **open** paints nothing itself: when
   its checks finish, the next poll tick reads the new body (a 200 instead of a 304) and paints
-  through `renderIfIdle()` under the normal gates (held pointer, selection, drafts). A row shows
+  through `renderIfIdle()` under the normal gates (a held press or a draft defers it; a selection
+  survives it, since only changed text is rewritten). A row shows
   `checking` while its check runs, if a tick lands meanwhile.
 - **The read.** The page reads `GET /api/mesh/agents` only when the last `/api/version` carried
   `mesh`, the Dashboard is the current tab and the document is visible. Then it is one more read
@@ -579,7 +580,8 @@ V4 can be dropped without changing V1–V3.
     post none; with no `mesh` in the last `/api/version`, no navigation posts anything;
   - **an open paints through the poll:** after an `open` POST answers, no `reloadAndPaint()` runs;
     the next poll tick reads the new body (200) and the rows change through `renderIfIdle()`; a
-    held press or a selection in the section defers that paint as for any other tick;
+    held press defers that paint as for any other tick, and a selection in the section survives it
+    (the tick paints, rewriting only text that changed);
   - **the section is global:** it shows the same rows under each state filter (Needs you, Working)
     and under a project and agent lens that hides every session; and it shows in the zero-sessions
     empty state, under the empty text;
@@ -681,7 +683,11 @@ The "In brief" bullet "The viewer's watch returns with the first phase that need
 "The viewer reads `mesh.json` lazily for the agent cards view (below)". The Agents view bullet's
 "fetches nothing" becomes "reads `/api/mesh/agents` only for its Mesh agents section, and only when
 `/api/version` carries `mesh`". `paths`/`applyTo` gain `src/mesh-agents.ts`, `src/agent-card.ts`
-and `public/mesh-agents.js`.
+and `public/mesh-agents.js`. (V3 note: the page module ships as `public/mesh-section.js`, because
+`test/dead-exports.test.ts` requires module basenames unique across `public/` and `src/`, and
+`src/mesh-agents.ts` holds the name. Also V3: a held press defers the open's poll paint, and a
+selection in the section is never a suspension: the tick paints, rewriting only changed text, so the
+selection survives, as `docs/architecture/viewer-frontend.md` requires; §4.5 and §7 say so.)
 
 **`CLAUDE.md`, the mesh invariant line.** From:
 

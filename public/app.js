@@ -609,6 +609,41 @@ async function messagesBody(read) {
   }
 }
 
+// The Mesh agents section (agent cards view design §4.5): `/api/mesh/agents` is
+// read only while the last /api/version carried `mesh`, the Dashboard shows and
+// the window is visible. A failed read keeps the last body, marked stale, and is
+// never a failed tick; an `on: false` body hides the section and stops the read
+// until /api/version carries `mesh` again.
+let meshOff = false
+const meshWanted = () => Boolean(liveVersion?.mesh) && !meshOff
+const meshReadable = () => meshWanted() && activeTab === 'dashboard' && document.visibilityState !== 'hidden'
+async function meshBody(read) {
+  try {
+    return await settledValue(read).json()
+  } catch {
+    return undefined
+  }
+}
+function meshNext(previous, fresh) {
+  if (fresh === undefined) return previous.body && !previous.stale ? { ...previous, stale: true } : previous
+  if (fresh.on === false) meshOff = true
+  return fresh === previous.body && !previous.stale ? previous : { body: fresh, stale: false }
+}
+const postMesh = (trigger) => fetch('/api/mesh/agents/refresh', {
+  method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ trigger }),
+})
+// The open trigger: only boot on the Dashboard, showAgentsHome() and selectTab('dashboard')
+// from another tab call it. Its checks' result paints through the next poll tick.
+function meshOpen() {
+  if (meshWanted()) postMesh('open').catch(() => {})
+}
+// Refresh, the human's press: the result paints through the human path.
+async function meshRefresh() {
+  if (!meshWanted()) return
+  await postMesh('refresh').catch(() => {})
+  await reloadAndPaint()
+}
+
 // #412 step 3 (§9 b): the launches are read only in the viewer the app owns,
 // with "Start sessions from Agent Inbox" on.
 function launchesOn() {
@@ -635,10 +670,11 @@ async function load() {
   // list is not wanted (#373).
   const lingerUrl = wantArchived ? null : lingeringUrl()
   const historyUrl = activityHistoryUrl(Date.now())
+  const wantMesh = meshReadable()
   try {
     const [
       items, boardsRead, summaryRead, activityRead, historyRead, closedRead, linksRead, issuesRead, closedHistoryRead,
-      archivedRead, lingerSettled, messagesRead, launchesRead,
+      archivedRead, lingerSettled, messagesRead, launchesRead, meshRead,
     ] = await Promise.allSettled([
       readSnapshot('/api/items').then(marked),
       readSnapshot('/api/boards').then(marked),
@@ -669,6 +705,9 @@ async function load() {
       // Driven sessions (#412 step 3): read only in the viewer the app owns, with
       // its switch on (§9 b). Off, the tick makes exactly the reads it always made.
       launchesOn() ? readSnapshot('/api/launches').then(marked) : null,
+      // The Mesh agents section: only while it can show (meshReadable), with
+      // the messages fallback. Off, the tick makes exactly the reads it made.
+      wantMesh ? readSnapshot('/api/mesh/agents').then(marked) : null,
     ])
     if (reloadRequested || generation < appliedLoadGeneration) return false
     const res = settledValue(items)
@@ -691,8 +730,9 @@ async function load() {
       wantArchived ? archivedBody(archivedRead) : null, lingerUrl ? lingeringBody(lingerSettled) : null,
       messagesBody(messagesRead),
       launchesOn() ? messagesBody(launchesRead) : null,
+      wantMesh ? meshBody(meshRead) : null,
     ])
-    const [g, boards, brief, activity, activityHistory, firstOlder, issues, links, firstArchived, firstLinger, messages, launches] =
+    const [g, boards, brief, activity, activityHistory, firstOlder, issues, links, firstArchived, firstLinger, messages, launches, meshFresh] =
       bodies.map(settledValue)
     const closedSnapshot = settledValue(closedRead)
     if (reloadRequested || generation < appliedLoadGeneration) return false
@@ -751,6 +791,8 @@ async function load() {
     // Standing in for a brief, the complete list is a read the tick needs.
     if (brief === null && !complete?.plans) throw new Error(complete?.error ?? ARCHIVED_UNAVAILABLE)
     const archivedBrief = brief ?? complete.plans
+    // a skipped read keeps the last body, so returning to the Dashboard paints it at once
+    const mesh = wantMesh ? meshNext(lastData?.mesh ?? { body: null, stale: false }, meshFresh) : lastData?.mesh ?? { body: null, stale: false }
     appliedLoadGeneration = generation
     if (closedSnapshot !== null) {
       appliedClosedGeneration = generation
@@ -793,6 +835,8 @@ async function load() {
       messages,
       // #412 step 3: null with the switch off, or when the read failed
       launches: Array.isArray(launches) ? launches : null,
+      // the Mesh agents section's last body and whether the last read of it failed
+      mesh,
       // What this tick read, compared by identity (#298): a snapshot that
       // answered 304 resolves to the very representation it revalidated, and
       // the fresh reads compare by what they can show (activity without its
@@ -803,7 +847,7 @@ async function load() {
         activityHistory.state, activityHistory.message, activityHistory.state === 'ready' ? activityHistory.spans : null,
         links.length ? links : null, issues, older?.done ?? null, older?.error ?? null,
         complete?.plans ?? null, complete?.error ?? null, lingerReadUrl, linger?.plans ?? null, linger?.error ?? null,
-        messages, launches ?? null,
+        messages, launches ?? null, mesh.body, mesh.stale,
       ],
     }
     applyProjectMutationIntents()
@@ -2043,6 +2087,8 @@ function renderDashboardAmbient(model, { forced = false } = {}) {
     launches: launchesOn() ? launchesInLens() : null,
     outside: launchesOn() ? launchesOutsideLens() : 0,
     nowMs: Date.now(), forced, lensProject: projectFilter, selected: focusSession, later: model.later,
+    // global: the lens and filters never narrow it; nothing it draws reaches attention
+    mesh: meshWanted() && lastData.mesh?.body?.on === true ? lastData.mesh : null,
   })
   renderDashFocus(focusPanelEl, model, { forced })
   placeFocusPanel()
@@ -2146,6 +2192,7 @@ const agentsHome = installAgentsHome({
   paintUndelivered,
   // its own repaints (filters, grouping, folds) can remove the group the panel sits in (#463 review)
   afterRepaint: () => placeFocusPanel(),
+  refreshMesh: () => { meshRefresh() },
   // "N sessions outside this filter · Show all": the lens cleared, as the rail's All does
   showAll: () => {
     projectFilter = null
@@ -2212,7 +2259,7 @@ function jumpToAsk(entry) {
     }
     if (agentFilter && agentFilter !== owner.agent) agentFilter = null
     resetPaging()
-    selectTab('dashboard', { paint: false })
+    selectTab('dashboard', { paint: false, open: false })
     forceRender()
     key = agentsHome.askKey(id)
   }
@@ -2718,7 +2765,7 @@ function openSessionFocus(session, part = null, ask = null) {
   // a launch outside the project and agent lens is scoped to its project, as jumpToSession does
   const scoped = session.startsWith('launch:') && scopeToLaunch(session.slice('launch:'.length))
   if (activeTab !== 'dashboard' || scoped) {
-    selectTab('dashboard', { paint: false })
+    selectTab('dashboard', { paint: false, open: false })
     forceRender()
   }
   paintSessionFocus()
@@ -2771,7 +2818,7 @@ function jumpToSession(session) {
   agentFilter = null
   focusSession = session
   resetSearch()
-  selectTab('dashboard', { paint: false })
+  selectTab('dashboard', { paint: false, open: false })
   forceRender()
   // An explicit entry point (#184). Defensive: ⌘K lists results only once the
   // older history is read, so it finds nothing omitted on the path that exists.
@@ -5055,8 +5102,9 @@ let activeTab = DEFAULT_TAB
 
 // single routing entry point: state + DOM together, so no caller can set one
 // without the other
-function selectTab(id, { paint = true } = {}) {
+function selectTab(id, { paint = true, open = true } = {}) {
   if (!TAB_IDS.includes(id)) return
+  const from = activeTab
   // Choosing a tab supersedes a deep link still waiting on older history or
   // archived plans, and leaving History releases the omitted target it was
   // keeping loaded (#184, #299).
@@ -5075,6 +5123,9 @@ function selectTab(id, { paint = true } = {}) {
     requestHistoryPaint()
   }
   if (id === 'needsYou') restoreRowSelection(false)
+  // An open, from the last known /api/version (agent cards view §4.5); never re-selecting the
+  // Dashboard, and never from a session panel's own navigation (`open: false`), which posts none.
+  if (open && id === 'dashboard' && from !== 'dashboard') meshOpen()
 }
 
 function initTabs() {
@@ -6096,7 +6147,10 @@ let liveVersion = null
 function refreshLiveVersion() {
   return fetch('/api/version')
     .then((r) => (r.ok ? r.json() : null))
-    .then((body) => { liveVersion = body && typeof body === 'object' ? body : null })
+    .then((body) => {
+      liveVersion = body && typeof body === 'object' ? body : null
+      if (liveVersion?.mesh) meshOff = false
+    })
     .catch(() => {})
 }
 
@@ -6576,8 +6630,9 @@ function openLater() {
 }
 
 function showAgentsHome() {
-  refreshLiveVersion()
-  if (activeTab !== 'dashboard') selectTab('dashboard')
+  // one navigation, one open: after the read, never a second from selectTab
+  refreshLiveVersion().then(() => { if (activeTab === 'dashboard') meshOpen() })
+  if (activeTab !== 'dashboard') selectTab('dashboard', { open: false })
   const title = document.getElementById('agentsHomeTitle')
   title?.scrollIntoView?.({ block: 'nearest' })
   title?.focus({ preventScroll: true })
@@ -6587,7 +6642,8 @@ function initSessionsIndicator() {
   document.getElementById('sessionsIndicator')?.addEventListener('click', showAgentsHome)
   // #197: read outside the poll; the next paint shows the build hints. A failed
   // or older viewer leaves the build state unknown, which hides every hint.
-  refreshLiveVersion()
+  // Booting on the Dashboard is an open (agent cards view §4.5); on another tab, none.
+  refreshLiveVersion().then(() => { if (activeTab === 'dashboard') meshOpen() })
 }
 
 // dismissing noise must not cost an expansion: staged 5s, undoable, flushed on blur

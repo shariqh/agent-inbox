@@ -161,8 +161,9 @@ export function meshAgents(opts: MeshAgentsOpts): MeshAgents {
       if (!AGENTS.includes(key as Agent)) continue
       const name = key as Agent
       const entry = (value && typeof value === 'object' ? value : {}) as Record<string, unknown>
-      const port = name === 'unslop' ? loopbackPort(entry['endpoint']) : undefined
-      const endpoint = (name === 'unslop' ? port && `http://127.0.0.1:${port}` : requestPostEndpoint(entry['endpoint'])) || null
+      const raw = typeof entry['endpoint'] === 'string' ? entry['endpoint'] : undefined
+      const port = name === 'unslop' ? loopbackPort(raw) : undefined
+      const endpoint = (name === 'unslop' ? port && `http://127.0.0.1:${port}` : requestPostEndpoint(raw)) || null
       const named = entry['profile']
       const profile = name === 'unslop' && typeof named === 'string' && /^[a-z0-9][a-z0-9-]{0,39}$/.test(named) ? named : null
       const old = config?.recs.get(name)

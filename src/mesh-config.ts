@@ -91,7 +91,9 @@ export function readMesh(file: string): MeshRead {
 
 /** The port of an `agents.unslop.endpoint`: only http://127.0.0.1:<port>, never port 80 (clients drop `:80` from Host). */
 export function loopbackPort(endpoint: unknown): number | undefined {
-  const port = Number(/^http:\/\/127\.0\.0\.1:(\d{1,5})\/?$/.exec(String(endpoint))?.[1])
+  // never String() a hand-edited object: one whose toString is not callable throws
+  if (typeof endpoint !== 'string') return undefined
+  const port = Number(/^http:\/\/127\.0\.0\.1:(\d{1,5})\/?$/.exec(endpoint)?.[1])
   return port >= 1 && port <= 65535 && port !== 80 ? port : undefined
 }
 
@@ -102,8 +104,9 @@ export function loopbackPort(endpoint: unknown): number | undefined {
  * written-out default port (443, 80); one trailing `/` is dropped. Anything else is off.
  */
 export function requestPostEndpoint(endpoint: unknown): string | undefined {
+  if (typeof endpoint !== 'string') return undefined
   const label = '[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?'
-  const text = String(endpoint)
+  const text = endpoint
   const tailnet = new RegExp(`^(https://(?:${label}\\.){2}ts\\.net)(?::([1-9]\\d{0,4}))?/?$`).exec(text)
   const loopback = /^(http:\/\/127\.0\.0\.1):([1-9]\d{0,4})\/?$/.exec(text)
   const match = tailnet ?? loopback

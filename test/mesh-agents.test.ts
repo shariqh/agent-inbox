@@ -11,6 +11,7 @@ import { join } from 'node:path'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import { startServer } from '../packages/mesh/src/a2a.js'
 import { meshAgents } from '../src/mesh-agents.js'
+import { loopbackPort, requestPostEndpoint } from '../src/mesh-config.js'
 import type { MeshAgentsOpts } from '../src/mesh-agents.js'
 import { createViewer } from '../src/viewer.js'
 import { openDb } from '../src/store.js'
@@ -129,6 +130,23 @@ describe('off means off (design §2.5, §3.3)', () => {
       ['unslop', 'invalid', null, 'local', 'run npm run meshctl -- status'],
     ])
     expect(counter.connections).toBe(0)
+  })
+})
+
+describe('a hand-edited endpoint that is not a string', () => {
+  it('is invalid and never fetched; /api/version answers with only the mesh key added', async () => {
+    const hostile = { toString: 1 }
+    const s = setup({ schema: 1, agents: { unslop: { endpoint: hostile }, 'request-post': { endpoint: hostile } } })
+    const on = await s.app.request('/api/version')
+    expect(on.status).toBe(200)
+    const plain = await (await s.plain.request('/api/version')).json()
+    expect(await on.text()).toBe(JSON.stringify({ ...plain, mesh: { agents: 2 } }))
+    expect(await (await s.post({ trigger: 'refresh' })).json()).toEqual({ ok: true })
+    expect((await s.agents()).agents.map((a: Json) => [a.name, a.state, a.endpoint])).toEqual([
+      ['request-post', 'invalid', null], ['unslop', 'invalid', null],
+    ])
+    // the rule itself, which the meshctl clients share, reads it as off
+    expect([loopbackPort(hostile), requestPostEndpoint(hostile), loopbackPort(4420), requestPostEndpoint(['http://127.0.0.1:8443'])]).toEqual([undefined, undefined, undefined, undefined])
   })
 })
 

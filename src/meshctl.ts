@@ -17,7 +17,8 @@
 //   meshctl enable --request-post --endpoint <url> --token-file <path> [--apply]
 //   meshctl disable [--apply]                turn every mesh piece off
 //   meshctl disable --unslop [--purge] [--apply]
-//   meshctl disable --request-post [--apply]
+//   meshctl disable --request-post [--purge] [--apply]
+//   meshctl forget-runs (--unslop | --request-post | --web-search | --all) [--apply]
 //   meshctl status                           say what mesh.json turns on
 //   meshctl unslop --kind <kind> [--report <file>] [--timeout <s>] < draft
 //                                            the shim's command (src/unslop-client.ts)
@@ -26,6 +27,7 @@
 // Exit codes: 0 done (or nothing to do), 1 refused or failed, 2 usage;
 // `unslop` has its own (0, 10-14, 4), listed in src/unslop-client.ts, and
 // `request-post` its own (0, 11-16, 124, 4), listed in src/request-post-client.ts.
+// The entry appends one run record per client run (src/mesh-runs.ts, cards view V5 §5).
 import { randomBytes } from 'node:crypto'
 import { closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmdirSync, statSync, unlinkSync, writeSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -33,8 +35,12 @@ import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { MESH_SCHEMA, loopbackPort, meshDir, meshFile, readMesh, requestPostEndpoint } from './mesh-config.js'
 import type { MeshDocument, MeshRead } from './mesh-config.js'
+import { appendRun, pruneRuns, runFiles, tidyRuns } from './mesh-runs.js'
+import type { RunAgent, RunCollector } from './mesh-runs.js'
 import { REQUEST_POST_USAGE, runRequestPost } from './request-post-client.js'
+import type { RequestPostIo } from './request-post-client.js'
 import { UNSLOP_USAGE, runUnslop } from './unslop-client.js'
+import type { UnslopIo } from './unslop-client.js'
 
 const UNSLOP_PORT = 4420
 const ENDPOINT_RULE = 'https://<name>.<tailnet>.ts.net[:<port>] or, for the SSH fallback only, http://127.0.0.1:<port>'
@@ -45,20 +51,24 @@ const USAGE = `usage: agent-inbox-meshctl status
        agent-inbox-meshctl enable --unslop [--port <n>] [--checkout <path>] [--apply]
        agent-inbox-meshctl disable --unslop [--purge] [--apply]
        agent-inbox-meshctl enable --request-post --endpoint <url> --token-file <path> [--apply]
-       agent-inbox-meshctl disable --request-post [--apply]
+       agent-inbox-meshctl disable --request-post [--purge] [--apply]
+       agent-inbox-meshctl forget-runs (--unslop | --request-post | --web-search | --all) [--apply]
        agent-inbox-meshctl unslop --kind <kind> [--report <file>] [--timeout <s>] < draft
        agent-inbox-meshctl request-post file|status|wait …
 
-Without --apply, enable and disable are dry runs: they print what they would do.
+Without --apply, enable, disable and forget-runs are dry runs: they print what they would do.
 The Agents view is always on, so enable --agents-view writes nothing.
 enable --unslop needs packages/mesh built in the checkout (npm ci && npm run build there);
 it listens on http://127.0.0.1:<port> only (default ${UNSLOP_PORT}). disable --unslop keeps the
-profile, logs and deny list unless --purge. unslop is what <mesh dir>/bin/unslop runs:
+profile, logs, deny list and run records unless --purge. unslop is what <mesh dir>/bin/unslop runs:
 it sends one public draft to the agent (docs/unslop.md).
 enable --request-post copies the per-device bearer token from --token-file (never printed);
 the endpoint is ${ENDPOINT_RULE} (docs/request-post.md).
+disable --request-post keeps its run records unless --purge.
 request-post is what <mesh dir>/bin/request-post runs: it files a content request with the
 service, reads its status or waits for it (docs/request-post.md).
+Each client run appends a record without text to <mesh dir>/mesh/runs/, kept 30 days;
+forget-runs deletes an agent's records now. Every enable and disable deletes expired ones.
 mesh.json lives in AGENT_INBOX_MESH_DIR, else beside AGENT_INBOX_DB, else ~/.agent-inbox.
 `
 
@@ -244,6 +254,18 @@ const objectOf = (value: unknown): Record<string, unknown> | undefined =>
   value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined
 
 export function runMeshctl(argv: string[], io: MeshctlIo = {}): number {
+  const code = meshctl(argv, io)
+  // deleting expired run records is housekeeping, not a configuration change, so a dry run
+  // does it too (cards view V5 §5.6)
+  if ((argv[0] === 'enable' || argv[0] === 'disable') && code !== 2) {
+    pruneRuns(resolve(meshDir(io.env ?? process.env, io.home ?? homedir())), (io.now ?? (() => new Date()))().getTime())
+  }
+  return code
+}
+
+const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? '' : 's'}`
+
+function meshctl(argv: string[], io: MeshctlIo): number {
   const env = io.env ?? process.env
   const home = io.home ?? homedir()
   const now = io.now ?? (() => new Date())
@@ -277,6 +299,12 @@ export function runMeshctl(argv: string[], io: MeshctlIo = {}): number {
   const apply = flags.delete('--apply')
   const unslop = flags.delete('--unslop')
   const requestPost = flags.delete('--request-post')
+  if (command === 'forget-runs') {
+    const all = flags.delete('--all')
+    const picked: RunAgent[] = [...(unslop ? ['unslop' as const] : []), ...(requestPost ? ['request-post' as const] : []), ...(flags.delete('--web-search') ? ['web-search' as const] : [])]
+    if (flags.size || values.size || (all ? picked.length : picked.length !== 1)) return usage()
+    return forgetRuns(resolve(meshDir(env, home)), all ? ['unslop', 'request-post', 'web-search'] : picked, apply, now().getTime(), out, err)
+  }
   if (unslop && requestPost) return usage()
   const only = (...names: string[]): boolean => [...values.keys()].every((key) => names.includes(key))
 
@@ -385,17 +413,22 @@ export function runMeshctl(argv: string[], io: MeshctlIo = {}): number {
   }
 
   if (command === 'disable' && requestPost) {
+    const purge = flags.delete('--purge')
     if (flags.size || values.size) return usage()
     const existing = readMesh(file)
     if (existing.kind === 'refused') return refuse(`${name} ${existing.reason}. Remove it by hand if you are sure`)
     const rp = requestPostPaths(dir)
     const drop = dropAgent(existing, 'request-post')
     const steps: Step[] = drop ? [drop] : []
+    // --purge removes its run records and nothing else (cards view V5 §5.6)
+    for (const run of purge ? runFiles(dir, 'request-post') : []) {
+      steps.push({ dry: `Would delete ${show(run.path)}.`, run: () => { unlinkSync(run.path); tidyRuns(dir); removeIfEmpty(rp.root); return `Deleted ${show(run.path)}.` } })
+    }
     for (const [path, parents] of [[rp.shim, [rp.bin]], [rp.token, [rp.tokens, rp.root]]] as const) {
       if (exists(path)) steps.push({ dry: `Would delete ${show(path)}.`, run: () => { unlinkSync(path); parents.forEach(removeIfEmpty); return `Deleted ${show(path)}.` } })
     }
     if (!steps.length) {
-      out('Request-post is already off. Nothing to do.\n')
+      out(`Request-post is already off${purge ? ' and purged' : ''}. Nothing to do.\n`)
       return 0
     }
     return runSteps(steps, apply, out, err, 'Steps before it are done; nothing after it ran.')
@@ -481,10 +514,11 @@ export function runMeshctl(argv: string[], io: MeshctlIo = {}): number {
         if (lstatSync(paths.logs).isDirectory()) logs = readdirSync(paths.logs).filter((entry) => /^unslop-/.test(entry)).sort()
       } catch { /* no logs */ }
       for (const log of logs) remove(join(paths.logs, log), paths.logs)
+      for (const run of runFiles(dir, 'unslop')) remove(run.path, join(paths.root, 'runs'))
       if (steps.length) steps.push({ dry: `Would remove ${show(paths.root)} if it is then empty.`, run: () => { removeIfEmpty(paths.root); return `Tidied ${show(paths.root)}.` } })
     }
     if (!steps.length) {
-      out(`Unslop is already off${purge ? ' and purged' : ' (its profile, logs and deny list stay; --purge removes them)'}. Nothing to do.\n`)
+      out(`Unslop is already off${purge ? ' and purged' : ' (its profile, logs, deny list and run records stay; --purge removes them)'}. Nothing to do.\n`)
       return 0
     }
     return runSteps(steps, apply, out, err, 'Steps before it are done; nothing after it ran.')
@@ -518,6 +552,62 @@ export function runMeshctl(argv: string[], io: MeshctlIo = {}): number {
   return usage()
 }
 
+/** `forget-runs` (cards view V5 §5.9): one agent's run records, or every agent's, whether it is on or off. */
+function forgetRuns(dir: string, agents: RunAgent[], apply: boolean, now: number, out: (text: string) => void, err: (text: string) => void): number {
+  pruneRuns(dir, now)
+  const lines: string[] = []
+  let failed = false
+  for (const agent of agents) {
+    const files = runFiles(dir, agent)
+    const what = `${plural(files.length, 'run file')} (${plural(files.reduce((n, f) => n + f.runs, 0), 'run')}) for ${agent}`
+    if (!files.length) lines.push(`No run records for ${agent}.`)
+    else if (!apply) lines.push(`Would delete ${what}.`)
+    else {
+      try {
+        for (const f of files) unlinkSync(f.path)
+        lines.push(`Deleted ${what}.`)
+      } catch {
+        failed = true
+        lines.push(`Could not delete every run file for ${agent}.`)
+      }
+    }
+  }
+  if (apply) tidyRuns(dir)
+  out(`${lines.join('\n')}\n${apply ? '' : 'Nothing changed. Re-run with --apply.\n'}`)
+  if (failed) err('Failed: some run files could not be deleted.\n')
+  return failed ? 1 : 0
+}
+
+type ClientIo = Pick<UnslopIo & RequestPostIo, 'env' | 'home' | 'stdin' | 'out' | 'err'>
+const SIGNALS = ['SIGTERM', 'SIGHUP', 'SIGINT'] as const
+
+/**
+ * The shims' entry (cards view V5 §5.3): runs one client and appends its run record on every
+ * end: a return, an internal error (13) and SIGTERM, SIGHUP or SIGINT, whose synchronous handler
+ * writes `interrupted` and re-raises the signal, so the process still dies by it.
+ * V5e adds `web-search` here once W5b's client exists; it fills `io.run` with §5.4's common
+ * fields only (mesh-runs.ts already allows no other field for it).
+ */
+export async function runClient(command: 'unslop' | 'request-post', args: string[], io: ClientIo): Promise<number> {
+  const dir = resolve(meshDir(io.env, io.home))
+  const run: RunCollector = {}
+  const onSignal = (signal: NodeJS.Signals): void => {
+    appendRun(dir, command, run, { exit: null, signal })
+    for (const s of SIGNALS) process.removeListener(s, onSignal)
+    process.kill(process.pid, signal)
+  }
+  for (const s of SIGNALS) process.once(s, onSignal)
+  try {
+    const code = command === 'unslop'
+      ? await runUnslop(args, { ...io, run }).catch(() => { run.internal = true; io.err('unslop: failed (internal error). Edit it in-session.\n'); return 13 })
+      : await runRequestPost(args, { ...io, run }).catch(() => { run.internal = true; io.err('request-post: outcome unknown (internal error): run the same command again; never file it in-session.\n'); return 13 })
+    appendRun(dir, command, run, { exit: code })
+    return code
+  } finally {
+    for (const s of SIGNALS) process.removeListener(s, onSignal)
+  }
+}
+
 const entry = process.argv[1]
 let isMain = false
 try {
@@ -525,12 +615,7 @@ try {
 } catch { /* not run directly */ }
 if (isMain) {
   const [command, ...rest] = process.argv.slice(2)
-  const err = (text: string): void => { process.stderr.write(text) }
-  process.exitCode = command === 'unslop'
-    ? await runUnslop(rest, { env: process.env, home: homedir(), stdin: process.stdin, out: (text) => { process.stdout.write(text) }, err })
-      .catch(() => { err('unslop: failed (internal error). Edit it in-session.\n'); return 13 })
-    : command === 'request-post'
-      ? await runRequestPost(rest, { env: process.env, home: homedir(), stdin: process.stdin, out: (text) => { process.stdout.write(text) }, err })
-        .catch(() => { err('request-post: outcome unknown (internal error): run the same command again; never file it in-session.\n'); return 13 })
-      : runMeshctl(process.argv.slice(2))
+  process.exitCode = command === 'unslop' || command === 'request-post'
+    ? await runClient(command, rest, { env: process.env, home: homedir(), stdin: process.stdin, out: (text) => { process.stdout.write(text) }, err: (text) => { process.stderr.write(text) } })
+    : runMeshctl(process.argv.slice(2))
 }

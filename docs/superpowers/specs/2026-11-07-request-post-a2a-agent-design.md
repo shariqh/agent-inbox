@@ -319,6 +319,8 @@ for everything.
 | `SKILL.md` | no | Briefs carry only material Shariq would publish |
 | The queue | yes, human | Nothing publishes without Shariq's approval and a due `Post at` |
 
+The meshctl entry appends a run record without text for each call (cards view V5 §5.4, §5.5).
+
 **Accountability.** The calling assistant owns the brief, Shariq owns the go and the approval. The
 screen catches mistakes; a paraphrased private detail with no listed name passes it, as with
 unslop. It runs on the service because every caller passes through it; the concern is

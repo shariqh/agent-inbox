@@ -6,10 +6,11 @@ paths:
   - "src/request-post-client.ts"
   - "src/agent-card.ts"
   - "src/mesh-agents.ts"
+  - "src/mesh-runs.ts"
   - "public/agents-home.js"
   - "public/mesh-section.js"
   - "packages/mesh/src/**/*.ts"
-applyTo: "src/mesh-config.ts,src/meshctl.ts,src/unslop-client.ts,src/request-post-client.ts,src/agent-card.ts,src/mesh-agents.ts,public/agents-home.js,public/mesh-section.js,packages/mesh/src/**/*.ts"
+applyTo: "src/mesh-config.ts,src/meshctl.ts,src/unslop-client.ts,src/request-post-client.ts,src/agent-card.ts,src/mesh-agents.ts,src/mesh-runs.ts,public/agents-home.js,public/mesh-section.js,packages/mesh/src/**/*.ts"
 ---
 
 # Agent mesh (M1)
@@ -104,6 +105,41 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   The page side (slice V3) is `public/mesh-section.js` (named apart from `src/mesh-agents.ts`,
   since `test/dead-exports.test.ts` needs unique module basenames), mounted by
   `public/agents-home.js`; `viewer-dashboard-and-shell.md` has its rules.
+  Run history (cards view V5, design
+  `docs/superpowers/specs/2026-11-09-agent-cards-view-v5-design.md` §5; slice V5a): the meshctl
+  entry that runs a client (`runClient()` in `src/meshctl.ts`, for `unslop` and `request-post`;
+  `web-search` joins in V5e) appends one record per run through `src/mesh-runs.ts`'s
+  `appendRun()` to `<mesh dir>/mesh/runs/<agent>-<date>.jsonl`, the local date of the run's end:
+  after the run function returns, after its `.catch` turns an internal error into 13
+  (`outcome: "failed"`, `reason: "internal"`), and from synchronous `SIGTERM`/`SIGHUP`/`SIGINT`
+  handlers that write `outcome: "interrupted"` and re-raise the signal. Only once the agent's key
+  has passed its rule (the client sets `io.run.armed`), so usage errors and "off" write nothing;
+  best effort and silent, never changing the exit, the signal, stdout or stderr. `SIGKILL`
+  leaves no record. The writer: a 0700 folder created without parents (`EEXIST` re-checked:
+  `lstat`, a real directory this user owns, no group or other write), 0600 files opened
+  `O_APPEND | O_CREAT | O_NOFOLLOW | O_NONBLOCK` and `fstat`-checked, one checked `writeSync` of
+  at most 512 bytes (a size bound; local filesystems serialise `O_APPEND` writes; `PIPE_BUF` is
+  about pipes), never retried, a leading `\n` when the file's last byte (read on a second
+  `O_NOFOLLOW` descriptor checked to be the same inode) is not one, and no write once
+  `size + line` would pass 256 KiB. Network-mounted mesh dirs are unsupported for run history. A
+  record is a closed schema with fixed vocabularies and patterns (§5.4; one rule table serves the
+  builder and the validator): `v`, `id`, `agent`, `op`, `at` (the end), `ms`, `exit`, `signal`,
+  `outcome`, `reason`, `classes`, `task`; for unslop `status`, `bytesIn`, `attempts`, `model`,
+  `rules`, `timing`, `warnings`; for request-post `phase`, `created`, `throughGo`, `fields`, and
+  `channels` and `brand` on exit 0 only. Never text, a prompt, a query, an answer, a title, a
+  URL, a page id, a request key (derived or caller-chosen), a token or the caller's identity.
+  Files dated before the kept period (the 30 local dates ending today) are deleted by
+  `appendRun` when it starts a day's file (its own agent), by every `enable` and `disable` (dry
+  run included; every agent), and by `forget-runs`. The viewer does not read them yet; V5b adds
+  the reader. `test/mesh-runs.test.ts` holds the canaries, the signals, the refusals, the
+  eight-process append, the torn line, the cap and retention.
+- **Forgetting run history (cards view V5 §5.9).**
+  `npm run meshctl -- forget-runs (--unslop | --request-post | --web-search | --all) [--apply]`
+  is a dry run that says how many run files and runs it would delete for each agent; `--apply`
+  deletes them. It deletes only regular day files this user owns with that agent's name in a
+  checked runs folder (never a symlink or another name), works whether the agent is on or off,
+  removes `runs/` when it is then empty, and first deletes expired files for every agent. The
+  viewer has no delete route: `meshctl` stays the only writer under the mesh dir.
 - **The Agents view is always on (#454).** `app.js` imports `public/agents-home.js`
   statically and calls `installAgentsHome(...)` at load, so `dead-exports` reaches it like
   any module. Since #454 PR 4 it is the Dashboard's one home for sessions (the lens and
@@ -260,8 +296,8 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
   write; no backend URL, key or deny list is written by meshctl or put in `mesh.json`.
   `disable --unslop [--purge] [--apply]` removes the key (deleting `mesh.json`, with a
   backup, when nothing else is left in it), the shim and the token, and keeps the
-  profile, logs, budget and deny list unless `--purge`, which also removes those and
-  `logs/unslop-*`. Plain `disable --apply` still deletes the whole file. `status` adds an
+  profile, logs, budget and deny list unless `--purge`, which also removes those,
+  `logs/unslop-*` and its run records (`mesh/runs/unslop-*`, then `runs/` if empty). Plain `disable --apply` still deletes the whole file. `status` adds an
   `Unslop:` line: on and its endpoint, or off, and whether the profile, token and shim
   exist. `test/mesh.test.ts` holds off test (g) (enable then disable leaves the tree as it
   was, but backups and the profile), the modes, the refusals, the stale shim, and the
@@ -536,9 +572,10 @@ This repository ships its client (R2 and R3 below) and the contract both sides t
     `meshctl request-post "$@"` (R3, below);
     3. `agents.request-post` = `{ "endpoint": <url> }` in `mesh.json`, every other key kept,
     written atomically after a timestamped backup. New folders are 0700.
-  - `disable --request-post [--apply]` removes the key (deleting `mesh.json`, with a backup,
+  - `disable --request-post [--purge] [--apply]` removes the key (deleting `mesh.json`, with a backup,
     when nothing else is left), the shim and the token, and the `bin`, `mesh/tokens` and
-    `mesh` folders when they are then empty. There is no profile, so no `--purge`. Plain
+    `mesh` folders when they are then empty. There is no profile; `--purge` (cards view V5)
+    removes its run records (`mesh/runs/request-post-*`, then `runs/` if empty) and nothing else. Plain
     `disable --apply` is unchanged. `status` adds a `Request-post:` line: on and its endpoint,
     or off, and whether the token and shim exist; it prints an endpoint only when it passed the
     rule, and never the token.

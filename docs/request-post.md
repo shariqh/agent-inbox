@@ -50,7 +50,8 @@ npm run meshctl -- disable --request-post --apply
 
 This removes `agents.request-post` from `mesh.json` (keeping a backup; the file is deleted when
 nothing else is left in it), the shim and the token copy. Ask the service's runbook owner to
-revoke the device's token too. `disable --apply` alone turns every mesh piece off.
+revoke the device's token too. Its run records stay; add `--purge` to delete them as well (below).
+`disable --apply` alone turns every mesh piece off.
 
 ## Call it
 
@@ -109,6 +110,35 @@ unreachable agent and a card mismatch, and it has no 15 or 16.
 
 While this machine is on a tailnet shared with others, the service's name does not resolve or
 refuses the device: exit 15, by design.
+
+## What this Mac keeps
+
+The meshctl entry that runs the command appends one line per call to
+`<mesh dir>/mesh/runs/request-post-<date>.jsonl` (a 0700 folder, 0600 files, the date of the call's
+end). A line is written once the command has read the agent's switch in `mesh.json` and found it
+on, whatever the exit, and also when the call is killed by `SIGTERM`, `SIGHUP` or Ctrl-C
+(`interrupted`). A call that ends before that (a usage error, or input refused on the Mac), a call
+while the agent is off and `kill -9` write nothing. Writing never changes the exit code, stdout or
+stderr.
+
+Each line holds the end time, the duration, the subcommand (`file`, `status` or `wait`), the
+exit code and an outcome word, plus the answer's fixed facts: its phase (for an interrupted
+`wait`, the last phase it saw), `created`, `--through-go`, the reason, the screen's classes and
+the names of refused fields. The brand and channels are kept only on exit 0, so a refused brand
+(perhaps a typo or a name) is never kept.
+
+It never holds the brief, the title, the slug, the source URL, the category, the page URL or id,
+any request key (yours from `--key` or the derived one), `humanAction` or error text from the
+service, or the token, or anything about who called. Records older than 30 days are deleted by
+the next call on a later day, or by the next `meshctl enable` or `disable`. To delete them now:
+
+```sh
+npm run meshctl -- forget-runs --request-post           # preview
+npm run meshctl -- forget-runs --request-post --apply
+```
+
+`disable --request-post --purge` deletes them too. A later Agent Inbox shows them in the agent's Run
+history; nothing reads them today.
 
 ## The caller's `SKILL.md`
 

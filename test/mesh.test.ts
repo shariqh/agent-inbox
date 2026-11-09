@@ -458,7 +458,8 @@ describe('meshctl enable/disable --request-post (#500, request-post design §6, 
     const t = setup()
     for (const argv of [['enable', '--request-post'], ['enable', '--request-post', '--endpoint', ENDPOINT], ['enable', '--request-post', '--token-file', t.tokenFile],
       ['enable', '--request-post', '--unslop', '--endpoint', ENDPOINT, '--token-file', t.tokenFile], ['enable', '--request-post', '--endpoint', ENDPOINT, '--token-file', t.tokenFile, '--port', '4420'],
-      ['enable', '--unslop', '--endpoint', ENDPOINT], ['disable', '--request-post', '--purge'], ['disable', '--request-post', '--endpoint', ENDPOINT], ['status', '--request-post']]) {
+      ['enable', '--unslop', '--endpoint', ENDPOINT], ['disable', '--request-post', '--endpoint', ENDPOINT], ['status', '--request-post'],
+      ['forget-runs'], ['forget-runs', '--unslop', '--request-post'], ['forget-runs', '--all', '--unslop'], ['forget-runs', '--web-search', '--purge'], ['forget-runs', '--unslop', '--port', '1']]) {
       expect(t.run(...argv).code, argv.join(' ')).toBe(2)
     }
     expect(readdirSync(t.dir)).toEqual([])
@@ -466,7 +467,7 @@ describe('meshctl enable/disable --request-post (#500, request-post design §6, 
 })
 
 describe('no new dependency (design §2.3, §2.4c)', () => {
-  const MESH_FILES = ['src/mesh-config.ts', 'src/meshctl.ts', 'src/unslop-client.ts', 'src/request-post-client.ts', 'src/mesh-agents.ts', 'public/agents-home.js']
+  const MESH_FILES = ['src/mesh-config.ts', 'src/meshctl.ts', 'src/unslop-client.ts', 'src/request-post-client.ts', 'src/mesh-agents.ts', 'src/mesh-runs.ts', 'public/agents-home.js']
   const SPECIFIERS = /(?:\bfrom\s*|\bimport\s*\(?\s*|\brequire\s*\(\s*)(['"])([^'"\n]+)\1/g
   // comment lines name modules in prose; only code imports count
   const code = (file: string): string => readFileSync(join(REPO, file), 'utf8').split('\n')
@@ -481,10 +482,14 @@ describe('no new dependency (design §2.3, §2.4c)', () => {
     }
     // meshctl, its unslop and request-post clients, the config module and the card rule are Node core plus each other only
     const local = (file: string) => [...code(file).matchAll(SPECIFIERS)].map((m) => m[2]!).filter((spec) => !spec.startsWith('node:'))
-    expect(local('src/meshctl.ts')).toEqual(['./mesh-config.js', './mesh-config.js', './request-post-client.js', './unslop-client.js'])
-    expect(local('src/unslop-client.ts')).toEqual(['./agent-card.js', './mesh-config.js'])
-    expect(local('src/request-post-client.ts')).toEqual(['./agent-card.js', './mesh-config.js'])
+    expect(local('src/meshctl.ts')).toEqual(['./mesh-config.js', './mesh-config.js', './mesh-runs.js', './mesh-runs.js', './request-post-client.js', './request-post-client.js', './unslop-client.js', './unslop-client.js'])
+    // the clients take the run collector's type only (cards view V5 §5.3); meshctl's entry writes the record
+    expect(local('src/unslop-client.ts')).toEqual(['./agent-card.js', './mesh-config.js', './mesh-runs.js'])
+    expect(local('src/request-post-client.ts')).toEqual(['./agent-card.js', './mesh-config.js', './mesh-runs.js'])
+    for (const file of ['src/unslop-client.ts', 'src/request-post-client.ts']) expect(code(file), file).toContain(`import type { RunCollector } from './mesh-runs.js'`)
     expect(local('src/mesh-config.ts')).toEqual([])
+    // run records (cards view V5 §5.6): Node core only
+    expect([...code('src/mesh-runs.ts').matchAll(SPECIFIERS)].map((m) => m[2]!)).toEqual(['node:crypto', 'node:fs', 'node:path'])
     // the viewer's cards view (agent cards view design §3.4): HTTP and the config rule only,
     // so it can never start an agent (no child_process) or open the hub
     expect([...code('src/mesh-agents.ts').matchAll(SPECIFIERS)].map((m) => m[2]!))

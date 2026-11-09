@@ -17,6 +17,7 @@ import { request } from 'node:http'
 import { isAbsolute, join, resolve } from 'node:path'
 import { checkCard } from './agent-card.js'
 import { loopbackPort, meshDir, meshFile, readMesh } from './mesh-config.js'
+import type { RunCollector } from './mesh-runs.js'
 
 const EXTENSION = 'urn:agent-inbox:ext:unslop:v1'
 const KINDS = ['pr', 'issue', 'release-notes', 'docs', 'blog']
@@ -45,6 +46,8 @@ export interface UnslopIo {
   pollMs?: number
   /** the local deadline only, when tests need it shorter than the --timeout sent to the agent */
   deadlineMs?: number
+  /** the meshctl entry's run record (cards view V5 §5.3): armed once the key passes its rule */
+  run?: RunCollector
 }
 
 type Json = Record<string, unknown>
@@ -247,6 +250,7 @@ export async function runUnslop(args: string[], io: UnslopIo): Promise<number> {
     say('off: agents.unslop.endpoint must be http://127.0.0.1:<port>. Run meshctl enable --unslop again.')
     return 14
   }
+  if (io.run) Object.assign(io.run, { armed: Date.now(), op: kind, bytesIn: bytes.length })
   const unavailable = (why: string): number => {
     say(`${why}. Edit it in-session.`)
     return 14
@@ -309,6 +313,7 @@ export async function runUnslop(args: string[], io: UnslopIo): Promise<number> {
     }
     if (result['artifactUpdate']) artifact(obj(result['artifactUpdate'])['artifact'])
     if (result['statusUpdate']) apply(obj(obj(result['statusUpdate'])['status']))
+    if (io.run) Object.assign(io.run, { task: taskId, data: outcome.data })
   }
 
   let buffered = ''

@@ -17,6 +17,7 @@ import type { LookupFunction } from 'node:net'
 import { join, resolve } from 'node:path'
 import { checkCard } from './agent-card.js'
 import { meshDir, meshFile, readMesh, requestPostEndpoint } from './mesh-config.js'
+import type { RunCollector } from './mesh-runs.js'
 
 const EXTENSION = 'urn:agent-inbox:ext:request-post:v1'
 const FINAL = ['awaiting-go', 'ready-for-human', 'proposed', 'needs-fix', 'failed', 'rejected', 'published']
@@ -48,6 +49,8 @@ export interface RequestPostIo {
   sendMs?: number
   /** DNS for a tailnet name (tests point it elsewhere) */
   lookup?: LookupFunction
+  /** the meshctl entry's run record (cards view V5 §5.3): armed once the key passes its rule */
+  run?: RunCollector
 }
 
 type Json = Record<string, unknown>
@@ -248,6 +251,8 @@ export async function runRequestPost(args: string[], io: RequestPostIo): Promise
       say(`off: ${meshFile(dir)} ${mesh.kind === 'refused' ? mesh.reason : 'does not turn on request-post'}. File it in-session (npm run meshctl -- enable --request-post turns it on).`)
       return 14
     }
+    // no request key, title or URL is ever collected (cards view V5 §5.4, §5.5)
+    if (io.run) Object.assign(io.run, { armed: Date.now(), op: sub, ...(sub === 'wait' ? { throughGo } : {}), ...(sub === 'file' ? { brand: meta['brand'], channels: meta['channels'] } : {}) })
     let token: string
     try {
       token = readPrivate(join(dir, 'mesh', 'tokens', 'request-post')).trim()
@@ -259,6 +264,7 @@ export async function runRequestPost(args: string[], io: RequestPostIo): Promise
     const key = String(meta['idempotencyKey'] ?? meta['requestKey'] ?? '')
     const finish = (r: Result): number => {
       const d = r.data ?? {}
+      if (io.run) io.run.data = r.data
       if (report !== undefined && r.data && !writeReport(d)) {
         say(`cannot write the report ${report}${sub === 'file' ? `; the outcome is unknown: run the same command again (key ${key})` : ''}`)
         return 13
@@ -300,6 +306,7 @@ export async function runRequestPost(args: string[], io: RequestPostIo): Promise
         if (typeof phase === 'string' && FINAL.includes(phase) && !(throughGo && phase === 'awaiting-go')) return finish(r)
         if (phase !== last && last !== undefined) say(`now ${clean(phase, 40)}`)
         last = phase
+        if (io.run && typeof phase === 'string') io.run.phase = phase
         delay = now() - start < 30 * MIN ? 2 * MIN : 15 * MIN
       } else if (r.exit === 12) {
         failingSince = undefined
@@ -322,6 +329,7 @@ export async function runRequestPost(args: string[], io: RequestPostIo): Promise
   try {
     code = await go()
   } catch {
+    if (io.run) io.run.internal = true
     say(`outcome unknown (internal error): run the same command again${sub === 'file' ? ' (the key makes it safe); never file it in-session' : ''}`)
     code = 13
   }

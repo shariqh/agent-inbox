@@ -87,7 +87,7 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   row `action_started_at`) in whole minutes, capped at 4 hours, so re-arms of an unchanged
   ask double (30 min → 1 h → 2 h → 4 h). It is stateless and evaluated twice by ONE
   function: the server sizes `timeout_seconds` with it, and the watcher re-derives its own
-  deadline at launch, so re-running the identical question command backs off too (the
+  deadline at launch, so relaunching the identical question command backs off too (the
   argv carries no timeout; `AGENT_INBOX_WATCH_TIMEOUT_MS` only forces one for tests). The
   human's quiet time — a snooze, or an "I'll take a while" with a time — can only push the
   deadline out, and never more than 24 hours past the later of the watcher's launch and the
@@ -97,6 +97,20 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   for good (exit 3, one stdout line telling the agent not to re-arm), then the deadline
   (exit 124, unchanged). `board_get({watch:true})` returns no watch for a row stopped for
   good: re-arming it would only cost another wake.
+- **Every Copilot launch contract carries a fresh `shell_id` (issue #489).** Copilot CLI
+  refuses a detached launch whose `shellId` an earlier command used, even one that has
+  finished and been read, until `stop_bash` frees it. So `freshShellId` in `src/watch.ts`
+  appends a random 8-hex suffix to the stable prefix (`agent-inbox-<item>`,
+  `agent-inbox-row-<row>-<version>`, `agent-inbox-messages-<session>`), and no re-arm
+  reuses an id: a message watcher re-arms through the `message_watch` of the next
+  `pending()` (exit 0, 124 or 4), a row through `board_get({title, watch:true})`, and a
+  question, which has no re-issue call, by relaunching the same `shell_command` under the
+  contract's id plus `-2`, `-3`, … The id no longer stops a second concurrent copy. For
+  messages the lease still does (exit 3), and the server still hands out no
+  `message_watch` while it is fresh. Question and row watchers hold no lease: `flag` and a
+  new blocked action issue one contract each, so only a `board_get({watch:true})` while a
+  watcher still runs can start a second copy, which costs one extra wake (its `pending()`
+  finds the answer already handled). Pinned in `test/copilot-watch.test.ts`.
 
 - **Hooks ignore the reserved projects (issue #412, driven sessions §4.2).** A driver files
   its approval alerts in `@sessions` with the driven agent's own MCP `session`, so a hook
@@ -150,7 +164,7 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   watcher at once. The watcher exits 0 with one fixed line for any other open
   message to that session (ids only, never the text). It has no #217 ladder: nothing
   closes its wait but the session, so it waits until its server goes and times out
-  (124, re-run the same command) only at `WATCH_MAX_MS`, a day, so an idle session is
+  (124: call `pending()` and launch the `message_watch` it returns) only at `WATCH_MAX_MS`, a day, so an idle session is
   woken at most once a day to re-arm. Exit 3 means another copy holds the session's
   lease: do not re-run. Exit 4 (`MESSAGE_WATCH_ENDED_EXIT`) means the session's server
   has gone: its presence ended, its `server_pid` is dead, or its `updated_at` is past
@@ -165,8 +179,7 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   lease is `copilot-messages:<session>`
   in `hook_watch_claims`, taken by one conditioned statement (first live copy wins),
   refreshed every 30 s and fresh for 90 s. While it is fresh the server hands out no
-  second contract, and `listActivity` reports `wakes`. The `shell_id` is fixed per
-  session, so Copilot refuses a second copy too. The contract names the reader's own
+  second contract, and `listActivity` reports `wakes`. The contract names the reader's own
   session id; #306's "agent reads never carry a session" holds for everything else.
   Pinned in `test/copilot-watch.test.ts`.
 

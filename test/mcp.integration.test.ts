@@ -312,9 +312,9 @@ describe('mcp round-trip', () => {
     expect(body.watch).toMatchObject({
       mode: 'async',
       detach: true,
-      shell_id: `agent-inbox-${body.id}`,
       timeout_seconds: 1800,
     })
+    expect(body.watch.shell_id).toMatch(new RegExp(`^agent-inbox-${body.id}-[0-9a-f]{8}$`))
     expect(body.watch.shell_command).toMatch(/watch-cli\.(?:js|ts)/)
     expect(body.watch.shell_command).toContain(body.id)
     expect(body.watch.on_completion).toMatch(/pending/)
@@ -348,8 +348,8 @@ describe('mcp round-trip', () => {
       expect(created.watches).toHaveLength(1)
       expect(created.watches[0]).toMatchObject({
         row_id: row.id, action_version: 1, mode: 'async', detach: true,
-        shell_id: `agent-inbox-row-${row.id}-1`,
       })
+      expect(created.watches[0].shell_id).toMatch(new RegExp(`^agent-inbox-row-${row.id}-1-[0-9a-f]{8}$`))
       expect(created.watches[0].shell_command).toContain("'--row'")
       expect(created.watches[0].on_completion).toContain('pending({project:"watch-project"})')
 
@@ -362,7 +362,10 @@ describe('mcp round-trip', () => {
       expect(plain.watches).toBeUndefined()
       const rearmed = await call('board_get', { title: board.title, watch: true })
       expect(rearmed.watches).toHaveLength(1)
-      expect(rearmed.watches[0].shell_id).toBe(created.watches[0].shell_id)
+      // Issue #489: the re-arm is the same command under a fresh shell id.
+      expect(rearmed.watches[0].shell_command).toBe(created.watches[0].shell_command)
+      expect(rearmed.watches[0].shell_id).not.toBe(created.watches[0].shell_id)
+      expect(rearmed.watches[0].shell_id.startsWith(`agent-inbox-row-${row.id}-1-`)).toBe(true)
 
       board = getBoard(db, 'watch-project', 'Release')!
       row = board.rows[0]!
@@ -479,7 +482,7 @@ describe('mcp round-trip', () => {
     try {
       const flagged = await call('flag', { kind: 'question', title: 'Install 1.4 and report back?', ...QUESTION_SHAPE })
       expect(flagged.watch.timeout_seconds).toBe(1800)
-      expect(flagged.watch.on_completion).toContain('A timeout (exit 124) is not an answer: if still waiting, re-run this same command; it waits longer each time.')
+      expect(flagged.watch.on_completion).toContain('A timeout (exit 124) is not an answer: if still waiting, launch this same shell_command again under a new shell_id (this one plus -2, then -3, …); it waits longer each time.')
       expect(flagged.watch.on_completion).toContain('Exit 3 means the human asked you to stop waiting: do not re-arm')
 
       const child = spawn('/bin/sh', ['-c', flagged.watch.shell_command], {

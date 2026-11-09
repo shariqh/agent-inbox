@@ -5,8 +5,10 @@
 // /api/mesh/agents (one lstat per 5 s at most; no timer, no fs.watch), and fetches each
 // configured agent's card from the configured endpoint only, on a trigger: an open or a
 // Refresh. It never starts an agent, never sends a token and never opens mesh/tokens or
-// mesh/wrappers; the one other file it reads is unslop's budget, when unslop is checked. Every user-facing reason and fix lives here, so no viewer, page or
-// Electron file names the clients or the command (test/mesh.test.ts's text guard).
+// mesh/wrappers; the other files it reads are unslop's budget, when unslop is checked, and the
+// run records (cards view V5 §5.7), through mesh-runs.ts's readRuns only. Every user-facing
+// reason, fix and the forget command live here, so no viewer, page or Electron file names the
+// clients or the command (test/mesh.test.ts's text guard).
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from 'node:fs'
 import { request as httpRequest } from 'node:http'
 import type { IncomingMessage } from 'node:http'
@@ -15,6 +17,8 @@ import type { LookupFunction } from 'node:net'
 import { join } from 'node:path'
 import { cardJson, checkCard, summarizeCard } from './agent-card.js'
 import { loopbackPort, meshFile, readMesh, requestPostEndpoint } from './mesh-config.js'
+import { readRuns } from './mesh-runs.js'
+import type { RunAgent, RunsCache, RunsRead } from './mesh-runs.js'
 
 type Agent = 'unslop' | 'request-post'
 type State = 'unchecked' | 'checking' | 'up' | 'not-running' | 'unreachable' | 'not-a-card' | 'mismatch' | 'invalid'
@@ -32,6 +36,10 @@ const FIX: Record<Agent, string> = { unslop: 'rebuild packages/mesh', 'request-p
 const UNCHECKED: Result = { state: 'unchecked', reason: 'press Refresh', fix: null, checkedAt: null, card: null }
 const OFF = { on: false, agents: [] }
 const BUDGET_MAX = 4 * 1024
+// every agent a run record can name; web search is configurable from V5e, so until then it is "not configured"
+const RUN_AGENTS: readonly string[] = ['unslop', 'request-post', 'web-search']
+const RUNS_SHOWN = 200
+const NO_RUNS: RunsRead = { runs: [], skipped: 0, truncated: false, keptDays: 0 }
 
 /** YYYY-MM-DD in local time, as packages/mesh writes the budget's date. */
 function localDate(ms: number): string {
@@ -99,6 +107,8 @@ export interface MeshAgents {
   body(): object
   /** Runs the trigger's checks and waits for them; false when `name` is not configured. */
   trigger(trigger: 'open' | 'refresh', name?: string): Promise<boolean>
+  /** `GET /api/mesh/agents/runs`'s body (V5 §5.7), or undefined for a name no run record can carry. */
+  runs(name: string): object | undefined
 }
 
 const where = (name: Agent, endpoint: string | null): Where =>
@@ -184,6 +194,19 @@ export function meshAgents(opts: MeshAgentsOpts): MeshAgents {
   let statAt = -Infinity
   let identity: string | undefined
   let config: Config | null = null
+  const history = new Map<string, { at: number; read: RunsRead; cache: RunsCache }>()
+
+  // V5 §5.7: one readdir pass per agent per 5 s at most, shared by the route and lastRun; each
+  // day file is parsed again only when its identity, size or mtime changed.
+  function runsOf(name: RunAgent): RunsRead {
+    let entry = history.get(name)
+    if (!entry) history.set(name, entry = { at: -Infinity, read: NO_RUNS, cache: new Map() })
+    if (now() - entry.at >= STAT_EVERY_MS) {
+      entry.at = now()
+      entry.read = readRuns(opts.dir, name, entry.at, entry.cache)
+    }
+    return entry.read
+  }
 
   // §3.2: at most one lstat per 5 s, and a re-read by readMesh() only when the file's
   // identity, size or times changed. A changed endpoint starts a fresh record.
@@ -248,6 +271,8 @@ export function meshAgents(opts: MeshAgentsOpts): MeshAgents {
       cardJson: r.card?.json ?? null,
       // a failure never reports the last good card as current (§4.7)
       lastSeen: rec.good && r.state !== 'up' ? { at: iso(rec.good.at), card: rec.good.card.summary } : null,
+      // the newest record by end time; these bytes change only when a run lands (V5 §5.7)
+      lastRun: ((run) => run ? { at: run['at'], op: run['op'], outcome: run['outcome'] } : null)(runsOf(rec.name).runs[0]),
       // another day's counts read as zero for today; no file, or a refused one, sends no key
       ...(rec.usage ? { usage: rec.usage.date === today ? rec.usage : { date: today, tasks: 0, modelMs: 0 } } : {}),
     }
@@ -269,6 +294,17 @@ export function meshAgents(opts: MeshAgentsOpts): MeshAgents {
       const due = (rec: Rec) => rec.running || rec.result.checkedAt === null || now() - rec.result.checkedAt >= SKIP_MS[trigger]
       await Promise.all(recs.filter(due).map(check))
       return true
+    },
+    runs: (name) => {
+      if (!RUN_AGENTS.includes(name)) return undefined
+      const cfg = read()
+      if (!cfg) return { on: false, runs: [] }
+      if (!cfg.recs.has(name as Agent)) return { ok: false, error: 'not configured' }
+      const r = runsOf(name as RunAgent)
+      return {
+        on: true, name, runs: r.runs.slice(0, RUNS_SHOWN), older: r.runs.length > RUNS_SHOWN, skipped: r.skipped, truncated: r.truncated,
+        keptDays: r.keptDays, forget: `npm run meshctl -- forget-runs --${name}`,
+      }
     },
   }
 }

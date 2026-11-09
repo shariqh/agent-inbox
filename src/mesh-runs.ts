@@ -2,7 +2,8 @@
 // `<mesh dir>/mesh/runs/<agent>-<YYYY-MM-DD>.jsonl`, appended by the meshctl entry that ran
 // the client. A closed schema: fixed vocabularies and tight patterns only, so no field can
 // carry a draft, brief, title, URL, query, key or token (§5.5). Node core only; meshctl
-// imports it, never the stdio MCP server, and no viewer, page or Electron file names it.
+// imports it to write, src/mesh-agents.ts to read (V5b's readRuns), never the stdio MCP
+// server, and no viewer, page or Electron file names it.
 // Writing is best effort and silent: it never changes a client's exit, stdout or stderr.
 import { randomBytes } from 'node:crypto'
 import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readSync, readdirSync, rmdirSync, unlinkSync, writeSync } from 'node:fs'
@@ -32,7 +33,8 @@ export type RunEnd = { exit: number } | { exit: null; signal: NodeJS.Signals }
 
 const KEPT_DAYS = 30
 const FILE_CAP = 256 * 1024
-const COUNT_MAX = 320 * 1024
+// the 256 KiB cap plus 64 KiB for concurrent writers' overshoot (§5.7)
+const READ_MAX = 320 * 1024
 // the record and its newline; the leading newline adds one more byte, so a write is at most 512
 const LINE_MAX = 511
 const FILE_NAME = /^(unslop|request-post|web-search)-(\d{4}-\d{2}-\d{2})\.jsonl$/
@@ -174,6 +176,12 @@ function localDate(ms: number): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
 
+/** The first local date of the kept period: the 30 local dates ending today (§5.6). */
+function oldestKept(now: number): string {
+  const today = new Date(now)
+  return localDate(new Date(today.getFullYear(), today.getMonth(), today.getDate() - (KEPT_DAYS - 1)).getTime())
+}
+
 /** The day files in a checked runs folder: regular files this user owns, for the agents asked. */
 function dayFiles(runs: string, agents: RunAgent[]): Array<{ path: string; date: string }> {
   const found: Array<{ path: string; date: string }> = []
@@ -197,8 +205,7 @@ function dayFiles(runs: string, agents: RunAgent[]): Array<{ path: string; date:
 export function pruneRuns(dir: string, now: number, agents: RunAgent[] = ['unslop', 'request-post', 'web-search'], apply = true): string[] {
   const runs = checkedRuns(dir)
   if (!runs) return []
-  const today = new Date(now)
-  const oldest = localDate(new Date(today.getFullYear(), today.getMonth(), today.getDate() - (KEPT_DAYS - 1)).getTime())
+  const oldest = oldestKept(now)
   try {
     const expired = dayFiles(runs, agents).filter((file) => file.date < oldest).map((file) => file.path)
     if (apply) for (const path of expired) try { unlinkSync(path) } catch { /* ENOENT: another process deleted it */ }
@@ -218,8 +225,8 @@ export function runFiles(dir: string, agent: RunAgent): Array<{ path: string; ru
       try {
         const fd = openSync(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
         try {
-          const buf = Buffer.alloc(COUNT_MAX)
-          const text = buf.toString('utf8', 0, readSync(fd, buf, 0, COUNT_MAX, 0))
+          const buf = Buffer.alloc(READ_MAX)
+          const text = buf.toString('utf8', 0, readSync(fd, buf, 0, READ_MAX, 0))
           count = text.split('\n').slice(0, -1).filter((line) => line.trim()).length
         } finally { closeSync(fd) }
       } catch { /* counted as none */ }
@@ -228,6 +235,86 @@ export function runFiles(dir: string, agent: RunAgent): Array<{ path: string; ru
   } catch {
     return []
   }
+}
+
+type Day = { runs: Json[]; skipped: number; truncated: boolean }
+/** Parsed day files by path, under the identity they were read at; the caller keeps it between reads. */
+export type RunsCache = Map<string, { key: string; day: Day }>
+export interface RunsRead { runs: Json[]; skipped: number; truncated: boolean; keptDays: number }
+
+/**
+ * One day file (§5.7): opened `O_NOFOLLOW | O_NONBLOCK`, a regular file this user owns that no
+ * one else can write, else undefined. At most 320 KiB in one bounded read from the checked
+ * descriptor; complete lines only, each through the writer's validator for this agent.
+ */
+function readDay(path: string, agent: RunAgent, cache: RunsCache): Day | undefined {
+  let fd: number
+  try {
+    fd = openSync(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+  } catch {
+    return undefined
+  }
+  try {
+    const s = fstatSync(fd)
+    if (!s.isFile() || (uid() !== undefined && s.uid !== uid()) || s.mode & 0o022) return undefined
+    const key = [s.dev, s.ino, s.size, s.mtimeMs].join(':')
+    const hit = cache.get(path)
+    if (hit?.key === key) return hit.day
+    const buf = Buffer.alloc(READ_MAX + 1)
+    const size = readSync(fd, buf, 0, buf.length, 0)
+    const lines = buf.toString('utf8', 0, Math.min(size, READ_MAX)).split('\n')
+    // what follows the last newline is empty, a write in progress or cut by the bound: never counted
+    lines.pop()
+    const day: Day = { runs: [], skipped: 0, truncated: size > READ_MAX }
+    for (const line of lines) {
+      if (!line) continue
+      let run: Json | undefined
+      try { run = validRun(JSON.parse(line)) } catch { /* not JSON */ }
+      if (run && run['agent'] === agent) day.runs.push(run)
+      else day.skipped++
+    }
+    cache.set(path, { key, day })
+    return day
+  } catch {
+    return undefined
+  } finally {
+    closeSync(fd)
+  }
+}
+
+/**
+ * One agent's runs in the kept period (§5.7), for the viewer: only from a checked runs folder,
+ * only day files named for this agent and dated within the 30 local dates ending today, merged
+ * and sorted by `at` (the end) newest first, `id` breaking ties. Every record is the validator's
+ * output, so unknown fields never pass. A file refused by its checks or a line that does not
+ * validate counts in `skipped`; a file past 320 KiB is read to the bound and sets `truncated`.
+ * Reads only: never writes, deletes or prunes.
+ */
+export function readRuns(dir: string, agent: RunAgent, now: number, cache: RunsCache = new Map()): RunsRead {
+  const read: RunsRead = { runs: [], skipped: 0, truncated: false, keptDays: KEPT_DAYS }
+  const runs = checkedRuns(dir)
+  let names: string[] = []
+  try { if (runs) names = readdirSync(runs) } catch { /* unreadable: no runs */ }
+  const oldest = oldestKept(now)
+  const seen = new Set<string>()
+  for (const name of names) {
+    const m = FILE_NAME.exec(name)
+    if (!m || m[1] !== agent || m[2]! < oldest) continue
+    const path = join(runs!, name)
+    seen.add(path)
+    const day = readDay(path, agent, cache)
+    if (!day) {
+      read.skipped++
+      continue
+    }
+    read.runs.push(...day.runs)
+    read.skipped += day.skipped
+    read.truncated ||= day.truncated
+  }
+  for (const path of cache.keys()) if (!seen.has(path)) cache.delete(path)
+  const by = (a: Json, b: Json, k: string): number => (a[k] as string) < (b[k] as string) ? 1 : (a[k] as string) > (b[k] as string) ? -1 : 0
+  read.runs.sort((a, b) => by(a, b, 'at') || by(a, b, 'id'))
+  return read
 }
 
 /** Removes the runs folder when it is empty. */

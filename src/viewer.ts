@@ -1003,6 +1003,20 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
     if (etagMatches(c.req.header('If-None-Match'), etag)) return c.body(null, 304)
     return c.body(body, 200, { 'Content-Type': 'application/json' })
   })
+  // Run history (cards view V5 §5.7): one agent's run records, read only when a page asks.
+  // Built fresh per read like /api/mesh/agents, with an ETag over the bytes; no snapshot.
+  // Without opts.mesh, or with the mesh off, it is off and touches no run file.
+  app.get('/api/mesh/agents/runs', (c) => {
+    c.header('Cache-Control', 'no-store')
+    const name = c.req.query('name')
+    const data = !name ? undefined : opts.mesh ? opts.mesh.runs(name) : { on: false, runs: [] }
+    if (!data) return c.json({ ok: false, error: 'expected ?name=<agent>' }, 400)
+    const body = JSON.stringify(data)
+    const etag = `"mesh-runs-${createHash('sha256').update(body).digest('hex')}"`
+    c.header('ETag', etag)
+    if (etagMatches(c.req.header('If-None-Match'), etag)) return c.body(null, 304)
+    return c.body(body, 200, { 'Content-Type': 'application/json' })
+  })
   // The only way a check starts: an open or a Refresh press. Answers once the checks end.
   app.post('/api/mesh/agents/refresh', async (c) => {
     const body = await c.req.json().catch(() => null) as unknown

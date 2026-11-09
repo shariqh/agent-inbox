@@ -490,10 +490,10 @@ describe('no new dependency (design §2.3, §2.4c)', () => {
     expect(local('src/mesh-config.ts')).toEqual([])
     // run records (cards view V5 §5.6): Node core only
     expect([...code('src/mesh-runs.ts').matchAll(SPECIFIERS)].map((m) => m[2]!)).toEqual(['node:crypto', 'node:fs', 'node:path'])
-    // the viewer's cards view (agent cards view design §3.4): HTTP and the config rule only,
-    // so it can never start an agent (no child_process) or open the hub
+    // the viewer's cards view (agent cards view design §3.4): HTTP, the config rule and the run
+    // reader only (V5 §5.7), so it can never start an agent (no child_process) or open the hub
     expect([...code('src/mesh-agents.ts').matchAll(SPECIFIERS)].map((m) => m[2]!))
-      .toEqual(['node:fs', 'node:http', 'node:http', 'node:https', 'node:net', 'node:path', './agent-card.js', './mesh-config.js'])
+      .toEqual(['node:fs', 'node:http', 'node:http', 'node:https', 'node:net', 'node:path', './agent-card.js', './mesh-config.js', './mesh-runs.js', './mesh-runs.js'])
     // the card rule is pure (agent cards view design §3.4): no import at all, Node core included
     expect([...code('src/agent-card.ts').matchAll(SPECIFIERS)].map((m) => m[2]!)).toEqual([])
   })

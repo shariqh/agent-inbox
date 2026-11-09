@@ -4,6 +4,8 @@
 the W1 spike's findings, #510)
 **Status:** Accepted by Shariq on 2026-11-09. He changed the provider to a self-hosted SearXNG with
 Ollama's web search as the fallback, and accepted the other recommendations. Decisions in §17.
+**Amended** on 2026-11-09 after H1: Ollama's web search now needs paid credits, so the trial runs
+on SearXNG alone (§17, decision 6).
 **Issue:** #505, with #498 (adopt `@a2a-js/sdk`). Tracking: #404 (mesh M2–M9). Related: #506
 (cards ready for many hosts), #492 (port squatter). Follows unslop (#483,
 [`2026-11-06-unslop-a2a-agent-design.md`](2026-11-06-unslop-a2a-agent-design.md)) and
@@ -413,6 +415,9 @@ agent's user page keeps its own table.
 ### 5.2 Choice (Shariq, 2026-11-09)
 
 **SearXNG first, Ollama's web search as the fallback, $0 in all.**
+
+> **Amended 2026-11-09 (§17, decision 6):** the trial runs on SearXNG alone. Ollama's search and
+> `web_fetch` stay in the code as an optional provider, off in the profile.
 
 - **SearXNG** answers every query first. Its engines, set in H1 (§13), favour APIs:
   - **API-backed:** `wikipedia`, `wikidata`, `marginalia` (a free non-commercial key);
@@ -1002,6 +1007,23 @@ backups, the profile and the seeded deny list, and never touches unslop's or req
 5. **The rest as recommended:** the Mac-hosted agent on loopback (phase M2c), the SDK behind our
    own front door, refuse-not-redact, no fetching by the agent, the grounding check, the bench
    and trial, and the slices.
+6. **SearXNG alone for the trial (amended 2026-11-09, after H1).** A live call with the Ollama
+   key returned HTTP 402, "Add usage credits to use web search". Ollama now sells pay-as-you-go
+   usage credits, and web search is no longer part of a free account. Shariq chose SearXNG alone
+   over a capped Ollama top-up or pulling W7's page fetcher forward. So:
+   - **The profile** that W5a writes has Ollama off (no provider entry, no key source) and
+     `fetch: "none"`. The Ollama adapter, its caps and its tests stay, as an optional provider
+     behind the same interface, like Kagi and Brave's API. Turning it back on is a profile change.
+     The key is kept in the password manager.
+   - **Answers come from snippets.** In `answer` mode the passages are SearXNG's titles and
+     snippets (`pageText: "snippet"`), and §6's grounding check runs against that text.
+   - **No fallback.** When SearXNG returns fewer than 3 usable results, the agent answers from what
+     it has. When it is unreachable (this Mac is off the personal tailnet, or the host is down),
+     the call fails with 13 and the reason `providers-failed`.
+   - **Bench S13** (§12.1) skips its Fallback part. The Answers part runs on SearXNG alone.
+   - **The checkpoint** (§12.3) reads the fallback-rate row as "too few results or unreachable".
+     A bad reading there, or snippet answers that trail in-session search by more than 10 points,
+     reopens the choice: a capped Ollama top-up, W7's page fetcher, or W9's Kagi adapter.
 
 ## §18 — What changes in the mesh design
 

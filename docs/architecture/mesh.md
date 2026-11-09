@@ -5,9 +5,10 @@ paths:
   - "src/unslop-client.ts"
   - "src/request-post-client.ts"
   - "src/agent-card.ts"
+  - "src/mesh-agents.ts"
   - "public/agents-home.js"
   - "packages/mesh/src/*.ts"
-applyTo: "src/mesh-config.ts,src/meshctl.ts,src/unslop-client.ts,src/request-post-client.ts,src/agent-card.ts,public/agents-home.js,packages/mesh/src/*.ts"
+applyTo: "src/mesh-config.ts,src/meshctl.ts,src/unslop-client.ts,src/request-post-client.ts,src/agent-card.ts,src/mesh-agents.ts,public/agents-home.js,packages/mesh/src/*.ts"
 ---
 
 # Agent mesh (M1)
@@ -21,9 +22,8 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
 - **The Agents view is always on (#454).** Design:
   [`docs/superpowers/specs/2026-11-04-agents-home-design.md`](../../docs/superpowers/specs/2026-11-04-agents-home-design.md)
   §4, which amends the mesh design's §2.2 (its M1 row), §2.4 (b) and §10.2. `app.js`
-  imports `public/agents-home.js` statically; `mesh.json` no longer gates it, the viewer
-  no longer watches the file, `/api/version` never carries a `mesh` key, and Settings →
-  Mesh is gone. The viewer's watch returns with the first phase that needs it (M3).
+  imports `public/agents-home.js` statically; `mesh.json` no longer gates it, and Settings →
+  Mesh is gone. The viewer reads `mesh.json` lazily for the agent cards view (below).
 - **Opt-in mesh (M2 and later, #397):** `mesh.json` (absolute `AGENT_INBOX_MESH_DIR`,
   else beside `AGENT_INBOX_DB`, else `~/.agent-inbox`) stays the one switch for the
   later phases; only `src/meshctl.ts` writes it (dry run first, `--apply` with backup,
@@ -70,9 +70,30 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   (agent cards view design §4.4, slice V1). It imports nothing at all (`test/mesh.test.ts`
   pins that), and `test/prstate.test.ts` names it in the stdio graph's forbidden list, since
   its name misses the `/mesh/i` net.
-  The viewer reads nothing of the mesh today: no stat watch, no `createViewer` option, no
-  `/api/version` key. The phase that first needs the viewer to know (M3) restores a watch
-  under the same rules the mesh design's §2.1 sets.
+  The viewer reads the mesh only in `src/mesh-agents.ts` (the agent cards view, design
+  `docs/superpowers/specs/2026-11-09-agent-cards-view-design.md`): `viewer-server.ts` passes it to
+  `createViewer` as `opts.mesh`. It `lstat`s `mesh.json` only when a page reads `/api/version` or
+  `/api/mesh/agents`, at most once every 5 s, and re-reads the file by `readMesh()`'s rule only when
+  its identity, size or times changed; no timer and no `fs.watch`. `/api/version` carries
+  `mesh: { agents: n }` only when the file reads present and names an agent this build knows;
+  otherwise its bytes are unchanged. It fetches each agent's card from the configured endpoint only
+  (never a URL from a card), with no token, no redirect, no proxy, a 64 KiB cap and one total
+  deadline (3 s for unslop, 5 s for every request-post check), only on
+  `POST /api/mesh/agents/refresh` with the open trigger (from slice V3: boot on the Dashboard,
+  `showAgentsHome()`, `selectTab('dashboard')` from another tab) or a Refresh press; reading
+  `/api/mesh/agents` never starts a check, and one check per agent runs at a time. An `open`
+  skips an agent checked in the last 60 s, a `refresh` one checked in the last 5 s. Records live
+  in memory only (a viewer starts every agent `unchecked`; a changed endpoint starts a fresh
+  record); a failure after a good card reports the failure, with the good card as `lastSeen`,
+  never as `card`. `GET /api/mesh/agents` is built fresh per read with an ETag over its bytes
+  (not a retained snapshot). It never starts an agent and never opens `mesh/tokens` or
+  `mesh/wrappers`; `test/mesh.test.ts` pins its imports to `node:fs`, `node:http`, `node:https`,
+  `node:net` (types), `./agent-card.js` and `./mesh-config.js`, so no `child_process`. Its
+  user-facing `reason` and `fix` words live in `src/mesh-agents.ts`, so the text guard on
+  `src/viewer*.ts`, `public/*.js` and `electron/*` stays as it is. `src/agent-card.ts` holds the
+  one card rule both clients and the view use, and the view's `summarizeCard` (caps, "+N more",
+  control, bidirectional and separator characters replaced) and `cardJson` (the raw card with
+  those characters escaped). The view never reaches attention.
 - **The Agents view is always on (#454).** `app.js` imports `public/agents-home.js`
   statically and calls `installAgentsHome(...)` at load, so `dead-exports` reaches it like
   any module. Since #454 PR 4 it is the Dashboard's one home for sessions (the lens and

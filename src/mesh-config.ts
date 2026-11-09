@@ -1,10 +1,9 @@
 // The mesh's root switch, `mesh.json` (Mesh M1, #397; design
 // docs/superpowers/specs/2026-10-29-agent-mesh-design.md §2). Node core only:
 // `meshctl` and its clients (src/unslop-client.ts, src/request-post-client.ts) read it and must never
-// open the hub. Since #454 the viewer reads
-// nothing here: the Agents view is always on, and the viewer's watch returns
-// with the first mesh phase that needs it (M3). Nothing in the stdio MCP
-// server's import graph may reach this module.
+// open the hub. The viewer reads it only through src/mesh-agents.ts, lazily,
+// for the agent cards view (the Agents view itself is always on, #454).
+// Nothing in the stdio MCP server's import graph may reach this module.
 //
 // One rule decides what the file means, for every reader: a regular file (never
 // a symlink), at most MESH_FILE_MAX bytes, a JSON object whose `schema` is 1.

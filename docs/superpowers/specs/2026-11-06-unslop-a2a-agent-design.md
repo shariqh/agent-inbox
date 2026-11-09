@@ -190,7 +190,10 @@ Off means the `agents.unslop` key is missing, or `mesh.json` is missing or unrea
 
 - **(a)** The stdio MCP graph test (`test/prstate.test.ts`) forbids the new `meshctl` client
   module; `tools/list` is identical.
-- **(b)** M2a touches nothing under `public/`, `src/viewer*.ts` or `electron/`.
+- **(b)** M2a touches nothing under `public/`, `src/viewer*.ts` or `electron/`. *(Held for M2a;
+  superseded by the agent cards view, [`2026-11-09-agent-cards-view-design.md`](2026-11-09-agent-cards-view-design.md)
+  §10, which adds a viewer module, a route and a page section for the configured agents. The
+  client is still not reachable from any of those files, and the text guard is unchanged.)*
 - **(c)** The client uses Node core only; `test/fixtures/app-dependencies.txt` is unchanged and the
   mesh import test covers the new module. `@a2a-js/sdk` lives only in `packages/mesh`.
 - **(d)** `test/fixtures/snapshot-triggers.txt` is byte-identical.

@@ -175,6 +175,12 @@ function extract(input: string, terms: string[]): Extract {
   }
 }
 
+/** The numbers (and versions), dates and quotes of three words or more that the check protects, normalised (web search's grounding check, #505). */
+export function extractValues(text: string): { numbers: string[]; dates: string[]; quotes: string[] } {
+  const { items } = extract(text, [])
+  return { numbers: items.numbers.map((i) => i.value), dates: items.dates.map((i) => i.value), quotes: items.quotes.map((i) => i.value) }
+}
+
 function minus(a: string[], b: string[]): string[] {
   const left = [...b]
   return a.filter((v) => {

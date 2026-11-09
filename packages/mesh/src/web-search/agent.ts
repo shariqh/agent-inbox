@@ -2,9 +2,9 @@
 // SDK spike. It refuses to start unless mesh.json's `agents.web-search` names a
 // loopback endpoint, serves A2A there behind its own front door, and exits within
 // a minute of that key or the caller token changing, or after 30 idle minutes.
-// The executor answers from one fixed result until the provider (W3) and the
-// answer (W4) land; it never rejects, so the SDK never logs or returns an error
-// message. Every console call and process-level error or warning writes a fixed
+// The real run is `createRun` (answer.ts: W3's search, W4's answer); until W5
+// reads the profile that builds it, `startAgent` answers from one fixed result. The
+// executor never rejects, so the SDK never logs or returns an error message. Every console call and process-level error or warning writes a fixed
 // line: no query, argument or error message reaches stderr or a log.
 import { randomUUID } from 'node:crypto'
 import { readFileSync } from 'node:fs'
@@ -20,7 +20,8 @@ import { EXTENSION, startFrontDoor } from './front-door.js'
 export const GATE_MS = 60_000
 export const IDLE_MS = 30 * 60_000
 type Json = Record<string, unknown>
-export type RunResult = { state: 'completed'; text: string; data: Json } | { state: 'rejected' | 'failed'; reason: string; data: Json }
+/** `log` holds fixed names, counts and timings only (§7.1 Logs); the executor adds it to the task's log line. */
+export type RunResult = ({ state: 'completed'; text: string; data: Json } | { state: 'rejected' | 'failed'; reason: string; data: Json }) & { log?: Json }
 export type Run = (query: string, options: Json, signal: AbortSignal, onState: (state: string) => void) => Promise<RunResult>
 export type StopReason = 'mesh.json' | 'token' | 'idle' | 'signal'
 export type AgentOptions = { meshDir: string; run?: Run; now?: () => number; every?: (ms: number, fn: () => void) => () => void }
@@ -85,9 +86,11 @@ export function createExecutor(run: Run, log: (entry: Json) => void): AgentExecu
       const content = ctx.userMessage.parts[0]?.content
       const query = content?.$case === 'text' ? content.value : ''
       const options = (ctx.userMessage.metadata?.[EXTENSION] ?? {}) as Json
+      let extra: Json | undefined
       try {
         bus.publish(AgentEvent.task({ id, contextId, status: { state: TaskState.TASK_STATE_SUBMITTED, message: undefined, timestamp: new Date().toISOString() }, artifacts: [], history: [], metadata: undefined }))
         const r = await run(query, options, t.abort.signal, (state) => { if (open.has(id)) status(bus, id, contextId, TaskState.TASK_STATE_WORKING, [part(state)]) })
+        extra = r.log
         if (!open.has(id)) return
         if (r.state !== 'completed') return end(id, r.state === 'rejected' ? TaskState.TASK_STATE_REJECTED : TaskState.TASK_STATE_FAILED, r.state, r.reason, r.data)
         open.delete(id)
@@ -101,7 +104,7 @@ export function createExecutor(run: Run, log: (entry: Json) => void): AgentExecu
         } catch {}
       } finally {
         try {
-          log({ taskId: id, chars: query.length, words: query.split(/\s+/).filter(Boolean).length, mode: options.mode === 'sources' ? 'sources' : 'answer', outcome: t.outcome, ms: Date.now() - started })
+          log({ taskId: id, chars: query.length, words: query.split(/\s+/).filter(Boolean).length, mode: options.mode === 'sources' ? 'sources' : 'answer', outcome: t.outcome, ms: Date.now() - started, ...(extra ? { run: extra } : {}) })
         } catch {}
       }
     },

@@ -714,6 +714,23 @@ describe('a canary query never reaches stderr or a log (§3.2 item 5, §13 Logs)
     clean({ dir, child })
   })
 
+  it('when the model answers, and when it fails with the query and that answer in its error (W4)', async () => {
+    const answer = 'Quuxcanaryanswer'
+    const c = await start()
+    const ok = (await rpc(c.port, 'SendMessage', ask(`answer-ok ${CANARY}`))).result.task
+    expect(ok.status.state).toBe('TASK_STATE_COMPLETED')
+    expect(ok.artifacts[0].parts[1].data.answer.text).toContain(answer)
+    const failed = (await rpc(c.port, 'SendMessage', ask(`answer-error ${CANARY}`))).result.task
+    expect(failed.status.state).toBe('TASK_STATE_COMPLETED')
+    expect(failed.artifacts[0].parts[1].data).toMatchObject({ code: 10, warnings: ['model-busy'] })
+    expect(JSON.stringify(failed)).not.toMatch(new RegExp(`${CANARY}|${answer}`))
+    await vi.waitFor(() => expect(c.child.stderr()).toContain('sdk: error\n'))
+    const log = logText(c.dir).trim().split('\n').map((l) => JSON.parse(l) as Json)
+    expect(log.map((l) => l.run?.code)).toEqual([0, 10])
+    for (const text of [c.child.stderr(), logText(c.dir)]) expect(text).not.toContain(answer)
+    clean(c)
+  })
+
   it.each([['timer'], ['reject']])('when a %s fails outside any await: one fixed line, open tasks FAILED, exit 1', async (kind) => {
     const c = await start()
     const task = (await rpc(c.port, 'SendMessage', ask(`${kind} ${CANARY}`))).result.task

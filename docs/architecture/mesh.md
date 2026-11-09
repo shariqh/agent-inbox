@@ -385,9 +385,9 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
   memory and fails on any difference, sends every refusal fixture through the real front door,
   and checks `screen.json` against unslop's five classes. `test/a2a-web-search-fixtures.test.ts`
   runs the validator over every file at the root.
-- **Web search W3: providers (#505; design §5, §6, §7.1, §9).** Not wired into the executor
-  yet (W4 adds the answer, W5 the profile and `meshctl`); `createSearch()` in
-  `web-search/search.ts` is one search as a function.
+- **Web search W3: providers (#505; design §5, §6, §7.1, §9).** `createSearch()` in
+  `web-search/search.ts` is one search as a function; W4's `createRun()` wraps it for the
+  executor, and W5 builds both from the profile.
   - `provider.ts`: §5.3's `SearchProvider`, `PageFetcher` and fixed `ProviderReason`s, and the
     one transport (`node:http(s)`, a fresh socket, no redirects: a 3xx is `bad-response`; no
     proxy environment). A failure is a fixed reason, never a URL (a `?q=` holds the query), a
@@ -417,6 +417,46 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
   - Tests (`packages/mesh/test/web-search-providers.test.ts`) use counting fakes answering
     from `test/fixtures/a2a-web-search/providers/`, and loopback for the redirect case; the
     canary child also runs the real search with a transport whose error carries `?q=` and the key.
+- **Web search W4: the answer (#505; design §4.3, §6, §8.1, §9).** `createRun()` in
+  `web-search/answer.ts` is the executor's `Run`: W3's search, then §4.3's data part. The agent
+  process still runs W1's fixed result until W5 reads the profile (model backend or
+  `synthesis: false`) and passes `createRun` to `startAgent`.
+  - `suspect.ts`: §8.1's patterns on each source's raw title and snippet and on each kept
+    passage (instruction overrides, chat-template markers, "system prompt", "do not tell the
+    user", delimiter imitation, Markdown images, bidirectional overrides, CSS-hidden text, an
+    urgent "run this command", "paste … into your reply", a URL to a private address or
+    `localhost`). A match sets `suspect: true`, adds the warning `suspect` and keeps the whole
+    source out of the prompt. `clean()` strips controls, bidirectional and zero-width characters
+    and Markdown images and caps titles (200), snippets (400), passages (2,400), answers (4,000).
+  - The model: unslop's `backend.ts` (`checkBaseUrl`, `checkApiKey`, `post`, `classify`,
+    `requestBody`), `max_tokens` 700, thinking off, no `tools`. The prompt is a fixed preamble,
+    `Question: …`, and each non-suspect source between `SOURCE <nonce> [n] BEGIN/END` lines
+    (title, host, date, passages; about 24,000 characters of passages, in rank order), so the
+    numbers stay the result's. The check (`grounding.ts`, `grounding.json`'s cases): every `[n]`
+    given, no URL, link, image, HTML or nonce, ≤ 4,000 characters, not cut off; unless it starts
+    `NOT FOUND` (cut to 400), every claiming paragraph or list item cites a source, and each
+    number, version, date and quote (fidelity.ts's extractors, `extractValues`) is contained in
+    a source its sentence, else its paragraph, cites: thousands separators and unit spacing
+    dropped, a coarser version or date matching a finer one, values from the question exempt.
+    One retry lists the failures in a `CHECK <nonce>` block when the time left covers the first
+    call's time. Sources only (10): `synthesis-off`, `model-busy` (a 5xx, an error status or an
+    unreachable box), `model-loading` (the call ran out of time, or under 5 s was left),
+    `truncated`, `check-failed`. No source to give the model is a `NOT FOUND` answer with
+    `attempts: 0` and no call (`conformance.ts` accepts that). `sources` mode never calls the
+    model. With `fetch: "none"` and Ollama off (the trial's setup) each source's one passage is
+    its SearXNG snippet, and the check holds the answer to the title, date and snippet the
+    model saw.
+  - Budgets and cache: answers are capped at 60 model calls a day (`budget.ts`'s `model`; a
+    spent cap refuses 11 before any search, through the non-spending `check`); passing answers
+    are cached in memory by the model and the prompt's text, so a repeat spends nothing and
+    `fresh` asks again. The run's `log` (fixed names, counts, timings) joins the task's log line
+    as `run`: never the query, a source, a checked value or the answer.
+  - Tests (`packages/mesh/test/web-search-answer.test.ts`): `grounding.json`, every
+    `pages/*.json` injection (flagged, absent from the prompt the fake model receives and from
+    every passing answer; a model that repeats it gets no answer), each sources-only exit, the
+    retry, the cap, the cache, sanitising, and `checkResult` on every completed result; the
+    canary child adds a model that answers with a canary and one that fails with the query and
+    that answer in its error.
 - **Bench S11 (U4, unslop design §9.1, §9.3).** `packages/mesh/bench/s11/`, compiled by
   `tsconfig.bench.json` into `dist/bench/` and run as `npm run bench -- run|score`; Node
   core plus the package's own `files.ts` and `mesh-config.ts`, never built by the

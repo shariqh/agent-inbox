@@ -52,6 +52,10 @@ FORM: Dark-first Live Operations Desk with a complete light counterpart and stru
           <svg class="tab-icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.5"></circle><path d="M8 4.5V8l2.5 1.5"></path></svg>
           <span class="tab-name">History</span><span class="tab-count" hidden></span>
         </button>
+        <button class="tab" type="button" role="tab" data-tab="agent" aria-selected="false" aria-controls="agentPage" tabindex="-1" hidden>
+          <span class="ma-dot" aria-hidden="true"></span>
+          <span class="tab-name"></span>
+        </button>
       </div>
       <div class="sidebar-section-label">Projects</div>
       <div id="projectDisclosure" class="project-disclosure" data-open="false">
@@ -128,6 +132,7 @@ FORM: Dark-first Live Operations Desk with a complete light counterpart and stru
         <section class="panel" id="boards" role="tabpanel" hidden><div class="boards"></div></section>
         <section class="panel" id="notes" role="tabpanel" hidden><div class="groups"></div></section>
         <section class="panel" id="done" role="tabpanel" hidden><div class="items"></div></section>
+        <section class="panel" id="agentPage" role="tabpanel" aria-label="Mesh agent" hidden></section>
         <section class="panel" id="setup" role="tabpanel" hidden><div class="setup-body"></div></section>
       </main>
     </div>

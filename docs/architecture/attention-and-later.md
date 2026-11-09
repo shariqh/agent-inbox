@@ -62,6 +62,8 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   each other. The attention predicate drops a pinned ask, and Electron's
   notification `known` set keeps pinned asks (`knownNotificationIds`), so
   bringing one back is never announced as new.
+- The agent tab (cards view V5) never carries a count, and nothing in the strip or Run history
+  reaches attention.
 
 ## Invariants in detail
 

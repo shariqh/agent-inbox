@@ -295,7 +295,8 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
     `a2a.ts`): `127.0.0.1` only, any `Origin` refused, `Host` exactly `127.0.0.1:<port>`,
     the bearer token compared with `timingSafeEqual` after a length check, `A2A-Version`
     `1.0` or `1.0.<n>` (else -32009; the SDK is always handed `1.0`: its core transport
-    checks no version), a 16 KiB body and a 10 s read limit. It then **rebuilds** the
+    checks no version), a 16 KiB body, a 10 s read limit (Node checks it on a sweep, every
+    second here rather than its default 30 s) and at most 16 open connections. It then **rebuilds** the
     JSON-RPC request from an allowlist in camelCase (`SendMessage` and
     `SendStreamingMessage`: one `ROLE_USER` text part, the extension's §4.2 fields,
     `returnImmediately: false` and `acceptedOutputModes`; `GetTask` and `CancelTask`:
@@ -317,8 +318,11 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
   - `a2a-client.ts`: `identityFetch`, the fetch the SDK client uses (over `node:http`: no
     redirects, no proxy; any 3xx, and any URL other than the configured endpoint's `/` and
     card path, is refused, so a card's interface URL cannot send the token elsewhere). The
-    card request carries a fresh `A2A-Mesh-Challenge` nonce and the token goes out only
-    after `A2A-Mesh-Proof` matches HMAC-SHA256(token, `"web-search/v1\n" + nonce`).
+    card request carries a fresh `A2A-Mesh-Challenge` nonce, and the token goes out only
+    on a keep-alive connection whose answer matched: `A2A-Mesh-Proof` =
+    HMAC-SHA256(token, `"web-search/v1\n" + nonce`). A request handed a new connection sends
+    nothing on it, closes it and proves again first, so after the agent exits a squatter on
+    its port gets neither the token nor the query, even from a long-lived client.
     `resolveCard` returns the checked card and `cardHash`: the SHA-256 of the SDK's JCS form
     of the card with every `supportedInterfaces[].url` removed.
   - Tests (`packages/mesh/test/web-search.test.ts`): the SDK's client through

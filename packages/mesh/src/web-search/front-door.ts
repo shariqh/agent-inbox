@@ -2,7 +2,8 @@
 // every refusal ours, then `@a2a-js/sdk`'s JsonRpcTransportHandler over its
 // DefaultRequestHandler. Any Origin, a Host other than 127.0.0.1:<port>, a missing
 // or wrong bearer token, an A2A-Version other than 1.0 or 1.0.<n>, a body over
-// 16 KiB or one not received within 10 s never reach the SDK. The JSON-RPC request
+// 16 KiB or one not received within 10 s (checked every second), never reach the
+// SDK, and at most 16 connections are open at once. The JSON-RPC request
 // is rebuilt from an allowlist in camelCase: any other key, at any level and in
 // either spelling, and any other method is refused with -32602, so the SDK's
 // snake_case aliases, `tenant`, continuations and push configs are unreachable.
@@ -20,6 +21,7 @@ import { ConfigError } from '../files.js'
 
 export const EXTENSION = 'urn:agent-inbox:ext:web-search:v1'
 const BODY_MAX = 16 * 1024
+export const MAX_CONNECTIONS = 16
 const KEEP = 64
 const TERMINAL = new Set([TaskState.TASK_STATE_COMPLETED, TaskState.TASK_STATE_FAILED, TaskState.TASK_STATE_CANCELED, TaskState.TASK_STATE_REJECTED])
 
@@ -110,6 +112,7 @@ export async function startFrontDoor(o: FrontDoorOptions): Promise<FrontDoor> {
     })
     req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')))
     req.on('error', () => resolve(undefined))
+    req.on('close', () => resolve(undefined))
   })
 
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -126,6 +129,7 @@ export async function startFrontDoor(o: FrontDoorOptions): Promise<FrontDoor> {
     lastActivity = now()
     if (Number(req.headers['content-length'] ?? 0) > BODY_MAX) return reply(res, 413, { error: 'too large' }, { connection: 'close' })
     const body = await readBody(req)
+    if (res.destroyed || res.headersSent) return
     if (body === undefined) return reply(res, 413, { error: 'too large' }, { connection: 'close' })
     let parsed: unknown
     try {
@@ -151,9 +155,11 @@ export async function startFrontDoor(o: FrontDoorOptions): Promise<FrontDoor> {
     res.end()
   }
 
-  const server = createServer({ requestTimeout: 10_000, headersTimeout: 5_000, maxHeaderSize: 16 * 1024 }, (req, res) => {
+  // Node enforces both timeouts only on its connection sweep, every 30 s by default
+  const server = createServer({ requestTimeout: 10_000, headersTimeout: 5_000, connectionsCheckingInterval: 1_000, maxHeaderSize: 16 * 1024 }, (req, res) => {
     handle(req, res).catch(() => { if (!res.headersSent) reply(res, 500, { error: 'internal' }); else res.end() })
   })
+  server.maxConnections = MAX_CONNECTIONS
   await new Promise<void>((resolve, reject) => {
     server.once('error', (error: NodeJS.ErrnoException) => reject(new ConfigError(`cannot listen on 127.0.0.1:${o.port} (${error.code ?? 'error'})`)))
     server.listen(o.port, '127.0.0.1', () => resolve())

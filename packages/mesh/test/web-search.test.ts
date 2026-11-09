@@ -10,7 +10,8 @@ import { randomBytes, randomUUID } from 'node:crypto'
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer, request } from 'node:http'
 import type { IncomingHttpHeaders, Server } from 'node:http'
-import type { AddressInfo } from 'node:net'
+import { connect } from 'node:net'
+import type { AddressInfo, Socket } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -24,7 +25,7 @@ import type { MockInstance } from 'vitest'
 import { CARD_PATH, IdentityError, cardHash, identityFetch, proofFor, resolveCard } from '../src/a2a-client.js'
 import { GATE_MS, IDLE_MS, card, createExecutor, fixtureRun, main, startAgent } from '../src/web-search/agent.js'
 import type { Agent, Run } from '../src/web-search/agent.js'
-import { EXTENSION, rebuild, startFrontDoor } from '../src/web-search/front-door.js'
+import { EXTENSION, MAX_CONNECTIONS, rebuild, startFrontDoor } from '../src/web-search/front-door.js'
 import type { FrontDoor } from '../src/web-search/front-door.js'
 
 const TOKEN = 'w5'.repeat(20)
@@ -54,17 +55,17 @@ const deferred = (): Hold => {
   return { release, promise }
 }
 
-async function door(run: Run = fixtureRun): Promise<FrontDoor & { log: Json[] }> {
+async function door(run: Run = fixtureRun, port = 0): Promise<FrontDoor & { log: Json[] }> {
   const log: Json[] = []
   const executor = createExecutor(run, (entry) => log.push(entry))
-  const d = await startFrontDoor({ port: 0, tokens: [TOKEN, OTHER], card: (url) => card(url, '0.0.0-test'), executor, busy: () => executor.open() > 0 })
+  const d = await startFrontDoor({ port, tokens: [TOKEN, OTHER], card: (url) => card(url, '0.0.0-test'), executor, busy: () => executor.open() > 0 })
   cleanups.push(() => d.close())
   return { ...d, log }
 }
 
-async function listen(handler: Parameters<typeof createServer>[1]): Promise<{ server: Server; port: number; url: string }> {
+async function listen(handler: Parameters<typeof createServer>[1], at = 0): Promise<{ server: Server; port: number; url: string }> {
   const server = createServer(handler)
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  await new Promise<void>((resolve) => server.listen(at, '127.0.0.1', resolve))
   const { port } = server.address() as AddressInfo
   cleanups.push(() => new Promise<void>((resolve) => { server.closeAllConnections(); server.close(() => resolve()) }))
   return { server, port, url: `http://127.0.0.1:${port}/` }
@@ -187,6 +188,46 @@ describe('the front door refuses before the SDK (§3.2 item 1)', () => {
     expect(res.result.task.status.state).toBe('TASK_STATE_COMPLETED')
     expect(handle).toHaveBeenCalledTimes(1)
     expect((handle.mock.calls[0]![1] as { requestedVersion: string }).requestedVersion).toBe('1.0')
+  })
+
+  it('ends a stalled authenticated body with 408 or a close within about 11 s', async () => {
+    const d = await door()
+    const started = Date.now()
+    const outcome = await new Promise<string>((resolve) => {
+      let data = ''
+      const socket = connect(d.port, '127.0.0.1', () => {
+        socket.write(`POST / HTTP/1.1\r\nHost: 127.0.0.1:${d.port}\r\nAuthorization: Bearer ${TOKEN}\r\nA2A-Version: 1.0\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{"jsonrpc"`)
+      })
+      socket.on('data', (c: Buffer) => { data += c.toString('utf8') })
+      socket.on('error', () => {})
+      socket.on('close', () => resolve(data.split('\r\n')[0] || 'closed'))
+    })
+    const ms = Date.now() - started
+    expect(outcome).toMatch(/^(HTTP\/1\.1 408|closed)/)
+    expect(ms).toBeGreaterThanOrEqual(9_500)
+    expect(ms).toBeLessThan(11_500)
+    expect(handle).not.toHaveBeenCalled()
+  }, 15_000)
+
+  it(`closes a connection over the cap of ${MAX_CONNECTIONS} unanswered, and takes one again once a slot frees`, async () => {
+    const d = await door()
+    const held = await Promise.all(Array.from({ length: MAX_CONNECTIONS }, () => new Promise<Socket>((resolve) => {
+      const s = connect(d.port, '127.0.0.1', () => resolve(s))
+      s.on('error', () => {})
+    })))
+    cleanups.push(() => { for (const s of held) s.destroy() })
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    const extra = await new Promise<string>((resolve) => {
+      let data = ''
+      const s = connect(d.port, '127.0.0.1', () => s.write(`GET ${CARD_PATH} HTTP/1.1\r\nHost: 127.0.0.1:${d.port}\r\n\r\n`))
+      s.on('data', (c: Buffer) => { data += c.toString('utf8') })
+      s.on('error', () => {})
+      s.on('close', () => resolve(data))
+    })
+    expect(extra).toBe('')
+    held[0]!.destroy()
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect((await call(d.port, { method: 'GET', path: CARD_PATH, headers: { authorization: undefined, connection: 'close' } })).status).toBe(200)
   })
 
   it('refuses a body over 16 KiB and malformed JSON', async () => {
@@ -460,6 +501,35 @@ describe('identityFetch (§3.3, §10.1)', () => {
     await expect(f(squatter.url, { method: 'POST', body: '{}' })).rejects.toThrow('has not proven its identity')
     expect(squatter.seen.every((s) => s.method === 'GET' && s.url === CARD_PATH)).toBe(true)
     expect(squatter.seen.some((s) => s.authorization !== undefined)).toBe(false)
+  })
+
+  it('proves every new connection: after the agent exits, a squatter on its port never sees the token or the query', async () => {
+    const port = await freePort()
+    const first = await door(fixtureRun, port)
+    const client = await sdkClient(first.url)
+    expect(await client.sendMessage(sdkMessage('hello'))).toMatchObject({ status: { state: TaskState.TASK_STATE_COMPLETED } })
+
+    // a restarted agent with the same token is proved again on its new connection
+    await first.close()
+    // the agent's connections close with it; an idle client sees that long before its next call
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    const second = await door(fixtureRun, port)
+    expect(await client.sendMessage(sdkMessage('hello'))).toMatchObject({ status: { state: TaskState.TASK_STATE_COMPLETED } })
+    await second.close()
+    await new Promise((resolve) => setTimeout(resolve, 50))
+
+    const seen: Array<{ method: string; url: string; authorization?: string; body: string }> = []
+    await listen((req, res) => {
+      let body = ''
+      req.on('data', (c: Buffer) => { body += c.toString('utf8') })
+      req.on('end', () => {
+        seen.push({ method: req.method ?? '', url: req.url ?? '', authorization: req.headers.authorization, body })
+        res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(card(`http://127.0.0.1:${port}/`, '0.0.0-test')))
+      })
+    }, port)
+    await expect(client.sendMessage(sdkMessage('canary-Squat9'))).rejects.toThrow('another process holds the agent port')
+    expect(seen.length).toBeGreaterThan(0)
+    expect(seen.every((s) => s.method === 'GET' && s.url === CARD_PATH && s.authorization === undefined && s.body === '')).toBe(true)
   })
 
   it("refuses a card whose interface URL points elsewhere: the configured endpoint wins", async () => {

@@ -4,9 +4,10 @@ paths:
   - "src/meshctl.ts"
   - "src/unslop-client.ts"
   - "src/request-post-client.ts"
+  - "src/agent-card.ts"
   - "public/agents-home.js"
   - "packages/mesh/src/*.ts"
-applyTo: "src/mesh-config.ts,src/meshctl.ts,src/unslop-client.ts,src/request-post-client.ts,public/agents-home.js,packages/mesh/src/*.ts"
+applyTo: "src/mesh-config.ts,src/meshctl.ts,src/unslop-client.ts,src/request-post-client.ts,src/agent-card.ts,public/agents-home.js,packages/mesh/src/*.ts"
 ---
 
 # Agent mesh (M1)
@@ -63,6 +64,12 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   object, `schema` 1; anything else is off) and `readMesh()`, which meshctl and its unslop
   and request-post clients (`src/unslop-client.ts`, `src/request-post-client.ts`) use. All four are Node core only and never import
   `store.ts`, and no mesh module may enter the stdio MCP graph (`test/prstate.test.ts`).
+  `src/agent-card.ts` holds the one A2A card rule, `checkCard(card, agent)`: the agent's
+  skills, an A2A 1.0 JSON-RPC interface and its extension with `api: 1`, returning a fixed
+  reason or undefined. Both clients call it and keep their own exit codes and words around it
+  (agent cards view design §4.4, slice V1). It imports nothing at all (`test/mesh.test.ts`
+  pins that), and `test/prstate.test.ts` names it in the stdio graph's forbidden list, since
+  its name misses the `/mesh/i` net.
   The viewer reads nothing of the mesh today: no stat watch, no `createViewer` option, no
   `/api/version` key. The phase that first needs the viewer to know (M3) restores a watch
   under the same rules the mesh design's §2.1 sets.
@@ -226,7 +233,7 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
   `packages/mesh/test/a2a.test.ts`.
 - **Calling unslop: `meshctl unslop` (U3b, unslop design §4.3-§4.5, §6.3, §7.3).** The
   shim runs `meshctl unslop --kind <kind> [--report <file>] [--timeout <s>] [--in <file>] < draft`;
-  the client is `src/unslop-client.ts`, Node core plus `mesh-config.ts`, imported only by
+  the client is `src/unslop-client.ts`, Node core plus `mesh-config.ts` and `agent-card.ts`, imported only by
   meshctl (its entry awaits it, since `runMeshctl` stays synchronous). User page with the
   callers' `SKILL.md` text: [`docs/unslop.md`](../unslop.md). In order:
   1. **Locally, before the switch is read:** arguments (else 4); the kind (`pr`, `issue`,
@@ -365,7 +372,7 @@ This repository ships its client (R2 and R3 below) and the contract both sides t
 ## Calling request-post (R3)
 
 `meshctl request-post file | status | wait [--through-go]` is `src/request-post-client.ts`: Node
-core plus `mesh-config.ts`, imported only by meshctl's async entry (`runMeshctl` alone answers
+core plus `mesh-config.ts` and `agent-card.ts`, imported only by meshctl's async entry (`runMeshctl` alone answers
 with the usage and 4). User page, exit table and the routing text: [`docs/request-post.md`](../request-post.md).
 Its exit codes are its own (design §3.3: 0, 11-16, 124, 4); `docs/unslop.md` has unslop's, and
 the two share numbers, not meanings.

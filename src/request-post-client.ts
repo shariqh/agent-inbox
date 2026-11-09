@@ -15,6 +15,7 @@ import { request as httpRequest } from 'node:http'
 import { request as httpsRequest } from 'node:https'
 import type { LookupFunction } from 'node:net'
 import { join, resolve } from 'node:path'
+import { checkCard } from './agent-card.js'
 import { meshDir, meshFile, readMesh, requestPostEndpoint } from './mesh-config.js'
 
 const EXTENSION = 'urn:agent-inbox:ext:request-post:v1'
@@ -130,11 +131,8 @@ async function send(base: URL, token: string, io: RequestPostIo, meta: Json, tex
   let card: Json = {}
   try { card = obj(JSON.parse(got.body)) } catch { /* below */ }
   if (got.status !== 200 || !Object.keys(card).length) return { exit: 15, why: `${base.host} has no agent card (HTTP ${got.status})` }
-  const skills = list(card['skills']).map((s) => s['id'])
-  const ext = list(obj(card['capabilities'])['extensions']).find((e) => e['uri'] === EXTENSION)
-  if (!skills.includes('request-post') || !skills.includes('request-post-status')
-    || !list(card['supportedInterfaces']).some((i) => i['protocolBinding'] === 'JSONRPC' && i['protocolVersion'] === '1.0')
-    || obj(ext?.['params'])['api'] !== 1) {
+  // the one card rule (agent cards view design §4.4); any failed check is the same 15
+  if (checkCard(card, 'request-post')) {
     return { exit: 15, fatal: true, why: 'the agent card does not match this client (skills, A2A 1.0 or the api 1 extension): update agent-inbox or the service' }
   }
   const id = randomUUID()

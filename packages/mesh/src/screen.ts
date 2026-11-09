@@ -2,6 +2,9 @@
 // any network. It refuses on any one class and names the class only, never the
 // matched value. There is no override. `--kind` is required but self-declared:
 // it forces a classification and enforces nothing.
+import { BlockList, isIP } from 'node:net'
+import { networkInterfaces, userInfo } from 'node:os'
+
 export const KINDS = ['pr', 'issue', 'release-notes', 'docs', 'blog'] as const
 export type Kind = (typeof KINDS)[number]
 export const parseKind = (value: unknown): Kind | undefined =>
@@ -93,7 +96,8 @@ function allowed(address: string, allow: string[]): boolean {
   })
 }
 
-export function screen(input: string, options: ScreenOptions = {}): ScreenResult {
+/** `only` runs a subset of the classes: web search's query screen runs five of them (§7.1). */
+export function screen(input: string, options: ScreenOptions = {}, only?: readonly ScreenClass[]): ScreenResult {
   const allow = [...DEFAULT_ALLOW, ...(options.allowEmails ?? [])]
   const raw = input.normalize('NFKC').replace(/[\u200B-\u200D\u2060\uFEFF]/g, '')
   // quoted reply lines are screened as if unquoted
@@ -119,6 +123,72 @@ export function screen(input: string, options: ScreenOptions = {}): ScreenResult
       .filter((entry) => entry.length > 1 && !entry.startsWith('#'))
       .some((entry) => new RegExp(`(?<!\\w)${escape(entry)}(?!\\w)`, 'iu').test(text))],
   ]
-  const classes = checks.filter(([, found]) => found()).map(([cls]) => cls)
+  const classes = checks.filter(([cls, found]) => (!only || only.includes(cls)) && found()).map(([cls]) => cls)
+  return classes.length ? { ok: false, classes } : { ok: true }
+}
+
+// Web search's query screen (web search design §7.1): five of the classes above, whose
+// shapes make sense on one line, and two query classes for what is this Mac's own.
+export type QueryClass = 'email-address' | 'phone-number' | 'secret' | 'customer-path' | 'deny-list' | 'private-name' | 'home-path'
+export type QueryScreenOptions = ScreenOptions & {
+  /** this Mac's interface subnets as CIDRs; os.networkInterfaces()'s by default */
+  interfaces?: string[]
+  /** the tailnet's own names, `<tailnet>.ts.net` */
+  tailnets?: string[]
+  /** this Mac's user name; os.userInfo()'s by default */
+  user?: string
+}
+const FIVE: ScreenClass[] = ['email-address', 'phone-number', 'secret', 'customer-path', 'deny-list']
+// loopback and the router addresses documentation questions name all the time
+const KNOWN_ADDRESSES = new Set(['127.0.0.1', '::1', '192.168.0.1', '192.168.1.1', '192.168.1.254', '10.0.0.1', '10.0.0.138'])
+const GENERIC_LABELS = new Set(['localhost', 'host', 'server', 'printer', 'router', 'example', 'foo', 'bar', 'my-host', 'myhost', 'machine', 'device', 'node', 'name', 'your-host', 'hostname'])
+const LABEL = String.raw`[\w*<>{}-]+`
+const PRIVATE_HOST = new RegExp(String.raw`(?<![\w.*<>{}-])(${LABEL})(?:\.${LABEL})*\.(?:local|internal|ts\.net)(?![\w-]|\.\w)`, 'gi')
+const generic = (label: string): boolean => GENERIC_LABELS.has(label.toLowerCase()) || /^(?:\*|<.*>|\{.*\})$/.test(label)
+
+function localSubnets(cidrs: string[] | undefined): BlockList {
+  const list = new BlockList()
+  const all = cidrs ?? Object.values(networkInterfaces()).flat().filter((i) => i && !i.internal).map((i) => i!.cidr ?? '')
+  for (const cidr of all) {
+    const [address = '', prefix] = cidr.split('/')
+    const family = isIP(address)
+    if (family && prefix !== undefined) list.addSubnet(address, Number(prefix), family === 4 ? 'ipv4' : 'ipv6')
+  }
+  return list
+}
+
+// Address literals are found wherever they sit, glued to `@`, `=`, `:`, `|` or `/` included:
+// IPv4 by a scan, IPv6 as runs of hex digits and colons, each also tried without a leading
+// `label:` (`ip:fd00::1`) or a trailing `:port` (`[fd00::1]:22` loses its brackets first).
+const IPV4 = /(?<![\d.])\d{1,3}(?:\.\d{1,3}){3}(?!\d|\.\d)/g
+const IPV6 = /[0-9a-f]*(?::[0-9a-f]*){2,8}(?:\.\d{1,3}){0,3}/gi
+function addresses(text: string): string[] {
+  const v6 = [...text.matchAll(IPV6)].flatMap((m) => {
+    const parts = m[0].split(':')
+    return parts.flatMap((_, i) => [parts.slice(i).join(':'), parts.slice(i, -1).join(':')])
+  })
+  return [...[...text.matchAll(IPV4)].map((m) => m[0]), ...v6].filter((a) => isIP(a))
+}
+
+function privateName(text: string, o: QueryScreenOptions): boolean {
+  const subnets = localSubnets(o.interfaces)
+  if (addresses(text).some((a) => !KNOWN_ADDRESSES.has(a) && subnets.check(a, isIP(a) === 4 ? 'ipv4' : 'ipv6'))) return true
+  if ([...text.matchAll(PRIVATE_HOST)].some((m) => !generic(m[1]!))) return true
+  return (o.tailnets ?? []).map((t) => t.toLowerCase().replace(/\.ts\.net\.?$/, '')).filter((t) => t.length > 1)
+    .some((name) => new RegExp(`(?<![\\w-])${escape(name)}(?![\\w-])`, 'i').test(text))
+}
+
+function homePath(text: string, o: QueryScreenOptions): boolean {
+  const user = o.user ?? userInfo().username
+  return Boolean(user) && new RegExp(`/(?:Users|home)/${escape(user)}(?![\\w.-])`, 'i').test(text)
+}
+
+/** Refuses, never redacts: the classes a one-line query trips, before any network. `deny` holds both deny lists. */
+export function screenQuery(query: string, options: QueryScreenOptions = {}): { ok: true } | { ok: false; classes: QueryClass[] } {
+  const text = query.normalize('NFKC').replace(/[\u200B-\u200D\u2060\uFEFF]/g, '')
+  const five = screen(text, options, FIVE)
+  const classes: QueryClass[] = five.ok ? [] : (five.classes as QueryClass[])
+  if (privateName(text, options)) classes.push('private-name')
+  if (homePath(text, options)) classes.push('home-path')
   return classes.length ? { ok: false, classes } : { ok: true }
 }

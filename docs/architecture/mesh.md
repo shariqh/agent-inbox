@@ -385,6 +385,38 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
   memory and fails on any difference, sends every refusal fixture through the real front door,
   and checks `screen.json` against unslop's five classes. `test/a2a-web-search-fixtures.test.ts`
   runs the validator over every file at the root.
+- **Web search W3: providers (#505; design §5, §6, §7.1, §9).** Not wired into the executor
+  yet (W4 adds the answer, W5 the profile and `meshctl`); `createSearch()` in
+  `web-search/search.ts` is one search as a function.
+  - `provider.ts`: §5.3's `SearchProvider`, `PageFetcher` and fixed `ProviderReason`s, and the
+    one transport (`node:http(s)`, a fresh socket, no redirects: a 3xx is `bad-response`; no
+    proxy environment). A failure is a fixed reason, never a URL (a `?q=` holds the query), a
+    body or a key; adapters never read a rejection's message.
+  - `searxng.ts`: `GET /search?q=…&format=json&categories=general&language=en` (+ `time_range`;
+    `sites` as `site:` terms in `q`, exclusions filtered after)
+    on an endpoint that must be `https://<name>.<tailnet>.ts.net[:<port>]` or
+    `http://127.0.0.1:<port>` (request-post's rule, held again here); reads only
+    `results[].url/title/content/engines/publishedDate`. `ollama.ts`: `web_search` and
+    `web_fetch` on `https://ollama.com` with the bearer key, read through `key-source.ts`
+    (unslop's `{ env }`, `{ file }`, `{ command }` resolver, moved there from `agent.ts`).
+  - `search.ts`: shape (`query.ts`) and `screenQuery()` before any network; the memory cache
+    (`cache.ts`: key over the normalised query, recency, maxSources, sorted sites, `pages`;
+    a `sources` call may reuse an `answer` entry, `fresh` replaces; a hit spends nothing);
+    SearXNG through `budget.ts`'s pacer (one at a time, 2 s apart, 5 s wait, else busy 12)
+    and caps (SearXNG 30/h, 100/day; Ollama search and fetch together 30/h, 150/day; persisted,
+    a cap is 11); Ollama's search when SearXNG has fewer than 3 usable results (`filter.ts`) or
+    failed, merged by URL; an Ollama 429 is 12 with its `Retry-After`; `web_fetch` for at most
+    the top 3 results without page text in `answer` mode with `fetch: "ollama"` (a failed fetch
+    keeps the snippet and warns `fetch-failed`; a result with any warning is not cached); passages
+    (`passages.ts`: navigation dropped, BM25, at most 3 chunks and 2,400 characters a source).
+  - `screenQuery()` in `screen.ts` runs unslop's email, phone, secret, customer-path and
+    deny-list classes (deny = `web-search-deny.txt` and `unslop-deny.txt`, read fresh) plus
+    `private-name` (an address inside this Mac's interface subnets but the router list; a
+    `.local`, `.internal` or `.ts.net` host with a specific first label; the tailnet's own
+    name) and `home-path` (`/Users/<user>/`, `/home/<user>/` for this user).
+  - Tests (`packages/mesh/test/web-search-providers.test.ts`) use counting fakes answering
+    from `test/fixtures/a2a-web-search/providers/`, and loopback for the redirect case; the
+    canary child also runs the real search with a transport whose error carries `?q=` and the key.
 - **Bench S11 (U4, unslop design §9.1, §9.3).** `packages/mesh/bench/s11/`, compiled by
   `tsconfig.bench.json` into `dist/bench/` and run as `npm run bench -- run|score`; Node
   core plus the package's own `files.ts` and `mesh-config.ts`, never built by the

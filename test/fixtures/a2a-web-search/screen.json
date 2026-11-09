@@ -96,6 +96,46 @@
       "note": "an address inside one of this Mac's interface subnets"
     },
     {
+      "query": "ssh person@192.0.2.23 permission denied",
+      "expect": "refuse",
+      "classes": [
+        "private-name"
+      ],
+      "note": "an interface-subnet address glued to @"
+    },
+    {
+      "query": "DB_HOST=192.0.2.23 connection refused",
+      "expect": "refuse",
+      "classes": [
+        "private-name"
+      ],
+      "note": "glued to ="
+    },
+    {
+      "query": "host=192.0.2.23",
+      "expect": "refuse",
+      "classes": [
+        "private-name"
+      ],
+      "note": "glued to ="
+    },
+    {
+      "query": "ip:192.0.2.23 unreachable",
+      "expect": "refuse",
+      "classes": [
+        "private-name"
+      ],
+      "note": "glued to :"
+    },
+    {
+      "query": "redis://:placeholder@192.0.2.23:6379 timeout",
+      "expect": "refuse",
+      "classes": [
+        "private-name"
+      ],
+      "note": "inside a URL with user info and a port"
+    },
+    {
       "query": "why is studio-mini.local slow to resolve",
       "expect": "refuse",
       "classes": [

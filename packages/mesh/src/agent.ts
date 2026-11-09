@@ -5,14 +5,14 @@
 // this process would otherwise refuse until it stopped), or after 30 idle minutes. Every path derives from the mesh dir. The
 // log gets one JSON line per task with sizes, timings and classes: never text,
 // never a matched value, never the token or the API key.
-import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
-import { homedir } from 'node:os'
 import { isAbsolute, join } from 'node:path'
 import { startServer } from './a2a.js'
-import { checkApiKey, checkBaseUrl } from './backend.js'
+import { checkBaseUrl } from './backend.js'
 import type { Post, Sampling } from './backend.js'
 import { ConfigError, appendPrivate, localDate, readPrivate, writePrivate } from './files.js'
+import { fixed, home, readApiKey, strings } from './key-source.js'
+import type { KeySource } from './key-source.js'
 import { meshDir, meshFile, readMesh } from './mesh-config.js'
 import { createRulesLoader } from './rules.js'
 import { runUnslop } from './unslop.js'
@@ -22,7 +22,6 @@ export const IDLE_MS = 30 * 60_000
 const DAILY_TASKS = 200
 const DAILY_MODEL_MS = 180 * 60_000
 
-type KeySource = { env: string } | { file: string } | { command: string[] }
 type Profile = {
   skill: string; baseUrl: string; apiKey?: KeySource; model?: string; sampling?: Partial<Sampling>
   terms?: string[]; allowEmails?: string[]; customerPaths?: string[]
@@ -50,18 +49,6 @@ export function endpointPort(dir: string): number {
   return port
 }
 
-const strings = (v: unknown): v is string[] => Array.isArray(v) && v.every((s) => typeof s === 'string')
-const home = (p: string): string => (p.startsWith('~/') ? join(homedir(), p.slice(2)) : p)
-/** Our own checks throw fixed messages; re-raise them as printable. */
-const fixed = <T>(fn: () => T): T => {
-  try {
-    return fn()
-  } catch (error) {
-    throw error instanceof ConfigError ? error : new ConfigError((error as Error).message)
-  }
-}
-const KEY_SHAPE = 'apiKey must be { env }, { file: absolute path } or { command: [absolute path, ...args] }'
-
 function parseProfile(text: string): Profile {
   let p: Profile
   try {
@@ -74,24 +61,6 @@ function parseProfile(text: string): Profile {
   fixed(() => checkBaseUrl(p.baseUrl))
   for (const key of ['terms', 'allowEmails', 'customerPaths'] as const) if (p[key] !== undefined && !strings(p[key])) throw new ConfigError(`the profile's \`${key}\` must be a list of strings`)
   return { ...p, skill: home(p.skill) }
-}
-
-function readApiKey(source: KeySource | undefined, env: NodeJS.ProcessEnv): string | undefined {
-  if (source === undefined) return undefined
-  if (!source || typeof source !== 'object' || Array.isArray(source)) throw new ConfigError(KEY_SHAPE)
-  let raw: string | undefined
-  if ('env' in source && typeof source.env === 'string') raw = env[source.env]
-  else if ('file' in source && typeof source.file === 'string' && isAbsolute(home(source.file))) raw = readPrivate(home(source.file))
-  else if ('command' in source && strings(source.command) && source.command[0] && isAbsolute(source.command[0])) {
-    try {
-      // a fixed argv, no shell; stdout is the key and is never logged
-      raw = execFileSync(source.command[0], source.command.slice(1), { encoding: 'utf8', timeout: 10_000, maxBuffer: 64 * 1024, stdio: ['ignore', 'pipe', 'ignore'] })
-    } catch {
-      throw new ConfigError('the API key command failed')
-    }
-  } else throw new ConfigError(KEY_SHAPE)
-  if (!raw?.trim()) throw new ConfigError('the API key source is empty')
-  return fixed(() => checkApiKey(raw))
 }
 
 function createBudget(file: string, now: () => number): { take(): boolean; spend(ms: number): void } {

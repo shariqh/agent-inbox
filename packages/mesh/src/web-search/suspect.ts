@@ -17,7 +17,8 @@ const PATTERNS = [
   /\bsystem prompt\b/i,
   /\b(?:do not|don't|never)\s+(?:tell|inform|show|mention (?:this |it )?to|reveal (?:this |it )?to)\s+the\s+user\b/i,
   /\b(?:SOURCE\s+\S{1,64}\s+\[\d+\]|QUESTION\s+\S{1,64}|CHECK\s+\S{1,64})\s+(?:BEGIN|END)\b/,
-  /!\[[^\]\n]{0,500}\][([]/,
+  // any `![`: an image whose alt text is longer than the strip's bound is still flagged
+  /!\[/,
   /[\u202A-\u202E\u2066-\u2069]/,
   /[\u{E0000}-\u{E007F}]/u,
   /\b(?:display\s*:\s*none|visibility\s*:\s*hidden|font-size\s*:\s*0(?![.\d]))/i,
@@ -50,7 +51,7 @@ export const visible = (text: string): string => text.replace(/\r\n?/g, '\n').re
 
 /** Text the data part may carry: one line unless `lines`, at most `max` code points. */
 export function clean(text: string, max: number, lines = false): string {
-  const kept = visible(text).replace(/!\[[^\]\n]{0,500}\](?:\([^)\n]{0,2048}\)|\[[^\]\n]{0,500}\])/g, '').replace(/^[ \t]*\[[^\]\n]+\]:[ \t]*\S.*$/gm, '')
+  const kept = visible(text).replace(/!\[[^\]\n]{0,500}\](?:\([^)\n]{0,2048}\)|\[[^\]\n]{0,500}\])/g, '').replace(/!\[/g, '[').replace(/^[ \t]*\[[^\]\n]+\]:[ \t]*\S.*$/gm, '')
   const shaped = lines ? kept.replace(/[ ]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim() : kept.replace(/\s+/g, ' ').trim()
   const points = [...shaped]
   return points.length > max ? points.slice(0, max).join('').trimEnd() : shaped

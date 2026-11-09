@@ -17,6 +17,7 @@ const LINK = /\[([^\]\n]{0,500})\]\([^)\s]{0,2048}(?:\s+"[^"\n]{0,500}")?\)/g
 
 const clean = (text: string): string => visible(text.slice(0, PAGE_CUT))
   .replace(/!\[[^\]\n]{0,500}\]\([^)\n]{0,2048}\)/g, '')
+  .replace(/!\[/g, '[')
   .replace(/<(script|style)\b[\s\S]*?<\/\1\s*>/gi, ' ')
   .replace(/<[^>\n]{0,500}>/g, '')
 

@@ -2,9 +2,30 @@
 // agent through `serve`, so the same output guard, front door and gate, with a run
 // whose stages try every way to leak the query: an error carrying it, a provider
 // failure carrying `?q=<query>`, console calls, a warning, a throw from a timer
-// callback and a rejected promise nobody awaits.
+// callback and a rejected promise nobody awaits; and W3's real search, whose
+// transport fails with the URL (`?q=<query>`) and the Ollama key in its message.
 import { fixtureRun, serve } from '../src/web-search/agent.js'
 import type { Run } from '../src/web-search/agent.js'
+import { createBudget, createPacer } from '../src/web-search/budget.js'
+import { createCache } from '../src/web-search/cache.js'
+import { createOllama } from '../src/web-search/ollama.js'
+import type { Send } from '../src/web-search/provider.js'
+import { createSearch } from '../src/web-search/search.js'
+import type { Found } from '../src/web-search/search.js'
+import { createSearxng } from '../src/web-search/searxng.js'
+
+const careless: Send = async (r) => {
+  const error = new Error(`${r.method} ${r.url.href} failed with ${r.headers.authorization ?? ''}`)
+  console.error('transport failed', error)
+  throw error
+}
+const ollama = createOllama({ key: process.env['W3_CANARY_KEY']!, send: careless })
+let state = ''
+const search = createSearch({
+  searxng: createSearxng({ endpoint: 'http://127.0.0.1:9', send: careless }), ollama: ollama.search, fetcher: ollama.fetcher, fetch: 'ollama',
+  budget: createBudget({ store: { load: () => state, save: (t) => { state = t } } }), pacer: createPacer({ spacingMs: 0 }), cache: createCache<Found>(),
+  screen: () => ({ user: 'canary-user', interfaces: [] }),
+})
 
 const never = new Promise<never>(() => {})
 const run: Run = async (query, options, signal, onState) => {
@@ -23,6 +44,11 @@ const run: Run = async (query, options, signal, onState) => {
     console.table([query])
     console.assert(false, query)
     throw error
+  }
+  if (kind === 'search') {
+    const r = await search({ query, mode: 'answer', recency: 'any', maxSources: 5, sites: [], excludeSites: [], fresh: false }, signal)
+    if (r.ok) return fixtureRun(query, options, signal, () => {})
+    return { state: r.code === 13 ? 'failed' : 'rejected', reason: r.reason, data: { code: r.code, status: r.status, reason: r.reason } }
   }
   if (kind === 'warning') {
     process.emitWarning(query)

@@ -699,6 +699,21 @@ describe('a canary query never reaches stderr or a log (§3.2 item 5, §13 Logs)
     clean(c)
   })
 
+  it('when both providers fail with the query in a URL and the key in the message (W3)', async () => {
+    const key = 'Kq9canaryOllamaKey'
+    const port = await freePort()
+    const dir = meshHome({ port })
+    const child = spawnNode([CHILD], { AGENT_INBOX_MESH_DIR: dir, W3_CANARY_KEY: key })
+    await vi.waitFor(() => expect(child.stderr()).toContain('listening on'), { timeout: 10_000 })
+    const res = await call(port, { body: envelope('SendMessage', ask(`search ${CANARY}`)) })
+    const task = (JSON.parse(res.body) as Json).result.task
+    expect(task.status.state).toBe('TASK_STATE_FAILED')
+    expect(task.status.message.parts[0].text).toBe('failed: providers-failed')
+    expect(child.stderr()).toContain('sdk: error\n')
+    for (const text of [res.body, child.stderr(), logText(dir)]) expect(text).not.toMatch(new RegExp(`${CANARY}|${key}|search\\?q`))
+    clean({ dir, child })
+  })
+
   it.each([['timer'], ['reject']])('when a %s fails outside any await: one fixed line, open tasks FAILED, exit 1', async (kind) => {
     const c = await start()
     const task = (await rpc(c.port, 'SendMessage', ask(`${kind} ${CANARY}`))).result.task

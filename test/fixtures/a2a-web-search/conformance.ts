@@ -192,7 +192,7 @@ export function checkExchange(exchange: unknown, card: unknown): string[] {
     problems.push(...checkResult(data, query))
   } else {
     if (list(task.artifacts).length) problems.push('response: an artifact on a task that did not complete')
-    if (x.exit === 11 && !(['shape', 'daily-cap'].includes(data.reason as string) || (data.reason === 'screen' && strs(data.classes) && data.classes.length && data.classes.every((c) => SLUG.test(c))))) problems.push('data: refusal reason or classes')
+    if (x.exit === 11 && !(['shape', 'daily-cap', 'hourly-cap'].includes(data.reason as string) || (data.reason === 'screen' && strs(data.classes) && data.classes.length && data.classes.every((c) => SLUG.test(c))))) problems.push('data: refusal reason or classes')
     if (x.exit === 12 && !(Number.isSafeInteger(data.retryAfterMs) && (data.retryAfterMs as number) > 0)) problems.push('data: retryAfterMs')
     if (x.exit === 13 && typeof data.reason !== 'string') problems.push('data: reason')
     if (query.length >= 8 && JSON.stringify(replies).includes(JSON.stringify(query).slice(1, -1))) problems.push('response: echoes the query')

@@ -388,7 +388,8 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
     one transport (`node:http(s)`, a fresh socket, no redirects: a 3xx is `bad-response`; no
     proxy environment). A failure is a fixed reason, never a URL (a `?q=` holds the query), a
     body or a key; adapters never read a rejection's message.
-  - `searxng.ts`: `GET /search?q=…&format=json&categories=general&language=en` (+ `time_range`)
+  - `searxng.ts`: `GET /search?q=…&format=json&categories=general&language=en` (+ `time_range`;
+    `sites` as `site:` terms in `q`, exclusions filtered after)
     on an endpoint that must be `https://<name>.<tailnet>.ts.net[:<port>]` or
     `http://127.0.0.1:<port>` (request-post's rule, held again here); reads only
     `results[].url/title/content/engines/publishedDate`. `ollama.ts`: `web_search` and

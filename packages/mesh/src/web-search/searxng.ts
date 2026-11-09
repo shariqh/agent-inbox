@@ -1,10 +1,11 @@
 // The SearXNG adapter (web search design §2.2, §5.3): GET /search?q=…&format=json on
 // the profile's endpoint, which must be a tailnet-only `https://<name>.<tailnet>.ts.net`
 // name or, for an SSH tunnel, `http://127.0.0.1:<port>` (request-post's endpoint rule):
-// never a public host or an IP literal. It reads results[].url, title, content, engines
+// never a public host or an IP literal. `sites` become `site:` terms in the query, since
+// SearXNG has no site parameter. It reads results[].url, title, content, engines
 // and publishedDate, and nothing else of SearXNG's answer.
 import { ConfigError } from '../files.js'
-import { failure, obj, reasonOf, send as defaultSend, str } from './provider.js'
+import { failure, obj, reasonOf, send as defaultSend, str, withSites } from './provider.js'
 import type { ProviderSource, SearchProvider, Send } from './provider.js'
 
 const LABEL = '[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?'
@@ -36,7 +37,7 @@ export function createSearxng(o: { endpoint: string; send?: Send; timeoutMs?: nu
     id: 'searxng',
     async search(q, signal) {
       const url = new URL('/search', base)
-      url.search = new URLSearchParams({ q: q.text, format: 'json', categories: 'general', language: 'en', ...(q.recency === 'any' ? {} : { time_range: q.recency }) }).toString()
+      url.search = new URLSearchParams({ q: withSites(q.text, q.sites), format: 'json', categories: 'general', language: 'en', ...(q.recency === 'any' ? {} : { time_range: q.recency }) }).toString()
       let reply
       try {
         reply = await send({ method: 'GET', url, headers: { accept: 'application/json' }, timeoutMs: o.timeoutMs ?? SEARCH_MS, signal })

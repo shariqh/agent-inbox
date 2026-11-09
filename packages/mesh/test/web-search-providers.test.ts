@@ -187,7 +187,9 @@ describe('the SearXNG adapter (§2.2, §5.3)', () => {
     expect(r).toEqual({ ok: true, sources: RESULTS.map((x) => ({ url: x.url, title: x.title, snippet: x.content, engines: x.engines, ...(x.publishedDate ? { publishedAt: String(x.publishedDate).slice(0, 10) } : {}) })) })
     await createSearxng({ endpoint: ENDPOINT, send: fake }).search({ text: Q, recency: 'week', max: 5, sites: ['docs.example.com'], excludeSites: ['example.net'] }, new AbortController().signal)
     expect(fake.calls.searxng[1]!.url.searchParams.get('time_range')).toBe('week')
-    expect(fake.calls.searxng[1]!.url.searchParams.get('q')).toBe(Q)
+    expect(fake.calls.searxng[1]!.url.searchParams.get('q')).toBe(`${Q} site:docs.example.com`)
+    await createSearxng({ endpoint: ENDPOINT, send: fake }).search({ text: Q, recency: 'any', max: 5, sites: ['a.example.com', 'b.example.org'], excludeSites: [] }, new AbortController().signal)
+    expect(fake.calls.searxng[2]!.url.searchParams.get('q')).toBe(`${Q} (site:a.example.com OR site:b.example.org)`)
   })
 
   it('maps 5xx, an unreachable host, a bad body and a redirect to fixed reasons', async () => {

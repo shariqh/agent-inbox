@@ -7,6 +7,7 @@
 // is rebuilt from an allowlist in camelCase: any other key, at any level and in
 // either spelling, and any other method is refused with -32602, so the SDK's
 // snake_case aliases, `tenant`, continuations and push configs are unreachable.
+// It adds one field of its own, `historyLength: 0`, so no Task response carries `history`.
 // It shares no code with unslop's a2a.ts.
 import { timingSafeEqual } from 'node:crypto'
 import { createServer } from 'node:http'
@@ -46,7 +47,8 @@ export function rebuild(body: unknown): Json | undefined {
   if (!only(body, ['jsonrpc', 'id', 'method', 'params']) || body.jsonrpc !== '2.0') return
   const { id, method, params } = body
   if (!text(id, 128) && !int(id, 0, Number.MAX_SAFE_INTEGER)) return
-  if (method === 'GetTask' || method === 'CancelTask') return only(params, ['id']) && text(params.id, 128) ? { jsonrpc: '2.0', id, method, params: { id: params.id } } : undefined
+  // historyLength 0 is ours alone: without it every Task response echoes the query and each status message
+  if (method === 'GetTask' || method === 'CancelTask') return only(params, ['id']) && text(params.id, 128) ? { jsonrpc: '2.0', id, method, params: { id: params.id, ...(method === 'GetTask' ? { historyLength: 0 } : {}) } } : undefined
   if ((method !== 'SendMessage' && method !== 'SendStreamingMessage') || !only(params, ['message', 'configuration'])) return
   const { message: m, configuration: c = {} } = params
   if (!only(m, ['messageId', 'role', 'parts', 'metadata']) || !text(m.messageId, 128) || m.role !== 'ROLE_USER') return
@@ -58,8 +60,8 @@ export function rebuild(body: unknown): Json | undefined {
   if (!only(c, ['returnImmediately', 'acceptedOutputModes']) || (c.returnImmediately !== undefined && c.returnImmediately !== false)) return
   if (c.acceptedOutputModes !== undefined && !texts(c.acceptedOutputModes, 8)) return
   const metadata = m.metadata === undefined ? {} : { metadata: { [EXTENSION]: structuredClone(ext) } }
-  const configuration = c.acceptedOutputModes === undefined ? {} : { configuration: { acceptedOutputModes: [...c.acceptedOutputModes] } }
-  return { jsonrpc: '2.0', id, method, params: { message: { messageId: m.messageId, role: 'ROLE_USER', parts: [{ text: part.text, mediaType: 'text/plain' }], ...metadata }, ...configuration } }
+  const configuration = { historyLength: 0, ...(c.acceptedOutputModes === undefined ? {} : { acceptedOutputModes: [...c.acceptedOutputModes] }) }
+  return { jsonrpc: '2.0', id, method, params: { message: { messageId: m.messageId, role: 'ROLE_USER', parts: [{ text: part.text, mediaType: 'text/plain' }], ...metadata }, configuration } }
 }
 
 /** A task belongs to the token that created it; only the last 64 finished tasks are kept. */

@@ -1,0 +1,30 @@
+{
+  "provider": "ollama",
+  "note": "web_fetch: one page, its title, its text (Markdown) and its links. The agent drops images and link targets before chunking (§6).",
+  "request": {
+    "method": "POST",
+    "url": "https://ollama.com/api/web_fetch",
+    "headers": {
+      "authorization": "Bearer <placeholder-key>",
+      "content-type": "application/json"
+    },
+    "body": {
+      "url": "https://docs.example.com/releases/1"
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": {
+      "title": "Example runtime release notes",
+      "content": "[Home](https://docs.example.com/) [Downloads](https://docs.example.com/download) [Blog](https://docs.example.com/blog)\n\n# Release notes\n\nVersion 24 of the example runtime entered long-term support on 2025-10-28. The first release in that line is v24.11.0, and it raised the default request body limit to 16 KiB.\n\n## Support window\n\nLong-term support lasts 30 months: 12 months of active support, then 18 months of maintenance. Security fixes land in every supported line.\n\n![Release timeline](https://docs.example.com/img/timeline.png)\n\n## Upgrading\n\nRead the migration guide before you upgrade from version 22. Most programs need no change.",
+      "links": [
+        "https://docs.example.com/",
+        "https://docs.example.com/download",
+        "https://docs.example.com/blog"
+      ]
+    }
+  }
+}

@@ -1,0 +1,230 @@
+{
+  "note": "Query screen cases (design §7.1, §7.4). Every name, address and path is a placeholder. `classes` are the classes a refusal names; `shape` is the layer before the screen. `context` stands in for what the agent reads at start.",
+  "context": {
+    "user": "example-user",
+    "interfaces": [
+      "192.0.2.10/24",
+      "198.51.100.7/24"
+    ],
+    "tailnet": "tailnet-example.ts.net",
+    "deny": [
+      "Acme Widgets",
+      "example-private-repo",
+      "studio-mini"
+    ],
+    "customerPaths": [
+      "~/notes/customers/"
+    ],
+    "allowEmails": [],
+    "seed": {
+      "tailnetHosts": [
+        "nas",
+        "pi",
+        "gpu",
+        "studio-mini"
+      ],
+      "privateRepos": [
+        "notes",
+        "example-private-repo"
+      ],
+      "kept": [
+        "studio-mini",
+        "example-private-repo"
+      ],
+      "skipped": {
+        "tooShort": [
+          "nas",
+          "pi",
+          "gpu"
+        ],
+        "commonWords": [
+          "notes"
+        ]
+      }
+    }
+  },
+  "cases": [
+    {
+      "query": "why does mail to person@mail.invalid bounce",
+      "expect": "refuse",
+      "classes": [
+        "email-address"
+      ]
+    },
+    {
+      "query": "who owns the number (555) 555-0123",
+      "expect": "refuse",
+      "classes": [
+        "phone-number"
+      ]
+    },
+    {
+      "query": "why is token=placeholder12345678 rejected by the server",
+      "expect": "refuse",
+      "classes": [
+        "secret"
+      ]
+    },
+    {
+      "query": "render notes/customers/example-co/brief.md as pdf",
+      "expect": "refuse",
+      "classes": [
+        "customer-path"
+      ]
+    },
+    {
+      "query": "Acme Widgets SSO outage",
+      "expect": "refuse",
+      "classes": [
+        "deny-list"
+      ]
+    },
+    {
+      "query": "example-private-repo build fails on arm64",
+      "expect": "refuse",
+      "classes": [
+        "deny-list"
+      ],
+      "note": "a seeded private repository name"
+    },
+    {
+      "query": "192.0.2.44 not responding to ping",
+      "expect": "refuse",
+      "classes": [
+        "private-name"
+      ],
+      "note": "an address inside one of this Mac's interface subnets"
+    },
+    {
+      "query": "why is studio-mini.local slow to resolve",
+      "expect": "refuse",
+      "classes": [
+        "private-name",
+        "deny-list"
+      ],
+      "note": "a .local host with a specific label, also a seeded tailnet host"
+    },
+    {
+      "query": "ssh to build-box.tailnet-example.ts.net times out",
+      "expect": "refuse",
+      "classes": [
+        "private-name"
+      ],
+      "note": "a .ts.net host with a specific label"
+    },
+    {
+      "query": "metrics.internal returns 503 after a reload",
+      "expect": "refuse",
+      "classes": [
+        "private-name"
+      ]
+    },
+    {
+      "query": "tailnet-example acl grant syntax",
+      "expect": "refuse",
+      "classes": [
+        "private-name"
+      ],
+      "note": "the tailnet's own name"
+    },
+    {
+      "query": "/Users/example-user/projects/app crashes on start",
+      "expect": "refuse",
+      "classes": [
+        "home-path"
+      ]
+    },
+    {
+      "query": "permissions on /home/example-user/.config",
+      "expect": "refuse",
+      "classes": [
+        "home-path"
+      ]
+    },
+    {
+      "query": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "expect": "refuse",
+      "classes": [
+        "shape"
+      ],
+      "note": "over 400 characters"
+    },
+    {
+      "query": "word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word",
+      "expect": "refuse",
+      "classes": [
+        "shape"
+      ],
+      "note": "over 40 words"
+    },
+    {
+      "query": "first line\nsecond line",
+      "expect": "refuse",
+      "classes": [
+        "shape"
+      ],
+      "note": "more than one line"
+    },
+    {
+      "query": "a",
+      "expect": "refuse",
+      "classes": [
+        "shape"
+      ],
+      "note": "under 2 characters"
+    },
+    {
+      "query": "Hello, World program in Zig",
+      "expect": "pass"
+    },
+    {
+      "query": "Hi, what is the default Postgres port",
+      "expect": "pass"
+    },
+    {
+      "query": "how does localhost resolve on macOS",
+      "expect": "pass"
+    },
+    {
+      "query": "what is 192.168.1.1",
+      "expect": "pass"
+    },
+    {
+      "query": "is 127.0.0.1 the same as ::1",
+      "expect": "pass"
+    },
+    {
+      "query": "printer.local not found on Mac",
+      "expect": "pass"
+    },
+    {
+      "query": "what does ~/ mean in bash",
+      "expect": "pass"
+    },
+    {
+      "query": "PATH=/usr/bin vs /usr/local/bin",
+      "expect": "pass"
+    },
+    {
+      "query": "C:\\Users folder permissions",
+      "expect": "pass"
+    },
+    {
+      "query": "difference between .local and .internal",
+      "expect": "pass"
+    },
+    {
+      "query": "set up a NAS on a Raspberry Pi with a GPU",
+      "expect": "pass",
+      "note": "tailnet hosts named nas, pi and gpu were skipped by the seed (§7.4), so they are not on the deny list"
+    },
+    {
+      "query": "what does /Users/me/Library hold on macOS",
+      "expect": "pass"
+    },
+    {
+      "query": "is 10.0.0.1 a router address",
+      "expect": "pass"
+    }
+  ]
+}

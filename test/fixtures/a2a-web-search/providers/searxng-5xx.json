@@ -1,0 +1,15 @@
+{
+  "provider": "searxng",
+  "note": "SearXNG (or the tailnet serve in front of it) erroring: counts as failing, so Ollama answers.",
+  "request": {
+    "method": "GET",
+    "path": "/search?q=example+runtime+long-term+support&format=json&categories=general&language=en"
+  },
+  "response": {
+    "status": 502,
+    "headers": {
+      "content-type": "text/plain; charset=utf-8"
+    },
+    "body": "Bad Gateway"
+  }
+}

@@ -330,7 +330,10 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
     `returnImmediately: false` and `acceptedOutputModes`; `GetTask` and `CancelTask`:
     `id`). Any other key at any level, in either spelling (the SDK's decoders accept
     `task_id`, `reference_task_ids`, `return_immediately`, … and `params.tenant`), and every
-    other method is refused with -32602 before the SDK. The rebuilt object goes to the SDK's
+    other method is refused with -32602 before the SDK. The rebuilt request adds one field of
+    its own, `historyLength: 0` (sends and `GetTask`, since W2), so no Task response carries
+    `history` (the query and every status message); `CancelTask` has no such field in A2A 1.0.
+    The rebuilt object goes to the SDK's
     `JsonRpcTransportHandler` over `DefaultRequestHandler`, with a task store owned per token
     that keeps the last 64 finished tasks (the SDK's `InMemoryTaskStore` cannot evict).
   - `web-search/agent.ts`: the card (§4.1: nothing per copy but the interface URL), the
@@ -360,8 +363,16 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
     see the token; child processes (run from source through `test/ts-hooks.mjs`) prove
     unslop's start loads no SDK module and that a canary query reaches neither stderr nor a
     log when a stage throws, a provider error carries `?q=`, `console` is called, a warning
-    is emitted, a timer callback throws or a rejection goes unhandled. The conformance
-    fixtures recorded from this server are W2's.
+    is emitted, a timer callback throws or a rejection goes unhandled.
+- **Web search W2: conformance fixtures (#505; design §11).** `test/fixtures/a2a-web-search/`
+  ([README](../../test/fixtures/a2a-web-search/README.md)): the card and its hash, one exchange
+  per §4.4 row, the refusals, provider shapes for W3, injected pages, `screen.json`,
+  `grounding.json`, and a Node-core validator (`conformance.ts`) with a manifest. The card and
+  exchanges are recorded from W1's server by `packages/mesh/test/web-search-record.ts`, with ids,
+  timestamps and the port replaced by placeholders; `web-search-fixtures.test.ts` re-records in
+  memory and fails on any difference, sends every refusal fixture through the real front door,
+  and checks `screen.json` against unslop's five classes. `test/a2a-web-search-fixtures.test.ts`
+  runs the validator over every file at the root.
 - **Bench S11 (U4, unslop design §9.1, §9.3).** `packages/mesh/bench/s11/`, compiled by
   `tsconfig.bench.json` into `dist/bench/` and run as `npm run bench -- run|score`; Node
   core plus the package's own `files.ts` and `mesh-config.ts`, never built by the

@@ -1,0 +1,7 @@
+{
+  "row": "usage",
+  "situation": "Usage, a terminal on stdin",
+  "exit": 4,
+  "clientOnly": true,
+  "note": "Client-side only: a usage error or a terminal on stdin exits 4 before any connection."
+}

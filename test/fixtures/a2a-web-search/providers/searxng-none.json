@@ -1,0 +1,35 @@
+{
+  "provider": "searxng",
+  "note": "No results: the Ollama fallback runs.",
+  "request": {
+    "method": "GET",
+    "path": "/search?q=example+runtime+long-term+support&format=json&categories=general&language=en"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": {
+      "query": "example runtime long-term support",
+      "number_of_results": 0,
+      "results": [],
+      "answers": [],
+      "corrections": [],
+      "infoboxes": [],
+      "suggestions": [
+        "example runtime release schedule"
+      ],
+      "unresponsive_engines": [
+        [
+          "duckduckgo",
+          "CAPTCHA"
+        ],
+        [
+          "brave",
+          "timeout"
+        ]
+      ]
+    }
+  }
+}

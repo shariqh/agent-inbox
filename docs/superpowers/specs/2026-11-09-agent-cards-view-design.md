@@ -11,9 +11,12 @@ the Agents home ([`2026-11-04-agents-home-design.md`](2026-11-04-agents-home-des
 unslop ([`2026-11-06-unslop-a2a-agent-design.md`](2026-11-06-unslop-a2a-agent-design.md)) §4.4,
 §8.3; request-post ([`2026-11-07-request-post-a2a-agent-design.md`](2026-11-07-request-post-a2a-agent-design.md))
 §3.1, §6.
-**Amends:** the mesh design's §2.1, §2.4 (b), §8.8 and §10.2, and the rule in
+**Amends:** the mesh design's §2.1, §2.2, §2.4 (b), §8.8 and §10.2; the rule in
 [`docs/architecture/mesh.md`](../../architecture/mesh.md) that "the viewer reads nothing of the
-mesh today" (§10 below).
+mesh today"; and supersedes unslop §4.5 (b) and request-post §1's "no viewer change" non-goal
+(§10 below).
+**Revised 2026-11-09 after review round 1:** §2.2-§2.6, §3.4, §4.2-§4.7, §5.1, §7, §9, §10 and
+§13 Q3 (now checks on open and Refresh only).
 
 ---
 
@@ -24,9 +27,11 @@ mesh today" (§10 below).
    loopback, started on demand, exits after 30 idle minutes) and **request-post** (remote, served
    by the publishing service over a tailnet). Each serves an A2A 1.0 Agent Card. The app shows
    none of it.
-2. **Where:** a **Mesh agents** section at the end of the Agents home, above its folds. One row
-   per configured agent: state, name, where it runs, version, skill count. A row expands in place
-   to the card's details and, one level deeper, the raw card JSON as inert text (§2).
+2. **Where:** a **Mesh agents** section at the end of the Agents home, above its folds. It is
+   global: the state filters and the project and agent lens do not narrow it, and it shows in the
+   zero-sessions empty state. One row per configured agent: state, name, where it runs, version,
+   skill count. A row expands in place to the card's details and, one level deeper, the raw card
+   JSON as inert text (§2).
 3. **State words are honest.** unslop not running is normal: "Not running · starts on its first
    call", in a neutral tone. A card that fails the client's own checks says which check and how to
    fix it. Nothing in the section is ever an ask (§2.4).
@@ -36,10 +41,11 @@ mesh today" (§10 below).
    `mesh` key only when the file names an agent this build knows (§3).
 5. **How cards are fetched:** a new viewer-only module, `src/mesh-agents.ts`, sends one
    `GET /.well-known/agent-card.json` per agent to the URL built from the configured endpoint,
-   never a URL from a card. No token, no redirect, no proxy, a size cap and a short timeout. It
-   never starts or wakes an agent. Checks run only while a page reads the section: at most every
-   30 s for unslop and every 5 minutes for request-post, plus a Refresh button (§4).
-6. **The card rules are shared.** The two clients' card checks move into a pure module,
+   never a URL from a card. No token, no redirect, no proxy, a size cap and a total deadline
+   (3 s on loopback for unslop, 5 s for every request-post check). It never starts or wakes an
+   agent. Checks run only when the Agents home opens and when the human presses Refresh; there is
+   no cadence (§4).
+6. **The card rule is shared.** The two clients' card checks move into a pure module,
    `src/agent-card.ts`, so the view and the clients cannot disagree on "does this card match"
    (§4.4).
 7. **Off means off.** With no `mesh.json`, the page makes exactly today's reads, `/api/version`
@@ -78,10 +84,17 @@ card fetcher, one read route, one refresh route).
 | B. Its own tab ("Agents" beside Inbox, Plans) | Room to grow for M3's cross-host view. | A tab is an attention surface by convention here: tabs carry counts. A tab for two rows is heavy. A new tab touches `public/tabs.js`, keys and help. |
 | C. A Settings panel ("Mesh") | Close to configuration. | Settings is for switches. A card is state, not a setting, and Settings → Mesh was removed by #454 on purpose. |
 
-**Recommendation: A.** The section is a `<details>` block, open by default, placed after the
-session groups and before the Ended, Dormant and Closed folds. Its open state is window-local and
-joins `frameInputs()` (§6). When M3 brings more agents, the same section gains grouping by host;
-a tab can be reconsidered then (§13 Q1).
+**Recommendation: A.** The section is a `<section>` with its own header row: a disclosure button
+("Mesh agents (2)", `aria-expanded`), the "checked 1m ago" text and a **Refresh** button. Refresh
+sits in the header row, never inside a `<summary>` or the disclosure button, so pressing it never
+toggles the section. The section is open by default and placed after the session groups and before
+the Ended, Dormant and Closed folds. Its open state is window-local and joins `frameInputs()` (§6).
+
+**The section is global.** The state filters (All, Needs you, Working, Quiet, Parked) and the
+sidebar's project and agent lens do not narrow it: an agent belongs to no project and is never a
+session. It also shows when there are no sessions at all, under the empty state's text. When M3
+brings more agents, the same section gains grouping by host; a tab can be reconsidered then
+(§13 Q1).
 
 ### 2.2 The collapsed row
 
@@ -90,17 +103,19 @@ One row per agent, sorted by name:
 1. A state dot and label (§2.4).
 2. The name: the `mesh.json` key (`unslop`, `request-post`), not the card's `name`. The card's
    name is shown in the details when it differs.
-3. Where it runs: **Local** with `127.0.0.1:<port>`, or **Remote · tailnet** without the host.
-   The full remote endpoint is shown only in the expanded details, so a screenshot of the
-   Dashboard does not show the tailnet name by default.
+3. Where it runs: **Local** with `127.0.0.1:<port>` for unslop; **Remote · tailnet** for a
+   request-post `https://` endpoint, without the host; **Remote · SSH tunnel** for request-post's
+   `http://127.0.0.1:<port>` fallback, since the agent itself is still the remote service. The full
+   remote endpoint is shown only in the expanded details, so a screenshot of the Dashboard does not
+   show the tailnet name by default.
 4. The card's version, its skill count and "A2A 1.0" when the interface matches. When the agent
    is not running and the viewer saw its card earlier, these come from that card and say so:
    "v0.3.1 · seen 2h ago".
 5. For unslop only, a usage line from its own budget file (§4.6): "Today: 12 tasks ·
    8 model-minutes".
 
-The section's summary line says "Mesh agents (2)" and, at the right, "checked 1m ago" (the oldest
-check) and a **Refresh** button.
+The section's header row says "Mesh agents (2)" and, at the right, "checked 1m ago" (the oldest
+check) and the **Refresh** button.
 
 ### 2.3 The expanded row
 
@@ -113,7 +128,7 @@ Opening a row shows, as labelled lines:
 | Where | the configured endpoint | `http://127.0.0.1:4420`, or the remote endpoint in full; for unslop also "profile: unslop" (the profile's name, never its content) |
 | Protocol | `supportedInterfaces[]` | "A2A 1.0 · JSON-RPC" per interface; each interface's `url` as text |
 | Capabilities | `capabilities.streaming`, `pushNotifications` | "streaming yes · push no" |
-| Auth | `securitySchemes`, `securityRequirements` | "bearer (HTTP Bearer), required" and "token held by meshctl; not shown here" |
+| Auth | `securitySchemes`, `securityRequirements` | "bearer (HTTP Bearer), required" and "token kept outside the app; not shown here" |
 | Extensions | `capabilities.extensions[]` | URI, "required" or "optional", then its params as `key value` pairs: numbers and strings as text, arrays joined with ", " (first 8, then "+N"), nested objects as compact JSON text. For unslop: `api 1 · skillId unslop · rulesSha256 3f9a1c0e7b22… · bytes 6,204 · loadedAt 14:02` |
 | Skills | `skills[]` | One line each: name (and id when different), description, tags as plain chips |
 | Modes | `defaultInputModes`, `defaultOutputModes` | "in text/plain · out text/plain, application/json" |
@@ -125,20 +140,24 @@ for copying. No link, image or icon from the card is ever rendered (§5.1).
 
 ### 2.4 States and their words
 
-| State | When | Label | Tone |
-|---|---|---|---|
-| `checking` | No check has finished since the viewer read this agent's config | "Checking…" | neutral |
-| `up` | The card was fetched and passed the client's checks (§4.4) | unslop "Running"; request-post "Reachable" | quiet green |
-| `not-running` | unslop only: the connection was refused | "Not running · starts on its first call" | neutral grey, **not** an error |
-| `unreachable` | No answer, a timeout, a name that does not resolve, a refused TLS handshake, or HTTP 401 or 403 | "Unreachable · <reason>" | amber |
-| `not-a-card` | Something answered, but not with a card: a non-200 status, a redirect, not a JSON object, over 64 KiB | "Not an agent card · <reason>" | amber |
-| `mismatch` | A card that fails the client's checks | "Card does not match this build · <check>" and the fix: unslop "rebuild packages/mesh", request-post "update agent-inbox or the service" | amber |
-| `invalid` | The `agents.<name>` key is present but its endpoint fails its rule (`loopbackPort()`, `requestPostEndpoint()`) | "Endpoint not accepted · run npm run meshctl -- status" | amber, no endpoint shown, nothing fetched |
+The page owns only the state labels. Every `reason` and `fix` string comes from
+`src/mesh-agents.ts` in the route's JSON and is rendered with `textContent` (§3.4 says why).
 
-Reasons are fixed words chosen by the viewer, never a socket's or parser's message: "does not
-resolve (is this Mac on the tailnet?)", "connection refused", "TLS handshake failed", "no answer
-in 5 s", "connection cut", "the service refused this device (HTTP 403)", "HTTP 404", "redirect,
-not followed", "not JSON", "larger than 64 KiB", and the check names of §4.4.
+| State | When | Label (page) | `reason` and `fix` (server) | Tone |
+|---|---|---|---|---|
+| `checking` | No check has finished since the viewer read this agent's config | "Checking…" | none | neutral |
+| `up` | The card was fetched and passed the client's checks (§4.4) | unslop "Running"; request-post "Reachable" | none | quiet green |
+| `not-running` | unslop only: the connection was refused | "Not running" | reason "starts on its first call" | neutral grey, **not** an error |
+| `unreachable` | No answer within the deadline, a name that does not resolve, a refused TLS handshake, or HTTP 401 or 403 | "Unreachable" | reason, below | amber |
+| `not-a-card` | Something answered, but not with a card: a non-200 status, a redirect, not a JSON object, over 64 KiB | "Not an agent card" | reason, below | amber |
+| `mismatch` | A card that fails the client's checks | "Card does not match this build" | reason: the failed check; fix: unslop "rebuild packages/mesh", request-post "update agent-inbox or the service" | amber |
+| `invalid` | The `agents.<name>` key is present but its endpoint fails its rule (`loopbackPort()`, `requestPostEndpoint()`) | "Endpoint not accepted" | fix: "run npm run meshctl -- status" | amber, no endpoint shown, nothing fetched |
+
+Reasons are fixed words chosen by `src/mesh-agents.ts`, never a socket's or parser's message:
+"does not resolve (is this Mac on the tailnet?)", "connection refused", "TLS handshake failed",
+"no answer in 3 s" (unslop) or "no answer in 5 s" (request-post), "connection cut", "the service
+refused this device (HTTP 403)", "HTTP 404", "redirect, not followed", "not JSON", "larger than
+64 KiB", and the check names of §4.4.
 
 For request-post, a refused connection is `unreachable`: it is a service, and it should be up.
 For unslop, a refused connection is the normal idle state. For unslop, something other than a card
@@ -150,8 +169,8 @@ or a notification (§6).
 ### 2.5 Mesh off, and keys this build does not know
 
 - **No `mesh.json`, a refused file (symlink, too large, not JSON, newer schema), or no `agents`
-  key this build knows:** no section, no read, no fetch. `meshctl status` remains the place that
-  explains a refused file.
+  key this build knows:** no section, no read, no fetch. The mesh status command remains the place
+  that explains a refused file.
 - **An `agents.<name>` key this build does not know** (a later phase's agent): not fetched. The
   section's foot says "1 other agent in mesh.json is not shown by this build". The name is not
   shown.
@@ -166,7 +185,7 @@ Collapsed, inside the Agents home:
 │ agent-inbox · main                                                        │
 │   [session cards …]                                                       │
 │                                                                           │
-│ ▾ Mesh agents (2)                                 checked 1m ago  Refresh │
+│ Mesh agents (2) ▾                                checked 1m ago  [Refresh]│
 │   ○ unslop        Not running · starts on its first call                  │
 │                   Local · 127.0.0.1:4420 · v0.3.1 · seen 2h ago · 1 skill │
 │                   Today: 12 tasks · 8 model-minutes                       │
@@ -177,6 +196,9 @@ Collapsed, inside the Agents home:
 └───────────────────────────────────────────────────────────────────────────┘
 ```
 
+The header row is one line: the disclosure button on the left, the check time and **Refresh** on
+the right, as siblings.
+
 One row expanded:
 
 ```
@@ -185,9 +207,12 @@ One row expanded:
 │       Where        Remote · https://<name>.<tailnet>.ts.net               │
 │       Protocol     A2A 1.0 · JSON-RPC                                     │
 │       Capabilities streaming no · push no                                 │
-│       Auth         bearer (HTTP Bearer), required · token held by meshctl │
+│       Auth         bearer (HTTP Bearer), required                         │
+│                    token kept outside the app; not shown here             │
 │       Extension    urn:agent-inbox:ext:request-post:v1 · required         │
-│                    api 1 · brands 2 · channels blog, x-thread, … · …      │
+│                    api 1 · brands brand-a, brand-b                        │
+│                    channels blog, x-thread, x-standalone, linkedin        │
+│                    categories category-a, category-b · maxBriefBytes 8192 │
 │       Skills       request-post: File one blog or social request …        │
 │                    [publishing]                                           │
 │                    request-post-status: Read one agent-filed request …    │
@@ -220,7 +245,8 @@ One row expanded:
   `ctimeMs` match the last one, the last reading stands. Otherwise `readMesh()` reads it by the one
   rule: a regular file, never a symlink, at most 64 KiB, a JSON object with `schema` 1. Anything
   else is off. A newer schema is off. `parseMesh` and `readMesh` are unchanged.
-- **Cadence:** at most one `lstat` per 5 s, on demand. No timer, no `fs.watch`.
+- **Cadence:** at most one `lstat` per 5 s, on demand: a read of `/api/version` or
+  `/api/mesh/agents`, or a trigger on `POST /api/mesh/agents/refresh`. No timer, no `fs.watch`.
 - **What it keeps:** for each known key, its endpoint (only when it passes its rule) and, for
   unslop, the profile name. Nothing else from the file reaches a response. A key whose endpoint
   changed starts a fresh record (`checking`), so a card from the old endpoint is never shown for
@@ -243,12 +269,20 @@ loaded. The key only tells the page that `/api/mesh/agents` is worth reading.
 ### 3.4 Process boundaries
 
 - `src/mesh-agents.ts` and `src/agent-card.ts` join the mesh modules that must never enter the
-  stdio MCP graph (`test/prstate.test.ts`'s list; `mesh-agents` also matches its `/mesh/i` net).
+  stdio MCP graph. `test/prstate.test.ts`'s `MESH` list names both explicitly (`mesh-agents` also
+  matches its `/mesh/i` net; `agent-card` does not, so the explicit entry matters).
 - `src/mesh-agents.ts` imports only Node core, `./mesh-config.js` and `./agent-card.js`.
-  `src/agent-card.ts` imports nothing. Neither imports `store.ts`. `test/mesh.test.ts` pins these
-  imports as it pins the clients'.
-- No viewer, `public/` or Electron file names `unslop-client`, `request-post-client` or
-  `meshctl` (the existing guard stands; the view does not call the clients).
+  `src/agent-card.ts` imports nothing at all. Neither imports `store.ts`. `test/mesh.test.ts` pins
+  these imports. `agent-card.ts` gets its own assertion that its import list is empty, outside the
+  `MESH_FILES` loop, which expects at least one import per file.
+- **The text guard stays as it is.** `test/mesh.test.ts`'s "no viewer, frontend or Electron file
+  reaches the unslop or request-post client" matches the text `unslop-client`,
+  `request-post-client` or `meshctl` anywhere in `src/viewer*.ts`, `public/*.js` and
+  `electron/*`, comments included. So no user-facing phrase that names the command lives in those
+  files. **Choice:** every `reason` and `fix` string is built in `src/mesh-agents.ts` (not a
+  `viewer*` file, so not under the guard) and sent in the route's JSON; the page renders it with
+  `textContent`. The page's own fixed words avoid the command's name ("token kept outside the app;
+  not shown here", "the mesh status command"). The guard's file list and pattern do not change.
 - No new package. `test/fixtures/app-dependencies.txt` is unchanged.
 
 ---
@@ -273,10 +307,15 @@ loopback boundary are unchanged. Never the MCP server: it stays network-free. Ne
 - No redirect is followed: a 3xx is `not-a-card` ("redirect, not followed").
 - The body is read up to 64 KiB, then the request is destroyed (`not-a-card`, "larger than
   64 KiB"). It must parse as a JSON object.
-- Timeouts: 3 s on loopback, as `meshctl unslop` uses; 5 s for a remote endpoint.
+- **One total deadline per check**, wall clock, covering lookup, connect, TLS, headers and body:
+  3 s for unslop (as `meshctl unslop` uses on loopback) and 5 s for every request-post check,
+  whether its endpoint is the tailnet form or the SSH fallback. It is one `AbortSignal.timeout()`
+  passed to the request (or one timer that destroys it), never per-phase socket timeouts, so a
+  server that drips one byte every 500 ms still ends at the deadline ("no answer in 3 s" or
+  "no answer in 5 s").
 - TLS: Node's default verification. The `https://<name>.<tailnet>.ts.net` form is the only remote
-  form `requestPostEndpoint()` accepts, so a remote card is always fetched over TLS. The SSH
-  fallback `http://127.0.0.1:<port>` is loopback.
+  form `requestPostEndpoint()` accepts, so a remote card is fetched over TLS. The SSH fallback
+  `http://127.0.0.1:<port>` is a local tunnel end, so it is plain HTTP on loopback.
 
 ### 4.3 Per agent
 
@@ -286,49 +325,67 @@ so it does not count as activity: the agent still exits after 30 minutes with no
 authenticated request (unslop design §4.3). When the viewer has seen a good card earlier in its
 own lifetime, the row shows that card, marked "seen 2h ago" (§13 Q2 weighs a disk copy).
 
-**request-post.** The card is fetched over the tailnet with no token, as `meshctl request-post`
-fetches it. The service's `serve` front needs the device's app capability, which this Mac has.
-From a machine without it, the row says "the service refused this device (HTTP 403)", which is
-the same fact the client reports as exit 15.
+**request-post.** The card is fetched with no token, as `meshctl request-post` fetches it, through
+the publishing service. The service's `serve` front needs the device's app capability, which this
+Mac has. From a machine without it, the row says "the service refused this device (HTTP 403)",
+which is the same fact the client reports as exit 15. Because each check reaches the service, it
+runs only on the two triggers of §4.5.
 
 ### 4.4 One card rule: `src/agent-card.ts`
 
 The clients' checks move into one pure module, so the view's `mismatch` and a client's exit 14 or
-15 always agree:
+15 always agree. The module grows in two steps, because `test/dead-exports.test.ts` never counts a
+test as a consumer and every export needs a shipping caller when it lands:
 
-- `checkCard(agent, card)` returns `undefined` or one fixed reason. unslop: the `unslop` skill, a
-  `JSONRPC` interface with `protocolVersion` `1.0`, and `urn:agent-inbox:ext:unslop:v1` with
-  `api: 1`. request-post: both skills, the same interface, and
-  `urn:agent-inbox:ext:request-post:v1` with `api: 1`. These are exactly
-  `cardMismatch()` in `src/unslop-client.ts` and the check in `src/request-post-client.ts`'s
-  `send()` today.
-- `summarizeCard(card)` builds the bounded view the page gets (§2.3): strings cut to their caps
-  (name 80, description 500, skill description 300, tag 40, extension param text 200), at most 16
-  skills, 8 interfaces, 8 extensions and 8 tags per skill, each with a "+N more". Control
-  characters but tab and newline, DEL, C1 controls, and the bidirectional overrides and isolates
-  (U+202A–U+202E, U+2066–U+2069) are replaced by U+FFFD.
-- `cardJson(card)` is the raw view: `JSON.stringify(card, null, 2)` with the same bidirectional
-  characters written as `\u` escapes (JSON already escapes the control characters).
+- **V1:** `checkCard(agent, card)` only. It returns `undefined` or one fixed reason. unslop: the
+  `unslop` skill, a `JSONRPC` interface with `protocolVersion` `1.0`, and
+  `urn:agent-inbox:ext:unslop:v1` with `api: 1`. request-post: both skills, the same interface,
+  and `urn:agent-inbox:ext:request-post:v1` with `api: 1`. These are exactly `cardMismatch()` in
+  `src/unslop-client.ts` and the check in `src/request-post-client.ts`'s `send()` today; both
+  clients call it from V1 on.
+- **V2, with their first caller (`src/mesh-agents.ts`):**
+  - `summarizeCard(card)` builds the bounded view the page gets (§2.3): strings cut to their caps
+    (name 80, description 500, skill description 300, tag 40, extension param text 200), at most
+    16 skills, 8 interfaces, 8 extensions and 8 tags per skill, each with a "+N more". It replaces
+    with U+FFFD: C0 controls but tab and newline, DEL, C1 controls, the bidirectional marks
+    U+200E, U+200F and U+061C, the overrides and isolates U+202A–U+202E and U+2066–U+2069, and the
+    line and paragraph separators U+2028 and U+2029.
+  - `cardJson(card)` is the raw view: `JSON.stringify(card, null, 2)` with every character of that
+    list that JSON leaves raw (the bidirectional marks, overrides, isolates and U+2028/U+2029)
+    written as a `\u` escape. JSON already escapes the C0 controls.
 
 The clients import `checkCard` and keep their own wording around it; their exit codes and tests do
-not change. The module is Node-free and does no I/O.
+not change. The module is pure: no imports and no I/O.
 
 ### 4.5 When checks run
 
-- **Demand-driven.** A check runs only when a page reads `/api/mesh/agents` and the agent's last
-  check is older than its interval: **30 s for unslop** (a loopback connection) and **5 minutes
-  for request-post** (a tailnet round trip). The read answers at once from what the viewer knows
-  and starts the check in the background; the next poll sees the result. One check per agent at a
-  time.
-- **The page reads `/api/mesh/agents` only when** the last `/api/version` carried `mesh`, the
-  Dashboard is the current view and the document is visible. Then it is one more read in the poll
-  tick, a conditional one (§4.7). Elsewhere, and with the window hidden, nothing is read and so
-  nothing is checked.
-- **Refresh.** `POST /api/mesh/agents/refresh` with `{}` (all agents) or `{ "name": "<key>" }`
-  checks now, waits for the checks to finish (bounded by the timeouts) and answers
-  `{ "ok": true }`. A body that is not one of those shapes is 400; a name that is not configured is
-  200 `{ "ok": false, "error": "not configured" }`. A refresh within 5 s of the last check of that
-  agent answers `{ "ok": true }` without a new request. The button then calls `reloadAndPaint()`.
+- **Two triggers only, for both agents.** A check runs when the Agents home opens and when the
+  human presses **Refresh**. There is no interval and no background cadence. "Opens" means the
+  moments the page already re-reads `/api/version` for the Agents home: a page load that lands on
+  the Dashboard, and opening the Agents home (the Dashboard tab, G L, the Sessions line, the Now
+  strip's Working tile). Each card `GET` to request-post goes through the publishing service, so
+  it should happen only when the human looks. unslop's local card follows the same rule, so
+  "checked 1m ago" means the same thing on both rows.
+- **The route.** `POST /api/mesh/agents/refresh` with `{ "trigger": "open" }`,
+  `{ "trigger": "refresh" }` or `{ "trigger": "refresh", "name": "<key>" }`. It checks the agents,
+  waits for the checks to finish (bounded by the deadlines of §4.2, one check per agent at a time)
+  and answers `{ "ok": true }`. Any other body is 400; a name that is not configured is 200
+  `{ "ok": false, "error": "not configured" }`. An `open` check skips an agent checked in the last
+  60 s, so switching tabs back and forth sends nothing new; a `refresh` skips one checked in the
+  last 5 s. The page then calls `reloadAndPaint()`.
+- **The read.** The page reads `GET /api/mesh/agents` only when the last `/api/version` carried
+  `mesh`, the Dashboard is the current view and the document is visible. Then it is one more read
+  in the poll tick, a conditional one (§4.7). The read never starts a check; between triggers it
+  is a 304.
+- **The page's fallback**, like `messagesBody` for `/api/messages`:
+  - a failed read (a network error, a 404 from an older viewer, a body that is not the expected
+    shape) keeps the previous model and marks the section stale ("could not read; showing what
+    was last read"). It is never a failed tick and never shows "disconnected";
+  - when the read is skipped because the Dashboard is not showing or the document is hidden,
+    `lastData.mesh` keeps the last body, not `null`, so returning to the Dashboard paints the last
+    known state at once;
+  - a body with `on: false` (the file went away or was refused) hides the section and stops the
+    read until the next `/api/version` read carries `mesh` again.
 
 ### 4.6 unslop's usage line
 
@@ -354,9 +411,9 @@ not shown: reading it would need an authenticated call.
       "endpoint": "http://127.0.0.1:4420",
       "profile": "unslop",
       "state": "not-running",
-      "reason": null,
+      "reason": "starts on its first call",
+      "fix": null,
       "checkedAt": "2026-11-09T22:02:11.000Z",
-      "stateSince": "2026-11-09T20:31:40.000Z",
       "card": null,
       "cardJson": null,
       "lastSeen": { "at": "2026-11-09T20:01:02.000Z", "card": { "name": "unslop", "...": "..." } },
@@ -375,10 +432,14 @@ not shown: reading it would need an authenticated call.
   state; the good card moves to `lastSeen` with its time and is never reported as `card` again
   until a later check passes. A `mismatch` keeps the failing card in `card` and `cardJson` so the
   human can see what is wrong.
-- `checkedAt` changes on every check. The page's frame key for this read drops it (as
-  `activityFrameKey` drops the liveness heartbeat), so a check that changed nothing else paints
-  nothing (#298). The "checked 1m ago" label follows the existing 30-second label clock.
-- Nothing is written to the hub or to disk. A viewer restart starts every agent at `checking`.
+- `checkedAt` changes only when a trigger ran a check, and every trigger is a human navigation or
+  press. Between triggers the read is a 304, which resolves to the same object, so an idle tick
+  paints nothing (#298). The "checked 1m ago" label follows the existing 30-second label clock.
+- `where` is `local` (unslop), `tailnet` (request-post's `https://` form) or `ssh-tunnel`
+  (request-post's `http://127.0.0.1:<port>` fallback). `reason` and `fix` are the server's fixed
+  words of §2.4, or `null`.
+- Nothing is written to the hub or to disk. A viewer restart starts every agent at `checking`
+  until the next trigger.
 
 ---
 
@@ -401,7 +462,7 @@ not shown: reading it would need an authenticated call.
 ### 5.2 Secrets
 
 - The viewer never opens `mesh/tokens/*` or `mesh/wrappers/*`, never sends a token, and never
-  shows one. The Auth line says where the token lives ("held by meshctl"), not what it is.
+  shows one. The Auth line says the token is kept outside the app, not what it is.
 - The viewer never reads the unslop profile, so the backend URL and API key source never reach it.
 - Logs are not read.
 
@@ -409,7 +470,8 @@ not shown: reading it would need an authenticated call.
 
 - The only hosts the viewer contacts for this view are `127.0.0.1` and the one remote endpoint
   that passed `requestPostEndpoint()`. Both come from `mesh.json`, which only `meshctl` writes.
-- The remote host appears only in the expanded details. The collapsed row says "Remote · tailnet".
+- The remote host appears only in the expanded details. The collapsed row says "Remote · tailnet"
+  or "Remote · SSH tunnel".
 - No new Electron grant, no new IPC, no new window permission. The page's requests stay on its
   own origin.
 
@@ -421,14 +483,15 @@ not shown: reading it would need an authenticated call.
 |---|---|
 | One attention predicate; nothing mesh reaches a badge, count, tab, rail or dock | The section reads only `lastData.mesh`. It never touches `public/attention.js` inputs. The DOM test compares the attention surfaces with the section drawn against the same seed without it (the `surfaces()` check in `test/dom/agents-home.test.ts`). |
 | Two render entries | The section paints inside `agentsHome.paint()`, which `renderDashboardAmbient` calls from both `load()` and `reloadAndPaint()`. Refresh ends in `reloadAndPaint()`. Toggling a row repaints its own region from the last model, as the folds do. |
-| An idle tick paints nothing (#298) | The read joins `lastData.reads` by its frame key; the section's open state, the open rows and the open JSON blocks join `agentsHome.state()`, which is in `frameInputs()`. A 304 resolves to the same object, so nothing paints. |
+| An idle tick paints nothing (#298) | The read joins `lastData.reads` by identity; the section's open state, the open rows and the open JSON blocks join `agentsHome.state()`, which is in `frameInputs()`. No check runs without a human trigger, and a 304 resolves to the same object, so nothing paints. A skipped read keeps the last body, so leaving the Dashboard changes no read either. |
 | A held pointer, scroll or selection is never a suspension | Rows update in place keyed by `key`, each part rewritten only when its own text changes. The JSON `<pre>` is rewritten only when `cardJson` changes, so a selection inside it survives polls. |
 | The Agents view is always on | Unchanged. The section is part of it and is simply absent when the mesh is off. |
 | Off means off (M2 and later) | No file: the page's request list and every body and ETag, `/api/version` included, are identical to today's. No `lstat` beyond one per `/api/version` read; no socket. |
 | No network in the MCP process; no mesh module in the stdio graph | `src/mesh-agents.ts` and `src/agent-card.ts` join the forbidden list in `test/prstate.test.ts`. |
 | No raw SQL outside `store.ts`; no hub schema change | The view touches no database. |
 | Viewer write routes validate bodies first | The refresh route answers 400 on a bad body and 200 `{ok:false}` on an unknown name. |
-| Dead exports | Every new export is reached from `viewer-server.ts`, `viewer.ts`, the clients or `agents-home.js`. |
+| Dead exports | Tests never count as consumers, so each export lands with its first shipping caller: `checkCard` in V1 (the clients), `summarizeCard` and `cardJson` in V2 (`src/mesh-agents.ts`), the route module in V2 (`viewer-server.ts`, `viewer.ts`), the page module in V3 (`agents-home.js`). |
+| The text guard on clients' names | Unchanged: no `src/viewer*.ts`, `public/*.js` or `electron/*` file contains `unslop-client`, `request-post-client` or `meshctl`; fix texts come from the server (§3.4). |
 | No new dependency | `test/fixtures/app-dependencies.txt` unchanged. |
 | Motion | None. No pulse, no animation. |
 
@@ -440,9 +503,9 @@ Each slice is one PR, mergeable alone, with its docs.
 
 | Slice | Content | Production lines (est.) |
 |---|---|---|
-| **V1. One card rule** | `src/agent-card.ts` (`checkCard`, `summarizeCard`, `cardJson`); both clients call `checkCard`; `mesh.md` notes the module | ~150 |
-| **V2. The viewer side** | `src/mesh-agents.ts` (lazy config read, card fetch, records, refresh); `opts.mesh` in `createViewer`; `/api/version`'s `mesh` key; `GET /api/mesh/agents`; `POST /api/mesh/agents/refresh`; wiring in `viewer-server.ts`; `mesh.md`, `overview.md`, `CLAUDE.md` and the mesh design's amendments (§10) | ~280 |
-| **V3. The section** | `public/mesh-agents.js` (pure row model and painter), mounted by `public/agents-home.js`; the poll's gated read and frame key in `public/app.js`; styles in `public/style.css`; `viewer-dashboard-and-shell.md` | ~280 |
+| **V1. One card rule** | `src/agent-card.ts` with `checkCard` only; both clients call it; the pins: `test/mesh.test.ts`'s client import pins gain `./agent-card.js`, `agent-card.ts` gets its own "imports nothing" assertion, and `test/prstate.test.ts`'s `MESH` list names `src/agent-card.ts`; `mesh.md` notes the module | ~60 |
+| **V2. The viewer side** | `summarizeCard` and `cardJson` in `src/agent-card.ts`; `src/mesh-agents.ts` (lazy config read, card fetch, records, triggers, fixed `reason`/`fix` words); `opts.mesh` in `createViewer`; `/api/version`'s `mesh` key; `GET /api/mesh/agents`; `POST /api/mesh/agents/refresh`; wiring in `viewer-server.ts`; `mesh-agents.ts` added to both pins; `mesh.md`, `overview.md`, `CLAUDE.md` and the mesh design's amendments (§10) | ~300 |
+| **V3. The section** | `public/mesh-agents.js` (pure row model and painter), mounted by `public/agents-home.js` outside the filtered groups; the poll's gated read, its fallback and the open trigger in `public/app.js`; styles in `public/style.css`; `viewer-dashboard-and-shell.md` | ~280 |
 | **V4. unslop usage** | The budget read (§4.6) and its line | ~60 |
 
 V4 can be dropped without changing V1–V3.
@@ -451,36 +514,52 @@ V4 can be dropped without changing V1–V3.
 
 - **V1, `test/agent-card.test.ts`:** the R1 fixture card
   (`test/fixtures/a2a-request-post/card.json`) and unslop's card (built from the agent source, as
-  `test/unslop-client.test.ts` does) pass; each mutation (a skill gone, `protocolVersion` 0.3, no
-  extension, `api: 2`) fails with its fixed reason; caps and "+N more"; a description holding
-  `<img src=x>`, NUL, ESC, U+202E and U+2066 comes back with the controls replaced and the markup
-  intact as text; `cardJson` escapes the bidirectional characters. `test/unslop-client.test.ts`
-  and `test/request-post-client.test.ts` pass unchanged.
+  `test/unslop-client.test.ts` does) pass `checkCard`; each mutation (a skill gone,
+  `protocolVersion` 0.3, no extension, `api: 2`) fails with its fixed reason.
+  `test/unslop-client.test.ts` and `test/request-post-client.test.ts` pass unchanged. The pin
+  changes above land here, with the first import of `./agent-card.js`.
+- **V2, `test/agent-card.test.ts`** gains `summarizeCard` and `cardJson`: caps and "+N more"; a
+  description holding `<img src=x>`, NUL, ESC, U+200E, U+200F, U+061C, U+202E, U+2066, U+2028 and
+  U+2029 comes back with each of them replaced and the markup intact as text; `cardJson` writes
+  every listed character JSON leaves raw as a `\u` escape.
 - **V2, `test/mesh-agents.test.ts`** (real temp dirs from `scratchDir()`, fake card servers on
   loopback, no mocks of `fs`): no file, a symlink, 64 KiB + 1, not JSON, schema 2, no known key and
   a bad endpoint each give no `mesh` key, a byte-identical `/api/version`, and zero connections on
   a counting listener; the `lstat` happens at most once per 5 s; unslop refused is `not-running`
   and a spy on every `node:child_process` entry point sees nothing; a running fake is `up`; a
-  mismatch names its check; request-post through the loopback fallback is `up`, and through an
-  injected `lookup` that fails is `unreachable` "does not resolve"; a 302 is not followed; a 70 KiB
-  body is cut; a stalled server times out; the request carries no `Authorization`, `Origin` or
-  cookie; one check at a time; the intervals; refresh's 400, `{ok:false}` and throttle; a good
-  card then a failure gives `unreachable` with `lastSeen`, never `up`; a changed endpoint resets
-  to `checking`; the budget file's symlink, wrong owner bits and stale date. `test/mesh.test.ts`'s
-  `/api/version` case becomes "carries `mesh` only with a known agent"; its import pins gain the
-  two modules; `test/prstate.test.ts` lists them.
+  mismatch names its check and carries its `fix`; request-post through the SSH-tunnel form is `up`
+  with `where: "ssh-tunnel"` and a 5 s deadline, and through an injected `lookup` that fails is
+  `unreachable` "does not resolve"; a 302 is not followed; a 70 KiB body is cut; **a drip-feed
+  server (1 byte every 500 ms, headers and body) ends at the 3 s or 5 s total deadline**, not
+  later; the request carries no `Authorization`, `Origin` or cookie; one check per agent at a time;
+  `GET /api/mesh/agents` alone never opens a connection; an `open` trigger skips an agent checked
+  in the last 60 s and a `refresh` one checked in the last 5 s; refresh's 400 and `{ok:false}`; a
+  good card then a failure gives `unreachable` with `lastSeen`, never `up`; a changed endpoint
+  resets to `checking`. `test/mesh.test.ts`'s `/api/version` case becomes "carries `mesh` only
+  with a known agent".
 - **V3, `test/dom/mesh-agents.test.ts`** (`// @vitest-environment jsdom`, the harness):
   - with no `mesh` key, the boot and poll request lists equal `test/dom/agents-home.test.ts`'s
-    `BOOT_REQUESTS` and no section exists (that file is unchanged and stays green);
-  - with the key, the section draws both rows with the words of §2.4, the read happens only on
-    the Dashboard with the document visible, and leaving the Dashboard stops it;
+    `BOOT_REQUESTS`, no refresh is posted and no section exists (that file is unchanged and stays
+    green);
+  - with the key, the section draws both rows with the words of §2.4 and the server's `reason`
+    and `fix`; opening the Agents home posts one `open` trigger; the read happens only on the
+    Dashboard with the document visible, and leaving the Dashboard stops it while keeping the last
+    body;
+  - **the section is global:** it shows the same rows under each state filter (Needs you, Working)
+    and under a project and agent lens that hides every session; and it shows in the zero-sessions
+    empty state, under the empty text;
+  - a failed read (a 500, a 404, a body of the wrong shape) keeps the previous rows, marks the
+    section stale and leaves the tick applied (no "disconnected"); a body with `on: false` hides
+    the section and stops the read until `/api/version` carries `mesh` again;
   - the attention surfaces (title, badge, tab counts, Needs you rows) equal the run without mesh;
   - a hostile card: no `img`, no `a[href]` from card data, no request to the card's URLs, the text
     shown literally;
-  - an idle tick (a 304) changes no node; a selection inside an open Card JSON survives a tick
-    whose `checkedAt` alone changed;
-  - toggles are window-local and in `frameInputs()`; Refresh posts, then repaints through
-    `reloadAndPaint()`.
+  - an idle tick (a 304) changes no node; a selection inside an open Card JSON survives a Refresh
+    whose result changed only `checkedAt`;
+  - Refresh sits in the header row outside the disclosure button: pressing it does not toggle the
+    section; it posts `refresh`, then repaints through `reloadAndPaint()`;
+  - toggles are window-local and in `frameInputs()`;
+  - no `public/*.js` file contains the guarded names (the existing guard, run unchanged).
 - **V4:** the usage line with today's date, zero for yesterday's, hidden for a symlink or a
   malformed file.
 
@@ -495,34 +574,39 @@ installed app running; the checkout build runs beside it on port 4392.
 
 1. In the checkout of the V3 (or V4) branch: `fnm use 24 && npm ci && npm run build`.
 2. `AGENT_INBOX_PORT=4392 npm run electron:side`. The window opens on the Dashboard.
-3. Scroll to the end of the Agents home. **Mesh agents (2)** shows unslop and request-post.
-   unslop most likely says "Not running · starts on its first call" (no "seen" time yet, since this
-   viewer just started). request-post says "Reachable" after a moment.
+3. Scroll to the end of the Agents home. **Mesh agents (2)** shows unslop and request-post; the
+   window's opening was the first trigger. unslop most likely says "Not running · starts on its
+   first call" (no "seen" time yet, since this viewer just started). request-post says
+   "Reachable" within 5 s.
 4. In a terminal: `echo "Draft text for a quick check." | ~/.agent-inbox/bin/unslop --kind docs`.
-   Within 30 s, or at once with **Refresh**, unslop says "Running" with its card.
+   Then press **Refresh**: unslop says "Running" with its card. Nothing changes until you press
+   it or reopen the Agents home; that is the design.
 5. Open unslop's row: the `rulesSha256` prefix matches the one the command printed on stderr.
    Open **Card JSON** and select some text; it stays selected across polls.
 6. Open request-post's row: the endpoint appears only here; the Auth line names the bearer scheme
-   and shows no token.
-7. Check the installed app on port 4319: nothing changed there, and no badge or count changed in
+   and says the token is kept outside the app.
+7. Set the filter to Working, then pick a project in the sidebar lens: the Mesh agents section
+   stays the same.
+8. Check the installed app on port 4319: nothing changed there, and no badge or count changed in
    either window.
-8. Optional: switch off Wi-Fi or Tailscale and press **Refresh**: request-post says
+9. Optional: switch off Wi-Fi or Tailscale and press **Refresh**: request-post says
    "Unreachable · does not resolve (is this Mac on the tailnet?)", amber, not a question.
-9. Close the side window. Nothing to undo: the view writes nothing.
+10. Close the side window. Nothing to undo: the view writes nothing.
 
 ---
 
 ## §9 — Forward compatibility (M3 and #506)
 
 - **Keys.** Each record is keyed `"<source>:<name>"`. Today the only source is `mesh.json`
-  (`mesh.json:unslop`). M3's registry adds `registry:<namespace>/<name>`; #506's AI Catalog adds
-  `catalog:<id>`. When #506 gives agents stable URNs, the key becomes that URN whenever the card
-  declares one, and `name` stays the label. The DOM, focus and open state use `key` only, so an
-  agent that moves host or port keeps its row, and a key change closes an open row once at worst.
-- **Sources.** `src/mesh-agents.ts` holds a list of sources, each giving records. M3 adds the
-  registry source in the same module (the console link of the mesh design §2.2), and the section
-  gains grouping by host. The route's shape (`agents[]` with `key`, `where`, `state`, `card`)
-  does not change.
+  (`mesh.json:unslop`). M3's registry would add `registry:<namespace>/<name>`; #506's AI Catalog
+  would add `catalog:<id>`. When #506 gives agents stable URNs, the key becomes that URN whenever
+  the card declares one, and `name` stays the label. The DOM, focus and open state use `key` only,
+  so an agent that moves host or port keeps its row, and a key change closes an open row once at
+  worst.
+- **No source abstraction yet.** `src/mesh-agents.ts` reads `mesh.json` directly; it has no list
+  of sources and no `stateSince` field. M3 adds what it needs (a registry source, grouping by host,
+  state ages) when it lands. The route's shape (`agents[]` with `key`, `where`, `state`, `card`)
+  is meant to survive that.
 - **Declared auth (#506).** The Auth line already reads `securitySchemes` and
   `securityRequirements`. Both cards declare a bearer scheme today.
 - **Signed cards (#506).** A record gains a `trust` field ("signed by <key id>", "unsigned",
@@ -550,8 +634,11 @@ with:
 > its identity, size or times changed; no timer and no `fs.watch`. `/api/version` carries
 > `mesh: { agents: n }` only when the file reads present and names an agent this build knows. It
 > fetches each agent's card from the configured endpoint only (never a URL from a card), with no
-> token, no redirect, no proxy, 64 KiB and 3 s (loopback) or 5 s (remote), only while a page reads
-> the section; it never starts an agent and never opens `mesh/tokens` or `mesh/wrappers`.
+> token, no redirect, no proxy, a 64 KiB cap and one total deadline (3 s for unslop, 5 s for every
+> request-post check), only when the Agents home opens or the human presses Refresh; reading
+> `/api/mesh/agents` never starts a check. It never starts an agent and never opens `mesh/tokens`
+> or `mesh/wrappers`. Its user-facing `reason` and `fix` words live in `src/mesh-agents.ts`, so the
+> text guard on `src/viewer*.ts`, `public/*.js` and `electron/*` stays as it is.
 > `src/agent-card.ts` holds the one card rule both clients and the view use.
 
 The "In brief" bullet "The viewer's watch returns with the first phase that needs it (M3)" becomes
@@ -577,17 +664,34 @@ second sentence moves to `mesh.md` only.
 **`docs/architecture/overview.md`.** The viewer-only list gains `src/mesh-agents.ts`.
 
 **The mesh design.** A header note "Amended 2026-11-09 by the agent cards view" and:
-§2.1, the stat exception becomes "the viewer `lstat`s `mesh.json` only when a page reads
-`/api/version` or `/api/mesh/agents`, at most once every 5 s; no timer"; §2.4 (b), the `mesh` key
-returns in `/api/version` as `{ agents: n }`, and the no-file test asserts the unchanged request
-list and bodies; §8.8, "The viewer calls only the registry URL in `mesh.json`" adds "and each
-configured agent's card URL, built from an endpoint that passed its rule; never a URL from a
-card"; §10.2, `/mesh-view.js` is replaced by the section in `agents-home.js` reading
-`/api/mesh/agents`.
+
+- §2.1: the stat exception becomes "the viewer `lstat`s `mesh.json` only when a page reads
+  `/api/version` or `/api/mesh/agents`, at most once every 5 s; no timer".
+- §2.2: a new table row:
+
+  | Piece | Runs where | Switched on by | Off means |
+  |---|---|---|---|
+  | Mesh agents section (agent cards view) | viewer process (`src/mesh-agents.ts`) and the Agents home | `agents.unslop` or `agents.request-post` in `mesh.json` | No section, no `/api/mesh/agents` read, no socket |
+
+- §2.4 (b): the `mesh` key returns in `/api/version` as `{ agents: n }`, and the no-file test
+  asserts the unchanged request list and bodies.
+- §8.8: "The viewer calls only the registry URL in `mesh.json`" adds "and each configured agent's
+  card URL, built from an endpoint that passed its rule; never a URL from a card".
+- §10.2: `/mesh-view.js` is replaced by the section in `agents-home.js` reading
+  `/api/mesh/agents`.
+
+**Superseded non-goals.** Each gets a one-line note pointing here:
+
+- **unslop design §4.5 (b)**, "M2a touches nothing under `public/`, `src/viewer*.ts` or
+  `electron/`": it held for M2a. The agent cards view now adds a viewer module, a route and a
+  page section for the configured agents. The client itself is still not reachable from any of
+  those files, and the text guard that tests it is unchanged.
+- **request-post design §1**, non-goal "A viewer change in Agent Inbox": superseded the same way.
+  §10's "no viewer, `public/` or `electron/` file names it" still holds.
 
 **`docs/architecture/viewer-dashboard-and-shell.md`.** The Agents home bullet gains the section,
-its states, its window-local open state in `frameInputs()`, and "nothing it draws reaches
-attention".
+its states, that it is global (no filter or lens narrows it, and it shows with no sessions), its
+window-local open state in `frameInputs()`, and "nothing it draws reaches attention".
 
 ---
 
@@ -613,9 +717,9 @@ attention".
 |---|---|
 | The view and a client disagree on a card | One rule in `src/agent-card.ts`, tested against the R1 fixture and the agent's own card. |
 | A hostile or broken card hurts the page | Caps, control and bidirectional cleaning on the server, `textContent` on the page, no links or images; the hostile-card DOM test. |
-| Checks cost the service or the box | Demand-driven only, 5 minutes for the remote card, one at a time, no token; nothing runs with the window hidden or off the Dashboard. |
-| The remote host leaks through a screenshot | Collapsed rows say "Remote · tailnet"; the host is in the expanded details only. |
-| `checkedAt` causes repaints | Dropped from the frame key; the label follows the 30-second clock. |
+| Checks cost the service or the box | Only on Agents home open (skipping an agent checked in the last 60 s) and on Refresh; one at a time; no token; reading the section never checks. |
+| The remote host leaks through a screenshot | Collapsed rows say "Remote · tailnet" or "Remote · SSH tunnel"; the host is in the expanded details only. |
+| The section looks stale between triggers | "checked 1m ago" is always shown beside Refresh; reopening the Agents home checks again. |
 | `/api/version` changes for existing users | Only when `mesh.json` names a known agent, which means `meshctl enable --unslop` or `--request-post` was applied. |
 
 ---
@@ -634,8 +738,11 @@ attention".
      (0600), and the view read that. Survives restarts, but adds a write to the client and a file
      to `disable --purge`.
    - C. Configured facts only. Simplest, but the row says little most of the time.
-3. **How often may the viewer check request-post's card over the tailnet?**
-   - **A. Every 5 minutes while the Dashboard is visible, plus Refresh** (recommended). Fresh
-     enough to notice a service that went down; about 12 requests an hour while you look.
-   - B. Only when the Agents home opens and on Refresh. Fewest requests; state can be an hour old.
+3. **When may the viewer check the cards?** (Each request-post check reaches the publishing
+   service.)
+   - A. Every 5 minutes while the Dashboard is visible, plus Refresh. Notices a service that went
+     down; about 12 requests an hour while you look.
+   - **B. Only when the Agents home opens and on Refresh, for both agents** (recommended, and what
+     this design specifies). Fewest requests and no background traffic to the service; the row
+     can be as old as your last look, and says so ("checked 40m ago").
    - C. Every 60 s while visible. Fastest; 60 requests an hour.

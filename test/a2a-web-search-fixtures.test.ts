@@ -184,7 +184,12 @@ describe('providers and pages', () => {
 
   it('each injected page holds its injection in the field it names and expects suspect', () => {
     const pages = folder('pages')
-    expect(pages).toHaveLength(8)
+    // §12.1's eight, and each again with its key phrase split by a zero-width character
+    expect(pages).toHaveLength(16)
+    const base = pages.filter(([, p]) => !p.variantOf).map(([, p]) => p.id)
+    expect(base).toHaveLength(8)
+    expect(pages.filter(([, p]) => p.variantOf).map(([, p]) => p.variantOf).sort()).toEqual([...base].sort())
+    for (const [, p] of pages.filter(([, p]) => p.variantOf)) expect(p.injected).toMatch(/\u200B/)
     for (const [, p] of pages) {
       const field = { title: p.source.title, snippet: p.source.snippet, passage: p.source.page }[p.where as string]
       expect(field).toContain(p.injected)
@@ -204,7 +209,8 @@ describe('the folder', () => {
     for (const ip of text.match(/\b\d{1,3}(?:\.\d{1,3}){3}\b/g) ?? []) {
       expect(/^(?:192\.0\.2|198\.51\.100|203\.0\.113|127\.0\.0)\.\d+$/.test(ip) || ['192.168.1.1', '10.0.0.1'].includes(ip), ip).toBe(true)
     }
-    for (const host of [...text.matchAll(/https?:\/\/([^/\s"'?:)]+)/g)].map((m) => m[1]!)) {
+    // a zero-width page (pages/zw-*) splits a host; it is the same placeholder once seen
+    for (const host of [...text.matchAll(/https?:\/\/([^/\s"'?:)]+)/g)].map((m) => m[1]!.replace(/\u200B/g, ''))) {
       expect(/(?:^|\.)(?:example\.(?:com|org|net)|example|invalid)$|^127\.0\.0\.1$|^ollama\.com$/.test(host), host).toBe(true)
     }
     for (const domain of [...text.matchAll(/[\w.+-]+@([\w-]+(?:\.[\w-]+)+)/g)].map((m) => m[1]!)) expect(domain).toMatch(/\.invalid$|example\.|^(?:192\.0\.2|198\.51\.100|203\.0\.113)\.\d+$/)

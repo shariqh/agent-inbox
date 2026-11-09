@@ -2,11 +2,12 @@
 // answer may go out. Shape, always: every [n] names a source the model was given; no
 // URL, Markdown link or image, HTML tag or the prompt's nonce; at most 4,000 characters;
 // not cut off. Unless the answer starts NOT FOUND: every paragraph or list item that
-// makes a claim cites a source, and each number, version, date and quote unslop's
+// makes a claim cites a source (a line that only introduces the list after it, with no
+// value of its own, makes none), and each number, version, date and quote unslop's
 // extractors find in a sentence is contained, after normalising, in a source the
-// sentence cites (or, when it cites none, one its paragraph cites). A coarser value
-// matches a finer one (`Node 24` ~ `v24.11.0`, `October 2025` ~ `2025-10-28`), and a
-// value the question holds is exempt.
+// sentence cites (or, when it cites none, one its paragraph cites; an uncited paragraph
+// is held to every source). A coarser value matches a finer one (`Node 24` ~
+// `v24.11.0`, `October 2025` ~ `2025-10-28`), and a value the question holds is exempt.
 import { extractValues } from '../fidelity.js'
 import { visible } from './suspect.js'
 
@@ -17,9 +18,11 @@ export type Grounding = { ok: boolean; text: string; found: boolean; citations: 
 export const ANSWER_MAX = 4000
 export const NOT_FOUND_MAX = 400
 const CITE = /\[(\d{1,3}(?:\s*,\s*\d{1,3})*)\]/g
-const IMAGE = /!\[[^\]\n]*\]\(/
-const LINK = /\]\([^)\n]*\)|\b[a-z][a-z\d+.-]*:\/\/|\bwww\.[a-z\d-]+\.|\bmailto:/i
+const IMAGE = /!\[[^\]\n]*\][([]/
+// a reference definition (`[a]: //host/p`) is a link even without a scheme
+const LINK = /\]\([^)\n]*\)|\b[a-z][a-z\d+.-]*:\/\/|\bwww\.[a-z\d-]+\.|\bmailto:|^\s*\[[^\]\n]+\]:\s*\S/im
 const HTML = /<[a-z/!?]/i
+const LIST = /^\s*(?:[-*•]|\d+[.)])\s/
 const SENTENCE = /(?<=[.!?](?:\s*\[[\d,\s]+\])*)\s+(?!\[\d)/
 const UNIT = /(\d) (?=(?:[KMGTPE]i?B|[kMG]?bps|[kMG]?Hz|ms|px|%)(?![\w%]))/g
 const APPROX = /^(?:about|around|roughly|approximately|nearly|almost|up to|at least|at most|more than|less than|fewer than|~) ?/i
@@ -47,8 +50,9 @@ function holds(cls: 'numbers' | 'dates' | 'quotes', v: string, s: Values): boole
   if (!a) return false
   if (/^\d{4}$/.test(v) && s.dates.some((d) => d.startsWith(`${v}-`))) return true
   if (s.numbers.some((w) => { const b = num(w); return b !== undefined && prefix(a.parts, b.parts) && (!a.unit || a.unit === b.unit) && (!a.pre || a.pre === b.pre) })) return true
-  // a value inside text the extractors take whole (a URL, a path): digits on its own
-  return !a.pre && !a.unit && new RegExp(`(?<![\\d.])${a.parts.join('\\.')}(?!\\d)`).test(s.text)
+  // a value inside text the extractors take whole (a URL, a path): digits on their own,
+  // never inside a number or date already compared above
+  return !a.pre && !a.unit && new RegExp(`(?<![\\d.])${a.parts.join('\\.')}(?!\\d)`).test(s.rest)
 }
 
 export function checkGrounding(input: { question: string; answer: string; nonce: string; sources: Array<{ n: number; text: string }>; truncated?: boolean }): Grounding {
@@ -70,21 +74,20 @@ export function checkGrounding(input: { question: string; answer: string; nonce:
   if (found && text && !long) {
     const asked = values(input.question)
     const blocks = text.split(/\n\s*\n|\n(?=\s*(?:[-*•]|\d+[.)])\s)/).map((b) => b.trim()).filter(Boolean)
-    for (const block of blocks) {
+    const item = (b: string | undefined): boolean => b !== undefined && LIST.test(b)
+    blocks.forEach((block, i) => {
       const own = cites(block)
-      if (!own.length) {
-        // a line that introduces a list ("The sources say:") states nothing itself
-        if (!/:\s*$/.test(block) && (uncite(block).match(/[\p{L}\p{N}]+/gu) ?? []).length >= 2) fail('uncited-claim', block.slice(0, 80))
-        continue
-      }
+      const all = values(uncite(block))
+      const intro = /:\s*$/.test(block) && !item(block) && item(blocks[i + 1]) && !all.numbers.length && !all.dates.length && !all.quotes.length
+      if (!own.length && !intro && (uncite(block).match(/[\p{L}\p{N}]+/gu) ?? []).length >= 2) fail('uncited-claim', block.slice(0, 80))
       for (const sentence of block.split(SENTENCE)) {
-        const cited = (cites(sentence).length ? cites(sentence) : own).flatMap((n) => given.get(n) ?? [])
+        const cited = cites(sentence).length ? cites(sentence).flatMap((n) => given.get(n) ?? []) : own.length ? own.flatMap((n) => given.get(n) ?? []) : [...given.values()]
         const said = values(uncite(sentence))
         for (const cls of ['numbers', 'dates', 'quotes'] as const) {
           for (const v of said[cls]) if (!holds(cls, v, asked) && !cited.some((s) => holds(cls, v, s))) fail('value-not-contained', v)
         }
       }
-    }
+    })
   }
   const shown = found ? text : [...text].slice(0, NOT_FOUND_MAX).join('').trimEnd()
   return {

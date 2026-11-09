@@ -169,9 +169,9 @@ export function installMeshAgentPage(deps) {
   /**
    * Paints the tab and, while an agent is open, its page from the last `/api/mesh/agents` body.
    * An agent the body no longer names keeps its tab and last lines, under one line saying so.
-   * @param {{body: any, stale: boolean} | null} input @param {number} nowMs @param {boolean} active
+   * @param {{body: any, stale: boolean} | null} input @param {number} nowMs
    */
-  function paint(input, nowMs, active) {
+  function paint(input, nowMs) {
     const tab = deps.tab()
     const page = deps.page()
     if (!tab || !page) return
@@ -184,7 +184,6 @@ export function installMeshAgentPage(deps) {
     setHidden(page.querySelector('.ma-stale'), !(agent && input?.stale))
     setText(tab.querySelector('.tab-name'), current.name)
     setText(page.querySelector('.map-name'), current.name)
-    if (active) setText(doc.getElementById('pageTitle'), current.name)
     paintInner(page)
     if (!agent) return
     const model = meshRows({ on: true, agents: [agent], others: 0 }, nowMs)

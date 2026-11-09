@@ -1,25 +1,30 @@
 // Rate limits (web search design §9.1): they protect the home network's address and the
 // free Ollama account, not a bill. SearXNG gets one request at a time, at least 2 s apart,
 // waiting up to 5 s for its turn before the task is busy; each provider has an hourly and
-// a daily cap, persisted 0600 so a restart does not reset them. A cap refuses (11); a
-// cache hit spends nothing, because nothing here is called for one.
+// a daily cap, persisted 0600 so a restart does not reset them, and so do answers (model
+// calls, W4). A cap refuses (11); a cache hit spends nothing, because nothing here is
+// called for one.
 import { localDate, readPrivate, writePrivate } from '../files.js'
 
 export type Caps = { hour: number; day: number }
-export type Metered = 'searxng' | 'ollama'
+export type Metered = 'searxng' | 'ollama' | 'model'
 export type CapReason = 'hourly-cap' | 'daily-cap'
-export type Budget = { take(provider: Metered): CapReason | undefined }
+export type Budget = {
+  take(provider: Metered): CapReason | undefined
+  /** The cap `take` would meet now, without spending */
+  check(provider: Metered): CapReason | undefined
+}
 export type Store = { load(): string | undefined; save(text: string): void }
 
-export const DEFAULT_CAPS: Record<Metered, Caps> = { searxng: { hour: 30, day: 100 }, ollama: { hour: 30, day: 150 } }
+export const DEFAULT_CAPS: Record<Metered, Caps> = { searxng: { hour: 30, day: 100 }, ollama: { hour: 30, day: 150 }, model: { hour: 60, day: 60 } }
 const HOUR_MS = 60 * 60_000
 
 export const fileStore = (path: string): Store => ({ load: () => readPrivate(path, true), save: (text) => writePrivate(path, text) })
 
 type Count = { day: number; hour: number[] }
-export function createBudget(o: { store: Store; now?: () => number; caps?: Record<Metered, Caps> }): Budget {
+export function createBudget(o: { store: Store; now?: () => number; caps?: Partial<Record<Metered, Caps>> }): Budget {
   const now = o.now ?? Date.now
-  const caps = o.caps ?? DEFAULT_CAPS
+  const caps = { ...DEFAULT_CAPS, ...o.caps }
   let state: { date: string; counts: Partial<Record<Metered, Count>> } = { date: '', counts: {} }
   try {
     const saved = JSON.parse(o.store.load() ?? '{}') as typeof state
@@ -27,18 +32,22 @@ export function createBudget(o: { store: Store; now?: () => number; caps?: Recor
   } catch (error) {
     if (!(error instanceof SyntaxError)) throw error
   }
+  const counted = (provider: Metered, at: number): { count: Count; cap?: CapReason } => {
+    if (state.date !== localDate(at)) {
+      state.date = localDate(at)
+      for (const c of Object.values(state.counts)) if (c && typeof c === 'object') c.day = 0
+    }
+    const prior = state.counts[provider]
+    const count: Count = { day: Number.isSafeInteger(prior?.day) ? prior!.day : 0, hour: (Array.isArray(prior?.hour) ? prior!.hour : []).filter((t) => typeof t === 'number' && at - t < HOUR_MS && t <= at) }
+    state.counts[provider] = count
+    return { count, cap: count.day >= caps[provider].day ? 'daily-cap' : count.hour.length >= caps[provider].hour ? 'hourly-cap' : undefined }
+  }
   return {
+    check: (provider) => counted(provider, now()).cap,
     take(provider) {
       const at = now()
-      if (state.date !== localDate(at)) {
-        state.date = localDate(at)
-        for (const c of Object.values(state.counts)) if (c && typeof c === 'object') c.day = 0
-      }
-      const prior = state.counts[provider]
-      const count: Count = { day: Number.isSafeInteger(prior?.day) ? prior!.day : 0, hour: (Array.isArray(prior?.hour) ? prior!.hour : []).filter((t) => typeof t === 'number' && at - t < HOUR_MS && t <= at) }
-      state.counts[provider] = count
-      if (count.day >= caps[provider].day) return 'daily-cap'
-      if (count.hour.length >= caps[provider].hour) return 'hourly-cap'
+      const { count, cap } = counted(provider, at)
+      if (cap) return cap
       count.day++
       count.hour.push(at)
       o.store.save(JSON.stringify(state))

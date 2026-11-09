@@ -74,7 +74,7 @@ export function checkCard(card: unknown): string[] {
   return problems
 }
 
-/** §4.3: the data part of a COMPLETED task; `query` must not be echoed whole. */
+/** §4.3: the data part of a COMPLETED task; `query` must not be echoed whole. `attempts` is 0 only for a NOT FOUND the model was never asked for (no source to give it). */
 export function checkResult(data: unknown, query?: string): string[] {
   const d = obj(data)
   const problems: string[] = []
@@ -101,7 +101,7 @@ export function checkResult(data: unknown, query?: string): string[] {
   const a = obj(d.answer)
   if (d.code === 0 && answerMode) {
     const cites = list(a.citations)
-    if (!short(a.text, 4000) || typeof a.found !== 'boolean' || typeof a.model !== 'string' || ![1, 2].includes(a.attempts as number)) problems.push('answer')
+    if (!short(a.text, 4000) || typeof a.found !== 'boolean' || typeof a.model !== 'string' || !([1, 2].includes(a.attempts as number) || (a.attempts === 0 && a.found === false && !list(a.citations).length))) problems.push('answer')
     if (!cites.every((n) => Number.isSafeInteger(n) && (n as number) >= 1 && (n as number) <= sources.length) || /https?:|!\[|<[a-z/]/i.test(String(a.text))) problems.push('answer: citations or links')
   } else if (d.answer !== undefined) problems.push('answer: present without code 0 in answer mode')
   if (d.code === 10 && (!answerMode || !strs(d.warnings) || !d.warnings.some((w) => WARNINGS.includes(w)))) problems.push('sources only: a warning naming why')

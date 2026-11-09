@@ -402,7 +402,8 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
     and caps (SearXNG 30/h, 100/day; Ollama search and fetch together 30/h, 150/day; persisted,
     a cap is 11); Ollama's search when SearXNG has fewer than 3 usable results (`filter.ts`) or
     failed, merged by URL; an Ollama 429 is 12 with its `Retry-After`; `web_fetch` for at most
-    the top 3 results without page text in `answer` mode with `fetch: "ollama"`; passages
+    the top 3 results without page text in `answer` mode with `fetch: "ollama"` (a failed fetch
+    keeps the snippet and warns `fetch-failed`; a result with any warning is not cached); passages
     (`passages.ts`: navigation dropped, BM25, at most 3 chunks and 2,400 characters a source).
   - `screenQuery()` in `screen.ts` runs unslop's email, phone, secret, customer-path and
     deny-list classes (deny = `web-search-deny.txt` and `unslop-deny.txt`, read fresh) plus

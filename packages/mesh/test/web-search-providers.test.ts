@@ -455,6 +455,16 @@ describe('the memory cache (§9.2)', () => {
     expect(count(t.fake)).toEqual([2, 0, 3])
   })
 
+  it('a result with a failed fetch keeps its snippet, warns, and is not cached (review of #517)', async () => {
+    for (const fetch of [reply(provider('ollama-fetch-429')), reply(provider('ollama-fetch-5xx')), 'unreachable'] as Route[]) {
+      const s = setup({ routes: { fetch } })
+      const first = found(await go(s))
+      expect([first.warnings, first.sources.map((x) => x.pageText)]).toEqual([['fetch-failed'], ['snippet', 'snippet', 'snippet']])
+      expect(found(await go(s)).cache).toBe('miss')
+      expect(count(s.fake)).toEqual([2, 0, 6])
+    }
+  })
+
   it('expires after 15 minutes, 5 for recency day', async () => {
     let t = 0
     const s = setup({ now: () => t })

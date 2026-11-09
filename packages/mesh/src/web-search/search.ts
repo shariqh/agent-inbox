@@ -110,7 +110,9 @@ export function createSearch(deps: SearchDeps): (req: SearchRequest, signal: Abo
         if (cap) return void warnings.push(`fetch-${cap}`)
         spent.ollama++
         const r = await deps.fetcher!.fetch(c.url, signal)
+        // the source keeps its snippet (§6); the warning also keeps this result out of the cache
         if (r.ok) fetched.set(i, r.text)
+        else warnings.push('fetch-failed')
       }))
     }
     const passages = rankPassages(query, list.map((c, i) => {

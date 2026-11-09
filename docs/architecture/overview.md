@@ -6,12 +6,13 @@ paths:
   - "src/issue-poller.ts"
   - "src/stamp.ts"
   - "src/agent-hosts.ts"
+  - "src/mesh-agents.ts"
   - "src/issue-graph.ts"
   - "src/hook-cli.ts"
   - "src/watch-cli.ts"
   - "public/issue-key.js"
   - "scripts/stage-runtime.mjs"
-applyTo: "src/mcp-server.ts,src/viewer-server.ts,src/prstate.ts,src/issue-poller.ts,src/stamp.ts,src/agent-hosts.ts,src/issue-graph.ts,src/hook-cli.ts,src/watch-cli.ts,public/issue-key.js,scripts/stage-runtime.mjs"
+applyTo: "src/mcp-server.ts,src/viewer-server.ts,src/prstate.ts,src/issue-poller.ts,src/stamp.ts,src/agent-hosts.ts,src/mesh-agents.ts,src/issue-graph.ts,src/hook-cli.ts,src/watch-cli.ts,public/issue-key.js,scripts/stage-runtime.mjs"
 ---
 
 # Architecture overview and process boundaries
@@ -37,7 +38,9 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
 - **Strict process boundaries:** `src/prstate.ts`, `src/issue-poller.ts` (#103)
   and `src/stamp.ts` are viewer-process concerns; they must not enter the MCP
   import graph. The two `gh` pollers share one tick (issues first, then PRs
-  with a 45-second start deadline) and one busy guard.
+  with a 45-second start deadline) and one busy guard. `src/mesh-agents.ts` (the
+  agent cards view's lazy `mesh.json` read and card fetcher) is viewer-only too, and
+  is the only viewer module that reaches the network for the mesh (`mesh.md`).
   `src/shape.ts` trims agent-facing MCP read payloads and must not affect viewer
   API payloads. `src/hook.ts`/`hook-cli.ts` and `src/watch.ts`/`watch-cli.ts` are
   separate host adapters that still access data through `store.ts`.

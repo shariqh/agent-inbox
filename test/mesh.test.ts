@@ -1,7 +1,8 @@
 // Mesh M1 (#397): mesh.json and meshctl. Design:
 // docs/superpowers/specs/2026-10-29-agent-mesh-design.md §2, amended by #454
-// (2026-11-04-agents-home-design.md §4): the Agents view is always on, the
-// viewer no longer watches mesh.json and /api/version never carries `mesh`.
+// (2026-11-04-agents-home-design.md §4): the Agents view is always on. The agent cards
+// view (2026-11-09-agent-cards-view-design.md §3) reads mesh.json lazily in the viewer, and
+// /api/version carries `mesh` only when it names a known agent (test/mesh-agents.test.ts).
 import { afterEach, describe, expect, it } from 'vitest'
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
@@ -10,6 +11,7 @@ import { MESH_FILE_MAX, meshDir, meshFile, parseMesh } from '../src/mesh-config.
 import { runMeshctl } from '../src/meshctl.js'
 import type { MeshctlIo } from '../src/meshctl.js'
 import { createViewer } from '../src/viewer.js'
+import { meshAgents } from '../src/mesh-agents.js'
 import { openDb } from '../src/store.js'
 import { removeScratchDirs, scratchDir } from './scratch.js'
 
@@ -464,7 +466,7 @@ describe('meshctl enable/disable --request-post (#500, request-post design §6, 
 })
 
 describe('no new dependency (design §2.3, §2.4c)', () => {
-  const MESH_FILES = ['src/mesh-config.ts', 'src/meshctl.ts', 'src/unslop-client.ts', 'src/request-post-client.ts', 'public/agents-home.js']
+  const MESH_FILES = ['src/mesh-config.ts', 'src/meshctl.ts', 'src/unslop-client.ts', 'src/request-post-client.ts', 'src/mesh-agents.ts', 'public/agents-home.js']
   const SPECIFIERS = /(?:\bfrom\s*|\bimport\s*\(?\s*|\brequire\s*\(\s*)(['"])([^'"\n]+)\1/g
   // comment lines name modules in prose; only code imports count
   const code = (file: string): string => readFileSync(join(REPO, file), 'utf8').split('\n')
@@ -483,6 +485,10 @@ describe('no new dependency (design §2.3, §2.4c)', () => {
     expect(local('src/unslop-client.ts')).toEqual(['./agent-card.js', './mesh-config.js'])
     expect(local('src/request-post-client.ts')).toEqual(['./agent-card.js', './mesh-config.js'])
     expect(local('src/mesh-config.ts')).toEqual([])
+    // the viewer's cards view (agent cards view design §3.4): HTTP and the config rule only,
+    // so it can never start an agent (no child_process) or open the hub
+    expect([...code('src/mesh-agents.ts').matchAll(SPECIFIERS)].map((m) => m[2]!))
+      .toEqual(['node:fs', 'node:http', 'node:http', 'node:https', 'node:net', './agent-card.js', './mesh-config.js'])
     // the card rule is pure (agent cards view design §3.4): no import at all, Node core included
     expect([...code('src/agent-card.ts').matchAll(SPECIFIERS)].map((m) => m[2]!)).toEqual([])
   })
@@ -537,15 +543,20 @@ describe('no new dependency (design §2.3, §2.4c)', () => {
   })
 })
 
-describe('/api/version never carries mesh (#454 §4)', () => {
-  it('has no mesh key, whatever mesh.json says', async () => {
+describe('/api/version carries mesh only with a known agent (agent cards view design §3.3)', () => {
+  it('has no mesh key without the viewer option or a known agent, whatever mesh.json says', async () => {
     const dbDir = scratchDir('mesh-viewer-')
     writeFileSync(join(dbDir, 'mesh.json'), '{"schema":1,"agentsView":true}\n')
     const db = openDb(join(dbDir, 'inbox.db'))
     const home = scratchDir('mesh-home-')
     mkdirSync(join(home, '.claude'), { recursive: true })
-    const res = await createViewer(db, { agentHome: home, setupInfoPath: join(dbDir, 'none.json') }).request('/api/version')
-    expect(Object.keys(await res.json())).toEqual(['current', 'mode', 'runtimeInstalled', 'updatable', 'hosts'])
+    const opts = { agentHome: home, setupInfoPath: join(dbDir, 'none.json') }
+    const keys = async (o: object) => Object.keys(await (await createViewer(db, { ...opts, ...o }).request('/api/version')).json())
+    expect(await keys({})).toEqual(['current', 'mode', 'runtimeInstalled', 'updatable', 'hosts'])
+    expect(await keys({ mesh: meshAgents({ dir: dbDir }) })).toEqual(['current', 'mode', 'runtimeInstalled', 'updatable', 'hosts'])
+    writeFileSync(join(dbDir, 'mesh.json'), '{"schema":1,"agents":{"unslop":{"endpoint":"http://127.0.0.1:4420"}}}\n')
+    expect(await keys({})).toEqual(['current', 'mode', 'runtimeInstalled', 'updatable', 'hosts'])
+    expect(await keys({ mesh: meshAgents({ dir: dbDir }) })).toEqual(['current', 'mode', 'runtimeInstalled', 'updatable', 'hosts', 'mesh'])
     db.close()
   })
 })

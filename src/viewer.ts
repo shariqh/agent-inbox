@@ -29,6 +29,7 @@ import type { RuntimeInventory, RuntimeMeasure, RuntimeMeasurer } from './runtim
 import { buildStamp, readBakedInfo } from './stamp.js'
 import type { BakedInfo, BuildStamp } from './stamp.js'
 import { AGENT_INBOX_VERSION } from './version.js'
+import type { MeshAgents } from './mesh-agents.js'
 
 const require = createRequire(import.meta.url)
 const {
@@ -81,6 +82,9 @@ export interface ViewerOpts {
   /** issue #294: how one runtime folder is measured, injected so a test can
    *  count the manifest reads and walks its cache exists to avoid. */
   runtimeMeasurer?: RuntimeMeasurer
+  /** The agent cards view (src/mesh-agents.ts); viewer-server.ts passes it. Without it
+   *  `/api/version` has no `mesh` key and the mesh routes answer off, touching no file. */
+  mesh?: MeshAgents
 }
 
 /** Split a fixed `darwin-arm64`/`darwin-x64` runtime key into platform/arch —
@@ -492,6 +496,7 @@ interface AgentVersion {
   runtimeInstalled: boolean | null
   updatable: boolean
   hosts: { claude: HostVersion; copilot: HostVersion }
+  mesh?: { agents: number }
 }
 
 type HostVersion = Pick<HostRegistration, 'kind' | 'version'>
@@ -965,12 +970,16 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
 
   // Read by the viewer at page load, whenever the Agents home or a session panel
   // opens and after a Setup install — never on the poll. Local reads only, no git, no network.
+  // `mesh` only when mesh.json names an agent this build knows; otherwise the bytes are
+  // exactly as before the agent cards view (its design §3.3).
   app.get('/api/version', (c) => {
     const baked = readBakedInfo(bakedPath)
     const registered = agentHosts(baked)
     const hosts = { claude: hostVersion(registered.claude), copilot: hostVersion(registered.copilot) }
+    const meshKey = opts.mesh?.version()
+    const mesh = meshKey ? { mesh: meshKey } : {}
     if (baked?.schema !== 2) {
-      return c.json({ current: AGENT_INBOX_VERSION, mode: 'dev', runtimeInstalled: null, updatable: false, hosts } satisfies AgentVersion)
+      return c.json({ current: AGENT_INBOX_VERSION, mode: 'dev', runtimeInstalled: null, updatable: false, hosts, ...mesh } satisfies AgentVersion)
     }
     const lookup = releaseRuntime(baked)
     return c.json({
@@ -979,7 +988,31 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
       runtimeInstalled: lookup?.runtime ? true : lookup?.source ? false : null,
       updatable: canUpdateAgents(baked, lookup),
       hosts,
+      ...mesh,
     } satisfies AgentVersion)
+  })
+
+  // The agent cards view (design 2026-11-09-agent-cards-view-design.md §4.5, §4.7). Built
+  // fresh per read from src/mesh-agents.ts's in-memory records, not a retained snapshot: the
+  // tag hashes the bytes, so a 304 means identical bytes. Reading never starts a check.
+  app.get('/api/mesh/agents', (c) => {
+    c.header('Cache-Control', 'no-store')
+    const body = JSON.stringify(opts.mesh?.body() ?? { on: false, agents: [] })
+    const etag = `"mesh-agents-${createHash('sha256').update(body).digest('hex')}"`
+    c.header('ETag', etag)
+    if (etagMatches(c.req.header('If-None-Match'), etag)) return c.body(null, 304)
+    return c.body(body, 200, { 'Content-Type': 'application/json' })
+  })
+  // The only way a check starts: an open or a Refresh press. Answers once the checks end.
+  app.post('/api/mesh/agents/refresh', async (c) => {
+    const body = await c.req.json().catch(() => null) as unknown
+    const { trigger, name, ...rest } = (body && typeof body === 'object' && !Array.isArray(body) ? body : {}) as Record<string, unknown>
+    if ((trigger !== 'open' && trigger !== 'refresh') || Object.keys(rest).length
+      || (name !== undefined && (trigger !== 'refresh' || typeof name !== 'string'))) {
+      return c.json({ ok: false, error: 'expected {"trigger":"open"|"refresh","name"?:string}' }, 400)
+    }
+    const known = await (opts.mesh?.trigger(trigger, name as string | undefined) ?? Promise.resolve(name === undefined))
+    return c.json(known ? { ok: true } : { ok: false, error: 'not configured' })
   })
 
   // Read-only, truthful claim-interval history for the dashboard: independent

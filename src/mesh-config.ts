@@ -1,10 +1,9 @@
 // The mesh's root switch, `mesh.json` (Mesh M1, #397; design
 // docs/superpowers/specs/2026-10-29-agent-mesh-design.md §2). Node core only:
 // `meshctl` and its clients (src/unslop-client.ts, src/request-post-client.ts) read it and must never
-// open the hub. Since #454 the viewer reads
-// nothing here: the Agents view is always on, and the viewer's watch returns
-// with the first mesh phase that needs it (M3). Nothing in the stdio MCP
-// server's import graph may reach this module.
+// open the hub. The viewer reads it only through src/mesh-agents.ts, lazily,
+// for the agent cards view (the Agents view itself is always on, #454).
+// Nothing in the stdio MCP server's import graph may reach this module.
 //
 // One rule decides what the file means, for every reader: a regular file (never
 // a symlink), at most MESH_FILE_MAX bytes, a JSON object whose `schema` is 1.
@@ -92,7 +91,9 @@ export function readMesh(file: string): MeshRead {
 
 /** The port of an `agents.unslop.endpoint`: only http://127.0.0.1:<port>, never port 80 (clients drop `:80` from Host). */
 export function loopbackPort(endpoint: unknown): number | undefined {
-  const port = Number(/^http:\/\/127\.0\.0\.1:(\d{1,5})\/?$/.exec(String(endpoint))?.[1])
+  // never String() a hand-edited object: one whose toString is not callable throws
+  if (typeof endpoint !== 'string') return undefined
+  const port = Number(/^http:\/\/127\.0\.0\.1:(\d{1,5})\/?$/.exec(endpoint)?.[1])
   return port >= 1 && port <= 65535 && port !== 80 ? port : undefined
 }
 
@@ -103,8 +104,9 @@ export function loopbackPort(endpoint: unknown): number | undefined {
  * written-out default port (443, 80); one trailing `/` is dropped. Anything else is off.
  */
 export function requestPostEndpoint(endpoint: unknown): string | undefined {
+  if (typeof endpoint !== 'string') return undefined
   const label = '[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?'
-  const text = String(endpoint)
+  const text = endpoint
   const tailnet = new RegExp(`^(https://(?:${label}\\.){2}ts\\.net)(?::([1-9]\\d{0,4}))?/?$`).exec(text)
   const loopback = /^(http:\/\/127\.0\.0\.1):([1-9]\d{0,4})\/?$/.exec(text)
   const match = tailnet ?? loopback

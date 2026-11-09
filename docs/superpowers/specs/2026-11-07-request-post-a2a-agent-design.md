@@ -51,6 +51,9 @@ it can follow. Approval stays with Shariq, in the queue.
 **Non-goals.** Approving, scheduling or publishing. Repairing failed rows or their pull requests.
 Drafting (the service already does it). Media uploads in the first slices (§3.2). Changing the
 review or publishing pipeline. A viewer change in Agent Inbox.
+*(The last non-goal is superseded by the agent cards view,
+[`2026-11-09-agent-cards-view-design.md`](2026-11-09-agent-cards-view-design.md) §10; §10's "no
+viewer, `public/` or `electron/` file names it" still holds.)*
 
 ## §2 — Decision 1: where the agent runs and which repository owns it
 

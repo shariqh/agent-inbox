@@ -28,6 +28,10 @@ local model agent first on loopback (D9). It touches §2.2, §2.4, §6.6, §8, �
 ([`2026-11-07-request-post-a2a-agent-design.md`](2026-11-07-request-post-a2a-agent-design.md)):
 Shariq accepted `request-post` as the second agent, hosted by the private publishing service, in a
 phase M2b (D11). It touches §6.6, §11 and §14.1.
+**Amended 2026-11-09 by the agent cards view**
+([`2026-11-09-agent-cards-view-design.md`](2026-11-09-agent-cards-view-design.md) §10): the
+viewer reads `mesh.json` lazily to show the configured agents and their cards in the Agents home.
+It touches §2.1, §2.2, §2.4 (b), §8.8 and §10.2.
 
 ---
 
@@ -112,15 +116,17 @@ one key per piece; a missing key or file means off:
 }
 ```
 
-**The one stated exception to "nothing changes when off":** the viewer process `stat`s
-`mesh.json` at start and once a minute. A missing file costs one failed `stat` a minute: no read,
-no write, no network, no timer beyond that one. The browser never supplies the registry URL.
+**The one stated exception to "nothing changes when off":** the viewer `lstat`s `mesh.json` only
+when a page reads `/api/version` or `/api/mesh/agents`, at most once every 5 s; no timer (amended
+by the agent cards view, §3.2 there). A missing file costs one failed `lstat` per such read: no
+read, no write, no network. The browser never supplies the registry URL.
 
 ### 2.2 The pieces and their switches
 
 | Piece | Runs where | Switched on by | Off means |
 |---|---|---|---|
 | Agents view (M1) | browser, from `/api/activity` | `agentsView: true`, then a window reload | No Mesh section, no view, no extra read |
+| Mesh agents section (agent cards view) | viewer process (`src/mesh-agents.ts`) and the Agents home | `agents.unslop` or `agents.request-post` in `mesh.json` | No section, no `/api/mesh/agents` read, no socket |
 | Unslop agent (M2a, #483) | its own process, loopback only, started on demand | `agents.unslop` in `mesh.json` (`meshctl enable --unslop`) | No process, no listener; `meshctl unslop` sends nothing |
 | request-post client (M2b, #500) | `meshctl request-post`, calling the publishing service's agent on the personal tailnet | `agents.request-post` in `mesh.json` (`meshctl enable --request-post`) | No connection; `meshctl request-post` exits 14 |
 | Local wrapper spike (M2) | its own process, loopback only | running `agent-inbox-wrap --profile <name>` | Nothing |
@@ -166,7 +172,10 @@ writes the host config atomically with a backup; `uninstall-bridge` removes only
   `import('/mesh-view.js')`. A DOM-harness test boots with no file and asserts byte-identical
   bodies and ETags for all eight poll reads and `/api/version`, the same request list, no Settings
   → Mesh section, and that `/mesh-view.js` was never requested. Turning the view on or off takes a
-  window reload.
+  window reload. *Amended 2026-11-09 by the agent cards view (§3.3 there):* the `mesh` key returns
+  in `/api/version` as `{ agents: n }`, only when `mesh.json` names an agent this build knows; with
+  no file `/api/version` is byte-identical, and the no-file test asserts the unchanged request list
+  and bodies (`test/mesh-agents.test.ts`).
 - **(c) No new dependency** in the app: `package-lock.json` changes only by the root entry's `bin`
   map (§2.3), and its dependency set is unchanged. A test holds this without the base branch,
   so it runs in CI: `test/fixtures/app-dependencies.txt` pins `package.json`'s dependency and
@@ -736,7 +745,8 @@ Agents view flags a chain when one callee receives the same message hash three t
   safer than a denylist.
 - The bridge calls only endpoints the registry returned for an `up` instance, and checks the
   card hash it sends to against the hash `discover` returned and the grant names.
-- The viewer calls only the registry URL in `mesh.json`.
+- The viewer calls only the registry URL in `mesh.json`, and each configured agent's card URL,
+  built from an endpoint that passed its rule; never a URL from a card (agent cards view §4.2).
 - **request-post (M2b, #500), before any registry:** `agents.request-post.endpoint` must be
   `https://<name>.<tailnet>.ts.net[:<port>]` or, for the SSH fallback only,
   `http://127.0.0.1:<port>`; anything else is off. The client follows no redirect, uses no proxy
@@ -842,6 +852,10 @@ Needed rework / Not used** verdict, which is ambient: no badge, count or notific
 load and, only then, imports `/mesh-view.js`. From M3 the view adds one read while visible,
 `GET /api/mesh`, which the viewer answers from its console cache with an ETag, so an idle tick is
 a 304.
+
+*Amended 2026-11-09 by the agent cards view (§3.3 there):* there is no `/mesh-view.js`. The `mesh`
+key tells the page that `/api/mesh/agents` is worth reading, and the Mesh agents section in
+`public/agents-home.js` reads it.
 
 ### 10.3 Asks live in a reserved project agents cannot reach
 

@@ -75,7 +75,7 @@ One line each; the detail, the reasons and the regressions behind them are in th
   reads the complete lists. → store-and-snapshots
 - MCP stdout is the protocol channel: no `console.log`, subprocesses capture stdout. → mcp-server
 - Fail-open, never lose a flag: failed inference attributes to `unknown` and still inserts. → mcp-server
-- No network in the MCP process; `prstate`/`issue-poller` stay viewer-only. → overview, github-and-issues
+- No network in the MCP process; `prstate`/`issue-poller`/`mesh-agents` stay viewer-only. → overview, github-and-issues
 - `src/shape.ts` trims agent reads only; the viewer never imports it (#42). → mcp-server
 - Human annotations, handled marks and delivery stamps are sacred: upserts never reset them. → delivery-and-responses
 - Delivery is not acknowledgement: a blocked row is re-delivered until an agent flips its status (#37). → delivery-and-responses

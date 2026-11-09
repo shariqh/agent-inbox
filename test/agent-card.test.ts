@@ -1,7 +1,8 @@
 // The one A2A card rule (agent cards view design §4.4, slice V1). Both cards that ship
 // today pass: request-post's R1 fixture and unslop's card as its agent serves it (the
 // agent's own source, so a change to that card that this rule rejects fails here). Each
-// rule fails with its fixed reason, checked in order. The clients' exit codes and words
+// rule fails with its fixed reason, checked in order. V2's summarizeCard and cardJson are
+// the bounded, cleaned views the viewer sends the page. The clients' exit codes and words
 // around these reasons are pinned in test/unslop-client.test.ts and
 // test/request-post-client.test.ts.
 import { readFileSync } from 'node:fs'
@@ -9,7 +10,7 @@ import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { startServer } from '../packages/mesh/src/a2a.js'
 import type { A2AServer } from '../packages/mesh/src/a2a.js'
-import { checkCard } from '../src/agent-card.js'
+import { cardJson, checkCard, summarizeCard } from '../src/agent-card.js'
 
 type Json = Record<string, any>
 const REPO = new URL('..', import.meta.url).pathname
@@ -88,5 +89,51 @@ describe('checkCard (agent cards view design §4.4)', () => {
 
   it('anything that is not a card object fails on its first rule', () => {
     for (const card of [undefined, null, '<html>', 42, [UNSLOP]]) expect(checkCard(card, 'unslop')).toBe('no unslop skill')
+  })
+})
+
+describe('summarizeCard and cardJson (agent cards view design §4.4, slice V2)', () => {
+  const HOSTILE = '<img src=x>\u0000\u001b\u200e\u200f\u061c\u202e\u2066\u2028\u2029\u007f\u0085\tok\nend'
+
+  it('summarizes the shipped card and keeps markup as text, replacing every listed control', () => {
+    const summary = summarizeCard(REQUEST_POST)
+    expect(summary).toMatchObject({
+      name: 'request-post', version: '0.0.0-fixture', streaming: false, pushNotifications: false,
+      interfaces: { items: [{ url: 'https://request-post.tailnet-name.ts.net/', binding: 'JSONRPC', protocolVersion: '1.0' }], more: 0 },
+      auth: { schemes: { items: [{ name: 'bearer', type: 'httpAuthSecurityScheme', scheme: 'Bearer' }], more: 0 }, required: true },
+      inputModes: { items: ['text/plain'], more: 0 },
+    })
+    expect(summary.extensions.items[0]!.params.items).toEqual([
+      ['api', '1'], ['brands', 'example-brand, second-brand'], ['channels', 'blog, x-thread, x-standalone, linkedin'],
+      ['categories', 'example-category, second-category'], ['maxBriefBytes', '8192'],
+    ])
+    const hostile = summarizeCard({ ...REQUEST_POST, description: HOSTILE })
+    expect(hostile.description).toBe(`<img src=x>${'\uFFFD'.repeat(11)}\tok\nend`)
+  })
+
+  it('cuts strings and lists to their caps with a count of what it left out', () => {
+    const many = (n: number, f: (i: number) => unknown) => Array.from({ length: n }, (_, i) => f(i))
+    const big = summarizeCard({
+      name: 'n'.repeat(81), description: 'd'.repeat(501),
+      skills: many(20, (i) => ({ id: `s${i}`, description: 's'.repeat(301), tags: many(10, () => 't'.repeat(41)) })),
+      supportedInterfaces: many(9, () => ({})),
+      capabilities: { extensions: many(9, () => ({ params: { list: many(10, (i) => i), nested: { a: 'p'.repeat(300) } } })) },
+    })
+    expect(big.name).toBe(`${'n'.repeat(80)}…`)
+    expect(big.description).toBe(`${'d'.repeat(500)}…`)
+    expect([big.skills.items.length, big.skills.more, big.interfaces.more, big.extensions.more]).toEqual([16, 4, 1, 1])
+    expect(big.skills.items[0]!.description).toHaveLength(301)
+    expect(big.skills.items[0]!.tags).toEqual({ items: Array(8).fill(`${'t'.repeat(40)}…`), more: 2 })
+    expect(big.extensions.items[0]!.params.items[0]).toEqual(['list', '0, 1, 2, 3, 4, 5, 6, 7 +2'])
+    expect(big.extensions.items[0]!.params.items[1]![1]).toHaveLength(201)
+    expect(summarizeCard('<html>')).toMatchObject({ name: null, skills: { items: [], more: 0 } })
+  })
+
+  it('cardJson is two-space JSON with every listed character JSON leaves raw escaped', () => {
+    const json = cardJson({ description: HOSTILE })
+    expect(json).toMatch(/^\{\n  "description": /)
+    expect(json).not.toMatch(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069\u2028\u2029]/)
+    for (const escape of ['\\u0000', '\\u001b', '\\u200e', '\\u200f', '\\u061c', '\\u202e', '\\u2066', '\\u2028', '\\u2029', '\\u007f', '\\u0085']) expect(json).toContain(escape)
+    expect(JSON.parse(json)).toEqual({ description: HOSTILE })
   })
 })

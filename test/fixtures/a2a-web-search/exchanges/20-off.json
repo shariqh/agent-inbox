@@ -1,0 +1,7 @@
+{
+  "row": "off",
+  "situation": "Off, no agent, a stale shim, the SDK not installed, a card mismatch, a failed identity check",
+  "exit": 14,
+  "clientOnly": true,
+  "note": "Client-side only: no task exists. Without agents.web-search, or when the card or its identity proof does not match, the client sends nothing and exits 14 with empty stdout."
+}

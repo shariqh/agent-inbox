@@ -1,0 +1,24 @@
+{
+  "provider": "ollama",
+  "note": "web_fetch erroring: reason http-5xx; with SearXNG also failing the task fails (13).",
+  "request": {
+    "method": "POST",
+    "url": "https://ollama.com/api/web_fetch",
+    "headers": {
+      "authorization": "Bearer <placeholder-key>",
+      "content-type": "application/json"
+    },
+    "body": {
+      "url": "https://docs.example.com/releases/1"
+    }
+  },
+  "response": {
+    "status": 503,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": {
+      "error": "service unavailable"
+    }
+  }
+}

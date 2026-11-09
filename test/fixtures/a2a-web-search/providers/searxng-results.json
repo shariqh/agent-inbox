@@ -1,0 +1,110 @@
+{
+  "provider": "searxng",
+  "note": "Three usable results: no Ollama fallback. publishedDate is null when an engine gives none; the adapter reads url, title, content, engines and publishedDate and ignores answers, infoboxes and suggestions.",
+  "request": {
+    "method": "GET",
+    "path": "/search?q=example+runtime+long-term+support&format=json&categories=general&language=en"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": {
+      "query": "example runtime long-term support",
+      "number_of_results": 0,
+      "results": [
+        {
+          "url": "https://docs.example.com/releases/1",
+          "title": "Example runtime release notes, part 1",
+          "content": "Version 24 of the example runtime entered long-term support on 2025-10-28.",
+          "engine": "wikipedia",
+          "engines": [
+            "wikipedia",
+            "duckduckgo"
+          ],
+          "positions": [
+            1
+          ],
+          "score": 3.0,
+          "category": "general",
+          "template": "default.html",
+          "parsed_url": [
+            "https",
+            "docs.example.com",
+            "/releases/1",
+            "",
+            "",
+            ""
+          ],
+          "publishedDate": "2025-10-28T00:00:00",
+          "thumbnail": "",
+          "img_src": "",
+          "priority": ""
+        },
+        {
+          "url": "https://wiki.example.org/wiki/Example_runtime",
+          "title": "Example runtime - Example Wiki",
+          "content": "Version 24 of the example runtime entered long-term support on 2025-10-28.",
+          "engine": "wikipedia",
+          "engines": [
+            "wikipedia"
+          ],
+          "positions": [
+            2
+          ],
+          "score": 1.5,
+          "category": "general",
+          "template": "default.html",
+          "parsed_url": [
+            "https",
+            "wiki.example.org",
+            "/wiki/Example_runtime",
+            "",
+            "",
+            ""
+          ],
+          "publishedDate": null,
+          "thumbnail": "",
+          "img_src": "",
+          "priority": ""
+        },
+        {
+          "url": "https://docs.example.com/releases/3",
+          "title": "Example runtime release notes, part 3",
+          "content": "A synthetic summary of the example runtime release schedule.",
+          "engine": "marginalia",
+          "engines": [
+            "marginalia",
+            "brave"
+          ],
+          "positions": [
+            3
+          ],
+          "score": 1.0,
+          "category": "general",
+          "template": "default.html",
+          "parsed_url": [
+            "https",
+            "docs.example.com",
+            "/releases/3",
+            "",
+            "",
+            ""
+          ],
+          "publishedDate": "2025-11-02T09:30:00",
+          "thumbnail": "",
+          "img_src": "",
+          "priority": ""
+        }
+      ],
+      "answers": [],
+      "corrections": [],
+      "infoboxes": [],
+      "suggestions": [
+        "example runtime release schedule"
+      ],
+      "unresponsive_engines": []
+    }
+  }
+}

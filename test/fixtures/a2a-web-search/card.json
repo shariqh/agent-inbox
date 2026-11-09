@@ -1,0 +1,75 @@
+{
+  "name": "web-search",
+  "description": "Searches the public web for one question and returns a cited answer or the sources alone.",
+  "version": "0.0.0",
+  "supportedInterfaces": [
+    {
+      "url": "http://127.0.0.1:4421/",
+      "protocolBinding": "JSONRPC",
+      "protocolVersion": "1.0"
+    }
+  ],
+  "capabilities": {
+    "streaming": true,
+    "pushNotifications": false,
+    "extensions": [
+      {
+        "uri": "urn:agent-inbox:ext:web-search:v1",
+        "description": "web-search task parameters and result",
+        "required": false,
+        "params": {
+          "api": 1,
+          "modes": [
+            "answer",
+            "sources"
+          ],
+          "recency": [
+            "any",
+            "day",
+            "week",
+            "month",
+            "year"
+          ],
+          "maxSources": 10,
+          "maxQueryChars": 400,
+          "maxSites": 5,
+          "maxExcludeSites": 10
+        }
+      }
+    ]
+  },
+  "securitySchemes": {
+    "bearer": {
+      "httpAuthSecurityScheme": {
+        "scheme": "Bearer"
+      }
+    }
+  },
+  "securityRequirements": [
+    {
+      "schemes": {
+        "bearer": {
+          "list": []
+        }
+      }
+    }
+  ],
+  "defaultInputModes": [
+    "text/plain"
+  ],
+  "defaultOutputModes": [
+    "text/plain",
+    "application/json"
+  ],
+  "skills": [
+    {
+      "id": "web-search",
+      "name": "web-search",
+      "description": "Answers one question from the public web with numbered sources, or returns the sources alone.",
+      "tags": [
+        "search",
+        "web"
+      ]
+    }
+  ]
+}

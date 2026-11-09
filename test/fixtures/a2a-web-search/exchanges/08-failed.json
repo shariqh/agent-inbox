@@ -1,0 +1,58 @@
+{
+  "row": "failed",
+  "situation": "Failed: SearXNG and Ollama both unreachable or erroring",
+  "exit": 13,
+  "headers": {
+    "A2A-Version": "1.0"
+  },
+  "request": {
+    "jsonrpc": "2.0",
+    "id": "rpc-08",
+    "method": "SendMessage",
+    "params": {
+      "message": {
+        "messageId": "msg-08",
+        "role": "ROLE_USER",
+        "parts": [
+          {
+            "text": "When did version 24 of the example runtime enter long-term support?"
+          }
+        ]
+      }
+    }
+  },
+  "response": {
+    "jsonrpc": "2.0",
+    "id": "rpc-08",
+    "result": {
+      "task": {
+        "id": "00000000-0000-4000-8000-000000000001",
+        "contextId": "00000000-0000-4000-8000-000000000002",
+        "status": {
+          "state": "TASK_STATE_FAILED",
+          "message": {
+            "messageId": "00000000-0000-4000-8000-000000000003",
+            "contextId": "00000000-0000-4000-8000-000000000002",
+            "taskId": "00000000-0000-4000-8000-000000000001",
+            "role": "ROLE_AGENT",
+            "parts": [
+              {
+                "text": "failed: providers-failed",
+                "mediaType": "text/plain"
+              },
+              {
+                "data": {
+                  "code": 13,
+                  "status": "failed",
+                  "reason": "providers-failed"
+                },
+                "mediaType": "application/json"
+              }
+            ]
+          },
+          "timestamp": "2026-11-09T18:00:00.000Z"
+        }
+      }
+    }
+  }
+}

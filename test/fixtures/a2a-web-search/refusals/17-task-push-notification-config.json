@@ -1,0 +1,31 @@
+{
+  "name": "Push config: configuration.taskPushNotificationConfig",
+  "headers": {
+    "A2A-Version": "1.0"
+  },
+  "request": {
+    "jsonrpc": "2.0",
+    "id": "rpc-r",
+    "method": "SendStreamingMessage",
+    "params": {
+      "message": {
+        "messageId": "msg-r",
+        "role": "ROLE_USER",
+        "parts": [
+          {
+            "text": "When did version 24 of the example runtime enter long-term support?"
+          }
+        ]
+      },
+      "configuration": {
+        "taskPushNotificationConfig": {
+          "url": "http://127.0.0.1:9/"
+        }
+      }
+    }
+  },
+  "error": {
+    "code": -32602,
+    "message": "Invalid params"
+  }
+}

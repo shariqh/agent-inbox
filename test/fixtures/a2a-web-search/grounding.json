@@ -1,0 +1,380 @@
+{
+  "note": "Grounding check cases (design §6). `nonce` is the delimiter nonce the prompt used; `finishReason` is the model's. A failing case names the rule it breaks.",
+  "rules": [
+    "citation-range",
+    "link",
+    "image",
+    "html",
+    "nonce",
+    "length",
+    "truncated",
+    "uncited-claim",
+    "value-not-contained"
+  ],
+  "cases": [
+    {
+      "id": "month-matches-day",
+      "question": "When did version 24 enter long-term support?",
+      "answer": "Version 24 entered long-term support in October 2025 [1].",
+      "expect": "pass",
+      "sources": [
+        {
+          "n": 1,
+          "text": "Version 24 of the example runtime entered long-term support on 2025-10-28. The first release in that line is v24.11.0."
+        },
+        {
+          "n": 2,
+          "text": "The default request body limit is 16KiB and the server accepts 1000 connections. The guide says \"restart the service after a config change\"."
+        }
+      ],
+      "nonce": "n0nce-placeholder",
+      "finishReason": "stop"
+    },
+    {
+      "id": "year-matches-day",
+      "question": "When did version 24 enter long-term support?",
+      "answer": "It entered long-term support in 2025 [1].",
+      "expect": "pass",
+      "sources": [
+        {
+          "n": 1,
+          "text": "Version 24 of the example runtime entered long-term support on 2025-10-28. The first release in that line is v24.11.0."
+        },
+        {
+          "n": 2,
+          "text": "The default request body limit is 16KiB and the server accepts 1000 connections. The guide says \"restart the service after a config change\"."
+        }
+      ],
+      "nonce": "n0nce-placeholder",
+      "finishReason": "stop"
+    },
+    {
+      "id": "version-prefix",
+      "question": "Which release line is in long-term support?",
+      "answer": "Node 24 is the long-term support line [1].",
+      "expect": "pass",
+      "sources": [
+        {
+          "n": 1,
+          "text": "Node v24.11.0 is the first long-term support release."
+        }
+      ],
+      "nonce": "n0nce-placeholder",
+      "finishReason": "stop"
+    },
+    {
+      "id": "version-not-prefix",
+      "question": "Which release line is in long-term support?",
+      "answer": "Node 25 is the long-term support line [1].",
+      "expect": "fail",
+      "rule": "value-not-contained",
+      "sources": [
+        {
+          "n": 1,
+          "text": "Node v24.11.0 is the first long-term support release."
+        }
+      ],
+      "nonce": "n0nce-placeholder",
+      "finishReason": "stop"
+    },
+    {
+      "id": "question-number-uncited",
+      "question": "Is version 24 of the example runtime still the long-term support line in 2026?",
+      "answer": "Yes: in 2026, version 24 is still in long-term support [1].",
+      "expect": "pass",
+      "sources": [
+        {
+          "n": 1,
+          "text": "Version 24 of the example runtime entered long-term support on 2025-10-28. The first release in that line is v24.11.0."
+        },
+        {
+          "n": 2,
+          "text": "The default request body limit is 16KiB and the server accepts 1000 connections. The guide says \"restart the service after a config change\"."
+        }
+      ],
+      "nonce": "n0nce-placeholder",
+      "finishReason": "stop"
+    },
+    {
+      "id": "paragraph-citation-covers",
+      "question": "What is the body limit?",
+      "answer": "The default request body limit is 16 KiB. It applies to every request [2].",
+      "expect": "pass",
+      "sources": [
+        {
+          "n": 1,
+          "text": "Version 24 of the example runtime entered long-term support on 2025-10-28. The first release in that line is v24.11.0."
+        },
+        {
+          "n": 2,
+          "text": "The default request body limit is 16KiB and the server accepts 1000 connections. The guide says \"restart the service after a config change\"."
+        }
+      ],
+      "nonce": "n0nce-placeholder",
+      "finishReason": "stop"
+    },
+    {
+      "id": "paragraph-citation-misses",
+      "question": "What is the body limit?",
+      "answer": "The default request body limit is 32 KiB. It applies to every request [2].",
+      "expect": "fail",
+      "rule": "value-not-contained",
+      "sources": [
+        {
+          "n": 1,
+          "text": "Version 24 of the example runtime entered long-term support on 2025-10-28. The first release in that line is v24.11.0."
+        },
+        {
+          "n": 2,
+          "text": "The default request body limit is 16KiB and the server accepts 1000 connections. The guide says \"restart the service after a config change\"."
+        }
+      ],
+      "nonce": "n0nce-placeholder",
+      "finishReason": "stop"
+    },
+    {
+      "id": "thousands-separator",
+      "question": "How many connections does the server accept?",
+      "answer": "It accepts 1,000 connections [2].",
+      "expect": "pass",
+      "sources": [
+        {
+          "n": 1,
+          "text": "Version 24 of the example runtime entered long-term support on 2025-10-28. The first release in that line is v24.11.0."
+        },
+        {
+          "n": 2,
+          "text": "The default request body limit is 16KiB and the server accepts 1000 connections. The guide says \"restart the service after a config change\"."
+        }
+      ],
+      "nonce": "n0nce-placeholder",
+      "finishReason": "stop"
+    },
+    {
+      "id": "quote-normalised",
+      "question": "What should I do after a config change?",
+      "answer": "The guide says “restart the service after a config change” [2].",
+      "expect": "pass",
+      "sources": [
+        {
+          "n": 1,
+          "text": "Version 24 of the example runtime entered long-term support on 2025-10-28. The first release in that line is v24.11.0."
+        },
+        {
+          "n": 2,
+          "text": "The default request body limit is 16KiB and the server accepts 1000 connections. The guide says \"restart the service after a config change\"."
+        }
+      ],
+      "nonce": "n0nce-placeholder",
+      "finishReason": "stop"
+    },
+    {
+      "id": "quote-altered",
+      "question": "What should I do after a config change?",
+      "answer": "The guide says \"reload the service after a config change\" [2].",
+      "expect": "fail",
+      "rule": "value-not-contained",
+      "sources": [
+        {
+          "n": 1,
+          "text": "Version 24 of the example runtime entered long-term support on 2025-10-28. The first release in that line is v24.11.0."
+        },
+        {
+          "n": 2,
+          "text": "The default request body limit is 16KiB and the server accepts 1000 connections. The guide says \"restart the service after a config change\"."
+        }
+      ],
+      "nonce": "n0nce-placeholder",
+      "finishReason": "stop"
+    },
+    {
+      "id": "not-found-uncited",
+      "question": "Who maintains version 24?",
+      "answer": "NOT FOUND: the sources do not say who maintains version 24.",
+      "expect": "pass",
+      "sources": [
+        {
+          "n": 1,
+          "text": "Version 24 of the example runtime entered long-term support on 2025-10-28. The first release in that line is v24.11.0."
+        },
+        {
+          "n": 2,
+          "text": "The default request body limit is 16KiB and the server accepts 1000 connections. The guide says \"restart the service after a config change\"."
+        }
+      ],
+      "nonce": "n0nce-placeholder",
+      "finishReason": "stop"
+    },
+    {
+      "id": "not-found-link",
+      "question": "Who maintains version 24?",
+      "answer": "NOT FOUND: see https://docs.example.com/maintainers for more.",
+      "expect": "fail",
+      "rule": "link",
+      "sources": [
+        {
+          "n": 1,
+          "text": "Version 24 of the example runtime entered long-term support on 2025-10-28. The first release in that line is v24.11.0."
+        },
+        {
+          "n": 2,
+          "text": "The default request body limit is 16KiB and the server accepts 1000 connections. The guide says \"restart the service after a config change\"."
+        }
+      ],
+      "nonce": "n0nce-placeholder",
+      "finishReason": "stop"
+    },
+    {
+      "id": "citation-out-of-range",
+      "question": "When did version 24 enter long-term support?",
+      "answer": "It entered long-term support on 2025-10-28 [3].",
+      "expect": "fail",
+      "rule": "citation-range",
+      "sources": [
+        {
+          "n": 1,
+          "text": "Version 24 of the example runtime entered long-term support on 2025-10-28. The first release in that line is v24.11.0."
+        },
+        {
+          "n": 2,
+          "text": "The default request body limit is 16KiB and the server accepts 1000 connections. The guide says \"restart the service after a config change\"."
+        }
+      ],
+      "nonce": "n0nce-placeholder",
+      "finishReason": "stop"
+    },
+    {
+      "id": "uncited-paragraph",
+      "question": "When did version 24 enter long-term support?",
+      "answer": "Version 24 entered long-term support on 2025-10-28.",
+      "expect": "fail",
+      "rule": "uncited-claim",
+      "sources": [
+        {
+          "n": 1,
+          "text": "Version 24 of the example runtime entered long-term support on 2025-10-28. The first release in that line is v24.11.0."
+        },
+        {
+          "n": 2,
+          "text": "The default request body limit is 16KiB and the server accepts 1000 connections. The guide says \"restart the service after a config change\"."
+        }
+      ],
+      "nonce": "n0nce-placeholder",
+      "finishReason": "stop"
+    },
+    {
+      "id": "markdown-link",
+      "question": "Where are the release notes?",
+      "answer": "See [the notes](https://docs.example.com/releases/1) [1].",
+      "expect": "fail",
+      "rule": "link",
+      "sources": [
+        {
+          "n": 1,
+          "text": "Version 24 of the example runtime entered long-term support on 2025-10-28. The first release in that line is v24.11.0."
+        },
+        {
+          "n": 2,
+          "text": "The default request body limit is 16KiB and the server accepts 1000 connections. The guide says \"restart the service after a config change\"."
+        }
+      ],
+      "nonce": "n0nce-placeholder",
+      "finishReason": "stop"
+    },
+    {
+      "id": "markdown-image",
+      "question": "When did version 24 enter long-term support?",
+      "answer": "On 2025-10-28 [1]. ![x](https://attacker.example/p.png)",
+      "expect": "fail",
+      "rule": "image",
+      "sources": [
+        {
+          "n": 1,
+          "text": "Version 24 of the example runtime entered long-term support on 2025-10-28. The first release in that line is v24.11.0."
+        },
+        {
+          "n": 2,
+          "text": "The default request body limit is 16KiB and the server accepts 1000 connections. The guide says \"restart the service after a config change\"."
+        }
+      ],
+      "nonce": "n0nce-placeholder",
+      "finishReason": "stop"
+    },
+    {
+      "id": "html-tag",
+      "question": "When did version 24 enter long-term support?",
+      "answer": "On <b>2025-10-28</b> [1].",
+      "expect": "fail",
+      "rule": "html",
+      "sources": [
+        {
+          "n": 1,
+          "text": "Version 24 of the example runtime entered long-term support on 2025-10-28. The first release in that line is v24.11.0."
+        },
+        {
+          "n": 2,
+          "text": "The default request body limit is 16KiB and the server accepts 1000 connections. The guide says \"restart the service after a config change\"."
+        }
+      ],
+      "nonce": "n0nce-placeholder",
+      "finishReason": "stop"
+    },
+    {
+      "id": "nonce-echoed",
+      "question": "When did version 24 enter long-term support?",
+      "answer": "On 2025-10-28 [1]. SOURCE n0nce-placeholder [1] END",
+      "expect": "fail",
+      "rule": "nonce",
+      "sources": [
+        {
+          "n": 1,
+          "text": "Version 24 of the example runtime entered long-term support on 2025-10-28. The first release in that line is v24.11.0."
+        },
+        {
+          "n": 2,
+          "text": "The default request body limit is 16KiB and the server accepts 1000 connections. The guide says \"restart the service after a config change\"."
+        }
+      ],
+      "nonce": "n0nce-placeholder",
+      "finishReason": "stop"
+    },
+    {
+      "id": "too-long",
+      "question": "When did version 24 enter long-term support?",
+      "answer": "Version 24 entered long-term support on 2025-10-28 [1]. Version 24 entered long-term support on 2025-10-28 [1]. Version 24 entered long-term support on 2025-10-28 [1]. Version 24 entered long-term support on 2025-10-28 [1]. Version 24 entered long-term support on 2025-10-28 [1]. Version 24 entered long-term support on 2025-10-28 [1]. Version 24 entered long-term support on 2025-10-28 [1]. Version 24 entered long-term support on 2025-10-28 [1]. Version 24 entered long-term support on 2025-10-28 [1]. Version 24 entered long-term support on 2025-10-28 [1]. Version 24 entered long-term support on 2025-10-28 [1]. Version 24 entered long-term support on 2025-10-28 [1]. Version 24 entered long-term support on 2025-10-28 [1]. Version 24 entered long-term support on 2025-10-28 [1]. Version 24 entered long-term support on 2025-10-28 [1]. Version 24 entered long-term support on 2025-10-28 [1]. Version 24 entered long-term support on 2025-10-28 [1]. Version 24 entered long-term support on 2025-10-28 [1]. Version 24 entered long-term support on 2025-10-28 [1]. Version 24 entered long-term support on 2025-10-28 [1]. Version 24 entered long-term support on 2025-10-28 [1]. Version 24 entered long-term support on 2025-10-28 [1]. Version 24 entered long-term support on 2025-10-28 [1]. Version 24 entered long-term support on 2025-10-28 [1]. Version 24 entered long-term support on 2025-10-28 [1]. Version 24 entered long-term support on 2025-10-28 [1]. Version 24 entered long-term support on 2025-10-28 [1]. Version 24 entered long-term support on 2025-10-28 [1]. Version 24 entered long-term support on 2025-10-28 [1]. Version 24 entered long-term support on 2025-10-28 [1]. Version 24 entered long-term support on 2025-10-28 [1]. Version 24 entered long-term support on 2025-10-28 [1]. Version 24 entered long-term support on 2025-10-28 [1]. Version 24 entered long-term support on 2025-10-28 [1]. Version 24 entered long-term support on 2025-10-28 [1]. Version 24 entered long-term support on 2025-10-28 [1]. Version 24 entered long-term support on 2025-10-28 [1]. Version 24 entered long-term support on 2025-10-28 [1]. Version 24 entered long-term support on 2025-10-28 [1]. Version 24 entered long-term support on 2025-10-28 [1]. Version 24 entered long-term support on 2025-10-28 [1]. Version 24 entered long-term support on 2025-10-28 [1]. Version 24 entered long-term support on 2025-10-28 [1]. Version 24 entered long-term support on 2025-10-28 [1]. Version 24 entered long-term support on 2025-10-28 [1]. Version 24 entered long-term support on 2025-10-28 [1]. Version 24 entered long-term support on 2025-10-28 [1]. Version 24 entered long-term support on 2025-10-28 [1]. Version 24 entered long-term support on 2025-10-28 [1]. Version 24 entered long-term support on 2025-10-28 [1]. Version 24 entered long-term support on 2025-10-28 [1]. Version 24 entered long-term support on 2025-10-28 [1]. Version 24 entered long-term support on 2025-10-28 [1]. Version 24 entered long-term support on 2025-10-28 [1]. Version 24 entered long-term support on 2025-10-28 [1]. Version 24 entered long-term support on 2025-10-28 [1]. Version 24 entered long-term support on 2025-10-28 [1]. Version 24 entered long-term support on 2025-10-28 [1]. Version 24 entered long-term support on 2025-10-28 [1]. Version 24 entered long-term support on 2025-10-28 [1]. Version 24 entered long-term support on 2025-10-28 [1]. Version 24 entered long-term support on 2025-10-28 [1]. Version 24 entered long-term support on 2025-10-28 [1]. Version 24 entered long-term support on 2025-10-28 [1]. Version 24 entered long-term support on 2025-10-28 [1]. Version 24 entered long-term support on 2025-10-28 [1]. Version 24 entered long-term support on 2025-10-28 [1]. Version 24 entered long-term support on 2025-10-28 [1]. Version 24 entered long-term support on 2025-10-28 [1]. Version 24 entered long-term support on 2025-10-28 [1]. Version 24 entered long-term support on 2025-10-28 [1]. Version 24 entered long-term support on 2025-10-28 [1].",
+      "expect": "fail",
+      "rule": "length",
+      "sources": [
+        {
+          "n": 1,
+          "text": "Version 24 of the example runtime entered long-term support on 2025-10-28. The first release in that line is v24.11.0."
+        },
+        {
+          "n": 2,
+          "text": "The default request body limit is 16KiB and the server accepts 1000 connections. The guide says \"restart the service after a config change\"."
+        }
+      ],
+      "nonce": "n0nce-placeholder",
+      "finishReason": "stop"
+    },
+    {
+      "id": "truncated",
+      "question": "When did version 24 enter long-term support?",
+      "answer": "Version 24 entered long-term support on 2025-10-28 [1], and",
+      "finishReason": "length",
+      "expect": "fail",
+      "rule": "truncated",
+      "sources": [
+        {
+          "n": 1,
+          "text": "Version 24 of the example runtime entered long-term support on 2025-10-28. The first release in that line is v24.11.0."
+        },
+        {
+          "n": 2,
+          "text": "The default request body limit is 16KiB and the server accepts 1000 connections. The guide says \"restart the service after a config change\"."
+        }
+      ],
+      "nonce": "n0nce-placeholder"
+    }
+  ]
+}

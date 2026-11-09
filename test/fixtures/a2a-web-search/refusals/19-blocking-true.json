@@ -1,0 +1,29 @@
+{
+  "name": "A2A 0.3: configuration.blocking true",
+  "headers": {
+    "A2A-Version": "1.0"
+  },
+  "request": {
+    "jsonrpc": "2.0",
+    "id": "rpc-r",
+    "method": "SendMessage",
+    "params": {
+      "message": {
+        "messageId": "msg-r",
+        "role": "ROLE_USER",
+        "parts": [
+          {
+            "text": "When did version 24 of the example runtime enter long-term support?"
+          }
+        ]
+      },
+      "configuration": {
+        "blocking": true
+      }
+    }
+  },
+  "error": {
+    "code": -32602,
+    "message": "Invalid params"
+  }
+}

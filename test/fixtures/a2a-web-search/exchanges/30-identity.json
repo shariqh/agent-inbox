@@ -1,0 +1,111 @@
+{
+  "row": "identity",
+  "situation": "The identity challenge (§10.1): the proof is HMAC-SHA256(token, \"web-search/v1\\n\" + nonce) in base64url; only then does the client send the token",
+  "token": "placeholder-token-0000000000000000000000000",
+  "exitOnMismatch": 14,
+  "challenge": {
+    "request": {
+      "method": "GET",
+      "path": "/.well-known/agent-card.json",
+      "headers": {
+        "A2A-Mesh-Challenge": "placeholder-nonce-0000000000000000000000000"
+      }
+    },
+    "response": {
+      "status": 200,
+      "headers": {
+        "A2A-Mesh-Proof": "2o5JrL8NYPYjF1R6PB3-pG2492vOw_uCgupUHcByD-c"
+      },
+      "body": {
+        "name": "web-search",
+        "description": "Searches the public web for one question and returns a cited answer or the sources alone.",
+        "version": "0.0.0",
+        "supportedInterfaces": [
+          {
+            "url": "http://127.0.0.1:4421/",
+            "protocolBinding": "JSONRPC",
+            "protocolVersion": "1.0"
+          }
+        ],
+        "capabilities": {
+          "streaming": true,
+          "pushNotifications": false,
+          "extensions": [
+            {
+              "uri": "urn:agent-inbox:ext:web-search:v1",
+              "description": "web-search task parameters and result",
+              "required": false,
+              "params": {
+                "api": 1,
+                "modes": [
+                  "answer",
+                  "sources"
+                ],
+                "recency": [
+                  "any",
+                  "day",
+                  "week",
+                  "month",
+                  "year"
+                ],
+                "maxSources": 10,
+                "maxQueryChars": 400,
+                "maxSites": 5,
+                "maxExcludeSites": 10
+              }
+            }
+          ]
+        },
+        "securitySchemes": {
+          "bearer": {
+            "httpAuthSecurityScheme": {
+              "scheme": "Bearer"
+            }
+          }
+        },
+        "securityRequirements": [
+          {
+            "schemes": {
+              "bearer": {
+                "list": []
+              }
+            }
+          }
+        ],
+        "defaultInputModes": [
+          "text/plain"
+        ],
+        "defaultOutputModes": [
+          "text/plain",
+          "application/json"
+        ],
+        "skills": [
+          {
+            "id": "web-search",
+            "name": "web-search",
+            "description": "Answers one question from the public web with numbered sources, or returns the sources alone.",
+            "tags": [
+              "search",
+              "web"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "malformed": {
+    "request": {
+      "method": "GET",
+      "path": "/.well-known/agent-card.json",
+      "headers": {
+        "A2A-Mesh-Challenge": "short"
+      }
+    },
+    "response": {
+      "status": 200,
+      "headers": {
+        "A2A-Mesh-Proof": null
+      }
+    }
+  }
+}

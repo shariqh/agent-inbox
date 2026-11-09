@@ -456,11 +456,14 @@ input and searches every runs file and every route body byte by byte (§8).
 - **The cap.** It writes nothing when `size + Buffer.byteLength(line) > 256 KiB`. Two clients can
   both pass that check and overshoot; the overshoot is at most one 512-byte line per concurrent
   writer. The reader allows for it (§5.7).
-- **Torn-line repair.** When `size > 0`, it reads the file's last byte with a positioned
-  `readSync` on a separate `O_RDONLY | O_NOFOLLOW` descriptor checked to be the same file (device
-  and inode). If that byte is not `\n`, the line gets a leading `\n`, so a record that an earlier
-  writer left without a newline cannot swallow this one. Two writers that both repair leave an
-  empty line, which the reader ignores.
+- **Torn-line repair.** Every write starts with `\n` (`\n<record>\n`), so a record that an
+  earlier writer left without a newline cannot swallow this one; the reader ignores the empty
+  lines this leaves. *Amended in V5a (#523):* the first version read the file's last byte and
+  added the `\n` only when that byte was not one. On Linux that check races: a concurrent
+  `O_APPEND` write grows the size page by page while it copies, and neither `fstat` nor a
+  positioned read waits for it, so a writer saw another's record half-written and added a newline
+  it never needed (CI, eight processes: 401 lines for 400 records). Writing the `\n` every time
+  needs no read at all.
 - **One write.** One `writeSync(fd, buffer)` of the whole line, newline included, with its return
   value checked. A short write is never retried, because a second write could land after another
   writer's line. The partial line fails to parse and the next writer's repair seals it. Never

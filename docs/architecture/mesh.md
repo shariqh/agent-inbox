@@ -119,8 +119,9 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   `lstat`, a real directory this user owns, no group or other write), 0600 files opened
   `O_APPEND | O_CREAT | O_NOFOLLOW | O_NONBLOCK` and `fstat`-checked, one checked `writeSync` of
   at most 512 bytes (a size bound; local filesystems serialise `O_APPEND` writes; `PIPE_BUF` is
-  about pipes), never retried, a leading `\n` when the file's last byte (read on a second
-  `O_NOFOLLOW` descriptor checked to be the same inode) is not one, and no write once
+  about pipes), never retried, always `\n<record>\n` (the leading newline seals a line an
+  earlier writer left torn; it is never decided by reading the last byte, which races with a
+  concurrent append on Linux, #523; the reader ignores empty lines), and no write once
   `size + line` would pass 256 KiB. Network-mounted mesh dirs are unsupported for run history. A
   record is a closed schema with fixed vocabularies and patterns (§5.4; one rule table serves the
   builder and the validator): `v`, `id`, `agent`, `op`, `at` (the end), `ms`, `exit`, `signal`,

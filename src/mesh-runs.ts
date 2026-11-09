@@ -33,7 +33,7 @@ export type RunEnd = { exit: number } | { exit: null; signal: NodeJS.Signals }
 const KEPT_DAYS = 30
 const FILE_CAP = 256 * 1024
 const COUNT_MAX = 320 * 1024
-// the line and its newline; a torn-line repair adds one more byte, so a write is at most 512
+// the record and its newline; the leading newline adds one more byte, so a write is at most 512
 const LINE_MAX = 511
 const FILE_NAME = /^(unslop|request-post|web-search)-(\d{4}-\d{2}-\d{2})\.jsonl$/
 const B32 = 'abcdefghijklmnopqrstuvwxyz234567'
@@ -240,10 +240,17 @@ export function tidyRuns(dir: string): void {
  * a 0700 folder and a 0600 day file that are real, this user's and not group or other writable;
  * one checked write, never retried, of at most 512 bytes; nothing once the file would pass
  * 256 KiB. Synchronous, so a signal handler can call it. Never throws.
+ *
+ * Every write is `\n<record>\n`: the leading newline seals a line an earlier writer left torn,
+ * so the next record always parses, and the reader ignores the empty lines it leaves. It is
+ * written unconditionally because checking the file's last byte first races: on Linux a
+ * concurrent append grows the size page by page while it copies, and neither fstat nor a
+ * positioned read waits for it, so a writer could see another's record half-written and add a
+ * newline that record never needed.
  */
 export function appendRun(dir: string, agent: RunAgent, run: RunCollector, end: RunEnd, now = Date.now()): void {
   try {
-    let line = buildLine(agent, run, end, now)
+    const line = buildLine(agent, run, end, now)
     if (!line) return
     const runs = join(dir, 'mesh', 'runs')
     try {
@@ -259,18 +266,7 @@ export function appendRun(dir: string, agent: RunAgent, run: RunCollector, end: 
       const s = fstatSync(fd)
       if (!s.isFile() || (uid() !== undefined && s.uid !== uid()) || s.mode & 0o022) return
       size = s.size
-      if (size > 0) {
-        // torn-line repair: a record left without its newline must not swallow this one
-        const rd = openSync(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
-        try {
-          const r = fstatSync(rd)
-          if (r.dev !== s.dev || r.ino !== s.ino) return
-          const last = Buffer.alloc(1)
-          if (readSync(rd, last, 0, 1, size - 1) !== 1) return
-          if (last[0] !== 0x0a) line = `\n${line}`
-        } finally { closeSync(rd) }
-      }
-      const bytes = Buffer.from(line)
+      const bytes = Buffer.from(`\n${line}`)
       if (size + bytes.length > FILE_CAP) return
       // one write, never retried: a second could land after another writer's line
       if (writeSync(fd, bytes) !== bytes.length) return

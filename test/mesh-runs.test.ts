@@ -375,9 +375,16 @@ for (let i = 0; i < 50; i++) appendRun(${JSON.stringify(dir)}, 'unslop', { armed
     expect(await Promise.all(runs)).toEqual(Array(8).fill(0))
     const files = readdirSync(runsDir(dir))
     expect(files).toHaveLength(1)
-    const lines = readFileSync(join(runsDir(dir), files[0]!), 'utf8').split('\n')
-    expect(lines.pop()).toBe('')
+    const text = readFileSync(join(runsDir(dir), files[0]!), 'utf8')
+    // every write is "\n<record>\n", so the file is exactly 400 of them with nothing torn between
+    expect(text.endsWith('\n')).toBe(true)
+    const all = text.split('\n')
+    // on failure, name each non-empty line that is not a record and where it sits
+    const unexpected = all.flatMap((line, i) => { try { if (line) JSON.parse(line); return [] } catch { return [`line ${i + 1}: ${JSON.stringify(line)}`] } })
+    expect(unexpected).toEqual([])
+    const lines = all.filter(Boolean)
     expect(lines).toHaveLength(400)
+    expect(all).toHaveLength(801)
     const parsed = lines.map((line) => JSON.parse(line))
     expect(new Set(parsed.map((r) => r.id)).size).toBe(400)
     expect(parsed.every((r) => r.v === 1 && r.outcome === 'ok')).toBe(true)
@@ -389,10 +396,10 @@ for (let i = 0; i < 50; i++) appendRun(${JSON.stringify(dir)}, 'unslop', { armed
     privateFile(file, '{"v":1,"id":"aaaaaaaaaa"}\n{"v":1,"id":"part')
     appendRun(dir, 'unslop', armed(), { exit: 0 })
     appendRun(dir, 'unslop', armed(), { exit: 0 })
-    const lines = readFileSync(file, 'utf8').split('\n')
+    const lines = readFileSync(file, 'utf8').split('\n').filter(Boolean)
     const bad = lines.filter((line) => { try { JSON.parse(line); return false } catch { return true } })
-    expect(bad).toEqual(['{"v":1,"id":"part', ''])
-    expect(lines.slice(2, 4).map((l) => JSON.parse(l).outcome)).toEqual(['ok', 'ok'])
+    expect(bad).toEqual(['{"v":1,"id":"part'])
+    expect(lines.slice(2).map((l) => JSON.parse(l).outcome)).toEqual(['ok', 'ok'])
   })
 
   it('the cap is size + line, and the largest record with its repair newline is at most 512 bytes', () => {

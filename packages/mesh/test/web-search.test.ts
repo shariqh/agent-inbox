@@ -359,15 +359,29 @@ describe('tasks', () => {
     await vi.waitFor(async () => expect((await rpc(d.port, 'GetTask', { id })).result.status.state).toBe('TASK_STATE_COMPLETED'))
   })
 
-  it('no response carries history: the front door sets historyLength 0 on sends and GetTask (§3.2 item 2)', async () => {
-    const d = await door()
+  it('no response carries history: the store keeps none, and sends and GetTask ask for none (§3.2 item 2)', async () => {
+    // 'canary-hold' waits until cancelled, so CancelTask meets an in-flight task
+    const d = await door(async (q, o, signal, on) => {
+      if (q !== 'canary-hold') return fixtureRun(q, o, signal, on)
+      on('searching')
+      await new Promise((resolve) => signal.addEventListener('abort', resolve))
+      return fixtureRun(q, o, signal, () => {})
+    })
     const sent = await call(d.port, { body: envelope('SendMessage', ask('canary-history')) })
     const id = (JSON.parse(sent.body) as Json).result.task.id as string
     const streamed = await call(d.port, { body: envelope('SendStreamingMessage', ask('canary-history')) })
     const got = await call(d.port, { body: envelope('GetTask', { id }) })
-    for (const body of [sent.body, streamed.body, got.body]) {
+    let cancel: Promise<Reply> | undefined
+    const held = await call(d.port, {
+      body: envelope('SendStreamingMessage', ask('canary-hold')),
+      onEvent: (e) => { if (e.result.statusUpdate?.status.state === 'TASK_STATE_WORKING') cancel = call(d.port, { body: envelope('CancelTask', { id: e.result.statusUpdate.taskId }) }) },
+    })
+    const cancelled = await cancel!
+    expect((JSON.parse(cancelled.body) as Json).result.status.state).toBe('TASK_STATE_CANCELED')
+    for (const body of [sent.body, streamed.body, got.body, held.body, cancelled.body]) {
       expect(body).not.toContain('"history"')
       expect(body).not.toContain('canary-history')
+      expect(body).not.toContain('canary-hold')
     }
   })
 

@@ -2,7 +2,7 @@
   "schema": 1,
   "algorithm": "sha256",
   "files": {
-    "README.md": "ee0f0c2d5cc5418125f9ffd97ee3d0f46d230e4edbcad647051aea2d7fd80d6b",
+    "README.md": "442a6ac9eba1768f8c8744899da8dafc4b8cb3752e0d74a8c225f9260c71a38c",
     "card.json": "d69ec9bda896d7fab1a89a4f52254eac68518f2ec90c01fa468c49a8c2e0d5e8",
     "card.sha256": "669d9900cc48a95d77f04d26eff47d6ad958a8c87429c7515e9e2abc19e9694a",
     "conformance.ts": "5e94787829d44891acef92bbfff70f1877cddb7b2af27ebe86099934a65e0edb",

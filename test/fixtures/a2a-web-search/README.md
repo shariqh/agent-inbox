@@ -21,9 +21,10 @@ ranges and loopback only), tokens and page text are not real.
 
 ## What W2 pins
 
-- **No `history`.** The front door adds `historyLength: 0` to every send and to `GetTask`, so no
-  Task response carries the caller's message or the status messages. A caller's own
-  `historyLength` is refused.
+- **No `history`.** No Task response carries the caller's message or the status messages, for
+  any method, `CancelTask` included: the agent's task store keeps no history, and the front door
+  also adds `historyLength: 0` to every send and to `GetTask`. A caller's own `historyLength` is
+  refused.
 - **Where the data part is.** On `COMPLETED` it is the second part of the one artifact, after a
   text part; on `REJECTED` and `FAILED` it is in the status message, after `<outcome>: <reason>`.
   Every data part carries `code`, the exit it maps to. A refusal names the class or reason, never

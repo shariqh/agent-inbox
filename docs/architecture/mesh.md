@@ -330,9 +330,10 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
     `returnImmediately: false` and `acceptedOutputModes`; `GetTask` and `CancelTask`:
     `id`). Any other key at any level, in either spelling (the SDK's decoders accept
     `task_id`, `reference_task_ids`, `return_immediately`, … and `params.tenant`), and every
-    other method is refused with -32602 before the SDK. The rebuilt request adds one field of
-    its own, `historyLength: 0` (sends and `GetTask`, since W2), so no Task response carries
-    `history` (the query and every status message); `CancelTask` has no such field in A2A 1.0.
+    other method is refused with -32602 before the SDK. No Task response carries `history`
+    (the query and every status message), since W2: the task store keeps none, and the
+    rebuilt sends and `GetTask` also ask for none with one field of the front door's own,
+    `historyLength: 0`.
     The rebuilt object goes to the SDK's
     `JsonRpcTransportHandler` over `DefaultRequestHandler`, with a task store owned per token
     that keeps the last 64 finished tasks (the SDK's `InMemoryTaskStore` cannot evict).

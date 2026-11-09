@@ -254,6 +254,15 @@ function watchCommand(args: (dbPath: string) => string[], options: WatchLaunchOp
   return [execPath, ...execArgv, entry, ...args(dbPath)].map(shellQuote).join(' ')
 }
 
+// Issue #489 — Copilot CLI refuses a detached launch whose shellId an earlier,
+// already finished command used, so every contract carries a fresh suffix after
+// its stable prefix. A second concurrent copy is not stopped by the id: the
+// message watcher's lease (exit 3) stops that, and the server hands out no
+// second contract while it is fresh.
+function freshShellId(prefix: string): string {
+  return `${prefix}-${randomUUID().slice(0, 8)}`
+}
+
 // Issue #477 — the message watcher's launch contract. `seen` are the open
 // messages already handed to this session; the watcher wakes for any other.
 export function copilotMessageWatchLaunch(session: string, seen: readonly string[], options: WatchLaunchOptions = {}) {
@@ -261,9 +270,9 @@ export function copilotMessageWatchLaunch(session: string, seen: readonly string
     shell_command: watchCommand((dbPath) => ['--messages', session, dbPath, ...seen], options),
     mode: 'async' as const,
     detach: true,
-    shell_id: `agent-inbox-messages-${session}`,
+    shell_id: freshShellId(`agent-inbox-messages-${session}`),
     timeout_seconds: WATCH_MAX_MS / 1_000,
-    on_completion: `Exit 0: the human sent this session a message. Call pending() immediately, act on each message, ack_message it, then launch the message_watch your next pending() or status({done:true}) returns. A timeout (exit 124, after a day) is not a message: re-run this same command. Exit 3: another copy is already running; do not re-run this command. Exit ${MESSAGE_WATCH_ENDED_EXIT}: this session's Agent Inbox server ended; call pending() once and launch any message_watch it returns.`,
+    on_completion: `Exit 0: the human sent this session a message. Call pending() immediately, act on each message, ack_message it, then launch the message_watch your next pending() or status({done:true}) returns. A timeout (exit 124, after a day) is not a message: call pending() and launch the message_watch it returns. Exit 3: another copy is already running; do not re-run this command. Exit ${MESSAGE_WATCH_ENDED_EXIT}: this session's Agent Inbox server ended; call pending() once and launch any message_watch it returns.`,
   }
 }
 
@@ -280,12 +289,12 @@ export function copilotWatchLaunch(id: string, options: WatchLaunchOptions = {})
     shell_command: watchCommand((dbPath) => [...targetArgs, dbPath], options),
     mode: 'async' as const,
     detach: true,
-    shell_id: version === undefined ? `agent-inbox-${id}` : `agent-inbox-row-${id}-${version}`,
+    shell_id: freshShellId(version === undefined ? `agent-inbox-${id}` : `agent-inbox-row-${id}-${version}`),
     // The wait the watcher itself will take: it re-derives the same backoff from
-    // the ask at launch, so re-running this exact command also waits longer.
+    // the ask at launch, so relaunching this exact command also waits longer.
     timeout_seconds: Math.ceil(watchWaitMs(options.ask, options.nowMs ?? Date.now()) / 1_000),
     on_completion: version === undefined
-      ? `Call ${pending} immediately, act on the reply, then resolve the question. A timeout (exit 124) is not an answer: if still waiting, re-run this same command; it waits longer each time. ${stopped}`
+      ? `Call ${pending} immediately, act on the reply, then resolve the question. A timeout (exit 124) is not an answer: if still waiting, launch this same shell_command again under a new shell_id (this one plus -2, then -3, …); it waits longer each time. ${stopped}`
       : `Call ${pending} immediately, act on the response, then change the row status and record an outcome. Use the row's project for board updates. A timeout (exit 124) is not an answer: if still waiting, re-arm with board_get({title, watch:true}); it waits longer each time. ${stopped}`,
   }
 }

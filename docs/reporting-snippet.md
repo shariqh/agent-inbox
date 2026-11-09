@@ -30,8 +30,8 @@ Call `flag` when:
   command** using the returned `mode`, `detach`, `shell_id`, and `timeout_seconds`; do not
   wait for it synchronously. The background completion notification wakes your session when
   the answer lands. On that notification, call `pending()` immediately, act on the answer,
-  and resolve the question. A timeout is not an answer: re-run the same command, which waits
-  longer each time the same question is still unanswered. If the watcher says the human asked
+  and resolve the question. A timeout is not an answer: relaunch the same command under a new
+  `shell_id` (append `-2`, `-3`, …), which waits longer each time the question is unanswered. If the watcher says the human asked
   you to stop waiting, do not re-arm it; their answer still arrives through `pending()` or
   chat. Clients without a returned watcher keep using their native wake
   path. Also **poll `pending()`** between work steps: it returns `{ items, rows, messages }` — your open questions with `reply` once answered (an

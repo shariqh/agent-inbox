@@ -371,21 +371,29 @@ describe('the human stops a watcher (#217)', () => {
 
 describe('copilotWatchLaunch', () => {
   it('returns a detached-background launch contract with shell-safe paths', () => {
-    expect(copilotWatchLaunch('item-1', {
+    const options = {
       execPath: "/Node 24/bin/node's",
       execArgv: [],
       moduleUrl: 'file:///repo%20path/dist/watch.js',
       dbPath: '/custom db/inbox.db',
-    })).toEqual({
+    }
+    const launch = copilotWatchLaunch('item-1', options)
+    expect(launch).toEqual({
       shell_command: `'/Node 24/bin/node'\\''s' '/repo path/dist/watch-cli.js' 'item-1' '/custom db/inbox.db'`,
       mode: 'async',
       detach: true,
-      shell_id: 'agent-inbox-item-1',
+      shell_id: expect.stringMatching(/^agent-inbox-item-1-[0-9a-f]{8}$/),
       timeout_seconds: 1800,
       on_completion: 'Call pending() immediately, act on the reply, then resolve the question. '
-        + 'A timeout (exit 124) is not an answer: if still waiting, re-run this same command; it waits longer each time. '
+        + 'A timeout (exit 124) is not an answer: if still waiting, launch this same shell_command again under a new shell_id '
+        + '(this one plus -2, then -3, …); it waits longer each time. '
         + 'Exit 3 means the human asked you to stop waiting: do not re-arm; their answer still arrives through pending() or chat.',
     })
+    // Issue #489: Copilot refuses a used shellId even after that command finished.
+    expect(launch.on_completion).not.toContain('re-run this same command')
+    const again = copilotWatchLaunch('item-1', options)
+    expect(again.shell_command).toBe(launch.shell_command)
+    expect(again.shell_id).not.toBe(launch.shell_id)
   })
 
   it('includes the exact board action and response project in a row launch contract', () => {
@@ -394,7 +402,8 @@ describe('copilotWatchLaunch', () => {
       dbPath: '/custom db/inbox.db', rowActionVersion: 2, project: 'another-project',
     })
     expect(launch.shell_command).toBe("'/node' '/repo/dist/watch-cli.js' '--row' 'row-1' '2' '/custom db/inbox.db'")
-    expect(launch.shell_id).toBe('agent-inbox-row-row-1-2')
+    expect(launch.shell_id).toMatch(/^agent-inbox-row-row-1-2-[0-9a-f]{8}$/)
+    expect(copilotWatchLaunch('row-1', { rowActionVersion: 2 }).shell_id).not.toBe(launch.shell_id)
     expect(launch.on_completion).toContain('pending({project:"another-project"})')
     expect(launch.on_completion).toContain('outcome')
     expect(launch.on_completion).toContain('re-arm with board_get({title, watch:true}); it waits longer each time')
@@ -524,7 +533,7 @@ describe('Copilot watch contracts size their wait (#217)', () => {
         action_owner: 'decision', impact: 'Picks the release.', options: [{ label: 'A' }, { label: 'B' }],
       })
       expect(question.watch.timeout_seconds).toBe(1800)
-      expect(question.watch.on_completion).toContain('re-run this same command; it waits longer each time')
+      expect(question.watch.on_completion).toContain('under a new shell_id (this one plus -2, then -3, …); it waits longer each time')
     } finally {
       await client.close()
       await server.close()
@@ -704,7 +713,10 @@ describe('Copilot message watch (#477)', () => {
     const claude = await connect('claude-code')
     try {
       const first = (await copilot.call('pending')).message_watch
-      expect(first).toMatchObject({ mode: 'async', detach: true, shell_id: `agent-inbox-messages-${copilot.session}`, timeout_seconds: 24 * 3600 })
+      expect(first).toMatchObject({ mode: 'async', detach: true, timeout_seconds: 24 * 3600 })
+      expect(first.shell_id).toMatch(new RegExp(`^agent-inbox-messages-${copilot.session}-[0-9a-f]{8}$`))
+      expect(first.on_completion).toContain('A timeout (exit 124, after a day) is not a message: call pending() and launch the message_watch it returns.')
+      expect(first.on_completion).not.toContain('re-run this same command')
       expect(first.shell_command).toMatch(new RegExp(`'--messages' '${copilot.session}' '[^']+'$`))
       expect(first.on_completion).toContain('Exit 4: this session\'s Agent Inbox server ended; call pending() once')
       expect(first.on_completion).toContain('Call pending()')
@@ -718,6 +730,9 @@ describe('Copilot message watch (#477)', () => {
       expect(delivered.message_watch).toBeUndefined()
       const done = await copilot.call('status', { done: true })
       expect(done.message_watch.shell_command).toMatch(new RegExp(`'${msg(7)}'$`))
+      // Issue #489: each contract for the same session gets its own shell id.
+      expect(done.message_watch.shell_id).not.toBe(first.shell_id)
+      expect(done.message_watch.shell_id.startsWith(`agent-inbox-messages-${copilot.session}-`)).toBe(true)
 
       // None while a watcher for this session runs.
       expect(holdMessageWatch(db, copilot.session, 'running-copy')).toBe(true)

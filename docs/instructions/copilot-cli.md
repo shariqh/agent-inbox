@@ -14,7 +14,8 @@
   status and record an outcome. Before updating a board in a different project,
   use `register` to select that project. Delivery alone is not acknowledgement.
 - A timeout (exit 124) is not an answer and does not complete the request. Re-arm
-  it: re-run the same command for a question, and for a board still waiting, call
+  it: relaunch a question's same command under a new shell ID (append `-2`, `-3`, …),
+  since Copilot refuses a used one; for a board still waiting, call
   `board_get({title, watch:true})` to obtain fresh watches. Each re-arm of the same
   unanswered ask waits longer: 30 minutes, then 1, 2 and 4 hours. `board_get` also
   restores watches when taking over a board after a session restart. Each watch
@@ -32,6 +33,7 @@
 - Messages: `pending()` with no message waiting, and `status({ done: true })`, may return a
   `message_watch`. Before ending a turn, launch it the same way (detached) so a message wakes
   you; it is omitted while one runs. On exit 0 call `pending()`, act on and `ack_message` each
-  message, then launch the next one returned. On 124 re-run it; on 3 (another copy runs)
+  message, then launch the next one returned. On 124 call `pending()` and launch the one it
+  returns; on 3 (another copy runs)
   do not; on 4 (its server ended) call `pending()` once and launch any it returns.
   Subagents never launch it.

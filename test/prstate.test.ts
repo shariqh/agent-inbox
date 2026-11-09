@@ -705,9 +705,10 @@ describe('the poller runs in the viewer process only', () => {
 
   // Mesh M1 (#397, design §2.4a): the stdio server reaches no mesh module,
   // including meshctl's unslop client (#483, unslop design §4.5 a) and its
-  // request-post client (#500, request-post design §10).
+  // request-post client (#500, request-post design §10), and the card rule they share
+  // (agent cards view design §3.4; `agent-card` misses the /mesh/i net, so it is named).
   it('no mesh module enters the stdio MCP import graph', () => {
-    const MESH = ['src/mesh-config.ts', 'src/meshctl.ts', 'src/unslop-client.ts', 'src/request-post-client.ts', 'public/agents-home.js']
+    const MESH = ['src/mesh-config.ts', 'src/meshctl.ts', 'src/unslop-client.ts', 'src/request-post-client.ts', 'src/agent-card.ts', 'public/agents-home.js']
     for (const file of MESH) expect(STDIO_GRAPH, `${file} is in the stdio graph`).not.toContain(file)
     for (const file of STDIO_GRAPH) {
       const reached = specifiers(read(file)).map((spec) => resolveSpec(file, spec))

@@ -190,19 +190,22 @@ function dayFiles(runs: string, agents: RunAgent[]): Array<{ path: string; date:
 }
 
 /**
- * Deletes every agent's day files dated before the kept period: the 30 local dates ending
- * today (§5.6). Symlinks, other owners and other names stay; a concurrent deletion is ignored.
+ * Deletes the agents' day files dated before the kept period: the 30 local dates ending today
+ * (§5.6). Symlinks, other owners and other names stay; a concurrent deletion is ignored. With
+ * `apply` false it deletes nothing and only returns what it would delete.
  */
-export function pruneRuns(dir: string, now: number, agents: RunAgent[] = ['unslop', 'request-post', 'web-search']): void {
+export function pruneRuns(dir: string, now: number, agents: RunAgent[] = ['unslop', 'request-post', 'web-search'], apply = true): string[] {
   const runs = checkedRuns(dir)
-  if (!runs) return
+  if (!runs) return []
   const today = new Date(now)
   const oldest = localDate(new Date(today.getFullYear(), today.getMonth(), today.getDate() - (KEPT_DAYS - 1)).getTime())
   try {
-    for (const file of dayFiles(runs, agents)) {
-      if (file.date < oldest) try { unlinkSync(file.path) } catch { /* ENOENT: another process deleted it */ }
-    }
-  } catch { /* unreadable: nothing to prune */ }
+    const expired = dayFiles(runs, agents).filter((file) => file.date < oldest).map((file) => file.path)
+    if (apply) for (const path of expired) try { unlinkSync(path) } catch { /* ENOENT: another process deleted it */ }
+    return expired
+  } catch {
+    return []
+  }
 }
 
 /** One agent's day files with their line counts, for `forget-runs` and `--purge` (§5.9). */

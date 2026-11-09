@@ -138,7 +138,9 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   is a dry run that says how many run files and runs it would delete for each agent; `--apply`
   deletes them. It deletes only regular day files this user owns with that agent's name in a
   checked runs folder (never a symlink or another name), works whether the agent is on or off,
-  removes `runs/` when it is then empty, and first deletes expired files for every agent. The
+  removes `runs/` when it is then empty, and with `--apply` also deletes every other agent's
+  expired files (the dry run deletes nothing, and counts them). Unlike `enable` and `disable`, a
+  `forget-runs` dry run never prunes. The
   viewer has no delete route: `meshctl` stays the only writer under the mesh dir.
 - **The Agents view is always on (#454).** `app.js` imports `public/agents-home.js`
   statically and calls `installAgentsHome(...)` at load, so `dead-exports` reaches it like

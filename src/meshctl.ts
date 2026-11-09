@@ -552,9 +552,13 @@ function meshctl(argv: string[], io: MeshctlIo): number {
   return usage()
 }
 
-/** `forget-runs` (cards view V5 §5.9): one agent's run records, or every agent's, whether it is on or off. */
+/**
+ * `forget-runs` (cards view V5 §5.9): one agent's run records, or every agent's, whether it is on
+ * or off, and every other agent's expired ones. A dry run deletes nothing, expired files included.
+ */
 function forgetRuns(dir: string, agents: RunAgent[], apply: boolean, now: number, out: (text: string) => void, err: (text: string) => void): number {
-  pruneRuns(dir, now)
+  const others = (['unslop', 'request-post', 'web-search'] as const).filter((agent) => !agents.includes(agent))
+  const expired = others.length ? pruneRuns(dir, now, others, apply).length : 0
   const lines: string[] = []
   let failed = false
   for (const agent of agents) {
@@ -572,6 +576,7 @@ function forgetRuns(dir: string, agents: RunAgent[], apply: boolean, now: number
       }
     }
   }
+  if (expired) lines.push(`${apply ? 'Deleted' : 'Would also delete'} ${plural(expired, 'expired run file')} of other agents (older than 30 days).`)
   if (apply) tidyRuns(dir)
   out(`${lines.join('\n')}\n${apply ? '' : 'Nothing changed. Re-run with --apply.\n'}`)
   if (failed) err('Failed: some run files could not be deleted.\n')

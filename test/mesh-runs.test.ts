@@ -480,10 +480,13 @@ describe('retention, purge and forget-runs (§5.6, §5.9)', () => {
 
   it('forget-runs lists without --apply, deletes with it, leaves symlinks and other agents alone, and works with the agent off', () => {
     const s = seeded()
+    // a dry run deletes nothing, expired files included
+    const before = s.list()
     const dry = ctl(s.dir, 'forget-runs', '--unslop')
-    expect(dry).toEqual({ code: 0, out: 'Would delete 1 run file (2 runs) for unslop.\nNothing changed. Re-run with --apply.\n' })
-    expect(s.list()).toHaveLength(5)
-    expect(ctl(s.dir, 'forget-runs', '--unslop', '--apply')).toEqual({ code: 0, out: 'Deleted 1 run file (2 runs) for unslop.\n' })
+    expect(dry).toEqual({ code: 0, out: 'Would delete 2 run files (3 runs) for unslop.\nWould also delete 2 expired run files of other agents (older than 30 days).\nNothing changed. Re-run with --apply.\n' })
+    expect(s.list()).toEqual(before)
+    expect(before).toHaveLength(8)
+    expect(ctl(s.dir, 'forget-runs', '--unslop', '--apply')).toEqual({ code: 0, out: 'Deleted 2 run files (3 runs) for unslop.\nDeleted 2 expired run files of other agents (older than 30 days).\n' })
     expect(s.list()).toEqual(sorted([`request-post-${daysAgo(29)}.jsonl`, `unslop-${daysAgo(41)}.jsonl`, `unslop-${s.old}.txt`, `web-search-${daysAgo(29)}.jsonl`]))
     const link = join(s.runs, `unslop-${daysAgo(41)}.jsonl`)
     expect([lstatSync(link).isSymbolicLink(), readFileSync(link, 'utf8')]).toEqual([true, 'keep'])

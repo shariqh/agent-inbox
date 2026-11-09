@@ -41,6 +41,8 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   with a 45-second start deadline) and one busy guard. `src/mesh-agents.ts` (the
   agent cards view's lazy `mesh.json` read and card fetcher) is viewer-only too, and
   is the only viewer module that reaches the network for the mesh (`mesh.md`).
+  `src/mesh-runs.ts` (run records, cards view V5) is used by `meshctl` and, from V5b,
+  the viewer; never by the MCP server.
   `src/shape.ts` trims agent-facing MCP read payloads and must not affect viewer
   API payloads. `src/hook.ts`/`hook-cli.ts` and `src/watch.ts`/`watch-cli.ts` are
   separate host adapters that still access data through `store.ts`.

@@ -212,6 +212,34 @@ miss allows one fix), Review (between the thresholds) or Pending (data still mis
   draft written once and the result read once, at 4 bytes a token), per kind.
 - The real-use fallback row comes from the two-week trial, not the bench.
 
+## What this Mac keeps
+
+The meshctl entry that runs the command appends one line per call to
+`<mesh dir>/mesh/runs/unslop-<date>.jsonl` (a 0700 folder, 0600 files, the date of the call's
+end). A line is written once the command has read the agent's switch in `mesh.json` and found it
+on, whatever the exit, and also when the call is killed by `SIGTERM`, `SIGHUP` or Ctrl-C
+(`interrupted`). A call that ends before that (a usage error, or input refused on the Mac), a call
+while the agent is off and `kill -9` write nothing. Writing never changes the exit code, stdout or
+stderr.
+
+Each line holds the end time, the duration, the kind, the exit code and an outcome word, plus
+the result's fixed facts: its status, reason and refusal classes, the draft's size in bytes, the
+attempts, the model name, the first 12 characters of the rules hash, the timings, the warning
+classes and the agent's task id (to find its own log line).
+
+It never holds the draft, the edited text, the report's `failures`, a warning's detail, the
+profile, the backend URL, the key or the token, or anything about who called. Records older than
+30 days are deleted by the next call on a later day, or by the next `meshctl enable` or
+`disable`. To delete them now:
+
+```sh
+npm run meshctl -- forget-runs --unslop           # preview
+npm run meshctl -- forget-runs --unslop --apply
+```
+
+`disable --unslop --purge` deletes them too. A later Agent Inbox shows them in the agent's Run
+history; nothing reads them today.
+
 ## Turn it off
 
 ```sh
@@ -220,6 +248,6 @@ npm run meshctl -- disable --unslop --apply
 ```
 
 This removes the `agents.unslop` key (keeping a backup of `mesh.json`), the shim and the
-token. A running agent exits within a minute. The profile, logs, budget and deny list
-stay; add `--purge` to remove them too. With the key gone, `unslop` exits 14 without
+token. A running agent exits within a minute. The profile, logs, budget, deny list and
+run records stay; add `--purge` to remove them too. With the key gone, `unslop` exits 14 without
 starting anything or opening a connection, and the skill edits in-session.

@@ -166,6 +166,7 @@ No backend URL, key or deny list is ever committed or written to `mesh.json`.
 - **`meshctl disable --unslop [--apply]`** removes the `agents.unslop` key, the shim and the token,
   keeps every other key, and writes the file atomically with a backup. Plain `disable --apply`
   still deletes the whole file. `--purge` also removes the profile, logs and deny list.
+- The meshctl entry appends a run record without text for each call (cards view V5 §5.4, §5.5).
 
 ### 4.3 Start, stop and the shim
 

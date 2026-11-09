@@ -90,8 +90,12 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   record); a failure after a good card reports the failure, with the good card as `lastSeen`,
   never as `card`. `GET /api/mesh/agents` is built fresh per read with an ETag over its bytes
   (not a retained snapshot). It never starts an agent and never opens `mesh/tokens` or
-  `mesh/wrappers`; `test/mesh.test.ts` pins its imports to `node:fs`, `node:http`, `node:https`,
-  `node:net` (types), `./agent-card.js` and `./mesh-config.js`, so no `child_process`. Its
+  `mesh/wrappers`. The one other file it reads is unslop's `mesh/unslop-budget.json` (slice V4,
+  design §4.6), only when a check of unslop runs: opened `O_NOFOLLOW`, a regular file the user
+  owns, at most 4 KiB, exactly `date`, `tasks` and `modelMs`; unslop's record then carries
+  `usage`, with another day's counts read as zero for today, and no `usage` key when the file is
+  missing or refused. `test/mesh.test.ts` pins its imports to `node:fs`, `node:http`, `node:https`,
+  `node:net` (types), `node:path`, `./agent-card.js` and `./mesh-config.js`, so no `child_process`. Its
   user-facing `reason` and `fix` words live in `src/mesh-agents.ts`, so the text guard on
   `src/viewer*.ts`, `public/*.js` and `electron/*` stays as it is. `src/agent-card.ts` holds the
   one card rule both clients and the view use, and the view's `summarizeCard` (caps, "+N more",

@@ -41,6 +41,12 @@ function whereText(agent) {
   return agent.name === 'unslop' ? 'Local' : 'Remote'
 }
 
+// §2.2's usage line, unslop's counts only; no usage key (no file, or a refused one) is no line.
+function usageText(usage) {
+  if (!usage || typeof usage !== 'object' || !Number.isFinite(usage.tasks) || !Number.isFinite(usage.modelMs)) return ''
+  return `Today: ${plural(usage.tasks, 'task')} · ${plural(Math.round(usage.modelMs / 60_000), 'model-minute')}`
+}
+
 // §2.3's labelled lines, from the card the row shows (its own, else the last good one).
 function details(agent, card, nowMs) {
   const lines = []
@@ -94,6 +100,7 @@ export function meshRows(body, nowMs) {
       status: [label, agent.reason].filter(Boolean).join(' · '),
       fix: agent.fix ? `Fix: ${agent.fix}` : '',
       facts: facts.join(' · '),
+      usage: usageText(agent.usage),
       details: details(agent, card, nowMs),
       json: typeof agent.cardJson === 'string' ? agent.cardJson : null,
     }
@@ -181,7 +188,7 @@ export function installMeshAgents(deps = {}) {
     json.append(make('summary', '', 'Card JSON'), make('pre', 'ma-json-text'))
     const more = make('div', 'ma-details')
     more.append(make('dl', 'ma-lines'), json)
-    el.append(toggle, make('div', 'ma-facts'), make('div', 'ma-fix'), more)
+    el.append(toggle, make('div', 'ma-facts'), make('div', 'ma-usage'), make('div', 'ma-fix'), more)
     return el
   }
 
@@ -200,6 +207,9 @@ export function installMeshAgents(deps = {}) {
     setText(el.querySelector('.ma-name'), row.name)
     setText(el.querySelector('.ma-status'), row.status)
     setText(el.querySelector('.ma-facts'), row.facts)
+    const usage = el.querySelector('.ma-usage')
+    setText(usage, row.usage)
+    setHidden(usage, !row.usage)
     const fix = el.querySelector('.ma-fix')
     setText(fix, row.fix)
     setHidden(fix, !row.fix)

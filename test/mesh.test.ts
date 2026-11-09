@@ -488,7 +488,7 @@ describe('no new dependency (design §2.3, §2.4c)', () => {
     // the viewer's cards view (agent cards view design §3.4): HTTP and the config rule only,
     // so it can never start an agent (no child_process) or open the hub
     expect([...code('src/mesh-agents.ts').matchAll(SPECIFIERS)].map((m) => m[2]!))
-      .toEqual(['node:fs', 'node:http', 'node:http', 'node:https', 'node:net', './agent-card.js', './mesh-config.js'])
+      .toEqual(['node:fs', 'node:http', 'node:http', 'node:https', 'node:net', 'node:path', './agent-card.js', './mesh-config.js'])
     // the card rule is pure (agent cards view design §3.4): no import at all, Node core included
     expect([...code('src/agent-card.ts').matchAll(SPECIFIERS)].map((m) => m[2]!)).toEqual([])
   })

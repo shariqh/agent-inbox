@@ -492,6 +492,46 @@ describe('the Mesh agents section (agent cards view V3)', () => {
     expect(log.some((entry) => entry.includes('evil.example'))).toBe(false)
   })
 
+  it('unslop\'s usage line (V4): the design\'s words as text, absent with no usage key, unchanged on an idle tick', async () => {
+    const statuses: number[] = []
+    const { s } = await boot({
+      mesh: fakeMesh(body(unslop({ usage: { date: '2026-11-09', tasks: 12, modelMs: 480000 } }), requestPost())),
+      intercept: async (url, _init, next) => {
+        if (url !== '/api/mesh/agents') return null
+        const res = await next()
+        statuses.push(res.status)
+        return res
+      },
+    })
+    await pollTick()
+    const usage = (name: string) => meshRow(name)!.querySelector<HTMLElement>('.ma-usage')!
+    expect(usage('unslop').hidden).toBe(false)
+    expect(usage('unslop').textContent).toBe('Today: 12 tasks · 8 model-minutes')
+    expect(usage('unslop').children).toHaveLength(0)
+    expect(usage('request-post').hidden).toBe(true)
+    expect(usage('request-post').textContent).toBe('')
+    expect(shown()).toEqual(UP_ROWS)
+
+    const records: MutationRecord[] = []
+    const observer = new MutationObserver((list) => records.push(...list))
+    observer.observe(section()!, { subtree: true, childList: true, characterData: true, attributes: true })
+    await pollTick()
+    expect(statuses.at(-1)).toBe(304)
+    expect(records).toEqual([])
+    observer.disconnect()
+
+    s.body = body(unslop(), requestPost())
+    await pollTick()
+    expect(usage('unslop').hidden).toBe(true)
+    expect(usage('unslop').textContent).toBe('')
+
+    const words = (u: unknown) => meshRows(body(unslop({ usage: u })), Date.now()).rows[0]!.usage
+    expect(words({ date: '2026-11-09', tasks: 1, modelMs: 60_000 })).toBe('Today: 1 task · 1 model-minute')
+    expect(words({ date: '2026-11-09', tasks: 0, modelMs: 0 })).toBe('Today: 0 tasks · 0 model-minutes')
+    expect(words({ tasks: '<b>12</b>', modelMs: 1 })).toBe('')
+    expect(words(null)).toBe('')
+  })
+
   it('an idle tick (a 304) changes no node; a selection in an open Card JSON survives a Refresh that moved only checkedAt', async () => {
     const statuses: number[] = []
     const { s } = await boot({

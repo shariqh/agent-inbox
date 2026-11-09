@@ -6,7 +6,7 @@ import { createServer as createHttpServer } from 'node:http'
 import type { IncomingHttpHeaders, Server, ServerResponse } from 'node:http'
 import { createServer as createNetServer } from 'node:net'
 import type { LookupFunction, Server as NetServer } from 'node:net'
-import { readFileSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import { startServer } from '../packages/mesh/src/a2a.js'
@@ -329,6 +329,66 @@ describe('checks and their words (design §2.4, §4.2-§4.5)', () => {
     expect(await step(4_999, 'refresh')).toBe(2)
     expect(await step(1, 'refresh')).toBe(3)
     expect(await step(60_000, 'open')).toBe(4)
+  })
+})
+
+describe('unslop\'s usage line (design §4.6, V4)', () => {
+  const DAY = 24 * 60 * 60 * 1000
+  const ymd = (ms: number) => {
+    const d = new Date(ms)
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  }
+  async function withBudget(write: (file: string, s: ReturnType<typeof setup>) => void) {
+    const s = setup({ schema: 1, agents: { ...unslopAt(await freePort()).agents, 'request-post': { endpoint: `http://127.0.0.1:${await freePort()}` } } })
+    mkdirSync(join(s.dir, 'mesh'))
+    const file = join(s.dir, 'mesh', 'unslop-budget.json')
+    write(file, s)
+    await s.post({ trigger: 'refresh' })
+    const body = await s.agents()
+    return { s, file, unslop: body.agents.find((a: Json) => a.name === 'unslop'), other: body.agents.find((a: Json) => a.name === 'request-post') }
+  }
+
+  it('today\'s file shows its counts on unslop only, read at a check and not between triggers', async () => {
+    const { s, file, unslop, other } = await withBudget((file, s) => writeFileSync(file, JSON.stringify({ date: ymd(s.clock.t), tasks: 12, modelMs: 480000 }), { mode: 0o600 }))
+    expect(unslop.state).toBe('not-running')
+    expect(unslop.usage).toEqual({ date: ymd(s.clock.t), tasks: 12, modelMs: 480000 })
+    expect(other).not.toHaveProperty('usage')
+    writeFileSync(file, JSON.stringify({ date: ymd(s.clock.t), tasks: 13, modelMs: 500000 }))
+    expect((await s.agents()).agents[1].usage.tasks).toBe(12)
+    s.clock.t += 5_000
+    await s.post({ trigger: 'refresh' })
+    expect((await s.agents()).agents[1].usage.tasks).toBe(13)
+    // the day turns with no check: the counts read as zero for the new day
+    s.clock.t += DAY
+    expect((await s.agents()).agents[1].usage).toEqual({ date: ymd(s.clock.t), tasks: 0, modelMs: 0 })
+  })
+
+  it('yesterday\'s file reads as zero for today', async () => {
+    const { s, unslop } = await withBudget((file, s) => writeFileSync(file, JSON.stringify({ date: ymd(s.clock.t - DAY), tasks: 40, modelMs: 9_000_000 })))
+    expect(unslop.usage).toEqual({ date: ymd(s.clock.t), tasks: 0, modelMs: 0 })
+  })
+
+  it('a missing file, a symlink, a directory or a malformed file sends no usage', async () => {
+    const good = (ms: number) => ({ date: ymd(ms), tasks: 1, modelMs: 1 })
+    const cases: Array<[string, (file: string, now: number) => void]> = [
+      ['missing', () => {}],
+      ['symlink', (file, now) => { writeFileSync(`${file}.real`, JSON.stringify(good(now))); symlinkSync(`${file}.real`, file) }],
+      ['directory', (file) => mkdirSync(file)],
+      ['not JSON', (file) => writeFileSync(file, '{')],
+      ['an array', (file) => writeFileSync(file, '[]')],
+      ['an extra key', (file, now) => writeFileSync(file, JSON.stringify({ ...good(now), limit: 60 }))],
+      ['a missing key', (file, now) => writeFileSync(file, JSON.stringify({ date: ymd(now), tasks: 1 }))],
+      ['tasks a string', (file, now) => writeFileSync(file, JSON.stringify({ ...good(now), tasks: '12' }))],
+      ['tasks fractional', (file, now) => writeFileSync(file, JSON.stringify({ ...good(now), tasks: 1.5 }))],
+      ['modelMs negative', (file, now) => writeFileSync(file, JSON.stringify({ ...good(now), modelMs: -1 }))],
+      ['a bad date', (file) => writeFileSync(file, JSON.stringify({ date: 'today', tasks: 1, modelMs: 1 }))],
+      ['over 4 KiB', (file, now) => writeFileSync(file, JSON.stringify(good(now)) + ' '.repeat(4 * 1024))],
+    ]
+    for (const [label, write] of cases) {
+      const { unslop } = await withBudget((file, s) => write(file, s.clock.t))
+      expect(unslop.state, label).toBe('not-running')
+      expect(unslop, label).not.toHaveProperty('usage')
+    }
   })
 })
 

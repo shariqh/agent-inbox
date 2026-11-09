@@ -12,6 +12,8 @@ export interface MeshRow {
   status: string
   fix: string
   facts: string
+  /** unslop's "Today: …" line, or empty when its record has no usage */
+  usage: string
   details: Array<[string, Array<string | { text: string; tags: string[] }>]>
   json: string | null
 }

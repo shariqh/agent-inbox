@@ -1,11 +1,12 @@
 # Design: mesh agent cards strip, agent tabs and run history (cards view V5)
 
 **Date:** 2026-11-09
-**Status:** Proposed. Waiting for Shariq's decisions (§13).
+**Status:** Accepted by Shariq on 2026-11-09 (all six recommendations).
 **Revised 2026-11-09 after review round 1:** §0, §1, §5.3–§5.9 (no request key by default, writes from
 the meshctl entry and on signals, end-time order, cap and torn-line rules, retention on enable and
 disable, `--purge` for every agent, forgetting through `meshctl`), §6–§13 (web search keeps only
-the common fields; V5c split into V5c1 and V5c2; new tests; Q3, Q4 and Q6).
+the common fields; V5c split into V5c1 and V5c2; new tests; Q3, Q4 and Q6). Decisions recorded in
+§13 the same day.
 **Scope of this PR:** this document. No source, test or workflow changes.
 **Refs:** #397 (the mesh), #507 (the agent cards view design), #509, #514, #516, #518 (V1–V4).
 **Builds on:** the agent cards view
@@ -32,21 +33,21 @@ request-post ([`2026-11-07-request-post-a2a-agent-design.md`](2026-11-07-request
    is one Tab stop with arrow-key focus and a CSS-only edge shade, and it is still global and never
    attention (§2).
 3. **Open as a tab.** I read the request as two tab levels: clicking a card opens the agent in a
-   tab, and that view has its own tabs. Recommended: **one agent tab in the library's tab list**,
+   tab, and that view has its own tabs. Decided: **one agent tab in the library's tab list**,
    shown only while an agent is open, named for the agent, replaced when another card is opened,
-   closed by its Close button, never counted and never restored after a reload (§3, Q1, Q2).
+   closed by its Close button, never counted and never restored after a reload (§3; decisions 1, 2).
 4. **Inside the agent tab:** two tabs, **Run history** (the default each time an agent opens)
    and **Details** (exactly what V3's expanded row shows, Card JSON included, with the same
    selection rules) (§4).
-5. **Run history needs a record the app does not keep today.** Recommended: the `meshctl` entry
+5. **Run history needs a record the app does not keep today.** Decided: the `meshctl` entry
    that runs each client (`unslop`, `request-post`, later `web-search`) appends one JSON line per
    run to `<mesh dir>/mesh/runs/<agent>-<date>.jsonl` (0600, in a 0700 folder). It writes after a
    normal exit, after an internal error, and from a signal handler when the run is killed. Each
    record has a closed set of fields: end time, duration, operation, exit code, outcome word and a
    few fixed-vocabulary facts. Never text, prompts, queries, answers, titles, URLs, request keys or
-   tokens. Records are kept 30 days (Q6). The viewer only reads them, through a new conditional
+   tokens. Records are kept 30 days (decision 6). The viewer only reads them, through a new conditional
    route, and only while an agent tab shows Run history. Forgetting is a `meshctl` command, so the
-   viewer still writes nothing under the mesh dir (§5, Q4).
+   viewer still writes nothing under the mesh dir (§5; decision 4).
 6. **Off still means off.** With no `mesh.json`, nothing changes: no strip, no tab, no reads, the
    same boot requests. A client whose agent is off writes no record (§7).
 7. **Six slices,** each under about 300 production lines and mergeable alone; the last waits for
@@ -70,7 +71,7 @@ agent; and the matching amendments.
 - No in-flight runs: a run shows once its client ends. A request-post `wait` that runs for hours
   shows when it ends, at the top, because runs sort by end time.
 - No search, filter or export in Run history. No charts.
-- No caller identity in a record (which session or project called) unless Q5 says so.
+- No caller identity in a record: not the session, not the project (decision 5).
 - No change to the agents themselves (`packages/mesh`) or to the publishing service.
 - No change to attention, the hub schema, the stdio MCP server or the dependency set.
 
@@ -189,19 +190,18 @@ Some facts about the app today:
 
 | Option | For | Against |
 |---|---|---|
-| **A. One agent tab in the library's tab list** (recommended) | The literal reading of "open … as a tab". A whole page for Run history, which is a table. Leaving and coming back keeps it. Opening, closing and the page title follow the existing `selectTab`/`showPanel` path. | The tab list gains a tab that comes and goes. Tabs carry counts by convention, so this one must be pinned count-free. The compact masthead's tab row gets one more tab (it already scrolls with a shade). |
+| **A. One agent tab in the library's tab list** (chosen) | The literal reading of "open … as a tab". A whole page for Run history, which is a table. Leaving and coming back keeps it. Opening, closing and the page title follow the existing `selectTab`/`showPanel` path. | The tab list gains a tab that comes and goes. Tabs carry counts by convention, so this one must be pinned count-free. The compact masthead's tab row gets one more tab (it already scrolls with a shade). |
 | B. A detail pane under the strip, with its own tab bar | Smallest change: everything stays in `mesh-section.js`, no routing. | Not a tab. The pane sits at the end of the Agents home, so a run table pushes the folds far down. The page is the Dashboard, so the Dashboard's poll gates and focus rules apply to a table. |
 | C. The session panel's sheet, holding the agent | The same gesture as a session card: click opens a panel. | The panel's code is session-shaped (`focusSession`, `sessionFocus`, `cardFor`, placement after the card's row). Generalising it touches the riskiest part of the Dashboard (#463's review rounds). A sheet is narrow for a table. |
 
-**Recommendation: A.** The details below assume it. If Shariq picks B, §4 and §5 are unchanged
-and §3.3 shrinks to a pane inside the section.
+**Decision: A** (Shariq, 2026-11-09; §13 decision 1).
 
 ### 3.3 The agent tab, exactly
 
 - **One slot.** `#tabs` gains a sixth tab, `data-tab="agent"`, after History, hidden while no agent
   is open. Its icon is the agent's state dot and its name the agent's `mesh.json` name. Opening a
   card shows the tab with that agent and selects it. Opening another card replaces the agent in the
-  same slot (Q2 weighs one tab per agent).
+  same slot (decision 2: one tab, not one per agent).
 - **Routing.** `TAB_IDS` gains `'agent'`. `selectTab('agent')` returns without effect while no
   agent is open, so a key, a deep link or a stale caller can never land on an empty page.
   `wireTablist`'s keydown filter, which today skips only tabs inside a closed `<details>`, also skips a `hidden` tab, so arrow keys never land on it. `PAGE_META.agent` gives the kicker
@@ -303,11 +303,11 @@ history.
 
 | Option | For | Against |
 |---|---|---|
-| **A. Each client's `meshctl` process appends one record per run** (recommended) | One writer per agent on this Mac, for all three agents, request-post included. Sees every end, including runs that never reached an agent, internal errors and signals. One versioned schema the viewer can validate. The process already holds every field (its exit, the result's data part, its own clock). | A new file family under the mesh dir. Several processes may append at once (§5.6). |
+| **A. Each client's `meshctl` process appends one record per run** (chosen) | One writer per agent on this Mac, for all three agents, request-post included. Sees every end, including runs that never reached an agent, internal errors and signals. One versioned schema the viewer can validate. The process already holds every field (its exit, the result's data part, its own clock). | A new file family under the mesh dir. Several processes may append at once (§5.6). |
 | B. Derive history from the agents' logs | No new writer. | Nothing for request-post. Misses client-side failures. The viewer would read logs, which the cards design ruled out. Unbounded files. |
 | C. The agents write a run file | Close to the work. | request-post's agent is remote, so it cannot write here. Misses client-side failures, the same as B. |
 
-**Recommendation: A.**
+**Decision: A** (accepted with the design).
 
 ### 5.3 What a run is
 
@@ -393,15 +393,14 @@ start, a missing token; and request-post 15), `conflict` (request-post 16), `tim
 | `channels` | up to 4 of `blog`, `x-thread`, `x-standalone`, `linkedin`; **exit 0 only** | the caller's arguments, once the service accepted them |
 | `brand` | `^[a-z0-9-]{1,40}$`; **exit 0 only** | the same; a refused brand might be a typo or a name, so it is never kept |
 | `fields` | up to 8 field names from the client's argument list | which fields a refusal named, never their values |
-| `key` | **only if Q3 is B or C**, and only when the key has `requestKey()`'s exact form: 26 characters of `a–z` and `2–7` | B: its first 8 characters; C: all 26 |
 
-**Why no key by default.** `--key` accepts any printable ASCII up to 128 characters
+**Why no key (decision 3).** `--key` accepts any printable ASCII up to 128 characters
 (`ID = /^[\x21-\x7e]{1,128}$/`), so a caller-chosen key such as `acme-launch-2026` would leave
 `acme-lau` in a prefix. Keeping a key only in the derived form closes that. It does not close the
 second leak: `requestKey()` is public code, a SHA-256 over brand, channels and the slug, source
 URL or normalised title, and those are often guessable. Anyone who can read the runs file can test
 a guessed title against a stored key or prefix. An 8-character prefix is 40 bits, plenty to confirm
-a guess. So the recommendation (Q3 A) keeps no key at all. The run is still identified by its time,
+a guess. So the record keeps no request key at all, derived or chosen. The run is still identified by its time,
 op, phase, channels and brand.
 
 **web search** (written by W5b's client; fixed here so it ships with the first version)
@@ -426,7 +425,7 @@ input and searches every runs file and every route body byte by byte (§8).
 - **unslop:** the draft, the result text, `failures` (its lost, added and moved fragments),
   warning `detail`, the profile, the backend URL, the API key and the token.
 - **request-post:** the brief, the title, the slug, the source URL, the category, the page URL,
-  the page id, any caller-chosen `--key`, the derived key (unless Q3 says otherwise), any
+  the page id, any request key (caller-chosen or derived), any
   `humanAction` or error text from the service, a brand or channel the service refused, and the
   token. The page URL is left out because Notion URLs carry the page title.
 - **web search:** the query, the answer, every source URL, title and snippet, the query's
@@ -436,7 +435,7 @@ input and searches every runs file and every route body byte by byte (§8).
   reads the folder. A test runs a canary query with `record: true` on and finds it in no runs file
   and no response.
 - **Everyone:** environment variables, the working directory, arguments other than those listed,
-  and stdin. Caller identity is left out unless Q5 says otherwise.
+  and stdin. Caller identity (session or project) is not kept (decision 5).
 
 ### 5.6 Where, and how the clients write it
 
@@ -479,7 +478,7 @@ input and searches every runs file and every route body byte by byte (§8).
   missing. The reader's per-line validation keeps the damage to lost records.
 - **Best effort.** Writing a record never changes the client's exit code, stdout or stderr. A
   failure is silent, because both clients' stderr is read by calling agents as protocol text.
-- **Retention (the period is Q6; 30 days recommended).** Files whose date is older than the period
+- **Retention: 30 days (decision 6).** Files whose date is older than the period
   are deleted (regular files only, `lstat` first; `ENOENT` from a concurrent deletion is ignored)
   at three points:
   1. by `appendRun`, for its own agent, when the append has just created the day's file;
@@ -580,15 +579,15 @@ input and searches every runs file and every route body byte by byte (§8).
 - **Footer:** "Runs from the last 30 days are shown. Older records are deleted by this agent's
   first run of a day, or the next time an agent is enabled or disabled. Never the text sent or
   returned."
-  (The period follows Q6.) Then, for Q4 A: "To forget them now:" and the route's `forget` text in a
-  `<code>` element with a Copy control. For Q4 B: the Forget history button (§5.9).
+  Then "To forget them now:" and the route's `forget` text in a `<code>` element with a Copy
+  control (§5.9).
 - No word here names the client modules or the command, so the text guard holds: the command
   arrives as data in `forget`, built in `src/mesh-agents.ts`, as the cards design's §3.4 set up for
   `fix` strings.
 
-### 5.9 Forgetting history (Q4)
+### 5.9 Forgetting history (decision 4)
 
-**Recommended (Q4 A): a `meshctl` command, so `meshctl` stays the only writer under the mesh dir.**
+**A `meshctl` command, so `meshctl` stays the only writer under the mesh dir.**
 
 ```sh
 npm run meshctl -- forget-runs (--unslop | --request-post | --web-search | --all) [--apply]
@@ -603,17 +602,10 @@ npm run meshctl -- forget-runs (--unslop | --request-post | --web-search | --all
 - The viewer stays read-only under the mesh dir: no write route, no grant, no new Electron
   surface. The cards design's "the view writes nothing" (its §4.7 and §8) still holds.
 
-**Q4 B, if chosen instead: a Forget history button.** It reverses the invariant above. The viewer
-would gain its first delete route under the mesh dir, the folder that also holds `tokens/` and
-`wrappers/`. The button would work like this:
-
-- Two steps in place ("Forget 48 runs? [Forget] [Keep]"), no modal.
-- `POST /api/mesh/agents/runs/forget` with `{ "name": "<agent>" }`, validating the body first
-  (400 on anything but one known name).
-- The same narrow file rule as the command, then `reloadAndPaint()`.
-
-Even with that narrow rule, a bug in that route would be a bug in a process that can delete files
-next to the tokens. That is why A is recommended.
+**Not chosen: a Forget history button in the viewer.** It would have reversed the invariant above,
+giving the viewer its first delete route under the mesh dir, the folder that also holds `tokens/`
+and `wrappers/`. Even with the same narrow file rule, a bug in that route would be a bug in a
+process that can delete files next to the tokens.
 
 ---
 
@@ -621,24 +613,22 @@ next to the tokens. That is why A is recommended.
 
 - **Untrusted text.** Records are validated on both write and read against closed vocabularies
   and patterns, and the page renders every value with `textContent`. A run record can never
-  carry markup, a link or an image. If Q3 C adds a page link, it goes through `chipHtml()` and
-  `safeHttpUrl()` and opens only through Electron main (`links.md`).
+  carry markup, a link or an image, and no field holds a URL.
 - **Request keys, honestly.** A caller-chosen `--key` is never kept, in full or in part, because
   it is free text (§5.4). A derived key is a SHA-256 over inputs that are often guessable (brand,
   channels and a title or slug), computed by public code. Whoever can read the runs file can
   confirm a guessed title against a stored key, and an 8-character prefix (40 bits) is enough to do
-  that. That is why the recommendation keeps no key. If Shariq picks Q3 B or C anyway, the
-  record holds a value that confirms guesses about request titles, and this section says so.
+  that. That is why the record keeps no request key at all (decision 3).
 - **Web search durations.** A record keeps the run's total `ms`, the same duration the agent's
   own log already writes per task. A very short run can hint that the answer came from the
   15-minute cache, so that the same query ran shortly before. The record states no repeat
-  (`fresh` and cache hits are not kept) and nothing about the query itself. Q6's period limits
+  (`fresh` and cache hits are not kept) and nothing about the query itself. The 30-day period limits
   how long even that hint stays on disk.
 - **What a screenshot shows.** Cards show no remote host (as V3's rows). Run history shows no
   host, title, key or text.
 - **Files.** 0700 folder, 0600 files, `O_NOFOLLOW` on both write and read, owner and mode checks,
   bounded sizes and bounded reads. The reader never follows a name it did not build itself.
-- **Who writes under the mesh dir.** With Q4 A, still only `meshctl` and the processes it runs
+- **Who writes under the mesh dir.** Still only `meshctl` and the processes it runs
   (the clients and the agents). The viewer reads `mesh.json`, unslop's budget and `runs/`, and
   writes nothing there.
 - **Secrets.** Unchanged: the viewer never opens `mesh/tokens/*` or `mesh/wrappers/*`, never reads
@@ -652,7 +642,7 @@ next to the tokens. That is why A is recommended.
 | Invariant | How it holds |
 |---|---|
 | Off means off | No `mesh.json`: no strip, no agent tab, no `/api/mesh/*` read, `/api/version` byte-identical, and `test/dom/agents-home.test.ts`'s `BOOT_REQUESTS` unchanged. A client whose key is off writes no record. |
-| The view writes nothing (cards design §4.7, §8) | Kept with Q4 A: forgetting is `meshctl forget-runs`; every viewer route under `/api/mesh/` reads. Q4 B would end this invariant. |
+| The view writes nothing (cards design §4.7, §8) | Kept (decision 4): forgetting is `meshctl forget-runs`; every viewer route under `/api/mesh/` reads. |
 | `meshctl` is the only writer of `mesh.json` | Unchanged. Run records never touch `mesh.json`. |
 | One attention predicate | Nothing here feeds `public/attention.js`. The agent tab has no count. The DOM test compares title, badge, tab counts, Needs you rows, rail and dock with and without the strip, the agent tab and run history. |
 | Two render entries | The strip paints in `agentsHome.paint()`; the agent page paints in the render pass for the active tab, from `load()` (through `renderIfIdle()`) and `reloadAndPaint()` only. Inner tab switches and Show more repaint their own region from the last model. |
@@ -680,7 +670,7 @@ V5b needs V5a; V5d needs V5b and V5c1; V5e follows web search's W5b.
 
 | Slice | Content | Production lines (est.) |
 |---|---|---|
-| **V5a. Run records** | `src/mesh-runs.ts` (schema v1, builder, validator, `appendRun`, torn-line repair, retention); the `io.run` collector in both run functions; the meshctl entry writes after the catch and installs the signal handlers; retention on every `enable` and `disable`; `disable --unslop --purge` removes `runs/unslop-*`; new `disable --request-post --purge`; new `forget-runs` (if Q4 is A); the import pins and the `MESH` lists gain `mesh-runs`; `docs/unslop.md` and `docs/request-post.md` gain "What this Mac keeps"; `mesh.md` | ~280 |
+| **V5a. Run records** | `src/mesh-runs.ts` (schema v1, builder, validator, `appendRun`, torn-line repair, retention); the `io.run` collector in both run functions; the meshctl entry writes after the catch and installs the signal handlers; retention on every `enable` and `disable`; `disable --unslop --purge` removes `runs/unslop-*`; new `disable --request-post --purge`; new `forget-runs`; the import pins and the `MESH` lists gain `mesh-runs`; `docs/unslop.md` and `docs/request-post.md` gain "What this Mac keeps"; `mesh.md` | ~280 |
 | **V5b. The read side** | `readRuns` in `src/mesh-runs.ts` (bounded read, merge, sort by `at`); `GET /api/mesh/agents/runs` with its `forget` text; `lastRun` in `/api/mesh/agents`; `mesh.md` | ~200 |
 | **V5c1. The agent tab** | A new `public/mesh-agent-page.js` with the inner tablist and **Details** (V3's lines and Card JSON, moved); the `agent` tab in `index.html`, `tabs.js` and `app.js` (`selectTab`, `PAGE_META`, Close, `wireTablist` skipping a hidden tab, the per-agent open trigger, the widened `/api/mesh/agents` gate); the refresh route accepts `name` with `open`; V3's rows stay, and pressing a row opens its agent tab instead of expanding in place; `style.css`; `viewer-dashboard-and-shell.md`, `attention-and-later.md`. Until V5d the page opens on Details | ~230 |
 | **V5c2. The card strip** | `public/mesh-section.js` draws cards instead of rows (§2.1's lines without the last-run line, which V5d adds), roving Left/Right/Home/End, both-edge shades, `aria-current` on the open agent's card; `style.css`; `viewer-dashboard-and-shell.md`. A card does what V5c1's row does; before V5c1 lands, it expands the details below the strip, as V3's row does | ~160 |
@@ -696,7 +686,7 @@ V5b needs V5a; V5d needs V5b and V5c1; V5e follows web search's W5b.
     `failures` fragment and a warning `detail` each carrying a unique string; none appears in any
     file under `mesh/runs/` (byte search);
   - **caller-chosen keys:** `file --key acme-secret-x` and `status --key acme-secret-x` each leave
-    no `acme` anywhere under `mesh/runs/`; with Q3 A, a derived key leaves no 8-character run of
+    no `acme` anywhere under `mesh/runs/`; a derived key leaves no 8-character run of
     it either;
   - a refused brand or channel is not kept; on exit 0 they are;
   - off (no key, or a key whose endpoint fails its rule) and usage errors write nothing, and enable
@@ -835,7 +825,7 @@ and in place:
 
 The purge sentences in "Turning unslop on and off" and "Turning request-post on and off" gain
 "and its run records", and the latter documents the new `--purge`. A new short "Forgetting run
-history" paragraph documents `forget-runs` (if Q4 is A).
+history" paragraph documents `forget-runs`.
 
 **`docs/architecture/viewer-dashboard-and-shell.md`** (V5c1, V5c2, V5d): the Mesh agents bullet's
 "One row per agent … the expanded row shows the card's lines and a nested Card JSON" becomes the
@@ -920,9 +910,9 @@ the installed app:
 | Risk | Mitigation |
 |---|---|
 | A record leaks private text through a new field later | One schema, closed vocabularies, the same validator on write and read, canary tests over every input (caller-chosen keys included), and §9's `mesh.md` rule. |
-| A stored key confirms a guessed title | No key by default (Q3 A); a caller-chosen key is never kept under any option. |
+| A stored key confirms a guessed title | No request key is kept, derived or caller-chosen (decision 3). |
 | A dynamic tab breaks tab keyboard order or the compact masthead | One slot, hidden when unused, skipped by roving, unreachable by G keys, hashes and bookmarks while empty; the compact row already scrolls with a shade; the tab tests pin it. |
-| History fills the disk, or outlives its period | 256 KiB a day per agent (plus bounded overshoot), the kept period (Q6), deletion on each new day file and on every enable and disable, `--purge` for every agent, `forget-runs`. |
+| History fills the disk, or outlives its period | 256 KiB a day per agent (plus bounded overshoot), the 30-day period (decision 6), deletion on each new day file and on every enable and disable, `--purge` for every agent, `forget-runs`. |
 | Concurrent writers interleave, or a write is torn | One checked `O_APPEND` write of at most 512 bytes on a local volume; never retried; torn-line repair; the reader skips anything that does not parse; the eight-process test from an empty folder. Network mounts are unsupported. |
 | A killed run leaves no trace | Signal handlers write `interrupted`; only `SIGKILL` escapes, and the design says so. |
 | The signal handlers change how a client dies | They write synchronously and re-raise the same signal; tests check the child's `signal`. |
@@ -930,48 +920,24 @@ the installed app:
 
 ---
 
-## §13 — Questions for Shariq
+## §13 — Decisions (Shariq, 2026-11-09)
 
-1. **Where does an opened agent live?**
-   - **A. One agent tab in the library's tab list, after History** (recommended). A whole page
-     for Run history, the literal "open as a tab"; never counted, never restored after a reload.
-   - B. A pane under the strip in the Agents home, with its own Run history and Details tabs.
-     Smallest change, but it sits under all the sessions and pushes the folds down.
-   - C. The session panel's sheet. The same gesture as a session card, but a narrow sheet and
-     the riskiest code on the Dashboard.
-2. **One agent tab, or one per agent?**
-   - **A. One tab; opening another card replaces it** (recommended). The tab list grows by at most
-     one, which keeps the compact masthead usable.
-   - B. One tab per opened agent (at most one per configured agent). Compare two agents by
-     switching tabs, at the cost of up to three extra tabs and a close control on each.
-3. **What may request-post's run history keep?**
-   - **A. Outcome, phase, channels and brand (exit 0 only); no request key** (recommended). Runs
-     are told apart by time, op, phase, channels and brand. Nothing on disk can confirm a guessed
-     title.
-   - B. A, plus the first 8 characters of the key, only when it is a derived key (never a
-     caller-chosen `--key`). Lets you match a run to the service's log, which keeps a key prefix,
-     but anyone who can read the file can confirm a guessed brand, channel and title against it.
-   - C. B with the full derived key and the page id, an "Open in Notion" link and a copyable
-     `status --key` command. Most useful; the same guess-confirming exposure, plus an identifier
-     of every request on disk.
-4. **How is history forgotten?**
-   - **A. A `meshctl forget-runs (--unslop | --request-post | --web-search | --all) [--apply]`
-     command, shown as copyable text in the Run history footer, plus `--purge` on every agent's
-     `disable` and the expiry** (recommended). `meshctl` stays the only writer under the mesh dir,
-     and the viewer stays read-only.
-   - B. A Forget history button in the Run history tab (two-step, in place). Reverses the cards
-     design's "the view writes nothing": the viewer gains its first delete route under the mesh
-     dir, which also holds `tokens/` and `wrappers/`.
-   - C. `--purge` and the expiry only. No way to forget one agent's history while keeping it on.
-5. **Should a run record say which project called the agent?**
-   - **A. No** (recommended). Nothing about the caller is kept; the record stays about the agent.
-   - B. Yes: the project name the inbox would infer for the calling directory. Lets Run history
-     say "agent-inbox · main", but adds the caller's project, which can be a customer's
-     repository name, to a second store.
-6. **How long are run records kept?**
-   - **A. 30 days** (recommended). Enough to answer "what happened last week"; at most about
-     7.5 MiB per agent, in practice far less.
-   - B. 7 days. Less on disk for less time, including web search's duration hint (§6); "last
-     week" still works at the edge.
-   - C. Today only. The least kept; Run history becomes "today's runs", and yesterday's failures
-     are gone by morning.
+Shariq accepted all six recommendations. The options are kept briefly for history.
+
+1. **Where an opened agent lives: one agent tab in the library's tab list, after History.** Not
+   chosen: a pane under the strip in the Agents home (smaller change, but under all the sessions),
+   or the session panel's sheet (narrow, and the riskiest Dashboard code). §3.3 specifies it.
+2. **One agent tab; opening another card replaces it.** Not chosen: one tab per opened agent, up
+   to three extra tabs, each with its own close control.
+3. **request-post's run history keeps outcome, phase, channels and brand (exit 0 only), and no
+   request key.** Not chosen: an 8-character prefix of a derived key, or the full derived key with
+   the page id and an "Open in Notion" link. Both would let anyone who can read the file confirm a
+   guessed title (§6). A caller-chosen `--key` was never an option.
+4. **Forgetting is `meshctl forget-runs (--unslop | --request-post | --web-search | --all)
+   [--apply]`, shown as copyable text in the Run history footer, plus `--purge` on every agent's
+   `disable` and the 30-day expiry.** The viewer stays read-only under the mesh dir. Not chosen: a
+   Forget history button in the viewer (it would reverse "the view writes nothing"), or `--purge`
+   and expiry only.
+5. **No caller identity in a record.** Not chosen: the project name the inbox would infer for the
+   calling directory, which can be a customer's repository name.
+6. **Run records are kept 30 days.** Not chosen: 7 days, or today only.

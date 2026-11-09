@@ -15,6 +15,7 @@ import { randomUUID } from 'node:crypto'
 import { closeSync, constants, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, writeSync } from 'node:fs'
 import { request } from 'node:http'
 import { isAbsolute, join, resolve } from 'node:path'
+import { checkCard } from './agent-card.js'
 import { loopbackPort, meshDir, meshFile, readMesh } from './mesh-config.js'
 
 const EXTENSION = 'urn:agent-inbox:ext:unslop:v1'
@@ -136,16 +137,6 @@ async function getCard(port: number): Promise<Card> {
   } catch {
     return { kind: 'bad' }
   }
-}
-
-/** Why this client cannot use the card, or undefined when it can (design §4.4, §8.3). */
-function cardMismatch(card: Json): string | undefined {
-  const list = (v: unknown): Json[] => (Array.isArray(v) ? v.map(obj) : [])
-  if (!list(card.skills).some((s) => s.id === 'unslop')) return 'no unslop skill'
-  if (!list(card.supportedInterfaces).some((i) => i.protocolVersion === '1.0' && i.protocolBinding === 'JSONRPC')) return 'no A2A 1.0 JSON-RPC interface'
-  const ext = list(obj(card.capabilities).extensions).find((e) => e.uri === EXTENSION)
-  if (!ext) return `no ${EXTENSION} extension`
-  return obj(ext.params).api === 1 ? undefined : 'unslop api is not 1'
 }
 
 /** Starts the profile's `start` argv, detached and without a shell; a string says why not. */
@@ -275,7 +266,8 @@ export async function runUnslop(args: string[], io: UnslopIo): Promise<number> {
     if (card.kind === 'none') return unavailable(`the agent did not start; see ${started.log}`)
   }
   if (card.kind === 'bad') return unavailable(`something other than the unslop agent answers at 127.0.0.1:${port}`)
-  const mismatch = cardMismatch(card.card)
+  // the one card rule (unslop design §4.4, §8.3; agent cards view design §4.4)
+  const mismatch = checkCard(card.card, 'unslop')
   if (mismatch) return unavailable(`the agent's card does not match this meshctl (${mismatch}): rebuild packages/mesh (npm ci && npm run build there) and stop the running agent`)
   let token: string
   try {

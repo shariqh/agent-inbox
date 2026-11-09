@@ -477,12 +477,14 @@ describe('no new dependency (design §2.3, §2.4c)', () => {
       for (const spec of specs) expect(spec, `${file} imports ${spec}`).toMatch(/^(node:|\.\/)/)
       expect(specs, `${file} must not open the hub`).not.toContain('./store.js')
     }
-    // meshctl, its unslop and request-post clients and the config module are Node core plus each other only
+    // meshctl, its unslop and request-post clients, the config module and the card rule are Node core plus each other only
     const local = (file: string) => [...code(file).matchAll(SPECIFIERS)].map((m) => m[2]!).filter((spec) => !spec.startsWith('node:'))
     expect(local('src/meshctl.ts')).toEqual(['./mesh-config.js', './mesh-config.js', './request-post-client.js', './unslop-client.js'])
-    expect(local('src/unslop-client.ts')).toEqual(['./mesh-config.js'])
-    expect(local('src/request-post-client.ts')).toEqual(['./mesh-config.js'])
+    expect(local('src/unslop-client.ts')).toEqual(['./agent-card.js', './mesh-config.js'])
+    expect(local('src/request-post-client.ts')).toEqual(['./agent-card.js', './mesh-config.js'])
     expect(local('src/mesh-config.ts')).toEqual([])
+    // the card rule is pure (agent cards view design §3.4): no import at all, Node core included
+    expect([...code('src/agent-card.ts').matchAll(SPECIFIERS)].map((m) => m[2]!)).toEqual([])
   })
 
   // unslop design §4.5 (b), request-post design §10: the clients are meshctl subcommands;

@@ -396,6 +396,12 @@ describe('closed projects (issue #32)', () => {
     expect(fn('function wireTablist(', '\nfunction btn(')).toContain('!t.hidden')
   })
 
+  // cards view V5 §3.3: no G key, hash or stale caller lands on an empty agent tab
+  it('selectTab refuses the agent tab with no agent open, and navigateKeyboard focuses only a tab it selected', () => {
+    expect(fn('function selectTab(', '\nfunction initTabs(')).toMatch(/id === 'agent' && !meshAgentPage\.current\(\)\) return/)
+    expect(fn('function navigateKeyboard(', '\nfunction initKeys(')).toContain('if (activeTab === destination) focusKeyboardPanel(')
+  })
+
   it('the peek banner names the suppression instead of leaving two counts disagreeing', () => {
     const body = fn('function renderClosedBanner(', '\n// Projects as vertical tabs')
     expect(body).toContain('closed-banner')

@@ -1,0 +1,58 @@
+{
+  "row": "refused-cap",
+  "situation": "Refused: a daily cap",
+  "exit": 11,
+  "headers": {
+    "A2A-Version": "1.0"
+  },
+  "request": {
+    "jsonrpc": "2.0",
+    "id": "rpc-06",
+    "method": "SendMessage",
+    "params": {
+      "message": {
+        "messageId": "msg-06",
+        "role": "ROLE_USER",
+        "parts": [
+          {
+            "text": "When did version 24 of the example runtime enter long-term support?"
+          }
+        ]
+      }
+    }
+  },
+  "response": {
+    "jsonrpc": "2.0",
+    "id": "rpc-06",
+    "result": {
+      "task": {
+        "id": "00000000-0000-4000-8000-000000000001",
+        "contextId": "00000000-0000-4000-8000-000000000002",
+        "status": {
+          "state": "TASK_STATE_REJECTED",
+          "message": {
+            "messageId": "00000000-0000-4000-8000-000000000003",
+            "contextId": "00000000-0000-4000-8000-000000000002",
+            "taskId": "00000000-0000-4000-8000-000000000001",
+            "role": "ROLE_AGENT",
+            "parts": [
+              {
+                "text": "rejected: daily-cap",
+                "mediaType": "text/plain"
+              },
+              {
+                "data": {
+                  "code": 11,
+                  "status": "rejected",
+                  "reason": "daily-cap"
+                },
+                "mediaType": "application/json"
+              }
+            ]
+          },
+          "timestamp": "2026-11-09T18:00:00.000Z"
+        }
+      }
+    }
+  }
+}

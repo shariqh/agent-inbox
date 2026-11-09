@@ -1,0 +1,36 @@
+{
+  "provider": "ollama",
+  "note": "web_search: up to 10 results, each with title, url and content (the page text the adapter keeps as `page`).",
+  "request": {
+    "method": "POST",
+    "url": "https://ollama.com/api/web_search",
+    "headers": {
+      "authorization": "Bearer <placeholder-key>",
+      "content-type": "application/json"
+    },
+    "body": {
+      "query": "example runtime long-term support",
+      "max_results": 5
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": {
+      "results": [
+        {
+          "title": "Example runtime release notes",
+          "url": "https://docs.example.com/releases/1",
+          "content": "# Release notes\n\nVersion 24 of the example runtime entered long-term support on 2025-10-28. The first release in that line is v24.11.0.\n\n## Support window\n\nLong-term support lasts 30 months."
+        },
+        {
+          "title": "Example runtime - Example Wiki",
+          "url": "https://wiki.example.org/wiki/Example_runtime",
+          "content": "The example runtime is a synthetic project used in documentation. Its even-numbered versions become long-term support releases."
+        }
+      ]
+    }
+  }
+}

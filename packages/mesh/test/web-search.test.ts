@@ -175,7 +175,8 @@ describe('the front door refuses before the SDK (§3.2 item 1)', () => {
     expect(handle).not.toHaveBeenCalled()
   })
 
-  it.each([[undefined], ['1.1'], ['0.3'], ['1'], ['1.0.x'], ['1.0, 1.1']])('refuses A2A-Version %s with -32009', async (version) => {
+  // none, 1.1 and 0.3 are refusals/ fixtures
+  it.each([['1'], ['1.0.x'], ['1.0, 1.1']])('refuses A2A-Version %s with -32009', async (version) => {
     const d = await door()
     const res = await rpc(d.port, 'SendMessage', ask('hello'), { 'a2a-version': version })
     expect(res.error).toEqual({ code: -32009, message: 'A2A-Version 1.0 is required' })
@@ -240,36 +241,14 @@ describe('the front door refuses before the SDK (§3.2 item 1)', () => {
 
 describe('the request is rebuilt from the allowlist (§3.2 item 2)', () => {
   const msg = (extra: Json): Json => ask('hello', extra)
-  const conf = (configuration: Json): Json => ({ ...ask('hello'), configuration })
   const ext = (fields: Json): Json => msg({ metadata: { [EXTENSION]: fields } })
   const cases: Array<[string, string, unknown]> = [
-    // snake_case aliases the SDK's decoders accept
-    ['message.message_id', 'SendMessage', { message: { message_id: 'm', role: 'ROLE_USER', parts: [{ text: 'hello' }] } }],
-    ['message.task_id', 'SendMessage', msg({ task_id: 't' })],
-    ['message.context_id', 'SendMessage', msg({ context_id: 'c' })],
-    ['message.reference_task_ids', 'SendMessage', msg({ reference_task_ids: ['t'] })],
-    ['configuration.return_immediately', 'SendMessage', conf({ return_immediately: false })],
-    ['configuration.accepted_output_modes', 'SendMessage', conf({ accepted_output_modes: ['text/plain'] })],
-    ['configuration.history_length', 'SendMessage', conf({ history_length: 0 })],
-    ['configuration.push_notification_config', 'SendMessage', conf({ push_notification_config: { url: 'http://127.0.0.1:1/' } })],
-    ['configuration.task_push_notification_config', 'SendStreamingMessage', conf({ task_push_notification_config: { url: 'http://127.0.0.1:1/' } })],
-    ['GetTask history_length', 'GetTask', { id: 't', history_length: 1 }],
-    // camelCase fields that are not on the allowlist
-    ['message.taskId (a continuation)', 'SendMessage', msg({ taskId: 't' })],
-    ['message.contextId', 'SendMessage', msg({ contextId: 'c' })],
-    ['message.referenceTaskIds', 'SendMessage', msg({ referenceTaskIds: ['t'] })],
+    // snake_case aliases, tenant, historyLength, continuations, push configs, blocking,
+    // returnImmediately and unknown methods: test/fixtures/a2a-web-search/refusals/, sent
+    // through this server by web-search-fixtures.test.ts
     ['message.extensions', 'SendMessage', msg({ extensions: [EXTENSION] })],
-    ['configuration.pushNotificationConfig', 'SendMessage', conf({ pushNotificationConfig: { url: 'http://127.0.0.1:1/' } })],
-    ['configuration.taskPushNotificationConfig', 'SendStreamingMessage', conf({ taskPushNotificationConfig: { url: 'http://127.0.0.1:1/' } })],
-    ['configuration.historyLength', 'SendMessage', conf({ historyLength: 0 })],
-    ['configuration.blocking: true (A2A 0.3)', 'SendMessage', conf({ blocking: true })],
-    ['configuration.blocking: false (A2A 0.3)', 'SendMessage', conf({ blocking: false })],
-    ['configuration.returnImmediately: true', 'SendMessage', conf({ returnImmediately: true })],
     ['configuration: null', 'SendMessage', { ...ask('hello'), configuration: null }],
-    ['params.tenant', 'SendMessage', { ...ask('hello'), tenant: 'other' }],
     ['params.metadata', 'SendMessage', { ...ask('hello'), metadata: {} }],
-    ['GetTask tenant', 'GetTask', { id: 't', tenant: 'other' }],
-    ['GetTask historyLength', 'GetTask', { id: 't', historyLength: 5 }],
     ['CancelTask tenant', 'CancelTask', { id: 't', tenant: 'other' }],
     ['CancelTask metadata', 'CancelTask', { id: 't', metadata: {} }],
     ['GetTask without an id', 'GetTask', {}],
@@ -293,16 +272,12 @@ describe('the request is rebuilt from the allowlist (§3.2 item 2)', () => {
     ['an extra top-level key', 'SendMessage', 'extra'],
     ['an object id', 'SendMessage', 'id'],
     // every other method
-    ['ListTasks', 'ListTasks', {}],
     ['GetExtendedAgentCard', 'GetExtendedAgentCard', {}],
     ['SubscribeToTask', 'SubscribeToTask', { id: 't' }],
-    ['CreateTaskPushNotificationConfig', 'CreateTaskPushNotificationConfig', { taskId: 't', url: 'http://127.0.0.1:1/' }],
     ['GetTaskPushNotificationConfig', 'GetTaskPushNotificationConfig', { taskId: 't', id: 'p' }],
     ['ListTaskPushNotificationConfigs', 'ListTaskPushNotificationConfigs', { taskId: 't' }],
     ['DeleteTaskPushNotificationConfig', 'DeleteTaskPushNotificationConfig', { taskId: 't', id: 'p' }],
-    ['message/send (A2A 0.3)', 'message/send', ask('hello')],
     ['tasks/get (A2A 0.3)', 'tasks/get', { id: 't' }],
-    ['an unknown method', 'Search', ask('hello')],
   ]
 
   it.each(cases)('refuses %s with -32602 before the SDK', async (_name, method, params) => {
@@ -324,7 +299,7 @@ describe('the request is rebuilt from the allowlist (§3.2 item 2)', () => {
     expect(res.result.task.status.state).toBe('TASK_STATE_COMPLETED')
     expect(res.result.task.artifacts[0].parts[1].data).toMatchObject({ code: 0, mode: 'sources', untrusted: true })
     expect(handle).toHaveBeenCalledTimes(1)
-    expect(handle.mock.calls[0]![0]).toEqual({ jsonrpc: '2.0', id: 1, method: 'SendMessage', params: { message: { ...params.message, parts: [{ text: 'node lts', mediaType: 'text/plain' }] }, configuration: { acceptedOutputModes: ['application/json'] } } })
+    expect(handle.mock.calls[0]![0]).toEqual({ jsonrpc: '2.0', id: 1, method: 'SendMessage', params: { message: { ...params.message, parts: [{ text: 'node lts', mediaType: 'text/plain' }] }, configuration: { historyLength: 0, acceptedOutputModes: ['application/json'] } } })
     expect(rebuild(JSON.parse(envelope('SendMessage', params)))).not.toBe(params)
   })
 })
@@ -382,6 +357,32 @@ describe('tasks', () => {
     })
     hold.release()
     await vi.waitFor(async () => expect((await rpc(d.port, 'GetTask', { id })).result.status.state).toBe('TASK_STATE_COMPLETED'))
+  })
+
+  it('no response carries history: the store keeps none, and sends and GetTask ask for none (§3.2 item 2)', async () => {
+    // 'canary-hold' waits until cancelled, so CancelTask meets an in-flight task
+    const d = await door(async (q, o, signal, on) => {
+      if (q !== 'canary-hold') return fixtureRun(q, o, signal, on)
+      on('searching')
+      await new Promise((resolve) => signal.addEventListener('abort', resolve))
+      return fixtureRun(q, o, signal, () => {})
+    })
+    const sent = await call(d.port, { body: envelope('SendMessage', ask('canary-history')) })
+    const id = (JSON.parse(sent.body) as Json).result.task.id as string
+    const streamed = await call(d.port, { body: envelope('SendStreamingMessage', ask('canary-history')) })
+    const got = await call(d.port, { body: envelope('GetTask', { id }) })
+    let cancel: Promise<Reply> | undefined
+    const held = await call(d.port, {
+      body: envelope('SendStreamingMessage', ask('canary-hold')),
+      onEvent: (e) => { if (e.result.statusUpdate?.status.state === 'TASK_STATE_WORKING') cancel = call(d.port, { body: envelope('CancelTask', { id: e.result.statusUpdate.taskId }) }) },
+    })
+    const cancelled = await cancel!
+    expect((JSON.parse(cancelled.body) as Json).result.status.state).toBe('TASK_STATE_CANCELED')
+    for (const body of [sent.body, streamed.body, got.body, held.body, cancelled.body]) {
+      expect(body).not.toContain('"history"')
+      expect(body).not.toContain('canary-history')
+      expect(body).not.toContain('canary-hold')
+    }
   })
 
   it('a refused run ends REJECTED with its data', async () => {

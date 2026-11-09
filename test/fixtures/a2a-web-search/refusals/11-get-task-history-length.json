@@ -1,0 +1,19 @@
+{
+  "name": "A caller historyLength on GetTask",
+  "headers": {
+    "A2A-Version": "1.0"
+  },
+  "request": {
+    "jsonrpc": "2.0",
+    "id": "rpc-r",
+    "method": "GetTask",
+    "params": {
+      "id": "00000000-0000-4000-8000-000000000001",
+      "historyLength": 5
+    }
+  },
+  "error": {
+    "code": -32602,
+    "message": "Invalid params"
+  }
+}

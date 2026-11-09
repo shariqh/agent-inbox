@@ -1,0 +1,54 @@
+{
+  "provider": "searxng",
+  "note": "One usable result: fewer than 3, so the Ollama fallback runs.",
+  "request": {
+    "method": "GET",
+    "path": "/search?q=example+runtime+long-term+support&format=json&categories=general&language=en"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": {
+      "query": "example runtime long-term support",
+      "number_of_results": 0,
+      "results": [
+        {
+          "url": "https://docs.example.com/releases/1",
+          "title": "Example runtime release notes, part 1",
+          "content": "Version 24 of the example runtime entered long-term support on 2025-10-28.",
+          "engine": "mojeek",
+          "engines": [
+            "mojeek"
+          ],
+          "positions": [
+            1
+          ],
+          "score": 3.0,
+          "category": "general",
+          "template": "default.html",
+          "parsed_url": [
+            "https",
+            "docs.example.com",
+            "/releases/1",
+            "",
+            "",
+            ""
+          ],
+          "publishedDate": null,
+          "thumbnail": "",
+          "img_src": "",
+          "priority": ""
+        }
+      ],
+      "answers": [],
+      "corrections": [],
+      "infoboxes": [],
+      "suggestions": [
+        "example runtime release schedule"
+      ],
+      "unresponsive_engines": []
+    }
+  }
+}

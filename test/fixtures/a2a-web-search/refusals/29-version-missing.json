@@ -1,0 +1,24 @@
+{
+  "name": "No A2A-Version header",
+  "headers": {},
+  "request": {
+    "jsonrpc": "2.0",
+    "id": "rpc-r",
+    "method": "SendMessage",
+    "params": {
+      "message": {
+        "messageId": "msg-r",
+        "role": "ROLE_USER",
+        "parts": [
+          {
+            "text": "When did version 24 of the example runtime enter long-term support?"
+          }
+        ]
+      }
+    }
+  },
+  "error": {
+    "code": -32009,
+    "message": "A2A-Version 1.0 is required"
+  }
+}

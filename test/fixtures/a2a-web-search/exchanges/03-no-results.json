@@ -1,0 +1,76 @@
+{
+  "row": "no-results",
+  "situation": "No results",
+  "exit": 0,
+  "headers": {
+    "A2A-Version": "1.0"
+  },
+  "request": {
+    "jsonrpc": "2.0",
+    "id": "rpc-03",
+    "method": "SendMessage",
+    "params": {
+      "message": {
+        "messageId": "msg-03",
+        "role": "ROLE_USER",
+        "parts": [
+          {
+            "text": "example runtime release with no public notes"
+          }
+        ],
+        "metadata": {
+          "urn:agent-inbox:ext:web-search:v1": {
+            "mode": "sources"
+          }
+        }
+      }
+    }
+  },
+  "response": {
+    "jsonrpc": "2.0",
+    "id": "rpc-03",
+    "result": {
+      "task": {
+        "id": "00000000-0000-4000-8000-000000000001",
+        "contextId": "00000000-0000-4000-8000-000000000002",
+        "status": {
+          "state": "TASK_STATE_COMPLETED",
+          "timestamp": "2026-11-09T18:00:00.000Z"
+        },
+        "artifacts": [
+          {
+            "artifactId": "00000000-0000-4000-8000-000000000003",
+            "name": "web-search",
+            "parts": [
+              {
+                "text": "0 sources",
+                "mediaType": "text/plain"
+              },
+              {
+                "data": {
+                  "code": 0,
+                  "mode": "sources",
+                  "untrusted": true,
+                  "providers": [
+                    "searxng"
+                  ],
+                  "fallback": false,
+                  "cache": "miss",
+                  "sources": [],
+                  "warnings": [],
+                  "ms": {
+                    "queued": 0,
+                    "search": 640,
+                    "model": 0,
+                    "check": 0
+                  }
+                },
+                "mediaType": "application/json"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,77 @@
+{
+  "row": "stream-refused",
+  "situation": "Streaming: refused by the screen",
+  "exit": 11,
+  "headers": {
+    "A2A-Version": "1.0"
+  },
+  "request": {
+    "jsonrpc": "2.0",
+    "id": "rpc-12",
+    "method": "SendStreamingMessage",
+    "params": {
+      "message": {
+        "messageId": "msg-12",
+        "role": "ROLE_USER",
+        "parts": [
+          {
+            "text": "why does mail to person@mail.invalid bounce"
+          }
+        ]
+      }
+    }
+  },
+  "events": [
+    {
+      "jsonrpc": "2.0",
+      "id": "rpc-12",
+      "result": {
+        "task": {
+          "id": "00000000-0000-4000-8000-000000000001",
+          "contextId": "00000000-0000-4000-8000-000000000002",
+          "status": {
+            "state": "TASK_STATE_SUBMITTED",
+            "timestamp": "2026-11-09T18:00:00.000Z"
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": "rpc-12",
+      "result": {
+        "statusUpdate": {
+          "taskId": "00000000-0000-4000-8000-000000000001",
+          "contextId": "00000000-0000-4000-8000-000000000002",
+          "status": {
+            "state": "TASK_STATE_REJECTED",
+            "message": {
+              "messageId": "00000000-0000-4000-8000-000000000003",
+              "contextId": "00000000-0000-4000-8000-000000000002",
+              "taskId": "00000000-0000-4000-8000-000000000001",
+              "role": "ROLE_AGENT",
+              "parts": [
+                {
+                  "text": "rejected: screen",
+                  "mediaType": "text/plain"
+                },
+                {
+                  "data": {
+                    "code": 11,
+                    "status": "rejected",
+                    "reason": "screen",
+                    "classes": [
+                      "email-address"
+                    ]
+                  },
+                  "mediaType": "application/json"
+                }
+              ]
+            },
+            "timestamp": "2026-11-09T18:00:00.000Z"
+          }
+        }
+      }
+    }
+  ]
+}

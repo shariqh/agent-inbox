@@ -1,0 +1,93 @@
+{
+  "row": "sources-only",
+  "situation": "Sources only: an answer was asked for, but this copy has no model",
+  "exit": 10,
+  "headers": {
+    "A2A-Version": "1.0"
+  },
+  "request": {
+    "jsonrpc": "2.0",
+    "id": "rpc-04",
+    "method": "SendMessage",
+    "params": {
+      "message": {
+        "messageId": "msg-04",
+        "role": "ROLE_USER",
+        "parts": [
+          {
+            "text": "When did version 24 of the example runtime enter long-term support?"
+          }
+        ]
+      }
+    }
+  },
+  "response": {
+    "jsonrpc": "2.0",
+    "id": "rpc-04",
+    "result": {
+      "task": {
+        "id": "00000000-0000-4000-8000-000000000001",
+        "contextId": "00000000-0000-4000-8000-000000000002",
+        "status": {
+          "state": "TASK_STATE_COMPLETED",
+          "timestamp": "2026-11-09T18:00:00.000Z"
+        },
+        "artifacts": [
+          {
+            "artifactId": "00000000-0000-4000-8000-000000000003",
+            "name": "web-search",
+            "parts": [
+              {
+                "text": "1 source",
+                "mediaType": "text/plain"
+              },
+              {
+                "data": {
+                  "code": 10,
+                  "mode": "answer",
+                  "untrusted": true,
+                  "providers": [
+                    "searxng"
+                  ],
+                  "fallback": false,
+                  "cache": "miss",
+                  "sources": [
+                    {
+                      "n": 1,
+                      "url": "https://docs.example.com/releases/1",
+                      "host": "docs.example.com",
+                      "title": "Example runtime release notes, part 1",
+                      "snippet": "Version 24 of the example runtime entered long-term support on 2025-10-28.",
+                      "passages": [
+                        "Version 24 entered long-term support on 2025-10-28, and v24.11.0 is the first release in that line."
+                      ],
+                      "publishedAt": "2025-10-28",
+                      "fetchedAt": "2026-11-02T08:00:00Z",
+                      "retrievedAt": "2026-11-09T18:02:11Z",
+                      "provider": "searxng",
+                      "engines": [
+                        "wikipedia"
+                      ],
+                      "pageText": "ollama-fetch",
+                      "suspect": false
+                    }
+                  ],
+                  "warnings": [
+                    "synthesis-off"
+                  ],
+                  "ms": {
+                    "queued": 0,
+                    "search": 640,
+                    "model": 0,
+                    "check": 0
+                  }
+                },
+                "mediaType": "application/json"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

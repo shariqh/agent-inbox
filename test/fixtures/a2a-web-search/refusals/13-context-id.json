@@ -1,0 +1,27 @@
+{
+  "name": "message.contextId",
+  "headers": {
+    "A2A-Version": "1.0"
+  },
+  "request": {
+    "jsonrpc": "2.0",
+    "id": "rpc-r",
+    "method": "SendMessage",
+    "params": {
+      "message": {
+        "messageId": "msg-r",
+        "role": "ROLE_USER",
+        "parts": [
+          {
+            "text": "When did version 24 of the example runtime enter long-term support?"
+          }
+        ],
+        "contextId": "00000000-0000-4000-8000-000000000002"
+      }
+    }
+  },
+  "error": {
+    "code": -32602,
+    "message": "Invalid params"
+  }
+}

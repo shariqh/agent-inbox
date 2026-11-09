@@ -1,0 +1,25 @@
+{
+  "provider": "ollama",
+  "note": "web_fetch rate limited: busy (12) with Retry-After as retryAfterMs when SearXNG returned too few results.",
+  "request": {
+    "method": "POST",
+    "url": "https://ollama.com/api/web_fetch",
+    "headers": {
+      "authorization": "Bearer <placeholder-key>",
+      "content-type": "application/json"
+    },
+    "body": {
+      "url": "https://docs.example.com/releases/1"
+    }
+  },
+  "response": {
+    "status": 429,
+    "headers": {
+      "content-type": "application/json",
+      "retry-after": "30"
+    },
+    "body": {
+      "error": "too many requests"
+    }
+  }
+}

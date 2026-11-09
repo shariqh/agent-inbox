@@ -1,0 +1,16 @@
+{
+  "id": "bidi-override",
+  "note": "A bidirectional override in the title.",
+  "where": "title",
+  "source": {
+    "url": "https://pages.example.org/bidi-override",
+    "title": "Example runtime ‮evil.example‬ notes",
+    "snippet": "Release notes mirror.",
+    "page": "Version 24 entered long-term support in 2025."
+  },
+  "injected": "‮",
+  "foreignUrls": [],
+  "expect": {
+    "suspect": true
+  }
+}

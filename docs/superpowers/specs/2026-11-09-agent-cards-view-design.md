@@ -16,7 +16,8 @@ unslop ([`2026-11-06-unslop-a2a-agent-design.md`](2026-11-06-unslop-a2a-agent-de
 mesh today"; and supersedes unslop §4.5 (b) and request-post §1's "no viewer change" non-goal
 (§10 below).
 **Revised 2026-11-09 after review round 1:** §2.2-§2.6, §3.4, §4.2-§4.7, §5.1, §7, §9, §10 and
-§13 Q3 (now checks on open and Refresh only).
+§13 Q3 (now checks on open and Refresh only). Round 2: the open trigger's exact handlers (§4.5),
+what paints after each trigger, and the `unchecked` state (§2.4).
 
 ---
 
@@ -43,8 +44,9 @@ mesh today"; and supersedes unslop §4.5 (b) and request-post §1's "no viewer c
    `GET /.well-known/agent-card.json` per agent to the URL built from the configured endpoint,
    never a URL from a card. No token, no redirect, no proxy, a size cap and a total deadline
    (3 s on loopback for unslop, 5 s for every request-post check). It never starts or wakes an
-   agent. Checks run only when the Agents home opens and when the human presses Refresh; there is
-   no cadence (§4).
+   agent. Checks run only on an open (booting on the Dashboard, `showAgentsHome()`, or switching
+   to the Dashboard tab; §4.5 lists the handlers) and when the human presses Refresh; there is no
+   cadence (§4).
 6. **The card rule is shared.** The two clients' card checks move into a pure module,
    `src/agent-card.ts`, so the view and the clients cannot disagree on "does this card match"
    (§4.4).
@@ -145,7 +147,8 @@ The page owns only the state labels. Every `reason` and `fix` string comes from
 
 | State | When | Label (page) | `reason` and `fix` (server) | Tone |
 |---|---|---|---|---|
-| `checking` | No check has finished since the viewer read this agent's config | "Checking…" | none | neutral |
+| `unchecked` | No check has run for this record yet: a viewer that just started, a newly enabled agent, or a changed endpoint, with no trigger since | "Not checked yet" | reason "press Refresh" | neutral |
+| `checking` | A check for this agent is running right now | "Checking…" | none | neutral |
 | `up` | The card was fetched and passed the client's checks (§4.4) | unslop "Running"; request-post "Reachable" | none | quiet green |
 | `not-running` | unslop only: the connection was refused | "Not running" | reason "starts on its first call" | neutral grey, **not** an error |
 | `unreachable` | No answer within the deadline, a name that does not resolve, a refused TLS handshake, or HTTP 401 or 403 | "Unreachable" | reason, below | amber |
@@ -230,7 +233,7 @@ One row expanded:
 |---|---|---|
 | A. §2.1's once-a-minute `stat` timer in the viewer process | One failed `stat` a minute, forever | The rule the mesh design accepted. A timer runs even when nobody looks. |
 | B. `fs.watch` on the mesh dir | An open watch handle, platform quirks (macOS FSEvents coalescing, a missing folder) | Fast, but a watch on `~/.agent-inbox` sees every hub write. |
-| **C. Lazy: `lstat` only when a page reads `/api/version` or `/api/mesh/agents`, at most once every 5 s** (recommended) | One failed `lstat` per `/api/version` read (page load, opening the Agents home, after Setup) | No timer and no handle. The page reads `/api/mesh/agents` only while the section is on screen (§4.5), so a closed app does nothing. |
+| **C. Lazy: `lstat` only when a request needs the config, at most once every 5 s** (recommended) | One failed `lstat` per `/api/version` read (at boot, `showAgentsHome()`, opening a session panel, after a Setup install) | No timer and no handle. `/api/mesh/agents` is read only while `/api/version` last carried `mesh`, the Dashboard is the current tab and the window is visible (§4.5), so a closed or hidden app does nothing. |
 
 **Recommendation: C.** It is cheaper than §2.1's exception and needs no timer, which also keeps
 `createViewer` timer-free for the route tests.
@@ -249,8 +252,8 @@ One row expanded:
   `/api/mesh/agents`, or a trigger on `POST /api/mesh/agents/refresh`. No timer, no `fs.watch`.
 - **What it keeps:** for each known key, its endpoint (only when it passes its rule) and, for
   unslop, the profile name. Nothing else from the file reaches a response. A key whose endpoint
-  changed starts a fresh record (`checking`), so a card from the old endpoint is never shown for
-  the new one.
+  changed starts a fresh record (`unchecked`), so a card from the old endpoint is never shown for
+  the new one, and the row asks for Refresh instead of saying "Checking…" until a trigger comes.
 - **What it never reads:** `mesh/tokens/*`, `mesh/wrappers/*` (the unslop profile holds the
   backend URL and key source), `unslop-deny.txt`, and the logs. The one other file it reads is
   unslop's budget (§4.6).
@@ -259,8 +262,13 @@ One row expanded:
 
 `/api/version` gains `mesh: { "agents": <n> }` only when `opts.mesh` is set, the file reads
 present by the rule, and `n` (the count of known agent keys, valid or not) is at least 1. In every
-other case the body is byte-identical to today's. The page reads `/api/version` at load, when the
-Agents home opens and after a Setup install, as today; it adds no read of its own.
+other case the body is byte-identical to today's. The page keeps reading `/api/version` exactly
+where `refreshLiveVersion()` reads it today: at boot (from `initSessionsIndicator()`, on any tab),
+in `showAgentsHome()`, in `openSessionFocus()` and after a Setup install. It adds no read of its
+own. `selectTab('dashboard')` does not re-read it today and still does not: switching to the
+Dashboard tab uses the last known `liveVersion.mesh`. So an agent enabled while the app is open
+appears after the next of those reads (G L, the Sessions line, opening a session panel, a Setup
+install or a reload).
 
 This restores the mesh design's §2.4 (b) and §10.2 in a smaller form: there is no
 `/mesh-view.js` import, because the section lives in `public/agents-home.js`, which is always
@@ -359,22 +367,38 @@ not change. The module is pure: no imports and no I/O.
 
 ### 4.5 When checks run
 
-- **Two triggers only, for both agents.** A check runs when the Agents home opens and when the
-  human presses **Refresh**. There is no interval and no background cadence. "Opens" means the
-  moments the page already re-reads `/api/version` for the Agents home: a page load that lands on
-  the Dashboard, and opening the Agents home (the Dashboard tab, G L, the Sessions line, the Now
-  strip's Working tile). Each card `GET` to request-post goes through the publishing service, so
-  it should happen only when the human looks. unslop's local card follows the same rule, so
-  "checked 1m ago" means the same thing on both rows.
+- **Two triggers only, for both agents:** an **open** and a **Refresh** press. There is no
+  interval and no background cadence. Each card `GET` to request-post goes through the publishing
+  service, so it should happen only when the human looks. unslop's local card follows the same
+  rule, so "checked 1m ago" means the same thing on both rows.
+- **What an open is, exactly.** One helper, `meshOpen()` in `public/app.js`, posts the `open`
+  trigger, and only these handlers call it, each only when the last `/api/version` carried `mesh`:
+  1. **Boot:** once, when the boot's `/api/version` read (`initSessionsIndicator()`'s
+     `refreshLiveVersion()`) resolves with `mesh` and the active tab is the Dashboard. Booting on
+     another tab posts nothing.
+  2. **`showAgentsHome()`** (G L, the Sessions line, the Now strip's Working tile), after its
+     `refreshLiveVersion()` resolves. When it switches tabs through `selectTab('dashboard')`, that
+     call does not post a second time: one navigation, one open.
+  3. **`selectTab('dashboard')` from another tab** (the tab strip, its key), using the last known
+     `liveVersion.mesh`, since this path does not re-read `/api/version` (§3.3). Selecting the
+     Dashboard while it is already the active tab posts nothing.
+
+  An open never fires from a render, a paint, a poll tick, `load()`, `reloadAndPaint()`,
+  `openSessionFocus()` or a Setup install.
 - **The route.** `POST /api/mesh/agents/refresh` with `{ "trigger": "open" }`,
   `{ "trigger": "refresh" }` or `{ "trigger": "refresh", "name": "<key>" }`. It checks the agents,
   waits for the checks to finish (bounded by the deadlines of §4.2, one check per agent at a time)
   and answers `{ "ok": true }`. Any other body is 400; a name that is not configured is 200
   `{ "ok": false, "error": "not configured" }`. An `open` check skips an agent checked in the last
   60 s, so switching tabs back and forth sends nothing new; a `refresh` skips one checked in the
-  last 5 s. The page then calls `reloadAndPaint()`.
+  last 5 s.
+- **What follows each trigger.** Only a **Refresh press** ends in `reloadAndPaint()`, after its
+  POST answers: the human asked, so the human path paints. An **open** paints nothing itself: when
+  its checks finish, the next poll tick reads the new body (a 200 instead of a 304) and paints
+  through `renderIfIdle()` under the normal gates (held pointer, selection, drafts). A row shows
+  `checking` while its check runs, if a tick lands meanwhile.
 - **The read.** The page reads `GET /api/mesh/agents` only when the last `/api/version` carried
-  `mesh`, the Dashboard is the current view and the document is visible. Then it is one more read
+  `mesh`, the Dashboard is the current tab and the document is visible. Then it is one more read
   in the poll tick, a conditional one (§4.7). The read never starts a check; between triggers it
   is a 304.
 - **The page's fallback**, like `messagesBody` for `/api/messages`:
@@ -438,8 +462,9 @@ not shown: reading it would need an authenticated call.
 - `where` is `local` (unslop), `tailnet` (request-post's `https://` form) or `ssh-tunnel`
   (request-post's `http://127.0.0.1:<port>` fallback). `reason` and `fix` are the server's fixed
   words of §2.4, or `null`.
-- Nothing is written to the hub or to disk. A viewer restart starts every agent at `checking`
-  until the next trigger.
+- Nothing is written to the hub or to disk. A viewer restart starts every agent at `unchecked`
+  until the next trigger. `state` is `checking` only while a check is actually running; a record
+  is never left at `checking` without one.
 
 ---
 
@@ -482,7 +507,7 @@ not shown: reading it would need an authenticated call.
 | Invariant | How it holds |
 |---|---|
 | One attention predicate; nothing mesh reaches a badge, count, tab, rail or dock | The section reads only `lastData.mesh`. It never touches `public/attention.js` inputs. The DOM test compares the attention surfaces with the section drawn against the same seed without it (the `surfaces()` check in `test/dom/agents-home.test.ts`). |
-| Two render entries | The section paints inside `agentsHome.paint()`, which `renderDashboardAmbient` calls from both `load()` and `reloadAndPaint()`. Refresh ends in `reloadAndPaint()`. Toggling a row repaints its own region from the last model, as the folds do. |
+| Two render entries | The section paints inside `agentsHome.paint()`, which `renderDashboardAmbient` calls from both `load()` and `reloadAndPaint()`. Only a Refresh press ends in `reloadAndPaint()`; an open's result arrives on the next poll tick and paints through `renderIfIdle()` under the normal gates. Toggling a row repaints its own region from the last model, as the folds do. |
 | An idle tick paints nothing (#298) | The read joins `lastData.reads` by identity; the section's open state, the open rows and the open JSON blocks join `agentsHome.state()`, which is in `frameInputs()`. No check runs without a human trigger, and a 304 resolves to the same object, so nothing paints. A skipped read keeps the last body, so leaving the Dashboard changes no read either. |
 | A held pointer, scroll or selection is never a suspension | Rows update in place keyed by `key`, each part rewritten only when its own text changes. The JSON `<pre>` is rewritten only when `cardJson` changes, so a selection inside it survives polls. |
 | The Agents view is always on | Unchanged. The section is part of it and is simply absent when the mesh is off. |
@@ -534,17 +559,27 @@ V4 can be dropped without changing V1–V3.
   later; the request carries no `Authorization`, `Origin` or cookie; one check per agent at a time;
   `GET /api/mesh/agents` alone never opens a connection; an `open` trigger skips an agent checked
   in the last 60 s and a `refresh` one checked in the last 5 s; refresh's 400 and `{ok:false}`; a
-  good card then a failure gives `unreachable` with `lastSeen`, never `up`; a changed endpoint
-  resets to `checking`. `test/mesh.test.ts`'s `/api/version` case becomes "carries `mesh` only
-  with a known agent".
+  good card then a failure gives `unreachable` with `lastSeen`, never `up`; a new viewer starts
+  every agent `unchecked`; **a changed endpoint, followed by `GET /api/mesh/agents` reads and no
+  trigger, stays `unchecked` (never `checking`)**; `checking` is reported only while a held fake
+  server keeps a check open, and ends with the check. `test/mesh.test.ts`'s `/api/version` case
+  becomes "carries `mesh` only with a known agent".
 - **V3, `test/dom/mesh-agents.test.ts`** (`// @vitest-environment jsdom`, the harness):
   - with no `mesh` key, the boot and poll request lists equal `test/dom/agents-home.test.ts`'s
     `BOOT_REQUESTS`, no refresh is posted and no section exists (that file is unchanged and stays
     green);
   - with the key, the section draws both rows with the words of §2.4 and the server's `reason`
-    and `fix`; opening the Agents home posts one `open` trigger; the read happens only on the
-    Dashboard with the document visible, and leaving the Dashboard stops it while keeping the last
-    body;
+    and `fix`; the read happens only on the Dashboard with the document visible, and leaving the
+    Dashboard stops it while keeping the last body;
+  - **the open trigger, one per navigation:** booting on the Dashboard posts one `open` once the
+    boot's `/api/version` carries `mesh`; booting on another tab posts none; `selectTab('dashboard')`
+    from another tab posts one; `showAgentsHome()` from another tab posts exactly one (not a second
+    from its `selectTab` call), and from the Dashboard posts one; selecting the Dashboard while it
+    is active posts none; `reloadAndPaint()`, a poll tick, `openSessionFocus()` and a Setup install
+    post none; with no `mesh` in the last `/api/version`, no navigation posts anything;
+  - **an open paints through the poll:** after an `open` POST answers, no `reloadAndPaint()` runs;
+    the next poll tick reads the new body (200) and the rows change through `renderIfIdle()`; a
+    held press or a selection in the section defers that paint as for any other tick;
   - **the section is global:** it shows the same rows under each state filter (Needs you, Working)
     and under a project and agent lens that hides every session; and it shows in the zero-sessions
     empty state, under the empty text;
@@ -557,7 +592,7 @@ V4 can be dropped without changing V1–V3.
   - an idle tick (a 304) changes no node; a selection inside an open Card JSON survives a Refresh
     whose result changed only `checkedAt`;
   - Refresh sits in the header row outside the disclosure button: pressing it does not toggle the
-    section; it posts `refresh`, then repaints through `reloadAndPaint()`;
+    section; it posts `refresh`, then (and only then) repaints through `reloadAndPaint()`;
   - toggles are window-local and in `frameInputs()`;
   - no `public/*.js` file contains the guarded names (the existing guard, run unchanged).
 - **V4:** the usage line with today's date, zero for yesterday's, hidden for a symlink or a
@@ -635,7 +670,8 @@ with:
 > `mesh: { agents: n }` only when the file reads present and names an agent this build knows. It
 > fetches each agent's card from the configured endpoint only (never a URL from a card), with no
 > token, no redirect, no proxy, a 64 KiB cap and one total deadline (3 s for unslop, 5 s for every
-> request-post check), only when the Agents home opens or the human presses Refresh; reading
+> request-post check), only on the open trigger (boot on the Dashboard, `showAgentsHome()`,
+> `selectTab('dashboard')` from another tab) or a Refresh press; reading
 > `/api/mesh/agents` never starts a check. It never starts an agent and never opens `mesh/tokens`
 > or `mesh/wrappers`. Its user-facing `reason` and `fix` words live in `src/mesh-agents.ts`, so the
 > text guard on `src/viewer*.ts`, `public/*.js` and `electron/*` stays as it is.

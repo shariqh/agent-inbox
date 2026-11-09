@@ -7,8 +7,8 @@ paths:
   - "src/agent-card.ts"
   - "src/mesh-agents.ts"
   - "public/agents-home.js"
-  - "packages/mesh/src/*.ts"
-applyTo: "src/mesh-config.ts,src/meshctl.ts,src/unslop-client.ts,src/request-post-client.ts,src/agent-card.ts,src/mesh-agents.ts,public/agents-home.js,packages/mesh/src/*.ts"
+  - "packages/mesh/src/**/*.ts"
+applyTo: "src/mesh-config.ts,src/meshctl.ts,src/unslop-client.ts,src/request-post-client.ts,src/agent-card.ts,src/mesh-agents.ts,public/agents-home.js,packages/mesh/src/**/*.ts"
 ---
 
 # Agent mesh (M1)
@@ -128,7 +128,8 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
   `tsconfig.json`, `vitest.config.ts` and `test/dead-exports.test.ts` do not reach it, no
   staging, pruning or packaging script copies it, and no release workflow builds it. The
   only workflow that does is the `mesh-package` job in `.github/workflows/ci.yml`
-  (ubuntu, Node 24: `npm ci`, typecheck, tests).
+  (ubuntu, Node 24: `npm ci`, typecheck, tests). Its one runtime dependency,
+  `@a2a-js/sdk` pinned to exactly 1.3.0 (which brings `jose`), is in that lockfile only.
 - **U1 (pure modules, no network, no writes):** `fidelity.ts` (§6.1-§6.2: output
   sentences are aligned to input sentences by their words; protected values keep their
   order inside an aligned sentence, and one that crossed sentences must keep its own
@@ -162,9 +163,11 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
   class 0/10/11/12/13; a log callback that gets sizes, timings, classes and check
   results, never text or a matched value; clock, random and transport injectable).
 - **U2b (the agent process):** `a2a.ts`, `agent.ts`, `files.ts` and the `wrap.ts` entry.
-  Build with `npm ci && npm run build` (Node 24) in `packages/mesh`, then run
+  Build with `npm ci && npm run build` (Node 24) in `packages/mesh`, re-run after a pull
+  that changes its lockfile, then run
   `node packages/mesh/dist/wrap.js --agent openai-compatible --profile unslop` (the
-  package's `agent-inbox-wrap` bin). Exit 0 when it stops, 1 when it refuses to start,
+  package's `agent-inbox-wrap` bin). `wrap.ts` loads each agent with `await import()` for
+  its own `--agent`, so unslop's start never loads `@a2a-js/sdk`. Exit 0 when it stops, 1 when it refuses to start,
   4 on a usage error; it prints only this package's own fixed messages (`ConfigError`),
   and anything else as "internal error", so no file content or key reaches its output.
   `meshctl enable --unslop` (U3a, below) writes its switch and files, and
@@ -189,8 +192,9 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
     kind, model, `rulesSha256`, check results and refusal classes; never text, a matched
     value, the token or the API key).
   - **A2A (design §7.3, §8.3).** A hand-rolled JSON-RPC subset of A2A 1.0 on `node:http`
-    (no `@a2a-js/sdk`: its server adapters need Express and carry push-notification and
-    database surfaces this agent would have to disable). `GET /.well-known/agent-card.json`
+    (written before the package had `@a2a-js/sdk`; the SDK's Express adapters are not
+    needed, but its core `./server` entry is, as web search's W1 below shows. Moving
+    unslop onto it is web search's optional slice W8). `GET /.well-known/agent-card.json`
     needs no token; `POST /` takes `SendMessage`, `SendStreamingMessage`, `GetTask` and
     `CancelTask` with `A2A-Version: 1.0` and `Authorization: Bearer <token>`
     (`timingSafeEqual` after a length check). Any `Origin` header, a `Host` other than
@@ -310,6 +314,54 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
   (through `meshctl status`) and `packages/mesh/test/mesh-config.test.ts`. Change the rule
   in both places and add a case there.
 - **Run its tests:** `cd packages/mesh && fnm exec --using=24 npm ci && npm run typecheck && npm test`.
+- **Web search W1: the SDK spike (#505, #498; web search design §3, §4.1, §13).** The
+  third agent, `--agent web-search --profile web-search`, the first on `@a2a-js/sdk`.
+  Nothing starts it yet (`meshctl enable --web-search` and `meshctl web-search` are W5),
+  and it answers every query from one fixed result until the provider (W3) and the answer
+  (W4) land.
+  - `web-search/front-door.ts` is its own `node:http` front door (it shares no code with
+    `a2a.ts`): `127.0.0.1` only, any `Origin` refused, `Host` exactly `127.0.0.1:<port>`,
+    the bearer token compared with `timingSafeEqual` after a length check, `A2A-Version`
+    `1.0` or `1.0.<n>` (else -32009; the SDK is always handed `1.0`: its core transport
+    checks no version), a 16 KiB body, a 10 s read limit (Node checks it on a sweep, every
+    second here rather than its default 30 s) and at most 16 open connections. It then **rebuilds** the
+    JSON-RPC request from an allowlist in camelCase (`SendMessage` and
+    `SendStreamingMessage`: one `ROLE_USER` text part, the extension's §4.2 fields,
+    `returnImmediately: false` and `acceptedOutputModes`; `GetTask` and `CancelTask`:
+    `id`). Any other key at any level, in either spelling (the SDK's decoders accept
+    `task_id`, `reference_task_ids`, `return_immediately`, … and `params.tenant`), and every
+    other method is refused with -32602 before the SDK. The rebuilt object goes to the SDK's
+    `JsonRpcTransportHandler` over `DefaultRequestHandler`, with a task store owned per token
+    that keeps the last 64 finished tasks (the SDK's `InMemoryTaskStore` cannot evict).
+  - `web-search/agent.ts`: the card (§4.1: nothing per copy but the interface URL), the
+    `mesh.json` gate (`agents.web-search.endpoint`), the token file
+    `<mesh dir>/mesh/tokens/web-search`, the one-minute tick and 30-minute idle exit as
+    unslop's, and a task log `logs/web-search-YYYY-MM-DD.log` (id, query length and word
+    count, mode, outcome, time; never the query). The executor **never rejects**: the SDK
+    would `console.error` the error and put its message in the `FAILED` status it returns,
+    so a stage that throws ends the task `FAILED` "internal" here instead. At start every
+    `console` method writes one fixed `sdk: <method>` line, `uncaughtException` and
+    `unhandledRejection` write `agent: uncaught <built-in class>`, fail every open task and
+    exit 1, and the default `warning` listener is replaced by `agent: warning <known name>`.
+  - `a2a-client.ts`: `identityFetch`, the fetch the SDK client uses (over `node:http`: no
+    redirects, no proxy; any 3xx, and any URL other than the configured endpoint's `/` and
+    card path, is refused, so a card's interface URL cannot send the token elsewhere). The
+    card request carries a fresh `A2A-Mesh-Challenge` nonce, and the token goes out only
+    on a keep-alive connection whose answer matched: `A2A-Mesh-Proof` =
+    HMAC-SHA256(token, `"web-search/v1\n" + nonce`). A request handed a new connection sends
+    nothing on it, closes it and proves again first, so after the agent exits a squatter on
+    its port gets neither the token nor the query, even from a long-lived client.
+    `resolveCard` returns the checked card and `cardHash`: the SHA-256 of the SDK's JCS form
+    of the card with every `supportedInterfaces[].url` removed.
+  - Tests (`packages/mesh/test/web-search.test.ts`): the SDK's client through
+    `identityFetch` and a Node-core client drive all four methods over loopback; every
+    allowlist, Origin, Host, token and version refusal goes through the real server with a
+    spy on `JsonRpcTransportHandler.handle`; squatter, redirect and foreign-URL cases never
+    see the token; child processes (run from source through `test/ts-hooks.mjs`) prove
+    unslop's start loads no SDK module and that a canary query reaches neither stderr nor a
+    log when a stage throws, a provider error carries `?q=`, `console` is called, a warning
+    is emitted, a timer callback throws or a rejection goes unhandled. The conformance
+    fixtures recorded from this server are W2's.
 - **Bench S11 (U4, unslop design §9.1, §9.3).** `packages/mesh/bench/s11/`, compiled by
   `tsconfig.bench.json` into `dist/bench/` and run as `npm run bench -- run|score`; Node
   core plus the package's own `files.ts` and `mesh-config.ts`, never built by the

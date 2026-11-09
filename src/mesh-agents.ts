@@ -5,13 +5,14 @@
 // /api/mesh/agents (one lstat per 5 s at most; no timer, no fs.watch), and fetches each
 // configured agent's card from the configured endpoint only, on a trigger: an open or a
 // Refresh. It never starts an agent, never sends a token and never opens mesh/tokens or
-// mesh/wrappers. Every user-facing reason and fix lives here, so no viewer, page or
+// mesh/wrappers; the one other file it reads is unslop's budget, when unslop is checked. Every user-facing reason and fix lives here, so no viewer, page or
 // Electron file names the clients or the command (test/mesh.test.ts's text guard).
-import { lstatSync } from 'node:fs'
+import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from 'node:fs'
 import { request as httpRequest } from 'node:http'
 import type { IncomingMessage } from 'node:http'
 import { request as httpsRequest } from 'node:https'
 import type { LookupFunction } from 'node:net'
+import { join } from 'node:path'
 import { cardJson, checkCard, summarizeCard } from './agent-card.js'
 import { loopbackPort, meshFile, readMesh, requestPostEndpoint } from './mesh-config.js'
 
@@ -19,6 +20,7 @@ type Agent = 'unslop' | 'request-post'
 type State = 'unchecked' | 'checking' | 'up' | 'not-running' | 'unreachable' | 'not-a-card' | 'mismatch' | 'invalid'
 type Where = 'local' | 'tailnet' | 'ssh-tunnel' | null
 type Shown = { summary: ReturnType<typeof summarizeCard>; json: string }
+type Usage = { date: string; tasks: number; modelMs: number }
 type Result = { state: State; reason: string | null; fix: string | null; checkedAt: number | null; card: Shown | null }
 
 const AGENTS: readonly Agent[] = ['unslop', 'request-post']
@@ -29,6 +31,46 @@ const SKIP_MS = { open: 60_000, refresh: 5_000 }
 const FIX: Record<Agent, string> = { unslop: 'rebuild packages/mesh', 'request-post': 'update agent-inbox or the service' }
 const UNCHECKED: Result = { state: 'unchecked', reason: 'press Refresh', fix: null, checkedAt: null, card: null }
 const OFF = { on: false, agents: [] }
+const BUDGET_MAX = 4 * 1024
+
+/** YYYY-MM-DD in local time, as packages/mesh writes the budget's date. */
+function localDate(ms: number): string {
+  const d = new Date(ms)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+const count = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0
+
+/**
+ * unslop's own budget file (§4.6), read only: a regular file this user owns, never through a
+ * symlink, at most 4 KiB, exactly `date`, `tasks` and `modelMs` of the right types. Anything
+ * else, a missing file included, is null and hides the line.
+ */
+function readUsage(file: string): Usage | null {
+  let fd: number
+  try {
+    fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+  } catch {
+    return null
+  }
+  try {
+    const s = fstatSync(fd)
+    if (!s.isFile() || s.size > BUDGET_MAX || (process.getuid && s.uid !== process.getuid())) return null
+    // one bounded read from the checked descriptor, so a file that grows after fstat is still refused
+    const buf = Buffer.alloc(BUDGET_MAX + 1)
+    const size = readSync(fd, buf, 0, buf.length, 0)
+    if (size > BUDGET_MAX) return null
+    const doc: unknown = JSON.parse(buf.toString('utf8', 0, size))
+    if (!doc || typeof doc !== 'object' || Array.isArray(doc) || Object.keys(doc).sort().join() !== 'date,modelMs,tasks') return null
+    const { date, tasks, modelMs } = doc as Record<string, unknown>
+    if (typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date) || !count(tasks) || !Number.isInteger(tasks) || !count(modelMs)) return null
+    return { date, tasks, modelMs }
+  } catch {
+    return null
+  } finally {
+    closeSync(fd)
+  }
+}
 
 interface Rec {
   name: Agent
@@ -36,6 +78,7 @@ interface Rec {
   profile: string | null
   result: Result
   good: { at: number; card: Shown } | null
+  usage: Usage | null
   running: Promise<void> | null
 }
 
@@ -137,6 +180,7 @@ function fetchCard(name: Agent, endpoint: string, lookup: LookupFunction | undef
 export function meshAgents(opts: MeshAgentsOpts): MeshAgents {
   const now = opts.now ?? Date.now
   const file = meshFile(opts.dir)
+  const budgetFile = join(opts.dir, 'mesh', 'unslop-budget.json')
   let statAt = -Infinity
   let identity: string | undefined
   let config: Config | null = null
@@ -168,7 +212,7 @@ export function meshAgents(opts: MeshAgentsOpts): MeshAgents {
       const profile = name === 'unslop' && typeof named === 'string' && /^[a-z0-9][a-z0-9-]{0,39}$/.test(named) ? named : null
       const old = config?.recs.get(name)
       const rec: Rec = old && old.endpoint === endpoint ? old : {
-        name, endpoint, profile, good: null, running: null,
+        name, endpoint, profile, good: null, usage: null, running: null,
         result: endpoint ? UNCHECKED : { state: 'invalid', reason: null, fix: 'run npm run meshctl -- status', checkedAt: null, card: null },
       }
       rec.profile = profile
@@ -185,13 +229,15 @@ export function meshAgents(opts: MeshAgentsOpts): MeshAgents {
         const at = now()
         if (result.state === 'up' && result.card) rec.good = { at, card: result.card }
         rec.result = { ...result, checkedAt: at }
+        // read when unslop is checked, so a read between triggers repaints nothing (§4.6)
+        if (rec.name === 'unslop') rec.usage = readUsage(budgetFile)
         rec.running = null
       })
     }
     return rec.running ?? Promise.resolve()
   }
 
-  function view(rec: Rec) {
+  function view(rec: Rec, today: string) {
     const r = rec.result
     const iso = (at: number | null) => (at === null ? null : new Date(at).toISOString())
     return {
@@ -202,6 +248,8 @@ export function meshAgents(opts: MeshAgentsOpts): MeshAgents {
       cardJson: r.card?.json ?? null,
       // a failure never reports the last good card as current (§4.7)
       lastSeen: rec.good && r.state !== 'up' ? { at: iso(rec.good.at), card: rec.good.card.summary } : null,
+      // another day's counts read as zero for today; no file, or a refused one, sends no key
+      ...(rec.usage ? { usage: rec.usage.date === today ? rec.usage : { date: today, tasks: 0, modelMs: 0 } } : {}),
     }
   }
 
@@ -213,7 +261,7 @@ export function meshAgents(opts: MeshAgentsOpts): MeshAgents {
     body: () => {
       const cfg = read()
       if (!cfg) return OFF
-      return { on: true, agents: [...cfg.recs.values()].sort((a, b) => a.name.localeCompare(b.name)).map(view), others: cfg.others }
+      return { on: true, agents: [...cfg.recs.values()].sort((a, b) => a.name.localeCompare(b.name)).map((rec) => view(rec, localDate(now()))), others: cfg.others }
     },
     trigger: async (trigger, name) => {
       const recs = [...(read()?.recs.values() ?? [])].filter((rec) => name === undefined || rec.name === name)

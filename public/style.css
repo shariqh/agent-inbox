@@ -2123,7 +2123,7 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
 /* the Mesh agents section (agent cards view V3): global, never an ask, so amber
    (--app-warning) for a card it cannot use and never the attention colour; no motion */
 .mesh-agents { margin-top: 16px; padding-top: 10px; border-top: 1px solid var(--app-border); }
-.ma-body[hidden], .ma-stale[hidden], .ma-others[hidden], .ma-fix[hidden], .ma-details[hidden], .ma-json[hidden] { display: none; }
+.ma-body[hidden], .ma-stale[hidden], .ma-others[hidden], .ma-fix[hidden], .ma-usage[hidden], .ma-details[hidden], .ma-json[hidden] { display: none; }
 .ma-head { display: flex; align-items: center; gap: 10px; }
 .ma-toggle { padding: 0; border: 0; background: none; color: var(--app-text); font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; }
 .ma-toggle::after { margin-left: 6px; color: var(--app-text-soft); content: "▸"; }
@@ -2141,8 +2141,8 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
 .ma-name { font-weight: 700; }
 .ma-status { color: var(--app-muted); }
 .ma-row.ma-tone-amber .ma-status, .ma-fix { color: var(--app-warning); }
-.ma-facts, .ma-fix, .ma-details { margin-left: 16px; }
-.ma-facts { color: var(--app-text-soft); font-size: 11.5px; }
+.ma-facts, .ma-usage, .ma-fix, .ma-details { margin-left: 16px; }
+.ma-facts, .ma-usage { color: var(--app-text-soft); font-size: 11.5px; }
 .ma-fix { font-size: 11.5px; }
 .ma-lines { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 8px 0 0; }
 .ma-lines dt { color: var(--app-text-soft); font-weight: 600; }

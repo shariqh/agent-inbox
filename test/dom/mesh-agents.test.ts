@@ -861,7 +861,7 @@ describe('the Mesh agents section (agent cards view V3)', () => {
         expect(rule).toMatch(new RegExp(`${edge} center / 28px 100% no-repeat local`))
         expect(rule).toMatch(new RegExp(`${edge} center / 14px 100% no-repeat scroll`))
       }
-      expect(css.slice(css.indexOf('.ma-card {'), css.indexOf('}', css.indexOf('.ma-card {')))).toContain('width: min(232px, 78vw);')
+      expect(css.slice(css.indexOf('.ma-card {'), css.indexOf('}', css.indexOf('.ma-card {')))).toContain('width: min(232px, 78cqi);')
       expect(css).toContain('.ma-card[aria-current="true"] { border-color: var(--app-border-strong); }')
       const mesh = css.slice(css.indexOf('.ma-body[hidden]'), css.indexOf('.ma-lines {'))
       expect(mesh).not.toMatch(/transition|animation|scroll-behavior/)

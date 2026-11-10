@@ -2159,8 +2159,9 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
 /* a fixed size, so the strip never changes height as text changes; every line clamps to one */
 .ma-card {
   display: flex;
-  /* 232px; only in a very narrow window does 78vw win, so the next card still peeks */
-  width: min(232px, 78vw);
+  /* 232px, narrowed against the Dashboard's operations-desk container (not the viewport,
+     which also counts the padding around the strip) so the next card still peeks */
+  width: min(232px, 78cqi);
   height: 116px;
   box-sizing: border-box;
   flex-direction: column;

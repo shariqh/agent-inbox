@@ -112,8 +112,8 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   by `mesh.json` name, keyed by the server's `key`, each holding one native
   `<button class="ma-card">`, updated in place (never rebuilt), so the strip's horizontal scroll
   position, focus and a selection survive polls. A card is a fixed 232 by 116 px
-  (`min(232px, 78vw)`, with no `@media` rule: only a window under about 300px is narrower than
-  232px at 78vw, so the next card always peeks) and every line clamps to one with an
+  (`min(232px, 78cqi)` against the `.dashboard`'s `operations-desk` container, with no
+  `@media` rule, so in a narrow window the next card still peeks) and every line clamps to one with an
   ellipsis: the state dot and name; the state word with the server's `reason`; the `fix` in
   amber; where it runs (Local, Remote · tailnet, Remote · SSH tunnel, never a host or port) with
   the version and "seen 2h ago" for the last good card; unslop's usage line. No skill count,

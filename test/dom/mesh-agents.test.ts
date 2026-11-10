@@ -14,7 +14,7 @@ import { insertItem, recordActivityCall, upsertActivity, upsertBoard } from '../
 import { cardJson, summarizeCard } from '../../src/agent-card.js'
 import type { MeshAgents } from '../../src/mesh-agents.js'
 import { meshRows } from '../../public/mesh-section.js'
-import { advanceClock, badgeCount, bootApp, click, freshDb, navigateToHash, pollTick, rows, settle, showInbox, tabCount, useDomTest } from './harness.js'
+import { advanceClock, attachStylesheet, badgeCount, bootApp, click, freshDb, navigateToHash, pollTick, rows, settle, showInbox, tabCount, useDomTest } from './harness.js'
 import type { ViewerBridge } from './harness.js'
 
 useDomTest()
@@ -109,23 +109,23 @@ const posted = (bridge: ViewerBridge) => bridge.posts.filter((p) => p.url === '/
   .map((p) => JSON.parse(String(p.init?.body)) as Json)
 const meshReads = (log: string[]) => log.filter((entry) => entry === 'GET /api/mesh/agents').length
 const section = () => document.querySelector<HTMLElement>('.agents-home .mesh-agents')
-const meshRow = (name: string) => [...document.querySelectorAll<HTMLElement>('.mesh-agents .ma-row')]
+const meshRow = (name: string) => [...document.querySelectorAll<HTMLElement>('.mesh-agents .ma-card')]
   .find((el) => el.querySelector('.ma-name')?.textContent === name) ?? null
-const shown = () => [...document.querySelectorAll<HTMLElement>('.mesh-agents .ma-row')].map((el) => [
+const shown = () => [...document.querySelectorAll<HTMLElement>('.mesh-agents .ma-card')].map((el) => [
   el.querySelector('.ma-name')?.textContent, el.querySelector('.ma-status')?.textContent,
   el.querySelector('.ma-facts')?.textContent, el.querySelector<HTMLElement>('.ma-fix')?.hidden ? '' : el.querySelector('.ma-fix')?.textContent,
 ])
 const tab = (id: string) => click(document.querySelector(`.tab[data-tab="${id}"]`))
 const UP_ROWS = [
-  ['request-post', 'Reachable', 'Remote · tailnet · v0.0.0-fixture · A2A 1.0 · 2 skills', ''],
-  ['unslop', 'Not running · starts on its first call', 'Local · 127.0.0.1:4420 · v0.3.1 · seen 2h ago · A2A 1.0 · 1 skill', ''],
+  ['request-post', 'Reachable', 'Remote · tailnet · v0.0.0-fixture', ''],
+  ['unslop', 'Not running · starts on its first call', 'Local · v0.3.1 · seen 2h ago', ''],
 ]
-// cards view V5c1: pressing a row opens the agent tab; its page holds the details
+// cards view V5c1: pressing a card (V5c2) opens the agent tab; its page holds the details
 const agentTab = () => document.querySelector<HTMLElement>('#tabs .tab[data-tab="agent"]')!
 const page = () => document.getElementById('agentPage')!
 const activeTab = () => document.querySelector('#tabs .tab[aria-selected="true"]')?.getAttribute('data-tab')
 async function openAgent(name: string): Promise<void> {
-  click(meshRow(name)?.querySelector('.ma-row-toggle'))
+  click(meshRow(name))
   await settle()
 }
 function openJson(): void {
@@ -172,7 +172,7 @@ describe('the Mesh agents section (agent cards view V3)', () => {
     expect(meshReads(again.log)).toBe(0)
   })
 
-  it('draws both rows with the state words and the server’s reason and fix, read only on a visible Dashboard', async () => {
+  it('draws both cards with the state words and the server’s reason and fix, read only on a visible Dashboard', async () => {
     const { log, s } = await boot()
     await pollTick()
     await settle()
@@ -189,7 +189,7 @@ describe('the Mesh agents section (agent cards view V3)', () => {
     await pollTick()
     expect(shown()).toEqual([
       ['request-post', 'Unreachable · does not resolve (is this Mac on the tailnet?)', 'Remote · tailnet', ''],
-      ['unslop', 'Card does not match this build · no unslop skill', 'Local · 127.0.0.1:4420 · v0.3.1 · A2A 1.0 · 1 skill', 'Fix: rebuild packages/mesh'],
+      ['unslop', 'Card does not match this build · no unslop skill', 'Local · v0.3.1', 'Fix: rebuild packages/mesh'],
     ])
     expect(meshRow('unslop')?.classList.contains('ma-tone-amber')).toBe(true)
 
@@ -334,8 +334,8 @@ describe('the Mesh agents section (agent cards view V3)', () => {
     expect(loads()).toBe(before)
     expect(shown()).toEqual(UP_ROWS)
 
-    // a press held across that tick keeps the rows; the tick after it paints
-    const pressed = meshRow('unslop')!.querySelector('.ma-row-toggle')!
+    // a press held across that tick keeps the cards; the tick after it paints
+    const pressed = meshRow('unslop')!
     pointer(pressed, 'pointerdown')
     await vi.advanceTimersByTimeAsync(300)
     expect(loads()).toBe(before + 1)
@@ -349,7 +349,7 @@ describe('the Mesh agents section (agent cards view V3)', () => {
     document.getSelection()!.removeAllRanges()
     document.getSelection()!.addRange(range)
     await pollTick()
-    expect(shown()[1]).toEqual(['unslop', 'Running', 'Local · 127.0.0.1:4420 · v0.3.1 · A2A 1.0 · 1 skill', ''])
+    expect(shown()[1]).toEqual(['unslop', 'Running', 'Local · v0.3.1', ''])
     expect([name.isConnected, String(document.getSelection())]).toEqual([true, 'request'])
   })
 
@@ -361,7 +361,7 @@ describe('the Mesh agents section (agent cards view V3)', () => {
       recordActivityCall(d, 'c1')
     }
 
-    it('shows the same rows under every state filter and a project and agent lens that hides every session', async () => {
+    it('shows the same cards under every state filter and a project and agent lens that hides every session', async () => {
       await boot({ seed })
       await pollTick()
       const expected = shown()
@@ -393,7 +393,7 @@ describe('the Mesh agents section (agent cards view V3)', () => {
     })
   })
 
-  it('a failed read keeps the rows, marked stale, and never fails the tick; an off body hides the section until /api/version says mesh again', async () => {
+  it('a failed read keeps the cards, marked stale, and never fails the tick; an off body hides the section until /api/version says mesh again', async () => {
     let failure: (() => Response) | null = null
     const { bridge, log, s } = await boot({ intercept: (url) => (url === '/api/mesh/agents' && failure ? Promise.resolve(failure()) : null) })
     await pollTick()
@@ -668,7 +668,7 @@ describe('the Mesh agents section (agent cards view V3)', () => {
   describe('the agent tab (cards view V5c1)', () => {
     const pressKey = (key: string) => document.body.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }))
     const heading = () => [document.getElementById('pageKicker')?.textContent, document.getElementById('pageTitle')?.textContent]
-    const rowButton = (name: string) => meshRow(name)!.querySelector<HTMLElement>('.ma-row-toggle')
+    const rowButton = (name: string) => meshRow(name)
 
     it('with no mesh key there is no agent tab, and selecting it does nothing', async () => {
       const { bridge, log } = await boot({ mesh: null })
@@ -682,7 +682,7 @@ describe('the Mesh agents section (agent cards view V3)', () => {
       expect(bridge.posts).toEqual([])
     })
 
-    it('pressing a row opens the agent in the one tab: one open for it, one reloadAndPaint(); Close returns to its row', async () => {
+    it('pressing a card opens the agent in the one tab: one open for it, one reloadAndPaint(); Close returns to its card', async () => {
       const { bridge, log, s } = await boot()
       await pollTick()
       const loads = () => log.filter((entry) => entry === 'GET /api/items').length
@@ -715,7 +715,7 @@ describe('the Mesh agents section (agent cards view V3)', () => {
       await settle()
       expect(posted(bridge).slice(2)).toEqual([{ trigger: 'open', name: 'unslop' }])
 
-      // Close: the Dashboard (one open for every agent), focus on the agent's row in a focused window
+      // Close: the Dashboard (one open for every agent), focus on the agent's card in a focused window
       vi.spyOn(document, 'hasFocus').mockReturnValue(true)
       page().querySelector<HTMLElement>('.map-close')!.focus()
       click(page().querySelector('.map-close'))
@@ -811,6 +811,192 @@ describe('the Mesh agents section (agent cards view V3)', () => {
       await boot()
       await pollTick()
       expect([agentTab().hidden, page().hidden, activeTab()]).toEqual([true, true, 'dashboard'])
+    })
+  })
+
+  describe('the card strip (cards view V5c2)', () => {
+    const strip = () => section()!.querySelector<HTMLElement>('.ma-strip')!
+    const cards = () => [...strip().querySelectorAll<HTMLElement>(':scope > li > .ma-card')]
+    const names = () => cards().map((el) => el.querySelector('.ma-name')?.textContent)
+    const tabbable = () => cards().filter((el) => el.tabIndex === 0).map((el) => el.querySelector('.ma-name')?.textContent)
+    const key = (el: Element | null, k: string) => {
+      const event = new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true })
+      el!.dispatchEvent(event)
+      return event
+    }
+    const described = (el: HTMLElement) => (el.getAttribute('aria-describedby') ?? '').split(' ').filter(Boolean)
+      .map((id) => document.getElementById(id)?.textContent)
+    const webSearch = (over: Json = {}) => requestPost({ key: 'mesh.json:web-search', name: 'web-search', ...over })
+
+    it('draws one fixed-size card per agent, a native button named by agent and state, the other lines its description', async () => {
+      await boot({ mesh: fakeMesh(body(unslop({ usage: { date: '2026-11-09', tasks: 12, modelMs: 480000 } }), requestPost())) })
+      await pollTick()
+      expect([strip().tagName, strip().getAttribute('role')]).toEqual(['UL', 'list'])
+      expect([...strip().children].map((li) => [li.tagName, li.children.length, (li as HTMLElement).dataset.meshKey]))
+        .toEqual([['LI', 1, 'mesh.json:request-post'], ['LI', 1, 'mesh.json:unslop']])
+      expect(cards().map((el) => [el.tagName, el.getAttribute('type')])).toEqual([['BUTTON', 'button'], ['BUTTON', 'button']])
+      expect(shown()).toEqual(UP_ROWS)
+      // V5 §2.1: no skill count, protocol or description on a card (Details has them)
+      expect(section()!.textContent).not.toMatch(/A2A|skill|Removes generic/)
+      const [rp, un] = cards()
+      expect(un!.getAttribute('aria-label')).toBe('unslop, Not running')
+      expect(rp!.getAttribute('aria-label')).toBe('request-post, Reachable')
+      expect(described(un!)).toEqual(['Not running · starts on its first call', 'Local · v0.3.1 · seen 2h ago', 'Today: 12 tasks · 8 model-minutes'])
+      expect(described(rp!)).toEqual(['Reachable', 'Remote · tailnet · v0.0.0-fixture'])
+      // ids from a counter, never from a name
+      expect(cards().flatMap((el) => described(el).length ? (el.getAttribute('aria-describedby') ?? '').split(' ') : []).join(' ')).not.toMatch(/unslop|request/)
+      expect(cards().some((el) => el.hasAttribute('aria-current'))).toBe(false)
+
+      // fixed width and height, every line one line; the strip scrolls sideways
+      attachStylesheet()
+      expect(getComputedStyle(un!).height).toBe('116px')
+      expect(getComputedStyle(un!.querySelector('.ma-status')!).whiteSpace).toBe('nowrap')
+      expect(getComputedStyle(strip()).overflowX).toBe('auto')
+      // jsdom drops what it cannot parse (min(), gradients), so the rest is pinned as source
+      const css = readFileSync(resolve(REPO, 'public', 'style.css'), 'utf8')
+      const rule = css.slice(css.indexOf('.ma-strip {'), css.indexOf('}', css.indexOf('.ma-strip {')))
+      expect(rule).toContain('scrollbar-width: thin')
+      expect(rule).toContain('scroll-snap-type: x proximity')
+      for (const edge of ['left', 'right']) {
+        expect(rule).toMatch(new RegExp(`${edge} center / 28px 100% no-repeat local`))
+        expect(rule).toMatch(new RegExp(`${edge} center / 14px 100% no-repeat scroll`))
+      }
+      expect(css.slice(css.indexOf('.ma-card {'), css.indexOf('}', css.indexOf('.ma-card {')))).toContain('width: min(232px, 78vw);')
+      expect(css).toContain('.ma-card[aria-current="true"] { border-color: var(--app-border-strong); }')
+      const mesh = css.slice(css.indexOf('.ma-body[hidden]'), css.indexOf('.ma-lines {'))
+      expect(mesh).not.toMatch(/transition|animation|scroll-behavior/)
+    })
+
+    it('one card is tabbable; Left, Right, Home and End move focus without animating; J and K never reach the strip', async () => {
+      const { s } = await boot({
+        mesh: fakeMesh(body(unslop(), requestPost(), webSearch())),
+        seed: (d) => {
+          for (const id of ['s1', 's2']) upsertActivity(d, { session: id, agent: 'copilot', project: 'demo', stream: 'main', doing: `Working ${id}` })
+        },
+      })
+      await pollTick()
+      // the harness installs its own scrollIntoView as it mounts, so the spy comes after
+      const scrolls: unknown[] = []
+      vi.spyOn(Element.prototype, 'scrollIntoView').mockImplementation(function (this: Element, arg?: boolean | ScrollIntoViewOptions) { scrolls.push([this, arg]) })
+      expect(names()).toEqual(['request-post', 'unslop', 'web-search'])
+      expect(tabbable()).toEqual(['request-post'])
+      const [first, middle, last] = cards()
+      first!.focus()
+      expect(key(first!, 'ArrowRight').defaultPrevented).toBe(true)
+      expect([document.activeElement, tabbable()]).toEqual([middle, ['unslop']])
+      expect(scrolls.at(-1)).toEqual([middle, { block: 'nearest', inline: 'nearest' }])
+      key(middle!, 'End')
+      expect(document.activeElement).toBe(last)
+      key(last!, 'ArrowRight')
+      expect(document.activeElement).toBe(last)
+      key(last!, 'Home')
+      expect(document.activeElement).toBe(first)
+      key(first!, 'ArrowLeft')
+      expect(document.activeElement).toBe(first)
+      key(first!, 'End')
+      expect(tabbable()).toEqual(['web-search'])
+
+      // an idle tick changes no node and keeps the roving card and focus
+      const records: MutationRecord[] = []
+      const observer = new MutationObserver((list) => records.push(...list))
+      observer.observe(section()!, { subtree: true, childList: true, characterData: true, attributes: true })
+      await pollTick()
+      expect(records).toEqual([])
+      observer.disconnect()
+      expect([document.activeElement, tabbable()]).toEqual([last, ['web-search']])
+
+      // J and K on a card do nothing; Enter is left to the native button
+      for (const k of ['j', 'k', 'J', 'K']) {
+        expect(key(last!, k).defaultPrevented, k).toBe(false)
+        expect(document.activeElement, k).toBe(last)
+      }
+      expect(key(last!, 'Enter').defaultPrevented).toBe(false)
+      expect(activeTab()).toBe('dashboard')
+      // and from the session cards, J and K stop at their own last and first card
+      const sessions = [...document.querySelectorAll<HTMLElement>('.agents-home [data-session-card]')]
+      expect(sessions).toHaveLength(2)
+      sessions[0]!.focus()
+      expect(document.activeElement).toBe(sessions[0])
+      key(sessions[0]!, 'k')
+      expect(document.activeElement).toBe(sessions[0])
+      key(sessions[0]!, 'j')
+      expect(document.activeElement).toBe(sessions[1])
+      key(sessions[1]!, 'j')
+      key(sessions[1]!, 'ArrowRight')
+      expect(document.activeElement).toBe(sessions[1])
+      expect(strip().contains(document.activeElement)).toBe(false)
+
+      // a card that leaves hands the tab stop to the first card
+      s.body = body(unslop(), requestPost())
+      await pollTick()
+      expect([names(), tabbable()]).toEqual([['request-post', 'unslop'], ['request-post']])
+      // Enter's activation is the button's click: it opens that agent
+      click(cards()[1])
+      await settle()
+      expect([activeTab(), agentTab().querySelector('.tab-name')?.textContent]).toEqual(['agent', 'unslop'])
+    })
+
+    it('the open agent’s card carries aria-current, the others none; Close clears it', async () => {
+      await boot()
+      await pollTick()
+      const current = () => cards().filter((el) => el.getAttribute('aria-current') === 'true').map((el) => el.querySelector('.ma-name')?.textContent)
+      await openAgent('unslop')
+      tab('dashboard')
+      await settle()
+      expect(current()).toEqual(['unslop'])
+      expect(cards().filter((el) => el.hasAttribute('aria-current'))).toHaveLength(1)
+      await openAgent('request-post')
+      tab('dashboard')
+      await settle()
+      expect(current()).toEqual(['request-post'])
+      await pollTick()
+      expect(current()).toEqual(['request-post'])
+      tab('agent')
+      await settle()
+      click(page().querySelector('.map-close'))
+      await settle()
+      expect(activeTab()).toBe('dashboard')
+      expect(cards().some((el) => el.hasAttribute('aria-current'))).toBe(false)
+    })
+
+    it('a poll that changes a card’s text keeps the strip’s scroll position, its nodes and a selection', async () => {
+      const { s } = await boot({ mesh: fakeMesh(body(unslop(), requestPost(), webSearch())) })
+      await pollTick()
+      const list = strip()
+      const nodes = cards()
+      list.scrollLeft = 150
+      const name = nodes[0]!.querySelector('.ma-name')!.firstChild!
+      const range = document.createRange()
+      range.setStart(name, 0)
+      range.setEnd(name, 7)
+      document.getSelection()!.removeAllRanges()
+      document.getSelection()!.addRange(range)
+      s.body = body(unslop({ state: 'up', reason: null, card: summarizeCard(UNSLOP_CARD), cardJson: cardJson(UNSLOP_CARD), lastSeen: null }), requestPost(), webSearch())
+      await pollTick()
+      expect(shown()[1]).toEqual(['unslop', 'Running', 'Local · v0.3.1', ''])
+      expect(cards()[1]!.getAttribute('aria-label')).toBe('unslop, Running')
+      expect([strip(), list.scrollLeft, list.isConnected]).toEqual([list, 150, true])
+      expect(cards()).toEqual(nodes)
+      expect(cards().every((el, i) => el === nodes[i])).toBe(true)
+      expect([name.isConnected, String(document.getSelection())]).toEqual([true, 'request'])
+    })
+
+    it('hostile names, reasons and versions show literally, as text and in the accessible name, never as markup', async () => {
+      const evil = '<img src=x onerror="alert(1)">'
+      const { log } = await boot({
+        mesh: fakeMesh(body(requestPost({
+          name: evil, state: 'mismatch', reason: '<a href="https://evil.example/">r</a>', fix: '<script>alert(2)</script>',
+          card: { ...summarizeCard(RP_CARD), version: '<b>9</b>' },
+        }))),
+      })
+      const images = document.querySelectorAll('img').length
+      await pollTick()
+      const [card] = cards()
+      expect(shown()).toEqual([[evil, 'Card does not match this build · <a href="https://evil.example/">r</a>', 'Remote · tailnet · v<b>9</b>', 'Fix: <script>alert(2)</script>']])
+      expect(card!.getAttribute('aria-label')).toBe(`${evil}, Card does not match this build`)
+      expect(section()!.querySelectorAll('img, a, script, b, [href], [src], [onerror]')).toHaveLength(0)
+      expect(document.querySelectorAll('img')).toHaveLength(images)
+      expect(log.some((entry) => entry.includes('evil.example'))).toBe(false)
     })
   })
 

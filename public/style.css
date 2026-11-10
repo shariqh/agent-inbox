@@ -2123,7 +2123,7 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
 /* the Mesh agents section (agent cards view V3): global, never an ask, so amber
    (--app-warning) for a card it cannot use and never the attention colour; no motion */
 .mesh-agents { margin-top: 16px; padding-top: 10px; border-top: 1px solid var(--app-border); }
-.ma-body[hidden], .ma-stale[hidden], .ma-others[hidden], .ma-fix[hidden], .ma-usage[hidden], .ma-json[hidden] { display: none; }
+.ma-body[hidden], .ma-stale[hidden], .ma-others[hidden], .ma-line[hidden], .ma-fix[hidden], .ma-usage[hidden], .ma-json[hidden] { display: none; }
 .ma-head { display: flex; align-items: center; gap: 10px; }
 .ma-toggle { padding: 0; border: 0; background: none; color: var(--app-text); font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; }
 .ma-toggle::after { margin-left: 6px; color: var(--app-text-soft); content: "▸"; }
@@ -2131,18 +2131,60 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
 .ma-checked { color: var(--app-text-soft); font-size: 11.5px; }
 .ma-refresh { padding: 3px 9px; border: 1px solid var(--app-border); border-radius: 7px; background: var(--app-surface); color: var(--app-text); font: inherit; font-size: 11.5px; font-weight: 650; cursor: pointer; }
 .ma-stale, .ma-others { margin: 8px 0 0; color: var(--app-muted); font-size: 12px; }
-.ma-rows { display: grid; gap: 10px; margin: 10px 0 0; padding: 0; list-style: none; }
-.ma-row { font-size: 12.5px; }
-.ma-row, .map-head, .tab[data-tab="agent"] { --ma-tone: var(--app-text-soft); }
+/* cards view V5 §2.3: a strip of fixed-width cards that scrolls sideways. The compact tab
+   row's trick at both ends, no JS: a shade at an edge while more cards wait past it, none
+   once scrolled there (each `local` cover scrolls with the cards, each `scroll` shade stays
+   at its edge; the cards are see-through so the shade shows on them). The thin scrollbar
+   stays visible for a mouse without a horizontal wheel. Nothing animates. */
+.ma-strip {
+  display: flex;
+  gap: 10px;
+  margin: 10px 0 0;
+  padding: 2px 2px 8px;
+  overflow-x: auto;
+  list-style: none;
+  scroll-snap-type: x proximity;
+  scroll-padding-inline: 2px;
+  scrollbar-width: thin;
+  background:
+    linear-gradient(to right, var(--app-surface) 45%, transparent) left center / 28px 100% no-repeat local,
+    linear-gradient(to left, var(--app-surface) 45%, transparent) right center / 28px 100% no-repeat local,
+    linear-gradient(to right, color-mix(in srgb, var(--app-text) 16%, transparent), transparent) left center / 14px 100% no-repeat scroll,
+    linear-gradient(to left, color-mix(in srgb, var(--app-text) 16%, transparent), transparent) right center / 14px 100% no-repeat scroll;
+}
+.ma-item { flex: 0 0 auto; scroll-snap-align: start; }
+.ma-card, .map-head, .tab[data-tab="agent"] { --ma-tone: var(--app-text-soft); }
 .ma-tone-up { --ma-tone: var(--app-success); }
 .ma-tone-amber { --ma-tone: var(--app-warning); }
-.ma-row-toggle { display: flex; align-items: baseline; gap: 8px; padding: 0; border: 0; background: none; color: var(--app-text); font: inherit; text-align: left; cursor: pointer; }
+/* a fixed size, so the strip never changes height as text changes; every line clamps to one */
+.ma-card {
+  display: flex;
+  /* 232px; only in a very narrow window does 78vw win, so the next card still peeks */
+  width: min(232px, 78vw);
+  height: 116px;
+  box-sizing: border-box;
+  flex-direction: column;
+  gap: 3px;
+  padding: 10px 12px;
+  overflow: hidden;
+  border: 1px solid var(--app-border);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--app-text);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.ma-card[aria-current="true"] { border-color: var(--app-border-strong); }
+.ma-line { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ma-title { display: flex; align-items: center; gap: 8px; }
+.ma-title .ma-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .ma-dot { width: 8px; height: 8px; flex: none; align-self: center; border-radius: 50%; background: var(--ma-tone); }
 .ma-tone-neutral .ma-dot { border: 1.5px solid var(--ma-tone); background: transparent; }
 .ma-name { font-weight: 700; }
 .ma-status { color: var(--app-muted); }
-.ma-row.ma-tone-amber .ma-status, .map-head.ma-tone-amber .map-status, .ma-fix { color: var(--app-warning); }
-.ma-facts, .ma-usage, .ma-row .ma-fix { margin-left: 16px; }
+.ma-card.ma-tone-amber .ma-status, .map-head.ma-tone-amber .map-status, .ma-fix { color: var(--app-warning); }
 .ma-facts, .ma-usage { color: var(--app-text-soft); font-size: 11.5px; }
 .ma-fix { font-size: 11.5px; }
 .ma-lines { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 8px 0 0; }

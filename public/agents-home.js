@@ -507,7 +507,7 @@ export function installAgentsHome(deps) {
     byId.clear()
     for (const card of cards) byId.set(card.id, card)
     section.classList.toggle('reading', reading)
-    mesh.paint(section.querySelector('.ah-mesh'), input.mesh ?? null, input.nowMs)
+    mesh.paint(section.querySelector('.ah-mesh'), input.mesh ?? null, input.nowMs, input.meshOpen ?? null)
     if (reading) {
       // before the first /api/activity read (§3.6)
       setText(section.querySelector('.ah-count'), 'Reading sessions…')

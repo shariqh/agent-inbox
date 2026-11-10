@@ -323,9 +323,11 @@ describe('meshctl enable/disable --request-post (#500, request-post design §6, 
     const script = join(scratchDir('rp-bin-'), 'meshctl.js')
     writeFileSync(script, 'console.log(JSON.stringify([process.env.AGENT_INBOX_MESH_DIR, ...process.argv.slice(2)]))\n')
     if (meshJson !== undefined) writeFileSync(meshFile(dir), meshJson)
-    const run = (...argv: string[]) => ctl(argv, dir, undefined, { node: process.execPath, script })
+    // this Mac's tailnet is the placeholder ENDPOINT's (#557)
+    const io = { suffix: 'tail1234.ts.net' as string | undefined, asked: 0 }
+    const run = (...argv: string[]) => ctl(argv, dir, undefined, { node: process.execPath, script, tailnet: () => { io.asked++; return io.suffix } })
     const enable = (endpoint = ENDPOINT, ...more: string[]) => run('enable', '--request-post', '--endpoint', endpoint, '--token-file', tokenFile, ...more)
-    return { dir, tokenFile, script, run, enable }
+    return { dir, tokenFile, script, run, enable, io }
   }
 
   it('enable is a dry run that writes nothing and never prints the token', () => {
@@ -390,6 +392,33 @@ describe('meshctl enable/disable --request-post (#500, request-post design §6, 
     expect(status).not.toContain('secret')
   })
 
+  it('takes a tailnet endpoint only on this Mac\'s tailnet (§8.8, #557), refusing another tailnet, a Funnel host or an unreadable suffix', () => {
+    const t = setup('{"schema":1}\n')
+    t.io.suffix = 'tailnet-example.ts.net'
+    const other = t.enable('https://request-post.other-example.ts.net', '--apply')
+    expect(other.code).toBe(1)
+    expect(other.err).toBe('Refused: the endpoint is on another tailnet or a Funnel host, not this Mac\'s tailnet (tailnet-example.ts.net): use the service\'s name on this Mac\'s tailnet, or the SSH fallback\'s http://127.0.0.1:<port>. Nothing changed.\n')
+    // the dry run refuses it too
+    expect(t.enable('https://request-post.other-example.ts.net').code).toBe(1)
+    t.io.suffix = undefined
+    const unknown = t.enable('https://request-post.tailnet-example.ts.net', '--apply')
+    expect(unknown.code).toBe(1)
+    expect(unknown.err).toBe('Refused: the endpoint is on a tailnet name, but this Mac\'s tailnet could not be read (is Tailscale installed, running and logged in?), so enable cannot tell it from another tailnet or a Funnel host. Nothing changed.\n')
+    expect(t.io.asked).toBe(3)
+    expect(readdirSync(t.dir)).toEqual(['mesh.json'])
+    expect(json(t.dir)).toEqual({ schema: 1 })
+    // the SSH fallback never asks, and works without a readable tailnet
+    expect(t.enable('http://127.0.0.1:8443', '--apply').code).toBe(0)
+    expect(t.io.asked).toBe(3)
+    // a name in this Mac's tailnet (with or without a port) is accepted as before
+    t.io.suffix = 'tailnet-example.ts.net'
+    for (const endpoint of ['https://request-post.tailnet-example.ts.net', 'https://request-post.tailnet-example.ts.net:8443']) {
+      const on = t.enable(endpoint, '--apply')
+      expect(on.code, on.err).toBe(0)
+      expect(json(t.dir).agents['request-post']).toEqual({ endpoint })
+    }
+  })
+
   it('refuses a symlinked, short, spaced or non-regular token file, and copies a good one 0600', () => {
     const t = setup()
     const folder = scratchDir('rp-token-')
@@ -426,7 +455,7 @@ describe('meshctl enable/disable --request-post (#500, request-post design §6, 
       const t = setup()
       const node = join(scratchDir('rp-node-'), 'node')
       writeFileSync(node, `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} "$@"\n`, { mode: 0o755 })
-      expect(ctl(['enable', '--request-post', '--endpoint', ENDPOINT, '--token-file', t.tokenFile, '--apply'], t.dir, undefined, { node, script: t.script }).code).toBe(0)
+      expect(ctl(['enable', '--request-post', '--endpoint', ENDPOINT, '--token-file', t.tokenFile, '--apply'], t.dir, undefined, { node, script: t.script, tailnet: () => 'tail1234.ts.net' }).code).toBe(0)
       unlinkSync(gone === 'node' ? node : t.script)
       const r = spawnSync('/bin/sh', [join(t.dir, 'bin', 'request-post'), 'file'], { input: 'x'.repeat(1 << 20), encoding: 'utf8' })
       expect(r.error, gone).toBeUndefined()
@@ -803,8 +832,8 @@ describe('no new dependency (design §2.3, §2.4c)', () => {
     expect(local('src/request-post-client.ts')).toEqual(['./agent-card.js', './mesh-config.js', './mesh-runs.js'])
     for (const file of ['src/unslop-client.ts', 'src/request-post-client.ts', 'src/mesh-call.ts']) expect(code(file), file).toContain(`import type { RunCollector } from './mesh-runs.js'`)
     expect(local('src/mesh-config.ts')).toEqual([])
-    // meshctl add's rules and card fetch (#529): HTTP, a hash and the card rule, never a child process
-    expect([...code('src/mesh-add.ts').matchAll(SPECIFIERS)].map((m) => m[2]!)).toEqual(['node:crypto', 'node:http', 'node:http', 'node:https', './agent-card.js'])
+    // meshctl add's rules and card fetch (#529): HTTP, a hash, the card rule and the tailnet test (#557), never a child process
+    expect([...code('src/mesh-add.ts').matchAll(SPECIFIERS)].map((m) => m[2]!)).toEqual(['node:crypto', 'node:http', 'node:http', 'node:https', './agent-card.js', './mesh-config.js'])
     // run records (cards view V5 §5.6): Node core only
     expect([...code('src/mesh-runs.ts').matchAll(SPECIFIERS)].map((m) => m[2]!)).toEqual(['node:crypto', 'node:fs', 'node:path'])
     // the viewer's cards view (agent cards view design §3.4): HTTP, the config rule and the run

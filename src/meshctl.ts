@@ -10,7 +10,8 @@
 // `enable --unslop` (#483, unslop design §4.2-§4.3) turns on the unslop agent:
 // the `agents.unslop` key, its profile template, caller token and shim.
 // `enable --request-post` (#500, request-post design §6, §8) turns on the
-// remote request-post agent: its endpoint, a copy of its bearer token and a shim.
+// remote request-post agent: its endpoint, a copy of its bearer token and a shim. A tailnet
+// endpoint must be on this Mac's tailnet (#557, mesh design §8.8), like `add`'s.
 // `add` (#529, mesh design §6.7, D13–D17) writes a card-driven `agents.<id>` entry for an
 // agent this repo doesn't ship: its card URL, endpoint, token copy and card pin
 // (src/mesh-add.ts holds the rules); `remove` takes one out. Only `add` writes such an entry.
@@ -44,7 +45,7 @@ import { closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdi
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { MESH_SCHEMA, loopbackPort, meshDir, meshFile, readMesh, requestPostEndpoint } from './mesh-config.js'
+import { MESH_SCHEMA, inTailnet, loopbackPort, meshDir, meshFile, readMesh, requestPostEndpoint } from './mesh-config.js'
 import type { MeshDocument, MeshRead } from './mesh-config.js'
 import { BUILT_IN_AGENTS, addedEntry, addedPlace, cardEndpoint, cardLine, cardSha256, fetchAddedCard, idFromName, idRefusal, placeRefusal, tailnetRefusal } from './mesh-add.js'
 import { appendRun, pruneRuns, runAgents, runFiles, tidyRuns } from './mesh-runs.js'
@@ -79,7 +80,8 @@ it listens on http://127.0.0.1:<port> only (default ${UNSLOP_PORT}). disable --u
 profile, logs, deny list and run records unless --purge. unslop is what <mesh dir>/bin/unslop runs:
 it sends one public draft to the agent (docs/unslop.md).
 enable --request-post copies the per-device bearer token from --token-file (never printed);
-the endpoint is ${ENDPOINT_RULE} (docs/request-post.md).
+the endpoint is ${ENDPOINT_RULE}; a tailnet name must be on this Mac's tailnet (read from
+tailscale status), never another tailnet or a Funnel host (docs/request-post.md).
 disable --request-post keeps its run records unless --purge.
 add fetches an A2A agent's card (no token, no redirect), checks it and pins it, and adds the
 agent as agents.<id>: the card URL and endpoint must be http://127.0.0.1:<port> or
@@ -104,7 +106,7 @@ export interface MeshctlIo {
   now?: () => Date
   out?: (text: string) => void
   err?: (text: string) => void
-  /** This Mac's MagicDNS suffix for `add`, or undefined when it cannot be read (default: `tailscale status --json`). */
+  /** This Mac's MagicDNS suffix for `add` and `enable --request-post`, or undefined when it cannot be read (default: `tailscale status --json`). */
   tailnet?: () => string | undefined
   /** The Node binary and meshctl.js the shim and start command name (tests point them at scratch files). */
   node?: string
@@ -464,6 +466,12 @@ function meshctl(argv: string[], io: MeshctlIo): number {
     if (flags.size || !only('--endpoint', '--token-file') || endpointText === undefined || tokenFile === undefined) return usage()
     const endpoint = requestPostEndpoint(endpointText)
     if (!endpoint) return refuse(`the endpoint must be ${ENDPOINT_RULE}: never a public host, another IP address, plain http to another host, or port 80 there`)
+    // §8.8 (#557): the bearer token goes only to a name in this Mac's tailnet; the SSH fallback never asks
+    if (endpoint.startsWith('https:')) {
+      const suffix = (io.tailnet ?? magicDnsSuffix)()
+      if (suffix === undefined) return refuse('the endpoint is on a tailnet name, but this Mac\'s tailnet could not be read (is Tailscale installed, running and logged in?), so enable cannot tell it from another tailnet or a Funnel host')
+      if (!inTailnet(new URL(endpoint).hostname, suffix)) return refuse(`the endpoint is on another tailnet or a Funnel host, not this Mac's tailnet (${suffix}): use the service's name on this Mac's tailnet, or the SSH fallback's http://127.0.0.1:<port>`)
+    }
     const existing = readMesh(file)
     if (existing.kind === 'refused') return refuse(`${name} ${existing.reason}. Remove it by hand if you are sure`)
     const doc: MeshDocument = existing.kind === 'present' ? existing.doc : { schema: MESH_SCHEMA }
@@ -815,7 +823,8 @@ const SIGNALS = ['SIGTERM', 'SIGHUP', 'SIGINT'] as const
  * writes `interrupted` and re-raises the signal, so the process still dies by it.
  * V5e adds `web-search` here once W5b's client exists; it fills `io.run` with §5.4's common
  * fields only (mesh-runs.ts already allows no other field for it). `call` records under the
- * added agent's id, once its entry passed the rule (#530).
+ * added agent's id, once its entry passed the rule (#530). `call` and `request-post` get this
+ * Mac's tailnet suffix reader for their §8.8 re-check (#557).
  */
 export async function runClient(command: 'unslop' | 'request-post' | 'call', args: string[], io: ClientIo & { tailnet?: () => string | undefined }): Promise<number> {
   const dir = resolve(meshDir(io.env, io.home))
@@ -832,7 +841,7 @@ export async function runClient(command: 'unslop' | 'request-post' | 'call', arg
       ? await runUnslop(args, { ...io, run }).catch(() => { run.internal = true; io.err('unslop: failed (internal error). Edit it in-session.\n'); return 13 })
       : command === 'call'
         ? await runCall(args, { tailnet: magicDnsSuffix, ...io, run }).catch(() => { run.internal = true; io.err('meshctl call: failed (internal error).\n'); return 13 })
-        : await runRequestPost(args, { ...io, run }).catch(() => { run.internal = true; io.err('request-post: outcome unknown (internal error): run the same command again; never file it in-session.\n'); return 13 })
+        : await runRequestPost(args, { tailnet: magicDnsSuffix, ...io, run }).catch(() => { run.internal = true; io.err('request-post: outcome unknown (internal error): run the same command again; never file it in-session.\n'); return 13 })
     appendRun(dir, agent, run, { exit: code })
     return code
   } finally {

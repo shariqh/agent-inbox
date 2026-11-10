@@ -627,6 +627,11 @@ This repository ships its client (R2 and R3 below) and the contract both sides t
     trailing `/` is dropped, and the rest is stored as given. Anything else (a public host, an IP
     literal other than that loopback, `http` to another host) is refused with one fixed message
     that never echoes the input, and an `agents.request-post` that breaks the rule reads as off.
+    §8.8's allowlist applies too (#557, as for `add`): a tailnet endpoint must be on this Mac's
+    tailnet (`inTailnet()` in `mesh-config.ts`, shared with `add`'s `tailnetRefusal()`), with the
+    suffix read by meshctl from `tailscale status --json` (`MeshctlIo.tailnet` in tests). Another
+    tailnet or a Funnel host is refused, and so is every tailnet name when the suffix cannot be
+    read; the loopback form never asks. `status` still reads the entry by shape only.
   - **The token file** must be a regular file the user owns (opened `O_NOFOLLOW | O_NONBLOCK`,
     so a symlink, folder or FIFO is refused without hanging), at most 4 KiB, holding one run of at
     least 32 visible ASCII characters (one trailing newline allowed). Refusals name the rule,
@@ -812,6 +817,12 @@ the two share numbers, not meanings.
   8 KiB of UTF-8, not blank, no control characters but tab and newline, CRLF read as LF (else 11,
   naming `brief`). Then off: no `agents.request-post` passing `requestPostEndpoint()`, or a device
   token that is not a 0600 regular file the user owns (opened `O_NOFOLLOW`), is 14.
+- **This Mac's tailnet (#557, §8.8).** Before each exchange (so each `wait` poll too) a tailnet
+  endpoint is checked with `inTailnet()` against `RequestPostIo.tailnet`, meshctl's
+  `tailscale status` reader (the client itself never spawns). Another tailnet or a Funnel host is
+  14 with "run meshctl enable --request-post again" and nothing sent, not even a DNS lookup; an
+  unreadable suffix is 15 (unavailable, so `wait` retries it like a DNS failure). The loopback
+  form never asks.
 - **The wire.** `node:http` or `node:https` with `agent: false` (no keep-alive and no environment
   proxy), `Host` exactly the endpoint's authority, the TLS name the endpoint's host, no `Origin`,
   and never the card's URL. Redirects are not followed: a 3xx on the card is 15, on the call 13.

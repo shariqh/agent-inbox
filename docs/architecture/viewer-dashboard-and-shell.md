@@ -42,8 +42,8 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   mounts `answerEl`/`rowAnswerEl` (`surface: 'compact'`) and the shared
   `snoozeAsk`/`pinAsk`, so drafts join `suspendState()`, recovery, durable drafts and
   the restart hold, and `expect_answer` is unchanged. It paints in the ambient painter:
-  a poll leaves the section alone while one of its asks holds a draft or a background
-  window remembers focus in it, and `render()`'s `forcedAmbient` makes a human's
+  a poll leaves the section alone while one of its asks holds a draft in use or a background
+  window remembers focus in it within two minutes of the human's last input (#563), and `render()`'s `forcedAmbient` makes a human's
   `reloadAndPaint()` rebuild it anyway. It restores its own focus only while the
   document has focus.
 - The Now strip (#304) reads one model, `buildLanes` in `public/lanes.js`, over reads
@@ -275,8 +275,10 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   `openAskInInbox`), the "the agent is waiting" meta, and this session's answers not yet
   picked up (`agentEntries`), dimmed and never counted; an `@sessions` approval keeps the
   Approval block (#459). Three draft rules hold for the section: a poll leaves
-  it alone while one of its asks holds a draft or a background window remembers focus in
-  it (and skips an unchanged one, moving only its ages); the hold is the panel's
+  it alone while one of its asks holds a draft in use (`draftInUse`, #563) or a background
+  window remembers focus in it within two minutes of the human's last input in it (past
+  that it shows current asks, never taking focus, so a window left beside a terminal
+  cannot keep an advanced row as an answered line) (and skips an unchanged one, moving only its ages); the hold is the panel's
   (`focusSession`), never its card's, because a card's id moves under an open panel (its
   session ends; an ask-only card's session comes back, when `followHeldAsk` moves the panel
   to the card now holding the drafted ask without rebuilding it, but only once the panel's

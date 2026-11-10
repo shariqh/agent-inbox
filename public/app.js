@@ -13,7 +13,7 @@ import { DEFAULT_TAB, TAB_IDS, tabCounts } from '/tabs.js'
 import { projectColor } from '/colors.js'
 import {
   SCROLL_IDLE_MS, pressHeld, scrollActive, shouldDeferRender,
-  suspendHint, pinOrder, reconcileOpenRow, pollMaySkipPaint,
+  suspendHint, pinOrder, reconcileOpenRow, pollMaySkipPaint, draftInUse, recentInput,
 } from '/poll.js'
 import { createStagedSend } from '/star.js'
 import {
@@ -252,7 +252,7 @@ let pendingWrites = 0
 // draft in a closed composer does not: it is stored (#279) and comes back in its
 // composer after the reload, so holding for it would protect nothing.
 function hasUnsentResponses() {
-  return Boolean(suspendHint(suspendState())) || hasDraftRecovery() || sendingMessages.size > 0 || composerInUse()
+  return Boolean(suspendHint({ drafts: typedDrafts() })) || hasDraftRecovery() || sendingMessages.size > 0 || composerInUse()
 }
 
 // Whether a textarea of this session's composers (drawer or focus panel) has focus.
@@ -303,20 +303,38 @@ let paintedFrame = null // { inputs, at } of the last complete frame (#298)
 let outsideChanges = 0  // human input and settled writes since boot (#298)
 let pinnedIds = []      // sort order pinned for this render session
 let pressedAt = null    // pointerdown → pointerup, hard-bounded by PRESS_GRACE_MS (#38)
+let humanInputAt = null // the human's last pointerdown, click, key or input in this window (#563)
 let launchUi = null     // driven sessions (#412 step 3), made at boot; inert unless the app's switch is on
 
-// What SUSPENDS the poll — deliberately not the same set as what DEFERS it.
-// `pressedAt` is missing on purpose and must stay missing: showPauseHint() reads
-// this, and a held button is not a pause (see initPressGuard).
-function suspendState() {
+// Every typed draft anywhere in the app: what the viewer-restart hold protects.
+function typedDrafts() {
   const drafts = {}
   for (const [id, value] of Object.entries(draftReplies)) drafts[`reply:${id}`] = value
   for (const [id, value] of Object.entries(draftReplyContexts)) drafts[`context:${id}`] = value
   for (const [id, value] of Object.entries(rowDrafts)) drafts[`row:${id}`] = value
   // #412 step 3: a New session task while its dialog is open
   for (const [key, value] of launchUi?.drafts() ?? []) drafts[`launch:${key}`] = value
+  return drafts
+}
+
+// Whether the drafts may hold the poll's rebuild now (#563, public/poll.js).
+// A New session task counts as in use: it exists only while its dialog is open.
+function draftsInUse(nowMs) {
+  return draftInUse({
+    inputAt: humanInputAt,
+    editorFocused: Boolean(activeFocusElement()?.closest?.('[data-draft-focus-key]')),
+    ownerMoved: (launchUi?.drafts() ?? []).some(([, value]) => String(value ?? '').trim() !== '') || draftOwnerMoved(),
+  }, nowMs)
+}
+
+// What SUSPENDS the poll — deliberately not the same set as what DEFERS it.
+// `pressedAt` is missing on purpose and must stay missing: showPauseHint() reads
+// this, and a held button is not a pause (see initPressGuard). A draft nobody
+// is using suspends nothing (#563): it is still unsent work (typedDrafts()).
+function suspendState() {
+  const drafts = typedDrafts()
   return {
-    drafts,
+    drafts: draftsInUse(Date.now()) ? drafts : {},
   }
 }
 
@@ -2504,7 +2522,8 @@ function approvalHtml(entry, granted) {
 // implementation, so drafts stay in draftReplies/rowDrafts and join
 // suspendState(), recovery, durable drafts and the restart hold. #303's
 // three draft rules hold here: a poll leaves the section alone while one of its
-// asks holds a draft (or a background window remembers focus in it), a frame
+// asks holds a draft in use (or a background window remembers focus in it, for
+// two minutes after the human's last input, #563), a frame
 // the human asked for rebuilds it, and focus comes back only with the
 // document's. Below, this session's answers not yet picked up, dimmed and
 // never counted.
@@ -2517,7 +2536,11 @@ const panelAsksKey = new WeakMap() // the section → what it was built from
 function panelAsksHeld(list, asks) {
   if (list.dataset.panel !== (focusSession ?? '')) return false
   const remembered = document.activeElement
-  if (!document.hasFocus() && remembered && list.contains(remembered)) return true
+  // #563: only while the human was here lately; a window left in the background
+  // for longer shows current asks, and its remembered focus goes with the old ones
+  const nowMs = Date.now()
+  if (!document.hasFocus() && remembered && list.contains(remembered) && recentInput(humanInputAt, nowMs)) return true
+  if (!draftsInUse(nowMs)) return false
   // an incoming ask holding a draft holds it too: building its editor from a
   // poll could run draft recovery, which switches tabs and moves focus
   return [...list.querySelectorAll('[data-panel-ask]')].some((el) => holdsDraft(el.dataset.panelAsk))
@@ -3457,6 +3480,10 @@ function initIdleFrame() {
     window.addEventListener(type, noteOutsideChange, true)
   }
   document.addEventListener('visibilitychange', noteOutsideChange)
+  // #563: what keeps a draft, or a background window's remembered focus, holding a rebuild
+  for (const type of ['pointerdown', 'click', 'keydown', 'input']) {
+    window.addEventListener(type, () => { humanInputAt = Date.now() }, true)
+  }
 }
 
 function render() {
@@ -8364,6 +8391,28 @@ function currentRow(id) {
   return null
 }
 
+// Whether a typed draft still belongs to the editor it was typed in. One that
+// does not moves to the unsent responses in the next frame (reconcileDraftOwners).
+function itemDraftOwned(item) {
+  return Boolean(item && cardSections(item).showAnswer)
+}
+
+function rowDraftOwned(owner, meta) {
+  return Boolean(owner && meta?.revision === owner.row.revision)
+}
+
+// Whether the next frame would move a draft to the unsent responses, and so
+// switch to the Inbox: then a draft holds the poll however idle it is (#563).
+function draftOwnerMoved() {
+  if (!lastData) return false
+  const itemIds = new Set([...Object.keys(draftReplies), ...Object.keys(draftReplyContexts)])
+  for (const id of itemIds) {
+    if (!String(draftReplies[id] ?? '').trim() && !String(draftReplyContexts[id] ?? '').trim()) continue
+    if (!itemDraftOwned(freshItem(id))) return true
+  }
+  return Object.entries(rowDrafts).some(([id, text]) => String(text).trim() && !rowDraftOwned(currentRow(id), rowDraftMeta[id]))
+}
+
 function reconcileDraftOwners() {
   let recovered = false
   const itemIds = new Set([...Object.keys(draftReplies), ...Object.keys(draftReplyContexts)])
@@ -8372,7 +8421,7 @@ function reconcileDraftOwners() {
     const context = draftReplyContexts[id] ?? ''
     if (!text.trim() && !context.trim()) continue
     const item = freshItem(id)
-    if (item && cardSections(item).showAnswer) continue
+    if (itemDraftOwned(item)) continue
     const generation = itemDraftGenerations[id] ?? 0
     const activeSubmission = itemDraftSubmission(id, generation)
     const intent = reusableDraftIntent(id, generation)
@@ -8407,7 +8456,7 @@ function reconcileDraftOwners() {
     const meta = rowDraftMeta[id]
     if (!String(text).trim()) continue
     const owner = currentRow(id)
-    if (owner && meta?.revision === owner.row.revision) continue
+    if (rowDraftOwned(owner, meta)) continue
     const revision = meta?.revision ?? -1
     staleRowDrafts[rowDraftRecoveryKey(id, revision)] = {
       rowId: id,

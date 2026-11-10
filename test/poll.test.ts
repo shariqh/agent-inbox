@@ -10,6 +10,8 @@ import {
   scrollActive,
   shouldDeferRender,
   pollMaySkipPaint,
+  draftInUse,
+  recentInput,
   PRESS_GRACE_MS,
   SCROLL_IDLE_MS,
 } from '../public/poll.js'
@@ -144,6 +146,27 @@ describe('shouldDeferRender (#38 · D2)', () => {
   it('is idle when nothing is expanded, nothing typed and no button is down', () => {
     expect(shouldDeferRender({ ...idle, pressedAt: null }, t)).toBe(false)
     expect(shouldDeferRender(idle, t), 'a state that never heard of presses still works').toBe(false)
+  })
+})
+
+describe('a draft holds the rebuild only while it is in use (#563)', () => {
+  const t = 10_000_000
+  const idle = 2 * 60_000
+
+  it('lapses two minutes after the human last gave the window input', () => {
+    expect(recentInput(t - (idle - 1), t)).toBe(true)
+    expect(recentInput(t - idle, t)).toBe(false)
+    expect(recentInput(null, t)).toBe(false)
+    expect(draftInUse({ inputAt: t - idle }, t)).toBe(false)
+  })
+
+  it('a clock moved back lapses the hold rather than stretching it', () => {
+    expect(recentInput(t + 1, t)).toBe(false)
+  })
+
+  it('a focused draft editor, or a draft whose target moved, holds however idle', () => {
+    expect(draftInUse({ inputAt: null, editorFocused: true }, t)).toBe(true)
+    expect(draftInUse({ inputAt: null, ownerMoved: true }, t)).toBe(true)
   })
 })
 

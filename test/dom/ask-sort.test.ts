@@ -232,6 +232,9 @@ describe('current ask time and queue sorting (#64)', () => {
     click(row(oldId))
     await settle()
     const input = answerInput(oldId)!
+    // still writing it: a draft holds the poll only while in use (#563)
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    input.focus()
     input.value = 'half-written answer'
     input.dispatchEvent(new Event('input', { bubbles: true }))
     advanceClock(HOUR)
@@ -459,6 +462,9 @@ describe('saved default sort order (#221)', () => {
     await bootApp(d)
     click(row(oldId))
     await settle()
+    // still writing it: a draft holds the poll only while in use (#563)
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    answerInput(oldId)!.focus()
     type(answerInput(oldId), 'half-written answer')
     advanceClock(HOUR)
     insertItem(d, { ...AGENT, kind: 'question', title: 'draft-gated arrival' })

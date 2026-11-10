@@ -61,6 +61,27 @@ export function scrollActive(scrolledAt, nowMs) {
   return scrolledAt != null && nowMs - scrolledAt < SCROLL_IDLE_MS
 }
 
+// Issue #563: a draft suspends the rebuild while it is in use, not for as long
+// as it exists. A draft left half-typed (or restored at boot) and never touched
+// again used to freeze every list for hours: an agent advanced the rows the
+// human had answered, and the window kept showing the old steps as current.
+// In use means the human gave this window input within DRAFT_IDLE_MS, a draft
+// editor has focus in a focused window, or a draft no longer matches its target
+// (the next frame would move it to the unsent responses and switch to the Inbox,
+// which a poll never does). An idle draft keeps its text: every editor is
+// rebuilt from module state.
+const DRAFT_IDLE_MS = 2 * 60_000
+
+// `inputAt` is the human's last input in this window, or null. A clock moved
+// back lapses the hold rather than stretching it.
+export function recentInput(inputAt, nowMs) {
+  return inputAt != null && nowMs >= inputAt && nowMs - inputAt < DRAFT_IDLE_MS
+}
+
+export function draftInUse({ inputAt = null, editorFocused = false, ownerMoved = false } = {}, nowMs) {
+  return editorFocused || ownerMoved || recentInput(inputAt, nowMs)
+}
+
 // What the 3s poll may do RIGHT NOW: the §10 suspension, plus bounded press and
 // scroll-interaction intervals.
 export function shouldDeferRender(state, nowMs) {

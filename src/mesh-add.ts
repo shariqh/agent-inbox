@@ -183,10 +183,10 @@ export function fetchAddedCard(place: Place, timeoutMs = DEADLINE_MS): Promise<A
   })
 }
 
-export type AddedEntry = { endpoint: string; cardSha256: string; tokenFile: string | undefined } | 'invalid'
+export type AddedEntry = { card: string; endpoint: string; cardSha256: string; tokenFile: string | undefined } | 'invalid'
 
 /**
- * An `agents.<id>` value meshctl add wrote (it has a `card`), read back for status and remove:
+ * An `agents.<id>` value meshctl add wrote (it has a `card`), read back for status, remove and call:
  * undefined when it is not one, `invalid` when a field breaks its rule (never echoed).
  */
 export function addedEntry(id: string, value: unknown): AddedEntry | undefined {
@@ -198,5 +198,5 @@ export function addedEntry(id: string, value: unknown): AddedEntry | undefined {
   const token = entry.tokenFile
   if (idRefusal(id) || 'refused' in card || 'refused' in endpoint || card.origin !== endpoint.origin) return 'invalid'
   if (typeof pin !== 'string' || !/^[0-9a-f]{64}$/.test(pin) || (token !== undefined && typeof token !== 'string')) return 'invalid'
-  return { endpoint: endpoint.url, cardSha256: pin, tokenFile: token }
+  return { card: card.url, endpoint: endpoint.url, cardSha256: pin, tokenFile: token }
 }

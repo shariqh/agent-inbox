@@ -632,8 +632,9 @@ the experimental unslop agent (`npm run meshctl -- enable --unslop`, #483; see
 [`docs/architecture/mesh.md`](docs/architecture/mesh.md)) and the request-post client
 (`npm run meshctl -- enable --request-post`, #500; see
 [`docs/request-post.md`](docs/request-post.md)). `npm run meshctl -- add <card-url>`
-adds an A2A agent this repo doesn't ship, by its card, as a dry run until `--apply` (#529;
-nothing calls it until `meshctl call` ships). `npm run meshctl -- status`
+adds an A2A agent this repo doesn't ship, by its card, as a dry run until `--apply` (#529), and
+`npm run meshctl -- call <id>` calls it (#530; see [`docs/mesh-call.md`](docs/mesh-call.md)).
+`npm run meshctl -- status`
 says what the file holds, and `npm run meshctl -- disable --apply` removes it (keeping a
 backup).
 

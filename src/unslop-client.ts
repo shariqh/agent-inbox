@@ -15,10 +15,10 @@
 // card mismatch, 4 usage.
 import { spawn as nodeSpawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { closeSync, constants, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, writeSync } from 'node:fs'
+import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readSync, writeSync } from 'node:fs'
 import { isAbsolute, join, resolve } from 'node:path'
 import { checkCard } from './agent-card.js'
-import { loopbackPort, meshDir, meshFile, readMesh } from './mesh-config.js'
+import { loopbackPort, meshDir, meshFile, openPrivate, readMesh, readPrivate } from './mesh-config.js'
 import { meshLink } from './mesh-identity.js'
 import type { Exchange, MeshLink } from './mesh-identity.js'
 import type { RunCollector } from './mesh-runs.js'
@@ -26,11 +26,10 @@ import type { RunCollector } from './mesh-runs.js'
 const EXTENSION = 'urn:agent-inbox:ext:unslop:v1'
 const KINDS = ['pr', 'issue', 'release-notes', 'docs', 'blog']
 const INPUT_MAX = 12 * 1024
-const PRIVATE_MAX = 64 * 1024
 const START_WAIT_MS = 10_000
 const POLL_MS = 5_000
 const TERMINAL = new Set(['TASK_STATE_COMPLETED', 'TASK_STATE_REJECTED', 'TASK_STATE_FAILED', 'TASK_STATE_CANCELED'])
-const { O_RDONLY, O_WRONLY, O_CREAT, O_TRUNC, O_APPEND, O_NOFOLLOW, O_NONBLOCK } = constants
+const { O_RDONLY, O_TRUNC, O_APPEND, O_NONBLOCK } = constants
 
 export const UNSLOP_USAGE = `usage: <mesh dir>/bin/unslop --kind <pr|issue|release-notes|docs|blog> [--report <file>] [--timeout <s>] [--in <file>] < draft
        (the shim runs agent-inbox-meshctl unslop with the same arguments)
@@ -57,28 +56,6 @@ export interface UnslopIo {
 type Json = Record<string, unknown>
 const obj = (v: unknown): Json => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Json) : {})
 const sleep = (ms: number): Promise<void> => new Promise((done) => setTimeout(done, ms))
-
-/** A private file: regular (never a symlink), this user's, no group or other bits. */
-function readPrivate(path: string): string {
-  const fd = openSync(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
-  try {
-    const stat = fstatSync(fd)
-    if (!stat.isFile() || (process.getuid && stat.uid !== process.getuid()) || stat.mode & 0o077 || stat.size > PRIVATE_MAX) throw new Error('not private')
-    return readFileSync(fd, 'utf8')
-  } finally {
-    closeSync(fd)
-  }
-}
-
-function openPrivate(path: string, flags: number): number {
-  const fd = openSync(path, flags | O_WRONLY | O_CREAT | O_NOFOLLOW | O_NONBLOCK, 0o600)
-  if (!fstatSync(fd).isFile()) {
-    closeSync(fd)
-    throw new Error('not a regular file')
-  }
-  fchmodSync(fd, 0o600)
-  return fd
-}
 
 async function readInput(io: UnslopIo, file: string | undefined): Promise<Buffer> {
   if (file !== undefined) {

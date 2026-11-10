@@ -478,10 +478,11 @@ describe('retention, purge and forget-runs (§5.6, §5.9)', () => {
       `unslop-${localDate(Date.now())}.jsonl`, `unslop-${s.old}.txt`, `web-search-${s.old}.jsonl`, `web-search-${daysAgo(29)}.jsonl`]))
   })
 
-  it('a 40-day-old file of each agent is deleted by disable --request-post (dry run and --apply) and by enable --unslop', () => {
-    const kept = (s: ReturnType<typeof seeded>) => sorted([`request-post-${daysAgo(29)}.jsonl`, `unslop-${daysAgo(29)}.jsonl`, `unslop-${daysAgo(41)}.jsonl`, `unslop-${s.old}.txt`, `web-search-${daysAgo(29)}.jsonl`])
+  it('a 40-day-old file of each agent, an added one included (#530), is deleted by disable --request-post (dry run and --apply) and by enable --unslop', () => {
+    const kept = (s: ReturnType<typeof seeded>) => sorted([`request-post-${daysAgo(29)}.jsonl`, `search-copy-${daysAgo(29)}.jsonl`, `unslop-${daysAgo(29)}.jsonl`, `unslop-${daysAgo(41)}.jsonl`, `unslop-${s.old}.txt`, `web-search-${daysAgo(29)}.jsonl`])
     for (const argv of [['disable', '--request-post'], ['disable', '--request-post', '--apply'], ['enable', '--unslop', '--checkout', '/nonexistent']]) {
       const s = seeded()
+      for (const date of [s.old, daysAgo(29)]) privateFile(join(s.runs, `search-copy-${date}.jsonl`), '{}\n')
       ctl(s.dir, ...argv)
       expect(s.list(), argv.join(' ')).toEqual(kept(s))
     }

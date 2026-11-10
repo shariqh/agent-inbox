@@ -1,6 +1,6 @@
 // The mesh's root switch, `mesh.json` (Mesh M1, #397; design
 // docs/superpowers/specs/2026-10-29-agent-mesh-design.md §2). Node core only:
-// `meshctl` and its clients (src/unslop-client.ts, src/request-post-client.ts) read it and must never
+// `meshctl` and its clients (src/unslop-client.ts, src/request-post-client.ts, src/mesh-call.ts) read it and must never
 // open the hub. The viewer reads it only through src/mesh-agents.ts, lazily,
 // for the agent cards view (the Agents view itself is always on, #454).
 // Nothing in the stdio MCP server's import graph may reach this module.
@@ -9,7 +9,7 @@
 // a symlink), at most MESH_FILE_MAX bytes, a JSON object whose `schema` is 1.
 // A missing key or file means off. A newer schema is never read as on: this
 // build cannot know what it would turn on.
-import { lstatSync, readFileSync } from 'node:fs'
+import { closeSync, constants, fchmodSync, fstatSync, lstatSync, openSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 
@@ -30,6 +30,31 @@ export function meshDir(env: NodeJS.ProcessEnv = process.env, home: string = hom
 }
 
 export const meshFile = (dir: string): string => join(dir, 'mesh.json')
+
+const { O_RDONLY, O_WRONLY, O_CREAT, O_NOFOLLOW, O_NONBLOCK } = constants
+
+/** A private file meshctl's clients read (a token, a profile): regular (never a symlink), this user's, no group or other bits, at most 64 KiB. */
+export function readPrivate(path: string): string {
+  const fd = openSync(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+  try {
+    const stat = fstatSync(fd)
+    if (!stat.isFile() || (process.getuid && stat.uid !== process.getuid()) || stat.mode & 0o077 || stat.size > 64 * 1024) throw new Error('not private')
+    return readFileSync(fd, 'utf8')
+  } finally {
+    closeSync(fd)
+  }
+}
+
+/** A file a client writes (a report, a log), opened `O_NOFOLLOW` and made 0600; `flags` adds `O_TRUNC` or `O_APPEND`. */
+export function openPrivate(path: string, flags: number): number {
+  const fd = openSync(path, flags | O_WRONLY | O_CREAT | O_NOFOLLOW | O_NONBLOCK, 0o600)
+  if (!fstatSync(fd).isFile()) {
+    closeSync(fd)
+    throw new Error('not a regular file')
+  }
+  fchmodSync(fd, 0o600)
+  return fd
+}
 
 export type MeshDocument = { schema: number; [key: string]: unknown }
 

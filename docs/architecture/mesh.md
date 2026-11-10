@@ -6,6 +6,7 @@ paths:
   - "src/unslop-client.ts"
   - "src/mesh-identity.ts"
   - "src/request-post-client.ts"
+  - "src/mesh-call.ts"
   - "src/agent-card.ts"
   - "src/mesh-agents.ts"
   - "src/mesh-runs.ts"
@@ -14,7 +15,7 @@ paths:
   - "public/mesh-agent-page.js"
   - "public/mesh-runs-tab.js"
   - "packages/mesh/src/**/*.ts"
-applyTo: "src/mesh-config.ts,src/meshctl.ts,src/mesh-add.ts,src/unslop-client.ts,src/mesh-identity.ts,src/request-post-client.ts,src/agent-card.ts,src/mesh-agents.ts,src/mesh-runs.ts,public/agents-home.js,public/mesh-section.js,public/mesh-agent-page.js,public/mesh-runs-tab.js,packages/mesh/src/**/*.ts"
+applyTo: "src/mesh-config.ts,src/meshctl.ts,src/mesh-add.ts,src/unslop-client.ts,src/mesh-identity.ts,src/request-post-client.ts,src/mesh-call.ts,src/agent-card.ts,src/mesh-agents.ts,src/mesh-runs.ts,public/agents-home.js,public/mesh-section.js,public/mesh-agent-page.js,public/mesh-runs-tab.js,packages/mesh/src/**/*.ts"
 ---
 
 # Agent mesh (M1)
@@ -38,7 +39,7 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   agent's `agents.unslop` key (#483, `enable --unslop`, below) and the remote request-post
   agent's `agents.request-post` key (#500, `enable --request-post`, below), plus any
   card-driven `agents.<id>` entry for an agent this repo doesn't ship (#529, `meshctl add`,
-  below; nothing calls one until `meshctl call`, #530); `enable --agents-view`
+  below; `meshctl call`, #530, calls one); `enable --agents-view`
   writes nothing and says the view is always on, `status` says the same, and an
   `agentsView` key in an existing file is kept like any other.
 - **The Agents view** (`public/agents-home.js`, now the Agents home, #454; see
@@ -706,10 +707,10 @@ the usage and 4).
   stopped, logged out) a tailnet name is refused. `mesh-add.ts` spawns nothing: the suffix is
   passed in (`MeshctlIo.tailnet` in tests). `status` reads entries by shape only; the call
   path (#530) re-checks the suffix.
-- **Identity (D17).** `add` sends no token and does not run the HMAC proof: the proof's label
-  for an added agent is `meshctl call`'s to define (#530), which proves a loopback agent's
-  identity before every call. A squatter that answers `add` gets a pin that the real agent's
-  card will not match, and no token.
+- **Identity (D17).** `add` sends no token and does not run the HMAC proof: `meshctl call`
+  (#530, below) proves a loopback agent's identity before every call, with the label
+  `a2a-mesh`. A squatter that answers `add` gets a pin that the real agent's card will not
+  match, and no token.
 - **`meshctl remove <id> [--apply]`** deletes only an entry `add` wrote (one with `card`), with
   a backup (deleting `mesh.json` when nothing else is left, like `disable`), then the token
   copy and the `mesh/tokens` and `mesh` folders when they are then empty. It refuses a built-in
@@ -727,6 +728,69 @@ the usage and 4).
   (a counting listener), built-in, malformed and existing ids, the token-file checks, remove's
   refusals and that the viewer never connects to an added agent. `test/agent-card.test.ts`
   pins `checkAddedCard` and `canonicalCard`.
+
+## Calling an added agent (#530)
+
+`meshctl call <id> [--skill <skill>] [--json] [--report <file>] [--timeout <s>] < request` is
+`src/mesh-call.ts`, the one generic client (D15): Node core plus `agent-card.ts`,
+`agent-result.ts`, `mesh-add.ts`, `mesh-config.ts` and `mesh-identity.ts`, imported only by
+meshctl's async entry (`runMeshctl` alone answers with its usage and 4). It never spawns (the
+tailnet suffix comes in as `CallIo.tailnet`, meshctl's `tailscale status` reader), never reads a
+terminal and never uses a proxy. User page and the one exit table: [`docs/mesh-call.md`](../mesh-call.md)
+(0, 11-16, 4; the numbers match unslop's and request-post's where the meaning matches, and 16 is
+a changed card).
+
+- **Before any connection:** arguments, with the id first (4); a `--report` that is a symlink or
+  not a regular file (4); a terminal on stdin (4); the request, at most 64 KiB of UTF-8, not blank
+  (11). Then off (14): `mesh.json` by the one reading rule, `addedEntry()` (now returning the card
+  URL too) for an entry `add` wrote; for a tailnet entry `tailnetRefusal()` again with this Mac's
+  suffix (§8.8); the token copy through `readPrivate()` (moved from unslop's client into
+  `mesh-config.ts`, with `openPrivate()`), required on loopback. The run record is armed here.
+- **The card, then the pin.** On loopback `meshLink(port, token, 'a2a-mesh', <card path>)`: the
+  card request carries the challenge and the proof is HMAC-SHA256(token, `"a2a-mesh/v1\n" + nonce`)
+  (D17). One fixed label for every added agent, since the agent cannot know the id the human
+  picked and its token already separates it from other agents; the label keeps the proof from
+  passing for unslop's or web search's. Not proven is 14, and the peer received only the nonce.
+  On a tailnet name `tlsLink()` (`node:https`, `rejectUnauthorized: true` whatever the
+  environment says, keep-alive, one socket, the injected `lookup` in tests): no challenge, the
+  token on every request to that origin only. Nothing answering, a failed fetch, a non-200 (no
+  redirect is followed) or no JSON card of at most 64 KiB is 15. `cardSha256()` of the fresh card
+  must equal the entry's `cardSha256`, else 16 with the way to accept it again (until #531:
+  `remove`, then `add` again) and nothing else is sent. Then `checkAddedCard()` (15), and
+  `--skill` must be one of the card's skill ids (11). The skill is not sent: A2A 1.0 has no
+  field for it, and a strict front door (web search's) refuses unknown metadata.
+- **The task.** One message with one text part and nothing else, `A2A-Version: 1.0`:
+  `SendStreamingMessage` when `capabilities.streaming` is true, else a blocking `SendMessage`,
+  to the entry's endpoint path (never a URL from the refetched card). Results are A2A 1.0's
+  wrappers (`task`, `message`, `statusUpdate`, `artifactUpdate` with `append`). A task not yet
+  final when the stream ends, or when `SendMessage` returns, is read with `GetTask` every 5 s
+  (three misses end it). One `--timeout` (default 300 s) covers the whole call, so a silent or
+  drip-fed stream is bounded; at it, or at 4 MiB of stream, the task gets `CancelTask`. An
+  `INPUT_REQUIRED` or `AUTH_REQUIRED` task is cancelled too: the client is one-shot.
+- **The answer.** `COMPLETED` is 0: the artifacts' parts (else a direct message's, else the
+  status message's), text as sent and data as two-space JSON, through `frameResult()` (#528) with
+  the id and the fresh pin; `--json` gives its JSON frame. `REJECTED` is 11, or 12 when its data
+  part says `code: 12`; HTTP 429 and 503 are 12; HTTP 401 and 403 are 14; anything else is 13.
+  stderr is fixed words (the cleaned skill ids of a refused `--skill` are the one exception).
+  `--report` writes `{ exit, state?, …frame }` after every run past the arguments (`O_NOFOLLOW`,
+  0600); one it cannot write makes the exit 13. stdout gets the frame only on 0.
+- **Run records.** `runClient('call', …)` appends one record per call under the id: `mesh-runs.ts`
+  takes any id that fits `add`'s id rule as kind `added`, with the common fields only, `op`
+  always `call`, the outcomes of the exit table (16 is `card-changed`) and `reason` from the
+  client's own fixed words. The day file is `<id>-<date>.jsonl`; `pruneRuns()` without a list
+  now expires every agent's files, added ones included. The viewer does not read added agents'
+  records yet (`readRuns` would accept them; no UI here). `forget-runs` and `remove` do not touch
+  them.
+- **Tests:** `test/mesh-call.test.ts` runs the client against a fake agent built from the
+  web-search conformance fixtures (card, recorded streams, `GetTask`, `SendMessage` answers):
+  the exact frame and `--json`, the wire request, `SendMessage` for a card that does not stream,
+  the `GetTask` fallback, the deadline over a silent and a drip-fed stream with `CancelTask`, each
+  exit, a squatter (no proof, unslop's label, another token) that receives neither the token nor
+  the request (counted bytes), a changed card refused before any request, a reordered card
+  accepted, `--skill`, every off case with no connection or DNS lookup, a failed TLS handshake
+  that never carries the token, the terminal rule (an `isTTY` stdin and the real CLI under
+  `script`) and the run record. `test/mesh.test.ts` pins its imports, `test/prstate.test.ts`
+  keeps it out of the stdio graph.
 
 ## Calling request-post (R3)
 

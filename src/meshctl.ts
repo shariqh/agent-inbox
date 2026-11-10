@@ -14,6 +14,7 @@
 // `add` (#529, mesh design §6.7, D13–D17) writes a card-driven `agents.<id>` entry for an
 // agent this repo doesn't ship: its card URL, endpoint, token copy and card pin
 // (src/mesh-add.ts holds the rules); `remove` takes one out. Only `add` writes such an entry.
+// `call` (#530, D15–D17) is the one generic client for such an agent (src/mesh-call.ts).
 //
 //   meshctl enable --agents-view [--apply]   says the Agents view is always on
 //   meshctl enable --unslop [--port <n>] [--checkout <path>] [--apply]
@@ -24,6 +25,8 @@
 //   meshctl add <card-url> [--id <id>] [--token-file <path>] [--apply]
 //                                            add an A2A agent this repo doesn't ship (#529)
 //   meshctl remove <id> [--apply]            take an added agent out again
+//   meshctl call <id> [--skill <s>] [--json] [--report <file>] [--timeout <s>] < request
+//                                            call an added agent (src/mesh-call.ts)
 //   meshctl forget-runs (--unslop | --request-post | --web-search | --all) [--apply]
 //   meshctl status                           say what mesh.json turns on
 //   meshctl unslop --kind <kind> [--report <file>] [--timeout <s>] < draft
@@ -32,7 +35,8 @@
 //
 // Exit codes: 0 done (or nothing to do), 1 refused or failed, 2 usage;
 // `unslop` has its own (0, 10-14, 4), listed in src/unslop-client.ts, and
-// `request-post` its own (0, 11-16, 124, 4), listed in src/request-post-client.ts.
+// `request-post` its own (0, 11-16, 124, 4), listed in src/request-post-client.ts, and
+// `call` one table for every added agent (0, 11-16, 4), in docs/mesh-call.md.
 // The entry appends one run record per client run (src/mesh-runs.ts, cards view V5 §5).
 import { spawnSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
@@ -40,20 +44,16 @@ import { closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdi
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { frameResult } from './agent-result.js'
 import { MESH_SCHEMA, loopbackPort, meshDir, meshFile, readMesh, requestPostEndpoint } from './mesh-config.js'
 import type { MeshDocument, MeshRead } from './mesh-config.js'
 import { BUILT_IN_AGENTS, addedEntry, addedPlace, cardEndpoint, cardLine, cardSha256, fetchAddedCard, idFromName, idRefusal, placeRefusal, tailnetRefusal } from './mesh-add.js'
 import { appendRun, pruneRuns, runFiles, tidyRuns } from './mesh-runs.js'
 import type { RunAgent, RunCollector } from './mesh-runs.js'
+import { CALL_USAGE, runCall } from './mesh-call.js'
 import { REQUEST_POST_USAGE, runRequestPost } from './request-post-client.js'
 import type { RequestPostIo } from './request-post-client.js'
 import { UNSLOP_USAGE, runUnslop } from './unslop-client.js'
 import type { UnslopIo } from './unslop-client.js'
-
-// The untrusted-result frame (#528, D16) lands one PR ahead of its first caller, `meshctl call`
-// (#530), which prints every added agent's result through it; #530 replaces this marker.
-void frameResult // kept exported+tested (#528); first caller is `meshctl call` (#530)
 
 const UNSLOP_PORT = 4420
 const ENDPOINT_RULE = 'https://<name>.<tailnet>.ts.net[:<port>] or, for the SSH fallback only, http://127.0.0.1:<port>'
@@ -67,6 +67,7 @@ const USAGE = `usage: agent-inbox-meshctl status
        agent-inbox-meshctl disable --request-post [--purge] [--apply]
        agent-inbox-meshctl add <card-url> [--id <id>] [--token-file <path>] [--apply]
        agent-inbox-meshctl remove <id> [--apply]
+       agent-inbox-meshctl call <id> [--skill <skill>] [--json] [--report <file>] [--timeout <s>] < request
        agent-inbox-meshctl forget-runs (--unslop | --request-post | --web-search | --all) [--apply]
        agent-inbox-meshctl unslop --kind <kind> [--report <file>] [--timeout <s>] < draft
        agent-inbox-meshctl request-post file|status|wait …
@@ -86,6 +87,9 @@ https://<name>.<tailnet>.ts.net on this Mac's tailnet (read from tailscale statu
 tailnet, a Funnel or a public host waits for #534). A loopback agent needs
 --token-file (a 0600 file you own; meshctl copies it and never prints it). add never replaces an
 entry or takes a built-in name; remove deletes only an entry add wrote, and its token copy.
+call sends one request to an added agent: it checks the card pin and, on loopback, the agent's
+identity before it sends the token or any text, and prints the result framed as untrusted
+(docs/mesh-call.md).
 request-post is what <mesh dir>/bin/request-post runs: it files a content request with the
 service, reads its status or waits for it (docs/request-post.md).
 Each client run appends a record without text to <mesh dir>/mesh/runs/, kept 30 days;
@@ -312,6 +316,11 @@ function meshctl(argv: string[], io: MeshctlIo): number {
   if (command === 'add') {
     // async: the entry below runs it (runAdd)
     err(USAGE)
+    return 4
+  }
+  if (command === 'call') {
+    // async: the entry below runs it (runCall in src/mesh-call.ts)
+    err(CALL_USAGE)
     return 4
   }
   const flags = new Set<string>()
@@ -779,7 +788,7 @@ export async function runAdd(args: string[], io: MeshctlIo = {}): Promise<number
     },
   })
   const code = runSteps(steps, apply, out, err, `Steps before it are done; ${name} was not changed.`)
-  if (apply && code === 0) out(`This --apply is your approval for ${agentId} (D14). Nothing calls it until meshctl call ships (#530); meshctl remove ${agentId} --apply takes it out.\n`)
+  if (apply && code === 0) out(`This --apply is your approval for ${agentId} (D14). meshctl call ${agentId} < request calls it; meshctl remove ${agentId} --apply takes it out.\n`)
   return code
 }
 
@@ -790,13 +799,15 @@ const SIGNALS = ['SIGTERM', 'SIGHUP', 'SIGINT'] as const
  * end: a return, an internal error (13) and SIGTERM, SIGHUP or SIGINT, whose synchronous handler
  * writes `interrupted` and re-raises the signal, so the process still dies by it.
  * V5e adds `web-search` here once W5b's client exists; it fills `io.run` with §5.4's common
- * fields only (mesh-runs.ts already allows no other field for it).
+ * fields only (mesh-runs.ts already allows no other field for it). `call` records under the
+ * added agent's id, once its entry passed the rule (#530).
  */
-export async function runClient(command: 'unslop' | 'request-post', args: string[], io: ClientIo): Promise<number> {
+export async function runClient(command: 'unslop' | 'request-post' | 'call', args: string[], io: ClientIo & { tailnet?: () => string | undefined }): Promise<number> {
   const dir = resolve(meshDir(io.env, io.home))
   const run: RunCollector = {}
+  const agent = command === 'call' ? args[0] ?? '' : command
   const onSignal = (signal: NodeJS.Signals): void => {
-    appendRun(dir, command, run, { exit: null, signal })
+    appendRun(dir, agent, run, { exit: null, signal })
     for (const s of SIGNALS) process.removeListener(s, onSignal)
     process.kill(process.pid, signal)
   }
@@ -804,8 +815,10 @@ export async function runClient(command: 'unslop' | 'request-post', args: string
   try {
     const code = command === 'unslop'
       ? await runUnslop(args, { ...io, run }).catch(() => { run.internal = true; io.err('unslop: failed (internal error). Edit it in-session.\n'); return 13 })
-      : await runRequestPost(args, { ...io, run }).catch(() => { run.internal = true; io.err('request-post: outcome unknown (internal error): run the same command again; never file it in-session.\n'); return 13 })
-    appendRun(dir, command, run, { exit: code })
+      : command === 'call'
+        ? await runCall(args, { tailnet: magicDnsSuffix, ...io, run }).catch(() => { run.internal = true; io.err('meshctl call: failed (internal error).\n'); return 13 })
+        : await runRequestPost(args, { ...io, run }).catch(() => { run.internal = true; io.err('request-post: outcome unknown (internal error): run the same command again; never file it in-session.\n'); return 13 })
+    appendRun(dir, agent, run, { exit: code })
     return code
   } finally {
     for (const s of SIGNALS) process.removeListener(s, onSignal)
@@ -819,7 +832,7 @@ try {
 } catch { /* not run directly */ }
 if (isMain) {
   const [command, ...rest] = process.argv.slice(2)
-  process.exitCode = command === 'unslop' || command === 'request-post'
+  process.exitCode = command === 'unslop' || command === 'request-post' || command === 'call'
     ? await runClient(command, rest, { env: process.env, home: homedir(), stdin: process.stdin, out: (text) => { process.stdout.write(text) }, err: (text) => { process.stderr.write(text) } })
     : command === 'add' ? await runAdd(rest) : runMeshctl(process.argv.slice(2))
 }

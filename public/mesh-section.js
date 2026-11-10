@@ -11,6 +11,7 @@
 // server's `key`, so a repaint never moves focus. Nothing here is an ask: no
 // state reaches public/attention.js, a badge, a count or a tab.
 import { relMs } from './rowview.js'
+import { lastRunText } from './mesh-runs-tab.js'
 
 const LABELS = {
   unchecked: 'Not checked yet',
@@ -57,6 +58,8 @@ export function meshRows(body, nowMs) {
       fix: agent.fix ? `Fix: ${agent.fix}` : '',
       facts: facts.join(' · '),
       usage: usageText(agent.usage),
+      // V5 §2.1's last line: when the newest run ended, by the label clock, and how
+      lastrun: lastRunText(agent.lastRun, nowMs),
     }
   })
   const checked = agents.map((a) => Date.parse(a.checkedAt ?? '')).filter(Number.isFinite)
@@ -73,7 +76,7 @@ export function meshRows(body, nowMs) {
 // V5 §2.2: Left/Right step, Home/End go to the ends; J/K stay the session cards' keys
 const MOVES = { ArrowLeft: -1, ArrowRight: 1, Home: -Infinity, End: Infinity }
 // a card's description lines, in order, by class; ids come from a counter, never a name
-const LINES = ['ma-status', 'ma-fix', 'ma-facts', 'ma-usage']
+const LINES = ['ma-status', 'ma-fix', 'ma-facts', 'ma-usage', 'ma-lastrun']
 let ids = 0
 
 /** @param {{doc?: Document, onRefresh?: () => void, onChange?: () => void, onOpen?: (key: string, name: string) => void}} deps */

@@ -49,6 +49,9 @@ const launches = (value) => Array.isArray(value) && value.every((launch) =>
 // configured mesh agents, built fresh per read and tagged by its bytes.
 const meshAgents = (value) => record(value) && typeof value.on === 'boolean' && Array.isArray(value.agents)
   && value.agents.every((agent) => strings(agent, ['key', 'name', 'state']))
+// Run history (cards view V5 §5.7): one agent's run records, newest end first.
+const meshRuns = (value) => record(value) && typeof value.on === 'boolean' && Array.isArray(value.runs)
+  && value.runs.every((run) => strings(run, ['id', 'agent', 'op', 'at', 'outcome']))
 const validators = new Map([
   ['/api/items', items],
   ['/api/items/history', history],
@@ -63,13 +66,15 @@ const validators = new Map([
   ['/api/messages', messages],
   ['/api/launches', launches],
   ['/api/mesh/agents', meshAgents],
+  ['/api/mesh/agents/runs', meshRuns],
 ])
 // The only routes whose query string selects one of their own representations:
-// the activity history window (#185) and the lingering archived plans (#373).
+// the activity history window (#185), the lingering archived plans (#373) and one
+// agent's run history (`?name=`, cards view V5 §5.7).
 // Anywhere else a query names a different representation, such as the dock
 // watcher's `/api/items?scope=attention`, which must never enter (and so never
 // share or evict) the slot of the route it shares a path with.
-const QUERY_ROUTES = new Set(['/api/activity/history', '/api/boards/archived/plans'])
+const QUERY_ROUTES = new Set(['/api/activity/history', '/api/boards/archived/plans', '/api/mesh/agents/runs'])
 
 const HISTORY_WINDOW_MS = 30 * 24 * 60 * 60 * 1000
 const HISTORY_STEP_MS = 60 * 60 * 1000

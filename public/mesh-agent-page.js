@@ -6,18 +6,19 @@
 // header (state dot, name, state word, checked, Refresh, Close) and an inner
 // tablist. Details is exactly what V3's expanded row showed: the card's lines
 // and a nested Card JSON whose <pre> is rewritten only when it changes. Run
-// history joins the inner tablist, as the default, in V5d; until then the page
-// opens on Details. Card text is untrusted: textContent only, no href, no image.
+// history (V5d, public/mesh-runs-tab.js) is the inner tablist's first tab and the
+// default on every open. Card text is untrusted: textContent only, no href, no image.
 // Nothing here is an ask: the tab never carries a count.
 import { relMs } from './rowview.js'
 import { meshRows } from './mesh-section.js'
+import { installRunsTab } from './mesh-runs-tab.js'
 
 const AUTH = {
   httpAuthSecurityScheme: 'HTTP', apiKeySecurityScheme: 'API key', oauth2SecurityScheme: 'OAuth 2',
   openIdConnectSecurityScheme: 'OpenID Connect', mtlsSecurityScheme: 'mutual TLS',
 }
-// [id, label]; V5d puts ['runs', 'Run history'] first and makes it the default
-const INNER = [['details', 'Details']]
+// [id, label]; the first is the default each time an agent opens (V5 §4)
+const INNER = [['runs', 'Run history'], ['details', 'Details']]
 const GONE = 'This agent is not in mesh.json any more'
 
 const ago = (ms) => (relMs(Math.max(0, ms)) === 'moments' ? 'just now' : `${relMs(Math.max(0, ms))} ago`)
@@ -75,6 +76,10 @@ export function installMeshAgentPage(deps) {
   let current = null
   let inner = INNER[0][0]
   const jsonOpen = new Set()
+  const runs = installRunsTab({ doc })
+  // the last runs input paint() was given, for an inner tab switch's repaint
+  let lastRuns = null
+  let lastNow = 0
 
   const make = (tag, className, text) => {
     const el = doc.createElement(tag)
@@ -131,6 +136,7 @@ export function installMeshAgentPage(deps) {
       if (!tab || tab.dataset.mapTab === inner) return
       inner = tab.dataset.mapTab
       paintInner(page)
+      if (inner === 'runs') paintRuns(page)
     })
     json.addEventListener('toggle', () => {
       if (!current || json.open === jsonOpen.has(current.key)) return
@@ -147,6 +153,12 @@ export function installMeshAgentPage(deps) {
       tab.tabIndex = on ? 0 : -1
     }
     for (const [id] of INNER) setHidden(page.querySelector(`#agentPagePanel-${id}`), id !== inner)
+  }
+
+  // the runs body belongs to the agent it was read for; another agent's never shows
+  function paintRuns(page) {
+    if (!current) return
+    runs.paint(page.querySelector('#agentPagePanel-runs'), lastRuns?.key === current.key ? lastRuns : null, lastNow)
   }
 
   // rewritten only when the card's JSON changed, so a selection inside it survives polls
@@ -169,9 +181,11 @@ export function installMeshAgentPage(deps) {
   /**
    * Paints the tab and, while an agent is open, its page from the last `/api/mesh/agents` body.
    * An agent the body no longer names keeps its tab and last lines, under one line saying so.
+   * Run history paints from `runsInput`, the last `/api/mesh/agents/runs` body for `key`.
    * @param {{body: any, stale: boolean} | null} input @param {number} nowMs
+   * @param {{key: string, body: any, stale: boolean} | null} [runsInput]
    */
-  function paint(input, nowMs) {
+  function paint(input, nowMs, runsInput = null) {
     const tab = deps.tab()
     const page = deps.page()
     if (!tab || !page) return
@@ -185,6 +199,9 @@ export function installMeshAgentPage(deps) {
     setText(tab.querySelector('.tab-name'), current.name)
     setText(page.querySelector('.map-name'), current.name)
     paintInner(page)
+    lastRuns = runsInput
+    lastNow = nowMs
+    paintRuns(page)
     if (!agent) return
     const model = meshRows({ on: true, agents: [agent], others: 0 }, nowMs)
     const row = model.rows[0]
@@ -214,6 +231,7 @@ export function installMeshAgentPage(deps) {
     paint,
     /** Opens `key` in the one slot, replacing any other; each open starts on the default inner tab. */
     open(key, name) {
+      runs.reset(current?.key !== key)
       if (current?.key !== key) {
         // another agent's lines never show under this one's name
         const lines = deps.page()?.querySelector('.ma-lines')
@@ -229,7 +247,9 @@ export function installMeshAgentPage(deps) {
     close() { current = null },
     /** The open agent, or null. */
     current: () => current,
+    /** Whether Run history is the inner tab showing: the runs read's gate (V5 §5.7). */
+    runsShowing: () => Boolean(current) && inner === 'runs',
     /** The window-local page state, for frameInputs(). */
-    state: () => [current?.key ?? '', inner, [...jsonOpen].sort().join(',')].join('|'),
+    state: () => [current?.key ?? '', inner, [...jsonOpen].sort().join(','), runs.state()].join('|'),
   }
 }

@@ -10,8 +10,9 @@ paths:
   - "public/agents-home.js"
   - "public/mesh-section.js"
   - "public/mesh-agent-page.js"
+  - "public/mesh-runs-tab.js"
   - "packages/mesh/src/**/*.ts"
-applyTo: "src/mesh-config.ts,src/meshctl.ts,src/unslop-client.ts,src/request-post-client.ts,src/agent-card.ts,src/mesh-agents.ts,src/mesh-runs.ts,public/agents-home.js,public/mesh-section.js,public/mesh-agent-page.js,packages/mesh/src/**/*.ts"
+applyTo: "src/mesh-config.ts,src/meshctl.ts,src/unslop-client.ts,src/request-post-client.ts,src/agent-card.ts,src/mesh-agents.ts,src/mesh-runs.ts,public/agents-home.js,public/mesh-section.js,public/mesh-agent-page.js,public/mesh-runs-tab.js,packages/mesh/src/**/*.ts"
 ---
 
 # Agent mesh (M1)
@@ -105,7 +106,9 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   those characters escaped). The view never reaches attention.
   The page side (slice V3) is `public/mesh-section.js` (named apart from `src/mesh-agents.ts`,
   since `test/dead-exports.test.ts` needs unique module basenames), mounted by
-  `public/agents-home.js`; `viewer-dashboard-and-shell.md` has its rules.
+  `public/agents-home.js`; `viewer-dashboard-and-shell.md` has its rules. The agent tab's Run
+  history (slice V5d) is `public/mesh-runs-tab.js`; it shows the route's `forget` text as data,
+  so no `public/` file names the command.
   Run history (cards view V5, design
   `docs/superpowers/specs/2026-11-09-agent-cards-view-v5-design.md` §5; slice V5a): the meshctl
   entry that runs a client (`runClient()` in `src/meshctl.ts`, for `unslop` and `request-post`;

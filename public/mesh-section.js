@@ -1,13 +1,15 @@
 // The Agents home's Mesh agents section (agent cards view design
-// docs/superpowers/specs/2026-11-09-agent-cards-view-design.md §2, V3): one row
+// docs/superpowers/specs/2026-11-09-agent-cards-view-design.md §2, V3): one card
 // per agent mesh.json configures, from the last `/api/mesh/agents` body app.js
-// read. Global: no state filter or project lens narrows it. Card text is
-// untrusted: it reaches the DOM only through textContent, never as markup, an
+// read, in a horizontal strip of fixed-width cards (cards view V5 §2, V5c2).
+// Global: no state filter or project lens narrows it. Card text is untrusted: it
+// reaches the DOM only through textContent and attributes, never as markup, an
 // href or an image. The page owns only the state labels; every reason and fix
-// comes from the server. Pressing a row opens its agent tab (cards view V5c1,
-// public/mesh-agent-page.js), which shows the card's lines and Card JSON.
-// Nothing here is an ask: no state reaches public/attention.js, a badge, a
-// count or a tab.
+// comes from the server. Pressing a card opens its agent tab (cards view V5c1,
+// public/mesh-agent-page.js), which shows the card's lines and Card JSON. The
+// strip is one Tab stop: Left/Right/Home/End rove between cards, kept by the
+// server's `key`, so a repaint never moves focus. Nothing here is an ask: no
+// state reaches public/attention.js, a badge, a count or a tab.
 import { relMs } from './rowview.js'
 
 const LABELS = {
@@ -22,11 +24,10 @@ const LABELS = {
 const NEUTRAL = new Set(['unchecked', 'checking', 'not-running'])
 const plural = (n, one) => `${n} ${one}${n === 1 ? '' : 's'}`
 const ago = (ms) => (relMs(Math.max(0, ms)) === 'moments' ? 'just now' : `${relMs(Math.max(0, ms))} ago`)
-const items = (list) => (Array.isArray(list?.items) ? list.items : [])
-const count = (list) => items(list).length + (Number(list?.more) || 0)
 
+// V5 §2.1's short form, never a host or port: Details shows the endpoint
 function whereText(agent) {
-  if (agent.where === 'local') return agent.endpoint ? `Local · ${agent.endpoint.replace(/^http:\/\//, '')}` : 'Local'
+  if (agent.where === 'local') return 'Local'
   if (agent.where === 'tailnet') return 'Remote · tailnet'
   if (agent.where === 'ssh-tunnel') return 'Remote · SSH tunnel'
   return agent.name === 'unslop' ? 'Local' : 'Remote'
@@ -38,7 +39,7 @@ function usageText(usage) {
   return `Today: ${plural(usage.tasks, 'task')} · ${plural(Math.round(usage.modelMs / 60_000), 'model-minute')}`
 }
 
-/** The section's model from a `/api/mesh/agents` body: one row per agent, by name. */
+/** The section's model from a `/api/mesh/agents` body: one card per agent, by name. */
 export function meshRows(body, nowMs) {
   const agents = (Array.isArray(body?.agents) ? body.agents : []).slice().sort((a, b) => String(a.name).localeCompare(String(b.name)))
   const rows = agents.map((agent) => {
@@ -47,12 +48,11 @@ export function meshRows(body, nowMs) {
     const facts = [whereText(agent)]
     if (card?.version) facts.push(`${/^v\d/.test(card.version) ? '' : 'v'}${card.version}`)
     if (!agent.card && agent.lastSeen?.at) facts.push(`seen ${ago(nowMs - Date.parse(agent.lastSeen.at))}`)
-    if (items(card?.interfaces).some((i) => i.protocolVersion === '1.0')) facts.push('A2A 1.0')
-    if (card) facts.push(plural(count(card.skills), 'skill'))
     return {
       key: String(agent.key),
       name: String(agent.name),
       tone: agent.state === 'up' ? 'up' : NEUTRAL.has(agent.state) ? 'neutral' : 'amber',
+      word: label,
       status: [label, agent.reason].filter(Boolean).join(' · '),
       fix: agent.fix ? `Fix: ${agent.fix}` : '',
       facts: facts.join(' · '),
@@ -69,12 +69,21 @@ export function meshRows(body, nowMs) {
   }
 }
 
+
+// V5 §2.2: Left/Right step, Home/End go to the ends; J/K stay the session cards' keys
+const MOVES = { ArrowLeft: -1, ArrowRight: 1, Home: -Infinity, End: Infinity }
+// a card's description lines, in order, by class; ids come from a counter, never a name
+const LINES = ['ma-status', 'ma-fix', 'ma-facts', 'ma-usage']
+let ids = 0
+
 /** @param {{doc?: Document, onRefresh?: () => void, onChange?: () => void, onOpen?: (key: string, name: string) => void}} deps */
 export function installMeshAgents(deps = {}) {
   const doc = deps.doc ?? globalThis.document
   // window-local, never persisted: the section opens by default
   let open = true
-  const rowEls = new Map()
+  // the card Tab lands on: the last one focused, else the first
+  let roving = null
+  const cardEls = new Map()
   let root = null
 
   const make = (tag, className, text) => {
@@ -85,7 +94,18 @@ export function installMeshAgents(deps = {}) {
   }
   const setText = (el, text) => { if (el.textContent !== text) el.textContent = text }
   const setHidden = (el, hidden) => { if (el.hidden !== hidden) el.hidden = hidden }
-  const setAttr = (el, name, value) => { if (el.getAttribute(name) !== value) el.setAttribute(name, value) }
+  const setAttr = (el, name, value) => {
+    if (value === null) { if (el.hasAttribute(name)) el.removeAttribute(name) } else if (el.getAttribute(name) !== value) el.setAttribute(name, value)
+  }
+  const cardsIn = (strip) => [...strip.querySelectorAll(':scope > li > .ma-card')]
+  function rove(strip) {
+    const cards = cardsIn(strip)
+    if (!cards.some((el) => el.parentElement.dataset.meshKey === roving)) roving = cards[0]?.parentElement.dataset.meshKey ?? null
+    for (const el of cards) {
+      const tab = el.parentElement.dataset.meshKey === roving ? 0 : -1
+      if (el.tabIndex !== tab) el.tabIndex = tab
+    }
+  }
 
   function element() {
     if (root) return root
@@ -104,52 +124,85 @@ export function installMeshAgents(deps = {}) {
     head.append(toggle, make('span', 'ah-spacer'), make('small', 'ma-checked'), refresh)
     const body = make('div', 'ma-body')
     body.id = 'meshAgentsBody'
-    const list = make('ul', 'ma-rows')
-    body.append(make('p', 'ma-stale', 'could not read; showing what was last read'), list, make('p', 'ma-others'))
+    // the explicit role keeps list semantics in WebKit under `list-style: none`
+    const strip = make('ul', 'ma-strip')
+    strip.setAttribute('role', 'list')
+    body.append(make('p', 'ma-stale', 'could not read; showing what was last read'), strip, make('p', 'ma-others'))
     root.append(head, body)
     toggle.addEventListener('click', () => { open = !open; deps.onChange?.() })
     refresh.addEventListener('click', () => deps.onRefresh?.())
-    list.addEventListener('click', (event) => {
-      const button = event.target instanceof doc.defaultView.Element ? event.target.closest('[data-mesh-open]') : null
-      const row = button?.closest('[data-mesh-key]')
-      if (row) deps.onOpen?.(row.dataset.meshKey, button.querySelector('.ma-name').textContent)
+    strip.addEventListener('click', (event) => {
+      const card = event.target instanceof doc.defaultView.Element ? event.target.closest('.ma-card') : null
+      if (card) deps.onOpen?.(card.parentElement.dataset.meshKey, card.querySelector('.ma-name').textContent)
+    })
+    strip.addEventListener('focusin', (event) => {
+      const card = event.target instanceof doc.defaultView.Element ? event.target.closest('.ma-card') : null
+      if (!card) return
+      roving = card.parentElement.dataset.meshKey
+      rove(strip)
+    })
+    strip.addEventListener('keydown', (event) => {
+      if (event.defaultPrevented || event.isComposing || event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return
+      const move = MOVES[event.key]
+      const card = event.target instanceof doc.defaultView.Element ? event.target.closest('.ma-card') : null
+      if (!move || !card) return
+      event.preventDefault()
+      const cards = cardsIn(strip)
+      const next = cards[Math.max(0, Math.min(cards.length - 1, cards.indexOf(card) + move))]
+      if (!next || next === card) return
+      next.focus({ preventScroll: true })
+      // no `behavior`: focus moves without a scroll animation (V5 §2.2)
+      next.scrollIntoView?.({ block: 'nearest', inline: 'nearest' })
     })
     return root
   }
 
-  function rowEl(key) {
-    const el = make('li', 'ma-row')
+  function cardEl(key) {
+    const el = make('li', 'ma-item')
     el.dataset.meshKey = key
-    const toggle = make('button', 'ma-row-toggle')
-    toggle.type = 'button'
-    toggle.dataset.meshOpen = ''
-    toggle.dataset.dashboardFocusKey = `ma:row:${key}`
+    const card = make('button', 'ma-card')
+    card.type = 'button'
+    card.dataset.meshOpen = ''
+    card.dataset.dashboardFocusKey = `ma:card:${key}`
+    card.tabIndex = -1
     const dot = make('span', 'ma-dot')
     dot.setAttribute('aria-hidden', 'true')
-    toggle.append(dot, make('span', 'ma-name'), make('span', 'ma-status'))
-    el.append(toggle, make('div', 'ma-facts'), make('div', 'ma-usage'), make('div', 'ma-fix'))
+    const title = make('span', 'ma-line ma-title')
+    title.append(dot, make('span', 'ma-name'))
+    const base = `ma-d${++ids}`
+    card.append(title, ...LINES.map((name, index) => {
+      const line = make('span', `ma-line ${name}`)
+      line.id = `${base}-${index}`
+      return line
+    }))
+    el.append(card)
     return el
   }
 
-  function paintRow(el, row) {
-    for (const name of [...el.classList]) if (name.startsWith('ma-tone-') && name !== `ma-tone-${row.tone}`) el.classList.remove(name)
-    if (!el.classList.contains(`ma-tone-${row.tone}`)) el.classList.add(`ma-tone-${row.tone}`)
-    setText(el.querySelector('.ma-name'), row.name)
-    setText(el.querySelector('.ma-status'), row.status)
-    setText(el.querySelector('.ma-facts'), row.facts)
-    const usage = el.querySelector('.ma-usage')
-    setText(usage, row.usage)
-    setHidden(usage, !row.usage)
-    const fix = el.querySelector('.ma-fix')
-    setText(fix, row.fix)
-    setHidden(fix, !row.fix)
+  function paintCard(el, row, current) {
+    const card = el.firstChild
+    for (const name of [...card.classList]) if (name.startsWith('ma-tone-') && name !== `ma-tone-${row.tone}`) card.classList.remove(name)
+    if (!card.classList.contains(`ma-tone-${row.tone}`)) card.classList.add(`ma-tone-${row.tone}`)
+    setText(card.querySelector('.ma-name'), row.name)
+    const described = []
+    for (const name of LINES) {
+      const line = card.querySelector(`.${name}`)
+      const text = row[name.slice(3)]
+      setText(line, text)
+      setHidden(line, !text)
+      if (text) described.push(line.id)
+    }
+    setAttr(card, 'aria-label', `${row.name}, ${row.word}`)
+    setAttr(card, 'aria-describedby', described.join(' '))
+    setAttr(card, 'aria-current', current ? 'true' : null)
   }
 
   /**
    * Mounts the section in `slot` while there is a body to show; with none (the mesh off) no section exists.
    * @param {Element} slot @param {{body: any, stale: boolean} | null} input @param {number} nowMs
+   * @param {string | null} [openKey] the agent the agent tab holds, whose card carries aria-current
    */
-  function paint(slot, input, nowMs) {
+  function paint(slot, input, nowMs, openKey = null) {
     if (!input) {
       root?.remove()
       return
@@ -166,20 +219,21 @@ export function installMeshAgents(deps = {}) {
     const others = section.querySelector('.ma-others')
     setText(others, model.others)
     setHidden(others, !model.others)
-    const list = section.querySelector('.ma-rows')
+    const strip = section.querySelector('.ma-strip')
     const nodes = model.rows.map((row) => {
-      let el = rowEls.get(row.key)
-      if (!el) rowEls.set(row.key, (el = rowEl(row.key)))
-      paintRow(el, row)
+      let el = cardEls.get(row.key)
+      if (!el) cardEls.set(row.key, (el = cardEl(row.key)))
+      paintCard(el, row, row.key === openKey)
       return el
     })
     const keep = new Set(model.rows.map((row) => row.key))
-    for (const [key, el] of rowEls) {
+    for (const [key, el] of cardEls) {
       if (keep.has(key)) continue
       el.remove()
-      rowEls.delete(key)
+      cardEls.delete(key)
     }
-    nodes.forEach((el, index) => { if (list.children[index] !== el) list.insertBefore(el, list.children[index] ?? null) })
+    nodes.forEach((el, index) => { if (strip.children[index] !== el) strip.insertBefore(el, strip.children[index] ?? null) })
+    rove(strip)
   }
 
   return {

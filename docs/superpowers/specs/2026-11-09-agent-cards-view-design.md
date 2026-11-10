@@ -35,7 +35,7 @@ what paints after each trigger, and the `unchecked` state (§2.4).
    none of it.
 2. **Where:** a **Mesh agents** section at the end of the Agents home, above its folds. It is
    global: the state filters and the project and agent lens do not narrow it, and it shows in the
-   zero-sessions empty state. One row per configured agent: state, name, where it runs, version,
+   zero-sessions empty state. One card per configured agent, in a horizontal strip (V5 §2): state, name, where it runs, version,
    skill count. A row expands in place to the card's details and, one level deeper, the raw card
    JSON as inert text (§2).
 3. **State words are honest.** unslop not running is normal: "Not running · starts on its first
@@ -104,6 +104,9 @@ brings more agents, the same section gains grouping by host; a tab can be recons
 (§13 Q1).
 
 ### 2.2 The collapsed row
+
+*Superseded by V5 §2.1 (the card, V5c2) and §4 (Details, in the agent tab, V5c1). The lines and
+words are unchanged; their place moved.*
 
 One row per agent, sorted by name:
 

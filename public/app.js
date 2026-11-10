@@ -657,7 +657,7 @@ const meshAgentPage = installMeshAgentPage({
   onRefresh: (name) => { meshRefresh(name) },
   onClose: closeMeshAgent,
 })
-// A row's press: the page paints at once from the last bodies (selectTab), selectTab posts the
+// A card's press: the page paints at once from the last bodies (selectTab), selectTab posts the
 // agent's open, and one reloadAndPaint() brings what the page reads without waiting for a tick.
 function openMeshAgent(key, name) {
   meshAgentPage.open(key, name)
@@ -666,7 +666,7 @@ function openMeshAgent(key, name) {
   reloadAndPaint()
 }
 // Close: the Dashboard (an open for every agent, from another tab); focus, if it was in the
-// page, goes to the agent's row, else the Agents heading, only in a focused window.
+// page, goes to the agent's card, else the Agents heading, only in a focused window.
 function closeMeshAgent() {
   const key = meshAgentPage.current()?.key
   const hadFocus = document.hasFocus() && Boolean(activeFocusElement()?.closest?.('#agentPage'))
@@ -2123,6 +2123,8 @@ function renderDashboardAmbient(model, { forced = false } = {}) {
     nowMs: Date.now(), forced, lensProject: projectFilter, selected: focusSession, later: model.later,
     // global: the lens and filters never narrow it; nothing it draws reaches attention
     mesh: meshWanted() && lastData.mesh?.body?.on === true ? lastData.mesh : null,
+    // the agent the agent tab holds: its card carries aria-current (cards view V5 §2.2)
+    meshOpen: meshAgentPage.current()?.key ?? null,
   })
   renderDashFocus(focusPanelEl, model, { forced })
   placeFocusPanel()

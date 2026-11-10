@@ -107,15 +107,33 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   `docs/superpowers/specs/2026-11-09-agent-cards-view-design.md` §2, §4.5) is
   `public/mesh-section.js`, mounted by `agents-home.js` after the groups and before the folds,
   in a slot no filter or lens touches: the state filters and the project and agent lens never
-  narrow it, and it shows under the empty state's text with no session. One row per agent by
-  `mesh.json` name, keyed by the server's `key`: the page's state words (Not checked yet,
+  narrow it, and it shows under the empty state's text with no session. Its body is a strip of
+  cards (cards view V5c2, V5 design §2): `<ul class="ma-strip" role="list">`, one `<li>` per agent
+  by `mesh.json` name, keyed by the server's `key`, each holding one native
+  `<button class="ma-card">`, updated in place (never rebuilt), so the strip's horizontal scroll
+  position, focus and a selection survive polls. A card is a fixed 232 by 116 px
+  (`min(232px, 78cqi)` against the `.dashboard`'s `operations-desk` container, with no
+  `@media` rule, so in a narrow window the next card still peeks) and every line clamps to one with an
+  ellipsis: the state dot and name; the state word with the server's `reason`; the `fix` in
+  amber; where it runs (Local, Remote · tailnet, Remote · SSH tunnel, never a host or port) with
+  the version and "seen 2h ago" for the last good card; unslop's usage line. No skill count,
+  "A2A 1.0" or description (those are in Details). Its accessible name is "name, state word"
+  (`aria-label`); the other shown lines are its `aria-describedby`, ids from a counter, never a
+  name. The open agent's card carries `aria-current="true"` (a `--app-border-strong` border),
+  from `meshAgentPage.current()` passed as the paint input's `meshOpen`. The strip is one Tab
+  stop: the last focused card, else the first, and a card that leaves hands it to the first;
+  Left/Right step, Home/End go to the ends, each calling `scrollIntoView({ block: 'nearest',
+  inline: 'nearest' })` with no `behavior`; Enter and Space are the button's own. J and K stay
+  the session cards' keys and never move into the strip. The strip scrolls (`overflow-x: auto`,
+  `scroll-snap-type: x proximity`, a visible `scrollbar-width: thin`) with the compact tab row's
+  CSS-only shade at both ends (a `local` cover over a `scroll` shade per edge; the cards are
+  see-through so the shade shows on them). Nothing animates. A card uses the page's state words (Not checked yet,
   Checking…, Running for unslop / Reachable for request-post, Not running, Unreachable, Not an
   agent card, Card does not match this build, Endpoint not accepted) with the server's `reason`
   and `fix`; quiet green for up, neutral grey for unchecked, checking and not running, amber
-  (`--app-warning`, never the attention colour) for the rest. The row says Local with
-  the loopback port, or Remote · tailnet / SSH tunnel without the host; pressing it opens the
-  agent tab (below). Card text reaches the DOM only through
-  `textContent`: no `img`, no `href`, no request to a card's URL. `app.js` reads
+  (`--app-warning`, never the attention colour) for the rest. Pressing a card opens the agent
+  tab (below). Card text reaches the DOM only through
+  `textContent` and the `aria-label` attribute's value: no `img`, no `href`, no request to a card's URL. `app.js` reads
   `GET /api/mesh/agents` (a conditional snapshot) only while the last `/api/version` carried
   `mesh`, the Dashboard or an open agent tab is the tab and the document is visible; a skipped read keeps the last
   body, a failed read keeps it marked stale (never a failed tick), and an `on: false` body hides
@@ -134,7 +152,7 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   and `reloadAndPaint()` only). It is `hidden` while no agent is open (`.tab[hidden]` beats
   `.tab`'s `display`), and `wireTablist` skips a hidden tab as it skips one in a closed
   `<details>`. `selectTab('agent')` returns without effect with no agent open, so a G key, an
-  item hash or a focus bookmark never lands on an empty page. Pressing a section row opens the
+  item hash or a focus bookmark never lands on an empty page. Pressing a section card opens the
   agent (replacing any other in the same slot), selects the tab, which posts
   `{trigger:'open', name}` for that agent only, and calls `reloadAndPaint()` once; selecting the
   agent tab from another tab posts the same open, selecting it while active or switching inner
@@ -142,7 +160,7 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   name. The page header holds the state dot, name, state word, "checked …", **Refresh**
   (`{trigger:'refresh', name}` then `reloadAndPaint()`) and **Close**, which hides the tab,
   selects the Dashboard (an open for every agent) and, if focus was in the page in a focused
-  window, focuses the agent's row, else the Agents heading. Esc does not close it. Its inner
+  window, focuses the agent's card, else the Agents heading. Esc does not close it. Its inner
   tablist (`wireTablist(…, 'horizontal')`) holds **Details**: the card's labelled lines and a
   nested Card JSON whose `<pre>` is rewritten only when `cardJson` changes, so a selection in it
   survives polls. Run history joins as the default in V5d; until then the page opens on Details.

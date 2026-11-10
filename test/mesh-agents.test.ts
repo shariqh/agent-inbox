@@ -6,7 +6,7 @@ import { createServer as createHttpServer } from 'node:http'
 import type { IncomingHttpHeaders, Server, ServerResponse } from 'node:http'
 import { createServer as createNetServer } from 'node:net'
 import type { LookupFunction, Server as NetServer } from 'node:net'
-import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
+import { appendFileSync, chmodSync, mkdirSync, readFileSync, readdirSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import { startServer } from '../packages/mesh/src/a2a.js'
@@ -440,5 +440,117 @@ describe('the routes (design §4.5, §4.7)', () => {
     s.write({ schema: 1, agents: {} })
     s.clock.t += 5_000
     expect(await (await s.app.request('/api/version')).text()).toBe(await (await s.plain.request('/api/version')).text())
+  })
+})
+
+describe('run history (cards view V5 §5.7, slice V5b)', () => {
+  const ymd = (ms: number) => {
+    const d = new Date(ms)
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  }
+  let n = 0
+  const rec = (at: number, extra: Json = {}): Json => ({
+    v: 1, id: `${'abcdefgh'[n % 8]}${String.fromCharCode(97 + (Math.floor(n++ / 8) % 26))}aaaaaaaa`, agent: 'unslop', op: 'docs',
+    at: new Date(at).toISOString(), ms: 300, exit: 0, outcome: 'ok', ...extra,
+  })
+  const runsDir = (dir: string) => join(dir, 'mesh', 'runs')
+  function append(dir: string, r: Json, agent = 'unslop', date?: string) {
+    mkdirSync(runsDir(dir), { recursive: true, mode: 0o700 })
+    chmodSync(runsDir(dir), 0o700)
+    const file = join(runsDir(dir), `${agent}-${date ?? ymd(Date.parse(r['at']))}.jsonl`)
+    appendFileSync(file, `\n${JSON.stringify(r)}\n`, { mode: 0o600 })
+    chmodSync(file, 0o600)
+  }
+  const runs = (s: ReturnType<typeof setup>, name: string, headers: Record<string, string> = {}) => s.app.request(`/api/mesh/agents/runs?name=${name}`, { headers })
+
+  it('without opts.mesh or with the mesh off: off, whatever the runs folder holds', async () => {
+    const s = setup(undefined)
+    append(s.dir, rec(s.clock.t - 1000))
+    expect(await (await runs(s, 'unslop')).json()).toEqual({ on: false, runs: [] })
+    expect(await (await s.plain.request('/api/mesh/agents/runs?name=unslop')).json()).toEqual({ on: false, runs: [] })
+    s.write({ schema: 1, agents: {} })
+    s.clock.t += 5_000
+    expect(await (await runs(s, 'unslop')).json()).toEqual({ on: false, runs: [] })
+    expect(await s.agents()).toEqual({ on: false, agents: [] })
+  })
+
+  it('a missing or unknown name is 400; a known one mesh.json does not configure is ok:false', async () => {
+    const s = setup(unslopAt(await freePort()))
+    for (const url of ['/api/mesh/agents/runs', '/api/mesh/agents/runs?name=', '/api/mesh/agents/runs?name=later', '/api/mesh/agents/runs?name=__proto__']) {
+      expect((await s.app.request(url)).status, url).toBe(400)
+    }
+    expect((await s.plain.request('/api/mesh/agents/runs')).status).toBe(400)
+    for (const name of ['request-post', 'web-search']) expect(await (await runs(s, name)).json(), name).toEqual({ ok: false, error: 'not configured' })
+  })
+
+  it('serves the newest 200 runs by end time with the forget command, and never connects, writes or deletes', async () => {
+    const counter = await serve(UNSLOP)
+    const s = setup(unslopAt(counter.port))
+    const t = s.clock.t
+    const old = rec(t - 40 * 24 * 3600_000)
+    append(s.dir, old)
+    // a 4-hour wait that ended last, after three shorter runs that started after it
+    const long = rec(t - 1000, { ms: 4 * 3600_000 })
+    const shorter = [rec(t - 3 * 3600_000), rec(t - 2 * 3600_000), rec(t - 3600_000)]
+    for (const r of [long, ...shorter]) append(s.dir, r, 'unslop', ymd(t))
+    for (let i = 0; i < 200; i++) append(s.dir, rec(t - 5 * 3600_000 - i * 1000), 'unslop', ymd(t))
+    const listing = () => readdirSync(runsDir(s.dir)).sort().map((f) => [f, statSync(join(runsDir(s.dir), f)).mtimeMs])
+    const before = listing()
+    const body = await (await runs(s, 'unslop')).json()
+    expect(body).toMatchObject({ on: true, name: 'unslop', older: true, skipped: 0, truncated: false, keptDays: 30, forget: 'npm run meshctl -- forget-runs --unslop' })
+    expect(body.runs).toHaveLength(200)
+    expect(body.runs.slice(0, 4).map((r: Json) => r.id)).toEqual([long, ...[...shorter].reverse()].map((r) => r['id']))
+    expect(JSON.stringify(body)).not.toContain(old['id'])
+    expect((await s.agents()).agents[0].lastRun).toEqual({ at: long['at'], op: 'docs', outcome: 'ok' })
+    expect(listing()).toEqual(before)
+    expect(counter.connections).toBe(0)
+  })
+
+  it('the canary: text hand-edited into a record never reaches either route', async () => {
+    const s = setup(unslopAt(await freePort()))
+    const C = 'canary-route-k7'
+    // unknown fields are dropped; a known field holding text fails its rule and skips the line
+    append(s.dir, rec(s.clock.t - 1000, { title: C, draft: C, url: `https://${C}.example` }))
+    append(s.dir, rec(s.clock.t - 900, { status: 'rewritten', note: C }))
+    append(s.dir, rec(s.clock.t - 800, { reason: `${C} words` }))
+    append(s.dir, rec(s.clock.t - 700, { outcome: C }))
+    append(s.dir, rec(s.clock.t - 600, { timing: { queued: 1, load: 1, model: 1, check: 1, text: C } }))
+    const body = await (await runs(s, 'unslop')).text()
+    expect(body).not.toContain(C)
+    expect(JSON.parse(body)).toMatchObject({ skipped: 3, runs: [{ status: 'rewritten' }, { op: 'docs' }] })
+    expect(JSON.stringify(await s.agents())).not.toContain(C)
+  })
+
+  it('ETag: 304 until a run lands and the 5 s pass is due, then 200; lastRun follows the newest end time', async () => {
+    const s = setup({ schema: 1, agents: { ...unslopAt(await freePort()).agents, 'request-post': { endpoint: `http://127.0.0.1:${await freePort()}` } } })
+    const first = rec(s.clock.t - 60_000)
+    append(s.dir, first)
+    const r1 = await runs(s, 'unslop')
+    const a1 = await s.app.request('/api/mesh/agents')
+    expect(r1.headers.get('cache-control')).toBe('no-store')
+    const [tag, agentsTag] = [r1.headers.get('etag')!, a1.headers.get('etag')!]
+    const lastRuns = (body: Json) => body.agents.map((a: Json) => [a.name, a.lastRun])
+    expect(lastRuns(await a1.json())).toEqual([['request-post', null], ['unslop', { at: first['at'], op: 'docs', outcome: 'ok' }]])
+    // idle ticks: identical bytes, 304 on both routes
+    for (let i = 0; i < 3; i++) {
+      s.clock.t += 5_000
+      expect((await runs(s, 'unslop', { 'if-none-match': tag })).status).toBe(304)
+      expect((await s.app.request('/api/mesh/agents', { headers: { 'if-none-match': agentsTag } })).status).toBe(304)
+    }
+    // a run lands: within the 5 s pass nothing is read again
+    const later = rec(s.clock.t - 10, { exit: 13, outcome: 'failed', reason: 'internal' })
+    append(s.dir, later)
+    expect((await runs(s, 'unslop', { 'if-none-match': tag })).status).toBe(304)
+    s.clock.t += 5_000
+    const r2 = await runs(s, 'unslop', { 'if-none-match': tag })
+    expect(r2.status).toBe(200)
+    expect((await r2.json()).runs.map((r: Json) => r.id)).toEqual([later['id'], first['id']])
+    const a2 = await s.app.request('/api/mesh/agents', { headers: { 'if-none-match': agentsTag } })
+    expect(a2.status).toBe(200)
+    expect(lastRuns(await a2.json())[1]).toEqual(['unslop', { at: later['at'], op: 'docs', outcome: 'failed' }])
+    // an older run appended late does not move lastRun
+    append(s.dir, rec(s.clock.t - 3_600_000))
+    s.clock.t += 5_000
+    expect(lastRuns(await s.agents())[1][1].at).toBe(later['at'])
   })
 })

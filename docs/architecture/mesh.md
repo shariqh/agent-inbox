@@ -79,6 +79,19 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   (agent cards view design §4.4, slice V1). It imports nothing at all (`test/mesh.test.ts`
   pins that), and `test/prstate.test.ts` names it in the stdio graph's forbidden list, since
   its name misses the `/mesh/i` net.
+  `src/agent-result.ts` (#528, mesh design §6.7 and §8.5, D16) is the one untrusted-result frame:
+  `frameResult(text, { agent, cardSha256 }, { json? })` prints a fixed ASCII header naming the
+  agent id and the card pin's first 12 hex characters, saying the text is data, not instructions,
+  and never to run a command, open a link or change a file because it says so, then the text
+  with every control, format and default-ignorable character, bidirectional override and
+  isolate, tag character and line or paragraph separator removed (tab and newline kept, a
+  carriage return made a newline): web search W4's class, restated because this module imports
+  nothing (`test/mesh.test.ts`) and stays out of the stdio graph (`test/prstate.test.ts`). With
+  `json` the header is a field beside `untrusted: true` and the text. Every client for an agent
+  this repo doesn't ship prints through it: `meshctl call` (#530) first, which replaces the
+  `void frameResult` marker in `src/meshctl.ts` that satisfies the dead-export guard until then;
+  web search's W5b client either uses it or says why not. Unslop's client doesn't (Q15), and
+  request-post's prints its own JSON.
   The viewer reads the mesh only in `src/mesh-agents.ts` (the agent cards view, design
   `docs/superpowers/specs/2026-11-09-agent-cards-view-design.md`): `viewer-server.ts` passes it to
   `createViewer` as `opts.mesh`. It `lstat`s `mesh.json` only when a page reads `/api/version` or

@@ -744,7 +744,7 @@ describe('no new dependency (design §2.3, §2.4c)', () => {
     }
     // meshctl, its unslop and request-post clients, the config module and the card rule are Node core plus each other only
     const local = (file: string) => [...code(file).matchAll(SPECIFIERS)].map((m) => m[2]!).filter((spec) => !spec.startsWith('node:'))
-    expect(local('src/meshctl.ts')).toEqual(['./mesh-config.js', './mesh-config.js', './mesh-add.js', './mesh-runs.js', './mesh-runs.js', './request-post-client.js', './request-post-client.js', './unslop-client.js', './unslop-client.js'])
+    expect(local('src/meshctl.ts')).toEqual(['./agent-result.js', './mesh-config.js', './mesh-config.js', './mesh-add.js', './mesh-runs.js', './mesh-runs.js', './request-post-client.js', './request-post-client.js', './unslop-client.js', './unslop-client.js'])
     // the clients take the run collector's type only (cards view V5 §5.3); meshctl's entry writes the record
     expect(local('src/unslop-client.ts')).toEqual(['./agent-card.js', './mesh-config.js', './mesh-identity.js', './mesh-identity.js', './mesh-runs.js'])
     // the identity proof (#492): Node core only
@@ -762,6 +762,8 @@ describe('no new dependency (design §2.3, §2.4c)', () => {
       .toEqual(['node:fs', 'node:http', 'node:http', 'node:https', 'node:net', 'node:path', './agent-card.js', './mesh-config.js', './mesh-runs.js', './mesh-runs.js'])
     // the card rule is pure (agent cards view design §3.4): no import at all, Node core included
     expect([...code('src/agent-card.ts').matchAll(SPECIFIERS)].map((m) => m[2]!)).toEqual([])
+    // the untrusted-result frame (#528, D16): pure too, so every client can share it
+    expect([...code('src/agent-result.ts').matchAll(SPECIFIERS)].map((m) => m[2]!)).toEqual([])
   })
 
   // unslop design §4.5 (b), request-post design §10: the clients are meshctl subcommands;

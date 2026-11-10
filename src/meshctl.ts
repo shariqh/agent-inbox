@@ -646,7 +646,8 @@ function meshctl(argv: string[], io: MeshctlIo): number {
  * A dry run deletes nothing, expired files included.
  */
 function forgetRuns(dir: string, picked: string[] | 'all', apply: boolean, now: number, out: (text: string) => void, err: (text: string) => void): number {
-  const known = [...new Set([...BUILT_IN_AGENTS, ...runAgents(dir)])]
+  const found = runAgents(dir)
+  const known = [...new Set([...BUILT_IN_AGENTS, ...found])]
   const agents = picked === 'all' ? known : picked
   const others = known.filter((agent) => !agents.includes(agent))
   const expired = others.length ? pruneRuns(dir, now, others, apply).length : 0

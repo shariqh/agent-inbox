@@ -45,6 +45,29 @@ export function readPrivate(path: string): string {
   }
 }
 
+const TOKEN_FILE_MAX = 4096
+
+/** The bearer token in `path` (meshctl's enable, add and check): a regular file the user owns, one run of at least 32 visible ASCII characters. */
+export function readTokenFile(path: string, privateOnly = false): { token: string } | { refused: string } {
+  let fd: number
+  try {
+    fd = openSync(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+  } catch (error) {
+    return { refused: (error as NodeJS.ErrnoException).code === 'ELOOP' ? 'the token file is a symlink: pass the file itself' : 'the token file cannot be read' }
+  }
+  try {
+    const stat = fstatSync(fd)
+    const uid = process.getuid?.()
+    if (!stat.isFile() || (uid !== undefined && stat.uid !== uid)) return { refused: 'the token file is not a regular file you own' }
+    if (privateOnly && stat.mode & 0o077) return { refused: 'the token file is open to other users: chmod 600 it' }
+    if (stat.size > TOKEN_FILE_MAX) return { refused: `the token file is larger than ${TOKEN_FILE_MAX} bytes` }
+    const token = readFileSync(fd, 'utf8').replace(/\r?\n$/, '')
+    return /^[\x21-\x7e]{32,}$/.test(token) ? { token } : { refused: 'the token file must hold one token of at least 32 printable characters, no spaces' }
+  } finally {
+    closeSync(fd)
+  }
+}
+
 /** A file a client writes (a report, a log), opened `O_NOFOLLOW` and made 0600; `flags` adds `O_TRUNC` or `O_APPEND`. */
 export function openPrivate(path: string, flags: number): number {
   const fd = openSync(path, flags | O_WRONLY | O_CREAT | O_NOFOLLOW | O_NONBLOCK, 0o600)

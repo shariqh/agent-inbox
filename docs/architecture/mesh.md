@@ -7,6 +7,7 @@ paths:
   - "src/mesh-identity.ts"
   - "src/request-post-client.ts"
   - "src/mesh-call.ts"
+  - "src/mesh-check.ts"
   - "src/agent-card.ts"
   - "src/mesh-agents.ts"
   - "src/mesh-runs.ts"
@@ -16,7 +17,7 @@ paths:
   - "public/mesh-agent-page.js"
   - "public/mesh-runs-tab.js"
   - "packages/mesh/src/**/*.ts"
-applyTo: "src/mesh-config.ts,src/meshctl.ts,src/mesh-add.ts,src/unslop-client.ts,src/mesh-identity.ts,src/request-post-client.ts,src/mesh-call.ts,src/agent-card.ts,src/mesh-agents.ts,src/mesh-runs.ts,src/mesh-skills.ts,public/agents-home.js,public/mesh-section.js,public/mesh-agent-page.js,public/mesh-runs-tab.js,packages/mesh/src/**/*.ts"
+applyTo: "src/mesh-config.ts,src/meshctl.ts,src/mesh-add.ts,src/unslop-client.ts,src/mesh-identity.ts,src/request-post-client.ts,src/mesh-call.ts,src/mesh-check.ts,src/agent-card.ts,src/mesh-agents.ts,src/mesh-runs.ts,src/mesh-skills.ts,public/agents-home.js,public/mesh-section.js,public/mesh-agent-page.js,public/mesh-runs-tab.js,packages/mesh/src/**/*.ts"
 ---
 
 # Agent mesh (M1)
@@ -857,6 +858,53 @@ a changed card).
   search's front door, spawns `meshctl add` and `call` against an `@a2a-js/sdk` agent with and
   without the proof, and, when `a2a` is on PATH or in `A2A_CLI`, runs the CLI's `send` and its
   `server --echo` (a2a-go) for real.
+
+## Checking a card: `meshctl check` (#538)
+
+`meshctl check <card-url> [--level local|publishable] [--strict] [--json] [--token-file <path>
+[--send <file>]]` is `src/mesh-check.ts` (publishable-agent design §5, D23, slice C2): Node core
+plus `agent-card.ts`, `mesh-add.ts`, `mesh-config.ts` and `mesh-identity.ts`, imported only by
+meshctl's async entry (`runMeshctl` answers with its usage and 4). It writes nothing, spawns
+nothing (the tailnet suffix comes in as `CheckIo.tailnet`, asked only for a `*.ts.net` card URL)
+and never reads a terminal. User page, test table and exits: [`docs/mesh-call.md`](../mesh-call.md).
+
+- **Before any connection (4):** arguments (`--send` needs `--token-file`); the card URL by
+  `add`'s `addedPlace()`, widened to a public `https://` DNS name with a plain path (design §5:
+  allowed before #534 because no token goes there); `--token-file` only for loopback or this
+  Mac's tailnet, read by `readTokenFile()` (moved from meshctl into `mesh-config.ts`, 0600
+  required); the `--send` file (`O_NOFOLLOW`, regular, at most 64 KiB of UTF-8, not blank).
+  Every refusal is fixed words, never the URL.
+- **The card.** `fetchCard()` is `add`'s fetch split out of `fetchAddedCard()` (which keeps its
+  words): one GET, `agent: false`, no redirect, 64 KiB, one deadline, a JSON object; it returns a
+  failure kind (`refused`, `timeout`, `dns`, `tls`, `cut`, `redirect`, `http`, `too-large`,
+  `not-json`), and `CheckIo.lookup`/`ca` are test seams. `check` adds a nesting walk that stops
+  past 32 levels without recursing. Any `card.fetch` failure is exit 15; `card.shape`
+  (`checkAddedCard()`) failing stops the run too.
+- **Static tests** are walks and field checks with no schema table: `card.stable` looks for
+  `""`, `[]`, `{}`, `null` anywhere and `"required": false` on an extension; `auth.supported` is
+  `bearerUsable()`, shared with `add`'s summary; `profile.present` is `checkProfile()` and
+  `profile.id` `agentIdRefusal()`. `profile.egress`, `profile.residency` and `signature.*` report
+  `skip`/`not-yet` until #535 and #536. `ext.required` knows one spoken extension, the profile.
+- **Live tests** run only with a token, an endpoint that passed and a card that declares bearer
+  auth. On loopback `meshLink(port, token, 'a2a-mesh', <card path>)` proves the agent first
+  (`live.identity`); unproven, nothing else is sent. On this Mac's tailnet `tlsLink()`, and
+  `live.identity` is `skip`. `live.auth` goes through `bareLink()` (new in `mesh-identity.ts`: no
+  token, no proof). `GetTask`/`CancelTask` on a random UUID must answer -32001, an unknown method
+  -32601; only `--send` sends `SendMessage`, then polls `GetTask` until a final or
+  `INPUT_REQUIRED` state (300 s), reads it once more and cancels it (`CANCELED` or -32002).
+- **Results.** Severity by level (`auth.*` at the local level is a must on loopback or with a
+  token, else a should), then `pass`, `fail`, `warn`, `info` or `skip`; `--strict` turns a missed
+  should into `fail`. `CHECK_REASONS` lists every reason id with its words; `--json` is
+  `{ level, ok, tests: [{ id, severity, result, reason }] }`. The table quotes the card's name
+  through `claim()` under the untrusted header and shows no other card text.
+- **Tests:** `test/mesh-check.test.ts` runs a counting fake agent: a good card passes every C2
+  test at the publishable level; one recorded bad card per reason id; every `card.fetch` kind
+  (exit 15, nothing posted); every live reason; a squatter that gets neither the token nor the
+  message; no POST without `--token-file` and no `SendMessage` without `--send`; usage cases with
+  no connection; `--strict`; the cleaned table; public, this-tailnet and other-tailnet https
+  names through a test CA; the token never in stdout or stderr; our three cards as they are; and
+  a final test that every reason id was reached. `test/mesh.test.ts` pins its imports,
+  `test/prstate.test.ts` keeps it out of the stdio graph.
 
 ## Calling request-post (R3)
 

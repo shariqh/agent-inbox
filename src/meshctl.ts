@@ -34,6 +34,8 @@
 //   meshctl remove <id> [--apply]            take an added agent out again
 //   meshctl call <id> [--skill <s>] [--json] [--report <file>] [--timeout <s>] < request
 //                                            call an added agent (src/mesh-call.ts)
+//   meshctl check <card-url> [--level local|publishable] [--strict] [--json] [--token-file <path> [--send <file>]]
+//                                            a conformance check anyone can run (src/mesh-check.ts, #538)
 //   meshctl forget-runs (--unslop | --request-post | --web-search | --id <id> | --all) [--apply]
 //   meshctl status                           say what mesh.json turns on
 //   meshctl skills link|unlink [--target claude|agents|all] [--apply]
@@ -45,7 +47,8 @@
 // Exit codes: 0 done (or nothing to do), 1 refused or failed, 2 usage;
 // `unslop` has its own (0, 10-14, 4), listed in src/unslop-client.ts, and
 // `request-post` its own (0, 11-16, 124, 4), listed in src/request-post-client.ts, and
-// `call` one table for every added agent (0, 11-16, 4), in docs/mesh-call.md.
+// `call` one table for every added agent (0, 11-16, 4), in docs/mesh-call.md, and `check`
+// its own (0, 17, 15, 4), in the same page.
 // The entry appends one run record per client run (src/mesh-runs.ts, cards view V5 §5).
 import { spawnSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
@@ -53,12 +56,13 @@ import { closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdi
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { MESH_SCHEMA, inTailnet, loopbackPort, meshDir, meshFile, readMesh, requestPostEndpoint } from './mesh-config.js'
+import { MESH_SCHEMA, inTailnet, loopbackPort, meshDir, meshFile, readMesh, readTokenFile, requestPostEndpoint } from './mesh-config.js'
 import type { MeshDocument, MeshRead } from './mesh-config.js'
 import { BUILT_IN_AGENTS, addSummary, addedEntry, addedPlace, cardEndpoint, cardSha256, fetchAddedCard, idFromName, idRefusal, placeRefusal, tailnetRefusal } from './mesh-add.js'
 import { appendRun, pruneRuns, runAgents, runFiles, tidyRuns } from './mesh-runs.js'
 import type { RunCollector } from './mesh-runs.js'
 import { CALL_USAGE, runCall } from './mesh-call.js'
+import { CHECK_USAGE, runCheck } from './mesh-check.js'
 import { SKILL_TARGETS, holdSetupLock, skillPlan } from './mesh-skills.js'
 import type { SkillTarget } from './mesh-skills.js'
 import { REQUEST_POST_USAGE, runRequestPost } from './request-post-client.js'
@@ -80,6 +84,7 @@ const USAGE = `usage: agent-inbox-meshctl status
        agent-inbox-meshctl add <card-url> --move <id> [--token-file <path>] [--apply]
        agent-inbox-meshctl remove <id> [--apply]
        agent-inbox-meshctl call <id> [--skill <skill>] [--json] [--report <file>] [--timeout <s>] < request
+       agent-inbox-meshctl check <card-url> [--level local|publishable] [--strict] [--json] [--token-file <path> [--send <file>]]
        agent-inbox-meshctl forget-runs (--unslop | --request-post | --web-search | --id <id> | --all) [--apply]
        agent-inbox-meshctl skills link|unlink [--target claude|agents|all] [--apply]
        agent-inbox-meshctl unslop --kind <kind> [--report <file>] [--timeout <s>] < draft
@@ -108,6 +113,9 @@ agentId and match its pin; only the card URL and endpoint change (and the token 
 call sends one request to an added agent: it checks the card pin and, on loopback, the agent's
 identity before it sends the token or any text, and prints the result framed as untrusted
 (docs/mesh-call.md).
+check runs the conformance tests on an A2A agent's card and writes nothing: exit 0 conforms, 17 a
+test failed, 15 the card could not be fetched, 4 usage. Live tests need --token-file and create no
+work unless --send <file> is given (docs/mesh-call.md).
 request-post is what <mesh dir>/bin/request-post runs: it files a content request with the
 service, reads its status or waits for it (docs/request-post.md).
 Each client run appends a record without text to <mesh dir>/mesh/runs/, kept 30 days;
@@ -262,29 +270,6 @@ function requestPostPaths(dir: string) {
   return { root, tokens: join(root, 'tokens'), token: join(root, 'tokens', 'request-post'), bin: join(dir, 'bin'), shim: join(dir, 'bin', 'request-post') }
 }
 
-const TOKEN_FILE_MAX = 4096
-
-/** The bearer token in `path`: a regular file the user owns, one run of at least 32 visible ASCII characters. */
-function readToken(path: string, privateOnly = false): { token: string } | { refused: string } {
-  let fd: number
-  try {
-    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
-  } catch (error) {
-    return { refused: (error as NodeJS.ErrnoException).code === 'ELOOP' ? 'the token file is a symlink: pass the file itself' : 'the token file cannot be read' }
-  }
-  try {
-    const stat = fstatSync(fd)
-    const uid = process.getuid?.()
-    if (!stat.isFile() || (uid !== undefined && stat.uid !== uid)) return { refused: 'the token file is not a regular file you own' }
-    if (privateOnly && stat.mode & 0o077) return { refused: 'the token file is open to other users: chmod 600 it' }
-    if (stat.size > TOKEN_FILE_MAX) return { refused: `the token file is larger than ${TOKEN_FILE_MAX} bytes` }
-    const token = readFileSync(fd, 'utf8').replace(/\r?\n$/, '')
-    return /^[\x21-\x7e]{32,}$/.test(token) ? { token } : { refused: 'the token file must hold one token of at least 32 printable characters, no spaces' }
-  } finally {
-    closeSync(fd)
-  }
-}
-
 type Step = { dry: string; run: () => string; lock?: true }
 
 function runSteps(steps: Step[], apply: boolean, out: (text: string) => void, err: (text: string) => void, failed: string): number {
@@ -347,6 +332,11 @@ function meshctl(argv: string[], io: MeshctlIo): number {
   if (command === 'call') {
     // async: the entry below runs it (runCall in src/mesh-call.ts)
     err(CALL_USAGE)
+    return 4
+  }
+  if (command === 'check') {
+    // async: the entry below runs it (runCheck in src/mesh-check.ts)
+    err(CHECK_USAGE)
     return 4
   }
   const flags = new Set<string>()
@@ -547,7 +537,7 @@ function meshctl(argv: string[], io: MeshctlIo): number {
     const agents = doc['agents'] === undefined ? {} : objectOf(doc['agents'])
     if (!agents) return refuse(`${name} has an "agents" value that is not an object`)
     const source = resolve(tokenFile)
-    const read = readToken(source)
+    const read = readTokenFile(source)
     if ('refused' in read) return refuse(read.refused)
     if (!isFile(script)) return refuse(`${show(script)} is missing: run npm run build in ${show(repo)}`)
     if ([node, script, dir].some((path) => /[\x00-\x1f\x7f]/.test(path))) return refuse('a path holds a control character')
@@ -843,7 +833,7 @@ export async function runAdd(args: string[], io: MeshctlIo = {}): Promise<number
   const source = tokenFile === undefined ? undefined : resolve(tokenFile)
   let token: string | undefined
   if (source !== undefined) {
-    const read = readToken(source, true)
+    const read = readTokenFile(source, true)
     if ('refused' in read) return refuse(read.refused)
     token = read.token
   }
@@ -994,5 +984,7 @@ if (isMain) {
   const [command, ...rest] = process.argv.slice(2)
   process.exitCode = command === 'unslop' || command === 'request-post' || command === 'call'
     ? await runClient(command, rest, { env: process.env, home: homedir(), stdin: process.stdin, out: (text) => { process.stdout.write(text) }, err: (text) => { process.stderr.write(text) } })
-    : command === 'add' ? await runAdd(rest) : runMeshctl(process.argv.slice(2))
+    : command === 'add' ? await runAdd(rest)
+      : command === 'check' ? await runCheck(rest, { tailnet: magicDnsSuffix, out: (text) => { process.stdout.write(text) }, err: (text) => { process.stderr.write(text) } })
+        : runMeshctl(process.argv.slice(2))
 }

@@ -132,3 +132,18 @@ export function tlsLink(origin: URL, token: string | undefined, cardPath: string
     close: () => pool.destroy(),
   }
 }
+
+/**
+ * A link that sends no token and asks for no proof (`meshctl check`'s live.auth, #538): a probe
+ * the agent must refuse. Plain http on loopback, else tlsLink without a token.
+ */
+export function bareLink(origin: URL, cardPath: string, seams: { lookup?: LookupFunction; ca?: string } = {}): MeshLink {
+  if (origin.protocol === 'https:') return tlsLink(origin, undefined, cardPath, seams)
+  const pool = new Agent({ keepAlive: false, maxSockets: 1 })
+  const target = { origin }
+  return {
+    card: (timeoutMs) => exchange(pool, target, { method: 'GET', path: cardPath, timeoutMs }),
+    call: (o) => exchange(pool, target, o),
+    close: () => pool.destroy(),
+  }
+}

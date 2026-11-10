@@ -271,6 +271,23 @@ describe('file (design §3.2, §3.3)', () => {
 describe('the endpoint and the card (design §3.1, §6, §8)', () => {
   const args = ['file', '--brand', 'example-brand', '--channels', 'x-standalone', '--title', 'Try the agent']
 
+  it('sends the metadata under the extension URI the card declares (publishable-agent design §6, C6)', async () => {
+    const PAGES = 'https://shariqh.github.io/agent-inbox/ext/request-post/v1'
+    const args = ['file', '--brand', 'example-brand', '--channels', 'x-standalone', '--title', 'Try the agent']
+    expect((await run(meshHome(), args)).code).toBe(0)
+    const pages = structuredClone(CARD)
+    pages.capabilities.extensions[0].uri = PAGES
+    card = pages
+    expect((await run(meshHome(), args)).code).toBe(0)
+    const both = structuredClone(CARD)
+    both.capabilities.extensions.push({ ...both.capabilities.extensions[0], uri: PAGES })
+    card = both
+    expect((await run(meshHome(), args)).code).toBe(0)
+    const keys = seen.map((s) => Object.keys(s.body.params.message.metadata))
+    expect(keys).toEqual([[EXT], [PAGES], [PAGES]])
+    expect(seen[1]!.body.params.message.metadata[PAGES]).toEqual(metaOf(seen[0]!.body))
+  })
+
   it('a card that does not match is 15 with "update agent-inbox or the service", and nothing is sent', async () => {
     const broken: Array<(c: Json) => void> = [
       (c) => { c.skills = c.skills.filter((s: Json) => s.id !== 'request-post-status') },

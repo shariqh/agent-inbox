@@ -11,7 +11,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { startServer } from '../packages/mesh/src/a2a.js'
 import type { A2AServer } from '../packages/mesh/src/a2a.js'
 import { cardHash as meshCardHash } from '../packages/mesh/src/a2a-client.js'
-import { agentIdRefusal, canonicalCard, cardJson, checkAddedCard, checkCard, checkProfile, claim, summarizeCard } from '../src/agent-card.js'
+import { agentIdRefusal, canonicalCard, cardExtension, cardJson, checkAddedCard, checkCard, checkProfile, claim, summarizeCard } from '../src/agent-card.js'
 import { cardSha256 } from '../src/mesh-add.js'
 import { cardHash as fixtureCardHash } from './fixtures/a2a-web-search/conformance.js'
 
@@ -22,6 +22,7 @@ const WEB_SEARCH_DIR = join(REPO, 'test', 'fixtures', 'a2a-web-search')
 const WEB_SEARCH: Json = JSON.parse(readFileSync(join(WEB_SEARCH_DIR, 'card.json'), 'utf8'))
 const UNSLOP_EXT = 'urn:agent-inbox:ext:unslop:v1'
 const REQUEST_POST_EXT = 'urn:agent-inbox:ext:request-post:v1'
+const REQUEST_POST_PAGES = 'https://shariqh.github.io/agent-inbox/ext/request-post/v1'
 
 let agent: A2AServer
 let UNSLOP: Json
@@ -79,10 +80,24 @@ describe('checkCard (agent cards view design §4.4)', () => {
       ['no request-post skill', (c) => { c.skills = [] }],
       ['no A2A 1.0 JSON-RPC interface', (c) => { c.supportedInterfaces[0].protocolVersion = '0.3' }],
       ['no A2A 1.0 JSON-RPC interface', (c) => { c.supportedInterfaces = [] }],
-      [`no ${REQUEST_POST_EXT} extension`, (c) => { c.capabilities.extensions[0].uri = UNSLOP_EXT }],
+      [`no ${REQUEST_POST_PAGES} or ${REQUEST_POST_EXT} extension`, (c) => { c.capabilities.extensions[0].uri = UNSLOP_EXT }],
       ['request-post api is not 1', (c) => { c.capabilities.extensions[0].params.api = 2 }],
     ]
     for (const [reason, edit] of cases) expect(checkCard(change(REQUEST_POST, edit), 'request-post'), reason).toBe(reason)
+  })
+
+  it('request-post: either extension URI passes; with both, the Pages URI is the one read (publishable-agent design §6, C6)', () => {
+    expect(cardExtension(REQUEST_POST, 'request-post')).toBe(REQUEST_POST_EXT)
+    const pages = change(REQUEST_POST, (c) => { c.capabilities.extensions[0].uri = REQUEST_POST_PAGES })
+    expect(checkCard(pages, 'request-post')).toBeUndefined()
+    expect(cardExtension(pages, 'request-post')).toBe(REQUEST_POST_PAGES)
+    const both = change(REQUEST_POST, (c) => { c.capabilities.extensions.push({ uri: REQUEST_POST_PAGES, params: { api: 1 } }) })
+    expect(checkCard(both, 'request-post')).toBeUndefined()
+    expect(cardExtension(both, 'request-post')).toBe(REQUEST_POST_PAGES)
+    const pagesApi2 = change(both, (c) => { c.capabilities.extensions.at(-1).params.api = 2 })
+    expect(checkCard(pagesApi2, 'request-post')).toBe('request-post api is not 1')
+    expect(cardExtension(change(REQUEST_POST, (c) => { c.capabilities.extensions = [] }), 'request-post')).toBeUndefined()
+    expect(checkCard(change(UNSLOP, (c) => { c.capabilities.extensions[0].uri = 'https://shariqh.github.io/agent-inbox/ext/unslop/v1' }), 'unslop')).toBe(`no ${UNSLOP_EXT} extension`)
   })
 
   it('a later interface or extension may satisfy the rule; only the first extension with the URI counts', () => {

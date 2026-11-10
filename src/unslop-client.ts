@@ -3,20 +3,24 @@
 // imports it: never the stdio MCP server or the viewer. It reads the draft from
 // stdin (or --in), never from a terminal, and never prompts. Off (no
 // `agents.unslop` in mesh.json by the one reading rule) is exit 14 before any
-// spawn or connection. Otherwise it fetches the agent's card, starts the
-// profile's `start` command when nothing answers, checks the card's version,
-// streams one task and falls back to GetTask polling when the stream drops.
+// spawn or connection. Otherwise it reads the caller token, fetches the agent's card
+// with an identity challenge (src/mesh-identity.ts, #492), starts the profile's `start`
+// command when nothing answers, checks the proof and then the card's version, streams one
+// task and falls back to GetTask polling when the stream drops. The token and the draft go
+// only to a connection that proved it holds the token.
 // The edited text reaches stdout only on exit 0; on any other exit stdout is empty.
 //
 // Exit codes: 0 rewritten or unchanged, 10 kept the original, 11 refused,
-// 12 busy, 13 failed or timed out, 14 off, no agent or a card mismatch, 4 usage.
+// 12 busy, 13 failed or timed out, 14 off, no agent, another process on the port or a
+// card mismatch, 4 usage.
 import { spawn as nodeSpawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { closeSync, constants, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, writeSync } from 'node:fs'
-import { request } from 'node:http'
 import { isAbsolute, join, resolve } from 'node:path'
 import { checkCard } from './agent-card.js'
 import { loopbackPort, meshDir, meshFile, readMesh } from './mesh-config.js'
+import { meshLink } from './mesh-identity.js'
+import type { Exchange, MeshLink } from './mesh-identity.js'
 import type { RunCollector } from './mesh-runs.js'
 
 const EXTENSION = 'urn:agent-inbox:ext:unslop:v1'
@@ -51,40 +55,8 @@ export interface UnslopIo {
 }
 
 type Json = Record<string, unknown>
-type Reply = { status: number; type: string; body: string }
 const obj = (v: unknown): Json => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Json) : {})
 const sleep = (ms: number): Promise<void> => new Promise((done) => setTimeout(done, ms))
-
-/** One HTTP exchange with the agent; `onChunk` streams the body instead of collecting it. */
-function http(port: number, o: { method: string; path: string; headers?: Json; body?: string; timeoutMs: number; signal?: AbortSignal; onChunk?: (text: string) => void }): Promise<Reply | 'refused' | 'error'> {
-  return new Promise((done) => {
-    let body = ''
-    let settled = false
-    const finish = (result: Reply | 'refused' | 'error'): void => {
-      if (settled) return
-      settled = true
-      clearTimeout(timer)
-      o.signal?.removeEventListener('abort', abort)
-      if (typeof result === 'string') req.destroy()
-      done(result)
-    }
-    const req = request({ host: '127.0.0.1', port, method: o.method, path: o.path, agent: false, headers: { host: `127.0.0.1:${port}`, ...(o.headers as Record<string, string>) } }, (res) => {
-      res.setEncoding('utf8')
-      res.on('data', (chunk: string) => {
-        if (o.onChunk && res.statusCode === 200) o.onChunk(chunk)
-        else if (body.length < 1024 * 1024) body += chunk
-      })
-      res.on('end', () => finish({ status: res.statusCode ?? 0, type: String(res.headers['content-type'] ?? ''), body }))
-      res.on('error', () => finish('error'))
-      res.on('aborted', () => finish('error'))
-    })
-    const abort = (): void => finish('error')
-    const timer = setTimeout(abort, o.timeoutMs)
-    o.signal?.addEventListener('abort', abort, { once: true })
-    req.on('error', (error: NodeJS.ErrnoException) => finish(error.code === 'ECONNREFUSED' ? 'refused' : 'error'))
-    req.end(o.body)
-  })
-}
 
 /** A private file: regular (never a symlink), this user's, no group or other bits. */
 function readPrivate(path: string): string {
@@ -130,10 +102,11 @@ async function readInput(io: UnslopIo, file: string | undefined): Promise<Buffer
   return Buffer.concat(chunks)
 }
 
-type Card = { kind: 'none' } | { kind: 'bad' } | { kind: 'ok'; card: Json }
-async function getCard(port: number): Promise<Card> {
-  const reply = await http(port, { method: 'GET', path: '/.well-known/agent-card.json', timeoutMs: 3000 })
+type Card = { kind: 'none' } | { kind: 'bad' } | { kind: 'unproven' } | { kind: 'ok'; card: Json }
+async function getCard(link: MeshLink): Promise<Card> {
+  const reply = await link.card(3000)
   if (reply === 'refused') return { kind: 'none' }
+  if (reply === 'unproven') return { kind: 'unproven' }
   if (reply === 'error' || reply.status !== 200) return { kind: 'bad' }
   try {
     return { kind: 'ok', card: obj(JSON.parse(reply.body)) }
@@ -180,6 +153,15 @@ function startAgent(dir: string, io: UnslopIo): { exited: () => boolean; log: st
 type Outcome = { state?: string; data?: Json; text?: string }
 
 export async function runUnslop(args: string[], io: UnslopIo): Promise<number> {
+  const links: MeshLink[] = []
+  try {
+    return await unslop(args, io, links)
+  } finally {
+    for (const link of links) link.close()
+  }
+}
+
+async function unslop(args: string[], io: UnslopIo, links: MeshLink[]): Promise<number> {
   // agent-supplied text reaches an assistant's shell output: no control bytes but tab and newline
   const say = (text: string): void => io.err(`unslop: ${text.replace(/[\x00-\x08\x0B-\x1F\x7F-\x9F]/g, '')}\n`)
   const values = new Map<string, string>()
@@ -256,7 +238,19 @@ export async function runUnslop(args: string[], io: UnslopIo): Promise<number> {
     return 14
   }
 
-  let card = await getCard(port)
+  // the token comes first: the agent proves it holds it before the token or the draft is sent (#492)
+  let token: string
+  try {
+    token = readPrivate(join(dir, 'mesh', 'tokens', 'unslop')).trim()
+  } catch {
+    return unavailable('the caller token is missing or not private (0600): run meshctl enable --unslop again')
+  }
+  const link = meshLink(port, token, 'unslop')
+  links.push(link)
+  const squatter = (): number => unavailable(`another process holds the unslop port 127.0.0.1:${port}: it did not prove it holds the caller token, so neither the token nor the draft was sent. ` +
+    'An agent started before the last enable --unslop stops within a minute; one from an older build stops after 30 idle minutes or on disable --unslop --apply')
+
+  let card = await getCard(link)
   if (card.kind === 'none') {
     const started = startAgent(dir, io)
     if (typeof started === 'string') return unavailable(`no agent at 127.0.0.1:${port} and cannot start one: ${started}`)
@@ -264,30 +258,26 @@ export async function runUnslop(args: string[], io: UnslopIo): Promise<number> {
     for (const until = Date.now() + START_WAIT_MS; card.kind === 'none' && Date.now() < until;) {
       const gone = started.exited()
       await sleep(200)
-      card = await getCard(port)
+      card = await getCard(link)
       if (gone) break
     }
     if (card.kind === 'none') return unavailable(`the agent did not start; see ${started.log}`)
   }
+  if (card.kind === 'unproven') return squatter()
   if (card.kind === 'bad') return unavailable(`something other than the unslop agent answers at 127.0.0.1:${port}`)
   // the one card rule (unslop design §4.4, §8.3; agent cards view design §4.4)
   const mismatch = checkCard(card.card, 'unslop')
   if (mismatch) return unavailable(`the agent's card does not match this meshctl (${mismatch}): rebuild packages/mesh (npm ci && npm run build there) and stop the running agent`)
-  let token: string
-  try {
-    token = readPrivate(join(dir, 'mesh', 'tokens', 'unslop')).trim()
-  } catch {
-    return unavailable('the caller token is missing or not private (0600): run meshctl enable --unslop again')
-  }
 
   const timeoutMs = +timeoutText * 1000
   const deadline = new AbortController()
   const begun = Date.now()
   const timer = setTimeout(() => deadline.abort(), io.deadlineMs ?? timeoutMs)
   const left = (): number => Math.max(1, (io.deadlineMs ?? timeoutMs) - (Date.now() - begun))
-  const headers = { authorization: `Bearer ${token}`, 'a2a-version': '1.0', 'content-type': 'application/json' }
-  const rpc = (method: string, params: Json, timeout: number): Promise<Reply | 'refused' | 'error'> =>
-    http(port, { method: 'POST', path: '/', headers, body: JSON.stringify({ jsonrpc: '2.0', id: randomUUID(), method, params }), timeoutMs: timeout })
+  // the link adds the token, and only on a connection that proved it holds it
+  const headers = { 'a2a-version': '1.0', 'content-type': 'application/json' }
+  const rpc = (method: string, params: Json, timeout: number): Promise<Exchange> =>
+    link.call({ method: 'POST', path: '/', headers, body: JSON.stringify({ jsonrpc: '2.0', id: randomUUID(), method, params }), timeoutMs: timeout })
 
   let taskId: string | undefined
   const outcome: Outcome = {}
@@ -317,7 +307,7 @@ export async function runUnslop(args: string[], io: UnslopIo): Promise<number> {
   }
 
   let buffered = ''
-  const streamed = await http(port, {
+  const streamed = await link.call({
     method: 'POST', path: '/', headers: { ...headers, accept: 'text/event-stream' }, timeoutMs: timeoutMs + 60_000, signal: deadline.signal,
     body: JSON.stringify({
       jsonrpc: '2.0', id: randomUUID(), method: 'SendStreamingMessage',
@@ -336,6 +326,7 @@ export async function runUnslop(args: string[], io: UnslopIo): Promise<number> {
     },
   })
   try {
+    if (streamed === 'unproven') return squatter()
     if (typeof streamed !== 'string' && streamed.status === 401) {
       return unavailable('a running agent holds an older token; it stops within a minute, so run the command again shortly')
     }
@@ -357,7 +348,8 @@ export async function runUnslop(args: string[], io: UnslopIo): Promise<number> {
         try {
           if (typeof got !== 'string') result = obj(JSON.parse(got.body))
         } catch { /* counted below */ }
-        if (result['result']) {
+        if (got === 'unproven') misses = 3
+        else if (result['result']) {
           misses = 0
           take({ task: result['result'] })
         } else if (result['error']) misses = 3

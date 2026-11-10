@@ -84,8 +84,16 @@ terminal and never asks anything. Progress (`waiting`, `editing`, `checking`,
 | 11 | Refused: kind, size, the privacy screen or the daily budget | empty |
 | 12 | Busy: the queue is full or the model server is loading or busy | empty |
 | 13 | Failed: unreachable, timed out (the task is cancelled) or lost | empty |
-| 14 | Off, no agent, a stale shim or an agent that needs rebuilding | empty |
+| 14 | Off, no agent, another process on the agent's port, a stale shim or an agent that needs rebuilding | empty |
 | 4 | Usage | empty |
+
+Before it sends the token or the draft, the command checks that whatever answers on the
+port holds the caller token: the card request carries a random challenge, and the agent
+answers with an HMAC of it keyed by the token. Without the right answer it exits 14 with
+"another process holds the unslop port", and only the challenge was sent. That also
+happens for an agent from a build before this check (it stops after 30 idle minutes, or
+within a minute of `disable --unslop --apply`) and for one started before the last
+`enable --unslop` (it stops within a minute).
 
 On anything but 0, edit the original in-session; don't retry. `--report <file>` gets
 the result as JSON (mode 0600, never through a symlink): `status`, `model`,

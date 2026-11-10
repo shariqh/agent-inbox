@@ -2,12 +2,14 @@
 // §6.3, §7.3, U3b). End to end against the real agent (packages/mesh's source,
 // run through tsx so the root suite needs no packages/mesh build) with a fake
 // OpenAI-compatible backend on loopback, plus off test (f), the card check and
-// the terminal rule. Every non-zero exit is checked for an empty stdout.
+// the terminal rule, and the agent's identity proof (#492). Every non-zero exit is
+// checked for an empty stdout.
 import { spawn, spawnSync } from 'node:child_process'
 import type { ChildProcess } from 'node:child_process'
+import { createHmac } from 'node:crypto'
 import { chmodSync, copyFileSync, lstatSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
 import { createServer, request } from 'node:http'
-import type { Server } from 'node:http'
+import type { IncomingMessage, Server } from 'node:http'
 import { createServer as createNetServer } from 'node:net'
 import type { AddressInfo } from 'node:net'
 import { join } from 'node:path'
@@ -124,6 +126,12 @@ async function run(dir: string, args: string[], input: string | Buffer = INPUT, 
   return r
 }
 
+/** The real agent's answer to the identity challenge (#492), for fakes that stand in for it. */
+function proof(req: IncomingMessage, token = TOKEN, label = 'unslop'): Record<string, string> {
+  const nonce = req.headers['a2a-mesh-challenge']
+  return typeof nonce === 'string' ? { 'a2a-mesh-proof': createHmac('sha256', token).update(`${label}/v1\n${nonce}`).digest('base64url') } : {}
+}
+
 /** A listener that counts every connection and answers none. */
 async function counting(): Promise<{ port: number; count: () => number }> {
   let n = 0
@@ -209,7 +217,7 @@ describe('the card check (design §4.4)', () => {
     let posts = 0
     const fake = createServer((req, res) => {
       if (req.method === 'POST') posts++
-      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(card))
+      res.writeHead(200, { 'content-type': 'application/json', ...proof(req) }).end(JSON.stringify(card))
     })
     servers.push(fake)
     const dir = meshHome(`http://127.0.0.1:${await listen(fake)}`)
@@ -233,7 +241,7 @@ describe('a fake agent (design §7.3)', () => {
   }
   async function fakeAgent(post: (res: import('node:http').ServerResponse) => void): Promise<string> {
     const fake = createServer((req, res) => {
-      if (req.method === 'GET') return void res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(card))
+      if (req.method === 'GET') return void res.writeHead(200, { 'content-type': 'application/json', ...proof(req) }).end(JSON.stringify(card))
       req.resume()
       req.on('end', () => post(res))
     })
@@ -261,6 +269,80 @@ describe('a fake agent (design §7.3)', () => {
     const r = await run(dir, ['--kind', 'pr'])
     expect(r.code).toBe(14)
     expect(r.err).toContain('a running agent holds an older token; it stops within a minute, so run the command again shortly')
+  })
+})
+
+describe('the agent proves it holds the token first (#492)', () => {
+  const CARD = {
+    skills: [{ id: 'unslop' }], supportedInterfaces: [{ url: 'x', protocolBinding: 'JSONRPC', protocolVersion: '1.0' }],
+    capabilities: { extensions: [{ uri: EXT, params: { api: 1 } }] },
+  }
+  /** A process on the agent's port serving a valid card, `answer` choosing its proof; it keeps every byte it receives. */
+  async function squatter(answer: (req: IncomingMessage, n: number) => Record<string, string>, headers: Record<string, string> = {}) {
+    const received: Buffer[] = []
+    const methods: string[] = []
+    const nonces: string[] = []
+    const server = createServer((req, res) => {
+      methods.push(req.method!)
+      nonces.push(String(req.headers['a2a-mesh-challenge']))
+      req.resume()
+      res.writeHead(200, { 'content-type': 'application/json', ...answer(req, methods.length - 1), ...headers }).end(JSON.stringify(CARD))
+    })
+    server.on('connection', (socket) => socket.on('data', (chunk: Buffer) => received.push(chunk)))
+    servers.push(server)
+    const dir = meshHome(`http://127.0.0.1:${await listen(server)}`)
+    return { dir, methods, nonces, bytes: () => Buffer.concat(received).toString('latin1').toLowerCase() }
+  }
+  const neverSent = (bytes: string): void => {
+    for (const secret of [TOKEN, 'authorization', 'post /', 'really very', 'sendstreamingmessage']) expect(bytes).not.toContain(secret)
+  }
+
+  it('without a valid proof the token and the draft are never sent: exit 14, empty stdout', async () => {
+    const cases: Array<[string, (req: IncomingMessage) => Record<string, string>]> = [
+      ['no proof (or an agent from before #492)', () => ({})],
+      ['an empty proof', () => ({ 'a2a-mesh-proof': '' })],
+      ['a proof with another token', (req) => proof(req, 'c3'.repeat(32))],
+      ["a proof under web search's label", (req) => proof(req, TOKEN, 'web-search')],
+      ['a proof for another nonce', () => proof({ headers: { 'a2a-mesh-challenge': 'A'.repeat(43) } } as unknown as IncomingMessage)],
+    ]
+    const nonces: string[] = []
+    for (const [name, answer] of cases) {
+      const s = await squatter(answer)
+      const r = await run(s.dir, ['--kind', 'pr'])
+      expect([name, r.code], r.err).toEqual([name, 14])
+      expect(r.err).toContain('unslop: another process holds the unslop port 127.0.0.1:')
+      expect(r.err).toContain('neither the token nor the draft was sent')
+      expect(s.methods).toEqual(['GET'])
+      expect(s.bytes()).toMatch(/^get \/\.well-known\/agent-card\.json http\/1\.1\r\n/)
+      neverSent(s.bytes())
+      nonces.push(...s.nonces)
+    }
+    // one fresh 256-bit nonce per card request
+    expect(nonces.every((n) => /^[\w-]{43}$/.test(n))).toBe(true)
+    expect(new Set(nonces).size).toBe(nonces.length)
+    expect(spawns).toBe(0)
+  })
+
+  it('a proof captured from an earlier call fails the next one', async () => {
+    let last: Record<string, string> = {}
+    const s = await squatter((req) => {
+      const replay = last
+      last = proof(req)
+      return replay
+    })
+    for (let i = 0; i < 2; i++) expect((await run(s.dir, ['--kind', 'pr'])).code).toBe(14)
+    expect(s.methods).toEqual(['GET', 'GET'])
+    neverSent(s.bytes())
+  })
+
+  it('the token goes only on the connection that proved it: one the agent closed is proved again', async () => {
+    // the agent answers its card and closes the connection; what answers the next one proves nothing
+    const s = await squatter((req, n) => (n === 0 ? proof(req) : {}), { connection: 'close' })
+    const r = await run(s.dir, ['--kind', 'pr'])
+    expect(r.code).toBe(14)
+    expect(r.err).toContain('another process holds the unslop port')
+    expect(s.methods).toEqual(['GET', 'GET'])
+    neverSent(s.bytes())
   })
 })
 
@@ -338,7 +420,8 @@ describe('end to end against the agent (design §6.3, §7.3)', () => {
         const method = body.length ? String(JSON.parse(body.toString()).method) : 'card'
         methods.push(method)
         const up = request({ host: '127.0.0.1', port: agentPort, method: req.method, path: req.url, agent: false, headers: { ...req.headers, host: `127.0.0.1:${agentPort}` } }, (upRes) => {
-          res.writeHead(upRes.statusCode!, { 'content-type': String(upRes.headers['content-type']) })
+          const proved = upRes.headers['a2a-mesh-proof']
+          res.writeHead(upRes.statusCode!, { 'content-type': String(upRes.headers['content-type']), ...(proved ? { 'a2a-mesh-proof': String(proved) } : {}) })
           if (method !== 'SendStreamingMessage') return void upRes.pipe(res)
           upRes.once('data', (chunk: Buffer) => {
             res.write(chunk)

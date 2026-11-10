@@ -5,8 +5,11 @@
 // SendStreamingMessage (status updates only: the edited text arrives once, with
 // COMPLETED), GetTask and CancelTask; no push notifications. One task runs and one
 // waits; a task the queue cannot finish within the caller's timeout is refused
-// up front as busy. A task belongs to the token that created it.
-import { randomUUID, timingSafeEqual } from 'node:crypto'
+// up front as busy. A task belongs to the token that created it. A card request that
+// carries an `A2A-Mesh-Challenge` nonce is answered with `A2A-Mesh-Proof` =
+// HMAC-SHA256(token, "unslop/v1\n" + nonce) (#492), so the client sends the token and
+// the draft only to the process that holds the token; the card itself stays public.
+import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto'
 import { createServer } from 'node:http'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
@@ -235,7 +238,13 @@ export async function startServer(o: ServerOptions): Promise<A2AServer> {
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (req.headers.origin !== undefined) return reply(res, 403, { error: 'origin' })
     if (req.headers.host !== host) return reply(res, 403, { error: 'host' })
-    if (req.method === 'GET' && req.url === '/.well-known/agent-card.json') return reply(res, 200, card())
+    if (req.method === 'GET' && req.url === '/.well-known/agent-card.json') {
+      // the same exchange as web search's front door, under unslop's own label (#492)
+      const nonce = req.headers['a2a-mesh-challenge']
+      const proof: Record<string, string> = typeof nonce === 'string' && /^[\w-]{43}$/.test(nonce) && o.tokens[0]
+        ? { 'a2a-mesh-proof': createHmac('sha256', o.tokens[0]).update(`unslop/v1\n${nonce}`).digest('base64url') } : {}
+      return reply(res, 200, card(), proof)
+    }
     if (req.method !== 'POST' || req.url !== '/') return reply(res, 404, { error: 'not found' })
     const owner = authorize(req.headers.authorization)
     if (owner < 0) return reply(res, 401, { error: 'token' }, { 'www-authenticate': 'Bearer' })

@@ -3,6 +3,7 @@ paths:
   - "src/mesh-config.ts"
   - "src/meshctl.ts"
   - "src/unslop-client.ts"
+  - "src/mesh-identity.ts"
   - "src/request-post-client.ts"
   - "src/agent-card.ts"
   - "src/mesh-agents.ts"
@@ -11,7 +12,7 @@ paths:
   - "public/mesh-section.js"
   - "public/mesh-agent-page.js"
   - "packages/mesh/src/**/*.ts"
-applyTo: "src/mesh-config.ts,src/meshctl.ts,src/unslop-client.ts,src/request-post-client.ts,src/agent-card.ts,src/mesh-agents.ts,src/mesh-runs.ts,public/agents-home.js,public/mesh-section.js,public/mesh-agent-page.js,packages/mesh/src/**/*.ts"
+applyTo: "src/mesh-config.ts,src/meshctl.ts,src/unslop-client.ts,src/mesh-identity.ts,src/request-post-client.ts,src/agent-card.ts,src/mesh-agents.ts,src/mesh-runs.ts,public/agents-home.js,public/mesh-section.js,public/mesh-agent-page.js,packages/mesh/src/**/*.ts"
 ---
 
 # Agent mesh (M1)
@@ -269,7 +270,11 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
     unslop onto it is web search's optional slice W8). `GET /.well-known/agent-card.json`
     needs no token; `POST /` takes `SendMessage`, `SendStreamingMessage`, `GetTask` and
     `CancelTask` with `A2A-Version: 1.0` and `Authorization: Bearer <token>`
-    (`timingSafeEqual` after a length check). Any `Origin` header, a `Host` other than
+    (`timingSafeEqual` after a length check). A card request with an `A2A-Mesh-Challenge`
+    nonce (43 base64url characters, else ignored) gets `A2A-Mesh-Proof` =
+    HMAC-SHA256(token, `"unslop/v1\n" + nonce`) in base64url (#492): web search's exchange
+    under unslop's own label, computed inline so unslop's start still loads no SDK. The card
+    body stays the same with or without it. Any `Origin` header, a `Host` other than
     `127.0.0.1:<port>`, a push-notification config, a message that continues a task, a
     body over 64 KiB and a request not received within 10 s are refused. The message is
     one text part; `metadata["urn:agent-inbox:ext:unslop:v1"]` carries `kind` and
@@ -330,7 +335,7 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
   `packages/mesh/test/a2a.test.ts`.
 - **Calling unslop: `meshctl unslop` (U3b, unslop design §4.3-§4.5, §6.3, §7.3).** The
   shim runs `meshctl unslop --kind <kind> [--report <file>] [--timeout <s>] [--in <file>] < draft`;
-  the client is `src/unslop-client.ts`, Node core plus `mesh-config.ts` and `agent-card.ts`, imported only by
+  the client is `src/unslop-client.ts`, Node core plus `mesh-config.ts`, `mesh-identity.ts` and `agent-card.ts`, imported only by
   meshctl (its entry awaits it, since `runMeshctl` stays synchronous). User page with the
   callers' `SKILL.md` text: [`docs/unslop.md`](../unslop.md). In order:
   1. **Locally, before the switch is read:** arguments (else 4); the kind (`pr`, `issue`,
@@ -340,16 +345,29 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
      valid UTF-8 and not blank (else 11).
   2. **Off (§4.5 (f)):** no `agents.unslop` by the reading rule, or an endpoint other than
      `http://127.0.0.1:<port>`, exits 14 before any spawn or connection.
-  3. **Discovery (§4.4):** `GET /.well-known/agent-card.json` with the exact `Host`. When
+  3. **Discovery (§4.4):** it reads the caller token first (missing or not private: 14),
+     then `GET /.well-known/agent-card.json` with the exact `Host` and a fresh
+     `A2A-Mesh-Challenge` nonce (32 random bytes, base64url). When
      the connection is refused it starts the profile's `start` argv (no shell; only from a
      user-owned 0600 regular profile; detached, unref'd, cwd and `AGENT_INBOX_MESH_DIR` the
      mesh dir, stdout and stderr appended to `<mesh dir>/mesh/logs/unslop-agent.log`, 0600)
      and polls the card for up to 10 s, giving up early once the child has exited and the
      card still does not answer (a second caller's agent that lost the port race exits, and
-     the first one's card answers). Anything else answering, or a card without the `unslop`
+     the first one's card answers). **Identity (#492):** an answer without the right
+     `A2A-Mesh-Proof` (HMAC-SHA256(token, `"unslop/v1\n" + nonce`), compared with
+     `timingSafeEqual`) is 14 with "another process holds the unslop port", and nothing but
+     that challenge was sent: a squatter on the port after the agent's idle exit, possibly
+     another macOS user's, never gets the token or the draft. An agent from before #492, or
+     one still holding the token from before the last `enable --unslop`, gets the same 14;
+     the message says when each stops. `src/mesh-identity.ts` (`meshLink`, Node core) owns the
+     exchange and every request after it: one keep-alive connection at a time, the token
+     added only on a connection that itself answered the challenge, and a request handed any
+     other connection closes it unsent and proves again first (as web search's
+     `identityFetch` does), so `GetTask` and `CancelTask` after a dropped stream are proved
+     too. Anything else answering, or a card without the `unslop`
      skill, a JSON-RPC interface with `protocolVersion` `1.0`, or the
      `urn:agent-inbox:ext:unslop:v1` extension with `api: 1`, is 14 with "rebuild
-     packages/mesh". A missing or non-private token is 14; so is HTTP 403, and HTTP 401, which means a
+     packages/mesh". HTTP 403 is 14, and so is HTTP 401, which means a
      running agent still holds an older token (it stops at its next minute tick, so the
      message says to run the command again shortly).
   4. **The call (§7.3):** one `SendStreamingMessage` with the kind and `timeoutMs` (the
@@ -372,7 +390,10 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
      empty**, and callers edit the original in-session without retrying.
   `test/unslop-client.test.ts` holds (f) (a counting listener and a spawn spy over a
   missing file, no key, a newer schema, a symlink and non-loopback endpoints), the card
-  check, the terminal rule (an `isTTY` stdin, and the real CLI under `script`), and end to
+  check, the terminal rule (an `isTTY` stdin, and the real CLI under `script`), the
+  identity proof (a squatter with a valid card and no proof, a proof for another token,
+  web search's label, another nonce or a replayed one, and one that proves a connection and
+  closes it, each receiving only card requests, never the token or the draft), and end to
   end runs against the agent's source (through tsx, so the root suite needs no
   `packages/mesh` build) and a fake backend: the on-demand start and its reuse, 0 with a
   0600 report, 10, 11, 12, a stream cut by a proxy that falls back to `GetTask`, and a

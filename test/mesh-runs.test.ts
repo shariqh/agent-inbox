@@ -2,6 +2,7 @@
 // per client run under <mesh dir>/mesh/runs/. Real temp dirs, real child processes for the
 // signals and the concurrent appends, fake agents on loopback; no fs mocks.
 import { spawn } from 'node:child_process'
+import { createHmac } from 'node:crypto'
 import type { ChildProcess } from 'node:child_process'
 import { appendFileSync, chmodSync, existsSync, linkSync, lstatSync, mkdirSync, readFileSync, readdirSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
@@ -44,14 +45,18 @@ afterEach(async () => {
   removeScratchDirs()
 })
 
-async function serve(onPost: (body: Json, res: ServerResponse) => void, card: unknown): Promise<{ port: number; posted: Promise<void> }> {
+const UNSLOP_TOKEN = 'u'.repeat(64)
+/** A fake agent; with `prove` it answers unslop's identity challenge (#492) as the agent does. */
+async function serve(onPost: (body: Json, res: ServerResponse) => void, card: unknown, prove = true): Promise<{ port: number; posted: Promise<void> }> {
   let posted!: () => void
   const seen = new Promise<void>((done) => { posted = done })
   const server = createServer((req: IncomingMessage, res) => {
     const chunks: Buffer[] = []
     req.on('data', (c: Buffer) => chunks.push(c))
     req.on('end', () => {
-      if (req.method === 'GET') return void res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(card))
+      const nonce = req.headers['a2a-mesh-challenge']
+      const proof = prove && typeof nonce === 'string' ? { 'a2a-mesh-proof': createHmac('sha256', UNSLOP_TOKEN).update(`unslop/v1\n${nonce}`).digest('base64url') } : {}
+      if (req.method === 'GET') return void res.writeHead(200, { 'content-type': 'application/json', ...proof }).end(JSON.stringify(card))
       posted()
       onPost(JSON.parse(Buffer.concat(chunks).toString('utf8')), res)
     })
@@ -62,7 +67,7 @@ async function serve(onPost: (body: Json, res: ServerResponse) => void, card: un
 }
 
 /** A fake unslop agent: one working event, then (after 120 ms) the final task, or nothing ('hold'). */
-const unslopAgent = (final: { state: string; data: Json } | 'hold', card: unknown = UNSLOP_CARD) => serve((body, res) => {
+const unslopAgent = (final: { state: string; data: Json } | 'hold', card: unknown = UNSLOP_CARD, prove = true) => serve((body, res) => {
   const event = (task: Json): void => void res.write(`data: ${JSON.stringify({ jsonrpc: '2.0', id: body.id, result: { task } })}\n\n`)
   res.writeHead(200, { 'content-type': 'text/event-stream' })
   event({ id: 'task-7', status: { state: 'TASK_STATE_WORKING' } })
@@ -75,7 +80,7 @@ const unslopAgent = (final: { state: string; data: Json } | 'hold', card: unknow
     })
     res.end()
   }, 120)
-}, card)
+}, card, prove)
 
 /** A fake request-post service answering with `data` (or an R1 fixture's response). */
 const requestPostService = (answer: (body: Json) => Json, card: unknown = fixture('card.json')) => serve((body, res) => {
@@ -94,7 +99,7 @@ function privateFile(path: string, text: string): void {
 function meshHome(agents: Json): string {
   const dir = scratchDir('runs-')
   writeFileSync(join(dir, 'mesh.json'), JSON.stringify({ schema: 1, agents }))
-  privateFile(join(dir, 'mesh', 'tokens', 'unslop'), `${'u'.repeat(64)}\n`)
+  privateFile(join(dir, 'mesh', 'tokens', 'unslop'), `${UNSLOP_TOKEN}\n`)
   privateFile(join(dir, 'mesh', 'tokens', 'request-post'), `${'r'.repeat(40)}\n`)
   return dir
 }
@@ -166,6 +171,21 @@ describe('unslop: one record per exit (§5.3, §5.4)', () => {
       for (const canary of [C.draft, C.failure, C.detail, 'canary', 'u'.repeat(16)]) expect(bytes).not.toContain(canary)
     })
   }
+
+  it('another process on the port (#492): exit 14, one unavailable record, and nothing reached it', async () => {
+    const squatter = await unslopAgent({ state: 'TASK_STATE_COMPLETED', data: { ...RESULT, code: 0, status: 'rewritten' } }, UNSLOP_CARD, false)
+    const dir = meshHome({ unslop: { endpoint: `http://127.0.0.1:${squatter.port}` } })
+    const draft = `A public draft about ${C.draft}.\n`
+    const r = await client('unslop', dir, ['--kind', 'docs'], draft)
+    expect([r.code, r.out], r.err).toEqual([14, ''])
+    expect(r.err).toContain('another process holds the unslop port')
+    expect(await Promise.race([squatter.posted.then(() => 'posted'), new Promise((done) => setTimeout(() => done('nothing'), 50))])).toBe('nothing')
+    const [rec, ...more] = records(dir)
+    expect(more).toEqual([])
+    expect(rec).toEqual({ v: 1, id: expect.any(String), agent: 'unslop', op: 'docs', at: expect.any(String), ms: expect.any(Number), exit: 14, outcome: 'unavailable', bytesIn: Buffer.byteLength(draft) })
+    const bytes = runBytes(dir)
+    for (const canary of [C.draft, 'canary', 'u'.repeat(16)]) expect(bytes).not.toContain(canary)
+  })
 
   it('an internal error after the key is armed exits 13 with one failed/internal record', async () => {
     const agent = await unslopAgent({ state: 'TASK_STATE_COMPLETED', data: { ...RESULT, code: 0, status: 'unchanged' } })

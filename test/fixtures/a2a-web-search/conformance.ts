@@ -29,27 +29,23 @@ const short = (v: unknown, max: number): boolean => typeof v === 'string' && [..
 const keysDeep = (v: unknown): string[] => Array.isArray(v) ? v.flatMap(keysDeep)
   : v && typeof v === 'object' ? Object.entries(v).flatMap(([k, x]) => [k, ...keysDeep(x)]) : []
 
-const cleanEmpty = (v: unknown): unknown => {
-  if (v === '' || v === null || v === undefined) return null
-  if (Array.isArray(v)) {
-    const kept = v.map(cleanEmpty).filter((x) => x !== null)
-    return kept.length ? kept : null
-  }
-  if (typeof v !== 'object') return v
-  const kept = Object.entries(v).map(([k, x]) => [k, cleanEmpty(x)] as const).filter(([, x]) => x !== null)
-  return kept.length ? Object.fromEntries(kept) : null
-}
 const jcs = (v: unknown): string => Array.isArray(v) ? `[${v.map(jcs).join(',')}]`
-  : v && typeof v === 'object' ? `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${jcs((v as Json)[k])}`).join(',')}}` : JSON.stringify(v)
+  : v && typeof v === 'object' ? members(v as Json, () => true) : JSON.stringify(v)
+const members = (o: Json, keep: (key: string) => boolean, value: (key: string) => string = (key) => jcs(o[key])): string =>
+  `{${Object.keys(o).filter(keep).sort().map((key) => `${JSON.stringify(key)}:${value(key)}`).join(',')}}`
 
-/** §4.1: SHA-256 of the card's JCS form without signatures or any interface URL, empty values dropped as the SDK's canonicaliser does. */
+/**
+ * §4.1: SHA-256 of the card's JCS form as received, without `signatures` and every
+ * `supportedInterfaces[].url`. No SDK normalisation: one rule for every agent (#556).
+ */
 export function cardHash(card: unknown): string {
-  const c = structuredClone(obj(card))
-  delete c.signatures
-  c.supportedInterfaces = list(c.supportedInterfaces).map((i) => ({ ...obj(i), url: undefined }))
-  // the SDK's protobuf round trip drops a proto3 `false`
-  for (const e of list(obj(c.capabilities).extensions).map(obj)) if (e.required === false) delete e.required
-  return createHash('sha256').update(jcs(cleanEmpty(c) ?? {})).digest('hex')
+  const c = obj(card)
+  const canonical = members(c, (key) => key !== 'signatures', (key) => {
+    const value = c[key]
+    if (key !== 'supportedInterfaces' || !Array.isArray(value)) return jcs(value)
+    return `[${value.map((i) => (i && typeof i === 'object' && !Array.isArray(i) ? members(i as Json, (k) => k !== 'url') : jcs(i))).join(',')}]`
+  })
+  return createHash('sha256').update(canonical).digest('hex')
 }
 
 /** §10.1: the identity proof, HMAC-SHA256(token, "web-search/v1\n" + nonce) in base64url. */

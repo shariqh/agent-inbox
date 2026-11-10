@@ -8,8 +8,6 @@ import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypt
 import { Agent, request } from 'node:http'
 import type { ClientRequest, IncomingMessage } from 'node:http'
 import { Readable } from 'node:stream'
-import { canonicalizeAgentCard } from '@a2a-js/sdk'
-import type { AgentCard } from '@a2a-js/sdk'
 
 export const CARD_PATH = '/.well-known/agent-card.json'
 export class IdentityError extends Error {}
@@ -17,10 +15,31 @@ export class IdentityError extends Error {}
 export const proofFor = (token: string, nonce: string, agent = 'web-search'): string =>
   createHmac('sha256', token).update(`${agent}/v1\n${nonce}`).digest('base64url')
 
-/** SHA-256 of the card's JCS form without any interface URL, so every copy of one version hashes the same. */
-export function cardHash(card: { supportedInterfaces?: Array<Record<string, unknown>> }): string {
-  const supportedInterfaces = (card.supportedInterfaces ?? []).map(({ url: _url, ...rest }) => rest)
-  return createHash('sha256').update(canonicalizeAgentCard({ ...card, supportedInterfaces } as unknown as AgentCard)).digest('hex')
+type Json = Record<string, unknown>
+// RFC 8785 (JCS) for values JSON.parse returns; builds no object, so a "__proto__" key is data
+const jcs = (v: unknown): string => {
+  if (Array.isArray(v)) return `[${v.map(jcs).join(',')}]`
+  if (v && typeof v === 'object') return members(v as Json, () => true)
+  return JSON.stringify(v)
+}
+const members = (o: Json, keep: (key: string) => boolean, value: (key: string) => string = (key) => jcs(o[key])): string =>
+  `{${Object.keys(o).filter(keep).sort().map((key) => `${JSON.stringify(key)}:${value(key)}`).join(',')}}`
+
+/**
+ * The card pin (web search design §4.1, one rule for every agent since #556): SHA-256 of the
+ * card's JCS form as received, without `signatures` and every `supportedInterfaces[].url`, so
+ * every copy of one version hashes the same. No SDK normalisation: it drops unknown fields and
+ * empty values, whose changes would then never move the pin. The root's `canonicalCard`
+ * (src/agent-card.ts) holds the same rule; test/agent-card.test.ts pins the two equal.
+ */
+export function cardHash(card: unknown): string {
+  const c = card && typeof card === 'object' && !Array.isArray(card) ? card as Json : {}
+  const canonical = members(c, (key) => key !== 'signatures', (key) => {
+    const value = c[key]
+    if (key !== 'supportedInterfaces' || !Array.isArray(value)) return jcs(value)
+    return `[${value.map((i) => (i && typeof i === 'object' && !Array.isArray(i) ? members(i as Json, (k) => k !== 'url') : jcs(i))).join(',')}]`
+  })
+  return createHash('sha256').update(canonical).digest('hex')
 }
 
 type Socket = ClientRequest['socket'] & object

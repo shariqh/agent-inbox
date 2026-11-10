@@ -10,11 +10,16 @@ import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { startServer } from '../packages/mesh/src/a2a.js'
 import type { A2AServer } from '../packages/mesh/src/a2a.js'
+import { cardHash as meshCardHash } from '../packages/mesh/src/a2a-client.js'
 import { canonicalCard, cardJson, checkAddedCard, checkCard, summarizeCard } from '../src/agent-card.js'
+import { cardSha256 } from '../src/mesh-add.js'
+import { cardHash as fixtureCardHash } from './fixtures/a2a-web-search/conformance.js'
 
 type Json = Record<string, any>
 const REPO = new URL('..', import.meta.url).pathname
 const REQUEST_POST: Json = JSON.parse(readFileSync(join(REPO, 'test', 'fixtures', 'a2a-request-post', 'card.json'), 'utf8'))
+const WEB_SEARCH_DIR = join(REPO, 'test', 'fixtures', 'a2a-web-search')
+const WEB_SEARCH: Json = JSON.parse(readFileSync(join(WEB_SEARCH_DIR, 'card.json'), 'utf8'))
 const UNSLOP_EXT = 'urn:agent-inbox:ext:unslop:v1'
 const REQUEST_POST_EXT = 'urn:agent-inbox:ext:request-post:v1'
 
@@ -118,6 +123,19 @@ describe('checkAddedCard and canonicalCard (meshctl add, #529; mesh design §6.7
     expect(canonicalCard(change(UNSLOP, (c) => { c.version = 'other' }))).not.toBe(canonicalCard(UNSLOP))
     // a "__proto__" key is data, never a prototype
     expect(canonicalCard(JSON.parse('{"__proto__":{"x":1},"name":"n"}'))).toBe('{"__proto__":{"x":1},"name":"n"}')
+  })
+
+  // web search design §4.1, amended by #556: one pin rule for every agent, raw JCS, no SDK normalisation
+  it('meshctl add, packages/mesh (resolveCard) and the conformance fixtures pin every card the same', () => {
+    expect(cardSha256(WEB_SEARCH)).toBe(readFileSync(join(WEB_SEARCH_DIR, 'card.sha256'), 'utf8').trim())
+    // values the SDK's normaliser would drop still move the pin
+    const empties = (c: Json) => { c.securityRequirements = []; c.capabilities.extensions.push({ uri: 'urn:x', required: false }); c.extra = '' }
+    const signed = (c: Json) => { c.signatures = [{ protected: 'p', signature: 's' }]; c.supportedInterfaces[0].url = 'https://elsewhere.tailnet-example.ts.net/a2a' }
+    for (const card of [WEB_SEARCH, UNSLOP, REQUEST_POST, change(UNSLOP, empties), change(WEB_SEARCH, empties)]) {
+      const pin = cardSha256(card)
+      expect([meshCardHash(card), fixtureCardHash(card), cardSha256(change(card, signed))]).toEqual([pin, pin, pin])
+    }
+    expect(cardSha256(change(UNSLOP, empties))).not.toBe(cardSha256(UNSLOP))
   })
 })
 

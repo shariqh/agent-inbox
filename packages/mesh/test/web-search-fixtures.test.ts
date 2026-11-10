@@ -28,7 +28,7 @@ describe('recorded fixtures (§11)', () => {
     for (const [rel, text] of recorded) expect(read(rel), rel).toBe(text)
   })
 
-  it("card.sha256 is the SDK's hash of card.json", () => {
+  it("card.sha256 is §4.1's raw-JCS hash of card.json", () => {
     expect(cardHash(JSON.parse(read('card.json')) as Json)).toBe(read('card.sha256').trim())
   })
 })

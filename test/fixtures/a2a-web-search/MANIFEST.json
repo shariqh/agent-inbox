@@ -2,10 +2,10 @@
   "schema": 1,
   "algorithm": "sha256",
   "files": {
-    "README.md": "442a6ac9eba1768f8c8744899da8dafc4b8cb3752e0d74a8c225f9260c71a38c",
+    "README.md": "dca84e34090eba165a5ba3584814d7f794bb8a96e6cec8b746dd2c77ea2a9fa4",
     "card.json": "d69ec9bda896d7fab1a89a4f52254eac68518f2ec90c01fa468c49a8c2e0d5e8",
-    "card.sha256": "669d9900cc48a95d77f04d26eff47d6ad958a8c87429c7515e9e2abc19e9694a",
-    "conformance.ts": "c0c14f7cbd5aab2b737815b6473045751f7d2b0031ff3a6abd53a4d2db396fa1",
+    "card.sha256": "f2f266ee18c60fbe477e83e2d9ac53b3bd5a5f74d3835a7fbd1d39d3c9f7f474",
+    "conformance.ts": "b9dd440b9048ce8c040fd5baa1d13898e8b4c0ae5a41df0326d07e92a1a0366a",
     "exchanges/01-answer.json": "066850e6d63bdaeca0f23b93b13b66ff44fb3b9ec54d99175bb7b5dfa2fd8496",
     "exchanges/02-sources.json": "ee2bf2f6e25aac9615d9dffc6f6cb0353f51b4be830ba0da607ed0cd91f7bd68",
     "exchanges/03-no-results.json": "484f74b67809711ea0f955804d8cce002e7cb00e06471182fb8326fb7f5a427e",

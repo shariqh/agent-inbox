@@ -308,6 +308,13 @@ One extension, `urn:agent-inbox:ext:web-search:v1` (a placeholder until mesh Q2 
   the same `version` therefore hash the same, the registry holds each instance's endpoint (D10),
   and callers never use the card's URL. W1 computes it this way; #506 adopts the rule for every
   agent.
+  *Amended 2026-11-09 (#556):* raw JCS, no SDK normalisation. The hash is taken over the card as
+  received, with `signatures` and every `supportedInterfaces[].url` removed and nothing else
+  changed (no protobuf round trip, no dropping of empty values or unknown fields, whose changes
+  would then never move the pin). One rule for every agent: `canonicalCard()` in
+  `src/agent-card.ts` (`meshctl add`'s `cardSha256`), `cardHash()` in
+  `packages/mesh/src/a2a-client.ts` (`resolveCard`) and the fixtures' `conformance.ts`, pinned
+  equal by `test/agent-card.test.ts`.
 - One skill with two modes, not two skills: both modes run the same search, and the answer is a
   step on top. A grant at M4 can still meter modes through the extension.
 

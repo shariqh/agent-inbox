@@ -34,15 +34,18 @@ Use Node 24 in every step (`fnm use 24`).
    npm run meshctl -- enable --unslop --apply
    ```
 
-   This writes the caller token, a profile template, the shim `<mesh dir>/bin/unslop`
-   and the `agents.unslop` key in `mesh.json`. `<mesh dir>` is `~/.agent-inbox` unless
+   This writes the caller token, a profile template, the shim `<mesh dir>/bin/unslop`,
+   the routing skill `<mesh dir>/skills/unslop/SKILL.md` (below) and the `agents.unslop`
+   key in `mesh.json`. `<mesh dir>` is `~/.agent-inbox` unless
    `AGENT_INBOX_MESH_DIR` (or `AGENT_INBOX_DB`) says otherwise. The endpoint is
    `http://127.0.0.1:4420`; pass `--port <n>` for another port.
 
 3. Fill in the profile, `<mesh dir>/mesh/wrappers/unslop.json` (keep it mode 0600). The
    agent refuses to start until you replace each `FILL IN` value:
    - `skill`: the absolute path of your unslop skill folder, the one that holds
-     `rules.md` and `SKILL.md`.
+     `rules.md` and a `SKILL.md` whose frontmatter names `unslop`. Keep it outside
+     `~/.claude/skills`, `~/.copilot/skills` and `~/.agents/skills`, so the routing skill
+     is the only `unslop` skill an assistant sees.
    - `baseUrl`: the base URL of your OpenAI-compatible model server, `https://`
      (`http://` only on a loopback address). The agent calls only
      `<baseUrl>/v1/chat/completions`.
@@ -104,22 +107,26 @@ for a value that changed place), with at most 10 values of 80 characters each, s
 can see what the check objected to. These values appear only in your report, never in
 the agent's log. After exit 0, read its `warnings` before you use the text.
 
-## The caller's `SKILL.md`
+## The routing skill
 
-Split the skill into two files in its one folder: `rules.md` holds today's `SKILL.md`
-body (the editing rules) unchanged, and `SKILL.md` keeps its frontmatter and becomes
-the routing text below. Keep your existing email completion check where the last
-section says. Replace `<mesh dir>` with the real path, usually `~/.agent-inbox`.
+An assistant finds the agent through a routing skill: `enable --unslop --apply` writes it to
+`<mesh dir>/skills/unslop/SKILL.md` from fixed text in `src/mesh-skills.ts` (#513), and
+`disable --unslop --apply` removes it. Don't edit it: meshctl rewrites it, keeping a changed copy
+under `<mesh dir>/backups/skills/`. The editing rules stay in your own folder, the one the
+profile's `skill` names. This is the text, with `<mesh dir>` replaced by the real path:
 
 ```markdown
 ---
-(your existing frontmatter, unchanged)
+name: unslop
+description: Remove generic AI-writing patterns from prose for people while keeping its meaning, facts, links and terms. Use when drafting or revising a PR description, an issue, release notes, public documentation, a blog post or an email. Public drafts go to the local unslop agent; email, customer text and private material are edited in-session.
 ---
+
+<!-- Written by agent-inbox meshctl (#513). Do not edit: meshctl rewrites this file. -->
 
 # unslop
 
-The editing rules are in `rules.md` beside this file. If it is not there, read
-`~/.copilot/skills/unslop/rules.md`.
+The editing rules are in `rules.md`, in the folder that `skill` names in
+`<mesh dir>/mesh/wrappers/unslop.json` (the unslop profile, which the agent reads too).
 
 ## Where the text is edited
 
@@ -137,18 +144,41 @@ The editing rules are in `rules.md` beside this file. If it is not there, read
 
 ## Email
 
-(your existing email completion check, unchanged: it runs in-session)
+Email is edited in-session only, with `rules.md`, before the draft goes for approval.
+Never change an approved revision in place.
 ```
+
+### Link it
+
+```sh
+npm run meshctl -- skills link             # preview
+npm run meshctl -- skills link --apply
+```
+
+This links `~/.claude/skills/unslop` (Claude Code) and `~/.agents/skills/unslop` (Codex and
+Copilot CLI) to the generated folder; `--target claude` or `--target agents` links one. With
+`--apply` it takes the setup lock, and refuses while another setup holds it.
+
+A skill named `unslop` that meshctl did not make, in either folder or in `~/.copilot/skills`,
+blocks the link: meshctl names it and links nothing for unslop, since two `unslop` skills would
+compete (Copilot CLI picks the one in `~/.copilot/skills`). Move it out of every skills folder,
+then link again. Don't leave a backup copy in a skills folder either: Copilot reads every folder
+there.
+
+`npm run meshctl -- skills unlink --apply` removes the links, and only links that point into
+`<mesh dir>/skills/`. `disable --unslop --apply` removes them with the folder, so with the agent
+off no assistant has an `unslop` skill until you link your own folder by hand again.
+
+**During the trial (#483).** The hand-made `~/.copilot/skills/unslop` and
+`~/.claude/skills/unslop` from the trial's setup stay until the trial ends, so `skills link`
+reports them and links nothing. After the trial, move your unslop folder out of both, point the
+profile's `skill` at its new place, and run `skills link --apply`.
 
 ### Rollout checks
 
-- Copilot reads every folder in `~/.copilot/skills`, so a stale backup copy of the skill
-  there can shadow the real one. Delete any backup copy of `unslop` under
-  `~/.copilot/skills`.
-- Link the same folder into `~/.claude/skills/unslop/` for Claude Code.
-- In a fresh session of each, confirm `unslop` resolves to that folder (`copilot skill
-  list`, and Claude Code's skill list), and ask each assistant to read `rules.md` beside
-  its `SKILL.md`.
+- In a fresh session of each assistant, confirm `unslop` resolves to the linked folder
+  (`copilot skill list`, and the `/skills` list in Claude Code and Codex), and ask each to read
+  `rules.md` through the profile.
 - **Shell check:** have Copilot run the shim on a public draft from its sync and async
   shells, and Claude Code from its Bash tool. Each must exit 0 within its shell timeout
   without touching the terminal.
@@ -255,7 +285,7 @@ npm run meshctl -- disable --unslop          # preview
 npm run meshctl -- disable --unslop --apply
 ```
 
-This removes the `agents.unslop` key (keeping a backup of `mesh.json`), the shim and the
-token. A running agent exits within a minute. The profile, logs, budget, deny list and
+This removes the `agents.unslop` key (keeping a backup of `mesh.json`), the shim, the
+token, the routing skill and meshctl's links to it. A running agent exits within a minute. The profile, logs, budget, deny list and
 run records stay; add `--purge` to remove them too. With the key gone, `unslop` exits 14 without
 starting anything or opening a connection, and the skill edits in-session.

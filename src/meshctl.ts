@@ -16,6 +16,10 @@
 // agent this repo doesn't ship: its card URL, endpoint, token copy and card pin
 // (src/mesh-add.ts holds the rules); `remove` takes one out. Only `add` writes such an entry.
 // `call` (#530, D15–D17) is the one generic client for such an agent (src/mesh-call.ts).
+// Every enable and disable also brings `<mesh dir>/skills/` in line with the mesh.json it leaves
+// (#513, src/mesh-skills.ts): a routing SKILL.md for each agent that is on and has a template,
+// none for an agent that is off, and none of meshctl's links to a folder it removes. `skills link`
+// and `skills unlink` add and remove those links for Claude Code, Codex and Copilot CLI.
 //
 //   meshctl enable --agents-view [--apply]   says the Agents view is always on
 //   meshctl enable --unslop [--port <n>] [--checkout <path>] [--apply]
@@ -30,6 +34,8 @@
 //                                            call an added agent (src/mesh-call.ts)
 //   meshctl forget-runs (--unslop | --request-post | --web-search | --id <id> | --all) [--apply]
 //   meshctl status                           say what mesh.json turns on
+//   meshctl skills link|unlink [--target claude|agents|all] [--apply]
+//                                            link the routing skills into the harnesses' skill folders
 //   meshctl unslop --kind <kind> [--report <file>] [--timeout <s>] < draft
 //                                            the shim's command (src/unslop-client.ts)
 //   meshctl request-post file|status|wait …  its shim's command (src/request-post-client.ts)
@@ -51,6 +57,8 @@ import { BUILT_IN_AGENTS, addedEntry, addedPlace, cardEndpoint, cardLine, cardSh
 import { appendRun, pruneRuns, runAgents, runFiles, tidyRuns } from './mesh-runs.js'
 import type { RunCollector } from './mesh-runs.js'
 import { CALL_USAGE, runCall } from './mesh-call.js'
+import { SKILL_TARGETS, holdSetupLock, skillPlan } from './mesh-skills.js'
+import type { SkillTarget } from './mesh-skills.js'
 import { REQUEST_POST_USAGE, runRequestPost } from './request-post-client.js'
 import type { RequestPostIo } from './request-post-client.js'
 import { UNSLOP_USAGE, runUnslop } from './unslop-client.js'
@@ -70,10 +78,11 @@ const USAGE = `usage: agent-inbox-meshctl status
        agent-inbox-meshctl remove <id> [--apply]
        agent-inbox-meshctl call <id> [--skill <skill>] [--json] [--report <file>] [--timeout <s>] < request
        agent-inbox-meshctl forget-runs (--unslop | --request-post | --web-search | --id <id> | --all) [--apply]
+       agent-inbox-meshctl skills link|unlink [--target claude|agents|all] [--apply]
        agent-inbox-meshctl unslop --kind <kind> [--report <file>] [--timeout <s>] < draft
        agent-inbox-meshctl request-post file|status|wait …
 
-Without --apply, enable, disable, add, remove and forget-runs are dry runs: they print what they would do.
+Without --apply, enable, disable, add, remove, forget-runs and skills are dry runs: they print what they would do.
 The Agents view is always on, so enable --agents-view writes nothing.
 enable --unslop needs packages/mesh built in the checkout (npm ci && npm run build there);
 it listens on http://127.0.0.1:<port> only (default ${UNSLOP_PORT}). disable --unslop keeps the
@@ -97,6 +106,13 @@ service, reads its status or waits for it (docs/request-post.md).
 Each client run appends a record without text to <mesh dir>/mesh/runs/, kept 30 days;
 forget-runs deletes an agent's records now (--id <id> an added agent's, --all every agent's);
 remove deletes an added agent's with its entry. Every enable and disable deletes expired ones.
+Every enable and disable writes <mesh dir>/skills/<agent>/SKILL.md, the fixed routing skill, for
+each agent that is on and has one (unslop), and removes the folders and links of agents that are off.
+skills link makes ~/.claude/skills/<agent> (Claude Code) and ~/.agents/skills/<agent> (Codex,
+Copilot CLI) links to those folders; skills unlink removes only links that point into
+<mesh dir>/skills/. Neither replaces a folder or link it did not make: a skill of the same name
+there, or in ~/.copilot/skills, is reported and that agent is not linked. With --apply both take
+the setup lock, and refuse while another setup holds it.
 mesh.json lives in AGENT_INBOX_MESH_DIR, else beside AGENT_INBOX_DB, else ~/.agent-inbox.
 `
 
@@ -262,7 +278,7 @@ function readToken(path: string, privateOnly = false): { token: string } | { ref
   }
 }
 
-type Step = { dry: string; run: () => string }
+type Step = { dry: string; run: () => string; lock?: true }
 
 function runSteps(steps: Step[], apply: boolean, out: (text: string) => void, err: (text: string) => void, failed: string): number {
   const n = steps.length
@@ -330,7 +346,7 @@ function meshctl(argv: string[], io: MeshctlIo): number {
   const values = new Map<string, string>()
   for (let i = 0; i < rest.length; i++) {
     const arg = rest[i]!
-    if (['--port', '--checkout', '--endpoint', '--token-file', '--id'].includes(arg)) {
+    if (['--port', '--checkout', '--endpoint', '--token-file', '--id', '--target'].includes(arg)) {
       const value = rest[++i]
       if (value === undefined || values.has(arg)) return usage()
       values.set(arg, value)
@@ -365,14 +381,22 @@ function meshctl(argv: string[], io: MeshctlIo): number {
   const node = io.node ?? process.execPath
   const self = fileURLToPath(import.meta.url)
   const script = io.script ?? (self.endsWith('.js') ? self : join(repo, 'dist', 'meshctl.js'))
+  // mesh.json without agents.<agent>: undefined when the file would be deleted (nothing else left)
+  const withoutAgent = (existing: MeshRead, agent: string): MeshDocument | undefined => {
+    if (existing.kind !== 'present') return undefined
+    const agents = objectOf(existing.doc['agents'])
+    if (!agents || !Object.hasOwn(agents, agent)) return existing.doc
+    const { [agent]: _gone, ...others } = agents
+    const next: MeshDocument = { ...existing.doc, agents: others }
+    if (!Object.keys(others).length) delete next['agents']
+    return Object.keys(next).length === 1 ? undefined : next
+  }
   // the step that takes agents.<agent> out of mesh.json, deleting the file when nothing else is left
   const dropAgent = (existing: MeshRead, agent: string): Step | undefined => {
     const agents = existing.kind === 'present' ? objectOf(existing.doc['agents']) : undefined
     if (existing.kind !== 'present' || !agents || !Object.hasOwn(agents, agent)) return undefined
-    const { [agent]: _gone, ...others } = agents
-    const next: MeshDocument = { ...existing.doc, agents: others }
-    if (!Object.keys(others).length) delete next['agents']
-    return Object.keys(next).length === 1
+    const next = withoutAgent(existing, agent)
+    return next === undefined
       ? {
           dry: `Would delete ${name}: agents.${agent} was its only setting (keeping a backup beside it).`,
           run: () => { const backup = writeBackup(file, now()); unlinkSync(file); return `Deleted ${name} (backup: ${show(backup)}).` },
@@ -381,6 +405,44 @@ function meshctl(argv: string[], io: MeshctlIo): number {
           dry: `Would remove agents.${agent} from ${name}, keeping every other key (and a backup beside it).`,
           run: () => `Removed agents.${agent} from ${name}${writeMesh(next, true)}.`,
         }
+  }
+
+  // #513: the routing skills follow the mesh.json a command leaves; a refusal there is a note,
+  // never a reason to refuse the command itself
+  const skillCtx = { dir, home, now: now(), show }
+  const withSkills = (steps: Step[], doc: MeshDocument | undefined): Step[] => {
+    const plan = skillPlan(skillCtx, doc)
+    for (const words of plan.refused) err(`Note: ${words}.\n`)
+    return [...steps, ...plan.steps]
+  }
+  // runSteps, holding the setup lock (scripts/setup-lock.sh) when a step changes a harness's skill folder
+  const run = (steps: Step[], failed: string): number => {
+    if (!apply || !steps.some((step) => step.lock)) return runSteps(steps, apply, out, err, failed)
+    const lock = holdSetupLock(env, home)
+    if ('refused' in lock) return refuse(lock.refused)
+    try {
+      return runSteps(steps, apply, out, err, failed)
+    } finally {
+      lock.release()
+    }
+  }
+
+  if (command === 'skills') {
+    const sub = rest[0]
+    if ((sub !== 'link' && sub !== 'unlink') || !flags.delete(sub) || flags.size || !only('--target') || unslop || requestPost) return usage()
+    const target = values.get('--target') ?? 'all'
+    if (target !== 'all' && !SKILL_TARGETS.includes(target as SkillTarget)) return usage()
+    const targets = target === 'all' ? SKILL_TARGETS : [target as SkillTarget]
+    const existing = readMesh(file)
+    if (existing.kind === 'refused') return refuse(`${name} ${existing.reason}`)
+    const plan = skillPlan(skillCtx, existing.kind === 'present' ? existing.doc : undefined, sub === 'link' ? { link: targets } : { unlink: targets })
+    // unlink changes links only; the folders follow mesh.json
+    const steps = sub === 'link' ? plan.steps : plan.steps.filter((step) => step.lock)
+    for (const words of plan.refused) err(`Refused: ${words}.\n`)
+    const code = steps.length
+      ? run(steps, 'Steps before it are done; nothing after it ran.')
+      : (out(sub === 'link' && !plan.agents.length && !plan.refused.length ? `No agent with a routing skill is on in ${name}. Nothing to link.\n` : 'Nothing to do.\n'), 0)
+    return code || (plan.refused.length ? 1 : 0)
   }
 
   if (command === 'status') {
@@ -505,7 +567,9 @@ function meshctl(argv: string[], io: MeshctlIo): number {
         run: () => `Wrote ${name}${writeMesh(next, existing.kind === 'present')}: request-post is on at ${endpoint}.`,
       },
     ]
-    return runSteps(steps, apply, out, err, `Steps before it are done; ${name} was not changed.`)
+    // the routing skill goes before the switch, which stays the last thing written
+    const last = steps.pop()!
+    return run([...withSkills(steps, next), last], `Steps before it are done; ${name} was not changed.`)
   }
 
   if (command === 'disable' && requestPost) {
@@ -515,19 +579,20 @@ function meshctl(argv: string[], io: MeshctlIo): number {
     if (existing.kind === 'refused') return refuse(`${name} ${existing.reason}. Remove it by hand if you are sure`)
     const rp = requestPostPaths(dir)
     const drop = dropAgent(existing, 'request-post')
-    const steps: Step[] = drop ? [drop] : []
+    const head: Step[] = drop ? [drop] : []
     // --purge removes its run records and nothing else (cards view V5 §5.6)
     for (const run of purge ? runFiles(dir, 'request-post') : []) {
-      steps.push({ dry: `Would delete ${show(run.path)}.`, run: () => { unlinkSync(run.path); tidyRuns(dir); removeIfEmpty(rp.root); return `Deleted ${show(run.path)}.` } })
+      head.push({ dry: `Would delete ${show(run.path)}.`, run: () => { unlinkSync(run.path); tidyRuns(dir); removeIfEmpty(rp.root); return `Deleted ${show(run.path)}.` } })
     }
     for (const [path, parents] of [[rp.shim, [rp.bin]], [rp.token, [rp.tokens, rp.root]]] as const) {
-      if (exists(path)) steps.push({ dry: `Would delete ${show(path)}.`, run: () => { unlinkSync(path); parents.forEach(removeIfEmpty); return `Deleted ${show(path)}.` } })
+      if (exists(path)) head.push({ dry: `Would delete ${show(path)}.`, run: () => { unlinkSync(path); parents.forEach(removeIfEmpty); return `Deleted ${show(path)}.` } })
     }
+    const steps = withSkills(head, withoutAgent(existing, 'request-post'))
     if (!steps.length) {
       out(`Request-post is already off${purge ? ' and purged' : ''}. Nothing to do.\n`)
       return 0
     }
-    return runSteps(steps, apply, out, err, 'Steps before it are done; nothing after it ran.')
+    return run(steps, 'Steps before it are done; nothing after it ran.')
   }
 
   if (command === 'enable') {
@@ -586,7 +651,9 @@ function meshctl(argv: string[], io: MeshctlIo): number {
         run: () => `Wrote ${name}${writeMesh(next, existing.kind === 'present')}: unslop is on at http://127.0.0.1:${port}.`,
       },
     ]
-    return runSteps(steps, apply, out, err, `Steps before it are done; ${name} was not changed.`)
+    // the routing skill goes before the switch, which stays the last thing written
+    const last = steps.pop()!
+    return run([...withSkills(steps, next), last], `Steps before it are done; ${name} was not changed.`)
   }
 
   if (command === 'disable' && unslop) {
@@ -613,36 +680,40 @@ function meshctl(argv: string[], io: MeshctlIo): number {
       for (const run of runFiles(dir, 'unslop')) remove(run.path, join(paths.root, 'runs'))
       if (steps.length) steps.push({ dry: `Would remove ${show(paths.root)} if it is then empty.`, run: () => { removeIfEmpty(paths.root); return `Tidied ${show(paths.root)}.` } })
     }
+    steps.push(...withSkills([], withoutAgent(existing, 'unslop')))
     if (!steps.length) {
       out(`Unslop is already off${purge ? ' and purged' : ' (its profile, logs, deny list and run records stay; --purge removes them)'}. Nothing to do.\n`)
       return 0
     }
-    return runSteps(steps, apply, out, err, 'Steps before it are done; nothing after it ran.')
+    return run(steps, 'Steps before it are done; nothing after it ran.')
   }
 
   if (command === 'disable') {
     if (flags.size || values.size) return usage()
     const existing = readMesh(file)
-    if (existing.kind === 'missing') {
-      out(`The mesh is already off: no ${name}. Nothing to do.\n`)
-      return 0
-    }
     if (existing.kind === 'refused') {
       err(`Refused: ${name} ${existing.reason}. Nothing changed. Remove it by hand if you are sure.\n`)
       return 1
     }
+    // with the mesh off, every routing skill folder and every link meshctl made goes (#513)
+    const skills = withSkills([], undefined)
+    if (existing.kind === 'missing' && !skills.length) {
+      out(`The mesh is already off: no ${name}. Nothing to do.\n`)
+      return 0
+    }
     // M1 has one step. Later phases put theirs before it (§2.5): pause the
     // registry, archive every active @mesh plan, then delete the file.
-    return runSteps([
-      {
+    return run([
+      ...(existing.kind === 'missing' ? [] : [{
         dry: `Would delete ${name} (keeping a backup beside it).`,
         run: () => {
           const backup = writeBackup(file, now())
           unlinkSync(file)
           return `Deleted ${name} (backup: ${shown(backup, home)}).`
         },
-      },
-    ], apply, out, err, `${name} was not removed.`)
+      }]),
+      ...skills,
+    ], skills.length ? 'Steps before it are done; nothing after it ran.' : `${name} was not removed.`)
   }
 
   return usage()

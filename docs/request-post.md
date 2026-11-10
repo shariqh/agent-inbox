@@ -153,7 +153,11 @@ history; nothing reads them today.
 ## The caller's `SKILL.md`
 
 The private request-post skill keeps the brief guidance (audience, angle, facts, exclusions, call
-to action; only material Shariq would publish) and routes with this text:
+to action; only material Shariq would publish) and routes with this text. meshctl does not generate
+it (#513): the routing text cannot stand apart from that guidance, since a skill holding only the
+routing would let an assistant file a brief without it, and a second `request-post` skill would
+compete with the private one. So `enable --request-post` writes no routing skill and
+`skills link` links none for it.
 
 > Run `<mesh dir>/bin/request-post file --brand … --channels … --title … [--category … --slug …] < brief.md`.
 > **0:** report the row; for blog, say it awaits Shariq's go (follow it with `wait --through-go --key <key>`).

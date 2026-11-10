@@ -195,15 +195,15 @@ function oldestKept(now: number): string {
 }
 
 /** The day files in a checked runs folder: regular files this user owns, for the agents asked (every agent without a list). */
-function dayFiles(runs: string, agents?: string[]): Array<{ path: string; date: string }> {
-  const found: Array<{ path: string; date: string }> = []
+function dayFiles(runs: string, agents?: string[]): Array<{ path: string; date: string; agent: string }> {
+  const found: Array<{ path: string; date: string; agent: string }> = []
   for (const name of readdirSync(runs).sort()) {
     const m = FILE_NAME.exec(name)
     if (!m || (agents && !agents.includes(m[1]!))) continue
     const path = join(runs, name)
     try {
       const s = lstatSync(path)
-      if (s.isFile() && (uid() === undefined || s.uid === uid())) found.push({ path, date: m[2]! })
+      if (s.isFile() && (uid() === undefined || s.uid === uid())) found.push({ path, date: m[2]!, agent: m[1]! })
     } catch { /* gone */ }
   }
   return found
@@ -228,8 +228,18 @@ export function pruneRuns(dir: string, now: number, agents?: string[], apply = t
   }
 }
 
-/** One agent's day files with their line counts, for `forget-runs` and `--purge` (§5.9). */
-export function runFiles(dir: string, agent: RunAgent): Array<{ path: string; runs: number }> {
+/** Every agent, built-in or added, with a day file in a checked runs folder (`forget-runs --all`). */
+export function runAgents(dir: string): string[] {
+  const runs = checkedRuns(dir)
+  try {
+    return runs ? [...new Set(dayFiles(runs).map((file) => file.agent))] : []
+  } catch {
+    return []
+  }
+}
+
+/** One agent's day files with their line counts, for `forget-runs`, `--purge` and `remove` (§5.9). */
+export function runFiles(dir: string, agent: string): Array<{ path: string; runs: number }> {
   const runs = checkedRuns(dir)
   if (!runs) return []
   try {

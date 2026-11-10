@@ -587,6 +587,26 @@ describe('meshctl add and remove (#529, mesh design §6.7, D13–D17, §8.8)', (
     }
   })
 
+  it('remove --apply also deletes that agent\'s run records, and only those (#530 review)', async () => {
+    const a = await agent()
+    const t = setup()
+    expect((await t.add(a.url, '--id', 'echo', '--token-file', t.tokenFile, '--apply')).code).toBe(0)
+    const runs = join(t.dir, 'mesh', 'runs')
+    mkdirSync(runs, { mode: 0o700 })
+    const names = ['echo-2026-10-28.jsonl', 'echo-2026-10-29.jsonl', 'echo-two-2026-10-29.jsonl', 'unslop-2026-10-29.jsonl']
+    for (const name of names) writeFileSync(join(runs, name), '{}\n{}\n', { mode: 0o600 })
+    const dry = t.run('remove', 'echo')
+    expect(dry.out).toContain('Would delete 2 run files (4 runs) for echo.')
+    expect(readdirSync(runs).sort()).toEqual(names)
+    expect(t.run('remove', 'echo', '--apply').code).toBe(0)
+    expect(readdirSync(runs).sort()).toEqual(['echo-two-2026-10-29.jsonl', 'unslop-2026-10-29.jsonl'])
+    // the entry gone, a later run file of the same id is still removed, and runs/ goes when empty
+    writeFileSync(join(runs, 'echo-2026-10-30.jsonl'), '{}\n', { mode: 0o600 })
+    for (const name of ['echo-two-2026-10-29.jsonl', 'unslop-2026-10-29.jsonl']) unlinkSync(join(runs, name))
+    expect(t.run('remove', 'echo', '--apply').out).toContain('Deleted 1 run file (1 run) for echo.')
+    expect(existsSync(runs)).toBe(false)
+  })
+
   it('refuses a bad card, each rule with fixed words, and writes nothing', async () => {
     const t = setup('{"schema":1}\n')
     const other = await agent()

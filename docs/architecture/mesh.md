@@ -178,9 +178,10 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   the refusals, the eight-process append, the torn line, the cap, retention and the reader;
   `test/mesh-agents.test.ts` the routes.
 - **Forgetting run history (cards view V5 §5.9).**
-  `npm run meshctl -- forget-runs (--unslop | --request-post | --web-search | --all) [--apply]`
+  `npm run meshctl -- forget-runs (--unslop | --request-post | --web-search | --id <id> | --all) [--apply]`
   is a dry run that says how many run files and runs it would delete for each agent; `--apply`
-  deletes them. It deletes only regular day files this user owns with that agent's name in a
+  deletes them. `--id <id>` is one added agent's (an id by `add`'s rule, never a built-in name);
+  `--all` is the built-ins' and every other agent with a day file, added agents included (#530). It deletes only regular day files this user owns with that agent's name in a
   checked runs folder (never a symlink or another name), works whether the agent is on or off,
   removes `runs/` when it is then empty, and with `--apply` also deletes every other agent's
   expired files (the dry run deletes nothing, and counts them). Unlike `enable` and `disable`, a
@@ -712,8 +713,10 @@ the usage and 4).
   `a2a-mesh`. A squatter that answers `add` gets a pin that the real agent's card will not
   match, and no token.
 - **`meshctl remove <id> [--apply]`** deletes only an entry `add` wrote (one with `card`), with
-  a backup (deleting `mesh.json` when nothing else is left, like `disable`), then the token
-  copy and the `mesh/tokens` and `mesh` folders when they are then empty. It refuses a built-in
+  a backup (deleting `mesh.json` when nothing else is left, like `disable`), then its run records
+  (`runs/<id>-<date>.jsonl`, through `runFiles()`'s checks; the dry run counts them, #530), so an
+  agent added later under the same id starts with no history, then the token copy and the
+  `runs`, `mesh/tokens` and `mesh` folders when they are then empty. It refuses a built-in
   name (`disable` turns those off) and an `agents.<id>` that has no `card`.
 - **`meshctl status`** adds one `Added agent <id>:` line per generic entry: its endpoint, the
   pin's first 12 hex digits and whether the token copy exists; an entry that breaks a rule is
@@ -780,8 +783,8 @@ a changed card).
   always `call`, the outcomes of the exit table (16 is `card-changed`) and `reason` from the
   client's own fixed words. The day file is `<id>-<date>.jsonl`; `pruneRuns()` without a list
   now expires every agent's files, added ones included. The viewer does not read added agents'
-  records yet (`readRuns` would accept them; no UI here). `forget-runs` and `remove` do not touch
-  them.
+  records yet (`readRuns` would accept them; no UI here). `remove <id>` deletes them with the
+  entry, `forget-runs --id <id>` on their own, and `forget-runs --all` with every other agent's.
 - **Tests:** `test/mesh-call.test.ts` runs the client against a fake agent built from the
   web-search conformance fixtures (card, recorded streams, `GetTask`, `SendMessage` answers):
   the exact frame and `--json`, the wire request, `SendMessage` for a card that does not stream,

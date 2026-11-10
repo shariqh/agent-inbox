@@ -131,3 +131,6 @@ Each call that got past the entry check appends one run record to
 `agent` = the id, `op` = `call`, `at`, `ms`, `exit`, `signal`, `outcome`, `reason`, `task`), with
 `reason` from this client's own fixed words, never the agent's. No request, result, card text or
 token is recorded. The Agents home does not show added agents' runs yet.
+`npm run meshctl -- forget-runs --id <id> --apply` deletes one agent's records now (`--all` every
+agent's), and `meshctl remove <id> --apply` deletes them with the entry, so an agent added later
+under the same id starts with no history.

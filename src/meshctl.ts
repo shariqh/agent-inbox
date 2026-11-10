@@ -27,7 +27,7 @@
 //   meshctl remove <id> [--apply]            take an added agent out again
 //   meshctl call <id> [--skill <s>] [--json] [--report <file>] [--timeout <s>] < request
 //                                            call an added agent (src/mesh-call.ts)
-//   meshctl forget-runs (--unslop | --request-post | --web-search | --all) [--apply]
+//   meshctl forget-runs (--unslop | --request-post | --web-search | --id <id> | --all) [--apply]
 //   meshctl status                           say what mesh.json turns on
 //   meshctl unslop --kind <kind> [--report <file>] [--timeout <s>] < draft
 //                                            the shim's command (src/unslop-client.ts)
@@ -47,8 +47,8 @@ import { fileURLToPath } from 'node:url'
 import { MESH_SCHEMA, loopbackPort, meshDir, meshFile, readMesh, requestPostEndpoint } from './mesh-config.js'
 import type { MeshDocument, MeshRead } from './mesh-config.js'
 import { BUILT_IN_AGENTS, addedEntry, addedPlace, cardEndpoint, cardLine, cardSha256, fetchAddedCard, idFromName, idRefusal, placeRefusal, tailnetRefusal } from './mesh-add.js'
-import { appendRun, pruneRuns, runFiles, tidyRuns } from './mesh-runs.js'
-import type { RunAgent, RunCollector } from './mesh-runs.js'
+import { appendRun, pruneRuns, runAgents, runFiles, tidyRuns } from './mesh-runs.js'
+import type { RunCollector } from './mesh-runs.js'
 import { CALL_USAGE, runCall } from './mesh-call.js'
 import { REQUEST_POST_USAGE, runRequestPost } from './request-post-client.js'
 import type { RequestPostIo } from './request-post-client.js'
@@ -68,7 +68,7 @@ const USAGE = `usage: agent-inbox-meshctl status
        agent-inbox-meshctl add <card-url> [--id <id>] [--token-file <path>] [--apply]
        agent-inbox-meshctl remove <id> [--apply]
        agent-inbox-meshctl call <id> [--skill <skill>] [--json] [--report <file>] [--timeout <s>] < request
-       agent-inbox-meshctl forget-runs (--unslop | --request-post | --web-search | --all) [--apply]
+       agent-inbox-meshctl forget-runs (--unslop | --request-post | --web-search | --id <id> | --all) [--apply]
        agent-inbox-meshctl unslop --kind <kind> [--report <file>] [--timeout <s>] < draft
        agent-inbox-meshctl request-post file|status|wait …
 
@@ -93,7 +93,8 @@ identity before it sends the token or any text, and prints the result framed as 
 request-post is what <mesh dir>/bin/request-post runs: it files a content request with the
 service, reads its status or waits for it (docs/request-post.md).
 Each client run appends a record without text to <mesh dir>/mesh/runs/, kept 30 days;
-forget-runs deletes an agent's records now. Every enable and disable deletes expired ones.
+forget-runs deletes an agent's records now (--id <id> an added agent's, --all every agent's);
+remove deletes an added agent's with its entry. Every enable and disable deletes expired ones.
 mesh.json lives in AGENT_INBOX_MESH_DIR, else beside AGENT_INBOX_DB, else ~/.agent-inbox.
 `
 
@@ -327,7 +328,7 @@ function meshctl(argv: string[], io: MeshctlIo): number {
   const values = new Map<string, string>()
   for (let i = 0; i < rest.length; i++) {
     const arg = rest[i]!
-    if (['--port', '--checkout', '--endpoint', '--token-file'].includes(arg)) {
+    if (['--port', '--checkout', '--endpoint', '--token-file', '--id'].includes(arg)) {
       const value = rest[++i]
       if (value === undefined || values.has(arg)) return usage()
       values.set(arg, value)
@@ -339,9 +340,10 @@ function meshctl(argv: string[], io: MeshctlIo): number {
   const requestPost = flags.delete('--request-post')
   if (command === 'forget-runs') {
     const all = flags.delete('--all')
-    const picked: RunAgent[] = [...(unslop ? ['unslop' as const] : []), ...(requestPost ? ['request-post' as const] : []), ...(flags.delete('--web-search') ? ['web-search' as const] : [])]
-    if (flags.size || values.size || (all ? picked.length : picked.length !== 1)) return usage()
-    return forgetRuns(resolve(meshDir(env, home)), all ? ['unslop', 'request-post', 'web-search'] : picked, apply, now().getTime(), out, err)
+    const id = values.get('--id')
+    const picked: string[] = [...(unslop ? ['unslop'] : []), ...(requestPost ? ['request-post'] : []), ...(flags.delete('--web-search') ? ['web-search'] : []), ...(id === undefined ? [] : [id])]
+    if (flags.size || [...values.keys()].some((key) => key !== '--id') || (all ? picked.length : picked.length !== 1) || (id !== undefined && idRefusal(id))) return usage()
+    return forgetRuns(resolve(meshDir(env, home)), all ? 'all' : picked, apply, now().getTime(), out, err)
   }
   if (unslop && requestPost) return usage()
   const only = (...names: string[]): boolean => [...values.keys()].every((key) => names.includes(key))
@@ -428,6 +430,15 @@ function meshctl(argv: string[], io: MeshctlIo): number {
     const token = join(tokens, id)
     const drop = dropAgent(existing, id)
     const steps: Step[] = drop ? [drop] : []
+    // its run history goes with it, so an agent added later under this id starts with none (V5 §5.9)
+    const files = runFiles(dir, id)
+    if (files.length) {
+      const what = `${plural(files.length, 'run file')} (${plural(files.reduce((n, f) => n + f.runs, 0), 'run')}) for ${id}`
+      steps.push({
+        dry: `Would delete ${what}.`,
+        run: () => { for (const f of files) unlinkSync(f.path); tidyRuns(dir); removeIfEmpty(join(dir, 'mesh')); return `Deleted ${what}.` },
+      })
+    }
     if (exists(token)) {
       steps.push({
         dry: `Would delete the token copy ${show(token)}.`,
@@ -630,11 +641,14 @@ function meshctl(argv: string[], io: MeshctlIo): number {
 }
 
 /**
- * `forget-runs` (cards view V5 §5.9): one agent's run records, or every agent's, whether it is on
- * or off, and every other agent's expired ones. A dry run deletes nothing, expired files included.
+ * `forget-runs` (cards view V5 §5.9): one agent's run records, or every agent's (the built-ins and
+ * every id with a day file, #530), whether it is on or off, and every other agent's expired ones.
+ * A dry run deletes nothing, expired files included.
  */
-function forgetRuns(dir: string, agents: RunAgent[], apply: boolean, now: number, out: (text: string) => void, err: (text: string) => void): number {
-  const others = (['unslop', 'request-post', 'web-search'] as const).filter((agent) => !agents.includes(agent))
+function forgetRuns(dir: string, picked: string[] | 'all', apply: boolean, now: number, out: (text: string) => void, err: (text: string) => void): number {
+  const known = [...new Set([...BUILT_IN_AGENTS, ...runAgents(dir)])]
+  const agents = picked === 'all' ? known : picked
+  const others = known.filter((agent) => !agents.includes(agent))
   const expired = others.length ? pruneRuns(dir, now, others, apply).length : 0
   const lines: string[] = []
   let failed = false

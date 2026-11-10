@@ -158,8 +158,8 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
 - **`load()` is the poll's; `reloadAndPaint()` is the human's (issues #38/#39).** `load()` ends in
   `renderIfIdle()` — the spec §10 gate. `suspendState()` reports every typed draft anywhere in the
   app while the drafts are in use, but NOT a merely expanded card.
-  **A draft nobody is using suspends nothing (#563).** A question draft typed at 02:57 and
-  left there froze every list until a reload, so rows its agents advanced with
+  **A draft nobody is using suspends nothing (#563).** A question draft left half-typed overnight
+  froze every list until a reload, so rows its agents advanced with
   `board_advance` kept showing their old steps as "Waiting for delivery" for two hours.
   `draftInUse` (`public/poll.js`) holds while the human gave the window input
   (`humanInputAt`: pointerdown, click, key or input) within two minutes, while a draft

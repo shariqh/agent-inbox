@@ -99,16 +99,21 @@ ${body}
 `
 
 /**
- * The whole site, path to content, from `<root>/docs/ext/` alone. Throws on any file there that
- * is not `<name>-v<N>.md`, so nothing else is ever published by mistake.
+ * The whole site, path to content, from `<root>/docs/ext/` alone. Throws on any entry there that
+ * is not a regular file named `<name>-v<N>.md` (a symlink included), so nothing else is ever
+ * published by mistake.
  */
 export function buildSite(root) {
   const dir = join(root, 'docs', 'ext')
   const files = new Map()
   const specs = []
-  for (const name of readdirSync(dir).sort()) {
+  const real = realpathSync(dir)
+  for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : 1))) {
+    const name = entry.name
     const match = SPEC.exec(name)
     if (!match) throw new Error(`docs/ext/${name} is not <name>-v<N>.md, and only extension specs are published`)
+    // a symlink (or anything but a plain file) could publish a file from outside docs/ext
+    if (!entry.isFile() || realpathSync(join(dir, name)) !== join(real, name)) throw new Error(`docs/ext/${name} is not a regular file in docs/ext, and only extension specs are published`)
     const { title, body } = renderMarkdown(readFileSync(join(dir, name), 'utf8'))
     const path = `ext/${match[1]}/v${match[2]}`
     files.set(`${path}.html`, page(title, body))

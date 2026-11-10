@@ -1,7 +1,7 @@
 // The GitHub Pages site for the extension URIs (#537; publishable-agent design §6, D22): built from
 // docs/ext/ alone, so it holds exactly the extension specs and the index, each spec at the path
 // Pages serves for its extension-less URI, and the workflow that deploys it runs only on main.
-import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { buildSite, renderMarkdown, writeSite } from '../scripts/pages-site.mjs'
@@ -44,6 +44,17 @@ describe('the extension specs site (#537)', () => {
     for (const name of ['README.md', 'profile-v1.txt', 'Profile-v1.md', 'profile-v0.md', 'profile.md', '-v1.md']) {
       expect(() => buildSite(root('thing-v2.md', name)), name).toThrow('only extension specs are published')
     }
+    // a symlink with a spec's name, to a file outside docs/ext (relative or absolute), or a folder, is refused
+    const secret = join(scratchDir('pages-secret-'), 'secret.md')
+    writeFileSync(secret, '# Secret\n')
+    for (const target of [secret, '../../package.json', 'thing-v2.md']) {
+      const dir = root('thing-v2.md')
+      symlinkSync(target, join(dir, 'docs', 'ext', 'thing-v1.md'))
+      expect(() => buildSite(dir), target).toThrow('docs/ext/thing-v1.md is not a regular file in docs/ext')
+    }
+    const folder = root()
+    mkdirSync(join(folder, 'docs', 'ext', 'thing-v1.md'))
+    expect(() => buildSite(folder)).toThrow('is not a regular file in docs/ext')
     const out = scratchDir('pages-out-')
     writeFileSync(join(out, 'stray'), '')
     expect(() => writeSite(REPO, out)).toThrow('is not empty')

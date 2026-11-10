@@ -147,6 +147,88 @@ npm run meshctl -- add <new-card-url> --move my-agent --apply
 The card at the new URL must declare the same id and have the same pin; a changed card is
 refused until #531 adds the accept. Pass `--token-file` too to replace the token copy.
 
+## Checking a card before anyone adds it: `meshctl check`
+
+`meshctl check` tells whoever writes an agent whether `meshctl add` will accept it, and whether
+someone else could add it (#538; the publishable-agent design's §5). It writes nothing, and a
+catalog's CI can run it.
+
+```sh
+npm run meshctl -- check http://127.0.0.1:4500/.well-known/agent-card.json --level local
+npm run meshctl -- check https://notes.example.org/.well-known/agent-card.json --json
+npm run meshctl -- check http://127.0.0.1:4500/.well-known/agent-card.json --token-file ~/test.token
+npm run meshctl -- check http://127.0.0.1:4500/.well-known/agent-card.json --token-file ~/test.token --send message.txt
+```
+
+`meshctl check <card-url> [--level local|publishable] [--strict] [--json] [--token-file <path> [--send <file>]]`:
+
+- `--level local` asks "can I add it on this Mac?" (loopback or this Mac's tailnet, today's
+  rule); `publishable`, the default, asks "can someone else add it?".
+- The card URL follows `add`'s rule, widened to a public `https://` name, since nothing secret
+  goes there: `http://127.0.0.1:<port>[/<path>]` or `https://<name>[:<port>][/<path>]`. Any other
+  URL is a usage error (4) before any connection, and the error never repeats the URL.
+- The card is fetched as `add` fetches it: one GET, no token, no redirect, no proxy, 64 KiB, 5 s.
+- `--token-file` (a 0600 file you own) turns on the live tests. It is only for a card on loopback
+  or this Mac's tailnet: live tests on another tailnet or a public name wait for #534. The token
+  goes only to the card's origin, on loopback only after the agent answers the
+  [`a2a-mesh/v1` proof](#the-identity-proof-an-added-loopback-agent-answers), and only when the
+  card declares bearer auth meshctl supports. It is never printed.
+- The live tests create nothing: a request without the token, `GetTask` and `CancelTask` on a
+  random task id, and a method that does not exist. `--send <file>` (at most 64 KiB of UTF-8, not
+  blank) is the one way to send a real message, the file's text, as one task; it needs
+  `--token-file`.
+- `--strict` fails on any `should`, for your own agent's CI.
+
+**Tests, in order.** "must" fails the level; "should" warns, or fails with `--strict`; "info"
+never fails. When `card.fetch` or `card.shape` fails, the rest do not run.
+
+| Id | Passes when | Local | Publishable |
+|---|---|---|---|
+| `card.fetch` | One GET with no redirect returns a JSON object of at most 64 KiB, nested at most 32 deep | must | must |
+| `card.shape` | A name, at least one skill, every skill with an id, an A2A 1.0 JSON-RPC interface (`add`'s card rule) | must | must |
+| `endpoint.rule` | The JSON-RPC interface is on the card's origin and passes the rule; at the local level the card is on loopback or this Mac's tailnet | must | must |
+| `card.required` | A2A's other required fields: `description`, `version`, `capabilities`, both default modes, and each skill's `name`, `description` and `tags` | should | must |
+| `card.stable` | No empty string, array or object, no `null`, and no extension with `"required": false` (A2A signers drop them) | should | should |
+| `card.text` | Name at most 80 characters, description 500; skill id and name 80, description 300, tags 40 each and at most 8 | should | should |
+| `auth.declared` | `securitySchemes` and `securityRequirements` present, every requirement naming defined schemes | must on loopback or with a token, else should | must |
+| `auth.supported` | A requirement meshctl can meet: HTTP Bearer | as `auth.declared` | must |
+| `version.semver` | The version is SemVer 2.0 | info | should |
+| `provider.present` | `provider.organization` and an `https://` `provider.url` | info | must |
+| `provider.domain` | The provider URL's host is the agent id's domain | info | info |
+| `profile.present` | The [profile extension](ext/profile-v1.md) with valid params | should | must |
+| `profile.id` | The profile id is `<domain>[/<path>]/<name>` | should | must |
+| `profile.egress`, `profile.residency` | Not run yet: #535 | should | must |
+| `signature.present`, `signature.valid`, `signature.extra` | Not run yet: #536 | should, must, info | must, must, should |
+| `ext.required` | Every `required: true` extension is one meshctl speaks (today only the profile) | should | should |
+| `live.identity` | Loopback: the agent answers the `a2a-mesh/v1` challenge (https: TLS proves the origin) | must | must |
+| `live.auth` | A request without the token gets HTTP 401 or 403 | must | must |
+| `live.unknown-task` | `GetTask` and `CancelTask` on a random id answer -32001 (`TaskNotFoundError`) | should | should |
+| `live.unknown-method` | An unknown method answers -32601 | should | should |
+| `live.send` | Only with `--send`: the task reaches a final or `INPUT_REQUIRED` state (or the agent answers with a message), `GetTask` returns it, and `CancelTask` answers `CANCELED` or -32002 (`TaskNotCancelableError`) | must | must |
+
+Each row prints `pass`, `fail`, `warn`, `info` or `skip` and fixed words, never the card's own
+text; the agent's name is the one value shown, quoted and cleaned under an untrusted-text header.
+With `--json` stdout is one line, `{ "level", "ok", "tests": [{ "id", "severity", "result",
+"reason" }] }`, every test in the order above; `reason` is `ok` for a pass, else a fixed id
+(`redirect`, `not-semver`, `unproven`, …; `src/mesh-check.ts` lists them all). A skipped test says
+why: `stopped` (a test it needs failed), `no-token`, `auth-unusable`, `identity-failed`,
+`not-yet`, `no-send` and a few more.
+
+| Exit | Meaning |
+|---|---|
+| 0 | Every `must` for the level passes (and every `should`, with `--strict`) |
+| 17 | A test failed at the level |
+| 15 | The card could not be fetched (`card.fetch` failed) |
+| 4 | Usage: arguments, a card URL outside the rule, a token or message file that cannot be used |
+
+**Our agents today.** Web search, request-post and unslop pass `--level local` with two
+warnings, `card.stable` (their bearer requirement's empty `list` and their own extension's
+`"required": false`) and `profile.present` (no profile yet); request-post also warns
+`ext.required`. At the publishable level they fail `provider.present` and `profile.present`
+until slices C7-C9 give each a provider, a profile and a signature. With `--token-file`, unslop
+and web search fail `live.identity`: they answer their own proof labels (`unslop/v1`,
+`web-search/v1`), not `a2a-mesh/v1`.
+
 ## Output
 
 On exit 0, stdout is the agent's result, framed:

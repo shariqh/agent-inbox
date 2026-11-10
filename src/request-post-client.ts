@@ -6,10 +6,11 @@
 // Off (no `agents.request-post` by the one reading rule) is exit 14 before any connection.
 // A tailnet endpoint must still be in this Mac's tailnet before each exchange (#557, mesh
 // design §8.8); the suffix comes in as `io.tailnet`, meshctl's `tailscale status` reader.
+// The Mac can switch tailnets mid-command, so a mismatch is 15, never 14's in-session path.
 //
 // Exit codes are request-post's own (design §3.3), not unslop's: 0 ok, 11 refused,
-// 12 busy, 13 outcome unknown, 14 off (or an endpoint on another tailnet), 15 unavailable
-// (DNS, TLS, refused, a redirect, a card mismatch or this Mac's tailnet unreadable; nothing
+// 12 busy, 13 outcome unknown, 14 off, 15 unavailable (DNS, TLS, refused, a redirect, a card
+// mismatch, or this Mac not on the endpoint's tailnet or its tailnet unreadable; nothing
 // sent), 16 conflict, 124 `wait` ran its 4 hours, 4 usage.
 // The data part reaches stdout only on exit 0.
 import { createHash, randomUUID } from 'node:crypto'
@@ -131,12 +132,14 @@ const unreachable = (base: URL, code: string): string => code === 'ENOTFOUND' ||
 
 /** The card check, then one blocking SendMessage (design §3.1, §3.3). */
 async function send(base: URL, token: string, io: RequestPostIo, meta: Json, text: string): Promise<Result> {
-  // §8.8 (#557): a tailnet endpoint must still be in this Mac's tailnet, or nothing is sent
+  // §8.8 (#557): a tailnet endpoint must still be in this Mac's tailnet, or nothing is sent. The
+  // Mac may have switched tailnets since the last call (another account), so a mismatch is 15,
+  // temporary like a DNS failure: `wait` keeps polling, and nobody is told to file in-session.
   if (base.protocol === 'https:') {
     const suffix = io.tailnet?.()
     if (suffix === undefined) return { exit: 15, why: `this Mac's tailnet could not be read (is Tailscale installed, running and logged in?), so ${base.hostname} cannot be told from another tailnet or a Funnel host` }
     if (!inTailnet(base.hostname, suffix)) {
-      return { exit: 14, why: `${base.hostname} is on another tailnet or a Funnel host, not this Mac's tailnet (${suffix}), so nothing was sent: run meshctl enable --request-post again with the service's name on this Mac's tailnet` }
+      return { exit: 15, why: `this Mac is not on the tailnet the request-post endpoint ${base.hostname} is configured for (this Mac is on ${suffix}), so nothing was sent: switch back, or run meshctl enable --request-post again` }
     }
   }
   // above the service's 30 s task limit (design §5), so its lock-wait 12 arrives as 12, not 13
@@ -294,7 +297,6 @@ export async function runRequestPost(args: string[], io: RequestPostIo): Promise
       } else if (r.exit === 12) say(`busy (${clean(d['reason'] ?? 'unknown', 40)}): try again in about ${Math.ceil(Number(d['retryAfterMs'] ?? MIN) / 1000)} s`)
       else if (r.exit === 13) say(sub === 'file' ? `outcome unknown (${r.why ?? 'unknown'}): run the same command again (key ${key}; it never files twice) or status --key ${key}; never file it in-session` : `no status (${r.why ?? 'unknown'}): try again`)
       else if (r.exit === 16) say(`conflict: ${clean(obj(d['conflict'])['url'])} (${clean(obj(d['conflict'])['phase'])}) already covers this; report that row and never change fields to get around it`)
-      else if (r.exit === 14) say(`off: ${r.why ?? 'unknown'}. File it in-session.`)
       else if (r.exit === 15) say(`unavailable: ${r.why ?? 'unknown'}. Retry once, then report it${sub === 'file' ? '; do not file it in-session' : ''}.`)
       if (r.exit === 0) io.out(json(d))
       return r.exit

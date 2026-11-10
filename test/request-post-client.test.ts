@@ -335,14 +335,20 @@ describe('the endpoint and the card (design §3.1, §6, §8)', () => {
     let suffix: string | undefined = 'other-example.ts.net'
     let asked = 0
     const extra = { lookup: loop, tailnet: () => { asked++; return suffix } }
-    // an entry written before #557, or by hand, on another tailnet or a Funnel host: off, nothing sent
+    // this Mac on another tailnet (an account switch, or an entry written before #557 or by hand):
+    // unavailable, nothing sent, and never the in-session path, which could file a duplicate
     const other = await run(meshHome(endpoint), args, 'b', extra)
-    expect(other.code).toBe(14)
-    expect(other.err).toBe('request-post: off: request-post.tailnet-example.ts.net is on another tailnet or a Funnel host, not this Mac\'s tailnet (other-example.ts.net), so nothing was sent: run meshctl enable --request-post again with the service\'s name on this Mac\'s tailnet. File it in-session.\n')
-    // wait stops at once rather than retrying it
+    expect(other.code).toBe(15)
+    expect(other.err).toBe('request-post: unavailable: this Mac is not on the tailnet the request-post endpoint request-post.tailnet-example.ts.net is configured for (this Mac is on other-example.ts.net), so nothing was sent: switch back, or run meshctl enable --request-post again. Retry once, then report it; do not file it in-session.\n')
+    // wait treats it as temporary: it keeps polling for 30 minutes, then is 15, never 14
     let t = 0
-    expect((await run(meshHome(endpoint), ['wait', '--key', 'k'], '', { ...extra, now: () => t, sleep: async (ms) => { t += ms } })).code).toBe(14)
-    expect(t).toBe(0)
+    const before = asked
+    const waited = await run(meshHome(endpoint), ['wait', '--key', 'k'], '', { ...extra, now: () => t, sleep: async (ms) => { t += ms } })
+    expect(waited.code).toBe(15)
+    expect(t).toBeGreaterThanOrEqual(30 * MIN)
+    expect(asked - before).toBeGreaterThan(2)
+    expect(waited.err).toContain('no status for 30 minutes: this Mac is not on the tailnet')
+    expect(waited.err).not.toMatch(/off:|File it in-session/)
     // the suffix cannot be read: unavailable, nothing sent
     suffix = undefined
     const unknown = await run(meshHome(endpoint), args, 'b', extra)
@@ -356,9 +362,9 @@ describe('the endpoint and the card (design §3.1, §6, §8)', () => {
     expect(ownCall.err).toContain('unavailable: cannot reach request-post.tailnet-example.ts.net')
     expect([lookups, c.count()]).toEqual([['request-post.tailnet-example.ts.net'], 1])
     // the SSH fallback's loopback endpoint never asks
-    const before = asked
+    const loopbackBefore = asked
     expect((await run(meshHome(), args, 'b', extra)).code).toBe(0)
-    expect(asked).toBe(before)
+    expect(asked).toBe(loopbackBefore)
   })
 
   it('agent text reaches stderr and stdout without control bytes', async () => {

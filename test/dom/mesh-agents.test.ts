@@ -71,6 +71,7 @@ function fakeMesh(first: Json = body(unslop(), requestPost())) {
   const mesh: MeshAgents = {
     version: () => s.version,
     body: () => s.body,
+    runs: () => undefined,
     trigger: async (trigger, name) => {
       s.triggers.push(name === undefined ? trigger : `${trigger} ${name}`)
       if (s.hold) await s.hold
@@ -739,6 +740,24 @@ describe('the Mesh agents section (agent cards view V3)', () => {
       expect(pageLines().find(([label]) => label === 'Where')).not.toContain('profile: unslop')
       expect(agentTab().classList.contains('ma-tone-up')).toBe(true)
       expect(posted(bridge).slice(6)).toEqual([{ trigger: 'open', name: 'request-post' }])
+    })
+
+    it('Settings opened over the agent tab keeps its title through a forced paint and a changed poll', async () => {
+      const { s } = await boot()
+      await pollTick()
+      await openAgent('unslop')
+      expect(heading()).toEqual(['Mesh agent', 'unslop'])
+      click(document.getElementById('gear'))
+      await settle()
+      expect(heading()).toEqual(['Agent Inbox', 'Settings'])
+      s.body = body(unslop({ checkedAt: at(0) }), requestPost())
+      await pollTick()
+      click(section()!.querySelector('.ma-toggle'))
+      await settle()
+      expect(heading()).toEqual(['Agent Inbox', 'Settings'])
+      click(document.getElementById('gear'))
+      await settle()
+      expect([activeTab(), heading()]).toEqual(['agent', ['Mesh agent', 'unslop']])
     })
 
     it('no path lands on an empty agent tab: roving, G keys, a hash, a focus bookmark', async () => {

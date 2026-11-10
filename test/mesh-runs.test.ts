@@ -3,7 +3,7 @@
 // signals and the concurrent appends, fake agents on loopback; no fs mocks.
 import { spawn } from 'node:child_process'
 import type { ChildProcess } from 'node:child_process'
-import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, readFileSync, readdirSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { appendFileSync, chmodSync, existsSync, linkSync, lstatSync, mkdirSync, readFileSync, readdirSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import type { IncomingMessage, Server, ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
@@ -12,7 +12,7 @@ import { Readable } from 'node:stream'
 import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { runClient, runMeshctl } from '../src/meshctl.js'
-import { appendRun } from '../src/mesh-runs.js'
+import { appendRun, readRuns } from '../src/mesh-runs.js'
 import type { RunCollector } from '../src/mesh-runs.js'
 import { requestKey } from '../src/request-post-client.js'
 import { removeScratchDirs, scratchDir } from './scratch.js'
@@ -498,5 +498,134 @@ describe('retention, purge and forget-runs (§5.6, §5.9)', () => {
     const link = join(s.runs, `unslop-${daysAgo(41)}.jsonl`)
     expect([lstatSync(link).isSymbolicLink(), readFileSync(link, 'utf8')]).toEqual([true, 'keep'])
     expect(ctl(s.dir, 'forget-runs', '--all', '--apply').out).toBe('No run records for unslop.\nDeleted 1 run file (2 runs) for request-post.\nDeleted 1 run file (2 runs) for web-search.\n')
+  })
+})
+
+describe('the reader (§5.7, slice V5b)', () => {
+  const HOUR = 60 * 60 * 1000
+  const now = Date.now()
+  const today = localDate(now)
+  let n = 0
+  /** A valid unslop record ending `ago` ms before now, as one line. */
+  const rec = (ago: number, extra: Json = {}): Json => ({
+    v: 1, id: `${'abcdefgh'[n % 8]}${String.fromCharCode(97 + (Math.floor(n++ / 8) % 26))}aaaaaaaa`, agent: 'unslop', op: 'docs',
+    at: new Date(now - ago).toISOString(), ms: 200, exit: 0, outcome: 'ok', ...extra,
+  })
+  const line = (r: Json): string => `\n${JSON.stringify(r)}\n`
+  const home = () => {
+    const dir = scratchDir('runs-read-')
+    mkdirSync(join(dir, 'mesh'), { mode: 0o700 })
+    mkdirSync(runsDir(dir), { mode: 0o700 })
+    return dir
+  }
+  const day = (dir: string, date: string, text: string, agent = 'unslop'): string => {
+    const file = join(runsDir(dir), `${agent}-${date}.jsonl`)
+    privateFile(file, text)
+    return file
+  }
+
+  it('ignores empty lines and a torn last line, drops unknown fields, skips and counts a bad line', () => {
+    const dir = home()
+    const good = rec(1000, { status: 'rewritten', title: 'canary-title-r1' })
+    day(dir, today, [
+      line(good), line(rec(2000, { reason: 'Has Spaces' })), '\nnot json\n', line({ ...rec(3000), agent: 'request-post', op: 'file' }),
+      line(rec(4000, { v: 2 })), '\n{"v":1,"id":"torn',
+    ].join(''))
+    const { title: _, ...kept } = good
+    const read = readRuns(dir, 'unslop', now)
+    expect(read).toEqual({ runs: [kept], skipped: 4, truncated: false, keptDays: 30 })
+    expect(JSON.stringify(read)).not.toContain('canary')
+  })
+
+  it('a hand-edited file with text in every place still yields no text (the canary)', () => {
+    const dir = home()
+    const C2 = 'canary-hand-edit-z9'
+    const text = [
+      rec(1, { draft: C2, brief: C2, title: C2, url: `https://${C2}.example`, timing: { queued: 1, load: 1, model: 1, check: 1, note: C2 } }),
+      rec(2, { reason: `${C2} free text` }), rec(3, { classes: [`a b ${C2}`] }), rec(4, { model: `${C2} x` }), rec(5, { task: `${C2}/x` }),
+      { ...rec(6), agent: 'request-post', op: 'file', title: C2, brand: 'acme', channels: ['blog'], fields: [C2] },
+      rec(7, { warnings: [{ class: 'x', detail: C2 }] }), rec(8, { [C2]: 1 }), rec(9, { nested: { deep: C2 } }),
+    ].map(line).join('')
+    day(dir, today, text)
+    day(dir, today, text.replaceAll('"agent":"unslop","op":"docs"', '"agent":"request-post","op":"file"'), 'request-post')
+    for (const agent of ['unslop', 'request-post'] as const) expect(JSON.stringify(readRuns(dir, agent, now)), agent).not.toContain(C2)
+    // the records that survive carry only schema fields
+    expect(readRuns(dir, 'unslop', now).runs.map((r) => Object.keys(r).sort().join())).toEqual(Array(2).fill(['agent', 'at', 'exit', 'id', 'ms', 'op', 'outcome', 'v'].join()))
+  })
+
+  it('skips and counts a symlinked, group-writable or foreign file; a symlinked folder reads nothing', () => {
+    const dir = home()
+    day(dir, today, line(rec(1)))
+    const elsewhere = join(scratchDir('runs-read-out-'), 'x.jsonl')
+    writeFileSync(elsewhere, line(rec(2)))
+    symlinkSync(elsewhere, join(runsDir(dir), `unslop-${daysAgo(1)}.jsonl`))
+    chmodSync(day(dir, daysAgo(2), line(rec(3))), 0o620)
+    let foreign = false
+    for (const source of ['/private/etc/hosts', '/etc/hosts', '/etc/passwd']) {
+      try { if (statSync(source).uid !== process.getuid!()) { linkSync(source, join(runsDir(dir), `unslop-${daysAgo(3)}.jsonl`)); foreign = true; break } } catch { /* next */ }
+    }
+    const read = readRuns(dir, 'unslop', now)
+    expect(read.runs).toHaveLength(1)
+    expect(read.skipped).toBe(foreign ? 3 : 2)
+    const linked = scratchDir('runs-read-link-')
+    mkdirSync(join(linked, 'mesh'))
+    symlinkSync(runsDir(dir), runsDir(linked))
+    expect(readRuns(linked, 'unslop', now)).toEqual({ runs: [], skipped: 0, truncated: false, keptDays: 30 })
+  })
+
+  it('reads a 330 KiB file up to 320 KiB and marks it truncated instead of skipping it', () => {
+    const dir = home()
+    const one = line(rec(1)).slice(1)
+    const count = Math.ceil((330 * 1024) / one.length)
+    day(dir, today, one.repeat(count))
+    const read = readRuns(dir, 'unslop', now)
+    expect(statSync(join(runsDir(dir), `unslop-${today}.jsonl`)).size).toBeGreaterThanOrEqual(330 * 1024)
+    expect(read.truncated).toBe(true)
+    expect(read.runs).toHaveLength(Math.floor((320 * 1024) / one.length))
+    expect(read.skipped).toBe(0)
+  })
+
+  it('shows the 30 local dates ending today only, and a read never writes, deletes or prunes', () => {
+    const dir = home()
+    day(dir, daysAgo(29), line(rec(29 * 24 * HOUR)))
+    day(dir, daysAgo(30), line(rec(30 * 24 * HOUR)))
+    day(dir, daysAgo(40), line(rec(40 * 24 * HOUR)))
+    day(dir, today, line(rec(1)), 'request-post')
+    const listing = () => readdirSync(runsDir(dir)).sort().map((name) => [name, statSync(join(runsDir(dir), name)).mtimeMs, statSync(join(runsDir(dir), name)).size])
+    const before = listing()
+    const folder = statSync(runsDir(dir)).mtimeMs
+    const read = readRuns(dir, 'unslop', now)
+    expect(read.runs.map((r) => r['at'])).toEqual([new Date(now - 29 * 24 * HOUR).toISOString()])
+    expect(read.skipped).toBe(0)
+    expect(listing()).toEqual(before)
+    expect(statSync(runsDir(dir)).mtimeMs).toBe(folder)
+  })
+
+  it('merges day files and sorts by end time: a 4-hour run that ended last comes first', () => {
+    const dir = home()
+    const long = rec(1000, { ms: 4 * HOUR })
+    const shorter = [rec(3 * HOUR), rec(2 * HOUR), rec(1 * HOUR)]
+    // the long run's line first, as if the file were in start order, and an older run on yesterday's file
+    day(dir, today, [long, ...shorter].map(line).join(''))
+    const yesterday = rec(26 * HOUR)
+    day(dir, daysAgo(1), line(yesterday))
+    const tie = { ...rec(1000), id: 'zzzzzzzzzz' }
+    appendFileSync(join(runsDir(dir), `unslop-${today}.jsonl`), line(tie))
+    expect(readRuns(dir, 'unslop', now).runs.map((r) => r['id'])).toEqual([tie['id'], long['id'], ...shorter.reverse().map((r) => r['id']), yesterday['id']])
+  })
+
+  it('parses a day file again only when its identity, size or mtime changed', () => {
+    const dir = home()
+    const file = day(dir, today, line(rec(1)))
+    const stamp = Math.floor(now / 1000) - 60
+    utimesSync(file, stamp, stamp)
+    const cache = new Map()
+    const first = readRuns(dir, 'unslop', now, cache)
+    // same size and mtime: the cached parse stands
+    writeFileSync(file, line(rec(2)))
+    utimesSync(file, stamp, stamp)
+    expect(readRuns(dir, 'unslop', now, cache).runs).toEqual(first.runs)
+    appendFileSync(file, line(rec(3)))
+    expect(readRuns(dir, 'unslop', now, cache).runs).toHaveLength(2)
   })
 })

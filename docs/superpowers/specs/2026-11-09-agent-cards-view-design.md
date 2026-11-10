@@ -267,7 +267,7 @@ One row expanded:
   the new one, and the row asks for Refresh instead of saying "Checking…" until a trigger comes.
 - **What it never reads:** `mesh/tokens/*`, `mesh/wrappers/*` (the unslop profile holds the
   backend URL and key source), `unslop-deny.txt`, and the logs. The one other file it reads is
-  unslop's budget (§4.6).
+  unslop's budget (§4.6). It reads `mesh/runs/` only through `src/mesh-runs.ts`'s reader (V5 §5.7).
 
 ### 3.3 `/api/version`
 
@@ -455,6 +455,7 @@ not shown: reading it would need an authenticated call.
       "card": null,
       "cardJson": null,
       "lastSeen": { "at": "2026-11-09T20:01:02.000Z", "card": { "name": "unslop", "...": "..." } },
+      "lastRun": { "at": "2026-11-09T21:58:40.112Z", "op": "docs", "outcome": "ok" },
       "usage": { "date": "2026-11-09", "tasks": 12, "modelMs": 480000 }
     }
   ],
@@ -471,8 +472,10 @@ not shown: reading it would need an authenticated call.
   until a later check passes. A `mismatch` keeps the failing card in `card` and `cardJson` so the
   human can see what is wrong.
 - `checkedAt` changes only when a trigger ran a check, and every trigger is a human navigation or
-  press. Between triggers the read is a 304, which resolves to the same object, so an idle tick
+  press. Between triggers and runs the read is a 304, which resolves to the same object, so an idle tick
   paints nothing (#298). The "checked 1m ago" label follows the existing 30-second label clock.
+- `lastRun` (cards view V5 §5.7, slice V5b) is `{ at, op, outcome }` from the newest valid run
+  record by end time, or `null`. It changes only when a run lands, which is a content change.
 - `where` is `local` (unslop), `tailnet` (request-post's `https://` form) or `ssh-tunnel`
   (request-post's `http://127.0.0.1:<port>` fallback). `reason` and `fix` are the server's fixed
   words of §2.4, or `null`.
@@ -503,7 +506,8 @@ not shown: reading it would need an authenticated call.
 - The viewer never opens `mesh/tokens/*` or `mesh/wrappers/*`, never sends a token, and never
   shows one. The Auth line says the token is kept outside the app, not what it is.
 - The viewer never reads the unslop profile, so the backend URL and API key source never reach it.
-- Logs are not read.
+- Logs are not read. Run records (`mesh/runs/`) are read, never written or deleted; they hold no
+  text (V5 §5.5).
 
 ### 5.3 Endpoints and the network
 

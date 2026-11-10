@@ -31,6 +31,12 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   [`2026-11-06-unslop-a2a-agent-design.md`](../../docs/superpowers/specs/2026-11-06-unslop-a2a-agent-design.md).
   The second agent, M2b, is request-post, hosted by the publishing service (#500):
   [`2026-11-07-request-post-a2a-agent-design.md`](../../docs/superpowers/specs/2026-11-07-request-post-a2a-agent-design.md).
+  **Order comes from the six mesh milestones on GitHub**, not from this file: "Mesh: web search
+  and cards view" (due 2026-11-26), "Mesh: add any agent" (2026-12-02), "Mesh: publish an agent"
+  (2026-12-24), "Mesh: catalog v0" (2027-01-12), "Mesh: many machines (M3, M4, M7)" (2027-02-09)
+  and "Mesh: agents call agents (M6)" (2027-02-19)
+  ([milestones](https://github.com/shariqh/agent-inbox/milestones)). Each issue carries an
+  `agent:copilot` or `agent:claude` label, and its dependencies are GitHub blocked-by links.
 Keep all of these additive and behind the existing seams — don't break v1's local,
 zero-config, no-auth path.
 

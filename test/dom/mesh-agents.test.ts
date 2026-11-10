@@ -67,11 +67,18 @@ function fakeMesh(first: Json = body(unslop(), requestPost())) {
     // runs as a check would, before the POST answers
     onTrigger: null as null | ((trigger: string) => void),
     hold: null as null | Promise<void>,
+    // each agent's run records, newest end first, as src/mesh-agents.ts answers them (V5d)
+    runs: {} as Record<string, Json[]>,
+    older: false,
+    runsRead: [] as string[],
   }
   const mesh: MeshAgents = {
     version: () => s.version,
     body: () => s.body,
-    runs: () => undefined,
+    runs: (name) => {
+      s.runsRead.push(name)
+      return { on: true, name, runs: s.runs[name] ?? [], older: s.older, skipped: 0, truncated: false, keptDays: 30, forget: `npm run meshctl -- forget-runs --${name}` }
+    },
     trigger: async (trigger, name) => {
       s.triggers.push(name === undefined ? trigger : `${trigger} ${name}`)
       if (s.hold) await s.hold
@@ -468,6 +475,15 @@ describe('the Mesh agents section (agent cards view V3)', () => {
     it.each([['off', null], ['on, every row amber', 'amber'], ['on, the agent tab open', 'tab']] as const)('mesh %s', async (_label, mode) => {
       const fake = mode ? fakeMesh(body(unslop({ state: 'mismatch', reason: 'no unslop skill', fix: 'rebuild packages/mesh' }),
         requestPost({ state: 'unreachable', reason: 'connection refused', card: null, cardJson: null }))) : null
+      // V5d: Run history, the agent tab's default, full of runs that went wrong
+      if (fake) {
+        fake.s.runs = {
+          unslop: [
+            { v: 1, id: 'faaaaaaaaa', agent: 'unslop', op: 'docs', at: at(60_000), ms: 900, exit: 13, outcome: 'failed', reason: 'internal' },
+            { v: 1, id: 'iaaaaaaaaa', agent: 'unslop', op: 'pr', at: at(120_000), ms: 900, exit: null, signal: 'SIGINT', outcome: 'interrupted' },
+          ],
+        }
+      }
       await boot({ mesh: fake, seed })
       await pollTick()
       await settle()
@@ -477,6 +493,7 @@ describe('the Mesh agents section (agent cards view V3)', () => {
         await pollTick()
         expect(agentTab().hidden).toBe(false)
         expect(agentTab().querySelector('.tab-count')).toBeNull()
+        expect(document.querySelectorAll('#agentPagePanel-runs tbody .mar-amber')).toHaveLength(2)
       }
       // the rail as the run without mesh drew it (it.each runs in order)
       if (!mode) railOff = railCounts()
@@ -697,12 +714,13 @@ describe('the Mesh agents section (agent cards view V3)', () => {
       expect(posted(bridge)).toEqual([{ trigger: 'open' }, { trigger: 'open', name: 'unslop' }])
       expect(s.triggers).toEqual(['open', 'open unslop'])
       expect(loads()).toBe(before + 1)
-      // until V5d the page opens on Details, its inner tablist's only tab
+      // V5d: the page opens on Run history, then Details
       const inner = [...page().querySelectorAll<HTMLElement>('.map-tabs [role="tab"]')]
-      expect(inner.map((t) => [t.textContent, t.getAttribute('aria-selected'), t.tabIndex])).toEqual([['Details', 'true', 0]])
-      expect(page().querySelector(`#${inner[0]!.getAttribute('aria-controls')}`)?.getAttribute('aria-labelledby')).toBe(inner[0]!.id)
+      expect(inner.map((t) => [t.textContent, t.getAttribute('aria-selected'), t.tabIndex])).toEqual([['Run history', 'true', 0], ['Details', 'false', -1]])
+      for (const t of inner) expect(page().querySelector(`#${t.getAttribute('aria-controls')}`)?.getAttribute('aria-labelledby')).toBe(t.id)
 
       // an inner tab, the active agent tab and a poll post nothing
+      click(inner[1])
       click(inner[0])
       click(agentTab())
       await settle()
@@ -868,7 +886,7 @@ describe('the Mesh agents section (agent cards view V3)', () => {
 
       // fixed width and height, every line one line; the strip scrolls sideways
       attachStylesheet()
-      expect(getComputedStyle(un!).height).toBe('116px')
+      expect(getComputedStyle(un!).height).toBe('134px')
       expect(getComputedStyle(un!.querySelector('.ma-status')!).whiteSpace).toBe('nowrap')
       expect(getComputedStyle(strip()).overflowX).toBe('auto')
       // jsdom drops what it cannot parse (min(), gradients), so the rest is pinned as source
@@ -1019,8 +1037,325 @@ describe('the Mesh agents section (agent cards view V3)', () => {
     })
   })
 
+  describe('Run history (cards view V5d)', () => {
+    const MIN = 60_000
+    // a run record as src/mesh-runs.ts reads it: `at` is the end, `ms` the duration
+    const run = (id: string, endedAgo: number, over: Json = {}): Json => ({
+      v: 1, id: id.padEnd(10, 'a'), agent: 'unslop', op: 'docs', at: at(endedAgo), ms: 8400, exit: 0, outcome: 'ok',
+      status: 'rewritten', attempts: 1, rules: '3f9a1c0e7b22', bytesIn: 6204, timing: { queued: 0, load: 0, model: 7000, check: 100 }, ...over,
+    })
+    const panel = () => page().querySelector<HTMLElement>('#agentPagePanel-runs')!
+    const runRows = () => [...panel().querySelectorAll<HTMLTableRowElement>('tbody tr')]
+    const ids = () => runRows().map((tr) => tr.dataset.runId)
+    const cells = () => runRows().map((tr) => [...tr.cells].map((td) => td.textContent))
+    const runsReads = (log: string[], name = 'unslop') => log.filter((entry) => entry === `GET /api/mesh/agents/runs?name=${name}`).length
+    const innerTab = (label: string) => [...page().querySelectorAll<HTMLElement>('.map-tabs [role="tab"]')].find((t) => t.textContent === label)!
+    const weekdayTime = (iso: string) => `${['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][new Date(iso).getDay()]} ${hhmm(iso)}`
+    const select = (node: Node, start: number, end: number) => {
+      const range = document.createRange()
+      range.setStart(node, start)
+      range.setEnd(node, end)
+      document.getSelection()!.removeAllRanges()
+      document.getSelection()!.addRange(range)
+      return String(document.getSelection())
+    }
+
+    it('opens on Run history and reads runs only while the agent tab is active, Run history shows and the document is visible', async () => {
+      const fake = fakeMesh()
+      fake.s.runs = { unslop: [run('b', 10 * MIN), run('a', 20 * MIN)], 'request-post': [] }
+      const { log } = await boot({ mesh: fake })
+      await pollTick()
+      await pollTick()
+      expect(log.some((entry) => entry.includes('/api/mesh/agents/runs'))).toBe(false)
+
+      await openAgent('unslop')
+      expect(innerTab('Run history').getAttribute('aria-selected')).toBe('true')
+      expect([panel().hidden, page().querySelector<HTMLElement>('#agentPagePanel-details')?.hidden]).toEqual([false, true])
+      // the click's reloadAndPaint() reads the runs without waiting for a tick
+      expect(runsReads(log)).toBe(1)
+      expect(ids()).toEqual(['baaaaaaaaa', 'aaaaaaaaaa'])
+      await pollTick()
+      expect(runsReads(log)).toBe(2)
+
+      // Details showing stops the read and keeps the last body; switching back paints it at once
+      const nodes = runRows()
+      click(innerTab('Details'))
+      await pollTick()
+      await pollTick()
+      expect(runsReads(log)).toBe(2)
+      click(innerTab('Run history'))
+      expect([panel().hidden, runRows()]).toEqual([false, nodes])
+      await pollTick()
+      expect(runsReads(log)).toBe(3)
+
+      // another tab stops it too
+      tab('needsYou')
+      await settle()
+      await pollTick()
+      expect(runsReads(log)).toBe(3)
+      tab('agent')
+      await settle()
+      expect(runRows()).toEqual(nodes)
+      await pollTick()
+      expect(runsReads(log)).toBe(4)
+
+      // and a hidden document
+      Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true })
+      await pollTick()
+      await pollTick()
+      expect(runsReads(log)).toBe(4)
+      delete (document as unknown as Record<string, unknown>).visibilityState
+      await pollTick()
+      expect(runsReads(log)).toBe(5)
+
+      // Details is kept while the tab stays open; every open (a re-open of the same agent too) starts on Run history
+      click(innerTab('Details'))
+      tab('needsYou')
+      await settle()
+      tab('agent')
+      await settle()
+      expect(innerTab('Details').getAttribute('aria-selected')).toBe('true')
+      tab('dashboard')
+      await settle()
+      await openAgent('unslop')
+      expect(innerTab('Run history').getAttribute('aria-selected')).toBe('true')
+
+      // opening another agent drops the last agent's rows at once, before its own read lands
+      tab('dashboard')
+      await settle()
+      click(meshRow('request-post'))
+      expect(runRows()).toEqual([])
+      await settle()
+      expect(runsReads(log, 'request-post')).toBe(1)
+      expect([runRows(), panel().querySelector<HTMLElement>('.mar-empty')?.hidden]).toEqual([[], false])
+    })
+
+    it('shows the summary, the table in the page’s words, the empty state and the footer with the route’s forget text', async () => {
+      const fake = fakeMesh()
+      const runs = [
+        run('a', 2 * MIN),
+        run('b', 5 * MIN, { op: 'pr', exit: 11, outcome: 'refused', status: undefined, attempts: undefined, rules: undefined, bytesIn: 900, timing: undefined, ms: 200, reason: 'screen', classes: ['email'] }),
+        run('c', 10 * MIN, { op: 'blog', exit: 10, outcome: 'kept-original', status: 'kept-original', attempts: 2, ms: 31_000, reason: 'fidelity', rules: undefined, bytesIn: undefined, timing: undefined }),
+        run('d', 3 * 24 * 60 * MIN, { exit: null, signal: 'SIGTERM', outcome: 'interrupted', status: undefined, ms: 4 * MIN, attempts: undefined, rules: undefined, bytesIn: undefined, timing: undefined }),
+        run('e', 10 * 24 * 60 * MIN, { exit: 14, outcome: 'unavailable', status: undefined, ms: 230 * MIN, attempts: undefined, rules: undefined, bytesIn: undefined, timing: undefined }),
+      ]
+      fake.s.runs = { unslop: runs, 'request-post': [] }
+      await boot({ mesh: fake })
+      await pollTick()
+      await openAgent('unslop')
+      expect(panel().querySelector('.mar-summary')?.textContent).toBe('Last 5 runs: 1 ok · 1 kept original · 1 refused · 1 unavailable · 1 interrupted · median 31 s')
+      expect([...panel().querySelectorAll('thead th')].map((th) => [th.textContent, th.getAttribute('scope')]))
+        .toEqual(['Ended', 'What', 'Outcome', 'Took', 'Details'].map((label) => [label, 'col']))
+      const d = new Date(String(runs[4]!['at']))
+      expect(cells()).toEqual([
+        [hhmm(String(runs[0]!['at'])), 'docs', 'rewritten', '8.4 s', 'model 7.0 s · 1 attempt · rules 3f9a1c0e7b22 · 6.2 KB'],
+        [hhmm(String(runs[1]!['at'])), 'pr', 'refused', '0.2 s', '0.9 KB · screen: email'],
+        [hhmm(String(runs[2]!['at'])), 'blog', 'kept original', '31 s', '2 attempts · fidelity'],
+        [weekdayTime(String(runs[3]!['at'])), 'docs', 'interrupted', '4 min', 'SIGTERM'],
+        [`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`, 'docs', 'unavailable', '3 h 50 min', ''],
+      ])
+      // amber only for the outcomes that went wrong
+      expect(runRows().map((tr) => tr.querySelector('.mar-outcome')!.classList.contains('mar-amber'))).toEqual([false, false, false, true, true])
+      // the full local start and end in the Ended cell's title
+      expect(runRows()[0]!.cells[0]!.title).toMatch(/^started \d{4}-\d\d-\d\d \d\d:\d\d:\d\d · ended \d{4}-\d\d-\d\d \d\d:\d\d:\d\d$/)
+      expect(panel().querySelector<HTMLElement>('.mar-empty')?.hidden).toBe(true)
+      expect(panel().querySelector<HTMLElement>('.mar-more')?.hidden).toBe(true)
+      expect(panel().querySelector<HTMLElement>('.mar-older')?.hidden).toBe(true)
+      // the footer: the kept period, then the forget command as the route sent it, inside <code>
+      expect(panel().querySelector('.mar-kept')?.textContent).toBe('Runs from the last 30 days are shown. Older records are deleted by this agent’s first run of a day, or the next time an agent is enabled or disabled. Never the text sent or returned.')
+      const code = panel().querySelector('.mar-forget code')!
+      expect(code.textContent).toBe('npm run meshctl -- forget-runs --unslop')
+      expect(panel().querySelector('.mar-forget')?.textContent).toBe('To forget them now: npm run meshctl -- forget-runs --unslop Copy')
+      expect(panel().querySelectorAll('img, a, [href], [src]')).toHaveLength(0)
+
+      // request-post's words: filed, the final phase, wait (through go), refused fields
+      fake.s.runs['request-post'] = [
+        run('p', 1 * MIN, { agent: 'request-post', op: 'file', status: undefined, attempts: undefined, rules: undefined, bytesIn: undefined, timing: undefined, created: true, phase: 'awaiting-go', channels: ['blog', 'x-thread'], brand: 'brand-a', ms: 1200 }),
+        run('q', 2 * MIN, { agent: 'request-post', op: 'wait', status: undefined, attempts: undefined, rules: undefined, bytesIn: undefined, timing: undefined, throughGo: true, phase: 'published', ms: 50 * MIN }),
+        run('r', 3 * MIN, { agent: 'request-post', op: 'status', exit: 11, outcome: 'refused', status: undefined, attempts: undefined, rules: undefined, bytesIn: undefined, timing: undefined, fields: ['channels'], ms: 300 }),
+        run('s', 4 * MIN, { agent: 'request-post', op: 'wait', exit: 124, outcome: 'timed-out', status: undefined, attempts: undefined, rules: undefined, bytesIn: undefined, timing: undefined, phase: 'awaiting-go', ms: 60 * MIN }),
+      ]
+      tab('dashboard')
+      await settle()
+      await openAgent('request-post')
+      expect(cells().map((row) => row.slice(1))).toEqual([
+        ['file', 'filed', '1.2 s', 'awaiting-go · blog, x-thread · brand-a'],
+        ['wait (through go)', 'published', '50 min', ''],
+        ['status', 'refused', '0.3 s', 'fields: channels'],
+        ['wait', 'timed out', '1 h', 'awaiting-go'],
+      ])
+      expect(panel().querySelector('.mar-forget code')?.textContent).toBe('npm run meshctl -- forget-runs --request-post')
+
+      // the empty state
+      fake.s.runs['request-post'] = []
+      await pollTick()
+      expect([panel().querySelector<HTMLElement>('.mar-empty')?.hidden, panel().querySelector<HTMLElement>('.mar-table')?.hidden, panel().querySelector<HTMLElement>('.mar-summary')?.hidden])
+        .toEqual([false, true, true])
+      expect(panel().querySelector('.mar-empty')?.textContent).toBe('No runs yet. Calls through this agent appear here once they finish; calls made before this version were not recorded.')
+      expect(panel().querySelector<HTMLElement>('.mar-foot')?.hidden).toBe(false)
+    })
+
+    it('hostile-looking values from a record show literally, as text', async () => {
+      const fake = fakeMesh()
+      fake.s.runs = { unslop: [run('a', MIN, { op: '<img src=x onerror=alert(1)>', reason: '<a href="https://evil.example/">r</a>' })] }
+      const { log } = await boot({ mesh: fake })
+      await pollTick()
+      await openAgent('unslop')
+      expect(cells()[0]!.slice(1, 2)).toEqual(['<img src=x onerror=alert(1)>'])
+      expect(panel().querySelectorAll('img, a, [href], [src], [onerror]')).toHaveLength(0)
+      expect(log.some((entry) => entry.includes('evil.example'))).toBe(false)
+    })
+
+    it('Show more adds 50 rows up to the 200 returned, is window-local and joins frameInputs()', async () => {
+      const fake = fakeMesh()
+      fake.s.runs = { unslop: Array.from({ length: 120 }, (_, i) => run(`r${String(i).padStart(3, '0')}`, (i + 1) * 1000)) }
+      fake.s.older = true
+      const { log } = await boot({ mesh: fake })
+      await pollTick()
+      await openAgent('unslop')
+      const more = panel().querySelector<HTMLButtonElement>('.mar-more')!
+      expect([runRows().length, more.hidden, more.textContent]).toEqual([50, false, 'Show 50 more'])
+      expect(panel().querySelector('.mar-summary')?.textContent).toMatch(/^Last 120 runs: 120 ok · median /)
+      const first = runRows()
+      const requests = log.length
+      click(more)
+      // the click repaints its own region at once, reads and posts nothing, and keeps the first rows
+      expect(runRows().length).toBe(100)
+      expect(runRows().slice(0, 50)).toEqual(first)
+      expect(log.length).toBe(requests)
+      click(more)
+      expect([runRows().length, more.hidden]).toEqual([120, true])
+      const older = panel().querySelector<HTMLElement>('.mar-older')!
+      expect([older.hidden, older.textContent]).toEqual([false, 'Older runs in the kept period are not shown.'])
+      await pollTick()
+      expect(runRows().length).toBe(120)
+      expect(JSON.stringify({ ...localStorage, ...sessionStorage })).not.toMatch(/mesh|unslop|more/i)
+      // a re-open starts at one page again
+      click(page().querySelector('.map-close'))
+      await settle()
+      await openAgent('unslop')
+      expect(runRows().length).toBe(50)
+      // pinned as source: the shown count joins the page's state(), which frameInputs() reads
+      const pageSrc = readFileSync(resolve(REPO, 'public', 'mesh-agent-page.js'), 'utf8')
+      expect(pageSrc).toMatch(/state: \(\) => \[[^\n]*runs\.state\(\)/)
+      expect(readFileSync(resolve(REPO, 'public', 'mesh-runs-tab.js'), 'utf8')).toContain('state: () => String(shown)')
+    })
+
+    it('a new run inserts one row in end order, touching no other row; a selection survives that poll, the label clock and Refresh; an idle tick changes nothing', async () => {
+      const fake = fakeMesh()
+      fake.s.runs = { unslop: [run('b', 10 * MIN, { ms: 2000 }), run('a', 20 * MIN)] }
+      await boot({ mesh: fake })
+      await pollTick()
+      await openAgent('unslop')
+      const [b, a] = runRows()
+      const details = b!.querySelector('.mar-details')!.firstChild!
+      const selected = select(details, 0, 9)
+      expect(selected).toBe('model 7.0')
+
+      // idle ticks (304s) change no node on the page
+      const records: MutationRecord[] = []
+      const observer = new MutationObserver((list) => records.push(...list))
+      observer.observe(page(), { subtree: true, childList: true, characterData: true, attributes: true })
+      await pollTick()
+      await pollTick()
+      expect(records).toEqual([])
+
+      // a run that started 4 h ago, before both, but ended last sorts first: one row inserted, the others the same nodes
+      fake.s.runs = { unslop: [run('c', MIN, { ms: 4 * 60 * MIN }), ...fake.s.runs['unslop']!] }
+      await pollTick()
+      expect(ids()).toEqual(['caaaaaaaaa', 'baaaaaaaaa', 'aaaaaaaaaa'])
+      expect(runRows().slice(1)).toEqual([b, a])
+      const inserted = records.filter((r) => r.type === 'childList' && r.target.nodeName === 'TBODY')
+      expect(inserted.map((r) => [r.addedNodes.length, r.removedNodes.length])).toEqual([[1, 0]])
+      expect(records.filter((r) => r.target.nodeName !== 'TBODY' && b!.contains(r.target))).toEqual([])
+      expect([details.isConnected, String(document.getSelection())]).toEqual([true, selected])
+      records.length = 0
+
+      // the 30-second label clock repaints the frame; nothing in the rows changes
+      await vi.advanceTimersByTimeAsync(31_000)
+      expect(records.filter((r) => runRows().some((tr) => tr.contains(r.target)) || r.target.nodeName === 'TBODY')).toEqual([])
+      expect([details.isConnected, String(document.getSelection())]).toEqual([true, selected])
+
+      // the page's Refresh ends in reloadAndPaint(): the rows stay, the selection too
+      click(page().querySelector('.map-refresh'))
+      await settle()
+      expect(fake.s.triggers.at(-1)).toBe('refresh unslop')
+      expect(runRows().slice(1)).toEqual([b, a])
+      expect([details.isConnected, String(document.getSelection())]).toEqual([true, selected])
+      observer.disconnect()
+    })
+
+    it('past midnight only the Ended cells’ text changes (time to weekday); a selection in another cell of the row survives', async () => {
+      const fake = fakeMesh()
+      // ended a few minutes ago, so today wherever the test runs
+      const runs = [run('b', 2 * MIN), run('a', 3 * MIN)]
+      fake.s.runs = { unslop: runs }
+      await boot({ mesh: fake })
+      await pollTick()
+      await openAgent('unslop')
+      expect(cells().map((row) => row[0])).toEqual(runs.map((r) => hhmm(String(r['at']))))
+      const [b] = runRows()
+      const what = b!.querySelector('.mar-what')!.firstChild!
+      const selected = select(what, 0, 4)
+      const records: MutationRecord[] = []
+      const observer = new MutationObserver((list) => records.push(...list))
+      observer.observe(panel(), { subtree: true, childList: true, characterData: true, attributes: true })
+      const next = new Date(Date.now())
+      next.setHours(24, 5, 0, 0)
+      vi.setSystemTime(next)
+      await pollTick()
+      expect(cells().map((row) => row[0])).toEqual(runs.map((r) => weekdayTime(String(r['at']))))
+      expect(records.length).toBeGreaterThan(0)
+      expect(records.every((r) => (r.target as Element).classList?.contains('mar-ended'))).toBe(true)
+      expect([what.isConnected, String(document.getSelection())]).toEqual([true, selected])
+      observer.disconnect()
+    })
+
+    it('a failed read keeps the last rows, marked stale, and never fails the tick', async () => {
+      let failure: (() => Response) | null = null
+      const fake = fakeMesh()
+      fake.s.runs = { unslop: [run('a', MIN)] }
+      await boot({ mesh: fake, intercept: (url) => (url.startsWith('/api/mesh/agents/runs') && failure ? Promise.resolve(failure()) : null) })
+      await pollTick()
+      await openAgent('unslop')
+      const stale = () => panel().querySelector<HTMLElement>('.mar-stale')!
+      expect(stale().hidden).toBe(true)
+      const nodes = runRows()
+      for (const make of [
+        () => new Response('boom', { status: 500 }),
+        () => new Response('<html>not found</html>', { status: 404 }),
+        () => new Response(JSON.stringify({ ok: false, error: 'not configured' }), { status: 200, headers: { etag: '"x"' } }),
+      ]) {
+        failure = make
+        await pollTick()
+        expect([stale().hidden, stale().textContent]).toEqual([false, 'could not read; showing what was last read'])
+        expect(runRows()).toEqual(nodes)
+        expect(document.getElementById('status')?.textContent).not.toBe('disconnected')
+      }
+      failure = null
+      await pollTick()
+      expect([stale().hidden, runRows()]).toEqual([true, nodes])
+    })
+
+    it('the card’s last-run line follows lastRun by the label clock', async () => {
+      const ended = at(5 * MIN)
+      const { s } = await boot({ mesh: fakeMesh(body(unslop({ lastRun: { at: ended, op: 'docs', outcome: 'ok' } }), requestPost({ lastRun: null }))) })
+      await pollTick()
+      const line = (name: string) => meshRow(name)!.querySelector<HTMLElement>('.ma-lastrun')!
+      expect([line('unslop').textContent, line('unslop').hidden]).toEqual([`Last run ${hhmm(ended)} · ok`, false])
+      expect(line('request-post').textContent).toBe('No runs yet')
+      // part of the card's description
+      expect(meshRow('unslop')!.getAttribute('aria-describedby')).toContain(line('unslop').id)
+      const older = at(2 * 24 * 60 * MIN)
+      s.body = body(unslop({ lastRun: { at: ended, op: 'docs', outcome: 'ok' } }), requestPost({ lastRun: { at: older, op: 'file', outcome: 'refused' } }))
+      await pollTick()
+      expect(line('request-post').textContent).toBe(`Last run ${['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][new Date(older).getDay()]} · refused`)
+      expect(line('request-post').classList.contains('ma-lastrun')).toBe(true)
+    })
+  })
+
   it('no public file names the clients or the command (the text guard, which test/mesh.test.ts runs unchanged)', () => {
-    for (const file of ['mesh-section.js', 'mesh-agent-page.js', 'agents-home.js', 'app.js', 'snapshots.js']) {
+    for (const file of ['mesh-section.js', 'mesh-agent-page.js', 'mesh-runs-tab.js', 'agents-home.js', 'app.js', 'snapshots.js']) {
       expect(readFileSync(resolve(REPO, 'public', file), 'utf8'), file).not.toMatch(/unslop-client|request-post-client|meshctl/)
     }
   })

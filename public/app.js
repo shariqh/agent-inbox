@@ -631,6 +631,22 @@ function meshNext(previous, fresh) {
   if (fresh.on === false) meshOff = true
   return fresh === previous.body && !previous.stale ? previous : { body: fresh, stale: false }
 }
+// Run history (cards view V5 §5.7): the open agent's runs, read only while the agent tab is
+// active, its Run history shows, the document is visible and the last body still names the
+// agent. The same fallback: a failed read keeps the last body marked stale, a skipped read
+// keeps it as it was, and a body read for another agent is never shown under this one.
+function meshRunsUrl() {
+  const agent = meshAgentPage.current()
+  if (!agent || activeTab !== 'agent' || !meshAgentPage.runsShowing() || !meshReadable()) return null
+  const body = lastData?.mesh?.body
+  if (body?.on !== true || !body.agents?.some((a) => String(a.key) === agent.key)) return null
+  return `/api/mesh/agents/runs?name=${encodeURIComponent(agent.name)}`
+}
+function meshRunsNext(previous, fresh, key) {
+  const last = previous?.key === key ? previous : { key, body: null, stale: false }
+  if (fresh === undefined) return last.stale ? last : { ...last, stale: true }
+  return fresh === last.body && !last.stale ? last : { key, body: fresh, stale: false }
+}
 const postMesh = (trigger, name) => fetch('/api/mesh/agents/refresh', {
   method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(name === undefined ? { trigger } : { trigger, name }),
 })
@@ -661,7 +677,7 @@ const meshAgentPage = installMeshAgentPage({
 // agent's open, and one reloadAndPaint() brings what the page reads without waiting for a tick.
 function openMeshAgent(key, name) {
   meshAgentPage.open(key, name)
-  meshAgentPage.paint(lastData?.mesh ?? null, Date.now())
+  meshAgentPage.paint(lastData?.mesh ?? null, Date.now(), lastData?.runs ?? null)
   selectTab('agent')
   reloadAndPaint()
 }
@@ -705,10 +721,12 @@ async function load() {
   const lingerUrl = wantArchived ? null : lingeringUrl()
   const historyUrl = activityHistoryUrl(Date.now())
   const wantMesh = meshReadable()
+  const runsUrl = meshRunsUrl()
+  const runsKey = meshAgentPage.current()?.key ?? null
   try {
     const [
       items, boardsRead, summaryRead, activityRead, historyRead, closedRead, linksRead, issuesRead, closedHistoryRead,
-      archivedRead, lingerSettled, messagesRead, launchesRead, meshRead,
+      archivedRead, lingerSettled, messagesRead, launchesRead, meshRead, runsRead,
     ] = await Promise.allSettled([
       readSnapshot('/api/items').then(marked),
       readSnapshot('/api/boards').then(marked),
@@ -742,6 +760,8 @@ async function load() {
       // The Mesh agents section: only while it can show (meshReadable), with
       // the messages fallback. Off, the tick makes exactly the reads it made.
       wantMesh ? readSnapshot('/api/mesh/agents').then(marked) : null,
+      // Run history: only while it shows (meshRunsUrl), with the same fallback.
+      runsUrl ? readSnapshot(runsUrl).then(marked) : null,
     ])
     if (reloadRequested || generation < appliedLoadGeneration) return false
     const res = settledValue(items)
@@ -765,8 +785,9 @@ async function load() {
       messagesBody(messagesRead),
       launchesOn() ? messagesBody(launchesRead) : null,
       wantMesh ? meshBody(meshRead) : null,
+      runsUrl ? meshBody(runsRead) : null,
     ])
-    const [g, boards, brief, activity, activityHistory, firstOlder, issues, links, firstArchived, firstLinger, messages, launches, meshFresh] =
+    const [g, boards, brief, activity, activityHistory, firstOlder, issues, links, firstArchived, firstLinger, messages, launches, meshFresh, runsFresh] =
       bodies.map(settledValue)
     const closedSnapshot = settledValue(closedRead)
     if (reloadRequested || generation < appliedLoadGeneration) return false
@@ -827,6 +848,7 @@ async function load() {
     const archivedBrief = brief ?? complete.plans
     // a skipped read keeps the last body, so returning to the Dashboard paints it at once
     const mesh = wantMesh ? meshNext(lastData?.mesh ?? { body: null, stale: false }, meshFresh) : lastData?.mesh ?? { body: null, stale: false }
+    const runs = runsUrl ? meshRunsNext(lastData?.runs ?? null, runsFresh, runsKey) : lastData?.runs ?? null
     appliedLoadGeneration = generation
     if (closedSnapshot !== null) {
       appliedClosedGeneration = generation
@@ -871,6 +893,8 @@ async function load() {
       launches: Array.isArray(launches) ? launches : null,
       // the Mesh agents section's last body and whether the last read of it failed
       mesh,
+      // Run history's last body, the agent it was read for, and whether the last read failed
+      runs,
       // What this tick read, compared by identity (#298): a snapshot that
       // answered 304 resolves to the very representation it revalidated, and
       // the fresh reads compare by what they can show (activity without its
@@ -881,7 +905,7 @@ async function load() {
         activityHistory.state, activityHistory.message, activityHistory.state === 'ready' ? activityHistory.spans : null,
         links.length ? links : null, issues, older?.done ?? null, older?.error ?? null,
         complete?.plans ?? null, complete?.error ?? null, lingerReadUrl, linger?.plans ?? null, linger?.error ?? null,
-        messages, launches ?? null, mesh.body, mesh.stale,
+        messages, launches ?? null, mesh.body, mesh.stale, runs?.key ?? null, runs?.body ?? null, runs?.stale ?? null,
       ],
     }
     applyProjectMutationIntents()
@@ -3302,7 +3326,7 @@ function paintAmbient() {
   reconcileMessageDrafts()
   renderDashboardAmbient(dashboard, { forced: forcedAmbient })
   // the agent tab, from the same body, whether or not mesh is still on (it then says the agent left)
-  meshAgentPage.paint(lastData.mesh ?? null, Date.now())
+  meshAgentPage.paint(lastData.mesh ?? null, Date.now(), lastData.runs ?? null)
   paintTabCounts(g, boards)
   paintLaterSectionHint()
   // #407: a poll held back by a draft, a press or a scroll still ends a stale

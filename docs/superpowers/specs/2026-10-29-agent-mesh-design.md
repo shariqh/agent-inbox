@@ -38,6 +38,13 @@ the first-hop click per agent from M4, `meshctl call` as the generic client behi
 skills and shims, one untrusted-result framing, and an identity proof for loopback endpoints. All
 of it is planned, none shipped. It adds §6.7 and touches §1, §2.2, §6.6, §7, §8 (intro, §8.5,
 §8.8), §13 and §14.1.
+**Amended 2026-11-10 by #533**
+([`2026-11-10-publishable-agent-design.md`](2026-11-10-publishable-agent-design.md)): Shariq
+accepted what a card must declare to be added by someone else (D18–D24): two levels of card, a
+profile extension (stable id, signing keys, per-skill egress and residency), signed cards,
+`meshctl check`, and GitHub Pages as the base for extension URIs and the capability name, which
+answers §13 Q2. All of it is planned, none shipped (milestone "Mesh: publish an agent"). It touches
+§6.7, §8.8, §9.2, §9.5, §11 (M9), §13 and §14.1.
 
 ---
 
@@ -635,6 +642,7 @@ it. Both follow `enable`'s habits: dry run first, a timestamped backup, other ke
 | `tokenFile` | The path of a `0600` file holding the bearer token. The token itself never lands in `mesh.json`, a skill file, an argument or shell history. |
 | `cardSha256` | The card pin: SHA-256 of the card's JCS form without `supportedInterfaces[].url` and `signatures`. `meshctl call` recomputes it before every call and refuses a changed card until the human accepts it again (#531). |
 | `skipFirstHopClick` | M4 only (D14): `true` when the human allowed the agent to skip the first-hop click while adding it. Absent means the click applies. |
+| `agentId` | Planned (#537, D19): the card's stable id from the profile extension, when it has one. `add` uses it to recognise the same agent at a new endpoint and move the entry, keeping its pin and runs, when a signature verifies under a key the pinned card lists, or when the human passes `--move <id>`. |
 
 Only `meshctl add` writes an `agents.<id>` entry. When the registry lands, #548 decides whether
 these entries register through it or stay in `mesh.json`.
@@ -668,6 +676,14 @@ so a process squatting on the port learns nothing. For added agents the proof's 
 agent, since the agent cannot know the id the human picked ([`docs/mesh-call.md`](../../mesh-call.md)). A public `https://` endpoint relies on TLS,
 the card pin and card signatures instead (#534, #531, #536), because the proof only makes sense
 for a local port (§8.8).
+
+**Signed cards (#533, D18 and D21; planned, #536).** A card that lists signing `keys` in its
+profile extension must carry a signature by one of them, checked when the agent is added, when a
+changed card is accepted (#531) and when the agent moves. Between those, the pin covers everything
+`call` uses, since only the interface URLs and the signatures can change without moving it. An
+unsigned card is accepted only for loopback and this Mac's tailnet; another tailnet or a public
+name needs the publishable level, signature included
+([`2026-11-10-publishable-agent-design.md`](2026-11-10-publishable-agent-design.md) §3).
 
 ---
 
@@ -849,6 +865,9 @@ Agents view flags a chain when one callee receives the same message hash three t
   passes the HMAC identity proof (`src/mesh-identity.ts`, #492). On `https://`, TLS verification
   (always on), the card pin (#531) and card signatures (#536) take its place, and the token goes
   only to the origin the agent was added with.
+- **Publishable cards (#533, D18; planned).** Another tailnet or a public name (#534) requires the
+  publishable level, including a signature (D21); loopback and this Mac's tailnet keep today's
+  rule, and an unsigned card is accepted only there.
 
 ---
 
@@ -876,11 +895,11 @@ and send that header itself.** So the header is never trusted alone:
 - a request with the header but no token is `401`.
 
 Header trust adds something only against a token stolen from another machine. A grant names the
-capability (the domain must be one Shariq controls, §13 Q2):
+capability, under the base Shariq chose (§13 Q2, D22):
 
 ```json
 { "src": ["tag:agent-host", "shariq@example.com"], "dst": ["tag:mesh-registry"],
-  "app": { "<domain>/cap/agent-mesh": [{ "actions": ["register", "discover", "delegate"],
+  "app": { "shariqh.github.io/agent-inbox/cap/agent-mesh": [{ "actions": ["register", "discover", "delegate"],
                                          "namespace": "shariq" }] } }
 ```
 
@@ -906,8 +925,13 @@ honest scheme. Wrappers' tokens live in `0600` files on their hosts, which §3 a
 
 ### 9.5 Publishing (M9)
 
-Agent ids are `namespace/name`; tokens and capabilities are scoped to namespaces; cross-namespace
-delegation is off unless a pair is allowed. OIDC tokens (including `tsidp`'s, BSD-3-Clause) are
+*Amended 2026-11-10 by #533 (D19, D24; planned).* An agent's id is the stable id its card declares
+in the profile extension: `<publisher-domain>[/<path>]/<name>`, such as
+`shariqh.github.io/agent-inbox/web-search` (D19). Namespaces are the mesh's tenants, not part of
+the id: tokens and capabilities are scoped to them, and an agent from any publisher can be
+registered in any namespace; cross-namespace delegation is off unless a pair is allowed. Card
+signing, ids, a catalog file, meshctl on npm, public endpoints and sign-in to agents moved earlier,
+to "Mesh: publish an agent" (D24); the registry reuses the client's verifier. OIDC tokens (including `tsidp`'s, BSD-3-Clause) are
 verified against a configured JWKS and map a groups claim to namespaces. Cards may be signed with
 JWS over RFC 8785 canonical JSON (A2A §8.4); the registry verifies against local JWKS and records
 `trust` beside the unchanged card, with remote `jku` fetching off. AI Catalog's Trust Manifests and
@@ -1182,8 +1206,11 @@ bridge (§8.6).
 - *Checkpoint.* Continue if nothing surprised him. Change back to one hop if depth was rarely
   useful. Stop at the first escape from a budget.
 
-**M9 — Publishable.** Namespaces, group tokens, OIDC, card JWS, the AI Catalog feed, npm and
-container, docs without Tailscale; a Go `tsnet` binary only if asked for.
+**M9 — Publishable.** Namespaces, group tokens, OIDC, registry-side trust records, `packages/mesh`
+on npm and a container, the rest of the docs without Tailscale; a Go `tsnet` binary only if asked
+for. *Amended 2026-11-10 by #533 (D24):* card JWS, stable ids, the AI Catalog file, meshctl on npm,
+public endpoints and sign-in to agents moved to the milestone "Mesh: publish an agent" (#536,
+#537, #543, #540, #534, #541), planned.
 - *Validation.* Agent: a clean machine without Tailscale reaches a two-host mesh from the docs in
   under 30 minutes. Reviewer: full security review. Shariq: another person or group uses it for
   two weeks.
@@ -1218,7 +1245,10 @@ container, docs without Tailscale; a Go `tsnet` binary only if asked for.
 
 1. **Registry home:** the homelab container (recommended; it does not sleep) or the Mac?
 2. **Domain** for the capability and extension URIs (`<domain>/cap/agent-mesh`,
-   `https://<domain>/ext/load/v1`). It must be one you control.
+   `https://<domain>/ext/load/v1`). It must be one you control. **Answered 2026-11-10 (#533,
+   D22):** GitHub Pages, `https://shariqh.github.io/agent-inbox/`, for both: extension URIs under
+   `https://shariqh.github.io/agent-inbox/ext/`, the capability name
+   `shariqh.github.io/agent-inbox/cap/agent-mesh`.
 3. **Is ubi-llm on the tailnet?**
 4. **Repositories and refs** wrappers may use, whether delegated work may ever push a branch, and
    whether write profiles should run under a dedicated OS user (§3).
@@ -1270,6 +1300,13 @@ container, docs without Tailscale; a Go `tsnet` binary only if asked for.
 | 2026-11-10 | **D15.** Harness path, a mix: every callable agent gets a generated routing skill and a shim that call the generic client `meshctl call`; the official `a2a` CLI must work with our agents and client in both directions but isn't the default client, so a token never has to reach it through a skill file or shell history; the M6 bridge comes later and reuses the same client. Why: no harness has a native A2A client yet, and one client keeps tokens, pins and framing in one place. Implemented by #513, #530, #532 and #551 (§6.7, §7) | Shariq (#511) |
 | 2026-11-10 | **D16.** Untrusted results: one shared helper frames every result from an agent this repo doesn't ship, starting from the web search design's §4.5. Whether unslop's client adopts the header stays open (§13, Q15). Why: an assistant reading an added agent's result reads text anyone could have written. Implemented by #528 (§6.7, §8.5) | Shariq (#511) |
 | 2026-11-10 | **D17.** Identity, for loopback endpoints: a generic entry on a loopback endpoint must pass the HMAC proof (`src/mesh-identity.ts`, #492) before the token or any text is sent. Public `https://` endpoints rely on TLS, the card pin and signatures instead. Why: any local process can bind a free loopback port; TLS already proves an `https://` origin. Implemented by #530, #534, #531 and #536 (§6.7, §8.8) | Shariq (#511) |
+| 2026-11-10 | **D18.** Two levels of card: local (loopback and this Mac's tailnet, today's rule) and publishable (another tailnet or a public name), with the fields of the publishable-agent design's §3.2. Why: the bar rises where the human can no longer see the machine. Planned: #538 and #534 | Shariq (#533) |
+| 2026-11-10 | **D19.** The stable agent id is `<publisher-domain>[/<path>]/<name>` (ours: `shariqh.github.io/agent-inbox/<agent>`), carried in the profile extension, mapped to ARD's `urn:air:` only on export; it is not §9.5's namespace. Why: readable, domain-anchored, needs no proposal or URN registration. Planned: #537 | Shariq (#533) |
+| 2026-11-10 | **D20.** One profile extension, `https://shariqh.github.io/agent-inbox/ext/profile/v1`, carries the id, the signing `keys` (public JWKs), and per skill the declared egress (`purpose`, `hosts` or `operator` or `any`, `sends`) and residency (`caller-host`, `caller-mesh`, `any`). Declarations, not enforcement; residency acts from M7. Why: one URI to freeze; all of it inside the signature and the pin. Planned: #537, #535 and #550 | Shariq (#533) |
+| 2026-11-10 | **D21.** Cards are signed per A2A §8.4 with ES256 and verified over their raw JCS form; our signer signs only cards with no empty, `null` or default values, and our bearer requirements name the role `call`, so A2A's rule, `@a2a-js/sdk` and raw JCS sign the same bytes. One `0600` key file per agent; keys are listed in the profile and trusted on first use or by `--key-thumbprint`; no key URL is fetched; signatures are checked at add, accept and move; a change to the key list alone, endorsed by a pinned key, is accepted without a prompt; unsigned cards only on loopback and this Mac's tailnet. Why: one byte string for the signature, the pin and the summary, in Node core. Planned: #536 and #531 | Shariq (#533) |
+| 2026-11-10 | **D22.** §13 Q2: extension URIs live under `https://shariqh.github.io/agent-inbox/ext/` and the Tailscale capability name is `shariqh.github.io/agent-inbox/cap/agent-mesh` (GitHub Pages, under the owner's control); the existing `urn:agent-inbox:ext:*:v1` URIs move there, each with its agent's slice. Why: signing freezes them, and the base must be one Shariq controls. Planned: the publishable-agent design's slices C1 and C6–C10 | Shariq (#533) |
+| 2026-11-10 | **D23.** `meshctl check <card-url>` runs the publishable-agent design's §5 tests with must, should and info severities, fixed reason ids, exit 0, 17, 15 or 4, and live tests that create no work unless `--send <file>` is given. Planned: #538 | Shariq (#533) |
+| 2026-11-10 | **D24.** From §9.5 and M9, card signing, stable ids, the AI Catalog file, meshctl on npm, public endpoints and sign-in to agents move to "Mesh: publish an agent", built in the order #537, #538, #536, #535; AI Catalog and ARD are export formats only. Planned: #536, #537, #543, #540, #534 and #541 | Shariq (#533) |
 
 D12 is reserved for the web search agent (#508): that design's §18 lists the amendment that
 records it.

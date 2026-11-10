@@ -3,8 +3,9 @@
 **Date:** 2026-11-10 (revised the same day after review round 1: bearer requirements and the
 SDK's canonicaliser, the verifier's precondition, the URI migration's timing, the domain, key
 storage, exit codes, when to verify, rotation, and keys a standard client can find)
-**Status:** Proposed. Every decision below is a recommendation until Shariq answers §12. The mesh
-design is not amended by this PR; §13 holds the amendment text for the follow-up.
+**Status:** Accepted by Shariq on 2026-11-10 (all six recommendations), with the build order
+#537, #538, #536, #535. Decisions in §12; the mesh design is amended in the same PR (§13). All of
+it is planned; none of it has shipped.
 **Issue:** #533 (milestone "Mesh: publish an agent"). Builds on #506 (its items became #536, #537,
 #543 and #550) and #511 (D13–D17). The issues that call this document "the listing design":
 #535, #536, #537, #538, #542.
@@ -13,7 +14,8 @@ design is not amended by this PR; §13 holds the amendment text for the follow-u
 ([`2026-11-09-web-search-a2a-agent-design.md`](2026-11-09-web-search-a2a-agent-design.md)) §4.1
 (the card hash rule, amended in #556); the unslop and request-post designs' cards;
 [`docs/mesh-call.md`](../../mesh-call.md); `src/agent-card.ts`; `src/mesh-add.ts`.
-**Scope of this PR:** this document. No source, test, workflow or mesh-design change.
+**Scope of this PR:** this document and the mesh design's amendments. No source, test or workflow
+change.
 **Facts** about A2A, the A2A JS SDK, ARD, AI Catalog, the IANA URN registry and w3id.org were
 checked on 2026-11-09 and 2026-11-10 against the sources in Appendix A. A2A v1.0.1 is a release; A2A `dev-1.1`,
 ARD v0.91 and AI Catalog are proposals or drafts, and nothing here depends on them.
@@ -46,14 +48,15 @@ ARD v0.91 and AI Catalog are proposals or drafts, and nothing here depends on th
    capped, quoted and called a claim (§4). **`meshctl check`** runs the same rules with
    must/should/info severities and fixed reason ids, plus live probes that create no work unless
    `--send` is given; a failed check exits 17 (§5).
-7. **The domain for extension URIs (§13 Q2) is decided before any card is signed.** Recommended:
-   GitHub Pages, `https://shariqh.github.io/agent-inbox/`: under the owner's control as §9.2 and
-   §13 Q2 require, serving each specification at its URI, with one risk the owner alone controls
-   (renaming the account or repository). w3id.org is the alternative (§6).
+7. **The domain for extension URIs and the capability name (§13 Q2) is GitHub Pages,**
+   `https://shariqh.github.io/agent-inbox/`: under the owner's control as §9.2 and §13 Q2
+   require, serving each specification at its URI, with one risk the owner alone controls
+   (renaming the account or repository) (§6).
 8. **AI Catalog and ARD are export formats, not dependencies** (§7). Our three agents become
    conformant in the order web search, request-post, unslop; unslop's card does not change before
    #512 and its trial checkpoint (about 2026-11-21), and neither does its client (§8). Ten
-   slices, each mergeable alone (§9).
+   slices, each mergeable alone, built in the order stable ids, `meshctl check`, signing, egress
+   (§9).
 
 ## §1 — Goal, non-goals and terms
 
@@ -74,7 +77,7 @@ enforces (#535). No change to the viewer: it shows cards as today and verifies n
 | Publishable level | What a card must carry to be added from another tailnet or a public name, and what `meshctl check` tests by default. |
 | Card pin | `cardSha256`: SHA-256 of the card's JCS form without `signatures` and every `supportedInterfaces[].url` (`canonicalCard()`, #556). Unchanged by this design. |
 | Canonical-stable | A card with no empty string, array or object, no `null`, and no `"required": false`; for such a card the spec's, the SDK's and the raw JCS payloads agree (§3.10). A signer-side rule and a `check` warning, not a verifier precondition. |
-| Profile extension | The one extension this design adds, `<ext-base>/ext/profile/v1` (§3.7). `<ext-base>` is the §6 answer. |
+| Profile extension | The one extension this design adds, `https://shariqh.github.io/agent-inbox/ext/profile/v1` (§3.7). |
 | Claim | Card text meshctl shows but has not verified (names, descriptions, provider, egress). |
 
 ## §2 — What exists today
@@ -101,7 +104,7 @@ enforces (#535). No change to the viewer: it shows cards as today and verifies n
 
 | Option | For | Against |
 |---|---|---|
-| **A. Two levels (recommended)** | Today's local adds keep working; the stricter bar applies exactly where the human can no longer see the machine. | Two rules to explain. |
+| **A. Two levels (chosen)** | Today's local adds keep working; the stricter bar applies exactly where the human can no longer see the machine. | Two rules to explain. |
 | B. One bar for every add | One rule. | Breaks today's local adds until each agent is re-carded and signed. |
 | C. No bar; show what is missing | Least code. | A public agent with no declared auth or egress could be added with one keystroke. |
 
@@ -152,7 +155,7 @@ A2A v1.0.1's `AgentCard` has no id field, and neither does the `dev-1.1` branch 
 
 | Option | Example | For | Against |
 |---|---|---|---|
-| **A. Domain-anchored path (recommended)** | `shariqh.github.io/agent-inbox/web-search` | Readable; anchored to a name someone controls; maps one-to-one to ARD (`urn:air:shariqh.github.io:agent-inbox:web-search`); no proposal or registry needed. | Longer than a short label; the domain is a claim until a key or catalog backs it; the id is only as permanent as the base it is under (§6). |
+| **A. Domain-anchored path (chosen)** | `shariqh.github.io/agent-inbox/web-search` | Readable; anchored to a name someone controls; maps one-to-one to ARD (`urn:air:shariqh.github.io:agent-inbox:web-search`); no proposal or registry needed. | Longer than a short label; the domain is a claim until a key or catalog backs it; the id is only as permanent as the base it is under (§6). |
 | B. §9.5's `namespace/name` with a short label | `shariqh/web-search` | Short; already in the mesh design. | Two publishers can pick the same label; export to ARD needs a separate label-to-domain map; conflates the publisher with §9.5's tenant namespace (below). |
 | C. ARD's URN now | `urn:air:shariqh.github.io:agent-inbox:web-search` | Same string ARD and AI Catalog examples use. | ARD is a v0.91 proposal with no tagged release; `air` is not a registered URN namespace (RFC 8141 requires registration); couples us to its change cadence. |
 
@@ -171,7 +174,7 @@ has id `example.org/notes-search` and lives in Shariq's namespace. §13 amends �
 
 | Option | For | Against |
 |---|---|---|
-| **A. The profile extension's params (recommended)** | Inside the signed payload (extension params are a `google.protobuf.Struct`, kept by the SDK's canonicaliser) and the pin. Standard A2A. | Clients must know the extension to read it. |
+| **A. The profile extension's params (chosen)** | Inside the signed payload (extension params are a `google.protobuf.Struct`, kept by the SDK's canonicaliser) and the pin. Standard A2A. | Clients must know the extension to read it. |
 | B. A top-level `id` field | Easy to read. | Not in A2A's schema: the SDK's canonicaliser drops unknown fields, so an SDK signer or verifier would not cover it. |
 | C. `provider.url` plus `name` | No new field. | Both are display data and change for unrelated reasons. |
 
@@ -203,7 +206,7 @@ One extension for everything A2A lacks, rather than one per concern.
 
 | Option | For | Against |
 |---|---|---|
-| **A. One profile extension (recommended)** | One URI to freeze and document, one validator, one place in the summary. | A later concern (say, rate limits) means a v2 or a second extension. |
+| **A. One profile extension (chosen)** | One URI to freeze and document, one validator, one place in the summary. | A later concern (say, rate limits) means a v2 or a second extension. |
 | B. One extension each for id, egress, residency, keys | Each versions alone. | Four URIs to settle before signing; the summary reads four places. |
 
 ```json
@@ -302,7 +305,7 @@ there:
 
 | Option | For | Against |
 |---|---|---|
-| **A. A non-empty role list, `"list": ["call"]` (recommended)** | All three payloads carry the same auth bytes, so the SDK signs the auth declaration and the interop test in C3 can pass on our real cards. OpenAPI 3.2, which A2A's security objects follow, allows role names for non-OAuth schemes. | A role nobody checks; a reader may wonder what "call" grants (§3.3 says: nothing beyond the token). |
+| **A. A non-empty role list, `"list": ["call"]` (chosen)** | All three payloads carry the same auth bytes, so the SDK signs the auth declaration and the interop test in C3 can pass on our real cards. OpenAPI 3.2, which A2A's security objects follow, allows role names for non-OAuth schemes. | A role nobody checks; a reader may wonder what "call" grants (§3.3 says: nothing beyond the token). |
 | B. Keep `"list": []`, verify raw JCS only, drop SDK interop for this field, and report the SDK behaviour upstream | Cards stay as they are. | An SDK verifier never covers our auth declaration, so a third party using the SDK could be shown a card whose auth was swapped; C3's interop test cannot pass on our cards. |
 
 We found no client or server that reads the role list for a bearer scheme; if one appears, the
@@ -325,7 +328,7 @@ walk as `card.stable`, a should (§5).
 
 | Option | For | Against |
 |---|---|---|
-| **A. Raw JCS, no precondition; canonical-stable as a signer rule and a warning (recommended)** | Node core; signature, pin and summary cover the same bytes; no schema table to track per A2A release; fails closed. | Refuses some cards another A2A client would verify (an SDK-signed card with an empty field); the hint names the likely cause. |
+| **A. Raw JCS, no precondition; canonical-stable as a signer rule and a warning (chosen)** | Node core; signature, pin and summary cover the same bytes; no schema table to track per A2A release; fails closed. | Refuses some cards another A2A client would verify (an SDK-signed card with an empty field); the hint names the likely cause. |
 | B. Implement A2A's normalisation in meshctl | Verifies every conforming card. | A field table for every message in the card, kept current per A2A minor; fields outside it pass unsigned; the spec and the SDK disagree on empty REQUIRED fields. |
 | C. Use the SDK in meshctl | Least code. | `src/` is Node core with a pinned dependency set (#540, `test/fixtures/app-dependencies.txt`); and B's coverage gap. |
 
@@ -339,7 +342,7 @@ has shipped, because meshctl never runs the SDK's canonicaliser.
 
 | Option | For | Against |
 |---|---|---|
-| **A. Trust on first use, with an optional known thumbprint (recommended)** | No network, no server; the human adds deliberately and the keys are then pinned. `--key-thumbprint <thumbprint>` lets a careful human check against a thumbprint the publisher posted elsewhere. | First contact is unverified unless the human uses the flag. |
+| **A. Trust on first use, with an optional known thumbprint (chosen)** | No network, no server; the human adds deliberately and the keys are then pinned. `--key-thumbprint <thumbprint>` lets a careful human check against a thumbprint the publisher posted elsewhere. | First contact is unverified unless the human uses the flag. |
 | B. Trust on first use only | Simplest. | No way to start from a known key. |
 | C. Thumbprint required for every publishable add | Strongest first contact. | Friction for every add; publishers must post thumbprints somewhere. |
 | D. Fetch keys from a `jku` URL under the provider's domain | Rooted in the Web PKI. | A URL the card supplies, fetched by meshctl (mesh §8.8 rules out `jku` fetches for the registry, for the same SSRF reason); a domain compromise is a key compromise. |
@@ -364,15 +367,15 @@ If the pin rule ever starts excluding more fields, this decision is revisited.
 
 | Option | For | Against |
 |---|---|---|
-| **A. Verify at add, accept and move (recommended)** | Verifies exactly when the human trusts something new; nothing else can change what `call` sends or where. | A card served with broken signatures is not noticed until the next accept. |
+| **A. Verify at add, accept and move (chosen)** | Verifies exactly when the human trusts something new; nothing else can change what `call` sends or where. | A card served with broken signatures is not noticed until the next accept. |
 | B. Verify on every call as defence in depth | Notices broken signatures early. | Protects nothing the pin does not; a new exit path on every call. |
 
 **Unsigned cards** are allowed at the local level (§3.1) and refused at the publishable level. A
 card that has `signatures` but no `keys`, or whose signatures name no listed key, counts as
 unsigned and `check` warns.
 
-**Our keys: one per agent.** #536 asks for "a local publisher key"; this design recommends one key
-per agent instead, each a P-256 private JWK at `<mesh dir>/mesh/keys/<agent>.jwk`, `0600`, outside
+**Our keys: one per agent.** #536 asks for "a local publisher key"; this design uses one key per
+agent instead, each a P-256 private JWK at `<mesh dir>/mesh/keys/<agent>.jwk`, `0600`, outside
 `mesh.json`, created by `meshctl key create <agent> --apply` and shown (thumbprint and public JWK,
 never the private part) by `meshctl key show <agent>`. Each agent in `packages/mesh` reads only its
 own key at start (owner-only, `O_NOFOLLOW`, at most 4 KiB) and signs its card once per start, in
@@ -381,7 +384,7 @@ private publishing service signs request-post's card with its own key.
 
 | Option | For | Against |
 |---|---|---|
-| **A. One `0600` key file per agent (recommended)** | A compromised agent process (unslop and web search handle untrusted text) exposes only its own key. Costs callers nothing: trust is per entry anyway, so nothing uses a shared key. | More files; no single "publisher" key for a catalog to name (a catalog can list each agent's keys). |
+| **A. One `0600` key file per agent (chosen)** | A compromised agent process (unslop and web search handle untrusted text) exposes only its own key. Costs callers nothing: trust is per entry anyway, so nothing uses a shared key. | More files; no single "publisher" key for a catalog to name (a catalog can list each agent's keys). |
 | B. One `0600` key file per machine (#536's wording) | One key to back up and rotate. | Any one agent's compromise lets an attacker sign cards for all of them. |
 | C. The macOS Keychain | Not a plain file. | Same-user processes can ask the Keychain too, so it protects little against §3's same-user threat; agents started on demand or under launchd hit unlock prompts and locked-keychain failures; not portable to other hosts. |
 
@@ -409,7 +412,7 @@ listed for at least 30 days. The steps go in `docs/architecture/mesh.md`.
 | Option | For | Against |
 |---|---|---|
 | A. Today's line: cleaned name and skill ids, endpoint, pin | Short. | Says nothing about auth, egress, publisher or keys: the human approves blind. |
-| **B. A labelled summary of every declared field, card text quoted and capped (recommended)** | One screen; every claim visible; fixed labels from meshctl, values from the card. | Longer dry run. |
+| **B. A labelled summary of every declared field, card text quoted and capped (chosen)** | One screen; every claim visible; fixed labels from meshctl, values from the card. | Longer dry run. |
 | C. The whole card | Complete. | Unreadable; invites skimming; untrusted text unbounded. |
 
 C stays available as `--card`, which prints `cardJson()` (the viewer's escaped form).
@@ -500,7 +503,7 @@ publisher's explicit choice, with a message they wrote.
 
 | Option | For | Against |
 |---|---|---|
-| **A. Negative probes by default, `--send <file>` for a real message (recommended)** | No side effects unless asked; still proves the protocol surface. | Does not prove a happy path by default. |
+| **A. Negative probes by default, `--send <file>` for a real message (chosen)** | No side effects unless asked; still proves the protocol surface. | Does not prove a happy path by default. |
 | B. Always send a fixed probe message | Proves the happy path. | Side effects on agents that act; a fixed probe is meaningless to most agents. |
 | C. No live tests | Simplest. | #538's step 4 and the identity proof go untested. |
 
@@ -540,12 +543,12 @@ mapping, registry-side trust records, Trust Manifests and `did:web`, the contain
 **The domain (§13 Q2).** It names every extension URI (and the profile's, so every id we publish)
 and the Tailscale capability `<domain>/cap/agent-mesh` (§9.2). The mesh design asks for "a domain
 you control" for both. Signing makes a URI hard to change: a new URI is a new extension (A2A
-§4.6.3), every pinned card changes, and every caller re-accepts. So it is answered before slice C2
-merges. The two uses can take different answers; §12 Q1 asks for each.
+§4.6.3), every pinned card changes, and every caller re-accepts. So it is settled before slice C1
+merges. The two uses could take different answers; Shariq chose A for both (§12).
 
 | Option | Base | For | Against |
 |---|---|---|---|
-| **A. GitHub Pages (recommended)** | `https://shariqh.github.io/agent-inbox/` | Under the owner's control, as §9.2 and §13 Q2 require; serves each specification at its URI with no redirect; free; a custom domain added later makes the `github.io` URLs redirect to it, so ids survive that move. | Pages is not enabled today; the URIs break if the owner renames the GitHub account or the repository (GitHub recommends a custom domain before renaming a repository with a Pages site), so that rename becomes a decision with a cost. |
+| **A. GitHub Pages (chosen)** | `https://shariqh.github.io/agent-inbox/` | Under the owner's control, as §9.2 and §13 Q2 require; serves each specification at its URI with no redirect; free; a custom domain added later makes the `github.io` URLs redirect to it, so ids survive that move. | Pages is not enabled today; the URIs break if the owner renames the GitHub account or the repository (GitHub recommends a custom domain before renaming a repository with a Pages site), so that rename becomes a decision with a cost. |
 | B. w3id.org | `https://w3id.org/agent-inbox/` | A permanent-identifier service, which A2A's extension guide suggests; free; the redirect target can move anywhere later. `w3id.org/agent-inbox` was free on 2026-11-09. | Not a domain the owner controls: it relaxes §9.2's and §13 Q2's rule. Creating or changing a redirect is a pull request to `perma-id/w3id.org` that its maintainers must merge, and the service is a W3C community group's. A poor fit for the Tailscale capability name. |
 | C. A project or personal domain | `https://<project-domain>/` | Fully controlled; neutral; suits the capability name. | Yearly cost; if it lapses, someone else can register it and answer for every URI. |
 | D. Repository blob URLs | `https://github.com/shariqh/agent-inbox/blob/main/docs/ext/` | No setup; resolves to the spec. | Encodes a branch and a file path into identifiers; long; tied to GitHub. |
@@ -563,14 +566,15 @@ With A, the URIs are `https://shariqh.github.io/agent-inbox/ext/profile/v1` and
 `shariqh.github.io/agent-inbox/cap/agent-mesh` (Tailscale's acceptance of a multi-segment
 capability path is checked in M3), and our ids `shariqh.github.io/agent-inbox/<agent>`. Pages
 serves `docs/ext/<name>-v1.md` at each extension URI (the exact Pages layout, so that the
-extension-less URI resolves, is part of C2).
+extension-less URI resolves, is part of C1).
 
-**Preconditions.** Before C2 merges, the base exists: Pages enabled (or, under B, the w3id pull
-request merged). Before C7 signs the first card, `<ext-base>/ext/profile/v1` resolves to the
-specification. C2's PR description records both.
+**Preconditions.** Before C1 merges, the GitHub Pages site for
+`https://shariqh.github.io/agent-inbox/` exists; this design's PR does not create it. Before C7
+signs the first card, `https://shariqh.github.io/agent-inbox/ext/profile/v1` resolves to the
+specification. C1's and C7's PR descriptions record each.
 
 **Moving the existing URIs.** `urn:agent-inbox:ext:{unslop,request-post,web-search}:v1` move to
-`<ext-base>/ext/{unslop,request-post,web-search}/v1` with the same params (`api: 1` unchanged).
+`https://shariqh.github.io/agent-inbox/ext/{unslop,request-post,web-search}/v1` with the same params (`api: 1` unchanged).
 Each move happens with the agent it belongs to, so no slice touches an agent before its turn:
 
 - For a client in this repository and a server elsewhere (request-post), the client first accepts
@@ -625,47 +629,52 @@ No private host name enters any card.
 
 | Agent | Id | Egress per skill | Residency | When |
 |---|---|---|---|---|
-| web search | `<id-base>/web-search` | `web-search`: `search`/`operator`/`input`, `model`/`operator`/`input` | `caller-mesh` | First: slice C7, after C2 and C3. Client, front door and card in one PR. Re-records `card.sha256` and `MANIFEST.json`. |
+| web search | `<id-base>/web-search` | `web-search`: `search`/`operator`/`input`, `model`/`operator`/`input` | `caller-mesh` | First: slice C7, after C1, C3 and C4. Client, front door and card in one PR. Re-records `card.sha256` and `MANIFEST.json`. |
 | request-post | `<id-base>/request-post` | `request-post`: `storage`/`operator`/`input`; `request-post-status`: `storage`/`operator`/`metadata` | `caller-mesh` for both | C6 (client) then C8: the fixture card here; the service's card, its dual-key metadata reading and its own key in the private repositories. Its extension stays `required: true`, so `check` warns `ext.required`; its own client handles it. |
 | unslop | `<id-base>/unslop` | `unslop`: `model`/`operator`/`input` | `caller-mesh` | C9: **not before #512 merges and unslop's trial checkpoint (about 2026-11-21).** Client, server and card in one PR; nothing of unslop's changes before then. #512 removes `loadedAt` first, so the card is stable across restarts. |
 
-`<id-base>` is the §6 answer's base without the scheme, for example
-`shariqh.github.io/agent-inbox`.
+`<id-base>` is `shariqh.github.io/agent-inbox`.
 
 Each must pass `meshctl check --strict` at its own level, except the one documented `ext.required`
-warning for request-post. Unslop's missing declared-auth test (#506 item 1) lands in C1, before
+warning for request-post. Unslop's missing declared-auth test (#506 item 1) lands in C2, before
 any unslop change, because it tests the card as it is: it passes `auth.declared` and
 `auth.supported` today and only warns on `card.stable`.
 
 ## §9 — Decision 7: slices
 
-Each slice is one PR, mergeable alone in the order its dependencies allow. Sizes are production
-lines / test lines.
+Each slice is one PR, mergeable alone in the order its dependencies allow. The build order follows
+the milestone's plan: stable ids (#537), then `meshctl check` (#538), then signing (#536), then
+declared egress (#535). Sizes are production lines / test lines.
 
 | Slice | Issue | Ships | Size | Depends on |
 |---|---|---|---|---|
-| A0 | #533 | The mesh design amendments of §13, with Shariq's answers | docs | §12 answered |
-| C1 | #538 | `meshctl check` without the profile and signature tests: fetch, shape, endpoint, required fields, `card.stable` (a should), text, auth, version, provider, required extensions, live probes, identity, exit codes 0, 17, 15 and 4, `--json`; `docs/mesh-call.md`. Includes unslop's declared-auth test | ~300 / ~400 | none |
-| C2 | #535, #537 (id), #550 (field only) | `docs/ext/profile-v1.md` served at its URI; `checkProfile()` in `src/agent-card.ts`; `check`'s `profile.*` tests; `add`'s summary (§4); `agentId` in the entry | ~200 / ~300 | §12 Q1, Q2; the base set up (§6) |
-| C3 | #536 | `meshctl key create/show/rotate/retire <agent>`; the signer in `packages/mesh` (refuses a card that is not canonical-stable) and the verifier in `src/` (raw JCS, Node core); the depth cap; `add` verifies, with `--key-thumbprint`; `check`'s `signature.*`; SDK interop both ways; rotation in `docs/architecture/mesh.md` | ~300 / ~450 | C2; §12 Q3, Q4, Q6 |
-| C4 | #537 | Moves: `add` matches `agentId`, the signed and `--move` paths, verifying at the move | ~120 / ~200 | C2, C3 |
-| C5 | #531 | `add --accept-card` verifies, keeps a copy of the accepted card, and its change summary includes id, provider, egress, residency and keys; the lighter accept for a change to `keys` alone (§3.10) (in #531 itself) | ~80 / ~150 added to #531 | C2, C3 |
-| C6 | — (new, small) | request-post's client and `checkCard` accept either extension URI and send metadata under the card's | ~30 / ~60 | §12 Q1 |
-| C7 | #535, #536, #537 | Web search: client accepts either URI, front door reads metadata under either key, the card (§8), signed | ~100 / fixtures | C2, C3 |
-| C8 | #535, #536, #537 | request-post's fixture card; the service's change tracked privately | ~40 / fixtures | C2, C3, C6 |
-| C9 | #535, #536, #537 | Unslop: client accepts either URI, server (`a2a.ts`) reads metadata under either key, the card, signed | ~100 / ~120 | C2, C3, #512, the trial checkpoint (not before about 2026-11-21) |
+| A0 | #533 | The mesh design amendments of §13 | docs | Done in this PR |
+| C1 | #537, #550 (field only) | `docs/ext/profile-v1.md`, the whole v1 profile (id, `keys`, per-skill `egress` and `residency`) so signing freezes nothing unplanned, served at its URI; `checkProfile()` in `src/agent-card.ts` for the structure and the id; `agentId` in the entry; `add`'s summary (§4) with the lines for the fields so far; moves with `--move <local-id>` (the unsigned path, §3.4) | ~220 / ~320 | **Precondition before it merges:** the GitHub Pages site exists for `https://shariqh.github.io/agent-inbox/` (§6). Not created by this design's PR |
+| C2 | #538 | `meshctl check` with its tests except `signature.*`, `profile.egress` and `profile.residency`: fetch, shape, endpoint, required fields, `card.stable` (a should), text, auth, version, provider, `profile.present`, `profile.id`, required extensions, live probes, identity, exit codes 0, 17, 15 and 4, `--json`; `docs/mesh-call.md`. Includes unslop's declared-auth test | ~300 / ~400 | C1 |
+| C3 | #536 | `meshctl key create/show/rotate/retire <agent>`; the signer in `packages/mesh` (refuses a card that is not canonical-stable) and the verifier in `src/` (raw JCS, Node core); the depth cap; `add` verifies, with `--key-thumbprint`; the signed move path; `check`'s `signature.*`; the summary's signature and key lines; SDK interop both ways; rotation in `docs/architecture/mesh.md` | ~320 / ~480 | C1, C2 |
+| C4 | #535, #550 (field only) | Egress and residency: their validation in `checkProfile()`, the summary's fixed phrases, `check`'s `profile.egress` and `profile.residency` | ~100 / ~150 | C1, C2 |
+| C5 | #531 | `add --accept-card` verifies, keeps a copy of the accepted card, and its change summary includes id, provider, egress, residency and keys; the lighter accept for a change to `keys` alone (§3.10) (in #531 itself) | ~80 / ~150 added to #531 | C1, C3 |
+| C6 | — (new, small) | request-post's client and `checkCard` accept either extension URI and send metadata under the card's | ~30 / ~60 | none |
+| C7 | #535, #536, #537 | Web search: client accepts either URI, front door reads metadata under either key, the card (§8), signed. **Before it signs:** `https://shariqh.github.io/agent-inbox/ext/profile/v1` resolves to the specification | ~100 / fixtures | C1, C3, C4 |
+| C8 | #535, #536, #537 | request-post's fixture card; the service's change tracked privately | ~40 / fixtures | C1, C3, C4, C6 |
+| C9 | #535, #536, #537 | Unslop: client accepts either URI, server (`a2a.ts`) reads metadata under either key, the card, signed | ~100 / ~120 | C1, C3, C4, #512, the trial checkpoint (not before about 2026-11-21) |
 | C10 | — (new, small) | Each client and server drops the old `urn:agent-inbox:ext:*` URI, one release after its card switched | ~30 / ~40 | C7, C8, C9 |
+
+#537's "our cards carry the ID" is met by C7–C9, so #537 closes with C9, after unslop's trial; its
+move test lands in C1. #535's cards likewise.
 
 **Tests each slice adds** (real loopback servers, as #556's tests do; no mocks of the card rules):
 
-- **C1:** every row of §5's table passes on a good fixture and fails on a recorded bad one with the
-  expected reason id; our three cards pass `--level local`, warning only on `card.stable`; exit
-  codes 0, 17, 15 and 4; the token never in stdout, stderr or `--json`; no live test without
-  `--token-file`; `--send` alone sends a message; zero connections for a refused URL.
-- **C2:** profile syntax (id forms, unknown purpose, empty array, missing skill, extra skill, too
-  many hosts, a key with a private member or an unknown member); the summary text for each egress
-  and residency value; a changed egress changes the pin; card text in the summary is cleaned,
+- **C1:** profile structure and id syntax (id forms, too long, uppercase, no dot in the domain, a
+  key with a private member or an unknown member, extra or missing skill entries); `agentId`
+  written by `add`; an agent moved to a new port with `--move` keeps its local id, pin and run
+  records; a move to an agent with another id is refused; card text in the summary is cleaned,
   capped and quoted.
+- **C2:** every row of §5's table that C2 ships passes on a good fixture and fails on a recorded
+  bad one with the expected reason id; our three cards pass `--level local`, warning only on
+  `card.stable`; exit codes 0, 17, 15 and 4; the token never in stdout, stderr or `--json`; no
+  live test without `--token-file`; `--send` alone sends a message; zero connections for a refused
+  URL.
 - **C3:** a good signature; a tampered card; a signature whose `kid` names no listed key;
   `alg: none`, `HS256` and a private key in `keys`, each refused; a header `jwk` ignored; a card
   over 64 KiB and one nested 33 deep, refused before canonicalising; an unsigned card accepted at
@@ -673,11 +682,13 @@ lines / test lines.
   `"required": false`, an empty array or a `null`; a card with `"list": []` signed by the SDK
   fails our verifier with the empty-values hint, and the same card with `"list": ["call"]`
   verifies under ours and the SDK's in both directions (the SDK's callback looks the `kid` up in
-  `keys`); `--key-thumbprint` with the wrong thumbprint refused; a pinned signed card served with
-  its signatures stripped still calls (same pin), and the next accept refuses it; the key file's
-  mode, owner and symlink checks; one agent's key file is never opened by another agent.
-- **C4:** an agent moved to a new port keeps its local id, pin and run records; a move claimed by
-  an unlisted key is refused; an unsigned move needs `--move`.
+  `keys`); `--key-thumbprint` with the wrong thumbprint refused; a signed move accepted and a move
+  claimed by an unlisted key refused; a pinned signed card served with its signatures stripped
+  still calls (same pin), and the next accept refuses it; the key file's mode, owner and symlink
+  checks; one agent's key file is never opened by another agent.
+- **C4:** egress and residency syntax (unknown purpose, empty array, too many hosts, `"none"`, a
+  missing skill); the summary text for each egress and residency value; a changed egress changes
+  the pin; `profile.residency` warns on a public endpoint that declares anything but `any`.
 - **C5:** the same card accepted; a changed skill refused, then accepted; a reordered but equal
   card accepted; a change to `keys` alone, signed by a pinned key, accepted by `call` with its
   stderr line; the same change signed only by the new key refused (16); a change to `keys` and a
@@ -688,7 +699,7 @@ lines / test lines.
   `canonicalCard()`; for unslop, two starts with the same rules serve the same pin (with #512).
 
 **Where the other issues touch.** #534 (public endpoints) requires the publishable level at `add`
-and takes C1–C3 as its checks. #539 (agent kit) packages C3's signer and C2's profile builder, and
+and takes C1–C4 as its checks. #539 (agent kit) packages C3's signer and C1's profile builder, and
 its example agent passes `check --strict` in CI. #540 (npm) ships `check` with the rest of meshctl.
 #541 (`login`) extends §3.3's supported schemes and `auth.supported`. #542 (catalog design) takes
 §3.2's publishable fields as a listing's required fields, plus the pin and the key thumbprints.
@@ -703,8 +714,7 @@ its example agent passes `check --strict` in CI. #540 (npm) ships `check` with t
 | A third-party SDK signer leaves `"list": []` | Its signature fails our verifier with the empty-values hint; at the local level the card can still be added unsigned. |
 | First contact is trusted blindly | `--key-thumbprint`; the summary says "new to this Mac"; a catalog can supply thumbprints later. |
 | Declared egress is wrong or a lie | It is shown as a claim. Enforcement is the operator's. A change still needs the human's accept. |
-| The owner renames the GitHub account or repository (under §6's A) | Every URI and id breaks. Add a custom domain first: `github.io` URLs then redirect to it. |
-| w3id.org rejects or loses the namespace (under §6's B) | The redirect target is our repo; moving the base is §6's migration again, once. |
+| The owner renames the GitHub account or repository | Every URI and id breaks. Add a custom domain first: `github.io` URLs then redirect to it. |
 | A lost private key | Generate a new key: callers see a key change not endorsed by a pinned key and re-accept deliberately. |
 | More output at `add` gets skimmed | One screen, fixed order, "not declared" lines; `check` gives the detail. |
 
@@ -721,117 +731,46 @@ its example agent passes `check --strict` in CI. #540 (npm) ships `check` with t
 - **Naming every egress host.** Leaks private names into public cards and breaks D10's one card
   for every copy.
 
-## §12 — Questions for Shariq
+## §12 — Decisions (Shariq, 2026-11-10)
 
-**Q1. Which base should the extension URIs use, and which the Tailscale capability name (mesh §13
-Q2)?**
-- **A (recommended): GitHub Pages, `https://shariqh.github.io/agent-inbox/`, for both.** Under
-  your control, as mesh §9.2 and §13 Q2 require; serves each specification at its URI; free. It
-  breaks only if you rename the account or the repository, and a custom domain added later keeps
-  it working (`github.io` redirects to it).
-- B: `https://w3id.org/agent-inbox/` for the extension URIs, with the capability name on A or C.
-  Permanent across hosting moves, but it relaxes "a domain you control": every redirect change is
-  a pull request w3id's maintainers must merge.
-- C: a project or personal domain you register, for both. Fully yours; a lapsed registration hands
-  every URI to whoever buys it.
-- D: keep `urn:agent-inbox:` for the extension URIs, with the capability name on A or C. No
-  hosting; not a registered URN namespace, and it resolves to nothing.
+Shariq accepted all six recommendations on 2026-11-10 ("Accept all six; keep the plan"), and the
+build order #537, #538, #536, #535 (§9). The options he was shown are kept here for the record.
 
-**Q2. Which stable agent id form?** Whatever the form, our ids sit under the Q1 base and are only
-as permanent as it is: a new base changes every id, and every caller re-accepts.
-- **A (recommended): a domain-anchored path, `<publisher-domain>[/<path>]/<name>`** (ours:
-  `shariqh.github.io/agent-inbox/web-search`), carried in the profile extension; maps one-to-one
-  to ARD's `urn:air:` for export.
-- B: §9.5's short `namespace/name` (`shariqh/web-search`). Shorter; labels can collide and need a
-  separate map to export.
-- C: ARD's URN now (`urn:air:shariqh.github.io:agent-inbox:web-search`). Matches the proposal
-  today; ties ids to an unreleased proposal and an unregistered URN namespace.
+1. **The base for extension URIs and for the Tailscale capability name (mesh §13 Q2): GitHub
+   Pages, `https://shariqh.github.io/agent-inbox/`, for both.** Under the owner's control, as
+   mesh §9.2 and §13 Q2 require; it serves each specification at its URI, and a custom domain
+   added later keeps it working. Not chosen: w3id.org (relaxes "a domain you control"), a project
+   or personal domain (a lapsed registration hands every URI to its buyer), keeping
+   `urn:agent-inbox:` (unregistered, resolves to nothing).
+2. **Stable ids: a domain-anchored path, `<publisher-domain>[/<path>]/<name>`,** carried in the
+   profile extension; ours are `shariqh.github.io/agent-inbox/<agent>`, as permanent as the base.
+   Not chosen: §9.5's short `namespace/name` (labels collide), ARD's URN now (an unreleased
+   proposal and an unregistered URN namespace).
+3. **Key trust: trust on first use when the agent is added, with an optional
+   `--key-thumbprint <thumbprint>`.** Not chosen: trust on first use only; a thumbprint required
+   for every publishable add; fetching keys from a `jku` URL.
+4. **Unsigned cards: accepted on loopback and this Mac's tailnet only;** another tailnet or a
+   public name needs a signature. Not chosen: refused everywhere once signing ships; accepted
+   anywhere.
+5. **`meshctl check` sends no real work** unless `--send <file>` is given; its live probes create
+   nothing. Not chosen: always sending a probe message; no live calls.
+6. **Signing keys: one `0600` key file per agent,** `<mesh dir>/mesh/keys/<agent>.jwk`; a copy on
+   another host gets its own key, listed in the card. Not chosen: one file per machine; the macOS
+   Keychain.
 
-**Q3. How does meshctl decide to trust an agent's signing key?**
-- **A (recommended): trust on first use when you add the agent, with an optional
-  `--key-thumbprint <thumbprint>`** that refuses any other key.
-- B: trust on first use only.
-- C: require `--key-thumbprint` for every publishable add; trust on first use for local adds.
-- D: fetch keys from a `jku` URL under the provider's domain. Fetches a URL the card names, which
-  mesh §8.8 rules out for the registry.
+## §13 — Amendments to the mesh design (made in this PR)
 
-**Q4. Where may an unsigned card be added?**
-- **A (recommended): loopback and this Mac's tailnet only;** another tailnet or a public name
-  needs a signature.
-- B: nowhere, once signing ships. Breaks today's local adds until each agent signs.
-- C: anywhere; the signature is shown but optional.
+[`2026-10-29-agent-mesh-design.md`](2026-10-29-agent-mesh-design.md) is amended with these
+decisions, all planned and none shipped:
 
-**Q5. Should `meshctl check` send real work to the agent?**
-- **A (recommended): no by default.** Probes that create nothing (unknown task, unknown method, no
-  token); a real message only with `--send <file>`.
-- B: always send a fixed probe message. Has side effects on agents that act, such as
-  request-post.
-- C: no live calls at all.
-
-**Q6. Where do our agents' signing keys live?**
-- **A (recommended): one `0600` key file per agent** (`<mesh dir>/mesh/keys/<agent>.jwk`). A
-  compromised agent exposes only its own key, and callers lose nothing because they trust each
-  agent separately. A copy on another host gets its own key, listed in the card, never a copy of
-  the private key.
-- B: one `0600` key file per machine, as #536 first proposed. One key to manage; one agent's
-  compromise lets an attacker sign cards for all of them.
-- C: the macOS Keychain. Same-user processes can ask the Keychain too, so it adds little against
-  the mesh's same-user threat model, and on-demand or launchd-started agents meet unlock prompts
-  and locked-keychain failures.
-
-## §13 — Amendments to the mesh design (for slice A0, after §12 is answered)
-
-Text for the follow-up PR. Angle-bracketed parts are filled from the answers; if an answer differs
-from the recommendation, the matching text changes with it. D-numbers continue after D17 (D12 is
-reserved for web search); renumber if another design lands first.
-
-**Header note.** "**Amended <date> by #533**
-([`2026-11-10-publishable-agent-design.md`](2026-11-10-publishable-agent-design.md)): what a card
-must declare to be added by someone else: two levels, a profile extension (stable id, signing keys,
-per-skill egress and residency), signed cards and `meshctl check`. Answers §13 Q2. Touches §6.7,
-§8.8, §9.2, §9.5, §11 (M9), §13 and §14.1."
-
-**§6.7, the entry table, a new row.** "`agentId` | The card's stable id from the profile extension
-(D19), when it has one. `add` uses it to recognise the same agent at a new endpoint and move the
-entry, keeping its pin and runs, when a signature verifies under a key the pinned card lists."
-
-**§6.7, after Identity (D17).** "**Signed cards (D21).** A card that lists signing `keys` must
-carry a signature by one of them, checked when the agent is added, when a changed card is accepted
-and when the agent moves. Between those, the pin covers everything `call` uses. An unsigned card
-is accepted only for loopback and this Mac's tailnet (D18)."
-
-**§8.8, Added agents, append.** "Another tailnet or a public name requires the publishable level
-(D18), including a signature (D21)."
-
-**§9.2.** Replace "the domain must be one Shariq controls, §13 Q2" with "`<capability base>`,
-D22", and `<domain>/cap/agent-mesh` with `<capability base>/cap/agent-mesh`.
-
-**§9.5, replace the first two sentences.** "An agent's id is the stable id its card declares in the
-profile extension: `<publisher-domain>[/<path>]/<name>` (D19). Namespaces are the mesh's tenants:
-tokens and capabilities are scoped to them, and an agent from any publisher can be registered in
-any namespace; cross-namespace delegation is off unless a pair is allowed. Card signing, ids, a
-catalog file, meshctl on npm, public endpoints and sign-in to agents moved earlier (D24); the
-registry reuses the client's verifier."
-
-**§11, M9 entry.** "Namespaces, group tokens, OIDC, registry-side trust records, `packages/mesh` on
-npm and a container, the rest of the docs without Tailscale; a Go `tsnet` binary only if asked for.
-Card JWS, ids, the catalog file, meshctl on npm and public endpoints moved to 'Mesh: publish an
-agent' (D24)."
-
-**§13 Q2.** "**Answered <date> (D22):** extension URIs under `<ext-base>`, the capability name
-under `<capability base>`."
-
-**§14.1, new rows.**
-
-| Date | Decision | Source |
-|---|---|---|
-| <date> | **D18.** Two levels of card: local (loopback and this Mac's tailnet, today's rule) and publishable (another tailnet or a public name), with the fields of the publishable design's §3.2. Why: the bar rises where the human can no longer see the machine. Implemented by #538 and #534 | Shariq (#533) |
-| <date> | **D19.** The stable agent id is `<publisher-domain>[/<path>]/<name>`, carried in the profile extension, mapped to ARD's `urn:air:` only on export; it is not §9.5's namespace. Why: readable, domain-anchored, needs no proposal or URN registration. Implemented by #537 | Shariq (#533) |
-| <date> | **D20.** One profile extension carries the id, the signing `keys` (public JWKs), and per skill the declared egress (`purpose`, `hosts` or `operator` or `any`, `sends`) and residency (`caller-host`, `caller-mesh`, `any`). Declarations, not enforcement; residency acts from M7. Why: one URI to freeze; all of it inside the signature and the pin. Implemented by #535, #537 and #550 | Shariq (#533) |
-| <date> | **D21.** Cards are signed per A2A §8.4 with ES256 and verified over their raw JCS form; our signer signs only cards with no empty, `null` or default values, and our bearer requirements name the role `call`, so A2A's rule, the SDK and raw JCS sign the same bytes. One key per agent in a `0600` file; keys are listed in the profile and trusted on first use or by `--key-thumbprint`; no key URL is fetched; signatures are checked at add, accept and move; a change to the key list alone, endorsed by a pinned key, is accepted without a prompt; unsigned cards only at the local level. Why: one byte string for the signature, the pin and the summary, in Node core. Implemented by #536 and #531 | Shariq (#533) |
-| <date> | **D22.** Extension URIs live under `<ext-base>` and the Tailscale capability name under `<capability base>` (§13 Q2); the existing `urn:agent-inbox:ext:*:v1` URIs move there, each with its agent's slice. Why: signing freezes them. Implemented by the publishable design's slices C2 and C6–C10 | Shariq (#533) |
-| <date> | **D23.** `meshctl check <card-url>` runs the publishable design's §5 tests with must, should and info severities, fixed reason ids, exit 0, 17, 15 or 4, and live tests that create no work unless `--send` is given. Implemented by #538 | Shariq (#533) |
-| <date> | **D24.** From §9.5 and M9, card signing, stable ids, the AI Catalog file, meshctl on npm, public endpoints and sign-in to agents move to "Mesh: publish an agent"; AI Catalog and ARD are export formats only. Implemented by #536, #537, #543, #540, #534 and #541 | Shariq (#533) |
+- a header note, "Amended 2026-11-10 by #533";
+- §6.7: the entry's `agentId` row, and a "Signed cards" paragraph after Identity (D17);
+- §8.8: another tailnet or a public name requires the publishable level and a signature;
+- §9.2: the capability name `shariqh.github.io/agent-inbox/cap/agent-mesh`;
+- §9.5: ids are the profile extension's id, and namespaces are tenants; what moved earlier;
+- §11, M9: what stays in M9 and what moved to "Mesh: publish an agent";
+- §13 Q2: answered;
+- §14.1: D18–D24, with D12 still reserved for the web search agent.
 
 ## Appendix A — Verification log (2026-11-09 and 2026-11-10)
 
@@ -856,7 +795,7 @@ under `<capability base>`."
 | Our cards | unslop (`packages/mesh/src/a2a.ts:79`), web search (`packages/mesh/src/web-search/agent.ts:39`) and the request-post fixture declare bearer auth as `securityRequirements: [{ schemes: { bearer: { list: [] } } }]`; unslop and web search carry `"required": false` on their extension | this repository at `a709719d` |
 ## Appendix B — Draft upstream issue for `a2aproject/a2a-js`
 
-Not filed by this PR; for Shariq to file or drop.
+Not filed by this PR; Shariq decides whether to file it.
 
 > **Title:** `canonicalizeAgentCard` drops a `securityRequirements` entry whose scope list is empty,
 > so its signature does not cover the card's auth

@@ -32,6 +32,12 @@ phase M2b (D11). It touches §6.6, §11 and §14.1.
 ([`2026-11-09-agent-cards-view-design.md`](2026-11-09-agent-cards-view-design.md) §10): the
 viewer reads `mesh.json` lazily to show the configured agents and their cards in the Agents home.
 It touches §2.1, §2.2, §2.4 (b), §8.8 and §10.2.
+**Amended 2026-11-10 by #511:** Shariq decided how assistants reach A2A agents this repo doesn't
+ship, before the registry (D13–D17): a card-driven `agents.<id>` entry written by `meshctl add`,
+the first-hop click per agent from M4, `meshctl call` as the generic client behind generated
+skills and shims, one untrusted-result framing, and an identity proof for loopback endpoints. All
+of it is planned, none shipped. It adds §6.7 and touches §1, §2.2, §6.6, §7, §8 (intro, §8.5,
+§8.8), §13 and §14.1.
 
 ---
 
@@ -78,8 +84,9 @@ It touches §2.1, §2.2, §2.4 (b), §8.8 and §10.2.
 **Goals.** (G1) Agents find each other: "who is alive and can review code?" (G2) Agents
 delegate a bounded task over A2A, follow it and use the result. (G3) New agents, workflows and
 automations become targetable by registering a card; anything that already speaks A2A joins
-without a wrapper. (G4) Copilot CLI, Claude Code and local models join through wrappers. (G5)
-Agent Inbox is the one human console. (G6) Personal first, publishable later.
+without a wrapper (before the registry, through `meshctl add`, §6.7). (G4) Copilot CLI, Claude
+Code and local models join through wrappers. (G5) Agent Inbox is the one human console. (G6)
+Personal first, publishable later.
 
 **Non-goals.** No change for anyone who does not opt in. No automatic routing before the load
 phase. No gateway or data-plane proxy (agentgateway stays a later option). No hosted inbox: the
@@ -129,6 +136,7 @@ read, no write, no network. The browser never supplies the registry URL.
 | Mesh agents section (agent cards view) | viewer process (`src/mesh-agents.ts`) and the Agents home | `agents.unslop` or `agents.request-post` in `mesh.json` | No section, no `/api/mesh/agents` read, no socket |
 | Unslop agent (M2a, #483) | its own process, loopback only, started on demand | `agents.unslop` in `mesh.json` (`meshctl enable --unslop`) | No process, no listener; `meshctl unslop` sends nothing |
 | request-post client (M2b, #500) | `meshctl request-post`, calling the publishing service's agent on the personal tailnet | `agents.request-post` in `mesh.json` (`meshctl enable --request-post`) | No connection; `meshctl request-post` exits 14 |
+| Added agents (#511, planned: #529, #530) | `meshctl call <id>`, behind the agent's generated shim | an `agents.<id>` entry with a `card` field (`meshctl add <card-url> --apply`, §6.7) | No connection; `meshctl call <id>` sends nothing |
 | Local wrapper spike (M2) | its own process, loopback only | running `agent-inbox-wrap --profile <name>` | Nothing |
 | Scenario bench (M2, §17.2) | its own process, by hand | running `agent-inbox-bench run` | Nothing |
 | Registry (M3) | its own process, any host | running `agent-inbox-registry` or the container | No listener, no `mesh.db` |
@@ -588,6 +596,8 @@ approval answers one request, by id and revision.
   endpoint such as Ollama's. It owns its queue, so its load is exact. A tool-using local agent can
   instead be built with Strands' `A2AServer` or Pydantic AI's FastA2A, with
   `agent-inbox-meshctl heartbeat --card-url <url>` renewing its lease (membership only, no load).
+  Until the registry exists, such an agent is added with `meshctl add` and called with
+  `meshctl call` instead (§6.7, D13; planned).
   **Decided 2026-11-06 (#483, D9):** this agent ships first, in M2a, on the Mac and on loopback,
   with `unslop` as its only skill and the model box as its backend
   ([`2026-11-06-unslop-a2a-agent-design.md`](2026-11-06-unslop-a2a-agent-design.md)). Its other
@@ -595,6 +605,67 @@ approval answers one request, by id and revision.
 - **An agent served by an existing service (#500, D11):** the second agent, `request-post`, is not
   a wrapper. The private publishing service serves its card and skills itself, on the tailnet, in
   M2b ([`2026-11-07-request-post-a2a-agent-design.md`](2026-11-07-request-post-a2a-agent-design.md)).
+
+### 6.7 Agents this repo doesn't ship (G3)
+
+*Decided by Shariq on 2026-11-10 (#511, D13–D17). Planned, none shipped: milestone "Mesh: add any
+agent" (#513, #528–#532), with public endpoints and card signatures in "Mesh: publish an agent"
+(#534, #536).* Today every callable agent ships here with its own `mesh.json` key, meshctl
+subcommand and client (`src/unslop-client.ts`, `src/request-post-client.ts`). This section is how
+an agent written elsewhere joins without new code here, before the registry (M3). #414 item 2's
+draft, delegation to such agents through admission from M4, would extend this section if accepted.
+
+**Adding an agent (D13).** `meshctl add <card-url> [--id <id>] [--token-file <path>]` fetches the
+card, checks it with the card rules in `src/agent-card.ts` rather than per-agent code, applies the
+endpoint rule (§8.8) and, with `--apply`, writes one entry. `meshctl remove <id> --apply` deletes
+it. Both follow `enable`'s habits: dry run first, a timestamped backup, other keys kept (#529).
+
+```json
+{ "agents": { "<id>": {
+    "card": "https://agent.example-tailnet.ts.net/.well-known/agent-card.json",
+    "endpoint": "https://agent.example-tailnet.ts.net/a2a",
+    "tokenFile": "<mesh dir>/mesh/tokens/<id>",
+    "cardSha256": "<hex>" } } }
+```
+
+| Field | Meaning |
+|---|---|
+| `card` | The card URL the human added. Its presence marks a generic entry; the built-in keys (`unslop`, `request-post`) keep their own shapes, and `add` refuses an id already in use. |
+| `endpoint` | The URL the client calls, taken from the card's JSON-RPC interface when the human adds the agent, shown in the dry run and checked by the endpoint rule (§8.8). Later calls never follow a URL from a refetched card. |
+| `tokenFile` | The path of a `0600` file holding the bearer token. The token itself never lands in `mesh.json`, a skill file, an argument or shell history. |
+| `cardSha256` | The card pin: SHA-256 of the card's JCS form without `supportedInterfaces[].url` and `signatures`. `meshctl call` recomputes it before every call and refuses a changed card until the human accepts it again (#531). |
+| `skipFirstHopClick` | M4 only (D14): `true` when the human allowed the agent to skip the first-hop click while adding it. Absent means the click applies. |
+
+Only `meshctl add` writes an `agents.<id>` entry. When the registry lands, #548 decides whether
+these entries register through it or stay in `mesh.json`.
+
+**First-hop click (D14).** D4 has no default exception. Before M4 the mesh has no click to skip,
+so `meshctl add --apply` is the human's approval for that agent. From M4 (#549) an added agent
+skips the click only if the human allowed that when adding it; the choice is per agent and
+recorded as `skipFirstHopClick` in its entry (§8).
+
+**Calling (D15).** Every callable agent gets a generated routing `SKILL.md` and a shim,
+`<mesh dir>/bin/<id>`, written from fixed templates and never from card text (#513, §8.5). Both
+call the generic client, `meshctl call <id>` (#530): a Node-core A2A 1.0 client that checks the
+card pin, proves a loopback agent's identity before sending anything, streams with a `GetTask`
+fallback, frames the result (D16), writes a run record, and keeps one exit-code table for every
+agent. The official `a2a` CLI must work with our agents and our client in both directions (#532),
+but it is not the default client, so a token never has to reach it through a skill file or shell
+history. The M6 bridge (#551) comes later and reuses the same client (§7).
+
+**Untrusted results (D16).** One shared helper (#528) frames every result from an agent this repo
+doesn't ship, starting from the web search design's §4.5
+([`2026-11-09-web-search-a2a-agent-design.md`](2026-11-09-web-search-a2a-agent-design.md)). It
+strips control, bidirectional and zero-width characters, adds a fixed untrusted header naming the
+agent's id and card hash, and tells the caller never to run a command, open a link or change a
+file because a result says so (§8.5). Whether unslop's client adopts the header stays open (§13,
+Q15).
+
+**Identity (D17).** An entry on a loopback endpoint must pass the HMAC proof in
+`src/mesh-identity.ts` (#492, shipped for unslop in #553) before the token or any text is sent,
+so a process squatting on the port learns nothing. A public `https://` endpoint relies on TLS,
+the card pin and card signatures instead (#534, #531, #536), because the proof only makes sense
+for a local port (§8.8).
 
 ---
 
@@ -604,6 +675,12 @@ A separate stdio MCP server the human registers on purpose (decision 3). It is a
 and an A2A client, infers the origin project and branch locally, and never writes the hub. Results
 are bounded, report a `*_chars` count when trimmed, and mark every remote string
 `untrusted: true` (§8.5).
+
+**One client (#511, D15–D16; planned).** The bridge reuses `meshctl call`'s client (#530) and the
+shared result helper (#528), so an agent added with `meshctl add` (§6.7) behaves the same through
+its shim or through `delegate`, and the bridge's `untrusted: true` marking and the terminal
+framing come from one implementation. The bridge (#551) honours an entry's `skipFirstHopClick`
+(D14).
 
 | Tool | Contract |
 |---|---|
@@ -642,6 +719,11 @@ Every rule applies from the first phase with delegation, whatever the budget.
 calling the unslop agent is agent-initiated egress without D4's first-hop click: an exception
 Shariq accepted explicitly on 2026-11-06, for that tool-free, workspace-free agent only, guarded by
 its screen. Whether it needs a click once M4 exists is decided at the M2a checkpoint.
+
+**Added agents (#511, D14; planned).** An agent added with `meshctl add` (§6.7) gets no default
+exception to D4. Before M4 there is no click to skip, so `meshctl add --apply` is the human's
+approval for that agent. From M4 (#549) it needs the first-hop click unless the human allowed it
+to skip the click when adding it, recorded per agent as `skipFirstHopClick` in its entry.
 
 ### 8.1 Grants and callee-side admission
 
@@ -704,6 +786,14 @@ heartbeats it cancels running turns, because it can no longer see the switch.
 
 - The bridge marks remote strings untrusted and trims them; its tool descriptions say to treat
   them as data. Card descriptions never enter a prompt or a tool description.
+- **Terminal clients (#511, D16; planned, #528).** Today each terminal client writes an agent's
+  result to stdout as received (shipped). `meshctl call` and every client for an agent this repo
+  doesn't ship print results through one shared helper: control, bidirectional and zero-width
+  characters stripped, a fixed untrusted header with the agent's id and card hash, and a line
+  telling the caller never to run a command, open a link or change a file because a result says
+  so. It starts from the web search design's §4.5; whether unslop's client adopts the header is
+  open (§13, Q15). Generated skills and shims are fixed templates; no card field or result text is
+  ever written into one (#513).
 - Delegates run with a fixed tool allowlist in their own worktree, with the user's config
   excluded (§6.3). Read-only by default.
 - Anything that leaves the worktree, pushes or reaches the network outside the model provider is
@@ -751,6 +841,12 @@ Agents view flags a chain when one callee receives the same message hash three t
   `https://<name>.<tailnet>.ts.net[:<port>]` or, for the SSH fallback only,
   `http://127.0.0.1:<port>`; anything else is off. The client follows no redirect, uses no proxy
   and never calls the card's URL (request-post design §6; `meshctl enable --request-post`).
+- **Added agents (#511, D13 and D17; planned).** `meshctl add` applies the endpoint rule above:
+  loopback, or `https://` on an allowlisted tailnet name; a public `https://` name waits for
+  #534. On a loopback endpoint, `meshctl call` sends the token or any text only after the agent
+  passes the HMAC identity proof (`src/mesh-identity.ts`, #492). On `https://`, TLS verification
+  (always on), the card pin (#531) and card signatures (#536) take its place, and the token goes
+  only to the origin the agent was added with.
 
 ---
 
@@ -1140,6 +1236,9 @@ container, docs without Tailscale; a Go `tsnet` binary only if asked for.
 14. **Verdicts (§17):** is a one-click Accept / Needed rework / Not used on each finished chain
     acceptable attention, or should acceptance come only from the bench and from proxies (a
     follow-up correction counts as rework)?
+15. **Unslop and the untrusted header (#511, D16):** should unslop's client frame its result with
+    the shared untrusted header (#528)? Its output is prose the caller is meant to use, so the
+    header may cost more than it protects.
 
 ---
 
@@ -1164,6 +1263,14 @@ container, docs without Tailscale; a Go `tsnet` binary only if asked for.
 | 2026-11-06 | **D9.** M2a comes before M2: the local model agent (§6.6) with `unslop` as its only skill, on the Mac and on loopback, behind an `agents.<name>` key in `mesh.json`. Assistants may call it without a click, an accepted exception to D4 (§8); its M4 approval is decided at the M2a checkpoint. Decisions: the unslop design §14 | Shariq ("Approve, assistants may call it") |
 | 2026-11-06 | **D10.** The registry's job is to find a healthy copy, the way Eureka does: the card says what an agent is, the registry says which copies are up, where and how loaded, and the bridge routes to an instance's registered endpoint, never to the card's URL alone. Selection order: healthy (`up` only), closest (the caller's own host first, then the tailnet), least loaded. Every copy of an agent serves the same card (`card_sha256`). | Shariq ("eureka would help us find a healthy agent … routing to one that is close, available and healthy") |
 | 2026-11-08 | **D11.** `request-post` is the second A2A agent, in a phase M2b after the M2a checkpoint and independent of M2. The private publishing service serves its card and two skills (file, status) behind a narrowed door with a whole-request write allowlist; Agent Inbox ships `meshctl request-post` and public conformance fixtures. The service may serve a tailnet-only A2A listener before M4, on the personal tailnet with an ACL grant and per-machine tokens bound to Tailscale capability values: an explicit exception to §14.3 item 6, like D9, with wider reach than loopback but a narrower capability. Agent-filed blog rows wait for Shariq's go before drafting. Decisions: the request-post design §14 | Shariq ("Approve with the recommendations") |
+| 2026-11-10 | **D13.** Registration before M3: `mesh.json` gains a card-driven `agents.<id>` entry (card URL, endpoint, token file, card hash). Only `meshctl add` writes it; the rules in `src/agent-card.ts` check the card. When the registry lands, #548 decides whether these entries register through it or stay in `mesh.json`. Why: an agent written elsewhere otherwise has no way in until M3, and a card-checked entry needs no per-agent code. Implemented by #529 and #531 (§6.7) | Shariq (#511) |
+| 2026-11-10 | **D14.** D4 gets no default exception for added agents. From M4 an added agent skips the first-hop click only if the human allowed that when adding it, per agent, recorded in its entry (`skipFirstHopClick`); before M4 there is no click, so `meshctl add --apply` is the human's approval for that agent. Why: D9's exception was for one tool-free agent; any other is the human's explicit, per-agent choice. Implemented by #529 (the entry) and #549 (M4) (§6.7, §8) | Shariq (#511) |
+| 2026-11-10 | **D15.** Harness path, a mix: every callable agent gets a generated routing skill and a shim that call the generic client `meshctl call`; the official `a2a` CLI must work with our agents and client in both directions but isn't the default client, so a token never has to reach it through a skill file or shell history; the M6 bridge comes later and reuses the same client. Why: no harness has a native A2A client yet, and one client keeps tokens, pins and framing in one place. Implemented by #513, #530, #532 and #551 (§6.7, §7) | Shariq (#511) |
+| 2026-11-10 | **D16.** Untrusted results: one shared helper frames every result from an agent this repo doesn't ship, starting from the web search design's §4.5. Whether unslop's client adopts the header stays open (§13, Q15). Why: an assistant reading an added agent's result reads text anyone could have written. Implemented by #528 (§6.7, §8.5) | Shariq (#511) |
+| 2026-11-10 | **D17.** Identity, for loopback endpoints: a generic entry on a loopback endpoint must pass the HMAC proof (`src/mesh-identity.ts`, #492) before the token or any text is sent. Public `https://` endpoints rely on TLS, the card pin and signatures instead. Why: any local process can bind a free loopback port; TLS already proves an `https://` origin. Implemented by #530, #534, #531 and #536 (§6.7, §8.8) | Shariq (#511) |
+
+D12 is reserved for the web search agent (#508): that design's §18 lists the amendment that
+records it.
 
 ### 14.2 Proposed in this design, for Shariq to confirm or change
 

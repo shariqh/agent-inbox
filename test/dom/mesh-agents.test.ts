@@ -71,6 +71,7 @@ function fakeMesh(first: Json = body(unslop(), requestPost())) {
   const mesh: MeshAgents = {
     version: () => s.version,
     body: () => s.body,
+    runs: () => undefined,
     trigger: async (trigger) => {
       s.triggers.push(trigger)
       if (s.hold) await s.hold

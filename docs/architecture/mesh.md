@@ -91,12 +91,12 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   record); a failure after a good card reports the failure, with the good card as `lastSeen`,
   never as `card`. `GET /api/mesh/agents` is built fresh per read with an ETag over its bytes
   (not a retained snapshot). It never starts an agent and never opens `mesh/tokens` or
-  `mesh/wrappers`. The one other file it reads is unslop's `mesh/unslop-budget.json` (slice V4,
+  `mesh/wrappers`. Besides the run records (below), the one other file it reads is unslop's `mesh/unslop-budget.json` (slice V4,
   design §4.6), only when a check of unslop runs: opened `O_NOFOLLOW`, a regular file the user
   owns, at most 4 KiB, exactly `date`, `tasks` and `modelMs`; unslop's record then carries
   `usage`, with another day's counts read as zero for today, and no `usage` key when the file is
   missing or refused. `test/mesh.test.ts` pins its imports to `node:fs`, `node:http`, `node:https`,
-  `node:net` (types), `node:path`, `./agent-card.js` and `./mesh-config.js`, so no `child_process`. Its
+  `node:net` (types), `node:path`, `./agent-card.js`, `./mesh-config.js` and `./mesh-runs.js`, so no `child_process`. Its
   user-facing `reason` and `fix` words live in `src/mesh-agents.ts`, so the text guard on
   `src/viewer*.ts`, `public/*.js` and `electron/*` stays as it is. `src/agent-card.ts` holds the
   one card rule both clients and the view use, and the view's `summarizeCard` (caps, "+N more",
@@ -131,9 +131,30 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   URL, a page id, a request key (derived or caller-chosen), a token or the caller's identity.
   Files dated before the kept period (the 30 local dates ending today) are deleted by
   `appendRun` when it starts a day's file (its own agent), by every `enable` and `disable` (dry
-  run included; every agent), and by `forget-runs`. The viewer does not read them yet; V5b adds
-  the reader. `test/mesh-runs.test.ts` holds the canaries, the signals, the refusals, the
-  eight-process append, the torn line, the cap and retention.
+  run included; every agent), and by `forget-runs`. The viewer reads them only through
+  `readRuns()` (slice V5b) and never writes or deletes them: a checked runs folder; only day
+  files named for the agent and dated within the kept period, whether or not an expired one has
+  been deleted yet; each opened `O_RDONLY | O_NOFOLLOW | O_NONBLOCK` and `fstat`-checked (a
+  regular file this user owns, no group or other write; a refused file counts in `skipped`); at
+  most 320 KiB per file in one bounded read (the 256 KiB cap plus concurrent overshoot), a larger
+  file read to the bound with `truncated: true`, never skipped; empty lines and the text after
+  the last newline ignored without a count; every other line through the writer's validator
+  (unknown fields dropped, a wrong type or pattern, or another agent's record, skipped and
+  counted); merged and sorted by `at` (the end time) newest first, `id` breaking ties.
+  `src/mesh-agents.ts` runs it at most once per agent per 5 s and keeps each day file's parse
+  under its device, inode, size and `mtimeMs`. `GET /api/mesh/agents/runs?name=<agent>` answers
+  `{ on, name, runs, older, skipped, truncated, keptDays, forget }`: the newest 200 runs, `older`
+  when more exist, and `forget`, the forget command as text built in `src/mesh-agents.ts` so no
+  page file names it. It is built fresh per read with `Cache-Control: no-store` and an ETag over
+  the bytes (304 on a match; not a retained snapshot). Without `opts.mesh`, or with the mesh off,
+  it is `{ on: false, runs: [] }` and reads no run file; a missing name, or one no record can
+  carry, is 400; a known name `mesh.json` does not configure (web search until V5e) is 200
+  `{ ok: false, error: "not configured" }`. `/api/mesh/agents` gains `lastRun` per agent
+  (`{ at, op, outcome }` of the newest record by `at`, or `null`) from the same throttled read, so
+  its bytes change only when a run lands and an idle tick stays a 304. Reading never starts a card
+  check and never opens a connection. `test/mesh-runs.test.ts` holds the canaries, the signals,
+  the refusals, the eight-process append, the torn line, the cap, retention and the reader;
+  `test/mesh-agents.test.ts` the routes.
 - **Forgetting run history (cards view V5 §5.9).**
   `npm run meshctl -- forget-runs (--unslop | --request-post | --web-search | --all) [--apply]`
   is a dry run that says how many run files and runs it would delete for each agent; `--apply`

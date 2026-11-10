@@ -21,7 +21,7 @@ import type { CallIo } from '../src/mesh-call.js'
 import { cardSha256 } from '../src/mesh-add.js'
 import { readRuns } from '../src/mesh-runs.js'
 import type { RunAgent } from '../src/mesh-runs.js'
-import { runClient } from '../src/meshctl.js'
+import { runAdd, runClient } from '../src/meshctl.js'
 import { removeScratchDirs, scratchDir } from './scratch.js'
 
 const REPO = new URL('..', import.meta.url).pathname
@@ -504,5 +504,35 @@ describe('the run record (cards view V5, #530)', () => {
     expect(lines.map((l) => [l.agent, l.op, l.exit, l.outcome, l.reason])).toEqual([[ID, 'call', 0, 'ok', undefined], [ID, 'call', 16, 'card-changed', 'card-changed']])
     // the V5b reader takes them by the same validator
     expect(readRuns(dir, ID as RunAgent, Date.now()).runs).toHaveLength(2)
+  })
+})
+
+describe('a moved agent keeps its pin and runs (#537, publishable-agent design §3.4)', () => {
+  it('add, call, move to a new port with --move, call again: one entry, one pin, every run under the local id', async () => {
+    const card = structuredClone(CARD)
+    card.capabilities.extensions.push({ uri: 'https://shariqh.github.io/agent-inbox/ext/profile/v1', params: { id: 'example.org/agents/search-copy' } })
+    const pin = cardSha256(card)
+    const dir = scratchDir('mesh-move-')
+    const tokenFile = join(scratchDir('mesh-move-token-'), 'token')
+    privateFile(tokenFile, `${TOKEN}\n`)
+    const env = { AGENT_INBOX_MESH_DIR: dir }
+    const add = (url: string, ...args: string[]) => runAdd([url, ...args, '--apply'], { env, home: '/nonexistent-home', out: () => {}, err: () => {} })
+    const call = () => runClient('call', [ID], { env, home: '/nonexistent-home', stdin: Readable.from([Buffer.from(TEXT)]), out: () => {}, err: () => {} })
+    const entry = () => JSON.parse(readFileSync(join(dir, 'mesh.json'), 'utf8')).agents
+    const runs = () => readRuns(dir, ID as RunAgent, Date.now()).runs
+
+    const first = await fakeAgent('stream', { card })
+    expect(await add(`http://127.0.0.1:${first.port}/.well-known/agent-card.json`, '--id', ID, '--token-file', tokenFile)).toBe(0)
+    expect(entry()[ID]).toMatchObject({ cardSha256: pin, agentId: 'example.org/agents/search-copy' })
+    expect(await call()).toBe(0)
+    expect(first.requests).toHaveLength(1)
+
+    const second = await fakeAgent('stream', { card })
+    expect(await add(`http://127.0.0.1:${second.port}/.well-known/agent-card.json`, '--move', ID)).toBe(0)
+    expect(Object.keys(entry())).toEqual([ID])
+    expect(entry()[ID]).toMatchObject({ endpoint: `http://127.0.0.1:${second.port}/`, cardSha256: pin, agentId: 'example.org/agents/search-copy' })
+    expect(await call()).toBe(0)
+    expect([first.requests.length, second.requests.length]).toEqual([1, 1])
+    expect(runs().map((r) => [r.agent, r.outcome])).toEqual([[ID, 'ok'], [ID, 'ok']])
   })
 })

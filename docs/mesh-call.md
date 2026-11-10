@@ -133,6 +133,20 @@ npm run meshctl -- add <card-url> --id my-agent --token-file <your token file> -
 The pin is SHA-256 of the card's JCS form without `signatures` and the interface URLs, so a
 reordered but equal card, or a copy on another port, is the same card.
 
+## When the agent moves
+
+If the agent's card declares a stable id (the
+[profile extension](ext/profile-v1.md), recorded as `agentId` when you added it), point the
+entry at its new card URL with `--move`. It keeps its id, pin, token copy and run records:
+
+```sh
+npm run meshctl -- add <new-card-url> --move my-agent           # dry run: says it is my-agent at a new endpoint
+npm run meshctl -- add <new-card-url> --move my-agent --apply
+```
+
+The card at the new URL must declare the same id and have the same pin; a changed card is
+refused until #531 adds the accept. Pass `--token-file` too to replace the token copy.
+
 ## Output
 
 On exit 0, stdout is the agent's result, framed:

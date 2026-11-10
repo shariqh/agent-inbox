@@ -29,6 +29,8 @@
 //   meshctl disable --request-post [--purge] [--apply]
 //   meshctl add <card-url> [--id <id>] [--token-file <path>] [--apply]
 //                                            add an A2A agent this repo doesn't ship (#529)
+//   meshctl add <card-url> --move <id> [--token-file <path>] [--apply]
+//                                            the same agent (its card's id) at a new endpoint (#537)
 //   meshctl remove <id> [--apply]            take an added agent out again
 //   meshctl call <id> [--skill <s>] [--json] [--report <file>] [--timeout <s>] < request
 //                                            call an added agent (src/mesh-call.ts)
@@ -53,7 +55,7 @@ import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { MESH_SCHEMA, inTailnet, loopbackPort, meshDir, meshFile, readMesh, requestPostEndpoint } from './mesh-config.js'
 import type { MeshDocument, MeshRead } from './mesh-config.js'
-import { BUILT_IN_AGENTS, addedEntry, addedPlace, cardEndpoint, cardLine, cardSha256, fetchAddedCard, idFromName, idRefusal, placeRefusal, tailnetRefusal } from './mesh-add.js'
+import { BUILT_IN_AGENTS, addSummary, addedEntry, addedPlace, cardEndpoint, cardSha256, fetchAddedCard, idFromName, idRefusal, placeRefusal, tailnetRefusal } from './mesh-add.js'
 import { appendRun, pruneRuns, runAgents, runFiles, tidyRuns } from './mesh-runs.js'
 import type { RunCollector } from './mesh-runs.js'
 import { CALL_USAGE, runCall } from './mesh-call.js'
@@ -75,6 +77,7 @@ const USAGE = `usage: agent-inbox-meshctl status
        agent-inbox-meshctl enable --request-post --endpoint <url> --token-file <path> [--apply]
        agent-inbox-meshctl disable --request-post [--purge] [--apply]
        agent-inbox-meshctl add <card-url> [--id <id>] [--token-file <path>] [--apply]
+       agent-inbox-meshctl add <card-url> --move <id> [--token-file <path>] [--apply]
        agent-inbox-meshctl remove <id> [--apply]
        agent-inbox-meshctl call <id> [--skill <skill>] [--json] [--report <file>] [--timeout <s>] < request
        agent-inbox-meshctl forget-runs (--unslop | --request-post | --web-search | --id <id> | --all) [--apply]
@@ -98,6 +101,10 @@ https://<name>.<tailnet>.ts.net on this Mac's tailnet (read from tailscale statu
 tailnet, a Funnel or a public host waits for #534). A loopback agent needs
 --token-file (a 0600 file you own; meshctl copies it and never prints it). add never replaces an
 entry or takes a built-in name; remove deletes only an entry add wrote, and its token copy.
+When the card declares a stable id (its profile extension), add records it as agentId.
+add --move <id> moves agents.<id> to the card URL given: the card must declare the entry's
+agentId and match its pin; only the card URL and endpoint change (and the token copy, with
+--token-file), so the pin and run records stay.
 call sends one request to an added agent: it checks the card pin and, on loopback, the agent's
 identity before it sends the token or any text, and prints the result framed as untrusted
 (docs/mesh-call.md).
@@ -475,7 +482,7 @@ function meshctl(argv: string[], io: MeshctlIo): number {
       const who = idRefusal(id) ? 'an entry with an id meshctl add refuses' : id
       out(read === 'invalid'
         ? `Added agent ${who}: off (the entry breaks meshctl add's rules; remove it and add it again).\n`
-        : `Added agent ${id}: at ${read.endpoint}; card pin ${read.cardSha256.slice(0, 12)}…; token: ${read.tokenFile === undefined ? 'none' : has(read.tokenFile)}.\n`)
+        : `Added agent ${id}: at ${read.endpoint}${read.agentId === undefined ? '' : ` (agent id ${read.agentId})`}; card pin ${read.cardSha256.slice(0, 12)}…; token: ${read.tokenFile === undefined ? 'none' : has(read.tokenFile)}.\n`)
     }
     return existing.kind === 'refused' ? 1 : 0
   }
@@ -779,11 +786,15 @@ function magicDnsSuffix(): string | undefined {
 type ClientIo = Pick<UnslopIo & RequestPostIo, 'env' | 'home' | 'stdin' | 'out' | 'err'>
 
 /**
- * `add <card-url> [--id <id>] [--token-file <path>] [--apply]` (#529, mesh design §6.7, D13–D17):
- * fetches and checks the card, applies the endpoint rule and, with `--apply`, copies the token
- * (0600, never printed) and writes `agents.<id>` = { card, endpoint, tokenFile?, cardSha256 },
- * keeping every other key and a backup. It never replaces an entry or takes a built-in name, and
- * sends no token: a loopback agent's identity proof (D17) runs before every call (#530).
+ * `add <card-url> [--id <id> | --move <id>] [--token-file <path>] [--apply]` (#529, mesh design
+ * §6.7, D13–D17): fetches and checks the card, applies the endpoint rule and, with `--apply`,
+ * copies the token (0600, never printed) and writes `agents.<id>` = { card, endpoint, tokenFile?,
+ * cardSha256, agentId? }, keeping every other key and a backup. It never replaces an entry or takes
+ * a built-in name, and sends no token: a loopback agent's identity proof (D17) runs before every
+ * call (#530). `agentId` is the card's stable id (#537, publishable-agent design §3.4); a card
+ * whose id an entry already holds is that agent, which only `--move <id>` relocates (the unsigned
+ * path): the same id and pin at a new card URL, changing only `card` and `endpoint` (and the token
+ * copy, with --token-file), so the pin and run records, keyed by the local id, stay.
  */
 export async function runAdd(args: string[], io: MeshctlIo = {}): Promise<number> {
   const env = io.env ?? process.env
@@ -797,28 +808,33 @@ export async function runAdd(args: string[], io: MeshctlIo = {}): Promise<number
 
   let cardUrl: string | undefined
   let id: string | undefined
+  let move: string | undefined
   let tokenFile: string | undefined
   let apply = false
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]!
     if (arg === '--apply' && !apply) apply = true
-    else if (arg === '--id' || arg === '--token-file') {
+    else if (arg === '--id' || arg === '--move' || arg === '--token-file') {
       const value = args[++i]
-      if (value === undefined || (arg === '--id' ? id : tokenFile) !== undefined) return usage()
+      if (value === undefined || (arg === '--id' ? id : arg === '--move' ? move : tokenFile) !== undefined) return usage()
       if (arg === '--id') id = value
+      else if (arg === '--move') move = value
       else tokenFile = value
     } else if (!arg.startsWith('-') && cardUrl === undefined) cardUrl = arg
     else return usage()
   }
-  if (cardUrl === undefined) return usage()
+  if (cardUrl === undefined || (id !== undefined && move !== undefined)) return usage()
   const idBad = id === undefined ? undefined : idRefusal(id)
   if (idBad) return refuse(idBad)
+  const moveBad = move === undefined ? undefined : idRefusal(move)
+  if (moveBad) return refuse(BUILT_IN_AGENTS.includes(move!) ? `${move} is a built-in agent: meshctl enable and disable manage it` : moveBad)
   const place = addedPlace(cardUrl)
   if ('refused' in place) return refuse(placeRefusal('the card URL', place.refused))
   // the endpoint must share the card URL's origin, so this one check covers both
   const elsewhere = tailnetRefusal('the card URL', place, place.loopback ? undefined : (io.tailnet ?? magicDnsSuffix)())
   if (elsewhere) return refuse(elsewhere)
-  if (place.loopback && tokenFile === undefined) return refuse('a loopback agent needs --token-file: meshctl call proves its identity with that token before it sends anything (D17)')
+  const NEEDS_TOKEN = 'a loopback agent needs --token-file: meshctl call proves its identity with that token before it sends anything (D17)'
+  if (place.loopback && tokenFile === undefined && move === undefined) return refuse(NEEDS_TOKEN)
 
   const dir = resolve(meshDir(env, home))
   const file = meshFile(dir)
@@ -838,33 +854,78 @@ export async function runAdd(args: string[], io: MeshctlIo = {}): Promise<number
     return (value === undefined ? {} : objectOf(value)) ?? `${name} has an "agents" value that is not an object`
   }
   const taken = (agentId: string): string => `the id ${agentId} is already in ${name}, and add never replaces an entry`
+  // the entry --move relocates: one add wrote, valid, with the stable id the new card must match
+  type Movable = Exclude<ReturnType<typeof addedEntry>, 'invalid' | undefined> & { agentId: string }
+  const movable = (agents: Record<string, unknown>): { entry: Movable } | string => {
+    const read = Object.hasOwn(agents, move!) ? addedEntry(move!, agents[move!]) : undefined
+    if (!Object.hasOwn(agents, move!)) return `${move} is not in ${name}: add it without --move`
+    if (read === undefined) return `agents.${move} was not written by meshctl add, so add cannot move it`
+    if (read === 'invalid') return `the entry for ${move} breaks meshctl add's rules: remove it and add it again`
+    if (read.agentId === undefined) return `agents.${move} records no agent id (its card declared none when it was added), so add cannot tell the new card is the same agent: remove it and add it again`
+    return { entry: { ...read, agentId: read.agentId } }
+  }
   const early = agentsOf(readMesh(file))
   if (typeof early === 'string') return refuse(early)
   if (id !== undefined && Object.hasOwn(early, id)) return refuse(taken(id))
+  if (move !== undefined) {
+    const was = movable(early)
+    if (typeof was === 'string') return refuse(was)
+    if (place.loopback && tokenFile === undefined && was.entry.tokenFile === undefined) return refuse(NEEDS_TOKEN)
+  }
 
   const fetched = await fetchAddedCard(place)
   if (fetched.reason !== undefined) return refuse(fetched.reason)
   const card = fetched.card
   const endpoint = cardEndpoint(card, place.origin)
   if ('refused' in endpoint) return refuse(endpoint.refused)
-  const agentId = id ?? idFromName(card['name'])
-  if (agentId === undefined) return refuse('the card\'s name makes no usable id: pass --id <id>')
-  const derivedBad = idRefusal(agentId)
-  if (derivedBad) return refuse(derivedBad)
+  const profile = fetched.profile
   const pin = cardSha256(card)
 
   const existing = readMesh(file)
   const agents = agentsOf(existing)
   if (typeof agents === 'string') return refuse(agents)
-  if (Object.hasOwn(agents, agentId)) return refuse(taken(agentId))
+  const holder = profile === undefined ? undefined : Object.keys(agents).find((key) => {
+    const read = addedEntry(key, agents[key])
+    return read !== undefined && read !== 'invalid' && read.agentId === profile.id
+  })
+  let agentId: string
+  let entry: Record<string, unknown>
+  let moved: Movable | undefined
+  if (move === undefined) {
+    if (holder !== undefined) return refuse(`the card declares the agent id that agents.${holder} holds, so it is that agent: to move ${holder} here, add --move ${holder} (its pin and run records stay)`)
+    const picked = id ?? idFromName(card['name'])
+    if (picked === undefined) return refuse('the card\'s name makes no usable id: pass --id <id>')
+    const derivedBad = idRefusal(picked)
+    if (derivedBad) return refuse(derivedBad)
+    if (Object.hasOwn(agents, picked)) return refuse(taken(picked))
+    agentId = picked
+    entry = { card: place.url, endpoint: endpoint.endpoint, ...(token === undefined ? {} : { tokenFile: join(dir, 'mesh', 'tokens', picked) }), cardSha256: pin, ...(profile ? { agentId: profile.id } : {}) }
+  } else {
+    const was = movable(agents)
+    if (typeof was === 'string') return refuse(was)
+    moved = was.entry
+    if (profile === undefined) return refuse(`the card declares no agent id, so add cannot tell it is ${move}'s agent`)
+    if (profile.id !== moved.agentId) return refuse(`the card declares another agent id than agents.${move}'s, so it is another agent: add it without --move`)
+    if (pin !== moved.cardSha256) return refuse(`the card at the new URL is not the one you added (pin ${moved.cardSha256.slice(0, 12)}, now ${pin.slice(0, 12)}): moving a changed card waits for accepting it (#531)`)
+    if (moved.card === place.url && moved.endpoint === endpoint.endpoint && token === undefined) {
+      out(`agents.${move} is already at ${place.url}. Nothing to do.\n`)
+      return 0
+    }
+    agentId = move
+    // only the card URL and endpoint change (and the token copy with --token-file); every other key stays
+    entry = { ...objectOf(agents[move])!, card: place.url, endpoint: endpoint.endpoint, ...(token === undefined ? {} : { tokenFile: join(dir, 'mesh', 'tokens', move) }) }
+  }
   const tokens = join(dir, 'mesh', 'tokens')
   const copy = join(tokens, agentId)
-  const entry = { card: place.url, endpoint: endpoint.endpoint, ...(token === undefined ? {} : { tokenFile: copy }), cardSha256: pin }
   const present = existing.kind === 'present'
   const next: MeshDocument = { ...(present ? existing.doc : { schema: MESH_SCHEMA }), agents: { ...agents, [agentId]: entry } }
   const json = `${JSON.stringify(next, null, 2)}\n`
 
-  out(`Card ${place.url}: ${cardLine(card)}.\nEndpoint ${endpoint.endpoint}${place.loopback ? ': loopback, so meshctl call proves the agent\'s identity before it sends the token or any text (D17)' : ': https on this Mac\'s tailnet, TLS verified'}.\nCard pin (sha256): ${pin}.\n`)
+  out(addSummary(card, { cardUrl: place.url, endpoint: endpoint.endpoint, loopback: place.loopback, token: token !== undefined || moved?.tokenFile !== undefined, pin, profile }))
+  if (moved) {
+    const sends = token !== undefined || moved.tokenFile !== undefined ? '; meshctl call will send the token to the new endpoint' : ''
+    out(`Move       this is ${agentId} at a new endpoint (was ${moved.endpoint}): its card pin${token === undefined ? ', token copy' : ''} and run records stay${sends}.\n`)
+  }
   const steps: Step[] = []
   if (token !== undefined) {
     steps.push({
@@ -878,11 +939,15 @@ export async function runAdd(args: string[], io: MeshctlIo = {}): Promise<number
       mkdirSync(dir, { recursive: true, mode: 0o700 })
       const backup = present ? ` (backup: ${show(writeBackup(file, now()))})` : ''
       writeAtomic(file, json, 0o644)
-      return `Wrote ${name}${backup}: ${agentId} is added at ${endpoint.endpoint}.`
+      return `Wrote ${name}${backup}: ${agentId} is ${moved ? 'moved to' : 'added at'} ${endpoint.endpoint}.`
     },
   })
   const code = runSteps(steps, apply, out, err, `Steps before it are done; ${name} was not changed.`)
-  if (apply && code === 0) out(`This --apply is your approval for ${agentId} (D14). meshctl call ${agentId} < request calls it; meshctl remove ${agentId} --apply takes it out.\n`)
+  if (apply && code === 0) {
+    out(moved
+      ? `${agentId} keeps its card pin and run records. meshctl call ${agentId} < request calls it at the new endpoint.\n`
+      : `This --apply is your approval for ${agentId} (D14). meshctl call ${agentId} < request calls it; meshctl remove ${agentId} --apply takes it out.\n`)
+  }
   return code
 }
 

@@ -74,7 +74,8 @@ These landed after v1 and still hold invariants; the release history itself is i
   (`pwd -P`) and treats a missing staged manifest or an unconfirmed graph check as failure:
   a step that silently did nothing could otherwise let `npm ci` walk up and strip the
   checkout's devDependencies. *(#315)* Every workflow but `ci.yml` builds, signs or
-  verifies a release, so none restores an npm cache (no setup-node `cache` input of any
+  verifies a release (`pages.yml`, which publishes the extension specs and runs no npm, follows
+  the same rules; `docs/architecture/mesh.md`), so none restores an npm cache (no setup-node `cache` input of any
   kind, and `package-manager-cache: false` on each setup-node step), and each sets
   `npm_config_build_from_source=true` once, in its top-level `env`, which no job or step
   may name again: nothing from the checkout's install ships, but scripts and tests load

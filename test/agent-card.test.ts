@@ -11,7 +11,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { startServer } from '../packages/mesh/src/a2a.js'
 import type { A2AServer } from '../packages/mesh/src/a2a.js'
 import { cardHash as meshCardHash } from '../packages/mesh/src/a2a-client.js'
-import { canonicalCard, cardJson, checkAddedCard, checkCard, summarizeCard } from '../src/agent-card.js'
+import { agentIdRefusal, canonicalCard, cardJson, checkAddedCard, checkCard, checkProfile, claim, summarizeCard } from '../src/agent-card.js'
 import { cardSha256 } from '../src/mesh-add.js'
 import { cardHash as fixtureCardHash } from './fixtures/a2a-web-search/conformance.js'
 
@@ -182,5 +182,111 @@ describe('summarizeCard and cardJson (agent cards view design §4.4, slice V2)',
     expect(json).not.toMatch(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069\u2028\u2029]/)
     for (const escape of ['\\u0000', '\\u001b', '\\u200e', '\\u200f', '\\u061c', '\\u202e', '\\u2066', '\\u2028', '\\u2029', '\\u007f', '\\u0085']) expect(json).toContain(escape)
     expect(JSON.parse(json)).toEqual({ description: HOSTILE })
+  })
+})
+
+describe('the v1 profile extension and stable agent ids (#537; publishable-agent design §3.4, §3.7)', () => {
+  const URI = 'https://shariqh.github.io/agent-inbox/ext/profile/v1'
+  const B43 = 'A'.repeat(42) + 'g'
+  const P256 = { kty: 'EC', crv: 'P-256', x: B43, y: B43.replace('A', 'B') }
+  const params = (): Json => ({
+    id: 'shariqh.github.io/agent-inbox/web-search',
+    keys: [P256],
+    skills: { 'web-search': { egress: [{ purpose: 'search', hosts: 'operator', sends: 'input' }], residency: 'caller-mesh' } },
+  })
+  const profiled = (edit: (p: Json) => void = () => {}): Json => change(WEB_SEARCH, (c) => {
+    const p = params()
+    edit(p)
+    c.capabilities.extensions.push({ uri: URI, description: 'Stable id, signing keys, and per-skill egress and residency', params: p })
+  })
+
+  it('reads the id and the key count; a card without the profile has none', () => {
+    expect(checkProfile(profiled())).toEqual({ profile: { id: 'shariqh.github.io/agent-inbox/web-search', keys: 1 } })
+    expect(checkProfile(profiled((p) => { delete p.keys; delete p.skills }))).toEqual({ profile: { id: 'shariqh.github.io/agent-inbox/web-search', keys: 0 } })
+    for (const card of [WEB_SEARCH, REQUEST_POST, UNSLOP, {}, null, 'card']) expect(checkProfile(card)).toBeUndefined()
+    // an Ed25519 and a P-384 key, four in all
+    const keys = [P256, { kty: 'OKP', crv: 'Ed25519', x: B43 }, { kty: 'EC', crv: 'P-384', x: 'C'.repeat(64), y: 'D'.repeat(64) }, { ...P256, x: B43.replace('A', 'E') }]
+    expect(checkProfile(profiled((p) => { p.keys = keys }))).toEqual({ profile: { id: 'shariqh.github.io/agent-inbox/web-search', keys: 4 } })
+  })
+
+  it('takes a domain-anchored id and refuses every other form with fixed words', () => {
+    for (const id of ['example.org/notes', 'shariqh.github.io/agent-inbox/web-search', 'xn--bcher-kva.example/a/b/c', `a.b/${'n'.repeat(40)}`, `${'a'.repeat(63)}.org/x`]) {
+      expect(agentIdRefusal(id), id).toBeUndefined()
+    }
+    const CHARS = 'a profile id with a character other than a-z, 0-9, "-", "." and "/"'
+    const DNS = 'a profile id whose domain is not a DNS name'
+    const cases: Array<[unknown, string]> = [
+      [42, 'a profile id that is not a string'],
+      [`example.org/${'a/'.repeat(95)}n`, 'a profile id longer than 200 characters'],
+      ['Example.org/notes', CHARS], ['example.org/Notes', CHARS], ['https://example.org/notes', CHARS],
+      ['user@example.org/notes', CHARS], ['example.org:8443/notes', CHARS], ['example.org/notes?x=1', CHARS],
+      ['example.org/notes#x', CHARS], ['example.org/no tes', CHARS], ['urn:air:example.org:notes', CHARS],
+      ['example.org', 'a profile id with no /<name> after its domain'],
+      ['localhost/notes', 'a profile id whose domain has no dot'],
+      ['-example.org/notes', DNS], ['example-.org/notes', DNS], ['example..org/notes', DNS], ['.example.org/notes', DNS],
+      ['127.0.0.1/notes', DNS], [`${'a'.repeat(64)}.org/x`, DNS], [`${'a.'.repeat(127)}org/x`, 'a profile id longer than 200 characters'],
+      ['example.org/notes/', 'a profile id with an empty or dotted path segment'],
+      ['example.org//notes', 'a profile id with an empty or dotted path segment'],
+      ['example.org/../notes', 'a profile id with an empty or dotted path segment'],
+      ['example.org/v1.2/notes', 'a profile id with an empty or dotted path segment'],
+      [`example.org/${'n'.repeat(41)}`, 'a profile id whose name is longer than 40 characters'],
+    ]
+    for (const [id, words] of cases) {
+      expect(agentIdRefusal(id), String(id)).toBe(words)
+      expect(checkProfile(profiled((p) => { p.id = id })), String(id)).toEqual({ reason: words })
+    }
+  })
+
+  it('refuses a private key, an unknown member, an unknown curve, a bad coordinate, a duplicate and more than four keys', () => {
+    const reason = (edit: (p: Json) => void) => checkProfile(profiled(edit))
+    const cases: Array<[unknown, string]> = [
+      [{ ...P256, d: B43 }, 'a private profile key'],
+      [{ kty: 'OKP', crv: 'Ed25519', x: B43, d: B43 }, 'a private profile key'],
+      [{ ...P256, kid: 'k1' }, 'a profile key with a member other than crv, kty, x, y'],
+      [{ ...P256, use: 'sig' }, 'a profile key with a member other than crv, kty, x, y'],
+      [{ kty: 'OKP', crv: 'Ed25519', x: B43, y: B43 }, 'a profile key with a member other than crv, kty, x'],
+      [{ kty: 'EC', crv: 'P-256', x: B43 }, 'a profile key with a member other than crv, kty, x, y'],
+      [{ kty: 'RSA', n: 'x', e: 'AQAB' }, 'a profile key that is not P-256, P-384 or Ed25519'],
+      [{ ...P256, crv: 'secp256k1' }, 'a profile key that is not P-256, P-384 or Ed25519'],
+      [{ ...P256, kty: 'OKP' }, 'a profile key that is not P-256, P-384 or Ed25519'],
+      [{ ...P256, crv: '__proto__' }, 'a profile key that is not P-256, P-384 or Ed25519'],
+      [{ ...P256, x: `${B43}=` }, 'a profile key with a malformed coordinate'],
+      [{ ...P256, y: B43.slice(1) }, 'a profile key with a malformed coordinate'],
+      [{ ...P256, x: B43.replace('A', '+') }, 'a profile key with a malformed coordinate'],
+      ['thumbprint', 'a profile key that is not a JWK'],
+    ]
+    for (const [key, words] of cases) expect(reason((p) => { p.keys = [key] }), words).toEqual({ reason: words })
+    expect(reason((p) => { p.keys = [P256, { ...P256 }] })).toEqual({ reason: 'a profile key listed twice' })
+    expect(reason((p) => { p.keys = Array.from({ length: 5 }, (_, i) => ({ ...P256, x: B43.replace('A', 'BCDEF'[i]!) })) })).toEqual({ reason: 'more than 4 profile keys' })
+    expect(reason((p) => { p.keys = P256 })).toEqual({ reason: 'profile keys that are not a list' })
+  })
+
+  it('holds the structure: exactly the card\'s skills, no unknown member, no empty value, one profile', () => {
+    const reason = (edit: (p: Json) => void) => checkProfile(profiled(edit))
+    expect(reason((p) => { p.skills['web-fetch'] = { residency: 'any' } })).toEqual({ reason: 'a profile entry for a skill the card lacks' })
+    expect(checkProfile(change(profiled(), (c) => { c.skills.push({ id: 'web-fetch', name: 'f', description: 'f', tags: ['f'] }) }))).toEqual({ reason: 'a skill without a profile entry' })
+    expect(reason((p) => { p.skills['web-search'].rate = 1 })).toEqual({ reason: 'a profile skill entry with a member other than egress and residency' })
+    expect(reason((p) => { p.skills['web-search'] = 'caller-mesh' })).toEqual({ reason: 'a profile skill entry that is not an object' })
+    expect(reason((p) => { p.skills = ['web-search'] })).toEqual({ reason: 'profile skills that are not an object' })
+    expect(reason((p) => { p.namespace = 'shariqh' })).toEqual({ reason: 'a profile with a member other than id, keys and skills' })
+    expect(reason((p) => { delete p.id })).toEqual({ reason: 'a profile without an id' })
+    for (const empty of [[], {}, '', null]) {
+      expect(reason((p) => { p.keys = empty }), JSON.stringify(empty)).toEqual({ reason: 'a profile with an empty value' })
+      expect(reason((p) => { p.skills['web-search'].egress = empty }), JSON.stringify(empty)).toEqual({ reason: 'a profile with an empty value' })
+    }
+    expect(reason((p) => { p.skills['web-search'].egress = JSON.parse(`${'['.repeat(40)}1${']'.repeat(40)}`) })).toEqual({ reason: 'a profile nested too deeply' })
+    for (const bad of [undefined, 'x', [params()]]) {
+      expect(checkProfile(change(WEB_SEARCH, (c) => { c.capabilities.extensions.push({ uri: URI, params: bad }) }))).toEqual({ reason: 'a profile extension whose params are not an object' })
+    }
+    expect(checkProfile(change(profiled(), (c) => { c.capabilities.extensions.push({ uri: URI, params: params() }) }))).toEqual({ reason: 'more than one profile extension' })
+  })
+
+  it('claim() quotes card text for one terminal line: cleaned, capped and escaped', () => {
+    expect(claim('Notes search', 80)).toBe('"Notes search"')
+    expect(claim('line\none\ttab', 80)).toBe('"line one tab"')
+    expect(claim('a\u202Eb\u200Bc\u2028d\u0007e\u{E0041}f\rg', 80)).toBe('"a\uFFFDb\uFFFDc\uFFFDd\uFFFDe\uFFFDf\uFFFDg"')
+    expect(claim('say "hi" \\ bye', 80)).toBe('"say \\"hi\\" \\\\ bye"')
+    expect(claim('\u{1F600}'.repeat(5), 3)).toBe('"\u{1F600}\u{1F600}\u{1F600}…"')
+    for (const v of [undefined, null, 3, ['x'], { a: 1 }]) expect(claim(v, 80)).toBeUndefined()
   })
 })

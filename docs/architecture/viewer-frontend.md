@@ -30,7 +30,8 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   cannot hide the result. A held pointer defers rendering but is not a
   suspension and must not appear in `suspendState()`. A draft suspends only
   while in use (#563): the window had input in the last two minutes, a draft
-  editor has focus in a focused window, or a draft's target moved.
+  editor has focus in a focused window, or a New session dialog holding one is
+  open. A poll's frame sets aside a draft whose target moved without navigating.
 - An idle tick paints nothing (#298): `load()` skips `renderIfIdle()` only when
   `pollMaySkipPaint` (`public/poll.js`) finds the frame on screen was painted
   from exactly this tick's `frameInputs()` (each snapshot's identical
@@ -163,12 +164,14 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   `board_advance` kept showing their old steps as "Waiting for delivery" for two hours.
   `draftInUse` (`public/poll.js`) holds while the human gave the window input
   (`humanInputAt`: pointerdown, click, key or input) within two minutes, while a draft
-  editor (`[data-draft-focus-key]`) has focus in a focused window, or while a draft's
-  target moved (`draftOwnerMoved()`, the test `reconcileDraftOwners()` applies), since
-  that frame would move it to the unsent responses and switch to the Inbox, which a poll
-  never does; a New session task holds while its dialog is open. Past that, the poll
-  paints and every editor is rebuilt with its text from module state; nothing is sent
-  or focused. `hasUnsentResponses()` reads every draft (`typedDrafts()`), so the
+  editor (`[data-draft-focus-key]`) has focus in a focused window; a New session task
+  holds while its dialog is open. Past that, the poll paints and every editor is
+  rebuilt with its text from module state; nothing is sent or focused. A draft whose
+  target moved (its row advanced, its question closed) is moved to the unsent responses
+  by that poll frame, still durable, but the frame never navigates: `renderIfIdle()`
+  sets `pollPaint`, so `reconcileDraftOwners()` and `recoverMismatchedRenderedRowDraft()`
+  skip `requestDraftRecovery()` (no tab switch, no closing the Review queue, no focus
+  move) and leave `recoveryNavPending` for the next frame the human asks for. `hasUnsentResponses()` reads every draft (`typedDrafts()`), so the
   viewer-restart hold is unchanged. `test/dom/advanced-row-repaint.test.ts` pins it. Expanded cards, the open inspector's scroll offset, and
   its focused control survive rebuilds; order pinning appends new work at the foot; the press
   guard protects clicks. A draft gates only the editable surfaces:

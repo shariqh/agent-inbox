@@ -164,9 +164,9 @@ describe('a draft holds the rebuild only while it is in use (#563)', () => {
     expect(recentInput(t + 1, t)).toBe(false)
   })
 
-  it('a focused draft editor, or a draft whose target moved, holds however idle', () => {
+  it('a focused draft editor, or an open dialog holding one, holds however idle', () => {
     expect(draftInUse({ inputAt: null, editorFocused: true }, t)).toBe(true)
-    expect(draftInUse({ inputAt: null, ownerMoved: true }, t)).toBe(true)
+    expect(draftInUse({ inputAt: null, dialogOpen: true }, t)).toBe(true)
   })
 })
 

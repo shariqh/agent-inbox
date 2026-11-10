@@ -10,7 +10,7 @@
 // while it is in use (public/poll.js `draftInUse`).
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import type Database from 'better-sqlite3'
-import { advanceBoardRow, insertItem, listBoards, upsertActivity, upsertBoard } from '../../src/store.js'
+import { advanceBoardRow, insertItem, listBoards, resolveItem, upsertActivity, upsertBoard } from '../../src/store.js'
 import {
   advanceClock, answerInput, bootApp, click, freshDb, pollTick, row, sendButton, settle, showInbox, type, useDomTest,
 } from './harness.js'
@@ -67,6 +67,8 @@ const pauseHint = (): string => {
   const el = document.getElementById('pauseHint')
   return el && !el.hidden ? el.textContent ?? '' : ''
 }
+const unsent = (): string => document.querySelector('#needsYouList .stale-drafts-fold')?.textContent ?? ''
+const stored = (): string => localStorage.getItem('agent-inbox-drafts-v1') ?? ''
 const activeTab = (): string | undefined => document.querySelector<HTMLElement>('.tab[aria-selected="true"]')?.dataset.tab
 
 describe('#563 · an idle draft never keeps an advanced row on its old step', () => {
@@ -123,7 +125,7 @@ describe('#563 · an idle draft never keeps an advanced row on its old step', ()
     expect(document.activeElement).toBe(answerInput(question))
   })
 
-  it('keeps holding a draft whose own row was advanced, so a poll never switches tabs to recover it', async () => {
+  it('sets aside an idle draft whose own row was advanced, without switching tabs or attaching it to the new step', async () => {
     const d = (db = freshDb())
     const [rowId] = seedRow(d) as [string]
     await bootApp(d)
@@ -135,7 +137,41 @@ describe('#563 · an idle draft never keeps an advanced row on its old step', ()
     advanceClock(AWAY_MS)
     advance(d)
     await pollTick()
+    // the poll painted the lists, and navigated nowhere
     expect(activeTab()).toBe('dashboard')
+    expect(pauseHint()).toBe('')
+    expect(chip(rowId)).toBe('Needs input')
+    expect(unsent()).toContain('Design B, actually')
+    expect(stored()).toContain('Design B, actually')
+
+    // the human's next frame shows it in the Inbox; the new step's editor is empty
+    await showInbox()
+    click(row(rowId))
+    await settle()
+    expect(row(rowId)?.querySelector('.nrow-card')?.textContent).toContain('Choose the rollout')
+    expect(answerInput(rowId)?.value ?? '').toBe('')
+    expect(unsent()).toContain('Design B, actually')
+  })
+
+  it('sets aside an idle draft whose question an agent resolved, without switching tabs', async () => {
+    const d = (db = freshDb())
+    seedRow(d)
+    advanceClock()
+    const question = insertItem(d, { ...AGENT, kind: 'question', title: 'Keep the Sessions line?' })
+    await bootApp(d)
+    await showInbox()
+    await openAndType(question, 'Keep it, but')
+    click(document.querySelector('.tab[data-tab="dashboard"]'))
+    await settle()
+
+    advanceClock(AWAY_MS)
+    resolveItem(d, question)
+    await pollTick()
+    expect(activeTab()).toBe('dashboard')
+    expect(pauseHint()).toBe('')
+    expect(row(question)).toBeNull()
+    expect(unsent()).toContain('Keep it, but')
+    expect(stored()).toContain('Keep it, but')
   })
 })
 

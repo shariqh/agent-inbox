@@ -30,7 +30,7 @@ export function recentInput(inputAt: number | null | undefined, nowMs: number): 
 export function draftInUse(state: {
   inputAt?: number | null
   editorFocused?: boolean
-  ownerMoved?: boolean
+  dialogOpen?: boolean
 }, nowMs: number): boolean
 export function shouldDeferRender(state: SuspendState, nowMs: number): boolean
 export function pinOrder(current: string[], incoming: string[]): string[]

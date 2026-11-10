@@ -304,6 +304,10 @@ let outsideChanges = 0  // human input and settled writes since boot (#298)
 let pinnedIds = []      // sort order pinned for this render session
 let pressedAt = null    // pointerdown → pointerup, hard-bounded by PRESS_GRACE_MS (#38)
 let humanInputAt = null // the human's last pointerdown, click, key or input in this window (#563)
+// True while the poll paints (renderIfIdle): a draft whose target moved is then
+// set aside without navigating, and the navigation waits for a human frame (#563).
+let pollPaint = false
+let recoveryNavPending = false
 let launchUi = null     // driven sessions (#412 step 3), made at boot; inert unless the app's switch is on
 
 // Every typed draft anywhere in the app: what the viewer-restart hold protects.
@@ -319,11 +323,13 @@ function typedDrafts() {
 
 // Whether the drafts may hold the poll's rebuild now (#563, public/poll.js).
 // A New session task counts as in use: it exists only while its dialog is open.
+// A draft whose target moved does not: the poll's frame moves it to the unsent
+// responses without navigating (reconcileDraftOwners).
 function draftsInUse(nowMs) {
   return draftInUse({
     inputAt: humanInputAt,
     editorFocused: Boolean(activeFocusElement()?.closest?.('[data-draft-focus-key]')),
-    ownerMoved: (launchUi?.drafts() ?? []).some(([, value]) => String(value ?? '').trim() !== '') || draftOwnerMoved(),
+    dialogOpen: (launchUi?.drafts() ?? []).some(([, value]) => String(value ?? '').trim() !== ''),
   }, nowMs)
 }
 
@@ -414,33 +420,39 @@ function showPauseHint() {
 
 // the poll's ONLY entry into render()
 function renderIfIdle() {
-  const now = Date.now()
-  // A held press still protects EVERY surface. paintAmbient() may rebuild the panel's asks,
-  // so running it between pointerdown and click would reintroduce issue #38.
-  if (pressHeld(pressedAt, now)) {
-    renderDirty = true
-    showPauseHint() // reads suspendState() only — a bare press prints nothing (#38)
-    return
-  }
-  // Ambient painters can rebuild under a selection too, so capture it first (#223).
-  const textSelection = captureSelection()
-  const frame = paintAmbient()
-  frame.textSelection = textSelection
-  // Drafts and active inspector/page scrolling protect only editable lists. Counts,
-  // the badge, rail and Sessions line above keep reporting fresh data. Before the
-  // first editable frame no editor exists to protect, so a draft restored at
-  // boot (#279) cannot leave the lists blank.
-  if (editablePanesPainted && (dashboardInteractionActive()
-    || shouldDeferRender({ ...suspendState(), pressedAt, scrolledAt: lastInteractionScrollAt }, now))) {
-    renderDirty = true
+  // #563: what this paints is the poll's (reconcileDraftOwners)
+  pollPaint = true
+  try {
+    const now = Date.now()
+    // A held press still protects EVERY surface. paintAmbient() may rebuild the panel's asks,
+    // so running it between pointerdown and click would reintroduce issue #38.
+    if (pressHeld(pressedAt, now)) {
+      renderDirty = true
+      showPauseHint() // reads suspendState() only — a bare press prints nothing (#38)
+      return
+    }
+    // Ambient painters can rebuild under a selection too, so capture it first (#223).
+    const textSelection = captureSelection()
+    const frame = paintAmbient()
+    frame.textSelection = textSelection
+    // Drafts and active inspector/page scrolling protect only editable lists. Counts,
+    // the badge, rail and Sessions line above keep reporting fresh data. Before the
+    // first editable frame no editor exists to protect, so a draft restored at
+    // boot (#279) cannot leave the lists blank.
+    if (editablePanesPainted && (dashboardInteractionActive()
+      || shouldDeferRender({ ...suspendState(), pressedAt, scrolledAt: lastInteractionScrollAt }, now))) {
+      renderDirty = true
+      showPauseHint()
+      restoreSelection(textSelection)
+      return
+    }
+    renderDirty = false
     showPauseHint()
-    restoreSelection(textSelection)
-    return
+    preparedFrame = frame
+    render()
+  } finally {
+    pollPaint = false
   }
-  renderDirty = false
-  showPauseHint()
-  preparedFrame = frame
-  render()
 }
 
 // called whenever a draft may have cleared (input emptied, reply sent), or
@@ -3608,6 +3620,13 @@ function recoverMismatchedRenderedRowDraft(b, r) {
   delete rowDrafts[r.id]
   delete rowDraftKinds[r.id]
   delete rowDraftMeta[r.id]
+  if (pollPaint) {
+    // #563: a poll never navigates; the next tick paints the unsent response
+    recoveryNavPending = true
+    renderDirty = true
+    scheduleDraftSave()
+    return true
+  }
   requestAnimationFrame(() => {
     requestDraftRecovery(null)
     forceRender()
@@ -8401,18 +8420,11 @@ function rowDraftOwned(owner, meta) {
   return Boolean(owner && meta?.revision === owner.row.revision)
 }
 
-// Whether the next frame would move a draft to the unsent responses, and so
-// switch to the Inbox: then a draft holds the poll however idle it is (#563).
-function draftOwnerMoved() {
-  if (!lastData) return false
-  const itemIds = new Set([...Object.keys(draftReplies), ...Object.keys(draftReplyContexts)])
-  for (const id of itemIds) {
-    if (!String(draftReplies[id] ?? '').trim() && !String(draftReplyContexts[id] ?? '').trim()) continue
-    if (!itemDraftOwned(freshItem(id))) return true
-  }
-  return Object.entries(rowDrafts).some(([id, text]) => String(text).trim() && !rowDraftOwned(currentRow(id), rowDraftMeta[id]))
-}
-
+// Moves every draft whose target moved to the unsent responses. A frame the
+// human asked for then switches to the Inbox and focuses it; the poll's frame
+// only sets it aside (still durable, listed in the unsent responses) and leaves
+// the navigation to the next human frame, so a poll never switches tabs, closes
+// the Review queue or moves focus (#563). Returns whether the caller must repaint.
 function reconcileDraftOwners() {
   let recovered = false
   const itemIds = new Set([...Object.keys(draftReplies), ...Object.keys(draftReplyContexts)])
@@ -8475,8 +8487,15 @@ function reconcileDraftOwners() {
     delete rowDraftMeta[id]
     recovered = true
   }
-  if (recovered) requestDraftRecovery()
-  return recovered
+  if (recovered && pollPaint) {
+    recoveryNavPending = true
+    scheduleDraftSave()
+    return false
+  }
+  if (!recovered && !recoveryNavPending) return false
+  recoveryNavPending = false
+  requestDraftRecovery()
+  return true
 }
 
 // ── durable drafts (#279) ───────────────────────────────────────────────────

@@ -66,10 +66,9 @@ export function scrollActive(scrolledAt, nowMs) {
 // again used to freeze every list for hours: an agent advanced the rows the
 // human had answered, and the window kept showing the old steps as current.
 // In use means the human gave this window input within DRAFT_IDLE_MS, a draft
-// editor has focus in a focused window, or a draft no longer matches its target
-// (the next frame would move it to the unsent responses and switch to the Inbox,
-// which a poll never does). An idle draft keeps its text: every editor is
-// rebuilt from module state.
+// editor has focus in a focused window, or a dialog holding one is open. An
+// idle draft keeps its text: every editor is rebuilt from module state, and one
+// whose target moved goes to the unsent responses without navigating.
 const DRAFT_IDLE_MS = 2 * 60_000
 
 // `inputAt` is the human's last input in this window, or null. A clock moved
@@ -78,8 +77,8 @@ export function recentInput(inputAt, nowMs) {
   return inputAt != null && nowMs >= inputAt && nowMs - inputAt < DRAFT_IDLE_MS
 }
 
-export function draftInUse({ inputAt = null, editorFocused = false, ownerMoved = false } = {}, nowMs) {
-  return editorFocused || ownerMoved || recentInput(inputAt, nowMs)
+export function draftInUse({ inputAt = null, editorFocused = false, dialogOpen = false } = {}, nowMs) {
+  return editorFocused || dialogOpen || recentInput(inputAt, nowMs)
 }
 
 // What the 3s poll may do RIGHT NOW: the §10 suspension, plus bounded press and

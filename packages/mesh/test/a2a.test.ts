@@ -1,7 +1,7 @@
 // The unslop agent's A2A server and process (#483, unslop design §4.2-§4.5,
 // §7.2-§7.3, §8.3, U2b) over real loopback HTTP, with an in-process fake
 // OpenAI-compatible backend, a scratch mesh dir and fake clocks for the gate.
-import { createHash } from 'node:crypto'
+import { createHash, createHmac } from 'node:crypto'
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { createServer, request } from 'node:http'
 import type { IncomingHttpHeaders, Server } from 'node:http'
@@ -108,7 +108,7 @@ async function agent(dir: string, extra: Partial<AgentOptions> = {}): Promise<Ag
   return { ...a, ticks }
 }
 
-type Reply = { status: number; body: any; raw: string }
+type Reply = { status: number; body: any; raw: string; headers: IncomingHttpHeaders }
 function http(port: number, opts: { method?: string; path?: string; body?: unknown; headers?: Record<string, string>; onData?: (raw: string) => void } = {}): Promise<Reply> {
   return new Promise((resolve, reject) => {
     const payload = opts.body === undefined ? undefined : typeof opts.body === 'string' ? opts.body : JSON.stringify(opts.body)
@@ -121,7 +121,7 @@ function http(port: number, opts: { method?: string; path?: string; body?: unkno
       res.on('end', () => {
         let body: unknown
         try { body = JSON.parse(raw) } catch { body = undefined }
-        resolve({ status: res.statusCode ?? 0, body, raw })
+        resolve({ status: res.statusCode ?? 0, body, raw, headers: res.headers })
       })
     })
     req.on('error', reject)
@@ -198,6 +198,25 @@ describe('auth, Host, Origin and the card', () => {
       api: 1, skillId: 'unslop', rulesSha256: createHash('sha256').update(RULES).digest('hex'), bytes: Buffer.byteLength(RULES),
       loadedAt: expect.stringMatching(/^\d{4}-\d\d-\d\dT/),
     })
+  })
+
+  it('answers an identity challenge with the HMAC of the token under its own label, the card unchanged (#492)', async () => {
+    const { dir, port } = await meshHome()
+    await agent(dir)
+    const card = (headers: Record<string, string> = {}): Promise<Reply> => http(port, { method: 'GET', path: '/.well-known/agent-card.json', headers: { authorization: '', ...headers } })
+    const nonce = 'n0'.repeat(21) + 'x'
+    const mac = (label: string, n: string): string => createHmac('sha256', TOKEN).update(`${label}/v1\n${n}`).digest('base64url')
+    const plain = await card()
+    const challenged = await card({ 'a2a-mesh-challenge': nonce })
+    expect(challenged.headers['a2a-mesh-proof']).toBe(mac('unslop', nonce))
+    expect(challenged.headers['a2a-mesh-proof']).not.toBe(mac('web-search', nonce))
+    expect((await card({ 'a2a-mesh-challenge': `${nonce.slice(1)}y` })).headers['a2a-mesh-proof']).toBe(mac('unslop', `${nonce.slice(1)}y`))
+    expect(challenged.raw).toBe(plain.raw)
+    expect(challenged.raw).not.toContain(TOKEN)
+    // no challenge, or one that is not 32 base64url bytes, gets no proof
+    for (const headers of [{} as Record<string, string>, { 'a2a-mesh-challenge': 'short' }, { 'a2a-mesh-challenge': `${nonce}z` }, { 'a2a-mesh-challenge': `${nonce.slice(1)}=` }]) {
+      expect((await card(headers)).headers['a2a-mesh-proof']).toBeUndefined()
+    }
   })
 
   it('refuses push-notification configs, other versions and oversized bodies', async () => {

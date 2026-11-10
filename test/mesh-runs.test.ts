@@ -478,10 +478,11 @@ describe('retention, purge and forget-runs (§5.6, §5.9)', () => {
       `unslop-${localDate(Date.now())}.jsonl`, `unslop-${s.old}.txt`, `web-search-${s.old}.jsonl`, `web-search-${daysAgo(29)}.jsonl`]))
   })
 
-  it('a 40-day-old file of each agent is deleted by disable --request-post (dry run and --apply) and by enable --unslop', () => {
-    const kept = (s: ReturnType<typeof seeded>) => sorted([`request-post-${daysAgo(29)}.jsonl`, `unslop-${daysAgo(29)}.jsonl`, `unslop-${daysAgo(41)}.jsonl`, `unslop-${s.old}.txt`, `web-search-${daysAgo(29)}.jsonl`])
+  it('a 40-day-old file of each agent, an added one included (#530), is deleted by disable --request-post (dry run and --apply) and by enable --unslop', () => {
+    const kept = (s: ReturnType<typeof seeded>) => sorted([`request-post-${daysAgo(29)}.jsonl`, `search-copy-${daysAgo(29)}.jsonl`, `unslop-${daysAgo(29)}.jsonl`, `unslop-${daysAgo(41)}.jsonl`, `unslop-${s.old}.txt`, `web-search-${daysAgo(29)}.jsonl`])
     for (const argv of [['disable', '--request-post'], ['disable', '--request-post', '--apply'], ['enable', '--unslop', '--checkout', '/nonexistent']]) {
       const s = seeded()
+      for (const date of [s.old, daysAgo(29)]) privateFile(join(s.runs, `search-copy-${date}.jsonl`), '{}\n')
       ctl(s.dir, ...argv)
       expect(s.list(), argv.join(' ')).toEqual(kept(s))
     }
@@ -518,6 +519,38 @@ describe('retention, purge and forget-runs (§5.6, §5.9)', () => {
     const link = join(s.runs, `unslop-${daysAgo(41)}.jsonl`)
     expect([lstatSync(link).isSymbolicLink(), readFileSync(link, 'utf8')]).toEqual([true, 'keep'])
     expect(ctl(s.dir, 'forget-runs', '--all', '--apply').out).toBe('No run records for unslop.\nDeleted 1 run file (2 runs) for request-post.\nDeleted 1 run file (2 runs) for web-search.\n')
+  })
+})
+
+describe('forgetting an added agent\'s runs (#530 review)', () => {
+  const ctl = (dir: string, ...argv: string[]) => {
+    const out: string[] = []
+    const code = runMeshctl(argv, { env: { AGENT_INBOX_MESH_DIR: dir }, home: '/nonexistent-home', out: (t) => out.push(t), err: (t) => out.push(t) })
+    return { code, out: out.join('') }
+  }
+
+  it('forget-runs --id forgets one added agent, and --all every agent with a day file', () => {
+    const dir = scratchDir('runs-forget-')
+    const runs = runsDir(dir)
+    mkdirSync(runs, { recursive: true, mode: 0o700 })
+    const old = daysAgo(40)
+    for (const name of [`search-copy-${daysAgo(1)}.jsonl`, `search-copy-${daysAgo(2)}.jsonl`, `other-agent-${daysAgo(1)}.jsonl`, `other-agent-${old}.jsonl`, `unslop-${daysAgo(1)}.jsonl`]) {
+      privateFile(join(runs, name), '{}\n')
+    }
+    const list = () => readdirSync(runs).sort()
+    const before = list()
+    expect(ctl(dir, 'forget-runs', '--id', 'search-copy')).toEqual({ code: 0, out: 'Would delete 2 run files (2 runs) for search-copy.\nWould also delete 1 expired run file of other agents (older than 30 days).\nNothing changed. Re-run with --apply.\n' })
+    expect(list()).toEqual(before)
+    expect(ctl(dir, 'forget-runs', '--id', 'search-copy', '--apply').code).toBe(0)
+    expect(list()).toEqual([`other-agent-${daysAgo(1)}.jsonl`, `unslop-${daysAgo(1)}.jsonl`])
+    expect(ctl(dir, 'forget-runs', '--all')).toEqual({ code: 0, out: 'Would delete 1 run file (1 run) for unslop.\nNo run records for request-post.\nNo run records for web-search.\nWould delete 1 run file (1 run) for other-agent.\nNothing changed. Re-run with --apply.\n' })
+    expect(list()).toHaveLength(2)
+    expect(ctl(dir, 'forget-runs', '--all', '--apply').code).toBe(0)
+    expect(existsSync(runs)).toBe(false)
+    // a built-in name or a bad id is not an --id, and --id takes one value alone
+    for (const argv of [['--id', 'unslop'], ['--id', 'Bad!'], ['--id'], ['--id', 'a', '--unslop'], ['--id', 'a', '--all'], ['--id', 'a', '--id', 'b']]) {
+      expect(ctl(dir, 'forget-runs', ...argv).code, argv.join(' ')).toBe(2)
+    }
   })
 })
 

@@ -5,11 +5,15 @@
 // imports it to write, src/mesh-agents.ts to read (V5b's readRuns), never the stdio MCP
 // server, and no viewer, page or Electron file names it.
 // Writing is best effort and silent: it never changes a client's exit, stdout or stderr.
+// An agent added with `meshctl add` (#530) records under its id, `<id>-<date>.jsonl`, with the
+// common fields only and `op` always `call`; the viewer does not read those yet.
 import { randomBytes } from 'node:crypto'
 import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readSync, readdirSync, rmdirSync, unlinkSync, writeSync } from 'node:fs'
 import { join } from 'node:path'
 
 export type RunAgent = 'unslop' | 'request-post' | 'web-search'
+/** What decides a record's fields: a built-in agent, or `added` for any id `meshctl add` wrote. */
+type Kind = RunAgent | 'added'
 type Json = Record<string, unknown>
 
 /** What a client run collects for its record (§5.3). Nothing is written until `armed` is set. */
@@ -37,23 +41,27 @@ const FILE_CAP = 256 * 1024
 const READ_MAX = 320 * 1024
 // the record and its newline; the leading newline adds one more byte, so a write is at most 512
 const LINE_MAX = 511
-const FILE_NAME = /^(unslop|request-post|web-search)-(\d{4}-\d{2}-\d{2})\.jsonl$/
+// mesh-add.ts's id rule (1-40 lower-case letters, digits and inner hyphens); the built-in names fit it too
+const ADDED_ID = /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/
+const FILE_NAME = /^([a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)-(\d{4}-\d{2}-\d{2})\.jsonl$/
 const B32 = 'abcdefghijklmnopqrstuvwxyz234567'
 const { O_RDONLY, O_WRONLY, O_APPEND, O_CREAT, O_NOFOLLOW, O_NONBLOCK } = constants
 
-const OUTCOMES: Record<RunAgent, Record<number, string>> = {
+const OUTCOMES: Record<Kind, Record<number, string>> = {
   unslop: { 0: 'ok', 10: 'kept-original', 11: 'refused', 12: 'busy', 13: 'failed', 14: 'unavailable' },
   'request-post': { 0: 'ok', 11: 'refused', 12: 'busy', 13: 'unknown', 14: 'unavailable', 15: 'unavailable', 16: 'conflict', 124: 'timed-out' },
   'web-search': { 0: 'ok', 10: 'sources-only', 11: 'refused', 12: 'busy', 13: 'failed', 14: 'unavailable' },
+  added: { 0: 'ok', 11: 'refused', 12: 'busy', 13: 'failed', 14: 'unavailable', 15: 'unavailable', 16: 'card-changed' },
 }
-const OPS: Record<RunAgent, string[]> = {
-  unslop: ['pr', 'issue', 'release-notes', 'docs', 'blog'], 'request-post': ['file', 'status', 'wait'], 'web-search': ['answer', 'sources'],
+const OPS: Record<Kind, string[]> = {
+  unslop: ['pr', 'issue', 'release-notes', 'docs', 'blog'], 'request-post': ['file', 'status', 'wait'], 'web-search': ['answer', 'sources'], added: ['call'],
 }
 const COMMON = ['v', 'id', 'agent', 'op', 'at', 'ms', 'exit', 'signal', 'outcome', 'reason', 'classes', 'task']
-const FIELDS: Record<RunAgent, string[]> = {
+const FIELDS: Record<Kind, string[]> = {
   unslop: [...COMMON, 'status', 'bytesIn', 'attempts', 'model', 'rules', 'timing', 'warnings'],
   'request-post': [...COMMON, 'phase', 'created', 'throughGo', 'channels', 'brand', 'fields'],
   'web-search': COMMON,
+  added: COMMON,
 }
 const CLASS = /^[a-z][a-z0-9-]{0,23}$/
 const CHANNELS = ['blog', 'x-thread', 'x-standalone', 'linkedin']
@@ -63,19 +71,22 @@ const int = (v: unknown, max = Number.MAX_SAFE_INTEGER): boolean => Number.isSaf
 const names = (v: unknown, max: number, ok: (s: string) => boolean): boolean =>
   Array.isArray(v) && v.length <= max && v.every((s) => typeof s === 'string' && ok(s))
 const test = (re: RegExp) => (v: unknown): boolean => typeof v === 'string' && re.test(v)
+const BUILT_IN = ['unslop', 'request-post', 'web-search']
+const kindOf = (agent: unknown): Kind | undefined =>
+  typeof agent !== 'string' ? undefined : BUILT_IN.includes(agent) ? agent as RunAgent : ADDED_ID.test(agent) ? 'added' : undefined
 
 // one rule per field, applied by the builder (a bad value is omitted) and by validRun
 const RULES: Record<string, (v: unknown, r: Json) => boolean> = {
   v: (v) => v === 1,
   id: test(/^[a-z2-7]{10}$/),
-  agent: (v) => typeof v === 'string' && Object.hasOwn(OUTCOMES, v),
-  op: (v, r) => OPS[r['agent'] as RunAgent].includes(v as string),
+  agent: (v) => kindOf(v) !== undefined,
+  op: (v, r) => OPS[kindOf(r['agent'])!].includes(v as string),
   at: test(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/),
   ms: (v) => int(v),
-  exit: (v, r) => (v === null ? SIGNALS.includes(r['signal'] as string) : typeof v === 'number' && Object.hasOwn(OUTCOMES[r['agent'] as RunAgent], v)),
+  exit: (v, r) => (v === null ? SIGNALS.includes(r['signal'] as string) : typeof v === 'number' && Object.hasOwn(OUTCOMES[kindOf(r['agent'])!], v)),
   signal: (v, r) => r['exit'] === null && SIGNALS.includes(v as string),
   // an internal error is `failed` whatever the agent's own word for its exit (§5.3)
-  outcome: (v, r) => v === (r['exit'] === null ? 'interrupted' : OUTCOMES[r['agent'] as RunAgent][r['exit'] as number]) || (r['exit'] === 13 && v === 'failed'),
+  outcome: (v, r) => v === (r['exit'] === null ? 'interrupted' : OUTCOMES[kindOf(r['agent'])!][r['exit'] as number]) || (r['exit'] === 13 && v === 'failed'),
   reason: test(/^[a-z][a-z0-9-]{0,39}$/),
   classes: (v) => names(v, 8, (s) => CLASS.test(s)),
   task: test(/^[A-Za-z0-9-]{1,64}$/),
@@ -100,7 +111,7 @@ function validRun(value: unknown): Json | undefined {
   const r = value as Json
   if (!RULES['agent']!(r['agent'], r)) return undefined
   const out: Json = {}
-  for (const key of FIELDS[r['agent'] as RunAgent]) {
+  for (const key of FIELDS[kindOf(r['agent'])!]) {
     if (r[key] === undefined) {
       if (['v', 'id', 'op', 'at', 'ms', 'exit', 'outcome'].includes(key)) return undefined
       continue
@@ -117,8 +128,9 @@ const list = (v: unknown, max: number): string[] | undefined => {
 }
 
 /** The record's line, newline included, or undefined when the run was never armed or cannot fit. */
-function buildLine(agent: RunAgent, c: RunCollector, end: RunEnd, now: number): string | undefined {
-  if (c.armed === undefined) return undefined
+function buildLine(agent: string, c: RunCollector, end: RunEnd, now: number): string | undefined {
+  const kind = kindOf(agent)
+  if (c.armed === undefined || kind === undefined) return undefined
   const d = c.data ?? {}
   const ms = d['ms'] && typeof d['ms'] === 'object' ? d['ms'] as Json : {}
   const reason = c.internal ? 'internal' : d['reason']
@@ -126,15 +138,15 @@ function buildLine(agent: RunAgent, c: RunCollector, end: RunEnd, now: number): 
     v: 1, id: [...randomBytes(10)].map((b) => B32[b & 31]).join(''), agent, op: c.op, at: new Date(now).toISOString(), ms: Math.max(0, Math.round(now - c.armed)),
     exit: end.exit, signal: end.exit === null ? end.signal : undefined, reason,
   }
-  r['outcome'] = end.exit === null ? 'interrupted' : reason === 'internal' ? 'failed' : OUTCOMES[agent][end.exit]
-  const candidates: Json = agent === 'unslop'
+  r['outcome'] = end.exit === null ? 'interrupted' : reason === 'internal' ? 'failed' : OUTCOMES[kind][end.exit]
+  const candidates: Json = kind === 'unslop'
     ? {
         classes: list(d['screen'], 8), task: c.task, status: d['status'], bytesIn: c.bytesIn, attempts: d['attempts'], model: d['model'],
         rules: typeof d['rulesSha256'] === 'string' ? d['rulesSha256'].slice(0, 12) : undefined,
         timing: { queued: ms['queued'], load: ms['load'], model: ms['model'], check: ms['check'] },
         warnings: list((Array.isArray(d['warnings']) ? d['warnings'] : []).map((w) => (w && typeof w === 'object' ? (w as Json)['class'] : undefined)), 8),
       }
-    : agent === 'request-post'
+    : kind === 'request-post'
       ? {
           classes: list(d['classes'], 8), phase: d['phase'] ?? c.phase, created: d['created'], throughGo: c.throughGo,
           channels: c.channels, brand: c.brand, fields: Array.isArray(d['fields']) ? d['fields'].filter((f) => ARGUMENTS.includes(f as string)).slice(0, 8) : undefined,
@@ -182,16 +194,16 @@ function oldestKept(now: number): string {
   return localDate(new Date(today.getFullYear(), today.getMonth(), today.getDate() - (KEPT_DAYS - 1)).getTime())
 }
 
-/** The day files in a checked runs folder: regular files this user owns, for the agents asked. */
-function dayFiles(runs: string, agents: RunAgent[]): Array<{ path: string; date: string }> {
-  const found: Array<{ path: string; date: string }> = []
+/** The day files in a checked runs folder: regular files this user owns, for the agents asked (every agent without a list). */
+function dayFiles(runs: string, agents?: string[]): Array<{ path: string; date: string; agent: string }> {
+  const found: Array<{ path: string; date: string; agent: string }> = []
   for (const name of readdirSync(runs).sort()) {
     const m = FILE_NAME.exec(name)
-    if (!m || !agents.includes(m[1] as RunAgent)) continue
+    if (!m || (agents && !agents.includes(m[1]!))) continue
     const path = join(runs, name)
     try {
       const s = lstatSync(path)
-      if (s.isFile() && (uid() === undefined || s.uid === uid())) found.push({ path, date: m[2]! })
+      if (s.isFile() && (uid() === undefined || s.uid === uid())) found.push({ path, date: m[2]!, agent: m[1]! })
     } catch { /* gone */ }
   }
   return found
@@ -199,10 +211,11 @@ function dayFiles(runs: string, agents: RunAgent[]): Array<{ path: string; date:
 
 /**
  * Deletes the agents' day files dated before the kept period: the 30 local dates ending today
- * (§5.6). Symlinks, other owners and other names stay; a concurrent deletion is ignored. With
- * `apply` false it deletes nothing and only returns what it would delete.
+ * (§5.6), every agent's when `agents` is not given, added agents' included. Symlinks, other
+ * owners and other names stay; a concurrent deletion is ignored. With `apply` false it deletes
+ * nothing and only returns what it would delete.
  */
-export function pruneRuns(dir: string, now: number, agents: RunAgent[] = ['unslop', 'request-post', 'web-search'], apply = true): string[] {
+export function pruneRuns(dir: string, now: number, agents?: string[], apply = true): string[] {
   const runs = checkedRuns(dir)
   if (!runs) return []
   const oldest = oldestKept(now)
@@ -215,8 +228,18 @@ export function pruneRuns(dir: string, now: number, agents: RunAgent[] = ['unslo
   }
 }
 
-/** One agent's day files with their line counts, for `forget-runs` and `--purge` (§5.9). */
-export function runFiles(dir: string, agent: RunAgent): Array<{ path: string; runs: number }> {
+/** Every agent, built-in or added, with a day file in a checked runs folder (`forget-runs --all`). */
+export function runAgents(dir: string): string[] {
+  const runs = checkedRuns(dir)
+  try {
+    return runs ? [...new Set(dayFiles(runs).map((file) => file.agent))] : []
+  } catch {
+    return []
+  }
+}
+
+/** One agent's day files with their line counts, for `forget-runs`, `--purge` and `remove` (§5.9). */
+export function runFiles(dir: string, agent: string): Array<{ path: string; runs: number }> {
   const runs = checkedRuns(dir)
   if (!runs) return []
   try {
@@ -335,7 +358,7 @@ export function tidyRuns(dir: string): void {
  * positioned read waits for it, so a writer could see another's record half-written and add a
  * newline that record never needed.
  */
-export function appendRun(dir: string, agent: RunAgent, run: RunCollector, end: RunEnd, now = Date.now()): void {
+export function appendRun(dir: string, agent: string, run: RunCollector, end: RunEnd, now = Date.now()): void {
   try {
     const line = buildLine(agent, run, end, now)
     if (!line) return

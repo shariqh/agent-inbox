@@ -663,7 +663,9 @@ Q15).
 
 **Identity (D17).** An entry on a loopback endpoint must pass the HMAC proof in
 `src/mesh-identity.ts` (#492, shipped for unslop in #553) before the token or any text is sent,
-so a process squatting on the port learns nothing. A public `https://` endpoint relies on TLS,
+so a process squatting on the port learns nothing. For added agents the proof's label is
+`a2a-mesh/v1` (#530): HMAC-SHA256(token, `"a2a-mesh/v1\n" + nonce`), one label for every added
+agent, since the agent cannot know the id the human picked ([`docs/mesh-call.md`](../../mesh-call.md)). A public `https://` endpoint relies on TLS,
 the card pin and card signatures instead (#534, #531, #536), because the proof only makes sense
 for a local port (§8.8).
 

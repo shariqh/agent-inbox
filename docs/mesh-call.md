@@ -73,6 +73,51 @@ so the token tells agents apart and the label keeps this proof from passing for 
 `Authorization: Bearer` token on later requests in constant time. The token and the request go
 only on the keep-alive connection that answered; any other connection is proved again first.
 
+## With the official CLI
+
+The A2A project's own CLI, [`a2a`](https://github.com/a2aproject/a2a-cli) (checked with 0.4.0,
+#532), works with our agents and our client in both directions. `meshctl call` stays the default
+client: it proves a loopback agent's identity, pins the card and frames the result, and `a2a`
+does none of these.
+
+**Calling our agents with `a2a`.** Give it the token through a credential helper that reads your
+token file, never with `--auth` or `A2ACLI_AUTH` typed out: those put the token in shell history,
+`ps` output or a `.env` file. The helper is a path with no arguments, so put the file's path in it
+(`<port>` is the one `meshctl status` shows):
+
+```sh
+cat > ~/bin/a2a-web-search-token <<'EOF'
+#!/bin/sh
+cat >/dev/null
+exec jq -n --rawfile t "$HOME/.agent-inbox/mesh/tokens/web-search" \
+  '{headers: {Authorization: ["Bearer " + ($t | rtrimstr("\n"))]}}'
+EOF
+chmod 700 ~/bin/a2a-web-search-token
+
+a2a --credential-helper 127.0.0.1=$HOME/bin/a2a-web-search-token send -a http://127.0.0.1:<port> "When did Node 24 enter LTS?"
+a2a --credential-helper 127.0.0.1=$HOME/bin/a2a-web-search-token send -a http://127.0.0.1:<port> --stream "…"
+```
+
+- `a2a` sends the token with the card request too, and it cannot tell our agent from another
+  process that took the port: it has no identity proof. Use it on loopback only while you know
+  the agent is running (`meshctl status`), or prefer `meshctl call`.
+- `send`, `send --stream`, `task get` and `task cancel` work. Web search's own options go in the
+  message's metadata, which `--metadata` does not reach (it fills the request's): use
+  `--request-payload` with a full request whose `message.metadata` holds
+  `urn:agent-inbox:ext:web-search:v1`.
+- Web search refuses by design, with -32602: `--async`, `--history`, `--tenant`, `--context-id`,
+  `--task-id`, `--metadata`, `task list`, `task subscribe` and push configs. `a2a` 0.4.0 prints
+  nothing and exits 0 when a `--stream` send or `task subscribe` is refused, so check the output.
+
+**Calling an agent served by something else.** `meshctl add` and `call` work with any A2A 1.0
+agent whose card has a name, at least one skill and a JSON-RPC 1.0 interface; `a2a server --echo`
+generates a card with no skills, so serve it one with `--card`. On loopback the agent must also
+check the bearer token and answer the `a2a-mesh/v1` challenge (above): an agent that does not,
+`a2a server` among them, is refused with 14 before the token or any text is sent. That is the
+design (D17), not a bug: implement the proof (an HMAC over the nonce, a few lines), put a small
+proxy that does it in front of the agent, or serve the agent over https on this Mac's tailnet,
+where TLS proves the origin instead.
+
 ## When the card changes
 
 `call` refuses a card whose pin differs from the one stored when you added the agent (exit 16)

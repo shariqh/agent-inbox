@@ -797,7 +797,11 @@ a changed card).
   a test CA's leaf accepted for the agent's name and refused for another name, each refusal with
   no request and no token), the terminal rule (an `isTTY` stdin and the real CLI under
   `script`) and the run record. `test/mesh.test.ts` pins its imports, `test/prstate.test.ts`
-  keeps it out of the stdio graph.
+  keeps it out of the stdio graph. `packages/mesh/test/a2a-cli-interop.test.ts` (#532) checks
+  interop with the official `a2a` CLI both ways: it replays the requests `a2a` 0.4.0 sent to web
+  search's front door, spawns `meshctl add` and `call` against an `@a2a-js/sdk` agent with and
+  without the proof, and, when `a2a` is on PATH or in `A2A_CLI`, runs the CLI's `send` and its
+  `server --echo` (a2a-go) for real.
 
 ## Calling request-post (R3)
 

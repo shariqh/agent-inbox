@@ -120,10 +120,11 @@ export function meshLink(port: number, token: string, label: 'unslop' | 'a2a-mes
 
 /**
  * An https agent's link (D17): certificate verification always on, whatever the environment says,
- * no proxy, and the token (when there is one) on every request to `origin` only.
+ * no proxy, and the token (when there is one) on every request to `origin` only. `ca` replaces
+ * the system roots and `lookup` the DNS: test seams only.
  */
-export function tlsLink(origin: URL, token: string | undefined, cardPath: string, lookup?: LookupFunction): MeshLink {
-  const pool = new TlsAgent({ keepAlive: true, maxSockets: 1, rejectUnauthorized: true })
+export function tlsLink(origin: URL, token: string | undefined, cardPath: string, { lookup, ca }: { lookup?: LookupFunction; ca?: string } = {}): MeshLink {
+  const pool = new TlsAgent({ keepAlive: true, maxSockets: 1, rejectUnauthorized: true, ...(ca === undefined ? {} : { ca }) })
   const target = { origin, lookup }
   return {
     card: (timeoutMs) => exchange(pool, target, { method: 'GET', path: cardPath, headers: { accept: 'application/json' }, timeoutMs }),

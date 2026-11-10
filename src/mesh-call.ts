@@ -50,8 +50,9 @@ export interface CallIo {
   err: (text: string) => void
   /** This Mac's MagicDNS suffix, for a tailnet entry only (meshctl passes `tailscale status`'s). */
   tailnet?: () => string | undefined
-  /** DNS for a tailnet name (tests point it elsewhere) */
+  /** DNS for a tailnet name, and the CA that replaces the system roots (test seams only) */
   lookup?: LookupFunction
+  ca?: string
   /** GetTask's interval after a stream ends early (tests shorten it) */
   pollMs?: number
   /** the meshctl entry's run record (cards view V5 §5.3): armed once the entry passes its rule */
@@ -194,7 +195,7 @@ async function call(id: string, skill: string | undefined, timeoutMs: number, io
   if (io.run) Object.assign(io.run, { armed: Date.now(), op: 'call' })
 
   // the card, fresh, and on loopback the identity proof before anything else is sent (D17)
-  const link = place.loopback ? meshLink(Number(card.port), token!, 'a2a-mesh', card.pathname) : tlsLink(new URL(place.origin), token, card.pathname, io.lookup)
+  const link = place.loopback ? meshLink(Number(card.port), token!, 'a2a-mesh', card.pathname) : tlsLink(new URL(place.origin), token, card.pathname, { lookup: io.lookup, ca: io.ca })
   links.push(link)
   const squatter: Ended = { code: 14, reason: 'identity' }
   const unproven = (): Ended => {

@@ -755,7 +755,7 @@ a changed card).
   picked and its token already separates it from other agents; the label keeps the proof from
   passing for unslop's or web search's. Not proven is 14, and the peer received only the nonce.
   On a tailnet name `tlsLink()` (`node:https`, `rejectUnauthorized: true` whatever the
-  environment says, keep-alive, one socket, the injected `lookup` in tests): no challenge, the
+  environment says, keep-alive, one socket; `CallIo.lookup` and `CallIo.ca` are test seams only): no challenge, the
   token on every request to that origin only. Nothing answering, a failed fetch, a non-200 (no
   redirect is followed) or no JSON card of at most 64 KiB is 15. `cardSha256()` of the fresh card
   must equal the entry's `cardSha256`, else 16 with the way to accept it again (until #531:
@@ -791,8 +791,11 @@ a changed card).
   the `GetTask` fallback, the deadline over a silent and a drip-fed stream with `CancelTask`, each
   exit, a squatter (no proof, unslop's label, another token) that receives neither the token nor
   the request (counted bytes), a changed card refused before any request, a reordered card
-  accepted, `--skill`, every off case with no connection or DNS lookup, a failed TLS handshake
-  that never carries the token, the terminal rule (an `isTTY` stdin and the real CLI under
+  accepted, `--skill`, every off case with no connection or DNS lookup, a tailnet name that does
+  not speak TLS, and verified TLS against certificates `openssl` makes at test time for a
+  placeholder tailnet name (a self-signed one refused, also with `NODE_TLS_REJECT_UNAUTHORIZED=0`;
+  a test CA's leaf accepted for the agent's name and refused for another name, each refusal with
+  no request and no token), the terminal rule (an `isTTY` stdin and the real CLI under
   `script`) and the run record. `test/mesh.test.ts` pins its imports, `test/prstate.test.ts`
   keeps it out of the stdio graph.
 

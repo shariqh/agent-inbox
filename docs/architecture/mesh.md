@@ -2,6 +2,7 @@
 paths:
   - "src/mesh-config.ts"
   - "src/meshctl.ts"
+  - "src/mesh-add.ts"
   - "src/unslop-client.ts"
   - "src/mesh-identity.ts"
   - "src/request-post-client.ts"
@@ -13,7 +14,7 @@ paths:
   - "public/mesh-agent-page.js"
   - "public/mesh-runs-tab.js"
   - "packages/mesh/src/**/*.ts"
-applyTo: "src/mesh-config.ts,src/meshctl.ts,src/unslop-client.ts,src/mesh-identity.ts,src/request-post-client.ts,src/agent-card.ts,src/mesh-agents.ts,src/mesh-runs.ts,public/agents-home.js,public/mesh-section.js,public/mesh-agent-page.js,public/mesh-runs-tab.js,packages/mesh/src/**/*.ts"
+applyTo: "src/mesh-config.ts,src/meshctl.ts,src/mesh-add.ts,src/unslop-client.ts,src/mesh-identity.ts,src/request-post-client.ts,src/agent-card.ts,src/mesh-agents.ts,src/mesh-runs.ts,public/agents-home.js,public/mesh-section.js,public/mesh-agent-page.js,public/mesh-runs-tab.js,packages/mesh/src/**/*.ts"
 ---
 
 # Agent mesh (M1)
@@ -35,7 +36,9 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   unknown keys kept; refuses symlinks, non-regular files, bad JSON and newer schemas).
   `src/mesh-config.ts` is the Node-core reader. The pieces read from it are the unslop
   agent's `agents.unslop` key (#483, `enable --unslop`, below) and the remote request-post
-  agent's `agents.request-post` key (#500, `enable --request-post`, below); `enable --agents-view`
+  agent's `agents.request-post` key (#500, `enable --request-post`, below), plus any
+  card-driven `agents.<id>` entry for an agent this repo doesn't ship (#529, `meshctl add`,
+  below; nothing calls one until `meshctl call`, #530); `enable --agents-view`
   writes nothing and says the view is always on, `status` says the same, and an
   `agentsView` key in an existing file is kept like any other.
 - **The Agents view** (`public/agents-home.js`, now the Agents home, #454; see
@@ -464,8 +467,9 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
     HMAC-SHA256(token, `"web-search/v1\n" + nonce`). A request handed a new connection sends
     nothing on it, closes it and proves again first, so after the agent exits a squatter on
     its port gets neither the token nor the query, even from a long-lived client.
-    `resolveCard` returns the checked card and `cardHash`: the SHA-256 of the SDK's JCS form
-    of the card with every `supportedInterfaces[].url` removed.
+    `resolveCard` returns the checked card and `cardHash`: the SHA-256 of the JCS form of the
+    card as received, with `signatures` and every `supportedInterfaces[].url` removed and no SDK
+    normalisation (web search design §4.1, one rule for every agent since #556).
   - Tests (`packages/mesh/test/web-search.test.ts`): the SDK's client through
     `identityFetch` and a Node-core client drive all four methods over loopback; every
     allowlist, Origin, Host, token and version refusal goes through the real server with a
@@ -645,6 +649,84 @@ This repository ships its client (R2 and R3 below) and the contract both sides t
     backups), the dry run, every endpoint refusal, the token refusals and its 0600 copy, the
     stale shim, and that request-post and unslop never touch each other's key or files.
     User page: [`docs/request-post.md`](../request-post.md).
+
+## Adding an agent this repo doesn't ship (#529)
+
+Design: the mesh design's §6.7 and D13–D17 (#511), §8.8 for the endpoint rule. `meshctl add`
+is the only writer of a card-driven `agents.<id>` entry; `meshctl remove` the only one that
+deletes it. Rules live in `src/mesh-add.ts` (Node core, `./agent-card.js`), the card rule in
+`src/agent-card.ts`; meshctl's async entry runs `runAdd` (`runMeshctl` alone answers `add` with
+the usage and 4).
+
+- **The entry** (`mesh.json` schema 1, under `agents`):
+  `{ "card": <card URL>, "endpoint": <url>, "tokenFile": "<mesh dir>/mesh/tokens/<id>", "cardSha256": <hex> }`.
+  `card` marks a generic entry (the built-ins keep their own shapes); `endpoint` is taken from
+  the card once, when the human adds it, and later calls never follow a URL from a refetched
+  card; `tokenFile` is meshctl's 0600 copy of the bearer token, present only when
+  `--token-file` was given (the token itself never reaches `mesh.json`, stdout or stderr);
+  `cardSha256` is the card pin, SHA-256 of `canonicalCard()`: the card's RFC 8785 (JCS) form
+  without `signatures` and without every `supportedInterfaces[].url`, hashed as received (no
+  A2A SDK normalisation, so any other change to the card changes the pin). It is the one pin
+  rule for every agent (web search design §4.1, amended by #556): `packages/mesh`'s
+  `cardHash` (`resolveCard`) and the web-search fixtures' `conformance.ts` hold copies, and
+  `test/agent-card.test.ts` pins all three equal on the web-search, unslop and request-post
+  cards. `#531` checks it
+  before each call. `skipFirstHopClick` (D14) is M4's and is never written now: before M4,
+  `meshctl add --apply` is the human's approval for that agent.
+- **`meshctl add <card-url> [--id <id>] [--token-file <path>] [--apply]`**, in this order,
+  writing nothing and opening no connection until the fetch: the id (1–40 lower-case letters,
+  digits and inner hyphens, never `unslop`, `request-post` or `web-search`); the card URL by the
+  endpoint rule, a tailnet name only on this Mac's tailnet; a loopback card URL needs `--token-file`, since `meshctl call` proves a
+  loopback agent's identity with it before it sends anything (D17); the token file (a regular
+  file the user owns, opened `O_NOFOLLOW | O_NONBLOCK`, no group or other permission bits, at
+  most 4 KiB, one run of at least 32 visible ASCII characters); `mesh.json` readable and the id
+  not in use. Then one `GET` of the card URL: `agent: false` (no keep-alive, no proxy), `Host`
+  its authority, no token, cookie or Origin, no redirect, 64 KiB, one 5 s deadline.
+  `checkAddedCard()` wants a name, at least one skill each with an id, and an A2A 1.0 JSON-RPC
+  interface. The endpoint is the first such interface whose URL passes the endpoint rule on
+  the card URL's own origin, so the token only ever goes where the card came from. Without
+  `--id`, the id is the card's name lower-cased with other runs as one hyphen. `mesh.json` is
+  read again after the fetch, and an id in use is refused: `add` never replaces an entry
+  (remove it, then add it again). The dry run prints the card's cleaned name and skill ids,
+  the endpoint, the pin and the file it would write; `--apply` copies the token to
+  `<mesh dir>/mesh/tokens/<id>` (0600, temporary file and rename) and then writes `mesh.json`
+  atomically after a timestamped backup, every other key kept. New folders are 0700. Every
+  refusal is fixed words, never the URL, the id or the token.
+- **The endpoint rule (`addedPlace()`, §8.8)** for both the card URL and the endpoint:
+  `http://127.0.0.1:<port>` (never `:80`) or `https://<name>.<tailnet>.ts.net[:<port>]` (two
+  lower-case labels, never `:443`), each with an optional plain path (no `.` or `..` segment,
+  percent-encoding, user, query or fragment). An `https` URL on any other DNS name is refused
+  as a public host until TLS identity, the card pin and card signatures land (#534, #531,
+  #536); any other IP literal, `localhost` or plain `http` to another host is refused outright.
+  §8.8's allowlist is this Mac's tailnet (`tailnetRefusal()`): a `*.ts.net` name must be
+  `<name>.<MagicDNS suffix>`, read once per `add` by meshctl from `tailscale status --json`
+  (`MagicDNSSuffix` while `BackendState` is `Running`; the CLI on PATH, else the app's), and only
+  for a tailnet card URL. Another tailnet or a public Funnel host (valid DNS and a public
+  certificate) waits for #534 like any public host; when the suffix cannot be read (no CLI,
+  stopped, logged out) a tailnet name is refused. `mesh-add.ts` spawns nothing: the suffix is
+  passed in (`MeshctlIo.tailnet` in tests). `status` reads entries by shape only; the call
+  path (#530) re-checks the suffix.
+- **Identity (D17).** `add` sends no token and does not run the HMAC proof: the proof's label
+  for an added agent is `meshctl call`'s to define (#530), which proves a loopback agent's
+  identity before every call. A squatter that answers `add` gets a pin that the real agent's
+  card will not match, and no token.
+- **`meshctl remove <id> [--apply]`** deletes only an entry `add` wrote (one with `card`), with
+  a backup (deleting `mesh.json` when nothing else is left, like `disable`), then the token
+  copy and the `mesh/tokens` and `mesh` folders when they are then empty. It refuses a built-in
+  name (`disable` turns those off) and an `agents.<id>` that has no `card`.
+- **`meshctl status`** adds one `Added agent <id>:` line per generic entry: its endpoint, the
+  pin's first 12 hex digits and whether the token copy exists; an entry that breaks a rule is
+  shown as off without echoing any field. The Mesh line counts valid ones as "N added agents".
+- **The viewer** knows only `unslop` and `request-post`: an added entry alone puts no `mesh`
+  key in `/api/version`, starts no check and opens no connection; beside a known agent, the
+  section counts it among the agents "not shown by this build".
+- `test/mesh.test.ts` holds the tailnet allowlist (another tailnet, an unreadable suffix, the
+  status parser), the dry run (one card GET with no Authorization, cookie or Origin;
+  the pin unchanged by the interface URL), add then remove leaving the tree as before but
+  backups, each bad-card and fetch refusal, every refused card URL with no connection opened
+  (a counting listener), built-in, malformed and existing ids, the token-file checks, remove's
+  refusals and that the viewer never connects to an added agent. `test/agent-card.test.ts`
+  pins `checkAddedCard` and `canonicalCard`.
 
 ## Calling request-post (R3)
 

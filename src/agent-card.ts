@@ -2,7 +2,8 @@
 // meshctl's unslop and request-post clients to use it. Each client keeps its own exit
 // code and wording around the reason. Pure: no imports and no I/O, so the clients and
 // the viewer's cards view (src/mesh-agents.ts) apply one rule; the view also shows a card
-// through summarizeCard and cardJson.
+// through summarizeCard and cardJson. `meshctl add` (#529, src/mesh-add.ts) checks an agent
+// this repo doesn't ship with checkAddedCard and pins it through canonicalCard.
 
 type Json = Record<string, unknown>
 const obj = (v: unknown): Json => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Json) : {})
@@ -27,6 +28,44 @@ export function checkCard(card: unknown, agent: keyof typeof EXPECT): string | u
   const ext = list(obj(c.capabilities).extensions).find((e) => e.uri === want.extension)
   if (!ext) return `no ${want.extension} extension`
   return obj(ext.params).api === 1 ? undefined : `${agent} api is not 1`
+}
+
+/**
+ * Why an agent this repo doesn't ship cannot be added (`meshctl add`, mesh design §6.7, D13),
+ * or undefined: a name, at least one skill and every skill with an id, and an A2A 1.0 JSON-RPC
+ * interface, checked in that order. The reason is fixed words, never text from the card.
+ */
+export function checkAddedCard(card: unknown): string | undefined {
+  const c = obj(card)
+  if (typeof c.name !== 'string' || !c.name.trim()) return 'no name'
+  const skills = list(c.skills)
+  if (!skills.length) return 'no skill'
+  if (skills.some((s) => typeof s.id !== 'string' || !s.id)) return 'a skill without an id'
+  return list(c.supportedInterfaces).some((i) => i.protocolVersion === '1.0' && i.protocolBinding === 'JSONRPC') ? undefined : 'no A2A 1.0 JSON-RPC interface'
+}
+
+// RFC 8785 (JCS) for values JSON.parse returns: keys sorted by UTF-16 code unit, numbers and
+// strings as ECMAScript's JSON.stringify writes them. Builds no object, so a "__proto__" key is data.
+const jcs = (v: unknown): string => {
+  if (Array.isArray(v)) return `[${v.map(jcs).join(',')}]`
+  if (v && typeof v === 'object') return members(v as Json, () => true)
+  return JSON.stringify(v)
+}
+const members = (o: Json, keep: (key: string) => boolean, value: (key: string) => string = (key) => jcs(o[key])): string =>
+  `{${Object.keys(o).filter(keep).sort().map((key) => `${JSON.stringify(key)}:${value(key)}`).join(',')}}`
+
+/**
+ * The card pin's input (mesh design §6.7, web search design §4.1): the card's JCS form without
+ * `signatures` and without every `supportedInterfaces[].url`, so the per-copy URL never changes
+ * the pin. Throws only on a card nested past the stack's depth.
+ */
+export function canonicalCard(card: unknown): string {
+  const c = obj(card)
+  return members(c, (key) => key !== 'signatures', (key) => {
+    const value = c[key]
+    if (key !== 'supportedInterfaces' || !Array.isArray(value)) return jcs(value)
+    return `[${value.map((i) => (i && typeof i === 'object' && !Array.isArray(i) ? members(i as Json, (k) => k !== 'url') : jcs(i))).join(',')}]`
+  })
 }
 
 // §4.4: what a card string never carries to the page: C0 controls but tab and newline, DEL,

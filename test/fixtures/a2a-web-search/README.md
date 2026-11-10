@@ -9,7 +9,7 @@ ranges and loopback only), tokens and page text are not real.
 
 | File | Holds |
 |---|---|
-| `card.json`, `card.sha256` | The card as W1 serves it, and its hash: SHA-256 of the JCS form with every `supportedInterfaces[].url` removed (§4.1) |
+| `card.json`, `card.sha256` | The card as W1 serves it, and its hash: SHA-256 of the JCS form of the card as received, with `signatures` and every `supportedInterfaces[].url` removed and no SDK normalisation (§4.1, amended by #556) |
 | `exchanges/*.json` | One request and response (or stream of events) per §4.4 row, **recorded from W1's server**, with the exit a client gives it; GetTask; the identity challenge and proof. Exits 14 and 4 are client-side notes. `01-answer.json` is the accepted `returnImmediately: false` |
 | `refusals/*.json` | Requests the front door refuses before the SDK, with the JSON-RPC error each gets |
 | `providers/*.json` | Neutral shapes of SearXNG's `/search?format=json` and Ollama's `web_search` and `web_fetch` answers, their 429 and 5xx, for W3 |

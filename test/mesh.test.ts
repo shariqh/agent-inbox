@@ -4,11 +4,15 @@
 // view (2026-11-09-agent-cards-view-design.md §3) reads mesh.json lazily in the viewer, and
 // /api/version carries `mesh` only when it names a known agent (test/mesh-agents.test.ts).
 import { afterEach, describe, expect, it } from 'vitest'
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
+import { createServer } from 'node:http'
+import type { IncomingHttpHeaders, Server } from 'node:http'
+import type { AddressInfo } from 'node:net'
 import { join } from 'node:path'
 import { MESH_FILE_MAX, meshDir, meshFile, parseMesh } from '../src/mesh-config.js'
-import { runMeshctl } from '../src/meshctl.js'
+import { runAdd, runMeshctl, suffixFrom } from '../src/meshctl.js'
+import { addedPlace, tailnetRefusal } from '../src/mesh-add.js'
 import type { MeshctlIo } from '../src/meshctl.js'
 import { createViewer } from '../src/viewer.js'
 import { meshAgents } from '../src/mesh-agents.js'
@@ -466,8 +470,295 @@ describe('meshctl enable/disable --request-post (#500, request-post design §6, 
   })
 })
 
+describe('meshctl add and remove (#529, mesh design §6.7, D13–D17, §8.8)', () => {
+  const TOKEN = `added-${'t'.repeat(40)}`
+  const unbacked = (t: Record<string, string>) => Object.fromEntries(Object.entries(t).filter(([key]) => !key.startsWith('mesh.json.bak-')))
+  const servers: Server[] = []
+  afterEach(async () => { await Promise.all(servers.splice(0).map((s) => new Promise((done) => s.close(done)))) })
+
+  type Answer = { status?: number; headers?: Record<string, string>; body?: string }
+  const card = (origin: string, edit: (c: Record<string, any>) => void = () => {}) => {
+    const c: Record<string, any> = {
+      name: 'Echo Agent', description: 'Echoes one text.', version: '1.0.0',
+      supportedInterfaces: [{ url: `${origin}/a2a`, protocolBinding: 'JSONRPC', protocolVersion: '1.0' }],
+      capabilities: { streaming: true, extensions: [{ uri: 'urn:example:ext:echo:v1', params: { api: 1 } }] },
+      securitySchemes: { bearer: { httpAuthSecurityScheme: { scheme: 'Bearer' } } },
+      securityRequirements: [{ schemes: { bearer: { list: [] } } }],
+      defaultInputModes: ['text/plain'], defaultOutputModes: ['text/plain'],
+      skills: [{ id: 'echo', name: 'echo', description: 'Echo one text.', tags: ['test'] }],
+    }
+    edit(c)
+    return c
+  }
+  // a loopback card server that counts connections and keeps every request's headers
+  async function agent(answer: (origin: string, path: string) => Answer = (origin) => ({ body: JSON.stringify(card(origin)) })) {
+    const seen: IncomingHttpHeaders[] = []
+    let connections = 0
+    const server = createServer((req, res) => {
+      seen.push(req.headers)
+      const a = answer(origin, req.url ?? '')
+      res.writeHead(a.status ?? 200, { 'content-type': 'application/json', ...a.headers })
+      res.end(a.body ?? '')
+    })
+    server.on('connection', () => { connections++ })
+    servers.push(server)
+    await new Promise<void>((done) => server.listen(0, '127.0.0.1', done))
+    const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
+    return { origin, url: `${origin}/.well-known/agent-card.json`, seen, connections: () => connections }
+  }
+  function setup(meshJson?: string) {
+    const dir = scratchDir('add-mesh-')
+    const tokenFile = join(scratchDir('add-token-'), 'token')
+    writeFileSync(tokenFile, `${TOKEN}\n`, { mode: 0o600 })
+    if (meshJson !== undefined) writeFileSync(meshFile(dir), meshJson)
+    const io = { suffix: 'tailnet-example.ts.net' as string | undefined, asked: 0 }
+    const add = async (...argv: string[]) => {
+      const out: string[] = []
+      const err: string[] = []
+      const code = await runAdd(argv, {
+        env: { AGENT_INBOX_MESH_DIR: dir }, home: '/nonexistent-home', now: () => new Date(2026, 10, 10, 9, 30, 0),
+        out: (text) => out.push(text), err: (text) => err.push(text), tailnet: () => { io.asked++; return io.suffix },
+      })
+      const r = { code, out: out.join(''), err: err.join('') }
+      expect(r.out + r.err).not.toContain(TOKEN)
+      return r
+    }
+    const run = (...argv: string[]) => ctl(argv, dir)
+    return { dir, tokenFile, add, run, io }
+  }
+
+  it('a dry run fetches the card with no token, prints the entry and its pin, and writes nothing', async () => {
+    const a = await agent()
+    const t = setup('{"schema":1,"console":{"relay":false}}\n')
+    const r = await t.add(a.url, '--token-file', t.tokenFile)
+    expect(r.code, r.err).toBe(0)
+    expect(r.out).toContain(`Card ${a.url}: Echo Agent, skills echo.\nEndpoint ${a.origin}/a2a: loopback`)
+    const pin = /Card pin \(sha256\): ([0-9a-f]{64})\.\n/.exec(r.out)?.[1]
+    expect(pin).toBeDefined()
+    expect(r.out).toContain([
+      '    "echo-agent": {', `      "card": "${a.url}",`, `      "endpoint": "${a.origin}/a2a",`,
+      `      "tokenFile": "${join(t.dir, 'mesh', 'tokens', 'echo-agent')}",`, `      "cardSha256": "${pin}"`, '    }',
+    ].join('\n'))
+    expect(r.out).toContain('it is never printed.')
+    expect(r.out).toContain('Nothing changed. Re-run with --apply.')
+    expect(readdirSync(t.dir)).toEqual(['mesh.json'])
+    // one GET of the card, with no Authorization, cookie or Origin
+    expect(a.seen).toHaveLength(1)
+    expect(a.seen[0]!.authorization).toBeUndefined()
+    expect(a.seen[0]!.cookie).toBeUndefined()
+    expect(a.seen[0]!.origin).toBeUndefined()
+    expect(a.seen[0]!.host).toBe(a.origin.slice('http://'.length))
+    // the pin leaves out the per-copy interface URL: the same card on another port pins the same
+    const b = await agent()
+    expect((await t.add(b.url, '--token-file', t.tokenFile)).out).toContain(`Card pin (sha256): ${pin}.`)
+  })
+
+  it('(off) add --apply then remove --apply leaves the other keys and the tree as before, but backups', async () => {
+    for (const before of ['{"schema":1,"console":{"relay":false},"agents":{"request-post":{"endpoint":"https://box.tail1234.ts.net"}}}\n', undefined]) {
+      const a = await agent()
+      const t = setup(before)
+      const start = tree(t.dir)
+      const on = await t.add(a.url, '--id', 'echo', '--token-file', t.tokenFile, '--apply')
+      expect(on.code, on.err).toBe(0)
+      expect(on.out).toContain('This --apply is your approval for echo (D14).')
+      const copy = join(t.dir, 'mesh', 'tokens', 'echo')
+      const entry = json(t.dir).agents.echo
+      expect(entry).toEqual({ card: a.url, endpoint: `${a.origin}/a2a`, tokenFile: copy, cardSha256: expect.stringMatching(/^[0-9a-f]{64}$/) })
+      expect(json(t.dir)).toEqual({ ...(before ? JSON.parse(before) : { schema: 1 }), agents: { ...(before ? JSON.parse(before).agents : {}), echo: entry } })
+      expect(readFileSync(meshFile(t.dir), 'utf8')).not.toContain(TOKEN)
+      expect([mode(copy), readFileSync(copy, 'utf8')]).toEqual(['600', `${TOKEN}\n`])
+      for (const d of ['mesh', 'mesh/tokens']) expect(mode(join(t.dir, d)), d).toBe('700')
+      const status = t.run('status')
+      expect(status.out).toContain(`turns on ${before ? 'request-post and ' : ''}1 added agent.`)
+      expect(status.out).toContain(`Added agent echo: at ${a.origin}/a2a; card pin ${entry.cardSha256.slice(0, 12)}…; token: present.\n`)
+      expect(status.out).not.toContain(TOKEN)
+
+      const dry = t.run('remove', 'echo')
+      expect(dry.out).toContain(`Would ${before ? 'remove agents.echo from' : 'delete'} ${meshFile(t.dir)}`)
+      expect(dry.out).toContain(`Would delete the token copy ${copy}.`)
+      expect(json(t.dir).agents.echo).toEqual(entry)
+      const off = t.run('remove', 'echo', '--apply')
+      expect(off.code, off.err).toBe(0)
+      if (before) expect(json(t.dir)).toEqual(JSON.parse(before))
+      expect(unbacked(tree(t.dir))).toEqual(before ? { ...start, 'mesh.json': expect.stringMatching(/^644 /) } : start)
+      expect(readdirSync(t.dir).filter((f) => f.startsWith('mesh.json.bak-'))).toHaveLength(before ? 2 : 1)
+      expect(t.run('remove', 'echo').out).toBe(`echo is not in ${meshFile(t.dir)}. Nothing to do.\n`)
+      expect(a.seen.every((h) => h.authorization === undefined)).toBe(true)
+    }
+  })
+
+  it('refuses a bad card, each rule with fixed words, and writes nothing', async () => {
+    const t = setup('{"schema":1}\n')
+    const other = await agent()
+    const cases: Array<[string, (origin: string) => Answer]> = [
+      ['the card has no name', (o) => ({ body: JSON.stringify(card(o, (c) => { delete c.name })) })],
+      ['the card has no skill', (o) => ({ body: JSON.stringify(card(o, (c) => { c.skills = [] })) })],
+      ['the card has a skill without an id', (o) => ({ body: JSON.stringify(card(o, (c) => { c.skills.push({ name: 'x' }) })) })],
+      ['the card has no A2A 1.0 JSON-RPC interface', (o) => ({ body: JSON.stringify(card(o, (c) => { c.supportedInterfaces[0].protocolVersion = '0.3' })) })],
+      ['the card URL sent no JSON object', () => ({ body: '<html>' })],
+      ['the card URL sent no JSON object', (o) => ({ body: JSON.stringify([card(o)]) })],
+      ['the card URL answered HTTP 404', () => ({ status: 404, body: '{}' })],
+      ['the card URL redirects, and add follows no redirect', () => ({ status: 302, headers: { location: other.url } })],
+      ['the card URL sent more than 64 KiB', (o) => ({ body: JSON.stringify(card(o, (c) => { c.description = 'd'.repeat(70_000) })) })],
+      ['the card URL sent a card nested too deeply', (o) => ({ body: JSON.stringify(card(o)).replace('"version"', `"deep":${'['.repeat(20_000)}${']'.repeat(20_000)},"version"`) })],
+      ['the card\'s JSON-RPC interface URL is on a public host', (o) => ({ body: JSON.stringify(card(o, (c) => { c.supportedInterfaces[0].url = 'https://agent.example.com/a2a' })) })],
+      ['the card\'s JSON-RPC interface URL must be', (o) => ({ body: JSON.stringify(card(o, (c) => { c.supportedInterfaces[0].url = 'http://192.168.1.2:8080/a2a' })) })],
+      ['the card\'s JSON-RPC interface is on another origin than the card', () => ({ body: JSON.stringify(card(other.origin)) })],
+      ['the card\'s name makes no usable id: pass --id <id>', (o) => ({ body: JSON.stringify(card(o, (c) => { c.name = '\u2603!' })) })],
+      ['request-post is a built-in agent', (o) => ({ body: JSON.stringify(card(o, (c) => { c.name = 'Request Post' })) })],
+    ]
+    for (const [words, answer] of cases) {
+      const a = await agent(answer)
+      const r = await t.add(a.url, '--token-file', t.tokenFile, '--apply')
+      expect([r.code, r.err.startsWith(`Refused: ${words}`), r.err.endsWith('. Nothing changed.\n')], `${words}: ${r.err}`).toEqual([1, true, true])
+    }
+    expect(other.connections()).toBe(0)
+    expect(readdirSync(t.dir)).toEqual(['mesh.json'])
+    expect(readFileSync(meshFile(t.dir), 'utf8')).toBe('{"schema":1}\n')
+  })
+
+  it('refuses a card URL outside the endpoint rule before it opens any connection', async () => {
+    const a = await agent()
+    const t = setup()
+    const port = a.origin.split(':')[2]
+    const RULE = 'must be http://127.0.0.1:<port>[/<path>] or https://<name>.<tailnet>.ts.net[:<port>][/<path>]'
+    const cases: Array<[string, string]> = [
+      ['https://agent.example.com/.well-known/agent-card.json', 'is on a public host: adding one waits for TLS identity, the card pin and card signatures (#534, #531, #536)'],
+      ['https://box.tail1234.ts.net.example.com/card', 'is on a public host'],
+      ['https://203.0.113.7/card', RULE], ['https://100.101.102.103:8443/card', RULE], ['https://[::1]:8443/card', RULE],
+      ['http://192.168.1.2:8080/card', RULE], [`http://localhost:${port}/card`, RULE], [`http://0x7f000001:${port}/card`, RULE],
+      [`http://127.0.0.2:${port}/card`, RULE], ['http://127.0.0.1:80/card', RULE], ['http://127.0.0.1/card', RULE],
+      [`https://127.0.0.1:${port}/card`, RULE], ['http://box.tail1234.ts.net/card', RULE], ['https://box.tail1234.ts.net:443/card', RULE],
+      ['https://BOX.tail1234.ts.net/card', RULE], [`http://user:secret@127.0.0.1:${port}/card`, RULE], [`${a.url}?secret=1`, RULE],
+      [`${a.url}#x`, RULE], [`${a.origin}/../card`, RULE], [`${a.origin}/a%2Fb`, RULE], ['ftp://127.0.0.1/card', RULE],
+    ]
+    for (const [url, words] of cases) {
+      const r = await t.add(url, '--token-file', t.tokenFile, '--apply')
+      expect(r.code, url).toBe(1)
+      expect(r.err, url).toContain(`Refused: the card URL ${words}`)
+      expect(r.err, url).not.toContain('secret')
+    }
+    expect(t.io.asked).toBe(0)
+    // a loopback agent needs a token, which meshctl call proves the agent holds (D17)
+    const noToken = await t.add(a.url, '--apply')
+    expect(noToken.err).toBe('Refused: a loopback agent needs --token-file: meshctl call proves its identity with that token before it sends anything (D17). Nothing changed.\n')
+    expect(a.connections()).toBe(0)
+    expect(readdirSync(t.dir)).toEqual([])
+  })
+
+  it('takes a tailnet name only on this Mac\'s tailnet (§8.8\'s allowlist), refusing another tailnet or a Funnel host', async () => {
+    const t = setup()
+    const other = await t.add('https://agent.other-example.ts.net/.well-known/agent-card.json', '--apply')
+    expect(other.err).toBe('Refused: the card URL is on another tailnet or a Funnel host, not this Mac\'s tailnet (tailnet-example.ts.net): adding one waits for TLS identity, the card pin and card signatures (#534, #531, #536). Nothing changed.\n')
+    t.io.suffix = undefined
+    const unknown = await t.add('https://agent.tailnet-example.ts.net/.well-known/agent-card.json', '--apply')
+    expect(unknown.err).toBe('Refused: the card URL is on a tailnet name, but this Mac\'s tailnet could not be read (is Tailscale installed, running and logged in?), so add cannot tell it from another tailnet or a Funnel host. Nothing changed.\n')
+    expect(t.io.asked).toBe(2)
+    expect(readdirSync(t.dir)).toEqual([])
+    // the accepting side, without a DNS lookup: a name in this Mac's tailnet passes, loopback never asks
+    const place = (url: string) => { const p = addedPlace(url); if ('refused' in p) throw new Error(url); return p }
+    expect(tailnetRefusal('x', place('https://agent.tailnet-example.ts.net:8443/a2a'), 'tailnet-example.ts.net')).toBeUndefined()
+    expect(tailnetRefusal('x', place('http://127.0.0.1:4500/a2a'), undefined)).toBeUndefined()
+    expect(tailnetRefusal('x', place('https://agent.example.ts.net/a2a'), 'tailnet-example.ts.net')).toContain('another tailnet or a Funnel host')
+  })
+
+  it('reads the MagicDNS suffix only from a running, logged-in tailscale status', () => {
+    const status = (o: object) => JSON.stringify({ Version: '1.90.0', ...o })
+    expect(suffixFrom(status({ BackendState: 'Running', MagicDNSSuffix: 'tailnet-example.ts.net' }))).toBe('tailnet-example.ts.net')
+    for (const text of [status({ BackendState: 'NeedsLogin', MagicDNSSuffix: 'tailnet-example.ts.net' }), status({ BackendState: 'Stopped', MagicDNSSuffix: '' }),
+      status({ BackendState: 'Running', MagicDNSSuffix: 'example.com' }), status({ BackendState: 'Running', MagicDNSSuffix: 'a.b.ts.net' }),
+      status({ BackendState: 'Running', MagicDNSSuffix: 'Tailnet-Example.ts.net' }), status({ BackendState: 'Running' }), '', 'not json', '[]']) {
+      expect(suffixFrom(text), text).toBeUndefined()
+    }
+  })
+
+  it('refuses a built-in, malformed or existing id', async () => {
+    const a = await agent()
+    const t = setup('{"schema":1,"agents":{"unslop":{"endpoint":"http://127.0.0.1:4420","profile":"unslop"}}}\n')
+    for (const id of ['unslop', 'request-post', 'web-search']) {
+      expect((await t.add(a.url, '--id', id, '--token-file', t.tokenFile)).err).toBe(`Refused: ${id} is a built-in agent: pick another --id (meshctl enable and disable manage ${id}). Nothing changed.\n`)
+    }
+    for (const id of ['Echo', 'echo_agent', '-echo', 'echo-', '../echo', 'e'.repeat(41), '']) {
+      expect((await t.add(a.url, '--id', id, '--token-file', t.tokenFile)).err, id).toBe('Refused: the id must be 1-40 lower-case letters, digits and inner hyphens. Nothing changed.\n')
+    }
+    expect(a.connections()).toBe(0)
+    expect((await t.add(a.url, '--token-file', t.tokenFile, '--apply')).code).toBe(0)
+    const added = readFileSync(meshFile(t.dir), 'utf8')
+    // taken: refused before the fetch with --id, after it when the id comes from the card's name
+    const seen = a.seen.length
+    const again = await t.add(a.url, '--id', 'echo-agent', '--token-file', t.tokenFile, '--apply')
+    expect(again.err).toBe(`Refused: the id echo-agent is already in ${meshFile(t.dir)}, and add never replaces an entry. Nothing changed.\n`)
+    expect(a.seen.length).toBe(seen)
+    expect((await t.add(a.url, '--token-file', t.tokenFile, '--apply')).err).toContain('Refused: the id echo-agent is already in')
+    expect(readFileSync(meshFile(t.dir), 'utf8')).toBe(added)
+  })
+
+  it('takes only a regular 0600 token file you own, copies it and never prints it', async () => {
+    const a = await agent()
+    const t = setup()
+    const folder = scratchDir('add-token-')
+    const file = (name: string, text: string, mode = 0o600) => { const p = join(folder, name); writeFileSync(p, text, { mode }); chmodSync(p, mode); return p }
+    const link = join(folder, 'link')
+    symlinkSync(t.tokenFile, link)
+    mkdirSync(join(folder, 'dir'))
+    const SHORT = 'must hold one token of at least 32 printable characters, no spaces'
+    for (const [path, words] of [
+      [file('group', `${TOKEN}\n`, 0o640), 'is open to other users: chmod 600 it'], [file('world', `${TOKEN}\n`, 0o604), 'is open to other users: chmod 600 it'],
+      [link, 'is a symlink: pass the file itself'], [join(folder, 'dir'), 'is not a regular file you own'], [join(folder, 'missing'), 'cannot be read'],
+      [file('short', 's'.repeat(31)), SHORT], [file('spaced', `${TOKEN} ${TOKEN}`), SHORT],
+    ] as const) {
+      const r = await t.add(a.url, '--token-file', path, '--apply')
+      expect([r.code, r.err], path).toEqual([1, `Refused: the token file ${words}. Nothing changed.\n`])
+    }
+    expect(a.connections()).toBe(0)
+    expect(readdirSync(t.dir)).toEqual([])
+    // 0400 is private too
+    const r = await t.add(a.url, '--token-file', file('readonly', TOKEN, 0o400), '--apply')
+    expect(r.code, r.err).toBe(0)
+    expect(readFileSync(join(t.dir, 'mesh', 'tokens', 'echo-agent'), 'utf8')).toBe(`${TOKEN}\n`)
+    expect(readFileSync(meshFile(t.dir), 'utf8')).not.toContain(TOKEN)
+  })
+
+  it('remove leaves built-ins and entries add did not write alone; status never echoes a broken entry', () => {
+    const t = setup('{"schema":1,"agents":{"unslop":{"endpoint":"http://127.0.0.1:4420","profile":"unslop"},"mine":{"endpoint":"x"},"bad":{"card":"https://user:secret@example.com/card","endpoint":"x","cardSha256":"no"}}}\n')
+    const before = readFileSync(meshFile(t.dir), 'utf8')
+    expect(t.run('remove', 'unslop', '--apply').err).toBe('Refused: unslop is a built-in agent: meshctl disable turns it off. Nothing changed.\n')
+    expect(t.run('remove', 'mine', '--apply').err).toBe('Refused: agents.mine was not written by meshctl add, so remove leaves it alone. Nothing changed.\n')
+    expect(t.run('remove', 'Bad!', '--apply').code).toBe(1)
+    const status = t.run('status').out
+    expect(status).toContain('Added agent bad: off (the entry breaks meshctl add\'s rules; remove it and add it again).')
+    expect(status).not.toContain('secret')
+    expect(readFileSync(meshFile(t.dir), 'utf8')).toBe(before)
+    expect(t.run('remove', 'bad', '--apply').code).toBe(0)
+    expect(Object.keys(json(t.dir).agents)).toEqual(['unslop', 'mine'])
+    for (const argv of [['remove'], ['remove', 'a', 'b'], ['remove', '--apply'], ['remove', 'a', '--purge']]) expect(t.run(...argv).code, argv.join(' ')).toBe(2)
+  })
+
+  it('bad add arguments are usage errors that open no connection', async () => {
+    const a = await agent()
+    const t = setup()
+    for (const argv of [[], ['--apply'], [a.url, a.url], [a.url, '--id'], [a.url, '--id', 'a', '--id', 'b'], [a.url, '--bogus'], [a.url, '--apply', '--apply'], [a.url, '--endpoint', a.origin]]) {
+      expect((await t.add(...argv)).code, argv.join(' ')).toBe(2)
+    }
+    expect(a.connections()).toBe(0)
+  })
+
+  it('(off) an added entry turns on no viewer check and no /api/version key: nothing connects to it', async () => {
+    const a = await agent()
+    const t = setup()
+    expect((await t.add(a.url, '--token-file', t.tokenFile, '--apply')).code).toBe(0)
+    const connections = a.connections()
+    const mesh = meshAgents({ dir: t.dir })
+    expect(mesh.version()).toBeUndefined()
+    expect(await mesh.trigger('open', 'echo-agent')).toBe(false)
+    await mesh.trigger('refresh')
+    t.run('status')
+    expect(a.connections()).toBe(connections)
+  })
+})
+
 describe('no new dependency (design §2.3, §2.4c)', () => {
-  const MESH_FILES = ['src/mesh-config.ts', 'src/meshctl.ts', 'src/unslop-client.ts', 'src/mesh-identity.ts', 'src/request-post-client.ts', 'src/mesh-agents.ts', 'src/mesh-runs.ts', 'public/agents-home.js']
+  const MESH_FILES = ['src/mesh-config.ts', 'src/meshctl.ts', 'src/mesh-add.ts', 'src/unslop-client.ts', 'src/mesh-identity.ts', 'src/request-post-client.ts', 'src/mesh-agents.ts', 'src/mesh-runs.ts', 'public/agents-home.js']
   const SPECIFIERS = /(?:\bfrom\s*|\bimport\s*\(?\s*|\brequire\s*\(\s*)(['"])([^'"\n]+)\1/g
   // comment lines name modules in prose; only code imports count
   const code = (file: string): string => readFileSync(join(REPO, file), 'utf8').split('\n')
@@ -482,7 +773,7 @@ describe('no new dependency (design §2.3, §2.4c)', () => {
     }
     // meshctl, its unslop and request-post clients, the config module and the card rule are Node core plus each other only
     const local = (file: string) => [...code(file).matchAll(SPECIFIERS)].map((m) => m[2]!).filter((spec) => !spec.startsWith('node:'))
-    expect(local('src/meshctl.ts')).toEqual(['./agent-result.js', './mesh-config.js', './mesh-config.js', './mesh-runs.js', './mesh-runs.js', './request-post-client.js', './request-post-client.js', './unslop-client.js', './unslop-client.js'])
+    expect(local('src/meshctl.ts')).toEqual(['./agent-result.js', './mesh-config.js', './mesh-config.js', './mesh-add.js', './mesh-runs.js', './mesh-runs.js', './request-post-client.js', './request-post-client.js', './unslop-client.js', './unslop-client.js'])
     // the clients take the run collector's type only (cards view V5 §5.3); meshctl's entry writes the record
     expect(local('src/unslop-client.ts')).toEqual(['./agent-card.js', './mesh-config.js', './mesh-identity.js', './mesh-identity.js', './mesh-runs.js'])
     // the identity proof (#492): Node core only
@@ -490,6 +781,8 @@ describe('no new dependency (design §2.3, §2.4c)', () => {
     expect(local('src/request-post-client.ts')).toEqual(['./agent-card.js', './mesh-config.js', './mesh-runs.js'])
     for (const file of ['src/unslop-client.ts', 'src/request-post-client.ts']) expect(code(file), file).toContain(`import type { RunCollector } from './mesh-runs.js'`)
     expect(local('src/mesh-config.ts')).toEqual([])
+    // meshctl add's rules and card fetch (#529): HTTP, a hash and the card rule, never a child process
+    expect([...code('src/mesh-add.ts').matchAll(SPECIFIERS)].map((m) => m[2]!)).toEqual(['node:crypto', 'node:http', 'node:http', 'node:https', './agent-card.js'])
     // run records (cards view V5 §5.6): Node core only
     expect([...code('src/mesh-runs.ts').matchAll(SPECIFIERS)].map((m) => m[2]!)).toEqual(['node:crypto', 'node:fs', 'node:path'])
     // the viewer's cards view (agent cards view design §3.4): HTTP, the config rule and the run

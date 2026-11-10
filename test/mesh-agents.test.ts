@@ -330,6 +330,23 @@ describe('checks and their words (design §2.4, §4.2-§4.5)', () => {
     expect(await step(1, 'refresh')).toBe(3)
     expect(await step(60_000, 'open')).toBe(4)
   })
+
+  it('an open naming one agent checks only that agent, with its own 60 s skip (cards view V5c1)', async () => {
+    const unslopAgent = await serve(UNSLOP)
+    const rpAgent = await serve(UNSLOP)
+    const s = setup({ schema: 1, agents: { ...unslopAt(unslopAgent.port).agents, 'request-post': { endpoint: `http://127.0.0.1:${rpAgent.port}` } } })
+    const counts = () => [unslopAgent.requests.length, rpAgent.requests.length]
+    expect(await (await s.post({ trigger: 'open', name: 'unslop' })).json()).toEqual({ ok: true })
+    expect(counts()).toEqual([1, 0])
+    s.clock.t += 30_000
+    await s.post({ trigger: 'open', name: 'unslop' })
+    expect(counts()).toEqual([1, 0])
+    await s.post({ trigger: 'open' })
+    expect(counts()).toEqual([1, 1])
+    s.clock.t += 30_000
+    await s.post({ trigger: 'open', name: 'unslop' })
+    expect(counts()).toEqual([2, 1])
+  })
 })
 
 describe('unslop\'s usage line (design §4.6, V4)', () => {
@@ -407,11 +424,14 @@ describe('the routes (design §4.5, §4.7)', () => {
 
   it('refuses a bad body with 400 and an unknown agent with ok:false', async () => {
     const s = setup(unslopAt(await freePort()))
-    for (const body of ['nope', [], {}, { trigger: 'poll' }, { trigger: 'open', name: 'unslop' }, { trigger: 'refresh', name: 7 }, { trigger: 'open', extra: 1 }]) {
+    for (const body of ['nope', [], {}, { trigger: 'poll' }, { trigger: 'open', name: 7 }, { trigger: 'refresh', name: 7 }, { trigger: 'open', extra: 1 }]) {
       expect((await s.post(body)).status, JSON.stringify(body)).toBe(400)
     }
     expect(await (await s.post({ trigger: 'refresh', name: 'request-post' })).json()).toEqual({ ok: false, error: 'not configured' })
     expect(await (await s.post({ trigger: 'refresh', name: 'unslop' })).json()).toEqual({ ok: true })
+    // cards view V5c1: an agent tab's open names its agent
+    expect(await (await s.post({ trigger: 'open', name: 'request-post' })).json()).toEqual({ ok: false, error: 'not configured' })
+    expect(await (await s.post({ trigger: 'open', name: 'unslop' })).json()).toEqual({ ok: true })
   })
 
   it('/api/version carries mesh only while the file names a known agent', async () => {

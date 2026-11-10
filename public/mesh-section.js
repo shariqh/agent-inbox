@@ -3,9 +3,11 @@
 // per agent mesh.json configures, from the last `/api/mesh/agents` body app.js
 // read. Global: no state filter or project lens narrows it. Card text is
 // untrusted: it reaches the DOM only through textContent, never as markup, an
-// href or an image, and the raw card is a <pre>'s text. The page owns only the
-// state labels; every reason and fix comes from the server. Nothing here is
-// an ask: no state reaches public/attention.js, a badge, a count or a tab.
+// href or an image. The page owns only the state labels; every reason and fix
+// comes from the server. Pressing a row opens its agent tab (cards view V5c1,
+// public/mesh-agent-page.js), which shows the card's lines and Card JSON.
+// Nothing here is an ask: no state reaches public/attention.js, a badge, a
+// count or a tab.
 import { relMs } from './rowview.js'
 
 const LABELS = {
@@ -18,21 +20,10 @@ const LABELS = {
   invalid: 'Endpoint not accepted',
 }
 const NEUTRAL = new Set(['unchecked', 'checking', 'not-running'])
-const AUTH = {
-  httpAuthSecurityScheme: 'HTTP', apiKeySecurityScheme: 'API key', oauth2SecurityScheme: 'OAuth 2',
-  openIdConnectSecurityScheme: 'OpenID Connect', mtlsSecurityScheme: 'mutual TLS',
-}
-
 const plural = (n, one) => `${n} ${one}${n === 1 ? '' : 's'}`
 const ago = (ms) => (relMs(Math.max(0, ms)) === 'moments' ? 'just now' : `${relMs(Math.max(0, ms))} ago`)
-const clock = (at) => {
-  const d = new Date(at)
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
-}
-const more = (list) => (list?.more ? [`+${list.more} more`] : [])
 const items = (list) => (Array.isArray(list?.items) ? list.items : [])
 const count = (list) => items(list).length + (Number(list?.more) || 0)
-const yes = (value) => (value === true ? 'yes' : value === false ? 'no' : 'not said')
 
 function whereText(agent) {
   if (agent.where === 'local') return agent.endpoint ? `Local · ${agent.endpoint.replace(/^http:\/\//, '')}` : 'Local'
@@ -45,41 +36,6 @@ function whereText(agent) {
 function usageText(usage) {
   if (!usage || typeof usage !== 'object' || !Number.isFinite(usage.tasks) || !Number.isFinite(usage.modelMs)) return ''
   return `Today: ${plural(usage.tasks, 'task')} · ${plural(Math.round(usage.modelMs / 60_000), 'model-minute')}`
-}
-
-// §2.3's labelled lines, from the card the row shows (its own, else the last good one).
-function details(agent, card, nowMs) {
-  const lines = []
-  if (card?.description) lines.push(['Description', [card.description]])
-  if (card?.name && card.name !== agent.name) lines.push(['Card name', [card.name]])
-  const where = [agent.where === 'local' ? 'Local' : 'Remote', agent.endpoint ?? 'endpoint not shown'].join(' · ')
-  lines.push(['Where', [where, ...(agent.profile ? [`profile: ${agent.profile}`] : [])]])
-  if (card) {
-    lines.push(['Protocol', [...items(card.interfaces).flatMap((i) => [
-      `A2A ${i.protocolVersion ?? '?'} · ${i.binding === 'JSONRPC' ? 'JSON-RPC' : i.binding ?? '?'}`, ...(i.url ? [i.url] : []),
-    ]), ...more(card.interfaces)]])
-    lines.push(['Capabilities', [`streaming ${yes(card.streaming)} · push ${yes(card.pushNotifications)}`]])
-    const schemes = items(card.auth?.schemes)
-    const required = card.auth?.required ? ', required' : ''
-    lines.push(['Auth', schemes.length
-      ? [...schemes.map((s) => `${s.name} (${[AUTH[s.type] ?? s.type, s.scheme].filter(Boolean).join(' ')})${required}`),
-        'token kept outside the app; not shown here']
-      : ['none declared']])
-    for (const ext of items(card.extensions)) {
-      const params = items(ext.params).map(([key, value]) => `${key} ${value}`)
-      lines.push(['Extension', [`${ext.uri} · ${ext.required ? 'required' : 'optional'}`, ...(params.length ? [params.join(' · ')] : []), ...more(ext.params)]])
-    }
-    if (card.extensions?.more) lines.push(['Extension', more(card.extensions)])
-    lines.push(['Skills', [...items(card.skills).map((s) => ({
-      text: `${s.name ?? s.id}${s.id && s.name && s.id !== s.name ? ` (${s.id})` : ''}${s.description ? `: ${s.description}` : ''}`,
-      tags: [...items(s.tags), ...more(s.tags)],
-    })), ...more(card.skills)]])
-    lines.push(['Modes', [`in ${[...items(card.inputModes), ...more(card.inputModes)].join(', ') || 'none'} · out ${[...items(card.outputModes), ...more(card.outputModes)].join(', ') || 'none'}`]])
-  }
-  const checked = agent.checkedAt ? `checked ${clock(agent.checkedAt)}` : 'not checked yet'
-  const fetched = agent.card ? ` · card fetched ${clock(agent.checkedAt)}` : agent.lastSeen?.at ? ` · last good card ${clock(agent.lastSeen.at)} (${ago(nowMs - Date.parse(agent.lastSeen.at))})` : ''
-  lines.push(['Checked', [checked + fetched]])
-  return lines
 }
 
 /** The section's model from a `/api/mesh/agents` body: one row per agent, by name. */
@@ -101,8 +57,6 @@ export function meshRows(body, nowMs) {
       fix: agent.fix ? `Fix: ${agent.fix}` : '',
       facts: facts.join(' · '),
       usage: usageText(agent.usage),
-      details: details(agent, card, nowMs),
-      json: typeof agent.cardJson === 'string' ? agent.cardJson : null,
     }
   })
   const checked = agents.map((a) => Date.parse(a.checkedAt ?? '')).filter(Number.isFinite)
@@ -115,13 +69,11 @@ export function meshRows(body, nowMs) {
   }
 }
 
-/** @param {{doc?: Document, onRefresh?: () => void, onChange?: () => void}} deps */
+/** @param {{doc?: Document, onRefresh?: () => void, onChange?: () => void, onOpen?: (key: string, name: string) => void}} deps */
 export function installMeshAgents(deps = {}) {
   const doc = deps.doc ?? globalThis.document
-  // window-local, never persisted: the section opens by default, its rows and Card JSON closed
+  // window-local, never persisted: the section opens by default
   let open = true
-  const rowsOpen = new Set()
-  const jsonOpen = new Set()
   const rowEls = new Map()
   let root = null
 
@@ -134,7 +86,6 @@ export function installMeshAgents(deps = {}) {
   const setText = (el, text) => { if (el.textContent !== text) el.textContent = text }
   const setHidden = (el, hidden) => { if (el.hidden !== hidden) el.hidden = hidden }
   const setAttr = (el, name, value) => { if (el.getAttribute(name) !== value) el.setAttribute(name, value) }
-  const flip = (set, key) => { if (set.has(key)) set.delete(key); else set.add(key) }
 
   function element() {
     if (root) return root
@@ -159,18 +110,10 @@ export function installMeshAgents(deps = {}) {
     toggle.addEventListener('click', () => { open = !open; deps.onChange?.() })
     refresh.addEventListener('click', () => deps.onRefresh?.())
     list.addEventListener('click', (event) => {
-      const button = event.target instanceof doc.defaultView.Element ? event.target.closest('[data-mesh-toggle]') : null
-      if (!button) return
-      flip(rowsOpen, button.closest('[data-mesh-key]').dataset.meshKey)
-      deps.onChange?.()
+      const button = event.target instanceof doc.defaultView.Element ? event.target.closest('[data-mesh-open]') : null
+      const row = button?.closest('[data-mesh-key]')
+      if (row) deps.onOpen?.(row.dataset.meshKey, button.querySelector('.ma-name').textContent)
     })
-    list.addEventListener('toggle', (event) => {
-      const json = event.target
-      const key = json instanceof doc.defaultView.HTMLDetailsElement ? json.closest('[data-mesh-key]')?.dataset.meshKey : null
-      if (!key || json.open === jsonOpen.has(key)) return
-      flip(jsonOpen, key)
-      deps.onChange?.()
-    }, true)
     return root
   }
 
@@ -179,31 +122,18 @@ export function installMeshAgents(deps = {}) {
     el.dataset.meshKey = key
     const toggle = make('button', 'ma-row-toggle')
     toggle.type = 'button'
-    toggle.dataset.meshToggle = ''
+    toggle.dataset.meshOpen = ''
     toggle.dataset.dashboardFocusKey = `ma:row:${key}`
     const dot = make('span', 'ma-dot')
     dot.setAttribute('aria-hidden', 'true')
     toggle.append(dot, make('span', 'ma-name'), make('span', 'ma-status'))
-    const json = make('details', 'ma-json')
-    json.append(make('summary', '', 'Card JSON'), make('pre', 'ma-json-text'))
-    const more = make('div', 'ma-details')
-    more.append(make('dl', 'ma-lines'), json)
-    el.append(toggle, make('div', 'ma-facts'), make('div', 'ma-usage'), make('div', 'ma-fix'), more)
-    return el
-  }
-
-  function line(value) {
-    if (typeof value === 'string') return make('div', '', value)
-    const el = make('div', '', value.text)
-    for (const tag of value.tags) el.append(doc.createTextNode(' '), make('span', 'ma-tag', tag))
+    el.append(toggle, make('div', 'ma-facts'), make('div', 'ma-usage'), make('div', 'ma-fix'))
     return el
   }
 
   function paintRow(el, row) {
     for (const name of [...el.classList]) if (name.startsWith('ma-tone-') && name !== `ma-tone-${row.tone}`) el.classList.remove(name)
     if (!el.classList.contains(`ma-tone-${row.tone}`)) el.classList.add(`ma-tone-${row.tone}`)
-    const expanded = rowsOpen.has(row.key)
-    setAttr(el.querySelector('.ma-row-toggle'), 'aria-expanded', String(expanded))
     setText(el.querySelector('.ma-name'), row.name)
     setText(el.querySelector('.ma-status'), row.status)
     setText(el.querySelector('.ma-facts'), row.facts)
@@ -213,25 +143,6 @@ export function installMeshAgents(deps = {}) {
     const fix = el.querySelector('.ma-fix')
     setText(fix, row.fix)
     setHidden(fix, !row.fix)
-    const more = el.querySelector('.ma-details')
-    setHidden(more, !expanded)
-    // a closed row keeps no details, as a closed fold keeps no cards
-    const lines = el.querySelector('.ma-lines')
-    const linesKey = expanded ? JSON.stringify(row.details) : ''
-    if (lines.dataset.key !== linesKey) {
-      lines.dataset.key = linesKey
-      lines.replaceChildren(...(expanded ? row.details.flatMap(([label, values]) => {
-        const dd = make('dd')
-        dd.append(...values.map(line))
-        return [make('dt', '', label), dd]
-      }) : []))
-    }
-    const json = el.querySelector('.ma-json')
-    setHidden(json, !row.json)
-    const jsonShown = jsonOpen.has(row.key)
-    if (json.open !== jsonShown) json.open = jsonShown
-    // rewritten only when the card's JSON changed, so a selection inside it survives polls
-    setText(json.querySelector('pre'), expanded && jsonShown && row.json ? row.json : '')
   }
 
   /**
@@ -274,6 +185,6 @@ export function installMeshAgents(deps = {}) {
   return {
     paint,
     /** The window-local open state, for frameInputs(). */
-    state: () => [open, [...rowsOpen].sort().join(','), [...jsonOpen].sort().join(',')].join('|'),
+    state: () => String(open),
   }
 }

@@ -44,14 +44,20 @@ describe('shell markup', () => {
     expect(css).not.toMatch(/settings-open[^}]*transition/)
   })
 
-  it('has a project rail and the five content tabs in product order (Live is a footer strip, not a tab)', () => {
+  it('has a project rail and the five content tabs in product order, then the agent tab (Live is a footer strip, not a tab)', () => {
     expect(html).toContain('id="rail"')
     const tabs = [...html.matchAll(/<button class="tab"[^>]*data-tab="(\w+)"/g)].map((m) => m[1])
-    expect(tabs).toEqual(['dashboard', 'needsYou', 'boards', 'notes', 'done'])
+    expect(tabs).toEqual(['dashboard', 'needsYou', 'boards', 'notes', 'done', 'agent'])
     expect(html).not.toContain('data-tab="live"')
+    // cards view V5 §3.3: hidden until an agent is open, with no count, and CSS that lets it hide
+    const agent = /<button class="tab"[^>]*data-tab="agent"[^>]*>[\s\S]*?<\/button>/.exec(html)?.[0] ?? ''
+    expect(agent).toMatch(/data-tab="agent"[^>]* hidden>/)
+    expect(agent).not.toContain('tab-count')
+    expect(css).toContain('.tab[hidden] { display: none; }')
+    expect(html).toMatch(/<section class="panel" id="agentPage" role="tabpanel"[^>]* hidden><\/section>/)
   })
 
-  it('gives every tab a count slot', () => {
+  it('gives every counted tab a count slot', () => {
     for (const t of ['needsYou', 'boards', 'notes', 'done']) {
       expect(html, t).toMatch(new RegExp(`data-tab="${t}"[\\s\\S]*?<span class="tab-name">[^<]+</span><span class="tab-count"`))
     }
@@ -385,8 +391,15 @@ describe('closed projects (issue #32)', () => {
     expect(action).toMatch(/setAttribute\('aria-label'/)
   })
 
-  it('wireTablist skips tabs inside a collapsed <details>, or arrow keys focus invisible rows', () => {
+  it('wireTablist skips tabs inside a collapsed <details> and hidden tabs, or arrow keys focus invisible rows', () => {
     expect(fn('function wireTablist(', '\nfunction btn(')).toContain('details:not([open])')
+    expect(fn('function wireTablist(', '\nfunction btn(')).toContain('!t.hidden')
+  })
+
+  // cards view V5 §3.3: no G key, hash or stale caller lands on an empty agent tab
+  it('selectTab refuses the agent tab with no agent open, and navigateKeyboard focuses only a tab it selected', () => {
+    expect(fn('function selectTab(', '\nfunction initTabs(')).toMatch(/id === 'agent' && !meshAgentPage\.current\(\)\)\) return/)
+    expect(fn('function navigateKeyboard(', '\nfunction initKeys(')).toContain('if (activeTab === destination) focusKeyboardPanel(')
   })
 
   it('the peek banner names the suppression instead of leaving two counts disagreeing', () => {

@@ -112,22 +112,45 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   Checking…, Running for unslop / Reachable for request-post, Not running, Unreachable, Not an
   agent card, Card does not match this build, Endpoint not accepted) with the server's `reason`
   and `fix`; quiet green for up, neutral grey for unchecked, checking and not running, amber
-  (`--app-warning`, never the attention colour) for the rest. The collapsed row says Local with
-  the loopback port, or Remote · tailnet / SSH tunnel without the host; the expanded row shows
-  the card's lines and a nested Card JSON whose `<pre>` is rewritten only when `cardJson`
-  changes, so a selection in it survives polls. Card text reaches the DOM only through
+  (`--app-warning`, never the attention colour) for the rest. The row says Local with
+  the loopback port, or Remote · tailnet / SSH tunnel without the host; pressing it opens the
+  agent tab (below). Card text reaches the DOM only through
   `textContent`: no `img`, no `href`, no request to a card's URL. `app.js` reads
   `GET /api/mesh/agents` (a conditional snapshot) only while the last `/api/version` carried
-  `mesh`, the Dashboard is the tab and the document is visible; a skipped read keeps the last
+  `mesh`, the Dashboard or an open agent tab is the tab and the document is visible; a skipped read keeps the last
   body, a failed read keeps it marked stale (never a failed tick), and an `on: false` body hides
   the section and stops the read until `/api/version` carries `mesh` again. The open trigger
   (`meshOpen()`) fires only on boot on the Dashboard once the boot's `/api/version` carries
   `mesh`, `showAgentsHome()` (once, after its version read; its `selectTab` passes
   `open: false`) and `selectTab('dashboard')` from another tab; its result paints through the
   next poll tick. Refresh, in the header row beside the disclosure button, posts `refresh` and
-  then repaints through `reloadAndPaint()`. The section's, rows' and Card JSON's open state is
-  window-local and joins `agentsHome.state()`, so `frameInputs()`. With no `mesh` the page's
-  requests are unchanged and no section exists. Nothing it draws reaches attention.
+  then repaints through `reloadAndPaint()`. The section's open state is window-local and joins
+  `agentsHome.state()`, so `frameInputs()`. With no `mesh` the page's requests are unchanged and
+  no section exists. Nothing it draws reaches attention.
+- The **agent tab** (cards view V5c1, design
+  `docs/superpowers/specs/2026-11-09-agent-cards-view-v5-design.md` §3, §4) is one slot after
+  History: `data-tab="agent"` in `#tabs`, `'agent'` last in `TAB_IDS`, its panel
+  `#agentPage`, painted by `public/mesh-agent-page.js` from `paintAmbient()` (so from `load()`
+  and `reloadAndPaint()` only). It is `hidden` while no agent is open (`.tab[hidden]` beats
+  `.tab`'s `display`), and `wireTablist` skips a hidden tab as it skips one in a closed
+  `<details>`. `selectTab('agent')` returns without effect with no agent open, so a G key, an
+  item hash or a focus bookmark never lands on an empty page. Pressing a section row opens the
+  agent (replacing any other in the same slot), selects the tab, which posts
+  `{trigger:'open', name}` for that agent only, and calls `reloadAndPaint()` once; selecting the
+  agent tab from another tab posts the same open, selecting it while active or switching inner
+  tabs posts nothing. `PAGE_META.agent` gives the kicker "Mesh agent"; the title is the agent's
+  name. The page header holds the state dot, name, state word, "checked …", **Refresh**
+  (`{trigger:'refresh', name}` then `reloadAndPaint()`) and **Close**, which hides the tab,
+  selects the Dashboard (an open for every agent) and, if focus was in the page in a focused
+  window, focuses the agent's row, else the Agents heading. Esc does not close it. Its inner
+  tablist (`wireTablist(…, 'horizontal')`) holds **Details**: the card's labelled lines and a
+  nested Card JSON whose `<pre>` is rewritten only when `cardJson` changes, so a selection in it
+  survives polls. Run history joins as the default in V5d; until then the page opens on Details.
+  An agent that leaves `mesh.json`, or a body with `on: false`, keeps the tab and its last lines
+  under "This agent is not in mesh.json any more". The open agent, inner tab and Card JSON state
+  are window-local, never persisted (a reload has no agent tab), and join `frameInputs()` through
+  `meshAgentPage.state()`. The tab never carries a count (`tabCounts()` has no `agent` key) and
+  nothing on it reaches attention.
 - The sidebar's Sessions line (`#sessionsIndicator`, #454, where the Live footer strip
   was) is the one session signal on every tab: `sessionsSummary` (`public/livebar.js`)
   over the GLOBAL `lastData.activity`, never the lens or closure ("N working · M

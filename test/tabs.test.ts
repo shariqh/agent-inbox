@@ -18,7 +18,8 @@ const boards = [
 describe('tab model', () => {
   it('boots to Dashboard and keeps Live as a footer strip rather than a tab', () => {
     expect(DEFAULT_TAB).toBe('dashboard')
-    expect(TAB_IDS).toEqual(['dashboard', 'needsYou', 'boards', 'notes', 'done'])
+    // `agent` (cards view V5 §3.3): the mesh agent tab, last, shown only while an agent is open
+    expect(TAB_IDS).toEqual(['dashboard', 'needsYou', 'boards', 'notes', 'done', 'agent'])
     expect(TAB_IDS[0]).toBe(DEFAULT_TAB)
   })
 
@@ -35,6 +36,11 @@ describe('tab model', () => {
       scoped: { boards: [{ id: 'b1' }], done: [{ id: 'd1' }] },
     })
     expect(c).toEqual({ needsYou: 7, boards: 1, notes: 2, done: 1 })
+  })
+
+  it('never counts the agent tab (cards view V5 §3.3)', () => {
+    const c = tabCounts({ globalAttention: 7, unreadNotes: 2, scoped: { boards: [{ id: 'b1' }], done: [{ id: 'd1' }] } })
+    expect('agent' in c).toBe(false)
   })
 
   it('treats a missing notes number as zero rather than NaN', () => {

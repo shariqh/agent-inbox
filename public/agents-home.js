@@ -62,7 +62,7 @@ export function installAgentsHome(deps) {
   const calls = new Map() // card id → the last call a paint has seen, for the one-shot pulse
   const byId = new Map() // card id → the card its buttons act on
   // global: no filter or lens narrows it, and it shows under the empty state's text
-  const mesh = installMeshAgents({ doc, onRefresh: () => deps.refreshMesh?.(), onChange: () => repaint() })
+  const mesh = installMeshAgents({ doc, onRefresh: () => deps.refreshMesh?.(), onChange: () => repaint(), onOpen: (key, name) => deps.openMeshAgent?.(key, name) })
 
   const make = (tag, className, text) => {
     const el = doc.createElement(tag)

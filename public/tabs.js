@@ -2,7 +2,8 @@
 // attention count is INJECTED rather than imported, so the filter-blindness
 // rule is stated here instead of hiding inside a call site.
 
-export const TAB_IDS = ['dashboard', 'needsYou', 'boards', 'notes', 'done']
+// `agent` (cards view V5 §3.3) is shown only while a mesh agent is open, and never counted
+export const TAB_IDS = ['dashboard', 'needsYou', 'boards', 'notes', 'done', 'agent']
 
 // the active tab is never persisted — the app always opens at the live desk
 export const DEFAULT_TAB = 'dashboard'

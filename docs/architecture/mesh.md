@@ -9,8 +9,9 @@ paths:
   - "src/mesh-runs.ts"
   - "public/agents-home.js"
   - "public/mesh-section.js"
+  - "public/mesh-agent-page.js"
   - "packages/mesh/src/**/*.ts"
-applyTo: "src/mesh-config.ts,src/meshctl.ts,src/unslop-client.ts,src/request-post-client.ts,src/agent-card.ts,src/mesh-agents.ts,src/mesh-runs.ts,public/agents-home.js,public/mesh-section.js,packages/mesh/src/**/*.ts"
+applyTo: "src/mesh-config.ts,src/meshctl.ts,src/unslop-client.ts,src/request-post-client.ts,src/agent-card.ts,src/mesh-agents.ts,src/mesh-runs.ts,public/agents-home.js,public/mesh-section.js,public/mesh-agent-page.js,packages/mesh/src/**/*.ts"
 ---
 
 # Agent mesh (M1)

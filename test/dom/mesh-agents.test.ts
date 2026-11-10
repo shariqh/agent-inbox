@@ -14,7 +14,7 @@ import { insertItem, recordActivityCall, upsertActivity, upsertBoard } from '../
 import { cardJson, summarizeCard } from '../../src/agent-card.js'
 import type { MeshAgents } from '../../src/mesh-agents.js'
 import { meshRows } from '../../public/mesh-section.js'
-import { advanceClock, badgeCount, bootApp, click, freshDb, pollTick, rows, settle, showInbox, tabCount, useDomTest } from './harness.js'
+import { advanceClock, badgeCount, bootApp, click, freshDb, navigateToHash, pollTick, rows, settle, showInbox, tabCount, useDomTest } from './harness.js'
 import type { ViewerBridge } from './harness.js'
 
 useDomTest()
@@ -72,8 +72,8 @@ function fakeMesh(first: Json = body(unslop(), requestPost())) {
     version: () => s.version,
     body: () => s.body,
     runs: () => undefined,
-    trigger: async (trigger) => {
-      s.triggers.push(trigger)
+    trigger: async (trigger, name) => {
+      s.triggers.push(name === undefined ? trigger : `${trigger} ${name}`)
       if (s.hold) await s.hold
       s.onTrigger?.(trigger)
       return true
@@ -105,6 +105,9 @@ async function boot(opts: {
 
 const triggers = (bridge: ViewerBridge) => bridge.posts.filter((p) => p.url === '/api/mesh/agents/refresh')
   .map((p) => (JSON.parse(String(p.init?.body)) as { trigger: string }).trigger)
+// the whole bodies, `name` included (cards view V5c1)
+const posted = (bridge: ViewerBridge) => bridge.posts.filter((p) => p.url === '/api/mesh/agents/refresh')
+  .map((p) => JSON.parse(String(p.init?.body)) as Json)
 const meshReads = (log: string[]) => log.filter((entry) => entry === 'GET /api/mesh/agents').length
 const section = () => document.querySelector<HTMLElement>('.agents-home .mesh-agents')
 const meshRow = (name: string) => [...document.querySelectorAll<HTMLElement>('.mesh-agents .ma-row')]
@@ -118,14 +121,20 @@ const UP_ROWS = [
   ['request-post', 'Reachable', 'Remote · tailnet · v0.0.0-fixture · A2A 1.0 · 2 skills', ''],
   ['unslop', 'Not running · starts on its first call', 'Local · 127.0.0.1:4420 · v0.3.1 · seen 2h ago · A2A 1.0 · 1 skill', ''],
 ]
-function expand(name: string): void {
+// cards view V5c1: pressing a row opens the agent tab; its page holds the details
+const agentTab = () => document.querySelector<HTMLElement>('#tabs .tab[data-tab="agent"]')!
+const page = () => document.getElementById('agentPage')!
+const activeTab = () => document.querySelector('#tabs .tab[aria-selected="true"]')?.getAttribute('data-tab')
+async function openAgent(name: string): Promise<void> {
   click(meshRow(name)?.querySelector('.ma-row-toggle'))
+  await settle()
 }
-function openJson(name: string): void {
-  const json = meshRow(name)!.querySelector<HTMLDetailsElement>('.ma-json')!
+function openJson(): void {
+  const json = page().querySelector<HTMLDetailsElement>('.ma-json')!
   json.open = true
   json.dispatchEvent(new Event('toggle'))
 }
+const pageLines = () => [...page().querySelectorAll('.ma-lines dt')].map((dt) => [dt.textContent, dt.nextElementSibling?.textContent])
 function pointer(el: Element | null, type: 'pointerdown' | 'pointerup'): void {
   el!.dispatchEvent(new window.PointerEvent(type, { bubbles: true }))
 }
@@ -434,7 +443,7 @@ describe('the Mesh agents section (agent cards view V3)', () => {
 
   // The same seed with the mesh off and on: what the human's attention reads does not move.
   describe('the attention surfaces equal the run without mesh', () => {
-    const SURFACES = { title: '(2) Agent Inbox', badge: 2, tabs: ['2', '1', '1', ''], needsYou: ['Approve it.', 'Ship it?'] }
+    const SURFACES = { title: '(2) Agent Inbox', badge: 2, tabs: ['2', '1', '1', '', ''], needsYou: ['Approve it.', 'Ship it?'] }
     function seed(d: Database.Database): void {
       insertItem(d, { project: 'agent-inbox', stream: 'main', agent: 'copilot', kind: 'question', title: 'Ship it?' })
       advanceClock()
@@ -450,17 +459,28 @@ describe('the Mesh agents section (agent cards view V3)', () => {
       return {
         title: document.title,
         badge: badgeCount(),
-        tabs: ['needsYou', 'notes', 'boards', 'done'].map(tabCount),
+        tabs: ['needsYou', 'notes', 'boards', 'done', 'agent'].map(tabCount),
         needsYou: await (async () => { await showInbox(); return rows().map((el) => el.querySelector('.nrow-title')?.textContent) })(),
       }
     }
-    it.each([['off', null], ['on, every row amber', 'amber']] as const)('mesh %s', async (_label, mode) => {
+    const railCounts = () => [...document.querySelectorAll('#rail .rail-tab')].map((el) => el.textContent?.replace(/\s+/g, ' ').trim() ?? '')
+    let railOff: string[] = []
+    it.each([['off', null], ['on, every row amber', 'amber'], ['on, the agent tab open', 'tab']] as const)('mesh %s', async (_label, mode) => {
       const fake = mode ? fakeMesh(body(unslop({ state: 'mismatch', reason: 'no unslop skill', fix: 'rebuild packages/mesh' }),
         requestPost({ state: 'unreachable', reason: 'connection refused', card: null, cardJson: null }))) : null
       await boot({ mesh: fake, seed })
       await pollTick()
       await settle()
       expect(Boolean(section())).toBe(Boolean(mode))
+      if (mode === 'tab') {
+        await openAgent('unslop')
+        await pollTick()
+        expect(agentTab().hidden).toBe(false)
+        expect(agentTab().querySelector('.tab-count')).toBeNull()
+      }
+      // the rail as the run without mesh drew it (it.each runs in order)
+      if (!mode) railOff = railCounts()
+      expect(railCounts()).toEqual(railOff)
       expect(await surfaces()).toEqual(SURFACES)
     })
   })
@@ -477,9 +497,9 @@ describe('the Mesh agents section (agent cards view V3)', () => {
     const { log } = await boot({ mesh: fakeMesh(body(requestPost({ state: 'mismatch', reason: 'no request-post-status skill', fix: 'update agent-inbox or the service', card: summarizeCard(hostile), cardJson: cardJson(hostile) }))) })
     const images = document.querySelectorAll('img').length
     await pollTick()
-    expand('request-post')
-    openJson('request-post')
-    const row = meshRow('request-post')!
+    await openAgent('request-post')
+    openJson()
+    const row = page()
     const lines = [...row.querySelectorAll('.ma-lines dd')].map((dd) => dd.textContent)
     expect(lines).toContain('<a href="https://evil.example/">click</a><script>alert(2)</script>')
     expect(lines).toContain('<img src=x onerror="alert(1)">')
@@ -487,6 +507,8 @@ describe('the Mesh agents section (agent cards view V3)', () => {
     expect([...row.querySelectorAll('.ma-tag')].map((el) => el.textContent)).toEqual(['<i>tag</i>'])
     expect(row.querySelector('.ma-json-text')?.textContent).toBe(cardJson(hostile))
     expect(section()!.querySelectorAll('img, a, script, b, i, [href], [src]')).toHaveLength(0)
+    expect(page().querySelectorAll('img, a, script, b, i, [href], [src]')).toHaveLength(0)
+    expect(agentTab().querySelectorAll('img, a, [href], [src]')).toHaveLength(0)
     expect(document.querySelectorAll('img')).toHaveLength(images)
     await pollTick()
     expect(log.filter((entry) => !/^(GET|POST) \/api\//.test(entry))).toEqual([])
@@ -544,18 +566,22 @@ describe('the Mesh agents section (agent cards view V3)', () => {
       },
     })
     await pollTick()
-    expand('request-post')
-    openJson('request-post')
+    await openAgent('request-post')
+    openJson()
+    await pollTick()
     const records: MutationRecord[] = []
     const observer = new MutationObserver((list) => records.push(...list))
     observer.observe(section()!, { subtree: true, childList: true, characterData: true, attributes: true })
+    observer.observe(page(), { subtree: true, childList: true, characterData: true, attributes: true })
+    observer.observe(agentTab(), { subtree: true, childList: true, characterData: true, attributes: true })
     await pollTick()
     await pollTick()
+    // the agent tab keeps the read going, and a 304 paints nothing on it
     expect(statuses.slice(-2)).toEqual([304, 304])
     expect(records).toEqual([])
     observer.disconnect()
 
-    const pre = meshRow('request-post')!.querySelector('.ma-json-text')!
+    const pre = page().querySelector('.ma-json-text')!
     const text = pre.firstChild!
     const range = document.createRange()
     range.setStart(text, 2)
@@ -564,13 +590,19 @@ describe('the Mesh agents section (agent cards view V3)', () => {
     document.getSelection()!.addRange(range)
     const selected = String(document.getSelection())
     s.onTrigger = () => { s.body = body(unslop(), requestPost({ checkedAt: at(0) })) }
-    click(section()!.querySelector('.ma-refresh'))
+    click(page().querySelector('.map-refresh'))
     await settle()
-    expect(section()!.querySelector('.ma-checked')?.textContent).toBe('checked 1m ago')
-    expect([...meshRow('request-post')!.querySelectorAll('.ma-lines dd')].at(-1)?.textContent).toBe(`checked ${hhmm(at(0))} · card fetched ${hhmm(at(0))}`)
+    expect(s.triggers.at(-1)).toBe('refresh request-post')
+    expect(page().querySelector('.map-checked')?.textContent).toBe('checked just now')
+    expect([...page().querySelectorAll('.ma-lines dd')].at(-1)?.textContent).toBe(`checked ${hhmm(at(0))} · card fetched ${hhmm(at(0))}`)
     expect(pre.firstChild).toBe(text)
     expect(text.isConnected).toBe(true)
     expect(String(document.getSelection())).toBe(selected)
+
+    // and a poll whose body moved only checkedAt
+    s.body = body(unslop(), requestPost({ checkedAt: at(0) }))
+    await pollTick()
+    expect([pre.firstChild, text.isConnected, String(document.getSelection())]).toEqual([text, true, selected])
   })
 
   it('Refresh sits in the header row outside the disclosure: it posts refresh, then (and only then) repaints through reloadAndPaint()', async () => {
@@ -612,30 +644,197 @@ describe('the Mesh agents section (agent cards view V3)', () => {
     expect(toggle().getAttribute('aria-expanded')).toBe('false')
     expect(section()!.querySelector<HTMLElement>('.ma-body')?.hidden).toBe(true)
     click(toggle())
-    expand('unslop')
-    expect(meshRow('unslop')?.querySelector('.ma-row-toggle')?.getAttribute('aria-expanded')).toBe('true')
-    expect(meshRow('unslop')?.querySelector<HTMLElement>('.ma-details')?.hidden).toBe(false)
+    await openAgent('unslop')
+    expect(page().hidden).toBe(false)
     // the last good card's details, marked as such; Card JSON only for a card fetched now
-    const lines = [...meshRow('unslop')!.querySelectorAll('.ma-lines dt')].map((dt) => [dt.textContent, dt.nextElementSibling?.textContent])
+    const lines = pageLines()
     expect(lines).toContainEqual(['Where', 'Local · http://127.0.0.1:4420profile: unslop'])
     expect(lines).toContainEqual(['Auth', 'bearer (HTTP Bearer), requiredtoken kept outside the app; not shown here'])
     expect(lines).toContainEqual(['Extension', 'urn:agent-inbox:ext:unslop:v1 · requiredapi 1 · skillId unslop · rulesSha256 3f9a1c0e7b22 · bytes 6204'])
     expect(lines).toContainEqual(['Modes', 'in text/plain · out text/plain'])
-    expect(meshRow('unslop')?.querySelector<HTMLElement>('.ma-json')?.hidden).toBe(true)
-    // the open row survives polls, a changed body included, and nothing is stored
+    expect(page().querySelector<HTMLElement>('.ma-json')?.hidden).toBe(true)
+    // the open agent survives polls, a changed body included, and nothing is stored
     s.body = body(unslop({ checkedAt: at(0) }), requestPost())
     await pollTick()
-    expect(meshRow('unslop')?.querySelector('.ma-row-toggle')?.getAttribute('aria-expanded')).toBe('true')
-    expect(JSON.stringify({ ...localStorage, ...sessionStorage })).not.toMatch(/mesh/i)
-    // pinned as source: the section's state joins agentsHome.state(), which joins frameInputs()
+    expect([activeTab(), page().querySelector('.map-name')?.textContent]).toEqual(['agent', 'unslop'])
+    expect(JSON.stringify({ ...localStorage, ...sessionStorage })).not.toMatch(/mesh|unslop/i)
+    // pinned as source: the section's state joins agentsHome.state(), the page's its own, and both frameInputs()
     const app = readFileSync(resolve(REPO, 'public', 'app.js'), 'utf8')
     const frame = app.slice(app.indexOf('function frameInputs()'), app.indexOf('function noteOutsideChange'))
     expect(frame).toContain('agentsHome.state()')
+    expect(frame).toContain('meshAgentPage.state()')
     expect(readFileSync(resolve(REPO, 'public', 'agents-home.js'), 'utf8')).toMatch(/state: \(\) => \[[^\n]*mesh\.state\(\)/)
   })
 
+  describe('the agent tab (cards view V5c1)', () => {
+    const pressKey = (key: string) => document.body.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }))
+    const heading = () => [document.getElementById('pageKicker')?.textContent, document.getElementById('pageTitle')?.textContent]
+    const rowButton = (name: string) => meshRow(name)!.querySelector<HTMLElement>('.ma-row-toggle')
+
+    it('with no mesh key there is no agent tab, and selecting it does nothing', async () => {
+      const { bridge, log } = await boot({ mesh: null })
+      await pollTick()
+      await settle()
+      expect(log.map((entry) => entry.replace(/^GET /, ''))).toEqual(BOOT_REQUESTS)
+      expect([agentTab().hidden, page().hidden]).toEqual([true, true])
+      click(agentTab())
+      await settle()
+      expect([activeTab(), page().hidden, agentTab().hidden]).toEqual(['dashboard', true, true])
+      expect(bridge.posts).toEqual([])
+    })
+
+    it('pressing a row opens the agent in the one tab: one open for it, one reloadAndPaint(); Close returns to its row', async () => {
+      const { bridge, log, s } = await boot()
+      await pollTick()
+      const loads = () => log.filter((entry) => entry === 'GET /api/items').length
+      const before = loads()
+      await openAgent('unslop')
+      expect([agentTab().hidden, agentTab().querySelector('.tab-name')?.textContent, activeTab()]).toEqual([false, 'unslop', 'agent'])
+      expect([page().hidden, document.getElementById('dashboard')?.hidden]).toEqual([false, true])
+      expect(heading()).toEqual(['Mesh agent', 'unslop'])
+      expect(page().querySelector('.map-status')?.textContent).toBe('Not running · starts on its first call')
+      expect(page().querySelector('.map-checked')?.textContent).toBe('checked 1m ago')
+      expect(posted(bridge)).toEqual([{ trigger: 'open' }, { trigger: 'open', name: 'unslop' }])
+      expect(s.triggers).toEqual(['open', 'open unslop'])
+      expect(loads()).toBe(before + 1)
+      // until V5d the page opens on Details, its inner tablist's only tab
+      const inner = [...page().querySelectorAll<HTMLElement>('.map-tabs [role="tab"]')]
+      expect(inner.map((t) => [t.textContent, t.getAttribute('aria-selected'), t.tabIndex])).toEqual([['Details', 'true', 0]])
+      expect(page().querySelector(`#${inner[0]!.getAttribute('aria-controls')}`)?.getAttribute('aria-labelledby')).toBe(inner[0]!.id)
+
+      // an inner tab, the active agent tab and a poll post nothing
+      click(inner[0])
+      click(agentTab())
+      await settle()
+      await pollTick()
+      expect(posted(bridge)).toHaveLength(2)
+      // the agent tab from another tab is an open for that agent; it stays in the list meanwhile
+      tab('needsYou')
+      await settle()
+      expect(agentTab().hidden).toBe(false)
+      tab('agent')
+      await settle()
+      expect(posted(bridge).slice(2)).toEqual([{ trigger: 'open', name: 'unslop' }])
+
+      // Close: the Dashboard (one open for every agent), focus on the agent's row in a focused window
+      vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+      page().querySelector<HTMLElement>('.map-close')!.focus()
+      click(page().querySelector('.map-close'))
+      await settle()
+      expect([activeTab(), agentTab().hidden, page().hidden]).toEqual(['dashboard', true, true])
+      expect(posted(bridge).slice(3)).toEqual([{ trigger: 'open' }])
+      expect(document.activeElement).toBe(rowButton('unslop'))
+      expect(heading()).toEqual(['Monitor', 'Live Operations Desk'])
+
+      // a second press within 60 s posts one open (the server skips the check)
+      await openAgent('unslop')
+      expect(posted(bridge).slice(4)).toEqual([{ trigger: 'open', name: 'unslop' }])
+      // another agent replaces it in the same slot
+      tab('dashboard')
+      await settle()
+      await openAgent('request-post')
+      expect(document.querySelectorAll('#tabs .tab:not([hidden])')).toHaveLength(6)
+      expect([agentTab().querySelector('.tab-name')?.textContent, page().querySelector('.map-name')?.textContent, heading()[1]])
+        .toEqual(['request-post', 'request-post', 'request-post'])
+      expect(pageLines()).toContainEqual(['Where', 'Remote · https://request-post.tailnet-name.ts.net'])
+      expect(pageLines().find(([label]) => label === 'Where')).not.toContain('profile: unslop')
+      expect(agentTab().classList.contains('ma-tone-up')).toBe(true)
+      expect(posted(bridge).slice(6)).toEqual([{ trigger: 'open', name: 'request-post' }])
+    })
+
+    it('Settings opened over the agent tab keeps its title through a forced paint and a changed poll', async () => {
+      const { s } = await boot()
+      await pollTick()
+      await openAgent('unslop')
+      expect(heading()).toEqual(['Mesh agent', 'unslop'])
+      click(document.getElementById('gear'))
+      await settle()
+      expect(heading()).toEqual(['Agent Inbox', 'Settings'])
+      s.body = body(unslop({ checkedAt: at(0) }), requestPost())
+      await pollTick()
+      click(section()!.querySelector('.ma-toggle'))
+      await settle()
+      expect(heading()).toEqual(['Agent Inbox', 'Settings'])
+      click(document.getElementById('gear'))
+      await settle()
+      expect([activeTab(), heading()]).toEqual(['agent', ['Mesh agent', 'unslop']])
+    })
+
+    it('no path lands on an empty agent tab: roving, G keys, a hash, a focus bookmark', async () => {
+      let id = ''
+      await boot({ seed: (d) => { id = insertItem(d, { project: 'demo', stream: 'main', agent: 'copilot', kind: 'question', title: 'Ship it?' }) } })
+      await pollTick()
+      vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+      // a bookmark captured while the tab was open, then the tab closed
+      await openAgent('unslop')
+      page().querySelector<HTMLElement>('.map-refresh')!.focus()
+      await pollTick()
+      expect(document.activeElement).toBe(page().querySelector('.map-refresh'))
+      click(page().querySelector('.map-close'))
+      await settle()
+      await pollTick()
+      expect([activeTab(), document.activeElement]).toEqual(['dashboard', rowButton('unslop')])
+
+      // roving in the library's tablist skips the hidden tab: End lands on History
+      const dashboardTab = document.querySelector<HTMLElement>('#tabs .tab[data-tab="dashboard"]')!
+      dashboardTab.focus()
+      dashboardTab.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true, cancelable: true }))
+      expect(document.activeElement?.getAttribute('data-tab')).toBe('done')
+      document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }))
+      expect(document.activeElement?.getAttribute('data-tab')).toBe('dashboard')
+
+      // every G destination: none is the agent tab
+      for (const key of ['d', 'i', 'p', 'n', 'h', 'l']) {
+        ;(document.activeElement as HTMLElement | null)?.blur()
+        pressKey('g')
+        pressKey(key)
+        await settle()
+        expect([activeTab(), agentTab().hidden, page().hidden], key).toEqual([activeTab(), true, true])
+        expect(activeTab(), key).not.toBe('agent')
+      }
+      // an item hash lands on the item's own tab
+      tab('dashboard')
+      await settle()
+      navigateToHash(`#item/${id}`)
+      await settle()
+      expect([activeTab(), page().hidden]).toEqual(['needsYou', true])
+      // and the hidden tab's own click (selectTab('agent')) does nothing
+      click(agentTab())
+      await settle()
+      expect(activeTab()).toBe('needsYou')
+    })
+
+    it('an agent leaving mesh.json keeps the tab under one line; a reload starts with no agent tab', async () => {
+      const { s } = await boot()
+      await pollTick()
+      await openAgent('request-post')
+      const gone = page().querySelector<HTMLElement>('.map-gone')!
+      expect(gone.hidden).toBe(true)
+      const lines = pageLines()
+      s.body = body(unslop())
+      await pollTick()
+      expect([activeTab(), agentTab().hidden, gone.hidden, gone.textContent]).toEqual(['agent', false, false, 'This agent is not in mesh.json any more'])
+      expect(pageLines()).toEqual(lines)
+      s.body = body(unslop(), requestPost())
+      await pollTick()
+      expect(gone.hidden).toBe(true)
+      // mesh off: the same line, the tab kept
+      s.body = { on: false, agents: [] }
+      s.version = undefined
+      await pollTick()
+      expect([activeTab(), agentTab().hidden, gone.hidden]).toEqual(['agent', false, false])
+
+      expect(JSON.stringify({ ...localStorage, ...sessionStorage })).not.toMatch(/request-post|agentPage/)
+      db?.close()
+      db = null
+      await boot()
+      await pollTick()
+      expect([agentTab().hidden, page().hidden, activeTab()]).toEqual([true, true, 'dashboard'])
+    })
+  })
+
   it('no public file names the clients or the command (the text guard, which test/mesh.test.ts runs unchanged)', () => {
-    for (const file of ['mesh-section.js', 'agents-home.js', 'app.js', 'snapshots.js']) {
+    for (const file of ['mesh-section.js', 'mesh-agent-page.js', 'agents-home.js', 'app.js', 'snapshots.js']) {
       expect(readFileSync(resolve(REPO, 'public', file), 'utf8'), file).not.toMatch(/unslop-client|request-post-client|meshctl/)
     }
   })

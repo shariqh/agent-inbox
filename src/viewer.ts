@@ -1017,12 +1017,13 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
     if (etagMatches(c.req.header('If-None-Match'), etag)) return c.body(null, 304)
     return c.body(body, 200, { 'Content-Type': 'application/json' })
   })
-  // The only way a check starts: an open or a Refresh press. Answers once the checks end.
+  // The only way a check starts: an open or a Refresh press, for every agent or (with `name`)
+  // one, as opening an agent tab does (cards view V5 §3.4). Answers once the checks end.
   app.post('/api/mesh/agents/refresh', async (c) => {
     const body = await c.req.json().catch(() => null) as unknown
     const { trigger, name, ...rest } = (body && typeof body === 'object' && !Array.isArray(body) ? body : {}) as Record<string, unknown>
     if ((trigger !== 'open' && trigger !== 'refresh') || Object.keys(rest).length
-      || (name !== undefined && (trigger !== 'refresh' || typeof name !== 'string'))) {
+      || (name !== undefined && typeof name !== 'string')) {
       return c.json({ ok: false, error: 'expected {"trigger":"open"|"refresh","name"?:string}' }, 400)
     }
     const known = await (opts.mesh?.trigger(trigger, name as string | undefined) ?? Promise.resolve(name === undefined))

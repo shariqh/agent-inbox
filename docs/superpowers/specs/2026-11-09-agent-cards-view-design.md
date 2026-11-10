@@ -15,6 +15,11 @@ unslop ([`2026-11-06-unslop-a2a-agent-design.md`](2026-11-06-unslop-a2a-agent-de
 [`docs/architecture/mesh.md`](../../architecture/mesh.md) that "the viewer reads nothing of the
 mesh today"; and supersedes unslop §4.5 (b) and request-post §1's "no viewer change" non-goal
 (§10 below).
+**Amended 2026-11-09 by cards view V5**
+([`2026-11-09-agent-cards-view-v5-design.md`](2026-11-09-agent-cards-view-v5-design.md)): an
+agent opens in an agent tab with Run history and Details; the section's rows become a strip of
+cards; `meshctl` keeps a run record the viewer reads. It touches §1, §2.1–§2.3, §2.6, §3.2, §4.5,
+§4.7, §5.2, §6 and §7.
 **Revised 2026-11-09 after review round 1:** §2.2-§2.6, §3.4, §4.2-§4.7, §5.1, §7, §9, §10 and
 §13 Q3 (now checks on open and Refresh only). Round 2: the open trigger's exact handlers (§4.5),
 what paints after each trigger, and the `unchecked` state (§2.4).
@@ -120,6 +125,9 @@ The section's header row says "Mesh agents (2)" and, at the right, "checked 1m a
 check) and the **Refresh** button.
 
 ### 2.3 The expanded row
+
+*Superseded by V5 §2.1 (the card, V5c2) and §4 (Details, in the agent tab, V5c1). The lines and
+words are unchanged; their place moved.*
 
 Opening a row shows, as labelled lines:
 
@@ -382,11 +390,13 @@ not change. The module is pure: no imports and no I/O.
   3. **`selectTab('dashboard')` from another tab** (the tab strip, its key), using the last known
      `liveVersion.mesh`, since this path does not re-read `/api/version` (§3.3). Selecting the
      Dashboard while it is already the active tab posts nothing.
+  4. Opening an agent tab (a card or row, or the agent tab from another tab) posts
+     `{ trigger: 'open', name }` for that agent only (V5 §3.4).
 
   An open never fires from a render, a paint, a poll tick, `load()`, `reloadAndPaint()`,
   `openSessionFocus()` or a Setup install.
 - **The route.** `POST /api/mesh/agents/refresh` with `{ "trigger": "open" }`,
-  `{ "trigger": "refresh" }` or `{ "trigger": "refresh", "name": "<key>" }`. It checks the agents,
+  `{ "trigger": "refresh" }`, or either with `"name": "<key>"` (V5 §3.4 added `open` with a name). It checks the agents,
   waits for the checks to finish (bounded by the deadlines of §4.2, one check per agent at a time)
   and answers `{ "ok": true }`. Any other body is 400; a name that is not configured is 200
   `{ "ok": false, "error": "not configured" }`. An `open` check skips an agent checked in the last
@@ -399,7 +409,7 @@ not change. The module is pure: no imports and no I/O.
   survives it, since only changed text is rewritten). A row shows
   `checking` while its check runs, if a tick lands meanwhile.
 - **The read.** The page reads `GET /api/mesh/agents` only when the last `/api/version` carried
-  `mesh`, the Dashboard is the current tab and the document is visible. Then it is one more read
+  `mesh`, the Dashboard or the agent tab is the current tab and the document is visible. Then it is one more read
   in the poll tick, a conditional one (§4.7). The read never starts a check; between triggers it
   is a 304.
 - **The page's fallback**, like `messagesBody` for `/api/messages`:
@@ -512,7 +522,7 @@ not shown: reading it would need an authenticated call.
 | Invariant | How it holds |
 |---|---|
 | One attention predicate; nothing mesh reaches a badge, count, tab, rail or dock | The section reads only `lastData.mesh`. It never touches `public/attention.js` inputs. The DOM test compares the attention surfaces with the section drawn against the same seed without it (the `surfaces()` check in `test/dom/agents-home.test.ts`). |
-| Two render entries | The section paints inside `agentsHome.paint()`, which `renderDashboardAmbient` calls from both `load()` and `reloadAndPaint()`. Only a Refresh press ends in `reloadAndPaint()`; an open's result arrives on the next poll tick and paints through `renderIfIdle()` under the normal gates. Toggling a row repaints its own region from the last model, as the folds do. |
+| Two render entries | The section paints inside `agentsHome.paint()`, which `renderDashboardAmbient` calls from both `load()` and `reloadAndPaint()`; the agent page (V5) paints in `paintAmbient()` from the same two. Only a Refresh press ends in `reloadAndPaint()`; an open's result arrives on the next poll tick and paints through `renderIfIdle()` under the normal gates. Toggling a row repaints its own region from the last model, as the folds do. |
 | An idle tick paints nothing (#298) | The read joins `lastData.reads` by identity; the section's open state, the open rows and the open JSON blocks join `agentsHome.state()`, which is in `frameInputs()`. No check runs without a human trigger, and a 304 resolves to the same object, so nothing paints. A skipped read keeps the last body, so leaving the Dashboard changes no read either. |
 | A held pointer, scroll or selection is never a suspension | Rows update in place keyed by `key`, each part rewritten only when its own text changes. The JSON `<pre>` is rewritten only when `cardJson` changes, so a selection inside it survives polls. |
 | The Agents view is always on | Unchanged. The section is part of it and is simply absent when the mesh is off. |
@@ -528,6 +538,8 @@ not shown: reading it would need an authenticated call.
 ---
 
 ## §7 — Decision 6: slices and tests
+
+*V5 extends `test/dom/mesh-agents.test.ts` and keeps every invariant case.*
 
 Each slice is one PR, mergeable alone, with its docs.
 

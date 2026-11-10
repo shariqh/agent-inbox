@@ -11,6 +11,9 @@
 // the `agents.unslop` key, its profile template, caller token and shim.
 // `enable --request-post` (#500, request-post design §6, §8) turns on the
 // remote request-post agent: its endpoint, a copy of its bearer token and a shim.
+// `add` (#529, mesh design §6.7, D13–D17) writes a card-driven `agents.<id>` entry for an
+// agent this repo doesn't ship: its card URL, endpoint, token copy and card pin
+// (src/mesh-add.ts holds the rules); `remove` takes one out. Only `add` writes such an entry.
 //
 //   meshctl enable --agents-view [--apply]   says the Agents view is always on
 //   meshctl enable --unslop [--port <n>] [--checkout <path>] [--apply]
@@ -18,6 +21,9 @@
 //   meshctl disable [--apply]                turn every mesh piece off
 //   meshctl disable --unslop [--purge] [--apply]
 //   meshctl disable --request-post [--purge] [--apply]
+//   meshctl add <card-url> [--id <id>] [--token-file <path>] [--apply]
+//                                            add an A2A agent this repo doesn't ship (#529)
+//   meshctl remove <id> [--apply]            take an added agent out again
 //   meshctl forget-runs (--unslop | --request-post | --web-search | --all) [--apply]
 //   meshctl status                           say what mesh.json turns on
 //   meshctl unslop --kind <kind> [--report <file>] [--timeout <s>] < draft
@@ -35,6 +41,7 @@ import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { MESH_SCHEMA, loopbackPort, meshDir, meshFile, readMesh, requestPostEndpoint } from './mesh-config.js'
 import type { MeshDocument, MeshRead } from './mesh-config.js'
+import { BUILT_IN_AGENTS, addedEntry, addedPlace, cardEndpoint, cardLine, cardSha256, fetchAddedCard, idFromName, idRefusal, placeRefusal } from './mesh-add.js'
 import { appendRun, pruneRuns, runFiles, tidyRuns } from './mesh-runs.js'
 import type { RunAgent, RunCollector } from './mesh-runs.js'
 import { REQUEST_POST_USAGE, runRequestPost } from './request-post-client.js'
@@ -52,11 +59,13 @@ const USAGE = `usage: agent-inbox-meshctl status
        agent-inbox-meshctl disable --unslop [--purge] [--apply]
        agent-inbox-meshctl enable --request-post --endpoint <url> --token-file <path> [--apply]
        agent-inbox-meshctl disable --request-post [--purge] [--apply]
+       agent-inbox-meshctl add <card-url> [--id <id>] [--token-file <path>] [--apply]
+       agent-inbox-meshctl remove <id> [--apply]
        agent-inbox-meshctl forget-runs (--unslop | --request-post | --web-search | --all) [--apply]
        agent-inbox-meshctl unslop --kind <kind> [--report <file>] [--timeout <s>] < draft
        agent-inbox-meshctl request-post file|status|wait …
 
-Without --apply, enable, disable and forget-runs are dry runs: they print what they would do.
+Without --apply, enable, disable, add, remove and forget-runs are dry runs: they print what they would do.
 The Agents view is always on, so enable --agents-view writes nothing.
 enable --unslop needs packages/mesh built in the checkout (npm ci && npm run build there);
 it listens on http://127.0.0.1:<port> only (default ${UNSLOP_PORT}). disable --unslop keeps the
@@ -65,6 +74,11 @@ it sends one public draft to the agent (docs/unslop.md).
 enable --request-post copies the per-device bearer token from --token-file (never printed);
 the endpoint is ${ENDPOINT_RULE} (docs/request-post.md).
 disable --request-post keeps its run records unless --purge.
+add fetches an A2A agent's card (no token, no redirect), checks it and pins it, and adds the
+agent as agents.<id>: the card URL and endpoint must be http://127.0.0.1:<port> or
+https://<name>.<tailnet>.ts.net (a public host waits for #534). A loopback agent needs
+--token-file (a 0600 file you own; meshctl copies it and never prints it). add never replaces an
+entry or takes a built-in name; remove deletes only an entry add wrote, and its token copy.
 request-post is what <mesh dir>/bin/request-post runs: it files a content request with the
 service, reads its status or waits for it (docs/request-post.md).
 Each client run appends a record without text to <mesh dir>/mesh/runs/, kept 30 days;
@@ -212,7 +226,7 @@ function requestPostPaths(dir: string) {
 const TOKEN_FILE_MAX = 4096
 
 /** The bearer token in `path`: a regular file the user owns, one run of at least 32 visible ASCII characters. */
-function readToken(path: string): { token: string } | { refused: string } {
+function readToken(path: string, privateOnly = false): { token: string } | { refused: string } {
   let fd: number
   try {
     fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
@@ -223,6 +237,7 @@ function readToken(path: string): { token: string } | { refused: string } {
     const stat = fstatSync(fd)
     const uid = process.getuid?.()
     if (!stat.isFile() || (uid !== undefined && stat.uid !== uid)) return { refused: 'the token file is not a regular file you own' }
+    if (privateOnly && stat.mode & 0o077) return { refused: 'the token file is open to other users: chmod 600 it' }
     if (stat.size > TOKEN_FILE_MAX) return { refused: `the token file is larger than ${TOKEN_FILE_MAX} bytes` }
     const token = readFileSync(fd, 'utf8').replace(/\r?\n$/, '')
     return /^[\x21-\x7e]{32,}$/.test(token) ? { token } : { refused: 'the token file must hold one token of at least 32 printable characters, no spaces' }
@@ -285,6 +300,11 @@ function meshctl(argv: string[], io: MeshctlIo): number {
     err(REQUEST_POST_USAGE)
     return 4
   }
+  if (command === 'add') {
+    // async: the entry below runs it (runAdd)
+    err(USAGE)
+    return 4
+  }
   const flags = new Set<string>()
   const values = new Map<string, string>()
   for (let i = 0; i < rest.length; i++) {
@@ -326,7 +346,7 @@ function meshctl(argv: string[], io: MeshctlIo): number {
   // the step that takes agents.<agent> out of mesh.json, deleting the file when nothing else is left
   const dropAgent = (existing: MeshRead, agent: string): Step | undefined => {
     const agents = existing.kind === 'present' ? objectOf(existing.doc['agents']) : undefined
-    if (existing.kind !== 'present' || !agents || !(agent in agents)) return undefined
+    if (existing.kind !== 'present' || !agents || !Object.hasOwn(agents, agent)) return undefined
     const { [agent]: _gone, ...others } = agents
     const next: MeshDocument = { ...existing.doc, agents: others }
     if (!Object.keys(others).length) delete next['agents']
@@ -350,7 +370,12 @@ function meshctl(argv: string[], io: MeshctlIo): number {
     const port = entry === undefined ? undefined : loopbackPort(objectOf(entry)?.['endpoint'])
     const rpEntry = agents?.['request-post']
     const rpEndpoint = rpEntry === undefined ? undefined : requestPostEndpoint(objectOf(rpEntry)?.['endpoint'])
-    const pieces = [...(port ? ['unslop'] : []), ...(rpEndpoint ? ['request-post'] : [])].join(' and ')
+    const added = Object.entries(agents ?? {}).flatMap(([id, value]) => {
+      const read = addedEntry(id, value)
+      return read === undefined ? [] : [{ id, read }]
+    })
+    const valid = added.filter((a) => a.read !== 'invalid').length
+    const pieces = [...(port ? ['unslop'] : []), ...(rpEndpoint ? ['request-post'] : []), ...(valid ? [plural(valid, 'added agent')] : [])].join(' and ')
     if (existing.kind === 'missing') out(`Mesh: off. No ${name}.\n`)
     else if (existing.kind === 'refused') out(`Mesh: off. ${name} ${existing.reason}, so it is read as off.\n`)
     else out(pieces ? `Mesh: on. ${name} turns on ${pieces}.\n` : `Mesh: off. ${name} turns on no piece this build reads.\n`)
@@ -361,7 +386,41 @@ function meshctl(argv: string[], io: MeshctlIo): number {
     const rp = requestPostPaths(dir)
     const rpState = rpEndpoint ? `on at ${rpEndpoint}` : rpEntry === undefined ? 'off' : `off (agents.request-post.endpoint is not ${ENDPOINT_RULE})`
     out(`Request-post: ${rpState}. Token: ${has(rp.token)}; shim ${show(rp.shim)}: ${has(rp.shim)}.\n`)
+    // an id or field that breaks its rule is never echoed: it is a hand edit, and could hold anything
+    for (const { id, read } of added) {
+      const who = idRefusal(id) ? 'an entry with an id meshctl add refuses' : id
+      out(read === 'invalid'
+        ? `Added agent ${who}: off (the entry breaks meshctl add's rules; remove it and add it again).\n`
+        : `Added agent ${id}: at ${read.endpoint}; card pin ${read.cardSha256.slice(0, 12)}…; token: ${read.tokenFile === undefined ? 'none' : has(read.tokenFile)}.\n`)
+    }
     return existing.kind === 'refused' ? 1 : 0
+  }
+
+  if (command === 'remove') {
+    const ids = rest.filter((arg) => arg !== '--apply')
+    if (ids.length !== 1 || rest.length > 2 || ids[0]!.startsWith('-')) return usage()
+    const id = ids[0]!
+    const bad = idRefusal(id)
+    if (bad) return refuse(BUILT_IN_AGENTS.includes(id) ? `${id} is a built-in agent: meshctl disable turns it off` : bad)
+    const existing = readMesh(file)
+    if (existing.kind === 'refused') return refuse(`${name} ${existing.reason}. Remove it by hand if you are sure`)
+    const agents = existing.kind === 'present' ? objectOf(existing.doc['agents']) : undefined
+    if (agents && Object.hasOwn(agents, id) && addedEntry(id, agents[id]) === undefined) return refuse(`agents.${id} was not written by meshctl add, so remove leaves it alone`)
+    const tokens = join(dir, 'mesh', 'tokens')
+    const token = join(tokens, id)
+    const drop = dropAgent(existing, id)
+    const steps: Step[] = drop ? [drop] : []
+    if (exists(token)) {
+      steps.push({
+        dry: `Would delete the token copy ${show(token)}.`,
+        run: () => { unlinkSync(token); removeIfEmpty(tokens); removeIfEmpty(join(dir, 'mesh')); return `Deleted ${show(token)}.` },
+      })
+    }
+    if (!steps.length) {
+      out(`${id} is not in ${name}. Nothing to do.\n`)
+      return 0
+    }
+    return runSteps(steps, apply, out, err, 'Steps before it are done; nothing after it ran.')
   }
 
   if (command === 'enable' && !unslop && !requestPost) {
@@ -584,6 +643,112 @@ function forgetRuns(dir: string, agents: RunAgent[], apply: boolean, now: number
 }
 
 type ClientIo = Pick<UnslopIo & RequestPostIo, 'env' | 'home' | 'stdin' | 'out' | 'err'>
+
+/**
+ * `add <card-url> [--id <id>] [--token-file <path>] [--apply]` (#529, mesh design §6.7, D13–D17):
+ * fetches and checks the card, applies the endpoint rule and, with `--apply`, copies the token
+ * (0600, never printed) and writes `agents.<id>` = { card, endpoint, tokenFile?, cardSha256 },
+ * keeping every other key and a backup. It never replaces an entry or takes a built-in name, and
+ * sends no token: a loopback agent's identity proof (D17) runs before every call (#530).
+ */
+export async function runAdd(args: string[], io: MeshctlIo = {}): Promise<number> {
+  const env = io.env ?? process.env
+  const home = io.home ?? homedir()
+  const now = io.now ?? (() => new Date())
+  const out = io.out ?? ((text: string) => { process.stdout.write(text) })
+  const err = io.err ?? ((text: string) => { process.stderr.write(text) })
+  const usage = (): number => { err(USAGE); return 2 }
+  const refuse = (reason: string): number => { err(`Refused: ${reason}. Nothing changed.\n`); return 1 }
+  const show = (path: string): string => shown(path, home)
+
+  let cardUrl: string | undefined
+  let id: string | undefined
+  let tokenFile: string | undefined
+  let apply = false
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!
+    if (arg === '--apply' && !apply) apply = true
+    else if (arg === '--id' || arg === '--token-file') {
+      const value = args[++i]
+      if (value === undefined || (arg === '--id' ? id : tokenFile) !== undefined) return usage()
+      if (arg === '--id') id = value
+      else tokenFile = value
+    } else if (!arg.startsWith('-') && cardUrl === undefined) cardUrl = arg
+    else return usage()
+  }
+  if (cardUrl === undefined) return usage()
+  const idBad = id === undefined ? undefined : idRefusal(id)
+  if (idBad) return refuse(idBad)
+  const place = addedPlace(cardUrl)
+  if ('refused' in place) return refuse(placeRefusal('the card URL', place.refused))
+  if (place.loopback && tokenFile === undefined) return refuse('a loopback agent needs --token-file: meshctl call proves its identity with that token before it sends anything (D17)')
+
+  const dir = resolve(meshDir(env, home))
+  const file = meshFile(dir)
+  const name = shown(file, home)
+  if (/[\x00-\x1f\x7f]/.test(dir)) return refuse('a path holds a control character')
+  const source = tokenFile === undefined ? undefined : resolve(tokenFile)
+  let token: string | undefined
+  if (source !== undefined) {
+    const read = readToken(source, true)
+    if ('refused' in read) return refuse(read.refused)
+    token = read.token
+  }
+  // the agents object of a readable mesh.json, or the refusal; read again after the fetch
+  const agentsOf = (read: MeshRead): Record<string, unknown> | string => {
+    if (read.kind === 'refused') return `${name} ${read.reason}. Remove it by hand if you are sure`
+    const value = read.kind === 'present' ? read.doc['agents'] : undefined
+    return (value === undefined ? {} : objectOf(value)) ?? `${name} has an "agents" value that is not an object`
+  }
+  const taken = (agentId: string): string => `the id ${agentId} is already in ${name}, and add never replaces an entry`
+  const early = agentsOf(readMesh(file))
+  if (typeof early === 'string') return refuse(early)
+  if (id !== undefined && Object.hasOwn(early, id)) return refuse(taken(id))
+
+  const fetched = await fetchAddedCard(place)
+  if (fetched.reason !== undefined) return refuse(fetched.reason)
+  const card = fetched.card
+  const endpoint = cardEndpoint(card, place.origin)
+  if ('refused' in endpoint) return refuse(endpoint.refused)
+  const agentId = id ?? idFromName(card['name'])
+  if (agentId === undefined) return refuse('the card\'s name makes no usable id: pass --id <id>')
+  const derivedBad = idRefusal(agentId)
+  if (derivedBad) return refuse(derivedBad)
+  const pin = cardSha256(card)
+
+  const existing = readMesh(file)
+  const agents = agentsOf(existing)
+  if (typeof agents === 'string') return refuse(agents)
+  if (Object.hasOwn(agents, agentId)) return refuse(taken(agentId))
+  const tokens = join(dir, 'mesh', 'tokens')
+  const copy = join(tokens, agentId)
+  const entry = { card: place.url, endpoint: endpoint.endpoint, ...(token === undefined ? {} : { tokenFile: copy }), cardSha256: pin }
+  const present = existing.kind === 'present'
+  const next: MeshDocument = { ...(present ? existing.doc : { schema: MESH_SCHEMA }), agents: { ...agents, [agentId]: entry } }
+  const json = `${JSON.stringify(next, null, 2)}\n`
+
+  out(`Card ${place.url}: ${cardLine(card)}.\nEndpoint ${endpoint.endpoint}${place.loopback ? ': loopback, so meshctl call proves the agent\'s identity before it sends the token or any text (D17)' : ': tailnet https, TLS verified'}.\nCard pin (sha256): ${pin}.\n`)
+  const steps: Step[] = []
+  if (token !== undefined) {
+    steps.push({
+      dry: `Would copy the bearer token in ${show(source!)} to ${show(copy)} (0600${exists(copy) ? ', replacing the one there' : ''}); it is never printed.`,
+      run: () => { mkdirSync(tokens, { recursive: true, mode: 0o700 }); writeAtomic(copy, `${token}\n`, 0o600); return `Copied the token to ${show(copy)}.` },
+    })
+  }
+  steps.push({
+    dry: `Would ${present ? 'replace' : 'create'} ${name}${present ? ' (keeping a backup beside it)' : ''}:\n${json}`,
+    run: () => {
+      mkdirSync(dir, { recursive: true, mode: 0o700 })
+      const backup = present ? ` (backup: ${show(writeBackup(file, now()))})` : ''
+      writeAtomic(file, json, 0o644)
+      return `Wrote ${name}${backup}: ${agentId} is added at ${endpoint.endpoint}.`
+    },
+  })
+  const code = runSteps(steps, apply, out, err, `Steps before it are done; ${name} was not changed.`)
+  if (apply && code === 0) out(`This --apply is your approval for ${agentId} (D14). Nothing calls it until meshctl call ships (#530); meshctl remove ${agentId} --apply takes it out.\n`)
+  return code
+}
+
 const SIGNALS = ['SIGTERM', 'SIGHUP', 'SIGINT'] as const
 
 /**
@@ -622,5 +787,5 @@ if (isMain) {
   const [command, ...rest] = process.argv.slice(2)
   process.exitCode = command === 'unslop' || command === 'request-post'
     ? await runClient(command, rest, { env: process.env, home: homedir(), stdin: process.stdin, out: (text) => { process.stdout.write(text) }, err: (text) => { process.stderr.write(text) } })
-    : runMeshctl(process.argv.slice(2))
+    : command === 'add' ? await runAdd(rest) : runMeshctl(process.argv.slice(2))
 }

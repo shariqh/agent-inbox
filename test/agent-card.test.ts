@@ -10,7 +10,7 @@ import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { startServer } from '../packages/mesh/src/a2a.js'
 import type { A2AServer } from '../packages/mesh/src/a2a.js'
-import { cardJson, checkCard, summarizeCard } from '../src/agent-card.js'
+import { canonicalCard, cardJson, checkAddedCard, checkCard, summarizeCard } from '../src/agent-card.js'
 
 type Json = Record<string, any>
 const REPO = new URL('..', import.meta.url).pathname
@@ -89,6 +89,35 @@ describe('checkCard (agent cards view design §4.4)', () => {
 
   it('anything that is not a card object fails on its first rule', () => {
     for (const card of [undefined, null, '<html>', 42, [UNSLOP]]) expect(checkCard(card, 'unslop')).toBe('no unslop skill')
+  })
+})
+
+describe('checkAddedCard and canonicalCard (meshctl add, #529; mesh design §6.7)', () => {
+  it('passes both shipped cards and fails each rule with its fixed reason, in order', () => {
+    expect(checkAddedCard(UNSLOP)).toBeUndefined()
+    expect(checkAddedCard(REQUEST_POST)).toBeUndefined()
+    const cases: Array<[string, (c: Json) => void]> = [
+      ['no name', (c) => { c.name = '  ' }],
+      ['no name', (c) => { c.name = 7; c.skills = [] }],
+      ['no skill', (c) => { c.skills = 'unslop' }],
+      ['a skill without an id', (c) => { c.skills.push({ id: '' }) }],
+      ['no A2A 1.0 JSON-RPC interface', (c) => { c.supportedInterfaces[0].protocolBinding = 'GRPC' }],
+    ]
+    for (const [reason, edit] of cases) expect(checkAddedCard(change(UNSLOP, edit)), reason).toBe(reason)
+    for (const card of [undefined, null, '<html>', [UNSLOP]]) expect(checkAddedCard(card)).toBe('no name')
+  })
+
+  it('is RFC 8785 JCS without signatures or interface URLs, whatever the key order or URL', () => {
+    expect(canonicalCard({ b: [1, 'é', { d: null, c: true }], a: 1e21, '\u20ac': -0, '1': 0.5, signatures: [{ x: 1 }] }))
+      .toBe('{"1":0.5,"a":1e+21,"b":[1,"é",{"c":true,"d":null}],"€":0}')
+    const moved = change(UNSLOP, (c) => { c.supportedInterfaces[0].url = 'http://127.0.0.1:1/other'; c.signatures = [{ protected: 'p', signature: 's' }] })
+    const reordered = Object.fromEntries(Object.entries(UNSLOP).reverse())
+    expect(canonicalCard(moved)).toBe(canonicalCard(UNSLOP))
+    expect(canonicalCard(reordered)).toBe(canonicalCard(UNSLOP))
+    expect(canonicalCard(UNSLOP)).not.toContain('"url"')
+    expect(canonicalCard(change(UNSLOP, (c) => { c.version = 'other' }))).not.toBe(canonicalCard(UNSLOP))
+    // a "__proto__" key is data, never a prototype
+    expect(canonicalCard(JSON.parse('{"__proto__":{"x":1},"name":"n"}'))).toBe('{"__proto__":{"x":1},"name":"n"}')
   })
 })
 

@@ -30,7 +30,8 @@ printf '…' | npm run --silent meshctl -- call my-agent --skill web-search --js
   from the message, as it would for any other client.
 - `--json` prints the result as one JSON object instead of text (below).
 - `--report <file>` writes `{ "exit": <code>, "state"?, … }` after every run that got past the
-  arguments, so a stale report never survives. When the agent answered, it holds the same framed
+  arguments, so a stale report never survives. `state` is the task's last A2A 1.0 state name;
+  any other string the agent sends is ignored. When the agent answered, it holds the same framed
   fields as `--json`, including the message of a refused or failed task. The file is 0600 and
   never followed through a symlink.
 - `--timeout` is 1 to 600 seconds (default 300). At the deadline the task is cancelled.

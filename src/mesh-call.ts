@@ -32,6 +32,8 @@ const POLL_MS = 5_000
 const TERMINAL = ['TASK_STATE_COMPLETED', 'TASK_STATE_REJECTED', 'TASK_STATE_FAILED', 'TASK_STATE_CANCELED']
 // a one-shot client cannot answer these, so they end the call too
 const INTERRUPTED = ['TASK_STATE_INPUT_REQUIRED', 'TASK_STATE_AUTH_REQUIRED']
+// A2A 1.0's TaskState names: any other string an agent sends is ignored, so it never reaches the report
+const STATES = [...TERMINAL, ...INTERRUPTED, 'TASK_STATE_SUBMITTED', 'TASK_STATE_WORKING']
 const TASK_ID = /^[\x21-\x7e]{1,128}$/
 
 export const CALL_USAGE = `usage: agent-inbox-meshctl call <id> [--skill <skill>] [--json] [--report <file>] [--timeout <s>] < request
@@ -253,7 +255,7 @@ async function task(id: string, text: string, streaming: boolean, path: string, 
   let statusParts: Json[] = []
   const artifacts = new Map<string, Json[]>()
   const status = (s: Json): void => {
-    if (typeof s['state'] === 'string') state = s['state']
+    if (STATES.includes(s['state'] as string)) state = s['state'] as string
     const parts = list(obj(s['message'])['parts'])
     if (parts.length) statusParts = parts
   }

@@ -773,7 +773,8 @@ a changed card).
   part says `code: 12`; HTTP 429 and 503 are 12; HTTP 401 and 403 are 14; anything else is 13.
   stderr is fixed words (the cleaned skill ids of a refused `--skill` are the one exception).
   `--report` writes `{ exit, state?, …frame }` after every run past the arguments (`O_NOFOLLOW`,
-  0600); one it cannot write makes the exit 13. stdout gets the frame only on 0.
+  0600); one it cannot write makes the exit 13. `state` sits outside the frame, so the client
+  keeps only A2A 1.0's `TASK_STATE_*` names and ignores any other string an agent sends. stdout gets the frame only on 0.
 - **Run records.** `runClient('call', …)` appends one record per call under the id: `mesh-runs.ts`
   takes any id that fits `add`'s id rule as kind `added`, with the common fields only, `op`
   always `call`, the outcomes of the exit table (16 is `card-changed`) and `reason` from the

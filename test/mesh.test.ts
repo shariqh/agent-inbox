@@ -11,7 +11,8 @@ import type { IncomingHttpHeaders, Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { join } from 'node:path'
 import { MESH_FILE_MAX, meshDir, meshFile, parseMesh } from '../src/mesh-config.js'
-import { runAdd, runMeshctl } from '../src/meshctl.js'
+import { runAdd, runMeshctl, suffixFrom } from '../src/meshctl.js'
+import { addedPlace, tailnetRefusal } from '../src/mesh-add.js'
 import type { MeshctlIo } from '../src/meshctl.js'
 import { createViewer } from '../src/viewer.js'
 import { meshAgents } from '../src/mesh-agents.js'
@@ -510,19 +511,20 @@ describe('meshctl add and remove (#529, mesh design §6.7, D13–D17, §8.8)', (
     const tokenFile = join(scratchDir('add-token-'), 'token')
     writeFileSync(tokenFile, `${TOKEN}\n`, { mode: 0o600 })
     if (meshJson !== undefined) writeFileSync(meshFile(dir), meshJson)
+    const io = { suffix: 'tailnet-example.ts.net' as string | undefined, asked: 0 }
     const add = async (...argv: string[]) => {
       const out: string[] = []
       const err: string[] = []
       const code = await runAdd(argv, {
         env: { AGENT_INBOX_MESH_DIR: dir }, home: '/nonexistent-home', now: () => new Date(2026, 10, 10, 9, 30, 0),
-        out: (text) => out.push(text), err: (text) => err.push(text),
+        out: (text) => out.push(text), err: (text) => err.push(text), tailnet: () => { io.asked++; return io.suffix },
       })
       const r = { code, out: out.join(''), err: err.join('') }
       expect(r.out + r.err).not.toContain(TOKEN)
       return r
     }
     const run = (...argv: string[]) => ctl(argv, dir)
-    return { dir, tokenFile, add, run }
+    return { dir, tokenFile, add, run, io }
   }
 
   it('a dry run fetches the card with no token, prints the entry and its pin, and writes nothing', async () => {
@@ -636,11 +638,38 @@ describe('meshctl add and remove (#529, mesh design §6.7, D13–D17, §8.8)', (
       expect(r.err, url).toContain(`Refused: the card URL ${words}`)
       expect(r.err, url).not.toContain('secret')
     }
+    expect(t.io.asked).toBe(0)
     // a loopback agent needs a token, which meshctl call proves the agent holds (D17)
     const noToken = await t.add(a.url, '--apply')
     expect(noToken.err).toBe('Refused: a loopback agent needs --token-file: meshctl call proves its identity with that token before it sends anything (D17). Nothing changed.\n')
     expect(a.connections()).toBe(0)
     expect(readdirSync(t.dir)).toEqual([])
+  })
+
+  it('takes a tailnet name only on this Mac\'s tailnet (§8.8\'s allowlist), refusing another tailnet or a Funnel host', async () => {
+    const t = setup()
+    const other = await t.add('https://agent.other-example.ts.net/.well-known/agent-card.json', '--apply')
+    expect(other.err).toBe('Refused: the card URL is on another tailnet or a Funnel host, not this Mac\'s tailnet (tailnet-example.ts.net): adding one waits for TLS identity, the card pin and card signatures (#534, #531, #536). Nothing changed.\n')
+    t.io.suffix = undefined
+    const unknown = await t.add('https://agent.tailnet-example.ts.net/.well-known/agent-card.json', '--apply')
+    expect(unknown.err).toBe('Refused: the card URL is on a tailnet name, but this Mac\'s tailnet could not be read (is Tailscale installed, running and logged in?), so add cannot tell it from another tailnet or a Funnel host. Nothing changed.\n')
+    expect(t.io.asked).toBe(2)
+    expect(readdirSync(t.dir)).toEqual([])
+    // the accepting side, without a DNS lookup: a name in this Mac's tailnet passes, loopback never asks
+    const place = (url: string) => { const p = addedPlace(url); if ('refused' in p) throw new Error(url); return p }
+    expect(tailnetRefusal('x', place('https://agent.tailnet-example.ts.net:8443/a2a'), 'tailnet-example.ts.net')).toBeUndefined()
+    expect(tailnetRefusal('x', place('http://127.0.0.1:4500/a2a'), undefined)).toBeUndefined()
+    expect(tailnetRefusal('x', place('https://agent.example.ts.net/a2a'), 'tailnet-example.ts.net')).toContain('another tailnet or a Funnel host')
+  })
+
+  it('reads the MagicDNS suffix only from a running, logged-in tailscale status', () => {
+    const status = (o: object) => JSON.stringify({ Version: '1.90.0', ...o })
+    expect(suffixFrom(status({ BackendState: 'Running', MagicDNSSuffix: 'tailnet-example.ts.net' }))).toBe('tailnet-example.ts.net')
+    for (const text of [status({ BackendState: 'NeedsLogin', MagicDNSSuffix: 'tailnet-example.ts.net' }), status({ BackendState: 'Stopped', MagicDNSSuffix: '' }),
+      status({ BackendState: 'Running', MagicDNSSuffix: 'example.com' }), status({ BackendState: 'Running', MagicDNSSuffix: 'a.b.ts.net' }),
+      status({ BackendState: 'Running', MagicDNSSuffix: 'Tailnet-Example.ts.net' }), status({ BackendState: 'Running' }), '', 'not json', '[]']) {
+      expect(suffixFrom(text), text).toBeUndefined()
+    }
   })
 
   it('refuses a built-in, malformed or existing id', async () => {

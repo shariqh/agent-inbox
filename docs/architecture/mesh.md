@@ -467,8 +467,9 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
     HMAC-SHA256(token, `"web-search/v1\n" + nonce`). A request handed a new connection sends
     nothing on it, closes it and proves again first, so after the agent exits a squatter on
     its port gets neither the token nor the query, even from a long-lived client.
-    `resolveCard` returns the checked card and `cardHash`: the SHA-256 of the SDK's JCS form
-    of the card with every `supportedInterfaces[].url` removed.
+    `resolveCard` returns the checked card and `cardHash`: the SHA-256 of the JCS form of the
+    card as received, with `signatures` and every `supportedInterfaces[].url` removed and no SDK
+    normalisation (web search design §4.1, one rule for every agent since #556).
   - Tests (`packages/mesh/test/web-search.test.ts`): the SDK's client through
     `identityFetch` and a Node-core client drive all four methods over loopback; every
     allowlist, Origin, Host, token and version refusal goes through the real server with a
@@ -665,13 +666,17 @@ the usage and 4).
   `--token-file` was given (the token itself never reaches `mesh.json`, stdout or stderr);
   `cardSha256` is the card pin, SHA-256 of `canonicalCard()`: the card's RFC 8785 (JCS) form
   without `signatures` and without every `supportedInterfaces[].url`, hashed as received (no
-  A2A SDK normalisation, so any other change to the card changes the pin). `#531` checks it
+  A2A SDK normalisation, so any other change to the card changes the pin). It is the one pin
+  rule for every agent (web search design §4.1, amended by #556): `packages/mesh`'s
+  `cardHash` (`resolveCard`) and the web-search fixtures' `conformance.ts` hold copies, and
+  `test/agent-card.test.ts` pins all three equal on the web-search, unslop and request-post
+  cards. `#531` checks it
   before each call. `skipFirstHopClick` (D14) is M4's and is never written now: before M4,
   `meshctl add --apply` is the human's approval for that agent.
 - **`meshctl add <card-url> [--id <id>] [--token-file <path>] [--apply]`**, in this order,
   writing nothing and opening no connection until the fetch: the id (1–40 lower-case letters,
   digits and inner hyphens, never `unslop`, `request-post` or `web-search`); the card URL by the
-  endpoint rule; a loopback card URL needs `--token-file`, since `meshctl call` proves a
+  endpoint rule, a tailnet name only on this Mac's tailnet; a loopback card URL needs `--token-file`, since `meshctl call` proves a
   loopback agent's identity with it before it sends anything (D17); the token file (a regular
   file the user owns, opened `O_NOFOLLOW | O_NONBLOCK`, no group or other permission bits, at
   most 4 KiB, one run of at least 32 visible ASCII characters); `mesh.json` readable and the id
@@ -693,6 +698,14 @@ the usage and 4).
   percent-encoding, user, query or fragment). An `https` URL on any other DNS name is refused
   as a public host until TLS identity, the card pin and card signatures land (#534, #531,
   #536); any other IP literal, `localhost` or plain `http` to another host is refused outright.
+  §8.8's allowlist is this Mac's tailnet (`tailnetRefusal()`): a `*.ts.net` name must be
+  `<name>.<MagicDNS suffix>`, read once per `add` by meshctl from `tailscale status --json`
+  (`MagicDNSSuffix` while `BackendState` is `Running`; the CLI on PATH, else the app's), and only
+  for a tailnet card URL. Another tailnet or a public Funnel host (valid DNS and a public
+  certificate) waits for #534 like any public host; when the suffix cannot be read (no CLI,
+  stopped, logged out) a tailnet name is refused. `mesh-add.ts` spawns nothing: the suffix is
+  passed in (`MeshctlIo.tailnet` in tests). `status` reads entries by shape only; the call
+  path (#530) re-checks the suffix.
 - **Identity (D17).** `add` sends no token and does not run the HMAC proof: the proof's label
   for an added agent is `meshctl call`'s to define (#530), which proves a loopback agent's
   identity before every call. A squatter that answers `add` gets a pin that the real agent's
@@ -707,7 +720,8 @@ the usage and 4).
 - **The viewer** knows only `unslop` and `request-post`: an added entry alone puts no `mesh`
   key in `/api/version`, starts no check and opens no connection; beside a known agent, the
   section counts it among the agents "not shown by this build".
-- `test/mesh.test.ts` holds the dry run (one card GET with no Authorization, cookie or Origin;
+- `test/mesh.test.ts` holds the tailnet allowlist (another tailnet, an unreadable suffix, the
+  status parser), the dry run (one card GET with no Authorization, cookie or Origin;
   the pin unchanged by the interface URL), add then remove leaving the tree as before but
   backups, each bad-card and fetch refusal, every refused card URL with no connection opened
   (a counting listener), built-in, malformed and existing ids, the token-file checks, remove's

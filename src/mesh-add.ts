@@ -1,8 +1,10 @@
 // `meshctl add` (#529; mesh design §6.7, D13–D17, §8.8): the rules for a card-driven
 // `agents.<id>` entry, an A2A agent this repo doesn't ship. The id rule, the endpoint rule
-// (loopback, or https on a tailnet name; a public host waits for #534), the card fetch (no
+// (loopback, or https on a name in this Mac's tailnet; another tailnet, a Funnel or a public
+// host waits for #534), the card fetch (no
 // token, no redirect, no proxy, 64 KiB, one deadline) and the card pin. Node core and the
-// card rule only; meshctl imports it, never the stdio MCP server or the viewer.
+// card rule only, and no child process: meshctl reads this Mac's MagicDNS suffix and passes
+// it in. meshctl imports it, never the stdio MCP server or the viewer.
 import { createHash } from 'node:crypto'
 import { request as httpRequest } from 'node:http'
 import type { IncomingMessage } from 'node:http'
@@ -11,7 +13,7 @@ import { canonicalCard, checkAddedCard, summarizeCard } from './agent-card.js'
 
 /** The agents that ship here, each with its own `mesh.json` shape: `add` never takes their names. */
 export const BUILT_IN_AGENTS: readonly string[] = ['unslop', 'request-post', 'web-search']
-export const ADDED_RULE = 'http://127.0.0.1:<port>[/<path>] or https://<name>.<tailnet>.ts.net[:<port>][/<path>]'
+export const ADDED_RULE = 'http://127.0.0.1:<port>[/<path>] or https://<name>.<tailnet>.ts.net[:<port>][/<path>] on this Mac\'s tailnet'
 const CARD_MAX = 64 * 1024
 const DEADLINE_MS = 5_000
 
@@ -35,7 +37,7 @@ export function idFromName(name: unknown): string | undefined {
   return ID.test(id) ? id : undefined
 }
 
-export type Place = { url: string; origin: string; loopback: boolean }
+export type Place = { url: string; origin: string; loopback: boolean; host: string }
 type Refused = 'rule' | 'public'
 
 const LABEL = '[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?'
@@ -45,10 +47,11 @@ const LOOPBACK = new RegExp(`^(http://127\\.0\\.0\\.1:([1-9]\\d{0,4}))${PATH}$`)
 const TAILNET = new RegExp(`^(https://(?:${LABEL}\\.){2}ts\\.net(?::([1-9]\\d{0,4}))?)${PATH}$`)
 
 /**
- * The endpoint rule for added agents (§8.8): `http://127.0.0.1:<port>` or `https://` on a
+ * The endpoint rule's shape for added agents (§8.8): `http://127.0.0.1:<port>` or `https://` on a
  * `<name>.<tailnet>.ts.net` name, as written (lower case, no written-out default port), with an
  * optional plain path. `public` is an https URL on any other DNS name: refused until TLS
- * identity, the card pin and signatures land (#534, #531, #536).
+ * identity, the card pin and signatures land (#534, #531, #536). Which tailnet is allowed is
+ * tailnetRefusal's question.
  */
 export function addedPlace(raw: unknown): Place | { refused: Refused } {
   if (typeof raw !== 'string') return { refused: 'rule' }
@@ -56,7 +59,7 @@ export function addedPlace(raw: unknown): Place | { refused: Refused } {
   const match = loopback ?? TAILNET.exec(raw)
   if (match) {
     const port = match[2] === undefined ? undefined : Number(match[2])
-    if (port === undefined || (port <= 65535 && port !== (loopback ? 80 : 443))) return { url: raw, origin: match[1]!, loopback: Boolean(loopback) }
+    if (port === undefined || (port <= 65535 && port !== (loopback ? 80 : 443))) return { url: raw, origin: match[1]!, loopback: Boolean(loopback), host: new URL(raw).hostname }
     return { refused: 'rule' }
   }
   let url: URL | undefined
@@ -68,10 +71,24 @@ export function addedPlace(raw: unknown): Place | { refused: Refused } {
   return { refused: url?.protocol === 'https:' && name ? 'public' : 'rule' }
 }
 
+const WAITS = 'adding one waits for TLS identity, the card pin and card signatures (#534, #531, #536)'
+
+/**
+ * §8.8's allowlist: a tailnet name must be in this Mac's tailnet, `suffix` (its MagicDNS suffix,
+ * `<tailnet>.ts.net`, undefined when it cannot be read). Any other `*.ts.net` name is another
+ * tailnet or a public Funnel host, so it waits for #534 like any public host. Loopback passes.
+ */
+export function tailnetRefusal(what: string, place: Place, suffix: string | undefined): string | undefined {
+  if (place.loopback) return undefined
+  if (suffix === undefined) return `${what} is on a tailnet name, but this Mac's tailnet could not be read (is Tailscale installed, running and logged in?), so add cannot tell it from another tailnet or a Funnel host`
+  if (place.host.slice(place.host.indexOf('.') + 1) === suffix) return undefined
+  return `${what} is on another tailnet or a Funnel host, not this Mac's tailnet (${suffix}): ${WAITS}`
+}
+
 /** Fixed words for a refused URL; never the URL, which can carry a user or a secret. */
 export function placeRefusal(what: string, refused: Refused): string {
   return refused === 'public'
-    ? `${what} is on a public host: adding one waits for TLS identity, the card pin and card signatures (#534, #531, #536); use ${ADDED_RULE}`
+    ? `${what} is on a public host: ${WAITS}; use ${ADDED_RULE}`
     : `${what} must be ${ADDED_RULE}: never another IP address, localhost, plain http to another host, a written-out port 80 or 443, a user, a query or a fragment`
 }
 

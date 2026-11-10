@@ -34,6 +34,7 @@
 // `unslop` has its own (0, 10-14, 4), listed in src/unslop-client.ts, and
 // `request-post` its own (0, 11-16, 124, 4), listed in src/request-post-client.ts.
 // The entry appends one run record per client run (src/mesh-runs.ts, cards view V5 §5).
+import { spawnSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import { closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmdirSync, statSync, unlinkSync, writeSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -42,7 +43,7 @@ import { fileURLToPath } from 'node:url'
 import { frameResult } from './agent-result.js'
 import { MESH_SCHEMA, loopbackPort, meshDir, meshFile, readMesh, requestPostEndpoint } from './mesh-config.js'
 import type { MeshDocument, MeshRead } from './mesh-config.js'
-import { BUILT_IN_AGENTS, addedEntry, addedPlace, cardEndpoint, cardLine, cardSha256, fetchAddedCard, idFromName, idRefusal, placeRefusal } from './mesh-add.js'
+import { BUILT_IN_AGENTS, addedEntry, addedPlace, cardEndpoint, cardLine, cardSha256, fetchAddedCard, idFromName, idRefusal, placeRefusal, tailnetRefusal } from './mesh-add.js'
 import { appendRun, pruneRuns, runFiles, tidyRuns } from './mesh-runs.js'
 import type { RunAgent, RunCollector } from './mesh-runs.js'
 import { REQUEST_POST_USAGE, runRequestPost } from './request-post-client.js'
@@ -81,7 +82,8 @@ the endpoint is ${ENDPOINT_RULE} (docs/request-post.md).
 disable --request-post keeps its run records unless --purge.
 add fetches an A2A agent's card (no token, no redirect), checks it and pins it, and adds the
 agent as agents.<id>: the card URL and endpoint must be http://127.0.0.1:<port> or
-https://<name>.<tailnet>.ts.net (a public host waits for #534). A loopback agent needs
+https://<name>.<tailnet>.ts.net on this Mac's tailnet (read from tailscale status; another
+tailnet, a Funnel or a public host waits for #534). A loopback agent needs
 --token-file (a 0600 file you own; meshctl copies it and never prints it). add never replaces an
 entry or takes a built-in name; remove deletes only an entry add wrote, and its token copy.
 request-post is what <mesh dir>/bin/request-post runs: it files a content request with the
@@ -97,6 +99,8 @@ export interface MeshctlIo {
   now?: () => Date
   out?: (text: string) => void
   err?: (text: string) => void
+  /** This Mac's MagicDNS suffix for `add`, or undefined when it cannot be read (default: `tailscale status --json`). */
+  tailnet?: () => string | undefined
   /** The Node binary and meshctl.js the shim and start command name (tests point them at scratch files). */
   node?: string
   script?: string
@@ -647,6 +651,28 @@ function forgetRuns(dir: string, agents: RunAgent[], apply: boolean, now: number
   return failed ? 1 : 0
 }
 
+const TAILSCALE = ['tailscale', '/Applications/Tailscale.app/Contents/MacOS/Tailscale']
+
+/** The MagicDNS suffix in `tailscale status --json` output, only while the backend runs and logged in. */
+export function suffixFrom(json: string): string | undefined {
+  let status: Record<string, unknown> | undefined
+  try {
+    status = objectOf(JSON.parse(json))
+  } catch { /* not JSON */ }
+  const suffix = status?.['MagicDNSSuffix']
+  if (status?.['BackendState'] !== 'Running' || typeof suffix !== 'string') return undefined
+  return /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.ts\.net$/.test(suffix) ? suffix : undefined
+}
+
+/** This Mac's MagicDNS suffix from the tailscale CLI, or undefined (no CLI, stopped, logged out). */
+function magicDnsSuffix(): string | undefined {
+  for (const command of TAILSCALE) {
+    const r = spawnSync(command, ['status', '--json'], { encoding: 'utf8', timeout: 5000, maxBuffer: 16 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] })
+    if (!r.error) return suffixFrom(r.stdout)
+  }
+  return undefined
+}
+
 type ClientIo = Pick<UnslopIo & RequestPostIo, 'env' | 'home' | 'stdin' | 'out' | 'err'>
 
 /**
@@ -686,6 +712,9 @@ export async function runAdd(args: string[], io: MeshctlIo = {}): Promise<number
   if (idBad) return refuse(idBad)
   const place = addedPlace(cardUrl)
   if ('refused' in place) return refuse(placeRefusal('the card URL', place.refused))
+  // the endpoint must share the card URL's origin, so this one check covers both
+  const elsewhere = tailnetRefusal('the card URL', place, place.loopback ? undefined : (io.tailnet ?? magicDnsSuffix)())
+  if (elsewhere) return refuse(elsewhere)
   if (place.loopback && tokenFile === undefined) return refuse('a loopback agent needs --token-file: meshctl call proves its identity with that token before it sends anything (D17)')
 
   const dir = resolve(meshDir(env, home))
@@ -732,7 +761,7 @@ export async function runAdd(args: string[], io: MeshctlIo = {}): Promise<number
   const next: MeshDocument = { ...(present ? existing.doc : { schema: MESH_SCHEMA }), agents: { ...agents, [agentId]: entry } }
   const json = `${JSON.stringify(next, null, 2)}\n`
 
-  out(`Card ${place.url}: ${cardLine(card)}.\nEndpoint ${endpoint.endpoint}${place.loopback ? ': loopback, so meshctl call proves the agent\'s identity before it sends the token or any text (D17)' : ': tailnet https, TLS verified'}.\nCard pin (sha256): ${pin}.\n`)
+  out(`Card ${place.url}: ${cardLine(card)}.\nEndpoint ${endpoint.endpoint}${place.loopback ? ': loopback, so meshctl call proves the agent\'s identity before it sends the token or any text (D17)' : ': https on this Mac\'s tailnet, TLS verified'}.\nCard pin (sha256): ${pin}.\n`)
   const steps: Step[] = []
   if (token !== undefined) {
     steps.push({

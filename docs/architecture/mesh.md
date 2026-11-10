@@ -667,7 +667,7 @@ deletes it. Rules live in `src/mesh-add.ts` (Node core, `./agent-card.js`), the 
 the usage and 4).
 
 - **The entry** (`mesh.json` schema 1, under `agents`):
-  `{ "card": <card URL>, "endpoint": <url>, "tokenFile": "<mesh dir>/mesh/tokens/<id>", "cardSha256": <hex> }`.
+  `{ "card": <card URL>, "endpoint": <url>, "tokenFile": "<mesh dir>/mesh/tokens/<id>", "cardSha256": <hex>, "agentId": <stable id> }`.
   `card` marks a generic entry (the built-ins keep their own shapes); `endpoint` is taken from
   the card once, when the human adds it, and later calls never follow a URL from a refetched
   card; `tokenFile` is meshctl's 0600 copy of the bearer token, present only when
@@ -679,7 +679,9 @@ the usage and 4).
   `cardHash` (`resolveCard`) and the web-search fixtures' `conformance.ts` hold copies, and
   `test/agent-card.test.ts` pins all three equal on the web-search, unslop and request-post
   cards. `#531` checks it
-  before each call. `skipFirstHopClick` (D14) is M4's and is never written now: before M4,
+  before each call. `agentId` (#537) is the card's stable id from the profile extension, written
+  only when the card carries one; `addedEntry()` reads an entry whose `agentId` breaks the id rule
+  as invalid. `skipFirstHopClick` (D14) is M4's and is never written now: before M4,
   `meshctl add --apply` is the human's approval for that agent.
 - **`meshctl add <card-url> [--id <id>] [--token-file <path>] [--apply]`**, in this order,
   writing nothing and opening no connection until the fetch: the id (1–40 lower-case letters,
@@ -695,8 +697,17 @@ the usage and 4).
   the card URL's own origin, so the token only ever goes where the card came from. Without
   `--id`, the id is the card's name lower-cased with other runs as one hyphen. `mesh.json` is
   read again after the fetch, and an id in use is refused: `add` never replaces an entry
-  (remove it, then add it again). The dry run prints the card's cleaned name and skill ids,
-  the endpoint, the pin and the file it would write; `--apply` copies the token to
+  (remove it, then add it again). The card's profile extension, when present, must pass
+  `checkProfile()` (below), and a card whose id another entry's `agentId` already holds is
+  refused with a pointer to `--move`, so one agent never has two entries. The dry run prints
+  `addSummary()` (publishable-agent design §4): the fixed untrusted header, then `Agent`,
+  `Publisher`, `Keys`, `Auth`, `Card URL`, `Endpoint`, `Skills` and `Card pin` lines, every card
+  string a quoted claim through `claim()` (tabs and newlines as spaces, every control, format,
+  default-ignorable, tag and separator character as U+FFFD, capped: names, provider and skill
+  descriptions 80, a provider URL 200, `\` and `"` escaped), an id, a SemVer version, a plain
+  skill id or a plain `https` provider URL printed bare, and a missing field as "not declared";
+  signatures (#536), egress and residency (#535) add their lines later. Then the file it would
+  write; `--apply` copies the token to
   `<mesh dir>/mesh/tokens/<id>` (0600, temporary file and rename) and then writes `mesh.json`
   atomically after a timestamped backup, every other key kept. New folders are 0700. Every
   refusal is fixed words, never the URL, the id or the token.
@@ -718,6 +729,27 @@ the usage and 4).
   (#530, below) proves a loopback agent's identity before every call, with the label
   `a2a-mesh`. A squatter that answers `add` gets a pin that the real agent's card will not
   match, and no token.
+- **The profile extension (#537, publishable-agent design §3.4 and §3.7, D19 and D20).** URI
+  `https://shariqh.github.io/agent-inbox/ext/profile/v1`; the spec is
+  [`docs/ext/profile-v1.md`](../ext/profile-v1.md), served at that URI by the Pages site (below).
+  `checkProfile()` in `src/agent-card.ts` (pure, fixed-word reasons): at most one such
+  extension; `params` an object with only `id` (required), `keys` and `skills`; no `""`, `[]`,
+  `{}` or `null` at any depth (a walk that stops at 32 levels); `agentIdRefusal()`'s id rule
+  (`<domain>[/<segment>…]/<name>`: a lower-case DNS name with a dot and a non-numeric last label,
+  `[a-z0-9-]` segments, a name of at most 40, 200 in all, so no scheme, user, port, query or
+  fragment); `keys` 1-4 public JWKs (P-256 and P-384 `kty, crv, x, y`, Ed25519 `kty, crv, x`,
+  base64url coordinates of the curve's length, no private or other member, none twice);
+  `skills` exactly the card's skill ids, each an object holding only `egress` and `residency`,
+  whose values C4 (#535) validates. Signatures are #536's.
+- **`meshctl add <card-url> --move <id> [--token-file <path>] [--apply]`** (#537, the unsigned
+  move of design §3.4): `<id>` must be an entry `add` wrote, valid, with an `agentId`; the new
+  card must declare that id and have the entry's pin (a changed card waits for #531's accept); a
+  loopback card URL needs a token copy, the entry's or a new `--token-file`. `--apply` changes
+  only `card` and `endpoint` (and the token copy with `--token-file`), keeping every other key, so
+  the pin and the run records, which are keyed by the local id, stay; the dry run adds a `Move`
+  line naming the old endpoint. The same card URL and endpoint again is "Nothing to do". `--id`
+  and `--move` together are a usage error. The signed move (a signature by a key the pinned card
+  lists, without `--move`) is #536's.
 - **`meshctl remove <id> [--apply]`** deletes only an entry `add` wrote (one with `card`), with
   a backup (deleting `mesh.json` when nothing else is left, like `disable`), then its run records
   (`runs/<id>-<date>.jsonl`, through `runFiles()`'s checks; the dry run counts them, #530), so an
@@ -725,7 +757,7 @@ the usage and 4).
   `runs`, `mesh/tokens` and `mesh` folders when they are then empty. It refuses a built-in
   name (`disable` turns those off) and an `agents.<id>` that has no `card`.
 - **`meshctl status`** adds one `Added agent <id>:` line per generic entry: its endpoint, the
-  pin's first 12 hex digits and whether the token copy exists; an entry that breaks a rule is
+  `agentId` when it has one, the pin's first 12 hex digits and whether the token copy exists; an entry that breaks a rule is
   shown as off without echoing any field. The Mesh line counts valid ones as "N added agents".
 - **The viewer** knows only `unslop` and `request-post`: an added entry alone puts no `mesh`
   key in `/api/version`, starts no check and opens no connection; beside a known agent, the
@@ -735,8 +767,25 @@ the usage and 4).
   the pin unchanged by the interface URL), add then remove leaving the tree as before but
   backups, each bad-card and fetch refusal, every refused card URL with no connection opened
   (a counting listener), built-in, malformed and existing ids, the token-file checks, remove's
-  refusals and that the viewer never connects to an added agent. `test/agent-card.test.ts`
-  pins `checkAddedCard` and `canonicalCard`.
+  refusals and that the viewer never connects to an added agent, plus the summary's cleaned,
+  capped and quoted claims, `agentId`, a doubled agent refused, and `--move`: keeping the local
+  id, pin, token copy, run records and other keys, and refusing another id, a changed card, a card
+  or entry with no id and every entry it cannot move. `test/mesh-call.test.ts` adds, calls, moves
+  to a new port and calls again: one entry, one pin, both runs under the local id.
+  `test/agent-card.test.ts` pins `checkAddedCard`, `canonicalCard`, `checkProfile`,
+  `agentIdRefusal` and `claim`.
+- **The extension specs' site (#537, design §6, D22).** `scripts/pages-site.mjs` (Node core, no
+  dependency) turns every `docs/ext/<name>-v<N>.md` into `ext/<name>/v<N>.html`, which GitHub
+  Pages serves at the extension-less URI `https://shariqh.github.io/agent-inbox/ext/<name>/v<N>`
+  with no redirect, plus `ext/<name>/v<N>/index.html` for the trailing slash and an `index.html`
+  listing them. It reads nothing else in `docs/`, refuses any other file in `docs/ext/`, renders
+  only the Markdown subset the specs use and escapes every source character.
+  `.github/workflows/pages.yml` builds it and deploys with `actions/upload-pages-artifact` and
+  `actions/deploy-pages` on a push to `main` touching `docs/ext/**`, the script or the workflow,
+  or by hand; the deploy job alone holds `pages: write` and `id-token: write`, runs only on
+  `main`, and pull requests never run it. Pages must be enabled with the source "GitHub Actions"
+  (a repository setting, done by hand). `test/pages-site.test.ts` pins the exact file list, the
+  rendering and the workflow's triggers and permissions.
 
 ## Calling an added agent (#530)
 

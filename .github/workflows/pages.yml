@@ -1,0 +1,57 @@
+name: Pages
+
+# The extension specifications at their URIs (publishable-agent design §6, D22; #537):
+# https://shariqh.github.io/agent-inbox/ext/<name>/v<N>, built from docs/ext/ alone by
+# scripts/pages-site.mjs (Node core, no npm install). Pages must be enabled with the source
+# "GitHub Actions"; only main deploys, and pull requests never run this workflow.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/ext/**"
+      - "scripts/pages-site.mjs"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+# Nothing here runs npm; the release workflows' rule (#315) still applies to every workflow but ci.yml.
+env:
+  npm_config_build_from_source: "true"
+
+jobs:
+  build:
+    name: Build the site
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - run: node scripts/pages-site.mjs _site
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: _site
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

@@ -16,6 +16,8 @@ export interface MeshRow {
   facts: string
   /** unslop's "Today: …" line, or empty when its record has no usage */
   usage: string
+  /** "Last run 14:02 · ok", "No runs yet", or empty for a body without `lastRun` */
+  lastrun: string
   details: Array<[string, Array<string | { text: string; tags: string[] }>]>
   json: string | null
 }

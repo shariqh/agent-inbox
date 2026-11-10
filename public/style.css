@@ -2162,7 +2162,7 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
   /* 232px, narrowed against the Dashboard's operations-desk container (not the viewport,
      which also counts the padding around the strip) so the next card still peeks */
   width: min(232px, 78cqi);
-  height: 116px;
+  height: 134px;
   box-sizing: border-box;
   flex-direction: column;
   gap: 3px;
@@ -2186,7 +2186,7 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
 .ma-name { font-weight: 700; }
 .ma-status { color: var(--app-muted); }
 .ma-card.ma-tone-amber .ma-status, .map-head.ma-tone-amber .map-status, .ma-fix { color: var(--app-warning); }
-.ma-facts, .ma-usage { color: var(--app-text-soft); font-size: 11.5px; }
+.ma-facts, .ma-usage, .ma-lastrun { color: var(--app-text-soft); font-size: 11.5px; }
 .ma-fix { font-size: 11.5px; }
 .ma-lines { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 8px 0 0; }
 .ma-lines dt { color: var(--app-text-soft); font-weight: 600; }
@@ -2212,6 +2212,22 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
 .map-tab { padding: 6px 10px; border: 0; border-bottom: 2px solid transparent; background: none; color: var(--app-muted); font: inherit; cursor: pointer; }
 .map-tab[aria-selected="true"] { border-bottom-color: var(--app-link); color: var(--app-text); font-weight: 650; }
 .map-panel { padding-top: 4px; }
+/* Run history (cards view V5d): one table, rows keyed by run id; amber only for the outcomes that
+   went wrong, never green or pink; the scroll anchor keeps a scrolled table still as a row lands */
+.mar-stale, .mar-summary, .mar-empty, .mar-older, .mar-kept, .mar-forget { margin: 8px 0 0; }
+.mar-stale, .mar-empty, .mar-older, .mar-kept { color: var(--app-muted); font-size: 12px; }
+.mar-summary { font-weight: 650; }
+.mar-stale[hidden], .mar-summary[hidden], .mar-empty[hidden], .mar-table[hidden], .mar-more[hidden], .mar-older[hidden], .mar-foot[hidden], .mar-forget[hidden] { display: none; }
+.mar-table { width: 100%; margin-top: 8px; border-collapse: collapse; overflow-anchor: auto; }
+.mar-table th { padding: 4px 10px 4px 0; border-bottom: 1px solid var(--app-border); color: var(--app-text-soft); font-weight: 600; text-align: left; }
+.mar-table td { padding: 4px 10px 4px 0; border-bottom: 1px solid var(--app-border); vertical-align: top; }
+.mar-ended, .mar-took { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.mar-details { color: var(--app-muted); overflow-wrap: anywhere; }
+.mar-amber { color: var(--app-warning); }
+.mar-more, .mar-copy { margin-top: 8px; padding: 3px 9px; border: 1px solid var(--app-border); border-radius: 7px; background: var(--app-surface); color: var(--app-text); font: inherit; font-size: 11.5px; font-weight: 650; cursor: pointer; }
+.mar-copy { margin-top: 0; }
+.mar-foot { margin-top: 14px; padding-top: 6px; border-top: 1px solid var(--app-border); }
+.mar-command { padding: 1px 5px; border-radius: 5px; background: var(--app-soft); font-size: 11.5px; overflow-wrap: anywhere; user-select: text; }
 /* the session card */
 /* #454 A.3 V1–V5: one quiet meta line, what it is doing leading, pink only for
    asks and green only for the working dot, one visible action as a text button */

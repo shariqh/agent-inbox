@@ -24,6 +24,14 @@ export const PRESS_GRACE_MS: number
 export function pressHeld(pressedAt: number | null | undefined, nowMs: number): boolean
 export const SCROLL_IDLE_MS: number
 export function scrollActive(scrolledAt: number | null | undefined, nowMs: number): boolean
+/** issue #563 — whether the human gave this window input within the last two minutes. */
+export function recentInput(inputAt: number | null | undefined, nowMs: number): boolean
+/** issue #563 — whether a typed draft may hold the poll's rebuild now. */
+export function draftInUse(state: {
+  inputAt?: number | null
+  editorFocused?: boolean
+  dialogOpen?: boolean
+}, nowMs: number): boolean
 export function shouldDeferRender(state: SuspendState, nowMs: number): boolean
 export function pinOrder(current: string[], incoming: string[]): string[]
 export function reconcileOpenRow(

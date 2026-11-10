@@ -28,7 +28,10 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   tick has applied and every boot marker agrees. A successful
   human-initiated write must end in `reloadAndPaint()` so an unrelated draft
   cannot hide the result. A held pointer defers rendering but is not a
-  suspension and must not appear in `suspendState()`.
+  suspension and must not appear in `suspendState()`. A draft suspends only
+  while in use (#563): the window had input in the last two minutes, a draft
+  editor has focus in a focused window, or a New session dialog holding one is
+  open. A poll's frame sets aside a draft whose target moved without navigating.
 - An idle tick paints nothing (#298): `load()` skips `renderIfIdle()` only when
   `pollMaySkipPaint` (`public/poll.js`) finds the frame on screen was painted
   from exactly this tick's `frameInputs()` (each snapshot's identical
@@ -155,7 +158,21 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   survive `safeHttpUrl` renders as a `<span>`. Do not build an anchor anywhere else.
 - **`load()` is the poll's; `reloadAndPaint()` is the human's (issues #38/#39).** `load()` ends in
   `renderIfIdle()` — the spec §10 gate. `suspendState()` reports every typed draft anywhere in the
-  app, but NOT a merely expanded card. Expanded cards, the open inspector's scroll offset, and
+  app while the drafts are in use, but NOT a merely expanded card.
+  **A draft nobody is using suspends nothing (#563).** A question draft left half-typed overnight
+  froze every list until a reload, so rows its agents advanced with
+  `board_advance` kept showing their old steps as "Waiting for delivery" for two hours.
+  `draftInUse` (`public/poll.js`) holds while the human gave the window input
+  (`humanInputAt`: pointerdown, click, key or input) within two minutes, while a draft
+  editor (`[data-draft-focus-key]`) has focus in a focused window; a New session task
+  holds while its dialog is open. Past that, the poll paints and every editor is
+  rebuilt with its text from module state; nothing is sent or focused. A draft whose
+  target moved (its row advanced, its question closed) is moved to the unsent responses
+  by that poll frame, still durable, but the frame never navigates: `renderIfIdle()`
+  sets `pollPaint`, so `reconcileDraftOwners()` and `recoverMismatchedRenderedRowDraft()`
+  skip `requestDraftRecovery()` (no tab switch, no closing the Review queue, no focus
+  move) and leave `recoveryNavPending` for the next frame the human asks for. `hasUnsentResponses()` reads every draft (`typedDrafts()`), so the
+  viewer-restart hold is unchanged. `test/dom/advanced-row-repaint.test.ts` pins it. Expanded cards, the open inspector's scroll offset, and
   its focused control survive rebuilds; order pinning appends new work at the foot; the press
   guard protects clicks. A draft gates only the editable surfaces:
   `paintAmbient()` still refreshes the document-title badge, project rail, tab counts and the global
@@ -297,8 +314,8 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   the human's behalf to get past a notice. A Retry
   of an entry an earlier click already took does nothing, so a double click claims no
   second intent. `renderIfIdle()` paints the first editable frame even with
-  restored drafts, since no editor exists yet to protect; every later tick pauses
-  exactly as for a typed draft. Bounds, applied on every read and write: 30 days since
+  restored drafts, since no editor exists yet to protect; a later tick pauses
+  exactly as for a typed draft, which is while it is in use (#563). Bounds, applied on every read and write: 30 days since
   the last write, 100 entries and 200,000 characters, oldest evicted first; a refused
   write (a full profile) is retried once within 50,000 characters, then the drafts
   stay in memory without an alarm. A stamp from the future (the clock was set back)

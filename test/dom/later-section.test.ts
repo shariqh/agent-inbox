@@ -570,6 +570,9 @@ describe('the fold that holds the open card renders open (#247)', () => {
     await showInbox()
     click(row(id))
     await settle()
+    // still writing it: a draft holds the poll only while in use (#563)
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    answerInput(id)!.focus()
     type(answerInput(id), 'Half an answer')
 
     advanceClock(2 * 60_000)

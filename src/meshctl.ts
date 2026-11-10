@@ -33,6 +33,7 @@ import { closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdi
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { frameResult } from './agent-result.js'
 import { MESH_SCHEMA, loopbackPort, meshDir, meshFile, readMesh, requestPostEndpoint } from './mesh-config.js'
 import type { MeshDocument, MeshRead } from './mesh-config.js'
 import { appendRun, pruneRuns, runFiles, tidyRuns } from './mesh-runs.js'
@@ -41,6 +42,10 @@ import { REQUEST_POST_USAGE, runRequestPost } from './request-post-client.js'
 import type { RequestPostIo } from './request-post-client.js'
 import { UNSLOP_USAGE, runUnslop } from './unslop-client.js'
 import type { UnslopIo } from './unslop-client.js'
+
+// The untrusted-result frame (#528, D16) lands one PR ahead of its first caller, `meshctl call`
+// (#530), which prints every added agent's result through it; #530 replaces this marker.
+void frameResult // kept exported+tested (#528); first caller is `meshctl call` (#530)
 
 const UNSLOP_PORT = 4420
 const ENDPOINT_RULE = 'https://<name>.<tailnet>.ts.net[:<port>] or, for the SSH fallback only, http://127.0.0.1:<port>'

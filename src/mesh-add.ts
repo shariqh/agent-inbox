@@ -2,14 +2,15 @@
 // `agents.<id>` entry, an A2A agent this repo doesn't ship. The id rule, the endpoint rule
 // (loopback, or https on a name in this Mac's tailnet; another tailnet, a Funnel or a public
 // host waits for #534), the card fetch (no
-// token, no redirect, no proxy, 64 KiB, one deadline) and the card pin. Node core and the
-// card rule only, and no child process: meshctl reads this Mac's MagicDNS suffix and passes
-// it in. meshctl imports it, never the stdio MCP server or the viewer.
+// token, no redirect, no proxy, 64 KiB, one deadline) and the card pin. Node core, the card
+// rule and mesh-config.ts's tailnet test only, and no child process: meshctl reads this Mac's
+// MagicDNS suffix and passes it in. meshctl imports it, never the stdio MCP server or the viewer.
 import { createHash } from 'node:crypto'
 import { request as httpRequest } from 'node:http'
 import type { IncomingMessage } from 'node:http'
 import { request as httpsRequest } from 'node:https'
 import { canonicalCard, checkAddedCard, summarizeCard } from './agent-card.js'
+import { inTailnet } from './mesh-config.js'
 
 /** The agents that ship here, each with its own `mesh.json` shape: `add` never takes their names. */
 export const BUILT_IN_AGENTS: readonly string[] = ['unslop', 'request-post', 'web-search']
@@ -81,7 +82,7 @@ const WAITS = 'adding one waits for TLS identity, the card pin and card signatur
 export function tailnetRefusal(what: string, place: Place, suffix: string | undefined): string | undefined {
   if (place.loopback) return undefined
   if (suffix === undefined) return `${what} is on a tailnet name, but this Mac's tailnet could not be read (is Tailscale installed, running and logged in?), so add cannot tell it from another tailnet or a Funnel host`
-  if (place.host.slice(place.host.indexOf('.') + 1) === suffix) return undefined
+  if (inTailnet(place.host, suffix)) return undefined
   return `${what} is on another tailnet or a Funnel host, not this Mac's tailnet (${suffix}): ${WAITS}`
 }
 

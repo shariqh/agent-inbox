@@ -37,6 +37,16 @@ is not on that tailnet and its SSH fallback is set, forward a local port with `s
 plain `http` to another host. While this Mac is on a tailnet shared with others, calls fail by
 design.
 
+A tailnet name must be on this Mac's own tailnet (#557, the mesh design's §8.8): `enable` reads
+the Mac's MagicDNS suffix from `tailscale status --json` and refuses a name on another tailnet or
+a public Funnel host, which has the same name shape and a valid certificate. When the suffix
+cannot be read (Tailscale not installed, stopped or logged out) it refuses every tailnet name;
+the SSH fallback's loopback form never needs it. Every call checks again before it sends the
+token. When this Mac is not on the endpoint's tailnet (it switched to another account, or the
+entry was written before this check or by hand), nothing is sent and the call is unavailable
+(exit 15), so `wait` keeps polling: switch back, or run `enable` again with the service's name on
+this Mac's tailnet.
+
 To use a new token from the runbook, run the same `enable` command with the new file.
 `npm run meshctl -- status` shows a `Request-post:` line: on and the endpoint, or off, and
 whether the token and shim exist. It never prints the token.
@@ -99,7 +109,7 @@ terminal and never asks anything; the brief comes on stdin or from `--brief-file
 | 12 | Busy: a rate limit, the filing lock or the daily budget | Try again after the time it gives |
 | 13 | Outcome unknown: sent, then cut off, timed out, failed or answered with a redirect on the call | Run the same command once more (the key makes it safe) or `status --key`; never file it in-session |
 | 14 | Off: no `agents.request-post`, or the device token is missing | The in-session path is fine |
-| 15 | Unavailable: DNS, TLS, refused, a redirect on the card, a refused token or a card that does not match ("update agent-inbox or the service"); nothing was filed | Retry once, then report to the user; no in-session filing |
+| 15 | Unavailable: DNS, TLS, refused, a redirect on the card, a refused token, a card that does not match ("update agent-inbox or the service"), or this Mac not on the endpoint's tailnet or its tailnet unreadable; nothing was filed | Retry once, then report to the user; no in-session filing |
 | 16 | Conflict: another row already covers this | Report that row; never change the slug, title or channels to get around it |
 | 124 | `wait` ran 4 hours without a final phase | Run the same `wait` again if it still matters |
 | 4 | Usage, a terminal on stdin, or an unreadable `--brief-file` | Fix the command |

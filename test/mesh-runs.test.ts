@@ -280,7 +280,7 @@ describe('off and usage write nothing (§5.3)', () => {
     writeFileSync(token, 'x'.repeat(40))
     const script = join(scratchDir('runs-bin-'), 'meshctl.js')
     writeFileSync(script, '')
-    const io = { env: { AGENT_INBOX_MESH_DIR: dir }, home: '/nonexistent-home', out: () => {}, err: () => {}, script }
+    const io = { env: { AGENT_INBOX_MESH_DIR: dir }, home: '/nonexistent-home', out: () => {}, err: () => {}, script, tailnet: () => 'tail1234.ts.net' }
     expect(runMeshctl(['enable', '--request-post', '--endpoint', 'https://box.tail1234.ts.net', '--token-file', token, '--apply'], io)).toBe(0)
     expect(runMeshctl(['disable', '--request-post', '--apply'], io)).toBe(0)
     expect(readdirSync(dir).filter((name) => !name.startsWith('mesh.json.bak-'))).toEqual([])

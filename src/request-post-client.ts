@@ -4,10 +4,14 @@
 // reads a terminal, never follows a redirect and never uses a proxy or the card's URL: it
 // talks to the configured endpoint only, with `Host` exactly that endpoint's authority.
 // Off (no `agents.request-post` by the one reading rule) is exit 14 before any connection.
+// A tailnet endpoint must still be in this Mac's tailnet before each exchange (#557, mesh
+// design §8.8); the suffix comes in as `io.tailnet`, meshctl's `tailscale status` reader.
+// The Mac can switch tailnets mid-command, so a mismatch is 15, never 14's in-session path.
 //
 // Exit codes are request-post's own (design §3.3), not unslop's: 0 ok, 11 refused,
-// 12 busy, 13 outcome unknown, 14 off, 15 unavailable (DNS, TLS, refused, a redirect or a
-// card mismatch; nothing sent), 16 conflict, 124 `wait` ran its 4 hours, 4 usage.
+// 12 busy, 13 outcome unknown, 14 off, 15 unavailable (DNS, TLS, refused, a redirect, a card
+// mismatch, or this Mac not on the endpoint's tailnet or its tailnet unreadable; nothing
+// sent), 16 conflict, 124 `wait` ran its 4 hours, 4 usage.
 // The data part reaches stdout only on exit 0.
 import { createHash, randomUUID } from 'node:crypto'
 import { closeSync, constants, fchmodSync, fstatSync, lstatSync, openSync, readFileSync, readSync, writeSync } from 'node:fs'
@@ -16,7 +20,7 @@ import { request as httpsRequest } from 'node:https'
 import type { LookupFunction } from 'node:net'
 import { join, resolve } from 'node:path'
 import { checkCard } from './agent-card.js'
-import { meshDir, meshFile, readMesh, requestPostEndpoint } from './mesh-config.js'
+import { inTailnet, meshDir, meshFile, readMesh, requestPostEndpoint } from './mesh-config.js'
 import type { RunCollector } from './mesh-runs.js'
 
 const EXTENSION = 'urn:agent-inbox:ext:request-post:v1'
@@ -49,6 +53,8 @@ export interface RequestPostIo {
   sendMs?: number
   /** DNS for a tailnet name (tests point it elsewhere) */
   lookup?: LookupFunction
+  /** This Mac's MagicDNS suffix, asked before each exchange with a tailnet endpoint (meshctl passes `tailscale status`'s) */
+  tailnet?: () => string | undefined
   /** the meshctl entry's run record (cards view V5 §5.3): armed once the key passes its rule */
   run?: RunCollector
 }
@@ -126,6 +132,16 @@ const unreachable = (base: URL, code: string): string => code === 'ENOTFOUND' ||
 
 /** The card check, then one blocking SendMessage (design §3.1, §3.3). */
 async function send(base: URL, token: string, io: RequestPostIo, meta: Json, text: string): Promise<Result> {
+  // §8.8 (#557): a tailnet endpoint must still be in this Mac's tailnet, or nothing is sent. The
+  // Mac may have switched tailnets since the last call (another account), so a mismatch is 15,
+  // temporary like a DNS failure: `wait` keeps polling, and nobody is told to file in-session.
+  if (base.protocol === 'https:') {
+    const suffix = io.tailnet?.()
+    if (suffix === undefined) return { exit: 15, why: `this Mac's tailnet could not be read (is Tailscale installed, running and logged in?), so ${base.hostname} cannot be told from another tailnet or a Funnel host` }
+    if (!inTailnet(base.hostname, suffix)) {
+      return { exit: 15, why: `this Mac is not on the tailnet the request-post endpoint ${base.hostname} is configured for (this Mac is on ${suffix}), so nothing was sent: switch back, or run meshctl enable --request-post again` }
+    }
+  }
   // above the service's 30 s task limit (design §5), so its lock-wait 12 arrives as 12, not 13
   const limit = io.sendMs ?? 40_000
   const got = await call(base, io, { method: 'GET', headers: { accept: 'application/json' }, timeoutMs: Math.min(limit, 10_000) })

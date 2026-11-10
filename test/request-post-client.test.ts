@@ -309,18 +309,62 @@ describe('the endpoint and the card (design §3.1, §6, §8)', () => {
       lookups.push(host)
       cb(Object.assign(new Error('nope'), { code: 'ENOTFOUND' }))
     }) as unknown as LookupFunction
-    const r = await run(meshHome('https://request-post.tailnet-name.ts.net'), args, 'b', { lookup: nowhere })
+    const own = (): string => 'tailnet-name.ts.net'
+    const r = await run(meshHome('https://request-post.tailnet-name.ts.net'), args, 'b', { lookup: nowhere, tailnet: own })
     expect(r.code).toBe(15)
     expect(r.err).toContain('does not resolve: is this machine on the personal tailnet? A shared tailnet gives this by design')
     expect(lookups).toEqual(['request-post.tailnet-name.ts.net'])
     // the name resolves, but what answers is no TLS server
     const c = await counting()
     const loop = ((_h: string, o: Json, cb: (...a: unknown[]) => void) => (o.all ? cb(null, [{ address: '127.0.0.1', family: 4 }]) : cb(null, '127.0.0.1', 4))) as unknown as LookupFunction
-    expect((await run(meshHome(`https://request-post.tailnet-name.ts.net:${c.port}`), args, 'b', { lookup: loop })).code).toBe(15)
+    expect((await run(meshHome(`https://request-post.tailnet-name.ts.net:${c.port}`), args, 'b', { lookup: loop, tailnet: own })).code).toBe(15)
     expect(c.count()).toBe(1)
     const free = await counting()
     servers.pop()!.close()
     expect((await run(meshHome(`http://127.0.0.1:${free.port}`), args)).code).toBe(15)
+  })
+
+  it('sends nothing to a tailnet endpoint outside this Mac\'s tailnet (§8.8, #557); this Mac\'s own still connects', async () => {
+    const lookups: string[] = []
+    const c = await counting()
+    const loop = ((host: string, o: Json, cb: (...a: unknown[]) => void) => {
+      lookups.push(host)
+      return o.all ? cb(null, [{ address: '127.0.0.1', family: 4 }]) : cb(null, '127.0.0.1', 4)
+    }) as unknown as LookupFunction
+    const endpoint = `https://request-post.tailnet-example.ts.net:${c.port}`
+    let suffix: string | undefined = 'other-example.ts.net'
+    let asked = 0
+    const extra = { lookup: loop, tailnet: () => { asked++; return suffix } }
+    // this Mac on another tailnet (an account switch, or an entry written before #557 or by hand):
+    // unavailable, nothing sent, and never the in-session path, which could file a duplicate
+    const other = await run(meshHome(endpoint), args, 'b', extra)
+    expect(other.code).toBe(15)
+    expect(other.err).toBe('request-post: unavailable: this Mac is not on the tailnet the request-post endpoint request-post.tailnet-example.ts.net is configured for (this Mac is on other-example.ts.net), so nothing was sent: switch back, or run meshctl enable --request-post again. Retry once, then report it; do not file it in-session.\n')
+    // wait treats it as temporary: it keeps polling for 30 minutes, then is 15, never 14
+    let t = 0
+    const before = asked
+    const waited = await run(meshHome(endpoint), ['wait', '--key', 'k'], '', { ...extra, now: () => t, sleep: async (ms) => { t += ms } })
+    expect(waited.code).toBe(15)
+    expect(t).toBeGreaterThanOrEqual(30 * MIN)
+    expect(asked - before).toBeGreaterThan(2)
+    expect(waited.err).toContain('no status for 30 minutes: this Mac is not on the tailnet')
+    expect(waited.err).not.toMatch(/off:|File it in-session/)
+    // the suffix cannot be read: unavailable, nothing sent
+    suffix = undefined
+    const unknown = await run(meshHome(endpoint), args, 'b', extra)
+    expect(unknown.code).toBe(15)
+    expect(unknown.err).toContain('this Mac\'s tailnet could not be read (is Tailscale installed, running and logged in?)')
+    expect([lookups, c.count(), seen.length]).toEqual([[], 0, 0])
+    // this Mac's own tailnet passes the check and reaches the endpoint (here no TLS server, so 15)
+    suffix = 'tailnet-example.ts.net'
+    const ownCall = await run(meshHome(endpoint), args, 'b', extra)
+    expect(ownCall.code).toBe(15)
+    expect(ownCall.err).toContain('unavailable: cannot reach request-post.tailnet-example.ts.net')
+    expect([lookups, c.count()]).toEqual([['request-post.tailnet-example.ts.net'], 1])
+    // the SSH fallback's loopback endpoint never asks
+    const loopbackBefore = asked
+    expect((await run(meshHome(), args, 'b', extra)).code).toBe(0)
+    expect(asked).toBe(loopbackBefore)
   })
 
   it('agent text reaches stderr and stdout without control bytes', async () => {

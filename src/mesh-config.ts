@@ -123,10 +123,21 @@ export function loopbackPort(endpoint: unknown): number | undefined {
 }
 
 /**
+ * The mesh design's §8.8 allowlist (#556, #557): whether `host`, a `<name>.<tailnet>.ts.net` name,
+ * is in this Mac's tailnet, `suffix` (its MagicDNS suffix, `<tailnet>.ts.net`; undefined when it
+ * cannot be read). Another tailnet's name or a public Funnel host is not. Nothing here spawns:
+ * meshctl reads the suffix from `tailscale status --json` and passes it in.
+ */
+export function inTailnet(host: string, suffix: string | undefined): boolean {
+  return suffix !== undefined && host.slice(host.indexOf('.') + 1) === suffix
+}
+
+/**
  * An `agents.request-post.endpoint` (request-post design §6), written the one way a client
  * sends as `Host`: `https://<name>.<tailnet>.ts.net[:<port>]` (lower-case labels), or, for
  * the SSH fallback, `http://127.0.0.1:<port>`. No path, user, query, leading zero or
- * written-out default port (443, 80); one trailing `/` is dropped. Anything else is off.
+ * written-out default port (443, 80); one trailing `/` is dropped. Anything else is off. Which
+ * tailnet is allowed is inTailnet's question (meshctl's enable and the client ask it).
  */
 export function requestPostEndpoint(endpoint: unknown): string | undefined {
   if (typeof endpoint !== 'string') return undefined

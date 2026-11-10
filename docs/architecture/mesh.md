@@ -10,12 +10,13 @@ paths:
   - "src/agent-card.ts"
   - "src/mesh-agents.ts"
   - "src/mesh-runs.ts"
+  - "src/mesh-skills.ts"
   - "public/agents-home.js"
   - "public/mesh-section.js"
   - "public/mesh-agent-page.js"
   - "public/mesh-runs-tab.js"
   - "packages/mesh/src/**/*.ts"
-applyTo: "src/mesh-config.ts,src/meshctl.ts,src/mesh-add.ts,src/unslop-client.ts,src/mesh-identity.ts,src/request-post-client.ts,src/mesh-call.ts,src/agent-card.ts,src/mesh-agents.ts,src/mesh-runs.ts,public/agents-home.js,public/mesh-section.js,public/mesh-agent-page.js,public/mesh-runs-tab.js,packages/mesh/src/**/*.ts"
+applyTo: "src/mesh-config.ts,src/meshctl.ts,src/mesh-add.ts,src/unslop-client.ts,src/mesh-identity.ts,src/request-post-client.ts,src/mesh-call.ts,src/agent-card.ts,src/mesh-agents.ts,src/mesh-runs.ts,src/mesh-skills.ts,public/agents-home.js,public/mesh-section.js,public/mesh-agent-page.js,public/mesh-runs-tab.js,packages/mesh/src/**/*.ts"
 ---
 
 # Agent mesh (M1)
@@ -876,3 +877,63 @@ the two share numbers, not meanings.
   graph must not reach, `test/mesh.test.ts` pins its imports and checks that no viewer,
   `public/` or `electron/` file names it, and the dependency and snapshot-trigger fixtures are
   unchanged.
+
+## Routing skills (#513)
+
+Design: the mesh design's §6.7 (D15) and §8.5. A harness finds a mesh agent through a routing
+`SKILL.md` that points at the agent's shim, `<mesh dir>/bin/<agent>`. `src/mesh-skills.ts` (Node
+core, `./mesh-config.js`; meshctl only) writes and links them.
+
+- **One folder per agent**, `<mesh dir>/skills/<agent>/SKILL.md`: harnesses pick a skill by its
+  description, so each agent gets one focused description. After every `enable` and `disable`
+  (whole mesh or one agent, dry run included) meshctl plans the folders the mesh.json it leaves
+  calls for: one for each agent that is on by its client's rule and has a template, none for any
+  other (its `SKILL.md` deleted, then the folder and `skills/` when empty). `enable` writes it
+  before `mesh.json`, so the switch stays the last thing written; `disable` removes it after.
+  `skills link` runs the same plan first. Folders are 0700 and `SKILL.md` 0644, written through a temporary file and a
+  rename; a `skills` folder or agent folder that is a link or a file is refused with a note.
+- **Fixed text only.** The templates are string constants in `src/mesh-skills.ts`; the only
+  substitution is `<mesh dir>`, the mesh dir's own resolved path, and only when it is one plain
+  shell word (letters, digits, `. _ / @ + -`), else no skill is written and a note says why.
+  `routingSkills(doc, dir)` is pure, and no card field, other `mesh.json` value or agent output
+  reaches a skill. `docs/unslop.md` quotes unslop's template; `test/mesh-skills.test.ts` fails
+  when they differ and pins the text in `test/fixtures/routing-skills/`. unslop's skill names
+  `rules.md` by the profile's `skill` folder, the one the agent reads, so the generated folder
+  holds `SKILL.md` alone. request-post has no template: its routing text is part of the private
+  skill with the brief guidance (`docs/request-post.md`). Agents added with `meshctl add` get none
+  yet (a follow-up: a template that calls `meshctl call <id>` through a shim, with the id as the
+  only substitution).
+- **`meshctl skills link [--target claude|agents|all] [--apply]`** links `~/.claude/skills/<agent>`
+  (Claude Code) and `~/.agents/skills/<agent>` (Codex; Copilot CLI reads it too) to the generated
+  folder, an absolute symlink. A target folder reached through a link is linked once. A name held
+  by anything meshctl did not make (a folder, a file, or a link elsewhere) in either target or in
+  `~/.copilot/skills` blocks that agent entirely: it is named on stderr, nothing is linked for it,
+  and the exit is 1 after the other steps. Two skills of one name would compete, and Copilot CLI
+  1.0.108 prefers `~/.copilot/skills` over `~/.agents/skills` (checked by hand, #513).
+  **`skills unlink`** removes only links that resolve into `<mesh dir>/skills/`, in the targets
+  named; the folders follow `mesh.json`, not unlink. Every plan also removes links of ours whose
+  agent is off or whose name differs from their folder's, dangling ones included. Both are dry
+  runs without `--apply`.
+- **The setup lock.** Any applied plan with a link step (`skills link|unlink`, and an
+  `enable`/`disable` that removes a link) first takes the installers' lease
+  (`scripts/setup-lock.sh`: `AGENT_INBOX_INSTALL_LOCK_DIR`, else `~/.agent-inbox/install-agents.lock`)
+  the same way, `lockf -s -t 0 9` on macOS (else `flock -E 75 -n 9`) on a descriptor meshctl
+  keeps open until the steps end, and refuses with nothing changed while another setup holds it.
+  A dry run takes no lock.
+- **Backups never go in a skills folder.** Copilot CLI reads every folder there, so a copy would
+  compete with the real skill. A `SKILL.md` meshctl replaces or removes whose text this build
+  would not write (an older template or a hand edit) is kept as
+  `<mesh dir>/backups/skills/<agent>-SKILL.md.bak-<time>` (0600). meshctl never replaces a folder
+  or link it did not make, so nothing of the user's needs one.
+- **Copilot CLI and symlinks.** Its docs do not say whether it follows a symlinked skill folder.
+  Copilot CLI 1.0.108 lists one in `~/.agents/skills` (`HOME=<scratch> copilot skill list`,
+  #513), so `link` makes symlinks only; if a later version stops following them, a copied folder
+  that meshctl rewrites on every change is the planned fallback.
+- `test/mesh-skills.test.ts` holds the pure generation with a hostile description in every
+  entry, the doc parity and snapshot, enable and disable writing and removing the folder, the
+  backup, link and unlink in a temporary `HOME` (dry runs change nothing, a foreign folder or link
+  in each of the three folders is reported and blocks the agent, ours dangling is removed, a
+  foreign dangling one is not), the shared lock both ways, and the off tests (no `mesh.json` or no
+  agent on: no folder, no link; `disable --apply` removes every folder and link meshctl made).
+  `test/prstate.test.ts` and `test/mesh.test.ts` keep the module out of the stdio graph, the
+  viewer, `public/` and `electron/`, and pin its imports.

@@ -6,11 +6,13 @@
 // `"list": []` the SDK signs a different payload, so meshctl refuses it with the empty-values hint,
 // and the SDK's own verifier would not notice the auth requirement removed (Appendix B).
 import { generateKeyPairSync } from 'node:crypto'
+import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { generateAgentCardSignature, verifyAgentCardSignature } from '@a2a-js/sdk'
 import type { AgentCard } from '@a2a-js/sdk'
 import { describe, expect, it } from 'vitest'
 import { signCard, thumbprint } from '../src/card-signing.js'
+import { CARD as REQUEST_POST_CARD, resign } from './request-post-sign.js'
 
 type Json = Record<string, any>
 type Verdict = { keys: string[]; signed?: string[]; algs?: string[]; unsigned?: string; refused?: string }
@@ -35,7 +37,7 @@ const card = (list: string[]): Json => ({
 })
 // the SDK's callback: the key whose thumbprint is the `kid`, from the card's own list
 const lookup = (c: Json) => async (kid: string) => {
-  const key = (c.capabilities.extensions[0].params.keys as Json[]).find((k) => thumbprint(k) === kid)
+  const key = ((c.capabilities.extensions as Json[]).find((e) => e.uri === PROFILE)!.params.keys as Json[]).find((k) => thumbprint(k) === kid)
   if (!key) throw new Error('no such key')
   return key
 }
@@ -81,5 +83,24 @@ describe('SDK interop on a card with "list": ["call"] (§3.3, §3.10)', () => {
     delete stripped.securityRequirements
     expect(await sdkVerifies(stripped)).toBe(true)
     expect(() => signCard(card([]), [{ kid: KID, key: privateKey }])).toThrow('not canonical-stable (empty-value)')
+  })
+})
+
+describe("request-post's fixture card (publishable-agent design §8, C8)", () => {
+  const committed: Json = JSON.parse(readFileSync(REQUEST_POST_CARD, 'utf8'))
+  const unkeyed = (c: Json): Json => {
+    const { signatures: _s, ...rest } = structuredClone(c)
+    delete (rest.capabilities.extensions as Json[]).find((e) => e.uri === PROFILE)!.params.keys
+    return rest
+  }
+
+  it('verifies under the SDK and meshctl; re-signing with a fresh key changes only keys and signatures', async () => {
+    expect(await sdkVerifies(committed)).toBe(true)
+    expect((await verdictOf(committed)).signed).toHaveLength(1)
+    const again = resign(committed)
+    expect(await sdkVerifies(again)).toBe(true)
+    expect(again.signatures).not.toEqual(committed.signatures)
+    expect(JSON.stringify(unkeyed(again))).toBe(JSON.stringify(unkeyed(committed)))
+    expect(JSON.stringify(again)).not.toMatch(/"d"\s*:/)
   })
 })

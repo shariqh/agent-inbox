@@ -15,7 +15,7 @@
           }
         ],
         "metadata": {
-          "urn:agent-inbox:ext:request-post:v1": {
+          "https://shariqh.github.io/agent-inbox/ext/request-post/v1": {
             "skill": "request-post-status",
             "pageId": "00000000-0000-4000-8000-000000000002"
           }

@@ -1,6 +1,6 @@
 {
   "row": "replay",
-  "situation": "Same key already filed: the row as it is now",
+  "situation": "Same key already filed: the row as it is now; the metadata is under the old URN, which the service still reads (publishable-agent design §6)",
   "exit": 0,
   "request": {
     "jsonrpc": "2.0",

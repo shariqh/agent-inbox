@@ -2,6 +2,10 @@
   "name": "request-post",
   "description": "Files one publishing request in the queue and reads it back; reads the state of agent-filed requests. No model, no free-form tools.",
   "version": "0.0.0-fixture",
+  "provider": {
+    "organization": "agent-inbox",
+    "url": "https://github.com/shariqh/agent-inbox"
+  },
   "supportedInterfaces": [
     {
       "url": "https://request-post.tailnet-name.ts.net/",
@@ -14,7 +18,7 @@
     "pushNotifications": false,
     "extensions": [
       {
-        "uri": "urn:agent-inbox:ext:request-post:v1",
+        "uri": "https://shariqh.github.io/agent-inbox/ext/request-post/v1",
         "description": "request-post parameters, results and status snapshots",
         "required": true,
         "params": {
@@ -35,6 +39,43 @@
           ],
           "maxBriefBytes": 8192
         }
+      },
+      {
+        "uri": "https://shariqh.github.io/agent-inbox/ext/profile/v1",
+        "description": "Stable id, signing keys, and per-skill egress and residency",
+        "params": {
+          "id": "shariqh.github.io/agent-inbox/request-post",
+          "keys": [
+            {
+              "kty": "EC",
+              "crv": "P-256",
+              "x": "lo-TU6aQIyzzyafRfknwpTflhs5TtSDXoIwvlZOq1_M",
+              "y": "wCNk6HtkFscQZDjEfOt0NzAkEAgzmOMMm_g6Zi9IC9o"
+            }
+          ],
+          "skills": {
+            "request-post": {
+              "egress": [
+                {
+                  "purpose": "storage",
+                  "hosts": "operator",
+                  "sends": "input"
+                }
+              ],
+              "residency": "caller-mesh"
+            },
+            "request-post-status": {
+              "egress": [
+                {
+                  "purpose": "storage",
+                  "hosts": "operator",
+                  "sends": "metadata"
+                }
+              ],
+              "residency": "caller-mesh"
+            }
+          }
+        }
       }
     ]
   },
@@ -49,7 +90,9 @@
     {
       "schemes": {
         "bearer": {
-          "list": []
+          "list": [
+            "call"
+          ]
         }
       }
     }
@@ -77,6 +120,12 @@
       "tags": [
         "publishing"
       ]
+    }
+  ],
+  "signatures": [
+    {
+      "protected": "eyJhbGciOiJFUzI1NiIsInR5cCI6IkpPU0UiLCJraWQiOiJFblhBRnFuY2tMYmdtMVpjV04wZXpZRlVyREM0TkdqX3lmTzljWDRKVVJrIn0",
+      "signature": "pS35eI3cUKG_WcB0IWIN2HZcSQGh1rN4OwWkAxqff9RbrMWPdLCxHHyjQBtRiu8wA2U5gKTYC_GT1SlmblNExA"
     }
   ]
 }

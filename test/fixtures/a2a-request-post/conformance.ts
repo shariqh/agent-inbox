@@ -7,7 +7,17 @@ import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-export const EXTENSION = 'urn:agent-inbox:ext:request-post:v1'
+// The extension's URIs, preferred first (publishable-agent design §6, C6 and C8): the card declares
+// the Pages one; a client accepts a card declaring either and sends metadata under the one it
+// declares, and the service reads metadata under either, never both. C10 drops the old URN.
+export const EXTENSIONS = ['https://shariqh.github.io/agent-inbox/ext/request-post/v1', 'urn:agent-inbox:ext:request-post:v1']
+const PROFILE = 'https://shariqh.github.io/agent-inbox/ext/profile/v1'
+// publishable-agent design §8: the id, and per skill what leaves with the input (a store the
+// operator chooses, never named) and where the work may run
+const PROFILE_SKILLS = {
+  'request-post': { egress: [{ purpose: 'storage', hosts: 'operator', sends: 'input' }], residency: 'caller-mesh' },
+  'request-post-status': { egress: [{ purpose: 'storage', hosts: 'operator', sends: 'metadata' }], residency: 'caller-mesh' },
+}
 export const PHASES = ['awaiting-go', 'queued', 'drafting', 'in-review', 'ready-for-human', 'proposed', 'needs-fix', 'failed', 'rejected', 'published']
 export const FINAL_PHASES = ['awaiting-go', 'ready-for-human', 'proposed', 'needs-fix', 'failed', 'rejected', 'published']
 const HUMAN_PHASES = ['awaiting-go', 'ready-for-human', 'proposed']
@@ -53,11 +63,23 @@ export function requestKey(r: KeyInput): string {
   return out
 }
 
-const extParams = (card: unknown): Json => obj(list(obj(obj(card).capabilities).extensions).map(obj).find((e) => e.uri === EXTENSION)?.params)
+/** The request-post extension `card` declares, under its preferred URI. */
+const extensionOf = (card: unknown): Json | undefined => {
+  const exts = list(obj(obj(card).capabilities).extensions).map(obj)
+  for (const uri of EXTENSIONS) {
+    const ext = exts.find((e) => e.uri === uri)
+    if (ext) return ext
+  }
+  return undefined
+}
+const extParams = (card: unknown): Json => obj(extensionOf(card)?.params)
+// no "", [], {} or null, and no `"required": false` (publishable-agent design §3.10)
+const unstable = (v: unknown): boolean => v === null || v === '' || (typeof v === 'object' && (!Object.values(v).length || Object.values(v).some(unstable)))
 
 export function checkCard(card: unknown): string[] {
   const c = obj(card)
   const p = extParams(card)
+  const caps = obj(c.capabilities)
   const problems: string[] = []
   if (c.name !== 'request-post' || typeof c.version !== 'string') problems.push('name or version')
   if (!list(c.supportedInterfaces).map(obj).some((i) => i.protocolBinding === 'JSONRPC' && i.protocolVersion === '1.0' && typeof i.url === 'string')) problems.push('interface')
@@ -68,6 +90,16 @@ export function checkCard(card: unknown): string[] {
   if (!strs(p.brands) || !p.brands.length || !strs(p.categories) || !p.categories.length) problems.push('brands or categories')
   if (!strs(p.channels) || !same([...p.channels].sort(), ['blog', ...SOCIAL].sort())) problems.push('channels')
   if (!Number.isSafeInteger(p.maxBriefBytes) || (p.maxBriefBytes as number) < 1 || (p.maxBriefBytes as number) > 8192) problems.push('maxBriefBytes')
+  // publishable-agent design §8 (C8): a provider, the profile with public keys only (none on an
+  // unsigned copy), the bearer role "call", and a canonical-stable card
+  const provider = obj(c.provider)
+  if (typeof provider.organization !== 'string' || !https(provider.url)) problems.push('provider')
+  const profile = list(caps.extensions).map(obj).filter((e) => e.uri === PROFILE)
+  const { keys, ...declared } = obj(profile[0]?.params)
+  const publicKeys = keys === undefined || (Array.isArray(keys) && keys.length >= 1 && keys.length <= 4 && keys.every((k) => Object.keys(obj(k)).sort().join() === 'crv,kty,x,y'))
+  if (profile.length !== 1 || !same(declared, { id: 'shariqh.github.io/agent-inbox/request-post', skills: PROFILE_SKILLS }) || !publicKeys) problems.push('profile')
+  const { signatures: _s, ...unsigned } = c
+  if (unstable(unsigned) || list(caps.extensions).some((e) => obj(e).required === false)) problems.push('not canonical-stable')
   return problems
 }
 
@@ -123,11 +155,14 @@ function checkCall(x: Json, skill: string): { problems: string[]; meta: Json; te
   const res = obj(x.response)
   const message = obj(obj(req.params).message)
   const parts = list(message.parts)
-  const meta = obj(obj(message.metadata)[EXTENSION])
+  const metadata = obj(message.metadata)
+  const keys = Object.keys(metadata)
+  const meta = obj(metadata[keys[0] ?? ''])
   const task = obj(obj(res.result).task)
   const data = taskData(task)
   if (req.jsonrpc !== '2.0' || req.method !== 'SendMessage' || obj(obj(req.params).configuration).returnImmediately === true) problems.push('request: a blocking SendMessage')
   if (message.role !== 'ROLE_USER' || parts.length !== 1 || typeof obj(parts[0]).text !== 'string' || message.taskId !== undefined) problems.push('request: one text part')
+  if (keys.length !== 1 || !EXTENSIONS.includes(keys[0]!)) problems.push('request: metadata')
   if (meta.skill !== skill) problems.push('request: skill')
   if (res.jsonrpc !== '2.0' || res.id !== req.id) problems.push('response: id')
   if (typeof task.id !== 'string' || typeof task.contextId !== 'string') problems.push('response: task')

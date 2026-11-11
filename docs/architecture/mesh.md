@@ -643,6 +643,26 @@ This repository ships its client (R2 and R3 below) and the contract both sides t
   `node test/fixtures/a2a-request-post/conformance.ts manifest > test/fixtures/a2a-request-post/MANIFEST.json`
   (Node 24). `test/request-post-conformance.test.ts` checks every fixture, the mutations the
   validator must catch, the key vectors and the manifest.
+- **The publishable card (C8; publishable-agent design §6, §8; #535, #536, #537).** `card.json`
+  has the shape the service's card moves to: `provider` (`agent-inbox`,
+  `https://github.com/shariqh/agent-inbox`), the profile extension (id
+  `shariqh.github.io/agent-inbox/request-post`; `request-post` egress `storage`/`operator`/`input`,
+  `request-post-status` `storage`/`operator`/`metadata`; residency `caller-mesh` for both), the
+  bearer requirement as `"list": ["call"]`, its own extension at
+  `https://shariqh.github.io/agent-inbox/ext/request-post/v1` (spec: `docs/ext/request-post-v1.md`,
+  published at that URI), still `required: true`, and one ES256 signature.
+  `packages/mesh/test/request-post-sign.ts write` re-signs it with a P-256 key it makes and never
+  writes, so a re-signing changes only the profile's `keys` and `signatures`, and no fixture holds
+  a `d` member (a test checks). `conformance.ts` accepts a card declaring either URI and requires
+  the provider, the profile (public keys only, none on an unsigned copy) and a canonical-stable
+  card; a request's metadata sits under one key, either URI. The exchanges use the Pages URI, but
+  `file/03-replay.json` and `status/queued.json` keep the old URN. Tests: the card verifies under
+  meshctl's verifier and the SDK's; served elsewhere and re-signed, it passes `meshctl check` at the
+  publishable level with one warning, `ext.required`, which is the one failure under `--strict`
+  (request-post's own client speaks the extension); the client sends metadata under the Pages URI
+  for it and under the old URN for a card that still declares that. The service's own card, its
+  dual-key metadata reading and its key are tracked in the private repositories; it re-vendors
+  this folder with that change.
 - **Turning request-post on and off (R2, request-post design §6, §8).** It mirrors U3a for a
   remote agent: there is nothing to build, spawn or profile. The service's runbook gives each
   device a bearer token; save it in a file, then run
@@ -835,7 +855,8 @@ the usage and 4).
     opens only `<agent>.jwk` and, while rotating, `<agent>-next.jwk`, through `readPrivate()`
     (`O_NOFOLLOW`, regular, this user's, 0600, at most 4 KiB) in a keys folder that is no symlink
     and 0700, and checks each holds exactly a P-256 private JWK whose `d` signs for its `x`/`y`.
-    Web search signs with it since C7 (above); request-post and unslop follow in C8 and C9.
+    Web search signs with it since C7 (above) and unslop follows in C9; request-post's service signs
+    with its own key, and its fixture card (C8) with a key made at signing time.
   - *SDK interop* (`packages/mesh/test/card-signing.test.ts`, where `@a2a-js/sdk` 1.3.0 is
     installed; it loads the root verifier at run time because it is outside the package's
     `rootDir`): on a card whose bearer requirement is `"list": ["call"]` our signer's card verifies

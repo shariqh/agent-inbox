@@ -231,9 +231,10 @@ describe('checks and their words (design §2.4, §4.2-§4.5)', () => {
     expect((await t.agents()).agents[0]).toMatchObject({ where: 'tailnet', state: 'unreachable', reason: 'does not resolve (is this Mac on the tailnet?)' })
   })
 
-  it('a request-post card under the Pages extension URI is up too (publishable-agent design §6, C6)', async () => {
+  it('a request-post card under the old extension URN is up too (publishable-agent design §6, C6, C8)', async () => {
+    // the fixture card declares the Pages URI since C8; the service's card before its switch, the old URN
     const card = structuredClone(REQUEST_POST)
-    card.capabilities.extensions[0].uri = 'https://shariqh.github.io/agent-inbox/ext/request-post/v1'
+    card.capabilities.extensions[0].uri = 'urn:agent-inbox:ext:request-post:v1'
     const s = setup(requestPostAt(`http://127.0.0.1:${(await serve(card)).port}`))
     await s.post({ trigger: 'open' })
     expect((await s.agents()).agents[0]).toMatchObject({ state: 'up', reason: null })

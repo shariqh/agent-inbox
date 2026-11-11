@@ -9,6 +9,7 @@ import { removeScratchDirs, scratchDir } from './scratch.js'
 
 const REPO = new URL('..', import.meta.url).pathname
 const PROFILE = 'https://shariqh.github.io/agent-inbox/ext/profile/v1'
+const REQUEST_POST = 'https://shariqh.github.io/agent-inbox/ext/request-post/v1'
 
 afterEach(() => removeScratchDirs())
 
@@ -17,11 +18,11 @@ const files = (dir: string): string[] => readdirSync(dir, { recursive: true, wit
 
 describe('the extension specs site (#537)', () => {
   it('builds exactly the index and each spec at its extension-less path, from docs/ext alone', () => {
-    expect(readdirSync(join(REPO, 'docs', 'ext'))).toEqual(['profile-v1.md'])
+    expect(readdirSync(join(REPO, 'docs', 'ext')).sort()).toEqual(['profile-v1.md', 'request-post-v1.md'])
     const out = join(scratchDir('pages-'), '_site')
     writeSite(REPO, out)
     // Pages serves ext/profile/v1.html at …/ext/profile/v1 with no redirect, and the folder's index at …/v1/
-    expect(files(out)).toEqual(['ext/profile/v1.html', 'ext/profile/v1/index.html', 'index.html'])
+    expect(files(out)).toEqual(['ext/profile/v1.html', 'ext/profile/v1/index.html', 'ext/request-post/v1.html', 'ext/request-post/v1/index.html', 'index.html'])
     const spec = readFileSync(join(out, 'ext/profile/v1.html'), 'utf8')
     expect(readFileSync(join(out, 'ext/profile/v1/index.html'), 'utf8')).toBe(spec)
     expect(spec).toContain('<title>Agent profile extension, version 1</title>')
@@ -31,6 +32,12 @@ describe('the extension specs site (#537)', () => {
     expect(readFileSync(join(out, 'index.html'), 'utf8')).toContain(`<a href="ext/profile/v1">Agent profile extension, version 1</a>: <code>${PROFILE}</code>`)
     // the spec names the URI the code checks
     expect(readFileSync(join(REPO, 'src', 'agent-card.ts'), 'utf8')).toContain(`'${PROFILE}'`)
+    // request-post's extension (C8): its spec at the URI its card declares, which the client checks too
+    const requestPost = readFileSync(join(out, 'ext/request-post/v1.html'), 'utf8')
+    expect(requestPost).toContain('<title>request-post extension, version 1</title>')
+    expect(requestPost).toContain(`<code>${REQUEST_POST}</code>`)
+    expect(readFileSync(join(out, 'index.html'), 'utf8')).toContain(`<a href="ext/request-post/v1">request-post extension, version 1</a>: <code>${REQUEST_POST}</code>`)
+    expect(readFileSync(join(REPO, 'src', 'agent-card.ts'), 'utf8')).toContain(`'${REQUEST_POST}'`)
   })
 
   it('refuses any other file in docs/ext, and an output folder that is not empty', () => {

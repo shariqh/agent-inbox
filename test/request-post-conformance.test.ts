@@ -9,6 +9,7 @@ import {
   FINAL_PHASES, PHASES, checkCard, checkExchange, checkManifest, checkStatus, keyPreimage, normaliseTitle, requestKey,
 } from './fixtures/a2a-request-post/conformance.js'
 import type { KeyInput } from './fixtures/a2a-request-post/conformance.js'
+import { jwkThumbprint, signatureVerdict } from '../src/card-signature.js'
 import { removeScratchDirs, scratchDir } from './scratch.js'
 
 afterEach(() => removeScratchDirs())
@@ -27,7 +28,9 @@ const dataOf = (x: Json): Json => {
   const task = x.response.result.task
   return (task.artifacts?.[0] ?? task.status.message).parts[1].data
 }
-const metaOf = (x: Json): Json => x.request.params.message.metadata['urn:agent-inbox:ext:request-post:v1']
+const PAGES = 'https://shariqh.github.io/agent-inbox/ext/request-post/v1'
+const URN = 'urn:agent-inbox:ext:request-post:v1'
+const metaOf = (x: Json): Json => Object.values(x.request.params.message.metadata)[0] as Json
 
 describe('request-post card (#500 §3.1)', () => {
   it('conforms', () => expect(checkCard(card)).toEqual([]))
@@ -43,6 +46,45 @@ describe('request-post card (#500 §3.1)', () => {
     streaming.capabilities.streaming = true
     expect(checkCard(streaming)).toEqual(['capabilities'])
   })
+
+  it('declares a provider, the v1 profile (id, public keys, egress and residency) and the bearer role, signed by its listed key (C8)', () => {
+    expect(card.provider).toEqual({ organization: 'agent-inbox', url: 'https://github.com/shariqh/agent-inbox' })
+    expect(card.securityRequirements).toEqual([{ schemes: { bearer: { list: ['call'] } } }])
+    expect(card.capabilities.extensions.map((e: Json) => [e.uri, e.required])).toEqual([[PAGES, true], ['https://shariqh.github.io/agent-inbox/ext/profile/v1', undefined]])
+    const [key] = card.capabilities.extensions[1].params.keys
+    expect(signatureVerdict(card)).toEqual({ keys: [jwkThumbprint(key)], signed: [jwkThumbprint(key)], algs: ['ES256'] })
+    // the signature covers the auth requirement and the interface URL
+    const NO = { keys: [jwkThumbprint(key)], refused: 'the card has a signature by a listed key that does not verify' }
+    expect(signatureVerdict({ ...card, securityRequirements: [{ schemes: { bearer: { list: ['admin'] } } }] })).toEqual(NO)
+    const moved = clone(card)
+    moved.supportedInterfaces[0].url = 'http://127.0.0.1:5555/'
+    expect(signatureVerdict(moved)).toEqual(NO)
+  })
+
+  it('accepts the old URN and an unsigned copy; fails another profile, a private key, an empty value or no provider', () => {
+    const old = clone(card)
+    old.capabilities.extensions[0].uri = URN
+    expect(checkCard(old)).toEqual([])
+    const unsigned = clone(card)
+    delete unsigned.signatures
+    delete unsigned.capabilities.extensions[1].params.keys
+    expect(checkCard(unsigned)).toEqual([])
+    const egress = clone(card)
+    egress.capabilities.extensions[1].params.skills['request-post-status'].egress[0].sends = 'input'
+    expect(checkCard(egress)).toEqual(['profile'])
+    const residency = clone(card)
+    residency.capabilities.extensions[1].params.skills['request-post'].residency = 'any'
+    expect(checkCard(residency)).toEqual(['profile'])
+    const secret = clone(card)
+    secret.capabilities.extensions[1].params.keys[0].d = secret.capabilities.extensions[1].params.keys[0].x
+    expect(checkCard(secret)).toEqual(['profile'])
+    const empty = clone(card)
+    empty.securityRequirements[0].schemes.bearer.list = []
+    expect(checkCard(empty)).toEqual(['not canonical-stable'])
+    const noProvider = clone(card)
+    delete noProvider.provider
+    expect(checkCard(noProvider)).toEqual(['provider'])
+  })
 })
 
 describe('request-post exchanges (#500 §3.3)', () => {
@@ -52,6 +94,19 @@ describe('request-post exchanges (#500 §3.3)', () => {
   })
 
   for (const [file, x] of exchanges) it(`${file} conforms`, () => expect(checkExchange(x, card)).toEqual([]))
+
+  it('send metadata under the Pages URI, and once each under the old URN, which the service still reads (C8)', () => {
+    const uri = (x: Json): string | undefined => x.request && Object.keys(x.request.params.message.metadata)[0]
+    const old = [...exchanges, ...statuses].filter(([, x]) => uri(x) === URN).map(([f, x]) => `${x.phase ? 'status' : 'file'}/${f}`)
+    expect(old).toEqual(['file/03-replay.json', 'status/queued.json'])
+    expect(new Set([...exchanges, ...statuses].map(([, x]) => uri(x)).filter(Boolean))).toEqual(new Set([PAGES, URN]))
+    const both = byRow('created-social')
+    both.request.params.message.metadata[URN] = metaOf(both)
+    expect(checkExchange(both, card)).toEqual(['request: metadata'])
+    const other = byRow('created-social')
+    other.request.params.message.metadata = { 'urn:other': metaOf(other) }
+    expect(checkExchange(other, card)).toEqual(['request: metadata'])
+  })
 
   it('fails a busy refusal without retryAfterMs', () => {
     const x = byRow('busy')
@@ -168,6 +223,10 @@ describe('request-post MANIFEST.json (#500 §10)', () => {
   it('matches every file in the folder', () => {
     expect(checkManifest(DIR)).toEqual([])
     expect(Object.keys(read('MANIFEST.json').files)).toContain('conformance.ts')
+  })
+
+  it('holds no private key: the card\'s signing key is never written (C8)', () => {
+    for (const f of Object.keys(read('MANIFEST.json').files)) expect(readFileSync(join(DIR, f), 'utf8'), f).not.toMatch(/"d"\s*:/)
   })
 
   it('names a changed, an added and a removed file', () => {

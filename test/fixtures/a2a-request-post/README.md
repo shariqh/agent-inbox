@@ -4,21 +4,48 @@ The contract between the request-post client in this repository (`meshctl reques
 and the agent the private publishing service hosts (P1-P4). Design:
 [`docs/superpowers/specs/2026-11-07-request-post-a2a-agent-design.md`](../../../docs/superpowers/specs/2026-11-07-request-post-a2a-agent-design.md)
 §3, §4.3 and §5. Every value here is a neutral placeholder: brands, categories, page ids, URLs and
-the endpoint name are not real.
+the endpoint name are not real. The exceptions are the card's extension URIs and its provider,
+which name the real publisher, and its signing key's public half.
 
 | File | Holds |
 |---|---|
-| `card.json` | The Agent Card: skills `request-post` and `request-post-status`, one A2A 1.0 JSON-RPC interface, no streaming or push, a bearer scheme, and the `urn:agent-inbox:ext:request-post:v1` extension with `params: { api: 1, brands, channels, categories, maxBriefBytes }` |
+| `card.json` | The Agent Card: skills `request-post` and `request-post-status`, one A2A 1.0 JSON-RPC interface, no streaming or push, a bearer scheme whose requirement names the role `call`, a `provider`, the `https://shariqh.github.io/agent-inbox/ext/request-post/v1` extension ([spec](../../../docs/ext/request-post-v1.md); `required: true`) with `params: { api: 1, brands, channels, categories, maxBriefBytes }`, the [profile extension](../../../docs/ext/profile-v1.md), and one signature (C8, below) |
 | `file/*.json` | One request and response per §3.3 row, with the exit a client gives it. Exits 14 (off), 15 (unavailable) and 4 (usage) have no task: they are client-side only and carry a note instead |
 | `status/*.json` | One `request-post-status` read per phase, `awaiting-go` included |
 | `keys.json` | Title normalisation and request-key vectors, each with its pre-image |
 | `conformance.ts` | The validator: `checkCard`, `checkExchange`, `checkStatus`, `invalidFields`, `exitFor`, `requestKey`, `checkManifest`. Node core only and erasable TypeScript, so Node 24 runs it as is |
 | `MANIFEST.json` | The SHA-256 of every other file here |
 
+## The publishable shape (C8)
+
+The card has the shape the publishable-agent design (§8) gives request-post
+([`docs/superpowers/specs/2026-11-10-publishable-agent-design.md`](../../../docs/superpowers/specs/2026-11-10-publishable-agent-design.md)):
+
+- `provider` `{ organization: "agent-inbox", url: "https://github.com/shariqh/agent-inbox" }`.
+- The profile extension: id `shariqh.github.io/agent-inbox/request-post`; `request-post` sends the
+  caller's input to a store the operator chooses (`storage`/`operator`/`input`) and
+  `request-post-status` sends identifiers only (`storage`/`operator`/`metadata`); residency
+  `caller-mesh` for both; `keys` lists the signing key's public half.
+- The bearer requirement `{ "schemes": { "bearer": { "list": ["call"] } } }`, so the card is
+  canonical-stable.
+- Its own extension under the Pages URI. It stays `required: true`, since only request-post's own
+  client fills its metadata, so `meshctl check` warns `ext.required` and that is its one warning.
+- **The URI move.** A client accepts a card declaring the Pages URI or the old
+  `urn:agent-inbox:ext:request-post:v1` and sends metadata under the one the card declares; the
+  service reads metadata under either, never both. The exchanges send it under the Pages URI,
+  except `file/03-replay.json` and `status/queued.json`, which keep the old URN.
+- **The signature.** One ES256 signature over the raw JCS form of the card without `signatures`,
+  by a P-256 key made when the card was signed and never written:
+  `packages/mesh/test/request-post-sign.ts` lists the fresh key's public half in the profile's
+  `keys`, signs with it and leaves every other byte alone. So re-signing changes `keys` and
+  `signatures` only, and no file here holds a private key (a test fails if any file here has a
+  `d` member, the private part of a JWK). The service signs its own card with its own key; this
+  one only proves the shape verifies.
+
 ## What R1 pins that the design left open
 
 - **The skill is named in the metadata.** Both skills take a blocking `SendMessage` with one text
-  part; `metadata["urn:agent-inbox:ext:request-post:v1"].skill` says which. A status read sends
+  part and one metadata key, the extension's URI; its `skill` says which. A status read sends
   `{ skill, requestKey }` or `{ skill, pageId }` and any text. The service ends a task within its
   30 s limit (design §5: busy, 12, while it still waits for the filing lock; 13 once its create
   call has started), and the client waits 40 s for the answer, a margin over that limit for DNS,
@@ -59,6 +86,8 @@ vendor a newer commit; never edit a vendored copy.
 
 ## Changing a fixture
 
-Change the file, run `node test/fixtures/a2a-request-post/conformance.ts manifest > test/fixtures/a2a-request-post/MANIFEST.json`
+Change the file; after a change to `card.json`, re-sign it with
+`cd packages/mesh && node --import ./test/ts-hooks.mjs test/request-post-sign.ts write`. Then run
+`node test/fixtures/a2a-request-post/conformance.ts manifest > test/fixtures/a2a-request-post/MANIFEST.json`
 (Node 24) and say in the pull request that the contract changed, so the private repository
 re-vendors.

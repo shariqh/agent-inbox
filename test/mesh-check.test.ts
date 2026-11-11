@@ -2,8 +2,10 @@
 // ships passes on a good card and fails on a recorded bad one with its reason id, and every reason
 // id is reached; exits 0, 17, 15 and 4; the --json shape; no live test without --token-file and
 // no SendMessage without --send (a counting fake agent); the token never in stdout or stderr;
-// card text cleaned. Our three agents' cards are checked as they are today: they pass the local
-// level with warnings and fail the publishable level until C7-C9 (the design's §8) re-card them.
+// card text cleaned. Our three agents' cards are checked as they are today: request-post's fixture
+// card (C8) passes the publishable level with one warning, ext.required, which --strict fails on;
+// the others pass the local level with warnings and fail the publishable level until C7 and C9
+// (the design's §8) re-card them.
 // C3 (#536) adds signature.*: the fake signs the card it serves (after its origin is filled in)
 // with a key GOOD lists, unless told not to, and each signature reason id has a recorded card.
 // C4 (#535) adds profile.egress and profile.residency, and residency's public-name warning.
@@ -559,7 +561,7 @@ describe.skipIf(!HAS_OPENSSL)('https card URLs: a public name, this Mac\'s tailn
   })
 })
 
-describe('our three agents today (design §8; re-carded by C7-C9)', () => {
+describe('our three agents today (design §8; request-post re-carded by C8, the others by C7 and C9)', () => {
   const fixture = (name: string): Json => JSON.parse(readFileSync(join(REPO, 'test', 'fixtures', name, 'card.json'), 'utf8'))
   // the fixture's interface moves to the fake's origin; nothing else changes
   const served = (card: Json): Json => change(card, (c) => { c.supportedInterfaces[0].url = '{origin}/' })
@@ -574,12 +576,15 @@ describe('our three agents today (design §8; re-carded by C7-C9)', () => {
     expect([pub.code, failing(pub), failing(pub, 'warn')]).toEqual([17, PUBLISHABLE_FAILS, ['card.stable empty-value']])
   })
 
-  it('request-post: the same, plus its required extension\'s warning', async () => {
-    const fake = await fakeAgent({ card: served(fixture('a2a-request-post')), unsigned: true })
-    const local = await check([fake.url, '--level', 'local', '--json'])
-    expect([local.code, failing(local, 'warn')]).toEqual([0, [...LOCAL_WARNINGS, 'ext.required unknown-required']])
+  it('request-post (C8): its signed fixture card passes the publishable level; its one should miss is ext.required, so --strict fails on that alone', async () => {
+    // served elsewhere, its URL changes, and the signature covers the URL: the fake signs it again with SIGNER, listed in place of the fixture's key
+    const resigned = change(served(fixture('a2a-request-post')), (c) => { delete c.signatures; c.capabilities.extensions[1].params.keys = [KEY] })
+    const fake = await fakeAgent({ card: resigned })
     const pub = await check([fake.url, '--json'])
-    expect([pub.code, failing(pub)]).toEqual([17, PUBLISHABLE_FAILS])
+    expect([pub.code, failing(pub), failing(pub, 'warn'), failing(pub, 'info')]).toEqual([0, [], ['ext.required unknown-required'], ['provider.domain differs']])
+    expect(test(pub, 'signature.valid')).toMatchObject({ result: 'pass' })
+    const strict = await check([fake.url, '--strict', '--json'])
+    expect([strict.code, failing(strict), failing(strict, 'warn')]).toEqual([17, ['ext.required unknown-required'], []])
   })
 
   it('unslop, as its agent serves it: declares bearer auth meshctl supports (#506 item 1); live, it answers only its own label', async () => {

@@ -34,6 +34,7 @@ const REPO = new URL('..', import.meta.url).pathname
 const TSX = pathToFileURL(join(REPO, 'node_modules', 'tsx', 'dist', 'loader.mjs')).href
 const FIX = join(REPO, 'test', 'fixtures', 'a2a-request-post')
 const EXT = 'urn:agent-inbox:ext:request-post:v1'
+const PAGES = 'https://shariqh.github.io/agent-inbox/ext/request-post/v1'
 const TOKEN = 'c3'.repeat(20)
 const MIN = 60_000
 const read = (rel: string): Json => JSON.parse(readFileSync(join(FIX, rel), 'utf8'))
@@ -41,7 +42,8 @@ const CARD = read('card.json')
 const files = readdirSync(join(FIX, 'file')).sort().map((f) => read(`file/${f}`)).filter((x) => x.request)
 const byRow = (row: string): Json => structuredClone(files.find((x) => x.row === row)!)
 const byPhase = (phase: string): Json => read(`status/${phase}.json`)
-const metaOf = (body: Json): Json => body.params.message.metadata[EXT]
+// the one metadata key: the card's extension URI (the Pages one since C8), or the old URN in a fixture that keeps it
+const metaOf = (body: Json): Json => Object.values(body.params.message.metadata)[0] as Json
 const dataOf = (x: Json): Json => { const t = x.response.result.task; return (t.artifacts?.[0] ?? t.status.message).parts.find((p: Json) => p.data).data }
 
 const servers: Server[] = []
@@ -149,6 +151,7 @@ describe('file (design §3.2, §3.3)', () => {
       expect([headers.host, headers.authorization, headers['a2a-version'], headers.origin]).toEqual([`127.0.0.1:${port}`, `Bearer ${TOKEN}`, '1.0', undefined])
       expect(body.params.configuration?.returnImmediately).toBeUndefined()
       const { seo: _seo, ...sent } = metaOf(x.request)
+      expect(Object.keys(body.params.message.metadata)).toEqual([PAGES])
       expect(metaOf(body)).toEqual(sent)
       expect('keyOverride' in metaOf(body), 'keyOverride only with --key').toBe(sent.keyOverride === true)
       expect(checkExchange({ exit: x.exit, request: body, response: { ...x.response, id: body.id } }, CARD)).toEqual([])
@@ -271,21 +274,22 @@ describe('file (design §3.2, §3.3)', () => {
 describe('the endpoint and the card (design §3.1, §6, §8)', () => {
   const args = ['file', '--brand', 'example-brand', '--channels', 'x-standalone', '--title', 'Try the agent']
 
-  it('sends the metadata under the extension URI the card declares (publishable-agent design §6, C6)', async () => {
-    const PAGES = 'https://shariqh.github.io/agent-inbox/ext/request-post/v1'
+  it('sends the metadata under the extension URI the card declares (publishable-agent design §6, C6, C8)', async () => {
     const args = ['file', '--brand', 'example-brand', '--channels', 'x-standalone', '--title', 'Try the agent']
+    // the fixture card declares the Pages URI since C8; the service's card before its switch, the old URN
+    const old = structuredClone(CARD)
+    old.capabilities.extensions[0].uri = EXT
+    card = old
     expect((await run(meshHome(), args)).code).toBe(0)
-    const pages = structuredClone(CARD)
-    pages.capabilities.extensions[0].uri = PAGES
-    card = pages
+    card = CARD
     expect((await run(meshHome(), args)).code).toBe(0)
-    const both = structuredClone(CARD)
+    const both = structuredClone(old)
     both.capabilities.extensions.push({ ...both.capabilities.extensions[0], uri: PAGES })
     card = both
     expect((await run(meshHome(), args)).code).toBe(0)
     const keys = seen.map((s) => Object.keys(s.body.params.message.metadata))
     expect(keys).toEqual([[EXT], [PAGES], [PAGES]])
-    expect(seen[1]!.body.params.message.metadata[PAGES]).toEqual(metaOf(seen[0]!.body))
+    expect(seen[1]!.body.params.message.metadata[PAGES]).toEqual(seen[0]!.body.params.message.metadata[EXT])
   })
 
   it('a card that does not match is 15 with "update agent-inbox or the service", and nothing is sent', async () => {

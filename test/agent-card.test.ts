@@ -86,12 +86,13 @@ describe('checkCard (agent cards view design §4.4)', () => {
     for (const [reason, edit] of cases) expect(checkCard(change(REQUEST_POST, edit), 'request-post'), reason).toBe(reason)
   })
 
-  it('request-post: either extension URI passes; with both, the Pages URI is the one read (publishable-agent design §6, C6)', () => {
-    expect(cardExtension(REQUEST_POST, 'request-post')).toBe(REQUEST_POST_EXT)
-    const pages = change(REQUEST_POST, (c) => { c.capabilities.extensions[0].uri = REQUEST_POST_PAGES })
-    expect(checkCard(pages, 'request-post')).toBeUndefined()
-    expect(cardExtension(pages, 'request-post')).toBe(REQUEST_POST_PAGES)
-    const both = change(REQUEST_POST, (c) => { c.capabilities.extensions.push({ uri: REQUEST_POST_PAGES, params: { api: 1 } }) })
+  it('request-post: either extension URI passes; with both, the Pages URI is the one read (publishable-agent design §6, C6, C8)', () => {
+    // the fixture card declares the Pages URI since C8; the service's card before its switch, the old URN
+    expect(cardExtension(REQUEST_POST, 'request-post')).toBe(REQUEST_POST_PAGES)
+    const old = change(REQUEST_POST, (c) => { c.capabilities.extensions[0].uri = REQUEST_POST_EXT })
+    expect(checkCard(old, 'request-post')).toBeUndefined()
+    expect(cardExtension(old, 'request-post')).toBe(REQUEST_POST_EXT)
+    const both = change(old, (c) => { c.capabilities.extensions.push({ uri: REQUEST_POST_PAGES, params: { api: 1 } }) })
     expect(checkCard(both, 'request-post')).toBeUndefined()
     expect(cardExtension(both, 'request-post')).toBe(REQUEST_POST_PAGES)
     const pagesApi2 = change(both, (c) => { c.capabilities.extensions.at(-1).params.api = 2 })
@@ -219,7 +220,12 @@ describe('the v1 profile extension and stable agent ids (#537; publishable-agent
     const skills = new Map([['web-search', params().skills['web-search']]])
     expect(checkProfile(profiled())).toEqual({ profile: { id: 'shariqh.github.io/agent-inbox/web-search', keys: 1, skills } })
     expect(checkProfile(profiled((p) => { delete p.keys; delete p.skills }))).toEqual({ profile: { id: 'shariqh.github.io/agent-inbox/web-search', keys: 0, skills: new Map() } })
-    for (const card of [WEB_SEARCH, REQUEST_POST, UNSLOP, {}, null, 'card']) expect(checkProfile(card)).toBeUndefined()
+    for (const card of [WEB_SEARCH, UNSLOP, {}, null, 'card']) expect(checkProfile(card)).toBeUndefined()
+    // request-post's fixture card carries its profile since C8 (publishable-agent design §8)
+    expect(checkProfile(REQUEST_POST)).toEqual({ profile: { id: 'shariqh.github.io/agent-inbox/request-post', keys: 1, skills: new Map([
+      ['request-post', { egress: [{ purpose: 'storage', hosts: 'operator', sends: 'input' }], residency: 'caller-mesh' }],
+      ['request-post-status', { egress: [{ purpose: 'storage', hosts: 'operator', sends: 'metadata' }], residency: 'caller-mesh' }],
+    ]) } })
     // an Ed25519 and a P-384 key, four in all
     const keys = [P256, { kty: 'OKP', crv: 'Ed25519', x: B43 }, { kty: 'EC', crv: 'P-384', x: 'C'.repeat(64), y: 'D'.repeat(64) }, { ...P256, x: B43.replace('A', 'E') }]
     expect(checkProfile(profiled((p) => { p.keys = keys }))).toEqual({ profile: { id: 'shariqh.github.io/agent-inbox/web-search', keys: 4, skills } })

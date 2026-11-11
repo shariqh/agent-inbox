@@ -25,6 +25,9 @@ const jcs = (v: unknown): string => {
 const members = (o: Json, keep: (key: string) => boolean, value: (key: string) => string = (key) => jcs(o[key])): string =>
   `{${Object.keys(o).filter(keep).sort().map((key) => `${JSON.stringify(key)}:${value(key)}`).join(',')}}`
 
+/** The JCS form of the card without `signatures`: what a card signature covers (card-signing.ts). */
+export const signedPayload = (card: Json): string => members(card, (key) => key !== 'signatures')
+
 /**
  * The card pin (web search design §4.1, one rule for every agent since #556): SHA-256 of the
  * card's JCS form as received, without `signatures` and every `supportedInterfaces[].url`, so

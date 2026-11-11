@@ -161,6 +161,9 @@ const jcs = (v: unknown): string => {
 const members = (o: Json, keep: (key: string) => boolean, value: (key: string) => string = (key) => jcs(o[key])): string =>
   `{${Object.keys(o).filter(keep).sort().map((key) => `${JSON.stringify(key)}:${value(key)}`).join(',')}}`
 
+/** The JCS form of the card without `signatures`: what a card signature covers (publishable-agent design §3.10). */
+export const signedPayload = (card: unknown): string => members(obj(card), (key) => key !== 'signatures')
+
 /**
  * The card pin's input (mesh design §6.7, web search design §4.1): the card's JCS form without
  * `signatures` and without every `supportedInterfaces[].url`, so the per-copy URL never changes

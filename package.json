@@ -37,6 +37,7 @@
     "generate:icons": "bash scripts/generate-icons.sh",
     "install:agents": "bash scripts/install-agents.sh",
     "install:hooks": "bash scripts/install-hooks.sh",
+    "sweep": "bash scripts/workspace-sweep.sh",
     "install:copilot-hooks": "bash scripts/install-copilot-hooks.sh",
     "electron": "electron .",
     "electron:side": "electron .",

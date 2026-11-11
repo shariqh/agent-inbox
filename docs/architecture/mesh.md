@@ -491,6 +491,33 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
   memory and fails on any difference, sends every refusal fixture through the real front door,
   and checks `screen.json` against unslop's five classes. `test/a2a-web-search-fixtures.test.ts`
   runs the validator over every file at the root.
+- **Web search's publishable card (C7; publishable-agent design §6, §8; #535, #536, #537).** The
+  first conformant agent. `card()` in `web-search/agent.ts` adds `provider` (`agent-inbox`,
+  `https://github.com/shariqh/agent-inbox`), the profile extension (id
+  `shariqh.github.io/agent-inbox/web-search`; the `web-search` skill's egress `search` and `model`,
+  each `hosts: "operator"`, `sends: "input"`; residency `caller-mesh`), the bearer requirement as
+  `"list": ["call"]`, and drops `"required": false` from its own extension, so the card is
+  canonical-stable. Its own extension moves to `https://shariqh.github.io/agent-inbox/ext/web-search/v1`
+  (spec: `docs/ext/web-search-v1.md`, published at that URI): the front door reads message metadata
+  under that URI or the old `urn:agent-inbox:ext:web-search:v1` (at most one key; both at once is
+  -32602) and hands the SDK the Pages key; `resolveCard()` returns the URI the card declares
+  (`webSearchExtension()`, the Pages one first); `checkCard(card, 'web-search')` and the fixtures'
+  `conformance.ts` accept either. At start the agent reads its keys with `loadSigningKeys(meshDir,
+  'web-search')` (`meshctl key create web-search --apply` makes one), lists their public halves in
+  the profile's `keys` and signs the card with every one (`servedCard()`), once per start; with no
+  key file it serves the card unsigned and with no `keys`, which passes `meshctl check --level
+  local` only; a key file that breaks a rule stops the start before the port opens. Since `keys` is
+  inside the pin, two copies with different keys pin differently (publishable-agent design §3.10).
+  The fixtures' card is signed by a key `web-search-record.ts` makes for each recording and never
+  writes, so `card.json`'s `keys` and `signatures`, `card.sha256` and the identity exchange's copy
+  of the card change on every re-recording, and the re-record comparison leaves those two members
+  out; `exchanges/03-no-results.json` sends its metadata under the old URN. Tests: the real agent's
+  signed card verifies under meshctl's verifier and the SDK's `verifyAgentCardSignature` and passes
+  `meshctl check --strict` at the publishable level (`packages/mesh/test/web-search.test.ts`,
+  loading `src/mesh-check.ts`, `src/mesh-keys.ts` and `src/card-signature.ts` at run time), with
+  rotation (two keys, two signatures), the unsigned and bad-key-file cases; the fixture card, served
+  elsewhere and re-signed, passes `--strict` in `test/mesh-check.test.ts`; no fixture holds a
+  `"d":` member.
 - **Web search W3: providers (#505; design §5, §6, §7.1, §9).** `createSearch()` in
   `web-search/search.ts` is one search as a function; W4's `createRun()` wraps it for the
   executor, and W5 builds both from the profile.
@@ -828,7 +855,8 @@ the usage and 4).
     opens only `<agent>.jwk` and, while rotating, `<agent>-next.jwk`, through `readPrivate()`
     (`O_NOFOLLOW`, regular, this user's, 0600, at most 4 KiB) in a keys folder that is no symlink
     and 0700, and checks each holds exactly a P-256 private JWK whose `d` signs for its `x`/`y`.
-    The agents start using it in C7-C9 (their cards change there, not here).
+    Web search signs with it since C7 (above) and unslop follows in C9; request-post's service signs
+    with its own key, and its fixture card (C8) with a key made at signing time.
   - *SDK interop* (`packages/mesh/test/card-signing.test.ts`, where `@a2a-js/sdk` 1.3.0 is
     installed; it loads the root verifier at run time because it is outside the package's
     `rootDir`): on a card whose bearer requirement is `"list": ["call"]` our signer's card verifies

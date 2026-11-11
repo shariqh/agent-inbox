@@ -6,6 +6,8 @@
 import { describe, expect, it } from 'vitest'
 import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
+import { checkProfile } from '../src/agent-card.js'
+import { jwkThumbprint, signatureVerdict } from '../src/card-signature.js'
 import { cardHash, checkCard, checkExchange, checkManifest, checkRefusal, checkResult, exitFor, manifestFiles } from './fixtures/a2a-web-search/conformance.js'
 
 type Json = Record<string, any>
@@ -32,6 +34,49 @@ describe('web-search card (§4.1)', () => {
     expect(cardHash(bumped)).not.toBe(cardHash(card))
   })
 
+  it('declares the v1 profile (id, public keys, egress and residency), a provider and the bearer role, signed by its listed key (C7)', () => {
+    expect(card.provider).toEqual({ organization: 'agent-inbox', url: 'https://github.com/shariqh/agent-inbox' })
+    expect(card.securityRequirements).toEqual([{ schemes: { bearer: { list: ['call'] } } }])
+    expect(card.capabilities.extensions.map((e: Json) => e.uri)).toEqual(['https://shariqh.github.io/agent-inbox/ext/web-search/v1', 'https://shariqh.github.io/agent-inbox/ext/profile/v1'])
+    expect(checkProfile(card)).toEqual({ profile: { id: 'shariqh.github.io/agent-inbox/web-search', keys: 1, skills: expect.any(Map) } })
+    const [key] = card.capabilities.extensions[1].params.keys
+    expect(signatureVerdict(card)).toEqual({ keys: [jwkThumbprint(key)], signed: [jwkThumbprint(key)], algs: ['ES256'] })
+    // the signature covers the auth requirement, and the interface URL the pin leaves out
+    const NO = { keys: [jwkThumbprint(key)], refused: 'the card has a signature by a listed key that does not verify' }
+    expect(signatureVerdict({ ...card, securityRequirements: [{ schemes: { bearer: { list: ['admin'] } } }] })).toEqual(NO)
+    const moved = clone(card)
+    moved.supportedInterfaces[0].url = 'http://127.0.0.1:5555/'
+    expect(signatureVerdict(moved)).toEqual(NO)
+  })
+
+  it('accepts the old URN and an unsigned copy; fails another profile, a named host, a private key, or an empty value', () => {
+    const old = clone(card)
+    old.capabilities.extensions[0].uri = 'urn:agent-inbox:ext:web-search:v1'
+    expect(checkCard(old)).toEqual([])
+    const unsigned = clone(card)
+    delete unsigned.signatures
+    delete unsigned.capabilities.extensions[1].params.keys
+    expect(checkCard(unsigned)).toEqual([])
+    const named = clone(card)
+    named.capabilities.extensions[1].params.skills['web-search'].egress[1].hosts = ['models.example.com']
+    expect(checkCard(named)).toEqual(['profile'])
+    const residency = clone(card)
+    residency.capabilities.extensions[1].params.skills['web-search'].residency = 'any'
+    expect(checkCard(residency)).toEqual(['profile'])
+    const secret = clone(card)
+    secret.capabilities.extensions[1].params.keys[0].d = secret.capabilities.extensions[1].params.keys[0].x
+    expect(checkCard(secret)).toEqual(['profile'])
+    const empty = clone(card)
+    empty.securityRequirements[0].schemes.bearer.list = []
+    expect(checkCard(empty)).toEqual(['not canonical-stable'])
+    const optional = clone(card)
+    optional.capabilities.extensions[0].required = false
+    expect(checkCard(optional)).toEqual(['not canonical-stable'])
+    const noProvider = clone(card)
+    delete noProvider.provider
+    expect(checkCard(noProvider)).toEqual(['provider'])
+  })
+
   it('fails with push on, another extension api, or a per-copy setting', () => {
     const push = clone(card)
     push.capabilities.pushNotifications = true
@@ -46,6 +91,15 @@ describe('web-search card (§4.1)', () => {
 })
 
 describe('web-search exchanges (§4.4)', () => {
+  it('send metadata under the Pages URI, and once under the old URN, which the agent still reads', () => {
+    const uris = exchanges.map(([, x]) => Object.keys(x.request?.params?.message?.metadata ?? {})[0]).filter(Boolean)
+    expect(uris.filter((u) => u === 'urn:agent-inbox:ext:web-search:v1')).toHaveLength(1)
+    expect(new Set(uris)).toEqual(new Set(['https://shariqh.github.io/agent-inbox/ext/web-search/v1', 'urn:agent-inbox:ext:web-search:v1']))
+    const both = byRow('sources')
+    both.request.params.message.metadata['urn:agent-inbox:ext:web-search:v1'] = { mode: 'sources' }
+    expect(checkExchange(both, card)).toEqual(['request: metadata'])
+  })
+
   it('cover every row of the exit table, streaming, GetTask and the identity challenge', () => {
     expect(exchanges.filter(([, x]) => x.exit !== undefined).map(([, x]) => x.exit).sort((a, b) => a - b)).toEqual([0, 0, 0, 0, 0, 0, 4, 10, 11, 11, 11, 12, 13, 13, 14])
     expect(exchanges.filter(([, x]) => x.clientOnly).map(([, x]) => x.exit).sort()).toEqual([14, 4])
@@ -202,7 +256,8 @@ describe('providers and pages', () => {
 function placeholderProblems(raw: string): string[] {
   const text = raw.replace(/(?![\t\n])[\p{Cc}\p{Cf}\p{Default_Ignorable_Code_Point}\u2028\u2029]/gu, '')
   const ips = (text.match(/\b\d{1,3}(?:\.\d{1,3}){3}\b/g) ?? []).filter((ip) => !(/^(?:192\.0\.2|198\.51\.100|203\.0\.113|127\.0\.0)\.\d+$/.test(ip) || ['192.168.1.1', '10.0.0.1'].includes(ip)))
-  const hosts = [...text.matchAll(/https?:\/\/([^/\s"'?:)]+)/g)].map((m) => m[1]!).filter((h) => !/(?:^|\.)(?:example\.(?:com|org|net)|example|invalid)$|^127\.0\.0\.1$|^ollama\.com$/.test(h))
+  // shariqh.github.io and github.com: the card's extension URIs and its provider, the one real publisher
+  const hosts = [...text.matchAll(/https?:\/\/([^/\s"'?:)]+)/g)].map((m) => m[1]!).filter((h) => !/(?:^|\.)(?:example\.(?:com|org|net)|example|invalid)$|^127\.0\.0\.1$|^ollama\.com$|^shariqh\.github\.io$|^github\.com$/.test(h))
   const domains = [...text.matchAll(/[\w.+-]+@([\w-]+(?:\.[\w-]+)+)/g)].map((m) => m[1]!).filter((d) => !/\.invalid$|example\.|^(?:192\.0\.2|198\.51\.100|203\.0\.113)\.\d+$/.test(d))
   return [...ips, ...hosts, ...domains]
 }
@@ -211,6 +266,10 @@ describe('the folder', () => {
   it('MANIFEST.json matches every file', () => {
     expect(checkManifest(DIR)).toEqual([])
     expect(Object.keys(manifestFiles(DIR)).length).toBeGreaterThan(60)
+  })
+
+  it('holds no private key: a recording\'s signing key is never written (C7)', () => {
+    for (const f of Object.keys(manifestFiles(DIR))) expect(readFileSync(join(DIR, f), 'utf8'), f).not.toMatch(/"d"\s*:/)
   })
 
   it('holds placeholders only: documentation addresses, loopback, reserved names', () => {

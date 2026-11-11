@@ -2,6 +2,10 @@
   "name": "web-search",
   "description": "Searches the public web for one question and returns a cited answer or the sources alone.",
   "version": "0.0.0",
+  "provider": {
+    "organization": "agent-inbox",
+    "url": "https://github.com/shariqh/agent-inbox"
+  },
   "supportedInterfaces": [
     {
       "url": "http://127.0.0.1:4421/",
@@ -14,9 +18,8 @@
     "pushNotifications": false,
     "extensions": [
       {
-        "uri": "urn:agent-inbox:ext:web-search:v1",
+        "uri": "https://shariqh.github.io/agent-inbox/ext/web-search/v1",
         "description": "web-search task parameters and result",
-        "required": false,
         "params": {
           "api": 1,
           "modes": [
@@ -35,6 +38,38 @@
           "maxSites": 5,
           "maxExcludeSites": 10
         }
+      },
+      {
+        "uri": "https://shariqh.github.io/agent-inbox/ext/profile/v1",
+        "description": "Stable id, signing keys, and per-skill egress and residency",
+        "params": {
+          "id": "shariqh.github.io/agent-inbox/web-search",
+          "keys": [
+            {
+              "kty": "EC",
+              "crv": "P-256",
+              "x": "rp3N2LxUmg7Zpr816wogNFdFnqveAH-F4qt3As34bBQ",
+              "y": "BbsWVyS_pQoIiXul-v-6HQ82HvuBnLOVihM_84S2ues"
+            }
+          ],
+          "skills": {
+            "web-search": {
+              "egress": [
+                {
+                  "purpose": "search",
+                  "hosts": "operator",
+                  "sends": "input"
+                },
+                {
+                  "purpose": "model",
+                  "hosts": "operator",
+                  "sends": "input"
+                }
+              ],
+              "residency": "caller-mesh"
+            }
+          }
+        }
       }
     ]
   },
@@ -49,7 +84,9 @@
     {
       "schemes": {
         "bearer": {
-          "list": []
+          "list": [
+            "call"
+          ]
         }
       }
     }
@@ -70,6 +107,12 @@
         "search",
         "web"
       ]
+    }
+  ],
+  "signatures": [
+    {
+      "protected": "eyJhbGciOiJFUzI1NiIsInR5cCI6IkpPU0UiLCJraWQiOiI5cjk3NWZrZmtSVERWUEdXc2tfNXZnUnF6bWwwd2J5RFhXcWFGUFhJTndVIn0",
+      "signature": "C3i91zeFxEk5G9s1cTsnQA1oWQ5Ag6ACTq_O409Wi3DBjWVkH0pgE8lVULUiif6DCemHdwxbmKa31aUWGaidSQ"
     }
   ]
 }

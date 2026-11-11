@@ -4,12 +4,13 @@
 // sends the token only on a connection whose peer proved it holds it: the card
 // request carries a fresh nonce and the agent answers HMAC-SHA256(token,
 // "<agent>/v1\n" + nonce). A new connection is proved again before it carries the token.
-import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import { Agent, request } from 'node:http'
 import type { ClientRequest, IncomingMessage } from 'node:http'
 import { Readable } from 'node:stream'
+import { CARD_PATH, proof } from './kit/identity.js'
 
-export const CARD_PATH = '/.well-known/agent-card.json'
+export { CARD_PATH }
 export class IdentityError extends Error {}
 
 // Web search's extension URIs, preferred first (publishable-agent design §6, C7): the card declares
@@ -18,8 +19,7 @@ export class IdentityError extends Error {}
 export const WEB_SEARCH_EXTENSION = 'https://shariqh.github.io/agent-inbox/ext/web-search/v1'
 export const WEB_SEARCH_EXTENSIONS: readonly string[] = [WEB_SEARCH_EXTENSION, 'urn:agent-inbox:ext:web-search:v1']
 
-export const proofFor = (token: string, nonce: string, agent = 'web-search'): string =>
-  createHmac('sha256', token).update(`${agent}/v1\n${nonce}`).digest('base64url')
+export const proofFor = (token: string, nonce: string, agent = 'web-search'): string => proof(token, nonce, `${agent}/v1`)
 
 type Json = Record<string, unknown>
 // RFC 8785 (JCS) for values JSON.parse returns; builds no object, so a "__proto__" key is data

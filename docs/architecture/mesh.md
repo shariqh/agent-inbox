@@ -436,7 +436,7 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
   and it answers every query from one fixed result until the provider (W3) and the answer
   (W4) land.
   - `web-search/front-door.ts` is its own `node:http` front door (it shares no code with
-    `a2a.ts`): `127.0.0.1` only, any `Origin` refused, `Host` exactly `127.0.0.1:<port>`,
+    `a2a.ts`; since #539 it is the agent kit's, below, with web search's allowlist and label): `127.0.0.1` only, any `Origin` refused, `Host` exactly `127.0.0.1:<port>`,
     the bearer token compared with `timingSafeEqual` after a length check, `A2A-Version`
     `1.0` or `1.0.<n>` (else -32009; the SDK is always handed `1.0`: its core transport
     checks no version), a 16 KiB body, a 10 s read limit (Node checks it on a sweep, every
@@ -518,6 +518,38 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
   rotation (two keys, two signatures), the unsigned and bad-key-file cases; the fixture card, served
   elsewhere and re-signed, passes `--strict` in `test/mesh-check.test.ts`; no fixture holds a
   `"d":` member.
+- **The agent kit (#539; [`docs/agent-kit.md`](../agent-kit.md)).** `packages/mesh/src/kit/` is
+  web search's W1 and C7 machinery made reusable; `kit/index.ts` exports it all.
+  - `kit/front-door.ts`: the front door above, unchanged in behaviour, with three parameters:
+    `request` (a `RequestSpec`: the agent's extension URIs, preferred first, and one check per
+    metadata field; the default is no extension, so any metadata key is -32602), `proofLabel`
+    (default `a2a-mesh/v1`, the label `meshctl call` and `check --token-file` prove) and
+    `unknownMethod` (default -32601, which `check`'s `live.unknown-method` wants). The card is
+    built once after the port is bound and served as those exact bytes; if building it throws, the
+    port closes. `rebuildRequest()` is the allowlist.
+  - `kit/identity.ts`: `CARD_PATH`, `proof()` and `proofHeaders()` (a malformed nonce gets no
+    header); `a2a-client.ts`'s `proofFor` is `proof()` under `<agent>/v1`.
+  - `kit/card.ts`: `meshCard(spec, url, keys)` builds the §8 card shape (provider, the JSON-RPC 1.0
+    interface, the agent's own extensions then the profile, bearer `"list": ["call"]`, skills with
+    egress and residency), and `servedCard(build, keys)` signs it with every key or returns it
+    unsigned with no `keys`. `card-signing.ts` exports `PROFILE`, the one copy of the URI.
+  - `kit/executor.ts`: W1's executor with the artifact name, the extension metadata is read
+    under and extra log fields as options; a completed result's `data` part is optional.
+  - `kit/task-store.ts` (`OwnedTaskStore`), `kit/guard.ts` (`guardOutput`) and `kit/agent.ts`
+    (`readToken`, and `startKitAgent`: keys, signed card, front door and executor for a standalone
+    agent; web search wires the same pieces itself around its `mesh.json` gate and idle exit).
+  - Web search keeps its own exports (`rebuild`, `startFrontDoor`, `card`, `servedCard`,
+    `createExecutor`) as thin wrappers: `REQUEST` with both extension URIs, `proofLabel:
+    'web-search/v1'` and `unknownMethod: -32602` (refusal fixture 23 records it). Its tests and
+    fixtures are unchanged; re-recording reproduces every fixture byte for byte apart from the
+    per-recording key, signature and hash.
+  - The example, `packages/mesh/src/examples/echo/agent.ts`: one skill, `echo`, egress `"none"`,
+    residency `any`, id `shariqh.github.io/agent-inbox/examples/echo`, no extension;
+    `node dist/examples/echo/agent.js --port <n> --token-file <path>` after `npm run build`. Its
+    key is `<mesh dir>/mesh/keys/echo.jwk`. `packages/mesh/test/kit.test.ts` spawns it from source
+    with a key `meshctl key create` makes at test time and runs `meshctl check --strict
+    --token-file --send` (root `src/mesh-check.ts` loaded at run time, as web search's test does)
+    in the `packages/mesh` CI job: every test passes, with no warning or info.
 - **Web search W3: providers (#505; design §5, §6, §7.1, §9).** `createSearch()` in
   `web-search/search.ts` is one search as a function; W4's `createRun()` wraps it for the
   executor, and W5 builds both from the profile.

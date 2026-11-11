@@ -634,6 +634,8 @@ the experimental unslop agent (`npm run meshctl -- enable --unslop`, #483; see
 [`docs/request-post.md`](docs/request-post.md)). `npm run meshctl -- add <card-url>`
 adds an A2A agent this repo doesn't ship, by its card, as a dry run until `--apply` (#529), and
 `npm run meshctl -- call <id>` calls it (#530; see [`docs/mesh-call.md`](docs/mesh-call.md)).
+To write such an agent on `@a2a-js/sdk`, start from the agent kit and its example
+([`docs/agent-kit.md`](docs/agent-kit.md), #539).
 `npm run meshctl -- status`
 says what the file holds, and `npm run meshctl -- disable --apply` removes it (keeping a
 backup).

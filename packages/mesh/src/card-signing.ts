@@ -18,7 +18,8 @@ import { ConfigError, readPrivate } from './files.js'
 type Json = Record<string, unknown>
 const obj = (v: unknown): Json => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Json) : {})
 
-const PROFILE_URI = 'https://shariqh.github.io/agent-inbox/ext/profile/v1'
+/** The profile extension's URI (docs/ext/profile-v1.md). */
+export const PROFILE = 'https://shariqh.github.io/agent-inbox/ext/profile/v1'
 const AGENT = /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/
 const B64 = /^[A-Za-z0-9_-]{43}$/
 const KEY_FILE_MAX = 4096
@@ -110,7 +111,7 @@ export function signCard(card: Json, keys: SigningKey[]): Json {
   const why = unstableReason(unsigned)
   if (why) throw new ConfigError(`the card is not canonical-stable (${why}): A2A signers would sign a different payload, so it is not signed`)
   const extensions = obj(unsigned.capabilities).extensions
-  const profile = Array.isArray(extensions) ? extensions.map(obj).find((e) => e.uri === PROFILE_URI) : undefined
+  const profile = Array.isArray(extensions) ? extensions.map(obj).find((e) => e.uri === PROFILE) : undefined
   const listed = obj(profile?.params).keys
   const kids = Array.isArray(listed) ? listed.map((k) => thumbprint(obj(k))) : []
   for (const { kid } of keys) if (!kids.includes(kid)) throw new ConfigError(`the card's profile extension does not list signing key ${kid}`)

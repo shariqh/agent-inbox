@@ -22,6 +22,7 @@ import { cardSha256 } from '../src/mesh-add.js'
 import { readRuns } from '../src/mesh-runs.js'
 import type { RunAgent } from '../src/mesh-runs.js'
 import { runAdd, runClient } from '../src/meshctl.js'
+import { signWith, testKey } from './signed-card.js'
 import { removeScratchDirs, scratchDir } from './scratch.js'
 
 const REPO = new URL('..', import.meta.url).pathname
@@ -73,7 +74,7 @@ const sse = (res: ServerResponse, event: unknown): boolean => res.write(`data: $
  * The fake agent: web-search's card and recorded answers. `label` and `token` are what its
  * proof uses (the real convention is `a2a-mesh` and the caller's token); `proves: false` is a squatter.
  */
-async function fakeAgent(mode: Mode = 'stream', o: { card?: Json; proves?: boolean; label?: string; token?: string; tls?: { key: string; cert: string } } = {}): Promise<Fake> {
+async function fakeAgent(mode: Mode = 'stream', o: { card?: Json; proves?: boolean; label?: string; token?: string; tls?: { key: string; cert: string }; serve?: (card: Json) => Json } = {}): Promise<Fake> {
   const requests: Json[] = []
   let cards = 0
   let port = 0
@@ -88,7 +89,7 @@ async function fakeAgent(mode: Mode = 'stream', o: { card?: Json; proves?: boole
           ? { 'a2a-mesh-proof': createHmac('sha256', o.token ?? TOKEN).update(`${o.label ?? 'a2a-mesh'}/v1\n${nonce}`).digest('base64url') } : {}
         const card = structuredClone(o.card ?? CARD)
         for (const i of card.supportedInterfaces) i.url = `http://127.0.0.1:${port}/`
-        return void res.writeHead(200, { 'content-type': 'application/json', ...proof }).end(JSON.stringify(card))
+        return void res.writeHead(200, { 'content-type': 'application/json', ...proof }).end(JSON.stringify(o.serve ? o.serve(card) : card))
       }
       const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as Json
       requests.push({ headers: req.headers, body })
@@ -534,5 +535,29 @@ describe('a moved agent keeps its pin and runs (#537, publishable-agent design ย
     expect(await call()).toBe(0)
     expect([first.requests.length, second.requests.length]).toEqual([1, 1])
     expect(runs().map((r) => [r.agent, r.outcome])).toEqual([[ID, 'ok'], [ID, 'ok']])
+  })
+})
+
+describe('signatures are checked at add, never on every call (#536, publishable-agent design ยง3.10)', () => {
+  it('a pinned signed card served with its signatures stripped or broken still calls: the pin is the same', async () => {
+    const key = testKey()
+    const card = structuredClone(CARD)
+    card.capabilities.extensions.push({ uri: 'https://shariqh.github.io/agent-inbox/ext/profile/v1', params: { id: 'example.org/agents/search-copy', keys: [key.publicJwk] } })
+    const dir = scratchDir('mesh-signed-')
+    const tokenFile = join(scratchDir('mesh-signed-token-'), 'token')
+    privateFile(tokenFile, `${TOKEN}\n`)
+    const env = { AGENT_INBOX_MESH_DIR: dir }
+    const served = { now: (c: Json): Json => signWith(c, key) }
+    const fake = await fakeAgent('stream', { card, serve: (c) => served.now(c) })
+    const out: string[] = []
+    expect(await runAdd([`http://127.0.0.1:${fake.port}/.well-known/agent-card.json`, '--id', ID, '--token-file', tokenFile, '--apply'], { env, home: '/nonexistent-home', out: (t) => out.push(t), err: () => {} })).toBe(0)
+    expect(out.join('')).toContain(`Signed     yes, ES256 key ${key.kid} (new to this Mac`)
+    const call = () => runClient('call', [ID], { env, home: '/nonexistent-home', stdin: Readable.from([Buffer.from(TEXT)]), out: () => {}, err: () => {} })
+    expect(await call()).toBe(0)
+    served.now = (c) => c
+    expect(await call()).toBe(0)
+    served.now = (c) => ({ ...c, signatures: [{ protected: 'e30', signature: 'AA' }] })
+    expect(await call()).toBe(0)
+    expect(fake.requests).toHaveLength(3)
   })
 })

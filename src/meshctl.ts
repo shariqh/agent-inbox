@@ -27,11 +27,13 @@
 //   meshctl disable [--apply]                turn every mesh piece off
 //   meshctl disable --unslop [--purge] [--apply]
 //   meshctl disable --request-post [--purge] [--apply]
-//   meshctl add <card-url> [--id <id>] [--token-file <path>] [--apply]
+//   meshctl add <card-url> [--id <id>] [--token-file <path>] [--key-thumbprint <t>] [--apply]
 //                                            add an A2A agent this repo doesn't ship (#529)
 //   meshctl add <card-url> --move <id> [--token-file <path>] [--apply]
 //                                            the same agent (its card's id) at a new endpoint (#537)
 //   meshctl remove <id> [--apply]            take an added agent out again
+//   meshctl key create|show|rotate|retire <agent> [--apply]
+//                                            an agent's card-signing key (src/mesh-keys.ts, #536)
 //   meshctl call <id> [--skill <s>] [--json] [--report <file>] [--timeout <s>] < request
 //                                            call an added agent (src/mesh-call.ts)
 //   meshctl check <card-url> [--level local|publishable] [--strict] [--json] [--token-file <path> [--send <file>]]
@@ -58,7 +60,9 @@ import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { MESH_SCHEMA, inTailnet, loopbackPort, meshDir, meshFile, readMesh, readTokenFile, requestPostEndpoint } from './mesh-config.js'
 import type { MeshDocument, MeshRead } from './mesh-config.js'
-import { BUILT_IN_AGENTS, addSummary, addedEntry, addedPlace, cardEndpoint, cardSha256, fetchAddedCard, idFromName, idRefusal, placeRefusal, tailnetRefusal } from './mesh-add.js'
+import { BUILT_IN_AGENTS, addSummary, addedEntry, addedPlace, cardEndpoint, cardSha256, fetchAddedCard, idFromName, idRefusal, placeRefusal, signatureRefusal, signedLine, tailnetRefusal } from './mesh-add.js'
+import { THUMBPRINT } from './card-signature.js'
+import { KEY_USAGE, runKey } from './mesh-keys.js'
 import { appendRun, pruneRuns, runAgents, runFiles, tidyRuns } from './mesh-runs.js'
 import type { RunCollector } from './mesh-runs.js'
 import { CALL_USAGE, runCall } from './mesh-call.js'
@@ -80,9 +84,10 @@ const USAGE = `usage: agent-inbox-meshctl status
        agent-inbox-meshctl disable --unslop [--purge] [--apply]
        agent-inbox-meshctl enable --request-post --endpoint <url> --token-file <path> [--apply]
        agent-inbox-meshctl disable --request-post [--purge] [--apply]
-       agent-inbox-meshctl add <card-url> [--id <id>] [--token-file <path>] [--apply]
-       agent-inbox-meshctl add <card-url> --move <id> [--token-file <path>] [--apply]
+       agent-inbox-meshctl add <card-url> [--id <id>] [--token-file <path>] [--key-thumbprint <t>] [--apply]
+       agent-inbox-meshctl add <card-url> --move <id> [--token-file <path>] [--key-thumbprint <t>] [--apply]
        agent-inbox-meshctl remove <id> [--apply]
+       agent-inbox-meshctl key create|show|rotate|retire <agent> [--apply]
        agent-inbox-meshctl call <id> [--skill <skill>] [--json] [--report <file>] [--timeout <s>] < request
        agent-inbox-meshctl check <card-url> [--level local|publishable] [--strict] [--json] [--token-file <path> [--send <file>]]
        agent-inbox-meshctl forget-runs (--unslop | --request-post | --web-search | --id <id> | --all) [--apply]
@@ -90,7 +95,7 @@ const USAGE = `usage: agent-inbox-meshctl status
        agent-inbox-meshctl unslop --kind <kind> [--report <file>] [--timeout <s>] < draft
        agent-inbox-meshctl request-post file|status|wait …
 
-Without --apply, enable, disable, add, remove, forget-runs and skills are dry runs: they print what they would do.
+Without --apply, enable, disable, add, remove, forget-runs, skills and key are dry runs: they print what they would do.
 The Agents view is always on, so enable --agents-view writes nothing.
 enable --unslop needs packages/mesh built in the checkout (npm ci && npm run build there);
 it listens on http://127.0.0.1:<port> only (default ${UNSLOP_PORT}). disable --unslop keeps the
@@ -107,9 +112,16 @@ tailnet, a Funnel or a public host waits for #534). A loopback agent needs
 --token-file (a 0600 file you own; meshctl copies it and never prints it). add never replaces an
 entry or takes a built-in name; remove deletes only an entry add wrote, and its token copy.
 When the card declares a stable id (its profile extension), add records it as agentId.
-add --move <id> moves agents.<id> to the card URL given: the card must declare the entry's
-agentId and match its pin; only the card URL and endpoint change (and the token copy, with
---token-file), so the pin and run records stay.
+add verifies the card's signatures (ES256, ES384 or EdDSA by a key the card's profile lists): one that fails
+refuses the card; an unsigned card is allowed here because add takes only loopback and this
+Mac's tailnet. The keys the card lists are pinned in the entry (trust on first use);
+--key-thumbprint <t> refuses a card not signed by the key with that RFC 7638 thumbprint.
+A card whose agent id an entry holds, signed by a key that entry pinned, is that agent at a new
+endpoint: add moves it. add --move <id> moves agents.<id> to the card URL given, signed or not:
+the card must declare the entry's agentId and match its pin; only the card URL and endpoint
+change (and the token copy, with --token-file), so the pin and run records stay.
+key create|show|rotate|retire <agent> manages <mesh dir>/mesh/keys/<agent>.jwk, the agent's
+card-signing key (0600, never printed; show prints the public key and its thumbprint).
 call sends one request to an added agent: it checks the card pin and, on loopback, the agent's
 identity before it sends the token or any text, and prints the result framed as untrusted
 (docs/mesh-call.md).
@@ -338,6 +350,10 @@ function meshctl(argv: string[], io: MeshctlIo): number {
     // async: the entry below runs it (runCheck in src/mesh-check.ts)
     err(CHECK_USAGE)
     return 4
+  }
+  if (command === 'key') {
+    if (rest[0] === 'help' || rest[0] === '--help') { out(KEY_USAGE); return 0 }
+    return runKey(rest, { dir: resolve(meshDir(env, home)), show: (path) => shown(path, home), out, err })
   }
   const flags = new Set<string>()
   const values = new Map<string, string>()
@@ -782,9 +798,14 @@ type ClientIo = Pick<UnslopIo & RequestPostIo, 'env' | 'home' | 'stdin' | 'out' 
  * cardSha256, agentId? }, keeping every other key and a backup. It never replaces an entry or takes
  * a built-in name, and sends no token: a loopback agent's identity proof (D17) runs before every
  * call (#530). `agentId` is the card's stable id (#537, publishable-agent design §3.4); a card
- * whose id an entry already holds is that agent, which only `--move <id>` relocates (the unsigned
+ * whose id an entry already holds is that agent, which `--move <id>` relocates (the unsigned
  * path): the same id and pin at a new card URL, changing only `card` and `endpoint` (and the token
  * copy, with --token-file), so the pin and run records, keyed by the local id, stay.
+ * Since #536 (§3.10) add verifies the card's signatures: a failing one refuses the card, an
+ * unsigned card is allowed (add takes only loopback and this Mac's tailnet, decision Q4), and the
+ * entry pins `keyThumbprints`, the keys the card lists (trust on first use, Q3);
+ * `--key-thumbprint` refuses a card that key did not sign. A card whose id an entry holds and that
+ * a key the entry pinned signed is the signed move (§3.4): the same as `--move <that id>`.
  */
 export async function runAdd(args: string[], io: MeshctlIo = {}): Promise<number> {
   const env = io.env ?? process.env
@@ -800,16 +821,18 @@ export async function runAdd(args: string[], io: MeshctlIo = {}): Promise<number
   let id: string | undefined
   let move: string | undefined
   let tokenFile: string | undefined
+  let thumbprint: string | undefined
   let apply = false
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]!
     if (arg === '--apply' && !apply) apply = true
-    else if (arg === '--id' || arg === '--move' || arg === '--token-file') {
+    else if (arg === '--id' || arg === '--move' || arg === '--token-file' || arg === '--key-thumbprint') {
       const value = args[++i]
-      if (value === undefined || (arg === '--id' ? id : arg === '--move' ? move : tokenFile) !== undefined) return usage()
+      if (value === undefined || (arg === '--id' ? id : arg === '--move' ? move : arg === '--token-file' ? tokenFile : thumbprint) !== undefined) return usage()
       if (arg === '--id') id = value
       else if (arg === '--move') move = value
-      else tokenFile = value
+      else if (arg === '--token-file') tokenFile = value
+      else thumbprint = value
     } else if (!arg.startsWith('-') && cardUrl === undefined) cardUrl = arg
     else return usage()
   }
@@ -818,6 +841,7 @@ export async function runAdd(args: string[], io: MeshctlIo = {}): Promise<number
   if (idBad) return refuse(idBad)
   const moveBad = move === undefined ? undefined : idRefusal(move)
   if (moveBad) return refuse(BUILT_IN_AGENTS.includes(move!) ? `${move} is a built-in agent: meshctl enable and disable manage it` : moveBad)
+  if (thumbprint !== undefined && !THUMBPRINT.test(thumbprint)) return refuse('--key-thumbprint must be a key\'s RFC 7638 SHA-256 thumbprint: 43 base64url characters (meshctl key show prints one)')
   const place = addedPlace(cardUrl)
   if ('refused' in place) return refuse(placeRefusal('the card URL', place.refused))
   // the endpoint must share the card URL's origin, so this one check covers both
@@ -846,19 +870,19 @@ export async function runAdd(args: string[], io: MeshctlIo = {}): Promise<number
   const taken = (agentId: string): string => `the id ${agentId} is already in ${name}, and add never replaces an entry`
   // the entry --move relocates: one add wrote, valid, with the stable id the new card must match
   type Movable = Exclude<ReturnType<typeof addedEntry>, 'invalid' | undefined> & { agentId: string }
-  const movable = (agents: Record<string, unknown>): { entry: Movable } | string => {
-    const read = Object.hasOwn(agents, move!) ? addedEntry(move!, agents[move!]) : undefined
-    if (!Object.hasOwn(agents, move!)) return `${move} is not in ${name}: add it without --move`
-    if (read === undefined) return `agents.${move} was not written by meshctl add, so add cannot move it`
-    if (read === 'invalid') return `the entry for ${move} breaks meshctl add's rules: remove it and add it again`
-    if (read.agentId === undefined) return `agents.${move} records no agent id (its card declared none when it was added), so add cannot tell the new card is the same agent: remove it and add it again`
+  const movable = (agents: Record<string, unknown>, target: string): { entry: Movable } | string => {
+    const read = Object.hasOwn(agents, target) ? addedEntry(target, agents[target]) : undefined
+    if (!Object.hasOwn(agents, target)) return `${target} is not in ${name}: add it without --move`
+    if (read === undefined) return `agents.${target} was not written by meshctl add, so add cannot move it`
+    if (read === 'invalid') return `the entry for ${target} breaks meshctl add's rules: remove it and add it again`
+    if (read.agentId === undefined) return `agents.${target} records no agent id (its card declared none when it was added), so add cannot tell the new card is the same agent: remove it and add it again`
     return { entry: { ...read, agentId: read.agentId } }
   }
   const early = agentsOf(readMesh(file))
   if (typeof early === 'string') return refuse(early)
   if (id !== undefined && Object.hasOwn(early, id)) return refuse(taken(id))
   if (move !== undefined) {
-    const was = movable(early)
+    const was = movable(early, move)
     if (typeof was === 'string') return refuse(was)
     if (place.loopback && tokenFile === undefined && was.entry.tokenFile === undefined) return refuse(NEEDS_TOKEN)
   }
@@ -869,6 +893,11 @@ export async function runAdd(args: string[], io: MeshctlIo = {}): Promise<number
   const endpoint = cardEndpoint(card, place.origin)
   if ('refused' in endpoint) return refuse(endpoint.refused)
   const profile = fetched.profile
+  const verdict = fetched.signatures
+  // add takes only loopback and this Mac's tailnet (the local level) until #534
+  const signatureBad = signatureRefusal(verdict, true, thumbprint)
+  if (signatureBad) return refuse(signatureBad)
+  const signedBy = 'signed' in verdict ? verdict.signed : []
   const pin = cardSha256(card)
 
   const existing = readMesh(file)
@@ -878,43 +907,64 @@ export async function runAdd(args: string[], io: MeshctlIo = {}): Promise<number
     const read = addedEntry(key, agents[key])
     return read !== undefined && read !== 'invalid' && read.agentId === profile.id
   })
+  // the signed move (§3.4): the holder's pinned keys signed this card, so it is that agent
+  const held = holder === undefined ? undefined : addedEntry(holder, agents[holder])
+  const endorsed = held !== undefined && held !== 'invalid' && (held.keyThumbprints ?? []).some((k) => signedBy.includes(k))
+  const target = move ?? (endorsed && id === undefined ? holder : undefined)
+  const pinned = { ...(verdict.keys.length ? { keyThumbprints: verdict.keys } : {}) }
   let agentId: string
   let entry: Record<string, unknown>
   let moved: Movable | undefined
-  if (move === undefined) {
-    if (holder !== undefined) return refuse(`the card declares the agent id that agents.${holder} holds, so it is that agent: to move ${holder} here, add --move ${holder} (its pin and run records stay)`)
+  if (target === undefined) {
+    if (holder !== undefined) {
+      return refuse(endorsed
+        ? `the card is agents.${holder}'s agent, signed by a key its pinned card lists: to move ${holder} here, add it without --id`
+        : signedBy.length
+          ? `the card declares the agent id that agents.${holder} holds, but no key agents.${holder}'s pinned card lists signed it, so add cannot tell it is that agent`
+          : `the card declares the agent id that agents.${holder} holds, so it is that agent: to move ${holder} here, add --move ${holder} (its pin and run records stay)`)
+    }
     const picked = id ?? idFromName(card['name'])
     if (picked === undefined) return refuse('the card\'s name makes no usable id: pass --id <id>')
     const derivedBad = idRefusal(picked)
     if (derivedBad) return refuse(derivedBad)
     if (Object.hasOwn(agents, picked)) return refuse(taken(picked))
     agentId = picked
-    entry = { card: place.url, endpoint: endpoint.endpoint, ...(token === undefined ? {} : { tokenFile: join(dir, 'mesh', 'tokens', picked) }), cardSha256: pin, ...(profile ? { agentId: profile.id } : {}) }
+    entry = { card: place.url, endpoint: endpoint.endpoint, ...(token === undefined ? {} : { tokenFile: join(dir, 'mesh', 'tokens', picked) }), cardSha256: pin, ...(profile ? { agentId: profile.id } : {}), ...pinned }
   } else {
-    const was = movable(agents)
+    const was = movable(agents, target)
     if (typeof was === 'string') return refuse(was)
     moved = was.entry
-    if (profile === undefined) return refuse(`the card declares no agent id, so add cannot tell it is ${move}'s agent`)
-    if (profile.id !== moved.agentId) return refuse(`the card declares another agent id than agents.${move}'s, so it is another agent: add it without --move`)
+    if (profile === undefined) return refuse(`the card declares no agent id, so add cannot tell it is ${target}'s agent`)
+    if (profile.id !== moved.agentId) return refuse(`the card declares another agent id than agents.${target}'s, so it is another agent: add it without --move`)
     if (pin !== moved.cardSha256) return refuse(`the card at the new URL is not the one you added (pin ${moved.cardSha256.slice(0, 12)}, now ${pin.slice(0, 12)}): moving a changed card waits for accepting it (#531)`)
     if (moved.card === place.url && moved.endpoint === endpoint.endpoint && token === undefined) {
-      out(`agents.${move} is already at ${place.url}. Nothing to do.\n`)
+      out(`agents.${target} is already at ${place.url}. Nothing to do.\n`)
       return 0
     }
-    agentId = move
-    // only the card URL and endpoint change (and the token copy with --token-file); every other key stays
-    entry = { ...objectOf(agents[move])!, card: place.url, endpoint: endpoint.endpoint, ...(token === undefined ? {} : { tokenFile: join(dir, 'mesh', 'tokens', move) }) }
+    agentId = target
+    // only the card URL and endpoint change (and the token copy with --token-file); every other key
+    // stays, and the keys the (same) card lists are pinned when an older entry had none
+    entry = { ...objectOf(agents[target])!, card: place.url, endpoint: endpoint.endpoint, ...(token === undefined ? {} : { tokenFile: join(dir, 'mesh', 'tokens', target) }), ...pinned }
   }
+  // how the summary describes the verified keys: the human's thumbprint, this entry's pin, another entry's, or new
+  const pinnedFor = (kid: string): string | undefined => Object.keys(agents).find((key) => {
+    const read = addedEntry(key, agents[key])
+    return read !== undefined && read !== 'invalid' && (read.keyThumbprints ?? []).includes(kid)
+  })
+  const knownAs = signedBy.map(pinnedFor).find((key) => key !== undefined)
+  const trust = thumbprint !== undefined ? 'matches --key-thumbprint'
+    : knownAs !== undefined ? `already pinned for agents.${knownAs}` : 'new to this Mac: trusted from now on if you --apply'
   const tokens = join(dir, 'mesh', 'tokens')
   const copy = join(tokens, agentId)
   const present = existing.kind === 'present'
   const next: MeshDocument = { ...(present ? existing.doc : { schema: MESH_SCHEMA }), agents: { ...agents, [agentId]: entry } }
   const json = `${JSON.stringify(next, null, 2)}\n`
 
-  out(addSummary(card, { cardUrl: place.url, endpoint: endpoint.endpoint, loopback: place.loopback, token: token !== undefined || moved?.tokenFile !== undefined, pin, profile }))
+  out(addSummary(card, { cardUrl: place.url, endpoint: endpoint.endpoint, loopback: place.loopback, token: token !== undefined || moved?.tokenFile !== undefined, pin, profile, signed: signedLine(verdict, trust) }))
   if (moved) {
     const sends = token !== undefined || moved.tokenFile !== undefined ? '; meshctl call will send the token to the new endpoint' : ''
-    out(`Move       this is ${agentId} at a new endpoint (was ${moved.endpoint}): its card pin${token === undefined ? ', token copy' : ''} and run records stay${sends}.\n`)
+    const why = move === undefined ? `, signed by a key its pinned card lists` : ''
+    out(`Move       this is ${agentId} at a new endpoint (was ${moved.endpoint})${why}: its card pin${token === undefined ? ', token copy' : ''} and run records stay${sends}.\n`)
   }
   const steps: Step[] = []
   if (token !== undefined) {

@@ -1,0 +1,195 @@
+// The card signature verifier (#536; publishable-agent design §3.10, D21): A2A v1.0.1 §8.4's JWS
+// over the RFC 8785 (JCS) form of the card without `signatures`, raw, with no normalisation and
+// no precondition, so a card signed over any other payload fails closed. ES256 over a P-256 key,
+// ES384 over P-384 and EdDSA over Ed25519, each bound to its key's curve; any other `alg` (`none`,
+// `HS*`, RSA) or a mismatched key fails. Our signer uses ES256. The key is found by `kid`, an RFC 7638 thumbprint, in the profile extension's `keys`: a header `jwk`,
+// `jku` or `x5u` is never read or fetched. Depth, size, count and header size are capped before
+// anything is canonicalised or parsed. Node core and the card rule only: meshctl's add and check
+// import it, never the viewer or the stdio MCP server. The signer is packages/mesh's
+// card-signing.ts; signatures are checked at add, accept and move, never on every call.
+import { createHash, createPublicKey, verify } from 'node:crypto'
+import { checkProfile, signedPayload } from './agent-card.js'
+
+type Json = Record<string, unknown>
+const obj = (v: unknown): Json => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Json) : {})
+
+const PROFILE_URI = 'https://shariqh.github.io/agent-inbox/ext/profile/v1'
+const DEPTH_MAX = 32
+const CARD_MAX = 64 * 1024
+const SIGNATURES_MAX = 4
+const HEADER_MAX = 2048
+const B64URL = /^[A-Za-z0-9_-]+$/
+// alg → the listed key's [kty, crv], the digest Node core verifies with (none for EdDSA) and the signature's length
+const ALGS: Record<string, { kty: string; crv: string; digest: string | null; length: number }> = {
+  ES256: { kty: 'EC', crv: 'P-256', digest: 'sha256', length: 64 },
+  ES384: { kty: 'EC', crv: 'P-384', digest: 'sha384', length: 96 },
+  EdDSA: { kty: 'OKP', crv: 'Ed25519', digest: null, length: 64 },
+}
+/** An RFC 7638 SHA-256 thumbprint: 43 base64url characters. */
+export const THUMBPRINT = /^[A-Za-z0-9_-]{43}$/
+
+/** RFC 7638: SHA-256 of the key's required members in lexicographic order, as base64url. */
+export function jwkThumbprint(key: Json): string {
+  const members = key.kty === 'OKP' ? { crv: key.crv, kty: key.kty, x: key.x } : { crv: key.crv, kty: key.kty, x: key.x, y: key.y }
+  return createHash('sha256').update(JSON.stringify(members)).digest('base64url')
+}
+
+/** Containers nested inside one another past 32 levels, counted without recursion and stopping at the cap. */
+export function tooDeep(card: unknown): boolean {
+  const stack: Array<[unknown, number]> = [[card, 1]]
+  while (stack.length) {
+    const [v, depth] = stack.pop()!
+    if (!v || typeof v !== 'object') continue
+    if (depth > DEPTH_MAX) return true
+    for (const x of Array.isArray(v) ? v : Object.values(v as Json)) stack.push([x, depth + 1])
+  }
+  return false
+}
+
+/** Why the card is not canonical-stable (§3.10), or undefined: "", [], {} or null anywhere, or "required": false on an extension. */
+export function unstableReason(card: unknown): 'null-value' | 'empty-value' | 'required-false' | undefined {
+  const stack: unknown[] = [card]
+  while (stack.length) {
+    const v = stack.pop()
+    if (v === null) return 'null-value'
+    if (v === '') return 'empty-value'
+    if (typeof v !== 'object') continue
+    const values = Array.isArray(v) ? v : Object.values(v as Json)
+    if (!values.length) return 'empty-value'
+    stack.push(...values)
+  }
+  const extensions = obj(obj(card).capabilities).extensions
+  return Array.isArray(extensions) && extensions.some((e) => obj(e).required === false) ? 'required-false' : undefined
+}
+
+/**
+ * Whether JSON text that JSON.parse accepted names a member twice in one object, at any depth
+ * (JSON.parse keeps the last, so `{"alg":"ES256","alg":"none"}` would read as one header to us and
+ * another to a verifier that keeps the first). Names compare after unescaping, so "a" and "\u0061"
+ * are the same. A scan of valid JSON only: strings are skipped whole, escapes included.
+ */
+function duplicateMember(text: string): boolean {
+  const objects: Array<Set<string> | null> = []
+  let key = false
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]
+    if (ch === '"') {
+      let end = i + 1
+      while (text[end] !== '"') end += text[end] === '\\' ? 2 : 1
+      const top = objects.at(-1)
+      if (key && top) {
+        const name = JSON.parse(text.slice(i, end + 1)) as string
+        if (top.has(name)) return true
+        top.add(name)
+        key = false
+      }
+      i = end
+    } else if (ch === '{') {
+      objects.push(new Set())
+      key = true
+    } else if (ch === '[') {
+      objects.push(null)
+      key = false
+    } else if (ch === '}' || ch === ']') {
+      objects.pop()
+      key = false
+    } else if (ch === ',') key = objects.at(-1) instanceof Set
+  }
+  return false
+}
+
+/** Why one signature by a listed key fails: a refused header, an algorithm off the list or not the key's, or no match. */
+export type SignatureFailure = 'header' | 'alg' | 'mismatch'
+export type Signatures = {
+  /** the thumbprints of the keys the card's (valid) profile lists */
+  keys: string[]
+  /** the `kid` of each signature by a listed key that verified */
+  valid: string[]
+  /** each verified signature's `alg`, in the same order */
+  algs: string[]
+  failed: SignatureFailure[]
+  /** signatures whose `kid` names no listed key */
+  unlisted: number
+  /** the card is not canonical-stable, so a failure may be a signer that signed another payload */
+  unstable: boolean
+}
+export type SignaturesRefused = 'too-deep' | 'too-large' | 'unreadable'
+
+/**
+ * Every signature on `card`, checked against the keys its profile extension lists, or why the
+ * card's signatures cannot be read at all: nested past 32, over 64 KiB, `signatures` not a list
+ * of at most 4 `{ protected, signature }` entries, or a protected header over 2 KiB, not a JSON
+ * object, naming a member twice, or without a string `kid`. The caps come first, so nothing unbounded is canonicalised.
+ */
+export function verifyCardSignatures(card: unknown): Signatures | { refused: SignaturesRefused } {
+  if (tooDeep(card)) return { refused: 'too-deep' }
+  if (Buffer.byteLength(JSON.stringify(card) ?? '') > CARD_MAX) return { refused: 'too-large' }
+  const c = obj(card)
+  const entries = c.signatures === undefined ? [] : c.signatures
+  if (!Array.isArray(entries) || entries.length > SIGNATURES_MAX) return { refused: 'unreadable' }
+  const signatures: Array<{ header: Json; protected: string; signature: string }> = []
+  for (const entry of entries) {
+    const e = obj(entry)
+    if (typeof e.protected !== 'string' || typeof e.signature !== 'string' || !B64URL.test(e.protected) || !B64URL.test(e.signature)) return { refused: 'unreadable' }
+    if (e.protected.length > Math.ceil(HEADER_MAX * 4 / 3)) return { refused: 'unreadable' }
+    let header: unknown
+    const text = Buffer.from(e.protected, 'base64url').toString('utf8')
+    try {
+      header = JSON.parse(text)
+    } catch { /* below */ }
+    if (!header || typeof header !== 'object' || Array.isArray(header) || typeof (header as Json).kid !== 'string' || duplicateMember(text)) return { refused: 'unreadable' }
+    signatures.push({ header: header as Json, protected: e.protected, signature: e.signature })
+  }
+  // keys only from a profile that passed checkProfile: public JWKs of a known curve, none twice
+  const profile = checkProfile(c)
+  const extensions = obj(c.capabilities).extensions
+  const params = profile && 'profile' in profile && Array.isArray(extensions) ? obj(extensions.map(obj).find((x) => x.uri === PROFILE_URI)?.params) : {}
+  const listed = Array.isArray(params.keys) ? params.keys.map(obj) : []
+  const keys = new Map(listed.map((k) => [jwkThumbprint(k), k]))
+  const result: Signatures = { keys: [...keys.keys()], valid: [], algs: [], failed: [], unlisted: 0, unstable: unstableReason(c) !== undefined }
+  if (!signatures.length) return result
+  const payload = Buffer.from(signedPayload(c)).toString('base64url')
+  for (const { header, protected: head, signature } of signatures) {
+    const kid = header.kid as string
+    const key = keys.get(kid)
+    if (!key) { result.unlisted++; continue }
+    if (['crit', 'b64', 'x5c'].some((m) => Object.hasOwn(header, m)) || typeof header.typ !== 'string' || header.typ.toUpperCase() !== 'JOSE') { result.failed.push('header'); continue }
+    const alg = typeof header.alg === 'string' && Object.hasOwn(ALGS, header.alg) ? ALGS[header.alg]! : undefined
+    if (!alg || key.kty !== alg.kty || key.crv !== alg.crv) { result.failed.push('alg'); continue }
+    const bytes = Buffer.from(signature, 'base64url')
+    let ok = false
+    try {
+      ok = bytes.length === alg.length && verify(alg.digest, Buffer.from(`${head}.${payload}`), { key: createPublicKey({ key: key as never, format: 'jwk' }), dsaEncoding: 'ieee-p1363' }, bytes)
+    } catch { /* a key Node cannot import verifies nothing */ }
+    if (ok) {
+      result.valid.push(kid)
+      result.algs.push(header.alg as string)
+    }
+    else result.failed.push('mismatch')
+  }
+  return result
+}
+
+const HINT = ': the card has empty or default values, which A2A signers drop, so its signer may have signed a different payload'
+
+/**
+ * What `add` makes of a card's signatures (§3.10): signed by the listed keys whose signatures
+ * verified (with each one's `alg`), unsigned (no signature, or none naming a listed key, which counts as unsigned), or
+ * refused with fixed words: unreadable signatures, or one by a listed key that fails. `keys` are
+ * the thumbprints of every key the card lists, which `add` pins in the entry.
+ */
+export type SignatureVerdict = { keys: string[] } & ({ signed: string[]; algs: string[] } | { unsigned: 'absent' | 'unlisted' } | { refused: string })
+
+export function signatureVerdict(card: unknown): SignatureVerdict {
+  const s = verifyCardSignatures(card)
+  if ('refused' in s) {
+    const words = { 'too-deep': 'the card is nested more than 32 deep', 'too-large': 'the card is over 64 KiB', unreadable: 'the card has signatures meshctl cannot read' }
+    return { keys: [], refused: words[s.refused] }
+  }
+  const failed = s.failed[0]
+  if (failed === 'header') return { keys: s.keys, refused: 'the card has a signature whose header meshctl refuses (crit, b64 or x5c, or a typ other than JOSE)' }
+  if (failed === 'alg') return { keys: s.keys, refused: 'the card has a signature by a listed key whose algorithm is not ES256 over a P-256 key, ES384 over P-384 or EdDSA over Ed25519' }
+  if (failed === 'mismatch') return { keys: s.keys, refused: `the card has a signature by a listed key that does not verify${s.unstable ? HINT : ''}` }
+  if (s.valid.length) return { keys: s.keys, signed: s.valid, algs: s.algs }
+  return { keys: s.keys, unsigned: s.unlisted ? 'unlisted' : 'absent' }
+}

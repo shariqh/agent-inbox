@@ -7,12 +7,14 @@
 // task and method. Only --send <file> sends a real message (decision Q5). The token goes only to
 // the card's origin, on loopback only after the a2a-mesh/v1 proof (D17), and is never printed.
 // Exits: 0 conforms, 17 a test failed, 15 the card could not be fetched, 4 usage. The signature
-// tests (#536) and the profile's egress and residency (#535) are reported as not yet run.
+// tests (#536) run card-signature.ts's verifier; the profile's egress and residency (#535) are
+// reported as not yet run.
 // Node core and the mesh's own modules only; only meshctl imports it.
 import { randomUUID } from 'node:crypto'
 import { closeSync, constants, fstatSync, openSync, readFileSync } from 'node:fs'
 import type { LookupFunction } from 'node:net'
 import { agentIdRefusal, checkAddedCard, checkProfile, claim } from './agent-card.js'
+import { tooDeep, unstableReason, verifyCardSignatures } from './card-signature.js'
 import { SEMVER, addedPlace, bearerUsable, fetchCard } from './mesh-add.js'
 import type { Place } from './mesh-add.js'
 import { inTailnet, readTokenFile } from './mesh-config.js'
@@ -58,7 +60,6 @@ const skip = (reason: string): Outcome => ({ skip: reason })
 const PROFILE_URI = 'https://shariqh.github.io/agent-inbox/ext/profile/v1'
 // the extensions meshctl speaks: the profile, which a card declares and a call needs no metadata for
 const SPOKEN = [PROFILE_URI]
-const DEPTH_MAX = 32
 const INPUT_MAX = 64 * 1024
 const TERMINAL = ['TASK_STATE_COMPLETED', 'TASK_STATE_REJECTED', 'TASK_STATE_FAILED', 'TASK_STATE_CANCELED']
 
@@ -130,9 +131,14 @@ export const CHECK_REASONS: Record<string, Record<string, string>> = {
   'profile.id': { 'bad-syntax': 'the profile id is not <domain>[/<path>]/<name>', 'no-profile': 'not run: no profile extension' },
   'profile.egress': { 'not-yet': 'not run: egress is checked from #535' },
   'profile.residency': { 'not-yet': 'not run: residency is checked from #535' },
-  'signature.present': { 'not-yet': 'not run: signatures are checked from #536' },
-  'signature.valid': { 'not-yet': 'not run: signatures are checked from #536' },
-  'signature.extra': { 'not-yet': 'not run: signatures are checked from #536' },
+  'signature.present': { absent: 'the card has no signature', unlisted: 'the card\'s signatures name no key its profile lists, so it counts as unsigned' },
+  'signature.valid': {
+    none: 'not run: no signature names a listed key', unreadable: 'the card has signatures meshctl cannot read (at most 4, each a protected header of at most 2 KiB with a kid)',
+    header: 'a signature\'s header has crit, b64 or x5c, or a typ other than JOSE', alg: 'a signature by a listed key is not ES256 over a P-256 key, ES384 over P-384 or EdDSA over Ed25519',
+    mismatch: 'a signature by a listed key does not verify over the card\'s JCS form',
+    'mismatch-unstable': 'a signature by a listed key does not verify: the card has empty or default values, which A2A signers drop, so its signer may have signed a different payload',
+  },
+  'signature.extra': { unlisted: 'a signature names no key the profile lists' },
   'ext.required': { 'unknown-required': 'the card requires an extension meshctl does not speak, so meshctl call cannot use it' },
   'live.identity': { unproven: 'the agent did not answer the a2a-mesh/v1 challenge', unreachable: 'the card request with the challenge failed', 'not-loopback': 'not run: TLS proves an https origin' },
   'live.auth': { accepted: 'a request without the token was accepted', 'wrong-status': 'a request without the token was not refused with HTTP 401 or 403', unreachable: 'the endpoint did not answer' },
@@ -158,33 +164,6 @@ function checkPlace(raw: unknown): Place | undefined {
   const m = place.refused === 'public' && typeof raw === 'string' ? PUBLIC.exec(raw) : null
   if (!m || (m[2] !== undefined && (Number(m[2]) > 65535 || m[2] === '443'))) return undefined
   return { url: raw as string, origin: m[1]!, loopback: false, host: new URL(raw as string).hostname }
-}
-
-// "", [], {} or null anywhere, or "required": false on an extension (§3.10)
-function stableReason(card: Json): string | undefined {
-  const stack: unknown[] = [card]
-  while (stack.length) {
-    const v = stack.pop()
-    if (v === null) return 'null-value'
-    if (v === '') return 'empty-value'
-    if (typeof v !== 'object') continue
-    const values = Array.isArray(v) ? v : Object.values(v as Json)
-    if (!values.length) return 'empty-value'
-    stack.push(...values)
-  }
-  return list(obj(card.capabilities).extensions).some((e) => e.required === false) ? 'required-false' : undefined
-}
-
-// containers nested inside one another, counted without recursion and stopping past the cap
-function tooDeep(card: unknown): boolean {
-  const stack: Array<[unknown, number]> = [[card, 1]]
-  while (stack.length) {
-    const [v, depth] = stack.pop()!
-    if (!v || typeof v !== 'object') continue
-    if (depth > DEPTH_MAX) return true
-    for (const x of Array.isArray(v) ? v : Object.values(v as Json)) stack.push([x, depth + 1])
-  }
-  return false
 }
 
 const SHAPE: Record<string, string> = { 'no name': 'no-name', 'no skill': 'no-skill', 'a skill without an id': 'skill-without-id', 'no A2A 1.0 JSON-RPC interface': 'no-jsonrpc-interface' }
@@ -242,6 +221,22 @@ function domain(c: Json): Outcome {
   } catch {
     return skip('no-provider-or-id')
   }
+}
+
+function signatureTests(c: Json, outcomes: Map<string, Outcome>): void {
+  const s = verifyCardSignatures(c)
+  if ('refused' in s) {
+    outcomes.set('signature.present', skip('stopped'))
+    outcomes.set('signature.valid', miss('unreadable'))
+    outcomes.set('signature.extra', skip('stopped'))
+    return
+  }
+  const listed = s.valid.length + s.failed.length
+  outcomes.set('signature.present', s.valid.length ? PASS : miss(s.unlisted ? 'unlisted' : 'absent'))
+  const failed = s.failed[0]
+  outcomes.set('signature.valid', !listed ? skip('none') : failed === undefined ? PASS
+    : miss(failed === 'mismatch' && s.unstable ? 'mismatch-unstable' : failed))
+  outcomes.set('signature.extra', s.unlisted ? miss('unlisted') : PASS)
 }
 
 type Rpc = { status: number; error?: number; result?: Json } | 'unreachable'
@@ -367,7 +362,7 @@ export async function runCheck(args: string[], io: CheckIo): Promise<number> {
       : level === 'local' && where === 'unknown' ? miss('tailnet-unreadable')
         : level === 'local' && where === 'elsewhere' ? miss('not-local') : PASS)
     outcomes.set('card.required', required(c))
-    const stable = stableReason(c)
+    const stable = unstableReason(c)
     outcomes.set('card.stable', stable ? miss(stable) : PASS)
     outcomes.set('card.text', text(c))
     outcomes.set('auth.declared', declared(c))
@@ -379,7 +374,8 @@ export async function runCheck(args: string[], io: CheckIo): Promise<number> {
     outcomes.set('profile.present', profile === undefined ? miss('absent') : 'reason' in profile ? miss('invalid') : PASS)
     const params = profileParams(c)
     outcomes.set('profile.id', params === undefined ? skip('no-profile') : agentIdRefusal(params.id) ? miss('bad-syntax') : PASS)
-    for (const id of ['profile.egress', 'profile.residency', 'signature.present', 'signature.valid', 'signature.extra']) outcomes.set(id, skip('not-yet'))
+    for (const id of ['profile.egress', 'profile.residency']) outcomes.set(id, skip('not-yet'))
+    signatureTests(c, outcomes)
     outcomes.set('ext.required', list(obj(c.capabilities).extensions).some((e) => e.required === true && !SPOKEN.includes(e.uri as string)) ? miss('unknown-required') : PASS)
 
     const live = ['live.identity', 'live.auth', 'live.unknown-task', 'live.unknown-method', 'live.send']

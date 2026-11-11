@@ -19,6 +19,7 @@ import {
 import type { Item } from '../src/store.js'
 import { installRuntimeVersion } from './release-runtime.js'
 import { removeScratchDirs, scratchDir } from './scratch.js'
+import { pidIn } from './wait.js'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 
@@ -1736,7 +1737,7 @@ describe('hook: installer', () => {
     })
     try {
       await waitForPath(marker)
-      const mutatorPid = Number(readFileSync(pidFile, 'utf8').trim())
+      const mutatorPid = await pidIn(pidFile)
 
       const contender = spawnSync(
         '/bin/bash',

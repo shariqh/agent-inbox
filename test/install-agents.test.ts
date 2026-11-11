@@ -648,7 +648,7 @@ describe('agent setup installer', () => {
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     await waitFor(join(f.state, 'claude.hanging'))
-    const mutatorPid = Number(readFileSync(join(f.state, 'claude.hanging-pid'), 'utf8').trim())
+    const mutatorPid = await pidIn(join(f.state, 'claude.hanging-pid'))
     process.kill(-first.pid!, 'SIGKILL')
     await new Promise<number | null>((resolveCode) => first.on('close', resolveCode))
     await waitForGone(mutatorPid)
@@ -1539,7 +1539,7 @@ describe('agent setup installer: losing its parent mid-install (#208)', () => {
     expect(Date.now() - started).toBeLessThan(12_000)
     // The hung CLI was stopped, and the registration it never removed is
     // reported, not claimed as rolled back.
-    await waitForGone(Number(readFileSync(join(f.state, 'claude.remove-pid'), 'utf8')))
+    await waitForGone(await pidIn(join(f.state, 'claude.remove-pid')))
     expect(existsSync(join(f.state, 'claude'))).toBe(true)
     const warning = 'install-agents: warning: could not roll back claude MCP registration: ' +
       'its mcp remove did not finish within 400 ms'
@@ -1643,8 +1643,7 @@ describe('agent setup installer: losing its parent mid-install (#208)', () => {
     f.env.AGENT_INBOX_ROLLBACK_STEP_TIMEOUT_MS = '1500'
     const installer = startInstaller(f, ['--apply'])
     try {
-      await waitFor(join(f.state, 'claude.remove-pid'), 10_000)
-      const hungPid = Number(readFileSync(join(f.state, 'claude.remove-pid'), 'utf8'))
+      const hungPid = await pidIn(join(f.state, 'claude.remove-pid'))
       // Setup's forced stop: SIGKILL to the installer's whole process group.
       process.kill(-installer.child.pid!, 'SIGKILL')
       expect(await installer.exited).toEqual({ code: null, signal: 'SIGKILL' })

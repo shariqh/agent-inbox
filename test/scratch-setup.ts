@@ -9,11 +9,13 @@
 import { afterAll } from 'vitest'
 import { detachLeftoverImages, removeScratchDirs } from './scratch.js'
 
-// #471: `hdiutil info` (allowed 60 s in scratch.ts) answers in well under a
-// second on an idle Mac but can take tens of seconds while other suites build
-// and attach images, which overran Vitest's 10 s default and failed whichever
-// file was ending. hdiutil's own timeouts bound the work; this one only has to
-// outlast them.
+// #471: one `hdiutil info` (allowed 60 s) covers every scratch directory the
+// file made, then each leftover image gets one `hdiutil detach` (60 s each).
+// hdiutil answers in well under a second on an idle Mac but can take tens of
+// seconds while other suites build and attach images, which overran Vitest's
+// 10 s default and failed whichever file was ending. 180 s covers the info call
+// and the rare detach; a file that leaves more than one image behind is already
+// a bug the warning below names.
 const CLEANUP_MS = 180_000
 
 afterAll(() => {

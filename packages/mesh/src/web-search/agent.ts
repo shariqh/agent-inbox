@@ -1,7 +1,9 @@
 // The web search agent process, W1 (web search design §2.1, §3.2, §4, §13): the
 // SDK spike. It refuses to start unless mesh.json's `agents.web-search` names a
 // loopback endpoint, serves A2A there behind its own front door, and exits within
-// a minute of that key or the caller token changing, or after 30 idle minutes.
+// a minute of that key or the caller token changing, or after 30 idle minutes. At start
+// it signs its card with its own key, when `meshctl key create web-search` made one
+// (publishable-agent design §3.10, C7); without one it serves the card unsigned.
 // The real run is `createRun` (answer.ts: W3's search, W4's answer); until W5
 // reads the profile that builds it, `startAgent` answers from one fixed result. The
 // executor never rejects, so the SDK never logs or returns an error message. Every console call and process-level error or warning writes a fixed
@@ -13,6 +15,8 @@ import { Role, TaskState } from '@a2a-js/sdk'
 import type { Part } from '@a2a-js/sdk'
 import { AgentEvent } from '@a2a-js/sdk/server'
 import type { AgentExecutor, ExecutionEventBus } from '@a2a-js/sdk/server'
+import { loadSigningKeys, publicJwk, signCard } from '../card-signing.js'
+import type { SigningKey } from '../card-signing.js'
 import { ConfigError, appendPrivate, localDate, readPrivate } from '../files.js'
 import { meshDir, meshFile, readMesh } from '../mesh-config.js'
 import { EXTENSION, startFrontDoor } from './front-door.js'
@@ -27,19 +31,44 @@ export type StopReason = 'mesh.json' | 'token' | 'idle' | 'signal'
 export type AgentOptions = { meshDir: string; run?: Run; now?: () => number; every?: (ms: number, fn: () => void) => () => void }
 export type Agent = { port: number; exited: Promise<StopReason>; stop(reason: StopReason): Promise<void>; failAll(): void }
 
-/** The card of §4.1: nothing per copy but the interface URL, which the card hash leaves out. */
-export const card = (url: string, version: string): Json => ({
+// The profile extension (publishable-agent design §3.7, §8): the stable id, the signing keys'
+// public halves, and per skill what leaves with the caller's input and where the work may run.
+// Hosts are "operator": a card names no private search or model host, and every copy serves one card.
+export const PROFILE = 'https://shariqh.github.io/agent-inbox/ext/profile/v1'
+export const AGENT_ID = 'shariqh.github.io/agent-inbox/web-search'
+
+/**
+ * The card of §4.1 and the publishable-agent design's §8: nothing per copy but the interface URL,
+ * which the card pin leaves out, and the keys this copy signs with (none: the card is unsigned, and
+ * its profile lists no keys). Canonical-stable (no empty or default value; the bearer requirement
+ * names the role "call"), so card-signing.ts signs it and every A2A verifier checks the same bytes.
+ */
+export const card = (url: string, version: string, keys: Json[] = []): Json => ({
   name: 'web-search', description: 'Searches the public web for one question and returns a cited answer or the sources alone.', version,
+  provider: { organization: 'agent-inbox', url: 'https://github.com/shariqh/agent-inbox' },
   supportedInterfaces: [{ url, protocolBinding: 'JSONRPC', protocolVersion: '1.0' }],
   capabilities: {
     streaming: true, pushNotifications: false,
-    extensions: [{ uri: EXTENSION, description: 'web-search task parameters and result', required: false, params: { api: 1, modes: ['answer', 'sources'], recency: ['any', 'day', 'week', 'month', 'year'], maxSources: 10, maxQueryChars: 400, maxSites: 5, maxExcludeSites: 10 } }],
+    extensions: [
+      { uri: EXTENSION, description: 'web-search task parameters and result', params: { api: 1, modes: ['answer', 'sources'], recency: ['any', 'day', 'week', 'month', 'year'], maxSources: 10, maxQueryChars: 400, maxSites: 5, maxExcludeSites: 10 } },
+      {
+        uri: PROFILE, description: 'Stable id, signing keys, and per-skill egress and residency',
+        params: {
+          id: AGENT_ID, ...(keys.length ? { keys } : {}),
+          skills: { 'web-search': { egress: [{ purpose: 'search', hosts: 'operator', sends: 'input' }, { purpose: 'model', hosts: 'operator', sends: 'input' }], residency: 'caller-mesh' } },
+        },
+      },
+    ],
   },
   securitySchemes: { bearer: { httpAuthSecurityScheme: { scheme: 'Bearer' } } },
-  securityRequirements: [{ schemes: { bearer: { list: [] } } }],
+  securityRequirements: [{ schemes: { bearer: { list: ['call'] } } }],
   defaultInputModes: ['text/plain'], defaultOutputModes: ['text/plain', 'application/json'],
   skills: [{ id: 'web-search', name: 'web-search', description: 'Answers one question from the public web with numbered sources, or returns the sources alone.', tags: ['search', 'web'] }],
 })
+
+/** The card this copy serves: signed by every key in `<mesh dir>/mesh/keys/web-search.jwk` (and `-next.jwk` while rotating), or unsigned when there is none. */
+export const servedCard = (url: string, version: string, keys: SigningKey[]): Json =>
+  keys.length ? signCard(card(url, version, keys.map(publicJwk)), keys) : card(url, version)
 
 /** W1 answers every query from one fixed result; W3 and W4 replace it. */
 export const fixtureRun: Run = async (_query, options, _signal, onState) => {
@@ -152,6 +181,8 @@ export async function startAgent(o: AgentOptions): Promise<Agent> {
   const token = readPrivate(tokenFile).trim()
   if (!/^[\x21-\x7E]{32,}$/.test(token)) throw new ConfigError('the token must be at least 32 printable characters')
   const version = (JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')) as { version: string }).version
+  // read once per start, before the port opens: a key file that breaks a rule stops the start
+  const keys = loadSigningKeys(o.meshDir, 'web-search')
   const executor = createExecutor(o.run ?? fixtureRun, (entry) => {
     try {
       appendPrivate(join(root, 'logs', `web-search-${localDate(now())}.log`), JSON.stringify({ at: new Date(now()).toISOString(), ...entry }))
@@ -159,7 +190,7 @@ export async function startAgent(o: AgentOptions): Promise<Agent> {
       process.stderr.write('agent: could not write the task log\n')
     }
   })
-  const door = await startFrontDoor({ port, tokens: [token], card: (url) => card(url, version), executor, busy: () => executor.open() > 0, now })
+  const door = await startFrontDoor({ port, tokens: [token], card: (url) => servedCard(url, version, keys), executor, busy: () => executor.open() > 0, now })
 
   let finished: (reason: StopReason) => void = () => {}
   const exited = new Promise<StopReason>((resolve) => { finished = resolve })

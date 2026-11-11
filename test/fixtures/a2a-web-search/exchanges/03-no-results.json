@@ -1,6 +1,6 @@
 {
   "row": "no-results",
-  "situation": "No results",
+  "situation": "No results; the metadata is under the old URN, which the front door still reads (publishable-agent design §6)",
   "exit": 0,
   "headers": {
     "A2A-Version": "1.0"

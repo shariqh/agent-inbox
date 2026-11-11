@@ -7,7 +7,13 @@ import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-export const EXTENSION = 'urn:agent-inbox:ext:web-search:v1'
+// The extension's URIs, preferred first (publishable-agent design §6, C7): a client accepts a card
+// declaring either and sends metadata under the one it declares; the agent reads either.
+export const EXTENSIONS = ['https://shariqh.github.io/agent-inbox/ext/web-search/v1', 'urn:agent-inbox:ext:web-search:v1']
+const PROFILE = 'https://shariqh.github.io/agent-inbox/ext/profile/v1'
+// publishable-agent design §8: the id, and per skill what leaves with the input (hosts the operator
+// chooses, never named) and where the work may run
+const PROFILE_SKILLS = { 'web-search': { egress: [{ purpose: 'search', hosts: 'operator', sends: 'input' }, { purpose: 'model', hosts: 'operator', sends: 'input' }], residency: 'caller-mesh' } }
 const PARAMS = { api: 1, modes: ['answer', 'sources'], recency: ['any', 'day', 'week', 'month', 'year'], maxSources: 10, maxQueryChars: 400, maxSites: 5, maxExcludeSites: 10 }
 const META = ['mode', 'recency', 'maxSources', 'sites', 'excludeSites', 'fresh', 'timeoutMs']
 const METHODS = ['SendMessage', 'SendStreamingMessage', 'GetTask', 'CancelTask']
@@ -51,10 +57,28 @@ export function cardHash(card: unknown): string {
 /** §10.1: the identity proof, HMAC-SHA256(token, "web-search/v1\n" + nonce) in base64url. */
 export const proofFor = (token: string, nonce: string): string => createHmac('sha256', token).update(`web-search/v1\n${nonce}`).digest('base64url')
 
+/** The web-search extension `card` declares, under its preferred URI. */
+const extensionOf = (card: unknown): Json | undefined => {
+  const exts = list(obj(obj(card).capabilities).extensions).map(obj)
+  for (const uri of EXTENSIONS) {
+    const ext = exts.find((e) => e.uri === uri)
+    if (ext) return ext
+  }
+  return undefined
+}
+/** The request's extension fields, under whichever URI it used. */
+const metaOf = (req: Json): Json => {
+  const meta = obj(obj(obj(req.params).message).metadata)
+  return obj(meta[Object.keys(meta)[0] ?? ''])
+}
+// no "", [], {} or null, and no `"required": false` (publishable-agent design §3.10)
+const unstable = (v: unknown): boolean => v === null || v === '' || (typeof v === 'object' && (!Object.values(v).length || Object.values(v).some(unstable)))
+
 export function checkCard(card: unknown): string[] {
   const c = obj(card)
   const caps = obj(c.capabilities)
-  const ext = list(caps.extensions).map(obj).find((e) => e.uri === EXTENSION)
+  const ext = extensionOf(card)
+  const profile = list(caps.extensions).map(obj).filter((e) => e.uri === PROFILE)
   const problems: string[] = []
   if (c.name !== 'web-search' || typeof c.version !== 'string') problems.push('name or version')
   const ifaces = list(c.supportedInterfaces).map(obj)
@@ -66,7 +90,17 @@ export function checkCard(card: unknown): string[] {
   const skills = list(c.skills).map(obj)
   if (skills.length !== 1 || skills[0]!.id !== 'web-search' || !strs(skills[0]!.tags)) problems.push('skills')
   if (!ext || !same(ext.params, PARAMS)) problems.push('extension')
-  if (/synthesis|provider|model|searxng|ollama/i.test(JSON.stringify(card))) problems.push('a per-copy setting')
+  const provider = obj(c.provider)
+  if (typeof provider.organization !== 'string' || !String(provider.url).startsWith('https://')) problems.push('provider')
+  // the profile: the id, the per-skill declarations, and public keys only (none on an unsigned copy)
+  const { keys, ...declared } = obj(profile[0]?.params)
+  const publicKeys = keys === undefined || (Array.isArray(keys) && keys.length >= 1 && keys.length <= 4 && keys.every((k) => Object.keys(obj(k)).sort().join() === 'crv,kty,x,y'))
+  if (profile.length !== 1 || !same(declared, { id: 'shariqh.github.io/agent-inbox/web-search', skills: PROFILE_SKILLS }) || !publicKeys) problems.push('profile')
+  const { signatures: _s, ...unsigned } = c
+  if (unstable(unsigned) || list(caps.extensions).some((e) => obj(e).required === false)) problems.push('not canonical-stable')
+  // the publisher and the profile name a model and a provider by design; nothing else may
+  const rest = { ...unsigned, provider: undefined, capabilities: { ...caps, extensions: list(caps.extensions).filter((e) => obj(e).uri !== PROFILE) } }
+  if (/synthesis|provider|model|searxng|ollama/i.test(JSON.stringify(rest))) problems.push('a per-copy setting')
   return problems
 }
 
@@ -131,7 +165,8 @@ function checkRequest(req: Json): string[] {
     const m = obj(params.message)
     const parts = list(m.parts).map(obj)
     if (m.role !== 'ROLE_USER' || parts.length !== 1 || typeof parts[0]!.text !== 'string') problems.push('request: one text part')
-    if (!Object.keys(obj(obj(m.metadata)[EXTENSION])).every((k) => META.includes(k)) || Object.keys(obj(m.metadata)).some((k) => k !== EXTENSION)) problems.push('request: metadata')
+    const keys = Object.keys(obj(m.metadata))
+    if (!Object.keys(metaOf(req)).every((k) => META.includes(k)) || keys.length > 1 || keys.some((k) => !EXTENSIONS.includes(k))) problems.push('request: metadata')
   } else if (!same(Object.keys(params), ['id'])) problems.push('request: id only')
   return problems
 }
@@ -194,8 +229,8 @@ export function checkExchange(exchange: unknown, card: unknown): string[] {
     if (query.length >= 8 && JSON.stringify(replies).includes(JSON.stringify(query).slice(1, -1))) problems.push('response: echoes the query')
   }
   // the request's extension fields stay within the card's limits
-  const p = obj(list(obj(obj(card).capabilities).extensions).map(obj).find((e) => e.uri === EXTENSION)?.params)
-  const meta = obj(obj(obj(obj(req.params).message).metadata)[EXTENSION])
+  const p = obj(extensionOf(card)?.params)
+  const meta = metaOf(req)
   if ((meta.mode !== undefined && !list(p.modes).includes(meta.mode)) || (meta.recency !== undefined && !list(p.recency).includes(meta.recency))
     || Number(meta.maxSources ?? 1) > Number(p.maxSources) || list(meta.sites).length > Number(p.maxSites) || list(meta.excludeSites).length > Number(p.maxExcludeSites)) problems.push('request: outside the card')
   return problems

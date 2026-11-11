@@ -15,15 +15,16 @@ import type { AddressInfo, Socket } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { Role, TaskState } from '@a2a-js/sdk'
-import type { SendMessageRequest } from '@a2a-js/sdk'
+import { Role, TaskState, verifyAgentCardSignature } from '@a2a-js/sdk'
+import type { AgentCard, SendMessageRequest } from '@a2a-js/sdk'
 import { ClientFactory, ClientFactoryOptions, DefaultAgentCardResolver, JsonRpcTransportFactory } from '@a2a-js/sdk/client'
 import type { Client } from '@a2a-js/sdk/client'
 import { JsonRpcTransportHandler } from '@a2a-js/sdk/server'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { MockInstance } from 'vitest'
-import { CARD_PATH, IdentityError, cardHash, identityFetch, proofFor, resolveCard } from '../src/a2a-client.js'
-import { GATE_MS, IDLE_MS, card, createExecutor, fixtureRun, main, startAgent } from '../src/web-search/agent.js'
+import { CARD_PATH, IdentityError, WEB_SEARCH_EXTENSIONS, cardHash, identityFetch, proofFor, resolveCard, webSearchExtension } from '../src/a2a-client.js'
+import { loadSigningKeys, publicJwk, thumbprint, unstableReason } from '../src/card-signing.js'
+import { AGENT_ID, GATE_MS, IDLE_MS, PROFILE, card, createExecutor, fixtureRun, main, startAgent } from '../src/web-search/agent.js'
 import type { Agent, Run } from '../src/web-search/agent.js'
 import { EXTENSION, MAX_CONNECTIONS, rebuild, startFrontDoor } from '../src/web-search/front-door.js'
 import type { FrontDoor } from '../src/web-search/front-door.js'
@@ -131,9 +132,15 @@ describe('the card (§4.1)', () => {
     expect(c).toEqual(card(d.url, '0.0.0-test'))
     expect(c.supportedInterfaces).toEqual([{ url: d.url, protocolBinding: 'JSONRPC', protocolVersion: '1.0' }])
     expect(c.capabilities).toMatchObject({ streaming: true, pushNotifications: false })
-    expect(c.capabilities.extensions[0]).toMatchObject({ uri: EXTENSION, params: { api: 1, modes: ['answer', 'sources'], maxSources: 10, maxQueryChars: 400, maxSites: 5, maxExcludeSites: 10 } })
+    expect(c.capabilities.extensions[0]).toEqual({ uri: EXTENSION, description: expect.any(String), params: { api: 1, modes: ['answer', 'sources'], recency: expect.any(Array), maxSources: 10, maxQueryChars: 400, maxSites: 5, maxExcludeSites: 10 } })
     expect(c.skills).toEqual([{ id: 'web-search', name: 'web-search', description: expect.any(String), tags: ['search', 'web'] }])
-    expect(res.body).not.toMatch(/synthesis|provider|model|kagi/i)
+    // the publisher, and what leaves with the input, named only as "a host the operator chooses"
+    expect(c.provider).toEqual({ organization: 'agent-inbox', url: 'https://github.com/shariqh/agent-inbox' })
+    expect(c.capabilities.extensions[1]).toEqual({ uri: PROFILE, description: expect.any(String), params: { id: AGENT_ID, skills: { 'web-search': { egress: [{ purpose: 'search', hosts: 'operator', sends: 'input' }, { purpose: 'model', hosts: 'operator', sends: 'input' }], residency: 'caller-mesh' } } } })
+    expect(c.securityRequirements).toEqual([{ schemes: { bearer: { list: ['call'] } } }])
+    expect(JSON.stringify([c.capabilities.extensions[0], c.skills, c.description])).not.toMatch(/synthesis|provider|model|kagi/i)
+    expect(res.body).not.toMatch(/synthesis|searxng|ollama|kagi|signatures/i)
+    expect(unstableReason(c)).toBeUndefined()
     expect(handle).not.toHaveBeenCalled()
   })
 
@@ -467,11 +474,31 @@ describe('interop over loopback', () => {
     expect(events(stream.body).map((e) => e.result.statusUpdate?.status.state ?? 'task')).toEqual(['task', 'TASK_STATE_WORKING', 'TASK_STATE_CANCELED'])
   })
 
-  it('resolveCard gives the identity-checked card and the hash any copy of this version shares', async () => {
+  it('resolveCard gives the identity-checked card, the hash any copy of this version shares, and the extension URI it declares', async () => {
     const d = await door()
     const r = await resolveCard(d.url, TOKEN)
     expect(r.card.name).toBe('web-search')
     expect(r.cardSha256).toBe(cardHash(card('http://127.0.0.1:4421/', '0.0.0-test')))
+    expect(r.extension).toBe(EXTENSION)
+  })
+
+  it('the client accepts a card under either extension URI, the Pages one first, and the front door reads metadata under either (publishable-agent design §6)', async () => {
+    const [pages, urn] = WEB_SEARCH_EXTENSIONS as [string, string]
+    expect(pages).toBe('https://shariqh.github.io/agent-inbox/ext/web-search/v1')
+    const declaring = (...uris: string[]): Json => ({ capabilities: { extensions: uris.map((uri) => ({ uri })) } })
+    expect([webSearchExtension(declaring(urn)), webSearchExtension(declaring(urn, pages)), webSearchExtension(declaring('urn:other')), webSearchExtension(undefined)]).toEqual([urn, pages, undefined, undefined])
+    const seen: Json[] = []
+    const d = await door(async (query, options, signal, onState) => { seen.push(options); return fixtureRun(query, options, signal, onState) })
+    for (const uri of [pages, urn]) {
+      const res = await rpc(d.port, 'SendMessage', ask('hello', { metadata: { [uri]: { mode: 'sources', maxSources: 2 } } }))
+      expect(res.result.task.artifacts[0].parts[1].data).toMatchObject({ code: 0, mode: 'sources' })
+    }
+    expect(seen).toEqual([{ mode: 'sources', maxSources: 2 }, { mode: 'sources', maxSources: 2 }])
+    // the SDK is handed the Pages key alone, whichever the caller used
+    expect(rebuild(JSON.parse(envelope('SendMessage', ask('hello', { metadata: { [urn]: { fresh: true } } }))))).toMatchObject({ params: { message: { metadata: { [pages]: { fresh: true } } } } })
+    // both keys at once is ambiguous
+    const both = await rpc(d.port, 'SendMessage', ask('hello', { metadata: { [pages]: { mode: 'sources' }, [urn]: { mode: 'answer' } } }))
+    expect(both.error).toEqual({ code: -32602, message: 'Invalid params' })
   })
 })
 
@@ -630,6 +657,98 @@ describe('the agent process', () => {
     t = IDLE_MS
     b.tick()
     expect(await b.exited).toBe('idle')
+  })
+})
+
+describe('the signed card (publishable-agent design §3.10, §8; C7)', () => {
+  // meshctl's key command, verifier and check, loaded at run time: they are outside this package's rootDir
+  const ROOT = (name: string): string => fileURLToPath(new URL(`../../../src/${name}`, import.meta.url))
+  type Verdict = { keys: string[]; signed?: string[]; algs?: string[]; unsigned?: string; refused?: string }
+  const verdict = async (c: Json): Promise<Verdict> => ((await import(ROOT('card-signature.ts'))) as { signatureVerdict: (c: unknown) => Verdict }).signatureVerdict(c)
+  async function meshctlKey(dir: string, sub: 'create' | 'rotate'): Promise<void> {
+    const { runKey } = (await import(ROOT('mesh-keys.ts'))) as { runKey: (args: string[], io: Json) => number }
+    const out: string[] = []
+    expect(runKey([sub, 'web-search', '--apply'], { dir, show: (p: string) => p, out: (t: string) => out.push(t), err: (t: string) => out.push(t) }), out.join('')).toBe(0)
+  }
+  async function check(port: number, ...args: string[]): Promise<{ code: number; results: string[] }> {
+    const { runCheck } = (await import(ROOT('mesh-check.ts'))) as { runCheck: (args: string[], io: Json) => Promise<number> }
+    const out: string[] = []
+    const code = await runCheck([`http://127.0.0.1:${port}${CARD_PATH}`, '--json', ...args], { out: (t: string) => out.push(t), err: (t: string) => out.push(t), tailnet: () => undefined })
+    const tests = (JSON.parse(out.join('')) as { tests: Json[] }).tests
+    return { code, results: tests.filter((t) => t.result !== 'pass' && t.result !== 'skip').map((t) => `${t.id as string} ${t.result as string} ${t.reason as string}`) }
+  }
+  const sdkVerifies = async (c: Json): Promise<boolean> => {
+    const keys = (c.capabilities.extensions as Json[]).find((e) => e.uri === PROFILE)!.params.keys as Json[]
+    const quiet = console.debug
+    console.debug = () => {}
+    try {
+      await verifyAgentCardSignature(async (kid) => keys.find((k) => thumbprint(k) === kid) ?? Promise.reject(new Error('no such key')))(c as unknown as AgentCard)
+      return true
+    } catch {
+      return false
+    } finally {
+      console.debug = quiet
+    }
+  }
+  async function serving(dir: string, port: number): Promise<Json> {
+    const a = await startAgent({ meshDir: dir, every: () => () => {} })
+    cleanups.push(() => a.stop('signal'))
+    return coreCard(port)
+  }
+
+  it('signs at start with the key meshctl key create made: our verifier, the SDK\'s, and meshctl check --strict accept it', async () => {
+    const port = await freePort()
+    const dir = meshHome({ port })
+    await meshctlKey(dir, 'create')
+    const [key] = loadSigningKeys(dir, 'web-search')
+    const c = await serving(dir, port)
+    const { signatures, ...unsigned } = c
+    expect(unsigned).toEqual(card(`http://127.0.0.1:${port}/`, c.version as string, [publicJwk(key!)]))
+    expect(signatures).toHaveLength(1)
+    const profile = (c.capabilities.extensions as Json[]).find((e) => e.uri === PROFILE)!
+    expect(profile.params.keys).toHaveLength(1)
+    expect(thumbprint(profile.params.keys[0] as Json)).toBe(key!.kid)
+    expect(JSON.stringify(c)).not.toContain('"d":')
+    expect(await verdict(c)).toEqual({ keys: [key!.kid], signed: [key!.kid], algs: ['ES256'] })
+    expect(await sdkVerifies(c)).toBe(true)
+    // any change to the card, the auth requirement included, breaks both
+    const tampered = structuredClone(c)
+    tampered.securityRequirements = [{ schemes: { bearer: { list: ['admin'] } } }]
+    expect((await verdict(tampered)).refused).toBeDefined()
+    expect(await sdkVerifies(tampered)).toBe(false)
+    // the design's acceptance bar: the publishable level, strict; provider.domain is an info
+    expect(await check(port, '--strict')).toEqual({ code: 0, results: ['provider.domain info differs'] })
+  })
+
+  it('while rotating, lists both keys and signs with both', async () => {
+    const port = await freePort()
+    const dir = meshHome({ port })
+    await meshctlKey(dir, 'create')
+    await meshctlKey(dir, 'rotate')
+    const kids = loadSigningKeys(dir, 'web-search').map((k) => k.kid)
+    const c = await serving(dir, port)
+    expect(await verdict(c)).toEqual({ keys: kids, signed: kids, algs: ['ES256', 'ES256'] })
+    expect(await sdkVerifies(c)).toBe(true)
+  })
+
+  it('without a key file it serves the card unsigned, with no keys: the local level only', async () => {
+    const port = await freePort()
+    const dir = meshHome({ port })
+    const c = await serving(dir, port)
+    expect(c.signatures).toBeUndefined()
+    expect(c).toEqual(card(`http://127.0.0.1:${port}/`, c.version as string))
+    expect((await verdict(c)).signed).toBeUndefined()
+    expect(await check(port, '--level', 'local')).toEqual({ code: 0, results: ['provider.domain info differs', 'signature.present warn absent'] })
+    expect((await check(port)).code).toBe(17)
+  })
+
+  it('refuses to start, before the port opens, on a key file that breaks a rule', async () => {
+    const port = await freePort()
+    const dir = meshHome({ port })
+    await meshctlKey(dir, 'create')
+    chmodSync(join(dir, 'mesh', 'keys', 'web-search.jwk'), 0o644)
+    await expect(startAgent({ meshDir: dir })).rejects.toThrow('web-search.jwk')
+    await expect(call(port, { method: 'GET', path: CARD_PATH })).rejects.toThrow()
   })
 })
 

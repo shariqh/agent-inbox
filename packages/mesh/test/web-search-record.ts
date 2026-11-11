@@ -2,17 +2,25 @@
 // (web search design §11, §13 W2): the front door, the executor and the SDK over
 // loopback, each run a fixed placeholder result. Ids, timestamps and the port are
 // replaced by placeholders, so a re-recording is byte-identical unless the server's
-// output changed; web-search-fixtures.test.ts re-records in memory and compares.
+// output changed; web-search-fixtures.test.ts re-records in memory and compares. The
+// card is signed as the agent signs it at start (C7), by a P-256 key made for each
+// recording and never written: the fixtures hold its public half and the signature
+// only, so those two (and card.sha256, which covers the key list) change on every
+// re-recording, and the comparison leaves them out.
 // `node --import ./test/ts-hooks.mjs test/web-search-record.ts write` (in packages/mesh)
 // rewrites the files; then regenerate MANIFEST.json as the fixtures' README says.
+import { generateKeyPairSync } from 'node:crypto'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { request } from 'node:http'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { CARD_PATH, cardHash, proofFor } from '../src/a2a-client.js'
-import { card, createExecutor } from '../src/web-search/agent.js'
+import { thumbprint } from '../src/card-signing.js'
+import type { SigningKey } from '../src/card-signing.js'
+import { createExecutor, servedCard } from '../src/web-search/agent.js'
 import type { Run, RunResult } from '../src/web-search/agent.js'
 import { EXTENSION, startFrontDoor } from '../src/web-search/front-door.js'
+import { WEB_SEARCH_EXTENSIONS } from '../src/a2a-client.js'
 
 export const FIXTURES = fileURLToPath(new URL('../../../test/fixtures/a2a-web-search/', import.meta.url))
 export const TOKEN = 'placeholder-token-'.padEnd(43, '0')
@@ -39,12 +47,12 @@ const completed = (data: Json): RunResult => ({
   text: data.answer ? `${data.answer.text as string}\n\nSources:\n${(data.sources as Json[]).map((s) => `[${s.n as number}] ${s.title as string} — ${s.url as string}`).join('\n')}` : `${(data.sources as Json[]).length} source${(data.sources as Json[]).length === 1 ? '' : 's'}`,
 })
 
-type Scenario = { file: string; row: string; situation: string; exit: number; method: string; query: string; meta?: Json; configuration?: Json; states?: string[]; run: RunResult | 'throw' }
+type Scenario = { file: string; row: string; situation: string; exit: number; method: string; query: string; meta?: Json; uri?: string; configuration?: Json; states?: string[]; run: RunResult | 'throw' }
 const Q = 'When did version 24 of the example runtime enter long-term support?'
 const SCENARIOS: Scenario[] = [
   { file: '01-answer', row: 'answer', situation: 'An answer that passed the check; returnImmediately: false is accepted', exit: 0, method: 'SendMessage', query: Q, meta: { mode: 'answer', recency: 'any', maxSources: 5, sites: ['docs.example.com'], excludeSites: ['example.net'], fresh: false, timeoutMs: 90000 }, configuration: { returnImmediately: false, acceptedOutputModes: ['text/plain', 'application/json'] }, states: ['searching', 'answering', 'checking'], run: completed({ ...result('answer', 2), answer: ANSWER }) },
   { file: '02-sources', row: 'sources', situation: 'Sources in sources mode', exit: 0, method: 'SendMessage', query: Q, meta: { mode: 'sources' }, states: ['searching'], run: completed(result('sources', 2)) },
-  { file: '03-no-results', row: 'no-results', situation: 'No results', exit: 0, method: 'SendMessage', query: 'example runtime release with no public notes', meta: { mode: 'sources' }, states: ['searching'], run: completed(result('sources', 0)) },
+  { file: '03-no-results', row: 'no-results', situation: 'No results; the metadata is under the old URN, which the front door still reads (publishable-agent design §6)', exit: 0, method: 'SendMessage', query: 'example runtime release with no public notes', meta: { mode: 'sources' }, uri: WEB_SEARCH_EXTENSIONS[1], states: ['searching'], run: completed(result('sources', 0)) },
   { file: '04-sources-only', row: 'sources-only', situation: 'Sources only: an answer was asked for, but this copy has no model', exit: 10, method: 'SendMessage', query: Q, states: ['searching'], run: completed(result('answer', 1, { code: 10, warnings: ['synthesis-off'], ms: { queued: 0, search: 640, model: 0, check: 0 } })) },
   { file: '05-refused-screen', row: 'refused-screen', situation: 'Refused by the screen: the class is named, never the value', exit: 11, method: 'SendMessage', query: 'why does mail to person@mail.invalid bounce', run: { state: 'rejected', reason: 'screen', data: { code: 11, status: 'rejected', reason: 'screen', classes: ['email-address'] } } },
   { file: '06-refused-cap', row: 'refused-cap', situation: 'Refused: a daily cap', exit: 11, method: 'SendMessage', query: Q, run: { state: 'rejected', reason: 'daily-cap', data: { code: 11, status: 'rejected', reason: 'daily-cap' } } },
@@ -91,8 +99,15 @@ function http(port: number, method: string, path: string, headers: Record<string
   })
 }
 
+/** A signing key for one recording, never written anywhere. */
+export function recordingKey(): SigningKey {
+  const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'P-256' })
+  const jwk = privateKey.export({ format: 'jwk' })
+  return { kid: thumbprint({ kty: 'EC', crv: 'P-256', x: jwk.x, y: jwk.y }), key: privateKey }
+}
+
 /** Every recorded file, by its path in the fixtures folder, with its exact text. */
-export async function record(): Promise<Map<string, string>> {
+export async function record(key: SigningKey = recordingKey()): Promise<Map<string, string>> {
   let current: Scenario | undefined
   const run: Run = async (_query, _options, _signal, onState) => {
     const s = current!
@@ -104,7 +119,8 @@ export async function record(): Promise<Map<string, string>> {
     return structuredClone(s.run)
   }
   const executor = createExecutor(run, () => {})
-  const door = await startFrontDoor({ port: 0, tokens: [TOKEN], card: (url) => card(url, VERSION), executor, busy: () => false })
+  // signed over the placeholder URL the fixtures hold, so the recorded signature verifies
+  const door = await startFrontDoor({ port: 0, tokens: [TOKEN], card: () => servedCard(`http://127.0.0.1:${PORT}/`, VERSION, [key]), executor, busy: () => false })
   const out = new Map<string, string>()
   const put = (rel: string, value: unknown): void => { out.set(rel, `${JSON.stringify(normalise(value), null, 2)}\n`) }
   try {
@@ -123,7 +139,7 @@ export async function record(): Promise<Map<string, string>> {
     for (const [i, s] of SCENARIOS.entries()) {
       current = s
       const id = `rpc-${String(i + 1).padStart(2, '0')}`
-      const message = { messageId: `msg-${String(i + 1).padStart(2, '0')}`, role: 'ROLE_USER', parts: [{ text: s.query }], ...(s.meta ? { metadata: { [EXTENSION]: s.meta } } : {}) }
+      const message = { messageId: `msg-${String(i + 1).padStart(2, '0')}`, role: 'ROLE_USER', parts: [{ text: s.query }], ...(s.meta ? { metadata: { [s.uri ?? EXTENSION]: s.meta } } : {}) }
       const send = { jsonrpc: '2.0', id, method: s.method === 'GetTask' ? 'SendMessage' : s.method, params: { message, ...(s.configuration ? { configuration: s.configuration } : {}) } }
       const sent = await http(door.port, 'POST', '/', headers, JSON.stringify(send))
       const head = { row: s.row, situation: s.situation, exit: s.exit, headers: { 'A2A-Version': '1.0' } }

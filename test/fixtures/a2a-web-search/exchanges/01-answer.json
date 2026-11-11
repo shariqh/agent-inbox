@@ -19,7 +19,7 @@
           }
         ],
         "metadata": {
-          "urn:agent-inbox:ext:web-search:v1": {
+          "https://shariqh.github.io/agent-inbox/ext/web-search/v1": {
             "mode": "answer",
             "recency": "any",
             "maxSources": 5,

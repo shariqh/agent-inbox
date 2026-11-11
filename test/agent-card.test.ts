@@ -43,10 +43,22 @@ const change = (card: Json, edit: (c: Json) => void): Json => {
 }
 
 describe('checkCard (agent cards view design §4.4)', () => {
-  it('passes the cards both agents serve', () => {
+  it('passes the cards the agents serve', () => {
     expect(UNSLOP.name).toBe('unslop')
     expect(checkCard(UNSLOP, 'unslop')).toBeUndefined()
     expect(checkCard(REQUEST_POST, 'request-post')).toBeUndefined()
+    expect(checkCard(WEB_SEARCH, 'web-search')).toBeUndefined()
+  })
+
+  it('web search: the Pages URI its card declares, the old URN, or both, the Pages one read (publishable-agent design §6, C7)', () => {
+    const [PAGES, URN] = ['https://shariqh.github.io/agent-inbox/ext/web-search/v1', 'urn:agent-inbox:ext:web-search:v1']
+    expect(cardExtension(WEB_SEARCH, 'web-search')).toBe(PAGES)
+    const old = change(WEB_SEARCH, (c) => { c.capabilities.extensions[0].uri = URN })
+    expect([checkCard(old, 'web-search'), cardExtension(old, 'web-search')]).toEqual([undefined, URN])
+    const both = change(old, (c) => { c.capabilities.extensions.push({ uri: PAGES, params: { api: 2 } }) })
+    expect([checkCard(both, 'web-search'), cardExtension(both, 'web-search')]).toEqual(['web-search api is not 1', PAGES])
+    expect(checkCard(change(WEB_SEARCH, (c) => { c.capabilities.extensions[0].uri = 'urn:other' }), 'web-search')).toBe(`no ${PAGES} or ${URN} extension`)
+    expect(checkCard(WEB_SEARCH, 'unslop')).toBe('no unslop skill')
   })
 
   it('holds each agent to its own skills and extension', () => {
@@ -209,7 +221,9 @@ describe('the v1 profile extension and stable agent ids (#537; publishable-agent
     keys: [P256],
     skills: { 'web-search': { egress: [{ purpose: 'search', hosts: 'operator', sends: 'input' }], residency: 'caller-mesh' } },
   })
-  const profiled = (edit: (p: Json) => void = () => {}): Json => change(WEB_SEARCH, (c) => {
+  // web search's card without the profile it carries since C7
+  const BARE = change(WEB_SEARCH, (c) => { c.capabilities.extensions = c.capabilities.extensions.filter((e: Json) => e.uri !== URI); delete c.signatures })
+  const profiled = (edit: (p: Json) => void = () => {}): Json => change(BARE, (c) => {
     const p = params()
     edit(p)
     c.capabilities.extensions.push({ uri: URI, description: 'Stable id, signing keys, and per-skill egress and residency', params: p })
@@ -219,7 +233,7 @@ describe('the v1 profile extension and stable agent ids (#537; publishable-agent
     const skills = new Map([['web-search', params().skills['web-search']]])
     expect(checkProfile(profiled())).toEqual({ profile: { id: 'shariqh.github.io/agent-inbox/web-search', keys: 1, skills } })
     expect(checkProfile(profiled((p) => { delete p.keys; delete p.skills }))).toEqual({ profile: { id: 'shariqh.github.io/agent-inbox/web-search', keys: 0, skills: new Map() } })
-    for (const card of [WEB_SEARCH, REQUEST_POST, UNSLOP, {}, null, 'card']) expect(checkProfile(card)).toBeUndefined()
+    for (const card of [BARE, REQUEST_POST, UNSLOP, {}, null, 'card']) expect(checkProfile(card)).toBeUndefined()
     // an Ed25519 and a P-384 key, four in all
     const keys = [P256, { kty: 'OKP', crv: 'Ed25519', x: B43 }, { kty: 'EC', crv: 'P-384', x: 'C'.repeat(64), y: 'D'.repeat(64) }, { ...P256, x: B43.replace('A', 'E') }]
     expect(checkProfile(profiled((p) => { p.keys = keys }))).toEqual({ profile: { id: 'shariqh.github.io/agent-inbox/web-search', keys: 4, skills } })
@@ -292,7 +306,7 @@ describe('the v1 profile extension and stable agent ids (#537; publishable-agent
     }
     expect(reason((p) => { p.skills['web-search'].egress = JSON.parse(`${'['.repeat(40)}1${']'.repeat(40)}`) })).toEqual({ reason: 'a profile nested too deeply' })
     for (const bad of [undefined, 'x', [params()]]) {
-      expect(checkProfile(change(WEB_SEARCH, (c) => { c.capabilities.extensions.push({ uri: URI, params: bad }) }))).toEqual({ reason: 'a profile extension whose params are not an object' })
+      expect(checkProfile(change(BARE, (c) => { c.capabilities.extensions.push({ uri: URI, params: bad }) }))).toEqual({ reason: 'a profile extension whose params are not an object' })
     }
     expect(checkProfile(change(profiled(), (c) => { c.capabilities.extensions.push({ uri: URI, params: params() }) }))).toEqual({ reason: 'more than one profile extension' })
   })

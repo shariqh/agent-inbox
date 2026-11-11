@@ -9,7 +9,10 @@ import { join } from 'node:path'
 import { JsonRpcTransportHandler } from '@a2a-js/sdk/server'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cardHash } from '../src/a2a-client.js'
-import { card, createExecutor, fixtureRun } from '../src/web-search/agent.js'
+import { AGENT_ID, PROFILE, card, createExecutor, fixtureRun } from '../src/web-search/agent.js'
+import { thumbprint } from '../src/card-signing.js'
+import { verifyAgentCardSignature } from '@a2a-js/sdk'
+import type { AgentCard } from '@a2a-js/sdk'
 import { startFrontDoor } from '../src/web-search/front-door.js'
 import { screen } from '../src/screen.js'
 import type { ScreenClass } from '../src/screen.js'
@@ -21,15 +24,43 @@ const folder = (name: string): string[] => readdirSync(join(FIXTURES, name)).sor
 
 afterEach(() => vi.restoreAllMocks())
 
+// Each recording signs with a key of its own (web-search-record.ts), so the key list and the
+// signatures are the one thing two recordings never share; every other byte must match.
+const unkeyed = (text: string): string => JSON.stringify(JSON.parse(text, function (this: Json, key, value: unknown) {
+  return key === 'signatures' || (key === 'keys' && this.id === AGENT_ID) ? 'recording-specific' : value
+}), null, 2)
+
 describe('recorded fixtures (§11)', () => {
-  it('the committed card and exchanges are exactly what W1 records now', async () => {
+  it('the committed card and exchanges are exactly what W1 records now, but for the recording key', async () => {
     const recorded = await record()
     expect([...recorded.keys()].filter((k) => k.startsWith('exchanges/')).sort()).toEqual(folder('exchanges'))
-    for (const [rel, text] of recorded) expect(read(rel), rel).toBe(text)
+    for (const [rel, text] of recorded) {
+      if (rel === 'card.sha256') continue
+      if (rel !== 'card.json' && rel !== 'exchanges/30-identity.json') expect(read(rel), rel).toBe(text)
+      else expect([read(rel), unkeyed(read(rel))], rel).toEqual([`${JSON.stringify(JSON.parse(read(rel)), null, 2)}\n`, unkeyed(text)])
+    }
   })
 
   it("card.sha256 is §4.1's raw-JCS hash of card.json", () => {
     expect(cardHash(JSON.parse(read('card.json')) as Json)).toBe(read('card.sha256').trim())
+  })
+
+  it('card.json is signed by the one key its profile lists, as the agent signs at start, and holds no private key (C7)', async () => {
+    const c = JSON.parse(read('card.json')) as Json
+    const profile = (c.capabilities.extensions as Json[]).find((e) => e.uri === PROFILE)!
+    const keys = profile.params.keys as Json[]
+    expect(keys.map((k) => Object.keys(k).sort().join())).toEqual(['crv,kty,x,y'])
+    expect(c.signatures).toHaveLength(1)
+    const quiet = console.debug
+    console.debug = () => {}
+    try {
+      await expect(verifyAgentCardSignature(async (kid) => keys.find((k) => thumbprint(k) === kid) ?? Promise.reject(new Error('no such key')))(c as unknown as AgentCard)).resolves.toBeUndefined()
+    } finally {
+      console.debug = quiet
+    }
+    const recorded = await record()
+    expect(JSON.parse(recorded.get('card.json')!).signatures).not.toEqual(c.signatures)
+    for (const rel of [...folder('exchanges'), 'card.json']) expect(read(rel), rel).not.toMatch(/"d"\s*:/)
   })
 })
 

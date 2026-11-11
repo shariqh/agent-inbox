@@ -147,6 +147,34 @@ npm run meshctl -- add <new-card-url> --move my-agent --apply
 The card at the new URL must declare the same id and have the same pin; a changed card is
 refused until #531 adds the accept. Pass `--token-file` too to replace the token copy.
 
+A signed card needs no `--move`: when a key the entry pinned at add signed the card at the new
+URL, `add <new-card-url>` says it is that agent at a new endpoint and `--apply` moves it the same
+way (on loopback, pass `--token-file`). A card that claims the id but is signed by another key is
+refused.
+
+## Signed cards
+
+An agent's card can carry signatures (A2A's JWS card signatures, ES256) by keys its
+[profile extension](ext/profile-v1.md) lists. `add` verifies them before it writes anything: a
+signature by a listed key that does not verify refuses the card, and the dry run's `Signed` line
+says which key signed it and whether this Mac has seen that key before. `--apply` pins the keys
+the card lists (trust on first use). If the publisher posted their key's thumbprint somewhere you
+trust, check it at add:
+
+```sh
+npm run meshctl -- add <card-url> --id my-agent --token-file <your token file> --key-thumbprint <thumbprint>
+```
+
+An unsigned card is allowed on loopback and this Mac's tailnet only. `call` does not re-check
+signatures: it checks the pin, which already covers everything a signature could vouch for that
+`call` uses.
+
+To sign your own agent's card, give it a key: `meshctl key create <agent> --apply` writes
+`<mesh dir>/mesh/keys/<agent>.jwk` (0600; never printed) and prints the public key and its
+thumbprint to list in the card's profile `keys`; `meshctl key show <agent>` prints them again.
+`meshctl key rotate <agent> --apply` adds a next key to list and sign with beside the current one
+for at least 30 days, and `meshctl key retire <agent> --apply` then drops the old one.
+
 ## Checking a card before anyone adds it: `meshctl check`
 
 `meshctl check` tells whoever writes an agent whether `meshctl add` will accept it, and whether
@@ -198,7 +226,9 @@ never fails. When `card.fetch` or `card.shape` fails, the rest do not run.
 | `profile.present` | The [profile extension](ext/profile-v1.md) with valid params | should | must |
 | `profile.id` | The profile id is `<domain>[/<path>]/<name>` | should | must |
 | `profile.egress`, `profile.residency` | Not run yet: #535 | should | must |
-| `signature.present`, `signature.valid`, `signature.extra` | Not run yet: #536 | should, must, info | must, must, should |
+| `signature.present` | A signature whose `kid` is the RFC 7638 thumbprint of a key the profile lists | should | must |
+| `signature.valid` | Every signature by a listed key verifies: ES256 over a P-256 key, header `typ: "JOSE"` with no `crit`, `b64` or `x5c`, over the card's raw JCS form without `signatures` (a failure on a card with empty or default values says its signer may have signed a different payload) | must | must |
+| `signature.extra` | No signature names a key the profile does not list | info | should |
 | `ext.required` | Every `required: true` extension is one meshctl speaks (today only the profile) | should | should |
 | `live.identity` | Loopback: the agent answers the `a2a-mesh/v1` challenge (https: TLS proves the origin) | must | must |
 | `live.auth` | A request without the token gets HTTP 401 or 403 | must | must |
@@ -221,11 +251,12 @@ why: `stopped` (a test it needs failed), `no-token`, `auth-unusable`, `identity-
 | 15 | The card could not be fetched (`card.fetch` failed) |
 | 4 | Usage: arguments, a card URL outside the rule, a token or message file that cannot be used |
 
-**Our agents today.** Web search, request-post and unslop pass `--level local` with two
+**Our agents today.** Web search, request-post and unslop pass `--level local` with three
 warnings, `card.stable` (their bearer requirement's empty `list` and their own extension's
-`"required": false`) and `profile.present` (no profile yet); request-post also warns
-`ext.required`. At the publishable level they fail `provider.present` and `profile.present`
-until slices C7-C9 give each a provider, a profile and a signature. With `--token-file`, unslop
+`"required": false`), `profile.present` (no profile yet) and `signature.present` (unsigned);
+request-post also warns `ext.required`. At the publishable level they fail `provider.present`,
+`profile.present` and `signature.present` until slices C7-C9 give each a provider, a profile and
+a signature. With `--token-file`, unslop
 and web search fail `live.identity`: they answer their own proof labels (`unslop/v1`,
 `web-search/v1`), not `a2a-mesh/v1`.
 

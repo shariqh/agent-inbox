@@ -702,12 +702,13 @@ the usage and 4).
   `checkProfile()` (below), and a card whose id another entry's `agentId` already holds is
   refused with a pointer to `--move`, so one agent never has two entries. The dry run prints
   `addSummary()` (publishable-agent design §4): the fixed untrusted header, then `Agent`,
-  `Publisher`, `Keys`, `Auth`, `Card URL`, `Endpoint`, `Skills` and `Card pin` lines, every card
+  `Publisher`, `Signed`, `Keys`, `Auth`, `Card URL`, `Endpoint`, `Skills` and `Card pin` lines, every card
   string a quoted claim through `claim()` (tabs and newlines as spaces, every control, format,
   default-ignorable, tag and separator character as U+FFFD, capped: names, provider and skill
   descriptions 80, a provider URL 200, `\` and `"` escaped), an id, a SemVer version, a plain
   skill id or a plain `https` provider URL printed bare, and a missing field as "not declared";
-  signatures (#536), egress and residency (#535) add their lines later. Then the file it would
+  `Signed` (#536, below) prints verified keys' thumbprints bare; egress and residency (#535) add
+  their lines later. Then the file it would
   write; `--apply` copies the token to
   `<mesh dir>/mesh/tokens/<id>` (0600, temporary file and rename) and then writes `mesh.json`
   atomically after a timestamped backup, every other key kept. New folders are 0700. Every
@@ -716,8 +717,7 @@ the usage and 4).
   `http://127.0.0.1:<port>` (never `:80`) or `https://<name>.<tailnet>.ts.net[:<port>]` (two
   lower-case labels, never `:443`), each with an optional plain path (no `.` or `..` segment,
   percent-encoding, user, query or fragment). An `https` URL on any other DNS name is refused
-  as a public host until TLS identity, the card pin and card signatures land (#534, #531,
-  #536); any other IP literal, `localhost` or plain `http` to another host is refused outright.
+  as a public host until TLS identity and the card accept land (#534, #531); any other IP literal, `localhost` or plain `http` to another host is refused outright.
   §8.8's allowlist is this Mac's tailnet (`tailnetRefusal()`): a `*.ts.net` name must be
   `<name>.<MagicDNS suffix>`, read once per `add` by meshctl from `tailscale status --json`
   (`MagicDNSSuffix` while `BackendState` is `Running`; the CLI on PATH, else the app's), and only
@@ -741,7 +741,7 @@ the usage and 4).
   fragment); `keys` 1-4 public JWKs (P-256 and P-384 `kty, crv, x, y`, Ed25519 `kty, crv, x`,
   base64url coordinates of the curve's length, no private or other member, none twice);
   `skills` exactly the card's skill ids, each an object holding only `egress` and `residency`,
-  whose values C4 (#535) validates. Signatures are #536's.
+  whose values C4 (#535) validates. Signatures are #536's (below).
 - **`meshctl add <card-url> --move <id> [--token-file <path>] [--apply]`** (#537, the unsigned
   move of design §3.4): `<id>` must be an entry `add` wrote, valid, with an `agentId`; the new
   card must declare that id and have the entry's pin (a changed card waits for #531's accept); a
@@ -749,8 +749,80 @@ the usage and 4).
   only `card` and `endpoint` (and the token copy with `--token-file`), keeping every other key, so
   the pin and the run records, which are keyed by the local id, stay; the dry run adds a `Move`
   line naming the old endpoint. The same card URL and endpoint again is "Nothing to do". `--id`
-  and `--move` together are a usage error. The signed move (a signature by a key the pinned card
-  lists, without `--move`) is #536's.
+  and `--move` together are a usage error. The signed move (below) needs no `--move`.
+- **Card signatures (#536, publishable-agent design §3.10, D21; decisions Q3, Q4 and Q6).**
+  - *The verifier* is `src/card-signature.ts`: Node core and the card rule only, imported by
+    `mesh-add.ts` and `mesh-check.ts`, never by the viewer or the stdio MCP server. Caps first,
+    before anything is canonicalised or parsed: a nesting walk that stops past 32 levels without
+    recursing (`tooDeep()`, also `check`'s `card.fetch` and `add`'s fetch, which no longer relies on
+    the stack), 64 KiB, at most 4 `signatures` entries of `{ protected, signature }` base64url, each
+    protected header at most 2 KiB decoded, a JSON object with a string `kid`; anything else makes
+    the card's signatures unreadable. The payload is the raw JCS form of the card without
+    `signatures` (`signedPayload()` in `agent-card.ts`), with no normalisation and no precondition,
+    so a card signed over any other payload fails closed. A signature's `kid` is looked up among the
+    RFC 7638 thumbprints of the keys a valid profile lists (a profile `checkProfile()` refuses lists
+    none); a `jwk`, `jku` or `x5u` in the header is never read or fetched. A signature whose `kid`
+    names no listed key is *unlisted* and counts as no signature. For a listed key: `crit`, `b64`,
+    `x5c` or a `typ` other than `JOSE` fail as `header`; anything but `alg: ES256` over a P-256 key
+    fails as `alg` (meshctl verifies only the algorithm our signer uses; `none`, `HS*`, RSA, ES384 and
+    EdDSA fail closed); otherwise Node's `verify` with `dsaEncoding: "ieee-p1363"` over
+    `<protected>.<payload>`, a 64-byte signature, or `mismatch`. A failure on a card that is not
+    canonical-stable (`unstableReason()`, the `card.stable` walk) carries the hint that its signer
+    may have signed a different payload (an A2A signer drops empty and default values).
+  - *`add`* (`signatureVerdict()`, `signatureRefusal()`): unreadable signatures, or any signature by
+    a listed key that fails, refuse the card. Signed means at least one verified, the rest unlisted.
+    An unsigned card (none, or only unlisted ones) is allowed because `add` takes only loopback and
+    this Mac's tailnet (the local level, decision Q4); `signatureRefusal(v, false, …)` is the
+    publishable rule #534 will apply. `--key-thumbprint <t>` (43 base64url characters) refuses a card
+    no verified signature of `t` is on. The entry records `keyThumbprints`, the thumbprints of every
+    key the card lists (trust on first use, decision Q3); since `keys` is inside the pin this is the
+    pinned card's list, not a second pin. `addedEntry()` reads it as 1-4 thumbprints or the entry is
+    invalid. The `Signed` line prints `yes, ES256 key <thumbprint> (…)` with "new to this Mac:
+    trusted from now on if you --apply", "already pinned for agents.<id>" or "matches
+    --key-thumbprint", or `no` with why, and `Keys` the count listed.
+  - *The signed move (§3.4).* A card whose agent id an entry holds is that agent when a key in that
+    entry's `keyThumbprints` signed it: `add <new-card-url>` without `--move` then moves it exactly
+    as `--move <id>` does (same pin required; the `Move` line adds "signed by a key its pinned card
+    lists"; a loopback URL still needs `--token-file` before the fetch). A card that claims the id
+    but is signed only by another key is refused; an unsigned one still points to `--move`.
+  - *Not on every call.* `call` checks the pin, which covers everything but the interface URLs and
+    `signatures`, and connects only to the entry's endpoint, so a refetched card with stripped or
+    broken signatures and the same pin still calls (`test/mesh-call.test.ts`). Accepting a changed
+    card (#531, C5) verifies again.
+  - *The signer* is `packages/mesh/src/card-signing.ts`: `signCard()` refuses a card that is not
+    canonical-stable (no `""`, `[]`, `{}` or `null`, no `"required": false` on an extension), no key,
+    or a key the card's profile does not list, and replaces `signatures` with one ES256 signature per
+    key (protected header `{ alg: "ES256", typ: "JOSE", kid }`). `loadSigningKeys(meshDir, agent)`
+    opens only `<agent>.jwk` and, while rotating, `<agent>-next.jwk`, through `readPrivate()`
+    (`O_NOFOLLOW`, regular, this user's, 0600, at most 4 KiB) in a keys folder that is no symlink
+    and 0700, and checks each holds exactly a P-256 private JWK whose `d` signs for its `x`/`y`.
+    The agents start using it in C7-C9 (their cards change there, not here).
+  - *SDK interop* (`packages/mesh/test/card-signing.test.ts`, where `@a2a-js/sdk` 1.3.0 is
+    installed; it loads the root verifier at run time because it is outside the package's
+    `rootDir`): on a card whose bearer requirement is `"list": ["call"]` our signer's card verifies
+    under the SDK's `verifyAgentCardSignature` (the callback looks the `kid` up in `keys`) and the
+    SDK's `generateAgentCardSignature` verifies under ours; with `"list": []` the SDK's signature
+    fails ours with the hint, the SDK would not notice the auth requirement removed, and our signer
+    refuses the card.
+- **`meshctl key create|show|rotate|retire <agent> [--apply]`** (`src/mesh-keys.ts`, decision Q6):
+  one P-256 key per agent at `<mesh dir>/mesh/keys/<agent>.jwk` (`kty`, `crv`, `x`, `y`, `d`),
+  written `O_EXCL | O_NOFOLLOW` and `fchmod` 0600, every folder it makes `chmod` 0700, so the modes
+  hold whatever the umask; an existing keys folder must be a 0700 folder the user owns. An agent
+  name is `add`'s id charset (built-ins included) and never ends in `-next`, which names a
+  rotation's file. `create` refuses an existing key; `show` prints `Key`, `Thumbprint` and
+  `Public JWK` (never `d`) for the key and, while rotating, the next key; refusals name the path
+  and a fixed reason, never the content. Every command but `show` is a dry run without `--apply`.
+- **Rotating a signing key.** The pin covers `keys`, so each step is a card change for callers.
+  1. `meshctl key rotate <agent> --apply` writes `<agent>-next.jwk`.
+  2. List both public keys (`meshctl key show <agent>`) in the card's profile `keys`; the agent
+     signs with every key it has, so the card carries both signatures. Callers accept the changed
+     card (#531; C5 makes a change to `keys` alone, endorsed by a pinned key, a lighter accept).
+  3. Keep both listed for at least 30 days, so a caller who did not call in between still sees a
+     signature by a key it pinned.
+  4. `meshctl key retire <agent> --apply` renames `<agent>-next.jwk` over `<agent>.jwk`; then drop
+     the old public key from the card. A copy on another host gets its own key, listed beside the
+     others (at most 4), never a copy of this file. A lost key: create a new one; callers see a
+     key change no pinned key endorses and accept it deliberately.
 - **`meshctl remove <id> [--apply]`** deletes only an entry `add` wrote (one with `card`), with
   a backup (deleting `mesh.json` when nothing else is left, like `disable`), then its run records
   (`runs/<id>-<date>.jsonl`, through `runFiles()`'s checks; the dry run counts them, #530), so an
@@ -771,7 +843,14 @@ the usage and 4).
   refusals and that the viewer never connects to an added agent, plus the summary's cleaned,
   capped and quoted claims, `agentId`, a doubled agent refused, and `--move`: keeping the local
   id, pin, token copy, run records and other keys, and refusing another id, a changed card, a card
-  or entry with no id and every entry it cannot move. `test/mesh-call.test.ts` adds, calls, moves
+  or entry with no id and every entry it cannot move; and #536's signed add (`keyThumbprints`,
+  the `Signed` line), tampered, unreadable and non-ES256 signatures refused, `--key-thumbprint`,
+  an unlisted signature counted as unsigned, the signed move and an impostor key refused.
+  `test/card-signature.test.ts` holds the verifier (tampering with any field, auth included; an
+  unlisted or private key; `alg` none, HS256, ES384, a P-384 key; a header `jwk` ignored; `crit`,
+  `b64`, `x5c`, `typ`; the caps; the empty-values hint), the publishable rule, the signer's
+  refusals, `loadSigningKeys()`'s file checks and `meshctl key` (modes under umask 000 and 277,
+  never printed, rotation). `test/mesh-call.test.ts` adds, calls, moves
   to a new port and calls again: one entry, one pin, both runs under the local id.
   `test/agent-card.test.ts` pins `checkAddedCard`, `canonicalCard`, `checkProfile`,
   `agentIdRefusal` and `claim`.
@@ -883,8 +962,13 @@ and never reads a terminal. User page, test table and exits: [`docs/mesh-call.md
 - **Static tests** are walks and field checks with no schema table: `card.stable` looks for
   `""`, `[]`, `{}`, `null` anywhere and `"required": false` on an extension; `auth.supported` is
   `bearerUsable()`, shared with `add`'s summary; `profile.present` is `checkProfile()` and
-  `profile.id` `agentIdRefusal()`. `profile.egress`, `profile.residency` and `signature.*` report
-  `skip`/`not-yet` until #535 and #536. `ext.required` knows one spoken extension, the profile.
+  `profile.id` `agentIdRefusal()`. `profile.egress` and `profile.residency` report
+  `skip`/`not-yet` until #535. `ext.required` knows one spoken extension, the profile.
+- **Signatures (#536)** use `verifyCardSignatures()` (above): `signature.present` passes with a
+  verified signature by a listed key, else `absent` or `unlisted` (should locally, must when
+  publishable); `signature.valid` (must) is `skip`/`none` without a signature by a listed key, else
+  `unreadable`, `header`, `alg`, `mismatch` or `mismatch-unstable` (the hint); `signature.extra`
+  (info locally, should when publishable) is `unlisted` when a signature names no listed key.
 - **Live tests** run only with a token, an endpoint that passed and a card that declares bearer
   auth. On loopback `meshLink(port, token, 'a2a-mesh', <card path>)` proves the agent first
   (`live.identity`); unproven, nothing else is sent. On this Mac's tailnet `tlsLink()`, and
@@ -897,8 +981,9 @@ and never reads a terminal. User page, test table and exits: [`docs/mesh-call.md
   should into `fail`. `CHECK_REASONS` lists every reason id with its words; `--json` is
   `{ level, ok, tests: [{ id, severity, result, reason }] }`. The table quotes the card's name
   through `claim()` under the untrusted header and shows no other card text.
-- **Tests:** `test/mesh-check.test.ts` runs a counting fake agent: a good card passes every C2
-  test at the publishable level; one recorded bad card per reason id; every `card.fetch` kind
+- **Tests:** `test/mesh-check.test.ts` runs a counting fake agent that signs the card it serves
+  with a key the good card lists: a good card passes every C2 and C3 test at the publishable level;
+  one recorded card per signature reason id; one recorded bad card per reason id; every `card.fetch` kind
   (exit 15, nothing posted); every live reason; a squatter that gets neither the token nor the
   message; no POST without `--token-file` and no `SendMessage` without `--send`; usage cases with
   no connection; `--strict`; the cleaned table; public, this-tailnet and other-tailnet https

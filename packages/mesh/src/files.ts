@@ -12,9 +12,9 @@ const FILE_MAX = 64 * 1024
 export class ConfigError extends Error {}
 const { O_RDONLY, O_WRONLY, O_CREAT, O_TRUNC, O_APPEND, O_NOFOLLOW, O_NONBLOCK } = constants
 
-export function readPrivate(path: string, optional: true): string | undefined
-export function readPrivate(path: string, optional?: false): string
-export function readPrivate(path: string, optional = false): string | undefined {
+export function readPrivate(path: string, optional: true, max?: number): string | undefined
+export function readPrivate(path: string, optional?: false, max?: number): string
+export function readPrivate(path: string, optional = false, max = FILE_MAX): string | undefined {
   let fd: number
   try {
     fd = openSync(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
@@ -28,7 +28,7 @@ export function readPrivate(path: string, optional = false): string | undefined 
     if (!stat.isFile()) throw new ConfigError(`${path} is not a regular file`)
     if (process.getuid && stat.uid !== process.getuid()) throw new ConfigError(`${path} is not owned by this user`)
     if (stat.mode & 0o077) throw new ConfigError(`${path} must be mode 0600`)
-    if (stat.size > FILE_MAX) throw new ConfigError(`${path} is larger than ${FILE_MAX} bytes`)
+    if (stat.size > max) throw new ConfigError(`${path} is larger than ${max} bytes`)
     return readFileSync(fd, 'utf8')
   } finally {
     closeSync(fd)

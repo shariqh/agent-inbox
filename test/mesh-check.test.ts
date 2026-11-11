@@ -4,6 +4,8 @@
 // no SendMessage without --send (a counting fake agent); the token never in stdout or stderr;
 // card text cleaned. Our three agents' cards are checked as they are today: they pass the local
 // level with warnings and fail the publishable level until C7-C9 (the design's §8) re-card them.
+// C3 (#536) adds signature.*: the fake signs the card it serves (after its origin is filled in)
+// with a key GOOD lists, unless told not to, and each signature reason id has a recorded card.
 import { execFileSync, spawnSync } from 'node:child_process'
 import { createHmac, randomUUID } from 'node:crypto'
 import { chmodSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
@@ -19,12 +21,14 @@ import { CHECK_REASONS, runCheck } from '../src/mesh-check.js'
 import type { CheckIo } from '../src/mesh-check.js'
 import { runMeshctl } from '../src/meshctl.js'
 import { scratchDir } from './scratch.js'
+import { jws, signWith, testKey } from './signed-card.js'
 
 type Json = Record<string, any>
 const REPO = new URL('..', import.meta.url).pathname
 const TOKEN = 'd4'.repeat(32)
 const PROFILE = 'https://shariqh.github.io/agent-inbox/ext/profile/v1'
-const KEY = { kty: 'EC', crv: 'P-256', x: 'A'.repeat(43), y: 'B'.repeat(43) }
+const SIGNER = testKey()
+const KEY = SIGNER.publicJwk
 // A card that meets every test C2 ships at the publishable level. `{origin}` is the fake's origin.
 const GOOD: Json = {
   name: 'Notes search', description: 'Searches your notes.', version: '1.4.0',
@@ -66,6 +70,8 @@ type Fake = { port: number; url: string; methods: string[]; headers: Json[]; byt
 type FakeOptions = {
   card?: Json; body?: (origin: string) => string; status?: number; headers?: Record<string, string>; cardSocket?: 'drop' | 'hold'
   proves?: boolean; label?: string; challenge?: 'drop'; tls?: { key: string; cert: string }; host?: string
+  // serve the card as it is, not signed by SIGNER
+  unsigned?: boolean
   // no token: 'enforce' answers 401; a status answers it; 'open' runs the request; 'drop' cuts it
   noToken?: 'enforce' | 'open' | 'drop' | number
   refuse?: string[]; drop?: string[]; unknownTask?: number; unknownMethod?: number
@@ -90,7 +96,8 @@ async function fakeAgent(o: FakeOptions = {}): Promise<Fake> {
         if (typeof nonce === 'string' && o.challenge === 'drop') return void req.socket.destroy()
         const proof = o.proves !== false && typeof nonce === 'string'
           ? { 'a2a-mesh-proof': createHmac('sha256', TOKEN).update(`${o.label ?? 'a2a-mesh'}/v1\n${nonce}`).digest('base64url') } : {}
-        const body = o.body ? o.body(origin) : JSON.stringify(o.card ?? GOOD).replaceAll('{origin}', origin)
+        const card = JSON.parse(JSON.stringify(o.card ?? GOOD).replaceAll('{origin}', origin))
+        const body = o.body ? o.body(origin) : JSON.stringify(o.unsigned ? card : signWith(card, SIGNER))
         return void res.writeHead(o.status ?? 200, { 'content-type': 'application/json', ...proof, ...o.headers }).end(body)
       }
       let body: Json = {}
@@ -171,7 +178,7 @@ beforeAll(() => {
 const live = (...more: string[]): string[] => ['--token-file', tokenFile, ...more]
 
 describe('a good card (design §5)', () => {
-  it('passes every test C2 ships at the publishable level; signatures, egress and residency are not run yet', async () => {
+  it('passes every test C2 and C3 ship at the publishable level; egress and residency are not run yet', async () => {
     const fake = await fakeAgent()
     const r = await check([fake.url, '--json'])
     expect(r.code).toBe(0)
@@ -180,9 +187,8 @@ describe('a good card (design §5)', () => {
     expect([body.level, body.ok]).toEqual(['publishable', true])
     expect(body.tests.map((t: Json) => t.id)).toEqual(IDS)
     for (const t of body.tests) expect(Object.keys(t)).toEqual(['id', 'severity', 'result', 'reason'])
-    expect(failing(r, 'pass').length).toBe(14)
-    expect(failing(r, 'skip')).toEqual(['profile.egress not-yet', 'profile.residency not-yet', 'signature.present not-yet', 'signature.valid not-yet',
-      'signature.extra not-yet', 'live.identity no-token', 'live.auth no-token', 'live.unknown-task no-token', 'live.unknown-method no-token', 'live.send no-token'])
+    expect(failing(r, 'pass').length).toBe(17)
+    expect(failing(r, 'skip')).toEqual(['profile.egress not-yet', 'profile.residency not-yet', 'live.identity no-token', 'live.auth no-token', 'live.unknown-task no-token', 'live.unknown-method no-token', 'live.send no-token'])
     // no live test without --token-file: one card GET, no token, no POST
     expect([fake.methods, fake.connections()]).toEqual([[], 1])
     expect(fake.headers[0]!.authorization).toBeUndefined()
@@ -219,7 +225,7 @@ describe('a good card (design §5)', () => {
     expect(lines[2]).toBe('Level      local')
     expect(lines[3]).toBe('pass  must    card.fetch           one GET, no redirect: a JSON object of at most 64 KiB, nested at most 32 deep')
     expect(lines).toContain('skip  must    live.identity        not run: live tests need --token-file')
-    expect(lines.at(-2)).toBe('Result     local: pass (0 failed, 0 warnings, 0 info, 10 not run)')
+    expect(lines.at(-2)).toBe('Result     local: pass (0 failed, 0 warnings, 0 info, 7 not run)')
   })
 })
 
@@ -300,6 +306,42 @@ describe('each test fails on a recorded bad card with its reason id', () => {
     const fake = await fakeAgent({ card })
     // a loopback card: meshctl call always sends a token there
     expect(test(await check([fake.url, '--level', 'local', '--json']), 'auth.declared').severity).toBe('must')
+  })
+})
+
+describe('signature.* (#536, design §3.10): raw JCS, ES256, a key the profile lists', () => {
+  const OTHER = testKey()
+  const at = (origin: string, card: Json = GOOD): Json => JSON.parse(JSON.stringify(card).replaceAll('{origin}', origin))
+  const unstable = change(GOOD, (c) => { c.securityRequirements[0].schemes.bearer.list = [] })
+  // [test, reason, the served card, severities local and publishable]
+  const CASES: Array<[string, string, (origin: string) => Json, string, string]> = [
+    ['signature.present', 'absent', (o) => at(o), 'should', 'must'],
+    ['signature.present', 'unlisted', (o) => signWith(at(o), OTHER), 'should', 'must'],
+    ['signature.extra', 'unlisted', (o) => signWith(at(o), SIGNER, OTHER), 'info', 'should'],
+    ['signature.valid', 'unreadable', (o) => ({ ...at(o), signatures: [{ protected: 'e30', signature: 'AA' }] }), 'must', 'must'],
+    ['signature.valid', 'header', (o) => ({ ...at(o), signatures: [jws(at(o), SIGNER.key, { alg: 'ES256', typ: 'JOSE', kid: SIGNER.kid, crit: ['exp'] })] }), 'must', 'must'],
+    ['signature.valid', 'alg', (o) => ({ ...at(o), signatures: [jws(at(o), SIGNER.key, { alg: 'none', typ: 'JOSE', kid: SIGNER.kid })] }), 'must', 'must'],
+    ['signature.valid', 'mismatch', (o) => ({ ...signWith(at(o), SIGNER), version: '1.4.1' }), 'must', 'must'],
+    ['signature.valid', 'mismatch-unstable', (o) => ({ ...signWith(at(o, unstable), SIGNER), version: '1.4.1' }), 'must', 'must'],
+  ]
+  const RESULT: Record<string, string> = { must: 'fail', should: 'warn', info: 'info' }
+
+  it.each(CASES)('%s %s', async (id, reason, served, local, publishable) => {
+    const fake = await fakeAgent({ body: (origin) => JSON.stringify(served(origin)) })
+    for (const [level, severity] of [['local', local], ['publishable', publishable]] as const) {
+      const r = await check([fake.url, '--level', level, '--json'])
+      expect(test(r, id), level).toEqual({ id, severity, result: RESULT[severity], reason })
+      expect(r.code).toBe(tests(r).some((t) => t.result === 'fail') ? 17 : 0)
+    }
+  })
+
+  it('a signature by a listed key passes; no signature by one skips signature.valid', async () => {
+    const signed = await check([(await fakeAgent()).url, '--json'])
+    expect(['signature.present', 'signature.valid', 'signature.extra'].map((id) => test(signed, id).result)).toEqual(['pass', 'pass', 'pass'])
+    const unsigned = await check([(await fakeAgent({ unsigned: true })).url, '--level', 'local', '--json'])
+    expect([unsigned.code, test(unsigned, 'signature.valid').result, test(unsigned, 'signature.valid').reason]).toEqual([0, 'skip', 'none'])
+    const human = await check([(await fakeAgent({ body: (o) => JSON.stringify({ ...signWith(at(o, unstable), SIGNER), version: '1.4.1' }) })).url])
+    expect(human.out).toContain('fail  must    signature.valid      a signature by a listed key does not verify: the card has empty or default values, which A2A signers drop, so its signer may have signed a different payload\n')
   })
 })
 
@@ -489,11 +531,11 @@ describe('our three agents today (design §8; re-carded by C7-C9)', () => {
   const fixture = (name: string): Json => JSON.parse(readFileSync(join(REPO, 'test', 'fixtures', name, 'card.json'), 'utf8'))
   // the fixture's interface moves to the fake's origin; nothing else changes
   const served = (card: Json): Json => change(card, (c) => { c.supportedInterfaces[0].url = '{origin}/' })
-  const LOCAL_WARNINGS = ['card.stable empty-value', 'profile.present absent']
-  const PUBLISHABLE_FAILS = ['provider.present no-provider', 'profile.present absent']
+  const LOCAL_WARNINGS = ['card.stable empty-value', 'profile.present absent', 'signature.present absent']
+  const PUBLISHABLE_FAILS = ['provider.present no-provider', 'profile.present absent', 'signature.present absent']
 
-  it('web search: passes the local level with two warnings, fails the publishable level', async () => {
-    const fake = await fakeAgent({ card: served(fixture('a2a-web-search')) })
+  it('web search: passes the local level with three warnings, fails the publishable level', async () => {
+    const fake = await fakeAgent({ card: served(fixture('a2a-web-search')), unsigned: true })
     const local = await check([fake.url, '--level', 'local', '--json'])
     expect([local.code, failing(local, 'warn'), failing(local, 'info')]).toEqual([0, LOCAL_WARNINGS, ['provider.present no-provider']])
     const pub = await check([fake.url, '--json'])
@@ -501,7 +543,7 @@ describe('our three agents today (design §8; re-carded by C7-C9)', () => {
   })
 
   it('request-post: the same, plus its required extension\'s warning', async () => {
-    const fake = await fakeAgent({ card: served(fixture('a2a-request-post')) })
+    const fake = await fakeAgent({ card: served(fixture('a2a-request-post')), unsigned: true })
     const local = await check([fake.url, '--level', 'local', '--json'])
     expect([local.code, failing(local, 'warn')]).toEqual([0, [...LOCAL_WARNINGS, 'ext.required unknown-required']])
     const pub = await check([fake.url, '--json'])

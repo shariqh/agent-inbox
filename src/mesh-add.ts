@@ -7,12 +7,16 @@
 // MagicDNS suffix and passes it in. meshctl imports it, never the stdio MCP server or the viewer.
 // Since #537 the fetch also reads the card's profile extension (its stable id, kept as the
 // entry's `agentId` so a move keeps the entry), and `addSummary()` is add's one-screen summary.
+// Since #536 it verifies the card's signatures (card-signature.ts): a signature by a listed key
+// that fails refuses the card, and the entry pins the thumbprints of the keys the card lists.
 import { createHash } from 'node:crypto'
 import { request as httpRequest } from 'node:http'
 import type { IncomingMessage } from 'node:http'
 import { request as httpsRequest } from 'node:https'
 import type { LookupFunction } from 'node:net'
 import { agentIdRefusal, canonicalCard, checkAddedCard, checkProfile, claim, type Profile } from './agent-card.js'
+import { THUMBPRINT, signatureVerdict, tooDeep } from './card-signature.js'
+import type { SignatureVerdict } from './card-signature.js'
 import { inTailnet } from './mesh-config.js'
 
 /** The agents that ship here, each with its own `mesh.json` shape: `add` never takes their names. */
@@ -54,7 +58,7 @@ const TAILNET = new RegExp(`^(https://(?:${LABEL}\\.){2}ts\\.net(?::([1-9]\\d{0,
  * The endpoint rule's shape for added agents (§8.8): `http://127.0.0.1:<port>` or `https://` on a
  * `<name>.<tailnet>.ts.net` name, as written (lower case, no written-out default port), with an
  * optional plain path. `public` is an https URL on any other DNS name: refused until TLS
- * identity, the card pin and signatures land (#534, #531, #536). Which tailnet is allowed is
+ * identity and the card accept land (#534, #531). Which tailnet is allowed is
  * tailnetRefusal's question.
  */
 export function addedPlace(raw: unknown): Place | { refused: Refused } {
@@ -75,7 +79,7 @@ export function addedPlace(raw: unknown): Place | { refused: Refused } {
   return { refused: url?.protocol === 'https:' && name ? 'public' : 'rule' }
 }
 
-const WAITS = 'adding one waits for TLS identity, the card pin and card signatures (#534, #531, #536)'
+const WAITS = 'adding one waits for TLS identity and the card accept (#534, #531)'
 
 /**
  * §8.8's allowlist: a tailnet name must be in this Mac's tailnet, `suffix` (its MagicDNS suffix,
@@ -133,13 +137,37 @@ function authLine(card: Json, token: boolean): string {
   return token ? 'bearer token (from --token-file)' : 'bearer token, but no --token-file was given'
 }
 
-export type SummaryOf = { cardUrl: string; endpoint: string; loopback: boolean; token: boolean; pin: string; profile: Profile | undefined }
+export type SummaryOf = { cardUrl: string; endpoint: string; loopback: boolean; token: boolean; pin: string; profile: Profile | undefined; signed: string }
+
+/**
+ * The summary's `Signed` value (§4): the verified keys' thumbprints and `trust`, add's words for
+ * them (new to this Mac, already pinned, or the --key-thumbprint match), or why the card counts as
+ * unsigned. Thumbprints passed their syntax check, so they are printed bare and in full.
+ */
+export function signedLine(v: SignatureVerdict, trust: string): string {
+  if ('signed' in v) return `yes, ES256 ${v.signed.length === 1 ? 'key' : 'keys'} ${v.signed.join(', ')} (${trust})`
+  const local = 'allowed on loopback and this Mac\'s tailnet only'
+  if ('unsigned' in v && v.unsigned === 'unlisted') return `no: its signatures name no key the card lists (${local})`
+  return `no (${local})`
+}
+
+/**
+ * Why add refuses the card's signatures (§3.10, decisions Q3 and Q4), or undefined: unreadable or
+ * failing signatures always; a card not signed by the key `--key-thumbprint` names; and an unsigned
+ * card outside loopback and this Mac's tailnet (`local` false: no such add exists until #534).
+ */
+export function signatureRefusal(v: SignatureVerdict, local: boolean, thumbprint: string | undefined): string | undefined {
+  if ('refused' in v) return v.refused
+  if (thumbprint !== undefined && !('signed' in v && v.signed.includes(thumbprint))) return 'the card is not signed by the key --key-thumbprint names'
+  if (!('signed' in v) && !local) return 'the card is not signed by a key it lists, and an agent outside loopback and this Mac\'s tailnet must be'
+  return undefined
+}
 
 /**
  * `add`'s one-screen summary (publishable-agent design §4): the fixed untrusted header, then one
  * labelled line per field. Card text is a quoted claim (`claim()`: cleaned, capped); an id, a
  * SemVer version, a skill id or a provider URL that passed its syntax check is printed bare; a
- * missing field says so. Signatures (#536), egress and residency (#535) add their lines later.
+ * missing field says so. `Signed` is signedLine()'s (#536); egress and residency (#535) add their lines later.
  */
 export function addSummary(card: unknown, s: SummaryOf): string {
   const c = obj(card)
@@ -153,7 +181,8 @@ export function addSummary(card: unknown, s: SummaryOf): string {
     UNTRUSTED,
     row('Agent', `${claim(c.name, 80) ?? 'no name'} ${version}, id ${s.profile?.id ?? 'not declared'}`),
     row('Publisher', org || url ? `${org ?? 'no organization'}, ${url ?? 'no URL'} (claimed)` : 'not declared'),
-    row('Keys', s.profile?.keys ? `${s.profile.keys} listed; meshctl does not check card signatures yet (#536)` : 'not declared'),
+    row('Signed', s.signed),
+    row('Keys', s.profile?.keys ? `${s.profile.keys} listed` : 'not declared'),
     row('Auth', authLine(c, s.token)),
     row('Card URL', s.cardUrl),
     row('Endpoint', `${s.endpoint} (${s.loopback ? 'loopback: meshctl call proves the agent\'s identity before it sends the token or any text, D17' : 'https on this Mac\'s tailnet, TLS verified'})`),
@@ -166,7 +195,7 @@ export function addSummary(card: unknown, s: SummaryOf): string {
 /** The card pin (`cardSha256`): SHA-256 of canonicalCard's form, as hex. */
 export const cardSha256 = (card: unknown): string => createHash('sha256').update(canonicalCard(card)).digest('hex')
 
-export type AddedCard = { card: Json; profile: Profile | undefined; reason?: undefined } | { card?: undefined; reason: string }
+export type AddedCard = { card: Json; profile: Profile | undefined; signatures: SignatureVerdict; reason?: undefined } | { card?: undefined; reason: string }
 
 /** Why one card GET failed, as a kind: `http` carries the status. */
 export type FetchFailure = { failed: 'refused' | 'timeout' | 'dns' | 'tls' | 'cut' | 'redirect' | 'too-large' | 'not-json' } | { failed: 'http'; status: number }
@@ -245,8 +274,9 @@ export function fetchCard(place: Place, timeoutMs = DEADLINE_MS, seams: FetchSea
 }
 
 /**
- * fetchCard, then the card must pass checkAddedCard and, when it carries the profile extension,
- * checkProfile (#537), whose id and key count come back with it.
+ * fetchCard, then the card must pass checkAddedCard, nest at most 32 deep and, when it carries the
+ * profile extension, pass checkProfile (#537), whose id and key count come back with it, and its
+ * signatures must be readable, with none by a listed key failing (#536).
  */
 export async function fetchAddedCard(place: Place, timeoutMs = DEADLINE_MS): Promise<AddedCard> {
   const got = await fetchCard(place, timeoutMs)
@@ -254,17 +284,15 @@ export async function fetchAddedCard(place: Place, timeoutMs = DEADLINE_MS): Pro
   const card = got.card
   const why = checkAddedCard(card)
   if (why) return { reason: `the card has ${why}` }
-  try {
-    canonicalCard(card)
-  } catch {
-    return { reason: 'the card URL sent a card nested too deeply' }
-  }
+  if (tooDeep(card)) return { reason: 'the card URL sent a card nested more than 32 deep' }
   const profile = checkProfile(card)
   if (profile && 'reason' in profile) return { reason: `the card has ${profile.reason}` }
-  return { card, profile: profile?.profile }
+  const signatures = signatureVerdict(card)
+  if ('refused' in signatures) return { reason: signatures.refused }
+  return { card, profile: profile?.profile, signatures }
 }
 
-export type AddedEntry = { card: string; endpoint: string; cardSha256: string; tokenFile: string | undefined; agentId: string | undefined } | 'invalid'
+export type AddedEntry = { card: string; endpoint: string; cardSha256: string; tokenFile: string | undefined; agentId: string | undefined; keyThumbprints: string[] | undefined } | 'invalid'
 
 /**
  * An `agents.<id>` value meshctl add wrote (it has a `card`), read back for status, remove and call:
@@ -278,8 +306,10 @@ export function addedEntry(id: string, value: unknown): AddedEntry | undefined {
   const pin = entry.cardSha256
   const token = entry.tokenFile
   const agentId = entry.agentId
+  const keys = entry.keyThumbprints
   if (agentId !== undefined && agentIdRefusal(agentId)) return 'invalid'
+  if (keys !== undefined && (!Array.isArray(keys) || !keys.length || keys.length > 4 || !keys.every((k) => typeof k === 'string' && THUMBPRINT.test(k)))) return 'invalid'
   if (idRefusal(id) || 'refused' in card || 'refused' in endpoint || card.origin !== endpoint.origin) return 'invalid'
   if (typeof pin !== 'string' || !/^[0-9a-f]{64}$/.test(pin) || (token !== undefined && typeof token !== 'string')) return 'invalid'
-  return { card: card.url, endpoint: endpoint.url, cardSha256: pin, tokenFile: token, agentId: agentId as string | undefined }
+  return { card: card.url, endpoint: endpoint.url, cardSha256: pin, tokenFile: token, agentId: agentId as string | undefined, keyThumbprints: keys as string[] | undefined }
 }

@@ -536,8 +536,12 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
   - `kit/executor.ts`: W1's executor with the artifact name, the extension metadata is read
     under and extra log fields as options; a completed result's `data` part is optional.
   - `kit/task-store.ts` (`OwnedTaskStore`), `kit/guard.ts` (`guardOutput`) and `kit/agent.ts`
-    (`readToken`, and `startKitAgent`: keys, signed card, front door and executor for a standalone
-    agent; web search wires the same pieces itself around its `mesh.json` gate and idle exit).
+    (`readToken`, and `startKitAgent` for a standalone agent: it refuses a token under 32
+    printable characters, installs `guardOutput` (once per process; its lines to the `write`
+    option or stderr; an uncaught error fails every running kit agent's open tasks `internal` and
+    exits 1), then loads the keys, signs the card and starts the front door and executor, all
+    before the port opens. The guard cannot be turned off. Web search wires the same pieces itself
+    around its `mesh.json` gate and idle exit, guard included).
   - Web search keeps its own exports (`rebuild`, `startFrontDoor`, `card`, `servedCard`,
     `createExecutor`) as thin wrappers: `REQUEST` with both extension URIs, `proofLabel:
     'web-search/v1'` and `unknownMethod: -32602` (refusal fixture 23 records it). Its tests and
@@ -549,7 +553,10 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
     key is `<mesh dir>/mesh/keys/echo.jwk`. `packages/mesh/test/kit.test.ts` spawns it from source
     with a key `meshctl key create` makes at test time and runs `meshctl check --strict
     --token-file --send` (root `src/mesh-check.ts` loaded at run time, as web search's test does)
-    in the `packages/mesh` CI job: every test passes, with no warning or info.
+    in the `packages/mesh` CI job: every test passes, with no warning or info, and the agent's
+    stderr holds only its own two lines. `test/kit-canary-child.ts` is a kit agent whose run calls
+    `console`, emits a warning, throws and leaves a rejection unhandled, each with a canary: stderr
+    holds only the guard's fixed lines, and the rejection exits 1.
 - **Web search W3: providers (#505; design §5, §6, §7.1, §9).** `createSearch()` in
   `web-search/search.ts` is one search as a function; W4's `createRun()` wraps it for the
   executor, and W5 builds both from the profile.

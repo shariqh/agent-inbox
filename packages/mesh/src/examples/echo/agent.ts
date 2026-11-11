@@ -5,7 +5,7 @@
 //   node dist/examples/echo/agent.js --port 4500 --token-file ~/echo.token
 import { fileURLToPath } from 'node:url'
 import { ConfigError } from '../../files.js'
-import { guardOutput, meshCard, readToken, startKitAgent } from '../../kit/index.js'
+import { meshCard, readToken, startKitAgent } from '../../kit/index.js'
 import type { KitAgent, Run } from '../../kit/index.js'
 import { meshDir } from '../../mesh-config.js'
 
@@ -27,7 +27,7 @@ export const echo: Run = async (input, _options, _signal, onState) => {
   return { state: 'completed', text: input.toUpperCase() }
 }
 
-/** `--port <1-65535> --token-file <path>`: 0 when it stops on a signal, 1 when it refuses to start, 4 on a usage error. */
+/** `--port <1-65535> --token-file <path>`: 0 when it stops on a signal, 1 when it refuses to start or fails, 4 on a usage error. */
 export async function main(args: string[], env: NodeJS.ProcessEnv, write: (text: string) => void): Promise<number> {
   const flag = (name: string): string | undefined => (args.indexOf(name) >= 0 ? args[args.indexOf(name) + 1] : undefined)
   const port = Number(flag('--port'))
@@ -36,13 +36,10 @@ export async function main(args: string[], env: NodeJS.ProcessEnv, write: (text:
     write('usage: echo --port <1-65535> --token-file <path>\n')
     return 4
   }
-  let agent: KitAgent | undefined
-  guardOutput((line) => write(`${line}\n`), () => {
-    void agent?.stop()
-    setTimeout(() => process.exit(1), 100)
-  })
+  let agent: KitAgent
   try {
-    agent = await startKitAgent({ agent: 'echo', meshDir: meshDir(env), port, token: readToken(tokenFile), card: echoCard, run: echo })
+    // startKitAgent installs the output guard, its lines to `write`, before the port opens
+    agent = await startKitAgent({ agent: 'echo', meshDir: meshDir(env), port, token: readToken(tokenFile), card: echoCard, run: echo, write: (line) => write(`${line}\n`) })
   } catch (error) {
     write(`echo: ${error instanceof ConfigError ? error.message : 'internal error'}\n`)
     return 1

@@ -19,8 +19,8 @@ inside a checkout of this repository. Use Node 24 (`fnm use 24`).
 | Signing | `kit/card.ts`, `card-signing.ts` | `servedCard()` signs the card once with each key `loadSigningKeys()` read at start (ES256 over the card's raw JCS form); the front door serialises it once and serves those exact bytes. With no key file the card is served unsigned. |
 | Executor | `kit/executor.ts` | Turns your `Run` function into the SDK's `AgentExecutor`. It never rejects: if your run throws, the task ends `FAILED` with the fixed reason `internal`, so no error message reaches the caller or a log. The artifact is published only with `COMPLETED`. |
 | Task store | `kit/task-store.ts` | Each task belongs to the token that created it, only the last 64 finished tasks are kept, and no task keeps `history`. |
-| Output guard | `kit/guard.ts` | `guardOutput()` replaces every `console` method and the process's error and warning handlers with fixed lines, so no request text, SDK error message or stack trace reaches stderr. |
-| Runner | `kit/agent.ts` | `startKitAgent()` loads the keys, signs the card and starts the front door over the executor. `readToken()` reads a 0600 token file. |
+| Output guard | `kit/guard.ts` | Built in and always on: `guardOutput()` replaces every `console` method and the process's error and warning handlers with fixed lines (`sdk: error`, `agent: uncaught Error`, `agent: warning Warning`, …), so no request text, SDK error message or stack trace reaches stderr. An uncaught error fails every open task with the reason `internal` and exits 1. |
+| Runner | `kit/agent.ts` | `startKitAgent()` refuses a token under 32 printable characters, installs the output guard, loads the keys, signs the card and starts the front door over the executor, all before the port opens. `readToken()` reads a 0600 token file under the same rule. |
 
 `kit/index.ts` exports all of these.
 
@@ -88,12 +88,18 @@ export const echo: Run = async (input, _options, _signal, onState) => {
   an error message in it.
 - `log` (optional) adds fixed counts and timings to the task's log entry.
 
-**3. `main`.** It parses `--port` and `--token-file`, guards the output, and starts:
+**3. `main`.** It parses `--port` and `--token-file` and starts:
 
 ```ts
-guardOutput((line) => write(`${line}\n`), () => { void agent?.stop(); setTimeout(() => process.exit(1), 100) })
-agent = await startKitAgent({ agent: 'echo', meshDir: meshDir(env), port, token: readToken(tokenFile), card: echoCard, run: echo })
+agent = await startKitAgent({ agent: 'echo', meshDir: meshDir(env), port, token: readToken(tokenFile), card: echoCard, run: echo, write: (line) => write(`${line}\n`) })
 ```
+
+`startKitAgent()` installs the output guard itself, before the port opens, and you cannot turn it
+off: from then on `console` and the process's error and warning handlers write only fixed lines,
+to stderr or to `write`. So a `console.error(input)` in your run, an error whose message holds the
+input, or a rejected promise nobody awaits never puts the input on stderr. Report what happened
+through the result's fixed `reason` and `log` instead. If you wire the pieces yourself, as web
+search does, call `guardOutput()` first.
 
 `agent: 'echo'` names the key files, `<mesh dir>/mesh/keys/echo.jwk` and, while you rotate,
 `echo-next.jwk`. The mesh dir is `AGENT_INBOX_MESH_DIR` if set, otherwise `~/.agent-inbox`.
@@ -159,6 +165,8 @@ moves and key rotation.
 with a key `meshctl key create` makes at test time and a scratch mesh dir. It then runs
 `meshctl check --strict --token-file … --send …` against it and expects every test to pass. Do
 the same for your agent: a key made at test time keeps every private key out of the repository.
+The same file runs a kit agent whose run calls `console`, throws and leaves a rejection unhandled
+with a canary in each, and checks that stderr holds only the guard's fixed lines.
 
 ## Your own extension
 

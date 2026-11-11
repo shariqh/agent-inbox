@@ -12,6 +12,12 @@ import { Readable } from 'node:stream'
 export const CARD_PATH = '/.well-known/agent-card.json'
 export class IdentityError extends Error {}
 
+// Web search's extension URIs, preferred first (publishable-agent design §6, C7): the card declares
+// the Pages URI; the client accepts a card that declares either and sends metadata under that one,
+// and the front door reads metadata under either. C10 drops the old URN.
+export const WEB_SEARCH_EXTENSION = 'https://shariqh.github.io/agent-inbox/ext/web-search/v1'
+export const WEB_SEARCH_EXTENSIONS: readonly string[] = [WEB_SEARCH_EXTENSION, 'urn:agent-inbox:ext:web-search:v1']
+
 export const proofFor = (token: string, nonce: string, agent = 'web-search'): string =>
   createHmac('sha256', token).update(`${agent}/v1\n${nonce}`).digest('base64url')
 
@@ -124,11 +130,19 @@ export function identityFetch(o: { token: string; endpoint: string; agent?: stri
   }
 }
 
-/** The identity-checked card, its hash, and the fetch that proved it. */
-export async function resolveCard(endpoint: string, token: string): Promise<{ card: Record<string, unknown>; cardSha256: string; fetch: typeof fetch }> {
+/** The web search extension URI `card` declares, the preferred one when it declares both, or undefined. */
+export function webSearchExtension(card: unknown): string | undefined {
+  const caps = card && typeof card === 'object' ? (card as Json).capabilities : undefined
+  const exts = caps && typeof caps === 'object' ? (caps as Json).extensions : undefined
+  const uris = Array.isArray(exts) ? exts.map((e) => (e && typeof e === 'object' ? (e as Json).uri : undefined)) : []
+  return WEB_SEARCH_EXTENSIONS.find((uri) => uris.includes(uri))
+}
+
+/** The identity-checked card, its hash, the web search extension URI it declares (metadata goes under it), and the fetch that proved it. */
+export async function resolveCard(endpoint: string, token: string): Promise<{ card: Record<string, unknown>; cardSha256: string; extension: string | undefined; fetch: typeof fetch }> {
   const fetch = identityFetch({ token, endpoint })
   const res = await fetch(new URL(CARD_PATH, endpoint))
   if (!res.ok) throw new IdentityError('the card request failed')
   const card = (await res.json()) as Record<string, unknown>
-  return { card, cardSha256: cardHash(card), fetch }
+  return { card, cardSha256: cardHash(card), extension: webSearchExtension(card), fetch }
 }

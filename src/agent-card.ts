@@ -11,14 +11,18 @@ type Json = Record<string, unknown>
 const obj = (v: unknown): Json => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Json) : {})
 const list = (v: unknown): Json[] => (Array.isArray(v) ? v.map(obj) : [])
 
-// Each agent's extension URIs, preferred first. request-post's moves to the Pages URI
-// (publishable-agent design §6, C6): the client accepts either, and a card that declares both is
-// read under the Pages one. C10 drops the old URN.
+// Each agent's extension URIs, preferred first. request-post's (C6) and web search's (C7) move to
+// the Pages URI (publishable-agent design §6): the client accepts either, and a card that declares
+// both is read under the Pages one. C10 drops the old URNs.
 const EXPECT = {
   unslop: { skills: ['unslop'], extensions: ['urn:agent-inbox:ext:unslop:v1'] },
   'request-post': {
     skills: ['request-post', 'request-post-status'],
     extensions: ['https://shariqh.github.io/agent-inbox/ext/request-post/v1', 'urn:agent-inbox:ext:request-post:v1'],
+  },
+  'web-search': {
+    skills: ['web-search'],
+    extensions: ['https://shariqh.github.io/agent-inbox/ext/web-search/v1', 'urn:agent-inbox:ext:web-search:v1'],
   },
 }
 

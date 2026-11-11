@@ -9,6 +9,7 @@ import { removeScratchDirs, scratchDir } from './scratch.js'
 
 const REPO = new URL('..', import.meta.url).pathname
 const PROFILE = 'https://shariqh.github.io/agent-inbox/ext/profile/v1'
+const WEB_SEARCH = 'https://shariqh.github.io/agent-inbox/ext/web-search/v1'
 
 afterEach(() => removeScratchDirs())
 
@@ -17,11 +18,11 @@ const files = (dir: string): string[] => readdirSync(dir, { recursive: true, wit
 
 describe('the extension specs site (#537)', () => {
   it('builds exactly the index and each spec at its extension-less path, from docs/ext alone', () => {
-    expect(readdirSync(join(REPO, 'docs', 'ext'))).toEqual(['profile-v1.md'])
+    expect(readdirSync(join(REPO, 'docs', 'ext')).sort()).toEqual(['profile-v1.md', 'web-search-v1.md'])
     const out = join(scratchDir('pages-'), '_site')
     writeSite(REPO, out)
     // Pages serves ext/profile/v1.html at …/ext/profile/v1 with no redirect, and the folder's index at …/v1/
-    expect(files(out)).toEqual(['ext/profile/v1.html', 'ext/profile/v1/index.html', 'index.html'])
+    expect(files(out)).toEqual(['ext/profile/v1.html', 'ext/profile/v1/index.html', 'ext/web-search/v1.html', 'ext/web-search/v1/index.html', 'index.html'])
     const spec = readFileSync(join(out, 'ext/profile/v1.html'), 'utf8')
     expect(readFileSync(join(out, 'ext/profile/v1/index.html'), 'utf8')).toBe(spec)
     expect(spec).toContain('<title>Agent profile extension, version 1</title>')
@@ -31,6 +32,12 @@ describe('the extension specs site (#537)', () => {
     expect(readFileSync(join(out, 'index.html'), 'utf8')).toContain(`<a href="ext/profile/v1">Agent profile extension, version 1</a>: <code>${PROFILE}</code>`)
     // the spec names the URI the code checks
     expect(readFileSync(join(REPO, 'src', 'agent-card.ts'), 'utf8')).toContain(`'${PROFILE}'`)
+    // web search's extension (C7): its spec at the URI its card declares, which the code checks too
+    const webSearch = readFileSync(join(out, 'ext/web-search/v1.html'), 'utf8')
+    expect(webSearch).toContain('<title>Web search extension, version 1</title>')
+    expect(webSearch).toContain(`<code>${WEB_SEARCH}</code>`)
+    expect(readFileSync(join(out, 'index.html'), 'utf8')).toContain(`<a href="ext/web-search/v1">Web search extension, version 1</a>: <code>${WEB_SEARCH}</code>`)
+    for (const code of ['src/agent-card.ts', 'packages/mesh/src/a2a-client.ts']) expect(readFileSync(join(REPO, code), 'utf8'), code).toContain(`'${WEB_SEARCH}'`)
   })
 
   it('refuses any other file in docs/ext, and an output folder that is not empty', () => {

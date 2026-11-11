@@ -26,6 +26,12 @@ const KEY_FILE_MAX = 4096
 /** One signing key: its RFC 7638 thumbprint, which is the signature's `kid`, and the private key. */
 export type SigningKey = { kid: string; key: KeyObject }
 
+/** The public half of a signing key as the card's profile lists it: `kty`, `crv`, `x` and `y` only. */
+export function publicJwk({ key }: SigningKey): Json {
+  const jwk = createPublicKey(key).export({ format: 'jwk' }) as Json
+  return { kty: jwk.kty, crv: jwk.crv, x: jwk.x, y: jwk.y }
+}
+
 /** RFC 7638 for a P-256 public key: SHA-256 of `{crv, kty, x, y}` in that order, as base64url. */
 export const thumbprint = (jwk: Json): string =>
   createHash('sha256').update(JSON.stringify({ crv: jwk.crv, kty: jwk.kty, x: jwk.x, y: jwk.y })).digest('base64url')

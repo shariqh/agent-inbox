@@ -9,6 +9,8 @@
 // snake_case aliases, `tenant`, continuations and push configs are unreachable.
 // No Task response carries `history`: the task store keeps none, and sends and GetTask
 // also ask for none with the one field the front door adds, `historyLength: 0`.
+// Message metadata is read under either extension URI, the Pages one or the old URN
+// (publishable-agent design §6, C7), and handed to the SDK under the Pages one.
 // It shares no code with unslop's a2a.ts.
 import { timingSafeEqual } from 'node:crypto'
 import { createServer } from 'node:http'
@@ -18,10 +20,10 @@ import { AgentCard, TaskState } from '@a2a-js/sdk'
 import type { ListTasksResponse, Task } from '@a2a-js/sdk'
 import { DefaultRequestHandler, JsonRpcTransportHandler, ServerCallContext } from '@a2a-js/sdk/server'
 import type { AgentExecutor, TaskStore } from '@a2a-js/sdk/server'
-import { CARD_PATH, proofFor } from '../a2a-client.js'
+import { CARD_PATH, WEB_SEARCH_EXTENSION, WEB_SEARCH_EXTENSIONS, proofFor } from '../a2a-client.js'
 import { ConfigError } from '../files.js'
 
-export const EXTENSION = 'urn:agent-inbox:ext:web-search:v1'
+export const EXTENSION = WEB_SEARCH_EXTENSION
 const BODY_MAX = 16 * 1024
 export const MAX_CONNECTIONS = 16
 const KEEP = 64
@@ -56,8 +58,10 @@ export function rebuild(body: unknown): Json | undefined {
   const part: unknown = Array.isArray(m.parts) && m.parts.length === 1 ? m.parts[0] : undefined
   if (!only(part, ['text', 'mediaType']) || typeof part.text !== 'string' || (part.mediaType !== undefined && part.mediaType !== 'text/plain')) return
   const meta = m.metadata ?? {}
-  const ext = isObj(meta) ? (meta[EXTENSION] ?? {}) : undefined
-  if (!only(meta, [EXTENSION]) || !only(ext, Object.keys(META)) || !Object.entries(ext).every(([k, v]) => META[k]!(v))) return
+  // at most one key, under either URI; both at once is ambiguous and refused
+  const keys = isObj(meta) ? Object.keys(meta) : []
+  const ext = isObj(meta) && keys.length <= 1 ? (meta[keys[0] ?? EXTENSION] ?? {}) : undefined
+  if (!only(meta, [...WEB_SEARCH_EXTENSIONS]) || !only(ext, Object.keys(META)) || !Object.entries(ext).every(([k, v]) => META[k]!(v))) return
   if (!only(c, ['returnImmediately', 'acceptedOutputModes']) || (c.returnImmediately !== undefined && c.returnImmediately !== false)) return
   if (c.acceptedOutputModes !== undefined && !texts(c.acceptedOutputModes, 8)) return
   const metadata = m.metadata === undefined ? {} : { metadata: { [EXTENSION]: structuredClone(ext) } }

@@ -9,7 +9,7 @@ ranges and loopback only), tokens and page text are not real.
 
 | File | Holds |
 |---|---|
-| `card.json`, `card.sha256` | The card as W1 serves it, and its hash: SHA-256 of the JCS form of the card as received, with `signatures` and every `supportedInterfaces[].url` removed and no SDK normalisation (§4.1, amended by #556) |
+| `card.json`, `card.sha256` | The card as W1 serves it, signed as the agent signs it at start (C7), and its hash: SHA-256 of the JCS form of the card as received, with `signatures` and every `supportedInterfaces[].url` removed and no SDK normalisation (§4.1, amended by #556). The hash covers the profile's `keys`, so it changes with the key |
 | `exchanges/*.json` | One request and response (or stream of events) per §4.4 row, **recorded from W1's server**, with the exit a client gives it; GetTask; the identity challenge and proof. Exits 14 and 4 are client-side notes. `01-answer.json` is the accepted `returnImmediately: false` |
 | `refusals/*.json` | Requests the front door refuses before the SDK, with the JSON-RPC error each gets |
 | `providers/*.json` | Neutral shapes of SearXNG's `/search?format=json` and Ollama's `web_search` and `web_fetch` answers, their 429 and 5xx, for W3 |
@@ -21,6 +21,10 @@ ranges and loopback only), tokens and page text are not real.
 
 ## What W2 pins
 
+- **The extension URI (C7).** The card declares `https://shariqh.github.io/agent-inbox/ext/web-search/v1`
+  ([spec](../../../docs/ext/web-search-v1.md)); a client accepts a card declaring that or the old
+  `urn:agent-inbox:ext:web-search:v1`, and the agent reads message metadata under either, never
+  both. `exchanges/03-no-results.json` uses the old URN.
 - **No `history`.** No Task response carries the caller's message or the status messages, for
   any method, `CancelTask` included: the agent's task store keeps no history, and the front door
   also adds `historyLength: 0` to every send and to `GetTask`. A caller's own `historyLength` is
@@ -40,7 +44,11 @@ The exchanges and the card are recorded, not written: `packages/mesh/test/web-se
 starts W1's front door and executor on loopback, sends each request, and replaces ids,
 timestamps and the port with placeholders. `packages/mesh/test/web-search-fixtures.test.ts`
 re-records in memory and fails if a committed file differs, so a change in the SDK's or the front
-door's output shows up as a fixture diff. To re-record (Node 24):
+door's output shows up as a fixture diff. The one exception is the card's signing key: each
+recording makes a P-256 key, signs the card with it and never writes it, so the profile's `keys`,
+the card's `signatures` (in `card.json` and `exchanges/30-identity.json`) and `card.sha256` differ
+between recordings and the comparison leaves them out. No file here holds a private key. To
+re-record (Node 24):
 
 ```sh
 cd packages/mesh && node --import ./test/ts-hooks.mjs test/web-search-record.ts write

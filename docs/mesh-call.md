@@ -104,7 +104,8 @@ a2a --credential-helper 127.0.0.1=$HOME/bin/a2a-web-search-token send -a http://
 - `send`, `send --stream`, `task get` and `task cancel` work. Web search's own options go in the
   message's metadata, which `--metadata` does not reach (it fills the request's): use
   `--request-payload` with a full request whose `message.metadata` holds
-  `urn:agent-inbox:ext:web-search:v1`.
+  `https://shariqh.github.io/agent-inbox/ext/web-search/v1` (the old
+  `urn:agent-inbox:ext:web-search:v1` still works; not both).
 - Web search refuses by design, with -32602: `--async`, `--history`, `--tenant`, `--context-id`,
   `--task-id`, `--metadata`, `task list`, `task subscribe` and push configs. `a2a` 0.4.0 prints
   nothing and exits 0 when a `--stream` send or `task subscribe` is refused, so check the output.

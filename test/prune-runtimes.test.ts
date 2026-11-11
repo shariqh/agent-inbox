@@ -58,11 +58,18 @@ const { createSetupProcessRunner } = createRequire(import.meta.url)('../electron
 
 // Versions no other test file stages: a runtime id is content-derived, and a
 // process another file runs from a runtime with the same id would count here.
-const OLD = '1.2.2-p294'
-const OLDER_HOOKS = '1.2.4-p294'
-const CHANGED = '1.2.3-p294'
-const EDITED = '1.2.1-p294'
-const APP = '1.7.0-p294'
+// The worker's pid keeps them apart from this same file running at the same
+// time in another checkout's suite, as concurrent builders do (#471).
+const RUN = `r${process.pid}`
+const OLD = `1.2.2-p294.${RUN}`
+const OLDER_HOOKS = `1.2.4-p294.${RUN}`
+const CHANGED = `1.2.3-p294.${RUN}`
+const EDITED = `1.2.1-p294.${RUN}`
+const APP = `1.7.0-p294.${RUN}`
+
+// #471: these tests run prune-runtimes.sh (a node per check, and ps) two or
+// three times in a row, which took 10-15 s under full-suite load
+const PRUNE_RUNS_MS = 60_000
 
 const live = new Set<ChildProcess>()
 
@@ -110,7 +117,10 @@ function unused(f: Fixture, extra: string[] = []): Verdicts {
 }
 
 function verdictOf(f: Fixture, runtimeId: string): Verdicts['runtimes'][number] | undefined {
-  return unused(f).runtimes.find((runtime) => runtime.runtimeId === runtimeId)
+  const verdicts = unused(f)
+  // an unknown listing has no runtimes: say why rather than report undefined
+  expect(verdicts.status, verdicts.reason).toBe('ok')
+  return verdicts.runtimes.find((runtime) => runtime.runtimeId === runtimeId)
 }
 
 function references(f: Fixture, runtimeId: string): { status: string; matches: Array<{ file: string }> } {
@@ -306,7 +316,7 @@ describe('what counts as using a runtime (#294)', () => {
   })
 })
 
-describe('the running-process check (#294)', () => {
+describe('the running-process check (#294)', { timeout: PRUNE_RUNS_MS }, () => {
   // Real-shaped ids from the manifest tool itself: a prerelease version made
   // of one id's tail gives a second id that begins with the first.
   function prefixPair(f: Fixture): { short: StagedRuntime; long: StagedRuntime } {
@@ -415,7 +425,7 @@ describe('the running-process check (#294)', () => {
   })
 })
 
-describe('prune-runtimes.sh (#294)', () => {
+describe('prune-runtimes.sh (#294)', { timeout: PRUNE_RUNS_MS }, () => {
   it('a dry run lists what --apply would remove and changes nothing: no lock, no trash cleanup, no write', () => {
     const f = fixture()
     const old = installRuntime(f.h, OLD)

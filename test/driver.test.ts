@@ -35,7 +35,8 @@ afterEach(() => {
   removeScratchDirs()
 })
 
-async function until<T>(read: () => T | undefined | false | null, label: string, ms = 3000): Promise<T> {
+// #471: returns as soon as `read` holds, so a deadline sized for a loaded machine costs nothing
+async function until<T>(read: () => T | undefined | false | null, label: string, ms = 15_000): Promise<T> {
   const deadline = Date.now() + ms
   for (;;) {
     const value = read()
@@ -895,8 +896,12 @@ describe('app launches: the row, park and resume (§6, §7)', () => {
     expect(h.driver.resumableSession()).toBeNull()
     h.driver.stop()
     await h.done
-    const later = start({ app: false, script: ended, timing: { idleMs: 60 } })
-    expect(await later.done).toBe('idle')
+    // #471: not a 60 ms idle limit, which counts from the driver's start and so,
+    // under load, could end the session before its task was ever sent
+    const later = start({ app: false, script: ended })
+    await until(() => later.log.find((e) => e.event === 'turn_end' && e.kind === 'task'), 'the task turn')
+    later.driver.stop()
+    expect(await later.done).toBe('stopped')
     expect(later.driver.resumableSession()).toBe(later.fake.session)
   })
 

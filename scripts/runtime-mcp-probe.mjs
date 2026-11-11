@@ -56,6 +56,9 @@ function probe(runtime, timeoutMs) {
   child.stderr.setEncoding('utf8')
   child.stderr.on('data', (chunk) => { if (stderr.length < STDERR_CAP) stderr += chunk })
   const closed = new Promise((done) => child.once('close', done))
+  // A server that dies first makes a write here fail with EPIPE. Its exit is
+  // the failure to report, with its stderr, so the write error is not (#471).
+  child.stdin.on('error', () => {})
 
   const waiting = new Map()
   let buffered = ''

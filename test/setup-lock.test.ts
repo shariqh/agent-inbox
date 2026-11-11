@@ -12,12 +12,17 @@ import { createServer } from 'node:net'
 import { dirname, join, resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { removeScratchDirs, scratchDir } from './scratch.js'
+import { pidIn } from './wait.js'
 
 const REPO = resolve(import.meta.dirname, '..')
 const LEASE = join(REPO, 'scripts', 'setup-lock.sh')
 const AGENT_INSTALLER = join(REPO, 'scripts', 'install-agents.sh')
 const HOOK_INSTALLER = join(REPO, 'scripts', 'install-hooks.sh')
 const CALLER = 'setup-lock-test'
+// #471: a bash start or a reaped pid can take seconds under full-suite load.
+// Each wait returns as soon as its condition holds; none of these is a window
+// a test relies on expiring (the lock is taken with -t 0 / -n, never waited for).
+const LOADED_MS = 10_000
 const BUSY = `${CALLER}: another setup is already running`
 
 interface ShellResult {
@@ -67,7 +72,7 @@ function shell(
     ['-c', `set -u\n${body}`, 'setup-lock-shell', LEASE],
     {
       encoding: 'utf8',
-      timeout: options.timeout ?? 3_000,
+      timeout: options.timeout ?? LOADED_MS,
       env: {
         ...process.env,
         HOME: home,
@@ -90,7 +95,7 @@ function acquireBody(extra = ''): string {
 }
 
 async function waitForFile(path: string): Promise<void> {
-  const deadline = Date.now() + 3_000
+  const deadline = Date.now() + LOADED_MS
   while (!existsSync(path)) {
     if (Date.now() >= deadline) throw new Error(`timed out waiting for ${path}`)
     await new Promise((resolveWait) => setTimeout(resolveWait, 20))
@@ -103,7 +108,7 @@ async function waitForExit(child: ChildProcess): Promise<void> {
 }
 
 async function waitForGone(pid: number): Promise<void> {
-  const deadline = Date.now() + 3_000
+  const deadline = Date.now() + LOADED_MS
   while (true) {
     try {
       process.kill(pid, 0)
@@ -309,7 +314,7 @@ describe('shared Setup lock lease', () => {
     const made = spawnSync('mkfifo', [fifo], { encoding: 'utf8' })
     expect(made.status, made.stderr).toBe(0)
 
-    const result = shell(acquireBody(), { home, lock: fifo, timeout: 750 })
+    const result = shell(acquireBody(), { home, lock: fifo })
 
     expect((result.error as NodeJS.ErrnoException | undefined)?.code).not.toBe('ETIMEDOUT')
     expect(result.status).toBe(1)
@@ -386,8 +391,7 @@ describe('shared Setup lock lease', () => {
       lock,
     )
     await waitForFile(parentMarker)
-    await waitForFile(childMarker)
-    const childPid = Number(readFileSync(childMarker, 'utf8').trim())
+    const childPid = await pidIn(childMarker, LOADED_MS)
     livePids.add(childPid)
 
     killPid(holder.pid!)
@@ -420,8 +424,7 @@ describe('shared Setup lock lease', () => {
       true,
     )
     await waitForFile(parentMarker)
-    await waitForFile(childMarker)
-    const childPid = Number(readFileSync(childMarker, 'utf8').trim())
+    const childPid = await pidIn(childMarker, LOADED_MS)
 
     killGroup(holder.pid!)
     await waitForExit(holder)
@@ -465,7 +468,7 @@ describe('installer helper loading', () => {
 
       const result = spawnSync('/bin/bash', [copied, ...args], {
         encoding: 'utf8',
-        timeout: 3_000,
+        timeout: LOADED_MS,
         env: {
           ...process.env,
           HOME: home,

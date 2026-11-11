@@ -12,6 +12,7 @@ import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import { openDb, listItems, listBoards, getBoard, updateBoardRow, annotateBoardRow, markRowHandled, listPendingRows, pinBoardRow, pinItem, replyItem, listActivity, listActivitySpans, upsertIssueSnapshot, insertItem, getItem, upsertBoard, claimHookWatch, releaseHookWatch, isDrivenSession } from '../src/store.js'
 import { createViewer } from '../src/viewer.js'
 import { scratchDir } from './scratch.js'
+import { waitUntil } from './wait.js'
 
 const REPO_ROOT = new URL('..', import.meta.url).pathname
 
@@ -255,13 +256,17 @@ describe('mcp round-trip', () => {
     try {
       await call('register', { project: 'trace', stream: 'main' })
       for (let i = 0; i < 3; i++) await call('pending', {})
+      const lastCallFrom = Math.floor(Date.now() / 60_000)
       await call('board_upsert', { title: 'plan', rows: [{ label: 'a', status: 'tracked' }] })
       const [live] = listActivity(db)
+      const readAt = Math.floor(Date.now() / 60_000)
       const total = (live!.calls ?? []).reduce((sum, count) => sum + count, 0)
       // register, three polls and the upsert; a call that lands on the next
       // minute starts a new bucket, so the sum is what counts
       expect(total).toBe(5)
-      expect(live!.calls_at).toBe(Math.floor(Date.now() / 60_000))
+      // the last call's minute, which a slow call or read can leave behind the clock (#471)
+      expect(live!.calls_at).toBeGreaterThanOrEqual(lastCallFrom)
+      expect(live!.calls_at).toBeLessThanOrEqual(readAt)
       expect(getBoard(db, 'trace', 'plan')!.session).toBe(live!.session)
 
       // a board_row from another server process moves the plan to that session
@@ -614,10 +619,10 @@ describe('mcp round-trip', () => {
     })
     const client = new Client({ name: 'claude-code', version: '1.0.0' })
     await client.connect(transport)
-    await new Promise((r) => setTimeout(r, 500))
 
     // presence appears with NO tool calls at all — the session itself is the row
-    let live = listActivity(openDb(dbPath))
+    const presence = openDb(dbPath)
+    let live = await waitUntil(() => { const rows = listActivity(presence); return rows.length > 0 && rows }, 'the presence row')
     expect(live).toHaveLength(1)
     expect(live[0]!.idle).toBe(true)
     expect(live[0]!.agent).toBe('claude-code')
@@ -663,8 +668,9 @@ describe('mcp round-trip', () => {
     expect(live[0]).toMatchObject(build)
 
     await client.close()
-    await new Promise((r) => setTimeout(r, 500))
-    expect(listActivity(openDb(dbPath))).toHaveLength(0) // process exit ends the row
+    // process exit ends the row
+    await waitUntil(() => listActivity(presence).length === 0, 'the presence row to end with the process')
+    presence.close()
   }, 20000)
 
   // Issue #162. Closing a terminal tab or window delivers SIGHUP, and Node's default
@@ -1633,12 +1639,13 @@ describe('mcp round-trip', () => {
     })
     const client = new Client({ name: 'claude-code', version: '1.0.0' })
     await client.connect(transport)
-    await new Promise((r) => setTimeout(r, 500)) // presence registers on the initialized notification
+    // presence registers on the initialized notification
+    const db = openDb(dbPath)
+    await waitUntil(() => listActivity(db).length > 0, 'the presence row')
 
     await client.callTool({ name: 'flag', arguments: { kind: 'question', title: 'which storage?', ...QUESTION_SHAPE } })
 
     // read BEFORE closing — process exit ends the activity row
-    const db = openDb(dbPath)
     const live = listActivity(db)
     expect(live).toHaveLength(1)
     const item = listItems(db).find((i) => i.title === 'which storage?')!

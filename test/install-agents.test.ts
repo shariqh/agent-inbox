@@ -16,6 +16,7 @@ import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { afterEach, describe, expect, it } from 'vitest'
 import { readCliShim } from '../src/agent-hosts.js'
 import { removeScratchDirs, scratchDir } from './scratch.js'
+import { pidIn } from './wait.js'
 
 // A signal-driven rollback runs each undo step as its own Node process through
 // scripts/run-isolated.mjs (#211), and each step may take up to its own 30 s
@@ -238,7 +239,7 @@ async function waitFor(path: string, timeoutMs = 3000): Promise<void> {
 }
 
 async function waitForGone(pid: number): Promise<void> {
-  const deadline = Date.now() + 3000
+  const deadline = Date.now() + 15_000
   while (true) {
     try {
       process.kill(pid, 0)
@@ -647,7 +648,7 @@ describe('agent setup installer', () => {
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     await waitFor(join(f.state, 'claude.hanging'))
-    const mutatorPid = Number(readFileSync(join(f.state, 'claude.hanging-pid'), 'utf8').trim())
+    const mutatorPid = await pidIn(join(f.state, 'claude.hanging-pid'))
     process.kill(-first.pid!, 'SIGKILL')
     await new Promise<number | null>((resolveCode) => first.on('close', resolveCode))
     await waitForGone(mutatorPid)
@@ -1490,8 +1491,7 @@ describe('agent setup installer: losing its parent mid-install (#208)', () => {
     try {
       await waitFor(join(f.state, 'copilot.hanging'), 10_000)
       process.kill(-installer.child.pid!, 'SIGTERM')
-      await waitFor(join(f.state, 'claude.removing'), 10_000)
-      const cliPid = Number(readFileSync(join(f.state, 'claude.removing'), 'utf8'))
+      const cliPid = await pidIn(join(f.state, 'claude.removing'))
       // A second Ctrl-C, then Setup's cancel, reach the whole group before
       // Claude's CLI has removed anything.
       process.kill(-installer.child.pid!, 'SIGINT')
@@ -1539,7 +1539,7 @@ describe('agent setup installer: losing its parent mid-install (#208)', () => {
     expect(Date.now() - started).toBeLessThan(12_000)
     // The hung CLI was stopped, and the registration it never removed is
     // reported, not claimed as rolled back.
-    await waitForGone(Number(readFileSync(join(f.state, 'claude.remove-pid'), 'utf8')))
+    await waitForGone(await pidIn(join(f.state, 'claude.remove-pid')))
     expect(existsSync(join(f.state, 'claude'))).toBe(true)
     const warning = 'install-agents: warning: could not roll back claude MCP registration: ' +
       'its mcp remove did not finish within 400 ms'
@@ -1614,12 +1614,11 @@ describe('agent setup installer: losing its parent mid-install (#208)', () => {
     f.env.FAIL_ADD = 'copilot'
     const installer = startInstaller(f, ['--apply'])
     try {
-      await waitFor(join(f.state, 'claude.removing'), 10_000)
-      const cliPid = Number(readFileSync(join(f.state, 'claude.removing'), 'utf8'))
+      const cliPid = await pidIn(join(f.state, 'claude.removing'))
       // The shell dies first. Neither the helper still waiting in its group
       // nor the undo holds the pipes Setup reads, so Setup sees them close.
       process.kill(installer.child.pid!, 'SIGKILL')
-      const closed = await Promise.race([installer.exited, sleep(3000).then(() => 'pipes still open' as const)])
+      const closed = await Promise.race([installer.exited, sleep(10_000).then(() => 'pipes still open' as const)])
       expect(closed).toEqual({ code: null, signal: 'SIGKILL' })
       // Then Setup's forced stop reaches the rest of the group.
       process.kill(-installer.child.pid!, 'SIGKILL')
@@ -1644,8 +1643,7 @@ describe('agent setup installer: losing its parent mid-install (#208)', () => {
     f.env.AGENT_INBOX_ROLLBACK_STEP_TIMEOUT_MS = '1500'
     const installer = startInstaller(f, ['--apply'])
     try {
-      await waitFor(join(f.state, 'claude.remove-pid'), 10_000)
-      const hungPid = Number(readFileSync(join(f.state, 'claude.remove-pid'), 'utf8'))
+      const hungPid = await pidIn(join(f.state, 'claude.remove-pid'))
       // Setup's forced stop: SIGKILL to the installer's whole process group.
       process.kill(-installer.child.pid!, 'SIGKILL')
       expect(await installer.exited).toEqual({ code: null, signal: 'SIGKILL' })
@@ -1907,8 +1905,7 @@ describe('rollback step isolation (#211)', () => {
     const helper = spawn(process.execPath, [ISOLATE, '--', ...command.args], { detached: true, stdio: 'ignore' })
     const exit = exitOf(helper)
     try {
-      await waitFor(command.pidFile, 10_000)
-      const commandPid = Number(readFileSync(command.pidFile, 'utf8'))
+      const commandPid = await pidIn(command.pidFile)
       for (const signal of ['SIGHUP', 'SIGINT', 'SIGQUIT', 'SIGALRM', 'SIGTERM', 'SIGXCPU'] as const) {
         process.kill(-helper.pid!, signal)
       }
@@ -1937,11 +1934,10 @@ describe('rollback step isolation (#211)', () => {
     helper.stderr!.resume()
     const closed = exitOf(helper, 'close')
     try {
-      await waitFor(command.pidFile, 10_000)
-      const commandPid = Number(readFileSync(command.pidFile, 'utf8'))
+      const commandPid = await pidIn(command.pidFile)
       // Setup's forced stop: SIGKILL to the whole process group.
       process.kill(-helper.pid!, 'SIGKILL')
-      expect(await Promise.race([closed, sleep(3000).then(() => 'pipes still open')]))
+      expect(await Promise.race([closed, sleep(10_000).then(() => 'pipes still open')]))
         .toEqual({ code: null, signal: 'SIGKILL' })
       expect(alive(commandPid)).toBe(true)
       writeFileSync(command.releaseFile, '')
@@ -1958,8 +1954,7 @@ describe('rollback step isolation (#211)', () => {
       stdio: 'ignore',
     })
     try {
-      await waitFor(command.pidFile, 10_000)
-      const commandPid = Number(readFileSync(command.pidFile, 'utf8'))
+      const commandPid = await pidIn(command.pidFile)
       // Setup's forced stop kills the helper with the installer's group.
       process.kill(-helper.pid!, 'SIGKILL')
       await sleep(300)
@@ -2065,7 +2060,8 @@ describe('the meshctl shim (#540)', () => {
     expect(readCliShim(f.home)).toMatchObject({ kind: 'checkout', command: 'export PATH="$HOME/.agent-inbox/bin:$PATH"' })
   })
 
-  it('reports a file it did not write, or a symlink, and leaves it alone', () => {
+  // eight installer runs in a row: 16 s under full-suite load (#471)
+  it('reports a file it did not write, or a symlink, and leaves it alone', { timeout: 60_000 }, () => {
     for (const plant of ['file', 'symlink'] as const) {
       const f = fixture()
       withMeshctl(f)

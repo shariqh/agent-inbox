@@ -32,17 +32,19 @@ export function removeScratchDirs(): void {
 }
 
 /**
- * The disk images attached from a file inside `dir` (macOS only), with their
- * whole-disk devices. An image can be attached without a volume: `hdiutil create
- * -srcfolder` has left its write-once image that way, so the mount table misses
- * it and Finder cannot show it to eject. `dir` matches with or without the
- * /private prefix $TMPDIR resolves to.
+ * The disk images attached from a file inside `dir`, or inside any directory
+ * when given a list (macOS only), with their whole-disk devices. One `hdiutil
+ * info` call covers every directory. An image can be attached without a volume: `hdiutil
+ * create -srcfolder` has left its write-once image that way, so the mount table
+ * misses it and Finder cannot show it to eject. A directory matches with or
+ * without the /private prefix $TMPDIR resolves to.
  */
-export function attachedImagesUnder(dir: string): Array<{ path: string; device: string }> {
-  if (process.platform !== 'darwin') return []
+export function attachedImagesUnder(dir: string | readonly string[]): Array<{ path: string; device: string }> {
+  const dirs = typeof dir === 'string' ? [dir] : dir
+  if (process.platform !== 'darwin' || dirs.length === 0) return []
   const info = spawnSync('/usr/bin/hdiutil', ['info'], { encoding: 'utf8', timeout: 60_000 })
   if (info.status !== 0 || typeof info.stdout !== 'string') return []
-  const prefixes = [`${dir}/`, dir.startsWith('/private/') ? `${dir.slice('/private'.length)}/` : `/private${dir}/`]
+  const prefixes = dirs.flatMap((d) => [`${d}/`, d.startsWith('/private/') ? `${d.slice('/private'.length)}/` : `/private${d}/`])
   return info.stdout.split(/^=+$/m).flatMap((block) => {
     const path = /^image-path\s*:\s*(.+)$/m.exec(block)?.[1]?.trim()
     const device = /^(\/dev\/disk\d+)\s/m.exec(block)?.[1]
@@ -51,15 +53,15 @@ export function attachedImagesUnder(dir: string): Array<{ path: string; device: 
 }
 
 /** Force-detach every image attached from a file inside `dir`; returns their paths. */
-export function detachImagesUnder(dir: string): string[] {
+export function detachImagesUnder(dir: string | readonly string[]): string[] {
   return attachedImagesUnder(dir).map(({ path, device }) => {
     spawnSync('/usr/bin/hdiutil', ['detach', '-force', device], { stdio: 'ignore', timeout: 60_000 })
     return path
   })
 }
 
-/** Detach whatever images this file's scratch directories still hold (the file-end hook). */
+/** Detach whatever images this file's scratch directories still hold (the file-end hook): one `hdiutil info` for all of them. */
 export function detachLeftoverImages(): string[] {
   if (process.platform !== 'darwin' || everMade.length === 0) return []
-  return everMade.splice(0).flatMap((dir) => detachImagesUnder(dir))
+  return detachImagesUnder(everMade.splice(0))
 }

@@ -360,7 +360,9 @@ describe('.pins is never a runtime (#412)', () => {
   })
 })
 
-describe('prune-runtimes.sh keeps a pinned runtime (#412)', () => {
+// #471: each test runs prune-runtimes.sh, a node per runtime and ps, up to three
+// times in a row; under full-suite load that passed the 15 s default
+describe('prune-runtimes.sh keeps a pinned runtime (#412)', { timeout: 60_000 }, () => {
   function fixture(): { h: HooksHome; app: StagedRuntime } {
     return { h: hooksHome(), app: stageRuntime(join(scratchDir('pin-app-'), 'payload'), APP) }
   }

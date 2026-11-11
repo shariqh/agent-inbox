@@ -2335,6 +2335,30 @@ describe('runtime-mcp-probe: the staged MCP server answers initialize and tools/
     expect(result.stderr).toContain('public/b.js')
   })
 
+  // #471: the probe's next write then hits a closed pipe (EPIPE), which used to
+  // crash it with an unhandled 'error' event instead of reporting the exit
+  it('reports a server that stops reading and exits as its exit, not as a crash on the closed pipe', () => {
+    const root = probeFixture()
+    writeFileSync(join(root, 'dist', 'mcp-server.js'), `
+import { closeSync, readSync } from 'node:fs'
+// stdin is read and closed by hand, never through process.stdin, whose handle
+// would make Node abort at exit once fd 0 is gone
+let input = ''
+const chunk = Buffer.alloc(65536)
+while (!input.includes('\\n')) input += chunk.toString('utf8', 0, readSync(0, chunk))
+closeSync(0)
+const m = JSON.parse(input.slice(0, input.indexOf('\\n')))
+process.stderr.write('server: closing stdin\\n')
+process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: m.id, result: { protocolVersion: m.params.protocolVersion, capabilities: {}, serverInfo: { name: 'agent-inbox', version: '0' } } }) + '\\n')
+setTimeout(() => process.exit(7), 500)
+`)
+    const result = probe(root)
+    expect(result.status).toBe(1)
+    expect(result.stderr).not.toContain('EPIPE')
+    expect(result.stderr).toContain('runtime MCP probe failed: the server exited (7) before answering')
+    expect(result.stderr).toContain('server: closing stdin')
+  })
+
   it('fails a server that answers without the agent-inbox tools', () => {
     const root = probeFixture()
     writeFileSync(join(root, 'public', 'b.js'), "export const tools = ['other']\n")

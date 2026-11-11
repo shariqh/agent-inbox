@@ -67,6 +67,10 @@ const CHANGED = `1.2.3-p294.${RUN}`
 const EDITED = `1.2.1-p294.${RUN}`
 const APP = `1.7.0-p294.${RUN}`
 
+// #471: these tests run prune-runtimes.sh (a node per check, and ps) two or
+// three times in a row, which took 10-15 s under full-suite load
+const PRUNE_RUNS_MS = 60_000
+
 const live = new Set<ChildProcess>()
 
 afterEach(() => {
@@ -312,7 +316,7 @@ describe('what counts as using a runtime (#294)', () => {
   })
 })
 
-describe('the running-process check (#294)', () => {
+describe('the running-process check (#294)', { timeout: PRUNE_RUNS_MS }, () => {
   // Real-shaped ids from the manifest tool itself: a prerelease version made
   // of one id's tail gives a second id that begins with the first.
   function prefixPair(f: Fixture): { short: StagedRuntime; long: StagedRuntime } {
@@ -421,7 +425,7 @@ describe('the running-process check (#294)', () => {
   })
 })
 
-describe('prune-runtimes.sh (#294)', () => {
+describe('prune-runtimes.sh (#294)', { timeout: PRUNE_RUNS_MS }, () => {
   it('a dry run lists what --apply would remove and changes nothing: no lock, no trash cleanup, no write', () => {
     const f = fixture()
     const old = installRuntime(f.h, OLD)

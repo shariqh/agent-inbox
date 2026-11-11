@@ -1,6 +1,7 @@
 // Card-signing helpers for the tests (#536): a P-256 test key and a raw JWS signer over the card's
 // JCS form without `signatures`, with any protected header, so a test can sign what our signer
-// (packages/mesh/src/card-signing.ts) refuses to: an unstable card, an unlisted key, `alg: none`.
+// (packages/mesh/src/card-signing.ts) refuses to: an unstable card, an unlisted key, `alg: none`,
+// or a P-384 or Ed25519 key.
 // Deliberately NOT named *.test.ts: it is imported, never collected.
 import { createHash, generateKeyPairSync, sign } from 'node:crypto'
 import type { KeyObject } from 'node:crypto'
@@ -28,7 +29,9 @@ export function jws(card: Json, key: KeyObject, header: Json, payload?: string):
   const { signatures: _drop, ...rest } = card
   const head = Buffer.from(JSON.stringify(header)).toString('base64url')
   const body = Buffer.from(payload ?? jcs(rest)).toString('base64url')
-  return { protected: head, signature: sign('sha256', Buffer.from(`${head}.${body}`), { key, dsaEncoding: 'ieee-p1363' }).toString('base64url') }
+  // the digest the key type needs (ES384: SHA-384, Ed25519: none), whatever `alg` the header claims
+  const digest = key.asymmetricKeyType === 'ed25519' ? null : key.asymmetricKeyDetails?.namedCurve === 'secp384r1' ? 'sha384' : 'sha256'
+  return { protected: head, signature: sign(digest, Buffer.from(`${head}.${body}`), { key, dsaEncoding: 'ieee-p1363' }).toString('base64url') }
 }
 
 /** `card` with `signatures` set to one ES256 signature by each key (the header our signer writes). */

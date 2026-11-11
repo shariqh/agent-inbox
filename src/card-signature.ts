@@ -1,8 +1,8 @@
 // The card signature verifier (#536; publishable-agent design §3.10, D21): A2A v1.0.1 §8.4's JWS
 // over the RFC 8785 (JCS) form of the card without `signatures`, raw, with no normalisation and
-// no precondition, so a card signed over any other payload fails closed. ES256 over P-256 only
-// (the algorithm our signer uses); every other `alg`, `none` and `HS*` included, fails. The key
-// is found by `kid`, an RFC 7638 thumbprint, in the profile extension's `keys`: a header `jwk`,
+// no precondition, so a card signed over any other payload fails closed. ES256 over a P-256 key,
+// ES384 over P-384 and EdDSA over Ed25519, each bound to its key's curve; any other `alg` (`none`,
+// `HS*`, RSA) or a mismatched key fails. Our signer uses ES256. The key is found by `kid`, an RFC 7638 thumbprint, in the profile extension's `keys`: a header `jwk`,
 // `jku` or `x5u` is never read or fetched. Depth, size, count and header size are capped before
 // anything is canonicalised or parsed. Node core and the card rule only: meshctl's add and check
 // import it, never the viewer or the stdio MCP server. The signer is packages/mesh's
@@ -19,6 +19,12 @@ const CARD_MAX = 64 * 1024
 const SIGNATURES_MAX = 4
 const HEADER_MAX = 2048
 const B64URL = /^[A-Za-z0-9_-]+$/
+// alg → the listed key's [kty, crv], the digest Node core verifies with (none for EdDSA) and the signature's length
+const ALGS: Record<string, { kty: string; crv: string; digest: string | null; length: number }> = {
+  ES256: { kty: 'EC', crv: 'P-256', digest: 'sha256', length: 64 },
+  ES384: { kty: 'EC', crv: 'P-384', digest: 'sha384', length: 96 },
+  EdDSA: { kty: 'OKP', crv: 'Ed25519', digest: null, length: 64 },
+}
 /** An RFC 7638 SHA-256 thumbprint: 43 base64url characters. */
 export const THUMBPRINT = /^[A-Za-z0-9_-]{43}$/
 
@@ -56,13 +62,15 @@ export function unstableReason(card: unknown): 'null-value' | 'empty-value' | 'r
   return Array.isArray(extensions) && extensions.some((e) => obj(e).required === false) ? 'required-false' : undefined
 }
 
-/** Why one signature by a listed key fails: a refused header, an algorithm other than ES256 over a P-256 key, or no match. */
+/** Why one signature by a listed key fails: a refused header, an algorithm off the list or not the key's, or no match. */
 export type SignatureFailure = 'header' | 'alg' | 'mismatch'
 export type Signatures = {
   /** the thumbprints of the keys the card's (valid) profile lists */
   keys: string[]
   /** the `kid` of each signature by a listed key that verified */
   valid: string[]
+  /** each verified signature's `alg`, in the same order */
+  algs: string[]
   failed: SignatureFailure[]
   /** signatures whose `kid` names no listed key */
   unlisted: number
@@ -101,7 +109,7 @@ export function verifyCardSignatures(card: unknown): Signatures | { refused: Sig
   const params = profile && 'profile' in profile && Array.isArray(extensions) ? obj(extensions.map(obj).find((x) => x.uri === PROFILE_URI)?.params) : {}
   const listed = Array.isArray(params.keys) ? params.keys.map(obj) : []
   const keys = new Map(listed.map((k) => [jwkThumbprint(k), k]))
-  const result: Signatures = { keys: [...keys.keys()], valid: [], failed: [], unlisted: 0, unstable: unstableReason(c) !== undefined }
+  const result: Signatures = { keys: [...keys.keys()], valid: [], algs: [], failed: [], unlisted: 0, unstable: unstableReason(c) !== undefined }
   if (!signatures.length) return result
   const payload = Buffer.from(signedPayload(c)).toString('base64url')
   for (const { header, protected: head, signature } of signatures) {
@@ -109,13 +117,17 @@ export function verifyCardSignatures(card: unknown): Signatures | { refused: Sig
     const key = keys.get(kid)
     if (!key) { result.unlisted++; continue }
     if (['crit', 'b64', 'x5c'].some((m) => Object.hasOwn(header, m)) || typeof header.typ !== 'string' || header.typ.toUpperCase() !== 'JOSE') { result.failed.push('header'); continue }
-    if (header.alg !== 'ES256' || key.kty !== 'EC' || key.crv !== 'P-256') { result.failed.push('alg'); continue }
+    const alg = typeof header.alg === 'string' && Object.hasOwn(ALGS, header.alg) ? ALGS[header.alg]! : undefined
+    if (!alg || key.kty !== alg.kty || key.crv !== alg.crv) { result.failed.push('alg'); continue }
     const bytes = Buffer.from(signature, 'base64url')
     let ok = false
     try {
-      ok = bytes.length === 64 && verify('sha256', Buffer.from(`${head}.${payload}`), { key: createPublicKey({ key: key as never, format: 'jwk' }), dsaEncoding: 'ieee-p1363' }, bytes)
+      ok = bytes.length === alg.length && verify(alg.digest, Buffer.from(`${head}.${payload}`), { key: createPublicKey({ key: key as never, format: 'jwk' }), dsaEncoding: 'ieee-p1363' }, bytes)
     } catch { /* a key Node cannot import verifies nothing */ }
-    if (ok) result.valid.push(kid)
+    if (ok) {
+      result.valid.push(kid)
+      result.algs.push(header.alg as string)
+    }
     else result.failed.push('mismatch')
   }
   return result
@@ -125,11 +137,11 @@ const HINT = ': the card has empty or default values, which A2A signers drop, so
 
 /**
  * What `add` makes of a card's signatures (§3.10): signed by the listed keys whose signatures
- * verified, unsigned (no signature, or none naming a listed key, which counts as unsigned), or
+ * verified (with each one's `alg`), unsigned (no signature, or none naming a listed key, which counts as unsigned), or
  * refused with fixed words: unreadable signatures, or one by a listed key that fails. `keys` are
  * the thumbprints of every key the card lists, which `add` pins in the entry.
  */
-export type SignatureVerdict = { keys: string[] } & ({ signed: string[] } | { unsigned: 'absent' | 'unlisted' } | { refused: string })
+export type SignatureVerdict = { keys: string[] } & ({ signed: string[]; algs: string[] } | { unsigned: 'absent' | 'unlisted' } | { refused: string })
 
 export function signatureVerdict(card: unknown): SignatureVerdict {
   const s = verifyCardSignatures(card)
@@ -139,8 +151,8 @@ export function signatureVerdict(card: unknown): SignatureVerdict {
   }
   const failed = s.failed[0]
   if (failed === 'header') return { keys: s.keys, refused: 'the card has a signature whose header meshctl refuses (crit, b64 or x5c, or a typ other than JOSE)' }
-  if (failed === 'alg') return { keys: s.keys, refused: 'the card has a signature by a listed key that is not ES256 over a P-256 key, the one algorithm meshctl verifies' }
+  if (failed === 'alg') return { keys: s.keys, refused: 'the card has a signature by a listed key whose algorithm is not ES256 over a P-256 key, ES384 over P-384 or EdDSA over Ed25519' }
   if (failed === 'mismatch') return { keys: s.keys, refused: `the card has a signature by a listed key that does not verify${s.unstable ? HINT : ''}` }
-  if (s.valid.length) return { keys: s.keys, signed: s.valid }
+  if (s.valid.length) return { keys: s.keys, signed: s.valid, algs: s.algs }
   return { keys: s.keys, unsigned: s.unlisted ? 'unlisted' : 'absent' }
 }

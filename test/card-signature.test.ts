@@ -1,18 +1,19 @@
 // Card signatures (#536; publishable-agent design §3.10, D21, decisions Q3, Q4 and Q6): the
-// verifier (src/card-signature.ts: raw JCS, ES256 over a listed P-256 key, caps first), our signer
+// verifier (src/card-signature.ts: raw JCS, ES256/ES384/EdDSA each over its own listed key type, caps first), our signer
 // (packages/mesh/src/card-signing.ts: refuses a card that is not canonical-stable or a key the
 // card does not list; each agent reads only its own key files) and `meshctl key` (0600 keys in a
 // 0700 folder whatever the umask, never printed). The SDK interop is in
 // packages/mesh/test/card-signing.test.ts, where the SDK is installed; add, check and call are in
 // test/mesh.test.ts, test/mesh-check.test.ts and test/mesh-call.test.ts.
 import { generateKeyPairSync } from 'node:crypto'
+import type { KeyObject } from 'node:crypto'
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { ConfigError } from '../packages/mesh/src/files.js'
 import { loadSigningKeys, signCard } from '../packages/mesh/src/card-signing.js'
 import { signatureVerdict, verifyCardSignatures } from '../src/card-signature.js'
-import { cardSha256, signatureRefusal } from '../src/mesh-add.js'
+import { cardSha256, signatureRefusal, signedLine } from '../src/mesh-add.js'
 import { runMeshctl } from '../src/meshctl.js'
 import { removeScratchDirs, scratchDir } from './scratch.js'
 import { jws, signWith, testKey } from './signed-card.js'
@@ -43,9 +44,9 @@ const NO_MATCH = 'the card has a signature by a listed key that does not verify'
 
 describe('the verifier (raw JCS, ES256, a listed key)', () => {
   it('a good signature verifies; two listed keys (a rotation) both do', () => {
-    expect(verdict(signCard(card(), [keyOf(A)]))).toEqual({ keys: [A.kid], signed: [A.kid] })
+    expect(verdict(signCard(card(), [keyOf(A)]))).toEqual({ keys: [A.kid], signed: [A.kid], algs: ['ES256'] })
     const both = signCard(card([A.publicJwk, B.publicJwk]), [keyOf(A), keyOf(B)])
-    expect(verdict(both)).toEqual({ keys: [A.kid, B.kid], signed: [A.kid, B.kid] })
+    expect(verdict(both)).toEqual({ keys: [A.kid, B.kid], signed: [A.kid, B.kid], algs: ['ES256', 'ES256'] })
     // key order and member order do not matter: JCS
     const reordered = Object.fromEntries(Object.entries(signCard(card(), [keyOf(A)])).reverse())
     expect(verdict(reordered)).toMatchObject({ signed: [A.kid] })
@@ -85,22 +86,44 @@ describe('the verifier (raw JCS, ES256, a listed key)', () => {
     expect(verifyCardSignatures(signWith(card([{ ...A.privateJwk }]), A))).toMatchObject({ keys: [], unlisted: 1, valid: [] })
   })
 
-  it('refuses alg none, HS256, ES384 and a non-P-256 key; a header jwk is ignored; crit, b64, x5c and a missing typ are refused', () => {
+  it('verifies ES256, ES384 and EdDSA, each only over its own key type; refuses none, HS256 and RS256', () => {
+    const P384 = generateKeyPairSync('ec', { namedCurve: 'P-384' })
+    const ED = generateKeyPairSync('ed25519')
+    const pub384 = P384.publicKey.export({ format: 'jwk' }) as Json
+    const pubEd = ED.publicKey.export({ format: 'jwk' }) as Json
+    const KEY384 = { kty: 'EC', crv: 'P-384', x: pub384.x, y: pub384.y }
+    const KEYED = { kty: 'OKP', crv: 'Ed25519', x: pubEd.x }
+    const both = card([A.publicJwk, KEY384, KEYED])
+    const [kidA, kid384, kidEd] = (verifyCardSignatures(both) as { keys: string[] }).keys as [string, string, string]
+    expect(kidA).toBe(A.kid)
+    const signed = (alg: string, kid: string, key: KeyObject): Json => ({ ...both, signatures: [jws(both, key, { alg, typ: 'JOSE', kid })] })
+    // a valid card for each algorithm the profile allows
+    expect(verdict(signed('ES384', kid384, P384.privateKey))).toEqual({ keys: [kidA, kid384, kidEd], signed: [kid384], algs: ['ES384'] })
+    expect(verdict(signed('EdDSA', kidEd, ED.privateKey))).toEqual({ keys: [kidA, kid384, kidEd], signed: [kidEd], algs: ['EdDSA'] })
+    expect(signedLine(verdict(signed('EdDSA', kidEd, ED.privateKey)), 'new')).toBe(`yes, EdDSA key ${kidEd} (new)`)
+    expect(verdict(signed('ES256', kidA, A.key))).toEqual({ keys: [kidA, kid384, kidEd], signed: [kidA], algs: ['ES256'] })
+    // and tampering breaks each
+    for (const [alg, kid, key] of [['ES384', kid384, P384.privateKey], ['EdDSA', kidEd, ED.privateKey]] as const) {
+      expect(verdict({ ...signed(alg, kid, key), name: 'Other' }), alg).toMatchObject({ refused: NO_MATCH })
+    }
+    // an algorithm bound to another key type fails, whatever key made the signature
+    const ALG = 'the card has a signature by a listed key whose algorithm is not ES256 over a P-256 key, ES384 over P-384 or EdDSA over Ed25519'
+    const mismatches: Array<[string, string, KeyObject]> = [
+      ['ES256', kid384, P384.privateKey], ['ES384', kidA, A.key], ['EdDSA', kidA, A.key], ['EdDSA', kid384, P384.privateKey],
+      ['ES256', kidEd, ED.privateKey], ['ES384', kidEd, ED.privateKey],
+    ]
+    for (const [alg, kid, key] of mismatches) expect(verdict(signed(alg, kid, key)), `${alg} over ${kid}`).toMatchObject({ refused: ALG })
+    // nothing off the list, for any listed key
+    for (const alg of ['none', 'HS256', 'RS256', 'ES512', 'PS256', 'es256']) {
+      for (const [kid, key] of [[kidA, A.key], [kidEd, ED.privateKey]] as const) expect(verdict(signed(alg, kid, key)), alg).toMatchObject({ refused: ALG })
+    }
     const c = card()
-    const signed = (header: Json, key = A.key): Json => ({ ...c, signatures: [jws(c, key, { typ: 'JOSE', kid: A.kid, ...header })] })
-    const ALG = 'the card has a signature by a listed key that is not ES256 over a P-256 key, the one algorithm meshctl verifies'
-    for (const alg of ['none', 'HS256', 'ES384', 'EdDSA', 'RS256']) expect(verdict(signed({ alg })), alg).toMatchObject({ refused: ALG })
-    const p384 = generateKeyPairSync('ec', { namedCurve: 'P-384' }).publicKey.export({ format: 'jwk' }) as Json
-    const p384Kid = verifyCardSignatures(card([{ kty: 'EC', crv: 'P-384', x: p384.x, y: p384.y }]))
-    expect(p384Kid).toMatchObject({ keys: [expect.any(String)] })
-    const listed384 = card([{ kty: 'EC', crv: 'P-384', x: p384.x, y: p384.y }])
-    const kid384 = (p384Kid as { keys: string[] }).keys[0]!
-    expect(verdict({ ...listed384, signatures: [jws(listed384, A.key, { alg: 'ES256', typ: 'JOSE', kid: kid384 })] })).toMatchObject({ refused: ALG })
+    const signedA = (header: Json, key = A.key): Json => ({ ...c, signatures: [jws(c, key, { typ: 'JOSE', kid: A.kid, ...header })] })
     // the key comes from the signed list, never the header: B's jwk with A's kid, signed by B, fails
-    expect(verdict(signed({ alg: 'ES256', jwk: B.publicJwk }, B.key))).toMatchObject({ refused: NO_MATCH })
-    expect(verdict(signed({ alg: 'ES256', jwk: B.publicJwk, jku: 'https://attacker.example/keys' }))).toMatchObject({ signed: [A.kid] })
+    expect(verdict(signedA({ alg: 'ES256', jwk: B.publicJwk }, B.key))).toMatchObject({ refused: NO_MATCH })
+    expect(verdict(signedA({ alg: 'ES256', jwk: B.publicJwk, jku: 'https://attacker.example/keys' }))).toMatchObject({ signed: [A.kid] })
     const HEADER = 'the card has a signature whose header meshctl refuses (crit, b64 or x5c, or a typ other than JOSE)'
-    for (const extra of [{ crit: ['b64'] }, { b64: false }, { x5c: ['MIIB'] }, { typ: 'JWT' }]) expect(verdict(signed({ alg: 'ES256', ...extra })), JSON.stringify(extra)).toMatchObject({ refused: HEADER })
+    for (const extra of [{ crit: ['b64'] }, { b64: false }, { x5c: ['MIIB'] }, { typ: 'JWT' }]) expect(verdict(signedA({ alg: 'ES256', ...extra })), JSON.stringify(extra)).toMatchObject({ refused: HEADER })
     const { typ: _t, ...noTyp } = { typ: 'x', alg: 'ES256', kid: A.kid }
     expect(verdict({ ...c, signatures: [jws(c, A.key, noTyp)] })).toMatchObject({ refused: HEADER })
   })

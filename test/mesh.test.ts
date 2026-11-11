@@ -932,7 +932,7 @@ describe('meshctl add and remove (#529, mesh design §6.7, D13–D17, §8.8)', (
       ['the card has a signature by a listed key that does not verify. ',
         (c) => { const s = structuredClone(c); s.securityRequirements[0].schemes.bearer.list = ['call']; return { ...signWith(s, K1), description: 'other' } }],
       ['the card has signatures meshctl cannot read', (c) => ({ ...c, signatures: [{ protected: 'e30', signature: 'AA' }] })],
-      ['the card has a signature by a listed key that is not ES256', (c) => ({ ...c, signatures: [jws(c, K1.key, { alg: 'HS256', typ: 'JOSE', kid: K1.kid })] })],
+      ['the card has a signature by a listed key whose algorithm is not ES256 over a P-256 key', (c) => ({ ...c, signatures: [jws(c, K1.key, { alg: 'HS256', typ: 'JOSE', kid: K1.kid })] })],
     ]
     const written = readFileSync(meshFile(t.dir), 'utf8')
     for (const [words, edit] of cases) {

@@ -134,7 +134,7 @@ export const CHECK_REASONS: Record<string, Record<string, string>> = {
   'signature.present': { absent: 'the card has no signature', unlisted: 'the card\'s signatures name no key its profile lists, so it counts as unsigned' },
   'signature.valid': {
     none: 'not run: no signature names a listed key', unreadable: 'the card has signatures meshctl cannot read (at most 4, each a protected header of at most 2 KiB with a kid)',
-    header: 'a signature\'s header has crit, b64 or x5c, or a typ other than JOSE', alg: 'a signature by a listed key is not ES256 over a P-256 key, the one algorithm meshctl verifies',
+    header: 'a signature\'s header has crit, b64 or x5c, or a typ other than JOSE', alg: 'a signature by a listed key is not ES256 over a P-256 key, ES384 over P-384 or EdDSA over Ed25519',
     mismatch: 'a signature by a listed key does not verify over the card\'s JCS form',
     'mismatch-unstable': 'a signature by a listed key does not verify: the card has empty or default values, which A2A signers drop, so its signer may have signed a different payload',
   },

@@ -145,7 +145,7 @@ export type SummaryOf = { cardUrl: string; endpoint: string; loopback: boolean; 
  * unsigned. Thumbprints passed their syntax check, so they are printed bare and in full.
  */
 export function signedLine(v: SignatureVerdict, trust: string): string {
-  if ('signed' in v) return `yes, ES256 ${v.signed.length === 1 ? 'key' : 'keys'} ${v.signed.join(', ')} (${trust})`
+  if ('signed' in v) return `yes, ${v.signed.map((kid, i) => `${v.algs[i]} key ${kid}`).join(', ')} (${trust})`
   const local = 'allowed on loopback and this Mac\'s tailnet only'
   if ('unsigned' in v && v.unsigned === 'unlisted') return `no: its signatures name no key the card lists (${local})`
   return `no (${local})`

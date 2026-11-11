@@ -763,10 +763,12 @@ the usage and 4).
     RFC 7638 thumbprints of the keys a valid profile lists (a profile `checkProfile()` refuses lists
     none); a `jwk`, `jku` or `x5u` in the header is never read or fetched. A signature whose `kid`
     names no listed key is *unlisted* and counts as no signature. For a listed key: `crit`, `b64`,
-    `x5c` or a `typ` other than `JOSE` fail as `header`; anything but `alg: ES256` over a P-256 key
-    fails as `alg` (meshctl verifies only the algorithm our signer uses; `none`, `HS*`, RSA, ES384 and
-    EdDSA fail closed); otherwise Node's `verify` with `dsaEncoding: "ieee-p1363"` over
-    `<protected>.<payload>`, a 64-byte signature, or `mismatch`. A failure on a card that is not
+    `x5c` or a `typ` other than `JOSE` fail as `header`; the profile spec's algorithms are each bound
+    to their key type, `ES256` to a P-256 key, `ES384` to P-384 and `EdDSA` to Ed25519, and any other
+    `alg` (`none`, `HS*`, RSA) or an `alg` over another key type (an ES256 header naming a P-384 key,
+    EdDSA naming an EC key) fails as `alg`; otherwise Node's `verify` (SHA-256, SHA-384 or none, with
+    `dsaEncoding: "ieee-p1363"`) over `<protected>.<payload>`, a signature of the algorithm's length
+    (64, 96 or 64 bytes), or `mismatch`. Our signer uses ES256 only. A failure on a card that is not
     canonical-stable (`unstableReason()`, the `card.stable` walk) carries the hint that its signer
     may have signed a different payload (an A2A signer drops empty and default values).
   - *`add`* (`signatureVerdict()`, `signatureRefusal()`): unreadable signatures, or any signature by
@@ -777,7 +779,7 @@ the usage and 4).
     no verified signature of `t` is on. The entry records `keyThumbprints`, the thumbprints of every
     key the card lists (trust on first use, decision Q3); since `keys` is inside the pin this is the
     pinned card's list, not a second pin. `addedEntry()` reads it as 1-4 thumbprints or the entry is
-    invalid. The `Signed` line prints `yes, ES256 key <thumbprint> (…)` with "new to this Mac:
+    invalid. The `Signed` line prints `yes, <alg> key <thumbprint> (…)` with "new to this Mac:
     trusted from now on if you --apply", "already pinned for agents.<id>" or "matches
     --key-thumbprint", or `no` with why, and `Keys` the count listed.
   - *The signed move (§3.4).* A card whose agent id an entry holds is that agent when a key in that

@@ -112,7 +112,7 @@ tailnet, a Funnel or a public host waits for #534). A loopback agent needs
 --token-file (a 0600 file you own; meshctl copies it and never prints it). add never replaces an
 entry or takes a built-in name; remove deletes only an entry add wrote, and its token copy.
 When the card declares a stable id (its profile extension), add records it as agentId.
-add verifies the card's signatures (ES256, by a key the card's profile lists): one that fails
+add verifies the card's signatures (ES256, ES384 or EdDSA by a key the card's profile lists): one that fails
 refuses the card; an unsigned card is allowed here because add takes only loopback and this
 Mac's tailnet. The keys the card lists are pinned in the entry (trust on first use);
 --key-thumbprint <t> refuses a card not signed by the key with that RFC 7638 thumbprint.

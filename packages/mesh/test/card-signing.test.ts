@@ -13,7 +13,7 @@ import { describe, expect, it } from 'vitest'
 import { signCard, thumbprint } from '../src/card-signing.js'
 
 type Json = Record<string, any>
-type Verdict = { keys: string[]; signed?: string[]; unsigned?: string; refused?: string }
+type Verdict = { keys: string[]; signed?: string[]; algs?: string[]; unsigned?: string; refused?: string }
 const VERIFIER = fileURLToPath(new URL('../../../src/card-signature.ts', import.meta.url))
 const verdictOf = async (card: Json): Promise<Verdict> =>
   ((await import(VERIFIER)) as { signatureVerdict: (card: unknown) => Verdict }).signatureVerdict(JSON.parse(JSON.stringify(card)))
@@ -62,12 +62,12 @@ describe('SDK interop on a card with "list": ["call"] (§3.3, §3.10)', () => {
     const tampered = structuredClone(signed)
     tampered.securityRequirements[0].schemes.bearer.list = ['admin']
     expect(await sdkVerifies(tampered)).toBe(false)
-    expect(await verdictOf(signed)).toEqual({ keys: [KID], signed: [KID] })
+    expect(await verdictOf(signed)).toEqual({ keys: [KID], signed: [KID], algs: ['ES256'] })
   })
 
   it('the SDK signer → meshctl\'s verifier', async () => {
     const signed = await sdkSign(card(['call']))
-    expect(await verdictOf(signed)).toEqual({ keys: [KID], signed: [KID] })
+    expect(await verdictOf(signed)).toEqual({ keys: [KID], signed: [KID], algs: ['ES256'] })
     const tampered = structuredClone(signed)
     delete tampered.securityRequirements
     expect(await verdictOf(tampered)).toEqual({ keys: [KID], refused: 'the card has a signature by a listed key that does not verify' })

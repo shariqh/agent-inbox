@@ -154,7 +154,7 @@ refused.
 
 ## Signed cards
 
-An agent's card can carry signatures (A2A's JWS card signatures, ES256) by keys its
+An agent's card can carry signatures (A2A's JWS card signatures: ES256, ES384 or EdDSA) by keys its
 [profile extension](ext/profile-v1.md) lists. `add` verifies them before it writes anything: a
 signature by a listed key that does not verify refuses the card, and the dry run's `Signed` line
 says which key signed it and whether this Mac has seen that key before. `--apply` pins the keys
@@ -227,7 +227,7 @@ never fails. When `card.fetch` or `card.shape` fails, the rest do not run.
 | `profile.id` | The profile id is `<domain>[/<path>]/<name>` | should | must |
 | `profile.egress`, `profile.residency` | Not run yet: #535 | should | must |
 | `signature.present` | A signature whose `kid` is the RFC 7638 thumbprint of a key the profile lists | should | must |
-| `signature.valid` | Every signature by a listed key verifies: ES256 over a P-256 key, header `typ: "JOSE"` with no `crit`, `b64` or `x5c`, over the card's raw JCS form without `signatures` (a failure on a card with empty or default values says its signer may have signed a different payload) | must | must |
+| `signature.valid` | Every signature by a listed key verifies: ES256 over a P-256 key, ES384 over P-384 or EdDSA over Ed25519 (never another algorithm or key type), header `typ: "JOSE"` with no `crit`, `b64` or `x5c`, over the card's raw JCS form without `signatures` (a failure on a card with empty or default values says its signer may have signed a different payload) | must | must |
 | `signature.extra` | No signature names a key the profile does not list | info | should |
 | `ext.required` | Every `required: true` extension is one meshctl speaks (today only the profile) | should | should |
 | `live.identity` | Loopback: the agent answers the `a2a-mesh/v1` challenge (https: TLS proves the origin) | must | must |

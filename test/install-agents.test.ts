@@ -2029,6 +2029,28 @@ describe('the meshctl shim (#540)', () => {
     expect(readCliShim(f.home)).toEqual({ kind: 'checkout', stale: true, name: 'meshctl', text: '~/.agent-inbox/bin/meshctl runs a source checkout whose build is gone (not managed by Setup)' })
   })
 
+  it('a stale shim exits 14 at once, without reading a stdin pipe its caller never closes', async () => {
+    const f = fixture()
+    withMeshctl(f)
+    expect(run(f, ['--apply']).code).toBe(0)
+    rmSync(join(f.home, 'meshctl.js'))
+    const started = Date.now()
+    const child = spawn(shimPath(f), ['status'], { env: f.env, stdio: ['pipe', 'pipe', 'pipe'] })
+    let stderr = ''
+    child.stderr!.on('data', (chunk: Buffer) => { stderr += chunk.toString() })
+    try {
+      const code = await new Promise<number | null>((done, fail) => {
+        const timer = setTimeout(() => fail(new Error('the stale shim is still running after 5 s')), 5000)
+        child.on('close', (status) => { clearTimeout(timer); done(status) })
+      })
+      expect(code).toBe(14)
+      expect(stderr).toContain('agent-inbox meshctl: this shim is stale')
+      expect(Date.now() - started).toBeLessThan(5000)
+    } finally {
+      child.kill('SIGKILL')
+    }
+  })
+
   it('quotes a path holding a quote or a space so the shim still runs it', () => {
     const f = fixture()
     const dir = join(f.home, "it's here")

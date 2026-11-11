@@ -151,8 +151,8 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   PATH from Setup; no npm package). It is a `#!/bin/sh` script whose second line is the marker
   `# agent-inbox meshctl shim (#540), kind=<runtime|checkout>, written by install-agents.sh. Do
   not edit.`, then `node='…'` and `meshctl='…'` in sh quoting, and `exec "$node" "$meshctl" "$@"`;
-  when either is gone it discards piped input, says it is stale and how to rewrite it, and exits
-  14, like the mesh's agent shims. `kind=runtime` names the INSTALLED runtime's `bin/node` and
+  when either is gone it says on stderr that it is stale and how to rewrite it, and exits 14 at
+  once without reading stdin (a drain would hang on a pipe its caller never closes). `kind=runtime` names the INSTALLED runtime's `bin/node` and
   `dist/meshctl.js` (`$RUNTIME_PATH`, never the app bundle, so it survives moving or updating the
   app; every Setup install or update rewrites it to the runtime it registers, and the prunes then
   keep or remove runtimes by the host configs as before); `kind=checkout` names the resolved Node

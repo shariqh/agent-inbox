@@ -735,7 +735,6 @@ ${MESHCTL_MARKER_HEAD}${kind}${MESHCTL_MARKER_TAIL}
 node=$(sh_single_quote "$node")
 meshctl=$(sh_single_quote "$script")
 if [ ! -x "\$node" ] || [ ! -f "\$meshctl" ]; then
-  [ -t 0 ] || cat > /dev/null
   echo 'agent-inbox meshctl: this shim is stale: $remedy' >&2
   exit 14
 fi

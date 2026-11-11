@@ -19,11 +19,10 @@ import { request as httpRequest } from 'node:http'
 import { request as httpsRequest } from 'node:https'
 import type { LookupFunction } from 'node:net'
 import { join, resolve } from 'node:path'
-import { checkCard } from './agent-card.js'
+import { cardExtension, checkCard } from './agent-card.js'
 import { inTailnet, meshDir, meshFile, readMesh, requestPostEndpoint } from './mesh-config.js'
 import type { RunCollector } from './mesh-runs.js'
 
-const EXTENSION = 'urn:agent-inbox:ext:request-post:v1'
 const FINAL = ['awaiting-go', 'ready-for-human', 'proposed', 'needs-fix', 'failed', 'rejected', 'published']
 const BRIEF_MAX = 8192
 const MIN = 60_000
@@ -151,14 +150,15 @@ async function send(base: URL, token: string, io: RequestPostIo, meta: Json, tex
   try { card = obj(JSON.parse(got.body)) } catch { /* below */ }
   if (got.status !== 200 || !Object.keys(card).length) return { exit: 15, why: `${base.host} has no agent card (HTTP ${got.status})` }
   // the one card rule (agent cards view design §4.4); any failed check is the same 15
-  if (checkCard(card, 'request-post')) {
+  const extension = checkCard(card, 'request-post') ? undefined : cardExtension(card, 'request-post')
+  if (!extension) {
     return { exit: 15, fatal: true, why: 'the agent card does not match this client (skills, A2A 1.0 or the api 1 extension): update agent-inbox or the service' }
   }
   const id = randomUUID()
   const r = await call(base, io, {
     method: 'POST', timeoutMs: limit,
     headers: { authorization: `Bearer ${token}`, 'a2a-version': '1.0', 'content-type': 'application/json', accept: 'application/json' },
-    body: JSON.stringify({ jsonrpc: '2.0', id, method: 'SendMessage', params: { message: { messageId: randomUUID(), role: 'ROLE_USER', parts: [{ text }], metadata: { [EXTENSION]: meta } } } }),
+    body: JSON.stringify({ jsonrpc: '2.0', id, method: 'SendMessage', params: { message: { messageId: randomUUID(), role: 'ROLE_USER', parts: [{ text }], metadata: { [extension]: meta } } } }),
   })
   if ('failed' in r) return r.failed === 'before' ? { exit: 15, why: unreachable(base, r.code) } : { exit: 13, why: `the connection ended before the answer (${r.code})` }
   if (r.status === 401 || r.status === 403) return { exit: 15, why: `the service refused this device (HTTP ${r.status}): a revoked token, or a shared tailnet` }

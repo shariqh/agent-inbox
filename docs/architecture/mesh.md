@@ -931,8 +931,11 @@ the two share numbers, not meanings.
   proxy), `Host` exactly the endpoint's authority, the TLS name the endpoint's host, no `Origin`,
   and never the card's URL. Redirects are not followed: a 3xx on the card is 15, on the call 13.
   Each call first reads `GET /.well-known/agent-card.json` (no token) and checks both skills, a
-  JSON-RPC interface with `protocolVersion` `1.0`, and `urn:agent-inbox:ext:request-post:v1` with
-  `api: 1`; a mismatch is 15 with "update agent-inbox or the service" (design §3.3 lists a card
+  JSON-RPC interface with `protocolVersion` `1.0`, and the request-post extension with `api: 1`
+  under either `https://shariqh.github.io/agent-inbox/ext/request-post/v1` or the old
+  `urn:agent-inbox:ext:request-post:v1` (publishable-agent design §6, C6; the Pages URI wins when a
+  card declares both, and the metadata goes under the URI the card declares; C10 drops the URN),
+  so the client keeps working while the service switches; a mismatch is 15 with "update agent-inbox or the service" (design §3.3 lists a card
   mismatch under 15, and the R1 fixture `10-unavailable.json` says the same). Then one blocking
   `SendMessage` (40 s: a margin over the service's 30 s task limit, so the service's lock-wait 12 is
   never cut to 13) with `Authorization: Bearer <token>` and `A2A-Version: 1.0`: one text part

@@ -128,6 +128,23 @@ describe('the verifier (raw JCS, ES256, a listed key)', () => {
     expect(verdict({ ...c, signatures: [jws(c, A.key, noTyp)] })).toMatchObject({ refused: HEADER })
   })
 
+  it('refuses a protected header that names a member twice, at any depth, before any crypto', () => {
+    const c = card()
+    const raw = (text: string): Json => verdict({ ...c, signatures: [jws(c, A.key, text)] })
+    const UNREADABLE = { keys: [], refused: 'the card has signatures meshctl cannot read' }
+    const kid = JSON.stringify(A.kid)
+    // JSON.parse keeps the last member: each of these would read as one header here and another elsewhere
+    expect(raw(`{"alg":"ES256","alg":"none","typ":"JOSE","kid":${kid}}`)).toEqual(UNREADABLE)
+    expect(raw(`{"alg":"none","alg":"ES256","typ":"JOSE","kid":${kid}}`)).toEqual(UNREADABLE)
+    expect(raw(`{"alg":"ES256","typ":"JOSE","kid":"${B.kid}","kid":${kid}}`)).toEqual(UNREADABLE)
+    expect(raw(`{"alg":"ES256","typ":"JOSE","k\\u0069d":"${B.kid}","kid":${kid}}`)).toEqual(UNREADABLE)
+    expect(raw(`{"alg":"ES256","typ":"JOSE","kid":${kid},"x":{"a":1,"b":[{"c":1}],"a":2}}`)).toEqual(UNREADABLE)
+    // escaped quotes, braces and brackets inside strings, and one name in separate objects, are fine
+    const note = JSON.stringify('say "kid": {"alg":"none"} [, \\ "typ"')
+    expect(raw(`{"alg":"ES256","typ":"JOSE","note":${note},"kid":${kid},"x":{"alg":1,"kid":[{"alg":2},{"alg":3}]},"y\\"z":"\\"kid\\"","k\\u0069d2":"\\u0022"}`)).toEqual({ keys: [A.kid], signed: [A.kid], algs: ['ES256'] })
+    expect(raw(` { "alg" : "ES256" , "typ" : "JOSE" , "kid" : ${kid} } `)).toEqual({ keys: [A.kid], signed: [A.kid], algs: ['ES256'] })
+  })
+
   it('caps size, depth, count and header size before canonicalising', () => {
     const UNREADABLE = 'the card has signatures meshctl cannot read'
     const deep = signCard(card(), [keyOf(A)])

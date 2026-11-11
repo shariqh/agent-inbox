@@ -24,10 +24,10 @@ const jcs = (v: unknown): string => {
   return JSON.stringify(v)
 }
 
-/** One signature entry over `payload` (default: the card's raw JCS without `signatures`). */
-export function jws(card: Json, key: KeyObject, header: Json, payload?: string): Json {
+/** One signature entry over `payload` (default: the card's raw JCS without `signatures`); a string header is used as written. */
+export function jws(card: Json, key: KeyObject, header: Json | string, payload?: string): Json {
   const { signatures: _drop, ...rest } = card
-  const head = Buffer.from(JSON.stringify(header)).toString('base64url')
+  const head = Buffer.from(typeof header === 'string' ? header : JSON.stringify(header)).toString('base64url')
   const body = Buffer.from(payload ?? jcs(rest)).toString('base64url')
   // the digest the key type needs (ES384: SHA-384, Ed25519: none), whatever `alg` the header claims
   const digest = key.asymmetricKeyType === 'ed25519' ? null : key.asymmetricKeyDetails?.namedCurve === 'secp384r1' ? 'sha384' : 'sha256'

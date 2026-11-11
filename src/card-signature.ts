@@ -62,6 +62,42 @@ export function unstableReason(card: unknown): 'null-value' | 'empty-value' | 'r
   return Array.isArray(extensions) && extensions.some((e) => obj(e).required === false) ? 'required-false' : undefined
 }
 
+/**
+ * Whether JSON text that JSON.parse accepted names a member twice in one object, at any depth
+ * (JSON.parse keeps the last, so `{"alg":"ES256","alg":"none"}` would read as one header to us and
+ * another to a verifier that keeps the first). Names compare after unescaping, so "a" and "\u0061"
+ * are the same. A scan of valid JSON only: strings are skipped whole, escapes included.
+ */
+function duplicateMember(text: string): boolean {
+  const objects: Array<Set<string> | null> = []
+  let key = false
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]
+    if (ch === '"') {
+      let end = i + 1
+      while (text[end] !== '"') end += text[end] === '\\' ? 2 : 1
+      const top = objects.at(-1)
+      if (key && top) {
+        const name = JSON.parse(text.slice(i, end + 1)) as string
+        if (top.has(name)) return true
+        top.add(name)
+        key = false
+      }
+      i = end
+    } else if (ch === '{') {
+      objects.push(new Set())
+      key = true
+    } else if (ch === '[') {
+      objects.push(null)
+      key = false
+    } else if (ch === '}' || ch === ']') {
+      objects.pop()
+      key = false
+    } else if (ch === ',') key = objects.at(-1) instanceof Set
+  }
+  return false
+}
+
 /** Why one signature by a listed key fails: a refused header, an algorithm off the list or not the key's, or no match. */
 export type SignatureFailure = 'header' | 'alg' | 'mismatch'
 export type Signatures = {
@@ -83,7 +119,7 @@ export type SignaturesRefused = 'too-deep' | 'too-large' | 'unreadable'
  * Every signature on `card`, checked against the keys its profile extension lists, or why the
  * card's signatures cannot be read at all: nested past 32, over 64 KiB, `signatures` not a list
  * of at most 4 `{ protected, signature }` entries, or a protected header over 2 KiB, not a JSON
- * object or without a string `kid`. The caps come first, so nothing unbounded is canonicalised.
+ * object, naming a member twice, or without a string `kid`. The caps come first, so nothing unbounded is canonicalised.
  */
 export function verifyCardSignatures(card: unknown): Signatures | { refused: SignaturesRefused } {
   if (tooDeep(card)) return { refused: 'too-deep' }
@@ -97,10 +133,11 @@ export function verifyCardSignatures(card: unknown): Signatures | { refused: Sig
     if (typeof e.protected !== 'string' || typeof e.signature !== 'string' || !B64URL.test(e.protected) || !B64URL.test(e.signature)) return { refused: 'unreadable' }
     if (e.protected.length > Math.ceil(HEADER_MAX * 4 / 3)) return { refused: 'unreadable' }
     let header: unknown
+    const text = Buffer.from(e.protected, 'base64url').toString('utf8')
     try {
-      header = JSON.parse(Buffer.from(e.protected, 'base64url').toString('utf8'))
+      header = JSON.parse(text)
     } catch { /* below */ }
-    if (!header || typeof header !== 'object' || Array.isArray(header) || typeof (header as Json).kid !== 'string') return { refused: 'unreadable' }
+    if (!header || typeof header !== 'object' || Array.isArray(header) || typeof (header as Json).kid !== 'string' || duplicateMember(text)) return { refused: 'unreadable' }
     signatures.push({ header: header as Json, protected: e.protected, signature: e.signature })
   }
   // keys only from a profile that passed checkProfile: public JWKs of a known curve, none twice

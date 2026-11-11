@@ -756,7 +756,8 @@ the usage and 4).
     before anything is canonicalised or parsed: a nesting walk that stops past 32 levels without
     recursing (`tooDeep()`, also `check`'s `card.fetch` and `add`'s fetch, which no longer relies on
     the stack), 64 KiB, at most 4 `signatures` entries of `{ protected, signature }` base64url, each
-    protected header at most 2 KiB decoded, a JSON object with a string `kid`; anything else makes
+    protected header at most 2 KiB decoded, a JSON object with a string `kid` that names no member
+    twice in any object (JSON.parse keeps the last, another parser the first); anything else makes
     the card's signatures unreadable. The payload is the raw JCS form of the card without
     `signatures` (`signedPayload()` in `agent-card.ts`), with no normalisation and no precondition,
     so a card signed over any other payload fails closed. A signature's `kid` is looked up among the

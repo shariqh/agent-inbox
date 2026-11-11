@@ -9,6 +9,13 @@
 import { afterAll } from 'vitest'
 import { detachLeftoverImages, removeScratchDirs } from './scratch.js'
 
+// #471: `hdiutil info` (allowed 60 s in scratch.ts) answers in well under a
+// second on an idle Mac but can take tens of seconds while other suites build
+// and attach images, which overran Vitest's 10 s default and failed whichever
+// file was ending. hdiutil's own timeouts bound the work; this one only has to
+// outlast them.
+const CLEANUP_MS = 180_000
+
 afterAll(() => {
   // A disk image a test left attached from its scratch tree would outlive the
   // directory, unseen by Finder: detach it, and say so, so the leak is fixed
@@ -18,4 +25,4 @@ afterAll(() => {
     console.warn(`[scratch] detached ${detached.length} disk image(s) a test left attached: ${detached.join(', ')}`)
   }
   removeScratchDirs()
-})
+}, CLEANUP_MS)

@@ -30,6 +30,19 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   volume (as `hdiutil create -srcfolder` sometimes leaves one) is invisible to
   Finder, so before this guard each run of `test/macos-dmg.test.ts` could leave
   one more behind. Treat that warning as a bug in the test that printed it.
+- Wait on a signal, never a fixed window (#471). The full suite runs about 300
+  files in parallel, often beside another checkout's suite, so a sleep sized for
+  an idle Mac loses. Poll for the condition with `waitUntil()` from `test/wait.ts`
+  (it returns as soon as the condition holds; the 15 s deadline costs nothing when
+  the machine is fast), read a pid a child writes with `pidIn()` (a file can
+  exist before its pid is written, and pid 0 is the whole process group), and
+  test an in-process timer such as the hook's grace
+  window with a fake clock (`vi.useFakeTimers({ toFake: ['Date', 'setTimeout'] })`)
+  rather than racing it. A cleanup hook that waits on a child process or a
+  system tool passes its own timeout, as `test/scratch-setup.ts` does for
+  `hdiutil`. Anything the code under test finds machine-wide, such as a runtime
+  id another process names, gets a per-run tag so the same file running in
+  another checkout cannot match it (`test/prune-runtimes.test.ts`).
 - Node is the default Vitest environment. DOM tests opt in per file with
   `// @vitest-environment jsdom`; keep `test/dom/harness.ts` outside the
   `*.test.ts` naming pattern.

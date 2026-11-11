@@ -35,7 +35,8 @@ afterEach(() => {
   removeScratchDirs()
 })
 
-async function until<T>(read: () => T | undefined | false | null, label: string, ms = 3000): Promise<T> {
+// #471: returns as soon as `read` holds, so a deadline sized for a loaded machine costs nothing
+async function until<T>(read: () => T | undefined | false | null, label: string, ms = 15_000): Promise<T> {
   const deadline = Date.now() + ms
   for (;;) {
     const value = read()

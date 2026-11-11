@@ -454,14 +454,46 @@ describe('hook: notification backstop (#10)', () => {
   // the instant it starts. Deciding immediately would give an ordinary prompt the
   // human answers in twenty seconds an inbox row — and, in the packaged app, a
   // desktop notification that cannot be withdrawn.
+  // #471: a fake clock, not a real 400ms window. The notification's own git
+  // call could eat a real window under load, so the committer started with no
+  // time left, decided at once and inserted before the "human" answered.
   it('the committer waits out the grace window instead of deciding the moment it starts', async () => {
     const { env, dbPath } = freshEnv({ AGENT_INBOX_HOOK_GRACE_MS: '400' })
-    await runHook(['notification'], ev(), env)
-    const commit = runHook(['notification-commit'], ev(), env) // starts its wait now
-    // the human answers 100ms in: the session's next step disarms the marker
-    setTimeout(() => { void runHook(['prompt-submit'], ev(), env) }, 100)
-    expect(await commit).toEqual({ stdout: '' })
-    expect(listItems(openDb(dbPath))).toHaveLength(0)
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout'] })
+    try {
+      await runHook(['notification'], ev(), env)
+      let settled = false
+      const commit = runHook(['notification-commit'], ev(), env).finally(() => { settled = true })
+      await vi.advanceTimersByTimeAsync(399)
+      expect(settled).toBe(false) // still waiting out the window, and nothing written
+      expect(listItems(openDb(dbPath))).toHaveLength(0)
+      // the human answers inside the window: the session's next step disarms the marker
+      await runHook(['prompt-submit'], ev(), env)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(settled).toBe(true)
+      expect(await commit).toEqual({ stdout: '' })
+      expect(listItems(openDb(dbPath))).toHaveLength(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('without an answer, the committer lands the row once the grace window ends', async () => {
+    const { env, dbPath } = freshEnv({ AGENT_INBOX_HOOK_GRACE_MS: '400' })
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout'] })
+    try {
+      await runHook(['notification'], ev(), env)
+      let settled = false
+      const commit = runHook(['notification-commit'], ev(), env).finally(() => { settled = true })
+      await vi.advanceTimersByTimeAsync(399)
+      expect(settled).toBe(false)
+      expect(listItems(openDb(dbPath))).toHaveLength(0)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(await commit).toEqual({ stdout: '' })
+      expect(listItems(openDb(dbPath)).map((i) => i.agent)).toEqual(['hook'])
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('stands down when the transcript grew during the grace window (the session moved on)', async () => {

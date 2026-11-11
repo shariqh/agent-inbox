@@ -16,14 +16,18 @@
 # Usage:
 #   npm run sweep                          # dry run
 #   npm run sweep -- --fetch               # `git fetch --prune origin` first
-#   npm run sweep -- --apply               # remove the `remove` candidates
+#   npm run sweep -- --apply               # fetch, then remove the `remove` candidates
 #   bash scripts/workspace-sweep.sh [--apply] [--fetch] [--main DIR]
 #        [--worktrees DIR] [--repo OWNER/NAME] [--runtime-root DIR]
 #
-# --apply re-verifies every candidate immediately before deleting it, one at a
-# time: `git worktree remove` (never --force, never rm -rf), `git branch -D`,
-# `git push origin --delete` only while `git ls-remote` still shows the listed
-# tip, and `rm -rf --` by absolute path for temp entries under $TMPDIR.
+# --apply implies --fetch: check (d) trusts remote-tracking refs, and a stale
+# one (a branch since deleted or force-pushed on origin) must never vouch for a
+# deletion. A failed fetch exits 2 with nothing removed. It then re-verifies
+# every candidate immediately before deleting it, one at a time:
+# `git worktree remove` (never --force, never rm -rf), `git branch -D`,
+# `git push --force-with-lease=<ref>:<listed tip> origin --delete` only while
+# `git ls-remote` still shows the listed tip, and `rm -rf --` by absolute path
+# for temp entries under $TMPDIR.
 #
 # Never touches: main, the main checkout's current branch, a branch checked
 # out in a kept worktree, open-PR heads and bases, anything changed in the last
@@ -32,7 +36,7 @@
 # files). Runtimes are reported, never removed (install-agents.sh prunes them).
 #
 # Exit: 0 success, 2 failed closed (gh unavailable or failing: nothing is
-# removed), 64 usage error.
+# removed; also a failed fetch under --fetch or --apply), 64 usage error.
 set -u
 set -f  # no pathname expansion anywhere: names and prefixes are data
 
@@ -53,7 +57,7 @@ WT=""
 REPO_SLUG=""
 RUNTIME_ROOT=""
 
-usage() { sed -n '2,35p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { awk 'NR > 1 && !/^#/ { exit } NR > 1' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 usage_error() { echo "workspace-sweep: $1 (try --help)" >&2; exit 64; }
 
 while [ $# -gt 0 ]; do
@@ -384,10 +388,12 @@ emit() { # kind, path-or-ref, size-kb or "", extra (for apply)
 }
 
 # ---------------------------------------------------------------- inventory
-if [ "$FETCH" -eq 1 ]; then
-  g fetch --prune --quiet origin || { echo "workspace-sweep: git fetch --prune origin failed; failing closed" >&2; exit 2; }
-fi
+# Check (d) reads remote-tracking refs, so --apply never decides on stale ones.
+[ "$APPLY" -eq 1 ] && FETCH=1
 load_prs
+if [ "$FETCH" -eq 1 ]; then
+  g fetch --prune --quiet origin || { echo "workspace-sweep: git fetch --prune origin failed; failing closed, nothing is removed" >&2; exit 2; }
+fi
 load_worktrees
 snapshot_ps
 derive_prefixes
@@ -397,7 +403,7 @@ echo "# workspace-sweep: $([ "$APPLY" -eq 1 ] && echo apply || echo 'dry run (re
 echo "# main checkout: $MAIN (current branch: ${MAIN_BRANCH:-detached})"
 echo "# worktree folder: $WT"
 if [ "$FETCH" -eq 1 ]; then
-  echo "# remote-tracking refs: fetched now (--fetch)"
+  echo "# remote-tracking refs: fetched now ($([ "$APPLY" -eq 1 ] && echo '--apply implies --fetch' || echo '--fetch'))"
 else
   fh="$MAIN_COMMON/FETCH_HEAD"
   echo "# remote-tracking refs: last fetched $( [ -f "$fh" ] && iso "$(mtime "$fh")" || echo 'unknown'); they may be stale (pass --fetch to refresh)"
@@ -512,7 +518,8 @@ for line in $(run_kind remote); do
   if ! live="$(g ls-remote --heads origin "refs/heads/$b")"; then refuse remote "$ref" "git ls-remote failed"; continue; fi
   live="${live%%"$TAB"*}"
   if [ "$live" != "$listed" ]; then refuse remote "$ref" "remote tip changed (now ${live:-gone}, listed $listed)"; continue; fi
-  if g push --quiet origin --delete "$b"; then did remote "$ref"; else refuse remote "$ref" "git push --delete failed"; fi
+  # The lease closes the gap between the re-read above and the delete.
+  if g push --quiet --force-with-lease="refs/heads/$b:$listed" origin --delete "$b"; then did remote "$ref"; else refuse remote "$ref" "git push --delete failed"; fi
 done
 for line in $(run_kind build); do
   d="${line%%"$TAB"*}"; owner="${line#*"$TAB"}"

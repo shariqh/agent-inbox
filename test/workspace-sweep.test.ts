@@ -4,7 +4,7 @@
 // `gh` on PATH that prints canned PR states, a scratch HOME and a scratch
 // TMPDIR, so nothing outside the scratch directory is read or written.
 import { spawn, spawnSync, type SpawnSyncReturns } from 'node:child_process'
-import { existsSync, lstatSync, mkdirSync, readdirSync, readlinkSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, readdirSync, readlinkSync, realpathSync, renameSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join, relative, resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { removeScratchDirs, scratchDir } from './scratch.js'
@@ -55,7 +55,9 @@ function ageTree(dir: string, env: NodeJS.ProcessEnv): void {
  * - feat/base (PR #7 merged) is the base of open PR #6: kept;
  * - feat/unmerged (no PR, a commit found nowhere else): kept;
  * - feat/old-merged (PR #8 merged, no worktree): proposed for removal;
- * - origin/feat/moved (PR #9 merged at the old tip) moved on origin after the last fetch;
+ * - origin/feat/moved (PR #9 merged): a commit to push to it later waits in the `other` clone;
+ * - worktree `stale` (feat/stale, no PR): its only copy elsewhere was origin/feat/stale, which was
+ *   deleted on origin after the main checkout last fetched, so only a stale ref vouches for it;
  * - `orphan` is a plain directory in the worktree folder: kept;
  * - out/ in the main checkout (ignored, old): proposed for removal; dist/ and node_modules/ are
  *   never listed.
@@ -72,7 +74,15 @@ function fixture(): Fixture {
   for (const d of [wt, home, tmp, bin]) mkdirSync(d)
   writeFileSync(
     join(bin, 'gh'),
-    '#!/bin/sh\nprintf "%s\\n" "$*" >> "$FAKE_GH_LOG"\n[ "${FAKE_GH_EXIT:-0}" = 0 ] || exit "$FAKE_GH_EXIT"\ncat "$FAKE_GH_PRS"\n',
+    [
+      '#!/bin/sh',
+      'printf "%s\\n" "$*" >> "$FAKE_GH_LOG"',
+      '[ "${FAKE_GH_EXIT:-0}" = 0 ] || exit "$FAKE_GH_EXIT"',
+      // --apply reloads PR states after the listing: this runs between listing and deletion.
+      'if [ -n "${FAKE_GH_ON_SECOND:-}" ] && [ "$(grep -c . "$FAKE_GH_LOG")" = 2 ]; then sh -c "$FAKE_GH_ON_SECOND" >/dev/null 2>&1; fi',
+      'cat "$FAKE_GH_PRS"',
+      '',
+    ].join('\n'),
     { mode: 0o755 },
   )
   const date = `${OLD_EPOCH} +0000`
@@ -92,7 +102,8 @@ function fixture(): Fixture {
     FAKE_GH_PRS: prs,
     FAKE_GH_LOG: join(root, 'gh.log'),
   }
-  writeFileSync(join(home, 'gitconfig'), '[init]\n\tdefaultBranch = main\n[advice]\n\tdetachedHead = false\n')
+  // No background auto-gc: it would repack the fixture while a test compares its files.
+  writeFileSync(join(home, 'gitconfig'), '[init]\n\tdefaultBranch = main\n[advice]\n\tdetachedHead = false\n[gc]\n\tauto = 0\n[maintenance]\n\tauto = false\n')
   const git = (cwd: string, ...args: string[]): string => run('git', args, cwd, env)
   git(root, 'init', '-q', '--bare', origin)
   git(root, 'clone', '-q', origin, main)
@@ -113,7 +124,9 @@ function fixture(): Fixture {
     git(main, 'worktree', 'add', '-q', '-b', branch, join(wt, dir), 'main')
     tips[branch] = commitOn(join(wt, dir), `${dir}.txt`)
   }
-  git(main, 'push', '-q', 'origin', 'feat/merged', 'feat/open')
+  git(main, 'worktree', 'add', '-q', '-b', 'feat/stale', join(wt, 'stale'), 'main')
+  tips['feat/stale'] = commitOn(join(wt, 'stale'), 'stale.txt')
+  git(main, 'push', '-q', 'origin', 'feat/merged', 'feat/open', 'feat/stale')
   mkdirSync(join(wt, 'merged', 'build'))
   writeFileSync(join(wt, 'merged', 'build', 'app.bin'), 'x')
   writeFileSync(join(wt, 'dirty', 'notes.txt'), 'uncommitted\n')
@@ -126,11 +139,11 @@ function fixture(): Fixture {
   git(main, 'checkout', '-q', '-b', 'feat/current', 'main')
   tips['feat/current'] = commitOn(main, 'current.txt')
   git(main, 'branch', '-q', '-D', 'feat/moved')
-  // Someone pushes to feat/moved after the main checkout last fetched.
   const other = join(root, 'other')
   git(root, 'clone', '-q', '-b', 'feat/moved', origin, other)
   tips['moved-on-origin'] = commitOn(other, 'later.txt')
-  git(other, 'push', '-q', 'origin', 'feat/moved')
+  // Someone deletes origin/feat/stale after the main checkout last fetched.
+  git(other, 'push', '-q', 'origin', '--delete', 'feat/stale')
 
   mkdirSync(join(main, 'out'))
   writeFileSync(join(main, 'out', 'big.bin'), 'x'.repeat(4096))
@@ -237,12 +250,13 @@ describe('workspace-sweep.sh (#248)', () => {
     expect(action(out, 'branch feat/base')).toBe('keep: base of open PR #6')
     expect(action(out, 'branch feat/unmerged')).toBe('keep: unmerged (no safety check passed)')
     expect(rows(out).get('branch feat/unmerged')?.checks).toBe('-')
-    // Listed from the stale tracking ref, so it is proposed; --apply re-reads the remote.
     expect(action(out, 'remote origin/feat/moved')).toBe('remove')
+    // The dry run reads refs as they are: only the stale origin/feat/stale vouches for it.
+    expect(rows(out).get(wt('stale'))).toMatchObject({ checks: 'd', action: 'remove' })
 
     expect([...rows(out).keys()].some((k) => /\/(dist|node_modules)$/.test(k))).toBe(false)
     expect(out).toMatch(/^# remote-tracking refs: last fetched .*may be stale \(pass --fetch to refresh\)$/m)
-    expect(out).toMatch(/^# summary: remove 6 \(2 branch, 1 build, 2 remote, 1 worktree\), keep \d+, reclaimable \S+$/m)
+    expect(out).toMatch(/^# summary: remove 8 \(3 branch, 1 build, 2 remote, 2 worktree\), keep \d+, reclaimable \S+$/m)
     // One line per candidate with seven tab-separated fields.
     for (const line of out.split('\n').filter((l) => l !== '' && !l.startsWith('#'))) {
       expect(line.split('\t')).toHaveLength(7)
@@ -259,24 +273,53 @@ describe('workspace-sweep.sh (#248)', () => {
 
   it('--apply removes only the remove candidates and refuses a remote branch whose tip moved', () => {
     const f = fixture()
-    const r = sweep(f, ['--apply'])
+    // feat/moved moves on origin after the listing, just before the deletions.
+    const r = sweep(f, ['--apply'], { FAKE_GH_ON_SECOND: `git -C '${join(f.root, 'other')}' push -q origin feat/moved` })
     expect(r.status).toBe(0)
+    expect(action(r.stdout, 'remote origin/feat/moved')).toBe('remove')
     const git = (cwd: string, ...args: string[]): string => run('git', args, cwd, f.env)
     const local = git(f.main, 'for-each-ref', '--format=%(refname:short)', 'refs/heads/').split('\n').sort()
-    expect(local).toEqual(['feat/base', 'feat/current', 'feat/dirty', 'feat/open', 'feat/recent', 'feat/unmerged', 'main'])
+    expect(local).toEqual(['feat/base', 'feat/current', 'feat/dirty', 'feat/open', 'feat/recent', 'feat/stale', 'feat/unmerged', 'main'])
     const remote = git(f.origin, 'for-each-ref', '--format=%(refname:short)', 'refs/heads/').split('\n').sort()
     expect(remote).toEqual(['feat/moved', 'feat/open', 'main'])
     expect(git(f.origin, 'rev-parse', 'refs/heads/feat/moved')).toBe(f.tips['moved-on-origin'])
     expect(r.stdout).toMatch(/^# apply: kept remote origin\/feat\/moved: remote tip changed/m)
 
     expect(existsSync(join(f.wt, 'merged'))).toBe(false)
-    for (const d of ['open', 'dirty', 'recent', 'orphan']) expect(existsSync(join(f.wt, d))).toBe(true)
+    for (const d of ['open', 'dirty', 'recent', 'orphan', 'stale']) expect(existsSync(join(f.wt, d))).toBe(true)
     expect(existsSync(join(f.wt, 'dirty', 'notes.txt'))).toBe(true)
     expect(existsSync(join(f.main, 'out'))).toBe(false)
     expect(existsSync(join(f.main, 'dist', 'keep.js'))).toBe(true)
     expect(existsSync(join(f.main, 'node_modules', 'keep.js'))).toBe(true)
     expect(git(f.main, 'worktree', 'list', '--porcelain')).not.toContain(join(f.wt, 'merged'))
     expect(r.stdout).toMatch(/^# apply: removed 5, kept 1 on re-verification$/m)
+  }, TEST_TIMEOUT_MS)
+
+  it('--apply fetches first, so a remote branch deleted on origin no longer vouches for local work', () => {
+    const f = fixture()
+    const git = (cwd: string, ...args: string[]): string => run('git', args, cwd, f.env)
+    const stale = join(f.wt, 'stale')
+    const r = sweep(f, ['--apply'])
+    expect(r.status).toBe(0)
+    expect(r.stdout).toContain('# remote-tracking refs: fetched now (--apply implies --fetch)')
+    expect(rows(r.stdout).get(`worktree ${stale}`)).toMatchObject({ checks: '-', action: 'keep: unmerged (no safety check passed)' })
+    expect(action(r.stdout, 'branch feat/stale')).toBe(`keep: checked out in ${stale}`)
+    expect(existsSync(join(stale, 'stale.txt'))).toBe(true)
+    expect(git(f.main, 'rev-parse', 'refs/heads/feat/stale')).toBe(f.tips['feat/stale'])
+    expect(git(f.main, 'for-each-ref', 'refs/remotes/origin/feat/stale')).toBe('')
+
+    // A fetch that fails stops --apply before it lists or removes anything. (Git itself
+    // truncates FETCH_HEAD when a fetch fails.)
+    const settled = (): string => state(f).replace(/^main\/\.git\/FETCH_HEAD .*\n/m, '')
+    const before = settled()
+    const away = join(f.root, 'origin-away.git')
+    renameSync(f.origin, away)
+    const broken = sweep(f, ['--apply'])
+    renameSync(away, f.origin)
+    expect(broken.status).toBe(2)
+    expect(broken.stderr).toContain('git fetch --prune origin failed')
+    expect(broken.stdout).toBe('')
+    expect(settled()).toBe(before)
   }, TEST_TIMEOUT_MS)
 
   it('fails closed with exit 2 when gh fails, before listing or removing anything', () => {
@@ -364,7 +407,6 @@ describe('workspace-sweep.sh (#248)', () => {
     expect(fetched.status).toBe(0)
     expect(fetched.stdout).toContain('# remote-tracking refs: fetched now (--fetch)')
     expect(action(fetched.stdout, 'remote origin/feat/late')).toBe('keep: tip is not the head of a merged or closed PR')
-    // The fetched tip of feat/moved is no longer the merged PR's head.
-    expect(action(fetched.stdout, 'remote origin/feat/moved')).toBe('keep: tip is not the head of a merged or closed PR')
+    expect(action(fetched.stdout, `worktree ${join(f.wt, 'stale')}`)).toBe('keep: unmerged (no safety check passed)')
   }, TEST_TIMEOUT_MS)
 })

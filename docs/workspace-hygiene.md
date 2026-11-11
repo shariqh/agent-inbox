@@ -81,7 +81,7 @@ git -C "$MAIN" bundle list-heads "$B"                 # must list the branch at 
 ```sh
 npm run sweep                   # dry run: read-only, lists every candidate and why
 npm run sweep -- --fetch        # git fetch --prune origin first, then the dry run
-npm run sweep -- --apply        # remove the candidates marked `remove`
+npm run sweep -- --apply        # fetch, then remove the candidates marked `remove`
 ```
 
 The dry run is strictly read-only: no `git fetch`, no `git worktree prune`, no write.
@@ -98,14 +98,21 @@ entries named `<prefix>XXXXXX`. The prefixes come from the repository's own
 prefixes that are too generic (`repo-`, `plain-`, anything under four characters) are
 refused. Runtimes are reported, never removed.
 
-`--apply` re-checks each candidate right before deleting it, one at a time:
-`git worktree remove` (never `--force`), `git branch -D`, `git push origin --delete`
+`--apply` always runs `git fetch --prune origin` first, so it implies `--fetch`: check
+(d) trusts remote-tracking refs, and a stale one (a branch since deleted or
+force-pushed on origin) must never vouch for a deletion. If the fetch fails it exits 2
+and removes nothing. It then re-checks each candidate right before deleting it, one at
+a time: `git worktree remove` (never `--force`), `git branch -D`,
+`git push --force-with-lease=refs/heads/<branch>:<listed tip> origin --delete <branch>`
 only while `git ls-remote` still shows the listed tip, and `rm -rf --` by absolute path
 for `build/`, `out/` and temp entries under the resolved `$TMPDIR`. It never touches
 `main`, the main checkout's current branch, a branch checked out in a kept worktree,
 open-PR heads or bases, anything changed in the last 2 hours, anything a running
 process names or works in, or anything in [Never touch](#never-touch). Without a working `gh` it fails closed: exit 2, nothing
 listed or removed. Exit 64 is a usage error.
+
+A dry run without `--fetch` decides on refs as they are, so its (d) can be stale; it
+says when the refs were last fetched.
 
 A `keep` line is something to report, or to ask the owner about, as the sections below
 describe.

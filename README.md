@@ -640,6 +640,12 @@ To write such an agent on `@a2a-js/sdk`, start from the agent kit and its exampl
 says what the file holds, and `npm run meshctl -- disable --apply` removes it (keeping a
 backup).
 
+Without a checkout, the app's own `meshctl` does the same (#540): installing or updating the
+agents from Setup writes `~/.agent-inbox/bin/meshctl`, which runs the meshctl inside the app's
+signed runtime. Setup never edits a shell profile; add the line it shows to `~/.zprofile`
+(`export PATH="$HOME/.agent-inbox/bin:$PATH"`), open a new terminal, and `meshctl status`
+works. A checkout's `npm run install:agents -- --apply` writes the same shim for the checkout.
+
 ## Architecture
 
 - **`src/store.ts`** owns schema, migrations, WAL configuration, and every database

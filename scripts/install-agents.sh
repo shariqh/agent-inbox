@@ -7,6 +7,8 @@
 # only), the managed block cites that import instead of inlining a second copy.
 # When Claude and Copilot resolve to one real instruction file, one shared
 # managed block carries the shared snippet and both host appendices.
+# --apply also writes ~/.agent-inbox/bin/meshctl, which runs this install's
+# meshctl (#540); it never edits a shell profile, and prints the PATH line.
 #
 # Usage:
 #   npm run install:agents
@@ -54,7 +56,7 @@ while [ "$#" -gt 0 ]; do
       TARGET="$2"
       shift 2
       ;;
-    -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,19p' "$0"; exit 0 ;;
     *) echo "install-agents: unknown flag: $1 (try --help)" >&2; exit 2 ;;
   esac
 
@@ -686,6 +688,172 @@ verify_expected_runtime() {
   ' "$RUNTIME_PATH/runtime-manifest.json" "$RUNTIME_ID" "$RUNTIME_MANIFEST_DIGEST" >/dev/null 2>&1
 }
 
+# ── the meshctl shim (#540) ──────────────────────────────────────────────────
+# Every --apply also writes ~/.agent-inbox/bin/meshctl, a small sh script that
+# runs this install's meshctl: the installed runtime's own bin/node and
+# dist/meshctl.js for Setup (kind=runtime, a path that survives moving or
+# updating the app), or the resolved Node 24 and the checkout's dist/meshctl.js
+# beside the MCP entry (kind=checkout). It owns only a file whose first two
+# lines are its own (#!/bin/sh and the marker below): anything else there is
+# reported and left alone, and a shim of the other kind is replaced only with
+# --force. --uninstall (all hosts) removes a shim of its own kind. Shell
+# profiles are never edited: the PATH line is printed for the human to add.
+MESHCTL_BIN_DIR="$HOME/.agent-inbox/bin"
+MESHCTL_SHIM="$MESHCTL_BIN_DIR/meshctl"
+MESHCTL_MARKER_HEAD='# agent-inbox meshctl shim (#540), kind='
+MESHCTL_MARKER_TAIL=', written by install-agents.sh. Do not edit.'
+# shellcheck disable=SC2016 # printed for the human's profile, expanded there
+MESHCTL_PATH_LINE='export PATH="$HOME/.agent-inbox/bin:$PATH"'
+
+# none, runtime, checkout or foreign (a symlink, not a regular file, not this
+# user's, or a file without the marker)
+meshctl_shim_state() {
+  [ -e "$MESHCTL_SHIM" ] || [ -L "$MESHCTL_SHIM" ] || { echo none; return; }
+  if [ -L "$MESHCTL_SHIM" ] || [ ! -f "$MESHCTL_SHIM" ] || [ ! -O "$MESHCTL_SHIM" ]; then echo foreign; return; fi
+  [ "$(sed -n 1p "$MESHCTL_SHIM" 2>/dev/null)" = '#!/bin/sh' ] || { echo foreign; return; }
+  case "$(sed -n 2p "$MESHCTL_SHIM" 2>/dev/null)" in
+    "${MESHCTL_MARKER_HEAD}runtime$MESHCTL_MARKER_TAIL") echo runtime ;;
+    "${MESHCTL_MARKER_HEAD}checkout$MESHCTL_MARKER_TAIL") echo checkout ;;
+    *) echo foreign ;;
+  esac
+}
+
+sh_single_quote() {
+  printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+}
+
+meshctl_shim_text() {
+  local kind="$1" node="$2" script="$3" remedy
+  if [ "$kind" = runtime ]; then
+    remedy='open Agent Inbox, then Settings, and install or update the agents again'
+  else
+    remedy='run npm run build, then npm run install:agents -- --apply in the checkout again'
+  fi
+  cat <<EOF
+#!/bin/sh
+${MESHCTL_MARKER_HEAD}${kind}${MESHCTL_MARKER_TAIL}
+node=$(sh_single_quote "$node")
+meshctl=$(sh_single_quote "$script")
+if [ ! -x "\$node" ] || [ ! -f "\$meshctl" ]; then
+  [ -t 0 ] || cat > /dev/null
+  echo 'agent-inbox meshctl: this shim is stale: $remedy' >&2
+  exit 14
+fi
+exec "\$node" "\$meshctl" "\$@"
+EOF
+}
+
+# MESHCTL_ACTION: write, remove or none; MESHCTL_NOTE says why, in one line.
+MESHCTL_ACTION=none
+MESHCTL_NOTE=""
+MESHCTL_SEEN="$(meshctl_shim_state)"
+if [ "$RUNTIME_MODE" -eq 1 ]; then MESHCTL_KIND=runtime; else MESHCTL_KIND=checkout; fi
+meshctl_other() {
+  case "$1" in
+    runtime) echo "runs an Agent Inbox app's runtime" ;;
+    checkout) echo "runs a source checkout" ;;
+    *) echo "was not written by this installer" ;;
+  esac
+}
+if [ "$UNINSTALL" -eq 1 ]; then
+  if [ "$TARGET" != all ]; then
+    [ "$MESHCTL_SEEN" = none ] || MESHCTL_NOTE="kept $MESHCTL_SHIM: only --uninstall for every host removes it"
+  elif [ "$MESHCTL_SEEN" = "$MESHCTL_KIND" ]; then
+    MESHCTL_ACTION=remove
+  elif [ "$MESHCTL_SEEN" != none ]; then
+    MESHCTL_NOTE="left $MESHCTL_SHIM alone: it $(meshctl_other "$MESHCTL_SEEN")"
+  fi
+else
+  if [ "$RUNTIME_MODE" -eq 1 ]; then
+    MESHCTL_NODE="$RUNTIME_PATH/bin/node"
+    MESHCTL_SCRIPT="$RUNTIME_PATH/dist/meshctl.js"
+    MESHCTL_SOURCE="$RUNTIME_SOURCE/dist/meshctl.js"
+  else
+    MESHCTL_NODE="$NODE"
+    MESHCTL_SCRIPT="$(dirname "$ENTRY")/meshctl.js"
+    MESHCTL_SOURCE="$MESHCTL_SCRIPT"
+  fi
+  newline='
+'
+  if [ ! -f "$MESHCTL_SOURCE" ]; then
+    MESHCTL_NOTE="no shim: $MESHCTL_SOURCE is missing"
+    [ "$RUNTIME_MODE" -eq 1 ] || MESHCTL_NOTE="$MESHCTL_NOTE (run npm run build first)"
+  else
+    case "$MESHCTL_NODE$MESHCTL_SCRIPT" in
+      *"$newline"*) MESHCTL_NOTE="no shim: its paths hold a line break" ;;
+      *)
+        case "$MESHCTL_SEEN" in
+          none | "$MESHCTL_KIND") MESHCTL_ACTION=write ;;
+          runtime | checkout)
+            if [ "$FORCE" -eq 1 ]; then MESHCTL_ACTION=write
+            else MESHCTL_NOTE="left $MESHCTL_SHIM alone: it $(meshctl_other "$MESHCTL_SEEN") (use --force to replace it)"
+            fi
+            ;;
+          *) MESHCTL_NOTE="left $MESHCTL_SHIM alone: it $(meshctl_other foreign)" ;;
+        esac
+        ;;
+    esac
+  fi
+  [ "$MESHCTL_ACTION" = write ] && MESHCTL_TEXT="$(meshctl_shim_text "$MESHCTL_KIND" "$MESHCTL_NODE" "$MESHCTL_SCRIPT")"
+fi
+
+# Writes or removes the shim as planned; the transaction is active, so a
+# failure here rolls everything back, rollback_meshctl included. The state is
+# read again first: a file that changed since the plan is never touched.
+apply_meshctl() {
+  local temp
+  [ "$MESHCTL_ACTION" != none ] || return 0
+  [ "$(meshctl_shim_state)" = "$MESHCTL_SEEN" ] || {
+    echo "install-agents: $MESHCTL_SHIM changed while installing; refusing to touch it" >&2
+    return 1
+  }
+  if [ "$MESHCTL_SEEN" != none ]; then
+    cp -p "$MESHCTL_SHIM" "$WORK/meshctl.original" || return 1
+  fi
+  if [ "$MESHCTL_ACTION" = remove ]; then
+    : > "$WORK/meshctl.applied"
+    rm -f "$MESHCTL_SHIM" || return 1
+    echo "meshctl: removed $MESHCTL_SHIM" >&2
+    return 0
+  fi
+  (umask 077 && mkdir -p "$MESHCTL_BIN_DIR") || return 1
+  temp="$(mktemp "$MESHCTL_BIN_DIR/.meshctl.XXXXXX")" || return 1
+  printf '%s\n' "$temp" > "$WORK/meshctl.temp-path"
+  printf '%s\n' "$MESHCTL_TEXT" > "$temp" && chmod 755 "$temp" || return 1
+  : > "$WORK/meshctl.applied"
+  mv -f "$temp" "$MESHCTL_SHIM" || return 1
+  echo "meshctl: wrote $MESHCTL_SHIM ($MESHCTL_KIND: $MESHCTL_SCRIPT)" >&2
+}
+
+rollback_meshctl() {
+  local rollback
+  [ -f "$WORK/meshctl.applied" ] || return 0
+  if [ -f "$WORK/meshctl.original" ]; then
+    rollback="$MESHCTL_SHIM.rollback.$$"
+    if cp -p "$WORK/meshctl.original" "$rollback" && mv -f "$rollback" "$MESHCTL_SHIM"; then
+      echo "meshctl: restored $MESHCTL_SHIM after failed install" >&2
+    else
+      rm -f "$rollback"
+      ROLLBACK_INCOMPLETE=1
+      echo "install-agents: warning: could not restore $MESHCTL_SHIM" >&2
+    fi
+  elif rm -f "$MESHCTL_SHIM"; then
+    echo "meshctl: removed $MESHCTL_SHIM after failed install" >&2
+  else
+    ROLLBACK_INCOMPLETE=1
+    echo "install-agents: warning: could not remove $MESHCTL_SHIM" >&2
+  fi
+}
+
+# Printed after a write and in the dry run, unless this shell's PATH already has the folder.
+meshctl_path_hint() {
+  case ":$PATH:" in
+    *":$MESHCTL_BIN_DIR:"*) return 0 ;;
+  esac
+  echo "meshctl: to run it as meshctl from a terminal, add this line to your shell profile (~/.zprofile for zsh), then open a new terminal:" >&2
+  echo "  $MESHCTL_PATH_LINE" >&2
+}
+
 for target in "${TARGETS[@]}"; do
   file="$(instruction_write_file "$target")" || exit 1
   preflight_markers "$file" || exit 1
@@ -726,6 +894,17 @@ cleanup() {
     rm -f "$WORK/$target.preserve-mcp-snapshot"
   done
   rm -f "$WORK/runtime-installed"
+  if [ -f "$WORK/meshctl.temp-path" ]; then
+    temp_path="$(< "$WORK/meshctl.temp-path")"
+    rm -f "$temp_path"
+  fi
+  rm -f "$WORK/meshctl.temp-path" "$WORK/meshctl.applied"
+  if [ "$keep_snapshots" -eq 1 ] && [ -f "$WORK/meshctl.original" ]; then
+    echo "install-agents: warning: exited before restoring $MESHCTL_SHIM; its earlier copy is retained at $WORK/meshctl.original" >&2
+    kept=1
+  else
+    rm -f "$WORK/meshctl.original"
+  fi
   if [ "$REPORT_DIVERTED" -eq 1 ]; then
     # Something was not, or may not have been, put back: the report stays,
     # beside any snapshot it names, for whoever was not reading when it was
@@ -922,6 +1101,7 @@ rollback_transaction() {
   trap '' "${INTERRUPT_SIGNALS[@]}"
   ROLLBACK_ISOLATION=1
   divert_report
+  rollback_meshctl
   rollback_files
   rollback_mcp_changes
   TRANSACTION_ACTIVE=0
@@ -989,7 +1169,18 @@ for target in "${TARGETS[@]}"; do
   fi
 done
 
-if [ "$APPLY" -eq 0 ]; then exit 0; fi
+if [ "$APPLY" -eq 0 ]; then
+  case "$MESHCTL_ACTION" in
+    write)
+      echo "── $MESHCTL_SHIM (0755) ──"
+      printf '%s\n' "$MESHCTL_TEXT"
+      ;;
+    remove) echo "── would remove $MESHCTL_SHIM ──" ;;
+  esac
+  [ -z "$MESHCTL_NOTE" ] || echo "meshctl: $MESHCTL_NOTE" >&2
+  [ "$MESHCTL_ACTION" != write ] || meshctl_path_hint
+  exit 0
+fi
 
 for target in "${TARGETS[@]}"; do
   file="$(instruction_write_file "$target")" || exit 1
@@ -1160,10 +1351,18 @@ for target in "${TARGETS[@]}"; do
   fi
 done
 
+if ! apply_meshctl; then
+  rollback_transaction
+  echo "install-agents: could not update $MESHCTL_SHIM; host configuration was not changed" >&2
+  exit 1
+fi
+
 TRANSACTION_ACTIVE=0
 if [ "$RUNTIME_MODE" -eq 1 ]; then
   if [ "$UNINSTALL" -eq 1 ]; then prune_old_runtimes 1; else prune_old_runtimes 0; fi
 fi
+[ -z "$MESHCTL_NOTE" ] || echo "meshctl: $MESHCTL_NOTE" >&2
+[ "$MESHCTL_ACTION" != write ] || meshctl_path_hint
 echo "Start a fresh agent session to load MCP and instruction changes." >&2
 # #412: the driven-session command this runtime carries, printed, never put on PATH
 if [ "$RUNTIME_MODE" -eq 1 ] && [ "$UNINSTALL" -eq 0 ] && [ -f "$RUNTIME_PATH/dist/driver-cli.js" ]; then

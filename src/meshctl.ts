@@ -40,6 +40,7 @@
 //                                            a conformance check anyone can run (src/mesh-check.ts, #538)
 //   meshctl forget-runs (--unslop | --request-post | --web-search | --id <id> | --all) [--apply]
 //   meshctl status                           say what mesh.json turns on
+//   meshctl --version                        this build's version
 //   meshctl skills link|unlink [--target claude|agents|all] [--apply]
 //                                            link the routing skills into the harnesses' skill folders
 //   meshctl unslop --kind <kind> [--report <file>] [--timeout <s>] < draft
@@ -73,11 +74,13 @@ import { REQUEST_POST_USAGE, runRequestPost } from './request-post-client.js'
 import type { RequestPostIo } from './request-post-client.js'
 import { UNSLOP_USAGE, runUnslop } from './unslop-client.js'
 import type { UnslopIo } from './unslop-client.js'
+import { AGENT_INBOX_VERSION } from './version.js'
 
 const UNSLOP_PORT = 4420
 const ENDPOINT_RULE = 'https://<name>.<tailnet>.ts.net[:<port>] or, for the SSH fallback only, http://127.0.0.1:<port>'
 
 const USAGE = `usage: agent-inbox-meshctl status
+       agent-inbox-meshctl --version
        agent-inbox-meshctl disable [--apply]
        agent-inbox-meshctl enable --agents-view [--apply]
        agent-inbox-meshctl enable --unslop [--port <n>] [--checkout <path>] [--apply]
@@ -326,6 +329,11 @@ function meshctl(argv: string[], io: MeshctlIo): number {
   const [command, ...rest] = argv
   const usage = (): number => { err(USAGE); return 2 }
   if (command === 'help' || command === '--help' || command === '-h') { out(USAGE); return 0 }
+  if (command === '--version' || command === 'version') {
+    if (rest.length) return usage()
+    out(`agent-inbox-meshctl ${AGENT_INBOX_VERSION}\n`)
+    return 0
+  }
   if (command === 'unslop') {
     // async: the entry below runs it (runUnslop in src/unslop-client.ts)
     err(UNSLOP_USAGE)

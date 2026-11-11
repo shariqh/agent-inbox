@@ -10424,6 +10424,9 @@ function renderAgents(host, s, canInstall) {
   title.textContent = 'Agents'
   const list = document.createElement('ul')
   list.className = 'agents-hosts'
+  // #540: the command-line shim the agent installer writes, apart from the host list
+  const cli = document.createElement('div')
+  cli.className = 'agents-cli'
   const actions = document.createElement('div')
   actions.className = 'agents-actions'
   const result = document.createElement('pre')
@@ -10433,9 +10436,9 @@ function renderAgents(host, s, canInstall) {
   restart.className = 'agents-restart'
   restart.setAttribute('role', 'status')
   restart.hidden = true
-  section.append(title, list, actions, result, restart)
+  section.append(title, list, cli, actions, result, restart)
   host.appendChild(section)
-  agentsBlock = { list, actions, result, restart, canInstall, running: false }
+  agentsBlock = { list, cli, actions, result, restart, canInstall, running: false }
   paintAgents(s.agents)
 }
 
@@ -10487,12 +10490,35 @@ function paintAgents(agents) {
     agentsHint(hooks.text)
     if (hooks.command) agentsCommand(hooks.command)
   }
+  paintCli(agents.cli)
+}
+
+// The shim's line and, while it works, the PATH line to copy: words the viewer
+// built (src/agent-hosts.ts), shown as text.
+function paintCli(shim) {
+  const box = agentsBlock.cli
+  box.replaceChildren()
+  const text = (value) => (typeof value === 'string' && value !== '' ? value : null)
+  if (!shim || typeof shim !== 'object' || !text(shim.name) || !text(shim.text)) return
+  const line = document.createElement('p')
+  line.className = 'setup-hint'
+  const name = document.createElement('strong')
+  name.textContent = `${shim.name}:`
+  line.append(name, ` ${shim.text}`)
+  box.appendChild(line)
+  if (text(shim.hint)) {
+    const p = document.createElement('p')
+    p.className = 'setup-hint'
+    p.textContent = shim.hint
+    box.appendChild(p)
+  }
+  if (text(shim.command)) agentsCommand(shim.command, box, 'agents-cli-command')
 }
 
 // A command the viewer built and quoted, shown as text with a Copy button.
-function agentsCommand(text) {
+function agentsCommand(text, into = agentsBlock.actions, className = 'agents-hooks-command') {
   const command = document.createElement('pre')
-  command.className = 'agents-hooks-command'
+  command.className = className
   command.textContent = text
   const copy = btn('Copy', async () => {
     try {
@@ -10504,7 +10530,7 @@ function agentsCommand(text) {
     setTimeout(() => { copy.textContent = 'Copy' }, 1500)
   })
   copy.className = 'copy-btn'
-  agentsBlock.actions.append(command, copy)
+  into.append(command, copy)
 }
 
 // /api/setup as JSON, or null when it cannot be read.

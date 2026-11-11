@@ -52,7 +52,9 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   tab, rail or the dock, and reads `/api/mesh/agents` only for its Mesh agents section, and only
   when `/api/version` carries `mesh`. No mesh module enters the stdio MCP graph, the hub
   schema is untouched, and `test/fixtures/app-dependencies.txt` pins the dependency
-  set. Nothing puts the meshctl bin on PATH: document `npm run meshctl -- …`.
+  set. Since #540 the agent installer puts meshctl on PATH through `~/.agent-inbox/bin/meshctl`
+  (a Setup runtime's, or a checkout's; `setup-and-installers.md` has the rule), and the docs
+  name both `meshctl …` and, from a checkout, `npm run meshctl -- …`. No npm package ships it.
 
 ## Invariants in detail
 

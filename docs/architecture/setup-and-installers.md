@@ -145,6 +145,45 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   `test/host-config-secrets.test.ts` runs every reader, the dry-run installers and
   `/api/setup` over configs that put a fake token where the parser quotes it: a new reader
   is one more row there. Unchanged on purpose: what each reader does with such a config.
+- **The meshctl shim: one file, its own kind, never a shell profile** *(#540)*. Every applied
+  `install-agents.sh` run (any `--target`) also writes `~/.agent-inbox/bin/meshctl`, so someone
+  with only the app can run `meshctl` (decision 2026-11-11: the app puts its bundled meshctl on
+  PATH from Setup; no npm package). It is a `#!/bin/sh` script whose second line is the marker
+  `# agent-inbox meshctl shim (#540), kind=<runtime|checkout>, written by install-agents.sh. Do
+  not edit.`, then `node='…'` and `meshctl='…'` in sh quoting, and `exec "$node" "$meshctl" "$@"`;
+  when either is gone it discards piped input, says it is stale and how to rewrite it, and exits
+  14, like the mesh's agent shims. `kind=runtime` names the INSTALLED runtime's `bin/node` and
+  `dist/meshctl.js` (`$RUNTIME_PATH`, never the app bundle, so it survives moving or updating the
+  app; every Setup install or update rewrites it to the runtime it registers, and the prunes then
+  keep or remove runtimes by the host configs as before); `kind=checkout` names the resolved Node
+  24 and the `meshctl.js` beside the MCP entry (`$ROOT/dist/`). No shim is written when that file
+  is missing (a payload from before #540, or a checkout that is not built), and the run says so.
+  Ownership is the marker on a regular file this user owns: a symlink, another file or another
+  user's is reported (`left … alone`) and never written or removed, `--force` included. A shim
+  of the other kind is left alone unless `--force`, so Setup never takes over a checkout's shim
+  (it never receives `--force`) and a checkout install never takes over Setup's by default.
+  `--uninstall` removes a shim of its own kind only for every host (`--target all`); one host's
+  uninstall keeps it, since the other host's runtime still runs it. The write is the LAST step
+  of the transaction: the state is read again (a file that changed since the plan refuses), a
+  replaced shim is copied into `$WORK`, a `mktemp` beside it gets the text and `chmod 755`, and
+  one `mv` publishes it; a failure there, or a signal, rolls the whole install back
+  (`rollback_meshctl` restores the copy or removes the new file) and an exit that skipped the
+  rollback keeps the copy in `$WORK`. The dry run prints the shim and writes nothing.
+  **PATH is handed over, never applied.** Shell profiles are not files these installers manage
+  (no marker, no backup convention, often symlinked into a dotfiles repo), so editing one
+  silently, or even behind an opt-in, would be the first write outside the files listed above;
+  the dry run and the install print `export PATH="$HOME/.agent-inbox/bin:$PATH"` unless the
+  running shell's PATH already has the folder, and Setup's Agents block shows the shim's state
+  and that line with Copy. `/usr/local/bin` is never written. The viewer reads the shim in
+  `src/agent-hosts.ts` (`readCliShim`, read-only, the same marker rule, a 4 KiB cap) and
+  `/api/setup` carries `agents.cli {kind, stale?, name, text, hint?, command?}`: the words are
+  built there, so no viewer or page file names meshctl (`test/mesh.test.ts`), and no path from
+  the file is returned. Putting `~/.agent-inbox/bin` on PATH also exposes the mesh's own agent
+  shims there (`unslop`, `request-post`), which are commands already. Known limits: the shim is
+  not a "use" of a runtime (`scanRuntimeReferences` reads host configs only), so after a
+  one-host uninstall the prune may remove the runtime it names and it reports itself stale; and
+  an agent shim `meshctl enable --request-post` wrote from a runtime names that runtime and goes
+  stale after an update prunes it (run the enable again).
 - **The Copilot CLI hooks installer owns one whole file** *(#466 PR 3)*.
   `scripts/install-copilot-hooks.sh` writes only `${COPILOT_HOME:-~/.copilot}/hooks/agent-inbox.json`,
   built by `scripts/copilot-hooks.mjs` (which also decides ownership: exactly the shape it

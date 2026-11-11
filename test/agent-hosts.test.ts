@@ -15,7 +15,7 @@ import { mkdirSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { join, resolve } from 'node:path'
-import { readAgentHosts, registeredRuntimeVersion } from '../src/agent-hosts.js'
+import { readAgentHosts, readCliShim, registeredRuntimeVersion } from '../src/agent-hosts.js'
 import type { RuntimeVerifier } from '../src/agent-hosts.js'
 import { installRuntimeVersion, registerHost } from './release-runtime.js'
 import { scratchDir } from './scratch.js'
@@ -356,5 +356,28 @@ describe('readAgentHosts (#197)', () => {
     }
     expect([...seen].sort()).toEqual(['checkout', 'other', 'runtime', 'unknown'])
     expect([...attributedKinds].sort()).toEqual(['checkout', 'dead', 'elsewhere', 'other', 'runtime', 'unknown'])
+  })
+})
+
+// #540: what Setup says about ~/.agent-inbox/bin/meshctl; the installer tests write the real ones.
+describe('readCliShim', () => {
+  const write = (home: string, text: string): void => {
+    mkdirSync(join(home, '.agent-inbox', 'bin'), { recursive: true })
+    writeFileSync(join(home, '.agent-inbox', 'bin', 'meshctl'), text, { mode: 0o755 })
+  }
+  const shim = (kind: string, node: string, script: string): string =>
+    `#!/bin/sh\n# agent-inbox meshctl shim (#540), kind=${kind}, written by install-agents.sh. Do not edit.\nnode='${node}'\nmeshctl='${script}'\n`
+
+  it('reads none, a stale runtime shim and a file the installer would not own, and returns no path from it', () => {
+    const home = scratchDir('cli-shim-')
+    expect(readCliShim(home)).toMatchObject({ kind: 'none' })
+    write(home, shim('runtime', join(home, 'gone', 'bin', 'node'), join(home, 'gone', 'dist', 'meshctl.js')))
+    const stale = readCliShim(home)
+    expect(stale).toEqual({ kind: 'runtime', stale: true, name: 'meshctl', text: '~/.agent-inbox/bin/meshctl runs a Setup runtime that is gone; install or update the agents to rewrite it' })
+    expect(JSON.stringify(stale)).not.toContain(home)
+    for (const text of [shim('surprise', process.execPath, process.execPath), `#!/bin/bash\n${shim('runtime', process.execPath, process.execPath).split('\n').slice(1).join('\n')}`, `${shim('runtime', process.execPath, process.execPath)}${'#'.repeat(5000)}\n`]) {
+      write(home, text)
+      expect(readCliShim(home).kind).toBe('foreign')
+    }
   })
 })

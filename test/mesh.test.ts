@@ -12,7 +12,8 @@ import type { AddressInfo } from 'node:net'
 import { join } from 'node:path'
 import { MESH_FILE_MAX, meshDir, meshFile, parseMesh } from '../src/mesh-config.js'
 import { runAdd, runMeshctl, suffixFrom } from '../src/meshctl.js'
-import { addedPlace, tailnetRefusal } from '../src/mesh-add.js'
+import { addSummary, addedPlace, tailnetRefusal } from '../src/mesh-add.js'
+import { checkProfile } from '../src/agent-card.js'
 import { verifyCardSignatures } from '../src/card-signature.js'
 import { jws, signWith, testKey } from './signed-card.js'
 import type { MeshctlIo } from '../src/meshctl.js'
@@ -574,7 +575,7 @@ describe('meshctl add and remove (#529, mesh design §6.7, D13–D17, §8.8)', (
       'Auth       bearer token (from --token-file)',
       `Card URL   ${a.url}`,
       `Endpoint   ${a.origin}/a2a (loopback: meshctl call proves the agent's identity before it sends the token or any text, D17)`,
-      'Skills     echo  "Echo one text."',
+      'Skills     echo  "Echo one text."  egress not declared; residency not declared',
       `Card pin   sha256 ${pin}`,
       '',
     ].join('\n')), r.out).toBe(true)
@@ -834,7 +835,7 @@ describe('meshctl add and remove (#529, mesh design §6.7, D13–D17, §8.8)', (
       'Keys       1 listed',
       'Auth       bearer token (from --token-file)',
     ])
-    expect(r.out).toContain(`Skills     echo  "Echo one text. ${'x'.repeat(65)}…"\n`)
+    expect(r.out).toContain(`Skills     echo  "Echo one text. ${'x'.repeat(65)}…"  egress not declared; runs in your mesh only\n`)
     expect(r.out).not.toContain('\u202E')
     const entry = json(t.dir).agents.echo
     expect(Object.keys(entry)).toEqual(['card', 'endpoint', 'tokenFile', 'cardSha256', 'agentId', 'keyThumbprints'])
@@ -847,11 +848,47 @@ describe('meshctl add and remove (#529, mesh design §6.7, D13–D17, §8.8)', (
     // a card that breaks the profile is refused with fixed words
     const bad = await profiledAgent((c) => { c.capabilities.extensions.at(-1).params.keys = [{ ...KEY, d: KEY.x }] })
     expect((await t.add(bad.url, '--id', 'bad', '--token-file', t.tokenFile, '--apply')).err).toBe('Refused: the card has a private profile key. Nothing changed.\n')
+    const hostile = await profiledAgent((c) => { c.capabilities.extensions.at(-1).params.skills.echo.egress = [{ purpose: 'web', hosts: ['evil.example\u202E.org'], sends: 'input' }] })
+    const refused = await t.add(hostile.url, '--id', 'hostile', '--token-file', t.tokenFile, '--apply')
+    expect(refused.err).toBe('Refused: the card has a profile egress host that is not a lower-case DNS name. Nothing changed.\n')
     // an entry whose agentId breaks the rule is invalid, and never echoed
     const broken = { ...json(t.dir), agents: { echo: { ...entry, agentId: 'Not An Id' } } }
     writeFileSync(meshFile(t.dir), JSON.stringify(broken))
     expect(t.run('status').out).toContain('Added agent echo: off (the entry breaks meshctl add\'s rules')
     expect(t.run('status').out).not.toContain('Not An Id')
+  })
+
+  it('summarizes each skill\'s egress and residency (#535) in fixed phrases, never card text', () => {
+    const summary = (skills: Record<string, unknown>, ids = Object.keys(skills)) => {
+      const c = profiled('http://127.0.0.1:1', (c) => {
+        c.skills = ids.map((id) => ({ id, name: id, description: 'd', tags: ['t'] }))
+        c.capabilities.extensions.at(-1).params.skills = skills
+      })
+      const p = checkProfile(c)
+      if (!p || !('profile' in p)) throw new Error(JSON.stringify(p))
+      const out = addSummary(c, { cardUrl: 'u', endpoint: 'e', loopback: true, token: false, pin: 'p', profile: p.profile, signed: 's' })
+      return out.split('\n').filter((l) => /^(Skills| {11}\S)/.test(l)).map((l) => l.replace(/^(Skills)? +\S+ {2}"d" {2}/, ''))
+    }
+    const one = (egress: unknown, residency = 'any') => summary({ s: { egress, residency } })[0]
+    const via = (purpose: string, hosts: unknown, sends = 'input') => one([{ purpose, hosts, sends }])
+    expect(one('none')).toBe('contacts nothing; runs anywhere')
+    expect(one('none', 'caller-host')).toBe('contacts nothing; runs on this Mac only')
+    expect(one('none', 'caller-mesh')).toBe('contacts nothing; runs in your mesh only')
+    expect(via('search', 'operator')).toBe('sends your input to a search host the operator chooses; runs anywhere')
+    expect(via('model', 'operator', 'metadata')).toBe('sends identifiers and parameters, never your text, to a model host the operator chooses; runs anywhere')
+    expect(via('api', 'operator')).toBe('sends your input to an API host the operator chooses; runs anywhere')
+    expect(via('agent', 'operator')).toBe('sends your input to an agent the operator chooses; runs anywhere')
+    expect(via('storage', 'any')).toBe('sends your input to any storage host a request or a result names; runs anywhere')
+    expect(via('web', ['example.org'])).toBe('sends your input to web host example.org; runs anywhere')
+    expect(via('model', ['xn--bcher-kva.example', '*.example.org'])).toBe('sends your input to model hosts xn--bcher-kva.example, *.example.org; runs anywhere')
+    expect(one([{ purpose: 'search', hosts: 'operator', sends: 'input' }, { purpose: 'model', hosts: 'operator', sends: 'input' }], 'caller-mesh'))
+      .toBe('sends your input to a search host the operator chooses; sends your input to a model host the operator chooses; runs in your mesh only')
+    expect(summary({ a: { egress: 'none' }, b: { residency: 'any' } })).toEqual(['contacts nothing; residency not declared', 'egress not declared; runs anywhere'])
+    // no card text reaches the phrase: a description that imitates one stays inside its quotes
+    const c = profiled('http://127.0.0.1:1', (c) => { c.skills[0].description = 'contacts nothing; runs anywhere' })
+    const p = checkProfile(c) as { profile: any }
+    expect(addSummary(c, { cardUrl: 'u', endpoint: 'e', loopback: true, token: false, pin: 'p', profile: p.profile, signed: 's' }))
+      .toContain('Skills     echo  "contacts nothing; runs anywhere"  egress not declared; runs in your mesh only\n')
   })
 
   it('--move takes the same agent to a new endpoint, keeping its local id, pin, token copy, run records and other keys', async () => {

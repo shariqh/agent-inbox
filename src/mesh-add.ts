@@ -9,12 +9,13 @@
 // entry's `agentId` so a move keeps the entry), and `addSummary()` is add's one-screen summary.
 // Since #536 it verifies the card's signatures (card-signature.ts): a signature by a listed key
 // that fails refuses the card, and the entry pins the thumbprints of the keys the card lists.
+// Since #535 the summary shows each skill's declared egress and residency in fixed phrases.
 import { createHash } from 'node:crypto'
 import { request as httpRequest } from 'node:http'
 import type { IncomingMessage } from 'node:http'
 import { request as httpsRequest } from 'node:https'
 import type { LookupFunction } from 'node:net'
-import { agentIdRefusal, canonicalCard, checkAddedCard, checkProfile, claim, type Profile } from './agent-card.js'
+import { agentIdRefusal, canonicalCard, checkAddedCard, checkProfile, claim, type Egress, type Profile, type SkillProfile } from './agent-card.js'
 import { THUMBPRINT, signatureVerdict, tooDeep } from './card-signature.js'
 import type { SignatureVerdict } from './card-signature.js'
 import { inTailnet } from './mesh-config.js'
@@ -163,11 +164,32 @@ export function signatureRefusal(v: SignatureVerdict, local: boolean, thumbprint
   return undefined
 }
 
+// §4: egress and residency in fixed phrases per enum value, never card text; named hosts passed
+// egressRefusal's punycode check, so they are printed bare
+const KIND: Record<Egress['purpose'], string> = { model: 'model host', search: 'search host', storage: 'storage host', web: 'web host', api: 'API host', agent: 'agent' }
+const SENDS: Record<Egress['sends'], string> = { input: 'sends your input to', metadata: 'sends identifiers and parameters, never your text, to' }
+const RUNS = { 'caller-host': 'runs on this Mac only', 'caller-mesh': 'runs in your mesh only', any: 'runs anywhere' }
+
+const egressPhrase = (e: Egress): string => {
+  const kind = KIND[e.purpose]
+  const to = e.hosts === 'operator' ? `${/^[aeiouA]/.test(kind) ? 'an' : 'a'} ${kind} the operator chooses`
+    : e.hosts === 'any' ? `any ${kind} a request or a result names`
+      : `${kind}${e.hosts.length > 1 ? 's' : ''} ${e.hosts.join(', ')}`
+  return `${SENDS[e.sends]} ${to}`
+}
+
+/** One skill's declared egress and residency (§3.8, §3.9) for the summary: fixed phrases, "not declared" when absent. */
+function declarationLine(d: SkillProfile | undefined): string {
+  const egress = d?.egress === undefined ? 'egress not declared' : d.egress === 'none' ? 'contacts nothing' : d.egress.map(egressPhrase).join('; ')
+  return `${egress}; ${d?.residency === undefined ? 'residency not declared' : RUNS[d.residency]}`
+}
+
 /**
  * `add`'s one-screen summary (publishable-agent design §4): the fixed untrusted header, then one
  * labelled line per field. Card text is a quoted claim (`claim()`: cleaned, capped); an id, a
  * SemVer version, a skill id or a provider URL that passed its syntax check is printed bare; a
- * missing field says so. `Signed` is signedLine()'s (#536); egress and residency (#535) add their lines later.
+ * missing field says so. `Signed` is signedLine()'s (#536); each skill's egress and residency are
+ * declarationLine()'s fixed phrases from the validated profile (#535).
  */
 export function addSummary(card: unknown, s: SummaryOf): string {
   const c = obj(card)
@@ -186,7 +208,7 @@ export function addSummary(card: unknown, s: SummaryOf): string {
     row('Auth', authLine(c, s.token)),
     row('Card URL', s.cardUrl),
     row('Endpoint', `${s.endpoint} (${s.loopback ? 'loopback: meshctl call proves the agent\'s identity before it sends the token or any text, D17' : 'https on this Mac\'s tailnet, TLS verified'})`),
-    ...skills.slice(0, 16).map((skill, i) => row(i ? '' : 'Skills', `${typeof skill.id === 'string' && BARE_SKILL.test(skill.id) ? skill.id : claim(skill.id, 80) ?? '?'}  ${claim(skill.description, 80) ?? 'no description'}`)),
+    ...skills.slice(0, 16).map((skill, i) => row(i ? '' : 'Skills', `${typeof skill.id === 'string' && BARE_SKILL.test(skill.id) ? skill.id : claim(skill.id, 80) ?? '?'}  ${claim(skill.description, 80) ?? 'no description'}  ${declarationLine(typeof skill.id === 'string' ? s.profile?.skills.get(skill.id) : undefined)}`)),
     ...(skills.length > 16 ? [row('', `and ${skills.length - 16} more`)] : []),
     row('Card pin', `sha256 ${s.pin}`),
   ].join('\n') + '\n'

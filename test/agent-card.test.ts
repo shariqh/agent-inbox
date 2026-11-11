@@ -216,12 +216,13 @@ describe('the v1 profile extension and stable agent ids (#537; publishable-agent
   })
 
   it('reads the id and the key count; a card without the profile has none', () => {
-    expect(checkProfile(profiled())).toEqual({ profile: { id: 'shariqh.github.io/agent-inbox/web-search', keys: 1 } })
-    expect(checkProfile(profiled((p) => { delete p.keys; delete p.skills }))).toEqual({ profile: { id: 'shariqh.github.io/agent-inbox/web-search', keys: 0 } })
+    const skills = new Map([['web-search', params().skills['web-search']]])
+    expect(checkProfile(profiled())).toEqual({ profile: { id: 'shariqh.github.io/agent-inbox/web-search', keys: 1, skills } })
+    expect(checkProfile(profiled((p) => { delete p.keys; delete p.skills }))).toEqual({ profile: { id: 'shariqh.github.io/agent-inbox/web-search', keys: 0, skills: new Map() } })
     for (const card of [WEB_SEARCH, REQUEST_POST, UNSLOP, {}, null, 'card']) expect(checkProfile(card)).toBeUndefined()
     // an Ed25519 and a P-384 key, four in all
     const keys = [P256, { kty: 'OKP', crv: 'Ed25519', x: B43 }, { kty: 'EC', crv: 'P-384', x: 'C'.repeat(64), y: 'D'.repeat(64) }, { ...P256, x: B43.replace('A', 'E') }]
-    expect(checkProfile(profiled((p) => { p.keys = keys }))).toEqual({ profile: { id: 'shariqh.github.io/agent-inbox/web-search', keys: 4 } })
+    expect(checkProfile(profiled((p) => { p.keys = keys }))).toEqual({ profile: { id: 'shariqh.github.io/agent-inbox/web-search', keys: 4, skills } })
   })
 
   it('takes a domain-anchored id and refuses every other form with fixed words', () => {
@@ -294,6 +295,64 @@ describe('the v1 profile extension and stable agent ids (#537; publishable-agent
       expect(checkProfile(change(WEB_SEARCH, (c) => { c.capabilities.extensions.push({ uri: URI, params: bad }) }))).toEqual({ reason: 'a profile extension whose params are not an object' })
     }
     expect(checkProfile(change(profiled(), (c) => { c.capabilities.extensions.push({ uri: URI, params: params() }) }))).toEqual({ reason: 'more than one profile extension' })
+  })
+
+  it('takes declared egress and residency (#535) and refuses every other value with fixed words', () => {
+    const declared = (edit: (e: Json) => void) => checkProfile(profiled((p) => edit(p.skills['web-search'])))
+    const egress = (value: unknown) => declared((e) => { e.egress = value })
+    const entry = (edit: Json) => egress([{ purpose: 'model', hosts: 'operator', sends: 'input', ...edit }])
+    // every purpose, sends, hosts form and residency; a skill entry may hold either member alone
+    for (const purpose of ['model', 'search', 'storage', 'web', 'api', 'agent']) {
+      for (const sends of ['input', 'metadata']) {
+        for (const hosts of ['operator', 'any', ['api.example.org'], ['*.example.org', 'xn--bcher-kva.example', 'a-b.c9.example']]) {
+          expect(entry({ purpose, sends, hosts }), `${purpose} ${sends} ${hosts}`).toHaveProperty('profile')
+        }
+      }
+    }
+    expect(egress('none')).toHaveProperty('profile')
+    expect(egress(Array.from({ length: 8 }, () => ({ purpose: 'web', hosts: Array.from({ length: 8 }, (_, i) => `h${i}.example.org`), sends: 'input' })))).toHaveProperty('profile')
+    for (const residency of ['caller-host', 'caller-mesh', 'any']) expect(declared((e) => { e.residency = residency })).toHaveProperty('profile')
+    expect(declared((e) => { delete e.egress })).toHaveProperty('profile')
+    expect(declared((e) => { delete e.residency })).toHaveProperty('profile')
+
+    const HOST = 'a profile egress host that is not a lower-case DNS name'
+    const cases: Array<[unknown, string]> = [
+      ['None', 'a profile egress that is neither "none" nor a list of entries'],
+      ['operator', 'a profile egress that is neither "none" nor a list of entries'],
+      [{ purpose: 'model', hosts: 'operator', sends: 'input' }, 'a profile egress that is neither "none" nor a list of entries'],
+      [Array.from({ length: 9 }, () => ({ purpose: 'model', hosts: 'operator', sends: 'input' })), 'more than 8 profile egress entries for a skill'],
+      [['none'], 'a profile egress entry that is not an object'],
+      [[{ purpose: 'model', hosts: 'operator' }], 'a profile egress entry whose members are not exactly purpose, hosts and sends'],
+      [[{ purpose: 'model', hosts: 'operator', sends: 'input', note: 'x' }], 'a profile egress entry whose members are not exactly purpose, hosts and sends'],
+    ]
+    for (const [value, words] of cases) expect(egress(value), JSON.stringify(value)).toEqual({ reason: words })
+    const entries: Array<[Json, string]> = [
+      [{ purpose: 'telemetry' }, 'a profile egress purpose other than model, search, storage, web, api, agent'],
+      [{ purpose: 'Model' }, 'a profile egress purpose other than model, search, storage, web, api, agent'],
+      [{ purpose: '__proto__' }, 'a profile egress purpose other than model, search, storage, web, api, agent'],
+      [{ sends: 'everything' }, 'a profile egress sends other than input and metadata'],
+      [{ sends: ['input'] }, 'a profile egress sends other than input and metadata'],
+      [{ hosts: 'none' }, 'profile egress hosts that are neither "operator", "any" nor a list of hosts'],
+      [{ hosts: 'api.example.org' }, 'profile egress hosts that are neither "operator", "any" nor a list of hosts'],
+      [{ hosts: Array.from({ length: 9 }, (_, i) => `h${i}.example.org`) }, 'more than 8 hosts in a profile egress entry'],
+      // hostile hosts: wildcard abuse, IP literals, controls, case, scheme, port, path, overlong
+      ...['*', '*.', '*.org', '**.example.org', '*.*.example.org', 'a.*.example.org', 'example.*', '127.0.0.1', '10.0.0.1',
+        '[::1]', '::1', 'localhost', 'Example.org', 'https://example.org', 'example.org:443', 'example.org/x', 'user@example.org',
+        'example.org.', '.example.org', 'example..org', '-a.example.org', 'a-.example.org', 'exa mple.org', 'example.org\n',
+        'exa\u202Emple.org', 'ex\u0000ample.org', 'bücher.example', `${'a'.repeat(64)}.org`, `${'a.'.repeat(126)}org`, `*.${'a.'.repeat(125)}org`, 42,
+      ].map((h): [Json, string] => [{ hosts: [h] }, HOST]),
+    ]
+    for (const [edit, words] of entries) expect(entry(edit), JSON.stringify(edit)).toEqual({ reason: words })
+    // the longest allowed name passes, so the 253 cap is the one refusing above
+    expect(entry({ hosts: [`${'a.'.repeat(125)}org`] })).toHaveProperty('profile')
+    for (const residency of ['Any', 'caller', 'public', 'none', ['any'], 1]) {
+      expect(declared((e) => { e.residency = residency }), JSON.stringify(residency)).toEqual({ reason: 'a profile residency other than caller-host, caller-mesh, any' })
+    }
+    // a changed egress or residency is a card change, so it changes the pin
+    const pin = canonicalCard(profiled())
+    expect(canonicalCard(profiled((p) => { p.skills['web-search'].egress[0].hosts = ['search.example.org'] }))).not.toBe(pin)
+    expect(canonicalCard(profiled((p) => { p.skills['web-search'].egress[0].sends = 'metadata' }))).not.toBe(pin)
+    expect(canonicalCard(profiled((p) => { p.skills['web-search'].residency = 'any' }))).not.toBe(pin)
   })
 
   it('claim() quotes card text for one terminal line: cleaned, capped and escaped', () => {

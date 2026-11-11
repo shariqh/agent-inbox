@@ -1061,7 +1061,7 @@ describe('no new dependency (design §2.3, §2.4c)', () => {
     }
     // meshctl, its unslop and request-post clients, the config module and the card rule are Node core plus each other only
     const local = (file: string) => [...code(file).matchAll(SPECIFIERS)].map((m) => m[2]!).filter((spec) => !spec.startsWith('node:'))
-    expect(local('src/meshctl.ts')).toEqual(['./mesh-config.js', './mesh-config.js', './mesh-add.js', './card-signature.js', './mesh-keys.js', './mesh-runs.js', './mesh-runs.js', './mesh-call.js', './mesh-check.js', './mesh-skills.js', './mesh-skills.js', './request-post-client.js', './request-post-client.js', './unslop-client.js', './unslop-client.js'])
+    expect(local('src/meshctl.ts')).toEqual(['./mesh-config.js', './mesh-config.js', './mesh-add.js', './card-signature.js', './mesh-keys.js', './mesh-runs.js', './mesh-runs.js', './mesh-call.js', './mesh-check.js', './mesh-skills.js', './mesh-skills.js', './request-post-client.js', './request-post-client.js', './unslop-client.js', './unslop-client.js', './version.js'])
     // the clients take the run collector's type only (cards view V5 §5.3); meshctl's entry writes the record
     expect(local('src/unslop-client.ts')).toEqual(['./agent-card.js', './mesh-config.js', './mesh-identity.js', './mesh-identity.js', './mesh-runs.js'])
     // the identity proof (#492) and the https link (#530): Node core only

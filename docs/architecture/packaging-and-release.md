@@ -89,6 +89,12 @@ These landed after v1 and still hold invariants; the release history itself is i
   by `scripts/app-dependencies.mjs` into a private nodedir, with node-gyp's dist-url at an
   unresolvable host and header overrides in the environment refused; the validators tie
   the pin's URLs to `electron.version`, so every Electron bump moves it too.
+- **meshctl rides in the runtime payload** *(#540)* — `dist/meshctl.js` is one of the payload's
+  entrypoints (package.json `bin`), so it ships, is manifested and is signed with the app; there
+  is no npm package. Setup puts it on PATH through the installed runtime (the `~/.agent-inbox/bin/meshctl`
+  shim, `setup-and-installers.md`), and `docs/macos-release.md` says how to verify it. Staging
+  needs nothing new: meshctl is Node core plus `dist/` (`test/mesh.test.ts` pins its imports),
+  and `test/install-runtime.test.ts` runs `meshctl status` from a payload-shaped runtime.
 - **Portable release runtime** *(#74 Layer 1)* — the app may additionally embed a Node 24
   payload staged outside the Electron dependency tree: `darwin-arm64` alone since #296,
   which builds the macOS app for Apple silicon only (`darwin-x64` too through 1.x-last).

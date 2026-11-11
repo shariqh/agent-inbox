@@ -312,3 +312,75 @@ export function registeredRuntimeVersion(dir: string, runtimeId: string, verify:
     return null
   }
 }
+
+/**
+ * `~/.agent-inbox/bin/meshctl`, the shim install-agents.sh writes (#540), as Setup reports it:
+ * `kind` none, runtime (an app runtime's meshctl), checkout (a source checkout's) or foreign (a
+ * file the installer did not write, which it leaves alone), `stale` when the Node or meshctl.js
+ * it runs is gone, and the words the Setup panel shows. They are built here, not in a page file,
+ * so no viewer or page file names meshctl (test/mesh.test.ts). Read by the installer's own
+ * ownership rule: a regular file this user owns whose first two lines are `#!/bin/sh` and the
+ * marker. No path from the file is returned. Setup never edits a shell profile, so `command`,
+ * the PATH line, is handed over while the shim works, never applied.
+ */
+export interface CliShim {
+  kind: 'none' | 'runtime' | 'checkout' | 'foreign'
+  stale?: true
+  name: string
+  text: string
+  hint?: string
+  command?: string
+}
+
+const SHIM_DISPLAY = '~/.agent-inbox/bin/meshctl'
+const SHIM_MARKER = /^# agent-inbox meshctl shim \(#540\), kind=(runtime|checkout), written by install-agents\.sh\. Do not edit\.$/
+const SHIM_MAX_BYTES = 4096
+const PATH_HINT = 'To run meshctl from a terminal, add this line to your shell profile (~/.zprofile for zsh), then open a new terminal:'
+const PATH_LINE = 'export PATH="$HOME/.agent-inbox/bin:$PATH"'
+
+// One `name='…'` line in the installer's sh quoting ('\'' for a quote), or null.
+function shimValue(line: string | undefined, name: string): string | null {
+  const match = line === undefined ? null : new RegExp(`^${name}='((?:[^']|'\\\\'')*)'$`).exec(line)
+  return match ? match[1]!.replaceAll(`'\\''`, `'`) : null
+}
+
+function shimKind(file: string): Pick<CliShim, 'kind' | 'stale'> {
+  try {
+    const at = lstatSync(file)
+    if (!at.isFile() || (typeof process.getuid === 'function' && at.uid !== process.getuid()) || at.size > SHIM_MAX_BYTES) return { kind: 'foreign' }
+    const lines = readFileSync(file, 'utf8').split('\n')
+    const kind = lines[0] === '#!/bin/sh' ? SHIM_MARKER.exec(lines[1] ?? '')?.[1] : undefined
+    if (kind !== 'runtime' && kind !== 'checkout') return { kind: 'foreign' }
+    const node = shimValue(lines[2], 'node')
+    const script = shimValue(lines[3], 'meshctl')
+    let fresh = false
+    try {
+      fresh = node !== null && script !== null && (statSync(node).mode & 0o111) !== 0 && statSync(script).isFile()
+    } catch {
+      fresh = false
+    }
+    return fresh ? { kind } : { kind, stale: true }
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'ENOENT' ? { kind: 'none' } : { kind: 'foreign' }
+  }
+}
+
+export function readCliShim(home: string): CliShim {
+  const { kind, stale } = shimKind(join(home, '.agent-inbox', 'bin', 'meshctl'))
+  const name = 'meshctl'
+  const works = (text: string): CliShim => ({ kind, name, text, hint: PATH_HINT, command: PATH_LINE })
+  switch (kind) {
+    case 'none':
+      return { kind, name, text: `not installed; Setup writes ${SHIM_DISPLAY} when it installs or updates the agents` }
+    case 'runtime':
+      return stale
+        ? { kind, stale, name, text: `${SHIM_DISPLAY} runs a Setup runtime that is gone; install or update the agents to rewrite it` }
+        : works(`${SHIM_DISPLAY} runs a Setup runtime`)
+    case 'checkout':
+      return stale
+        ? { kind, stale, name, text: `${SHIM_DISPLAY} runs a source checkout whose build is gone (not managed by Setup)` }
+        : works(`${SHIM_DISPLAY} runs a source checkout (not managed by Setup)`)
+    default:
+      return { kind, name, text: `${SHIM_DISPLAY} was not written by Setup, so Setup leaves it alone` }
+  }
+}

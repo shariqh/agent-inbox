@@ -22,8 +22,8 @@ import { groupItems } from './group.js'
 import { buildIssueGraph } from './issue-graph.js'
 import { issueKeySets } from '../public/issue-key.js'
 import { hooksSettingsBlock } from './hook.js'
-import { agentConfigFiles, readAgentHosts, registeredRuntimeVersion } from './agent-hosts.js'
-import type { AgentHosts, HostRegistration, RuntimeVerifier } from './agent-hosts.js'
+import { agentConfigFiles, readAgentHosts, readCliShim, registeredRuntimeVersion } from './agent-hosts.js'
+import type { AgentHosts, CliShim, HostRegistration, RuntimeVerifier } from './agent-hosts.js'
 import { measureRuntime, readRuntimes, referenceFiles } from './runtime-inventory.js'
 import type { RuntimeInventory, RuntimeMeasure, RuntimeMeasurer } from './runtime-inventory.js'
 import { buildStamp, readBakedInfo } from './stamp.js'
@@ -522,6 +522,8 @@ function canUpdateAgents(baked: BakedInfo | null, lookup: ReleaseRuntime | null)
 // `checkoutHooksCommand` (#278) points them at the source checkout Claude Code
 // runs from instead, present only while they are not that checkout's: Setup
 // never switches a checkout, so it never installs this runtime on its behalf.
+// `cli` (#540) is the command-line shim the agent installer writes under
+// ~/.agent-inbox/bin: its kind and the words agent-hosts.ts builds, never its paths.
 interface AgentsInfo {
   current: string | null
   updatable: boolean
@@ -530,6 +532,7 @@ interface AgentsInfo {
   hooks: HostRegistration
   hooksCommand: string
   checkoutHooksCommand?: string
+  cli: CliShim
 }
 
 // The checkout's own hook installer. `--replace-existing` because the hooks
@@ -540,7 +543,7 @@ function checkoutHooksCommand({ claude, hooks }: AgentHosts): string | null {
   return `cd ${shellQuote(claude.path)} && npm run install:hooks -- --apply --replace-existing`
 }
 
-function agentsInfo(baked: BakedInfo | null, lookup: ReleaseRuntime | null, hosts: AgentHosts): AgentsInfo {
+function agentsInfo(baked: BakedInfo | null, lookup: ReleaseRuntime | null, hosts: AgentHosts, cli: CliShim): AgentsInfo {
   const current = baked?.schema === 2 ? baked.version ?? null : null
   const installed = lookup?.runtime ?? null
   const hooksInstaller = installed ? resolve(installed.dir, 'scripts', 'install-hooks.sh') : null
@@ -555,6 +558,7 @@ function agentsInfo(baked: BakedInfo | null, lookup: ReleaseRuntime | null, host
     hooks: hosts.hooks,
     hooksCommand: moveHooks ? `bash ${shellQuote(hooksInstaller)} --apply` : '',
     ...(fromCheckout ? { checkoutHooksCommand: fromCheckout } : {}),
+    cli,
   }
 }
 
@@ -956,7 +960,7 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
       build = null
     }
     const lookup = baked?.schema === 2 ? releaseRuntime(baked) : null
-    const agents = agentsInfo(baked, lookup, agentHosts(baked))
+    const agents = agentsInfo(baked, lookup, agentHosts(baked), readCliShim(agentHome))
     const inventory = runtimeInventory(lookup?.source?.runtimeId ?? null)
     const runtimes: RuntimesInfo | null = inventory && { ...inventory, removable: canPrune(baked, lookup) }
     return c.json({ ...setupInfo(baked, runtimeHostKey, lookup), agents, runtimes, build })

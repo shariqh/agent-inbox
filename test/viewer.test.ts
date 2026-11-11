@@ -264,6 +264,7 @@ describe('viewer api', () => {
         copilot: { kind: 'none' },
         hooks: { kind: 'runtime', version: '1.2.8', runtimeId: oldId },
         hooksCommand: '',
+        cli: { kind: 'none', name: 'meshctl', text: 'not installed; Setup writes ~/.agent-inbox/bin/meshctl when it installs or updates the agents' },
       })
 
       const installed = release.install()
@@ -281,6 +282,7 @@ describe('viewer api', () => {
       expect(dev).toEqual({
         current: null, updatable: false,
         claude: { kind: 'none' }, copilot: { kind: 'none' }, hooks: { kind: 'none' }, hooksCommand: '',
+        cli: expect.objectContaining({ kind: 'none' }),
       })
     })
 

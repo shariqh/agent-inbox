@@ -826,3 +826,34 @@ describe('Setup shows what each host\'s agents run (#197)', () => {
     }
   })
 })
+
+describe('Setup says what meshctl runs and hands over the PATH line (#540)', () => {
+  const meshctlText = (): string => document.querySelector('.agents-cli')?.textContent ?? ''
+  const pathCommand = (): string | null => document.querySelector('.agents-cli-command')?.textContent ?? null
+
+  it('shows the shim Setup wrote, with the line to add to a profile, apart from the host list', async () => {
+    const release = releaseRuntime('2.0.0')
+    const script = join(release.home, 'meshctl.js')
+    writeFileSync(script, '')
+    mkdirSync(join(release.home, '.agent-inbox', 'bin'), { recursive: true })
+    writeFileSync(join(release.home, '.agent-inbox', 'bin', 'meshctl'), [
+      '#!/bin/sh',
+      '# agent-inbox meshctl shim (#540), kind=runtime, written by install-agents.sh. Do not edit.',
+      `node='${process.execPath}'`,
+      `meshctl='${script}'`,
+      '',
+    ].join('\n'), { mode: 0o755 })
+
+    await boot(release)
+
+    expect(meshctlText()).toContain('meshctl: ~/.agent-inbox/bin/meshctl runs a Setup runtime')
+    expect(pathCommand()).toBe('export PATH="$HOME/.agent-inbox/bin:$PATH"')
+    expect(lines()).toHaveLength(3)
+  })
+
+  it('says Setup writes it with the agents when there is none, and offers no PATH line', async () => {
+    await boot(releaseRuntime('2.0.0'))
+    expect(meshctlText()).toBe('meshctl: not installed; Setup writes ~/.agent-inbox/bin/meshctl when it installs or updates the agents')
+    expect(pathCommand()).toBeNull()
+  })
+})

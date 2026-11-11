@@ -7,6 +7,7 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   utimesSync,
@@ -17,7 +18,8 @@ import { spawn, spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { basename, dirname, join, resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { readAgentHosts, registeredRuntimeVersion } from '../src/agent-hosts.js'
+import { readAgentHosts, readCliShim, registeredRuntimeVersion } from '../src/agent-hosts.js'
+import { AGENT_INBOX_VERSION } from '../src/version.js'
 import type { RuntimeVerifier } from '../src/agent-hosts.js'
 import { accentedRoot, RUNTIME_SPELLINGS } from './runtime-spellings.js'
 import { goneProcess, startOf, writePinFile } from './runtime-uses.js'
@@ -40,9 +42,22 @@ function copy(src: string, dest: string): void {
   copyFileSync(src, dest)
 }
 
+// #540: the app's own dist/, transpiled from src/ the way `npm run build` emits it, beside the
+// fixture's stub entries (kept), so the shim runs the real meshctl from the packaged layout.
+function transpileDist(dist: string): void {
+  const ts = createRequire(import.meta.url)('typescript') as typeof import('typescript')
+  for (const name of readdirSync(join(REPO, 'src'))) {
+    if (!name.endsWith('.ts') || existsSync(join(dist, name.replace(/\.ts$/, '.js')))) continue
+    const { outputText } = ts.transpileModule(readFileSync(join(REPO, 'src', name), 'utf8'), {
+      compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2023 },
+    })
+    writeFileSync(join(dist, name.replace(/\.ts$/, '.js')), outputText)
+  }
+}
+
 function runtimePayload(
   version: string,
-  options: { committedFailure?: 'exact' | 'substituted'; driver?: boolean } = {},
+  options: { committedFailure?: 'exact' | 'substituted'; driver?: boolean; meshctl?: boolean } = {},
 ): { root: string; digest: string; runtimeId: string } {
   const root = temp(`agent-runtime-${version}-`)
   mkdirSync(join(root, 'bin'), { recursive: true })
@@ -56,6 +71,7 @@ function runtimePayload(
   )
   writeFileSync(join(root, 'dist', 'watch-cli.js'), 'process.exit(0)\n')
   if (options.driver) writeFileSync(join(root, 'dist', 'driver-cli.js'), 'process.exit(0)\n')
+  if (options.meshctl) transpileDist(join(root, 'dist'))
   writeFileSync(join(root, 'package.json'), JSON.stringify({ type: 'module' }))
 
   for (const script of [
@@ -129,6 +145,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     '--entrypoint', 'dist/mcp-server.js',
     '--entrypoint', 'dist/hook-cli.js',
     '--entrypoint', 'dist/watch-cli.js',
+    ...(options.meshctl ? ['--entrypoint', 'dist/meshctl.js'] : []),
   ], { encoding: 'utf8' })
   expect(result.status, result.stderr).toBe(0)
   const manifest = JSON.parse(result.stdout) as { runtimeId: string }
@@ -1070,4 +1087,83 @@ fs.rmSync = function rmSync(path, options) {
     expect(readdirSync(f.runtimeRoot)).toEqual([])
     expect(registration(f.claudeConfig)).toBeUndefined()
   }, 30_000)
+})
+
+// #540: Setup puts the app's bundled meshctl on PATH through ~/.agent-inbox/bin/meshctl, which runs
+// the INSTALLED runtime's own bin/node and dist/meshctl.js, so it survives the app moving or going.
+describe('the meshctl shim Setup writes (#540)', () => {
+  const marker = (kind: string): string => `# agent-inbox meshctl shim (#540), kind=${kind}, written by install-agents.sh. Do not edit.`
+  const shimOf = (f: Fixture): string => join(f.home, '.agent-inbox', 'bin', 'meshctl')
+
+  it('runs meshctl status from the installed runtime on a clean home with no checkout, opening no connection', () => {
+    const f = fixture()
+    const payload = runtimePayload('1.0.0', { meshctl: true })
+    const result = install(f, payload)
+    expect(result.status, result.stderr).toBe(0)
+    const installed = join(f.runtimeRoot, payload.runtimeId)
+    const shim = shimOf(f)
+    expect(lstatSync(shim).mode & 0o777).toBe(0o755)
+    expect(readFileSync(shim, 'utf8').split('\n').slice(0, 4)).toEqual([
+      '#!/bin/sh', marker('runtime'), `node='${installed}/bin/node'`, `meshctl='${installed}/dist/meshctl.js'`,
+    ])
+    expect(result.stderr).toContain('export PATH="$HOME/.agent-inbox/bin:$PATH"')
+    expect(readCliShim(f.home)).toEqual({
+      kind: 'runtime', name: 'meshctl', text: '~/.agent-inbox/bin/meshctl runs a Setup runtime',
+      hint: 'To run meshctl from a terminal, add this line to your shell profile (~/.zprofile for zsh), then open a new terminal:',
+      command: 'export PATH="$HOME/.agent-inbox/bin:$PATH"',
+    })
+    // the app's payload is gone: the installed runtime is what runs
+    rmSync(payload.root, { recursive: true })
+
+    const clean = temp('meshctl-clean-home-')
+    const guard = join(temp('meshctl-guard-'), 'no-network.mjs')
+    const attempted = join(dirname(guard), 'attempted')
+    writeFileSync(guard, `import net from 'node:net'
+import { writeFileSync } from 'node:fs'
+net.Socket.prototype.connect = function () { writeFileSync(${JSON.stringify(attempted)}, 'connect'); throw new Error('no network in this test') }
+`)
+    const env = { HOME: clean, PATH: '/usr/bin:/bin', NODE_OPTIONS: `--import=${guard}` }
+    const status = spawnSync(shim, ['status'], { encoding: 'utf8', env })
+    expect(status.status, status.stderr).toBe(0)
+    expect(status.stdout).toContain('Mesh: off. No ~/.agent-inbox/mesh.json.')
+    const version = spawnSync(shim, ['--version'], { encoding: 'utf8', env })
+    expect(version.status, version.stderr).toBe(0)
+    expect(version.stdout).toBe(`agent-inbox-meshctl ${AGENT_INBOX_VERSION}\n`)
+    // off means off: nothing opened a connection or wrote under the clean home
+    expect(existsSync(attempted)).toBe(false)
+    expect(readdirSync(clean)).toEqual([])
+
+    const removed = spawnSync('/bin/bash', [join(installed, 'scripts', 'install-agents.sh'), '--apply', '--uninstall'], { encoding: 'utf8', env: f.env })
+    expect(removed.status, removed.stderr).toBe(0)
+    expect(removed.stderr).toContain(`meshctl: removed ${shim}`)
+    expect(existsSync(shim)).toBe(false)
+  }, MULTI_INSTALL_TEST_TIMEOUT_MS)
+
+  it('moves the shim to the new runtime on an update, and leaves a checkout\'s shim alone', () => {
+    const f = fixture()
+    const first = runtimePayload('1.0.0', { meshctl: true })
+    const second = runtimePayload('1.1.0', { meshctl: true })
+    expect(install(f, first).status).toBe(0)
+    const updated = install(f, second)
+    expect(updated.status, updated.stderr).toBe(0)
+    expect(readFileSync(shimOf(f), 'utf8')).toContain(`meshctl='${join(f.runtimeRoot, second.runtimeId)}/dist/meshctl.js'`)
+
+    const g = fixture()
+    const checkoutShim = `#!/bin/sh\n${marker('checkout')}\nnode='/usr/local/bin/node'\nmeshctl='/Users/me/agent-inbox/dist/meshctl.js'\n`
+    mkdirSync(dirname(shimOf(g)), { recursive: true })
+    writeFileSync(shimOf(g), checkoutShim, { mode: 0o755 })
+    const kept = install(g, first)
+    expect(kept.status, kept.stderr).toBe(0)
+    expect(kept.stderr).toContain(`meshctl: left ${shimOf(g)} alone: it runs a source checkout`)
+    expect(readFileSync(shimOf(g), 'utf8')).toBe(checkoutShim)
+  }, MULTI_INSTALL_TEST_TIMEOUT_MS)
+
+  it('writes no shim from a runtime that carries no meshctl', () => {
+    const f = fixture()
+    const payload = runtimePayload('1.0.0')
+    const result = install(f, payload)
+    expect(result.status, result.stderr).toBe(0)
+    expect(result.stderr).toContain(`meshctl: no shim: ${realpathSync(payload.root)}/dist/meshctl.js is missing`)
+    expect(existsSync(shimOf(f))).toBe(false)
+  })
 })

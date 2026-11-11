@@ -1219,6 +1219,36 @@ spctl --assess --type execute --verbose=4 "/Volumes/Agent Inbox/Agent Inbox.app"
 These commands follow Apple's current notarization/stapling flow, Electron's current
 Developer ID and hardened-runtime guidance, and GitHub's protected-environment model.
 
+#### meshctl ships inside the signed app (#540)
+
+`meshctl` is not published anywhere else: no npm package, no separate download. It is
+`dist/meshctl.js` in the app's runtime payload (`Contents/Resources/app/runtime/darwin-arm64`),
+one of the payload's manifest entrypoints (package.json `bin`), so its SHA-256 is in the
+payload's `runtime-manifest.json`, whose digest is in the signed `setup-info.json`, and the
+app's code signature seals all of it. Setup verifies the payload against that digest, installs
+it to `~/.agent-inbox/runtime/<runtime id>/` and writes `~/.agent-inbox/bin/meshctl`, a shim that
+runs that installed copy's own `bin/node` and `dist/meshctl.js`
+([`docs/architecture/setup-and-installers.md`](architecture/setup-and-installers.md)). It is
+released and updated with the app, and Setup's "Update agents" moves it to the new runtime.
+
+To check what the shim runs, after the commands above:
+
+```sh
+APP="/Applications/Agent Inbox.app"
+codesign --verify --deep --strict --verbose=2 "$APP"
+sed -n '2,4p' ~/.agent-inbox/bin/meshctl          # the marker, then node='…' and meshctl='…'
+RT="$(dirname "$(dirname "$(sed -n "s/^meshctl='\(.*\)'$/\1/p" ~/.agent-inbox/bin/meshctl)")")"
+"$RT/bin/node" "$RT/scripts/runtime-payload.mjs" verify --root "$RT" --product agent-inbox-runtime \
+  && cmp "$RT/runtime-manifest.json" "$APP/Contents/Resources/app/runtime/darwin-arm64/runtime-manifest.json" \
+  && echo "the shim runs this app's verified runtime"
+~/.agent-inbox/bin/meshctl --version                # agent-inbox-meshctl <the app's version>
+```
+
+`verify` re-hashes every file of the installed runtime against its manifest (nothing missing,
+changed or extra); `cmp` shows that manifest is byte-for-byte the one sealed inside the signed
+app. A runtime from an older app version is still verifiable the same way, but its manifest
+matches that version's app, not this one; run Setup's "Update agents" to move to this one.
+
 ## Dependency updates
 
 Every third-party action in the release workflow is pinned to a reviewed full commit

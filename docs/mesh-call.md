@@ -8,7 +8,9 @@ Implementation notes are in [`docs/architecture/mesh.md`](architecture/mesh.md).
 
 ## Add, then call
 
-Use Node 24 (`fnm use 24`) from a checkout.
+Use Node 24 (`fnm use 24`) from a checkout. With only the app, run `meshctl …` instead of
+`npm run meshctl -- …` once Setup has installed the agents and `~/.agent-inbox/bin` is on your
+PATH (#540; Setup shows the line to add).
 
 ```sh
 # a dry run shows the card, the endpoint and the pin; --apply adds it

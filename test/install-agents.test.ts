@@ -6,6 +6,7 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs'
@@ -13,6 +14,7 @@ import { constants } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { afterEach, describe, expect, it } from 'vitest'
+import { readCliShim } from '../src/agent-hosts.js'
 import { removeScratchDirs, scratchDir } from './scratch.js'
 
 // A signal-driven rollback runs each undo step as its own Node process through
@@ -1969,5 +1971,174 @@ describe('rollback step isolation (#211)', () => {
     } finally {
       writeFileSync(command.releaseFile, '')
     }
+  })
+})
+
+// #540: every --apply writes ~/.agent-inbox/bin/meshctl, which runs this install's meshctl. From a
+// checkout that is the resolved Node 24 and the dist/meshctl.js beside the MCP entry.
+describe('the meshctl shim (#540)', () => {
+  const shimPath = (f: Fixture): string => join(f.home, '.agent-inbox', 'bin', 'meshctl')
+  // a meshctl.js beside the fixture's MCP entry that prints what it was given
+  const withMeshctl = (f: Fixture): string => {
+    const script = join(f.home, 'meshctl.js')
+    writeFileSync(script, "process.stdout.write(JSON.stringify(process.argv.slice(2)) + '\\n')\n")
+    return script
+  }
+  const marker = (kind: string): string => `# agent-inbox meshctl shim (#540), kind=${kind}, written by install-agents.sh. Do not edit.`
+
+  it('dry run prints the shim and the PATH line and writes nothing', () => {
+    const f = fixture()
+    withMeshctl(f)
+    const result = run(f)
+    expect(result.code, result.err).toBe(0)
+    expect(result.out).toContain(`── ${shimPath(f)} (0755) ──`)
+    expect(result.out).toContain(marker('checkout'))
+    expect(result.err).toContain('export PATH="$HOME/.agent-inbox/bin:$PATH"')
+    expect(existsSync(join(f.home, '.agent-inbox', 'bin'))).toBe(false)
+  })
+
+  it('writes an executable shim of its own, atomically, that runs the checkout\'s meshctl with every argument', () => {
+    const f = fixture()
+    const script = withMeshctl(f)
+    const result = run(f, ['--apply'])
+    expect(result.code, result.err).toBe(0)
+    const shim = shimPath(f)
+    const at = lstatSync(shim)
+    expect(at.isFile()).toBe(true)
+    expect(at.mode & 0o777).toBe(0o755)
+    expect(at.uid).toBe(process.getuid!())
+    const text = readFileSync(shim, 'utf8').split('\n')
+    expect(text.slice(0, 4)).toEqual(['#!/bin/sh', marker('checkout'), `node='${process.execPath}'`, `meshctl='${script}'`])
+    // no staging file is left beside it
+    expect(readdirSync(dirname(shim))).toEqual(['meshctl'])
+    expect(result.err).toContain(`meshctl: wrote ${shim} (checkout: ${script})`)
+    expect(result.err).toContain('export PATH="$HOME/.agent-inbox/bin:$PATH"')
+    // never a shell profile
+    for (const profile of ['.zprofile', '.zshrc', '.bash_profile', '.bashrc', '.profile']) expect(existsSync(join(f.home, profile))).toBe(false)
+
+    const ran = spawnSync(shim, ['status', 'two words'], { encoding: 'utf8', env: f.env })
+    expect(ran.status, ran.stderr).toBe(0)
+    expect(JSON.parse(ran.stdout)).toEqual(['status', 'two words'])
+    expect(readCliShim(f.home)).toMatchObject({ kind: 'checkout', command: 'export PATH="$HOME/.agent-inbox/bin:$PATH"' })
+
+    // a build that is gone: the shim says so and exits 14
+    rmSync(script)
+    const stale = spawnSync(shim, ['status'], { encoding: 'utf8', env: f.env, input: '' })
+    expect(stale.status).toBe(14)
+    expect(stale.stderr).toContain('this shim is stale')
+    expect(readCliShim(f.home)).toEqual({ kind: 'checkout', stale: true, name: 'meshctl', text: '~/.agent-inbox/bin/meshctl runs a source checkout whose build is gone (not managed by Setup)' })
+  })
+
+  it('a stale shim exits 14 at once, without reading a stdin pipe its caller never closes', async () => {
+    const f = fixture()
+    withMeshctl(f)
+    expect(run(f, ['--apply']).code).toBe(0)
+    rmSync(join(f.home, 'meshctl.js'))
+    const started = Date.now()
+    const child = spawn(shimPath(f), ['status'], { env: f.env, stdio: ['pipe', 'pipe', 'pipe'] })
+    let stderr = ''
+    child.stderr!.on('data', (chunk: Buffer) => { stderr += chunk.toString() })
+    try {
+      const code = await new Promise<number | null>((done, fail) => {
+        const timer = setTimeout(() => fail(new Error('the stale shim is still running after 5 s')), 5000)
+        child.on('close', (status) => { clearTimeout(timer); done(status) })
+      })
+      expect(code).toBe(14)
+      expect(stderr).toContain('agent-inbox meshctl: this shim is stale')
+      expect(Date.now() - started).toBeLessThan(5000)
+    } finally {
+      child.kill('SIGKILL')
+    }
+  })
+
+  it('quotes a path holding a quote or a space so the shim still runs it', () => {
+    const f = fixture()
+    const dir = join(f.home, "it's here")
+    mkdirSync(dir)
+    const entry = join(dir, 'mcp-server.js')
+    writeFileSync(entry, 'process.exit(0)\n')
+    writeFileSync(join(dir, 'meshctl.js'), "process.stdout.write('ran\\n')\n")
+    const result = run({ ...f, env: { ...f.env, AGENT_INBOX_MCP_ENTRY: entry } }, ['--apply'])
+    expect(result.code, result.err).toBe(0)
+    const ran = spawnSync(shimPath(f), [], { encoding: 'utf8', env: f.env })
+    expect(ran.stdout).toBe('ran\n')
+    expect(readCliShim(f.home)).toMatchObject({ kind: 'checkout', command: 'export PATH="$HOME/.agent-inbox/bin:$PATH"' })
+  })
+
+  it('reports a file it did not write, or a symlink, and leaves it alone', () => {
+    for (const plant of ['file', 'symlink'] as const) {
+      const f = fixture()
+      withMeshctl(f)
+      const shim = shimPath(f)
+      mkdirSync(dirname(shim), { recursive: true })
+      const target = join(f.home, 'my-meshctl')
+      writeFileSync(target, '#!/bin/sh\necho mine\n')
+      if (plant === 'file') writeFileSync(shim, '#!/bin/sh\necho mine\n')
+      else symlinkSync(target, shim)
+      for (const args of [[], ['--apply'], ['--apply', '--force'], ['--apply', '--uninstall']]) {
+        const result = run(f, args)
+        expect(result.code, `${plant} ${args.join(' ')}: ${result.err}`).toBe(0)
+        expect(result.err).toContain(`meshctl: left ${shim} alone: it was not written by this installer`)
+      }
+      expect(lstatSync(shim).isSymbolicLink()).toBe(plant === 'symlink')
+      expect(readFileSync(shim, 'utf8')).toBe('#!/bin/sh\necho mine\n')
+      expect(readCliShim(f.home)).toEqual({ kind: 'foreign', name: 'meshctl', text: '~/.agent-inbox/bin/meshctl was not written by Setup, so Setup leaves it alone' })
+    }
+  })
+
+  it('leaves an app runtime\'s shim alone unless --force, and --uninstall removes only its own kind', () => {
+    const f = fixture()
+    const script = withMeshctl(f)
+    const shim = shimPath(f)
+    mkdirSync(dirname(shim), { recursive: true })
+    const runtimeShim = `#!/bin/sh\n${marker('runtime')}\nnode='/nowhere/bin/node'\nmeshctl='/nowhere/dist/meshctl.js'\n`
+    writeFileSync(shim, runtimeShim, { mode: 0o755 })
+
+    const kept = run(f, ['--apply'])
+    expect(kept.code, kept.err).toBe(0)
+    expect(kept.err).toContain(`meshctl: left ${shim} alone: it runs an Agent Inbox app's runtime (use --force to replace it)`)
+    expect(readFileSync(shim, 'utf8')).toBe(runtimeShim)
+    expect(run(f, ['--apply', '--uninstall']).err).toContain(`left ${shim} alone: it runs an Agent Inbox app's runtime`)
+    expect(readFileSync(shim, 'utf8')).toBe(runtimeShim)
+
+    const forced = run(f, ['--apply', '--force'])
+    expect(forced.code, forced.err).toBe(0)
+    expect(readFileSync(shim, 'utf8')).toContain(`meshctl='${script}'`)
+
+    // one host's uninstall keeps it; every host's removes it
+    const one = run(f, ['--apply', '--uninstall', '--target', 'claude'])
+    expect(one.code, one.err).toBe(0)
+    expect(one.err).toContain('only --uninstall for every host removes it')
+    expect(existsSync(shim)).toBe(true)
+    const dry = run(f, ['--uninstall'])
+    expect(dry.out).toContain(`── would remove ${shim} ──`)
+    expect(existsSync(shim)).toBe(true)
+    const all = run(f, ['--apply', '--uninstall'])
+    expect(all.code, all.err).toBe(0)
+    expect(all.err).toContain(`meshctl: removed ${shim}`)
+    expect(existsSync(shim)).toBe(false)
+  })
+
+  it('writes no shim, and says why, when the checkout has no dist/meshctl.js', () => {
+    const f = fixture()
+    const result = run(f, ['--apply'])
+    expect(result.code, result.err).toBe(0)
+    expect(result.err).toContain(`meshctl: no shim: ${join(f.home, 'meshctl.js')} is missing (run npm run build first)`)
+    expect(existsSync(join(f.home, '.agent-inbox', 'bin'))).toBe(false)
+  })
+
+  it('rolls the whole install back when the shim cannot be written', () => {
+    const f = fixture()
+    withMeshctl(f)
+    // ~/.agent-inbox/bin is a file, so the folder cannot be made
+    mkdirSync(join(f.home, '.agent-inbox'), { recursive: true })
+    writeFileSync(join(f.home, '.agent-inbox', 'bin'), 'not a folder\n')
+    const claudeBefore = readFileSync(f.claudeFile, 'utf8')
+    const result = run(f, ['--apply'])
+    expect(result.code).toBe(1)
+    expect(result.err).toContain('could not update')
+    expect(readFileSync(f.claudeFile, 'utf8')).toBe(claudeBefore)
+    expect(readFileSync(f.env.CLAUDE_CONFIG!, 'utf8')).toBe('{"mcpServers":{}}\n')
+    expect(statSync(join(f.home, '.agent-inbox', 'bin')).isFile()).toBe(true)
   })
 })

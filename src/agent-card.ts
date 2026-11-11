@@ -72,15 +72,16 @@ const PROFILE_URI = 'https://shariqh.github.io/agent-inbox/ext/profile/v1'
 const DNS_LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/
 const SEGMENT = /^[a-z0-9-]+$/
 // a lower-case punycode DNS name with at least one dot, at most 253 characters, and a last label
-// that is not all digits (so never an IP address)
+// that starts with a letter: never an IP address, since the URL parser reads a last label that
+// starts with a digit (`1`, `0x7f`) as an IPv4 number
 const dnsName = (name: string): boolean => {
   const labels = name.split('.')
-  return name.length <= 253 && labels.length > 1 && labels.every((l) => DNS_LABEL.test(l)) && !/^[0-9]+$/.test(labels.at(-1)!)
+  return name.length <= 253 && labels.length > 1 && labels.every((l) => DNS_LABEL.test(l)) && /^[a-z]/.test(labels.at(-1)!)
 }
 
 /**
  * Why `id` is not a stable agent id (§3.4, D19), or undefined: `<domain>[/<segment>…]/<name>`,
- * a lower-case DNS name with at least one dot and a non-numeric last label, segments of
+ * a lower-case DNS name with at least one dot and a last label that starts with a letter, segments of
  * `[a-z0-9-]`, a name of 1-40 such characters, 200 characters in all. The character set alone
  * keeps out a scheme, a user, a port, a query and a fragment. Fixed words, never the id.
  */

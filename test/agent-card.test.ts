@@ -240,7 +240,7 @@ describe('the v1 profile extension and stable agent ids (#537; publishable-agent
       ['example.org', 'a profile id with no /<name> after its domain'],
       ['localhost/notes', 'a profile id whose domain has no dot'],
       ['-example.org/notes', DNS], ['example-.org/notes', DNS], ['example..org/notes', DNS], ['.example.org/notes', DNS],
-      ['127.0.0.1/notes', DNS], [`${'a'.repeat(64)}.org/x`, DNS], [`${'a.'.repeat(127)}org/x`, 'a profile id longer than 200 characters'],
+      ['127.0.0.1/notes', DNS], ['0x7f.0x0.0x0.0x1/notes', DNS], ['example.0x1/notes', DNS], ['example.9org/notes', DNS], [`${'a'.repeat(64)}.org/x`, DNS], [`${'a.'.repeat(127)}org/x`, 'a profile id longer than 200 characters'],
       ['example.org/notes/', 'a profile id with an empty or dotted path segment'],
       ['example.org//notes', 'a profile id with an empty or dotted path segment'],
       ['example.org/../notes', 'a profile id with an empty or dotted path segment'],
@@ -336,7 +336,7 @@ describe('the v1 profile extension and stable agent ids (#537; publishable-agent
       [{ hosts: 'api.example.org' }, 'profile egress hosts that are neither "operator", "any" nor a list of hosts'],
       [{ hosts: Array.from({ length: 9 }, (_, i) => `h${i}.example.org`) }, 'more than 8 hosts in a profile egress entry'],
       // hostile hosts: wildcard abuse, IP literals, controls, case, scheme, port, path, overlong
-      ...['*', '*.', '*.org', '**.example.org', '*.*.example.org', 'a.*.example.org', 'example.*', '127.0.0.1', '10.0.0.1',
+      ...['*', '*.', '*.org', '**.example.org', '0x7f.0x0.0x0.0x1', '1.2.3.0x4', '*.0x0.0x1', 'example.0x', 'example.1a', '*.*.example.org', 'a.*.example.org', 'example.*', '127.0.0.1', '10.0.0.1',
         '[::1]', '::1', 'localhost', 'Example.org', 'https://example.org', 'example.org:443', 'example.org/x', 'user@example.org',
         'example.org.', '.example.org', 'example..org', '-a.example.org', 'a-.example.org', 'exa mple.org', 'example.org\n',
         'exa\u202Emple.org', 'ex\u0000ample.org', 'bücher.example', `${'a'.repeat(64)}.org`, `${'a.'.repeat(126)}org`, `*.${'a.'.repeat(125)}org`, 42,

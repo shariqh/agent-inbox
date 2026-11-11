@@ -739,14 +739,15 @@ the usage and 4).
   `checkProfile()` in `src/agent-card.ts` (pure, fixed-word reasons): at most one such
   extension; `params` an object with only `id` (required), `keys` and `skills`; no `""`, `[]`,
   `{}` or `null` at any depth (a walk that stops at 32 levels); `agentIdRefusal()`'s id rule
-  (`<domain>[/<segment>…]/<name>`: a lower-case DNS name with a dot and a non-numeric last label,
+  (`<domain>[/<segment>…]/<name>`: a lower-case DNS name with a dot and a last label that starts with a letter,
   `[a-z0-9-]` segments, a name of at most 40, 200 in all, so no scheme, user, port, query or
   fragment); `keys` 1-4 public JWKs (P-256 and P-384 `kty, crv, x, y`, Ed25519 `kty, crv, x`,
   base64url coordinates of the curve's length, no private or other member, none twice);
   `skills` exactly the card's skill ids, each an object holding only `egress` and `residency`.
   `egressRefusal()` (#535): `"none"` or 1-8 entries of exactly `purpose` (model, search,
   storage, web, api, agent), `hosts` (`"operator"`, `"any"`, or 1-8 lower-case punycode DNS
-  names: a dot, at most 253 characters, a non-numeric last label so never an IP, and at most a
+  names: a dot, at most 253 characters, a last label that starts with a letter so never an IP (the WHATWG URL parser reads a last label
+  starting with a digit, `1` or `0x7f`, as an IPv4 number), and at most a
   leading `*.` before a name that still has a dot, so never `*`, `*.com` or an inner `*`) and
   `sends` (input, metadata); `residencyRefusal()`: caller-host, caller-mesh or any. `Profile.skills`
   carries the validated values to `addSummary()`. Signatures are #536's (below).

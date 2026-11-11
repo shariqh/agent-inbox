@@ -7,26 +7,25 @@
 // The real run is `createRun` (answer.ts: W3's search, W4's answer); until W5
 // reads the profile that builds it, `startAgent` answers from one fixed result. The
 // executor never rejects, so the SDK never logs or returns an error message. Every console call and process-level error or warning writes a fixed
-// line: no query, argument or error message reaches stderr or a log.
-import { randomUUID } from 'node:crypto'
+// line: no query, argument or error message reaches stderr or a log. Its card, executor and
+// output guard are the agent kit's (src/kit/, #539).
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { Role, TaskState } from '@a2a-js/sdk'
-import type { Part } from '@a2a-js/sdk'
-import { AgentEvent } from '@a2a-js/sdk/server'
-import type { AgentExecutor, ExecutionEventBus } from '@a2a-js/sdk/server'
-import { loadSigningKeys, publicJwk, signCard } from '../card-signing.js'
+import { loadSigningKeys } from '../card-signing.js'
 import type { SigningKey } from '../card-signing.js'
 import { ConfigError, appendPrivate, localDate, readPrivate } from '../files.js'
+import { readToken } from '../kit/agent.js'
+import { PROFILE, meshCard, servedCard as signedCard } from '../kit/card.js'
+import { createExecutor as createKitExecutor } from '../kit/executor.js'
+import type { Executor, Run } from '../kit/executor.js'
+import { guardOutput } from '../kit/guard.js'
 import { meshDir, meshFile, readMesh } from '../mesh-config.js'
 import { EXTENSION, startFrontDoor } from './front-door.js'
 
 export const GATE_MS = 60_000
 export const IDLE_MS = 30 * 60_000
 type Json = Record<string, unknown>
-/** `log` holds fixed names, counts and timings only (§7.1 Logs); the executor adds it to the task's log line. */
-export type RunResult = ({ state: 'completed'; text: string; data: Json } | { state: 'rejected' | 'failed'; reason: string; data: Json }) & { log?: Json }
-export type Run = (query: string, options: Json, signal: AbortSignal, onState: (state: string) => void) => Promise<RunResult>
+export type { Run, RunResult } from '../kit/executor.js'
 export type StopReason = 'mesh.json' | 'token' | 'idle' | 'signal'
 export type AgentOptions = { meshDir: string; run?: Run; now?: () => number; every?: (ms: number, fn: () => void) => () => void }
 export type Agent = { port: number; exited: Promise<StopReason>; stop(reason: StopReason): Promise<void>; failAll(): void }
@@ -34,7 +33,7 @@ export type Agent = { port: number; exited: Promise<StopReason>; stop(reason: St
 // The profile extension (publishable-agent design §3.7, §8): the stable id, the signing keys'
 // public halves, and per skill what leaves with the caller's input and where the work may run.
 // Hosts are "operator": a card names no private search or model host, and every copy serves one card.
-export const PROFILE = 'https://shariqh.github.io/agent-inbox/ext/profile/v1'
+export { PROFILE }
 export const AGENT_ID = 'shariqh.github.io/agent-inbox/web-search'
 
 /**
@@ -43,32 +42,19 @@ export const AGENT_ID = 'shariqh.github.io/agent-inbox/web-search'
  * its profile lists no keys). Canonical-stable (no empty or default value; the bearer requirement
  * names the role "call"), so card-signing.ts signs it and every A2A verifier checks the same bytes.
  */
-export const card = (url: string, version: string, keys: Json[] = []): Json => ({
+export const card = (url: string, version: string, keys: Json[] = []): Json => meshCard({
   name: 'web-search', description: 'Searches the public web for one question and returns a cited answer or the sources alone.', version,
-  provider: { organization: 'agent-inbox', url: 'https://github.com/shariqh/agent-inbox' },
-  supportedInterfaces: [{ url, protocolBinding: 'JSONRPC', protocolVersion: '1.0' }],
-  capabilities: {
-    streaming: true, pushNotifications: false,
-    extensions: [
-      { uri: EXTENSION, description: 'web-search task parameters and result', params: { api: 1, modes: ['answer', 'sources'], recency: ['any', 'day', 'week', 'month', 'year'], maxSources: 10, maxQueryChars: 400, maxSites: 5, maxExcludeSites: 10 } },
-      {
-        uri: PROFILE, description: 'Stable id, signing keys, and per-skill egress and residency',
-        params: {
-          id: AGENT_ID, ...(keys.length ? { keys } : {}),
-          skills: { 'web-search': { egress: [{ purpose: 'search', hosts: 'operator', sends: 'input' }, { purpose: 'model', hosts: 'operator', sends: 'input' }], residency: 'caller-mesh' } },
-        },
-      },
-    ],
-  },
-  securitySchemes: { bearer: { httpAuthSecurityScheme: { scheme: 'Bearer' } } },
-  securityRequirements: [{ schemes: { bearer: { list: ['call'] } } }],
-  defaultInputModes: ['text/plain'], defaultOutputModes: ['text/plain', 'application/json'],
-  skills: [{ id: 'web-search', name: 'web-search', description: 'Answers one question from the public web with numbered sources, or returns the sources alone.', tags: ['search', 'web'] }],
-})
+  provider: { organization: 'agent-inbox', url: 'https://github.com/shariqh/agent-inbox' }, id: AGENT_ID, streaming: true,
+  extensions: [{ uri: EXTENSION, description: 'web-search task parameters and result', params: { api: 1, modes: ['answer', 'sources'], recency: ['any', 'day', 'week', 'month', 'year'], maxSources: 10, maxQueryChars: 400, maxSites: 5, maxExcludeSites: 10 } }],
+  inputModes: ['text/plain'], outputModes: ['text/plain', 'application/json'],
+  skills: [{
+    id: 'web-search', name: 'web-search', description: 'Answers one question from the public web with numbered sources, or returns the sources alone.', tags: ['search', 'web'],
+    egress: [{ purpose: 'search', hosts: 'operator', sends: 'input' }, { purpose: 'model', hosts: 'operator', sends: 'input' }], residency: 'caller-mesh',
+  }],
+}, url, keys)
 
 /** The card this copy serves: signed by every key in `<mesh dir>/mesh/keys/web-search.jwk` (and `-next.jwk` while rotating), or unsigned when there is none. */
-export const servedCard = (url: string, version: string, keys: SigningKey[]): Json =>
-  keys.length ? signCard(card(url, version, keys.map(publicJwk)), keys) : card(url, version)
+export const servedCard = (url: string, version: string, keys: SigningKey[]): Json => signedCard((listed) => card(url, version, listed), keys)
 
 /** W1 answers every query from one fixed result; W3 and W4 replace it. */
 export const fixtureRun: Run = async (_query, options, _signal, onState) => {
@@ -83,85 +69,9 @@ export const fixtureRun: Run = async (_query, options, _signal, onState) => {
   return { state: 'completed', text: mode === 'answer' ? `${answer.text}\n\nSources:\n[1] Example Domain — https://example.com/` : '1 source', data }
 }
 
-const part = (value: string | Json): Part => typeof value === 'string'
-  ? { content: { $case: 'text', value }, mediaType: 'text/plain', filename: '', metadata: undefined }
-  : { content: { $case: 'data', value }, mediaType: 'application/json', filename: '', metadata: undefined }
-
-export function createExecutor(run: Run, log: (entry: Json) => void): AgentExecutor & { open(): number; failAll(reason: string): void } {
-  const open = new Map<string, { bus: ExecutionEventBus; contextId: string; abort: AbortController; outcome?: string }>()
-  const status = (bus: ExecutionEventBus, taskId: string, contextId: string, state: TaskState, parts?: Part[]): void => bus.publish(AgentEvent.statusUpdate({
-    taskId, contextId, metadata: undefined,
-    status: { state, timestamp: new Date().toISOString(), message: parts && { messageId: randomUUID(), taskId, contextId, role: Role.ROLE_AGENT, parts, metadata: undefined, extensions: [], referenceTaskIds: [] } },
-  }))
-  /** Ends a task that is still open with a fixed reason; the one place a non-completed terminal state is published. */
-  const end = (id: string, state: TaskState, outcome: string, reason: string, data?: Json): void => {
-    const t = open.get(id)
-    if (!t) return
-    open.delete(id)
-    t.outcome = `${outcome}:${reason}`
-    t.abort.abort()
-    const code = state === TaskState.TASK_STATE_REJECTED ? 11 : 13
-    status(t.bus, id, t.contextId, state, state === TaskState.TASK_STATE_CANCELED ? [part('cancelled')] : [part(`${outcome}: ${reason}`), part(data ?? { code, status: outcome, reason })])
-  }
-  return {
-    open: () => open.size,
-    failAll: (reason) => { for (const id of [...open.keys()]) end(id, TaskState.TASK_STATE_FAILED, 'failed', reason) },
-    cancelTask: async (id) => end(id, TaskState.TASK_STATE_CANCELED, 'cancelled', 'cancelled'),
-    execute: async (ctx, bus) => {
-      const { taskId: id, contextId } = ctx
-      const t = { bus, contextId, abort: new AbortController(), outcome: 'failed:internal' }
-      open.set(id, t)
-      const started = Date.now()
-      const content = ctx.userMessage.parts[0]?.content
-      const query = content?.$case === 'text' ? content.value : ''
-      const options = (ctx.userMessage.metadata?.[EXTENSION] ?? {}) as Json
-      let extra: Json | undefined
-      try {
-        bus.publish(AgentEvent.task({ id, contextId, status: { state: TaskState.TASK_STATE_SUBMITTED, message: undefined, timestamp: new Date().toISOString() }, artifacts: [], history: [], metadata: undefined }))
-        const r = await run(query, options, t.abort.signal, (state) => { if (open.has(id)) status(bus, id, contextId, TaskState.TASK_STATE_WORKING, [part(state)]) })
-        extra = r.log
-        if (!open.has(id)) return
-        if (r.state !== 'completed') return end(id, r.state === 'rejected' ? TaskState.TASK_STATE_REJECTED : TaskState.TASK_STATE_FAILED, r.state, r.reason, r.data)
-        open.delete(id)
-        t.outcome = 'completed'
-        // the one artifact goes out only with COMPLETED, so no unchecked answer is ever streamed
-        bus.publish(AgentEvent.artifactUpdate({ taskId: id, contextId, artifact: { artifactId: randomUUID(), name: 'web-search', description: '', parts: [part(r.text), part(r.data)], metadata: undefined, extensions: [] }, append: false, lastChunk: true, metadata: undefined }))
-        status(bus, id, contextId, TaskState.TASK_STATE_COMPLETED)
-      } catch {
-        try {
-          end(id, TaskState.TASK_STATE_FAILED, 'failed', 'internal')
-        } catch {}
-      } finally {
-        try {
-          log({ taskId: id, chars: query.length, words: query.split(/\s+/).filter(Boolean).length, mode: options.mode === 'sources' ? 'sources' : 'answer', outcome: t.outcome, ms: Date.now() - started, ...(extra ? { run: extra } : {}) })
-        } catch {}
-      }
-    },
-  }
-}
-
-const BUILTIN = [TypeError, RangeError, SyntaxError, ReferenceError, URIError, EvalError, AggregateError, Error]
-const WARNINGS = ['Warning', 'DeprecationWarning', 'ExperimentalWarning', 'MaxListenersExceededWarning', 'TimeoutOverflowWarning', 'UnsupportedWarning']
-const SDK_EVENTS = ['Agent execution failed', 'Event processing loop failed', 'Error sending push notification', 'Failed to load full task', 'ResultManager', 'Reference task']
-const CONSOLE = ['log', 'info', 'debug', 'warn', 'error', 'trace', 'dir', 'dirxml', 'table', 'assert', 'count', 'group', 'groupCollapsed', 'timeLog', 'timeEnd'] as const
-
-/** Every console call and process-level error or warning writes one fixed line: never an argument, a message or a stack. */
-export function guardOutput(write: (line: string) => void, fatal: () => void): void {
-  for (const name of CONSOLE) {
-    console[name] = (...args: unknown[]): void => {
-      const event = typeof args[0] === 'string' ? SDK_EVENTS.find((e) => (args[0] as string).startsWith(e)) : undefined
-      write(`sdk: ${name}${event ? ` ${event}` : ''}`)
-    }
-  }
-  const die = (error: unknown): void => {
-    write(`agent: uncaught ${BUILTIN.find((c) => error instanceof c)?.name ?? 'value'}`)
-    fatal()
-  }
-  process.on('uncaughtException', die)
-  process.on('unhandledRejection', die)
-  process.removeAllListeners('warning')
-  process.on('warning', (w) => write(`agent: warning ${WARNINGS.includes(w.name) ? w.name : 'other'}`))
-}
+/** The kit's executor, its artifact `web-search` and its log entry naming the mode. */
+export const createExecutor = (run: Run, log: (entry: Json) => void): Executor =>
+  createKitExecutor(run, log, { artifact: 'web-search', extension: EXTENSION, logFields: (options) => ({ mode: options.mode === 'sources' ? 'sources' : 'answer' }) })
 
 /** The port of `agents.web-search.endpoint`, which must be http://127.0.0.1:<port>. */
 export function endpointPort(dir: string): number {
@@ -178,8 +88,7 @@ export async function startAgent(o: AgentOptions): Promise<Agent> {
   const port = endpointPort(o.meshDir)
   const root = join(o.meshDir, 'mesh')
   const tokenFile = join(root, 'tokens', 'web-search')
-  const token = readPrivate(tokenFile).trim()
-  if (!/^[\x21-\x7E]{32,}$/.test(token)) throw new ConfigError('the token must be at least 32 printable characters')
+  const token = readToken(tokenFile)
   const version = (JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')) as { version: string }).version
   // read once per start, before the port opens: a key file that breaks a rule stops the start
   const keys = loadSigningKeys(o.meshDir, 'web-search')

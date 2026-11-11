@@ -117,7 +117,8 @@ check the bearer token and answer the `a2a-mesh/v1` challenge (above): an agent 
 `a2a server` among them, is refused with 14 before the token or any text is sent. That is the
 design (D17), not a bug: implement the proof (an HMAC over the nonce, a few lines), put a small
 proxy that does it in front of the agent, or serve the agent over https on this Mac's tailnet,
-where TLS proves the origin instead.
+where TLS proves the origin instead. An agent built on the [agent kit](agent-kit.md) answers it
+already.
 
 ## When the card changes
 

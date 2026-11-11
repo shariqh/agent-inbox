@@ -1,0 +1,15 @@
+// The agent kit (#539; docs/agent-kit.md): what a mesh-ready A2A agent on `@a2a-js/sdk` needs,
+// taken from web search, its first user.
+export { readToken, startKitAgent } from './agent.js'
+export type { KitAgent, KitAgentOptions } from './agent.js'
+export { PROFILE, meshCard, servedCard } from './card.js'
+export type { CardSpec, Egress, Skill } from './card.js'
+export { createExecutor } from './executor.js'
+export type { Executor, ExecutorOptions, Run, RunResult } from './executor.js'
+export { MAX_CONNECTIONS, rebuildRequest, startFrontDoor } from './front-door.js'
+export type { FrontDoor, FrontDoorOptions, RequestSpec } from './front-door.js'
+export { guardOutput } from './guard.js'
+export { CARD_PATH, MESH_PROOF_LABEL, proof, proofHeaders } from './identity.js'
+export { OwnedTaskStore } from './task-store.js'
+export { loadSigningKeys, publicJwk, signCard } from '../card-signing.js'
+export type { SigningKey } from '../card-signing.js'

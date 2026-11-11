@@ -7,13 +7,13 @@
 // task and method. Only --send <file> sends a real message (decision Q5). The token goes only to
 // the card's origin, on loopback only after the a2a-mesh/v1 proof (D17), and is never printed.
 // Exits: 0 conforms, 17 a test failed, 15 the card could not be fetched, 4 usage. The signature
-// tests (#536) run card-signature.ts's verifier; the profile's egress and residency (#535) are
-// reported as not yet run.
+// tests (#536) run card-signature.ts's verifier; the egress and residency tests (#535) run
+// agent-card.ts's egressRefusal and residencyRefusal per skill.
 // Node core and the mesh's own modules only; only meshctl imports it.
 import { randomUUID } from 'node:crypto'
 import { closeSync, constants, fstatSync, openSync, readFileSync } from 'node:fs'
 import type { LookupFunction } from 'node:net'
-import { agentIdRefusal, checkAddedCard, checkProfile, claim } from './agent-card.js'
+import { agentIdRefusal, checkAddedCard, checkProfile, claim, egressRefusal, residencyRefusal } from './agent-card.js'
 import { tooDeep, unstableReason, verifyCardSignatures } from './card-signature.js'
 import { SEMVER, addedPlace, bearerUsable, fetchCard } from './mesh-add.js'
 import type { Place } from './mesh-add.js'
@@ -47,7 +47,8 @@ export interface CheckIo {
 type Json = Record<string, unknown>
 type Severity = 'must' | 'should' | 'info'
 type Level = 'local' | 'publishable'
-type Outcome = { pass: true } | { miss: string } | { skip: string }
+// `warn`: a miss that counts as a should even where the test is a must (§3.9's public residency)
+type Outcome = { pass: true } | { miss: string; warn?: true } | { skip: string }
 
 const obj = (v: unknown): Json => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Json) : {})
 const list = (v: unknown): Json[] => (Array.isArray(v) ? v.map(obj) : [])
@@ -129,8 +130,11 @@ export const CHECK_REASONS: Record<string, Record<string, string>> = {
   'provider.domain': { differs: 'the provider URL\'s host differs from the agent id\'s domain', 'no-provider-or-id': 'not run: no provider URL or no agent id' },
   'profile.present': { absent: 'the card has no profile extension', invalid: 'the profile extension\'s params break profile v1' },
   'profile.id': { 'bad-syntax': 'the profile id is not <domain>[/<path>]/<name>', 'no-profile': 'not run: no profile extension' },
-  'profile.egress': { 'not-yet': 'not run: egress is checked from #535' },
-  'profile.residency': { 'not-yet': 'not run: residency is checked from #535' },
+  'profile.egress': { invalid: 'a skill\'s egress breaks profile v1', missing: 'a skill declares no egress', 'no-profile': 'not run: no profile extension' },
+  'profile.residency': {
+    invalid: 'a skill\'s residency breaks profile v1', missing: 'a skill declares no residency', 'no-profile': 'not run: no profile extension',
+    'not-any-public': 'the card is on a public name or another tailnet, outside this Mac\'s mesh, so a skill whose residency is not any cannot be satisfied',
+  },
   'signature.present': { absent: 'the card has no signature', unlisted: 'the card\'s signatures name no key its profile lists, so it counts as unsigned' },
   'signature.valid': {
     none: 'not run: no signature names a listed key', unreadable: 'the card has signatures meshctl cannot read (at most 4, each a protected header of at most 2 KiB with a kid)',
@@ -221,6 +225,20 @@ function domain(c: Json): Outcome {
   } catch {
     return skip('no-provider-or-id')
   }
+}
+
+// profile.egress and profile.residency (§3.8, §3.9): each card skill's declaration, invalid before missing
+function declarations(c: Json, member: 'egress' | 'residency', refusal: (v: unknown) => string | undefined, outside: boolean): Outcome {
+  const params = profileParams(c)
+  if (!params) return skip('no-profile')
+  const skills = obj(params.skills)
+  const values = list(c.skills).map((s) => {
+    const entry = typeof s.id === 'string' && Object.hasOwn(skills, s.id) ? obj(skills[s.id]) : {}
+    return Object.hasOwn(entry, member) ? { value: entry[member] } : undefined
+  })
+  if (values.some((v) => v && refusal(v.value))) return miss('invalid')
+  if (values.some((v) => !v)) return miss('missing')
+  return outside && values.some((v) => v!.value !== 'any') ? { miss: 'not-any-public', warn: true } : PASS
 }
 
 function signatureTests(c: Json, outcomes: Map<string, Outcome>): void {
@@ -374,7 +392,8 @@ export async function runCheck(args: string[], io: CheckIo): Promise<number> {
     outcomes.set('profile.present', profile === undefined ? miss('absent') : 'reason' in profile ? miss('invalid') : PASS)
     const params = profileParams(c)
     outcomes.set('profile.id', params === undefined ? skip('no-profile') : agentIdRefusal(params.id) ? miss('bad-syntax') : PASS)
-    for (const id of ['profile.egress', 'profile.residency']) outcomes.set(id, skip('not-yet'))
+    outcomes.set('profile.egress', declarations(c, 'egress', egressRefusal, false))
+    outcomes.set('profile.residency', declarations(c, 'residency', residencyRefusal, where === 'elsewhere'))
     signatureTests(c, outcomes)
     outcomes.set('ext.required', list(obj(c.capabilities).extensions).some((e) => e.required === true && !SPOKEN.includes(e.uri as string)) ? miss('unknown-required') : PASS)
 
@@ -391,8 +410,9 @@ export async function runCheck(args: string[], io: CheckIo): Promise<number> {
   let failed = false
   let fetchFailed = false
   const tests = TESTS.map(([id, local, publishable]) => {
-    const severity: Severity = level === 'publishable' ? publishable : local === 'token' ? (tokenSent ? 'must' : 'should') : local
     const outcome = outcomes.get(id) ?? skip('stopped')
+    const full: Severity = level === 'publishable' ? publishable : local === 'token' ? (tokenSent ? 'must' : 'should') : local
+    const severity: Severity = 'warn' in outcome && full === 'must' ? 'should' : full
     const result = 'pass' in outcome ? 'pass' : 'skip' in outcome ? 'skip'
       : severity === 'must' || (severity === 'should' && flags.has('--strict')) ? 'fail' : severity === 'should' ? 'warn' : 'info'
     if (result === 'fail') failed = true

@@ -6,6 +6,7 @@
 // level with warnings and fail the publishable level until C7-C9 (the design's §8) re-card them.
 // C3 (#536) adds signature.*: the fake signs the card it serves (after its origin is filled in)
 // with a key GOOD lists, unless told not to, and each signature reason id has a recorded card.
+// C4 (#535) adds profile.egress and profile.residency, and residency's public-name warning.
 import { execFileSync, spawnSync } from 'node:child_process'
 import { createHmac, randomUUID } from 'node:crypto'
 import { chmodSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
@@ -178,7 +179,7 @@ beforeAll(() => {
 const live = (...more: string[]): string[] => ['--token-file', tokenFile, ...more]
 
 describe('a good card (design §5)', () => {
-  it('passes every test C2 and C3 ship at the publishable level; egress and residency are not run yet', async () => {
+  it('passes every static test at the publishable level', async () => {
     const fake = await fakeAgent()
     const r = await check([fake.url, '--json'])
     expect(r.code).toBe(0)
@@ -187,8 +188,8 @@ describe('a good card (design §5)', () => {
     expect([body.level, body.ok]).toEqual(['publishable', true])
     expect(body.tests.map((t: Json) => t.id)).toEqual(IDS)
     for (const t of body.tests) expect(Object.keys(t)).toEqual(['id', 'severity', 'result', 'reason'])
-    expect(failing(r, 'pass').length).toBe(17)
-    expect(failing(r, 'skip')).toEqual(['profile.egress not-yet', 'profile.residency not-yet', 'live.identity no-token', 'live.auth no-token', 'live.unknown-task no-token', 'live.unknown-method no-token', 'live.send no-token'])
+    expect(failing(r, 'pass').length).toBe(19)
+    expect(failing(r, 'skip')).toEqual(['live.identity no-token', 'live.auth no-token', 'live.unknown-task no-token', 'live.unknown-method no-token', 'live.send no-token'])
     // no live test without --token-file: one card GET, no token, no POST
     expect([fake.methods, fake.connections()]).toEqual([[], 1])
     expect(fake.headers[0]!.authorization).toBeUndefined()
@@ -225,7 +226,7 @@ describe('a good card (design §5)', () => {
     expect(lines[2]).toBe('Level      local')
     expect(lines[3]).toBe('pass  must    card.fetch           one GET, no redirect: a JSON object of at most 64 KiB, nested at most 32 deep')
     expect(lines).toContain('skip  must    live.identity        not run: live tests need --token-file')
-    expect(lines.at(-2)).toBe('Result     local: pass (0 failed, 0 warnings, 0 info, 7 not run)')
+    expect(lines.at(-2)).toBe('Result     local: pass (0 failed, 0 warnings, 0 info, 5 not run)')
   })
 })
 
@@ -266,13 +267,23 @@ describe('each test fails on a recorded bad card with its reason id', () => {
     ['profile.present', 'invalid', (c) => { ext(c).params.extra = 1 }],
     ['profile.id', 'bad-syntax', (c) => { ext(c).params.id = 'Example.org/notes' }],
     ['profile.id', 'no-profile', (c) => { c.capabilities.extensions = [] }],
+    ['profile.egress', 'invalid', (c) => { ext(c).params.skills['search-notes'].egress = [{ purpose: 'web', hosts: ['*.org'], sends: 'input' }] }],
+    ['profile.egress', 'invalid', (c) => { ext(c).params.skills['search-notes'].egress = [{ purpose: 'telemetry', hosts: 'any', sends: 'input' }] }],
+    ['profile.egress', 'missing', (c) => { delete ext(c).params.skills['search-notes'].egress }],
+    ['profile.egress', 'missing', (c) => { delete ext(c).params.skills }],
+    // a second skill with no profile entry: missing, though its first skill's egress is valid
+    ['profile.egress', 'missing', (c) => { c.skills.push({ ...c.skills[0], id: 'summarize' }) }],
+    ['profile.egress', 'no-profile', (c) => { c.capabilities.extensions = [] }],
+    ['profile.residency', 'invalid', (c) => { ext(c).params.skills['search-notes'].residency = 'public' }],
+    ['profile.residency', 'missing', (c) => { delete ext(c).params.skills['search-notes'].residency }],
+    ['profile.residency', 'no-profile', (c) => { c.capabilities.extensions = [] }],
     ['ext.required', 'unknown-required', (c) => { c.capabilities.extensions.push({ uri: 'urn:example:ext:notes:v1', required: true }) }],
   ]
   const SEVERITY: Record<string, [string, string]> = {
     'card.shape': ['must', 'must'], 'endpoint.rule': ['must', 'must'], 'card.required': ['should', 'must'], 'card.stable': ['should', 'should'],
     'card.text': ['should', 'should'], 'auth.declared': ['must', 'must'], 'auth.supported': ['must', 'must'], 'version.semver': ['info', 'should'],
     'provider.present': ['info', 'must'], 'provider.domain': ['info', 'info'], 'profile.present': ['should', 'must'], 'profile.id': ['should', 'must'],
-    'ext.required': ['should', 'should'],
+    'ext.required': ['should', 'should'], 'profile.egress': ['should', 'must'], 'profile.residency': ['should', 'must'],
   }
   const RESULT: Record<string, string> = { must: 'fail', should: 'warn', info: 'info' }
 
@@ -509,6 +520,27 @@ describe.skipIf(!HAS_OPENSSL)('https card URLs: a public name, this Mac\'s tailn
     expect(test(unread, 'endpoint.rule').reason).toBe('tailnet-unreadable')
   })
 
+  it('a public name or another tailnet warns on a residency other than any; this Mac\'s tailnet and loopback do not', async () => {
+    const narrow = change(GOOD, (c) => { c.capabilities.extensions[0].params.skills['search-notes'].residency = 'caller-mesh' })
+    const pub = await fakeAgent({ card: narrow, tls: leaf, host: NAMES[0] })
+    const r = await check([pub.url, '--json'], { lookup, ca, tailnet })
+    // a should even at the publishable level, where the test is a must: it fails only with --strict
+    expect([r.code, test(r, 'profile.residency')]).toEqual([0, { id: 'profile.residency', severity: 'should', result: 'warn', reason: 'not-any-public' }])
+    const strict = await check([pub.url, '--json', '--strict'], { lookup, ca, tailnet })
+    expect([strict.code, failing(strict)]).toEqual([17, ['profile.residency not-any-public']])
+    const other = await fakeAgent({ card: narrow, tls: leaf, host: NAMES[2] })
+    expect(test(await check([other.url, '--json'], { lookup, ca, tailnet }), 'profile.residency').reason).toBe('not-any-public')
+    const own = await fakeAgent({ card: narrow, tls: leaf, host: NAMES[1] })
+    expect(test(await check([own.url, '--json', '--strict'], { lookup, ca, tailnet }), 'profile.residency').result).toBe('pass')
+    const loop = await fakeAgent({ card: narrow })
+    expect(test(await check([loop.url, '--json', '--strict']), 'profile.residency').result).toBe('pass')
+    // an invalid residency on a public name is still a must
+    const bad = await fakeAgent({ card: change(narrow, (c) => { c.capabilities.extensions[0].params.skills['search-notes'].residency = 'public' }), tls: leaf, host: NAMES[0] })
+    expect(test(await check([bad.url, '--json'], { lookup, ca, tailnet }), 'profile.residency')).toMatchObject({ severity: 'must', result: 'fail', reason: 'invalid' })
+    const human = await check([pub.url], { lookup, ca, tailnet })
+    expect(human.out).toContain('warn  should  profile.residency    the card is on a public name or another tailnet, outside this Mac\'s mesh, so a skill whose residency is not any cannot be satisfied\n')
+  })
+
   it('this Mac\'s tailnet with a token: TLS proves the origin, so the identity test is not run', async () => {
     const fake = await fakeAgent({ tls: leaf, host: NAMES[1] })
     const r = await check([fake.url, '--json', '--level', 'local', ...live()], { lookup, ca, tailnet })
@@ -580,7 +612,7 @@ describe('reason ids', () => {
     }
     const all = Object.entries(CHECK_REASONS).flatMap(([id, reasons]) => Object.keys(reasons).map((r) => `${id} ${r}`))
     // the network kinds the TLS block reaches are skipped without openssl
-    expect(all.filter((pair) => !seen.has(pair) && !(!HAS_OPENSSL && /^(card\.fetch (tls|dns)|endpoint\.rule (not-local|tailnet-unreadable)|live\.identity not-loopback)$/.test(pair)))).toEqual([])
+    expect(all.filter((pair) => !seen.has(pair) && !(!HAS_OPENSSL && /^(card\.fetch (tls|dns)|endpoint\.rule (not-local|tailnet-unreadable)|live\.identity not-loopback|profile\.residency not-any-public)$/.test(pair)))).toEqual([])
     for (const reason of common.slice(1)) expect([...seen].some((pair) => pair.endsWith(` ${reason}`)), reason).toBe(true)
   })
 })

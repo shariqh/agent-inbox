@@ -4,7 +4,8 @@
 // the viewer's cards view (src/mesh-agents.ts) apply one rule; the view also shows a card
 // through summarizeCard and cardJson. `meshctl add` (#529, src/mesh-add.ts) checks an agent
 // this repo doesn't ship with checkAddedCard and pins it through canonicalCard; checkProfile
-// reads the profile extension's stable id and keys (#537, publishable-agent design §3.4, §3.7).
+// reads the profile extension's stable id, keys and per-skill egress and residency (#537, #535,
+// publishable-agent design §3.4, §3.7 to §3.9).
 
 type Json = Record<string, unknown>
 const obj = (v: unknown): Json => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Json) : {})
@@ -70,10 +71,17 @@ export function checkAddedCard(card: unknown): string | undefined {
 const PROFILE_URI = 'https://shariqh.github.io/agent-inbox/ext/profile/v1'
 const DNS_LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/
 const SEGMENT = /^[a-z0-9-]+$/
+// a lower-case punycode DNS name with at least one dot, at most 253 characters, and a last label
+// that starts with a letter: never an IP address, since the URL parser reads a last label that
+// starts with a digit (`1`, `0x7f`) as an IPv4 number
+const dnsName = (name: string): boolean => {
+  const labels = name.split('.')
+  return name.length <= 253 && labels.length > 1 && labels.every((l) => DNS_LABEL.test(l)) && /^[a-z]/.test(labels.at(-1)!)
+}
 
 /**
  * Why `id` is not a stable agent id (§3.4, D19), or undefined: `<domain>[/<segment>…]/<name>`,
- * a lower-case DNS name with at least one dot and a non-numeric last label, segments of
+ * a lower-case DNS name with at least one dot and a last label that starts with a letter, segments of
  * `[a-z0-9-]`, a name of 1-40 such characters, 200 characters in all. The character set alone
  * keeps out a scheme, a user, a port, a query and a fragment. Fixed words, never the id.
  */
@@ -83,9 +91,8 @@ export function agentIdRefusal(id: unknown): string | undefined {
   if (!/^[a-z0-9./-]+$/.test(id)) return 'a profile id with a character other than a-z, 0-9, "-", "." and "/"'
   const [domain = '', ...path] = id.split('/')
   if (!path.length) return 'a profile id with no /<name> after its domain'
-  const labels = domain.split('.')
-  if (labels.length < 2) return 'a profile id whose domain has no dot'
-  if (domain.length > 253 || !labels.every((l) => DNS_LABEL.test(l)) || /^[0-9]+$/.test(labels.at(-1)!)) return 'a profile id whose domain is not a DNS name'
+  if (!domain.includes('.')) return 'a profile id whose domain has no dot'
+  if (!dnsName(domain)) return 'a profile id whose domain is not a DNS name'
   if (!path.every((s) => SEGMENT.test(s))) return 'a profile id with an empty or dotted path segment'
   return path.at(-1)!.length > 40 ? 'a profile id whose name is longer than 40 characters' : undefined
 }
@@ -123,14 +130,51 @@ function emptyRefusal(v: unknown, depth = 0): string | undefined {
   return undefined
 }
 
-export type Profile = { id: string; keys: number }
+// Declared egress (§3.8, #535) and residency (§3.9, #550): closed lists in v1
+const PURPOSES = ['model', 'search', 'storage', 'web', 'api', 'agent'] as const
+const SENDS = ['input', 'metadata'] as const
+const RESIDENCIES = ['caller-host', 'caller-mesh', 'any'] as const
+export type Egress = { purpose: (typeof PURPOSES)[number]; hosts: string[] | 'operator' | 'any'; sends: (typeof SENDS)[number] }
+export type Residency = (typeof RESIDENCIES)[number]
+export type SkillProfile = { egress?: 'none' | Egress[]; residency?: Residency }
+
+const isIn = <T extends string>(values: readonly T[], v: unknown): v is T => typeof v === 'string' && (values as readonly string[]).includes(v)
 
 /**
- * The card's profile extension (§3.7): undefined when the card has none, else its id and how many
- * keys it lists, or why its params break the v1 structure: only `id` (required), `keys` (1-4
- * public JWKs, none twice) and `skills` (exactly the card's skill ids, each an object holding only
- * `egress` and `residency`), and no empty value. The values of `egress` and `residency` are C4's
- * (#535). The reason is fixed words, never text from the card.
+ * Why a skill's `egress` breaks profile v1 (§3.8), or undefined: `"none"`, or 1-8 entries of exactly
+ * `purpose` (a closed list), `hosts` (`"operator"`, `"any"`, or 1-8 lower-case punycode DNS names,
+ * each with at most a leading `*.` before a name that still has a dot) and `sends`. Fixed words.
+ */
+export function egressRefusal(v: unknown): string | undefined {
+  if (v === 'none') return undefined
+  if (!Array.isArray(v) || !v.length) return 'a profile egress that is neither "none" nor a list of entries'
+  if (v.length > 8) return 'more than 8 profile egress entries for a skill'
+  for (const entry of v) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return 'a profile egress entry that is not an object'
+    if (Object.keys(entry).sort().join() !== 'hosts,purpose,sends') return 'a profile egress entry whose members are not exactly purpose, hosts and sends'
+    const e = entry as Json
+    if (!isIn(PURPOSES, e.purpose)) return `a profile egress purpose other than ${PURPOSES.join(', ')}`
+    if (!isIn(SENDS, e.sends)) return 'a profile egress sends other than input and metadata'
+    if (e.hosts === 'operator' || e.hosts === 'any') continue
+    if (!Array.isArray(e.hosts) || !e.hosts.length) return 'profile egress hosts that are neither "operator", "any" nor a list of hosts'
+    if (e.hosts.length > 8) return 'more than 8 hosts in a profile egress entry'
+    if (!e.hosts.every((h) => typeof h === 'string' && dnsName(h.startsWith('*.') ? h.slice(2) : h) && h.length <= 253)) return 'a profile egress host that is not a lower-case DNS name'
+  }
+  return undefined
+}
+
+/** Why a skill's `residency` breaks profile v1 (§3.9), or undefined. Fixed words. */
+export const residencyRefusal = (v: unknown): string | undefined =>
+  isIn(RESIDENCIES, v) ? undefined : `a profile residency other than ${RESIDENCIES.join(', ')}`
+
+export type Profile = { id: string; keys: number; skills: Map<string, SkillProfile> }
+
+/**
+ * The card's profile extension (§3.7): undefined when the card has none, else its id, how many
+ * keys it lists and each skill's declared egress and residency, or why its params break v1: only
+ * `id` (required), `keys` (1-4 public JWKs, none twice) and `skills` (exactly the card's skill ids,
+ * each an object holding only `egress` and `residency`, whose values pass egressRefusal and
+ * residencyRefusal, #535), and no empty value. The reason is fixed words, never text from the card.
  */
 export function checkProfile(card: unknown): { profile: Profile } | { reason: string } | undefined {
   const c = obj(card)
@@ -157,6 +201,7 @@ export function checkProfile(card: unknown): { profile: Profile } | { reason: st
     if (new Set(params.keys.map((k) => jcs(k))).size !== params.keys.length) return { reason: 'a profile key listed twice' }
     keys = params.keys.length
   }
+  const declared = new Map<string, SkillProfile>()
   if (Object.hasOwn(params, 'skills')) {
     const skills = params.skills
     if (!skills || typeof skills !== 'object' || Array.isArray(skills)) return { reason: 'profile skills that are not an object' }
@@ -164,12 +209,16 @@ export function checkProfile(card: unknown): { profile: Profile } | { reason: st
     const named = Object.keys(skills)
     if (ids.some((id) => typeof id === 'string' && !named.includes(id))) return { reason: 'a skill without a profile entry' }
     if (named.some((id) => !ids.includes(id))) return { reason: 'a profile entry for a skill the card lacks' }
-    for (const entry of Object.values(skills as Json)) {
+    for (const [id, entry] of Object.entries(skills as Json)) {
       if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return { reason: 'a profile skill entry that is not an object' }
       if (Object.keys(entry).some((k) => k !== 'egress' && k !== 'residency')) return { reason: 'a profile skill entry with a member other than egress and residency' }
+      const e = entry as Json
+      const why = (Object.hasOwn(e, 'egress') ? egressRefusal(e.egress) : undefined) ?? (Object.hasOwn(e, 'residency') ? residencyRefusal(e.residency) : undefined)
+      if (why) return { reason: why }
+      declared.set(id, e as SkillProfile)
     }
   }
-  return { profile: { id: params.id as string, keys } }
+  return { profile: { id: params.id as string, keys, skills: declared } }
 }
 
 // RFC 8785 (JCS) for values JSON.parse returns: keys sorted by UTF-16 code unit, numbers and

@@ -707,8 +707,11 @@ the usage and 4).
   default-ignorable, tag and separator character as U+FFFD, capped: names, provider and skill
   descriptions 80, a provider URL 200, `\` and `"` escaped), an id, a SemVer version, a plain
   skill id or a plain `https` provider URL printed bare, and a missing field as "not declared";
-  `Signed` (#536, below) prints verified keys' thumbprints bare; egress and residency (#535) add
-  their lines later. Then the file it would
+  `Signed` (#536, below) prints verified keys' thumbprints bare; each `Skills` line ends with the
+  skill's declared egress and residency (#535) in fixed phrases per enum value (`contacts
+  nothing`, `sends your input to a search host the operator chooses`, `runs anywhere`, …), with
+  named hosts printed bare (they passed the punycode check) and "egress not declared" or
+  "residency not declared" when absent; never card text. Then the file it would
   write; `--apply` copies the token to
   `<mesh dir>/mesh/tokens/<id>` (0600, temporary file and rename) and then writes `mesh.json`
   atomically after a timestamped backup, every other key kept. New folders are 0700. Every
@@ -736,12 +739,18 @@ the usage and 4).
   `checkProfile()` in `src/agent-card.ts` (pure, fixed-word reasons): at most one such
   extension; `params` an object with only `id` (required), `keys` and `skills`; no `""`, `[]`,
   `{}` or `null` at any depth (a walk that stops at 32 levels); `agentIdRefusal()`'s id rule
-  (`<domain>[/<segment>…]/<name>`: a lower-case DNS name with a dot and a non-numeric last label,
+  (`<domain>[/<segment>…]/<name>`: a lower-case DNS name with a dot and a last label that starts with a letter,
   `[a-z0-9-]` segments, a name of at most 40, 200 in all, so no scheme, user, port, query or
   fragment); `keys` 1-4 public JWKs (P-256 and P-384 `kty, crv, x, y`, Ed25519 `kty, crv, x`,
   base64url coordinates of the curve's length, no private or other member, none twice);
-  `skills` exactly the card's skill ids, each an object holding only `egress` and `residency`,
-  whose values C4 (#535) validates. Signatures are #536's (below).
+  `skills` exactly the card's skill ids, each an object holding only `egress` and `residency`.
+  `egressRefusal()` (#535): `"none"` or 1-8 entries of exactly `purpose` (model, search,
+  storage, web, api, agent), `hosts` (`"operator"`, `"any"`, or 1-8 lower-case punycode DNS
+  names: a dot, at most 253 characters, a last label that starts with a letter so never an IP (the WHATWG URL parser reads a last label
+  starting with a digit, `1` or `0x7f`, as an IPv4 number), and at most a
+  leading `*.` before a name that still has a dot, so never `*`, `*.com` or an inner `*`) and
+  `sends` (input, metadata); `residencyRefusal()`: caller-host, caller-mesh or any. `Profile.skills`
+  carries the validated values to `addSummary()`. Signatures are #536's (below).
 - **`meshctl add <card-url> --move <id> [--token-file <path>] [--apply]`** (#537, the unsigned
   move of design §3.4): `<id>` must be an entry `add` wrote, valid, with an `agentId`; the new
   card must declare that id and have the entry's pin (a changed card waits for #531's accept); a
@@ -965,8 +974,12 @@ and never reads a terminal. User page, test table and exits: [`docs/mesh-call.md
 - **Static tests** are walks and field checks with no schema table: `card.stable` looks for
   `""`, `[]`, `{}`, `null` anywhere and `"required": false` on an extension; `auth.supported` is
   `bearerUsable()`, shared with `add`'s summary; `profile.present` is `checkProfile()` and
-  `profile.id` `agentIdRefusal()`. `profile.egress` and `profile.residency` report
-  `skip`/`not-yet` until #535. `ext.required` knows one spoken extension, the profile.
+  `profile.id` `agentIdRefusal()`. `profile.egress` and `profile.residency` (#535) run
+  `egressRefusal()`/`residencyRefusal()` on each card skill's entry, read from the raw params so
+  they report even when another part of the profile is invalid: `invalid` before `missing`,
+  `skip`/`no-profile` with no profile. A card on a public name or another tailnet (`where ===
+  'elsewhere'`) whose residency is not `any` gets `not-any-public`, an outcome marked `warn` that
+  counts as a should even at the publishable level (§3.9: "warns"), so only `--strict` fails it. `ext.required` knows one spoken extension, the profile.
 - **Signatures (#536)** use `verifyCardSignatures()` (above): `signature.present` passes with a
   verified signature by a listed key, else `absent` or `unlisted` (should locally, must when
   publishable); `signature.valid` (must) is `skip`/`none` without a signature by a listed key, else

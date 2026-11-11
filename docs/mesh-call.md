@@ -225,7 +225,8 @@ never fails. When `card.fetch` or `card.shape` fails, the rest do not run.
 | `provider.domain` | The provider URL's host is the agent id's domain | info | info |
 | `profile.present` | The [profile extension](ext/profile-v1.md) with valid params | should | must |
 | `profile.id` | The profile id is `<domain>[/<path>]/<name>` | should | must |
-| `profile.egress`, `profile.residency` | Not run yet: #535 | should | must |
+| `profile.egress` | Every skill has a profile entry with a valid `egress` (`invalid` before `missing`) | should | must |
+| `profile.residency` | Every skill has a profile entry with a valid `residency`; a card on a public name or another tailnet that declares anything but `any` warns (`not-any-public`, a should at both levels, so it fails only with `--strict`) | should | must |
 | `signature.present` | A signature whose `kid` is the RFC 7638 thumbprint of a key the profile lists | should | must |
 | `signature.valid` | Every signature by a listed key verifies: ES256 over a P-256 key, ES384 over P-384 or EdDSA over Ed25519 (never another algorithm or key type), header `typ: "JOSE"` with no `crit`, `b64` or `x5c`, over the card's raw JCS form without `signatures` (a failure on a card with empty or default values says its signer may have signed a different payload) | must | must |
 | `signature.extra` | No signature names a key the profile does not list | info | should |
@@ -242,7 +243,7 @@ With `--json` stdout is one line, `{ "level", "ok", "tests": [{ "id", "severity"
 "reason" }] }`, every test in the order above; `reason` is `ok` for a pass, else a fixed id
 (`redirect`, `not-semver`, `unproven`, …; `src/mesh-check.ts` lists them all). A skipped test says
 why: `stopped` (a test it needs failed), `no-token`, `auth-unusable`, `identity-failed`,
-`not-yet`, `no-send` and a few more.
+`no-profile`, `no-send` and a few more.
 
 | Exit | Meaning |
 |---|---|

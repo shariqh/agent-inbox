@@ -76,7 +76,8 @@ The publisher's stable name for the agent: the same string at every endpoint the
 
 - `<domain>` is a lower-case DNS name with at least one dot, written in punycode for an
   internationalised name: labels of 1 to 63 characters of `a-z`, `0-9` and inner `-`, at most
-  253 characters, and a last label that is not all digits (so never an IP address).
+  253 characters, and a last label that starts with a letter (`a-z`), so never an IP address:
+  a URL parser reads a last label that starts with a digit (`1`, `0x7f`) as an IPv4 number.
 - Each `<segment>` and the `<name>` are one or more characters of `a-z`, `0-9` and `-`. The name
   is at most 40 characters.
 - The whole id is at most 200 characters.
@@ -130,10 +131,15 @@ Each entry is an object with exactly these members:
 | Member | Values | Meaning |
 |---|---|---|
 | `purpose` | `model`, `search`, `storage`, `web`, `api`, `agent` | What kind of service. `agent` means it calls another agent. A closed list in version 1. |
-| `hosts` | A list of 1 to 8 lower-case DNS names in punycode (a leading `*.` allowed), or `"operator"`, or `"any"` | Named hosts are fixed in the agent's code. `"operator"`: a host whoever runs this copy configures, not named in the card. `"any"`: hosts a request or a result names (a page fetcher). |
+| `hosts` | A list of 1 to 8 lower-case DNS names in punycode (a leading `*.` allowed, see below), or `"operator"`, or `"any"` | Named hosts are fixed in the agent's code. `"operator"`: a host whoever runs this copy configures, not named in the card. `"any"`: hosts a request or a result names (a page fetcher). |
 | `sends` | `input`, `metadata` | `input`: the caller's text, whole or in part. `metadata`: identifiers and parameters only, never the text. |
 
 `"none"` means the skill contacts nothing. It is a string, not an empty list.
+
+A named host follows the `id`'s domain rule: labels of 1 to 63 characters of `a-z`, `0-9` and
+inner `-`, at least one dot, at most 253 characters, and a last label that starts with a letter
+(so never an IP address, decimal or hex). A wildcard is only `*.` as the first label, before a
+name that itself has a dot: `*.example.org` is allowed; `*`, `*.org`, `**.example.org` and `a.*.example.org` are not.
 
 `"operator"` exists because a card is public: naming a private model or search host would
 publish that name, and two copies of one agent with different backends serve the same card.

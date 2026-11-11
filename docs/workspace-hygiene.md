@@ -74,9 +74,47 @@ git -C "$MAIN" bundle verify -q "$B"                  # must print "is okay"
 git -C "$MAIN" bundle list-heads "$B"                 # must list the branch at its tip
 ```
 
+## The sweep script
+
+`scripts/workspace-sweep.sh` (#248) runs the checks above for every candidate at once:
+
+```sh
+npm run sweep                   # dry run: read-only, lists every candidate and why
+npm run sweep -- --fetch        # git fetch --prune origin first, then the dry run
+npm run sweep -- --apply        # remove the candidates marked `remove`
+```
+
+The dry run is strictly read-only: no `git fetch`, no `git worktree prune`, no write.
+It reads the local remote-tracking refs and says when they may be stale; `--fetch`
+refreshes them first. It prints one tab-separated line per candidate,
+`kind  path-or-ref  size  last-change  pr-state  checks  action`, where `checks` lists
+which of (a)–(d) passed and `action` is `remove` or `keep: <reason>`, then a summary
+of counts and reclaimable size. It covers the agent worktrees in `$WT` (registered or
+not), the main checkout's local branches, `origin` branches whose tip is the head of a
+merged or closed PR, `build/` and `out/` in the main checkout and in kept worktrees
+that are only unmerged (not open-PR, dirty, locked, recent or in use), and `$TMPDIR`
+entries named `<prefix>XXXXXX`. The prefixes come from the repository's own
+`mkdtemp`/`scratchDir`/`mktemp` literals, read at run time; the list is printed, and
+prefixes that are too generic (`repo-`, `plain-`, anything under four characters) are
+refused. Runtimes are reported, never removed.
+
+`--apply` re-checks each candidate right before deleting it, one at a time:
+`git worktree remove` (never `--force`), `git branch -D`, `git push origin --delete`
+only while `git ls-remote` still shows the listed tip, and `rm -rf --` by absolute path
+for `build/`, `out/` and temp entries under the resolved `$TMPDIR`. It never touches
+`main`, the main checkout's current branch, a branch checked out in a kept worktree,
+open-PR heads or bases, anything changed in the last 2 hours, anything a running
+process names or works in, or anything in [Never touch](#never-touch). Without a working `gh` it fails closed: exit 2, nothing
+listed or removed. Exit 64 is a usage error.
+
+A `keep` line is something to report, or to ask the owner about, as the sections below
+describe.
+
 ## After a PR merges or closes
 
 1. Verify the live PR state (`gh pr view <n> --json state,headRefOid`).
+   `npm run sweep` lists the worktree, branches and remote branch the steps below
+   remove; `npm run sweep -- --apply` removes them after the same checks.
 2. Run the checks above, then remove the worktree with git, never with `rm -rf`:
 
    ```sh
@@ -202,7 +240,9 @@ delete only what passes the checks.
 9. Anything else attributable to the repository, such as `~/Library/Logs` entries or dev
    Electron userData under another name. Report app-managed folders; do not delete them.
 
-A dry-run helper that automates this inventory is proposed in #248.
+`npm run sweep` automates the inventory of steps 1–6 (see
+[The sweep script](#the-sweep-script)), except packaged apps outside `build/`/`out/` and
+`/tmp` leftovers outside `$TMPDIR`; those and steps 7–9 stay manual.
 
 ## Ownership
 

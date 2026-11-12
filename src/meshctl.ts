@@ -58,22 +58,24 @@ import { randomBytes } from 'node:crypto'
 import { closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmdirSync, statSync, unlinkSync, writeSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
+import type { LookupFunction } from 'node:net'
 import { fileURLToPath } from 'node:url'
 import { MESH_SCHEMA, inTailnet, loopbackPort, meshDir, meshFile, readMesh, readTokenFile, requestPostEndpoint } from './mesh-config.js'
 import type { MeshDocument, MeshRead } from './mesh-config.js'
-import { BUILT_IN_AGENTS, addSummary, addedEntry, addedPlace, cardEndpoint, cardSha256, fetchAddedCard, idFromName, idRefusal, placeRefusal, signatureRefusal, signedLine, tailnetRefusal } from './mesh-add.js'
+import { BUILT_IN_AGENTS, addSummary, addedEntry, addedPlace, cardEndpoint, cardSha256, fetchAddedCard, idFromName, idRefusal, placeRefusal, reachOf, signatureRefusal, signedLine } from './mesh-add.js'
 import { THUMBPRINT } from './card-signature.js'
 import { KEY_USAGE, runKey } from './mesh-keys.js'
 import { appendRun, pruneRuns, runAgents, runFiles, tidyRuns } from './mesh-runs.js'
 import type { RunCollector } from './mesh-runs.js'
 import { CALL_USAGE, runCall } from './mesh-call.js'
-import { CHECK_USAGE, runCheck } from './mesh-check.js'
+import { CHECK_USAGE, publishableRefusal, runCheck } from './mesh-check.js'
 import { SKILL_TARGETS, holdSetupLock, skillPlan } from './mesh-skills.js'
 import type { SkillTarget } from './mesh-skills.js'
 import { REQUEST_POST_USAGE, runRequestPost } from './request-post-client.js'
 import type { RequestPostIo } from './request-post-client.js'
 import { UNSLOP_USAGE, runUnslop } from './unslop-client.js'
 import type { UnslopIo } from './unslop-client.js'
+import { publicLookup } from './public-address.js'
 import { AGENT_INBOX_VERSION } from './version.js'
 
 const UNSLOP_PORT = 4420
@@ -109,15 +111,16 @@ the endpoint is ${ENDPOINT_RULE}; a tailnet name must be on this Mac's tailnet (
 tailscale status), never another tailnet or a Funnel host (docs/request-post.md).
 disable --request-post keeps its run records unless --purge.
 add fetches an A2A agent's card (no token, no redirect), checks it and pins it, and adds the
-agent as agents.<id>: the card URL and endpoint must be http://127.0.0.1:<port> or
-https://<name>.<tailnet>.ts.net on this Mac's tailnet (read from tailscale status; another
-tailnet, a Funnel or a public host waits for #534). A loopback agent needs
+agent as agents.<id>: the card URL and endpoint must be http://127.0.0.1:<port> or https://<name>
+on a DNS name. A <name>.<tailnet>.ts.net on this Mac's tailnet (read from tailscale status) is
+local; any other name is public (#534): every address it resolves to must be public, the card must
+be signed and publishable, and what you send it leaves this Mac. A loopback agent needs
 --token-file (a 0600 file you own; meshctl copies it and never prints it). add never replaces an
 entry or takes a built-in name; remove deletes only an entry add wrote, and its token copy.
 When the card declares a stable id (its profile extension), add records it as agentId.
 add verifies the card's signatures (ES256, ES384 or EdDSA by a key the card's profile lists): one that fails
-refuses the card; an unsigned card is allowed here because add takes only loopback and this
-Mac's tailnet. The keys the card lists are pinned in the entry (trust on first use);
+refuses the card; an unsigned card is allowed on loopback and this Mac's tailnet only. The keys
+the card lists are pinned in the entry (trust on first use);
 --key-thumbprint <t> refuses a card not signed by the key with that RFC 7638 thumbprint.
 A card whose agent id an entry holds, signed by a key that entry pinned, is that agent at a new
 endpoint: add moves it. add --move <id> moves agents.<id> to the card URL given, signed or not:
@@ -157,6 +160,10 @@ export interface MeshctlIo {
   /** The Node binary and meshctl.js the shim and start command name (tests point them at scratch files). */
   node?: string
   script?: string
+  /** `add`'s DNS, the CA that replaces the system roots, and which addresses count as public (test seams only, #534) */
+  lookup?: LookupFunction
+  ca?: string
+  isPublic?: (address: string) => boolean
 }
 
 // `~/…` for the home directory, so the output reads like the docs
@@ -814,6 +821,9 @@ type ClientIo = Pick<UnslopIo & RequestPostIo, 'env' | 'home' | 'stdin' | 'out' 
  * entry pins `keyThumbprints`, the keys the card lists (trust on first use, Q3);
  * `--key-thumbprint` refuses a card that key did not sign. A card whose id an entry holds and that
  * a key the entry pinned signed is the signed move (§3.4): the same as `--move <that id>`.
+ * Since #534 (§8.8, D18) a public name is allowed: fetched only through publicLookup(), the card
+ * must be signed and pass the publishable level's network-free must tests (publishableRefusal),
+ * and the entry records `public: true`. A move never changes whether an entry is public.
  */
 export async function runAdd(args: string[], io: MeshctlIo = {}): Promise<number> {
   const env = io.env ?? process.env
@@ -851,10 +861,10 @@ export async function runAdd(args: string[], io: MeshctlIo = {}): Promise<number
   if (moveBad) return refuse(BUILT_IN_AGENTS.includes(move!) ? `${move} is a built-in agent: meshctl enable and disable manage it` : moveBad)
   if (thumbprint !== undefined && !THUMBPRINT.test(thumbprint)) return refuse('--key-thumbprint must be a key\'s RFC 7638 SHA-256 thumbprint: 43 base64url characters (meshctl key show prints one)')
   const place = addedPlace(cardUrl)
-  if ('refused' in place) return refuse(placeRefusal('the card URL', place.refused))
-  // the endpoint must share the card URL's origin, so this one check covers both
-  const elsewhere = tailnetRefusal('the card URL', place, place.loopback ? undefined : (io.tailnet ?? magicDnsSuffix)())
-  if (elsewhere) return refuse(elsewhere)
+  if ('refused' in place) return refuse(placeRefusal('the card URL'))
+  // the endpoint must share the card URL's origin, so this one placing covers both
+  const reach = reachOf(place, io.tailnet ?? magicDnsSuffix)
+  const seams = reach === 'public' ? { lookup: publicLookup(io.lookup, io.isPublic), ca: io.ca } : { lookup: io.lookup, ca: io.ca }
   const NEEDS_TOKEN = 'a loopback agent needs --token-file: meshctl call proves its identity with that token before it sends anything (D17)'
   if (place.loopback && tokenFile === undefined && move === undefined) return refuse(NEEDS_TOKEN)
 
@@ -895,16 +905,18 @@ export async function runAdd(args: string[], io: MeshctlIo = {}): Promise<number
     if (place.loopback && tokenFile === undefined && was.entry.tokenFile === undefined) return refuse(NEEDS_TOKEN)
   }
 
-  const fetched = await fetchAddedCard(place)
+  const fetched = await fetchAddedCard(place, undefined, seams)
   if (fetched.reason !== undefined) return refuse(fetched.reason)
   const card = fetched.card
   const endpoint = cardEndpoint(card, place.origin)
   if ('refused' in endpoint) return refuse(endpoint.refused)
   const profile = fetched.profile
   const verdict = fetched.signatures
-  // add takes only loopback and this Mac's tailnet (the local level) until #534
-  const signatureBad = signatureRefusal(verdict, true, thumbprint)
+  // an unsigned card only on loopback and this Mac's tailnet (the local level); a public name needs the publishable level (#534, D18)
+  const signatureBad = signatureRefusal(verdict, reach !== 'public', thumbprint)
   if (signatureBad) return refuse(signatureBad)
+  const unpublishable = reach === 'public' ? publishableRefusal(card) : undefined
+  if (unpublishable) return refuse(`the card is on a public name, so it must be publishable, and it fails ${unpublishable} (meshctl check <card-url> lists every test)`)
   const signedBy = 'signed' in verdict ? verdict.signed : []
   const pin = cardSha256(card)
 
@@ -937,11 +949,12 @@ export async function runAdd(args: string[], io: MeshctlIo = {}): Promise<number
     if (derivedBad) return refuse(derivedBad)
     if (Object.hasOwn(agents, picked)) return refuse(taken(picked))
     agentId = picked
-    entry = { card: place.url, endpoint: endpoint.endpoint, ...(token === undefined ? {} : { tokenFile: join(dir, 'mesh', 'tokens', picked) }), cardSha256: pin, ...(profile ? { agentId: profile.id } : {}), ...pinned }
+    entry = { card: place.url, endpoint: endpoint.endpoint, ...(token === undefined ? {} : { tokenFile: join(dir, 'mesh', 'tokens', picked) }), cardSha256: pin, ...(profile ? { agentId: profile.id } : {}), ...pinned, ...(reach === 'public' ? { public: true } : {}) }
   } else {
     const was = movable(agents, target)
     if (typeof was === 'string') return refuse(was)
     moved = was.entry
+    if (moved.public !== (reach === 'public')) return refuse(`the new card URL is ${reach === 'public' ? 'on a public name' : 'on loopback or this Mac\'s tailnet'} and agents.${target} is not, so add cannot move it there: remove it and add it again`)
     if (profile === undefined) return refuse(`the card declares no agent id, so add cannot tell it is ${target}'s agent`)
     if (profile.id !== moved.agentId) return refuse(`the card declares another agent id than agents.${target}'s, so it is another agent: add it without --move`)
     if (pin !== moved.cardSha256) return refuse(`the card at the new URL is not the one you added (pin ${moved.cardSha256.slice(0, 12)}, now ${pin.slice(0, 12)}): moving a changed card waits for accepting it (#531)`)
@@ -968,7 +981,7 @@ export async function runAdd(args: string[], io: MeshctlIo = {}): Promise<number
   const next: MeshDocument = { ...(present ? existing.doc : { schema: MESH_SCHEMA }), agents: { ...agents, [agentId]: entry } }
   const json = `${JSON.stringify(next, null, 2)}\n`
 
-  out(addSummary(card, { cardUrl: place.url, endpoint: endpoint.endpoint, loopback: place.loopback, token: token !== undefined || moved?.tokenFile !== undefined, pin, profile, signed: signedLine(verdict, trust) }))
+  out(addSummary(card, { cardUrl: place.url, endpoint: endpoint.endpoint, reach, token: token !== undefined || moved?.tokenFile !== undefined, pin, profile, signed: signedLine(verdict, trust) }))
   if (moved) {
     const sends = token !== undefined || moved.tokenFile !== undefined ? '; meshctl call will send the token to the new endpoint' : ''
     const why = move === undefined ? `, signed by a key its pinned card lists` : ''

@@ -20,6 +20,7 @@ import type { Place } from './mesh-add.js'
 import { meshDir, meshFile, openPrivate, readMesh, readPrivate } from './mesh-config.js'
 import { meshLink, tlsLink } from './mesh-identity.js'
 import type { Exchange, MeshLink } from './mesh-identity.js'
+import { publicLookup } from './public-address.js'
 import type { RunCollector } from './mesh-runs.js'
 
 const INPUT_MAX = 64 * 1024
@@ -50,9 +51,10 @@ export interface CallIo {
   err: (text: string) => void
   /** This Mac's MagicDNS suffix, for a tailnet entry only (meshctl passes `tailscale status`'s). */
   tailnet?: () => string | undefined
-  /** DNS for a tailnet name, and the CA that replaces the system roots (test seams only) */
+  /** DNS for an https name, the CA that replaces the system roots, and which addresses count as public (test seams only) */
   lookup?: LookupFunction
   ca?: string
+  isPublic?: (address: string) => boolean
   /** GetTask's interval after a stream ends early (tests shorten it) */
   pollMs?: number
   /** the meshctl entry's run record (cards view V5 §5.3): armed once the entry passes its rule */
@@ -174,8 +176,9 @@ async function call(id: string, skill: string | undefined, timeoutMs: number, io
   }
   const place = addedPlace(entry.endpoint) as Place
   const card = new URL(entry.card)
-  if (!place.loopback) {
-    // §8.8: the tailnet the entry was added on must still be this Mac's
+  if (!place.loopback && !entry.public) {
+    // §8.8: the tailnet a local entry was added on must still be this Mac's; a public one (#534)
+    // is reached only through publicLookup() below
     const elsewhere = tailnetRefusal(`agents.${id}`, place, io.tailnet?.())
     if (elsewhere) {
       say(`off: ${elsewhere}`)
@@ -195,7 +198,8 @@ async function call(id: string, skill: string | undefined, timeoutMs: number, io
   if (io.run) Object.assign(io.run, { armed: Date.now(), op: 'call' })
 
   // the card, fresh, and on loopback the identity proof before anything else is sent (D17)
-  const link = place.loopback ? meshLink(Number(card.port), token!, 'a2a-mesh', card.pathname) : tlsLink(new URL(place.origin), token, card.pathname, { lookup: io.lookup, ca: io.ca })
+  const lookup = entry.public ? publicLookup(io.lookup, io.isPublic) : io.lookup
+  const link = place.loopback ? meshLink(Number(card.port), token!, 'a2a-mesh', card.pathname) : tlsLink(new URL(place.origin), token, card.pathname, { lookup, ca: io.ca })
   links.push(link)
   const squatter: Ended = { code: 14, reason: 'identity' }
   const unproven = (): Ended => {
@@ -210,7 +214,7 @@ async function call(id: string, skill: string | undefined, timeoutMs: number, io
   const got = await link.card(CARD_MS)
   if (got === 'unproven') return unproven()
   if (got === 'refused') return unavailable(`nothing answers at ${place.origin}: is the agent running?`)
-  if (got === 'error') return unavailable(`the card request to ${place.origin} failed (no answer in ${CARD_MS / 1000} s, a cut connection, DNS or TLS)`)
+  if (got === 'error') return unavailable(`the card request to ${place.origin} failed (no answer in ${CARD_MS / 1000} s, a cut connection, DNS${entry.public ? ', a name that resolves to an address that is not public' : ''} or TLS)`)
   if (got.status !== 200) return unavailable(`the card URL answered HTTP ${got.status}${got.status >= 300 && got.status < 400 ? ', and call follows no redirect' : ''}`)
   let fetched: Json | undefined
   try {

@@ -8,11 +8,11 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync,
 import { spawnSync } from 'node:child_process'
 import { createServer } from 'node:http'
 import type { IncomingHttpHeaders, Server } from 'node:http'
-import type { AddressInfo } from 'node:net'
+import type { AddressInfo, LookupFunction } from 'node:net'
 import { join } from 'node:path'
 import { MESH_FILE_MAX, meshDir, meshFile, parseMesh } from '../src/mesh-config.js'
 import { runAdd, runMeshctl, suffixFrom } from '../src/meshctl.js'
-import { addSummary, addedPlace, tailnetRefusal } from '../src/mesh-add.js'
+import { addSummary, addedPlace, reachOf, tailnetRefusal } from '../src/mesh-add.js'
 import { checkProfile } from '../src/agent-card.js'
 import { verifyCardSignatures } from '../src/card-signature.js'
 import { jws, signWith, testKey } from './signed-card.js'
@@ -543,13 +543,14 @@ describe('meshctl add and remove (#529, mesh design §6.7, D13–D17, §8.8)', (
     const tokenFile = join(scratchDir('add-token-'), 'token')
     writeFileSync(tokenFile, `${TOKEN}\n`, { mode: 0o600 })
     if (meshJson !== undefined) writeFileSync(meshFile(dir), meshJson)
-    const io = { suffix: 'tailnet-example.ts.net' as string | undefined, asked: 0 }
+    const io = { suffix: 'tailnet-example.ts.net' as string | undefined, asked: 0, lookup: undefined as LookupFunction | undefined, ca: undefined as string | undefined, isPublic: undefined as ((a: string) => boolean) | undefined }
     const add = async (...argv: string[]) => {
       const out: string[] = []
       const err: string[] = []
       const code = await runAdd(argv, {
         env: { AGENT_INBOX_MESH_DIR: dir }, home: '/nonexistent-home', now: () => new Date(2026, 10, 10, 9, 30, 0),
         out: (text) => out.push(text), err: (text) => err.push(text), tailnet: () => { io.asked++; return io.suffix },
+        lookup: io.lookup, ca: io.ca, isPublic: io.isPublic,
       })
       const r = { code, out: out.join(''), err: err.join('') }
       expect(r.out + r.err).not.toContain(TOKEN)
@@ -665,7 +666,9 @@ describe('meshctl add and remove (#529, mesh design §6.7, D13–D17, §8.8)', (
       ['the card URL redirects, and add follows no redirect', () => ({ status: 302, headers: { location: other.url } })],
       ['the card URL sent more than 64 KiB', (o) => ({ body: JSON.stringify(card(o, (c) => { c.description = 'd'.repeat(70_000) })) })],
       ['the card URL sent a card nested more than 32 deep', (o) => ({ body: JSON.stringify(card(o)).replace('"version"', `"deep":${'['.repeat(20_000)}${']'.repeat(20_000)},"version"`) })],
-      ['the card\'s JSON-RPC interface URL is on a public host', (o) => ({ body: JSON.stringify(card(o, (c) => { c.supportedInterfaces[0].url = 'https://agent.example.com/a2a' })) })],
+      // a public name passes the rule since #534, but never another origin than the card's: the token goes only where the card came from
+      ['the card\'s JSON-RPC interface is on another origin than the card', (o) => ({ body: JSON.stringify(card(o, (c) => { c.supportedInterfaces[0].url = 'https://agent.example.com/a2a' })) })],
+      ['the card\'s JSON-RPC interface URL must be', (o) => ({ body: JSON.stringify(card(o, (c) => { c.supportedInterfaces[0].url = 'https://203.0.113.7/a2a' })) })],
       ['the card\'s JSON-RPC interface URL must be', (o) => ({ body: JSON.stringify(card(o, (c) => { c.supportedInterfaces[0].url = 'http://192.168.1.2:8080/a2a' })) })],
       ['the card\'s JSON-RPC interface is on another origin than the card', () => ({ body: JSON.stringify(card(other.origin)) })],
       ['the card\'s name makes no usable id: pass --id <id>', (o) => ({ body: JSON.stringify(card(o, (c) => { c.name = '\u2603!' })) })],
@@ -685,11 +688,9 @@ describe('meshctl add and remove (#529, mesh design §6.7, D13–D17, §8.8)', (
     const a = await agent()
     const t = setup()
     const port = a.origin.split(':')[2]
-    const RULE = 'must be http://127.0.0.1:<port>[/<path>] or https://<name>.<tailnet>.ts.net[:<port>][/<path>]'
+    const RULE = 'must be http://127.0.0.1:<port>[/<path>] or https://<name>[:<port>][/<path>] on a DNS name'
     const cases: Array<[string, string]> = [
-      ['https://agent.example.com/.well-known/agent-card.json', 'is on a public host: adding one waits for TLS identity and the card accept (#534, #531)'],
-      ['https://box.tail1234.ts.net.example.com/card', 'is on a public host'],
-      ['https://203.0.113.7/card', RULE], ['https://100.101.102.103:8443/card', RULE], ['https://[::1]:8443/card', RULE],
+      ['https://203.0.113.7/card', RULE], ['https://agent.example.123/card', RULE], ['https://agent.example.com./card', RULE], [`https://${'a'.repeat(60)}.${'b'.repeat(60)}.${'c'.repeat(60)}.${'d'.repeat(60)}.${'e'.repeat(60)}.example/card`, RULE], ['https://100.101.102.103:8443/card', RULE], ['https://[::1]:8443/card', RULE],
       ['http://192.168.1.2:8080/card', RULE], [`http://localhost:${port}/card`, RULE], [`http://0x7f000001:${port}/card`, RULE],
       [`http://127.0.0.2:${port}/card`, RULE], ['http://127.0.0.1:80/card', RULE], ['http://127.0.0.1/card', RULE],
       [`https://127.0.0.1:${port}/card`, RULE], ['http://box.tail1234.ts.net/card', RULE], ['https://box.tail1234.ts.net:443/card', RULE],
@@ -710,20 +711,32 @@ describe('meshctl add and remove (#529, mesh design §6.7, D13–D17, §8.8)', (
     expect(readdirSync(t.dir)).toEqual([])
   })
 
-  it('takes a tailnet name only on this Mac\'s tailnet (§8.8\'s allowlist), refusing another tailnet or a Funnel host', async () => {
+  it('places a tailnet name: this Mac\'s tailnet is local; another tailnet or a Funnel host is public, behind the address check (#534)', async () => {
     const t = setup()
+    // another tailnet's name answers in Tailscale's 100.64.0.0/10, so the public name's address check refuses it before any connection
+    const lookups: string[] = []
+    t.io.lookup = ((host: string, _o: unknown, done: (...a: unknown[]) => void) => { lookups.push(host); done(null, [{ address: '100.101.102.103', family: 4 }]) }) as unknown as LookupFunction
+    const PRIVATE = 'Refused: the card URL is on a name that resolves to a loopback, private or other address that is not public, and a public name must resolve only to public ones'
     const other = await t.add('https://agent.other-example.ts.net/.well-known/agent-card.json', '--apply')
-    expect(other.err).toBe('Refused: the card URL is on another tailnet or a Funnel host, not this Mac\'s tailnet (tailnet-example.ts.net): adding one waits for TLS identity and the card accept (#534, #531). Nothing changed.\n')
+    expect(other.err).toContain(PRIVATE)
+    // with this Mac's tailnet unreadable, its own name is public too, and refused the same way
     t.io.suffix = undefined
     const unknown = await t.add('https://agent.tailnet-example.ts.net/.well-known/agent-card.json', '--apply')
-    expect(unknown.err).toBe('Refused: the card URL is on a tailnet name, but this Mac\'s tailnet could not be read (is Tailscale installed, running and logged in?), so add cannot tell it from another tailnet or a Funnel host. Nothing changed.\n')
-    expect(t.io.asked).toBe(2)
+    expect(unknown.err).toContain(PRIVATE)
+    expect([t.io.asked, lookups]).toEqual([2, ['agent.other-example.ts.net', 'agent.tailnet-example.ts.net']])
     expect(readdirSync(t.dir)).toEqual([])
-    // the accepting side, without a DNS lookup: a name in this Mac's tailnet passes, loopback never asks
+    // the placing, without a DNS lookup: this Mac's tailnet is local and loopback never asks; any other name is public
     const place = (url: string) => { const p = addedPlace(url); if ('refused' in p) throw new Error(url); return p }
+    const suffix = () => 'tailnet-example.ts.net'
+    expect(reachOf(place('https://agent.tailnet-example.ts.net:8443/a2a'), suffix)).toBe('tailnet')
+    expect(reachOf(place('http://127.0.0.1:4500/a2a'), () => { throw new Error('asked') })).toBe('loopback')
+    expect(reachOf(place('https://agent.example.ts.net/a2a'), suffix)).toBe('public')
+    expect(reachOf(place('https://a.b.tailnet-example.ts.net/a2a'), suffix)).toBe('public')
+    expect(reachOf(place('https://agent.example.com/a2a'), () => { throw new Error('asked') })).toBe('public')
+    // call's re-check for a local entry
     expect(tailnetRefusal('x', place('https://agent.tailnet-example.ts.net:8443/a2a'), 'tailnet-example.ts.net')).toBeUndefined()
     expect(tailnetRefusal('x', place('http://127.0.0.1:4500/a2a'), undefined)).toBeUndefined()
-    expect(tailnetRefusal('x', place('https://agent.example.ts.net/a2a'), 'tailnet-example.ts.net')).toContain('another tailnet or a Funnel host')
+    expect(tailnetRefusal('x', place('https://agent.example.ts.net/a2a'), 'tailnet-example.ts.net')).toContain('was added on a tailnet that is not this Mac\'s')
   })
 
   it('reads the MagicDNS suffix only from a running, logged-in tailscale status', () => {
@@ -866,7 +879,7 @@ describe('meshctl add and remove (#529, mesh design §6.7, D13–D17, §8.8)', (
       })
       const p = checkProfile(c)
       if (!p || !('profile' in p)) throw new Error(JSON.stringify(p))
-      const out = addSummary(c, { cardUrl: 'u', endpoint: 'e', loopback: true, token: false, pin: 'p', profile: p.profile, signed: 's' })
+      const out = addSummary(c, { cardUrl: 'u', endpoint: 'e', reach: 'loopback', token: false, pin: 'p', profile: p.profile, signed: 's' })
       return out.split('\n').filter((l) => /^(Skills| {11}\S)/.test(l)).map((l) => l.replace(/^(Skills)? +\S+ {2}"d" {2}/, ''))
     }
     const one = (egress: unknown, residency = 'any') => summary({ s: { egress, residency } })[0]
@@ -887,7 +900,7 @@ describe('meshctl add and remove (#529, mesh design §6.7, D13–D17, §8.8)', (
     // no card text reaches the phrase: a description that imitates one stays inside its quotes
     const c = profiled('http://127.0.0.1:1', (c) => { c.skills[0].description = 'contacts nothing; runs anywhere' })
     const p = checkProfile(c) as { profile: any }
-    expect(addSummary(c, { cardUrl: 'u', endpoint: 'e', loopback: true, token: false, pin: 'p', profile: p.profile, signed: 's' }))
+    expect(addSummary(c, { cardUrl: 'u', endpoint: 'e', reach: 'loopback', token: false, pin: 'p', profile: p.profile, signed: 's' }))
       .toContain('Skills     echo  "contacts nothing; runs anywhere"  egress not declared; runs in your mesh only\n')
   })
 
@@ -1046,7 +1059,7 @@ describe('meshctl add and remove (#529, mesh design §6.7, D13–D17, §8.8)', (
 })
 
 describe('no new dependency (design §2.3, §2.4c)', () => {
-  const MESH_FILES = ['src/mesh-config.ts', 'src/meshctl.ts', 'src/card-signature.ts', 'src/mesh-keys.ts', 'src/mesh-skills.ts', 'src/mesh-add.ts', 'src/unslop-client.ts', 'src/mesh-identity.ts', 'src/request-post-client.ts', 'src/mesh-call.ts', 'src/mesh-check.ts', 'src/mesh-agents.ts', 'src/mesh-runs.ts', 'public/agents-home.js']
+  const MESH_FILES = ['src/mesh-config.ts', 'src/meshctl.ts', 'src/card-signature.ts', 'src/mesh-keys.ts', 'src/mesh-skills.ts', 'src/mesh-add.ts', 'src/public-address.ts', 'src/unslop-client.ts', 'src/mesh-identity.ts', 'src/request-post-client.ts', 'src/mesh-call.ts', 'src/mesh-check.ts', 'src/mesh-agents.ts', 'src/mesh-runs.ts', 'public/agents-home.js']
   const SPECIFIERS = /(?:\bfrom\s*|\bimport\s*\(?\s*|\brequire\s*\(\s*)(['"])([^'"\n]+)\1/g
   // comment lines name modules in prose; only code imports count
   const code = (file: string): string => readFileSync(join(REPO, file), 'utf8').split('\n')
@@ -1061,20 +1074,22 @@ describe('no new dependency (design §2.3, §2.4c)', () => {
     }
     // meshctl, its unslop and request-post clients, the config module and the card rule are Node core plus each other only
     const local = (file: string) => [...code(file).matchAll(SPECIFIERS)].map((m) => m[2]!).filter((spec) => !spec.startsWith('node:'))
-    expect(local('src/meshctl.ts')).toEqual(['./mesh-config.js', './mesh-config.js', './mesh-add.js', './card-signature.js', './mesh-keys.js', './mesh-runs.js', './mesh-runs.js', './mesh-call.js', './mesh-check.js', './mesh-skills.js', './mesh-skills.js', './request-post-client.js', './request-post-client.js', './unslop-client.js', './unslop-client.js', './version.js'])
+    expect(local('src/meshctl.ts')).toEqual(['./mesh-config.js', './mesh-config.js', './mesh-add.js', './card-signature.js', './mesh-keys.js', './mesh-runs.js', './mesh-runs.js', './mesh-call.js', './mesh-check.js', './mesh-skills.js', './mesh-skills.js', './request-post-client.js', './request-post-client.js', './unslop-client.js', './unslop-client.js', './public-address.js', './version.js'])
     // the clients take the run collector's type only (cards view V5 §5.3); meshctl's entry writes the record
     expect(local('src/unslop-client.ts')).toEqual(['./agent-card.js', './mesh-config.js', './mesh-identity.js', './mesh-identity.js', './mesh-runs.js'])
     // the identity proof (#492) and the https link (#530): Node core only
     expect([...code('src/mesh-identity.ts').matchAll(SPECIFIERS)].map((m) => m[2]!)).toEqual(['node:crypto', 'node:http', 'node:http', 'node:https', 'node:net'])
     // meshctl call (#530): the card rule, the frame, add's rules, the config reader and the link; never a child process
-    expect([...code('src/mesh-call.ts').matchAll(SPECIFIERS)].map((m) => m[2]!)).toEqual(['node:crypto', 'node:fs', 'node:net', 'node:path', './agent-card.js', './agent-result.js', './mesh-add.js', './mesh-add.js', './mesh-config.js', './mesh-identity.js', './mesh-identity.js', './mesh-runs.js'])
+    expect([...code('src/mesh-call.ts').matchAll(SPECIFIERS)].map((m) => m[2]!)).toEqual(['node:crypto', 'node:fs', 'node:net', 'node:path', './agent-card.js', './agent-result.js', './mesh-add.js', './mesh-add.js', './mesh-config.js', './mesh-identity.js', './mesh-identity.js', './public-address.js', './mesh-runs.js'])
     // meshctl check (#538): the card rules, add's rules and fetch, the token reader and the links; never a child process
-    expect([...code('src/mesh-check.ts').matchAll(SPECIFIERS)].map((m) => m[2]!)).toEqual(['node:crypto', 'node:fs', 'node:net', './agent-card.js', './card-signature.js', './mesh-add.js', './mesh-add.js', './mesh-config.js', './mesh-identity.js', './mesh-identity.js'])
+    expect([...code('src/mesh-check.ts').matchAll(SPECIFIERS)].map((m) => m[2]!)).toEqual(['node:crypto', 'node:fs', 'node:net', './agent-card.js', './card-signature.js', './mesh-add.js', './mesh-add.js', './mesh-config.js', './mesh-identity.js', './mesh-identity.js', './public-address.js'])
     expect(local('src/request-post-client.ts')).toEqual(['./agent-card.js', './mesh-config.js', './mesh-runs.js'])
     for (const file of ['src/unslop-client.ts', 'src/request-post-client.ts', 'src/mesh-call.ts']) expect(code(file), file).toContain(`import type { RunCollector } from './mesh-runs.js'`)
     expect(local('src/mesh-config.ts')).toEqual([])
     // meshctl add's rules and card fetch (#529): HTTP, a hash, the card rule and the tailnet test (#557), never a child process
-    expect([...code('src/mesh-add.ts').matchAll(SPECIFIERS)].map((m) => m[2]!)).toEqual(['node:crypto', 'node:http', 'node:http', 'node:https', 'node:net', './agent-card.js', './card-signature.js', './card-signature.js', './mesh-config.js'])
+    expect([...code('src/mesh-add.ts').matchAll(SPECIFIERS)].map((m) => m[2]!)).toEqual(['node:crypto', 'node:http', 'node:http', 'node:https', 'node:net', './agent-card.js', './card-signature.js', './card-signature.js', './mesh-config.js', './public-address.js'])
+    // the public name's address check (#534): Node core only
+    expect([...code('src/public-address.ts').matchAll(SPECIFIERS)].map((m) => m[2]!)).toEqual(['node:dns', 'node:dns', 'node:net', 'node:net'])
     // the card signature verifier and meshctl key (#536): Node core, the card rule and the thumbprint only
     expect([...code('src/card-signature.ts').matchAll(SPECIFIERS)].map((m) => m[2]!)).toEqual(['node:crypto', './agent-card.js'])
     expect([...code('src/mesh-keys.ts').matchAll(SPECIFIERS)].map((m) => m[2]!)).toEqual(['node:crypto', 'node:fs', 'node:path', './card-signature.js'])

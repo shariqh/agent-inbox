@@ -1,7 +1,7 @@
 // `meshctl add` (#529; mesh design §6.7, D13–D17, §8.8): the rules for a card-driven
 // `agents.<id>` entry, an A2A agent this repo doesn't ship. The id rule, the endpoint rule
-// (loopback, or https on a name in this Mac's tailnet; another tailnet, a Funnel or a public
-// host waits for #534), the card fetch (no
+// (loopback, or https on a DNS name: this Mac's tailnet, or since #534 a public name, which
+// another tailnet's name or a Funnel host is too), the card fetch (no
 // token, no redirect, no proxy, 64 KiB, one deadline) and the card pin. Node core, the card
 // rule and mesh-config.ts's tailnet test only, and no child process: meshctl reads this Mac's
 // MagicDNS suffix and passes it in. meshctl imports it, never the stdio MCP server or the viewer.
@@ -19,10 +19,11 @@ import { agentIdRefusal, canonicalCard, checkAddedCard, checkProfile, claim, typ
 import { THUMBPRINT, signatureVerdict, tooDeep } from './card-signature.js'
 import type { SignatureVerdict } from './card-signature.js'
 import { inTailnet } from './mesh-config.js'
+import { NOT_PUBLIC } from './public-address.js'
 
 /** The agents that ship here, each with its own `mesh.json` shape: `add` never takes their names. */
 export const BUILT_IN_AGENTS: readonly string[] = ['unslop', 'request-post', 'web-search']
-export const ADDED_RULE = 'http://127.0.0.1:<port>[/<path>] or https://<name>.<tailnet>.ts.net[:<port>][/<path>] on this Mac\'s tailnet'
+export const ADDED_RULE = 'http://127.0.0.1:<port>[/<path>] or https://<name>[:<port>][/<path>] on a DNS name'
 const CARD_MAX = 64 * 1024
 const DEADLINE_MS = 5_000
 
@@ -47,58 +48,69 @@ export function idFromName(name: unknown): string | undefined {
 }
 
 export type Place = { url: string; origin: string; loopback: boolean; host: string }
-type Refused = 'rule' | 'public'
+/** Where an added agent is (§8.8, D18): loopback and this Mac's tailnet are local, anything else public (#534). */
+export type Reach = 'loopback' | 'tailnet' | 'public'
 
 const LABEL = '[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?'
 // plain segments only: no `.` or `..`, no percent-encoding, query or fragment
 const PATH = '(?:/(?!\\.\\.?(?:/|$))[A-Za-z0-9._~-]+)*/?'
 const LOOPBACK = new RegExp(`^(http://127\\.0\\.0\\.1:([1-9]\\d{0,4}))${PATH}$`)
 const TAILNET = new RegExp(`^(https://(?:${LABEL}\\.){2}ts\\.net(?::([1-9]\\d{0,4}))?)${PATH}$`)
+// any https DNS name (#534): lower-case labels and a last label that starts with a letter, so never
+// an IP literal (the WHATWG URL parser reads a last label starting with a digit as an IPv4 number)
+const NAMED = new RegExp(`^(https://(?:${LABEL}\\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?(?::([1-9]\\d{0,4}))?)${PATH}$`)
 
 /**
  * The endpoint rule's shape for added agents (§8.8): `http://127.0.0.1:<port>` or `https://` on a
- * `<name>.<tailnet>.ts.net` name, as written (lower case, no written-out default port), with an
- * optional plain path. `public` is an https URL on any other DNS name: refused until TLS
- * identity and the card accept land (#534, #531). Which tailnet is allowed is
- * tailnetRefusal's question.
+ * DNS name of at most 253 characters, as written (lower case, no written-out default port), with an
+ * optional plain path. Where the name is (this Mac's tailnet or public) is reachOf's question, and
+ * whether a public name's addresses are public is publicLookup's (public-address.ts).
  */
-export function addedPlace(raw: unknown): Place | { refused: Refused } {
+export function addedPlace(raw: unknown): Place | { refused: 'rule' } {
   if (typeof raw !== 'string') return { refused: 'rule' }
   const loopback = LOOPBACK.exec(raw)
-  const match = loopback ?? TAILNET.exec(raw)
-  if (match) {
-    const port = match[2] === undefined ? undefined : Number(match[2])
-    if (port === undefined || (port <= 65535 && port !== (loopback ? 80 : 443))) return { url: raw, origin: match[1]!, loopback: Boolean(loopback), host: new URL(raw).hostname }
-    return { refused: 'rule' }
-  }
-  let url: URL | undefined
-  try {
-    url = new URL(raw)
-  } catch { /* not a URL */ }
-  const host = url?.hostname ?? ''
-  const name = /[a-z]/.test(host) && !host.includes(':') && !/(^|\.)(ts\.net|localhost)\.?$/.test(host)
-  return { refused: url?.protocol === 'https:' && name ? 'public' : 'rule' }
+  const match = loopback ?? NAMED.exec(raw)
+  if (!match) return { refused: 'rule' }
+  const port = match[2] === undefined ? undefined : Number(match[2])
+  const host = new URL(raw).hostname
+  if ((port === undefined || (port <= 65535 && port !== (loopback ? 80 : 443))) && host.length <= 253) return { url: raw, origin: match[1]!, loopback: Boolean(loopback), host }
+  return { refused: 'rule' }
 }
 
-const WAITS = 'adding one waits for TLS identity and the card accept (#534, #531)'
+/** Whether a URL's shape is a `<name>.<tailnet>.ts.net` name, so its entry may be a local one. */
+export const tailnetShaped = (url: string): boolean => TAILNET.test(url)
+
+const UNREADABLE = 'is on a tailnet name, but this Mac\'s tailnet could not be read (is Tailscale installed, running and logged in?)'
 
 /**
- * §8.8's allowlist: a tailnet name must be in this Mac's tailnet, `suffix` (its MagicDNS suffix,
- * `<tailnet>.ts.net`, undefined when it cannot be read). Any other `*.ts.net` name is another
- * tailnet or a public Funnel host, so it waits for #534 like any public host. Loopback passes.
+ * Where an added agent's card URL is (§8.8, D18): loopback; a `<name>.<tailnet>.ts.net` name in
+ * this Mac's tailnet (`suffix()`, its MagicDNS suffix, asked only for a `*.ts.net` name); or
+ * public, any other DNS name, another tailnet's name and a Funnel host included (#534). A
+ * `*.ts.net` name is public too when the suffix cannot be read, which is safe: publicLookup()
+ * refuses a tailnet's 100.64.0.0/10 addresses, so only a Funnel host's public ones get through.
+ */
+export function reachOf(place: Place, suffix: () => string | undefined): Reach {
+  if (place.loopback) return 'loopback'
+  if (!/\.ts\.net$/.test(place.host)) return 'public'
+  const tailnet = suffix()
+  return tailnet !== undefined && tailnetShaped(place.url) && inTailnet(place.host, tailnet) ? 'tailnet' : 'public'
+}
+
+/**
+ * call's re-check for a local entry (§8.8): a tailnet name must still be in this Mac's tailnet,
+ * `suffix` (undefined when it cannot be read). An entry added on a tailnet that is no longer
+ * this Mac's stays off: add again, and add places it afresh. Loopback passes.
  */
 export function tailnetRefusal(what: string, place: Place, suffix: string | undefined): string | undefined {
   if (place.loopback) return undefined
-  if (suffix === undefined) return `${what} is on a tailnet name, but this Mac's tailnet could not be read (is Tailscale installed, running and logged in?), so add cannot tell it from another tailnet or a Funnel host`
+  if (suffix === undefined) return `${what} ${UNREADABLE}`
   if (inTailnet(place.host, suffix)) return undefined
-  return `${what} is on another tailnet or a Funnel host, not this Mac's tailnet (${suffix}): ${WAITS}`
+  return `${what} was added on a tailnet that is not this Mac's (${suffix}) now: remove it and add it again`
 }
 
 /** Fixed words for a refused URL; never the URL, which can carry a user or a secret. */
-export function placeRefusal(what: string, refused: Refused): string {
-  return refused === 'public'
-    ? `${what} is on a public host: ${WAITS}; use ${ADDED_RULE}`
-    : `${what} must be ${ADDED_RULE}: never another IP address, localhost, plain http to another host, a written-out port 80 or 443, a user, a query or a fragment`
+export function placeRefusal(what: string): string {
+  return `${what} must be ${ADDED_RULE}: never an IP address other than 127.0.0.1, localhost, plain http to another host, a written-out port 80 or 443, a user, a query or a fragment`
 }
 
 /**
@@ -112,7 +124,7 @@ export function cardEndpoint(card: unknown, origin: string): { endpoint: string 
     if (!('refused' in place) && place.origin === origin) return { endpoint: place.url }
   }
   const first = addedPlace(rpc[0]?.url)
-  return { refused: 'refused' in first ? placeRefusal('the card\'s JSON-RPC interface URL', first.refused) : 'the card\'s JSON-RPC interface is on another origin than the card' }
+  return { refused: 'refused' in first ? placeRefusal('the card\'s JSON-RPC interface URL') : 'the card\'s JSON-RPC interface is on another origin than the card' }
 }
 
 export const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\+[0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*)?$/
@@ -138,7 +150,13 @@ function authLine(card: Json, token: boolean): string {
   return token ? 'bearer token (from --token-file)' : 'bearer token, but no --token-file was given'
 }
 
-export type SummaryOf = { cardUrl: string; endpoint: string; loopback: boolean; token: boolean; pin: string; profile: Profile | undefined; signed: string }
+export type SummaryOf = { cardUrl: string; endpoint: string; reach: Reach; token: boolean; pin: string; profile: Profile | undefined; signed: string }
+
+const REACH: Record<Reach, string> = {
+  loopback: 'loopback: meshctl call proves the agent\'s identity before it sends the token or any text, D17',
+  tailnet: 'https on this Mac\'s tailnet, TLS verified',
+  public: 'https on a public name, TLS verified, every address it resolves to public: what you send it leaves this Mac',
+}
 
 /**
  * The summary's `Signed` value (§4): the verified keys' thumbprints and `trust`, add's words for
@@ -155,7 +173,7 @@ export function signedLine(v: SignatureVerdict, trust: string): string {
 /**
  * Why add refuses the card's signatures (§3.10, decisions Q3 and Q4), or undefined: unreadable or
  * failing signatures always; a card not signed by the key `--key-thumbprint` names; and an unsigned
- * card outside loopback and this Mac's tailnet (`local` false: no such add exists until #534).
+ * card outside loopback and this Mac's tailnet (`local` false: a public name, #534).
  */
 export function signatureRefusal(v: SignatureVerdict, local: boolean, thumbprint: string | undefined): string | undefined {
   if ('refused' in v) return v.refused
@@ -207,7 +225,7 @@ export function addSummary(card: unknown, s: SummaryOf): string {
     row('Keys', s.profile?.keys ? `${s.profile.keys} listed` : 'not declared'),
     row('Auth', authLine(c, s.token)),
     row('Card URL', s.cardUrl),
-    row('Endpoint', `${s.endpoint} (${s.loopback ? 'loopback: meshctl call proves the agent\'s identity before it sends the token or any text, D17' : 'https on this Mac\'s tailnet, TLS verified'})`),
+    row('Endpoint', `${s.endpoint} (${REACH[s.reach]})`),
     ...skills.slice(0, 16).map((skill, i) => row(i ? '' : 'Skills', `${typeof skill.id === 'string' && BARE_SKILL.test(skill.id) ? skill.id : claim(skill.id, 80) ?? '?'}  ${claim(skill.description, 80) ?? 'no description'}  ${declarationLine(typeof skill.id === 'string' ? s.profile?.skills.get(skill.id) : undefined)}`)),
     ...(skills.length > 16 ? [row('', `and ${skills.length - 16} more`)] : []),
     row('Card pin', `sha256 ${s.pin}`),
@@ -220,12 +238,13 @@ export const cardSha256 = (card: unknown): string => createHash('sha256').update
 export type AddedCard = { card: Json; profile: Profile | undefined; signatures: SignatureVerdict; reason?: undefined } | { card?: undefined; reason: string }
 
 /** Why one card GET failed, as a kind: `http` carries the status. */
-export type FetchFailure = { failed: 'refused' | 'timeout' | 'dns' | 'tls' | 'cut' | 'redirect' | 'too-large' | 'not-json' } | { failed: 'http'; status: number }
+export type FetchFailure = { failed: 'refused' | 'timeout' | 'dns' | 'private' | 'tls' | 'cut' | 'redirect' | 'too-large' | 'not-json' } | { failed: 'http'; status: number }
 export type FetchSeams = { lookup?: LookupFunction; ca?: string }
 
 // A socket's or parser's code as a kind, never its message.
-function failKind(code: string): 'refused' | 'timeout' | 'dns' | 'tls' | 'cut' {
+function failKind(code: string): 'refused' | 'timeout' | 'dns' | 'private' | 'tls' | 'cut' {
   if (code === 'ECONNREFUSED') return 'refused'
+  if (code === NOT_PUBLIC) return 'private'
   if (code === 'timeout') return 'timeout'
   if (/^(ENOTFOUND|EAI_)/.test(code)) return 'dns'
   if (/^(ERR_TLS|ERR_SSL|CERT_|UNABLE_TO|DEPTH_ZERO|SELF_SIGNED|HOSTNAME_MISMATCH)/.test(code)) return 'tls'
@@ -238,6 +257,7 @@ function fetchWords(f: FetchFailure): string {
     case 'refused': return 'refused the connection'
     case 'timeout': return `did not answer in ${DEADLINE_MS / 1000} s`
     case 'dns': return 'does not resolve (is this Mac on the tailnet?)'
+    case 'private': return 'is on a name that resolves to a loopback, private or other address that is not public, and a public name must resolve only to public ones (a name on this Mac\'s tailnet does too while Tailscale cannot be read)'
     case 'tls': return 'failed the TLS handshake'
     case 'cut': return 'cut the connection'
     case 'redirect': return 'redirects, and add follows no redirect'
@@ -249,9 +269,11 @@ function fetchWords(f: FetchFailure): string {
 
 /**
  * One `GET` of the card URL: `agent: false` (no keep-alive, no proxy), `Host` the URL's
- * authority, no token, cookie or Origin, no redirect, 64 KiB at most, and one wall-clock timer
- * over lookup, connect, TLS, headers and body. The body must be a JSON object. `lookup` and `ca`
- * are test seams only. `add` (fetchAddedCard) and `check` (#538) share it.
+ * authority, certificate verification always on for https whatever the environment says, no
+ * token, cookie or Origin, no redirect, 64 KiB at most, and one wall-clock timer
+ * over lookup, connect, TLS, headers and body. The body must be a JSON object. `ca` is a test seam
+ * only; `lookup` is publicLookup() for a public name (#534) and otherwise a test seam. `add`
+ * (fetchAddedCard) and `check` (#538) share it.
  */
 export function fetchCard(place: Place, timeoutMs = DEADLINE_MS, seams: FetchSeams = {}): Promise<{ card: Json } | FetchFailure> {
   const url = new URL(place.url)
@@ -286,7 +308,8 @@ export function fetchCard(place: Place, timeoutMs = DEADLINE_MS, seams: FetchSea
     }
     const req = (tls ? httpsRequest : httpRequest)({
       host: url.hostname, port: url.port || (tls ? 443 : 80), method: 'GET', path: url.pathname,
-      agent: false, servername: tls ? url.hostname : undefined, lookup: seams.lookup, ...(seams.ca === undefined ? {} : { ca: seams.ca }),
+      // rejectUnauthorized set, never left to NODE_TLS_REJECT_UNAUTHORIZED's default (#534)
+      agent: false, servername: tls ? url.hostname : undefined, lookup: seams.lookup, ...(tls ? { rejectUnauthorized: true } : {}), ...(seams.ca === undefined ? {} : { ca: seams.ca }),
       headers: { host: url.host, accept: 'application/json' },
     }, read)
     req.on('error', (error: NodeJS.ErrnoException) => finish({ failed: failKind(error.code ?? 'error') }))
@@ -300,8 +323,8 @@ export function fetchCard(place: Place, timeoutMs = DEADLINE_MS, seams: FetchSea
  * profile extension, pass checkProfile (#537), whose id and key count come back with it, and its
  * signatures must be readable, with none by a listed key failing (#536).
  */
-export async function fetchAddedCard(place: Place, timeoutMs = DEADLINE_MS): Promise<AddedCard> {
-  const got = await fetchCard(place, timeoutMs)
+export async function fetchAddedCard(place: Place, timeoutMs = DEADLINE_MS, seams: FetchSeams = {}): Promise<AddedCard> {
+  const got = await fetchCard(place, timeoutMs, seams)
   if ('failed' in got) return { reason: `the card URL ${fetchWords(got)}` }
   const card = got.card
   const why = checkAddedCard(card)
@@ -314,11 +337,13 @@ export async function fetchAddedCard(place: Place, timeoutMs = DEADLINE_MS): Pro
   return { card, profile: profile?.profile, signatures }
 }
 
-export type AddedEntry = { card: string; endpoint: string; cardSha256: string; tokenFile: string | undefined; agentId: string | undefined; keyThumbprints: string[] | undefined } | 'invalid'
+export type AddedEntry = { card: string; endpoint: string; cardSha256: string; tokenFile: string | undefined; agentId: string | undefined; keyThumbprints: string[] | undefined; public: boolean } | 'invalid'
 
 /**
  * An `agents.<id>` value meshctl add wrote (it has a `card`), read back for status, remove and call:
- * undefined when it is not one, `invalid` when a field breaks its rule (never echoed).
+ * undefined when it is not one, `invalid` when a field breaks its rule (never echoed). `public: true`
+ * (#534) marks an agent added on a public name; only a `<name>.<tailnet>.ts.net` or loopback entry
+ * may lack it, and a loopback one may not carry it, so call never takes a public entry for a local one.
  */
 export function addedEntry(id: string, value: unknown): AddedEntry | undefined {
   const entry = obj(value)
@@ -329,9 +354,12 @@ export function addedEntry(id: string, value: unknown): AddedEntry | undefined {
   const token = entry.tokenFile
   const agentId = entry.agentId
   const keys = entry.keyThumbprints
+  const reach = entry.public
+  if (reach !== undefined && reach !== true) return 'invalid'
+  if (!('refused' in card) && (reach === true ? card.loopback : !card.loopback && !tailnetShaped(card.url))) return 'invalid'
   if (agentId !== undefined && agentIdRefusal(agentId)) return 'invalid'
   if (keys !== undefined && (!Array.isArray(keys) || !keys.length || keys.length > 4 || !keys.every((k) => typeof k === 'string' && THUMBPRINT.test(k)))) return 'invalid'
   if (idRefusal(id) || 'refused' in card || 'refused' in endpoint || card.origin !== endpoint.origin) return 'invalid'
   if (typeof pin !== 'string' || !/^[0-9a-f]{64}$/.test(pin) || (token !== undefined && typeof token !== 'string')) return 'invalid'
-  return { card: card.url, endpoint: endpoint.url, cardSha256: pin, tokenFile: token, agentId: agentId as string | undefined, keyThumbprints: keys as string[] | undefined }
+  return { card: card.url, endpoint: endpoint.url, cardSha256: pin, tokenFile: token, agentId: agentId as string | undefined, keyThumbprints: keys as string[] | undefined, public: reach === true }
 }

@@ -22,6 +22,7 @@ import { cardSha256 } from '../src/mesh-add.js'
 import { readRuns } from '../src/mesh-runs.js'
 import type { RunAgent } from '../src/mesh-runs.js'
 import { runAdd, runClient } from '../src/meshctl.js'
+import type { MeshctlIo } from '../src/meshctl.js'
 import { signWith, testKey } from './signed-card.js'
 import { removeScratchDirs, scratchDir } from './scratch.js'
 
@@ -426,7 +427,7 @@ describe('off means off, and the terminal is never read', () => {
 const TLS_HOST = 'agent.placeholder-tailnet.ts.net'
 const HAS_OPENSSL = spawnSync('openssl', ['version']).status === 0
 type Pair = { key: string; cert: string }
-function makeCerts(): { self: Pair; ca: string; right: Pair; wrong: Pair } {
+function makeCerts(host = TLS_HOST, other = 'other.placeholder-tailnet.ts.net'): { self: Pair; ca: string; right: Pair; wrong: Pair } {
   const dir = scratchDir('mesh-call-certs-')
   const file = (name: string): string => join(dir, name)
   const ssl = (...args: string[]): void => void execFileSync('openssl', args, { stdio: 'ignore' })
@@ -437,10 +438,10 @@ function makeCerts(): { self: Pair; ca: string; right: Pair; wrong: Pair } {
     return { key: readFileSync(file(`${name}.key`), 'utf8'), cert: readFileSync(file(`${name}.pem`), 'utf8') }
   }
   const san = (host: string): string => `subjectAltName=DNS:${host}`
-  const self = make('self', TLS_HOST, san(TLS_HOST), ['-signkey', file('self.key')])
+  const self = make('self', host, san(host), ['-signkey', file('self.key')])
   const ca = make('ca', 'test-only-ca', 'basicConstraints=critical,CA:TRUE\nkeyUsage=critical,keyCertSign,cRLSign', ['-signkey', file('ca.key')])
   const byCa = ['-CA', file('ca.pem'), '-CAkey', file('ca.key'), '-set_serial', '2']
-  return { self, ca: ca.cert, right: make('right', TLS_HOST, san(TLS_HOST), byCa), wrong: make('wrong', 'other.placeholder-tailnet.ts.net', san('other.placeholder-tailnet.ts.net'), byCa) }
+  return { self, ca: ca.cert, right: make('right', host, san(host), byCa), wrong: make('wrong', other, san(other), byCa) }
 }
 
 describe.skipIf(!HAS_OPENSSL)('verified TLS for a tailnet agent (D17)', () => {
@@ -483,6 +484,160 @@ describe.skipIf(!HAS_OPENSSL)('verified TLS for a tailnet agent (D17)', () => {
     const wrong = await fakeAgent('stream', { tls: certs.wrong })
     expect((await call(wrong, certs.ca)).code).toBe(15)
     refusedHandshakes(wrong)
+  })
+})
+
+// #534: an agent on a public name, end to end through add and call, over verified TLS with a test
+// CA. The fake answers on loopback, so a test that wants a connection counts 127.0.0.1 as public
+// (`isPublic`); without that seam publicLookup refuses the answer, as it refuses any private one.
+const PUBLIC_HOST = 'agent.example.org'
+const PROFILE_URI = 'https://shariqh.github.io/agent-inbox/ext/profile/v1'
+describe.skipIf(!HAS_OPENSSL)('a public https agent (#534, mesh design §8.8)', () => {
+  let certs: ReturnType<typeof makeCerts>
+  beforeAll(() => { certs = makeCerts(PUBLIC_HOST, 'other.example.org') })
+  const key = testKey()
+  const answering = (address: string) => ((_h: string, _o: unknown, done: (...a: unknown[]) => void) => done(null, [{ address, family: 4 }])) as unknown as LookupFunction
+  const loopbackIsPublic = (address: string): boolean => address === '127.0.0.1'
+  const seams = { lookup: answering('127.0.0.1'), isPublic: loopbackIsPublic, tailnet: () => 'placeholder-tailnet.ts.net' }
+  // web search's card, publishable as recorded, with its interface on `origin` and a test key in its profile
+  const publicCard = (origin: string, edit: (c: Json) => void = () => {}): Json => {
+    const c = structuredClone(CARD)
+    delete c.signatures
+    c.capabilities.extensions.find((e: Json) => e.uri === PROFILE_URI).params.keys = [key.publicJwk]
+    for (const i of c.supportedInterfaces) i.url = `${origin}/`
+    edit(c)
+    return c
+  }
+  const portOf = (served: Json): string => new URL(served.supportedInterfaces[0].url).port
+  // what the fake serves: the public card at its own port, signed unless `sign` is false
+  const serving = (edit: (c: Json) => void = () => {}, sign = true) => (served: Json): Json => {
+    const c = publicCard(`https://${PUBLIC_HOST}:${portOf(served)}`, edit)
+    return sign ? signWith(c, key) : c
+  }
+  const cardUrl = (port: number): string => `https://${PUBLIC_HOST}:${port}/.well-known/agent-card.json`
+  function tokenFile(): string {
+    const file = join(scratchDir('mesh-public-token-'), 'token')
+    privateFile(file, `${TOKEN}\n`)
+    return file
+  }
+  async function add(dir: string, args: string[], io: Partial<MeshctlIo> = {}) {
+    const out: string[] = []
+    const err: string[] = []
+    const code = await runAdd(args, { env: { AGENT_INBOX_MESH_DIR: dir }, home: '/nonexistent-home', out: (s) => out.push(s), err: (s) => err.push(s), ca: certs.ca, ...seams, ...io })
+    return { code, out: out.join(''), err: err.join('') }
+  }
+  const entries = (dir: string): Json => JSON.parse(readFileSync(join(dir, 'mesh.json'), 'utf8')).agents
+
+  it('add takes a signed, publishable card and records it as public; call sends the token to that origin only', async () => {
+    const fake = await fakeAgent('stream', { tls: certs.right, serve: serving() })
+    const dir = scratchDir('mesh-public-')
+    const added = await add(dir, [cardUrl(fake.port), '--id', ID, '--token-file', tokenFile(), '--apply'])
+    expect([added.code, added.err]).toEqual([0, ''])
+    expect(added.out).toContain(`Endpoint   https://${PUBLIC_HOST}:${fake.port}/ (https on a public name, TLS verified, every address it resolves to public: what you send it leaves this Mac)\n`)
+    expect(added.out).toContain(`Signed     yes, ES256 key ${key.kid} (new to this Mac`)
+    expect(entries(dir)[ID]).toMatchObject({ card: cardUrl(fake.port), endpoint: `https://${PUBLIC_HOST}:${fake.port}/`, public: true, keyThumbprints: [key.kid] })
+    // add sent no token
+    expect([fake.requests, fake.bytes().includes(TOKEN)]).toEqual([[], false])
+
+    const ok = await run(dir, [ID], TEXT, { ...seams, ca: certs.ca })
+    expect([ok.code, ok.err]).toEqual([0, ''])
+    expect(ok.out.endsWith(`${ANSWER}\n`)).toBe(true)
+    expect(fake.requests.map((q) => [q.body.method, q.headers.authorization, q.headers.host])).toEqual([['SendStreamingMessage', `Bearer ${TOKEN}`, `${PUBLIC_HOST}:${fake.port}`]])
+
+    // the same loopback answer, judged as it really is: refused before any connection
+    const connections = fake.connections()
+    const refused = await run(dir, [ID], TEXT, { ...seams, isPublic: undefined, ca: certs.ca })
+    expect(refused.code).toBe(15)
+    expect(refused.err).toContain('a name that resolves to an address that is not public')
+    expect([fake.connections(), fake.requests.length]).toEqual([connections, 1])
+  })
+
+  it('add refuses a redirect, an answer that is not public, a certificate for another name, another origin, and an unsigned or unpublishable card, sending no token', async () => {
+    const dir = scratchDir('mesh-public-refused-')
+    const token = tokenFile()
+    const tried = async (port: number, words: string, io: Partial<MeshctlIo> = {}) => {
+      const r = await add(dir, [cardUrl(port), '--id', ID, '--token-file', token, '--apply'], io)
+      expect([r.code, r.err.startsWith(`Refused: ${words}`), r.err.endsWith('. Nothing changed.\n')], r.err).toEqual([1, true, true])
+    }
+    // a redirect, even to the same name
+    const redirect = createTlsServer(certs.right, (_req, res) => void res.writeHead(302, { location: `https://${PUBLIC_HOST}/card.json` }).end()) as unknown as Server
+    const redirected = counted(redirect)
+    await tried(await listen(redirect), 'the card URL redirects, and add follows no redirect')
+    expect(redirected.connections()).toBe(1)
+    // loopback, a private address and a tailnet's address: no connection at all
+    const good = await fakeAgent('stream', { tls: certs.right, serve: serving() })
+    const PRIVATE = 'the card URL is on a name that resolves to a loopback, private or other address that is not public'
+    await tried(good.port, PRIVATE, { isPublic: undefined })
+    for (const address of ['10.0.0.7', '192.168.1.20', '100.101.102.103', '169.254.169.254']) await tried(good.port, PRIVATE, { lookup: answering(address), isPublic: undefined })
+    expect(good.connections()).toBe(0)
+    // a certificate the CA signed for another name: the handshake fails before any request
+    const wrong = await fakeAgent('stream', { tls: certs.wrong, serve: serving() })
+    await tried(wrong.port, 'the card URL failed the TLS handshake')
+    expect([wrong.connections() > 0, wrong.cards()]).toEqual([true, 0])
+    // the card's interface on another origin, unsigned, and signed but with no provider
+    const elsewhere = await fakeAgent('stream', { tls: certs.right, serve: (c) => signWith(publicCard(`https://other.example.org:${portOf(c)}`), key) })
+    await tried(elsewhere.port, 'the card\'s JSON-RPC interface is on another origin than the card')
+    const unsigned = await fakeAgent('stream', { tls: certs.right, serve: serving(() => {}, false) })
+    await tried(unsigned.port, 'the card is not signed by a key it lists, and an agent outside loopback and this Mac\'s tailnet must be')
+    const anonymous = await fakeAgent('stream', { tls: certs.right, serve: serving((c) => { delete c.provider }) })
+    await tried(anonymous.port, 'the card is on a public name, so it must be publishable, and it fails provider.present: the card names no provider (meshctl check <card-url> lists every test)')
+    expect(readdirSync(dir)).toEqual([])
+    for (const fake of [good, wrong, elsewhere, unsigned, anonymous]) expect([fake.requests, fake.bytes().includes(TOKEN)]).toEqual([[], false])
+  })
+
+  it('call never sends the token to another origin, and an entry that breaks the public rule is off', async () => {
+    const away = await fakeAgent('stream', { tls: certs.right, serve: serving() })
+    const state = { origin: undefined as string | undefined }
+    const fake = await fakeAgent('stream', { tls: certs.right, serve: (c) => signWith(publicCard(state.origin ?? `https://${PUBLIC_HOST}:${portOf(c)}`), key) })
+    const dir = scratchDir('mesh-public-origin-')
+    expect((await add(dir, [cardUrl(fake.port), '--id', ID, '--token-file', tokenFile(), '--apply'])).code).toBe(0)
+    // the card now names another origin: its pin leaves interface URLs out, so call goes on, to the entry's endpoint only
+    state.origin = `https://${PUBLIC_HOST}:${away.port}`
+    const ok = await run(dir, [ID], TEXT, { ...seams, ca: certs.ca })
+    expect(ok.code).toBe(0)
+    expect([fake.requests.length, away.connections()]).toEqual([1, 0])
+
+    // hand-edited entries: an endpoint on another origin, a public name without `public`, loopback with it, a `public` that is not true
+    const origin = `https://${PUBLIC_HOST}:${fake.port}`
+    for (const entry of [{ public: true, endpoint: `https://other.example.org:${fake.port}/` }, {}, { public: 'yes' }]) {
+      const off = await run(meshHome(origin, entry), [ID], TEXT, { ...seams, ca: certs.ca })
+      expect([off.code, off.err], JSON.stringify(entry)).toEqual([14, `meshctl call: off: the entry for ${ID} breaks meshctl add's rules: meshctl remove ${ID} --apply, then add it again\n`])
+    }
+    const loopback = await fakeAgent()
+    expect((await run(meshHome(`http://127.0.0.1:${loopback.port}`, { public: true }), [ID])).code).toBe(14)
+    expect([fake.requests.length, loopback.connections()]).toEqual([1, 0])
+  })
+
+  it('TLS is verified whatever the environment says: a self-signed card at add, a certificate for another name at call', async () => {
+    const was = process.env['NODE_TLS_REJECT_UNAUTHORIZED']
+    process.env['NODE_TLS_REJECT_UNAUTHORIZED'] = '0'
+    try {
+      const self = await fakeAgent('stream', { tls: certs.self, serve: serving() })
+      const dir = scratchDir('mesh-public-env-')
+      const r = await add(dir, [cardUrl(self.port), '--id', ID, '--token-file', tokenFile(), '--apply'])
+      expect([r.code, r.err]).toEqual([1, 'Refused: the card URL failed the TLS handshake. Nothing changed.\n'])
+      expect([self.cards(), readdirSync(dir)]).toEqual([0, []])
+      // an entry added earlier, now answered with the CA's certificate for another name
+      const wrong = await fakeAgent('stream', { tls: certs.wrong, serve: serving() })
+      const call = await run(meshHome(`https://${PUBLIC_HOST}:${wrong.port}`, { public: true }), [ID], TEXT, { ...seams, ca: certs.ca })
+      expect(call.code).toBe(15)
+      expect([wrong.cards(), wrong.requests, wrong.bytes().includes(TOKEN)]).toEqual([0, [], false])
+    } finally {
+      if (was === undefined) delete process.env['NODE_TLS_REJECT_UNAUTHORIZED']
+      else process.env['NODE_TLS_REJECT_UNAUTHORIZED'] = was
+    }
+  })
+
+  it('a move never changes whether an entry is public', async () => {
+    const fake = await fakeAgent('stream', { tls: certs.right, serve: serving() })
+    const dir = scratchDir('mesh-public-move-')
+    const token = tokenFile()
+    expect((await add(dir, [cardUrl(fake.port), '--id', ID, '--token-file', token, '--apply'])).code).toBe(0)
+    // the same signed card on loopback has the same pin and id, but loopback is local
+    const local = await fakeAgent('stream', { serve: (c) => signWith(publicCard(`http://127.0.0.1:${portOf(c)}`), key) })
+    const moved = await add(dir, [`http://127.0.0.1:${local.port}/.well-known/agent-card.json`, '--move', ID, '--token-file', token, '--apply'])
+    expect([moved.code, moved.err]).toEqual([1, `Refused: the new card URL is on loopback or this Mac's tailnet and agents.${ID} is not, so add cannot move it there: remove it and add it again. Nothing changed.\n`])
+    expect(entries(dir)[ID]).toMatchObject({ endpoint: `https://${PUBLIC_HOST}:${fake.port}/`, public: true })
   })
 })
 

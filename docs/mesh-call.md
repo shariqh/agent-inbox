@@ -43,7 +43,8 @@ printf '…' | npm run --silent meshctl -- call my-agent --skill web-search --js
 1. Reads the request, then `mesh.json` by the one reading rule. No `agents.<id>` entry that
    `add` wrote is off (14), with no connection.
 2. For a tailnet entry, checks that its name is still on this Mac's tailnet (`tailscale status`),
-   as `add` did; otherwise 14.
+   as `add` did; otherwise 14. An entry on a public name (`"public": true`, below) skips this
+   check and gets the address check in step 4 instead.
 3. Reads the token copy `add` made (a 0600 file you own). A loopback agent must have one.
 4. Fetches the card fresh from the URL you added: no redirect, no proxy, 64 KiB, 5 s.
    - **Loopback (D17):** the card request carries an `A2A-Mesh-Challenge` nonce, and the agent
@@ -51,12 +52,54 @@ printf '…' | npm run --silent meshctl -- call my-agent --skill web-search --js
      is sent; a process squatting on the port gets only the nonce (14).
    - **https on your tailnet:** TLS, always verified, proves the origin instead, and the token
      goes only to the origin you added.
+   - **https on a public name (#534):** the same TLS, and before any connection every address the
+     name resolves to must be public (below); otherwise 15, with nothing sent.
 5. Compares the card's pin with the one `add` stored. A changed card is refused (16) and
    nothing else is sent.
 6. Sends one message with one text part: `SendStreamingMessage` when the card says it streams,
    else a blocking `SendMessage`. If the stream ends early, or the agent returns before the task
    ends, it reads the task with `GetTask` every few seconds.
 7. Prints the result through the untrusted-result frame (D16) and writes a run record.
+
+## Agents on a public name
+
+`add` takes an agent at `https://<name>[:<port>][/<path>]` on any DNS name, not only this Mac's
+tailnet (#534): someone else's agent on the internet, a Tailscale Funnel host, or a hosted agent.
+It asks more of such an agent than of one on loopback or your tailnet:
+
+- **The card must be publishable** (the same bar as `meshctl check`'s default level, below):
+  signed by a key its profile lists, with a provider, a stable id, declared auth and each skill's
+  egress and residency. `add` names the first test it fails; `meshctl check <card-url>` lists all of
+  them.
+- **Every address the name resolves to must be public.** A name that resolves to loopback, a
+  private network (`10.0.0.0/8`, `192.168.0.0/16` and the like), link-local, a tailnet's
+  `100.64.0.0/10`, or any other address that is not public unicast is refused before anything
+  connects. The connection then goes only to an address that was checked, so a second DNS answer
+  cannot swap a private one in. A name on another tailnet resolves into `100.64.0.0/10`, so it is
+  refused this way; only a Funnel host's public addresses get through.
+- **TLS is always verified**, with no option to turn it off, and no redirect is followed.
+- **The token goes only to the origin you added.** The card's JSON-RPC interface must be on the
+  card URL's origin, and `call` never follows a URL from a card it fetches again.
+
+The entry records `"public": true`, so `call` never mistakes it for a local one, and a move
+(`--move`, or a signed move) never turns a public entry into a local one or back: remove it and add
+it again.
+
+### What a public agent means for your privacy
+
+A loopback agent runs on this Mac, and an agent on your tailnet runs on a machine you control.
+An agent on a public name runs on someone else's server:
+
+- **Your request leaves this Mac.** Everything you send with `call` reaches that server and
+  whoever operates it, along with your token and your public IP address. TLS protects it on the
+  way, not at the other end.
+- **What happens to it there is the operator's promise, not this Mac's.** The card's declared
+  egress (who the agent sends your input to) and residency are claims the signature ties to the
+  publisher; nothing here can enforce them. Read the `Skills` lines in the dry run before you
+  `--apply`.
+- **Results are untrusted text**, framed as such (D16), the same as any added agent's.
+- Send it nothing you would not paste into that operator's website, and keep customer data and
+  secrets in-session.
 
 ## The identity proof an added loopback agent answers
 
@@ -169,7 +212,8 @@ trust, check it at add:
 npm run meshctl -- add <card-url> --id my-agent --token-file <your token file> --key-thumbprint <thumbprint>
 ```
 
-An unsigned card is allowed on loopback and this Mac's tailnet only. `call` does not re-check
+An unsigned card is allowed on loopback and this Mac's tailnet only; on a public name the card must
+be signed and publishable (above). `call` does not re-check
 signatures: it checks the pin, which already covers everything a signature could vouch for that
 `call` uses.
 
@@ -196,12 +240,12 @@ npm run meshctl -- check http://127.0.0.1:4500/.well-known/agent-card.json --tok
 
 - `--level local` asks "can I add it on this Mac?" (loopback or this Mac's tailnet, today's
   rule); `publishable`, the default, asks "can someone else add it?".
-- The card URL follows `add`'s rule, widened to a public `https://` name, since nothing secret
-  goes there: `http://127.0.0.1:<port>[/<path>]` or `https://<name>[:<port>][/<path>]`. Any other
+- The card URL follows `add`'s rule: `http://127.0.0.1:<port>[/<path>]` or
+  `https://<name>[:<port>][/<path>]`, and a name `add` would take as public gets its address check. Any other
   URL is a usage error (4) before any connection, and the error never repeats the URL.
 - The card is fetched as `add` fetches it: one GET, no token, no redirect, no proxy, 64 KiB, 5 s.
-- `--token-file` (a 0600 file you own) turns on the live tests. It is only for a card on loopback
-  or this Mac's tailnet: live tests on another tailnet or a public name wait for #534. The token
+- `--token-file` (a 0600 file you own) turns on the live tests. On a public name they connect only
+  through the same address check as `add` (#534). The token
   goes only to the card's origin, on loopback only after the agent answers the
   [`a2a-mesh/v1` proof](#the-identity-proof-an-added-loopback-agent-answers), and only when the
   card declares bearer auth meshctl supports. It is never printed.
@@ -297,7 +341,7 @@ matches.
 | 12 | Busy: HTTP 429 or 503, or a `REJECTED` task whose data part says `code: 12` | the request |
 | 13 | Failed: `FAILED` or `CANCELED`, the deadline (the task is cancelled), the agent asked for input or authorization (cancelled), a JSON-RPC error, an HTTP error without a task, a lost connection, a result over 1 MiB, or a report it cannot write | the request |
 | 14 | Off or not trusted: no entry `add` wrote, a broken entry, a tailnet name not on this Mac's tailnet, a missing or non-private token copy, a loopback agent that did not prove it holds the token, or an agent that refused the token (HTTP 401 or 403) | nothing, but on a refused token the request |
-| 15 | Unavailable: nothing answers, the card request failed (DNS, TLS, timeout, a redirect, not a JSON card of at most 64 KiB) or the card no longer passes `add`'s card rule | nothing |
+| 15 | Unavailable: nothing answers, the card request failed (DNS, a public name that resolves to an address that is not public, TLS, timeout, a redirect, not a JSON card of at most 64 KiB) or the card no longer passes `add`'s card rule | nothing |
 | 16 | The card changed since you added the agent; accept it again (above) | nothing |
 | 4 | Usage: arguments, a `--report` that is a symlink or not a regular file, a terminal on stdin | nothing |
 

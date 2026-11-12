@@ -555,6 +555,16 @@ describe.skipIf(!HAS_OPENSSL)('https card URLs: a public name, this Mac\'s tailn
     const fake = await fakeAgent({ tls: leaf, host: NAMES[0] })
     const tls = await check([fake.url, '--json'], { lookup, isPublic })
     expect([tls.code, test(tls, 'card.fetch').reason]).toEqual([15, 'tls'])
+    // and so it stays when the environment turns verification off (#534)
+    const was = process.env['NODE_TLS_REJECT_UNAUTHORIZED']
+    process.env['NODE_TLS_REJECT_UNAUTHORIZED'] = '0'
+    try {
+      const again = await check([fake.url, '--json'], { lookup, isPublic })
+      expect([again.code, test(again, 'card.fetch').reason]).toEqual([15, 'tls'])
+    } finally {
+      if (was === undefined) delete process.env['NODE_TLS_REJECT_UNAUTHORIZED']
+      else process.env['NODE_TLS_REJECT_UNAUTHORIZED'] = was
+    }
     const nowhere = ((_h: string, _o: unknown, done: (...a: unknown[]) => void) => done(Object.assign(new Error('nope'), { code: 'ENOTFOUND' }))) as unknown as LookupFunction
     const dns = await check(['https://agent.example.org/card.json', '--json'], { lookup: nowhere })
     expect([dns.code, test(dns, 'card.fetch').reason]).toEqual([15, 'dns'])

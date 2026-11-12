@@ -414,7 +414,8 @@ export async function runCheck(args: string[], io: CheckIo): Promise<number> {
     outcomes.set('endpoint.rule', !own ? miss(checkPlace(rpcs[0]?.url) ? 'other-origin' : 'interface-refused')
       : level === 'local' && where === 'unknown' ? miss('tailnet-unreadable')
         : level === 'local' && where === 'elsewhere' ? miss('not-local') : PASS)
-    cardTests(c, where === 'elsewhere', outcomes)
+    // outside this Mac's mesh: wherever add would place the card as public
+    cardTests(c, where === 'elsewhere' || where === 'unknown', outcomes)
 
     const live = ['live.identity', 'live.auth', 'live.unknown-task', 'live.unknown-method', 'live.send']
     const skipLive = (reason: string): void => { for (const id of live) if (!outcomes.has(id)) outcomes.set(id, skip(reason)) }

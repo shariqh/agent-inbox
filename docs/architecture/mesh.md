@@ -1082,7 +1082,8 @@ and never reads a terminal. User page, test table and exits: [`docs/mesh-call.md
   (moved from meshctl into `mesh-config.ts`, 0600 required); the `--send` file (`O_NOFOLLOW`, regular, at most 64 KiB of UTF-8, not blank).
   Every refusal is fixed words, never the URL.
 - **The card.** `fetchCard()` is `add`'s fetch split out of `fetchAddedCard()` (which keeps its
-  words): one GET, `agent: false`, no redirect, 64 KiB, one deadline, a JSON object; it returns a
+  words): one GET, `agent: false`, `rejectUnauthorized: true` for https whatever the environment
+  says (#534), no redirect, 64 KiB, one deadline, a JSON object; it returns a
   failure kind (`refused`, `timeout`, `dns`, `private`, `tls`, `cut`, `redirect`, `http`,
   `too-large`, `not-json`), and `CheckIo.lookup`/`ca`/`isPublic` are test seams. A card URL `add`
   would place as public (`elsewhere` or `unknown`) is fetched, and live-tested, through
@@ -1096,7 +1097,7 @@ and never reads a terminal. User page, test table and exits: [`docs/mesh-call.md
   `egressRefusal()`/`residencyRefusal()` on each card skill's entry, read from the raw params so
   they report even when another part of the profile is invalid: `invalid` before `missing`,
   `skip`/`no-profile` with no profile. A card on a public name or another tailnet (`where ===
-  'elsewhere'`) whose residency is not `any` gets `not-any-public`, an outcome marked `warn` that
+  'elsewhere'`, or `'unknown'`, which `add` places as public) whose residency is not `any` gets `not-any-public`, an outcome marked `warn` that
   counts as a should even at the publishable level (§3.9: "warns"), so only `--strict` fails it. `ext.required` knows one spoken extension, the profile.
 - **Signatures (#536)** use `verifyCardSignatures()` (above): `signature.present` passes with a
   verified signature by a listed key, else `absent` or `unlisted` (should locally, must when

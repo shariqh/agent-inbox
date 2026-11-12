@@ -608,6 +608,26 @@ describe.skipIf(!HAS_OPENSSL)('a public https agent (#534, mesh design §8.8)', 
     expect([fake.requests.length, loopback.connections()]).toEqual([1, 0])
   })
 
+  it('TLS is verified whatever the environment says: a self-signed card at add, a certificate for another name at call', async () => {
+    const was = process.env['NODE_TLS_REJECT_UNAUTHORIZED']
+    process.env['NODE_TLS_REJECT_UNAUTHORIZED'] = '0'
+    try {
+      const self = await fakeAgent('stream', { tls: certs.self, serve: serving() })
+      const dir = scratchDir('mesh-public-env-')
+      const r = await add(dir, [cardUrl(self.port), '--id', ID, '--token-file', tokenFile(), '--apply'])
+      expect([r.code, r.err]).toEqual([1, 'Refused: the card URL failed the TLS handshake. Nothing changed.\n'])
+      expect([self.cards(), readdirSync(dir)]).toEqual([0, []])
+      // an entry added earlier, now answered with the CA's certificate for another name
+      const wrong = await fakeAgent('stream', { tls: certs.wrong, serve: serving() })
+      const call = await run(meshHome(`https://${PUBLIC_HOST}:${wrong.port}`, { public: true }), [ID], TEXT, { ...seams, ca: certs.ca })
+      expect(call.code).toBe(15)
+      expect([wrong.cards(), wrong.requests, wrong.bytes().includes(TOKEN)]).toEqual([0, [], false])
+    } finally {
+      if (was === undefined) delete process.env['NODE_TLS_REJECT_UNAUTHORIZED']
+      else process.env['NODE_TLS_REJECT_UNAUTHORIZED'] = was
+    }
+  })
+
   it('a move never changes whether an entry is public', async () => {
     const fake = await fakeAgent('stream', { tls: certs.right, serve: serving() })
     const dir = scratchDir('mesh-public-move-')

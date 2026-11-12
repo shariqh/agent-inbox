@@ -269,7 +269,8 @@ function fetchWords(f: FetchFailure): string {
 
 /**
  * One `GET` of the card URL: `agent: false` (no keep-alive, no proxy), `Host` the URL's
- * authority, no token, cookie or Origin, no redirect, 64 KiB at most, and one wall-clock timer
+ * authority, certificate verification always on for https whatever the environment says, no
+ * token, cookie or Origin, no redirect, 64 KiB at most, and one wall-clock timer
  * over lookup, connect, TLS, headers and body. The body must be a JSON object. `ca` is a test seam
  * only; `lookup` is publicLookup() for a public name (#534) and otherwise a test seam. `add`
  * (fetchAddedCard) and `check` (#538) share it.
@@ -307,7 +308,8 @@ export function fetchCard(place: Place, timeoutMs = DEADLINE_MS, seams: FetchSea
     }
     const req = (tls ? httpsRequest : httpRequest)({
       host: url.hostname, port: url.port || (tls ? 443 : 80), method: 'GET', path: url.pathname,
-      agent: false, servername: tls ? url.hostname : undefined, lookup: seams.lookup, ...(seams.ca === undefined ? {} : { ca: seams.ca }),
+      // rejectUnauthorized set, never left to NODE_TLS_REJECT_UNAUTHORIZED's default (#534)
+      agent: false, servername: tls ? url.hostname : undefined, lookup: seams.lookup, ...(tls ? { rejectUnauthorized: true } : {}), ...(seams.ca === undefined ? {} : { ca: seams.ca }),
       headers: { host: url.host, accept: 'application/json' },
     }, read)
     req.on('error', (error: NodeJS.ErrnoException) => finish({ failed: failKind(error.code ?? 'error') }))

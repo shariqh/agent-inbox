@@ -9,6 +9,8 @@
 // Exits: 0 conforms, 17 a test failed, 15 the card could not be fetched, 4 usage. The signature
 // tests (#536) run card-signature.ts's verifier; the egress and residency tests (#535) run
 // agent-card.ts's egressRefusal and residencyRefusal per skill.
+// Since #534 a card on a public name is fetched and called only through publicLookup()
+// (public-address.ts), live tests included, and publishableRefusal() is add's bar for such a card.
 // Node core and the mesh's own modules only; only meshctl imports it.
 import { randomUUID } from 'node:crypto'
 import { closeSync, constants, fstatSync, openSync, readFileSync } from 'node:fs'
@@ -16,16 +18,17 @@ import type { LookupFunction } from 'node:net'
 import { agentIdRefusal, checkAddedCard, checkProfile, claim, egressRefusal, residencyRefusal } from './agent-card.js'
 import { tooDeep, unstableReason, verifyCardSignatures } from './card-signature.js'
 import { SEMVER, addedPlace, bearerUsable, fetchCard } from './mesh-add.js'
-import type { Place } from './mesh-add.js'
+import type { FetchSeams, Place } from './mesh-add.js'
 import { inTailnet, readTokenFile } from './mesh-config.js'
 import { bareLink, meshLink, tlsLink } from './mesh-identity.js'
 import type { MeshLink } from './mesh-identity.js'
+import { publicLookup } from './public-address.js'
 
 export const CHECK_USAGE = `usage: agent-inbox-meshctl check <card-url> [--level local|publishable] [--strict] [--json] [--token-file <path> [--send <file>]]
 Checks an A2A agent's card against what meshctl add needs (--level local) or what someone else
 needs to add it (publishable, the default), and writes nothing. The card URL is
 http://127.0.0.1:<port>[/<path>] or https://<name>[:<port>][/<path>]. Live tests run only with
---token-file (a 0600 file you own; loopback or this Mac's tailnet) and create no work; --send
+--token-file (a 0600 file you own; the token goes only to the card's origin) and create no work; --send
 sends the message in <file> as one real task. --strict fails on any should. Exit 0: conforms;
 17: a test failed; 15: the card could not be fetched; 4: usage. Tests: docs/mesh-call.md.
 `
@@ -35,9 +38,10 @@ export interface CheckIo {
   err: (text: string) => void
   /** This Mac's MagicDNS suffix, asked only for a `*.ts.net` card URL (meshctl passes tailscale status's). */
   tailnet?: () => string | undefined
-  /** DNS and the CA that replaces the system roots for https (test seams only) */
+  /** DNS and the CA that replaces the system roots for https, and which addresses count as public (test seams only) */
   lookup?: LookupFunction
   ca?: string
+  isPublic?: (address: string) => boolean
   /** the card fetch's deadline, GetTask's interval and --send's deadline (tests shorten them) */
   cardMs?: number
   pollMs?: number
@@ -106,6 +110,7 @@ export const CHECK_REASONS: Record<string, Record<string, string>> = {
     refused: 'nothing answers at the card URL', timeout: 'the card URL did not answer in time', dns: 'the card URL\'s name does not resolve',
     tls: 'the TLS handshake failed', cut: 'the card URL cut the connection', redirect: 'the card URL redirects, and meshctl follows no redirect',
     'http-status': 'the card URL did not answer HTTP 200', 'too-large': 'the card is over 64 KiB', 'not-json': 'the card is not a JSON object',
+    private: 'the card URL\'s name resolves to an address that is not public (loopback, private, link-local or a tailnet\'s), so nothing was sent to it',
     'too-deep': 'the card is nested more than 32 deep',
   },
   'card.shape': { 'no-name': 'the card has no name', 'no-skill': 'the card has no skill', 'skill-without-id': 'a skill has no id', 'no-jsonrpc-interface': 'the card has no A2A 1.0 JSON-RPC interface' },
@@ -157,17 +162,10 @@ export const CHECK_REASONS: Record<string, Record<string, string>> = {
 
 const wordsFor = (id: string, reason: string): string => CHECK_REASONS[id]?.[reason] ?? COMMON[reason] ?? reason
 
-// A public https name, for check only (§5: allowed before #534 since no token goes there):
-// lower-case DNS labels with a non-numeric last label, an optional port, a plain path
-const PUBLIC = /^(https:\/\/(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,62}(?::([1-9]\d{0,4}))?)(?:\/(?!\.\.?(?:\/|$))[A-Za-z0-9._~-]+)*\/?$/
-
-/** add's endpoint rule, widened to a public https name; undefined when refused. */
+/** add's endpoint rule (§8.8): since #534 it takes a public https name too; undefined when refused. */
 function checkPlace(raw: unknown): Place | undefined {
   const place = addedPlace(raw)
-  if (!('refused' in place)) return place
-  const m = place.refused === 'public' && typeof raw === 'string' ? PUBLIC.exec(raw) : null
-  if (!m || (m[2] !== undefined && (Number(m[2]) > 65535 || m[2] === '443'))) return undefined
-  return { url: raw as string, origin: m[1]!, loopback: false, host: new URL(raw as string).hostname }
+  return 'refused' in place ? undefined : place
 }
 
 const SHAPE: Record<string, string> = { 'no name': 'no-name', 'no skill': 'no-skill', 'a skill without an id': 'skill-without-id', 'no A2A 1.0 JSON-RPC interface': 'no-jsonrpc-interface' }
@@ -255,6 +253,42 @@ function signatureTests(c: Json, outcomes: Map<string, Outcome>): void {
   outcomes.set('signature.valid', !listed ? skip('none') : failed === undefined ? PASS
     : miss(failed === 'mismatch' && s.unstable ? 'mismatch-unstable' : failed))
   outcomes.set('signature.extra', s.unlisted ? miss('unlisted') : PASS)
+}
+
+/** §5's tests that read only the card (no network), from card.required to ext.required; `outside`: a public name or another tailnet. */
+function cardTests(c: Json, outside: boolean, outcomes: Map<string, Outcome>): void {
+  outcomes.set('card.required', required(c))
+  const stable = unstableReason(c)
+  outcomes.set('card.stable', stable ? miss(stable) : PASS)
+  outcomes.set('card.text', text(c))
+  outcomes.set('auth.declared', declared(c))
+  outcomes.set('auth.supported', bearerUsable(c) ? PASS : miss('none-supported'))
+  outcomes.set('version.semver', typeof c.version === 'string' && SEMVER.test(c.version) ? PASS : miss('not-semver'))
+  outcomes.set('provider.present', provider(c))
+  outcomes.set('provider.domain', domain(c))
+  const profile = checkProfile(c)
+  outcomes.set('profile.present', profile === undefined ? miss('absent') : 'reason' in profile ? miss('invalid') : PASS)
+  const params = profileParams(c)
+  outcomes.set('profile.id', params === undefined ? skip('no-profile') : agentIdRefusal(params.id) ? miss('bad-syntax') : PASS)
+  outcomes.set('profile.egress', declarations(c, 'egress', egressRefusal, false))
+  outcomes.set('profile.residency', declarations(c, 'residency', residencyRefusal, outside))
+  signatureTests(c, outcomes)
+  outcomes.set('ext.required', list(obj(c.capabilities).extensions).some((e) => e.required === true && !SPOKEN.includes(e.uri as string)) ? miss('unknown-required') : PASS)
+}
+
+/**
+ * add's bar for a card on a public name (#534, D18): the publishable level's must tests that read
+ * only the card. The first one that fails, as `<test id>: <its words>`, or undefined. A residency
+ * other than `any` stays a warning here, as in check.
+ */
+export function publishableRefusal(card: Json): string | undefined {
+  const outcomes = new Map<string, Outcome>()
+  cardTests(card, true, outcomes)
+  for (const [id, , publishable] of TESTS) {
+    const outcome = outcomes.get(id)
+    if (publishable === 'must' && outcome && 'miss' in outcome && !outcome.warn) return `${id}: ${wordsFor(id, outcome.miss)}`
+  }
+  return undefined
 }
 
 type Rpc = { status: number; error?: number; result?: Json } | 'unreachable'
@@ -346,11 +380,12 @@ export async function runCheck(args: string[], io: CheckIo): Promise<number> {
   const tailnetName = /\.ts\.net$/.test(place.host)
   const suffix = tailnetName ? io.tailnet?.() : undefined
   const where = place.loopback ? 'loopback' : !tailnetName ? 'elsewhere' : suffix === undefined ? 'unknown' : inTailnet(place.host, suffix) ? 'tailnet' : 'elsewhere'
+  // a card add would take as public (#534): every connection to it goes through publicLookup()
+  const seams: FetchSeams = where === 'elsewhere' || where === 'unknown' ? { lookup: publicLookup(io.lookup, io.isPublic), ca: io.ca } : { lookup: io.lookup, ca: io.ca }
   let token: string | undefined
   let message: string | undefined
   const tokenFile = values.get('--token-file')
   if (tokenFile !== undefined) {
-    if (where !== 'loopback' && where !== 'tailnet') return usage('--token-file is only for a card on loopback or this Mac\'s tailnet: live tests on another tailnet or a public name wait for #534')
     const read = readTokenFile(tokenFile, true)
     if ('refused' in read) return usage(read.refused)
     token = read.token
@@ -363,7 +398,7 @@ export async function runCheck(args: string[], io: CheckIo): Promise<number> {
   }
 
   const outcomes = new Map<string, Outcome>()
-  const fetched = await fetchCard(place, io.cardMs, { lookup: io.lookup, ca: io.ca })
+  const fetched = await fetchCard(place, io.cardMs, seams)
   const card = 'card' in fetched && !tooDeep(fetched.card) ? fetched.card : undefined
   if ('failed' in fetched) outcomes.set('card.fetch', miss(fetched.failed === 'http' ? 'http-status' : fetched.failed))
   else outcomes.set('card.fetch', card ? PASS : miss('too-deep'))
@@ -379,30 +414,14 @@ export async function runCheck(args: string[], io: CheckIo): Promise<number> {
     outcomes.set('endpoint.rule', !own ? miss(checkPlace(rpcs[0]?.url) ? 'other-origin' : 'interface-refused')
       : level === 'local' && where === 'unknown' ? miss('tailnet-unreadable')
         : level === 'local' && where === 'elsewhere' ? miss('not-local') : PASS)
-    outcomes.set('card.required', required(c))
-    const stable = unstableReason(c)
-    outcomes.set('card.stable', stable ? miss(stable) : PASS)
-    outcomes.set('card.text', text(c))
-    outcomes.set('auth.declared', declared(c))
-    outcomes.set('auth.supported', bearerUsable(c) ? PASS : miss('none-supported'))
-    outcomes.set('version.semver', typeof c.version === 'string' && SEMVER.test(c.version) ? PASS : miss('not-semver'))
-    outcomes.set('provider.present', provider(c))
-    outcomes.set('provider.domain', domain(c))
-    const profile = checkProfile(c)
-    outcomes.set('profile.present', profile === undefined ? miss('absent') : 'reason' in profile ? miss('invalid') : PASS)
-    const params = profileParams(c)
-    outcomes.set('profile.id', params === undefined ? skip('no-profile') : agentIdRefusal(params.id) ? miss('bad-syntax') : PASS)
-    outcomes.set('profile.egress', declarations(c, 'egress', egressRefusal, false))
-    outcomes.set('profile.residency', declarations(c, 'residency', residencyRefusal, where === 'elsewhere'))
-    signatureTests(c, outcomes)
-    outcomes.set('ext.required', list(obj(c.capabilities).extensions).some((e) => e.required === true && !SPOKEN.includes(e.uri as string)) ? miss('unknown-required') : PASS)
+    cardTests(c, where === 'elsewhere', outcomes)
 
     const live = ['live.identity', 'live.auth', 'live.unknown-task', 'live.unknown-method', 'live.send']
     const skipLive = (reason: string): void => { for (const id of live) if (!outcomes.has(id)) outcomes.set(id, skip(reason)) }
     if (token === undefined) skipLive('no-token')
     else if (!endpoint) skipLive('stopped')
     else if (!bearerUsable(c)) skipLive('auth-unusable')
-    else await liveTests(place, endpoint, token, message, io, outcomes, skipLive)
+    else await liveTests(place, endpoint, token, message, io, seams, outcomes, skipLive)
   }
 
   // severities for the level, then results
@@ -437,11 +456,10 @@ export async function runCheck(args: string[], io: CheckIo): Promise<number> {
   return code
 }
 
-async function liveTests(place: Place, endpoint: URL, token: string, message: string | undefined, io: CheckIo, outcomes: Map<string, Outcome>, skipLive: (reason: string) => void): Promise<void> {
+async function liveTests(place: Place, endpoint: URL, token: string, message: string | undefined, io: CheckIo, seams: FetchSeams, outcomes: Map<string, Outcome>, skipLive: (reason: string) => void): Promise<void> {
   const cardPath = new URL(place.url).pathname
   const path = endpoint.pathname
   const origin = new URL(place.origin)
-  const seams = { lookup: io.lookup, ca: io.ca }
   const link = place.loopback ? meshLink(Number(origin.port), token, 'a2a-mesh', cardPath) : tlsLink(origin, token, cardPath, seams)
   const bare = bareLink(origin, cardPath, seams)
   try {

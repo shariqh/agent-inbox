@@ -195,7 +195,8 @@ startKitAgent({ ..., request: REQUEST })
 - **Lifecycle.** The example runs until a signal arrives. Web search adds its own: it starts only
   while `mesh.json` names its endpoint, and it exits when that changes or after 30 idle minutes.
 - **Anything but loopback.** The front door listens on `127.0.0.1` and checks `Host` against it.
-  Serving on your tailnet or a public name needs TLS in front of it (#534).
+  Serving on your tailnet or a public name needs TLS in front of it; `meshctl add` takes a public
+  name when the card is signed and publishable (#534, [`docs/mesh-call.md`](mesh-call.md)).
 - **Auth other than a bearer token.** OAuth is #541.
 - **Its own identity label.** The default label is `a2a-mesh/v1`. A built-in agent with its own client
   can set `proofLabel`, as web search does (`web-search/v1`), but `meshctl call` and `check` then

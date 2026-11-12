@@ -775,7 +775,7 @@ the usage and 4).
 - **`meshctl add <card-url> [--id <id>] [--token-file <path>] [--apply]`**, in this order,
   writing nothing and opening no connection until the fetch: the id (1–40 lower-case letters,
   digits and inner hyphens, never `unslop`, `request-post` or `web-search`); the card URL by the
-  endpoint rule, a tailnet name only on this Mac's tailnet; a loopback card URL needs `--token-file`, since `meshctl call` proves a
+  endpoint rule, then where it is (`reachOf()`, below); a loopback card URL needs `--token-file`, since `meshctl call` proves a
   loopback agent's identity with it before it sends anything (D17); the token file (a regular
   file the user owns, opened `O_NOFOLLOW | O_NONBLOCK`, no group or other permission bits, at
   most 4 KiB, one run of at least 32 visible ASCII characters); `mesh.json` readable and the id
@@ -805,18 +805,37 @@ the usage and 4).
   atomically after a timestamped backup, every other key kept. New folders are 0700. Every
   refusal is fixed words, never the URL, the id or the token.
 - **The endpoint rule (`addedPlace()`, §8.8)** for both the card URL and the endpoint:
-  `http://127.0.0.1:<port>` (never `:80`) or `https://<name>.<tailnet>.ts.net[:<port>]` (two
-  lower-case labels, never `:443`), each with an optional plain path (no `.` or `..` segment,
-  percent-encoding, user, query or fragment). An `https` URL on any other DNS name is refused
-  as a public host until TLS identity and the card accept land (#534, #531); any other IP literal, `localhost` or plain `http` to another host is refused outright.
-  §8.8's allowlist is this Mac's tailnet (`tailnetRefusal()`): a `*.ts.net` name must be
-  `<name>.<MagicDNS suffix>`, read once per `add` by meshctl from `tailscale status --json`
-  (`MagicDNSSuffix` while `BackendState` is `Running`; the CLI on PATH, else the app's), and only
-  for a tailnet card URL. Another tailnet or a public Funnel host (valid DNS and a public
-  certificate) waits for #534 like any public host; when the suffix cannot be read (no CLI,
-  stopped, logged out) a tailnet name is refused. `mesh-add.ts` spawns nothing: the suffix is
-  passed in (`MeshctlIo.tailnet` in tests). `status` reads entries by shape only; the call
-  path (#530) re-checks the suffix.
+  `http://127.0.0.1:<port>` (never `:80`) or `https://` on a DNS name (lower-case labels, a last
+  label that starts with a letter so never an IP literal, at most 253 characters, never `:443`),
+  each with an optional plain path (no `.` or `..` segment, percent-encoding, user, query or
+  fragment). Any IP literal but `127.0.0.1`, `localhost` or plain `http` to another host is
+  refused outright, with no connection.
+- **Where it is (`reachOf()`, §8.8 and D18, #534).** Loopback; `tailnet`, a
+  `<name>.<MagicDNS suffix>` name, the suffix read once per `add` by meshctl from
+  `tailscale status --json` (`MagicDNSSuffix` while `BackendState` is `Running`; the CLI on PATH,
+  else the app's) and asked only for a `*.ts.net` card URL; or `public`, any other name: someone
+  else's host, another tailnet's name or a Funnel host, and a `*.ts.net` name while the suffix
+  cannot be read. That last is safe because a public name connects only through the address
+  check below, which refuses a tailnet's `100.64.0.0/10`. `mesh-add.ts` spawns nothing: the
+  suffix is passed in (`MeshctlIo.tailnet` in tests). `status` reads entries by shape only; the
+  call path (#530) re-checks the suffix for a local tailnet entry (`tailnetRefusal()`).
+- **Public names (#534).** `src/public-address.ts` (Node core: `node:dns`, `node:net`'s
+  `BlockList`) holds the address check. `isPublicAddress()` takes IPv4 outside this network,
+  private, `100.64.0.0/10`, loopback, link-local, the IETF, documentation, 6to4-relay and
+  benchmarking ranges, multicast and reserved; and IPv6 in `2000::/3` outside Teredo,
+  benchmarking, ORCHID, documentation and 6to4, judging an IPv4-mapped or well-known NAT64
+  address by its IPv4 (a scoped address is never public). `publicLookup()` wraps the resolver
+  for `net.connect`: it asks for every address, fails with `NOT_PUBLIC` before any connection
+  unless each is public, and returns only checked ones, so the socket connects to an address that
+  passed (no rebinding between check and connect; a new connection on a keep-alive pool looks up
+  again). `fetchCard()` reports `NOT_PUBLIC` as the failure kind `private`. A public card URL
+  needs the publishable level at `add`: `signatureRefusal(v, false, …)` (signed) and then
+  `publishableRefusal()` from `mesh-check.ts`, the publishable level's must tests that read only
+  the card (`cardTests()`, shared with `check`), refused as `<test id>: <words>`; a residency other
+  than `any` stays a warning. The entry gets `"public": true`; `addedEntry()` reads a public name
+  without it, `public` on loopback, or any value but `true` as invalid. A move (`--move`, or the
+  signed move) that would change whether an entry is public is refused. `MeshctlIo`, `CallIo` and
+  `CheckIo` take `lookup`, `ca` and `isPublic` as test seams only.
 - **Identity (D17).** `add` sends no token and does not run the HMAC proof: `meshctl call`
   (#530, below) proves a loopback agent's identity before every call, with the label
   `a2a-mesh`. A squatter that answers `add` gets a pin that the real agent's card will not
@@ -871,9 +890,9 @@ the usage and 4).
     may have signed a different payload (an A2A signer drops empty and default values).
   - *`add`* (`signatureVerdict()`, `signatureRefusal()`): unreadable signatures, or any signature by
     a listed key that fails, refuse the card. Signed means at least one verified, the rest unlisted.
-    An unsigned card (none, or only unlisted ones) is allowed because `add` takes only loopback and
-    this Mac's tailnet (the local level, decision Q4); `signatureRefusal(v, false, …)` is the
-    publishable rule #534 will apply. `--key-thumbprint <t>` (43 base64url characters) refuses a card
+    An unsigned card (none, or only unlisted ones) is allowed on loopback and this Mac's tailnet
+    (the local level, decision Q4); on a public name `signatureRefusal(v, false, …)` refuses it
+    (#534, above). `--key-thumbprint <t>` (43 base64url characters) refuses a card
     no verified signature of `t` is on. The entry records `keyThumbprints`, the thumbprints of every
     key the card lists (trust on first use, decision Q3); since `keys` is inside the pin this is the
     pinned card's list, not a second pin. `addedEntry()` reads it as 1-4 thumbprints or the entry is
@@ -982,8 +1001,8 @@ a changed card).
 - **Before any connection:** arguments, with the id first (4); a `--report` that is a symlink or
   not a regular file (4); a terminal on stdin (4); the request, at most 64 KiB of UTF-8, not blank
   (11). Then off (14): `mesh.json` by the one reading rule, `addedEntry()` (now returning the card
-  URL too) for an entry `add` wrote; for a tailnet entry `tailnetRefusal()` again with this Mac's
-  suffix (§8.8); the token copy through `readPrivate()` (moved from unslop's client into
+  URL too) for an entry `add` wrote; for a local tailnet entry `tailnetRefusal()` again with this
+  Mac's suffix (§8.8), never for a public one (#534); the token copy through `readPrivate()` (moved from unslop's client into
   `mesh-config.ts`, with `openPrivate()`), required on loopback. The run record is armed here.
 - **The card, then the pin.** On loopback `meshLink(port, token, 'a2a-mesh', <card path>)`: the
   card request carries the challenge and the proof is HMAC-SHA256(token, `"a2a-mesh/v1\n" + nonce`)
@@ -992,7 +1011,9 @@ a changed card).
   passing for unslop's or web search's. Not proven is 14, and the peer received only the nonce.
   On a tailnet name `tlsLink()` (`node:https`, `rejectUnauthorized: true` whatever the
   environment says, keep-alive, one socket; `CallIo.lookup` and `CallIo.ca` are test seams only): no challenge, the
-  token on every request to that origin only. Nothing answering, a failed fetch, a non-200 (no
+  token on every request to that origin only. A public entry's `tlsLink()` resolves through
+  `publicLookup()` (#534), so an answer that is not public fails the card request (15) before any
+  connection. Nothing answering, a failed fetch, a non-200 (no
   redirect is followed) or no JSON card of at most 64 KiB is 15. `cardSha256()` of the fresh card
   must equal the entry's `cardSha256`, else 16 with the way to accept it again (until #531:
   `remove`, then `add` again) and nothing else is sent. Then `checkAddedCard()` (15), and
@@ -1032,7 +1053,15 @@ a changed card).
   placeholder tailnet name (a self-signed one refused, also with `NODE_TLS_REJECT_UNAUTHORIZED=0`;
   a test CA's leaf accepted for the agent's name and refused for another name, each refusal with
   no request and no token), the terminal rule (an `isTTY` stdin and the real CLI under
-  `script`) and the run record. `test/mesh.test.ts` pins its imports, `test/prstate.test.ts`
+  `script`) and the run record. A public agent (#534), against a TLS fake with a test CA made at
+  test time for `agent.example.org`: `add` then `call` with the token on the call only and the
+  entry marked public; the same loopback answer judged as it is (no connection, 15); at `add`, a
+  redirect, loopback, private and tailnet answers (no connection), a certificate for another name,
+  an interface on another origin, an unsigned and an unpublishable card, each refused with no
+  token sent; a refetched card naming another origin not followed; hand-edited entries that break
+  the public rule off (14); and a move between public and local refused.
+  `test/public-address.test.ts` holds every refused and allowed range and `publicLookup()`'s
+  answers. `test/mesh.test.ts` pins its imports, `test/prstate.test.ts`
   keeps it out of the stdio graph. `packages/mesh/test/a2a-cli-interop.test.ts` (#532) checks
   interop with the official `a2a` CLI both ways: it replays the requests `a2a` 0.4.0 sent to web
   search's front door, spawns `meshctl add` and `call` against an `@a2a-js/sdk` agent with and
@@ -1049,15 +1078,15 @@ nothing (the tailnet suffix comes in as `CheckIo.tailnet`, asked only for a `*.t
 and never reads a terminal. User page, test table and exits: [`docs/mesh-call.md`](../mesh-call.md).
 
 - **Before any connection (4):** arguments (`--send` needs `--token-file`); the card URL by
-  `add`'s `addedPlace()`, widened to a public `https://` DNS name with a plain path (design §5:
-  allowed before #534 because no token goes there); `--token-file` only for loopback or this
-  Mac's tailnet, read by `readTokenFile()` (moved from meshctl into `mesh-config.ts`, 0600
-  required); the `--send` file (`O_NOFOLLOW`, regular, at most 64 KiB of UTF-8, not blank).
+  `add`'s `addedPlace()`; `--token-file` for any card URL since #534, read by `readTokenFile()`
+  (moved from meshctl into `mesh-config.ts`, 0600 required); the `--send` file (`O_NOFOLLOW`, regular, at most 64 KiB of UTF-8, not blank).
   Every refusal is fixed words, never the URL.
 - **The card.** `fetchCard()` is `add`'s fetch split out of `fetchAddedCard()` (which keeps its
   words): one GET, `agent: false`, no redirect, 64 KiB, one deadline, a JSON object; it returns a
-  failure kind (`refused`, `timeout`, `dns`, `tls`, `cut`, `redirect`, `http`, `too-large`,
-  `not-json`), and `CheckIo.lookup`/`ca` are test seams. `check` adds a nesting walk that stops
+  failure kind (`refused`, `timeout`, `dns`, `private`, `tls`, `cut`, `redirect`, `http`,
+  `too-large`, `not-json`), and `CheckIo.lookup`/`ca`/`isPublic` are test seams. A card URL `add`
+  would place as public (`elsewhere` or `unknown`) is fetched, and live-tested, through
+  `publicLookup()` (#534). `check` adds a nesting walk that stops
   past 32 levels without recursing. Any `card.fetch` failure is exit 15; `card.shape`
   (`checkAddedCard()`) failing stops the run too.
 - **Static tests** are walks and field checks with no schema table: `card.stable` looks for
@@ -1076,8 +1105,8 @@ and never reads a terminal. User page, test table and exits: [`docs/mesh-call.md
   (info locally, should when publishable) is `unlisted` when a signature names no listed key.
 - **Live tests** run only with a token, an endpoint that passed and a card that declares bearer
   auth. On loopback `meshLink(port, token, 'a2a-mesh', <card path>)` proves the agent first
-  (`live.identity`); unproven, nothing else is sent. On this Mac's tailnet `tlsLink()`, and
-  `live.identity` is `skip`. `live.auth` goes through `bareLink()` (new in `mesh-identity.ts`: no
+  (`live.identity`); unproven, nothing else is sent. On https `tlsLink()` (through
+  `publicLookup()` for a public name), and `live.identity` is `skip`. `live.auth` goes through `bareLink()` (new in `mesh-identity.ts`: no
   token, no proof). `GetTask`/`CancelTask` on a random UUID must answer -32001, an unknown method
   -32601; only `--send` sends `SendMessage`, then polls `GetTask` until a final or
   `INPUT_REQUIRED` state (300 s), reads it once more and cancels it (`CANCELED` or -32002).
@@ -1092,7 +1121,8 @@ and never reads a terminal. User page, test table and exits: [`docs/mesh-call.md
   (exit 15, nothing posted); every live reason; a squatter that gets neither the token nor the
   message; no POST without `--token-file` and no `SendMessage` without `--send`; usage cases with
   no connection; `--strict`; the cleaned table; public, this-tailnet and other-tailnet https
-  names through a test CA; the token never in stdout or stderr; our three cards as they are; and
+  names through a test CA, live tests on a public name and its `private` refusals (#534); the
+  token never in stdout or stderr; our three cards as they are; and
   a final test that every reason id was reached. `test/mesh.test.ts` pins its imports,
   `test/prstate.test.ts` keeps it out of the stdio graph.
 

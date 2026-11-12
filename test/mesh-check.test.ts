@@ -471,8 +471,6 @@ describe('usage (exit 4), with no connection', () => {
       [[`http://127.0.0.1:${fake.port}/x?token=${TOKEN}`], 'the card URL must be'],
       [[`https://user@agent.example.org/card.json`], 'the card URL must be'],
       [['https://127.0.0.2/card.json'], 'the card URL must be'],
-      [['https://agent.example.org/card.json', ...live()], 'wait for #534'],
-      [['https://agent.other.ts.net/card.json', ...live()], 'wait for #534'],
     ]
     for (const [args, words] of cases) {
       const r = await check(args)
@@ -509,43 +507,45 @@ describe.skipIf(!HAS_OPENSSL)('https card URLs: a public name, this Mac\'s tailn
   })
   const lookup = ((_h: string, _o: unknown, done: (...a: unknown[]) => void) => done(null, [{ address: '127.0.0.1', family: 4 }])) as unknown as LookupFunction
   const tailnet = (): string => 'this-tailnet.ts.net'
+  // the fake answers on loopback, which a public name's address check (#534) refuses: these tests count it as public
+  const isPublic = (address: string): boolean => address === '127.0.0.1'
 
   it('a public name is checked without a token: publishable passes the endpoint rule, local does not', async () => {
     const fake = await fakeAgent({ tls: leaf, host: NAMES[0] })
-    const pub = await check([fake.url, '--json'], { lookup, ca, tailnet })
+    const pub = await check([fake.url, '--json'], { lookup, ca, tailnet, isPublic })
     expect([pub.code, test(pub, 'endpoint.rule').result]).toEqual([0, 'pass'])
-    const local = await check([fake.url, '--json', '--level', 'local'], { lookup, ca, tailnet })
+    const local = await check([fake.url, '--json', '--level', 'local'], { lookup, ca, tailnet, isPublic })
     expect([local.code, test(local, 'endpoint.rule').reason]).toEqual([17, 'not-local'])
     const other = await fakeAgent({ tls: leaf, host: NAMES[2] })
-    expect(test(await check([other.url, '--json', '--level', 'local'], { lookup, ca, tailnet }), 'endpoint.rule').reason).toBe('not-local')
-    const unread = await check([other.url, '--json', '--level', 'local'], { lookup, ca, tailnet: () => undefined })
+    expect(test(await check([other.url, '--json', '--level', 'local'], { lookup, ca, tailnet, isPublic }), 'endpoint.rule').reason).toBe('not-local')
+    const unread = await check([other.url, '--json', '--level', 'local'], { lookup, ca, tailnet: () => undefined, isPublic })
     expect(test(unread, 'endpoint.rule').reason).toBe('tailnet-unreadable')
   })
 
   it('a public name or another tailnet warns on a residency other than any; this Mac\'s tailnet and loopback do not', async () => {
     const narrow = change(GOOD, (c) => { c.capabilities.extensions[0].params.skills['search-notes'].residency = 'caller-mesh' })
     const pub = await fakeAgent({ card: narrow, tls: leaf, host: NAMES[0] })
-    const r = await check([pub.url, '--json'], { lookup, ca, tailnet })
+    const r = await check([pub.url, '--json'], { lookup, ca, tailnet, isPublic })
     // a should even at the publishable level, where the test is a must: it fails only with --strict
     expect([r.code, test(r, 'profile.residency')]).toEqual([0, { id: 'profile.residency', severity: 'should', result: 'warn', reason: 'not-any-public' }])
-    const strict = await check([pub.url, '--json', '--strict'], { lookup, ca, tailnet })
+    const strict = await check([pub.url, '--json', '--strict'], { lookup, ca, tailnet, isPublic })
     expect([strict.code, failing(strict)]).toEqual([17, ['profile.residency not-any-public']])
     const other = await fakeAgent({ card: narrow, tls: leaf, host: NAMES[2] })
-    expect(test(await check([other.url, '--json'], { lookup, ca, tailnet }), 'profile.residency').reason).toBe('not-any-public')
+    expect(test(await check([other.url, '--json'], { lookup, ca, tailnet, isPublic }), 'profile.residency').reason).toBe('not-any-public')
     const own = await fakeAgent({ card: narrow, tls: leaf, host: NAMES[1] })
-    expect(test(await check([own.url, '--json', '--strict'], { lookup, ca, tailnet }), 'profile.residency').result).toBe('pass')
+    expect(test(await check([own.url, '--json', '--strict'], { lookup, ca, tailnet, isPublic }), 'profile.residency').result).toBe('pass')
     const loop = await fakeAgent({ card: narrow })
     expect(test(await check([loop.url, '--json', '--strict']), 'profile.residency').result).toBe('pass')
     // an invalid residency on a public name is still a must
     const bad = await fakeAgent({ card: change(narrow, (c) => { c.capabilities.extensions[0].params.skills['search-notes'].residency = 'public' }), tls: leaf, host: NAMES[0] })
-    expect(test(await check([bad.url, '--json'], { lookup, ca, tailnet }), 'profile.residency')).toMatchObject({ severity: 'must', result: 'fail', reason: 'invalid' })
-    const human = await check([pub.url], { lookup, ca, tailnet })
+    expect(test(await check([bad.url, '--json'], { lookup, ca, tailnet, isPublic }), 'profile.residency')).toMatchObject({ severity: 'must', result: 'fail', reason: 'invalid' })
+    const human = await check([pub.url], { lookup, ca, tailnet, isPublic })
     expect(human.out).toContain('warn  should  profile.residency    the card is on a public name or another tailnet, outside this Mac\'s mesh, so a skill whose residency is not any cannot be satisfied\n')
   })
 
   it('this Mac\'s tailnet with a token: TLS proves the origin, so the identity test is not run', async () => {
     const fake = await fakeAgent({ tls: leaf, host: NAMES[1] })
-    const r = await check([fake.url, '--json', '--level', 'local', ...live()], { lookup, ca, tailnet })
+    const r = await check([fake.url, '--json', '--level', 'local', ...live()], { lookup, ca, tailnet, isPublic })
     expect(r.code).toBe(0)
     expect(test(r, 'live.identity')).toMatchObject({ result: 'skip', reason: 'not-loopback' })
     expect(tests(r).slice(20, 23).map((t) => t.result)).toEqual(['pass', 'pass', 'pass'])
@@ -553,11 +553,28 @@ describe.skipIf(!HAS_OPENSSL)('https card URLs: a public name, this Mac\'s tailn
 
   it('a certificate the CA did not sign fails the TLS handshake; a name that does not resolve fails DNS', async () => {
     const fake = await fakeAgent({ tls: leaf, host: NAMES[0] })
-    const tls = await check([fake.url, '--json'], { lookup })
+    const tls = await check([fake.url, '--json'], { lookup, isPublic })
     expect([tls.code, test(tls, 'card.fetch').reason]).toEqual([15, 'tls'])
     const nowhere = ((_h: string, _o: unknown, done: (...a: unknown[]) => void) => done(Object.assign(new Error('nope'), { code: 'ENOTFOUND' }))) as unknown as LookupFunction
     const dns = await check(['https://agent.example.org/card.json', '--json'], { lookup: nowhere })
     expect([dns.code, test(dns, 'card.fetch').reason]).toEqual([15, 'dns'])
+  })
+
+  it('a public name (#534): live tests run with --token-file through the address check; an answer that is not public connects nowhere', async () => {
+    const fake = await fakeAgent({ tls: leaf, host: NAMES[0] })
+    const r = await check([fake.url, '--json', ...live()], { lookup, ca, tailnet, isPublic })
+    expect(r.code).toBe(0)
+    expect(test(r, 'live.identity')).toMatchObject({ result: 'skip', reason: 'not-loopback' })
+    expect(tests(r).slice(20, 23).map((t) => t.result)).toEqual(['pass', 'pass', 'pass'])
+    // the same loopback answer, now judged as it really is: the card fetch fails before any connection, so no token leaves
+    const other = await fakeAgent({ tls: leaf, host: NAMES[0] })
+    const refused = await check([other.url, '--json', ...live()], { lookup, ca, tailnet })
+    expect([refused.code, test(refused, 'card.fetch').reason]).toEqual([15, 'private'])
+    // another tailnet's name answers in 100.64.0.0/10, refused the same way
+    const cgnat = ((_h: string, _o: unknown, done: (...a: unknown[]) => void) => done(null, [{ address: '100.100.1.2', family: 4 }])) as unknown as LookupFunction
+    const tailnetOther = await check(['https://agent.other-tailnet.ts.net/card.json', '--json', ...live()], { lookup: cgnat, ca, tailnet })
+    expect([tailnetOther.code, test(tailnetOther, 'card.fetch').reason]).toEqual([15, 'private'])
+    expect([other.connections(), other.bytes()]).toEqual([0, ''])
   })
 })
 
@@ -623,7 +640,7 @@ describe('reason ids', () => {
     }
     const all = Object.entries(CHECK_REASONS).flatMap(([id, reasons]) => Object.keys(reasons).map((r) => `${id} ${r}`))
     // the network kinds the TLS block reaches are skipped without openssl
-    expect(all.filter((pair) => !seen.has(pair) && !(!HAS_OPENSSL && /^(card\.fetch (tls|dns)|endpoint\.rule (not-local|tailnet-unreadable)|live\.identity not-loopback|profile\.residency not-any-public)$/.test(pair)))).toEqual([])
+    expect(all.filter((pair) => !seen.has(pair) && !(!HAS_OPENSSL && /^(card\.fetch (tls|dns|private)|endpoint\.rule (not-local|tailnet-unreadable)|live\.identity not-loopback|profile\.residency not-any-public)$/.test(pair)))).toEqual([])
     for (const reason of common.slice(1)) expect([...seen].some((pair) => pair.endsWith(` ${reason}`)), reason).toBe(true)
   })
 })

@@ -45,6 +45,9 @@ profile extension (stable id, signing keys, per-skill egress and residency), sig
 `meshctl check`, and GitHub Pages as the base for extension URIs and the capability name, which
 answers §13 Q2. All of it is planned, none shipped (milestone "Mesh: publish an agent"). It touches
 §6.7, §8.8, §9.2, §9.5, §11 (M9), §13 and §14.1.
+**Amended 2026-11-11 by #534:** public `https://` endpoints for added agents, built as D17 and D18
+describe: what "a public name" is, the address check that replaces the tailnet allowlist for one,
+the publishable bar at `add`, and the entry's `public` mark. It touches §8.8 and adds §14.6.
 
 ---
 
@@ -859,15 +862,30 @@ Agents view flags a chain when one callee receives the same message hash three t
   `https://<name>.<tailnet>.ts.net[:<port>]` or, for the SSH fallback only,
   `http://127.0.0.1:<port>`; anything else is off. The client follows no redirect, uses no proxy
   and never calls the card's URL (request-post design §6; `meshctl enable --request-post`).
-- **Added agents (#511, D13 and D17; planned).** `meshctl add` applies the endpoint rule above:
-  loopback, or `https://` on an allowlisted tailnet name; a public `https://` name waits for
-  #534. On a loopback endpoint, `meshctl call` sends the token or any text only after the agent
-  passes the HMAC identity proof (`src/mesh-identity.ts`, #492). On `https://`, TLS verification
-  (always on), the card pin (#531) and card signatures (#536) take its place, and the token goes
-  only to the origin the agent was added with.
-- **Publishable cards (#533, D18; planned).** Another tailnet or a public name (#534) requires the
-  publishable level, including a signature (D21); loopback and this Mac's tailnet keep today's
-  rule, and an unsigned card is accepted only there.
+- **Added agents (#511, D13 and D17; #534 for public names).** `meshctl add` takes loopback, or
+  `https://` on a DNS name (never an IP literal). Loopback and a name in this Mac's tailnet are
+  local and keep the rules above. Any other name is public: someone else's host, a Funnel host,
+  another tailnet's name, and a `*.ts.net` name while this Mac's tailnet cannot be read. On a
+  loopback endpoint, `meshctl call` sends the token or any text only after the agent passes the
+  HMAC identity proof (`src/mesh-identity.ts`, #492). On `https://`, TLS verification (always on,
+  whatever the environment says), the card pin (#531) and card signatures (#536) take its place,
+  and the token goes only to the origin the agent was added with: the card's JSON-RPC interface
+  must be on the card URL's origin, and `call` never follows a URL from a refetched card. No
+  redirect is followed and no proxy is used.
+- **Public names (#534).** The allowlist above cannot cover a public name, so an address check
+  replaces it: before any connection, every address the name resolves to must be public unicast.
+  Loopback, private, link-local, `100.64.0.0/10` (a tailnet's or carrier NAT's), documentation,
+  multicast and reserved IPv4 are refused, and so is IPv6 outside `2000::/3` or in its special
+  prefixes (Teredo, documentation, 6to4 and the like); an IPv4-mapped or NAT64 address is judged
+  by its IPv4. The socket connects only to an address that passed, so a second DNS answer cannot
+  swap in a private one (DNS rebinding), and each new connection checks again. Another tailnet's
+  name resolves into `100.64.0.0/10`, so this refuses it; only a Funnel host's public addresses
+  pass. The entry records `"public": true`, so `call` never treats it as local, and a move never
+  changes it.
+- **Publishable cards (#533, D18; #534 at `add`).** A public name requires the publishable level,
+  including a signature (D21): `add` runs the publishable level's must tests that read only the
+  card (`meshctl check`'s), and a residency other than `any` stays a warning. Loopback and this
+  Mac's tailnet keep the local rule, and an unsigned card is accepted only there.
 
 ---
 
@@ -1413,6 +1431,31 @@ Shariq asked whether to adopt Eureka, for mockups, and for a way to measure the 
    `AGENT_INBOX_DB`, else `~/.agent-inbox`, so a scratch hub never reads the real home's switch.
 4. **The lens is window-local** (§10.1): a fresh window opens on Sessions, like the lanes' quick
    filters and the attention-first cold launch.
+
+### 14.6 Changes for public endpoints (2026-11-11, #534)
+
+#534 builds what D17 and D18 decided; these are the calls made while building it, recorded in
+§8.8.
+
+1. **What counts as public.** Any `https://` DNS name that is not `<name>.<MagicDNS suffix>` of
+   this Mac's tailnet, including another tailnet's name, a Funnel host and a `*.ts.net` name while
+   the suffix cannot be read. The last used to be refused; it is safe as public because the
+   address check below refuses a tailnet's addresses, and it lets someone without Tailscale add
+   an agent on a Funnel host. IP literals stay refused: a public agent has a name, and TLS
+   verifies that name.
+2. **An address check, not a name list.** The issue asked for no request to a name that resolves
+   to a loopback, link-local or private address. Every address of the answer is checked, and one
+   that fails refuses the whole name, rather than connecting to the ones that pass, so a name that
+   points at both is never reached. The check sits in the lookup `net.connect` uses, so the
+   connection uses a checked address and every reconnection checks again.
+3. **The publishable bar at `add`** is `meshctl check`'s publishable must tests that need no
+   network, shared code rather than a copy; residency other than `any` warns, as in `check`.
+4. **The entry records `"public": true`.** Without it, `call` would have to infer local or public
+   from the name and this Mac's tailnet at call time, and an entry added as local (perhaps
+   unsigned) could be called as public after a tailnet change. A move never changes the mark;
+   remove and add again.
+5. **`meshctl check --token-file`** now works for any card URL: live tests on a public name go
+   through the same address check.
 
 ---
 

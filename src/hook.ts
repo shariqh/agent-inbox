@@ -15,8 +15,8 @@ import { dirname, join } from 'node:path'
 import type Database from 'better-sqlite3'
 import {
   claimHookWatch, defaultDbPath, holdsHookWatch, insertItem, listHostSessions, listItems, listOpenMessages, listPending,
-  listPendingRows, listSessionQuestions, listUnansweredBoardRows, openDb, recordHostEvent, releaseHookWatch, resolveItem,
-  HOST_TOOL_STAMP_MS,
+  listPendingRows, listSessionQuestions, listUnansweredBoardRows, openDb, recordHostEvent, refreshHookWatch, releaseHookWatch,
+  resolveItem, HOST_TOOL_STAMP_MS,
 } from './store.js'
 import type { Item } from './store.js'
 import { isReservedProject } from '../public/reserved-projects.js'
@@ -90,6 +90,9 @@ export interface HookOpts {
   notifyTypes: string[]
   watchSecs: number
   watchPollMs: number
+  watchSlowAfterSecs: number
+  watchSlowPollMs: number
+  watchRefreshMs: number
 }
 
 export type Env = Record<string, string | undefined>
@@ -120,9 +123,26 @@ export function hookOpts(env: Env): HookOpts {
     // inbox row (and, in the packaged app, an un-withdrawable desktop notification)
     graceMs: num(env.AGENT_INBOX_HOOK_GRACE_MS, 90_000),
     notifyTypes: types.length ? types : ['permission_prompt'],
-    watchSecs: num(env.AGENT_INBOX_WATCH_SECS, 1740),
+    // #580: up to a day, just under the hook's 86400 s timeout, like Copilot's watchers
+    watchSecs: num(env.AGENT_INBOX_WATCH_SECS, WATCH_SECS),
     watchPollMs: num(env.AGENT_INBOX_WATCH_POLL_MS, 2000, 1),
+    // after the first half hour an answer can wait a few seconds: poll every 10 s
+    watchSlowAfterSecs: num(env.AGENT_INBOX_WATCH_SLOW_AFTER_SECS, 30 * 60),
+    watchSlowPollMs: num(env.AGENT_INBOX_WATCH_SLOW_POLL_MS, 10_000, 1),
+    // the lease's claimed_at, refreshed well inside the Agents view's 30-minute WAKE_LEASE_MS
+    watchRefreshMs: num(env.AGENT_INBOX_WATCH_REFRESH_MS, 5 * 60_000, 1),
   }
+}
+
+// #580: the watch hook's timeout in settings.json (also in scripts/install-hooks.sh and
+// scripts/runtime-config.mjs) and the watcher's own budget a minute inside it, so the watcher
+// ends on its own before Claude Code's timer kills it
+const WATCH_HOOK_TIMEOUT_SECS = 86_400
+const WATCH_SECS = WATCH_HOOK_TIMEOUT_SECS - 60
+
+/** How long `watch` sleeps between polls, `elapsedMs` after it armed (#580): fast at first, then slow. */
+export function watchPollDelay(elapsedMs: number, opts: Pick<HookOpts, 'watchPollMs' | 'watchSlowAfterSecs' | 'watchSlowPollMs'>): number {
+  return elapsedMs < opts.watchSlowAfterSecs * 1000 ? opts.watchPollMs : Math.max(opts.watchPollMs, opts.watchSlowPollMs)
 }
 
 // ── the settings.json registration block ────────────────────────────────────
@@ -162,7 +182,7 @@ export function hooksSettingsBlock(nodeBin: string, entry: string): { hooks: Rec
       PostToolUse: [{ hooks: [h('activity', 5, { async: true })] }],
       Stop: [{ hooks: [
         h('stop', 10, { statusMessage: 'Checking agent-inbox for answered questions…' }),
-        h('watch', 1800, {
+        h('watch', WATCH_HOOK_TIMEOUT_SECS, {
           statusMessage: 'Arming agent-inbox answer watcher…',
           asyncRewake: true,
           rewakeSummary: 'Agent Inbox: your answer arrived',
@@ -772,7 +792,7 @@ function cmdSessionStep(ctx: Ctx): HookResult {
 // failure is logged and the subcommand goes on exactly as before.
 function stampHost(ctx: Ctx, db: Database.Database, servers: Iterable<string>, kind: 'turn' | 'idle' | 'tool'): void {
   try {
-    // the clock now, not the hook's start: a watch stamps up to 29 minutes later
+    // the clock now, not the hook's start: a watch stamps up to a day later (#580)
     recordHostEvent(db, [...servers], kind, Date.now())
   } catch (err) {
     logLine(ctx.dbPath, `stamp ${kind}: ${err instanceof Error ? err.message : String(err)}`)
@@ -854,6 +874,7 @@ function liveServers(db: Database.Database, host: number): string[] {
 // same `host:<pid>` key, so supersession is unchanged, and only a marked
 // token may tell the human a message will wake this session.
 const MESSAGE_WATCH_TOKEN = 'm1:'
+const WATCH_SIGNALS = ['SIGTERM', 'SIGHUP', 'SIGINT'] as const
 
 // The open questions a watcher can see: every one in the session's projects,
 // plus any its linked servers raised under another project.
@@ -878,6 +899,11 @@ function visibleQuestions(db: Database.Database, scope: SessionScope): Item[] {
 // and cwd project when unlinked: a newer Stop's watcher takes the lease, and
 // this one leaves at its next poll, waking first only if one of its own
 // requests was answered since its last poll.
+//
+// Issue #580 — it waits up to a day (watchSecs), not half an hour, so an answer
+// that comes hours later still wakes the session. After its first half hour it
+// polls every 10 s instead of 2 s, and it refreshes its lease every 5 minutes so
+// the Agents view keeps showing that a message will wake this session.
 async function cmdWatch(ctx: Ctx): Promise<HookResult> {
   const { project } = scopeOf(ctx.ev)
   if (isReservedProject(project)) return EMPTY
@@ -888,6 +914,16 @@ async function cmdWatch(ctx: Ctx): Promise<HookResult> {
     claimHookWatch(db, lease.key, lease.token)
     lease.held = true
   }
+  // #580: killed at its hook's timeout (an older settings.json still says 1800 s) or by a
+  // signal, it gives its lease back first, so the Agents view never shows a wake that is gone
+  const onSignal = (): void => {
+    if (lease.held) {
+      try { releaseHookWatch(db, lease.key, lease.token) } catch { /* a stale lease is pruned after a day */ }
+      lease.held = false
+    }
+    process.exit(0)
+  }
+  for (const signal of WATCH_SIGNALS) process.once(signal, onSignal)
   try {
     const scope = sessionScope(db, ctx, project)
     // #466: a wake starts a turn that fires no UserPromptSubmit, so it stamps one itself
@@ -912,7 +948,9 @@ async function cmdWatch(ctx: Ctx): Promise<HookResult> {
     // a linked watcher stays for the session's later questions, even with nothing waiting yet
     if (scope.host === null && !awaited.size && !watchedRows.length) return EMPTY
     claim()
-    const deadline = Date.now() + ctx.opts.watchSecs * 1000
+    const armedAt = Date.now()
+    const deadline = armedAt + ctx.opts.watchSecs * 1000
+    let refreshedAt = armedAt
     while (Date.now() < deadline) {
       // Claude Code exited: nothing is left to wake
       if (process.ppid !== parent) return EMPTY
@@ -944,10 +982,16 @@ async function cmdWatch(ctx: Ctx): Promise<HookResult> {
         return woke(wake([...responses].sort(([a], [b]) => rank(a) - rank(b)), messages))
       }
       if (superseded || (scope.host === null && !waiting)) return EMPTY
-      await delay(ctx.opts.watchPollMs)
+      const now = Date.now()
+      if (now - refreshedAt >= ctx.opts.watchRefreshMs) {
+        refreshHookWatch(db, lease.key, lease.token)
+        refreshedAt = now
+      }
+      await delay(watchPollDelay(now - armedAt, ctx.opts))
     }
     return EMPTY
   } finally {
+    for (const signal of WATCH_SIGNALS) process.removeListener(signal, onSignal)
     if (lease.held) {
       try { releaseHookWatch(db, lease.key, lease.token) } catch { /* a stale lease is pruned after a day */ }
     }

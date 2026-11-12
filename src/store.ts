@@ -3671,7 +3671,8 @@ function countCall(minute: number | null, text: string | null, now: number): { m
 }
 
 // #411: how long after its claim a message-capable hook watch counts as armed.
-// The watch itself gives up after 29 minutes (AGENT_INBOX_WATCH_SECS).
+// The watch waits up to a day (AGENT_INBOX_WATCH_SECS, #580) and re-stamps its
+// claim every 5 minutes (refreshHookWatch), so a live one stays inside this.
 const WAKE_LEASE_MS = 30 * 60000
 
 export function listActivity(db: Database.Database, opts: { staleMinutes?: number } = {}): Activity[] {
@@ -3837,6 +3838,14 @@ export function claimHookWatch(db: Database.Database, key: string, token: string
                 ON CONFLICT(claim_key) DO UPDATE SET token = excluded.token, claimed_at = excluded.claimed_at`)
       .run(key, token, new Date(now).toISOString())
   }).immediate()
+}
+
+// #580: a watcher that waits up to a day re-stamps its own lease every few
+// minutes, so the Agents view's WAKE_LEASE_MS window keeps seeing it; a token
+// that no longer holds the key (a newer Stop took it) changes nothing.
+export function refreshHookWatch(db: Database.Database, key: string, token: string): boolean {
+  return db.prepare(`UPDATE hook_watch_claims SET claimed_at = ? WHERE claim_key = ? AND token = ?`)
+    .run(new Date().toISOString(), key, token).changes === 1
 }
 
 export function holdsHookWatch(db: Database.Database, key: string, token: string): boolean {

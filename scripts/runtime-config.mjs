@@ -793,7 +793,8 @@ export function buildHooksSettingsBlock(nodeBinPath, entryPath) {
       {
         hooks: [
           h('stop', 10, { statusMessage: 'Checking agent-inbox for answered questions…' }),
-          h('watch', 1800, {
+          // #580: up to a day, like Copilot's watchers; the watcher's own budget ends a minute sooner
+          h('watch', 86400, {
             statusMessage: 'Arming agent-inbox answer watcher…',
             asyncRewake: true,
             rewakeSummary: 'Agent Inbox: your answer arrived',

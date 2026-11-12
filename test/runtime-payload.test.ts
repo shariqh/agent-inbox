@@ -1487,6 +1487,7 @@ describe('runtime-config hooks: packaged Claude Code hook-settings transformatio
     expect(events.Notification![0]!.hooks[0]!.command).toBe(nodeBin)
     expect(events.Stop![0]!.hooks.map((h) => h.args[1])).toEqual(['stop', 'watch'])
     expect(events.Stop![0]!.hooks[1]!.asyncRewake).toBe(true)
+    expect(events.Stop![0]!.hooks[1]!.timeout).toBe(86_400) // #580
   })
 
   it('upgrades cleanly across a NEW runtimeId under the same runtimeRoot without --force', () => {

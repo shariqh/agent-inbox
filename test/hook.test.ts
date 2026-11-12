@@ -7,14 +7,14 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import {
   shouldBackstop, backoffMs, nudgeText, parseEvent, safeSegment, hookOpts,
-  runHook, sweepStale, hooksSettingsBlock, SUBCOMMANDS,
+  runHook, sweepStale, hooksSettingsBlock, SUBCOMMANDS, watchPollDelay,
 } from '../src/hook.js'
 import type { SessionMarker } from '../src/hook.js'
 import {
   openDb, insertItem, listItems, replyItem, markReplySeen, resolveItem,
   upsertBoard, getBoard, annotateBoardRow, markRowHandled, markAnnotationDelivered,
   updateBoardRow, archiveBoard, advanceBoardRow, upsertActivity, endActivity,
-  sendSessionMessage, markMessageDelivered, ackMessage, listActivity,
+  sendSessionMessage, markMessageDelivered, ackMessage, listActivity, claimHookWatch, refreshHookWatch,
 } from '../src/store.js'
 import type { Item } from '../src/store.js'
 import { installRuntimeVersion } from './release-runtime.js'
@@ -162,6 +162,22 @@ describe('hook: options and parsing', () => {
     })
     expect(o).toMatchObject({ recentMs: 1, cooldownMs: 2, maxPerSession: 9, maxAgeMs: 3, graceMs: 4 })
     expect(o.notifyTypes).toEqual(['permission_prompt', 'idle_prompt'])
+  })
+
+  it('#580: the watcher waits up to a day, a minute inside the hook\'s timeout, polling slower after half an hour', () => {
+    const d = hookOpts({})
+    const watch = hooksSettingsBlock('NODE', '/x/hook-cli.js').hooks.Stop![0]!.hooks[1]!
+    expect(watch.timeout).toBe(86_400)
+    expect(d.watchSecs).toBe(86_340)
+    expect([d.watchPollMs, d.watchSlowAfterSecs, d.watchSlowPollMs, d.watchRefreshMs]).toEqual([2000, 1800, 10_000, 300_000])
+    // the refresh stays well inside the Agents view's 30-minute WAKE_LEASE_MS
+    expect(d.watchRefreshMs).toBeLessThan(30 * 60_000 / 2)
+    expect([0, 29 * 60_000, 30 * 60_000 - 1].map((ms) => watchPollDelay(ms, d))).toEqual([2000, 2000, 2000])
+    expect([30 * 60_000, 23 * 3600_000].map((ms) => watchPollDelay(ms, d))).toEqual([10_000, 10_000])
+    // a fast poll set higher than the slow one is never made faster
+    expect(watchPollDelay(31 * 60_000, { ...d, watchPollMs: 20_000 })).toBe(20_000)
+    expect(hookOpts({ AGENT_INBOX_WATCH_SLOW_AFTER_SECS: '5', AGENT_INBOX_WATCH_SLOW_POLL_MS: '7', AGENT_INBOX_WATCH_REFRESH_MS: '9' }))
+      .toMatchObject({ watchSlowAfterSecs: 5, watchSlowPollMs: 7, watchRefreshMs: 9 })
   })
 
   it('a garbage env value falls back to the default rather than producing NaN windows', () => {
@@ -717,6 +733,43 @@ describe('hook: watch', () => {
     expect(res.exitCode).toBe(2)
     expect(res.stdout).toBe('') // stdout stays clean; stderr carries the payload
     expect(res.stderr).toMatch(/pending/)
+  })
+
+  it('#580: an answer that lands after the fast half still wakes it, on the slow poll', async () => {
+    const { env, dbPath } = freshEnv({ ...fast, AGENT_INBOX_WATCH_SLOW_AFTER_SECS: '0.1', AGENT_INBOX_WATCH_SLOW_POLL_MS: '150' })
+    const db = openDb(dbPath)
+    const id = insertItem(db, { project: PROJECT, stream: 'main', agent: 'claude-code', kind: 'question', title: 'later?' })
+    const started = Date.now()
+    const running = runHook(['watch'], ev(), env)
+    setTimeout(() => replyItem(openDb(dbPath), id, 'much later'), 600)
+    const res = await running
+    expect(res).toMatchObject({ stdout: '', exitCode: 2, stderr: expect.stringMatching(/pending/) })
+    expect(Date.now() - started).toBeGreaterThanOrEqual(600)
+    db.close()
+  })
+
+  it('#580: refreshes its lease while it waits, and only its own', async () => {
+    const { env, dbPath } = freshEnv({ ...fast, AGENT_INBOX_WATCH_REFRESH_MS: '50' })
+    const db = openDb(dbPath)
+    const id = insertItem(db, { project: PROJECT, stream: 'main', agent: 'claude-code', kind: 'question', title: 'refresh?' })
+    const claimedAt = (): string[] => (db.prepare(`SELECT claimed_at FROM hook_watch_claims`).all() as Array<{ claimed_at: string }>).map((r) => r.claimed_at)
+    const running = runHook(['watch'], ev(), env)
+    await sleep(150)
+    const first = claimedAt()
+    expect(first).toHaveLength(1)
+    await sleep(300)
+    const later = claimedAt()
+    expect(later).toHaveLength(1)
+    expect(Date.parse(later[0]!)).toBeGreaterThan(Date.parse(first[0]!))
+    replyItem(db, id, 'done')
+    expect((await running).exitCode).toBe(2)
+    // a token that does not hold the key changes nothing
+    claimHookWatch(db, 'host:1', 'mine')
+    const before = claimedAt()
+    expect(refreshHookWatch(db, 'host:1', 'not-mine')).toBe(false)
+    expect(claimedAt()).toEqual(before)
+    expect(refreshHookWatch(db, 'host:1', 'mine')).toBe(true)
+    db.close()
   })
 
   it.each(['annotation', 'handled'] as const)('wakes for a board-only %s response', async (response) => {
@@ -1348,6 +1401,22 @@ describe('hook: real spawn round-trip', () => {
     }
   })
 
+  // #580: an older settings.json still kills the day-long watcher at 1800 s; a
+  // killed watcher gives its lease back, so the Agents view shows no stale wake.
+  it('a watcher stopped by a signal releases its lease and exits 0', async () => {
+    const { env, dbPath } = freshEnv({ AGENT_INBOX_WATCH_SECS: '20', AGENT_INBOX_WATCH_POLL_MS: '50' })
+    question(openDb(dbPath), PROJECT, 'which?')
+    const watcher = spawn(process.execPath, ['--import', TSX_LOADER, join(REPO, 'src', 'hook-cli.ts'), 'watch'], { env: { ...process.env, ...env }, cwd: REPO })
+    const exited = new Promise<number | null>((resolve) => watcher.on('close', resolve))
+    watcher.stdin.end(ev())
+    const deadline = Date.now() + 10_000
+    while (leases(dbPath).length === 0 && Date.now() < deadline) await sleep(50)
+    expect(leases(dbPath)).toHaveLength(1)
+    watcher.kill('SIGTERM')
+    expect(await exited).toBe(0)
+    expect(leases(dbPath)).toEqual([])
+  })
+
   // When Claude Code exits, nothing is left to wake: the watcher stops at its
   // next poll rather than polling out its whole window as an orphan.
   it('the watcher exits once the process that started it is gone', async () => {
@@ -1589,7 +1658,21 @@ describe('hook: installer', () => {
     expect(s.hooks.SessionStart[0].matcher).toBe('startup|resume')
     expect(s.hooks.Stop[0].hooks.map((h: { args: string[] }) => h.args[1])).toEqual(['stop', 'watch'])
     expect(s.hooks.Stop[0].hooks[1].asyncRewake).toBe(true)
+    expect(s.hooks.Stop[0].hooks[1].timeout).toBe(86_400) // #580: a day, like Copilot's watchers
     expect(readdirSync(join(dir, '.claude')).some((f) => f.startsWith('settings.json.bak.'))).toBe(true)
+  })
+
+  it('#580: a reinstall over an earlier set (--force, as any checkout reinstall) rewrites its 30-minute watch to a day, keeping one set', () => {
+    const { dir, entry, file } = home({})
+    expect(installer(['--apply'], dir, entry).code).toBe(0)
+    const s = JSON.parse(readFileSync(file, 'utf8'))
+    s.hooks.Stop[0].hooks[1].timeout = 1800
+    writeFileSync(file, JSON.stringify(s))
+    expect(installer(['--apply'], dir, entry).code).toBe(1) // unchanged: a checkout reinstall always needs --force
+    expect(installer(['--apply', '--force'], dir, entry).code).toBe(0)
+    const again = JSON.parse(readFileSync(file, 'utf8'))
+    expect(again.hooks.Stop).toHaveLength(1)
+    expect(again.hooks.Stop[0].hooks.map((h: { args: string[]; timeout: number }) => [h.args[1], h.timeout])).toEqual([['stop', 10], ['watch', 86_400]])
   })
 
   it('adds the async tool-activity hooks beside another tool\'s PostToolUse, never replacing it (#466)', () => {

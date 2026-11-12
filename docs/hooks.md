@@ -232,7 +232,7 @@ runtime; `src/hook-cli.ts` is the thin entry that owns stdin and the exit code.
 | `UserPromptSubmit` | `prompt-submit` | 10s | clears this session's backstop; stamps a turn started (#466); nudges if an answer is unpicked or a message to this session is open | one JSON object |
 | `Stop` | `stop` | 10s | clears this session's backstop; bounces the agent back to work if an answer is unpicked, or once per new message to this session; a Stop that does not bounce stamps the turn ended (#466) | one JSON object |
 | `PreToolUse`, `PostToolUse` (async) | `activity` | 5s | stamps "a tool ran" on this session's presence row, at most once per 30 s (#466) | *(empty)* |
-| `Stop` (asyncRewake) | `watch` | 1800s | polls until the human answers one of this session's requests or messages it, then stamps a turn started (#466) and exits **2** to wake the model | *(empty; stderr carries the payload)* |
+| `Stop` (asyncRewake) | `watch` | 86400s | polls until the human answers one of this session's requests or messages it, then stamps a turn started (#466) and exits **2** to wake the model | *(empty; stderr carries the payload)* |
 | *(manual/cron)* | `sweep` | — | runs the 24h janitor over orphaned backstop items | *(empty)* |
 | *(installer only)* | `selftest` | — | proves the resolved Node can load `better-sqlite3`. The ONE subcommand allowed to exit non-zero on failure | one line |
 
@@ -438,6 +438,18 @@ already answered: it wakes if one of them was answered since its last poll, and
 otherwise exits 0, silently. A watcher also stops at its next poll once the
 process that started it is gone, since nothing is left to wake.
 
+**How long it waits (#580).** Up to a day, like Copilot's watchers: the hook's
+`timeout` is 86400 s and the watcher's own budget a minute less, so it ends on
+its own first. An answer that comes hours after the turn ended still wakes the
+session. Waiting costs no model tokens: it is one small Node process reading the
+local hub, every 2 s for its first half hour and every 10 s after that. Every 5
+minutes it re-stamps its lease, so the Agents view keeps showing that a message
+will wake the session; a watcher stopped by SIGTERM, SIGHUP or SIGINT gives its
+lease back before it exits. A settings.json written before #580 still says 1800 s,
+so Claude Code stops the watcher after half an hour until the hooks are installed
+again: Setup's update replaces its own set, and from a checkout
+`npm run install:hooks -- --apply --force` does.
+
 The nudge names every project that has responses and the `pending({project:"…"})`
 call that reads each one without changing the session's scope.
 
@@ -549,8 +561,11 @@ cannot stop nagging is exactly what the viewer rebuild was designed against
 | `AGENT_INBOX_HOOK_COOLDOWN_MS` | `600000` | base of the exponential backoff |
 | `AGENT_INBOX_HOOK_MAX_PER_SESSION` | `3` | hard cap on backstop inserts per session |
 | `AGENT_INBOX_HOOK_MAX_AGE_MS` | `86400000` | the janitor's cutoff |
-| `AGENT_INBOX_WATCH_SECS` | `1740` | `watch` budget, just under the 1800s hook timeout |
-| `AGENT_INBOX_WATCH_POLL_MS` | `2000` | `watch` poll interval |
+| `AGENT_INBOX_WATCH_SECS` | `86340` | `watch` budget, a minute under the 86400s hook timeout (#580) |
+| `AGENT_INBOX_WATCH_POLL_MS` | `2000` | `watch` poll interval for its first `AGENT_INBOX_WATCH_SLOW_AFTER_SECS` |
+| `AGENT_INBOX_WATCH_SLOW_AFTER_SECS` | `1800` | when `watch` switches to the slow poll |
+| `AGENT_INBOX_WATCH_SLOW_POLL_MS` | `10000` | `watch` poll interval after that (never faster than `AGENT_INBOX_WATCH_POLL_MS`) |
+| `AGENT_INBOX_WATCH_REFRESH_MS` | `300000` | how often `watch` re-stamps its lease for the Agents view |
 | `AGENT_INBOX_HOOK_ENTRY` | *(set by the CLI)* | absolute path to `dist/hook-cli.js`. The runtime needs it to re-launch itself for the deferred commit; the installer accepts it as an override |
 | `AGENT_INBOX_NODE` | *(unset)* | absolute Node 24 binary the installer and the shell wrapper should use |
 

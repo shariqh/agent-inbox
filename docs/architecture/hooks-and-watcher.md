@@ -143,13 +143,27 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   since #253 claims the same key without waking for messages, so only a marked token may
   ever tell the human a message will wake the session. The nudge adds one clause per
   kind; with no messages it is byte-identical to before. A message that arrives during a
-  `stop_hook_active` continuation, or after the watch window ends, waits for the next
+  `stop_hook_active` continuation, or after the watch window (a day since #580) ends, waits for the next
   prompt or ordinary Stop, as does one sent in the milliseconds between `stop` reading the
   open messages and `watch` reading its baseline (separate processes on the same Stop).
   A Claude Code session launched with the channel flag needs none of that window: the MCP
   server pushes it a notice per message (`mcp-server.md`). The hooks still run beside it,
   so a message can wake such a session twice; the agent's second `pending()` finds it
   acked or already in hand. A Copilot session has the message watcher below.
+- **The Claude answer watcher waits up to a day (issue #580).** `watch`'s hook timeout is
+  86400 s in all three writers (`hooksSettingsBlock()`, `scripts/install-hooks.sh`,
+  `scripts/runtime-config.mjs`, kept identical by `test/hook.test.ts`), and `watchSecs`
+  defaults to 86340, a minute inside it, so the watcher ends on its own before Claude Code's
+  timer (Claude Code 2.1.319's schema has no maximum; an `asyncRewake` timeout becomes a
+  millisecond timer). Its stops are unchanged: the parent process gone, a newer Stop's lease,
+  or, unlinked, nothing left waiting. `watchPollDelay()` polls every `watchPollMs` (2 s) for
+  `watchSlowAfterSecs` (30 min), then every `watchSlowPollMs` (10 s), never faster than the
+  first. Every `watchRefreshMs` (5 min) `refreshHookWatch()` re-stamps the lease's
+  `claimed_at` (only for its own token), which keeps `listActivity`'s 30-minute
+  `WAKE_LEASE_MS` join true while the watcher lives. SIGTERM, SIGHUP and SIGINT release the
+  lease and exit 0, so a settings.json still at 1800 s, whose timer now kills the watcher
+  before its budget ends, leaves no stale "wakes"; only SIGKILL can, for at most
+  `WAKE_LEASE_MS` after the last refresh. Copilot's watchers already wait a day (#217, #477).
 - **The Copilot message watcher (issue #477) is host-owned, per session and
   read-only.** No documented Copilot CLI hook can re-prompt an idle session: `agentStop`
   can only `block` the turn that is ending (eight continuations at most), and a

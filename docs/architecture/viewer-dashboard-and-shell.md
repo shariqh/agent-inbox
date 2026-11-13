@@ -24,6 +24,11 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
 
 ## In brief
 
+- Type and spacing come from the `--fs-*`, `--sp-*` and `--lane-gap` tokens in `:root` (table in
+  `DESIGN.md` Typography); new CSS takes a token, not a literal size. The Dashboard's region
+  headers (`.dashboard-card h2`) are `--fs-lane` at weight 650 and the grid's regions are
+  `--lane-gap` apart; the `operations-desk` container under 900px sets `--fs-lane: 24px` and
+  `--lane-gap: 40px` on `.dashboard-grid`. Pinned in `test/dashboard-tokens.test.ts`.
 - Motion (#302, Dashboard 2.0 proposal §10) is CSS-only: keyframes animate only
   `transform` and `opacity`, transitions take `--motion-*` tokens, at most 12
   infinite animations are on screen (none for activity, which is one-shot per event, #304), and motion never moves focus, scrolls or

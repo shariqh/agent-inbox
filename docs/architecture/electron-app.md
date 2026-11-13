@@ -24,6 +24,11 @@ installers: the update controller publishes `available.installWithheld: 'unowned
 says to quit and reopen Agent Inbox (see `updates.md`). Granting installs after failover would move
 the binding below, so it needs a design pass first.
 
+**Default window size.** The window opens at 1440 x 900, above the Dashboard's 1280px wide
+breakpoint, clamped to the work area of the display the pointer is on (`defaultWindowSize()` in
+`electron/window-size.cjs`, fed by `screen.getDisplayNearestPoint(screen.getCursorScreenPoint())`),
+so it is never larger than that display. The size is not remembered and there is no minimum.
+
 ## History (shipped since v1)
 
 These landed after v1 and still hold invariants; the release history itself is in `CHANGELOG.md`.

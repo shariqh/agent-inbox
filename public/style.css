@@ -537,10 +537,13 @@ body.settings-open #rail, body.settings-open #tabs, body.settings-open .floating
 .nrow:focus-visible { outline: 2px solid var(--app-focus); outline-offset: 1px; }
 .nrow.answered { opacity: .55; }
 .nrow.staged { opacity: .45; }
-.nrow-l1 { display: flex; align-items: center; gap: 8px; min-width: 0; }
+/* #590: above the 620px stack the title and its metadata share one line, but the
+   title keeps 18rem. When both don't fit, the metadata wraps to a line of its own
+   (still right-aligned) instead of squeezing the title to a letter per line. */
+.nrow-l1 { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
 .nrow-primary, .nrow-meta { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.nrow-primary { flex: 1 1 auto; }
-.nrow-meta { flex: 0 0 auto; }
+.nrow-primary { flex: 1 1 18rem; }
+.nrow-meta { flex: 0 1 auto; flex-wrap: wrap; margin-left: auto; }
 .nrow-title { font-weight: 600; font-size: 14px; flex: 1; min-width: 0; white-space: normal; overflow-wrap: anywhere; line-height: 1.4; }
 .nrow-owner, .nrow-change { flex-shrink: 0; font-size: 9.5px; padding: 0 6px; border-radius: 999px; text-transform: uppercase; letter-spacing: .04em; }
 .nrow-owner { background: color-mix(in srgb, var(--app-text) 7%, transparent); opacity: .7; }

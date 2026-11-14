@@ -112,6 +112,25 @@ function contextRepo(entity, link) {
   return (entity && entity.repo) || (link && link.repo) || null
 }
 
+// The repository, and the folder, a bare #N or repo-relative path in an
+// entity's agent-written text is read against (#588). An item keeps its own.
+// A plan row reads against its own issue link first, then its plan's pinned
+// issue, then the plan's repository: a row linked to owner/b#585 says "PR #585"
+// of owner/b, whichever repository its plan lives in. Repo-relative paths
+// (#324) resolve against the plan's folder, so a row read against another
+// repository gets none and its paths stay plain text.
+export function textRepo(entity, identity) {
+  const planRepo = identity && typeof identity.repo === 'string' ? identity.repo : null
+  const planRoot = identity && typeof identity.repo_root === 'string' ? identity.repo_root : null
+  const row = entity && identity && entity !== identity ? entity : null
+  if (!row) return { repo: planRepo, root: planRoot }
+  const own = issueKey(row.issue_repo, row.issue_number) ? row.issue_repo : null
+  const pinned = issueKey(identity.issue_pin_repo, identity.issue_pin_number) ? identity.issue_pin_repo : null
+  const repo = own ?? pinned ?? planRepo
+  const same = repo === planRepo || (repo !== null && planRepo !== null && repo.toLowerCase() === planRepo.toLowerCase())
+  return { repo, root: same ? planRoot : null }
+}
+
 // `#N` beside its own repository, `owner/name#N` anywhere else: a number is
 // never shown without its repository when that differs (§4.1).
 function issueLabel(repo, number, against) {

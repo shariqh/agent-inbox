@@ -9,7 +9,7 @@
 // attention predicate, a badge or a count.
 import { issueKey } from './issue-key.js'
 import { fileLabel, githubRef, webLabel } from './links.js'
-import { issueRef, linkFor, repoFilePath, safeHttpUrl } from './source.js'
+import { issueRef, linkFor, repoFilePath, safeHttpUrl, textRepo } from './source.js'
 import { renderStructuredText } from './structured-text.js'
 
 // The agent-written fields of an item or a plan row, in card order. The
@@ -52,7 +52,7 @@ function refLink(kind, repo, number, url, against, extra = {}) {
 // a plan row, whose own issue link replaces the plan's issue.
 function ownLinks(entity, identity, index) {
   const link = linkFor(index, identity)
-  const against = identity.repo
+  const against = textRepo(entity, identity).repo
   const own = []
   if (link && Number.isSafeInteger(link.pr_number) && link.pr_number > 0) {
     const url = safeHttpUrl(link.pr_url) || safeHttpUrl(`https://github.com/${link.repo}/pull/${link.pr_number}`)
@@ -89,11 +89,12 @@ function stripLink(found, against) {
 // [] when the text links nothing beyond the card's own PR and issue: its
 // origin chips already show those, right above where the strip would be.
 // Repo-relative paths (#324) resolve against the folder the item, or the plan
-// a row belongs to, recorded: `identity.repo_root`.
+// a row belongs to, recorded: `identity.repo_root`. A row's bare #N reads
+// against its own issue link first (textRepo, #588).
 export function cardLinks(entity, identity, index) {
   if (!entity || !identity) return []
-  const against = typeof identity.repo === 'string' ? identity.repo : null
-  const root = typeof identity.repo_root === 'string' ? identity.repo_root : null
+  // the same repository and folder the inline text reads against (#588)
+  const { repo: against, root } = textRepo(entity, identity)
   const found = []
   for (const text of linkSources(entity)) renderStructuredText(text, { repo: against, root, found })
   const byKey = new Map()

@@ -606,3 +606,92 @@ describe('repo-relative paths (issue #324)', () => {
       .toEqual([2, '2', '1', 2])
   })
 })
+
+// Issue #588: a bare #N on a plan row reads against the row's own issue link,
+// so a row linked to another repository links there, inline and in the strip.
+describe('a plan row linked to another repository (issue #588)', () => {
+  const OTHER = 'octo/other'
+  const NOTE = 'Merged as PR #585, then #586; see shariqh/agent-inbox#12 and docs/spec.md'
+
+  async function openRowPanel(d: Database.Database): Promise<HTMLElement> {
+    await bootApp(d)
+    click(document.querySelector('.tab[data-tab="boards"]'))
+    await settle()
+    click(document.querySelector('#boards .board-row'))
+    await settle()
+    return document.querySelector<HTMLElement>('#boards .row-panel')!
+  }
+  const hrefs = (root: ParentNode) => [...root.querySelectorAll<HTMLAnchorElement>('a[data-link-kind="pr"], a[data-link-kind="issue"]')].map((a) => a.href)
+
+  it('links its #N inline and in the strip to the row’s repository, and a written owner/name#N still to its own', async () => {
+    db = freshDb()
+    upsertBoard(db, {
+      ...SCOPE, title: 'Links plan', repoRoot: '/Users/s/Development/agent-inbox',
+      rows: [{ label: 'Land the fix', status: 'tracked', note: NOTE, issue: { repo: OTHER, number: 585 } }],
+    })
+    const panel = await openRowPanel(db)
+    expect(hrefs(panel.querySelector('.card-tldr-body')!)).toEqual([
+      'https://github.com/octo/other/pull/585',
+      'https://github.com/octo/other/issues/586',
+      'https://github.com/shariqh/agent-inbox/issues/12',
+    ])
+    // repo-relative paths belong to the plan's folder, not the other repository's
+    expect(panel.querySelectorAll('[data-link-kind="file"]')).toHaveLength(0)
+    expect(hrefs(stripOf(panel)!)).toEqual([
+      'https://github.com/octo/other/issues/585',
+      'https://github.com/octo/other/issues/586',
+      'https://github.com/shariqh/agent-inbox/issues/12',
+    ])
+    expect(chips(panel)).toEqual(['Issue #585', 'Issue #586', 'Issue shariqh/agent-inbox#12'])
+  })
+
+  it('reads a row with no link of its own against the plan’s repository, folder included', async () => {
+    db = freshDb()
+    upsertBoard(db, {
+      ...SCOPE, title: 'Links plan', repoRoot: '/Users/s/Development/agent-inbox',
+      rows: [{ label: 'Land the fix', status: 'tracked', note: 'PR #585 and docs/spec.md' }],
+    })
+    const panel = await openRowPanel(db)
+    expect(hrefs(panel.querySelector('.card-tldr-body')!)).toEqual(['https://github.com/shariqh/agent-inbox/pull/585'])
+    expect(panel.querySelectorAll('.card-tldr-body [data-link-kind="file"]')).toHaveLength(1)
+  })
+  // The Inbox is where the bug was seen: a blocked row reaches it through the
+  // Needs-you card (title and inline card) and its option details.
+  it('reads a blocked row in the Inbox against the row’s repository, title, card and option detail', async () => {
+    db = freshDb()
+    upsertBoard(db, {
+      ...SCOPE, title: 'Links plan', repoRoot: '/Users/s/Development/agent-inbox',
+      rows: [{
+        label: 'Land the fix', status: 'blocked', issue: { repo: OTHER, number: 585 },
+        note: 'Merged as PR #585', next_step: 'Approve PR #585', action_owner: 'approval', impact: 'Blocks #586',
+        options: [{ label: 'Merge', detail: 'Squash PR #585', recommended: true }, { label: 'Hold', detail: 'Wait on #586' }],
+      }],
+    })
+    await bootApp(db)
+    await showInbox()
+    const entry = document.querySelector<HTMLElement>('#needsYouList .nrow[data-card-id]')!
+    click(entry)
+    await settle()
+    const card = entry.querySelector<HTMLElement>('.nrow-card')!
+    const inline = [...card.querySelectorAll<HTMLAnchorElement>('a[data-link-kind="pr"], a[data-link-kind="issue"]')].map((a) => a.href)
+    expect(inline.length).toBeGreaterThan(0)
+    for (const href of inline) expect(href.startsWith('https://github.com/octo/other/')).toBe(true)
+    // the title, the inline row card (impact) and the option details each link there
+    expect(card.querySelector('.card-title a')?.getAttribute('href')).toBe('https://github.com/octo/other/pull/585')
+    expect([...card.querySelectorAll<HTMLAnchorElement>('a')].map((a) => a.href)).not.toContain('https://github.com/shariqh/agent-inbox/pull/585')
+    expect([...card.querySelectorAll<HTMLAnchorElement>('.opt-detail a')].map((a) => a.href)).toEqual([
+      'https://github.com/octo/other/pull/585',
+      'https://github.com/octo/other/issues/586',
+    ])
+  })
+  // The heading and outcome of the triage card, and the other row call sites,
+  // are not all reachable from one card: pin that none reads a row without it.
+  it('never builds a row’s text context from the plan alone', () => {
+    const app = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../../public/app.js'), 'utf8')
+    const calls = [...app.matchAll(/textContext\(([^()]*(?:\([^()]*\))?[^()]*)\)/g)].map((m) => (m[1] ?? '').trim())
+    expect(calls).not.toContain('b')
+    expect(calls).not.toContain('entry.board')
+    expect(calls.filter((c) => c === 'b, r')).toHaveLength(7)
+    expect(calls).toContain('entry.board, entry.row')
+  })
+})

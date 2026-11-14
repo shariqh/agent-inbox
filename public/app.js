@@ -50,7 +50,7 @@ import { titleWithBadge, focusHashFor, parseFocusHash } from '/badge.js'
 import { layoutMode, railLabel, NARROW_MAX, PROJECT_DISCLOSURE_MAX } from '/layout.js'
 import {
   indexLinks, issueRelationsHtml, linkStripHtml, missionDepsHtml, missionOutsideHtml, planGroupHeadHtml, planWaitsChipHtml, PREVIEW_TTL_MS,
-  previewRef, rowIssueChipsHtml, rowParentHeadHtml, rowWaitsChipHtml, rowWaitsHtml, sourceChipsHtml, sourceBlockHtml,
+  previewRef, rowIssueChipsHtml, rowParentHeadHtml, rowWaitsChipHtml, rowWaitsHtml, sourceChipsHtml, sourceBlockHtml, textRepo,
 } from '/source.js'
 import { buildIssueView, planGroups, rowParentRuns } from '/issues.js'
 import { buildSummary } from '/buildstamp.js'
@@ -4432,7 +4432,7 @@ function rowAnswerEl(b, r, onSaved, { surface = null } = {}) {
       if (option.detail) {
         const detail = document.createElement('div')
         detail.className = 'opt-detail'
-        detail.innerHTML = renderStructuredText(option.detail, textContext(b))
+        detail.innerHTML = renderStructuredText(option.detail, textContext(b, r))
         box.appendChild(detail)
       }
       choices.appendChild(box)
@@ -4569,8 +4569,8 @@ function cardDetailsHtml(entity, identity, key, presentation, { includeAsked = t
     <div class="card-original-title">${esc(presentation.originalTitle)}</div>
     <div class="meta card-meta">${metadata.map(esc).join(' · ')}</div>
     ${identity.title && entity.label !== undefined ? `<div class="meta">Plan · ${esc(identity.title)} <span class="board-id">#${esc(identity.id.slice(0, 6))}</span></div>` : ''}
-    ${entity.next_step && entity.next_step !== presentation.headline ? `<div class="card-recorded-request"><span class="card-tracking-label">Recorded request</span>${renderStructuredText(entity.next_step, textContext(identity))}</div>` : ''}
-    ${entity.context ? `<div class="card-context-body">${renderStructuredText(entity.context, textContext(identity))}</div>` : ''}
+    ${entity.next_step && entity.next_step !== presentation.headline ? `<div class="card-recorded-request"><span class="card-tracking-label">Recorded request</span>${renderStructuredText(entity.next_step, textContext(identity, entity))}</div>` : ''}
+    ${entity.context ? `<div class="card-context-body">${renderStructuredText(entity.context, textContext(identity, entity))}</div>` : ''}
     ${sourceBlockHtml(linkIndex, identity, Date.now(), sourceOptions(entity, identity))}
     ${lifecycleHtml(entity, { includeAsked })}
     ${historyHtml(entity)}
@@ -4620,13 +4620,10 @@ function cardHeadingHtml(presentation, ctx) {
 
 // Issue #300: a bare #N in a card's text resolves against the repository of
 // the item, or of the plan a row belongs to; #324: a repo-relative path,
-// against the folder that item or plan recorded.
-function textContext(identity) {
-  return {
-    repo: typeof identity?.repo === 'string' ? identity.repo : null,
-    root: typeof identity?.repo_root === 'string' ? identity.repo_root : null,
-    copyFiles: fileLinksCopy(),
-  }
+// against the folder that item or plan recorded. #588: a plan row reads its #N
+// against its own issue link first (textRepo, shared with the Links strip).
+function textContext(identity, entity = identity) {
+  return { ...textRepo(entity, identity), copyFiles: fileLinksCopy() }
 }
 
 // Issue #300: the Links strip under the card's origin, listing every link its
@@ -4689,11 +4686,11 @@ function rowPanelEl(b, r, readOnly = false) {
   setHintOwner(wrap, r, b)
   const presentation = actionPresentation(r, { done: readOnly })
   wrap.innerHTML = `
-    ${cardHeadingHtml(presentation, textContext(b))}
+    ${cardHeadingHtml(presentation, textContext(b, r))}
     ${cardOriginHtml(r, b)}
-    ${actionBlocksHtml(presentation, textContext(b))}
+    ${actionBlocksHtml(presentation, textContext(b, r))}
     ${rowHumanStateHtml(r)}
-    ${outcomeHtml(r.outcome, r.outcome_at, textContext(b))}
+    ${outcomeHtml(r.outcome, r.outcome_at, textContext(b, r))}
     ${rowWaitsHtml(r, b, Date.now(), { issues: issueView })}
     ${cardDetailsHtml(r, b, `row:${r.id}`, presentation)}`
   bindContextDisclosures(wrap)
@@ -4712,11 +4709,11 @@ function rowCardEl(b, r, onSaved, { includeAsked = true, header = true } = {}) {
   setHintOwner(wrap, r, b)
   const presentation = actionPresentation(r, { done: b.status === 'archived' })
   wrap.innerHTML = `
-    ${header ? cardHeadingHtml(presentation, textContext(b)) : ''}
+    ${header ? cardHeadingHtml(presentation, textContext(b, r)) : ''}
     ${cardOriginHtml(r, b, { showProject: header })}
-    ${actionBlocksHtml(presentation, textContext(b))}
+    ${actionBlocksHtml(presentation, textContext(b, r))}
     ${rowHumanStateHtml(r)}
-    ${outcomeHtml(r.outcome, r.outcome_at, textContext(b))}
+    ${outcomeHtml(r.outcome, r.outcome_at, textContext(b, r))}
     ${cardDetailsHtml(r, b, `row:${r.id}`, presentation, { includeAsked })}`
   bindContextDisclosures(wrap)
   wrap.appendChild(rowAnswerEl(b, r, onSaved))
@@ -7571,7 +7568,7 @@ function rowCardBodyEl(entry, m, nowMs) {
   title.className = `card-title${m.headlineField === 'next-step' ? ' card-next-body' : ''}`
   title.setAttribute('role', 'heading')
   title.setAttribute('aria-level', '2')
-  title.innerHTML = renderStructuredText(m.title, textContext(entry.kind === 'row' ? entry.board : entry.item))
+  title.innerHTML = renderStructuredText(m.title, entry.kind === 'row' ? textContext(entry.board, entry.row) : textContext(entry.item))
   const meta = document.createElement('span')
   meta.textContent = [m.project, m.agent].filter(Boolean).join(' · ')
   heading.append(title, meta)

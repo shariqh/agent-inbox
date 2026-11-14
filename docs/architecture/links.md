@@ -64,6 +64,17 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   fails falls back to the default one. Rules, Quick Look and Reveal are file
   requests, so they share the owned-viewer `files` grant, and so do the
   Settings → Links channels (a reused viewer gets `error: 'unowned'`).
+- The repository a card's bare `#N` is read against (#588) is decided in one
+  place, `textRepo(entity, identity)` in `public/source.js`, which `app.js`'s
+  `textContext` and `link-strip.js`'s `cardLinks` both call so the inline links
+  and the Links strip agree. An item reads against its own `repo`. A plan row
+  reads against, in order: its own issue link (`issue_repo` and `issue_number`,
+  valid as `issueKey` judges them), the plan's pinned issue repository
+  (`issue_pin_repo` and `issue_pin_number`, likewise), then the plan's `repo`. A
+  written `owner/name#N` and a full GitHub URL are never re-read. Repo-relative
+  paths resolve against the plan's `repo_root`, so a row read against a
+  different repository (compared case-insensitively) gets no folder and its
+  relative paths stay plain text; absolute and `~/` paths are unaffected.
 - Repo-relative paths (#324) link only in a card whose item or plan recorded
   `repo_root` (additive, nullable columns on `items` and `boards`): the MCP
   server's `git rev-parse --show-toplevel`, read live by `scope.rootFor()` on
@@ -86,7 +97,7 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
 
 - **Links in agent text are found conservatively, drawn by `source.js`, and opened only by
   Electron main (issue #300).** `public/links.js` (pure) finds GitHub references (`#287`,
-  `PR #284`, `owner/name#12`, a bare `#N` only against the card's own `repo`) and local paths
+  `PR #284`, `owner/name#12`, a bare `#N` only against the card's own repository; a plan row's is its issue link's, see #588 above) and local paths
   (`/Users/…`, `~/…`, optional `:line`) in the plain runs between the URLs `structured-text.js`
   finds; `renderStructuredText(value, { repo, found })` threads both. A wrong link is worse than
   none, so ordinals (a single-digit `#N` needs `issue`/`PR`/a closing keyword or parentheses),

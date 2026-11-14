@@ -97,6 +97,8 @@ does not link. Common documents (Markdown, text, JSON, YAML, CSV, PDF, images, H
 their default app; any other file is only shown in its folder. A single-digit `#N` links
 only after `issue`, `PR` or a closing keyword such as `Fixes`, or in parentheses like
 `(#7)`, because on its own it reads as an ordinal.
+A bare `#N` on a plan row is read against the row's issue link, else the plan's pinned issue, else the
+project's repository, so write `owner/name#N` for any other repository.
 **Always provide `context`** — the background a human returning cold needs
 to act without asking you anything: what you were working on, why this came up, relevant
 files/PRs/links. They may read the item hours later with zero memory of the task; it

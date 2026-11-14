@@ -123,6 +123,11 @@ export function linkStripHtml(
    */
   opts?: { key?: string; open?: boolean; actions?: { reveal: string } | null; copyFiles?: boolean },
 ): string
+/** issue #588 — the repository and folder an entity's bare #N and repo-relative paths are read against */
+export function textRepo(
+  entity: (LinkedEntity & { id?: string; label?: string; issue_repo?: string | null; issue_number?: number | null }) | null,
+  identity: (LinkedEntity & { id?: string }) | null,
+): { repo: string | null; root: string | null }
 export function issueRef(entity: LinkedEntity | null, link: CachedLink | null, row?: IssueViewRow | { id: string } | null): IssueRef | null
 export const PREVIEW_TTL_MS: number
 export function previewRef(link: CachedLink | null | undefined, nowMs: number): PreviewRef | null

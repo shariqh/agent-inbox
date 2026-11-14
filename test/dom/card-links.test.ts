@@ -606,3 +606,53 @@ describe('repo-relative paths (issue #324)', () => {
       .toEqual([2, '2', '1', 2])
   })
 })
+
+// Issue #588: a bare #N on a plan row reads against the row's own issue link,
+// so a row linked to another repository links there, inline and in the strip.
+describe('a plan row linked to another repository (issue #588)', () => {
+  const OTHER = 'octo/other'
+  const NOTE = 'Merged as PR #585, then #586; see shariqh/agent-inbox#12 and docs/spec.md'
+
+  async function openRowPanel(d: Database.Database): Promise<HTMLElement> {
+    await bootApp(d)
+    click(document.querySelector('.tab[data-tab="boards"]'))
+    await settle()
+    click(document.querySelector('#boards .board-row'))
+    await settle()
+    return document.querySelector<HTMLElement>('#boards .row-panel')!
+  }
+  const hrefs = (root: ParentNode) => [...root.querySelectorAll<HTMLAnchorElement>('a[data-link-kind="pr"], a[data-link-kind="issue"]')].map((a) => a.href)
+
+  it('links its #N inline and in the strip to the row’s repository, and a written owner/name#N still to its own', async () => {
+    db = freshDb()
+    upsertBoard(db, {
+      ...SCOPE, title: 'Links plan', repoRoot: '/Users/s/Development/agent-inbox',
+      rows: [{ label: 'Land the fix', status: 'tracked', note: NOTE, issue: { repo: OTHER, number: 585 } }],
+    })
+    const panel = await openRowPanel(db)
+    expect(hrefs(panel.querySelector('.card-tldr-body')!)).toEqual([
+      'https://github.com/octo/other/pull/585',
+      'https://github.com/octo/other/issues/586',
+      'https://github.com/shariqh/agent-inbox/issues/12',
+    ])
+    // repo-relative paths belong to the plan's folder, not the other repository's
+    expect(panel.querySelectorAll('[data-link-kind="file"]')).toHaveLength(0)
+    expect(hrefs(stripOf(panel)!)).toEqual([
+      'https://github.com/octo/other/issues/585',
+      'https://github.com/octo/other/issues/586',
+      'https://github.com/shariqh/agent-inbox/issues/12',
+    ])
+    expect(chips(panel)).toEqual(['Issue #585', 'Issue #586', 'Issue shariqh/agent-inbox#12'])
+  })
+
+  it('reads a row with no link of its own against the plan’s repository, folder included', async () => {
+    db = freshDb()
+    upsertBoard(db, {
+      ...SCOPE, title: 'Links plan', repoRoot: '/Users/s/Development/agent-inbox',
+      rows: [{ label: 'Land the fix', status: 'tracked', note: 'PR #585 and docs/spec.md' }],
+    })
+    const panel = await openRowPanel(db)
+    expect(hrefs(panel.querySelector('.card-tldr-body')!)).toEqual(['https://github.com/shariqh/agent-inbox/pull/585'])
+    expect(panel.querySelectorAll('.card-tldr-body [data-link-kind="file"]')).toHaveLength(1)
+  })
+})

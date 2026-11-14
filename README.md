@@ -580,6 +580,10 @@ files written as absolute paths (`/Users/…/spec.md` or `~/notes.md`, optionall
 strip under its title: the item's own PR and issue first, then the rest in the order
 they appear, each once. More than six fold into **+N more**.
 
+A bare `#N` on a plan row is read against the row's own issue link, else the plan's
+pinned issue, else the project's repository, so write `owner/name#N` for any other
+repository.
+
 Paths relative to a repository (`docs/superpowers/specs/spec.md`,
 `public/app.js:7491`) link too, against the folder of the repository the agent's
 session was working in, which Agent Inbox records with each item and plan. They need

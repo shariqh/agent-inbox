@@ -586,7 +586,8 @@ repository.
 
 Paths relative to a repository (`docs/superpowers/specs/spec.md`,
 `public/app.js:7491`) link too, against the folder of the repository the agent's
-session was working in, which Agent Inbox records with each item and plan. They need
+session was working in, which Agent Inbox records with each item and plan; a plan row
+whose `#N` reads against another repository leaves them as text. They need
 a folder and a file name with an extension or a `:line`. A file that folder doesn't
 have, such as a doc that only exists on a pull request's branch or in another
 worktree, is not opened: clicking it shows its nearest folder inside the repository

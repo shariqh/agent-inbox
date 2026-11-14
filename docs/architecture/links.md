@@ -97,7 +97,7 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
 
 - **Links in agent text are found conservatively, drawn by `source.js`, and opened only by
   Electron main (issue #300).** `public/links.js` (pure) finds GitHub references (`#287`,
-  `PR #284`, `owner/name#12`, a bare `#N` only against the card's own `repo`) and local paths
+  `PR #284`, `owner/name#12`, a bare `#N` only against the card's own repository; a plan row's is its issue link's, see #588 above) and local paths
   (`/Users/…`, `~/…`, optional `:line`) in the plain runs between the URLs `structured-text.js`
   finds; `renderStructuredText(value, { repo, found })` threads both. A wrong link is worse than
   none, so ordinals (a single-digit `#N` needs `issue`/`PR`/a closing keyword or parentheses),

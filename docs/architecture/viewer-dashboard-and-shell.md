@@ -547,6 +547,9 @@ These landed after v1 and still hold invariants; the release history itself is i
   unmodified keyboard shortcut. The queue itself is an
   inline-size container: filter/tool groups reflow rather than scroll beneath the inspector, and
   below 620px each row gives its title a full primary line before wrapping status metadata.
+  Above 620px the title and its metadata share a line only while the title keeps 18rem; a row
+  whose metadata is wider moves it to a line of its own, right-aligned, rather than squeezing the
+  title to a letter per line (#590).
   `test/editorial-shell.test.ts`, `test/panes.test.ts`, `test/layout.test.ts`,
   `test/dom/search-index.test.ts`, `test/dom/boot.test.ts`, and
   `test/dom/project-disclosure.test.ts` pin the contract; jsdom still

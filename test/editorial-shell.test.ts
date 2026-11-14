@@ -184,6 +184,15 @@ describe('the editorial desk shell', () => {
     expect(compact).not.toMatch(/\.tab-header\s*\{[^}]*overflow-x:\s*auto/s)
   })
 
+  it('wraps a wide row\'s metadata to its own line instead of squeezing the title (#590)', () => {
+    // above the 620px stack: the title keeps 18rem and the metadata may shrink, wrap and drop below it
+    expect(css).toMatch(/\n\.nrow-l1\s*\{[^}]*display:\s*flex;[^}]*flex-wrap:\s*wrap/s)
+    expect(css).toMatch(/\n\.nrow-primary\s*\{\s*flex:\s*1 1 18rem;\s*\}/)
+    expect(css).toMatch(/\n\.nrow-meta\s*\{[^}]*flex:\s*0 1 auto;[^}]*flex-wrap:\s*wrap;[^}]*margin-left:\s*auto/s)
+    // the old rule kept the metadata at full width whatever the title had left
+    expect(css).not.toMatch(/\n\.nrow-meta\s*\{\s*flex:\s*0 0 auto;/)
+  })
+
   it('gives compact queue titles their own row before wrapping metadata', () => {
     expect(css).toMatch(/\.nrow-primary,\s*\.nrow-meta\s*\{[^}]*display:\s*flex/s)
     expect(css).toMatch(/@container needs-queue \(max-width:\s*620px\)[\s\S]*\.nrow-l1\s*\{[^}]*display:\s*grid[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)[^}]*\}[\s\S]*\.nrow-meta\s*\{[^}]*flex-wrap:\s*wrap/s)

@@ -44,6 +44,25 @@ Use one compact workhorse UI family:
 This is intentional for an Operate surface. Hierarchy comes from disciplined size,
 weight, spacing, and tabular numerals—not a decorative display face.
 
+#### Type and spacing tokens
+
+`public/style.css` declares one scale in `:root`. The Dashboard uses it first; other views move
+to it as they are reworked. **New CSS uses these tokens, not literal sizes**, and a size that no
+token fits is a reason to change the scale, not to add a literal.
+
+| Token | Value | Use |
+|---|---|---|
+| `--fs-meta` | 12px | meta lines, table headers |
+| `--fs-body` | 13px | body text, table rows |
+| `--fs-lead` | 15px | what a session is doing, plan titles |
+| `--fs-title` | 17px | an ask's title, group heads |
+| `--fs-lane` | 28px (24px when the Dashboard is under 900px wide) | Dashboard region headers, weight 650 |
+| `--sp-1` … `--sp-7` | 4, 8, 12, 16, 20, 28, 56px | gaps and padding |
+| `--lane-gap` | 56px (40px when the Dashboard is under 900px wide) | space between Dashboard regions |
+
+Region headers sit `--sp-5` above their content, and cards in a region are `--sp-3` apart. The
+older `--gap` (16px) stays for the layout it already serves.
+
 ### Geometry and Depth
 
 - Prefer 7px controls and 10px panels; pills are reserved for short state/count

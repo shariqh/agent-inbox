@@ -17,7 +17,7 @@
 //      before and kill that child on quit — only because we own it.
 //   4. Open a BrowserWindow on the viewer URL once the server responds.
 
-const { app, BrowserWindow, dialog, ipcMain, Menu, Notification, nativeTheme, safeStorage, session, shell } = require('electron')
+const { app, BrowserWindow, dialog, ipcMain, Menu, Notification, nativeTheme, safeStorage, screen, session, shell } = require('electron')
 const { execFile, spawn } = require('node:child_process')
 const { randomBytes, randomUUID } = require('node:crypto')
 const { chmodSync, existsSync, mkdirSync, realpathSync, renameSync, statSync, writeFileSync } = require('node:fs')
@@ -49,6 +49,7 @@ const { createUpdatePreferences, createUpdateTrustState } = require('./update-pr
 const { loadUpdateRegistry } = require('./update-trust.cjs')
 const { createConditionalReader } = require('./conditional-read.cjs')
 const { syncSpellcheckLanguages } = require('./spellcheck-languages.cjs')
+const { defaultWindowSize } = require('./window-size.cjs')
 const { quitWhenRestartManagerAsks, setWindowsAppIdentity } = require('./windows-app.cjs')
 const {
   attentionNotification,
@@ -1010,11 +1011,23 @@ function refreshUpdatesAfterLoad() {
   })
 }
 
+// The work area of the display the pointer is on: where the human is looking
+// when they open the app. 1440 x 900, clamped to it (window-size.cjs).
+function initialWindowSize() {
+  try {
+    return defaultWindowSize(screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workAreaSize)
+  } catch (err) {
+    console.error(`[agent-inbox] could not read the display's work area: ${err.message}`)
+    return defaultWindowSize(null)
+  }
+}
+
 function createWindow() {
+  const { width, height } = initialWindowSize()
   const win = new BrowserWindow({
     show: false,
-    width: 1100,
-    height: 850,
+    width,
+    height,
     title: 'Agent Inbox',
     backgroundColor: themeBackgroundColor(),
     webPreferences: {

@@ -72,6 +72,18 @@ describe('the Dashboard region headers and gaps', () => {
     expect(ruleBody('.dashboard-card')).toMatch(/padding:\s*var\(--sp-5\);/)
   })
 
+  it('never shrink a header below its text: the controls beside it wrap instead', () => {
+    // at about 700px, "Agents" ran under the session count beside it (lanes PR 3)
+    const head = ruleBody('.dashboard-card-head')
+    expect(head).toMatch(/display:\s*flex;/)
+    expect(head).toMatch(/flex-wrap:\s*wrap;/)
+    const h2 = ruleBody('.dashboard-card-head > h2')
+    expect(h2).toMatch(/min-width:\s*max-content;/)
+    expect(h2).not.toMatch(/min-width:\s*0;/)
+    // no later rule lets the Agents or Needs you heading shrink again
+    expect(css).not.toMatch(/\.(ah|ny)-head\s*>?\s*h2\s*\{[^}]*(min-width:\s*0|flex-shrink:\s*[1-9]|flex:\s*[0-9.]+\s+[1-9])/)
+  })
+
   it('leave no 14px or 17px literal in the Dashboard card rules', () => {
     for (const selector of ['.dashboard-card', '.dashboard-card-head', '.dashboard-card h2', '.dash-ribbon']) {
       expect(ruleBody(selector), selector).not.toMatch(/\b1[47]px\b/)

@@ -1766,7 +1766,6 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
 /* §3.2: the Needs you lane, one card per ask. A card opens its ask in the
    Inbox's panel and never answers, so it holds no control. */
 .needs-you-lane { margin-top: var(--lane-gap); }
-.ny-head { flex-wrap: wrap; }
 .ny-later { padding: 0; border: 0; background: none; color: var(--app-attention); font: inherit; font-size: var(--fs-meta); font-weight: 650; cursor: pointer; }
 .ny-review { padding: var(--sp-1) var(--sp-3); border: 1px solid var(--app-border); border-radius: 7px; background: var(--app-surface); color: var(--app-text); font: inherit; font-size: var(--fs-meta); font-weight: 650; cursor: pointer; }
 .ny-later[hidden], .ny-empty[hidden], .ny-card [hidden] { display: none; }
@@ -1805,8 +1804,10 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
   border-radius: 10px;
   background: var(--app-surface);
 }
-.dashboard-card-head { display: flex; align-items: center; gap: var(--sp-3); margin-bottom: var(--sp-5); }
-.dashboard-card-head > h2 { min-width: 0; flex: 1; }
+.dashboard-card-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-3); margin-bottom: var(--sp-5); }
+/* never narrower than its text, so it never runs under the controls beside it:
+   they wrap to the next line instead (lanes PR 3 visual check, about 700px) */
+.dashboard-card-head > h2 { min-width: max-content; flex: 1; }
 .dashboard-card h2 { margin: 0; font-size: var(--fs-lane); font-weight: 650; line-height: 1.15; letter-spacing: -.02em; }
 .dashboard-range {
   min-height: 32px;
@@ -2107,7 +2108,7 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
 .agents-home[hidden], .ah-empty[hidden], .ah-none[hidden], .ah-note[hidden], .ah-outside[hidden], .ah-fold[hidden], .ah-new[hidden], .sc-asking[hidden], .sc-where[hidden], .sc-foot[hidden] { display: none; }
 .agents-home.reading .ah-filters, .agents-home.reading .ah-group-by, .agents-home.reading .ah-groups, .agents-home.reading .ah-folds { display: none; }
 .agents-home.ah-is-empty .ah-filters, .agents-home.ah-is-empty .ah-group-by, .agents-home.ah-is-empty .ah-count { display: none; }
-.ah-head { flex-wrap: wrap; gap: 10px; }
+.ah-head { gap: 10px; }
 .ah-head h2 { margin: 0; }
 .ah-count { color: var(--app-text-soft); font-size: 11.5px; }
 .ah-spacer { flex: 1; }

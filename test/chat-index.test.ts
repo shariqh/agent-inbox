@@ -870,7 +870,7 @@ describe('GET /api/chats/copilot/:id (#586 phase 2)', () => {
     for (const n of [1, 2]) expect((await get(app, `/api/chats/copilot/${id(n)}`)).body.chat).toMatchObject({ id: id(n) })
   })
 
-  it('links the newest launch whose chat_id or acp_session is the chat, as /api/launches serves it', async () => {
+  it('links the launch that holds the chat, else the newest, by chat_id or acp_session, as /api/launches serves it', async () => {
     const h = home()
     copilot(h, id(1), yaml(id(1)), { events: true })
     const { app, launch, stamp, end } = rig(h)
@@ -889,8 +889,11 @@ describe('GET /api/chats/copilot/:id (#586 phase 2)', () => {
     launch(3)
     stamp(3, '2026-11-14T10:02:00.000Z', id(1))
     expect(await link()).toMatchObject({ id: LID(3), chat_id: null })
-    // and the older one again when it is the newer
+    // a running launch that holds the chat beats a newer ended one
     stamp(2, '2026-11-14T10:03:00.000Z')
+    expect(await link()).toMatchObject({ id: LID(3), status: 'running' })
+    // with both ended, the newer is the link
+    end(3)
     expect(await link()).toMatchObject({ id: LID(2) })
     // the shape is launchView's: the same object /api/launches/:id serves, less its `driver` field
     const served = await (await app.request(`/api/launches/${LID(2)}`)).json() as Record<string, unknown>
@@ -953,7 +956,7 @@ describe('GET /api/chats/copilot/:id (#586 phase 2)', () => {
     expect(dump()).toBe(before[1])
   })
 
-  it('leaves GET /api/chats byte for byte what it was, for the same folders', async () => {
+  it('calling the route changes nothing GET /api/chats answers for the same folders', async () => {
     const h = home()
     claude(h, 'a', id(1), basicHead, [{ type: 'ai-title', aiTitle: 'Shown' }])
     copilot(h, id(2), yaml(id(2), ['name: Alpha chat']), { events: true })

@@ -499,6 +499,47 @@ describe('the launch that holds a chat (#586 phase 2)', () => {
     // a launch for another chat or session is never the link
     expect(launchForChat(db, '0c4a7000-0000-4000-8000-00000000c002')).toBeNull()
   })
+
+  it('prefers a launch that holds the chat over a newer one that does not; the newest breaks ties', () => {
+    const at = (n: number, createdAt: string) => db.prepare('UPDATE launches SET created_at = ? WHERE id = ?').run(createdAt, ID(n))
+    const asSession = (n: number) => db.prepare('UPDATE launches SET acp_session = ? WHERE id = ?').run(CHAT, ID(n))
+    const end = (n: number, reason: string) => endLaunch(db, ID(n), { reason })
+    const row = () => launchForChat(db, CHAT)
+    // an older running launch holds the chat through its session only; a newer one with the chat_id ended
+    createLaunch(db, launch(1))
+    asSession(1)
+    createLaunch(db, launch(2, { chatId: CHAT, budgetActiveMs: null, budgetToolCalls: null }))
+    end(2, 'error:start')
+    at(1, '2026-11-02T12:00:00.000Z')
+    at(2, '2026-11-02T13:00:00.000Z')
+    expect(row()).toMatchObject({ id: ID(1), status: 'running', chat_id: null })
+    // two ended launches that hold nothing: the newer one
+    end(1, 'error:start')
+    expect(row()).toMatchObject({ id: ID(2), status: 'ended' })
+    at(1, '2026-11-02T14:00:00.000Z')
+    expect(row()).toMatchObject({ id: ID(1) })
+    // a parked launch beats a newer ended one
+    createLaunch(db, launch(3))
+    asSession(3)
+    parkLaunch(db, ID(3), { acpSession: CHAT, activeMs: 0, toolCalls: 0 })
+    at(3, '2026-11-02T12:30:00.000Z')
+    expect(row()).toMatchObject({ id: ID(3), status: 'parked' })
+    // a launch stopped with its session beats a newer ended one without
+    endLaunch(db, ID(3), { reason: 'stopped', acpSession: CHAT })
+    expect(row()).toMatchObject({ id: ID(3), end_reason: 'stopped' })
+    // stopped without a session holds nothing
+    createLaunch(db, launch(4))
+    asSession(4)
+    endLaunch(db, ID(4), { reason: 'stopped' })
+    db.prepare('UPDATE launches SET acp_session = NULL, chat_id = ? WHERE id = ?').run(CHAT, ID(4))
+    at(4, '2026-11-02T15:00:00.000Z')
+    expect(row()).toMatchObject({ id: ID(3) })
+    // two that both hold it: the newer
+    createLaunch(db, launch(5))
+    asSession(5)
+    at(5, '2026-11-02T16:00:00.000Z')
+    expect(row()).toMatchObject({ id: ID(5), status: 'running' })
+  })
 })
 
 describe('Take over in Terminal (step 5, §3.5)', () => {

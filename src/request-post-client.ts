@@ -11,7 +11,8 @@
 // Exit codes are request-post's own (design §3.3), not unslop's: 0 ok, 11 refused,
 // 12 busy, 13 outcome unknown, 14 off, 15 unavailable (DNS, TLS, refused, a redirect, a card
 // mismatch, or this Mac not on the endpoint's tailnet or its tailnet unreadable; nothing
-// sent), 16 conflict, 124 `wait` ran its 4 hours, 4 usage.
+// sent), 16 conflict, 124 `wait` ran its 4 hours, 4 usage. The shim itself exits 18 when it is
+// stale (meshctl.ts shimText; #584): that never reaches this client.
 // The data part reaches stdout only on exit 0.
 import { createHash, randomUUID } from 'node:crypto'
 import { closeSync, constants, fchmodSync, fstatSync, lstatSync, openSync, readFileSync, readSync, writeSync } from 'node:fs'
@@ -36,7 +37,8 @@ export const REQUEST_POST_USAGE = `usage: <mesh dir>/bin/request-post file --bra
        <mesh dir>/bin/request-post wait (--key <k> | --page-id <id>) [--through-go] [--report <f>]
 (the shim runs agent-inbox-meshctl request-post with the same arguments; docs/request-post.md)
 Exit 0 ok (JSON on stdout), 11 refused, 12 busy, 13 outcome unknown, 14 off,
-15 unavailable, 16 conflict, 124 wait ran 4 h, 4 usage. stdout is empty unless 0.
+15 unavailable, 16 conflict, 18 the shim is stale (run meshctl enable --request-post --endpoint <url> --token-file <path> --apply again),
+124 wait ran 4 h, 4 usage. stdout is empty unless 0.
 `
 
 export interface RequestPostIo {

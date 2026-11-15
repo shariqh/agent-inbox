@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
-  cleanCopilotName, cleanPath, cleanTitle, hiddenReasons, isChatId, isTempFolder, lockPid, parseClaudeLiveFile, parseClaudeWindows,
+  BOOT_SLACK_MS, cleanCopilotName, cleanPath, cleanTitle, hiddenReasons, isChatId, isTempFolder, lockHeld, lockPid, parseClaudeLiveFile, parseClaudeWindows,
   parseGitdirPointer, parseGitOrigin, parseWorkspaceYaml, readYamlScalars, retentionDays, sessionFilePid,
 } from '../src/chat-parse.js'
 
@@ -21,6 +21,16 @@ describe('chat-parse (#586)', () => {
     for (const bad of ['inuse.0.lock', 'inuse.1.lock', 'inuse.-5.lock', 'inuse.99999999999.lock', 'inuse.12.lock.bak', 'inuse..lock']) expect(lockPid(bad), bad).toBeNull()
     expect(sessionFilePid('123.json')).toBe(123)
     for (const bad of ['123.abc.key', '1.json', 'x.json', '123.json.bak']) expect(sessionFilePid(bad), bad).toBeNull()
+  })
+
+  it('lockHeld is a lock written since boot (with the slack) whose pid is alive', () => {
+    const boot = 1_000_000
+    const alive = (pid: number) => pid === 7
+    expect(BOOT_SLACK_MS).toBe(5000)
+    expect(lockHeld(7, boot, boot, alive)).toBe(true)
+    expect(lockHeld(7, boot - BOOT_SLACK_MS, boot, alive)).toBe(true)
+    expect(lockHeld(7, boot - BOOT_SLACK_MS - 1, boot, alive)).toBe(false)
+    expect(lockHeld(8, boot + 1, boot, alive)).toBe(false)
   })
 
   it('readYamlScalars reads plain, quoted and block scalars', () => {

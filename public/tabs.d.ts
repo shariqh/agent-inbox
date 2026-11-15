@@ -1,4 +1,4 @@
-export type TabId = 'needsYou' | 'boards' | 'notes' | 'done'
+export type TabId = 'dashboard' | 'needsYou' | 'boards' | 'notes' | 'done' | 'chats' | 'agent'
 
 export const TAB_IDS: TabId[]
 export const DEFAULT_TAB: TabId

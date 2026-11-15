@@ -47,6 +47,11 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   (within 3 s), and a notification click at once only when it deep-links one
   item. Any state render reads that changes outside a paint must join
   `frameInputs()`.
+- The Chats tab (`public/chats-view.js`, #586) repaints only `#chats`, from its
+  own read and controls, as search does: `render()` paints it while it shows, its
+  read settling paints the region directly (keeping a selection and waiting out a
+  press inside it), and it is never in `load()`. Its state joins `frameInputs()`
+  through `chatsView.state()`; see `chats.md`.
 - A text selection is captured before and restored after each rebuild by both
   render entries (`public/selection.js`, #223). It never defers or suspends a
   frame, never focuses or scrolls, and is dropped when its text changed.

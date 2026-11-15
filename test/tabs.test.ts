@@ -19,7 +19,7 @@ describe('tab model', () => {
   it('boots to Dashboard and keeps Live as a footer strip rather than a tab', () => {
     expect(DEFAULT_TAB).toBe('dashboard')
     // `agent` (cards view V5 §3.3): the mesh agent tab, last, shown only while an agent is open
-    expect(TAB_IDS).toEqual(['dashboard', 'needsYou', 'boards', 'notes', 'done', 'agent'])
+    expect(TAB_IDS).toEqual(['dashboard', 'needsYou', 'boards', 'notes', 'done', 'chats', 'agent'])
     expect(TAB_IDS[0]).toBe(DEFAULT_TAB)
   })
 

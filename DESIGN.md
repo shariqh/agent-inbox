@@ -103,7 +103,10 @@ The first viewport contains, top to bottom:
 - the **Working** lane: one card per session with live work, grouped by project;
 - the **Quiet** lane: one table row per idle, quiet or parked session, with the folds at
   its end;
-- local agent-claim history with explicit empty/error states, and recent outcomes.
+- the **Plans in progress** lane: one row per active plan with open steps;
+- **Just landed**: recent outcomes;
+- **Today**: the activity ribbon of local agent-claim history, with explicit empty and
+  error states, last on the page.
 
 A lane chip is a button that scrolls to its lane and moves focus to its first card. It
 never filters, and it shows 0 when its lane is empty. The Needs you count shows only on
@@ -152,9 +155,25 @@ through a forced one while the pointer or keyboard focus is in the lane, so a ca
 under the pointer never moves. A session that starts or stops working changes lane on the
 next paint.
 
-Keyboard: Tab reaches the chips, then each lane in page order. In a lane, J/K and the arrow
-keys move between its cards or rows with one roving tab stop, never into the next lane, and
-Enter opens the card or the session panel. G I still opens the Inbox.
+**Plans in progress** holds every active plan under the Dashboard's lens that has an open
+step (a row neither done nor na), from the plans already loaded. A row shows the plan's
+title (on one line, the whole of it in its tooltip), its project's dot and name with All
+projects, a bar of done out of countable steps with the numbers beside it ("7/15"), the
+rows waiting on you in pink ("2 need you", only above 0), and when the plan last changed,
+with the exact time in its tooltip. The numbers are the ones the Working card's plan bar
+and the Plans tab show. Plans with a row waiting on you come first, then the newest change;
+the order holds while the pointer or keyboard focus is in the lane, as Needs you's does. Six
+show, then one line, "All plans ›" ("All plans · N more ›" when more qualify), which opens
+Plans under the same lens. A row is one link-like control: a click or Enter opens that plan
+in Plans, as every other link to a plan does, and it holds no button and never answers. The
+lane's header carries no count. Empty, it says "No plan in this view has open steps." and
+keeps its place. **Just landed** and the **Today** ribbon follow it as full-width lanes,
+their content unchanged.
+
+Keyboard: Tab reaches the chips, then each lane in page order. In each lane, Plans in
+progress included, J/K and the arrow keys move between its cards or rows with one roving tab
+stop, never into the next lane, and Enter opens the card, the session panel or the plan.
+G I still opens the Inbox.
 
 Every summary is a working entry point into an existing view. Dashboard data never
 enters the attention predicate, badge count, or alert system.
@@ -191,19 +210,23 @@ No portal or duplicate action component is permitted.
 
 - **1280px and wider:** fixed project library, resizable queue/inspector split,
   the lane chips on one row; Working cards three a row at 1440px and two at 1280px;
-  the session panel is a sheet over the lanes.
+  the session panel is a sheet over the lanes. Plans in progress, Just landed and
+  the Today ribbon span the page: a plan row on one line, Just landed four across.
 - **900–1279px:** compact masthead, inline queue detail; the lane chips wrap
   before they shrink; two Working cards a row, and the session panel inline under
   its card or Quiet row.
 - **620–899px:** stacked dashboard regions, one Needs you card and one Working
-  card a row, reflowed metadata, and each Quiet row on two lines with no header.
+  card a row, reflowed metadata, and each Quiet row on two lines with no header;
+  a plan row on two lines, Just landed two across.
 - **Below 620px:** horizontally scrollable navigation preserves every tab and
   count; dashboard is single-column, the Needs you lane's Later and Review
-  queue wrap under its title. The masthead uses three compact rows:
-  identity/settings, tabs, then project and agent selectors side by side.
+  queue wrap under its title; a plan row stacks, Just landed is one across.
+  The masthead uses three compact rows: identity/settings, tabs, then project
+  and agent selectors side by side.
 - **440px and below:** full-viewport action card. Verify at 320px, 375px, and
   430px. Project and agent selectors remain side by side rather than adding a
   fourth masthead row.
+- **Every width:** the Today ribbon is the Dashboard's last lane, at full width.
 
 Responsive design reflows meaning. It never removes ownership, attention, actions,
 outcomes, or global counts.

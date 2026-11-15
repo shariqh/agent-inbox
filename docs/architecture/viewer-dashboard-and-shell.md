@@ -3,6 +3,7 @@ paths:
   - "public/dashboard.js"
   - "public/ribbon.js"
   - "public/lanes.js"
+  - "public/plans-lane.js"
   - "public/motion.js"
   - "public/style.css"
   - "public/layout.js"
@@ -13,7 +14,7 @@ paths:
   - "public/index.html"
   - "public/theme.js"
   - "public/theme-bootstrap.js"
-applyTo: "public/dashboard.js,public/ribbon.js,public/lanes.js,public/motion.js,public/style.css,public/layout.js,public/panes.js,public/tabs.js,public/search.js,public/search-index.js,public/index.html,public/theme.js,public/theme-bootstrap.js"
+applyTo: "public/dashboard.js,public/ribbon.js,public/lanes.js,public/plans-lane.js,public/motion.js,public/style.css,public/layout.js,public/panes.js,public/tabs.js,public/search.js,public/search-index.js,public/index.html,public/theme.js,public/theme-bootstrap.js"
 ---
 
 # Viewer dashboard, Agents home and shell
@@ -42,6 +43,21 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   once. A card never answers: a click or Enter opens the ask in the Inbox's detail panel
   (`jumpToAsk` → `openAskInInbox`), and Esc or the card's close comes back (`dashReturn`).
   Its header holds "Later N ›" (above 0 only) and Review queue, which left the old Agents header.
+- The Plans in progress lane (dashboard lanes PR 6, §3.5; `public/plans-lane.js`) follows Working
+  and Quiet in the grid, then Just landed and the Today ribbon, each a full-width lane
+  (`grid-column: 1 / -1` in one rule), the ribbon last. DOM order is page order, so Tab follows
+  it; `test/dom/plans-lane.test.ts` pins the six regions' order. Its rows are
+  `buildDashboard().plansInProgress`: `plansInProgress(visibleBoards)`, the lens's active plans
+  (closed projects left out) with an open row (`isOpenRow`: neither done nor na). It reads
+  nothing new. The numbers are `planBar`'s, the Working card's: done and countable are the
+  server's `progress`, and "N need you" counts `isBlockedRowAttention` rows, so an answered ask
+  is never pink. Plans with a waiting row come first, then the newest `updated_at`, then the
+  id; while the pointer or keyboard focus is in the lane `pinLaneOrder` holds the order over
+  every qualifying plan before `capPlans` shows six, as Needs you's does. A row is one
+  `role="listitem"` with a roving tab stop and no control: a click or Enter calls `focusItem`
+  (the plan's project as the lens, Plans, the card focused), and "All plans ›" calls
+  `selectTab('boards')`, keeping the lens. It is painted from `renderDashboardAmbient`, so
+  from both render entries; agent text is set with `textContent`, and only when it changed.
 - Motion (#302, Dashboard 2.0 proposal §10) is CSS-only: keyframes animate only
   `transform` and `opacity`, transitions take `--motion-*` tokens, at most 12
   infinite animations are on screen (none for activity, which is one-shot per event, #304), and motion never moves focus, scrolls or
@@ -78,7 +94,7 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   since the dashboard lanes PR 4 (§3.3, §3.4) the **Working and Quiet lanes**, is the
   Dashboard's one home for sessions: `public/agents-home.js` paints both lanes into one
   `.agents-home` wrapper mounted once in the grid (`agentsHome.element()`), after Needs you
-  and before the ribbon and Just landed; the session panel's sheet sits after the wrapper.
+  and before Plans in progress, Just landed and the ribbon; the session panel's sheet sits after the wrapper.
   `laneOf`/`splitLanes` (`sessions.js`) put every main card in exactly one lane: Working when
   its base state is working (`isWorking`, or a running host turn, `isBusy`), Quiet otherwise;
   a card in a fold is in neither. Working groups its cards by project under a head (dot, name,
@@ -481,8 +497,8 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   elements against the 1,500 budget).
 - **Command-center polish reads nothing new (#307, Dashboard 2.0 phase 5, D2).** Three parts (#307's lane quick filters retired with the lanes, #454). (2) **Keyboard help** lists the
   Dashboard's keys as help-only (`legacy`) commands in `public/keys.js`, group "Dashboard":
-  J/K and Enter on a Needs you or session card (`onKey` in `needs-you-lane.js` and
-  `agents-home.js`, only on a card), the panel's 1–4, S, P and R, and Esc for the panel
+  J/K and Enter on a Needs you or session card or a plan row (`onKey` in `needs-you-lane.js`,
+  `agents-home.js` and `plans-lane.js`, only on a card or row), the panel's 1–4, S, P and R, and Esc for the panel
   or an ask opened from the Dashboard. Never make them non-legacy: the global handler would then take
   S and P everywhere. (3) **The session focus panel** (`.dash-focus`, mounted once in the
   Dashboard grid (#454): on a desktop a sheet over the grid's right side; below 1280px static, in flow

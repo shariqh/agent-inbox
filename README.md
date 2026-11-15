@@ -10,8 +10,8 @@ Agent Inbox gives GitHub Copilot CLI and Claude Code one shared place to surface
 decisions, handoffs, notes, milestones, and multi-step plans. You respond in the
 Electron app; agents pick the response up through MCP and continue working.
 The app opens on the Dashboard: a card for each session, with its asks answered
-in its session panel, a Today ribbon of each project's activity, and what just
-landed. You can also send a message to a running session.
+in its session panel, the plans still in progress, what just landed, and a Today
+ribbon of each project's activity. You can also send a message to a running session.
 
 ![Agent Inbox showing a synthetic decision queue, plan row, response options, and live agents](docs/assets/agent-inbox-overview.png)
 
@@ -23,7 +23,7 @@ share one SQLite database on your machine.
 
 | Capability | What you get |
 |---|---|
-| **Dashboard** | A card per session with its asks, its plan's progress and recent activity, a session panel you answer from, and a Today ribbon of asks and outcomes |
+| **Dashboard** | A card per session with its asks, its plan's progress and recent activity, a session panel you answer from, the plans in progress, and a Today ribbon of asks and outcomes |
 | **Cross-project inbox** | Questions and handoffs from every active coding session in one prioritized queue |
 | **Action-aware responses** | Recommended options, free-text answers, snooze, pin for later, clarify, and decline controls |
 | **Durable plans** | Tracking boards with stable rows, progress, next steps, outcomes, and human-owned actions |
@@ -275,11 +275,16 @@ The app opens on the Dashboard (`G D`), for all projects and agents.
   first request in Needs you. Click a card or row to open its session panel: its
   requests, its plan, its recent outcomes, PR and CI state, links, and a place to
   message it.
-- **The Today ribbon** draws one line per project over the last 24 hours, 7 days or
-  30 days: when its agents worked, ◆ where one asked you something and ● where an
-  outcome landed.
+- **Plans in progress** lists up to six plans that still have open steps, in the
+  projects you are looking at: each one's title, its project, a bar of steps done
+  ("7/15"), how many steps need you, in pink, and when it last changed. Plans with a
+  step waiting on you come first. Click a row, or press `Enter`, to open that plan in
+  Plans; **All plans ›** opens Plans.
 - **Just landed** shows the four newest outcomes. An outcome on a pull request that
   is still waiting on you is counted there instead of shown.
+- **The Today ribbon**, last on the page, draws one line per project over the last
+  24 hours, 7 days or 30 days: when its agents worked, ◆ where one asked you
+  something and ● where an outcome landed.
 - After at least 30 minutes away, one line says what happened since you last looked.
 
 In search (`Cmd/Ctrl K`), type `answer `, `open plan ` or `jump to session ` to list

@@ -1,8 +1,9 @@
 # Design: the Dashboard as attention lanes
 
 Status: direction picked by the owner on 2026-11-13 (mockup A, "Attention lanes"). PR 2 (tokens
-and window size), PR 3 (the page head chips and the Needs you lane) and PR 4 (the Working and
-Quiet lanes) are built; §7 says what each remaining PR holds. Mockups were shared with the owner separately and are not committed.
+and window size), PR 3 (the page head chips and the Needs you lane), PR 4 (the Working and
+Quiet lanes) and PR 6 (Plans in progress, and the ribbon last) are built; §7 says what each
+remaining PR holds. Mockups were shared with the owner separately and are not committed.
 
 ## §0 Summary
 
@@ -158,7 +159,15 @@ G I still opens the Inbox.
 - **Plans in progress.** One row per active plan with open rows in the lens: title, a progress
   bar (done of countable), blocked count in pink, and the last update. Up to six, then "All
   plans ›", which opens Plans. It reads `lastData.boards`, already loaded.
-- **Just landed.** Unchanged except for the header and spacing tokens.
+  As built (PR 6): an open row is one neither done nor na. The pink count is the rows waiting
+  on you (`planBar`'s waiting, the attention predicate's rows, so an answered blocked row is
+  not counted), shown only above 0 ("2 need you"); the project's dot and name show with All
+  projects. Plans with a row waiting on you come first, then the newest change; the order
+  holds under the pointer or keyboard focus, as Needs you's does. Past six the line reads "All
+  plans · N more ›", and it opens Plans under the same lens; a row's click or Enter opens its
+  plan in Plans (`focusItem`). Empty, the lane says "No plan in this view has open steps."
+- **Just landed.** Unchanged except for the header and spacing tokens. As built: at full width
+  its items sit four across (two under 900px, one under 620px).
 - **Today.** The activity ribbon, unchanged, last on the page.
 
 ### 3.6 The session panel

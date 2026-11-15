@@ -992,7 +992,8 @@ person's message as its first turn. This part is the store and the driver only. 
   any folder and moves the chat there, so the driver passes exactly that folder. Then, after the slot
   and before `createLaunch`, the lock re-check (`chatHolder`): it lists
   `<COPILOT_HOME, or $HOME/.copilot>/session-state/<chatId>/` from the spec's env and `lstat`s each
-  `inuse.<pid>.lock` (`lockPid`, `src/chat-parse.ts`), never following or reading one, and refuses "This
+  `inuse.<pid>.lock` (`lockPid` and `lockHeld`, `src/chat-parse.ts`, the rule the viewer's one-chat route
+  shares), never following or reading one, and refuses "This
   chat is live in another process." when one has a live pid and was written since boot. Copilot loads a
   chat a terminal holds and takes its own lock only at the first prompt, so this is the guard on the
   driver's side against two Copilots on one chat. One folder cannot apply the index's newest-lock-per-pid

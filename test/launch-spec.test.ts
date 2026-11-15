@@ -87,6 +87,53 @@ describe('the launch spec (§8)', () => {
     expect(parsed.ok ? '' : parsed.error).toMatch(error)
   })
 
+  // #586 phase 2: continue a terminal-made Copilot chat (the chats-resume-driven design, §3.3)
+  describe('the chat kind', () => {
+    const CHAT = '0c4a7000-0000-4000-8000-00000000c001'
+    const chat = (over: Record<string, unknown> = {}) => JSON.stringify({
+      v: 1, kind: 'chat', launchId: ID, host: 'copilot', chatId: CHAT, cwd: '/work/app', mode: 'ask',
+      prompt: 'Carry on with the tests.', env: { PATH: '/usr/bin:/bin', HOME: '/home/someone' }, launchKey: KEY, ...over,
+    })
+
+    it('parses exactly its keys, with the key as bytes and the spec version still 1', () => {
+      expect(parseLaunchSpec(chat(), ID)).toEqual({
+        ok: true,
+        spec: {
+          v: 1, kind: 'chat', launchId: ID, host: 'copilot', chatId: CHAT, cwd: '/work/app', mode: 'ask',
+          prompt: 'Carry on with the tests.', env: { PATH: '/usr/bin:/bin', HOME: '/home/someone' }, launchKey: LAUNCH_KEY,
+        },
+      })
+      expect(parseLaunchSpec(chat({ mode: 'read-only', maxDrivers: 3 }), ID)).toMatchObject({ ok: true, spec: { mode: 'read-only', maxDrivers: 3 } })
+      expect(parseLaunchSpec(chat({ prompt: 'x'.repeat(65_536) }), ID)).toMatchObject({ ok: true })
+    })
+
+    it.each([
+      ['a Plan first mode', chat({ mode: 'plan' }), /mode must be one of ask, read-only/],
+      ['an Edits mode, unasked in the person’s own folder', chat({ mode: 'edits' }), /mode must be one of ask, read-only/],
+      ['an id in capitals', chat({ chatId: CHAT.toUpperCase() }), /chatId must be a lowercase UUID/],
+      ['an id that is a path', chat({ chatId: '../0c4a7000-0000-4000-8000-00000000c001' }), /chatId must be a lowercase UUID/],
+      ['an id that is not text', chat({ chatId: 7 }), /chatId must be a lowercase UUID/],
+      ['no id', JSON.stringify({ ...JSON.parse(chat()), chatId: undefined }), /missing chatId/],
+      ['no message', JSON.stringify({ ...JSON.parse(chat()), prompt: undefined }), /missing prompt/],
+      ['an empty message', chat({ prompt: '  \n ' }), /prompt must hold 1 to 65536 characters/],
+      ['a message over 65,536 characters', chat({ prompt: 'x'.repeat(65_537) }), /prompt must hold 1 to 65536 characters/],
+      ['a relative folder', chat({ cwd: 'work/app' }), /absolute path/],
+      ['another host', chat({ host: 'claude' }), /host must be copilot/],
+      ['a model', chat({ model: 'claude-haiku-4.5' }), /unknown field model/],
+      ['a reasoning effort', chat({ reasoningEffort: 'none' }), /unknown field reasoningEffort/],
+      ['budgets', chat({ budgets: { activeMs: null, toolCalls: null } }), /unknown field budgets/],
+      ['a worktree', chat({ worktree: { path: '/w/app/fix-it-22222222', branch: 'agent-inbox/fix-it-22222222' } }), /unknown field worktree/],
+      ['a raise', chat({ raise: { revision: 1, activeMs: 60_000, toolCalls: 1 } }), /unknown field raise/],
+      ['argv', chat({ args: ['--yolo'] }), /unknown field args/],
+      ['a newer version', chat({ v: 2 }), /version 2 is not 1/],
+      ['a kind no driver knows', chat({ kind: 'remote' }), /kind must be new, resume or chat/],
+    ] as Array<[string, string, RegExp]>)('refuses %s', (_, text, error) => {
+      const parsed = parseLaunchSpec(text, ID)
+      expect(parsed.ok).toBe(false)
+      expect(parsed.ok ? '' : parsed.error).toMatch(error)
+    })
+  })
+
   it('reads fd 3 to its end and refuses more than 1 MiB', () => {
     // a shell pipe on fd 3, as main's is
     const run = (bytes: number) => spawnSync('/bin/sh', ['-c', `head -c ${bytes} /dev/zero | tr '\\0' x | "$0" --import tsx --input-type=module -e "$1" 3<&0`, process.execPath, `

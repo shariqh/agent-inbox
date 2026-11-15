@@ -939,8 +939,8 @@ keeps its session but resumes only with a new allowance, each one an explicit hu
 Design: [`2026-11-14-chats-resume-driven-design.md`](../superpowers/specs/2026-11-14-chats-resume-driven-design.md)
 §3.3 and §3.6; the check it rests on is the spike's "2026-11-15" section. A launch can continue a
 Copilot CLI chat made in a terminal: the driver loads the chat with `session/load` and sends the
-person's message as its first turn. This part is the store and the driver only. Nothing starts one yet
-(main's `continueChat` and the page come later), so the app behaves as before.
+person's message as its first turn. This part is the store and the driver only. Main's `continueChat`
+is part 2 (below); until the page (a later PR) calls it, nothing starts one, so the app behaves as before.
 
 - **The spec.** A third kind, `chat`: exactly `v`, `kind`, `launchId`, `host` (`copilot`), `chatId` (a
   lowercase UUID), `cwd`, `mode` (`ask` or `read-only` only), `prompt` (1 to 65,536 characters), `env`,
@@ -1026,3 +1026,81 @@ person's message as its first turn. This part is the store and the driver only. 
   and a folder other than the resolved one refused), `test/mixed-version.test.ts` (a v2.9.0 table
   migrated while its process writes on; its writes keep `chat_id` and never break the index; its spec
   check refuses the kind).
+
+## Continue a chat (#586 phase 2), part 2: Electron main
+
+Design §3.2 to §3.7. Main's side of Continue here…: `continueChat` (`electron/launch-controller.cjs`),
+the IPC channel and the preload method, Resume's re-check for a chat launch, and Resume in Terminal's
+refusal of a chat driven here. The page that calls it comes later, so nothing in the UI reaches it
+yet.
+
+- **The request** (`chatRequest`): exactly `tool`, `id`, `mode`, `prompt` and an optional `startId`.
+  `tool` must be `copilot`, `id` a lowercase UUID, `mode` `ask` or `read-only`, `prompt` 1 to 65,536
+  characters with something besides blanks, and `startId` the New session start tag (echoed with the
+  phases, never in the spec). Any other key, a folder, a title, argv or an env refuses. The preload's
+  `agentInboxLaunch.continueChat` checks the same shape (it lets `claude` through, so main's own text
+  answers it) and sends main a fresh object of those keys.
+- **The gate.** IPC `launch-continue-chat`, exactly one argument, behind the `launch` grant, so with the
+  switch off the page cannot reach it; `continueChat` then refuses in `blocked()` before anything else,
+  so even a granted window that races a switch-off reads nothing.
+- **What main reads.** `GET /api/chats/copilot/:id` once (`{ chat, launch }`, checked: a chat that is
+  null or this Copilot chat's entry with a string project, a string or null title and a hidden list;
+  a launch that is null or a row). The folder, title and project come only from that answer. Then
+  `GET /api/launches` once, for the `worktree` refusal and the shared-folder warning, and
+  `GET /api/chats?all=1` once, for the live-chat warning. It looks for a `.git` folder or file at the
+  folder and up to 10 levels above it (`insideRepository`, `electron/session-worktree.cjs`, `lstat`
+  only, the index's walk; a `.git` that is a link is not a repository). Main runs no git and does not
+  read Copilot's `permissions-config.json`.
+- **Refusals, in order**, each with `reason`, and nothing confirmed, captured, spawned or written for
+  any of them: blocked (`blocked()`'s texts, no reason); `invalid` ("This chat can’t be continued
+  here.", or "Only Copilot CLI chats can be continued here for now." when only the tool is wrong);
+  `busy` ("This chat is already starting.": an in-memory set of chat ids, emptied on every way out,
+  a throw included); `index` (the route's answer could not be read); `missing`; `driven` (the
+  route's launch is not ended, or ended `stopped` or by a budget with `resumable` not false); `live`
+  (`chat.live` anything but `false`); `kind` (`hidden` holds `empty` or `non-interactive`); `folder`
+  (`folder-gone`, no folder, a relative one, a C0, DEL, C1, U+2028 or U+2029 character in the folder
+  or its real path, or not a directory now: `realDirectory`); `sessions` ("Agent Inbox could not read
+  its sessions.", the launch list unreadable); `worktree` (the recorded or real folder is at or under
+  a launch's `worktree_path` whose `worktree_removed_at` is not set); runtime (`runtimeOrRefusal()`'s
+  text); `index` again when the whole list for the warning cannot be read; cancelled ("Not
+  continued.", `cancelled: true`); environment (`environment()`'s texts, `reason: 'environment'`);
+  `copilot_home`. `temp` is no refusal.
+- **`COPILOT_HOME`.** After the capture, the env's `COPILOT_HOME`, or `$HOME/.copilot` when it is not
+  set, must be absolute and resolve (`realDirectory`) to the same folder as `<home>/.copilot`, where
+  `home` is `app.getPath('home')`, the folder whose `.copilot` the index reads. An empty or relative
+  value, no `HOME`, or a `<home>/.copilot` that is not there refuses.
+- **The confirmation** (`chatConfirmation`, Cancel the default): "Continue this Copilot chat in
+  <project>?", then "Chat: <title, or Untitled> (<first 8 of the id>)", "Folder: <real folder>", the
+  works-in-the-folder line, the three conditional lines (not inside a git repository; another session
+  of this app running in the folder itself, counted as `start` counts `shared`: a running launch whose
+  `cwd` is the folder and that has no `worktree_path`; another chat live in the folder, from the whole
+  list, by its recorded or real folder), the drives-it-from-this-window line, the Mode line (Ask for
+  everything with §3.4's decided copy, "…such as a command you told Copilot not to ask about again in
+  this folder."; Read-only with `MODES['read-only']`'s), the shell-command warning, "Budgets: no limit
+  on active turn time or tool calls.", the premium-requests line, a blank line, and "Message: " with
+  the first 300 characters. Project, title and folder go through `displayLine`, so none can add, hide
+  or reorder a line; the message through `displaySafe`, as New session's task.
+- **The spec** main sends: `{ v: 1, kind: 'chat', launchId, host: 'copilot', chatId, cwd, mode, prompt,
+  env, launchKey, maxDrivers }`, `cwd` the real folder, `env` the capture through `launchEnv`, and the
+  key and cap added by `spawnDriver` as for every start (which checks the gate and the runtime again
+  just before the spawn). It reports the `environment` and `runtime` phases with the page's `startId`.
+- **An older runtime.** A driver from before the `chat` kind writes `{"ok":false,"error":"launch spec:
+  kind must be new or resume"}` and exits 65 without a row; `startDriver` resolves on that line, and
+  main answers "This Agent Inbox runtime is older than the app. Update agents in Setup."
+  (`reason: 'outdated'`). Any other refusal on the status line is passed on as the driver wrote it.
+- **Resume of a chat launch.** `resume(id)` on a launch whose `chat_id` is set re-reads the chat through
+  the route after the status check and refuses `index`, `missing`, or `live` ("This chat is live in
+  another process."), so a chat a terminal took meanwhile is not loaded twice. A `chat_id` that is not
+  a lowercase UUID refuses as "The launch is not valid.". A launch with no `chat_id` reads no chat.
+- **Resume in Terminal** (`electron/chat-resume.cjs`, injected `isEnabled`, main's `launchEnabled`):
+  with the switch on, a Copilot chat is also read through the route after the list's `missing`, and
+  one whose launch holds it is refused (`driven`, "This chat has a session here: use Show session, then
+  Take over."), as is an unreadable answer (`index`) or a chat the route reads live (`live`). With the
+  switch off it reads nothing new and answers as before (`chats.md`, "Resume in Terminal").
+- **Tests**: `test/launch-electron.test.ts` (the spec and the call order; every refusal in order with
+  nothing spawned, `worktree` included; extra keys, paths, argv and env refused before any read; the
+  confirmation's exact lines and hostile titles, projects and folders; `COPILOT_HOME`; the older
+  runtime's status line through the real `startDriver`; two concurrent calls spawning one driver; the
+  repository walk; Resume's re-check; the IPC's arity and grant; the preload; off reading nothing),
+  `test/chat-resume.test.ts` (the switch-on refusal, and phase 1's cases with the switch off giving
+  the same answers, reads and opens).

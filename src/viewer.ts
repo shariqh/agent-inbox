@@ -13,7 +13,7 @@ import {
   markRowHandled, clearRowHandled, listActivity, listActivitySpans, listSourceLinks, defaultDbPath,
   closeProject, reopenProject, closedProjects, readSnapshotState, listIssueEntities, listIssueSnapshots,
   listSessionMessages, sendSessionMessage, withdrawSessionMessage, validMessageId, validMessageText, MESSAGE_MAX_TEXT,
-  listLaunches, getLaunch, launchView, launchDriverAlive, isLaunchAsk, requestLaunchStop, closeLostLaunch, getLaunchAsk, handOffForTerminal, withdrawLaunchHandOff,
+  listLaunches, launchForChat, getLaunch, launchView, launchDriverAlive, isLaunchAsk, requestLaunchStop, closeLostLaunch, getLaunchAsk, handOffForTerminal, withdrawLaunchHandOff,
   forgetLaunch,
   answerLaunchAsk, listLaunchFolders, requestLaunchInterrupt, requestLaunchPark,
 } from './store.js'
@@ -32,6 +32,7 @@ import { AGENT_INBOX_VERSION } from './version.js'
 import type { MeshAgents } from './mesh-agents.js'
 import { chatsResponse, createChatIndex } from './chat-index.js'
 import type { ChatIndex } from './chat-index.js'
+import { isChatId } from './chat-parse.js'
 
 const require = createRequire(import.meta.url)
 const {
@@ -1119,6 +1120,16 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
     if (all !== undefined && all !== '1') return c.json({ ok: false, error: 'expected ?all=1' }, 400)
     c.header('Cache-Control', 'no-store')
     return c.json(chatsResponse(chats.read(), { all: all === '1', claudeDays: chats.claudeDays() }))
+  })
+
+  // #586 phase 2: one Copilot chat and the launch that holds it, read fresh. Main reads it before it continues a
+  // chat. It writes nothing and starts nothing, and nothing calls it yet. The id is a lowercase UUID before it
+  // becomes a path segment under the Copilot home; the index reads only that chat's own folder.
+  app.get('/api/chats/copilot/:id', (c) => {
+    const id = c.req.param('id')
+    if (!isChatId(id)) return c.json({ ok: false, error: 'expected a chat id' }, 400)
+    c.header('Cache-Control', 'no-store')
+    return c.json({ chat: chats.readCopilot(id), launch: launchForChat(db, id) })
   })
 
   // Issue #412 step 3: what Electron main reads and writes for a launch, as it

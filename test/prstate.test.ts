@@ -725,7 +725,9 @@ describe('the poller runs in the viewer process only', () => {
       const reached = specifiers(read(file)).map((spec) => resolveSpec(file, spec))
       expect(reached.filter((target) => CHAT.includes(target) || /chat-/.test(target)), `${file} pulls the chat index into MCP`).toEqual([])
     }
-    expect(specifiers(read('src/viewer.ts')).map((spec) => resolveSpec('src/viewer.ts', spec))).toContain('src/chat-index.ts')
+    // the viewer's route for one Copilot chat checks the id with chat-parse's isChatId before the index builds a path
+    expect(specifiers(read('src/viewer.ts')).map((spec) => resolveSpec('src/viewer.ts', spec))).toEqual(expect.arrayContaining(['src/chat-index.ts', 'src/chat-parse.ts']))
+    expect(read('src/viewer.ts')).toMatch(/import \{ isChatId \} from '\.\/chat-parse\.js'/)
     // the index is lazy: the server start-up reads nothing from either tool's folder
     expect(read('src/viewer-server.ts')).not.toMatch(/chat/i)
   })

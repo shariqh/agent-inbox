@@ -4290,7 +4290,8 @@ const WORKTREE_KEPT = `worktree_path IS NOT NULL AND worktree_removed_at IS NULL
 // #586 phase 2: a chat launch that holds its chat: running, parked, or stopped with its session
 // (RESUMABLE_END without its worktree term, since a chat launch never has one). The unique index
 // idx_launches_chat and listLaunches' chat clause share it.
-const CHAT_HELD = `chat_id IS NOT NULL AND (status <> 'ended' OR (end_reason = 'stopped' AND acp_session IS NOT NULL))`
+const LAUNCH_HOLDS = `(status <> 'ended' OR (end_reason = 'stopped' AND acp_session IS NOT NULL))`
+const CHAT_HELD = `chat_id IS NOT NULL AND ${LAUNCH_HOLDS}`
 
 // The driver's start, after it claimed its slot: one row, status running. In
 // the same transaction, ended launches older than 30 days are removed with
@@ -4339,6 +4340,21 @@ export function listLaunches(db: Database.Database): Launch[] {
       OR (status = 'ended' AND ${CHAT_HELD})
     ORDER BY created_at DESC, id DESC`).all({ limit: RECENT_ENDED_LAUNCHES }) as Array<Omit<LaunchRecord, 'sessions'> & { sessions: string | null }>
   return rows.map((row) => launchView(parseLaunch(row)))
+}
+
+/**
+ * #586 phase 2: the launch that is this Copilot chat, as /api/launches serves it: one whose `chat_id` or ACP session
+ * is the id (a chat that is any launch's session is never continued a second time). A launch that holds the chat
+ * (running, parked, or stopped with its session: CHAT_HELD's status part, with or without a `chat_id`) comes first,
+ * and the newest breaks ties, so an older launch holding the chat through its session beats a newer ended one.
+ * Read-only; null when none.
+ */
+export function launchForChat(db: Database.Database, chatId: string): Launch | null {
+  if (!LAUNCH_ID.test(chatId)) return null
+  const row = db.prepare(`SELECT * FROM launches WHERE chat_id = @id OR acp_session = @id
+      ORDER BY CASE WHEN ${LAUNCH_HOLDS} THEN 0 ELSE 1 END, created_at DESC, id DESC LIMIT 1`)
+    .get({ id: chatId }) as (Omit<LaunchRecord, 'sessions'> & { sessions: string | null }) | undefined
+  return row ? launchView(parseLaunch(row)) : null
 }
 
 // Step 5 (full resume): an ended launch that can be resumed. Only the human's

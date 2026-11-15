@@ -1,11 +1,15 @@
 import { spawnSync } from 'node:child_process'
 import { appendFileSync, chmodSync, mkdirSync, readdirSync, readFileSync, lstatSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
+import { once } from 'node:events'
+import { request } from 'node:http'
+import type { AddressInfo } from 'node:net'
 import { join } from 'node:path'
 import { afterAll, afterEach, describe, expect, it } from 'vitest'
 import { chatsResponse, CHAT_WINDOW_BYTES, createChatIndex, MAX_CHATS } from '../src/chat-index.js'
 import type { ChatEntry, ChatIndexOpts, ChatIndexRead } from '../src/chat-index.js'
-import { openDb } from '../src/store.js'
+import { createLaunch, openDb } from '../src/store.js'
 import { createViewer } from '../src/viewer.js'
+import { startLocalViewer } from '../src/viewer-network.js'
 import { removeScratchDirs, scratchDir } from './scratch.js'
 
 afterEach(removeScratchDirs)
@@ -575,7 +579,7 @@ describe('chat index: project names without spawning git (#586)', () => {
       'node:os: uptime',
       'node:path: dirname,join,resolve',
       './infer.js: inferProject',
-      './chat-parse.js: hiddenReasons,isChatId,lockPid,parseClaudeLiveFile,parseClaudeWindows,parseGitOrigin,parseGitdirPointer,parseWorkspaceYaml,retentionDays,sessionFilePid',
+      './chat-parse.js: BOOT_SLACK_MS,hiddenReasons,isChatId,lockHeld,lockPid,parseClaudeLiveFile,parseClaudeWindows,parseGitOrigin,parseGitdirPointer,parseWorkspaceYaml,retentionDays,sessionFilePid',
       'type ./chat-parse.js: ChatHiddenReason,ChatPr,ChatTool,ClaudeMeta,CopilotMeta',
     ])
     const code = src.split('\n').filter((line) => !/^\s*\/\//.test(line)).join('\n')
@@ -669,5 +673,348 @@ describe('GET /api/chats (#586)', () => {
     mkdirSync(join(h, '.claude'), { recursive: true })
     symlinkSync(join(h, 'dotfiles', 'settings.json'), join(h, '.claude', 'settings.json'))
     expect(open(h).claudeDays()).toBe(7)
+  })
+})
+
+// a UUID with hex letters in capitals: the ids above are all digits, which have no case
+const UPPER = 'ABCDEF01-0000-4000-8000-ABCDEF012345'
+
+describe('chat index: one Copilot chat, read fresh (#586 phase 2)', () => {
+  const alive = (...pids: number[]) => (pid: number) => pids.includes(pid)
+  const FIXED = new Date('2026-11-14T09:45:00.000Z')
+  /** Pin a path's mtime, so an edit that keeps the size also keeps the cache stamp the list read keyed it by. */
+  const pin = (path: string) => utimesSync(path, FIXED, FIXED)
+
+  it('answers the entry the list gives for that chat, hidden ones included', () => {
+    const h = home()
+    copilot(h, id(1), yaml(id(1), ['name: Alpha chat', 'branch: main']), { events: true })
+    copilot(h, id(2), yaml(id(2)), { events: false })
+    copilot(h, id(3), [...yaml(id(3)).filter((l) => !l.startsWith('cwd:')), `cwd: ${GONE}`], { events: true })
+    copilot(h, id(4), yaml(id(4)), { events: true, locks: [5001] })
+    const index = open(h, { isAlive: alive(5001) })
+    const listed = index.read()
+    for (const n of [1, 2, 3, 4]) expect(index.readCopilot(id(n))).toEqual(byId(listed, id(n)))
+    expect(index.readCopilot(id(2))!.hidden).toEqual(['empty'])
+    expect(index.readCopilot(id(3))!.hidden).toEqual(['folder-gone'])
+    expect(index.readCopilot(id(4))!.live).toBe(true)
+  })
+
+  it('reads workspace.yaml and the lock list again, past the cache the list read keeps', () => {
+    const h = home()
+    const dir = copilot(h, id(1), yaml(id(1), ['name: Alpha one']), { events: true })
+    pin(join(dir, 'workspace.yaml'))
+    pin(dir)
+    const index = open(h, { isAlive: alive(5001) })
+    expect(byId(index.read(), id(1))).toMatchObject({ title: 'Alpha one', live: false })
+    // the same size and the same mtime: the list's stamp cannot tell, so it keeps what it read
+    put(join(dir, 'workspace.yaml'), `${yaml(id(1), ['name: Alpha two']).join('\n')}\n`)
+    pin(join(dir, 'workspace.yaml'))
+    put(join(dir, 'inuse.5001.lock'), '')
+    pin(dir)
+    expect(byId(index.read(), id(1))).toMatchObject({ title: 'Alpha one', live: false })
+    expect(index.readCopilot(id(1))).toMatchObject({ title: 'Alpha two', live: true })
+    // and a lock that went away is seen at once
+    rmSync(join(dir, 'inuse.5001.lock'))
+    pin(dir)
+    expect(index.readCopilot(id(1))!.live).toBe(false)
+  })
+
+  it('reads a folder that appeared or vanished since the list read, not the 60-second cache of it', () => {
+    const h = home()
+    const later = join(FIXTURES, 'appears-later')
+    rmSync(later, { recursive: true, force: true })
+    copilot(h, id(1), [...yaml(id(1)).filter((l) => !l.startsWith('cwd:')), `cwd: ${later}`], { events: true })
+    const index = open(h)
+    expect(byId(index.read(), id(1)).hidden).toEqual(['folder-gone'])
+    mkdirSync(join(later, '.git'), { recursive: true })
+    expect(byId(index.read(), id(1)).hidden).toEqual(['folder-gone'])
+    expect(index.readCopilot(id(1))!.hidden).toEqual([])
+    rmSync(later, { recursive: true, force: true })
+  })
+
+  it('finds a chat the list left out: past the scan cap and past the fresh-read budget', () => {
+    const h = home()
+    copilot(h, id(1), yaml(id(1)), { events: true })
+    copilot(h, id(2), yaml(id(2)), { events: true })
+    const capped = open(h, { limits: { copilotDirs: 1 } })
+    const listed = capped.read()
+    expect(listed.truncated).toBe(true)
+    expect(listed.chats).toHaveLength(1)
+    for (const n of [1, 2]) expect(capped.readCopilot(id(n))).toMatchObject({ id: id(n), tool: 'copilot' })
+    const broke = open(h, { limits: { freshBytes: 0 } })
+    expect(broke.read().chats).toEqual([])
+    expect(broke.readCopilot(id(2))).toMatchObject({ id: id(2) })
+  })
+
+  it('says live by the driver\'s one-folder rule: where the list did not, never the reverse', () => {
+    const h = home()
+    const old = copilot(h, id(1), yaml(id(1)), { events: true, locks: [5002] })
+    const fresh = copilot(h, id(2), yaml(id(2)), { events: true, locks: [5002] })
+    utimesSync(join(old, 'inuse.5002.lock'), new Date(Date.now() - 1000), new Date(Date.now() - 1000))
+    utimesSync(join(fresh, 'inuse.5002.lock'), new Date(), new Date())
+    const stale = copilot(h, id(3), yaml(id(3)), { events: true, locks: [5003] })
+    utimesSync(join(stale, 'inuse.5003.lock'), new Date(Date.now() - 2 * HOUR), new Date(Date.now() - 2 * HOUR))
+    copilot(h, id(4), yaml(id(4)), { events: true, locks: [5004] })
+    const index = open(h, { isAlive: alive(5002, 5003) })
+    const listed = index.read()
+    expect([1, 2, 3, 4].map((n) => byId(listed, id(n)).live)).toEqual([false, true, false, false])
+    // chat 1 shares its pid with a newer lock in chat 2: only the one-folder rule calls it live
+    expect([1, 2, 3, 4].map((n) => index.readCopilot(id(n))!.live)).toEqual([true, true, false, false])
+    for (const n of [1, 2, 3, 4]) expect(!byId(listed, id(n)).live || index.readCopilot(id(n))!.live).toBe(true)
+  })
+
+  it('is null for an unknown chat, a bad id, a link, another chat\'s files and an unreadable folder', () => {
+    const h = home()
+    copilot(h, id(1), yaml(id(1)), { events: true })
+    copilot(h, id(2), yaml(id(1)), { events: true })
+    const elsewhere = copilot(h, 'elsewhere', yaml(id(3)), { events: true })
+    symlinkSync(elsewhere, join(h, '.copilot', 'session-state', id(3)))
+    const index = open(h)
+    expect(index.readCopilot(id(9))).toBeNull()
+    // a folder whose workspace.yaml names another id is not this chat
+    expect(index.readCopilot(id(2))).toBeNull()
+    // a link in place of the chat's folder is never followed
+    expect(index.readCopilot(id(3))).toBeNull()
+    for (const bad of ['', '..', '../..', `../${id(1)}`, UPPER, `${id(1)}\n`, `${id(1)}/`, `${id(1)}/../${id(1)}`, 'elsewhere', `pending-session:${id(1)}`]) {
+      expect(index.readCopilot(bad), JSON.stringify(bad)).toBeNull()
+    }
+    expect(index.readCopilot(id(1))).not.toBeNull()
+    expect(open(scratchDir('chat-empty-home-')).readCopilot(id(1))).toBeNull()
+    expect(open(h, { platform: 'win32' }).readCopilot(id(1))).toBeNull()
+  })
+
+  it('touches nothing outside the chat\'s own folder and leaves the last read\'s counters alone', () => {
+    const h = home()
+    copilot(h, id(1), yaml(id(1)), { events: true })
+    // a decoy beside it that a loose path join would reach
+    put(join(h, '.copilot', 'session-state', `${id(1)}x`, 'workspace.yaml'), `${yaml(id(1)).join('\n')}\n`)
+    const index = open(h)
+    const listed = index.read()
+    const work = { ...listed.work }
+    expect(index.readCopilot(id(1))).not.toBeNull()
+    expect(listed.work).toEqual(work)
+    const src = readFileSync(join(import.meta.dirname, '..', 'src', 'chat-index.ts'), 'utf8')
+    const body = src.slice(src.indexOf('    readCopilot(id) {'), src.indexOf('    claudeDays() {'))
+    // the id is checked before the first path is built from it
+    expect(body.indexOf('isChatId(id)')).toBeGreaterThan(-1)
+    expect(body.indexOf('isChatId(id)')).toBeLessThan(body.indexOf('join(copilotRoot, id)'))
+    expect(body).not.toMatch(/writeFile|appendFile|mkdir|rmSync|unlink|rename|spawn|exec/)
+  })
+})
+
+describe('GET /api/chats/copilot/:id (#586 phase 2)', () => {
+  const LID = (n: number) => `22222222-3333-4444-8555-${String(n).padStart(12, '0')}`
+  const alive = (...pids: number[]) => (pid: number) => pids.includes(pid)
+  const rig = (h: string, extra: Partial<ChatIndexOpts> = {}) => {
+    const db = openDb(join(scratchDir('chat-db-'), 'inbox.db'))
+    const app = createViewer(db, { agentHome: h, setupInfoPath: join(h, 'none.json'), chatIndex: open(h, extra) })
+    const launch = (n: number, chatId: string | null = null) => createLaunch(db, {
+      id: LID(n), host: 'copilot', project: 'p', stream: 's', cwd: CWD, mode: 'ask', budgetActiveMs: null, budgetToolCalls: null,
+      prompt: 'secret first message', specVersion: 1, driverPid: 4242, ...(chatId ? { chatId } : {}),
+    })
+    const stamp = (n: number, createdAt: string, acp: string | null = null) =>
+      db.prepare('UPDATE launches SET created_at = ?, acp_session = ? WHERE id = ?').run(createdAt, acp, LID(n))
+    const end = (n: number) => db.prepare(`UPDATE launches SET status = 'ended', end_reason = 'error:start', ended_at = created_at WHERE id = ?`).run(LID(n))
+    return { db, app, launch, stamp, end }
+  }
+  const get = async (app: ReturnType<typeof rig>['app'], path: string) => {
+    const res = await app.request(path)
+    const text = await res.text()
+    const body = (() => { try { return JSON.parse(text) } catch { return null } })() as { chat: ChatEntry | null; launch: Record<string, unknown> | null; ok?: boolean; error?: string }
+    return { res, body, text }
+  }
+
+  it('answers { chat, launch } with the index entry and no cache header to reuse', async () => {
+    const h = home()
+    copilot(h, id(1), yaml(id(1), ['name: Alpha chat', 'branch: main']), { events: true })
+    copilot(h, id(2), yaml(id(2)), { events: false })
+    const { app } = rig(h)
+    const all = await (await app.request('/api/chats?all=1')).json() as ReturnType<typeof chatsResponse>
+    for (const n of [1, 2]) {
+      const { res, body } = await get(app, `/api/chats/copilot/${id(n)}`)
+      expect(res.status).toBe(200)
+      expect(res.headers.get('cache-control')).toBe('no-store')
+      expect(Object.keys(body).sort()).toEqual(['chat', 'launch'])
+      expect(body.chat).toEqual(all.chats.find((c) => c.id === id(n)))
+      expect(body.launch).toBeNull()
+    }
+    // the hidden chat is answered too: the route is how a caller learns why it is hidden
+    expect((await get(app, `/api/chats/copilot/${id(2)}`)).body.chat!.hidden).toEqual(['empty'])
+  })
+
+  it('reads the chat fresh: the route sees a change the cached list has not caught up with', async () => {
+    const h = home()
+    const dir = copilot(h, id(1), yaml(id(1), ['name: Alpha one']), { events: true })
+    const FIXED = new Date('2026-11-14T09:45:00.000Z')
+    utimesSync(join(dir, 'workspace.yaml'), FIXED, FIXED)
+    utimesSync(dir, FIXED, FIXED)
+    const { app } = rig(h, { isAlive: alive(5001) })
+    const list = async () => ((await (await app.request('/api/chats')).json()) as ReturnType<typeof chatsResponse>).chats.find((c) => c.id === id(1))!
+    expect(await list()).toMatchObject({ title: 'Alpha one', live: false })
+    put(join(dir, 'workspace.yaml'), `${yaml(id(1), ['name: Alpha two']).join('\n')}\n`)
+    put(join(dir, 'inuse.5001.lock'), '')
+    utimesSync(join(dir, 'workspace.yaml'), FIXED, FIXED)
+    utimesSync(dir, FIXED, FIXED)
+    expect(await list()).toMatchObject({ title: 'Alpha one', live: false })
+    expect((await get(app, `/api/chats/copilot/${id(1)}`)).body.chat).toMatchObject({ title: 'Alpha two', live: true })
+  })
+
+  it('finds a chat the list leaves out past its cap', async () => {
+    const h = home()
+    copilot(h, id(1), yaml(id(1)), { events: true })
+    copilot(h, id(2), yaml(id(2)), { events: true })
+    const { app } = rig(h, { limits: { copilotDirs: 1 } })
+    const all = await (await app.request('/api/chats?all=1')).json() as ReturnType<typeof chatsResponse>
+    expect(all.chats).toHaveLength(1)
+    expect(all.truncated).toBe(true)
+    for (const n of [1, 2]) expect((await get(app, `/api/chats/copilot/${id(n)}`)).body.chat).toMatchObject({ id: id(n) })
+  })
+
+  it('links the launch that holds the chat, else the newest, by chat_id or acp_session, as /api/launches serves it', async () => {
+    const h = home()
+    copilot(h, id(1), yaml(id(1)), { events: true })
+    const { app, launch, stamp, end } = rig(h)
+    const link = async () => (await get(app, `/api/chats/copilot/${id(1)}`)).body.launch
+    expect(await link()).toBeNull()
+    // an unrelated launch, whose session is another chat's, is never the link
+    launch(1)
+    stamp(1, '2026-11-14T10:00:00.000Z', id(2))
+    expect(await link()).toBeNull()
+    // by chat_id
+    launch(2, id(1))
+    stamp(2, '2026-11-14T10:01:00.000Z')
+    expect(await link()).toMatchObject({ id: LID(2), chat_id: id(1), status: 'running' })
+    end(2)
+    // by acp_session, newer than the chat_id one
+    launch(3)
+    stamp(3, '2026-11-14T10:02:00.000Z', id(1))
+    expect(await link()).toMatchObject({ id: LID(3), chat_id: null })
+    // a running launch that holds the chat beats a newer ended one
+    stamp(2, '2026-11-14T10:03:00.000Z')
+    expect(await link()).toMatchObject({ id: LID(3), status: 'running' })
+    // with both ended, the newer is the link
+    end(3)
+    expect(await link()).toMatchObject({ id: LID(2) })
+    // the shape is launchView's: the same object /api/launches/:id serves, less its `driver` field
+    const served = await (await app.request(`/api/launches/${LID(2)}`)).json() as Record<string, unknown>
+    delete served.driver
+    expect(await link()).toEqual(served)
+    expect(Object.keys((await link())!)).not.toEqual(expect.arrayContaining(['prompt', 'acp_session', 'driver_pid']))
+    expect(JSON.stringify(await link())).not.toContain('secret first message')
+  })
+
+  it('links a launch even when Copilot has no such chat any more', async () => {
+    const h = home()
+    const { app, launch } = rig(h)
+    launch(1, id(5))
+    expect(await get(app, `/api/chats/copilot/${id(5)}`)).toMatchObject({ body: { chat: null, launch: { id: LID(1), chat_id: id(5) } } })
+  })
+
+  it('is a 400 for an id that is not a lowercase UUID and null for an unknown chat', async () => {
+    const h = home()
+    copilot(h, id(1), yaml(id(1)), { events: true })
+    const { app } = rig(h)
+    for (const bad of ['abc', UPPER, `${id(1)}%0a`, `..%2f${id(1)}`, `${id(1)}%2f..%2f${id(1)}`, `${id(1)}.json`, 'x'.repeat(300)]) {
+      const { res, body } = await get(app, `/api/chats/copilot/${bad}`)
+      expect(res.status, bad).toBe(400)
+      expect(body, bad).toEqual({ ok: false, error: 'expected a chat id' })
+    }
+    // a path the URL parser folds away never reaches the route with a chat in it
+    for (const folded of ['/api/chats/copilot/', '/api/chats/copilot/..', `/api/chats/copilot/${id(1)}/..`, `/api/chats/copilot/%2e%2e`]) {
+      const { res, body } = await get(app, folded)
+      expect(res.status === 200 && body?.chat != null, folded).toBe(false)
+    }
+    const unknown = await get(app, `/api/chats/copilot/${id(9)}`)
+    expect(unknown.res.status).toBe(200)
+    expect(unknown.body).toEqual({ chat: null, launch: null })
+  })
+
+  it('is GET only and writes nothing: no file under the home, no row in the store', async () => {
+    const h = home()
+    copilot(h, id(1), yaml(id(1)), { events: true, locks: [5001] })
+    const { app, db, launch } = rig(h)
+    launch(1, id(1))
+    const tree = () => {
+      const out: string[] = []
+      const walk = (dir: string) => {
+        for (const e of readdirSync(dir, { withFileTypes: true })) {
+          const p = join(dir, e.name)
+          if (e.isDirectory()) walk(p)
+          else out.push(`${p}:${lstatSync(p).mtimeMs}:${lstatSync(p).size}`)
+        }
+      }
+      walk(h)
+      return out.sort()
+    }
+    const dump = () => JSON.stringify(db.prepare('SELECT * FROM launches').all())
+    const before = [tree(), dump(), (db.prepare('PRAGMA data_version').get() as { data_version: number }).data_version]
+    for (const path of [`/api/chats/copilot/${id(1)}`, `/api/chats/copilot/${id(9)}`, '/api/chats/copilot/bad']) await app.request(path)
+    expect([tree(), dump(), (db.prepare('PRAGMA data_version').get() as { data_version: number }).data_version]).toEqual(before)
+    for (const method of ['POST', 'PUT', 'PATCH', 'DELETE']) {
+      expect((await app.request(`/api/chats/copilot/${id(1)}`, { method })).status, method).toBe(404)
+    }
+    expect(dump()).toBe(before[1])
+  })
+
+  it('calling the route changes nothing GET /api/chats answers for the same folders', async () => {
+    const h = home()
+    claude(h, 'a', id(1), basicHead, [{ type: 'ai-title', aiTitle: 'Shown' }])
+    copilot(h, id(2), yaml(id(2), ['name: Alpha chat']), { events: true })
+    copilot(h, id(3), yaml(id(3)), { events: false })
+    copilot(h, id(4), yaml(id(4)), { events: true, locks: [5001] })
+    const { app } = rig(h, { isAlive: alive(5001) })
+    const text = async (q: string) => await (await app.request(`/api/chats${q}`)).text()
+    const before = [await text(''), await text('?all=1')]
+    for (const n of [1, 2, 3, 4, 9]) await app.request(`/api/chats/copilot/${n === 9 ? id(9) : id(n)}`)
+    expect([await text(''), await text('?all=1')]).toEqual(before)
+    // the route adds no field to the list's entries, and the list carries no launch
+    const body = JSON.parse(before[1]!) as ReturnType<typeof chatsResponse>
+    expect(Object.keys(body).sort()).toEqual(['chats', 'counts', 'retention', 'truncated'])
+    for (const c of body.chats) expect(Object.keys(c).sort()).toEqual(['branch', 'createdAt', 'cwd', 'hidden', 'id', 'lastActiveAt', 'live', 'pr', 'project', 'title', 'titleAuto', 'tool'])
+  })
+
+  describe('behind the local boundary (Host and Origin)', () => {
+    const send = (port: number, path: string, headers: Record<string, string>, method = 'GET') => new Promise<{ status: number; body: string }>((resolve, reject) => {
+      const req = request({ hostname: '127.0.0.1', port, path, method, headers }, (res) => {
+        let body = ''
+        res.setEncoding('utf8')
+        res.on('data', (chunk) => { body += chunk })
+        res.on('end', () => resolve({ status: res.statusCode ?? 0, body }))
+      })
+      req.on('error', reject)
+      req.end()
+    })
+
+    it('refuses a foreign Host and a hostile or opaque Origin, as /api/chats does, and serves no other method', async () => {
+      const h = home()
+      copilot(h, id(1), yaml(id(1), ['name: Alpha chat']), { events: true })
+      const { app } = rig(h)
+      const server = startLocalViewer(app, 0)
+      if (!server.listening) await once(server, 'listening')
+      const { port } = server.address() as AddressInfo
+      try {
+        const route = `/api/chats/copilot/${id(1)}`
+        for (const path of [route, '/api/chats']) {
+          const ok = await send(port, path, { host: `127.0.0.1:${port}` })
+          expect(ok.status, path).toBe(200)
+          expect((await send(port, path, { host: `localhost:${port}`, origin: `http://localhost:${port}`, 'sec-fetch-site': 'same-origin' })).status, path).toBe(200)
+          for (const headers of <Array<Record<string, string>>>[
+            { host: `inbox.attacker.example:${port}` },
+            { host: `127.0.0.1:${port}`, origin: 'https://attacker.example', 'sec-fetch-site': 'cross-site' },
+            { host: `127.0.0.1:${port}`, origin: 'null', 'sec-fetch-site': 'cross-site' },
+          ]) {
+            const refused = await send(port, path, headers)
+            expect(refused.status, `${path} ${JSON.stringify(headers)}`).toBe(403)
+            expect(refused.body).not.toContain('Alpha chat')
+          }
+        }
+        // a POST with a trusted Origin reaches the app and finds no such route
+        expect((await send(port, route, { host: `127.0.0.1:${port}`, origin: `http://127.0.0.1:${port}` }, 'POST')).status).toBe(404)
+        expect((await send(port, route, { host: `127.0.0.1:${port}` }, 'POST')).status).toBe(403)
+        expect((await send(port, route, { host: `127.0.0.1:${port}`, origin: `http://127.0.0.1:${port}`, 'sec-fetch-site': 'cross-site' }, 'POST')).status).toBe(403)
+      } finally {
+        await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())))
+      }
+    })
   })
 })

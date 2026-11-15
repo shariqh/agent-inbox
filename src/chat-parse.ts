@@ -58,6 +58,15 @@ function pidOf(digits: string | undefined): number | null {
 export function lockPid(name: string): number | null {
   return pidOf(/^inuse\.(\d{1,10})\.lock$/.exec(name)?.[1])
 }
+// A lock or a session file written a moment before the boot time we compute still belongs to this boot.
+export const BOOT_SLACK_MS = 5000
+/**
+ * Whether one `inuse.<pid>.lock` is a holder: written since boot and its pid alive. The index and the driver's
+ * one-folder re-check (`chatHolder`) share this one rule. The index adds its own newest-lock-per-pid rule on top.
+ */
+export function lockHeld(pid: number, mtimeMs: number, bootMs: number, alive: (pid: number) => boolean): boolean {
+  return mtimeMs >= bootMs - BOOT_SLACK_MS && alive(pid)
+}
 /** `<pid>.json` (Claude's `<pid>.<hex>.key` files do not match) */
 export function sessionFilePid(name: string): number | null {
   return pidOf(/^(\d{1,10})\.json$/.exec(name)?.[1])

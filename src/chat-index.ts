@@ -16,7 +16,7 @@ import { uptime } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { inferProject } from './infer.js'
 import {
-  hiddenReasons, isChatId, lockPid, parseClaudeLiveFile, parseClaudeWindows, parseGitdirPointer, parseGitOrigin,
+  BOOT_SLACK_MS, hiddenReasons, isChatId, lockHeld, lockPid, parseClaudeLiveFile, parseClaudeWindows, parseGitdirPointer, parseGitOrigin,
   parseWorkspaceYaml, retentionDays, sessionFilePid,
 } from './chat-parse.js'
 import type { ChatHiddenReason, ChatPr, ChatTool, ClaudeMeta, CopilotMeta } from './chat-parse.js'
@@ -50,6 +50,12 @@ export interface ChatIndexRead {
 
 export interface ChatIndex {
   read(): ChatIndexRead
+  /**
+   * #586 phase 2: one Copilot chat, read fresh (its workspace.yaml and lock list, no cache, no 2,000 cap, no
+   * fresh-read budget), or null when Copilot has no such chat. `live` is the driver's one-folder rule, so it can say
+   * live where read() did not and never the reverse. The id is checked before any path is built.
+   */
+  readCopilot(id: string): ChatEntry | null
   claudeDays(): number
 }
 
@@ -90,8 +96,6 @@ const MAX_SETTINGS_BYTES = 1024 * 1024
 const MAX_SESSION_FILES = 5000
 const ORIGIN_TTL_MS = 60_000
 const MAX_WALK = 10
-// a lock or a session file written a moment before the boot time we compute still belongs to this boot
-const BOOT_SLACK_MS = 5000
 const SLUG_DIR = /^[A-Za-z0-9_-][\w.-]*$/
 const TRANSCRIPT = /^([0-9a-f-]{36})\.jsonl$/
 
@@ -410,6 +414,29 @@ export function createChatIndex(opts: ChatIndexOpts): ChatIndex {
 
   // ── Copilot CLI ───────────────────────────────────────────────────────────
 
+  function copilotRaw(d: CopilotDir, live: boolean): Raw {
+    const { meta } = d
+    const folder = meta.cwd
+    return {
+      entry: {
+        id: d.name,
+        tool: 'copilot',
+        title: meta.title,
+        titleAuto: meta.titleAuto,
+        cwd: folder,
+        branch: meta.branch,
+        createdAt: meta.createdAt,
+        // updated_at lags a resumed chat: events.jsonl is appended to without touching workspace.yaml
+        lastActiveAt: later(meta.updatedAt, d.eventsMs === null ? null : iso(d.eventsMs)),
+        pr: null,
+        hidden: hiddenReasons({ tool: 'copilot', folder, clientName: meta.clientName, hasEvents: d.hasEvents }),
+      },
+      folder: meta.gitRoot ?? folder,
+      slug: meta.repository,
+      live,
+    }
+  }
+
   function scanCopilot(budget: { left: number }, alive: (pid: number) => boolean, boot: number): { raws: Raw[]; truncated: boolean } {
     const raws: Raw[] = []
     let truncated = false
@@ -474,28 +501,26 @@ export function createChatIndex(opts: ChatIndexOpts): ChatIndex {
       }
     }
     for (const d of dirs) {
-      const { meta } = d
-      const folder = meta.cwd
-      raws.push({
-        entry: {
-          id: d.name,
-          tool: 'copilot',
-          title: meta.title,
-          titleAuto: meta.titleAuto,
-          cwd: folder,
-          branch: meta.branch,
-          createdAt: meta.createdAt,
-          // updated_at lags a resumed chat: events.jsonl is appended to without touching workspace.yaml
-          lastActiveAt: later(meta.updatedAt, d.eventsMs === null ? null : iso(d.eventsMs)),
-          pr: null,
-          hidden: hiddenReasons({ tool: 'copilot', folder, clientName: meta.clientName, hasEvents: d.hasEvents }),
-        },
-        folder: meta.gitRoot ?? folder,
-        slug: meta.repository,
-        live: d.locks.some((l) => newest.get(l.pid)?.name === d.name && l.mtimeMs >= boot - BOOT_SLACK_MS && alive(l.pid)),
-      })
+      raws.push(copilotRaw(d, d.locks.some((l) => newest.get(l.pid)?.name === d.name && lockHeld(l.pid, l.mtimeMs, boot, alive))))
     }
     return { raws, truncated }
+  }
+
+  /** One raw chat to its index entry. `info` says whether a folder exists and what its git origin is. */
+  function finish(raw: Raw, info: (folder: string) => { exists: boolean; origin?: string | null }): ChatEntry {
+    const found = raw.folder === null ? null : info(raw.folder)
+    const origin = found === null ? null : originOf(raw.folder!, found)
+    const slug = raw.slugIfGone && found?.exists ? null : raw.slug
+    // the chat's own folder decides `folder-gone`, reusing the stat above when it is the same folder
+    const cwd = raw.entry.cwd
+    const cwdInfo = cwd === null ? null : cwd === raw.folder ? found : info(cwd)
+    return {
+      ...raw.entry,
+      hidden: cwdInfo?.exists ? raw.entry.hidden : [...raw.entry.hidden, 'folder-gone'],
+      // inferProject is always given its origin (a string or null), so it never runs git
+      project: inferProject(raw.folder ?? '', origin ?? slug ?? null),
+      live: raw.live,
+    }
   }
 
   return {
@@ -515,25 +540,57 @@ export function createChatIndex(opts: ChatIndexOpts): ChatIndex {
       const copilot = scanCopilot(budget, alive, boot)
       const byKey = new Map<string, ChatEntry>()
       for (const raw of [...claude.raws, ...copilot.raws]) {
-        const found = raw.folder === null ? null : folderInfo(raw.folder, at)
-        const origin = found === null ? null : originOf(raw.folder!, found)
-        const slug = raw.slugIfGone && found?.exists ? null : raw.slug
-        // the chat's own folder decides `folder-gone`, reusing the stat above when it is the same folder
-        const cwd = raw.entry.cwd
-        const cwdInfo = cwd === null ? null : cwd === raw.folder ? found : folderInfo(cwd, at)
-        const entry: ChatEntry = {
-          ...raw.entry,
-          hidden: cwdInfo?.exists ? raw.entry.hidden : [...raw.entry.hidden, 'folder-gone'],
-          // inferProject is always given its origin (a string or null), so it never runs git
-          project: inferProject(raw.folder ?? '', origin ?? slug ?? null),
-          live: raw.live,
-        }
+        const entry = finish(raw, (folder) => folderInfo(folder, at))
         const key = `${entry.tool}:${entry.id}`
         const prev = byKey.get(key)
         if (!prev || later(prev.lastActiveAt, entry.lastActiveAt) === entry.lastActiveAt) byKey.set(key, entry)
       }
       for (const [folder, o] of origins) if (at - o.at >= ORIGIN_TTL_MS) origins.delete(folder)
       return { chats: [...byKey.values()], truncated: claude.truncated || copilot.truncated, work }
+    },
+
+    readCopilot(id) {
+      // the id becomes a path segment: nothing is built from it unless it is a lowercase UUID
+      if (!isChatId(id) || platform === 'win32' || !isRealRoot(copilotRoot)) return null
+      // a fresh read counts its own work, so the counters of the last read() stay as they were
+      const saved = work
+      work = { filesRead: 0, bytesRead: 0 }
+      try {
+        const dir = join(copilotRoot, id)
+        const yamlPath = join(dir, 'workspace.yaml')
+        let ys
+        try {
+          // the folder first, and never through a link: nothing below is touched unless it is a real folder here
+          if (!lstatSync(dir).isDirectory()) return null
+          ys = lstatSync(yamlPath, { throwIfNoEntry: false })
+        } catch { return null }
+        if (!ys || !ys.isFile() || ys.size > MAX_YAML_BYTES) return null
+        const file = readText(yamlPath, MAX_YAML_BYTES)
+        const meta = file ? parseWorkspaceYaml(file.text) : null
+        // a folder whose workspace.yaml names another id is not this chat
+        if (!meta || meta.id !== id) return null
+        const locks: Array<{ pid: number; mtimeMs: number }> = []
+        for (const f of listDir(dir)) {
+          const pid = lockPid(f.name)
+          if (pid === null || !f.isFile()) continue
+          try { locks.push({ pid, mtimeMs: lstatSync(join(dir, f.name)).mtimeMs }) } catch { /* gone */ }
+        }
+        let es
+        try { es = lstatSync(join(dir, 'events.jsonl'), { throwIfNoEntry: false }) } catch { es = undefined }
+        const hasEvents = es?.isFile() === true
+        const boot = bootTimeMs()
+        const alive = new Map<number, boolean>()
+        const live = locks.some((l) => lockHeld(l.pid, l.mtimeMs, boot, (pid) => {
+          let v = alive.get(pid)
+          if (v === undefined) { v = isAlive(pid); alive.set(pid, v) }
+          return v
+        }))
+        const raw = copilotRaw({ name: id, dir, meta, hasEvents, eventsMs: hasEvents ? es!.mtimeMs : null, locks }, live)
+        // the folder checks are fresh too: nothing goes into, or comes from, the 60-second origin cache
+        return finish(raw, (folder) => ({ exists: folderExists(folder) }))
+      } finally {
+        work = saved
+      }
     },
 
     claudeDays() {

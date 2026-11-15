@@ -45,7 +45,7 @@ import { findNativeHost, linkSessions, readProcesses } from './driver-link.js'
 import { childEnv, copilotAgentInboxServer, copilotArgs, editsFolder, isReasoningEffort, REASONING_EFFORTS, terminalSafe } from './driver-policy.js'
 import type { LaunchMode, ReasoningEffort } from './driver-policy.js'
 import { inferProject, inferStream } from './infer.js'
-import { lockPid } from './chat-parse.js'
+import { lockHeld, lockPid } from './chat-parse.js'
 import {
   claimDriverSlot, createLaunch, defaultDbPath, driverStopRequested, endLaunch, getLaunch, handOffLaunch, holdDriverLeases, listHostSessions, recordLaunchEffort,
   recordWorktreeSummary, liveSessionServers, markWorktreeRemoved, openDb, parkLaunch, restoreStoppedLaunch,
@@ -69,8 +69,6 @@ const LOG_ROTATE_BYTES = 20 * 1024 * 1024
 const EFFORT_FALLBACK_NOTICE = 'This model takes no reasoning effort, so Agent Inbox started it with none.'
 // #586 phase 2: the unique index's refusal of a second launch of one chat, in the person's words
 const CHAT_TAKEN = 'This chat already has a session here.'
-// a lock written a moment before the boot time computed here still belongs to this boot (as the chat index's)
-const BOOT_SLACK_MS = 5000
 
 function fail(message: string, code = 2): never {
   process.stderr.write(`agent-inbox-driver: ${terminalSafe(message)}\n`)
@@ -282,7 +280,7 @@ function chatHolder(env: Record<string, string>, chatId: string): string | null 
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue
       return unreadable
     }
-    if (mtimeMs >= boot - BOOT_SLACK_MS && pidAlive(pid)) return 'This chat is live in another process.'
+    if (lockHeld(pid, mtimeMs, boot, pidAlive)) return 'This chat is live in another process.'
   }
   return null
 }

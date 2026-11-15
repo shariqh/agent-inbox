@@ -348,7 +348,7 @@ contextBridge.exposeInMainWorld('agentInboxLaunch', {
 const CHAT_TOOLS = new Set(['claude', 'copilot'])
 // the index's id rule: a lowercase UUID
 const CHAT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
-const CHAT_RESUME_REASONS = new Set(['unavailable', 'invalid', 'quitting', 'busy', 'index', 'missing', 'live', 'opened', 'folder', 'write', 'open'])
+const CHAT_RESUME_REASONS = new Set(['unavailable', 'invalid', 'quitting', 'busy', 'index', 'missing', 'driven', 'live', 'opened', 'folder', 'write', 'open'])
 const chatNoAnswer = () => ({ ok: false, reason: 'unavailable', error: 'Agent Inbox did not answer.' })
 const chatResumeOff = () => ({ available: false, terminal: 'terminal' })
 

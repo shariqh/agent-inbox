@@ -6,6 +6,12 @@
 // fresh 0700 script that cds there and execs the tool's own resume command, and
 // opens it with openInTerminal. It is the person opening their own terminal, so
 // it needs no driven-sessions switch (#412) and shows no dialog.
+//
+// #586 phase 2 (design §3.5): with the driven-sessions switch on, a Copilot chat is
+// also read through the one-chat route GET /api/chats/copilot/:id, and a chat with a
+// launch of this app that holds it (running, parked, or stopped with its session) is
+// refused, so a terminal never opens a second Copilot on a chat driven here. With the
+// switch off nothing new is read and the results are phase 1's.
 const { randomBytes } = require('node:crypto')
 const fs = require('node:fs')
 const path = require('node:path')
@@ -35,11 +41,27 @@ const ERRORS = Object.freeze({
   live: 'This chat is live in another process.',
   folder: 'Its folder no longer exists.',
   write: 'Agent Inbox could not write the Terminal script.',
+  // #586 phase 2: with the switch on, a chat a launch of this app holds
+  driven: 'This chat has a session here: use Show session, then Take over.',
 })
 
 const refused = (reason, error = ERRORS[reason]) => ({ ok: false, reason, error })
 const isTool = (value) => typeof value === 'string' && CHAT_TOOLS.includes(value)
 const isPlainObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value)
+
+/**
+ * #586 phase 2 (design §3.6, §3.7): whether a launch from the one-chat route holds its chat, so
+ * the chat must not be continued or resumed elsewhere: running or parked (any status but ended),
+ * or ended with its session kept by a Stop or a budget. Null is no launch; anything that is not
+ * a launch row counts as holding, so an answer that cannot be read refuses.
+ */
+function holdsChat(launch) {
+  if (launch === null || launch === undefined) return false
+  if (!isPlainObject(launch)) return true
+  if (launch.status !== 'ended') return true
+  const kept = launch.end_reason === 'stopped' || /^budget:/.test(String(launch.end_reason))
+  return kept && launch.resumable !== false
+}
 
 /** The request's tool and id, read from a plain object and nothing else; null unless both check. */
 function chatResumeRequest(value) {
@@ -128,12 +150,15 @@ function writeChatScript({ dir, name, text, now = Date.now }) {
 
 /**
  * Main's handler. Refusals, in order: unavailable (not macOS), invalid,
- * quitting, busy (one resume at a time), index, missing, live, opened (this
+ * quitting, busy (one resume at a time), index, missing, driven and live from the
+ * one-chat route (#586 phase 2: a Copilot chat with the switch on), live, opened (this
  * chat was opened moments ago), folder, invalid (the script cannot be built),
  * write, open.
  */
 function createChatResume({
   platform, isQuitting, viewer, isDirectory, terminal, scriptDir,
+  // #586 phase 2: the driven-sessions switch, read on each resume; off when not given
+  isEnabled = () => false,
   writeScript = (dir, name, text) => writeChatScript({ dir, name, text, now }),
   now = Date.now,
   random = () => randomBytes(8).toString('hex'),
@@ -160,6 +185,14 @@ function createChatResume({
       if (chat) break
     }
     if (!chat) return refused('missing')
+    // #586 phase 2 (§3.5): only with the switch on, and only for Copilot (the one-chat route's tool)
+    if (tool === 'copilot' && isEnabled() === true) {
+      const found = await Promise.resolve(viewer.getJson(`/api/chats/copilot/${id}`)).catch(() => null)
+      if (!isPlainObject(found) || !('launch' in found)) return refused('index')
+      if (holdsChat(found.launch)) return refused('driven')
+      // the route's one-folder lock rule can say live where the list did not, never the reverse
+      if (isPlainObject(found.chat) && found.chat.live === true) return refused('live')
+    }
     if (chat.live === true) return refused('live')
     const key = `${tool}:${id}`
     const nowMs = now()
@@ -235,6 +268,6 @@ function registerChatResumeIpc({ ipcMain, platform, settled, isOwned, chatResume
 }
 
 module.exports = {
-  CHANNELS, CHAT_ID, CHAT_TOOLS, REOPEN_MS, SCRIPT_KEEP_MS,
-  chatResumeRequest, chatResumeScript, createChatResume, registerChatResumeIpc, scriptName, writeChatScript,
+  CHANNELS, CHAT_ID, CHAT_TOOLS, REOPEN_MS, SCRIPT_KEEP_MS, UNSAFE_PATH,
+  chatResumeRequest, holdsChat, chatResumeScript, createChatResume, registerChatResumeIpc, scriptName, writeChatScript,
 }

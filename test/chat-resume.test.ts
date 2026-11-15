@@ -188,6 +188,9 @@ interface RigOptions {
   platform?: string
   run?: (command: TerminalCommand) => Promise<TerminalRun>
   writeScript?: (dir: string, name: string, text: string) => string | null
+  // #586 phase 2: the driven-sessions switch (left out: the handler's default), and the one-chat route's answer
+  isEnabled?: () => boolean
+  lookup?: unknown
 }
 
 const DIR = '/Users/tester/.agent-inbox/chat-resume'
@@ -196,8 +199,8 @@ function chatEntry(over: Record<string, unknown> = {}) {
   return { id: ID, tool: 'claude', cwd: FOLDER, live: false, hidden: [], ...over }
 }
 
-function rig({ chats = [chatEntry()], folders = [FOLDER], terminal = 'terminal', platform = 'darwin', run, writeScript }: RigOptions = {}) {
-  const state = { quitting: false, clock: 1_000_000, terminal, chats }
+function rig({ chats = [chatEntry()], folders = [FOLDER], terminal = 'terminal', platform = 'darwin', run, writeScript, isEnabled, lookup = null }: RigOptions = {}) {
+  const state = { quitting: false, clock: 1_000_000, terminal, chats, lookup }
   const routes: string[] = []
   const runs: string[][] = []
   const written: Array<[string, string, string]> = []
@@ -212,6 +215,7 @@ function rig({ chats = [chatEntry()], folders = [FOLDER], terminal = 'terminal',
     viewer: {
       getJson: async (route: string) => {
         routes.push(route)
+        if (route.startsWith('/api/chats/copilot/')) return typeof state.lookup === 'function' ? (state.lookup as (route: string) => unknown)(route) : state.lookup
         return typeof state.chats === 'function' ? (state.chats as (route: string) => unknown)(route) : { chats: state.chats }
       },
     },
@@ -221,6 +225,7 @@ function rig({ chats = [chatEntry()], folders = [FOLDER], terminal = 'terminal',
       run: run ?? (async (command) => { runs.push([command.file, ...command.args]); return { ok: true } }),
     },
     scriptDir: DIR,
+    ...(isEnabled ? { isEnabled } : {}),
     writeScript: writeScript ?? ((dir, name, text) => { written.push([dir, name, text]); return join(dir, name) }),
     now: () => state.clock,
     random: () => (n++).toString(16).padStart(16, '0'),
@@ -229,6 +234,25 @@ function rig({ chats = [chatEntry()], folders = [FOLDER], terminal = 'terminal',
 }
 
 const scriptFor = (tool: string, index = 0) => `${DIR}/${tool}-${ID}-${index.toString(16).padStart(16, '0')}.command`
+
+// phase 1's refusals, each opening nothing; the switch-off test below runs them again
+const refusals: Array<[string, RigOptions, unknown, Partial<ChatResumeResult> & { reason: string }]> = [
+  ['an invalid request', {}, { tool: 'claude', id: 'nope' }, { reason: 'invalid', error: 'This chat can’t be resumed.' }],
+  ['a request that is not an object', {}, 'claude', { reason: 'invalid' }],
+  ['another platform', { platform: 'linux' }, { tool: 'claude', id: ID }, { reason: 'unavailable', error: 'Resume in Terminal works only in Agent Inbox’s own window on macOS.' }],
+  ['an unreadable index', { chats: () => null }, { tool: 'claude', id: ID }, { reason: 'index', error: 'Agent Inbox could not read the chat list.' }],
+  ['an index with no list', { chats: () => ({}) }, { tool: 'claude', id: ID }, { reason: 'index' }],
+  ['a chat the index does not list', { chats: [chatEntry({ id: ID2 })] }, { tool: 'claude', id: ID }, { reason: 'missing', error: 'This chat is no longer listed.' }],
+  ['the same id under the other tool', { chats: [chatEntry({ tool: 'copilot' })] }, { tool: 'claude', id: ID }, { reason: 'missing' }],
+  ['a live chat', { chats: [chatEntry({ live: true })] }, { tool: 'claude', id: ID }, { reason: 'live', error: 'This chat is live in another process.' }],
+  ['a live chat whose folder is gone', { chats: [chatEntry({ live: true, cwd: '/gone' })] }, { tool: 'claude', id: ID }, { reason: 'live' }],
+  ['no folder', { chats: [chatEntry({ cwd: null })] }, { tool: 'claude', id: ID }, { reason: 'folder', error: 'Its folder no longer exists.' }],
+  ['a relative folder', { chats: [chatEntry({ cwd: 'dev/alpha' })], folders: ['dev/alpha'] }, { tool: 'claude', id: ID }, { reason: 'folder' }],
+  ['a folder that is not a directory', { folders: [] }, { tool: 'claude', id: ID }, { reason: 'folder' }],
+  ['a folder with a newline', { chats: [chatEntry({ cwd: '/Users/tester/a\nb' })], folders: ['/Users/tester/a\nb'] }, { tool: 'claude', id: ID }, { reason: 'invalid' }],
+  ['a folder with U+2028', { chats: [chatEntry({ cwd: '/Users/tester/a\u2028b' })], folders: ['/Users/tester/a\u2028b'] }, { tool: 'claude', id: ID }, { reason: 'invalid' }],
+  ['a script that cannot be written', { writeScript: () => null }, { tool: 'claude', id: ID }, { reason: 'write', error: 'Agent Inbox could not write the Terminal script.' }],
+]
 
 describe('createChatResume', () => {
   it('opens a script that cds to the index’s folder, in Terminal', async () => {
@@ -311,23 +335,6 @@ describe('createChatResume', () => {
     expect(await r.handler.available()).toEqual({ available: true, terminal: 'terminal' })
   })
 
-  const refusals: Array<[string, RigOptions, unknown, Partial<ChatResumeResult> & { reason: string }]> = [
-    ['an invalid request', {}, { tool: 'claude', id: 'nope' }, { reason: 'invalid', error: 'This chat can’t be resumed.' }],
-    ['a request that is not an object', {}, 'claude', { reason: 'invalid' }],
-    ['another platform', { platform: 'linux' }, { tool: 'claude', id: ID }, { reason: 'unavailable', error: 'Resume in Terminal works only in Agent Inbox’s own window on macOS.' }],
-    ['an unreadable index', { chats: () => null }, { tool: 'claude', id: ID }, { reason: 'index', error: 'Agent Inbox could not read the chat list.' }],
-    ['an index with no list', { chats: () => ({}) }, { tool: 'claude', id: ID }, { reason: 'index' }],
-    ['a chat the index does not list', { chats: [chatEntry({ id: ID2 })] }, { tool: 'claude', id: ID }, { reason: 'missing', error: 'This chat is no longer listed.' }],
-    ['the same id under the other tool', { chats: [chatEntry({ tool: 'copilot' })] }, { tool: 'claude', id: ID }, { reason: 'missing' }],
-    ['a live chat', { chats: [chatEntry({ live: true })] }, { tool: 'claude', id: ID }, { reason: 'live', error: 'This chat is live in another process.' }],
-    ['a live chat whose folder is gone', { chats: [chatEntry({ live: true, cwd: '/gone' })] }, { tool: 'claude', id: ID }, { reason: 'live' }],
-    ['no folder', { chats: [chatEntry({ cwd: null })] }, { tool: 'claude', id: ID }, { reason: 'folder', error: 'Its folder no longer exists.' }],
-    ['a relative folder', { chats: [chatEntry({ cwd: 'dev/alpha' })], folders: ['dev/alpha'] }, { tool: 'claude', id: ID }, { reason: 'folder' }],
-    ['a folder that is not a directory', { folders: [] }, { tool: 'claude', id: ID }, { reason: 'folder' }],
-    ['a folder with a newline', { chats: [chatEntry({ cwd: '/Users/tester/a\nb' })], folders: ['/Users/tester/a\nb'] }, { tool: 'claude', id: ID }, { reason: 'invalid' }],
-    ['a folder with U+2028', { chats: [chatEntry({ cwd: '/Users/tester/a\u2028b' })], folders: ['/Users/tester/a\u2028b'] }, { tool: 'claude', id: ID }, { reason: 'invalid' }],
-    ['a script that cannot be written', { writeScript: () => null }, { tool: 'claude', id: ID }, { reason: 'write', error: 'Agent Inbox could not write the Terminal script.' }],
-  ]
 
   it.each(refusals)('refuses %s and opens nothing', async (_, options, request, expected) => {
     const r = rig(options)
@@ -381,6 +388,84 @@ describe('createChatResume', () => {
   it('is available on macOS only, with the chosen terminal', async () => {
     expect(await rig({ terminal: 'iterm2' }).handler.available()).toEqual({ available: true, terminal: 'iterm2' })
     expect(await rig({ platform: 'linux', terminal: 'iterm2' }).handler.available()).toEqual({ available: false, terminal: 'terminal' })
+  })
+})
+
+// #586 phase 2 (design §3.5): with the driven-sessions switch on, Resume in Terminal never opens a
+// second Copilot on a chat a launch of this app holds; with it off it reads and does what phase 1 did
+describe('Resume in Terminal beside driven sessions (#586 phase 2)', () => {
+  const LOOKUP = `/api/chats/copilot/${ID}`
+  const copilot = () => [chatEntry({ tool: 'copilot' })]
+  const held = 'This chat has a session here: use Show session, then Take over.'
+
+  it.each([
+    ['running', { status: 'running' }],
+    ['parked', { status: 'parked', resumable: true }],
+    ['stopped with its session', { status: 'ended', end_reason: 'stopped', resumable: true }],
+  ])('with the switch on, refuses a chat a launch here holds (%s), and nothing opens or is written', async (_, launch) => {
+    const r = rig({ chats: copilot(), isEnabled: () => true, lookup: { chat: chatEntry({ tool: 'copilot' }), launch: { id: ID2, ...launch } } })
+    expect(await r.handler.resume({ tool: 'copilot', id: ID })).toEqual({ ok: false, reason: 'driven', error: held })
+    expect(r.routes).toEqual(['/api/chats', LOOKUP])
+    expect([r.runs, r.written]).toEqual([[], []])
+  })
+
+  it.each([
+    ['no launch', null],
+    ['a handed-off launch', { status: 'ended', end_reason: 'handed_off', resumable: true }],
+    ['a launch that ended in an error', { status: 'ended', end_reason: 'error:load', resumable: false }],
+    ['a launch stopped before its first message', { status: 'ended', end_reason: 'stopped', resumable: false }],
+  ])('with the switch on, opens a chat with %s', async (_, launch) => {
+    const r = rig({ chats: copilot(), isEnabled: () => true, lookup: { chat: chatEntry({ tool: 'copilot' }), launch } })
+    expect(await r.handler.resume({ tool: 'copilot', id: ID })).toEqual({ ok: true, terminal: 'terminal' })
+    expect(r.routes).toEqual(['/api/chats', LOOKUP])
+    expect(r.runs).toHaveLength(1)
+  })
+
+  it('with the switch on, refuses when the route cannot be read or reads the chat live, and reads nothing new for Claude', async () => {
+    for (const lookup of [null, 'x', { chat: null }, () => { throw new Error('gone') }]) {
+      const r = rig({ chats: copilot(), isEnabled: () => true, lookup })
+      expect(await r.handler.resume({ tool: 'copilot', id: ID })).toEqual({ ok: false, reason: 'index', error: 'Agent Inbox could not read the chat list.' })
+      expect(r.runs).toEqual([])
+    }
+    const live = rig({ chats: copilot(), isEnabled: () => true, lookup: { chat: chatEntry({ tool: 'copilot', live: true }), launch: null } })
+    expect(await live.handler.resume({ tool: 'copilot', id: ID })).toEqual({ ok: false, reason: 'live', error: 'This chat is live in another process.' })
+    expect(live.runs).toEqual([])
+    const claude = rig({ isEnabled: () => true, lookup: { chat: null, launch: { status: 'running' } } })
+    expect(await claude.handler.resume({ tool: 'claude', id: ID })).toEqual({ ok: true, terminal: 'terminal' })
+    expect(claude.routes).toEqual(['/api/chats'])
+  })
+
+  it('reads the switch on every resume', async () => {
+    let on = false
+    const r = rig({ chats: copilot(), isEnabled: () => on, lookup: { chat: chatEntry({ tool: 'copilot' }), launch: { status: 'running' } } })
+    expect(await r.handler.resume({ tool: 'copilot', id: ID })).toMatchObject({ ok: true })
+    on = true
+    r.state.clock += REOPEN_MS
+    expect(await r.handler.resume({ tool: 'copilot', id: ID })).toMatchObject({ ok: false, reason: 'driven' })
+  })
+
+  // phase 1's cases, run with the switch off and a route that would refuse every one of them: the
+  // same answers, the same reads, the same scripts and opens as with no switch at all
+  const cases: Array<[string, Partial<RigOptions>, unknown]> = [
+    ['a Copilot chat', { chats: copilot() }, { tool: 'copilot', id: ID }],
+    ['a Claude chat', {}, { tool: 'claude', id: ID }],
+    ['a hidden chat', { chats: (route: string) => ({ chats: route === '/api/chats' ? [] : copilot() }) }, { tool: 'copilot', id: ID }],
+    ...refusals.map(([name, options, request]) => [name, options, request] as [string, Partial<RigOptions>, unknown]),
+    // and each as a Copilot chat, the only tool the route answers for
+    ...refusals.filter(([, , request]) => (request as { tool?: string })?.tool === 'claude').map(([name, options, request]) => [
+      `${name} (Copilot)`,
+      { ...options, chats: Array.isArray(options.chats) ? options.chats.map((entry) => ({ ...(entry as object), tool: 'copilot' })) : options.chats ?? copilot() },
+      { ...(request as object), tool: 'copilot' },
+    ] as [string, Partial<RigOptions>, unknown]),
+  ]
+  it.each(cases)('with the switch off, %s gets phase 1’s result and no new read', async (_, options, request) => {
+    const before = rig(options as RigOptions)
+    const off = rig({ ...(options as RigOptions), isEnabled: () => false, lookup: () => { throw new Error('read with the switch off') } })
+    const expected = await before.handler.resume(request)
+    expect(await off.handler.resume(request)).toEqual(expected)
+    expect(off.routes).toEqual(before.routes)
+    expect(off.routes.some((route) => route.startsWith('/api/chats/copilot/'))).toBe(false)
+    expect([off.runs, off.written]).toEqual([before.runs, before.written])
   })
 })
 
@@ -472,6 +557,8 @@ describe('main’s wiring (source)', () => {
     expect(made).toContain('return statSync(folder).isDirectory()')
     expect(made).toContain('terminal: { read: () => linkPrefs().readTerminal(), run: runTerminalCommand },')
     expect(made).toContain("scriptDir: path.join(path.dirname(launchHubPath()), 'chat-resume'),")
+    // #586 phase 2: the driven-sessions switch as main holds it, read on each resume
+    expect(made).toContain('isEnabled: () => launchEnabled === true,')
     // one runner, so both callers share its env and its 10 s timeout
     expect(main.match(/execFile\(command\.file, command\.args, \{ env: \{ PATH: '\/usr\/bin:\/bin' \}, timeout: 10_000 \}/g)).toHaveLength(1)
     expect(main).toContain('run: runTerminalCommand,')
@@ -527,6 +614,8 @@ describe('the agentInboxChats bridge', () => {
   const noAnswer = { ok: false, reason: 'unavailable', error: 'Agent Inbox did not answer.' }
   it.each([
     ['a refusal', { ok: false, reason: 'live', error: 'This chat is live in another process.', extra: 1 }, { ok: false, reason: 'live', error: 'This chat is live in another process.' }],
+    // #586 phase 2: a chat driven here, with the switch on
+    ['a driven chat', { ok: false, reason: 'driven', error: 'This chat has a session here: use Show session, then Take over.' }, { ok: false, reason: 'driven', error: 'This chat has a session here: use Show session, then Take over.' }],
     ['a refusal with a long error', { ok: false, reason: 'open', error: 'x'.repeat(900) }, { ok: false, reason: 'open', error: 'x'.repeat(500) }],
     ['a success with the fallback notice', { ok: true, terminal: 'terminal', notice: 'n'.repeat(600), folder: '/x' }, { ok: true, terminal: 'terminal', notice: 'n'.repeat(500) }],
     ['an unknown reason', { ok: false, reason: 'shell', error: 'x' }, noAnswer],

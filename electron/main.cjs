@@ -669,6 +669,7 @@ registerLaunchIpc({
 // #586 PR 3: Resume a chat in Terminal. The page sends { tool, id }; main reads the folder from the
 // index through the viewer, as the launchers reach the hub. The owned viewer on macOS only, and no
 // driven-sessions switch: it opens the person's own terminal on the tool's own resume command.
+// #586 phase 2: with that switch on, it also refuses a Copilot chat a launch of this app holds.
 let chatResume = null
 const chatResumeFor = () => (chatResume ??= createChatResume({
   platform: process.platform,
@@ -683,6 +684,8 @@ const chatResumeFor = () => (chatResume ??= createChatResume({
   },
   terminal: { read: () => linkPrefs().readTerminal(), run: runTerminalCommand },
   scriptDir: path.join(path.dirname(launchHubPath()), 'chat-resume'),
+  // #586 phase 2: with the driven-sessions switch on, a chat driven here is refused
+  isEnabled: () => launchEnabled === true,
 }))
 registerChatResumeIpc({
   ipcMain,

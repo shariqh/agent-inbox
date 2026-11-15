@@ -27,6 +27,7 @@ afterEach(async () => {
   db?.close()
   db = null
   Reflect.deleteProperty(window, 'agentInboxLaunch')
+  Reflect.deleteProperty(window, 'agentInboxLinkSettings')
 })
 
 const LAUNCH = '11111111-2222-4333-8444-555555555555'
@@ -38,7 +39,7 @@ let progress: ((phase: string, launch?: string, startId?: string) => void) | nul
 // the tag of the newest start the page asked main for
 const startTag = (api: { start: { mock: { calls: unknown[][] } } }) => (api.start.mock.calls.at(-1)![0] as { startId: string }).startId
 
-type State = { owned: boolean; enabled: boolean; available: boolean; canEnable: boolean; worktreeRoot?: { path: string; isDefault: boolean }; maxSessions?: number }
+type State = { owned: boolean; enabled: boolean; available: boolean; canEnable: boolean; worktreeRoot?: { path: string; isDefault: boolean }; maxSessions?: number; terminal?: string }
 function launchBridge(state: Partial<State> = {}) {
   const current: State = { owned: true, enabled: true, available: true, canEnable: true, ...state }
   const api = {
@@ -349,6 +350,112 @@ describe('a launch’s card and session panel (§3.6, §7, #454)', () => {
     markWorktreeRemoved(db, OLD)
     await changedPollTick(db)
     expect(anyCard(`launch:${OLD}`)?.closest('[data-ah-fold]')?.getAttribute('data-ah-fold')).toBe('earlier')
+  })
+
+  // #586: the labels stay the generic word; the title and the accessible name say which app opens
+  it('names the chosen terminal in the Terminal buttons’ titles and keeps their labels, on the panel and the card', async () => {
+    const api = launchBridge({ terminal: 'iterm2' })
+    // Settings → Terminal, whose saved choice refreshes the buttons' titles
+    let stored = 'iterm2'
+    Object.defineProperty(window, 'agentInboxLinkSettings', {
+      configurable: true,
+      value: {
+        get: async () => ({ available: false, rules: [] }),
+        getTerminal: async () => ({ available: true, terminal: stored }),
+        setTerminal: async (id: string) => { stored = id; return { available: true, terminal: id } },
+      },
+    })
+    db = freshDb()
+    createLaunch(db, {
+      id: LAUNCH, host: 'copilot', project: 'alpha', stream: 'agent-inbox/fix-1', cwd: '/w/alpha/fix-1', mode: 'ask',
+      budgetActiveMs: 7_200_000, budgetToolCalls: 500, prompt: 'Fix it.', specVersion: 1, driverPid: 4242,
+      worktree: { checkoutRoot: '/work/alpha', branch: 'agent-inbox/fix-1', baseSha: 'a'.repeat(40), baseRef: 'refs/heads/main' },
+    })
+    drivenSession(db)
+    await bootApp(db)
+    await changedPollTick(db)
+    const open = action(LAUNCH, 'open-worktree')
+    expect(open?.textContent).toBe('Open in Terminal')
+    expect(open?.title).toBe('Open iTerm2 in this session’s worktree')
+    expect(open?.getAttribute('aria-label')).toBe('Open in Terminal (iTerm2)')
+    const take = action(LAUNCH, 'take-over')
+    expect(take?.textContent).toBe('Take over in Terminal')
+    expect(take?.title).toBe('Go on with this session in Copilot in iTerm2')
+    expect(take?.getAttribute('aria-label')).toBe('Take over in Terminal (iTerm2)')
+    // the card repeats them once it is parked or handed off
+    handOffLaunch(db, LAUNCH, { acpSession: 'acp-1', activeMs: 10, toolCalls: 1 })
+    await changedPollTick(db)
+    const card = launchRow(LAUNCH)!
+    const resume = card.querySelector<HTMLButtonElement>('[data-ah-action="take-over"]')
+    expect(resume?.textContent).toBe('Resume in Terminal')
+    expect(resume?.title).toBe('Open iTerm2 on this session again')
+    expect(resume?.getAttribute('aria-label')).toBe('Resume in Terminal (iTerm2)')
+    expect(action(LAUNCH, 'take-over')?.title).toBe('Open iTerm2 on this session again')
+
+    // main says Terminal (a saved choice, then a refresh): the titles follow, with no accessible name of their own
+    api.available.mockResolvedValue({ owned: true, enabled: true, available: true, canEnable: true, terminal: 'terminal' })
+    const picker = document.querySelector<HTMLSelectElement>('#terminal-setting-select')!
+    picker.value = 'terminal'
+    picker.dispatchEvent(new Event('change', { bubbles: true }))
+    await settle()
+    // the panel repaints at once; the cards, with the next frame, which a changed launch state forces
+    expect(action(LAUNCH, 'take-over')?.title).toBe('Open Terminal on this session again')
+    await pollTick()
+    const again = launchRow(LAUNCH)?.querySelector<HTMLButtonElement>('[data-ah-action="take-over"]')
+    expect(again?.title).toBe('Open Terminal on this session again')
+    expect(again?.hasAttribute('aria-label')).toBe(false)
+  })
+
+  it('titles the Terminal buttons Terminal when main names no terminal', async () => {
+    launchBridge()
+    db = freshDb()
+    createLaunch(db, {
+      id: LAUNCH, host: 'copilot', project: 'alpha', stream: 'agent-inbox/fix-1', cwd: '/w/alpha/fix-1', mode: 'ask',
+      budgetActiveMs: 7_200_000, budgetToolCalls: 500, prompt: 'Fix it.', specVersion: 1, driverPid: 4242,
+      worktree: { checkoutRoot: '/work/alpha', branch: 'agent-inbox/fix-1', baseSha: 'a'.repeat(40), baseRef: 'refs/heads/main' },
+    })
+    await bootApp(db)
+    await changedPollTick(db)
+    expect(action(LAUNCH, 'open-worktree')?.title).toBe('Open Terminal in this session’s worktree')
+    expect(action(LAUNCH, 'open-worktree')?.hasAttribute('aria-label')).toBe(false)
+  })
+
+  it('shows main’s fallback notice on the launch after Open in Terminal (#586)', async () => {
+    const api = launchBridge({ terminal: 'iterm2' })
+    db = freshDb()
+    createLaunch(db, {
+      id: LAUNCH, host: 'copilot', project: 'alpha', stream: 'agent-inbox/fix-1', cwd: '/w/alpha/fix-1', mode: 'ask',
+      budgetActiveMs: 7_200_000, budgetToolCalls: 500, prompt: 'Fix it.', specVersion: 1, driverPid: 4242,
+      worktree: { checkoutRoot: '/work/alpha', branch: 'agent-inbox/fix-1', baseSha: 'a'.repeat(40), baseRef: 'refs/heads/main' },
+    })
+    await bootApp(db)
+    await changedPollTick(db)
+    api.openWorktree.mockResolvedValueOnce({ ok: true, notice: 'iTerm2 could not be opened, so Terminal was opened instead.' })
+    click(action(LAUNCH, 'open-worktree'))
+    await settle()
+    expect(api.openWorktree).toHaveBeenCalledWith(LAUNCH)
+    expect(panel().querySelector('.sp-note')?.textContent).toBe('iTerm2 could not be opened, so Terminal was opened instead.')
+    expect(panel().querySelector<HTMLElement>('.sp-note')?.hidden).toBe(false)
+  })
+
+  it('keeps main’s fallback notice on a launch Take over just handed off, though its state changed (#586 review)', async () => {
+    const api = launchBridge({ terminal: 'iterm2' })
+    db = freshDb()
+    newLaunch(db)
+    drivenSession(db)
+    await bootApp(db)
+    await changedPollTick(db)
+    api.takeOver.mockImplementationOnce(async () => {
+      // the driver hands the launch off while main opens the terminal
+      handOffLaunch(db!, LAUNCH, { acpSession: 'acp-1', activeMs: 10, toolCalls: 1 })
+      return { ok: true, notice: 'iTerm2 could not be opened, so Terminal was opened instead.' }
+    })
+    click(action(LAUNCH, 'take-over'))
+    await settle()
+    await changedPollTick(db)
+    expect(stateOf(LAUNCH)).toBe('In Terminal')
+    expect(panel().querySelector('.sp-note')?.textContent).toBe('iTerm2 could not be opened, so Terminal was opened instead.')
+    expect(panel().querySelector<HTMLElement>('.sp-note')?.hidden).toBe(false)
   })
 
   it('an ended launch’s kept worktree is removed from its card, and the Ended fold counts the worktrees kept (#454)', async () => {

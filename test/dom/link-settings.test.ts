@@ -166,6 +166,105 @@ describe('Settings → Links (issue #300 part 2)', () => {
   })
 })
 
+// Settings → Terminal (#586): a main process that keeps the choice the way link-preferences.cjs does
+function terminalBridge(start: { available: boolean; terminal?: string; error?: string } = { available: true, terminal: 'terminal' }) {
+  let view = { ...start }
+  const api = {
+    ...settingsBridge(),
+    getTerminal: vi.fn(async () => ({ ...view })),
+    setTerminal: vi.fn(async (id: string) => { view = { ...view, terminal: id }; return { ...view } }),
+  }
+  Object.defineProperty(window, 'agentInboxLinkSettings', { configurable: true, value: api })
+  return Object.assign(api, { set: (next: typeof view) => { view = next } })
+}
+const terminalSection = () => document.getElementById('terminal-settings')
+const terminalSelect = () => terminalSection()?.querySelector<HTMLSelectElement>('select') ?? null
+
+describe('Settings → Terminal (#586)', () => {
+  it('shows the terminal choice in the desktop app and saves it through main', async () => {
+    const api = terminalBridge()
+    db = freshDb()
+    await bootApp(db)
+    expect(terminalSection()?.hidden).toBe(false)
+    expect(terminalSection()?.querySelector('h3')?.textContent).toBe('Terminal')
+    expect(options(terminalSelect())).toEqual([['terminal', 'Terminal'], ['iterm2', 'iTerm2']])
+    expect(terminalSection()?.querySelector(`label[for="${terminalSelect()?.id}"]`)?.textContent).toBe('Open sessions in')
+    expect(terminalSelect()?.value).toBe('terminal')
+    choose(terminalSelect(), 'iterm2')
+    await settle()
+    expect(api.setTerminal).toHaveBeenCalledOnce()
+    expect(api.setTerminal).toHaveBeenCalledWith('iterm2')
+    expect(terminalSelect()?.value).toBe('iterm2')
+    expect(terminalSection()?.querySelector('.link-settings-message')?.textContent).toBe('')
+  })
+
+  it('shows what main stored, and asks again when Settings reopens', async () => {
+    const api = terminalBridge({ available: true, terminal: 'iterm2' })
+    db = freshDb()
+    await bootApp(db)
+    expect(terminalSelect()?.value).toBe('iterm2')
+    expect(api.getTerminal).toHaveBeenCalledOnce()
+    api.set({ available: true, terminal: 'terminal' })
+    click(document.getElementById('gear'))
+    await settle()
+    expect(api.getTerminal).toHaveBeenCalledTimes(2)
+    expect(terminalSelect()?.value).toBe('terminal')
+  })
+
+  it('shows no terminal choice in the browser, where the Links hint still shows', async () => {
+    db = freshDb()
+    await bootApp(db)
+    expect(terminalSection()).toBeNull()
+    expect(section()?.querySelector('.setup-hint')?.textContent).toMatch(/^In the Agent Inbox app on macOS/)
+  })
+
+  it.each([
+    ['a viewer it does not own', { available: false, error: 'unowned' }],
+    ['a system other than macOS', { available: false }],
+  ])('draws no terminal choice for %s', async (_name, view) => {
+    terminalBridge(view)
+    db = freshDb()
+    await bootApp(db)
+    expect(terminalSection()?.hidden).toBe(true)
+    expect(terminalSection()?.querySelector('.link-settings-message')?.textContent).toBe('')
+  })
+
+  it('shows main’s refusal with the value main kept, never the one it refused', async () => {
+    const api = terminalBridge({ available: true, terminal: 'iterm2' })
+    db = freshDb()
+    await bootApp(db)
+    api.setTerminal.mockResolvedValueOnce({ available: true, terminal: 'iterm2', error: 'invalid' })
+    choose(terminalSelect(), 'terminal')
+    await settle()
+    expect(terminalSection()?.querySelector('.link-settings-message')?.textContent).toBe('That setting couldn’t be changed.')
+    expect(terminalSelect()?.value).toBe('iterm2')
+    api.setTerminal.mockRejectedValueOnce(new Error('gone'))
+    choose(terminalSelect(), 'terminal')
+    await settle()
+    expect(terminalSection()?.querySelector('.link-settings-message')?.textContent).toBe('Agent Inbox couldn’t save that. Try again.')
+  })
+
+  it('tells the Terminal buttons to refresh once a choice is saved, and not after a refusal', async () => {
+    const launch = vi.fn(async () => ({ owned: true, enabled: true, available: true, canEnable: true, terminal: 'terminal' }))
+    Object.defineProperty(window, 'agentInboxLaunch', { configurable: true, value: { available: launch, onStartProgress: () => true } })
+    const api = terminalBridge()
+    db = freshDb()
+    try {
+      await bootApp(db)
+      const before = launch.mock.calls.length
+      choose(terminalSelect(), 'iterm2')
+      await settle()
+      expect(launch.mock.calls.length).toBe(before + 1)
+      api.setTerminal.mockResolvedValueOnce({ available: true, terminal: 'iterm2', error: 'invalid' })
+      choose(terminalSelect(), 'terminal')
+      await settle()
+      expect(launch.mock.calls.length).toBe(before + 1)
+    } finally {
+      Reflect.deleteProperty(window, 'agentInboxLaunch')
+    }
+  })
+})
+
 describe('file chip actions (issue #300 part 2)', () => {
   async function card() {
     db = freshDb()

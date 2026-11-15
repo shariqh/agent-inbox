@@ -279,6 +279,9 @@ export function installAgentsHome(deps) {
   // The state's main action (§2), and Message on a session that can take one.
   function actionsOf(card, granted) {
     const out = []
+    // #586: the Terminal buttons keep the generic word; the title and accessible name say which app opens
+    const app = deps.launches?.()?.terminalName?.() ?? 'Terminal'
+    const named = (label) => (app === 'Terminal' ? '' : `${label} (${app})`)
     const session = card.session
     const message = () => {
       if (!session) return
@@ -296,13 +299,13 @@ export function installAgentsHome(deps) {
       case 'starting': case 'stopping': out.push(['transcript', 'Transcript', '']); break
       case 'working': case 'idle': message(); break
       case 'parked':
-        if (granted && has('takeover')) out.push(['take-over', 'Take over in Terminal', 'Go on with this session in Copilot in Terminal'])
+        if (granted && has('takeover')) out.push(['take-over', 'Take over in Terminal', `Go on with this session in Copilot in ${app}`, '', named('Take over in Terminal')])
         out.push(granted && has('resume') ? ['resume', 'Resume…', 'Resume this session with a message', 'primary'] : ['transcript', 'Transcript', ''])
         break
-      case 'terminal': out.push(granted && has('terminal') ? ['take-over', 'Resume in Terminal', 'Open Terminal on this session again'] : ['transcript', 'Transcript', '']); break
+      case 'terminal': out.push(granted && has('terminal') ? ['take-over', 'Resume in Terminal', `Open ${app} on this session again`, '', named('Resume in Terminal')] : ['transcript', 'Transcript', '']); break
       default:
         out.push(granted && card.launch.worktree_path && !card.launch.worktree_removed_at
-          ? ['open-worktree', 'Open in Terminal', 'Open Terminal in this session’s worktree'] : ['transcript', 'Transcript', ''])
+          ? ['open-worktree', 'Open in Terminal', `Open ${app} in this session’s worktree`, '', named('Open in Terminal')] : ['transcript', 'Transcript', ''])
     }
     // an ended launch's kept worktree is removed from its card too: main checks it and asks first (#432)
     if (granted && worktreeKept(card)) out.push(['remove-worktree', 'Remove worktree…', 'Remove this session’s worktree: its branch is kept'])
@@ -401,10 +404,11 @@ export function installAgentsHome(deps) {
       }
       return parts
     })
-    rebuild(buttons, JSON.stringify(actions), () => actions.map(([action, label, title, tone]) => {
+    rebuild(buttons, JSON.stringify(actions), () => actions.map(([action, label, title, tone, aria]) => {
       const control = button(label, `sc-action${tone ? ` ${tone}` : ''}`, `sc:${card.id}:${action}`)
       control.dataset.ahAction = action
       if (title) control.title = title
+      if (aria) control.setAttribute('aria-label', aria)
       return control
     }))
     setHidden(foot, !facts.childElementCount && !buttons.childElementCount)

@@ -72,7 +72,7 @@ export function installAgentsHome(deps) {
   const groupEls = new Map()
   const calls = new Map() // card id → the last call a paint has seen, for the one-shot pulse
   const byId = new Map() // card id → the card its buttons act on
-  // global: no lens narrows it, and it shows under the empty state's text
+  // global: no lens narrows it, and it shows in Quiet with no session at all
   const mesh = installMeshAgents({ doc, onRefresh: () => deps.refreshMesh?.(), onChange: () => repaint(), onOpen: (key, name) => deps.openMeshAgent?.(key, name) })
 
   const make = (tag, className, text) => {
@@ -384,7 +384,8 @@ export function installAgentsHome(deps) {
     setText(el.querySelector('.sc-when'), card.recency)
     const doing = el.querySelector('.sc-doing')
     setText(doing, card.line)
-    if (doing.classList.contains('was') !== card.historical) doing.classList.toggle('was', card.historical)
+    const was = Boolean(card.historical)
+    if (doing.classList.contains('was') !== was) doing.classList.toggle('was', was)
     if (doing.title !== card.line) doing.title = card.line
     const asking = el.querySelector('.sc-asking')
     setHidden(asking, !card.asks.length)

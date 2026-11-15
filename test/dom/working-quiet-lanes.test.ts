@@ -78,10 +78,12 @@ describe('the Working and Quiet lanes (§3.3, §3.4)', () => {
       ['workingLaneTitle', 'Working'], ['quietLaneTitle', 'Quiet'],
     ])
     expect(document.querySelector('#dashboard .needs-you-lane')?.nextElementSibling?.classList.contains('dashboard-grid')).toBe(true)
-    expect(home().parentElement?.classList.contains('dashboard-grid')).toBe(true)
+    // the lanes share the split with the session panel (§3.6), and the split is the grid's
+    expect(home().parentElement?.classList.contains('dash-split')).toBe(true)
+    expect(home().parentElement?.parentElement?.classList.contains('dashboard-grid')).toBe(true)
     // Just landed and the ribbon stay after the lanes
-    const grid = [...home().parentElement!.children].map((el) => el.classList[1] ?? el.classList[0])
-    expect(grid.indexOf('agents-home')).toBeLessThan(grid.indexOf('dashboard-activity'))
+    const grid = [...home().parentElement!.parentElement!.children].map((el) => el.classList[1] ?? el.classList[0])
+    expect(grid.indexOf('dash-split')).toBeLessThan(grid.indexOf('dashboard-activity'))
     expect(document.querySelector('#dashboard [data-ah-filter], #dashboard .ah-group-by, #dashboard .ah-count, #dashboard .ah-none, #agentsHomeTitle')).toBeNull()
     expect([chipCount('working'), chipCount('quiet')]).toEqual(['1', '1'])
   })
@@ -530,12 +532,12 @@ describe('the session panel from both lanes (§3.6, as today)', () => {
     await bootApp(db)
     click(item('session:w')?.querySelector('.sc-doing'))
     await settle()
-    expect([panel().hidden, panel().dataset.session, panel().parentElement?.className]).toEqual([false, 'w', 'dashboard-grid'])
+    expect([panel().hidden, panel().dataset.session, panel().parentElement?.className]).toEqual([false, 'w', 'dash-split'])
     expect(panel().previousElementSibling).toBe(home())
     expect(item('session:w')?.classList.contains('sel')).toBe(true)
     click(item('session:q')?.querySelector('.sc-doing'))
     await settle()
-    expect([panel().hidden, panel().dataset.session, panel().parentElement?.className]).toEqual([false, 'q', 'dashboard-grid'])
+    expect([panel().hidden, panel().dataset.session, panel().parentElement?.className]).toEqual([false, 'q', 'dash-split'])
     expect(item('session:q')?.classList.contains('sel')).toBe(true)
     // a second click on the row closes it
     click(item('session:q')?.querySelector('.sc-doing'))
@@ -560,7 +562,7 @@ describe('the session panel from both lanes (§3.6, as today)', () => {
     click(panel().querySelector('.dash-focus-close'))
     await settle()
     expect(panel().hidden).toBe(true)
-    expect(panel().parentElement?.classList.contains('dashboard-grid')).toBe(true)
+    expect(panel().parentElement?.classList.contains('dash-split')).toBe(true)
   })
 
   it('a trusted click on a Quiet row toggles its panel, never closing and reopening it', async () => {

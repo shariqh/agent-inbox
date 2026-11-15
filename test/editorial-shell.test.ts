@@ -237,7 +237,8 @@ describe('the session panel placement (#307, #454)', () => {
     expect(rule(desktop)).toMatch(/position:\s*absolute;/)
     expect(rule(desktop)).toMatch(/width:\s*min\(620px, calc\(100% - 24px\)\);/)
     expect(rule(desktop)).not.toMatch(/position:\s*fixed/)
-    expect(app).toMatch(/grid\.appendChild\(dashFocusEl\(\)\)/)
+    expect(app).toMatch(/split\.append\(agentsHome\.element\(\), dashFocusEl\(\)\)/)
+    expect(desktop).toMatch(/\.dash-split \{ display: contents; \}/)
   })
 
   it('joins the flow after the list under 1280px, never over the masthead', () => {

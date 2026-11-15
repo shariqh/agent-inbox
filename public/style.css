@@ -1911,6 +1911,7 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
   animation: dash-focus-in var(--motion-moderate) var(--motion-ease-out) 1;
 }
 .dash-focus[hidden], .dash-focus [hidden] { display: none; }
+.dash-split { display: contents; }
 .sp-head { display: grid; gap: 6px; padding: 14px 16px 10px; border-bottom: 1px solid var(--app-border); }
 .sp-state { flex: none; padding: 1px 8px; border-radius: 999px; background: color-mix(in srgb, var(--sp-tone, var(--app-text-soft)) 16%, transparent); color: var(--sp-tone, var(--app-text-soft)); font-size: 10.5px; font-weight: 700; }
 .sp-state.tone-working { --sp-tone: var(--app-success); }

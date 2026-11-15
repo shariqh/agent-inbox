@@ -288,11 +288,14 @@ describe('the session focus panel (#307)', () => {
     expect(panel()!.hidden).toBe(false)
   })
 
-  it('is the Dashboard grid’s own, so no card or fold can hide it (#454)', async () => {
+  it('is the Dashboard split’s own, so no card or fold can hide it (#454, §3.6)', async () => {
     const d = open()
     seed(d)
     await bootApp(d)
-    expect(panel()!.parentElement?.classList.contains('dashboard-grid')).toBe(true)
+    const split = panel()!.parentElement!
+    expect(split.classList.contains('dash-split')).toBe(true)
+    expect(split.parentElement?.classList.contains('dashboard-grid')).toBe(true)
+    expect(panel()!.previousElementSibling?.classList.contains('agents-home')).toBe(true)
     expect(panel()!.closest('.agents-home')).toBeNull()
     openCard('mine')
     expect(panel()?.hidden).toBe(false)

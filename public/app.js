@@ -2386,6 +2386,8 @@ const focusPartHtml = new WeakMap()
 // The one panel element, made once: under 1280px it moves into the cards' grid
 // (placeFocusPanel), so it is always reached through this, never a selector.
 let focusPanelEl = null
+// The one split around the lanes and the panel (§3.6), made once by renderDashboard.
+let splitEl = null
 
 function dashFocusEl() {
   const aside = document.createElement('aside')
@@ -2814,7 +2816,7 @@ function paintSessionFocus() {
 const narrowPanel = window.matchMedia('(max-width: 1279px)')
 const outOfSight = (el) => !el.isConnected || Boolean(el.parentElement?.closest('[hidden], details:not([open])'))
 function placeFocusPanel(aside = focusPanelEl) {
-  const home = document.querySelector('#dashboard .dashboard-grid > .agents-home')
+  const home = document.querySelector('#dashboard .dash-split > .agents-home')
   if (!aside || !home) return
   const id = focusSession && narrowPanel.matches ? agentsHome.cardFor(focusSession)?.id ?? null : null
   const card = id ? [...home.querySelectorAll('[data-session-card]')].find((el) => el.dataset.sessionCard === id && !outOfSight(el)) : null
@@ -3307,17 +3309,20 @@ function renderDashboard(model) {
   since.hidden = true
   host.appendChild(since)
   sinceEl = since
-  // the Needs you lane (§3.2), first and above the grid: the desktop session sheet covers the grid only
+  // the Needs you lane (§3.2), first and above the grid: the desktop session panel splits the lanes only
   host.appendChild(needsYouLane.element())
 
   const grid = document.createElement('div')
   grid.className = 'dashboard-grid'
-  // #454, dashboard lanes design §3.3–3.4: the Working and Quiet lanes span the
-  // grid; the session panel is never inside a card that could hide it: a sheet
-  // over the grid's right side on a desktop, after its card's row or its Quiet
-  // row on a narrow screen (placeFocusPanel).
-  grid.appendChild(agentsHome.element())
-  grid.appendChild(dashFocusEl())
+  // #454, dashboard lanes design §3.3–3.4, §3.6: the Working and Quiet lanes and
+  // the session panel share one split, so the panel is never inside a card that
+  // could hide it: beside the lanes on a desktop, after its card's row or its
+  // Quiet row on a narrow screen (placeFocusPanel).
+  const split = document.createElement('div')
+  split.className = 'dash-split'
+  split.append(agentsHome.element(), dashFocusEl())
+  splitEl = split
+  grid.appendChild(split)
   grid.appendChild(dashRibbonEl())
 
   const outcomes = document.createElement('section')

@@ -245,9 +245,13 @@ export function installPlansLane(deps) {
     setHidden(section.querySelector('.pl-empty'), nodes.length > 0)
     const all = section.querySelector('.pl-all')
     setText(all, more ? `All plans · ${more} more ›` : 'All plans ›')
-    setHidden(section.querySelector('.pl-more'), nodes.length === 0)
-    // a keyboard user whose row left lands on the heading, only in a window that has focus
-    if (hadFocus && (!doc.activeElement || doc.activeElement === doc.body)) section.querySelector('#plansLaneTitle')?.focus({ preventScroll: true })
+    const moreEl = section.querySelector('.pl-more')
+    // hiding the focused All plans leaves activeElement on it until the browser's focus fixup,
+    // which then drops focus to body, so the lane catches that case itself
+    const lostMore = nodes.length === 0 && Boolean(moreEl?.contains(doc.activeElement))
+    setHidden(moreEl, nodes.length === 0)
+    // a keyboard user whose row (or All plans) left lands on the heading, only in a window that has focus
+    if (hadFocus && (lostMore || !doc.activeElement || doc.activeElement === doc.body)) section.querySelector('#plansLaneTitle')?.focus({ preventScroll: true })
   }
 
   return {

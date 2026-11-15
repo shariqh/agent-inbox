@@ -309,6 +309,21 @@ describe('the lane under the keyboard and the pointer (§3.1, §2)', () => {
     expect(planIds()).toEqual([b, a])
   })
 
+  it('moves focus on All plans to the heading when the lane empties under it', async () => {
+    db = freshDb()
+    plan(db, 'Plan A', ['missing'])
+    await bootApp(db)
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    allPlans().focus()
+    expect(document.activeElement).toBe(allPlans())
+    // its last open step is set aside, so the lane empties and All plans hides
+    plan(db, 'Plan A', ['na'])
+    await changedPollTick(db)
+    expect(planRows()).toHaveLength(0)
+    expect(lane().querySelector<HTMLElement>('.pl-more')!.hidden).toBe(true)
+    expect(document.activeElement).toBe(document.getElementById('plansLaneTitle'))
+  })
+
   it('keeps a text selection in a row through a poll that repaints', async () => {
     db = freshDb()
     const id = plan(db, 'Plan A', ['missing'])

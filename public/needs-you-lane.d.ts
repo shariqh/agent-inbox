@@ -25,6 +25,8 @@ export interface NeedsYouLaneDeps {
   /** "session ended" or "no session" for an ask no session card holds, else '' (§6) */
   sessionTag?(entry: AttentionEntry): '' | 'session ended' | 'no session'
   scrollBehavior?(): ScrollBehavior
+  /** whether the Inbox holds an unsent answer for this ask (app.js holdsDraft): the card's "Draft" tag */
+  hasDraft?(id: string): boolean
 }
 
 export function installNeedsYouLane(deps: NeedsYouLaneDeps): {

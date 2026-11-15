@@ -10,6 +10,7 @@
 // textContent, and an unchanged value is never rewritten, so a selection in a
 // card survives a poll. Painted from app.js's renderDashboardAmbient, so from
 // both render entries; it fetches nothing and runs no timer.
+import { actionPresentation } from './card.js'
 import { pinLaneOrder } from './lanes.js'
 import { currentAskAt, relMs } from './rowview.js'
 import { hostLabel } from './sessions.js'
@@ -123,7 +124,7 @@ export function installNeedsYouLane(deps) {
     const meta = make('div', 'ny-meta')
     const dot = make('i', 'ny-dot')
     dot.setAttribute('aria-hidden', 'true')
-    meta.append(dot, make('span', 'ny-project'), make('span', 'ny-agent'), make('span', 'ny-branch'), make('span', 'ny-age'), make('span', 'ny-session'))
+    meta.append(dot, make('span', 'ny-project'), make('span', 'ny-agent'), make('span', 'ny-branch'), make('span', 'ny-age'), make('span', 'ny-session'), make('b', 'ny-draft', 'Draft'))
     el.append(meta, make('div', 'ny-title'), make('div', 'ny-next'), make('div', 'ny-plan'))
     return el
   }
@@ -132,15 +133,20 @@ export function installNeedsYouLane(deps) {
     const owner = entry.kind === 'row' ? entry.board : entry.item
     const entity = entry.kind === 'row' ? entry.row : entry.item
     const project = String(owner?.project ?? '')
-    const title = String((entry.kind === 'row' ? entity?.label : entity?.title) ?? '')
+    // the Inbox row's headline (§3.2): the requested action while it is unanswered, else the title
+    const presentation = actionPresentation(entity ?? {})
+    const title = String(presentation.headline ?? '')
     const agent = typeof owner?.agent === 'string' && owner.agent ? hostLabel(owner.agent) : ''
     const branch = typeof owner?.stream === 'string' ? owner.stream : ''
     const at = Date.parse(currentAskAt(entry) ?? '')
     const rel = Number.isFinite(at) ? relMs(Math.max(0, nowMs - at)) : ''
     const age = rel === 'moments' ? 'now' : rel
     const tag = deps.sessionTag?.(entry) ?? ''
-    const next = typeof entity?.next_step === 'string' ? entity.next_step.trim() : ''
-    const plan = entry.kind === 'row' ? `Plan · ${entry.board?.title ?? ''}` : ''
+    const step = typeof entity?.next_step === 'string' ? entity.next_step.trim() : ''
+    const next = presentation.headlineField !== 'next-step' && step ? step : presentation.detail
+    // a row led by its step keeps its label findable here
+    const plan = entry.kind === 'row' ? `Plan · ${entry.board?.title ?? ''} · ${presentation.originalTitle}` : ''
+    const draft = deps.hasDraft?.(laneAskId(entry)) === true
     const color = deps.projectColor?.(project) ?? ''
     // a custom property reads back as written, so an unchanged color is never rewritten
     if (el.style.getPropertyValue('--ny-project') !== color) {
@@ -152,11 +158,13 @@ export function installNeedsYouLane(deps) {
       setText(part, text)
       setHidden(part, !text)
     }
+    setHidden(el.querySelector('.ny-draft'), !draft)
     const titleEl = el.querySelector('.ny-title')
     setText(titleEl, title)
-    if (titleEl.title !== title) titleEl.title = title
-    // an app session's approval is a tool line (#412)
-    const mono = entry.kind === 'item' && isReservedProject(project)
+    // as the Inbox row's: the title the agent wrote, under a headline that is its step
+    if (titleEl.title !== presentation.originalTitle) titleEl.title = presentation.originalTitle
+    // an app session's approval is a tool line (#412), while that line is the headline
+    const mono = entry.kind === 'item' && isReservedProject(project) && presentation.headlineField === 'title'
     if (titleEl.classList.contains('mono') !== mono) titleEl.classList.toggle('mono', mono)
     const nextEl = el.querySelector('.ny-next')
     setText(nextEl, next)
@@ -164,7 +172,11 @@ export function installNeedsYouLane(deps) {
     const planEl = el.querySelector('.ny-plan')
     setText(planEl, plan)
     setHidden(planEl, !plan)
-    setAttr(el, 'aria-label', [title, [project, agent, branch].filter(Boolean).join(' · '), age && `asked ${age === 'now' ? 'just now' : `${age} ago`}`, tag].filter(Boolean).join('. '))
+    const label = [title, [project, agent, branch].filter(Boolean).join(' · '), age && `asked ${age === 'now' ? 'just now' : `${age} ago`}`, tag, draft && 'unsent draft']
+      .filter(Boolean)
+      // a headline that is a step already ends in a period
+      .reduce((text, part) => (text ? `${text}${/[.?!…]$/.test(text) ? ' ' : '. '}${part}` : part), '')
+    setAttr(el, 'aria-label', label)
   }
 
   /** @param {{entries: any[], later: number, nowMs: number}} input */

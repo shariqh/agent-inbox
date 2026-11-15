@@ -12,7 +12,7 @@ import {
 import { attentionEntries, sortRail } from '../../public/attention.js'
 import { installDashHead } from '../../public/dash-head.js'
 import { installAgentsHome } from '../../public/agents-home.js'
-import { NEEDS_YOU_EMPTY } from '../../public/needs-you-lane.js'
+import { NEEDS_YOU_EMPTY, installNeedsYouLane } from '../../public/needs-you-lane.js'
 import {
   advanceClock, answerInput, badgeCount, bootApp, buttonLabelled, changedPollTick, click, collapseRow, freshDb,
   pollTick, row, rows, searchFor, sendButton, settle, setViewport, showInbox, type, useDomTest,
@@ -115,7 +115,8 @@ describe('the Needs you lane holds every ask once (§3.2, §8)', () => {
     for (const title of ['From a live session', 'Stamped by the live one', 'Joined to the idle one', 'From an ended session']) expect(cardParts).not.toContain(title)
     expect(document.querySelector('#dashboard [data-session-card^="ask:"]')).toBeNull()
     // the asks no card holds say why
-    const tag = (title: string) => laneCards().find((el) => el.querySelector('.ny-title')?.textContent === title)?.querySelector<HTMLElement>('.ny-session')
+    // by the title's tooltip: a row with a next step leads with the step (card.js actionPresentation)
+    const tag = (title: string) => laneCards().find((el) => el.querySelector<HTMLElement>('.ny-title')?.title === title)?.querySelector<HTMLElement>('.ny-session')
     expect(tag('From an ended session')?.textContent).toBe('session ended')
     expect(tag('From no session')?.textContent).toBe('no session')
     expect(tag('On no branch anyone is on')?.textContent).toBe('no session')
@@ -133,7 +134,7 @@ describe('the Needs you lane holds every ask once (§3.2, §8)', () => {
     expect(badgeCount()).toBe(7)
   })
 
-  it('a card shows project, agent kind, branch, age, the title and next step, names a blocked row’s plan, and holds no control', async () => {
+  it('a card shows project, agent kind, branch, age, the headline and its summary, names a blocked row’s plan and label, and holds no control', async () => {
     db = freshDb()
     const item = question(db, 'Which release?', { next_step: 'Pick one.', agent: 'claude-code', stream: 'feat/x' })
     const step = blockedRow(db, 'Rotate the token')
@@ -142,8 +143,8 @@ describe('the Needs you lane holds every ask once (§3.2, §8)', () => {
     await bootApp(db)
     const parts = (id: string) => ['.ny-project', '.ny-agent', '.ny-branch', '.ny-age', '.ny-title', '.ny-next', '.ny-plan']
       .map((cls) => { const el = laneCard(id)!.querySelector<HTMLElement>(cls)!; return el.hidden ? null : el.textContent })
-    expect(parts(item)).toEqual(['alpha', 'Claude Code', 'feat/x', '5m', 'Which release?', 'Pick one.', null])
-    expect(parts(step)).toEqual(['alpha', 'Copilot', 'main', '5m', 'Rotate the token', 'Do Rotate the token.', 'Plan · Plan for Rotate the token'])
+    expect(parts(item)).toEqual(['alpha', 'Claude Code', 'feat/x', '5m', 'Pick one.', null, null])
+    expect(parts(step)).toEqual(['alpha', 'Copilot', 'main', '5m', 'Do Rotate the token.', 'Rotate the token is ready.', 'Plan · Plan for Rotate the token · Rotate the token'])
     const approval = laneCards().find((el) => el.querySelector('.ny-title')?.textContent === 'Allow shell: npm test')!
     expect(approval.querySelector('.ny-title')?.classList.contains('mono')).toBe(true)
     for (const el of laneCards()) expect(el.querySelector('button, input, textarea, select, a, .row-answer, .options')).toBeNull()
@@ -201,6 +202,124 @@ describe('the Needs you lane holds every ask once (§3.2, §8)', () => {
     endActivity(db, 'elsewhere')
     await pollTick()
     expect(laneCard(id)?.querySelector('.ny-session')?.textContent).toBe('session ended')
+  })
+})
+
+describe('a card leads with what the Inbox leads with (§3.2)', () => {
+  // painted directly, so each shape of ask is one synthetic entry
+  function paintLane(entries: unknown[], deps: Record<string, unknown> = {}) {
+    const lane = installNeedsYouLane({ open: vi.fn(), ...deps })
+    const el = lane.element()
+    document.body.append(el)
+    lane.paint({ entries: entries as never, later: 0, nowMs: Date.now() })
+    return el
+  }
+  const at = () => new Date().toISOString()
+  const itemEntry = (item: Record<string, unknown>) =>
+    ({ kind: 'item', item: { id: 'i1', project: 'alpha', kind: 'question', status: 'open', created_at: at(), ...item }, liveness: 'parked' })
+  const rowEntry = (r: Record<string, unknown>) =>
+    ({ kind: 'row', board: { id: 'b1', project: 'alpha', title: 'Release plan', stream: 'main', agent: 'copilot' }, row: { id: 'r1', status: 'blocked', updated_at: at(), ...r }, liveness: 'parked' })
+  const parts = (el: HTMLElement) => ['.ny-title', '.ny-next', '.ny-plan']
+    .map((cls) => { const part = el.querySelector<HTMLElement>(cls)!; return part.hidden ? null : part.textContent })
+
+  it('a plan row with a next step: the step, then its note; the plan line names the plan and the row', () => {
+    const el = paintLane([rowEntry({ label: 'Lanes PR 2', note: 'The PR is green.', next_step: 'Merge PR 2.' })])
+    expect(parts(el)).toEqual(['Merge PR 2.', 'The PR is green.', 'Plan · Release plan · Lanes PR 2'])
+    expect(el.querySelector<HTMLElement>('.ny-title')!.title).toBe('Lanes PR 2')
+    expect(el.querySelector('.ny-card')!.getAttribute('aria-label')).toBe('Merge PR 2. alpha · Copilot · main')
+    el.remove()
+  })
+
+  it('a plan row with no next step: its label, then its note', () => {
+    const el = paintLane([rowEntry({ label: 'Lanes PR 2', note: 'The PR is green.' })])
+    expect(parts(el)).toEqual(['Lanes PR 2', 'The PR is green.', 'Plan · Release plan · Lanes PR 2'])
+    el.remove()
+  })
+
+  it('a question with a next step leads with it, its detail under it; without one, its title', () => {
+    let el = paintLane([itemEntry({ title: 'Which release?', detail: 'Two builds are ready.', next_step: 'Pick a build.' })])
+    expect(parts(el)).toEqual(['Pick a build.', 'Two builds are ready.', null])
+    expect(el.querySelector<HTMLElement>('.ny-title')!.title).toBe('Which release?')
+    expect(el.querySelector('.ny-card')!.getAttribute('aria-label')!.startsWith('Pick a build.')).toBe(true)
+    el.remove()
+    el = paintLane([itemEntry({ title: 'Which release?', detail: 'Two builds are ready.' })])
+    expect(parts(el)).toEqual(['Which release?', 'Two builds are ready.', null])
+    el.remove()
+  })
+
+  it('shows the next step under a headline that is not the step', () => {
+    // an outcome means the request is no longer the headline (card.js actionPresentation)
+    const el = paintLane([itemEntry({ title: 'Which release?', detail: 'Two builds are ready.', next_step: 'Pick a build.', outcome: 'Shipped 2.' })])
+    expect(parts(el)).toEqual(['Which release?', 'Pick a build.', null])
+    el.remove()
+  })
+
+  it('an app approval’s tool line is mono only while it is the headline', () => {
+    let el = paintLane([itemEntry({ project: '@sessions', title: 'Allow shell: npm test' })])
+    expect(el.querySelector('.ny-title')!.classList.contains('mono')).toBe(true)
+    el.remove()
+    el = paintLane([itemEntry({ project: '@sessions', title: 'Allow shell: npm test', next_step: 'Approve or decline.' })])
+    expect(el.querySelector('.ny-title')!.classList.contains('mono')).toBe(false)
+    el.remove()
+  })
+
+  it('keeps text that looks like HTML as text', () => {
+    const html = '<img src=x onerror="alert(1)"><b>bold</b>'
+    const el = paintLane([rowEntry({ label: html, note: `<i>${html}</i>`, next_step: `<a href="x">${html}</a>` })])
+    expect(parts(el)).toEqual([`<a href="x">${html}</a>`, `<i>${html}</i>`, `Plan · Release plan · ${html}`])
+    expect(el.querySelector('.ny-title *, .ny-next *, .ny-plan *')).toBeNull()
+    el.remove()
+  })
+
+  it('the Dashboard card’s headline is the Inbox row’s', async () => {
+    db = freshDb()
+    const step = blockedRow(db, 'Rotate the token')
+    const item = question(db, 'Which release?', { next_step: 'Pick one.', detail: 'Two builds.' })
+    await bootApp(db)
+    const lane = [step, item].map((id) => laneCard(id)!.querySelector('.ny-title')!.textContent)
+    await showInbox()
+    expect(lane).toEqual([step, item].map((id) => row(id)!.querySelector('.nrow-title')!.textContent))
+    expect(lane).toEqual(['Do Rotate the token.', 'Pick one.'])
+  })
+})
+
+describe('the Draft tag (§3.2)', () => {
+  it('shows "Draft" on a card while the Inbox holds an unsent answer for that ask', async () => {
+    db = freshDb()
+    const id = question(db, 'Half answered')
+    const other = question(db, 'Untouched')
+    await bootApp(db)
+    const draftTag = (ask: string) => laneCard(ask)!.querySelector<HTMLElement>('.ny-draft')!
+    expect(draftTag(id).hidden).toBe(true)
+    await showInbox()
+    click(row(id)!)
+    await settle()
+    type(answerInput(id), 'Not sure yet')
+    click(document.querySelector('.tab[data-tab="dashboard"]'))
+    await settle()
+    expect([draftTag(id).hidden, draftTag(id).textContent]).toEqual([false, 'Draft'])
+    expect(draftTag(other).hidden).toBe(true)
+    expect(laneCard(id)!.getAttribute('aria-label')).toMatch(/unsent draft/)
+  })
+
+  it('reads the draft through its dep, keyed by the ask’s id', () => {
+    const hasDraft = vi.fn((id: string) => id === 'r1')
+    const laneApi = installNeedsYouLane({ open: vi.fn(), hasDraft })
+    const el = laneApi.element()
+    document.body.append(el)
+    const at = new Date().toISOString()
+    laneApi.paint({
+      entries: [
+        { kind: 'row', board: { id: 'b1', project: 'alpha', title: 'Plan' }, row: { id: 'r1', label: 'Step', status: 'blocked', updated_at: at } },
+        { kind: 'item', item: { id: 'i1', project: 'alpha', kind: 'question', status: 'open', title: 'Ask', created_at: at } },
+      ] as never,
+      later: 0,
+      nowMs: Date.now(),
+    })
+    const tags = [...el.querySelectorAll<HTMLElement>('.ny-draft')].map((tag) => tag.hidden)
+    expect(tags).toEqual([false, true])
+    expect(hasDraft.mock.calls.map(([id]) => id).sort()).toEqual(['i1', 'r1'])
+    el.remove()
   })
 })
 

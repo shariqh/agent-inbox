@@ -2239,6 +2239,8 @@ const needsYouLane = installNeedsYouLane({
   projectColor: (project) => pcolor(project).dot,
   sessionTag: (entry) => laneSessionTag(entry),
   scrollBehavior: () => motion.scrollBehavior(),
+  // the old "Answer · draft" hint, now on the ask's own card: the drafts suspendState() reads
+  hasDraft: (id) => Boolean(id) && holdsDraft(id),
 })
 const dashHead = installDashHead({
   onChip: (key) => (key === 'needs' ? needsYouLane.focusFirst() : agentsHome.focusFirst(key)),

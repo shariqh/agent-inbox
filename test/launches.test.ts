@@ -13,7 +13,7 @@ import {
   requestLaunchStop, resumeLaunch, settleLaunchAsk, listActivity, markDriverTurn, requestLaunchInterrupt, takeLaunchInterrupt,
   upsertActivity, holdDriverLeases, releaseDriverLeases, requestLaunchPark, takeLaunchPark, insertItem, listLaunchFolders,
   markWorktreeRemoved, recordWorktreeSummary, handOffForTerminal, handOffLaunch, takeLaunchHandOff, withdrawLaunchHandOff, restoreStoppedLaunch,
-  forgetLaunch, claimHookWatch,
+  forgetLaunch, claimHookWatch, launchForChat,
 } from '../src/store.js'
 import type { NewLaunch } from '../src/store.js'
 import { createViewer } from '../src/viewer.js'
@@ -475,6 +475,29 @@ describe('the composer’s turn state and Interrupt and send (§5.3)', () => {
     const app = createViewer(db)
     expect(await (await app.request(`/api/launches/${ID(1)}/interrupt`, { method: 'POST' })).json()).toEqual({ ok: true })
     expect(await (await app.request(`/api/launches/${ID(9)}/interrupt`, { method: 'POST' })).json()).toEqual({ ok: false })
+  })
+})
+
+// #586 phase 2, PR 4: the lookup behind GET /api/chats/copilot/:id
+describe('the launch that holds a chat (#586 phase 2)', () => {
+  const CHAT = '0c4a7000-0000-4000-8000-00000000c001'
+
+  it('is the newest launch whose chat_id or ACP session is the chat, as launchView shapes it, else null', () => {
+    expect(launchForChat(db, CHAT)).toBeNull()
+    expect(launchForChat(db, 'not-a-uuid')).toBeNull()
+    createLaunch(db, launch(1))
+    createLaunch(db, launch(2, { chatId: CHAT, budgetActiveMs: null, budgetToolCalls: null }))
+    createLaunch(db, launch(3))
+    db.prepare('UPDATE launches SET created_at = ? WHERE id = ?').run('2026-11-02T13:00:00.000Z', ID(2))
+    db.prepare('UPDATE launches SET created_at = ?, acp_session = ? WHERE id = ?').run('2026-11-02T12:30:00.000Z', CHAT, ID(3))
+    expect(launchForChat(db, CHAT)).toEqual(listLaunches(db).find((l) => l.id === ID(2)))
+    db.prepare('UPDATE launches SET created_at = ? WHERE id = ?').run('2026-11-02T14:00:00.000Z', ID(3))
+    const by = launchForChat(db, CHAT)!
+    expect(by).toMatchObject({ id: ID(3), chat_id: null, resumable: true })
+    expect(by).not.toHaveProperty('acp_session')
+    expect(by).not.toHaveProperty('prompt')
+    // a launch for another chat or session is never the link
+    expect(launchForChat(db, '0c4a7000-0000-4000-8000-00000000c002')).toBeNull()
   })
 })
 

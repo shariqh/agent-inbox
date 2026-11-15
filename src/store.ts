@@ -4341,6 +4341,17 @@ export function listLaunches(db: Database.Database): Launch[] {
   return rows.map((row) => launchView(parseLaunch(row)))
 }
 
+/**
+ * #586 phase 2: the newest launch that is this Copilot chat, as /api/launches serves it: its `chat_id`, or its ACP
+ * session (a chat that is any launch's session is never continued a second time). Read-only; null when none.
+ */
+export function launchForChat(db: Database.Database, chatId: string): Launch | null {
+  if (!LAUNCH_ID.test(chatId)) return null
+  const row = db.prepare(`SELECT * FROM launches WHERE chat_id = @id OR acp_session = @id ORDER BY created_at DESC, id DESC LIMIT 1`)
+    .get({ id: chatId }) as (Omit<LaunchRecord, 'sessions'> & { sessions: string | null }) | undefined
+  return row ? launchView(parseLaunch(row)) : null
+}
+
 // Step 5 (full resume): an ended launch that can be resumed. Only the human's
 // Stop, with the session Copilot persisted, in a worktree still on disk: never
 // one handed off to a terminal, lost, failed, ended by a budget (its budgets are

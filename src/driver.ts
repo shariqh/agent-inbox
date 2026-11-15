@@ -20,7 +20,7 @@ import type Database from 'better-sqlite3'
 import { ACP_PROTOCOL_VERSION, connectAcp } from './acp-client.js'
 import type { AcpConnection, AcpFrame, JsonRpcId } from './acp-client.js'
 import {
-  MODE_AGENT, MODE_PLAN, PLAN_APPROVED_PROMPT, answerPingPrompt, askTitle, cappedInput, filterOptions, firstPrompt,
+  MODE_AGENT, MODE_PLAN, PLAN_APPROVED_PROMPT, answerPingPrompt, askTitle, cappedInput, chatPrompt, filterOptions, firstPrompt,
   initialPhase, interruptPrompt, messagesPrompt, phaseMode, promptSafe, setupRefusalHint, stateValid, terminalSafe,
 } from './driver-policy.js'
 import type { LaunchMode, Phase, PushedMessage } from './driver-policy.js'
@@ -37,7 +37,10 @@ export type EndReason =
   | 'park'
   | 'budget:active_time' | 'budget:tool_calls'
   | 'error:mode_escalation' | 'error:setup' | 'error:hub_unreachable' | 'error:lease_lost' | 'error:protocol'
-  /** A resume whose session/load failed for a reason other than "never prompted": the launch can be retried. */
+  /**
+   * A resume whose session/load failed for a reason other than "never prompted": the launch can be retried.
+   * #586 phase 2: any failed load of a launch that continues a chat, -32002 included (`sessionGone()`).
+   */
   | 'error:load'
   /** Take over in Terminal (step 5, §3.5): the session goes on in a terminal `copilot --resume`. */
   | 'handed_off'
@@ -185,7 +188,25 @@ export interface DriverOptions {
    * so the CLI can start Copilot once more with `--reasoning-effort none`.
    */
   effortFallback?: boolean
+  /**
+   * #586 phase 2: a `chat` spec's first start. `loadSessionId` is the chat, made in a terminal: the
+   * load does not count as the task sent, so the task is sent after it, framed by `chatPrompt`, and
+   * `resumableSession()` holds the chat only once that first message was sent.
+   */
+  chatStart?: boolean
+  /**
+   * #586 phase 2: every start of a launch that continues a chat (its first, and each later resume).
+   * Nothing but a load: `session/new` is never sent, since a fresh session is not the chat. A load
+   * answered -32002 ends the launch with `error:load` and the session gone; so does a Copilot whose
+   * `initialize` does not offer `loadSession`, with `error:setup`.
+   */
+  noFreshSession?: boolean
 }
+
+// #586 phase 2: why a launch that continues a chat did not start, as its row's "Didn't start" says it
+const CHAT_NOT_FOUND = 'Copilot has no chat with this id. If your shell sets COPILOT_HOME, Copilot looks there.'
+const CHAT_NO_LOAD = 'this Copilot cannot load chats over ACP. Update Copilot CLI.'
+const CHAT_NOTHING_TO_LOAD = 'There is no chat to load for this session.'
 
 // Step 2's asks: an alert in @sessions, answered on the driver's own terminal.
 function terminalAsks(db: Database.Database, project: string, stream: string): AskChannel {
@@ -257,6 +278,8 @@ function configValue(options: unknown, id: string): string | undefined {
 export class Driver {
   private readonly o: DriverOptions
   private readonly t: DriverTiming
+  // #586 phase 2: a launch that continues a chat, so it only ever loads (chatStart or noFreshSession)
+  private readonly chat: boolean
   private readonly conn: AcpConnection
   private readonly queue: Event[] = []
   private draining = false
@@ -317,8 +340,10 @@ export class Driver {
     this.askChannel = options.asks ?? terminalAsks(options.db, options.project, options.stream)
     this.activeMs = Math.max(0, options.usage?.activeMs ?? 0)
     this.toolCalls = Math.max(0, options.usage?.toolCalls ?? 0)
-    // a loaded session was prompted with its task before it was parked (§7)
-    this.taskSent = options.loadSessionId !== undefined
+    this.chat = options.chatStart === true || options.noFreshSession === true
+    // a loaded session was prompted with its task before it was parked (§7); a chat's first start
+    // loads a chat made in a terminal, whose first message from here is still to be sent
+    this.taskSent = options.loadSessionId !== undefined && options.chatStart !== true
     for (const prior of options.priorSessions ?? []) {
       this.linked.push(prior.session)
       this.ended.set(prior.session, prior.dead)
@@ -407,10 +432,12 @@ export class Driver {
    */
   resumableSession(): string | null {
     if (this.taskSent && this.sessionId) return this.sessionId
+    // #586 phase 2: a chat's first start holds the chat only once its first message was sent
+    if (this.o.chatStart) return null
     return this.loadNotFound ? null : this.o.loadSessionId ?? null
   }
 
-  /** Whether a resume's session/load found no such session, so the stored one is to be forgotten. */
+  /** Whether a resume's (or a chat's) session/load found no such session, so the stored one is to be forgotten. */
   sessionGone(): boolean {
     return this.loadNotFound
   }
@@ -534,13 +561,19 @@ export class Driver {
         this.loadNotFound = true
         this.o.log({ event: 'load_not_found', sessionId: this.sessionId })
         this.sessionId = null
+        // #586 phase 2: a fresh session is not the chat, so a chat launch ends instead
+        if (this.chat) {
+          this.failure = CHAT_NOT_FOUND
+          this.o.ui.notice(CHAT_NOT_FOUND)
+          return this.end('error:load')
+        }
         this.taskSent = false
         this.setupRpc = this.conn.request('session/new', { cwd: this.o.cwd, mcpServers: [] })
         return
       }
       // anything else may pass: the launch is parked again, with the reason, to retry
       this.loadError = terminalSafe(frame.error.message).slice(0, 300)
-      this.o.ui.notice(`Copilot could not load the session: ${frame.error.message}`)
+      this.o.ui.notice(`Copilot could not load the ${this.chat ? 'chat' : 'session'}: ${frame.error.message}`)
       return this.end('error:load')
     }
     if (frame.error) {
@@ -559,13 +592,24 @@ export class Driver {
     }
     const result = isRecord(frame.result) ? frame.result : {}
     if (frame.method === 'initialize') {
+      if (this.chat) {
+        // #586 phase 2: a chat is only ever loaded, so a Copilot that cannot load, or nothing to load, ends here
+        const capabilities = isRecord(result.agentCapabilities) ? result.agentCapabilities : {}
+        const why = capabilities.loadSession !== true ? CHAT_NO_LOAD : !this.o.loadSessionId ? CHAT_NOTHING_TO_LOAD : null
+        if (why) {
+          this.o.log({ event: 'setup_failed', reason: capabilities.loadSession !== true ? 'no loadSession' : 'no chat to load' })
+          this.o.ui.notice(why)
+          this.failure = why
+          return this.end('error:setup')
+        }
+      }
       this.setup = 1
       const params = { cwd: this.o.cwd, mcpServers: [] }
       if (this.o.loadSessionId) {
         this.sessionId = this.o.loadSessionId
         this.loading = true
         this.setupRpc = this.conn.request('session/load', { sessionId: this.o.loadSessionId, ...params })
-      } else {
+      } else if (!this.chat) {
         this.setupRpc = this.conn.request('session/new', params)
       }
       return
@@ -831,7 +875,7 @@ export class Driver {
       // to link so its alerts carry its session and its messages can be pushed
       if (!this.live().length && Date.now() - this.readyAt < this.t.linkWaitMs) return
       this.taskSent = true
-      this.sendPrompt(firstPrompt(this.o.task), 'task')
+      this.sendPrompt(this.o.chatStart ? chatPrompt(this.o.task) : firstPrompt(this.o.task), 'task')
       return
     }
     const messages = this.unpushedMessages()
@@ -944,8 +988,9 @@ export class Driver {
       return
     }
     if (this.turn && this.activeMs + (Date.now() - this.turn.startedAt) >= this.t.activeMs) return this.end('budget:active_time')
-    // parked only once setup is done: a resume's session is not loaded (or known) before
-    const settled = this.setup === 5 && !this.turn && this.asks.size === 0
+    // parked only once setup is done: a resume's session is not loaded (or known) before; a chat's
+    // first start only once its first message was sent, since until then it holds no session to resume
+    const settled = this.setup === 5 && !this.turn && this.asks.size === 0 && (this.taskSent || this.o.chatStart !== true)
     if (settled && this.parkRequested) return this.end('park')
     if (settled && Date.now() - this.lastActivity >= this.t.idleMs) return this.end('idle')
     if (version !== this.dataVersion || !this.taskSent) {
@@ -1088,7 +1133,7 @@ export class Driver {
   private end(reason: EndReason): void {
     if (this.ending) return
     this.ending = reason
-    if (this.setup !== 5 && !this.failure) this.failure = this.loadError !== null ? `Copilot could not load the session: ${this.loadError}` : beforeReady(reason)
+    if (this.setup !== 5 && !this.failure) this.failure = this.loadError !== null ? `Copilot could not load the ${this.chat ? 'chat' : 'session'}: ${this.loadError}` : beforeReady(reason)
     this.o.log({ event: 'ending', reason })
     const outcome = reason === 'stopped' ? 'Session stopped.' : reason === 'handed_off' ? 'Handed off to a terminal.' : `Session ended (${reason}).`
     for (const ask of [...this.asks.values()]) {

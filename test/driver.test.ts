@@ -82,6 +82,9 @@ function start(opts: {
   refuseLoad?: FakeScript['refuseLoad']
   priorSessions?: DriverOptions['priorSessions']
   usage?: DriverOptions['usage']
+  /** #586 phase 2: a chat launch's first start, or any start of a launch with a chat_id. */
+  chatStart?: boolean
+  noFreshSession?: boolean
 } = {}): Harness {
   const dir = scratchDir('driver-')
   const dbPath = join(dir, 'inbox.db')
@@ -120,6 +123,8 @@ function start(opts: {
     ...(opts.loadSessionId ? { loadSessionId: opts.loadSessionId } : {}),
     ...(opts.priorSessions ? { priorSessions: opts.priorSessions } : {}),
     ...(opts.usage ? { usage: opts.usage } : {}),
+    ...(opts.chatStart ? { chatStart: true } : {}),
+    ...(opts.noFreshSession ? { noFreshSession: true } : {}),
     ...(app ?? {}),
   })
   const done = driver.start()
@@ -1019,5 +1024,133 @@ describe('loading a terminal-made chat (Copilot 1.0.112-0, #586 phase 2)', () =>
     const held = listings('load-while-terminal-holds').find((l) => l.label === '0-before-load')!
     expect(held.locks.some((l) => /^inuse\.\d+\.lock$/.test(l.name))).toBe(true)
     expect(resultOf(fixture(`${V}/load-while-terminal-holds`), 'session/load').result).toBeDefined()
+  })
+})
+
+// #586 phase 2, PR 3: a launch that continues a terminal-made chat (the chats-resume-driven design,
+// §3.3). Its first start loads the chat and sends the message once; every start only ever loads.
+describe('a launch that continues a chat (#586 phase 2)', () => {
+  const V = 'copilot-1.0.112-0'
+  const CHAT = '0c4a7000-0000-4000-8000-00000000c001'
+  const UNKNOWN = '9b2c6a1e-4d3f-4e8a-9c71-2f5e8d0a6b13'
+  const methods = (h: Harness) => h.fake.received.map((m) => m.method).filter((m) => m === 'session/load' || m === 'session/new')
+  const unknownId = () => resultOf(fixture(`${V}/load-unknown-id`)) as { code: number; message: string }
+  function resultOf(rec: ReturnType<typeof fixture>) {
+    const id = rec.find((e) => e.dir === 'c2a' && e.msg?.method === 'session/load')!.msg!.id
+    return rec.find((e) => e.dir === 'a2c' && e.msg?.id === id && !('method' in e.msg!))!.msg!.error
+  }
+  const firstStart = (over: Parameters<typeof start>[0] = {}) => start({
+    app: true, task: 'Carry on with the tests.', loadSessionId: CHAT, chatStart: true, noFreshSession: true,
+    script: { recorded: `${V}/load-terminal-chat` }, ...over,
+  })
+
+  it('a first start loads the chat, then sends the framed message once, and only then holds the chat', async () => {
+    const h = firstStart({ linked: [], timing: { linkWaitMs: 10_000 } })
+    await until(() => h.log.find((e) => e.event === 'ready'), 'ready')
+    expect(h.fake.received.find((m) => m.method === 'session/load')!.params).toEqual({ sessionId: CHAT, cwd: h.dir, mcpServers: [] })
+    // loaded and verified, the message not yet sent: there is no session to resume
+    expect(h.fake.prompts()).toEqual([])
+    expect(h.driver.resumableSession()).toBeNull()
+    h.scan.result = { hostPid: HOST, linked: ['mcp-1'], dead: [] }
+    await until(() => h.log.find((e) => e.event === 'turn_end' && e.kind === 'task'), 'the first turn')
+    expect(h.fake.prompts()).toEqual(['The human continued this chat via Agent Inbox and says:\n\nCarry on with the tests.'])
+    expect(h.driver.resumableSession()).toBe(CHAT)
+    // an idle tick and a pushed message later, the first message is still sent once
+    sendSessionMessage(h.human, { id: '00000000-0000-4000-8000-00000000000a', session: 'mcp-1', text: 'Also lint.' })
+    await until(() => h.fake.prompts().length === 2, 'the push')
+    expect(h.fake.prompts().filter((p) => p.includes('Carry on with the tests.'))).toHaveLength(1)
+    expect(methods(h)).toEqual(['session/load'])
+    h.driver.stop()
+    expect(await h.done).toBe('stopped')
+    expect(h.driver.resumableSession()).toBe(CHAT)
+  })
+
+  it('stopped before its first message, it holds no session; Park now waits for that message', async () => {
+    const stopped = firstStart({ linked: [], timing: { linkWaitMs: 10_000 } })
+    await until(() => stopped.log.find((e) => e.event === 'ready'), 'ready')
+    stopped.driver.stop()
+    expect(await stopped.done).toBe('stopped')
+    expect(stopped.driver.resumableSession()).toBeNull()
+    expect(stopped.fake.prompts()).toEqual([])
+
+    const parked = firstStart({ linked: [], timing: { linkWaitMs: 10_000 } })
+    await until(() => parked.log.find((e) => e.event === 'ready'), 'ready')
+    expect(requestLaunchPark(parked.human, LAUNCH)).toBe(true)
+    await until(() => parked.log.find((e) => e.event === 'park_requested'), 'the park taken')
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    expect(parked.driver.isFinished()).toBe(false)
+    parked.scan.result = { hostPid: HOST, linked: ['mcp-1'], dead: [] }
+    expect(await parked.done).toBe('park')
+    expect(parked.fake.prompts()).toHaveLength(1)
+    expect(parked.driver.resumableSession()).toBe(CHAT)
+  })
+
+  it('a later resume loads the chat and sends no first message again', async () => {
+    const h = start({ app: true, task: 'Carry on with the tests.', loadSessionId: CHAT, noFreshSession: true, script: { recorded: `${V}/load-terminal-chat` } })
+    await h.ready()
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    expect(h.fake.prompts()).toEqual([])
+    expect(methods(h)).toEqual(['session/load'])
+    expect(h.driver.resumableSession()).toBe(CHAT)
+    h.driver.stop()
+    expect(await h.done).toBe('stopped')
+  })
+
+  it.each([
+    ['a first start', { chatStart: true }],
+    ['a later resume', {}],
+  ] as const)('-32002 on %s ends with error:load and the session gone, and never sends session/new', async (_, over) => {
+    const h = start({ app: true, loadSessionId: UNKNOWN, noFreshSession: true, ...over, script: ended, refuseLoad: unknownId() })
+    expect(await h.done).toBe('error:load')
+    expect(methods(h)).toEqual(['session/load'])
+    expect(h.fake.prompts()).toEqual([])
+    expect(h.driver.sessionGone()).toBe(true)
+    expect(h.driver.resumableSession()).toBeNull()
+    expect(h.driver.startFailure()).toBe('Copilot has no chat with this id. If your shell sets COPILOT_HOME, Copilot looks there.')
+  })
+
+  it.each([
+    ['a first start', { chatStart: true }],
+    ['a later resume', {}],
+  ] as const)('another load error on %s ends with error:load and Copilot’s message, never a fresh session', async (_, over) => {
+    const h = start({ app: true, loadSessionId: CHAT, noFreshSession: true, ...over, script: ended, refuseLoad: { code: -32603, message: 'Internal error\u001b[2J' } })
+    expect(await h.done).toBe('error:load')
+    expect(methods(h)).toEqual(['session/load'])
+    expect(h.fake.prompts()).toEqual([])
+    expect(h.driver.sessionGone()).toBe(false)
+    expect(h.driver.loadFailure()).toBe('Internal error\\x1b[2J')
+    expect(h.driver.startFailure()).toBe('Copilot could not load the chat: Internal error\\x1b[2J')
+    // a first start holds nothing; a resume keeps the chat to park again
+    expect(h.driver.resumableSession()).toBe('chatStart' in over ? null : CHAT)
+  })
+
+  it('a Copilot that does not offer loadSession ends the launch before any load or session/new', async () => {
+    for (const over of [{ chatStart: true }, {}]) {
+      const h = start({ app: true, loadSessionId: CHAT, noFreshSession: true, ...over, script: { ...ended, noLoadSession: true } })
+      expect(await h.done).toBe('error:setup')
+      expect(methods(h)).toEqual([])
+      expect(h.driver.startFailure()).toBe('this Copilot cannot load chats over ACP. Update Copilot CLI.')
+    }
+    // a launch with no chat is not checked: it starts fresh as before
+    const fresh = start({ app: true, script: { ...ended, noLoadSession: true } })
+    await fresh.ready()
+    expect(methods(fresh)).toEqual(['session/new'])
+    fresh.driver.stop()
+    await fresh.done
+  })
+
+  it('with nothing to load, it ends rather than start a fresh session', async () => {
+    const h = start({ app: true, noFreshSession: true, script: ended })
+    expect(await h.done).toBe('error:setup')
+    expect(methods(h)).toEqual([])
+    expect(h.driver.startFailure()).toBe('There is no chat to load for this session.')
+  })
+
+  it('a load that never answers ends a chat launch with error:load, never a fresh session', async () => {
+    const h = firstStart({ script: { recorded: `${V}/load-terminal-chat`, hang: 'session/load' }, timing: { setupDeadlineMs: 500 } })
+    expect(await h.done).toBe('error:load')
+    expect(methods(h)).toEqual(['session/load'])
+    expect(h.driver.startFailure()).toBe('Copilot could not load the chat: it did not answer within 1 s.')
+    expect(h.driver.resumableSession()).toBeNull()
   })
 })

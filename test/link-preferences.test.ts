@@ -247,3 +247,95 @@ describe('Settings → Links operations (issue #300)', () => {
     }
   })
 })
+
+describe('Settings → Terminal (#586)', () => {
+  const read = (filePath: string) => readFileSync(filePath, 'utf8')
+
+  it.each([
+    ['missing', null],
+    ['corrupt', '{'],
+    ['newer', '{"schema":2,"terminal":"iterm2"}'],
+    ['off the list', '{"schema":1,"terminal":"Hyper"}'],
+    ['not a string', '{"schema":1,"terminal":{"x":1}}'],
+    ['a prototype key', '{"schema":1,"terminal":"__proto__"}'],
+  ])('reads the terminal as Terminal when the file is %s', async (_name, text) => {
+    const { filePath, preferences } = store()
+    if (text !== null) writeFileSync(filePath, text)
+    expect(await preferences.readTerminal()).toBe('terminal')
+  })
+
+  it('saves the terminal; a link-rule write keeps it and a terminal write keeps the link rules', async () => {
+    const { filePath, preferences } = store()
+    expect(await preferences.setTerminal('iterm2')).toEqual({ terminal: 'iterm2' })
+    expect(await preferences.readTerminal()).toBe('iterm2')
+    await preferences.update((prefs) => ({ ...prefs, markdown: { handler: 'quicklook' }, types: [{ extension: 'log', handler: 'reveal' }] }))
+    expect(JSON.parse(read(filePath))).toEqual({
+      schema: 1, terminal: 'iterm2', web: { handler: 'default' }, markdown: { handler: 'quicklook' }, types: [{ extension: 'log', handler: 'reveal' }],
+    })
+    await preferences.setTerminal('terminal')
+    expect(JSON.parse(read(filePath))).toMatchObject({ terminal: 'terminal', markdown: { handler: 'quicklook' }, types: [{ extension: 'log', handler: 'reveal' }] })
+    expect(statSync(filePath).mode & 0o777).toBe(0o600)
+    // the link rules read back unchanged by a terminal-only file too
+    expect((await preferences.read()).markdown).toEqual({ handler: 'quicklook' })
+  })
+
+  it('refuses to write the terminal over a newer schema', async () => {
+    const { filePath, preferences } = store()
+    writeFileSync(filePath, '{"schema":2,"web":{"handler":"default"}}')
+    expect(await preferences.setTerminal('iterm2')).toEqual({ terminal: 'terminal', refused: 'newer' })
+    expect(read(filePath)).toBe('{"schema":2,"web":{"handler":"default"}}')
+  })
+
+  it.each(['Hyper', 'iTerm2', '', '__proto__', 1, null, undefined, {}])('setTerminal rejects %j', async (value) => {
+    const { filePath, preferences } = store()
+    await expect(preferences.setTerminal(value as never)).rejects.toBeInstanceOf(TypeError)
+    expect(existsSync(filePath)).toBe(false)
+  })
+
+  describe('through the settings', () => {
+    function terminalSettings(platform = 'darwin') {
+      const { filePath, preferences } = store()
+      return { filePath, preferences, settings: createLinkSettings({ preferences, platform, chooseApp: async () => null }) }
+    }
+
+    it('offers the terminal choice on macOS only', async () => {
+      const mac = terminalSettings()
+      expect(await mac.settings.terminal()).toEqual({ available: true, terminal: 'terminal' })
+      expect(await mac.settings.setTerminal('iterm2')).toEqual({ available: true, terminal: 'iterm2' })
+      expect(await mac.settings.terminal()).toEqual({ available: true, terminal: 'iterm2' })
+      const linux = terminalSettings('linux')
+      expect(await linux.settings.terminal()).toEqual({ available: false })
+      expect(await linux.settings.setTerminal('iterm2')).toEqual({ available: false })
+      expect(existsSync(linux.filePath)).toBe(false)
+    })
+
+    it('refuses a renderer value off the list and keeps the stored one', async () => {
+      const { filePath, settings } = terminalSettings()
+      await settings.setTerminal('iterm2')
+      const before = read(filePath)
+      for (const value of ['Hyper', 'iTerm2', '', '__proto__', 'constructor', {}, 1, null, undefined, ['iterm2']]) {
+        expect(await settings.setTerminal(value)).toEqual({ available: true, terminal: 'iterm2', error: 'invalid' })
+      }
+      expect(read(filePath)).toBe(before)
+    })
+
+    it('says so over a newer file, and reports a failed write', async () => {
+      const newer = terminalSettings()
+      writeFileSync(newer.filePath, '{"schema":2}')
+      expect(await newer.settings.setTerminal('iterm2')).toEqual({ available: true, terminal: 'terminal', error: 'newer' })
+      const failing = createLinkSettings({
+        preferences: { read: async () => DEFAULTS, readTerminal: async () => 'terminal', setTerminal: async () => { throw new Error('disk') } } as never,
+        platform: 'darwin', chooseApp: async () => null,
+      })
+      expect(await failing.setTerminal('iterm2')).toEqual({ available: true, terminal: 'terminal', error: 'failed' })
+    })
+
+    it('reads the Terminal when the store cannot be read', async () => {
+      const broken = createLinkSettings({
+        preferences: { read: async () => DEFAULTS, readTerminal: async () => { throw new Error('disk') } } as never,
+        platform: 'darwin', chooseApp: async () => null,
+      })
+      expect(await broken.terminal()).toEqual({ available: true, terminal: 'terminal' })
+    })
+  })
+})

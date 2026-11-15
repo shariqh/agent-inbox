@@ -181,6 +181,8 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   schema 1, written by `createLockedFile` (exported from `update-preferences.cjs`: temp file and
   rename under the same cross-process lock), read tolerantly (corrupt → defaults, a bad rule
   dropped, a newer schema read as defaults and never overwritten, unknown top-level fields kept).
+  The same file holds one non-rule field, `terminal` (#586, Settings → Terminal: which terminal
+  the session launchers open; see `electron-app.md`), which a rule write keeps.
   Rules: Web links (Default browser or an app), Markdown (`.md`, `.markdown`) and up to 20 added
   types (Quick Look, Reveal, or an app, plus System default only for a type on the allow-list:
   the view's `systemDefault` says which, an added type off the list starts as Reveal, and a stored

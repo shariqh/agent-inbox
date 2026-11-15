@@ -2,7 +2,7 @@
 // the New session request main checks again, what a launch's state reads as,
 // and the transcript's lines.
 import { describe, expect, it } from 'vitest'
-import { budgetAllowance, launchStatus, newSessionRequest, transcriptLines } from '../public/launches.js'
+import { TERMINAL_CHOICES, budgetAllowance, launchStatus, newSessionRequest, terminalName, transcriptLines } from '../public/launches.js'
 
 const BASE = { root: '/work/alpha', mode: 'ask', model: '', reasoningEffort: '', activeHours: '2', toolCalls: '500', prompt: 'Fix it.' }
 
@@ -151,5 +151,17 @@ describe('the transcript', () => {
       { kind: 'note', text: 'You asked it to park: it parks once its turn ends.' },
       { kind: 'note', text: 'Parked: Copilot stopped, its session kept to resume.' },
     ])
+  })
+})
+
+describe('the terminal names (#586)', () => {
+  it('lists Terminal and iTerm2, the ids main checks again', () => {
+    expect(TERMINAL_CHOICES).toEqual([['terminal', 'Terminal'], ['iterm2', 'iTerm2']])
+  })
+
+  it('names iTerm2, and reads anything else as Terminal', () => {
+    expect(terminalName('iterm2')).toBe('iTerm2')
+    expect(terminalName('terminal')).toBe('Terminal')
+    for (const value of [undefined, null, '', 'iTerm2', 'hyper', '__proto__', 'constructor', 1, {}]) expect(terminalName(value)).toBe('Terminal')
   })
 })

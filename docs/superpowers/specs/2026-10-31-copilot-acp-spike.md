@@ -432,7 +432,7 @@ folder is accepted silently and moves the chat.
 | 4 | Does load rewrite `client_name`? | **No.** The whole folder was byte-identical after `session/load`. After the first prompt `workspace.yaml` changed in three keys: `last_client_name` became the ACP `clientInfo.name`, `updated_at` moved, and `mc_last_event_id` moved; `client_name` stayed `github/cli`. `events.jsonl` was appended to (a `session.resume` event first, with `alreadyInUse: false`). A fresh ACP `session/new` writes `client_name` as the `clientInfo.name`, which is what the index's `non-interactive` rule relies on. | The chat index keeps showing a continued chat. The index must keep reading `client_name`, not `last_client_name`. |
 | 5 | Do the terminal's "allow for this session" approvals survive? | **1.0.112-0's terminal offered no per-session approval** for a shell command or a file write: the second option was "Yes, and don't ask again for `touch` in this repo" (in a plain folder: "in this directory"; for a file create: "for file operations when in this repo"). That approval is written to **`$COPILOT_HOME/permissions-config.json`**, under `locations.<folder>.tool_approvals` (`{ kind: "commands", commandIdentifiers: ["touch"] }`), and the chat's `events.jsonl` records it as `permission.completed` with `result.kind: "approved-for-location"`. It is not in `session-state/<id>/`. **It applies over ACP**: in the loaded chat, `touch probe-c.txt` ran with no `session/request_permission`, while a file create (approved only once in the terminal) asked. It also applied to a **fresh** ACP `session/new` in the same folder (`new-session-location-approval.jsonl`), so it is not tied to the chat. The session-wide switch survives too: chat B, left with `/allow-all on`, loaded with `allow_all: on` (the driver's re-assert turns it off, below). | §3.4 and §7 question 4: see "Against the design" below. |
 | 6 | Does load hit the reasoning-effort refusal? | **No.** With `{"effortLevel": "high"}` in the scratch `settings.json` and `--model claude-haiku-4.5`, `session/load` answered normally while `session/new` in the same process was refused: "Request sessions.open failed with message: session construction failed: Model 'claude-haiku-4.5' does not support reasoning effort configuration. Use models.list to check which models support reasoning effort." (`load-effort-setting.jsonl`; the driver's hint still matches the new wording). | §3.3's table: `effortFallback` need not be extended to a chat's first load. A prompt on that loaded session was **not tested** (below). |
-| 7 | How do `mc_task_id` chats load? | **Like any other.** Both terminal chats got `mc_task_id`, `mc_session_id`, `mc_last_event_id` and an `mc_pending_repository_warning` ("This remote session is not linked to a repository…") in `workspace.yaml` during their first turn, with `remote_steerable: false`; Copilot's log said "Remote session access enabled" at start-up. So this was honest: no key was added by hand. Chat A carried them through every load and prompt above. The scratch login is a GitHub staff account ("Staff mode activated" at start-up), so whether every account's terminal chats get these keys is not known. An ACP `session/new` session got none. | §3.1: see "Against the design". |
+| 7 | How do `mc_task_id` chats load? | **Like any other.** Both terminal chats got `mc_task_id`, `mc_session_id`, `mc_last_event_id` and an `mc_pending_repository_warning` ("This remote session is not linked to a repository…") in `workspace.yaml` during their first turn, with `remote_steerable: false`; Copilot's log said "Remote session access enabled" at start-up. So this was honest: no key was added by hand. Chat A carried them through every load and prompt above. Only one account was used, so whether every account's terminal chats get these keys is not known. An ACP `session/new` session got none. | §3.1: see "Against the design". |
 
 **Other facts §3.3 leans on:**
 
@@ -454,12 +454,13 @@ folder is accepted silently and moves the chat.
    to every Copilot session in that folder, ACP ones included. So "each tool call asks you first"
    is not true for a continued chat whose folder has such approvals. They can be read (the second
    branch), but from `permissions-config.json`, not `session-state`. Whether its keys match only the
-   exact folder or also folders under it was not tested. It is a choice for the owner whether
-   §3.2's mitigation and question 4 still hold, or whether these approvals count as "what your
-   own Copilot settings already allow".
+   exact folder or also folders under it was not tested. The design now counts these approvals
+   as "what your own Copilot settings already allow" and names them in the Mode line (§3.4's
+   decision).
 2. **§3.1's `mc_task_id` rule.** On this account every new terminal chat has `mc_task_id`, so the
    rule would refuse all of them. Such a chat loads like any other, which is the case where §3.1
-   says PR 2 may relax the rule. The key no longer marks a cloud or remote session.
+   says PR 2 may relax the rule. The key no longer marks a cloud or remote session, and the
+   design drops the rule (§3.1's decision).
 3. **§3.3's table, the effort row:** the load is not refused, so no `effortFallback` change is
    needed for the load itself.
 
@@ -475,8 +476,8 @@ model.
 - A prompt on a chat loaded with `effortLevel` set. The command for it was denied, so it was not
   run; only `session/load` and `session/new` were recorded with that setting.
 - A real cloud or remote session (`/delegate`, a Copilot coding agent task). The `mc_task_id` chats
-  here are ordinary terminal chats, and the account is a staff account.
-- A non-staff account's terminal chats (whether they get `mc_task_id`).
+  here are ordinary terminal chats.
+- Another account's terminal chats (whether they get `mc_task_id`): only one account was used.
 - Whether a location approval for a repository also covers a worktree of it or a folder under it.
 - What ACP's `allow_always` writes in 1.0.112-0.
 - A chat left in autopilot or plan mode in the terminal (1.0.105's load restored autopilot).

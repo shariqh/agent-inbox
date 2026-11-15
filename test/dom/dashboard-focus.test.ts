@@ -7,9 +7,10 @@
 // None of it reaches attention: PR and CI chips in the panel included.
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type Database from 'better-sqlite3'
-import { insertItem, recordActivityCall, resolveItem, upsertActivity, upsertBoard, upsertSourceLink } from '../../src/store.js'
+import { endActivity, insertItem, recordActivityCall, resolveItem, upsertActivity, upsertBoard, upsertSourceLink } from '../../src/store.js'
 import {
-  advanceClock, attachStylesheet, badgeCount, bootApp, click, freshDb, pollTick, row, searchFor, settle, tabCount, useDomTest,
+  advanceClock, attachStylesheet, badgeCount, bootApp, click, freshDb, pollTick, row, searchFor, setViewport, settle, tabCount, type,
+  useDomTest,
 } from './harness.js'
 
 // jsdom dispatches only untrusted events, and an outside click closes the panel
@@ -245,7 +246,7 @@ describe('the session focus panel (#307)', () => {
     await bootApp(d)
     attachStylesheet()
     openCard('mine')
-    expect(getComputedStyle(panel()!).position).toBe('absolute')
+    expect(getComputedStyle(panel()!).position).toBe('sticky')
     click(panel()!.querySelector('.dash-focus-doing'))
     openCard('theirs')
     expect(panel()!.dataset.session).toBe('theirs')
@@ -361,6 +362,235 @@ describe('the session focus panel (#307)', () => {
     expect(aside.querySelector('[data-panel-ask]')).not.toBeNull()
     expect(aside.querySelector('.dash-focus-doing')?.textContent).toBe('Last reported: Polishing the panel · just now')
     expect(aside.querySelector<HTMLElement>('.dash-focus-gone')?.hidden).toBe(true)
+  })
+})
+
+// Dashboard lanes design §3.6 (PR 5): at 1280px and wider an open panel sits
+// beside the lanes in .dash-split.open, covering nothing; below 1280px it opens
+// inline under its card or row, as before. jsdom cannot lay out, so the columns
+// are pinned in test/editorial-shell.test.ts; here, where the panel is, which
+// class the split carries, focus, and what a poll keeps.
+describe('the session panel as a split (§3.6)', () => {
+  afterEach(() => setViewport('wide'))
+  const split = () => document.querySelector<HTMLElement>('#dashboard .dash-split')!
+  const home = () => document.querySelector<HTMLElement>('#dashboard .agents-home')!
+  const isOpen = () => split().classList.contains('open')
+  // a session that takes messages has a composer, so a draft to keep
+  const MSG = { receives_messages: true }
+  function seed(d: Database.Database): void {
+    work(d, 'mine', 'Painting the panel', MSG)
+    work(d, 'theirs', 'Elsewhere', { project: 'beta' })
+    upsertActivity(d, { ...A, session: 'idle', doing: 'open', idle: true })
+  }
+
+  it('opens beside the lanes at 1280px and wider: the lanes and the panel are siblings in the split', async () => {
+    const d = open()
+    seed(d)
+    await bootApp(d)
+    attachStylesheet()
+    expect(isOpen()).toBe(false)
+    expect(getComputedStyle(split()).display).toBe('contents')
+    openCard('mine')
+    expect(isOpen()).toBe(true)
+    expect(panel()!.parentElement).toBe(split())
+    expect(home().parentElement).toBe(split())
+    expect(panel()!.previousElementSibling).toBe(home())
+    // in the split's own column, never a sheet over the cards
+    expect(getComputedStyle(split()).display).toBe('grid')
+    expect(getComputedStyle(panel()!).position).toBe('sticky')
+    expect(getComputedStyle(panel()!).position).not.toBe('absolute')
+    // a Quiet row opens it the same way
+    click(card('idle')?.querySelector('.sc-doing'))
+    expect([panel()!.dataset.session, panel()!.parentElement === split(), isOpen()]).toEqual(['idle', true, true])
+  })
+
+  it('with it closed the split is gone, by ×, Esc, a second click and a trusted outside click', async () => {
+    const d = open()
+    seed(d)
+    await bootApp(d)
+    attachStylesheet()
+    const closedBy = (close: () => void) => {
+      openCard('mine')
+      expect(isOpen()).toBe(true)
+      close()
+      expect([panel()!.hidden, isOpen(), panel()!.parentElement === split()]).toEqual([true, false, true])
+    }
+    closedBy(() => click(panel()!.querySelector('.dash-focus-close')))
+    closedBy(() => keydown(panel()!.querySelector('#dashFocusTitle')!, 'Escape'))
+    closedBy(() => openCard('mine'))
+    closedBy(() => click(document.querySelector('#dashboard .dashboard-activity')))
+  })
+
+  it('switching sessions keeps the split, and its class is never rewritten', async () => {
+    const d = open()
+    seed(d)
+    await bootApp(d)
+    openCard('mine')
+    const observer = new MutationObserver(() => {})
+    observer.observe(split(), { attributes: true })
+    openCard('theirs')
+    const records = observer.takeRecords()
+    observer.disconnect()
+    expect(records).toEqual([])
+    expect([panel()!.dataset.session, panel()!.parentElement === split(), isOpen()]).toEqual(['theirs', true, true])
+  })
+
+  it('open, switch, ×, and Esc leave focus where the base branch left it', async () => {
+    const d = open()
+    seed(d)
+    await bootApp(d)
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    openCard('mine')
+    expect(document.activeElement).toBe(document.getElementById('dashFocusTitle'))
+    openCard('theirs')
+    expect(document.activeElement).toBe(document.getElementById('dashFocusTitle'))
+    click(panel()!.querySelector('.dash-focus-close'))
+    expect(document.activeElement).toBe(card('theirs')!.querySelector('[data-ah-action="open"]'))
+    openCard('mine')
+    keydown(document.getElementById('dashFocusTitle')!, 'Escape')
+    expect(isOpen()).toBe(false)
+    expect(document.activeElement).toBe(card('mine')!.querySelector('[data-ah-action="open"]'))
+  })
+
+  it('a poll while it is open keeps its draft, its scroll and the split, and reads no layout', async () => {
+    const d = open()
+    seed(d)
+    await bootApp(d)
+    openCard('mine')
+    const input = panel()!.querySelector<HTMLTextAreaElement>('.dash-focus-message textarea')!
+    type(input, 'half a thought')
+    const body = panel()!.querySelector<HTMLElement>('.sp-body')!
+    body.scrollTop = 120
+    const rect = vi.spyOn(card('mine')!, 'getBoundingClientRect')
+    const scroll = vi.spyOn(window, 'scrollBy').mockImplementation(() => {})
+    work(d, 'mine', 'Still painting', MSG)
+    await pollTick()
+    expect(panel()!.querySelector('.dash-focus-doing')?.textContent).toBe('Still painting')
+    expect(panel()!.querySelector('.dash-focus-message textarea')).toBe(input)
+    expect(input.value).toBe('half a thought')
+    expect(panel()!.querySelector('.sp-body')).toBe(body)
+    expect(body.scrollTop).toBe(120)
+    expect([isOpen(), panel()!.parentElement === split()]).toEqual([true, true])
+    expect(rect).not.toHaveBeenCalled()
+    expect(scroll).not.toHaveBeenCalled()
+  })
+
+  it('keeps the split, its class and the scroll when its session changes lane or leaves the lists', async () => {
+    const d = open()
+    seed(d)
+    await bootApp(d)
+    openCard('mine')
+    const scroll = vi.spyOn(window, 'scrollBy').mockImplementation(() => {})
+    const observer = new MutationObserver(() => {})
+    observer.observe(split(), { attributes: true })
+    upsertActivity(d, { ...A, session: 'mine', doing: 'open', idle: true })
+    await pollTick()
+    expect(card('mine')?.closest('.quiet-lane')).not.toBeNull()
+    expect([panel()!.hidden, panel()!.parentElement === split(), isOpen()]).toEqual([false, true, true])
+    endActivity(d, 'mine')
+    await pollTick()
+    expect(card('mine')).toBeNull()
+    expect([panel()!.hidden, panel()!.parentElement === split(), isOpen()]).toEqual([false, true, true])
+    expect(panel()!.querySelector<HTMLElement>('.dash-focus-gone')?.hidden).toBe(false)
+    expect(observer.takeRecords()).toEqual([])
+    observer.disconnect()
+    expect(scroll).not.toHaveBeenCalled()
+  })
+
+  it('opening and closing keep the opened card where it was on screen', async () => {
+    const d = open()
+    seed(d)
+    await bootApp(d)
+    // the card reflows 120px down while the lanes are narrowed beside the panel
+    vi.spyOn(card('mine')!, 'getBoundingClientRect').mockImplementation(() => new DOMRect(0, isOpen() ? 420 : 300, 340, 120))
+    const scroll = vi.spyOn(window, 'scrollBy').mockImplementation(() => {})
+    openCard('mine')
+    expect(scroll.mock.calls).toEqual([[0, 120]])
+    // a switch and a poll flip nothing, so nothing scrolls
+    openCard('theirs')
+    openCard('mine')
+    work(d, 'mine', 'Still painting', MSG)
+    await pollTick()
+    expect(scroll.mock.calls).toEqual([[0, 120]])
+    click(panel()!.querySelector('.dash-focus-close'))
+    expect(scroll.mock.calls).toEqual([[0, 120], [0, -120]])
+  })
+
+  it('below 1280px the split never opens; the panel is inline under its card and under its row', async () => {
+    const d = open()
+    seed(d)
+    setViewport(760)
+    await bootApp(d)
+    openCard('mine')
+    expect(panel()!.parentElement).toBe(card('mine')!.parentElement)
+    expect(panel()!.previousElementSibling).toBe(card('mine'))
+    expect(isOpen()).toBe(false)
+    click(card('idle')?.querySelector('.sc-doing'))
+    expect(panel()!.parentElement?.classList.contains('qt-rows')).toBe(true)
+    expect(panel()!.previousElementSibling).toBe(card('idle'))
+    expect(isOpen()).toBe(false)
+    click(panel()!.querySelector('.dash-focus-close'))
+    expect([panel()!.hidden, panel()!.parentElement === split(), isOpen()]).toEqual([true, true, false])
+  })
+
+  it('a window crossing 1280px moves the panel and the split with it', async () => {
+    const d = open()
+    seed(d)
+    await bootApp(d)
+    openCard('mine')
+    expect(isOpen()).toBe(true)
+    setViewport(760)
+    expect(panel()!.previousElementSibling).toBe(card('mine'))
+    expect(isOpen()).toBe(false)
+    setViewport('wide')
+    expect(panel()!.parentElement).toBe(split())
+    expect(isOpen()).toBe(true)
+  })
+
+  it('a panel holding focus stays put across 1280px, with no split while narrow, until focus leaves', async () => {
+    const d = open()
+    seed(d)
+    await bootApp(d)
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    openCard('mine')
+    const title = document.getElementById('dashFocusTitle')!
+    expect(document.activeElement).toBe(title)
+    const input = panel()!.querySelector<HTMLTextAreaElement>('.dash-focus-message textarea')!
+    type(input, 'a draft')
+    // wide to narrow: held in the split, which no longer splits
+    setViewport(760)
+    expect([panel()!.parentElement === split(), isOpen()]).toEqual([true, false])
+    expect(document.activeElement).toBe(title)
+    expect(input.value).toBe('a draft')
+    title.blur()
+    work(d, 'mine', 'Still painting', MSG)
+    await pollTick()
+    expect(panel()!.previousElementSibling).toBe(card('mine'))
+    expect(isOpen()).toBe(false)
+    // narrow to wide: held inline, with no split, until it lets go
+    title.focus()
+    setViewport('wide')
+    expect([panel()!.previousElementSibling === card('mine'), isOpen()]).toEqual([true, false])
+    expect(document.activeElement).toBe(title)
+    title.blur()
+    work(d, 'mine', 'Painting again', MSG)
+    await pollTick()
+    expect([panel()!.parentElement === split(), isOpen()]).toEqual([true, true])
+    expect(panel()!.querySelector('.dash-focus-message textarea')).toBe(input)
+    expect(input.value).toBe('a draft')
+  })
+
+  it('a window resized across 1280px before the first paint throws nothing', async () => {
+    const d = open()
+    seed(d)
+    // the app is loaded but its first read is still in flight: no Dashboard, no split
+    const bridge = await bootApp(d, { holdFetch: true })
+    expect(document.querySelector('#dashboard .dash-split')).toBeNull()
+    expect(() => { setViewport(760); setViewport('wide') }).not.toThrow()
+    bridge.releaseFetch()
+    await settle()
+    openCard('mine')
+    expect(isOpen()).toBe(true)
   })
 })
 

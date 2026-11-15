@@ -1888,30 +1888,39 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
 /* #303's icons, an ask's Snooze, Pin and Open in Inbox in the session panel (#454) */
 .ask-icon { display: inline-flex; align-items: center; gap: 3px; padding: 3px 6px; font-size: 11.5px; }
 .ask-icon svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.4; }
-/* #307 grown by #454 (design §3.3): the session panel, a sheet over the right
-   side of the Dashboard grid (over the cards while open), mounted in the grid
-   itself so no lens can hide it. Below 1280px it is in flow after the list (the
-   compact block at the end). Its one-shot entrance uses the motion tokens;
-   reduced motion makes it instant and Calm drops it. */
-.dashboard-grid { position: relative; }
+/* #307 grown by #454, dashboard lanes design §3.6: the session panel, in the
+   split it shares with the lanes (.dash-split, never inside a card a lens could
+   hide). At 1280px and wider an open panel turns the split on (app.js
+   syncSplit): the lanes narrow to the left column and the panel takes the
+   right one, covering nothing. Sticky under the top bar (116px, its height, as
+   the Inbox inspector's offset), with its own scroll when taller than the
+   window; no z-index, so the top bar and every dialog stay over it, and its
+   grid area keeps it off Needs you and the ribbon. Below 1280px it is in flow
+   after its card or row (the compact block at the end). Its one-shot entrance
+   uses the motion tokens; reduced motion makes it instant and Calm drops it. */
 .dash-focus {
-  position: absolute;
-  top: 0;
-  right: 0;
-  z-index: 5;
+  position: sticky;
+  top: 116px;
   display: flex;
-  width: min(620px, calc(100% - 24px));
-  max-height: max(420px, calc(100vh - 200px));
+  max-height: calc(100vh - 116px - var(--sp-4));
   flex-direction: column;
   overflow: hidden;
   border: 1px solid var(--app-border-strong);
   border-radius: 14px;
   background: var(--app-surface);
-  box-shadow: 0 12px 40px color-mix(in srgb, var(--app-text) 18%, transparent);
   animation: dash-focus-in var(--motion-moderate) var(--motion-ease-out) 1;
 }
 .dash-focus[hidden], .dash-focus [hidden] { display: none; }
+/* closed, the split is no box at all, so the lanes and the grid lay out as without it */
 .dash-split { display: contents; }
+/* 360px keeps the panel's action bar and composer readable; 34%, capped at 460px,
+   leaves Working two card columns at 1440px with the default 220px sidebar */
+.dash-split.open { display: grid; grid-column: 1 / -1; grid-template-columns: minmax(0, 1fr) clamp(360px, 34%, 460px); column-gap: var(--sp-4); align-items: start; }
+.dash-split.open > .agents-home { grid-column: 1; grid-row: 1; }
+.dash-split.open > .dash-focus { grid-column: 2; grid-row: 1; }
+/* held inline by focus across a resize to 1280px or wider (app.js placeFocusPanel):
+   the narrow panel's own layout until focus leaves, never one card cell */
+:is(.ah-cards, .qt-rows) > .dash-focus { position: static; grid-column: 1 / -1; max-height: none; }
 .sp-head { display: grid; gap: 6px; padding: 14px 16px 10px; border-bottom: 1px solid var(--app-border); }
 .sp-state { flex: none; padding: 1px 8px; border-radius: 999px; background: color-mix(in srgb, var(--sp-tone, var(--app-text-soft)) 16%, transparent); color: var(--sp-tone, var(--app-text-soft)); font-size: 10.5px; font-weight: 700; }
 .sp-state.tone-working { --sp-tone: var(--app-success); }
@@ -2574,9 +2583,9 @@ body.sidebar-collapsed .gear[data-shortcut]::after { display: none; }
    .rail-filter stays inside the menu whenever >12 projects means it is
    rendered (RAIL_FILTER_THRESHOLD, rail.js). */
 @media (max-width: 1279px) {
-  /* #307, #454: the session panel joins the flow after the list, never fixed
+  /* #307, #454: the session panel joins the flow after the list, never sticky
      over the masthead's selectors, tabs or project menu. */
-  .dash-focus { position: static; z-index: auto; grid-column: 1 / -1; width: auto; max-height: none; margin-top: calc(var(--sp-3) - var(--lane-gap)); box-shadow: none; }
+  .dash-focus { position: static; grid-column: 1 / -1; max-height: none; margin-top: calc(var(--sp-3) - var(--lane-gap)); }
   /* #454 A.3: two columns of session cards, one in a narrow desk, where the
      panel sits inline under its card (placeFocusPanel) */
   .ah-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }

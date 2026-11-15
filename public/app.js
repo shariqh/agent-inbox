@@ -2808,14 +2808,53 @@ function paintSessionFocus() {
 // #454 A.3: under 1280px the panel opens after its card's row, spanning the
 // cards' grid (one card a row below 900px, so inline under it), or after its
 // Quiet row (dashboard lanes design §3.6); on a desktop, and with no card
-// drawn, it is the Dashboard grid's own sheet after the lanes. An open panel
-// never moves while it holds focus: moving a focused node drops the focus (the
-// next paint after it leaves places it), unless the panel has been cut off
-// (#463 review: a removed group took it along, or a fold hid it), when it goes
-// home whatever held it.
+// drawn, it sits in the split after the lanes, and at 1280px and wider an open
+// one turns the split on, so it takes the column beside the lanes (syncSplit).
+// An open panel never moves while it holds focus: moving a focused node drops
+// the focus (the next paint after it leaves places it), unless the panel has
+// been cut off (#463 review: a removed group took it along, or a fold hid it),
+// when it goes home whatever held it.
 const narrowPanel = window.matchMedia('(max-width: 1279px)')
 const outOfSight = (el) => !el.isConnected || Boolean(el.parentElement?.closest('[hidden], details:not([open])'))
 function placeFocusPanel(aside = focusPanelEl) {
+  movePanel(aside)
+  syncSplit(aside)
+}
+narrowPanel.addEventListener?.('change', () => placeFocusPanel())
+
+// §3.6: the split is on only while the panel is shown, the window is 1280px or
+// wider and the panel is the split's own (held inline by focus, it is not). The
+// class flips here alone, and only a flip reads layout, so a poll or a switch
+// between sessions reads none and moves nothing. A flip reflows the lanes to
+// their new width, so the card the split is for is kept where it was on screen.
+let splitCard = null // data-session-card of the card the open split is for: close's anchor
+function syncSplit(aside) {
+  if (!splitEl || !aside) return
+  const open = !aside.hidden && !narrowPanel.matches && aside.parentElement === splitEl
+  const shown = open ? agentsHome.cardFor(focusSession)?.id ?? null : null
+  if (splitEl.classList.contains('open') === open) {
+    if (open) splitCard = shown ?? splitCard
+    return
+  }
+  const id = shown ?? splitCard
+  const anchor = activeTab === 'dashboard' && id
+    ? [...splitEl.querySelectorAll('.agents-home [data-session-card]')].find((el) => el.dataset.sessionCard === id && !outOfSight(el))
+    : null
+  keepOnScreen(anchor, () => splitEl.classList.toggle('open', open))
+  splitCard = shown
+}
+
+// Run a change that reflows the page, then scroll by however far it moved el
+// on screen, as restoreQueueView keeps the open Inbox row.
+function keepOnScreen(el, change) {
+  const before = el?.getBoundingClientRect().top
+  change()
+  if (before === undefined) return
+  const delta = el.getBoundingClientRect().top - before
+  if (Number.isFinite(delta) && Math.abs(delta) > 0.5) window.scrollBy(0, delta)
+}
+
+function movePanel(aside) {
   const home = document.querySelector('#dashboard .dash-split > .agents-home')
   if (!aside || !home) return
   const id = focusSession && narrowPanel.matches ? agentsHome.cardFor(focusSession)?.id ?? null : null
@@ -2827,7 +2866,6 @@ function placeFocusPanel(aside = focusPanelEl) {
   // a forced re-home keeps the focus (and caret) it held
   moveKeepingFocus(aside, () => anchor.after(aside))
 }
-narrowPanel.addEventListener?.('change', () => placeFocusPanel())
 
 // An element the human can see: no ancestor is hidden.
 const isShown = (el) => Boolean(el) && !el.closest('[hidden]')
@@ -2898,9 +2936,12 @@ function closeSessionFocus() {
 // A trusted click outside the panel that is not on a card or a Quiet row (each
 // toggles it itself) closes it, moving no focus. A click, never a pointerdown: it fires
 // once the press has completed on one element, so nothing moves under the
-// pointer mid-press. In the compact layout the panel is in flow (static) and
-// part of the page, with its own close and Esc, so an outside click never
-// closes it there: the cards below it would jump up under the press.
+// pointer mid-press. At 1280px and wider the panel is the split's sticky
+// column (§3.6), so an outside click closes it, and syncSplit keeps the card
+// it was for in place while the lanes widen back. Inline (static: the compact
+// layout, or held inline by focus) it is part of the page, with its own close
+// and Esc, so an outside click never closes it there: the cards below it would
+// jump up under the press.
 function closeSessionFocusOnClick(event) {
   if (!focusSession || !trustedInput(event) || !(event.target instanceof Element)) return
   if (event.target.closest('#dashboard .dash-focus, #dashboard [data-session-card]')) return

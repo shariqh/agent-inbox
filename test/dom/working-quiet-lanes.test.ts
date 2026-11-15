@@ -522,27 +522,29 @@ describe('chips and keys (§3.1)', () => {
   })
 })
 
-describe('the session panel from both lanes (§3.6, as today)', () => {
+describe('the session panel from both lanes (§3.6)', () => {
   afterEach(() => setViewport('wide'))
 
-  it('opens as the sheet after the lanes at 1280px and wider, from a Working card and from a Quiet row', async () => {
+  it('opens beside the lanes in the split at 1280px and wider, from a Working card and from a Quiet row', async () => {
     db = freshDb()
     work(db, 'w', 'Working')
     rest(db, 'q')
     await bootApp(db)
     click(item('session:w')?.querySelector('.sc-doing'))
     await settle()
-    expect([panel().hidden, panel().dataset.session, panel().parentElement?.className]).toEqual([false, 'w', 'dash-split'])
+    expect([panel().hidden, panel().dataset.session, panel().parentElement?.className]).toEqual([false, 'w', 'dash-split open'])
     expect(panel().previousElementSibling).toBe(home())
     expect(item('session:w')?.classList.contains('sel')).toBe(true)
     click(item('session:q')?.querySelector('.sc-doing'))
     await settle()
-    expect([panel().hidden, panel().dataset.session, panel().parentElement?.className]).toEqual([false, 'q', 'dash-split'])
+    expect([panel().hidden, panel().dataset.session, panel().parentElement?.className]).toEqual([false, 'q', 'dash-split open'])
     expect(item('session:q')?.classList.contains('sel')).toBe(true)
     // a second click on the row closes it
     click(item('session:q')?.querySelector('.sc-doing'))
     await settle()
     expect(panel().hidden).toBe(true)
+    // and the lanes have the full width again
+    expect(panel().parentElement?.className).toBe('dash-split')
   })
 
   it('opens inline under its card or its row below 1280px, and goes home on close', async () => {
@@ -569,13 +571,13 @@ describe('the session panel from both lanes (§3.6, as today)', () => {
     db = freshDb()
     rest(db, 'q')
     await bootApp(db)
-    // the sheet's own position: an outside click closes only a panel over the lanes
+    // the split's own position: an outside click closes only a panel beside the lanes, never an inline one
     attachStylesheet()
     trust.on = true
     click(item('session:q')?.querySelector('.sc-doing'))
     await settle()
     expect([panel().hidden, panel().dataset.session]).toEqual([false, 'q'])
-    expect(getComputedStyle(panel()).position).toBe('absolute')
+    expect(getComputedStyle(panel()).position).toBe('sticky')
     // on the row itself: neither closed by the outside click nor reopened by the row
     click(item('session:q')?.querySelector('.qt-since'))
     await settle()

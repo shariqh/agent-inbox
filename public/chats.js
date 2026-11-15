@@ -1,9 +1,11 @@
 // public/chats.js
 // The Chats tab's pure model (#586 PR 2): reading the /api/chats body, the sort,
 // search and filters, the home folder shown as ~, the labels, the fetch rule and
-// the resume command. No DOM, clock or fetch; public/chats-view.js paints it.
+// the resume command, and (PR 3) the Resume in Terminal control and its outcome.
+// No DOM, clock or fetch; public/chats-view.js paints it.
 // Every chat string here is untrusted text: the view sets it as textContent only.
 
+import { terminalName } from './launches.js'
 import { relMs } from './rowview.js'
 
 export const CHATS_HASH = '#chats'
@@ -18,6 +20,13 @@ const TOOLS = { claude: 'Claude Code', copilot: 'Copilot' }
 const HIDDEN = { temp: 'Temp folder', 'non-interactive': 'Non-interactive', empty: 'Empty', 'folder-gone': 'Folder gone' }
 const AUTO_TITLE = "Copilot's automatic name: the opening of the chat's first prompt"
 const LIVE_WARNING = 'This chat is live in another process; resuming it opens a second copy.'
+const RESUME_LIVE = 'This chat is live in another process, so it is not resumed a second time.'
+const RESUME_FAILED = 'Could not resume this chat.'
+// main's refusals after which the list is read again, so the row's off state catches up
+const RESUME_REFRESH = new Set(['live', 'folder', 'missing', 'opened'])
+
+export const RESUME_LABEL = 'Resume'
+export const RESUME_BUSY_LABEL = 'Opening…'
 
 /** Whether a location hash is the Chats tab's deep link. */
 export function isChatsHash(hash) {
@@ -156,6 +165,35 @@ export function resumeControl(chat) {
   const command = resumeCommand(chat)
   if (!command) return { command: null, title: "This chat's id or folder can't be made into a safe command." }
   return { command, title: chat.live ? `${command}\n${LIVE_WARNING}` : command }
+}
+
+/**
+ * The Resume in Terminal control (desktop app only): off, with the reason in its
+ * title, for a live chat (#586: never resumed a second time) and wherever Copy
+ * resume is off. Its title names the app; the aria-label does too for iTerm2,
+ * because the visible label stays the generic word (the terminal setting's rule).
+ */
+export function resumeTerminalControl(chat, terminal) {
+  if (chat.live) return { enabled: false, title: RESUME_LIVE, ariaLabel: null }
+  const copy = resumeControl(chat)
+  if (!copy.command) return { enabled: false, title: copy.title, ariaLabel: null }
+  const name = terminalName(terminal)
+  const title = `Resume in ${name}`
+  return { enabled: true, title, ariaLabel: name === 'Terminal' ? null : title }
+}
+
+/**
+ * What the row shows after main answered: the button's confirmation label
+ * ("Opened in iTerm2"), the note under it (the fallback notice or main's reason),
+ * and whether to read the list again.
+ */
+export function resumeOutcome(result) {
+  if (result?.ok === true) {
+    const notice = typeof result.notice === 'string' && result.notice ? result.notice : null
+    return { label: `Opened in ${terminalName(result.terminal)}`, note: notice, refresh: false }
+  }
+  const error = typeof result?.error === 'string' && result.error ? result.error : RESUME_FAILED
+  return { label: null, note: error, refresh: RESUME_REFRESH.has(result?.reason) }
 }
 
 export function toolLabel(tool) {

@@ -92,7 +92,8 @@ function recordingBoot(d: Database.Database) {
   return { urls, boot }
 }
 
-// #454: a launch is a card in the Agents home, and its actions live in the session panel
+// #454: a launch is a card in the Working lane or a row in the Quiet lane (dashboard lanes
+// design §3.3, §3.4), and its actions live in the session panel
 const panel = (): HTMLElement => document.querySelector<HTMLElement>('#dashboard .dash-focus')!
 const newSessionButton = () => document.querySelector<HTMLButtonElement>('#dashboard .dash-head .ah-new')
 const anyCard = (id: string) => [...document.querySelectorAll<HTMLElement>('[data-session-card]')].find((el) => el.dataset.sessionCard === id) ?? null
@@ -132,7 +133,7 @@ describe('off means off on the page (§9 b)', () => {
     await changedPollTick(db)
     expect(urls.filter((u) => u.includes('/api/launch'))).toEqual([])
     expect(document.getElementById('launch-settings')).toBeNull()
-    // the Agents home (#454): no launch card and no New session; the driven session is a card of its own,
+    // the lanes (#454): no launch card and no New session; the driven session is a card of its own,
     // and its panel has no action bar, transcript, worktree or Resume and send, and its composer no Interrupt
     click(document.querySelector('[data-session-card="session:mcp-1"] .sc-doing'))
     await settle()
@@ -167,7 +168,9 @@ describe('off means off on the page (§9 b)', () => {
     expect(api.setEnabled).toHaveBeenCalledWith(true)
     await changedPollTick(db)
     expect(urls.some((u) => u.startsWith('/api/launches'))).toBe(true)
-    expect(launchRow(LAUNCH)?.closest('.ah-group')?.querySelector('.ah-group-name')?.textContent).toBe('alpha')
+    // a launch still starting is a Quiet row, its project in the Session column
+    expect(launchRow(LAUNCH)?.closest('.quiet-lane .qt-rows')).not.toBeNull()
+    expect(launchRow(LAUNCH)?.querySelector('.qt-project')?.textContent).toBe('alpha')
   })
 
   it('unticks and disables New worktree for a chosen folder that is not a repository, and restores it for one that is (#432)', async () => {
@@ -1266,9 +1269,17 @@ describe('session cards for launches (#454, #412)', () => {
     expect(card(`launch:${LAUNCH}`)?.querySelector<HTMLElement>('.sc-agent')?.title).toBe('Copilot · started here')
     expect(card(`launch:${LAUNCH}`)?.querySelector('.sc-here')?.textContent).toBe('A')
     expect(card(`launch:${LAUNCH}`)?.querySelector('.sc-state')?.textContent).toBe('Working')
-    expect(actions(`launch:${LAUNCH}`)).toEqual(['Message'])
+    // the Working lane's main action, Open, then Message (dashboard lanes design §3.3)
+    expect(card(`launch:${LAUNCH}`)?.closest('.working-lane')).not.toBeNull()
+    expect(actions(`launch:${LAUNCH}`)).toEqual(['Open', 'Message'])
     expect(card('session:mcp-1')).toBeNull()
     expect(card('session:mcp-2')?.querySelector('.sc-origin')?.textContent).toBe('driven')
+    // Open is the launch's panel, never a launch action of its own
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    click(cardAction(`launch:${LAUNCH}`, 'open'))
+    await settle()
+    expect([panel().hidden, panel().dataset.card]).toEqual([false, `launch:${LAUNCH}`])
+    expect(document.activeElement).toBe(document.getElementById('dashFocusTitle'))
   })
 
   it('a parked launch offers Take over and Resume…, which opens its Resume and send, focused', async () => {

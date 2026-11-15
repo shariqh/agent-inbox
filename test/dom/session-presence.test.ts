@@ -37,9 +37,9 @@ describe('session presence and project identity', () => {
     expect(card('idle')?.classList.contains('quiet')).toBe(true)
     expect(card('active')?.classList.contains('quiet')).toBe(false)
     expect(card('idle')?.querySelector('.sc-doing')?.textContent).toMatch(/^Last reported: Preparing the release · /)
-    const group = (session: string) => card(session)?.closest<HTMLElement>('.ah-group')
-    expect(group('active')?.style.getPropertyValue('--ah-group')).toBe(projectColor('alpha', 'dark').dot)
-    expect(group('idle')?.style.getPropertyValue('--ah-group')).toBe(projectColor('beta', 'dark').dot)
+    // a Working card takes its project group's colour, a Quiet row its own (dashboard lanes design §3.3, §3.4)
+    expect(card('active')?.closest<HTMLElement>('.ah-group')?.style.getPropertyValue('--ah-group')).toBe(projectColor('alpha', 'dark').dot)
+    expect(card('idle')?.style.getPropertyValue('--ah-group')).toBe(projectColor('beta', 'dark').dot)
     expect(indicator('si-v')).toBe('1 working')
     expect(indicator('si-s')).toBe('2 connected')
     expect(document.getElementById('sessionsIndicator')?.dataset.tone).not.toBe('idle')
@@ -60,7 +60,9 @@ describe('session presence and project identity', () => {
     }
     expect(indicator('si-v')).toBe('2 connected')
     expect(indicator('si-s')).toBe('all quiet')
-    expect(document.querySelector('.agents-home .ah-groups')?.textContent).not.toMatch(/\bWorking\b|no agents running/)
+    // neither is drawn as work: both are Quiet rows, and Working says it has none
+    expect(document.querySelector('.agents-home .ah-groups')?.textContent).toBe('')
+    expect(document.querySelector('.agents-home .qt-rows')?.textContent).not.toMatch(/\bWorking\b|no agents running/)
   })
 
   it('says there are no sessions only when none are present', async () => {

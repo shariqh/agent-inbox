@@ -12,16 +12,16 @@ export interface AgentsHomeInput {
   answered?: Array<Record<string, any>>
   closed?: Iterable<string>
   nowMs: number
-  /** a forced paint re-sorts the cards (§10 rule 5) */
+  /** a forced paint re-sorts each lane, unless the pointer or the keyboard is in it (dashboard lanes design §3.3) */
   forced?: boolean
-  /** the sidebar's project lens, named in the card count */
-  lensProject?: string | null
   /** the session panel's key, so its card is marked */
   selected?: string | null
   /** launches the project and agent lens hides that are not ended (#454) */
   outside?: number
   /** the Mesh agents section's last `/api/mesh/agents` body, or null to draw none (agent cards view V3) */
   mesh?: MeshAgentsInput | null
+  /** the agent the agent tab holds: its card carries aria-current (cards view V5 §2.2) */
+  meshOpen?: string | null
 }
 
 export interface AgentsHomeLaunches {
@@ -33,8 +33,9 @@ export interface AgentsHomeLaunches {
 export interface AgentsHomeDeps {
   doc?: Document
   /**
-   * The session panel (#454): a card's click toggles it (no part); Enter, Message, Transcript and
-   * Resume… open it at that part. `key` is a launch card's id, else the card's session.
+   * The session panel (#454): a card's or row's click toggles it (no part); Enter and Open open it
+   * at its head, Message, Transcript and Resume… at that part. `key` is a launch card's id, else
+   * the card's session.
    */
   openSession: (key: string, part?: 'approval' | 'asks' | 'message' | 'transcript' | 'resume' | 'head' | null, ask?: string | null) => void
   /** the "Asking you · N" chip: the session's first ask in the Needs you lane, by its id (dashboard lanes design §3.3) */
@@ -53,7 +54,9 @@ export interface AgentsHomeDeps {
   showAll?: () => void
   /** the Mesh agents section's Refresh: posts `refresh`, then repaints through reloadAndPaint() */
   refreshMesh?: () => void
-  /** after the home's own repaints (filters, grouping, folds): the session panel finds its place again */
+  /** a Mesh agents card's press: the agent tab (cards view V5) */
+  openMeshAgent?: (key: string, name: string) => void
+  /** after the lanes' own repaints (folds, the mesh section): the session panel finds its place again */
   afterRepaint?: () => void
   /** the scroll behavior a chip's jump uses (motion.scrollBehavior) */
   scrollBehavior?: () => ScrollBehavior
@@ -62,8 +65,16 @@ export interface AgentsHomeDeps {
 /** moves `node` with `move()`, giving back the focus (and a text control's selection) it held, in a focused window */
 export function moveKeepingFocus(node: Element, move: () => void): void
 
+/** Working's first-run message, with no session at all */
+export const SESSIONS_EMPTY: string
+/** a lane's one quiet line when it has nothing (dashboard lanes design §3.3, §3.4) */
+export const WORKING_EMPTY: string
+export const QUIET_EMPTY: string
+/** Working's line before the first /api/activity read */
+export const READING: string
+
 export function installAgentsHome(deps: AgentsHomeDeps): {
-  /** the Agents home card, made once; renderDashboard mounts it in the Dashboard grid */
+  /** the Working and Quiet lanes in one wrapper, made once; renderDashboard mounts it in the Dashboard grid */
   element(): HTMLElement
   paint(host: Element, input: AgentsHomeInput): void
   /** repaints the cards from the last paint's input (a closed panel's draft shows on its card at once) */
@@ -72,11 +83,13 @@ export function installAgentsHome(deps: AgentsHomeDeps): {
   paintNewSession(): void
   /** New session… and its note, made once: the page head mounts them (dashboard lanes design §3.1) */
   newSessionElements(): { button: HTMLButtonElement; note: HTMLElement }
-  /** the page head's Working and Quiet counts over the main list, or null before the first activity read */
+  /** the page head's Working and Quiet counts, each its lane's size, or null before the first activity read */
   counts(): { working: number; quiet: number } | null
-  /** a lane chip's jump: scrolls the card in and focuses its first shown working (or other) card, else its heading */
+  /** a lane chip's jump: scrolls its lane in and focuses the lane's first card or row, else its heading */
   focusFirst(kind: 'working' | 'quiet'): void
-  /** the window-local view state (filter, grouping, folds), for frameInputs() */
+  /** the heading of the lane a panel key's card is in: Quiet for a row or a fold's card, else Working */
+  laneTitle(key?: string | null): HTMLElement | null
+  /** the window-local view state (the open folds, the mesh section), for frameInputs() */
   state(): string
   /** the card a session panel key names: a card id, a live session, or a session a launch remembers */
   cardFor(key: string | null | undefined): SessionCard | null

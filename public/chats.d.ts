@@ -39,6 +39,10 @@ export function filterChats(chats: readonly Chat[], filter: ChatFilter, home: st
 export function projectOptions(chats: readonly Pick<Chat, 'project'>[]): string[]
 export function resumeCommand(chat: { id: unknown; tool: unknown; cwd: unknown }): string | null
 export function resumeControl(chat: Chat): { command: string | null; title: string }
+export const RESUME_LABEL: 'Resume'
+export const RESUME_BUSY_LABEL: string
+export function resumeTerminalControl(chat: Chat, terminal: unknown): { enabled: boolean; title: string; ariaLabel: string | null }
+export function resumeOutcome(result: unknown): { label: string | null; note: string | null; refresh: boolean }
 export function toolLabel(tool: string): string
 export function hiddenLabel(reason: string): string
 export function titleView(chat: Pick<Chat, 'title' | 'titleAuto'>): { text: string; quiet: boolean; title: string | null }

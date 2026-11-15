@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from 'vitest'
 import type Database from 'better-sqlite3'
-import { insertItem } from '../../src/store.js'
+import { insertItem, upsertActivity } from '../../src/store.js'
 import {
   bootApp, buttonLabelled, click, freshDb, pollTick, row, setViewport, settle, showInbox, useDomTest,
 } from './harness.js'
@@ -19,8 +19,10 @@ function press(key: string, extra: KeyboardEventInit = {}) {
 
 it('reveals explicit Tab targets only in their scrolling owner and leaves passive restoration alone', async () => {
   db = freshDb()
+  // a live session: Show on Agents › is offered only where a session card can open the ask (lanes design §6)
+  upsertActivity(db, { project: 'alpha', stream: 'main', agent: 'copilot', session: 'live', doing: 'Releasing', idle: false })
   const id = insertItem(db, {
-    project: 'alpha', stream: 'main', agent: 'copilot', kind: 'question',
+    project: 'alpha', stream: 'main', agent: 'copilot', kind: 'question', session: 'live',
     title: 'Choose a release',
     options: [
       { label: 'Approve', detail: 'Continue with the verified build.', recommended: true },

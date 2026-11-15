@@ -257,3 +257,35 @@ describe('the Agents home layout (#454)', () => {
     expect(css.slice(css.indexOf('@media (max-width: 1279px)'))).toMatch(/\.ah-cards \{ grid-template-columns: repeat\(2, minmax\(0, 1fr\)\); \}\s*@container operations-desk \(max-width: 900px\) \{\s*\.ah-cards \{ grid-template-columns: minmax\(0, 1fr\); \}/)
   })
 })
+
+// Dashboard lanes design §3.1, §3.2, §4: the page head's chips and the Needs
+// you lane take the type and spacing tokens, never a literal size or gap.
+describe('the Needs you lane and the lane chips (dashboard lanes PR 3)', () => {
+  // every top-level rule whose selector names one of the new parts
+  const OURS = /(^|[\s,>])\.(dash-head|dash-chip[\w-]*|dash-chips|dash-head-actions|needs-you-lane|ny-[\w-]+|sc-asking)(?![\w-])/
+  const rules = [...css.matchAll(/(?:^|\n)([^{}@\n][^{}\n]*)\{([^{}]*)\}/g)]
+    .map((m) => ({ selector: m[1]!.trim(), body: m[2]! }))
+    .filter((r) => OURS.test(r.selector))
+  const body = (selector: string) => rules.find((r) => r.selector === selector)?.body ?? ''
+
+  it('take the tokens for every font size, gap, margin and padding', () => {
+    expect(rules.length).toBeGreaterThan(10)
+    for (const { selector, body: decls } of rules) {
+      for (const [, prop, value] of decls.matchAll(/(?<![\w-])(font-size|gap|row-gap|column-gap|margin[\w-]*|padding[\w-]*):\s*([^;]+);/g)) {
+        for (const part of value!.trim().split(/\s+/)) {
+          expect(part, `${selector} ${prop}`).toMatch(/^(0|auto|var\(--(fs-[\w-]+|sp-\d|lane-gap)\))$/)
+        }
+      }
+    }
+    expect(body('.ny-title')).toMatch(/font-size: var\(--fs-title\);/)
+    expect(body('.needs-you-lane')).toMatch(/margin-top: var\(--lane-gap\);/)
+    expect(body('.ny-cards')).toMatch(/gap: var\(--sp-3\);/)
+    expect(body('.ny-card')).toMatch(/padding: var\(--sp-3\) var\(--sp-4\);/)
+  })
+
+  it('wrap Later and Review queue under the lane title below 620px, and leave no Now strip', () => {
+    const narrow = css.slice(css.indexOf('@container operations-desk (max-width: 620px) {'))
+    expect(narrow.slice(0, narrow.indexOf('\n}'))).toMatch(/\.ny-head > h2 \{ flex-basis: 100%; \}/)
+    expect(css).not.toMatch(/\.dash-now|\.dashboard-value|\.sc-ask\b|\.sc-ask-|sc-ask-only|tone-ask|\.ah-later|\.ah-review/)
+  })
+})

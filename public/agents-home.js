@@ -1,28 +1,29 @@
 // The Agents home (#454, design docs/superpowers/specs/2026-11-04-agents-home-design.md
 // §3): one card per session, grouped by project (or by agent kind), with state
-// filters, New session… and folds for the ended, the dormant, the closed
-// projects' sessions and the messages not delivered. It began as mesh M1's
-// Agents view (#397) and is always on.
+// filters and folds for the ended, the dormant, the closed projects' sessions
+// and the messages not delivered. It began as mesh M1's Agents view (#397) and
+// is always on. It still builds New session…, which the page head shows
+// (dashboard lanes design §3.1).
 //
 // It reads what the frame already read (sessions.js builds the cards) and
-// never feeds attention: "Needs you" and the asks READ the frame's attention
-// entries, and nothing here reaches public/attention.js, a badge, a count, the
-// rail or the dock. It fetches nothing and runs no timer; a working card
-// pulses once on a new call, through the page's one-shot (#304). Agent text
+// never feeds attention: a card's "Asking you · N" chip READS the frame's
+// attention entries (its asks show in the Needs you lane, §3.3), and nothing
+// here reaches public/attention.js, a badge, a count, the rail or the dock. It
+// fetches nothing and runs no timer; a working card pulses once on a new call,
+// through the page's one-shot (#304). Agent text
 // reaches the DOM only through textContent. Painted from app.js's
 // renderDashboardAmbient, so from both render entries. The Mesh agents section
 // (public/mesh-section.js) sits after the groups, outside every filter and lens.
-import { FILTERS, cardMatches, filterCounts, groupCards, messageHint, sessionCards } from './sessions.js'
+import { FILTERS, cardMatches, filterCounts, groupCards, laneCounts, messageHint, sessionCards } from './sessions.js'
 import { forgettable } from './launches.js'
 import { pinLaneOrder, tracePath } from './lanes.js'
-import { relMs } from './rowview.js'
 import { installMeshAgents } from './mesh-section.js'
 
 const SVG = 'http://www.w3.org/2000/svg'
 const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`
-// A launch's panel is keyed by the launch, which outlives its sessions, and an
-// ask-only card's by its id; any other card by its session.
-const panelKey = (card) => (card.launch || card.askOnly ? card.id : card.session)
+// A launch's panel is keyed by the launch, which outlives its sessions; any
+// other card by its session.
+const panelKey = (card) => (card.launch ? card.id : card.session)
 const askId = (entry) => (entry?.kind === 'row' ? entry.row?.id : entry?.item?.id) ?? null
 const EMPTY = 'No sessions yet. A Claude Code or Copilot session appears here once Agent Inbox’s MCP server starts in it.'
 
@@ -118,7 +119,7 @@ export function installAgentsHome(deps) {
     filters.setAttribute('role', 'group')
     filters.setAttribute('aria-label', 'Show sessions')
     for (const [key, label] of FILTERS) {
-      const option = button('', `ah-filter${key === 'ask' ? ' att' : ''}`, `ah:filter:${key}`)
+      const option = button('', 'ah-filter', `ah:filter:${key}`)
       option.dataset.ahFilter = key
       option.append(make('span', '', label), make('b', 'ah-filter-count', '0'))
       option.addEventListener('click', () => { filter = key; repaint() })
@@ -131,20 +132,7 @@ export function installAgentsHome(deps) {
     select.append(new Option('Project', 'project'), new Option('Agent', 'agent'))
     select.addEventListener('change', () => { groupBy = select.value === 'agent' ? 'agent' : 'project'; repaint() })
     group.append(make('span', '', 'Group:'), select)
-    const start = button('＋ New session…', 'ah-new', 'ah:new')
-    start.hidden = true
-    start.addEventListener('click', () => deps.launches?.()?.openNewSession())
-    // #454 A.2: where the rail's "N in Later" and Open Review queue went
-    const later = button('', 'ah-later', 'ah:later')
-    later.hidden = true
-    later.title = 'Open the Inbox’s Later section'
-    later.addEventListener('click', () => deps.openLater?.())
-    const review = button('Review queue', 'ah-review', 'ah:review')
-    review.dataset.shortcutId = 'review'
-    review.addEventListener('click', () => deps.openReview?.())
-    head.append(title, make('small', 'ah-count'), filters, make('span', 'ah-spacer'), later, review, group, start)
-    const note = make('p', 'ah-note')
-    note.hidden = true
+    head.append(title, make('small', 'ah-count'), filters, make('span', 'ah-spacer'), group)
     // the launches the project and agent lens hides, so a session started elsewhere is never lost
     const outside = make('p', 'ah-outside')
     outside.hidden = true
@@ -197,7 +185,7 @@ export function installAgentsHome(deps) {
       else folds.delete(fold.dataset.ahFold)
       repaint()
     }, true)
-    section.append(head, note, outside, list, empty, none, make('div', 'ah-mesh'), foldRow)
+    section.append(head, outside, list, empty, none, make('div', 'ah-mesh'), foldRow)
     section.addEventListener('click', onClick)
     section.addEventListener('keydown', onKey)
     return section
@@ -208,23 +196,25 @@ export function installAgentsHome(deps) {
     const el = target?.closest('[data-session-card]')
     const card = el ? byId.get(el.dataset.sessionCard) : null
     if (!card) return
+    // "Asking you · N" goes to the session's first ask in Needs you (dashboard lanes design §3.3):
+    // not a card action, so it never reaches a launch's
+    if (target.closest('.sc-asking')) {
+      deps.showAsk?.(askId(card.asks[0]))
+      return
+    }
     const control = target.closest('[data-ah-action]')
     if (control) {
       if (control.disabled) return
       const action = control.dataset.ahAction
-      // the session panel holds the ask, the composer, the transcript and Resume and send (§3.3)
-      if (action === 'review') openAsk(card)
-      else if (action === 'inbox') deps.openInInbox?.(card.asks[0])
-      else if (action === 'message' || action === 'transcript' || action === 'resume') deps.openSession(panelKey(card), action)
+      // the session panel holds the composer, the transcript and Resume and send (§3.3)
+      if (action === 'message' || action === 'transcript' || action === 'resume') deps.openSession(panelKey(card), action)
       else if (card.launch) deps.launchAction?.(card.launch.id, action)
       return
     }
     // A click anywhere else on the card opens it, but never one that ends a
     // text selection or lands on a control.
     if (target.closest('button, a, select, summary, [data-link-kind]') || String(doc.getSelection?.() ?? '')) return
-    // the ask strip opens the panel at that ask; it never answers (A.6)
-    if (target.closest('.sc-ask') && card.asks.length) openAsk(card)
-    else deps.openSession(panelKey(card))
+    deps.openSession(panelKey(card))
   }
 
   // #454 A.2: on a card itself (never its controls), J/K and the arrows move
@@ -240,8 +230,7 @@ export function installAgentsHome(deps) {
     event.preventDefault()
     event.stopPropagation()
     if (!move) {
-      if (card.asks.length) openAsk(card)
-      else deps.openSession(panelKey(card), 'head')
+      deps.openSession(panelKey(card), 'head')
       return
     }
     const cards = [...el.closest('.agents-home').querySelectorAll('[data-session-card]')]
@@ -250,12 +239,6 @@ export function installAgentsHome(deps) {
     roving = next.dataset.sessionCard
     for (const other of cards) other.tabIndex = other === next ? 0 : -1
     next.focus()
-  }
-
-  // An approval lands on its heading (#459); any other ask on its own block.
-  function openAsk(card) {
-    const first = card.asks[0]
-    deps.openSession(panelKey(card), card.approval ? 'approval' : 'asks', card.approval ? null : askId(first))
   }
 
   // ── a card ────────────────────────────────────────────────────────────────
@@ -267,7 +250,9 @@ export function installAgentsHome(deps) {
     const dot = make('span', 'sc-dot')
     dot.setAttribute('aria-hidden', 'true')
     top.append(dot, make('span', 'sc-state'), make('span', 'sc-chips'), make('span', 'sc-when'))
-    const ask = make('div', 'sc-ask')
+    // "Asking you · N" (dashboard lanes design §3.3): the asks themselves are in Needs you
+    const ask = button('', 'sc-asking')
+    ask.title = 'Show in Needs you'
     ask.hidden = true
     // the foot's facts and its buttons are rebuilt apart, so a new call never replaces a focused button
     const foot = make('div', 'sc-foot')
@@ -291,20 +276,6 @@ export function installAgentsHome(deps) {
     return parts
   }
 
-  // The ask strip's second line: each ask's kind and age, the first two.
-  const askAge = (entry, nowMs) => {
-    const at = Date.parse((entry.kind === 'row' ? entry.row?.action_started_at ?? entry.board?.updated_at : entry.item?.created_at) ?? '')
-    if (!Number.isFinite(at)) return ''
-    const ms = Math.max(0, nowMs - at)
-    return relMs(ms) === 'moments' ? 'now' : relMs(ms)
-  }
-  const askKind = (entry) => (entry.kind === 'row' ? 'plan step' : entry.item?.project?.startsWith('@') ? 'approval' : 'question')
-  function askLine(card, nowMs) {
-    const [first] = card.asks
-    if (card.asks.length === 1) return [askKind(first).replace(/^./, (c) => c.toUpperCase()), askAge(first, nowMs)].filter(Boolean).join(' · ')
-    return [plural(card.asks.length, 'ask'), ...card.asks.slice(0, 2).map((entry) => `${askKind(entry)} ${askAge(entry, nowMs)}`.trim())].join(' · ')
-  }
-
   // The state's main action (§2), and Message on a session that can take one.
   function actionsOf(card, granted) {
     const out = []
@@ -316,13 +287,6 @@ export function installAgentsHome(deps) {
       if (!session) return
       const draft = deps.hasDraft?.(session) === true
       out.push(['message', draft ? 'Message · draft' : 'Message', draft ? 'Message this session: your unsent draft is kept' : 'Message this session'])
-    }
-    if (card.state === 'ask') {
-      if (card.askOnly) out.push(['inbox', 'Open in Inbox', 'Open this ask’s card in the Inbox'])
-      const draft = card.asks.some((entry) => deps.hasAskDraft?.(askId(entry)) === true)
-      out.push(['review', draft ? 'Answer · draft' : 'Answer',
-        draft ? 'Answer in the session panel: your unsent draft is kept' : card.approval ? 'Review this approval in the session panel' : 'Answer in the session panel', 'primary'])
-      return out
     }
     if (!card.launch) {
       message()
@@ -356,7 +320,6 @@ export function installAgentsHome(deps) {
     if (!el.classList.contains(`tone-${card.state}`)) el.classList.add(`tone-${card.state}`)
     const selected = Boolean(last?.input.selected) && cardFor(last.input.selected) === card
     if (el.classList.contains('sel') !== selected) el.classList.toggle('sel', selected)
-    if (el.classList.contains('sc-ask-only') !== Boolean(card.askOnly)) el.classList.toggle('sc-ask-only', Boolean(card.askOnly))
     if (el.classList.contains('quiet') !== Boolean(card.quiet)) el.classList.toggle('quiet', Boolean(card.quiet))
     // written only on a change, so an unchanged paint writes nothing at all
     const label = `${card.label}: ${card.host} in ${card.project}${card.branch ? ` on ${card.branch}` : ''}`
@@ -377,7 +340,7 @@ export function installAgentsHome(deps) {
     // V2: a secondary line under what it is doing: the worktree and a working
     // session's plan bar, else when a message reaches it
     const busy = card.state === 'working'
-    const hint = busy || card.state === 'ask' || card.launch ? null : messageHint(card.row)
+    const hint = busy || card.launch ? null : messageHint(card.row)
     const where = el.querySelector('.sc-where')
     rebuild(where, JSON.stringify([card.worktree, busy && card.plan, hint]), () => {
       const parts = []
@@ -408,18 +371,11 @@ export function installAgentsHome(deps) {
       return parts
     })
     setHidden(where, !where.childElementCount)
-    const ask = el.querySelector('.sc-ask')
-    setHidden(ask, !card.asks.length)
-    const first = card.asks[0]
-    const askTitle = first ? (first.kind === 'item' ? first.item?.title : first.row?.label) ?? '' : ''
-    if (ask.title !== (first ? 'Open this ask in the session panel' : '')) ask.title = first ? 'Open this ask in the session panel' : ''
-    const line = first ? askLine(card, last?.input.nowMs ?? Date.now()) : ''
-    rebuild(ask, JSON.stringify([card.approval, askTitle, line]), () => {
-      if (!first) return []
-      const title = make('span', `sc-ask-title${card.approval ? ' mono' : ''}`, askTitle)
-      title.title = askTitle
-      return [title, make('span', 'sc-ask-line', line)]
-    })
+    const asking = el.querySelector('.sc-asking')
+    setHidden(asking, !card.asks.length)
+    setText(asking, card.asks.length ? `Asking you · ${card.asks.length}` : '')
+    // a key of its own, so a focused chip comes back after a card rebuild
+    if (asking.dataset.dashboardFocusKey !== `sc:${card.id}:asking`) asking.dataset.dashboardFocusKey = `sc:${card.id}:asking`
     const actions = actionsOf(card, granted)
     const foot = el.querySelector('.sc-foot')
     const trace = busy ? card.trace ?? [] : []
@@ -514,6 +470,7 @@ export function installAgentsHome(deps) {
     mesh.paint(section.querySelector('.ah-mesh'), input.mesh ?? null, input.nowMs, input.meshOpen ?? null)
     if (reading) {
       // before the first /api/activity read (§3.6)
+      lanes = null
       setText(section.querySelector('.ah-count'), 'Reading sessions…')
       return
     }
@@ -534,13 +491,11 @@ export function installAgentsHome(deps) {
     const select = section.querySelector('[data-dashboard-focus-key="ah:group"]')
     if (select.value !== groupBy) select.value = groupBy
     setText(section.querySelector('.ah-count'), `${plural(main.length, 'session')}${input.lensProject ? ` in ${input.lensProject}` : ''}`)
-    paintNewSession(section, launchUi)
+    lanes = laneCounts(main)
+    paintNewSession(launchUi)
     const hidden = Number(input.outside) || 0
     setText(section.querySelector('.ah-outside-text'), hidden ? `${plural(hidden, 'session')} outside this filter` : '')
     setHidden(section.querySelector('.ah-outside'), !hidden)
-    const later = Number(input.later) || 0
-    setText(section.querySelector('.ah-later'), later ? `Later ${later} ›` : '')
-    setHidden(section.querySelector('.ah-later'), !later)
 
     // the one-shot pulse: a real call since the last paint, on a drawn working card
     const pulse = new Set()
@@ -577,8 +532,8 @@ export function installAgentsHome(deps) {
         groupEls.set(key, el)
       }
       setText(el.querySelector('.ah-group-name'), group.label)
-      const asks = group.cards.reduce((sum, card) => sum + card.asks.length, 0)
-      setText(el.querySelector('.ah-group-count'), `${plural(group.cards.length, 'session')}${asks ? ` · ${plural(asks, 'ask')}` : ''}`)
+      // sessions only: the Needs you chip counts the asks, once (dashboard lanes design §3.1)
+      setText(el.querySelector('.ah-group-count'), plural(group.cards.length, 'session'))
       const color = groupBy === 'project' && deps.projectColor ? deps.projectColor(group.key) : ''
       if (el.style.getPropertyValue('--ah-group') !== color) {
         if (color) el.style.setProperty('--ah-group', color)
@@ -625,13 +580,25 @@ export function installAgentsHome(deps) {
     for (const [id, el] of cardEls) if (!byId.has(id) || !el.isConnected) cardEls.delete(id)
   }
 
+  // New session… and its note, made once: the page head shows them (dashboard lanes design §3.1)
+  let newSessionEls = null
+  function newSessionElements() {
+    if (newSessionEls) return newSessionEls
+    const start = button('＋ New session…', 'ah-new', 'ah:new')
+    start.hidden = true
+    start.addEventListener('click', () => deps.launches?.()?.openNewSession())
+    const note = make('p', 'ah-note')
+    note.hidden = true
+    newSessionEls = { button: start, note }
+    return newSessionEls
+  }
+
   /** New session…: hidden with the switch off, disabled while a start is in flight. */
-  function paintNewSession(section, launchUi) {
-    const start = section.querySelector('.ah-new')
+  function paintNewSession(launchUi) {
+    const { button: start, note } = newSessionElements()
     const newSession = launchUi?.newSession() ?? null
     setHidden(start, !newSession)
     if (newSession && start.disabled !== newSession.disabled) start.disabled = newSession.disabled
-    const note = section.querySelector('.ah-note')
     setText(note, newSession?.note ?? '')
     setHidden(note, !newSession?.note)
   }
@@ -650,6 +617,35 @@ export function installAgentsHome(deps) {
   }
 
   let mounted = null
+  let lanes = null // the last paint's Working and Quiet counts, or null while reading
+
+  // A chip's target (dashboard lanes design §3.1): the Agents card scrolled in,
+  // focus on its first shown card of that kind, else its heading. It never filters.
+  function focusFirst(kind) {
+    if (!mounted) return
+    const behavior = deps.scrollBehavior?.() ?? 'auto'
+    mounted.scrollIntoView?.({ block: 'start', behavior })
+    const find = () => [...mounted.querySelectorAll('.ah-groups [data-session-card]')].find((el) => {
+      const card = byId.get(el.dataset.sessionCard)
+      return card && (card.base === 'working') === (kind === 'working')
+    })
+    let match = find()
+    // §3.1: the chip counts every main card, so a state filter that hides them
+    // is cleared (never applied) before landing; the chip still never filters
+    if (!match && filter !== 'all' && (lanes?.[kind === 'working' ? 'working' : 'quiet'] ?? 0) > 0) {
+      filter = 'all'
+      repaint()
+      match = find()
+    }
+    const target = match ?? mounted.querySelector('#agentsHomeTitle')
+    if (match) {
+      roving = match.dataset.sessionCard
+      for (const other of mounted.querySelectorAll('[data-session-card]')) other.tabIndex = other === match ? 0 : -1
+    }
+    target?.focus({ preventScroll: true })
+    // a card deep in a long group is revealed, not focused off-screen
+    match?.scrollIntoView?.({ block: 'nearest', behavior })
+  }
 
   return {
     /** The card, made once: renderDashboard mounts it in the Dashboard grid. */
@@ -658,15 +654,14 @@ export function installAgentsHome(deps) {
     /** Repaints the cards from the last paint's input with `overrides`: a closed panel's draft shows on its card at once. */
     repaint,
     /** Repaints New session… alone, as a start begins or settles. */
-    paintNewSession: () => { if (mounted) paintNewSession(mounted, deps.launches?.() ?? null) },
+    paintNewSession: () => paintNewSession(deps.launches?.() ?? null),
+    /** New session… and its note, which the page head mounts. */
+    newSessionElements,
     cardFor,
-    /** Shows one state filter and lands on the Agents heading (the Now strip's Waiting on you, #454 A.2). */
-    showFilter: (key) => {
-      filter = FILTERS.some(([name]) => name === key) ? key : 'all'
-      repaint()
-      if (doc.hasFocus?.()) mounted?.querySelector('#agentsHomeTitle')?.focus({ preventScroll: true })
-    },
-    /** The panel key of the card holding an ask, or null. */
+    /** The page head's Working and Quiet counts, or null before the first /api/activity read. */
+    counts: () => lanes,
+    focusFirst,
+    /** The panel key of the card holding an ask (at most one does), or null. */
     askKey: (id) => {
       const card = cardForAsk(id)
       return card ? panelKey(card) : null

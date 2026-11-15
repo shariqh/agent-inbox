@@ -57,14 +57,6 @@ export interface Lane {
   waiting: { entry: AttentionEntry; ms: number } | null
 }
 
-export interface NowStrip {
-  working: number
-  subagents: number
-  waiting: number
-  oldestWaitingMs: number | null
-  plans: { done: number; countable: number }
-}
-
 export const QUIET_MS: number
 export function isWorking(row: LaneActivity, nowMs: number): boolean
 export function linkedPlan<B extends LaneBoard>(row: LaneActivity, boards: B[], working?: Set<string>): B | null
@@ -77,7 +69,7 @@ export function buildLanes(input: {
   boards: LaneBoard[]
   asks: AttentionEntry[]
   nowMs: number
-}): { lanes: Lane[]; idle: number; now: NowStrip }
+}): { lanes: Lane[]; idle: number }
 export function pinLaneOrder(previous: string[], lanes: Array<{ session: string }>): string[]
 export function sessionFocus(lane: Lane, input: { items?: any[]; boards?: any[]; outcomes?: any[] }): {
   board: any | null

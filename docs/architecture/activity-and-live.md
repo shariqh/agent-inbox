@@ -118,7 +118,7 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   its exit-2 wake, and a tool stamp more than 5 s after the idle stamp counts as a turn
   (the margin absorbs the last tool's async PostToolUse landing after its Stop); `isBusy` = `isWorking` or `busy`. A busy card with no claim is Working,
   "Task not reported", "turn running 35m · last tool 20s ago"; `waiting` is Idle, "turn
-  ended 12m ago"; the Sessions line and the Now strip's Working count use `isBusy`.
+  ended 12m ago"; the Sessions line and the Dashboard's Working chip (a card whose base state is working) use `isBusy`.
   Plan joins, lanes and `linkedPlan` keep `isWorking`; dormancy and card order also
   read the newest host stamp. Presence, not attention: no badge, Needs you or count.
   Older servers never name the columns; a row no hook links to reads as before.

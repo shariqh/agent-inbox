@@ -95,13 +95,46 @@ The ownership grammar is consistent everywhere:
 
 ## Dashboard
 
-The first viewport contains:
+The first viewport contains, top to bottom:
 
-- truthful signals for active agents, human attention, plans, and recorded outcomes;
-- local agent-claim history with explicit empty/error states;
-- ownership flow;
-- live dispatch;
-- recent outcomes.
+- the page head: one row of lane chips, **Needs you N**, **Working N** and **Quiet N**,
+  with New session… at its right end;
+- the **Needs you** lane: one card per ask;
+- the Agents card, one card per session;
+- local agent-claim history with explicit empty/error states, and recent outcomes.
+
+A lane chip is a button that scrolls to its lane and moves focus to its first card. It
+never filters, and it shows 0 when its lane is empty. The Needs you count shows only on
+its chip: no lane header, group head or session card repeats it. Working counts the live
+session cards whose state is working; Quiet counts the other live cards in the main list.
+Until the Working and Quiet lanes exist, both chips land on the Agents card, clearing an
+Agents state filter that hides the cards they count, and that card keeps its state filters
+with their own per-state counts: its Quiet filter counts idle cards only, while the Quiet
+chip also counts parked and starting ones. PR 4 removes the filters.
+
+The Needs you lane holds the Inbox's attention set under the Dashboard's lens, in rail
+order (asks an agent is waiting on first, oldest first), so with All projects its count is
+the Inbox badge and every ask shows exactly once. A card leads with what the Inbox row leads
+with: a meta line (project, agent kind, branch, age, and a muted "Draft" tag while the Inbox
+holds an unsent answer for it), then the same headline (`actionPresentation`: the requested
+step while the ask is unanswered, else its title), then up to two lines of its summary (or
+its next step when the headline is not the step), and for a blocked plan row one line,
+"Plan · plan title · row label". A Dashboard card's heading is never narrower than its text:
+the controls beside it wrap to the next line instead. A card never
+answers and holds no control: a click or Enter opens the ask in the Inbox's detail panel,
+which is the one action card per ask. When it was opened from the lane, Esc or the card's
+close returns to the Dashboard, scrolled where it was, with focus on the card; answering
+stays in the Inbox. The lane's header holds "Later N ›" (only above 0) and Review queue.
+Empty, it says "Nothing in this view is waiting on you." and keeps its place. A card under
+the pointer, or holding keyboard focus, does not move.
+
+A session card never shows an ask. A session that has asks carries a pink "Asking you · N"
+chip, which scrolls to its first ask in Needs you. An ask no session card holds shows in the
+lane with "session ended" or "no session" in its meta line. The session panel keeps its
+Asking you section, so you can answer while reading that session's transcript.
+
+Keyboard: Tab reaches the chips, then the lane. In the lane, J/K and the arrow keys move
+between cards with one roving tab stop, and Enter opens the card. G I still opens the Inbox.
 
 Every summary is a working entry point into an existing view. Dashboard data never
 enters the attention predicate, badge count, or alert system.
@@ -137,12 +170,14 @@ No portal or duplicate action component is permitted.
 ## Responsive Contract
 
 - **1280px and wider:** fixed project library, resizable queue/inspector split,
-  four dashboard signals.
-- **900–1279px:** compact masthead, two-column dashboard signals, inline queue
-  detail.
-- **620–899px:** stacked dashboard regions and reflowed metadata.
+  the lane chips on one row.
+- **900–1279px:** compact masthead, inline queue detail; the lane chips wrap
+  before they shrink.
+- **620–899px:** stacked dashboard regions, one Needs you card a row, and
+  reflowed metadata.
 - **Below 620px:** horizontally scrollable navigation preserves every tab and
-  count; dashboard is single-column. The masthead uses three compact rows:
+  count; dashboard is single-column, and the Needs you lane's Later and Review
+  queue wrap under its title. The masthead uses three compact rows:
   identity/settings, tabs, then project and agent selectors side by side.
 - **440px and below:** full-viewport action card. Verify at 320px, 375px, and
   430px. Project and agent selectors remain side by side rather than adding a

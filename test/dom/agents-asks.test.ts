@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
-// #454 amendment A.1–A.2 (PR 5): every ask in the Agents view. Every attention
-// entry is on exactly one session card, an ask whose session no card shows on
-// an ask-only card, and the session panel's Asking you section answers it with
-// the Inbox's own controls and writes, under the rail's draft rules.
+// #454 amendment A.1–A.2 (PR 5), as the dashboard lanes design (§3.2, §6) left
+// it: every attention entry shows once, in the Needs you lane; a session card
+// holds at most one of them and only counts it; and the session panel's Asking
+// you section answers a card's asks with the Inbox's own controls and writes,
+// under the rail's draft rules.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type Database from 'better-sqlite3'
 import {
@@ -53,15 +54,18 @@ const block = (id: string) => panel().querySelector<HTMLElement>(`[data-panel-as
 const editor = (id: string) => block(id)?.querySelector<HTMLTextAreaElement>('.reply-input:not(.reply-context-input)') ?? null
 const askAction = (id: string, name: string) => block(id)?.querySelector<HTMLButtonElement>(`[data-ask-action="${name}"]`) ?? null
 const card = (key: string) => [...document.querySelectorAll<HTMLElement>('#dashboard [data-session-card]')].find((el) => el.dataset.sessionCard === key) ?? null
-const needsYou = () => Number(document.querySelector('.agents-home [data-ah-filter="ask"] .ah-filter-count')?.textContent)
+// the page head's Needs you chip, which counts the lane (dashboard lanes design §3.1)
+const needsYou = () => Number(document.querySelector('#dashboard [data-dash-chip="needs"] .dash-chip-count')?.textContent)
+const laneCard = (id: string) => [...document.querySelectorAll<HTMLElement>('#dashboard .ny-card')].find((el) => el.dataset.nyAsk === id) ?? null
 const body = (bridge: ViewerBridge, match: string): Record<string, unknown> =>
   JSON.parse(String(bridge.posts.find((post) => post.url.includes(match))?.init?.body ?? '{}'))
+// the card's click opens its session panel, whose Asking you section holds the card's asks
 async function answerOn(key: string): Promise<void> {
-  click(card(key)?.querySelector('[data-ah-action="review"]'))
+  click(card(key)?.querySelector('.sc-doing'))
   await settle()
 }
 
-describe('every ask on a card (#454 A.1)', () => {
+describe('every ask in the Needs you lane (#454 A.1, lanes design §3.2)', () => {
   it('counts the attention set under Needs you in each lens, the badge with All projects, ended and session-less asks included', async () => {
     db = freshDb()
     live(db, 'here')
@@ -84,9 +88,9 @@ describe('every ask on a card (#454 A.1)', () => {
 
     expect(badgeCount()).toBe(4)
     expect(needsYou()).toBe(4)
-    const ended = card('ask:session:gone')!
-    expect([ended.querySelector('.sc-state')?.textContent, ended.querySelector('.sc-agent')?.textContent, ended.querySelector('.sc-when')?.textContent])
-      .toEqual(['Session ended', 'Claude Code', 'last heard just now'])
+    const ended = [...document.querySelectorAll<HTMLElement>('#dashboard .ny-card')].find((el) => el.querySelector('.ny-title')?.textContent === 'From an ended session')!
+    expect([ended.querySelector('.ny-session')?.textContent, ended.querySelector('.ny-agent')?.textContent])
+      .toEqual(['session ended', 'Claude Code'])
 
     click(document.querySelector('#rail button.rail-tab[data-project="alpha"]'))
     await settle()
@@ -103,24 +107,19 @@ describe('every ask on a card (#454 A.1)', () => {
     expect(needsYou()).toBe(2)
   })
 
-  it('draws ask-only cards with the switch off and reads nothing new: Open in Inbox and Answer, no composer or actions', async () => {
+  it('shows an ended session’s ask in the lane with the switch off, reads nothing new, draws no card for it, and opens its Inbox card', async () => {
     db = freshDb()
     const id = question(db, 'Keep the Sessions line?', { session: 'gone', agent: 'claude-code' })
     const reads: string[] = []
     await bootApp(db, { interceptFetch: async (input, _init, next) => { reads.push(String(input)); return next() } })
     expect(reads.some((url) => url.includes('/api/launch'))).toBe(false)
-    const ended = card('ask:session:gone')!
-    expect(ended.classList.contains('sc-ask-only')).toBe(true)
-    expect([...ended.querySelectorAll('[data-ah-action]')].map((el) => el.textContent)).toEqual(['Open in Inbox', 'Answer'])
-    await answerOn('ask:session:gone')
-    expect(panel().hidden).toBe(false)
-    expect(block(id)).not.toBeNull()
-    expect(panel().querySelector<HTMLElement>('.dash-focus-message')?.hidden).toBe(true)
-    expect(panel().querySelector<HTMLElement>('.sp-actions')?.hidden).toBe(true)
-    click(card('ask:session:gone')?.querySelector('[data-ah-action="inbox"]'))
+    expect(document.querySelector('#dashboard [data-session-card]')).toBeNull()
+    expect(laneCard(id)?.querySelector('.ny-session')?.textContent).toBe('session ended')
+    click(laneCard(id))
     await settle()
     expect(document.getElementById('needsYou')?.hidden).toBe(false)
     expect(location.hash).toBe(`#item/${id}`)
+    expect(row(id)?.dataset.open).toBe('1')
   })
 })
 
@@ -227,7 +226,7 @@ describe('the panel’s draft rules (#454 A.2)', () => {
     type(input, 'Thursday, after the backup')
     question(db, 'New arrival', { session: 'here' })
     await pollTick()
-    expect(card('session:here')?.querySelector('[data-ah-action="review"]')?.textContent).toBe('Answer · draft')
+    expect(card('session:here')?.querySelector('.sc-asking')?.textContent).toBe('Asking you · 2')
     expect(editor(id)).toBe(input)
     expect(document.activeElement).toBe(input)
     expect(panel().querySelectorAll('[data-panel-ask]')).toHaveLength(1)
@@ -247,7 +246,7 @@ describe('the panel’s draft rules (#454 A.2)', () => {
   })
 
   // #462 review: the hold is the panel's, not its card's: a card's id moves under an open panel
-  it('keeps the editor being typed in when its session ends and the card becomes ask-only', async () => {
+  it('keeps the editor being typed in when its session ends and its card goes', async () => {
     db = freshDb()
     live(db, 'here')
     const id = question(db, 'Which day?', { session: 'here' })
@@ -259,25 +258,30 @@ describe('the panel’s draft rules (#454 A.2)', () => {
     type(input, 'Thursday')
     endActivity(db, 'here')
     await pollTick()
-    expect(card('ask:session:here')).not.toBeNull()
+    expect(card('session:here')).toBeNull()
+    // the ask is in the lane, "session ended"; the panel holds the editor and says its session left
+    expect(laneCard(id)?.querySelector('.ny-session')?.textContent).toBe('session ended')
     expect(editor(id)).toBe(input)
     expect(document.activeElement).toBe(input)
-    expect(panel().querySelector<HTMLElement>('.dash-focus-gone')?.hidden).toBe(true)
+    expect(panel().querySelector<HTMLElement>('.dash-focus-gone')?.hidden).toBe(false)
   })
 
-  it('follows a drafted ask to its live card when an ask-only card’s session comes back, rebuilding nothing', async () => {
+  it('keeps the drafted panel through its session leaving and coming back, rebuilding nothing', async () => {
     db = freshDb()
+    live(db, 'gone')
     const id = question(db, 'Keep the Sessions line?', { session: 'gone' })
     await bootApp(db)
     vi.spyOn(document, 'hasFocus').mockReturnValue(true)
-    await answerOn('ask:session:gone')
+    await answerOn('session:gone')
     const input = editor(id)!
     input.focus()
     type(input, 'Keep it')
+    endActivity(db, 'gone')
+    await pollTick()
+    expect(card('session:gone')).toBeNull()
     upsertActivity(db, { ...AGENT, session: 'gone', doing: 'Back at it', idle: false })
     await pollTick()
     expect(card('session:gone')).not.toBeNull()
-    expect(card('ask:session:gone')).toBeNull()
     expect(editor(id)).toBe(input)
     expect(document.activeElement).toBe(input)
     expect(panel().hidden).toBe(false)
@@ -297,7 +301,7 @@ describe('the panel’s draft rules (#454 A.2)', () => {
     await bootApp(d)
     vi.spyOn(document, 'hasFocus').mockReturnValue(true)
     // the newest call links the plan: w2
-    expect(card('session:w2')?.querySelector<HTMLElement>('.sc-ask')?.hidden).toBe(false)
+    expect(card('session:w2')?.querySelector<HTMLElement>('.sc-asking')?.hidden).toBe(false)
     await answerOn('session:w2')
     type(editor(id), 'Started it')
     return id
@@ -318,7 +322,7 @@ describe('the panel’s draft rules (#454 A.2)', () => {
       expect(panel().dataset.session, session).toBe('w2')
       expect(editor(id)).toBe(input)
     }
-    expect(card('session:w1')?.querySelector<HTMLElement>('.sc-ask')?.hidden).toBe(false)
+    expect(card('session:w1')?.querySelector<HTMLElement>('.sc-asking')?.hidden).toBe(false)
     expect(card('session:w2')?.classList.contains('sel')).toBe(true)
     expect(card('session:w1')?.classList.contains('sel')).toBe(false)
   })
@@ -381,7 +385,6 @@ describe('the panel’s draft rules (#454 A.2)', () => {
 
     click(panel().querySelector('.dash-focus-close'))
     expect(panel().hidden).toBe(true)
-    expect(card('session:here')?.querySelector('[data-ah-action="review"]')?.textContent).toBe('Answer · draft')
     boot = 'restarted-viewer'
     await pollTick()
     expect(reload).not.toHaveBeenCalled()
@@ -431,7 +434,7 @@ const key = (target: Element, name: string) =>
 const cardEls = () => [...document.querySelectorAll<HTMLElement>('#dashboard .ah-groups [data-session-card]')]
 
 describe('the Dashboard without the rail (#454 PR 6)', () => {
-  it('has no rail: the Agents home spans the grid, and its header holds Later and Review queue', async () => {
+  it('has no rail: the Agents home spans the grid, and the Needs you lane’s header holds Later and Review queue', async () => {
     db = freshDb()
     question(db, 'Asked here')
     const later = question(db, 'Pinned for later')
@@ -445,7 +448,7 @@ describe('the Dashboard without the rail (#454 PR 6)', () => {
     click(document.querySelector('.tab[data-tab="dashboard"]'))
     await settle()
     expect(document.querySelector('#dashRail, .dash-rail, [data-rail-card]')).toBeNull()
-    const laterButton = document.querySelector<HTMLButtonElement>('.agents-home .ah-later')!
+    const laterButton = document.querySelector<HTMLButtonElement>('#dashboard .needs-you-lane .ny-later')!
     expect([laterButton.hidden, laterButton.textContent]).toEqual([false, 'Later 1 ›'])
     click(laterButton)
     await settle()
@@ -454,19 +457,21 @@ describe('the Dashboard without the rail (#454 PR 6)', () => {
 
     click(document.querySelector('.tab[data-tab="dashboard"]'))
     await settle()
-    click(document.querySelector('.agents-home .ah-review'))
+    click(document.querySelector('#dashboard .needs-you-lane .ny-review'))
     await settle()
     expect(document.querySelector<HTMLElement>('#lightbox')?.hidden).toBe(false)
   })
 
-  it('moves between cards with J/K and the arrows, one tabbable, and Enter opens the panel at the ask', async () => {
+  it('moves between cards with J/K and the arrows, one tabbable, and Enter opens the panel listing the card’s ask', async () => {
     db = freshDb()
+    live(db, 'two', { doing: 'Second' })
     live(db, 'one', { doing: 'First' })
     const ask = question(db, 'Pick one', { session: 'one' })
-    live(db, 'two', { doing: 'Second' })
     await bootApp(db)
     vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    // the newest call first: an ask never moves a card (lanes design §3.3)
     const [first, second] = cardEls()
+    expect(first).toBe(card('session:one'))
     expect(cardEls().map((el) => el.tabIndex)).toEqual([0, -1])
     first!.focus()
     key(first!, 'j')
@@ -476,10 +481,13 @@ describe('the Dashboard without the rail (#454 PR 6)', () => {
     expect(document.activeElement).toBe(first)
     key(first!, 'Enter')
     expect(panel().hidden).toBe(false)
-    expect(document.activeElement).toBe(block(ask))
+    expect(block(ask)).not.toBeNull()
+    expect(document.activeElement).toBe(document.getElementById('dashFocusTitle'))
     // never on the card's own controls
-    key(card('session:one')!.querySelector('[data-ah-action]')!, 'j')
-    expect(document.activeElement).toBe(block(ask))
+    const message = card('session:one')!.querySelector<HTMLElement>('[data-ah-action]')!
+    message.focus()
+    key(message, 'j')
+    expect(document.activeElement).toBe(message)
   })
 
   it('answers from the keyboard in the panel: 1–4 choose, S snoozes, P pins, R goes to the answer; typing keeps its keys', async () => {
@@ -491,6 +499,8 @@ describe('the Dashboard without the rail (#454 PR 6)', () => {
     await bootApp(db)
     vi.spyOn(document, 'hasFocus').mockReturnValue(true)
     await answerOn('session:here')
+    // the card's click lands on the panel's title; the keys act on the ask block that has focus
+    block(choose)!.focus()
     key(block(choose)!, 'r')
     expect(document.activeElement).toBe(editor(choose))
     expect(key(editor(choose)!, '2')).toBe(true)
@@ -563,7 +573,7 @@ describe('the Dashboard without the rail (#454 PR 6)', () => {
     async function twoGroups(d: Database.Database) {
       live(d, 'one', { project: 'beta', doing: 'Alone in beta' })
       recordActivityCall(d, 'one')
-      live(d, 'two', { doing: 'Asking in alpha' })
+      upsertActivity(d, { ...AGENT, session: 'two', doing: 'open', idle: true })
       question(d, 'Pick one', { session: 'two' })
       setViewport(760)
       await bootApp(d)
@@ -573,10 +583,10 @@ describe('the Dashboard without the rail (#454 PR 6)', () => {
     }
     afterEach(() => setViewport('wide'))
 
-    it('when a filter hides its card (the Waiting on you tile)', async () => {
+    it('when a filter hides its card', async () => {
       db = freshDb()
       await twoGroups(db)
-      click(document.querySelector('[data-dashboard-signal="waiting"]'))
+      click(document.querySelector('.agents-home [data-ah-filter="idle"]'))
       await settle()
       expect(card('session:one')).toBeNull()
       inSight()
@@ -605,24 +615,25 @@ describe('the Dashboard without the rail (#454 PR 6)', () => {
     })
 
     // #463 re-check: the move keeps the focus and caret it held, and paint() sends nothing to the heading
-    it('keeps the answer being typed, caret and all, when the Needs you filter drops its card’s group', async () => {
+    it('keeps the answer being typed, caret and all, when a filter drops its card’s group', async () => {
       db = freshDb()
-      live(db, 'one', { project: 'beta', doing: 'Asking in beta' })
+      upsertActivity(db, { ...AGENT, project: 'beta', session: 'one', doing: 'open', idle: true })
       const ask = question(db, 'Which day?', { project: 'beta', session: 'one' })
       live(db, 'two', { doing: 'Asking in alpha' })
       question(db, 'Pick one', { session: 'two' })
       setViewport(760)
       await bootApp(db)
       vi.spyOn(document, 'hasFocus').mockReturnValue(true)
-      click(document.querySelector('[data-dashboard-signal="waiting"]'))
+      click(document.querySelector('.agents-home [data-ah-filter="idle"]'))
       await settle()
       await answerOn('session:one')
       const input = editor(ask)!
       input.focus()
       type(input, 'Thursday after the backup')
       input.setSelectionRange(3, 8)
-      // the agent closes the ask: the card leaves the filter, and its group goes
-      resolveItem(db, ask, 'Settled in chat.')
+      // the session starts working: its card leaves the Quiet filter, and its group goes
+      upsertActivity(db, { ...AGENT, project: 'beta', session: 'one', doing: 'Back at it', idle: false })
+      recordActivityCall(db, 'one')
       await pollTick()
       expect(card('session:one')).toBeNull()
       inSight()
@@ -663,7 +674,7 @@ describe('the Dashboard without the rail (#454 PR 6)', () => {
     })
   })
 
-  it('names the ask’s session on the Inbox row, and Show on Agents opens its panel', async () => {
+  it('names the ask’s session on the Inbox row, and Show on Agents opens a live one’s panel', async () => {
     db = freshDb()
     live(db, 'here', { stream: 'feat/x' })
     const own = question(db, 'Live one', { session: 'here' })
@@ -674,13 +685,17 @@ describe('the Dashboard without the rail (#454 PR 6)', () => {
     expect(row(own)?.querySelector('.nrow-session')?.textContent).toBe('live · feat/x')
     expect(row(gone)?.querySelector('.nrow-session')?.textContent).toBe('session ended')
     expect(row(none)?.querySelector('.nrow-session')).toBeNull()
+    // a session that has ended has no card to show it on (lanes design §6)
     click(row(gone))
     await settle()
-    click(buttonLabelled('Show on Agents ›', row(gone)!))
+    expect(buttonLabelled('Show on Agents ›', row(gone)!)).toBeNull()
+    click(row(own))
+    await settle()
+    click(buttonLabelled('Show on Agents ›', row(own)!))
     await settle()
     expect(document.getElementById('dashboard')?.hidden).toBe(false)
-    expect(panel().dataset.session).toBe('ask:session:gone')
-    expect(block(gone)).not.toBeNull()
+    expect(panel().dataset.session).toBe('here')
+    expect(block(own)).not.toBeNull()
   })
 
   // ported from the rail (#303, review of #389)
@@ -738,7 +753,7 @@ describe('the Dashboard without the rail (#454 PR 6)', () => {
     await answerOn('session:here')
     expect(askAction(id, 'pin')).not.toBeNull()
     type(editor(id), 'foo')
-    click(document.querySelector('.agents-home .ah-review'))
+    click(document.querySelector('#dashboard .ny-review'))
     await settle()
     type(document.querySelector<HTMLTextAreaElement>('#lightbox .reply-input:not(.reply-context-input)'), 'foobar')
     click(document.querySelector('#lightbox .lb-close'))

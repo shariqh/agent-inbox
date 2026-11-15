@@ -1,7 +1,8 @@
 # Design: the Dashboard as attention lanes
 
-Status: direction picked by the owner on 2026-11-13 (mockup A, "Attention lanes"). Nothing is
-built yet. Mockups were shared with the owner separately and are not committed.
+Status: direction picked by the owner on 2026-11-13 (mockup A, "Attention lanes"). PR 2 (tokens
+and window size) and PR 3 (the page head chips and the Needs you lane) are built; §7 says what each
+remaining PR holds. Mockups were shared with the owner separately and are not committed.
 
 ## §0 Summary
 
@@ -88,8 +89,15 @@ G I still opens the Inbox.
   oldest first. With All projects the count equals the Inbox badge. The
   11-04 amendment's invariant, that every attention entry shows exactly once, moves from the
   session cards to this lane.
-- **Card.** Project dot and name, agent kind, branch, age, the ask's title at 17px, and its
-  `next_step`. A blocked plan row also names its plan. Option labels are not buttons: the card
+- **Card.** It leads with what the Inbox row leads with. One meta line: project dot and name,
+  agent kind, branch, age, and a muted "Draft" tag while the Inbox holds an unsent answer for
+  the ask. Then the headline at 17px, `actionPresentation(entity).headline` from
+  `public/card.js`, the call the Inbox makes: the `next_step` while the ask is unanswered and
+  has one, else the row's label or the item's title, which is also the headline's tooltip.
+  Under it, up to two lines, the presentation's detail (a row's `note`, an item's `detail`), or
+  the `next_step` when the headline is not the step. A blocked plan row ends with one line,
+  "Plan · <plan title> · <row label>", so the label stays findable. The aria-label starts with
+  the headline, and agent text is set as text only. Option labels are not buttons: the card
   does not answer in one click (owner decision 1, 2026-11-04).
 - **Click or Enter** switches to the Inbox tab with that ask open in its detail panel
   (`openAskInInbox`), exactly as a click on an Inbox row opens it. The owner asked for this. The
@@ -178,6 +186,7 @@ shows on most screens. Remembering the size and position is out of scope.
 | 11-04 §3.1 one Agents card with filters and group-by | Working and Quiet lanes; no filters or group-by |
 | Now strip (Working, Waiting on you, Plan steps, Recorded outcomes) | Lane chips in the page head |
 | 10-22 §10 pinned order across the whole Agents card | Pinned within a lane only |
+| 11-04 A.2 "Show on Agents ›" on every Inbox card | Kept, shown only where a session card holds the ask or its session is live, since ask-only cards are gone |
 
 The session panel's Asking you section stays, so you can answer while reading that session's
 transcript. It mounts the Inbox's `answerEl` and `rowAnswerEl`, so there is still one answering
@@ -192,8 +201,8 @@ land with the PR that builds them, so it never describes a layout that doesn't e
 |---|---|
 | 1 | This spec |
 | 2 | §4 tokens, applied to the Dashboard's existing headers and gaps; §5 window size; `DESIGN.md` typography |
-| 3 | Needs you lane (§3.2) and the page head chips (§3.1); `jumpToAsk` to the Inbox panel; Esc returns |
-| 4 | Working and Quiet lanes (§3.3, §3.4) from the Agents card; Now strip, filters, group-by and ask-only cards removed; `DESIGN.md` Dashboard and responsive sections |
+| 3 | Needs you lane (§3.2) and the page head chips (§3.1); `jumpToAsk` to the Inbox panel; Esc returns; the Now strip removed; the session card's ask strip becomes the "Asking you · N" chip and ask-only cards are removed (§3.3, §3.4, §6), so no ask shows twice; `DESIGN.md` Dashboard rules and the chips' responsive lines |
+| 4 | Working and Quiet lanes (§3.3, §3.4) from the Agents card; filters and group-by removed; `DESIGN.md` responsive sections |
 | 5 | Session panel as a split at 1280px and wider (§3.6) |
 | 6 | Plans in progress (§3.5); ribbon moved last |
 
@@ -203,13 +212,19 @@ land with the PR that builds them, so it never describes a layout that doesn't e
   once (port the parity fixtures in `test/sessions.test.ts` to the lane). Every live card is in
   exactly one of Working, Quiet or a fold. Held pointers, drafts and text selections survive a
   poll. Two render entries. With the §9 switch off, reads are byte-identical.
-- **Changed.** `test/dom/agents-home.test.ts` (filters, group-by), `test/dom/agents-asks.test.ts`
-  (counts and opening move to the lane; answering from the session panel stays),
-  `test/dom/dashboard.test.ts` (Now strip), `test/dom/dashboard-cards.test.ts` (pinned order per
-  lane), `test/dom/dashboard-focus.test.ts` (split at 1280px), `test/editorial-shell.test.ts`
-  (CSS source checks for `.dash-focus` and `.ah-cards`), `test/motion-css.test.ts` (selectors).
-- **New.** A session that starts asking gains its chip and its ask appears in Needs you on the
-  next paint. A click on a Needs you card opens the Inbox panel at that ask, and Esc returns to
-  the Dashboard. The window's default bounds clamp to a small work area.
+- **Changed.** PR 3: `test/dom/agents-asks.test.ts` (counts and opening move to the lane;
+  answering from the session panel stays), the ask-only parts of `test/dom/agents-home.test.ts`
+  and `test/sessions.test.ts`, `test/dom/dashboard.test.ts` (Now strip), `test/editorial-shell.test.ts`
+  and `test/motion-css.test.ts` (the lane and chip selectors). PR 4: `test/dom/agents-home.test.ts`
+  (filters, group-by), `test/dom/dashboard-cards.test.ts` (pinned order per lane),
+  `test/editorial-shell.test.ts` (`.ah-cards`). PR 5: `test/dom/dashboard-focus.test.ts` (split at
+  1280px), `test/editorial-shell.test.ts` (`.dash-focus`).
+- **New.** PR 2: the window's default bounds clamp to a small work area. PR 3
+  (`test/dom/needs-you-lane.test.ts`): a session that starts asking gains its chip and its ask
+  appears in Needs you on the next paint; a click or Enter on a Needs you card opens the Inbox
+  panel at that ask, and Esc or its close returns to the Dashboard with focus on the card, while
+  answering stays in the Inbox; the lane's count equals the badge and each entry shows once; its
+  order is `sortRail`'s, held under the pointer or keyboard focus; the chips scroll and focus and
+  never filter; the empty text; Later shows only when N > 0.
 - **Docs.** `docs/architecture/viewer-dashboard-and-shell.md`, `attention-and-later.md` (Later's
   entry point), `electron-app.md` (window size) and `CHANGELOG.md`.

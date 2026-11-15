@@ -94,7 +94,7 @@ function recordingBoot(d: Database.Database) {
 
 // #454: a launch is a card in the Agents home, and its actions live in the session panel
 const panel = (): HTMLElement => document.querySelector<HTMLElement>('#dashboard .dash-focus')!
-const newSessionButton = () => document.querySelector<HTMLButtonElement>('.agents-home .ah-new')
+const newSessionButton = () => document.querySelector<HTMLButtonElement>('#dashboard .dash-head .ah-new')
 const anyCard = (id: string) => [...document.querySelectorAll<HTMLElement>('[data-session-card]')].find((el) => el.dataset.sessionCard === id) ?? null
 function openFolds(): void {
   for (const key of ['ended', 'earlier']) {
@@ -143,7 +143,7 @@ describe('off means off on the page (§9 b)', () => {
     }
     expect(urls.filter((u) => u.includes('/api/launch'))).toEqual([])
     expect(document.querySelector('[data-session-card^="launch:"]')).toBeNull()
-    expect(document.querySelector<HTMLElement>('.agents-home .ah-new')?.hidden).toBe(true)
+    expect(document.querySelector<HTMLElement>('#dashboard .dash-head .ah-new')?.hidden).toBe(true)
     expect(document.querySelector<HTMLElement>('[data-session-card="session:mcp-1"] .sc-agent')?.title).toBe('Copilot · driven')
   })
 
@@ -1436,10 +1436,16 @@ describe('session cards for launches (#454, #412)', () => {
     await changedPollTick(db)
     await settle()
     const id = `launch:${LAUNCH}`
-    expect(card(id)?.querySelector('.sc-state')?.textContent).toBe('Needs you')
-    click(cardAction(id, 'review'))
+    // its card keeps its own state and counts the approval; the Inbox's Show on Agents › opens its panel there (lanes design §6)
+    expect(card(id)?.querySelector('.sc-state')?.textContent).toBe('Idle')
+    expect(card(id)?.querySelector('.sc-asking')?.textContent).toBe('Asking you · 1')
+    click(document.querySelector('.tab[data-tab="needsYou"]'))
     await settle()
-    expect(panel().querySelector('.sp-state')?.textContent).toBe('Needs you')
+    click(row(ask.itemId))
+    await settle()
+    click(row(ask.itemId)?.querySelector('.nrow-show-agents'))
+    await settle()
+    expect(panel().querySelector('.sp-state')?.textContent).toBe('Idle')
     expect([...panel().querySelectorAll('.sp-actions [data-launch-action]')].map((b) => [b.textContent, (b as HTMLButtonElement).disabled]))
       .toEqual([['Stop', false], ['Park now', false], ['Take over in Terminal', false], ['Open in Terminal', false], ['Remove worktree…', true]])
     expect([...panel().querySelectorAll('.sp-worktree-box dd')].map((el) => el.textContent))
@@ -1449,7 +1455,7 @@ describe('session cards for launches (#454, #412)', () => {
     expect(appr.querySelector('.sp-appr-title')?.textContent).toBe('Allow shell: npm test')
     expect(appr.querySelector('.sp-approval-count')?.textContent).toMatch(/^1 open/)
     expect(appr.querySelector('textarea, input')).toBeNull()
-    // Review lands on the heading, never on an option a stray Space or held Enter would press
+    // it lands on the heading, never on an option a stray Space or held Enter would press
     expect(document.activeElement).toBe(appr.querySelector('h3'))
     expect(document.activeElement?.closest('.sp-option')).toBeNull()
     click([...appr.querySelectorAll<HTMLButtonElement>('button')].find((b) => b.textContent === 'Deny'))
@@ -1480,7 +1486,7 @@ describe('session cards for launches (#454, #412)', () => {
     await bootApp(db)
     await changedPollTick(db)
     await settle()
-    click(cardAction(`launch:${LAUNCH}`, 'review'))
+    click(card(`launch:${LAUNCH}`)?.querySelector('.sc-doing'))
     await settle()
     const option = (item: string, label: string) => [...panel().querySelectorAll<HTMLButtonElement>('.sp-appr')]
       .find((el) => el.dataset.focusApproval === item)?.querySelector<HTMLButtonElement>(`.sp-option:nth-of-type(${label === 'Allow once' ? 1 : 2})`) ?? null
@@ -1529,7 +1535,7 @@ describe('session cards for launches (#454, #412)', () => {
     await bootApp(db)
     await changedPollTick(db)
     await settle()
-    click(cardAction(`launch:${LAUNCH}`, 'review'))
+    click(card(`launch:${LAUNCH}`)?.querySelector('.sc-doing'))
     await settle()
     const hasFocus = vi.spyOn(document, 'hasFocus').mockReturnValue(true)
     const allow = panel().querySelector<HTMLButtonElement>(`[data-focus-approval="${ask.itemId}"] .sp-option`)!
@@ -1586,9 +1592,9 @@ describe('session cards for launches (#454, #412)', () => {
     await bootApp(db)
     await changedPollTick(db)
     await settle()
-    const start = document.querySelector<HTMLButtonElement>('.agents-home .ah-new')!
+    const start = document.querySelector<HTMLButtonElement>('#dashboard .dash-head .ah-new')!
     expect([start.hidden, start.disabled]).toEqual([false, false])
-    expect(document.querySelector<HTMLElement>('.agents-home .ah-note')?.hidden).toBe(true)
+    expect(document.querySelector<HTMLElement>('#dashboard .ah-note')?.hidden).toBe(true)
     click(start)
     await settle()
     expect(document.querySelector<HTMLDialogElement>('.launch-dialog')?.open).toBe(true)
@@ -1600,7 +1606,7 @@ describe('session cards for launches (#454, #412)', () => {
     await bootApp(db)
     await changedPollTick(db)
     await settle()
-    expect(document.querySelector<HTMLButtonElement>('.agents-home .ah-new')?.disabled).toBe(true)
-    expect(document.querySelector('.agents-home .ah-note')?.textContent).toBe('Starting and approving sessions works only in Agent Inbox’s own window.')
+    expect(document.querySelector<HTMLButtonElement>('#dashboard .dash-head .ah-new')?.disabled).toBe(true)
+    expect(document.querySelector('#dashboard .ah-note')?.textContent).toBe('Starting and approving sessions works only in Agent Inbox’s own window.')
   })
 })

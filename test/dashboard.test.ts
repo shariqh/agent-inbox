@@ -13,8 +13,8 @@ const ask = (id: string, created: string, extra: Record<string, unknown> = {}) =
 const ids = (entries: DashboardModel['waitingEntries']): string[] =>
   entries.map((entry) => entry.kind === 'item' ? entry.item.id : entry.row.id)
 
-// #454 A.2: the rail is retired; the model carries the attention set the session
-// cards read and how many asks wait in Later (the Agents header's "Later N ›").
+// #454 A.2: the rail is retired; the model carries the attention set and how
+// many asks wait in Later (the Needs you lane's "Later N ›").
 describe('the attention set and Later count (#303, #454)', () => {
   const items = [
     ask('parked-old', '2026-08-24T12:00:00.000Z'),
@@ -40,6 +40,15 @@ describe('the attention set and Later count (#303, #454)', () => {
     expect(model.waitingEntries).toHaveLength(model.signals.waiting)
     expect(model.later).toBe(2)
     expect('rail' in model).toBe(false)
+  })
+
+  // dashboard lanes design §3.2: the lane is the attention set in sortRail order, each entry once
+  it('gives the Needs you lane the attention set in sortRail order, and no Now strip', () => {
+    const model = buildDashboard(input)
+    expect(ids(model.needsYou)).toEqual(ids(sortRail(model.waitingEntries as never, NOW) as never))
+    expect(ids(model.needsYou).slice(0, 2)).toEqual(['waiting-old', 'waiting-new'])
+    expect(new Set(ids(model.needsYou)).size).toBe(model.signals.waiting)
+    expect(model).not.toHaveProperty('now')
   })
 
   it('sortRail ranks asks an agent is waiting on first without changing membership (the session cards’ ask order)', () => {
@@ -222,7 +231,7 @@ describe('buildDashboard', () => {
       closedProjects: ['closed-project'],
     })
 
-    expect(model.now).toMatchObject({ working: 2, subagents: 2 })
+    expect(model.lanes.flatMap((lane) => lane.children.map((child) => child.name))).toEqual(['worker-a', 'worker-b'])
     expect(model.idleConnections).toBe(1)
     expect(model.lanes.map((lane) => lane.session)).toEqual(['manager', 'malformed'])
   })
@@ -245,7 +254,8 @@ describe('buildDashboard', () => {
       projects: 0,
     })
     expect(model.lanes).toEqual([])
-    expect(model.now).toEqual({ working: 0, subagents: 0, waiting: 0, oldestWaitingMs: null, plans: { done: 0, countable: 0 } })
+    expect(model.needsYou).toEqual([])
+    expect(model.idleConnections).toBe(0)
     expect(model.recentOutcomes).toEqual([])
   })
 

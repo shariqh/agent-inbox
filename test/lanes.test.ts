@@ -42,7 +42,6 @@ describe('lane model (#304)', () => {
     ])
     expect(model.lanes.map((lane) => lane.session)).toEqual(['calling', 'first-call-pending'])
     expect(model.idle).toBe(3)
-    expect(model.now.working).toBe(2)
     // The heartbeat moving changes nothing.
     const heartbeat = lanesOf([session('calling', { updated_at: ago(29 * MIN) })])
     expect(heartbeat.lanes[0]!.sinceMs).toBe(MIN)
@@ -81,19 +80,6 @@ describe('lane model (#304)', () => {
     expect(lanesOf([session('s', { stream: 'elsewhere' })], boards).lanes[0]!.plan).toBeNull()
   })
 
-  it('totals the Now strip plan steps from the lanes bars, each plan once', () => {
-    const boards = [
-      plan('shared', ago(0), [{ status: 'done' }, { status: 'missing' }]),
-      plan('own', ago(0), [{ status: 'done' }, { status: 'done' }, { status: 'tracked' }], { agent: 'claude-code' }),
-      plan('unlinked', ago(0), [{ status: 'done' }, { status: 'missing' }], { stream: 'nobody' }),
-    ]
-    const model = lanesOf([session('a'), session('b'), session('c', { agent: 'claude-code' })], boards)
-    const unique = new Map(model.lanes.flatMap((lane) => lane.plan ? [[lane.plan.id, lane.plan]] : []))
-    const bars = [...unique.values()].reduce((sum, bar) => ({ done: sum.done + bar.done, countable: sum.countable + bar.countable }), { done: 0, countable: 0 })
-    expect(model.now.plans).toEqual(bars)
-    expect(model.now.plans).toEqual({ done: 3, countable: 5 })
-  })
-
   it('hands a lane its own asks in rail order, and its oldest as "waiting on you"', () => {
     const boards = [plan('p', ago(0), [{ status: 'blocked', action_started_at: ago(30 * MIN) }])]
     const items = [
@@ -106,8 +92,8 @@ describe('lane model (#304)', () => {
     const ids = lane.asks.map((entry) => entry.kind === 'item' ? entry.item.id : entry.row.id)
     expect(ids).toEqual(['mine-old', 'mine-new', 'p-0'])
     expect(lane.waiting).toEqual({ entry: lane.asks[0], ms: 120 * MIN })
-    expect(model.now.waiting).toBe(4)
-    expect(model.now.oldestWaitingMs).toBe(300 * MIN)
+    // the Now strip went with the lane chips (dashboard lanes design §3.1)
+    expect(model).not.toHaveProperty('now')
     expect(model.lanes.find((l) => l.session === 't')!.asks).toHaveLength(1)
   })
 })

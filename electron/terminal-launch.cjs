@@ -8,7 +8,8 @@
 // app opens a new session there. For the Take over script (a 0700
 // .command file), Terminal runs it; iTerm2's own openFile handler asks "OK to
 // run <path>?" first (an advanced setting can silence it) and then types the
-// path into a login shell, in a new tab unless its settings say otherwise. No
+// path into a login shell, in a new tab of its current window (a new window only if its advanced
+// setting openFileInNewWindows is on). No
 // AppleScript: the shipped app has no Apple Events entitlement, so an
 // `osascript` child would be refused or prompt for Automation.
 //

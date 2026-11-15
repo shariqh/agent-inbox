@@ -52,7 +52,9 @@ Terminal (the default) or iTerm2.
   and the open agree.
 - **iTerm2 and a script.** iTerm2's own openFile handler asks "OK to run <script>?" (OK/Cancel,
   and it can be silenced in iTerm2), then types the script's path into a login shell, in a new tab
-  unless its settings say otherwise. The take-over script is unchanged. The dialog says iTerm2
+  of its current window (a new window only if iTerm2's advanced setting "Open files in new
+  windows" is on; forcing a window needs AppleScript, which the app's entitlements rule out). The
+  take-over script is unchanged. The dialog says iTerm2
   may ask.
 - **Fallback.** If the chosen app is not installed, `open` exits on its own and the launch falls
   back to Terminal once; the result carries a `notice` ("iTerm2 could not be opened, so Terminal

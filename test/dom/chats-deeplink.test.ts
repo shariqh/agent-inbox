@@ -24,6 +24,7 @@ async function boot(seed: (d: Database.Database) => void = () => {}) {
       truncated: false,
       work: { filesRead: 0, bytesRead: 0 },
     }),
+    readCopilot: () => null,
     claudeDays: () => 30,
   }
   const reads: string[] = []

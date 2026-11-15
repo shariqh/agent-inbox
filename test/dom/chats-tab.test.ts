@@ -54,6 +54,7 @@ async function boot({ chats = fixture(), truncated = false, intercept }: Setup =
   const index = { chats, truncated }
   const chatIndex: ChatIndex = {
     read: () => ({ chats: index.chats, truncated: index.truncated, work: { filesRead: 0, bytesRead: 0 } }),
+    readCopilot: () => null,
     claudeDays: () => 21,
   }
   const reads: string[] = []

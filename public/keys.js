@@ -29,7 +29,7 @@ export const KEYBOARD_COMMANDS = [
   { id: 'dismiss', key: 'x', display: 'X', label: 'Dismiss the current item with its undo window', group: 'Work through items', legacy: true },
   { id: 'review', key: 't', display: 'T', label: 'Open the review queue', group: 'Work through items', legacy: true },
   // #307, #454 A.2: the Dashboard's own keys, listed here only (legacy: the
-  // Needs you lane, the session cards and the session panel handle them where
+  // Dashboard's lanes (Plans in progress too) and the session panel handle them where
   // focus is, so they never collide with the Inbox's).
   { id: 'cardMove', key: 'j', display: 'J / K', label: 'Move between the cards in a Dashboard lane (the arrows too)', group: 'Dashboard', legacy: true },
   { id: 'cardOpen', key: 'Enter', display: 'Enter', label: 'Open a card: an ask in the Inbox, a session in its panel, a plan in Plans', group: 'Dashboard', legacy: true },

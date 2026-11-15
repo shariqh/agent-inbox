@@ -250,9 +250,14 @@ function pinOwnRuntime(launchId: string): string | null {
 // `inuse.<pid>.lock` lstat'ed, never followed or read: one with a live pid written since boot is a
 // holder. One folder cannot apply the index's newest-lock-per-pid rule, so this refuses more than
 // the index does, never less. A folder that is not there holds no lock (Copilot then answers
-// -32002); anything that cannot be checked refuses. Returns why it refuses, or null.
+// -32002), and a lock that vanished after the listing is skipped; anything else that cannot be
+// checked refuses, and so does a COPILOT_HOME that is set but not absolute, since Copilot is handed
+// it as it is (childEnv) and would look elsewhere. Returns why it refuses, or null.
 function chatHolder(env: Record<string, string>, chatId: string): string | null {
-  const home = env.COPILOT_HOME && isAbsolute(env.COPILOT_HOME) ? env.COPILOT_HOME : env.HOME && isAbsolute(env.HOME) ? join(env.HOME, '.copilot') : null
+  if (env.COPILOT_HOME !== undefined && !isAbsolute(env.COPILOT_HOME)) {
+    return 'Your shell sets COPILOT_HOME to a path that is not absolute, so Agent Inbox cannot tell where Copilot keeps this chat.'
+  }
+  const home = env.COPILOT_HOME !== undefined ? env.COPILOT_HOME : env.HOME && isAbsolute(env.HOME) ? join(env.HOME, '.copilot') : null
   if (!home) return 'Agent Inbox cannot tell where Copilot keeps this chat: your shell sets no HOME.'
   const dir = join(home, 'session-state', chatId)
   const unreadable = `Agent Inbox could not check whether another process holds this chat (${dir}).`
@@ -272,7 +277,11 @@ function chatHolder(env: Record<string, string>, chatId: string): string | null 
     let mtimeMs: number
     try {
       mtimeMs = lstatSync(join(dir, name)).mtimeMs
-    } catch { continue /* gone: its holder let go */ }
+    } catch (error) {
+      // gone since the listing: its holder let go
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue
+      return unreadable
+    }
     if (mtimeMs >= boot - BOOT_SLACK_MS && pidAlive(pid)) return 'This chat is live in another process.'
   }
   return null
@@ -726,6 +735,14 @@ async function runLaunch(argv: string[]): Promise<void> {
     // and its first message is never sent again (§3.3); a terminal that took it meanwhile refuses
     if (row.chat_id !== null) {
       const chatId = row.chat_id
+      // the first start's rule: exactly the folder it resolves to now, since Copilot moves a chat to
+      // whatever folder it is loaded in; refused, the row is put back as it was
+      let real: string | null = null
+      try {
+        const resolved = realpathSync(row.cwd)
+        if (statSync(resolved).isDirectory()) real = resolved
+      } catch { /* checked below */ }
+      if (real !== row.cwd) return refuse(`${row.cwd} is not a folder`)
       // never reached by this build's writes (the chat is its session once the first message is sent);
       // ended rather than put back, so a row that can never load leaves the unique index
       if (row.acp_session !== chatId) {

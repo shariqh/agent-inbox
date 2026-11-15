@@ -6,7 +6,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { execFileSync, spawn } from 'node:child_process'
 import { once } from 'node:events'
-import { chmodSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
+import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type { Duplex } from 'node:stream'
 import type Database from 'better-sqlite3'
@@ -1080,6 +1080,8 @@ describe('agent-inbox-driver run: continuing a chat (#586 phase 2)', () => {
       writeFileSync(chatDir(r), '')
       return {}
     }, /could not check whether another process holds this chat/],
+    // Copilot is handed it as it is (childEnv), so the check and Copilot would look in different places
+    ['a COPILOT_HOME that is not absolute', (r: Rig) => ({ env: { ...r.env, COPILOT_HOME: 'copilot-home' } }), /^Your shell sets COPILOT_HOME to a path that is not absolute/],
   ] as Array<[string, (r: Rig) => Record<string, unknown>, RegExp]>)('refuses %s before writing any row', async (_, spoil, error) => {
     const r = chatRig()
     const run = runDriver(r, chatSpec(r, spoil(r)))
@@ -1089,5 +1091,48 @@ describe('agent-inbox-driver run: continuing a chat (#586 phase 2)', () => {
     expect(await run.exited).toBe(1)
     expect(getLaunch(r.hub, LAUNCH)).toBeNull()
     expect(readFileSync(r.fakeLog, 'utf8')).toBe('')
+  }, 40_000)
+
+  // a folder that can be listed but not searched: each lock's lstat fails with EACCES, not ENOENT
+  it.skipIf(process.getuid?.() === 0)('refuses a chat whose lock cannot be lstat’ed, before writing any row', async () => {
+    const r = chatRig()
+    writeFileSync(join(chatDir(r), 'inuse.2147483646.lock'), '2147483646')
+    chmodSync(chatDir(r), 0o444)
+    try {
+      // the case under test: the listing works, the lock's lstat does not
+      expect(readdirSync(chatDir(r))).toContain('inuse.2147483646.lock')
+      expect(() => lstatSync(join(chatDir(r), 'inuse.2147483646.lock'))).toThrow(/EACCES/)
+      const run = runDriver(r, chatSpec(r))
+      const status = await run.status()
+      expect(status.ok).toBe(false)
+      expect(String(status.error)).toMatch(/could not check whether another process holds this chat/)
+      expect(await run.exited).toBe(1)
+      expect(getLaunch(r.hub, LAUNCH)).toBeNull()
+      expect(readFileSync(r.fakeLog, 'utf8')).toBe('')
+    } finally {
+      chmodSync(chatDir(r), 0o755)
+    }
+  }, 40_000)
+
+  it('a resume whose folder was replaced by a symlink since it parked is refused, starts nothing, and leaves the row as it was', async () => {
+    const r = chatRig()
+    const first = runDriver(r, chatSpec(r), { AGENT_INBOX_DRIVER_IDLE_MS: '400' })
+    expect(await first.status()).toEqual({ ok: true, launch: LAUNCH })
+    expect(await first.exited).toBe(0)
+    const work = realpathSync(join(r.dir, 'work'))
+    const before = getLaunch(r.hub, LAUNCH)!
+    expect(before).toMatchObject({ status: 'parked', acp_session: CHAT, cwd: work })
+    renameSync(work, `${work}-real`)
+    symlinkSync(`${work}-real`, work)
+    const spawned = received(r).filter((m) => 'argv' in m).length
+    const resumed = runDriver(r, resumeSpec(r))
+    expect(await resumed.status()).toEqual({ ok: false, error: `${work} is not a folder` })
+    expect(await resumed.exited).toBe(1)
+    expect(received(r).filter((m) => 'argv' in m)).toHaveLength(spawned)
+    expect(methods(r, 'session/load')).toHaveLength(1)
+    expect(getLaunch(r.hub, LAUNCH)).toMatchObject({
+      status: 'parked', acp_session: CHAT, chat_id: CHAT, cwd: work, park_reason: before.park_reason, end_reason: null,
+      active_ms: before.active_ms, tool_calls: before.tool_calls, sessions: before.sessions, prompt: before.prompt,
+    })
   }, 40_000)
 })

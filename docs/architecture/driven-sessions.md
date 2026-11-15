@@ -1145,3 +1145,51 @@ has the row, the texts and the layout.
   `launch:<id>` and its panel line; Show session, "· here" and Copy resume's off state; hostile text kept
   as text; switch off against the phase 1 capture), `test/chats-model.test.ts` (the eligibility, link
   and outcome rules), `test/chats-style.test.ts` (tokens, the one-line Actions cell, the narrow wrap).
+
+## Continue a chat (#586 phase 2): what was run for real
+
+Three runs on 2026-11-15, on macOS with Copilot CLI 1.0.112-0. None of them is a test in this
+repository, so they are written down here.
+
+**The driver against a real Copilot.** `dist/driver-cli.js` was started the way the app starts it
+(`startDriver`, a `chat` spec on fd 3), on an empty scratch hub, with a scratch `COPILOT_HOME`
+holding a chat made in Copilot's terminal UI. One model turn was used.
+
+- The driver sent `initialize`, `session/load`, `session/set_mode` and one `session/prompt`. It
+  never sent `session/new`. Copilot recorded the message as "The human continued this chat via
+  Agent Inbox and says: …", once, and answered with no approval asked.
+- The row carried `chat_id` from the start. `acp_session` stayed null while the launch ran and was
+  written when it ended as `stopped`. So a running chat launch is linked to its chat by `chat_id`
+  alone, which is what the lookup route and the page use.
+- The chat's `cwd` and `client_name` were unchanged. `last_client_name` became the driver's.
+- A second driver for the same chat was refused by the lock re-check while the first held it, and
+  by the unique index once the first had stopped with its session. Neither wrote a row.
+- With a terminal `copilot --resume=<id>` open on the chat, a start and a resume were both refused
+  as live. A refused resume left its row as it was.
+- A resume of the stopped launch loaded the chat again and sent no first message.
+
+Two facts from that run that the rules above lean on:
+
+- A terminal `copilot --resume` takes its `inuse.<pid>.lock` when it starts. The ACP host takes
+  one only at its first prompt. So a resumed chat launch that has not been sent a message holds no
+  lock, and only main's checks keep Resume in Terminal off that chat in that window.
+- `startDriver` opens `launches/<id>/driver.log` before the driver runs, so a refused start leaves
+  a log folder with no row.
+
+**The page in the desktop app.** A dev copy of the app, on an empty scratch hub and a scratch
+profile, was driven over the DevTools protocol at 1440px.
+
+- Switch off: no Continue here… control, no `/api/launches` read, and rows as before.
+- Switch on: Continue here… on every Copilot row and on no Claude Code row, with Resume and Copy
+  resume on the same line. The dialog opened with focus in the message, kept Continue off for an
+  empty message and for spaces alone, closed on Escape with focus back on the row's control, and
+  kept the message for the next open.
+
+**The seam between them.** In that dev copy, Continue was pressed in the dialog for one Copilot
+chat. The dialog read "Agent Inbox is asking you to confirm…" with its start button off and Cancel
+reading "Stop starting", which means main had passed every check before its confirmation. The
+confirmation is a native sheet, which the DevTools protocol cannot answer, so the run stopped
+there: no row was written and no driver or Copilot was started.
+
+Not run: answering that confirmation in the app and watching the session start from it. The parts
+on each side of it were run as above.

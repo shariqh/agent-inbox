@@ -3,7 +3,8 @@ paths:
   - "electron/main.cjs"
   - "electron/setup-runner.cjs"
   - "electron/viewer-navigation.cjs"
-applyTo: "electron/main.cjs,electron/setup-runner.cjs,electron/viewer-navigation.cjs"
+  - "electron/terminal-launch.cjs"
+applyTo: "electron/main.cjs,electron/setup-runner.cjs,electron/viewer-navigation.cjs,electron/terminal-launch.cjs"
 ---
 
 # Electron app: window install binding
@@ -28,6 +29,39 @@ the binding below, so it needs a design pass first.
 breakpoint, clamped to the work area of the display the pointer is on (`defaultWindowSize()` in
 `electron/window-size.cjs`, fed by `screen.getDisplayNearestPoint(screen.getCursorScreenPoint())`),
 so it is never larger than that display. The size is not remembered and there is no minimum.
+
+**Terminal of choice (#586).** Settings → Terminal (macOS, the owned viewer only; a browser draws
+nothing) picks the terminal that Open in Terminal and Take over / Resume in Terminal open:
+Terminal (the default) or iTerm2.
+
+- **One module.** `electron/terminal-launch.cjs` maps (terminal, kind `folder` or `script`, absolute
+  path) to `/usr/bin/open -b <bundle id> -- <path>`: argv only, never a shell string, the app named
+  by bundle id (`com.apple.Terminal`, `com.googlecode.iterm2`) and never by display name, and no
+  path that is relative or holds a control character. There is no AppleScript: the shipped app has
+  only the `allow-jit` entitlement, so an `osascript` child would be refused or raise a macOS
+  Automation prompt, and fixing that is a packaging change.
+- **Where it lives.** A top-level `terminal` field in userData `link-preferences.json` (schema 1,
+  same lock and tolerant reader; a link-rule write keeps it and a terminal write keeps the rules).
+  The two channels `agent-inbox:terminal-setting` and `agent-inbox:terminal-setting-set` sit behind
+  `handleLinkSettings`, so they answer only the owned viewer, and the setting is a fixed list. The
+  renderer's value is checked against that list on every set, and main reads and checks the stored
+  value on every launch: a missing, unknown or unreadable value means Terminal.
+- **Grants unchanged.** Launches still go only through the launch channels (`isGranted`), and
+  `launch-available` reports the chosen id (never a path) to the granted window, for the buttons'
+  titles. Main's own Take over dialog names the chosen app, reading the choice once so the dialog
+  and the open agree.
+- **iTerm2 and a script.** iTerm2's own openFile handler asks "OK to run <script>?" (OK/Cancel,
+  and it can be silenced in iTerm2), then types the script's path into a login shell, in a new tab
+  unless its settings say otherwise. The take-over script is unchanged. The dialog says iTerm2
+  may ask.
+- **Fallback.** If the chosen app is not installed, `open` exits on its own and the launch falls
+  back to Terminal once; the result carries a `notice` ("iTerm2 could not be opened, so Terminal
+  was opened instead.") that the page shows as the launch's note, since the launch worked. After
+  a **timeout** (the runner's 10 s kill) nothing else opens: iTerm2 may still open late, and a
+  second terminal on a take-over script would run two Copilots in one session. That is reported
+  as "could not be opened".
+- **Buttons.** The labels stay the generic words; the `title` and, for iTerm2, the `aria-label`
+  name the app ("Open in Terminal (iTerm2)"), because a tooltip alone is not read on keyboard focus.
 
 ## History (shipped since v1)
 

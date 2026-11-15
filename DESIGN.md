@@ -182,6 +182,11 @@ renders an honest empty state; it never draws a zero trend. Recorded outcomes in
 both items and plan rows, so their total is intentionally broader than the History
 item count.
 
+Terminal action labels keep the generic word ("Open in Terminal", "Take over in Terminal").
+The chosen app (Settings → Terminal, #586) is named in the control's `title` and, when it is not
+Terminal, its `aria-label`, and in main's own confirmation, so the truth reaches keyboard and
+screen-reader users too.
+
 ## Anti-Patterns
 
 - floating controls that cover working content;

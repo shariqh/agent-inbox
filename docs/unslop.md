@@ -45,7 +45,8 @@ Use Node 24 in every step (`fnm use 24`).
    - `skill`: the absolute path of your unslop skill folder, the one that holds
      `rules.md` and a `SKILL.md` whose frontmatter names `unslop`. Keep it outside
      `~/.claude/skills`, `~/.copilot/skills` and `~/.agents/skills`, so the routing skill
-     is the only `unslop` skill an assistant sees.
+     is the only `unslop` skill an assistant sees. meshctl links its `rules.md` into the
+     routing skill's folder (see [The rules.md link](#the-rulesmd-link)).
    - `baseUrl`: the base URL of your OpenAI-compatible model server, `https://`
      (`http://` only on a loopback address). The agent calls only
      `<baseUrl>/v1/chat/completions`.
@@ -87,7 +88,8 @@ terminal and never asks anything. Progress (`waiting`, `editing`, `checking`,
 | 11 | Refused: kind, size, the privacy screen or the daily budget | empty |
 | 12 | Busy: the queue is full or the model server is loading or busy | empty |
 | 13 | Failed: unreachable, timed out (the task is cancelled) or lost | empty |
-| 14 | Off, no agent, another process on the agent's port, a stale shim or an agent that needs rebuilding | empty |
+| 14 | Off, no agent, another process on the agent's port or an agent that needs rebuilding | empty |
+| 18 | The shim is stale (its Node or `meshctl.js` is gone): run `meshctl enable --unslop --apply` again. The shim itself exits 18, before the client runs | empty |
 | 4 | Usage | empty |
 
 Before it sends the token or the draft, the command checks that whatever answers on the
@@ -98,7 +100,8 @@ happens for an agent from a build before this check (it stops after 30 idle minu
 within a minute of `disable --unslop --apply`) and for one started before the last
 `enable --unslop` (it stops within a minute).
 
-On anything but 0, edit the original in-session; don't retry. `--report <file>` gets
+On anything but 0, edit the original in-session; don't retry, and say in the reply that the agent
+was not used, with the exit code and the shim's last stderr line (the routing skill does). `--report <file>` gets
 the result as JSON (mode 0600, never through a symlink): `status`, `model`,
 `rulesSha256`, `attempts`, the hard check results, `warnings` (such as a changed
 `may`), any refusal classes and timings. When the last attempt failed the check, it also
@@ -113,7 +116,12 @@ An assistant finds the agent through a routing skill: `enable --unslop --apply` 
 `<mesh dir>/skills/unslop/SKILL.md` from fixed text in `src/mesh-skills.ts` (#513), and
 `disable --unslop --apply` removes it. Don't edit it: meshctl rewrites it, keeping a changed copy
 under `<mesh dir>/backups/skills/`. The editing rules stay in your own folder, the one the
-profile's `skill` names. This is the text, with `<mesh dir>` replaced by the real path:
+profile's `skill` names. This is the text, with `<mesh dir>` replaced by the mesh dir's path:
+`~/.agent-inbox` when the mesh dir is inside your home folder, the absolute path otherwise. The
+`~/…` form matters: Copilot CLI's path check denies the absolute path of a shim in a
+non-interactive run, and the allow rules below name the `~/…` form (#584). That path is the only
+thing meshctl substitutes; no card field, `mesh.json` value or agent output is ever written into
+the skill.
 
 ```markdown
 ---
@@ -125,28 +133,76 @@ description: Remove generic AI-writing patterns from prose for people while keep
 
 # unslop
 
-The editing rules are in `rules.md`, in the folder that `skill` names in
-`<mesh dir>/mesh/wrappers/unslop.json` (the unslop profile, which the agent reads too).
+The editing rules are in `rules.md`, beside this file. If `rules.md` cannot be read, do NOT
+edit in-session: return the text unchanged and say that the rules could not be read.
 
 ## Where the text is edited
 
 1. Email, customer text and private material never go to the unslop agent. Edit them
    in-session with `rules.md`. When unsure, edit in-session.
 2. For a PR description, an issue, release notes, public documentation or a blog post,
-   write the draft to a file and run, with a shell timeout of at least 300 seconds:
+   write the draft to a file and run this command directly, with a shell timeout of at
+   least 300 seconds. Do not check for the shim first, and use no shell redirection:
 
-   <mesh dir>/bin/unslop --kind <pr|issue|release-notes|docs|blog> --report <report file> < <draft file>
+   <mesh dir>/bin/unslop --kind <pr|issue|release-notes|docs|blog> --in <draft file> --report <report file>
 
    - Exit 0: use stdout as the edited text, and check the report's `warnings`.
-   - Any other exit, or none within the timeout: ignore stdout and edit the original
-     in-session with `rules.md`. Do not retry.
+   - Any other exit, or none within the timeout: ignore stdout and never retry. Before any
+     in-session edit, tell the person in your reply that the unslop agent was not used,
+     giving the exit code (or that it timed out) and the last line the shim wrote to stderr.
+     Then edit the original in-session with `rules.md`.
+   - Exit 18 (the shim is stale): the same, and also tell the person to run
+     `meshctl enable --unslop --apply` again.
+   - If the shell says the shim file does not exist, the agent is off. That is not a
+     failure: edit in-session with `rules.md`.
 3. Anything else: edit in-session with `rules.md`.
 
 ## Email
 
 Email is edited in-session only, with `rules.md`, before the draft goes for approval.
-Never change an approved revision in place.
+Never change an approved revision in place. Before the draft goes for approval, check that:
+
+- every fact and source in the original survived;
+- names, recipients, dates, links, commitments and technical terms are unchanged;
+- nothing was added that the original did not say.
 ```
+
+### The rules.md link
+
+The skill says the rules are in `rules.md` beside it. meshctl makes that file a symlink,
+`<mesh dir>/skills/unslop/rules.md`, to the `rules.md` in the folder the profile's `skill` names, so
+a host reads your rules through the skill's own folder and never needs the profile (Copilot CLI
+could not read it, #584). The link holds no text of the rules, and the skill text names no path of
+yours. meshctl owns the link, and only the link:
+
+- `enable --unslop --apply` and `skills link --apply` make it, and point it at the new folder when
+  the profile's `skill` changes. Fill in the profile first, then run either one: the template's
+  `FILL IN` value names no folder, so a first `enable` makes no link.
+- It is absent while the profile, its `skill` or that `rules.md` is missing or unreadable, and an
+  old link goes when its file does.
+- It is removed with the generated folder (`disable --unslop --apply`). `skills unlink` removes
+  host links only, so it stays while the folder does.
+- A file, a folder or a link elsewhere that is not a `rules.md` link is not meshctl's, and is never
+  replaced: meshctl says so and leaves it.
+
+If a host cannot read `rules.md`, the skill tells it not to edit in-session: it returns the text
+unchanged and says why, so an edit without the rules cannot change a fact.
+
+### Allow the shim
+
+Both hosts ask before running a command unless a rule allows it. The skill runs the shim directly,
+with `--in <draft file>` and no shell redirection, so a rule that names the shim matches it:
+
+| Host | Allow rule |
+|---|---|
+| Claude Code | `Bash(~/.agent-inbox/bin/unslop:*)` in `permissions.allow`, or `--allowedTools 'Bash(~/.agent-inbox/bin/unslop:*)'` |
+| Copilot CLI | `--allow-tool 'shell(~/.agent-inbox/bin/unslop)'` |
+
+With a mesh dir other than `~/.agent-inbox`, write that dir's path (with `~/` if it is inside your
+home folder). A non-interactive Copilot run (`copilot -p`) also needs `--add-dir <mesh dir>` when
+the mesh dir is outside your home folder, because its path check denies the shim's folder
+otherwise. A redirection such as `< draft` does not match Claude Code's rule, which is why the
+skill passes `--in`.
 
 ### Link it
 
@@ -178,7 +234,7 @@ profile's `skill` at its new place, and run `skills link --apply`.
 
 - In a fresh session of each assistant, confirm `unslop` resolves to the linked folder
   (`copilot skill list`, and the `/skills` list in Claude Code and Codex), and ask each to read
-  `rules.md` through the profile.
+  `rules.md` through the skill's link.
 - **Shell check:** have Copilot run the shim on a public draft from its sync and async
   shells, and Claude Code from its Bash tool. Each must exit 0 within its shell timeout
   without touching the terminal.

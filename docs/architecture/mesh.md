@@ -342,7 +342,8 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
      (exported as `AGENT_INBOX_MESH_DIR`, so the caller's environment cannot move it) and
      the absolute paths of that Node binary and the built `meshctl.js` (`dist/meshctl.js`, so run
      `npm run build` at the root first). When either is gone it discards piped input
-     (never a terminal), prints "run meshctl enable --unslop again" and exits 14;
+     (never a terminal), prints "run meshctl enable --unslop again" and exits 18 (#584: 14 stays the agent being off, so
+     a caller can tell a broken install from a switch);
      otherwise it runs `meshctl unslop` (below);
   4. `agents.unslop` = `{ "endpoint": "http://127.0.0.1:<port>", "profile": "unslop" }` in
      `mesh.json` (created with `schema` 1 when absent), every other key kept, written
@@ -731,7 +732,7 @@ This repository ships its client (R2 and R3 below) and the contract both sides t
     file and a rename; a newer token from the runbook replaces it); 2. the shim
     `<mesh dir>/bin/request-post` (0755), the unslop shim's text with the agent's name: it pins
     its mesh dir, and when its Node or `meshctl.js` is gone it discards piped input, prints "run
-    meshctl enable --request-post again" and exits 14; otherwise it runs
+    meshctl enable --request-post again" and exits 18 (#584, as unslop's); otherwise it runs
     `meshctl request-post "$@"` (R3, below);
     3. `agents.request-post` = `{ "endpoint": <url> }` in `mesh.json`, every other key kept,
     written atomically after a timestamped backup. New folders are 0700.
@@ -1214,16 +1215,36 @@ core, `./mesh-config.js`; meshctl only) writes and links them.
   `skills link` runs the same plan first. Folders are 0700 and `SKILL.md` 0644, written through a temporary file and a
   rename; a `skills` folder or agent folder that is a link or a file is refused with a note.
 - **Fixed text only.** The templates are string constants in `src/mesh-skills.ts`; the only
-  substitution is `<mesh dir>`, the mesh dir's own resolved path, and only when it is one plain
-  shell word (letters, digits, `. _ / @ + -`), else no skill is written and a note says why.
-  `routingSkills(doc, dir)` is pure, and no card field, other `mesh.json` value or agent output
+  substitution is `<mesh dir>`, the mesh dir's own path, and only when it is one plain shell word
+  (letters, digits, `. _ / @ + -`, and a leading `~`), else no skill is written and a note says
+  why. The path is written as `~/…` when the mesh dir is inside the home folder (`shownDir`) and
+  as the absolute path otherwise: Copilot CLI's path check denies an absolute shim path in a
+  non-interactive run, and the `~/…` form is also what the hosts' allow rules name (#584).
+  `routingSkills(doc, dir, home)` is pure, and no card field, other `mesh.json` value or agent output
   reaches a skill. `docs/unslop.md` quotes unslop's template; `test/mesh-skills.test.ts` fails
-  when they differ and pins the text in `test/fixtures/routing-skills/`. unslop's skill names
-  `rules.md` by the profile's `skill` folder, the one the agent reads, so the generated folder
-  holds `SKILL.md` alone. request-post has no template: its routing text is part of the private
+  when they differ and pins the text in `test/fixtures/routing-skills/`. unslop's skill says
+  the rules are in `rules.md` beside it, and meshctl makes that a symlink (below) rather than
+  have the skill name the profile, which Copilot CLI could not read (#584). request-post has no template: its routing text is part of the private
   skill with the brief guidance (`docs/request-post.md`). Agents added with `meshctl add` get none
   yet (a follow-up: a template that calls `meshctl call <id>` through a shim, with the id as the
   only substitution).
+- **The `rules.md` link (#584).** When `<mesh dir>/mesh/wrappers/unslop.json` has an absolute
+  `skill` whose folder holds a regular `rules.md` (read through links; a profile naming the
+  generated folder itself is ignored), the plan makes `<mesh dir>/skills/unslop/rules.md` a
+  symlink to it. Only the path is read: no byte of the file or the profile reaches a skill. meshctl
+  owns the link and nothing else at that name: a symlink to an absolute path ending in `/rules.md`
+  is ours, so it is refreshed when the profile's folder changes and removed when the profile or
+  its `rules.md` goes missing or the folder is removed; a file, a folder or any other link there
+  is left alone, with a note (the exit of `skills link` is then 1). `skills unlink` removes host
+  links only, so the rules link stays with the folder. The skill's text says that when `rules.md`
+  cannot be read, the agent returns the text unchanged instead of editing without the rules.
+- **The skill's failure text (#584).** It runs `<mesh dir>/bin/unslop --kind … --in <file>
+  --report <file>` directly (no redirection, so Claude Code's `Bash(~/.agent-inbox/bin/unslop:*)`
+  matches) and, on any exit but 0 or a timeout, tells the person the unslop agent was not used,
+  with the exit code and the shim's last stderr line, before an in-session edit; it never
+  retries. Exit 18 (a stale shim, both shims) adds "run `meshctl enable --unslop --apply` again".
+  A missing shim file is the agent being off. The email section carries a generic completion
+  check. `docs/unslop.md` holds the allow rule for each host.
 - **`meshctl skills link [--target claude|agents|all] [--apply]`** links `~/.claude/skills/<agent>`
   (Claude Code) and `~/.agents/skills/<agent>` (Codex; Copilot CLI reads it too) to the generated
   folder, an absolute symlink. A target folder reached through a link is linked once. A name held
@@ -1250,7 +1271,9 @@ core, `./mesh-config.js`; meshctl only) writes and links them.
   Copilot CLI 1.0.108 lists one in `~/.agents/skills` (`HOME=<scratch> copilot skill list`,
   #513), so `link` makes symlinks only; if a later version stops following them, a copied folder
   that meshctl rewrites on every change is the planned fallback.
-- `test/mesh-skills.test.ts` holds the pure generation with a hostile description in every
+- `test/mesh-skills.test.ts` holds the pure generation (`~/…` inside the home folder, the absolute
+  path outside it, the failure and email text, the rules link made, refreshed, removed and never
+  over a foreign file) with a hostile description in every
   entry, the doc parity and snapshot, enable and disable writing and removing the folder, the
   backup, link and unlink in a temporary `HOME` (dry runs change nothing, a foreign folder or link
   in each of the three folders is reported and blocks the agent, ours dangling is removed, a

@@ -30,6 +30,7 @@ import { runHook } from '../src/hook.js'
 import { issueKeyFor } from '../public/issue-key.js'
 import { createViewer } from '../src/viewer.js'
 import { appAsks } from '../src/driver-launch.js'
+import { parseLaunchSpec } from '../src/launch-spec.js'
 import { sign } from './launch-fixtures.js'
 import type { FoundLink } from '../public/links.js'
 import { renderStructuredText } from '../public/structured-text.js'
@@ -2137,9 +2138,16 @@ describe('a v2.9.0 hub, driver and spec sharing launches that continue a chat (#
     db.close()
   })
 
-  it('an older driver refuses a chat spec (exit 65), so it never starts one', () => {
-    expect(V290.kind({ kind: 'new' })).toBeNull()
-    expect(V290.kind({ kind: 'resume' })).toBeNull()
-    expect(V290.kind({ kind: 'chat' })).toBe('launch spec: kind must be new or resume')
+  // V290.kind is a copy of tag v2.9.0's src/launch-spec.ts kind check; its text is what main matches
+  // to say the runtime is older than the app (design §3.3)
+  it('an older driver refuses a chat spec this build accepts (exit 65), so it never starts one', () => {
+    const text = JSON.stringify({
+      v: 1, kind: 'chat', launchId: LAUNCH(1), host: 'copilot', chatId: CHAT, cwd: '/work/a', mode: 'ask',
+      prompt: 'Carry on.', env: { PATH: '/usr/bin:/bin', HOME: '/home/someone' }, launchKey: Buffer.alloc(32, 3).toString('base64'),
+    })
+    const parsed = parseLaunchSpec(text, LAUNCH(1))
+    expect(parsed).toMatchObject({ ok: true, spec: { kind: 'chat', chatId: CHAT } })
+    expect(V290.kind(JSON.parse(text) as { kind: unknown })).toBe('launch spec: kind must be new or resume')
+    expect(V290.kind(parsed.ok ? parsed.spec : { kind: null })).toBe('launch spec: kind must be new or resume')
   })
 })

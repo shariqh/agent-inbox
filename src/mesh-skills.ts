@@ -11,10 +11,10 @@
 // CLI's path check denies the absolute form in a non-interactive run, #584) and as is otherwise. No
 // card field, mesh.json value or agent output ever reaches a skill file. The one thing meshctl adds
 // beside SKILL.md is a symlink, `rules.md`, to the file the unslop profile's skill folder holds: a
-// link, so none of that file's text is copied. request-post has no template: its routing text is part of a private skill
-// that also holds the brief guidance (docs/request-post.md). Agents added with `meshctl add` wait
-// for a follow-up. Node core only; nothing in the viewer, the frontend, Electron or the stdio MCP
-// server imports this module.
+// link, so none of that file's text is copied. request-post has no template: its routing text is
+// part of a private skill that also holds the brief guidance (docs/request-post.md). Agents added
+// with `meshctl add` wait for a follow-up. Node core only; nothing in the viewer, the frontend,
+// Electron or the stdio MCP server imports this module.
 import { spawnSync } from 'node:child_process'
 import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmdirSync, statSync, symlinkSync, unlinkSync, writeSync } from 'node:fs'
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path'

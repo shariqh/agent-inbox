@@ -135,8 +135,8 @@ A host asks before it runs the shim unless a rule allows it (#584).
   `status` there also allows `file`, which files a request. Allow the shim in Copilot only when
   both are acceptable; otherwise leave it to ask (#584, finding 2). A non-interactive `copilot -p`
   run with a mesh dir outside your home folder also needs `--add-dir <mesh dir>`. When a call is
-  denied, Copilot's own explanation of the denial is not a reason to trust: the exit code and
-  stderr of an allowed run are.
+  denied, read the exit code and stderr of the run, not the model's explanation of the denial:
+  Copilot's model gave a made-up reason in the #584 test.
 
 ## What this Mac keeps
 

@@ -30,6 +30,14 @@ export const LAUNCH_MODES = Object.freeze([
   },
 ])
 
+// #586: the terminals Settings → Terminal offers, [id, name]; main checks the id again on every launch
+export const TERMINAL_CHOICES = Object.freeze([Object.freeze(['terminal', 'Terminal']), Object.freeze(['iterm2', 'iTerm2'])])
+
+/** The name of the terminal an id names; anything else, or nothing, is Terminal. */
+export function terminalName(id) {
+  return TERMINAL_CHOICES.find(([value]) => value === id)?.[1] ?? 'Terminal'
+}
+
 export const REASONING_EFFORTS = Object.freeze(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
 export const SHELL_WARNING = 'Once any shell command is allowed, the session can run anything, in its folder and beyond. Answer each approval with that in mind.'
 export const PROMPT_WARNING = 'Don’t paste secrets here: the task is stored with the session.'

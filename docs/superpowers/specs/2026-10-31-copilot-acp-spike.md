@@ -392,3 +392,91 @@ The coordinator's decisions on these are folded into the design doc; its §14.4 
   should not depend on the model.
 - Effects of an inherited parent-Copilot `COPILOT_*` env; every spike run stripped them.
 - Claude (`claude-agent-acp`): deferred to #421.
+
+## 2026-11-15: loading a terminal-made chat (#586 phase 2, PR 2)
+
+**Why:** PR 2 of [`2026-11-14-chats-resume-driven-design.md`](2026-11-14-chats-resume-driven-design.md)
+(§5) is a check, with a stop gate, that `session/load` loads a chat made in Copilot's own
+terminal UI. Everything above loaded only sessions that ACP had made.
+**Verdict: the gate passes.** A terminal-made chat loads with its history replayed. Three findings
+differ from what the design assumed: the terminal's "don't ask again" approvals are per folder and
+apply to every session there; ordinary terminal chats get `mc_task_id`; and a load in another
+folder is accepted silently and moves the chat.
+**Fixtures:** [`test/fixtures/acp/copilot-1.0.112-0/`](../../../test/fixtures/acp/copilot-1.0.112-0/)
+(7 recordings; their README gives the format and what changed in the chat folder).
+
+### Setup
+
+- **Agent:** GitHub Copilot CLI **1.0.112-0**, the installed npm build. The spec named 1.0.108;
+  Copilot was not updated for the check, so 1.0.108 itself was not tested.
+- **Isolation:** a fresh scratch `COPILOT_HOME`, scratch folders, and every Copilot process started
+  from `env -i` with only `HOME`, `USER`, `LOGNAME`, `TERM`, `LANG`, `PATH`, `TMPDIR`,
+  `COPILOT_HOME` and `COPILOT_AUTO_UPDATE=false`. The keychain login worked. No real chat, Copilot
+  config or hub was read or touched.
+- **The chats** were made in the terminal UI (`copilot --model claude-haiku-4.5` in tmux,
+  `send-keys` and `capture-pane`), not with `-p` or ACP. Chat A, in a scratch git repository:
+  `echo` (it ran with no approval asked), `touch` approved with "Yes, and don't ask again for
+  `touch` in this repo", and a file create approved once. Chat B, in a plain folder: `touch`
+  approved for that folder, then `/allow-all on`.
+- **Client:** a Node-core ACP recorder, as before, with the driver's `initialize` params,
+  `mcpServers: []` and argv `copilot --acp --stdio --model claude-haiku-4.5`. It listed the
+  chat's `session-state/<id>/` folder and copied it at each step, and the copies were diffed.
+
+### The answers
+
+| # | Question | What happened | Binds |
+|---|---|---|---|
+| 1 | Does `session/load` load a terminal-made chat, with its history? | **Yes.** `initialize` reports `loadSession: true` (and `sessionCapabilities: { close, list }`, as in 1.0.105). `session/list` lists the terminal chat with its folder and title. `session/load` sends `available_commands_update`, then replays the terminal's turns (`user_message_chunk`, `tool_call`, `tool_call_update`, `agent_message_chunk`, 15 updates in all, including the terminal's own "Info: Folder … has been added to trusted folders." line) before it answers. The result has `modes`, `models` and three `configOptions` (`mode`, `model`, `allow_all`; no `reasoning_effort` for claude-haiku-4.5). A prompt after `set_mode #agent` ran normally (`load-terminal-chat.jsonl`). | The stop gate: phase 2 goes on. |
+| 2 | A `cwd` other than the recorded one? | **Accepted silently.** The load answered as usual, `pwd` in the next turn printed the new folder, and at that first prompt `workspace.yaml`'s `cwd` and `git_root` were rewritten to it (`load-other-cwd.jsonl`). Copilot gives no error, so it cannot catch a wrong folder. | §3.3: the driver must pass exactly the index's `cwd`, as designed; the "folder is not the chat's folder" row is right that only the driver's own `realpathSync` check can refuse. |
+| 3 | Does the ACP host take `inuse.<pid>.lock`? | **Yes, but only at the first prompt, not at the load.** After the load the folder was unchanged, and a load followed by `set_mode` and `set_config_option` with no prompt (chat B) rewrote nothing. At the first `session/prompt` (the lock's mtime is the `updated_at` that prompt wrote to `workspace.yaml`) it held `inuse.<pid>.lock` (its body the native host's pid, not the loader's) and an empty `inuse.<pid>.hold`, the same pair the terminal UI writes. Both were removed at exit. Also: **a load is answered while a terminal holds the chat**, with no error or warning (`load-while-terminal-holds.jsonl`). | Binds nothing, as §5 says. It confirms §3.3's driver lock re-check is the only guard on Copilot's side, and that a loaded chat with no prompt yet holds no lock. |
+| 4 | Does load rewrite `client_name`? | **No.** The whole folder was byte-identical after `session/load`. After the first prompt `workspace.yaml` changed in three keys: `last_client_name` became the ACP `clientInfo.name`, `updated_at` moved, and `mc_last_event_id` moved; `client_name` stayed `github/cli`. `events.jsonl` was appended to (a `session.resume` event first, with `alreadyInUse: false`). A fresh ACP `session/new` writes `client_name` as the `clientInfo.name`, which is what the index's `non-interactive` rule relies on. | The chat index keeps showing a continued chat. The index must keep reading `client_name`, not `last_client_name`. |
+| 5 | Do the terminal's "allow for this session" approvals survive? | **1.0.112-0's terminal offered no per-session approval** for a shell command or a file write: the second option was "Yes, and don't ask again for `touch` in this repo" (in a plain folder: "in this directory"; for a file create: "for file operations when in this repo"). That approval is written to **`$COPILOT_HOME/permissions-config.json`**, under `locations.<folder>.tool_approvals` (`{ kind: "commands", commandIdentifiers: ["touch"] }`), and the chat's `events.jsonl` records it as `permission.completed` with `result.kind: "approved-for-location"`. It is not in `session-state/<id>/`. **It applies over ACP**: in the loaded chat, `touch probe-c.txt` ran with no `session/request_permission`, while a file create (approved only once in the terminal) asked. It also applied to a **fresh** ACP `session/new` in the same folder (`new-session-location-approval.jsonl`), so it is not tied to the chat. The session-wide switch survives too: chat B, left with `/allow-all on`, loaded with `allow_all: on` (the driver's re-assert turns it off, below). | §3.4 and §7 question 4: see "Against the design" below. |
+| 6 | Does load hit the reasoning-effort refusal? | **No.** With `{"effortLevel": "high"}` in the scratch `settings.json` and `--model claude-haiku-4.5`, `session/load` answered normally while `session/new` in the same process was refused: "Request sessions.open failed with message: session construction failed: Model 'claude-haiku-4.5' does not support reasoning effort configuration. Use models.list to check which models support reasoning effort." (`load-effort-setting.jsonl`; the driver's hint still matches the new wording). | §3.3's table: `effortFallback` need not be extended to a chat's first load. A prompt on that loaded session was **not tested** (below). |
+| 7 | How do `mc_task_id` chats load? | **Like any other.** Both terminal chats got `mc_task_id`, `mc_session_id`, `mc_last_event_id` and an `mc_pending_repository_warning` ("This remote session is not linked to a repository…") in `workspace.yaml` during their first turn, with `remote_steerable: false`; Copilot's log said "Remote session access enabled" at start-up. So this was honest: no key was added by hand. Chat A carried them through every load and prompt above. The scratch login is a GitHub staff account ("Staff mode activated" at start-up), so whether every account's terminal chats get these keys is not known. An ACP `session/new` session got none. | §3.1: see "Against the design". |
+
+**Other facts §3.3 leans on:**
+
+- **`-32002`** for an id Copilot never saw: `{"code":-32002,"message":"Resource not found: Session <id> not found","data":{"uri":"Session <id> not found"}}` (`load-unknown-id.jsonl`), as in 1.0.105.
+- **The re-assert works on 1.0.112-0.** `set_mode #agent` on a session already in `#agent` answers
+  `{}` after one `config_option_update` and **no `current_mode_update`**, and it leaves
+  `allow_all` on. `set_config_option allow_all off` then sends a `config_option_update` with it
+  off (`load-allow-all-from-terminal.jsonl`). The driver reads the mode from either update, so its
+  setup still verifies both.
+- **No folder-trust prompt over ACP.** The terminal asked to trust each folder; ACP loads and
+  prompts ran in a folder never trusted.
+- `initialize` took 0.5–3.7 s; a load 0.9–1.8 s.
+
+### Against the design
+
+1. **§3.4, §7 question 4: approvals survive, but not as the spec pictured.** The spec's three
+   branches assume per-session approvals stored with the chat. In 1.0.112-0 the terminal's "don't
+   ask again" is per folder, in `$COPILOT_HOME/permissions-config.json`, and it already applies
+   to every Copilot session in that folder, ACP ones included. So "each tool call asks you first"
+   is not true for a continued chat whose folder has such approvals. They can be read (the second
+   branch), but from `permissions-config.json`, not `session-state`. Whether its keys match only the
+   exact folder or also folders under it was not tested. It is a choice for the owner whether
+   §3.2's mitigation and question 4 still hold, or whether these approvals count as "what your
+   own Copilot settings already allow".
+2. **§3.1's `mc_task_id` rule.** On this account every new terminal chat has `mc_task_id`, so the
+   rule would refuse all of them. Such a chat loads like any other, which is the case where §3.1
+   says PR 2 may relax the rule. The key no longer marks a cloud or remote session.
+3. **§3.3's table, the effort row:** the load is not refused, so no `effortFallback` change is
+   needed for the load itself.
+
+### Cost
+
+7 model turns, all on claude-haiku-4.5: 4 in the terminal UI and 3 over ACP. Copilot's own count
+for chat A (3 terminal turns and 1 ACP turn) was 1.32 premium requests. `/allow-all on` used no
+model.
+
+### Not tested
+
+- Copilot 1.0.108, the version the spec named (1.0.112-0 was installed).
+- A prompt on a chat loaded with `effortLevel` set. The command for it was denied, so it was not
+  run; only `session/load` and `session/new` were recorded with that setting.
+- A real cloud or remote session (`/delegate`, a Copilot coding agent task). The `mc_task_id` chats
+  here are ordinary terminal chats, and the account is a staff account.
+- A non-staff account's terminal chats (whether they get `mc_task_id`).
+- Whether a location approval for a repository also covers a worktree of it or a folder under it.
+- What ACP's `allow_always` writes in 1.0.112-0.
+- A chat left in autopilot or plan mode in the terminal (1.0.105's load restored autopilot).

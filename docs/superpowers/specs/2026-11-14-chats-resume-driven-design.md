@@ -98,6 +98,11 @@ such chats on the author's Mac are ordinary `github/cli` chats (`chats.md`, "Hid
 but how `session/load` treats them is unknown. Refusing them costs little, because Resume in
 Terminal still offers them. PR 2 may relax this rule if it shows they load like any other chat.
 
+**PR 2 findings (2026-11-15, Copilot 1.0.112-0):** they do load like any other chat. On the
+author's account every new terminal chat got `mc_task_id` during its first turn, with no cloud
+or remote use, so this rule would refuse all of them. A non-staff account was not tested
+(`docs/superpowers/specs/2026-10-31-copilot-acp-spike.md`, "2026-11-15").
+
 What a row shows when the chat is not eligible: Continue here… is `aria-disabled` with the reason
 in its `title`, as Resume does on the phase 1 branch:
 
@@ -247,7 +252,7 @@ start: …" with its transcript, and the dialog's progress line shows the same t
 | this Copilot does not offer `loadSession` | "Didn't start: this Copilot cannot load chats over ACP. Update Copilot CLI." |
 | the runtime's driver predates the `chat` kind | the driver writes `{"ok":false,"error":"launch spec: kind must be new or resume"}` before it exits 65 (`refuseStart`, `src/driver-cli.ts`), and `startDriver` resolves on that status line, not the exit code (`electron/driver-process.cjs`). Main matches that `error` text and shows "This Agent Inbox runtime is older than the app. Update agents in Setup." No row is written. |
 | the load works but the folder is not the chat's folder | Main and the driver both pass the index's `cwd`, so this happens only if the folder was replaced between the check and the spawn. The driver's `realpathSync` then refuses with "<folder> is not a folder" before Copilot starts. A chat whose folder moved is `folder-gone` and is refused before the dialog. |
-| Copilot refuses the model's effort on load | not known yet (PR 2). If it happens, `effortFallback` is extended to a chat launch's first load, which has run nothing. |
+| Copilot refuses the model's effort on load | not known yet (PR 2). If it happens, `effortFallback` is extended to a chat launch's first load, which has run nothing. **PR 2 findings:** on 1.0.112-0 the load is not refused when a `settings.json` `effortLevel` refuses `session/new`; a prompt on that loaded chat was not tested. |
 
 ### 3.4 Gate and consent
 
@@ -293,6 +298,15 @@ approvals, because `promptSafe` refuses a slash command. So PR 2's finding binds
   allow and any tool you allowed for the rest of this chat in a terminal." §3.2's first mitigation
   and §7 question 4 then no longer hold, and question 4 goes back to the owner with PR 2's findings
   before PR 5 starts.
+
+**PR 2 findings (2026-11-15, Copilot 1.0.112-0):** none of the three branches fits exactly. The
+terminal offered no per-session approval for a shell command or a file write, only "don't ask again
+for `<command>` in this repo" (or "in this directory"). That approval is kept per folder in
+`$COPILOT_HOME/permissions-config.json` (`locations.<folder>.tool_approvals`), not in
+`session-state`. It applied in the loaded chat, and also in a fresh `session/new` in the same
+folder, so it is not tied to the chat. It can be read, but from that file. A chat left with
+`/allow-all on` loads with `allow_all` on, which the setup already turns off. Whether this counts
+as "what your own Copilot settings already allow" is for the owner (`docs/superpowers/specs/2026-10-31-copilot-acp-spike.md`, "2026-11-15").
 
 ### 3.5 The page
 
@@ -525,3 +539,8 @@ need the phase 1 Chats tab and Resume in Terminal on main.
    - Add a count of uncommitted files. The driver or main would need to run git before the dialog.
    - Refuse a dirty folder. This is safest, but it blocks the common case of continuing work in
      progress.
+
+   **PR 2 findings:** the terminal's "don't ask again" approvals survive, because they are kept per
+   folder in `$COPILOT_HOME/permissions-config.json` and apply to every session there (§3.4's
+   note). So the recommended answer's condition does not hold as written, and this question goes
+   back to the owner.

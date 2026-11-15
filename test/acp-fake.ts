@@ -4,13 +4,15 @@
 // with frames replayed from the spike's recorded Copilot 1.0.105 transcripts
 // (test/fixtures/acp/copilot-1.0.105/): the initialize and session/new results,
 // set_mode's update-then-result order, a load's history replay, the permission
-// request shape and the config option updates. A test scripts what each prompt
+// request shape and the config option updates. `recorded` replays a later
+// version's initialize and load instead (copilot-1.0.112-0/, #586 phase 2). A test scripts what each prompt
 // does. Deliberately NOT named *.test.ts: it is imported, never collected.
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
 
-const FIXTURES = join(new URL('.', import.meta.url).pathname, 'fixtures', 'acp', 'copilot-1.0.105')
+const ACP_FIXTURES = join(new URL('.', import.meta.url).pathname, 'fixtures', 'acp')
+const FIXTURES = join(ACP_FIXTURES, 'copilot-1.0.105')
 
 type Json = Record<string, unknown>
 interface Entry { t: number; dir: string; msg?: Json }
@@ -21,8 +23,9 @@ export const MODE = {
   autopilot: 'https://agentclientprotocol.com/protocol/session-modes#autopilot',
 }
 
+/** A recorded transcript: `name` in 1.0.105's folder, or `<folder>/<name>` for another version's. */
 export function fixture(name: string): Entry[] {
-  return readFileSync(join(FIXTURES, `${name}.jsonl`), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line) as Entry)
+  return readFileSync(join(name.includes('/') ? ACP_FIXTURES : FIXTURES, `${name}.jsonl`), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line) as Entry)
 }
 
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T
@@ -105,6 +108,26 @@ export interface FakeScript {
   refuseLoad?: { code: number; message: string }
   /** Answers session/load only once this settles (a slow load, still in setup). */
   holdLoad?: Promise<void>
+  /**
+   * A recording (`copilot-1.0.112-0/load-terminal-chat`) that answers initialize and session/load
+   * as Copilot did: the load's replayed updates, then its result or error (#586 phase 2, PR 2).
+   */
+  recorded?: string
+}
+
+/** What a recording's initialize and first session/load answered, with the load's updates before its answer. */
+function recordedSetup(name: string): { initialize: Json; loadUpdates: Json[]; load: Json } {
+  const entries = fixture(name)
+  const answer = (method: string) => {
+    const at = entries.findIndex((e) => e.dir === 'c2a' && e.msg?.method === method)
+    const id = entries[at]!.msg!.id
+    const end = entries.findIndex((e, i) => i > at && e.dir === 'a2c' && e.msg !== undefined && e.msg.id === id && !('method' in e.msg))
+    return { at, end, msg: entries[end]!.msg! }
+  }
+  const load = answer('session/load')
+  const loadUpdates = entries.slice(load.at + 1, load.end)
+    .filter((e) => e.dir === 'a2c' && e.msg?.method === 'session/update').map((e) => clone(e.msg!))
+  return { initialize: clone(answer('initialize').msg.result as Json), loadUpdates, load: clone(load.msg) }
 }
 
 export function fakeAgent(script: FakeScript = {}): FakeAgent {
@@ -164,10 +187,11 @@ export function fakeAgent(script: FakeScript = {}): FakeAgent {
   })
   stdin.on('end', () => { if (!script.ignoreStdinClose) exitNow() })
 
+  const recorded = script.recorded ? recordedSetup(script.recorded) : null
   const handle = (m: Json) => {
     const params = (m.params ?? {}) as Json
     switch (m.method) {
-      case 'initialize': return script.hang === 'initialize' ? undefined : fake.respond(m.id, INITIALIZE)
+      case 'initialize': return script.hang === 'initialize' ? undefined : fake.respond(m.id, recorded?.initialize ?? INITIALIZE)
       case 'session/new': {
         if (script.refuseSessionNew) return fake.send({ id: m.id, error: { code: -32603, message: script.refuseSessionNew } })
         const result = clone(SESSION_NEW)
@@ -189,6 +213,14 @@ export function fakeAgent(script: FakeScript = {}): FakeAgent {
           return
         }
         fake.session = params.sessionId as string
+        if (recorded) {
+          const frames = recorded.loadUpdates.map((u) => ({ ...u, params: { ...(u.params as Json), sessionId: fake.session } }))
+          if (recorded.load.error) return fake.send(...frames, { id: m.id, error: recorded.load.error })
+          const result = recorded.load.result as Json
+          fake.mode = ((result.modes as Json).currentModeId as string)
+          fake.allowAll = ((result.configOptions as Json[]).find((o) => o.id === 'allow_all')!.currentValue as 'on' | 'off')
+          return fake.send(...frames, { id: m.id, result })
+        }
         const replay = fixture('load-restores-autopilot')
         const frames: Json[] = []
         if (script.loadReplay) {

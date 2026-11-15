@@ -62,7 +62,7 @@ Goals:
 Non-goals:
 
 - Claude Code chats. They follow when driven Claude sessions exist (#475).
-- Cloud or remote Copilot sessions (`mc_task_id`), as in #586.
+- Cloud or remote Copilot sessions, as in #586. (`mc_task_id` does not mark them: §3.1's decision.)
 - Choosing another folder for a chat whose folder moved or is gone.
 - A worktree for a continued chat (§3.2).
 - Model, reasoning effort and budget fields in the dialog. A continued chat runs on Copilot's
@@ -86,7 +86,7 @@ Decision: **Copilot CLI chats only**, and only when all of these hold:
 | not live in another process | main, then the driver | a Copilot holding `inuse.<pid>.lock` owns the session |
 | no launch of this app is running, parked or stopped with its session | main, the store | one launch per chat (§3.6) |
 | `hidden` holds none of `empty`, `non-interactive`, `folder-gone` | page, main | nothing to load, a one-shot or app-made run, or nowhere to run it |
-| no `mc_task_id` key in `workspace.yaml` | main, through the lookup route (§3.7) | cloud and remote sessions are a non-goal |
+| ~~no `mc_task_id` key in `workspace.yaml`~~ | not built | dropped after PR 2 (the decision below) |
 | the folder is a directory now, its path free of control characters | main (`realDirectory`), the driver | the session runs there |
 
 `temp` is not a refusal. It is only a list filter, and a chat in `/tmp` loads like any other.
@@ -98,6 +98,17 @@ such chats on the author's Mac are ordinary `github/cli` chats (`chats.md`, "Hid
 but how `session/load` treats them is unknown. Refusing them costs little, because Resume in
 Terminal still offers them. PR 2 may relax this rule if it shows they load like any other chat.
 
+**PR 2 findings (2026-11-15, Copilot 1.0.112-0):** they do load like any other chat. On the
+author's account every new terminal chat got `mc_task_id` during its first turn, with no cloud
+or remote use, so this rule would refuse all of them. Only one account was used
+(`docs/superpowers/specs/2026-10-31-copilot-acp-spike.md`, "2026-11-15").
+
+**Decision (2026-11-15): the `mc_task_id` rule is dropped.** The key no longer tells a cloud or
+remote session from a terminal chat, so nothing is refused for it. The table's `mc_task_id` row,
+main's `remote` refusal and its text (§3.7), the lookup route's `remote` field and PR 4's read of
+the key are not built. Cloud and remote sessions stay a non-goal: one with no local `events.jsonl`
+is `empty`, and one whose folder is not on this machine is `folder-gone`, and both are refused.
+
 What a row shows when the chat is not eligible: Continue here… is `aria-disabled` with the reason
 in its `title`, as Resume does on the phase 1 branch:
 
@@ -106,7 +117,7 @@ in its `title`, as Resume does on the phase 1 branch:
 - `empty`: "Nothing was ever said in this chat."
 - `non-interactive`: "This was not an interactive chat."
 
-The page cannot see `mc_task_id`. Main refuses such a chat, and the refusal shows in the row's
+(Not built, by the decision above.) The page cannot see `mc_task_id`. Main refuses such a chat, and the refusal shows in the row's
 note (§3.5). Claude Code rows get no Continue here… control at all, so the row is not crowded with
 a control that is always off.
 
@@ -247,7 +258,7 @@ start: …" with its transcript, and the dialog's progress line shows the same t
 | this Copilot does not offer `loadSession` | "Didn't start: this Copilot cannot load chats over ACP. Update Copilot CLI." |
 | the runtime's driver predates the `chat` kind | the driver writes `{"ok":false,"error":"launch spec: kind must be new or resume"}` before it exits 65 (`refuseStart`, `src/driver-cli.ts`), and `startDriver` resolves on that status line, not the exit code (`electron/driver-process.cjs`). Main matches that `error` text and shows "This Agent Inbox runtime is older than the app. Update agents in Setup." No row is written. |
 | the load works but the folder is not the chat's folder | Main and the driver both pass the index's `cwd`, so this happens only if the folder was replaced between the check and the spawn. The driver's `realpathSync` then refuses with "<folder> is not a folder" before Copilot starts. A chat whose folder moved is `folder-gone` and is refused before the dialog. |
-| Copilot refuses the model's effort on load | not known yet (PR 2). If it happens, `effortFallback` is extended to a chat launch's first load, which has run nothing. |
+| Copilot refuses the model's effort on load | not known yet (PR 2). If it happens, `effortFallback` is extended to a chat launch's first load, which has run nothing. **PR 2 findings:** on 1.0.112-0 the load is not refused when a `settings.json` `effortLevel` refuses `session/new`; a prompt on that loaded chat was not tested. |
 
 ### 3.4 Gate and consent
 
@@ -293,6 +304,29 @@ approvals, because `promptSafe` refuses a slash command. So PR 2's finding binds
   allow and any tool you allowed for the rest of this chat in a terminal." §3.2's first mitigation
   and §7 question 4 then no longer hold, and question 4 goes back to the owner with PR 2's findings
   before PR 5 starts.
+
+**PR 2 findings (2026-11-15, Copilot 1.0.112-0):** none of the three branches fits exactly. The
+terminal offered no per-session approval for a shell command or a file write, only "don't ask again
+for `<command>` in this repo" (or "in this directory"). That approval is kept per folder in
+`$COPILOT_HOME/permissions-config.json` (`locations.<folder>.tool_approvals`), not in
+`session-state`. It applied in the loaded chat, and also in a fresh `session/new` in the same
+folder, so it is not tied to the chat. It can be read, but from that file. A chat left with
+`/allow-all on` loads with `allow_all` on, which the setup already turns off
+(`docs/superpowers/specs/2026-10-31-copilot-acp-spike.md`, "2026-11-15").
+
+**Decision (2026-11-15): these approvals count as the person's own Copilot settings.** They wrote
+each one through Copilot's own "don't ask again" prompt, the file is Copilot's, and it already
+applies to every session in that folder, a New session started there without a worktree included.
+The Mode line names the case, so it stays true:
+
+```
+Mode: Ask for everything. Each tool call asks you first, except what your own Copilot settings already allow, such as a command you told Copilot not to ask about again in this folder.
+```
+
+Main does not read `permissions-config.json`: listing its entries would add a reader of another
+tool's settings file for a line the person can check in Copilot. §3.2's first mitigation holds with
+that exception stated, and §7 question 4 keeps its recommended answer. The owner asked on
+2026-11-15 that calls like this one be made without a round trip, and reviews the built feature.
 
 ### 3.5 The page
 
@@ -396,8 +430,8 @@ apart (`chats.md`, "Live"). That is a separate step.
 - **The page sends only the tool, the id, the mode, the message and its start tag.** Main reads
   everything else. Before the dialog it reads the chat through one new route, `GET
   /api/chats/copilot/:id`. The viewer reads that chat's `workspace.yaml` and lock list fresh, with
-  no cache. It answers `{ chat, remote, launch }`: the index entry or null, whether `mc_task_id` is
-  present, and the newest launch whose `chat_id` or `acp_session` is the id. Its `chat.live` uses
+  no cache. It answers `{ chat, launch }`: the index entry or null, and the newest launch whose
+  `chat_id` or `acp_session` is the id (no `remote` field: §3.1's decision). Its `chat.live` uses
   the driver's one-folder rule (§3.3), so it can read live where the list did not, never the
   reverse. It follows the
   viewer's Host and Origin rules. A non-UUID is a 400, and an unknown chat is `chat: null`. It
@@ -414,7 +448,7 @@ apart (`chats.md`, "Live"). That is a separate step.
   | `missing` | `chat: null` | "This chat is no longer listed." |
   | `driven` | `launch` is running, parked, or stopped with its session | "This chat already has a session here: use Show session." |
   | `live` | `chat.live` | "This chat is live in another process." |
-  | `remote` | `remote` | "Cloud and remote Copilot sessions can't be continued here." |
+  | ~~`remote`~~ | ~~`remote`~~ | not built (§3.1's decision) |
   | `kind` | `hidden` holds `empty` or `non-interactive` | "Only interactive chats with something said can be continued here." |
   | `folder` | no folder, a control character in it, or not a directory now | "Its folder no longer exists." |
   | `worktree` | the folder is at or under a launch's `worktree_path` not yet removed (§3.2) | "This chat's folder is a worktree of another session here. Continue that session instead." |
@@ -479,7 +513,7 @@ and one `CHANGELOG.md` bullet each).
 | 1 | This spec | none |
 | 2 | **Check, with a stop gate.** Against Copilot CLI 1.0.108 with a scratch `COPILOT_HOME` and a synthetic chat made in a terminal: does `session/load` load it with its history? What does load do with a `cwd` other than the recorded one? Does the ACP host take `inuse.<pid>.lock`? Does load rewrite `workspace.yaml`'s `client_name` (which would hide the chat as `non-interactive`)? Do "allow for this session" approvals survive, and if so, does `session-state` record them where main can read them? Does load hit the reasoning-effort refusal? How do `mc_task_id` chats load? The findings go in the spike doc, and the recorded frames go in `test/fixtures/acp/copilot-1.0.108/`. If load does not work for terminal chats, phase 2 stops and #586 is updated. The approvals finding binds §3.4's Mode line and §7 question 4 as §3.4 says. The lock finding is recorded but binds nothing, since §3.5 does not lean on it. | the fixtures replay in `test/driver.test.ts` |
 | 3 | Store and driver: `chat_id`, the widened unique index and the renamed trigger; `endLaunch`'s `forgetSession`; `listLaunches`'s chat clause; the `chat` spec kind; `Driver`'s `chatStart` and `noFreshSession` options and `chatPrompt`; `run`'s `chat` branch, lock re-check, `closeRow` for a chat launch and the wrapped `resumeLaunch`; `noFreshSession` on a later resume. Nothing calls it yet. | `test/launch-spec.test.ts` (the kind's exact keys, modes, id); `test/launches.test.ts` (the column, `launchView`; the unique index refusing a second create while the first is running, parked, or stopped with its session, and allowing one after a hand-off, an error or a stop before the first message; `listLaunches` keeping a resumable chat launch behind 50 newer ended ones; `endLaunch` forgetting the session); `test/driver.test.ts` (a first start loads, then sends the framed prompt once; a resumed chat launch sends no first prompt; `-32002` ends and sends no `session/new` on a first start and on a resume; `resumableSession()` is null before the first message; another load error ends a first start and parks a resume; no `loadSession` ends); `test/driver-run.test.ts` against the fake `copilot` with a synthetic `session-state` folder (the row; a live lock refused; a stale lock ignored; a second start refused; "Didn't start"; a resume that gets `-32002` ends the launch with its session forgotten; a stop before the first message leaves no resumable launch); `test/mixed-version.test.ts` (an older spec check refuses the kind) |
-| 4 | Viewer: `GET /api/chats/copilot/:id` and reading `mc_task_id`'s presence in `parseWorkspaceYaml` | `test/chat-index.test.ts` (fresh read past the cache, `remote`, the launch link by either column, 400 and null, Host and Origin); `/api/chats` byte-identical; `test/prstate.test.ts` import pins |
+| 4 | Viewer: `GET /api/chats/copilot/:id` (without `remote` and the `mc_task_id` read: §3.1's decision) | `test/chat-index.test.ts` (fresh read past the cache, `remote`, the launch link by either column, 400 and null, Host and Origin); `/api/chats` byte-identical; `test/prstate.test.ts` import pins |
 | 5 | Main: `chatRequest`, `continueChat`, `chatConfirmation`, the IPC and preload, `resume`'s re-check for a chat launch, and Resume in Terminal's refusal of a driven chat | `test/launch-electron.test.ts` (every refusal in order and that each spawns nothing, `worktree` included; the confirmation's lines with hostile titles and folders; `COPILOT_HOME`; the spec main sends; the runtime-too-old text matched from the status line; the IPC arity and grant; off reads nothing); the phase 1 Resume test (switch on: a chat with a running, parked or stopped-with-session launch is refused and nothing opens; switch off: no new read and phase 1's results) |
 | 6 | Page: the row control and its off states, the dialog, Show session, "· here", Copy resume's off state for a driven chat, the panel line, CSS with the tokens, and `DESIGN.md` | `test/chats-model.test.ts` (the pure eligibility and link rules); `test/dom/chats-continue.test.ts` (drawn only with the grant; disabled reasons; the dialog's request; progress; refusals in the note; Show session opens `launch:<id>`; Copy resume off beside Show session; switch off draws and reads exactly what phase 1 did); `test/chats-style.test.ts` (tokens only) |
 
@@ -525,3 +559,8 @@ need the phase 1 Chats tab and Resume in Terminal on main.
    - Add a count of uncommitted files. The driver or main would need to run git before the dialog.
    - Refuse a dirty folder. This is safest, but it blocks the common case of continuing work in
      progress.
+
+   **PR 2 findings:** the terminal's "don't ask again" approvals survive, because they are kept per
+   folder in `$COPILOT_HOME/permissions-config.json` and apply to every session there (§3.4's
+   note). So the recommended answer's condition does not hold as written. §3.4's decision keeps
+   the recommended answer, with the Mode line naming those approvals.

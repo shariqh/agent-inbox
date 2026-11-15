@@ -1,0 +1,8 @@
+{"t":0,"dir":"note","event":"spawn","command":"copilot","args":["--acp","--stdio","--model","claude-haiku-4.5"],"cwd":"<SCRATCH>/repo","label":"load-unknown-id"}
+{"t":41,"dir":"note","event":"pid","pid":11369}
+{"t":42,"dir":"c2a","msg":{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false},"terminal":false},"clientInfo":{"name":"agent-inbox-check-586","version":"0.0.0"}}}}
+{"t":3780,"dir":"a2c","msg":{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{"auth":{"logout":{}},"loadSession":true,"mcpCapabilities":{"http":true,"sse":true},"promptCapabilities":{"image":true,"audio":false,"embeddedContext":true},"sessionCapabilities":{"close":{},"list":{}}},"agentInfo":{"name":"Copilot","title":"Copilot","version":"1.0.112-0"},"authMethods":[{"id":"copilot-login","name":"Log in with Copilot CLI","description":"Run `copilot login` in the terminal","_meta":{"terminal-auth":{"command":"/opt/homebrew/lib/node_modules/@github/copilot/node_modules/@github/copilot-darwin-arm64/copilot","args":["login"],"label":"Copilot Login"}}}]}}}
+{"t":3781,"dir":"c2a","msg":{"jsonrpc":"2.0","id":2,"method":"session/load","params":{"sessionId":"9b2c6a1e-4d3f-4e8a-9c71-2f5e8d0a6b13","cwd":"<SCRATCH>/repo","mcpServers":[]}}}
+{"t":3801,"dir":"a2c","msg":{"jsonrpc":"2.0","id":2,"error":{"code":-32002,"message":"Resource not found: Session 9b2c6a1e-4d3f-4e8a-9c71-2f5e8d0a6b13 not found","data":{"uri":"Session 9b2c6a1e-4d3f-4e8a-9c71-2f5e8d0a6b13 not found"}}}}
+{"t":3801,"dir":"note","event":"stdin-close"}
+{"t":4800,"dir":"note","event":"exit","code":0,"signal":null}
